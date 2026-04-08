@@ -1,3 +1,42 @@
 *~
 \#*\#
 \.\#*
+
+# Fork-specific local files
+.clinerules
+.claude/
+
+# ── Build artifacts ──────────────────────────────────────────────────────────
+
+# Generated Verilog and SVD (produced by build_hdl.bat)
+maia-hdl/ip/maia-sdr/default/
+maia-hdl/ip/maia-sdr/maia_iio/
+maia-hdl/ip/maia-sdr/maia_iio_lite/
+maia-hdl/maia-sdr.svd
+
+# Vivado project artifacts (produced by build_fpga.bat)
+*.xpr
+*.cache/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sdk/
+*.srcs/
+.Xil/
+
+# Simulation output (produced by sim_hdl.bat)
+sim_output/
+
+# Vivado logs
+vivado*.log
+vivado*.jou
+vivado*.str
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.eggs/
+dist/
+build/
