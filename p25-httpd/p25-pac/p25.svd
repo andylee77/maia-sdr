@@ -18,7 +18,7 @@
       <access>read-write</access>
       <addressBlock>
         <offset>0</offset>
-        <size>0x50</size>
+        <size>0x80</size>
         <usage>registers</usage>
       </addressBlock>
       <registers>
@@ -105,7 +105,7 @@
         <register>
           <name>ddc_coeff_addr</name>
           <description>ddc_coeff_addr</description>
-          <addressOffset>0x8</addressOffset>
+          <addressOffset>0x20</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -119,7 +119,7 @@
         <register>
           <name>ddc_coeff</name>
           <description>ddc_coeff</description>
-          <addressOffset>0x10</addressOffset>
+          <addressOffset>0x28</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -139,7 +139,7 @@
         <register>
           <name>ddc_decimation</name>
           <description>ddc_decimation</description>
-          <addressOffset>0x14</addressOffset>
+          <addressOffset>0x2c</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -165,7 +165,7 @@
         <register>
           <name>ddc_frequency</name>
           <description>ddc_frequency</description>
-          <addressOffset>0x18</addressOffset>
+          <addressOffset>0x30</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -179,7 +179,7 @@
         <register>
           <name>ddc_control</name>
           <description>ddc_control</description>
-          <addressOffset>0x1c</addressOffset>
+          <addressOffset>0x34</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -235,7 +235,7 @@
         <register>
           <name>demod_status</name>
           <description>demod_status</description>
-          <addressOffset>0x20</addressOffset>
+          <addressOffset>0x40</addressOffset>
           <access>read-only</access>
           <fields>
             <field>
@@ -255,7 +255,7 @@
         <register>
           <name>demod_control</name>
           <description>demod_control</description>
-          <addressOffset>0x24</addressOffset>
+          <addressOffset>0x44</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -281,7 +281,7 @@
         <register>
           <name>dibit_next_address</name>
           <description>dibit_next_address</description>
-          <addressOffset>0x28</addressOffset>
+          <addressOffset>0x48</addressOffset>
           <access>read-only</access>
           <fields>
             <field>
@@ -295,7 +295,7 @@
         <register>
           <name>traffic_ddc_frequency</name>
           <description>traffic_ddc_frequency</description>
-          <addressOffset>0x30</addressOffset>
+          <addressOffset>0x60</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -309,7 +309,7 @@
         <register>
           <name>traffic_ddc_control</name>
           <description>traffic_ddc_control</description>
-          <addressOffset>0x34</addressOffset>
+          <addressOffset>0x64</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -365,7 +365,7 @@
         <register>
           <name>traffic_ddc_decimation</name>
           <description>traffic_ddc_decimation</description>
-          <addressOffset>0x38</addressOffset>
+          <addressOffset>0x68</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -391,7 +391,7 @@
         <register>
           <name>traffic_demod_status</name>
           <description>traffic_demod_status</description>
-          <addressOffset>0x3c</addressOffset>
+          <addressOffset>0x6c</addressOffset>
           <access>read-only</access>
           <fields>
             <field>
@@ -411,7 +411,7 @@
         <register>
           <name>traffic_demod_control</name>
           <description>traffic_demod_control</description>
-          <addressOffset>0x40</addressOffset>
+          <addressOffset>0x70</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -437,7 +437,7 @@
         <register>
           <name>traffic_next_address</name>
           <description>traffic_next_address</description>
-          <addressOffset>0x44</addressOffset>
+          <addressOffset>0x74</addressOffset>
           <access>read-only</access>
           <fields>
             <field>

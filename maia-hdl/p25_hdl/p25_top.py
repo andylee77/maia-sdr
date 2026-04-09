@@ -207,11 +207,13 @@ class P25Core(Elaboratable):
             'description': f'Fishball P25 IP core (platform {config.platform})',
             'licenseText': 'SPDX-License-Identifier: MIT',
         }
+        # Address banks: bits [4:3] of the word address select the bank.
+        # Each bank spans 8 words = 32 bytes (0x20).
         self.register_map = RegisterMap({
-            0x0: self.control_registers,
-            0x08: self.sdr_registers,
-            0x20: self.demod_registers,
-            0x30: self.traffic_registers,
+            0x00: self.control_registers,
+            0x20: self.sdr_registers,
+            0x40: self.demod_registers,
+            0x60: self.traffic_registers,
         }, metadata)
 
         # ── I/O signals ────────────────────────────────────────────────
