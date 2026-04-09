@@ -145,41 +145,94 @@ if exist "%MAIA_HDL%\adi-hdl\library\axi_ad9361" (
 echo.
 
 :: ===== Step 2: Generate Verilog =====
-echo [Step 2] Checking for generated Verilog...
+:: Staleness detection: if any *.py source file under the relevant HDL
+:: directories is newer than the generated .v, force a regeneration.
+:: Previously this step only checked for file existence, which silently
+:: baked pre-fix logic into new bitstreams when sources changed between
+:: builds but the Verilog wasn't re-emitted (see doc/changes/009).
+echo [Step 2] Checking Verilog generation status...
+set "STALE_CHECK=%PROJECT_DIR%\tools\check_verilog_stale.ps1"
+if not exist "%STALE_CHECK%" (
+    echo [FAIL] Missing staleness helper: %STALE_CHECK%
+    goto :error
+)
 
-:: Maia SDR Verilog (always needed — pluto base design instantiates maia_sdr)
-if exist "%MAIA_IP_DIR%\%MAIA_CONFIG%\maia_sdr.v" (
-    echo [OK] maia_sdr.v already exists for config '%MAIA_CONFIG%'.
-) else (
+:: ----- Maia SDR Verilog (always needed) -----
+set "MAIA_VERILOG=%MAIA_IP_DIR%\%MAIA_CONFIG%\maia_sdr.v"
+set "MAIA_STATE="
+for /f "delims=" %%R in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%STALE_CHECK%" -VerilogFile "%MAIA_VERILOG%" -SourceDirs "%MAIA_HDL%\maia_hdl"') do set "MAIA_STATE=%%R"
+
+set "MAIA_REGEN=0"
+if "!MAIA_STATE!"=="FRESH" echo [OK] maia_sdr.v is current ^(newer than maia_hdl/*.py^).
+if "!MAIA_STATE!"=="MISSING" (
     echo [INFO] maia_sdr.v not found. Running HDL generation via Docker...
+    set "MAIA_REGEN=1"
+)
+if "!MAIA_STATE!"=="STALE" (
+    echo [WARN] maia_sdr.v is STALE -- maia_hdl/*.py has newer changes.
+    echo        Regenerating via Docker to avoid baking stale logic into bitstream.
+    set "MAIA_REGEN=1"
+)
+if not defined MAIA_STATE (
+    echo [FAIL] Staleness helper returned empty state for maia_sdr.v
+    goto :error
+)
+if not "!MAIA_STATE!"=="FRESH" if not "!MAIA_STATE!"=="MISSING" if not "!MAIA_STATE!"=="STALE" (
+    echo [FAIL] Staleness helper returned unexpected state: '!MAIA_STATE!'
+    goto :error
+)
+if "!MAIA_REGEN!"=="1" (
     call "%PROJECT_DIR%\build_hdl.bat" --verilog-only
     if !errorlevel! neq 0 (
         echo [FAIL] HDL generation failed. Run build_hdl.bat manually.
         goto :error
     )
-    if not exist "%MAIA_IP_DIR%\%MAIA_CONFIG%\maia_sdr.v" (
+    if not exist "!MAIA_VERILOG!" (
         echo [FAIL] maia_sdr.v still not found after generation.
         goto :error
     )
-    echo [OK] maia_sdr.v generated.
+    echo [OK] maia_sdr.v regenerated.
 )
 
-:: P25 Verilog (only for --p25 build)
+:: ----- P25 Verilog (only for --p25 build) -----
+:: Source dirs include both p25_hdl (the P25-specific modules) AND
+:: maia_hdl (because p25_top.py imports DDC, registers, DMA, etc. from
+:: maia_hdl, so a change in maia_hdl affects the generated p25_core.v).
 if "%BUILD_P25%"=="1" (
-    if exist "%P25_IP_DIR%\%P25_CONFIG%\p25_core.v" (
-        echo [OK] p25_core.v already exists for config '%P25_CONFIG%'.
-    ) else (
-        echo [Step 2b] Generating P25 Verilog via Docker...
+    set "P25_VERILOG=%P25_IP_DIR%\%P25_CONFIG%\p25_core.v"
+    set "P25_STATE="
+    for /f "delims=" %%R in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%STALE_CHECK%" -VerilogFile "!P25_VERILOG!" -SourceDirs "%MAIA_HDL%\p25_hdl;%MAIA_HDL%\maia_hdl"') do set "P25_STATE=%%R"
+
+    set "P25_REGEN=0"
+    if "!P25_STATE!"=="FRESH" echo [OK] p25_core.v is current ^(newer than p25_hdl + maia_hdl source^).
+    if "!P25_STATE!"=="MISSING" (
+        echo [INFO] p25_core.v not found. Generating P25 Verilog via Docker...
+        set "P25_REGEN=1"
+    )
+    if "!P25_STATE!"=="STALE" (
+        echo [WARN] p25_core.v is STALE -- p25_hdl or maia_hdl has newer changes.
+        echo        Regenerating via Docker to avoid baking stale logic into bitstream.
+        set "P25_REGEN=1"
+    )
+    if not defined P25_STATE (
+        echo [FAIL] Staleness helper returned empty state for p25_core.v
+        goto :error
+    )
+    if not "!P25_STATE!"=="FRESH" if not "!P25_STATE!"=="MISSING" if not "!P25_STATE!"=="STALE" (
+        echo [FAIL] Staleness helper returned unexpected state: '!P25_STATE!'
+        goto :error
+    )
+    if "!P25_REGEN!"=="1" (
         call "%PROJECT_DIR%\build_hdl.bat" --verilog-only --p25 --p25-config %P25_CONFIG%
         if !errorlevel! neq 0 (
             echo [FAIL] P25 Verilog generation failed. Run build_hdl.bat --p25 manually.
             goto :error
         )
-        if not exist "%P25_IP_DIR%\%P25_CONFIG%\p25_core.v" (
+        if not exist "!P25_VERILOG!" (
             echo [FAIL] p25_core.v still not found after generation.
             goto :error
         )
-        echo [OK] p25_core.v generated.
+        echo [OK] p25_core.v regenerated.
     )
 )
 echo.
@@ -445,7 +498,11 @@ echo.
 echo  NEXT STEPS:
 echo  1. Build Tezuka firmware:
 echo     cd %TEZUKA_FW%
-echo     build.bat
+if "%BUILD_P25%"=="1" (
+    echo     build.bat --p25
+) else (
+    echo     build.bat
+)
 echo.
 echo  2. Flash the .frm/.zip to Fishball via SD card
 echo.
