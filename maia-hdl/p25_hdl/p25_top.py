@@ -16,7 +16,7 @@ from maia_hdl.axi4_lite import Axi4LiteRegisterBridge
 from maia_hdl.cdc import RegisterCDC, RxIQCDC
 from maia_hdl.clknx import ClkNxCommonEdge
 from maia_hdl.ddc import DDC
-from maia_hdl.dma import DmaStreamWrite
+from maia_hdl.dma import DmaStreamRingWrite
 from maia_hdl.pluto_platform import PlutoPlatform
 from maia_hdl.register import Access, Field, Registers, Register, RegisterMap
 
@@ -121,9 +121,11 @@ class P25Core(Elaboratable):
         # 8 MSPS ADC / 128x DDC decimation = 62.5 kSPS / 4800 sym/s ≈ 13 samp/sym
         self.symbol_timing = SymbolTimingRecovery(samples_per_symbol=13)
         self.dibit_packer = DibitPacker()
-        self.dibit_dma = DmaStreamWrite(
+        # Continuous ring DMA: fires interrupt on each sub-buffer completion
+        self.dibit_dma = DmaStreamRingWrite(
             config.dibit_dma_address,
-            config.dibit_dma_address + config.dibit_dma_size,
+            config.dibit_dma_num_buffers_log2,
+            config.dibit_dma_buffer_size,
             width=64, axi_awidth=32, name='m_axi_dibit')
 
         # ── Control channel demod registers (0x40) ────────────────────
@@ -133,10 +135,11 @@ class P25Core(Elaboratable):
                 0b00: Register('demod_status', [
                     Field('dibit_count', Access.R, 16, 0),
                     Field('demod_overflow', Access.Rsticky, 1, 0),
+                    Field('last_buffer', Access.R,
+                          config.dibit_dma_num_buffers_log2, -1),
                 ]),
                 0b01: Register('demod_control', [
-                    Field('start', Access.Wpulse, 1, 0),
-                    Field('stop', Access.Wpulse, 1, 0),
+                    # Single enable bit for ring DMA (replaces start/stop pulses)
                     Field('demod_enable', Access.RW, 1, 0),
                 ]),
                 0b10: Register('dibit_next_address', [
@@ -150,9 +153,10 @@ class P25Core(Elaboratable):
         self.traffic_c4fm = C4FMDemod()
         self.traffic_timing = SymbolTimingRecovery(samples_per_symbol=13)
         self.traffic_packer = DibitPacker()
-        self.traffic_dma = DmaStreamWrite(
+        self.traffic_dma = DmaStreamRingWrite(
             config.traffic_dma_address,
-            config.traffic_dma_address + config.traffic_dma_size,
+            config.traffic_dma_num_buffers_log2,
+            config.traffic_dma_buffer_size,
             width=64, axi_awidth=32, name='m_axi_traffic')
 
         # ── Traffic channel registers (0x60) ──────────────────────────
@@ -184,11 +188,11 @@ class P25Core(Elaboratable):
                     'traffic_demod_status', [
                         Field('dibit_count', Access.R, 16, 0),
                         Field('demod_overflow', Access.Rsticky, 1, 0),
+                        Field('last_buffer', Access.R,
+                              config.traffic_dma_num_buffers_log2, -1),
                     ]),
                 0b100: Register(
                     'traffic_demod_control', [
-                        Field('start', Access.Wpulse, 1, 0),
-                        Field('stop', Access.Wpulse, 1, 0),
                         Field('demod_enable', Access.RW, 1, 0),
                     ]),
                 0b101: Register(
@@ -341,25 +345,23 @@ class P25Core(Elaboratable):
                 self.symbol_timing.symbol_strobe),
         ]
 
-        # Dibit packer -> DMA stream
+        # Dibit packer -> ring DMA stream
         m.d.comb += [
             self.dibit_dma.stream_data.eq(self.dibit_packer.data_out),
             self.dibit_dma.stream_valid.eq(self.dibit_packer.data_valid),
             self.dibit_packer.stream_ready.eq(self.dibit_dma.stream_ready),
         ]
 
-        # DMA start/stop from demod registers
+        # Ring DMA enable from demod_control register (level, not pulse)
         m.d.comb += [
-            self.dibit_dma.start.eq(
-                self.demod_registers['demod_control']['start']),
-            self.dibit_dma.stop.eq(
-                self.demod_registers['demod_control']['stop']),
+            self.dibit_dma.enable.eq(
+                self.demod_registers['demod_control']['demod_enable']),
         ]
 
-        # DMA finished -> interrupt
+        # DMA sub-buffer completion -> interrupt (sticky bit, cleared by read)
         interrupts_reg = self.control_registers['interrupts']
         m.d.comb += [
-            interrupts_reg['dibit_dma'].eq(self.dibit_dma.finished),
+            interrupts_reg['dibit_dma'].eq(self.dibit_dma.interrupt),
         ]
 
         # Demod status registers
@@ -371,8 +373,12 @@ class P25Core(Elaboratable):
                 dibit_counter),
             self.demod_registers['demod_status']['demod_overflow'].eq(
                 self.dibit_packer.overflow),
+            self.demod_registers['demod_status']['last_buffer'].eq(
+                self.dibit_dma.last_buffer),
+            # next_address is no longer exposed by ring DMA — report
+            # the AW write address from inside the AXI interface for debug.
             self.demod_registers['dibit_next_address']['next_address'].eq(
-                self.dibit_dma.next_address),
+                self.dibit_dma.axi.awaddr),
         ]
 
         # ── Traffic channel DDC + demod chain ─────────────────────────
@@ -426,7 +432,7 @@ class P25Core(Elaboratable):
             self.traffic_ddc.im_in.eq(rxiq_cdc.im_out),
         ]
 
-        # Traffic DDC -> C4FM demod -> symbol timing -> dibit packer -> DMA
+        # Traffic DDC -> C4FM demod -> symbol timing -> dibit packer -> ring DMA
         m.d.comb += [
             self.traffic_c4fm.re_in.eq(self.traffic_ddc.re_out),
             self.traffic_c4fm.im_in.eq(self.traffic_ddc.im_out),
@@ -440,10 +446,13 @@ class P25Core(Elaboratable):
             self.traffic_dma.stream_valid.eq(self.traffic_packer.data_valid),
             self.traffic_packer.stream_ready.eq(
                 self.traffic_dma.stream_ready),
-            self.traffic_dma.start.eq(
-                self.traffic_registers['traffic_demod_control']['start']),
-            self.traffic_dma.stop.eq(
-                self.traffic_registers['traffic_demod_control']['stop']),
+            self.traffic_dma.enable.eq(
+                self.traffic_registers['traffic_demod_control']['demod_enable']),
+        ]
+
+        # Traffic DMA sub-buffer completion -> interrupt
+        m.d.comb += [
+            interrupts_reg['traffic_dma'].eq(self.traffic_dma.interrupt),
         ]
 
         # Traffic demod status registers
@@ -456,8 +465,10 @@ class P25Core(Elaboratable):
                 traffic_dibit_counter),
             self.traffic_registers['traffic_demod_status']['demod_overflow'].eq(
                 self.traffic_packer.overflow),
+            self.traffic_registers['traffic_demod_status']['last_buffer'].eq(
+                self.traffic_dma.last_buffer),
             self.traffic_registers['traffic_next_address']['next_address'].eq(
-                self.traffic_dma.next_address),
+                self.traffic_dma.axi.awaddr),
         ]
 
         # ── Register crossbar ─────────────────────────────────────────

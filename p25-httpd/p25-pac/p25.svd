@@ -250,6 +250,12 @@
               <bitRange>[16:16]</bitRange>
               <access>read-only</access>
             </field>
+            <field>
+              <name>last_buffer</name>
+              <description>last_buffer</description>
+              <bitRange>[19:17]</bitRange>
+              <access>read-only</access>
+            </field>
           </fields>
         </register>
         <register>
@@ -259,21 +265,9 @@
           <access>read-write</access>
           <fields>
             <field>
-              <name>start</name>
-              <description>start</description>
-              <bitRange>[0:0]</bitRange>
-              <access>write-only</access>
-            </field>
-            <field>
-              <name>stop</name>
-              <description>stop</description>
-              <bitRange>[1:1]</bitRange>
-              <access>write-only</access>
-            </field>
-            <field>
               <name>demod_enable</name>
               <description>demod_enable</description>
-              <bitRange>[2:2]</bitRange>
+              <bitRange>[0:0]</bitRange>
               <access>read-write</access>
             </field>
           </fields>
@@ -406,6 +400,12 @@
               <bitRange>[16:16]</bitRange>
               <access>read-only</access>
             </field>
+            <field>
+              <name>last_buffer</name>
+              <description>last_buffer</description>
+              <bitRange>[19:17]</bitRange>
+              <access>read-only</access>
+            </field>
           </fields>
         </register>
         <register>
@@ -415,21 +415,9 @@
           <access>read-write</access>
           <fields>
             <field>
-              <name>start</name>
-              <description>start</description>
-              <bitRange>[0:0]</bitRange>
-              <access>write-only</access>
-            </field>
-            <field>
-              <name>stop</name>
-              <description>stop</description>
-              <bitRange>[1:1]</bitRange>
-              <access>write-only</access>
-            </field>
-            <field>
               <name>demod_enable</name>
               <description>demod_enable</description>
-              <bitRange>[2:2]</bitRange>
+              <bitRange>[0:0]</bitRange>
               <access>read-write</access>
             </field>
           </fields>

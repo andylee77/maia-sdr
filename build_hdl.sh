@@ -184,6 +184,22 @@ pip install --quiet numpy scipy
 log "Installing amaranth-yosys (Verilog backend)..."
 pip install --quiet amaranth-yosys
 
+# Install svd2rust for P25 PAC regeneration (cached in Docker volume)
+if ! command -v svd2rust >/dev/null 2>&1; then
+    log "Installing svd2rust (P25 PAC generator)..."
+    apt-get install -y -qq curl >/dev/null 2>&1 || true
+    SVD2RUST_VERSION="0.33.5"
+    SVD2RUST_URL="https://github.com/rust-embedded/svd2rust/releases/download/v${SVD2RUST_VERSION}/svd2rust-x86_64-unknown-linux-gnu.gz"
+    if curl -sL "$SVD2RUST_URL" -o /tmp/svd2rust.gz 2>/dev/null && \
+       gunzip -f /tmp/svd2rust.gz && \
+       chmod +x /tmp/svd2rust && \
+       mv /tmp/svd2rust /usr/local/bin/svd2rust; then
+        log "  svd2rust v${SVD2RUST_VERSION} installed"
+    else
+        warn "svd2rust download failed - PAC regeneration must be done manually"
+    fi
+fi
+
 # ── Step 4: Install maia_hdl package ──────────────────────────────────────────
 step "Step 4: Install maia_hdl package (editable)"
 pip install --quiet -e "$SRC_DIR"
@@ -221,6 +237,46 @@ if $DO_P25; then
 
     P25_LINES=$(wc -l < p25_core.v)
     log "P25 Verilog generated: p25_core.v ($P25_LINES lines)"
+fi
+
+# ── Step 5c: Generate P25 SVD ─────────────────────────────────────────────────
+# Always generate the P25 SVD when building P25 — it's tiny and the PAC
+# depends on it. Avoids stale PAC after register map changes.
+if $DO_P25; then
+    step "Step 5c: Generate P25 SVD → p25.svd"
+    cd "$SRC_DIR"
+
+    PYTHONPATH="." python - <<PYEOF
+import sys
+from p25_hdl.p25_top import P25Core
+from p25_hdl import configs
+
+cfg_fn = getattr(configs, '${P25_CONFIG}', None)
+if cfg_fn is None:
+    print(f"[ERROR] No P25 config named '${P25_CONFIG}' in p25_hdl.configs", file=sys.stderr)
+    sys.exit(1)
+
+core = P25Core(cfg_fn())
+svd_bytes = core.svd()
+
+with open('p25.svd', 'wb') as f:
+    f.write(svd_bytes)
+
+import xml.etree.ElementTree as ET
+tree = ET.fromstring(svd_bytes)
+regs = tree.findall('.//register')
+print(f'P25 SVD written: {len(svd_bytes)} bytes, {len(regs)} registers')
+for r in regs:
+    name = r.findtext('name', '')
+    offset = r.findtext('addressOffset', '')
+    print(f'  {offset}: {name}')
+PYEOF
+
+    if [ ! -f p25.svd ]; then
+        err "p25.svd was not created — P25 SVD generation failed."
+        exit 1
+    fi
+    log "P25 SVD generated: p25.svd ($(wc -c < p25.svd) bytes)"
 fi
 
 # ── Step 6: Generate SVD ──────────────────────────────────────────────────────
@@ -282,6 +338,24 @@ if $DO_P25; then
     mkdir -p "$P25_IP_DIR"
     cp "$SRC_DIR/p25_core.v" "$P25_IP_DIR/p25_core.v"
     log "  ✓ p25_core.v → maia-hdl/ip/p25-core/$P25_CONFIG/ ($(wc -l < "$SRC_DIR/p25_core.v") lines)"
+
+    # Copy P25 SVD into the p25-pac crate and regenerate the PAC if svd2rust
+    # is available. Otherwise leave it for the host to run manually.
+    P25_PAC_DIR="$SRC_MOUNT/p25-httpd/p25-pac"
+    if [ -d "$P25_PAC_DIR" ]; then
+        cp "$SRC_DIR/p25.svd" "$P25_PAC_DIR/p25.svd"
+        log "  ✓ p25.svd → p25-httpd/p25-pac/ ($(wc -c < "$SRC_DIR/p25.svd") bytes)"
+        if command -v svd2rust >/dev/null 2>&1; then
+            log "  Regenerating p25-pac with svd2rust..."
+            (cd "$P25_PAC_DIR" && svd2rust -i p25.svd --target none && \
+                mv lib.rs src/lib.rs 2>/dev/null) || \
+                warn "svd2rust regeneration failed"
+            log "  ✓ p25-pac src/lib.rs regenerated"
+        else
+            warn "svd2rust not in PATH — run manually:"
+            warn "  cd p25-httpd/p25-pac && svd2rust -i p25.svd --target none && mv lib.rs src/lib.rs"
+        fi
+    fi
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

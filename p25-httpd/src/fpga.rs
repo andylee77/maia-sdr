@@ -298,38 +298,7 @@ impl IpCore {
             .modify(|_, w| w.demod_enable().bit(enable));
     }
 
-    /// Starts the dibit DMA.
-    ///
-    /// Retries the start pulse because the demod_registers run in the
-    /// s_axi_lite clock domain (100 MHz) but the DMA runs in sync
-    /// (62.5 MHz). The Wpulse may not cross the CDC boundary on the
-    /// first attempt. Verifies the DMA address moves off the base.
-    pub fn demod_start(&self) {
-        let base = self.dibit_next_address();
-        for attempt in 0..20 {
-            self.registers
-                .demod_control()
-                .modify(|_, w| w.start().set_bit());
-            // Brief spin to let the DMA process a few stream words
-            for _ in 0..10000 {
-                core::hint::spin_loop();
-            }
-            if self.dibit_next_address() != base {
-                tracing::info!("DMA started on attempt {}", attempt + 1);
-                return;
-            }
-        }
-        tracing::warn!("DMA start: address did not advance after 20 attempts");
-    }
-
-    /// Stops the dibit DMA.
-    pub fn demod_stop(&self) {
-        self.registers
-            .demod_control()
-            .modify(|_, w| w.stop().set_bit());
-    }
-
-    /// Returns the dibit counter value.
+    /// Returns the dibit counter value (16-bit, wraps).
     pub fn dibit_count(&self) -> u16 {
         self.registers
             .demod_status()
@@ -338,7 +307,7 @@ impl IpCore {
             .bits()
     }
 
-    /// Returns true if the demod has overflowed.
+    /// Returns true if the demod has overflowed (sticky).
     pub fn demod_overflow(&self) -> bool {
         self.registers
             .demod_status()
@@ -347,7 +316,18 @@ impl IpCore {
             .bit()
     }
 
-    /// Returns the current DMA write address for the dibit channel.
+    /// Returns the index of the most recently completed sub-buffer.
+    /// Initialised to all-ones (-1) so the first read after enable
+    /// indicates "no buffers completed yet".
+    pub fn dibit_last_buffer(&self) -> u8 {
+        self.registers
+            .demod_status()
+            .read()
+            .last_buffer()
+            .bits()
+    }
+
+    /// Returns the current AW write address for the dibit channel (debug).
     pub fn dibit_next_address(&self) -> u32 {
         self.registers
             .dibit_next_address()
@@ -404,32 +384,16 @@ impl IpCore {
             .modify(|_, w| w.demod_enable().bit(enable));
     }
 
-    /// Starts the traffic channel DMA (with CDC retry).
-    pub fn traffic_demod_start(&self) {
-        let base = self.traffic_next_address();
-        for attempt in 0..20 {
-            self.registers
-                .traffic_demod_control()
-                .modify(|_, w| w.start().set_bit());
-            for _ in 0..10000 {
-                core::hint::spin_loop();
-            }
-            if self.traffic_next_address() != base {
-                tracing::info!("Traffic DMA started on attempt {}", attempt + 1);
-                return;
-            }
-        }
-        tracing::warn!("Traffic DMA start: address did not advance after 20 attempts");
-    }
-
-    /// Stops the traffic channel DMA.
-    pub fn traffic_demod_stop(&self) {
+    /// Returns the index of the most recently completed traffic sub-buffer.
+    pub fn traffic_last_buffer(&self) -> u8 {
         self.registers
-            .traffic_demod_control()
-            .modify(|_, w| w.stop().set_bit());
+            .traffic_demod_status()
+            .read()
+            .last_buffer()
+            .bits()
     }
 
-    /// Returns the traffic DMA write address.
+    /// Returns the current traffic DMA AW write address (debug).
     pub fn traffic_next_address(&self) -> u32 {
         self.registers
             .traffic_next_address()
@@ -445,57 +409,75 @@ impl IpCore {
 
     // ── DMA buffer helpers ───────────────────────────────────────
 
+    /// Reads new dibit/traffic ring sub-buffers since the last call.
+    ///
+    /// Uses the FPGA's `last_buffer` field (updated by the ring DMA's
+    /// B-channel completion logic) to determine which sub-buffers are
+    /// newly available. Sub-buffer N becomes valid the cycle after the
+    /// FPGA finishes writing it (response received from DDR).
     fn read_dma_buffers(&mut self, channel: DmaChannel) -> Vec<&[u8]> {
-        let (dma, last_addr, current_addr) = match channel {
+        let (dma, last_seen_idx, current_last) = match channel {
             DmaChannel::Dibit => (
                 &self.dibit_dma,
                 &mut self.dibit_last_addr,
                 self.registers
-                    .dibit_next_address()
+                    .demod_status()
                     .read()
-                    .next_address()
-                    .bits(),
+                    .last_buffer()
+                    .bits() as u32,
             ),
             DmaChannel::Traffic => (
                 &self.traffic_dma,
                 &mut self.traffic_last_addr,
                 self.registers
-                    .traffic_next_address()
+                    .traffic_demod_status()
                     .read()
-                    .next_address()
-                    .bits(),
+                    .last_buffer()
+                    .bits() as u32,
             ),
         };
 
-        let buf_size = dma.buffer_size();
         let num_bufs = dma.num_buffers();
-        if buf_size == 0 || num_bufs == 0 {
+        if num_bufs == 0 {
             return Vec::new();
         }
 
-        // Convert addresses to buffer indices
-        let current_idx = (current_addr as usize / buf_size) % num_bufs;
+        // Mask to num_buffers_log2 bits (last_buffer is N bits wide)
+        let mask = (num_bufs - 1) as u32;
+        let current_idx = (current_last & mask) as usize;
 
-        let start_idx = match *last_addr {
-            Some(addr) => ((addr as usize / buf_size) + 1) % num_bufs,
+        let start_idx = match *last_seen_idx {
+            Some(prev) => {
+                let prev_idx = (prev & mask) as usize;
+                if prev_idx == current_idx {
+                    // No new buffers since last poll
+                    return Vec::new();
+                }
+                (prev_idx + 1) % num_bufs
+            }
             None => {
-                // First call — start from current buffer
-                *last_addr = Some(current_addr);
+                // First call: snapshot current and return empty.
+                // last_buffer initialises to all-1s in HW; on the first
+                // sub-buffer completion it wraps to 0.
+                *last_seen_idx = Some(current_last);
                 return Vec::new();
             }
         };
 
-        *last_addr = Some(current_addr);
+        *last_seen_idx = Some(current_last);
 
-        // Collect new buffers
+        // Collect new sub-buffers, walking the ring forward to current_idx
         let mut result = Vec::new();
         let mut idx = start_idx;
-        while idx != current_idx {
+        loop {
             if let Err(e) = dma.cache_invalidate(idx) {
                 tracing::warn!("cache invalidate failed for buffer {idx}: {e}");
                 break;
             }
             result.push(dma.buffer_as_slice(idx));
+            if idx == current_idx {
+                break;
+            }
             idx = (idx + 1) % num_bufs;
         }
         result
