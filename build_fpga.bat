@@ -33,14 +33,14 @@ set "FPGA_PROJECT_DIR=%MAIA_HDL%\projects\%FPGA_PROJECT%"
 
 if "%BUILD_P25%"=="1" (
     echo ============================================================
-    echo  Fishball 7020 — P25 FPGA Bitstream Build (Vivado)
-    echo  Target: xc7z020clg400-1 (Zynq Z7020 SoC)
+    echo  Fishball 7020 -- P25 FPGA Bitstream Build ^(Vivado^)
+    echo  Target: xc7z020clg400-1 ^(Zynq Z7020 SoC^)
     echo  Project: fishball7020_p25
     echo ============================================================
 ) else (
     echo ============================================================
-    echo  Fishball 7020 — FPGA Bitstream Build (Vivado)
-    echo  Target: xc7z020clg400-1 (Zynq Z7020 SoC)
+    echo  Fishball 7020 -- FPGA Bitstream Build ^(Vivado^)
+    echo  Target: xc7z020clg400-1 ^(Zynq Z7020 SoC^)
     echo  Project: fishball7020_iio
     echo ============================================================
 )
@@ -166,16 +166,21 @@ if exist "%MAIA_IP_DIR%\%MAIA_CONFIG%\maia_sdr.v" (
 
 :: P25 Verilog (only for --p25 build)
 if "%BUILD_P25%"=="1" (
-    echo [Step 2b] Generating P25 Verilog...
-    if not exist "%P25_IP_DIR%\%P25_CONFIG%" mkdir "%P25_IP_DIR%\%P25_CONFIG%"
-    set "PYTHONPATH=%MAIA_HDL%"
-    cd /d "%MAIA_HDL%"
-    python -m p25_hdl.p25_top --config %P25_CONFIG% "%P25_IP_DIR%\%P25_CONFIG%\p25_core.v"
-    if !errorlevel! neq 0 (
-        echo [FAIL] P25 Verilog generation failed.
-        goto :error
+    if exist "%P25_IP_DIR%\%P25_CONFIG%\p25_core.v" (
+        echo [OK] p25_core.v already exists for config '%P25_CONFIG%'.
+    ) else (
+        echo [Step 2b] Generating P25 Verilog via Docker...
+        call "%PROJECT_DIR%\build_hdl.bat" --verilog-only --p25 --p25-config %P25_CONFIG%
+        if !errorlevel! neq 0 (
+            echo [FAIL] P25 Verilog generation failed. Run build_hdl.bat --p25 manually.
+            goto :error
+        )
+        if not exist "%P25_IP_DIR%\%P25_CONFIG%\p25_core.v" (
+            echo [FAIL] p25_core.v still not found after generation.
+            goto :error
+        )
+        echo [OK] p25_core.v generated.
     )
-    echo [OK] p25_core.v generated.
 )
 echo.
 
@@ -190,97 +195,164 @@ cd /d "%MAIA_IP_DIR%\%MAIA_CONFIG%"
 call "%VIVADO%" -mode batch -source "%MAIA_IP_DIR%\package_ip.tcl" -notrace
 :: Vivado may return non-zero for non-fatal CRITICAL WARNINGs
 if not exist "%MAIA_IP_DIR%\%MAIA_CONFIG%\component.xml" (
-    echo [FAIL] Maia SDR IP packaging failed — no component.xml created.
+    echo [FAIL] Maia SDR IP packaging failed -- no component.xml created.
     goto :error
 )
-echo [OK] Maia SDR IP core packaged (component.xml created).
+echo [OK] Maia SDR IP core packaged ^(component.xml created^).
 
 :: P25 IP (only for --p25 build)
 if "%BUILD_P25%"=="1" (
-    echo [Step 3b] Packaging P25 IP core (config: %P25_CONFIG%)...
+    echo [Step 3b] Packaging P25 IP core ^(config: %P25_CONFIG%^)...
     cd /d "%P25_IP_DIR%\%P25_CONFIG%"
     set "IP_CORE_VERSION=%IP_CORE_VERSION%"
     set "P25_CONFIG=%P25_CONFIG%"
     call "%VIVADO%" -mode batch -source "%P25_IP_DIR%\package_ip.tcl" -notrace
     if not exist "%P25_IP_DIR%\%P25_CONFIG%\component.xml" (
-        echo [FAIL] P25 IP packaging failed — no component.xml created.
+        echo [FAIL] P25 IP packaging failed -- no component.xml created.
         goto :error
     )
-    echo [OK] P25 IP core packaged (component.xml created).
+    echo [OK] P25 IP core packaged ^(component.xml created^).
 )
 echo.
 
 :: ===== Step 4: Build ADI Library IP Cores =====
 echo [Step 4] Building ADI library IP cores...
-echo          axi_ad9361, util_axis_fifo, util_cdc, axi_dmac, util_cpack2, util_upack2
+echo          axi_ad9361, util_clkdiv, util_rfifo, util_wfifo,
+echo          util_axis_fifo, util_cdc, axi_dmac, util_cpack2, util_upack2
+
+:: util_clkdiv (in xilinx/ subdir)
+if exist "%ADI_LIB%\xilinx\util_clkdiv\component.xml" (
+    echo [OK] util_clkdiv already built.
+) else (
+    echo [INFO] Building util_clkdiv...
+    cd /d "%ADI_LIB%\xilinx\util_clkdiv"
+    call "%VIVADO%" -mode batch -source util_clkdiv_ip.tcl -notrace
+    if !errorlevel! neq 0 (
+        echo [FAIL] util_clkdiv build failed.
+        goto :error
+    )
+    echo [OK] util_clkdiv built.
+)
+
+:: util_rfifo
+if exist "%ADI_LIB%\util_rfifo\component.xml" (
+    echo [OK] util_rfifo already built.
+) else (
+    echo [INFO] Building util_rfifo...
+    cd /d "%ADI_LIB%\util_rfifo"
+    call "%VIVADO%" -mode batch -source util_rfifo_ip.tcl -notrace
+    if !errorlevel! neq 0 (
+        echo [FAIL] util_rfifo build failed.
+        goto :error
+    )
+    echo [OK] util_rfifo built.
+)
+
+:: util_wfifo
+if exist "%ADI_LIB%\util_wfifo\component.xml" (
+    echo [OK] util_wfifo already built.
+) else (
+    echo [INFO] Building util_wfifo...
+    cd /d "%ADI_LIB%\util_wfifo"
+    call "%VIVADO%" -mode batch -source util_wfifo_ip.tcl -notrace
+    if !errorlevel! neq 0 (
+        echo [FAIL] util_wfifo build failed.
+        goto :error
+    )
+    echo [OK] util_wfifo built.
+)
 
 :: axi_ad9361
-echo [INFO] Building axi_ad9361...
-cd /d "%ADI_LIB%\axi_ad9361"
-call "%VIVADO%" -mode batch -source axi_ad9361_ip.tcl -notrace
-if !errorlevel! neq 0 (
-    echo [FAIL] axi_ad9361 build failed.
-    goto :error
+if exist "%ADI_LIB%\axi_ad9361\component.xml" (
+    echo [OK] axi_ad9361 already built.
+) else (
+    echo [INFO] Building axi_ad9361...
+    cd /d "%ADI_LIB%\axi_ad9361"
+    call "%VIVADO%" -mode batch -source axi_ad9361_ip.tcl -notrace
+    if !errorlevel! neq 0 (
+        echo [FAIL] axi_ad9361 build failed.
+        goto :error
+    )
+    echo [OK] axi_ad9361 built.
 )
-echo [OK] axi_ad9361 built.
 
 :: util_axis_fifo
-echo [INFO] Building util_axis_fifo...
-cd /d "%ADI_LIB%\util_axis_fifo"
-call "%VIVADO%" -mode batch -source util_axis_fifo_ip.tcl -notrace
-if !errorlevel! neq 0 (
-    echo [FAIL] util_axis_fifo build failed.
-    goto :error
+if exist "%ADI_LIB%\util_axis_fifo\component.xml" (
+    echo [OK] util_axis_fifo already built.
+) else (
+    echo [INFO] Building util_axis_fifo...
+    cd /d "%ADI_LIB%\util_axis_fifo"
+    call "%VIVADO%" -mode batch -source util_axis_fifo_ip.tcl -notrace
+    if !errorlevel! neq 0 (
+        echo [FAIL] util_axis_fifo build failed.
+        goto :error
+    )
+    echo [OK] util_axis_fifo built.
 )
-echo [OK] util_axis_fifo built.
 
 :: util_cdc
-echo [INFO] Building util_cdc...
-cd /d "%ADI_LIB%\util_cdc"
-call "%VIVADO%" -mode batch -source util_cdc_ip.tcl -notrace
-if !errorlevel! neq 0 (
-    echo [FAIL] util_cdc build failed.
-    goto :error
+if exist "%ADI_LIB%\util_cdc\component.xml" (
+    echo [OK] util_cdc already built.
+) else (
+    echo [INFO] Building util_cdc...
+    cd /d "%ADI_LIB%\util_cdc"
+    call "%VIVADO%" -mode batch -source util_cdc_ip.tcl -notrace
+    if !errorlevel! neq 0 (
+        echo [FAIL] util_cdc build failed.
+        goto :error
+    )
+    echo [OK] util_cdc built.
 )
-echo [OK] util_cdc built.
 
 :: axi_dmac (depends on util_axis_fifo, util_cdc)
-echo [INFO] Building axi_dmac...
-cd /d "%ADI_LIB%\axi_dmac"
-call "%VIVADO%" -mode batch -source axi_dmac_ip.tcl -notrace
-if !errorlevel! neq 0 (
-    echo [FAIL] axi_dmac build failed.
-    goto :error
+if exist "%ADI_LIB%\axi_dmac\component.xml" (
+    echo [OK] axi_dmac already built.
+) else (
+    echo [INFO] Building axi_dmac...
+    cd /d "%ADI_LIB%\axi_dmac"
+    call "%VIVADO%" -mode batch -source axi_dmac_ip.tcl -notrace
+    if !errorlevel! neq 0 (
+        echo [FAIL] axi_dmac build failed.
+        goto :error
+    )
+    echo [OK] axi_dmac built.
 )
-echo [OK] axi_dmac built.
 
 :: util_cpack2
-echo [INFO] Building util_cpack2...
-cd /d "%ADI_LIB%\util_pack\util_cpack2"
-call "%VIVADO%" -mode batch -source util_cpack2_ip.tcl -notrace
-if !errorlevel! neq 0 (
-    echo [FAIL] util_cpack2 build failed.
-    goto :error
+if exist "%ADI_LIB%\util_pack\util_cpack2\component.xml" (
+    echo [OK] util_cpack2 already built.
+) else (
+    echo [INFO] Building util_cpack2...
+    cd /d "%ADI_LIB%\util_pack\util_cpack2"
+    call "%VIVADO%" -mode batch -source util_cpack2_ip.tcl -notrace
+    if !errorlevel! neq 0 (
+        echo [FAIL] util_cpack2 build failed.
+        goto :error
+    )
+    echo [OK] util_cpack2 built.
 )
-echo [OK] util_cpack2 built.
 
 :: util_upack2
-echo [INFO] Building util_upack2...
-cd /d "%ADI_LIB%\util_pack\util_upack2"
-call "%VIVADO%" -mode batch -source util_upack2_ip.tcl -notrace
-if !errorlevel! neq 0 (
-    echo [FAIL] util_upack2 build failed.
-    goto :error
+if exist "%ADI_LIB%\util_pack\util_upack2\component.xml" (
+    echo [OK] util_upack2 already built.
+) else (
+    echo [INFO] Building util_upack2...
+    cd /d "%ADI_LIB%\util_pack\util_upack2"
+    call "%VIVADO%" -mode batch -source util_upack2_ip.tcl -notrace
+    if !errorlevel! neq 0 (
+        echo [FAIL] util_upack2 build failed.
+        goto :error
+    )
+    echo [OK] util_upack2 built.
 )
-echo [OK] util_upack2 built.
 echo.
 
 :: ===== Step 5: Build FPGA Project (FULL SYNTHESIS) =====
 echo ============================================================
 echo [Step 5] Building %FPGA_PROJECT% FPGA project via Vivado
-echo          Target: xc7z020clg400-1 (Zynq Z7020 SoC)
+echo          Target: xc7z020clg400-1 ^(Zynq Z7020 SoC^)
 echo          Typical time: ~15-30 minutes
-echo          Synthesis → Implementation → Bitstream → XSA
+echo          Synthesis -^> Implementation -^> Bitstream -^> XSA
 echo ============================================================
 
 cd /d "%FPGA_PROJECT_DIR%"
@@ -290,7 +362,7 @@ if !errorlevel! neq 0 (
     if exist "%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top_bad_timing.xsa" (
         echo.
         echo [WARN] Build completed with timing violations.
-        echo        Cross-clock domain paths may show violations — this is
+        echo        Cross-clock domain paths may show violations -- this is
         echo        expected for PS7 CDC paths. Bitstream is functionally correct.
         echo.
         echo [INFO] Promoting system_top_bad_timing.xsa to system_top.xsa...
@@ -301,8 +373,8 @@ if !errorlevel! neq 0 (
         echo        Check logs in: %FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.runs\
         echo.
         echo        If error is 'No parts matched xc7z020clg400-1':
-        echo        Re-run Vivado installer → Add Design Tools or Devices
-        echo        Check: SoCs → Zynq-7000
+        echo        Re-run Vivado installer -^> Add Design Tools or Devices
+        echo        Check: SoCs -^> Zynq-7000
         goto :error
     )
 )
@@ -384,7 +456,7 @@ goto :end
 :error
 echo.
 echo ============================================================
-echo  BUILD FAILED — See errors above
+echo  BUILD FAILED -- See errors above
 echo ============================================================
 exit /b 1
 

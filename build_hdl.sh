@@ -53,6 +53,8 @@ CONFIG="maia_iio"
 DO_CLEAN=false
 DO_VERILOG=true
 DO_SVD=true
+DO_P25=false
+P25_CONFIG="default"
 
 # Build dir layout (all on ext4)
 SRC_DIR="$BUILD_HOME/src"
@@ -65,6 +67,8 @@ while [[ $# -gt 0 ]]; do
         --clean)         DO_CLEAN=true; shift ;;
         --verilog-only)  DO_SVD=false; shift ;;
         --svd-only)      DO_VERILOG=false; shift ;;
+        --p25)           DO_P25=true; shift ;;
+        --p25-config)    P25_CONFIG="$2"; shift 2 ;;
         --interactive)   shift ;;  # handled by .bat
         --help|-h)
             grep '^#' "$0" | grep -v '^#!/' | sed 's/^# \{0,1\}//' | head -40
@@ -82,6 +86,7 @@ info "Source:       $SRC_MOUNT/maia-hdl"
 info "Build (ext4): $BUILD_HOME"
 info "Verilog:      $($DO_VERILOG && echo 'yes' || echo 'skip')"
 info "SVD:          $($DO_SVD && echo 'yes' || echo 'skip')"
+info "P25:          $($DO_P25 && echo "yes (config: $P25_CONFIG)" || echo 'skip')"
 echo ""
 
 # ── Validate source ──────────────────────────────────────────────────────────
@@ -98,6 +103,17 @@ for f in maia_hdl/maia_sdr.py maia_hdl/config.py maia_hdl/configs.py pyproject.t
     fi
 done
 log "Source files verified."
+
+# Validate P25 source if building P25
+if $DO_P25; then
+    for f in p25_hdl/p25_top.py p25_hdl/c4fm_demod.py p25_hdl/symbol_timing.py p25_hdl/dibit_packer.py; do
+        if [ ! -f "$SRC_MOUNT/maia-hdl/$f" ]; then
+            err "Required P25 source file missing: maia-hdl/$f"
+            exit 1
+        fi
+    done
+    log "P25 source files verified."
+fi
 
 # ── Optional clean ────────────────────────────────────────────────────────────
 if $DO_CLEAN; then
@@ -190,6 +206,23 @@ if $DO_VERILOG; then
     log "Verilog generated: maia_sdr.v ($V_LINES lines)"
 fi
 
+# ── Step 5b: Generate P25 Verilog ─────────────────────────────────────────────
+if $DO_P25; then
+    step "Step 5b: Generate P25 Verilog → p25_core.v"
+    cd "$SRC_DIR"
+    info "Command: PYTHONPATH=. python -m p25_hdl.p25_top --config $P25_CONFIG p25_core.v"
+
+    PYTHONPATH="." python -m p25_hdl.p25_top --config "$P25_CONFIG" p25_core.v
+
+    if [ ! -f p25_core.v ]; then
+        err "p25_core.v was not created — P25 Amaranth elaboration failed."
+        exit 1
+    fi
+
+    P25_LINES=$(wc -l < p25_core.v)
+    log "P25 Verilog generated: p25_core.v ($P25_LINES lines)"
+fi
+
 # ── Step 6: Generate SVD ──────────────────────────────────────────────────────
 if $DO_SVD; then
     step "Step 6: Generate SVD → maia-sdr.svd"
@@ -244,6 +277,13 @@ if $DO_SVD; then
     log "  ✓ maia-sdr.svd → maia-hdl/ ($(wc -c < "$SRC_DIR/maia-sdr.svd") bytes)"
 fi
 
+if $DO_P25; then
+    P25_IP_DIR="$SRC_MOUNT/maia-hdl/ip/p25-core/$P25_CONFIG"
+    mkdir -p "$P25_IP_DIR"
+    cp "$SRC_DIR/p25_core.v" "$P25_IP_DIR/p25_core.v"
+    log "  ✓ p25_core.v → maia-hdl/ip/p25-core/$P25_CONFIG/ ($(wc -l < "$SRC_DIR/p25_core.v") lines)"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 log "=== BUILD COMPLETE ==="
@@ -251,9 +291,14 @@ echo ""
 info "Output files:"
 $DO_VERILOG && info "  maia-hdl/ip/maia-sdr/$CONFIG/maia_sdr.v"
 $DO_SVD     && info "  maia-hdl/maia-sdr.svd"
+$DO_P25     && info "  maia-hdl/ip/p25-core/$P25_CONFIG/p25_core.v"
 echo ""
 info "Next steps:"
-info "  1. Run build_fpga.bat to synthesize FPGA bitstream"
+if $DO_P25; then
+    info "  1. Run build_fpga.bat --p25 to synthesize P25 FPGA bitstream"
+else
+    info "  1. Run build_fpga.bat to synthesize FPGA bitstream"
+fi
 if $DO_SVD; then
     info "  2. Regenerate Rust PAC from SVD:"
     info "     cd maia-httpd/maia-pac"

@@ -73,31 +73,53 @@ set "EXTRA_ARGS="
 set "INTERACTIVE=false"
 set "MODE_DESC=Full build (Verilog + SVD)"
 
+:parse_args
+if "%~1"=="" goto :mode_set
 if "%~1"=="--verilog-only" (
-    set "EXTRA_ARGS=--verilog-only"
+    set "EXTRA_ARGS=!EXTRA_ARGS! --verilog-only"
     set "MODE_DESC=Verilog only"
-    goto :mode_set
+    shift
+    goto :parse_args
 )
 if "%~1"=="--svd-only" (
-    set "EXTRA_ARGS=--svd-only"
+    set "EXTRA_ARGS=!EXTRA_ARGS! --svd-only"
     set "MODE_DESC=SVD only"
-    goto :mode_set
+    shift
+    goto :parse_args
 )
 if "%~1"=="--clean" (
-    set "EXTRA_ARGS=--clean"
+    set "EXTRA_ARGS=!EXTRA_ARGS! --clean"
     set "MODE_DESC=Clean + full rebuild"
-    goto :mode_set
+    shift
+    goto :parse_args
+)
+if "%~1"=="--p25" (
+    set "EXTRA_ARGS=!EXTRA_ARGS! --p25"
+    set "MODE_DESC=!MODE_DESC! + P25"
+    shift
+    goto :parse_args
+)
+if "%~1"=="--p25-config" (
+    set "EXTRA_ARGS=!EXTRA_ARGS! --p25-config %~2"
+    shift
+    shift
+    goto :parse_args
 )
 if "%~1"=="--interactive" (
     set "INTERACTIVE=true"
     set "MODE_DESC=Interactive Docker shell"
-    goto :mode_set
+    shift
+    goto :parse_args
 )
 if "%~1"=="--config" (
-    set "EXTRA_ARGS=--config %~2"
+    set "EXTRA_ARGS=!EXTRA_ARGS! --config %~2"
     set "MODE_DESC=Config: %~2"
-    goto :mode_set
+    shift
+    shift
+    goto :parse_args
 )
+shift
+goto :parse_args
 
 :mode_set
 echo Mode: %MODE_DESC%

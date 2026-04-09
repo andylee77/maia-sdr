@@ -37,8 +37,7 @@ class P25Core(Elaboratable):
       AD9361 IQ -> DDC (tune + decimate) -> C4FM demod -> symbol timing
       -> dibit packer -> DMA to PS
 
-    Reuses Maia SDR DDC, spectrometer (debug), recorder (debug),
-    register infrastructure, and DMA modules.
+    Reuses Maia SDR DDC, register infrastructure, and DMA modules.
     """
     def __init__(self, config=P25Config()):
         config.validate()
