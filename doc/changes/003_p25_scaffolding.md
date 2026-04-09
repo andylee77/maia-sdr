@@ -1,17 +1,21 @@
-# 001 -- Project Scaffolding
+# 003 -- P25 Project Scaffolding
 
 **Date:** 2026-04-08
 **Phase:** 0 (Project Setup)
+**Branch:** fishball-p25
 
 ---
 
 ## Summary
 
-Created the `fishball-p25` repository with full project scaffolding for an FPGA-based P25 Phase 1 trunking radio targeting the Fishball Z7020 board.
+Scaffolded the P25 trunking radio components within the maia-sdr tree on the
+`fishball-p25` branch. Originally created in a standalone `fishball-p25` repo,
+then migrated in-tree after the standalone approach failed (relative path
+breakage, IIO DMA not routed, DTS/bitstream mismatches).
 
 ## What Was Created
 
-### FPGA Gateware (`p25_hdl/`)
+### FPGA Gateware (`maia-hdl/p25_hdl/`)
 
 - `p25_top.py` -- Top-level IP core, wraps Maia DDC + new P25 DSP chain
 - `c4fm_demod.py` -- C4FM FM discriminator (cross-product method)
@@ -19,10 +23,10 @@ Created the `fishball-p25` repository with full project scaffolding for an FPGA-
 - `dibit_packer.py` -- Pack dibits into 64-bit DMA words
 - `config.py`, `configs.py` -- Build configuration classes
 
-### Vivado Project (`ip/` + `projects/`)
+### Vivado Project (`maia-hdl/ip/` + `maia-hdl/projects/`)
 
-- `ip/p25-core/` -- IP packaging scripts and constraints
-- `projects/fishball7020_p25/` -- Vivado block design, constraints, top-level wrapper
+- `maia-hdl/ip/p25-core/` -- IP packaging scripts and constraints
+- `maia-hdl/projects/fishball7020_p25/` -- Vivado block design, constraints, top-level wrapper
 - Based on Maia's `fishball7020_iio/` project
 
 ### PS Application (`p25-httpd/`)
@@ -31,29 +35,21 @@ Created the `fishball-p25` repository with full project scaffolding for an FPGA-
 - Skeleton `fpga.rs`, `iio.rs`, `main.rs`
 - P25 protocol decoder directory structure (`src/p25/`)
 
-### Tests (`test/`)
+### Tests (`maia-hdl/test/`)
 
 - `test_c4fm_demod.py` -- C4FM demodulator simulation test
 - `test_symbol_timing.py` -- Symbol timing recovery test
 - `test_dibit_packer.py` -- Dibit packer test
 
-### Submodule
+### SVD Generation
 
-- `ext/maia-sdr/` -> `andylee77/maia-sdr` (`fishball-dev` branch)
-- Provides `maia_hdl` package: DDC, DMA, registers, spectrometer, recorder
-
-### Build & Config
-
-- `Makefile` -- Top-level build targets
-- `pyproject.toml` -- Python project config
-- `generate_p25_svd.py` -- SVD generation for register PAC
-- `.gitignore` -- Editor, Python, Vivado, Rust, simulation artifacts
+- `maia-hdl/generate_p25_svd.py` -- SVD generation for register PAC
 
 ## Design Decisions
 
 - **Reuse Maia DDC directly** -- same 3-stage FIR architecture, different coefficients for P25
 - **Frame sync in PS software** -- at 4800 sym/sec, ARM easily handles NID correlation
-- **Keep Spectrometer + Recorder from Maia** -- useful as debug tools
+- **Keep Spectrometer + Recorder from Maia** -- useful as debug tools (later removed in Phase 3)
 - **Rust patterns adapted, not submoduled** -- UIO driver, IIO, SVD workflow copied from maia-httpd
 
 ## Next Steps

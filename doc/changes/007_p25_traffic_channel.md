@@ -1,17 +1,21 @@
-# 005 -- Phase 3: Traffic Channel + Cleanup
+# 007 -- P25 Phase 3: Traffic Channel + Cleanup
 
 **Date:** 2026-04-08
 **Phase:** 3 (Second DDC + traffic manager + spectrometer/recorder removal)
+**Branch:** fishball-p25
 
 ---
 
 ## Summary
 
-Added a second DDC + C4FM demod chain for traffic channel voice following. Removed the spectrometer and recorder (carried over from Maia but unused in P25). Implemented the Rust traffic manager with NCO calculation, grant lifecycle, and timeout management.
+Added a second DDC + C4FM demod chain for traffic channel voice following.
+Removed the spectrometer and recorder (carried over from Maia but unused in
+P25). Implemented the Rust traffic manager with NCO calculation, grant
+lifecycle, and timeout management.
 
 ## FPGA Changes
 
-### Second DDC + Demod Chain (`p25_top.py`)
+### Second DDC + Demod Chain (`maia-hdl/p25_hdl/p25_top.py`)
 
 - `traffic_ddc`: Independent DDC instance sharing IQ input with control DDC
 - `traffic_c4fm` + `traffic_timing` + `traffic_packer`: Full demod pipeline
@@ -61,7 +65,7 @@ Added a second DDC + C4FM demod chain for traffic channel voice following. Remov
 
 ## Rust Changes
 
-### Traffic Manager (`traffic_manager.rs`)
+### Traffic Manager (`p25-httpd/src/p25/traffic_manager.rs`)
 
 - `TrafficState`: Idle -> Acquiring -> Active lifecycle
 - `handle_grant()`: Computes 28-bit NCO word from frequency offset and sample rate
@@ -72,9 +76,9 @@ Added a second DDC + C4FM demod chain for traffic channel voice following. Remov
 
 ## Vivado Changes
 
-- `system_bd.tcl`: Removed HP1 spectrometer and HP2 recorder connections
+- `maia-hdl/projects/fishball7020_p25/system_bd.tcl`: Removed HP1 spectrometer and HP2 recorder connections
 - Both DMA ports share HP1 via `ad_mem_hp1_interconnect`
-- `package_ip.tcl`: Removed clk2x interface, recorder bus association, added m_axi_traffic
+- `maia-hdl/ip/p25-core/package_ip.tcl`: Removed clk2x interface, recorder bus association, added m_axi_traffic
 
 ## Test Results
 

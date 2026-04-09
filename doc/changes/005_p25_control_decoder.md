@@ -1,20 +1,24 @@
-# 003 -- Phase 2A: Control Channel Decoder (Rust)
+# 005 -- P25 Phase 2A: Control Channel Decoder (Rust)
 
 **Date:** 2026-04-08
-**Phase:** 2A (PS firmware — TSBK parser + control channel state machine)
+**Phase:** 2A (PS firmware -- TSBK parser + control channel state machine)
+**Branch:** fishball-p25
 
 ---
 
 ## Summary
 
-Implemented the complete P25 control channel software decoder in Rust: TSBK parser with 6 opcode decoders, Golay(23,12) + Viterbi trellis FEC, TSDU de-interleaving, and the control channel state machine with system identity / frequency band / grant tracking. 13 Rust unit tests passing.
+Implemented the complete P25 control channel software decoder in Rust: TSBK
+parser with 6 opcode decoders, Golay(23,12) + Viterbi trellis FEC, TSDU
+de-interleaving, and the control channel state machine with system identity /
+frequency band / grant tracking. 13 Rust unit tests passing.
 
 ## Architecture
 
 ```text
 DMA buffer (64-bit words)
   -> Unpack 32 dibits per word
-  -> Frame sync correlator (48-dibit pattern, Hamming ≤4)
+  -> Frame sync correlator (48-dibit pattern, Hamming <= 4)
   -> NID extraction (32 dibits, Golay FEC -> NAC + DUID)
   -> Data Unit framing (TSDU = 336 dibits)
   -> TSDU de-interleave (remove status symbols)
@@ -76,14 +80,14 @@ DMA buffer (64-bit words)
 ## Validation Against Clay County System
 
 - Band 0: base=851006250, spacing=6250, offset=-45000000
-- Channel 1593 (control) resolves to 860962500 Hz (860.9625 MHz) ✓
-- Channel 1117 (traffic) resolves to 857987500 Hz (857.9875 MHz) ✓
-- WACN 0xBEE00 / system 0x8A0 / NAC 0x8A1 correctly parsed ✓
+- Channel 1593 (control) resolves to 860962500 Hz (860.9625 MHz)
+- Channel 1117 (traffic) resolves to 857987500 Hz (857.9875 MHz)
+- WACN 0xBEE00 / system 0x8A0 / NAC 0x8A1 correctly parsed
 
 ## What's Left for End-to-End
 
-The trellis decoder uses a simplified 4-state model. The exact P25 trellis constellation mapping (TIA-102.BAAA Table 7-3) will need validation against real captured data. The Golay decoder currently extracts NAC/DUID from NID bit positions without full two-codeword Golay decode — sufficient for initial testing but should be hardened.
-
-## Next Steps
-
-- Phase 2B: Web UI (REST + WebSocket), integration test on live Clay County system
+The trellis decoder uses a simplified 4-state model. The exact P25 trellis
+constellation mapping (TIA-102.BAAA Table 7-3) will need validation against
+real captured data. The Golay decoder currently extracts NAC/DUID from NID bit
+positions without full two-codeword Golay decode -- sufficient for initial
+testing but should be hardened.

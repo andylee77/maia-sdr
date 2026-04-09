@@ -1,71 +1,106 @@
-# Maia SDR — Developer Log
+# Maia SDR + Fishball P25 -- Developer Log
 
-Reference for repo structure, build systems, and infrastructure in the `andylee77/maia-sdr` fork.
+Reference for repo structure, build systems, and infrastructure on the
+`fishball-p25` branch of `andylee77/maia-sdr`.
+
+This branch adds a P25 Phase 1 trunking radio on top of Maia SDR's FPGA
+platform. The `fishball-dev` branch carries Maia SDR changes only.
 
 ---
 
 ## Repository Layout
 
 ```
-maia-sdr/
-├── CHANGELOG_FORK.md         ← Fork tracking log (our changes, builds)
-├── CHANGELOG.md              ← Upstream changelog (do not modify)
-├── DEVLOG.md                 ← This file (developer reference)
-├── README.md                 ← Upstream README
-├── .gitmodules               ← Submodule definitions (adi-hdl, XilinxUnisimLibrary)
-├── sourceme.first            ← Vivado/OSS-CAD environment setup (upstream)
+maia-sdr/                             (fishball-p25 branch)
+├── CHANGELOG.md                      <- Upstream changelog (do not modify)
+├── CHANGELOG_FORK.md                 <- Fork + P25 tracking log
+├── DEVLOG.md                         <- This file (developer reference)
+├── README.md                         <- Project overview (fork + P25)
+├── CLAUDE.md                         <- AI workspace rules
+├── .gitmodules                       <- Submodule definitions (adi-hdl, XilinxUnisimLibrary)
+├── sourceme.first                    <- Vivado/OSS-CAD environment setup (upstream)
 │
-├── maia-hdl/                 ← FPGA gateware
-│   ├── maia_hdl/             ← Amaranth HDL modules (Python)
-│   │   ├── maia_sdr.py       ← Top-level SDR module
-│   │   ├── spectrometer.py   ← Spectrum analyzer
-│   │   ├── recorder.py       ← IQ recorder
-│   │   ├── ddc.py            ← Digital down-converter
-│   │   ├── fft.py            ← FFT implementation
+├── maia-hdl/                         <- FPGA gateware
+│   ├── maia_hdl/                     <- Maia Amaranth HDL modules (Python)
+│   │   ├── maia_sdr.py              <- Top-level Maia SDR module
+│   │   ├── spectrometer.py          <- Spectrum analyzer
+│   │   ├── recorder.py              <- IQ recorder
+│   │   ├── ddc.py                   <- Digital down-converter (reused by P25)
+│   │   ├── dma.py                   <- DMA infrastructure (reused by P25)
+│   │   ├── register.py              <- Register framework (reused by P25)
+│   │   ├── fft.py                   <- FFT implementation
 │   │   └── ...
-│   ├── projects/             ← Vivado board projects
-│   │   ├── fishball7020_iio/ ← Our target (Z7020)
-│   │   ├── fishball_iio/     ← Z7010 variant
-│   │   ├── pluto/            ← ADALM Pluto
-│   │   ├── plutoplus/        ← Pluto+
+│   ├── p25_hdl/                      <- P25 Amaranth HDL modules (Python)
+│   │   ├── __init__.py
+│   │   ├── p25_top.py               <- P25 top-level IP core
+│   │   ├── p25_top_version.py       <- Version constants
+│   │   ├── config.py                <- Configuration classes
+│   │   ├── configs.py               <- Board/build configurations
+│   │   ├── c4fm_demod.py            <- C4FM FM discriminator
+│   │   ├── symbol_timing.py         <- Gardner TED + PI loop filter
+│   │   └── dibit_packer.py          <- Pack dibits for DMA
+│   ├── projects/                     <- Vivado board projects
+│   │   ├── fishball7020_iio/        <- Maia target (Z7020)
+│   │   ├── fishball7020_p25/        <- P25 target (Z7020)
+│   │   ├── fishball_iio/            <- Z7010 variant
+│   │   ├── pluto/                   <- ADALM Pluto
 │   │   └── ...
-│   ├── ip/maia-sdr/          ← Packaged IP core
-│   ├── adi-hdl/              ← [submodule] Analog Devices HDL
-│   ├── XilinxUnisimLibrary/  ← [submodule] Xilinx sim primitives
-│   ├── test/                 ← Amaranth unit tests
-│   └── test_cocotb/          ← Cocotb simulation tests
+│   ├── ip/
+│   │   ├── maia-sdr/                <- Maia packaged IP core
+│   │   └── p25-core/                <- P25 packaged IP core
+│   │       ├── Makefile
+│   │       ├── package_ip.tcl
+│   │       └── p25_core.xdc
+│   ├── adi-hdl/                      <- [submodule] Analog Devices HDL
+│   ├── XilinxUnisimLibrary/          <- [submodule] Xilinx sim primitives
+│   ├── test/                         <- Amaranth unit tests (Maia + P25)
+│   ├── test_cocotb/                  <- Cocotb simulation tests
+│   └── generate_p25_svd.py          <- SVD generation for P25 register PAC
 │
-├── maia-httpd/               ← Rust HTTP daemon (runs on Zynq ARM)
+├── maia-httpd/                       <- Maia HTTP daemon (Rust, runs on Zynq ARM)
 │   ├── src/
-│   │   ├── main.rs           ← Entry point
-│   │   ├── httpd.rs          ← HTTP server
-│   │   ├── app.rs            ← Application state
-│   │   ├── spectrometer.rs   ← Spectrum data streaming
-│   │   ├── iio.rs            ← IIO subsystem interface
-│   │   ├── rxbuffer.rs       ← RX buffer management
-│   │   ├── ddc.rs            ← DDC control
-│   │   └── httpd/            ← HTTP route handlers
-│   ├── maia-json/            ← JSON API type definitions
-│   ├── maia-pac/             ← FPGA register definitions (from SVD)
-│   ├── Cargo.toml            ← Rust workspace manifest
-│   └── Cross.toml            ← Cross-compilation config
+│   ├── maia-json/                    <- Maia JSON API types
+│   ├── maia-pac/                     <- Maia FPGA register PAC (from SVD)
+│   ├── Cargo.toml
+│   └── Cross.toml
 │
-├── maia-wasm/                ← Rust/WASM web frontend
+├── p25-httpd/                        <- P25 HTTP daemon (Rust, runs on Zynq ARM)
 │   ├── src/
-│   │   ├── lib.rs            ← WASM entry point
-│   │   ├── waterfall.rs      ← Waterfall display (WebGL2)
-│   │   ├── ui.rs             ← UI controls
-│   │   ├── websocket.rs      ← WebSocket client
-│   │   └── render/           ← WebGL rendering
-│   ├── assets/               ← Static web assets (HTML, CSS, icons)
+│   │   ├── main.rs                  <- Entry point
+│   │   ├── fpga.rs                  <- FPGA register driver (UIO)
+│   │   ├── iio.rs                   <- AD9361 IIO driver
+│   │   ├── httpd/                   <- HTTP route handlers + embedded dashboard
+│   │   └── p25/                     <- P25 protocol decoder
+│   │       ├── control_channel.rs   <- Control channel state machine
+│   │       ├── tsbk.rs             <- TSBK message parser (6 opcodes)
+│   │       ├── traffic_manager.rs   <- Voice grant manager + NCO calc
+│   │       ├── fec.rs              <- Golay + trellis Viterbi FEC
+│   │       └── types.rs            <- NAC, talkgroup, channel types
+│   ├── p25-json/                    <- P25 JSON API types
+│   ├── p25-pac/                     <- P25 FPGA register PAC (from SVD)
+│   │   ├── src/lib.rs              <- Generated by svd2rust
+│   │   └── p25.svd                 <- Generated by generate_p25_svd.py
 │   └── Cargo.toml
 │
-├── maia-kmod/                ← Linux kernel module
-│   ├── maia-sdr.c            ← DMA buffer kernel module
+├── maia-wasm/                        <- Rust/WASM web frontend (Maia waterfall UI)
+│   ├── src/
+│   └── assets/
+│
+├── maia-kmod/                        <- Linux kernel module (DMA buffer management)
+│   ├── maia-sdr.c
 │   └── Makefile
 │
 └── doc/
-    └── changes/              ← Detailed change documentation
+    ├── DEVPLAN.md                    <- P25 phased development roadmap
+    ├── BUILD_FPGA.md                 <- P25 FPGA bitstream build guide
+    └── changes/                      <- Detailed change documentation
+        ├── 001_build_scripts.md      <- In-repo build scripts (Maia, 2026-03-08)
+        ├── 002_upstream_sync.md      <- Upstream rebase + refactor analysis (2026-04-07)
+        ├── 003_p25_scaffolding.md    <- P25 Phase 0: repo structure (2026-04-08)
+        ├── 004_p25_fpga_gateware.md  <- P25 Phase 1: DSP modules + Vivado (2026-04-08)
+        ├── 005_p25_control_decoder.md <- P25 Phase 2A: control channel decoder (2026-04-08)
+        ├── 006_p25_web_dashboard.md  <- P25 Phase 2B: web dashboard (2026-04-08)
+        └── 007_p25_traffic_channel.md <- P25 Phase 3: traffic channel (2026-04-08)
 ```
 
 ---
@@ -74,75 +109,94 @@ maia-sdr/
 
 ### Build Scripts (In-Repo)
 
-All build scripts live at the repo root, following the same pattern as `tezuka_fw/build.bat`:
+All build scripts live at the repo root:
 
 ```
 maia-sdr/
-├── build_hdl.bat / .sh    ← Amaranth → Verilog + SVD (Docker)
-├── build_fpga.bat          ← Full Vivado FPGA synthesis (Windows)
-├── sim_hdl.bat / .sh       ← HDL simulation (Docker)
-└── clean.bat               ← Clean all build artifacts
+├── build_hdl.bat / .sh    <- Amaranth -> Verilog + SVD (Docker)
+├── build_fpga.bat          <- Full Vivado FPGA synthesis (Windows)
+├── sim_hdl.bat / .sh       <- HDL simulation (Docker)
+└── clean.bat               <- Clean all build artifacts
 ```
 
 | Script | What it does | Runs where | Time |
 |--------|-------------|------------|------|
-| `build_hdl.bat` | Generate `maia_sdr.v` + `maia-sdr.svd` from Amaranth | Docker (python:3.11-slim) | ~2 min |
-| `build_fpga.bat` | IP packaging + Vivado synthesis → XSA bitstream | Windows (native Vivado) | ~15-30 min |
+| `build_hdl.bat` | Generate Verilog + SVD from Amaranth | Docker (python:3.11-slim) | ~2 min |
+| `build_fpga.bat` | Maia IP packaging + Vivado synthesis -> XSA | Windows (native Vivado) | ~15-30 min |
+| `build_fpga.bat --p25` | P25 IP packaging + Vivado synthesis -> XSA | Windows (native Vivado) | ~15-30 min |
 | `sim_hdl.bat` | Tier 1: pytest + Tier 2: cocotb/iverilog | Docker (python:3.11-slim) | ~5 min |
 | `clean.bat` | Remove Vivado artifacts, generated IP, Docker volume | Windows | instant |
 
-**Docker volume:** `maia-hdl-build` — persistent ext4 volume caching the Python venv. Shared between `build_hdl` and `sim_hdl`. First run installs packages (~2 min); subsequent runs reuse the cache.
+**Docker volume:** `maia-hdl-build` -- persistent ext4 volume caching the Python venv.
 
 **Key options:**
+
 ```
 build_hdl.bat --config NAME        Use a specific Amaranth config (default: maia_iio)
 build_hdl.bat --verilog-only       Skip SVD generation
 build_hdl.bat --clean              Delete cached venv, fresh rebuild
 build_hdl.bat --interactive        Open Docker shell for debugging
-build_fpga.bat                     Auto-detects Vivado 2023.2 or 2025.2
+build_fpga.bat                     Build Maia FPGA (fishball7020_iio)
+build_fpga.bat --p25               Build P25 FPGA (fishball7020_p25)
 sim_hdl.bat --tier1                Amaranth Python sim only (fast)
 sim_hdl.bat --test NAME            Run a single test by name
 clean.bat --all                    Also remove Docker build volume
 ```
 
-**Environment variables:**
-- `VIVADO_DIR_OVERRIDE` — Force a specific Vivado installation path
-- `TEZUKA_FW` — Path to tezuka_fw repo (default: `../../Tezuka/tezuka_fw`)
-
 ### FPGA Gateware (maia-hdl)
 
 **Tool:** Vivado 2023.2 + Amaranth HDL (Python)
-**Target:** Fishball Z7020 (`projects/fishball7020_iio/`)
+
+**Maia target:** `maia-hdl/projects/fishball7020_iio/`
+**P25 target:** `maia-hdl/projects/fishball7020_p25/`
 
 **Build flow:**
-1. `build_hdl.bat` — Amaranth generates Verilog from Python HDL (in Docker)
-2. `build_fpga.bat` — Vivado synthesizes, places, routes → bitstream (native Windows)
+
+1. `build_hdl.bat` -- Amaranth generates Verilog from Python HDL (in Docker)
+2. `build_fpga.bat [--p25]` -- Vivado synthesizes, places, routes -> bitstream (native Windows)
 3. XSA copied to Tezuka firmware, packaged into BOOT.bin by Buildroot
 
-### HTTP Daemon (maia-httpd)
+### HTTP Daemons (maia-httpd / p25-httpd)
 
 **Tool:** Rust + Cross (cross-compilation to ARM)
 **Built by:** Tezuka firmware Buildroot (not standalone)
 
-In `tezuka_fw`, the package `maia-httpd.mk` does:
-```
-MAIA_HTTPD_SITE = https://github.com/andylee77/maia-sdr.git
-MAIA_HTTPD_VERSION = fishball-dev
-```
-
-So Buildroot clones this repo and builds maia-httpd automatically.
+- **Maia:** `tezuka_fw` builds `maia-httpd` from `fishball-dev` branch
+- **P25:** `tezuka_fw` builds `p25-httpd` (P25 defconfig TBD -- Phase 5)
 
 ### Web UI (maia-wasm)
 
-**Tool:** Rust + wasm-pack → WebAssembly
-**Built by:** Tezuka firmware Buildroot (not standalone)
+**Tool:** Rust + wasm-pack -> WebAssembly
+**Built by:** Tezuka firmware Buildroot
 
-Similar to httpd — `maia-wasm.mk` pulls from this fork and builds.
+Used by Maia builds. P25 uses an embedded SPA in the `p25-httpd` binary instead.
 
 ### Kernel Module (maia-kmod)
 
 **Tool:** Linux kernel build system (Makefile)
 **Built by:** Tezuka firmware Buildroot
+
+Shared by both Maia and P25 builds (provides DMA buffer management).
+
+---
+
+## DSP Signal Chain (P25)
+
+```text
+AD9361 IQ (12-bit, 8 MSPS)
+  -> RxIQCDC (clock domain crossing)
+  -> DDC (tune + decimate 128x to 62.5 kSPS)  [maia_hdl/ddc.py]
+  -> C4FM Demod (FM discriminator)             [p25_hdl/c4fm_demod.py]
+  -> Symbol Timing Recovery (Gardner TED)      [p25_hdl/symbol_timing.py]
+  -> Dibit Packer (32 dibits -> 64-bit DMA)    [p25_hdl/dibit_packer.py]
+  -> DmaStreamWrite -> DDR3 (HP1)              [maia_hdl/dma.py]
+  -> PS reads via UIO
+```
+
+- P25 Phase 1 C4FM: 4800 sym/sec, 12.5 kHz channel, 4FSK +/-1800/+/-600 Hz deviation
+- AD9361: 8 MSPS (Tezuka BBPLL: 1024 MHz / 4 = 256 MHz ADC / 32x HB chain)
+- DDC: 128x (16x4x2) -> 62.5 kSPS -> ~13 samples/symbol
+- Two DDC+demod chains: one for control channel, one for traffic channel
 
 ---
 
@@ -158,7 +212,8 @@ Similar to httpd — `maia-wasm.mk` pulls from this fork and builds.
 | Branch | Purpose |
 |--------|---------|
 | `main` | Tracks upstream, clean for syncing |
-| `fishball-dev` | Active development (Fishball Z7020 changes) |
+| `fishball-dev` | Maia SDR development (Fishball Z7020 changes) |
+| `fishball-p25` | P25 trunking radio (includes Maia + P25 additions) |
 
 ### Upstream Sync
 
@@ -174,15 +229,54 @@ git merge main
 git push
 ```
 
+P25 branch picks up Maia changes via merge from fishball-dev:
+
+```bash
+git checkout fishball-p25
+git merge fishball-dev
+# Resolve conflicts if any
+git push
+```
+
 ---
 
 ## Related Repositories
 
 | Repo | Branch | Purpose |
 |------|--------|---------|
-| `andylee77/maia-sdr` | `fishball-dev` | This repo — FPGA + httpd + wasm |
-| `andylee77/tezuka_fw` | `fishball-dev` | Firmware (Buildroot, pulls from this repo) |
-| `andylee77/sdrtrunk` | `plutosdr` | SDRTrunk (Java SDR app, PlutoSDR support) |
+| `andylee77/maia-sdr` | `fishball-dev` | Maia SDR FPGA + httpd + wasm |
+| `andylee77/maia-sdr` | `fishball-p25` | This branch -- P25 radio on Maia platform |
+| `andylee77/tezuka_fw` | `fishball-dev` | Firmware (Maia + P25 builds) |
+| `andylee77/sdrtrunk` | `plutosdr` | SDRTrunk (P25 reference architecture) |
+| `andylee77/fishball-p25` | archived | Original standalone P25 repo (migrated here) |
+
+---
+
+## Register Map (P25)
+
+| Offset | Bank | Register | Fields |
+|--------|------|----------|--------|
+| 0x00 | control | product_id | product_id (R, 32b, "p25f") |
+| 0x04 | control | version | bugfix, minor, major, platform (R) |
+| 0x08 | control | control | sdr_reset (RW) |
+| 0x0C | control | interrupts | dibit_dma, traffic_dma (Rsticky) |
+| 0x08 | sdr | ddc_coeff_addr | coeff_waddr (RW) |
+| 0x0A | sdr | ddc_coeff | coeff_wren (Wpulse), coeff_wdata (RW) |
+| 0x0C | sdr | ddc_decimation | decimation1, decimation2, decimation3 (RW) |
+| 0x10 | sdr | ddc_frequency | frequency (RW, 28b) |
+| 0x14 | sdr | ddc_control | operations, odd, bypass, enable (RW) |
+| 0x20 | demod | demod_status | dibit_count (R, 16b), demod_overflow (Rsticky) |
+| 0x24 | demod | demod_control | start, stop (Wpulse), demod_enable (RW) |
+| 0x28 | demod | dibit_next_address | next_address (R, 32b) |
+| 0x30 | traffic | traffic DDC + demod | frequency, decimation, control, status |
+
+## AXI Port Map (P25)
+
+| Port | Type | HP | Purpose |
+|------|------|-----|---------|
+| s_axi_lite | Slave | - | CPU register access (0x7C460000) |
+| m_axi_dibit | Master | HP1 | Control channel dibit DMA to DDR |
+| m_axi_traffic | Master | HP1 | Traffic channel dibit DMA to DDR |
 
 ---
 
@@ -207,7 +301,16 @@ Located at `C:\Users\Andy\Projects\MAIA_SDR\work_docs\`:
 
 ## Session Log
 
-| Date | Session | What was done |
-|------|---------|---------------|
-| 2026-03-08 | Project setup | Forked repo, created fishball-dev, set up workspace docs |
-| 2026-03-08 | Build scripts | Created in-repo build scripts (build_hdl, build_fpga, sim_hdl, clean) |
+| Date | Branch | Session | What was done |
+|------|--------|---------|---------------|
+| 2026-03-08 | fishball-dev | Project setup | Forked repo, created fishball-dev, set up workspace docs |
+| 2026-03-08 | fishball-dev | Build scripts | Created in-repo build scripts (build_hdl, build_fpga, sim_hdl, clean) |
+| 2026-04-07 | fishball-dev | Upstream sync | Rebased onto upstream/main (10 commits), analyzed refactor branch |
+| 2026-04-08 | fishball-p25 | P25 Phase 0 | Scaffolded P25 project in standalone fishball-p25 repo |
+| 2026-04-08 | fishball-p25 | P25 Phase 1A | C4FM demod, symbol timing recovery, dibit packer; 14 sim tests |
+| 2026-04-08 | fishball-p25 | P25 Phase 1B | Integrated demod chain + DMA into p25_top; Vivado project; SVD + PAC |
+| 2026-04-08 | fishball-p25 | P25 Phase 2A | TSBK parser (6 opcodes), FEC, control channel state machine; 13 Rust tests |
+| 2026-04-08 | fishball-p25 | P25 Phase 2B | Web dashboard: REST API, WebSocket, embedded SPA |
+| 2026-04-08 | fishball-p25 | P25 Phase 3 | Second DDC + traffic demod, traffic manager, removed spectrometer/recorder |
+| 2026-04-08 | fishball-p25 | Migration | Migrated P25 code from standalone fishball-p25 into maia-sdr tree |
+| 2026-04-08 | fishball-p25 | Doc cleanup | Consolidated docs: merged p25-docs/ into doc/, unified DEVLOG + CHANGELOG |

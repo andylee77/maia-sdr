@@ -1,13 +1,17 @@
-# 004 -- Phase 2B: Web Dashboard
+# 006 -- P25 Phase 2B: Web Dashboard
 
 **Date:** 2026-04-08
 **Phase:** 2B (Web UI + REST API + WebSocket)
+**Branch:** fishball-p25
 
 ---
 
 ## Summary
 
-Built a complete embedded web dashboard for real-time P25 trunking radio monitoring. The dashboard is served as a single-page app from the Rust binary with no external dependencies. Features live activity feed via WebSocket, frequency map, talkgroup aliases, and dark/light theme.
+Built a complete embedded web dashboard for real-time P25 trunking radio
+monitoring. The dashboard is served as a single-page app from the Rust binary
+with no external dependencies. Features live activity feed via WebSocket,
+frequency map, talkgroup aliases, and dark/light theme.
 
 ## Architecture
 
@@ -49,7 +53,7 @@ Built a complete embedded web dashboard for real-time P25 trunking radio monitor
 
 ## Design Decisions
 
-- **Embedded HTML vs separate WASM**: Chose embedded for simplicity — no build pipeline, single binary deployment, works on resource-constrained Zynq ARM
+- **Embedded HTML vs separate WASM**: Chose embedded for simplicity -- no build pipeline, single binary deployment, works on resource-constrained Zynq ARM
 - **WebSocket vs polling**: WebSocket for live events (instant), REST polling as background state sync (every 2s)
-- **Vanilla JS**: No framework — keeps the embedded HTML small (~8KB) and avoids build complexity
-- **LCN data hardcoded in JS**: The 11 Clay County frequencies are static in the frontend for the frequency map — will need to be dynamic once the band table is populated from IDEN_UP messages
+- **Vanilla JS**: No framework -- keeps the embedded HTML small (~8KB) and avoids build complexity
+- **LCN data hardcoded in JS**: The 11 Clay County frequencies are static in the frontend for the frequency map -- will need to be dynamic once the band table is populated from IDEN_UP messages

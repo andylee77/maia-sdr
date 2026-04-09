@@ -35,7 +35,9 @@ control channel decoder.
 - `p25-httpd/src/` — P25 httpd source
 - `p25-httpd/p25-pac/` — P25 FPGA register PAC (from SVD)
 - `p25-httpd/p25-json/` — P25 JSON API types
-- `p25-docs/` — P25 development docs (DEVPLAN, DEVLOG, BUILD_FPGA, etc.)
+- `doc/DEVPLAN.md` — P25 development roadmap
+- `doc/BUILD_FPGA.md` — P25 FPGA bitstream build guide
+- `doc/changes/` — Detailed change documentation (Maia + P25)
 - `maia-wasm/src/` — WASM source (waterfall, UI, WebSocket)
 
 ## Build Environment
@@ -46,14 +48,14 @@ control channel decoder.
 - **Amaranth:** Python virtual environment
 - **Maia build:** `build_fpga.bat` (builds fishball7020_iio)
 - **P25 build:** `build_fpga.bat --p25` (builds fishball7020_p25)
-- **P25 build guide:** `p25-docs/BUILD_FPGA.md`
+- **P25 build guide:** `doc/BUILD_FPGA.md`
 
 ### Firmware
 
 - Built by **Tezuka firmware** Buildroot
 - Tezuka's build mounts this repo at `/mnt/maia-sdr` in Docker
 - **Maia:** `fishball-dev` branch, `fishball_maiasdr_7020_defconfig`
-- **P25:** `fishball-p25` branch, `fishball_p25_7020_defconfig`
+- **P25:** `fishball-dev` branch (P25 defconfig TBD -- Phase 5)
 - Cross-compiled for ARM (Zynq-7000) inside the Tezuka Docker build
 
 ### Submodules
@@ -68,8 +70,7 @@ control channel decoder.
 - **`fishball-p25`** is the P25 radio branch (forked from fishball-dev)
 - Maia changes go on `fishball-dev`, committed with descriptive messages
 - P25 changes go on `fishball-p25`
-- Each Maia change gets a doc in `doc/changes/NNN_description.md`
-- Update `CHANGELOG_FORK.md` with each Maia change and build
+- Each significant change gets a doc in `doc/changes/NNN_description.md`
 - Do NOT modify the upstream `CHANGELOG.md`
 
 ## Conventions
@@ -81,9 +82,10 @@ control channel decoder.
 - P25 Rust workspace: `p25-httpd/` with sub-crates `p25-json` and `p25-pac`
 - WASM build: `maia-wasm/` uses wasm-pack
 - Build outputs go to build-specific directories (gitignored by component)
-- Use `doc/changes/` for detailed technical docs about Maia changes
-- P25 dev plan: `p25-docs/DEVPLAN.md`
-- P25 dev log: `p25-docs/DEVLOG.md`
+- Use `doc/changes/` for detailed technical docs (Maia + P25 changes)
+- P25 dev plan: `doc/DEVPLAN.md`
+- P25 dev log: merged into root `DEVLOG.md`
+- Update `CHANGELOG_FORK.md` with each change (Maia and P25)
 
 ## Related Repositories
 
