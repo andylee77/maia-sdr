@@ -113,19 +113,34 @@ class SymbolTimingRecovery(Elaboratable):
         # ── Symbol-rate differential (for the slicer) ────────────────
         # Latch the IQ samples at every symbol decision point. The held
         # value becomes the "previous symbol" for the next decision.
-        # The combinational differential is then:
-        #   sym_diff_re = re_in*sym_re_prev + im_in*sym_im_prev
-        #   sym_diff_im = im_in*sym_re_prev - re_in*sym_im_prev
-        # Inferred to 4 DSP48E1 multiplies (16x16 -> 32-bit each).
+        #
+        # Multiplies are REGISTERED every strobe so Vivado packs them
+        # cleanly into DSP48E1 blocks with output registers. A fully
+        # combinational `re_in*sym_prev` path was failing timing at
+        # 62.5 MHz with WNS ≈ -6 ns. With the products registered, the
+        # combinational path on the slice critical edge is just a
+        # 33-bit add + sign comparator (~3 ns), trivially within budget.
+        #
+        # Pipeline note: the registered products at any given cycle
+        # reflect the *previous* sample's IQ × the held previous symbol.
+        # On at_symbol the slice fires off those one-sample-old products.
+        # With ~13 samples/symbol and IQ stable in the symbol's centre
+        # region, the 1-sample early read is well within the settled
+        # window and produces the correct quadrant.
         sym_re_prev = Signal(signed(16), reset_less=True)
         sym_im_prev = Signal(signed(16), reset_less=True)
-        sym_diff_re = Signal(signed(34))
-        sym_diff_im = Signal(signed(34))
+        rr = Signal(signed(32), reset_less=True)
+        ii = Signal(signed(32), reset_less=True)
+        ir = Signal(signed(32), reset_less=True)
+        ri = Signal(signed(32), reset_less=True)
+
+        # Combinational sums of the registered products. Sign bits
+        # drive the dibit slicer below.
+        sym_diff_re = Signal(signed(33))
+        sym_diff_im = Signal(signed(33))
         m.d.comb += [
-            sym_diff_re.eq(
-                self.re_in * sym_re_prev + self.im_in * sym_im_prev),
-            sym_diff_im.eq(
-                self.im_in * sym_re_prev - self.re_in * sym_im_prev),
+            sym_diff_re.eq(rr + ii),
+            sym_diff_im.eq(ir - ri),
         ]
 
         # ── Gardner TED + PI loop filter ─────────────────────────────
@@ -142,6 +157,15 @@ class SymbolTimingRecovery(Elaboratable):
         timing_adj = Signal(signed(2), reset_less=True)
 
         with m.If(self.strobe_in):
+            # Per-cycle DSP48E1 multiplies — products are registered so
+            # the slice path is just (flop -> add -> sign bit -> flop).
+            m.d.sync += [
+                rr.eq(self.re_in * sym_re_prev),
+                ii.eq(self.im_in * sym_im_prev),
+                ir.eq(self.im_in * sym_re_prev),
+                ri.eq(self.re_in * sym_im_prev),
+            ]
+
             # Capture midpoint sample (on diff_im for Gardner TED)
             with m.If(at_midpoint):
                 m.d.sync += x_mid.eq(self.diff_im_in)
