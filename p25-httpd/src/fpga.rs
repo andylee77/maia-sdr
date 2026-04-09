@@ -299,10 +299,27 @@ impl IpCore {
     }
 
     /// Starts the dibit DMA.
+    ///
+    /// Retries the start pulse because the demod_registers run in the
+    /// s_axi_lite clock domain (100 MHz) but the DMA runs in sync
+    /// (62.5 MHz). The Wpulse may not cross the CDC boundary on the
+    /// first attempt. Verifies the DMA address moves off the base.
     pub fn demod_start(&self) {
-        self.registers
-            .demod_control()
-            .modify(|_, w| w.start().set_bit());
+        let base = self.dibit_next_address();
+        for attempt in 0..20 {
+            self.registers
+                .demod_control()
+                .modify(|_, w| w.start().set_bit());
+            // Brief spin to let the DMA process a few stream words
+            for _ in 0..10000 {
+                core::hint::spin_loop();
+            }
+            if self.dibit_next_address() != base {
+                tracing::info!("DMA started on attempt {}", attempt + 1);
+                return;
+            }
+        }
+        tracing::warn!("DMA start: address did not advance after 20 attempts");
     }
 
     /// Stops the dibit DMA.
@@ -387,11 +404,22 @@ impl IpCore {
             .modify(|_, w| w.demod_enable().bit(enable));
     }
 
-    /// Starts the traffic channel DMA.
+    /// Starts the traffic channel DMA (with CDC retry).
     pub fn traffic_demod_start(&self) {
-        self.registers
-            .traffic_demod_control()
-            .modify(|_, w| w.start().set_bit());
+        let base = self.traffic_next_address();
+        for attempt in 0..20 {
+            self.registers
+                .traffic_demod_control()
+                .modify(|_, w| w.start().set_bit());
+            for _ in 0..10000 {
+                core::hint::spin_loop();
+            }
+            if self.traffic_next_address() != base {
+                tracing::info!("Traffic DMA started on attempt {}", attempt + 1);
+                return;
+            }
+        }
+        tracing::warn!("Traffic DMA start: address did not advance after 20 attempts");
     }
 
     /// Stops the traffic channel DMA.
