@@ -181,6 +181,101 @@ class TestC4FMDemod(unittest.TestCase):
         self._simulate(bench)
         self.assertEqual(strobe_count, 0, "No output when strobe_in is low")
 
+    def test_diff_re_dc(self):
+        """Constant IQ -> diff_re ~= |z|^2 (no rotation, full real part)."""
+        self.dut = C4FMDemod()
+
+        outputs = []
+
+        async def bench(ctx):
+            for i in range(30):
+                ctx.set(self.dut.re_in, 10000)
+                ctx.set(self.dut.im_in, 0)
+                ctx.set(self.dut.strobe_in, 1)
+                await ctx.tick()
+                if ctx.get(self.dut.strobe_out):
+                    outputs.append((ctx.get(self.dut.diff_re_out),
+                                    ctx.get(self.dut.diff_im_out)))
+
+        self._simulate(bench)
+        # After pipeline flush: diff_im should be 0 (no frequency)
+        # and diff_re should be positive (= |z|^2 / 2^15)
+        steady = outputs[3:]
+        for diff_re, diff_im in steady:
+            self.assertEqual(diff_im, 0, "DC -> diff_im should be 0")
+            self.assertGreater(diff_re, 0,
+                               "DC at non-zero magnitude -> diff_re > 0")
+
+    def test_quadrant_mapping(self):
+        """Verify each LSM-style quadrant produces the right (re,im) signs.
+
+        Feed an IQ signal with constant phase change of +/-pi/4 or +/-3pi/4
+        between samples. The differential product z[n]*conj(z[n-1]) should
+        land in the quadrant matching the phase change.
+        """
+        self.dut = C4FMDemod()
+
+        # Phase changes for the 4 P25 dibit positions
+        # +pi/4 -> dibit 00 (+1) -> (re>0, im>0)
+        # +3pi/4 -> dibit 01 (+3) -> (re<0, im>0)
+        # -pi/4 -> dibit 10 (-1) -> (re>0, im<0)
+        # -3pi/4 -> dibit 11 (-3) -> (re<0, im<0)
+        phase_steps = [np.pi/4, 3*np.pi/4, -np.pi/4, -3*np.pi/4]
+        expected_quadrants = [
+            ('+', '+'),  # +pi/4
+            ('-', '+'),  # +3pi/4
+            ('+', '-'),  # -pi/4
+            ('-', '-'),  # -3pi/4
+        ]
+
+        amplitude = 10000
+
+        for step, (exp_re_sign, exp_im_sign) in zip(
+                phase_steps, expected_quadrants):
+            self.dut = C4FMDemod()
+            n_samples = 30
+            phase = 0.0
+            re = []
+            im = []
+            for _ in range(n_samples):
+                phase += step
+                re.append(int(round(amplitude * np.cos(phase))))
+                im.append(int(round(amplitude * np.sin(phase))))
+
+            outputs = []
+
+            async def bench(ctx):
+                for i in range(n_samples):
+                    ctx.set(self.dut.re_in, re[i])
+                    ctx.set(self.dut.im_in, im[i])
+                    ctx.set(self.dut.strobe_in, 1)
+                    await ctx.tick()
+                    if ctx.get(self.dut.strobe_out):
+                        outputs.append((ctx.get(self.dut.diff_re_out),
+                                        ctx.get(self.dut.diff_im_out)))
+
+            self._simulate(bench)
+
+            steady = outputs[5:]
+            self.assertGreater(len(steady), 5)
+            for diff_re, diff_im in steady:
+                if exp_re_sign == '+':
+                    self.assertGreater(
+                        diff_re, 0,
+                        f"step={step:.3f}: expected diff_re>0, got {diff_re}")
+                else:
+                    self.assertLess(
+                        diff_re, 0,
+                        f"step={step:.3f}: expected diff_re<0, got {diff_re}")
+                if exp_im_sign == '+':
+                    self.assertGreater(
+                        diff_im, 0,
+                        f"step={step:.3f}: expected diff_im>0, got {diff_im}")
+                else:
+                    self.assertLess(
+                        diff_im, 0,
+                        f"step={step:.3f}: expected diff_im<0, got {diff_im}")
+
 
 if __name__ == '__main__':
     unittest.main()

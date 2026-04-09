@@ -17,41 +17,43 @@ from amaranth import *
 
 
 class SymbolTimingRecovery(Elaboratable):
-    """Gardner-based symbol timing recovery for P25 C4FM
+    """Gardner-based symbol timing recovery for P25 C4FM and LSM
 
     Architecture:
-        - Decimating counter (integer NCO) at ~10 samp/sym
-        - Gardner TED: e[k] = (x[k] - x[k-1]) * x[k-half]
+        - Decimating counter (integer NCO) at ~13 samp/sym
+        - Gardner TED on diff_im (the FM cross-product) — works for both
+          C4FM (where diff_im = instantaneous frequency) and LSM (where
+          diff_im is the imaginary part of the differential vector and
+          still has a zero-crossing at symbol boundaries)
         - PI loop filter adjusts the NCO step
-        - 4-level symbol slicer -> 2-bit dibit
-
-    The NCO accumulates a fractional phase. When it wraps, that's a symbol
-    strobe. The midpoint sample is taken at counter = sps/2. This is a
-    "decimate and Gardner" approach — simpler than a full interpolating
-    recovery, but sufficient for the 10 samp/sym ratio of P25.
+        - Symbol slicer: sign bits of (diff_re, diff_im) -> 2-bit dibit
+          This works for both C4FM and LSM/CQPSK as confirmed by the
+          SDRTrunk implementation (P25P1DemodulatorLSM.toDibit). The
+          differential product z[n]*conj(z[n-1]) lies in one of 4
+          quadrants matching the P25 dibit set.
 
     Inputs (sync domain):
-        disc_in: 18-bit signed discriminator samples
+        diff_re_in, diff_im_in: 18-bit signed differential product
         strobe_in: sample valid strobe
 
     Outputs (sync domain):
-        dibit_out: 2-bit symbol decision (4FSK level)
+        dibit_out: 2-bit symbol decision
         symbol_strobe: symbol decision strobe (4800 Hz)
     """
     # PI loop filter gains (fixed-point, 16 fractional bits)
-    # BW ~48 Hz at 48 kSPS, damping ~0.707
-    # Kp = 4*zeta*BnT / (1 + 2*zeta*BnT) ≈ 0.00283
-    # Ki = 4*(BnT)^2 / (1 + 2*zeta*BnT)^2 ≈ 0.00000401
-    # Scale for fixed-point: Kp*2^16 ≈ 185, Ki*2^16 ≈ 0.26 -> use 1 minimum
-    KP = 185   # proportional gain (Q0.16 as integer)
-    KI = 1     # integral gain (Q0.16 as integer)
+    KP = 185
+    KI = 1
 
     def __init__(self, samples_per_symbol=10):
         self.samples_per_symbol = samples_per_symbol
 
-        # Inputs
-        self.disc_in = Signal(signed(18))
+        # Inputs (differential demodulator outputs)
+        self.diff_re_in = Signal(signed(18))
+        self.diff_im_in = Signal(signed(18))
         self.strobe_in = Signal()
+
+        # Legacy alias: disc_in == diff_im_in (FM cross-product)
+        self.disc_in = self.diff_im_in
 
         # Outputs
         self.dibit_out = Signal(2)
@@ -79,6 +81,8 @@ class SymbolTimingRecovery(Elaboratable):
         # x_curr: sample at symbol point (current)
         # x_prev: sample at previous symbol point
         # x_mid:  sample at midpoint between prev and current symbol
+        # All on diff_im (the FM-style discriminator) — Gardner TED zero
+        # crossings work the same way for both C4FM and LSM here.
         x_curr = Signal(signed(18), reset_less=True)
         x_prev = Signal(signed(18), reset_less=True)
         x_mid = Signal(signed(18), reset_less=True)
@@ -97,24 +101,22 @@ class SymbolTimingRecovery(Elaboratable):
         timing_adj = Signal(signed(2), reset_less=True)
 
         with m.If(self.strobe_in):
-            # Capture midpoint sample
+            # Capture midpoint sample (on diff_im for Gardner TED)
             with m.If(at_midpoint):
-                m.d.sync += x_mid.eq(self.disc_in)
+                m.d.sync += x_mid.eq(self.diff_im_in)
 
             # Symbol strobe: compute TED, update loop, output dibit
             with m.If(at_symbol):
                 m.d.sync += [
-                    x_curr.eq(self.disc_in),
+                    x_curr.eq(self.diff_im_in),
                     x_prev.eq(x_curr),
                     self.symbol_strobe.eq(1),
                 ]
 
-                # Gardner TED: e = (disc_in - x_prev) * x_mid
-                # (disc_in is x_curr at this point)
-                # Approximate by sign(x_mid) * (disc_in - x_prev) to avoid
-                # a full multiply and keep the error bounded
+                # Gardner TED: e = (diff_im_in - x_prev) * x_mid
+                # Approximated as sign(x_mid) * (diff_im_in - x_prev)
                 diff = Signal(signed(19), reset_less=True)
-                m.d.comb += diff.eq(self.disc_in - x_prev)
+                m.d.comb += diff.eq(self.diff_im_in - x_prev)
                 error = Signal(signed(19), reset_less=True)
                 with m.If(x_mid[-1]):  # x_mid negative
                     m.d.comb += error.eq(-diff)
@@ -137,11 +139,17 @@ class SymbolTimingRecovery(Elaboratable):
                     loop_out.eq(kp_error + new_integrator),
                 ]
 
-                # Symbol slicer (4-level -> 2-bit dibit)
-                # P25 C4FM deviation levels: +3, +1, -1, -3
-                # Thresholds at 0, +2*step, -2*step (normalized)
-                # With 18-bit disc output, use simple comparison
-                self._slicer(m, self.disc_in)
+                # Symbol slicer: sign bits of (diff_re, diff_im) at the
+                # symbol point. Matches SDRTrunk LSM/C4FM toDibit
+                # (P25P1DemodulatorLSM.toDibit, P25 TIA-102.BAAA):
+                #   diff_re > 0, diff_im > 0  -> +1 -> dibit 00 (0)
+                #   diff_re < 0, diff_im > 0  -> +3 -> dibit 01 (1)
+                #   diff_re > 0, diff_im < 0  -> -1 -> dibit 10 (2)
+                #   diff_re < 0, diff_im < 0  -> -3 -> dibit 11 (3)
+                # So dibit_lsb = (diff_re < 0) and dibit_msb = (diff_im < 0)
+                # In Amaranth Cat(a, b), 'a' is the LSB.
+                m.d.sync += self.dibit_out.eq(
+                    Cat(self.diff_re_in[-1], self.diff_im_in[-1]))
 
                 # Timing adjustment from loop filter: if loop_out > threshold
                 # advance by 1 sample, if < -threshold retard by 1
@@ -167,33 +175,3 @@ class SymbolTimingRecovery(Elaboratable):
             m.d.sync += self.symbol_strobe.eq(0)
 
         return m
-
-    def _slicer(self, m, sample):
-        """4-level symbol slicer -> 2-bit dibit
-
-        P25 C4FM deviation mapping (TIA-102.BAAA):
-          +1800 Hz -> dibit 01 (level +3)
-          +600 Hz  -> dibit 00 (level +1)
-          -600 Hz  -> dibit 10 (level -1)
-          -1800 Hz -> dibit 11 (level -3)
-
-        Decision boundaries at 0 and ±(2*step).
-        """
-        # sample is signed 18-bit; thresholds are at ~1/3 and ~2/3 of max
-        # For the discriminator, +3 and -3 are ~3x the +1/-1 levels.
-        # Threshold between ±3 and ±1 is at ±2*unit.
-        # With arbitrary scaling, just use sign bit + magnitude comparison.
-        # Threshold at half of expected max deviation
-        # (If max disc output for ±1800 Hz = X, threshold = X/2 ~ 2/3*X)
-        # Use simple quarter-range: compare abs(sample) vs (max/2)
-        # For 18-bit signed, we use bit 16 as the threshold (≈ 1/4 of max)
-        with m.If(sample >= 0):
-            with m.If(sample[15]):  # above mid-threshold -> +3 -> dibit 01
-                m.d.sync += self.dibit_out.eq(0b01)
-            with m.Else():          # below mid-threshold -> +1 -> dibit 00
-                m.d.sync += self.dibit_out.eq(0b00)
-        with m.Else():
-            with m.If(~sample[15]):  # magnitude above threshold -> -3 -> dibit 11
-                m.d.sync += self.dibit_out.eq(0b11)
-            with m.Else():           # magnitude below threshold -> -1 -> dibit 10
-                m.d.sync += self.dibit_out.eq(0b10)

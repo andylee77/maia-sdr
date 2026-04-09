@@ -1,15 +1,18 @@
 #
-# Fishball P25 - C4FM Differential Demodulator
+# Fishball P25 - Differential Demodulator (C4FM + LSM/CQPSK)
 #
-# Cross-product FM discriminator:
-#   disc[n] = re[n-1]*im[n] - im[n-1]*re[n]
+# Computes the full complex differential product:
+#   z_curr * conj(z_prev) = (re_curr + j*im_curr) * (re_prev - j*im_prev)
+#   diff_re = re_curr*re_prev + im_curr*im_prev
+#   diff_im = im_curr*re_prev - re_curr*im_prev
 #
-# Output is proportional to instantaneous frequency deviation.
-# For P25 C4FM (±1800/±600 Hz, 4800 sym/sec), the small modulation
-# index means sin(delta_phi) ≈ delta_phi, so the discriminator output
-# maps directly to the 4 deviation levels.
+# diff_im is the classic FM cross-product discriminator and works for C4FM
+# (where data = instantaneous frequency).
+# (diff_re, diff_im) together is the differential symbol vector and works
+# for both C4FM and LSM (CQPSK), matching SDRTrunk's unified approach.
+# The dibit is then just the two sign bits of (diff_re, diff_im).
 #
-# Cost: 2 DSP48E1 (two 16x16 multiplies for cross product)
+# Cost: 4 DSP48E1 (16x16 multiplies)
 #
 # SPDX-License-Identifier: MIT
 #
@@ -18,14 +21,20 @@ from amaranth import *
 
 
 class C4FMDemod(Elaboratable):
-    """C4FM FM discriminator
+    """Differential demodulator for P25 C4FM and LSM (CQPSK)
+
+    Computes the full complex differential product z[n] * conj(z[n-1]).
+    The imaginary part is the FM frequency discriminator (works for C4FM).
+    The (real, imag) pair is the differential symbol vector — its quadrant
+    encodes the dibit for both C4FM and LSM.
 
     Inputs (sync domain):
         re_in, im_in: 16-bit signed IQ samples from DDC
         strobe_in: sample valid strobe
 
     Outputs (sync domain):
-        disc_out: 18-bit signed discriminator output
+        diff_re_out, diff_im_out: 18-bit signed differential product
+        disc_out: alias for diff_im_out (legacy name for FM discriminator)
         strobe_out: output valid strobe
     """
     def __init__(self):
@@ -34,9 +43,13 @@ class C4FMDemod(Elaboratable):
         self.im_in = Signal(signed(16))
         self.strobe_in = Signal()
 
-        # Outputs
-        self.disc_out = Signal(signed(18))
+        # Outputs (full complex differential product)
+        self.diff_re_out = Signal(signed(18))
+        self.diff_im_out = Signal(signed(18))
         self.strobe_out = Signal()
+
+        # Legacy alias: disc_out == diff_im_out (FM cross-product)
+        self.disc_out = self.diff_im_out
 
     def elaborate(self, platform):
         m = Module()
@@ -54,12 +67,10 @@ class C4FMDemod(Elaboratable):
 
         with m.If(self.strobe_in):
             m.d.sync += [
-                # Latch current and previous for multiply stage
                 re_curr_r.eq(self.re_in),
                 im_curr_r.eq(self.im_in),
                 re_prev_r.eq(re_prev),
                 im_prev_r.eq(im_prev),
-                # Update previous sample
                 re_prev.eq(self.re_in),
                 im_prev.eq(self.im_in),
                 strobe_p1.eq(1),
@@ -67,28 +78,34 @@ class C4FMDemod(Elaboratable):
         with m.Else():
             m.d.sync += strobe_p1.eq(0)
 
-        # Pipeline stage 2: cross-product multiply and subtract
-        # disc = re_prev * im_curr - im_prev * re_curr
-        # Each multiply is 16x16 -> 32 bits, difference -> 33 bits
-        # Truncate to 18 bits (drop 15 LSBs) for downstream
-        prod_a = Signal(signed(32), reset_less=True)  # re_prev * im_curr
-        prod_b = Signal(signed(32), reset_less=True)  # im_prev * re_curr
+        # Pipeline stage 2: 4 multiplies for full complex differential
+        # diff_re = re_curr*re_prev + im_curr*im_prev
+        # diff_im = im_curr*re_prev - re_curr*im_prev
+        rr = Signal(signed(32), reset_less=True)  # re_curr * re_prev
+        ii = Signal(signed(32), reset_less=True)  # im_curr * im_prev
+        ir = Signal(signed(32), reset_less=True)  # im_curr * re_prev
+        ri = Signal(signed(32), reset_less=True)  # re_curr * im_prev
 
         with m.If(strobe_p1):
             m.d.sync += [
-                prod_a.eq(re_prev_r * im_curr_r),
-                prod_b.eq(im_prev_r * re_curr_r),
+                rr.eq(re_curr_r * re_prev_r),
+                ii.eq(im_curr_r * im_prev_r),
+                ir.eq(im_curr_r * re_prev_r),
+                ri.eq(re_curr_r * im_prev_r),
                 self.strobe_out.eq(1),
             ]
         with m.Else():
             m.d.sync += self.strobe_out.eq(0)
 
-        # Output: (prod_a - prod_b) >> 15, saturated to 18 bits
-        diff = Signal(signed(33), reset_less=True)
-        m.d.comb += diff.eq(prod_a - prod_b)
-        # Right-shift by 15 to fit 18-bit output (keeps sign + 17 magnitude)
-        shifted = Signal(signed(18), reset_less=True)
-        m.d.comb += shifted.eq(diff >> 15)
-        m.d.comb += self.disc_out.eq(shifted)
+        # Combine: diff_re = rr + ii ; diff_im = ir - ri
+        # Each is 33-bit, right-shift by 15 to fit 18-bit output
+        diff_re_full = Signal(signed(33), reset_less=True)
+        diff_im_full = Signal(signed(33), reset_less=True)
+        m.d.comb += [
+            diff_re_full.eq(rr + ii),
+            diff_im_full.eq(ir - ri),
+            self.diff_re_out.eq(diff_re_full >> 15),
+            self.diff_im_out.eq(diff_im_full >> 15),
+        ]
 
         return m

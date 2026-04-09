@@ -1,6 +1,42 @@
 #
 # Fishball P25 - Top-level IP core
 #
+# Demodulator design notes
+# ------------------------
+# P25 Phase 1 has TWO physical layer modulations that the FPGA must handle:
+#
+#   * C4FM (Continuous 4-level Frequency Modulation) - pure 4FSK with
+#     deviations of +-1800/+-600 Hz. Data is in instantaneous frequency.
+#   * LSM (Linear Simulcast Modulation) - actually a CQPSK with shaped
+#     pulses, used in simulcast systems for cleaner overlap. Data is in
+#     phase, not frequency.
+#
+# A naive FM-discriminator-only demod (cross-product alone) decodes C4FM
+# fine but DOES NOT decode LSM. We confirmed this empirically: an LSM
+# control channel sliced through a frequency-only demodulator produces
+# only 2 of the 4 dibit values (the inner +-1 levels), never the outer
+# +-3 levels.
+#
+# SDRTrunk's reference solution (P25P1DemodulatorLSM.java) uses a UNIFIED
+# differential demod that works for both modulations:
+#
+#     diff = z[n] * conj(z[n-1])
+#     diff_re = re[n]*re[n-1] + im[n]*im[n-1]
+#     diff_im = im[n]*re[n-1] - re[n]*im[n-1]    <-- the FM cross-product
+#     dibit = (sign(diff_re), sign(diff_im))     <-- 4 quadrants
+#
+# The dibit is just the two sign bits of the differential product, no
+# CORDIC, no atan2, no PLL needed for the hard decision. SDRTrunk's
+# author confirms in the C4FM source that LSM "likely uses direct phase
+# manipulation" and the same slicer works for both.
+#
+# Our `C4FMDemod` module computes the full complex differential product
+# (4 multiplies, 4 DSP48s instead of 2) and exposes both diff_re and
+# diff_im. `SymbolTimingRecovery` runs the Gardner TED on diff_im (still
+# the FM cross-product, has zero crossings at symbol boundaries for both
+# modulations) and slices the dibit from the (diff_re, diff_im) sign
+# bits at the symbol point.
+#
 # SPDX-License-Identifier: MIT
 #
 
@@ -332,9 +368,13 @@ class P25Core(Elaboratable):
             self.c4fm_demod.strobe_in.eq(self.ddc.strobe_out),
         ]
 
-        # C4FM discriminator -> Symbol timing recovery
+        # Differential demodulator -> Symbol timing + slicer
+        # Pass both Re and Im of z[n]*conj(z[n-1]). diff_im is the
+        # classic FM cross-product (used by Gardner TED). The dibit
+        # is the (re_sign, im_sign) pair — works for C4FM AND LSM.
         m.d.comb += [
-            self.symbol_timing.disc_in.eq(self.c4fm_demod.disc_out),
+            self.symbol_timing.diff_re_in.eq(self.c4fm_demod.diff_re_out),
+            self.symbol_timing.diff_im_in.eq(self.c4fm_demod.diff_im_out),
             self.symbol_timing.strobe_in.eq(self.c4fm_demod.strobe_out),
         ]
 
@@ -432,12 +472,14 @@ class P25Core(Elaboratable):
             self.traffic_ddc.im_in.eq(rxiq_cdc.im_out),
         ]
 
-        # Traffic DDC -> C4FM demod -> symbol timing -> dibit packer -> ring DMA
+        # Traffic DDC -> differential demod -> timing -> packer -> ring DMA
+        # Same C4FM/LSM-unified differential approach as the control chain.
         m.d.comb += [
             self.traffic_c4fm.re_in.eq(self.traffic_ddc.re_out),
             self.traffic_c4fm.im_in.eq(self.traffic_ddc.im_out),
             self.traffic_c4fm.strobe_in.eq(self.traffic_ddc.strobe_out),
-            self.traffic_timing.disc_in.eq(self.traffic_c4fm.disc_out),
+            self.traffic_timing.diff_re_in.eq(self.traffic_c4fm.diff_re_out),
+            self.traffic_timing.diff_im_in.eq(self.traffic_c4fm.diff_im_out),
             self.traffic_timing.strobe_in.eq(self.traffic_c4fm.strobe_out),
             self.traffic_packer.dibit_in.eq(self.traffic_timing.dibit_out),
             self.traffic_packer.symbol_strobe.eq(
