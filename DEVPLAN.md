@@ -242,7 +242,7 @@ At 9600 bps, the ARM A9 has trivial CPU load for all protocol processing.
 5. **Phase 2B**: Web UI, integration test with live P25 system. Done
 6. **Phase 3**: Second DDC/demod chain, traffic manager, voice extraction, audio. Done
 7. **Phase 4**: Bitstream build with Vivado. Build script (`build_fpga.bat --p25`), XSA export. Done
-8. **Phase 5**: Tezuka firmware integration. P25 board config, SD card boot, hardware test. -- IN PROGRESS
+8. **Phase 5**: Tezuka firmware integration. P25 board config, SD card boot, hardware test. -- COMPLETE (with redirect to Phase 6 for the demodulator architecture)
    - Done: Build pipeline fixes (Docker Verilog gen, CMD escaping, ADI libs, stale paths, .gitattributes LF, incremental builds)
    - Done: Tezuka firmware fixes (XSA cache invalidation, source change detection, phantom UART removal from DTS)
    - Done: Register map fix (SVD offsets corrected: bank select bits [4:3] -> byte offsets 0x00/0x20/0x40/0x60)
@@ -254,10 +254,74 @@ At 9600 bps, the ARM A9 has trivial CPU load for all protocol processing.
    - Done: Register layout simplification -- `demod_control` and `traffic_demod_control` collapse to a single `demod_enable` level bit (start/stop Wpulses removed). `demod_status` and `traffic_demod_status` expose the new `last_buffer` field. Other bank offsets unchanged. SVD + PAC regenerated.
    - Done: DMA physical address layout -- FPGA hardcoded reservations updated from 1 MB each to 32 KB ring: `0x17000000` (dibit) and `0x18000000` (traffic). Device tree `reg = <0x17000000 0x8000>` / `<0x18000000 0x8000>` updated to match.
    - Done: Build script automation -- `build_hdl.sh` now auto-generates `p25.svd` and regenerates `p25-pac/src/lib.rs` via a downloaded `svd2rust` binary when `--p25` is passed. `build.sh` (Tezuka) auto-invalidates the FPGA package on XSA timestamp change and the p25-httpd/maia-httpd packages on source change.
-   - Remaining: Live control channel decode verification (tune DDC to confirmed P25 frequency, validate dibit stream)
-   - Remaining: Traffic channel following test
-   - Remaining: Voice frame extraction (LDU1/LDU2 -> IMBE)
-   - Remaining: SD card image packaging and clean boot from cold start
+   - Done: Build_fpga.bat staleness detection -- `build_fpga.bat --p25` auto-runs Verilog regen via Docker when any `p25_hdl/*.py` or `maia_hdl/*.py` is newer than the cached `p25_core.v`. See change 009.
+   - Done: Decoder observability -- p25-httpd stdout now redirected to `/var/log/p25-httpd.log` (was going to /dev/null via `start-stop-daemon -b`); `/api/stats` exposes AGC gain + RSSI; `/api/dibit_dump` exposes inner/outer dibit pct + raw_duid histogram; periodic grant expiry. See change 010.
+   - **Redirect to Phase 6:** Live control channel decode verification done -- with the existing C4FM-only gateware AND with `SYNC_THRESHOLD` widened to 10, the on-target decoder produces ~3 sync hits/sec on a known-good control channel but the NIDs decode to random NACs and a near-uniform DUID histogram. Root cause discovered to be that the target (and all in-range) P25 systems are LSM Simulcast, not C4FM. The existing slicer architecture cannot decode LSM. Effort redirected to Phase 6.
+
+9. **Phase 6**: LSM demodulator (Python -> Rust on PS -> HDL on PL). NEW PHASE.
+
+   The Fishball P25 target site is LSM Simulcast (`P25 Phase 1 Simulcast (LSM)`
+   per SDRTrunk). All P25 systems within RF range of the user's location are
+   LSM. The existing Phase 1 C4FM-only gateware is the wrong architecture for
+   the modulation actually being received and cannot be made to work without
+   adding two missing blocks: an RRC matched filter and a decision-directed
+   PLL for carrier recovery.
+
+   Project mandate: SDRTrunk is the reference implementation. Port
+   `P25P1DecoderLSM` and `P25P1DemodulatorLSM`, do not invent algorithms.
+   Final destination is PL (FPGA fabric). PS Rust is acceptable as an
+   intermediate validation step.
+
+   Three-step ladder, each step validated against the previous one with a
+   bit-exact reference vector (the captured `.wav` recording from
+   `C:\Users\Andy\SDRTrunk\recordings\` and matching truth log from
+   `C:\Users\Andy\SDRTrunk\event_logs\`):
+
+   - **Phase 6A: Python reference port** -- DONE (change 011).
+     `tools/p25_lsm_demod.py` is a self-contained ~900-line port of
+     SDRTrunk's full LSM chain (decimator, baseband LPF, RRC matched
+     filter, demod loop with AGC + PLL + Gardner TED + slicer, soft + hard
+     sync detectors, status-aware NID extractor). Validated against
+     SDRTrunk truth: 339 sync events vs 335 truth (101.2% recall), 91% at
+     Hamming distance 0, NAC = 0x8A1 in 93.5% of detections, DUID = 0x7
+     in 95.9% of detections. The remaining ~6% gap is uncorrected NID
+     bit errors that BCH(64,16) FEC will close.
+
+   - **Phase 6B: Add BCH(64,16) NID FEC + finish the Python reference.**
+     Port `BCH_63_16_23_P25.java` and parent `BCH.java` (Berlekamp-Massey
+     decoder over GF(2^6)) to Python. Should bring NAC accuracy to >99.9%.
+     Note: the user has an existing pyradio port in their Downloads folder
+     with a `decode_p25_nid` function in `fec/reed_solomon.py` that may be
+     reusable -- explore before porting from scratch.
+
+   - **Phase 6C: IQ DMA path in the FPGA gateware.** New ring DMA parallel
+     to the existing dibit DMA. Streams raw post-DDC IQ to DRAM via the
+     same `DmaStreamRingWrite` pattern as the dibit path. Same physical
+     memory layout, new device tree entry, new UIO mapping. Lets PS read
+     IQ samples directly without changing the existing dibit pipeline.
+
+   - **Phase 6D: Rust LSM demod module in p25-httpd.** Mechanical port of
+     the validated Python prototype to Rust, file-by-file with golden
+     vector unit tests against frozen Python outputs. New `lsm/` module
+     with one Rust file per Python stage. Replaces the dibit reader path
+     with an IQ reader path that runs the new demod chain in software on
+     the Cortex-A9. Validates end-to-end on the live Fishball using the
+     same antenna SDRTrunk uses.
+
+   - **Phase 6E: HDL LSM demod in PL.** Each block ported from Rust to
+     Amaranth with cocotb tests against the Rust reference. The
+     decimator and FIRs map to existing maia_hdl FIR infrastructure.
+     The Gardner+PLL+slicer is the unique work and is fully specified
+     by the Python reference. Final goal of the project: pure-PL DSP
+     path producing dibits identical to the Rust reference, with the
+     PS doing only the post-dibit decode and dashboard.
+
+   Why this ordering: each phase locks in a fixed reference for the next
+   one. Phase 6A says "the algorithm is right". Phase 6B says "the FEC is
+   right". Phase 6C says "we can stream raw IQ from FPGA to PS". Phase 6D
+   says "the Rust port is right". Phase 6E says "the HDL port is right".
+   At each step there is one degree of freedom and a known-good target,
+   not several entangled unknowns at once.
 
 ### Critical Maia Files Referenced
 

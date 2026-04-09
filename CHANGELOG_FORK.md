@@ -5,6 +5,129 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-09] Phase 6: P25 LSM Demodulator -- Validated Python Reference
+
+**Branch:** fishball-p25
+
+The Fishball P25 target site is **LSM Simulcast**, not C4FM. All P25 systems
+within RF range of the user's location are LSM. The existing C4FM-only Phase 1
+gateware cannot decode LSM regardless of how we tune the existing slicer --
+LSM is pulse-shaped CQPSK with data in carrier *phase*, requiring an RRC
+matched filter and a decision-directed PLL that the current architecture
+lacks. See `doc/changes/011_p25_lsm_python_reference.md` for the full
+diagnosis and the validated Python reference port.
+
+This change establishes the project's new direction:
+
+- **Read SDRTrunk's LSM source line by line** (`P25P1DecoderLSM.java`,
+  `P25P1DemodulatorLSM.java`, `Dibit.java`, `P25P1MessageFramer.java`,
+  `P25P1SoftSyncDetector.java`, `BCH_63_16_23_P25.java`) and document
+  every constant and DSP block.
+- **`tools/p25_lsm_demod.py`** -- new self-contained ~900-line Python port
+  of the full LSM chain: half-band decimation -> Parks-McClellan baseband
+  LPF -> RRC matched filter -> demod loop with AGC + PLL + Gardner TED +
+  atan2 slicer -> hard + soft sync detectors -> status-aware NID extractor
+  (skip dibit 11). Variable names mirror the Java source for direct diff.
+  Includes a 6-panel Matplotlib `--plot` dashboard for visual diagnosis.
+- **Validated bit-exact against SDRTrunk** on a 27-second .wav recording
+  the user captured via their Pluto + SDRTrunk + custom pluto_server.py
+  bridge: 339 sync events vs 335 in SDRTrunk's truth log (101.2% recall),
+  91% at perfect Hamming distance 0, NAC = 0x8A1 in 93.5% of detections,
+  DUID = 0x7 in 95.9% of detections. Symbol rate within 0.006% of nominal.
+- **`tools/monitor_p25_decoder.py`** -- new tool for live polling of the
+  on-target Fishball `/api/stats` and `/api/dibit_dump` endpoints into
+  JSONL snapshots. Used during the failed slow-convergence-tracking
+  detour but kept as the standard "watch the decoder over time" utility.
+- **`maia-hdl/p25_hdl/p25_top.py`** -- corrected the docstring's wrong
+  claim that the existing slicer is "unified for C4FM and LSM". It is
+  not. Documented the architectural delta (RRC + PLL missing) and the
+  recommended fix path (PS Rust -> HDL).
+- **DEVPLAN.md** -- new Phase 6 with a 5-step ladder (6A Python reference
+  done, 6B BCH FEC, 6C IQ DMA in FPGA, 6D Rust on PS, 6E HDL/PL final).
+  Each step locks in a fixed reference for the next, so each one has at
+  most one degree of freedom and a known-good target.
+
+The validated Python reference unblocks the rest of the project. Phase 6B
+through 6E now become mechanical port-and-test exercises with bit-exact
+targets, instead of "design and pray."
+
+## [2026-04-09] Phase 5 (final): P25 Decoder Observability + Init Hardening
+
+**Branch:** fishball-p25
+
+A bundle of small but high-leverage diagnostic-infrastructure changes that
+turned the P25 decoder from a black box into something we could actually
+debug from a browser. See `doc/changes/010_p25_decoder_observability.md`
+for the per-item rationale.
+
+The headline finding: `S60p25-httpd` was launching the daemon via
+`start-stop-daemon -b`, which detaches the process and closes its standard
+streams under busybox. **Every `tracing::info!` we have ever written has
+been going straight to /dev/null.** Fixed by wrapping the binary in
+`sh -c 'exec ... >> /var/log/p25-httpd.log 2>&1'`. The same bug exists in
+`S60maia-httpd` (Maia's init script) and is worth fixing in `fishball-dev`
+in a follow-up.
+
+Other items in this bundle:
+
+- **Explicit `EnvFilter` setup** in `main.rs` so the default tracing
+  filter is `info,p25_httpd=info` and not whatever `fmt::init()`'s
+  undocumented default is.
+- **`/api/stats` exposes AD9361 RX gain + RSSI.** No more "ssh in and
+  cat sysfs" while debugging.
+- **`/api/dibit_dump` exposes inner/outer histogram percentages and a
+  raw on-air DUID histogram.** The DUID histogram in particular was
+  the diagnostic that broke open the LSM debug session -- it showed a
+  near-uniform spread across all 16 nibble values (TSDU at 4-5%
+  instead of expected ~100%), immediately implicating the demodulator
+  architecture.
+- **`SYNC_THRESHOLD` widened from 4 to 10** with a long comment
+  explaining why and when it should drop back. Temporary diagnostic
+  measure -- not a fix.
+- **Periodic `expire_grants(30)`** task in `main.rs` so the dashboard's
+  Active Grants count doesn't grow forever once decoding works.
+- **NID DUID hardcode hack** in `decode_nid` to flush out downstream
+  bugs faster while the demod is still broken. Diagnostic raw_duid
+  histogram preserves the actual on-air values so we can observe the
+  bit-error pattern. Replaced by proper BCH(64,16) FEC in change 011's
+  follow-up work (Phase 6B).
+- **Category-1 cleanups**: drop unused imports (`put`, `TsbkMessage`),
+  module-level `#![allow(dead_code)]` for traffic-following placeholder
+  code, remove dead `tracing::debug!` in `fpga.rs`, fold the NCO
+  frequency into the existing `configure_ddc` info log.
+
+## [2026-04-09] Phase 5 (cont.): Build Verilog Staleness Detection
+
+**Branch:** fishball-p25
+
+Added automatic staleness detection for Amaranth-generated IP Verilog in
+`build_fpga.bat`. Previously the script only checked whether `p25_core.v` /
+`maia_sdr.v` existed, so any edit to `p25_hdl/*.py` or `maia_hdl/*.py` after
+the first build would silently bake pre-edit logic into new bitstreams that
+looked fresh by mtime. See `doc/changes/009_build_verilog_staleness.md`.
+
+This was discovered while debugging why the P25 dibit slicer fix (symbol-rate
+differential, commits 3f1bff7 and 94faae9) wasn't affecting the on-target
+FPGA behaviour. The bitstream was built 15 minutes *after* the fix was
+committed, but Vivado had picked up the old `p25_core.v` generated 90 minutes
+*before* the fix. The symbol-rate slicer logic never made it into the
+bitstream, and the on-target dibit histogram exactly matched the pre-fix
+failure mode fingerprint recorded in the `p25_top.py` docstring.
+
+- **New:** `tools/check_verilog_stale.ps1` -- PowerShell helper that compares
+  generated `.v` mtime against the maximum mtime of `*.py` files under one or
+  more source directories. Outputs `MISSING`, `STALE`, or `FRESH`.
+- **Changed:** `build_fpga.bat` Step 2 now calls this helper for both the
+  Maia SDR and P25 IP Verilog. P25 checks against both `p25_hdl` and
+  `maia_hdl` (since `p25_top.py` imports DDC, registers, DMA, and CDC from
+  `maia_hdl`). On `STALE` or `MISSING`, it automatically invokes
+  `build_hdl.bat --verilog-only [--p25]` in Docker before running Vivado.
+- **No API change:** users still run `build_fpga.bat --p25` as the single
+  command. The `--verilog-only` flag on `build_hdl.bat` remains as an
+  internal mechanism and is no longer user-facing.
+
+---
+
 ## [2026-04-09] Phase 5: Build Pipeline, Register CDC, Ring DMA, First Hardware Boot
 
 **Branch:** fishball-p25

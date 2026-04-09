@@ -3,43 +3,57 @@
 #
 # Demodulator design notes
 # ------------------------
-# P25 Phase 1 has TWO physical layer modulations that the FPGA must handle:
+# P25 Phase 1 has TWO physical layer modulations:
 #
 #   * C4FM (Continuous 4-level Frequency Modulation) - pure 4FSK with
 #     deviations of +-1800/+-600 Hz. Data is in instantaneous frequency.
+#     Used by most non-simulcast P25 systems.
 #   * LSM (Linear Simulcast Modulation) - actually a CQPSK with shaped
-#     pulses, used in simulcast systems for cleaner overlap. Data is in
-#     phase, not frequency.
+#     pulses. Used by simulcast systems where multiple co-located
+#     transmitters radiate the same signal -- LSM's pulse shape gives
+#     cleaner overlap than C4FM. Data is in carrier phase, not frequency.
 #
-# A naive FM-discriminator-only demod (cross-product alone) decodes C4FM
-# fine but DOES NOT decode LSM. We confirmed this empirically: an LSM
-# control channel sliced through a frequency-only demodulator produces
-# only 2 of the 4 dibit values (the inner +-1 levels), never the outer
-# +-3 levels.
+# CURRENT STATUS: this gateware decodes C4FM only. The LSM path is NOT
+# YET IMPLEMENTED -- if you point this at a simulcast system you will
+# get random NIDs and no useful decode. See doc/changes/0xx_lsm_support.md
+# (TBD) for the design discussion.
 #
-# SDRTrunk's reference solution (P25P1DemodulatorLSM.java) uses a UNIFIED
-# differential demod that works for both modulations:
+# History of this comment block (for context, since it has been wrong
+# in informative ways before):
 #
-#     diff = z[n] * conj(z[n-1])
-#     diff_re = re[n]*re[n-1] + im[n]*im[n-1]
-#     diff_im = im[n]*re[n-1] - re[n]*im[n-1]    <-- the FM cross-product
-#     dibit = (sign(diff_re), sign(diff_im))     <-- 4 quadrants
+# An earlier iteration of this design claimed the per-sample differential
+# z[n]*conj(z[n-1]) (specifically the sign bits of (diff_re, diff_im))
+# was a "unified" slicer that worked for both C4FM and LSM. This was
+# wrong in two important ways:
 #
-# The dibit is just the two sign bits of the differential product, no
-# CORDIC, no atan2, no PLL needed for the hard decision. SDRTrunk's
-# author confirms in the C4FM source that LSM "likely uses direct phase
-# manipulation" and the same slicer works for both.
+#   1. The per-sample differential at ~13 samples/symbol has cos(small)
+#      ~+1 always, so diff_re never goes negative. Only 2 of the 4 dibit
+#      values appear. Fixed by computing the differential at SYMBOL rate
+#      (sym[k]*conj(sym[k-1])) where the phase change is the actual P25
+#      symbol angle of +-pi/4 or +-3pi/4. See SymbolTimingRecovery's
+#      symbol-rate slicer block for the working version.
 #
-# Important detail: the differential MUST be computed at the SYMBOL
-# RATE, not at the sample rate. With ~13 samples/symbol, the per-sample
-# phase change is small (~symbol-phase-change / sps), so cos(small) ≈
-# +1 and the real part of a sample-rate differential is *always*
-# positive. The slicer LSB sticks at 0 and only 2 of the 4 dibit values
-# (the inner +-1 levels) ever appear. We confirmed this empirically on
-# hardware: 70.8% / 0.2% / 28.8% / 0.2% — dibits 0/2 dominated, sync
-# correlator best Hamming distance was 33/48 (worse than random 24).
+#   2. Even with the symbol-rate fix, the slicer only decodes C4FM
+#      cleanly. For LSM it produces a near-random dibit stream because:
+#        (a) LSM pulses are shaped (raised-cosine) so adjacent symbols
+#            ISI into each decision -- needs an RRC matched filter
+#            *before* slicing. We don't have one.
+#        (b) LSM data lives in absolute carrier phase, so any LO offset
+#            between AD9361 and the transmitter rotates the constellation
+#            continuously. The slicer's fixed reference angle drifts and
+#            sym_diff_re/sym_diff_im sweep through all 4 quadrants
+#            independent of signal content. Needs a Costas loop (or
+#            equivalent coherent carrier recovery). We don't have one.
 #
-# So our pipeline is:
+#      Empirically confirmed 2026-04-09 against the Clay County simulcast
+#      site (NAC 0x8A1, 860.9625 MHz): the existing build produces ~3
+#      sync hits/sec at threshold 10, but every NID decodes with random
+#      NAC and a DUID histogram spread roughly uniformly across all 16
+#      values (TSDU bucket = 4-5%, expected 100% on a control channel).
+#      SDRTrunk on the same antenna decodes the same site cleanly using
+#      its P25P1DemodulatorLSM, which is essentially RRC + Costas + slicer.
+#
+# So our current pipeline (C4FM-only) is:
 #
 #   DDC -> raw post-FIR (re, im)  ─┐
 #                                  ├─> SymbolTimingRecovery
@@ -57,6 +71,23 @@
 # rate (used to be the slicer source); we keep it because diff_im is
 # the natural FM cross-product and feeds Gardner TED. diff_re from
 # C4FMDemod is no longer wired to anything.
+#
+# To add LSM support, two new blocks need to slot in between DDC and
+# SymbolTimingRecovery:
+#
+#   1. RRC matched filter (P25 alpha=0.2, ~24 taps at 13 sps). Symmetric
+#      FIR, ~12 DSP48E1. Real and imaginary share coefficients so total
+#      cost is two 24-tap FIRs ~= 24 DSPs.
+#
+#   2. Costas loop carrier recovery: complex multiply IQ by NCO, slice,
+#      compute phase error from sliced symbol, drive NCO via PI loop.
+#      ~3 DSPs for the rotator + small NCO + loop filter.
+#
+# Alternative: move slicing entirely to the PS (Cortex-A9), use the
+# existing IQ DMA infrastructure to stream raw post-DDC IQ to memory,
+# and run RRC + Costas + slicer in p25-httpd. Easier to develop, easier
+# to iterate, much easier to A/B test against SDRTrunk's reference.
+# This is the currently-recommended path.
 #
 # SPDX-License-Identifier: MIT
 #
