@@ -100,5 +100,11 @@ control channel decoder.
 ## Shared Documentation
 
 - `C:\Users\Andy\Projects\_shared\` — Cross-project docs (build systems, environment, hardware refs)
-- `C:\Users\Andy\Projects\MAIA_SDR\work_docs\` — Work documentation
-- `C:\Users\Andy\Projects\MAIA_SDR\build_scripts\` — Build scripts
+- `C:\Users\Andy\Projects\_shared\Hardware\` — Board schematics, pinouts, block diagrams
+  - `schematic/` — Fishball 7020 schematic analysis (FPGA banks, AD9361 interface, peripherals)
+  - `BOARD_BLOCK_DIAGRAMS.md` — Block diagrams for all supported boards
+  - `PIN_COMPATIBILITY_E200_VS_FISHBALL.md` — Pin compatibility analysis
+- `C:\Users\Andy\Projects\_shared\BUILD_SYSTEMS.md` — Full firmware build pipeline overview
+- `C:\Users\Andy\Projects\_shared\VIVADO_2023_INSTALL_GUIDE.md` — Vivado installation guide
+- `C:\Users\Andy\Projects\MAIA_SDR\work_docs\` — Work documentation (Vivado build guide, dev plans)
+- `C:\Users\Andy\Projects\MAIA_SDR\build_scripts\` — Original build scripts (reference)
