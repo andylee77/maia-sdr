@@ -30,12 +30,33 @@
 # author confirms in the C4FM source that LSM "likely uses direct phase
 # manipulation" and the same slicer works for both.
 #
-# Our `C4FMDemod` module computes the full complex differential product
-# (4 multiplies, 4 DSP48s instead of 2) and exposes both diff_re and
-# diff_im. `SymbolTimingRecovery` runs the Gardner TED on diff_im (still
-# the FM cross-product, has zero crossings at symbol boundaries for both
-# modulations) and slices the dibit from the (diff_re, diff_im) sign
-# bits at the symbol point.
+# Important detail: the differential MUST be computed at the SYMBOL
+# RATE, not at the sample rate. With ~13 samples/symbol, the per-sample
+# phase change is small (~symbol-phase-change / sps), so cos(small) ≈
+# +1 and the real part of a sample-rate differential is *always*
+# positive. The slicer LSB sticks at 0 and only 2 of the 4 dibit values
+# (the inner +-1 levels) ever appear. We confirmed this empirically on
+# hardware: 70.8% / 0.2% / 28.8% / 0.2% — dibits 0/2 dominated, sync
+# correlator best Hamming distance was 33/48 (worse than random 24).
+#
+# So our pipeline is:
+#
+#   DDC -> raw post-FIR (re, im)  ─┐
+#                                  ├─> SymbolTimingRecovery
+#   C4FMDemod -> diff_im  ─────────┘     ├ Gardner TED on diff_im
+#                                        │ (still sample-rate, used for
+#                                        │  clock recovery only)
+#                                        └ Symbol-rate differential
+#                                          z[k]*conj(z[k-1]) computed
+#                                          on the latched IQ at the
+#                                          decision point. Sign bits of
+#                                          (diff_re, diff_im) -> dibit.
+#                                          4 DSP48E1.
+#
+# `C4FMDemod` still computes the full complex differential at sample
+# rate (used to be the slicer source); we keep it because diff_im is
+# the natural FM cross-product and feeds Gardner TED. diff_re from
+# C4FMDemod is no longer wired to anything.
 #
 # SPDX-License-Identifier: MIT
 #
@@ -368,12 +389,16 @@ class P25Core(Elaboratable):
             self.c4fm_demod.strobe_in.eq(self.ddc.strobe_out),
         ]
 
-        # Differential demodulator -> Symbol timing + slicer
-        # Pass both Re and Im of z[n]*conj(z[n-1]). diff_im is the
-        # classic FM cross-product (used by Gardner TED). The dibit
-        # is the (re_sign, im_sign) pair — works for C4FM AND LSM.
+        # Symbol timing + slicer
+        # - Raw post-DDC IQ samples feed the symbol-rate differential
+        #   slicer inside SymbolTimingRecovery (4 DSP48E1 multiplies)
+        # - diff_im (the FM cross-product from C4FMDemod) feeds the
+        #   Gardner TED for clock recovery
+        # The slicer computes z_sym[k] * conj(z_sym[k-1]) at the
+        # symbol decision point; sign bits give the 4-quadrant dibit.
         m.d.comb += [
-            self.symbol_timing.diff_re_in.eq(self.c4fm_demod.diff_re_out),
+            self.symbol_timing.re_in.eq(self.ddc.re_out),
+            self.symbol_timing.im_in.eq(self.ddc.im_out),
             self.symbol_timing.diff_im_in.eq(self.c4fm_demod.diff_im_out),
             self.symbol_timing.strobe_in.eq(self.c4fm_demod.strobe_out),
         ]
@@ -473,12 +498,14 @@ class P25Core(Elaboratable):
         ]
 
         # Traffic DDC -> differential demod -> timing -> packer -> ring DMA
-        # Same C4FM/LSM-unified differential approach as the control chain.
+        # Same C4FM/LSM-unified differential approach as the control chain:
+        # raw IQ feeds the symbol-rate slicer, diff_im feeds Gardner TED.
         m.d.comb += [
             self.traffic_c4fm.re_in.eq(self.traffic_ddc.re_out),
             self.traffic_c4fm.im_in.eq(self.traffic_ddc.im_out),
             self.traffic_c4fm.strobe_in.eq(self.traffic_ddc.strobe_out),
-            self.traffic_timing.diff_re_in.eq(self.traffic_c4fm.diff_re_out),
+            self.traffic_timing.re_in.eq(self.traffic_ddc.re_out),
+            self.traffic_timing.im_in.eq(self.traffic_ddc.im_out),
             self.traffic_timing.diff_im_in.eq(self.traffic_c4fm.diff_im_out),
             self.traffic_timing.strobe_in.eq(self.traffic_c4fm.strobe_out),
             self.traffic_packer.dibit_in.eq(self.traffic_timing.dibit_out),

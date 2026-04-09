@@ -27,38 +27,57 @@ class TestSymbolTimingRecovery(unittest.TestCase):
             with sim.write_vcd(vcd):
                 sim.run()
 
-    def _generate_diff_samples(self, dibits, samples_per_symbol=10,
-                               timing_offset=0):
-        """Generate (diff_re, diff_im) samples for a dibit sequence.
+    def _generate_iq_samples(self, dibits, samples_per_symbol=10,
+                             timing_offset=0):
+        """Generate raw IQ samples + diff_im for a dibit sequence.
 
-        Maps dibits to 4 quadrants of the differential product plane,
-        matching the SDRTrunk LSM/C4FM unified slicer:
-          0b00 (+1): (diff_re > 0, diff_im > 0)  -> +pi/4
-          0b01 (+3): (diff_re < 0, diff_im > 0)  -> +3pi/4
-          0b10 (-1): (diff_re > 0, diff_im < 0)  -> -pi/4
-          0b11 (-3): (diff_re < 0, diff_im < 0)  -> -3pi/4
+        Walks a phase accumulator forward by the per-symbol phase step
+        for each dibit, holding the phase steady within a symbol so the
+        sample at the decision point lands on the symbol's IQ vector.
 
-        Returns two lists (re, im) of integer samples.
+        Phase steps (matching P25 C4FM/LSM):
+          0b00 (+1): +pi/4    (sym_diff in quadrant 1: re>0, im>0)
+          0b01 (+3): +3pi/4   (quadrant 2: re<0, im>0)
+          0b10 (-1): -pi/4    (quadrant 4: re>0, im<0)
+          0b11 (-3): -3pi/4   (quadrant 3: re<0, im<0)
+
+        Returns (re, im, diff_im):
+          re, im: 16-bit signed IQ samples (post-DDC stand-in)
+          diff_im: per-sample FM cross-product im(z[n] * conj(z[n-1]))
+                   used to drive the Gardner TED in tests
         """
-        # 4 unit-vector points on the differential plane (scaled to 18-bit)
-        amp = 50000
-        quad_map = {
-            0b00: ( amp,  amp),  # quadrant 1, dibit value 0
-            0b01: (-amp,  amp),  # quadrant 2, dibit value 1
-            0b10: ( amp, -amp),  # quadrant 4, dibit value 2
-            0b11: (-amp, -amp),  # quadrant 3, dibit value 3
+        amp = 10000
+        phase_step = {
+            0b00:  np.pi / 4,
+            0b01:  3 * np.pi / 4,
+            0b10: -np.pi / 4,
+            0b11: -3 * np.pi / 4,
         }
         re = []
         im = []
         for _ in range(timing_offset):
             re.append(0)
             im.append(0)
+        phase = 0.0
         for dibit in dibits:
-            r, i = quad_map[dibit]
+            phase += phase_step[dibit]
+            r = int(round(amp * np.cos(phase)))
+            i = int(round(amp * np.sin(phase)))
             for _ in range(samples_per_symbol):
                 re.append(r)
                 im.append(i)
-        return re, im
+
+        # Per-sample diff_im = im[n]*re[n-1] - re[n]*im[n-1], scaled to
+        # ~18-bit like the C4FMDemod output (>>15 of 32-bit product)
+        diff_im = []
+        re_p = 0
+        im_p = 0
+        for r, i in zip(re, im):
+            d = (i * re_p - r * im_p) >> 15
+            d = max(-131071, min(131071, d))
+            diff_im.append(d)
+            re_p, im_p = r, i
+        return re, im, diff_im
 
     def test_known_dibit_sequence(self):
         """Feed a clean dibit pattern and verify output matches."""
@@ -66,16 +85,15 @@ class TestSymbolTimingRecovery(unittest.TestCase):
 
         # Known dibit sequence
         dibits = [0b01, 0b00, 0b10, 0b11] * 10  # 40 symbols
-        re, im = self._generate_diff_samples(dibits)
+        re, im, diff_im = self._generate_iq_samples(dibits)
 
         recovered = []
 
         async def bench(ctx):
             for i in range(len(re)):
-                ctx.set(self.dut.diff_re_in,
-                        max(-131071, min(131071, re[i])))
-                ctx.set(self.dut.diff_im_in,
-                        max(-131071, min(131071, im[i])))
+                ctx.set(self.dut.re_in, re[i])
+                ctx.set(self.dut.im_in, im[i])
+                ctx.set(self.dut.diff_im_in, diff_im[i])
                 ctx.set(self.dut.strobe_in, 1)
                 await ctx.tick()
                 if ctx.get(self.dut.symbol_strobe):
@@ -92,16 +110,15 @@ class TestSymbolTimingRecovery(unittest.TestCase):
         self.dut = SymbolTimingRecovery(samples_per_symbol=10)
 
         dibits = [0b01, 0b11] * 10  # 20 symbols = 200 samples
-        re, im = self._generate_diff_samples(dibits)
+        re, im, diff_im = self._generate_iq_samples(dibits)
         strobe_count = 0
 
         async def bench(ctx):
             nonlocal strobe_count
             for i in range(len(re)):
-                ctx.set(self.dut.diff_re_in,
-                        max(-131071, min(131071, re[i])))
-                ctx.set(self.dut.diff_im_in,
-                        max(-131071, min(131071, im[i])))
+                ctx.set(self.dut.re_in, re[i])
+                ctx.set(self.dut.im_in, im[i])
+                ctx.set(self.dut.diff_im_in, diff_im[i])
                 ctx.set(self.dut.strobe_in, 1)
                 await ctx.tick()
                 if ctx.get(self.dut.symbol_strobe):
@@ -114,27 +131,33 @@ class TestSymbolTimingRecovery(unittest.TestCase):
         self.assertLess(strobe_count, 25, f"Too many strobes: {strobe_count}")
 
     def test_slicer_levels(self):
-        """Verify the sign-bit slicer maps each quadrant to its dibit."""
-        # Each test case: (expected_dibit, diff_re_value, diff_im_value)
-        # Mapping: dibit_lsb = (re < 0), dibit_msb = (im < 0)
+        """Each P25 phase step lands in the correct symbol-rate quadrant.
+
+        Feeds raw IQ that walks the phase by exactly the per-dibit
+        phase step every symbol. The symbol-rate differential then
+        lands in the matching quadrant for the entire run.
+        """
+        # Each test: (expected_dibit, single dibit repeated)
         test_cases = [
-            (0b00,  50000,  50000),   # quadrant 1: +1
-            (0b01, -50000,  50000),   # quadrant 2: +3
-            (0b10,  50000, -50000),   # quadrant 4: -1
-            (0b11, -50000, -50000),   # quadrant 3: -3
+            (0b00, [0b00] * 20),  # +pi/4 every symbol -> quadrant 1
+            (0b01, [0b01] * 20),  # +3pi/4 every symbol -> quadrant 2
+            (0b10, [0b10] * 20),  # -pi/4 every symbol -> quadrant 4
+            (0b11, [0b11] * 20),  # -3pi/4 every symbol -> quadrant 3
         ]
 
-        for expected_dibit, re_val, im_val in test_cases:
+        for expected_dibit, dibits in test_cases:
             sps = 10
-            n_samples = 15 * sps
+            self.dut = SymbolTimingRecovery(samples_per_symbol=sps)
+            re, im, diff_im = self._generate_iq_samples(
+                dibits, samples_per_symbol=sps)
+
             recovered = []
 
-            self.dut = SymbolTimingRecovery(samples_per_symbol=sps)
-
             async def bench(ctx):
-                for _ in range(n_samples):
-                    ctx.set(self.dut.diff_re_in, re_val)
-                    ctx.set(self.dut.diff_im_in, im_val)
+                for i in range(len(re)):
+                    ctx.set(self.dut.re_in, re[i])
+                    ctx.set(self.dut.im_in, im[i])
+                    ctx.set(self.dut.diff_im_in, diff_im[i])
                     ctx.set(self.dut.strobe_in, 1)
                     await ctx.tick()
                     if ctx.get(self.dut.symbol_strobe):
@@ -148,9 +171,42 @@ class TestSymbolTimingRecovery(unittest.TestCase):
                 ratio = correct / len(steady)
                 self.assertGreater(
                     ratio, 0.8,
-                    f"Quadrant ({re_val},{im_val}): expected dibit "
-                    f"{expected_dibit:02b}, got {ratio:.0%} correct of "
-                    f"{len(steady)} symbols")
+                    f"Dibit {expected_dibit:02b}: got {ratio:.0%} correct "
+                    f"of {len(steady)} symbols (recovered={recovered})")
+
+    def test_all_four_dibits_appear(self):
+        """Regression: all 4 dibit values must appear, not just 0 and 2.
+
+        This is the bug we hit on hardware: a sample-rate differential
+        slicer produces ~99.6% dibits 0/2 because cos(small_angle) ≈ +1
+        always, so diff_re never crosses zero. The symbol-rate slicer
+        should produce ~25% of each value for a uniform input.
+        """
+        self.dut = SymbolTimingRecovery(samples_per_symbol=10)
+        # Repeating 4-dibit pattern -> uniform distribution
+        dibits = [0b00, 0b01, 0b10, 0b11] * 12
+        re, im, diff_im = self._generate_iq_samples(dibits)
+
+        recovered = []
+
+        async def bench(ctx):
+            for i in range(len(re)):
+                ctx.set(self.dut.re_in, re[i])
+                ctx.set(self.dut.im_in, im[i])
+                ctx.set(self.dut.diff_im_in, diff_im[i])
+                ctx.set(self.dut.strobe_in, 1)
+                await ctx.tick()
+                if ctx.get(self.dut.symbol_strobe):
+                    recovered.append(ctx.get(self.dut.dibit_out))
+
+        self._simulate(bench)
+
+        if len(recovered) >= 16:
+            seen = set(recovered[2:])  # skip startup transient
+            self.assertEqual(
+                seen, {0, 1, 2, 3},
+                f"Expected all 4 dibit values, got {sorted(seen)} "
+                f"from {recovered[2:]}")
 
     def test_strobe_gating(self):
         """No symbol strobe when input strobe is deasserted."""
@@ -161,8 +217,9 @@ class TestSymbolTimingRecovery(unittest.TestCase):
         async def bench(ctx):
             nonlocal strobe_count
             for _ in range(100):
-                ctx.set(self.dut.diff_re_in, 10000)
-                ctx.set(self.dut.diff_im_in, 10000)
+                ctx.set(self.dut.re_in, 1000)
+                ctx.set(self.dut.im_in, 500)
+                ctx.set(self.dut.diff_im_in, 0)
                 ctx.set(self.dut.strobe_in, 0)
                 await ctx.tick()
                 if ctx.get(self.dut.symbol_strobe):

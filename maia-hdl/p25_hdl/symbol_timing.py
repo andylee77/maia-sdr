@@ -1,14 +1,20 @@
 #
 # Fishball P25 - Symbol Timing Recovery
 #
-# Gardner timing error detector + PI loop filter + interpolator.
-# Operates at 10 samples/symbol (48 kSPS / 4800 sym/sec).
+# Gardner timing error detector + PI loop filter + symbol-rate slicer.
+# Operates at ~13 samples/symbol (62.5 kSPS / 4800 sym/sec).
 #
-# Gardner TED: e[k] = (x[k] - x[k-1]) * x[k-1/2]
-# Loop filter: PI controller (BW ~48 Hz, damping 0.707)
+# Gardner TED: e[k] ≈ sign(x[k-1/2]) * (x[k] - x[k-1])  (on diff_im)
+# Loop filter: PI controller adjusting integer NCO step ±1
 # Output: 2-bit dibit (4-level symbol decision) + strobe
 #
-# Cost: 2-3 DSP48E1
+# Symbol-rate differential (for the slicer):
+#   diff = sym[k] * conj(sym[k-1])
+#   diff_re = re[k]*re[k-1] + im[k]*im[k-1]
+#   diff_im = im[k]*re[k-1] - re[k]*im[k-1]
+#   dibit = (sign(diff_re), sign(diff_im))     (4 quadrants)
+#
+# Cost: 4 DSP48E1 (16x16 multiplies for the symbol-rate differential)
 #
 # SPDX-License-Identifier: MIT
 #
@@ -17,23 +23,37 @@ from amaranth import *
 
 
 class SymbolTimingRecovery(Elaboratable):
-    """Gardner-based symbol timing recovery for P25 C4FM and LSM
+    """Gardner-based symbol timing recovery + symbol-rate slicer for P25
+    C4FM and LSM.
 
     Architecture:
-        - Decimating counter (integer NCO) at ~13 samp/sym
+        - Decimating counter (integer NCO) at samples_per_symbol
         - Gardner TED on diff_im (the FM cross-product) — works for both
           C4FM (where diff_im = instantaneous frequency) and LSM (where
-          diff_im is the imaginary part of the differential vector and
-          still has a zero-crossing at symbol boundaries)
-        - PI loop filter adjusts the NCO step
-        - Symbol slicer: sign bits of (diff_re, diff_im) -> 2-bit dibit
-          This works for both C4FM and LSM/CQPSK as confirmed by the
-          SDRTrunk implementation (P25P1DemodulatorLSM.toDibit). The
-          differential product z[n]*conj(z[n-1]) lies in one of 4
-          quadrants matching the P25 dibit set.
+          diff_im is the imaginary part of the per-sample differential
+          and still has a zero-crossing at symbol boundaries)
+        - PI loop filter adjusts the NCO step ±1
+        - Symbol slicer: at the symbol decision point, hold the latched
+          previous symbol's (re, im), compute the SYMBOL-RATE differential
+          z[k] * conj(z[k-1]) combinationally, and take the two sign
+          bits as the dibit. This is the same approach used by SDRTrunk's
+          P25P1DemodulatorLSM.toDibit and works for both C4FM and LSM.
+
+    Why symbol-rate (not sample-rate) differential for slicing:
+        At sample rate, the per-sample phase change is small (~symbol
+        phase change / sps), so cos(small_angle) ≈ +1 and the real part
+        of the differential is *always* positive. The slicer LSB is
+        stuck and only 2 of the 4 dibit values appear. By computing the
+        differential between successive *symbols* (samples 1 symbol
+        apart), the phase change is the actual P25 symbol angle (±π/4
+        or ±3π/4), the real part flips sign for the outer ±3 symbols,
+        and all four dibit values are produced.
 
     Inputs (sync domain):
-        diff_re_in, diff_im_in: 18-bit signed differential product
+        re_in, im_in: 16-bit signed post-DDC IQ samples (used for the
+            symbol-rate differential — captured at the symbol point)
+        diff_im_in: 18-bit signed FM cross-product (used by Gardner TED
+            and as a sanity discriminator; same as before)
         strobe_in: sample valid strobe
 
     Outputs (sync domain):
@@ -47,8 +67,11 @@ class SymbolTimingRecovery(Elaboratable):
     def __init__(self, samples_per_symbol=10):
         self.samples_per_symbol = samples_per_symbol
 
-        # Inputs (differential demodulator outputs)
-        self.diff_re_in = Signal(signed(18))
+        # Inputs
+        # Raw post-DDC IQ samples (used for the symbol-rate differential)
+        self.re_in = Signal(signed(16))
+        self.im_in = Signal(signed(16))
+        # FM cross-product from C4FMDemod (used by Gardner TED)
         self.diff_im_in = Signal(signed(18))
         self.strobe_in = Signal()
 
@@ -86,6 +109,24 @@ class SymbolTimingRecovery(Elaboratable):
         x_curr = Signal(signed(18), reset_less=True)
         x_prev = Signal(signed(18), reset_less=True)
         x_mid = Signal(signed(18), reset_less=True)
+
+        # ── Symbol-rate differential (for the slicer) ────────────────
+        # Latch the IQ samples at every symbol decision point. The held
+        # value becomes the "previous symbol" for the next decision.
+        # The combinational differential is then:
+        #   sym_diff_re = re_in*sym_re_prev + im_in*sym_im_prev
+        #   sym_diff_im = im_in*sym_re_prev - re_in*sym_im_prev
+        # Inferred to 4 DSP48E1 multiplies (16x16 -> 32-bit each).
+        sym_re_prev = Signal(signed(16), reset_less=True)
+        sym_im_prev = Signal(signed(16), reset_less=True)
+        sym_diff_re = Signal(signed(34))
+        sym_diff_im = Signal(signed(34))
+        m.d.comb += [
+            sym_diff_re.eq(
+                self.re_in * sym_re_prev + self.im_in * sym_im_prev),
+            sym_diff_im.eq(
+                self.im_in * sym_re_prev - self.re_in * sym_im_prev),
+        ]
 
         # ── Gardner TED + PI loop filter ─────────────────────────────
         # Error: e = (x_curr - x_prev) * x_mid
@@ -139,17 +180,22 @@ class SymbolTimingRecovery(Elaboratable):
                     loop_out.eq(kp_error + new_integrator),
                 ]
 
-                # Symbol slicer: sign bits of (diff_re, diff_im) at the
-                # symbol point. Matches SDRTrunk LSM/C4FM toDibit
-                # (P25P1DemodulatorLSM.toDibit, P25 TIA-102.BAAA):
-                #   diff_re > 0, diff_im > 0  -> +1 -> dibit 00 (0)
-                #   diff_re < 0, diff_im > 0  -> +3 -> dibit 01 (1)
-                #   diff_re > 0, diff_im < 0  -> -1 -> dibit 10 (2)
-                #   diff_re < 0, diff_im < 0  -> -3 -> dibit 11 (3)
-                # So dibit_lsb = (diff_re < 0) and dibit_msb = (diff_im < 0)
+                # Symbol slicer: sign bits of the SYMBOL-RATE differential
+                # sym[k] * conj(sym[k-1]). Matches SDRTrunk LSM/C4FM
+                # toDibit (P25P1DemodulatorLSM.toDibit, P25 TIA-102.BAAA):
+                #   sym_diff_re > 0, sym_diff_im > 0  -> +1 -> dibit 00 (0)
+                #   sym_diff_re < 0, sym_diff_im > 0  -> +3 -> dibit 01 (1)
+                #   sym_diff_re > 0, sym_diff_im < 0  -> -1 -> dibit 10 (2)
+                #   sym_diff_re < 0, sym_diff_im < 0  -> -3 -> dibit 11 (3)
+                # dibit_lsb = (sym_diff_re < 0), dibit_msb = (sym_diff_im < 0)
                 # In Amaranth Cat(a, b), 'a' is the LSB.
-                m.d.sync += self.dibit_out.eq(
-                    Cat(self.diff_re_in[-1], self.diff_im_in[-1]))
+                m.d.sync += [
+                    self.dibit_out.eq(
+                        Cat(sym_diff_re[-1], sym_diff_im[-1])),
+                    # Update held previous symbol for the NEXT decision.
+                    sym_re_prev.eq(self.re_in),
+                    sym_im_prev.eq(self.im_in),
+                ]
 
                 # Timing adjustment from loop filter: if loop_out > threshold
                 # advance by 1 sample, if < -threshold retard by 1
