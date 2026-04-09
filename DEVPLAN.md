@@ -49,8 +49,8 @@ maia-sdr/
 ### Reuse Strategy
 
 - `maia_hdl.ddc.DDC` -- same 3-stage FIR architecture, different coefficients for P25
-- `maia_hdl.dma.DmaStreamWrite` -- DMA to DDR via AXI HP
-- `maia_hdl.register` -- register framework for AXI-Lite control
+- `maia_hdl.dma.DmaStreamRingWrite` -- ring-buffer DMA to DDR via AXI HP (8 sub-buffers, interrupt on sub-buffer completion). Ported from the never-merged upstream IQ stream branch.
+- `maia_hdl.register` -- register framework for AXI-Lite control (with `RegisterCDC` for crossing from s_axi_lite clock into the sync/DSP clock)
 - Rust patterns adapted (not submoduled) from `maia-httpd`: UIO driver, IIO AD9361, SVD workflow
 
 ### Build Pipeline
@@ -99,7 +99,7 @@ P25 Phase 1 C4FM: 4800 sym/sec, 12.5 kHz channel, 4FSK +/-1800/+/-600 Hz deviati
 - Pack 32 dibits into 64-bit words for DMA
 - 4800 sym/sec = 150 DMA words/sec (negligible bandwidth)
 - Include timestamp words for cross-channel alignment
-- Uses `maia_hdl.dma.DmaStreamWrite`
+- Uses `maia_hdl.dma.DmaStreamRingWrite` (8 x 4 KB sub-buffer ring, interrupt per sub-buffer)
 
 **Frame sync**: Deferred to PS software -- at 4800 sym/sec, ARM can easily do NID correlation
 
@@ -249,6 +249,11 @@ At 9600 bps, the ARM A9 has trivial CPU load for all protocol processing.
    - Done: DDC FIR coefficient loading in p25-httpd (3-stage, 48+32+64 taps, Kaiser window, 18-bit, >137 dB stopband)
    - Done: First hardware boot -- FPGA registers accessible (product_id 0x70323566), AD9361 at 858.1 MHz / 8 MSPS, dibit counter incrementing, web UI on port 8080
    - Done: SDRTrunk confirmed P25 signal at 860.9625 MHz (NAC:2209, WACN:781824, System:2208)
+   - Done: Register CDC fix -- `demod_registers` and `traffic_registers` now cross from s_axi_lite (100 MHz) into sync (62.5 MHz) via `RegisterCDC`, matching the existing `sdr_registers_cdc` pattern. Previously Wpulse start signals had ~38% miss rate due to clock skew.
+   - Done: Ring-buffer DMA -- replaced `DmaStreamWrite` with a new `DmaStreamRingWrite` (ported from the unmerged upstream IQ stream branch). 8 x 4 KB sub-buffers = 32 KB ring per channel. Sub-buffer completion fires an interrupt on the AXI B-channel response. `demod_status.last_buffer` (3 bits) tracks which sub-buffer was just written. Runs continuously, no PS restart required.
+   - Done: Register layout simplification -- `demod_control` and `traffic_demod_control` collapse to a single `demod_enable` level bit (start/stop Wpulses removed). `demod_status` and `traffic_demod_status` expose the new `last_buffer` field. Other bank offsets unchanged. SVD + PAC regenerated.
+   - Done: DMA physical address layout -- FPGA hardcoded reservations updated from 1 MB each to 32 KB ring: `0x17000000` (dibit) and `0x18000000` (traffic). Device tree `reg = <0x17000000 0x8000>` / `<0x18000000 0x8000>` updated to match.
+   - Done: Build script automation -- `build_hdl.sh` now auto-generates `p25.svd` and regenerates `p25-pac/src/lib.rs` via a downloaded `svd2rust` binary when `--p25` is passed. `build.sh` (Tezuka) auto-invalidates the FPGA package on XSA timestamp change and the p25-httpd/maia-httpd packages on source change.
    - Remaining: Live control channel decode verification (tune DDC to confirmed P25 frequency, validate dibit stream)
    - Remaining: Traffic channel following test
    - Remaining: Voice frame extraction (LDU1/LDU2 -> IMBE)

@@ -44,6 +44,22 @@ pub struct ControlChannelDecoder {
     /// Expected data unit length
     du_expected_len: usize,
 
+    // ── Diagnostic counters (for tracing/logging only) ──
+    /// Cumulative dibit value histogram
+    dibit_hist: [u64; 4],
+    /// Total dibits processed
+    total_dibits: u64,
+    /// Best (lowest) sync Hamming distance seen since last log
+    best_sync_distance: u32,
+    /// Number of full sync matches (distance ≤ SYNC_THRESHOLD)
+    sync_hits: u64,
+    /// Number of near-syncs (distance ≤ SYNC_NEAR_LOG_THRESHOLD but > SYNC_THRESHOLD)
+    sync_near_misses: u64,
+    /// Last logged dibit count, for periodic histogram dumps
+    last_log_dibits: u64,
+    /// Rolling capture of recent dibits for /api/dibit_dump (oldest first)
+    pub recent_dibits: std::collections::VecDeque<u8>,
+
     /// System identity
     pub system: SystemIdentity,
     /// Frequency band table (from IDEN_UP messages)
@@ -102,6 +118,10 @@ const FRAME_SYNC_MASK: u64 = 0xFFFF_FFFF_FFFF; // 48 bits
 /// Maximum Hamming distance for sync detection (allow a few bit errors)
 const SYNC_THRESHOLD: u32 = 4;
 
+/// Logging threshold: any candidate with distance ≤ this is logged as a "near miss"
+/// to give visibility into how close the bit stream is to a real sync.
+const SYNC_NEAR_LOG_THRESHOLD: u32 = 12;
+
 /// NID is 48 dibits (96 bits) following frame sync
 const NID_DIBITS: usize = 32;
 
@@ -113,6 +133,13 @@ impl ControlChannelDecoder {
             state: DecoderState::Hunting,
             du_buffer: Vec::with_capacity(1024),
             du_expected_len: 0,
+            dibit_hist: [0; 4],
+            total_dibits: 0,
+            best_sync_distance: u32::MAX,
+            sync_hits: 0,
+            sync_near_misses: 0,
+            last_log_dibits: 0,
+            recent_dibits: std::collections::VecDeque::with_capacity(2048),
             system: SystemIdentity::default(),
             bands: HashMap::new(),
             grants: HashMap::new(),
@@ -128,6 +155,32 @@ impl ControlChannelDecoder {
         self.event_tx = Some(tx);
     }
 
+    /// Snapshot of the dibit histogram (count per dibit value 0..3).
+    pub fn dibit_histogram(&self) -> [u64; 4] {
+        self.dibit_hist
+    }
+
+    /// Total dibits processed since startup.
+    pub fn total_dibits(&self) -> u64 {
+        self.total_dibits
+    }
+
+    /// Number of full sync correlator hits.
+    pub fn sync_hits(&self) -> u64 {
+        self.sync_hits
+    }
+
+    /// Number of "near sync" matches (Hamming distance ≤ near threshold).
+    pub fn sync_near_misses(&self) -> u64 {
+        self.sync_near_misses
+    }
+
+    /// Best (lowest) Hamming distance to the sync pattern observed since
+    /// the last periodic decoder log dump (resets every ~16k dibits).
+    pub fn best_sync_distance(&self) -> u32 {
+        self.best_sync_distance
+    }
+
     /// Process a 64-bit DMA word containing 32 packed dibits
     pub fn process_dma_word(&mut self, word: u64) {
         for i in 0..32 {
@@ -138,6 +191,36 @@ impl ControlChannelDecoder {
 
     /// Process a single dibit
     pub fn process_dibit(&mut self, dibit: u8) {
+        // ── Diagnostics: histogram + periodic dump ───────────────
+        let d = dibit & 0x03;
+        self.dibit_hist[d as usize] += 1;
+        self.total_dibits += 1;
+        // Capture recent dibits for /api/dibit_dump (rolling 2048)
+        if self.recent_dibits.len() == 2048 {
+            self.recent_dibits.pop_front();
+        }
+        self.recent_dibits.push_back(d);
+
+        // Every 16384 dibits (~3.4 s of 4800 sym/s), dump stats
+        if self.total_dibits - self.last_log_dibits >= 16384 {
+            let n: u64 = self.dibit_hist.iter().sum();
+            let pct = |v: u64| -> f64 {
+                if n == 0 { 0.0 } else { 100.0 * v as f64 / n as f64 }
+            };
+            tracing::info!(
+                target: "p25_decoder",
+                "dibit stats @ {}: hist 0={:.1}% 1={:.1}% 2={:.1}% 3={:.1}% \
+                 sync hits={} near={} best_dist={}",
+                self.total_dibits,
+                pct(self.dibit_hist[0]), pct(self.dibit_hist[1]),
+                pct(self.dibit_hist[2]), pct(self.dibit_hist[3]),
+                self.sync_hits, self.sync_near_misses,
+                if self.best_sync_distance == u32::MAX { 99 } else { self.best_sync_distance },
+            );
+            self.last_log_dibits = self.total_dibits;
+            self.best_sync_distance = u32::MAX;
+        }
+
         match self.state.clone() {
             DecoderState::Hunting => {
                 // Shift dibit into sync register
@@ -147,7 +230,31 @@ impl ControlChannelDecoder {
 
                 // Check for frame sync match (with error tolerance)
                 let distance = (self.sync_register ^ FRAME_SYNC_DIBIT_PATTERN).count_ones();
+                if distance < self.best_sync_distance && self.dibit_count >= 24 {
+                    self.best_sync_distance = distance;
+                }
+                if distance <= SYNC_NEAR_LOG_THRESHOLD
+                    && distance > SYNC_THRESHOLD
+                    && self.dibit_count >= 24
+                {
+                    self.sync_near_misses += 1;
+                    // Log the first few near-misses then sample sparsely
+                    if self.sync_near_misses <= 8 || self.sync_near_misses % 256 == 0 {
+                        tracing::info!(
+                            target: "p25_decoder",
+                            "near-sync #{}: distance={} reg=0x{:012X} (dibit #{})",
+                            self.sync_near_misses, distance, self.sync_register,
+                            self.total_dibits,
+                        );
+                    }
+                }
                 if distance <= SYNC_THRESHOLD && self.dibit_count >= 24 {
+                    self.sync_hits += 1;
+                    tracing::info!(
+                        target: "p25_decoder",
+                        "SYNC HIT #{}: distance={} (dibit #{}) -> ReadingNid",
+                        self.sync_hits, distance, self.total_dibits,
+                    );
                     self.state = DecoderState::ReadingNid {
                         dibits_read: 0,
                         nid_bits: 0,
@@ -167,6 +274,11 @@ impl ControlChannelDecoder {
                     let (nac_raw, duid_raw) = match GolayDecoder::decode_nid(new_bits) {
                         Some(v) => v,
                         None => {
+                            tracing::info!(
+                                target: "p25_decoder",
+                                "NID Golay decode FAILED (raw=0x{:016X}) -> Hunting",
+                                new_bits,
+                            );
                             self.state = DecoderState::Hunting;
                             self.dibit_count = 0;
                             return;
@@ -179,6 +291,11 @@ impl ControlChannelDecoder {
                         self.system.nac = Some(nac);
 
                         let expected_len = duid.length_dibits();
+                        tracing::info!(
+                            target: "p25_decoder",
+                            "NID OK: NAC=0x{:03X} DUID=0x{:X} ({:?}) len={}",
+                            nac_raw, duid_raw, duid, expected_len,
+                        );
                         if expected_len > 0 {
                             self.du_buffer.clear();
                             self.du_expected_len = expected_len;
@@ -190,6 +307,11 @@ impl ControlChannelDecoder {
                         }
                     } else {
                         // Invalid DUID, go back to hunting
+                        tracing::info!(
+                            target: "p25_decoder",
+                            "NID DUID invalid: NAC=0x{:03X} DUID_raw=0x{:X} -> Hunting",
+                            nac_raw, duid_raw,
+                        );
                         self.state = DecoderState::Hunting;
                         self.dibit_count = 0;
                     }

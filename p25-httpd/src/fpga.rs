@@ -596,16 +596,32 @@ impl InterruptHandler {
     ///
     /// This should be spawned as a background tokio task.
     pub async fn run(mut self) -> Result<()> {
+        let mut total_irqs: u64 = 0;
+        let mut dibit_irqs: u64 = 0;
+        let mut traffic_irqs: u64 = 0;
         loop {
             self.uio.irq_enable().await?;
             self.uio.irq_wait().await?;
 
             let interrupts = self.registers.interrupts().read();
-            if interrupts.dibit_dma().bit() {
+            let dibit = interrupts.dibit_dma().bit();
+            let traffic = interrupts.traffic_dma().bit();
+            total_irqs += 1;
+            if dibit {
+                dibit_irqs += 1;
                 self.notify_dibit_dma.notify_waiters();
             }
-            if interrupts.traffic_dma().bit() {
+            if traffic {
+                traffic_irqs += 1;
                 self.notify_traffic_dma.notify_waiters();
+            }
+            // Log first 10 then every 64th to avoid flooding
+            if total_irqs <= 10 || total_irqs % 64 == 0 {
+                tracing::info!(
+                    target: "p25_irq",
+                    "IRQ #{total_irqs}: dibit={dibit} traffic={traffic} \
+                     (totals dibit={dibit_irqs} traffic={traffic_irqs})"
+                );
             }
         }
     }

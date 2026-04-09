@@ -39,6 +39,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/grants", get(get_grants))
         .route("/api/bands", get(get_bands))
         .route("/api/stats", get(get_stats))
+        .route("/api/dibit_dump", get(get_dibit_dump))
         .route("/api/aliases", get(get_aliases).put(put_aliases))
         .route("/ws/events", get(ws_events))
         .with_state(state)
@@ -118,6 +119,54 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats> {
         overflow,
         dma_next_address,
     })
+}
+
+/// Returns recent dibits as a hex string + diagnostic counters.
+///
+/// Each pair of hex chars = 8 dibits. Useful for sanity-checking
+/// the demod output from a browser without devmem on the target.
+async fn get_dibit_dump(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let decoder = state.decoder.read().await;
+    let dibits: Vec<u8> = decoder.recent_dibits.iter().copied().collect();
+
+    // Pack 4 dibits per byte (LSB first), MSB-first byte ordering
+    let mut packed = Vec::with_capacity(dibits.len().div_ceil(4));
+    for chunk in dibits.chunks(4) {
+        let mut b = 0u8;
+        for (i, d) in chunk.iter().enumerate() {
+            b |= (d & 0x03) << (i * 2);
+        }
+        packed.push(b);
+    }
+    let hex: String = packed.iter().map(|b| format!("{:02X}", b)).collect();
+
+    // Histogram + sync stats
+    let hist = decoder.dibit_histogram();
+    let total = decoder.total_dibits();
+    let pct = |v: u64| -> f64 {
+        if total == 0 { 0.0 } else { 100.0 * v as f64 / total as f64 }
+    };
+
+    Json(serde_json::json!({
+        "total_dibits": total,
+        "captured": dibits.len(),
+        "histogram": {
+            "0":   hist[0],
+            "1":   hist[1],
+            "2":   hist[2],
+            "3":   hist[3],
+            "0_pct": pct(hist[0]),
+            "1_pct": pct(hist[1]),
+            "2_pct": pct(hist[2]),
+            "3_pct": pct(hist[3]),
+        },
+        "sync": {
+            "hits":        decoder.sync_hits(),
+            "near_misses": decoder.sync_near_misses(),
+            "best_distance": decoder.best_sync_distance(),
+        },
+        "dibits_hex": hex,
+    }))
 }
 
 async fn get_aliases(State(state): State<Arc<AppState>>) -> Json<AliasMap> {
@@ -296,6 +345,30 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   </div>
 </div>
 
+<div class="grid2">
+  <div class="card">
+    <h2>Dibit Histogram</h2>
+    <table>
+      <tr><th>Total Dibits</th><td class="v" id="dh_total">0</td></tr>
+      <tr><th>Value 0 (+1)</th><td class="v" id="dh_0">--</td></tr>
+      <tr><th>Value 1 (+3)</th><td class="v" id="dh_1">--</td></tr>
+      <tr><th>Value 2 (-1)</th><td class="v" id="dh_2">--</td></tr>
+      <tr><th>Value 3 (-3)</th><td class="v" id="dh_3">--</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h2>Sync Correlator</h2>
+    <table>
+      <tr><th>Sync Hits</th><td class="v" id="sy_hits">0</td></tr>
+      <tr><th>Near Misses</th><td class="v" id="sy_near">0</td></tr>
+      <tr><th>Best Distance</th><td class="v" id="sy_best">--</td></tr>
+    </table>
+    <p style="color:var(--text-dim);font-size:0.8em;margin-top:6px">
+      Hamming distance to P25 frame sync (48 bits). Random&asymp;24, locked&le;4.
+    </p>
+  </div>
+</div>
+
 <h2>Live Activity</h2>
 <div class="card">
   <div id="activity"></div>
@@ -363,6 +436,20 @@ async function refresh() {
     const d = $('dot'), s = $('status');
     if (stats.system_acquired) { d.classList.add('active'); s.textContent = 'Tracking'; }
     else { d.classList.remove('active'); s.textContent = 'Searching'; }
+  }
+
+  const dump = await fetchJson('/api/dibit_dump');
+  if (dump) {
+    $('dh_total').textContent = dump.total_dibits.toLocaleString();
+    const fmt = (n, p) => `${n.toLocaleString()} (${p.toFixed(1)}%)`;
+    $('dh_0').textContent = fmt(dump.histogram['0'], dump.histogram['0_pct']);
+    $('dh_1').textContent = fmt(dump.histogram['1'], dump.histogram['1_pct']);
+    $('dh_2').textContent = fmt(dump.histogram['2'], dump.histogram['2_pct']);
+    $('dh_3').textContent = fmt(dump.histogram['3'], dump.histogram['3_pct']);
+    $('sy_hits').textContent = dump.sync.hits.toLocaleString();
+    $('sy_near').textContent = dump.sync.near_misses.toLocaleString();
+    const bd = dump.sync.best_distance;
+    $('sy_best').textContent = (bd >= 4294967000) ? '--' : bd;
   }
 
   const grants = await fetchJson('/api/grants');

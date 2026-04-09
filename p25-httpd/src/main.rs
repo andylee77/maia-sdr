@@ -110,8 +110,14 @@ async fn main() -> anyhow::Result<()> {
         let reader_decoder = decoder.clone();
         tokio::spawn(async move {
             tracing::info!("dibit reader task started");
+            let mut wakeups: u64 = 0;
+            let mut total_buffers: u64 = 0;
+            let mut total_bytes: u64 = 0;
+            // Cumulative dibit histogram across all reads
+            let mut hist = [0u64; 4];
             loop {
                 dibit_waiter.wait().await;
+                wakeups += 1;
                 let buffers = {
                     let mut core = reader_core.lock().await;
                     core.read_dibit_buffers()
@@ -119,14 +125,62 @@ async fn main() -> anyhow::Result<()> {
                         .map(|b| b.to_vec())
                         .collect::<Vec<_>>()
                 };
+
+                let mut wake_bytes = 0usize;
+                let mut wake_dibits = 0usize;
                 for buffer in &buffers {
-                    // Each buffer contains packed 64-bit dibit words
+                    wake_bytes += buffer.len();
                     let words: &[u64] = bytemuck_cast(buffer);
+                    // Tally dibit histogram for this batch
+                    for &word in words {
+                        for i in 0..32 {
+                            let d = ((word >> (i * 2)) & 0x03) as usize;
+                            hist[d] += 1;
+                            wake_dibits += 1;
+                        }
+                    }
                     let mut dec = reader_decoder.write().await;
                     for &word in words {
                         dec.process_dma_word(word);
                     }
                 }
+                total_buffers += buffers.len() as u64;
+                total_bytes += wake_bytes as u64;
+
+                if wakeups <= 5 || wakeups % 16 == 0 {
+                    let total_dibits: u64 = hist.iter().sum();
+                    let pct = |v: u64| -> f64 {
+                        if total_dibits == 0 { 0.0 }
+                        else { 100.0 * v as f64 / total_dibits as f64 }
+                    };
+                    tracing::info!(
+                        target: "p25_reader",
+                        "wake #{wakeups}: bufs={} bytes={} dibits={} \
+                         (cum bufs={total_buffers} bytes={total_bytes}) \
+                         hist 0={:.1}% 1={:.1}% 2={:.1}% 3={:.1}%",
+                        buffers.len(), wake_bytes, wake_dibits,
+                        pct(hist[0]), pct(hist[1]), pct(hist[2]), pct(hist[3]),
+                    );
+                }
+            }
+        });
+
+        // 7. Spawn periodic stats task — polls FPGA registers every 2s
+        let stats_core = ip_core.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            tick.tick().await; // discard first immediate tick
+            loop {
+                tick.tick().await;
+                let core = stats_core.lock().await;
+                tracing::info!(
+                    target: "p25_stats",
+                    "regs: dibit_count={} overflow={} last_buffer={} next_addr=0x{:08X}",
+                    core.dibit_count(),
+                    core.demod_overflow(),
+                    core.dibit_last_buffer(),
+                    core.dibit_next_address(),
+                );
             }
         });
 
