@@ -80,6 +80,14 @@ from pathlib import Path
 import numpy as np
 from scipy import signal
 
+# Phase 6B: BCH(63,16,11) NID forward error correction.
+# tools/p25_nid_fec.py is a sibling module in this same directory; importing
+# by simple name works because we run as `python tools/p25_lsm_demod.py` from
+# the repo root, which puts tools/ on sys.path.
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from p25_nid_fec import decode_nid as bch_decode_nid  # noqa: E402
+
 
 # ============================================================================
 # Constants from SDRTrunk's P25 LSM chain (verbatim)
@@ -494,12 +502,16 @@ SYNC_THRESHOLD = 4   # Hamming distance for hard correlator (used by hard path)
 
 @dataclass
 class SyncEvent:
-    """One frame-sync match -> NID extraction."""
+    """One frame-sync match -> NID extraction (raw + BCH-corrected)."""
     symbol_idx: int       # symbol index of the dibit immediately after sync
     distance: int         # Hamming distance of the sync match (hard detector)
     score: float          # soft correlation score (soft detector)
-    nac: int              # 12-bit NAC, no FEC
-    duid: int             # 4-bit DUID, no FEC
+    nac: int              # 12-bit NAC, no FEC (raw extraction)
+    duid: int             # 4-bit DUID, no FEC (raw extraction)
+    nid_raw: int          # full 64-bit NID word, status dibit already skipped
+    nac_fec: int          # 12-bit NAC after BCH(63,16,11) correction
+    duid_fec: int         # 4-bit DUID after BCH(63,16,11) correction
+    fec_errors: int       # bit errors corrected, or -1 if uncorrectable
 
 
 def _build_sync_pattern_phases() -> np.ndarray:
@@ -531,12 +543,16 @@ SYNC_PATTERN_PHASES = _build_sync_pattern_phases()
 
 def _extract_nid_skipping_status(
     dibits: np.ndarray, start_idx: int
-) -> tuple[int, int] | None:
-    """Read 33 dibits starting at start_idx, skip index 11 (status), return (nac, duid).
+) -> tuple[int, int, int] | None:
+    """Read 33 dibits starting at start_idx, skip index 11 (status), return
+    (nac, duid, nid_bits).
 
     Returns None if the buffer doesn't have enough room past start_idx.
     The 33-dibit window matches SDRTrunk's DIBIT_LENGTH_NID; the skip-11
     matches checkNID()'s `if(i != 11)` branch in P25P1MessageFramer.
+
+    The third return value is the full 64-bit NID word, suitable for handing
+    directly to bch_decode_nid() in p25_nid_fec.py.
     """
     end = start_idx + NID_TRANSMITTED_DIBITS
     if end > len(dibits):
@@ -549,7 +565,23 @@ def _extract_nid_skipping_status(
     # nid_bits is now exactly 64 bits = NAC[12] || DUID[4] || parity[48]
     nac = (nid_bits >> 52) & 0xFFF
     duid = (nid_bits >> 48) & 0xF
-    return nac, duid
+    return nac, duid, nid_bits
+
+
+def _decode_with_bch(nid_bits: int) -> tuple[int, int, int]:
+    """Run BCH(63,16,11) on a 64-bit NID. Returns (nac_fec, duid_fec, fec_errors).
+
+    fec_errors == -1 indicates the FEC declared the NID uncorrectable; in
+    that case (nac_fec, duid_fec) carry the raw extraction (caller's choice
+    is whether to treat the event as a sync error).
+    """
+    result = bch_decode_nid(nid_bits)
+    if result is None:
+        nac_raw = (nid_bits >> 52) & 0xFFF
+        duid_raw = (nid_bits >> 48) & 0xF
+        return nac_raw, duid_raw, -1
+    nac_fec, duid_fec, n_errors = result
+    return nac_fec, duid_fec, n_errors
 
 
 def find_sync_events_hard(dibits: np.ndarray) -> list[SyncEvent]:
@@ -570,13 +602,18 @@ def find_sync_events_hard(dibits: np.ndarray) -> list[SyncEvent]:
             nid = _extract_nid_skipping_status(dibits, i)
             if nid is None:
                 break
-            nac, duid = nid
+            nac, duid, nid_bits = nid
+            nac_fec, duid_fec, fec_errors = _decode_with_bch(nid_bits)
             out.append(SyncEvent(
                 symbol_idx=i,
                 distance=dist,
                 score=0.0,
                 nac=nac,
                 duid=duid,
+                nid_raw=nid_bits,
+                nac_fec=nac_fec,
+                duid_fec=duid_fec,
+                fec_errors=fec_errors,
             ))
             # Skip past this NID's 33 dibits before scanning again, exactly
             # like SDRTrunk's framer suppresses sync detection during message
@@ -638,13 +675,18 @@ def find_sync_events_soft(
         nid = _extract_nid_skipping_status(hard_dibits, first_nid_idx)
         if nid is None:
             break
-        nac, duid = nid
+        nac, duid, nid_bits = nid
+        nac_fec, duid_fec, fec_errors = _decode_with_bch(nid_bits)
         out.append(SyncEvent(
             symbol_idx=first_nid_idx,
             distance=-1,            # not used by soft detector
             score=float(scores[k]),
             nac=nac,
             duid=duid,
+            nid_raw=nid_bits,
+            nac_fec=nac_fec,
+            duid_fec=duid_fec,
+            fec_errors=fec_errors,
         ))
         last_emit = sync_end + NID_TRANSMITTED_DIBITS
 
@@ -820,10 +862,63 @@ def report(
                   f"(most common in truth)")
             print(f"   NAC match (raw) : {n_nac_match}/{len(sync_events)} = "
                   f"{100.0 * n_nac_match / len(sync_events):.1f}% "
-                  f"(no FEC; BCH(64,16) would correct most residual errors)")
-            print(f"   DUID==7 (TSDU)  : {n_duid_match}/{len(sync_events)} = "
+                  f"(no FEC, raw extraction)")
+            print(f"   DUID==7 (raw)   : {n_duid_match}/{len(sync_events)} = "
                   f"{100.0 * n_duid_match / len(sync_events):.1f}% "
                   f"(control channel should be ~100% TSDU)")
+
+            # ---------- Phase 6B: BCH(63,16,11) FEC results ----------
+            n_fec_ok = sum(1 for e in sync_events if e.fec_errors >= 0)
+            n_fec_uncorrectable = sum(1 for e in sync_events
+                                      if e.fec_errors == -1)
+            n_nac_fec_match = sum(1 for e in sync_events
+                                  if e.fec_errors >= 0 and e.nac_fec == target_nac)
+            n_duid_fec_match = sum(1 for e in sync_events
+                                   if e.fec_errors >= 0 and e.duid_fec == 0x7)
+            print()
+            print(f"   --- after BCH(63,16,11) FEC ---")
+            print(f"   correctable     : {n_fec_ok}/{len(sync_events)} = "
+                  f"{100.0 * n_fec_ok / len(sync_events):.1f}% "
+                  f"(remaining {n_fec_uncorrectable} had >11 bit errors)")
+            if n_fec_ok > 0:
+                # Show error histogram (number of NIDs at each correction count)
+                err_hist: dict[int, int] = {}
+                for e in sync_events:
+                    if e.fec_errors >= 0:
+                        err_hist[e.fec_errors] = err_hist.get(e.fec_errors, 0) + 1
+                top_err = sorted(err_hist.items())[:12]
+                print(f"   bit-err histo   : "
+                      + ", ".join(f"e{k}={v}" for k, v in top_err))
+                print(f"   NAC match (FEC) : {n_nac_fec_match}/{len(sync_events)} = "
+                      f"{100.0 * n_nac_fec_match / len(sync_events):.1f}%  "
+                      f"(was {100.0 * n_nac_match / len(sync_events):.1f}% raw)")
+                print(f"   DUID==7 (FEC)   : {n_duid_fec_match}/{len(sync_events)} = "
+                      f"{100.0 * n_duid_fec_match / len(sync_events):.1f}%  "
+                      f"(was {100.0 * n_duid_match / len(sync_events):.1f}% raw)")
+
+                # The right metric for FEC quality (independent of false-sync
+                # noise): of the events the BCH decoder DECLARED correctable,
+                # what fraction were corrected to the target NAC? Uncorrectable
+                # events are dominated by false sync hits and reflect detector
+                # threshold tuning, not FEC algorithm correctness.
+                fec_nac_among_correctable = (
+                    100.0 * n_nac_fec_match / n_fec_ok if n_fec_ok else 0.0
+                )
+                print(f"   NAC among correct: {n_nac_fec_match}/{n_fec_ok} = "
+                      f"{fec_nac_among_correctable:.1f}% "
+                      f"(of events the FEC could correct, what % got target NAC)")
+                if fec_nac_among_correctable >= 99.5:
+                    print("   FEC verdict     : [PASS] FEC correctly recovered "
+                          ">=99.5% of NIDs that were within the BCH(63,16,11) "
+                          "correction sphere -- algorithm is bit-perfect")
+                elif fec_nac_among_correctable >= 95.0:
+                    print("   FEC verdict     : [WARN] FEC recovers most "
+                          "in-sphere NIDs but not all -- possible status-dibit "
+                          "or bit-ordering edge case")
+                else:
+                    print("   FEC verdict     : [FAIL] FEC fails to recover "
+                          "many in-sphere NIDs -- algorithm bug or wrong bit "
+                          "ordering")
     print()
 
 

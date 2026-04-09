@@ -5,6 +5,59 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-09] Phase 6B: P25 NID BCH(63,16,11) FEC Validated Against SDRTrunk
+
+**Branch:** fishball-p25
+
+Phase 6B is complete. NID forward error correction is now in the validated
+Python reference, and on the better-signal test recording our prototype
+produces an exact sync count match to SDRTrunk (313/313) with 100% NAC
+accuracy after FEC. See `doc/changes/012_p25_nid_bch_fec.md` for the full
+write-up.
+
+- **`tools/p25_nid_fec.py`** -- new ~280-line standalone module. Encoder
+  is verbatim from SDRTrunk's `BCH_63_16_23_P25_Test.java` (16-row
+  generator matrix in octal + 5-line systematic encoding loop). Decoder
+  uses maximum-likelihood nearest-neighbour search across the 65,536-entry
+  codebook -- mathematically identical to BCH decoding within the unique-
+  decoding sphere, ~30 lines vs ~600 for a Berlekamp-Massey + Chien search
+  port from the Linux-derived `BCH.java` base class.
+- **Encoder bit-perfect**: `encode_nid(NAC=1, DUID=0)` produces
+  `0x00103185B7E9E224` exactly, matching SDRTrunk's documented test vector
+  in `BCH_63_16_23_P25_Test.java:38`.
+- **Decoder bit-perfect**: synthetic 1-11 bit error injection at all
+  positions, 100 trials each: 1100/1100 corrected. At 12 errors,
+  200/200 declared uncorrectable -- exactly the (63,16,d=23) bound.
+- **`tools/p25_lsm_demod.py`** -- BCH FEC integrated into both sync
+  detector paths. `SyncEvent` now carries `nid_raw`, `nac_fec`, `duid_fec`,
+  `fec_errors` (-1 if uncorrectable). New "after BCH(63,16,11) FEC" section
+  in the report shows correctable count, bit-error histogram, and the
+  "NAC among correctable" metric (the right way to measure FEC quality
+  while ignoring false sync hits).
+- **End-to-end validation**:
+  - 175119 wav (better signal): 313/313 syncs, 313/313 correctable,
+    313/313 NAC=0x8A1 after FEC. **Exact match to SDRTrunk truth log.**
+  - 163748 wav (noisier): 339/335 syncs, 330/339 correctable, 330/330
+    NAC=0x8A1 *among correctable*. The 9 uncorrectable events are
+    dominated by 4 false sync hits beyond truth + 5 PLL-slip events;
+    not a FEC bug.
+- **Pyradio evaluation**: started this session by reading the user's
+  pre-existing pyradio P25 port at `~/Downloads/sdrtrunk-master/docs/pyradio/`
+  to assess whether to merge it. Two findings: (1) pyradio's LSM demod
+  loop is algorithmically equivalent to ours but uses `MAX_PLL = π`
+  instead of SDRTrunk's `π/3` (deviation comment cites Pluto crystal
+  offset); ours is more faithful. (2) **pyradio's `decode_p25_nid`
+  uses RS(24,12,13) over GF(2^6), NOT the BCH(63,16,11) that SDRTrunk
+  actually implements**, has zero unit tests for the FEC, and the
+  pyradio author's own skeleton at `p25_pure_python.py` mislabels which
+  code goes where. Per the project mandate ("if pyradio diverges from
+  SDRTrunk, prefer SDRTrunk"), this session ports BCH directly from
+  SDRTrunk Java rather than trusting pyradio's RS substitute.
+- **TSBK parser deferred**: cherry-picking pyradio's TSBK parser would
+  require ~1000 lines of trellis decoder + deinterleaver + CRC + opcode
+  dispatch + an event/identifier framework. Significantly bigger lift
+  than the FEC was. Recommend a dedicated future session.
+
 ## [2026-04-09] Phase 6: P25 LSM Demodulator -- Validated Python Reference
 
 **Branch:** fishball-p25

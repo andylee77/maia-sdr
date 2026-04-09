@@ -318,3 +318,5 @@ Located at `C:\Users\Andy\Projects\MAIA_SDR\work_docs\`:
 | 2026-04-08 | fishball-p25 | Doc cleanup | Consolidated docs: merged p25-docs/ into doc/, unified DEVLOG + CHANGELOG |
 | 2026-04-09 | fishball-p25 | Phase 5 | Build pipeline fixes, register map fix, DDC FIR init, first hardware boot |
 | 2026-04-09 | fishball-p25 | Phase 5 | Register CDC fix (demod/traffic banks), ring-buffer DMA (`DmaStreamRingWrite`), DMA address layout, build script auto-SVD/PAC |
+| 2026-04-09 | fishball-p25 | Phase 6A | Diagnosed C4FM-vs-LSM mismatch; ported SDRTrunk LSM chain to `tools/p25_lsm_demod.py`; validated 91% NID accuracy on captured wav |
+| 2026-04-09 | fishball-p25 | Phase 6B | Ported SDRTrunk BCH(63,16,11) NID FEC to `tools/p25_nid_fec.py` (ML decoder via codebook); 100% NAC accuracy on better-signal wav (313/313 exact match to SDRTrunk) |
