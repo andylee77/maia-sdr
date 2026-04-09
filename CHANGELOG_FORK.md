@@ -5,6 +5,71 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-09] Phase 6C: P25 Post-DDC IQ Ring DMA in FPGA Gateware
+
+**Branch:** fishball-p25
+
+Phase 6C is complete (gateware logic + Verilog/SVD/PAC regen). Adds a third
+ring DMA inside the P25 IP core that streams the control DDC's post-decimation
+IQ output (62.5 kSPS, 16-bit signed I/Q, two samples per 64-bit word) to a
+reserved DDR carve-out at `0x1900_0000`. This is the bridge that lets Phase
+6D's Rust port of the validated Python LSM demod consume live antenna data
+without disturbing the existing dibit pipeline. See
+`doc/changes/013_phase6c_iq_dma.md` for the full write-up and
+`doc/P25_ADDRESS_MAP.md` for the canonical address-space tables.
+
+- **`maia-hdl/p25_hdl/iq_packer.py`** -- new ~120-line `IQPacker` Amaranth
+  module. Buffers two consecutive `(re, im)` pairs into a 64-bit AXI4-Stream
+  word `{im[1], re[1], im[0], re[0]}` (sample 0 in low half). Mirrors
+  `DibitPacker`'s handshake + sticky-overflow conventions exactly.
+- **`maia-hdl/p25_hdl/p25_top.py`** -- third tap of the control DDC output
+  (alongside `c4fm_demod` and `symbol_timing`); new `iq_dma` instance of
+  `DmaStreamRingWrite` exposing `m_axi_iq`; new 5th register bank `iq` at
+  byte offset `0x80` containing `iq_dma_status`/`iq_dma_control`/
+  `iq_next_address`. The bank decoder was widened from `address[3:5]`
+  (4 banks) to `address[3:6]` (8 banks max) -- no `axi4_awidth` change
+  needed, the existing 7-bit word address has plenty of headroom.
+- **`maia-hdl/p25_hdl/config.py`** -- new `iq_dma_*` fields with the full
+  bandwidth math (250 KB/s, 256 KB ring = 8 x 32 KB sub-buffers, ~128 ms
+  per sub-buffer interrupt, ~1 s of IQ in flight) and an alignment assert
+  in `validate()`.
+- **`maia-hdl/ip/p25-core/package_ip.tcl`** -- one new
+  `ipx::associate_bus_interfaces -busif m_axi_iq -clock clk` line.
+- **`maia-hdl/projects/fishball7020_p25/system_bd.tcl`** -- one new
+  `ad_mem_hp1_interconnect` line. SmartConnect on HP1 now arbitrates
+  three masters (`m_axi_dibit` + `m_axi_traffic` + `m_axi_iq`); HP1 budget
+  at ~1.7 GB/s absorbs the new ~250 KB/s consumer with ~0.015% utilisation.
+- **`maia-hdl/test/test_iq_packer.py`** -- new pure-Python pysim test (uses
+  `amaranth.sim.Simulator`, mirrors `test_dibit_packer.py`). 7 tests
+  covering single/multi-pair packing, two's complement extremes, no-strobe
+  quiescence, backpressure handshake, and the sticky overflow flag. All 7
+  pass on the Windows host.
+- **`maia-hdl/test_cocotb/iq_packer/`** -- new cocotb scaffold (Makefile,
+  verilog.py, tb.v, test_iq_packer.py) ready to run in WSL Ubuntu or
+  Docker as a CI step.
+- **`doc/P25_ADDRESS_MAP.md`** -- new canonical address-map document.
+  Single source of truth for DDR carve-outs, AXI-Lite register banks, and
+  IRQ assignments. Per the doc-as-we-go discipline, written *before* the
+  wiring code so the address-map decisions were committed in writing
+  before they hardened.
+- **Verification on Windows host:** 7/7 pysim tests pass. Full P25Core
+  Amaranth elaboration succeeds. `build_hdl.sh --verilog-only --p25` (run
+  in the project's Python 3.11 Docker container) regenerates `p25_core.v`
+  (22046 lines, all 20 `m_axi_iq_*` ports declared), `p25.svd` (with the
+  three new registers at `0x80`/`0x84`/`0x88`), and `p25-pac/src/lib.rs`
+  via `svd2rust v0.33.5` cleanly. Phase 6D's Rust port can `use p25_pac::iq`
+  immediately.
+- **Pending verification:** Vivado bitstream synth (`build_fpga.bat --p25`,
+  ~30-60 min on host Vivado 2023.2) and on-hardware smoke test (load
+  bitstream, devmem to enable `iq_dma_control`, mmap `0x1900_0000`, dump
+  sub-buffers, feed to `tools/p25_lsm_demod.py`, check NAC accuracy).
+
+Phase 6C ends at "gateware logic verified, Verilog regenerates, register
+PAC regenerates". Phase 6D -- Rust port of the LSM demod to the Cortex-A9,
+fed by this new IQ ring -- is the next step on the ladder.
+
+---
+
 ## [2026-04-09] Phase 6B: P25 NID BCH(63,16,11) FEC Validated Against SDRTrunk
 
 **Branch:** fishball-p25

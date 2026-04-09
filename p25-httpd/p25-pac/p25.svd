@@ -18,7 +18,7 @@
       <access>read-write</access>
       <addressBlock>
         <offset>0</offset>
-        <size>0x80</size>
+        <size>0x88</size>
         <usage>registers</usage>
       </addressBlock>
       <registers>
@@ -98,6 +98,12 @@
               <name>traffic_dma</name>
               <description>traffic_dma</description>
               <bitRange>[1:1]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>iq_dma</name>
+              <description>iq_dma</description>
+              <bitRange>[2:2]</bitRange>
               <access>read-only</access>
             </field>
           </fields>
@@ -426,6 +432,54 @@
           <name>traffic_next_address</name>
           <description>traffic_next_address</description>
           <addressOffset>0x74</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>next_address</name>
+              <description>next_address</description>
+              <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>iq_dma_status</name>
+          <description>iq_dma_status</description>
+          <addressOffset>0x80</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>iq_overflow</name>
+              <description>iq_overflow</description>
+              <bitRange>[0:0]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>last_buffer</name>
+              <description>last_buffer</description>
+              <bitRange>[3:1]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>iq_dma_control</name>
+          <description>iq_dma_control</description>
+          <addressOffset>0x84</addressOffset>
+          <access>read-write</access>
+          <fields>
+            <field>
+              <name>iq_enable</name>
+              <description>iq_enable</description>
+              <bitRange>[0:0]</bitRange>
+              <access>read-write</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>iq_next_address</name>
+          <description>iq_next_address</description>
+          <addressOffset>0x88</addressOffset>
           <access>read-only</access>
           <fields>
             <field>

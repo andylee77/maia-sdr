@@ -111,6 +111,7 @@ from maia_hdl.register import Access, Field, Registers, Register, RegisterMap
 from .c4fm_demod import C4FMDemod
 from .symbol_timing import SymbolTimingRecovery
 from .dibit_packer import DibitPacker
+from .iq_packer import IQPacker
 from .config import P25Config
 from . import configs
 
@@ -163,6 +164,8 @@ class P25Core(Elaboratable):
                 0b11: Register('interrupts', [
                     Field('dibit_dma', Access.Rsticky, 1, 0),
                     Field('traffic_dma', Access.Rsticky, 1, 0),
+                    # Phase 6C: control-channel post-DDC IQ ring DMA
+                    Field('iq_dma', Access.Rsticky, 1, 0),
                 ], interrupt=True),
             },
             2)
@@ -236,6 +239,51 @@ class P25Core(Elaboratable):
             },
             2)
 
+        # ── Control-channel post-DDC IQ ring DMA (Phase 6C) ───────────
+        # Third tap of the control DDC output (alongside c4fm_demod and
+        # symbol_timing). The packer buffers two consecutive (re, im)
+        # pairs into a 64-bit DMA word; see iq_packer.py for the bit
+        # layout. The DMA mirrors the dibit_dma pattern: continuous
+        # ring write, sub-buffer-completion interrupt, level-enable.
+        #
+        # Address: 0x1900_0000 / 256 KB ring (8 x 32 KB sub-buffers).
+        # See doc/P25_ADDRESS_MAP.md for the full picture.
+        self.iq_packer = IQPacker()
+        self.iq_dma = DmaStreamRingWrite(
+            config.iq_dma_address,
+            config.iq_dma_num_buffers_log2,
+            config.iq_dma_buffer_size,
+            width=64, axi_awidth=32, name='m_axi_iq')
+
+        # ── Control channel IQ DMA registers (0x80) ───────────────────
+        # Bank 4 in the AXI-Lite register space (next free bank after
+        # control/sdr/demod/traffic). The bank decoder in elaborate()
+        # already covers bits [5:3] of the word address (3 bits = 8
+        # banks max), so this slot does not require any address-width
+        # change. See doc/P25_ADDRESS_MAP.md for the bank table.
+        #
+        # Layout intentionally mirrors the demod_status / dibit_next_address
+        # pair from the control-channel block, with iq_overflow at bit 0
+        # (Rsticky, clears on read) and last_buffer at bits [16+:N] to
+        # leave the low half free for future flags.
+        self.iq_registers = Registers(
+            'iq', {
+                0b00: Register('iq_dma_status', [
+                    Field('iq_overflow', Access.Rsticky, 1, 0),
+                    Field('last_buffer', Access.R,
+                          config.iq_dma_num_buffers_log2, -1),
+                ]),
+                0b01: Register('iq_dma_control', [
+                    # Single enable bit for ring DMA AW channel
+                    # (level signal, not pulse) - mirrors dibit_dma.
+                    Field('iq_enable', Access.RW, 1, 0),
+                ]),
+                0b10: Register('iq_next_address', [
+                    Field('next_address', Access.R, 32, 0),
+                ]),
+            },
+            2)
+
         # ── Traffic channel DDC + demod chain ─────────────────────────
         self.traffic_ddc = DDC('clk3x')
         self.traffic_c4fm = C4FMDemod()
@@ -299,13 +347,15 @@ class P25Core(Elaboratable):
             'description': f'Fishball P25 IP core (platform {config.platform})',
             'licenseText': 'SPDX-License-Identifier: MIT',
         }
-        # Address banks: bits [4:3] of the word address select the bank.
-        # Each bank spans 8 words = 32 bytes (0x20).
+        # Address banks: bits [5:3] of the word address select the bank
+        # (3 bits = 8 banks max). Each bank spans 8 words = 32 bytes (0x20).
+        # See doc/P25_ADDRESS_MAP.md for the canonical bank table.
         self.register_map = RegisterMap({
             0x00: self.control_registers,
             0x20: self.sdr_registers,
             0x40: self.demod_registers,
             0x60: self.traffic_registers,
+            0x80: self.iq_registers,        # Phase 6C
         }, metadata)
 
         # ── I/O signals ────────────────────────────────────────────────
@@ -319,6 +369,7 @@ class P25Core(Elaboratable):
             self.axi4lite.axi.ports()
             + self.dibit_dma.axi.ports()
             + self.traffic_dma.axi.ports()
+            + self.iq_dma.axi.ports()       # Phase 6C
             + [
                 self.re_in,
                 self.im_in,
@@ -413,6 +464,15 @@ class P25Core(Elaboratable):
         m.submodules.demod_registers_cdc = demod_registers_cdc = RegisterCDC(
             's_axi_lite', 'sync', self.demod_registers.aw)
 
+        # Phase 6C: control-channel post-DDC IQ ring DMA submodules.
+        # Both run in the same sync domain as dibit_dma and tap the
+        # same DDC output below.
+        m.submodules.iq_packer = self.iq_packer
+        m.submodules.iq_dma = self.iq_dma
+        m.submodules.iq_registers = self.iq_registers
+        m.submodules.iq_registers_cdc = iq_registers_cdc = RegisterCDC(
+            's_axi_lite', 'sync', self.iq_registers.aw)
+
         # DDC output -> C4FM discriminator
         m.d.comb += [
             self.c4fm_demod.re_in.eq(self.ddc.re_out),
@@ -475,6 +535,39 @@ class P25Core(Elaboratable):
             # the AW write address from inside the AXI interface for debug.
             self.demod_registers['dibit_next_address']['next_address'].eq(
                 self.dibit_dma.axi.awaddr),
+        ]
+
+        # ── Control-channel IQ ring DMA (Phase 6C) ────────────────────
+        # Third tap of the control DDC output. The packer fans the
+        # same re_out / im_out / strobe_out signals that already feed
+        # c4fm_demod and symbol_timing into a 64-bit DMA stream
+        # (two IQ pairs per word, sample 0 in the low half).
+        # See iq_packer.py for the bit layout and
+        # doc/P25_ADDRESS_MAP.md for the DDR carve-out.
+        m.d.comb += [
+            self.iq_packer.re_in.eq(self.ddc.re_out),
+            self.iq_packer.im_in.eq(self.ddc.im_out),
+            self.iq_packer.strobe_in.eq(self.ddc.strobe_out),
+        ]
+
+        # IQ packer -> ring DMA stream (handshake-driven backpressure)
+        m.d.comb += [
+            self.iq_dma.stream_data.eq(self.iq_packer.data_out),
+            self.iq_dma.stream_valid.eq(self.iq_packer.data_valid),
+            self.iq_packer.stream_ready.eq(self.iq_dma.stream_ready),
+        ]
+
+        # IQ DMA enable + interrupt + status registers
+        m.d.comb += [
+            self.iq_dma.enable.eq(
+                self.iq_registers['iq_dma_control']['iq_enable']),
+            interrupts_reg['iq_dma'].eq(self.iq_dma.interrupt),
+            self.iq_registers['iq_dma_status']['iq_overflow'].eq(
+                self.iq_packer.overflow),
+            self.iq_registers['iq_dma_status']['last_buffer'].eq(
+                self.iq_dma.last_buffer),
+            self.iq_registers['iq_next_address']['next_address'].eq(
+                self.iq_dma.axi.awaddr),
         ]
 
         # ── Traffic channel DDC + demod chain ─────────────────────────
@@ -573,30 +666,39 @@ class P25Core(Elaboratable):
 
         # ── Register crossbar ─────────────────────────────────────────
         # Address map (word-addressed via AXI4-Lite, 7-bit address):
-        #   0x00-0x03: control registers    (bits [4:3] == 00)
-        #   0x08-0x0F: SDR/DDC registers    (bits [4:3] == 01)
-        #   0x10-0x17: demod registers      (bits [4:3] == 10)
-        #   0x18-0x1F: traffic registers    (bits [4:3] == 11)
+        # Bank field is bits [5:3] of the word address (3 bits = 8
+        # banks max). See doc/P25_ADDRESS_MAP.md for the canonical table.
+        #
+        #   word 0x00-0x07: control registers    (bits [5:3] == 000)
+        #   word 0x08-0x0F: SDR/DDC registers    (bits [5:3] == 001)
+        #   word 0x10-0x17: demod registers      (bits [5:3] == 010)
+        #   word 0x18-0x1F: traffic registers    (bits [5:3] == 011)
+        #   word 0x20-0x27: IQ DMA registers     (bits [5:3] == 100) [Phase 6C]
+        #   word 0x28-0x3F: free for future banks
         address = Signal(self.axi4_awidth, reset_less=True)
         wdata = Signal(32, reset_less=True)
-        addr_bank = self.axi4lite.address[3:5]  # bits [4:3]
-        control_regs_select = (addr_bank == 0b00)
-        sdr_regs_select = (addr_bank == 0b01)
-        demod_regs_select = (addr_bank == 0b10)
-        traffic_regs_select = (addr_bank == 0b11)
+        addr_bank = self.axi4lite.address[3:6]  # bits [5:3]
+        control_regs_select = (addr_bank == 0b000)
+        sdr_regs_select = (addr_bank == 0b001)
+        demod_regs_select = (addr_bank == 0b010)
+        traffic_regs_select = (addr_bank == 0b011)
+        iq_regs_select = (addr_bank == 0b100)       # Phase 6C
         m.d.s_axi_lite += [
             self.axi4lite.rdata.eq(self.control_registers.rdata
                                    | sdr_registers_cdc.i_rdata
                                    | demod_registers_cdc.i_rdata
-                                   | traffic_registers_cdc.i_rdata),
+                                   | traffic_registers_cdc.i_rdata
+                                   | iq_registers_cdc.i_rdata),
             self.axi4lite.rdone.eq(self.control_registers.rdone
                                    | sdr_registers_cdc.i_rdone
                                    | demod_registers_cdc.i_rdone
-                                   | traffic_registers_cdc.i_rdone),
+                                   | traffic_registers_cdc.i_rdone
+                                   | iq_registers_cdc.i_rdone),
             self.axi4lite.wdone.eq(self.control_registers.wdone
                                    | sdr_registers_cdc.i_wdone
                                    | demod_registers_cdc.i_wdone
-                                   | traffic_registers_cdc.i_wdone),
+                                   | traffic_registers_cdc.i_wdone
+                                   | iq_registers_cdc.i_wdone),
             self.control_registers.ren.eq(
                 self.axi4lite.ren & control_regs_select),
             self.control_registers.wstrobe.eq(
@@ -613,6 +715,10 @@ class P25Core(Elaboratable):
                 self.axi4lite.ren & traffic_regs_select),
             traffic_registers_cdc.i_wstrobe.eq(
                 Mux(traffic_regs_select, self.axi4lite.wstrobe, 0)),
+            iq_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & iq_regs_select),
+            iq_registers_cdc.i_wstrobe.eq(
+                Mux(iq_regs_select, self.axi4lite.wstrobe, 0)),
             address.eq(self.axi4lite.address),
             wdata.eq(self.axi4lite.wdata),
         ]
@@ -625,6 +731,8 @@ class P25Core(Elaboratable):
             demod_registers_cdc.i_wdata.eq(wdata),
             traffic_registers_cdc.i_address.eq(address),
             traffic_registers_cdc.i_wdata.eq(wdata),
+            iq_registers_cdc.i_address.eq(address),
+            iq_registers_cdc.i_wdata.eq(wdata),
         ]
 
         # ── Registers sync domain ────────────────────────────────────
@@ -657,6 +765,16 @@ class P25Core(Elaboratable):
             traffic_registers_cdc.o_rdone.eq(self.traffic_registers.rdone),
             traffic_registers_cdc.o_wdone.eq(self.traffic_registers.wdone),
             traffic_registers_cdc.o_rdata.eq(self.traffic_registers.rdata),
+        ]
+        # iq_registers CDC (Phase 6C)
+        m.d.comb += [
+            self.iq_registers.ren.eq(iq_registers_cdc.o_ren),
+            self.iq_registers.wstrobe.eq(iq_registers_cdc.o_wstrobe),
+            self.iq_registers.address.eq(iq_registers_cdc.o_address),
+            self.iq_registers.wdata.eq(iq_registers_cdc.o_wdata),
+            iq_registers_cdc.o_rdone.eq(self.iq_registers.rdone),
+            iq_registers_cdc.o_wdone.eq(self.iq_registers.wdone),
+            iq_registers_cdc.o_rdata.eq(self.iq_registers.rdata),
         ]
 
         # ── Internal resets ───────────────────────────────────────────

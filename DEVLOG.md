@@ -320,3 +320,4 @@ Located at `C:\Users\Andy\Projects\MAIA_SDR\work_docs\`:
 | 2026-04-09 | fishball-p25 | Phase 5 | Register CDC fix (demod/traffic banks), ring-buffer DMA (`DmaStreamRingWrite`), DMA address layout, build script auto-SVD/PAC |
 | 2026-04-09 | fishball-p25 | Phase 6A | Diagnosed C4FM-vs-LSM mismatch; ported SDRTrunk LSM chain to `tools/p25_lsm_demod.py`; validated 91% NID accuracy on captured wav |
 | 2026-04-09 | fishball-p25 | Phase 6B | Ported SDRTrunk BCH(63,16,11) NID FEC to `tools/p25_nid_fec.py` (ML decoder via codebook); 100% NAC accuracy on better-signal wav (313/313 exact match to SDRTrunk) |
+| 2026-04-09 | fishball-p25 | Phase 6C | Added control-channel post-DDC IQ ring DMA in P25 gateware (`iq_packer.py` + `iq_dma` at `0x1900_0000`, 256 KB ring, ~250 KB/s, 5th register bank at offset 0x80). 7/7 pysim tests pass; Verilog/SVD/PAC regenerate cleanly. New `doc/P25_ADDRESS_MAP.md` is canonical address-map source-of-truth. Bridge for Phase 6D Rust LSM port. |
