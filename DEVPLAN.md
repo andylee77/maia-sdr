@@ -243,6 +243,16 @@ At 9600 bps, the ARM A9 has trivial CPU load for all protocol processing.
 6. **Phase 3**: Second DDC/demod chain, traffic manager, voice extraction, audio. Done
 7. **Phase 4**: Bitstream build with Vivado. Build script (`build_fpga.bat --p25`), XSA export. Done
 8. **Phase 5**: Tezuka firmware integration. P25 board config, SD card boot, hardware test. -- IN PROGRESS
+   - Done: Build pipeline fixes (Docker Verilog gen, CMD escaping, ADI libs, stale paths, .gitattributes LF, incremental builds)
+   - Done: Tezuka firmware fixes (XSA cache invalidation, source change detection, phantom UART removal from DTS)
+   - Done: Register map fix (SVD offsets corrected: bank select bits [4:3] -> byte offsets 0x00/0x20/0x40/0x60)
+   - Done: DDC FIR coefficient loading in p25-httpd (3-stage, 48+32+64 taps, Kaiser window, 18-bit, >137 dB stopband)
+   - Done: First hardware boot -- FPGA registers accessible (product_id 0x70323566), AD9361 at 858.1 MHz / 8 MSPS, dibit counter incrementing, web UI on port 8080
+   - Done: SDRTrunk confirmed P25 signal at 860.9625 MHz (NAC:2209, WACN:781824, System:2208)
+   - Remaining: Live control channel decode verification (tune DDC to confirmed P25 frequency, validate dibit stream)
+   - Remaining: Traffic channel following test
+   - Remaining: Voice frame extraction (LDU1/LDU2 -> IMBE)
+   - Remaining: SD card image packaging and clean boot from cold start
 
 ### Critical Maia Files Referenced
 

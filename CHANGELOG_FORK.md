@@ -5,6 +5,52 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-09] Phase 5: Build Pipeline, Register Fix, DDC Init, First Hardware Boot
+
+**Branch:** fishball-p25
+
+First successful hardware boot of the P25 FPGA bitstream on the Fishball Z7020.
+Fixed multiple build pipeline issues from the standalone repo migration, corrected
+the SVD register map, and added DDC FIR coefficient initialization.
+
+### Build Pipeline Fixes
+
+- Fixed P25 Verilog generation to use Docker (ext4 filesystem avoids NTFS pip issues)
+- Fixed CMD escaping in `build_fpga.bat` for Docker invocation
+- Added missing ADI library builds: `util_clkdiv`, `util_rfifo`, `util_wfifo`
+- Fixed stale TCL/Makefile paths left over from standalone repo migration
+- Added `.gitattributes` enforcing LF line endings on `.sh` files
+- Added skip-if-built logic for incremental ADI library builds
+
+### Tezuka Firmware Fixes
+
+- Added XSA cache invalidation in `build.sh` (detects when source XSA is newer than cached package)
+- Added p25-httpd/maia-httpd source change detection for auto-rebuild
+- Removed phantom AXI UART Lite from P25 device tree (was at 0x42C00000, not present in P25 FPGA design)
+
+### Register Map Fix
+
+- SVD register offsets were wrong: FPGA uses bank select bits [4:3] of word address giving byte offsets 0x00/0x20/0x40/0x60, but SVD had 0x00/0x08/0x20/0x30
+- Fixed `RegisterMap` in `p25_top.py`, regenerated SVD and PAC
+
+### DDC FIR Coefficient Initialization
+
+- Added 3-stage FIR filter coefficient loading to p25-httpd (`fpga.rs`)
+- Previously only NCO frequency and enable bits were programmed
+- P25 channel filter: 128x decimation (16x4x2), 8 MSPS -> 62.5 kSPS (13 samples/symbol)
+- Coefficients: 48+32+64 taps, Kaiser window, 18-bit quantized, >137 dB stopband
+
+### Hardware Test Results
+
+- Board booted with P25 bitstream, FPGA registers accessible
+- Product ID: 0x70323566 ("p25f")
+- AD9361 configured: 858.1 MHz center / 8 MSPS
+- Dibit counter incrementing (DSP chain active)
+- Web UI served on port 8080
+- SDRTrunk confirmed P25 signal at 860.9625 MHz (NAC:2209, WACN:781824, System:2208)
+
+---
+
 ## [2026-04-08] P25 Migration into maia-sdr
 
 **Branch:** fishball-p25
@@ -84,8 +130,7 @@ See `doc/changes/002_upstream_sync.md` for full analysis.
 
 ## Pending / Future
 
-- [ ] Phase 5: Tezuka firmware integration, device tree, hardware boot
-- [ ] Hardware test with live Clay County P25 system
+- [ ] Phase 5 (remaining): Live control channel decode, traffic following test, SD card clean boot
 - [ ] Voice frame extraction (LDU1/LDU2 -> IMBE frames)
 - [ ] Audio codec (mbelib, codec2, or DVSI)
 - [ ] Document IQ streaming patches to maia-httpd

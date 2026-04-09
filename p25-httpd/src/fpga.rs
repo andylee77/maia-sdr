@@ -105,6 +105,37 @@ impl IpCore {
 
     // ── Control channel DDC ──────────────────────────────────────
 
+    /// Configures the complete DDC: FIR coefficients, decimation, NCO.
+    ///
+    /// This must be called before enabling the DDC. Loads the 3-stage
+    /// FIR filters (P25 12.5 kHz channel filter, 128x decimation) and
+    /// programs the NCO frequency for the given channel offset.
+    pub fn configure_ddc(
+        &self,
+        frequency_hz: f64,
+        sample_rate_hz: f64,
+    ) -> Result<()> {
+        // P25 channel filter: 8 MSPS -> 62.5 kSPS (16x4x2 = 128x)
+        // Designed with scipy.signal.firwin, Kaiser window, 18-bit quantized
+        self.load_fir1(&P25_FIR1_COEFFS, P25_DEC1)?;
+        self.load_fir2(&P25_FIR2_COEFFS, P25_DEC2)?;
+        self.load_fir3(&P25_FIR3_COEFFS, P25_DEC3)?;
+
+        // Enable all 3 stages (no bypass)
+        self.registers.ddc_control().modify(|_, w| {
+            w.bypass2().clear_bit().bypass3().clear_bit()
+        });
+
+        self.set_ddc_frequency(frequency_hz, sample_rate_hz)?;
+
+        tracing::info!(
+            "DDC configured: 3-stage FIR ({}/{}/{} taps), {}x{}x{}={}x decimation",
+            P25_FIR1_COEFFS.len(), P25_FIR2_COEFFS.len(), P25_FIR3_COEFFS.len(),
+            P25_DEC1, P25_DEC2, P25_DEC3, P25_DEC1 * P25_DEC2 * P25_DEC3,
+        );
+        Ok(())
+    }
+
     /// Sets the control channel DDC NCO frequency.
     ///
     /// `frequency_hz` is the offset from the RX LO center.
@@ -133,6 +164,129 @@ impl IpCore {
         self.registers
             .ddc_control()
             .modify(|_, w| w.enable_input().bit(enable));
+    }
+
+    // ── FIR coefficient loading (private) ───────────────────────
+
+    /// Load FIR1 (stage 1, FIR4DSP): 4 DSPs, folded coefficient layout.
+    fn load_fir1(&self, coefficients: &[i32], decimation: usize) -> Result<()> {
+        self.load_fir_4dsp(coefficients, decimation, 0)?;
+        let branch_len = coefficients.len().div_ceil(decimation);
+        let operations = branch_len.div_ceil(2);
+        let odd = branch_len % 2 == 1;
+        let dec = u8::try_from(decimation).unwrap();
+        let opm1 = u8::try_from(operations - 1).unwrap();
+        self.registers.ddc_decimation().modify(|_, w| unsafe {
+            w.decimation1().bits(dec)
+        });
+        self.registers.ddc_control().modify(|_, w| unsafe {
+            w.operations_minus_one1().bits(opm1)
+                .odd_operations1().bit(odd)
+        });
+        Ok(())
+    }
+
+    /// Load FIR2 (stage 2, FIR2DSP): 2 DSPs, no folding.
+    fn load_fir2(&self, coefficients: &[i32], decimation: usize) -> Result<()> {
+        self.load_fir_2dsp(coefficients, decimation, 256)?;
+        let operations = coefficients.len().div_ceil(decimation);
+        let dec = u8::try_from(decimation).unwrap();
+        let opm1 = u8::try_from(operations - 1).unwrap();
+        self.registers.ddc_decimation().modify(|_, w| unsafe {
+            w.decimation2().bits(dec)
+        });
+        self.registers.ddc_control().modify(|_, w| unsafe {
+            w.operations_minus_one2().bits(opm1)
+        });
+        Ok(())
+    }
+
+    /// Load FIR3 (stage 3, FIR4DSP): 4 DSPs, folded coefficient layout.
+    fn load_fir3(&self, coefficients: &[i32], decimation: usize) -> Result<()> {
+        self.load_fir_4dsp(coefficients, decimation, 512)?;
+        let branch_len = coefficients.len().div_ceil(decimation);
+        let operations = branch_len.div_ceil(2);
+        let odd = branch_len % 2 == 1;
+        let dec = u8::try_from(decimation).unwrap();
+        let opm1 = u8::try_from(operations - 1).unwrap();
+        self.registers.ddc_decimation().modify(|_, w| unsafe {
+            w.decimation3().bits(dec)
+        });
+        self.registers.ddc_control().modify(|_, w| unsafe {
+            w.operations_minus_one3().bits(opm1)
+                .odd_operations3().bit(odd)
+        });
+        Ok(())
+    }
+
+    /// Write polyphase-reordered coefficients for a FIR4DSP stage (folded).
+    fn load_fir_4dsp(
+        &self,
+        coefficients: &[i32],
+        decimation: usize,
+        addr_offset: usize,
+    ) -> Result<()> {
+        const NUM_ADDR: usize = 256;
+        let branch_len = coefficients.len().div_ceil(decimation);
+        let operations = branch_len.div_ceil(2);
+        if operations * decimation > NUM_ADDR / 2 {
+            anyhow::bail!("FIR4DSP coefficients too long for RAM");
+        }
+        for addr in 0..NUM_ADDR {
+            let (off, fold) = if addr >= NUM_ADDR / 2 {
+                (1, NUM_ADDR / 2)
+            } else {
+                (0, 0)
+            };
+            let k = (addr - fold) / operations;
+            let coeff = if k >= decimation {
+                0
+            } else {
+                let j = (addr - fold) % operations;
+                let n = (2 * j + off) * decimation + (decimation - 1 - k);
+                *coefficients.get(n).unwrap_or(&0)
+            };
+            let waddr = u16::try_from(addr + addr_offset).unwrap();
+            self.registers
+                .ddc_coeff_addr()
+                .modify(|_, w| unsafe { w.coeff_waddr().bits(waddr) });
+            self.registers.ddc_coeff().modify(|_, w| unsafe {
+                w.coeff_wren().bit(true).coeff_wdata().bits(coeff as u32)
+            });
+        }
+        Ok(())
+    }
+
+    /// Write polyphase-reordered coefficients for a FIR2DSP stage (no fold).
+    fn load_fir_2dsp(
+        &self,
+        coefficients: &[i32],
+        decimation: usize,
+        addr_offset: usize,
+    ) -> Result<()> {
+        const NUM_ADDR: usize = 128;
+        let operations = coefficients.len().div_ceil(decimation);
+        if operations * decimation > NUM_ADDR {
+            anyhow::bail!("FIR2DSP coefficients too long for RAM");
+        }
+        for addr in 0..NUM_ADDR {
+            let k = addr / operations;
+            let coeff = if k >= decimation {
+                0
+            } else {
+                let j = addr % operations;
+                let n = j * decimation + (decimation - 1 - k);
+                *coefficients.get(n).unwrap_or(&0)
+            };
+            let waddr = u16::try_from(addr + addr_offset).unwrap();
+            self.registers
+                .ddc_coeff_addr()
+                .modify(|_, w| unsafe { w.coeff_waddr().bits(waddr) });
+            self.registers.ddc_coeff().modify(|_, w| unsafe {
+                w.coeff_wren().bit(true).coeff_wdata().bits(coeff as u32)
+            });
+        }
+        Ok(())
     }
 
     // ── Control channel demod ────────────────────────────────────
@@ -332,6 +486,51 @@ fn freq_to_nco(frequency_hz: f64, sample_rate_hz: f64) -> u32 {
     let cycles_per_sample = frequency_hz / sample_rate_hz;
     (cycles_per_sample * scale).round() as i32 as u32
 }
+
+// ── P25 DDC filter coefficients ──────────────────────────────────────
+//
+// 3-stage FIR decimation: 8 MSPS -> 62.5 kSPS (128x = 16 x 4 x 2)
+// P25 Phase 1 channel: 12.5 kHz (±6.25 kHz passband)
+// Output: 62.5 kSPS = 13.0 samples/symbol at 4800 baud
+//
+// Designed with scipy.signal.firwin, Kaiser window, 18-bit quantized.
+
+const P25_DEC1: usize = 16;
+const P25_DEC2: usize = 4;
+const P25_DEC3: usize = 2;
+
+// Stage 1 (FIR4DSP): 48 taps, 200 kHz cutoff, Kaiser beta=6, >137 dB stopband
+#[rustfmt::skip]
+const P25_FIR1_COEFFS: &[i32] = &[
+    -277, -402, -419, -220, 325, 1372, 3086, 5640,
+    9190, 13870, 19769, 26920, 35285, 44750, 55123, 66131,
+    77436, 88647, 99339, 109082, 117460, 124103, 128712, 131071,
+    131071, 128712, 124103, 117460, 109082, 99339, 88647, 77436,
+    66131, 55123, 44750, 35285, 26920, 19769, 13870, 9190,
+    5640, 3086, 1372, 325, -220, -419, -402, -277,
+];
+
+// Stage 2 (FIR2DSP): 32 taps, 50 kHz cutoff, Kaiser beta=7, >140 dB stopband
+#[rustfmt::skip]
+const P25_FIR2_COEFFS: &[i32] = &[
+    -25, 87, 530, 1287, 1841, 1156, -1803, -7068,
+    -12694, -14613, -7853, 11060, 41616, 78199, 111332, 131071,
+    131071, 111332, 78199, 41616, 11060, -7853, -14613, -12694,
+    -7068, -1803, 1156, 1841, 1287, 530, 87, -25,
+];
+
+// Stage 3 (FIR4DSP): 64 taps, 8 kHz cutoff, Kaiser beta=9, >166 dB stopband
+#[rustfmt::skip]
+const P25_FIR3_COEFFS: &[i32] = &[
+    1, -8, -37, -92, -173, -258, -305, -250,
+    -21, 434, 1121, 1959, 2766, 3261, 3102, 1965,
+    -357, -3835, -8116, -12478, -15864, -17007, -14631, -7704,
+    4302, 21207, 42029, 65020, 87870, 108017, 123044, 131071,
+    131071, 123044, 108017, 87870, 65020, 42029, 21207, 4302,
+    -7704, -14631, -17007, -15864, -12478, -8116, -3835, -357,
+    1965, 3102, 3261, 2766, 1959, 1121, 434, -21,
+    -250, -305, -258, -173, -92, -37, -8, 1,
+];
 
 // ── Interrupt handler ────────────────────────────────────────────────
 

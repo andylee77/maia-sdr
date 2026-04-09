@@ -85,9 +85,9 @@ async fn main() -> anyhow::Result<()> {
             args.sample_rate
         );
 
-        // 3. Configure control channel DDC
+        // 3. Configure control channel DDC (FIR filters + decimation + NCO)
         let nco_offset = args.control_freq as f64 - args.rx_lo as f64;
-        ip_core.set_ddc_frequency(nco_offset, args.sample_rate as f64)?;
+        ip_core.configure_ddc(nco_offset, args.sample_rate as f64)?;
         ip_core.set_ddc_enable(true);
         ip_core.set_demod_enable(true);
         ip_core.demod_start();

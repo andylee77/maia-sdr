@@ -162,7 +162,7 @@ clean.bat --all                    Also remove Docker build volume
 **Built by:** Tezuka firmware Buildroot (not standalone)
 
 - **Maia:** `tezuka_fw` builds `maia-httpd` from `fishball-dev` branch
-- **P25:** `tezuka_fw` builds `p25-httpd` (P25 defconfig TBD -- Phase 5)
+- **P25:** `tezuka_fw` builds `p25-httpd` via `fishball_p25_7020_defconfig`
 
 ### Web UI (maia-wasm)
 
@@ -254,21 +254,23 @@ git push
 
 ## Register Map (P25)
 
+Bank select uses word address bits [4:3], giving byte offsets 0x00/0x20/0x40/0x60.
+
 | Offset | Bank | Register | Fields |
 |--------|------|----------|--------|
 | 0x00 | control | product_id | product_id (R, 32b, "p25f") |
 | 0x04 | control | version | bugfix, minor, major, platform (R) |
 | 0x08 | control | control | sdr_reset (RW) |
 | 0x0C | control | interrupts | dibit_dma, traffic_dma (Rsticky) |
-| 0x08 | sdr | ddc_coeff_addr | coeff_waddr (RW) |
-| 0x0A | sdr | ddc_coeff | coeff_wren (Wpulse), coeff_wdata (RW) |
-| 0x0C | sdr | ddc_decimation | decimation1, decimation2, decimation3 (RW) |
-| 0x10 | sdr | ddc_frequency | frequency (RW, 28b) |
-| 0x14 | sdr | ddc_control | operations, odd, bypass, enable (RW) |
-| 0x20 | demod | demod_status | dibit_count (R, 16b), demod_overflow (Rsticky) |
-| 0x24 | demod | demod_control | start, stop (Wpulse), demod_enable (RW) |
-| 0x28 | demod | dibit_next_address | next_address (R, 32b) |
-| 0x30 | traffic | traffic DDC + demod | frequency, decimation, control, status |
+| 0x20 | sdr | ddc_coeff_addr | coeff_waddr (RW) |
+| 0x24 | sdr | ddc_coeff | coeff_wren (Wpulse), coeff_wdata (RW) |
+| 0x28 | sdr | ddc_decimation | decimation1, decimation2, decimation3 (RW) |
+| 0x2C | sdr | ddc_frequency | frequency (RW, 28b) |
+| 0x30 | sdr | ddc_control | operations, odd, bypass, enable (RW) |
+| 0x40 | demod | demod_status | dibit_count (R, 16b), demod_overflow (Rsticky) |
+| 0x44 | demod | demod_control | start, stop (Wpulse), demod_enable (RW) |
+| 0x48 | demod | dibit_next_address | next_address (R, 32b) |
+| 0x60 | traffic | traffic DDC + demod | frequency, decimation, control, status |
 
 ## AXI Port Map (P25)
 
@@ -314,3 +316,4 @@ Located at `C:\Users\Andy\Projects\MAIA_SDR\work_docs\`:
 | 2026-04-08 | fishball-p25 | P25 Phase 3 | Second DDC + traffic demod, traffic manager, removed spectrometer/recorder |
 | 2026-04-08 | fishball-p25 | Migration | Migrated P25 code from standalone fishball-p25 into maia-sdr tree |
 | 2026-04-08 | fishball-p25 | Doc cleanup | Consolidated docs: merged p25-docs/ into doc/, unified DEVLOG + CHANGELOG |
+| 2026-04-09 | fishball-p25 | Phase 5 | Build pipeline fixes, register map fix, DDC FIR init, first hardware boot |
