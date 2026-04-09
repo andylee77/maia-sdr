@@ -1,0 +1,17 @@
+[package]
+name = "p25-pac"
+version = "0.1.0"
+edition = "2021"
+authors = ["Andy Lee"]
+description = "Fishball P25 - FPGA register PAC (generated from SVD)"
+license = "MIT"
+
+# This crate is generated from the P25 core SVD file using svd2rust.
+# To regenerate: make pac   (from project root)
+# Or manually:
+#   1. python3 generate_p25_svd.py
+#   2. cd p25-httpd/p25-pac && svd2rust -i p25.svd --target none -o src/
+
+[dependencies]
+critical-section = { version = "1.0", optional = true }
+vcell = "0.1"

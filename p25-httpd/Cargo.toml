@@ -1,0 +1,36 @@
+[package]
+name = "p25-httpd"
+version = "0.1.0"
+edition = "2021"
+authors = ["Andy Lee"]
+description = "Fishball P25 Trunking Radio - PS application"
+license = "MIT"
+
+[features]
+default = []
+
+[dependencies]
+anyhow = { version = "1.0", features = ["std"] }
+axum = { version = "0.8", features = ["default", "ws"] }
+bytes = "1.2"
+clap = { version = "4.0", features = ["derive"] }
+futures = "0.3"
+libc = "0.2"
+nix = { version = "0.29", features = ["ioctl", "time"] }
+page_size = "0.6"
+paste = "1.0"
+p25-json = { path = "p25-json", version = "0.1.0" }
+p25-pac = { path = "p25-pac", version = "0.1.0" }
+pm-remez = { version = "0.1.5", features = ["openblas-static"], optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["fs", "rt", "rt-multi-thread", "sync"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = "symbols"

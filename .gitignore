@@ -8,11 +8,15 @@
 
 # ── Build artifacts ──────────────────────────────────────────────────────────
 
-# Generated Verilog and SVD (produced by build_hdl.bat)
+# Generated Verilog and SVD (produced by build_hdl.bat / build_fpga.bat)
 maia-hdl/ip/maia-sdr/default/
 maia-hdl/ip/maia-sdr/maia_iio/
 maia-hdl/ip/maia-sdr/maia_iio_lite/
+maia-hdl/ip/p25-core/default/
 maia-hdl/maia-sdr.svd
+
+# Rust build artifacts
+p25-httpd/target/
 
 # Vivado project artifacts (produced by build_fpga.bat)
 *.xpr

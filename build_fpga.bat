@@ -1,25 +1,50 @@
 @echo off
 setlocal enabledelayedexpansion
 
-echo ============================================================
-echo  Fishball 7020 — FPGA Bitstream Build (Vivado)
-echo  Target: xc7z020clg400-1 (Zynq Z7020 SoC)
-echo  Project: fishball7020_iio
-echo ============================================================
-echo.
+:: ===== Parse arguments =====
+set "BUILD_P25=0"
+for %%a in (%*) do (
+    if "%%a"=="--p25" set "BUILD_P25=1"
+)
 
 :: ===== Configuration =====
 set "PROJECT_DIR=%~dp0"
 if "%PROJECT_DIR:~-1%"=="\" set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
 
 set "MAIA_HDL=%PROJECT_DIR%\maia-hdl"
-set "IP_DIR=%MAIA_HDL%\ip\maia-sdr"
 set "ADI_LIB=%MAIA_HDL%\adi-hdl\library"
-set "FPGA_PROJECT=fishball7020_iio"
-set "FPGA_PROJECT_DIR=%MAIA_HDL%\projects\%FPGA_PROJECT%"
-set "FPGA_PROJECT_NAME=fishball"
 set "ADI_HDL_BRANCH=hdl_2023_r2"
-set "CONFIG=maia_iio"
+
+:: Maia SDR IP (always needed — pluto base design requires it)
+set "MAIA_IP_DIR=%MAIA_HDL%\ip\maia-sdr"
+set "MAIA_CONFIG=maia_iio"
+
+if "%BUILD_P25%"=="1" (
+    set "P25_IP_DIR=%MAIA_HDL%\ip\p25-core"
+    set "P25_CONFIG=default"
+    set "FPGA_PROJECT=fishball7020_p25"
+    set "FPGA_PROJECT_NAME=fishball_p25"
+    set "IP_CORE_VERSION=0.1.0"
+) else (
+    set "FPGA_PROJECT=fishball7020_iio"
+    set "FPGA_PROJECT_NAME=fishball"
+)
+set "FPGA_PROJECT_DIR=%MAIA_HDL%\projects\%FPGA_PROJECT%"
+
+if "%BUILD_P25%"=="1" (
+    echo ============================================================
+    echo  Fishball 7020 — P25 FPGA Bitstream Build (Vivado)
+    echo  Target: xc7z020clg400-1 (Zynq Z7020 SoC)
+    echo  Project: fishball7020_p25
+    echo ============================================================
+) else (
+    echo ============================================================
+    echo  Fishball 7020 — FPGA Bitstream Build (Vivado)
+    echo  Target: xc7z020clg400-1 (Zynq Z7020 SoC)
+    echo  Project: fishball7020_iio
+    echo ============================================================
+)
+echo.
 
 :: Tezuka firmware path (configurable via env var)
 if not defined TEZUKA_FW (
@@ -119,11 +144,12 @@ if exist "%MAIA_HDL%\adi-hdl\library\axi_ad9361" (
 )
 echo.
 
-:: ===== Step 2: Generate Verilog (if not already present) =====
+:: ===== Step 2: Generate Verilog =====
 echo [Step 2] Checking for generated Verilog...
-if exist "%IP_DIR%\%CONFIG%\maia_sdr.v" (
-    echo [OK] maia_sdr.v already exists for config '%CONFIG%'.
-    echo      To regenerate, run: build_hdl.bat
+
+:: Maia SDR Verilog (always needed — pluto base design instantiates maia_sdr)
+if exist "%MAIA_IP_DIR%\%MAIA_CONFIG%\maia_sdr.v" (
+    echo [OK] maia_sdr.v already exists for config '%MAIA_CONFIG%'.
 ) else (
     echo [INFO] maia_sdr.v not found. Running HDL generation via Docker...
     call "%PROJECT_DIR%\build_hdl.bat" --verilog-only
@@ -131,30 +157,57 @@ if exist "%IP_DIR%\%CONFIG%\maia_sdr.v" (
         echo [FAIL] HDL generation failed. Run build_hdl.bat manually.
         goto :error
     )
-    if not exist "%IP_DIR%\%CONFIG%\maia_sdr.v" (
+    if not exist "%MAIA_IP_DIR%\%MAIA_CONFIG%\maia_sdr.v" (
         echo [FAIL] maia_sdr.v still not found after generation.
         goto :error
     )
     echo [OK] maia_sdr.v generated.
 )
+
+:: P25 Verilog (only for --p25 build)
+if "%BUILD_P25%"=="1" (
+    echo [Step 2b] Generating P25 Verilog...
+    if not exist "%P25_IP_DIR%\%P25_CONFIG%" mkdir "%P25_IP_DIR%\%P25_CONFIG%"
+    set "PYTHONPATH=%MAIA_HDL%"
+    cd /d "%MAIA_HDL%"
+    python -m p25_hdl.p25_top --config %P25_CONFIG% "%P25_IP_DIR%\%P25_CONFIG%\p25_core.v"
+    if !errorlevel! neq 0 (
+        echo [FAIL] P25 Verilog generation failed.
+        goto :error
+    )
+    echo [OK] p25_core.v generated.
+)
 echo.
 
-:: ===== Step 3: Package Maia SDR IP Core =====
-echo [Step 3] Packaging Maia SDR IP core (config: %CONFIG%)...
-set "MAIA_SDR_CONFIG=%CONFIG%"
+:: ===== Step 3: Package IP Cores =====
+:: Maia SDR IP (always needed)
+echo [Step 3] Packaging Maia SDR IP core (config: %MAIA_CONFIG%)...
+set "MAIA_SDR_CONFIG=%MAIA_CONFIG%"
+set "MAIA_IP_CORE_VERSION=0.6.1"
+set "IP_CORE_VERSION_MAIA=0.6.1"
 
-:: Get IP core version via the existing maia_sdr.v header or default
-set "IP_CORE_VERSION=0.6.1"
-set "MAIA_SDR_CONFIG=%CONFIG%"
-
-cd /d "%IP_DIR%\%CONFIG%"
-call "%VIVADO%" -mode batch -source "%IP_DIR%\package_ip.tcl" -notrace
+cd /d "%MAIA_IP_DIR%\%MAIA_CONFIG%"
+call "%VIVADO%" -mode batch -source "%MAIA_IP_DIR%\package_ip.tcl" -notrace
 :: Vivado may return non-zero for non-fatal CRITICAL WARNINGs
-if not exist "%IP_DIR%\%CONFIG%\component.xml" (
-    echo [FAIL] IP packaging failed — no component.xml created.
+if not exist "%MAIA_IP_DIR%\%MAIA_CONFIG%\component.xml" (
+    echo [FAIL] Maia SDR IP packaging failed — no component.xml created.
     goto :error
 )
 echo [OK] Maia SDR IP core packaged (component.xml created).
+
+:: P25 IP (only for --p25 build)
+if "%BUILD_P25%"=="1" (
+    echo [Step 3b] Packaging P25 IP core (config: %P25_CONFIG%)...
+    cd /d "%P25_IP_DIR%\%P25_CONFIG%"
+    set "IP_CORE_VERSION=%IP_CORE_VERSION%"
+    set "P25_CONFIG=%P25_CONFIG%"
+    call "%VIVADO%" -mode batch -source "%P25_IP_DIR%\package_ip.tcl" -notrace
+    if not exist "%P25_IP_DIR%\%P25_CONFIG%\component.xml" (
+        echo [FAIL] P25 IP packaging failed — no component.xml created.
+        goto :error
+    )
+    echo [OK] P25 IP core packaged (component.xml created).
+)
 echo.
 
 :: ===== Step 4: Build ADI Library IP Cores =====
@@ -281,8 +334,13 @@ if !errorlevel! equ 0 (
     set "TEZUKA_RESOLVED=%CD%"
     popd
 
-    :: Tezuka board dir: board/tezuka/fishball7020/bitstream/maia-iio
-    set "TEZUKA_BITSTREAM=!TEZUKA_RESOLVED!\board\tezuka\fishball7020\bitstream\maia-iio"
+    :: Choose bitstream subdir based on build type
+    if "%BUILD_P25%"=="1" (
+        set "BITSTREAM_SUBDIR=p25"
+    ) else (
+        set "BITSTREAM_SUBDIR=maia-iio"
+    )
+    set "TEZUKA_BITSTREAM=!TEZUKA_RESOLVED!\board\tezuka\fishball7020\bitstream\!BITSTREAM_SUBDIR!"
     if exist "!TEZUKA_BITSTREAM!" (
         echo [INFO] Copying XSA to Tezuka firmware...
         :: Backup existing
@@ -294,13 +352,6 @@ if !errorlevel! equ 0 (
         )
         copy "!XSA_SOURCE!" "!TEZUKA_BITSTREAM!\system_top.xsa" >nul
         echo [OK] Copied to: !TEZUKA_BITSTREAM!\system_top.xsa
-
-        :: Also copy to fishball7010 if it exists (same bitstream works on both)
-        set "TEZUKA_7010=!TEZUKA_RESOLVED!\board\tezuka\fishball7010\bitstream\maia-iio"
-        if exist "!TEZUKA_7010!" (
-            copy "!XSA_SOURCE!" "!TEZUKA_7010!\system_top.xsa" >nul
-            echo [OK] Copied to: !TEZUKA_7010!\system_top.xsa
-        )
     ) else (
         echo [INFO] Tezuka bitstream dir not found at: !TEZUKA_BITSTREAM!
         echo        XSA remains at: !XSA_SOURCE!

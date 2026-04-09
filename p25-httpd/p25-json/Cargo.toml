@@ -1,0 +1,10 @@
+[package]
+name = "p25-json"
+version = "0.1.0"
+edition = "2021"
+authors = ["Andy Lee"]
+description = "Fishball P25 - JSON API types"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }

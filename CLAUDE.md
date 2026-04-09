@@ -1,73 +1,97 @@
-# Maia SDR — Project Rules
+# Maia SDR + Fishball P25 — Project Rules
 
 ## Project Overview
 
-This is the **Maia SDR** project — an open-source FPGA-based SDR platform for the ADALM Pluto
-and compatible boards (including Fishball Z7020). It provides a web-based spectrum analyzer with
-real-time waterfall display and IQ recording.
+This is the **Maia SDR** project with the **Fishball P25** trunking radio added on the
+`fishball-p25` branch. Maia SDR provides the base FPGA platform (AD9361, IIO DMA, DDC,
+register infrastructure). P25 adds C4FM demod, symbol timing, dibit DMA, and a Rust
+control channel decoder.
 
 - **Fork:** `andylee77/maia-sdr` (forked from `F5OEO/maia-sdr`, originally `maia-sdr/maia-sdr`)
-- **Active branch:** `fishball-dev`
-- **Target hardware:** Fishball Z7020 (Zynq-7020 + AD9361), ADALM Pluto, Pluto+
+- **Branches:** `fishball-dev` (Maia SDR), `fishball-p25` (P25 radio)
+- **Target hardware:** Fishball Z7020 (Zynq-7020 + AD9361)
 
 ## Components
 
 | Component | Language | Purpose |
 |-----------|----------|---------|
-| `maia-hdl/` | Python (Amaranth) + Vivado | FPGA gateware |
-| `maia-httpd/` | Rust | HTTP daemon on Zynq ARM |
+| `maia-hdl/maia_hdl/` | Python (Amaranth) + Vivado | Maia FPGA gateware (DDC, DMA, registers) |
+| `maia-hdl/p25_hdl/` | Python (Amaranth) | P25 FPGA gateware (C4FM demod, symbol timing, dibit packer) |
+| `maia-httpd/` | Rust | Maia HTTP daemon on Zynq ARM |
+| `p25-httpd/` | Rust | P25 HTTP daemon (control channel decoder, web UI) |
 | `maia-wasm/` | Rust → WASM | Web UI (waterfall, WebGL2) |
 | `maia-kmod/` | C | Linux kernel module for DMA |
 
 ## Key Directories
 
-- `maia-hdl/maia_hdl/` — HDL source modules
-- `maia-hdl/projects/fishball7020_iio/` — Our target board project
+- `maia-hdl/maia_hdl/` — Maia HDL source modules
+- `maia-hdl/p25_hdl/` — P25 HDL source modules
+- `maia-hdl/p25_hdl/p25_top.py` — P25 top-level IP core
+- `maia-hdl/ip/p25-core/` — P25 Vivado IP packaging
+- `maia-hdl/projects/fishball7020_iio/` — Maia FPGA project
+- `maia-hdl/projects/fishball7020_p25/` — P25 FPGA project
 - `maia-hdl/projects/` — Vivado project definitions per board
-- `maia-httpd/src/` — Main httpd source
-- `maia-httpd/maia-json/` — JSON API types
-- `maia-httpd/maia-pac/` — FPGA register PAC (from SVD)
+- `maia-httpd/src/` — Maia httpd source
+- `p25-httpd/src/` — P25 httpd source
+- `p25-httpd/p25-pac/` — P25 FPGA register PAC (from SVD)
+- `p25-httpd/p25-json/` — P25 JSON API types
+- `p25-docs/` — P25 development docs (DEVPLAN, DEVLOG, BUILD_FPGA, etc.)
 - `maia-wasm/src/` — WASM source (waterfall, UI, WebSocket)
 
 ## Build Environment
 
 ### FPGA (maia-hdl)
+
 - **Vivado:** 2023.2 (Xilinx)
 - **Amaranth:** Python virtual environment
+- **Maia build:** `build_fpga.bat` (builds fishball7020_iio)
+- **P25 build:** `build_fpga.bat --p25` (builds fishball7020_p25)
+- **P25 build guide:** `p25-docs/BUILD_FPGA.md`
 
-### Firmware (maia-httpd + maia-wasm)
-- Built by **Tezuka firmware** Buildroot (not built standalone here)
-- Tezuka's build pulls from this repo's `fishball-dev` branch
+### Firmware
+
+- Built by **Tezuka firmware** Buildroot
+- Tezuka's build mounts this repo at `/mnt/maia-sdr` in Docker
+- **Maia:** `fishball-dev` branch, `fishball_maiasdr_7020_defconfig`
+- **P25:** `fishball-p25` branch, `fishball_p25_7020_defconfig`
 - Cross-compiled for ARM (Zynq-7000) inside the Tezuka Docker build
 
 ### Submodules
+
 - `maia-hdl/adi-hdl` → `analogdevicesinc/hdl` (Analog Devices HDL library)
 - `maia-hdl/XilinxUnisimLibrary` → Xilinx simulation primitives
 
 ## Git Workflow
 
 - **`main`** branch tracks upstream — keep clean for syncing
-- **`fishball-dev`** is the active development branch
-- All changes go on `fishball-dev`, committed with descriptive messages
-- Each change gets a doc in `doc/changes/NNN_description.md`
-- Update `CHANGELOG_FORK.md` with each change and build
+- **`fishball-dev`** is the Maia SDR development branch
+- **`fishball-p25`** is the P25 radio branch (forked from fishball-dev)
+- Maia changes go on `fishball-dev`, committed with descriptive messages
+- P25 changes go on `fishball-p25`
+- Each Maia change gets a doc in `doc/changes/NNN_description.md`
+- Update `CHANGELOG_FORK.md` with each Maia change and build
 - Do NOT modify the upstream `CHANGELOG.md`
 
 ## Conventions
 
 - FPGA projects per board live in `maia-hdl/projects/<board>/`
-- Our target board project: `maia-hdl/projects/fishball7020_iio/`
-- Rust workspace: `maia-httpd/` is a Cargo workspace with sub-crates `maia-json` and `maia-pac`
+- Maia target project: `maia-hdl/projects/fishball7020_iio/`
+- P25 target project: `maia-hdl/projects/fishball7020_p25/`
+- Maia Rust workspace: `maia-httpd/` with sub-crates `maia-json` and `maia-pac`
+- P25 Rust workspace: `p25-httpd/` with sub-crates `p25-json` and `p25-pac`
 - WASM build: `maia-wasm/` uses wasm-pack
 - Build outputs go to build-specific directories (gitignored by component)
-- Use `doc/changes/` for detailed technical docs about each change
+- Use `doc/changes/` for detailed technical docs about Maia changes
+- P25 dev plan: `p25-docs/DEVPLAN.md`
+- P25 dev log: `p25-docs/DEVLOG.md`
 
 ## Related Repositories
 
 | Repo | Location | Purpose |
 |------|----------|---------|
 | `andylee77/tezuka_fw` | `C:\Users\Andy\Projects\Tezuka\tezuka_fw` | Firmware (Buildroot) |
-| `andylee77/sdrtrunk` | `C:\Users\Andy\Projects\SDRTrunk\sdrtrunk` | SDRTrunk fork |
+| `andylee77/sdrtrunk` | `C:\Users\Andy\Projects\SDRTrunk\sdrtrunk` | SDRTrunk (P25 reference) |
+| `andylee77/fishball-p25` | archived | Original standalone P25 repo (migrated here) |
 | Upstream `F5OEO/maia-sdr` | remote `upstream` | F5OEO's fork |
 | Original `maia-sdr/maia-sdr` | — | Daniel Estévez's original |
 

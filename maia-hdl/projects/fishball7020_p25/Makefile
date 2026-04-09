@@ -1,0 +1,21 @@
+####################################################################################
+## Fishball P25 - Vivado project build
+## Based on Maia SDR fishball7020_iio project
+####################################################################################
+
+PROJECT_NAME := fishball_p25
+
+M_DEPS += ../../ext/maia-sdr/maia-hdl/adi-hdl/library/common/ad_iobuf.v
+M_DEPS += ../../ext/maia-sdr/maia-hdl/adi-hdl/library/axi_ad9361/axi_ad9361_delay.tcl
+M_DEPS += ip_cores
+LIB_DEPS += xilinx/util_clkdiv
+LIB_DEPS += axi_ad9361
+LIB_DEPS += util_rfifo
+LIB_DEPS += util_wfifo
+
+include ../../ext/maia-sdr/maia-hdl/adi-hdl/projects/scripts/project-xilinx.mk
+
+ip_cores:
+	$(MAKE) -C ../../ip
+
+.PHONY: ip_cores
