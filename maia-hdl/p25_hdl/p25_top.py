@@ -317,8 +317,9 @@ class P25Core(Elaboratable):
         m.submodules.symbol_timing = self.symbol_timing
         m.submodules.dibit_packer = self.dibit_packer
         m.submodules.dibit_dma = self.dibit_dma
-        m.submodules.demod_registers = s_axi_lite_renamer(
-            self.demod_registers)
+        m.submodules.demod_registers = self.demod_registers
+        m.submodules.demod_registers_cdc = demod_registers_cdc = RegisterCDC(
+            's_axi_lite', 'sync', self.demod_registers.aw)
 
         # DDC output -> C4FM discriminator
         m.d.comb += [
@@ -380,8 +381,9 @@ class P25Core(Elaboratable):
         m.submodules.traffic_timing = self.traffic_timing
         m.submodules.traffic_packer = self.traffic_packer
         m.submodules.traffic_dma = self.traffic_dma
-        m.submodules.traffic_registers = s_axi_lite_renamer(
-            self.traffic_registers)
+        m.submodules.traffic_registers = self.traffic_registers
+        m.submodules.traffic_registers_cdc = traffic_registers_cdc = RegisterCDC(
+            's_axi_lite', 'sync', self.traffic_registers.aw)
 
         # Traffic DDC shares the same IQ input as control DDC
         # but has its own NCO frequency for independent tuning
@@ -474,16 +476,16 @@ class P25Core(Elaboratable):
         m.d.s_axi_lite += [
             self.axi4lite.rdata.eq(self.control_registers.rdata
                                    | sdr_registers_cdc.i_rdata
-                                   | self.demod_registers.rdata
-                                   | self.traffic_registers.rdata),
+                                   | demod_registers_cdc.i_rdata
+                                   | traffic_registers_cdc.i_rdata),
             self.axi4lite.rdone.eq(self.control_registers.rdone
                                    | sdr_registers_cdc.i_rdone
-                                   | self.demod_registers.rdone
-                                   | self.traffic_registers.rdone),
+                                   | demod_registers_cdc.i_rdone
+                                   | traffic_registers_cdc.i_rdone),
             self.axi4lite.wdone.eq(self.control_registers.wdone
                                    | sdr_registers_cdc.i_wdone
-                                   | self.demod_registers.wdone
-                                   | self.traffic_registers.wdone),
+                                   | demod_registers_cdc.i_wdone
+                                   | traffic_registers_cdc.i_wdone),
             self.control_registers.ren.eq(
                 self.axi4lite.ren & control_regs_select),
             self.control_registers.wstrobe.eq(
@@ -492,13 +494,13 @@ class P25Core(Elaboratable):
                 self.axi4lite.ren & sdr_regs_select),
             sdr_registers_cdc.i_wstrobe.eq(
                 Mux(sdr_regs_select, self.axi4lite.wstrobe, 0)),
-            self.demod_registers.ren.eq(
+            demod_registers_cdc.i_ren.eq(
                 self.axi4lite.ren & demod_regs_select),
-            self.demod_registers.wstrobe.eq(
+            demod_registers_cdc.i_wstrobe.eq(
                 Mux(demod_regs_select, self.axi4lite.wstrobe, 0)),
-            self.traffic_registers.ren.eq(
+            traffic_registers_cdc.i_ren.eq(
                 self.axi4lite.ren & traffic_regs_select),
-            self.traffic_registers.wstrobe.eq(
+            traffic_registers_cdc.i_wstrobe.eq(
                 Mux(traffic_regs_select, self.axi4lite.wstrobe, 0)),
             address.eq(self.axi4lite.address),
             wdata.eq(self.axi4lite.wdata),
@@ -508,13 +510,14 @@ class P25Core(Elaboratable):
             self.control_registers.wdata.eq(wdata),
             sdr_registers_cdc.i_address.eq(address),
             sdr_registers_cdc.i_wdata.eq(wdata),
-            self.demod_registers.address.eq(address),
-            self.demod_registers.wdata.eq(wdata),
-            self.traffic_registers.address.eq(address),
-            self.traffic_registers.wdata.eq(wdata),
+            demod_registers_cdc.i_address.eq(address),
+            demod_registers_cdc.i_wdata.eq(wdata),
+            traffic_registers_cdc.i_address.eq(address),
+            traffic_registers_cdc.i_wdata.eq(wdata),
         ]
 
         # ── Registers sync domain ────────────────────────────────────
+        # sdr_registers CDC
         m.d.comb += [
             self.sdr_registers.ren.eq(sdr_registers_cdc.o_ren),
             self.sdr_registers.wstrobe.eq(sdr_registers_cdc.o_wstrobe),
@@ -523,6 +526,26 @@ class P25Core(Elaboratable):
             sdr_registers_cdc.o_rdone.eq(self.sdr_registers.rdone),
             sdr_registers_cdc.o_wdone.eq(self.sdr_registers.wdone),
             sdr_registers_cdc.o_rdata.eq(self.sdr_registers.rdata),
+        ]
+        # demod_registers CDC
+        m.d.comb += [
+            self.demod_registers.ren.eq(demod_registers_cdc.o_ren),
+            self.demod_registers.wstrobe.eq(demod_registers_cdc.o_wstrobe),
+            self.demod_registers.address.eq(demod_registers_cdc.o_address),
+            self.demod_registers.wdata.eq(demod_registers_cdc.o_wdata),
+            demod_registers_cdc.o_rdone.eq(self.demod_registers.rdone),
+            demod_registers_cdc.o_wdone.eq(self.demod_registers.wdone),
+            demod_registers_cdc.o_rdata.eq(self.demod_registers.rdata),
+        ]
+        # traffic_registers CDC
+        m.d.comb += [
+            self.traffic_registers.ren.eq(traffic_registers_cdc.o_ren),
+            self.traffic_registers.wstrobe.eq(traffic_registers_cdc.o_wstrobe),
+            self.traffic_registers.address.eq(traffic_registers_cdc.o_address),
+            self.traffic_registers.wdata.eq(traffic_registers_cdc.o_wdata),
+            traffic_registers_cdc.o_rdone.eq(self.traffic_registers.rdone),
+            traffic_registers_cdc.o_wdone.eq(self.traffic_registers.wdone),
+            traffic_registers_cdc.o_rdata.eq(self.traffic_registers.rdata),
         ]
 
         # ── Internal resets ───────────────────────────────────────────
