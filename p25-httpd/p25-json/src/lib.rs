@@ -49,6 +49,15 @@ pub struct DecoderStats {
     pub dibit_count: u32,
     pub overflow: bool,
     pub dma_next_address: u32,
+    /// AD9361 RX hardware gain in dB (current AGC value, or None on read error).
+    /// Slow-attack AGC parks high (~70-76 dB) on weak signals, low (~10-30) on strong.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rx_gain_db: Option<f64>,
+    /// AD9361 RSSI in dB (relative scale). For 800 MHz P25, ~100-110 dB is
+    /// the normal reception range we observed on this site (verified
+    /// against PlutoSDR + SDRTrunk on the same antenna).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rx_rssi_db: Option<f64>,
 }
 
 /// Real-time TSBK event (sent over WebSocket)

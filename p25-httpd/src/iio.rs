@@ -4,6 +4,13 @@
 //! P25 is receive-only, so TX attributes are omitted.
 //!
 //! Adapted from maia-httpd/src/iio.rs.
+//!
+//! The `iio_getset!` macro generates a paired `get_*` / `set_*` for every
+//! attribute. Some pairs are intentionally one-sided in practice (RSSI is
+//! read-only on the AD9361, sampling_frequency is set once at boot) but
+//! both halves are kept for API symmetry.
+
+#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -89,6 +96,9 @@ impl Ad9361 {
         GainMode,
         GainMode
     );
+    // RSSI is read-only at the AD9361 level. The macro emits a `set_rx_rssi`
+    // we never call -- ignored under the file-scope #![allow(dead_code)].
+    iio_getset!(rx_rssi, "in_voltage0_rssi", Dbf64, f64);
 }
 
 /// AD9361 gain control modes.

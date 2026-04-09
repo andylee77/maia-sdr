@@ -128,10 +128,14 @@ impl IpCore {
 
         self.set_ddc_frequency(frequency_hz, sample_rate_hz)?;
 
+        let total_dec = P25_DEC1 * P25_DEC2 * P25_DEC3;
         tracing::info!(
-            "DDC configured: 3-stage FIR ({}/{}/{} taps), {}x{}x{}={}x decimation",
+            "DDC configured: NCO={} Hz, 3-stage FIR ({}/{}/{} taps), \
+             {}x{}x{}={}x decimation, output={} Hz",
+            frequency_hz as i64,
             P25_FIR1_COEFFS.len(), P25_FIR2_COEFFS.len(), P25_FIR3_COEFFS.len(),
-            P25_DEC1, P25_DEC2, P25_DEC3, P25_DEC1 * P25_DEC2 * P25_DEC3,
+            P25_DEC1, P25_DEC2, P25_DEC3, total_dec,
+            sample_rate_hz as u64 / total_dec as u64,
         );
         Ok(())
     }
@@ -155,7 +159,6 @@ impl IpCore {
         self.registers
             .ddc_frequency()
             .modify(|_, w| unsafe { w.frequency().bits(nco_word) });
-        tracing::debug!("DDC frequency: {frequency_hz} Hz (NCO 0x{nco_word:07x})");
         Ok(())
     }
 

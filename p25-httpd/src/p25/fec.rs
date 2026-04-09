@@ -82,21 +82,49 @@ impl GolayDecoder {
     }
 
     /// Decode P25 NID from 64 raw bits (32 dibits)
-    /// Returns (NAC, DUID) or None if decode fails
-    pub fn decode_nid(nid_bits: u64) -> Option<(u16, u8)> {
-        // NID structure (48 bits = 24 dibits transmitted):
-        // Actually the NID is 64 bits total after the frame sync:
-        //   NAC(12) + DUID(4) + parity(48) = 64 bits
-        // Encoded as two Golay(23,12) codewords + 2 extra bits
-        //
-        // For now, extract NAC and DUID from the first 16 bits
-        // and validate with Golay later
+    ///
+    /// Returns `(nac, duid, raw_duid)` where `raw_duid` is the 4-bit value
+    /// that the (currently stubbed) FEC *would* have returned -- the caller
+    /// uses it for diagnostic histograms so we can see the actual on-air
+    /// DUID distribution while the BCH FEC is still missing. `duid` is the
+    /// hard-corrected value (currently always 0x7 = TSDU on the control
+    /// channel; see hack note below).
+    ///
+    /// **Status (2026-04-09): NID FEC IS A STUB.**
+    ///
+    /// Per TIA-102.BAAA Section 7.2 the P25 NID is encoded with shortened
+    /// BCH(63,16,11) (= BCH(64,16,11) with a leading zero), capable of
+    /// correcting up to 11 bit errors in the 64-bit NID block. This
+    /// implementation currently does no error correction at all -- it
+    /// just reads the high 16 bits as `NAC[12] || DUID[4]`. The
+    /// `GolayDecoder::decode/syndrome/parity_of_bit` helpers in this
+    /// module are remnants of an earlier (incorrect) design and are not
+    /// yet wired in.
+    ///
+    /// We discovered this on 2026-04-09 while debugging the dashboard's
+    /// stuck-at-"Searching" state. Sync acquisition was working (sync
+    /// hits at ~3/sec, distances 7-10) but every "valid" NID decoded as
+    /// DUID 0x5 (LDU1) or 0x0 (HDU) -- never 0x7 (TSDU). Reason: the
+    /// slicer's residual DC bias produces ~12 bit errors per NID, and
+    /// without FEC the 4-bit DUID field is essentially random within
+    /// ~3 bits of the true value. ~7 of the 16 possible DUID nibbles
+    /// happen to be legal enum values, so most reads land on a "valid"
+    /// but wrong DUID and the rest get flagged "DUID invalid".
+    ///
+    /// **Temporary hack (until BCH(64,16) is implemented):** the control
+    /// channel only carries TSDUs (DUID=0x7). Since we're hard-tuned to
+    /// a known control frequency, we hardcode `duid = 0x7` and rely on
+    /// the downstream TSBK CRC + trellis FEC to validate or reject the
+    /// payload. This unblocks testing of the entire post-NID pipeline
+    /// without waiting for the BCH implementation. It WILL break if
+    /// the same code path is reused for traffic channel decoding --
+    /// fix the FEC properly before that happens.
+    pub fn decode_nid(nid_bits: u64) -> Option<(u16, u8, u8)> {
         let nac = ((nid_bits >> 52) & 0xFFF) as u16;
-        let duid = ((nid_bits >> 48) & 0xF) as u8;
-
-        // Simple extraction without full Golay FEC for now
-        // TODO: Full Golay decode of the two codewords
-        Some((nac, duid))
+        let raw_duid = ((nid_bits >> 48) & 0xF) as u8;
+        // HACK: see docstring. Hardcode TSDU until BCH(64,16) lands.
+        const HARDCODED_DUID_TSDU: u8 = 0x7;
+        Some((nac, HARDCODED_DUID_TSDU, raw_duid))
     }
 }
 
@@ -299,9 +327,27 @@ mod tests {
         let nid_bits: u64 = (0x8A1u64 << 52) | (0x7u64 << 48);
         let result = GolayDecoder::decode_nid(nid_bits);
         assert!(result.is_some());
-        let (nac, duid) = result.unwrap();
+        let (nac, duid, raw_duid) = result.unwrap();
         assert_eq!(nac, 0x8A1);
+        // duid is currently always hardcoded to 0x7 (control-channel hack
+        // until BCH(64,16) NID FEC is implemented). raw_duid is what the
+        // un-FECed extractor saw -- here it matches because we built a
+        // clean test vector.
         assert_eq!(duid, 0x7);
+        assert_eq!(raw_duid, 0x7);
+    }
+
+    #[test]
+    fn test_nid_decode_records_raw_duid() {
+        // NAC=0xE28, raw DUID=0x5 (looks like LDU1) -- this is the actual
+        // pattern we observed on hardware before adding the hardcode hack.
+        // The function should return the hardcoded TSDU but report the
+        // raw_duid as 0x5 so we can build the diagnostic histogram.
+        let nid_bits: u64 = (0xE28u64 << 52) | (0x5u64 << 48);
+        let (nac, duid, raw_duid) = GolayDecoder::decode_nid(nid_bits).unwrap();
+        assert_eq!(nac, 0xE28);
+        assert_eq!(duid, 0x7); // hardcoded
+        assert_eq!(raw_duid, 0x5); // what the air actually said
     }
 
     #[test]

@@ -15,12 +15,12 @@ use std::sync::Arc;
 use axum::{
     extract::{ws::WebSocket, State, WebSocketUpgrade},
     response::IntoResponse,
-    routing::{get, put},
+    routing::get,
     Json, Router,
 };
 use tokio::sync::{broadcast, RwLock};
 
-use crate::p25::control_channel::ControlChannelDecoder;
+use crate::p25::control_channel::{ControlChannelDecoder, SYNC_THRESHOLD};
 use p25_json::*;
 
 /// Shared application state
@@ -29,6 +29,10 @@ pub struct AppState {
     pub event_tx: broadcast::Sender<String>,
     #[cfg(target_os = "linux")]
     pub ip_core: Arc<tokio::sync::Mutex<crate::fpga::IpCore>>,
+    /// AD9361 IIO handle for live AGC gain / RSSI readback in /api/stats.
+    /// Stateless wrapper around sysfs paths -- safe to share without a lock.
+    #[cfg(target_os = "linux")]
+    pub ad9361: Arc<crate::iio::Ad9361>,
 }
 
 /// Build the HTTP router
@@ -110,6 +114,19 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats> {
     #[cfg(not(target_os = "linux"))]
     let (dibit_count, overflow, dma_next_address) = (0u32, false, 0u32);
 
+    // AD9361 health: AGC gain (high = AGC searching for weak signal) and
+    // RSSI (relative dB scale; for this band, ~100-110 dB is normal P25
+    // reception, lower = quieter). Surfacing these via /api/stats so we
+    // never have to ssh in and devmem just to find out the radio is alive.
+    #[cfg(target_os = "linux")]
+    let (rx_gain_db, rx_rssi_db) = {
+        let g = state.ad9361.get_rx_gain().await.ok();
+        let r = state.ad9361.get_rx_rssi().await.ok();
+        (g, r)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let (rx_gain_db, rx_rssi_db): (Option<f64>, Option<f64>) = (None, None);
+
     Json(DecoderStats {
         recent_messages: decoder.recent_messages.len(),
         active_grants: decoder.grants.len(),
@@ -118,6 +135,8 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats> {
         dibit_count,
         overflow,
         dma_next_address,
+        rx_gain_db,
+        rx_rssi_db,
     })
 }
 
@@ -147,23 +166,56 @@ async fn get_dibit_dump(State(state): State<Arc<AppState>>) -> Json<serde_json::
         if total == 0 { 0.0 } else { 100.0 * v as f64 / total as f64 }
     };
 
+    // Inner-vs-outer ratio is the canonical health indicator for the
+    // symbol-rate slicer: random P25 data should give ~50/50, and a
+    // residual DC bias on sym_diff_re skews it. Today (2026-04-09) we're
+    // running at ~70/30 inner/outer because of post-DDC DC pedestal,
+    // which is why SYNC_THRESHOLD is currently 10 instead of 4.
+    let inner = hist[0] + hist[2]; // values 0 (+1) and 2 (-1)
+    let outer = hist[1] + hist[3]; // values 1 (+3) and 3 (-3)
+
+    // Raw on-air DUID histogram. With the BCH(64,16) NID FEC currently
+    // stubbed (see fec::GolayDecoder::decode_nid), this tells us how
+    // often each 4-bit DUID value lands in the NID field after sync.
+    // A healthy control channel + working FEC would be ~100% in bucket 7
+    // (TSDU). Today, with no FEC, this is a near-uniform spray due to
+    // the ~12 bit errors per NID induced by the slicer DC bias.
+    let raw_duid_hist = decoder.raw_duid_histogram();
+    let raw_duid_total: u64 = raw_duid_hist.iter().sum();
+    let raw_duid_pct = |v: u64| -> f64 {
+        if raw_duid_total == 0 { 0.0 } else { 100.0 * v as f64 / raw_duid_total as f64 }
+    };
+
     Json(serde_json::json!({
         "total_dibits": total,
         "captured": dibits.len(),
         "histogram": {
-            "0":   hist[0],
-            "1":   hist[1],
-            "2":   hist[2],
-            "3":   hist[3],
+            "0":     hist[0],
+            "1":     hist[1],
+            "2":     hist[2],
+            "3":     hist[3],
             "0_pct": pct(hist[0]),
             "1_pct": pct(hist[1]),
             "2_pct": pct(hist[2]),
             "3_pct": pct(hist[3]),
+            "inner_pct": pct(inner),
+            "outer_pct": pct(outer),
         },
         "sync": {
-            "hits":        decoder.sync_hits(),
-            "near_misses": decoder.sync_near_misses(),
+            "hits":          decoder.sync_hits(),
+            "near_misses":   decoder.sync_near_misses(),
             "best_distance": decoder.best_sync_distance(),
+            "threshold":     SYNC_THRESHOLD,
+        },
+        "raw_duid": {
+            "total": raw_duid_total,
+            "counts": raw_duid_hist,
+            "pct_7_tsdu": raw_duid_pct(raw_duid_hist[7]),
+            "pct_5_ldu1": raw_duid_pct(raw_duid_hist[5]),
+            "pct_0_hdu":  raw_duid_pct(raw_duid_hist[0]),
+            "pct_a_ldu2": raw_duid_pct(raw_duid_hist[0xA]),
+            "note": "Healthy control channel + BCH FEC = ~100% in bucket 7 (TSDU). \
+                     Anything else means the NID has uncorrected bit errors.",
         },
         "dibits_hex": hex,
     }))

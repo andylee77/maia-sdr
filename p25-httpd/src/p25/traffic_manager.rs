@@ -13,10 +13,16 @@
 //!   DDC retune (register write): ~1µs
 //!   FIR flush + sync acquisition: ~40ms
 //!   Total: ~60ms (P25 allows ~200ms)
+//!
+//! TODO(traffic-following): the structs in this module are scaffolding for
+//! the channel-grant follow-along feature. They will be wired into main.rs
+//! after the control channel decode is solid. Suppressing dead-code warnings
+//! at module scope until then so the rest of the build stays warning-clean.
+
+#![allow(dead_code)]
 
 use std::time::Instant;
 
-use super::tsbk::TsbkMessage;
 use super::types::*;
 
 /// Traffic channel state

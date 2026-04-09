@@ -47,7 +47,19 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    // Default log level: info for our crate, warn for everything else.
+    // Honour RUST_LOG when set, otherwise emit a sensible default so the
+    // user actually sees the dibit reader / IRQ / decoder logs without
+    // having to manually configure tracing.
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,p25_httpd=info"));
+    fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_level(true)
+        .init();
+
     let args = Args::parse();
 
     tracing::info!(
@@ -62,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
     let decoder = Arc::new(RwLock::new(decoder));
 
     #[cfg(target_os = "linux")]
-    let ip_core = {
+    let (ip_core, ad9361) = {
         use tokio::sync::Mutex;
 
         // 1. Initialize FPGA IP core via UIO
@@ -94,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Control DDC: offset={nco_offset} Hz, ring DMA enabled");
 
         let ip_core = Arc::new(Mutex::new(ip_core));
+        let ad9361 = Arc::new(ad9361);
 
         // 4. Get interrupt waiters before spawning handler
         let dibit_waiter = interrupt_handler.waiter_dibit_dma();
@@ -184,7 +197,24 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        ip_core
+        // 8. Spawn periodic grant-expiry task. The control channel decoder
+        //    accumulates voice grants in a HashMap as it sees TSBK_GRANT
+        //    messages. Without periodic pruning the table only ever grows
+        //    -- the dashboard's "Active Grants" count would never decay
+        //    even after a call ended. Expire any grant whose TSBK was last
+        //    seen more than 30 seconds ago (P25 typical call timeout).
+        let expiry_decoder = decoder.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let mut dec = expiry_decoder.write().await;
+                dec.expire_grants(30);
+            }
+        });
+
+        (ip_core, ad9361)
     };
 
     // Build app state
@@ -193,6 +223,8 @@ async fn main() -> anyhow::Result<()> {
         event_tx,
         #[cfg(target_os = "linux")]
         ip_core,
+        #[cfg(target_os = "linux")]
+        ad9361,
     });
 
     // Start HTTP server
