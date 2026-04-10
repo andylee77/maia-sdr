@@ -515,6 +515,14 @@ impl IpCore {
             .modify(|_, w| w.lsm_dibit_dma_enable().bit(enable));
     }
 
+    /// Reads back the `lsm_control` register as `(lsm_enable,
+    /// lsm_dibit_dma_enable)`. Used at startup to confirm the bits we
+    /// wrote actually stuck in the register bank.
+    pub fn lsm_control_readback(&self) -> (bool, bool) {
+        let c = self.registers.lsm_control().read();
+        (c.lsm_enable().bit(), c.lsm_dibit_dma_enable().bit())
+    }
+
     /// Reads the `lsm_status` register and returns a coherent snapshot.
     ///
     /// **Important:** the `nid_event` bit is Rsticky -- a single read

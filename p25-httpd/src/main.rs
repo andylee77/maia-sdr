@@ -135,9 +135,21 @@ async fn main() -> anyhow::Result<()> {
         // lsm_status below.
         ip_core.set_lsm_enable(true);
         ip_core.set_lsm_dibit_dma_enable(true);
+        // Read back lsm_control to confirm the bits actually stuck in the
+        // register bank. If the readback disagrees with what we wrote we
+        // have a register-bank wiring bug (rare; would surface as obvious
+        // garbage in lsm_status / lsm_nid downstream).
+        let (lsm_en_rb, lsm_dma_en_rb) = ip_core.lsm_control_readback();
         tracing::info!(
-            "Control DDC: offset={nco_offset} Hz, dibit + iq + lsm ring DMA enabled"
+            "Control DDC: offset={nco_offset} Hz, dibit + iq + lsm ring DMA enabled \
+             (lsm_control readback: lsm_enable={lsm_en_rb}, lsm_dibit_dma_enable={lsm_dma_en_rb})"
         );
+        if !lsm_en_rb || !lsm_dma_en_rb {
+            tracing::error!(
+                "lsm_control readback mismatch -- expected (true,true) got \
+                 ({lsm_en_rb},{lsm_dma_en_rb}); HDL LSM chain WILL NOT be active"
+            );
+        }
 
         let ip_core = Arc::new(Mutex::new(ip_core));
         let ad9361 = Arc::new(ad9361);
@@ -424,43 +436,107 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        // 6d. Spawn HDL LSM NID event poller (Phase 6E.9/6E.10).
-        //     `lsm_status.nid_event` is Rsticky: the HDL latches it on
-        //     each `nid_event_strobe` and clears it on read. At one NID
-        //     per ~14 ms a 60 Hz polling loop catches every event with
-        //     plenty of headroom, and we explicitly avoid IRQ-driving
-        //     NID events to keep the IRQ budget for the dibit ring.
-        //     Reads `lsm_status` + `lsm_nid` + `lsm_drop_count` in one
-        //     pass on the event -- the HDL guarantees these form a
-        //     coherent per-event snapshot (see fpga.rs::lsm_status()).
+        // 6d. Spawn HDL LSM heartbeat / NID event poller (Phase 6E.9/6E.10).
+        //
+        //     Reads `lsm_status` + `lsm_debug` on EVERY tick at 60 Hz,
+        //     not just when `nid_event` fires. This lets us see the
+        //     state of the HDL LSM chain even when it isn't producing
+        //     NID events, which is exactly the bring-up situation we
+        //     hit on real RF.
+        //
+        //     Two outputs per loop iteration:
+        //     1. **NID event log** -- as before, fires only when
+        //        `lsm_status.nid_event` (Rsticky) is high. Throttled to
+        //        5 Hz on a busy site (~70 NIDs/sec) but always logs the
+        //        first 10 events.
+        //     2. **Heartbeat log** -- fires every ~1 s regardless of
+        //        whether NIDs are being decoded, dumping the windowed
+        //        min/max of `pll_dbg` + `sample_point_dbg` + the lowest
+        //        `sync_distance` seen in the window + how many ticks of
+        //        the window observed `bch_busy` / `in_nid_window` /
+        //        `nid_event` / `dibit_overflow`. THIS IS THE
+        //        DIAGNOSTIC for "the HDL LSM chain is alive but not
+        //        decoding": pll_dbg railed at +/- clamp = AGC issue,
+        //        pll_dbg flat-zero = PLL never updates, lowest
+        //        sync_distance ~47 = sync detector at noise floor,
+        //        bch_busy never observed = sync_strobe never fires,
+        //        etc. See doc 020 / phase 6E.6.5 follow-up.
+        //
+        //     The heartbeat windowed counters reset every emission so
+        //     each line describes the *immediate past second*, not a
+        //     cumulative average that washes out transients.
         let lsm_nid_core = ip_core.clone();
         tokio::spawn(async move {
-            tracing::info!("HDL LSM NID poller task started (Phase 6E)");
+            tracing::info!("HDL LSM heartbeat + NID poller task started (Phase 6E)");
             let mut tick = tokio::time::interval(
                 std::time::Duration::from_millis(16),
             );
             tick.tick().await;
+
+            // ── NID event tracking (cumulative) ─────────────────────
             let mut event_count: u64 = 0;
             let mut valid_count: u64 = 0;
             let mut last_drop_count: u16 = 0;
-            let mut last_log = std::time::Instant::now();
+            let mut last_event_log = std::time::Instant::now();
+
+            // ── Heartbeat windowed stats (reset on each emission) ──
+            // Reset every ~1 s of polling = ~60 ticks at 16 ms.
+            let mut hb_ticks: u32 = 0;
+            let mut hb_pll_min: i16 = i16::MAX;
+            let mut hb_pll_max: i16 = i16::MIN;
+            let mut hb_sp_min: i16 = i16::MAX;
+            let mut hb_sp_max: i16 = i16::MIN;
+            // sync_distance is u8 0..47; track the BEST (lowest) hit in
+            // the window. 99 is a "no observations yet" sentinel.
+            let mut hb_sync_dist_best: u8 = 99;
+            let mut hb_bch_busy_ticks: u32 = 0;
+            let mut hb_in_window_ticks: u32 = 0;
+            let mut hb_nid_event_ticks: u32 = 0;
+            let mut hb_overflow_ticks: u32 = 0;
+            // For NIDs that DID arrive in the window, what did we see?
+            let mut hb_window_event_count: u32 = 0;
+            let mut hb_window_valid_count: u32 = 0;
+
+            let mut last_hb = std::time::Instant::now();
+
             loop {
                 tick.tick().await;
+
+                // EVERY tick: snapshot the full status + debug pair.
+                // We read coherently under the mutex so the heartbeat
+                // observes the same instant the optional nid_event
+                // payload would describe.
                 let (status, nac, duid, drop_count, pll_dbg, sp_dbg) = {
                     let core = lsm_nid_core.lock().await;
                     let s = core.lsm_status();
-                    if !s.nid_event && !s.dibit_overflow {
-                        // nothing to report; skip the rest of the reads
-                        // to avoid racing with other fields -- we only
-                        // burn a few cycles per tick on the happy path
-                        continue;
-                    }
                     let (nac, duid) = core.lsm_nid();
                     let drop_count = core.lsm_drop_count();
                     let (pll_dbg, sp_dbg) = core.lsm_debug();
                     (s, nac, duid, drop_count, pll_dbg, sp_dbg)
                 };
 
+                // ── Fold this tick into the heartbeat window ────────
+                hb_ticks += 1;
+                if pll_dbg < hb_pll_min { hb_pll_min = pll_dbg; }
+                if pll_dbg > hb_pll_max { hb_pll_max = pll_dbg; }
+                if sp_dbg  < hb_sp_min  { hb_sp_min  = sp_dbg; }
+                if sp_dbg  > hb_sp_max  { hb_sp_max  = sp_dbg; }
+                if status.bch_busy      { hb_bch_busy_ticks += 1; }
+                if status.in_nid_window { hb_in_window_ticks += 1; }
+                if status.nid_event     { hb_nid_event_ticks += 1; }
+                if status.dibit_overflow { hb_overflow_ticks += 1; }
+                // Track the lowest sync_distance we ever see across
+                // the window, regardless of whether nid_event fires.
+                // The HDL latches sync_distance at the moment a sync
+                // hit fires so it stays constant between events.
+                // sync_distance == 0 sentinel after a perfect hit is
+                // also legitimate, and the rsticky bits decay on read,
+                // so we just take min over the raw reads.
+                if status.sync_distance < hb_sync_dist_best {
+                    hb_sync_dist_best = status.sync_distance;
+                }
+
+                // ── Per-tick: dibit overflow latch warning ──────────
                 if status.dibit_overflow {
                     tracing::warn!(
                         target: "p25_hdl_lsm",
@@ -468,10 +544,13 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
 
+                // ── Per-tick: NID event handling ────────────────────
                 if status.nid_event {
                     event_count += 1;
+                    hb_window_event_count += 1;
                     if status.nid_valid {
                         valid_count += 1;
+                        hb_window_valid_count += 1;
                     }
                     if drop_count != last_drop_count {
                         tracing::warn!(
@@ -481,13 +560,12 @@ async fn main() -> anyhow::Result<()> {
                         );
                         last_drop_count = drop_count;
                     }
-                    // Throttle event logging to 5 Hz so we don't flood
-                    // on a healthy site (~70 NIDs/sec); always log the
-                    // first 10 for sanity.
+                    // Throttle event logging to 5 Hz on a busy site
+                    // (~70 NIDs/sec); always log the first 10.
                     let log_now = event_count <= 10
-                        || last_log.elapsed() >= std::time::Duration::from_millis(200);
+                        || last_event_log.elapsed() >= std::time::Duration::from_millis(200);
                     if log_now {
-                        last_log = std::time::Instant::now();
+                        last_event_log = std::time::Instant::now();
                         tracing::info!(
                             target: "p25_hdl_lsm",
                             "NID event #{event_count}: nac=0x{:03X} duid={} \
@@ -501,6 +579,50 @@ async fn main() -> anyhow::Result<()> {
                             valid_count, event_count,
                         );
                     }
+                }
+
+                // ── Heartbeat log (every ~1 s of polling) ───────────
+                if last_hb.elapsed() >= std::time::Duration::from_secs(1) {
+                    let pll_range = if hb_pll_min == i16::MAX {
+                        "[no samples]".to_string()
+                    } else {
+                        format!("[{},{}]", hb_pll_min, hb_pll_max)
+                    };
+                    let sp_range = if hb_sp_min == i16::MAX {
+                        "[no samples]".to_string()
+                    } else {
+                        format!("[{},{}]", hb_sp_min, hb_sp_max)
+                    };
+                    let best_str = if hb_sync_dist_best == 99 {
+                        "n/a".to_string()
+                    } else {
+                        hb_sync_dist_best.to_string()
+                    };
+                    tracing::info!(
+                        target: "p25_hdl_lsm",
+                        "HB {hb_ticks}t: pll{pll_range} sp{sp_range} \
+                         best_sync_dist={best_str} \
+                         bch_busy={hb_bch_busy_ticks} \
+                         in_window={hb_in_window_ticks} \
+                         nid_evts={hb_nid_event_ticks} \
+                         overflow={hb_overflow_ticks} \
+                         (window NIDs: {hb_window_valid_count}/{hb_window_event_count} valid; \
+                         cum NIDs: {valid_count}/{event_count})"
+                    );
+                    // Reset windowed accumulators for the next second.
+                    hb_ticks = 0;
+                    hb_pll_min = i16::MAX;
+                    hb_pll_max = i16::MIN;
+                    hb_sp_min = i16::MAX;
+                    hb_sp_max = i16::MIN;
+                    hb_sync_dist_best = 99;
+                    hb_bch_busy_ticks = 0;
+                    hb_in_window_ticks = 0;
+                    hb_nid_event_ticks = 0;
+                    hb_overflow_ticks = 0;
+                    hb_window_event_count = 0;
+                    hb_window_valid_count = 0;
+                    last_hb = std::time::Instant::now();
                 }
             }
         });
