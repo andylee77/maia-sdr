@@ -9,6 +9,52 @@
 # fractional-sample-point IQ values per symbol decision and a
 # strobe.
 #
+# Pipeline depth (Phase 6E.6e timing fix, doc/changes/022)
+# --------------------------------------------------------
+# 2 cycles from `strobe_in` (with a decision firing) to
+# `decision_strobe`:
+#
+#   Cycle T   : strobe_in arrives, sp_dec subtraction + cur_int
+#               extraction + cur_int-driven FIFO mux ALL fire
+#               combinationally and the muxed FIFO entries +
+#               cur_frac/mu_mid are latched into a stage 1 register
+#               set. The FIFO shift and sample_point update also
+#               fire on this cycle.
+#   Cycle T+1 : the four lerps run combinationally from the stage
+#               1 latched values (which are stable from flops, not
+#               from a borrow-propagating subtractor chain), and
+#               the lerp results + decision_strobe are latched
+#               into the output registers.
+#   Cycle T+2 : output registers and decision_strobe are visible
+#               to downstream consumers.
+#
+# Why the 2-stage pipeline (vs the original 1-cycle form):
+# ---------------------------------------------------------
+# Phase 6E.6e CORDIC bake (commit 47c9cc5) exposed a 24-endpoint
+# WNS = -0.444 ns intra-clock violation in this module's lerp
+# datapath at 62.5 MHz (16 ns budget). The failing path was
+# `sample_point_dbg_reg[12] -> SUB -> ADD -> cur_int -> DSP input
+# mux -> DSP multiply -> output mux -> q_cur_out_reg`. Vivado
+# fused `i_cur_3` and `i_cur_4` into a single DSP whose `a/b`
+# inputs were muxed by cur_int, putting the cur_int decision
+# logic INSIDE the DSP critical path -- ~17 ns from sample_point
+# bit 12 to the q_cur_out flop, ~1 ns over budget.
+#
+# The 2-stage fix:
+#   1. Pre-applies the cur_int mux on the FIFO entries in stage 1
+#      (combinational), so stage 2 sees four DISTINCT lerps with
+#      no shared multiplier. This naturally undoes the DSP fusion.
+#   2. Latches the muxed FIFO entries + cur_frac/mu_mid into a
+#      stage 1 register set, so stage 2's lerp inputs are flop
+#      outputs (clean, ~0 ns clk-to-q) instead of CARRY-chain
+#      outputs (~3 ns of borrow propagation).
+#   3. The 2-stage pipeline drops the WNS comfortably back into
+#      the green and also saves 2 DSPs (4 lerps in stage 2 vs
+#      the original 6).
+#
+# The 1-extra-cycle latency is invisible downstream because all
+# consumers gate on `decision_strobe`.
+#
 # Algorithm (port of `demod_lsm_with_state` lines 178-207, with the
 # AGC scaling section short-circuited to gain = 1):
 #
@@ -64,9 +110,14 @@
 #
 # DSP cost
 # --------
-# 4 lerps × 1 multiply each = 4 DSP48E1 (parallel, 1-cycle latency).
-# Vivado will pack the (a + (b - a) * mu) lerp form into a single
-# DSP48E1 per channel using its pre-adder + multiply path.
+# 4 lerps × 1 multiply each = 4 DSP48E1 (parallel). With the 2-stage
+# pipeline (Phase 6E.6e fix) the cur_int mux is pre-applied, so the
+# stage 2 lerps are i_mid, q_mid, i_cur, q_cur -- four lerps total,
+# four DSP48E1 blocks. (The original 1-cycle form had 6 lerps because
+# i_cur_3 and i_cur_4 were both computed in parallel; pre-muxing
+# saves 2 DSPs as a side effect of the timing fix.) Vivado packs
+# the `(a + (b - a) * mu)` lerp form into a single DSP48E1 per
+# channel using its pre-adder + multiply path.
 #
 # SPDX-License-Identifier: MIT
 #
@@ -264,14 +315,48 @@ class LsmTimingInterp(Elaboratable):
         sample_point = Signal(signed(18), init=sample_point_init)
         m.d.comb += self.sample_point_dbg.eq(sample_point)
 
-        # Default: no decision strobe this cycle.
+        # ── Stage 1 latch register set ──────────────────────────
+        # Latched on the cycle that a decision is detected; used
+        # by stage 2 (next cycle) as the lerp inputs. See module
+        # docstring for the rationale.
+        s1_active = Signal(reset_less=True)
+        s1_mu_mid = Signal(unsigned(SAMPLE_POINT_FRAC_BITS),
+                           reset_less=True, name="s1_mu_mid")
+        s1_cur_frac = Signal(unsigned(SAMPLE_POINT_FRAC_BITS),
+                             reset_less=True, name="s1_cur_frac")
+        # FIFO snapshots for the four stage-2 lerps. The cur_int
+        # mux is pre-applied in stage 1 (combinationally on
+        # fifo_re/fifo_im), so stage 2 sees four DISTINCT inputs
+        # rather than a cur_int-controlled DSP-input mux.
+        s1_a_mid_re = Signal(signed(W), reset_less=True,
+                             name="s1_a_mid_re")
+        s1_b_mid_re = Signal(signed(W), reset_less=True,
+                             name="s1_b_mid_re")
+        s1_a_mid_im = Signal(signed(W), reset_less=True,
+                             name="s1_a_mid_im")
+        s1_b_mid_im = Signal(signed(W), reset_less=True,
+                             name="s1_b_mid_im")
+        s1_a_cur_re = Signal(signed(W), reset_less=True,
+                             name="s1_a_cur_re")
+        s1_b_cur_re = Signal(signed(W), reset_less=True,
+                             name="s1_b_cur_re")
+        s1_a_cur_im = Signal(signed(W), reset_less=True,
+                             name="s1_a_cur_im")
+        s1_b_cur_im = Signal(signed(W), reset_less=True,
+                             name="s1_b_cur_im")
+
+        # Default: no strobes fire this cycle.
         m.d.sync += self.decision_strobe.eq(0)
+        m.d.sync += s1_active.eq(0)
 
         with m.If(self.strobe_in):
             # ── Shift the lookahead FIFO ────────────────────────
             # Newest sample lands at index 0; everything else
             # moves up by one (slot 1 <- slot 0, slot 2 <- slot 1,
-            # ...).
+            # ...). The shift takes effect on the next clock
+            # edge, so the FIFO reads inside this `with` block
+            # see the PRE-shift values -- which is exactly what
+            # the lerp wants (matches Rust's `buf[bp]`).
             for i in range(N - 1, 0, -1):
                 m.d.sync += [
                     fifo_re[i].eq(fifo_re[i - 1]),
@@ -295,107 +380,115 @@ class LsmTimingInterp(Elaboratable):
                 # sample_point and wait for the next input.
                 m.d.sync += sample_point.eq(sp_dec)
             with m.Else():
-                # Symbol decision fires this cycle.
+                # Symbol decision fires this cycle. Stage 1 will
+                # latch the FIFO snapshot + lerp control signals;
+                # stage 2 (next cycle) will run the lerps.
                 #
-                # NOTE: the FIFO contents we compute the lerps
-                # against are the *pre-shift* values, because the
-                # m.d.sync shift above hasn't taken effect yet
-                # (synchronous assignments are applied at the next
-                # clock edge). The new sample we just received is
-                # *not* in the FIFO yet -- but it doesn't need to
-                # be. The Rust loop's `buf[bp]` corresponds to
-                # fifo[BP] of the pre-shift FIFO, and `buf[bp+1]`
-                # is fifo[BP - 1] of the pre-shift FIFO (i.e. the
-                # second-newest sample stored in the FIFO -- one
-                # input behind the just-arrived sample). The
-                # current-input sample stays out of the lerp
-                # entirely until it has been shifted in.
+                # NOTE: the FIFO contents we snapshot are the
+                # *pre-shift* values, because the m.d.sync shift
+                # above hasn't taken effect yet (synchronous
+                # assignments are applied at the next clock edge).
+                # The new sample we just received is *not* in the
+                # FIFO yet -- but it doesn't need to be. The Rust
+                # loop's `buf[bp]` corresponds to fifo[BP] of the
+                # pre-shift FIFO, and `buf[bp+1]` is fifo[BP - 1]
+                # of the pre-shift FIFO. The current-input sample
+                # stays out of the lerp entirely until it has been
+                # shifted in.
                 #
-                # Build mu_mid = sp_dec[0:12] (the fractional part).
-                # sp_dec is in [0, 1) at this branch so its
+                # Build mu_mid = sp_dec[0:12] (the fractional
+                # part). sp_dec is in [0, 1) at this branch so its
                 # integer part is 0 and the unsigned low 12 bits
                 # are exactly the lerp coefficient.
-                mu_mid = Signal(unsigned(12), name="mu_mid")
+                mu_mid = Signal(unsigned(SAMPLE_POINT_FRAC_BITS),
+                                name="mu_mid")
                 m.d.comb += mu_mid.eq(sp_dec[:SAMPLE_POINT_FRAC_BITS])
-
-                i_mid = self._lerp(
-                    m, "i_mid", fifo_re[BP], fifo_re[BP - 1], mu_mid, W)
-                q_mid = self._lerp(
-                    m, "q_mid", fifo_im[BP], fifo_im[BP - 1], mu_mid, W)
 
                 # ── Current-symbol sample lookup ────────────────
                 # ptr   = sp_dec + HALF_SPS_Q12  (still Q4.12)
-                # int   = ptr >> 12  ∈ {3, 4}    (the integer
-                #         number of samples ahead of bp)
+                # int   = ptr >> 12  ∈ {3, 4}
                 # frac  = ptr[:12]               (lerp residual)
-                #
-                # FIFO index: BP - int
-                #
-                # Because BP - int is between BP - 4 and BP - 3
-                # (inclusive), we expand the two cases as a pair
-                # of Mux'd lerps, which keeps the lerp inputs
-                # static and lets Vivado pack each lerp into one
-                # DSP48E1 cleanly.
                 ptr = Signal(signed(16), name="cur_ptr")
                 m.d.comb += ptr.eq(sp_dec + HALF_SPS_Q12)
                 cur_int = Signal(unsigned(4), name="cur_int")
-                cur_frac = Signal(unsigned(12), name="cur_frac")
+                cur_frac = Signal(unsigned(SAMPLE_POINT_FRAC_BITS),
+                                  name="cur_frac")
                 m.d.comb += [
                     cur_int.eq(ptr[SAMPLE_POINT_FRAC_BITS:
                                    SAMPLE_POINT_FRAC_BITS + 4]),
                     cur_frac.eq(ptr[:SAMPLE_POINT_FRAC_BITS]),
                 ]
 
-                # Build lerps for both possible offsets.
-                # ptr is in [HALF_SPS_Q12, ONE_Q12 + HALF_SPS_Q12)
-                # = [13334, 17430). int = 3 (when ptr < 16384)
-                # or int = 4 (when ptr >= 16384).
-                i_cur_3 = self._lerp(
-                    m, "i_cur_3",
-                    fifo_re[BP - 3], fifo_re[BP - 4], cur_frac, W)
-                q_cur_3 = self._lerp(
-                    m, "q_cur_3",
-                    fifo_im[BP - 3], fifo_im[BP - 4], cur_frac, W)
-                i_cur_4 = self._lerp(
-                    m, "i_cur_4",
-                    fifo_re[BP - 4], fifo_re[BP - 5], cur_frac, W)
-                q_cur_4 = self._lerp(
-                    m, "q_cur_4",
-                    fifo_im[BP - 4], fifo_im[BP - 5], cur_frac, W)
-                # NOTE: BP - 5 = 0 for the default depth 8 / BP=5
-                # configuration, which is the head of the FIFO.
-                # Reading slot 0 BEFORE the new sample is shifted
-                # in still gives the previously-newest sample,
-                # which is what we want -- index 0 in the
-                # pre-shift FIFO == "1 sample ahead of bp" in
-                # Rust terms.
-
-                i_cur = Signal(signed(W), name="i_cur_mux")
-                q_cur = Signal(signed(W), name="q_cur_mux")
+                # Pre-apply the cur_int mux on the FIFO entries.
+                # This combinational mux is the only place
+                # cur_int (and therefore sample_point[12]) flows
+                # in the timing-critical direction; latching the
+                # muxed result into stage 1 keeps the path short
+                # (FIFO flop -> mux LUT -> stage 1 flop) and
+                # leaves stage 2 reading from clean flop outputs.
+                a_cur_re = Signal(signed(W), name="a_cur_re_mux")
+                b_cur_re = Signal(signed(W), name="b_cur_re_mux")
+                a_cur_im = Signal(signed(W), name="a_cur_im_mux")
+                b_cur_im = Signal(signed(W), name="b_cur_im_mux")
                 with m.If(cur_int == 3):
                     m.d.comb += [
-                        i_cur.eq(i_cur_3),
-                        q_cur.eq(q_cur_3),
+                        a_cur_re.eq(fifo_re[BP - 3]),
+                        b_cur_re.eq(fifo_re[BP - 4]),
+                        a_cur_im.eq(fifo_im[BP - 3]),
+                        b_cur_im.eq(fifo_im[BP - 4]),
                     ]
                 with m.Else():
                     # cur_int == 4 (the only other possible value
-                    # given ptr's range)
+                    # given ptr's range [HALF_SPS_Q12, ONE_Q12 +
+                    # HALF_SPS_Q12) = [13334, 17430)).
                     m.d.comb += [
-                        i_cur.eq(i_cur_4),
-                        q_cur.eq(q_cur_4),
+                        a_cur_re.eq(fifo_re[BP - 4]),
+                        b_cur_re.eq(fifo_re[BP - 5]),
+                        a_cur_im.eq(fifo_im[BP - 4]),
+                        b_cur_im.eq(fifo_im[BP - 5]),
                     ]
 
-                # ── Latch outputs and assert decision strobe ───
+                # ── Latch stage 1 + advance sample_point ────────
                 m.d.sync += [
-                    self.i_mid_out.eq(i_mid),
-                    self.q_mid_out.eq(q_mid),
-                    self.i_cur_out.eq(i_cur),
-                    self.q_cur_out.eq(q_cur),
-                    self.decision_strobe.eq(1),
+                    s1_active.eq(1),
+                    s1_mu_mid.eq(mu_mid),
+                    s1_cur_frac.eq(cur_frac),
+                    s1_a_mid_re.eq(fifo_re[BP]),
+                    s1_b_mid_re.eq(fifo_re[BP - 1]),
+                    s1_a_mid_im.eq(fifo_im[BP]),
+                    s1_b_mid_im.eq(fifo_im[BP - 1]),
+                    s1_a_cur_re.eq(a_cur_re),
+                    s1_b_cur_re.eq(b_cur_re),
+                    s1_a_cur_im.eq(a_cur_im),
+                    s1_b_cur_im.eq(b_cur_im),
                     # Schedule the next decision: add SPS_Q12 to
                     # the post-decrement value.
                     sample_point.eq(sp_dec + SPS_Q12),
                 ]
+
+        # ── Stage 2: lerps from stage 1 snapshot ────────────────
+        # Fires on the cycle after a decision was latched. The
+        # four lerps run combinationally from stage 1 flop outputs
+        # (clean inputs, no borrow-propagating subtractor chain
+        # or DSP-input mux), and the lerp results + decision_strobe
+        # are latched into the output registers.
+        with m.If(s1_active):
+            i_mid = self._lerp(
+                m, "i_mid", s1_a_mid_re, s1_b_mid_re, s1_mu_mid, W)
+            q_mid = self._lerp(
+                m, "q_mid", s1_a_mid_im, s1_b_mid_im, s1_mu_mid, W)
+            i_cur = self._lerp(
+                m, "i_cur", s1_a_cur_re, s1_b_cur_re, s1_cur_frac, W)
+            q_cur = self._lerp(
+                m, "q_cur", s1_a_cur_im, s1_b_cur_im, s1_cur_frac, W)
+
+            m.d.sync += [
+                self.i_mid_out.eq(i_mid),
+                self.q_mid_out.eq(q_mid),
+                self.i_cur_out.eq(i_cur),
+                self.q_cur_out.eq(q_cur),
+                self.decision_strobe.eq(1),
+            ]
 
         # ── Gardner TED feedback (Phase 6E.6a) ──────────────────
         # When the loop's timing-error detector asserts

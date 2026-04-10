@@ -7,6 +7,14 @@
 # implements the same lerp + sample_point algorithm in floating
 # point.
 #
+# Phase 6E.6e timing fix (doc/changes/022): `LsmTimingInterp` is
+# now a 2-stage pipeline (was 1 cycle). decision_strobe fires 2
+# cycles after the input strobe_in that triggered the decision,
+# rather than 1. The polling pattern below adds an extra
+# `await ctx.tick()` after the input strobe to drain the new
+# stage 1 -> stage 2 latch and read decision_strobe at the cycle
+# the lerp results are latched into the output flops.
+#
 # This sub-phase does NOT compare against the Phase 6D
 # `demod_loop_synthetic` golden vector -- the Rust loop has AGC,
 # differential demod, PLL rotation, and Gardner TED all wired in,
@@ -144,6 +152,13 @@ class TestLsmTimingInterp(unittest.TestCase):
 
         Drive a long stream of constant inputs (lerp values are
         irrelevant for this test, only the decision count matters).
+
+        With the Phase 6E.6e 2-stage pipeline, decision_strobe
+        fires 2 cycles after the input strobe that triggered the
+        decision. We add an extra `await ctx.tick()` after the
+        input strobe to drain the stage 1 -> stage 2 latch and
+        catch decision_strobe at the cycle the lerp result is
+        latched into the output flop.
         """
         dut = LsmTimingInterp()
         n_in = 1000
@@ -157,6 +172,9 @@ class TestLsmTimingInterp(unittest.TestCase):
                 ctx.set(dut.strobe_in, 1)
                 await ctx.tick()
                 ctx.set(dut.strobe_in, 0)
+                # Stage 2 fires the cycle AFTER strobe_in for a
+                # decision input -- drain one extra cycle.
+                await ctx.tick()
                 if ctx.get(dut.decision_strobe):
                     decision_count += 1
 
@@ -190,6 +208,8 @@ class TestLsmTimingInterp(unittest.TestCase):
                 ctx.set(dut.strobe_in, 1)
                 await ctx.tick()
                 ctx.set(dut.strobe_in, 0)
+                # Drain the 2-stage pipeline (Phase 6E.6e fix).
+                await ctx.tick()
                 if ctx.get(dut.decision_strobe):
                     decisions.append((
                         ctx.get(dut.i_mid_out),
@@ -246,6 +266,8 @@ class TestLsmTimingInterp(unittest.TestCase):
                 ctx.set(dut.strobe_in, 1)
                 await ctx.tick()
                 ctx.set(dut.strobe_in, 0)
+                # Drain the 2-stage pipeline (Phase 6E.6e fix).
+                await ctx.tick()
                 if ctx.get(dut.decision_strobe):
                     decisions.append((
                         ctx.get(dut.i_mid_out),
