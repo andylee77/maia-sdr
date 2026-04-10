@@ -479,6 +479,33 @@ async fn main() -> anyhow::Result<()> {
             let mut last_drop_count: u16 = 0;
             let mut last_event_log = std::time::Instant::now();
 
+            // ── PLL cycle-slip watchdog (Phase 6E.0-6E.6 follow-up) ─
+            //
+            // The HDL LSM Costas PLL uses a small-angle linearised
+            // update that is only stable within the ±0.3 rad envelope;
+            // strong transients can slip it to an adjacent 4-ary
+            // Costas lock point and strand it there because there's
+            // no HDL-side re-acquire mechanism yet. Observed on real
+            // RF as a PLL integrator sign flip from ~[-8500,-4500]
+            // to ~[+5000,+8500] in a single 1-second window, followed
+            // by zero `nid_event`s indefinitely.
+            //
+            // Until the HDL grows AGC (6E.6.5) or an in-HDL cycle-slip
+            // detector, this PS-side watchdog notices "no NID events
+            // for N consecutive 1-second windows" and pulses
+            // `sdr_reset` via `IpCore::reset_and_reinit()` to clear
+            // the PLL integrator and force a re-acquire from zero.
+            // See doc/changes/023.
+            const STUCK_WINDOWS_THRESHOLD: u32 = 5; // ~5 seconds
+            // Minimum time between consecutive recovery attempts.
+            // Protects against thrashing if the chain slips again
+            // immediately after recovery.
+            let min_recovery_interval =
+                std::time::Duration::from_secs(10);
+            let mut stuck_windows: u32 = 0;
+            let mut last_recovery: Option<std::time::Instant> = None;
+            let mut recovery_count: u64 = 0;
+
             // ── Heartbeat windowed stats (reset on each emission) ──
             // Reset every ~1 s of polling = ~60 ticks at 16 ms.
             let mut hb_ticks: u32 = 0;
@@ -607,8 +634,50 @@ async fn main() -> anyhow::Result<()> {
                          nid_evts={hb_nid_event_ticks} \
                          overflow={hb_overflow_ticks} \
                          (window NIDs: {hb_window_valid_count}/{hb_window_event_count} valid; \
-                         cum NIDs: {valid_count}/{event_count})"
+                         cum NIDs: {valid_count}/{event_count}; \
+                         recoveries: {recovery_count})"
                     );
+
+                    // ── PLL cycle-slip watchdog ────────────────────
+                    //
+                    // If this window had zero NID events, bump the
+                    // stuck counter. Zero the counter on any window
+                    // that sees even a single event -- that's enough
+                    // to prove the chain is still acquiring.
+                    if hb_window_event_count == 0 {
+                        stuck_windows += 1;
+                    } else {
+                        stuck_windows = 0;
+                    }
+                    let cooldown_ok = match last_recovery {
+                        None => true,
+                        Some(t) => t.elapsed() >= min_recovery_interval,
+                    };
+                    if stuck_windows >= STUCK_WINDOWS_THRESHOLD && cooldown_ok {
+                        tracing::warn!(
+                            target: "p25_hdl_lsm",
+                            "WATCHDOG: HDL LSM chain has produced 0 \
+                             NID events for {stuck_windows} consecutive \
+                             seconds (PLL likely cycle-slipped, see \
+                             doc/changes/023); pulsing sdr_reset to \
+                             clear PLL integrator and force re-acquire"
+                        );
+                        {
+                            let mut core = lsm_nid_core.lock().await;
+                            core.reset_and_reinit().await;
+                        }
+                        recovery_count += 1;
+                        last_recovery = Some(std::time::Instant::now());
+                        stuck_windows = 0;
+                        tracing::info!(
+                            target: "p25_hdl_lsm",
+                            "WATCHDOG: sdr_reset pulse complete \
+                             (recovery #{recovery_count}); HDL LSM \
+                             chain should re-acquire within the next \
+                             ~1 second if signal is still present"
+                        );
+                    }
+
                     // Reset windowed accumulators for the next second.
                     hb_ticks = 0;
                     hb_pll_min = i16::MAX;

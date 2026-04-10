@@ -523,6 +523,101 @@ impl IpCore {
         (c.lsm_enable().bit(), c.lsm_dibit_dma_enable().bit())
     }
 
+    /// Recovery path for HDL LSM chain lockup: pulse `sdr_reset` to
+    /// clear all `d.sync` flop state, reset the PS-side DMA ring-read
+    /// cursors, and re-assert the enable bits.
+    ///
+    /// **Why this exists.** The HDL LSM Costas-style PLL uses a small-
+    /// angle linearised update (see the Phase 6E.0-6E.6 HDL port doc,
+    /// architectural cut #1) which is only stable within the ±0.3 rad
+    /// linearisation envelope. A strong enough transient (noise burst,
+    /// fade, antenna swap, etc.) can push the integrator past that
+    /// envelope; on the next symbol the linearised correction has the
+    /// wrong direction, and the PLL slips to an adjacent 4-ary Costas
+    /// lock point and STAYS there indefinitely -- there is no
+    /// re-acquire mechanism in the current HDL. Observed on-air as the
+    /// `pll_dbg` range flipping sign from ~[-8500,-4500] to ~[+5000,
+    /// +8500] in a single second, then never emitting another NID event.
+    ///
+    /// Until the HDL either gets AGC (deferred Phase 6E.6.5) or a
+    /// proper atan2/CORDIC PLL update or an in-HDL cycle-slip watchdog,
+    /// the PS-side workaround is to detect the stuck state (no
+    /// `lsm_status.nid_event` fires for N seconds) and pulse
+    /// `sdr_reset` to clear the PLL integrator. See
+    /// `doc/changes/023_hdl_lsm_pll_cycle_slip_watchdog.md`.
+    ///
+    /// **What gets reset** (`d.sync` flops in the core clock domain):
+    ///
+    /// - DDC phase accumulator and FIR delay lines
+    /// - C4FM demod state
+    /// - LSM demod state: PLL integrator, Gardner TED, slicer,
+    ///   LsmSyncNidExtract sync register + state machine
+    /// - `dibit/traffic/iq/lsm_dibit` DMA ring write pointers (back
+    ///   to ring base address)
+    ///
+    /// **What is preserved** (AXI-Lite register bank in the separate
+    /// `s_axi_lite_clk` domain):
+    ///
+    /// - DDC frequency, decimation, operations, odd, enable bits
+    /// - FIR coefficient BRAMs (BRAM contents survive sync reset)
+    /// - All `lsm_*` control register bits
+    /// - `demod_control.demod_enable`, `iq_dma_control.iq_enable`
+    ///
+    /// So after the pulse, the DDC NCO restarts counting from 0 at
+    /// the correct frequency, the FIR filters re-fill from zero state,
+    /// the LSM chain re-acquires lock from a clean PLL integrator, and
+    /// the DMA rings start writing from sub-buffer 0 again. The
+    /// re-acquire takes roughly the same time it took on boot (a few
+    /// hundred milliseconds of FIR settling + a few sync windows to
+    /// lock).
+    ///
+    /// **Cost of re-acquisition.** ~100 ms of lost dibits while the
+    /// pipeline re-settles, plus the time for the PS-side dibit
+    /// readers to re-sync to the ring cursor. On a busy control
+    /// channel this is worth ~1 TSBK of lost messages per recovery
+    /// -- acceptable tradeoff vs sitting stuck at a wrong lock point
+    /// forever.
+    pub async fn reset_and_reinit(&mut self) {
+        // Assert sdr_reset. All d.sync flops in the core domain go to
+        // their init values on the next core clock edge.
+        self.registers
+            .control()
+            .modify(|_, w| w.sdr_reset().set_bit());
+        // 5 ms >> any conceivable settling time for a 100 MHz core
+        // clock. The real requirement is "at least one core clock
+        // edge after the AXI-Lite write propagates", which is
+        // microseconds at most.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        // De-assert sdr_reset. The core starts clocking from init
+        // values; because the enable bits were preserved in the AXI
+        // bank, data starts flowing again immediately.
+        self.registers
+            .control()
+            .modify(|_, w| w.sdr_reset().clear_bit());
+
+        // The HDL ring DMA write pointers are now back at ring base
+        // address 0 (sub-buffer 0). Our PS-side "last address read"
+        // cursors remember the stale sub-buffer index from BEFORE
+        // the reset, which would make `read_dma_buffers` either
+        // return no buffers (if the old cursor == new cursor) or
+        // return a stale buffer range (if the old cursor is ahead).
+        // Reset all four to None so the next read acts as a "first
+        // call after boot" and snapshots the current hardware state.
+        self.dibit_last_addr = None;
+        self.traffic_last_addr = None;
+        self.iq_last_addr = None;
+        self.lsm_dibit_last_addr = None;
+
+        // Re-assert the enable bits. These were preserved across the
+        // reset but re-writing is cheap insurance against any future
+        // register-bank design change that accidentally clears them.
+        self.set_ddc_enable(true);
+        self.set_demod_enable(true);
+        self.set_iq_dma_enable(true);
+        self.set_lsm_enable(true);
+        self.set_lsm_dibit_dma_enable(true);
+    }
+
     /// Reads the `lsm_status` register and returns a coherent snapshot.
     ///
     /// **Important:** the `nid_event` bit is Rsticky -- a single read
