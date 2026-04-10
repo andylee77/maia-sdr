@@ -50,9 +50,9 @@ vectors emitted from the validated Rust pipeline.
 | 6E.6c | PLL rotate (1024-entry sin/cos LUT, no interp) | Python lin ref | DONE |
 | 6E.6d | `LsmDemodLoop` top-level integration | `demod_loop_synthetic.json` | DONE (100 %) |
 | 6E.6.5 | AGC | (deferred to follow-up) | DEFERRED |
-| 6E.7 | BCH(63,16,11) codebook BRAM + popcount tree | (TBD synthetic) | pending |
-| 6E.8 | `LsmDemod` top-level Amaranth module | n/a | pending |
-| 6E.9 | Wire LsmDemod into [p25_top.py](../../maia-hdl/p25_hdl/p25_top.py) alongside C4FM chain | n/a | pending |
+| 6E.7 | BCH(63,16,11) compute-on-the-fly + popcount tree (deviates from BRAM plan, see [doc 016](016_phase6e7_bch_fec.md)) | encoder vs SDRTrunk vector | DONE |
+| 6E.8 | `LsmDemod` top-level (hard sync detect + NID pipeline + BCH), see [doc 017](017_phase6e8_lsm_demod_top.md) | constructed dibit stream | DONE |
+| 6E.9 | Wire LsmDemod into [p25_top.py](../../maia-hdl/p25_hdl/p25_top.py) alongside C4FM chain, see [doc 018](018_phase6e9_lsm_top_integration.md) | elaboration smoke test + 49/49 LSM HDL suite + 17/17 P25 HDL suite | DONE |
 | 6E.10 | Regen Verilog + bitstream + on-target validation | n/a | pending |
 
 ---

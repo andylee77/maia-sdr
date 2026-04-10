@@ -29,9 +29,10 @@ must be aligned to its **total ring size** (this is asserted by
 
 | Name | Base | Sub-buffers | Sub-buffer size | Total | Ring depth | IRQ rate | Byte rate | Source |
 |------|------|-------------|-----------------|-------|------------|----------|-----------|--------|
-| `dibit_dma`   | `0x1700_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | control-channel dibits (post-slicer, post-symbol-timing) |
-| `traffic_dma` | `0x1800_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | traffic-channel dibits (post-slicer, post-symbol-timing) |
-| `iq_dma`      | `0x1900_0000` | 8 | 32 KB   | 256 KB  | ~1 s     | ~128 ms  | ~250 KB/s    | **Phase 6C:** control-channel post-DDC IQ (16-bit signed I + 16-bit signed Q, 62.5 kSPS, two samples per 64-bit DMA word) |
+| `dibit_dma`      | `0x1700_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | control-channel C4FM dibits (post-slicer, post-symbol-timing) |
+| `traffic_dma`    | `0x1800_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | traffic-channel C4FM dibits (post-slicer, post-symbol-timing) |
+| `iq_dma`         | `0x1900_0000` | 8 | 32 KB   | 256 KB  | ~1 s     | ~128 ms  | ~250 KB/s    | **Phase 6C:** control-channel post-DDC IQ (16-bit signed I + 16-bit signed Q, 62.5 kSPS, two samples per 64-bit DMA word) |
+| `lsm_dibit_dma`  | `0x1A00_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | **Phase 6E.9:** control-channel LSM dibits (post-`LsmDemod.dibit_out`/`symbol_strobe`, parallel to `dibit_dma` so PS can A/B C4FM and LSM on the same RF capture) |
 
 **Sample-rate math (control DDC at 62.5 kSPS):**
 
@@ -40,6 +41,18 @@ must be aligned to its **total ring size** (this is asserted by
 250 KB/s / 32 KB sub-buffer = ~7.8 IRQ/s = ~128 ms per sub-buffer
 8 sub-buffers x 32 KB = 256 KB ring = ~1.0 s of IQ in flight
 ```
+
+**Why a parallel `lsm_dibit_dma` rather than muxing the existing `dibit_dma`:**
+
+The C4FM and LSM demod chains both consume the same control DDC output stream
+but produce different dibit streams (different sample timing recovery, different
+slicer reference). By giving the LSM chain its own ring DMA at `0x1A00_0000`
+the PS can drain both rings in parallel and run both decoders on a single live
+capture, which is essential for A/B comparing C4FM vs. LSM bring-up against the
+same RF state. The cost is one extra HP1 master at ~1.28 KB/s — same byte rate
+as `dibit_dma`, well below 0.001 % of the HP1 budget. Layout (8 sub-buffers ×
+4 KB) mirrors `dibit_dma` exactly so the existing kernel-side DMA helper code
+carries over without changes. Aligned to `0x8000` (32 KB total ring size).
 
 **Why these specific values for `iq_dma`:**
 
@@ -90,8 +103,8 @@ window (set by `ad_cpu_interconnect 0x7C460000 p25_core` in `system_bd.tcl`).
 | 2 | `0x10` | `0x7C46_0040` | `demod` | 2 | 3 / 4 | demod_status, demod_control, dibit_next_address |
 | 3 | `0x18` | `0x7C46_0060` | `traffic` | 3 | 6 / 8 | traffic DDC + traffic demod + traffic_next_address |
 | 4 | `0x20` | `0x7C46_0080` | `iq` (Phase 6C) | 2 | 3 / 4 | iq_dma_status, iq_dma_control, iq_next_address |
-| 5 | `0x28` | `0x7C46_00A0` | *(free)* | — | — | next available bank |
-| 6 | `0x30` | `0x7C46_00C0` | *(free)* | — | — | |
+| 5 | `0x28` | `0x7C46_00A0` | `lsm` (Phase 6E.9) | 3 | 6 / 8 | lsm_control, lsm_status, lsm_nid, lsm_drop_count, lsm_dibit_next, lsm_debug |
+| 6 | `0x30` | `0x7C46_00C0` | *(free)* | — | — | next available bank |
 | 7 | `0x38` | `0x7C46_00E0` | *(free)* | — | — | last bank in the 7-bit word-address space |
 
 ### `iq` bank (Phase 6C) detail — byte offsets relative to `0x7C46_0080`
@@ -107,6 +120,57 @@ window (set by `ad_cpu_interconnect 0x7C460000 p25_core` in `system_bd.tcl`).
 future status flags, matching the `demod_status` and `traffic_demod_status`
 layout convention.
 
+### `lsm` bank (Phase 6E.9) detail — byte offsets relative to `0x7C46_00A0`
+
+The LSM chain (`LsmDecimator2 → LsmFir(LPF) → LsmFir(RRC) → LsmDemod`) sits in
+parallel with the existing C4FM chain on the control channel. Both consume
+the same control DDC output. The LSM dibits exit via `lsm_dibit_dma` (see
+DDR table); the recovered NIDs are exposed as registers in this bank.
+
+| Byte offset | Register | Field | Bits | Access | Description |
+|-------------|----------|-------|------|--------|-------------|
+| `0x00` | `lsm_control` | `lsm_enable`            | `[0]`     | RW       | master enable for the entire LSM chain (decimator + LPF + RRC + LsmDemod). Gates the strobe at the front of the chain so all downstream blocks go quiescent when 0. |
+| `0x00` | `lsm_control` | `lsm_dibit_dma_enable`  | `[1]`     | RW       | enable bit for the `lsm_dibit_dma` ring's AW channel; mirrors `dibit_dma`'s enable convention (level signal, not pulse) |
+| `0x04` | `lsm_status`  | `bch_busy`              | `[0]`     | R        | high while `LsmNidBchFec` is sweeping a candidate NID (~656 µs per decode) |
+| `0x04` | `lsm_status`  | `in_nid_window`         | `[1]`     | R        | high while `LsmSyncNidExtract` is collecting the 33-dibit NID payload after a sync hit (useful as a "have lock" indicator) |
+| `0x04` | `lsm_status`  | `nid_event`             | `[2]`     | Rsticky  | latches each time `LsmDemod.nid_event_strobe` fires (a new NID has been BCH-decoded); cleared on read. **Drives `interrupts.lsm_dibit_dma`'s sibling — see IRQ table below; not currently a separate IRQ line.** |
+| `0x04` | `lsm_status`  | `nid_valid`             | `[3]`     | R        | latched copy of `LsmDemod.valid_out` for the most recent NID event (1 if BCH Hamming distance ≤ 11) |
+| `0x04` | `lsm_status`  | `n_errors`              | `[10:4]`  | R        | latched BCH Hamming distance (0..63) for the most recent NID event |
+| `0x04` | `lsm_status`  | `sync_distance`         | `[17:11]` | R        | latched 48-bit sync hit Hamming distance (0..47) for the most recent NID event |
+| `0x04` | `lsm_status`  | `lsm_dibit_overflow`    | `[18]`    | Rsticky  | latches when the LSM `DibitPacker.data_valid` asserts while `lsm_dibit_dma.stream_ready` is low; cleared on read |
+| `0x08` | `lsm_nid`     | `nac`                   | `[11:0]`  | R        | latched 12-bit NAC for the most recent NID event |
+| `0x08` | `lsm_nid`     | `duid`                  | `[15:12]` | R        | latched 4-bit DUID for the most recent NID event |
+| `0x0C` | `lsm_drop_count` | `drop_count`         | `[15:0]`  | R        | saturating count of NIDs the sync detector emitted while `bch_busy` was high. **Should always read 0** in normal operation (NIDs are ~14 ms apart, BCH takes ~656 µs); non-zero indicates a back-pressure regression. |
+| `0x0C` | `lsm_drop_count` | `lsm_dibit_last_buffer` | `[18:16]`* | R     | index of the most recently completed `lsm_dibit_dma` sub-buffer (mirrors `lsm_dibit_dma.last_buffer`); width = `lsm_dibit_dma_num_buffers_log2` = 3 bits |
+| `0x10` | `lsm_dibit_next` | `next_address`       | `[31:0]`  | R        | current AW write address inside the `lsm_dibit_dma` ring (debug only) |
+| `0x14` | `lsm_debug`   | `pll_dbg`               | `[15:0]`  | R        | snapshot of `LsmDemod.pll_dbg` (signed Q2.13, the live PLL accumulator) — useful as a Costas-loop trace in the dashboard |
+| `0x14` | `lsm_debug`   | `sample_point_dbg`      | `[31:16]` | R        | snapshot of `LsmDemod.sample_point_dbg[17:2]` (signed Q4.10, top 16 bits of the 18-bit Q4.12 sample point) — Gardner timing trace. The 2 dropped LSBs cost ~0.25 sample of fractional resolution, irrelevant for dashboard plotting. |
+
+*`lsm_dibit_last_buffer` is co-located with `drop_count` in the same register
+to keep the bank within 6 / 8 slots and leave 2 free for future expansion
+(soft-sync detector status, AGC trace, etc.).
+
+**Behaviour of the latched NID-event fields.** The five "latched" fields
+(`nid_valid`, `n_errors`, `sync_distance`, `nac`, `duid`) live in `Signal()`s
+inside `P25Core.elaborate()` that are updated on each `nid_event_strobe`
+pulse and then read out via `R` fields. Combined with `nid_event` (sticky,
+clears on read), the PS-side flow is:
+
+```text
+loop:
+    s = read(lsm_status)
+    if s.nid_event:           # implicitly clears the sticky bit
+        nid     = read(lsm_nid)
+        drop    = read(lsm_drop_count)
+        # at this point (s.nac, s.duid, s.n_errors, s.valid, s.sync_distance,
+        # nid.nac, nid.duid) all describe the same NID event.
+```
+
+The PS sees a coherent snapshot per event because none of the latched fields
+update again until the next `nid_event_strobe` pulse, and the `nid_event`
+sticky bit is what tells the PS that *any* event has happened since the last
+read.
+
 ## IRQ assignments
 
 The P25 IP exposes a single `interrupt_out` line that is the OR of all
@@ -115,9 +179,10 @@ sticky interrupt bits in `control.interrupts`. It is connected to
 
 | Bit | Name (in `control.interrupts`) | Source signal | Purpose |
 |-----|-------------------------------|---------------|---------|
-| 0 | `dibit_dma`   | `dibit_dma.interrupt`   | sub-buffer of control-channel dibit ring filled |
-| 1 | `traffic_dma` | `traffic_dma.interrupt` | sub-buffer of traffic-channel dibit ring filled |
+| 0 | `dibit_dma`   | `dibit_dma.interrupt`   | sub-buffer of control-channel C4FM dibit ring filled |
+| 1 | `traffic_dma` | `traffic_dma.interrupt` | sub-buffer of traffic-channel C4FM dibit ring filled |
 | 2 | `iq_dma` (Phase 6C) | `iq_dma.interrupt` | sub-buffer of control-channel IQ ring filled |
+| 3 | `lsm_dibit_dma` (Phase 6E.9) | `lsm_dibit_dma.interrupt` | sub-buffer of control-channel LSM dibit ring filled. **NID events themselves are PS-polled via `lsm_status.nid_event` rather than IRQ-driven**, because at one NID per ~14 ms a 60 Hz dashboard poll already catches every event. |
 
 All bits are `Rsticky` — they latch on the source pulse and clear on read.
 
@@ -128,9 +193,10 @@ The Zynq HP1 slave port hosts all three DMA masters via Vivado SmartConnect
 
 | AXI master | HP slave | Sustained byte rate | HP1 budget @ 1.7 GB/s |
 |------------|----------|---------------------|-----------------------|
-| `m_axi_dibit`   | HP1 | ~1.28 KB/s | <0.001% |
-| `m_axi_traffic` | HP1 | ~1.28 KB/s | <0.001% |
-| `m_axi_iq`      | HP1 | ~250 KB/s  | ~0.015% |
+| `m_axi_dibit`     | HP1 | ~1.28 KB/s | <0.001% |
+| `m_axi_traffic`   | HP1 | ~1.28 KB/s | <0.001% |
+| `m_axi_iq`        | HP1 | ~250 KB/s  | ~0.015% |
+| `m_axi_lsm_dibit` | HP1 | ~1.28 KB/s | <0.001% |
 
 HP1 is wildly overprovisioned for these consumers; HP2/HP3 are unused and
 remain available for future high-bandwidth needs (e.g. wideband recorder).

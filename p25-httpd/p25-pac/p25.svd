@@ -18,7 +18,7 @@
       <access>read-write</access>
       <addressBlock>
         <offset>0</offset>
-        <size>0x88</size>
+        <size>0xc0</size>
         <usage>registers</usage>
       </addressBlock>
       <registers>
@@ -104,6 +104,12 @@
               <name>iq_dma</name>
               <description>iq_dma</description>
               <bitRange>[2:2]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>lsm_dibit_dma</name>
+              <description>lsm_dibit_dma</description>
+              <bitRange>[3:3]</bitRange>
               <access>read-only</access>
             </field>
           </fields>
@@ -486,6 +492,150 @@
               <name>next_address</name>
               <description>next_address</description>
               <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>lsm_control</name>
+          <description>lsm_control</description>
+          <addressOffset>0xa0</addressOffset>
+          <access>read-write</access>
+          <fields>
+            <field>
+              <name>lsm_enable</name>
+              <description>lsm_enable</description>
+              <bitRange>[0:0]</bitRange>
+              <access>read-write</access>
+            </field>
+            <field>
+              <name>lsm_dibit_dma_enable</name>
+              <description>lsm_dibit_dma_enable</description>
+              <bitRange>[1:1]</bitRange>
+              <access>read-write</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>lsm_status</name>
+          <description>lsm_status</description>
+          <addressOffset>0xa4</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>bch_busy</name>
+              <description>bch_busy</description>
+              <bitRange>[0:0]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>in_nid_window</name>
+              <description>in_nid_window</description>
+              <bitRange>[1:1]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>nid_event</name>
+              <description>nid_event</description>
+              <bitRange>[2:2]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>nid_valid</name>
+              <description>nid_valid</description>
+              <bitRange>[3:3]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>n_errors</name>
+              <description>n_errors</description>
+              <bitRange>[10:4]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>sync_distance</name>
+              <description>sync_distance</description>
+              <bitRange>[17:11]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>lsm_dibit_overflow</name>
+              <description>lsm_dibit_overflow</description>
+              <bitRange>[18:18]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>lsm_nid</name>
+          <description>lsm_nid</description>
+          <addressOffset>0xa8</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>nac</name>
+              <description>nac</description>
+              <bitRange>[11:0]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>duid</name>
+              <description>duid</description>
+              <bitRange>[15:12]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>lsm_drop_count</name>
+          <description>lsm_drop_count</description>
+          <addressOffset>0xac</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>drop_count</name>
+              <description>drop_count</description>
+              <bitRange>[15:0]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>lsm_dibit_last_buffer</name>
+              <description>lsm_dibit_last_buffer</description>
+              <bitRange>[18:16]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>lsm_dibit_next</name>
+          <description>lsm_dibit_next</description>
+          <addressOffset>0xb0</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>next_address</name>
+              <description>next_address</description>
+              <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>lsm_debug</name>
+          <description>lsm_debug</description>
+          <addressOffset>0xb4</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>pll_dbg</name>
+              <description>pll_dbg</description>
+              <bitRange>[15:0]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>sample_point_dbg</name>
+              <description>sample_point_dbg</description>
+              <bitRange>[31:16]</bitRange>
               <access>read-only</access>
             </field>
           </fields>

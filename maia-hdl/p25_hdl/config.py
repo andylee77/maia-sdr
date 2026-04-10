@@ -71,6 +71,26 @@ class P25Config:
         self.iq_dma_num_buffers_log2 = 3   # 8 sub-buffers
         self.iq_dma_buffer_size = 0x8000   # 32 KB per sub-buffer
 
+        # ── Control channel LSM dibit ring DMA (Phase 6E.9) ───────
+        # Parallel to the existing C4FM `dibit_dma`. The LSM demod
+        # chain (`LsmDecimator2 -> LsmFir(LPF) -> LsmFir(RRC) ->
+        # LsmDemod`) sits beside the C4FM chain on the same control
+        # DDC output and produces its own dibit stream from
+        # `LsmDemod.dibit_out`/`symbol_strobe`. Giving it its own
+        # ring DMA lets the PS drain both rings in parallel and
+        # A/B C4FM vs. LSM on the same RF capture.
+        #
+        # Layout (8 sub-buffers x 4 KB = 32 KB) mirrors `dibit_dma`
+        # exactly so the existing kernel-side DMA helper code carries
+        # over without changes. Byte rate at 4800 sym/s is identical
+        # to `dibit_dma` (~1.28 KB/s).
+        #
+        # Ring base must be aligned to total ring size (32 KB).
+        # See doc/P25_ADDRESS_MAP.md for the full picture.
+        self.lsm_dibit_dma_address = 0x1A00_0000
+        self.lsm_dibit_dma_num_buffers_log2 = 3   # 8 sub-buffers
+        self.lsm_dibit_dma_buffer_size = 0x1000   # 4 KB per sub-buffer
+
     @property
     def dibit_dma_num_buffers(self):
         return 1 << self.dibit_dma_num_buffers_log2
@@ -95,6 +115,14 @@ class P25Config:
     def iq_dma_total_size(self):
         return self.iq_dma_num_buffers * self.iq_dma_buffer_size
 
+    @property
+    def lsm_dibit_dma_num_buffers(self):
+        return 1 << self.lsm_dibit_dma_num_buffers_log2
+
+    @property
+    def lsm_dibit_dma_total_size(self):
+        return self.lsm_dibit_dma_num_buffers * self.lsm_dibit_dma_buffer_size
+
     def validate(self):
         assert self.platform >= 0 and self.platform < 256
         # Ring base addresses must be aligned to total ring size
@@ -107,3 +135,6 @@ class P25Config:
         assert self.iq_dma_address & (self.iq_dma_total_size - 1) == 0, \
             f'iq_dma_address {self.iq_dma_address:#x} not aligned to ' \
             f'ring size {self.iq_dma_total_size:#x}'
+        assert self.lsm_dibit_dma_address & (self.lsm_dibit_dma_total_size - 1) == 0, \
+            f'lsm_dibit_dma_address {self.lsm_dibit_dma_address:#x} not ' \
+            f'aligned to ring size {self.lsm_dibit_dma_total_size:#x}'

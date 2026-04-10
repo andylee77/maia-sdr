@@ -72,6 +72,10 @@ ipx::associate_bus_interfaces -busif m_axi_traffic -clock clk [ipx::current_core
 # Same clock domain as the dibit/traffic masters; SmartConnect on the
 # block-design side handles arbitration to HP1.
 ipx::associate_bus_interfaces -busif m_axi_iq -clock clk [ipx::current_core]
+# Phase 6E.9: LSM control-channel dibit ring DMA on m_axi_lsm_dibit.
+# Parallel to the C4FM m_axi_dibit master so the PS can A/B C4FM vs LSM
+# on a single RF capture. Same clock domain; same HP1 SmartConnect.
+ipx::associate_bus_interfaces -busif m_axi_lsm_dibit -clock clk [ipx::current_core]
 
 # interrupt
 ipx::add_bus_interface interrupt [ipx::current_core]

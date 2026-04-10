@@ -13,81 +13,52 @@
 #     transmitters radiate the same signal -- LSM's pulse shape gives
 #     cleaner overlap than C4FM. Data is in carrier phase, not frequency.
 #
-# CURRENT STATUS: this gateware decodes C4FM only. The LSM path is NOT
-# YET IMPLEMENTED -- if you point this at a simulcast system you will
-# get random NIDs and no useful decode. See doc/changes/0xx_lsm_support.md
-# (TBD) for the design discussion.
+# CURRENT STATUS (Phase 6E.9, 2026-04-10): the control channel runs the
+# C4FM and LSM demod chains in parallel. Both consume the same control
+# DDC output; their dibit streams flow through independent ring DMAs
+# (`dibit_dma` for C4FM at 0x1700_0000, `lsm_dibit_dma` for LSM at
+# 0x1A00_0000) so the PS can A/B both decoders on the same RF capture
+# without disturbing either chain. The recovered LSM NIDs are surfaced
+# via the new `lsm` AXI register bank (bank 5). The traffic channel is
+# still C4FM-only -- adding LSM there is a follow-up phase.
 #
-# History of this comment block (for context, since it has been wrong
-# in informative ways before):
+# LSM chain pipeline (added in 6E.9):
 #
-# An earlier iteration of this design claimed the per-sample differential
-# z[n]*conj(z[n-1]) (specifically the sign bits of (diff_re, diff_im))
-# was a "unified" slicer that worked for both C4FM and LSM. This was
-# wrong in two important ways:
+#   control DDC out (62.5 kSPS)
+#       |
+#       v
+#   LsmDecimator2  (/2)              -> 31.25 kSPS
+#       |
+#       v
+#   LsmFir(LPF_TAPS_31250)           -- 83-tap baseband LPF
+#       |
+#       v
+#   LsmFir(RRC_TAPS_31250)           -- 105-tap matched filter (alpha=0.2)
+#       |
+#       v
+#   LsmDemod                          -- timing recovery + diff demod
+#       |                                + Costas-style PLL rotate +
+#       |                                slicer + sync detect + BCH
+#       |
+#       +--> dibit_out / symbol_strobe -> lsm_dibit_packer -> lsm_dibit_dma
+#       |
+#       +--> nid_event_strobe + (NAC, DUID, n_errors, ...) -> `lsm` register bank
 #
-#   1. The per-sample differential at ~13 samples/symbol has cos(small)
-#      ~+1 always, so diff_re never goes negative. Only 2 of the 4 dibit
-#      values appear. Fixed by computing the differential at SYMBOL rate
-#      (sym[k]*conj(sym[k-1])) where the phase change is the actual P25
-#      symbol angle of +-pi/4 or +-3pi/4. See SymbolTimingRecovery's
-#      symbol-rate slicer block for the working version.
+# The LSM chain is master-enabled by `lsm.lsm_control.lsm_enable`, which
+# gates the strobe at the very front of LsmDecimator2 so all downstream
+# blocks go quiescent when 0. The lsm_dibit_dma ring is independently
+# enabled by `lsm.lsm_control.lsm_dibit_dma_enable` (mirroring the
+# dibit_dma / iq_dma pattern).
 #
-#   2. Even with the symbol-rate fix, the slicer only decodes C4FM
-#      cleanly. For LSM it produces a near-random dibit stream because:
-#        (a) LSM pulses are shaped (raised-cosine) so adjacent symbols
-#            ISI into each decision -- needs an RRC matched filter
-#            *before* slicing. We don't have one.
-#        (b) LSM data lives in absolute carrier phase, so any LO offset
-#            between AD9361 and the transmitter rotates the constellation
-#            continuously. The slicer's fixed reference angle drifts and
-#            sym_diff_re/sym_diff_im sweep through all 4 quadrants
-#            independent of signal content. Needs a Costas loop (or
-#            equivalent coherent carrier recovery). We don't have one.
-#
-#      Empirically confirmed 2026-04-09 against the Clay County simulcast
-#      site (NAC 0x8A1, 860.9625 MHz): the existing build produces ~3
-#      sync hits/sec at threshold 10, but every NID decodes with random
-#      NAC and a DUID histogram spread roughly uniformly across all 16
-#      values (TSDU bucket = 4-5%, expected 100% on a control channel).
-#      SDRTrunk on the same antenna decodes the same site cleanly using
-#      its P25P1DemodulatorLSM, which is essentially RRC + Costas + slicer.
-#
-# So our current pipeline (C4FM-only) is:
-#
-#   DDC -> raw post-FIR (re, im)  ─┐
-#                                  ├─> SymbolTimingRecovery
-#   C4FMDemod -> diff_im  ─────────┘     ├ Gardner TED on diff_im
-#                                        │ (still sample-rate, used for
-#                                        │  clock recovery only)
-#                                        └ Symbol-rate differential
-#                                          z[k]*conj(z[k-1]) computed
-#                                          on the latched IQ at the
-#                                          decision point. Sign bits of
-#                                          (diff_re, diff_im) -> dibit.
-#                                          4 DSP48E1.
-#
-# `C4FMDemod` still computes the full complex differential at sample
-# rate (used to be the slicer source); we keep it because diff_im is
-# the natural FM cross-product and feeds Gardner TED. diff_re from
-# C4FMDemod is no longer wired to anything.
-#
-# To add LSM support, two new blocks need to slot in between DDC and
-# SymbolTimingRecovery:
-#
-#   1. RRC matched filter (P25 alpha=0.2, ~24 taps at 13 sps). Symmetric
-#      FIR, ~12 DSP48E1. Real and imaginary share coefficients so total
-#      cost is two 24-tap FIRs ~= 24 DSPs.
-#
-#   2. Costas loop carrier recovery: complex multiply IQ by NCO, slice,
-#      compute phase error from sliced symbol, drive NCO via PI loop.
-#      ~3 DSPs for the rotator + small NCO + loop filter.
-#
-# Alternative: move slicing entirely to the PS (Cortex-A9), use the
-# existing IQ DMA infrastructure to stream raw post-DDC IQ to memory,
-# and run RRC + Costas + slicer in p25-httpd. Easier to develop, easier
-# to iterate, much easier to A/B test against SDRTrunk's reference.
-# This is the currently-recommended path.
+# C4FM chain detail (unchanged from Phase 6E.0)
+# ---------------------------------------------
+# The C4FM chain runs the same symbol-rate differential slicer it has
+# since Phase 4: raw post-DDC IQ feeds SymbolTimingRecovery's symbol-
+# rate `z[k]*conj(z[k-1])` slicer (4 DSP48E1), and `C4FMDemod.diff_im`
+# (the FM cross-product) drives Gardner TED for clock recovery. The
+# slicer decodes C4FM cleanly but produces ~random dibits on LSM
+# (empirically confirmed against Clay County NAC 0x8A1, 2026-04-09),
+# which is exactly why the LSM chain above exists in parallel.
 #
 # SPDX-License-Identifier: MIT
 #
@@ -112,6 +83,9 @@ from .c4fm_demod import C4FMDemod
 from .symbol_timing import SymbolTimingRecovery
 from .dibit_packer import DibitPacker
 from .iq_packer import IQPacker
+from .lsm_decimator import LsmDecimator2
+from .lsm_fir import LsmFir, LPF_TAPS_31250, RRC_TAPS_31250
+from .lsm_demod import LsmDemod
 from .config import P25Config
 from . import configs
 
@@ -166,6 +140,8 @@ class P25Core(Elaboratable):
                     Field('traffic_dma', Access.Rsticky, 1, 0),
                     # Phase 6C: control-channel post-DDC IQ ring DMA
                     Field('iq_dma', Access.Rsticky, 1, 0),
+                    # Phase 6E.9: control-channel LSM dibit ring DMA
+                    Field('lsm_dibit_dma', Access.Rsticky, 1, 0),
                 ], interrupt=True),
             },
             2)
@@ -284,6 +260,99 @@ class P25Core(Elaboratable):
             },
             2)
 
+        # ── Control channel LSM demod chain (Phase 6E.9) ──────────────
+        # Sits in parallel with the C4FM chain on the control channel.
+        # Both consume the same control DDC output (62.5 kSPS, 16-bit
+        # signed I+Q). The LSM chain decimates by 2 down to 31.25 kSPS,
+        # filters with the 83-tap baseband LPF and the 105-tap RRC,
+        # then runs LsmDemod (timing recovery + diff demod + Costas
+        # PLL rotate + slicer + sync detect + BCH FEC). The recovered
+        # dibits exit via lsm_dibit_dma; the recovered NIDs are
+        # surfaced via the new `lsm` register bank.
+        #
+        # All four blocks live at top level (not wrapped) for the same
+        # reason the C4FM chain does: keeps each block visible in the
+        # Vivado hierarchy and amaranth-sim waveforms during bring-up.
+        #
+        # Resource budget per the 6E.8 estimate (doc 017):
+        #   LsmDecimator2  : ~30 LUT, 0 DSP, 0 BRAM
+        #   LsmFir x 2     : ~2 DSP48 (sequential MAC, one per FIR),
+        #                    0 BRAM (taps live in distributed ROM)
+        #   LsmDemod       : ~30 DSP48, 2 BRAM18, ~3940 LUT
+        #   Total          : ~32 DSP48 (15% of Z7020), 2 BRAM18 (1.4%)
+        self.lsm_decimator = LsmDecimator2(width=16)
+        self.lsm_lpf = LsmFir(LPF_TAPS_31250)
+        self.lsm_rrc = LsmFir(RRC_TAPS_31250)
+        self.lsm_demod = LsmDemod()
+        # Reuse the existing DibitPacker for the LSM dibit stream so
+        # the LSM ring DMA word format is bit-identical to the C4FM
+        # ring DMA -- the PS reads both rings the same way.
+        self.lsm_dibit_packer = DibitPacker()
+        self.lsm_dibit_dma = DmaStreamRingWrite(
+            config.lsm_dibit_dma_address,
+            config.lsm_dibit_dma_num_buffers_log2,
+            config.lsm_dibit_dma_buffer_size,
+            width=64, axi_awidth=32, name='m_axi_lsm_dibit')
+
+        # ── LSM register bank (0xA0, bank 5) ──────────────────────────
+        # See doc/P25_ADDRESS_MAP.md for the canonical layout, including
+        # the read/write semantics of every field and the PS-side polling
+        # protocol for NID events.
+        #
+        # Bit-layout shorthand (bit positions inside each 32-bit word):
+        #   lsm_control [0]   lsm_enable
+        #               [1]   lsm_dibit_dma_enable
+        #   lsm_status  [0]   bch_busy
+        #               [1]   in_nid_window
+        #               [2]   nid_event             (Rsticky)
+        #               [3]   nid_valid
+        #               [10:4]  n_errors            (7 bits)
+        #               [17:11] sync_distance       (7 bits)
+        #               [18]  lsm_dibit_overflow    (Rsticky)
+        #   lsm_nid     [11:0]  nac                 (12 bits)
+        #               [15:12] duid                (4 bits)
+        #   lsm_drop_count
+        #               [15:0]  drop_count          (16 bits)
+        #               [18:16] lsm_dibit_last_buffer (3 bits, init -1)
+        #   lsm_dibit_next [31:0] next_address       (32 bits)
+        #   lsm_debug   [15:0]  pll_dbg             (signed Q2.13)
+        #               [31:16] sample_point_dbg    (signed Q4.10,
+        #                                            top 16 bits of
+        #                                            the 18-bit Q4.12)
+        self.lsm_registers = Registers(
+            'lsm', {
+                0b000: Register('lsm_control', [
+                    Field('lsm_enable', Access.RW, 1, 0),
+                    Field('lsm_dibit_dma_enable', Access.RW, 1, 0),
+                ]),
+                0b001: Register('lsm_status', [
+                    Field('bch_busy', Access.R, 1, 0),
+                    Field('in_nid_window', Access.R, 1, 0),
+                    Field('nid_event', Access.Rsticky, 1, 0),
+                    Field('nid_valid', Access.R, 1, 0),
+                    Field('n_errors', Access.R, 7, 0),
+                    Field('sync_distance', Access.R, 7, 0),
+                    Field('lsm_dibit_overflow', Access.Rsticky, 1, 0),
+                ]),
+                0b010: Register('lsm_nid', [
+                    Field('nac', Access.R, 12, 0),
+                    Field('duid', Access.R, 4, 0),
+                ]),
+                0b011: Register('lsm_drop_count', [
+                    Field('drop_count', Access.R, 16, 0),
+                    Field('lsm_dibit_last_buffer', Access.R,
+                          config.lsm_dibit_dma_num_buffers_log2, -1),
+                ]),
+                0b100: Register('lsm_dibit_next', [
+                    Field('next_address', Access.R, 32, 0),
+                ]),
+                0b101: Register('lsm_debug', [
+                    Field('pll_dbg', Access.R, 16, 0),
+                    Field('sample_point_dbg', Access.R, 16, 0),
+                ]),
+            },
+            3)
+
         # ── Traffic channel DDC + demod chain ─────────────────────────
         self.traffic_ddc = DDC('clk3x')
         self.traffic_c4fm = C4FMDemod()
@@ -356,6 +425,7 @@ class P25Core(Elaboratable):
             0x40: self.demod_registers,
             0x60: self.traffic_registers,
             0x80: self.iq_registers,        # Phase 6C
+            0xA0: self.lsm_registers,       # Phase 6E.9
         }, metadata)
 
         # ── I/O signals ────────────────────────────────────────────────
@@ -370,6 +440,7 @@ class P25Core(Elaboratable):
             + self.dibit_dma.axi.ports()
             + self.traffic_dma.axi.ports()
             + self.iq_dma.axi.ports()       # Phase 6C
+            + self.lsm_dibit_dma.axi.ports()  # Phase 6E.9
             + [
                 self.re_in,
                 self.im_in,
@@ -473,6 +544,19 @@ class P25Core(Elaboratable):
         m.submodules.iq_registers_cdc = iq_registers_cdc = RegisterCDC(
             's_axi_lite', 'sync', self.iq_registers.aw)
 
+        # Phase 6E.9: control-channel LSM demod chain submodules.
+        # All run in the same sync domain as the C4FM chain and tap
+        # the same DDC output below.
+        m.submodules.lsm_decimator = self.lsm_decimator
+        m.submodules.lsm_lpf = self.lsm_lpf
+        m.submodules.lsm_rrc = self.lsm_rrc
+        m.submodules.lsm_demod = self.lsm_demod
+        m.submodules.lsm_dibit_packer = self.lsm_dibit_packer
+        m.submodules.lsm_dibit_dma = self.lsm_dibit_dma
+        m.submodules.lsm_registers = self.lsm_registers
+        m.submodules.lsm_registers_cdc = lsm_registers_cdc = RegisterCDC(
+            's_axi_lite', 'sync', self.lsm_registers.aw)
+
         # DDC output -> C4FM discriminator
         m.d.comb += [
             self.c4fm_demod.re_in.eq(self.ddc.re_out),
@@ -568,6 +652,118 @@ class P25Core(Elaboratable):
                 self.iq_dma.last_buffer),
             self.iq_registers['iq_next_address']['next_address'].eq(
                 self.iq_dma.axi.awaddr),
+        ]
+
+        # ── Control-channel LSM demod chain (Phase 6E.9) ──────────────
+        # Pipeline:
+        #   DDC (62.5 kSPS) -> /2 decimator -> LPF -> RRC ->
+        #     LsmDemod -> { dibit_packer -> lsm_dibit_dma,
+        #                   nid event registers }
+        #
+        # Master enable: lsm_control.lsm_enable gates the strobe at the
+        # very front of LsmDecimator2, so when 0 every downstream block
+        # sees no strobes and goes quiescent (no PLL drift, no BCH
+        # sweeps, no spurious dibits).
+        lsm_enable = self.lsm_registers['lsm_control']['lsm_enable']
+
+        # Stage 1: control DDC -> LSM /2 decimator
+        m.d.comb += [
+            self.lsm_decimator.re_in.eq(self.ddc.re_out),
+            self.lsm_decimator.im_in.eq(self.ddc.im_out),
+            self.lsm_decimator.strobe_in.eq(
+                self.ddc.strobe_out & lsm_enable),
+        ]
+        # Stage 2: decimator -> 83-tap LPF
+        m.d.comb += [
+            self.lsm_lpf.re_in.eq(self.lsm_decimator.re_out),
+            self.lsm_lpf.im_in.eq(self.lsm_decimator.im_out),
+            self.lsm_lpf.strobe_in.eq(self.lsm_decimator.strobe_out),
+        ]
+        # Stage 3: LPF -> 105-tap RRC matched filter
+        m.d.comb += [
+            self.lsm_rrc.re_in.eq(self.lsm_lpf.re_out),
+            self.lsm_rrc.im_in.eq(self.lsm_lpf.im_out),
+            self.lsm_rrc.strobe_in.eq(self.lsm_lpf.strobe_out),
+        ]
+        # Stage 4: RRC -> LsmDemod (timing recovery + diff demod +
+        # PLL rotate + slicer + sync detect + BCH FEC). Outputs:
+        # `dibit_out`/`symbol_strobe` (passthrough to dibit DMA) and
+        # `nid_event_strobe` + (NAC, DUID, ...) latched into the
+        # lsm register bank below.
+        m.d.comb += [
+            self.lsm_demod.re_in.eq(self.lsm_rrc.re_out),
+            self.lsm_demod.im_in.eq(self.lsm_rrc.im_out),
+            self.lsm_demod.strobe_in.eq(self.lsm_rrc.strobe_out),
+        ]
+
+        # Stage 5: LsmDemod dibits -> packer -> ring DMA stream
+        # Mirrors the C4FM dibit_packer / dibit_dma wiring exactly.
+        m.d.comb += [
+            self.lsm_dibit_packer.dibit_in.eq(self.lsm_demod.dibit_out),
+            self.lsm_dibit_packer.symbol_strobe.eq(
+                self.lsm_demod.symbol_strobe),
+            self.lsm_dibit_dma.stream_data.eq(
+                self.lsm_dibit_packer.data_out),
+            self.lsm_dibit_dma.stream_valid.eq(
+                self.lsm_dibit_packer.data_valid),
+            self.lsm_dibit_packer.stream_ready.eq(
+                self.lsm_dibit_dma.stream_ready),
+            self.lsm_dibit_dma.enable.eq(
+                self.lsm_registers['lsm_control']['lsm_dibit_dma_enable']),
+            interrupts_reg['lsm_dibit_dma'].eq(self.lsm_dibit_dma.interrupt),
+        ]
+
+        # Stage 6: NID event latching.
+        # Latched copies of the BCH-decoded NID fields. Updated on
+        # every nid_event_strobe pulse so the PS sees a coherent
+        # snapshot when it reads after observing nid_event sticky.
+        latched_nac = Signal(12, reset_less=True)
+        latched_duid = Signal(4, reset_less=True)
+        latched_n_errors = Signal(7, reset_less=True)
+        latched_valid = Signal(reset_less=True)
+        latched_sync_distance = Signal(7, reset_less=True)
+        with m.If(self.lsm_demod.nid_event_strobe):
+            m.d.sync += [
+                latched_nac.eq(self.lsm_demod.nac_out),
+                latched_duid.eq(self.lsm_demod.duid_out),
+                latched_n_errors.eq(self.lsm_demod.n_errors_out),
+                latched_valid.eq(self.lsm_demod.valid_out),
+                latched_sync_distance.eq(self.lsm_demod.sync_distance_out),
+            ]
+
+        # Continuous-read live signals + the latched NID fields, all
+        # surfaced as R / Rsticky fields in the lsm bank. The
+        # nid_event sticky bit is fed by nid_event_strobe directly --
+        # the Rsticky machinery in `Register` does the latch + clear-
+        # on-read.
+        lsm_status = self.lsm_registers['lsm_status']
+        lsm_nid = self.lsm_registers['lsm_nid']
+        lsm_drop = self.lsm_registers['lsm_drop_count']
+        lsm_debug = self.lsm_registers['lsm_debug']
+        m.d.comb += [
+            lsm_status['bch_busy'].eq(self.lsm_demod.bch_busy),
+            lsm_status['in_nid_window'].eq(self.lsm_demod.in_nid_window),
+            lsm_status['nid_event'].eq(self.lsm_demod.nid_event_strobe),
+            lsm_status['nid_valid'].eq(latched_valid),
+            lsm_status['n_errors'].eq(latched_n_errors),
+            lsm_status['sync_distance'].eq(latched_sync_distance),
+            lsm_status['lsm_dibit_overflow'].eq(
+                self.lsm_dibit_packer.overflow),
+            lsm_nid['nac'].eq(latched_nac),
+            lsm_nid['duid'].eq(latched_duid),
+            lsm_drop['drop_count'].eq(self.lsm_demod.nid_drop_count),
+            lsm_drop['lsm_dibit_last_buffer'].eq(
+                self.lsm_dibit_dma.last_buffer),
+            self.lsm_registers['lsm_dibit_next']['next_address'].eq(
+                self.lsm_dibit_dma.axi.awaddr),
+            # pll_dbg is signed Q2.13 (16 bits), drop straight in.
+            lsm_debug['pll_dbg'].eq(self.lsm_demod.pll_dbg),
+            # sample_point_dbg is signed Q4.12 (18 bits); take the top
+            # 16 bits to get a Q4.10 view that fits the field. Losing
+            # 2 LSBs of fractional resolution is fine for a dashboard
+            # trace -- still ~0.25 sample of precision.
+            lsm_debug['sample_point_dbg'].eq(
+                self.lsm_demod.sample_point_dbg[2:]),
         ]
 
         # ── Traffic channel DDC + demod chain ─────────────────────────
@@ -674,7 +870,8 @@ class P25Core(Elaboratable):
         #   word 0x10-0x17: demod registers      (bits [5:3] == 010)
         #   word 0x18-0x1F: traffic registers    (bits [5:3] == 011)
         #   word 0x20-0x27: IQ DMA registers     (bits [5:3] == 100) [Phase 6C]
-        #   word 0x28-0x3F: free for future banks
+        #   word 0x28-0x2F: LSM registers        (bits [5:3] == 101) [Phase 6E.9]
+        #   word 0x30-0x3F: free for future banks
         address = Signal(self.axi4_awidth, reset_less=True)
         wdata = Signal(32, reset_less=True)
         addr_bank = self.axi4lite.address[3:6]  # bits [5:3]
@@ -683,22 +880,26 @@ class P25Core(Elaboratable):
         demod_regs_select = (addr_bank == 0b010)
         traffic_regs_select = (addr_bank == 0b011)
         iq_regs_select = (addr_bank == 0b100)       # Phase 6C
+        lsm_regs_select = (addr_bank == 0b101)      # Phase 6E.9
         m.d.s_axi_lite += [
             self.axi4lite.rdata.eq(self.control_registers.rdata
                                    | sdr_registers_cdc.i_rdata
                                    | demod_registers_cdc.i_rdata
                                    | traffic_registers_cdc.i_rdata
-                                   | iq_registers_cdc.i_rdata),
+                                   | iq_registers_cdc.i_rdata
+                                   | lsm_registers_cdc.i_rdata),
             self.axi4lite.rdone.eq(self.control_registers.rdone
                                    | sdr_registers_cdc.i_rdone
                                    | demod_registers_cdc.i_rdone
                                    | traffic_registers_cdc.i_rdone
-                                   | iq_registers_cdc.i_rdone),
+                                   | iq_registers_cdc.i_rdone
+                                   | lsm_registers_cdc.i_rdone),
             self.axi4lite.wdone.eq(self.control_registers.wdone
                                    | sdr_registers_cdc.i_wdone
                                    | demod_registers_cdc.i_wdone
                                    | traffic_registers_cdc.i_wdone
-                                   | iq_registers_cdc.i_wdone),
+                                   | iq_registers_cdc.i_wdone
+                                   | lsm_registers_cdc.i_wdone),
             self.control_registers.ren.eq(
                 self.axi4lite.ren & control_regs_select),
             self.control_registers.wstrobe.eq(
@@ -719,6 +920,10 @@ class P25Core(Elaboratable):
                 self.axi4lite.ren & iq_regs_select),
             iq_registers_cdc.i_wstrobe.eq(
                 Mux(iq_regs_select, self.axi4lite.wstrobe, 0)),
+            lsm_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & lsm_regs_select),
+            lsm_registers_cdc.i_wstrobe.eq(
+                Mux(lsm_regs_select, self.axi4lite.wstrobe, 0)),
             address.eq(self.axi4lite.address),
             wdata.eq(self.axi4lite.wdata),
         ]
@@ -733,6 +938,8 @@ class P25Core(Elaboratable):
             traffic_registers_cdc.i_wdata.eq(wdata),
             iq_registers_cdc.i_address.eq(address),
             iq_registers_cdc.i_wdata.eq(wdata),
+            lsm_registers_cdc.i_address.eq(address),
+            lsm_registers_cdc.i_wdata.eq(wdata),
         ]
 
         # ── Registers sync domain ────────────────────────────────────
@@ -775,6 +982,16 @@ class P25Core(Elaboratable):
             iq_registers_cdc.o_rdone.eq(self.iq_registers.rdone),
             iq_registers_cdc.o_wdone.eq(self.iq_registers.wdone),
             iq_registers_cdc.o_rdata.eq(self.iq_registers.rdata),
+        ]
+        # lsm_registers CDC (Phase 6E.9)
+        m.d.comb += [
+            self.lsm_registers.ren.eq(lsm_registers_cdc.o_ren),
+            self.lsm_registers.wstrobe.eq(lsm_registers_cdc.o_wstrobe),
+            self.lsm_registers.address.eq(lsm_registers_cdc.o_address),
+            self.lsm_registers.wdata.eq(lsm_registers_cdc.o_wdata),
+            lsm_registers_cdc.o_rdone.eq(self.lsm_registers.rdone),
+            lsm_registers_cdc.o_wdone.eq(self.lsm_registers.wdone),
+            lsm_registers_cdc.o_rdata.eq(self.lsm_registers.rdata),
         ]
 
         # ── Internal resets ───────────────────────────────────────────
