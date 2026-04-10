@@ -16,6 +16,12 @@ pub struct SystemInfo {
     pub site_id: Option<u8>,
     pub lra: Option<u8>,
     pub control_channel: Option<String>,
+    /// Build tag of the running p25-httpd binary. Lets the browser
+    /// verify that the deployed binary is the one that was just built
+    /// (Buildroot zeros file mtimes, so on-target file timestamps are
+    /// useless for this check). Bumped on every feature-flag change.
+    #[serde(default)]
+    pub build: Option<String>,
 }
 
 /// Active voice channel grant

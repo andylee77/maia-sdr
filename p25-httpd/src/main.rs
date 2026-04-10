@@ -26,6 +26,16 @@ mod uio;
 
 use p25::control_channel::ControlChannelDecoder;
 
+/// Build tag, logged at startup and exposed via `/api/system`.
+///
+/// **Bump this string whenever a feature flag changes** so on-target
+/// "is the binary I just flashed actually the one I just built?" is a
+/// trivial check (`grep "p25-httpd build" /var/log/p25-httpd.log` or
+/// `wget -qO- http://target:8080/api/system | grep build`). Don't try
+/// to be clever with mtimes (Buildroot zeros them) or doc-comment
+/// strings (they don't survive into the binary).
+pub const BUILD_TAG: &str = "2026-04-10-phase6f.1-dashboard-migration";
+
 #[derive(Parser)]
 #[command(name = "p25-httpd", about = "Fishball P25 Trunking Radio")]
 struct Args {
@@ -83,6 +93,18 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // Build marker. Bump the BUILD_TAG string whenever a feature flag changes
+    // so on-target verification of "is this binary the one I just built" is a
+    // single grep instead of guessing from mtimes (Buildroot zeros mtimes to
+    // 1970) or doc-comment strings (which don't survive into the binary).
+    //
+    // BUILD_TAG also lands in /api/system as the `build` field so the browser
+    // can show the deployed build at a glance.
+    tracing::info!(
+        "p25-httpd build: {} (dashboard_source=lsm_decoder, Phase 6F.1)",
+        BUILD_TAG
+    );
 
     // Pluto crystal calibration: shift the DDC NCO by -ppm * 1e-6 * rx_lo Hz.
     // See the doc comment on Args::lo_ppm for why this only moves the NCO and

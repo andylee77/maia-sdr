@@ -81,6 +81,7 @@ async fn get_system(State(state): State<Arc<AppState>>) -> Json<SystemInfo> {
         site_id: sys.site_id,
         lra: sys.lra,
         control_channel: sys.control_channel.map(|c| format!("{}", c)),
+        build: Some(crate::BUILD_TAG.to_string()),
     })
 }
 
