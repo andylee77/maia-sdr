@@ -77,11 +77,22 @@ from .lsm_timing_interp import LsmTimingInterp
 from .lsm_diff_demod_slicer import LsmDiffDemodSlicer
 from .lsm_pll_rotate import LsmPllRotate
 from .lsm_gardner_ted import LsmGardnerTed
-from .lsm_pll_update import LsmPllUpdate
+from .lsm_pll_update import LsmPllUpdate, LsmPllUpdateLinearised
 
 
 class LsmDemodLoop(Elaboratable):
     """Closed-loop LSM demod from post-RRC IQ to dibits.
+
+    Parameters
+    ----------
+    pll_mode : str
+        Which PLL update implementation to instantiate. Default
+        ``'cordic'`` selects the production
+        :class:`LsmPllUpdate` (10-iteration CORDIC vectoring +
+        true atan2 phase-error computation, Phase 6E.6e). The
+        legacy small-angle linearised form (Phase 6E.6b) can be
+        selected with ``'linearised'`` for the slip-resistance
+        regression test in ``test_lsm_demod_loop.py``.
 
     Inputs (sync domain):
         re_in, im_in : signed 16  Q1.15 IQ at 31.25 kSPS (post-decimator,
@@ -100,7 +111,13 @@ class LsmDemodLoop(Elaboratable):
             actually see.
     """
 
-    def __init__(self):
+    def __init__(self, *, pll_mode='cordic'):
+        if pll_mode not in ('cordic', 'linearised'):
+            raise ValueError(
+                f"pll_mode must be 'cordic' or 'linearised', "
+                f"got {pll_mode!r}")
+        self.pll_mode = pll_mode
+
         # ── Inputs ──────────────────────────────────────────────
         self.re_in = Signal(signed(16))
         self.im_in = Signal(signed(16))
@@ -125,7 +142,11 @@ class LsmDemodLoop(Elaboratable):
         m.submodules.rotate_mid = rotate_mid = LsmPllRotate()
         m.submodules.rotate_sym = rotate_sym = LsmPllRotate()
         m.submodules.gardner = gardner = LsmGardnerTed()
-        m.submodules.pll_update = pll_update = LsmPllUpdate()
+        if self.pll_mode == 'cordic':
+            pll_update_cls = LsmPllUpdate
+        else:
+            pll_update_cls = LsmPllUpdateLinearised
+        m.submodules.pll_update = pll_update = pll_update_cls()
 
         # ── Stage 1: timing recovery + lerp ─────────────────────
         m.d.comb += [

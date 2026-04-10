@@ -1,17 +1,27 @@
 #
 # Fishball P25 -- LSM PLL update HDL tests
 #
-# Phase 6E.6b. Drives `LsmPllUpdate` with synthetic inputs that
-# exercise:
-#   - the 4-way dibit mux (one test per dibit)
-#   - the raw clamp (large input -> clamped step)
+# Covers BOTH PLL update implementations:
+#
+#   - `LsmPllUpdate`           (Phase 6E.6e, CORDIC atan2 form;
+#                               production)
+#   - `LsmPllUpdateLinearised` (Phase 6E.6b, small-angle form;
+#                               legacy regression baseline)
+#
+# Tests exercise:
+#   - the 4-way dibit mux (one test per dibit, both forms)
+#   - per-step clamps (large input -> clamped step)
 #   - the integrator clamp (drive pll past +/- pi/3)
-#   - convergence behaviour against a Python reference
+#   - convergence behaviour against a Python reference (linearised
+#     form: bit-exact; CORDIC form: a few ULPs of CORDIC residual)
+#   - cross-form smoke: both classes converge in the same direction
+#     on the same dibit/(i,q) pair
 #
 # SPDX-License-Identifier: MIT
 #
 
 import math
+import random
 import unittest
 
 from amaranth import *
@@ -19,6 +29,7 @@ from amaranth.sim import Simulator
 
 from p25_hdl.lsm_pll_update import (
     LsmPllUpdate,
+    LsmPllUpdateLinearised,
     PLL_GAIN_FLOAT,
     PLL_MAX_ERROR_FLOAT,
     MAX_PLL_ABS_FLOAT,
@@ -87,7 +98,13 @@ class _PythonPll:
 
 def _drive_pll(dut, samples, *, drain=4):
     """Drive samples = [(i_q15, q_q15, dibit), ...] and collect
-    (pll_out_q13, ...) per pll_strobe."""
+    (pll_out_q13, ...) per pll_strobe.
+
+    `drain` is the number of sync cycles to wait for pll_strobe
+    after each input strobe. The linearised form needs ~3 cycles;
+    the CORDIC form needs ~16. Default is 4 (matches the legacy
+    linearised form); the CORDIC tests pass `drain=24` explicitly.
+    """
     out = []
 
     async def bench(ctx):
@@ -98,13 +115,15 @@ def _drive_pll(dut, samples, *, drain=4):
             ctx.set(dut.symbol_strobe, 1)
             await ctx.tick()
             ctx.set(dut.symbol_strobe, 0)
+            captured = False
             for _ in range(drain):
                 await ctx.tick()
-                if ctx.get(dut.pll_strobe):
+                if ctx.get(dut.pll_strobe) and not captured:
                     v = ctx.get(dut.pll_out)
                     if v >= (1 << 15):
                         v -= (1 << 16)
                     out.append(v)
+                    captured = True
 
     sim = Simulator(dut)
     sim.add_clock(16e-9)
@@ -113,11 +132,66 @@ def _drive_pll(dut, samples, *, drain=4):
     return out
 
 
-class TestLsmPllUpdate(unittest.TestCase):
+# CORDIC PLL update needs more drain cycles than the linearised
+# form: ~16 cycles latency from symbol_strobe to pll_strobe.
+CORDIC_DRAIN = 24
+
+
+class _AtanPll:
+    """Literal atan2-based PLL reference matching the Rust loop.
+
+    This is the algorithm `LsmPllUpdate` (CORDIC form) implements.
+    Unlike `_PythonPll`, this reference uses true `math.atan2` --
+    so HDL comparisons must allow a few ULPs of CORDIC residual
+    quantisation error (the HDL is bit-exact against the
+    `cordic_vectoring_reference` in `lsm_cordic_atan2.py`, which
+    is its own bit-exact Python reference).
+    """
+
+    DIBIT_PHASE = {
+        0b00: math.pi / 4.0,
+        0b01: 3.0 * math.pi / 4.0,
+        0b10: -math.pi / 4.0,
+        0b11: -3.0 * math.pi / 4.0,
+    }
+
+    def __init__(self):
+        self.pll = 0.0
+
+    def step(self, i_sym, q_sym, dibit):
+        if i_sym == 0.0 and q_sym == 0.0:
+            # Match Rust + HDL: skip the update on exact zero input.
+            return self.pll
+        soft_symbol = math.atan2(q_sym, i_sym)
+        phase_error = soft_symbol - self.DIBIT_PHASE[dibit]
+        # Wrap into (-pi, pi] -- not strictly needed for the cases
+        # the test exercises, but matches Rust's natural range.
+        while phase_error > math.pi:
+            phase_error -= 2 * math.pi
+        while phase_error < -math.pi:
+            phase_error += 2 * math.pi
+        if phase_error > PLL_MAX_ERROR_FLOAT:
+            phase_error = PLL_MAX_ERROR_FLOAT
+        elif phase_error < -PLL_MAX_ERROR_FLOAT:
+            phase_error = -PLL_MAX_ERROR_FLOAT
+        self.pll -= phase_error * PLL_GAIN_FLOAT
+        if self.pll > MAX_PLL_ABS_FLOAT:
+            self.pll = MAX_PLL_ABS_FLOAT
+        elif self.pll < -MAX_PLL_ABS_FLOAT:
+            self.pll = -MAX_PLL_ABS_FLOAT
+        return self.pll
+
+
+class TestLsmPllUpdateLinearised(unittest.TestCase):
+    """Legacy tests for the small-angle linearised form. These all
+    target `LsmPllUpdateLinearised` (the legacy class), NOT the
+    production `LsmPllUpdate` (CORDIC form). The linearised tests
+    have to keep passing because the slip-resistance regression
+    test in test_lsm_demod_loop.py instantiates the linearised
+    class to demonstrate the slip behaviour."""
 
     def test_constants(self):
         """Q-format constants land within 1 ULP of the float values."""
-        approx = LsmPllUpdate.__module__  # silence linter
         from p25_hdl.lsm_pll_update import (
             COMBINED_GAIN_Q16, RAW_CLAMP_Q15, MAX_PLL_ABS_Q13)
         self.assertAlmostEqual(
@@ -129,7 +203,7 @@ class TestLsmPllUpdate(unittest.TestCase):
 
     def test_zero_input_no_change(self):
         """All-zero (i, q) -> raw == 0 -> step == 0 -> pll stays 0."""
-        dut = LsmPllUpdate()
+        dut = LsmPllUpdateLinearised()
         samples = [(0, 0, 0b00)] * 10
         out = _drive_pll(dut, samples)
         self.assertGreaterEqual(len(out), 5)
@@ -151,20 +225,20 @@ class TestLsmPllUpdate(unittest.TestCase):
         q_q15 = _q(0.5, INPUT_FRAC_BITS, 18)
 
         # 00 -> step 0 -> pll stays 0
-        dut = LsmPllUpdate()
+        dut = LsmPllUpdateLinearised()
         out = _drive_pll(dut, [(i_q15, q_q15, 0b00)] * 5)
         for v in out:
             self.assertEqual(v, 0)
 
         # 11 -> step 0 -> pll stays 0
-        dut = LsmPllUpdate()
+        dut = LsmPllUpdateLinearised()
         out = _drive_pll(dut, [(i_q15, q_q15, 0b11)] * 5)
         for v in out:
             self.assertEqual(v, 0)
 
         # 01 -> raw = -1 (clamped to -RAW_CLAMP) -> step = -clamped*gain
         # -> pll += clamped*gain (positive)
-        dut = LsmPllUpdate()
+        dut = LsmPllUpdateLinearised()
         out = _drive_pll(dut, [(i_q15, q_q15, 0b01)] * 5)
         for v in out:
             self.assertGreater(v, 0,
@@ -172,7 +246,7 @@ class TestLsmPllUpdate(unittest.TestCase):
 
         # 10 -> raw = +1 (clamped to +RAW_CLAMP) -> step = +clamped*gain
         # -> pll -= positive (negative)
-        dut = LsmPllUpdate()
+        dut = LsmPllUpdateLinearised()
         out = _drive_pll(dut, [(i_q15, q_q15, 0b10)] * 5)
         for v in out:
             self.assertLess(v, 0,
@@ -187,7 +261,7 @@ class TestLsmPllUpdate(unittest.TestCase):
         i_q15 = _q(1.0, INPUT_FRAC_BITS, 18)  # saturates to 32767
         q_q15 = _q(1.0, INPUT_FRAC_BITS, 18)
 
-        dut = LsmPllUpdate()
+        dut = LsmPllUpdateLinearised()
         # Run enough symbols to drive pll past pi/3.
         # Each step is approximately RAW_CLAMP * COMBINED_GAIN
         # ~= 0.4243 * 0.0707 ~= 0.030 rad / step.
@@ -227,7 +301,7 @@ class TestLsmPllUpdate(unittest.TestCase):
              d)
             for (i, q, d) in py_inputs
         ]
-        dut = LsmPllUpdate()
+        dut = LsmPllUpdateLinearised()
         out = _drive_pll(dut, hdl_inputs)
 
         self.assertEqual(len(out), len(py_pll),
@@ -252,6 +326,186 @@ class TestLsmPllUpdate(unittest.TestCase):
                 err, TOLERANCE_ULPS,
                 f"sample {i}: HDL {got} (={got/Q13:.5f}) "
                 f"vs ref {ref_q13} (={ref:.5f}), err {err} ULPs")
+
+
+class TestLsmPllUpdateCordic(unittest.TestCase):
+    """Tests for the production `LsmPllUpdate` (CORDIC atan2 form).
+
+    The HDL is bit-exact against `cordic_vectoring_reference` in
+    `lsm_cordic_atan2.py`, but tests here compare against the
+    *literal* float-precision atan2 reference (`_AtanPll`) -- the
+    HDL has to be allowed a small CORDIC residual (~1-3 mrad
+    /symbol => ~10 ULPs in Q2.13 over the test horizon)."""
+
+    def test_zero_input_no_change(self):
+        """All-zero (i, q) hits the explicit `pending_skip` path
+        in the HDL: the CORDIC still runs (its FSM doesn't gate on
+        input), but the final subtract is forced to 0 so the pll
+        register is left untouched. Matches Rust's
+        `if soft_symbol != 0.0` skip semantics."""
+        dut = LsmPllUpdate()
+        out = _drive_pll(dut, [(0, 0, 0b00)] * 10, drain=CORDIC_DRAIN)
+        self.assertGreaterEqual(len(out), 5)
+        for v in out:
+            self.assertEqual(
+                v, 0,
+                f"CORDIC pll should stay 0 on zero input, got {v}")
+
+    def test_each_dibit_drives_correct_sign(self):
+        """For each dibit, drive an input that puts the symbol
+        slightly off the ideal angle by +0.1 rad. The CORDIC
+        version computes phase_error as the *true* angle relative
+        to the ideal (not the small-angle proxy), so the sign of
+        the resulting pll step is unambiguous: positive phase
+        error -> negative pll step (pll -= phase_error * gain)."""
+        offset = 0.1
+        for (dibit, ideal_angle) in [
+            (0b00, math.pi / 4.0),
+            (0b01, 3.0 * math.pi / 4.0),
+            (0b10, -math.pi / 4.0),
+            (0b11, -3.0 * math.pi / 4.0),
+        ]:
+            ang = ideal_angle + offset
+            mag = 0.5
+            i = _q(mag * math.cos(ang), INPUT_FRAC_BITS, 18)
+            q = _q(mag * math.sin(ang), INPUT_FRAC_BITS, 18)
+            dut = LsmPllUpdate()
+            out = _drive_pll(
+                dut, [(i, q, dibit)] * 5, drain=CORDIC_DRAIN)
+            self.assertEqual(
+                len(out), 5,
+                f"dibit {dibit:02b}: expected 5 strobes, got {len(out)}")
+            # +0.1 rad phase error -> pll decreases by ~ 0.01 rad/step.
+            # After 5 steps, pll should be ~ -0.05 rad = -410 in Q2.13.
+            # Allow generous tolerance for CORDIC residual.
+            self.assertLess(
+                out[-1], -100,
+                f"dibit {dibit:02b}: expected pll <-100, got {out[-1]}")
+            self.assertGreater(
+                out[-1], -800,
+                f"dibit {dibit:02b}: expected pll >-800, got {out[-1]}")
+
+    def test_pll_clamps_at_pi_over_3(self):
+        """Drive a constant phase error large enough to saturate
+        the integrator, verify it clamps at +/- pi/3."""
+        # Symbol at +pi/4 + 0.5 rad, dibit 00 (ideal +pi/4).
+        # CORDIC computes phase_error = +0.5, clamps to +0.3,
+        # step = -0.03 rad / symbol. After ~35 symbols pll hits
+        # -pi/3. Run 60 to be safe.
+        ang = math.pi / 4.0 + 0.5
+        mag = 0.5
+        i = _q(mag * math.cos(ang), INPUT_FRAC_BITS, 18)
+        q = _q(mag * math.sin(ang), INPUT_FRAC_BITS, 18)
+        dut = LsmPllUpdate()
+        out = _drive_pll(
+            dut, [(i, q, 0b00)] * 60, drain=CORDIC_DRAIN)
+        from p25_hdl.lsm_pll_update import MAX_PLL_ABS_Q13
+        # Final value should be at -MAX_PLL_ABS_Q13 (within a few
+        # ULPs of CORDIC quantisation).
+        self.assertLessEqual(out[-1], -MAX_PLL_ABS_Q13 + 4)
+        self.assertGreaterEqual(out[-1], -MAX_PLL_ABS_Q13 - 1)
+
+    def test_against_atan2_reference(self):
+        """Compare HDL pll trace against the literal-atan2 Python
+        reference (`_AtanPll`) on a deterministic random input.
+
+        Tolerance is necessarily looser than the linearised form's
+        16-ULP bound: each CORDIC call has ~1-3 mrad residual error
+        (~25 ULPs in Q2.13), and the integrator accumulates a
+        random walk of these errors. Allow 80 ULPs (~10 mrad) over
+        a 64-symbol horizon -- still tight enough to catch a real
+        algorithm bug, loose enough that CORDIC quantisation
+        doesn't false-fail the test."""
+        rng = random.Random(0xCAFE)
+        n = 64
+        py_inputs = []
+        for k in range(n):
+            ang = rng.uniform(-math.pi, math.pi)
+            mag = rng.uniform(0.2, 0.6)
+            i = mag * math.cos(ang)
+            q = mag * math.sin(ang)
+            # Pick the dibit the slicer would pick (4-PSK
+            # nearest-quadrant on the input angle, before any PLL
+            # rotation -- this matches what LsmDemodLoop's
+            # `rotated_dibit` will produce on the rotated symbol).
+            if i >= 0 and q >= 0:
+                d = 0b00
+            elif i < 0 and q >= 0:
+                d = 0b01
+            elif i >= 0 and q < 0:
+                d = 0b10
+            else:
+                d = 0b11
+            py_inputs.append((i, q, d))
+
+        py = _AtanPll()
+        py_pll = [py.step(i, q, d) for (i, q, d) in py_inputs]
+
+        hdl_inputs = [
+            (_q(i, INPUT_FRAC_BITS, 18),
+             _q(q, INPUT_FRAC_BITS, 18),
+             d)
+            for (i, q, d) in py_inputs
+        ]
+        dut = LsmPllUpdate()
+        out = _drive_pll(dut, hdl_inputs, drain=CORDIC_DRAIN)
+
+        self.assertEqual(len(out), len(py_pll),
+                         f"HDL emitted {len(out)} samples, "
+                         f"reference expected {len(py_pll)}")
+
+        TOLERANCE_ULPS = 80   # ~10 mrad over 64 steps
+        Q13 = 1 << 13
+        max_err = 0
+        for i, (got, ref) in enumerate(zip(out, py_pll)):
+            ref_q13 = int(round(ref * Q13))
+            err = abs(got - ref_q13)
+            max_err = max(max_err, err)
+            self.assertLessEqual(
+                err, TOLERANCE_ULPS,
+                f"sample {i}: HDL {got} (={got/Q13:.5f} rad) "
+                f"vs ref {ref_q13} (={ref:.5f} rad), err {err} ULPs")
+        # Print the worst-case error so the test output is
+        # informative without forcing a tight assertion.
+        print(f"\n[pll_cordic] max err = {max_err} ULPs "
+              f"(={max_err / Q13 * 1000:.2f} mrad over 64 steps)")
+
+    def test_skip_on_zero_input_does_not_corrupt_state(self):
+        """Verify the `pending_skip` path doesn't desync the
+        CORDIC pipeline: alternate zero and non-zero inputs and
+        check that the non-zero updates still produce the right
+        sign of step (i.e. the skip flag isn't being latched into
+        the wrong slot)."""
+        offset = 0.1
+        ang = math.pi / 4.0 + offset
+        mag = 0.5
+        i = _q(mag * math.cos(ang), INPUT_FRAC_BITS, 18)
+        q = _q(mag * math.sin(ang), INPUT_FRAC_BITS, 18)
+        zero = (0, 0, 0b00)
+        nonzero = (i, q, 0b00)
+        # Alternate: zero, nonzero, zero, nonzero, ...
+        # The non-zero updates should drive pll negative; the
+        # zero updates should leave it alone. Final pll should be
+        # ~ 5 negative steps deep, NOT 10.
+        samples = []
+        for _ in range(10):
+            samples.append(zero)
+            samples.append(nonzero)
+        dut = LsmPllUpdate()
+        out = _drive_pll(dut, samples, drain=CORDIC_DRAIN)
+        # Expect 20 strobes total (one per sample).
+        self.assertEqual(len(out), 20)
+        # Even-indexed samples were zero -> pll unchanged.
+        # Odd-indexed samples were non-zero -> pll decreases.
+        # After all 20 samples (10 non-zero updates), pll should
+        # be ~ -10 * 0.01 rad = -0.1 rad = -819 in Q2.13.
+        final = out[-1]
+        self.assertLess(
+            final, -300,
+            f"expected pll < -300 after 10 non-zero updates, got {final}")
+        self.assertGreater(
+            final, -1500,
+            f"expected pll > -1500, got {final}")
 
 
 if __name__ == '__main__':
