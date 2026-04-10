@@ -74,6 +74,21 @@ async fn main() -> anyhow::Result<()> {
     decoder.set_event_tx(event_tx.clone());
     let decoder = Arc::new(RwLock::new(decoder));
 
+    // Phase 6E.10 bring-up: a second independent `ControlChannelDecoder`
+    // instance fed by the HDL LSM dibit stream from `lsm_dibit_dma`.
+    // Runs the identical Hunting -> ReadingNid -> ReadingDu -> trellis
+    // -> CRC -> TsbkMessage pipeline as the C4FM decoder above, just
+    // against a different dibit source. Shares the same event_tx
+    // broadcast channel so both decoders' TSBKs land on the same
+    // dashboard WebSocket (with distinct trace targets in the server
+    // log so they can be separated post-hoc). Both instances operate
+    // in parallel against the same RF capture on bring-up days -- this
+    // is how we validate the HDL LSM port (Phase 6E.0-6E.9) against the
+    // working Phase 2A C4FM path.
+    let mut lsm_decoder = ControlChannelDecoder::new();
+    lsm_decoder.set_event_tx(event_tx.clone());
+    let lsm_decoder = Arc::new(RwLock::new(lsm_decoder));
+
     // Phase 6D dashboard wiring: shared LsmStats mutex, populated by the
     // LSM IRQ task below and read by the /api/lsm handler. Kept out of
     // the cfg(linux) block so non-Linux builds still expose the (empty)
@@ -294,20 +309,45 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        // 6c. Spawn HDL LSM dibit ring drain task (Phase 6E.9/6E.10).
+        // 6c. Spawn HDL LSM dibit ring drain + TSBK decode task
+        //     (Phase 6E.9/6E.10 bring-up).
+        //
         //     The HDL LSM demod chain produces its own dibit stream via
-        //     `lsm_dibit_dma`, parallel to the C4FM `dibit_dma` ring.
-        //     We drain it to keep the ring from back-pressuring, but we
-        //     deliberately do NOT feed it to the C4FM control-channel
-        //     decoder -- LSM dibits have different symbol-phase timing
-        //     and feeding them into the C4FM TSBK parser would corrupt
-        //     state. For now the dibits are only counted + histogrammed,
-        //     so bring-up can confirm "gateware is producing plausible
-        //     symbols" without the risk of cross-polluting the working
-        //     Phase 2A decoder. A dedicated LSM TSBK decoder is Phase 6F.
+        //     `lsm_dibit_dma`, parallel to the C4FM `dibit_dma` ring on
+        //     the same control DDC output. We feed that stream into a
+        //     SECOND, independent `ControlChannelDecoder` instance
+        //     (`lsm_decoder`) which runs the identical Hunting ->
+        //     ReadingNid -> ReadingDu -> trellis -> CRC -> TsbkMessage
+        //     pipeline as the C4FM decoder above, just against a
+        //     different dibit source. Both decoders land events on the
+        //     same WebSocket broadcast channel so the dashboard sees a
+        //     unified TSBK stream; the distinct trace targets
+        //     (`p25_decoder` vs `p25_hdl_lsm_decoder`) let operators
+        //     separate them in the server log.
+        //
+        //     **Why a separate instance instead of feeding into the
+        //     existing decoder:** the two dibit streams come from two
+        //     independent HDL demod chains with independent symbol
+        //     timing loops. Frame sync alignment, NID boundaries, and
+        //     TSU framing state are all specific to the stream they
+        //     came from -- sharing state would corrupt either or both
+        //     decoders. Two parallel instances is cheap (~300 bytes of
+        //     state each on an ARM Cortex-A9) and gives us the
+        //     cross-validation we want for bring-up: both decoders
+        //     should emit IDENTICAL TSBK streams against the same RF
+        //     capture, confirming the HDL LSM port is equivalent to
+        //     the working Phase 2A C4FM path.
+        //
+        //     The existing Phase 6D in-PS Rust LSM pipeline keeps
+        //     running in parallel (task 6b below) as a third
+        //     independent sanity check. Retiring it is a Phase 6F
+        //     decision after all three paths converge on hardware.
         let lsm_dibit_core = ip_core.clone();
+        let lsm_dibit_decoder = lsm_decoder.clone();
         tokio::spawn(async move {
-            tracing::info!("HDL LSM dibit reader task started (Phase 6E)");
+            tracing::info!(
+                "HDL LSM dibit reader + TSBK decoder task started (Phase 6E)"
+            );
             let mut wakeups: u64 = 0;
             let mut total_buffers: u64 = 0;
             let mut total_bytes: u64 = 0;
@@ -328,12 +368,22 @@ async fn main() -> anyhow::Result<()> {
                 for buffer in &buffers {
                     wake_bytes += buffer.len();
                     let words: &[u64] = bytemuck_cast(buffer);
+                    // Histogram for bring-up diagnostics + feed into
+                    // the LSM-side ControlChannelDecoder. The decoder
+                    // does its own frame sync / NID / TSU / trellis /
+                    // CRC chain internally, and emits TsbkMessage
+                    // events on the shared WebSocket broadcast when
+                    // a CRC-valid TSBK lands.
                     for &word in words {
                         for i in 0..32 {
                             let d = ((word >> (i * 2)) & 0x03) as usize;
                             hist[d] += 1;
                             wake_dibits += 1;
                         }
+                    }
+                    let mut dec = lsm_dibit_decoder.write().await;
+                    for &word in words {
+                        dec.process_dma_word(word);
                     }
                 }
                 total_buffers += buffers.len() as u64;
@@ -345,13 +395,30 @@ async fn main() -> anyhow::Result<()> {
                         if total_dibits == 0 { 0.0 }
                         else { 100.0 * v as f64 / total_dibits as f64 }
                     };
+                    // Snapshot the LSM decoder's cumulative sync /
+                    // near-miss / recent-messages counters so we can
+                    // see in the log whether the LSM dibit stream is
+                    // actually producing frame sync hits (the single
+                    // most important bring-up signal).
+                    let (lsm_sync_hits, lsm_near, lsm_best, lsm_msg_count) = {
+                        let d = lsm_dibit_decoder.read().await;
+                        (
+                            d.sync_hits(),
+                            d.sync_near_misses(),
+                            d.best_sync_distance(),
+                            d.recent_messages.len(),
+                        )
+                    };
                     tracing::info!(
                         target: "p25_hdl_lsm",
                         "wake #{wakeups}: bufs={} bytes={} dibits={} \
                          (cum bufs={total_buffers} bytes={total_bytes}) \
-                         hist 0={:.1}% 1={:.1}% 2={:.1}% 3={:.1}%",
+                         hist 0={:.1}% 1={:.1}% 2={:.1}% 3={:.1}% \
+                         | LSM decoder: sync_hits={lsm_sync_hits} \
+                         near={lsm_near} best_dist={} recent_msgs={lsm_msg_count}",
                         buffers.len(), wake_bytes, wake_dibits,
                         pct(hist[0]), pct(hist[1]), pct(hist[2]), pct(hist[3]),
+                        if lsm_best == u32::MAX { 99 } else { lsm_best },
                     );
                 }
             }
