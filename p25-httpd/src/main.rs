@@ -74,6 +74,12 @@ async fn main() -> anyhow::Result<()> {
     decoder.set_event_tx(event_tx.clone());
     let decoder = Arc::new(RwLock::new(decoder));
 
+    // Phase 6D dashboard wiring: shared LsmStats mutex, populated by the
+    // LSM IRQ task below and read by the /api/lsm handler. Kept out of
+    // the cfg(linux) block so non-Linux builds still expose the (empty)
+    // endpoint -- useful for host-side cargo test of httpd routing.
+    let lsm_stats = Arc::new(tokio::sync::Mutex::new(lsm::LsmStats::default()));
+
     #[cfg(target_os = "linux")]
     let (ip_core, ad9361) = {
         use tokio::sync::Mutex;
@@ -189,23 +195,18 @@ async fn main() -> anyhow::Result<()> {
         // 6b. Spawn Phase 6D LSM reader task. Pulls 62.5 kSPS post-DDC IQ
         //     from the iq_dma ring, runs the streaming LSM pipeline
         //     (decimate /2 -> LPF -> RRC -> AGC+PLL+Gardner+slicer ->
-        //     hard+soft sync detectors -> BCH(63,16,11) FEC), and logs
-        //     per-IRQ NID accuracy stats. Runs in parallel with the dibit
-        //     reader above; both consume the same control DDC output.
+        //     hard+soft sync detectors -> BCH(63,16,11) FEC), logs
+        //     per-IRQ NID accuracy stats, and updates the shared
+        //     `LsmStats` that feeds `GET /api/lsm` on the dashboard.
+        //     Runs in parallel with the dibit reader above; both consume
+        //     the same control DDC output but via separate ring DMAs.
         let lsm_core = ip_core.clone();
+        let lsm_stats_task = lsm_stats.clone();
         tokio::spawn(async move {
             tracing::info!("LSM IQ reader task started (Phase 6D)");
             let mut pipeline = lsm::LsmPipeline::new();
-            let mut wakeups: u64 = 0;
-            let mut total_iq_samples: u64 = 0;
-            let mut total_dibits: u64 = 0;
-            let mut total_hard_events: u64 = 0;
-            let mut total_soft_events: u64 = 0;
-            let mut nac_hist: std::collections::HashMap<u16, u64> =
-                std::collections::HashMap::new();
             loop {
                 iq_waiter.wait().await;
-                wakeups += 1;
 
                 // Snapshot the new sub-buffers and overflow latch under
                 // the lock, then drop it before doing CPU work.
@@ -227,49 +228,45 @@ async fn main() -> anyhow::Result<()> {
                         "iq_dma overflow latched -- resetting LSM streaming state"
                     );
                     pipeline.reset();
+                    lsm_stats_task.lock().await.record_overflow();
                 }
                 if iq_complex.is_empty() {
                     continue;
                 }
 
                 let batch = pipeline.process_iq(&iq_complex);
-                total_iq_samples += iq_complex.len() as u64;
-                total_dibits += batch.demod.n_symbols() as u64;
-                total_hard_events += batch.hard_events.len() as u64;
-                total_soft_events += batch.soft_events.len() as u64;
-                for e in batch
-                    .hard_events
-                    .iter()
-                    .chain(batch.soft_events.iter())
-                {
-                    *nac_hist.entry(e.best_nac()).or_insert(0) += 1;
-                }
+                let wake_iq = iq_complex.len();
+                let wake_dibits = batch.demod.n_symbols();
+                let wake_hard = batch.hard_events.len();
+                let wake_soft = batch.soft_events.len();
+
+                // Fold into shared stats + snapshot cumulative totals and
+                // top-3 NACs under the lock, then drop it before logging.
+                let (wakeups, cum_iq, cum_dibits, cum_hard, cum_soft, top3) = {
+                    let mut stats = lsm_stats_task.lock().await;
+                    stats.record_batch(wake_iq, &batch);
+                    (
+                        stats.wakeups,
+                        stats.iq_samples,
+                        stats.dibits,
+                        stats.hard_events,
+                        stats.soft_events,
+                        stats.top_nacs(3),
+                    )
+                };
 
                 if wakeups <= 5 || wakeups % 16 == 0 {
-                    // Top 3 NACs across the cumulative histogram.
-                    let mut top: Vec<(u16, u64)> =
-                        nac_hist.iter().map(|(k, v)| (*k, *v)).collect();
-                    top.sort_by(|a, b| b.1.cmp(&a.1));
-                    let top_str = top
+                    let top_str = top3
                         .iter()
-                        .take(3)
                         .map(|(n, c)| format!("0x{:03X}={}", n, c))
                         .collect::<Vec<_>>()
                         .join(",");
                     tracing::info!(
                         target: "p25_lsm",
-                        "wake #{wakeups}: iq_samples={} dibits={} \
-                         hard_syncs={} soft_syncs={} \
-                         (cum iq={} dibits={} hard={} soft={}) top_nacs=[{}]",
-                        iq_complex.len(),
-                        batch.demod.n_symbols(),
-                        batch.hard_events.len(),
-                        batch.soft_events.len(),
-                        total_iq_samples,
-                        total_dibits,
-                        total_hard_events,
-                        total_soft_events,
-                        top_str,
+                        "wake #{wakeups}: iq_samples={wake_iq} dibits={wake_dibits} \
+                         hard_syncs={wake_hard} soft_syncs={wake_soft} \
+                         (cum iq={cum_iq} dibits={cum_dibits} hard={cum_hard} soft={cum_soft}) \
+                         top_nacs=[{top_str}]"
                     );
                 }
             }
@@ -322,6 +319,7 @@ async fn main() -> anyhow::Result<()> {
         ip_core,
         #[cfg(target_os = "linux")]
         ad9361,
+        lsm_stats: lsm_stats.clone(),
     });
 
     // Start HTTP server

@@ -6,6 +6,7 @@
 //! - GET  /api/grants    -> Active voice grants
 //! - GET  /api/bands     -> Frequency band table
 //! - GET  /api/stats     -> Decoder statistics
+//! - GET  /api/lsm       -> LSM pipeline runtime stats (Phase 6D)
 //! - GET  /api/aliases   -> Talkgroup alias map
 //! - PUT  /api/aliases   -> Update alias map
 //! - WS   /ws/events     -> Real-time TSBK event stream
@@ -33,6 +34,11 @@ pub struct AppState {
     /// Stateless wrapper around sysfs paths -- safe to share without a lock.
     #[cfg(target_os = "linux")]
     pub ad9361: Arc<crate::iio::Ad9361>,
+    /// Phase 6D: LSM pipeline runtime stats. Populated by the LSM tokio
+    /// task on every iq_dma wake; read by the `/api/lsm` handler to
+    /// surface the parallel LSM decoder on the dashboard alongside the
+    /// existing C4FM dibit pipeline panels.
+    pub lsm_stats: Arc<tokio::sync::Mutex<crate::lsm::LsmStats>>,
 }
 
 /// Build the HTTP router
@@ -43,6 +49,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/grants", get(get_grants))
         .route("/api/bands", get(get_bands))
         .route("/api/stats", get(get_stats))
+        .route("/api/lsm", get(get_lsm))
         .route("/api/dibit_dump", get(get_dibit_dump))
         .route("/api/aliases", get(get_aliases).put(put_aliases))
         .route("/ws/events", get(ws_events))
@@ -218,6 +225,95 @@ async fn get_dibit_dump(State(state): State<Arc<AppState>>) -> Json<serde_json::
                      Anything else means the NID has uncorrected bit errors.",
         },
         "dibits_hex": hex,
+    }))
+}
+
+/// Phase 6D: snapshot of the LSM pipeline runtime stats.
+///
+/// Returns everything the dashboard's "LSM Decoder" card needs in one
+/// round trip: task liveness, cumulative counters, top-10 NAC histogram,
+/// and the most recent sync event. The overflow counter is returned
+/// with a note flagging it as a known false positive in the current
+/// Phase 6C gateware (see doc 014 follow-ups).
+///
+/// All times are derived on the server side from `Instant`s inside the
+/// stats struct; the client only sees seconds/milliseconds so there is
+/// no clock skew issue vs the Fishball's wall clock (which runs from
+/// 1970 anyway until NTP lands).
+async fn get_lsm(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    use std::time::Instant;
+    let stats = state.lsm_stats.lock().await;
+    let now = Instant::now();
+
+    let uptime_secs = stats
+        .started_at
+        .map(|t| now.saturating_duration_since(t).as_secs())
+        .unwrap_or(0);
+    let last_wake_ms_ago = stats
+        .last_wake_at
+        .map(|t| now.saturating_duration_since(t).as_millis() as u64);
+
+    // Sort top-10 by count desc (LsmStats::top_nacs handles the ordering).
+    let total_nac_hits: u64 = stats.nac_hist.values().sum();
+    let top_nacs: Vec<serde_json::Value> = stats
+        .top_nacs(10)
+        .into_iter()
+        .map(|(nac, count)| {
+            let pct = if total_nac_hits == 0 {
+                0.0
+            } else {
+                100.0 * (count as f64) / (total_nac_hits as f64)
+            };
+            serde_json::json!({
+                "nac":   format!("0x{:03X}", nac),
+                "count": count,
+                "pct":   pct,
+            })
+        })
+        .collect();
+
+    let last_sync = stats.last_sync.map(|ls| {
+        let age_ms = now.saturating_duration_since(ls.at).as_millis() as u64;
+        serde_json::json!({
+            "nac":           format!("0x{:03X}", ls.nac),
+            "duid":          format!("0x{:X}",   ls.duid),
+            "fec_corrected": ls.fec_corrected,
+            "distance":      ls.distance,
+            "score":         ls.score,
+            "age_ms":        age_ms,
+        })
+    });
+
+    // Steady-state rates (avoid divide-by-zero before the first wake).
+    let iq_rate_sps = if uptime_secs > 0 {
+        stats.iq_samples as f64 / uptime_secs as f64
+    } else {
+        0.0
+    };
+    let dibit_rate_sps = if uptime_secs > 0 {
+        stats.dibits as f64 / uptime_secs as f64
+    } else {
+        0.0
+    };
+
+    Json(serde_json::json!({
+        "running":             stats.started_at.is_some(),
+        "uptime_secs":         uptime_secs,
+        "last_wake_ms_ago":    last_wake_ms_ago,
+        "wakeups":             stats.wakeups,
+        "iq_samples":          stats.iq_samples,
+        "iq_samples_per_sec":  iq_rate_sps,
+        "dibits":              stats.dibits,
+        "dibits_per_sec":      dibit_rate_sps,
+        "hard_events":         stats.hard_events,
+        "soft_events":         stats.soft_events,
+        "overflow_resets":     stats.overflow_resets,
+        "overflow_note":
+            "Phase 6C gateware fires the iq_dma overflow latch spuriously \
+             on every sub-buffer; Rust sample math proves no actual data \
+             loss. Tracked in doc 014 follow-ups.",
+        "top_nacs":            top_nacs,
+        "last_sync":           last_sync,
     }))
 }
 
@@ -399,6 +495,34 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
 
 <div class="grid2">
   <div class="card">
+    <h2>LSM Decoder (Phase 6D) <span id="lsm_status" style="font-size:0.75em;color:var(--text-dim);margin-left:6px">--</span></h2>
+    <table>
+      <tr><th>Uptime</th><td class="v" id="lsm_uptime">--</td></tr>
+      <tr><th>Wakeups</th><td class="v" id="lsm_wakes">0</td></tr>
+      <tr><th>IQ Samples</th><td class="v" id="lsm_iq">0</td></tr>
+      <tr><th>Dibits</th><td class="v" id="lsm_dibits">0</td></tr>
+      <tr><th>Hard / Soft Syncs</th><td class="v" id="lsm_syncs">0 / 0</td></tr>
+      <tr><th>Overflow Resets</th><td class="v" id="lsm_overflows">0</td></tr>
+      <tr><th>Last Sync</th><td class="v" id="lsm_last">--</td></tr>
+    </table>
+    <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px" id="lsm_note">
+      Parallel LSM pipeline output; independent of the C4FM dibit panels above.
+    </p>
+  </div>
+  <div class="card">
+    <h2>Top NACs (LSM)</h2>
+    <table>
+      <thead><tr><th>NAC</th><th>Count</th><th>%</th></tr></thead>
+      <tbody id="lsm_nacs_body"><tr><td colspan="3" style="color:var(--text-dim)">No sync events yet</td></tr></tbody>
+    </table>
+    <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
+      Combined hard + soft sync NAC histogram. Winner = locked on-air site ID.
+    </p>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
     <h2>Dibit Histogram</h2>
     <table>
       <tr><th>Total Dibits</th><td class="v" id="dh_total">0</td></tr>
@@ -488,6 +612,49 @@ async function refresh() {
     const d = $('dot'), s = $('status');
     if (stats.system_acquired) { d.classList.add('active'); s.textContent = 'Tracking'; }
     else { d.classList.remove('active'); s.textContent = 'Searching'; }
+  }
+
+  const lsm = await fetchJson('/api/lsm');
+  if (lsm) {
+    const alive = lsm.running && lsm.last_wake_ms_ago != null && lsm.last_wake_ms_ago < 3000;
+    if (!lsm.running) {
+      $('lsm_status').textContent = 'NOT STARTED';
+      $('lsm_status').style.color = 'var(--red)';
+    } else if (alive) {
+      $('lsm_status').textContent = 'ALIVE';
+      $('lsm_status').style.color = 'var(--green)';
+    } else {
+      $('lsm_status').textContent = 'STALLED';
+      $('lsm_status').style.color = 'var(--red)';
+    }
+    $('lsm_uptime').textContent = lsm.uptime_secs + 's';
+    $('lsm_wakes').textContent = lsm.wakeups.toLocaleString();
+    const iqk = Math.round(lsm.iq_samples_per_sec / 1000);
+    $('lsm_iq').textContent = lsm.iq_samples.toLocaleString() + ' (' + iqk + 'k/s)';
+    const dps = Math.round(lsm.dibits_per_sec);
+    $('lsm_dibits').textContent = lsm.dibits.toLocaleString() + ' (' + dps + '/s)';
+    $('lsm_syncs').textContent = lsm.hard_events.toLocaleString() + ' / ' +
+      lsm.soft_events.toLocaleString();
+    $('lsm_overflows').textContent = lsm.overflow_resets.toLocaleString();
+    if (lsm.last_sync) {
+      const fec = lsm.last_sync.fec_corrected ? '\u2713' : '\u2717';
+      const age = Math.round(lsm.last_sync.age_ms / 1000);
+      $('lsm_last').textContent =
+        lsm.last_sync.nac + ' DUID' + lsm.last_sync.duid + ' FEC' + fec +
+        ' (' + age + 's ago)';
+    } else {
+      $('lsm_last').textContent = '--';
+    }
+    if (lsm.top_nacs && lsm.top_nacs.length) {
+      $('lsm_nacs_body').innerHTML = lsm.top_nacs.map(n =>
+        '<tr><td class="v">' + n.nac + '</td>' +
+        '<td>' + n.count.toLocaleString() + '</td>' +
+        '<td>' + n.pct.toFixed(1) + '%</td></tr>'
+      ).join('');
+    } else {
+      $('lsm_nacs_body').innerHTML =
+        '<tr><td colspan="3" style="color:var(--text-dim)">No sync events yet</td></tr>';
+    }
   }
 
   const dump = await fetchJson('/api/dibit_dump');

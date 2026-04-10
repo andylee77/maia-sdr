@@ -425,10 +425,85 @@ This phase delivers the code; on-target validation is the next step:
    demod loop into Amaranth, replacing the C4FM-only `c4fm_demod` +
    `symbol_timing` path. That work is independent of this phase.
 
+## Follow-up: LSM dashboard wiring (2026-04-09, same day)
+
+First on-target bring-up confirmed the Rust LSM port works (see below),
+but the dashboard at `:8080` still only surfaced the C4FM dibit
+pipeline's output — which decodes to garbage NACs against an LSM
+signal, so the System Identity panel showed `NAC=0xC0A` while the LSM
+task's log lines showed `top_nacs=[0x8A1=2085, 0x12E=38, 0xABB=38]`.
+The operator had to SSH in and tail `/var/log/p25-httpd.log` to see
+the real decoded NAC. This follow-up clears the doc 014 punch-list
+item ("No HTTP API surface for LSM events yet") by adding a parallel
+LSM panel to the dashboard:
+
+1. **`LsmStats` struct** added to
+   [p25-httpd/src/lsm/mod.rs](../../p25-httpd/src/lsm/mod.rs) with
+   cumulative counters (`wakeups`, `iq_samples`, `dibits`,
+   `hard_events`, `soft_events`, `overflow_resets`), a
+   `HashMap<u16, u64>` NAC histogram, and a `LastSync` snapshot of
+   the most recent sync event. `record_batch` folds one `LsmBatch`
+   into the stats, `record_overflow` bumps the reset counter, and
+   `top_nacs(n)` returns the top-N NACs sorted descending with a
+   stable secondary key. 3 unit tests cover accumulation, sort
+   order, and counter independence.
+2. **Shared `Arc<tokio::sync::Mutex<LsmStats>>`** created in
+   [main.rs](../../p25-httpd/src/main.rs) before the
+   `cfg(target_os = "linux")` block and cloned into both (a) the LSM
+   tokio task, which now updates it every wake alongside the existing
+   tracing logs, and (b) `httpd::AppState`. The task's local counter
+   variables (`wakeups`, `total_iq_samples`, etc.) are removed — the
+   shared stats are now the single source of truth and the logging
+   branch snapshots them under the lock.
+3. **`GET /api/lsm` handler** in
+   [p25-httpd/src/httpd/mod.rs](../../p25-httpd/src/httpd/mod.rs)
+   returns `serde_json::Value` inline (same lightweight pattern as
+   `/api/dibit_dump` — no new `p25-json` types). Fields: `running`,
+   `uptime_secs`, `last_wake_ms_ago`, cumulative counters, steady-
+   state rates (`iq_samples_per_sec`, `dibits_per_sec`), top-10 NACs
+   `[{nac, count, pct}, ...]`, and `last_sync: {nac, duid,
+   fec_corrected, distance, score, age_ms}`. The `overflow_resets`
+   field ships alongside an `overflow_note` string flagging the
+   known Phase 6C false-positive.
+4. **New "LSM Decoder (Phase 6D)" grid2 row** added to
+   `DASHBOARD_HTML` just above the existing Dibit Histogram /
+   Sync Correlator row. Left card: status pill ("ALIVE" green /
+   "STALLED" or "NOT STARTED" red), uptime, wakeups, IQ samples with
+   rate, dibits with rate, hard/soft sync totals, overflow resets,
+   last sync display (`NAC DUID FEC✓ (Xs ago)`). Right card: top-10
+   NAC table with count and percentage. The `refresh()` polling loop
+   gains a `/api/lsm` fetch and DOM update block. The existing System
+   Identity / Decode Stats panels are intentionally **left alone** so
+   the operator can see the C4FM-decoder-on-LSM-signal garbage side-
+   by-side with the real LSM output.
+
+### Verification (dashboard wiring)
+
+- `cargo check --bin p25-httpd` (Windows host): clean, 0 errors.
+- `cargo check --bin p25-httpd --target armv7-unknown-linux-gnueabihf`:
+  clean, 0 errors (all 26 warnings pre-existing dead code).
+- `cargo test --bin p25-httpd lsm::stats_tests`: 3/3 new tests pass.
+- On-target dashboard validation: deferred until next firmware
+  rebuild + SD flash.
+
+### Still deferred
+
+- **iq_dma overflow debug** (spurious "overflow latched" on every
+  sub-buffer despite correct sample throughput). Root cause is
+  either sticky Rsticky semantics in the Phase 6C HDL, the
+  `iq_overflow()` accessor in `fpga.rs`, or a `p25.svd` register-map
+  mismatch. Not blocking — sample math proves no actual loss, and
+  the dashboard now shows the reset count transparently so the bug
+  is visible rather than silent. Queue for next session after on-
+  target validation of this follow-up.
+- **Live-RF golden test embedded as a `cargo test`** — still
+  deferred from the original Phase 6D punch list.
+
 ## Phase ladder status after this commit
 
 - 6A: Python LSM demod ✅ (commit `e1980aa`, doc 011)
 - 6B: NID BCH FEC ✅ (commit `46630d6`, doc 012)
 - 6C: IQ DMA path in FPGA gateware ✅ (commit `9f35f34`, doc 013)
 - **6D: Rust port of demod + FEC to PS** ✅ (this change, doc 014)
+  - Follow-up: LSM dashboard wiring ✅ (this doc, appended 2026-04-09)
 - 6E: HDL/PL final implementation (codebook BRAM + popcount tree) — next
