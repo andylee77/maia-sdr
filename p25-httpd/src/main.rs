@@ -907,12 +907,27 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
+        // Phase 6F.1: same expiry sweep for the LSM decoder. Without it,
+        // grants accumulated by the LSM decoder (which now feeds the
+        // dashboard's Active Grants panel) would never time out.
+        let lsm_expiry_decoder = lsm_decoder.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let mut dec = lsm_expiry_decoder.write().await;
+                dec.expire_grants(30);
+            }
+        });
+
         (ip_core, ad9361)
     };
 
     // Build app state
     let state = Arc::new(httpd::AppState {
         decoder: decoder.clone(),
+        lsm_decoder: lsm_decoder.clone(),
         event_tx,
         #[cfg(target_os = "linux")]
         ip_core,

@@ -26,7 +26,19 @@ use p25_json::*;
 
 /// Shared application state
 pub struct AppState {
+    /// Original Phase 2A C4FM `ControlChannelDecoder`, fed by the C4FM HDL
+    /// chain via `dibit_dma`. Retained for diagnostics and as a fallback,
+    /// but no longer the primary source for the dashboard's identity /
+    /// stats / grants panels (those now read `lsm_decoder` -- see below).
     pub decoder: Arc<RwLock<ControlChannelDecoder>>,
+    /// Phase 6E.10 LSM `ControlChannelDecoder`, fed by the HDL LSM chain
+    /// via `lsm_dibit_dma`. This is now the source of truth for the
+    /// dashboard's System Identity, Decode Stats, Active Grants, and
+    /// Frequency Bands panels because the test target (Clay County NAC
+    /// 0x8A1) is an LSM simulcast control channel that the C4FM decoder
+    /// only ever sees as garbage. Phase 6F.1 dashboard migration --
+    /// see doc/changes/024 follow-up notes.
+    pub lsm_decoder: Arc<RwLock<ControlChannelDecoder>>,
     pub event_tx: broadcast::Sender<String>,
     #[cfg(target_os = "linux")]
     pub ip_core: Arc<tokio::sync::Mutex<crate::fpga::IpCore>>,
@@ -59,7 +71,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 // ── REST Handlers ──────────────────────────────────────────────────────
 
 async fn get_system(State(state): State<Arc<AppState>>) -> Json<SystemInfo> {
-    let decoder = state.decoder.read().await;
+    let decoder = state.lsm_decoder.read().await;
     let sys = &decoder.system;
     Json(SystemInfo {
         nac: sys.nac.map(|n| format!("{}", n)),
@@ -73,7 +85,7 @@ async fn get_system(State(state): State<Arc<AppState>>) -> Json<SystemInfo> {
 }
 
 async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant>> {
-    let decoder = state.decoder.read().await;
+    let decoder = state.lsm_decoder.read().await;
     let grants: Vec<ChannelGrant> = decoder
         .grants
         .values()
@@ -90,7 +102,7 @@ async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant
 }
 
 async fn get_bands(State(state): State<Arc<AppState>>) -> Json<Vec<BandInfo>> {
-    let decoder = state.decoder.read().await;
+    let decoder = state.lsm_decoder.read().await;
     let mut bands: Vec<BandInfo> = decoder
         .bands
         .values()
@@ -107,7 +119,7 @@ async fn get_bands(State(state): State<Arc<AppState>>) -> Json<Vec<BandInfo>> {
 }
 
 async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats> {
-    let decoder = state.decoder.read().await;
+    let decoder = state.lsm_decoder.read().await;
 
     #[cfg(target_os = "linux")]
     let (dibit_count, overflow, dma_next_address) = {
