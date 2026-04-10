@@ -44,6 +44,27 @@ struct Args {
     /// P25 control channel frequency in Hz
     #[arg(long, default_value_t = 860_962_500)]
     control_freq: u64,
+
+    /// Pluto LO PPM offset for crystal calibration.
+    ///
+    /// Compensates the AD9361 crystal frequency error by shifting the
+    /// DDC NCO (NOT the AD9361 LO request -- the LO synthesizer step
+    /// at our operating range is much coarser than the typical PPM-
+    /// scale shift, so a small LO shift gets rounded back to the
+    /// nominal value while the NCO computation still moves, doubling
+    /// the post-DDC offset and breaking lock. The DDC NCO is generated
+    /// in fabric at 1 Hz precision and is the only place a sub-step
+    /// shift can actually be applied).
+    ///
+    /// Negative ppm means the Pluto crystal is slow (real signals
+    /// appear above their expected IF). For the Clay County test
+    /// Pluto: -0.54 ppm. SDRTrunk's tuner panel exposes the same
+    /// setting and is the reference for the value to use here.
+    ///
+    /// Math: nco_shift = -ppm * 1e-6 * rx_lo Hz. With rx_lo=858 MHz
+    /// and ppm=-0.54, that is +463 Hz added to the nominal NCO.
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+    lo_ppm: f64,
 }
 
 #[tokio::main]
@@ -63,10 +84,18 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
+    // Pluto crystal calibration: shift the DDC NCO by -ppm * 1e-6 * rx_lo Hz.
+    // See the doc comment on Args::lo_ppm for why this only moves the NCO and
+    // not the LO request. nco_lo_shift_hz is folded into nco_offset further
+    // down inside the cfg(linux) block where the IP core gets configured.
+    let nco_lo_shift_hz = -args.lo_ppm * 1e-6 * args.rx_lo as f64;
+
     tracing::info!(
-        "Fishball P25 starting: RX LO={} Hz, control_freq={} Hz",
+        "Fishball P25 starting: RX LO={} Hz, control_freq={} Hz, lo_ppm={:+} ({:+.1} Hz NCO shift)",
         args.rx_lo,
-        args.control_freq
+        args.control_freq,
+        args.lo_ppm,
+        nco_lo_shift_hz
     );
 
     let (event_tx, _) = broadcast::channel::<String>(256);
@@ -119,8 +148,11 @@ async fn main() -> anyhow::Result<()> {
             args.sample_rate
         );
 
-        // 3. Configure control channel DDC (FIR filters + decimation + NCO)
-        let nco_offset = args.control_freq as f64 - args.rx_lo as f64;
+        // 3. Configure control channel DDC (FIR filters + decimation + NCO).
+        // The lo_ppm crystal calibration is folded into the NCO here -- see
+        // the doc comment on Args::lo_ppm for the rationale and the math.
+        let nco_offset =
+            args.control_freq as f64 - args.rx_lo as f64 + nco_lo_shift_hz;
         ip_core.configure_ddc(nco_offset, args.sample_rate as f64)?;
         ip_core.set_ddc_enable(true);
         // Ring DMA: enable bit is level-triggered, starts continuous writes
