@@ -139,8 +139,32 @@ pub const SYNC_THRESHOLD: u32 = 10;
 /// to give visibility into how close the bit stream is to a real sync.
 const SYNC_NEAR_LOG_THRESHOLD: u32 = 14;
 
-/// NID is 48 dibits (96 bits) following frame sync
-const NID_DIBITS: usize = 32;
+/// The P25 NID payload is 64 bits = 32 content dibits, but the first P25
+/// status dibit lands inside the NID window at on-air index 11 (counting
+/// from 0 at the first dibit after the frame sync), so the NID spans 33
+/// on-air dibits. Matches `lsm::sync::NID_TRANSMITTED_DIBITS` and the
+/// HDL `LsmSyncNidExtract` which both read 33 dibits and skip index 11
+/// before packing the remaining 32 into the 64-bit BCH codeword.
+///
+/// Historical note: until 2026-04-10 this constant was 32 and the
+/// decoder skipped nothing, which silently corrupted bits 41..40 of the
+/// NID codeword with the status dibit value and shifted the remaining
+/// parity bits out of position. The Phase 2A C4FM decoder "worked"
+/// because its `decode_nid` stub only extracted bits 63..48 (NAC+DUID)
+/// from the top of the word -- those come from on-air dibits 0..7, all
+/// BEFORE the status dibit at index 11, so the stub got the right
+/// NAC/raw_DUID despite the corrupted parity region. Porting the
+/// validated BCH(63,16,11) FEC into the decoder exposed the bug: the
+/// LSM-side decoder consistently miscorrected clean Clay County NIDs
+/// (NAC=0x8A1, DUID=0x7) to a spurious fixed codeword
+/// (NAC=0xE28, DUID=0x5) because the status-dibit corruption was
+/// deterministic. See doc/changes/022 for the fix log.
+const NID_TRANSMITTED_DIBITS: usize = 33;
+/// Index within the 33-dibit on-air NID window where the first P25
+/// status dibit lands. The decoder must read this dibit (so the
+/// dibit-stream cursor keeps advancing) but must NOT fold its value
+/// into the 64-bit BCH codeword.
+const NID_STATUS_DIBIT_INDEX: usize = 11;
 
 impl ControlChannelDecoder {
     pub fn new() -> Self {
@@ -316,10 +340,23 @@ impl ControlChannelDecoder {
                 dibits_read,
                 nid_bits,
             } => {
-                let new_bits = (nid_bits << 2) | (dibit as u64);
+                // The on-air NID window is NID_TRANSMITTED_DIBITS (33)
+                // dibits wide, with a P25 status dibit injected at
+                // index NID_STATUS_DIBIT_INDEX (11). We ALWAYS advance
+                // the cursor (dibits_read) on every incoming dibit so
+                // the window length stays in sync with the on-air
+                // stream, but we only fold the dibit into `nid_bits`
+                // if it isn't the status slot. The resulting 64-bit
+                // `nid_bits` is bit-for-bit compatible with the BCH
+                // codeword layout produced by `lsm::nid_fec::encode_nid`.
+                let new_bits = if dibits_read == NID_STATUS_DIBIT_INDEX {
+                    nid_bits
+                } else {
+                    (nid_bits << 2) | (dibit as u64)
+                };
                 let new_count = dibits_read + 1;
 
-                if new_count >= NID_DIBITS {
+                if new_count >= NID_TRANSMITTED_DIBITS {
                     // NID complete — decode NAC and DUID. The DUID is
                     // currently hardcoded to 0x7 (TSDU) inside decode_nid
                     // because the BCH(64,16) NID FEC is still a stub.
@@ -715,5 +752,76 @@ mod tests {
         let grant = &decoder.grants[&0x045D];
         assert_eq!(grant.talkgroup.0, 300);
         assert_eq!(grant.frequency_hz, Some(857_987_500)); // 857.9875 MHz
+    }
+
+    /// Drive the decoder end-to-end with a frame sync + 33-dibit NID
+    /// (with a deliberately-wrong status dibit injected at index 11)
+    /// and verify the BCH FEC still decodes the correct NAC/DUID.
+    ///
+    /// This is the regression guard for doc/changes/022 -- before the
+    /// NID_STATUS_DIBIT_INDEX skip was added, the decoder read 32
+    /// consecutive dibits and deterministically miscorrected clean
+    /// Clay County NIDs to a spurious fixed (NAC=0xE28, DUID=0x5)
+    /// because the on-air status dibit at position 11 corrupted bits
+    /// 41..40 of the BCH codeword and shifted the rest of the parity
+    /// region.
+    #[test]
+    fn test_nid_status_dibit_skip_e2e() {
+        use crate::lsm::nid_fec;
+
+        // Helper: unpack a 48-bit pattern into 24 dibits MSB-first,
+        // or a 64-bit word into 32 dibits.
+        fn unpack_dibits(bits: u64, n_dibits: usize) -> Vec<u8> {
+            let mut out = Vec::with_capacity(n_dibits);
+            for i in (0..n_dibits).rev() {
+                out.push(((bits >> (i * 2)) & 0x3) as u8);
+            }
+            out
+        }
+
+        // Clean Clay County NID: NAC=0x8A1, DUID=0x7 (TSDU).
+        let nid_bits = nid_fec::encode_nid(0x8A1, 0x7);
+        let nid_dibits_32 = unpack_dibits(nid_bits, 32);
+
+        // Build the 33-dibit on-air NID window: splice a DELIBERATELY
+        // WRONG status dibit (value 0x3 = "-3") at index 11. If the
+        // decoder folds this into nid_bits, the BCH codeword gets
+        // corrupted and the test fails. If the decoder correctly
+        // skips index 11, the test passes.
+        let mut on_air_nid: Vec<u8> = Vec::with_capacity(33);
+        on_air_nid.extend_from_slice(&nid_dibits_32[..11]);
+        on_air_nid.push(0x3); // garbage status dibit
+        on_air_nid.extend_from_slice(&nid_dibits_32[11..]);
+        assert_eq!(on_air_nid.len(), 33);
+
+        // Frame sync pattern unpacked into 24 dibits. Matches the
+        // decoder's FRAME_SYNC_DIBIT_PATTERN constant at the top of
+        // this file.
+        let fs_dibits = unpack_dibits(FRAME_SYNC_DIBIT_PATTERN, 24);
+        assert_eq!(fs_dibits.len(), 24);
+
+        // Drive the decoder: first 24 dibits of frame sync (to arm
+        // the correlator) followed by the 33 dibits of the on-air NID
+        // window (with status spliced in).
+        let mut decoder = ControlChannelDecoder::new();
+        for &d in &fs_dibits {
+            decoder.process_dibit(d);
+        }
+        for &d in &on_air_nid {
+            decoder.process_dibit(d);
+        }
+
+        // After the NID is fully consumed the decoder should have
+        // latched the Clay County NAC into `system.nac`. Anything
+        // else means the BCH decoder either rejected the codeword or
+        // miscorrected to a different NAC -- either way the status
+        // dibit skip is broken.
+        assert_eq!(
+            decoder.system.nac,
+            Some(Nac::new(0x8A1)),
+            "decoder should land on the clean Clay County NAC after \
+             skipping the status dibit at position 11; got {:?}",
+            decoder.system.nac,
+        );
     }
 }
