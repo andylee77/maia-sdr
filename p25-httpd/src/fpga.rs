@@ -39,8 +39,10 @@ pub struct IpCore {
     registers: Registers,
     dibit_dma: RxBuffer,
     traffic_dma: RxBuffer,
+    iq_dma: RxBuffer,
     dibit_last_addr: Option<u32>,
     traffic_last_addr: Option<u32>,
+    iq_last_addr: Option<u32>,
 }
 
 impl IpCore {
@@ -90,13 +92,21 @@ impl IpCore {
         let traffic_dma = RxBuffer::new("p25-traffic")
             .await
             .context("failed to open p25-traffic DMA buffer")?;
+        // Phase 6D: post-DDC IQ ring (8 x 32 KB), parallel to the dibit
+        // path. Optional — older boots without the iq_dma DT entry will
+        // simply skip the LSM pipeline.
+        let iq_dma = RxBuffer::new("p25-iq")
+            .await
+            .context("failed to open p25-iq DMA buffer")?;
 
         let ip_core = IpCore {
             registers,
             dibit_dma,
             traffic_dma,
+            iq_dma,
             dibit_last_addr: None,
             traffic_last_addr: None,
+            iq_last_addr: None,
         };
 
         let interrupt_handler = InterruptHandler::new(uio, interrupt_registers);
@@ -410,6 +420,64 @@ impl IpCore {
         self.read_dma_buffers(DmaChannel::Traffic)
     }
 
+    // ── IQ ring (Phase 6C/6D) ────────────────────────────────────
+    //
+    // The third DDC tap streams post-decimation 62.5 kSPS interleaved
+    // 16-bit signed I/Q to a separate 256 KB ring (8 x 32 KB sub-buffers)
+    // at physical 0x19000000. The PS LSM demod reads from this ring while
+    // the existing dibit pipeline keeps running unchanged.
+    //
+    // Per 64-bit DMA word: { im[1] s16, re[1] s16, im[0] s16, re[0] s16 }
+    // — i.e. natural little-endian interleaved-IQ byte order. See
+    // doc/changes/013_phase6c_iq_dma.md and the Phase 6D entry-point note.
+
+    /// Enables or disables the post-DDC IQ ring DMA. Level-triggered.
+    /// When false, the AW channel is held idle and the packer back-pressures.
+    pub fn set_iq_dma_enable(&self, enable: bool) {
+        self.registers
+            .iq_dma_control()
+            .modify(|_, w| w.iq_enable().bit(enable));
+    }
+
+    /// Returns the index of the most recently completed IQ sub-buffer.
+    /// Initialised to all-ones (-1) by the gateware so the first read after
+    /// enable indicates "no buffers completed yet".
+    pub fn iq_last_buffer(&self) -> u8 {
+        self.registers
+            .iq_dma_status()
+            .read()
+            .last_buffer()
+            .bits()
+    }
+
+    /// Reads and clears the IQ ring overflow latch (Rsticky bit).
+    /// True means the packer stalled at least once since the last read —
+    /// indicates the PS isn't draining sub-buffers fast enough or the AW
+    /// channel was disabled.
+    pub fn iq_overflow(&self) -> bool {
+        self.registers
+            .iq_dma_status()
+            .read()
+            .iq_overflow()
+            .bit()
+    }
+
+    /// Returns the current IQ DMA AW write address (debug).
+    pub fn iq_next_address(&self) -> u32 {
+        self.registers
+            .iq_next_address()
+            .read()
+            .next_address()
+            .bits()
+    }
+
+    /// Reads new IQ ring sub-buffers since the last call. Each returned
+    /// slice is 32 KB of interleaved 16-bit signed I/Q (8192 complex
+    /// samples = ~131 ms at 62.5 kSPS).
+    pub fn read_iq_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::Iq)
+    }
+
     // ── DMA buffer helpers ───────────────────────────────────────
 
     /// Reads new dibit/traffic ring sub-buffers since the last call.
@@ -434,6 +502,15 @@ impl IpCore {
                 &mut self.traffic_last_addr,
                 self.registers
                     .traffic_demod_status()
+                    .read()
+                    .last_buffer()
+                    .bits() as u32,
+            ),
+            DmaChannel::Iq => (
+                &self.iq_dma,
+                &mut self.iq_last_addr,
+                self.registers
+                    .iq_dma_status()
                     .read()
                     .last_buffer()
                     .bits() as u32,
@@ -490,6 +567,7 @@ impl IpCore {
 enum DmaChannel {
     Dibit,
     Traffic,
+    Iq,
 }
 
 /// Converts a frequency offset to a 28-bit NCO phase increment.
@@ -569,6 +647,7 @@ pub struct InterruptHandler {
     registers: Registers,
     notify_dibit_dma: Arc<Notify>,
     notify_traffic_dma: Arc<Notify>,
+    notify_iq_dma: Arc<Notify>,
 }
 
 impl InterruptHandler {
@@ -578,6 +657,7 @@ impl InterruptHandler {
             registers,
             notify_dibit_dma: Arc::new(Notify::new()),
             notify_traffic_dma: Arc::new(Notify::new()),
+            notify_iq_dma: Arc::new(Notify::new()),
         }
     }
 
@@ -595,6 +675,14 @@ impl InterruptHandler {
         }
     }
 
+    /// Returns a waiter for post-DDC IQ ring DMA completion interrupts
+    /// (Phase 6C/6D).
+    pub fn waiter_iq_dma(&self) -> InterruptWaiter {
+        InterruptWaiter {
+            notify: self.notify_iq_dma.clone(),
+        }
+    }
+
     /// Runs the interrupt handler loop.
     ///
     /// This should be spawned as a background tokio task.
@@ -602,6 +690,7 @@ impl InterruptHandler {
         let mut total_irqs: u64 = 0;
         let mut dibit_irqs: u64 = 0;
         let mut traffic_irqs: u64 = 0;
+        let mut iq_irqs: u64 = 0;
         loop {
             self.uio.irq_enable().await?;
             self.uio.irq_wait().await?;
@@ -609,6 +698,7 @@ impl InterruptHandler {
             let interrupts = self.registers.interrupts().read();
             let dibit = interrupts.dibit_dma().bit();
             let traffic = interrupts.traffic_dma().bit();
+            let iq = interrupts.iq_dma().bit();
             total_irqs += 1;
             if dibit {
                 dibit_irqs += 1;
@@ -618,12 +708,16 @@ impl InterruptHandler {
                 traffic_irqs += 1;
                 self.notify_traffic_dma.notify_waiters();
             }
+            if iq {
+                iq_irqs += 1;
+                self.notify_iq_dma.notify_waiters();
+            }
             // Log first 10 then every 64th to avoid flooding
             if total_irqs <= 10 || total_irqs % 64 == 0 {
                 tracing::info!(
                     target: "p25_irq",
-                    "IRQ #{total_irqs}: dibit={dibit} traffic={traffic} \
-                     (totals dibit={dibit_irqs} traffic={traffic_irqs})"
+                    "IRQ #{total_irqs}: dibit={dibit} traffic={traffic} iq={iq} \
+                     (totals dibit={dibit_irqs} traffic={traffic_irqs} iq={iq_irqs})"
                 );
             }
         }

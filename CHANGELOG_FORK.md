@@ -5,6 +5,100 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-09] Phase 6D: Rust LSM Demod + NID FEC Port to p25-httpd
+
+**Branch:** fishball-p25
+
+Phase 6D is complete (Rust port compiles, all unit tests pass, ARM
+cross-build clean; on-target validation queued behind the next Tezuka
+firmware rebuild). Mechanical port of the validated Phase 6A/6B Python
+prototype into the embedded p25-httpd Rust workspace, file-by-file with a
+one-to-one mapping between Python stages and Rust files. The new pipeline
+runs in parallel with the existing C4FM dibit reader, consuming the
+Phase 6C `iq_dma` ring directly. See `doc/changes/014_phase6d_lsm_rust_port.md`
+for the full write-up.
+
+- **`p25-httpd/src/lsm/`** -- new module, ~1580 lines of Rust + tests:
+  - `nid_fec.rs` (~280 lines) -- BCH(63,16,11) encoder + ML codebook
+    decoder. Generator matrix copied verbatim from
+    `BCH_63_16_23_P25_Test.java` (octal literals → `u64`). Codebook is
+    `OnceLock<Box<[u64; 65536]>>`, built lazily on first decode call
+    (~512 KB resident, <10 ms build on Cortex-A9).
+  - `filters.rs` (~310 lines) -- frozen LPF (83 taps Parks-McClellan) and
+    RRC (105 taps closed-form) `const [f32; N]` arrays designed at
+    31.25 kSPS via the existing `tools/p25_lsm_demod.py`. Plus
+    `apply_real_fir_complex` (batch), `StreamingFir` (with `(taps.len()-1)`
+    history for boundary-transient-free chunking), `decimate_by_2` (batch),
+    and `StreamingDecimator2` (phase-tracking across odd-length chunks).
+  - `demod.rs` (~330 lines) -- verbatim port of `demod_lsm()` and the
+    SDRTrunk `P25P1DemodulatorLSM.process()` it descends from. Variable
+    names match the Java source. AGC + PLL + Gardner TED + slicer.
+    `DemodState` is exposed so the streaming variant
+    `demod_lsm_with_state` can preserve loop state across iq_dma
+    sub-buffer boundaries.
+  - `sync.rs` (~400 lines) -- hard + soft sync detectors. Hard is the
+    sliding 48-bit Hamming-distance correlator (`SYNC_THRESHOLD = 4`).
+    Soft is the port of `P25P1SoftSyncDetectorScalar` correlating
+    against the 24 ideal `±3π/4` sync phases (`SYNC_SCORE_THRESHOLD =
+    60.0`). Both share the same status-dibit-aware NID extractor that
+    skips the 33-dibit-window position 11.
+  - `ring.rs` (~110 lines) -- iq_dma sub-buffer `&[u8]` to
+    `Vec<Complex32>` adapter. Decodes the FPGA's
+    `{im[1], re[1], im[0], re[0]}` 64-bit word as four little-endian
+    `i16` samples, normalises to ±1.0.
+  - `mod.rs` (~150 lines) -- module root, local
+    `Complex32 { re: f32, im: f32 }` POD type (avoids new `num-complex`
+    runtime dep), `LsmPipeline` orchestrator that owns the streaming
+    decimator + LPF + RRC + demod state and exposes `process_iq()` /
+    `reset()`.
+- **`p25-httpd/src/fpga.rs`** -- `IpCore` gains `iq_dma: RxBuffer`,
+  `iq_last_addr: Option<u32>`, `set_iq_dma_enable`, `iq_last_buffer`,
+  `iq_overflow`, `iq_next_address`, `read_iq_buffers`. New `DmaChannel::Iq`
+  arm in `read_dma_buffers`. `InterruptHandler` gains `notify_iq_dma`,
+  `waiter_iq_dma`, and the IRQ-loop iq branch (bit 2 of `interrupts`).
+- **`p25-httpd/src/main.rs`** -- `mod lsm`, `ip_core.set_iq_dma_enable(true)`
+  at startup, third tokio task that runs the LSM pipeline on iq_dma
+  wakeups. Snapshots `read_iq_buffers()` + `iq_overflow()` under the lock,
+  drops the lock before CPU work, runs the streaming pipeline, and logs
+  per-IRQ NID stats (hard/soft sync counts, cumulative top-3 NACs). The
+  task resets all streaming state if the gateware overflow latch fires.
+  Independent of the existing dibit reader -- both pull from the same
+  control DDC output via separate ring DMAs and separate PS state.
+- **`tezuka_fw/board/tezuka/fishball7020/dts/fishball-p25.dtsi`** --
+  third `reserved-memory` entry `p25_iq_dma: p25-iq-dma@19000000`
+  (256 KB, `no-map`) and a matching `p25-iq` rxbuffer node with
+  `buffer-size = <0x8000>` (32 KB sub-buffer × 8 = 256 KB ring, matches
+  FPGA `iq_dma_num_buffers_log2 = 3`).
+- **Verification on Windows host:** **17/17 lsm unit tests pass**
+  (`cargo test lsm::`). The encoder produces SDRTrunk's golden vector
+  bit-for-bit (`encode_nid(1, 0) == 0x00103185B7E9E224`). The BCH decoder
+  recovers all 550 corrupted codewords across the 1..=11 error sweep
+  (50 trials per error level). The streaming FIR matches the batch FIR
+  to <1e-5 absolute on a 400-sample frequency-sweep input chunked at
+  position 137. The streaming /2 decimator preserves the even-grid phase
+  across 7+8+8 odd-length chunks. Both sync detectors find a clean sync
+  in a synthetic dibit stream and the BCH decoder recovers the embedded
+  NAC/DUID with zero errors. The status dibit at NID-window index 11 is
+  proven to be skipped (two streams differing only in that dibit produce
+  identical extracted NIDs).
+- **ARM cross-build clean:** `cargo check --target armv7-unknown-linux-gnueabihf`
+  produces 27 warnings (all dead-code on existing modules) and zero
+  errors. No new runtime dependencies (`pm-remez` and `num-complex` not
+  pulled in).
+- **Pending verification:** Tezuka firmware rebuild (`build.bat --p25`
+  inside the Tezuka Docker container) to consume the Phase 6C XSA + the
+  new lsm module, SD-card flash, on-target smoke test (LSM reader task
+  starts, iq_dma wakeups arrive at ~7.6 Hz, NAC=0x8A1 dominates the
+  cumulative histogram at a per-second rate comparable to SDRTrunk on
+  the same antenna).
+
+Phase 6D ends at "Rust port compiles, all unit tests pass, ARM
+cross-build clean". Phase 6E -- HDL port of the streaming filters and
+the demod loop into Amaranth, replacing the C4FM-only path -- is the
+next step on the ladder.
+
+---
+
 ## [2026-04-09] Phase 6C: P25 Post-DDC IQ Ring DMA in FPGA Gateware
 
 **Branch:** fishball-p25

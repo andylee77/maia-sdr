@@ -267,18 +267,34 @@ Bank select uses word address bits [4:3], giving byte offsets 0x00/0x20/0x40/0x6
 | 0x28 | sdr | ddc_decimation | decimation1, decimation2, decimation3 (RW) |
 | 0x2C | sdr | ddc_frequency | frequency (RW, 28b) |
 | 0x30 | sdr | ddc_control | operations, odd, bypass, enable (RW) |
-| 0x40 | demod | demod_status | dibit_count (R, 16b), demod_overflow (Rsticky) |
-| 0x44 | demod | demod_control | start, stop (Wpulse), demod_enable (RW) |
+| 0x40 | demod | demod_status | dibit_count (R, 16b), demod_overflow (Rsticky), last_buffer (R, 3b) |
+| 0x44 | demod | demod_control | demod_enable (RW) |
 | 0x48 | demod | dibit_next_address | next_address (R, 32b) |
 | 0x60 | traffic | traffic DDC + demod | frequency, decimation, control, status |
+| 0x80 | iq | iq_dma_status | iq_overflow (Rsticky), last_buffer (R, 3b) |
+| 0x84 | iq | iq_dma_control | iq_enable (RW) |
+| 0x88 | iq | iq_next_address | next_address (R, 32b) |
+
+The bank decoder uses `address[3:6]` (3-bit field, 8 banks max) since
+Phase 6C — was previously `address[3:5]` (4 banks). See
+`doc/P25_ADDRESS_MAP.md` for the canonical address-map source of truth.
 
 ## AXI Port Map (P25)
 
 | Port | Type | HP | Purpose |
 |------|------|-----|---------|
 | s_axi_lite | Slave | - | CPU register access (0x7C460000) |
-| m_axi_dibit | Master | HP1 | Control channel dibit DMA to DDR |
-| m_axi_traffic | Master | HP1 | Traffic channel dibit DMA to DDR |
+| m_axi_dibit | Master | HP1 | Control channel dibit DMA to DDR (0x17000000, 32 KB ring) |
+| m_axi_traffic | Master | HP1 | Traffic channel dibit DMA to DDR (0x18000000, 32 KB ring) |
+| m_axi_iq | Master | HP1 | Post-DDC IQ ring DMA to DDR (0x19000000, 256 KB ring) -- Phase 6C |
+
+## Interrupts (P25)
+
+| Bit | Source | Notes |
+|-----|--------|-------|
+| 0 | dibit_dma | Sub-buffer completion on the control dibit ring |
+| 1 | traffic_dma | Sub-buffer completion on the traffic dibit ring |
+| 2 | iq_dma | Sub-buffer completion on the post-DDC IQ ring (Phase 6C/6D) |
 
 ---
 
@@ -321,3 +337,4 @@ Located at `C:\Users\Andy\Projects\MAIA_SDR\work_docs\`:
 | 2026-04-09 | fishball-p25 | Phase 6A | Diagnosed C4FM-vs-LSM mismatch; ported SDRTrunk LSM chain to `tools/p25_lsm_demod.py`; validated 91% NID accuracy on captured wav |
 | 2026-04-09 | fishball-p25 | Phase 6B | Ported SDRTrunk BCH(63,16,11) NID FEC to `tools/p25_nid_fec.py` (ML decoder via codebook); 100% NAC accuracy on better-signal wav (313/313 exact match to SDRTrunk) |
 | 2026-04-09 | fishball-p25 | Phase 6C | Added control-channel post-DDC IQ ring DMA in P25 gateware (`iq_packer.py` + `iq_dma` at `0x1900_0000`, 256 KB ring, ~250 KB/s, 5th register bank at offset 0x80). 7/7 pysim tests pass; Verilog/SVD/PAC regenerate cleanly. New `doc/P25_ADDRESS_MAP.md` is canonical address-map source-of-truth. Bridge for Phase 6D Rust LSM port. |
+| 2026-04-09 | fishball-p25 | Phase 6D | Mechanical Rust port of `tools/p25_lsm_demod.py` + `tools/p25_nid_fec.py` to new `p25-httpd/src/lsm/` module (nid_fec, filters, demod, sync, ring, mod). Frozen LPF/RRC taps as `const [f32; N]` (no `pm-remez` runtime dep). Streaming FIR + /2 decimator preserve continuity across iq_dma sub-buffer boundaries. `LsmPipeline` orchestrator owns all per-stage state. `IpCore` extended with iq_dma registers + `read_iq_buffers()` + 3rd interrupt waiter; Tezuka DT gains `p25_iq_dma@19000000` reserved-memory + `p25-iq` rxbuffer node. `main.rs` spawns parallel LSM reader task alongside the existing dibit reader. **17/17 unit tests pass on Windows host** (encoder vs SDRTrunk golden vector, BCH error sweep 1..=11 × 50 trials, streaming-vs-batch FIR equivalence, decimator phase tracking, hard+soft sync detection, status-dibit skip). **ARM cross-build (`cargo check --target armv7-unknown-linux-gnueabihf`) clean.** Hardware bring-up queued. |
