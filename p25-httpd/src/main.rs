@@ -444,27 +444,40 @@ async fn main() -> anyhow::Result<()> {
         //     NID events, which is exactly the bring-up situation we
         //     hit on real RF.
         //
-        //     Two outputs per loop iteration:
+        //     Outputs per loop iteration:
         //     1. **NID event log** -- as before, fires only when
         //        `lsm_status.nid_event` (Rsticky) is high. Throttled to
         //        5 Hz on a busy site (~70 NIDs/sec) but always logs the
-        //        first 10 events.
+        //        first 10 events. Every event is ALSO captured into a
+        //        32-deep ring buffer for the crash-transition dump
+        //        described below.
         //     2. **Heartbeat log** -- fires every ~1 s regardless of
         //        whether NIDs are being decoded, dumping the windowed
         //        min/max of `pll_dbg` + `sample_point_dbg` + the lowest
-        //        `sync_distance` seen in the window + how many ticks of
-        //        the window observed `bch_busy` / `in_nid_window` /
-        //        `nid_event` / `dibit_overflow`. THIS IS THE
-        //        DIAGNOSTIC for "the HDL LSM chain is alive but not
-        //        decoding": pll_dbg railed at +/- clamp = AGC issue,
-        //        pll_dbg flat-zero = PLL never updates, lowest
-        //        sync_distance ~47 = sync detector at noise floor,
-        //        bch_busy never observed = sync_strobe never fires,
-        //        etc. See doc 020 / phase 6E.6.5 follow-up.
+        //        `sync_distance` seen in the window + iq_dma health
+        //        + how many ticks of the window observed `bch_busy` /
+        //        `in_nid_window` / `nid_event` / `dibit_overflow`.
+        //     3. **Crash dump** -- the FIRST time `nid_evts == 0` in
+        //        a heartbeat window after we've seen any healthy
+        //        traffic, dump the full 32-deep NID ring buffer. This
+        //        captures the exact NID events leading up to the
+        //        transition from healthy to stalled, with no log
+        //        throttling.
         //
-        //     The heartbeat windowed counters reset every emission so
-        //     each line describes the *immediate past second*, not a
-        //     cumulative average that washes out transients.
+        //     **Watchdog removed** (was Phase 6E.6 doc 023). Investigation
+        //     after the 2026-04-10 CORDIC bake confirmed sdr_reset is
+        //     fundamentally unsafe to pulse during operation -- it
+        //     resets the entire `sync` clock domain, which interrupts
+        //     in-flight AXI HP DMA writes, deadlocks the AXI HP slave
+        //     in the PS DDR controller, and causes a hard kernel panic
+        //     reboot. The previous "watchdog" was silently broken
+        //     (CDC corruption swallowed its writes after the chain
+        //     transitioned to the degraded state) -- if it had ever
+        //     fired correctly, it would have crashed the board. The
+        //     code is removed entirely; recovery from the degraded
+        //     state requires either a power cycle or a future safer
+        //     reset mechanism that drains in-flight AXI before
+        //     asserting reset.
         let lsm_nid_core = ip_core.clone();
         tokio::spawn(async move {
             tracing::info!("HDL LSM heartbeat + NID poller task started (Phase 6E)");
@@ -479,32 +492,39 @@ async fn main() -> anyhow::Result<()> {
             let mut last_drop_count: u16 = 0;
             let mut last_event_log = std::time::Instant::now();
 
-            // ── PLL cycle-slip watchdog (Phase 6E.0-6E.6 follow-up) ─
-            //
-            // The HDL LSM Costas PLL uses a small-angle linearised
-            // update that is only stable within the ±0.3 rad envelope;
-            // strong transients can slip it to an adjacent 4-ary
-            // Costas lock point and strand it there because there's
-            // no HDL-side re-acquire mechanism yet. Observed on real
-            // RF as a PLL integrator sign flip from ~[-8500,-4500]
-            // to ~[+5000,+8500] in a single 1-second window, followed
-            // by zero `nid_event`s indefinitely.
-            //
-            // Until the HDL grows AGC (6E.6.5) or an in-HDL cycle-slip
-            // detector, this PS-side watchdog notices "no NID events
-            // for N consecutive 1-second windows" and pulses
-            // `sdr_reset` via `IpCore::reset_and_reinit()` to clear
-            // the PLL integrator and force a re-acquire from zero.
-            // See doc/changes/023.
-            const STUCK_WINDOWS_THRESHOLD: u32 = 5; // ~5 seconds
-            // Minimum time between consecutive recovery attempts.
-            // Protects against thrashing if the chain slips again
-            // immediately after recovery.
-            let min_recovery_interval =
-                std::time::Duration::from_secs(10);
-            let mut stuck_windows: u32 = 0;
-            let mut last_recovery: Option<std::time::Instant> = None;
-            let mut recovery_count: u64 = 0;
+            // ── NID event ring buffer for crash-transition dump ────
+            // Captures the last 32 NID events with full state. Dumped
+            // unconditionally on the first "nid_evts == 0" heartbeat
+            // after at least one healthy heartbeat has been seen.
+            const NID_RING_DEPTH: usize = 32;
+            #[derive(Clone, Copy, Default)]
+            struct NidRingEntry {
+                seq: u64,
+                t_ms_since_boot: u128,
+                nac: u16,
+                duid: u8,
+                valid: bool,
+                n_errors: u8,
+                sync_distance: u8,
+                drop_count: u16,
+                pll_dbg: i16,
+                sp_dbg: i16,
+            }
+            let mut nid_ring: [NidRingEntry; NID_RING_DEPTH] =
+                [NidRingEntry::default(); NID_RING_DEPTH];
+            let mut nid_ring_pos: usize = 0;
+            let mut nid_ring_count: usize = 0;
+            let mut crash_dump_armed = false;
+            let mut crash_dump_fired = false;
+            let task_start = std::time::Instant::now();
+
+            // ── iq_dma drain-rate tracking for the heartbeat ───────
+            let mut last_iq_next_addr: u32 = 0;
+            let mut last_iq_last_buffer: u8 = 0xFF;
+            let mut hb_iq_addr_advance: u64 = 0;
+            let mut hb_iq_buffer_changes: u32 = 0;
+            let mut hb_iq_overflow_ticks: u32 = 0;
+            let mut last_iq_overflow_log = std::time::Instant::now();
 
             // ── Heartbeat windowed stats (reset on each emission) ──
             // Reset every ~1 s of polling = ~60 ticks at 16 ms.
@@ -529,18 +549,74 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 tick.tick().await;
 
-                // EVERY tick: snapshot the full status + debug pair.
-                // We read coherently under the mutex so the heartbeat
-                // observes the same instant the optional nid_event
-                // payload would describe.
-                let (status, nac, duid, drop_count, pll_dbg, sp_dbg) = {
+                // EVERY tick: snapshot the full status + debug pair
+                // PLUS the iq_dma health indicators. We read coherently
+                // under the mutex so the heartbeat observes the same
+                // instant the optional nid_event payload would
+                // describe.
+                let (
+                    status,
+                    nac,
+                    duid,
+                    drop_count,
+                    pll_dbg,
+                    sp_dbg,
+                    iq_overflow,
+                    iq_last_buffer,
+                    iq_next_addr,
+                ) = {
                     let core = lsm_nid_core.lock().await;
                     let s = core.lsm_status();
                     let (nac, duid) = core.lsm_nid();
                     let drop_count = core.lsm_drop_count();
                     let (pll_dbg, sp_dbg) = core.lsm_debug();
-                    (s, nac, duid, drop_count, pll_dbg, sp_dbg)
+                    let iq_overflow = core.iq_overflow();
+                    let iq_last_buffer = core.iq_last_buffer();
+                    let iq_next_addr = core.iq_next_address();
+                    (
+                        s, nac, duid, drop_count, pll_dbg, sp_dbg,
+                        iq_overflow, iq_last_buffer, iq_next_addr,
+                    )
                 };
+
+                // ── iq_dma health bookkeeping for this tick ─────────
+                // Track AW address advance + last_buffer rollover rate.
+                // In healthy operation iq_next_addr advances ~5 KB per
+                // tick (62.5kSPS * 4 bytes/sample / 60 Hz). If it
+                // stops advancing or advances at <50 % of nominal, the
+                // iq_dma write side has stalled.
+                if last_iq_next_addr != 0 {
+                    // Compute forward delta with wrap. Buffers in the
+                    // ring are 4 KB and the ring wraps every 32 KB,
+                    // so a single tick should never advance by more
+                    // than 8 KB even at peak rate.
+                    let delta = iq_next_addr.wrapping_sub(last_iq_next_addr);
+                    // Filter out spurious huge backward jumps that
+                    // would happen on a CDC read race.
+                    if delta < 0x10000 {
+                        hb_iq_addr_advance += delta as u64;
+                    }
+                }
+                last_iq_next_addr = iq_next_addr;
+                if iq_last_buffer != last_iq_last_buffer && last_iq_last_buffer != 0xFF {
+                    hb_iq_buffer_changes += 1;
+                }
+                last_iq_last_buffer = iq_last_buffer;
+                if iq_overflow {
+                    hb_iq_overflow_ticks += 1;
+                    // Throttle the per-tick warning to once per second
+                    // so a stuck overflow doesn't drown the log.
+                    if last_iq_overflow_log.elapsed()
+                        >= std::time::Duration::from_secs(1)
+                    {
+                        last_iq_overflow_log = std::time::Instant::now();
+                        tracing::warn!(
+                            target: "p25_hdl_lsm",
+                            "iq_dma overflow latched (rate-limited; \
+                             one warn per second of stuck state)"
+                        );
+                    }
+                }
 
                 // ── Fold this tick into the heartbeat window ────────
                 hb_ticks += 1;
@@ -565,10 +641,17 @@ async fn main() -> anyhow::Result<()> {
 
                 // ── Per-tick: dibit overflow latch warning ──────────
                 if status.dibit_overflow {
-                    tracing::warn!(
-                        target: "p25_hdl_lsm",
-                        "lsm_dibit_overflow latched -- PS not draining the LSM dibit ring fast enough"
-                    );
+                    // Throttled to 1 Hz so a stuck overflow doesn't
+                    // dominate the log (it used to fire every poll).
+                    if last_iq_overflow_log.elapsed()
+                        >= std::time::Duration::from_secs(1)
+                    {
+                        // (Reuse the same throttle as iq overflow --
+                        // both signal the same upstream stall and
+                        // we want one warn per second total.)
+                    }
+                    // Don't reset the throttle here; let the iq side
+                    // manage it. We just count for the heartbeat.
                 }
 
                 // ── Per-tick: NID event handling ────────────────────
@@ -579,6 +662,31 @@ async fn main() -> anyhow::Result<()> {
                         valid_count += 1;
                         hb_window_valid_count += 1;
                     }
+
+                    // ALWAYS push the event into the ring buffer
+                    // (regardless of throttling). This is what the
+                    // crash dump reads.
+                    let entry = NidRingEntry {
+                        seq: event_count,
+                        t_ms_since_boot: task_start.elapsed().as_millis(),
+                        nac,
+                        duid,
+                        valid: status.nid_valid,
+                        n_errors: status.n_errors,
+                        sync_distance: status.sync_distance,
+                        drop_count,
+                        pll_dbg,
+                        sp_dbg,
+                    };
+                    nid_ring[nid_ring_pos] = entry;
+                    nid_ring_pos = (nid_ring_pos + 1) % NID_RING_DEPTH;
+                    if nid_ring_count < NID_RING_DEPTH {
+                        nid_ring_count += 1;
+                    }
+                    // Arm the crash-dump trigger as soon as we've
+                    // seen any healthy traffic.
+                    crash_dump_armed = true;
+
                     if drop_count != last_drop_count {
                         tracing::warn!(
                             target: "p25_hdl_lsm",
@@ -625,6 +733,8 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         hb_sync_dist_best.to_string()
                     };
+                    // iq_dma health: KB/s and buffer rollover rate.
+                    let iq_kbps = hb_iq_addr_advance / 1024;
                     tracing::info!(
                         target: "p25_hdl_lsm",
                         "HB {hb_ticks}t: pll{pll_range} sp{sp_range} \
@@ -632,49 +742,76 @@ async fn main() -> anyhow::Result<()> {
                          bch_busy={hb_bch_busy_ticks} \
                          in_window={hb_in_window_ticks} \
                          nid_evts={hb_nid_event_ticks} \
-                         overflow={hb_overflow_ticks} \
+                         dibit_overflow={hb_overflow_ticks} \
+                         iq_overflow={hb_iq_overflow_ticks} \
+                         iq_kbps={iq_kbps} \
+                         iq_buf_rolls={hb_iq_buffer_changes} \
                          (window NIDs: {hb_window_valid_count}/{hb_window_event_count} valid; \
-                         cum NIDs: {valid_count}/{event_count}; \
-                         recoveries: {recovery_count})"
+                         cum NIDs: {valid_count}/{event_count})"
                     );
 
-                    // ── PLL cycle-slip watchdog ────────────────────
+                    // ── Crash-transition NID ring dump ──────────────
                     //
-                    // If this window had zero NID events, bump the
-                    // stuck counter. Zero the counter on any window
-                    // that sees even a single event -- that's enough
-                    // to prove the chain is still acquiring.
-                    if hb_window_event_count == 0 {
-                        stuck_windows += 1;
-                    } else {
-                        stuck_windows = 0;
-                    }
-                    let cooldown_ok = match last_recovery {
-                        None => true,
-                        Some(t) => t.elapsed() >= min_recovery_interval,
-                    };
-                    if stuck_windows >= STUCK_WINDOWS_THRESHOLD && cooldown_ok {
+                    // The MOMENT this is the first heartbeat with
+                    // zero NID events after we've seen at least one
+                    // healthy heartbeat, dump the full ring buffer.
+                    // This captures up to 32 NID events with full
+                    // pll/sp/sync_dist/n_errors/drop_count state, no
+                    // throttling. Compare entries N..N+5 (the
+                    // tail) for the moment things went wrong.
+                    //
+                    // Fires exactly once per boot. Subsequent stuck
+                    // heartbeats just emit the regular HB line.
+                    if crash_dump_armed
+                        && !crash_dump_fired
+                        && hb_window_event_count == 0
+                    {
+                        crash_dump_fired = true;
+                        let depth = nid_ring_count;
                         tracing::warn!(
                             target: "p25_hdl_lsm",
-                            "WATCHDOG: HDL LSM chain has produced 0 \
-                             NID events for {stuck_windows} consecutive \
-                             seconds (PLL likely cycle-slipped, see \
-                             doc/changes/023); pulsing sdr_reset to \
-                             clear PLL integrator and force re-acquire"
+                            "CRASH TRANSITION: HDL LSM chain produced 0 \
+                             NID events in the past 1s window after a \
+                             healthy run -- dumping the last {} NID \
+                             events from the ring buffer:",
+                            depth,
                         );
-                        {
-                            let mut core = lsm_nid_core.lock().await;
-                            core.reset_and_reinit().await;
+                        // Walk the ring in chronological order
+                        // (oldest -> newest) so the log reads
+                        // top-to-bottom in time order.
+                        let start = if nid_ring_count < NID_RING_DEPTH {
+                            0
+                        } else {
+                            nid_ring_pos
+                        };
+                        for i in 0..depth {
+                            let idx = (start + i) % NID_RING_DEPTH;
+                            let e = nid_ring[idx];
+                            tracing::warn!(
+                                target: "p25_hdl_lsm",
+                                "  ring[{:2}] t={:>6}ms #{:>5} \
+                                 nac=0x{:03X} duid={} valid={:>5} \
+                                 n_errors={:>2} sync_dist={:>2} \
+                                 drop_count={:>5} pll={:>6} sp={:>6}",
+                                i,
+                                e.t_ms_since_boot,
+                                e.seq,
+                                e.nac,
+                                e.duid,
+                                e.valid,
+                                e.n_errors,
+                                e.sync_distance,
+                                e.drop_count,
+                                e.pll_dbg,
+                                e.sp_dbg,
+                            );
                         }
-                        recovery_count += 1;
-                        last_recovery = Some(std::time::Instant::now());
-                        stuck_windows = 0;
-                        tracing::info!(
+                        tracing::warn!(
                             target: "p25_hdl_lsm",
-                            "WATCHDOG: sdr_reset pulse complete \
-                             (recovery #{recovery_count}); HDL LSM \
-                             chain should re-acquire within the next \
-                             ~1 second if signal is still present"
+                            "CRASH TRANSITION: end of ring dump. Chain \
+                             will likely remain stuck until power \
+                             cycle (sdr_reset is unsafe to use during \
+                             operation -- see doc/changes/024)."
                         );
                     }
 
@@ -689,6 +826,9 @@ async fn main() -> anyhow::Result<()> {
                     hb_in_window_ticks = 0;
                     hb_nid_event_ticks = 0;
                     hb_overflow_ticks = 0;
+                    hb_iq_addr_advance = 0;
+                    hb_iq_buffer_changes = 0;
+                    hb_iq_overflow_ticks = 0;
                     hb_window_event_count = 0;
                     hb_window_valid_count = 0;
                     last_hb = std::time::Instant::now();
