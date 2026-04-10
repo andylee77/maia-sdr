@@ -15,8 +15,13 @@ maia-hdl/ip/maia-sdr/maia_iio_lite/
 maia-hdl/ip/p25-core/default/
 maia-hdl/maia-sdr.svd
 
-# Rust build artifacts
+# Rust build artifacts -- workspace-root target/ AND any per-subcrate
+# target/ that gets created if cargo runs from inside a subcrate
+# (e.g. cd p25-httpd/p25-pac && cargo check creates p25-pac/target/).
 p25-httpd/target/
+p25-httpd/**/target/
+maia-httpd/target/
+maia-httpd/**/target/
 
 # Vivado project artifacts (produced by build_fpga.bat)
 *.xpr
