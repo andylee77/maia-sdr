@@ -45,6 +45,12 @@ pub mod sync;
 #[cfg(target_os = "linux")]
 pub mod ring;
 
+// Phase 6E.0: golden vector emitter for the HDL port. Test-only,
+// writes JSON fixtures to maia-hdl/test/golden_vectors/. See
+// `golden_dump.rs` for the file format.
+#[cfg(test)]
+mod golden_dump;
+
 /// Minimal complex number type for the LSM pipeline.
 ///
 /// Defined locally instead of pulling in `num-complex` as a new dependency
