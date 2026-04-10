@@ -81,50 +81,52 @@ impl GolayDecoder {
         Self::syndrome(1 << (22 - i))
     }
 
-    /// Decode P25 NID from 64 raw bits (32 dibits)
+    /// Decode P25 NID from 64 raw bits (32 dibits).
     ///
-    /// Returns `(nac, duid, raw_duid)` where `raw_duid` is the 4-bit value
-    /// that the (currently stubbed) FEC *would* have returned -- the caller
-    /// uses it for diagnostic histograms so we can see the actual on-air
-    /// DUID distribution while the BCH FEC is still missing. `duid` is the
-    /// hard-corrected value (currently always 0x7 = TSDU on the control
-    /// channel; see hack note below).
+    /// Returns `Some((nac, duid, raw_duid))` if the BCH(63,16,11) FEC
+    /// successfully corrects the NID block (<= 11 bit errors), or `None`
+    /// otherwise. The `raw_duid` is the un-FEC'd 4-bit DUID field as it
+    /// arrived on-air; the caller logs it in the diagnostic histogram so
+    /// we can compare the BCH-corrected DUID against the raw on-air
+    /// distribution. `duid` is the BCH-corrected hard value.
     ///
-    /// **Status (2026-04-09): NID FEC IS A STUB.**
+    /// **Implementation:** Delegates to the validated
+    /// [`crate::lsm::nid_fec::decode_nid`] from Phase 6D, which is a port
+    /// of `tools/p25_nid_fec.py` (which is itself a port of SDRTrunk's
+    /// `BCH_63_16_23_P25_Test.java`). Maximum-likelihood decoder over the
+    /// 65,536-entry codebook; bit-exact with SDRTrunk for any received
+    /// word with <= 11 bit errors. The codebook is built lazily on the
+    /// first call via `OnceLock`, ~512 KB resident, <10 ms build time on
+    /// a Cortex-A9.
     ///
-    /// Per TIA-102.BAAA Section 7.2 the P25 NID is encoded with shortened
-    /// BCH(63,16,11) (= BCH(64,16,11) with a leading zero), capable of
-    /// correcting up to 11 bit errors in the 64-bit NID block. This
-    /// implementation currently does no error correction at all -- it
-    /// just reads the high 16 bits as `NAC[12] || DUID[4]`. The
-    /// `GolayDecoder::decode/syndrome/parity_of_bit` helpers in this
-    /// module are remnants of an earlier (incorrect) design and are not
-    /// yet wired in.
+    /// On-wire NID layout (matches the lsm::nid_fec encoder):
     ///
-    /// We discovered this on 2026-04-09 while debugging the dashboard's
-    /// stuck-at-"Searching" state. Sync acquisition was working (sync
-    /// hits at ~3/sec, distances 7-10) but every "valid" NID decoded as
-    /// DUID 0x5 (LDU1) or 0x0 (HDU) -- never 0x7 (TSDU). Reason: the
-    /// slicer's residual DC bias produces ~12 bit errors per NID, and
-    /// without FEC the 4-bit DUID field is essentially random within
-    /// ~3 bits of the true value. ~7 of the 16 possible DUID nibbles
-    /// happen to be legal enum values, so most reads land on a "valid"
-    /// but wrong DUID and the rest get flagged "DUID invalid".
+    /// ```text
+    /// bit 63..52 : NAC  (12 bits, MSB-first within the data word)
+    /// bit 51..48 : DUID (4 bits)
+    /// bit 47..0  : 48 BCH parity bits
+    /// ```
     ///
-    /// **Temporary hack (until BCH(64,16) is implemented):** the control
-    /// channel only carries TSDUs (DUID=0x7). Since we're hard-tuned to
-    /// a known control frequency, we hardcode `duid = 0x7` and rely on
-    /// the downstream TSBK CRC + trellis FEC to validate or reject the
-    /// payload. This unblocks testing of the entire post-NID pipeline
-    /// without waiting for the BCH implementation. It WILL break if
-    /// the same code path is reused for traffic channel decoding --
-    /// fix the FEC properly before that happens.
+    /// The caller in `control_channel.rs::process_dibit` builds the
+    /// `nid_bits` u64 by left-shifting and OR-ing 32 consecutive dibits
+    /// in arrival order, which is the natural P25 on-wire order: the
+    /// first dibit lands at bits [63:62] and the last lands at [1:0],
+    /// putting NAC[11] at bit 63 -- exactly the layout the BCH decoder
+    /// (and the SDRTrunk reference encoder) expects.
+    ///
+    /// **History.** Until 2026-04-10 this was a stub that hardcoded
+    /// `duid = 0x7` (TSDU) because the FEC was unimplemented and the
+    /// raw bits had ~12 errors per NID from slicer/PLL noise, making
+    /// the 4-bit DUID field effectively random. The `GolayDecoder::
+    /// decode/syndrome/parity_of_bit` helpers above are leftovers from
+    /// an even earlier (incorrect) design where the NID was thought to
+    /// be Golay(23,12)-coded; they're kept for backwards compatibility
+    /// with the existing tests but are not used by `decode_nid` itself.
+    /// See doc/changes/021 for the cleanup.
     pub fn decode_nid(nid_bits: u64) -> Option<(u16, u8, u8)> {
-        let nac = ((nid_bits >> 52) & 0xFFF) as u16;
         let raw_duid = ((nid_bits >> 48) & 0xF) as u8;
-        // HACK: see docstring. Hardcode TSDU until BCH(64,16) lands.
-        const HARDCODED_DUID_TSDU: u8 = 0x7;
-        Some((nac, HARDCODED_DUID_TSDU, raw_duid))
+        let decoded = crate::lsm::nid_fec::decode_nid(nid_bits)?;
+        Some((decoded.nac, decoded.duid, raw_duid))
     }
 }
 
@@ -321,33 +323,84 @@ mod tests {
     }
 
     #[test]
-    fn test_nid_decode() {
-        // NAC=0x8A1, DUID=0x7 (TSDU)
-        // Pack into NID bits: NAC in bits 63-52, DUID in bits 51-48
-        let nid_bits: u64 = (0x8A1u64 << 52) | (0x7u64 << 48);
-        let result = GolayDecoder::decode_nid(nid_bits);
-        assert!(result.is_some());
-        let (nac, duid, raw_duid) = result.unwrap();
+    fn test_nid_decode_clean_clay_county() {
+        // Clay County NAC 0x8A1 / DUID 0x7 (TSDU). Encode via the
+        // validated lsm::nid_fec encoder so we get a real BCH codeword
+        // with the right 48 parity bits, then verify decode_nid round-
+        // trips it cleanly.
+        let nid_bits = crate::lsm::nid_fec::encode_nid(0x8A1, 0x7);
+        let (nac, duid, raw_duid) = GolayDecoder::decode_nid(nid_bits).unwrap();
         assert_eq!(nac, 0x8A1);
-        // duid is currently always hardcoded to 0x7 (control-channel hack
-        // until BCH(64,16) NID FEC is implemented). raw_duid is what the
-        // un-FECed extractor saw -- here it matches because we built a
-        // clean test vector.
         assert_eq!(duid, 0x7);
+        // raw_duid is the un-FEC'd 4-bit DUID field straight off the wire.
+        // For a clean codeword this matches the BCH-corrected value.
         assert_eq!(raw_duid, 0x7);
     }
 
     #[test]
-    fn test_nid_decode_records_raw_duid() {
-        // NAC=0xE28, raw DUID=0x5 (looks like LDU1) -- this is the actual
-        // pattern we observed on hardware before adding the hardcode hack.
-        // The function should return the hardcoded TSDU but report the
-        // raw_duid as 0x5 so we can build the diagnostic histogram.
-        let nid_bits: u64 = (0xE28u64 << 52) | (0x5u64 << 48);
-        let (nac, duid, raw_duid) = GolayDecoder::decode_nid(nid_bits).unwrap();
+    fn test_nid_decode_corrects_11_bit_errors() {
+        // The BCH(63,16,11) code has minimum distance 23 and corrects up
+        // to t = 11 bit errors. Flip 11 bits in a clean Clay County
+        // codeword and verify the decoder still recovers the original
+        // NAC/DUID, matching the existing
+        // lsm::nid_fec::error_correction_sweep_up_to_t11 test.
+        let clean = crate::lsm::nid_fec::encode_nid(0x8A1, 0x7);
+        // 11 fixed bit positions from the parity field (avoid bit 63
+        // which is the SDRTrunk-test convention).
+        let positions = [0u32, 5, 9, 14, 20, 27, 33, 40, 46, 51, 58];
+        let mut corrupted = clean;
+        for &p in &positions {
+            corrupted ^= 1u64 << (63 - p);
+        }
+        let (nac, duid, _raw) = GolayDecoder::decode_nid(corrupted).unwrap();
+        assert_eq!(nac, 0x8A1);
+        assert_eq!(duid, 0x7);
+    }
+
+    #[test]
+    fn test_nid_decode_rejects_uncorrectable() {
+        // 20 bit errors is well outside the t=11 unique-decoding sphere.
+        // The decoder may either return None (uncorrectable) or land on
+        // a different valid codeword that happens to be closer; in
+        // EITHER case, test_nid_decode must NOT silently return the
+        // original (NAC, DUID) pair, because that would be undetectably
+        // wrong. The strict assertion is "either None, or a different
+        // (NAC, DUID)".
+        let clean = crate::lsm::nid_fec::encode_nid(0x8A1, 0x7);
+        // Flip the first 20 bits.
+        let mut corrupted = clean;
+        for p in 0u32..20 {
+            corrupted ^= 1u64 << (63 - p);
+        }
+        match GolayDecoder::decode_nid(corrupted) {
+            None => {} // ok -- uncorrectable
+            Some((nac, duid, _)) => {
+                assert_ne!(
+                    (nac, duid),
+                    (0x8A1, 0x7),
+                    "20-bit-error word silently decoded as the original NAC/DUID -- BCH bypass?"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_nid_decode_records_raw_duid_under_corruption() {
+        // Encode a real codeword for NAC=0xE28 / DUID=0x7, then flip a
+        // few bits in the DUID nibble (positions 12..15 of the on-wire
+        // bit stream = bits 51..48 of the u64). The BCH FEC should
+        // correct the DUID back to 0x7, but the raw_duid that we
+        // expose for the diagnostic histogram should still be the
+        // PRE-correction value (so the histogram measures slicer noise,
+        // not BCH-corrected output).
+        let clean = crate::lsm::nid_fec::encode_nid(0xE28, 0x7);
+        // Flip the DUID LSB (on-wire bit 15 = u64 bit 48). 1 bit error
+        // is well within the t=11 correction sphere.
+        let corrupted = clean ^ (1u64 << 48);
+        let (nac, duid, raw_duid) = GolayDecoder::decode_nid(corrupted).unwrap();
         assert_eq!(nac, 0xE28);
-        assert_eq!(duid, 0x7); // hardcoded
-        assert_eq!(raw_duid, 0x5); // what the air actually said
+        assert_eq!(duid, 0x7); // BCH-corrected
+        assert_eq!(raw_duid, 0x6); // the un-FEC'd LSB-flipped DUID
     }
 
     #[test]
