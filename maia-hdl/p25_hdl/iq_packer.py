@@ -62,10 +62,18 @@ class IQPacker(Elaboratable):
         data_out: 64-bit packed word containing two IQ pairs
         data_valid: AXI4-Stream valid; rises when a new word is
             latched and stays high until ``stream_ready`` accepts it
-        overflow: sticky flag — set if a new word is latched while
-            the previous word is still waiting for ``stream_ready``.
-            Latches once and stays set; cleared at the AXI-Lite
-            register layer via ``Rsticky`` semantics on read.
+        overflow: **one-cycle pulse** — asserts for exactly one
+            cycle when a new word is latched while the previous
+            word is still waiting for ``stream_ready``. Must NOT be
+            a latched level: the ``Rsticky`` register-layer wrapper
+            (maia_hdl.register.Registers) already handles
+            accumulation + read-clear, and does so by snapshotting
+            the *current input value* on read (sticky := input), so
+            a latched level would get re-accumulated on the very
+            next cycle and the PS could never clear the sticky.
+            This was the Phase 6C iq_dma spurious-overflow bug that
+            caused the p25-httpd LSM pipeline to reset every
+            sub-buffer. See doc/changes/020_iq_dibit_packer_overflow_pulse.md.
     """
     def __init__(self):
         # Inputs
@@ -100,6 +108,12 @@ class IQPacker(Elaboratable):
         with m.If(holding_valid & self.stream_ready):
             m.d.sync += holding_valid.eq(0)
 
+        # Default overflow to 0 every cycle so the only time it is
+        # high is the single cycle after a trigger event -- see the
+        # class docstring for why this MUST be a pulse and not a
+        # latched level.
+        m.d.sync += self.overflow.eq(0)
+
         with m.If(self.strobe_in):
             with m.If(phase == 0):
                 # Latch the first sample into the low half and flip
@@ -119,11 +133,10 @@ class IQPacker(Elaboratable):
                     phase.eq(0),
                 ]
                 # If the previous word still hasn't been accepted by
-                # the DMA, we are about to overwrite it — latch the
-                # sticky overflow flag. Same semantic as
-                # DibitPacker.overflow: never self-clears in the
-                # gateware; the AXI-Lite Rsticky field clears it on
-                # PS read.
+                # the DMA, we are about to overwrite it -- emit a
+                # one-cycle overflow pulse. The Rsticky register
+                # wrapper in maia_hdl.register.Registers takes care
+                # of accumulation + PS read-clear.
                 with m.If(holding_valid):
                     m.d.sync += self.overflow.eq(1)
 

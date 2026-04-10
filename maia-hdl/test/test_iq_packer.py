@@ -210,53 +210,95 @@ class TestIQPacker(unittest.TestCase):
         self.assertTrue(valid_cleared, 'data_valid should clear after handshake')
 
     def test_overflow_flag(self):
-        """overflow flag latches when a new word arrives while previous stalled."""
+        """overflow fires for (at least) one cycle when a word is latched
+        while the previous word is still waiting for stream_ready.
+
+        Note that `overflow` is now a one-cycle pulse on the packer
+        side, not a latched level -- see the IQPacker class docstring
+        and doc/changes/020_iq_dibit_packer_overflow_pulse.md. The
+        accumulation across multiple triggers is handled by the
+        ``Rsticky`` wrapper in maia_hdl.register.Registers.
+        """
         self.dut = IQPacker()
-        overflow = False
+        overflow_seen = False
 
         async def bench(ctx):
-            nonlocal overflow
+            nonlocal overflow_seen
             ctx.set(self.dut.stream_ready, 0)
-            # Feed 4 pairs (8 strobes = 2 words) without accepting any
+            # Feed 4 pairs (8 strobes = 2 words) without accepting any.
+            # Check overflow on every cycle so a one-cycle pulse is not
+            # missed.
             for k in range(8):
                 ctx.set(self.dut.re_in, s16(k + 1))
                 ctx.set(self.dut.im_in, s16(-(k + 1)))
                 ctx.set(self.dut.strobe_in, 1)
                 await ctx.tick()
+                if ctx.get(self.dut.overflow) == 1:
+                    overflow_seen = True
             ctx.set(self.dut.strobe_in, 0)
             await ctx.tick()
-            overflow = ctx.get(self.dut.overflow) == 1
+            if ctx.get(self.dut.overflow) == 1:
+                overflow_seen = True
 
         self._simulate(bench)
-        self.assertTrue(overflow, 'overflow should set when a word stalls')
+        self.assertTrue(overflow_seen, 'overflow should pulse when a word stalls')
 
-    def test_overflow_sticky(self):
-        """overflow stays set after stream_ready re-asserts (Rsticky semantics)."""
+    def test_overflow_is_pulse_not_latched(self):
+        """overflow must return to 0 within a couple of cycles after the
+        trigger event. A latched-level bug would cause the Rsticky
+        register wrapper to re-accumulate it on every cycle, breaking
+        PS-side clear-on-read. This test guards against reintroducing
+        the Phase 6C spurious-overflow bug documented in
+        doc/changes/020_iq_dibit_packer_overflow_pulse.md.
+        """
         self.dut = IQPacker()
-        overflow_after_clear = False
+        high_cycles = 0
+        overflow_ever_fired = False
 
         async def bench(ctx):
-            nonlocal overflow_after_clear
+            nonlocal high_cycles, overflow_ever_fired
             ctx.set(self.dut.stream_ready, 0)
-            # Two complete pairs while stalled = guaranteed overflow
+            # Feed enough strobes to guarantee at least one overflow
+            # trigger.
             for k in range(8):
                 ctx.set(self.dut.re_in, s16(k))
                 ctx.set(self.dut.im_in, s16(-k))
                 ctx.set(self.dut.strobe_in, 1)
                 await ctx.tick()
+                if ctx.get(self.dut.overflow) == 1:
+                    overflow_ever_fired = True
+                    high_cycles += 1
             ctx.set(self.dut.strobe_in, 0)
+            # After the last strobe, stream_ready is still 0 but no new
+            # strobes are arriving. overflow must fall to 0 within at
+            # most one tick because its only driver is the trigger edge.
             await ctx.tick()
-            assert ctx.get(self.dut.overflow) == 1
-            # Re-enable backpressure release; gateway-side overflow must
-            # NOT self-clear (the AXI Rsticky layer is the only clear path).
+            await ctx.tick()
+            final_overflow = ctx.get(self.dut.overflow) == 1
+
+            # Now release back-pressure and wait a few cycles. overflow
+            # must stay at 0 -- anything else means the packer is
+            # latching a level the Rsticky wrapper cannot clear.
             ctx.set(self.dut.stream_ready, 1)
             for _ in range(8):
                 await ctx.tick()
-            overflow_after_clear = ctx.get(self.dut.overflow) == 1
+                if ctx.get(self.dut.overflow) == 1:
+                    # latched level -- this is the bug we're guarding
+                    # against
+                    high_cycles += 1000
+
+            self.assertFalse(
+                final_overflow,
+                'overflow must not be held high when no trigger fires')
 
         self._simulate(bench)
-        self.assertTrue(overflow_after_clear,
-                        'overflow should be sticky in gateware')
+        self.assertTrue(overflow_ever_fired,
+                        'expected at least one overflow trigger in this bench')
+        self.assertLess(
+            high_cycles, 4,
+            f'overflow stayed high for {high_cycles} cycles -- this is the '
+            f'Phase 6C latched-level bug (see doc 020); it must pulse for '
+            f'only ~1 cycle per trigger')
 
 
 if __name__ == '__main__':

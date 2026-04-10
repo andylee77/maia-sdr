@@ -5,6 +5,211 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-10] Phase 6E.10 PS-side scaffolding + iq/dibit packer overflow HDL hotfix
+
+**Branch:** fishball-p25
+**Related:** Tezuka `doc/changes/004_p25_lsm_dibit_dma_reserved_memory.md`
+
+Bring-up companion to the Phase 6E.10 Vivado bake below. Adds the
+p25-httpd PS-side accessors and tasks that let Linux userspace
+actually exercise the new HDL LSM chain on hardware, the Tezuka DT
+carve-out that makes the new `lsm_dibit_dma` ring visible as
+`/dev/p25-lsm-dibit`, and a long-deferred Phase 6C hotfix to the
+iq/dibit packer `overflow` semantics that was silently wrecking the
+Phase 6D Rust LSM pipeline on every boot.
+
+See `doc/changes/020_iq_dibit_packer_overflow_pulse.md` for the
+overflow hotfix investigation + fix, and the existing `018`/`019`
+docs for the Phase 6E.9/6E.10 HDL context.
+
+### p25-httpd PS-side scaffolding for the HDL LSM chain
+
+- `p25-httpd/src/fpga.rs`: `IpCore` grows a fourth `lsm_dibit_dma`
+  `RxBuffer` opened against the new `/dev/p25-lsm-dibit` chardev and
+  a full set of `lsm_*` register accessors against the regenerated
+  PAC -- `set_lsm_enable`, `set_lsm_dibit_dma_enable`, `lsm_status`
+  (returning a new `LsmStatusSnapshot` struct that captures all 7
+  fields of the register in one bus read so the PS sees a coherent
+  per-NID-event picture), `lsm_nid`, `lsm_drop_count`,
+  `lsm_dibit_last_buffer`, `lsm_dibit_next_address`, `lsm_debug`,
+  `read_lsm_dibit_buffers`. `DmaChannel` gains an `LsmDibit` variant
+  wired through the existing `read_dma_buffers` helper.
+- `InterruptHandler` gains `notify_lsm_dibit_dma` + matching
+  `waiter_lsm_dibit_dma()`, and the IRQ fanout loop decodes the new
+  bit 3 (`interrupts.lsm_dibit_dma`) alongside the existing three.
+  NID events themselves are deliberately NOT IRQ-driven -- the 60 Hz
+  polling loop below catches every ~14 ms NID with plenty of headroom.
+- `p25-httpd/src/main.rs`:
+  - Boot sequence enables the HDL LSM chain alongside C4FM + iq_dma:
+    `ip_core.set_lsm_enable(true)` +
+    `ip_core.set_lsm_dibit_dma_enable(true)`.
+  - New "HDL LSM dibit reader" task drains the `lsm_dibit_dma` ring
+    on every IRQ and histograms the dibit distribution for bring-up
+    sanity. It deliberately does NOT feed the dibits into the Phase
+    2A C4FM control-channel decoder -- LSM has different symbol-phase
+    timing so cross-feeding would corrupt the working decoder's state.
+    A dedicated LSM TSBK decoder is a Phase 6F follow-up.
+  - New "HDL LSM NID poller" task polls `lsm_status.nid_event` at
+    60 Hz (16 ms tick). On each fired event it reads the coherent
+    snapshot (lsm_status + lsm_nid + lsm_drop_count + lsm_debug in
+    one pass under the mutex), logs NAC/DUID/`n_errors`/
+    `sync_distance`/`drop_count`/`pll_dbg`/`sample_point_dbg`
+    throttled to 5 Hz (always logs the first 10 events), and warns
+    on `lsm_dibit_overflow` latches or `drop_count` bumps.
+  - The Phase 6D Rust LSM path keeps running in parallel as an
+    independent sanity check. Both pipelines consume the same
+    control DDC output and should emit identical NID streams on the
+    same RF feed -- useful A/B during bring-up. Retiring the Phase
+    6D PS-side path is a Phase 6F decision once both converge.
+  - Phase 6 stats task is extended to also log
+    `lsm_dibit_last_buffer` and `lsm_dibit_next_address`.
+
+### Tezuka DT carve-out for `/dev/p25-lsm-dibit`
+
+Added to `board/tezuka/fishball7020/dts/fishball-p25.dtsi` alongside
+the existing dibit / traffic / iq entries (kernel-side counterpart
+in `andylee77/tezuka_fw`):
+
+```dts
+p25_lsm_dibit_dma: p25-lsm-dibit-dma@1a000000 {
+    no-map;
+    reg = <0x1a000000 0x8000>;
+    label = "p25_lsm_dibit_dma";
+};
+
+p25-lsm-dibit {
+    compatible = "maia-sdr,rxbuffer";
+    memory-region = <&p25_lsm_dibit_dma>;
+    buffer-size = <0x1000>;
+};
+```
+
+32 KB region, 8 x 4 KB sub-buffers -- mechanically identical to the
+existing C4FM `p25_dibit_dma` ring, just at a new base. Mirrors the
+FPGA-side `lsm_dibit_dma_address = 0x1A00_0000` from
+`maia-hdl/p25_hdl/config.py`. Tezuka commit lands separately in
+`andylee77/tezuka_fw/doc/changes/004_p25_lsm_dibit_dma_reserved_memory.md`.
+
+### Phase 6C iq/dibit packer overflow HDL hotfix (doc 020)
+
+Long-deferred bug from doc 014 follow-ups: `iq_dma` overflow latch
+fired on every sub-buffer on hardware, causing
+`p25-httpd/src/main.rs` to call `pipeline.reset()` on the Phase 6D
+Rust LSM pipeline every ~128 ms, which wiped accumulated streaming
+FIR delay lines / /2 decimator phase / Gardner TED history / Costas
+PLL accumulator / sync-detector state before the pipeline had any
+chance to converge. On-target symptom: `overflow_resets` ticking up
+monotonically at ~7.6 Hz regardless of signal strength, and the
+Phase 6D Rust LSM pipeline never locking onto the Clay County
+control channel despite the Python reference doing so cleanly on
+the same wav capture.
+
+**Root cause.** `maia-hdl/p25_hdl/iq_packer.py` (and
+`dibit_packer.py` -- same pattern) drove `self.overflow.eq(1)` on
+the trigger condition but never cleared it anywhere else, so once
+latched the signal was stuck high forever. The `maia_hdl.register`
+`Rsticky` wrapper implements read-clear as `sticky := input` (not
+`sticky := 0`), because the intended semantics are "one-cycle pulse
+in, accumulated + clear-on-read sticky out". With a stuck-high
+input, reads "clear" the accumulator by replacing it with the
+current input value (still 1), and the next cycle's
+`sticky := sticky | input` re-accumulates it immediately. The PS
+never sees the bit clear. The class docstring even documented this
+backwards (*"never self-clears in the gateware; the AXI Rsticky
+layer is the only clear path"*).
+
+**Fix.** Add a default `m.d.sync += self.overflow.eq(0)` at the top
+of `elaborate()` in both packers. Amaranth's last-assignment-wins
+means the conditional `self.overflow.eq(1)` inside the trigger
+branch still fires, but now only for one cycle; the Rsticky wrapper
+accumulates the pulse and clears it correctly on PS read.
+
+`dibit_packer` had the same latent bug but it had never triggered
+in practice: at 4800 sym/s on a 1.7 GB/s HP1 budget, the trigger
+condition (previous word still waiting for `stream_ready` when the
+next word arrives) effectively never fires. Fixed anyway for
+consistency.
+
+### Overflow regression guard + test rewrite
+
+Added `test_overflow_is_pulse_not_latched` to both
+`test_iq_packer.py` and `test_dibit_packer.py`. The new test fires
+enough strobes under back-pressure to guarantee at least one
+overflow trigger, samples `overflow` every cycle during the burst,
+then verifies: (1) overflow actually fired at least once, (2) it
+fell to 0 within one tick after the strobe burst stopped, (3) it
+stayed at 0 for 8 ticks after back-pressure was released. Fail
+mode: cycle-high counter bumps past a small threshold with an
+explicit "this is the Phase 6C latched-level bug (see doc 020)"
+assertion message.
+
+The old `test_overflow_sticky` in both files actively asserted the
+*wrong* behaviour (*"overflow should be sticky in gateware"*) and
+therefore could never have caught the bug via pure regression
+testing. Rewrote both `test_overflow_flag` tests to sample cycle
+by cycle instead of only at the end of the burst, so a 1-cycle
+pulse still passes.
+
+### PS-side `main.rs` companion fix (defence in depth)
+
+Even with the HDL fix, the old PS-side behaviour was wrong: it
+called `pipeline.reset()` on any overflow bit, which throws away
+legitimate LSM lock state. The right reaction is log + count + keep
+running, because doc 014 proved the sample math shows no actual
+data loss when the bit fires. A genuine back-pressure event that
+caused actual sample loss would need a higher-layer detection
+(gap in sample timestamps or backward jump in the FPGA's AW
+address counter), not inference from the Rsticky.
+
+### Regenerated HDL artefacts
+
+Re-ran `./build_hdl.bat --p25 --verilog-only` to roll the packer
+fix into `p25_core.v`. `p25.svd` and `p25-pac/src/lib.rs` are
+regenerated but their content is byte-identical to the post-6E.10
+version -- this is a gate-level internal change inside the packer's
+`elaborate()` that does not touch any register layout.
+
+### Verification
+
+- `python -m unittest test.test_iq_packer test.test_dibit_packer`
+  -- 13/13 pass.
+- `python -m unittest test.test_iq_packer test.test_dibit_packer
+  test.test_c4fm_demod test.test_symbol_timing` -- 25/25 pass, no
+  regressions in the wider p25_hdl suite.
+- Host-side `cargo check` on the p25-httpd workspace -- clean (90
+  pre-existing warnings, no errors).
+- ARM cross-check `cargo check --target
+  armv7-unknown-linux-gnueabihf` -- clean (27 pre-existing warnings,
+  no errors). New `fpga.rs` + `main.rs` paths compile under
+  `cfg(target_os = "linux")`.
+- First Vivado bake (bitstream A, pre-fix) completed cleanly at
+  `maia-hdl/projects/fishball7020_p25/fishball_p25.sdk/system_top.xsa`
+  -- kept as a baseline for comparison, not intended for flashing.
+- Second Vivado bake (bitstream B, with fix) running in background.
+
+### What gets flashed
+
+On-target testing should use **bitstream B** (post-fix) plus the
+p25-httpd binary from this commit plus the Tezuka firmware that
+picks up `004_p25_lsm_dibit_dma_reserved_memory.md`. With all three
+in place:
+
+- `overflow_resets` in `/api/lsm` should stay at 0 for the first
+  minute of uptime and climb only on actual HP1 stalls (vs the
+  ~7.6 Hz boot-constant of the old bitstream).
+- The Phase 6D Rust LSM pipeline should start accumulating
+  `hard_events` / `soft_events` within seconds of enable as the
+  streaming state is no longer being wiped.
+- The Phase 6E.9 HDL LSM path should start logging NID events at
+  the expected ~14 ms cadence with `nac=0x8A1`, `valid=true`,
+  `n_errors<=11`, `drop_count=0`, and `lsm_dibit_overflow` not
+  latching.
+- Both decoders should agree on the same NIDs on the same RF
+  capture, cross-validating the HDL port of 6E.0-6E.9 against the
+  Phase 6D Rust reference.
+
+---
+
 ## [2026-04-10] Phase 6E.10: Vivado bake artefacts (regen Verilog + PAC, wire `m_axi_lsm_dibit` through TCL)
 
 **Branch:** fishball-p25

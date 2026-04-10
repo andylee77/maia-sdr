@@ -142,26 +142,91 @@ class TestDibitPacker(unittest.TestCase):
         self.assertTrue(valid_cleared, "data_valid should clear after handshake")
 
     def test_overflow_flag(self):
-        """overflow flag sets if new word ready while previous stalled."""
+        """overflow fires for (at least) one cycle when a new word is
+        latched while the previous one is still waiting for stream_ready.
+
+        Note that `overflow` is a one-cycle pulse on the packer side,
+        not a latched level -- see the DibitPacker class docstring
+        and doc/changes/020_iq_dibit_packer_overflow_pulse.md.
+        """
         self.dut = DibitPacker()
 
-        overflow = False
+        overflow_seen = False
 
         async def bench(ctx):
-            nonlocal overflow
-            # Disable stream_ready -> words will stall
+            nonlocal overflow_seen
             ctx.set(self.dut.stream_ready, 0)
-            # Feed 64 dibits (2 words) without accepting any
+            # Feed 64 dibits (2 words) without accepting any. Check
+            # overflow on every cycle so a one-cycle pulse is not missed.
             for i in range(64):
                 ctx.set(self.dut.dibit_in, i % 4)
                 ctx.set(self.dut.symbol_strobe, 1)
                 await ctx.tick()
+                if ctx.get(self.dut.overflow) == 1:
+                    overflow_seen = True
             ctx.set(self.dut.symbol_strobe, 0)
             await ctx.tick()
-            overflow = ctx.get(self.dut.overflow) == 1
+            if ctx.get(self.dut.overflow) == 1:
+                overflow_seen = True
 
         self._simulate(bench)
-        self.assertTrue(overflow, "overflow should set when word stalls")
+        self.assertTrue(overflow_seen, "overflow should pulse when word stalls")
+
+    def test_overflow_is_pulse_not_latched(self):
+        """overflow must return to 0 within a couple of cycles after the
+        trigger event. A latched-level bug would cause the Rsticky
+        register wrapper to re-accumulate it on every cycle, breaking
+        PS-side clear-on-read. This test guards against reintroducing
+        the Phase 6C spurious-overflow bug documented in
+        doc/changes/020_iq_dibit_packer_overflow_pulse.md.
+        """
+        self.dut = DibitPacker()
+        high_cycles = 0
+        overflow_ever_fired = False
+
+        async def bench(ctx):
+            nonlocal high_cycles, overflow_ever_fired
+            ctx.set(self.dut.stream_ready, 0)
+            # Feed enough dibits to guarantee at least one overflow
+            # trigger (2+ full 32-dibit words while stalled).
+            for i in range(96):
+                ctx.set(self.dut.dibit_in, i % 4)
+                ctx.set(self.dut.symbol_strobe, 1)
+                await ctx.tick()
+                if ctx.get(self.dut.overflow) == 1:
+                    overflow_ever_fired = True
+                    high_cycles += 1
+            ctx.set(self.dut.symbol_strobe, 0)
+            # After the last strobe, stream_ready is still 0 but no new
+            # symbols are arriving. overflow must fall to 0 within at
+            # most one tick because its only driver is the trigger edge.
+            await ctx.tick()
+            await ctx.tick()
+            final_overflow = ctx.get(self.dut.overflow) == 1
+
+            # Now release back-pressure and wait a few cycles. overflow
+            # must stay at 0 -- anything else means the packer is
+            # latching a level the Rsticky wrapper cannot clear.
+            ctx.set(self.dut.stream_ready, 1)
+            for _ in range(8):
+                await ctx.tick()
+                if ctx.get(self.dut.overflow) == 1:
+                    high_cycles += 1000
+
+            self.assertFalse(
+                final_overflow,
+                'overflow must not be held high when no trigger fires')
+
+        self._simulate(bench)
+        self.assertTrue(overflow_ever_fired,
+                        'expected at least one overflow trigger in this bench')
+        # Expected pulse count: ~2-3 cycles across the 96-strobe test
+        # (one per word boundary while stalled). Definitely < 10.
+        self.assertLess(
+            high_cycles, 10,
+            f'overflow stayed high for {high_cycles} cycles -- this is the '
+            f'Phase 6C latched-level bug (see doc 020); it must pulse for '
+            f'only ~1 cycle per trigger')
 
 
 if __name__ == '__main__':

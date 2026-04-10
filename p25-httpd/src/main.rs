@@ -114,8 +114,14 @@ async fn main() -> anyhow::Result<()> {
         // can pull raw 62.5 kSPS IQ samples in parallel with the dibit
         // pipeline. Both rings share the control DDC's output.
         ip_core.set_iq_dma_enable(true);
+        // Phase 6E.9/6E.10: enable the HDL LSM demod chain (runs alongside
+        // the C4FM demod on the same control DDC output) and its dedicated
+        // dibit ring DMA. NID events themselves are PS-polled via
+        // lsm_status below.
+        ip_core.set_lsm_enable(true);
+        ip_core.set_lsm_dibit_dma_enable(true);
         tracing::info!(
-            "Control DDC: offset={nco_offset} Hz, dibit + iq ring DMA enabled"
+            "Control DDC: offset={nco_offset} Hz, dibit + iq + lsm ring DMA enabled"
         );
 
         let ip_core = Arc::new(Mutex::new(ip_core));
@@ -124,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         // 4. Get interrupt waiters before spawning handler
         let dibit_waiter = interrupt_handler.waiter_dibit_dma();
         let iq_waiter = interrupt_handler.waiter_iq_dma();
+        let lsm_dibit_waiter = interrupt_handler.waiter_lsm_dibit_dma();
 
         // 5. Spawn interrupt handler
         tokio::spawn(async move {
@@ -223,11 +230,26 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 if overflow {
+                    // Phase 6C HDL hotfix (doc 020): iq_packer.overflow
+                    // used to be a latched level that never cleared, so
+                    // the Rsticky register wrapper re-accumulated it on
+                    // every cycle and this PS-side read saw overflow=1
+                    // on every sub-buffer -- which used to trigger a
+                    // full pipeline.reset() that wiped PLL / Gardner /
+                    // sync-detector state every ~128 ms, so the Rust LSM
+                    // pipeline never converged. With the pulse fix in
+                    // iq_packer.py, this branch now only fires on a real
+                    // back-pressure event. We log + count it, but do NOT
+                    // pipeline.reset(): sample math in doc 014 proved no
+                    // actual data loss, so a streaming reset was always
+                    // the wrong reaction. If a real back-pressure event
+                    // ever causes actual sample loss we need to detect
+                    // it at a higher layer (gap in sample timestamps),
+                    // not here.
                     tracing::warn!(
                         target: "p25_lsm",
-                        "iq_dma overflow latched -- resetting LSM streaming state"
+                        "iq_dma overflow latched -- counting, NOT resetting pipeline (see doc 020)"
                     );
-                    pipeline.reset();
                     lsm_stats_task.lock().await.record_overflow();
                 }
                 if iq_complex.is_empty() {
@@ -272,6 +294,150 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
+        // 6c. Spawn HDL LSM dibit ring drain task (Phase 6E.9/6E.10).
+        //     The HDL LSM demod chain produces its own dibit stream via
+        //     `lsm_dibit_dma`, parallel to the C4FM `dibit_dma` ring.
+        //     We drain it to keep the ring from back-pressuring, but we
+        //     deliberately do NOT feed it to the C4FM control-channel
+        //     decoder -- LSM dibits have different symbol-phase timing
+        //     and feeding them into the C4FM TSBK parser would corrupt
+        //     state. For now the dibits are only counted + histogrammed,
+        //     so bring-up can confirm "gateware is producing plausible
+        //     symbols" without the risk of cross-polluting the working
+        //     Phase 2A decoder. A dedicated LSM TSBK decoder is Phase 6F.
+        let lsm_dibit_core = ip_core.clone();
+        tokio::spawn(async move {
+            tracing::info!("HDL LSM dibit reader task started (Phase 6E)");
+            let mut wakeups: u64 = 0;
+            let mut total_buffers: u64 = 0;
+            let mut total_bytes: u64 = 0;
+            let mut hist = [0u64; 4];
+            loop {
+                lsm_dibit_waiter.wait().await;
+                wakeups += 1;
+                let buffers = {
+                    let mut core = lsm_dibit_core.lock().await;
+                    core.read_lsm_dibit_buffers()
+                        .iter()
+                        .map(|b| b.to_vec())
+                        .collect::<Vec<_>>()
+                };
+
+                let mut wake_bytes = 0usize;
+                let mut wake_dibits = 0usize;
+                for buffer in &buffers {
+                    wake_bytes += buffer.len();
+                    let words: &[u64] = bytemuck_cast(buffer);
+                    for &word in words {
+                        for i in 0..32 {
+                            let d = ((word >> (i * 2)) & 0x03) as usize;
+                            hist[d] += 1;
+                            wake_dibits += 1;
+                        }
+                    }
+                }
+                total_buffers += buffers.len() as u64;
+                total_bytes += wake_bytes as u64;
+
+                if wakeups <= 5 || wakeups % 16 == 0 {
+                    let total_dibits: u64 = hist.iter().sum();
+                    let pct = |v: u64| -> f64 {
+                        if total_dibits == 0 { 0.0 }
+                        else { 100.0 * v as f64 / total_dibits as f64 }
+                    };
+                    tracing::info!(
+                        target: "p25_hdl_lsm",
+                        "wake #{wakeups}: bufs={} bytes={} dibits={} \
+                         (cum bufs={total_buffers} bytes={total_bytes}) \
+                         hist 0={:.1}% 1={:.1}% 2={:.1}% 3={:.1}%",
+                        buffers.len(), wake_bytes, wake_dibits,
+                        pct(hist[0]), pct(hist[1]), pct(hist[2]), pct(hist[3]),
+                    );
+                }
+            }
+        });
+
+        // 6d. Spawn HDL LSM NID event poller (Phase 6E.9/6E.10).
+        //     `lsm_status.nid_event` is Rsticky: the HDL latches it on
+        //     each `nid_event_strobe` and clears it on read. At one NID
+        //     per ~14 ms a 60 Hz polling loop catches every event with
+        //     plenty of headroom, and we explicitly avoid IRQ-driving
+        //     NID events to keep the IRQ budget for the dibit ring.
+        //     Reads `lsm_status` + `lsm_nid` + `lsm_drop_count` in one
+        //     pass on the event -- the HDL guarantees these form a
+        //     coherent per-event snapshot (see fpga.rs::lsm_status()).
+        let lsm_nid_core = ip_core.clone();
+        tokio::spawn(async move {
+            tracing::info!("HDL LSM NID poller task started (Phase 6E)");
+            let mut tick = tokio::time::interval(
+                std::time::Duration::from_millis(16),
+            );
+            tick.tick().await;
+            let mut event_count: u64 = 0;
+            let mut valid_count: u64 = 0;
+            let mut last_drop_count: u16 = 0;
+            let mut last_log = std::time::Instant::now();
+            loop {
+                tick.tick().await;
+                let (status, nac, duid, drop_count, pll_dbg, sp_dbg) = {
+                    let core = lsm_nid_core.lock().await;
+                    let s = core.lsm_status();
+                    if !s.nid_event && !s.dibit_overflow {
+                        // nothing to report; skip the rest of the reads
+                        // to avoid racing with other fields -- we only
+                        // burn a few cycles per tick on the happy path
+                        continue;
+                    }
+                    let (nac, duid) = core.lsm_nid();
+                    let drop_count = core.lsm_drop_count();
+                    let (pll_dbg, sp_dbg) = core.lsm_debug();
+                    (s, nac, duid, drop_count, pll_dbg, sp_dbg)
+                };
+
+                if status.dibit_overflow {
+                    tracing::warn!(
+                        target: "p25_hdl_lsm",
+                        "lsm_dibit_overflow latched -- PS not draining the LSM dibit ring fast enough"
+                    );
+                }
+
+                if status.nid_event {
+                    event_count += 1;
+                    if status.nid_valid {
+                        valid_count += 1;
+                    }
+                    if drop_count != last_drop_count {
+                        tracing::warn!(
+                            target: "p25_hdl_lsm",
+                            "lsm_drop_count bumped {} -> {} -- sync detector emitted a NID while BCH was busy",
+                            last_drop_count, drop_count,
+                        );
+                        last_drop_count = drop_count;
+                    }
+                    // Throttle event logging to 5 Hz so we don't flood
+                    // on a healthy site (~70 NIDs/sec); always log the
+                    // first 10 for sanity.
+                    let log_now = event_count <= 10
+                        || last_log.elapsed() >= std::time::Duration::from_millis(200);
+                    if log_now {
+                        last_log = std::time::Instant::now();
+                        tracing::info!(
+                            target: "p25_hdl_lsm",
+                            "NID event #{event_count}: nac=0x{:03X} duid={} \
+                             valid={} n_errors={} sync_dist={} drop_count={} \
+                             in_nid_window={} bch_busy={} pll={} sp={} \
+                             (valid totals: {}/{})",
+                            nac, duid, status.nid_valid, status.n_errors,
+                            status.sync_distance, drop_count,
+                            status.in_nid_window, status.bch_busy,
+                            pll_dbg, sp_dbg,
+                            valid_count, event_count,
+                        );
+                    }
+                }
+            }
+        });
+
         // 7. Spawn periodic stats task — polls FPGA registers every 2s
         let stats_core = ip_core.clone();
         tokio::spawn(async move {
@@ -282,11 +448,14 @@ async fn main() -> anyhow::Result<()> {
                 let core = stats_core.lock().await;
                 tracing::info!(
                     target: "p25_stats",
-                    "regs: dibit_count={} overflow={} last_buffer={} next_addr=0x{:08X}",
+                    "regs: dibit_count={} overflow={} last_buffer={} next_addr=0x{:08X} \
+                     lsm_last_buffer={} lsm_next_addr=0x{:08X}",
                     core.dibit_count(),
                     core.demod_overflow(),
                     core.dibit_last_buffer(),
                     core.dibit_next_address(),
+                    core.lsm_dibit_last_buffer(),
+                    core.lsm_dibit_next_address(),
                 );
             }
         });

@@ -40,9 +40,11 @@ pub struct IpCore {
     dibit_dma: RxBuffer,
     traffic_dma: RxBuffer,
     iq_dma: RxBuffer,
+    lsm_dibit_dma: RxBuffer,
     dibit_last_addr: Option<u32>,
     traffic_last_addr: Option<u32>,
     iq_last_addr: Option<u32>,
+    lsm_dibit_last_addr: Option<u32>,
 }
 
 impl IpCore {
@@ -98,15 +100,24 @@ impl IpCore {
         let iq_dma = RxBuffer::new("p25-iq")
             .await
             .context("failed to open p25-iq DMA buffer")?;
+        // Phase 6E.9/6E.10: LSM control-channel dibit ring (8 x 4 KB),
+        // parallel to the C4FM dibit path so the PS can A/B both demods
+        // on one RF capture. Requires Tezuka DT carve-out for
+        // p25_lsm_dibit_dma@1a000000.
+        let lsm_dibit_dma = RxBuffer::new("p25-lsm-dibit")
+            .await
+            .context("failed to open p25-lsm-dibit DMA buffer")?;
 
         let ip_core = IpCore {
             registers,
             dibit_dma,
             traffic_dma,
             iq_dma,
+            lsm_dibit_dma,
             dibit_last_addr: None,
             traffic_last_addr: None,
             iq_last_addr: None,
+            lsm_dibit_last_addr: None,
         };
 
         let interrupt_handler = InterruptHandler::new(uio, interrupt_registers);
@@ -478,6 +489,100 @@ impl IpCore {
         self.read_dma_buffers(DmaChannel::Iq)
     }
 
+    // ── LSM chain (Phase 6E.9/6E.10) ─────────────────────────────
+    //
+    // LSM demod chain (LsmDecimator2 -> LsmFir(LPF) -> LsmFir(RRC) ->
+    // LsmDemod) sits alongside the C4FM chain on the control channel
+    // DDC output. Produces its own dibit stream via `lsm_dibit_dma`
+    // (parallel ring at 0x1A000000) and exposes BCH-decoded NID events
+    // via the `lsm_*` register bank. See doc/P25_ADDRESS_MAP.md for
+    // the full layout.
+
+    /// Master enable for the LSM chain (decimator + FIRs + LsmDemod).
+    /// Gates the strobe at the front so all downstream blocks go
+    /// quiescent when false.
+    pub fn set_lsm_enable(&self, enable: bool) {
+        self.registers
+            .lsm_control()
+            .modify(|_, w| w.lsm_enable().bit(enable));
+    }
+
+    /// Enables or disables the LSM dibit ring DMA. Level-triggered;
+    /// mirrors the C4FM `dibit_dma` enable convention.
+    pub fn set_lsm_dibit_dma_enable(&self, enable: bool) {
+        self.registers
+            .lsm_control()
+            .modify(|_, w| w.lsm_dibit_dma_enable().bit(enable));
+    }
+
+    /// Reads the `lsm_status` register and returns a coherent snapshot.
+    ///
+    /// **Important:** the `nid_event` bit is Rsticky -- a single read
+    /// clears it. Callers that need to inspect multiple fields of the
+    /// same NID event must rely on the returned snapshot (not
+    /// re-read the register) because `n_errors`, `sync_distance`, and
+    /// `nid_valid` are latched into Signal()s on each
+    /// `nid_event_strobe` pulse and will not update again until the
+    /// next NID arrives -- so the snapshot + a follow-up `lsm_nid()`
+    /// + `lsm_drop_count()` read together form a coherent per-event
+    /// picture.
+    pub fn lsm_status(&self) -> LsmStatusSnapshot {
+        let s = self.registers.lsm_status().read();
+        LsmStatusSnapshot {
+            bch_busy: s.bch_busy().bit(),
+            in_nid_window: s.in_nid_window().bit(),
+            nid_event: s.nid_event().bit(),
+            nid_valid: s.nid_valid().bit(),
+            n_errors: s.n_errors().bits(),
+            sync_distance: s.sync_distance().bits(),
+            dibit_overflow: s.lsm_dibit_overflow().bit(),
+        }
+    }
+
+    /// Reads the latched NAC/DUID of the most recent NID event.
+    pub fn lsm_nid(&self) -> (u16, u8) {
+        let n = self.registers.lsm_nid().read();
+        (n.nac().bits(), n.duid().bits())
+    }
+
+    /// Reads the saturating NID drop counter. Should always be 0 in
+    /// normal operation (BCH decode is ~656 us, NIDs are ~14 ms apart).
+    pub fn lsm_drop_count(&self) -> u16 {
+        self.registers.lsm_drop_count().read().drop_count().bits()
+    }
+
+    /// Returns the index of the most recently completed LSM dibit
+    /// sub-buffer. Mirrors the C4FM `dibit_last_buffer` semantics.
+    pub fn lsm_dibit_last_buffer(&self) -> u8 {
+        self.registers
+            .lsm_drop_count()
+            .read()
+            .lsm_dibit_last_buffer()
+            .bits()
+    }
+
+    /// Returns the current AW write address for the LSM dibit channel.
+    pub fn lsm_dibit_next_address(&self) -> u32 {
+        self.registers
+            .lsm_dibit_next()
+            .read()
+            .next_address()
+            .bits()
+    }
+
+    /// Reads the debug taps: `pll_dbg` (signed Q2.13, live PLL accum)
+    /// and `sample_point_dbg` (signed Q4.10, Gardner sample point).
+    pub fn lsm_debug(&self) -> (i16, i16) {
+        let d = self.registers.lsm_debug().read();
+        (d.pll_dbg().bits() as i16, d.sample_point_dbg().bits() as i16)
+    }
+
+    /// Reads new LSM dibit DMA buffers since the last call. Same
+    /// format as `read_dibit_buffers()` -- packed 64-bit dibit words.
+    pub fn read_lsm_dibit_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::LsmDibit)
+    }
+
     // ── DMA buffer helpers ───────────────────────────────────────
 
     /// Reads new dibit/traffic ring sub-buffers since the last call.
@@ -513,6 +618,15 @@ impl IpCore {
                     .iq_dma_status()
                     .read()
                     .last_buffer()
+                    .bits() as u32,
+            ),
+            DmaChannel::LsmDibit => (
+                &self.lsm_dibit_dma,
+                &mut self.lsm_dibit_last_addr,
+                self.registers
+                    .lsm_drop_count()
+                    .read()
+                    .lsm_dibit_last_buffer()
                     .bits() as u32,
             ),
         };
@@ -568,6 +682,33 @@ enum DmaChannel {
     Dibit,
     Traffic,
     Iq,
+    LsmDibit,
+}
+
+/// Snapshot of the `lsm_status` register read in a single bus access.
+///
+/// See `IpCore::lsm_status` for the per-NID coherency protocol.
+#[derive(Debug, Clone, Copy)]
+pub struct LsmStatusSnapshot {
+    /// High while `LsmNidBchFec` is sweeping a candidate NID (~656 us).
+    pub bch_busy: bool,
+    /// High while `LsmSyncNidExtract` is collecting the 33-dibit NID
+    /// payload after a sync hit (useful as a "have lock" indicator).
+    pub in_nid_window: bool,
+    /// Rsticky -- latches on each `nid_event_strobe`, cleared by this
+    /// very read. True means a new NID event is described by the
+    /// other fields in this snapshot + a follow-up `lsm_nid()` read.
+    pub nid_event: bool,
+    /// Latched copy of `LsmDemod.valid_out` for the most recent NID
+    /// event: true when BCH Hamming distance <= 11.
+    pub nid_valid: bool,
+    /// Latched BCH Hamming distance (0..63) for the most recent NID.
+    pub n_errors: u8,
+    /// Latched 48-bit sync hit Hamming distance (0..47).
+    pub sync_distance: u8,
+    /// Rsticky -- latches when the LSM DibitPacker back-pressured the
+    /// LSM dibit DMA ring.
+    pub dibit_overflow: bool,
 }
 
 /// Converts a frequency offset to a 28-bit NCO phase increment.
@@ -648,6 +789,7 @@ pub struct InterruptHandler {
     notify_dibit_dma: Arc<Notify>,
     notify_traffic_dma: Arc<Notify>,
     notify_iq_dma: Arc<Notify>,
+    notify_lsm_dibit_dma: Arc<Notify>,
 }
 
 impl InterruptHandler {
@@ -658,6 +800,7 @@ impl InterruptHandler {
             notify_dibit_dma: Arc::new(Notify::new()),
             notify_traffic_dma: Arc::new(Notify::new()),
             notify_iq_dma: Arc::new(Notify::new()),
+            notify_lsm_dibit_dma: Arc::new(Notify::new()),
         }
     }
 
@@ -683,6 +826,15 @@ impl InterruptHandler {
         }
     }
 
+    /// Returns a waiter for LSM control-channel dibit DMA completion
+    /// interrupts (Phase 6E.9). NID events themselves are PS-polled via
+    /// `IpCore::lsm_status()` rather than IRQ-driven.
+    pub fn waiter_lsm_dibit_dma(&self) -> InterruptWaiter {
+        InterruptWaiter {
+            notify: self.notify_lsm_dibit_dma.clone(),
+        }
+    }
+
     /// Runs the interrupt handler loop.
     ///
     /// This should be spawned as a background tokio task.
@@ -691,6 +843,7 @@ impl InterruptHandler {
         let mut dibit_irqs: u64 = 0;
         let mut traffic_irqs: u64 = 0;
         let mut iq_irqs: u64 = 0;
+        let mut lsm_dibit_irqs: u64 = 0;
         loop {
             self.uio.irq_enable().await?;
             self.uio.irq_wait().await?;
@@ -699,6 +852,7 @@ impl InterruptHandler {
             let dibit = interrupts.dibit_dma().bit();
             let traffic = interrupts.traffic_dma().bit();
             let iq = interrupts.iq_dma().bit();
+            let lsm_dibit = interrupts.lsm_dibit_dma().bit();
             total_irqs += 1;
             if dibit {
                 dibit_irqs += 1;
@@ -712,12 +866,18 @@ impl InterruptHandler {
                 iq_irqs += 1;
                 self.notify_iq_dma.notify_waiters();
             }
+            if lsm_dibit {
+                lsm_dibit_irqs += 1;
+                self.notify_lsm_dibit_dma.notify_waiters();
+            }
             // Log first 10 then every 64th to avoid flooding
             if total_irqs <= 10 || total_irqs % 64 == 0 {
                 tracing::info!(
                     target: "p25_irq",
                     "IRQ #{total_irqs}: dibit={dibit} traffic={traffic} iq={iq} \
-                     (totals dibit={dibit_irqs} traffic={traffic_irqs} iq={iq_irqs})"
+                     lsm_dibit={lsm_dibit} (totals dibit={dibit_irqs} \
+                     traffic={traffic_irqs} iq={iq_irqs} \
+                     lsm_dibit={lsm_dibit_irqs})"
                 );
             }
         }

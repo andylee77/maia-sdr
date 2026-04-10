@@ -30,7 +30,22 @@ class DibitPacker(Elaboratable):
     Outputs (sync domain):
         data_out: 64-bit packed word (32 dibits)
         data_valid: word ready for DMA (AXI4-Stream valid)
-        overflow: sticky flag if symbol arrives while output stalled
+        overflow: **one-cycle pulse** asserted when a complete 32-dibit
+            word is latched while the previous word is still waiting
+            for ``stream_ready``. Must NOT be a latched level: the
+            ``Rsticky`` register-layer wrapper (``maia_hdl.register``)
+            already handles accumulation + PS read-clear, and does so
+            by snapshotting the *current input value* on read
+            (``sticky := input``), so a latched level would get
+            re-accumulated on the very next cycle and the PS could
+            never clear the sticky. Phase 6C manifested this bug in
+            `iq_packer` (where back-pressure actually fires on ring
+            wrap); `dibit_packer` has the same latent bug but has
+            never been observed in practice because the dibit rate
+            (~1.28 KB/s) is orders of magnitude below the HP1 budget
+            so the trigger condition effectively never fires. Fixed
+            anyway for consistency with `iq_packer`. See
+            doc/changes/020_iq_dibit_packer_overflow_pulse.md.
     """
     def __init__(self):
         # Inputs
@@ -59,6 +74,12 @@ class DibitPacker(Elaboratable):
         with m.If(holding_valid & self.stream_ready):
             m.d.sync += holding_valid.eq(0)
 
+        # Default overflow to 0 every cycle so the only time it is
+        # high is the single cycle after a trigger event -- see the
+        # class docstring for why this MUST be a pulse and not a
+        # latched level.
+        m.d.sync += self.overflow.eq(0)
+
         with m.If(self.symbol_strobe):
             # Shift new dibit in
             m.d.sync += [
@@ -68,7 +89,10 @@ class DibitPacker(Elaboratable):
 
             # When we've accumulated 32 dibits, latch output word
             with m.If(count == 31):
-                # If previous word hasn't been accepted yet, overflow
+                # If previous word hasn't been accepted yet, emit a
+                # one-cycle overflow pulse. The Rsticky register
+                # wrapper in maia_hdl.register.Registers takes care
+                # of accumulation + PS read-clear.
                 with m.If(holding_valid):
                     m.d.sync += self.overflow.eq(1)
                 m.d.sync += [
