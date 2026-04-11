@@ -257,24 +257,54 @@ impl TrellisDecoder {
 
 /// TSDU de-interleaver
 ///
-/// The TSDU interleaves status symbols among the data.
-/// A TSDU frame contains 336 dibits total:
-///   - 12 status dibits (SS)
-///   - 324 data dibits (for up to 3 TSBKs, but typically 1-2)
+/// The TSDU interleaves status symbols among the data per the P25
+/// TIA-102.BAAA-A frame structure: one status symbol is inserted every
+/// 70 information bits (35 data dibits), so the on-air repeat is one
+/// status per 36 raw dibits. SDRTrunk's `P25P1MessageFramer` uses the
+/// same period 36 (its `mStatusSymbolDibitCounter == 36` check fires
+/// every 36 increments).
 ///
-/// Status symbols appear every 35 dibits (at positions 35, 71, 107, ...)
+/// **Phase 6F.2c fix (2026-04-11):** the original implementation here
+/// used `(i + 1) % 35 == 0` (period 35 with offset 34), which is wrong
+/// on BOTH the period AND the offset. The right alignment is dictated
+/// by where the previous status symbol fell. The decoder above
+/// (`ControlChannelDecoder.process_dibit`) explicitly skips a status
+/// dibit at NID position 11 (= post-sync position 11). The next status
+/// in the on-air stream is therefore at post-sync position 11+36=47,
+/// which is TSDU-body relative position 47-33=14 (the 33-dibit NID
+/// window has already been consumed when `process_tsdu` is called).
+/// Subsequent statuses follow at TSDU-body positions {14, 50, 86, 122,
+/// 158, 194, 230, 266, 302} -- 9 status dibits in the 336-dibit body,
+/// leaving 327 data dibits.
+///
+/// On-target evidence for the bug: with the period-35 deinterleaver
+/// the PS LSM software decoder validated 79 % of NIDs (BCH absorbing
+/// the small per-NID corruption) but failed CRC on 100 % of TSBK
+/// blocks because the body deinterleaver was running at the wrong
+/// alignment, mangling roughly one byte per status period in every
+/// trellis-decoded TSBK block. Trellis decode succeeded on every
+/// block (it tolerates more bit errors than CRC) but the CRC always
+/// disagreed. See doc/changes/025 for the full failure-mode analysis.
 pub struct TsduDeinterleaver;
 
 impl TsduDeinterleaver {
-    /// Remove status symbols from a TSDU and return data dibits
-    /// Input: raw TSDU dibits (336)
-    /// Output: data dibits with status symbols removed
+    /// Status symbol positions in the 336-dibit on-air TSDU body,
+    /// counted from the first dibit AFTER the NID. See the struct
+    /// doc comment for the derivation.
+    const STATUS_OFFSET: usize = 14;
+    const STATUS_PERIOD: usize = 36;
+
+    /// Remove status symbols from a TSDU and return data dibits.
+    ///
+    /// Input: raw TSDU dibits (336 on-air)
+    /// Output: data dibits with status symbols removed (327)
     pub fn deinterleave(tsdu_dibits: &[u8]) -> Vec<u8> {
-        let mut data = Vec::with_capacity(324);
+        let mut data = Vec::with_capacity(327);
         for (i, &dibit) in tsdu_dibits.iter().enumerate() {
-            // Status symbols at positions 35*n + 34 (0-indexed)
-            // i.e., every 35th dibit starting from position 34
-            if (i + 1) % 35 != 0 {
+            let is_status =
+                i >= Self::STATUS_OFFSET
+                && (i - Self::STATUS_OFFSET) % Self::STATUS_PERIOD == 0;
+            if !is_status {
                 data.push(dibit);
             }
         }
@@ -405,21 +435,29 @@ mod tests {
 
     #[test]
     fn test_tsdu_deinterleave_removes_status() {
-        // Create a 350-dibit TSDU with known pattern
-        let mut tsdu = vec![0u8; 350];
-        // Mark status positions with 0xFF
-        for i in 0..tsdu.len() {
-            if (i + 1) % 35 == 0 {
-                tsdu[i] = 0xFF;
-            } else {
-                tsdu[i] = 1;
-            }
+        // Build a 336-dibit on-air TSDU body with status markers
+        // (0xFF) at the SDRTrunk-aligned positions {14, 50, 86, 122,
+        // 158, 194, 230, 266, 302}, and data markers (0x01) elsewhere.
+        let mut tsdu = vec![1u8; 336];
+        let status_positions: Vec<usize> = (14..336).step_by(36).collect();
+        assert_eq!(
+            status_positions,
+            vec![14, 50, 86, 122, 158, 194, 230, 266, 302],
+            "expected 9 status positions in the 336-dibit TSDU body"
+        );
+        for &p in &status_positions {
+            tsdu[p] = 0xFF;
         }
 
         let data = TsduDeinterleaver::deinterleave(&tsdu);
-        // Should have removed the status symbols
+        assert_eq!(
+            data.len(),
+            336 - status_positions.len(),
+            "deinterleaver must drop exactly the status dibits (327 expected)"
+        );
         for &d in &data {
-            assert_ne!(d, 0xFF, "Status symbol should be removed");
+            assert_ne!(d, 0xFF, "no status marker should survive deinterleave");
+            assert_eq!(d, 0x01, "all surviving dibits must be the data marker");
         }
     }
 }
