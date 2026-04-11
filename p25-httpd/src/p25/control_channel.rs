@@ -117,6 +117,20 @@ pub struct ControlChannelDecoder {
     /// turn into a known TsbkMessage variant.
     pub tsbk_unknown_opcode: u64,
 
+    // ── Phase 6F.2h aligned capture (one-shot diagnostic) ──
+    /// Set to `true` by `/api/lsm_capture_aligned` to request a full
+    /// pipeline trace on the NEXT sync hit. Cleared by the decoder as
+    /// soon as it captures one frame.
+    pub aligned_capture_armed: bool,
+    /// Snapshot populated when `aligned_capture_armed` was true at the
+    /// moment of a sync hit. Read by `/api/lsm_capture_aligned` and
+    /// then cleared.
+    pub aligned_capture: Option<AlignedCapture>,
+    /// Internal: when non-None, the decoder is in the middle of
+    /// capturing a frame and this is the buffer holding the in-flight
+    /// raw NID + body dibits.
+    capture_in_flight: Option<CaptureBuilder>,
+
     /// System identity
     pub system: SystemIdentity,
     /// Frequency band table (from IDEN_UP messages)
@@ -142,6 +156,93 @@ enum DecoderState {
     ReadingNid { dibits_read: usize, nid_bits: u64 },
     /// Reading data unit payload
     ReadingDataUnit { duid: DataUnit },
+}
+
+/// Phase 6F.2h: snapshot of one full TSBK frame as it flows through
+/// the LSM software decoder. Captured one-shot via the
+/// `/api/lsm_capture_aligned` endpoint, used for offline replay /
+/// pattern analysis when the on-target dashboard counters say "TSBK
+/// CRC fails on every frame" but we can't tell which pipeline stage is
+/// at fault.
+#[derive(Debug, Clone, Default)]
+pub struct AlignedCapture {
+    /// 24 dibits of the matched sync pattern (the contents of
+    /// `sync_register` at the moment of the hit, dumped MSB-first
+    /// into a Vec).
+    pub sync_dibits: Vec<u8>,
+    /// Hamming distance of the sync hit (0..SYNC_THRESHOLD).
+    pub sync_distance: u32,
+    /// 33 raw NID-window dibits including the in-NID status dibit at
+    /// position 11.
+    pub raw_nid_dibits: Vec<u8>,
+    /// 64-bit `nid_bits` word fed to BCH (status dibit removed,
+    /// packed MSB-first per the existing `process_dibit` logic).
+    pub nid_bits: u64,
+    /// BCH-corrected NAC, or `None` if BCH rejected the word.
+    pub bch_nac: Option<u16>,
+    /// BCH-corrected DUID, or `None` if BCH rejected the word.
+    pub bch_duid: Option<u8>,
+    /// Raw on-air DUID nibble before BCH (for diagnostic comparison
+    /// against the corrected value).
+    pub raw_duid: u8,
+    /// 122 raw TSDU body dibits (only populated if BCH succeeded
+    /// AND the corrected DUID was TSDU). Empty otherwise.
+    pub raw_body_dibits: Vec<u8>,
+    /// 98 trellis data dibits after the deinterleaver dropped the 3
+    /// status dibits and 21 trailing nulls.
+    pub trellis_dibits: Vec<u8>,
+    /// 12 trellis-decoded TSBK bytes.
+    pub tsbk_bytes: Vec<u8>,
+    /// CRC validation result: "plain", "xored", or "fail".
+    pub crc_result: String,
+    /// `total_dibits` counter at the moment the sync hit fired
+    /// (lets us correlate this snapshot with `/api/lsm_capture`).
+    pub total_dibits_at_capture: u64,
+}
+
+impl AlignedCapture {
+    pub fn to_json(&self) -> serde_json::Value {
+        let hex = |v: &[u8]| -> String {
+            v.iter().map(|d| format!("{:1X}", d & 0x3)).collect()
+        };
+        let bytes_hex = |v: &[u8]| -> String {
+            v.iter().map(|b| format!("{:02X}", b)).collect()
+        };
+        serde_json::json!({
+            "status": "captured",
+            "sync_dibits_hex":     hex(&self.sync_dibits),
+            "sync_distance":       self.sync_distance,
+            "raw_nid_dibits_hex":  hex(&self.raw_nid_dibits),
+            "nid_bits_hex":        format!("{:016X}", self.nid_bits),
+            "bch_nac":             self.bch_nac.map(|n| format!("{:03X}", n)),
+            "bch_duid":            self.bch_duid.map(|d| format!("{:1X}", d)),
+            "raw_duid":            format!("{:1X}", self.raw_duid),
+            "raw_body_dibits_hex": hex(&self.raw_body_dibits),
+            "trellis_dibits_hex":  hex(&self.trellis_dibits),
+            "tsbk_bytes_hex":      bytes_hex(&self.tsbk_bytes),
+            "crc_result":          self.crc_result.clone(),
+            "total_dibits_at_capture": self.total_dibits_at_capture,
+            "note": "Hex strings are 1 char per dibit (low 2 bits). \
+                     tsbk_bytes_hex is 2 chars per byte. Replay with \
+                     tools/p25_decode_capture.py to compare against the \
+                     Python reference Viterbi.",
+        })
+    }
+}
+
+/// Internal builder for an in-flight capture: holds the partial state
+/// while we're walking through the NID and body dibits.
+#[derive(Debug, Clone, Default)]
+struct CaptureBuilder {
+    sync_dibits: Vec<u8>,
+    sync_distance: u32,
+    raw_nid_dibits: Vec<u8>,
+    nid_bits: u64,
+    bch_nac: Option<u16>,
+    bch_duid: Option<u8>,
+    raw_duid: u8,
+    raw_body_dibits: Vec<u8>,
+    total_dibits_at_capture: u64,
 }
 
 /// System identity from control channel broadcasts
@@ -258,6 +359,9 @@ impl ControlChannelDecoder {
             tsbk_crc_ok_plain: 0,
             tsbk_crc_ok_xored: 0,
             tsbk_unknown_opcode: 0,
+            aligned_capture_armed: false,
+            aligned_capture: None,
+            capture_in_flight: None,
             system: SystemIdentity::default(),
             bands: HashMap::new(),
             grants: HashMap::new(),
@@ -406,6 +510,28 @@ impl ControlChannelDecoder {
                         "SYNC HIT #{}: distance={} (dibit #{}) -> ReadingNid",
                         self.sync_hits, distance, self.total_dibits,
                     );
+
+                    // Phase 6F.2h: if armed, start a capture. Snapshot
+                    // the 24 sync dibits from the sync_register and
+                    // begin accumulating raw NID dibits.
+                    if self.aligned_capture_armed {
+                        let mut sync_d = Vec::with_capacity(24);
+                        for x in 0..24 {
+                            let shift = (23 - x) * 2;
+                            sync_d.push(
+                                ((self.sync_register >> shift) & 0x03) as u8,
+                            );
+                        }
+                        self.capture_in_flight = Some(CaptureBuilder {
+                            sync_dibits: sync_d,
+                            sync_distance: distance,
+                            raw_nid_dibits: Vec::with_capacity(NID_TRANSMITTED_DIBITS),
+                            raw_body_dibits: Vec::new(),
+                            total_dibits_at_capture: self.total_dibits,
+                            ..Default::default()
+                        });
+                    }
+
                     self.state = DecoderState::ReadingNid {
                         dibits_read: 0,
                         nid_bits: 0,
@@ -426,6 +552,12 @@ impl ControlChannelDecoder {
                 // if it isn't the status slot. The resulting 64-bit
                 // `nid_bits` is bit-for-bit compatible with the BCH
                 // codeword layout produced by `lsm::nid_fec::encode_nid`.
+                // Phase 6F.2h: append every NID-window dibit to the
+                // in-flight capture (raw, including the status dibit).
+                if let Some(cap) = self.capture_in_flight.as_mut() {
+                    cap.raw_nid_dibits.push(dibit & 0x03);
+                }
+
                 let new_bits = if dibits_read == NID_STATUS_DIBIT_INDEX {
                     nid_bits
                 } else {
@@ -449,6 +581,25 @@ impl ControlChannelDecoder {
                                     "NID decode FAILED (raw=0x{:016X}) -> Hunting",
                                     new_bits,
                                 );
+                                // Phase 6F.2h: finalize the in-flight
+                                // capture as a BCH-reject snapshot.
+                                if let Some(cap) = self.capture_in_flight.take() {
+                                    self.aligned_capture = Some(AlignedCapture {
+                                        sync_dibits: cap.sync_dibits,
+                                        sync_distance: cap.sync_distance,
+                                        raw_nid_dibits: cap.raw_nid_dibits,
+                                        nid_bits: new_bits,
+                                        bch_nac: None,
+                                        bch_duid: None,
+                                        raw_duid: 0,
+                                        raw_body_dibits: Vec::new(),
+                                        trellis_dibits: Vec::new(),
+                                        tsbk_bytes: Vec::new(),
+                                        crc_result: "nid_bch_reject".to_string(),
+                                        total_dibits_at_capture: cap.total_dibits_at_capture,
+                                    });
+                                    self.aligned_capture_armed = false;
+                                }
                                 self.state = DecoderState::Hunting;
                                 self.dibit_count = 0;
                                 return;
@@ -469,6 +620,15 @@ impl ControlChannelDecoder {
                         self.nid_decoded_ok += 1;
                         if matches!(duid, DataUnit::Tsdu) {
                             self.nid_decoded_tsdu += 1;
+                        }
+
+                        // Phase 6F.2h: stash BCH-success fields into the
+                        // in-flight capture so process_tsdu can finalize.
+                        if let Some(cap) = self.capture_in_flight.as_mut() {
+                            cap.nid_bits = new_bits;
+                            cap.bch_nac = Some(nac_raw);
+                            cap.bch_duid = Some(duid_raw);
+                            cap.raw_duid = on_air_duid;
                         }
 
                         let expected_len = duid.length_dibits();
@@ -508,6 +668,12 @@ impl ControlChannelDecoder {
             DecoderState::ReadingDataUnit { duid } => {
                 self.du_buffer.push(dibit);
 
+                // Phase 6F.2h: append every body dibit to the in-flight
+                // capture so process_tsdu has the raw input to dump.
+                if let Some(cap) = self.capture_in_flight.as_mut() {
+                    cap.raw_body_dibits.push(dibit & 0x03);
+                }
+
                 if self.du_buffer.len() >= self.du_expected_len {
                     // Data unit complete
                     match duid {
@@ -530,10 +696,24 @@ impl ControlChannelDecoder {
         // 1. Remove status symbols from raw TSDU dibits
         let data_dibits = TsduDeinterleaver::deinterleave(&self.du_buffer);
 
+        // Phase 6F.2h: snapshot the deinterleaved trellis dibits into
+        // the in-flight capture before we run the trellis. We need this
+        // even if trellis fails so the offline replay sees the raw
+        // input the trellis was given.
+        if let Some(cap) = self.capture_in_flight.as_mut() {
+            cap.raw_body_dibits.truncate(self.du_buffer.len()); // safety
+        }
+        let trellis_dibits_for_capture: Vec<u8> = data_dibits.clone();
+
         // 2. Extract individual TSBK blocks (196 dibits each)
         let tsbk_blocks = TsduDeinterleaver::extract_tsbk_blocks(&data_dibits);
 
-        for block_dibits in tsbk_blocks {
+        // Phase 6F.2h capture finalisation -- track the result of the
+        // FIRST block we attempt; the capture is one-shot per frame.
+        let mut capture_decoded_bytes: Vec<u8> = Vec::new();
+        let mut capture_crc_result: String = "no_block".to_string();
+
+        for (block_idx, block_dibits) in tsbk_blocks.iter().enumerate() {
             self.tsbk_block_attempts += 1;
 
             // 3. Trellis decode: 196 dibits -> 12 bytes
@@ -541,24 +721,40 @@ impl ControlChannelDecoder {
                 Some(bytes) => bytes,
                 None => {
                     self.tsbk_trellis_failures += 1;
+                    if block_idx == 0 {
+                        capture_crc_result = "trellis_fail".to_string();
+                    }
                     continue;
                 }
             };
+
+            if block_idx == 0 {
+                capture_decoded_bytes = decoded.to_vec();
+            }
 
             // 4. Parse TSBK block and check CRC
             let block = TsbkBlock::parse(&decoded);
             match block.crc_valid(&decoded) {
                 None => {
                     self.tsbk_crc_failures += 1;
+                    if block_idx == 0 {
+                        capture_crc_result = "crc_fail".to_string();
+                    }
                     continue;
                 }
                 Some(crate::p25::tsbk::CrcConvention::Plain) => {
                     self.tsbk_crc_ok += 1;
                     self.tsbk_crc_ok_plain += 1;
+                    if block_idx == 0 {
+                        capture_crc_result = "plain".to_string();
+                    }
                 }
                 Some(crate::p25::tsbk::CrcConvention::Xored) => {
                     self.tsbk_crc_ok += 1;
                     self.tsbk_crc_ok_xored += 1;
+                    if block_idx == 0 {
+                        capture_crc_result = "xored".to_string();
+                    }
                 }
             }
 
@@ -569,6 +765,25 @@ impl ControlChannelDecoder {
             } else {
                 self.tsbk_unknown_opcode += 1;
             }
+        }
+
+        // Phase 6F.2h: finalize the in-flight capture, if any.
+        if let Some(cap) = self.capture_in_flight.take() {
+            self.aligned_capture = Some(AlignedCapture {
+                sync_dibits: cap.sync_dibits,
+                sync_distance: cap.sync_distance,
+                raw_nid_dibits: cap.raw_nid_dibits,
+                nid_bits: cap.nid_bits,
+                bch_nac: cap.bch_nac,
+                bch_duid: cap.bch_duid,
+                raw_duid: cap.raw_duid,
+                raw_body_dibits: cap.raw_body_dibits,
+                trellis_dibits: trellis_dibits_for_capture,
+                tsbk_bytes: capture_decoded_bytes,
+                crc_result: capture_crc_result,
+                total_dibits_at_capture: cap.total_dibits_at_capture,
+            });
+            self.aligned_capture_armed = false;
         }
     }
 

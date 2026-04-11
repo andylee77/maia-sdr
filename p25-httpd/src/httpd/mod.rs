@@ -76,6 +76,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/decoder_compare", get(get_decoder_compare))
         .route("/api/dibit_dump", get(get_dibit_dump))
         .route("/api/lsm_dibit_dump", get(get_lsm_dibit_dump))
+        .route("/api/lsm_capture", get(get_lsm_capture))
+        .route("/api/lsm_capture_aligned", get(get_lsm_capture_aligned))
         .route("/api/aliases", get(get_aliases).put(put_aliases))
         .route("/ws/events", get(ws_events))
         .with_state(state)
@@ -192,6 +194,90 @@ async fn get_lsm_dibit_dump(
 ) -> Json<serde_json::Value> {
     let decoder = state.lsm_decoder.read().await;
     Json(dibit_dump_json(&decoder, "PL HDL LSM chain (lsm_dibit_dma)"))
+}
+
+/// Phase 6F.2h diagnostic capture endpoint.
+///
+/// Returns the LSM decoder's `recent_dibits` rolling buffer (up to 2048
+/// raw on-air dibits) as a base64-encoded byte array, one byte per
+/// dibit (only the low 2 bits used). Also returns a hex-string view
+/// for human readability and the cumulative dibit counter at capture
+/// time so a follow-up call can detect overlaps.
+///
+/// Arming the next-sync alignment capture is a separate endpoint
+/// (`/api/lsm_capture_aligned`); this one just returns whatever's
+/// currently in the rolling buffer with no waiting.
+async fn get_lsm_capture(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let decoder = state.lsm_decoder.read().await;
+    let dibits: Vec<u8> = decoder.recent_dibits.iter().copied().collect();
+    let hex: String = dibits.iter().map(|d| format!("{:1X}", d & 0x3)).collect();
+    Json(serde_json::json!({
+        "captured":     dibits.len(),
+        "total_dibits": decoder.total_dibits(),
+        "dibits_hex":   hex,
+        "note": "One hex digit per dibit, oldest first. Each digit is the \
+                 low 2 bits (00..03). 4800 sym/s -> 2048 dibits ~= 426 ms.",
+    }))
+}
+
+/// Phase 6F.2h diagnostic capture endpoint -- aligned snapshot.
+///
+/// Arms the LSM decoder to capture the next sync hit and returns the
+/// full pipeline trace through that one frame:
+///   - 24 sync dibits
+///   - 33 raw NID dibits (status dibit at index 11 not yet skipped)
+///   - 64-bit nid_bits word fed to BCH (status dibit removed, packed
+///     MSB-first)
+///   - BCH-corrected NAC + DUID + raw DUID
+///   - 122 raw TSDU body dibits
+///   - 98 trellis data dibits after status + null removal
+///   - 12 trellis-decoded TSBK bytes
+///   - CRC validation result (Plain | Xored | None)
+///
+/// This is the data we use to bisect between "deinterleaver bug" and
+/// "trellis bug" if the dashboard counters say PS LSM is still failing
+/// CRC after 6F.2g lands.
+///
+/// **Behaviour:** the endpoint is one-shot per call. It arms the
+/// capture flag, then waits up to 2 seconds for the next sync hit. If
+/// no sync hits in that window it returns `{"status": "timeout"}`.
+/// Otherwise it returns the snapshot and clears the armed state.
+async fn get_lsm_capture_aligned(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    use std::time::{Duration, Instant};
+
+    // Arm the capture: clear any previous snapshot, set the armed flag.
+    {
+        let mut dec = state.lsm_decoder.write().await;
+        dec.aligned_capture = None;
+        dec.aligned_capture_armed = true;
+    }
+
+    // Poll for up to 2 seconds (~10 NIDs at the on-air rate, plenty
+    // of headroom) for the snapshot to populate.
+    let deadline = Instant::now() + Duration::from_millis(2000);
+    loop {
+        {
+            let dec = state.lsm_decoder.read().await;
+            if let Some(snap) = dec.aligned_capture.as_ref() {
+                return Json(snap.to_json());
+            }
+        }
+        if Instant::now() >= deadline {
+            // Disarm so we don't capture later than the user expects.
+            let mut dec = state.lsm_decoder.write().await;
+            dec.aligned_capture_armed = false;
+            return Json(serde_json::json!({
+                "status": "timeout",
+                "note": "No sync hit observed within 2 seconds. Either the \
+                         LSM dibit stream is stalled (check IRQ counters) \
+                         or the sync correlator is missing every frame \
+                         (check best Hamming distance on the LSM dibit dump).",
+            }));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 fn dibit_dump_json(
