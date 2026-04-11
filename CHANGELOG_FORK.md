@@ -5,6 +5,93 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-11] Phase 6F.11 -- PS at 100% (5 new opcode parsers + API merge)
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/030_phase6f11_ps_complete_and_pl_port_roadmap.md`
+
+Finishes the PS Rust side of the Fishball P25 LSM control channel
+decoder. Adds the top 5 unparsed opcodes from the 6F.10
+verification, extends `SystemIdentity` with the new state fields,
+and unions both decoders' state in the dashboard handlers so the
+operator sees the best of both pipelines while the per-pipeline
+diagnostic split stays intact in `/api/decoder_compare`.
+
+### Five new opcode parsers
+
+All using SDRTrunk-style absolute-bit-position layouts via the
+existing `TsbkBlock::bits()` helper:
+
+| Opcode | Name | What it brings |
+|---|---|---|
+| 0x05 | UU_ANS_REQ | Private call paging (target + source radio IDs) |
+| 0x09 | TELE_INT_VCH_GRNT_UPDT | Telephone interconnect grant update |
+| 0x16 | SNDCP_DCH_ANN_EX | SNDCP packet-data channels (DL + UL) |
+| 0x30 | TDMA_SYNC_BCST | System date/time + microslot rollover |
+| 0x39 | SEC_CCH_BROADCST | Backup primary control channels A/B |
+
+### Extended `SystemIdentity`
+
+New optional fields populated by the new parsers: `secondary_cch_a/b`,
+`sndcp_downlink/uplink_channel`, `last_sync_clock`. `p25-json::SystemInfo`
+grows matching `Option<String>` fields with `serde` skip-if-none.
+
+### API-level merge of both decoders
+
+`/api/system`, `/api/grants`, `/api/bands` now read BOTH
+`lsm_decoder` and `iq_lsm_decoder` and union the state:
+
+- `/api/system` picks the most-populated value per field via
+  `pick(a, b) = a.or(b)`
+- `/api/grants` unions grants by channel, picks the YOUNGER on
+  duplicates
+- `/api/bands` unions frequency band entries by identifier
+
+`/api/decoder_compare` is INTENTIONALLY unchanged to keep the
+per-pipeline diagnostic A/B comparison from 6F.4-6F.10. See doc 030
+for the design discussion.
+
+### Final on-target numbers (92 s post PLL lock)
+
+| Pipeline | TSDU/s | Block/s | CRC OK/s | Pass% |
+|---|---:|---:|---:|---:|
+| `ps_lsm` | 10.17 | 30.50 | **25.04** | 82.1% |
+| `ps_iq_lsm` | 10.23 | 30.70 | **16.55** | 53.9% |
+| **COMBINED** | — | **61.20** | **41.59** | — |
+
+- **87.6 % opcode coverage** of CRC-OK blocks (2021/2308 parsed)
+- **Top 9 opcodes all `parsed: yes`** in `/api/tsbk_opcodes`
+- **3 simultaneous active grants decoded** (TG 300/433/402)
+- **`bands_known = 6`** (FDMA + TDMA via merge)
+
+### PS side is feature-complete
+
+Doc 030 captures what "PS at 100 %" means concretely + the PL port
+roadmap for Phase 6G:
+
+1. **HDL DC blocker** (top priority) -- shrinks PLL acquisition
+   transient from 2-3 min to seconds, fixes the 60/40 inner/outer
+   slicer ratio that costs us ~70 % of syncs during transients
+2. **(possibly) soft sync correlator into PL HDL** -- moderate
+   value, would let us retire the parallel `iq_lsm_decoder` pipeline
+3. **Multi-channel decode for trunking failover** -- only if
+   we have a real failover need
+4. **TSBK status/Viterbi feed** -- defer indefinitely, not
+   CPU-limited
+
+What stays in PS forever: BCH NID FEC, Trellis Viterbi, TSBK CRC,
+all opcode parsers, dashboard / WebSocket / API. What we won't do:
+port BCH FEC to HDL (already there + PS port is faster), port
+opcode parsers to HDL (high-level state machine work), kill the
+parallel-decoder architecture as a "cleanup" (lose diagnostic
+A/B value the 6F.4-6F.10 saga depended on).
+
+Tests: cargo test = 52 green.
+
+Build tag: 2026-04-11-phase6f.11-five-new-opcode-parsers-and-api-merge
+
+---
+
 ## [2026-04-11] Phase 6F.5 → 6F.9 throughput breakthrough (PS LSM decoder)
 
 **Branch:** fishball-p25
