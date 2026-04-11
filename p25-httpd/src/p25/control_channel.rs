@@ -66,6 +66,47 @@ pub struct ControlChannelDecoder {
     /// -- a healthy control channel should be ~100% in bucket 7 (TSDU).
     raw_duid_hist: [u64; 16],
 
+    // ── Phase 6F.2 diagnostic counters: pipeline failure breakdown ─
+    /// Number of times a frame sync hit triggered a NID read attempt.
+    /// This is the same as `sync_hits` but kept separate for clarity.
+    pub nid_attempts: u64,
+    /// NID payloads where `GolayDecoder::decode_nid` returned `None`
+    /// (BCH FEC could not correct, parity check failed). High here =
+    /// either real bit errors in the NID dibits or a frame-sync slip
+    /// putting the read window at the wrong place.
+    pub nid_decode_failures: u64,
+    /// NID payloads where decode_nid succeeded but the recovered DUID
+    /// nibble didn't map to a known DataUnit variant. Should be 0 in a
+    /// healthy stream because the BCH would have rejected garbage.
+    pub nid_invalid_duid: u64,
+    /// NID payloads that fully validated and resulted in a Hunting ->
+    /// ReadingDataUnit transition.
+    pub nid_decoded_ok: u64,
+    /// NID payloads that fully validated AND were TSDUs (DUID 0x7).
+    /// On a healthy control channel this should converge on
+    /// `nid_decoded_ok` because nearly every NID is a TSDU.
+    pub nid_decoded_tsdu: u64,
+
+    /// Number of TSDU data units that finished `process_tsdu` (the de-
+    /// interleave + extract). This is the count of "we tried to decode
+    /// a TSDU body".
+    pub tsdu_attempts: u64,
+    /// Sum of TSBK blocks attempted across all TSDUs (each TSDU yields
+    /// 1-4 TSBK blocks).
+    pub tsbk_block_attempts: u64,
+    /// TSBK blocks where `TrellisDecoder::decode` returned None.
+    pub tsbk_trellis_failures: u64,
+    /// TSBK blocks where trellis succeeded but `block.crc_valid` was
+    /// false. **This is the canonical "we have dibits but they're
+    /// corrupted past trellis FEC capacity" indicator.**
+    pub tsbk_crc_failures: u64,
+    /// TSBK blocks that decoded cleanly through CRC and produced a
+    /// `TsbkMessage`.
+    pub tsbk_crc_ok: u64,
+    /// TSBK blocks that survived CRC but the opcode parser couldn't
+    /// turn into a known TsbkMessage variant.
+    pub tsbk_unknown_opcode: u64,
+
     /// System identity
     pub system: SystemIdentity,
     /// Frequency band table (from IDEN_UP messages)
@@ -182,6 +223,17 @@ impl ControlChannelDecoder {
             last_log_dibits: 0,
             recent_dibits: std::collections::VecDeque::with_capacity(2048),
             raw_duid_hist: [0; 16],
+            nid_attempts: 0,
+            nid_decode_failures: 0,
+            nid_invalid_duid: 0,
+            nid_decoded_ok: 0,
+            nid_decoded_tsdu: 0,
+            tsdu_attempts: 0,
+            tsbk_block_attempts: 0,
+            tsbk_trellis_failures: 0,
+            tsbk_crc_failures: 0,
+            tsbk_crc_ok: 0,
+            tsbk_unknown_opcode: 0,
             system: SystemIdentity::default(),
             bands: HashMap::new(),
             grants: HashMap::new(),
@@ -324,6 +376,7 @@ impl ControlChannelDecoder {
                 }
                 if distance <= SYNC_THRESHOLD && self.dibit_count >= 24 {
                     self.sync_hits += 1;
+                    self.nid_attempts += 1;
                     tracing::info!(
                         target: "p25_decoder",
                         "SYNC HIT #{}: distance={} (dibit #{}) -> ReadingNid",
@@ -366,6 +419,7 @@ impl ControlChannelDecoder {
                         match GolayDecoder::decode_nid(new_bits) {
                             Some(v) => v,
                             None => {
+                                self.nid_decode_failures += 1;
                                 tracing::info!(
                                     target: "p25_decoder",
                                     "NID decode FAILED (raw=0x{:016X}) -> Hunting",
@@ -388,6 +442,10 @@ impl ControlChannelDecoder {
                     if let Some(duid) = DataUnit::from_duid(duid_raw) {
                         // Update NAC if we see a valid one
                         self.system.nac = Some(nac);
+                        self.nid_decoded_ok += 1;
+                        if matches!(duid, DataUnit::Tsdu) {
+                            self.nid_decoded_tsdu += 1;
+                        }
 
                         let expected_len = duid.length_dibits();
                         tracing::info!(
@@ -406,6 +464,7 @@ impl ControlChannelDecoder {
                         }
                     } else {
                         // Invalid DUID, go back to hunting
+                        self.nid_invalid_duid += 1;
                         tracing::info!(
                             target: "p25_decoder",
                             "NID DUID invalid: NAC=0x{:03X} DUID_raw=0x{:X} -> Hunting",
@@ -442,6 +501,8 @@ impl ControlChannelDecoder {
     ///
     /// Pipeline: de-interleave -> trellis decode -> CRC check -> TSBK parse -> state update
     fn process_tsdu(&mut self) {
+        self.tsdu_attempts += 1;
+
         // 1. Remove status symbols from raw TSDU dibits
         let data_dibits = TsduDeinterleaver::deinterleave(&self.du_buffer);
 
@@ -449,22 +510,31 @@ impl ControlChannelDecoder {
         let tsbk_blocks = TsduDeinterleaver::extract_tsbk_blocks(&data_dibits);
 
         for block_dibits in tsbk_blocks {
+            self.tsbk_block_attempts += 1;
+
             // 3. Trellis decode: 196 dibits -> 12 bytes
             let decoded = match TrellisDecoder::decode(block_dibits) {
                 Some(bytes) => bytes,
-                None => continue, // Decode failed, skip this block
+                None => {
+                    self.tsbk_trellis_failures += 1;
+                    continue;
+                }
             };
 
             // 4. Parse TSBK block and check CRC
             let block = TsbkBlock::parse(&decoded);
             if !block.crc_valid(&decoded) {
-                continue; // CRC failed
+                self.tsbk_crc_failures += 1;
+                continue;
             }
+            self.tsbk_crc_ok += 1;
 
             // 5. Decode opcode-specific payload
             if let Some(msg) = block.decode() {
                 // 6. Update system state
                 self.handle_tsbk(msg);
+            } else {
+                self.tsbk_unknown_opcode += 1;
             }
         }
     }

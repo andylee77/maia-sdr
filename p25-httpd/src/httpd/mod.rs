@@ -75,6 +75,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/irq_stats", get(get_irq_stats))
         .route("/api/decoder_compare", get(get_decoder_compare))
         .route("/api/dibit_dump", get(get_dibit_dump))
+        .route("/api/lsm_dibit_dump", get(get_lsm_dibit_dump))
         .route("/api/aliases", get(get_aliases).put(put_aliases))
         .route("/ws/events", get(ws_events))
         .with_state(state)
@@ -178,6 +179,25 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats> {
 /// the demod output from a browser without devmem on the target.
 async fn get_dibit_dump(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let decoder = state.decoder.read().await;
+    Json(dibit_dump_json(&decoder, "C4FM HDL chain (c4fm_dibit_dma)"))
+}
+
+/// Phase 6F.2: LSM-side counterpart of `/api/dibit_dump`. Same diagnostic
+/// shape but reads from `lsm_decoder` (the software decoder fed by
+/// `lsm_dibit_dma`). Lets us compare the LSM dibit stream's histogram /
+/// sync correlator / raw_DUID distribution against the C4FM stream side
+/// by side without having to grep the on-target log.
+async fn get_lsm_dibit_dump(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let decoder = state.lsm_decoder.read().await;
+    Json(dibit_dump_json(&decoder, "PL HDL LSM chain (lsm_dibit_dma)"))
+}
+
+fn dibit_dump_json(
+    decoder: &ControlChannelDecoder,
+    source_label: &str,
+) -> serde_json::Value {
     let dibits: Vec<u8> = decoder.recent_dibits.iter().copied().collect();
 
     // Pack 4 dibits per byte (LSB first), MSB-first byte ordering
@@ -218,7 +238,8 @@ async fn get_dibit_dump(State(state): State<Arc<AppState>>) -> Json<serde_json::
         if raw_duid_total == 0 { 0.0 } else { 100.0 * v as f64 / raw_duid_total as f64 }
     };
 
-    Json(serde_json::json!({
+    serde_json::json!({
+        "source": source_label,
         "total_dibits": total,
         "captured": dibits.len(),
         "histogram": {
@@ -249,8 +270,21 @@ async fn get_dibit_dump(State(state): State<Arc<AppState>>) -> Json<serde_json::
             "note": "Healthy control channel + BCH FEC = ~100% in bucket 7 (TSDU). \
                      Anything else means the NID has uncorrected bit errors.",
         },
+        "pipeline": {
+            "nid_attempts":          decoder.nid_attempts,
+            "nid_decode_failures":   decoder.nid_decode_failures,
+            "nid_invalid_duid":      decoder.nid_invalid_duid,
+            "nid_decoded_ok":        decoder.nid_decoded_ok,
+            "nid_decoded_tsdu":      decoder.nid_decoded_tsdu,
+            "tsdu_attempts":         decoder.tsdu_attempts,
+            "tsbk_block_attempts":   decoder.tsbk_block_attempts,
+            "tsbk_trellis_failures": decoder.tsbk_trellis_failures,
+            "tsbk_crc_failures":     decoder.tsbk_crc_failures,
+            "tsbk_crc_ok":           decoder.tsbk_crc_ok,
+            "tsbk_unknown_opcode":   decoder.tsbk_unknown_opcode,
+        },
         "dibits_hex": hex,
-    }))
+    })
 }
 
 /// Phase 6D: snapshot of the LSM pipeline runtime stats.
@@ -518,6 +552,17 @@ async fn get_decoder_compare(
                 serde_json::Value::from(dec_c4fm.best_sync_distance())
             },
             "total_dibits":    dec_c4fm.total_dibits(),
+            "nid_attempts":          dec_c4fm.nid_attempts,
+            "nid_decode_failures":   dec_c4fm.nid_decode_failures,
+            "nid_invalid_duid":      dec_c4fm.nid_invalid_duid,
+            "nid_decoded_ok":        dec_c4fm.nid_decoded_ok,
+            "nid_decoded_tsdu":      dec_c4fm.nid_decoded_tsdu,
+            "tsdu_attempts":         dec_c4fm.tsdu_attempts,
+            "tsbk_block_attempts":   dec_c4fm.tsbk_block_attempts,
+            "tsbk_trellis_failures": dec_c4fm.tsbk_trellis_failures,
+            "tsbk_crc_failures":     dec_c4fm.tsbk_crc_failures,
+            "tsbk_crc_ok":           dec_c4fm.tsbk_crc_ok,
+            "tsbk_unknown_opcode":   dec_c4fm.tsbk_unknown_opcode,
         },
         "ps_lsm": {
             "label":           "PS LSM (software, HDL lsm dibit-fed)",
@@ -533,6 +578,17 @@ async fn get_decoder_compare(
                 serde_json::Value::from(dec_lsm.best_sync_distance())
             },
             "total_dibits":    dec_lsm.total_dibits(),
+            "nid_attempts":          dec_lsm.nid_attempts,
+            "nid_decode_failures":   dec_lsm.nid_decode_failures,
+            "nid_invalid_duid":      dec_lsm.nid_invalid_duid,
+            "nid_decoded_ok":        dec_lsm.nid_decoded_ok,
+            "nid_decoded_tsdu":      dec_lsm.nid_decoded_tsdu,
+            "tsdu_attempts":         dec_lsm.tsdu_attempts,
+            "tsbk_block_attempts":   dec_lsm.tsbk_block_attempts,
+            "tsbk_trellis_failures": dec_lsm.tsbk_trellis_failures,
+            "tsbk_crc_failures":     dec_lsm.tsbk_crc_failures,
+            "tsbk_crc_ok":           dec_lsm.tsbk_crc_ok,
+            "tsbk_unknown_opcode":   dec_lsm.tsbk_unknown_opcode,
         },
         "ps_phase6d": {
             "label":           "PS Phase 6D (software, raw IQ-fed)",
@@ -866,26 +922,57 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   </div>
 </div>
 
+<h2>Dibit Stream Diagnostics (PS C4FM vs PS LSM, side by side)</h2>
 <div class="grid2">
   <div class="card">
-    <h2>Dibit Histogram</h2>
+    <h2>PS C4FM Dibit Stream <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">c4fm_dibit_dma</span></h2>
     <table>
+      <tr><th colspan="2" style="color:var(--text-dim);text-align:left">Histogram</th></tr>
       <tr><th>Total Dibits</th><td class="v" id="dh_total">0</td></tr>
       <tr><th>Value 0 (+1)</th><td class="v" id="dh_0">--</td></tr>
       <tr><th>Value 1 (+3)</th><td class="v" id="dh_1">--</td></tr>
       <tr><th>Value 2 (-1)</th><td class="v" id="dh_2">--</td></tr>
       <tr><th>Value 3 (-3)</th><td class="v" id="dh_3">--</td></tr>
+      <tr><th>Inner / Outer ratio</th><td class="v" id="dh_io">--</td></tr>
+      <tr><th colspan="2" style="color:var(--text-dim);text-align:left">Sync correlator</th></tr>
+      <tr><th>Sync hits</th><td class="v" id="sy_hits">0</td></tr>
+      <tr><th>Near misses</th><td class="v" id="sy_near">0</td></tr>
+      <tr><th>Best Hamming distance</th><td class="v" id="sy_best">--</td></tr>
+      <tr><th colspan="2" style="color:var(--text-dim);text-align:left">Raw on-air DUID histogram</th></tr>
+      <tr><th>Total NIDs</th><td class="v" id="rd_total">0</td></tr>
+      <tr><th>Bucket 7 TSDU %</th><td class="v" id="rd_7">--</td></tr>
+      <tr><th>Bucket 5 LDU1 %</th><td class="v" id="rd_5">--</td></tr>
+      <tr><th>Bucket A LDU2 %</th><td class="v" id="rd_a">--</td></tr>
+      <tr><th>Bucket 0 HDU %</th><td class="v" id="rd_0">--</td></tr>
     </table>
   </div>
   <div class="card">
-    <h2>Sync Correlator</h2>
+    <h2>PS LSM Dibit Stream <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">lsm_dibit_dma</span></h2>
     <table>
-      <tr><th>Sync Hits</th><td class="v" id="sy_hits">0</td></tr>
-      <tr><th>Near Misses</th><td class="v" id="sy_near">0</td></tr>
-      <tr><th>Best Distance</th><td class="v" id="sy_best">--</td></tr>
+      <tr><th colspan="2" style="color:var(--text-dim);text-align:left">Histogram</th></tr>
+      <tr><th>Total Dibits</th><td class="v" id="ldh_total">0</td></tr>
+      <tr><th>Value 0 (+1)</th><td class="v" id="ldh_0">--</td></tr>
+      <tr><th>Value 1 (+3)</th><td class="v" id="ldh_1">--</td></tr>
+      <tr><th>Value 2 (-1)</th><td class="v" id="ldh_2">--</td></tr>
+      <tr><th>Value 3 (-3)</th><td class="v" id="ldh_3">--</td></tr>
+      <tr><th>Inner / Outer ratio</th><td class="v" id="ldh_io">--</td></tr>
+      <tr><th colspan="2" style="color:var(--text-dim);text-align:left">Sync correlator</th></tr>
+      <tr><th>Sync hits</th><td class="v" id="lsy_hits">0</td></tr>
+      <tr><th>Near misses</th><td class="v" id="lsy_near">0</td></tr>
+      <tr><th>Best Hamming distance</th><td class="v" id="lsy_best">--</td></tr>
+      <tr><th colspan="2" style="color:var(--text-dim);text-align:left">Raw on-air DUID histogram</th></tr>
+      <tr><th>Total NIDs</th><td class="v" id="lrd_total">0</td></tr>
+      <tr><th>Bucket 7 TSDU %</th><td class="v" id="lrd_7">--</td></tr>
+      <tr><th>Bucket 5 LDU1 %</th><td class="v" id="lrd_5">--</td></tr>
+      <tr><th>Bucket A LDU2 %</th><td class="v" id="lrd_a">--</td></tr>
+      <tr><th>Bucket 0 HDU %</th><td class="v" id="lrd_0">--</td></tr>
     </table>
-    <p style="color:var(--text-dim);font-size:0.8em;margin-top:6px">
-      Hamming distance to P25 frame sync (48 bits). Random&asymp;24, locked&le;4.
+    <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
+      Side-by-side: identical metrics on the C4FM HDL dibit stream vs the
+      LSM HDL dibit stream. If histograms differ, the slicers see different
+      signal statistics. If sync best distance differs, frame alignment
+      between the two streams is diverging. If TSDU bucket % is &lt;90% on
+      either, NID payload bits are being corrupted upstream.
     </p>
   </div>
 </div>
@@ -970,6 +1057,18 @@ async function refresh() {
       ['Live PLL register', '--', '--', '--', fmtN(cmp.pl_hdl.pll_dbg)],
       ['Live sample-point register', '--', '--', '--', fmtN(cmp.pl_hdl.sp_dbg)],
       ['Overflow events', '--', '--', fmtN(cmp.ps_phase6d.overflow_resets), 'dibit:' + fmtN(cmp.pl_hdl.dibit_overflow_ticks) + ' iq:' + fmtN(cmp.pl_hdl.iq_overflow_ticks)],
+      ['── pipeline ──', '', '', '', ''],
+      ['NID attempts (sync hit)', fmtN(cmp.ps_c4fm.nid_attempts), fmtN(cmp.ps_lsm.nid_attempts), '--', '--'],
+      ['NID BCH decode failures', fmtN(cmp.ps_c4fm.nid_decode_failures), fmtN(cmp.ps_lsm.nid_decode_failures), '--', '--'],
+      ['NID invalid DUID after BCH', fmtN(cmp.ps_c4fm.nid_invalid_duid), fmtN(cmp.ps_c4fm.nid_invalid_duid), '--', '--'],
+      ['NID decoded OK (any DUID)', fmtN(cmp.ps_c4fm.nid_decoded_ok), fmtN(cmp.ps_lsm.nid_decoded_ok), '--', '--'],
+      ['NID decoded OK (TSDU only)', fmtN(cmp.ps_c4fm.nid_decoded_tsdu), fmtN(cmp.ps_lsm.nid_decoded_tsdu), '--', '--'],
+      ['TSDU attempts', fmtN(cmp.ps_c4fm.tsdu_attempts), fmtN(cmp.ps_lsm.tsdu_attempts), '--', '--'],
+      ['TSBK block attempts', fmtN(cmp.ps_c4fm.tsbk_block_attempts), fmtN(cmp.ps_lsm.tsbk_block_attempts), '--', '--'],
+      ['TSBK trellis failures', fmtN(cmp.ps_c4fm.tsbk_trellis_failures), fmtN(cmp.ps_lsm.tsbk_trellis_failures), '--', '--'],
+      ['TSBK CRC failures', fmtN(cmp.ps_c4fm.tsbk_crc_failures), fmtN(cmp.ps_lsm.tsbk_crc_failures), '--', '--'],
+      ['TSBK CRC OK', fmtN(cmp.ps_c4fm.tsbk_crc_ok), fmtN(cmp.ps_lsm.tsbk_crc_ok), '--', '--'],
+      ['TSBK unknown opcode', fmtN(cmp.ps_c4fm.tsbk_unknown_opcode), fmtN(cmp.ps_lsm.tsbk_unknown_opcode), '--', '--'],
     ];
     $('cmp_body').innerHTML = rows.map(r =>
       '<tr><th>' + r[0] + '</th>' +
@@ -1106,19 +1205,37 @@ async function refresh() {
     }
   }
 
-  const dump = await fetchJson('/api/dibit_dump');
-  if (dump) {
-    $('dh_total').textContent = dump.total_dibits.toLocaleString();
+  // Helper to populate one of the dibit-stream cards (C4FM or LSM).
+  const renderDibitDump = (dump, ids) => {
+    if (!dump) return;
     const fmt = (n, p) => `${n.toLocaleString()} (${p.toFixed(1)}%)`;
-    $('dh_0').textContent = fmt(dump.histogram['0'], dump.histogram['0_pct']);
-    $('dh_1').textContent = fmt(dump.histogram['1'], dump.histogram['1_pct']);
-    $('dh_2').textContent = fmt(dump.histogram['2'], dump.histogram['2_pct']);
-    $('dh_3').textContent = fmt(dump.histogram['3'], dump.histogram['3_pct']);
-    $('sy_hits').textContent = dump.sync.hits.toLocaleString();
-    $('sy_near').textContent = dump.sync.near_misses.toLocaleString();
+    $(ids.total).textContent = dump.total_dibits.toLocaleString();
+    $(ids.v0).textContent = fmt(dump.histogram['0'], dump.histogram['0_pct']);
+    $(ids.v1).textContent = fmt(dump.histogram['1'], dump.histogram['1_pct']);
+    $(ids.v2).textContent = fmt(dump.histogram['2'], dump.histogram['2_pct']);
+    $(ids.v3).textContent = fmt(dump.histogram['3'], dump.histogram['3_pct']);
+    $(ids.io).textContent = dump.histogram.inner_pct.toFixed(1) + '% / ' + dump.histogram.outer_pct.toFixed(1) + '%';
+    $(ids.hits).textContent = dump.sync.hits.toLocaleString();
+    $(ids.near).textContent = dump.sync.near_misses.toLocaleString();
     const bd = dump.sync.best_distance;
-    $('sy_best').textContent = (bd >= 4294967000) ? '--' : bd;
-  }
+    $(ids.best).textContent = (bd >= 4294967000) ? '--' : bd;
+    $(ids.rd_total).textContent = dump.raw_duid.total.toLocaleString();
+    if (dump.raw_duid.total > 0) {
+      $(ids.rd_7).textContent = dump.raw_duid.pct_7_tsdu.toFixed(1) + '%';
+      $(ids.rd_5).textContent = dump.raw_duid.pct_5_ldu1.toFixed(1) + '%';
+      $(ids.rd_a).textContent = dump.raw_duid.pct_a_ldu2.toFixed(1) + '%';
+      $(ids.rd_0).textContent = dump.raw_duid.pct_0_hdu.toFixed(1) + '%';
+    }
+  };
+
+  const c4fmIds = {total:'dh_total', v0:'dh_0', v1:'dh_1', v2:'dh_2', v3:'dh_3', io:'dh_io',
+    hits:'sy_hits', near:'sy_near', best:'sy_best',
+    rd_total:'rd_total', rd_7:'rd_7', rd_5:'rd_5', rd_a:'rd_a', rd_0:'rd_0'};
+  const lsmIds = {total:'ldh_total', v0:'ldh_0', v1:'ldh_1', v2:'ldh_2', v3:'ldh_3', io:'ldh_io',
+    hits:'lsy_hits', near:'lsy_near', best:'lsy_best',
+    rd_total:'lrd_total', rd_7:'lrd_7', rd_5:'lrd_5', rd_a:'lrd_a', rd_0:'lrd_0'};
+  renderDibitDump(await fetchJson('/api/dibit_dump'), c4fmIds);
+  renderDibitDump(await fetchJson('/api/lsm_dibit_dump'), lsmIds);
 
   const grants = await fetchJson('/api/grants');
   if (grants) {
