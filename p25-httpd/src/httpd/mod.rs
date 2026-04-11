@@ -164,6 +164,15 @@ async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant
     // Phase 6F.11 API-level merge: union grants from both decoders,
     // de-duped by channel. If the same channel appears in both we
     // pick the YOUNGER (smaller age) one since it's more recent.
+    //
+    // Phase 6G.x: also de-dupe by talkgroup across the union. Each
+    // decoder's `grants` map is now talkgroup-clean internally
+    // (`purge_other_grants_for_talkgroup` runs before insert), but
+    // the cross-decoder union can still hold a stale entry if
+    // decoder A latched TG T on channel X while decoder B latched
+    // the same TG on a different channel Y just before A caught
+    // the update. Treat the YOUNGEST entry per TG as the truth,
+    // matching the per-channel rule.
     let dec_a = state.lsm_decoder.read().await;
     let dec_b = state.iq_lsm_decoder.read().await;
     let mut by_channel: std::collections::HashMap<u16, ChannelGrant> =
@@ -189,7 +198,28 @@ async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant
     };
     push(&dec_a, &mut by_channel);
     push(&dec_b, &mut by_channel);
-    let mut grants: Vec<ChannelGrant> = by_channel.into_values().collect();
+
+    // Second pass: collapse by talkgroup, picking the youngest
+    // surviving channel entry per TG. TG 0 is excluded from the
+    // dedup (matches the decoder-side wildcard sentinel) so we
+    // never collapse multiple unrelated "no-talkgroup" entries.
+    let mut by_talkgroup: std::collections::HashMap<u16, ChannelGrant> =
+        std::collections::HashMap::new();
+    let mut tg0_passthrough: Vec<ChannelGrant> = Vec::new();
+    for cg in by_channel.into_values() {
+        if cg.talkgroup == 0 {
+            tg0_passthrough.push(cg);
+            continue;
+        }
+        match by_talkgroup.get(&cg.talkgroup) {
+            Some(existing) if existing.age_secs <= cg.age_secs => {}
+            _ => {
+                by_talkgroup.insert(cg.talkgroup, cg);
+            }
+        }
+    }
+    let mut grants: Vec<ChannelGrant> = by_talkgroup.into_values().collect();
+    grants.extend(tg0_passthrough);
     grants.sort_by_key(|g| g.age_secs);
     Json(grants)
 }

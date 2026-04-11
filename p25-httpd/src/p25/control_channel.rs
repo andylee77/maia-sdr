@@ -1319,6 +1319,9 @@ impl ControlChannelDecoder {
                 source,
             } => {
                 let freq = self.channel_to_frequency(*channel);
+                // Drop any prior grant for this TG on a different
+                // channel before inserting the new one.
+                self.purge_other_grants_for_talkgroup(*talkgroup);
                 self.grants.insert(
                     channel.0,
                     GrantInfo {
@@ -1386,6 +1389,9 @@ impl ControlChannelDecoder {
                 talkgroup_b,
             } => {
                 let freq_a = self.channel_to_frequency(*channel_a);
+                // Drop any prior grant for talkgroup_a on a different
+                // channel before inserting the update.
+                self.purge_other_grants_for_talkgroup(*talkgroup_a);
                 self.grants.insert(
                     channel_a.0,
                     GrantInfo {
@@ -1398,6 +1404,7 @@ impl ControlChannelDecoder {
                 );
                 if talkgroup_b.0 != 0 {
                     let freq_b = self.channel_to_frequency(*channel_b);
+                    self.purge_other_grants_for_talkgroup(*talkgroup_b);
                     self.grants.insert(
                         channel_b.0,
                         GrantInfo {
@@ -1651,6 +1658,33 @@ impl ControlChannelDecoder {
             now.duration_since(grant.timestamp).as_secs() < max_age_secs
         });
     }
+
+    /// Drop any existing grants that match `talkgroup` so a freshly
+    /// inserted grant for the same TG doesn't leave stale entries
+    /// scattered across other channels.
+    ///
+    /// In real trunking, a single talkgroup is on one voice channel
+    /// at a time -- when the system grants TG `T` to a new channel,
+    /// any prior `T` grant on a different channel is by definition
+    /// no longer active. The decoder's `grants` map is keyed by
+    /// channel number (so a grant on channel A and a grant on
+    /// channel B are two HashMap entries even if they're for the
+    /// same TG), which means the natural insert path leaves the
+    /// old A entry sitting around until `expire_grants` reaps it.
+    /// On a busy site that produces a long tail of phantom "active"
+    /// grants for the same TG -- not a correctness bug, just bad
+    /// UX in `/api/grants`.
+    ///
+    /// Call this **before** `grants.insert(...)` for any new TG.
+    /// Wildcard TG 0 is excluded because the grant-update path
+    /// already filters it as a sentinel and dropping all "TG 0"
+    /// entries would clobber unrelated state.
+    fn purge_other_grants_for_talkgroup(&mut self, talkgroup: Talkgroup) {
+        if talkgroup.0 == 0 {
+            return;
+        }
+        self.grants.retain(|_, g| g.talkgroup != talkgroup);
+    }
 }
 
 #[cfg(test)]
@@ -1717,6 +1751,63 @@ mod tests {
         let grant = &decoder.grants[&0x045D];
         assert_eq!(grant.talkgroup.0, 300);
         assert_eq!(grant.frequency_hz, Some(857_987_500)); // 857.9875 MHz
+    }
+
+    /// A new grant for the same talkgroup on a different channel
+    /// must drop the prior grant entry. The dashboard's
+    /// `/api/grants` was showing the same TG repeated 5+ times across
+    /// different channels with ages spanning ~30 minutes -- the
+    /// underlying state machine was carrying stale rows in
+    /// `decoder.grants` because the map is keyed by channel.
+    #[test]
+    fn test_grant_dedup_by_talkgroup() {
+        let mut decoder = ControlChannelDecoder::new();
+        decoder.handle_tsbk(0, TsbkMessage::IdentifierUpdate {
+            identifier: 0,
+            bw: 100,
+            transmit_offset: -45_000_000,
+            channel_spacing: 6_250,
+            base_frequency: 851_006_250,
+        });
+
+        // First grant: TG 202 on channel 0x0345.
+        decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
+            channel: Channel(0x0345),
+            talkgroup: Talkgroup(202),
+            source: RadioId(1011),
+        });
+        // Independent TG on a third channel -- must NOT be cleared.
+        decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
+            channel: Channel(0x0500),
+            talkgroup: Talkgroup(300),
+            source: RadioId(2022),
+        });
+        assert_eq!(decoder.grants.len(), 2);
+
+        // Second grant: same TG 202 on a different channel. The
+        // prior 0x0345 entry should be dropped, leaving exactly two
+        // grants total (the new TG 202 + the unrelated TG 300).
+        decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
+            channel: Channel(0x045D),
+            talkgroup: Talkgroup(202),
+            source: RadioId(1011),
+        });
+        assert_eq!(decoder.grants.len(), 2);
+        assert!(!decoder.grants.contains_key(&0x0345));
+        assert!(decoder.grants.contains_key(&0x045D));
+        assert!(decoder.grants.contains_key(&0x0500));
+
+        // GroupVoiceChannelGrantUpdate must dedupe the same way.
+        decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrantUpdate {
+            channel_a: Channel(0x0789),
+            talkgroup_a: Talkgroup(202),
+            channel_b: Channel(0),
+            talkgroup_b: Talkgroup(0),
+        });
+        assert_eq!(decoder.grants.len(), 2);
+        assert!(!decoder.grants.contains_key(&0x045D));
+        assert!(decoder.grants.contains_key(&0x0789));
+        assert!(decoder.grants.contains_key(&0x0500));
     }
 
     /// Drive the decoder end-to-end with a frame sync + 33-dibit NID
