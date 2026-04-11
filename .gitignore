@@ -50,3 +50,8 @@ __pycache__/
 dist/
 build/
 runs/
+
+# P25 LSM aligned-capture diagnostic snapshots (one-shot dumps from
+# /api/lsm_capture_aligned, used as input to tools/p25_decode_capture.py).
+# These are throwaway debug artifacts -- don't commit them.
+/capture*.json
