@@ -67,6 +67,42 @@ TRANSITION_MATRIX = [
     [5, 11, 6, 8],
 ]
 
+# TIA-102 BAAA Table 7-7 / SDRTrunk DATA_DEINTERLEAVE: bit permutation
+# applied AFTER trellis decoding the 196-bit message. Encoder applies
+# the inverse before transmission.
+DATA_DEINTERLEAVE = [
+    0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 49, 50, 51,
+    64, 65, 66, 67, 80, 81, 82, 83, 96, 97, 98, 99, 112, 113, 114, 115,
+    128, 129, 130, 131, 144, 145, 146, 147, 160, 161, 162, 163, 176, 177, 178, 179,
+    192, 193, 194, 195, 4, 5, 6, 7, 20, 21, 22, 23, 36, 37, 38, 39,
+    52, 53, 54, 55, 68, 69, 70, 71, 84, 85, 86, 87, 100, 101, 102, 103,
+    116, 117, 118, 119, 132, 133, 134, 135, 148, 149, 150, 151, 164, 165, 166, 167,
+    180, 181, 182, 183, 8, 9, 10, 11, 24, 25, 26, 27, 40, 41, 42, 43,
+    56, 57, 58, 59, 72, 73, 74, 75, 88, 89, 90, 91, 104, 105, 106, 107,
+    120, 121, 122, 123, 136, 137, 138, 139, 152, 153, 154, 155, 168, 169, 170, 171,
+    184, 185, 186, 187, 12, 13, 14, 15, 28, 29, 30, 31, 44, 45, 46, 47,
+    60, 61, 62, 63, 76, 77, 78, 79, 92, 93, 94, 95, 108, 109, 110, 111,
+    124, 125, 126, 127, 140, 141, 142, 143, 156, 157, 158, 159, 172, 173, 174, 175,
+    188, 189, 190, 191,
+]
+assert len(DATA_DEINTERLEAVE) == 196
+
+# SDRTrunk CRCP25.CCITT_80_CHECKSUMS: per-bit XOR table for the
+# CRC-16/CCITT used to protect P25 80-bit (10-byte) TSBK payloads.
+CCITT_80_CHECKSUMS = [
+    0x1BCB, 0x8DE5, 0xC6F2, 0x6B69, 0xB5B4, 0x52CA, 0x2175, 0x90BA, 0x404D,
+    0xA026, 0x5803, 0xAC01, 0xD600, 0x6310, 0x3998, 0x14DC, 0x027E, 0x092F,
+    0x8497, 0xC24B, 0xE125, 0xF092, 0x7059, 0xB82C, 0x5406, 0x2213, 0x9109,
+    0xC884, 0x6C52, 0x3E39, 0x9F1C, 0x479E, 0x2BDF, 0x95EF, 0xCAF7, 0xE57B,
+    0xF2BD, 0xF95E, 0x74BF, 0xBA5F, 0xDD2F, 0xEE97, 0xF74B, 0xFBA5, 0xFDD2,
+    0x76F9, 0xBB7C, 0x55AE, 0x22C7, 0x9163, 0xC8B1, 0xE458, 0x7A3C, 0x350E,
+    0x1297, 0x894B, 0xC4A5, 0xE252, 0x7939, 0xBC9C, 0x565E, 0x233F, 0x919F,
+    0xC8CF, 0xE467, 0xF233, 0xF919, 0xFC8C, 0x7656, 0x333B, 0x999D, 0xCCCE,
+    0x6E77, 0xB73B, 0xDB9D, 0xEDCE, 0x7EF7, 0xBF7B, 0xDFBD, 0xEFDE, 0x0001,
+    0x0002, 0x0004, 0x0008, 0x0010, 0x0020, 0x0040, 0x0080, 0x0100, 0x0200,
+    0x0400, 0x0800, 0x1000, 0x2000, 0x4000, 0x8000,
+]
+
 
 def hamming4(a: int, b: int) -> int:
     return bin((a ^ b) & 0x0F).count("1")
@@ -134,16 +170,32 @@ def deinterleave_tsdu(body_dibits: list[int]) -> list[int]:
 
 
 def viterbi_decode(trellis_dibits: list[int]) -> tuple[bytes, int]:
-    """Return (12 bytes, total_path_error)."""
+    """Return (12 bytes, total_path_error).
+
+    Phase 6F.2j: applies the DATA_DEINTERLEAVE bit permutation BEFORE
+    decoding, mirroring SDRTrunk's TSBKMessageFactory.
+    """
     if len(trellis_dibits) < 98:
         raise ValueError(f"need 98 trellis dibits, got {len(trellis_dibits)}")
 
-    # Pack 98 dibits into 49 nibbles (high bits = first dibit).
+    # Step 1: convert dibits to 196 raw bits (interleaved order).
+    interleaved_bits = []
+    for d in trellis_dibits[:98]:
+        interleaved_bits.append((d >> 1) & 1)
+        interleaved_bits.append(d & 1)
+
+    # Step 2: apply DATA_DEINTERLEAVE permutation.
+    de_bits = [0] * 196
+    for i in range(196):
+        de_bits[DATA_DEINTERLEAVE[i]] = interleaved_bits[i]
+
+    # Step 3: pack 196 deinterleaved bits into 49 nibbles (4 bits each, MSB first).
     nibbles = []
     for n in range(49):
-        a = trellis_dibits[n * 2] & 0x3
-        b = trellis_dibits[n * 2 + 1] & 0x3
-        nibbles.append((a << 2) | b)
+        nib = 0
+        for k in range(4):
+            nib = (nib << 1) | de_bits[n * 4 + k]
+        nibbles.append(nib)
 
     INF = 1 << 30
     metrics = [INF] * 4
@@ -204,11 +256,27 @@ def crc16_ccitt(data: bytes) -> int:
     return crc ^ 0xFFFF  # final XOR (CCITT-FALSE inverted convention)
 
 
+def ccitt80_crc(data: bytes) -> int:
+    """SDRTrunk-style CCITT_80 CRC over the first 80 bits of data."""
+    calc = 0xFFFF
+    for byte_idx in range(10):
+        b = data[byte_idx]
+        for bit_idx in range(8):
+            if (b >> (7 - bit_idx)) & 1:
+                calc ^= CCITT_80_CHECKSUMS[byte_idx * 8 + bit_idx]
+    return calc
+
+
 def crc_check(tsbk_bytes: bytes) -> tuple[bool, bool, int, int]:
-    """Return (plain_match, xored_match, calc_plain, msg_crc)."""
-    calc = crc16_ccitt(tsbk_bytes[:10])
+    """Return (plain_match, xored_match, calc, msg_crc).
+
+    Phase 6F.2j: switched to SDRTrunk's table-based CCITT_80 CRC.
+    Validates if residual (calc XOR msg) is 0 or 0xFFFF.
+    """
+    calc = ccitt80_crc(tsbk_bytes)
     msg = (tsbk_bytes[10] << 8) | tsbk_bytes[11]
-    return calc == msg, (calc ^ 0xFFFF) == msg, calc, msg
+    residual = calc ^ msg
+    return residual == 0, residual == 0xFFFF, calc, msg
 
 
 # ─── Pretty printing ───────────────────────────────────────────────────
