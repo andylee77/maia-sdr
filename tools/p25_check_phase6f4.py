@@ -89,12 +89,12 @@ def main() -> int:
     site = sys_info.get("site_id")
     cc = sys_info.get("control_channel")
 
-    # Accept 6F.4 through 6F.9 builds. 6F.9 added the iq_lsm decoder
-    # fed by Phase 6D's soft sync events.
-    is_64 = any(
-        f"phase6f.{n}" in (build or "")
-        for n in ("4", "5", "6", "7", "8", "9")
-    )
+    # Accept 6F.4 or any later phase6f.N build. We do a regex match
+    # because string `in` would let "phase6f.1" match "phase6f.10",
+    # but checking the trailing character avoids a false positive.
+    import re
+    m = re.search(r"phase6f\.(\d+)", build or "")
+    is_64 = bool(m and int(m.group(1)) >= 4)
     rfss_ok = rfss == 1
     wacn_ok = wacn == "BEE00"
 
@@ -125,23 +125,32 @@ def main() -> int:
     crc_ok_pct = 100.0 * crc_ok / max(block_attempts, 1)
     nid_pct = 100.0 * nid_decoded / max(nid_attempts, 1)
     seconds = total_dibits / 4800.0
-    msgs_per_sec = messages / max(seconds, 1.0)
+    # 6F.10: report rates derived from CRC-OK count instead of the
+    # `recent_messages` ring buffer length, which capped at 100
+    # pre-6F.10 and saturated in ~7 seconds at the steady-state
+    # throughput. The new headline metric is "useful TSBK blocks per
+    # second" which is what `tsbk_crc_ok / uptime` measures.
+    crc_ok_per_sec = crc_ok / max(seconds, 1.0)
     blocks_per_sec = block_attempts / max(seconds, 1.0)
+    tsdu_per_sec = tsdu_attempts / max(seconds, 1.0)
 
     # 6F.3 was 1.6 blocks/TSDU, 6F.4 target is closer to 3.0
     bptd_ok = blocks_per_tsdu >= 2.5
+    # 6F.9 throughput targets: 30 TSBK attempts/s, 14+ CRC OK/s.
+    crc_rate_ok = crc_ok_per_sec >= 14.0
 
     kv("uptime (estimated)", f"{seconds:.0f} s")
-    kv("nid_attempts", nid_attempts)
+    kv("nid_attempts", f"{nid_attempts} ({nid_attempts/max(seconds,1):.2f}/s)")
     kv("nid_decoded_ok", f"{nid_decoded} ({nid_pct:.1f}%)", nid_pct >= 75)
-    kv("tsdu_attempts", tsdu_attempts)
-    kv("tsbk_block_attempts", block_attempts)
+    kv("tsdu_attempts", f"{tsdu_attempts} ({tsdu_per_sec:.2f}/s)")
+    kv("tsbk_block_attempts", f"{block_attempts} ({blocks_per_sec:.2f}/s)")
     kv("blocks per TSDU", f"{blocks_per_tsdu:.2f} (target ~3.0)", bptd_ok)
-    kv("tsbk_crc_ok", f"{crc_ok} ({crc_ok_pct:.1f}%)")
+    kv("tsbk_crc_ok",
+       f"{crc_ok} ({crc_ok_pct:.1f}% pass, {crc_ok_per_sec:.2f}/s)",
+       crc_rate_ok)
     kv("tsbk_crc_fail", crc_fail)
-    kv("messages", messages)
-    kv("messages / sec", f"{msgs_per_sec:.1f}")
-    kv("blocks / sec", f"{blocks_per_sec:.1f}")
+    kv("recent_msgs ring",
+       f"{messages} (capped at 1000 in 6F.10, was 100)")
     kv("bands_known", f"{bands_known} (target >= 6 with FDMA + TDMA bands)",
        bands_known >= 6)
     kv("active_grants", f"{active_grants} (depends on call activity)")
@@ -163,27 +172,29 @@ def main() -> int:
         iq_tsdu_per_s = iq_tsdu / max(seconds, 1.0)
         iq_block_per_s = iq_blocks / max(seconds, 1.0)
         iq_crc_per_s = iq_crc_ok / max(seconds, 1.0)
-        iq_msg_per_s = iq_msgs / max(seconds, 1.0)
         iq_nid_pct = 100.0 * iq_nid_ok / max(iq_nid_att, 1)
         iq_crc_pct = 100.0 * iq_crc_ok / max(iq_blocks, 1)
 
-        # Compare to ps_lsm baseline
-        lsm_msg_per_s = msgs_per_sec
-        ratio = iq_msg_per_s / max(lsm_msg_per_s, 0.001)
+        # 6F.10: compare CRC-OK rates instead of the saturated
+        # recent_messages ring count.
+        ratio = iq_crc_per_s / max(crc_ok_per_sec, 0.001)
+        combined_crc_per_s = crc_ok_per_sec + iq_crc_per_s
 
         kv("nid_attempts", iq_nid_att)
         kv("nid_decoded_ok", f"{iq_nid_ok} ({iq_nid_pct:.1f}%)")
         kv("tsdu_attempts", f"{iq_tsdu} ({iq_tsdu_per_s:.2f}/s)")
         kv("tsbk_block_attempts", f"{iq_blocks} ({iq_block_per_s:.2f}/s)")
         kv("tsbk_crc_ok",
-           f"{iq_crc_ok} ({iq_crc_pct:.1f}% CRC pass, {iq_crc_per_s:.2f}/s)")
-        kv("messages decoded",
-           f"{iq_msgs} ({iq_msg_per_s:.2f}/s)")
+           f"{iq_crc_ok} ({iq_crc_pct:.1f}% pass, {iq_crc_per_s:.2f}/s)")
+        kv("recent_msgs ring", f"{iq_msgs}")
         kv("bands_known", iq_bands)
         kv("active_grants", iq_grants)
-        kv("vs ps_lsm msg/s",
-           f"{ratio:.2f}x ({lsm_msg_per_s:.2f} -> {iq_msg_per_s:.2f})",
-           ratio >= 1.5)
+        kv("vs ps_lsm CRC OK/s",
+           f"{ratio:.2f}x ({crc_ok_per_sec:.2f} -> {iq_crc_per_s:.2f})",
+           ratio >= 0.5)
+        kv("COMBINED CRC OK/s",
+           f"{combined_crc_per_s:.2f}/s (target >= 30/s)",
+           combined_crc_per_s >= 30.0)
 
     # ── /api/lsm_dibit_dump  (sync distance histogram, 6F.6+) ──
     banner("Sync distance histogram (6F.6+)")
@@ -298,11 +309,12 @@ def main() -> int:
     # ── Acceptance summary ──
     banner("Acceptance summary")
     checks = [
-        ("Build tag is phase6f.4", is_64),
+        ("Build tag is phase6f.4 or newer", is_64),
         ("RFSS = 1 (was 160 in 6F.3)", rfss_ok),
         ("blocks_per_tsdu >= 2.5 (was 1.6 in 6F.3)", bptd_ok),
         ("bands_known >= 6 (was 0 in 6F.3)", bands_known >= 6),
         ("WACN matches Clay County (BEE00)", wacn_ok),
+        ("ps_lsm CRC OK/s >= 14 (was 0.5 in 6F.4)", crc_rate_ok),
     ]
     all_passed = True
     for label, ok in checks:

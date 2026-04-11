@@ -479,7 +479,14 @@ impl ControlChannelDecoder {
             bands: HashMap::new(),
             grants: HashMap::new(),
             recent_messages: Vec::new(),
-            max_recent: 100,
+            // 6F.10: bumped from 100 -> 1000. At the steady-state PS LSM
+            // throughput of ~14 messages/sec the 100 cap saturates in 7
+            // seconds, which made the verification script's
+            // `messages / uptime` headline rate report a misleading
+            // 1.1 msg/sec instead of the real 14.8/sec. 1000 holds ~70
+            // seconds of activity, enough for `/api/recent_tsbks` to
+            // show a representative window.
+            max_recent: 1000,
             aliases: HashMap::new(),
             event_tx: None,
         }

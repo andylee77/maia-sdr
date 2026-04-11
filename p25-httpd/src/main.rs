@@ -34,7 +34,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-11-phase6f.9-iq-lsm-decoder-soft-sync-directed-tsdu";
+pub const BUILD_TAG: &str = "2026-04-11-phase6f.10-iq-lsm-pending-defer-recent-msgs-1000";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -408,12 +408,39 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             tracing::info!("LSM IQ reader task started (Phase 6D)");
             let mut pipeline = lsm::LsmPipeline::new();
-            // Phase 6F.9: cross-batch carry-over of the last ~336
-            // hard_dibits so soft sync events near a batch boundary
-            // can still find their 336-dibit (NID + 303 body) window
-            // in the combined buffer. Capped to avoid unbounded growth.
+            // Phase 6F.10 cross-batch carry-over with pending event
+            // queue. The Phase 6D LSM IRQ task wakes about every
+            // ~17 ms (one IRQ per ~84 dibits), so a soft sync event
+            // landing near the end of a batch will not have its full
+            // 336-dibit (NID + TSBK1+TSBK2+TSBK3) body in the current
+            // batch -- it needs to wait for the NEXT 1-3 batches.
+            //
+            // 6F.9 simply capped each dispatch at `combined.len()` so
+            // late events only got a fragment of their body (often
+            // just NID + TSBK1, dropping TSBK2/TSBK3). That pulled
+            // `ps_iq_lsm` blocks/TSDU down to 1.86 instead of 3.0.
+            //
+            // 6F.10 tracks each event by its absolute stream position
+            // and stashes it in a pending queue if the full body
+            // isn't available yet. Every batch we walk the queue and
+            // dispatch any event whose 336-dibit body has arrived,
+            // then drop events older than MAX_AGE_DIBITS.
             let mut prev_tail: Vec<u8> = Vec::new();
-            const CARRY_DIBITS: usize = 400; // a bit more than 33+303
+            const CARRY_DIBITS: usize = 1024;
+            // Global stream offset of the FIRST dibit currently in
+            // `prev_tail`. Together with prev_tail.len() and the
+            // new batch's hard_dibits, this lets us address any
+            // dibit by its absolute stream position.
+            let mut stream_offset_at_prev_tail_start: u64 = 0;
+            // Pending events: absolute stream positions of first NID
+            // dibits whose bodies haven't fully arrived yet.
+            let mut pending_events: Vec<u64> = Vec::new();
+            // Drop pending events whose first NID dibit is more than
+            // this many dibits behind the latest data we have. With
+            // CARRY_DIBITS = 1024 anything older than ~700 dibits has
+            // already fallen off the front of prev_tail so it's
+            // unrecoverable.
+            const MAX_AGE_DIBITS: u64 = 700;
             loop {
                 iq_waiter.wait().await;
 
@@ -464,55 +491,99 @@ async fn main() -> anyhow::Result<()> {
                 let wake_hard = batch.hard_events.len();
                 let wake_soft = batch.soft_events.len();
 
-                // Phase 6F.9: dispatch every soft sync event into the
-                // directed-decode TSBK pipeline. This is the path that
-                // bypasses the HDL slicer for sync detection -- the
-                // soft correlator on Phase 6D's `soft_phases` finds
-                // ~9 syncs/sec vs ~5/sec for the dibit-domain hard
-                // correlator on the HDL slicer's output. Each event
-                // gives us a precise dibit position; we slice 336
-                // dibits (33 NID + 303 body) starting at that position
-                // and run them through `process_directed_tsdu` which
-                // shares the existing TSBK parsers, CRC, and counters.
+                // Phase 6F.10: dispatch soft sync events into the
+                // directed-decode TSBK pipeline with cross-batch
+                // pending-queue defer. Each event is identified by
+                // its absolute stream position; if the full 336-dibit
+                // body isn't available yet, it stays in
+                // `pending_events` until enough dibits have arrived.
                 {
                     let prev_tail_len = prev_tail.len();
-                    // Build a `combined` view of (prev_tail || new_dibits)
-                    // so events near a batch boundary can still find
-                    // their full body in the next batch.
+                    // Combined buffer: prev_tail || new dibits.
                     let mut combined: Vec<u8> =
                         Vec::with_capacity(prev_tail_len + wake_dibits);
                     combined.extend_from_slice(&prev_tail);
                     combined.extend_from_slice(&batch.demod.hard_dibits);
 
-                    if !batch.soft_events.is_empty() {
-                        let mut dec = iq_lsm_decoder_task.write().await;
-                        for ev in &batch.soft_events {
-                            // event.symbol_idx is the position of the
-                            // FIRST NID dibit, relative to the current
-                            // batch's hard_dibits.
-                            let abs = prev_tail_len + ev.symbol_idx;
-                            // Need at minimum 33 dibits for the NID.
-                            // process_directed_tsdu handles short
-                            // buffers gracefully (decodes fewer blocks
-                            // and stops when it runs out of data).
-                            if abs + 33 <= combined.len() {
-                                let end = (abs + 336).min(combined.len());
-                                dec.process_directed_tsdu(&combined[abs..end]);
-                            }
-                        }
+                    // Absolute stream offset of combined[0].
+                    let combined_start_offset = stream_offset_at_prev_tail_start;
+                    // Absolute stream offset just past combined[len-1].
+                    let combined_end_offset =
+                        combined_start_offset + combined.len() as u64;
+
+                    // Step 1: register every new soft event from this
+                    // batch as an absolute stream position.
+                    for ev in &batch.soft_events {
+                        // ev.symbol_idx is the position of the FIRST
+                        // NID dibit relative to THIS batch's
+                        // hard_dibits, NOT relative to combined. Add
+                        // the offset of "where the new dibits start
+                        // in combined" + the global offset.
+                        let abs_in_combined =
+                            (prev_tail_len + ev.symbol_idx) as u64;
+                        let abs_stream = combined_start_offset + abs_in_combined;
+                        pending_events.push(abs_stream);
                     }
 
-                    // Trim to the last CARRY_DIBITS dibits as the next
-                    // batch's prev_tail. Any soft event whose body
-                    // straddles a batch boundary becomes processable
-                    // when the next batch arrives because we still
-                    // have its NID start in `prev_tail`.
-                    if combined.len() > CARRY_DIBITS {
-                        prev_tail =
-                            combined[combined.len() - CARRY_DIBITS..].to_vec();
-                    } else {
-                        prev_tail = combined;
+                    // Step 2: dispatch every pending event whose body
+                    // is fully present in combined. Keep the rest for
+                    // next batch.
+                    if !pending_events.is_empty() {
+                        let mut still_pending: Vec<u64> =
+                            Vec::with_capacity(pending_events.len());
+                        let mut dec = iq_lsm_decoder_task.write().await;
+                        for &abs_stream in &pending_events {
+                            // Translate absolute stream position into
+                            // an offset within `combined`.
+                            if abs_stream < combined_start_offset {
+                                // Fell off the front of prev_tail
+                                // before its body could complete.
+                                // Lost -- drop silently.
+                                continue;
+                            }
+                            let abs_in_combined =
+                                (abs_stream - combined_start_offset) as usize;
+                            // Need 336 dibits to dispatch (full
+                            // 3-block TSDU). Below that, defer.
+                            if abs_in_combined + 336 <= combined.len() {
+                                dec.process_directed_tsdu(
+                                    &combined[abs_in_combined..abs_in_combined + 336],
+                                );
+                            } else if abs_in_combined + 33 <= combined.len()
+                                && combined_end_offset
+                                    .saturating_sub(abs_stream)
+                                    >= MAX_AGE_DIBITS
+                            {
+                                // Body never arrived in time. We have
+                                // the NID at minimum, so dispatch what
+                                // we have (fewer than 3 blocks) and
+                                // give up on the rest.
+                                let end = combined.len();
+                                dec.process_directed_tsdu(
+                                    &combined[abs_in_combined..end],
+                                );
+                            } else {
+                                // Body partially arrived but we still
+                                // have headroom -- keep waiting.
+                                still_pending.push(abs_stream);
+                            }
+                        }
+                        pending_events = still_pending;
                     }
+
+                    // Step 3: trim combined to the last CARRY_DIBITS
+                    // dibits and use that as the next prev_tail.
+                    // Update the stream offset accordingly.
+                    let new_prev_tail_start_offset =
+                        if combined.len() > CARRY_DIBITS {
+                            let drop = combined.len() - CARRY_DIBITS;
+                            prev_tail = combined[drop..].to_vec();
+                            combined_start_offset + drop as u64
+                        } else {
+                            prev_tail = combined;
+                            combined_start_offset
+                        };
+                    stream_offset_at_prev_tail_start = new_prev_tail_start_offset;
                 }
 
                 // Fold into shared stats + snapshot cumulative totals and

@@ -119,7 +119,10 @@ def main() -> int:
     # don't exist on older builds).
     sys_info = fetch(target, "/api/system")
     build = sys_info.get("build", "")
-    if "phase6f.7" not in build and "phase6f.8" not in build:
+    import re
+    m = re.search(r"phase6f\.(\d+)", build or "")
+    needs_warn = not (m and int(m.group(1)) >= 7)
+    if needs_warn:
         print(f"{YELLOW}!! target build {build!r} may not have "
               f"/api/sync_tune (need >= phase6f.7){RESET}")
 
