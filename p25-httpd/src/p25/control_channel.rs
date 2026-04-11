@@ -1320,8 +1320,10 @@ impl ControlChannelDecoder {
             } => {
                 let freq = self.channel_to_frequency(*channel);
                 // Drop any prior grant for this TG on a different
-                // channel before inserting the new one.
-                self.purge_other_grants_for_talkgroup(*talkgroup);
+                // channel. The TSBK includes a fresh source RadioId
+                // so we discard the preserved value here -- the new
+                // call's caller is what we want to record.
+                let _ = self.take_other_grants_for_talkgroup(*talkgroup);
                 self.grants.insert(
                     channel.0,
                     GrantInfo {
@@ -1390,27 +1392,32 @@ impl ControlChannelDecoder {
             } => {
                 let freq_a = self.channel_to_frequency(*channel_a);
                 // Drop any prior grant for talkgroup_a on a different
-                // channel before inserting the update.
-                self.purge_other_grants_for_talkgroup(*talkgroup_a);
+                // channel and PRESERVE its source -- the update TSBK
+                // doesn't carry a source itself, so without this we'd
+                // wipe the caller ID we recorded from the original
+                // GroupVoiceChannelGrant.
+                let preserved_source_a =
+                    self.take_other_grants_for_talkgroup(*talkgroup_a);
                 self.grants.insert(
                     channel_a.0,
                     GrantInfo {
                         channel: *channel_a,
                         talkgroup: *talkgroup_a,
-                        source: None,
+                        source: preserved_source_a,
                         frequency_hz: freq_a,
                         timestamp: Instant::now(),
                     },
                 );
                 if talkgroup_b.0 != 0 {
                     let freq_b = self.channel_to_frequency(*channel_b);
-                    self.purge_other_grants_for_talkgroup(*talkgroup_b);
+                    let preserved_source_b =
+                        self.take_other_grants_for_talkgroup(*talkgroup_b);
                     self.grants.insert(
                         channel_b.0,
                         GrantInfo {
                             channel: *channel_b,
                             talkgroup: *talkgroup_b,
-                            source: None,
+                            source: preserved_source_b,
                             frequency_hz: freq_b,
                             timestamp: Instant::now(),
                         },
@@ -1659,9 +1666,9 @@ impl ControlChannelDecoder {
         });
     }
 
-    /// Drop any existing grants that match `talkgroup` so a freshly
-    /// inserted grant for the same TG doesn't leave stale entries
-    /// scattered across other channels.
+    /// Drop any existing grants that match `talkgroup` and return the
+    /// `source` RadioId from the first matching entry (if any), so the
+    /// caller can preserve the original caller ID across a refresh.
     ///
     /// In real trunking, a single talkgroup is on one voice channel
     /// at a time -- when the system grants TG `T` to a new channel,
@@ -1669,21 +1676,41 @@ impl ControlChannelDecoder {
     /// no longer active. The decoder's `grants` map is keyed by
     /// channel number (so a grant on channel A and a grant on
     /// channel B are two HashMap entries even if they're for the
-    /// same TG), which means the natural insert path leaves the
-    /// old A entry sitting around until `expire_grants` reaps it.
-    /// On a busy site that produces a long tail of phantom "active"
-    /// grants for the same TG -- not a correctness bug, just bad
-    /// UX in `/api/grants`.
+    /// same TG), which means the natural insert path leaves the old
+    /// A entry sitting around until `expire_grants` reaps it.
     ///
-    /// Call this **before** `grants.insert(...)` for any new TG.
-    /// Wildcard TG 0 is excluded because the grant-update path
-    /// already filters it as a sentinel and dropping all "TG 0"
-    /// entries would clobber unrelated state.
-    fn purge_other_grants_for_talkgroup(&mut self, talkgroup: Talkgroup) {
+    /// Returning the prior `source` lets `GroupVoiceChannelGrantUpdate`
+    /// preserve the caller ID across refreshes -- the
+    /// `GroupVoiceChannelGrant` opcode includes a source RadioId, but
+    /// `GroupVoiceChannelGrantUpdate` does NOT, so without this preserve
+    /// path the source would get wiped to `None` the first time the
+    /// trunking system refreshed an active call. The caller in
+    /// `handle_tsbk` gets to decide whether to use the returned source
+    /// (update path) or ignore it and use a fresh source from the TSBK
+    /// itself (initial-grant path).
+    ///
+    /// Wildcard TG 0 is excluded because the grant-update path already
+    /// filters it as a sentinel and dropping all "TG 0" entries would
+    /// clobber unrelated state.
+    fn take_other_grants_for_talkgroup(&mut self, talkgroup: Talkgroup) -> Option<RadioId> {
         if talkgroup.0 == 0 {
-            return;
+            return None;
         }
-        self.grants.retain(|_, g| g.talkgroup != talkgroup);
+        let mut preserved_source: Option<RadioId> = None;
+        self.grants.retain(|_, g| {
+            if g.talkgroup == talkgroup {
+                // Capture the source from the first match. Don't
+                // overwrite if we already have one (in case the map
+                // somehow holds two stale entries for the same TG).
+                if preserved_source.is_none() && g.source.is_some() {
+                    preserved_source = g.source;
+                }
+                false
+            } else {
+                true
+            }
+        });
+        preserved_source
     }
 }
 
@@ -1808,6 +1835,97 @@ mod tests {
         assert!(!decoder.grants.contains_key(&0x045D));
         assert!(decoder.grants.contains_key(&0x0789));
         assert!(decoder.grants.contains_key(&0x0500));
+    }
+
+    /// `GroupVoiceChannelGrantUpdate` does not carry a source RadioId
+    /// field, but the original `GroupVoiceChannelGrant` does. When an
+    /// update arrives for an existing TG the dedup path must
+    /// **preserve** the prior source so the dashboard's caller ID
+    /// doesn't drop to None on every periodic refresh.
+    #[test]
+    fn test_grant_update_preserves_source_id() {
+        let mut decoder = ControlChannelDecoder::new();
+        decoder.handle_tsbk(0, TsbkMessage::IdentifierUpdate {
+            identifier: 0,
+            bw: 100,
+            transmit_offset: -45_000_000,
+            channel_spacing: 6_250,
+            base_frequency: 851_006_250,
+        });
+
+        // Initial grant: TG 202, source = radio 1011, on channel 0x0345.
+        decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
+            channel: Channel(0x0345),
+            talkgroup: Talkgroup(202),
+            source: RadioId(1011),
+        });
+        assert_eq!(
+            decoder.grants[&0x0345].source,
+            Some(RadioId(1011)),
+            "initial grant should record the source from the TSBK",
+        );
+
+        // Update on the SAME channel: source should be preserved.
+        decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrantUpdate {
+            channel_a: Channel(0x0345),
+            talkgroup_a: Talkgroup(202),
+            channel_b: Channel(0),
+            talkgroup_b: Talkgroup(0),
+        });
+        assert_eq!(decoder.grants.len(), 1);
+        assert_eq!(
+            decoder.grants[&0x0345].source,
+            Some(RadioId(1011)),
+            "update on the same channel must preserve the original source",
+        );
+
+        // Update that MOVES the call to a different channel: source
+        // should still be preserved across the dedup-and-reinsert.
+        decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrantUpdate {
+            channel_a: Channel(0x0789),
+            talkgroup_a: Talkgroup(202),
+            channel_b: Channel(0),
+            talkgroup_b: Talkgroup(0),
+        });
+        assert_eq!(decoder.grants.len(), 1);
+        assert!(!decoder.grants.contains_key(&0x0345));
+        assert!(decoder.grants.contains_key(&0x0789));
+        assert_eq!(
+            decoder.grants[&0x0789].source,
+            Some(RadioId(1011)),
+            "update across channels must still preserve the original source",
+        );
+
+        // A NEW initial grant for the same TG with a DIFFERENT source
+        // (a new caller starting a new call) must overwrite the source
+        // with the fresh value, not preserve the stale 1011.
+        decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
+            channel: Channel(0x0900),
+            talkgroup: Talkgroup(202),
+            source: RadioId(2022),
+        });
+        assert_eq!(decoder.grants.len(), 1);
+        assert!(decoder.grants.contains_key(&0x0900));
+        assert_eq!(
+            decoder.grants[&0x0900].source,
+            Some(RadioId(2022)),
+            "a new initial grant must use the new source from the TSBK, \
+             not preserve the prior caller",
+        );
+
+        // Update for a TG we've never seen before -- nothing to
+        // preserve, source must be None.
+        decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrantUpdate {
+            channel_a: Channel(0x0AA0),
+            talkgroup_a: Talkgroup(555),
+            channel_b: Channel(0),
+            talkgroup_b: Talkgroup(0),
+        });
+        assert_eq!(
+            decoder.grants[&0x0AA0].source,
+            None,
+            "update for a previously-unseen TG must have source = None",
+        );
     }
 
     /// Drive the decoder end-to-end with a frame sync + 33-dibit NID
