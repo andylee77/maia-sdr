@@ -1,0 +1,383 @@
+# P25 HTTPD API Reference
+
+Canonical reference for every HTTP / WebSocket endpoint exposed by
+`p25-httpd` running on the Fishball Z7020. Source of truth is
+[`p25-httpd/src/httpd/mod.rs`](../p25-httpd/src/httpd/mod.rs); typed
+JSON shapes are in [`p25-httpd/p25-json/src/lib.rs`](../p25-httpd/p25-json/src/lib.rs).
+
+**Default target**: `http://192.168.2.1:8080` (wired Ethernet
+direct-connect). All endpoints accept GET unless otherwise noted.
+JSON throughout. No auth — the radio is on a private subnet.
+
+---
+
+## Quick start
+
+```bash
+# One-shot status snapshot:
+python tools/p25_status_and_next_step.py
+
+# Or hit a single endpoint by hand:
+curl -s http://192.168.2.1:8080/api/system | python -m json.tool
+```
+
+---
+
+## Endpoint catalogue
+
+All 19 routes registered in `httpd/mod.rs`:
+
+| # | Path | Method | Returns | Purpose |
+|---|---|---|---|---|
+| 1 | `/` | GET | HTML | Embedded dashboard (`index_html`) |
+| 2 | `/api/system` | GET | `SystemInfo` | System identity (NAC, WACN, RFSS, site, control channel, secondary CCH, SNDCP channels, system clock, build tag) |
+| 3 | `/api/grants` | GET | `Vec<ChannelGrant>` | Active voice grants (talkgroup-deduped, source preserved across updates) |
+| 4 | `/api/bands` | GET | `Vec<BandInfo>` | Frequency band table from `IDEN_UPDATE` opcodes |
+| 5 | `/api/stats` | GET | `DecoderStats` | Decoder + FPGA-side counters (dibit count, overflow flag, AGC gain, RSSI) |
+| 6 | `/api/lsm` | GET | JSON | PS-side raw IQ + soft sync stats (Phase 6D `LsmPipeline`) |
+| 7 | `/api/hdl_lsm` | GET | JSON | HDL LSM chain runtime stats (cumulative, live, last NID, NID ring buffer) |
+| 8 | `/api/irq_stats` | GET | JSON | Per-IRQ wait counts and average wait times (dibit DMA, IQ DMA, LSM dibit DMA) |
+| 9 | `/api/decoder_compare` | GET | JSON | Side-by-side per-pipeline counters: `pl_hdl`, `ps_c4fm`, `ps_lsm`, `ps_iq_lsm`, `ps_phase6d` |
+| 10 | `/api/dibit_dump` | GET | JSON | Raw dibit DMA dump (inner/outer ratio, raw_duid histogram) |
+| 11 | `/api/lsm_dibit_dump` | GET | JSON | Raw LSM dibit DMA dump from the HDL LSM chain |
+| 12 | `/api/lsm_capture` | GET | JSON | Pull a raw IQ capture window from the IQ DMA ring (for offline cross-validation) |
+| 13 | `/api/lsm_capture_aligned` | GET | JSON | Same as `lsm_capture` but aligned to a sync hit boundary |
+| 14 | `/api/tsbk_opcodes` | GET | JSON | Per-opcode + per-block-position histogram with parsed/unparsed flag and MFID breakdown |
+| 15 | `/api/recent_tsbks` | GET | JSON | Newest 50 TSBKs as `{age_secs, block, summary}` strings |
+| 16 | `/api/sync_tune` | GET, PUT | JSON | Read or set the runtime sync threshold (Phase 6F.7+) |
+| 17 | `/api/decoder_reset` | GET, POST | JSON | Reset the decoder counters to zero (for clean post-flash measurements) |
+| 18 | `/api/aliases` | GET, PUT | `AliasMap` | Get or set the talkgroup-id → display-name map |
+| 19 | `/ws/events` | WS upgrade | JSON frames | Real-time TSBK event stream (`TsbkEvent`) — one frame per parsed TSBK |
+
+---
+
+## Typed responses
+
+### `GET /api/system` → `SystemInfo`
+
+```json
+{
+  "nac": "8A1",
+  "wacn": "BEE00",
+  "system_id": "8A0",
+  "rfss_id": 1,
+  "site_id": 1,
+  "lra": 0,
+  "control_channel": "0-1593",
+  "secondary_cch_a": "0-1349",
+  "secondary_cch_b": "0-1277",
+  "sndcp_downlink_channel": "0-1117",
+  "sndcp_uplink_channel": "15-4095",
+  "system_clock": "2026-04-11 18:52 UNLOCKED",
+  "build": "2026-04-11-phase6g.1-preserve-grant-source-id-on-update"
+}
+```
+
+Optional fields are omitted (`#[serde(skip_serializing_if = "Option::is_none")]`)
+when the decoder hasn't seen the corresponding TSBK yet. The `build`
+field is the canonical "which binary is running" identifier — bumped
+on every feature-flag commit per the
+[`feedback_bump_build_tag.md`](../../.claude/projects/c--Users-Andy-Projects-MAIA-SDR-maia-sdr/memory/feedback_bump_build_tag.md)
+rule.
+
+### `GET /api/grants` → `Vec<ChannelGrant>`
+
+```json
+[
+  {
+    "channel": "0-1117",
+    "talkgroup": 202,
+    "talkgroup_alias": null,
+    "source": 1011,
+    "frequency_mhz": 857.9875,
+    "age_secs": 12
+  }
+]
+```
+
+**De-dupe rules** (Phase 6G.1):
+
+- The decoder's internal `grants` map is keyed by channel but is
+  also TG-deduped: when a `GroupVoiceChannelGrant` or
+  `GroupVoiceChannelGrantUpdate` arrives for an active TG on a new
+  channel, the prior entry is dropped.
+- The HTTP handler does a second-pass collapse by talkgroup across
+  the union of `lsm_decoder.grants` and `iq_lsm_decoder.grants`,
+  keeping the youngest entry per TG. Wildcard `talkgroup=0` is
+  excluded from the dedup so unrelated "no-talkgroup" sentinels
+  don't collapse.
+- `source` is **preserved across updates** (commit `1e29839`):
+  `GroupVoiceChannelGrantUpdate` doesn't carry a source, so the
+  decoder pulls the prior source from any existing entry for the
+  same TG. Initial `GroupVoiceChannelGrant` always uses the fresh
+  source from the TSBK.
+
+Sorted by `age_secs` ascending (newest first).
+
+### `GET /api/bands` → `Vec<BandInfo>`
+
+```json
+[
+  {
+    "identifier": 0,
+    "base_frequency_mhz": 851.00625,
+    "channel_spacing_khz": 6.25,
+    "transmit_offset_mhz": -45.0,
+    "bandwidth_khz": 12.5
+  }
+]
+```
+
+Unioned across both decoders, keyed by `identifier`, first-write
+wins. Sorted by `identifier` ascending.
+
+### `GET /api/stats` → `DecoderStats`
+
+```json
+{
+  "recent_messages": 1000,
+  "active_grants": 2,
+  "bands_known": 6,
+  "system_acquired": true,
+  "dibit_count": 30482512,
+  "overflow": false,
+  "dma_next_address": 402653184,
+  "rx_gain_db": 27.0,
+  "rx_rssi_db": 105.5
+}
+```
+
+`rx_gain_db` and `rx_rssi_db` come from the AD9361 via libiio. Slow
+AGC parks high (~70-76 dB) on weak signals, low (~10-30 dB) on
+strong. RSSI is on a relative dB scale; ~100-110 dB is normal P25
+reception on this site (cross-checked against PlutoSDR + SDRTrunk).
+
+### `GET /api/recent_tsbks` → JSON
+
+```json
+{
+  "count": 50,
+  "messages": [
+    {"age_secs": 0.4, "block": "TSBK1", "summary": "GRP_V_CH_GRANT_UPDT CH_A:0-1117 TG_A:00202 ..."},
+    {"age_secs": 0.5, "block": "TSBK2", "summary": "TDMA_SYNC_BCST 2026-04-11 18:52 UNLOCKED"}
+  ]
+}
+```
+
+`block` is `TSBK1` / `TSBK2` / `TSBK3` matching the TSBK position
+within the parent TSDU. `summary` is the human-readable string used
+in the dashboard activity feed and is the same string the WebSocket
+event stream uses.
+
+### `GET /api/tsbk_opcodes` → JSON
+
+```json
+{
+  "opcodes": [
+    {"opcode": 22, "label": "SNDCP_DCH_ANN_EX", "ok": 893, "fail": 239, "parsed": true},
+    {"opcode": 11, "label": "(unknown)", "ok": 110, "fail": 163, "parsed": false}
+  ],
+  "by_position": {
+    "tsbk1": {"attempts": 2418, "crc_ok": 1808, "pct": 74.8},
+    "tsbk2": {"attempts": 2417, "crc_ok": 1843, "pct": 76.3},
+    "tsbk3": {"attempts": 2417, "crc_ok": 1651, "pct": 68.3}
+  },
+  "tsbk_block_attempts_total": 7252,
+  "crc_ok_total": 5302,
+  "crc_fail_total": 1950,
+  "crc_ok_pct": 73.1,
+  "tsdu_attempts": 2418,
+  "blocks_per_tsdu": 3.0,
+  "mfid_breakdown": {"standard_0x00": 4243, "motorola_0x90": 1059, "harris_0xA4": 0, "other": 0}
+}
+```
+
+`parsed: false` means the decoder sees the opcode but has no
+matching `TsbkMessage` variant — typically vendor-specific
+(Motorola `mfid=0x90`, Harris `mfid=0xA4`) or pure-status
+acknowledgments. See doc 030 for the rationale on which opcodes
+are intentionally not parsed.
+
+### `GET /api/decoder_compare` → JSON
+
+The canonical A/B diagnostic surface. Five top-level keys, one
+per pipeline:
+
+```json
+{
+  "pl_hdl": {
+    "label": "PL HDL LSM chain (FPGA gateware)",
+    "total_nids": 6708,
+    "valid_nids": 6628,
+    "valid_pct": 98.81,
+    "drop_count": 0,
+    "winner_nac": "0x8A1",
+    "sync_distance": 0,
+    "pll_dbg": 601,
+    "sp_dbg": 3395,
+    "iq_overflow_ticks": 1,
+    "dibit_overflow_ticks": 0
+  },
+  "ps_c4fm":   { "...": "C4FM software pipeline (HDL c4fm dibit-fed)" },
+  "ps_lsm":    { "...": "LSM software pipeline (HDL lsm dibit-fed)" },
+  "ps_iq_lsm": { "...": "IQ-LSM software pipeline (raw IQ + soft sync -> TSBK)" },
+  "ps_phase6d":{ "...": "Phase 6D sync-only path on raw IQ" }
+}
+```
+
+Per-pipeline fields for the three full pipelines (`ps_c4fm`,
+`ps_lsm`, `ps_iq_lsm`):
+
+- `tsbk_block_attempts`, `tsbk_crc_ok`, `tsbk_crc_failures`,
+  `tsbk_crc_ok_plain`, `tsbk_crc_ok_xored`, `tsbk_unknown_opcode`,
+  `tsbk_trellis_failures`
+- `nid_attempts`, `nid_decoded_ok`, `nid_decoded_tsdu`,
+  `nid_decode_failures`, `nid_invalid_duid`
+- `sync_hits`, `sync_near`, `sync_best_dist`
+- `total_dibits`, `messages` (capped at `max_recent`)
+- `active_grants`, `bands_known`, `system_nac`
+
+`pl_hdl` is the HDL chain itself (NID-level only — no PS TSBK
+processing). `ps_phase6d` is the legacy raw-IQ sync detector kept
+for the soft/hard event count comparison.
+
+### `GET /api/sync_tune`
+
+Runtime sync-threshold knob (Phase 6F.7+). GET returns:
+
+```json
+{"threshold": 14, "default": 14, "min": 0, "max": 47}
+```
+
+PUT with `?threshold=N` (or POST body) overrides. Threshold is the
+maximum 48-bit sync correlator Hamming distance accepted as a sync
+hit; lower = stricter, higher = more permissive. Doc 030 settled
+on `14` as the steady-state default.
+
+### `GET /api/decoder_reset`
+
+Resets all per-pipeline cumulative counters to zero. Useful after
+flash so cumulative percentages reflect post-PLL-lock steady state
+rather than including the early acquisition window. Returns:
+
+```json
+{"ok": true, "reset": ["lsm_decoder", "iq_lsm_decoder", "c4fm_decoder", "phase6d", "hdl_lsm"]}
+```
+
+### `GET /api/aliases` / `PUT /api/aliases` → `AliasMap`
+
+Talkgroup-id → display-name map persisted in `~/.config/p25-httpd/aliases.json`.
+
+```json
+{"202": "FIRE OPS", "402": "PD CH 4", "300": "EMS"}
+```
+
+PUT replaces the entire map.
+
+### `GET /ws/events` (WebSocket)
+
+Real-time TSBK event stream. Each frame is a `TsbkEvent`:
+
+```json
+{
+  "timestamp": "2026-04-11T18:52:30Z",
+  "event_type": "GRP_GRANT",
+  "summary": "GRP_V_CH_GRANT_UPDT CH:0-1117 TG:00202",
+  "talkgroup": 202,
+  "talkgroup_alias": "FIRE OPS",
+  "channel": "0-1117",
+  "frequency_mhz": 857.9875,
+  "source": null
+}
+```
+
+One frame per parsed TSBK. The dashboard uses this **only** for the
+"Live Activity" feed at the bottom of the page; everything else on
+the dashboard is polled from REST every 2 seconds via
+`setInterval(refresh, 2000)`.
+
+**Important:** the WebSocket is the **only** structured per-event
+source. `/api/recent_tsbks` returns just `{age_secs, block, summary}`
+(3 fields, summary is a human-readable string) — useful for a one-shot
+dashboard snapshot but lossy for any tool that wants to filter on
+talkgroup, channel, or source. `TsbkEvent` carries 8 structured fields
+including `talkgroup` (u16), `talkgroup_alias` (looked up from
+`/api/aliases`), `channel`, `frequency_mhz`, and `source` (caller
+RadioId — preserved across grant updates as of commit `1e29839`).
+External clients that want to react to specific TSBKs (talkgroup
+loggers, alerters, audio-tap triggers, future voice-channel followers)
+should subscribe to `/ws/events` and not poll the REST endpoints.
+
+The connection opens with no auth, no subscribe message, no filter
+— every parsed TSBK becomes a frame, ordered. The dashboard JS just
+does:
+
+```js
+const ws = new WebSocket(`${proto}//${location.host}/ws/events`);
+ws.onmessage = (e) => { /* prepend to activity feed */ };
+```
+
+---
+
+## Dashboard panels and their backing endpoints
+
+For reference, this is what the embedded `index_html` page renders
+and where each panel's data comes from. All 9 polled endpoints are
+fetched on a 2-second interval; the WebSocket runs in parallel.
+
+| Dashboard panel | Endpoint(s) | Notes |
+|---|---|---|
+| Header build tag | `/api/system.build` | the "is the right binary on the box?" check |
+| Decoder Comparison Matrix | `/api/decoder_compare` | side-by-side `pl_hdl` / `ps_c4fm` / `ps_lsm` / `ps_iq_lsm` / `ps_phase6d` counters |
+| System Identity | `/api/system` | NAC, WACN, RFSS/Site, control channel |
+| Decode Stats | `/api/stats` | dibit count, overflow, AGC gain, RSSI |
+| HDL LSM Chain (PL) | `/api/hdl_lsm` | cumulative + live + 1 s window stats; nested `last_window`, `nid_ring`, `top_nacs` keys |
+| HDL LSM NID Ring (last 32) | `/api/hdl_lsm.nid_ring` | per-NID `{t_ms, nac, duid, valid, n_err, sync_d, drop, pll, sp}` |
+| IRQ Source Counters | `/api/irq_stats` | per-source IRQ count + rate (dibit/traffic/iq/lsm_dibit) |
+| LSM Decoder (Phase 6D) | `/api/lsm` | wakeups, IQ samples, hard/soft sync events, `last_sync`, `top_nacs` |
+| Top NACs (LSM) | `/api/lsm.top_nacs` | NAC histogram from soft+hard sync events |
+| PS C4FM Dibit Stream | `/api/dibit_dump` | per-bucket dibit histogram, inner/outer ratio, raw_duid histogram |
+| PS LSM Dibit Stream | `/api/lsm_dibit_dump` | same shape as `/api/dibit_dump` but on the LSM HDL stream |
+| Active Grants | `/api/grants` | TG-deduped, source-preserved across updates |
+| Frequency Bands | `/api/bands` | unioned across both decoders |
+| Live Activity | **`/ws/events`** | the only WebSocket consumer; richer than `recent_tsbks` |
+| Aliases dialog | `/api/aliases` (GET, PUT) | TG-id → name map persisted on the board |
+
+Endpoints **not** consumed by the dashboard (snapshot / debugging
+tools only): `/api/recent_tsbks` (used by `tools/p25_check_phase6f4.py`
+and `tools/p25_status_and_next_step.py`), `/api/tsbk_opcodes`
+(opcode coverage report), `/api/lsm_capture` and
+`/api/lsm_capture_aligned` (raw IQ pulls for offline cross-validation),
+`/api/sync_tune` and `/api/decoder_reset` (operator knobs).
+
+---
+
+## Endpoints we do NOT have yet
+
+Things you might reasonably expect to find here that aren't
+implemented (in roughly the order they'd be useful):
+
+| Want | Why missing | Status |
+|---|---|---|
+| `GET /api/lsm_control` (read register state, including `lsm_dc_block_enable`) | Phase 6G.1 wired the bit through HDL but only surfaces the readback in the startup log line, not as a runtime endpoint | Easy add — ~20 lines in `httpd/mod.rs` + a `(bool, bool, bool)` getter that's already in `fpga.rs` |
+| `PUT /api/lsm_dc_block_enable` (runtime toggle for the DC blocker A/B) | Same as above — the test rig works through `devmem` instead | Same effort as the read endpoint |
+| `GET /api/talkgroups` (catalogue of TGs ever heard, not just currently active) | DEVPLAN.md mentions it as a Phase 2 deliverable but we never built it | Medium — need to grow `ControlChannelDecoder` to retain a TG-history map |
+| `GET /api/voice_channel/<grant_id>` (initiate voice follow on a granted channel) | Phase 3 voice-channel-following work, not started | Significant — depends on voice-follow infrastructure |
+| `GET /api/audio.opus` (live decoded voice) | Requires IMBE/AMBE vocoder + audio output | Significant + licensing question |
+
+The first two are tiny and would be useful enough to add ad hoc
+the next time we touch `httpd/mod.rs`. The rest are real new
+features with their own design questions.
+
+---
+
+## See also
+
+- [`P25_ADDRESS_MAP.md`](P25_ADDRESS_MAP.md) — register-bank layout
+  documentation; the bit-level "what does PS read/write" reference
+- [`DEVPLAN.md`](../DEVPLAN.md) — the original (somewhat-outdated)
+  P25 trunking dev plan
+- [`changes/`](changes/) — phase-by-phase change docs (latest is
+  doc 031, Phase 6G.1)
+- [`tools/p25_status_and_next_step.py`](../tools/p25_status_and_next_step.py)
+  — comprehensive status snapshot + next-step recommendation script
