@@ -290,39 +290,40 @@ impl TrellisDecoder {
 
 /// TSDU de-interleaver
 ///
-/// The TSDU body has 4 status dibits embedded in it at on-air positions
-/// {14, 50, 86, 122} (counted from the first dibit AFTER the NID),
-/// followed by 21 trailing null padding dibits.
+/// The TSDU body has 3 status dibits embedded in it at on-air positions
+/// {14, 50, 86} (counted from the first dibit AFTER the NID), followed
+/// by 21 trailing null padding dibits.
 ///
-/// **Phase 6F.2f (2026-04-11):** total rewrite. The 6F.2c version was
-/// based on a wrong understanding of the TSBK frame: it tried to
-/// deinterleave a 336-dibit body looking for 9 status dibits, but the
-/// real TSBK1 body is only 123 on-air dibits with 4 status symbols, and
-/// the 21 trailing dibits are null padding (not data). Cross-checked
-/// against SDRTrunk's `P25P1DataUnitID.TRUNKING_SIGNALING_BLOCK_1`
-/// (`messageLength=196`, `nullBits=42`, `statusDibits=5` -- where the
-/// 5 includes the 1 status dibit that lands inside the NID region, so
-/// only 4 of the 5 are in the body).
+/// **Phase 6F.2g (2026-04-11) note:** off-by-one correction from 6F.2f
+/// (which had 4 status positions including 122). Trace SDRTrunk's
+/// framer carefully: `mStatusSymbolDibitCounter` starts at 21 after
+/// `nidDetected()` and increments BEFORE the `== 36` check. The first
+/// body dibit takes the counter to 22; the 15th body dibit (raw index
+/// 14) takes it to 36 → status drop. Status drops repeat at body
+/// indices {14, 50, 86}. After body raw index 121 the message
+/// assembler has accumulated 119 non-status dibits and is complete --
+/// we never read body index 122 (which WOULD be a 4th status). So:
+/// 14 (non-status) + 1 (status) + 35 + 1 + 35 + 1 + 35 = **122** raw
+/// on-air body dibits, **3** status drops, 119 non-status dibits, 21
+/// trailing nulls → 98 trellis data dibits.
 ///
-/// The status-symbol counter in `P25P1MessageFramer` is free-running on
-/// a period of 36 dibits, reset to 21 by `nidDetected()`. With counter
-/// starting at 21 immediately after NID and incrementing once per dibit
-/// before the `== 36` check, the 36 trigger fires when 15 body dibits
-/// have been consumed -- so the first status in the body is at body
-/// index 14 (0-indexed), and subsequent statuses are at 50, 86, 122.
+/// **Phase 6F.2f (2026-04-11):** total rewrite from the 6F.2c version
+/// which was based on a wrong understanding of the TSBK frame (336
+/// dibits with 9 status drops -- both numbers way off).
 ///
-/// On-target evidence after 6F.2e (sync threshold 4): with the wrong
-/// 336-dibit / 9-status assumption, every TSBK block trellis-decoded
-/// successfully (because the wrong-but-old trellis was lenient) but
-/// 100 % of CRCs failed because the body bytes were misaligned. Even
-/// after fixing the trellis, this layout had to be corrected to match.
+/// On-target evidence after 6F.2e (sync threshold 4) and 6F.2f (real
+/// trellis + length 123): every TSBK block trellis-decoded successfully
+/// but 100 % of CRCs failed -- the residual misalignment from
+/// over-counting status dibits by 1 corrupted enough bytes per block
+/// to make CRC always fail.
 pub struct TsduDeinterleaver;
 
 impl TsduDeinterleaver {
-    /// On-air positions of the 4 status dibits inside the 123-dibit
-    /// TSDU body (post-NID). Same period 36 as the framer status
-    /// counter, derived in the struct doc comment above.
-    const STATUS_POSITIONS: [usize; 4] = [14, 50, 86, 122];
+    /// On-air positions of the 3 status dibits inside the 122-dibit
+    /// TSDU body (post-NID). Derived from SDRTrunk's framer
+    /// `mStatusSymbolDibitCounter` reset-to-21 + period-36 logic; see
+    /// the struct doc comment above for the full trace.
+    const STATUS_POSITIONS: [usize; 3] = [14, 50, 86];
 
     /// Number of trailing null padding dibits in the TSBK1 body
     /// (`nullBits = 42 = 21 dibits` per SDRTrunk's data unit table).
@@ -587,38 +588,23 @@ mod tests {
 
     #[test]
     fn test_tsdu_deinterleave_removes_status_and_nulls() {
-        // Build a 123-dibit on-air TSBK1 body:
+        // Build a 122-dibit on-air TSBK1 body:
         //   - 98 trellis data dibits (marker 0x01) interleaved with
-        //   - 4 status dibits (marker 0xFE) at body positions 14, 50, 86, 122
+        //   - 3 status dibits (marker 0xFE) at body positions 14, 50, 86
         //   - followed by 21 trailing null dibits (marker 0xFD)
         // Net: 98 surviving 0x01 dibits after deinterleave.
-        let mut tsdu = vec![0u8; 123];
+        let mut tsdu = vec![0u8; 122];
         // Default fill: data marker.
         for d in tsdu.iter_mut() {
             *d = 0x01;
         }
-        // Status markers at the 4 body positions.
-        for p in [14usize, 50, 86, 122] {
+        // Status markers at the 3 body positions.
+        for p in [14usize, 50, 86] {
             tsdu[p] = 0xFE;
         }
-        // Null padding occupies the LAST 21 NON-status positions of
-        // the body. The framer's status-counter is free-running, so
-        // null dibits live alongside the status pattern; the order
-        // along the wire is data-data-... -status- ... -null-null.
-        // For this test we just put 21 null markers at the very end
-        // of the body, after position 122 (the last status). Body
-        // positions 102..122 + the position immediately after = the
-        // last 21 non-status dibits.
-        // Actually simpler: replace data markers in the LAST 21 indices
-        // that survive the status drop. Those are body positions
-        // 102..123 minus position 122 (which is status). So body
-        // positions {102..122} ∪ {123-1=122 is status, exclude} →
-        // exactly 21 non-status positions: 102..122 (inclusive) = 21
-        // values, since pos 122 is status -> need to back up. Use
-        // {101..122} \ {122 is status} = 22 positions... easier to
-        // just count the LAST 21 non-status positions.
-        let mut non_status_positions: Vec<usize> = (0..123)
-            .filter(|i| !matches!(*i, 14 | 50 | 86 | 122))
+        // Null padding: the LAST 21 non-status positions get 0xFD.
+        let mut non_status_positions: Vec<usize> = (0..122)
+            .filter(|i| !matches!(*i, 14 | 50 | 86))
             .collect();
         let null_positions = non_status_positions.split_off(non_status_positions.len() - 21);
         for p in &null_positions {
@@ -630,7 +616,7 @@ mod tests {
             data.len(),
             98,
             "deinterleaver must return exactly 98 trellis data dibits \
-             (123 raw - 4 status - 21 null)"
+             (122 raw - 3 status - 21 null)"
         );
         for (i, &d) in data.iter().enumerate() {
             assert_ne!(d, 0xFE, "status marker survived at output[{}]", i);

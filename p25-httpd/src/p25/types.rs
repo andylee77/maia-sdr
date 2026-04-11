@@ -64,21 +64,31 @@ impl DataUnit {
 
     /// Number of dibits in this data unit (excluding NID).
     ///
-    /// **Phase 6F.2f (2026-04-11) note for Tsdu:** Was 336 (assumed
-    /// 1-3 TSBKs in a single fixed-length read). Corrected to 123,
-    /// matching SDRTrunk's `P25P1DataUnitID.TRUNKING_SIGNALING_BLOCK_1`:
-    /// 196 trellis data bits + 42 null padding bits = 238 bits = 119
-    /// dibits, plus 4 status dibits embedded in the body at positions
-    /// {14, 50, 86, 122} = 123 on-air dibits total post-NID for one
-    /// TSBK. Multi-block TSBK2 / TSBK3 handling is a follow-up; for now
-    /// we read one block at a time and let the next sync detect catch
-    /// the start of any subsequent block.
+    /// **Phase 6F.2g (2026-04-11) note for Tsdu:** Final value 122 after
+    /// off-by-one correction from 6F.2f (which was 123). The math:
+    /// SDRTrunk's `P25P1DataUnitID.TRUNKING_SIGNALING_BLOCK_1` declares
+    /// `messageLength = 196 + 42 (nullBits) = 238 bits = 119 non-status
+    /// dibits` accumulated in the message assembler. The framer's
+    /// `mStatusSymbolDibitCounter` starts at 21 immediately after
+    /// `nidDetected()` and increments by 1 BEFORE the `== 36` check, so
+    /// the first body dibit takes the counter to 22. Status drops occur
+    /// at body positions {14, 50, 86} (counter hits 36 → drop → reset
+    /// to 0 → another 35 non-status dibits → next drop). After body
+    /// position 121 the assembler has accumulated 119 non-status dibits
+    /// and is complete; the next dibit would be a 4th status drop but
+    /// we never read it. So total raw on-air body length = 14 + 1 +
+    /// 35 + 1 + 35 + 1 + 35 = 122 dibits, with 3 status dibits
+    /// embedded.
+    ///
+    /// Multi-block TSBK2 / TSBK3 handling is a follow-up; for now we
+    /// read one block at a time and let the next sync detect catch the
+    /// start of any subsequent block.
     pub fn length_dibits(self) -> usize {
         match self {
             Self::Hdu => 324,   // 648 bits
             Self::Tdu => 0,     // no payload
             Self::Ldu1 => 792,  // 1584 bits (9 IMBE frames + LC)
-            Self::Tsdu => 123,  // TSBK1: 119 data+null + 4 status, see above
+            Self::Tsdu => 122,  // TSBK1: 119 data+null + 3 status, see above
             Self::Ldu2 => 792,  // 1584 bits
             Self::Pdu => 288,   // variable, minimum
             Self::TduLc => 168, // 336 bits (LC + parity)
