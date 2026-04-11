@@ -302,6 +302,7 @@ class P25Core(Elaboratable):
         # Bit-layout shorthand (bit positions inside each 32-bit word):
         #   lsm_control [0]   lsm_enable
         #               [1]   lsm_dibit_dma_enable
+        #               [2]   lsm_dc_block_enable   (Phase 6G.1)
         #   lsm_status  [0]   bch_busy
         #               [1]   in_nid_window
         #               [2]   nid_event             (Rsticky)
@@ -324,6 +325,12 @@ class P25Core(Elaboratable):
                 0b000: Register('lsm_control', [
                     Field('lsm_enable', Access.RW, 1, 0),
                     Field('lsm_dibit_dma_enable', Access.RW, 1, 0),
+                    # Phase 6G.1: front-end DC blocker enable.
+                    # Defaults to 0 (off) at reset to match the
+                    # convention of lsm_enable; PS-side code is
+                    # responsible for setting this to 1 in the
+                    # same write that turns on lsm_enable.
+                    Field('lsm_dc_block_enable', Access.RW, 1, 0),
                 ]),
                 0b001: Register('lsm_status', [
                     Field('bch_busy', Access.R, 1, 0),
@@ -690,10 +697,17 @@ class P25Core(Elaboratable):
         # `dibit_out`/`symbol_strobe` (passthrough to dibit DMA) and
         # `nid_event_strobe` + (NAC, DUID, ...) latched into the
         # lsm register bank below.
+        #
+        # Phase 6G.1: dc_block_enable is driven from the new
+        # lsm_control.lsm_dc_block_enable PS bit. Defaults to 0 at
+        # reset; the P25 daemon's `lsm_control` write turns it on
+        # at the same time as `lsm_enable`.
         m.d.comb += [
             self.lsm_demod.re_in.eq(self.lsm_rrc.re_out),
             self.lsm_demod.im_in.eq(self.lsm_rrc.im_out),
             self.lsm_demod.strobe_in.eq(self.lsm_rrc.strobe_out),
+            self.lsm_demod.dc_block_enable.eq(
+                self.lsm_registers['lsm_control']['lsm_dc_block_enable']),
         ]
 
         # Stage 5: LsmDemod dibits -> packer -> ring DMA stream

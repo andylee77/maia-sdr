@@ -300,21 +300,38 @@ async fn main() -> anyhow::Result<()> {
         // the C4FM demod on the same control DDC output) and its dedicated
         // dibit ring DMA. NID events themselves are PS-polled via
         // lsm_status below.
+        // Phase 6G.1: also turn on the front-end DC blocker -- this is
+        // the production-correct state and removes the slow IQ DC bias
+        // that otherwise gives the slicer a 60/40 inner/outer dibit
+        // ratio for 2-3 minutes after PLL start. See doc/changes/031.
         ip_core.set_lsm_enable(true);
         ip_core.set_lsm_dibit_dma_enable(true);
+        ip_core.set_lsm_dc_block_enable(true);
         // Read back lsm_control to confirm the bits actually stuck in the
         // register bank. If the readback disagrees with what we wrote we
         // have a register-bank wiring bug (rare; would surface as obvious
         // garbage in lsm_status / lsm_nid downstream).
-        let (lsm_en_rb, lsm_dma_en_rb) = ip_core.lsm_control_readback();
+        let (lsm_en_rb, lsm_dma_en_rb, lsm_dc_block_rb) =
+            ip_core.lsm_control_readback();
         tracing::info!(
             "Control DDC: offset={nco_offset} Hz, dibit + iq + lsm ring DMA enabled \
-             (lsm_control readback: lsm_enable={lsm_en_rb}, lsm_dibit_dma_enable={lsm_dma_en_rb})"
+             (lsm_control readback: lsm_enable={lsm_en_rb}, \
+             lsm_dibit_dma_enable={lsm_dma_en_rb}, \
+             lsm_dc_block_enable={lsm_dc_block_rb})"
         );
         if !lsm_en_rb || !lsm_dma_en_rb {
             tracing::error!(
-                "lsm_control readback mismatch -- expected (true,true) got \
-                 ({lsm_en_rb},{lsm_dma_en_rb}); HDL LSM chain WILL NOT be active"
+                "lsm_control readback mismatch -- expected lsm_enable=true and \
+                 lsm_dibit_dma_enable=true, got ({lsm_en_rb},{lsm_dma_en_rb}); \
+                 HDL LSM chain WILL NOT be active"
+            );
+        }
+        if !lsm_dc_block_rb {
+            tracing::warn!(
+                "lsm_dc_block_enable readback is false -- expected true; \
+                 LSM front-end DC blocker is NOT active and the PLL \
+                 acquisition transient will be 2-3 minutes instead of \
+                 a few seconds (Phase 6G.1)"
             );
         }
 

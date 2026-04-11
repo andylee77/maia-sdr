@@ -1,9 +1,20 @@
 #
 # Fishball P25 -- LSM demod top-level (front end + sync + BCH)
 #
-# Phase 6E.8 of the LSM HDL port. The complete LSM demod chain
-# from post-RRC IQ to recovered (NAC, DUID) NID events. Wires
-# together two submodules:
+# Phase 6E.8 of the LSM HDL port, extended in Phase 6G.1 with a
+# pair of front-end DC blockers (one each for I and Q).
+#
+# The complete LSM demod chain from post-RRC IQ to recovered
+# (NAC, DUID) NID events. Wires together three submodules:
+#
+#     LsmDcBlocker x2       -- per-channel one-pole leaky
+#                              integrator DC blockers, runtime
+#                              bypassable via dc_block_enable.
+#                              See doc/changes/031 + the
+#                              lsm_dc_blocker.py docstring for
+#                              the motivation (the 2-3 minute
+#                              PLL acquisition transient on
+#                              cold boot).               [6G.1]
 #
 #     LsmDemodLoop          -- closed-loop demod (front end +
 #                              timing recovery + diff demod +
@@ -18,11 +29,12 @@
 # Pipeline (one-line)
 # -------------------
 #
-#   IQ -> [LsmDemodLoop] -> dibits -> [LsmNidPipeline]
-#                                            |
-#                                            v
-#                                    NID events + dibit
-#                                    pass-through to dibit DMA
+#   IQ -> [LsmDcBlocker x2] -> [LsmDemodLoop] -> dibits -> [LsmNidPipeline]
+#                                                                 |
+#                                                                 v
+#                                                         NID events + dibit
+#                                                         pass-through to
+#                                                         dibit DMA
 #
 # This top-level is the HDL counterpart of the Rust
 # `LsmPipeline::process_iq()` flow in
@@ -50,6 +62,11 @@
 #                                (post-decimator, post-LPF,
 #                                post-RRC -- same as LsmDemodLoop)
 #     strobe_in    : Signal()    one cycle per new IQ sample
+#     dc_block_enable : Signal() 1 = run the front-end DC blockers
+#                                (default), 0 = bypass them and
+#                                feed raw IQ straight to the
+#                                demod loop. Lets us A/B the
+#                                blocker on hardware. Phase 6G.1.
 #
 # Outputs (sync domain):
 #     dibit_out, symbol_strobe : pass-through from LsmDemodLoop
@@ -83,19 +100,21 @@
 # Resource estimate (Z7020)
 # -------------------------
 # Sum of submodule estimates:
+#     LsmDcBlocker x2   ~12 LUT total, 0 BRAM, 0 DSP   [6G.1]
 #     LsmDemodLoop      ~30 DSP48, 2 BRAM18 (PLL rotate LUT x 2)
 #     LsmNidPipeline    ~390 LUT, 0 BRAM, 0 DSP
 #                       (sync_nid + bch + drop counter)
 #     glue              ~10 LUT
 #
 #     Total per LSM channel: ~30 DSP48 (14% of Z7020), 2 BRAM18
-#     (1.4%), <500 LUT (~1%).
+#     (1.4%), <520 LUT (~1%).
 #
 # SPDX-License-Identifier: MIT
 #
 
 from amaranth import *
 
+from .lsm_dc_blocker import LsmDcBlocker
 from .lsm_demod_loop import LsmDemodLoop
 from .lsm_nid_pipeline import LsmNidPipeline
 
@@ -112,6 +131,10 @@ class LsmDemod(Elaboratable):
         self.re_in = Signal(signed(16))
         self.im_in = Signal(signed(16))
         self.strobe_in = Signal()
+        # 6G.1: front-end DC blocker enable. Defaults high so a
+        # bitstream that doesn't drive this input still gets the
+        # blocker (the right behaviour for fishball7020_p25).
+        self.dc_block_enable = Signal(init=1)
 
         # ── Pass-through dibit stream ───────────────────────────
         self.dibit_out = Signal(2)
@@ -135,14 +158,35 @@ class LsmDemod(Elaboratable):
     def elaborate(self, platform):
         m = Module()
 
+        # 6G.1: front-end DC blockers, one per channel. Each one
+        # registers its data + strobe in lockstep, so the demod
+        # loop sees IQ that's delayed by exactly one cycle vs the
+        # raw input -- invisible to LsmTimingInterp because it
+        # samples on its own input strobe.
+        m.submodules.dc_block_re = dc_block_re = LsmDcBlocker()
+        m.submodules.dc_block_im = dc_block_im = LsmDcBlocker()
         m.submodules.demod_loop = demod_loop = LsmDemodLoop()
         m.submodules.nid_pipeline = nid_pipeline = LsmNidPipeline()
 
+        # ── Stage 0: per-channel DC blocking ───────────────────
+        # Both blockers run off the same enable + the same strobe
+        # so I/Q stay phase-aligned. Bypass via dc_block_enable=0.
+        m.d.comb += [
+            dc_block_re.x_in.eq(self.re_in),
+            dc_block_re.strobe_in.eq(self.strobe_in),
+            dc_block_re.enable_in.eq(self.dc_block_enable),
+
+            dc_block_im.x_in.eq(self.im_in),
+            dc_block_im.strobe_in.eq(self.strobe_in),
+            dc_block_im.enable_in.eq(self.dc_block_enable),
+        ]
+
         # ── Stage 1: IQ -> dibits ──────────────────────────────
         m.d.comb += [
-            demod_loop.re_in.eq(self.re_in),
-            demod_loop.im_in.eq(self.im_in),
-            demod_loop.strobe_in.eq(self.strobe_in),
+            demod_loop.re_in.eq(dc_block_re.y_out),
+            demod_loop.im_in.eq(dc_block_im.y_out),
+            # Both blockers strobe together; pick either one.
+            demod_loop.strobe_in.eq(dc_block_re.strobe_out),
         ]
         # Pass dibit stream straight through to the existing
         # dibit DMA path.

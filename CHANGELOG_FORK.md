@@ -5,6 +5,79 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-11] Phase 6G.1 -- HDL DC blocker on the LSM IQ input
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/031_phase6g1_hdl_dc_blocker.md`
+
+First commit of the doc 030 PL port roadmap. Adds a pair of one-pole
+leaky-integrator DC blockers (one each for I and Q) at the very
+front of `LsmDemod`, runtime bypassable through a new
+`lsm_control.lsm_dc_block_enable` register bit. The slicer was
+running on a slightly DC-biased input, which gave it a 60/40
+inner/outer dibit ratio for the first 2-3 minutes after PLL start
+until the loop slowly absorbed the bias on its own. With the
+front-end DC blocker enabled the slicer never sees the bias in
+the first place and the loop should lock immediately from cold boot.
+
+### HDL changes
+
+- New `LsmDcBlocker` Elaboratable in `maia-hdl/p25_hdl/lsm_dc_blocker.py`.
+  One-pole leaky integrator with `alpha = 1 - 2^-7` (~39 Hz cutoff at
+  31.25 kSPS, ~4 ms time constant). Pure shifts and adds, no DSPs,
+  no BRAM. Saturated signed-16 output. Runtime bypass via `enable_in`.
+  ~6 LUTs per instance.
+- `LsmDemod` instantiates two of them at the front, with a new
+  `dc_block_enable` top-level input. The blockers add one cycle of
+  latency on the IQ path, which is invisible to `LsmTimingInterp`.
+- `p25_top.py` adds a new `lsm_dc_block_enable` field at
+  `lsm_control[2]`, default 0 (matches the existing `lsm_enable`
+  convention), wired through to `LsmDemod.dc_block_enable`.
+
+### PS changes
+
+- `p25-pac` SVD updated; PAC regenerated with `svd2rust 0.33.5`.
+- `fpga.rs`: new `set_lsm_dc_block_enable(bool)` helper;
+  `lsm_control_readback()` extended to return the new bit.
+- `main.rs`: control DDC startup now calls
+  `set_lsm_dc_block_enable(true)` alongside the existing
+  `set_lsm_enable(true)` / `set_lsm_dibit_dma_enable(true)`. The
+  startup readback log line includes the new bit, and a
+  `tracing::warn!` fires if the readback comes back false (with
+  the explicit warning that the PLL acquisition transient will be
+  2-3 minutes instead of a few seconds, so this isn't a silent
+  regression).
+
+### Tests
+
+- New `test/test_lsm_dc_blocker.py`: 4 unit tests (step response
+  bit-exact against a Python reference + decay below 0.5% of input;
+  passband 1 kHz unattenuated; bypass passes DC through unchanged;
+  strobe lockstep with input).
+- New `test_dc_blocker_absorbs_constant_iq_bias` regression in
+  `test/test_lsm_demod.py`: drives `LsmDemod` with the synthetic
+  golden + a 6%-of-fullscale DC bias on both I and Q; verifies the
+  dibit pass-through still produces a sensible dibit count.
+- All 9 LSM demod / DC blocker tests pass; `cargo check` on
+  `p25-httpd` is clean.
+
+### Doc
+
+- `doc/changes/031_phase6g1_hdl_dc_blocker.md` -- full design rationale,
+  fixed-point format, on-target verification plan.
+- `doc/P25_ADDRESS_MAP.md` -- documents the new `lsm_dc_block_enable`
+  field at `lsm_control[2]`.
+
+### Status
+
+HDL + PS source ships in this commit. **Next:** rebuild bitstream
+via `build_fpga.bat --p25`, commit the binary artefact separately
+(per the build/commit-sequencing rule), then on-target A/B
+verification (blocker on vs off) to confirm the cold-boot lock
+time drops from 2-3 minutes to a few seconds.
+
+---
+
 ## [2026-04-11] Phase 6F.11 -- PS at 100% (5 new opcode parsers + API merge)
 
 **Branch:** fishball-p25

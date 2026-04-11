@@ -136,6 +136,80 @@ class TestLsmDemod(unittest.TestCase):
             f"nid_drop_count is non-zero on a no-sync input: "
             f"{final_drop_count}")
 
+    def test_dc_blocker_absorbs_constant_iq_bias(self):
+        """Phase 6G.1 regression: drive LsmDemod with the synthetic
+        golden plus a constant DC offset on both I and Q, and verify
+        the dibit pass-through still produces ~the same dibit count
+        as the unbiased run.
+
+        This is the integration-level proof that the DC blocker
+        wiring is correct: the demod loop downstream of the blocker
+        sees IQ with the bias removed, so the dibit stream is not
+        catastrophically corrupted by an offset that would otherwise
+        skew the slicer (which is exactly the symptom doc/changes/030
+        identified as the cause of the 2-3 minute PLL acquisition
+        transient on cold boot).
+
+        We don't compare dibit-for-dibit against the unbiased run --
+        the leaky integrator's startup transient adds a small
+        amount of additional warm-up jitter -- but the dibit *count*
+        is a robust integration check that survives the warm-up.
+        """
+        stage = load_demod_stage('demod_loop_synthetic')
+
+        SCALE = 0.34
+        # ~6 % of full scale -- much larger than any DC bias the
+        # AD9361 produces in practice but well clear of saturation
+        # at the 0.34 pre-scale, so the underlying signal still
+        # round-trips through the chain unclipped.
+        DC_BIAS = 2000
+
+        scaled_re = [SCALE * x for x in stage.input_re]
+        scaled_im = [SCALE * x for x in stage.input_im]
+        in_re_q = [v + DC_BIAS
+                   for v in to_fixed(scaled_re, frac_bits=15, width=16)]
+        in_im_q = [v + DC_BIAS
+                   for v in to_fixed(scaled_im, frac_bits=15, width=16)]
+
+        dibits = []
+
+        async def bench(ctx):
+            # Default dc_block_enable=1 (set by the Signal init).
+            for k in range(stage.n_input):
+                ctx.set(dut.re_in, in_re_q[k])
+                ctx.set(dut.im_in, in_im_q[k])
+                ctx.set(dut.strobe_in, 1)
+                await ctx.tick()
+                ctx.set(dut.strobe_in, 0)
+                for _ in range(CYCLES_BETWEEN_STROBES - 1):
+                    await ctx.tick()
+                    if ctx.get(dut.symbol_strobe):
+                        dibits.append(ctx.get(dut.dibit_out))
+            for _ in range(20):
+                await ctx.tick()
+                if ctx.get(dut.symbol_strobe):
+                    dibits.append(ctx.get(dut.dibit_out))
+
+        dut = LsmDemod()
+        sim = Simulator(dut)
+        sim.add_clock(16e-9)
+        sim.add_testbench(bench)
+        sim.run()
+
+        # The DC blocker has a ~128-sample warm-up time constant
+        # at K=7. The synthetic golden runs many hundreds of
+        # samples, so by the end of the run the blocker is well
+        # past convergence. Reuse the same loose 0.9x..1.1x bound
+        # the unbiased test uses.
+        self.assertGreaterEqual(
+            len(dibits), int(0.9 * stage.n_symbols),
+            f"With DC bias + blocker, LsmDemod emitted {len(dibits)} "
+            f"dibits, expected ~{stage.n_symbols}")
+        self.assertLessEqual(
+            len(dibits), int(1.1 * stage.n_symbols) + 4,
+            f"With DC bias + blocker, LsmDemod emitted {len(dibits)} "
+            f"dibits, expected ~{stage.n_symbols}")
+
 
 if __name__ == '__main__':
     unittest.main()

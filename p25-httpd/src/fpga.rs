@@ -515,12 +515,32 @@ impl IpCore {
             .modify(|_, w| w.lsm_dibit_dma_enable().bit(enable));
     }
 
+    /// Enables or disables the front-end LSM DC blocker (Phase 6G.1).
+    ///
+    /// When `true`, a one-pole leaky-integrator DC blocker runs on
+    /// both I and Q at the input to `LsmDemod` -- this removes the
+    /// slow IQ DC bias from the AD9361 that otherwise gives the
+    /// slicer a 60/40 inner/outer dibit ratio for the first 2-3
+    /// minutes after PLL start. Production code should always set
+    /// this to `true`. The runtime knob exists so we can A/B the
+    /// blocker on-target during bring-up. See doc/changes/031.
+    pub fn set_lsm_dc_block_enable(&self, enable: bool) {
+        self.registers
+            .lsm_control()
+            .modify(|_, w| w.lsm_dc_block_enable().bit(enable));
+    }
+
     /// Reads back the `lsm_control` register as `(lsm_enable,
-    /// lsm_dibit_dma_enable)`. Used at startup to confirm the bits we
-    /// wrote actually stuck in the register bank.
-    pub fn lsm_control_readback(&self) -> (bool, bool) {
+    /// lsm_dibit_dma_enable, lsm_dc_block_enable)`. Used at startup
+    /// to confirm the bits we wrote actually stuck in the register
+    /// bank.
+    pub fn lsm_control_readback(&self) -> (bool, bool, bool) {
         let c = self.registers.lsm_control().read();
-        (c.lsm_enable().bit(), c.lsm_dibit_dma_enable().bit())
+        (
+            c.lsm_enable().bit(),
+            c.lsm_dibit_dma_enable().bit(),
+            c.lsm_dc_block_enable().bit(),
+        )
     }
 
     // ── DELETED: reset_and_reinit() (Phase 6E.6 watchdog, doc 023) ──
