@@ -370,6 +370,105 @@ impl IpCore {
 
     // ── Traffic channel DDC ──────────────────────────────────────
 
+    /// Configures the traffic channel DDC: decimation, operations, NCO.
+    ///
+    /// Mirrors `configure_ddc()` but writes the **traffic_** register
+    /// bank (offset 0x60) instead of the control DDC (`sdr_*`, offset
+    /// 0x20). FIR coefficients are NOT loaded here -- the traffic DDC
+    /// shares its FIR coefficient ROM with the control DDC at the HDL
+    /// level (see `maia-hdl/p25_hdl/p25_top.py` lines 801-807, which
+    /// drive `traffic_ddc.coeff_*` from the control `sdr_registers.ddc_coeff_*`).
+    /// Therefore `configure_ddc()` must be called BEFORE this function
+    /// so that the shared coefficient RAM is loaded by the time the
+    /// traffic DDC is enabled.
+    ///
+    /// `frequency_hz` is the initial NCO offset from the RX LO. The
+    /// caller will typically pass 0.0 here and call
+    /// `set_traffic_ddc_frequency()` later when a grant is followed.
+    /// `sample_rate_hz` is the AD9361 ADC sample rate.
+    ///
+    /// Phase 7A.1: this is the first PS-side use of the traffic chain.
+    /// The traffic chain has been instantiated and wired in HDL since
+    /// doc 007 (Phase 4) but never driven from PS until now. The
+    /// traffic_dma RxBuffer, IRQ counter, and helper functions have
+    /// also been in fpga.rs since Phase 4 -- only the startup init
+    /// (this function) and the runtime grant-follower task in main.rs
+    /// were missing.
+    pub fn configure_traffic_ddc(
+        &self,
+        frequency_hz: f64,
+        sample_rate_hz: f64,
+    ) -> Result<()> {
+        // Compute decimation / operations / odd-operations for each FIR
+        // stage from the same constants the control DDC uses, then write
+        // them into the traffic_ddc_decimation + traffic_ddc_control
+        // register bank. We do NOT touch coefficient RAM (shared with
+        // control DDC).
+        let dec1 = u8::try_from(P25_DEC1).unwrap();
+        let dec2 = u8::try_from(P25_DEC2).unwrap();
+        let dec3 = u8::try_from(P25_DEC3).unwrap();
+
+        // FIR1 (FIR4DSP, folded): same math as load_fir1.
+        let fir1_branch_len = P25_FIR1_COEFFS.len().div_ceil(P25_DEC1);
+        let fir1_operations = fir1_branch_len.div_ceil(2);
+        let fir1_odd = fir1_branch_len % 2 == 1;
+        let opm1_1 = u8::try_from(fir1_operations - 1).unwrap();
+
+        // FIR2 (FIR2DSP, no folding): same math as load_fir2.
+        let fir2_operations = P25_FIR2_COEFFS.len().div_ceil(P25_DEC2);
+        let opm1_2 = u8::try_from(fir2_operations - 1).unwrap();
+
+        // FIR3 (FIR4DSP, folded): same math as load_fir3.
+        let fir3_branch_len = P25_FIR3_COEFFS.len().div_ceil(P25_DEC3);
+        let fir3_operations = fir3_branch_len.div_ceil(2);
+        let fir3_odd = fir3_branch_len % 2 == 1;
+        let opm1_3 = u8::try_from(fir3_operations - 1).unwrap();
+
+        self.registers
+            .traffic_ddc_decimation()
+            .modify(|_, w| unsafe {
+                w.decimation1()
+                    .bits(dec1)
+                    .decimation2()
+                    .bits(dec2)
+                    .decimation3()
+                    .bits(dec3)
+            });
+
+        self.registers.traffic_ddc_control().modify(|_, w| unsafe {
+            w.operations_minus_one1()
+                .bits(opm1_1)
+                .operations_minus_one2()
+                .bits(opm1_2)
+                .operations_minus_one3()
+                .bits(opm1_3)
+                .odd_operations1()
+                .bit(fir1_odd)
+                .odd_operations3()
+                .bit(fir3_odd)
+                .bypass2()
+                .clear_bit()
+                .bypass3()
+                .clear_bit()
+        });
+
+        // Initial NCO. Caller will typically retune this on every grant.
+        self.set_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
+
+        let total_dec = P25_DEC1 * P25_DEC2 * P25_DEC3;
+        tracing::info!(
+            "Traffic DDC configured: NCO={} Hz, {}x{}x{}={}x decimation \
+             (FIR coeffs shared with control DDC), output={} Hz",
+            frequency_hz as i64,
+            P25_DEC1,
+            P25_DEC2,
+            P25_DEC3,
+            total_dec,
+            sample_rate_hz as u64 / total_dec as u64,
+        );
+        Ok(())
+    }
+
     /// Sets the traffic channel DDC NCO frequency word directly.
     pub fn set_traffic_ddc_frequency_word(&self, nco_word: u32) {
         self.registers

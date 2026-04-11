@@ -72,6 +72,25 @@ pub struct AppState {
     /// Phase 6F.2: per-source IRQ counters from the InterruptHandler
     /// task. Read by `/api/irq_stats`.
     pub irq_stats: Arc<tokio::sync::Mutex<crate::IrqStats>>,
+    /// Phase 7A.1: traffic-channel grant follower. Singleton, driven by
+    /// the 50 ms polling task in main.rs that snapshots
+    /// `lsm_decoder.grants` and forwards the newest entry. Read by
+    /// `/api/traffic` to surface state, current TG/channel/frequency,
+    /// NCO offset, and retune counters. Phase 7H will replace the
+    /// singleton with a slot allocator over a channelizer.
+    pub traffic_manager:
+        Arc<tokio::sync::Mutex<crate::p25::traffic_manager::TrafficManager>>,
+    /// Phase 7A.1: data-side counters for the traffic dibit DMA path,
+    /// updated by the traffic dibit reader task in main.rs. Read by
+    /// `/api/traffic` alongside the TrafficManager state.
+    pub traffic_stats: Arc<tokio::sync::Mutex<crate::TrafficStats>>,
+    /// Phase 7A.1: when false, the grant follower task in main.rs
+    /// skips its 50 ms poll iteration entirely (no retunes, no
+    /// timeouts). Flipped via `GET /api/traffic?follower=on|off` so
+    /// the user can take manual control of the traffic DDC NCO +
+    /// demod_enable bits without the polling task immediately
+    /// overriding them. Default true; process-lifetime only.
+    pub traffic_follower_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Build the HTTP router
@@ -107,6 +126,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         // port roadmap wanted -- previously had to be poked via
         // ssh + devmem on the board.
         .route("/api/lsm_control", get(get_lsm_control))
+        // Phase 7A.1: traffic-channel grant follower state + dibit
+        // counters. Read-only diagnostic surface for the singleton
+        // voice channel scaffold; will gain monitor-list write
+        // operations in Phase 7B.
+        .route("/api/traffic", get(get_traffic))
         .route("/api/aliases", get(get_aliases).put(put_aliases))
         .route("/ws/events", get(ws_events))
         .with_state(state)
@@ -583,6 +607,286 @@ async fn get_lsm_control(
             "error": "lsm_control read/write requires hardware (target_os=linux)",
         }))
     }
+}
+
+/// Phase 7A.1: GET /api/traffic -- traffic-channel grant follower
+/// state + dibit DMA counters, with optional manual control via
+/// query parameters.
+///
+/// **Read-side** (no params): returns a snapshot of the TrafficManager
+/// state machine, the TrafficStats counters, and the traffic_dma IRQ
+/// count.
+///
+/// **Write-side** (query params, applied in this order before reading
+/// the snapshot below):
+///
+/// 1. `?reset_stats=1` -- zero out the TrafficStats counters
+///    (wakeups, total_*, dibit_hist). Useful for clean A/B
+///    comparisons after a config change.
+/// 2. `?follower=on|off` -- pause/resume the 50 ms grant-follower
+///    polling task in main.rs. When `off`, manual retunes won't be
+///    immediately overridden by the next snapshot. Default state is
+///    `on`; the override does NOT persist across p25-httpd restarts.
+/// 3. `?retune_hz=<i64>` -- manually write the traffic DDC NCO offset
+///    in Hz, signed, relative to the AD9361 RX LO. Bypasses the
+///    grant follower entirely. Does NOT touch `demod_enable` --
+///    explicit by design (see #4).
+/// 4. `?demod_enable=0|1` -- manually flip the
+///    `traffic_demod_control.demod_enable` register bit. Required
+///    after a manual retune to actually start the dibit stream.
+///
+/// All four params can be combined in one call:
+/// `GET /api/traffic?follower=off&reset_stats=1&retune_hz=2862500&demod_enable=1`
+/// will pause the follower, zero the counters, retune to RX LO + 2.8625
+/// MHz, and turn on the demod -- in that order, so the histogram
+/// counts only what arrives after the retune.
+///
+/// At Phase 7A.1 the traffic chain is C4FM-only and Clay County is
+/// LSM, so the dibit *content* is expected garbage on real LSM voice
+/// channels. The histogram is included as a sanity check: a dead
+/// chain produces all-zero dibits, a live chain produces a roughly
+/// even spread across all four dibit values. Phase 7A.2 will add an
+/// LSM parallel chain on the traffic side and the histogram will
+/// become decode-quality data.
+async fn get_traffic(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<
+        std::collections::HashMap<String, String>,
+    >,
+) -> Json<serde_json::Value> {
+    use std::sync::atomic::Ordering;
+
+    // Track which write actions actually fired so the JSON response
+    // can echo them back -- gives the caller a confirmation that the
+    // params were parsed and applied (vs. silently ignored due to a
+    // typo).
+    let mut applied: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    // ── 1. reset_stats ──
+    if params.get("reset_stats").map(String::as_str) == Some("1") {
+        let mut s = state.traffic_stats.lock().await;
+        *s = crate::TrafficStats::default();
+        applied.push("reset_stats=1".into());
+    }
+
+    // ── 2. follower on/off ──
+    if let Some(v) = params.get("follower") {
+        match v.as_str() {
+            "on" | "1" | "true" => {
+                state
+                    .traffic_follower_enabled
+                    .store(true, Ordering::Relaxed);
+                applied.push("follower=on".into());
+            }
+            "off" | "0" | "false" => {
+                state
+                    .traffic_follower_enabled
+                    .store(false, Ordering::Relaxed);
+                applied.push("follower=off".into());
+            }
+            other => {
+                errors.push(format!(
+                    "follower={other}: expected on|off|1|0|true|false"
+                ));
+            }
+        }
+    }
+
+    // ── 3. retune_hz (manual NCO write) ──
+    //    Linux-only because it touches the FPGA registers via the
+    //    ip_core lock. The non-Linux build path simply records an
+    //    error so host-side cargo test of the routing still works.
+    if let Some(v) = params.get("retune_hz") {
+        match v.parse::<i64>() {
+            Ok(offset_hz) => {
+                #[cfg(target_os = "linux")]
+                {
+                    let core = state.ip_core.lock().await;
+                    // Read the AD9361 sample rate from the cached
+                    // register (the same value the startup configure
+                    // call used). For Phase 7A.1 we hard-code this
+                    // from the well-known default; if we ever start
+                    // varying sample rate at runtime this needs to
+                    // come from a shared config struct instead.
+                    let sample_rate_hz = 8_000_000.0_f64;
+                    match core.set_traffic_ddc_frequency(
+                        offset_hz as f64,
+                        sample_rate_hz,
+                    ) {
+                        Ok(()) => {
+                            applied.push(format!(
+                                "retune_hz={offset_hz}"
+                            ));
+                            // Mirror the manager-side bookkeeping so
+                            // /api/traffic shows the new offset
+                            // immediately even though the follower
+                            // didn't drive it.
+                            let mut mgr =
+                                state.traffic_manager.lock().await;
+                            mgr.last_offset_hz = offset_hz;
+                            // Recompute the NCO word the same way
+                            // the helper does, so the dashboard's
+                            // displayed nco_word matches the register.
+                            let nco_frac =
+                                offset_hz as f64 / sample_rate_hz;
+                            mgr.nco_word = (nco_frac
+                                * (1u64 << 28) as f64)
+                                as i32
+                                as u32
+                                & 0x0FFF_FFFF;
+                        }
+                        Err(e) => {
+                            errors.push(format!(
+                                "retune_hz={offset_hz} rejected: {e}"
+                            ));
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = offset_hz;
+                    errors.push(
+                        "retune_hz requires hardware (target_os=linux)"
+                            .into(),
+                    );
+                }
+            }
+            Err(_) => {
+                errors.push(format!(
+                    "retune_hz={v}: expected signed integer Hz offset"
+                ));
+            }
+        }
+    }
+
+    // ── 4. demod_enable ──
+    if let Some(v) = params.get("demod_enable") {
+        let parsed = match v.as_str() {
+            "1" | "on" | "true" => Some(true),
+            "0" | "off" | "false" => Some(false),
+            _ => None,
+        };
+        match parsed {
+            Some(bit) => {
+                #[cfg(target_os = "linux")]
+                {
+                    let core = state.ip_core.lock().await;
+                    core.set_traffic_demod_enable(bit);
+                    applied.push(format!("demod_enable={bit}"));
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = bit;
+                    errors.push(
+                        "demod_enable requires hardware (target_os=linux)"
+                            .into(),
+                    );
+                }
+            }
+            None => {
+                errors.push(format!(
+                    "demod_enable={v}: expected 0|1|on|off|true|false"
+                ));
+            }
+        }
+    }
+
+    // ── Snapshot read (always, even after a write) ──
+    let (
+        state_label,
+        current_channel,
+        current_talkgroup,
+        current_frequency_hz,
+        nco_word,
+        last_offset_hz,
+        grants_seen,
+        retunes,
+        last_retune_at_secs_ago,
+    ) = {
+        let mgr = state.traffic_manager.lock().await;
+        let label = mgr.state_label();
+        let ch = mgr.current_channel().map(|c| c.0);
+        let tg = mgr.current_talkgroup().map(|t| t.0);
+        let freq = mgr.current_frequency();
+        let nco = mgr.nco_word;
+        let offset = mgr.last_offset_hz;
+        let seen = mgr.grants_seen;
+        let retunes = mgr.retunes;
+        let age = mgr
+            .last_retune_at
+            .map(|t| t.elapsed().as_secs_f64());
+        (label, ch, tg, freq, nco, offset, seen, retunes, age)
+    };
+
+    let stats_json = {
+        let s = state.traffic_stats.lock().await;
+        let total: u64 = s.dibit_hist.iter().sum();
+        let pct = |v: u64| -> f64 {
+            if total == 0 {
+                0.0
+            } else {
+                100.0 * v as f64 / total as f64
+            }
+        };
+        serde_json::json!({
+            "wakeups":        s.wakeups,
+            "total_buffers":  s.total_buffers,
+            "total_bytes":    s.total_bytes,
+            "total_dibits":   s.total_dibits,
+            "dibit_hist":     s.dibit_hist,
+            "dibit_hist_pct": [
+                pct(s.dibit_hist[0]), pct(s.dibit_hist[1]),
+                pct(s.dibit_hist[2]), pct(s.dibit_hist[3])
+            ],
+            "started_secs_ago": s.started_at.map(|t| t.elapsed().as_secs_f64()),
+            "last_secs_ago":    s.last_at.map(|t| t.elapsed().as_secs_f64()),
+        })
+    };
+
+    let irq_json = {
+        let s = state.irq_stats.lock().await;
+        serde_json::json!({
+            "traffic_dma_total": s.traffic,
+        })
+    };
+
+    let follower_on =
+        state.traffic_follower_enabled.load(Ordering::Relaxed);
+
+    Json(serde_json::json!({
+        "state":                     state_label,
+        "follower_enabled":          follower_on,
+        "current_channel":           current_channel,
+        "current_talkgroup":         current_talkgroup,
+        "current_frequency_hz":      current_frequency_hz,
+        "nco_word":                  nco_word,
+        "nco_word_hex":              format!("0x{:08X}", nco_word),
+        "last_offset_hz":            last_offset_hz,
+        "grants_seen":               grants_seen,
+        "retunes":                   retunes,
+        "last_retune_secs_ago":      last_retune_at_secs_ago,
+        "stats":                     stats_json,
+        "irq":                       irq_json,
+        "applied":                   applied,
+        "errors":                    errors,
+        "phase":                     "7A.1",
+        "modulation":                "C4FM-only (LSM traffic chain coming in 7A.2)",
+        "controls": {
+            "reset_stats":   "?reset_stats=1            -- zero TrafficStats",
+            "follower":      "?follower=on|off          -- pause/resume 50 ms poll",
+            "retune_hz":     "?retune_hz=<i64>          -- manual NCO offset (Hz, signed)",
+            "demod_enable":  "?demod_enable=0|1         -- manual demod_enable bit"
+        },
+        "note": "Singleton voice-channel grant follower. Polls \
+                 lsm_decoder.grants @ 50ms and retunes the traffic DDC \
+                 to the most recent grant. At 7A.1 the traffic demod \
+                 is C4FM and the test target (Clay County) is LSM, so \
+                 the dibit histogram is the only useful 'is the chain \
+                 alive' signal -- the dibit *content* is garbage until \
+                 7A.2 ships an LSM traffic chain. Manual retune does \
+                 NOT auto-enable demod -- explicit by design.",
+    }))
 }
 
 /// Phase 6F.7: PUT /api/sync_tune?threshold=N -- update the runtime

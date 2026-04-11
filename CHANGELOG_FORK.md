@@ -5,6 +5,93 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-11] Phase 7A.1 -- Traffic-channel grant follower scaffold + sticky-lock policy
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/033_phase7a1_traffic_scaffold_wire_up.md`
+
+First step of Phase 7 (voice channel follow + audio out). Wires
+the **already-existing** C4FM traffic-channel scaffold (HDL chain
+from doc 007 + `fpga.rs` traffic helpers + `p25/traffic_manager.rs`
+state machine, all sitting dormant since Phase 4) into the live
+`p25-httpd` process so that:
+
+- The traffic DDC is configured at startup (the existing
+  `configure_ddc()` only set up the control DDC; the new
+  `configure_traffic_ddc()` mirrors the same decimation /
+  operations / bypass writes against the `traffic_*` register bank,
+  no coefficient loading because the FIR ROM is shared at the HDL
+  level).
+- A new traffic dibit reader task drains the `traffic_dma` ring
+  on every IRQ, builds a per-dibit histogram in `TrafficStats`,
+  and pets the `TrafficManager` activity timer.
+- A new traffic grant follower task polls
+  `lsm_decoder.grants` at 50 ms cadence and retunes the traffic
+  DDC to follow active calls.
+- A new `/api/traffic` endpoint surfaces TrafficManager state,
+  the dibit histogram, the traffic_dma IRQ counter, and four
+  manual-control query params (`?reset_stats=1`,
+  `?follower=on/off`, `?retune_hz=N`, `?demod_enable=0/1`)
+  processed in fixed order.
+
+**Sticky-lock policy from SDRTrunk upstream PR #2010 (commit `1b3ce431`):**
+The initial naive newest-by-timestamp follower thrashed the
+singleton DDC across multiple simultaneously-active TGs (~15+
+retunes/sec observed on Clay County). Replaced with sticky-lock:
+TG-based call identity (matching SDRTrunk's
+`isSameCallCheckingToOnly()`), 2 s stale eviction threshold
+(matching `STALE_EVENT_THRESHOLD_MS = 2000`), and a polling-task
+gate that only accepts new TGs when state is Idle. Same-TG
+different-frequency falls through to retune (handles network
+channel reassignment mid-call). Plus an `Acquiring -> Active`
+auto-promote in `handle_grant` that fixes a compound bug where
+the 200 ms `acquire_timeout_ms` was hard-timing-out every call
+because no real sync detector exists yet (Phase 7C).
+
+**No FPGA bake required.** The traffic chain has been in the
+HDL since Phase 4 (doc 007) and is already in the bitstream
+from `tezuka_fw@08f7607`. Only `p25-httpd` needed a Tezuka
+rebuild + flash to pick up the new endpoint and tasks.
+
+Files touched:
+
+- `p25-httpd/src/fpga.rs` -- new `configure_traffic_ddc()`.
+- `p25-httpd/src/p25/traffic_manager.rs` -- removed
+  `#![allow(dead_code)]`, added metrics fields and accessors,
+  TG-based call identity in `handle_grant`, 2 s
+  `call_timeout_ms`, `Acquiring -> Active` auto-promote.
+- `p25-httpd/src/main.rs` -- new `TrafficStats`, two new tokio
+  tasks (dibit reader + grant follower), traffic DDC startup
+  configuration, BUILD_TAG bump to
+  `2026-04-11-phase7a1-traffic-scaffold-wire-up`.
+- `p25-httpd/src/httpd/mod.rs` -- extended `AppState`, new
+  `/api/traffic` endpoint with four manual-control query params.
+- `doc/P25_API.md` -- documented `/api/traffic` + bumped route
+  count to 21.
+- `doc/changes/033_phase7a1_traffic_scaffold_wire_up.md` -- new
+  doc with the discovery, design decisions, the sticky-lock
+  derivation from SDRTrunk PR #2010, the Acquiring bug story,
+  and the on-target verification appendix.
+- `tools/p25_status_and_next_step.py` -- new Phase 7A.1 ROADMAP
+  entry plus restaged Phase 7A.2 -> 7H entries; also fixed two
+  pre-existing brittle build-tag-string checks (Phase 6F
+  source-preservation and Phase 6G.1 DC blocker) by replacing
+  them with functional checks against `/api/grants[].source`
+  and `/api/lsm_control.lsm_dc_block_enable`.
+- `tools/p25_sticky_lock_test.py` -- new verification script
+  that polls `/api/traffic` until an active call is seen, then
+  takes a 12-sample burst to confirm `retunes` stays flat.
+
+**Verification:** Round 1 (scaffold) verified on hardware -- all
+seven acceptance criteria from doc 033 pass. Round 2 (sticky
+lock) verified the TG pin holds. Round 3 (Acquiring auto-promote
+fix) deferred to the next flash since the user was away from
+the device when the second bug was found and fixed; the same
+binary that ships Phase 7A.2 will validate the auto-promote
+behavior automatically.
+
+---
+
 ## [2026-04-11] Phase 6 closeout -- LSM trunking control channel COMPLETE
 
 **Branch:** fishball-p25

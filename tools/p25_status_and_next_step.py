@@ -69,6 +69,11 @@ ENDPOINTS = [
     ("/api/tsbk_opcodes",    "tsbk_opcodes"),
     ("/api/recent_tsbks",    "recent_tsbks"),
     ("/api/lsm_control",     "lsm_control"),
+    # Phase 7A.1: traffic-channel grant follower state + counters.
+    # Returns None on binaries that predate the endpoint, which is
+    # exactly what the Phase 7A.1 roadmap check uses to detect "the
+    # binary on the board is older than 7A.1".
+    ("/api/traffic",         "traffic"),
     ("/api/aliases",         "aliases"),
 ]
 
@@ -389,27 +394,57 @@ ROADMAP = [
         "phase": "Phase 6F",
         "name": "Source RadioId preserved across grant updates",
         "check": lambda s: (
-            s["sys"] is not None
-            and "preserve-grant-source-id-on-update" in (s["sys"].get("build") or "")
+            # Functional check (replaces a brittle build-tag string
+            # match that broke when the Phase 6 closeout commit dropped
+            # the old "preserve-grant-source-id-on-update" suffix from
+            # the BUILD_TAG): look for at least one active grant whose
+            # `source` field is non-null. The closeout binary
+            # preserves source RadioIds across grant updates, so any
+            # grant from a non-data TG should have a real RadioId.
+            #
+            # The check tolerates "no grants right now" -- it returns
+            # True if there are no grants at all, since that means
+            # there is nothing to validate, not that the binary is
+            # broken. The "Active grants visible" check above already
+            # gates the no-grants case.
+            s.get("grants") is not None
+            and (
+                len(s["grants"]) == 0
+                or any(
+                    g.get("source") not in (None, 0)
+                    for g in s["grants"]
+                )
+            )
         ),
         "next_step": (
-            "Running binary predates commit 1e29839. Rebuild p25-httpd "
-            "in tezuka_fw and re-flash so the dashboard's caller ID "
-            "stops dropping to None on every grant refresh."
+            "Active grants are present but none of them carry a "
+            "source RadioId -- the running binary likely predates "
+            "commit 1e29839 (source preservation across grant "
+            "updates). Rebuild p25-httpd in tezuka_fw and re-flash."
         ),
     },
     {
         "phase": "Phase 6G.1",
-        "name": "HDL DC blocker shipped + enabled (build tag check)",
+        "name": "HDL DC blocker shipped + enabled",
         "check": lambda s: (
-            s["sys"] is not None
-            and ("phase6g.1" in (s["sys"].get("build") or "")
-                 or "dc-blocker" in (s["sys"].get("build") or ""))
+            # Functional check (replaces a brittle build-tag string
+            # match): ask the lsm_control register directly. The
+            # closeout binary defaults lsm_dc_block_enable to true at
+            # startup; if it reads back as true on a freshly-booted
+            # board, the HDL DC blocker is shipped, wired, and on.
+            #
+            # If /api/lsm_control isn't on the binary the check below
+            # for Phase 6G.2 will catch that separately.
+            s.get("lsm_control") is not None
+            and s["lsm_control"].get("lsm_dc_block_enable") is True
         ),
         "next_step": (
-            "Running binary predates the Phase 6G.1 HDL DC blocker. "
-            "Rebuild p25-httpd from main and re-flash. The DC blocker "
-            "is runtime-bypassable via lsm_control[2]."
+            "lsm_dc_block_enable register reads back false. The "
+            "closeout binary defaults this to true at startup, so "
+            "either the running binary predates Phase 6G.1 (rebuild "
+            "p25-httpd in tezuka_fw and re-flash) or someone toggled "
+            "it off via /api/lsm_control?dc_block=0 (re-enable with "
+            "?dc_block=1)."
         ),
     },
     # ── PHASES BELOW ARE NOT YET IMPLEMENTED ──
@@ -435,57 +470,152 @@ ROADMAP = [
         ),
     },
     {
-        "phase": "Phase 7 (Voice channel follow)",
-        "name": "Second DDC + traffic decoder reachable from PS",
-        "check": lambda s: False,
+        "phase": "Phase 7A.1",
+        "name": "Traffic chain wired into PS (singleton C4FM, no bake)",
+        "check": lambda s: (
+            # Two independent signals -- either is sufficient, both
+            # confirm the new binary is on the board:
+            #   1. /api/traffic returned valid JSON (the endpoint
+            #      didn't exist before 7A.1).
+            #   2. The build tag mentions phase7a1.
+            (s.get("traffic") is not None
+             and "state" in s["traffic"])
+            or (s["sys"] is not None
+                and "phase7a1" in (s["sys"].get("build") or ""))
+        ),
         "next_step": (
-            "Phase 7 starts here. The current radio decodes the "
-            "control channel and lists active grants in /api/grants, "
-            "but does NOT retune to voice channels. To make this a "
-            "real trunking radio:\n"
-            "  1. Instantiate a second DDC chain in p25_top.py "
-            "(parallel to the existing one), with its own NCO/decimator/"
-            "demod pipeline. The c4fm chain already exists in p25_hdl/ "
-            "but is fed by the same DDC as LSM -- it needs its own "
-            "DDC instance for independent retune.\n"
-            "  2. Add a voice_channel register bank for PS to write "
-            "the target frequency offset.\n"
-            "  3. In p25-httpd, on every GroupVoiceChannelGrant for "
-            "an interesting talkgroup (configured via /api/aliases or "
-            "a new monitor list), compute the offset from the active "
-            "frequency band table and write it.\n"
-            "  4. Confirm the second chain locks within ~60 ms (P25 "
-            "spec is ~200 ms) -- DEVPLAN.md Phase 3 budgeted for this.\n"
-            "Total HDL cost: ~18 DSP48E1, ~3000 LUTs. Z7020 has "
-            "plenty of headroom (~16% utilization for 2 channels)."
+            "Phase 7A.1 PS Rust changes are committed but the binary "
+            "on the board is older. Rebuild p25-httpd in tezuka_fw "
+            "(no FPGA bake -- the bitstream from 08f7607 already has "
+            "the traffic chain) and re-flash. After flash, the new "
+            "/api/traffic endpoint surfaces TrafficManager state, "
+            "the dibit DMA histogram, and four manual-control query "
+            "params (?reset_stats=1, ?follower=on/off, ?retune_hz=N, "
+            "?demod_enable=0/1). See doc/changes/033 for verification."
         ),
     },
     {
-        "phase": "Phase 7 (Voice frame extraction)",
-        "name": "LDU1/LDU2 sync + IMBE frame extraction working",
+        "phase": "Phase 7A.2",
+        "name": "LSM demod chain on traffic side (FPGA bake)",
         "check": lambda s: False,
         "next_step": (
-            "Once voice channel follow works (above), the next step "
-            "is to actually decode voice. P25 voice uses LDU1 and LDU2 "
-            "frames -- different sync words from the TSDU we already "
-            "decode for the control channel. Each LDU carries 9 IMBE "
-            "frames (88 bits each) protected by Trellis + RS FEC. "
-            "Reuse the existing trellis decoder from the TSBK path."
+            "Phase 7A.1 wired the existing C4FM traffic chain into "
+            "PS, but Clay County is LSM-only and the C4FM chain "
+            "produces garbage on LSM voice channels. Phase 7A.2 "
+            "mirrors what Phase 6E.9 did on the control side: "
+            "add an LSM demod chain on the traffic side.\n"
+            "  1. p25_top.py: instantiate traffic_lsm_decimator, "
+            "traffic_lsm_lpf, traffic_lsm_rrc, traffic_lsm_demod, "
+            "traffic_lsm_dibit_packer, traffic_lsm_dibit_dma "
+            "(mirroring the control-side LSM chain).\n"
+            "  2. New traffic_lsm register bank at offset 0xC0 "
+            "(bank 6) modelled on the control-side `lsm` bank.\n"
+            "  3. New ring DMA at 0x1B00_0000.\n"
+            "  4. Vivado bake (~20 min) -> new XSA -> Tezuka rebuild "
+            "-> flash.\n"
+            "  5. Verify on a known active voice channel: LSM "
+            "chain produces stable NIDs and dibit CRC pass rate "
+            "matches the control-side ~85% per-block.\n"
+            "Resource cost: ~32 DSP48, ~4000 LUT, 2 BRAM18 (Phase "
+            "6E.8 numbers). Z7020 has plenty of room."
         ),
     },
     {
-        "phase": "Phase 7 (Audio output)",
+        "phase": "Phase 7B",
+        "name": "Voice grant follower with modulation auto-detect + monitor list",
+        "check": lambda s: False,
+        "next_step": (
+            "Phase 7B replaces the 7A.1 polling task with a typed "
+            "event channel and adds modulation auto-detect: read "
+            "the DUID from the first NID on either pipeline (C4FM "
+            "or LSM), lock to whichever produces stable sync, and "
+            "drive the appropriate demod chain. Also adds a monitor "
+            "list endpoint (/api/voice_follow_targets) so the "
+            "operator can pin which talkgroups to follow when "
+            "multiple grants are active simultaneously."
+        ),
+    },
+    {
+        "phase": "Phase 7C",
+        "name": "LDU1/LDU2 sync + IMBE frame extraction",
+        "check": lambda s: False,
+        "next_step": (
+            "Voice channels carry LDU1/LDU2 frames with their own "
+            "sync words (different from the TSDU we already decode). "
+            "Each LDU carries 9 IMBE voice frames (88 bits each) "
+            "protected by trellis + RS FEC. Reuse the existing "
+            "trellis decoder from the TSBK path. Output: 88-bit "
+            "raw IMBE bits per frame, 9 frames per LDU."
+        ),
+    },
+    {
+        "phase": "Phase 7D",
         "name": "IMBE/AMBE vocoder + PCM out",
         "check": lambda s: False,
         "next_step": (
-            "Voice frames are extracted but not yet decoded to audio. "
-            "Options for the vocoder:\n"
-            "  - mbelib (open-source, FFI from Rust, license-questionable)\n"
-            "  - codec2 (open-source, not bit-compatible with IMBE)\n"
-            "  - DVSI hardware (proper but adds a chip)\n"
-            "Output: stream PCM via RTP over the existing Ethernet, "
-            "or pipe to a USB audio device on the Zynq. RTP is the "
-            "more flexible option since the radio is headless."
+            "Convert the 88-bit IMBE frames to PCM audio. Options:\n"
+            "  - mbelib (open-source FFI from Rust, license grey, "
+            "bit-compatible IMBE+AMBE)\n"
+            "  - codec2 (clean licence, not bit-compatible with "
+            "IMBE -- sounds different)\n"
+            "  - DVSI hardware (vendor-blessed, adds a chip + "
+            "per-channel licensing)"
+        ),
+    },
+    {
+        "phase": "Phase 7E",
+        "name": "RTP audio output + /api/audio.opus endpoint (singleton MVP done)",
+        "check": lambda s: False,
+        "next_step": (
+            "Tie grant detection + voice follow + vocoder + RTP into "
+            "a single 'give me the audio for talkgroup X' handler. "
+            "Stream PCM via RTP over the existing Ethernet (the "
+            "radio is headless). End of singleton MVP -- after this "
+            "the dashboard becomes a real operator console for one "
+            "voice channel at a time. Phase 7F begins the multi-"
+            "channel scale-out."
+        ),
+    },
+    {
+        "phase": "Phase 7F",
+        "name": "Multi-channel architecture review (channelizer fork)",
+        "check": lambda s: False,
+        "next_step": (
+            "Final goal is ~10 concurrent traffic channels. Brute-"
+            "force replication does NOT fit on Z7020: 10x (DDC + "
+            "LSM demod + C4FM demod) = ~560 DSP48, well over the "
+            "220 DSP budget. Pick a channelizer architecture: "
+            "polyphase FFT (one big block produces all P25 6.25 "
+            "kHz bins, PS picks slots) vs. wide-capture + cheap "
+            "per-channel fine tuners (one wide DDC at e.g. 4 MHz "
+            "BW, then 10x cheap NCO+halfband fine tuners feeding "
+            "individual demod chains). Decision should be informed "
+            "by ground-truth measurements from the 7A-E singleton, "
+            "not abstract analysis."
+        ),
+    },
+    {
+        "phase": "Phase 7G",
+        "name": "Channelizer + N-channel demod fan-out (FPGA bake)",
+        "check": lambda s: False,
+        "next_step": (
+            "Replace the singleton DDC with the channelizer chosen "
+            "in 7F. Instantiate ~10 LSM+C4FM demod blocks downstream "
+            "(cheaper than 7A.2 because they sit on already-"
+            "decimated streams). New register bank for channelizer "
+            "slot allocation."
+        ),
+    },
+    {
+        "phase": "Phase 7H",
+        "name": "Multi-channel grant manager + per-call RTP mux",
+        "check": lambda s: False,
+        "next_step": (
+            "PS-side multi-channel grant manager: track up to N "
+            "concurrent calls, allocate channelizer slots, mux audio "
+            "streams to per-call RTP destinations. Replace the "
+            "singleton TrafficManager from 7A.1 with a slot-aware "
+            "allocator. End of Phase 7."
         ),
     },
     {

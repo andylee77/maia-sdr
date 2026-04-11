@@ -34,7 +34,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-11-phase6-closeout-lsm_control-runtime-toggle";
+pub const BUILD_TAG: &str = "2026-04-11-phase7a1-traffic-scaffold-wire-up";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -130,6 +130,31 @@ pub struct IrqStats {
     /// Set to None until the first IRQ; updated only by the IRQ task.
     pub started_at: Option<std::time::Instant>,
     pub last_at: Option<std::time::Instant>,
+}
+
+/// Phase 7A.1: data-side counters for the traffic DMA path. Distinct
+/// from `IrqStats.traffic` (which counts wakeups) -- this struct
+/// tracks the bytes / dibits actually consumed by the traffic dibit
+/// reader task. Both are exposed via `/api/traffic`.
+///
+/// At Phase 7A.1 the traffic chain is C4FM-only and Clay County is
+/// LSM, so the dibit *content* is expected garbage; we are only
+/// validating that the chain comes alive when the DDC is retuned.
+/// The histogram is included for sanity (a dead chain produces all
+/// zeros; a live chain produces a roughly even spread across all 4
+/// dibits even on garbage). Phase 7A.2 will add an LSM traffic chain
+/// that produces decodable content; once that's in, the histogram
+/// will skew toward the C4FM all-zero pattern on dead air and the
+/// LSM-decoded dibit pattern on active calls.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TrafficStats {
+    pub started_at: Option<std::time::Instant>,
+    pub last_at: Option<std::time::Instant>,
+    pub wakeups: u64,
+    pub total_buffers: u64,
+    pub total_bytes: u64,
+    pub total_dibits: u64,
+    pub dibit_hist: [u64; 4],
 }
 
 #[derive(Parser)]
@@ -259,6 +284,29 @@ async fn main() -> anyhow::Result<()> {
     let hdl_lsm = Arc::new(tokio::sync::Mutex::new(HdlLsmRuntime::default()));
     let irq_stats = Arc::new(tokio::sync::Mutex::new(IrqStats::default()));
 
+    // Phase 7A.1: traffic-channel grant follower + dibit-reader stats.
+    // Created out of cfg(linux) so the AppState construction below sees
+    // them on every target. The polling task that drives the
+    // TrafficManager and the dibit reader task that updates TrafficStats
+    // both live INSIDE the cfg(linux) block (they touch ip_core).
+    //
+    // Note: TrafficManager::new takes (rx_lo_hz, sample_rate_hz) so it
+    // can compute NCO offsets at runtime; both come straight from the
+    // CLI args and never change after startup.
+    let traffic_manager = Arc::new(tokio::sync::Mutex::new(
+        p25::traffic_manager::TrafficManager::new(args.rx_lo, args.sample_rate),
+    ));
+    let traffic_stats = Arc::new(tokio::sync::Mutex::new(TrafficStats::default()));
+    // Phase 7A.1 manual control: when this is `false`, the grant
+    // follower task skips its entire loop iteration (no grant snapshot,
+    // no retune, no timeout sweep). The user can flip this off via
+    // `GET /api/traffic?follower=off` to take manual control of the
+    // traffic DDC NCO + demod_enable bits without the polling task
+    // immediately yanking them back. Default is on; the state does NOT
+    // persist across restarts (process-lifetime only).
+    let traffic_follower_enabled =
+        Arc::new(std::sync::atomic::AtomicBool::new(true));
+
     #[cfg(target_os = "linux")]
     let (ip_core, ad9361) = {
         use tokio::sync::Mutex;
@@ -335,6 +383,31 @@ async fn main() -> anyhow::Result<()> {
             );
         }
 
+        // Phase 7A.1: configure the traffic-channel DDC the same way the
+        // control DDC is set up, then leave it disabled. The grant
+        // follower task below flips the demod_enable bit and writes the
+        // NCO frequency on demand whenever the control channel reports a
+        // GroupVoiceChannelGrant.
+        //
+        // The traffic chain has been instantiated in HDL since Phase 4
+        // (doc 007) but never driven from PS until now -- the existing
+        // bitstream from Phase 6G.1 (08f7607) already contains it, so no
+        // FPGA rebake is needed for 7A.1. The chain is C4FM-only at this
+        // phase; Phase 7A.2 adds an LSM parallel chain on the traffic
+        // side mirroring what Phase 6E.9 did on the control side.
+        //
+        // Initial NCO = 0 (centred on RX LO) so the chain has a defined
+        // state before the first grant arrives. demod_enable starts at 0
+        // to keep the dibit ring quiet until there's actually a call to
+        // follow.
+        ip_core.configure_traffic_ddc(0.0, args.sample_rate as f64)?;
+        ip_core.set_traffic_ddc_enable(true);
+        ip_core.set_traffic_demod_enable(false);
+        tracing::info!(
+            "Traffic DDC armed: NCO=0 Hz, ddc_enable=true, demod_enable=false \
+             (will be flipped on by the grant follower on first GroupVoiceChannelGrant)"
+        );
+
         let ip_core = Arc::new(Mutex::new(ip_core));
         let ad9361 = Arc::new(ad9361);
 
@@ -342,6 +415,8 @@ async fn main() -> anyhow::Result<()> {
         let dibit_waiter = interrupt_handler.waiter_dibit_dma();
         let iq_waiter = interrupt_handler.waiter_iq_dma();
         let lsm_dibit_waiter = interrupt_handler.waiter_lsm_dibit_dma();
+        // Phase 7A.1: traffic dibit DMA wakeups
+        let traffic_dibit_waiter = interrupt_handler.waiter_traffic_dma();
 
         // 5. Spawn interrupt handler
         let irq_stats_for_handler = irq_stats.clone();
@@ -1259,6 +1334,307 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
+        // Phase 7A.1 (a): traffic dibit reader task. Wakes on every
+        // traffic_dma sub-buffer interrupt, drains the ring via
+        // `read_traffic_buffers()`, counts dibits + maintains a per-dibit
+        // histogram, and updates the shared `TrafficStats`. Does NOT
+        // feed a decoder -- the C4FM chain produces garbage on the LSM
+        // Clay County voice channels we are validating against. The
+        // histogram alone is enough to confirm "the chain is alive": a
+        // dead chain produces all-zero dibits, a live chain produces an
+        // even-ish spread across {0,1,2,3} (LSM through a C4FM slicer
+        // looks essentially random).
+        //
+        // Mirrors the control-channel dibit reader at line ~358 above
+        // but against the traffic_dma ring + traffic stats sink. Bumps
+        // `note_activity()` on the TrafficManager whenever new bytes
+        // arrive so the call_timeout_ms inactivity detector resets.
+        let traffic_reader_core = ip_core.clone();
+        let traffic_reader_stats = traffic_stats.clone();
+        let traffic_reader_mgr = traffic_manager.clone();
+        tokio::spawn(async move {
+            tracing::info!("traffic dibit reader task started (Phase 7A.1)");
+            loop {
+                traffic_dibit_waiter.wait().await;
+                // Snapshot under the lock, then drop it before CPU work.
+                let buffers: Vec<Vec<u8>> = {
+                    let mut core = traffic_reader_core.lock().await;
+                    core.read_traffic_buffers()
+                        .iter()
+                        .map(|b| b.to_vec())
+                        .collect()
+                };
+                if buffers.is_empty() {
+                    continue;
+                }
+
+                let mut wake_bytes = 0usize;
+                let mut wake_dibits = 0usize;
+                let mut wake_hist = [0u64; 4];
+                for buffer in &buffers {
+                    wake_bytes += buffer.len();
+                    let words: &[u64] = bytemuck_cast(buffer);
+                    for &word in words {
+                        for i in 0..32 {
+                            let d = ((word >> (i * 2)) & 0x03) as usize;
+                            wake_hist[d] += 1;
+                            wake_dibits += 1;
+                        }
+                    }
+                }
+
+                {
+                    let mut s = traffic_reader_stats.lock().await;
+                    let now = std::time::Instant::now();
+                    if s.started_at.is_none() {
+                        s.started_at = Some(now);
+                    }
+                    s.last_at = Some(now);
+                    s.wakeups += 1;
+                    s.total_buffers += buffers.len() as u64;
+                    s.total_bytes += wake_bytes as u64;
+                    s.total_dibits += wake_dibits as u64;
+                    for i in 0..4 {
+                        s.dibit_hist[i] += wake_hist[i];
+                    }
+                    // Use plain modulo, not `is_multiple_of` -- the
+                    // latter is unstable (`int_roundings` feature gate)
+                    // and the Tezuka Buildroot Rust toolchain is older
+                    // stable.
+                    let log_now = s.wakeups <= 5 || s.wakeups % 64 == 0;
+                    if log_now {
+                        let total_d: u64 = s.dibit_hist.iter().sum();
+                        let pct = |v: u64| -> f64 {
+                            if total_d == 0 {
+                                0.0
+                            } else {
+                                100.0 * v as f64 / total_d as f64
+                            }
+                        };
+                        tracing::info!(
+                            target: "p25_traffic",
+                            "wake #{}: bufs={} bytes={} dibits={} \
+                             (cum bufs={} bytes={} dibits={}) \
+                             hist 0={:.1}% 1={:.1}% 2={:.1}% 3={:.1}%",
+                            s.wakeups, buffers.len(), wake_bytes, wake_dibits,
+                            s.total_buffers, s.total_bytes, s.total_dibits,
+                            pct(s.dibit_hist[0]), pct(s.dibit_hist[1]),
+                            pct(s.dibit_hist[2]), pct(s.dibit_hist[3]),
+                        );
+                    }
+                }
+
+                // Pet the TrafficManager so its 3-second
+                // call-inactivity timeout doesn't fire while real bytes
+                // are still arriving.
+                {
+                    let mut mgr = traffic_reader_mgr.lock().await;
+                    mgr.note_activity();
+                }
+            }
+        });
+
+        // Phase 7A.1 (b): traffic grant follower task. Polls the
+        // canonical LSM control-channel decoder's `grants` HashMap at
+        // 50 ms cadence (well within the P25 ~200 ms grant-follow
+        // budget), picks the most recent grant with a known frequency,
+        // and forwards it to the TrafficManager. On a state change to
+        // a new channel, retunes the traffic DDC and asserts demod_enable.
+        // On the TrafficManager going Idle (3 s of no activity), drops
+        // demod_enable to quiet the dibit ring.
+        //
+        // POLLING CHOICE (vs. typed broadcast events): the existing
+        // `event_tx` is `broadcast::Sender<String>` -- it carries
+        // pre-formatted strings, not enums. Subscribing and parsing
+        // strings is brittle. The two clean alternatives -- adding a
+        // parallel `Sender<GrantEvent>` channel or a callback hook on
+        // the decoder -- both touch every grant dispatch site in
+        // control_channel.rs. For Phase 7A.1 ("wire it up, prove the
+        // path") polling is sufficient: 50 ms gives <100 ms total
+        // latency, which is half the P25 budget. Phase 7B will replace
+        // this with a typed event channel when modulation auto-detect
+        // and per-grant lifecycle hooks force tighter coupling.
+        //
+        // We poll `lsm_decoder` (not `decoder` or `iq_lsm_decoder`)
+        // because per the AppState doc comment that's the canonical
+        // source for the dashboard's Active Grants panel.
+        let follower_lsm_decoder = lsm_decoder.clone();
+        let follower_mgr = traffic_manager.clone();
+        let follower_core = ip_core.clone();
+        let follower_sample_rate = args.sample_rate as f64;
+        let follower_rx_lo = args.rx_lo as i64;
+        let follower_enabled = traffic_follower_enabled.clone();
+        tokio::spawn(async move {
+            use std::sync::atomic::Ordering;
+            tracing::info!(
+                "traffic grant follower task started (Phase 7A.1, polling \
+                 lsm_decoder.grants @ 50 ms)"
+            );
+            let mut tick =
+                tokio::time::interval(std::time::Duration::from_millis(50));
+            tick.tick().await; // discard immediate first tick
+            loop {
+                tick.tick().await;
+
+                // Phase 7A.1 manual-control gate: skip the entire
+                // iteration when the user has paused the follower via
+                // /api/traffic?follower=off. We do NOT call
+                // check_timeouts() while paused either -- the user is
+                // expected to drive everything explicitly. Resuming
+                // the follower with a stale Active state will simply
+                // see whatever grant is in lsm_decoder at that
+                // moment and re-decide.
+                if !follower_enabled.load(Ordering::Relaxed) {
+                    continue;
+                }
+
+                // ── Phase 7A.1 sticky-lock policy ────────────────
+                // (Derived from SDRTrunk upstream PR #2010 / commit
+                // 1b3ce431, which introduced the
+                // P25TrafficChannelEventTracker class with the same
+                // semantics: a tuner slot stays bound to a single
+                // talkgroup until the call is stale, and other-TG
+                // grants arriving in the meantime are dropped rather
+                // than allocated.)
+                //
+                // The policy is:
+                //
+                //   1. Snapshot the LSM decoder's grants HashMap.
+                //   2. If the manager is currently locked on a
+                //      talkgroup, look for any grant in the snapshot
+                //      whose talkgroup matches our locked TG. If
+                //      found, forward it to handle_grant (which will
+                //      either refresh activity if the frequency
+                //      hasn't changed, or retune if the network
+                //      reassigned the TG to a new channel mid-call).
+                //      Other-TG grants are explicitly ignored.
+                //   3. If the manager is Idle, pick the newest grant
+                //      from the snapshot and forward it. The 2 s
+                //      call_timeout_ms acts as the SDRTrunk
+                //      STALE_EVENT_THRESHOLD_MS equivalent: once we
+                //      have not seen activity for our locked TG for
+                //      2 s, check_timeouts() drops us back to Idle
+                //      and we accept the next grant.
+                //
+                // This eliminates the thrashing observed in the
+                // pre-fix Phase 7A.1 binary, where naive
+                // newest-by-timestamp policy retuned the singleton
+                // DDC ~15+ times per second between two or three
+                // simultaneously-active TGs. With sticky lock the
+                // DDC retunes at most once per call, plus on TG
+                // channel reassignments (which are rare).
+                let grants_snapshot: Vec<_> = {
+                    let dec = follower_lsm_decoder.read().await;
+                    dec.grants
+                        .values()
+                        .filter(|g| g.frequency_hz.is_some())
+                        .filter(|g| {
+                            g.timestamp.elapsed().as_secs() < 5
+                        })
+                        .cloned()
+                        .collect()
+                };
+
+                // Pick the grant we want to forward to handle_grant
+                // based on current manager state. We do this outside
+                // the manager lock so we can hold the lock for as
+                // short a time as possible.
+                let chosen = {
+                    let mgr = follower_mgr.lock().await;
+                    let locked_tg = mgr.current_talkgroup();
+                    drop(mgr);
+
+                    match locked_tg {
+                        Some(tg) => {
+                            // Locked on TG -- find any grant for our
+                            // TG in the snapshot. If multiple match
+                            // (shouldn't happen with TG-deduped
+                            // grants store, but defensively), prefer
+                            // the newest.
+                            grants_snapshot
+                                .iter()
+                                .filter(|g| g.talkgroup.0 == tg.0)
+                                .max_by_key(|g| g.timestamp)
+                                .cloned()
+                        }
+                        None => {
+                            // Idle -- newest grant wins. This is
+                            // the only place a different TG can
+                            // become the locked TG.
+                            grants_snapshot
+                                .iter()
+                                .max_by_key(|g| g.timestamp)
+                                .cloned()
+                        }
+                    }
+                };
+
+                if let Some(g) = chosen {
+                    let freq_hz = g.frequency_hz.unwrap();
+                    let mut mgr = follower_mgr.lock().await;
+                    let retune = mgr.handle_grant(
+                        g.channel,
+                        g.talkgroup,
+                        freq_hz,
+                    );
+                    drop(mgr);
+
+                    if retune {
+                        // Either a fresh call (Idle -> Acquiring) or
+                        // a same-TG channel reassignment. Either way,
+                        // write the new NCO and assert demod_enable.
+                        let offset_hz = freq_hz as i64 - follower_rx_lo;
+                        let core = follower_core.lock().await;
+                        match core.set_traffic_ddc_frequency(
+                            offset_hz as f64,
+                            follower_sample_rate,
+                        ) {
+                            Ok(()) => {
+                                core.set_traffic_demod_enable(true);
+                                tracing::info!(
+                                    target: "p25_traffic",
+                                    "retune: TG={} channel={:?} freq={} Hz \
+                                     offset={:+} Hz (demod_enable=on)",
+                                    g.talkgroup.0,
+                                    g.channel,
+                                    freq_hz,
+                                    offset_hz,
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    target: "p25_traffic",
+                                    "traffic DDC retune failed: TG={} \
+                                     freq={} Hz offset={:+} Hz: {}",
+                                    g.talkgroup.0,
+                                    freq_hz,
+                                    offset_hz,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Periodic timeout sweep. Returns true on
+                // Active/Acquiring -> Idle transition; that's our cue
+                // to drop demod_enable and quiet the ring. The 2 s
+                // call_timeout_ms is the SDRTrunk STALE_EVENT_THRESHOLD_MS
+                // equivalent -- see traffic_manager.rs::new() for
+                // the citation.
+                let mut mgr = follower_mgr.lock().await;
+                if mgr.check_timeouts() {
+                    drop(mgr);
+                    let core = follower_core.lock().await;
+                    core.set_traffic_demod_enable(false);
+                    tracing::info!(
+                        target: "p25_traffic",
+                        "traffic Idle (timeout) -- demod_enable=off"
+                    );
+                }
+            }
+        });
+
         // 8. Spawn periodic grant-expiry task. The control channel decoder
         //    accumulates voice grants in a HashMap as it sees TSBK_GRANT
         //    messages. Without periodic pruning the table only ever grows
@@ -1306,6 +1682,10 @@ async fn main() -> anyhow::Result<()> {
         lsm_stats: lsm_stats.clone(),
         hdl_lsm: hdl_lsm.clone(),
         irq_stats: irq_stats.clone(),
+        // Phase 7A.1: traffic-channel grant follower + dibit reader
+        traffic_manager: traffic_manager.clone(),
+        traffic_stats: traffic_stats.clone(),
+        traffic_follower_enabled: traffic_follower_enabled.clone(),
     });
 
     // Start HTTP server

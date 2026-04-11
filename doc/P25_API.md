@@ -25,7 +25,7 @@ curl -s http://192.168.2.1:8080/api/system | python -m json.tool
 
 ## Endpoint catalogue
 
-All 20 routes registered in `httpd/mod.rs`:
+All 21 routes registered in `httpd/mod.rs`:
 
 | # | Path | Method | Returns | Purpose |
 |---|---|---|---|---|
@@ -47,8 +47,9 @@ All 20 routes registered in `httpd/mod.rs`:
 | 16 | `/api/sync_tune` | GET, PUT | JSON | Read or set the runtime sync threshold (Phase 6F.7+) |
 | 17 | `/api/decoder_reset` | GET, POST | JSON | Reset the decoder counters to zero (for clean post-flash measurements) |
 | 18 | `/api/lsm_control` | GET | JSON | Read all 3 `lsm_control` bits + optional `?dc_block=0/1` query-param shortcut to toggle the DC blocker without ssh+devmem (Phase 6G.2) |
-| 19 | `/api/aliases` | GET, PUT | `AliasMap` | Get or set the talkgroup-id → display-name map |
-| 20 | `/ws/events` | WS upgrade | JSON frames | Real-time TSBK event stream (`TsbkEvent`) — one frame per parsed TSBK |
+| 19 | `/api/traffic` | GET | JSON | **Phase 7A.1** -- traffic-channel grant follower state, dibit DMA counters, optional `?reset_stats=1`, `?follower=on/off`, `?retune_hz=N`, `?demod_enable=0/1` manual controls |
+| 20 | `/api/aliases` | GET, PUT | `AliasMap` | Get or set the talkgroup-id → display-name map |
+| 21 | `/ws/events` | WS upgrade | JSON frames | Real-time TSBK event stream (`TsbkEvent`) — one frame per parsed TSBK |
 
 ---
 
@@ -311,6 +312,103 @@ happened. So a write request returns the **prior** value in
 The handler takes the `ip_core` lock once and does the optional
 write + the readback under it, so a write+read sequence is atomic
 from the perspective of any other PS code touching the register.
+
+### `GET /api/traffic`
+
+Phase 7A.1. Traffic-channel grant follower state, dibit DMA
+counters, and optional manual control of the traffic DDC NCO and
+demod_enable bit. The endpoint is read-only by default; passing
+any of the four documented query params performs a write before
+the snapshot read.
+
+**Read shape (no params):**
+
+```bash
+curl http://192.168.2.1:8080/api/traffic
+```
+
+```json
+{
+  "state":                     "Acquiring",
+  "follower_enabled":          true,
+  "current_channel":           1117,
+  "current_talkgroup":         202,
+  "current_frequency_hz":      857987500,
+  "nco_word":                  6029312,
+  "nco_word_hex":              "0x005C0000",
+  "last_offset_hz":            -112500,
+  "grants_seen":               17,
+  "retunes":                   3,
+  "last_retune_secs_ago":      1.84,
+  "stats": {
+    "wakeups":            234,
+    "total_buffers":      234,
+    "total_bytes":        958464,
+    "total_dibits":       3833856,
+    "dibit_hist":         [958464, 958464, 958464, 958464],
+    "dibit_hist_pct":     [25.0, 25.0, 25.0, 25.0],
+    "started_secs_ago":   1.85,
+    "last_secs_ago":      0.04
+  },
+  "irq": {
+    "traffic_dma_total":  234
+  },
+  "applied":              [],
+  "errors":               [],
+  "phase":                "7A.1",
+  "modulation":           "C4FM-only (LSM traffic chain coming in 7A.2)",
+  "controls": {
+    "reset_stats":   "?reset_stats=1            -- zero TrafficStats",
+    "follower":      "?follower=on|off          -- pause/resume 50 ms poll",
+    "retune_hz":     "?retune_hz=<i64>          -- manual NCO offset (Hz, signed)",
+    "demod_enable":  "?demod_enable=0|1         -- manual demod_enable bit"
+  },
+  "note": "..."
+}
+```
+
+**Manual-control query params** (applied in this fixed order
+before the snapshot read, so a single combined call does the right
+thing):
+
+| Order | Param | Effect |
+|---|---|---|
+| 1 | `?reset_stats=1` | Zero out TrafficStats (`wakeups`, `total_*`, `dibit_hist`). |
+| 2 | `?follower=on\|off` | Pause/resume the 50 ms grant-follower polling task. When `off`, manual retunes won't be immediately overridden. State does NOT persist across `p25-httpd` restarts. |
+| 3 | `?retune_hz=<i64>` | Manually write the traffic DDC NCO offset in Hz, signed, relative to the AD9361 RX LO. Bypasses the grant follower entirely. Does NOT touch `demod_enable` -- explicit by design. |
+| 4 | `?demod_enable=0\|1` | Manually flip the `traffic_demod_control.demod_enable` bit. Required after a manual retune to actually start the dibit stream. |
+
+The `applied` array in the response echoes the writes that fired,
+and `errors` lists any params that failed to parse. So a successful
+combined call:
+
+```bash
+curl 'http://192.168.2.1:8080/api/traffic?follower=off&reset_stats=1&retune_hz=2862500&demod_enable=1'
+```
+
+returns `"applied": ["reset_stats=1", "follower=off", "retune_hz=2862500", "demod_enable=true"]`
+and the snapshot fields will reflect the new state immediately.
+
+**Why both a follower pause AND an explicit demod toggle?** The 50
+ms grant-follower task drives the traffic DDC and `demod_enable`
+based on whatever the canonical LSM control-channel decoder
+(`lsm_decoder`) reports as the most recent grant. Without
+`?follower=off`, any manual retune would be silently overridden
+within ~50 ms by whatever the next grant snapshot says. And without
+the explicit `?demod_enable=1`, a manual retune leaves the dibit
+ring quiet -- you wouldn't see any dibits at the new frequency. The
+two controls compose: pause the follower, retune, enable demod.
+
+**Why the dibit histogram is the headline metric at 7A.1.** The
+traffic chain is C4FM-only at 7A.1 and the day-one validation
+target (Clay County) is LSM, so the dibit *content* is expected
+garbage on real LSM voice channels -- the C4FM slicer running on
+LSM produces a roughly even spread across {0,1,2,3} (essentially
+random). The histogram is enough to confirm "the chain is alive"
+(non-zero, even spread) vs. "the chain is dead" (all zeros, all
+the same value, or no IRQs firing). Phase 7A.2 adds an LSM
+parallel chain on the traffic side and the histogram becomes
+decode-quality data.
 
 ### `GET /api/aliases` / `PUT /api/aliases` → `AliasMap`
 

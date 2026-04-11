@@ -14,12 +14,12 @@
 //!   FIR flush + sync acquisition: ~40ms
 //!   Total: ~60ms (P25 allows ~200ms)
 //!
-//! TODO(traffic-following): the structs in this module are scaffolding for
-//! the channel-grant follow-along feature. They will be wired into main.rs
-//! after the control channel decode is solid. Suppressing dead-code warnings
-//! at module scope until then so the rest of the build stays warning-clean.
-
-#![allow(dead_code)]
+//! Phase 7A.1 (2026-04-11): wired into main.rs as a singleton driven by
+//! a 50 ms polling task that snapshots the canonical `lsm_decoder.grants`
+//! HashMap and forwards the newest entry. Polling rather than typed
+//! events because the existing broadcast channel is `Sender<String>` --
+//! see doc/changes/033 for the rationale and the upgrade path to typed
+//! events in Phase 7B.
 
 use std::time::Instant;
 
@@ -56,12 +56,22 @@ pub struct TrafficManager {
     sample_rate_hz: u64,
     /// NCO word for the traffic DDC (28-bit, computed from frequency offset)
     pub nco_word: u32,
+    /// Last NCO offset (Hz, signed) -- diagnostic surface for /api/traffic.
+    pub last_offset_hz: i64,
     /// Timeout for sync acquisition (ms)
     acquire_timeout_ms: u64,
     /// Timeout for call inactivity before returning to idle (ms)
     call_timeout_ms: u64,
     /// Last dibit activity timestamp
     last_activity: Instant,
+    /// Total handle_grant() calls (Phase 7A.1: counts grant snapshots
+    /// the polling task forwarded; some are duplicates that don't
+    /// trigger a retune).
+    pub grants_seen: u64,
+    /// Total retunes triggered (handle_grant calls that returned true).
+    pub retunes: u64,
+    /// Wall-clock instant of the most recent retune.
+    pub last_retune_at: Option<Instant>,
 }
 
 impl TrafficManager {
@@ -71,43 +81,153 @@ impl TrafficManager {
             rx_lo_hz,
             sample_rate_hz,
             nco_word: 0,
+            last_offset_hz: 0,
             acquire_timeout_ms: 200,
-            call_timeout_ms: 3000,
+            // Phase 7A.1 sticky-lock: 2000 ms matches SDRTrunk
+            // upstream PR #2010 / commit 1b3ce431's
+            // STALE_EVENT_THRESHOLD_MS = 2000 in
+            // P25TrafficChannelEventTracker.java. Years of P25
+            // monitoring on the SDRTrunk codebase have settled on
+            // 2 s as the right "this call is really over" gap; any
+            // longer and we hold a singleton DDC slot through real
+            // call ends, any shorter and we drop calls during PTT
+            // releases between speakers in the same conversation.
+            // Phase 7C will replace this with a TDU-based release
+            // (with a 2 s post-TDU hold window, also from PR #2010)
+            // once we have LDU/TDU sync detection.
+            call_timeout_ms: 2000,
             last_activity: Instant::now(),
+            grants_seen: 0,
+            retunes: 0,
+            last_retune_at: None,
+        }
+    }
+
+    /// Single-character state label for /api/traffic JSON.
+    pub fn state_label(&self) -> &'static str {
+        match self.state {
+            TrafficState::Idle => "Idle",
+            TrafficState::Acquiring { .. } => "Acquiring",
+            TrafficState::Active { .. } => "Active",
+        }
+    }
+
+    /// Channel currently being followed (if any).
+    pub fn current_channel(&self) -> Option<Channel> {
+        match &self.state {
+            TrafficState::Acquiring { channel, .. }
+            | TrafficState::Active { channel, .. } => Some(*channel),
+            TrafficState::Idle => None,
         }
     }
 
     /// Handle a voice grant from the control channel.
     /// Returns true if the traffic DDC should be retuned.
+    ///
+    /// **Sticky-lock policy (Phase 7A.1, derived from SDRTrunk
+    /// upstream PR #2010 / commit 1b3ce431):**
+    ///
+    /// Call identity is determined by **talkgroup ID only** (the
+    /// "TO" identifier in P25 parlance), NOT by channel ID. This
+    /// matches `isSameCallCheckingToOnly()` in
+    /// `P25TrafficChannelEventTracker.java` from upstream
+    /// `1b3ce431`. The reason: P25 networks routinely reassign an
+    /// active call from one channel to another mid-conversation
+    /// (network rebalancing, channel-add via
+    /// `GroupVoiceChannelGrantUpdate`). Channel-based matching
+    /// would treat a reassignment as a different call and break
+    /// audio continuity.
+    ///
+    /// Behaviour:
+    ///
+    /// - Same TG, same frequency -> refresh activity, no retune.
+    /// - Same TG, different frequency -> retune to new frequency
+    ///   (TG was reassigned by the network), keep call alive.
+    /// - Different TG (any frequency) -> caller is responsible for
+    ///   filtering this out via the polling task's sticky-lock
+    ///   policy (only call handle_grant on a different TG when
+    ///   state is Idle). If the caller violates that contract,
+    ///   handle_grant will accept the new TG and start a new
+    ///   call -- the manager itself does not enforce stickiness.
+    ///
+    /// The Idle->next-grant transition is gated entirely by the
+    /// `call_timeout_ms` inactivity timer (2000 ms, matching
+    /// SDRTrunk's STALE_EVENT_THRESHOLD_MS). Once Idle, any new
+    /// grant is accepted via the same code path.
     pub fn handle_grant(
         &mut self,
         channel: Channel,
         talkgroup: Talkgroup,
         frequency_hz: u64,
     ) -> bool {
-        // If already on this channel, just refresh the timestamp
-        match &self.state {
+        self.grants_seen += 1;
+
+        // Same call (same TG)? Refresh activity. If the network
+        // moved the TG to a new frequency, fall through to the
+        // retune path so we follow it.
+        //
+        // Phase 7A.1 bug-fix (same commit, post-on-target observation):
+        // also auto-promote Acquiring -> Active here. The original
+        // design had `sync_acquired()` as the only way to promote out
+        // of Acquiring, but Phase 7A.1 has no sync detector (Phase 7C
+        // will add LDU sync extraction). Without auto-promotion the
+        // state stayed in Acquiring forever, and `check_timeouts`'s
+        // Acquiring branch uses the 200 ms `acquire_timeout_ms`
+        // against `started`, not `last_activity` -- so the call
+        // unconditionally timed out 200 ms after the retune and was
+        // immediately re-acquired by the next poll, producing a
+        // ~4 retunes/sec thrashing cycle even with sticky lock
+        // working correctly. Promoting on the very next matching
+        // poll (50 ms after the retune) puts us in the Active
+        // branch's 2 s `call_timeout_ms` window, which is the right
+        // semantics for the Phase 7A.1 "no real sync detection yet"
+        // state.
+        let same_tg_same_freq = match &self.state {
             TrafficState::Active {
-                channel: c,
+                talkgroup: t,
+                frequency_hz: f,
                 ..
-            }
-            | TrafficState::Acquiring {
-                channel: c,
-                ..
-            } if c.0 == channel.0 => {
+            } if t.0 == talkgroup.0 => {
                 self.last_activity = Instant::now();
-                return false;
+                *f == frequency_hz
             }
-            _ => {}
+            TrafficState::Acquiring {
+                channel: c,
+                talkgroup: t,
+                frequency_hz: f,
+                started: s,
+            } if t.0 == talkgroup.0 => {
+                let same_freq = *f == frequency_hz;
+                if same_freq {
+                    // Auto-promote: we have at least one same-TG
+                    // poll matching, treat the chain as locked.
+                    let promoted = TrafficState::Active {
+                        channel: *c,
+                        talkgroup: *t,
+                        frequency_hz: *f,
+                        started: *s,
+                    };
+                    self.state = promoted;
+                }
+                self.last_activity = Instant::now();
+                same_freq
+            }
+            _ => false,
+        };
+
+        // Same TG, same frequency -> nothing to do.
+        if same_tg_same_freq {
+            return false;
         }
 
-        // Compute NCO frequency word for the traffic DDC
-        // offset = target_freq - rx_lo (can be negative)
-        // nco_word = offset / sample_rate * 2^28 (28-bit NCO)
+        // Either a fresh call (different TG, or no current call)
+        // OR same TG that has been reassigned to a new frequency.
+        // Both paths require a retune.
         let offset_hz = frequency_hz as i64 - self.rx_lo_hz as i64;
         let nco_frac = offset_hz as f64 / self.sample_rate_hz as f64;
         // Convert to 28-bit unsigned (two's complement wrapping)
         self.nco_word = (nco_frac * (1u64 << 28) as f64) as i32 as u32 & 0x0FFF_FFFF;
+        self.last_offset_hz = offset_hz;
 
         self.state = TrafficState::Acquiring {
             channel,
@@ -115,7 +235,10 @@ impl TrafficManager {
             frequency_hz,
             started: Instant::now(),
         };
-        self.last_activity = Instant::now();
+        let now = Instant::now();
+        self.last_activity = now;
+        self.retunes += 1;
+        self.last_retune_at = Some(now);
 
         true // DDC retune needed
     }
