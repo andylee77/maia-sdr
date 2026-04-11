@@ -21,7 +21,9 @@ use axum::{
 };
 use tokio::sync::{broadcast, RwLock};
 
-use crate::p25::control_channel::{ControlChannelDecoder, SYNC_THRESHOLD};
+use crate::p25::control_channel::{
+    ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, SYNC_THRESHOLD,
+};
 use p25_json::*;
 
 /// Shared application state
@@ -39,6 +41,16 @@ pub struct AppState {
     /// only ever sees as garbage. Phase 6F.1 dashboard migration --
     /// see doc/changes/024 follow-up notes.
     pub lsm_decoder: Arc<RwLock<ControlChannelDecoder>>,
+    /// **Phase 6F.9 IQ-LSM `ControlChannelDecoder`**, fed by the Phase
+    /// 6D `LsmPipeline` running on RAW IQ from the iq_dma ring. This
+    /// is a third parallel TSBK pipeline that bypasses the HDL slicer
+    /// for sync detection -- the LSM IQ task uses the soft-decision
+    /// sync correlator on `demod.soft_phases` (the same one SDRTrunk
+    /// uses) and dispatches every detected sync into
+    /// `process_directed_tsdu`. The hope is to catch the ~9 syncs/sec
+    /// the soft correlator finds vs the ~5 syncs/sec the dibit-domain
+    /// hard correlator finds. See doc/changes/029.
+    pub iq_lsm_decoder: Arc<RwLock<ControlChannelDecoder>>,
     pub event_tx: broadcast::Sender<String>,
     #[cfg(target_os = "linux")]
     pub ip_core: Arc<tokio::sync::Mutex<crate::fpga::IpCore>>,
@@ -78,6 +90,17 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/lsm_dibit_dump", get(get_lsm_dibit_dump))
         .route("/api/lsm_capture", get(get_lsm_capture))
         .route("/api/lsm_capture_aligned", get(get_lsm_capture_aligned))
+        .route("/api/tsbk_opcodes", get(get_tsbk_opcodes))
+        .route("/api/recent_tsbks", get(get_recent_tsbks))
+        // Phase 6F.7 testing knobs. Both endpoints accept GET with
+        // query params so they work from a plain curl / browser bar
+        // without -X PUT / -X POST. The PUT/POST aliases are kept for
+        // anyone who wants HTTP-method-correct calls.
+        .route("/api/sync_tune", get(get_sync_tune).put(put_sync_tune))
+        .route(
+            "/api/decoder_reset",
+            get(get_decoder_reset).post(post_decoder_reset),
+        )
         .route("/api/aliases", get(get_aliases).put(put_aliases))
         .route("/ws/events", get(ws_events))
         .with_state(state)
@@ -285,6 +308,343 @@ async fn get_lsm_capture_aligned(
     }
 }
 
+/// Phase 6F.7: read the current runtime sync threshold + a quick
+/// histogram-based "tuning hint" so an operator can decide what to
+/// set next without rebuilding the dashboard.
+///
+/// **Dual-mode endpoint:** if called with `?threshold=N`, this also
+/// updates the runtime threshold (mirroring the PUT handler) so it
+/// works from a browser bar or plain `curl` without `-X PUT`. The
+/// response always contains the *current* (post-update) value.
+async fn get_sync_tune(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    use std::sync::atomic::Ordering;
+
+    // GET-with-query-param shortcut: if `threshold=N` is present and
+    // valid, update the runtime threshold before returning the
+    // histogram.
+    let mut updated_from = None;
+    if let Some(v) = params.get("threshold") {
+        if let Ok(n) = v.parse::<u32>() {
+            if n <= 24 {
+                let prev = RUNTIME_SYNC_THRESHOLD.swap(n, Ordering::Relaxed);
+                updated_from = Some(prev);
+            }
+        }
+    }
+
+    let dec = state.lsm_decoder.read().await;
+    let cur = RUNTIME_SYNC_THRESHOLD.load(Ordering::Relaxed);
+    let hist = dec.sync_distance_hist;
+
+    // Cumulative counts at each prospective threshold (0..=24).
+    let mut cumulative = [0u64; 25];
+    let mut running = 0u64;
+    for (i, &v) in hist.iter().enumerate() {
+        running += v;
+        cumulative[i] = running;
+    }
+    let total: u64 = hist.iter().sum();
+
+    Json(serde_json::json!({
+        "current_threshold":   cur,
+        "default_threshold":   SYNC_THRESHOLD,
+        "updated_from":        updated_from,
+        "total_observations":  total,
+        "cumulative_at_threshold": cumulative,
+        "histogram": hist,
+        "note": "GET /api/sync_tune?threshold=N updates the runtime sync \
+                 threshold in-place (no PUT needed). Range 0..=24. Use \
+                 the histogram + cumulative arrays to pick a threshold \
+                 that captures the real-sync cluster (clear bump above \
+                 the binomial random tail) without flooding the \
+                 pipeline with noise. After tuning, GET \
+                 /api/decoder_reset clears counters so you can measure \
+                 the new threshold against a clean baseline.",
+    }))
+}
+
+/// Phase 6F.7: clear the per-run decoder counters and histograms
+/// without restarting the binary. Lets us measure a new
+/// `/api/sync_tune?threshold=N` value against a clean baseline
+/// instead of waiting hours for the cumulative counters to wash out.
+///
+/// What this clears: NID counters, TSDU counters, TSBK CRC counters,
+/// per-opcode histograms, per-block-position counters, sync hits,
+/// sync near misses, sync distance histogram, recent_messages ring,
+/// raw_duid_hist, dibit_hist.
+///
+/// What this PRESERVES: system identity (NAC/WACN/RFSS/...),
+/// frequency band table, active grants, talkgroup aliases. Those are
+/// long-lived radio state that shouldn't be wiped just because we
+/// want a clean measurement window.
+async fn get_decoder_reset(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    {
+        let mut dec = state.lsm_decoder.write().await;
+        dec.reset_diagnostics();
+    }
+    {
+        // Phase 6F.9: also reset the iq_lsm decoder so the sweep tool
+        // and `/api/decoder_compare` start from a clean baseline.
+        let mut dec = state.iq_lsm_decoder.write().await;
+        dec.reset_diagnostics();
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "note": "Both lsm_decoder + iq_lsm_decoder counters + histograms \
+                 cleared. System identity, bands, grants, and aliases \
+                 preserved.",
+    }))
+}
+
+async fn post_decoder_reset(state: State<Arc<AppState>>) -> Json<serde_json::Value> {
+    get_decoder_reset(state).await
+}
+
+/// Phase 6F.7: PUT /api/sync_tune?threshold=N -- update the runtime
+/// sync threshold without rebuilding. Validates 0 <= N <= 24.
+async fn put_sync_tune(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    use std::sync::atomic::Ordering;
+    let new = params
+        .get("threshold")
+        .and_then(|v| v.parse::<u32>().ok());
+    match new {
+        Some(n) if n <= 24 => {
+            let prev = RUNTIME_SYNC_THRESHOLD.swap(n, Ordering::Relaxed);
+            Json(serde_json::json!({
+                "ok":            true,
+                "previous":      prev,
+                "current":       n,
+                "default":       SYNC_THRESHOLD,
+                "note":          "Threshold updated. Counters keep accumulating; \
+                                  use /api/sync_tune to verify the new histogram \
+                                  shape after a few seconds of new data.",
+            }))
+        }
+        _ => Json(serde_json::json!({
+            "ok":     false,
+            "error":  "missing or invalid `threshold` query param (must be 0..=24)",
+            "current": RUNTIME_SYNC_THRESHOLD.load(Ordering::Relaxed),
+        })),
+    }
+}
+
+/// Phase 6F.4: per-opcode histogram of CRC-OK and CRC-FAIL TSBK
+/// blocks decoded by the LSM software decoder. Lets the dashboard
+/// see the on-air opcode distribution and pinpoint missing parsers.
+async fn get_tsbk_opcodes(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let dec = state.lsm_decoder.read().await;
+
+    // Map opcode index → SDRTrunk-style label so the dashboard
+    // doesn't have to mirror the table. Covers all opcodes that
+    // appear in `Opcode.java` for the OSP direction (control-channel
+    // outbound). Lowercase here means we don't recognise it as a P25
+    // opcode at all (probably trellis-decode garbage).
+    fn label(op: u8) -> &'static str {
+        match op {
+            0x00 => "GRP_V_CH_GRANT",
+            0x02 => "GRP_V_CH_GRANT_UPDT",
+            0x03 => "GRP_V_CH_GRANT_UPDT_EXP",
+            0x04 => "UU_V_CH_GRANT",
+            0x05 => "UU_ANS_REQ",
+            0x06 => "UU_V_CH_GRANT_UPDT",
+            0x08 => "TELE_INT_V_CH_GRANT",
+            0x09 => "TELE_INT_V_CH_GRANT_UPDT",
+            0x0A => "TELE_INT_ANS_REQ",
+            0x14 => "SNDCP_DCH_GRANT",
+            0x15 => "SNDCP_DCH_PAG_RQ",
+            0x16 => "SNDCP_DCH_ANN_EX",
+            0x18 => "STS_UPDT",
+            0x1C => "MSG_UPDT",
+            0x1F => "CALL_ALERT",
+            0x20 => "ACK_RESPONSE_FNE",
+            0x21 => "QUEUED_RESP",
+            0x22 => "EXT_FNCT_CMD",
+            0x24 => "DENY_RESPONSE",
+            0x27 => "GRP_AFFIL_RESP",
+            0x28 => "SCCB",
+            0x29 => "RFSS_STS_BCST_EXP",
+            0x2A => "NET_STS_BCST_EXP",
+            0x2B => "ADJ_STS_BCST_EXP",
+            0x2C => "IDEN_UP_VUHF_EXP",
+            0x2D => "DENY_RESPONSE_EXP",
+            0x2F => "DE_REGIST_ACK",
+            0x30 => "TDMA_SYNC_BCST",
+            0x31 => "AUTH_DMD",
+            0x32 => "AUTH_FNE_RESULT",
+            0x33 => "IDEN_UPDATE_TDMA",
+            0x34 => "IDEN_UPDATE_VUHF",
+            0x36 => "TIME_DATE",
+            0x37 => "ROAM_ADDR_CMD",
+            0x38 => "SYS_SRV_BCST",
+            0x39 => "SEC_CCH_BROADCST",
+            0x3A => "RFSS_STATUS_BCST",
+            0x3B => "NET_STATUS_BCAST",
+            0x3C => "ADJ_STS_BCAST",
+            0x3D => "IDEN_UPDATE",
+            0x3E => "PROT_PARAM_BCST",
+            0x3F => "PROT_PARAM_UPDT",
+            _ => "(unknown)",
+        }
+    }
+
+    let mut entries = Vec::with_capacity(64);
+    let mut total_ok = 0u64;
+    let mut total_fail = 0u64;
+    for op in 0u8..64 {
+        let ok = dec.tsbk_opcode_hist_ok[op as usize];
+        let fail = dec.tsbk_opcode_hist_fail[op as usize];
+        total_ok += ok;
+        total_fail += fail;
+        if ok > 0 || fail > 0 {
+            let parsed = matches!(
+                op,
+                0x00 | 0x02 | 0x33 | 0x34 | 0x3A | 0x3B | 0x3C | 0x3D
+            );
+            entries.push(serde_json::json!({
+                "opcode": format!("0x{:02X}", op),
+                "label": label(op),
+                "ok": ok,
+                "fail": fail,
+                "parsed": parsed,
+            }));
+        }
+    }
+    // Sort by ok-count descending so the most common live opcodes
+    // float to the top of the list.
+    entries.sort_by(|a, b| {
+        let a_ok = a["ok"].as_u64().unwrap_or(0);
+        let b_ok = b["ok"].as_u64().unwrap_or(0);
+        b_ok.cmp(&a_ok)
+    });
+
+    // Per-block-position rates (TSBK1 / TSBK2 / TSBK3 attempts and
+    // CRC successes). If TSBK2 / TSBK3 success rates are massively
+    // worse than TSBK1, the multi-block continuation alignment is
+    // wrong somewhere upstream.
+    let attempts_pos = dec.tsbk_block_attempts_by_pos;
+    let crc_ok_pos = dec.tsbk_crc_ok_by_pos;
+    let pos_pct = |a: u64, ok: u64| -> f64 {
+        if a == 0 { 0.0 } else { 100.0 * ok as f64 / a as f64 }
+    };
+
+    Json(serde_json::json!({
+        "tsdu_attempts": dec.tsdu_attempts,
+        "tsbk_block_attempts_total": dec.tsbk_block_attempts,
+        "blocks_per_tsdu": if dec.tsdu_attempts == 0 { 0.0 }
+            else { dec.tsbk_block_attempts as f64 / dec.tsdu_attempts as f64 },
+        "crc_ok_total": total_ok,
+        "crc_fail_total": total_fail,
+        "crc_ok_pct": if (total_ok + total_fail) == 0 { 0.0 }
+            else { 100.0 * total_ok as f64 / (total_ok + total_fail) as f64 },
+        "by_position": {
+            "tsbk1": {
+                "attempts": attempts_pos[0],
+                "crc_ok": crc_ok_pos[0],
+                "crc_ok_pct": pos_pct(attempts_pos[0], crc_ok_pos[0]),
+            },
+            "tsbk2": {
+                "attempts": attempts_pos[1],
+                "crc_ok": crc_ok_pos[1],
+                "crc_ok_pct": pos_pct(attempts_pos[1], crc_ok_pos[1]),
+            },
+            "tsbk3": {
+                "attempts": attempts_pos[2],
+                "crc_ok": crc_ok_pos[2],
+                "crc_ok_pct": pos_pct(attempts_pos[2], crc_ok_pos[2]),
+            },
+        },
+        "mfid_breakdown": {
+            "standard_0x00": dec.tsbk_mfid_hist_ok[0],
+            "motorola_0x90": dec.tsbk_mfid_hist_ok[1],
+            "harris_0xA4":   dec.tsbk_mfid_hist_ok[2],
+            "other":         dec.tsbk_mfid_hist_ok[3],
+        },
+        "opcodes": entries,
+    }))
+}
+
+/// Phase 6F.4: dump the most recent TSBK messages with their
+/// originating block index (TSBK1/2/3), so the dashboard can show a
+/// live activity feed in the same format as SDRTrunk's
+/// decoded_messages.log.
+async fn get_recent_tsbks(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let dec = state.lsm_decoder.read().await;
+    let now = std::time::Instant::now();
+
+    let summarize = |msg: &crate::p25::tsbk::TsbkMessage| -> String {
+        use crate::p25::tsbk::TsbkMessage::*;
+        match msg {
+            NetworkStatus { wacn, system_id, channel } => format!(
+                "NET_STATUS_BCAST WACN:{:05X} SYS:{:03X} CH:{}",
+                wacn, system_id, channel
+            ),
+            RfssStatus { lra, rfss_id, site_id, channel } => format!(
+                "RFSS_STATUS_BCST LRA:{} RFSS:{} SITE:{} CH:{}",
+                lra, rfss_id, site_id, channel
+            ),
+            AdjacentStatus { lra, rfss_id, site_id, channel, system_id } => format!(
+                "ADJ_STS_BCAST LRA:{} SYS:{:03X} RFSS:{} SITE:{} CH:{}",
+                lra, system_id, rfss_id, site_id, channel
+            ),
+            IdentifierUpdate {
+                identifier,
+                bw,
+                transmit_offset,
+                channel_spacing,
+                base_frequency,
+            } => format!(
+                "IDEN_UPDATE ID:{} OFFSET:{} SPACING:{} BASE:{} BW:{}",
+                identifier, transmit_offset, channel_spacing, base_frequency, bw
+            ),
+            GroupVoiceChannelGrant { channel, talkgroup, source } => format!(
+                "GRP_V_CH_GRANT CH:{} TG:{} SRC:{}",
+                channel, talkgroup, source
+            ),
+            GroupVoiceChannelGrantUpdate {
+                channel_a, talkgroup_a, channel_b, talkgroup_b,
+            } => format!(
+                "GRP_V_CH_GRANT_UPDT CH_A:{} TG_A:{} CH_B:{} TG_B:{}",
+                channel_a, talkgroup_a, channel_b, talkgroup_b
+            ),
+        }
+    };
+
+    // Iterate newest-first.
+    let entries: Vec<serde_json::Value> = dec
+        .recent_messages
+        .iter()
+        .rev()
+        .take(50)
+        .map(|(t, block_idx, msg)| {
+            let block_label = match block_idx {
+                0 => "TSBK1",
+                1 => "TSBK2",
+                2 => "TSBK3",
+                _ => "TSBK?",
+            };
+            serde_json::json!({
+                "age_secs": now.duration_since(*t).as_secs_f64(),
+                "block": block_label,
+                "summary": summarize(msg),
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "count": entries.len(),
+        "messages": entries,
+    }))
+}
+
 fn dibit_dump_json(
     decoder: &ControlChannelDecoder,
     source_label: &str,
@@ -349,7 +709,14 @@ fn dibit_dump_json(
             "hits":          decoder.sync_hits(),
             "near_misses":   decoder.sync_near_misses(),
             "best_distance": decoder.best_sync_distance(),
-            "threshold":     SYNC_THRESHOLD,
+            "threshold":     RUNTIME_SYNC_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed),
+            "threshold_default": SYNC_THRESHOLD,
+            // Phase 6F.6 distance histogram. Bucket i = count of dibit
+            // shifts where the sync_register matched at exactly Hamming
+            // distance i. Bucket 24 collects everything ≥ 24. The cluster
+            // shape tells us whether the slicer is the bottleneck or
+            // whether widening the threshold further would help.
+            "distance_hist": decoder.sync_distance_hist,
         },
         "raw_duid": {
             "total": raw_duid_total,
@@ -606,6 +973,7 @@ async fn get_decoder_compare(
 ) -> Json<serde_json::Value> {
     let dec_c4fm = state.decoder.read().await;
     let dec_lsm = state.lsm_decoder.read().await;
+    let dec_iq_lsm = state.iq_lsm_decoder.read().await;
     let lsm_stats = state.lsm_stats.lock().await;
     let hdl_rt = state.hdl_lsm.lock().await;
 
@@ -685,8 +1053,28 @@ async fn get_decoder_compare(
             "tsbk_crc_ok_xored":     dec_lsm.tsbk_crc_ok_xored,
             "tsbk_unknown_opcode":   dec_lsm.tsbk_unknown_opcode,
         },
+        "ps_iq_lsm": {
+            "label":           "PS IQ-LSM (software, raw IQ + soft sync -> TSBK)",
+            "system_nac":      fmt_nac(dec_iq_lsm.system.nac),
+            "messages":        dec_iq_lsm.recent_messages.len(),
+            "active_grants":   dec_iq_lsm.grants.len(),
+            "bands_known":     dec_iq_lsm.bands.len(),
+            "nid_attempts":          dec_iq_lsm.nid_attempts,
+            "nid_decode_failures":   dec_iq_lsm.nid_decode_failures,
+            "nid_invalid_duid":      dec_iq_lsm.nid_invalid_duid,
+            "nid_decoded_ok":        dec_iq_lsm.nid_decoded_ok,
+            "nid_decoded_tsdu":      dec_iq_lsm.nid_decoded_tsdu,
+            "tsdu_attempts":         dec_iq_lsm.tsdu_attempts,
+            "tsbk_block_attempts":   dec_iq_lsm.tsbk_block_attempts,
+            "tsbk_trellis_failures": dec_iq_lsm.tsbk_trellis_failures,
+            "tsbk_crc_failures":     dec_iq_lsm.tsbk_crc_failures,
+            "tsbk_crc_ok":           dec_iq_lsm.tsbk_crc_ok,
+            "tsbk_crc_ok_plain":     dec_iq_lsm.tsbk_crc_ok_plain,
+            "tsbk_crc_ok_xored":     dec_iq_lsm.tsbk_crc_ok_xored,
+            "tsbk_unknown_opcode":   dec_iq_lsm.tsbk_unknown_opcode,
+        },
         "ps_phase6d": {
-            "label":           "PS Phase 6D (software, raw IQ-fed)",
+            "label":           "PS Phase 6D (software, raw IQ-fed -- sync detection only)",
             "winner_nac":      lsm_winner_nac,
             "wakeups":         lsm_stats.wakeups,
             "iq_samples":      lsm_stats.iq_samples,

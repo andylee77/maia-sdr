@@ -43,6 +43,12 @@ pub struct ControlChannelDecoder {
     du_buffer: Vec<u8>,
     /// Expected data unit length
     du_expected_len: usize,
+    /// Number of TSBK blocks already decoded from the current TSDU
+    /// (0..=3). Phase 6F.3 multi-block TSBK support: when TSBK1
+    /// finishes and `last_block` is not set, we extend `du_expected_len`
+    /// to 231 (TSBK2) or 303 (TSBK3) and bump this counter on each
+    /// successful decode. Reset to 0 on every Hunting transition.
+    tsdu_blocks_decoded: usize,
 
     // ── Diagnostic counters (for tracing/logging only) ──
     /// Cumulative dibit value histogram
@@ -117,6 +123,55 @@ pub struct ControlChannelDecoder {
     /// turn into a known TsbkMessage variant.
     pub tsbk_unknown_opcode: u64,
 
+    // ── Phase 6F.4 diagnostic histograms ──
+    /// Per-opcode histogram of CRC-OK TSBK blocks. Indexed by the
+    /// 6-bit opcode value (`bytes[0] & 0x3F`). Lets the dashboard show
+    /// the actual on-air opcode distribution and figure out which
+    /// opcodes we're missing parsers for. Phase 6F.4 added this so we
+    /// can stop guessing why `bands_known` stays at 0.
+    pub tsbk_opcode_hist_ok: [u64; 64],
+    /// Per-opcode histogram of CRC-FAIL TSBK blocks. Same layout as
+    /// `tsbk_opcode_hist_ok`. A high count for a particular opcode
+    /// suggests the trellis-decoded bytes are mostly garbage (the
+    /// "opcode" was randomly distributed) -- a low count and clean
+    /// distribution match the CRC-OK histogram for confirmed real
+    /// opcodes that just had bit errors past trellis correction.
+    pub tsbk_opcode_hist_fail: [u64; 64],
+    /// Per-vendor-mfid histogram on CRC-OK blocks. Index 0 = standard
+    /// (mfid==0x00), other indices are bucketed by mfid value (we
+    /// only track mfid 0x00, 0x90 = Motorola, 0x10 = Icom etc, and
+    /// "other"). Diagnostic for "how much of our traffic is vendor
+    /// proprietary?".
+    pub tsbk_mfid_hist_ok: [u64; 4],
+    /// Per-block-position attempt counters (block 0 = TSBK1,
+    /// 1 = TSBK2, 2 = TSBK3). Increments when the decoder feeds the
+    /// trellis for that block index. Confirms multi-block continuation
+    /// is actually firing.
+    pub tsbk_block_attempts_by_pos: [u64; 3],
+    /// Per-block-position CRC-OK counters. Compares against
+    /// `tsbk_block_attempts_by_pos` to give a per-position CRC success
+    /// rate -- if block 1 / block 2 have substantially worse rates than
+    /// block 0, the multi-block dibit alignment is wrong.
+    pub tsbk_crc_ok_by_pos: [u64; 3],
+
+    /// **Phase 6F.6 sync distance histogram.** Indexed by Hamming
+    /// distance bucket (0..=23, with bucket 24 = "anything ≥ 24").
+    /// Bumped on every dibit shift in Hunting state once we have a
+    /// full 24-dibit sync window. Lets the dashboard see whether real
+    /// syncs cluster at low distances (slicer is fine, just need to
+    /// match) or high distances (slicer is corrupting half the
+    /// outer-symbol bits in the all-outer sync pattern, sync widening
+    /// can't help).
+    ///
+    /// 6F.4 verification showed the PS hard correlator and PL HDL hard
+    /// correlator both stuck at ~4.7 sync hits/sec while the Phase 6D
+    /// soft-decision IQ correlator gets 9/sec on the same signal. The
+    /// dibit-correlator hard sync rate is the dominant throughput
+    /// bottleneck. Without this histogram we can't tell whether the
+    /// missing 4.3 syncs/sec are at salvageable distances (e.g. 9-14)
+    /// or not (e.g. 18-24, where they overlap random data).
+    pub sync_distance_hist: [u64; 25],
+
     // ── Phase 6F.2h aligned capture (one-shot diagnostic) ──
     /// Set to `true` by `/api/lsm_capture_aligned` to request a full
     /// pipeline trace on the NEXT sync hit. Cleared by the decoder as
@@ -137,8 +192,12 @@ pub struct ControlChannelDecoder {
     pub bands: HashMap<u8, FrequencyBand>,
     /// Active grants (channel -> grant info)
     pub grants: HashMap<u16, GrantInfo>,
-    /// Recent TSBK messages for logging
-    pub recent_messages: Vec<(Instant, TsbkMessage)>,
+    /// Recent TSBK messages for logging. Tuple is `(instant, block_idx,
+    /// message)` where `block_idx` is 0/1/2 = TSBK1/TSBK2/TSBK3 within
+    /// the parent TSDU. Phase 6F.4: added `block_idx` so the dashboard
+    /// can show which block each message came from, matching SDRTrunk's
+    /// `decoded_messages.log` format ("TSBK1 NET_STS_BCAST...").
+    pub recent_messages: Vec<(Instant, u8, TsbkMessage)>,
     /// Max recent messages to keep
     max_recent: usize,
     /// Talkgroup aliases (ID -> name)
@@ -275,33 +334,80 @@ const FRAME_SYNC_MASK: u64 = 0xFFFF_FFFF_FFFF; // 48 bits
 
 /// Maximum Hamming distance for sync detection.
 ///
-/// Temporarily widened from 4 → 10 while we still have a residual DC bias on
-/// `sym_diff_re` that flips ~20% of outer (±3) symbols to inner (±1). The P25
-/// frame sync is all outer symbols, so the bias produces ~5 systematic bit
-/// errors per sync window plus ~5 from random noise = ~10 errors total. With
-/// the old threshold of 4, less than 1% of sync windows matched. With 10, the
-/// near-miss cluster (centred ~10-12 per the dashboard's "Near Misses" stat)
-/// becomes acquirable, while NID Golay decode + DUID validation still reject
-/// false syncs downstream.
+/// **Phase 6F.7 (2026-04-11):** sync threshold is now RUNTIME-TUNABLE
+/// via the new `RUNTIME_SYNC_THRESHOLD` AtomicU32. The constant below
+/// is just the boot default. Use `/api/sync_tune?threshold=N` to
+/// experiment without reflashing -- the 6F.6 verification showed the
+/// optimal threshold depends on PLL lock state and varies over time.
 ///
-/// Once the HDL DC blocker is added (see DEVPLAN), this should drop back to 4.
+/// **Phase 6F.6 history (2026-04-11):** raised from 8 → 14 after 6F.5
+/// verification showed widening 4 → 8 had no effect on sync hit rate.
+/// The 6F.5 dibit dump:
 ///
-/// **Phase 6F.2e (2026-04-11):** dropped from 10 to 4 because the HDL LSM
-/// dibit stream is much cleaner than the legacy C4FM-on-DC-pedestal stream
-/// the threshold-10 era was tuning for. Phase 6D (`lsm/sync.rs`) has always
-/// used threshold 4 on the same signal class and gets 91 %+ NID validity,
-/// vs 81 % for the threshold-10 path here. The extra "captured" syncs from
-/// threshold 10 turned out to be loose-sync false positives whose NID
-/// payloads BCH(63,16,11) "corrects" to random valid codewords -- the
-/// decoded NAC/DUID is then arbitrary and 100 % of the resulting TSBK
-/// blocks fail CRC because the body dibits are misaligned. The C4FM HDL
-/// path also benefits because false-positive sync misses still fail BCH
-/// downstream regardless of threshold.
-pub const SYNC_THRESHOLD: u32 = 4;
+/// ```text
+/// SYNC_THRESHOLD       = 8
+/// sync hits            = 470 (4.59/sec)
+/// sync near (5..14)    = 3243 (31.67/sec)   ← still missing
+/// ```
+///
+/// The hits/sec is the SAME at threshold 8 and threshold 4 because
+/// there are essentially no real syncs at distance 5-8 in this
+/// signal. The big mass of "near" sync events at distance 9-14 is
+/// what we need to capture, so 6F.6 raises threshold to 14.
+///
+/// Cross-checked against the PL HDL gateware NID extractor (which
+/// runs its OWN hard sync detector in firmware): also stuck at
+/// ~4.7 NID events/sec. So both PS and PL hard correlators on the
+/// HDL slicer's dibit stream agree -- the slicer is producing too
+/// many bit errors per outer-symbol sync dibit for the dibit-level
+/// correlator to find better matches. The Phase 6D soft-decision IQ
+/// correlator on raw IQ samples gets 9/sec, confirming syncs ARE
+/// out there at the sample level but the slicer is dropping them.
+///
+/// At threshold 14 the random-false-positive rate is much higher
+/// than threshold 8: `P(48-bit random ≤ 14 of fixed)` ≈ 6×10⁻³.
+/// At ~2400 sliding windows/sec that's ~14 false syncs/sec. The
+/// downstream BCH(63,16,11) NID FEC catches them (~10⁻⁴ pass-through
+/// rate for random 64-bit words → ~0.001 false TSDU events/sec,
+/// negligible). Each false sync costs ~33 dibits of wasted NID
+/// read work; at 14 false/sec that's 462 dibits/sec ≈ 10 % of the
+/// 4800 sym/s budget -- still cheap on Cortex-A9.
+///
+/// **6F.6 also adds a `sync_distance_hist[25]` field** that buckets
+/// every observed sync distance, exposed via `/api/lsm_dibit_dump`.
+/// If the histogram shows a real sync cluster at 9-14, threshold 14
+/// catches them. If the distribution is essentially flat random with
+/// no cluster at any distance, the syncs aren't recoverable from the
+/// current dibit stream and we need to either (a) fix the HDL DC
+/// blocker / slicer or (b) wire the Phase 6D soft sync events into
+/// the TSBK pipeline.
+///
+/// Phase 6F.2e history: dropped 10 → 4 because the LSM stream was
+/// "much cleaner" than legacy C4FM. That was optimistic; both 6F.5
+/// (8) and 6F.6 (14) have walked it back as the noise budget became
+/// clear from on-target measurement.
+/// Boot-time default for the runtime-tunable sync threshold. Code
+/// reads `RUNTIME_SYNC_THRESHOLD.load(Relaxed)` everywhere instead of
+/// this constant directly. The 6F.6 distance histogram showed this is
+/// a moving target -- 6 is a sane middle ground between
+/// "perfect-only" (4) and "noise-flooded" (14), but the optimum
+/// shifts with PLL lock state, so the right tool is `/api/sync_tune`.
+pub const SYNC_THRESHOLD: u32 = 6;
+
+/// Phase 6F.7 runtime-tunable sync threshold. Reads inside the dibit
+/// hot loop go through this AtomicU32 (Relaxed ordering -- the value
+/// only changes when an operator hits `/api/sync_tune`, and a one-
+/// dibit lag is fine). Initial value is set in
+/// `ControlChannelDecoder::new()` from `SYNC_THRESHOLD`.
+pub static RUNTIME_SYNC_THRESHOLD: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(SYNC_THRESHOLD);
 
 /// Logging threshold: any candidate with distance ≤ this is logged as a "near miss"
 /// to give visibility into how close the bit stream is to a real sync.
-const SYNC_NEAR_LOG_THRESHOLD: u32 = 14;
+/// 6F.6: bumped from 14 to 20 since SYNC_THRESHOLD is now 14 -- we want
+/// the near counter to show us the distance 15-20 bucket so we can
+/// decide whether widening further is worthwhile.
+const SYNC_NEAR_LOG_THRESHOLD: u32 = 20;
 
 /// The P25 NID payload is 64 bits = 32 content dibits, but the first P25
 /// status dibit lands inside the NID window at on-air index 11 (counting
@@ -338,6 +444,7 @@ impl ControlChannelDecoder {
             state: DecoderState::Hunting,
             du_buffer: Vec::with_capacity(1024),
             du_expected_len: 0,
+            tsdu_blocks_decoded: 0,
             dibit_hist: [0; 4],
             total_dibits: 0,
             best_sync_distance: u32::MAX,
@@ -359,6 +466,12 @@ impl ControlChannelDecoder {
             tsbk_crc_ok_plain: 0,
             tsbk_crc_ok_xored: 0,
             tsbk_unknown_opcode: 0,
+            tsbk_opcode_hist_ok: [0; 64],
+            tsbk_opcode_hist_fail: [0; 64],
+            tsbk_mfid_hist_ok: [0; 4],
+            tsbk_block_attempts_by_pos: [0; 3],
+            tsbk_crc_ok_by_pos: [0; 3],
+            sync_distance_hist: [0; 25],
             aligned_capture_armed: false,
             aligned_capture: None,
             capture_in_flight: None,
@@ -375,6 +488,201 @@ impl ControlChannelDecoder {
     /// Set the broadcast channel for WebSocket events
     pub fn set_event_tx(&mut self, tx: broadcast::Sender<String>) {
         self.event_tx = Some(tx);
+    }
+
+    /// Phase 6F.9: process a TSDU "directed" by an upstream sync
+    /// detector (typically the Phase 6D soft-decision sync correlator
+    /// on raw IQ). The caller knows the dibit position of the first
+    /// NID dibit; we skip the Hunting state machine entirely and run
+    /// NID extraction + multi-block TSBK decode on the supplied buffer.
+    ///
+    /// `nid_and_body` must be at least 33 dibits (just the NID); for a
+    /// full multi-block TSDU it should be 33 + 303 = 336 dibits. Any
+    /// length in between truncates the body read at the buffer end.
+    ///
+    /// **Why this exists.** The HDL dibit slicer is the dominant
+    /// throughput bottleneck (60 / 40 inner / outer ratio costs us
+    /// ~70% of TSDUs at the dibit-correlator hard sync stage). Phase
+    /// 6D's soft-decision raw-IQ correlator picks up roughly twice as
+    /// many syncs from the same signal -- bypassing the slicer means
+    /// we can process those extra syncs through the same TSBK pipeline
+    /// instead of just counting them in `LsmStats`. See doc 029.
+    ///
+    /// All counter updates flow through the same fields as the
+    /// streaming `process_dibit` path so `/api/decoder_compare` and
+    /// `/api/tsbk_opcodes` show a unified view of "what this decoder
+    /// has seen", regardless of whether it came in via Hunting or via
+    /// directed soft sync.
+    pub fn process_directed_tsdu(&mut self, nid_and_body: &[u8]) {
+        if nid_and_body.len() < NID_TRANSMITTED_DIBITS {
+            return;
+        }
+
+        // 1. Extract NID, skipping the in-window status dibit at index 11.
+        let mut nid_bits: u64 = 0;
+        for j in 0..NID_TRANSMITTED_DIBITS {
+            if j == NID_STATUS_DIBIT_INDEX {
+                continue;
+            }
+            nid_bits = (nid_bits << 2) | (nid_and_body[j] as u64 & 0x3);
+        }
+
+        self.nid_attempts += 1;
+        let (nac_raw, duid_raw, on_air_duid) =
+            match GolayDecoder::decode_nid(nid_bits) {
+                Some(v) => v,
+                None => {
+                    self.nid_decode_failures += 1;
+                    return;
+                }
+            };
+        self.raw_duid_hist[(on_air_duid & 0x0F) as usize] += 1;
+
+        let duid = match DataUnit::from_duid(duid_raw) {
+            Some(d) => d,
+            None => {
+                self.nid_invalid_duid += 1;
+                return;
+            }
+        };
+        self.system.nac = Some(Nac::new(nac_raw));
+        self.nid_decoded_ok += 1;
+
+        // 2. We only handle TSDU directed reads for now (Phase 6F.9).
+        //    Other DUIDs (HDU / LDU / TDU) just bump the NID counters
+        //    and return.
+        if !matches!(duid, DataUnit::Tsdu) {
+            return;
+        }
+        self.nid_decoded_tsdu += 1;
+        self.tsdu_attempts += 1;
+
+        // 3. Walk through up to 3 TSBK blocks. Body starts at offset
+        //    NID_TRANSMITTED_DIBITS in the supplied buffer.
+        let body = &nid_and_body[NID_TRANSMITTED_DIBITS..];
+        for block_idx in 0..TsduDeinterleaver::MAX_BLOCKS {
+            let num_blocks = block_idx + 1;
+            let needed = TsduDeinterleaver::body_dibits_for_blocks(num_blocks)
+                .expect("body_dibits_for_blocks returns Some for 1..=3");
+            if body.len() < needed {
+                break;
+            }
+            let body_slice = &body[..needed];
+
+            let data_dibits =
+                TsduDeinterleaver::deinterleave_multi(body_slice, num_blocks);
+            let block_start = block_idx * TsduDeinterleaver::TRELLIS_DATA_DIBITS;
+            let block_end = block_start + TsduDeinterleaver::TRELLIS_DATA_DIBITS;
+            if data_dibits.len() < block_end {
+                break;
+            }
+            let block_dibits = &data_dibits[block_start..block_end];
+            self.tsbk_block_attempts += 1;
+            self.tsbk_block_attempts_by_pos[block_idx] += 1;
+
+            let decoded = match TrellisDecoder::decode(block_dibits) {
+                Some(d) => d,
+                None => {
+                    self.tsbk_trellis_failures += 1;
+                    // Continue to next block (matches the streaming
+                    // process_tsdu_block "continue past failure" model).
+                    continue;
+                }
+            };
+
+            let block = TsbkBlock::parse(&decoded);
+            let opcode_byte = (decoded[0] & 0x3F) as usize;
+            let last_block_bit = block.last_block;
+            match block.crc_valid(&decoded) {
+                None => {
+                    self.tsbk_crc_failures += 1;
+                    self.tsbk_opcode_hist_fail[opcode_byte] += 1;
+                    continue;
+                }
+                Some(crate::p25::tsbk::CrcConvention::Plain) => {
+                    self.tsbk_crc_ok += 1;
+                    self.tsbk_crc_ok_plain += 1;
+                    self.tsbk_crc_ok_by_pos[block_idx] += 1;
+                    self.tsbk_opcode_hist_ok[opcode_byte] += 1;
+                    self.bump_mfid(block.manufacturer);
+                }
+                Some(crate::p25::tsbk::CrcConvention::Xored) => {
+                    self.tsbk_crc_ok += 1;
+                    self.tsbk_crc_ok_xored += 1;
+                    self.tsbk_crc_ok_by_pos[block_idx] += 1;
+                    self.tsbk_opcode_hist_ok[opcode_byte] += 1;
+                    self.bump_mfid(block.manufacturer);
+                }
+            }
+
+            if let Some(msg) = block.decode() {
+                self.handle_tsbk(block_idx as u8, msg);
+            } else {
+                self.tsbk_unknown_opcode += 1;
+            }
+
+            // For directed reads we ALWAYS attempt all 3 blocks even
+            // if a clean LB=1 was set early -- the soft sync correlator
+            // gives us the dibit position for free, and at this layer
+            // we don't know how much body is "really" supposed to follow
+            // the LB bit. Reading 3 blocks always wastes at most 2 ×
+            // 98 trellis dibits per "single block" TSDU, ~6 ms of CPU.
+            // The CRC check still rejects garbage so the only "cost"
+            // is a slightly higher tsbk_block_attempts denominator.
+            let _ = last_block_bit;
+        }
+    }
+
+    /// Phase 6F.8: clear ALL diagnostic counters and histograms (the
+    /// `/api/decoder_reset` backend). Lets us measure a new
+    /// `SYNC_THRESHOLD` value against a clean baseline window without
+    /// rebooting. Preserves long-lived radio state (system identity,
+    /// frequency band table, active grants, talkgroup aliases) so
+    /// resetting doesn't wipe state the operator wants to keep.
+    ///
+    /// **6F.8 fix:** in 6F.7 the `/api/decoder_reset` handler only
+    /// cleared a subset of counters and missed `sync_hits`,
+    /// `sync_near_misses`, `total_dibits`, `dibit_hist`, and
+    /// `recent_dibits`. The sweep tool divided the cumulative
+    /// (lifetime) `sync_hits` by `total_dibits/4800` (also lifetime)
+    /// and reported per-second rates that conflated lifetime average
+    /// with the 30-second post-reset window. This method clears
+    /// everything.
+    pub fn reset_diagnostics(&mut self) {
+        // NID/TSBK pipeline counters
+        self.nid_attempts = 0;
+        self.nid_decode_failures = 0;
+        self.nid_invalid_duid = 0;
+        self.nid_decoded_ok = 0;
+        self.nid_decoded_tsdu = 0;
+        self.tsdu_attempts = 0;
+        self.tsbk_block_attempts = 0;
+        self.tsbk_trellis_failures = 0;
+        self.tsbk_crc_failures = 0;
+        self.tsbk_crc_ok = 0;
+        self.tsbk_crc_ok_plain = 0;
+        self.tsbk_crc_ok_xored = 0;
+        self.tsbk_unknown_opcode = 0;
+        self.tsbk_opcode_hist_ok = [0; 64];
+        self.tsbk_opcode_hist_fail = [0; 64];
+        self.tsbk_mfid_hist_ok = [0; 4];
+        self.tsbk_block_attempts_by_pos = [0; 3];
+        self.tsbk_crc_ok_by_pos = [0; 3];
+        // Sync stats (these were missed in 6F.7)
+        self.sync_hits = 0;
+        self.sync_near_misses = 0;
+        self.best_sync_distance = u32::MAX;
+        self.sync_distance_hist = [0; 25];
+        // Dibit stats (also missed in 6F.7) -- total_dibits drives
+        // the sweep tool's per-sec calculation, so it MUST be reset
+        // for measurement windows to make sense.
+        self.total_dibits = 0;
+        self.dibit_hist = [0; 4];
+        self.last_log_dibits = 0;
+        self.raw_duid_hist = [0; 16];
+        self.recent_dibits.clear();
+        // Recent message log
+        self.recent_messages.clear();
     }
 
     /// Snapshot of the dibit histogram (count per dibit value 0..3).
@@ -487,8 +795,22 @@ impl ControlChannelDecoder {
                 if distance < self.best_sync_distance && self.dibit_count >= 24 {
                     self.best_sync_distance = distance;
                 }
+
+                // Phase 6F.6: bump the sync distance histogram on every
+                // dibit shift once we have a full sync window. The hist
+                // is the most informative diagnostic for "is the slicer
+                // garbage?" -- if real syncs cluster at low distances
+                // we just need to widen the threshold; if they smear
+                // across distance 9-20 the slicer is corrupting half
+                // the outer symbols and we need to fix the slicer.
+                if self.dibit_count >= 24 {
+                    let bucket = (distance as usize).min(24);
+                    self.sync_distance_hist[bucket] += 1;
+                }
+                let runtime_threshold = RUNTIME_SYNC_THRESHOLD
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 if distance <= SYNC_NEAR_LOG_THRESHOLD
-                    && distance > SYNC_THRESHOLD
+                    && distance > runtime_threshold
                     && self.dibit_count >= 24
                 {
                     self.sync_near_misses += 1;
@@ -502,7 +824,7 @@ impl ControlChannelDecoder {
                         );
                     }
                 }
-                if distance <= SYNC_THRESHOLD && self.dibit_count >= 24 {
+                if distance <= runtime_threshold && self.dibit_count >= 24 {
                     self.sync_hits += 1;
                     self.nid_attempts += 1;
                     tracing::info!(
@@ -640,6 +962,7 @@ impl ControlChannelDecoder {
                         if expected_len > 0 {
                             self.du_buffer.clear();
                             self.du_expected_len = expected_len;
+                            self.tsdu_blocks_decoded = 0;
                             self.state = DecoderState::ReadingDataUnit { duid };
                         } else {
                             // TDU or empty — back to hunting
@@ -675,99 +998,249 @@ impl ControlChannelDecoder {
                 }
 
                 if self.du_buffer.len() >= self.du_expected_len {
-                    // Data unit complete
-                    match duid {
-                        DataUnit::Tsdu => self.process_tsdu(),
-                        _ => {} // Other DU types handled in later phases
+                    // Data unit complete (or one TSBK block complete in
+                    // the multi-block case). Process and find out
+                    // whether more dibits are needed.
+                    let done = match duid {
+                        DataUnit::Tsdu => self.process_tsdu_block(),
+                        // Other DU types handled in later phases
+                        _ => true,
+                    };
+                    if done {
+                        self.state = DecoderState::Hunting;
+                        self.dibit_count = 0;
                     }
-                    self.state = DecoderState::Hunting;
-                    self.dibit_count = 0;
+                    // Otherwise stay in ReadingDataUnit and keep
+                    // appending dibits until the new (extended)
+                    // du_expected_len is reached for the next block.
                 }
             }
         }
     }
 
-    /// Process a complete TSDU (Trunking Signaling Data Unit)
+    /// Process the next TSBK block of the in-flight TSDU.
     ///
-    /// Pipeline: de-interleave -> trellis decode -> CRC check -> TSBK parse -> state update
-    fn process_tsdu(&mut self) {
-        self.tsdu_attempts += 1;
-
-        // 1. Remove status symbols from raw TSDU dibits
-        let data_dibits = TsduDeinterleaver::deinterleave(&self.du_buffer);
-
-        // Phase 6F.2h: snapshot the deinterleaved trellis dibits into
-        // the in-flight capture before we run the trellis. We need this
-        // even if trellis fails so the offline replay sees the raw
-        // input the trellis was given.
-        if let Some(cap) = self.capture_in_flight.as_mut() {
-            cap.raw_body_dibits.truncate(self.du_buffer.len()); // safety
+    /// **Phase 6F.3 (2026-04-11) multi-block TSBK support, refined in
+    /// 6F.4 to continue past CRC failures.**
+    ///
+    /// A single TSDU can carry one, two, or three TSBK blocks per
+    /// SDRTrunk's `P25P1DataUnitID.TRUNKING_SIGNALING_BLOCK_{1,2,3}`
+    /// table; the block-1 header bit `LB` (last block) tells the
+    /// receiver whether more blocks follow.
+    ///
+    /// **Phase 6F.4 change vs 6F.3:** when the current block fails
+    /// trellis or CRC, we no longer abort the multi-block read.
+    /// Instead, we treat it as `last_block=0` and continue to the next
+    /// block boundary, mirroring SDRTrunk's
+    /// `P25P1MessageFramer.dispatchTSBK()` behaviour:
+    ///
+    /// ```java
+    /// else if(tsbk1.isValid() && tsbk1.isLastBlock()) {
+    ///     mMessageAssembler = null;          // stop
+    /// } else {
+    ///     mMessageAssembler.reconfigure(TSBK_2);  // KEEP READING
+    /// }
+    /// ```
+    ///
+    /// On the Clay County test target almost every TSDU is a 3-block
+    /// frame (TSBK1+TSBK2+TSBK3). Aborting on TSBK1 CRC fail meant we
+    /// dropped TSBK2/TSBK3 ~55 % of the time, capping
+    /// `tsbk_block_attempts/tsdu_attempts` at ~1.6 instead of the
+    /// theoretical 3.0.
+    ///
+    /// This function is called once per `du_expected_len` boundary in
+    /// the state machine. It:
+    ///
+    /// 1. Re-runs `TsduDeinterleaver::deinterleave_multi` over the
+    ///    entire buffered body for the current block count
+    ///    (`tsdu_blocks_decoded + 1`). O(303) once per TSDU.
+    /// 2. Slices out the trellis dibits for THIS block (positions
+    ///    `[block_idx*98 .. (block_idx+1)*98]`) and runs the Viterbi.
+    /// 3. Validates the CRC, populates diagnostic histograms,
+    ///    dispatches the parsed message via `handle_tsbk`.
+    /// 4. Decides whether to continue:
+    ///    - block index 2 (TSBK3): always done.
+    ///    - CRC OK + LB=1: legitimately done.
+    ///    - Anything else (CRC OK + LB=0, CRC fail, trellis fail):
+    ///      extend `du_expected_len` and continue.
+    fn process_tsdu_block(&mut self) -> bool {
+        // The state machine resets tsdu_blocks_decoded=0 on entry into
+        // ReadingDataUnit, so the first call into here is block 0 of a
+        // fresh TSDU. tsdu_attempts is bumped on block 0 only.
+        let block_idx = self.tsdu_blocks_decoded;
+        if block_idx == 0 {
+            self.tsdu_attempts += 1;
         }
-        let trellis_dibits_for_capture: Vec<u8> = data_dibits.clone();
 
-        // 2. Extract individual TSBK blocks (196 dibits each)
-        let tsbk_blocks = TsduDeinterleaver::extract_tsbk_blocks(&data_dibits);
+        let num_blocks = block_idx + 1;
+        let data_dibits =
+            TsduDeinterleaver::deinterleave_multi(&self.du_buffer, num_blocks);
+        let block_start = block_idx * TsduDeinterleaver::TRELLIS_DATA_DIBITS;
+        let block_end = block_start + TsduDeinterleaver::TRELLIS_DATA_DIBITS;
 
-        // Phase 6F.2h capture finalisation -- track the result of the
-        // FIRST block we attempt; the capture is one-shot per frame.
+        // The aligned capture is one-shot per TSDU and snapshots the
+        // FIRST block's trellis input + bytes. Continuation blocks
+        // don't update the capture.
+        let trellis_dibits_for_capture: Vec<u8> = if block_idx == 0 {
+            data_dibits.clone()
+        } else {
+            Vec::new()
+        };
         let mut capture_decoded_bytes: Vec<u8> = Vec::new();
         let mut capture_crc_result: String = "no_block".to_string();
 
-        for (block_idx, block_dibits) in tsbk_blocks.iter().enumerate() {
-            self.tsbk_block_attempts += 1;
+        // Defensive: short buffer means deinterleave_multi returned
+        // less than expected. Treat as a hard failure for this block
+        // but still continue to the next block boundary (Phase 6F.4
+        // continue-past-failure model).
+        let mut block_failed = false;
+        let mut block_last_bit = false;
 
-            // 3. Trellis decode: 196 dibits -> 12 bytes
-            let decoded = match TrellisDecoder::decode(block_dibits) {
-                Some(bytes) => bytes,
+        if data_dibits.len() < block_end {
+            block_failed = true;
+            if block_idx == 0 {
+                capture_crc_result = "short_dibits".to_string();
+            }
+        } else {
+            let block_dibits = &data_dibits[block_start..block_end];
+            self.tsbk_block_attempts += 1;
+            self.tsbk_block_attempts_by_pos[block_idx] += 1;
+
+            // 1. Trellis decode: 98 dibits -> 12 bytes
+            match TrellisDecoder::decode(block_dibits) {
                 None => {
                     self.tsbk_trellis_failures += 1;
+                    block_failed = true;
                     if block_idx == 0 {
                         capture_crc_result = "trellis_fail".to_string();
                     }
-                    continue;
                 }
-            };
-
-            if block_idx == 0 {
-                capture_decoded_bytes = decoded.to_vec();
-            }
-
-            // 4. Parse TSBK block and check CRC
-            let block = TsbkBlock::parse(&decoded);
-            match block.crc_valid(&decoded) {
-                None => {
-                    self.tsbk_crc_failures += 1;
+                Some(decoded) => {
                     if block_idx == 0 {
-                        capture_crc_result = "crc_fail".to_string();
+                        capture_decoded_bytes = decoded.to_vec();
                     }
-                    continue;
-                }
-                Some(crate::p25::tsbk::CrcConvention::Plain) => {
-                    self.tsbk_crc_ok += 1;
-                    self.tsbk_crc_ok_plain += 1;
-                    if block_idx == 0 {
-                        capture_crc_result = "plain".to_string();
-                    }
-                }
-                Some(crate::p25::tsbk::CrcConvention::Xored) => {
-                    self.tsbk_crc_ok += 1;
-                    self.tsbk_crc_ok_xored += 1;
-                    if block_idx == 0 {
-                        capture_crc_result = "xored".to_string();
-                    }
-                }
-            }
 
-            // 5. Decode opcode-specific payload
-            if let Some(msg) = block.decode() {
-                // 6. Update system state
-                self.handle_tsbk(msg);
-            } else {
-                self.tsbk_unknown_opcode += 1;
+                    // 2. Parse TSBK block and check CRC
+                    let block = TsbkBlock::parse(&decoded);
+                    let opcode_byte = (decoded[0] & 0x3F) as usize;
+                    block_last_bit = block.last_block;
+                    let crc = block.crc_valid(&decoded);
+                    match crc {
+                        None => {
+                            self.tsbk_crc_failures += 1;
+                            self.tsbk_opcode_hist_fail[opcode_byte] += 1;
+                            block_failed = true;
+                            if block_idx == 0 {
+                                capture_crc_result = "crc_fail".to_string();
+                            }
+                        }
+                        Some(crate::p25::tsbk::CrcConvention::Plain) => {
+                            self.tsbk_crc_ok += 1;
+                            self.tsbk_crc_ok_plain += 1;
+                            self.tsbk_crc_ok_by_pos[block_idx] += 1;
+                            self.tsbk_opcode_hist_ok[opcode_byte] += 1;
+                            self.bump_mfid(block.manufacturer);
+                            if block_idx == 0 {
+                                capture_crc_result = "plain".to_string();
+                            }
+                        }
+                        Some(crate::p25::tsbk::CrcConvention::Xored) => {
+                            self.tsbk_crc_ok += 1;
+                            self.tsbk_crc_ok_xored += 1;
+                            self.tsbk_crc_ok_by_pos[block_idx] += 1;
+                            self.tsbk_opcode_hist_ok[opcode_byte] += 1;
+                            self.bump_mfid(block.manufacturer);
+                            if block_idx == 0 {
+                                capture_crc_result = "xored".to_string();
+                            }
+                        }
+                    }
+
+                    // 3. Decode opcode-specific payload (only on CRC OK)
+                    if !block_failed {
+                        if let Some(msg) = block.decode() {
+                            self.handle_tsbk(block_idx as u8, msg);
+                        } else {
+                            self.tsbk_unknown_opcode += 1;
+                        }
+                    }
+                }
             }
         }
 
-        // Phase 6F.2h: finalize the in-flight capture, if any.
+        self.tsdu_blocks_decoded += 1;
+
+        // Phase 6F.4 continue-past-failure: stop only if we got LB=1
+        // from a CLEAN (CRC-OK) block, OR we just finished block 3.
+        let cleanly_done = !block_failed && block_last_bit;
+        let max_reached = self.tsdu_blocks_decoded >= TsduDeinterleaver::MAX_BLOCKS;
+
+        if cleanly_done || max_reached {
+            self.finalize_capture(
+                trellis_dibits_for_capture,
+                capture_decoded_bytes,
+                capture_crc_result,
+                block_idx,
+            );
+            return true;
+        }
+
+        // Extend du_expected_len to the next multi-block boundary.
+        // body_dibits_for_blocks(2) = 231, (3) = 303.
+        match TsduDeinterleaver::body_dibits_for_blocks(self.tsdu_blocks_decoded + 1) {
+            Some(next_len) => {
+                self.du_expected_len = next_len;
+                // Block 0 finalises the capture immediately (capture
+                // is the TSBK1 snapshot the diagnostic tools expect).
+                if block_idx == 0 {
+                    self.finalize_capture(
+                        trellis_dibits_for_capture,
+                        capture_decoded_bytes,
+                        capture_crc_result,
+                        0,
+                    );
+                }
+                false
+            }
+            None => {
+                self.finalize_capture(
+                    trellis_dibits_for_capture,
+                    capture_decoded_bytes,
+                    capture_crc_result,
+                    block_idx,
+                );
+                true
+            }
+        }
+    }
+
+    /// Phase 6F.4 mfid bucketing helper. We track three named
+    /// vendors (standard 0x00, Motorola 0x90, Harris/Tait 0xA4) plus
+    /// "other" so the dashboard can show the vendor mix without
+    /// blowing up to a 256-entry histogram.
+    fn bump_mfid(&mut self, mfid: u8) {
+        match mfid {
+            0x00 => self.tsbk_mfid_hist_ok[0] += 1,
+            0x90 => self.tsbk_mfid_hist_ok[1] += 1,
+            0xA4 => self.tsbk_mfid_hist_ok[2] += 1,
+            _ => self.tsbk_mfid_hist_ok[3] += 1,
+        }
+    }
+
+    /// Phase 6F.2h aligned-capture finaliser. Splits out so the
+    /// multi-block process_tsdu_block has one place to drain the
+    /// in-flight capture without duplicating the AlignedCapture
+    /// construction.
+    ///
+    /// `block_idx` is purely for documentation; the capture itself is
+    /// always the TSBK1 snapshot.
+    fn finalize_capture(
+        &mut self,
+        trellis_dibits: Vec<u8>,
+        tsbk_bytes: Vec<u8>,
+        crc_result: String,
+        _block_idx: usize,
+    ) {
         if let Some(cap) = self.capture_in_flight.take() {
             self.aligned_capture = Some(AlignedCapture {
                 sync_dibits: cap.sync_dibits,
@@ -778,17 +1251,19 @@ impl ControlChannelDecoder {
                 bch_duid: cap.bch_duid,
                 raw_duid: cap.raw_duid,
                 raw_body_dibits: cap.raw_body_dibits,
-                trellis_dibits: trellis_dibits_for_capture,
-                tsbk_bytes: capture_decoded_bytes,
-                crc_result: capture_crc_result,
+                trellis_dibits,
+                tsbk_bytes,
+                crc_result,
                 total_dibits_at_capture: cap.total_dibits_at_capture,
             });
             self.aligned_capture_armed = false;
         }
     }
 
-    /// Process a decoded TSBK message and update system state
-    pub fn handle_tsbk(&mut self, msg: TsbkMessage) {
+    /// Process a decoded TSBK message and update system state.
+    /// `block_idx` is 0/1/2 = TSBK1/TSBK2/TSBK3 (used for diagnostic
+    /// labels in the recent_messages log + WebSocket events).
+    pub fn handle_tsbk(&mut self, block_idx: u8, msg: TsbkMessage) {
         match &msg {
             TsbkMessage::NetworkStatus {
                 wacn,
@@ -868,22 +1343,32 @@ impl ControlChannelDecoder {
 
         // Broadcast event over WebSocket
         if let Some(ref tx) = self.event_tx {
-            let event = self.tsbk_to_event(&msg);
+            let event = self.tsbk_to_event(block_idx, &msg);
             if let Ok(json) = serde_json::to_string(&event) {
                 let _ = tx.send(json);
             }
         }
 
-        // Log the message
-        self.recent_messages.push((Instant::now(), msg));
+        // Log the message with its TSBK block index (0/1/2 = TSBK1/2/3).
+        self.recent_messages.push((Instant::now(), block_idx, msg));
         if self.recent_messages.len() > self.max_recent {
             self.recent_messages.remove(0);
         }
     }
 
-    /// Convert a TSBK message to a WebSocket event
-    fn tsbk_to_event(&self, msg: &TsbkMessage) -> p25_json::TsbkEvent {
+    /// Convert a TSBK message to a WebSocket event. Phase 6F.4: each
+    /// event is now prefixed with the originating block label
+    /// ("TSBK1"/"TSBK2"/"TSBK3") so the dashboard event feed matches
+    /// the format of SDRTrunk's `decoded_messages.log`.
+    fn tsbk_to_event(&self, block_idx: u8, msg: &TsbkMessage) -> p25_json::TsbkEvent {
         let now = chrono_timestamp();
+        let block_label = match block_idx {
+            0 => "TSBK1",
+            1 => "TSBK2",
+            2 => "TSBK3",
+            _ => "TSBK?",
+        };
+        let block_prefix = format!("[{}] ", block_label);
         match msg {
             TsbkMessage::GroupVoiceChannelGrant {
                 channel,
@@ -895,7 +1380,8 @@ impl ControlChannelDecoder {
                     timestamp: now,
                     event_type: "GRP_GRANT".into(),
                     summary: format!(
-                        "TG:{:05} -> {} ({:.4} MHz)",
+                        "{}TG:{:05} -> {} ({:.4} MHz)",
+                        block_prefix,
                         talkgroup.0,
                         channel,
                         freq.unwrap_or(0) as f64 / 1e6
@@ -914,7 +1400,7 @@ impl ControlChannelDecoder {
             } => p25_json::TsbkEvent {
                 timestamp: now,
                 event_type: "GRANT_UPD".into(),
-                summary: format!("TG:{:05} -> {}", talkgroup_a.0, channel_a),
+                summary: format!("{}TG:{:05} -> {}", block_prefix, talkgroup_a.0, channel_a),
                 talkgroup: Some(talkgroup_a.0),
                 talkgroup_alias: self.aliases.get(&talkgroup_a.0).cloned(),
                 channel: Some(format!("{}", channel_a)),
@@ -930,7 +1416,7 @@ impl ControlChannelDecoder {
             } => p25_json::TsbkEvent {
                 timestamp: now,
                 event_type: "NET_STS".into(),
-                summary: format!("WACN:{:05X} SYS:{:03X} CH:{}", wacn, system_id, channel),
+                summary: format!("{}WACN:{:05X} SYS:{:03X} CH:{}", block_prefix, wacn, system_id, channel),
                 talkgroup: None,
                 talkgroup_alias: None,
                 channel: Some(format!("{}", channel)),
@@ -942,7 +1428,7 @@ impl ControlChannelDecoder {
             } => p25_json::TsbkEvent {
                 timestamp: now,
                 event_type: "RFSS_STS".into(),
-                summary: format!("RFSS:{:02} SITE:{:02}", rfss_id, site_id),
+                summary: format!("{}RFSS:{:02} SITE:{:02}", block_prefix, rfss_id, site_id),
                 talkgroup: None,
                 talkgroup_alias: None,
                 channel: None,
@@ -958,7 +1444,8 @@ impl ControlChannelDecoder {
                 timestamp: now,
                 event_type: "IDEN_UP".into(),
                 summary: format!(
-                    "Band:{} base:{:.5} MHz spacing:{} Hz",
+                    "{}Band:{} base:{:.5} MHz spacing:{} Hz",
+                    block_prefix,
                     identifier,
                     *base_frequency as f64 / 1e6,
                     channel_spacing
@@ -978,8 +1465,8 @@ impl ControlChannelDecoder {
                 timestamp: now,
                 event_type: "ADJ_STS".into(),
                 summary: format!(
-                    "SYS:{:03X} RFSS:{:02} SITE:{:02}",
-                    system_id, rfss_id, site_id
+                    "{}SYS:{:03X} RFSS:{:02} SITE:{:02}",
+                    block_prefix, system_id, rfss_id, site_id
                 ),
                 talkgroup: None,
                 talkgroup_alias: None,
@@ -1015,7 +1502,7 @@ mod tests {
         let mut decoder = ControlChannelDecoder::new();
 
         // Simulate NET_STS_BCST
-        decoder.handle_tsbk(TsbkMessage::NetworkStatus {
+        decoder.handle_tsbk(0, TsbkMessage::NetworkStatus {
             wacn: 0xBEE00,
             system_id: 0x8A0,
             channel: Channel(0x0639),
@@ -1031,7 +1518,7 @@ mod tests {
         let mut decoder = ControlChannelDecoder::new();
 
         // Add Clay County band 0
-        decoder.handle_tsbk(TsbkMessage::IdentifierUpdate {
+        decoder.handle_tsbk(0, TsbkMessage::IdentifierUpdate {
             identifier: 0,
             bw: 100, // 12500 Hz
             transmit_offset: -45_000_000,
@@ -1051,7 +1538,7 @@ mod tests {
         let mut decoder = ControlChannelDecoder::new();
 
         // Add band first
-        decoder.handle_tsbk(TsbkMessage::IdentifierUpdate {
+        decoder.handle_tsbk(0, TsbkMessage::IdentifierUpdate {
             identifier: 0,
             bw: 100,
             transmit_offset: -45_000_000,
@@ -1060,7 +1547,7 @@ mod tests {
         });
 
         // Voice grant
-        decoder.handle_tsbk(TsbkMessage::GroupVoiceChannelGrant {
+        decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
             channel: Channel(0x045D), // band 0, ch 1117
             talkgroup: Talkgroup(300),
             source: RadioId(1011),
@@ -1141,5 +1628,249 @@ mod tests {
              skipping the status dibit at position 11; got {:?}",
             decoder.system.nac,
         );
+    }
+
+    /// **Phase 6F.3 multi-block TSBK e2e regression guard.** Build a
+    /// real 2-block TSDU body (TSBK1 last_block=0, TSBK2 last_block=1)
+    /// with valid CCITT_80 CRCs, trellis-encode each 12-byte block, and
+    /// splice in the 7 status dibits at body raw positions
+    /// {13,49,85,121,157,193,229} plus 28 trailing null padding dibits.
+    /// Drive the decoder end-to-end (sync + NID + body) and verify:
+    ///
+    /// 1. `tsdu_attempts` == 1 (one TSDU sync hit)
+    /// 2. `tsbk_block_attempts` == 2 (two TSBK blocks decoded)
+    /// 3. `tsbk_crc_ok` == 2 (both CRCs validated)
+    /// 4. The two messages dispatched correctly:
+    ///    - Block 1: NetworkStatusBroadcast (0x3B) updates `system.wacn`
+    ///    - Block 2: RfssStatusBroadcast (0x3A) updates `system.rfss_id`
+    /// 5. Decoder returns to Hunting after the second block.
+    ///
+    /// Until 6F.3 the decoder always read 123 raw body dibits and
+    /// stopped, so a 2-block TSDU would either get cut off at TSBK1
+    /// (losing TSBK2 entirely) or fail TSBK1 CRC because the
+    /// status-dibit positions for TSBK2 hadn't yet been consumed.
+    #[test]
+    fn test_multi_block_tsbk_e2e() {
+        use crate::lsm::nid_fec;
+        use crate::p25::fec::trellis_encode_bytes;
+        use crate::p25::tsbk::ccitt80_crc;
+
+        fn unpack_dibits(bits: u64, n_dibits: usize) -> Vec<u8> {
+            let mut out = Vec::with_capacity(n_dibits);
+            for i in (0..n_dibits).rev() {
+                out.push(((bits >> (i * 2)) & 0x3) as u8);
+            }
+            out
+        }
+
+        // Helper: take 12 TSBK bytes minus the trailing CRC, compute
+        // the CCITT_80 CRC for "Plain" convention (residual==0), and
+        // splice it into bytes[10..12]. Returns the finalized 12-byte
+        // block ready for trellis_encode_bytes.
+        fn finalize_tsbk(mut bytes: [u8; 12]) -> [u8; 12] {
+            // The CRC covers the first 80 bits = bytes[0..10]. We want
+            // residual = calc XOR msg_crc == 0, so msg_crc = calc.
+            let calc = ccitt80_crc(&bytes);
+            bytes[10] = (calc >> 8) as u8;
+            bytes[11] = (calc & 0xFF) as u8;
+            bytes
+        }
+
+        // ── TSBK1: NET_STS_BCST (opcode 0x3B), LB=0 (NOT last block) ──
+        // Same payload layout as test_net_sts_bcst_decode but with
+        // LB=0 in the header byte.
+        let tsbk1_raw = [
+            0x3B, // LB=0, P=0, opcode=0x3B (NetworkStatusBroadcast)
+            0x00, // standard manufacturer
+            0x00, // payload[0]: LRA
+            0xBE, // payload[1]: WACN bits 19-12
+            0xE0, // payload[2]: WACN bits 11-4
+            0x08, // payload[3]: WACN bits 3-0 | system_id bits 11-8
+            0xA0, // payload[4]: system_id bits 7-0
+            0x06, // payload[5]: channel high
+            0x39, // payload[6]: channel low
+            0x00, // payload[7]: services
+            0x00, 0x00, // CRC placeholder
+        ];
+        let tsbk1 = finalize_tsbk(tsbk1_raw);
+
+        // ── TSBK2: RFSS_STS_BCST (opcode 0x3A), LB=1 (LAST block) ──
+        // Phase 6F.4 layout (matches SDRTrunk RFSSStatusBroadcast.java):
+        // payload[0] = LRA, payload[1..2] = system_id (12 bits at bits
+        // 28-39), payload[3] = RFSS, payload[4] = SITE,
+        // payload[5..6] = freq_band(4) | channel_number(12).
+        let tsbk2_raw = [
+            0xBA, // LB=1, P=0, opcode=0x3A
+            0x00, // standard manufacturer
+            0x00, // payload[0]: LRA
+            0x00, // payload[1]: bits 24-27 reserved/active flag,
+                  //              bits 28-31 = system high nibble (0)
+            0x00, // payload[2]: bits 32-39 = system low byte (0)
+            0x01, // payload[3]: RFSS ID = 1
+            0x01, // payload[4]: SITE ID = 1
+            0x06, // payload[5]: freq_band(4)=0 | channel_number high(4)=0x6
+            0x39, // payload[6]: channel_number low(8)=0x39
+            0x00, // payload[7]: system service class
+            0x00, 0x00, // CRC placeholder
+        ];
+        let tsbk2 = finalize_tsbk(tsbk2_raw);
+
+        // Trellis-encode each block to 98 on-air dibits.
+        let tsbk1_dibits = trellis_encode_bytes(&tsbk1);
+        let tsbk2_dibits = trellis_encode_bytes(&tsbk2);
+
+        // Concatenate the two blocks → 196 trellis dibits, then
+        // append 28 null dibits → 224 dibits, then splice in the 7
+        // status dibits at positions {13,49,85,121,157,193,229} →
+        // 231 raw body dibits. The decoder will reverse this.
+        let mut data: Vec<u8> = Vec::with_capacity(224);
+        data.extend_from_slice(&tsbk1_dibits);
+        data.extend_from_slice(&tsbk2_dibits);
+        // 28 trailing null dibits (value doesn't matter -- gets stripped)
+        for _ in 0..28 {
+            data.push(0);
+        }
+        assert_eq!(data.len(), 224);
+
+        let status_positions = [13usize, 49, 85, 121, 157, 193, 229];
+        let mut body: Vec<u8> = Vec::with_capacity(231);
+        let mut data_iter = data.into_iter();
+        for i in 0..231 {
+            if status_positions.contains(&i) {
+                body.push(0x01); // status dibit -- value gets stripped
+            } else {
+                body.push(data_iter.next().unwrap());
+            }
+        }
+        assert_eq!(body.len(), 231);
+
+        // Build sync + NID for Clay County NAC=0x8A1, DUID=0x7 (TSDU).
+        let nid_bits = nid_fec::encode_nid(0x8A1, 0x7);
+        let nid_dibits_32 = unpack_dibits(nid_bits, 32);
+        let mut on_air_nid: Vec<u8> = Vec::with_capacity(33);
+        on_air_nid.extend_from_slice(&nid_dibits_32[..11]);
+        on_air_nid.push(0x0); // status dibit (value irrelevant -- skipped)
+        on_air_nid.extend_from_slice(&nid_dibits_32[11..]);
+        let fs_dibits = unpack_dibits(FRAME_SYNC_DIBIT_PATTERN, 24);
+
+        // Drive the decoder.
+        let mut decoder = ControlChannelDecoder::new();
+        for &d in &fs_dibits {
+            decoder.process_dibit(d);
+        }
+        for &d in &on_air_nid {
+            decoder.process_dibit(d);
+        }
+        for &d in &body {
+            decoder.process_dibit(d);
+        }
+
+        // Verify counters: one TSDU, two blocks, both CRCs OK.
+        assert_eq!(
+            decoder.tsdu_attempts, 1,
+            "expected 1 TSDU attempt, got {}",
+            decoder.tsdu_attempts
+        );
+        assert_eq!(
+            decoder.tsbk_block_attempts, 2,
+            "expected 2 TSBK block attempts (TSBK1 + TSBK2), got {}",
+            decoder.tsbk_block_attempts
+        );
+        assert_eq!(
+            decoder.tsbk_crc_ok, 2,
+            "expected 2 TSBK CRC successes, got {} (failures: trellis={} crc={})",
+            decoder.tsbk_crc_ok,
+            decoder.tsbk_trellis_failures,
+            decoder.tsbk_crc_failures,
+        );
+
+        // Verify both messages dispatched: TSBK1 set wacn,
+        // TSBK2 set rfss_id.
+        assert_eq!(
+            decoder.system.wacn,
+            Some(0xBEE00),
+            "TSBK1 NetworkStatus should have set wacn=0xBEE00"
+        );
+        assert_eq!(
+            decoder.system.rfss_id,
+            Some(0x01),
+            "TSBK2 RfssStatus should have set rfss_id=1"
+        );
+    }
+
+    /// Single-block TSBK regression: confirm `last_block=1` on the
+    /// FIRST block correctly terminates after TSBK1 without trying to
+    /// read 108 more dibits for an imaginary TSBK2. Otherwise the
+    /// decoder would silently consume the next sync window's dibits
+    /// and fall out of sync.
+    #[test]
+    fn test_single_block_tsbk_terminates_on_lb1() {
+        use crate::lsm::nid_fec;
+        use crate::p25::fec::trellis_encode_bytes;
+        use crate::p25::tsbk::ccitt80_crc;
+
+        fn unpack_dibits(bits: u64, n_dibits: usize) -> Vec<u8> {
+            let mut out = Vec::with_capacity(n_dibits);
+            for i in (0..n_dibits).rev() {
+                out.push(((bits >> (i * 2)) & 0x3) as u8);
+            }
+            out
+        }
+
+        let mut tsbk1_raw = [
+            0xBB, // LB=1, opcode=0x3B
+            0x00, 0x00, 0xBE, 0xE0, 0x08, 0xA0, 0x06, 0x39, 0x00, 0x00, 0x00,
+        ];
+        let calc = ccitt80_crc(&tsbk1_raw);
+        tsbk1_raw[10] = (calc >> 8) as u8;
+        tsbk1_raw[11] = (calc & 0xFF) as u8;
+
+        let tsbk1_dibits = trellis_encode_bytes(&tsbk1_raw);
+        // 98 trellis + 21 null = 119 non-status dibits, then splice 4
+        // status dibits at body positions {13,49,85,121} → 123 raw.
+        let mut data: Vec<u8> = Vec::with_capacity(119);
+        data.extend_from_slice(&tsbk1_dibits);
+        for _ in 0..21 {
+            data.push(0);
+        }
+        let status_positions = [13usize, 49, 85, 121];
+        let mut body: Vec<u8> = Vec::with_capacity(123);
+        let mut data_iter = data.into_iter();
+        for i in 0..123 {
+            if status_positions.contains(&i) {
+                body.push(0x01);
+            } else {
+                body.push(data_iter.next().unwrap());
+            }
+        }
+
+        let nid_bits = nid_fec::encode_nid(0x8A1, 0x7);
+        let nid_dibits_32 = unpack_dibits(nid_bits, 32);
+        let mut on_air_nid: Vec<u8> = Vec::with_capacity(33);
+        on_air_nid.extend_from_slice(&nid_dibits_32[..11]);
+        on_air_nid.push(0x0);
+        on_air_nid.extend_from_slice(&nid_dibits_32[11..]);
+        let fs_dibits = unpack_dibits(FRAME_SYNC_DIBIT_PATTERN, 24);
+
+        let mut decoder = ControlChannelDecoder::new();
+        for &d in &fs_dibits {
+            decoder.process_dibit(d);
+        }
+        for &d in &on_air_nid {
+            decoder.process_dibit(d);
+        }
+        for &d in &body {
+            decoder.process_dibit(d);
+        }
+
+        assert_eq!(decoder.tsdu_attempts, 1);
+        assert_eq!(
+            decoder.tsbk_block_attempts, 1,
+            "single-block TSBK with LB=1 must NOT trigger a second block read"
+        );
+        assert_eq!(decoder.tsbk_crc_ok, 1);
+        assert_eq!(decoder.system.wacn, Some(0xBEE00));
+        // After TSBK1 with LB=1, we should be back in Hunting.
+        assert!(matches!(decoder.state, DecoderState::Hunting));
     }
 }

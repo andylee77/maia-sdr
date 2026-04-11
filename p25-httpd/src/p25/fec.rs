@@ -345,93 +345,167 @@ impl TrellisDecoder {
 
 /// TSDU de-interleaver
 ///
-/// The TSDU body has 4 status dibits embedded in it at on-air positions
-/// **{13, 49, 85, 121}** (counted from the first dibit AFTER the NID),
-/// followed by 21 trailing null padding dibits within the 119 surviving
-/// non-status dibits.
+/// The TSDU body has its status dibits embedded at the period-36 schedule
+/// driven by SDRTrunk's `mStatusSymbolDibitCounter` (reset to 21 by
+/// `nidDetected()`, hits 36 → drop → reset to 0). The first status drop
+/// in the body lands at raw position **13**, and subsequent drops follow
+/// at +36 each (49, 85, 121, 157, 193, 229, 265, 301...). After stripping
+/// status dibits and trailing null padding, the data is exactly
+/// `num_blocks * 98` trellis-coded dibits.
 ///
-/// **Phase 6F.2i (2026-04-11) FINAL:** see the doc comment on
-/// `DataUnit::Tsdu.length_dibits()` in `p25/types.rs` for the full
-/// SDRTrunk framer trace. Summary: the framer creates the assembler
-/// at `mDibitCounter == 57` WITHOUT feeding the current dibit, so the
-/// first body dibit fed is the one after that. With
-/// `mStatusSymbolDibitCounter` reset to 21 by `nidDetected()`, the
-/// first body data dibit (raw position 0) sees counter == 23 at the
-/// top of `process()`. Status drops fire at counter == 36, which is
-/// 13 dibits later — i.e. body raw position 13.
+/// **Phase 6F.2j (2026-04-11):** TSBK1 single-block path was confirmed
+/// against SDRTrunk and decodes the Clay County control channel
+/// end-to-end (see doc/changes/026). **Phase 6F.3 (2026-04-11):** added
+/// multi-block TSBK2/TSBK3 support per SDRTrunk's
+/// `P25P1DataUnitID.TRUNKING_SIGNALING_BLOCK_{1,2,3}` table:
 ///
-/// History (all wrong):
-///   - 6F.2c: length 336, period 35, offset 34. Total nonsense.
-///   - 6F.2f: length 123, status {14, 50, 86, 122}. Off-by-one in
-///     positions.
-///   - 6F.2g: length 122, status {14, 50, 86}. Lost the 4th status.
-///   - 6F.2i: length 123, status {13, 49, 85, 121}. Correct.
+/// | Blocks | Body raw dibits | Body status dibits          | Trail nulls |
+/// |--------|----------------:|-----------------------------|------------:|
+/// |   1    |             123 | 4 — {13,49,85,121}          |         21  |
+/// |   2    |             231 | 7 — {…,157,193,229}         |         28  |
+/// |   3    |             303 | 9 — {…,265,301}             |          0  |
+///
+/// SDRTrunk constants: TSBK1 messageLength=196 bits + nullBits=42, TSBK2
+/// messageLength=392 + nullBits=56, TSBK3 messageLength=588 + nullBits=0,
+/// statusDibits = 5/8/10 INCLUDING the in-NID status dibit. Each block
+/// is 196 trellis-coded bits = 98 dibits, transmitted contiguously after
+/// status removal.
 pub struct TsduDeinterleaver;
 
 impl TsduDeinterleaver {
-    /// On-air positions of the 4 status dibits inside the 123-dibit
-    /// TSDU body (post-NID). Derived from SDRTrunk's framer
-    /// `mStatusSymbolDibitCounter` reset-to-21 + period-36 logic; see
-    /// the struct doc comment above for the full trace.
-    const STATUS_POSITIONS: [usize; 4] = [13, 49, 85, 121];
-
-    /// Number of trailing null padding dibits in the TSBK1 body
-    /// (`nullBits = 42 = 21 dibits` per SDRTrunk's data unit table).
-    const NULL_DIBITS: usize = 21;
-
     /// Number of trellis-coded data dibits in one TSBK block:
     /// 196 trellis-encoded bits = 49 four-bit symbols = 98 dibits.
-    const TRELLIS_DATA_DIBITS: usize = 98;
+    pub const TRELLIS_DATA_DIBITS: usize = 98;
 
-    /// Remove status symbols and trailing null padding from a TSDU body.
+    /// Maximum number of TSBK blocks per TSDU per the SDRTrunk
+    /// `P25P1DataUnitID` table (TSBK1, TSBK2, TSBK3).
+    pub const MAX_BLOCKS: usize = 3;
+
+    /// Raw on-air body dibit length for each multi-block TSBK extent.
+    /// Indexed by `num_blocks - 1`.
+    const BODY_DIBITS_PER_BLOCKS: [usize; 3] = [123, 231, 303];
+
+    /// Trailing null-padding dibit count for each multi-block extent.
+    /// Per SDRTrunk's `P25P1DataUnitID` table: TSBK1=42 null bits =
+    /// 21 dibits, TSBK2=56 null bits = 28 dibits, TSBK3=0.
+    const NULL_DIBITS_PER_BLOCKS: [usize; 3] = [21, 28, 0];
+
+    /// On-air status-dibit positions inside the body (post-NID), in
+    /// order. Period 36 starting at raw position 13. We pre-compute all
+    /// 9 positions and slice to the relevant prefix per block count.
+    const STATUS_POSITIONS_ALL: [usize; 9] =
+        [13, 49, 85, 121, 157, 193, 229, 265, 301];
+
+    /// Number of body status dibits for each multi-block extent.
+    const STATUS_COUNT_PER_BLOCKS: [usize; 3] = [4, 7, 9];
+
+    /// Raw on-air body dibits required to fully assemble `num_blocks`
+    /// TSBK blocks (1..=3). Returns `None` for invalid block counts.
+    pub fn body_dibits_for_blocks(num_blocks: usize) -> Option<usize> {
+        if num_blocks == 0 || num_blocks > Self::MAX_BLOCKS {
+            None
+        } else {
+            Some(Self::BODY_DIBITS_PER_BLOCKS[num_blocks - 1])
+        }
+    }
+
+    /// Strip status dibits and trailing nulls from a multi-block TSDU
+    /// body. Returns `num_blocks * 98` trellis-coded dibits ready to
+    /// hand to `TrellisDecoder::decode` block by block.
     ///
-    /// **Input:** the 123 raw on-air dibits of one TSBK1 body, taken
-    /// from the dibit stream immediately after the 33-dibit NID
-    /// window has been consumed.
+    /// **Input:** the `body_dibits_for_blocks(num_blocks)` raw on-air
+    /// dibits of the TSDU body (everything after the 33-dibit NID
+    /// window).
     ///
-    /// **Output:** 98 trellis-coded data dibits, ready to feed to
-    /// `TrellisDecoder::decode`.
-    pub fn deinterleave(tsdu_dibits: &[u8]) -> Vec<u8> {
-        // Step 1: drop the 4 status dibits.
-        let mut after_status: Vec<u8> = Vec::with_capacity(
-            tsdu_dibits.len().saturating_sub(Self::STATUS_POSITIONS.len()),
-        );
+    /// **Output:** `num_blocks * 98` deinterleaved trellis dibits,
+    /// laid out contiguously: block 0 in `[0..98]`, block 1 in
+    /// `[98..196]`, block 2 in `[196..294]`.
+    pub fn deinterleave_multi(tsdu_dibits: &[u8], num_blocks: usize) -> Vec<u8> {
+        if num_blocks == 0 || num_blocks > Self::MAX_BLOCKS {
+            return Vec::new();
+        }
+        let status_count = Self::STATUS_COUNT_PER_BLOCKS[num_blocks - 1];
+        let null_dibits = Self::NULL_DIBITS_PER_BLOCKS[num_blocks - 1];
+        let status_positions = &Self::STATUS_POSITIONS_ALL[..status_count];
+
+        // Step 1: drop the status dibits at the known on-air positions.
+        let mut after_status: Vec<u8> =
+            Vec::with_capacity(tsdu_dibits.len().saturating_sub(status_count));
         for (i, &dibit) in tsdu_dibits.iter().enumerate() {
-            if !Self::STATUS_POSITIONS.contains(&i) {
+            if !status_positions.contains(&i) {
                 after_status.push(dibit);
             }
         }
 
-        // Step 2: drop the 21 trailing null padding dibits, leaving
-        // exactly 98 trellis data dibits if the input was 123 dibits.
-        let trellis_len = after_status
-            .len()
-            .saturating_sub(Self::NULL_DIBITS);
+        // Step 2: drop the trailing null padding dibits.
+        let trellis_len = after_status.len().saturating_sub(null_dibits);
         after_status.truncate(trellis_len);
 
-        // Defensive: clamp to 98. Anything longer is from a caller
-        // that fed a multi-block TSBK; we only handle TSBK1 right now
-        // (see length_dibits in p25/types.rs).
-        if after_status.len() > Self::TRELLIS_DATA_DIBITS {
-            after_status.truncate(Self::TRELLIS_DATA_DIBITS);
+        // Defensive: clamp to num_blocks * 98 in case the input was
+        // longer than expected.
+        let max = num_blocks * Self::TRELLIS_DATA_DIBITS;
+        if after_status.len() > max {
+            after_status.truncate(max);
         }
         after_status
     }
+}
 
-    /// Extract trellis-block-sized slices from de-interleaved TSDU data.
-    ///
-    /// Phase 6F.2f reduced this to a single-block extractor: with the
-    /// new TSBK1-only `length_dibits` (123 raw → 98 trellis dibits),
-    /// `data_dibits` is exactly one trellis block. Multi-block TSBK
-    /// support is a follow-up.
-    pub fn extract_tsbk_blocks(data_dibits: &[u8]) -> Vec<&[u8]> {
-        let tsbk_size = Self::TRELLIS_DATA_DIBITS;
-        let mut blocks = Vec::new();
-        if data_dibits.len() >= tsbk_size {
-            blocks.push(&data_dibits[..tsbk_size]);
-        }
-        blocks
+/// Encode 48 two-bit input symbols into 49 four-bit transmitted
+/// symbols using SDRTrunk's TIA-102 BAAA Table 7-2 transition matrix
+/// (`P25_1_2_Node.getOutputValue()`), then apply the encoder-side bit
+/// interleave so the output dibits are in on-air order. Inverse of
+/// `TrellisDecoder::decode`. Test-only helper used by both `fec` tests
+/// and the multi-block TSBK e2e tests in `control_channel`.
+#[cfg(test)]
+pub(crate) fn trellis_encode_block(inputs: &[u8; 48]) -> [u8; 98] {
+    let mut nibbles = [0u8; 49];
+    let mut prev = 0u8;
+    for n in 0..48 {
+        let curr = inputs[n] & 0x03;
+        nibbles[n] = TRANSITION_MATRIX[prev as usize][curr as usize];
+        prev = curr;
     }
+    // Flush transition: input = 0.
+    nibbles[48] = TRANSITION_MATRIX[prev as usize][0];
+
+    // Unpack the 49 nibbles into 196 deinterleaved bits.
+    let mut de_bits = [0u8; 196];
+    for n in 0..49 {
+        let nib = nibbles[n] & 0x0F;
+        for k in 0..4 {
+            de_bits[n * 4 + k] = (nib >> (3 - k)) & 1;
+        }
+    }
+
+    // Apply the encoder's inverse-deinterleave: bit at position
+    // DATA_DEINTERLEAVE[i] in deinterleaved order goes to position i
+    // in the on-air order.
+    let mut interleaved = [0u8; 196];
+    for i in 0..196 {
+        interleaved[i] = de_bits[DATA_DEINTERLEAVE[i]];
+    }
+
+    // Pack the 196 interleaved bits back into 98 dibits.
+    let mut dibits = [0u8; 98];
+    for n in 0..98 {
+        dibits[n] = (interleaved[n * 2] << 1) | interleaved[n * 2 + 1];
+    }
+    dibits
+}
+
+/// Encode 12 TSBK bytes (96 bits, MSB-first per byte) into 98 on-air
+/// dibits via the P25 1/2 trellis. Convenience wrapper around
+/// `trellis_encode_block` that handles the bit-to-symbol packing.
+#[cfg(test)]
+pub(crate) fn trellis_encode_bytes(bytes: &[u8; 12]) -> [u8; 98] {
+    let mut inputs = [0u8; 48];
+    for n in 0..48 {
+        let bit_hi = (bytes[(n * 2) / 8] >> (7 - (n * 2) % 8)) & 1;
+        let bit_lo = (bytes[(n * 2 + 1) / 8] >> (7 - (n * 2 + 1) % 8)) & 1;
+        inputs[n] = (bit_hi << 1) | bit_lo;
+    }
+    trellis_encode_block(&inputs)
 }
 
 #[cfg(test)]
@@ -541,54 +615,6 @@ mod tests {
         assert_eq!(raw_duid, 0x6); // the un-FEC'd LSB-flipped DUID
     }
 
-    /// Encode 48 two-bit input symbols into 49 four-bit transmitted
-    /// symbols using SDRTrunk's TIA-102 BAAA Table 7-2 transition
-    /// matrix. Mirrors `P25_1_2_Node.getOutputValue()`. The encoder
-    /// starts in implicit state 0, runs 48 data transitions, then
-    /// flushes with one input=0 transition for a total of 49 emitted
-    /// nibbles = 196 bits = 98 dibits.
-    ///
-    /// **Phase 6F.2j:** also applies the inverse of `DATA_DEINTERLEAVE`
-    /// (which is the encoder-side bit interleave) so the output dibits
-    /// are in the SAME bit order as on-air. The decoder undoes this
-    /// permutation.
-    fn trellis_encode(inputs: &[u8; 48]) -> [u8; 98] {
-        let mut nibbles = [0u8; 49];
-        let mut prev = 0u8;
-        for n in 0..48 {
-            let curr = inputs[n] & 0x03;
-            nibbles[n] = TRANSITION_MATRIX[prev as usize][curr as usize];
-            prev = curr;
-        }
-        // Flush transition: input = 0.
-        nibbles[48] = TRANSITION_MATRIX[prev as usize][0];
-
-        // Unpack the 49 nibbles into 196 deinterleaved bits.
-        let mut de_bits = [0u8; 196];
-        for n in 0..49 {
-            let nib = nibbles[n] & 0x0F;
-            for k in 0..4 {
-                de_bits[n * 4 + k] = (nib >> (3 - k)) & 1;
-            }
-        }
-
-        // Apply the encoder's inverse-deinterleave: bit at position
-        // DATA_DEINTERLEAVE[i] in deinterleaved order goes to position
-        // i in the on-air order. (The decoder uses
-        // out[DATA_DEINTERLEAVE[i]] = in[i] -- this is its inverse.)
-        let mut interleaved = [0u8; 196];
-        for i in 0..196 {
-            interleaved[i] = de_bits[DATA_DEINTERLEAVE[i]];
-        }
-
-        // Pack the 196 interleaved bits back into 98 dibits.
-        let mut dibits = [0u8; 98];
-        for n in 0..98 {
-            dibits[n] = (interleaved[n * 2] << 1) | interleaved[n * 2 + 1];
-        }
-        dibits
-    }
-
     #[test]
     fn test_trellis_decode_clean_roundtrip() {
         // Build a 48-symbol input pattern and round-trip it through
@@ -599,7 +625,7 @@ mod tests {
         for i in 0..48 {
             inputs[i] = ((i * 7 + 1) % 4) as u8;
         }
-        let dibits = trellis_encode(&inputs);
+        let dibits = trellis_encode_block(&inputs);
         let bytes = TrellisDecoder::decode(&dibits).expect("decode should succeed");
 
         // Re-pack expected bytes from inputs (48 × 2 bits = 96 bits =
@@ -633,7 +659,7 @@ mod tests {
         for i in 0..48 {
             inputs[i] = ((i * 11 + 2) % 4) as u8;
         }
-        let mut dibits = trellis_encode(&inputs);
+        let mut dibits = trellis_encode_block(&inputs);
         // Flip the LSB of dibit 30 (somewhere in the middle).
         dibits[30] ^= 0x01;
 
@@ -681,7 +707,7 @@ mod tests {
             tsdu[*p] = 0xFD;
         }
 
-        let data = TsduDeinterleaver::deinterleave(&tsdu);
+        let data = TsduDeinterleaver::deinterleave_multi(&tsdu, 1);
         assert_eq!(
             data.len(),
             98,
@@ -693,5 +719,80 @@ mod tests {
             assert_ne!(d, 0xFD, "null marker survived at output[{}]", i);
             assert_eq!(d, 0x01, "non-data dibit at output[{}]: 0x{:02X}", i, d);
         }
+    }
+
+    /// **Phase 6F.3 multi-block TSBK regression guard.** Build a
+    /// 231-dibit on-air TSBK1+TSBK2 body with the 7 expected status
+    /// drops at {13,49,85,121,157,193,229} and 28 trailing null padding
+    /// dibits, and verify the deinterleaver returns exactly 196 trellis
+    /// data dibits (= two contiguous 98-dibit blocks) with all status
+    /// and null markers stripped.
+    #[test]
+    fn test_tsdu_deinterleave_two_blocks() {
+        let mut tsdu = vec![0u8; 231];
+        for d in tsdu.iter_mut() {
+            *d = 0x01;
+        }
+        for &p in &[13usize, 49, 85, 121, 157, 193, 229] {
+            tsdu[p] = 0xFE;
+        }
+        // Mark the LAST 28 non-status positions as null.
+        let mut non_status_positions: Vec<usize> = (0..231)
+            .filter(|i| !matches!(*i, 13 | 49 | 85 | 121 | 157 | 193 | 229))
+            .collect();
+        let null_positions =
+            non_status_positions.split_off(non_status_positions.len() - 28);
+        for p in &null_positions {
+            tsdu[*p] = 0xFD;
+        }
+
+        let data = TsduDeinterleaver::deinterleave_multi(&tsdu, 2);
+        assert_eq!(
+            data.len(),
+            196,
+            "two-block deinterleaver must return 196 trellis dibits \
+             (231 raw - 7 status - 28 null)"
+        );
+        for (i, &d) in data.iter().enumerate() {
+            assert_ne!(d, 0xFE, "status marker survived at output[{}]", i);
+            assert_ne!(d, 0xFD, "null marker survived at output[{}]", i);
+            assert_eq!(d, 0x01, "non-data dibit at output[{}]: 0x{:02X}", i, d);
+        }
+    }
+
+    /// **Phase 6F.3 multi-block TSBK3 regression guard.** TSBK3 has 9
+    /// status drops at {13,49,85,121,157,193,229,265,301} and ZERO
+    /// trailing null padding. Body length 303 raw → 294 trellis dibits
+    /// (= 3 contiguous 98-dibit blocks).
+    #[test]
+    fn test_tsdu_deinterleave_three_blocks() {
+        let mut tsdu = vec![0u8; 303];
+        for d in tsdu.iter_mut() {
+            *d = 0x01;
+        }
+        for &p in &[13usize, 49, 85, 121, 157, 193, 229, 265, 301] {
+            tsdu[p] = 0xFE;
+        }
+
+        let data = TsduDeinterleaver::deinterleave_multi(&tsdu, 3);
+        assert_eq!(
+            data.len(),
+            294,
+            "three-block deinterleaver must return 294 trellis dibits \
+             (303 raw - 9 status - 0 null)"
+        );
+        for (i, &d) in data.iter().enumerate() {
+            assert_ne!(d, 0xFE, "status marker survived at output[{}]", i);
+            assert_eq!(d, 0x01, "non-data dibit at output[{}]: 0x{:02X}", i, d);
+        }
+    }
+
+    #[test]
+    fn test_body_dibits_for_blocks_table() {
+        assert_eq!(TsduDeinterleaver::body_dibits_for_blocks(1), Some(123));
+        assert_eq!(TsduDeinterleaver::body_dibits_for_blocks(2), Some(231));
+        assert_eq!(TsduDeinterleaver::body_dibits_for_blocks(3), Some(303));
+        assert_eq!(TsduDeinterleaver::body_dibits_for_blocks(0), None);
+        assert_eq!(TsduDeinterleaver::body_dibits_for_blocks(4), None);
     }
 }

@@ -27,7 +27,19 @@ pub enum TsbkOpcode {
     UnitToUnitVoiceChannelGrant,
     /// Telephone Interconnect Voice Channel Grant (0x08)
     TelephoneInterconnectVoiceChannelGrant,
-    /// Identifier Update VHF/UHF (0x34)
+    /// Identifier Update TDMA (0x33) -- TDMA frequency band, 4-bit
+    /// channel-type field instead of bandwidth, 13-bit transmit offset
+    /// at bits 25-37, otherwise same layout as VUHF.
+    IdentifierUpdateTdma,
+    /// Identifier Update VHF/UHF (0x34) -- VUHF frequency band,
+    /// 4-bit bandwidth, 13-bit transmit offset at bits 25-37.
+    IdentifierUpdateVuhf,
+    /// System Service Broadcast (0x38)
+    SystemServiceBroadcast,
+    /// Identifier Update standard FDMA (0x3D) -- THE common one on
+    /// Clay County and most P25 sites. 9-bit bandwidth, 8-bit transmit
+    /// offset at bits 30-37. NOT the same as opcode 0x34 (VUHF) which
+    /// has a different field layout.
     IdentifierUpdate,
     /// RFSS Status Broadcast (0x3A)
     RfssStatusBroadcast,
@@ -35,8 +47,6 @@ pub enum TsbkOpcode {
     NetworkStatusBroadcast,
     /// Adjacent Status Broadcast (0x3C)
     AdjacentStatusBroadcast,
-    /// System Service Broadcast (0x38)
-    SystemServiceBroadcast,
     /// Unknown opcode
     Unknown(u8),
 }
@@ -48,11 +58,13 @@ impl From<u8> for TsbkOpcode {
             0x02 => Self::GroupVoiceChannelGrantUpdate,
             0x04 => Self::UnitToUnitVoiceChannelGrant,
             0x08 => Self::TelephoneInterconnectVoiceChannelGrant,
-            0x34 => Self::IdentifierUpdate,
+            0x33 => Self::IdentifierUpdateTdma,
+            0x34 => Self::IdentifierUpdateVuhf,
             0x38 => Self::SystemServiceBroadcast,
             0x3A => Self::RfssStatusBroadcast,
             0x3B => Self::NetworkStatusBroadcast,
             0x3C => Self::AdjacentStatusBroadcast,
+            0x3D => Self::IdentifierUpdate,
             other => Self::Unknown(other),
         }
     }
@@ -266,7 +278,13 @@ impl TsbkBlock {
                 Some(self.decode_grp_v_ch_grant_update())
             }
             TsbkOpcode::IdentifierUpdate => {
-                Some(self.decode_iden_update())
+                Some(self.decode_iden_update_fdma())
+            }
+            TsbkOpcode::IdentifierUpdateVuhf => {
+                Some(self.decode_iden_update_vuhf())
+            }
+            TsbkOpcode::IdentifierUpdateTdma => {
+                Some(self.decode_iden_update_tdma())
             }
             TsbkOpcode::NetworkStatusBroadcast => {
                 Some(self.decode_net_sts_bcst())
@@ -313,111 +331,180 @@ impl TsbkBlock {
         }
     }
 
-    /// IDEN_UP (0x34)
-    /// Payload: [iden(4)|bw(9)|xmit_offset(19)][spacing(10)|base_freq(32)]
-    /// Frequencies are in units of 5 Hz
-    fn decode_iden_update(&self) -> TsbkMessage {
-        let identifier = self.payload[0] >> 4;
-        let bw = (((self.payload[0] & 0x0F) as u16) << 5)
-            | ((self.payload[1] >> 3) as u16);
-        // transmit_offset is 19 bits, two's complement, in units of 250 kHz
-        let raw_offset = (((self.payload[1] & 0x07) as u32) << 16)
-            | ((self.payload[2] as u32) << 8)
-            | (self.payload[3] as u32);
-        // Sign-extend 19-bit to i32
-        let transmit_offset = if raw_offset & (1 << 18) != 0 {
-            (raw_offset | 0xFFF80000) as i32
+    /// Helper: read `n` bits from the 12-byte TSBK starting at absolute
+    /// bit position `start` (where bit 0 is the MSB of byte 0). Returns
+    /// the bits packed into a u64, MSB-first. Used by all the SDRTrunk-
+    /// style absolute-bit-position bit-field extractors below.
+    fn bits(&self, data: &[u8; 12], start: usize, n: usize) -> u64 {
+        let mut out = 0u64;
+        for i in 0..n {
+            let pos = start + i;
+            let byte = data[pos / 8];
+            let bit = (byte >> (7 - (pos % 8))) & 1;
+            out = (out << 1) | bit as u64;
+        }
+        out
+    }
+
+    /// Sign-extend an n-bit two's-complement value into i32 with sign
+    /// bit at the MSB of `n`.
+    fn sign_extend(val: u64, n: usize) -> i32 {
+        let sign = (val >> (n - 1)) & 1;
+        if sign == 1 {
+            (val | (!0u64 << n)) as i32
         } else {
-            raw_offset as i32
-        } * 250_000; // convert to Hz
+            val as i32
+        }
+    }
 
-        let channel_spacing = (((self.payload[4] >> 5) as u32) << 7)
-            | (((self.payload[4] & 0x1F) as u32) << 2)
-            | ((self.payload[5] >> 6) as u32);
-        // spacing in units of 125 Hz
-        let channel_spacing = channel_spacing * 125;
+    /// IDEN_UPDATE (opcode 0x3D) -- standard FDMA frequency band entry.
+    /// SDRTrunk's `FrequencyBandUpdate.java` absolute-bit-position
+    /// layout (bit 0 = MSB of byte 0):
+    ///
+    /// | Field             | Bits  | Width |
+    /// |-------------------|-------|-------|
+    /// | identifier        | 16-19 | 4     |
+    /// | bandwidth (×125)  | 20-28 | 9     |
+    /// | offset sign       | 29    | 1     |
+    /// | transmit offset   | 30-37 | 8     |
+    /// | channel spacing   | 38-47 | 10    |
+    /// | base frequency    | 48-79 | 32    |
+    ///
+    /// Note that this is DIFFERENT from VUHF (0x34) which has a 4-bit
+    /// bandwidth + 13-bit offset starting at bit 25. SDRTrunk maps both
+    /// to separate Java classes; we route them to separate decode_*
+    /// functions but emit the same `TsbkMessage::IdentifierUpdate`
+    /// variant since the downstream `FrequencyBand` consumer cares
+    /// about the same fields.
+    ///
+    /// Phase 6F.4 fix: this opcode (0x3D) is the one Clay County
+    /// actually broadcasts. Until Phase 6F.4 we mapped 0x34 to
+    /// `IdentifierUpdate` and never decoded 0x3D, which is why
+    /// `bands_known` stayed at 0 even after the multi-block 6F.3 work
+    /// landed. Verified against the SDRTrunk reference recording from
+    /// 2026-04-11: every `TSBK1/2/3 IDEN_UPDATE` line in the log uses
+    /// FDMA layout, never VUHF.
+    fn decode_iden_update_fdma(&self) -> TsbkMessage {
+        // We need the full 12-byte TSBK to bit-extract from absolute
+        // positions, but we only stored payload[0..8] (= bits 16-79).
+        // Reconstruct a synthetic 12-byte buffer with zeros for bytes
+        // 0/1/10/11 (we don't read them) and the payload in the middle.
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
 
-        // base_frequency: 32 bits in units of 5 Hz
-        let base_frequency = ((self.payload[5] & 0x3F) as u64) << 26
-            | (self.payload[6] as u64) << 18
-            | (self.payload[7] as u64) << 10;
-        // Actually it's a straight 32-bit field...
-        // Let me re-read the spec layout more carefully
-        // IDEN_UP layout: iden(4) | bw(9) | xmit_offset(13) | spacing(10) | base_freq(32)
-        // Wait, that's 68 bits for 8 bytes = 64 bits. Let me reconsider.
-        //
-        // Per TIA-102.AABF-D Table 7.3.10:
-        // Byte layout (8 bytes payload):
-        //   [0]    identifier(4) | reserved(4)
-        //   [1-2]  bandwidth(9) | xmit_offset_sign(1) | xmit_offset_mag(13)
-        //          ... this doesn't work either. Let me use the SDRTrunk layout.
-        //
-        // SDRTrunk IdentifierUpdateVHFUHF.java:
-        //   identifier = message.getInt(IDENTIFIER)  -- bits 16-19
-        //   bandwidth  = message.getInt(BW) * 125    -- bits 20-28 (9 bits) * 125 Hz
-        //   offset     = message.getInt(TX_OFFSET) * 250000 * sign -- bits 29-41 (13 bits)
-        //   spacing    = message.getInt(CH_SPACING) * 125  -- bits 42-51 (10 bits)
-        //   base_freq  = message.getLong(BASE_FREQ) * 5 -- bits 52-83 (32 bits)
-        //
-        // So in our 8-byte payload (bits 0-63, after opcode+mfid):
-        //   [0] bits 0-3: identifier, bits 4-7: reserved
-        //   Wait, the TSBK is 12 bytes total: opcode(8)+mfid(8)+payload(64)+crc(16) = 96 bits
-        //   So payload is bits 16-79 of the TSBK.
-        //   identifier is at absolute bits 16-19 = payload bits 0-3 = payload[0] >> 4 ✓
-        //   bw at bits 20-28 = payload bits 4-12
-        //   xmit_offset at bits 29-41 = payload bits 13-25
-        //   spacing at bits 42-51 = payload bits 26-35
-        //   base_freq at bits 52-83 = payload bits 36-67... but payload is only 64 bits (0-63)
-        //   So base_freq extends to bit 67 which is payload[8]...[8.375]
-        //   That's wrong, we only have 8 bytes of payload.
-        //
-        // Actually, I think the "payload" in SDRTrunk counts from bit 0 of the full TSBK.
-        // Let me compute from the full 12-byte block:
-        //   Block bits 0-7: LB|P|opcode
-        //   Block bits 8-15: manufacturer
-        //   Block bits 16-19: identifier    => payload[0] >> 4
-        //   Block bits 20-28: bw (9 bits)   => payload[0:1] bits
-        //   Block bits 29-41: offset (13b)  => payload[1:3]
-        //   Block bits 42-51: spacing (10b) => payload[3:4]
-        //   Block bits 52-83: base_freq (32b) => payload[4:7] + extends...
-        //   Block bits 80-95: CRC
-        //
-        // 52+32 = 84. Block is 96 bits. CRC at 80-95. So base_freq is bits 52-79 = 28 bits.
-        // Hmm that's only 28 bits. Let me look at this more carefully.
-
-        // Using bit extraction from the full 8-byte payload:
-        let p = &self.payload;
-        let iden = p[0] >> 4;
-        // BW: 9 bits starting at payload bit 4
-        let bw_val = (((p[0] & 0x0F) as u16) << 5) | ((p[1] >> 3) as u16);
-        // Transmit offset: 13 bits starting at payload bit 13, with sign at bit 29 of block
-        let offset_sign = (p[1] >> 2) & 1;
-        let offset_mag = (((p[1] & 0x03) as u32) << 10)
-            | ((p[2] as u32) << 2)
-            | ((p[3] >> 6) as u32);
-        let xmit_offset = if offset_sign == 1 {
-            -(offset_mag as i32) * 250_000
-        } else {
-            (offset_mag as i32) * 250_000
-        };
-        // Channel spacing: 10 bits starting at payload bit 26
-        let spacing_raw = (((p[3] & 0x3F) as u32) << 4) | ((p[4] >> 4) as u32);
-        let spacing = spacing_raw * 125;
-        // Base frequency: 32 bits starting at payload bit 36
-        let base_freq_raw = ((p[4] & 0x0F) as u64) << 28
-            | (p[5] as u64) << 20
-            | (p[6] as u64) << 12
-            | (p[7] as u64) << 4;
-        // Actually only 28 bits available in payload. The remaining 4 bits are zeros.
-        // base_freq is in units of 5 Hz
-        let base_freq = base_freq_raw * 5;
+        let identifier = self.bits(&full, 16, 4) as u8;
+        let bw_raw = self.bits(&full, 20, 9) as u16;
+        let bw = bw_raw; // SDRTrunk multiplies by 125 in the getter; we
+                        // emit raw and let FrequencyBand do that.
+        let offset_sign = self.bits(&full, 29, 1);
+        let offset_mag = self.bits(&full, 30, 8);
+        // SDRTrunk: `if (!sign) offset *= -1` -- sign=1 means POSITIVE
+        let mut xmit_offset = (offset_mag as i32) * 250_000;
+        if offset_sign == 0 {
+            xmit_offset = -xmit_offset;
+        }
+        let spacing = self.bits(&full, 38, 10) as u32 * 125;
+        let base_frequency = self.bits(&full, 48, 32) * 5;
 
         TsbkMessage::IdentifierUpdate {
-            identifier: iden,
-            bw: bw_val,
+            identifier,
+            bw,
             transmit_offset: xmit_offset,
             channel_spacing: spacing,
-            base_frequency: base_freq,
+            base_frequency,
+        }
+    }
+
+    /// IDEN_UPDATE_VHF_UHF (opcode 0x34) -- VUHF frequency band.
+    /// SDRTrunk `FrequencyBandUpdateVUHF.java`:
+    ///
+    /// | Field             | Bits  | Width |
+    /// |-------------------|-------|-------|
+    /// | identifier        | 16-19 | 4     |
+    /// | bandwidth (×125)  | 20-23 | 4     |
+    /// | offset sign       | 24    | 1     |
+    /// | transmit offset   | 25-37 | 13    |
+    /// | channel spacing   | 38-47 | 10    |
+    /// | base frequency    | 48-79 | 32    |
+    fn decode_iden_update_vuhf(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+
+        let identifier = self.bits(&full, 16, 4) as u8;
+        let bw = self.bits(&full, 20, 4) as u16;
+        let offset_sign = self.bits(&full, 24, 1);
+        let offset_mag = self.bits(&full, 25, 13);
+        let mut xmit_offset = (offset_mag as i32) * 250_000;
+        if offset_sign == 0 {
+            xmit_offset = -xmit_offset;
+        }
+        let spacing = self.bits(&full, 38, 10) as u32 * 125;
+        let base_frequency = self.bits(&full, 48, 32) * 5;
+
+        TsbkMessage::IdentifierUpdate {
+            identifier,
+            bw,
+            transmit_offset: xmit_offset,
+            channel_spacing: spacing,
+            base_frequency,
+        }
+    }
+
+    /// IDEN_UPDATE_TDMA (opcode 0x33). SDRTrunk
+    /// `FrequencyBandUpdateTDMA.java`:
+    ///
+    /// | Field             | Bits  | Width |
+    /// |-------------------|-------|-------|
+    /// | identifier        | 16-19 | 4     |
+    /// | channel type      | 20-23 | 4     |
+    /// | offset sign       | 24    | 1     |
+    /// | transmit offset   | 25-37 | 13    |
+    /// | channel spacing   | 38-47 | 10    |
+    /// | base frequency    | 48-79 | 32    |
+    ///
+    /// We expose the channel type via the `bw` field of
+    /// `IdentifierUpdate` for now (SDRTrunk stores TDMA bandwidth in a
+    /// separate enum mapped from `channel type`). Downstream the
+    /// `FrequencyBand` consumer treats it as bandwidth which is wrong
+    /// for TDMA -- not a problem for control-channel tracking which
+    /// only uses base_frequency + spacing.
+    ///
+    /// **Phase 6F.5 fix:** TDMA offset is `mag * channel_spacing`, NOT
+    /// `mag * 250000` like FDMA/VUHF. SDRTrunk's
+    /// `FrequencyBandUpdateTDMA.getTransmitOffset()`:
+    ///
+    /// ```java
+    /// long offset = getMessage().getLong(TRANSMIT_OFFSET) * getChannelSpacing();
+    /// ```
+    ///
+    /// Until 6F.5 we used `* 250_000` and the resulting offset was
+    /// wrong by a factor of `250000 / channel_spacing` -- on the Clay
+    /// County 12.5 kHz TDMA bands that's `250000 / 12500 = 20`, so
+    /// band 5 reported -780 MHz instead of -39 MHz. Verified
+    /// against the SDRTrunk reference recording.
+    fn decode_iden_update_tdma(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+
+        let identifier = self.bits(&full, 16, 4) as u8;
+        let channel_type = self.bits(&full, 20, 4) as u16;
+        let offset_sign = self.bits(&full, 24, 1);
+        let offset_mag = self.bits(&full, 25, 13);
+        let spacing = self.bits(&full, 38, 10) as u32 * 125;
+        // TDMA-specific: offset is in units of channel_spacing, NOT
+        // 250 kHz. See doc above.
+        let mut xmit_offset = (offset_mag as i32) * (spacing as i32);
+        if offset_sign == 0 {
+            xmit_offset = -xmit_offset;
+        }
+        let base_frequency = self.bits(&full, 48, 32) * 5;
+
+        TsbkMessage::IdentifierUpdate {
+            identifier,
+            bw: channel_type, // see doc above
+            transmit_offset: xmit_offset,
+            channel_spacing: spacing,
+            base_frequency,
         }
     }
 
@@ -441,13 +528,35 @@ impl TsbkBlock {
         }
     }
 
-    /// RFSS_STS_BCST (0x3A)
-    /// Payload: [lra(8)][reserved(8)][rfss_id(8)][site_id(8)][channel(16)][services(8)]
+    /// RFSS_STS_BCST (0x3A). SDRTrunk `RFSSStatusBroadcast.java` bit
+    /// layout (absolute bit positions in the 12-byte TSBK):
+    ///
+    /// | Field            | Bits  | Width |
+    /// |------------------|-------|-------|
+    /// | LRA              | 16-23 | 8     |
+    /// | active conn      | 27    | 1     |
+    /// | system           | 28-39 | 12    |
+    /// | RFSS             | 40-47 | 8     |
+    /// | site             | 48-55 | 8     |
+    /// | freq band        | 56-59 | 4     |
+    /// | channel number   | 60-71 | 12    |
+    /// | system service   | 72-79 | 8     |
+    ///
+    /// Phase 6F.4 fix: until 6F.4 we read RFSS from `payload[2]`
+    /// (= bits 32-39, which is actually the LOW byte of the SYSTEM
+    /// field). On Clay County `system_id = 0x8A0`, low byte = 0xA0 =
+    /// 160 -- exactly the wrong value we were reporting via
+    /// `/api/system`. Same off-by-one shift on site/channel.
     fn decode_rfss_sts_bcst(&self) -> TsbkMessage {
-        let lra = self.payload[0];
-        let rfss_id = self.payload[2];
-        let site_id = self.payload[3];
-        let channel = Channel(u16::from_be_bytes([self.payload[4], self.payload[5]]));
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let lra = self.bits(&full, 16, 8) as u8;
+        let rfss_id = self.bits(&full, 40, 8) as u8;
+        let site_id = self.bits(&full, 48, 8) as u8;
+        // Channel = freq_band(4) | channel_number(12) -- packed into
+        // a single 16-bit Channel(u16) where the top 4 bits are the
+        // band (matches our Channel::identifier() / number() split).
+        let channel = Channel(self.bits(&full, 56, 16) as u16);
         TsbkMessage::RfssStatus {
             lra,
             rfss_id,
@@ -573,7 +682,13 @@ mod tests {
     #[test]
     fn test_opcode_parsing() {
         assert_eq!(TsbkOpcode::from(0x00), TsbkOpcode::GroupVoiceChannelGrant);
-        assert_eq!(TsbkOpcode::from(0x34), TsbkOpcode::IdentifierUpdate);
+        // Phase 6F.4: 0x33 = IDEN_UPDATE_TDMA, 0x34 = IDEN_UPDATE_VUHF,
+        // 0x3D = IDEN_UPDATE (standard FDMA, the one Clay County actually
+        // broadcasts). Until 6F.4 we mapped 0x34 to IdentifierUpdate
+        // which never matched real on-air TSBKs.
+        assert_eq!(TsbkOpcode::from(0x33), TsbkOpcode::IdentifierUpdateTdma);
+        assert_eq!(TsbkOpcode::from(0x34), TsbkOpcode::IdentifierUpdateVuhf);
+        assert_eq!(TsbkOpcode::from(0x3D), TsbkOpcode::IdentifierUpdate);
         assert_eq!(TsbkOpcode::from(0x3B), TsbkOpcode::NetworkStatusBroadcast);
         // LB and P bits should be masked
         assert_eq!(TsbkOpcode::from(0xC0), TsbkOpcode::GroupVoiceChannelGrant);

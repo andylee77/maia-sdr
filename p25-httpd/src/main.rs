@@ -34,7 +34,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-11-phase6f.2j-trellis-deinterleave-and-ccitt80";
+pub const BUILD_TAG: &str = "2026-04-11-phase6f.9-iq-lsm-decoder-soft-sync-directed-tsdu";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -236,6 +236,17 @@ async fn main() -> anyhow::Result<()> {
     lsm_decoder.set_event_tx(event_tx.clone());
     let lsm_decoder = Arc::new(RwLock::new(lsm_decoder));
 
+    // Phase 6F.9: third parallel `ControlChannelDecoder` driven by the
+    // Phase 6D `LsmPipeline` running on RAW IQ. Soft-decision sync
+    // events from `find_sync_events_soft` get dispatched into
+    // `process_directed_tsdu` to bypass the Hunting state machine
+    // entirely. The hope is to capture the syncs the dibit-domain hard
+    // correlator misses (~9/sec soft vs ~5/sec hard) and turn them
+    // into TSBKs through the same parser path.
+    let mut iq_lsm_decoder = ControlChannelDecoder::new();
+    iq_lsm_decoder.set_event_tx(event_tx.clone());
+    let iq_lsm_decoder = Arc::new(RwLock::new(iq_lsm_decoder));
+
     // Phase 6D dashboard wiring: shared LsmStats mutex, populated by the
     // LSM IRQ task below and read by the /api/lsm handler. Kept out of
     // the cfg(linux) block so non-Linux builds still expose the (empty)
@@ -393,9 +404,16 @@ async fn main() -> anyhow::Result<()> {
         //     the same control DDC output but via separate ring DMAs.
         let lsm_core = ip_core.clone();
         let lsm_stats_task = lsm_stats.clone();
+        let iq_lsm_decoder_task = iq_lsm_decoder.clone();
         tokio::spawn(async move {
             tracing::info!("LSM IQ reader task started (Phase 6D)");
             let mut pipeline = lsm::LsmPipeline::new();
+            // Phase 6F.9: cross-batch carry-over of the last ~336
+            // hard_dibits so soft sync events near a batch boundary
+            // can still find their 336-dibit (NID + 303 body) window
+            // in the combined buffer. Capped to avoid unbounded growth.
+            let mut prev_tail: Vec<u8> = Vec::new();
+            const CARRY_DIBITS: usize = 400; // a bit more than 33+303
             loop {
                 iq_waiter.wait().await;
 
@@ -445,6 +463,57 @@ async fn main() -> anyhow::Result<()> {
                 let wake_dibits = batch.demod.n_symbols();
                 let wake_hard = batch.hard_events.len();
                 let wake_soft = batch.soft_events.len();
+
+                // Phase 6F.9: dispatch every soft sync event into the
+                // directed-decode TSBK pipeline. This is the path that
+                // bypasses the HDL slicer for sync detection -- the
+                // soft correlator on Phase 6D's `soft_phases` finds
+                // ~9 syncs/sec vs ~5/sec for the dibit-domain hard
+                // correlator on the HDL slicer's output. Each event
+                // gives us a precise dibit position; we slice 336
+                // dibits (33 NID + 303 body) starting at that position
+                // and run them through `process_directed_tsdu` which
+                // shares the existing TSBK parsers, CRC, and counters.
+                {
+                    let prev_tail_len = prev_tail.len();
+                    // Build a `combined` view of (prev_tail || new_dibits)
+                    // so events near a batch boundary can still find
+                    // their full body in the next batch.
+                    let mut combined: Vec<u8> =
+                        Vec::with_capacity(prev_tail_len + wake_dibits);
+                    combined.extend_from_slice(&prev_tail);
+                    combined.extend_from_slice(&batch.demod.hard_dibits);
+
+                    if !batch.soft_events.is_empty() {
+                        let mut dec = iq_lsm_decoder_task.write().await;
+                        for ev in &batch.soft_events {
+                            // event.symbol_idx is the position of the
+                            // FIRST NID dibit, relative to the current
+                            // batch's hard_dibits.
+                            let abs = prev_tail_len + ev.symbol_idx;
+                            // Need at minimum 33 dibits for the NID.
+                            // process_directed_tsdu handles short
+                            // buffers gracefully (decodes fewer blocks
+                            // and stops when it runs out of data).
+                            if abs + 33 <= combined.len() {
+                                let end = (abs + 336).min(combined.len());
+                                dec.process_directed_tsdu(&combined[abs..end]);
+                            }
+                        }
+                    }
+
+                    // Trim to the last CARRY_DIBITS dibits as the next
+                    // batch's prev_tail. Any soft event whose body
+                    // straddles a batch boundary becomes processable
+                    // when the next batch arrives because we still
+                    // have its NID start in `prev_tail`.
+                    if combined.len() > CARRY_DIBITS {
+                        prev_tail =
+                            combined[combined.len() - CARRY_DIBITS..].to_vec();
+                    } else {
+                        prev_tail = combined;
+                    }
+                }
 
                 // Fold into shared stats + snapshot cumulative totals and
                 // top-3 NACs under the lock, then drop it before logging.
@@ -1140,6 +1209,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(httpd::AppState {
         decoder: decoder.clone(),
         lsm_decoder: lsm_decoder.clone(),
+        iq_lsm_decoder: iq_lsm_decoder.clone(),
         event_tx,
         #[cfg(target_os = "linux")]
         ip_core,
