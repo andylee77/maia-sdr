@@ -116,7 +116,7 @@ def extract_nid_skipping_status(raw_nid_dibits: list[int]) -> int:
 
 # ─── Stage 3: TSDU body deinterleaver ──────────────────────────────────
 
-STATUS_POSITIONS = (14, 50, 86)
+STATUS_POSITIONS = (13, 49, 85, 121)
 NULL_DIBITS = 21
 TRELLIS_DATA_DIBITS = 98
 

@@ -64,21 +64,34 @@ impl DataUnit {
 
     /// Number of dibits in this data unit (excluding NID).
     ///
-    /// **Phase 6F.2g (2026-04-11) note for Tsdu:** Final value 122 after
-    /// off-by-one correction from 6F.2f (which was 123). The math:
-    /// SDRTrunk's `P25P1DataUnitID.TRUNKING_SIGNALING_BLOCK_1` declares
-    /// `messageLength = 196 + 42 (nullBits) = 238 bits = 119 non-status
-    /// dibits` accumulated in the message assembler. The framer's
-    /// `mStatusSymbolDibitCounter` starts at 21 immediately after
-    /// `nidDetected()` and increments by 1 BEFORE the `== 36` check, so
-    /// the first body dibit takes the counter to 22. Status drops occur
-    /// at body positions {14, 50, 86} (counter hits 36 → drop → reset
-    /// to 0 → another 35 non-status dibits → next drop). After body
-    /// position 121 the assembler has accumulated 119 non-status dibits
-    /// and is complete; the next dibit would be a 4th status drop but
-    /// we never read it. So total raw on-air body length = 14 + 1 +
-    /// 35 + 1 + 35 + 1 + 35 = 122 dibits, with 3 status dibits
-    /// embedded.
+    /// **Phase 6F.2i (2026-04-11) note for Tsdu:** FINAL value 123, with
+    /// 4 status positions at body raw indices {13, 49, 85, 121}, after
+    /// careful re-trace of SDRTrunk's `P25P1MessageFramer.process()`.
+    /// 6F.2c had length 123 but wrong positions {14, 50, 86, 122};
+    /// 6F.2g shifted to length 122 with 3 positions {14, 50, 86} which
+    /// was also wrong by one. Correct trace:
+    ///
+    /// 1. `nidDetected()` sets `mDibitCounter = 57` and
+    ///    `mStatusSymbolDibitCounter = 21` (lines 904-905).
+    /// 2. The next iteration (#1 post-NID) increments
+    ///    `mStatusSymbolDibitCounter` to 22 at the top, then takes the
+    ///    `mDibitCounter == 57` branch which CREATES the assembler but
+    ///    does NOT call `receive()`. `mDibitCounter -> 58`.
+    /// 3. Iteration #2: `mStatusSymbolDibitCounter -> 23`. Assembler
+    ///    is non-null now → `receive()` is called. THIS is the first
+    ///    body dibit fed (body raw position 0).
+    /// 4. From here, `mStatusSymbolDibitCounter` increments by 1 each
+    ///    iteration. It hits 36 at iteration #15 (counter 23+13=36),
+    ///    which is body raw position 13. Status drop, reset to 0.
+    /// 5. Subsequent status drops at body positions {49, 85, 121}.
+    /// 6. The assembler completes at the 119th non-status dibit fed,
+    ///    which is body raw position 122.
+    /// 7. Total body raw length = 4 status + 119 data = **123 dibits**.
+    ///
+    /// SDRTrunk's `P25P1DataUnitID.TRUNKING_SIGNALING_BLOCK_1` table
+    /// independently confirms: `messageLength=196` data bits +
+    /// `nullBits=42` = 238 bits = 119 dibits, with `statusDibits=5`
+    /// total across the whole frame (1 in NID + 4 in body).
     ///
     /// Multi-block TSBK2 / TSBK3 handling is a follow-up; for now we
     /// read one block at a time and let the next sync detect catch the
@@ -88,7 +101,7 @@ impl DataUnit {
             Self::Hdu => 324,   // 648 bits
             Self::Tdu => 0,     // no payload
             Self::Ldu1 => 792,  // 1584 bits (9 IMBE frames + LC)
-            Self::Tsdu => 122,  // TSBK1: 119 data+null + 3 status, see above
+            Self::Tsdu => 123,  // TSBK1: 119 data+null + 4 status, see above
             Self::Ldu2 => 792,  // 1584 bits
             Self::Pdu => 288,   // variable, minimum
             Self::TduLc => 168, // 336 bits (LC + parity)
