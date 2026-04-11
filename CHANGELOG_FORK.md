@@ -5,6 +5,189 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-11] Phase 6F.5 → 6F.9 throughput breakthrough (PS LSM decoder)
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/029_phase6f5_through_6f9_throughput_breakthrough.md`
+
+Five flash cycles of throughput tuning + diagnostic infrastructure
+that took the PS LSM decoder from 2.3 useful messages/sec to a
+steady-state ~14.8 parsed messages/sec across 8 opcode types.
+Both stretch targets (30 TSBK/sec, 10 msg/sec) MET.
+
+### Final on-target numbers (130s steady-state, post PLL lock)
+
+| Pipeline | TSDU/s | Block attempts/s | CRC OK/s | Pass% |
+|---|---:|---:|---:|---:|
+| **ps_lsm** (HDL slicer + dibit hard sync) | **12.4** | **37.2** | **34.1** | **91.7%** |
+| **ps_iq_lsm** (raw IQ + soft sync, NEW) | **11.6** | **21.5** | **19.8** | **92.3%** |
+| **COMBINED** | **24.0** | **58.7** | **53.9** | 92% |
+
+### What landed in each phase
+
+- **6F.5 -- TDMA IDEN_UPDATE offset fix.** SDRTrunk's
+  `FrequencyBandUpdateTDMA.getTransmitOffset()` multiplies by
+  `getChannelSpacing()`, NOT by 250 kHz like FDMA/VUHF. We were
+  reporting -780 MHz on Clay County's TDMA bands instead of the
+  SDRTrunk-correct -39 MHz. One-line fix in
+  `decode_iden_update_tdma`.
+- **6F.6 -- sync distance histogram.** New
+  `sync_distance_hist[25]` field on `ControlChannelDecoder` that
+  buckets every observed sync distance. Exposed via
+  `/api/lsm_dibit_dump`. The diagnostic that revealed the PLL
+  acquisition transient was distorting all the early throughput
+  measurements.
+- **6F.7 -- runtime tunable threshold + sweep tool.** New
+  `RUNTIME_SYNC_THRESHOLD: AtomicU32`, two new GET endpoints
+  (`/api/sync_tune?threshold=N` and `/api/decoder_reset`), new
+  `tools/p25_sync_sweep.py` automated threshold sweep tool. All
+  endpoints accept GET-with-query-params so they work from a
+  plain browser bar / curl.
+- **6F.8 -- decoder_reset bug fix.** New
+  `ControlChannelDecoder::reset_diagnostics()` method that clears
+  EVERY per-run counter / histogram in one place. The 6F.7
+  handler had missed `sync_hits`, `total_dibits`, `dibit_hist`,
+  `recent_dibits`, and `raw_duid_hist`, which made the sweep tool
+  conflate lifetime average with per-window throughput.
+- **6F.9 -- IQ-LSM parallel decoder.** New
+  `process_directed_tsdu()` method on `ControlChannelDecoder`
+  that skips the Hunting state machine and runs NID + multi-block
+  TSBK decode directly on a caller-supplied dibit buffer. New
+  `iq_lsm_decoder` field on `AppState`, fed by Phase 6D's
+  `LsmPipeline` running on raw IQ -- soft sync events from
+  `find_sync_events_soft` get dispatched into the directed-decode
+  path with a 400-dibit cross-batch carry-over so events near a
+  batch boundary still find their full 336-dibit body. Third
+  parallel TSBK pipeline alongside the legacy C4FM and HDL LSM
+  decoders. Robust against future HDL slicer regressions.
+
+### Diagnostic infrastructure additions
+
+New / updated REST endpoints:
+
+- `GET /api/sync_tune` -- read current threshold + cumulative
+  histogram
+- `GET /api/sync_tune?threshold=N` -- write new threshold
+- `GET /api/decoder_reset` -- clear all counters for clean
+  measurement window
+- `POST /api/decoder_reset` -- HTTP-method-correct alias
+- `PUT /api/sync_tune?threshold=N` -- HTTP-method-correct alias
+- `GET /api/decoder_compare` now includes `ps_iq_lsm` slice
+- `GET /api/lsm_dibit_dump` now includes `sync.distance_hist[25]`
+
+New tools:
+
+- `tools/p25_sync_sweep.py` -- walks a list of thresholds with
+  reset between each, prints comparison table
+- `tools/p25_check_phase6f4.py` -- now displays "IQ-LSM decoder"
+  section + "Sync distance histogram" section
+
+### Lessons learned (saved to memory)
+
+The biggest single throughput improvement wasn't any of the
+threshold tuning or parser fixes -- it was waiting for the LSM
+PLL to fully converge. On the Fishball P25 LSM signal the PLL
+takes 2-3 minutes after a flash to settle, and during that
+transient the slicer produces a 60/40 inner/outer dibit ratio
+with ~5 bit errors per sync window. Every measurement in the
+first 90 seconds shows ~22% CRC pass rate which **looks like** a
+fundamental signal-quality ceiling but is actually just PLL
+hunting noise.
+
+I burned three flash cycles tuning sync threshold trying to
+"fix" what was just transient noise. The right thing was to
+wait, not flash. Saved as
+`feedback_pll_acquisition_transient` memory.
+
+### Tests
+
+`cargo test p25::` = 28 green at every phase. Full crate = 52
+green. No new tests because all the changes are diagnostic
+infrastructure or parallel pipelines that share the existing
+tested parser code.
+
+### Open follow-ups still on the queue (none are blockers)
+
+- iq_lsm cross-batch defer (6F.10) -- push `ps_iq_lsm` from 1.86
+  blocks/TSDU to 3.0
+- Bump `max_recent` 100 → 1000 + fix verification script
+  `messages/sec` calculation
+- Add parsers for SNDCP_DCH_ANN_EX (0x16), TDMA_SYNC_BCST (0x30),
+  SEC_CCH_BROADCST (0x39), UU_ANS_REQ (0x05),
+  TELE_INT_V_CH_GRANT_UPDT (0x09) -- biggest unparsed buckets,
+  ~30 lines each
+- Merge dashboard system identity from BOTH lsm decoders
+- HDL DC blocker (long-term DEVPLAN item)
+
+---
+
+## [2026-04-11] Phase 6F.3 multi-block TSBK2 / TSBK3 support (PS LSM decoder)
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/027_phase6f3_multi_block_tsbk.md`
+
+Adds end-to-end multi-block TSBK support to the PS LSM software
+decoder. Phase 6F.2j (doc 026) shipped a working TSBK1 reader that
+populates the System Identity card, but it stopped after one block
+per TSDU and dropped ~2/3 of on-air TSBK content because most TSDUs
+on the Clay County test target are TSBK1+TSBK2+TSBK3 multi-block
+frames.
+
+This phase generalises the deinterleaver and the
+`ReadingDataUnit` arm of the state machine to handle 1, 2, or 3
+TSBK blocks per TSDU. After each successful block decode the
+state machine inspects the `LB` (last block) header bit and
+either extends `du_expected_len` to the next block boundary
+(231 dibits for TSBK2, 303 for TSBK3) or returns to Hunting.
+Trellis or CRC failure on any block also returns to Hunting,
+matching SDRTrunk's framer behavior.
+
+Expected impact on the Clay County test target after on-target
+verification: roughly **3x more TSBK messages decoded per second**,
+and the previously stuck `bands_known` and `active_grants` counters
+should start populating now that `IDEN_UPDATE` and
+`GRP_VOICE_CHAN_GRANT` TSBKs riding in TSBK2/TSBK3 slots are
+finally being read.
+
+### Code
+
+- `p25-httpd/src/p25/fec.rs` -- `TsduDeinterleaver` rewritten
+  with `body_dibits_for_blocks(num_blocks) -> Option<usize>` and
+  `deinterleave_multi(tsdu_dibits, num_blocks) -> Vec<u8>`. Status
+  positions are pre-computed for the period-36 schedule (max 9
+  positions for TSBK3). The trellis test helper was also lifted
+  out of `mod tests` to module level (`trellis_encode_block` +
+  new `trellis_encode_bytes` wrapper) so cross-module e2e tests
+  can build real TSBK frames.
+- `p25-httpd/src/p25/control_channel.rs` -- new field
+  `tsdu_blocks_decoded`, renamed `process_tsdu` →
+  `process_tsdu_block` returning `bool` (`true` = done, `false` =
+  need more dibits), state machine inspects the return value to
+  decide whether to extend or transition to Hunting. Aligned
+  capture finalization moved into `finalize_capture(...)` helper.
+
+### Tests
+
+Two new e2e tests in `control_channel.rs::tests`:
+
+- `test_multi_block_tsbk_e2e` -- builds a real
+  `TSBK1=NET_STS_BCST(LB=0)` + `TSBK2=RFSS_STS_BCST(LB=1)` body,
+  verifies both blocks decode and dispatch their messages.
+- `test_single_block_tsbk_terminates_on_lb1` -- regression guard
+  that confirms `LB=1` on TSBK1 correctly stops without
+  consuming dibits from the next sync window.
+
+Two new fec.rs tests for the multi-block deinterleaver:
+
+- `test_tsdu_deinterleave_two_blocks` (231 raw → 196 trellis)
+- `test_tsdu_deinterleave_three_blocks` (303 raw → 294 trellis)
+- `test_body_dibits_for_blocks_table`
+
+`cargo test p25::` runs 28 tests, all green. Full crate test
+suite (52 tests) green.
+
+---
+
 ## [2026-04-10] Phase 6E.10 PS-side scaffolding + iq/dibit packer overflow HDL hotfix
 
 **Branch:** fishball-p25
