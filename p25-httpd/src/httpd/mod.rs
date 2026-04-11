@@ -51,6 +51,15 @@ pub struct AppState {
     /// surface the parallel LSM decoder on the dashboard alongside the
     /// existing C4FM dibit pipeline panels.
     pub lsm_stats: Arc<tokio::sync::Mutex<crate::lsm::LsmStats>>,
+    /// Phase 6F.2: PL HDL LSM chain runtime stats, populated by the
+    /// HDL LSM heartbeat task. Read by `/api/hdl_lsm`. Single source
+    /// of truth for everything the heartbeat task observes about the
+    /// FPGA-side LSM chain (registers, NID counts, NAC histogram,
+    /// last 32 NID ring buffer).
+    pub hdl_lsm: Arc<tokio::sync::Mutex<crate::HdlLsmRuntime>>,
+    /// Phase 6F.2: per-source IRQ counters from the InterruptHandler
+    /// task. Read by `/api/irq_stats`.
+    pub irq_stats: Arc<tokio::sync::Mutex<crate::IrqStats>>,
 }
 
 /// Build the HTTP router
@@ -62,6 +71,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/bands", get(get_bands))
         .route("/api/stats", get(get_stats))
         .route("/api/lsm", get(get_lsm))
+        .route("/api/hdl_lsm", get(get_hdl_lsm))
+        .route("/api/irq_stats", get(get_irq_stats))
+        .route("/api/decoder_compare", get(get_decoder_compare))
         .route("/api/dibit_dump", get(get_dibit_dump))
         .route("/api/aliases", get(get_aliases).put(put_aliases))
         .route("/ws/events", get(ws_events))
@@ -330,6 +342,229 @@ async fn get_lsm(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> 
     }))
 }
 
+/// Phase 6F.2: PL HDL LSM chain runtime snapshot.
+///
+/// Reads the shared `HdlLsmRuntime` populated by the heartbeat task.
+/// Includes: live register snapshot, cumulative NID counts, NAC
+/// histogram, and the last 32 NID events from the ring buffer.
+async fn get_hdl_lsm(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    use std::time::Instant;
+    let rt = state.hdl_lsm.lock().await;
+    let now = Instant::now();
+    let uptime_secs = rt
+        .started_at
+        .map(|t| now.saturating_duration_since(t).as_secs())
+        .unwrap_or(0);
+    let last_tick_ms_ago = rt
+        .last_tick_at
+        .map(|t| now.saturating_duration_since(t).as_millis() as u64);
+    let last_nid_ms_ago = rt
+        .last_nid_at
+        .map(|t| now.saturating_duration_since(t).as_millis() as u64);
+
+    let total_nac_hits: u64 = rt.nac_hist.values().sum();
+    let top_nacs: Vec<serde_json::Value> = rt
+        .top_nacs(10)
+        .into_iter()
+        .map(|(nac, count)| {
+            let pct = if total_nac_hits == 0 {
+                0.0
+            } else {
+                100.0 * (count as f64) / (total_nac_hits as f64)
+            };
+            serde_json::json!({
+                "nac":   format!("0x{:03X}", nac),
+                "count": count,
+                "pct":   pct,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "running":              rt.started_at.is_some(),
+        "uptime_secs":          uptime_secs,
+        "last_tick_ms_ago":     last_tick_ms_ago,
+        "last_nid_ms_ago":      last_nid_ms_ago,
+
+        "live": {
+            "pll_dbg":               rt.pll_dbg,
+            "sp_dbg":                rt.sp_dbg,
+            "sync_distance":         rt.sync_distance,
+            "bch_busy":              rt.bch_busy,
+            "in_nid_window":         rt.in_nid_window,
+            "dibit_overflow_latch":  rt.dibit_overflow_latched,
+            "iq_overflow_latch":     rt.iq_overflow_latched,
+            "last_nac":              format!("0x{:03X}", rt.last_nac),
+            "last_duid":             rt.last_duid,
+            "last_drop_count":       rt.last_drop_count,
+            "last_nid_valid":        rt.last_nid_valid,
+            "last_nid_n_errors":     rt.last_nid_n_errors,
+        },
+
+        "cumulative": {
+            "total_nid_events":      rt.total_nid_events,
+            "valid_nid_events":      rt.valid_nid_events,
+            "valid_pct":             if rt.total_nid_events == 0 {
+                0.0
+            } else {
+                100.0 * (rt.valid_nid_events as f64) / (rt.total_nid_events as f64)
+            },
+            "dibit_overflow_ticks":  rt.dibit_overflow_ticks,
+            "iq_overflow_ticks":     rt.iq_overflow_ticks,
+        },
+
+        "last_window": {
+            "pll_min":               rt.hb_pll_min,
+            "pll_max":               rt.hb_pll_max,
+            "sp_min":                rt.hb_sp_min,
+            "sp_max":                rt.hb_sp_max,
+            "sync_dist_best":        rt.hb_sync_dist_best,
+            "bch_busy_ticks":        rt.hb_bch_busy_ticks,
+            "in_window_ticks":       rt.hb_in_window_ticks,
+            "nid_event_ticks":       rt.hb_nid_event_ticks,
+            "dibit_overflow_ticks":  rt.hb_dibit_overflow_ticks,
+            "iq_overflow_ticks":     rt.hb_iq_overflow_ticks,
+            "iq_kbps":               rt.hb_iq_kbps,
+            "iq_buf_rolls":          rt.hb_iq_buf_rolls,
+            "valid_count":           rt.hb_window_valid_count,
+            "event_count":           rt.hb_window_event_count,
+        },
+
+        "top_nacs":  top_nacs,
+        "nid_ring":  rt.nid_ring.clone(),
+    }))
+}
+
+/// Phase 6F.2: per-source IRQ counters from the InterruptHandler task.
+async fn get_irq_stats(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    use std::time::Instant;
+    let s = state.irq_stats.lock().await;
+    let now = Instant::now();
+    let uptime_secs = s
+        .started_at
+        .map(|t| now.saturating_duration_since(t).as_secs())
+        .unwrap_or(0);
+    let last_at_ms_ago = s
+        .last_at
+        .map(|t| now.saturating_duration_since(t).as_millis() as u64);
+    let rate = |n: u64| -> f64 {
+        if uptime_secs == 0 { 0.0 } else { (n as f64) / (uptime_secs as f64) }
+    };
+    Json(serde_json::json!({
+        "running":         s.started_at.is_some(),
+        "uptime_secs":     uptime_secs,
+        "last_at_ms_ago":  last_at_ms_ago,
+        "total":           s.total,
+        "dibit":           s.dibit,
+        "traffic":         s.traffic,
+        "iq":              s.iq,
+        "lsm_dibit":       s.lsm_dibit,
+        "rate_per_sec": {
+            "total":     rate(s.total),
+            "dibit":     rate(s.dibit),
+            "traffic":   rate(s.traffic),
+            "iq":        rate(s.iq),
+            "lsm_dibit": rate(s.lsm_dibit),
+        },
+    }))
+}
+
+/// Phase 6F.2: side-by-side comparison matrix of all decoder sources.
+///
+/// Returns the same set of metrics for each of:
+///   - PS C4FM software decoder (`state.decoder`)
+///   - PS LSM software decoder (`state.lsm_decoder`)
+///   - PS Phase 6D iq-fed pipeline (`state.lsm_stats`)
+///   - PL HDL LSM chain (`state.hdl_lsm`)
+async fn get_decoder_compare(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let dec_c4fm = state.decoder.read().await;
+    let dec_lsm = state.lsm_decoder.read().await;
+    let lsm_stats = state.lsm_stats.lock().await;
+    let hdl_rt = state.hdl_lsm.lock().await;
+
+    fn fmt_nac(n: Option<crate::p25::types::Nac>) -> serde_json::Value {
+        match n {
+            Some(v) => serde_json::Value::String(format!("{}", v)),
+            None => serde_json::Value::Null,
+        }
+    }
+    fn fmt_nac_u16(n: u16) -> String { format!("0x{:03X}", n) }
+
+    let lsm_winner_nac = lsm_stats
+        .top_nacs(1)
+        .first()
+        .map(|(n, _)| fmt_nac_u16(*n))
+        .unwrap_or_else(|| "--".to_string());
+    let hdl_winner_nac = hdl_rt
+        .top_nacs(1)
+        .first()
+        .map(|(n, _)| fmt_nac_u16(*n))
+        .unwrap_or_else(|| "--".to_string());
+
+    Json(serde_json::json!({
+        "ps_c4fm": {
+            "label":           "PS C4FM (software, HDL c4fm dibit-fed)",
+            "system_nac":      fmt_nac(dec_c4fm.system.nac),
+            "messages":        dec_c4fm.recent_messages.len(),
+            "active_grants":   dec_c4fm.grants.len(),
+            "bands_known":     dec_c4fm.bands.len(),
+            "sync_hits":       dec_c4fm.sync_hits(),
+            "sync_near":       dec_c4fm.sync_near_misses(),
+            "sync_best_dist":  if dec_c4fm.best_sync_distance() == u32::MAX {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::from(dec_c4fm.best_sync_distance())
+            },
+            "total_dibits":    dec_c4fm.total_dibits(),
+        },
+        "ps_lsm": {
+            "label":           "PS LSM (software, HDL lsm dibit-fed)",
+            "system_nac":      fmt_nac(dec_lsm.system.nac),
+            "messages":        dec_lsm.recent_messages.len(),
+            "active_grants":   dec_lsm.grants.len(),
+            "bands_known":     dec_lsm.bands.len(),
+            "sync_hits":       dec_lsm.sync_hits(),
+            "sync_near":       dec_lsm.sync_near_misses(),
+            "sync_best_dist":  if dec_lsm.best_sync_distance() == u32::MAX {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::from(dec_lsm.best_sync_distance())
+            },
+            "total_dibits":    dec_lsm.total_dibits(),
+        },
+        "ps_phase6d": {
+            "label":           "PS Phase 6D (software, raw IQ-fed)",
+            "winner_nac":      lsm_winner_nac,
+            "wakeups":         lsm_stats.wakeups,
+            "iq_samples":      lsm_stats.iq_samples,
+            "dibits":          lsm_stats.dibits,
+            "hard_events":     lsm_stats.hard_events,
+            "soft_events":     lsm_stats.soft_events,
+            "overflow_resets": lsm_stats.overflow_resets,
+        },
+        "pl_hdl": {
+            "label":           "PL HDL LSM chain (FPGA gateware)",
+            "winner_nac":      hdl_winner_nac,
+            "total_nids":      hdl_rt.total_nid_events,
+            "valid_nids":      hdl_rt.valid_nid_events,
+            "valid_pct":       if hdl_rt.total_nid_events == 0 {
+                0.0
+            } else {
+                100.0 * (hdl_rt.valid_nid_events as f64)
+                    / (hdl_rt.total_nid_events as f64)
+            },
+            "drop_count":      hdl_rt.last_drop_count,
+            "pll_dbg":         hdl_rt.pll_dbg,
+            "sp_dbg":          hdl_rt.sp_dbg,
+            "sync_distance":   hdl_rt.sync_distance,
+            "dibit_overflow_ticks": hdl_rt.dibit_overflow_ticks,
+            "iq_overflow_ticks":    hdl_rt.iq_overflow_ticks,
+        },
+    }))
+}
+
 async fn get_aliases(State(state): State<Arc<AppState>>) -> Json<AliasMap> {
     let decoder = state.decoder.read().await;
     Json(decoder.aliases.clone())
@@ -476,6 +711,7 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   <div class="header-left">
     <h1>&#x1f4e1; Fishball P25</h1>
     <span class="status"><span class="dot" id="dot"></span><span id="status">Offline</span></span>
+    <span style="font-size:0.75em;color:var(--text-dim);font-family:var(--mono)" id="build_tag">--</span>
   </div>
   <div>
     <span class="alias-btn" onclick="showAliases()">&#x2699; Aliases</span>
@@ -483,9 +719,33 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   </div>
 </div>
 
+<!-- ── Phase 6F.2: Decoder Comparison Matrix (PS vs PL) ── -->
+<h2>Decoder Comparison (PS vs PL)</h2>
+<div class="card">
+  <table id="cmp_t" style="font-size:0.85em">
+    <thead>
+      <tr>
+        <th style="width:32%">Metric</th>
+        <th>PS C4FM<br><span style="color:var(--text-dim);font-weight:400">software, HDL c4fm dibits</span></th>
+        <th>PS LSM<br><span style="color:var(--text-dim);font-weight:400">software, HDL lsm dibits</span></th>
+        <th>PS Phase 6D<br><span style="color:var(--text-dim);font-weight:400">software, raw IQ</span></th>
+        <th>PL HDL LSM<br><span style="color:var(--text-dim);font-weight:400">FPGA gateware</span></th>
+      </tr>
+    </thead>
+    <tbody id="cmp_body">
+      <tr><td colspan="5" style="color:var(--text-dim)">Loading...</td></tr>
+    </tbody>
+  </table>
+  <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
+    Side-by-side: same metric across all four decoder paths. PS = Processing
+    System (ARM software), PL = Programmable Logic (FPGA). Winner NAC for
+    Phase 6D / PL HDL is the top of their NAC histogram.
+  </p>
+</div>
+
 <div class="grid2">
   <div class="card">
-    <h2>System Identity</h2>
+    <h2>System Identity <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">PS &middot; LSM software decoder &middot; HDL dibit-fed</span></h2>
     <table>
       <tr><th>NAC</th><td class="v" id="nac">--</td></tr>
       <tr><th>WACN</th><td class="v" id="wacn">--</td></tr>
@@ -493,17 +753,89 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       <tr><th>RFSS / Site</th><td class="v" id="rfss">--</td></tr>
       <tr><th>Control CH</th><td class="v" id="cc">--</td></tr>
     </table>
+    <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
+      Software decoder fed by HDL LSM dibit DMA. Empty until a TSBK validates.
+    </p>
   </div>
   <div class="card">
-    <h2>Decode Stats</h2>
+    <h2>Decode Stats <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">PS &middot; LSM software decoder &middot; HDL dibit-fed</span></h2>
     <table>
       <tr><th>Messages</th><td class="v" id="msgs">0</td></tr>
       <tr><th>Active Grants</th><td class="v" id="grants_n">0</td></tr>
       <tr><th>Bands Known</th><td class="v" id="bands_n">0</td></tr>
-      <tr><th>Dibit Count</th><td class="v" id="dibits">0</td></tr>
-      <tr><th>Overflow</th><td class="v" id="overflow">No</td></tr>
+      <tr><th>Dibit Count <span style="color:var(--text-dim);font-size:0.85em">(C4FM HDL)</span></th><td class="v" id="dibits">0</td></tr>
+      <tr><th>Overflow <span style="color:var(--text-dim);font-size:0.85em">(C4FM HDL)</span></th><td class="v" id="overflow">No</td></tr>
     </table>
+    <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
+      Decoder counters from PS LSM software decoder. Dibit Count + Overflow are
+      from the C4FM HDL chain DMA ring (not migrated).
+    </p>
   </div>
+</div>
+
+<!-- ── Phase 6F.2: PL HDL LSM Chain Detail + IRQ Counters ── -->
+<div class="grid2">
+  <div class="card">
+    <h2>HDL LSM Chain (PL) <span id="hdl_status" style="font-size:0.75em;color:var(--text-dim);margin-left:6px">--</span></h2>
+    <table style="font-size:0.85em">
+      <tr><th>Cumulative NIDs (valid/total)</th><td class="v"><span id="hdl_nid_valid">0</span> / <span id="hdl_nid_total">0</span> (<span id="hdl_nid_pct">0%</span>)</td></tr>
+      <tr><th>Last NAC / DUID</th><td class="v"><span id="hdl_last_nac">--</span> / <span id="hdl_last_duid">--</span></td></tr>
+      <tr><th>Drop count (sync hit while BCH busy)</th><td class="v" id="hdl_drop">0</td></tr>
+      <tr><th>PLL register (now)</th><td class="v" id="hdl_pll">--</td></tr>
+      <tr><th>Sample point register (now)</th><td class="v" id="hdl_sp">--</td></tr>
+      <tr><th>Sync distance (now / window best)</th><td class="v"><span id="hdl_sd_now">--</span> / <span id="hdl_sd_best">--</span></td></tr>
+      <tr><th>BCH busy / in-NID-window flags</th><td class="v"><span id="hdl_bch">--</span> / <span id="hdl_inwin">--</span></td></tr>
+      <tr><th>Last 1s window: pll min/max</th><td class="v"><span id="hdl_w_pll">--</span></td></tr>
+      <tr><th>Last 1s window: sp min/max</th><td class="v"><span id="hdl_w_sp">--</span></td></tr>
+      <tr><th>Last 1s window: NIDs (valid/total)</th><td class="v"><span id="hdl_w_nids">--</span></td></tr>
+      <tr><th>Last 1s window: iq KB/s, buf rolls</th><td class="v"><span id="hdl_w_iq">--</span></td></tr>
+      <tr><th>Cumulative dibit / iq overflow ticks</th><td class="v"><span id="hdl_ovf">0 / 0</span></td></tr>
+    </table>
+    <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
+      Live FPGA register reads from the heartbeat task (16 ms cadence).
+      pll_dbg / sp_dbg are signed 16-bit. Healthy lock for our test target:
+      pll near 0, sp ~3000-6000, sync_dist 0.
+    </p>
+  </div>
+  <div class="card">
+    <h2>IRQ Source Counters</h2>
+    <table style="font-size:0.85em">
+      <tr><th>Total IRQs</th><td class="v"><span id="irq_total">0</span> (<span id="irq_total_rate">0/s</span>)</td></tr>
+      <tr><th>C4FM dibit DMA done</th><td class="v"><span id="irq_dibit">0</span> (<span id="irq_dibit_rate">0/s</span>)</td></tr>
+      <tr><th>Traffic dibit DMA done</th><td class="v"><span id="irq_traffic">0</span> (<span id="irq_traffic_rate">0/s</span>)</td></tr>
+      <tr><th>IQ DMA done</th><td class="v"><span id="irq_iq">0</span> (<span id="irq_iq_rate">0/s</span>)</td></tr>
+      <tr><th>LSM dibit DMA done</th><td class="v"><span id="irq_lsm">0</span> (<span id="irq_lsm_rate">0/s</span>)</td></tr>
+      <tr><th>Last IRQ (ms ago)</th><td class="v" id="irq_last">--</td></tr>
+      <tr><th>Uptime</th><td class="v" id="irq_uptime">--</td></tr>
+    </table>
+    <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
+      Per-source IRQ counters from the InterruptHandler task. lsm_dibit
+      should be ~17/min (one buffer every ~3.5 s) on a healthy 4800 sym/s
+      LSM dibit stream. iq should be ~60/s (one sub-buffer every 16 ms).
+    </p>
+  </div>
+</div>
+
+<!-- ── Phase 6F.2: Last 32 NIDs from PL HDL ring buffer ── -->
+<h2>HDL LSM NID Ring (last 32, PL)</h2>
+<div class="card">
+  <table style="font-size:0.78em">
+    <thead>
+      <tr>
+        <th>#</th><th>t (ms)</th><th>NAC</th><th>DUID</th>
+        <th>valid</th><th>n_err</th><th>sync_d</th>
+        <th>drop</th><th>pll</th><th>sp</th>
+      </tr>
+    </thead>
+    <tbody id="nid_ring_body">
+      <tr><td colspan="10" style="color:var(--text-dim)">No NID events yet</td></tr>
+    </tbody>
+  </table>
+  <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
+    32-deep ring buffer of the most recent NID events as observed by the
+    HDL LSM chain. Same data the heartbeat task dumps to the log on
+    crash transition.
+  </p>
 </div>
 
 <div class="grid2">
@@ -612,6 +944,110 @@ async function refresh() {
     $('sys').textContent = sys.system_id || '--';
     $('rfss').textContent = (sys.rfss_id != null ? `${sys.rfss_id} / ${sys.site_id}` : '--');
     $('cc').textContent = sys.control_channel || '--';
+    if (sys.build) $('build_tag').textContent = 'build: ' + sys.build;
+  }
+
+  // ── Phase 6F.2: Decoder Comparison Matrix ──
+  const cmp = await fetchJson('/api/decoder_compare');
+  if (cmp) {
+    const fmtN = v => (v == null) ? '--' : (typeof v === 'number' ? v.toLocaleString() : v);
+    const fmtPct = v => (v == null) ? '--' : v.toFixed(1) + '%';
+    const rows = [
+      ['NAC (winner)', cmp.ps_c4fm.system_nac, cmp.ps_lsm.system_nac, cmp.ps_phase6d.winner_nac, cmp.pl_hdl.winner_nac],
+      ['Messages decoded', fmtN(cmp.ps_c4fm.messages), fmtN(cmp.ps_lsm.messages), '--', '--'],
+      ['Total NIDs (any source)', '--', '--', fmtN(cmp.ps_phase6d.hard_events + cmp.ps_phase6d.soft_events), fmtN(cmp.pl_hdl.total_nids)],
+      ['Valid NIDs', '--', '--', '--', fmtN(cmp.pl_hdl.valid_nids) + ' (' + fmtPct(cmp.pl_hdl.valid_pct) + ')'],
+      ['Sync hits (frame sync correlator)', fmtN(cmp.ps_c4fm.sync_hits), fmtN(cmp.ps_lsm.sync_hits), '--', '--'],
+      ['Sync near-misses', fmtN(cmp.ps_c4fm.sync_near), fmtN(cmp.ps_lsm.sync_near), '--', '--'],
+      ['Sync best Hamming distance', fmtN(cmp.ps_c4fm.sync_best_dist), fmtN(cmp.ps_lsm.sync_best_dist), '--', fmtN(cmp.pl_hdl.sync_distance)],
+      ['Total dibits processed', fmtN(cmp.ps_c4fm.total_dibits), fmtN(cmp.ps_lsm.total_dibits), fmtN(cmp.ps_phase6d.dibits), '--'],
+      ['Active grants', fmtN(cmp.ps_c4fm.active_grants), fmtN(cmp.ps_lsm.active_grants), '--', '--'],
+      ['Frequency bands known', fmtN(cmp.ps_c4fm.bands_known), fmtN(cmp.ps_lsm.bands_known), '--', '--'],
+      ['Hard sync events', '--', '--', fmtN(cmp.ps_phase6d.hard_events), '--'],
+      ['Soft sync events', '--', '--', fmtN(cmp.ps_phase6d.soft_events), '--'],
+      ['IQ samples processed', '--', '--', fmtN(cmp.ps_phase6d.iq_samples), '--'],
+      ['Drop count (PL only)', '--', '--', '--', fmtN(cmp.pl_hdl.drop_count)],
+      ['Live PLL register', '--', '--', '--', fmtN(cmp.pl_hdl.pll_dbg)],
+      ['Live sample-point register', '--', '--', '--', fmtN(cmp.pl_hdl.sp_dbg)],
+      ['Overflow events', '--', '--', fmtN(cmp.ps_phase6d.overflow_resets), 'dibit:' + fmtN(cmp.pl_hdl.dibit_overflow_ticks) + ' iq:' + fmtN(cmp.pl_hdl.iq_overflow_ticks)],
+    ];
+    $('cmp_body').innerHTML = rows.map(r =>
+      '<tr><th>' + r[0] + '</th>' +
+      '<td class="v">' + r[1] + '</td>' +
+      '<td class="v">' + r[2] + '</td>' +
+      '<td class="v">' + r[3] + '</td>' +
+      '<td class="v">' + r[4] + '</td></tr>'
+    ).join('');
+  }
+
+  // ── Phase 6F.2: PL HDL LSM Chain Detail ──
+  const hdl = await fetchJson('/api/hdl_lsm');
+  if (hdl) {
+    const alive = hdl.running && hdl.last_tick_ms_ago != null && hdl.last_tick_ms_ago < 1000;
+    if (!hdl.running) {
+      $('hdl_status').textContent = 'NOT STARTED';
+      $('hdl_status').style.color = 'var(--red)';
+    } else if (alive) {
+      $('hdl_status').textContent = 'ALIVE (' + hdl.uptime_secs + 's)';
+      $('hdl_status').style.color = 'var(--green)';
+    } else {
+      $('hdl_status').textContent = 'STALLED';
+      $('hdl_status').style.color = 'var(--red)';
+    }
+    $('hdl_nid_valid').textContent = hdl.cumulative.valid_nid_events.toLocaleString();
+    $('hdl_nid_total').textContent = hdl.cumulative.total_nid_events.toLocaleString();
+    $('hdl_nid_pct').textContent = hdl.cumulative.valid_pct.toFixed(1) + '%';
+    $('hdl_last_nac').textContent = hdl.live.last_nac;
+    $('hdl_last_duid').textContent = '0x' + hdl.live.last_duid.toString(16).toUpperCase();
+    $('hdl_drop').textContent = hdl.live.last_drop_count;
+    $('hdl_pll').textContent = hdl.live.pll_dbg;
+    $('hdl_sp').textContent = hdl.live.sp_dbg;
+    $('hdl_sd_now').textContent = hdl.live.sync_distance;
+    $('hdl_sd_best').textContent = hdl.last_window.sync_dist_best === 99 ? '--' : hdl.last_window.sync_dist_best;
+    $('hdl_bch').textContent = hdl.live.bch_busy ? 'YES' : 'no';
+    $('hdl_inwin').textContent = hdl.live.in_nid_window ? 'YES' : 'no';
+    $('hdl_w_pll').textContent = hdl.last_window.pll_min + ' / ' + hdl.last_window.pll_max;
+    $('hdl_w_sp').textContent = hdl.last_window.sp_min + ' / ' + hdl.last_window.sp_max;
+    $('hdl_w_nids').textContent = hdl.last_window.valid_count + ' / ' + hdl.last_window.event_count;
+    $('hdl_w_iq').textContent = hdl.last_window.iq_kbps + ' KB/s, ' + hdl.last_window.iq_buf_rolls + ' rolls';
+    $('hdl_ovf').textContent = hdl.cumulative.dibit_overflow_ticks + ' / ' + hdl.cumulative.iq_overflow_ticks;
+
+    if (hdl.nid_ring && hdl.nid_ring.length) {
+      // Reverse so newest is on top.
+      const ring = hdl.nid_ring.slice().reverse();
+      $('nid_ring_body').innerHTML = ring.map(e =>
+        '<tr>' +
+        '<td class="v">' + e.seq + '</td>' +
+        '<td class="v">' + e.t_ms_since_boot + '</td>' +
+        '<td class="v">0x' + e.nac.toString(16).toUpperCase().padStart(3, '0') + '</td>' +
+        '<td class="v">' + e.duid + '</td>' +
+        '<td class="v" style="color:' + (e.valid ? 'var(--green)' : 'var(--red)') + '">' + (e.valid ? '\u2713' : '\u2717') + '</td>' +
+        '<td class="v">' + e.n_errors + '</td>' +
+        '<td class="v">' + e.sync_distance + '</td>' +
+        '<td class="v">' + e.drop_count + '</td>' +
+        '<td class="v">' + e.pll_dbg + '</td>' +
+        '<td class="v">' + e.sp_dbg + '</td>' +
+        '</tr>'
+      ).join('');
+    }
+  }
+
+  // ── Phase 6F.2: IRQ Source Counters ──
+  const irq = await fetchJson('/api/irq_stats');
+  if (irq) {
+    const fmtRate = r => (r < 1 ? r.toFixed(2) : Math.round(r).toLocaleString()) + '/s';
+    $('irq_total').textContent = irq.total.toLocaleString();
+    $('irq_total_rate').textContent = fmtRate(irq.rate_per_sec.total);
+    $('irq_dibit').textContent = irq.dibit.toLocaleString();
+    $('irq_dibit_rate').textContent = fmtRate(irq.rate_per_sec.dibit);
+    $('irq_traffic').textContent = irq.traffic.toLocaleString();
+    $('irq_traffic_rate').textContent = fmtRate(irq.rate_per_sec.traffic);
+    $('irq_iq').textContent = irq.iq.toLocaleString();
+    $('irq_iq_rate').textContent = fmtRate(irq.rate_per_sec.iq);
+    $('irq_lsm').textContent = irq.lsm_dibit.toLocaleString();
+    $('irq_lsm_rate').textContent = fmtRate(irq.rate_per_sec.lsm_dibit);
+    $('irq_last').textContent = irq.last_at_ms_ago != null ? irq.last_at_ms_ago : '--';
+    $('irq_uptime').textContent = irq.uptime_secs + 's';
   }
 
   const stats = await fetchJson('/api/stats');

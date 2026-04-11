@@ -34,7 +34,103 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-10-phase6f.1-dashboard-migration";
+pub const BUILD_TAG: &str = "2026-04-10-phase6f.2-pl-dashboard";
+
+/// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
+/// gateware). Populated by the HDL LSM heartbeat task and read by
+/// `/api/hdl_lsm`. Single source of truth for everything the
+/// heartbeat task used to keep in task-local variables.
+#[derive(Debug, Clone, Default)]
+pub struct HdlLsmRuntime {
+    pub started_at: Option<std::time::Instant>,
+    pub last_tick_at: Option<std::time::Instant>,
+
+    // Last raw register snapshot (read every 16 ms).
+    pub pll_dbg: i16,
+    pub sp_dbg: i16,
+    pub sync_distance: u8,
+    pub bch_busy: bool,
+    pub in_nid_window: bool,
+    pub dibit_overflow_latched: bool,
+    pub iq_overflow_latched: bool,
+    pub last_nac: u16,
+    pub last_duid: u8,
+    pub last_drop_count: u16,
+
+    // Last successful NID event.
+    pub last_nid_at: Option<std::time::Instant>,
+    pub last_nid_valid: bool,
+    pub last_nid_n_errors: u8,
+
+    // Cumulative counters since boot.
+    pub total_nid_events: u64,
+    pub valid_nid_events: u64,
+    pub dibit_overflow_ticks: u64,
+    pub iq_overflow_ticks: u64,
+
+    // NAC histogram across all NID events. Winner = locked site ID.
+    pub nac_hist: std::collections::HashMap<u16, u64>,
+
+    // Last completed heartbeat window snapshot (1 s cadence).
+    pub hb_pll_min: i16,
+    pub hb_pll_max: i16,
+    pub hb_sp_min: i16,
+    pub hb_sp_max: i16,
+    pub hb_sync_dist_best: u8,
+    pub hb_bch_busy_ticks: u32,
+    pub hb_in_window_ticks: u32,
+    pub hb_nid_event_ticks: u32,
+    pub hb_dibit_overflow_ticks: u32,
+    pub hb_iq_overflow_ticks: u32,
+    pub hb_iq_kbps: u64,
+    pub hb_iq_buf_rolls: u32,
+    pub hb_window_valid_count: u32,
+    pub hb_window_event_count: u32,
+
+    // Last 32 NID events (chronological, oldest first after wrap).
+    pub nid_ring: Vec<HdlNidEntry>,
+}
+
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct HdlNidEntry {
+    pub seq: u64,
+    pub t_ms_since_boot: u64,
+    pub nac: u16,
+    pub duid: u8,
+    pub valid: bool,
+    pub n_errors: u8,
+    pub sync_distance: u8,
+    pub drop_count: u16,
+    pub pll_dbg: i16,
+    pub sp_dbg: i16,
+}
+
+impl HdlLsmRuntime {
+    pub fn top_nacs(&self, n: usize) -> Vec<(u16, u64)> {
+        let mut v: Vec<(u16, u64)> = self
+            .nac_hist
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v.truncate(n);
+        v
+    }
+}
+
+/// Per-source IRQ counters maintained by the InterruptHandler task.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IrqStats {
+    pub total: u64,
+    pub dibit: u64,
+    pub traffic: u64,
+    pub iq: u64,
+    pub lsm_dibit: u64,
+    pub last_at_secs_ago: f64,
+    /// Set to None until the first IRQ; updated only by the IRQ task.
+    pub started_at: Option<std::time::Instant>,
+    pub last_at: Option<std::time::Instant>,
+}
 
 #[derive(Parser)]
 #[command(name = "p25-httpd", about = "Fishball P25 Trunking Radio")]
@@ -146,6 +242,12 @@ async fn main() -> anyhow::Result<()> {
     // endpoint -- useful for host-side cargo test of httpd routing.
     let lsm_stats = Arc::new(tokio::sync::Mutex::new(lsm::LsmStats::default()));
 
+    // Phase 6F.2: shared PL HDL LSM runtime + IRQ stats, populated by
+    // their respective tasks below and read by /api/hdl_lsm and
+    // /api/irq_stats. Same out-of-cfg(linux) treatment.
+    let hdl_lsm = Arc::new(tokio::sync::Mutex::new(HdlLsmRuntime::default()));
+    let irq_stats = Arc::new(tokio::sync::Mutex::new(IrqStats::default()));
+
     #[cfg(target_os = "linux")]
     let (ip_core, ad9361) = {
         use tokio::sync::Mutex;
@@ -214,8 +316,9 @@ async fn main() -> anyhow::Result<()> {
         let lsm_dibit_waiter = interrupt_handler.waiter_lsm_dibit_dma();
 
         // 5. Spawn interrupt handler
+        let irq_stats_for_handler = irq_stats.clone();
         tokio::spawn(async move {
-            if let Err(e) = interrupt_handler.run().await {
+            if let Err(e) = interrupt_handler.run(irq_stats_for_handler).await {
                 tracing::error!("interrupt handler error: {e}");
             }
         });
@@ -533,8 +636,14 @@ async fn main() -> anyhow::Result<()> {
         //     reset mechanism that drains in-flight AXI before
         //     asserting reset.
         let lsm_nid_core = ip_core.clone();
+        let lsm_nid_runtime = hdl_lsm.clone();
         tokio::spawn(async move {
             tracing::info!("HDL LSM heartbeat + NID poller task started (Phase 6E)");
+            // Stamp the start time as soon as we run.
+            {
+                let mut rt = lsm_nid_runtime.lock().await;
+                rt.started_at = Some(std::time::Instant::now());
+            }
             let mut tick = tokio::time::interval(
                 std::time::Duration::from_millis(16),
             );
@@ -708,6 +817,29 @@ async fn main() -> anyhow::Result<()> {
                     // manage it. We just count for the heartbeat.
                 }
 
+                // ── Phase 6F.2: live PL register snapshot to shared
+                //    HdlLsmRuntime so /api/hdl_lsm can read it ───────
+                {
+                    let mut rt = lsm_nid_runtime.lock().await;
+                    rt.last_tick_at = Some(std::time::Instant::now());
+                    rt.pll_dbg = pll_dbg;
+                    rt.sp_dbg = sp_dbg;
+                    rt.sync_distance = status.sync_distance;
+                    rt.bch_busy = status.bch_busy;
+                    rt.in_nid_window = status.in_nid_window;
+                    rt.dibit_overflow_latched = status.dibit_overflow;
+                    rt.iq_overflow_latched = iq_overflow;
+                    rt.last_nac = nac;
+                    rt.last_duid = duid;
+                    rt.last_drop_count = drop_count;
+                    if status.dibit_overflow {
+                        rt.dibit_overflow_ticks += 1;
+                    }
+                    if iq_overflow {
+                        rt.iq_overflow_ticks += 1;
+                    }
+                }
+
                 // ── Per-tick: NID event handling ────────────────────
                 if status.nid_event {
                     event_count += 1;
@@ -740,6 +872,44 @@ async fn main() -> anyhow::Result<()> {
                     // Arm the crash-dump trigger as soon as we've
                     // seen any healthy traffic.
                     crash_dump_armed = true;
+
+                    // ── Phase 6F.2: NID-event update to shared runtime
+                    {
+                        let mut rt = lsm_nid_runtime.lock().await;
+                        rt.total_nid_events = event_count;
+                        rt.valid_nid_events = valid_count;
+                        rt.last_nid_at = Some(std::time::Instant::now());
+                        rt.last_nid_valid = status.nid_valid;
+                        rt.last_nid_n_errors = status.n_errors;
+                        if status.nid_valid {
+                            *rt.nac_hist.entry(nac).or_insert(0) += 1;
+                        }
+                        // Rebuild the ring as a chronological Vec for
+                        // the dashboard.
+                        let depth = nid_ring_count;
+                        let start = if nid_ring_count < NID_RING_DEPTH {
+                            0
+                        } else {
+                            nid_ring_pos
+                        };
+                        rt.nid_ring.clear();
+                        for i in 0..depth {
+                            let idx = (start + i) % NID_RING_DEPTH;
+                            let e = nid_ring[idx];
+                            rt.nid_ring.push(HdlNidEntry {
+                                seq: e.seq,
+                                t_ms_since_boot: e.t_ms_since_boot as u64,
+                                nac: e.nac,
+                                duid: e.duid,
+                                valid: e.valid,
+                                n_errors: e.n_errors,
+                                sync_distance: e.sync_distance,
+                                drop_count: e.drop_count,
+                                pll_dbg: e.pll_dbg,
+                                sp_dbg: e.sp_dbg,
+                            });
+                        }
+                    }
 
                     if drop_count != last_drop_count {
                         tracing::warn!(
@@ -869,6 +1039,26 @@ async fn main() -> anyhow::Result<()> {
                         );
                     }
 
+                    // ── Phase 6F.2: snapshot completed window into the
+                    //    shared runtime BEFORE we reset accumulators ──
+                    {
+                        let mut rt = lsm_nid_runtime.lock().await;
+                        rt.hb_pll_min = if hb_pll_min == i16::MAX { 0 } else { hb_pll_min };
+                        rt.hb_pll_max = if hb_pll_max == i16::MIN { 0 } else { hb_pll_max };
+                        rt.hb_sp_min = if hb_sp_min == i16::MAX { 0 } else { hb_sp_min };
+                        rt.hb_sp_max = if hb_sp_max == i16::MIN { 0 } else { hb_sp_max };
+                        rt.hb_sync_dist_best = hb_sync_dist_best;
+                        rt.hb_bch_busy_ticks = hb_bch_busy_ticks;
+                        rt.hb_in_window_ticks = hb_in_window_ticks;
+                        rt.hb_nid_event_ticks = hb_nid_event_ticks;
+                        rt.hb_dibit_overflow_ticks = hb_overflow_ticks;
+                        rt.hb_iq_overflow_ticks = hb_iq_overflow_ticks;
+                        rt.hb_iq_kbps = iq_kbps;
+                        rt.hb_iq_buf_rolls = hb_iq_buffer_changes;
+                        rt.hb_window_valid_count = hb_window_valid_count;
+                        rt.hb_window_event_count = hb_window_event_count;
+                    }
+
                     // Reset windowed accumulators for the next second.
                     hb_ticks = 0;
                     hb_pll_min = i16::MAX;
@@ -956,6 +1146,8 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(target_os = "linux")]
         ad9361,
         lsm_stats: lsm_stats.clone(),
+        hdl_lsm: hdl_lsm.clone(),
+        irq_stats: irq_stats.clone(),
     });
 
     // Start HTTP server

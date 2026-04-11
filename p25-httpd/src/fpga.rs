@@ -902,8 +902,16 @@ impl InterruptHandler {
 
     /// Runs the interrupt handler loop.
     ///
+    /// `irq_stats` is the shared `Arc<Mutex<IrqStats>>` from the
+    /// dashboard wiring; the handler updates it on every IRQ so the
+    /// `/api/irq_stats` endpoint can return live counters without
+    /// having to grep the log.
+    ///
     /// This should be spawned as a background tokio task.
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run(
+        mut self,
+        irq_stats: std::sync::Arc<tokio::sync::Mutex<crate::IrqStats>>,
+    ) -> Result<()> {
         let mut total_irqs: u64 = 0;
         let mut dibit_irqs: u64 = 0;
         let mut traffic_irqs: u64 = 0;
@@ -934,6 +942,21 @@ impl InterruptHandler {
             if lsm_dibit {
                 lsm_dibit_irqs += 1;
                 self.notify_lsm_dibit_dma.notify_waiters();
+            }
+            // Update shared stats. Cheap async lock, no contention
+            // because nothing else writes this struct.
+            {
+                let now = std::time::Instant::now();
+                let mut s = irq_stats.lock().await;
+                if s.started_at.is_none() {
+                    s.started_at = Some(now);
+                }
+                s.total = total_irqs;
+                s.dibit = dibit_irqs;
+                s.traffic = traffic_irqs;
+                s.iq = iq_irqs;
+                s.lsm_dibit = lsm_dibit_irqs;
+                s.last_at = Some(now);
             }
             // Log first 10 then every 64th to avoid flooding
             if total_irqs <= 10 || total_irqs % 64 == 0 {
