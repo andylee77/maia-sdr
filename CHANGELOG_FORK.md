@@ -5,6 +5,83 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-11] Phase 6 closeout -- LSM trunking control channel COMPLETE
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/032_phase6_closeout.md`
+
+Phase 6 (the multi-month port of an LSM Simulcast P25 control
+channel decoder onto the Fishball Z7020) is **DONE**. The Clay
+County NAC 0x8A1 control channel is decoded end-to-end on the
+FPGA + ARM PS at ~76-80 % steady-state TSBK CRC pass with ~88 %
+of CRC-OK blocks dispatching as structured TsbkMessage events,
+TG dedup + source-RadioId preservation in the active grants
+table, and a runtime DC blocker A/B knob.
+
+This commit closes out the phase with three small additions
+and a documentation sweep:
+
+### New endpoint: `/api/lsm_control` (Phase 6G.2)
+
+`p25-httpd/src/httpd/mod.rs` adds a new GET handler that
+reads back all three `lsm_control` register bits
+(`lsm_enable`, `lsm_dibit_dma_enable`, `lsm_dc_block_enable`)
+and exposes a `?dc_block=0|1` query-param shortcut for
+toggling the DC blocker without ssh + devmem. The handler
+takes the `ip_core` lock once and does the optional write +
+the readback under it so a write+read sequence is atomic.
+Closes the doc 031 verification gap that previously required
+shell access on the board for runtime A/B testing.
+
+The two other lsm_control bits are intentionally read-only
+from this endpoint -- flipping them at runtime would tear
+down the radio for no debugging benefit, and the devmem
+escape hatch is still there.
+
+### Documentation sweep
+
+- New `doc/changes/032_phase6_closeout.md` -- canonical
+  "Phase 6 is done, here's what shipped, here's what was
+  consciously deferred, here's Phase 7" reference. Includes
+  the full sub-phase rollup (6A through 6G.2), the deferred-list
+  with decision references, the final commit chain, and a
+  Phase 7A-7E sketch for the next session.
+- `DEVPLAN.md` -- updated implementation order section to
+  reflect Phase 6 completion (was stale past Phase 5 since
+  the original C4FM-only redirect). Now shows Phase 6 sub-phases
+  6A-6G.2 marked done with brief descriptions, and Phase 10
+  added as the explicit Phase 7 voice-channel-follow next
+  step with sub-phases 7A-7E.
+- `doc/P25_API.md` -- new `/api/lsm_control` section, updated
+  route count from 19 to 20, removed `/api/lsm_control` from
+  the "endpoints we don't have" table.
+- `tools/p25_status_and_next_step.py` -- ROADMAP[] entry for
+  Phase 6G.2 now probes the live `/api/lsm_control` endpoint
+  to verify the new binary is on the box. New
+  `render_lsm_control` section in the snapshot output.
+
+### Memory
+
+- New `project_phase7_entry_point.md` memory replaces the
+  obsolete `project_phase6e_entry_point.md` and
+  `project_phase6f_entry_point.md` files (both were full of
+  historical Phase 6F.x debug detail that lives in the change
+  docs now). The new memory is forward-looking: where Phase 6
+  ended, what the Phase 7A-7E plan is, and the recommended
+  fresh-session entry point.
+
+### Status
+
+Source ships in this commit. **One more Tezuka rebuild + flash
+is needed** to get this binary onto the board (no FPGA bake --
+the bitstream from `tezuka_fw@08f7607` is unchanged). After
+flashing, `/api/system.build` will report the new
+`phase6-closeout` tag and
+`tools/p25_status_and_next_step.py` will advance the
+next-step pointer to Phase 7A.
+
+---
+
 ## [2026-04-11] Phase 6G.1 -- HDL DC blocker on the LSM IQ input
 
 **Branch:** fishball-p25

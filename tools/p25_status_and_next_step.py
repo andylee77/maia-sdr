@@ -68,6 +68,7 @@ ENDPOINTS = [
     ("/api/lsm_dibit_dump",  "lsm_dibit_dump"),
     ("/api/tsbk_opcodes",    "tsbk_opcodes"),
     ("/api/recent_tsbks",    "recent_tsbks"),
+    ("/api/lsm_control",     "lsm_control"),
     ("/api/aliases",         "aliases"),
 ]
 
@@ -292,6 +293,26 @@ def render_recent_tsbks(rt: dict | None, n: int = 8) -> None:
         print(f"  -{age:>5.1f}s  {block}  {summary}")
 
 
+def render_lsm_control(lc: dict | None) -> None:
+    banner("9b. LSM control register (Phase 6G.2)")
+    if lc is None:
+        kv("status",
+           "/api/lsm_control not present  (binary predates Phase 6G.2)",
+           value_color=YELLOW)
+        return
+    if "error" in lc:
+        kv("status", lc["error"], value_color=RED)
+        return
+    def fmt_bit(name):
+        v = lc.get(name)
+        col = GREEN if v is True else (RED if v is False else DIM)
+        return f"{col}{v}{RESET}"
+    print(f"  lsm_enable             = {fmt_bit('lsm_enable')}")
+    print(f"  lsm_dibit_dma_enable   = {fmt_bit('lsm_dibit_dma_enable')}")
+    print(f"  lsm_dc_block_enable    = {fmt_bit('lsm_dc_block_enable')}"
+          f"   {DIM}<- toggle via ?dc_block=0/1{RESET}")
+
+
 # ──────────────────────────────────────────────────────────────────
 # Roadmap evaluator: where are we, what's next
 # ──────────────────────────────────────────────────────────────────
@@ -395,16 +416,22 @@ ROADMAP = [
     # Each one's check() returns False, so the script stops at the
     # first one and reports it as "the next thing to build".
     {
-        "phase": "Phase 6G.2 (planned)",
+        "phase": "Phase 6G.2",
         "name": "Runtime DC blocker bypass via /api/lsm_control endpoint",
-        "check": lambda s: False,
+        "check": lambda s: (
+            # Probes /api/lsm_control directly. Returns False if the
+            # endpoint isn't on the running binary (404 -> JSONDecodeError
+            # -> snapshot["lsm_control"] is None).
+            s.get("lsm_control") is not None
+            and "lsm_dc_block_enable" in s["lsm_control"]
+        ),
         "next_step": (
-            "Add a small read/write endpoint exposing lsm_control bits "
-            "(lsm_enable, lsm_dibit_dma_enable, lsm_dc_block_enable) "
-            "so runtime A/B testing of the DC blocker doesn't require "
-            "ssh + devmem on the board. ~30 lines in p25-httpd/src/"
-            "httpd/mod.rs + a 3-bit setter in fpga.rs (already mostly "
-            "there). Cheap, useful, no bitstream rebuild needed."
+            "/api/lsm_control endpoint not present in the running binary. "
+            "Rebuild p25-httpd from main (commit 5fcb0e3 or later) and "
+            "re-flash via the Tezuka build pipeline. Once present, the "
+            "DC blocker can be A/B tested at runtime via "
+            "curl 'http://192.168.2.1:8080/api/lsm_control?dc_block=0|1' "
+            "instead of ssh + devmem on the board."
         ),
     },
     {
@@ -577,6 +604,7 @@ def main() -> int:
     render_irq(snapshot.get("irq_stats"))
     if snapshot.get("recent_tsbks") is not None:
         render_recent_tsbks(snapshot["recent_tsbks"])
+    render_lsm_control(snapshot.get("lsm_control"))
 
     # Phase 4: roadmap evaluation -- the actual point of the script.
     snapshot["dc"] = snapshot.get("decoder_compare")

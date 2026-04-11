@@ -258,7 +258,8 @@ At 9600 bps, the ARM A9 has trivial CPU load for all protocol processing.
    - Done: Decoder observability -- p25-httpd stdout now redirected to `/var/log/p25-httpd.log` (was going to /dev/null via `start-stop-daemon -b`); `/api/stats` exposes AGC gain + RSSI; `/api/dibit_dump` exposes inner/outer dibit pct + raw_duid histogram; periodic grant expiry. See change 010.
    - **Redirect to Phase 6:** Live control channel decode verification done -- with the existing C4FM-only gateware AND with `SYNC_THRESHOLD` widened to 10, the on-target decoder produces ~3 sync hits/sec on a known-good control channel but the NIDs decode to random NACs and a near-uniform DUID histogram. Root cause discovered to be that the target (and all in-range) P25 systems are LSM Simulcast, not C4FM. The existing slicer architecture cannot decode LSM. Effort redirected to Phase 6.
 
-9. **Phase 6**: LSM demodulator (Python -> Rust on PS -> HDL on PL). NEW PHASE.
+9. **Phase 6**: LSM demodulator (Python -> Rust on PS -> HDL on PL).
+   **COMPLETE 2026-04-11.** See doc/changes/032 for the closeout.
 
    The Fishball P25 target site is LSM Simulcast (`P25 Phase 1 Simulcast (LSM)`
    per SDRTrunk). All P25 systems within RF range of the user's location are
@@ -272,56 +273,100 @@ At 9600 bps, the ARM A9 has trivial CPU load for all protocol processing.
    Final destination is PL (FPGA fabric). PS Rust is acceptable as an
    intermediate validation step.
 
-   Three-step ladder, each step validated against the previous one with a
-   bit-exact reference vector (the captured `.wav` recording from
-   `C:\Users\Andy\SDRTrunk\recordings\` and matching truth log from
-   `C:\Users\Andy\SDRTrunk\event_logs\`):
-
    - **Phase 6A: Python reference port** -- DONE (change 011).
-     `tools/p25_lsm_demod.py` is a self-contained ~900-line port of
-     SDRTrunk's full LSM chain (decimator, baseband LPF, RRC matched
-     filter, demod loop with AGC + PLL + Gardner TED + slicer, soft + hard
-     sync detectors, status-aware NID extractor). Validated against
-     SDRTrunk truth: 339 sync events vs 335 truth (101.2% recall), 91% at
-     Hamming distance 0, NAC = 0x8A1 in 93.5% of detections, DUID = 0x7
-     in 95.9% of detections. The remaining ~6% gap is uncorrected NID
-     bit errors that BCH(64,16) FEC will close.
+     `tools/p25_lsm_demod.py`, ~900 lines, validated against SDRTrunk
+     truth at 91% NAC accuracy (BCH-uncorrected).
 
-   - **Phase 6B: Add BCH(64,16) NID FEC + finish the Python reference.**
-     Port `BCH_63_16_23_P25.java` and parent `BCH.java` (Berlekamp-Massey
-     decoder over GF(2^6)) to Python. Should bring NAC accuracy to >99.9%.
-     Note: the user has an existing pyradio port in their Downloads folder
-     with a `decode_p25_nid` function in `fec/reed_solomon.py` that may be
-     reusable -- explore before porting from scratch.
+   - **Phase 6B: BCH(63,16,11) NID FEC** -- DONE (change 012).
+     Berlekamp-Massey decoder over GF(2^6). Brings NAC accuracy to >99.9%.
 
-   - **Phase 6C: IQ DMA path in the FPGA gateware.** New ring DMA parallel
-     to the existing dibit DMA. Streams raw post-DDC IQ to DRAM via the
-     same `DmaStreamRingWrite` pattern as the dibit path. Same physical
-     memory layout, new device tree entry, new UIO mapping. Lets PS read
-     IQ samples directly without changing the existing dibit pipeline.
+   - **Phase 6C: IQ DMA path in HDL** -- DONE (change 013).
+     New ring DMA parallel to the dibit DMA, streams raw post-DDC IQ to
+     DRAM via `DmaStreamRingWrite`. Same physical memory layout, new
+     device tree entry, new UIO mapping.
 
-   - **Phase 6D: Rust LSM demod module in p25-httpd.** Mechanical port of
-     the validated Python prototype to Rust, file-by-file with golden
-     vector unit tests against frozen Python outputs. New `lsm/` module
-     with one Rust file per Python stage. Replaces the dibit reader path
-     with an IQ reader path that runs the new demod chain in software on
-     the Cortex-A9. Validates end-to-end on the live Fishball using the
-     same antenna SDRTrunk uses.
+   - **Phase 6D: Rust LSM port** -- DONE (change 014).
+     Mechanical port of the Python prototype to Rust, file-by-file with
+     golden vector unit tests against frozen Python outputs. Reads IQ
+     from the new ring DMA, runs the demod chain on Cortex-A9, feeds
+     into a parallel `iq_lsm_decoder` instance.
 
-   - **Phase 6E: HDL LSM demod in PL.** Each block ported from Rust to
-     Amaranth with cocotb tests against the Rust reference. The
-     decimator and FIRs map to existing maia_hdl FIR infrastructure.
-     The Gardner+PLL+slicer is the unique work and is fully specified
-     by the Python reference. Final goal of the project: pure-PL DSP
-     path producing dibits identical to the Rust reference, with the
-     PS doing only the post-dibit decode and dashboard.
+   - **Phase 6E: HDL LSM port** -- DONE (changes 015-019).
+     Sub-phases 6E.1 (decimator), 6E.2 (LPF), 6E.3 (RRC), 6E.4 (timing
+     interp), 6E.5 (diff demod slicer), 6E.6a-e (Gardner TED + PLL
+     update + rotate + CORDIC atan2), 6E.7 (BCH FEC), 6E.8
+     (LsmNidPipeline + LsmDemod top-level), 6E.9 (p25_top integration),
+     6E.10 (Vivado bake). Cost: ~30 DSP, 2 BRAM, ~520 LUT on Z7020.
 
-   Why this ordering: each phase locks in a fixed reference for the next
-   one. Phase 6A says "the algorithm is right". Phase 6B says "the FEC is
-   right". Phase 6C says "we can stream raw IQ from FPGA to PS". Phase 6D
-   says "the Rust port is right". Phase 6E says "the HDL port is right".
-   At each step there is one degree of freedom and a known-good target,
-   not several entangled unknowns at once.
+   - **Phase 6F: PS at 100%** -- DONE (changes 020-030).
+     Sub-phases 6F.1 (dibit packer overflow pulse fix), 6F.2-6F.7
+     (throughput saga: sync threshold tuning, dibit packing fix, status
+     dibit skip, trellis decoder, deinterleaver, CRC convention
+     discovery), 6F.8-6F.11 (opcode coverage). End state: top 9 opcodes
+     parsed = ~88% of CRC-OK blocks dispatch as structured TsbkMessage
+     events; per-block CRC pass TSBK1 ~85 / TSBK2 ~85 / TSBK3 ~80%;
+     per-pipeline diagnostic A/B via `/api/decoder_compare`; full
+     dashboard with 20 routes; talkgroup dedup + source ID preservation
+     across grant updates.
+
+   - **Phase 6G: PL port** -- DONE (changes 031, 032).
+     - 6G.1: HDL DC blocker on the LSM IQ input, runtime bypassable via
+       new `lsm_control[2]` register field (change 031). The doc 030
+       motivation ("fixes 2-3 minute cold-boot transient") turned out
+       to be based on outdated observations -- by the time of 6G.1
+       verification the radio was already decoding cleanly from boot.
+       The blocker is shipped, wired correctly, verified end-to-end,
+       and runtime-bypassable.
+     - 6G.2: `/api/lsm_control` runtime read/write endpoint (change
+       032). Closes the doc 031 verification gap that previously
+       required ssh + devmem on the board for DC blocker A/B.
+     - 6G.3 (soft sync correlator into PL), 6G.4 (TSBK status-dibit
+       deinterleave into PL), 6G.5 (multi-channel parallel decode):
+       all consciously deferred per doc 030 + doc 032. The decision
+       record is in those docs.
+
+   What Phase 6 does NOT include (consciously deferred): vendor opcode
+   parsers (Motorola 0x0B etc.), pure-status acknowledgment opcodes,
+   the heartbeat observability fix from doc 025, BCH-FEC port to HDL.
+   Full deferral list in doc 032.
+
+10. **Phase 7**: Voice channel follow + audio. **NEXT.** Starts in a
+    fresh session. The control channel is fully decoded and grants
+    are tracked in `/api/grants`, but the radio does NOT yet retune
+    to voice channels. To make this a real trunking radio:
+
+    - **Phase 7A: Second DDC + traffic decoder chain (HDL).** Add a
+      second DDC instance in `p25_top.py` independent from the
+      control channel chain, with its own NCO/decimator/LPF and a
+      new `voice_control` register bank for runtime retune. New ring
+      DMA for the voice dibit stream mirroring `lsm_dibit_dma`.
+      Confirm lock within ~60 ms of frequency change (P25 spec
+      budget is ~200 ms).
+
+    - **Phase 7B: Voice grant follower (PS).** New `voice_follow.rs`
+      module. On every `GroupVoiceChannelGrant` for an interesting
+      talkgroup (configured via a new monitor list endpoint),
+      compute the channel frequency from the active band table,
+      subtract the AD9361 RX LO, write `voice_control.voice_freq_offset`
+      and assert `voice_enable`. On `TDU` reception, decide whether
+      to keep following or release.
+
+    - **Phase 7C: LDU sync + IMBE frame extraction.** The voice
+      channel produces LDU1/LDU2 frames with their own sync words.
+      Each LDU carries 9 IMBE voice frames (88 bits each, trellis +
+      RS protected). Reuse the trellis decoder from the TSBK path.
+
+    - **Phase 7D: IMBE/AMBE vocoder + audio output.** Convert the
+      88-bit IMBE frames to PCM audio. Options: mbelib (open-source,
+      grey license, bit-compatible), codec2 (open-source, FOSS, not
+      bit-compatible), or DVSI hardware (vendor-blessed, adds a chip).
+      Output: stream PCM via RTP over the existing Ethernet, or pipe
+      to a USB audio device on the Zynq.
+
+    - **Phase 7E: Closing the loop.** `/api/audio.opus` style endpoint
+      that ties grant detection + voice follow + vocoder + RTP into a
+      single "give me the audio for talkgroup X" handler. The
+      dashboard becomes a real operator console.
 
 ### Critical Maia Files Referenced
 

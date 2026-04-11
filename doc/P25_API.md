@@ -25,7 +25,7 @@ curl -s http://192.168.2.1:8080/api/system | python -m json.tool
 
 ## Endpoint catalogue
 
-All 19 routes registered in `httpd/mod.rs`:
+All 20 routes registered in `httpd/mod.rs`:
 
 | # | Path | Method | Returns | Purpose |
 |---|---|---|---|---|
@@ -46,8 +46,9 @@ All 19 routes registered in `httpd/mod.rs`:
 | 15 | `/api/recent_tsbks` | GET | JSON | Newest 50 TSBKs as `{age_secs, block, summary}` strings |
 | 16 | `/api/sync_tune` | GET, PUT | JSON | Read or set the runtime sync threshold (Phase 6F.7+) |
 | 17 | `/api/decoder_reset` | GET, POST | JSON | Reset the decoder counters to zero (for clean post-flash measurements) |
-| 18 | `/api/aliases` | GET, PUT | `AliasMap` | Get or set the talkgroup-id → display-name map |
-| 19 | `/ws/events` | WS upgrade | JSON frames | Real-time TSBK event stream (`TsbkEvent`) — one frame per parsed TSBK |
+| 18 | `/api/lsm_control` | GET | JSON | Read all 3 `lsm_control` bits + optional `?dc_block=0/1` query-param shortcut to toggle the DC blocker without ssh+devmem (Phase 6G.2) |
+| 19 | `/api/aliases` | GET, PUT | `AliasMap` | Get or set the talkgroup-id → display-name map |
+| 20 | `/ws/events` | WS upgrade | JSON frames | Real-time TSBK event stream (`TsbkEvent`) — one frame per parsed TSBK |
 
 ---
 
@@ -264,6 +265,53 @@ rather than including the early acquisition window. Returns:
 {"ok": true, "reset": ["lsm_decoder", "iq_lsm_decoder", "c4fm_decoder", "phase6d", "hdl_lsm"]}
 ```
 
+### `GET /api/lsm_control`
+
+Phase 6G.2. Read-back of all three `lsm_control` register bits, with
+an optional `?dc_block=0/1` query-param shortcut to toggle the DC
+blocker in-place. The two other bits (`lsm_enable`,
+`lsm_dibit_dma_enable`) are read-only from this endpoint — flipping
+them at runtime would tear down the radio for no debugging benefit,
+and the `devmem` escape hatch is still there if you really need it.
+
+```bash
+# Read current state:
+curl http://192.168.2.1:8080/api/lsm_control
+
+# Disable the DC blocker (and read back to confirm):
+curl 'http://192.168.2.1:8080/api/lsm_control?dc_block=0'
+
+# Re-enable:
+curl 'http://192.168.2.1:8080/api/lsm_control?dc_block=1'
+```
+
+Response shape:
+
+```json
+{
+  "lsm_enable":           true,
+  "lsm_dibit_dma_enable": true,
+  "lsm_dc_block_enable":  true,
+  "updated_from":         null,
+  "register_address":     "0x7C4600A0",
+  "bit_layout": {
+    "lsm_enable":            "[0]",
+    "lsm_dibit_dma_enable":  "[1]",
+    "lsm_dc_block_enable":   "[2]"
+  },
+  "note": "..."
+}
+```
+
+`updated_from` is `null` if no `dc_block` query param was passed,
+or the previous value of the bit (`true` / `false`) if a write
+happened. So a write request returns the **prior** value in
+`updated_from` and the **new** value in `lsm_dc_block_enable`.
+
+The handler takes the `ip_core` lock once and does the optional
+write + the readback under it, so a write+read sequence is atomic
+from the perspective of any other PS code touching the register.
+
 ### `GET /api/aliases` / `PUT /api/aliases` → `AliasMap`
 
 Talkgroup-id → display-name map persisted in `~/.config/p25-httpd/aliases.json`.
@@ -359,15 +407,14 @@ implemented (in roughly the order they'd be useful):
 
 | Want | Why missing | Status |
 |---|---|---|
-| `GET /api/lsm_control` (read register state, including `lsm_dc_block_enable`) | Phase 6G.1 wired the bit through HDL but only surfaces the readback in the startup log line, not as a runtime endpoint | Easy add — ~20 lines in `httpd/mod.rs` + a `(bool, bool, bool)` getter that's already in `fpga.rs` |
-| `PUT /api/lsm_dc_block_enable` (runtime toggle for the DC blocker A/B) | Same as above — the test rig works through `devmem` instead | Same effort as the read endpoint |
 | `GET /api/talkgroups` (catalogue of TGs ever heard, not just currently active) | DEVPLAN.md mentions it as a Phase 2 deliverable but we never built it | Medium — need to grow `ControlChannelDecoder` to retain a TG-history map |
-| `GET /api/voice_channel/<grant_id>` (initiate voice follow on a granted channel) | Phase 3 voice-channel-following work, not started | Significant — depends on voice-follow infrastructure |
+| `GET /api/voice_channel/<grant_id>` (initiate voice follow on a granted channel) | Phase 7 voice-channel-following work, not started | Significant — depends on voice-follow infrastructure |
 | `GET /api/audio.opus` (live decoded voice) | Requires IMBE/AMBE vocoder + audio output | Significant + licensing question |
 
-The first two are tiny and would be useful enough to add ad hoc
-the next time we touch `httpd/mod.rs`. The rest are real new
-features with their own design questions.
+These are real new features for Phase 7+ with their own design
+questions. The previously-missing `/api/lsm_control` runtime
+read/write endpoint shipped in Phase 6G.2 and is now in the table
+above.
 
 ---
 

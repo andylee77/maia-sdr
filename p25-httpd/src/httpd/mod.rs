@@ -101,6 +101,12 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/decoder_reset",
             get(get_decoder_reset).post(post_decoder_reset),
         )
+        // Phase 6G.2: runtime read/write of the lsm_control register
+        // (lsm_enable, lsm_dibit_dma_enable, lsm_dc_block_enable). The
+        // dc_block_enable bit is the runtime A/B knob the doc 030 PL
+        // port roadmap wanted -- previously had to be poked via
+        // ssh + devmem on the board.
+        .route("/api/lsm_control", get(get_lsm_control))
         .route("/api/aliases", get(get_aliases).put(put_aliases))
         .route("/ws/events", get(ws_events))
         .with_state(state)
@@ -494,6 +500,89 @@ async fn get_decoder_reset(State(state): State<Arc<AppState>>) -> Json<serde_jso
 
 async fn post_decoder_reset(state: State<Arc<AppState>>) -> Json<serde_json::Value> {
     get_decoder_reset(state).await
+}
+
+/// Phase 6G.2: read-back of the `lsm_control` register, plus an
+/// optional GET-with-query-param shortcut for toggling
+/// `lsm_dc_block_enable` without ssh + devmem.
+///
+/// Without query params, returns the current state of all three
+/// `lsm_control` bits + a hint about which bit positions they map
+/// to. The dashboard can poll this once a second to surface the
+/// "is the DC blocker actually on?" question that previously
+/// required scraping the startup log.
+///
+/// With `?dc_block=0` or `?dc_block=1`, ALSO writes the bit before
+/// reading back. This is the runtime A/B knob the doc 030 PL port
+/// roadmap (and Phase 6G.1 verification plan in doc 031) wanted
+/// but had to do via `devmem` previously. Range-checked: only
+/// `0` or `1` are accepted, everything else is ignored. The two
+/// other lsm_control bits (`lsm_enable`, `lsm_dibit_dma_enable`)
+/// are NOT exposed for write here -- those are master enables that
+/// shouldn't be flipped at runtime, and there's no debugging story
+/// that needs them.
+///
+/// Returns the same shape whether or not the write happened, so a
+/// curl-based A/B test loop can just toggle and re-read in one
+/// request:
+///
+/// ```text
+/// curl http://192.168.2.1:8080/api/lsm_control?dc_block=0
+/// curl http://192.168.2.1:8080/api/lsm_control?dc_block=1
+/// ```
+async fn get_lsm_control(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let mut updated_from: Option<bool> = None;
+
+    #[cfg(target_os = "linux")]
+    {
+        // Take the ip_core lock once, do both the optional write and
+        // the readback under it so nothing can race in between.
+        let core = state.ip_core.lock().await;
+
+        if let Some(v) = params.get("dc_block") {
+            let new_val = match v.as_str() {
+                "1" | "true" => Some(true),
+                "0" | "false" => Some(false),
+                _ => None,
+            };
+            if let Some(new_bit) = new_val {
+                let (_, _, prev) = core.lsm_control_readback();
+                core.set_lsm_dc_block_enable(new_bit);
+                updated_from = Some(prev);
+            }
+        }
+
+        let (lsm_en, lsm_dma_en, lsm_dc_block) = core.lsm_control_readback();
+        Json(serde_json::json!({
+            "lsm_enable":            lsm_en,
+            "lsm_dibit_dma_enable":  lsm_dma_en,
+            "lsm_dc_block_enable":   lsm_dc_block,
+            "updated_from":          updated_from,
+            "register_address":      "0x7C4600A0",
+            "bit_layout": {
+                "lsm_enable":            "[0]",
+                "lsm_dibit_dma_enable":  "[1]",
+                "lsm_dc_block_enable":   "[2]"
+            },
+            "note": "GET /api/lsm_control?dc_block=0 disables the LSM \
+                     front-end DC blocker; ?dc_block=1 enables it. The \
+                     other two bits are not writable from this endpoint \
+                     -- toggle them via devmem if you really need to. \
+                     See doc/changes/031 + 032 for the rationale.",
+        }))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (state, params, &mut updated_from);
+        Json(serde_json::json!({
+            "ok": false,
+            "error": "lsm_control read/write requires hardware (target_os=linux)",
+        }))
+    }
 }
 
 /// Phase 6F.7: PUT /api/sync_tune?threshold=N -- update the runtime
