@@ -62,13 +62,23 @@ impl DataUnit {
         }
     }
 
-    /// Number of dibits in this data unit (excluding NID)
+    /// Number of dibits in this data unit (excluding NID).
+    ///
+    /// **Phase 6F.2f (2026-04-11) note for Tsdu:** Was 336 (assumed
+    /// 1-3 TSBKs in a single fixed-length read). Corrected to 123,
+    /// matching SDRTrunk's `P25P1DataUnitID.TRUNKING_SIGNALING_BLOCK_1`:
+    /// 196 trellis data bits + 42 null padding bits = 238 bits = 119
+    /// dibits, plus 4 status dibits embedded in the body at positions
+    /// {14, 50, 86, 122} = 123 on-air dibits total post-NID for one
+    /// TSBK. Multi-block TSBK2 / TSBK3 handling is a follow-up; for now
+    /// we read one block at a time and let the next sync detect catch
+    /// the start of any subsequent block.
     pub fn length_dibits(self) -> usize {
         match self {
             Self::Hdu => 324,   // 648 bits
             Self::Tdu => 0,     // no payload
             Self::Ldu1 => 792,  // 1584 bits (9 IMBE frames + LC)
-            Self::Tsdu => 336,  // 672 bits (1-3 TSBKs)
+            Self::Tsdu => 123,  // TSBK1: 119 data+null + 4 status, see above
             Self::Ldu2 => 792,  // 1584 bits
             Self::Pdu => 288,   // variable, minimum
             Self::TduLc => 168, // 336 bits (LC + parity)
