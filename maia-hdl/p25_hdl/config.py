@@ -91,6 +91,39 @@ class P25Config:
         self.lsm_dibit_dma_num_buffers_log2 = 3   # 8 sub-buffers
         self.lsm_dibit_dma_buffer_size = 0x1000   # 4 KB per sub-buffer
 
+        # ── Traffic channel LSM dibit ring DMA (Phase 7A.2) ───────
+        # Phase 7A.2 mirrors what Phase 6E.9 did on the control side:
+        # an LSM demod chain (LsmDecimator2 -> LsmFir(LPF) ->
+        # LsmFir(RRC) -> LsmDemod) sits beside the existing C4FM
+        # traffic chain, both fed by the same `traffic_ddc.re_out`/
+        # `im_out`. The LSM dibits exit via this dedicated ring; the
+        # C4FM dibits stay on `traffic_dma_address` (0x1800_0000).
+        # The PS drains both rings in parallel so the dashboard can
+        # A/B C4FM vs. LSM on a followed voice channel and pick the
+        # right modulation per call (Phase 7B will add automatic
+        # selection based on which pipeline produces stable NIDs).
+        #
+        # Layout (8 sub-buffers x 4 KB = 32 KB) mirrors
+        # `lsm_dibit_dma` exactly. Byte rate is the same 1.28 KB/s
+        # as the other dibit rings.
+        #
+        # Address `0x1B00_0000` continues the 0x100_0000 spacing
+        # pattern: 0x1700 (control C4FM dibit), 0x1800 (traffic
+        # C4FM dibit), 0x1900 (control IQ), 0x1A00 (control LSM
+        # dibit), 0x1B00 (traffic LSM dibit). 0x1C00 onwards is
+        # reserved for the Phase 7G channelizer slot rings.
+        #
+        # Tezuka side: a new device-tree carve-out for
+        # `p25_traffic_lsm_dibit_dma@1b000000` is required so the
+        # rxbuffer kernel module exposes a `p25-traffic-lsm-dibit`
+        # UIO device. PS-side `fpga.rs` opens that device.
+        #
+        # Ring base must be aligned to total ring size (32 KB).
+        # See doc/P25_ADDRESS_MAP.md for the canonical map.
+        self.traffic_lsm_dibit_dma_address = 0x1B00_0000
+        self.traffic_lsm_dibit_dma_num_buffers_log2 = 3   # 8 sub-buffers
+        self.traffic_lsm_dibit_dma_buffer_size = 0x1000   # 4 KB per sub-buffer
+
     @property
     def dibit_dma_num_buffers(self):
         return 1 << self.dibit_dma_num_buffers_log2
@@ -123,6 +156,15 @@ class P25Config:
     def lsm_dibit_dma_total_size(self):
         return self.lsm_dibit_dma_num_buffers * self.lsm_dibit_dma_buffer_size
 
+    @property
+    def traffic_lsm_dibit_dma_num_buffers(self):
+        return 1 << self.traffic_lsm_dibit_dma_num_buffers_log2
+
+    @property
+    def traffic_lsm_dibit_dma_total_size(self):
+        return (self.traffic_lsm_dibit_dma_num_buffers
+                * self.traffic_lsm_dibit_dma_buffer_size)
+
     def validate(self):
         assert self.platform >= 0 and self.platform < 256
         # Ring base addresses must be aligned to total ring size
@@ -138,3 +180,8 @@ class P25Config:
         assert self.lsm_dibit_dma_address & (self.lsm_dibit_dma_total_size - 1) == 0, \
             f'lsm_dibit_dma_address {self.lsm_dibit_dma_address:#x} not ' \
             f'aligned to ring size {self.lsm_dibit_dma_total_size:#x}'
+        assert self.traffic_lsm_dibit_dma_address & \
+            (self.traffic_lsm_dibit_dma_total_size - 1) == 0, \
+            f'traffic_lsm_dibit_dma_address ' \
+            f'{self.traffic_lsm_dibit_dma_address:#x} not aligned to ' \
+            f'ring size {self.traffic_lsm_dibit_dma_total_size:#x}'

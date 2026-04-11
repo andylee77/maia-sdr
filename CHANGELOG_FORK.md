@@ -5,6 +5,135 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-11] Phase 7A.2 -- LSM demod chain on traffic side + HDU/TDU/LDU dispatch
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/034_phase7a2_lsm_traffic_chain_and_tdu_hdu.md`
+
+Mirrors Phase 6E.9 on the traffic side: a parallel LSM demod chain
+sits beside the existing C4FM traffic chain on the traffic DDC
+output, identical to the control-side LSM chain. The new chain
+produces NID events (NAC + DUID + BCH validity + sync distance)
+which the PS-side heartbeat task polls at 16 ms cadence and
+dispatches by DUID to the appropriate TrafficManager handler:
+
+| DUID | Name | Dispatch |
+|------|------|----------|
+| `0x0` | HDU (Header) | `hdu_received(now, nac)` |
+| `0x3` | TDU | `tdu_received(now, nac, false)` |
+| `0x5` | LDU1 | `ldu_received(now, nac, false)` |
+| `0xA` | LDU2 | `ldu_received(now, nac, true)` |
+| `0xF` | TDU_LC | `tdu_received(now, nac, true)` |
+
+This is the FPGA prerequisite for HDU + TDU detection on followed
+voice channels. With TDU detection in place, the TrafficManager
+gains a **2 s post-TDU hold window** (matches SDRTrunk PR #2010 /
+commit `1b3ce431` `STALE_EVENT_THRESHOLD_MS = 2000`) so that PTT
+releases between speakers in a multi-speaker conversation reuse
+the same slot instead of fragmenting into separate calls. Phase
+7C will tap the new `traffic_lsm_dibit_dma` ring in parallel for
+IMBE frame extraction, and Phase 7D will add the IMBE -> PCM
+vocoder.
+
+**HDL changes:**
+
+- `maia-hdl/p25_hdl/config.py`: new
+  `traffic_lsm_dibit_dma_address = 0x1B00_0000` constant +
+  validate() assertion.
+- `maia-hdl/p25_hdl/p25_top.py`: new constructor instantiations
+  (`traffic_lsm_decimator`, `traffic_lsm_lpf`, `traffic_lsm_rrc`,
+  `traffic_lsm_demod`, `traffic_lsm_dibit_packer`,
+  `traffic_lsm_dibit_dma`), new `traffic_lsm` register bank at
+  offset 0xC0 (bank 6) with bit-identical layout to the
+  control-side `lsm` bank, new `m_axi_traffic_lsm_dibit` AXI
+  master, new `interrupts.traffic_lsm_dibit_dma` field, register
+  crossbar update for `addr_bank == 0b110`. The
+  `elaborate()` chain wiring mirrors lines 664-781 of the
+  control-side LSM chain exactly, just fed by `traffic_ddc.re_out`
+  instead of `ddc.re_out`.
+- `maia-hdl/projects/fishball7020_p25/system_bd.tcl`: new
+  `ad_mem_hp1_interconnect` line for
+  `p25_core/m_axi_traffic_lsm_dibit`.
+- `maia-hdl/ip/p25-core/default/p25_core.v`: regenerated from
+  Amaranth (54888 lines, +16K from Phase 7A.1).
+
+**PS Rust changes:**
+
+- `p25-httpd/p25-pac/p25.svd` + `src/lib.rs`: regenerated via
+  `svd2rust` to expose the new `traffic_lsm_*` register accessors.
+- `p25-httpd/src/p25/traffic_manager.rs`: new fields
+  (`post_tdu_hold_until`, `last_duid`, `last_nac`, `hdus_seen`,
+  `tdus_seen`, `ldus_seen`), new methods (`hdu_received`,
+  `tdu_received`, `ldu_received`, `post_tdu_hold_remaining_ms`),
+  modified `note_activity()` (now also clears the post-TDU hold),
+  modified `check_timeouts()` (honours the post-TDU hold window
+  with priority over the call_timeout_ms fallback). The
+  Phase 7A.1 Acquiring auto-promote bug fix is still present and
+  carries over.
+- `p25-httpd/src/fpga.rs`: new
+  `set_traffic_lsm_enable/dibit_dma_enable/dc_block_enable`
+  helpers, `traffic_lsm_control_readback`, `traffic_lsm_status`,
+  `traffic_lsm_nid`, `traffic_lsm_drop_count`,
+  `traffic_lsm_dibit_last_buffer/next_address`,
+  `traffic_lsm_debug`, new `traffic_lsm_dibit_dma: RxBuffer`
+  field opened from UIO device `p25-traffic-lsm-dibit`,
+  new `DmaChannel::TrafficLsmDibit` variant + branch in
+  `read_dma_buffers`, new `notify_traffic_lsm_dibit_dma` /
+  `waiter_traffic_lsm_dibit_dma` for the IRQ source, plus IRQ
+  counter and log line wiring.
+- `p25-httpd/src/main.rs`: extended `IrqStats` with
+  `traffic_lsm_dibit` field, new traffic LSM chain init at
+  startup (enable + dibit DMA + DC blocker, with readback
+  verification), new traffic LSM heartbeat task (polls
+  `traffic_lsm_status` at 16 ms cadence, dispatches NID events by
+  DUID), BUILD_TAG bumped to
+  `2026-04-11-phase7a2-traffic-lsm-chain-and-tdu-hdu`.
+- `p25-httpd/src/httpd/mod.rs`: extended `/api/traffic` snapshot
+  with `last_duid` / `last_duid_hex` / `last_duid_label` /
+  `last_nac` / `last_nac_hex` / `hdus_seen` / `ldus_seen` /
+  `tdus_seen` / `post_tdu_hold_remaining_ms` / `traffic_lsm_chain`
+  (full new register bank readback) / `irq.traffic_lsm_dibit_total`.
+
+**Tezuka side (separate repo):**
+
+- New device-tree carve-out for
+  `p25_traffic_lsm_dibit_dma@1b000000` so the rxbuffer kernel
+  module exposes a `p25-traffic-lsm-dibit` UIO device. Mirrors
+  the existing `p25_lsm_dibit_dma@1a000000` carve-out.
+
+**Documentation:**
+
+- `doc/changes/034_phase7a2_lsm_traffic_chain_and_tdu_hdu.md`
+  (new).
+- `doc/P25_API.md` -- new "Phase 7A.2 additions" section under
+  `/api/traffic`.
+- `doc/P25_ADDRESS_MAP.md` -- new bank 6 detail section, new
+  IRQ table row, new HP1 master row, new DDR carve-out row.
+- `tools/p25_status_and_next_step.py` -- Phase 7A.2 ROADMAP
+  entry's check() now actually verifies
+  `/api/traffic.traffic_lsm_chain.enabled == true` instead of
+  always returning false.
+
+**Verification (pending):** combined Phase 7A.1 sticky-lock fix +
+Phase 7A.2 LSM traffic chain will be verified together on the
+next flash. Acceptance criteria:
+
+1. `/api/traffic.traffic_lsm_chain.enabled == true`
+2. NID events arrive at the heartbeat dispatcher (visible in
+   `last_duid_label` rotating through HDU / LDU1 / LDU2 / TDU)
+3. `hdus_seen + ldus_seen + tdus_seen` grows during a real call
+4. TDU release is sub-second (visible in `post_tdu_hold_remaining_ms`
+   counting down from 2000 -> 0 after TDU)
+5. `tools/p25_sticky_lock_test.py` reports
+   `delta_retunes <= 2` over the 12 s sample window during a
+   real call (validates the Phase 7A.1 Acquiring auto-promote
+   fix on hardware)
+6. NID CRC pass rate on the traffic LSM chain matches the
+   control-side ~85% per-block when locked on a known voice
+   channel
+
+---
+
 ## [2026-04-11] Phase 7A.1 -- Traffic-channel grant follower scaffold + sticky-lock policy
 
 **Branch:** fishball-p25

@@ -496,28 +496,31 @@ ROADMAP = [
     },
     {
         "phase": "Phase 7A.2",
-        "name": "LSM demod chain on traffic side (FPGA bake)",
-        "check": lambda s: False,
+        "name": "LSM demod chain on traffic side + HDU/TDU/LDU dispatch",
+        "check": lambda s: (
+            # /api/traffic gained a `traffic_lsm_chain` block in 7A.2
+            # that holds the new traffic_lsm register bank readback.
+            # Its presence (and its `enabled=true` field) tells us the
+            # binary on the board is post-7A.2 AND the HDL bake
+            # included the new chain.
+            s.get("traffic") is not None
+            and s["traffic"].get("traffic_lsm_chain") is not None
+            and s["traffic"]["traffic_lsm_chain"].get("enabled") is True
+        ),
         "next_step": (
-            "Phase 7A.1 wired the existing C4FM traffic chain into "
-            "PS, but Clay County is LSM-only and the C4FM chain "
-            "produces garbage on LSM voice channels. Phase 7A.2 "
-            "mirrors what Phase 6E.9 did on the control side: "
-            "add an LSM demod chain on the traffic side.\n"
-            "  1. p25_top.py: instantiate traffic_lsm_decimator, "
-            "traffic_lsm_lpf, traffic_lsm_rrc, traffic_lsm_demod, "
-            "traffic_lsm_dibit_packer, traffic_lsm_dibit_dma "
-            "(mirroring the control-side LSM chain).\n"
-            "  2. New traffic_lsm register bank at offset 0xC0 "
-            "(bank 6) modelled on the control-side `lsm` bank.\n"
-            "  3. New ring DMA at 0x1B00_0000.\n"
-            "  4. Vivado bake (~20 min) -> new XSA -> Tezuka rebuild "
-            "-> flash.\n"
-            "  5. Verify on a known active voice channel: LSM "
-            "chain produces stable NIDs and dibit CRC pass rate "
-            "matches the control-side ~85% per-block.\n"
-            "Resource cost: ~32 DSP48, ~4000 LUT, 2 BRAM18 (Phase "
-            "6E.8 numbers). Z7020 has plenty of room."
+            "Phase 7A.2 PS Rust + HDL changes are committed but the "
+            "binary on the board predates them. Need a full Tezuka "
+            "rebuild + Vivado FPGA bake (~20 min) + flash. The new "
+            "chain mirrors Phase 6E.9 on the traffic side: "
+            "traffic_lsm_decimator -> traffic_lsm_lpf -> "
+            "traffic_lsm_rrc -> traffic_lsm_demod, with NID events "
+            "exposed via the new traffic_lsm register bank (0xC0). "
+            "PS dispatcher polls traffic_lsm_status at 16 ms cadence "
+            "and routes HDU/TDU/LDU/LDU2 events to TrafficManager. "
+            "TDU triggers a 2 s post-TDU hold (matches SDRTrunk PR "
+            "#2010 semantics). Tezuka kernel DT also needs a new "
+            "carve-out for p25_traffic_lsm_dibit_dma@1b000000. See "
+            "doc/changes/034 for verification."
         ),
     },
     {

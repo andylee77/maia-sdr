@@ -803,6 +803,12 @@ async fn get_traffic(
         grants_seen,
         retunes,
         last_retune_at_secs_ago,
+        last_duid,
+        last_nac,
+        hdus_seen,
+        ldus_seen,
+        tdus_seen,
+        post_tdu_hold_remaining_ms,
     ) = {
         let mgr = state.traffic_manager.lock().await;
         let label = mgr.state_label();
@@ -816,8 +822,48 @@ async fn get_traffic(
         let age = mgr
             .last_retune_at
             .map(|t| t.elapsed().as_secs_f64());
-        (label, ch, tg, freq, nco, offset, seen, retunes, age)
+        let duid = mgr.last_duid;
+        let nac = mgr.last_nac;
+        let hdus = mgr.hdus_seen;
+        let ldus = mgr.ldus_seen;
+        let tdus = mgr.tdus_seen;
+        let hold = mgr.post_tdu_hold_remaining_ms();
+        (label, ch, tg, freq, nco, offset, seen, retunes, age,
+         duid, nac, hdus, ldus, tdus, hold)
     };
+
+    // Phase 7A.2: read the live traffic_lsm chain health from the
+    // FPGA registers. Mirrors the control-side `/api/hdl_lsm` snapshot
+    // but on the new traffic_lsm bank.
+    #[cfg(target_os = "linux")]
+    let traffic_lsm_chain_json = {
+        let core = state.ip_core.lock().await;
+        let s = core.traffic_lsm_status();
+        let drop_count = core.traffic_lsm_drop_count();
+        let last_buffer = core.traffic_lsm_dibit_last_buffer();
+        let next_addr = core.traffic_lsm_dibit_next_address();
+        let (pll_dbg, sample_point_dbg) = core.traffic_lsm_debug();
+        let (en, dma_en, dc_block) = core.traffic_lsm_control_readback();
+        serde_json::json!({
+            "enabled":            en,
+            "dibit_dma_enabled":  dma_en,
+            "dc_block_enabled":   dc_block,
+            "bch_busy":           s.bch_busy,
+            "in_nid_window":      s.in_nid_window,
+            "nid_event":          s.nid_event,
+            "nid_valid":          s.nid_valid,
+            "n_errors":           s.n_errors,
+            "sync_distance":      s.sync_distance,
+            "dibit_overflow":     s.dibit_overflow,
+            "drop_count":         drop_count,
+            "dibit_last_buffer":  last_buffer,
+            "dibit_next_addr":    format!("0x{:08X}", next_addr),
+            "pll_dbg":            pll_dbg,
+            "sample_point_dbg":   sample_point_dbg,
+        })
+    };
+    #[cfg(not(target_os = "linux"))]
+    let traffic_lsm_chain_json = serde_json::json!(null);
 
     let stats_json = {
         let s = state.traffic_stats.lock().await;
@@ -847,7 +893,8 @@ async fn get_traffic(
     let irq_json = {
         let s = state.irq_stats.lock().await;
         serde_json::json!({
-            "traffic_dma_total": s.traffic,
+            "traffic_dma_total":       s.traffic,
+            "traffic_lsm_dibit_total": s.traffic_lsm_dibit,
         })
     };
 
@@ -866,26 +913,45 @@ async fn get_traffic(
         "grants_seen":               grants_seen,
         "retunes":                   retunes,
         "last_retune_secs_ago":      last_retune_at_secs_ago,
+        // Phase 7A.2: NID event counters and post-TDU hold
+        "last_duid":                 last_duid,
+        "last_duid_hex":             last_duid.map(|d| format!("0x{:X}", d)),
+        "last_duid_label":           last_duid.map(|d| match d {
+            0x0 => "HDU",
+            0x3 => "TDU",
+            0x5 => "LDU1",
+            0x7 => "TSDU",
+            0xA => "LDU2",
+            0xC => "PDU",
+            0xF => "TDU_LC",
+            _   => "?",
+        }),
+        "last_nac":                  last_nac,
+        "last_nac_hex":              last_nac.map(|n| format!("0x{:03X}", n)),
+        "hdus_seen":                 hdus_seen,
+        "ldus_seen":                 ldus_seen,
+        "tdus_seen":                 tdus_seen,
+        "post_tdu_hold_remaining_ms": post_tdu_hold_remaining_ms,
         "stats":                     stats_json,
         "irq":                       irq_json,
+        "traffic_lsm_chain":         traffic_lsm_chain_json,
         "applied":                   applied,
         "errors":                    errors,
-        "phase":                     "7A.1",
-        "modulation":                "C4FM-only (LSM traffic chain coming in 7A.2)",
+        "phase":                     "7A.2",
+        "modulation":                "C4FM + LSM (parallel chains, LSM is the active one for HDU/TDU/LDU dispatch)",
         "controls": {
             "reset_stats":   "?reset_stats=1            -- zero TrafficStats",
             "follower":      "?follower=on|off          -- pause/resume 50 ms poll",
             "retune_hz":     "?retune_hz=<i64>          -- manual NCO offset (Hz, signed)",
-            "demod_enable":  "?demod_enable=0|1         -- manual demod_enable bit"
+            "demod_enable":  "?demod_enable=0|1         -- manual demod_enable bit (C4FM chain only -- LSM chain has its own enable in HDL)"
         },
-        "note": "Singleton voice-channel grant follower. Polls \
-                 lsm_decoder.grants @ 50ms and retunes the traffic DDC \
-                 to the most recent grant. At 7A.1 the traffic demod \
-                 is C4FM and the test target (Clay County) is LSM, so \
-                 the dibit histogram is the only useful 'is the chain \
-                 alive' signal -- the dibit *content* is garbage until \
-                 7A.2 ships an LSM traffic chain. Manual retune does \
-                 NOT auto-enable demod -- explicit by design.",
+        "note": "Phase 7A.2: traffic-side LSM chain produces NID events \
+                 (HDU/TDU/LDU/LDU2) which the heartbeat task dispatches \
+                 to TrafficManager. TDU triggers a 2 s post-TDU hold \
+                 window (matches SDRTrunk PR #2010 semantics) so PTT \
+                 releases between speakers in a multi-speaker call \
+                 don't fragment into separate calls. Phase 7C will \
+                 extract IMBE frames from LDU1/LDU2 for the vocoder.",
     }))
 }
 

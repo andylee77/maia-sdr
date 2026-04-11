@@ -41,10 +41,16 @@ pub struct IpCore {
     traffic_dma: RxBuffer,
     iq_dma: RxBuffer,
     lsm_dibit_dma: RxBuffer,
+    /// Phase 7A.2: traffic-side LSM dibit DMA ring (parallel to the
+    /// existing C4FM `traffic_dma` ring). Mirrors `lsm_dibit_dma` on
+    /// the control side. UIO device `p25-traffic-lsm-dibit`,
+    /// physical address `0x1B00_0000` (8 x 4 KB ring).
+    traffic_lsm_dibit_dma: RxBuffer,
     dibit_last_addr: Option<u32>,
     traffic_last_addr: Option<u32>,
     iq_last_addr: Option<u32>,
     lsm_dibit_last_addr: Option<u32>,
+    traffic_lsm_dibit_last_addr: Option<u32>,
 }
 
 impl IpCore {
@@ -107,6 +113,15 @@ impl IpCore {
         let lsm_dibit_dma = RxBuffer::new("p25-lsm-dibit")
             .await
             .context("failed to open p25-lsm-dibit DMA buffer")?;
+        // Phase 7A.2: LSM traffic-channel dibit ring (8 x 4 KB),
+        // parallel to the C4FM traffic_dma ring on the traffic side.
+        // The traffic_lsm HDL chain decodes voice-channel NIDs (HDU,
+        // TDU, LDU1, LDU2) so the PS dispatcher can implement
+        // sub-second TDU release on followed calls. Requires Tezuka
+        // DT carve-out for p25_traffic_lsm_dibit_dma@1b000000.
+        let traffic_lsm_dibit_dma = RxBuffer::new("p25-traffic-lsm-dibit")
+            .await
+            .context("failed to open p25-traffic-lsm-dibit DMA buffer")?;
 
         let ip_core = IpCore {
             registers,
@@ -114,10 +129,12 @@ impl IpCore {
             traffic_dma,
             iq_dma,
             lsm_dibit_dma,
+            traffic_lsm_dibit_dma,
             dibit_last_addr: None,
             traffic_last_addr: None,
             iq_last_addr: None,
             lsm_dibit_last_addr: None,
+            traffic_lsm_dibit_last_addr: None,
         };
 
         let interrupt_handler = InterruptHandler::new(uio, interrupt_registers);
@@ -767,6 +784,114 @@ impl IpCore {
         self.read_dma_buffers(DmaChannel::LsmDibit)
     }
 
+    // ── Traffic-side LSM chain (Phase 7A.2) ──────────────────────
+    //
+    // Mirrors the control-side LSM helpers above (lines 600-768) but
+    // against the new `traffic_lsm` register bank (offset 0xC0).
+    // Same field semantics throughout -- the PS-side dispatcher polls
+    // `traffic_lsm_status()` the same way the control-side
+    // `lsm_status()` is polled.
+
+    /// Master enable for the traffic-side LSM chain. Mirrors
+    /// `set_lsm_enable` for the control side.
+    pub fn set_traffic_lsm_enable(&self, enable: bool) {
+        self.registers
+            .traffic_lsm_control()
+            .modify(|_, w| w.traffic_lsm_enable().bit(enable));
+    }
+
+    /// Enables or disables the traffic LSM dibit ring DMA.
+    pub fn set_traffic_lsm_dibit_dma_enable(&self, enable: bool) {
+        self.registers
+            .traffic_lsm_control()
+            .modify(|_, w| w.traffic_lsm_dibit_dma_enable().bit(enable));
+    }
+
+    /// Enables or disables the traffic LSM front-end DC blocker.
+    /// Same one-pole leaky-integrator design as the control side.
+    /// Production code should always set this to `true`.
+    pub fn set_traffic_lsm_dc_block_enable(&self, enable: bool) {
+        self.registers
+            .traffic_lsm_control()
+            .modify(|_, w| w.traffic_lsm_dc_block_enable().bit(enable));
+    }
+
+    /// Reads back the `traffic_lsm_control` register as
+    /// `(traffic_lsm_enable, traffic_lsm_dibit_dma_enable,
+    /// traffic_lsm_dc_block_enable)`.
+    pub fn traffic_lsm_control_readback(&self) -> (bool, bool, bool) {
+        let c = self.registers.traffic_lsm_control().read();
+        (
+            c.traffic_lsm_enable().bit(),
+            c.traffic_lsm_dibit_dma_enable().bit(),
+            c.traffic_lsm_dc_block_enable().bit(),
+        )
+    }
+
+    /// Reads the `traffic_lsm_status` register and returns a coherent
+    /// snapshot. Same Rsticky semantics as `lsm_status()` -- the
+    /// `nid_event` bit is cleared on read.
+    pub fn traffic_lsm_status(&self) -> LsmStatusSnapshot {
+        let s = self.registers.traffic_lsm_status().read();
+        LsmStatusSnapshot {
+            bch_busy: s.bch_busy().bit(),
+            in_nid_window: s.in_nid_window().bit(),
+            nid_event: s.nid_event().bit(),
+            nid_valid: s.nid_valid().bit(),
+            n_errors: s.n_errors().bits(),
+            sync_distance: s.sync_distance().bits(),
+            dibit_overflow: s.traffic_lsm_dibit_overflow().bit(),
+        }
+    }
+
+    /// Reads the latched NAC/DUID of the most recent traffic LSM NID event.
+    pub fn traffic_lsm_nid(&self) -> (u16, u8) {
+        let n = self.registers.traffic_lsm_nid().read();
+        (n.nac().bits(), n.duid().bits())
+    }
+
+    /// Reads the saturating traffic LSM NID drop counter.
+    pub fn traffic_lsm_drop_count(&self) -> u16 {
+        self.registers
+            .traffic_lsm_drop_count()
+            .read()
+            .drop_count()
+            .bits()
+    }
+
+    /// Returns the index of the most recently completed traffic LSM
+    /// dibit sub-buffer.
+    pub fn traffic_lsm_dibit_last_buffer(&self) -> u8 {
+        self.registers
+            .traffic_lsm_drop_count()
+            .read()
+            .traffic_lsm_dibit_last_buffer()
+            .bits()
+    }
+
+    /// Returns the current AW write address for the traffic LSM dibit channel.
+    pub fn traffic_lsm_dibit_next_address(&self) -> u32 {
+        self.registers
+            .traffic_lsm_dibit_next()
+            .read()
+            .next_address()
+            .bits()
+    }
+
+    /// Reads the traffic LSM debug taps: `pll_dbg` (signed Q2.13)
+    /// and `sample_point_dbg` (signed Q4.10).
+    pub fn traffic_lsm_debug(&self) -> (i16, i16) {
+        let d = self.registers.traffic_lsm_debug().read();
+        (d.pll_dbg().bits() as i16, d.sample_point_dbg().bits() as i16)
+    }
+
+    /// Reads new traffic LSM dibit DMA buffers since the last call.
+    /// Same format as `read_dibit_buffers()` -- packed 64-bit dibit
+    /// words.
+    pub fn read_traffic_lsm_dibit_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::TrafficLsmDibit)
+    }
+
     // ── DMA buffer helpers ───────────────────────────────────────
 
     /// Reads new dibit/traffic ring sub-buffers since the last call.
@@ -811,6 +936,15 @@ impl IpCore {
                     .lsm_drop_count()
                     .read()
                     .lsm_dibit_last_buffer()
+                    .bits() as u32,
+            ),
+            DmaChannel::TrafficLsmDibit => (
+                &self.traffic_lsm_dibit_dma,
+                &mut self.traffic_lsm_dibit_last_addr,
+                self.registers
+                    .traffic_lsm_drop_count()
+                    .read()
+                    .traffic_lsm_dibit_last_buffer()
                     .bits() as u32,
             ),
         };
@@ -867,6 +1001,7 @@ enum DmaChannel {
     Traffic,
     Iq,
     LsmDibit,
+    TrafficLsmDibit,  // Phase 7A.2
 }
 
 /// Snapshot of the `lsm_status` register read in a single bus access.
@@ -974,6 +1109,7 @@ pub struct InterruptHandler {
     notify_traffic_dma: Arc<Notify>,
     notify_iq_dma: Arc<Notify>,
     notify_lsm_dibit_dma: Arc<Notify>,
+    notify_traffic_lsm_dibit_dma: Arc<Notify>,  // Phase 7A.2
 }
 
 impl InterruptHandler {
@@ -985,6 +1121,7 @@ impl InterruptHandler {
             notify_traffic_dma: Arc::new(Notify::new()),
             notify_iq_dma: Arc::new(Notify::new()),
             notify_lsm_dibit_dma: Arc::new(Notify::new()),
+            notify_traffic_lsm_dibit_dma: Arc::new(Notify::new()),
         }
     }
 
@@ -1019,6 +1156,17 @@ impl InterruptHandler {
         }
     }
 
+    /// Returns a waiter for traffic-side LSM dibit DMA completion
+    /// interrupts (Phase 7A.2). Same convention as the control side:
+    /// NID events for HDU/TDU/LDU dispatch are PS-polled via
+    /// `IpCore::traffic_lsm_status()`, IRQ-driven only for the dibit
+    /// DMA ring drain.
+    pub fn waiter_traffic_lsm_dibit_dma(&self) -> InterruptWaiter {
+        InterruptWaiter {
+            notify: self.notify_traffic_lsm_dibit_dma.clone(),
+        }
+    }
+
     /// Runs the interrupt handler loop.
     ///
     /// `irq_stats` is the shared `Arc<Mutex<IrqStats>>` from the
@@ -1036,6 +1184,7 @@ impl InterruptHandler {
         let mut traffic_irqs: u64 = 0;
         let mut iq_irqs: u64 = 0;
         let mut lsm_dibit_irqs: u64 = 0;
+        let mut traffic_lsm_dibit_irqs: u64 = 0;  // Phase 7A.2
         loop {
             self.uio.irq_enable().await?;
             self.uio.irq_wait().await?;
@@ -1045,6 +1194,7 @@ impl InterruptHandler {
             let traffic = interrupts.traffic_dma().bit();
             let iq = interrupts.iq_dma().bit();
             let lsm_dibit = interrupts.lsm_dibit_dma().bit();
+            let traffic_lsm_dibit = interrupts.traffic_lsm_dibit_dma().bit();
             total_irqs += 1;
             if dibit {
                 dibit_irqs += 1;
@@ -1062,6 +1212,10 @@ impl InterruptHandler {
                 lsm_dibit_irqs += 1;
                 self.notify_lsm_dibit_dma.notify_waiters();
             }
+            if traffic_lsm_dibit {
+                traffic_lsm_dibit_irqs += 1;
+                self.notify_traffic_lsm_dibit_dma.notify_waiters();
+            }
             // Update shared stats. Cheap async lock, no contention
             // because nothing else writes this struct.
             {
@@ -1075,6 +1229,7 @@ impl InterruptHandler {
                 s.traffic = traffic_irqs;
                 s.iq = iq_irqs;
                 s.lsm_dibit = lsm_dibit_irqs;
+                s.traffic_lsm_dibit = traffic_lsm_dibit_irqs;
                 s.last_at = Some(now);
             }
             // Log first 10 then every 64th to avoid flooding
@@ -1082,9 +1237,10 @@ impl InterruptHandler {
                 tracing::info!(
                     target: "p25_irq",
                     "IRQ #{total_irqs}: dibit={dibit} traffic={traffic} iq={iq} \
-                     lsm_dibit={lsm_dibit} (totals dibit={dibit_irqs} \
-                     traffic={traffic_irqs} iq={iq_irqs} \
-                     lsm_dibit={lsm_dibit_irqs})"
+                     lsm_dibit={lsm_dibit} traffic_lsm_dibit={traffic_lsm_dibit} \
+                     (totals dibit={dibit_irqs} traffic={traffic_irqs} \
+                     iq={iq_irqs} lsm_dibit={lsm_dibit_irqs} \
+                     traffic_lsm_dibit={traffic_lsm_dibit_irqs})"
                 );
             }
         }

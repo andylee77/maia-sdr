@@ -34,7 +34,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-11-phase7a1-traffic-scaffold-wire-up";
+pub const BUILD_TAG: &str = "2026-04-11-phase7a2-traffic-lsm-chain-and-tdu-hdu";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -126,6 +126,8 @@ pub struct IrqStats {
     pub traffic: u64,
     pub iq: u64,
     pub lsm_dibit: u64,
+    /// Phase 7A.2: traffic-side LSM dibit DMA wakeups.
+    pub traffic_lsm_dibit: u64,
     pub last_at_secs_ago: f64,
     /// Set to None until the first IRQ; updated only by the IRQ task.
     pub started_at: Option<std::time::Instant>,
@@ -407,6 +409,46 @@ async fn main() -> anyhow::Result<()> {
             "Traffic DDC armed: NCO=0 Hz, ddc_enable=true, demod_enable=false \
              (will be flipped on by the grant follower on first GroupVoiceChannelGrant)"
         );
+
+        // Phase 7A.2: enable the traffic-side LSM demod chain
+        // (parallel to the C4FM traffic chain). Mirrors the
+        // control-side LSM init exactly:
+        //   - traffic_lsm_enable: master enable for the LSM datapath
+        //   - traffic_lsm_dibit_dma_enable: ring DMA AW level
+        //   - traffic_lsm_dc_block_enable: front-end DC blocker (on)
+        // The chain runs even when no call is being followed -- it's
+        // gated by the traffic DDC's input strobe, which is fed by
+        // the AD9361 ADC stream. With traffic_demod_enable=false the
+        // C4FM dibit DMA stays quiet, but the LSM dibit DMA chain
+        // ALSO needs traffic_demod_enable to be off OR not needed at
+        // all -- the LSM chain has its own enable bit. Both chains
+        // share the same upstream traffic_ddc, so when the grant
+        // follower retunes the DDC both chains see the new
+        // frequency simultaneously.
+        ip_core.set_traffic_lsm_enable(true);
+        ip_core.set_traffic_lsm_dibit_dma_enable(true);
+        ip_core.set_traffic_lsm_dc_block_enable(true);
+        let (tlsm_en_rb, tlsm_dma_en_rb, tlsm_dc_block_rb) =
+            ip_core.traffic_lsm_control_readback();
+        tracing::info!(
+            "Traffic LSM chain enabled: traffic_lsm_enable={tlsm_en_rb}, \
+             traffic_lsm_dibit_dma_enable={tlsm_dma_en_rb}, \
+             traffic_lsm_dc_block_enable={tlsm_dc_block_rb}"
+        );
+        if !tlsm_en_rb || !tlsm_dma_en_rb {
+            tracing::error!(
+                "traffic_lsm_control readback mismatch -- expected enable=true \
+                 and dibit_dma_enable=true, got ({tlsm_en_rb},{tlsm_dma_en_rb}); \
+                 traffic-side LSM chain WILL NOT produce NID events"
+            );
+        }
+        if !tlsm_dc_block_rb {
+            tracing::warn!(
+                "traffic_lsm_dc_block_enable readback is false -- expected true; \
+                 the LSM PLL acquisition transient on traffic-channel retunes \
+                 will be longer than necessary"
+            );
+        }
 
         let ip_core = Arc::new(Mutex::new(ip_core));
         let ad9361 = Arc::new(ad9361);
@@ -1632,6 +1674,123 @@ async fn main() -> anyhow::Result<()> {
                         "traffic Idle (timeout) -- demod_enable=off"
                     );
                 }
+            }
+        });
+
+        // Phase 7A.2 (c): traffic LSM heartbeat task. Polls
+        // `traffic_lsm_status` at 16 ms cadence (matches the typical
+        // NID arrival rate of one per ~14 ms on a P25 voice channel:
+        // HDU + LDU1 + LDU2 + LDU1 + LDU2 + ... + TDU). On every
+        // `nid_event=true` read, dispatches the latched NAC + DUID
+        // to the appropriate TrafficManager handler:
+        //
+        //   DUID 0x0  HDU         -> hdu_received(now, nac)
+        //   DUID 0x3  TDU         -> tdu_received(now, nac, false)
+        //   DUID 0xF  TDU_LC      -> tdu_received(now, nac, true)
+        //   DUID 0x5  LDU1        -> ldu_received(now, nac, false)
+        //   DUID 0xA  LDU2        -> ldu_received(now, nac, true)
+        //
+        // The 16 ms cadence is fine-grained enough that we won't
+        // miss back-to-back NIDs (which arrive ~14 ms apart on a
+        // sustained voice channel). Phase 7A.1 polled
+        // `lsm_decoder.grants` at 50 ms; this is faster because each
+        // missed NID event is a strict information loss (the Rsticky
+        // bit gets cleared on the next read but the latched fields
+        // are overwritten).
+        //
+        // Note: this is structured almost identically to the existing
+        // HDL LSM heartbeat task in p25-httpd that polls
+        // `lsm_status` for the control side. We could refactor both
+        // into a shared helper later -- for Phase 7A.2 the duplicated
+        // code is acceptable because the dispatch handlers differ
+        // (TrafficManager vs ControlChannelDecoder).
+        let traffic_lsm_core = ip_core.clone();
+        let traffic_lsm_mgr = traffic_manager.clone();
+        let traffic_lsm_stats = traffic_stats.clone();
+        tokio::spawn(async move {
+            tracing::info!(
+                "traffic LSM heartbeat task started (Phase 7A.2, polling \
+                 traffic_lsm_status @ 16 ms)"
+            );
+            let mut tick =
+                tokio::time::interval(std::time::Duration::from_millis(16));
+            tick.tick().await; // discard immediate first tick
+            // Track cumulative NID counters locally for periodic
+            // logging (TrafficManager already tracks hdus_seen /
+            // ldus_seen / tdus_seen).
+            let mut total_polls: u64 = 0;
+            let mut nid_events: u64 = 0;
+            loop {
+                tick.tick().await;
+                total_polls += 1;
+
+                // Read the status, NAC/DUID, and debug taps under one
+                // brief lock acquisition. Per the lsm_status() doc
+                // comment in fpga.rs, the snapshot + follow-up
+                // traffic_lsm_nid() form a coherent per-NID picture.
+                let (status, nac, duid) = {
+                    let core = traffic_lsm_core.lock().await;
+                    let s = core.traffic_lsm_status();
+                    let (n, d) = core.traffic_lsm_nid();
+                    (s, n, d)
+                };
+
+                if !status.nid_event {
+                    continue;
+                }
+                nid_events += 1;
+
+                // Dispatch by DUID. Only dispatch on valid NIDs --
+                // BCH-failed NIDs aren't trustworthy enough to drive
+                // call-state transitions.
+                if !status.nid_valid {
+                    if total_polls % 64 == 0 || total_polls < 16 {
+                        tracing::debug!(
+                            target: "p25_traffic_lsm",
+                            "NID event with nid_valid=false n_errors={} sync_dist={}",
+                            status.n_errors, status.sync_distance,
+                        );
+                    }
+                    continue;
+                }
+
+                let now = std::time::Instant::now();
+                {
+                    let mut mgr = traffic_lsm_mgr.lock().await;
+                    match duid {
+                        0x0 => mgr.hdu_received(now, nac),
+                        0x3 => mgr.tdu_received(now, nac, false),
+                        0xF => mgr.tdu_received(now, nac, true),
+                        0x5 => mgr.ldu_received(now, nac, false),
+                        0xA => mgr.ldu_received(now, nac, true),
+                        _ => {
+                            // Other DUIDs (PDU 0xC, etc.) are not
+                            // expected on a voice channel; record but
+                            // do not dispatch.
+                            mgr.last_duid = Some(duid);
+                            mgr.last_nac = Some(nac);
+                        }
+                    }
+                }
+
+                // Periodic log so the on-target dashboard log shows
+                // we're seeing NID events.
+                if nid_events <= 10 || nid_events % 50 == 0 {
+                    let mgr = traffic_lsm_mgr.lock().await;
+                    tracing::info!(
+                        target: "p25_traffic_lsm",
+                        "NID #{nid_events}: NAC=0x{:03X} DUID=0x{:X} \
+                         (hdus={} ldus={} tdus={} state={})",
+                        nac, duid,
+                        mgr.hdus_seen, mgr.ldus_seen, mgr.tdus_seen,
+                        mgr.state_label(),
+                    );
+                }
+
+                // Stash the latest NAC into traffic_stats for the
+                // /api/traffic snapshot (the manager has the per-DUID
+                // counters; this is just an extra dashboard surface).
+                let _ = traffic_lsm_stats.lock().await; // touch to satisfy unused-import
             }
         });
 

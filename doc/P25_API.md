@@ -410,6 +410,106 @@ the same value, or no IRQs firing). Phase 7A.2 adds an LSM
 parallel chain on the traffic side and the histogram becomes
 decode-quality data.
 
+### `GET /api/traffic` -- Phase 7A.2 additions
+
+Phase 7A.2 added an LSM demod chain on the traffic side
+(mirroring Phase 6E.9 on the control side) and a 16 ms heartbeat
+task that polls the new `traffic_lsm_status` register bank for NID
+events and dispatches each DUID to a TrafficManager handler:
+
+| DUID | Name | Dispatch |
+|------|------|----------|
+| `0x0` | HDU (Header) | `hdu_received(now, nac)` -- call start, refresh activity |
+| `0x3` | TDU | `tdu_received(now, nac, false)` -- call end, start 2 s post-TDU hold |
+| `0x5` | LDU1 (voice + LC) | `ldu_received(now, nac, false)` -- activity refresh |
+| `0xA` | LDU2 (voice + ESS) | `ldu_received(now, nac, true)` -- activity refresh |
+| `0xF` | TDU_LC | `tdu_received(now, nac, true)` -- call end with LC payload |
+
+The post-TDU hold window matches SDRTrunk PR #2010 semantics: a TDU
+does NOT immediately deallocate the slot. The slot stays bound to
+the same TG for 2 seconds after the TDU so that PTT releases
+between speakers in a multi-speaker conversation reuse the same
+slot. If the TG resumes within the hold (a new HDU or LDU arrives),
+the hold is cancelled. Otherwise the hold expires and the lock is
+released.
+
+**New JSON fields in the `/api/traffic` snapshot (Phase 7A.2):**
+
+```json
+{
+  "phase":                     "7A.2",
+  "modulation":                "C4FM + LSM (parallel chains, LSM is the active one for HDU/TDU/LDU dispatch)",
+  "last_duid":                 5,
+  "last_duid_hex":             "0x5",
+  "last_duid_label":           "LDU1",
+  "last_nac":                  2209,
+  "last_nac_hex":              "0x8A1",
+  "hdus_seen":                 1,
+  "ldus_seen":                 27,
+  "tdus_seen":                 0,
+  "post_tdu_hold_remaining_ms": null,
+  "irq": {
+    "traffic_dma_total":       234,
+    "traffic_lsm_dibit_total": 12
+  },
+  "traffic_lsm_chain": {
+    "enabled":           true,
+    "dibit_dma_enabled": true,
+    "dc_block_enabled":  true,
+    "bch_busy":          false,
+    "in_nid_window":     false,
+    "nid_event":         false,
+    "nid_valid":         true,
+    "n_errors":          2,
+    "sync_distance":     1,
+    "dibit_overflow":    false,
+    "drop_count":        0,
+    "dibit_last_buffer": 3,
+    "dibit_next_addr":   "0x1B003800",
+    "pll_dbg":           1234,
+    "sample_point_dbg":  17542
+  }
+}
+```
+
+`post_tdu_hold_remaining_ms` is `null` when no hold is active. When
+a TDU has just arrived it is `2000` and counts down each subsequent
+poll. If a new LDU arrives during the window, it is cleared back to
+`null` (the conversation continues).
+
+`traffic_lsm_chain` is a snapshot of the new `traffic_lsm` register
+bank (offset `0x7C46_00C0`). Field semantics are identical to
+the control-side `lsm` bank (see `doc/P25_ADDRESS_MAP.md` Phase
+7A.2 detail section). The `nid_event` Rsticky bit is cleared by
+the `/api/traffic` read itself, so this snapshot reflects "is a
+new event pending right now" rather than the cumulative count
+(use `hdus_seen + ldus_seen + tdus_seen` for the cumulative
+count).
+
+**Verification on a clean Clay County voice grant:**
+
+```bash
+# Wait for an active call, then snapshot every second:
+for i in 1 2 3 4 5; do
+    curl -s http://192.168.2.1:8080/api/traffic | python -c "
+import sys,json
+d=json.load(sys.stdin)
+print(f't={i} state={d[\"state\"]} tg={d[\"current_talkgroup\"]} '
+      f'duid={d[\"last_duid_label\"]} hdus={d[\"hdus_seen\"]} '
+      f'ldus={d[\"ldus_seen\"]} tdus={d[\"tdus_seen\"]} '
+      f'hold={d[\"post_tdu_hold_remaining_ms\"]}')
+"
+    sleep 1
+done
+```
+
+Expected pattern: `state=Active tg=202 duid=LDU1` or `LDU2` for
+the duration of the call, `hdus_seen` increments by 1 at the
+start, `ldus_seen` increments rapidly throughout (at ~7-8 LDUs/sec
+since each LDU is ~140 ms), `tdus_seen` increments by 1 at the
+end, then `state` transitions to Idle ~2 s after the TDU when the
+post-TDU hold window expires.
+
 ### `GET /api/aliases` / `PUT /api/aliases` → `AliasMap`
 
 Talkgroup-id → display-name map persisted in `~/.config/p25-httpd/aliases.json`.

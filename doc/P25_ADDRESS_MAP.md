@@ -29,10 +29,11 @@ must be aligned to its **total ring size** (this is asserted by
 
 | Name | Base | Sub-buffers | Sub-buffer size | Total | Ring depth | IRQ rate | Byte rate | Source |
 |------|------|-------------|-----------------|-------|------------|----------|-----------|--------|
-| `dibit_dma`      | `0x1700_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | control-channel C4FM dibits (post-slicer, post-symbol-timing) |
-| `traffic_dma`    | `0x1800_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | traffic-channel C4FM dibits (post-slicer, post-symbol-timing) |
-| `iq_dma`         | `0x1900_0000` | 8 | 32 KB   | 256 KB  | ~1 s     | ~128 ms  | ~250 KB/s    | **Phase 6C:** control-channel post-DDC IQ (16-bit signed I + 16-bit signed Q, 62.5 kSPS, two samples per 64-bit DMA word) |
-| `lsm_dibit_dma`  | `0x1A00_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | **Phase 6E.9:** control-channel LSM dibits (post-`LsmDemod.dibit_out`/`symbol_strobe`, parallel to `dibit_dma` so PS can A/B C4FM and LSM on the same RF capture) |
+| `dibit_dma`              | `0x1700_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | control-channel C4FM dibits (post-slicer, post-symbol-timing) |
+| `traffic_dma`            | `0x1800_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | traffic-channel C4FM dibits (post-slicer, post-symbol-timing) |
+| `iq_dma`                 | `0x1900_0000` | 8 | 32 KB   | 256 KB  | ~1 s     | ~128 ms  | ~250 KB/s    | **Phase 6C:** control-channel post-DDC IQ (16-bit signed I + 16-bit signed Q, 62.5 kSPS, two samples per 64-bit DMA word) |
+| `lsm_dibit_dma`          | `0x1A00_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | **Phase 6E.9:** control-channel LSM dibits (post-`LsmDemod.dibit_out`/`symbol_strobe`, parallel to `dibit_dma` so PS can A/B C4FM and LSM on the same RF capture) |
+| `traffic_lsm_dibit_dma`  | `0x1B00_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | **Phase 7A.2:** traffic-channel LSM dibits (post-`traffic_lsm_demod.dibit_out`/`symbol_strobe`, parallel to `traffic_dma` so PS can A/B C4FM and LSM on the followed voice channel and dispatch HDU/TDU/LDU events from the new `traffic_lsm` register bank) |
 
 **Sample-rate math (control DDC at 62.5 kSPS):**
 
@@ -104,8 +105,8 @@ window (set by `ad_cpu_interconnect 0x7C460000 p25_core` in `system_bd.tcl`).
 | 3 | `0x18` | `0x7C46_0060` | `traffic` | 3 | 6 / 8 | traffic DDC + traffic demod + traffic_next_address |
 | 4 | `0x20` | `0x7C46_0080` | `iq` (Phase 6C) | 2 | 3 / 4 | iq_dma_status, iq_dma_control, iq_next_address |
 | 5 | `0x28` | `0x7C46_00A0` | `lsm` (Phase 6E.9) | 3 | 6 / 8 | lsm_control, lsm_status, lsm_nid, lsm_drop_count, lsm_dibit_next, lsm_debug |
-| 6 | `0x30` | `0x7C46_00C0` | *(free)* | — | — | next available bank |
-| 7 | `0x38` | `0x7C46_00E0` | *(free)* | — | — | last bank in the 7-bit word-address space |
+| 6 | `0x30` | `0x7C46_00C0` | `traffic_lsm` (Phase 7A.2) | 3 | 6 / 8 | traffic_lsm_control, traffic_lsm_status, traffic_lsm_nid, traffic_lsm_drop_count, traffic_lsm_dibit_next, traffic_lsm_debug |
+| 7 | `0x38` | `0x7C46_00E0` | *(free)* | — | — | last bank in the 7-bit word-address space; reserved for the Phase 7G channelizer slot allocator |
 
 ### `iq` bank (Phase 6C) detail — byte offsets relative to `0x7C46_0080`
 
@@ -172,6 +173,58 @@ update again until the next `nid_event_strobe` pulse, and the `nid_event`
 sticky bit is what tells the PS that *any* event has happened since the last
 read.
 
+### `traffic_lsm` bank (Phase 7A.2) detail — byte offsets relative to `0x7C46_00C0`
+
+The traffic-side LSM chain (`LsmDecimator2 → LsmFir(LPF) → LsmFir(RRC) →
+LsmDemod`) sits in parallel with the existing C4FM traffic chain on the
+traffic side. Both consume the same `traffic_ddc` output. The LSM dibits exit
+via `traffic_lsm_dibit_dma` (see DDR table); the recovered NIDs are exposed as
+registers in this bank. Layout is **bit-identical** to the control-side `lsm`
+bank at `0x7C46_00A0` — same field positions, same Rsticky semantics, same
+PS-side coherency protocol.
+
+The motivation is HDU + TDU detection on followed voice channels. The
+PS-side dispatcher polls `traffic_lsm_status.nid_event` at 16 ms cadence and
+classifies each NID by `traffic_lsm_nid.duid`:
+
+| DUID | Name | TrafficManager dispatch |
+|------|------|-------------------------|
+| `0x0` | HDU (Header) | `hdu_received(now, nac)` -- call start |
+| `0x3` | TDU | `tdu_received(now, nac, false)` -- call end (start 2 s post-TDU hold) |
+| `0x5` | LDU1 (voice + LC) | `ldu_received(now, nac, false)` -- activity refresh |
+| `0xA` | LDU2 (voice + ESS) | `ldu_received(now, nac, true)` -- activity refresh |
+| `0xF` | TDU_LC | `tdu_received(now, nac, true)` -- call end with LC payload |
+
+Phase 7C will extend the LDU dispatch to also tap `traffic_lsm_dibit_dma`
+in parallel for IMBE frame extraction.
+
+| Byte offset | Register | Field | Bits | Access | Description |
+|-------------|----------|-------|------|--------|-------------|
+| `0x00` | `traffic_lsm_control` | `traffic_lsm_enable`           | `[0]` | RW | master enable for the entire traffic LSM chain. Same semantics as `lsm_control.lsm_enable` on the control side. |
+| `0x00` | `traffic_lsm_control` | `traffic_lsm_dibit_dma_enable` | `[1]` | RW | enable bit for the `traffic_lsm_dibit_dma` ring's AW channel; mirrors `dibit_dma`'s enable convention |
+| `0x00` | `traffic_lsm_control` | `traffic_lsm_dc_block_enable`  | `[2]` | RW | front-end one-pole leaky-integrator DC blocker, identical to `lsm_control.lsm_dc_block_enable`. PS sets this together with `traffic_lsm_enable` at startup. |
+| `0x04` | `traffic_lsm_status`  | `bch_busy`                     | `[0]`     | R       | high while `LsmNidBchFec` is sweeping a candidate NID |
+| `0x04` | `traffic_lsm_status`  | `in_nid_window`                | `[1]`     | R       | high while collecting the 33-dibit NID payload after a sync hit |
+| `0x04` | `traffic_lsm_status`  | `nid_event`                    | `[2]`     | Rsticky | latches each new NID event; cleared on read. Drives the PS heartbeat dispatcher. |
+| `0x04` | `traffic_lsm_status`  | `nid_valid`                    | `[3]`     | R       | latched copy of `LsmDemod.valid_out` (BCH Hamming distance ≤ 11) |
+| `0x04` | `traffic_lsm_status`  | `n_errors`                     | `[10:4]`  | R       | latched BCH Hamming distance (0..63) |
+| `0x04` | `traffic_lsm_status`  | `sync_distance`                | `[17:11]` | R       | latched 48-bit sync hit Hamming distance (0..47) |
+| `0x04` | `traffic_lsm_status`  | `traffic_lsm_dibit_overflow`   | `[18]`    | Rsticky | latches when the LSM `DibitPacker.data_valid` asserts while `traffic_lsm_dibit_dma.stream_ready` is low |
+| `0x08` | `traffic_lsm_nid`     | `nac`                          | `[11:0]`  | R       | latched 12-bit NAC for the most recent NID event |
+| `0x08` | `traffic_lsm_nid`     | `duid`                         | `[15:12]` | R       | latched 4-bit DUID for the most recent NID event |
+| `0x0C` | `traffic_lsm_drop_count` | `drop_count`                | `[15:0]`  | R       | saturating count of NIDs the sync detector emitted while `bch_busy` was high. **Should always read 0** in normal operation. |
+| `0x0C` | `traffic_lsm_drop_count` | `traffic_lsm_dibit_last_buffer` | `[18:16]` | R    | index of the most recently completed `traffic_lsm_dibit_dma` sub-buffer |
+| `0x10` | `traffic_lsm_dibit_next` | `next_address`              | `[31:0]`  | R       | current AW write address inside the `traffic_lsm_dibit_dma` ring (debug only) |
+| `0x14` | `traffic_lsm_debug`   | `pll_dbg`                      | `[15:0]`  | R       | snapshot of `traffic_lsm_demod.pll_dbg` (signed Q2.13) |
+| `0x14` | `traffic_lsm_debug`   | `sample_point_dbg`             | `[31:16]` | R       | snapshot of `traffic_lsm_demod.sample_point_dbg[17:2]` (signed Q4.10) |
+
+The PS-side dispatch flow uses the same coherency protocol as the
+control-side `lsm` bank: read `traffic_lsm_status` (which clears
+`nid_event` sticky), then read `traffic_lsm_nid` for the NAC + DUID,
+then dispatch by DUID. All latched fields stay valid until the next
+`nid_event_strobe` pulse so the snapshot is coherent across the two
+register reads.
+
 ## IRQ assignments
 
 The P25 IP exposes a single `interrupt_out` line that is the OR of all
@@ -184,6 +237,7 @@ sticky interrupt bits in `control.interrupts`. It is connected to
 | 1 | `traffic_dma` | `traffic_dma.interrupt` | sub-buffer of traffic-channel C4FM dibit ring filled |
 | 2 | `iq_dma` (Phase 6C) | `iq_dma.interrupt` | sub-buffer of control-channel IQ ring filled |
 | 3 | `lsm_dibit_dma` (Phase 6E.9) | `lsm_dibit_dma.interrupt` | sub-buffer of control-channel LSM dibit ring filled. **NID events themselves are PS-polled via `lsm_status.nid_event` rather than IRQ-driven**, because at one NID per ~14 ms a 60 Hz dashboard poll already catches every event. |
+| 4 | `traffic_lsm_dibit_dma` (Phase 7A.2) | `traffic_lsm_dibit_dma.interrupt` | sub-buffer of traffic-channel LSM dibit ring filled. Same poll convention as `lsm_dibit_dma`: NID events are PS-polled via `traffic_lsm_status.nid_event` from a dedicated 16 ms heartbeat task in `main.rs`. |
 
 All bits are `Rsticky` — they latch on the source pulse and clear on read.
 
@@ -194,10 +248,11 @@ The Zynq HP1 slave port hosts all three DMA masters via Vivado SmartConnect
 
 | AXI master | HP slave | Sustained byte rate | HP1 budget @ 1.7 GB/s |
 |------------|----------|---------------------|-----------------------|
-| `m_axi_dibit`     | HP1 | ~1.28 KB/s | <0.001% |
-| `m_axi_traffic`   | HP1 | ~1.28 KB/s | <0.001% |
-| `m_axi_iq`        | HP1 | ~250 KB/s  | ~0.015% |
-| `m_axi_lsm_dibit` | HP1 | ~1.28 KB/s | <0.001% |
+| `m_axi_dibit`             | HP1 | ~1.28 KB/s | <0.001% |
+| `m_axi_traffic`           | HP1 | ~1.28 KB/s | <0.001% |
+| `m_axi_iq`                | HP1 | ~250 KB/s  | ~0.015% |
+| `m_axi_lsm_dibit`         | HP1 | ~1.28 KB/s | <0.001% |
+| `m_axi_traffic_lsm_dibit` | HP1 | ~1.28 KB/s | <0.001% |
 
 HP1 is wildly overprovisioned for these consumers; HP2/HP3 are unused and
 remain available for future high-bandwidth needs (e.g. wideband recorder).
