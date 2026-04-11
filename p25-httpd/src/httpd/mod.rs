@@ -109,50 +109,113 @@ pub fn router(state: Arc<AppState>) -> Router {
 // ── REST Handlers ──────────────────────────────────────────────────────
 
 async fn get_system(State(state): State<Arc<AppState>>) -> Json<SystemInfo> {
-    let decoder = state.lsm_decoder.read().await;
-    let sys = &decoder.system;
+    // Phase 6F.11 API-level merge: read BOTH lsm decoders and pick
+    // the most-populated value for each field. This gives us the
+    // union of state visible to either decoder pipeline. Both
+    // decoders are tracking the same radio, so disagreement is
+    // either (a) a transient where one is ahead of the other, or
+    // (b) one pipeline lost a TSBK that the other caught -- either
+    // way the right answer is "show the populated value".
+    //
+    // Why merge in the API instead of architecturally? Keeps the
+    // diagnostic A/B comparison in /api/decoder_compare intact, and
+    // we don't lose the regression insurance of having two
+    // independent decoder paths. See doc/changes/030 for the
+    // discussion.
+    let dec_a = state.lsm_decoder.read().await;
+    let dec_b = state.iq_lsm_decoder.read().await;
+    let sa = &dec_a.system;
+    let sb = &dec_b.system;
+    fn pick<T: Clone>(a: Option<T>, b: Option<T>) -> Option<T> {
+        a.or(b)
+    }
+    let system_clock_str = pick(sa.last_sync_clock, sb.last_sync_clock).map(
+        |(y, mo, d, h, mn, locked)| {
+            format!(
+                "{:04}-{:02}-{:02} {:02}:{:02} {}",
+                y, mo, d, h, mn,
+                if locked { "LOCKED" } else { "UNLOCKED" }
+            )
+        },
+    );
     Json(SystemInfo {
-        nac: sys.nac.map(|n| format!("{}", n)),
-        wacn: sys.wacn.map(|w| format!("{:05X}", w)),
-        system_id: sys.system_id.map(|s| format!("{:03X}", s)),
-        rfss_id: sys.rfss_id,
-        site_id: sys.site_id,
-        lra: sys.lra,
-        control_channel: sys.control_channel.map(|c| format!("{}", c)),
+        nac: pick(sa.nac, sb.nac).map(|n| format!("{}", n)),
+        wacn: pick(sa.wacn, sb.wacn).map(|w| format!("{:05X}", w)),
+        system_id: pick(sa.system_id, sb.system_id).map(|s| format!("{:03X}", s)),
+        rfss_id: pick(sa.rfss_id, sb.rfss_id),
+        site_id: pick(sa.site_id, sb.site_id),
+        lra: pick(sa.lra, sb.lra),
+        control_channel: pick(sa.control_channel, sb.control_channel)
+            .map(|c| format!("{}", c)),
+        secondary_cch_a: pick(sa.secondary_cch_a, sb.secondary_cch_a)
+            .map(|c| format!("{}", c)),
+        secondary_cch_b: pick(sa.secondary_cch_b, sb.secondary_cch_b)
+            .map(|c| format!("{}", c)),
+        sndcp_downlink_channel: pick(sa.sndcp_downlink_channel, sb.sndcp_downlink_channel)
+            .map(|c| format!("{}", c)),
+        sndcp_uplink_channel: pick(sa.sndcp_uplink_channel, sb.sndcp_uplink_channel)
+            .map(|c| format!("{}", c)),
+        system_clock: system_clock_str,
         build: Some(crate::BUILD_TAG.to_string()),
     })
 }
 
 async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant>> {
-    let decoder = state.lsm_decoder.read().await;
-    let grants: Vec<ChannelGrant> = decoder
-        .grants
-        .values()
-        .map(|g| ChannelGrant {
-            channel: format!("{}", g.channel),
-            talkgroup: g.talkgroup.0,
-            talkgroup_alias: decoder.aliases.get(&g.talkgroup.0).cloned(),
-            source: g.source.map(|s| s.0),
-            frequency_mhz: g.frequency_hz.map(|f| f as f64 / 1_000_000.0),
-            age_secs: g.timestamp.elapsed().as_secs(),
-        })
-        .collect();
+    // Phase 6F.11 API-level merge: union grants from both decoders,
+    // de-duped by channel. If the same channel appears in both we
+    // pick the YOUNGER (smaller age) one since it's more recent.
+    let dec_a = state.lsm_decoder.read().await;
+    let dec_b = state.iq_lsm_decoder.read().await;
+    let mut by_channel: std::collections::HashMap<u16, ChannelGrant> =
+        std::collections::HashMap::new();
+    let push = |dec: &ControlChannelDecoder,
+                map: &mut std::collections::HashMap<u16, ChannelGrant>| {
+        for g in dec.grants.values() {
+            let cg = ChannelGrant {
+                channel: format!("{}", g.channel),
+                talkgroup: g.talkgroup.0,
+                talkgroup_alias: dec.aliases.get(&g.talkgroup.0).cloned(),
+                source: g.source.map(|s| s.0),
+                frequency_mhz: g.frequency_hz.map(|f| f as f64 / 1_000_000.0),
+                age_secs: g.timestamp.elapsed().as_secs(),
+            };
+            match map.get(&g.channel.0) {
+                Some(existing) if existing.age_secs <= cg.age_secs => {}
+                _ => {
+                    map.insert(g.channel.0, cg);
+                }
+            }
+        }
+    };
+    push(&dec_a, &mut by_channel);
+    push(&dec_b, &mut by_channel);
+    let mut grants: Vec<ChannelGrant> = by_channel.into_values().collect();
+    grants.sort_by_key(|g| g.age_secs);
     Json(grants)
 }
 
 async fn get_bands(State(state): State<Arc<AppState>>) -> Json<Vec<BandInfo>> {
-    let decoder = state.lsm_decoder.read().await;
-    let mut bands: Vec<BandInfo> = decoder
-        .bands
-        .values()
-        .map(|b| BandInfo {
-            identifier: b.identifier,
-            base_frequency_mhz: b.base_frequency_hz as f64 / 1_000_000.0,
-            channel_spacing_khz: b.channel_spacing_hz as f64 / 1_000.0,
-            transmit_offset_mhz: b.transmit_offset_hz as f64 / 1_000_000.0,
-            bandwidth_khz: b.bandwidth_hz as f64 / 1_000.0,
-        })
-        .collect();
+    // Phase 6F.11 API-level merge: union frequency bands from both
+    // decoders, de-duped by identifier. The two pipelines can land
+    // different IDEN_UPDATE blocks at different times, so the union
+    // gives the dashboard the complete table even if either single
+    // pipeline missed a band.
+    let dec_a = state.lsm_decoder.read().await;
+    let dec_b = state.iq_lsm_decoder.read().await;
+    let mut by_id: std::collections::HashMap<u8, BandInfo> =
+        std::collections::HashMap::new();
+    for dec in [&*dec_a, &*dec_b] {
+        for b in dec.bands.values() {
+            by_id.entry(b.identifier).or_insert_with(|| BandInfo {
+                identifier: b.identifier,
+                base_frequency_mhz: b.base_frequency_hz as f64 / 1_000_000.0,
+                channel_spacing_khz: b.channel_spacing_hz as f64 / 1_000.0,
+                transmit_offset_mhz: b.transmit_offset_hz as f64 / 1_000_000.0,
+                bandwidth_khz: b.bandwidth_hz as f64 / 1_000.0,
+            });
+        }
+    }
+    let mut bands: Vec<BandInfo> = by_id.into_values().collect();
     bands.sort_by_key(|b| b.identifier);
     Json(bands)
 }
@@ -505,7 +568,11 @@ async fn get_tsbk_opcodes(
         if ok > 0 || fail > 0 {
             let parsed = matches!(
                 op,
+                // 6F.4 + 6F.5: voice grants, IDEN_UPDATE variants,
+                // RFSS / NET / ADJ status broadcasts.
                 0x00 | 0x02 | 0x33 | 0x34 | 0x3A | 0x3B | 0x3C | 0x3D
+                // 6F.11: 5 new parsers added in this phase.
+                | 0x05 | 0x09 | 0x16 | 0x30 | 0x39
             );
             entries.push(serde_json::json!({
                 "opcode": format!("0x{:02X}", op),
@@ -614,6 +681,38 @@ async fn get_recent_tsbks(
             } => format!(
                 "GRP_V_CH_GRANT_UPDT CH_A:{} TG_A:{} CH_B:{} TG_B:{}",
                 channel_a, talkgroup_a, channel_b, talkgroup_b
+            ),
+            // Phase 6F.11 new opcodes
+            SecondaryControlChannelBroadcast {
+                rfss_id, site_id, channel_a, channel_b,
+            } => format!(
+                "SEC_CCH_BROADCST RFSS:{} SITE:{} A:{} B:{}",
+                rfss_id, site_id, channel_a, channel_b
+            ),
+            SndcpDataChannelAnnouncementExplicit {
+                downlink_channel, uplink_channel, autonomous_access,
+                requested_access, ..
+            } => format!(
+                "SNDCP_DCH_ANN_EX DL:{} UL:{} {}{}",
+                downlink_channel, uplink_channel,
+                if *autonomous_access { "AUTO " } else { "" },
+                if *requested_access { "REQ" } else { "" },
+            ),
+            TdmaSyncBroadcast {
+                year, month, day, hours, minutes, time_locked, ..
+            } => format!(
+                "TDMA_SYNC_BCST {:04}-{:02}-{:02} {:02}:{:02} {}",
+                year, month, day, hours, minutes,
+                if *time_locked { "LOCKED" } else { "UNLOCKED" }
+            ),
+            TelephoneInterconnectVoiceChannelGrantUpdate {
+                channel, call_timer_secs, unit_id,
+            } => format!(
+                "TEL_INT_VCH_GRNT_UPDT UNIT:{} CH:{} timer:{}s",
+                unit_id, channel, call_timer_secs
+            ),
+            UnitToUnitAnswerRequest { target, source } => format!(
+                "UU_ANS_REQ TGT:{} SRC:{}", target, source
             ),
         }
     };

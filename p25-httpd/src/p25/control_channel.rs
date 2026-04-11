@@ -314,6 +314,22 @@ pub struct SystemIdentity {
     pub site_id: Option<u8>,
     pub lra: Option<u8>,
     pub control_channel: Option<Channel>,
+    /// Phase 6F.11: backup primary control channel "A" announced via
+    /// Secondary Control Channel Broadcast (TSBK opcode 0x39). Used by
+    /// the trunking failover mechanism in P25.
+    pub secondary_cch_a: Option<Channel>,
+    /// Phase 6F.11: backup primary control channel "B".
+    pub secondary_cch_b: Option<Channel>,
+    /// Phase 6F.11: SNDCP downlink data services channel announced
+    /// via SNDCP_DCH_ANN_EX (TSBK opcode 0x16). The channel that
+    /// carries packet-data subscribers on this site.
+    pub sndcp_downlink_channel: Option<Channel>,
+    /// Phase 6F.11: SNDCP uplink data services channel.
+    pub sndcp_uplink_channel: Option<Channel>,
+    /// Phase 6F.11: most-recent system clock from TDMA_SYNC_BCST
+    /// (opcode 0x30). Format: `(year, month, day, hours, minutes,
+    /// time_locked)`. Updated on every sync broadcast (~5/sec).
+    pub last_sync_clock: Option<(u16, u8, u8, u8, u8, bool)>,
 }
 
 /// Active voice channel grant
@@ -1314,6 +1330,55 @@ impl ControlChannelDecoder {
                     },
                 );
             }
+            // Phase 6F.11: Secondary Control Channel Broadcast --
+            // record the backup CCH A/B channels for the trunking
+            // failover view. RFSS/SITE come along for the ride and
+            // overwrite (always identical to the primary in practice).
+            TsbkMessage::SecondaryControlChannelBroadcast {
+                rfss_id,
+                site_id,
+                channel_a,
+                channel_b,
+            } => {
+                self.system.rfss_id = Some(*rfss_id);
+                self.system.site_id = Some(*site_id);
+                self.system.secondary_cch_a = Some(*channel_a);
+                self.system.secondary_cch_b = Some(*channel_b);
+            }
+            // Phase 6F.11: SNDCP Data Channel Announcement Explicit --
+            // record the data services channels.
+            TsbkMessage::SndcpDataChannelAnnouncementExplicit {
+                downlink_channel,
+                uplink_channel,
+                ..
+            } => {
+                self.system.sndcp_downlink_channel = Some(*downlink_channel);
+                self.system.sndcp_uplink_channel = Some(*uplink_channel);
+            }
+            // Phase 6F.11: TDMA Sync Broadcast -- snapshot system
+            // clock for the activity feed / debug.
+            TsbkMessage::TdmaSyncBroadcast {
+                time_locked,
+                year,
+                month,
+                day,
+                hours,
+                minutes,
+                ..
+            } => {
+                self.system.last_sync_clock =
+                    Some((*year, *month, *day, *hours, *minutes, *time_locked));
+            }
+            // Phase 6F.11: TELE_INT_VCH_GRANT_UPDATE -- another grant
+            // type, but unit-to-phone (no talkgroup). Surface it via
+            // the activity feed but DON'T push into `grants`, which
+            // is talkgroup-keyed for now.
+            TsbkMessage::TelephoneInterconnectVoiceChannelGrantUpdate {
+                ..
+            } => {}
+            // Phase 6F.11: UU_ANS_REQ -- private call paging. Pure
+            // event for the activity feed.
+            TsbkMessage::UnitToUnitAnswerRequest { .. } => {}
             TsbkMessage::GroupVoiceChannelGrantUpdate {
                 channel_a,
                 talkgroup_a,
@@ -1481,6 +1546,94 @@ impl ControlChannelDecoder {
                 frequency_mhz: None,
                 source: None,
             },
+            // Phase 6F.11 new opcodes
+            TsbkMessage::SecondaryControlChannelBroadcast {
+                channel_a, channel_b, ..
+            } => p25_json::TsbkEvent {
+                timestamp: now,
+                event_type: "SCCB".into(),
+                summary: format!(
+                    "{}A:{} B:{}",
+                    block_prefix, channel_a, channel_b
+                ),
+                talkgroup: None,
+                talkgroup_alias: None,
+                channel: Some(format!("{}", channel_a)),
+                frequency_mhz: self
+                    .channel_to_frequency(*channel_a)
+                    .map(|f| f as f64 / 1e6),
+                source: None,
+            },
+            TsbkMessage::SndcpDataChannelAnnouncementExplicit {
+                downlink_channel,
+                uplink_channel,
+                ..
+            } => p25_json::TsbkEvent {
+                timestamp: now,
+                event_type: "SNDCP_ANN".into(),
+                summary: format!(
+                    "{}DL:{} UL:{}",
+                    block_prefix, downlink_channel, uplink_channel
+                ),
+                talkgroup: None,
+                talkgroup_alias: None,
+                channel: Some(format!("{}", downlink_channel)),
+                frequency_mhz: self
+                    .channel_to_frequency(*downlink_channel)
+                    .map(|f| f as f64 / 1e6),
+                source: None,
+            },
+            TsbkMessage::TdmaSyncBroadcast {
+                year, month, day, hours, minutes, time_locked, ..
+            } => p25_json::TsbkEvent {
+                timestamp: now,
+                event_type: "TDMA_SYNC".into(),
+                summary: format!(
+                    "{}{:04}-{:02}-{:02} {:02}:{:02} {}",
+                    block_prefix, year, month, day, hours, minutes,
+                    if *time_locked { "LOCKED" } else { "UNLOCKED" }
+                ),
+                talkgroup: None,
+                talkgroup_alias: None,
+                channel: None,
+                frequency_mhz: None,
+                source: None,
+            },
+            TsbkMessage::TelephoneInterconnectVoiceChannelGrantUpdate {
+                channel, call_timer_secs, unit_id,
+            } => {
+                let freq = self.channel_to_frequency(*channel);
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "TEL_INT_GRANT_UPD".into(),
+                    summary: format!(
+                        "{}UNIT:{} CH:{} ({:.4} MHz) timer:{}s",
+                        block_prefix, unit_id, channel,
+                        freq.unwrap_or(0) as f64 / 1e6,
+                        call_timer_secs,
+                    ),
+                    talkgroup: None,
+                    talkgroup_alias: None,
+                    channel: Some(format!("{}", channel)),
+                    frequency_mhz: freq.map(|f| f as f64 / 1e6),
+                    source: Some(unit_id.0),
+                }
+            }
+            TsbkMessage::UnitToUnitAnswerRequest { target, source } => {
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "UU_ANS_REQ".into(),
+                    summary: format!(
+                        "{}TGT:{} SRC:{}",
+                        block_prefix, target, source
+                    ),
+                    talkgroup: None,
+                    talkgroup_alias: None,
+                    channel: None,
+                    frequency_mhz: None,
+                    source: Some(source.0),
+                }
+            }
         }
     }
 

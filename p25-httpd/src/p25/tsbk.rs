@@ -25,8 +25,21 @@ pub enum TsbkOpcode {
     GroupVoiceChannelGrantUpdate,
     /// Unit to Unit Voice Channel Grant (0x04)
     UnitToUnitVoiceChannelGrant,
+    /// Unit to Unit Answer Request (0x05) -- private call paging.
+    /// Phase 6F.11.
+    UnitToUnitAnswerRequest,
     /// Telephone Interconnect Voice Channel Grant (0x08)
     TelephoneInterconnectVoiceChannelGrant,
+    /// Telephone Interconnect Voice Channel Grant Update (0x09).
+    /// Phase 6F.11.
+    TelephoneInterconnectVoiceChannelGrantUpdate,
+    /// SNDCP Data Channel Announcement Explicit (0x16) -- which
+    /// downlink/uplink channel carries SNDCP packet data services.
+    /// Phase 6F.11.
+    SndcpDataChannelAnnouncementExplicit,
+    /// TDMA Synchronization Broadcast (0x30) -- system date/time +
+    /// microslot rollover info. Phase 6F.11.
+    TdmaSyncBroadcast,
     /// Identifier Update TDMA (0x33) -- TDMA frequency band, 4-bit
     /// channel-type field instead of bandwidth, 13-bit transmit offset
     /// at bits 25-37, otherwise same layout as VUHF.
@@ -36,6 +49,9 @@ pub enum TsbkOpcode {
     IdentifierUpdateVuhf,
     /// System Service Broadcast (0x38)
     SystemServiceBroadcast,
+    /// Secondary Control Channel Broadcast (0x39) -- backup CCH A/B
+    /// channels for trunking failover. Phase 6F.11.
+    SecondaryControlChannelBroadcast,
     /// Identifier Update standard FDMA (0x3D) -- THE common one on
     /// Clay County and most P25 sites. 9-bit bandwidth, 8-bit transmit
     /// offset at bits 30-37. NOT the same as opcode 0x34 (VUHF) which
@@ -57,10 +73,15 @@ impl From<u8> for TsbkOpcode {
             0x00 => Self::GroupVoiceChannelGrant,
             0x02 => Self::GroupVoiceChannelGrantUpdate,
             0x04 => Self::UnitToUnitVoiceChannelGrant,
+            0x05 => Self::UnitToUnitAnswerRequest,
             0x08 => Self::TelephoneInterconnectVoiceChannelGrant,
+            0x09 => Self::TelephoneInterconnectVoiceChannelGrantUpdate,
+            0x16 => Self::SndcpDataChannelAnnouncementExplicit,
+            0x30 => Self::TdmaSyncBroadcast,
             0x33 => Self::IdentifierUpdateTdma,
             0x34 => Self::IdentifierUpdateVuhf,
             0x38 => Self::SystemServiceBroadcast,
+            0x39 => Self::SecondaryControlChannelBroadcast,
             0x3A => Self::RfssStatusBroadcast,
             0x3B => Self::NetworkStatusBroadcast,
             0x3C => Self::AdjacentStatusBroadcast,
@@ -124,6 +145,60 @@ pub enum TsbkMessage {
         site_id: u8,
         channel: Channel,
         system_id: u16,
+    },
+
+    /// Secondary Control Channel Broadcast (opcode 0x39) -- backup
+    /// CCH channels A and B for the same RFSS/site. P25 trunking
+    /// failover; SDRTrunk's `SecondaryControlChannelBroadcast.java`.
+    /// Phase 6F.11.
+    SecondaryControlChannelBroadcast {
+        rfss_id: u8,
+        site_id: u8,
+        channel_a: Channel,
+        channel_b: Channel,
+    },
+
+    /// SNDCP Data Channel Announcement Explicit (opcode 0x16) --
+    /// downlink + uplink channels carrying SNDCP packet-data services
+    /// on this site. Phase 6F.11.
+    SndcpDataChannelAnnouncementExplicit {
+        autonomous_access: bool,
+        requested_access: bool,
+        downlink_channel: Channel,
+        uplink_channel: Channel,
+        data_access_control: u16,
+    },
+
+    /// TDMA Synchronization Broadcast (opcode 0x30) -- system
+    /// date/time + microslot rollover. Phase 6F.11. We expose just
+    /// enough fields to display "system clock" status; full ISO 8601
+    /// formatting is left to the dashboard if/when it cares.
+    TdmaSyncBroadcast {
+        time_locked: bool,
+        year: u16,
+        month: u8,
+        day: u8,
+        hours: u8,
+        minutes: u8,
+        micro_slots: u16,
+    },
+
+    /// Telephone Interconnect Voice Channel Grant Update (opcode
+    /// 0x09). A non-talkgroup grant -- "any address" is the unit ID
+    /// being patched to a phone number. Phase 6F.11.
+    TelephoneInterconnectVoiceChannelGrantUpdate {
+        channel: Channel,
+        call_timer_secs: u16,
+        unit_id: RadioId,
+    },
+
+    /// Unit-to-Unit Answer Request (opcode 0x05) -- private call
+    /// paging from `source` to `target`. No channel grant; the
+    /// dispatcher just routes paging info onto the activity feed.
+    /// Phase 6F.11.
+    UnitToUnitAnswerRequest {
+        target: RadioId,
+        source: RadioId,
     },
 }
 
@@ -294,6 +369,21 @@ impl TsbkBlock {
             }
             TsbkOpcode::AdjacentStatusBroadcast => {
                 Some(self.decode_adj_sts_bcst())
+            }
+            TsbkOpcode::SecondaryControlChannelBroadcast => {
+                Some(self.decode_secondary_cch_bcst())
+            }
+            TsbkOpcode::SndcpDataChannelAnnouncementExplicit => {
+                Some(self.decode_sndcp_dch_ann_ex())
+            }
+            TsbkOpcode::TdmaSyncBroadcast => {
+                Some(self.decode_tdma_sync_bcst())
+            }
+            TsbkOpcode::TelephoneInterconnectVoiceChannelGrantUpdate => {
+                Some(self.decode_tele_int_v_ch_grant_update())
+            }
+            TsbkOpcode::UnitToUnitAnswerRequest => {
+                Some(self.decode_uu_ans_req())
             }
             _ => None,
         }
@@ -584,6 +674,156 @@ impl TsbkBlock {
             channel,
             system_id,
         }
+    }
+
+    /// SECONDARY_CONTROL_CHANNEL_BROADCAST (0x39). SDRTrunk
+    /// `SecondaryControlChannelBroadcast.java` absolute-bit-position
+    /// layout (bit 0 = MSB of byte 0):
+    ///
+    /// | Field      | Bits  | Width |
+    /// |------------|-------|-------|
+    /// | RFSS       | 16-23 | 8     |
+    /// | SITE       | 24-31 | 8     |
+    /// | freq_band_a| 32-35 | 4     |
+    /// | channel_a  | 36-47 | 12    |
+    /// | service_a  | 48-55 | 8     |
+    /// | freq_band_b| 56-59 | 4     |
+    /// | channel_b  | 60-71 | 12    |
+    /// | service_b  | 72-79 | 8     |
+    ///
+    /// Phase 6F.11.
+    fn decode_secondary_cch_bcst(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let rfss_id = self.bits(&full, 16, 8) as u8;
+        let site_id = self.bits(&full, 24, 8) as u8;
+        let channel_a = Channel(self.bits(&full, 32, 16) as u16);
+        let channel_b = Channel(self.bits(&full, 56, 16) as u16);
+        TsbkMessage::SecondaryControlChannelBroadcast {
+            rfss_id,
+            site_id,
+            channel_a,
+            channel_b,
+        }
+    }
+
+    /// SNDCP_DATA_CHANNEL_ANNOUNCEMENT_EXPLICIT (0x16). SDRTrunk
+    /// `SNDCPDataChannelAnnouncementExplicit.java` layout:
+    ///
+    /// | Field          | Bits  | Width |
+    /// |----------------|-------|-------|
+    /// | data svc opts  | 16-23 | 8     |
+    /// | autonomous flg | 24    | 1     |
+    /// | requested flg  | 25    | 1     |
+    /// | DL freq band   | 32-35 | 4     |
+    /// | DL channel num | 36-47 | 12    |
+    /// | UL freq band   | 48-51 | 4     |
+    /// | UL channel num | 52-63 | 12    |
+    /// | data acc ctrl  | 64-79 | 16    |
+    ///
+    /// Phase 6F.11.
+    fn decode_sndcp_dch_ann_ex(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let autonomous_access = self.bits(&full, 24, 1) != 0;
+        let requested_access = self.bits(&full, 25, 1) != 0;
+        let downlink_channel = Channel(self.bits(&full, 32, 16) as u16);
+        let uplink_channel = Channel(self.bits(&full, 48, 16) as u16);
+        let data_access_control = self.bits(&full, 64, 16) as u16;
+        TsbkMessage::SndcpDataChannelAnnouncementExplicit {
+            autonomous_access,
+            requested_access,
+            downlink_channel,
+            uplink_channel,
+            data_access_control,
+        }
+    }
+
+    /// TDMA_SYNC_BROADCAST (0x30). SDRTrunk
+    /// `SynchronizationBroadcast.java` layout:
+    ///
+    /// | Field           | Bits   | Width |
+    /// |-----------------|--------|-------|
+    /// | reserved        | 16-28  | 13    |
+    /// | unlocked flag   | 29     | 1     |
+    /// | year            | 40-46  | 7     |
+    /// | month           | 47-50  | 4     |
+    /// | day             | 51-55  | 5     |
+    /// | hours           | 56-60  | 5     |
+    /// | minutes         | 61-66  | 6     |
+    /// | micro_slots     | 67-79  | 13    |
+    ///
+    /// Phase 6F.11. We expose just enough fields to display "system
+    /// clock" status; full ISO 8601 formatting is left to the dashboard.
+    /// Year is the offset from 2000 per the SDRTrunk decoder.
+    fn decode_tdma_sync_bcst(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        // SDRTrunk uses bit 29 as `SYSTEM_TIME_NOT_LOCKED`. We invert
+        // for `time_locked` so the value is true when good.
+        let time_locked = self.bits(&full, 29, 1) == 0;
+        let year = (self.bits(&full, 40, 7) + 2000) as u16;
+        let month = self.bits(&full, 47, 4) as u8;
+        let day = self.bits(&full, 51, 5) as u8;
+        let hours = self.bits(&full, 56, 5) as u8;
+        let minutes = self.bits(&full, 61, 6) as u8;
+        let micro_slots = self.bits(&full, 67, 13) as u16;
+        TsbkMessage::TdmaSyncBroadcast {
+            time_locked,
+            year,
+            month,
+            day,
+            hours,
+            minutes,
+            micro_slots,
+        }
+    }
+
+    /// TELEPHONE_INTERCONNECT_VOICE_CHANNEL_GRANT_UPDATE (0x09).
+    /// SDRTrunk `TelephoneInterconnectVoiceChannelGrantUpdate.java`:
+    ///
+    /// | Field          | Bits  | Width |
+    /// |----------------|-------|-------|
+    /// | service opts   | 16-23 | 8     |
+    /// | freq_band      | 24-27 | 4     |
+    /// | channel num    | 28-39 | 12    |
+    /// | call timer     | 40-55 | 16    |
+    /// | any address    | 56-79 | 24    |
+    ///
+    /// Phase 6F.11. Call timer is in 100 ms units per SDRTrunk's
+    /// `getCallTimer()` (`* 100` ms → seconds via `/ 10`).
+    fn decode_tele_int_v_ch_grant_update(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let channel = Channel(self.bits(&full, 24, 16) as u16);
+        let call_timer_raw = self.bits(&full, 40, 16) as u16;
+        // SDRTrunk: timer * 100ms; we expose seconds rounded down.
+        let call_timer_secs = call_timer_raw / 10;
+        let unit_id = RadioId(self.bits(&full, 56, 24) as u32);
+        TsbkMessage::TelephoneInterconnectVoiceChannelGrantUpdate {
+            channel,
+            call_timer_secs,
+            unit_id,
+        }
+    }
+
+    /// UNIT_TO_UNIT_ANSWER_REQUEST (0x05). SDRTrunk
+    /// `UnitToUnitAnswerRequest.java`:
+    ///
+    /// | Field          | Bits  | Width |
+    /// |----------------|-------|-------|
+    /// | service opts   | 16-23 | 8     |
+    /// | reserved       | 24-31 | 8     |
+    /// | target address | 32-55 | 24    |
+    /// | source address | 56-79 | 24    |
+    ///
+    /// Phase 6F.11.
+    fn decode_uu_ans_req(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let target = RadioId(self.bits(&full, 32, 24) as u32);
+        let source = RadioId(self.bits(&full, 56, 24) as u32);
+        TsbkMessage::UnitToUnitAnswerRequest { target, source }
     }
 }
 

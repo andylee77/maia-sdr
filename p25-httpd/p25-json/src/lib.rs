@@ -16,6 +16,24 @@ pub struct SystemInfo {
     pub site_id: Option<u8>,
     pub lra: Option<u8>,
     pub control_channel: Option<String>,
+    /// Phase 6F.11: backup primary control channel A from Secondary
+    /// Control Channel Broadcast (TSBK opcode 0x39).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_cch_a: Option<String>,
+    /// Phase 6F.11: backup primary control channel B.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_cch_b: Option<String>,
+    /// Phase 6F.11: SNDCP downlink data channel from
+    /// SNDCP_DCH_ANN_EX (TSBK opcode 0x16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sndcp_downlink_channel: Option<String>,
+    /// Phase 6F.11: SNDCP uplink data channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sndcp_uplink_channel: Option<String>,
+    /// Phase 6F.11: most-recent system clock from TDMA_SYNC_BCST
+    /// (opcode 0x30). ISO-8601 string + lock state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_clock: Option<String>,
     /// Build tag of the running p25-httpd binary. Lets the browser
     /// verify that the deployed binary is the one that was just built
     /// (Buildroot zeros file mtimes, so on-target file timestamps are
