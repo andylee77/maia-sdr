@@ -274,7 +274,9 @@ def main() -> int:
     if ref_bch_decode_nid is not None:
         ref = ref_bch_decode_nid(py_nid_bits)
         if ref is not None:
-            ref_nac, ref_duid = ref
+            # p25_nid_fec.decode_nid returns either (nac, duid) or
+            # (nac, duid, n_corrected); accept either shape.
+            ref_nac, ref_duid = ref[0], ref[1]
             print(f"  python BCH ref: NAC 0x{ref_nac:03X}  DUID 0x{ref_duid:1X}")
         else:
             print("  python BCH ref: REJECTED (>11 bit errors)")

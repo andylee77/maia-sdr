@@ -167,6 +167,36 @@ const HAMMING_4BIT: [u8; 16] = [
     0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
 ];
 
+/// **TIA-102 BAAA Table 7-7 / SDRTrunk `P25P1Interleave.DATA_DEINTERLEAVE`**
+///
+/// 196-element bit permutation applied to the trellis-coded message
+/// BEFORE feeding it to the Viterbi decoder. The encoder applies the
+/// inverse permutation; the receiver runs `out[DEINTERLEAVE[i]] = in[i]`
+/// to undo it.
+///
+/// This table was missing from our pipeline through 6F.2i. Without it
+/// the trellis input bits are scrambled relative to the encoder's
+/// output and the Viterbi finds garbage paths with high error metrics.
+/// Adding this step is the difference between "metric=24, garbage
+/// bytes" and "metric=0, valid TSBK bytes" -- this fix lands every
+/// known control-channel TSBK on the test target. See
+/// doc/changes/025 follow-up notes for the full diagnosis.
+pub const DATA_DEINTERLEAVE: [usize; 196] = [
+    0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 49, 50, 51,
+    64, 65, 66, 67, 80, 81, 82, 83, 96, 97, 98, 99, 112, 113, 114, 115,
+    128, 129, 130, 131, 144, 145, 146, 147, 160, 161, 162, 163, 176, 177, 178, 179,
+    192, 193, 194, 195, 4, 5, 6, 7, 20, 21, 22, 23, 36, 37, 38, 39,
+    52, 53, 54, 55, 68, 69, 70, 71, 84, 85, 86, 87, 100, 101, 102, 103,
+    116, 117, 118, 119, 132, 133, 134, 135, 148, 149, 150, 151, 164, 165, 166, 167,
+    180, 181, 182, 183, 8, 9, 10, 11, 24, 25, 26, 27, 40, 41, 42, 43,
+    56, 57, 58, 59, 72, 73, 74, 75, 88, 89, 90, 91, 104, 105, 106, 107,
+    120, 121, 122, 123, 136, 137, 138, 139, 152, 153, 154, 155, 168, 169, 170, 171,
+    184, 185, 186, 187, 12, 13, 14, 15, 28, 29, 30, 31, 44, 45, 46, 47,
+    60, 61, 62, 63, 76, 77, 78, 79, 92, 93, 94, 95, 108, 109, 110, 111,
+    124, 125, 126, 127, 140, 141, 142, 143, 156, 157, 158, 159, 172, 173, 174, 175,
+    188, 189, 190, 191,
+];
+
 impl TrellisDecoder {
     /// Decode a P25 1/2 rate trellis-coded message.
     ///
@@ -199,15 +229,40 @@ impl TrellisDecoder {
             return None;
         }
 
-        // Pack the first 98 dibits into 49 four-bit nibbles. Each dibit
-        // is 2 bits (MSB first within the pair: bit1 in [1] and bit2 in
-        // [0] of the 2-bit value the slicer produces). Group two dibits
-        // into one nibble: nibble = (dibit_a << 2) | dibit_b.
+        // **Phase 6F.2j (2026-04-11):** apply the P25 1/2 trellis bit
+        // deinterleave (DATA_DEINTERLEAVE) BEFORE forming the trellis
+        // nibbles. The encoder permutes the 196 trellis-coded bits
+        // before transmission per TIA-102 BAAA Table 7-7; the receiver
+        // must un-permute. Without this step the Viterbi sees scrambled
+        // input and finds no valid trellis path. With it, clean
+        // signals decode to metric=0 and the TSBK CRC validates.
+
+        // Step 1: convert the 98 input dibits into 196 raw bits
+        // (interleaved order).
+        let mut interleaved_bits = [0u8; 196];
+        for n in 0..98 {
+            let d = dibits[n] & 0x03;
+            interleaved_bits[n * 2] = (d >> 1) & 1;
+            interleaved_bits[n * 2 + 1] = d & 1;
+        }
+
+        // Step 2: apply the deinterleave permutation -- bit i in the
+        // input lands at position DATA_DEINTERLEAVE[i] in the output.
+        let mut de_bits = [0u8; 196];
+        for i in 0..196 {
+            de_bits[DATA_DEINTERLEAVE[i]] = interleaved_bits[i];
+        }
+
+        // Step 3: re-pack the deinterleaved bits into 49 four-bit
+        // trellis nibbles, MSB-first per nibble (= 2 dibits per nibble
+        // with the first dibit in the high 2 bits).
         let mut nibbles = [0u8; 49];
         for n in 0..49 {
-            let a = dibits[n * 2] & 0x03;
-            let b = dibits[n * 2 + 1] & 0x03;
-            nibbles[n] = (a << 2) | b;
+            let mut nib = 0u8;
+            for k in 0..4 {
+                nib = (nib << 1) | de_bits[n * 4 + k];
+            }
+            nibbles[n] = nib;
         }
 
         // Viterbi over 4 states. The encoder starts in state 0 (input
@@ -492,6 +547,11 @@ mod tests {
     /// starts in implicit state 0, runs 48 data transitions, then
     /// flushes with one input=0 transition for a total of 49 emitted
     /// nibbles = 196 bits = 98 dibits.
+    ///
+    /// **Phase 6F.2j:** also applies the inverse of `DATA_DEINTERLEAVE`
+    /// (which is the encoder-side bit interleave) so the output dibits
+    /// are in the SAME bit order as on-air. The decoder undoes this
+    /// permutation.
     fn trellis_encode(inputs: &[u8; 48]) -> [u8; 98] {
         let mut nibbles = [0u8; 49];
         let mut prev = 0u8;
@@ -503,13 +563,28 @@ mod tests {
         // Flush transition: input = 0.
         nibbles[48] = TRANSITION_MATRIX[prev as usize][0];
 
-        // Pack 49 nibbles into 98 dibits (high nibble bits = first
-        // dibit, low nibble bits = second dibit).
-        let mut dibits = [0u8; 98];
+        // Unpack the 49 nibbles into 196 deinterleaved bits.
+        let mut de_bits = [0u8; 196];
         for n in 0..49 {
             let nib = nibbles[n] & 0x0F;
-            dibits[n * 2] = (nib >> 2) & 0x03;
-            dibits[n * 2 + 1] = nib & 0x03;
+            for k in 0..4 {
+                de_bits[n * 4 + k] = (nib >> (3 - k)) & 1;
+            }
+        }
+
+        // Apply the encoder's inverse-deinterleave: bit at position
+        // DATA_DEINTERLEAVE[i] in deinterleaved order goes to position
+        // i in the on-air order. (The decoder uses
+        // out[DATA_DEINTERLEAVE[i]] = in[i] -- this is its inverse.)
+        let mut interleaved = [0u8; 196];
+        for i in 0..196 {
+            interleaved[i] = de_bits[DATA_DEINTERLEAVE[i]];
+        }
+
+        // Pack the 196 interleaved bits back into 98 dibits.
+        let mut dibits = [0u8; 98];
+        for n in 0..98 {
+            dibits[n] = (interleaved[n * 2] << 1) | interleaved[n * 2 + 1];
         }
         dibits
     }

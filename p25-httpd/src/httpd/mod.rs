@@ -254,9 +254,14 @@ async fn get_lsm_capture_aligned(
         dec.aligned_capture_armed = true;
     }
 
-    // Poll for up to 2 seconds (~10 NIDs at the on-air rate, plenty
-    // of headroom) for the snapshot to populate.
-    let deadline = Instant::now() + Duration::from_millis(2000);
+    // Poll for up to 10 seconds. The LSM dibit reader IRQ fires only
+    // about every 3.5 seconds (one buffer per IRQ), and the reader
+    // holds the decoder write() lock for the duration of one buffer
+    // (~8000 dibits). So the API may have to wait up to 2 IRQ cycles
+    // before it can read a populated capture. 10 s gives us at least
+    // 3 cycles of headroom -- if no sync hits in that long, the chain
+    // is genuinely stalled.
+    let deadline = Instant::now() + Duration::from_millis(10000);
     loop {
         {
             let dec = state.lsm_decoder.read().await;
