@@ -184,7 +184,19 @@ const FRAME_SYNC_MASK: u64 = 0xFFFF_FFFF_FFFF; // 48 bits
 /// false syncs downstream.
 ///
 /// Once the HDL DC blocker is added (see DEVPLAN), this should drop back to 4.
-pub const SYNC_THRESHOLD: u32 = 10;
+///
+/// **Phase 6F.2e (2026-04-11):** dropped from 10 to 4 because the HDL LSM
+/// dibit stream is much cleaner than the legacy C4FM-on-DC-pedestal stream
+/// the threshold-10 era was tuning for. Phase 6D (`lsm/sync.rs`) has always
+/// used threshold 4 on the same signal class and gets 91 %+ NID validity,
+/// vs 81 % for the threshold-10 path here. The extra "captured" syncs from
+/// threshold 10 turned out to be loose-sync false positives whose NID
+/// payloads BCH(63,16,11) "corrects" to random valid codewords -- the
+/// decoded NAC/DUID is then arbitrary and 100 % of the resulting TSBK
+/// blocks fail CRC because the body dibits are misaligned. The C4FM HDL
+/// path also benefits because false-positive sync misses still fail BCH
+/// downstream regardless of threshold.
+pub const SYNC_THRESHOLD: u32 = 4;
 
 /// Logging threshold: any candidate with distance ≤ this is logged as a "near miss"
 /// to give visibility into how close the bit stream is to a real sync.
