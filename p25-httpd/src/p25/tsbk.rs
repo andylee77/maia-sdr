@@ -126,6 +126,21 @@ pub struct TsbkBlock {
     pub crc: u16,
 }
 
+/// Which CRC convention validated a TSBK block. Phase 6F.2d
+/// diagnostic so the dashboard can report whether real on-air TSBKs
+/// use a single convention or a mix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrcConvention {
+    /// `crc16_ccitt(data) == msg_crc` -- our implementation's plain
+    /// output (which already does the CCITT-FALSE final XOR) matches
+    /// the message CRC field directly.
+    Plain,
+    /// `crc16_ccitt(data) ^ 0xFFFF == msg_crc` -- the encoder did one
+    /// fewer 0xFFFF XOR than our implementation does, equivalent to
+    /// SDRTrunk's `residual == 0xFFFF` branch in `correctCCITT80`.
+    Xored,
+}
+
 impl TsbkBlock {
     /// Parse a 12-byte TSBK block
     pub fn parse(data: &[u8; 12]) -> Self {
@@ -147,9 +162,41 @@ impl TsbkBlock {
         }
     }
 
-    /// Verify CRC-16 (CCITT) over the 12-byte block
-    pub fn crc_valid(&self, data: &[u8; 12]) -> bool {
-        crc16_ccitt(&data[..10]) == u16::from_be_bytes([data[10], data[11]])
+    /// Verify CRC-16 (CCITT) over the 12-byte block.
+    ///
+    /// **Phase 6F.2d fix (2026-04-11):** P25 TSBK CRC encoders in the
+    /// wild use BOTH conventions for the final XOR step -- some output
+    /// `crc16_ccitt(data)` directly, others output
+    /// `crc16_ccitt(data) ^ 0xFFFF`. SDRTrunk's `CRCP25.correctCCITT80`
+    /// handles this by accepting `residual == 0 || residual == 0xFFFF`
+    /// from its lookup-table CRC. Our `crc16_ccitt` implementation
+    /// already does the final XOR (matches CCITT-FALSE inverted), so
+    /// to match SDRTrunk's coverage we need to accept the value either
+    /// AS-IS or XOR'd with 0xFFFF.
+    ///
+    /// On-target evidence (Phase 6F.2c run): with the single-convention
+    /// check, the PS LSM software decoder hit 100 % CRC failures while
+    /// trellis decode succeeded on every block (446/446 attempts on a
+    /// healthy LSM control channel signal). Trellis succeeding while
+    /// CRC fails on every block is the canonical "bytes are right but
+    /// the CRC formula is wrong by a constant" signature -- in this
+    /// case the constant is the 0xFFFF final XOR. See doc/changes/025
+    /// for the diagnosis log.
+    ///
+    /// Returns:
+    /// - `Some(CrcConvention::Plain)` if `crc16_ccitt(data) == msg_crc`
+    /// - `Some(CrcConvention::Xored)` if `crc16_ccitt(data) ^ 0xFFFF == msg_crc`
+    /// - `None` if neither matches (CRC is invalid)
+    pub fn crc_valid(&self, data: &[u8; 12]) -> Option<CrcConvention> {
+        let calc = crc16_ccitt(&data[..10]);
+        let msg = u16::from_be_bytes([data[10], data[11]]);
+        if calc == msg {
+            Some(CrcConvention::Plain)
+        } else if (calc ^ 0xFFFF) == msg {
+            Some(CrcConvention::Xored)
+        } else {
+            None
+        }
     }
 
     /// Decode the payload into a typed message

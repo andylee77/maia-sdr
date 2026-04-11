@@ -562,6 +562,8 @@ async fn get_decoder_compare(
             "tsbk_trellis_failures": dec_c4fm.tsbk_trellis_failures,
             "tsbk_crc_failures":     dec_c4fm.tsbk_crc_failures,
             "tsbk_crc_ok":           dec_c4fm.tsbk_crc_ok,
+            "tsbk_crc_ok_plain":     dec_c4fm.tsbk_crc_ok_plain,
+            "tsbk_crc_ok_xored":     dec_c4fm.tsbk_crc_ok_xored,
             "tsbk_unknown_opcode":   dec_c4fm.tsbk_unknown_opcode,
         },
         "ps_lsm": {
@@ -588,6 +590,8 @@ async fn get_decoder_compare(
             "tsbk_trellis_failures": dec_lsm.tsbk_trellis_failures,
             "tsbk_crc_failures":     dec_lsm.tsbk_crc_failures,
             "tsbk_crc_ok":           dec_lsm.tsbk_crc_ok,
+            "tsbk_crc_ok_plain":     dec_lsm.tsbk_crc_ok_plain,
+            "tsbk_crc_ok_xored":     dec_lsm.tsbk_crc_ok_xored,
             "tsbk_unknown_opcode":   dec_lsm.tsbk_unknown_opcode,
         },
         "ps_phase6d": {
@@ -1068,6 +1072,8 @@ async function refresh() {
       ['TSBK trellis failures', fmtN(cmp.ps_c4fm.tsbk_trellis_failures), fmtN(cmp.ps_lsm.tsbk_trellis_failures), '--', '--'],
       ['TSBK CRC failures', fmtN(cmp.ps_c4fm.tsbk_crc_failures), fmtN(cmp.ps_lsm.tsbk_crc_failures), '--', '--'],
       ['TSBK CRC OK', fmtN(cmp.ps_c4fm.tsbk_crc_ok), fmtN(cmp.ps_lsm.tsbk_crc_ok), '--', '--'],
+      ['  - via plain CRC convention', fmtN(cmp.ps_c4fm.tsbk_crc_ok_plain), fmtN(cmp.ps_lsm.tsbk_crc_ok_plain), '--', '--'],
+      ['  - via xored 0xFFFF convention', fmtN(cmp.ps_c4fm.tsbk_crc_ok_xored), fmtN(cmp.ps_lsm.tsbk_crc_ok_xored), '--', '--'],
       ['TSBK unknown opcode', fmtN(cmp.ps_c4fm.tsbk_unknown_opcode), fmtN(cmp.ps_lsm.tsbk_unknown_opcode), '--', '--'],
     ];
     $('cmp_body').innerHTML = rows.map(r =>

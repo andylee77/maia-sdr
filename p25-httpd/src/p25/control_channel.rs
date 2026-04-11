@@ -103,6 +103,16 @@ pub struct ControlChannelDecoder {
     /// TSBK blocks that decoded cleanly through CRC and produced a
     /// `TsbkMessage`.
     pub tsbk_crc_ok: u64,
+    /// Subset of `tsbk_crc_ok` where the CRC validated under the
+    /// **plain** convention (`crc16_ccitt(data) == msg_crc`). Phase
+    /// 6F.2d diagnostic: lets us see in the dashboard which CRC
+    /// convention real on-air TSBKs use, and whether the population
+    /// is mixed or single-convention.
+    pub tsbk_crc_ok_plain: u64,
+    /// Subset of `tsbk_crc_ok` where the CRC validated under the
+    /// **xor 0xFFFF** convention (`crc16_ccitt(data) ^ 0xFFFF ==
+    /// msg_crc`). Phase 6F.2d diagnostic, see `tsbk_crc_ok_plain`.
+    pub tsbk_crc_ok_xored: u64,
     /// TSBK blocks that survived CRC but the opcode parser couldn't
     /// turn into a known TsbkMessage variant.
     pub tsbk_unknown_opcode: u64,
@@ -233,6 +243,8 @@ impl ControlChannelDecoder {
             tsbk_trellis_failures: 0,
             tsbk_crc_failures: 0,
             tsbk_crc_ok: 0,
+            tsbk_crc_ok_plain: 0,
+            tsbk_crc_ok_xored: 0,
             tsbk_unknown_opcode: 0,
             system: SystemIdentity::default(),
             bands: HashMap::new(),
@@ -523,11 +535,20 @@ impl ControlChannelDecoder {
 
             // 4. Parse TSBK block and check CRC
             let block = TsbkBlock::parse(&decoded);
-            if !block.crc_valid(&decoded) {
-                self.tsbk_crc_failures += 1;
-                continue;
+            match block.crc_valid(&decoded) {
+                None => {
+                    self.tsbk_crc_failures += 1;
+                    continue;
+                }
+                Some(crate::p25::tsbk::CrcConvention::Plain) => {
+                    self.tsbk_crc_ok += 1;
+                    self.tsbk_crc_ok_plain += 1;
+                }
+                Some(crate::p25::tsbk::CrcConvention::Xored) => {
+                    self.tsbk_crc_ok += 1;
+                    self.tsbk_crc_ok_xored += 1;
+                }
             }
-            self.tsbk_crc_ok += 1;
 
             // 5. Decode opcode-specific payload
             if let Some(msg) = block.decode() {
