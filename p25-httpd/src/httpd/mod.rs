@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{ws::WebSocket, State, WebSocketUpgrade},
+    extract::{ws::WebSocket, Query, State, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
     Json, Router,
@@ -94,17 +94,23 @@ pub struct AppState {
     /// Phase 7C: fourth `ControlChannelDecoder` instance fed by the
     /// new `traffic_lsm_dibit_dma` ring (Phase 7A.2 HDL chain).
     /// Runs HDU/LDU1/LDU2/TDU/TDU_LC dispatch via its installed
-    /// voice handler (the `imbe_counter` below). Read by
+    /// voice handler (the `imbe_forwarder` below). Read by
     /// `/api/traffic` for the per-DUID counters and the cumulative
     /// IMBE frame count.
     pub traffic_lsm_decoder:
         Arc<RwLock<ControlChannelDecoder>>,
-    /// Phase 7C: shared IMBE counter that the traffic LSM decoder's
-    /// voice handler updates on every successful LDU body
-    /// extraction. Atomic counters so the `/api/traffic` reader
-    /// doesn't need a lock. Phase 7D will read raw IMBE frames
-    /// from a separate mpsc channel for the vocoder.
-    pub imbe_counter: Arc<crate::ImbeCounter>,
+    /// Phase 7D: IMBE forwarder that counts events AND pushes raw
+    /// frame batches to the vocoder task. Atomic counters for both
+    /// extraction stats and vocoder output stats (pcm produced,
+    /// errors, encrypted skips).
+    pub imbe_forwarder: Arc<crate::ImbeForwarder>,
+    /// Phase 7B: talkgroup monitor list. When non-empty, only grants
+    /// for TGs in the list are followed. When empty, newest-grant
+    /// wins (Phase 7A.1 backward compat).
+    pub monitor_list: Arc<RwLock<crate::monitor::MonitorList>>,
+    /// Phase 7E: audio broadcast channel. The vocoder task sends
+    /// AudioChunks here; HTTP/WebSocket handlers subscribe.
+    pub audio_tx: crate::audio::AudioTx,
 }
 
 /// Build the HTTP router
@@ -145,8 +151,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         // voice channel scaffold; will gain monitor-list write
         // operations in Phase 7B.
         .route("/api/traffic", get(get_traffic))
+        .route("/api/monitor", get(get_monitor).put(put_monitor))
+        .route("/api/audio", get(get_audio))
+        .route("/api/imbe_dump", get(get_imbe_dump))
+        .route("/api/audio_test", get(get_audio_test))
         .route("/api/aliases", get(get_aliases).put(put_aliases))
         .route("/ws/events", get(ws_events))
+        .route("/ws/audio", get(ws_audio))
         .with_state(state)
 }
 
@@ -918,12 +929,13 @@ async fn get_traffic(
     };
 
     // Phase 7C: IMBE counter snapshot from the traffic LSM voice
-    // decoder. The atomics are updated synchronously by the
-    // ImbeCounter voice handler from inside the dibit reader task,
-    // so this read is a coherent point-in-time snapshot.
+    // Phase 7D: read IMBE extraction + vocoder stats from the
+    // ImbeForwarder's atomics. Updated synchronously by the voice
+    // handler (extraction counters) and by the vocoder task (PCM
+    // produced, errors, encrypted skips).
     let imbe_json = {
         use std::sync::atomic::Ordering;
-        let c = &state.imbe_counter;
+        let c = &state.imbe_forwarder;
         let last_imbe_at_millis = c.last_imbe_at_millis.load(Ordering::Relaxed);
         let now_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -940,8 +952,12 @@ async fn get_traffic(
             "ldu2_count":             c.ldu2_count.load(Ordering::Relaxed),
             "tdu_count":              c.tdu_count.load(Ordering::Relaxed),
             "tdu_lc_count":           c.tdu_lc_count.load(Ordering::Relaxed),
-            "imbe_frames_extracted": c.imbe_frames_extracted.load(Ordering::Relaxed),
+            "imbe_frames_extracted":  c.imbe_frames_extracted.load(Ordering::Relaxed),
+            "imbe_frames_dropped":    c.imbe_frames_dropped.load(Ordering::Relaxed),
             "last_imbe_secs_ago":     last_imbe_secs_ago,
+            "vocoder_pcm_produced":   c.vocoder_pcm_produced.load(Ordering::Relaxed),
+            "vocoder_errors":         c.vocoder_errors.load(Ordering::Relaxed),
+            "vocoder_frames_encrypted": c.vocoder_frames_encrypted.load(Ordering::Relaxed),
         })
     };
 
@@ -968,21 +984,19 @@ async fn get_traffic(
 
     // Phase 7C: pull the encryption flag from the currently-locked
     // grant, if any. The grant follower's TrafficManager holds the
-    // current TG; the grant store on `lsm_decoder` (the canonical
-    // grants HashMap) holds the encrypted flag for that TG. We
-    // surface this so the dashboard can show "[ENC]" next to the
-    // active TG and the future Phase 7D vocoder can gate on it.
+    // Phase 7D: the encryption flag shown on the dashboard comes from
+    // the ImbeForwarder's `call_encrypted` atomic, which is the same
+    // flag the vocoder task reads to decide whether to decode or skip.
+    // This is set by the grant follower task whenever it observes a
+    // grant for the locked TG, and cleared on Idle transition.
+    // Single source of truth: what the vocoder sees = what the
+    // dashboard shows.
     let current_call_encrypted = {
-        let mgr_tg = {
-            let mgr = state.traffic_manager.lock().await;
-            mgr.current_talkgroup().map(|t| t.0)
-        };
-        if let Some(tg) = mgr_tg {
-            let dec = state.lsm_decoder.read().await;
-            dec.grants
-                .values()
-                .find(|g| g.talkgroup.0 == tg)
-                .map(|g| g.encrypted)
+        let mgr = state.traffic_manager.lock().await;
+        if mgr.current_talkgroup().is_some() {
+            Some(state.imbe_forwarder.call_encrypted.load(
+                std::sync::atomic::Ordering::Relaxed,
+            ))
         } else {
             None
         }
@@ -1839,6 +1853,215 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
     }
 }
 
+// ── Phase 7D diagnostic: raw IMBE frame dump ──────────────────────────
+
+/// GET /api/imbe_dump -- return the last 128 raw IMBE frames from the
+/// ring buffer. Each entry has talkgroup, encrypted flag, and the raw
+/// 18 bytes (144 bits) in hex. Use for offline vocoder testing.
+async fn get_imbe_dump(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let ring = state.imbe_forwarder.imbe_ring.lock().unwrap();
+    let frames: Vec<serde_json::Value> = ring
+        .iter()
+        .map(|(tg, enc, bits)| {
+            serde_json::json!({
+                "talkgroup": tg,
+                "encrypted": enc,
+                "hex": bits.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({
+        "count": frames.len(),
+        "frames": frames,
+    }))
+}
+
+/// GET /api/audio_test -- decode the IMBE ring buffer on-device and
+/// return a WAV file. Filters to clear (non-encrypted) frames only.
+/// Use to verify vocoder output without VLC streaming.
+///
+///   curl -o test.wav http://192.168.2.1:8080/api/audio_test
+async fn get_audio_test(
+    State(state): State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
+    let ring = state.imbe_forwarder.imbe_ring.lock().unwrap().clone();
+    let clear: Vec<_> = ring.iter().filter(|(_, enc, _)| !enc).collect();
+
+    let mut decoder = crate::vocoder::JmbeDecoder::new();
+    let mut all_pcm: Vec<i16> = Vec::new();
+
+    for (_tg, _enc, bits) in &clear {
+        let frame = crate::p25::voice_frame::ImbeFrameRaw { bits: *bits };
+        let pcm = decoder.decode_frame(&frame);
+        all_pcm.extend_from_slice(&pcm);
+    }
+
+    // Build WAV
+    let header = crate::audio::wav_header_8k_16bit_mono();
+    let data_size = (all_pcm.len() * 2) as u32;
+    let file_size = 36 + data_size;
+
+    let mut wav = Vec::with_capacity(44 + all_pcm.len() * 2);
+    wav.extend_from_slice(&header[..4]);   // RIFF
+    wav.extend_from_slice(&file_size.to_le_bytes()); // actual size
+    wav.extend_from_slice(&header[8..40]); // WAVEfmt...data
+    wav.extend_from_slice(&data_size.to_le_bytes()); // actual data size
+    for &sample in &all_pcm {
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "audio/wav"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"imbe_test.wav\"",
+            ),
+        ],
+        wav,
+    )
+}
+
+// ── Phase 7B: Monitor list ─────────────────────────────────────────────
+
+/// GET /api/monitor -- return the current monitor list.
+/// PUT /api/monitor -- replace the list. Body: {"talkgroups": [300, 402]}
+/// GET /api/monitor?add=300 / ?remove=300 -- quick add/remove.
+async fn get_monitor(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let mut list = state.monitor_list.write().await;
+
+    if let Some(tg_str) = params.get("add") {
+        if let Ok(tg) = tg_str.parse::<u16>() {
+            list.add(tg);
+        }
+    }
+    if let Some(tg_str) = params.get("remove") {
+        if let Ok(tg) = tg_str.parse::<u16>() {
+            list.remove(tg);
+        }
+    }
+
+    Json(serde_json::json!({
+        "talkgroups": list.list(),
+    }))
+}
+
+async fn put_monitor(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let mut list = state.monitor_list.write().await;
+    if let Some(arr) = body.get("talkgroups").and_then(|v| v.as_array()) {
+        let tgs: Vec<u16> = arr
+            .iter()
+            .filter_map(|v| v.as_u64().map(|n| n as u16))
+            .collect();
+        list.set(tgs);
+    }
+    Json(serde_json::json!({
+        "talkgroups": list.list(),
+    }))
+}
+
+// ── Phase 7E: Audio streaming ─────────────────────────────────────────
+
+/// GET /api/audio -- stream PCM audio.
+///   ?format=wav  -- prepend a WAV header (default: raw PCM)
+///   Content-Type: audio/L16;rate=8000;channels=1 (raw) or audio/wav
+///
+/// The response is a chunked HTTP stream that runs until the client
+/// disconnects. Each chunk is 320 bytes (160 samples * 2 bytes).
+/// Pipe to `aplay -r 8000 -f S16_LE -c 1` or open in VLC.
+async fn get_audio(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl axum::response::IntoResponse {
+    let format = params
+        .get("format")
+        .map(String::as_str)
+        .unwrap_or("raw");
+    let want_wav = format == "wav";
+    let mut rx = state.audio_tx.subscribe();
+
+    let stream = async_stream::stream! {
+        if want_wav {
+            yield Ok::<_, std::io::Error>(bytes::Bytes::copy_from_slice(
+                &crate::audio::wav_header_8k_16bit_mono()
+            ));
+        }
+        loop {
+            match rx.recv().await {
+                Ok(chunk) => {
+                    let mut buf = [0u8; 320];
+                    for (i, &sample) in chunk.pcm.iter().enumerate() {
+                        let le = sample.to_le_bytes();
+                        buf[i * 2] = le[0];
+                        buf[i * 2 + 1] = le[1];
+                    }
+                    yield Ok(bytes::Bytes::copy_from_slice(&buf));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+
+    let content_type = if want_wav {
+        "audio/wav"
+    } else {
+        "audio/L16;rate=8000;channels=1"
+    };
+
+    (
+        [(axum::http::header::CONTENT_TYPE, content_type)],
+        axum::body::Body::from_stream(stream),
+    )
+}
+
+/// WebSocket /ws/audio -- binary frames of 320 bytes (160 i16 LE
+/// samples = 20 ms of 8 kHz mono audio per message).
+async fn ws_audio(
+    ws: axum::extract::WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
+    ws.on_upgrade(move |socket| handle_ws_audio(socket, state))
+}
+
+async fn handle_ws_audio(
+    mut socket: axum::extract::ws::WebSocket,
+    state: Arc<AppState>,
+) {
+    let mut rx = state.audio_tx.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(chunk) => {
+                let mut buf = [0u8; 320];
+                for (i, &sample) in chunk.pcm.iter().enumerate() {
+                    let le = sample.to_le_bytes();
+                    buf[i * 2] = le[0];
+                    buf[i * 2 + 1] = le[1];
+                }
+                if socket
+                    .send(axum::extract::ws::Message::Binary(buf.to_vec().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
 // ── Dashboard HTML ─────────────────────────────────────────────────────
 
 async fn index_html() -> impl IntoResponse {
@@ -1900,9 +2123,16 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
 .tg { color: var(--green); }
 .alias { color: var(--purple); font-size: 0.8em; }
 
+/* Activity filter bar */
+.activity-filters { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0; font-size: 0.8em; }
+.af { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+.af input { margin: 0; cursor: pointer; }
+.af-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+
 /* Live activity feed */
-#activity { max-height: 320px; overflow-y: auto; font-family: var(--mono); font-size: 0.8em; }
-.evt { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.08); display: flex; gap: 8px; }
+#activity { max-height: 400px; overflow-y: auto; font-family: var(--mono); font-size: 0.8em;
+            display: flex; flex-direction: column-reverse; }
+.evt { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.08); display: flex; gap: 8px; flex-shrink: 0; }
 .evt-time { color: var(--text-dim); min-width: 80px; }
 .evt-type { min-width: 80px; font-weight: 600; }
 .evt-type.GRP_GRANT { color: var(--green); }
@@ -1910,6 +2140,14 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
 .evt-type.NET_STS, .evt-type.RFSS_STS { color: var(--orange); }
 .evt-type.IDEN_UP { color: var(--purple); }
 .evt-type.ADJ_STS { color: var(--text-dim); }
+.evt-type.SCCB { color: var(--text-dim); }
+.evt-type.SNDCP_ANN { color: var(--text-dim); }
+.evt-type.TDMA_SYNC { color: var(--text-dim); }
+.evt-type.TEL_INT_GRANT_UPD { color: var(--accent); }
+.evt-type.UU_ANS_REQ { color: var(--text); }
+.evt-type.TRF_HDU { color: #4fc3f7; }
+.evt-type.TRF_LDU1, .evt-type.TRF_LDU2 { color: #4db6ac; }
+.evt-type.TRF_TDU, .evt-type.TRF_TDU_LC { color: #ffb74d; }
 .evt-detail { flex: 1; }
 
 /* Frequency map */
@@ -2159,9 +2397,43 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   </div>
 </div>
 
-<h2>Live Activity</h2>
-<div class="card">
-  <div id="activity"></div>
+<!-- ── Phase 7D: Traffic Channel + Vocoder ── -->
+<h2>Traffic Channel <span id="trf_phase" style="font-size:0.75em;color:var(--text-dim);margin-left:6px"></span></h2>
+<div class="grid2">
+  <div class="card">
+    <h2>Grant Follower</h2>
+    <table>
+      <tbody>
+        <tr><th>State</th><td class="v" id="trf_state">--</td></tr>
+        <tr><th>Current TG</th><td class="v" id="trf_tg">--</td></tr>
+        <tr><th>Frequency</th><td class="v" id="trf_freq">--</td></tr>
+        <tr><th>Encrypted</th><td class="v" id="trf_enc">--</td></tr>
+        <tr><th>Grants Seen</th><td class="v" id="trf_grants">--</td></tr>
+        <tr><th>Retunes</th><td class="v" id="trf_retunes">--</td></tr>
+        <tr><th>Last DUID</th><td class="v" id="trf_duid">--</td></tr>
+        <tr><th>Last Retune</th><td class="v" id="trf_last_retune">--</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h2>IMBE + Vocoder <span id="voc_status" style="font-size:0.75em;color:var(--green);margin-left:6px"></span></h2>
+    <table>
+      <tbody>
+        <tr><th>HDU</th><td class="v" id="trf_hdu">0</td></tr>
+        <tr><th>LDU1</th><td class="v" id="trf_ldu1">0</td></tr>
+        <tr><th>LDU2</th><td class="v" id="trf_ldu2">0</td></tr>
+        <tr><th>TDU / TDU_LC</th><td class="v" id="trf_tdu">0 / 0</td></tr>
+        <tr><th>IMBE Extracted</th><td class="v" id="trf_imbe">0</td></tr>
+        <tr><th>IMBE Expected</th><td class="v" id="trf_imbe_exp">0</td></tr>
+        <tr><th>IMBE Dropped</th><td class="v" id="trf_imbe_drop">0</td></tr>
+        <tr><th>Last IMBE</th><td class="v" id="trf_imbe_ago">--</td></tr>
+        <tr><th colspan="2" style="color:var(--text-dim);text-align:left">Vocoder (mbelib)</th></tr>
+        <tr><th>PCM Produced</th><td class="v" id="voc_pcm">0</td></tr>
+        <tr><th>Errors (>4 bit)</th><td class="v" id="voc_err">0</td></tr>
+        <tr><th>Encrypted Skip</th><td class="v" id="voc_enc">0</td></tr>
+      </tbody>
+    </table>
+  </div>
 </div>
 
 <h2>Frequency Map</h2>
@@ -2182,6 +2454,22 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       <tbody id="bands_t"></tbody>
     </table>
   </div>
+</div>
+
+<h2>Live Activity</h2>
+<div class="activity-filters" id="actFilters">
+  <label class="af"><input type="checkbox" data-types="GRP_GRANT" checked><span class="af-swatch" style="background:var(--green)"></span>Grants</label>
+  <label class="af"><input type="checkbox" data-types="GRANT_UPD,TEL_INT_GRANT_UPD" checked><span class="af-swatch" style="background:var(--accent)"></span>Grant Updates</label>
+  <label class="af"><input type="checkbox" data-types="NET_STS,RFSS_STS" checked><span class="af-swatch" style="background:var(--orange)"></span>Network/RFSS</label>
+  <label class="af"><input type="checkbox" data-types="IDEN_UP"><span class="af-swatch" style="background:var(--purple)"></span>Band IDs</label>
+  <label class="af"><input type="checkbox" data-types="SCCB"><span class="af-swatch" style="background:var(--text-dim)"></span>SCCB</label>
+  <label class="af"><input type="checkbox" data-types="SNDCP_ANN"><span class="af-swatch" style="background:var(--text-dim)"></span>SNDCP</label>
+  <label class="af"><input type="checkbox" data-types="TDMA_SYNC"><span class="af-swatch" style="background:var(--text-dim)"></span>TDMA Sync</label>
+  <label class="af"><input type="checkbox" data-types="UU_ANS_REQ" checked><span class="af-swatch" style="background:var(--text)"></span>UU Calls</label>
+  <label class="af"><input type="checkbox" data-types="TRF_HDU,TRF_LDU1,TRF_LDU2,TRF_TDU,TRF_TDU_LC" checked><span class="af-swatch" style="background:#4db6ac"></span>Traffic CH</label>
+</div>
+<div class="card">
+  <div id="activity"></div>
 </div>
 
 <!-- Aliases Modal -->
@@ -2421,6 +2709,65 @@ async function refresh() {
   renderDibitDump(await fetchJson('/api/dibit_dump'), c4fmIds);
   renderDibitDump(await fetchJson('/api/lsm_dibit_dump'), lsmIds);
 
+  // ── Phase 7D: Traffic Channel + Vocoder panel ──
+  const trf = await fetchJson('/api/traffic');
+  if (trf) {
+    $('trf_phase').textContent = 'Phase ' + (trf.phase || '?');
+    $('trf_state').textContent = trf.state || '--';
+    if (trf.current_talkgroup != null) {
+      const encBadge = trf.current_call_encrypted ? ' [ENC]' : '';
+      $('trf_tg').textContent = trf.current_talkgroup + encBadge;
+      $('trf_tg').style.color = trf.current_call_encrypted ? 'var(--red)' : '';
+    } else {
+      $('trf_tg').textContent = '(idle)';
+      $('trf_tg').style.color = 'var(--text-dim)';
+    }
+    if (trf.current_frequency_hz != null) {
+      $('trf_freq').textContent = (trf.current_frequency_hz / 1e6).toFixed(4) + ' MHz';
+    } else {
+      $('trf_freq').textContent = '--';
+    }
+    $('trf_enc').textContent = trf.current_call_encrypted == null ? '--' :
+      (trf.current_call_encrypted ? 'YES' : 'No');
+    $('trf_enc').style.color = trf.current_call_encrypted ? 'var(--red)' : 'var(--green)';
+    $('trf_grants').textContent = (trf.grants_seen || 0).toLocaleString();
+    $('trf_retunes').textContent = trf.retunes || 0;
+    $('trf_duid').textContent = (trf.last_duid_label || '--') + ' (' + (trf.last_duid_hex || '--') + ')';
+    if (trf.last_retune_secs_ago != null) {
+      $('trf_last_retune').textContent = Math.round(trf.last_retune_secs_ago) + 's ago';
+    } else {
+      $('trf_last_retune').textContent = '--';
+    }
+    const im = trf.imbe || {};
+    $('trf_hdu').textContent = (im.hdu_count || 0).toLocaleString();
+    $('trf_ldu1').textContent = (im.ldu1_count || 0).toLocaleString();
+    $('trf_ldu2').textContent = (im.ldu2_count || 0).toLocaleString();
+    $('trf_tdu').textContent = (im.tdu_count || 0).toLocaleString() + ' / ' +
+      (im.tdu_lc_count || 0).toLocaleString();
+    $('trf_imbe').textContent = (im.imbe_frames_extracted || 0).toLocaleString();
+    const ldu_total = (im.ldu1_count || 0) + (im.ldu2_count || 0);
+    $('trf_imbe_exp').textContent = (ldu_total * 9).toLocaleString();
+    $('trf_imbe_drop').textContent = (im.imbe_frames_dropped || 0).toLocaleString();
+    $('trf_imbe_drop').style.color = (im.imbe_frames_dropped || 0) > 0 ? 'var(--red)' : '';
+    if (im.last_imbe_secs_ago != null) {
+      $('trf_imbe_ago').textContent = Math.round(im.last_imbe_secs_ago) + 's ago';
+    } else {
+      $('trf_imbe_ago').textContent = 'never';
+    }
+    $('voc_pcm').textContent = (im.vocoder_pcm_produced || 0).toLocaleString();
+    $('voc_err').textContent = (im.vocoder_errors || 0).toLocaleString();
+    $('voc_enc').textContent = (im.vocoder_frames_encrypted || 0).toLocaleString();
+    // Status indicator
+    const pcm = im.vocoder_pcm_produced || 0;
+    if (pcm > 0) {
+      $('voc_status').textContent = 'ACTIVE (' + pcm.toLocaleString() + ' samples)';
+      $('voc_status').style.color = 'var(--green)';
+    } else {
+      $('voc_status').textContent = 'WAITING';
+      $('voc_status').style.color = 'var(--text-dim)';
+    }
+  }
+
   const grants = await fetchJson('/api/grants');
   if (grants) {
     $('grants_t').innerHTML = grants.map(g =>
@@ -2474,6 +2821,17 @@ function renderFreqMap(grants) {
   map.innerHTML = html;
 }
 
+// Activity filter state
+function getActiveFilters() {
+  const active = new Set();
+  document.querySelectorAll('#actFilters input[type=checkbox]').forEach(cb => {
+    if (cb.checked) {
+      cb.dataset.types.split(',').forEach(t => active.add(t));
+    }
+  });
+  return active;
+}
+
 // WebSocket
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -2481,22 +2839,38 @@ function connectWs() {
   ws.onmessage = e => {
     try {
       const evt = JSON.parse(e.data);
+      const filters = getActiveFilters();
+      if (!filters.has(evt.event_type)) return;
       const el = document.createElement('div');
       el.className = 'evt';
+      el.dataset.type = evt.event_type;
       const alias = evt.talkgroup_alias ? ` <span class="alias">${evt.talkgroup_alias}</span>` : '';
       el.innerHTML =
         `<span class="evt-time">${evt.timestamp}</span>` +
         `<span class="evt-type ${evt.event_type}">${evt.event_type}</span>` +
         `<span class="evt-detail">${evt.summary}${alias}</span>`;
       const act = $('activity');
+      // column-reverse: first child is at the bottom (newest visually at top)
       act.prepend(el);
-      while (act.children.length > 200) act.lastChild.remove();
+      while (act.children.length > 300) act.lastChild.remove();
     } catch {}
     refresh();
   };
   ws.onclose = () => setTimeout(connectWs, 3000);
   ws.onerror = () => ws.close();
 }
+
+// When a filter checkbox changes, hide/show existing matching events
+document.querySelectorAll('#actFilters input[type=checkbox]').forEach(cb => {
+  cb.addEventListener('change', () => {
+    const types = cb.dataset.types.split(',');
+    document.querySelectorAll('#activity .evt').forEach(el => {
+      if (types.includes(el.dataset.type)) {
+        el.style.display = cb.checked ? '' : 'none';
+      }
+    });
+  });
+});
 
 // Theme
 function toggleTheme() {

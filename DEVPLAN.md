@@ -330,43 +330,82 @@ At 9600 bps, the ARM A9 has trivial CPU load for all protocol processing.
    the heartbeat observability fix from doc 025, BCH-FEC port to HDL.
    Full deferral list in doc 032.
 
-10. **Phase 7**: Voice channel follow + audio. **NEXT.** Starts in a
-    fresh session. The control channel is fully decoded and grants
-    are tracked in `/api/grants`, but the radio does NOT yet retune
-    to voice channels. To make this a real trunking radio:
+10. **Phase 7**: Voice channel follow + audio.
 
-    - **Phase 7A: Second DDC + traffic decoder chain (HDL).** Add a
-      second DDC instance in `p25_top.py` independent from the
-      control channel chain, with its own NCO/decimator/LPF and a
-      new `voice_control` register bank for runtime retune. New ring
-      DMA for the voice dibit stream mirroring `lsm_dibit_dma`.
-      Confirm lock within ~60 ms of frequency change (P25 spec
-      budget is ~200 ms).
+    - **Phase 7A.1: Traffic-channel grant follower scaffold** -- DONE
+      (commit `fc3c9ed`, change 033). Sticky-lock policy: on
+      `GroupVoiceChannelGrant` / `GRP_V_CH_GRANT_UPDT`, compute channel
+      frequency from band table, write traffic NCO offset, assert
+      demod_enable. 50 ms heartbeat poll, auto-promote from Acquiring
+      to Active on first valid NID. Verified on hardware: `delta_retunes
+      = 0` during active call, state stays `Active`.
 
-    - **Phase 7B: Voice grant follower (PS).** New `voice_follow.rs`
-      module. On every `GroupVoiceChannelGrant` for an interesting
-      talkgroup (configured via a new monitor list endpoint),
-      compute the channel frequency from the active band table,
-      subtract the AD9361 RX LO, write `voice_control.voice_freq_offset`
-      and assert `voice_enable`. On `TDU` reception, decide whether
-      to keep following or release.
+    - **Phase 7A.2: LSM demod chain on traffic side** -- DONE (commit
+      `5a6f09a` maia-sdr + `efa218c` tezuka_fw, change 034). Mirrors
+      Phase 6E.9 architecture on the traffic DDC output. HDU/TDU/LDU
+      dispatch via heartbeat task. New `traffic_lsm_dibit_dma` ring
+      buffer + device tree carve-out. Vivado bake: WNS = -5.253 ns
+      (better than 6G.1 baseline). All 6 acceptance criteria passed on
+      hardware.
 
-    - **Phase 7C: LDU sync + IMBE frame extraction.** The voice
-      channel produces LDU1/LDU2 frames with their own sync words.
-      Each LDU carries 9 IMBE voice frames (88 bits each, trellis +
-      RS protected). Reuse the trellis decoder from the TSBK path.
+    - **Phase 7B: Typed event channel + monitor list + modulation
+      auto-detect** -- DEFERRED. Independent of 7C/7D; gets revisited
+      after vocoder integration. Would replace the 7A.1 polling task
+      with a typed event channel and add modulation auto-detect +
+      `/api/voice_follow_targets` endpoint.
 
-    - **Phase 7D: IMBE/AMBE vocoder + audio output.** Convert the
-      88-bit IMBE frames to PCM audio. Options: mbelib (open-source,
-      grey license, bit-compatible), codec2 (open-source, FOSS, not
-      bit-compatible), or DVSI hardware (vendor-blessed, adds a chip).
-      Output: stream PCM via RTP over the existing Ethernet, or pipe
-      to a USB audio device on the Zynq.
+    - **Phase 7C: LDU sync + IMBE frame extraction** -- DONE (commit
+      `57bb770`, change 035). The traffic-side LSM dibit reader feeds a
+      `ControlChannelDecoder` running the same Hunting -> ReadingNid ->
+      ReadingDataUnit state machine. On LDU1/LDU2 dispatch, strips
+      status dibits, applies the 9 IMBE bit positions from SDRTrunk
+      `LDUMessage.java`, emits raw 144-bit `ImbeFrameRaw` via the
+      `VoiceHandler` trait. Encryption flag plumbed from control channel
+      grant (`service_options.encrypted`). Verified on hardware: all 7
+      acceptance criteria passed, headline check
+      `imbe_frames_extracted == (ldu1+ldu2)*9` holds **exactly** across
+      multiple call boundaries.
 
-    - **Phase 7E: Closing the loop.** `/api/audio.opus` style endpoint
-      that ties grant detection + voice follow + vocoder + RTP into a
-      single "give me the audio for talkgroup X" handler. The
-      dashboard becomes a real operator console.
+    - **Phase 7D: IMBE vocoder + audio output** -- NEXT. Convert raw
+      144-bit IMBE frames to PCM audio. The `VoiceHandler` callback
+      chain is already flowing real frames from Clay County calls.
+
+      Concrete work:
+
+      1. Choose vocoder library: mbelib (C, grey license,
+         bit-compatible IMBE+AMBE, well-tested) vs codec2 (FOSS, clean
+         license, not bit-compatible) vs DVSI hardware.
+      2. Cross-compile for ARMv7 via Tezuka Buildroot. New recipe in
+         `tezuka_fw/package/mbelib/`.
+      3. Rust FFI bindings in `p25-httpd/src/vocoder/`. Small API:
+         `mbe_initStruct`, `mbe_processImbe7100x4400Data`,
+         `mbe_synthesizeAudio`.
+      4. Spawn vocoder tokio task in `main.rs`. Reads
+         `ImbeFrameRaw` from mpsc channel, outputs 160 PCM samples
+         (20 ms @ 8 kHz) per frame.
+      5. Replace `ImbeCounter` with `ImbeForwarder` (same atomic
+         counters + mpsc sender to vocoder task).
+      6. Encryption gating: skip encrypted calls based on
+         `current_call_encrypted` from grant store.
+      7. Surface vocoder counters in `/api/traffic`: `pcm_samples`,
+         `frames_skipped_encrypted`, `errors`.
+
+      Acceptance criteria:
+
+      1. Vocoder cross-compiled and packaged in Tezuka.
+      2. FFI bindings in `p25-httpd/src/vocoder/`.
+      3. Vocoder tokio task consuming from mpsc channel.
+      4. `ImbeForwarder` replacing `ImbeCounter`.
+      5. `/api/traffic.vocoder.pcm_samples_produced > 0` during a
+         real clear-voice call.
+      6. Encryption gating verified: encrypted TG shows
+         `frames_skipped_encrypted` incrementing.
+      7. Subjective audio quality check on saved PCM file.
+
+    - **Phase 7E: Closing the loop.** `/api/audio` endpoint that ties
+      grant detection + voice follow + vocoder into a single "give me
+      the audio for talkgroup X" handler. RTP or WebSocket audio
+      streaming. The dashboard becomes a real operator console.
 
 ### Critical Maia Files Referenced
 

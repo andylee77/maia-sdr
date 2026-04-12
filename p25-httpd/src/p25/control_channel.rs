@@ -205,6 +205,8 @@ pub struct ControlChannelDecoder {
     pub aliases: HashMap<u16, String>,
     /// Broadcast channel for WebSocket events
     event_tx: Option<broadcast::Sender<String>>,
+    /// Phase 7B: typed grant event channel for the grant follower task.
+    grant_event_tx: Option<tokio::sync::mpsc::Sender<super::events::P25Event>>,
     /// Phase 7C: optional voice frame handler. When set, the decoder
     /// dispatches HDU/LDU1/LDU2/TDU/TDU_LC bodies to the handler in
     /// addition to the normal TSDU dispatch. Set on the new
@@ -605,6 +607,7 @@ impl ControlChannelDecoder {
             max_recent: 1000,
             aliases: HashMap::new(),
             event_tx: None,
+            grant_event_tx: None,
             // Phase 7C: voice handler is opt-in. Control-channel
             // decoders leave it None; the new traffic_lsm_decoder
             // sets it to forward IMBE frames downstream.
@@ -620,6 +623,31 @@ impl ControlChannelDecoder {
     /// Set the broadcast channel for WebSocket events
     pub fn set_event_tx(&mut self, tx: broadcast::Sender<String>) {
         self.event_tx = Some(tx);
+    }
+
+    /// Phase 7B: set the typed grant event channel.
+    pub fn set_grant_event_tx(
+        &mut self,
+        tx: tokio::sync::mpsc::Sender<super::events::P25Event>,
+    ) {
+        self.grant_event_tx = Some(tx);
+    }
+
+    /// Phase 7B: push a grant event to the typed channel (non-blocking).
+    fn emit_grant_event(&self, info: &GrantInfo) {
+        if let Some(ref tx) = self.grant_event_tx {
+            let _ = tx.try_send(super::events::P25Event::Grant(
+                super::events::GrantEvent {
+                    channel: info.channel,
+                    talkgroup: info.talkgroup,
+                    source: info.source,
+                    frequency_hz: info.frequency_hz,
+                    encrypted: info.encrypted,
+                    emergency: info.emergency,
+                    timestamp: info.timestamp,
+                },
+            ));
+        }
     }
 
     /// Phase 7C: install a voice frame handler. The decoder will
@@ -1505,18 +1533,17 @@ impl ControlChannelDecoder {
                     crate::p25::tsbk::service_options::is_encrypted(*service_options);
                 let emergency =
                     crate::p25::tsbk::service_options::is_emergency(*service_options);
-                self.grants.insert(
-                    channel.0,
-                    GrantInfo {
-                        channel: *channel,
-                        talkgroup: *talkgroup,
-                        source: Some(*source),
-                        frequency_hz: freq,
-                        timestamp: Instant::now(),
-                        encrypted,
-                        emergency,
-                    },
-                );
+                let grant = GrantInfo {
+                    channel: *channel,
+                    talkgroup: *talkgroup,
+                    source: Some(*source),
+                    frequency_hz: freq,
+                    timestamp: Instant::now(),
+                    encrypted,
+                    emergency,
+                };
+                self.emit_grant_event(&grant);
+                self.grants.insert(channel.0, grant);
             }
             // Phase 6F.11: Secondary Control Channel Broadcast --
             // record the backup CCH A/B channels for the trunking
@@ -1584,33 +1611,32 @@ impl ControlChannelDecoder {
                 // preservation (commit 1e29839).
                 let preserved_a =
                     self.take_other_grants_for_talkgroup(*talkgroup_a);
-                self.grants.insert(
-                    channel_a.0,
-                    GrantInfo {
-                        channel: *channel_a,
-                        talkgroup: *talkgroup_a,
-                        source: preserved_a.source,
-                        frequency_hz: freq_a,
-                        timestamp: Instant::now(),
-                        encrypted: preserved_a.encrypted,
-                        emergency: preserved_a.emergency,
-                    },
-                );
+                let grant_a = GrantInfo {
+                    channel: *channel_a,
+                    talkgroup: *talkgroup_a,
+                    source: preserved_a.source,
+                    frequency_hz: freq_a,
+                    timestamp: Instant::now(),
+                    encrypted: preserved_a.encrypted,
+                    emergency: preserved_a.emergency,
+                };
+                self.emit_grant_event(&grant_a);
+                self.grants.insert(channel_a.0, grant_a);
                 if talkgroup_b.0 != 0 {
                     let freq_b = self.channel_to_frequency(*channel_b);
                     let preserved_b =
                         self.take_other_grants_for_talkgroup(*talkgroup_b);
-                    self.grants.insert(
-                        channel_b.0,
-                        GrantInfo {
-                            channel: *channel_b,
-                            talkgroup: *talkgroup_b,
-                            source: preserved_b.source,
-                            frequency_hz: freq_b,
-                            timestamp: Instant::now(),
-                            encrypted: preserved_b.encrypted,
-                            emergency: preserved_b.emergency,
-                        },
+                    let grant_b = GrantInfo {
+                        channel: *channel_b,
+                        talkgroup: *talkgroup_b,
+                        source: preserved_b.source,
+                        frequency_hz: freq_b,
+                        timestamp: Instant::now(),
+                        encrypted: preserved_b.encrypted,
+                        emergency: preserved_b.emergency,
+                    };
+                    self.emit_grant_event(&grant_b);
+                    self.grants.insert(channel_b.0, grant_b
                     );
                 }
             }
@@ -1662,9 +1688,10 @@ impl ControlChannelDecoder {
                     timestamp: now,
                     event_type: "GRP_GRANT".into(),
                     summary: format!(
-                        "{}TG:{:05} -> {} ({:.4} MHz){}",
+                        "{}TG:{:05} SRC:{:05} -> {} ({:.4} MHz){}",
                         block_prefix,
                         talkgroup.0,
+                        source.0,
                         channel,
                         freq.unwrap_or(0) as f64 / 1e6,
                         enc_marker

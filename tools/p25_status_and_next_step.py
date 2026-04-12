@@ -563,35 +563,38 @@ ROADMAP = [
         ),
     },
     {
-        "phase": "Phase 7B",
-        "name": "Voice grant follower with modulation auto-detect + monitor list",
-        "check": lambda s: False,
+        "phase": "Phase 7D",
+        "name": "IMBE vocoder + PCM audio output (mbelib)",
+        "check": lambda s: (
+            s.get("traffic") is not None
+            and isinstance(s["traffic"].get("imbe"), dict)
+            and s["traffic"]["imbe"].get("vocoder_pcm_produced", 0) is not None
+            # Pass if the field exists (vocoder is wired). PCM > 0
+            # only during an active clear-voice call, so we just
+            # check the field is present (build has 7D code).
+            and "vocoder_pcm_produced" in s["traffic"].get("imbe", {})
+        ),
         "next_step": (
-            "Phase 7B replaces the 7A.1 polling task with a typed "
-            "event channel and adds modulation auto-detect: read "
-            "the DUID from the first NID on either pipeline (C4FM "
-            "or LSM), lock to whichever produces stable sync, and "
-            "drive the appropriate demod chain. Also adds a monitor "
-            "list endpoint (/api/voice_follow_targets) so the "
-            "operator can pin which talkgroups to follow when "
-            "multiple grants are active simultaneously. **Skipped in "
-            "the 2026-04-11 work cycle** to ship Phase 7C IMBE "
-            "extraction sooner -- 7B is independent and gets "
-            "revisited after Phase 7D vocoder integration."
+            "Phase 7D mbelib vocoder is wired: ImbeForwarder pushes "
+            "frame batches via mpsc to a vocoder tokio task that "
+            "decodes via mbe_processImbe7200x4400Frame. Encryption "
+            "gating skips encrypted calls. Verify on hardware:\n"
+            "  - /api/traffic.imbe.vocoder_pcm_produced > 0 during "
+            "a clear-voice call\n"
+            "  - vocoder_frames_encrypted incrementing on TG 402\n"
+            "  - Subjective audio quality check on saved PCM file"
         ),
     },
     {
-        "phase": "Phase 7D",
-        "name": "IMBE/AMBE vocoder + PCM out",
+        "phase": "Phase 7B",
+        "name": "Typed event channel + monitor list + modulation auto-detect (deferred)",
         "check": lambda s: False,
         "next_step": (
-            "Convert the 88-bit IMBE frames to PCM audio. Options:\n"
-            "  - mbelib (open-source FFI from Rust, license grey, "
-            "bit-compatible IMBE+AMBE)\n"
-            "  - codec2 (clean licence, not bit-compatible with "
-            "IMBE -- sounds different)\n"
-            "  - DVSI hardware (vendor-blessed, adds a chip + "
-            "per-channel licensing)"
+            "Phase 7B replaces the 7A.1 polling task with a typed "
+            "event channel and adds modulation auto-detect + a "
+            "monitor list endpoint (/api/voice_follow_targets). "
+            "Deferred to after Phase 7D vocoder integration -- "
+            "independent cleanup that doesn't unblock audio."
         ),
     },
     {

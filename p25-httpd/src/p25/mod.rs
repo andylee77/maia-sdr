@@ -3,6 +3,7 @@
 //! Decodes the P25 control channel from a dibit stream produced by the FPGA.
 
 pub mod control_channel;
+pub mod events;
 pub mod fec;
 pub mod traffic_manager;
 pub mod tsbk;

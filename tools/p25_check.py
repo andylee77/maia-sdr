@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Phase 6F.4 on-target verification status script.
+"""Fishball P25 on-target verification status script.
 
-Hits all the diagnostic endpoints on the running p25-httpd target,
+Hits all diagnostic endpoints on the running p25-httpd target,
 pretty-prints the key metrics, and tells you whether each acceptance
-criterion from doc/changes/028 has been met.
+criterion has been met.
 
 Usage:
-    python tools/p25_check_phase6f4.py [TARGET]
+    python tools/p25_check.py [TARGET]
 
 TARGET defaults to "192.168.2.1:8080" (Fishball Z7020 wired Ethernet
 direct-connect address). Pass another host:port to point at a
@@ -14,11 +14,18 @@ different target.
 
 Endpoints exercised:
     GET /api/system           -- build tag, NAC/WACN/RFSS/SITE
+    GET /api/stats            -- basic decode stats + gain/RSSI
     GET /api/decoder_compare  -- pipeline counters
     GET /api/tsbk_opcodes     -- per-opcode + per-block-position hist
     GET /api/recent_tsbks     -- newest 50 TSBKs with TSBK1/2/3 labels
     GET /api/bands            -- frequency band table
     GET /api/grants           -- active voice grants
+    GET /api/lsm              -- Phase 6D LSM decoder stats
+    GET /api/hdl_lsm          -- PL HDL LSM chain stats + NID ring
+    GET /api/irq_stats        -- per-source IRQ counters
+    GET /api/traffic          -- Phase 7 traffic channel + IMBE stats
+    GET /api/lsm_control      -- LSM control register state
+    GET /api/sync_tune        -- sync distance histogram + threshold
 
 Exit code: 0 if every acceptance check passes, 1 otherwise. Lets you
 shove this in a `while sleep 30; do ...` loop on flash + watch.
@@ -76,7 +83,7 @@ def kv(label: str, value, ok: bool | None = None) -> None:
 
 def main() -> int:
     target = sys.argv[1] if len(sys.argv) >= 2 else "192.168.2.1:8080"
-    print(f"{BOLD}Phase 6F.4 verification @ {target}{RESET}")
+    print(f"{BOLD}Fishball P25 verification @ {target}{RESET}")
 
     # ── /api/system ──
     banner("System identity (/api/system)")
@@ -89,16 +96,12 @@ def main() -> int:
     site = sys_info.get("site_id")
     cc = sys_info.get("control_channel")
 
-    # Accept 6F.4 or any later phase6f.N build. We do a regex match
-    # because string `in` would let "phase6f.1" match "phase6f.10",
-    # but checking the trailing character avoids a false positive.
     import re
-    m = re.search(r"phase6f\.(\d+)", build or "")
-    is_64 = bool(m and int(m.group(1)) >= 4)
+    build_ok = bool(re.search(r"phase[67]", build or ""))
     rfss_ok = rfss == 1
     wacn_ok = wacn == "BEE00"
 
-    kv("build tag", build, is_64)
+    kv("build tag", build, build_ok)
     kv("NAC", nac, nac == "8A1")
     kv("WACN", wacn, wacn_ok)
     kv("System ID", sysid, sysid == "8A0")
@@ -306,15 +309,172 @@ def main() -> int:
             summary = m.get("summary", "")
             print(f"  -{age:6.1f}s  {block}  {summary}")
 
+    # ── /api/stats ──
+    banner("Basic stats (/api/stats)")
+    st = fetch(target, "/api/stats")
+    kv("system_acquired", st.get("system_acquired"), st.get("system_acquired"))
+    kv("dibit_count (C4FM HDL)", st.get("dibit_count"))
+    kv("overflow", st.get("overflow"), not st.get("overflow"))
+    kv("rx_gain_db", f"{st.get('rx_gain_db', 0):.1f} dB")
+    kv("rx_rssi_db", f"{st.get('rx_rssi_db', 0):.2f} dB")
+
+    # ── /api/lsm ──
+    banner("LSM decoder (/api/lsm)")
+    lsm = fetch(target, "/api/lsm")
+    lsm_up = lsm.get("uptime_secs", 0)
+    lsm_running = lsm.get("running", False)
+    kv("running", lsm_running, lsm_running)
+    kv("uptime", f"{lsm_up}s")
+    kv("wakeups", lsm.get("wakeups"))
+    kv("IQ samples", f"{lsm.get('iq_samples', 0):,} ({lsm.get('iq_samples_per_sec', 0):.0f}/s)")
+    kv("dibits", f"{lsm.get('dibits', 0):,} ({lsm.get('dibits_per_sec', 0):.0f}/s)")
+    kv("hard / soft syncs", f"{lsm.get('hard_events', 0):,} / {lsm.get('soft_events', 0):,}")
+    kv("overflow resets", lsm.get("overflow_resets", 0),
+       lsm.get("overflow_resets", 0) == 0)
+    ls = lsm.get("last_sync", {})
+    kv("last sync", f"NAC={ls.get('nac')} DUID={ls.get('duid')} "
+       f"FEC={'OK' if ls.get('fec_corrected') else 'FAIL'} "
+       f"({ls.get('age_ms', '?')}ms ago)")
+
+    # ── /api/hdl_lsm ──
+    banner("HDL LSM chain (/api/hdl_lsm)")
+    hdl = fetch(target, "/api/hdl_lsm")
+    cum = hdl.get("cumulative", {})
+    live = hdl.get("live", {})
+    win = hdl.get("last_window", {})
+    hdl_valid = cum.get("valid_nid_events", 0)
+    hdl_total = cum.get("total_nid_events", 0)
+    hdl_pct = cum.get("valid_pct", 0)
+    kv("cumulative NIDs", f"{hdl_valid:,} / {hdl_total:,} ({hdl_pct:.1f}%)",
+       hdl_pct >= 75)
+    kv("last NAC / DUID", f"0x{live.get('last_nac', '?')} / {live.get('last_duid', '?')}")
+    kv("drop count", live.get("last_drop_count", 0),
+       live.get("last_drop_count", 0) == 0)
+    kv("PLL / SP (now)", f"{live.get('pll_dbg', '?')} / {live.get('sp_dbg', '?')}")
+    kv("sync distance (now)", live.get("sync_distance", "?"))
+    kv("dibit / iq overflow ticks", f"{cum.get('dibit_overflow_ticks', 0)} / "
+       f"{cum.get('iq_overflow_ticks', 0)}")
+    kv("last 1s window NIDs", f"{win.get('valid_count', '?')} / "
+       f"{win.get('event_count', '?')}")
+    kv("last 1s PLL min/max", f"{win.get('pll_min', '?')} / {win.get('pll_max', '?')}")
+    kv("last 1s SP min/max", f"{win.get('sp_min', '?')} / {win.get('sp_max', '?')}")
+
+    # ── /api/irq_stats ──
+    banner("IRQ stats (/api/irq_stats)")
+    irq = fetch(target, "/api/irq_stats")
+    irq_rates = irq.get("rate_per_sec", {})
+    kv("total IRQs", f"{irq.get('total', 0):,} ({irq_rates.get('total', 0):.1f}/s)")
+    kv("IQ DMA", f"{irq.get('iq', 0):,} ({irq_rates.get('iq', 0):.1f}/s)")
+    kv("C4FM dibit DMA", f"{irq.get('dibit', 0):,} ({irq_rates.get('dibit', 0):.2f}/s)")
+    kv("LSM dibit DMA", f"{irq.get('lsm_dibit', 0):,} ({irq_rates.get('lsm_dibit', 0):.2f}/s)")
+    kv("traffic DMA", f"{irq.get('traffic', 0):,} ({irq_rates.get('traffic', 0):.2f}/s)")
+    kv("last IRQ (ms ago)", irq.get("last_at_ms_ago"))
+    kv("uptime", f"{irq.get('uptime_secs', 0)}s")
+
+    # ── /api/traffic (Phase 7) ──
+    banner("Traffic channel (/api/traffic)")
+    tr = fetch(target, "/api/traffic")
+    tr_state = tr.get("state", "?")
+    tr_phase = tr.get("phase", "?")
+    follower = tr.get("follower_enabled", False)
+    kv("phase", tr_phase)
+    kv("state", tr_state)
+    kv("follower enabled", follower, follower)
+    kv("grants seen", f"{tr.get('grants_seen', 0):,}")
+    kv("retunes", tr.get("retunes", 0))
+
+    cur_tg = tr.get("current_talkgroup")
+    cur_ch = tr.get("current_channel")
+    cur_freq = tr.get("current_frequency_hz")
+    if cur_tg is not None:
+        kv("current call", f"TG={cur_tg} CH={cur_ch} freq={cur_freq}Hz")
+    else:
+        kv("current call", f"{DIM}(idle){RESET}")
+
+    kv("last NAC", tr.get("last_nac_hex", "?"))
+    kv("last DUID", f"{tr.get('last_duid_label', '?')} ({tr.get('last_duid_hex', '?')})")
+    kv("last retune (s ago)", f"{tr.get('last_retune_secs_ago', '?')}")
+    kv("last offset Hz", tr.get("last_offset_hz"))
+
+    imbe = tr.get("imbe", {})
+    ldu1 = imbe.get("ldu1_count", 0)
+    ldu2 = imbe.get("ldu2_count", 0)
+    imbe_total = imbe.get("imbe_frames_extracted", 0)
+    hdu_cnt = imbe.get("hdu_count", 0)
+    tdu_cnt = imbe.get("tdu_count", 0)
+    tdu_lc = imbe.get("tdu_lc_count", 0)
+    expected_imbe = (ldu1 + ldu2) * 9
+    imbe_match = imbe_total == expected_imbe if (ldu1 + ldu2) > 0 else None
+
+    cur_enc = tr.get("current_call_encrypted")
+    if cur_enc is not None:
+        kv("current call encrypted", "YES" if cur_enc else "No")
+
+    print()
+    kv("HDUs seen", hdu_cnt)
+    kv("LDU1 count", f"{ldu1:,}")
+    kv("LDU2 count", f"{ldu2:,}")
+    kv("TDU count", tdu_cnt)
+    kv("TDU_LC count", f"{tdu_lc:,}")
+    kv("IMBE frames extracted", f"{imbe_total:,}", imbe_match)
+    kv("expected (LDU*9)", f"{expected_imbe:,}")
+    imbe_dropped = imbe.get("imbe_frames_dropped", 0)
+    kv("IMBE frames dropped", f"{imbe_dropped:,}",
+       imbe_dropped == 0 if imbe_dropped is not None else None)
+    kv("last IMBE (s ago)", f"{imbe.get('last_imbe_secs_ago', '?')}")
+
+    # Phase 7D: vocoder stats
+    voc_pcm = imbe.get("vocoder_pcm_produced", 0)
+    voc_err = imbe.get("vocoder_errors", 0)
+    voc_enc = imbe.get("vocoder_frames_encrypted", 0)
+    print()
+    kv("vocoder PCM produced", f"{voc_pcm:,}")
+    kv("vocoder errors (>4 bit)", f"{voc_err:,}")
+    kv("vocoder frames encrypted", f"{voc_enc:,}")
+
+    tr_irq = tr.get("irq", {})
+    kv("traffic DMA IRQs", tr_irq.get("traffic_dma_total"))
+    kv("traffic LSM dibit IRQs", tr_irq.get("traffic_lsm_dibit_total"))
+
+    # ── /api/lsm_control ──
+    banner("LSM control register (/api/lsm_control)")
+    lc = fetch(target, "/api/lsm_control")
+    kv("lsm_enable", lc.get("lsm_enable"), lc.get("lsm_enable"))
+    kv("lsm_dibit_dma_enable", lc.get("lsm_dibit_dma_enable"),
+       lc.get("lsm_dibit_dma_enable"))
+    kv("lsm_dc_block_enable", lc.get("lsm_dc_block_enable"),
+       lc.get("lsm_dc_block_enable"))
+
+    # ── /api/sync_tune (summary only) ──
+    banner("Sync tune (/api/sync_tune)")
+    sy = fetch(target, "/api/sync_tune")
+    kv("current threshold", sy.get("current_threshold"))
+    kv("total observations", f"{sy.get('total_observations', 0):,}")
+    hist = sy.get("histogram", [])
+    if hist:
+        d0 = hist[0] if len(hist) > 0 else 0
+        thresh = sy.get("current_threshold", 6)
+        in_thresh = sum(hist[:thresh + 1]) if len(hist) > thresh else 0
+        total_obs = sy.get("total_observations", 1)
+        kv("dist=0 (exact match)", f"{d0:,} ({100.0*d0/max(total_obs,1):.2f}%)")
+        kv(f"dist<=threshold ({thresh})", f"{in_thresh:,} ({100.0*in_thresh/max(total_obs,1):.2f}%)")
+
     # ── Acceptance summary ──
     banner("Acceptance summary")
+    # Build tag: accept any phase6 or phase7 tag
+
     checks = [
-        ("Build tag is phase6f.4 or newer", is_64),
-        ("RFSS = 1 (was 160 in 6F.3)", rfss_ok),
-        ("blocks_per_tsdu >= 2.5 (was 1.6 in 6F.3)", bptd_ok),
-        ("bands_known >= 6 (was 0 in 6F.3)", bands_known >= 6),
+        ("Build tag recognized", build_ok),
+        ("RFSS = 1", rfss_ok),
+        ("blocks_per_tsdu >= 2.5", bptd_ok),
+        ("bands_known >= 6", bands_known >= 6),
         ("WACN matches Clay County (BEE00)", wacn_ok),
-        ("ps_lsm CRC OK/s >= 14 (was 0.5 in 6F.4)", crc_rate_ok),
+        ("LSM decoder running", lsm_running),
+        ("HDL LSM valid >= 75%", hdl_pct >= 75),
+        ("traffic follower enabled", follower),
+        ("IMBE frames == (LDU1+LDU2)*9", imbe_match if imbe_match is not None else False),
+        ("IMBE frames not dropped", imbe_dropped == 0),
+        ("vocoder PCM produced > 0 (7D)", voc_pcm > 0),
     ]
     all_passed = True
     for label, ok in checks:
@@ -323,10 +483,10 @@ def main() -> int:
 
     print()
     if all_passed:
-        print(f"{BOLD}{GREEN}== Phase 6F.4 acceptance: ALL PASS =={RESET}")
+        print(f"{BOLD}{GREEN}== Acceptance: ALL PASS =={RESET}")
         return 0
     else:
-        print(f"{BOLD}{YELLOW}== Phase 6F.4 acceptance: PARTIAL "
+        print(f"{BOLD}{YELLOW}== Acceptance: PARTIAL "
               f"-- see failures above =={RESET}")
         return 1
 

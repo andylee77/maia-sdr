@@ -17,8 +17,12 @@ mod fpga;
 mod httpd;
 #[cfg(target_os = "linux")]
 mod iio;
+mod audio;
 mod lsm;
+mod monitor;
 mod p25;
+mod vocoder;
+mod jmbe;
 #[cfg(target_os = "linux")]
 mod rxbuffer;
 #[cfg(target_os = "linux")]
@@ -34,7 +38,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-11-phase7c-ldu-imbe-extraction";
+pub const BUILD_TAG: &str = "2026-04-12-phase7d-jmbe-vocoder";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -159,7 +163,7 @@ pub struct TrafficStats {
     pub dibit_hist: [u64; 4],
     // ── Phase 7C: IMBE frame extraction counters ──────────────────
     //
-    // Updated by the `ImbeCounter` voice handler that's wired into
+    // Updated by the `ImbeForwarder` voice handler that's wired into
     // the `traffic_lsm_decoder` instance. Each successful LDU1/LDU2
     // body extraction yields 9 IMBE frames (~180 ms of audio at 50
     // frames/sec when locked). Phase 7D will consume these frames
@@ -181,63 +185,58 @@ pub struct TrafficStats {
     pub last_imbe_at: Option<std::time::Instant>,
 }
 
-/// Phase 7C: voice frame handler that updates `TrafficStats` IMBE
-/// counters and (in Phase 7D) will also push the raw IMBE frames to
-/// the vocoder mpsc channel.
+/// Phase 7D: voice frame handler that counts IMBE events AND forwards
+/// raw frames to the vocoder task via an mpsc channel.
 ///
 /// Implements `p25::control_channel::VoiceHandler`. Installed on
-/// the new `traffic_lsm_decoder` instance via `set_voice_handler`.
-/// Held as an `Arc<dyn ...>` so the counter can be cloned into the
-/// decoder AND any future Phase 7D consumer.
+/// the `traffic_lsm_decoder` via `set_voice_handler`. Held as
+/// `Arc<dyn VoiceHandler + Send + Sync>`.
 ///
-/// Uses `std::sync::Mutex` (NOT `tokio::sync::Mutex`) on the
-/// TrafficStats handle so the handler doesn't need an async
-/// runtime to update the counters -- it's called synchronously
-/// from inside `ControlChannelDecoder::process_dibit`. Lock
-/// contention is minimal because the handler holds the lock for
-/// only a few field writes per LDU (~140 ms cadence on a real
-/// call).
-///
-/// **Why two TrafficStats locks?** The Phase 7A.1 dibit reader
-/// task already holds an `Arc<tokio::sync::Mutex<TrafficStats>>`.
-/// Wrapping it in a second `std::sync::Mutex` would create a
-/// double-lock hazard. Instead, we add a SECOND shared
-/// `Arc<std::sync::Mutex<TrafficStats>>` -- but ALSO mirror the
-/// IMBE-counter fields to the existing tokio Mutex copy via the
-/// `/api/traffic` handler reading both. Wait, that's worse than
-/// just using the existing tokio Mutex with `try_lock` from the
-/// sync handler context. Let me actually use `blocking_lock()` --
-/// the dibit decoder runs from a tokio task already, so blocking
-/// inside the handler would be a runtime panic. Easier: pass the
-/// tokio Mutex through and use `blocking_lock` ONLY when the
-/// handler runs from a non-tokio context, which it doesn't.
-///
-/// Conclusion: use a SECOND TrafficStats handle wrapped in
-/// `std::sync::Mutex`, kept in sync with the tokio one by
-/// having the dibit reader task copy the IMBE counters across.
-/// Awkward but safe. Phase 7B refactor will unify them with a
-/// proper tokio mpsc channel for IMBE frames + a single shared
-/// stats struct behind one lock.
-///
-/// **Simpler interim approach** (Phase 7C): the handler holds the
-/// counters in its OWN AtomicU64 fields and `/api/traffic` reads
-/// directly from the handler. No second TrafficStats lock at all.
-/// This is what we ship.
-pub struct ImbeCounter {
+/// Uses `try_send` (non-async) on the mpsc channel because the
+/// `VoiceHandler` trait methods take `&self` and are called from
+/// synchronous `process_dibit` code inside a tokio task. If the
+/// channel is full the frame batch is dropped and `imbe_frames_dropped`
+/// is incremented -- the vocoder task is expected to keep up at
+/// ~50 frames/sec (one LDU every ~180 ms).
+pub struct ImbeForwarder {
     pub hdu_count: std::sync::atomic::AtomicU64,
     pub ldu1_count: std::sync::atomic::AtomicU64,
     pub ldu2_count: std::sync::atomic::AtomicU64,
     pub tdu_count: std::sync::atomic::AtomicU64,
     pub tdu_lc_count: std::sync::atomic::AtomicU64,
     pub imbe_frames_extracted: std::sync::atomic::AtomicU64,
-    /// Wall-clock millis-since-epoch of the most recent IMBE frame
-    /// batch. 0 means "never seen one". Stored as u64 (not
-    /// `Instant`) because Atomics can't hold non-Copy types.
+    pub imbe_frames_dropped: std::sync::atomic::AtomicU64,
     pub last_imbe_at_millis: std::sync::atomic::AtomicU64,
+    /// Vocoder stats -- updated by the vocoder task, read by /api/traffic.
+    pub vocoder_pcm_produced: std::sync::atomic::AtomicU64,
+    pub vocoder_errors: std::sync::atomic::AtomicU64,
+    pub vocoder_frames_encrypted: std::sync::atomic::AtomicU64,
+    /// Set by the grant follower task when it locks onto a TG. The
+    /// vocoder task reads this to skip encrypted calls.
+    pub call_encrypted: std::sync::atomic::AtomicBool,
+    /// Current talkgroup (set by grant follower, read by vocoder
+    /// to tag AudioChunks). 0 = idle / unknown.
+    pub current_talkgroup: std::sync::atomic::AtomicU16,
+    /// TGs that have ever been observed encrypted. Once a TG is in
+    /// this set, the follower defaults to encrypted even if the
+    /// current grant doesn't carry service options.
+    pub encrypted_tg_history: std::sync::Mutex<std::collections::HashSet<u16>>,
+    /// Set by the grant follower on call boundary (new TG lock or
+    /// Idle→Active). The vocoder task checks this and resets mbelib
+    /// state to avoid cross-call artifacts.
+    pub vocoder_reset_pending: std::sync::atomic::AtomicBool,
+    /// Ring buffer of the last N raw IMBE frames for diagnostic capture
+    /// via `/api/imbe_dump`. Stores (talkgroup, encrypted, frame_bytes).
+    pub imbe_ring: std::sync::Mutex<Vec<(u16, bool, [u8; 18])>>,
+    /// Channel to the vocoder task. Each send is a batch of 9 frames
+    /// (one LDU's worth = 180 ms of audio).
+    imbe_tx: tokio::sync::mpsc::Sender<[p25::voice_frame::ImbeFrameRaw; 9]>,
 }
 
-impl Default for ImbeCounter {
-    fn default() -> Self {
+impl ImbeForwarder {
+    pub fn new(
+        imbe_tx: tokio::sync::mpsc::Sender<[p25::voice_frame::ImbeFrameRaw; 9]>,
+    ) -> Self {
         Self {
             hdu_count: 0.into(),
             ldu1_count: 0.into(),
@@ -245,12 +244,20 @@ impl Default for ImbeCounter {
             tdu_count: 0.into(),
             tdu_lc_count: 0.into(),
             imbe_frames_extracted: 0.into(),
+            imbe_frames_dropped: 0.into(),
             last_imbe_at_millis: 0.into(),
+            vocoder_pcm_produced: 0.into(),
+            vocoder_errors: 0.into(),
+            vocoder_frames_encrypted: 0.into(),
+            call_encrypted: false.into(),
+            current_talkgroup: 0.into(),
+            encrypted_tg_history: std::sync::Mutex::new(std::collections::HashSet::new()),
+            vocoder_reset_pending: false.into(),
+            imbe_ring: std::sync::Mutex::new(Vec::with_capacity(128)),
+            imbe_tx,
         }
     }
-}
 
-impl ImbeCounter {
     fn touch_imbe(&self, n_frames: u64) {
         use std::sync::atomic::Ordering;
         self.imbe_frames_extracted.fetch_add(n_frames, Ordering::Relaxed);
@@ -260,21 +267,45 @@ impl ImbeCounter {
             .unwrap_or(0);
         self.last_imbe_at_millis.store(now_millis, Ordering::Relaxed);
     }
+
+    fn forward_frames(&self, frames: &[p25::voice_frame::ImbeFrameRaw; 9]) {
+        use std::sync::atomic::Ordering;
+        // Stash raw frames in the diagnostic ring buffer
+        let tg = self.current_talkgroup.load(Ordering::Relaxed);
+        let enc = self.call_encrypted.load(Ordering::Relaxed);
+        if let Ok(mut ring) = self.imbe_ring.lock() {
+            for f in frames {
+                if ring.len() >= 128 {
+                    ring.remove(0);
+                }
+                ring.push((tg, enc, f.bits));
+            }
+        }
+        match self.imbe_tx.try_send(*frames) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                self.imbe_frames_dropped.fetch_add(9, Ordering::Relaxed);
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                self.imbe_frames_dropped.fetch_add(9, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
-impl p25::control_channel::VoiceHandler for ImbeCounter {
-    fn on_ldu1(&self, _frames: &[p25::voice_frame::ImbeFrameRaw; 9]) {
+impl p25::control_channel::VoiceHandler for ImbeForwarder {
+    fn on_ldu1(&self, frames: &[p25::voice_frame::ImbeFrameRaw; 9]) {
         use std::sync::atomic::Ordering;
         self.ldu1_count.fetch_add(1, Ordering::Relaxed);
         self.touch_imbe(9);
-        // Phase 7D will push `_frames` to the vocoder mpsc channel
-        // here. For Phase 7C we just count.
+        self.forward_frames(frames);
     }
 
-    fn on_ldu2(&self, _frames: &[p25::voice_frame::ImbeFrameRaw; 9]) {
+    fn on_ldu2(&self, frames: &[p25::voice_frame::ImbeFrameRaw; 9]) {
         use std::sync::atomic::Ordering;
         self.ldu2_count.fetch_add(1, Ordering::Relaxed);
         self.touch_imbe(9);
+        self.forward_frames(frames);
     }
 
     fn on_hdu(&self) {
@@ -390,8 +421,14 @@ async fn main() -> anyhow::Result<()> {
     // in parallel against the same RF capture on bring-up days -- this
     // is how we validate the HDL LSM port (Phase 6E.0-6E.9) against the
     // working Phase 2A C4FM path.
+    // Phase 7B: typed grant event channel + monitor list.
+    let (grant_event_tx, mut grant_event_rx) =
+        tokio::sync::mpsc::channel::<p25::events::P25Event>(128);
+    let monitor_list = Arc::new(RwLock::new(monitor::MonitorList::default()));
+
     let mut lsm_decoder = ControlChannelDecoder::new();
     lsm_decoder.set_event_tx(event_tx.clone());
+    lsm_decoder.set_grant_event_tx(grant_event_tx);
     let lsm_decoder = Arc::new(RwLock::new(lsm_decoder));
 
     // Phase 6F.9: third parallel `ControlChannelDecoder` driven by the
@@ -418,20 +455,19 @@ async fn main() -> anyhow::Result<()> {
     // state machine as the control side, just with the new LDU/HDU/TDU
     // dispatch arms in `process_dibit` (added in Phase 7C) doing the
     // work instead of the TSDU dispatch arm.
-    // Phase 7C: shared IMBE counter that the voice handler updates
-    // and `/api/traffic` reads. Created out-of-cfg(linux) for
-    // host-build compatibility (the AppState fields don't depend on
-    // target_os).
-    let imbe_counter = Arc::new(ImbeCounter::default());
+    // Phase 7D: mpsc channel for IMBE frame batches from the voice
+    // handler to the vocoder task. Buffer 16 LDU batches (~2.9 s of
+    // audio) to absorb jitter without dropping.
+    let (imbe_tx, imbe_rx) =
+        tokio::sync::mpsc::channel::<[p25::voice_frame::ImbeFrameRaw; 9]>(16);
+    let imbe_forwarder = Arc::new(ImbeForwarder::new(imbe_tx));
 
     let mut traffic_lsm_decoder = ControlChannelDecoder::new();
     traffic_lsm_decoder.set_event_tx(event_tx.clone());
-    // Phase 7C: install the IMBE counter as the decoder's voice
-    // handler. The decoder dispatches HDU/LDU1/LDU2/TDU/TDU_LC events
-    // to the counter as they're framed off the dibit stream.
-    // `Arc<ImbeCounter>` -> `Arc<dyn VoiceHandler + Send + Sync>`
-    // coercion is automatic via `From<Arc<T>> for Arc<dyn Trait>`.
-    traffic_lsm_decoder.set_voice_handler(imbe_counter.clone());
+    // Phase 7D: install the IMBE forwarder as the decoder's voice
+    // handler. Counts events AND pushes frame batches to the vocoder
+    // task via try_send.
+    traffic_lsm_decoder.set_voice_handler(imbe_forwarder.clone());
     let traffic_lsm_decoder = Arc::new(RwLock::new(traffic_lsm_decoder));
 
     // Phase 6D dashboard wiring: shared LsmStats mutex, populated by the
@@ -1044,8 +1080,8 @@ async fn main() -> anyhow::Result<()> {
         //     -> traffic_lsm_decoder.process_dma_word (Hunting ->
         //        ReadingNid -> ReadingDataUnit state machine)
         //     -> on_ldu1 / on_ldu2 / on_hdu / on_tdu / on_tdu_lc
-        //        callbacks on the ImbeCounter voice handler
-        //     -> ImbeCounter atomic counters incremented
+        //        callbacks on the ImbeForwarder voice handler
+        //     -> ImbeForwarder atomic counters incremented
         //     -> /api/traffic snapshot reads the atomics
         //
         // **Phase 7D will tap the same callback chain** to push raw
@@ -1773,175 +1809,183 @@ async fn main() -> anyhow::Result<()> {
         let follower_sample_rate = args.sample_rate as f64;
         let follower_rx_lo = args.rx_lo as i64;
         let follower_enabled = traffic_follower_enabled.clone();
+        let follower_imbe = imbe_forwarder.clone();
+        let follower_monitor = monitor_list.clone();
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
             tracing::info!(
-                "traffic grant follower task started (Phase 7A.1, polling \
-                 lsm_decoder.grants @ 50 ms)"
+                "traffic grant follower task started (Phase 7B, \
+                 event-driven via mpsc + 200 ms timeout tick)"
             );
-            let mut tick =
-                tokio::time::interval(std::time::Duration::from_millis(50));
-            tick.tick().await; // discard immediate first tick
-            loop {
-                tick.tick().await;
+            let mut timeout_tick =
+                tokio::time::interval(std::time::Duration::from_millis(200));
+            timeout_tick.tick().await; // discard immediate first tick
 
-                // Phase 7A.1 manual-control gate: skip the entire
-                // iteration when the user has paused the follower via
-                // /api/traffic?follower=off. We do NOT call
-                // check_timeouts() while paused either -- the user is
-                // expected to drive everything explicitly. Resuming
-                // the follower with a stale Active state will simply
-                // see whatever grant is in lsm_decoder at that
-                // moment and re-decide.
-                if !follower_enabled.load(Ordering::Relaxed) {
-                    continue;
-                }
+            // Helper closure: process a grant event. Returns true if
+            // a retune was performed.
+            //
+            // Sticky-lock policy (from SDRTrunk PR #2010):
+            // - If locked on a TG, only accept grants for that TG.
+            // - If Idle, accept according to monitor list priority
+            //   (or newest if monitor list is empty).
+            let handle_grant_event =
+                |g: &p25::events::GrantEvent,
+                 mgr: &mut p25::traffic_manager::TrafficManager,
+                 imbe: &ImbeForwarder| -> bool
+            {
+                let freq_hz = match g.frequency_hz {
+                    Some(f) => f,
+                    None => return false,
+                };
+                let retune = mgr.handle_grant(g.channel, g.talkgroup, freq_hz);
+                imbe.current_talkgroup.store(g.talkgroup.0, Ordering::Relaxed);
 
-                // ── Phase 7A.1 sticky-lock policy ────────────────
-                // (Derived from SDRTrunk upstream PR #2010 / commit
-                // 1b3ce431, which introduced the
-                // P25TrafficChannelEventTracker class with the same
-                // semantics: a tuner slot stays bound to a single
-                // talkgroup until the call is stale, and other-TG
-                // grants arriving in the meantime are dropped rather
-                // than allocated.)
-                //
-                // The policy is:
-                //
-                //   1. Snapshot the LSM decoder's grants HashMap.
-                //   2. If the manager is currently locked on a
-                //      talkgroup, look for any grant in the snapshot
-                //      whose talkgroup matches our locked TG. If
-                //      found, forward it to handle_grant (which will
-                //      either refresh activity if the frequency
-                //      hasn't changed, or retune if the network
-                //      reassigned the TG to a new channel mid-call).
-                //      Other-TG grants are explicitly ignored.
-                //   3. If the manager is Idle, pick the newest grant
-                //      from the snapshot and forward it. The 2 s
-                //      call_timeout_ms acts as the SDRTrunk
-                //      STALE_EVENT_THRESHOLD_MS equivalent: once we
-                //      have not seen activity for our locked TG for
-                //      2 s, check_timeouts() drops us back to Idle
-                //      and we accept the next grant.
-                //
-                // This eliminates the thrashing observed in the
-                // pre-fix Phase 7A.1 binary, where naive
-                // newest-by-timestamp policy retuned the singleton
-                // DDC ~15+ times per second between two or three
-                // simultaneously-active TGs. With sticky lock the
-                // DDC retunes at most once per call, plus on TG
-                // channel reassignments (which are rare).
-                let grants_snapshot: Vec<_> = {
-                    let dec = follower_lsm_decoder.read().await;
-                    dec.grants
-                        .values()
-                        .filter(|g| g.frequency_hz.is_some())
-                        .filter(|g| {
-                            g.timestamp.elapsed().as_secs() < 5
-                        })
-                        .cloned()
-                        .collect()
+                // Determine encryption: check the grant flag, then
+                // fall back to TG history (remembers TGs that were
+                // ever seen encrypted).
+                let is_enc = if g.encrypted {
+                    // Record this TG as encrypted for future lookups
+                    if let Ok(mut hist) = imbe.encrypted_tg_history.lock() {
+                        hist.insert(g.talkgroup.0);
+                    }
+                    true
+                } else {
+                    // Grant doesn't say encrypted -- check history
+                    imbe.encrypted_tg_history.lock()
+                        .map(|h| h.contains(&g.talkgroup.0))
+                        .unwrap_or(false)
                 };
 
-                // Pick the grant we want to forward to handle_grant
-                // based on current manager state. We do this outside
-                // the manager lock so we can hold the lock for as
-                // short a time as possible.
-                let chosen = {
-                    let mgr = follower_mgr.lock().await;
-                    let locked_tg = mgr.current_talkgroup();
-                    drop(mgr);
+                if retune {
+                    // New call: set encryption and reset vocoder
+                    imbe.call_encrypted.store(is_enc, Ordering::Relaxed);
+                    imbe.vocoder_reset_pending.store(true, Ordering::Relaxed);
+                } else if is_enc {
+                    // Sticky-true within a call
+                    imbe.call_encrypted.store(true, Ordering::Relaxed);
+                }
+                // Note: we deliberately do NOT set call_encrypted=false
+                // on a grant refresh where g.encrypted==false. The flag
+                // is cleared only on Idle transition.
+                retune
+            };
 
-                    match locked_tg {
-                        Some(tg) => {
-                            // Locked on TG -- find any grant for our
-                            // TG in the snapshot. If multiple match
-                            // (shouldn't happen with TG-deduped
-                            // grants store, but defensively), prefer
-                            // the newest.
-                            grants_snapshot
-                                .iter()
-                                .filter(|g| g.talkgroup.0 == tg.0)
-                                .max_by_key(|g| g.timestamp)
-                                .cloned()
+            loop {
+                tokio::select! {
+                    event = grant_event_rx.recv() => {
+                        let event = match event {
+                            Some(e) => e,
+                            None => break, // channel closed
+                        };
+
+                        if !follower_enabled.load(Ordering::Relaxed) {
+                            continue;
                         }
-                        None => {
-                            // Idle -- newest grant wins. This is
-                            // the only place a different TG can
-                            // become the locked TG.
-                            grants_snapshot
-                                .iter()
-                                .max_by_key(|g| g.timestamp)
-                                .cloned()
+
+                        match event {
+                            p25::events::P25Event::Grant(g) => {
+                                // Check monitor list
+                                let dominated = {
+                                    let monitor = follower_monitor.read().await;
+                                    if monitor.is_empty() {
+                                        true // accept all
+                                    } else {
+                                        monitor.contains(g.talkgroup.0)
+                                    }
+                                };
+                                if !dominated { continue; }
+
+                                // Sticky-lock check
+                                let mut mgr = follower_mgr.lock().await;
+                                let locked_tg = mgr.current_talkgroup();
+                                match locked_tg {
+                                    Some(tg) if tg.0 != g.talkgroup.0 => {
+                                        // Locked on a different TG -- ignore
+                                        continue;
+                                    }
+                                    _ => {}
+                                }
+
+                                let retune = handle_grant_event(
+                                    &g, &mut mgr, &follower_imbe
+                                );
+                                drop(mgr);
+
+                                if retune {
+                                    let freq_hz = g.frequency_hz.unwrap();
+                                    let offset_hz = freq_hz as i64 - follower_rx_lo;
+                                    let core = follower_core.lock().await;
+                                    match core.set_traffic_ddc_frequency(
+                                        offset_hz as f64,
+                                        follower_sample_rate,
+                                    ) {
+                                        Ok(()) => {
+                                            core.set_traffic_demod_enable(true);
+                                            tracing::info!(
+                                                target: "p25_traffic",
+                                                "retune: TG={} channel={:?} \
+                                                 freq={} Hz offset={:+} Hz \
+                                                 (demod_enable=on)",
+                                                g.talkgroup.0, g.channel,
+                                                freq_hz, offset_hz,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                target: "p25_traffic",
+                                                "traffic DDC retune failed: \
+                                                 TG={} freq={} Hz \
+                                                 offset={:+} Hz: {}",
+                                                g.talkgroup.0, freq_hz,
+                                                offset_hz, e,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
-                };
-
-                if let Some(g) = chosen {
-                    let freq_hz = g.frequency_hz.unwrap();
-                    let mut mgr = follower_mgr.lock().await;
-                    let retune = mgr.handle_grant(
-                        g.channel,
-                        g.talkgroup,
-                        freq_hz,
-                    );
-                    drop(mgr);
-
-                    if retune {
-                        // Either a fresh call (Idle -> Acquiring) or
-                        // a same-TG channel reassignment. Either way,
-                        // write the new NCO and assert demod_enable.
-                        let offset_hz = freq_hz as i64 - follower_rx_lo;
-                        let core = follower_core.lock().await;
-                        match core.set_traffic_ddc_frequency(
-                            offset_hz as f64,
-                            follower_sample_rate,
-                        ) {
-                            Ok(()) => {
-                                core.set_traffic_demod_enable(true);
+                    _ = timeout_tick.tick() => {
+                        if !follower_enabled.load(Ordering::Relaxed) {
+                            continue;
+                        }
+                        let mut mgr = follower_mgr.lock().await;
+                        let pre_timeout_tg = mgr.current_talkgroup();
+                        if mgr.check_timeouts() {
+                            drop(mgr);
+                            let core = follower_core.lock().await;
+                            core.set_traffic_demod_enable(false);
+                            if let Some(tg) = pre_timeout_tg {
+                                let mut dec =
+                                    follower_lsm_decoder.write().await;
+                                dec.grants.retain(
+                                    |_, g| g.talkgroup.0 != tg.0
+                                );
                                 tracing::info!(
                                     target: "p25_traffic",
-                                    "retune: TG={} channel={:?} freq={} Hz \
-                                     offset={:+} Hz (demod_enable=on)",
-                                    g.talkgroup.0,
-                                    g.channel,
-                                    freq_hz,
-                                    offset_hz,
+                                    "traffic Idle (timeout) -- removed \
+                                     TG {} from grant store, \
+                                     demod_enable=off",
+                                    tg.0,
                                 );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
+                            } else {
+                                tracing::info!(
                                     target: "p25_traffic",
-                                    "traffic DDC retune failed: TG={} \
-                                     freq={} Hz offset={:+} Hz: {}",
-                                    g.talkgroup.0,
-                                    freq_hz,
-                                    offset_hz,
-                                    e
+                                    "traffic Idle (timeout) -- \
+                                     demod_enable=off"
                                 );
                             }
+                            follower_imbe.call_encrypted.store(
+                                false, Ordering::Relaxed,
+                            );
+                            follower_imbe.current_talkgroup.store(
+                                0, Ordering::Relaxed,
+                            );
                         }
                     }
                 }
-
-                // Periodic timeout sweep. Returns true on
-                // Active/Acquiring -> Idle transition; that's our cue
-                // to drop demod_enable and quiet the ring. The 2 s
-                // call_timeout_ms is the SDRTrunk STALE_EVENT_THRESHOLD_MS
-                // equivalent -- see traffic_manager.rs::new() for
-                // the citation.
-                let mut mgr = follower_mgr.lock().await;
-                if mgr.check_timeouts() {
-                    drop(mgr);
-                    let core = follower_core.lock().await;
-                    core.set_traffic_demod_enable(false);
-                    tracing::info!(
-                        target: "p25_traffic",
-                        "traffic Idle (timeout) -- demod_enable=off"
-                    );
-                }
             }
+            tracing::warn!("grant follower task exiting (channel closed)");
         });
 
         // Phase 7A.2 (c): traffic LSM heartbeat task. Polls
@@ -1974,6 +2018,7 @@ async fn main() -> anyhow::Result<()> {
         let traffic_lsm_core = ip_core.clone();
         let traffic_lsm_mgr = traffic_manager.clone();
         let traffic_lsm_stats = traffic_stats.clone();
+        let traffic_event_tx = event_tx.clone();
         tokio::spawn(async move {
             tracing::info!(
                 "traffic LSM heartbeat task started (Phase 7A.2, polling \
@@ -2040,6 +2085,48 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
+                // Broadcast traffic DUID events to the WebSocket
+                // activity feed so the dashboard shows HDU/LDU/TDU.
+                {
+                    let mgr = traffic_lsm_mgr.lock().await;
+                    let duid_label = match duid {
+                        0x0 => "HDU",
+                        0x3 => "TDU",
+                        0x5 => "LDU1",
+                        0xA => "LDU2",
+                        0xF => "TDU_LC",
+                        d => { let _ = d; "DUID?" }
+                    };
+                    let tg = mgr.current_talkgroup()
+                        .map(|t| format!("TG:{:05}", t.0))
+                        .unwrap_or_else(|| "--".into());
+                    let ch = mgr.current_channel()
+                        .map(|c| format!("{}", c))
+                        .unwrap_or_else(|| "--".into());
+                    let now_str = {
+                        let d = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default();
+                        let total_secs = d.as_secs();
+                        let millis = d.subsec_millis();
+                        let h = (total_secs / 3600) % 24;
+                        let m = (total_secs / 60) % 60;
+                        let s = total_secs % 60;
+                        format!("{:02}:{:02}:{:02}.{:03}", h, m, s, millis)
+                    };
+                    let evt = serde_json::json!({
+                        "timestamp": now_str,
+                        "event_type": format!("TRF_{}", duid_label),
+                        "summary": format!("{} NAC:0x{:03X} {} CH:{}",
+                            duid_label, nac, tg, ch),
+                        "talkgroup": mgr.current_talkgroup().map(|t| t.0),
+                        "channel": ch,
+                    });
+                    if let Ok(json) = serde_json::to_string(&evt) {
+                        let _ = traffic_event_tx.send(json);
+                    }
+                }
+
                 // Periodic log so the on-target dashboard log shows
                 // we're seeing NID events.
                 if nid_events <= 10 || nid_events % 50 == 0 {
@@ -2095,6 +2182,53 @@ async fn main() -> anyhow::Result<()> {
         (ip_core, ad9361)
     };
 
+    // Phase 7E: audio broadcast channel (vocoder -> HTTP/WebSocket).
+    let audio_tx = audio::audio_channel();
+
+    // Phase 7D/7E: vocoder task -- reads IMBE frame batches, decodes
+    // via mbelib, pushes AudioChunks to the broadcast channel, and
+    // updates stats atomics. Encryption gating: encrypted frames are
+    // counted but not decoded.
+    {
+        let voc_forwarder = imbe_forwarder.clone();
+        let voc_audio_tx = audio_tx.clone();
+        tokio::spawn(async move {
+            use std::sync::atomic::Ordering;
+            let mut decoder = vocoder::JmbeDecoder::new();
+            let mut rx = imbe_rx;
+            let mut seq: u64 = 0;
+            tracing::info!(target: "p25_vocoder", "vocoder task started");
+            while let Some(frames) = rx.recv().await {
+                // Reset mbelib state on call boundary
+                if voc_forwarder.vocoder_reset_pending.swap(false, Ordering::Relaxed) {
+                    decoder.reset();
+                }
+                let encrypted = voc_forwarder.call_encrypted.load(Ordering::Relaxed);
+                if encrypted {
+                    voc_forwarder
+                        .vocoder_frames_encrypted
+                        .fetch_add(9, Ordering::Relaxed);
+                    continue;
+                }
+                let tg = voc_forwarder.current_talkgroup.load(Ordering::Relaxed);
+                for frame in &frames {
+                    let pcm = decoder.decode_frame(frame);
+                    voc_forwarder
+                        .vocoder_pcm_produced
+                        .fetch_add(vocoder::SAMPLES_PER_FRAME as u64, Ordering::Relaxed);
+                    // Push to audio broadcast (ignore if no subscribers)
+                    let _ = voc_audio_tx.send(audio::AudioChunk {
+                        pcm,
+                        seq,
+                        talkgroup: tg,
+                    });
+                    seq += 1;
+                }
+            }
+            tracing::warn!(target: "p25_vocoder", "vocoder task exiting (channel closed)");
+        });
+    }
+
     // Build app state
     let state = Arc::new(httpd::AppState {
         decoder: decoder.clone(),
@@ -2114,7 +2248,9 @@ async fn main() -> anyhow::Result<()> {
         traffic_follower_enabled: traffic_follower_enabled.clone(),
         // Phase 7C: traffic LSM voice decoder + IMBE counter
         traffic_lsm_decoder: traffic_lsm_decoder.clone(),
-        imbe_counter: imbe_counter.clone(),
+        imbe_forwarder: imbe_forwarder.clone(),
+        monitor_list: monitor_list.clone(),
+        audio_tx: audio_tx.clone(),
     });
 
     // Start HTTP server

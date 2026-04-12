@@ -5,6 +5,32 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-12] Phase 7D + 7B + 7E -- JMBE vocoder, monitor list, audio streaming
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/036_phase7d_vocoder_and_7b7e_audio.md`
+
+Three phases landed in a single work session:
+
+- **Phase 7D:** IMBE vocoder — pure Rust port of JMBE (DSheirer/jmbe)
+  replaces mbelib as the primary decoder. ~2500 LOC covering the full
+  MBE synthesis pipeline with spectral enhancement and adaptive
+  smoothing. mbelib retained as vendored fallback in `mbelib-sys/`.
+
+- **Phase 7B:** Event-driven grant follower replaces 50ms polling.
+  Typed `P25Event::Grant` mpsc channel from decoder to follower.
+  New `MonitorList` + `/api/monitor` endpoint for pinning TGs.
+
+- **Phase 7E:** Audio output — `GET /api/audio?format=wav` for VLC,
+  `WS /ws/audio` for browser, `GET /api/audio_test` for offline QA.
+  Broadcast channel from vocoder task to HTTP/WebSocket clients.
+
+Also: TG encryption history, sticky encryption flag, grant store
+cleanup on Idle, traffic DUID events in activity feed, source ID
+in grant events, activity filter checkboxes, XSA files now tracked.
+
+---
+
 ## [2026-04-11] Phase 7C -- LDU sync + IMBE frame extraction (focused, PS Rust only)
 
 **Branch:** fishball-p25
