@@ -468,21 +468,67 @@ because it depends on the interaction between `handle_grant` +
 
 ### Round 3: Acquiring auto-promote fix flashed and verified
 
-**STATUS:** *deferred -- user away from the device when this
-fix landed, so the Acquiring auto-promote fix is committed
-without on-target verification. Round 3 will run when the user
-flashes the next binary (which will likely be the combined
-Phase 7A.1 + 7A.2 commit).*
+**STATUS: ✅ PASSED on-target on 2026-04-11.** Verification ran
+on the combined Phase 7A.1 + 7A.2 + 7C binary
+(`2026-04-11-phase7c-ldu-imbe-extraction`).
 
-Expected outcome of `tools/p25_sticky_lock_test.py` after
-flash: `delta_retunes <= 2` over the 12 s sample window during
-an active single-TG call -- one retune at the call start, zero
-retunes thereafter, optionally one retune for a network
-channel reassignment.
+`tools/p25_sticky_lock_test.py` output during a real Clay
+County call on TG 402:
 
-If the verification surfaces a third bug, this appendix will
-get a Round 4 entry. If it passes clean, the appendix is the
-final word on Phase 7A.1.
+```text
+initial state          = Active
+initial talkgroup      = 402
+initial channel        = 1189
+initial frequency_hz   = 858437500
+initial retunes        = 9
+initial grants_seen    = 1020
+last_retune_secs_ago   = 0.16
+
+Sampling 12 times over 12 seconds (1 sec apart)...
+
+  i= 0 state=Active     tg=402 retunes=9 grants_seen=1020 wakeups=19
+  i= 1 state=Active     tg=402 retunes=9 grants_seen=1041 wakeups=20
+  i= 2 state=Active     tg=402 retunes=9 grants_seen=1062 wakeups=20
+  ... (samples 3-10 elided -- all identical) ...
+  i=11 state=Active     tg=402 retunes=9 grants_seen=1212 wakeups=23
+
+=== verdict ===
+  retunes:     9 -> 9  (delta 0)
+  grants_seen: 1020 -> 1212  (delta 192)
+  retune rate during the 12s sample window: 0.00 retunes/sec
+  unique talkgroups locked across the 12 samples: [402]
+
+PASS: retune count stable (<=2 retunes in 12s) -- sticky lock works
+```
+
+**Headline numbers:**
+
+- **`delta_retunes = 0`** over the entire 12 s window
+- **`retune rate = 0.00 retunes/sec`** vs the pre-fix `~3-4 retunes/sec`
+  Round 2 measured (and the original pre-sticky-lock `~15+ retunes/sec`
+  Round 1 measured)
+- **State remained `Active` throughout** -- the auto-promote
+  pushed us out of `Acquiring` on the first matching poll
+  (50 ms after the initial retune) and the 2 s `call_timeout_ms`
+  was correctly refreshed by every subsequent same-TG-same-freq
+  match
+- **`grants_seen` advanced 192 over 12 s = 16/s**, matching the
+  expected ~20 Hz polling cadence with some samples seeing no
+  grant in the snapshot
+- **Single TG lock**: `unique talkgroups locked = [402]` -- the
+  follower stayed pinned to TG 402 throughout, no flapping
+
+**This is Round 3 closed.** Phase 7A.1's compound bug fix
+(sticky-lock + Acquiring auto-promote) is verified on hardware
+in production conditions. The doc 033 appendix is now
+complete.
+
+The on-target verification was deferred from this commit's
+original flash because the user was away from the device when
+the second bug was found and fixed. It rode the combined
+Phase 7A.1 + 7A.2 + 7C flash on 2026-04-11 and was the first
+test run after the new binary booted -- exactly the workflow
+this appendix predicted.
 
 ### What 7A.1 ships in this commit
 

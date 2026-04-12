@@ -524,21 +524,6 @@ ROADMAP = [
         ),
     },
     {
-        "phase": "Phase 7B",
-        "name": "Voice grant follower with modulation auto-detect + monitor list",
-        "check": lambda s: False,
-        "next_step": (
-            "Phase 7B replaces the 7A.1 polling task with a typed "
-            "event channel and adds modulation auto-detect: read "
-            "the DUID from the first NID on either pipeline (C4FM "
-            "or LSM), lock to whichever produces stable sync, and "
-            "drive the appropriate demod chain. Also adds a monitor "
-            "list endpoint (/api/voice_follow_targets) so the "
-            "operator can pin which talkgroups to follow when "
-            "multiple grants are active simultaneously."
-        ),
-    },
-    {
         "phase": "Phase 7C",
         "name": "LDU1/LDU2 sync + IMBE frame extraction",
         "check": lambda s: (
@@ -546,6 +531,17 @@ ROADMAP = [
             # ImbeCounter voice handler. Its presence (and the
             # imbe_frames_extracted counter being a number, even if
             # zero) tells us the binary on the board is post-7C.
+            #
+            # Note: 7C is checked BEFORE 7B in this list even though
+            # 7B precedes it numerically. The reason is that 7B is a
+            # cleanup phase (typed event channel + monitor list) that
+            # was deliberately skipped in this work cycle to ship the
+            # IMBE extraction sooner -- 7C doesn't depend on 7B and
+            # we wanted the script to surface 7C's verification
+            # status without being blocked by an unimplemented 7B
+            # entry. The numerical phase ordering is preserved in
+            # doc/changes/ filenames + commit messages, only the
+            # ROADMAP[] evaluation order is swapped here.
             s.get("traffic") is not None
             and s["traffic"].get("imbe") is not None
             and "imbe_frames_extracted" in s["traffic"]["imbe"]
@@ -564,6 +560,24 @@ ROADMAP = [
             "See doc/changes/035 for the verification protocol "
             "(check imbe_frames_extracted == (ldu1+ldu2)*9 exactly "
             "during a real call)."
+        ),
+    },
+    {
+        "phase": "Phase 7B",
+        "name": "Voice grant follower with modulation auto-detect + monitor list",
+        "check": lambda s: False,
+        "next_step": (
+            "Phase 7B replaces the 7A.1 polling task with a typed "
+            "event channel and adds modulation auto-detect: read "
+            "the DUID from the first NID on either pipeline (C4FM "
+            "or LSM), lock to whichever produces stable sync, and "
+            "drive the appropriate demod chain. Also adds a monitor "
+            "list endpoint (/api/voice_follow_targets) so the "
+            "operator can pin which talkgroups to follow when "
+            "multiple grants are active simultaneously. **Skipped in "
+            "the 2026-04-11 work cycle** to ship Phase 7C IMBE "
+            "extraction sooner -- 7B is independent and gets "
+            "revisited after Phase 7D vocoder integration."
         ),
     },
     {

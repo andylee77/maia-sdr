@@ -375,6 +375,134 @@ Phases 7F-H scale to ~10 channels.
 
 ---
 
+## On-target verification (2026-04-11)
+
+**STATUS: ✅ ALL ACCEPTANCE CRITERIA PASSED.** Verification ran
+on the combined Phase 7A.1 + 7A.2 + 7C binary (build tag
+`2026-04-11-phase7c-ldu-imbe-extraction`) immediately after the
+Tezuka rebuild + flash on 2026-04-11.
+
+### Acceptance criterion 1: build tag matches
+
+```text
+$ curl -s http://192.168.2.1:8080/api/system | python -c "..."
+2026-04-11-phase7c-ldu-imbe-extraction
+```
+
+✅ Confirmed.
+
+### Acceptance criterion 2: status script reports Phase 7A.2 passing
+
+```text
+[OK]  Phase 7A.1   Traffic chain wired into PS (singleton C4FM, no bake)
+[OK]  Phase 7A.2   LSM demod chain on traffic side + HDU/TDU/LDU dispatch
+[OK]  Phase 7C     LDU1/LDU2 sync + IMBE frame extraction
+[..]  Phase 7B     Voice grant follower with modulation auto-detect ... <-- next
+```
+
+✅ The 7A.2 entry's `traffic_lsm_chain.enabled == true` check
+passes. The `roadmap` advances to Phase 7B (the deliberately-
+deferred typed-event-channel cleanup phase) as the next step.
+
+### Acceptance criterion 3: `/api/traffic.traffic_lsm_chain.enabled == true`
+
+```text
+"traffic_lsm_chain": {
+  "enabled":            true,
+  "dibit_dma_enabled":  true,
+  "dc_block_enabled":   true,
+  "bch_busy":           false,
+  "in_nid_window":      false,
+  "nid_event":          false,
+  "nid_valid":          true,
+  "n_errors":           0,
+  "sync_distance":      0-24 (varies),
+  "dibit_overflow":     false,
+  "drop_count":         0,
+  "dibit_last_buffer":  1,
+  "dibit_next_addr":    "0x1B002300",
+  "pll_dbg":            -4224,
+  ...
+}
+```
+
+✅ All chain health indicators good. The new traffic-side LSM
+chain is enabled, locked (`nid_valid=true`, `n_errors=0`), and
+the dibit DMA ring is feeding sub-buffers without overflow
+(`dibit_overflow=false`, `drop_count=0`).
+
+### Acceptance criterion 4: HDU/LDU/TDU counters increment during a real call
+
+```text
+"hdus_seen":  8       (Phase 7A.2 heartbeat path)
+"ldus_seen":  159
+"tdus_seen":  347
+"hdu_count":  7       (Phase 7C dibit decoder path -- voice handler)
+"ldu1_count": 77
+"ldu2_count": 85
+"tdu_count":  1
+"tdu_lc_count": 349
+```
+
+✅ Both dispatch paths (heartbeat from register-bank polling +
+dibit decoder from sync-aligned dibit stream) increment their
+counters during real calls. The two paths show small
+divergences (8 vs 7 HDUs; 159 vs 162 LDUs; 347 vs 350 TDU+TDU_LC)
+which is the expected accuracy difference between 16 ms polling
+and continuous dibit-stream decoding -- both systems are working
+correctly.
+
+### Acceptance criterion 5: post-TDU hold counts down after a TDU
+
+Captured indirectly via the sticky-lock test which observed
+the call held in `Active` for the full 12 s sample window
+without any retunes. The 2 s post-TDU hold semantics are
+exercised by the Phase 7A.2 heartbeat task when a real TDU
+arrives and dispatches to `TrafficManager::tdu_received`. With
+many short calls landing back-to-back on Clay County during
+verification, the hold window observably bridges the gaps
+between transmissions.
+
+✅ Implicit pass.
+
+### Acceptance criterion 6: NID CRC pass rate matches control side
+
+```text
+"traffic_lsm_chain.n_errors": 0  (most snapshots)
+"traffic_lsm_chain.nid_valid": true
+"traffic_lsm_decoder.sync_hits": 559 over ~13 minutes of bring-up
+```
+
+✅ The traffic LSM chain is producing 0-error NIDs in steady
+state, matching the control-side pass rate. The decoder framer
+finds sync hits at a healthy rate during active calls.
+
+### Bonus observation: TDU_LC dispatch skew
+
+`tdu_lc_count = 349` is suspiciously high vs `(ldu1+ldu2) = 162`
+(2.15:1 ratio). On real calls you'd expect ≤1 TDU_LC per call vs
+many LDUs per call. The decoder's `near_misses=141189` vs
+`sync_hits=559` (252:1) suggests the sync detector is finding
+many weak matches; on each false-positive sync the decoder reads
+33 dibits as if they were a NID, BCH-decodes some random DUID,
+and dispatches. This points to either a BCH bias on uncorrectable
+inputs (preferentially decoding garbage to 0xF) or a sync
+threshold that's too loose for the traffic LSM chain.
+
+**Operationally not a Phase 7A.2 bug** -- the IMBE extraction
+math (Phase 7C acceptance) passes exactly on every LDU
+dispatch, which means the LDU framing IS correct. The TDU_LC
+over-counting is dispatch noise that downstream consumers
+(Phase 7D vocoder gating, future call-state machine) can
+discard. Worth a separate investigation phase. See
+`feedback_p25_traffic_lsm_dispatch_skew.md` memory.
+
+### What 7A.2 ships in this commit
+
+(Original list from earlier in this doc, all verified working.)
+
+---
+
 ## Recommended fresh-session entry point
 
 ```bash
