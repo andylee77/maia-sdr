@@ -62,49 +62,135 @@ impl DataUnit {
         }
     }
 
-    /// Number of dibits in this data unit (excluding NID).
+    /// Number of body raw dibits (excluding sync + NID, INCLUDING the
+    /// in-body status dibits).
     ///
-    /// **Phase 6F.2i (2026-04-11) note for Tsdu:** FINAL value 123, with
-    /// 4 status positions at body raw indices {13, 49, 85, 121}, after
-    /// careful re-trace of SDRTrunk's `P25P1MessageFramer.process()`.
-    /// 6F.2c had length 123 but wrong positions {14, 50, 86, 122};
-    /// 6F.2g shifted to length 122 with 3 positions {14, 50, 86} which
-    /// was also wrong by one. Correct trace:
+    /// All values cross-checked against SDRTrunk
+    /// `P25P1DataUnitID.java`'s constructor formula
+    /// `mElapsedDibitLength = 56 + (messageLength / 2) + statusDibits + (nullBits / 2)`
+    /// where `56 = 24 sync dibits + 32 NID data dibits` (the in-NID
+    /// status dibit at NID position 11 is counted in the per-frame
+    /// `statusDibits` field, not in the 32-dibit NID data count). Body
+    /// raw = elapsed - 24 sync - 33 NID raw (= 32 NID data + 1 NID
+    /// status). Body status count = per-frame status - 1 (the NID
+    /// status dibit). Body data count = body raw - body status count.
     ///
-    /// 1. `nidDetected()` sets `mDibitCounter = 57` and
-    ///    `mStatusSymbolDibitCounter = 21` (lines 904-905).
-    /// 2. The next iteration (#1 post-NID) increments
-    ///    `mStatusSymbolDibitCounter` to 22 at the top, then takes the
-    ///    `mDibitCounter == 57` branch which CREATES the assembler but
-    ///    does NOT call `receive()`. `mDibitCounter -> 58`.
-    /// 3. Iteration #2: `mStatusSymbolDibitCounter -> 23`. Assembler
-    ///    is non-null now → `receive()` is called. THIS is the first
-    ///    body dibit fed (body raw position 0).
-    /// 4. From here, `mStatusSymbolDibitCounter` increments by 1 each
-    ///    iteration. It hits 36 at iteration #15 (counter 23+13=36),
-    ///    which is body raw position 13. Status drop, reset to 0.
-    /// 5. Subsequent status drops at body positions {49, 85, 121}.
-    /// 6. The assembler completes at the 119th non-status dibit fed,
-    ///    which is body raw position 122.
-    /// 7. Total body raw length = 4 status + 119 data = **123 dibits**.
+    /// | DUID  | msgLen | statDib | nullBit | elapsed | body raw | body data | body status |
+    /// |-------|--------|---------|---------|---------|----------|-----------|-------------|
+    /// | HDU   |  648   |   11    |   10    |   396   |   339    |    329    |     10      |
+    /// | TDU   |    0   |    2    |   28    |    72   |    15    |     14    |      1      |
+    /// | LDU1  | 1568   |   24    |    0    |   864   |   807    |    784    |     23      |
+    /// | TSDU  |  196   |    5    |   42    |   180   |   123    |    119    |      4      |
+    /// | LDU2  | 1568   |   24    |    0    |   864   |   807    |    784    |     23      |
+    /// | TDULC |  288   |    6    |   20    |   216   |   159    |    154    |      5      |
     ///
-    /// SDRTrunk's `P25P1DataUnitID.TRUNKING_SIGNALING_BLOCK_1` table
-    /// independently confirms: `messageLength=196` data bits +
-    /// `nullBits=42` = 238 bits = 119 dibits, with `statusDibits=5`
-    /// total across the whole frame (1 in NID + 4 in body).
+    /// **Body status dibit pattern is universal across all DUIDs:**
+    /// status dibits live at body raw positions {13, 49, 85, 121, ...}
+    /// (= 13 + 36*k for k >= 0). This is because SDRTrunk's
+    /// `mStatusSymbolDibitCounter` is set to 21 at NID-detect and
+    /// incremented by 1 each iteration, so the first body iteration
+    /// has counter 23 and the counter hits 36 at body pos 13 (then
+    /// resets to 0 and counts back up to 36 every 36 iterations).
+    /// Use `is_body_status_dibit(body_pos)` to check.
     ///
-    /// Multi-block TSBK2 / TSBK3 handling is a follow-up; for now we
-    /// read one block at a time and let the next sync detect catch the
-    /// start of any subsequent block.
+    /// **Phase 7C correction (2026-04-11):** the previous values for
+    /// HDU=324, TDU=0, LDU1=792, LDU2=792, TDULC=168 were never tested
+    /// because Phase 6 only handled TSDU. Phase 7C is the first time
+    /// LDU lengths matter (for IMBE frame extraction from voice
+    /// channels), so they get fixed here. Verify against the SDRTrunk
+    /// table above before changing again.
     pub fn length_dibits(self) -> usize {
         match self {
-            Self::Hdu => 324,   // 648 bits
-            Self::Tdu => 0,     // no payload
-            Self::Ldu1 => 792,  // 1584 bits (9 IMBE frames + LC)
-            Self::Tsdu => 123,  // TSBK1: 119 data+null + 4 status, see above
-            Self::Ldu2 => 792,  // 1584 bits
-            Self::Pdu => 288,   // variable, minimum
-            Self::TduLc => 168, // 336 bits (LC + parity)
+            Self::Hdu => 339,    // 648 bits + 10 null + 10 body status (was 324)
+            Self::Tdu => 15,     // 0 bits + 14 null + 1 body status (was 0)
+            Self::Ldu1 => 807,   // 1568 bits + 0 null + 23 body status (was 792)
+            Self::Tsdu => 123,   // unchanged ✓ (was 123, validated in Phase 6F.2i)
+            Self::Ldu2 => 807,   // 1568 bits + 0 null + 23 body status (was 792)
+            Self::Pdu => 288,    // not yet validated
+            Self::TduLc => 159,  // 288 bits + 20 null + 5 body status (was 168)
+        }
+    }
+
+    /// Number of body data dibits (excluding both sync+NID AND body
+    /// status dibits). This is the post-status-strip count -- the
+    /// number of dibits the IMBE / TSBK / LC extractor sees.
+    pub fn data_dibits(self) -> usize {
+        match self {
+            Self::Hdu => 329,
+            Self::Tdu => 14,
+            Self::Ldu1 => 784,
+            Self::Tsdu => 119,
+            Self::Ldu2 => 784,
+            Self::Pdu => 288,    // not yet validated
+            Self::TduLc => 154,
+        }
+    }
+}
+
+/// Returns true if `body_raw_pos` (0-indexed dibit position within the
+/// body, INCLUDING status dibits) is a status dibit.
+///
+/// The body status pattern is universal across all P25 Phase 1 data
+/// unit types (HDU, TDU, LDU1, LDU2, TSDU, TDU_LC, PDU). Status dibits
+/// live at body raw positions {13, 49, 85, 121, ...} = 13 + 36*k for
+/// k = 0, 1, 2, ...
+///
+/// Derivation: SDRTrunk's `P25P1MessageFramer` sets
+/// `mStatusSymbolDibitCounter = 21` at NID-detect. The first body
+/// iteration sees counter 23 (after two pre-iterations). The counter
+/// increments by 1 each iteration and a status dibit is dropped when
+/// counter == 36, resetting to 0. So the first body status drop is at
+/// body pos (36 - 23) = 13, and subsequent drops are at 13 + 36*k.
+#[inline]
+pub fn is_body_status_dibit(body_raw_pos: usize) -> bool {
+    body_raw_pos >= 13 && (body_raw_pos - 13) % 36 == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn body_status_pattern_matches_tsdu() {
+        // TSDU body has 4 status dibits at {13, 49, 85, 121} per the
+        // existing Phase 6F.2i validation. Verify the universal helper
+        // returns the same pattern.
+        let tsdu_status: Vec<usize> = (0..123)
+            .filter(|p| is_body_status_dibit(*p))
+            .collect();
+        assert_eq!(tsdu_status, vec![13, 49, 85, 121]);
+    }
+
+    #[test]
+    fn body_status_count_matches_sdrtrunk_table() {
+        // Cross-check the universal status pattern against the SDRTrunk
+        // P25P1DataUnitID statusDibits field minus the in-NID status (1).
+        let cases = [
+            (DataUnit::Hdu, 339, 10),
+            (DataUnit::Tdu, 15, 1),
+            (DataUnit::Ldu1, 807, 23),
+            (DataUnit::Tsdu, 123, 4),
+            (DataUnit::Ldu2, 807, 23),
+            (DataUnit::TduLc, 159, 5),
+        ];
+        for (du, expected_len, expected_n_status) in cases {
+            assert_eq!(
+                du.length_dibits(),
+                expected_len,
+                "{:?} length_dibits", du
+            );
+            let n_status = (0..expected_len)
+                .filter(|p| is_body_status_dibit(*p))
+                .count();
+            assert_eq!(
+                n_status, expected_n_status,
+                "{:?} body status count", du
+            );
+            assert_eq!(
+                du.data_dibits(),
+                expected_len - expected_n_status,
+                "{:?} data_dibits = length - n_status", du
+            );
         }
     }
 }

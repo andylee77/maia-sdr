@@ -34,7 +34,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-11-phase7a2-traffic-lsm-chain-and-tdu-hdu";
+pub const BUILD_TAG: &str = "2026-04-11-phase7c-ldu-imbe-extraction";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -157,6 +157,137 @@ pub struct TrafficStats {
     pub total_bytes: u64,
     pub total_dibits: u64,
     pub dibit_hist: [u64; 4],
+    // ── Phase 7C: IMBE frame extraction counters ──────────────────
+    //
+    // Updated by the `ImbeCounter` voice handler that's wired into
+    // the `traffic_lsm_decoder` instance. Each successful LDU1/LDU2
+    // body extraction yields 9 IMBE frames (~180 ms of audio at 50
+    // frames/sec when locked). Phase 7D will consume these frames
+    // from a separate mpsc channel and produce PCM audio; for 7C
+    // these counters are the only observable proof that the IMBE
+    // extraction pipeline is alive.
+    pub hdu_count: u64,
+    pub ldu1_count: u64,
+    pub ldu2_count: u64,
+    pub tdu_count: u64,
+    pub tdu_lc_count: u64,
+    /// Total IMBE frames pushed to the (future) Phase 7D vocoder
+    /// channel. Should equal `(ldu1_count + ldu2_count) * 9` in
+    /// steady state -- any divergence indicates a frame extraction
+    /// failure (e.g. wrong dibit count, status-strip math off).
+    pub imbe_frames_extracted: u64,
+    /// Wall-clock instant of the most recent IMBE frame batch.
+    /// Used to compute "frames per second" for the dashboard.
+    pub last_imbe_at: Option<std::time::Instant>,
+}
+
+/// Phase 7C: voice frame handler that updates `TrafficStats` IMBE
+/// counters and (in Phase 7D) will also push the raw IMBE frames to
+/// the vocoder mpsc channel.
+///
+/// Implements `p25::control_channel::VoiceHandler`. Installed on
+/// the new `traffic_lsm_decoder` instance via `set_voice_handler`.
+/// Held as an `Arc<dyn ...>` so the counter can be cloned into the
+/// decoder AND any future Phase 7D consumer.
+///
+/// Uses `std::sync::Mutex` (NOT `tokio::sync::Mutex`) on the
+/// TrafficStats handle so the handler doesn't need an async
+/// runtime to update the counters -- it's called synchronously
+/// from inside `ControlChannelDecoder::process_dibit`. Lock
+/// contention is minimal because the handler holds the lock for
+/// only a few field writes per LDU (~140 ms cadence on a real
+/// call).
+///
+/// **Why two TrafficStats locks?** The Phase 7A.1 dibit reader
+/// task already holds an `Arc<tokio::sync::Mutex<TrafficStats>>`.
+/// Wrapping it in a second `std::sync::Mutex` would create a
+/// double-lock hazard. Instead, we add a SECOND shared
+/// `Arc<std::sync::Mutex<TrafficStats>>` -- but ALSO mirror the
+/// IMBE-counter fields to the existing tokio Mutex copy via the
+/// `/api/traffic` handler reading both. Wait, that's worse than
+/// just using the existing tokio Mutex with `try_lock` from the
+/// sync handler context. Let me actually use `blocking_lock()` --
+/// the dibit decoder runs from a tokio task already, so blocking
+/// inside the handler would be a runtime panic. Easier: pass the
+/// tokio Mutex through and use `blocking_lock` ONLY when the
+/// handler runs from a non-tokio context, which it doesn't.
+///
+/// Conclusion: use a SECOND TrafficStats handle wrapped in
+/// `std::sync::Mutex`, kept in sync with the tokio one by
+/// having the dibit reader task copy the IMBE counters across.
+/// Awkward but safe. Phase 7B refactor will unify them with a
+/// proper tokio mpsc channel for IMBE frames + a single shared
+/// stats struct behind one lock.
+///
+/// **Simpler interim approach** (Phase 7C): the handler holds the
+/// counters in its OWN AtomicU64 fields and `/api/traffic` reads
+/// directly from the handler. No second TrafficStats lock at all.
+/// This is what we ship.
+pub struct ImbeCounter {
+    pub hdu_count: std::sync::atomic::AtomicU64,
+    pub ldu1_count: std::sync::atomic::AtomicU64,
+    pub ldu2_count: std::sync::atomic::AtomicU64,
+    pub tdu_count: std::sync::atomic::AtomicU64,
+    pub tdu_lc_count: std::sync::atomic::AtomicU64,
+    pub imbe_frames_extracted: std::sync::atomic::AtomicU64,
+    /// Wall-clock millis-since-epoch of the most recent IMBE frame
+    /// batch. 0 means "never seen one". Stored as u64 (not
+    /// `Instant`) because Atomics can't hold non-Copy types.
+    pub last_imbe_at_millis: std::sync::atomic::AtomicU64,
+}
+
+impl Default for ImbeCounter {
+    fn default() -> Self {
+        Self {
+            hdu_count: 0.into(),
+            ldu1_count: 0.into(),
+            ldu2_count: 0.into(),
+            tdu_count: 0.into(),
+            tdu_lc_count: 0.into(),
+            imbe_frames_extracted: 0.into(),
+            last_imbe_at_millis: 0.into(),
+        }
+    }
+}
+
+impl ImbeCounter {
+    fn touch_imbe(&self, n_frames: u64) {
+        use std::sync::atomic::Ordering;
+        self.imbe_frames_extracted.fetch_add(n_frames, Ordering::Relaxed);
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.last_imbe_at_millis.store(now_millis, Ordering::Relaxed);
+    }
+}
+
+impl p25::control_channel::VoiceHandler for ImbeCounter {
+    fn on_ldu1(&self, _frames: &[p25::voice_frame::ImbeFrameRaw; 9]) {
+        use std::sync::atomic::Ordering;
+        self.ldu1_count.fetch_add(1, Ordering::Relaxed);
+        self.touch_imbe(9);
+        // Phase 7D will push `_frames` to the vocoder mpsc channel
+        // here. For Phase 7C we just count.
+    }
+
+    fn on_ldu2(&self, _frames: &[p25::voice_frame::ImbeFrameRaw; 9]) {
+        use std::sync::atomic::Ordering;
+        self.ldu2_count.fetch_add(1, Ordering::Relaxed);
+        self.touch_imbe(9);
+    }
+
+    fn on_hdu(&self) {
+        self.hdu_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn on_tdu(&self) {
+        self.tdu_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn on_tdu_lc(&self) {
+        self.tdu_lc_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 #[derive(Parser)]
@@ -273,6 +404,35 @@ async fn main() -> anyhow::Result<()> {
     let mut iq_lsm_decoder = ControlChannelDecoder::new();
     iq_lsm_decoder.set_event_tx(event_tx.clone());
     let iq_lsm_decoder = Arc::new(RwLock::new(iq_lsm_decoder));
+
+    // Phase 7C: fourth `ControlChannelDecoder` instance fed by the
+    // new `traffic_lsm_dibit_dma` ring (Phase 7A.2 HDL chain). Unlike
+    // the three control-channel decoders above, this one runs on the
+    // FOLLOWED VOICE CHANNEL and produces HDU/LDU1/LDU2/TDU/TDU_LC
+    // events instead of TSDUs. The voice handler installed below
+    // forwards extracted IMBE frames to a counter on `TrafficStats`
+    // (Phase 7C) and will forward to the vocoder mpsc channel in
+    // Phase 7D.
+    //
+    // The decoder runs the same Hunting -> ReadingNid -> ReadingDataUnit
+    // state machine as the control side, just with the new LDU/HDU/TDU
+    // dispatch arms in `process_dibit` (added in Phase 7C) doing the
+    // work instead of the TSDU dispatch arm.
+    // Phase 7C: shared IMBE counter that the voice handler updates
+    // and `/api/traffic` reads. Created out-of-cfg(linux) for
+    // host-build compatibility (the AppState fields don't depend on
+    // target_os).
+    let imbe_counter = Arc::new(ImbeCounter::default());
+
+    let mut traffic_lsm_decoder = ControlChannelDecoder::new();
+    traffic_lsm_decoder.set_event_tx(event_tx.clone());
+    // Phase 7C: install the IMBE counter as the decoder's voice
+    // handler. The decoder dispatches HDU/LDU1/LDU2/TDU/TDU_LC events
+    // to the counter as they're framed off the dibit stream.
+    // `Arc<ImbeCounter>` -> `Arc<dyn VoiceHandler + Send + Sync>`
+    // coercion is automatic via `From<Arc<T>> for Arc<dyn Trait>`.
+    traffic_lsm_decoder.set_voice_handler(imbe_counter.clone());
+    let traffic_lsm_decoder = Arc::new(RwLock::new(traffic_lsm_decoder));
 
     // Phase 6D dashboard wiring: shared LsmStats mutex, populated by the
     // LSM IRQ task below and read by the /api/lsm handler. Kept out of
@@ -459,6 +619,10 @@ async fn main() -> anyhow::Result<()> {
         let lsm_dibit_waiter = interrupt_handler.waiter_lsm_dibit_dma();
         // Phase 7A.1: traffic dibit DMA wakeups
         let traffic_dibit_waiter = interrupt_handler.waiter_traffic_dma();
+        // Phase 7A.2 + 7C: traffic-side LSM dibit DMA wakeups. The
+        // dibit reader task spawned below feeds the traffic_lsm_decoder
+        // (which has the IMBE counter voice handler installed).
+        let traffic_lsm_dibit_waiter = interrupt_handler.waiter_traffic_lsm_dibit_dma();
 
         // 5. Spawn interrupt handler
         let irq_stats_for_handler = irq_stats.clone();
@@ -862,6 +1026,109 @@ async fn main() -> anyhow::Result<()> {
                         buffers.len(), wake_bytes, wake_dibits,
                         pct(hist[0]), pct(hist[1]), pct(hist[2]), pct(hist[3]),
                         if lsm_best == u32::MAX { 99 } else { lsm_best },
+                    );
+                }
+            }
+        });
+
+        // Phase 7C: traffic-side LSM dibit reader + voice frame
+        // decoder task. Mirrors the control-side LSM dibit reader
+        // task immediately above (lines ~952-1032), feeding the
+        // dibit stream into the new `traffic_lsm_decoder` instance
+        // (which has the IMBE counter voice handler installed).
+        //
+        // Data flow:
+        //   traffic_lsm_dibit_dma (DMA ring, ~3.4 sec sub-buffer fill)
+        //     -> read_traffic_lsm_dibit_buffers (Vec<&[u8]>)
+        //     -> bytemuck_cast (&[u64] of packed dibits)
+        //     -> traffic_lsm_decoder.process_dma_word (Hunting ->
+        //        ReadingNid -> ReadingDataUnit state machine)
+        //     -> on_ldu1 / on_ldu2 / on_hdu / on_tdu / on_tdu_lc
+        //        callbacks on the ImbeCounter voice handler
+        //     -> ImbeCounter atomic counters incremented
+        //     -> /api/traffic snapshot reads the atomics
+        //
+        // **Phase 7D will tap the same callback chain** to push raw
+        // IMBE frames to the vocoder mpsc channel. Phase 7E will
+        // wrap that with RTP audio output.
+        //
+        // The decoder runs the same state machine as the control
+        // side -- it'll go through Hunting until a sync hit, decode
+        // the NID, then dispatch by DUID. On a real call (Clay
+        // County voice channel locked) we expect:
+        //   - first event: HDU on call start
+        //   - then 9-10x LDU1 / LDU2 alternation per second
+        //   - final event: TDU or TDU_LC on call end
+        let traffic_lsm_core = ip_core.clone();
+        let traffic_lsm_decoder_task = traffic_lsm_decoder.clone();
+        tokio::spawn(async move {
+            tracing::info!(
+                "Traffic LSM dibit reader + voice frame decoder task \
+                 started (Phase 7C)"
+            );
+            let mut wakeups: u64 = 0;
+            let mut total_buffers: u64 = 0;
+            let mut total_bytes: u64 = 0;
+            let mut hist = [0u64; 4];
+            loop {
+                traffic_lsm_dibit_waiter.wait().await;
+                wakeups += 1;
+                let buffers = {
+                    let mut core = traffic_lsm_core.lock().await;
+                    core.read_traffic_lsm_dibit_buffers()
+                        .iter()
+                        .map(|b| b.to_vec())
+                        .collect::<Vec<_>>()
+                };
+
+                let mut wake_bytes = 0usize;
+                let mut wake_dibits = 0usize;
+                for buffer in &buffers {
+                    wake_bytes += buffer.len();
+                    let words: &[u64] = bytemuck_cast(buffer);
+                    for &word in words {
+                        for i in 0..32 {
+                            let d = ((word >> (i * 2)) & 0x03) as usize;
+                            hist[d] += 1;
+                            wake_dibits += 1;
+                        }
+                    }
+                    let mut dec = traffic_lsm_decoder_task.write().await;
+                    for &word in words {
+                        dec.process_dma_word(word);
+                    }
+                }
+                total_buffers += buffers.len() as u64;
+                total_bytes += wake_bytes as u64;
+
+                if wakeups <= 5 || wakeups % 16 == 0 {
+                    let total_dibits: u64 = hist.iter().sum();
+                    let pct = |v: u64| -> f64 {
+                        if total_dibits == 0 { 0.0 }
+                        else { 100.0 * v as f64 / total_dibits as f64 }
+                    };
+                    let (sync_hits, msg_count, ldu1, ldu2, hdu, tdu, tdu_lc) = {
+                        let d = traffic_lsm_decoder_task.read().await;
+                        (
+                            d.sync_hits(),
+                            d.recent_messages.len(),
+                            d.ldu1_count,
+                            d.ldu2_count,
+                            d.hdu_count,
+                            d.tdu_count,
+                            d.tdu_lc_count,
+                        )
+                    };
+                    tracing::info!(
+                        target: "p25_traffic_lsm",
+                        "wake #{wakeups}: bufs={} bytes={} dibits={} \
+                         (cum bufs={total_buffers} bytes={total_bytes}) \
+                         hist 0={:.1}% 1={:.1}% 2={:.1}% 3={:.1}% \
+                         | traffic_lsm decoder: sync_hits={sync_hits} \
+                         hdu={hdu} ldu1={ldu1} ldu2={ldu2} tdu={tdu} \
+                         tdu_lc={tdu_lc} recent_msgs={msg_count}",
+                        buffers.len(), wake_bytes, wake_dibits,
+                        pct(hist[0]), pct(hist[1]), pct(hist[2]), pct(hist[3]),
                     );
                 }
             }
@@ -1845,6 +2112,9 @@ async fn main() -> anyhow::Result<()> {
         traffic_manager: traffic_manager.clone(),
         traffic_stats: traffic_stats.clone(),
         traffic_follower_enabled: traffic_follower_enabled.clone(),
+        // Phase 7C: traffic LSM voice decoder + IMBE counter
+        traffic_lsm_decoder: traffic_lsm_decoder.clone(),
+        imbe_counter: imbe_counter.clone(),
     });
 
     // Start HTTP server

@@ -541,14 +541,29 @@ ROADMAP = [
     {
         "phase": "Phase 7C",
         "name": "LDU1/LDU2 sync + IMBE frame extraction",
-        "check": lambda s: False,
+        "check": lambda s: (
+            # Phase 7C added an `imbe` block to /api/traffic via the
+            # ImbeCounter voice handler. Its presence (and the
+            # imbe_frames_extracted counter being a number, even if
+            # zero) tells us the binary on the board is post-7C.
+            s.get("traffic") is not None
+            and s["traffic"].get("imbe") is not None
+            and "imbe_frames_extracted" in s["traffic"]["imbe"]
+        ),
         "next_step": (
-            "Voice channels carry LDU1/LDU2 frames with their own "
-            "sync words (different from the TSDU we already decode). "
-            "Each LDU carries 9 IMBE voice frames (88 bits each) "
-            "protected by trellis + RS FEC. Reuse the existing "
-            "trellis decoder from the TSBK path. Output: 88-bit "
-            "raw IMBE bits per frame, 9 frames per LDU."
+            "Phase 7C PS Rust changes are committed but the binary "
+            "on the board predates them. Tezuka rebuild + flash "
+            "(no FPGA bake required for 7C alone -- the HDL pulls "
+            "from the Phase 7A.2 traffic_lsm_dibit_dma ring which "
+            "is already in the bitstream from the 7A.2 bake). "
+            "After flash, /api/traffic gains an `imbe` block with "
+            "per-DUID counters and `imbe_frames_extracted`, plus a "
+            "`current_call_encrypted` field plumbed from the control "
+            "channel grant TSBK service_options byte. /api/grants "
+            "also gains `encrypted` + `emergency` flags per grant. "
+            "See doc/changes/035 for the verification protocol "
+            "(check imbe_frames_extracted == (ldu1+ldu2)*9 exactly "
+            "during a real call)."
         ),
     },
     {

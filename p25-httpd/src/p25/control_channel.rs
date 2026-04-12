@@ -10,6 +10,7 @@
 //! At 4800 sym/sec the ARM has trivial CPU load for all of this.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::broadcast;
@@ -204,6 +205,69 @@ pub struct ControlChannelDecoder {
     pub aliases: HashMap<u16, String>,
     /// Broadcast channel for WebSocket events
     event_tx: Option<broadcast::Sender<String>>,
+    /// Phase 7C: optional voice frame handler. When set, the decoder
+    /// dispatches HDU/LDU1/LDU2/TDU/TDU_LC bodies to the handler in
+    /// addition to the normal TSDU dispatch. Set on the new
+    /// `traffic_lsm_decoder` instance in main.rs (which feeds off the
+    /// new `traffic_lsm_dibit_dma` ring); left `None` on the three
+    /// existing control-channel decoder instances which never see
+    /// voice channel frames anyway. The handler is called from
+    /// `process_dibit` after a complete data unit body has been
+    /// collected -- it owns the decoded payload (e.g. an
+    /// `ImbeFrameRaw` for LDUs) and is responsible for forwarding it
+    /// to whatever downstream consumer (Phase 7D vocoder, mpsc
+    /// channel, etc).
+    pub voice_handler: Option<Arc<dyn VoiceHandler + Send + Sync>>,
+    /// Phase 7C: cumulative count of LDU1 frames the decoder has
+    /// successfully framed and dispatched. Per-call rate is computed
+    /// downstream from successive snapshots.
+    pub ldu1_count: u64,
+    pub ldu2_count: u64,
+    pub hdu_count: u64,
+    pub tdu_count: u64,
+    pub tdu_lc_count: u64,
+}
+
+/// Phase 7C: voice frame handler trait. Implementations consume the
+/// 9 raw IMBE frames extracted from each LDU and forward them to a
+/// downstream consumer (Phase 7D vocoder, RTP broadcaster, file
+/// recorder, etc).
+///
+/// Methods take `&self` so the trait object can be shared across
+/// the decoder + the downstream consumer. Implementations are
+/// expected to use interior mutability (e.g. an mpsc Sender, an
+/// AtomicU64 counter) where state is needed.
+///
+/// **Why a trait instead of a concrete type:** the decoder lives in
+/// the `p25` module which has no knowledge of `tokio::sync::mpsc`,
+/// `TrafficStats`, or any of the per-binary types. Wiring through a
+/// trait keeps the decoder library-style and lets `main.rs` plug in
+/// whatever consumer it wants.
+pub trait VoiceHandler {
+    /// Called once per successfully-framed LDU1 with the 9 raw IMBE
+    /// frames in transmission order. The decoder has already
+    /// stripped status dibits and applied the LDU1 bit layout.
+    ///
+    /// Default impl is a no-op so implementations can choose to
+    /// only override the methods they care about.
+    fn on_ldu1(&self, _frames: &[crate::p25::voice_frame::ImbeFrameRaw; 9]) {}
+
+    /// Called once per successfully-framed LDU2.
+    fn on_ldu2(&self, _frames: &[crate::p25::voice_frame::ImbeFrameRaw; 9]) {}
+
+    /// Called once per HDU. Phase 7C ships with payload extraction
+    /// deferred (the encryption flag comes from the control channel
+    /// grant per `reference_p25_encryption_flag_from_control_channel.md`)
+    /// so this just signals "an HDU arrived" with no payload.
+    fn on_hdu(&self) {}
+
+    /// Called once per TDU (DUID 0x3, no payload).
+    fn on_tdu(&self) {}
+
+    /// Called once per TDU_LC (DUID 0xF). Phase 7C ships without
+    /// LC payload extraction (defer the RS(24,12,13) decode to
+    /// 7C.2 / 7B); this just signals "a TDU_LC arrived".
+    fn on_tdu_lc(&self) {}
 }
 
 /// Decoder state machine
@@ -340,6 +404,42 @@ pub struct GrantInfo {
     pub source: Option<RadioId>,
     pub frequency_hz: Option<u64>,
     pub timestamp: Instant,
+    /// Phase 7C: encryption flag from the `GroupVoiceChannelGrant`
+    /// TSBK service options byte (mask 0x40). Preserved across
+    /// `GroupVoiceChannelGrantUpdate` refreshes via
+    /// `take_other_grants_for_talkgroup` since the update TSBK
+    /// doesn't carry service options.
+    ///
+    /// **Operational use:** Phase 7D vocoder reads this and skips
+    /// vocoding encrypted IMBE frames (matches SDRTrunk's
+    /// `mIgnoreEncryptedCalls` semantics, gated EARLIER -- at the
+    /// control channel grant moment, BEFORE the traffic DDC
+    /// retunes). See
+    /// `reference_p25_encryption_flag_from_control_channel.md`
+    /// memory.
+    ///
+    /// **Late-entry caveat:** if we missed the original
+    /// `GroupVoiceChannelGrant` and only see updates, this stays
+    /// `false`. The HDU on the voice channel would tell us, but
+    /// HDU payload parsing is deferred to Phase 7C.2.
+    pub encrypted: bool,
+    /// Phase 7C: emergency flag from the same service options byte
+    /// (mask 0x80). Surfaced for the dashboard "active calls" view
+    /// so emergency calls can be visually highlighted.
+    pub emergency: bool,
+}
+
+/// Phase 7C: fields preserved across grant updates by
+/// `take_other_grants_for_talkgroup`. The original
+/// `GroupVoiceChannelGrant` carries the source RadioId and the
+/// service options byte (encryption + emergency flags); the
+/// `GroupVoiceChannelGrantUpdate` carries neither, so the update
+/// handler inherits both from the prior grant for the same TG.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PreservedGrantFields {
+    pub source: Option<RadioId>,
+    pub encrypted: bool,
+    pub emergency: bool,
 }
 
 /// Frame sync pattern as dibits packed into u64
@@ -505,12 +605,33 @@ impl ControlChannelDecoder {
             max_recent: 1000,
             aliases: HashMap::new(),
             event_tx: None,
+            // Phase 7C: voice handler is opt-in. Control-channel
+            // decoders leave it None; the new traffic_lsm_decoder
+            // sets it to forward IMBE frames downstream.
+            voice_handler: None,
+            ldu1_count: 0,
+            ldu2_count: 0,
+            hdu_count: 0,
+            tdu_count: 0,
+            tdu_lc_count: 0,
         }
     }
 
     /// Set the broadcast channel for WebSocket events
     pub fn set_event_tx(&mut self, tx: broadcast::Sender<String>) {
         self.event_tx = Some(tx);
+    }
+
+    /// Phase 7C: install a voice frame handler. The decoder will
+    /// dispatch HDU/LDU1/LDU2/TDU/TDU_LC events to the handler in
+    /// addition to the normal TSDU dispatch. Set on the
+    /// `traffic_lsm_decoder` instance in `main.rs`; left unset on the
+    /// three control-channel decoders which never see voice frames.
+    pub fn set_voice_handler(
+        &mut self,
+        handler: Arc<dyn VoiceHandler + Send + Sync>,
+    ) {
+        self.voice_handler = Some(handler);
     }
 
     /// Phase 6F.9: process a TSDU "directed" by an upstream sync
@@ -1026,7 +1147,60 @@ impl ControlChannelDecoder {
                     // whether more dibits are needed.
                     let done = match duid {
                         DataUnit::Tsdu => self.process_tsdu_block(),
-                        // Other DU types handled in later phases
+                        // Phase 7C: voice channel data unit dispatch.
+                        // The framer has already read `length_dibits()`
+                        // raw dibits (status dibits in place); the
+                        // payload extractors below strip status dibits
+                        // and apply the SDRTrunk-documented bit
+                        // positions. The voice handler is opt-in -- on
+                        // control-channel decoders it's None and these
+                        // arms reduce to "count + return true".
+                        DataUnit::Ldu1 => {
+                            self.ldu1_count += 1;
+                            if let Some(handler) = self.voice_handler.clone() {
+                                if let Some(frames) = crate::p25::voice_frame::extract_imbe_frames(&self.du_buffer) {
+                                    handler.on_ldu1(&frames);
+                                }
+                            }
+                            true
+                        }
+                        DataUnit::Ldu2 => {
+                            self.ldu2_count += 1;
+                            if let Some(handler) = self.voice_handler.clone() {
+                                if let Some(frames) = crate::p25::voice_frame::extract_imbe_frames(&self.du_buffer) {
+                                    handler.on_ldu2(&frames);
+                                }
+                            }
+                            true
+                        }
+                        DataUnit::Hdu => {
+                            self.hdu_count += 1;
+                            if let Some(handler) = self.voice_handler.clone() {
+                                handler.on_hdu();
+                            }
+                            true
+                        }
+                        DataUnit::Tdu => {
+                            // length_dibits() is now 15 (Phase 7C
+                            // correction), so the framer DOES read
+                            // the trailing 15 raw dibits before we
+                            // get here -- we just dispatch the event
+                            // and return.
+                            self.tdu_count += 1;
+                            if let Some(handler) = self.voice_handler.clone() {
+                                handler.on_tdu();
+                            }
+                            true
+                        }
+                        DataUnit::TduLc => {
+                            self.tdu_lc_count += 1;
+                            if let Some(handler) = self.voice_handler.clone() {
+                                handler.on_tdu_lc();
+                            }
+                            true
+                        }
+                        // PDU is rare on voice channels and not part
+                        // of Phase 7C scope; just consume + return.
                         _ => true,
                     };
                     if done {
@@ -1317,13 +1491,20 @@ impl ControlChannelDecoder {
                 channel,
                 talkgroup,
                 source,
+                service_options,
             } => {
                 let freq = self.channel_to_frequency(*channel);
                 // Drop any prior grant for this TG on a different
                 // channel. The TSBK includes a fresh source RadioId
-                // so we discard the preserved value here -- the new
-                // call's caller is what we want to record.
+                // and a fresh service_options byte so we discard
+                // the preserved values here -- the new call's
+                // caller and encryption flag are what we want to
+                // record.
                 let _ = self.take_other_grants_for_talkgroup(*talkgroup);
+                let encrypted =
+                    crate::p25::tsbk::service_options::is_encrypted(*service_options);
+                let emergency =
+                    crate::p25::tsbk::service_options::is_emergency(*service_options);
                 self.grants.insert(
                     channel.0,
                     GrantInfo {
@@ -1332,6 +1513,8 @@ impl ControlChannelDecoder {
                         source: Some(*source),
                         frequency_hz: freq,
                         timestamp: Instant::now(),
+                        encrypted,
+                        emergency,
                     },
                 );
             }
@@ -1392,34 +1575,41 @@ impl ControlChannelDecoder {
             } => {
                 let freq_a = self.channel_to_frequency(*channel_a);
                 // Drop any prior grant for talkgroup_a on a different
-                // channel and PRESERVE its source -- the update TSBK
-                // doesn't carry a source itself, so without this we'd
-                // wipe the caller ID we recorded from the original
-                // GroupVoiceChannelGrant.
-                let preserved_source_a =
+                // channel and PRESERVE its source + encryption +
+                // emergency flags -- the update TSBK doesn't carry
+                // service options or a source, so without this we'd
+                // wipe the caller ID AND the encryption flag we
+                // recorded from the original GroupVoiceChannelGrant.
+                // Phase 7C extension of the Phase 6G.1 source-only
+                // preservation (commit 1e29839).
+                let preserved_a =
                     self.take_other_grants_for_talkgroup(*talkgroup_a);
                 self.grants.insert(
                     channel_a.0,
                     GrantInfo {
                         channel: *channel_a,
                         talkgroup: *talkgroup_a,
-                        source: preserved_source_a,
+                        source: preserved_a.source,
                         frequency_hz: freq_a,
                         timestamp: Instant::now(),
+                        encrypted: preserved_a.encrypted,
+                        emergency: preserved_a.emergency,
                     },
                 );
                 if talkgroup_b.0 != 0 {
                     let freq_b = self.channel_to_frequency(*channel_b);
-                    let preserved_source_b =
+                    let preserved_b =
                         self.take_other_grants_for_talkgroup(*talkgroup_b);
                     self.grants.insert(
                         channel_b.0,
                         GrantInfo {
                             channel: *channel_b,
                             talkgroup: *talkgroup_b,
-                            source: preserved_source_b,
+                            source: preserved_b.source,
                             frequency_hz: freq_b,
                             timestamp: Instant::now(),
+                            encrypted: preserved_b.encrypted,
+                            emergency: preserved_b.emergency,
                         },
                     );
                 }
@@ -1460,17 +1650,24 @@ impl ControlChannelDecoder {
                 channel,
                 talkgroup,
                 source,
+                service_options,
             } => {
                 let freq = self.channel_to_frequency(*channel);
+                let enc_marker = if crate::p25::tsbk::service_options::is_encrypted(*service_options) {
+                    " [ENC]"
+                } else {
+                    ""
+                };
                 p25_json::TsbkEvent {
                     timestamp: now,
                     event_type: "GRP_GRANT".into(),
                     summary: format!(
-                        "{}TG:{:05} -> {} ({:.4} MHz)",
+                        "{}TG:{:05} -> {} ({:.4} MHz){}",
                         block_prefix,
                         talkgroup.0,
                         channel,
-                        freq.unwrap_or(0) as f64 / 1e6
+                        freq.unwrap_or(0) as f64 / 1e6,
+                        enc_marker
                     ),
                     talkgroup: Some(talkgroup.0),
                     talkgroup_alias: self.aliases.get(&talkgroup.0).cloned(),
@@ -1692,25 +1889,48 @@ impl ControlChannelDecoder {
     /// Wildcard TG 0 is excluded because the grant-update path already
     /// filters it as a sentinel and dropping all "TG 0" entries would
     /// clobber unrelated state.
-    fn take_other_grants_for_talkgroup(&mut self, talkgroup: Talkgroup) -> Option<RadioId> {
+    fn take_other_grants_for_talkgroup(
+        &mut self,
+        talkgroup: Talkgroup,
+    ) -> PreservedGrantFields {
         if talkgroup.0 == 0 {
-            return None;
+            return PreservedGrantFields::default();
         }
-        let mut preserved_source: Option<RadioId> = None;
+        let mut preserved = PreservedGrantFields::default();
         self.grants.retain(|_, g| {
             if g.talkgroup == talkgroup {
                 // Capture the source from the first match. Don't
                 // overwrite if we already have one (in case the map
                 // somehow holds two stale entries for the same TG).
-                if preserved_source.is_none() && g.source.is_some() {
-                    preserved_source = g.source;
+                if preserved.source.is_none() && g.source.is_some() {
+                    preserved.source = g.source;
+                }
+                // Phase 7C: also preserve the encryption + emergency
+                // flags. These come from the GVCG service options
+                // byte and don't refresh on GVCG_UPDATE, so without
+                // this preservation we'd lose them on the first
+                // update TSBK after the original grant.
+                //
+                // The "any prior grant said true" rule (boolean OR
+                // accumulation) is intentional: a TG that was once
+                // marked encrypted/emergency stays so for the
+                // duration of the call even if some intermediate
+                // tracker entry got the flag wrong. This matches
+                // the SDRTrunk semantics where encryption is a
+                // property of the call session, not of individual
+                // TSBK refreshes.
+                if g.encrypted {
+                    preserved.encrypted = true;
+                }
+                if g.emergency {
+                    preserved.emergency = true;
                 }
                 false
             } else {
                 true
             }
         });
-        preserved_source
+        preserved
     }
 }
 
@@ -1772,6 +1992,7 @@ mod tests {
             channel: Channel(0x045D), // band 0, ch 1117
             talkgroup: Talkgroup(300),
             source: RadioId(1011),
+            service_options: 0, // Phase 7C: clear voice, no emergency
         });
 
         assert!(decoder.grants.contains_key(&0x045D));
@@ -1802,12 +2023,14 @@ mod tests {
             channel: Channel(0x0345),
             talkgroup: Talkgroup(202),
             source: RadioId(1011),
+            service_options: 0,
         });
         // Independent TG on a third channel -- must NOT be cleared.
         decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
             channel: Channel(0x0500),
             talkgroup: Talkgroup(300),
             source: RadioId(2022),
+            service_options: 0,
         });
         assert_eq!(decoder.grants.len(), 2);
 
@@ -1818,6 +2041,7 @@ mod tests {
             channel: Channel(0x045D),
             talkgroup: Talkgroup(202),
             source: RadioId(1011),
+            service_options: 0,
         });
         assert_eq!(decoder.grants.len(), 2);
         assert!(!decoder.grants.contains_key(&0x0345));
@@ -1858,6 +2082,7 @@ mod tests {
             channel: Channel(0x0345),
             talkgroup: Talkgroup(202),
             source: RadioId(1011),
+            service_options: 0,
         });
         assert_eq!(
             decoder.grants[&0x0345].source,
@@ -1903,6 +2128,7 @@ mod tests {
             channel: Channel(0x0900),
             talkgroup: Talkgroup(202),
             source: RadioId(2022),
+            service_options: 0,
         });
         assert_eq!(decoder.grants.len(), 1);
         assert!(decoder.grants.contains_key(&0x0900));

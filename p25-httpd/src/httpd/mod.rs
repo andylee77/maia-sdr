@@ -91,6 +91,20 @@ pub struct AppState {
     /// demod_enable bits without the polling task immediately
     /// overriding them. Default true; process-lifetime only.
     pub traffic_follower_enabled: Arc<std::sync::atomic::AtomicBool>,
+    /// Phase 7C: fourth `ControlChannelDecoder` instance fed by the
+    /// new `traffic_lsm_dibit_dma` ring (Phase 7A.2 HDL chain).
+    /// Runs HDU/LDU1/LDU2/TDU/TDU_LC dispatch via its installed
+    /// voice handler (the `imbe_counter` below). Read by
+    /// `/api/traffic` for the per-DUID counters and the cumulative
+    /// IMBE frame count.
+    pub traffic_lsm_decoder:
+        Arc<RwLock<ControlChannelDecoder>>,
+    /// Phase 7C: shared IMBE counter that the traffic LSM decoder's
+    /// voice handler updates on every successful LDU body
+    /// extraction. Atomic counters so the `/api/traffic` reader
+    /// doesn't need a lock. Phase 7D will read raw IMBE frames
+    /// from a separate mpsc channel for the vocoder.
+    pub imbe_counter: Arc<crate::ImbeCounter>,
 }
 
 /// Build the HTTP router
@@ -217,6 +231,11 @@ async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant
                 source: g.source.map(|s| s.0),
                 frequency_mhz: g.frequency_hz.map(|f| f as f64 / 1_000_000.0),
                 age_secs: g.timestamp.elapsed().as_secs(),
+                // Phase 7C: surface the encryption + emergency flags
+                // from the GVCG service options byte. The grant store
+                // already preserves these across GVCG_UPDATE refreshes.
+                encrypted: g.encrypted,
+                emergency: g.emergency,
             };
             match map.get(&g.channel.0) {
                 Some(existing) if existing.age_secs <= cg.age_secs => {}
@@ -898,6 +917,77 @@ async fn get_traffic(
         })
     };
 
+    // Phase 7C: IMBE counter snapshot from the traffic LSM voice
+    // decoder. The atomics are updated synchronously by the
+    // ImbeCounter voice handler from inside the dibit reader task,
+    // so this read is a coherent point-in-time snapshot.
+    let imbe_json = {
+        use std::sync::atomic::Ordering;
+        let c = &state.imbe_counter;
+        let last_imbe_at_millis = c.last_imbe_at_millis.load(Ordering::Relaxed);
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let last_imbe_secs_ago = if last_imbe_at_millis == 0 {
+            None
+        } else {
+            Some((now_millis.saturating_sub(last_imbe_at_millis)) as f64 / 1000.0)
+        };
+        serde_json::json!({
+            "hdu_count":              c.hdu_count.load(Ordering::Relaxed),
+            "ldu1_count":             c.ldu1_count.load(Ordering::Relaxed),
+            "ldu2_count":             c.ldu2_count.load(Ordering::Relaxed),
+            "tdu_count":              c.tdu_count.load(Ordering::Relaxed),
+            "tdu_lc_count":           c.tdu_lc_count.load(Ordering::Relaxed),
+            "imbe_frames_extracted": c.imbe_frames_extracted.load(Ordering::Relaxed),
+            "last_imbe_secs_ago":     last_imbe_secs_ago,
+        })
+    };
+
+    // Phase 7C: also surface the traffic_lsm_decoder's own
+    // sync/decode counters so the dashboard can see whether the
+    // decoder's framer is finding sync hits on the traffic dibit
+    // stream (the most important bring-up signal -- if sync_hits
+    // == 0 we know the dibit ring isn't carrying anything the
+    // decoder recognises as P25).
+    let traffic_lsm_decoder_json = {
+        let d = state.traffic_lsm_decoder.read().await;
+        serde_json::json!({
+            "sync_hits":          d.sync_hits(),
+            "sync_near_misses":   d.sync_near_misses(),
+            "best_sync_distance": if d.best_sync_distance() == u32::MAX { 99 } else { d.best_sync_distance() },
+            "recent_msg_count":   d.recent_messages.len(),
+            "ldu1":               d.ldu1_count,
+            "ldu2":               d.ldu2_count,
+            "hdu":                d.hdu_count,
+            "tdu":                d.tdu_count,
+            "tdu_lc":             d.tdu_lc_count,
+        })
+    };
+
+    // Phase 7C: pull the encryption flag from the currently-locked
+    // grant, if any. The grant follower's TrafficManager holds the
+    // current TG; the grant store on `lsm_decoder` (the canonical
+    // grants HashMap) holds the encrypted flag for that TG. We
+    // surface this so the dashboard can show "[ENC]" next to the
+    // active TG and the future Phase 7D vocoder can gate on it.
+    let current_call_encrypted = {
+        let mgr_tg = {
+            let mgr = state.traffic_manager.lock().await;
+            mgr.current_talkgroup().map(|t| t.0)
+        };
+        if let Some(tg) = mgr_tg {
+            let dec = state.lsm_decoder.read().await;
+            dec.grants
+                .values()
+                .find(|g| g.talkgroup.0 == tg)
+                .map(|g| g.encrypted)
+        } else {
+            None
+        }
+    };
+
     let follower_on =
         state.traffic_follower_enabled.load(Ordering::Relaxed);
 
@@ -937,21 +1027,37 @@ async fn get_traffic(
         "traffic_lsm_chain":         traffic_lsm_chain_json,
         "applied":                   applied,
         "errors":                    errors,
-        "phase":                     "7A.2",
-        "modulation":                "C4FM + LSM (parallel chains, LSM is the active one for HDU/TDU/LDU dispatch)",
+        "phase":                     "7C",
+        "modulation":                "C4FM + LSM (parallel chains, LSM is the active one for HDU/TDU/LDU dispatch + IMBE extraction)",
+        // Phase 7C: encryption flag from the control channel grant
+        // for the currently-locked TG (None if no call active or
+        // no grant in store). Phase 7D will read this to skip the
+        // vocoder for encrypted calls.
+        "current_call_encrypted":    current_call_encrypted,
+        // Phase 7C: IMBE frame counter snapshot from the
+        // traffic_lsm_decoder's voice handler.
+        "imbe":                      imbe_json,
+        // Phase 7C: traffic_lsm_decoder framer state (sync hits,
+        // recent msgs, per-DUID counters from the decoder itself).
+        // Distinct from `imbe` above which counts via the voice
+        // handler atomic counters: these are the decoder-internal
+        // counters and should track 1:1 with the imbe ones.
+        "traffic_lsm_decoder":       traffic_lsm_decoder_json,
         "controls": {
             "reset_stats":   "?reset_stats=1            -- zero TrafficStats",
             "follower":      "?follower=on|off          -- pause/resume 50 ms poll",
             "retune_hz":     "?retune_hz=<i64>          -- manual NCO offset (Hz, signed)",
             "demod_enable":  "?demod_enable=0|1         -- manual demod_enable bit (C4FM chain only -- LSM chain has its own enable in HDL)"
         },
-        "note": "Phase 7A.2: traffic-side LSM chain produces NID events \
-                 (HDU/TDU/LDU/LDU2) which the heartbeat task dispatches \
-                 to TrafficManager. TDU triggers a 2 s post-TDU hold \
-                 window (matches SDRTrunk PR #2010 semantics) so PTT \
-                 releases between speakers in a multi-speaker call \
-                 don't fragment into separate calls. Phase 7C will \
-                 extract IMBE frames from LDU1/LDU2 for the vocoder.",
+        "note": "Phase 7C: traffic-side LSM dibit reader feeds a \
+                 ControlChannelDecoder that runs the same Hunting -> \
+                 ReadingNid -> ReadingDataUnit state machine as the \
+                 control side. On LDU1/LDU2 dispatch the decoder \
+                 strips status dibits, applies the 9 IMBE bit \
+                 positions from SDRTrunk LDUMessage.java, and emits \
+                 raw 144-bit IMBE frames via the VoiceHandler trait. \
+                 Phase 7D will plug a vocoder into the same \
+                 callback chain.",
     }))
 }
 
@@ -1161,9 +1267,14 @@ async fn get_recent_tsbks(
                 "IDEN_UPDATE ID:{} OFFSET:{} SPACING:{} BASE:{} BW:{}",
                 identifier, transmit_offset, channel_spacing, base_frequency, bw
             ),
-            GroupVoiceChannelGrant { channel, talkgroup, source } => format!(
-                "GRP_V_CH_GRANT CH:{} TG:{} SRC:{}",
-                channel, talkgroup, source
+            GroupVoiceChannelGrant { channel, talkgroup, source, service_options } => format!(
+                "GRP_V_CH_GRANT CH:{} TG:{} SRC:{}{}",
+                channel, talkgroup, source,
+                if crate::p25::tsbk::service_options::is_encrypted(*service_options) {
+                    " [ENC]"
+                } else {
+                    ""
+                }
             ),
             GroupVoiceChannelGrantUpdate {
                 channel_a, talkgroup_a, channel_b, talkgroup_b,

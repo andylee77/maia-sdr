@@ -510,6 +510,109 @@ since each LDU is ~140 ms), `tdus_seen` increments by 1 at the
 end, then `state` transitions to Idle ~2 s after the TDU when the
 post-TDU hold window expires.
 
+### `GET /api/traffic` -- Phase 7C additions
+
+Phase 7C added an LDU sync + IMBE frame extraction pipeline that
+runs the new traffic-side LSM dibit DMA ring through a fourth
+`ControlChannelDecoder` instance (the existing three only see the
+control channel). The decoder's `process_dibit` state machine
+gained LDU1 / LDU2 / HDU / TDU / TDU_LC dispatch arms (was
+TSDU-only) that feed a `VoiceHandler` trait. Phase 7C ships an
+`ImbeCounter` voice handler that updates atomic counters; Phase 7D
+will replace it with an `ImbeForwarder` that pushes raw 144-bit
+IMBE frames to a vocoder mpsc channel.
+
+Also: encryption flag plumbed end-to-end from the
+`GroupVoiceChannelGrant` TSBK service options byte through
+`GrantInfo` to `/api/grants` and `/api/traffic.current_call_encrypted`.
+**This is operationally equivalent to HDU encryption-flag parsing
+without needing the trellis + RS(36,20,17) decoder** -- the
+control channel grant arrives before the HDU does, so the
+encryption decision happens earlier and saves the DDC retune for
+encrypted calls when `?ignore_encrypted=1` is added in Phase 7D.
+
+**New top-level fields in `/api/traffic` (Phase 7C):**
+
+```json
+{
+  "phase":                  "7C",
+  "current_call_encrypted": false,
+  "imbe": {
+    "hdu_count":            1,
+    "ldu1_count":           14,
+    "ldu2_count":           13,
+    "tdu_count":            0,
+    "tdu_lc_count":         1,
+    "imbe_frames_extracted": 243,
+    "last_imbe_secs_ago":   0.18
+  },
+  "traffic_lsm_decoder": {
+    "sync_hits":            28,
+    "sync_near_misses":     2,
+    "best_sync_distance":   1,
+    "recent_msg_count":     0,
+    "ldu1":                 14,
+    "ldu2":                 13,
+    "hdu":                  1,
+    "tdu":                  0,
+    "tdu_lc":               1
+  }
+}
+```
+
+**Field semantics:**
+
+- **`current_call_encrypted`**: encryption flag for the
+  currently-locked TG, read from the `lsm_decoder.grants` store.
+  `null` if no call is active or if the locked TG isn't in the
+  grant store. `false` for clear voice, `true` for encrypted.
+  Phase 7D vocoder reads this to gate IMBE -> PCM decoding.
+- **`imbe.hdu_count` / `ldu1_count` / `ldu2_count` / `tdu_count` /
+  `tdu_lc_count`**: cumulative count of each DUID type the
+  voice handler has seen. Update synchronously from inside the
+  dibit decoder task via `AtomicU64` so `/api/traffic` reads
+  them with no lock.
+- **`imbe.imbe_frames_extracted`**: total raw 144-bit IMBE
+  frames pushed to the (future) vocoder. **Should equal**
+  `(ldu1_count + ldu2_count) * 9` exactly -- any divergence
+  indicates an extraction failure (wrong status-strip math,
+  wrong dibit count, etc).
+- **`imbe.last_imbe_secs_ago`**: seconds since the most recent
+  IMBE frame batch was extracted. `null` if no frames have been
+  seen yet. Useful for the dashboard to show "audio active" /
+  "audio silent" indicators.
+- **`traffic_lsm_decoder`**: framer-internal counters from the
+  `traffic_lsm_decoder` itself. `sync_hits` is the most
+  important diagnostic -- if zero during an active call, the
+  decoder isn't finding sync in the dibit stream (indicates
+  either an HDL bug from Phase 7A.2, or my length_dibits
+  corrections in Phase 7C are off). `ldu1`/`ldu2`/`hdu`/`tdu`/`tdu_lc`
+  here should track 1:1 with the corresponding `imbe.*_count`
+  fields above.
+
+**New per-grant fields in `/api/grants` (Phase 7C):**
+
+```json
+[
+  {
+    "channel":          "0-1117",
+    "talkgroup":        202,
+    "talkgroup_alias":  "FIRE OPS",
+    "source":           1011,
+    "frequency_mhz":    857.9875,
+    "age_secs":         3,
+    "encrypted":        false,
+    "emergency":        false
+  }
+]
+```
+
+`encrypted` and `emergency` come from the
+`GroupVoiceChannelGrant` TSBK service options byte (bits 6 and 7
+respectively). Both are preserved across `GroupVoiceChannelGrantUpdate`
+refreshes via `take_other_grants_for_talkgroup` so the values
+don't get wiped on every periodic update.
+
 ### `GET /api/aliases` / `PUT /api/aliases` → `AliasMap`
 
 Talkgroup-id → display-name map persisted in `~/.config/p25-httpd/aliases.json`.

@@ -5,6 +5,119 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-11] Phase 7C -- LDU sync + IMBE frame extraction (focused, PS Rust only)
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/035_phase7c_ldu_imbe_extraction.md`
+
+Wires the new traffic-side LSM dibit DMA ring (from Phase 7A.2)
+into a fourth `ControlChannelDecoder` instance that runs the same
+state machine as the control side, with **new LDU1/LDU2/HDU/TDU/TDU_LC
+dispatch arms** that extract raw 144-bit IMBE voice frames at the
+SDRTrunk-documented bit positions. The frames flow through a new
+`VoiceHandler` trait to an `ImbeCounter` that will become the
+Phase 7D vocoder feed.
+
+**Key new modules:**
+
+- `p25/voice_frame.rs` -- `ImbeFrameRaw` (18-byte raw IMBE frame),
+  `IMBE_FRAME_BIT_POSITIONS` (`[0, 144, 328, 512, 696, 880, 1064,
+  1248, 1424]` from SDRTrunk `LDUMessage.java:32-40`),
+  `extract_imbe_frames()` with status-dibit strip + bit-pack +
+  9-position extraction. 5 unit tests.
+
+**Critical type corrections:**
+
+- `p25/types.rs` `length_dibits` corrected for HDU (324 -> 339),
+  TDU (0 -> 15), LDU1 (792 -> 807), LDU2 (792 -> 807), TDU_LC
+  (168 -> 159). The previous values were never validated because
+  Phase 6 only handled TSDU. Cross-checked against the SDRTrunk
+  `P25P1DataUnitID.java` table via the new
+  `body_status_count_matches_sdrtrunk_table` test. Also added
+  the universal `is_body_status_dibit(body_pos)` helper validated
+  by the `body_status_pattern_matches_tsdu` test.
+
+**Encryption flag plumbed end-to-end from the control channel:**
+
+- `p25/tsbk.rs` `TsbkMessage::GroupVoiceChannelGrant` now exposes
+  `service_options: u8` (was previously dropped at decode). New
+  `pub mod service_options` with `ENCRYPTION_FLAG = 0x40` and
+  `EMERGENCY_FLAG = 0x80` constants verbatim from SDRTrunk
+  `ServiceOptions.java:27-30`.
+- `p25/control_channel.rs` `GrantInfo` gained `encrypted: bool`
+  and `emergency: bool` fields, populated from the grant TSBK.
+  `take_other_grants_for_talkgroup` (Phase 6G.1 source preservation)
+  extended to also preserve encrypted + emergency across
+  `GroupVoiceChannelGrantUpdate` refreshes via a new
+  `PreservedGrantFields` struct.
+- `p25-json::ChannelGrant` gained `encrypted` + `emergency` fields
+  with `#[serde(default)]` for forward-compat.
+- `httpd/mod.rs` `/api/grants` surfaces both flags per grant, and
+  `/api/traffic` adds a top-level `current_call_encrypted` field
+  read from the lsm_decoder grant store for the currently-locked
+  TG. Phase 7D vocoder will gate on this -- saving the ~600 lines
+  of HDU payload parsing (trellis + RS(36,20,17)) we'd otherwise
+  need to extract the encryption flag from the voice channel
+  itself.
+
+**Decoder voice dispatch:**
+
+- `p25/control_channel.rs` new `VoiceHandler` trait with
+  default-no-op methods for `on_ldu1`, `on_ldu2`, `on_hdu`,
+  `on_tdu`, `on_tdu_lc`. New `voice_handler:
+  Option<Arc<dyn VoiceHandler + Send + Sync>>` field on
+  `ControlChannelDecoder` with `set_voice_handler()` setter. New
+  `ldu1_count` / `ldu2_count` / `hdu_count` / `tdu_count` /
+  `tdu_lc_count` cumulative counters. New LDU1/LDU2/HDU/TDU/TDU_LC
+  dispatch arms in `process_dibit` (the existing `match duid`
+  block was previously a no-op `_ => true` for non-TSDU).
+
+**main.rs wiring:**
+
+- New `ImbeCounter` struct with `AtomicU64` counters implementing
+  `VoiceHandler`. Atomic counters because the handler is called
+  synchronously from inside the dibit decoder task and a Mutex
+  would deadlock with the existing tokio dibit reader's stats
+  lock.
+- New `traffic_lsm_decoder` ControlChannelDecoder instance with
+  the `ImbeCounter` installed via `set_voice_handler`.
+- New traffic LSM dibit reader task spawned in cfg(linux) block,
+  mirror of the existing control-side `lsm_dibit_decoder` task.
+- New `traffic_lsm_dibit_waiter` in the IRQ-handler-waiter cluster.
+- AppState extended with `traffic_lsm_decoder` + `imbe_counter`.
+- BUILD_TAG bumped to `2026-04-11-phase7c-ldu-imbe-extraction`.
+
+**httpd/mod.rs API extension:**
+
+- `/api/traffic` JSON gained `phase: "7C"`, `current_call_encrypted`,
+  `imbe` block (atomic counter snapshot from ImbeCounter), and
+  `traffic_lsm_decoder` block (decoder-internal sync_hits +
+  per-DUID counters). The two should track 1:1 -- any divergence
+  indicates an extraction failure.
+
+**What's deferred** (per the focused scope):
+
+- HDU payload parsing (algorithm ID, key ID, source RadioID, MFID,
+  MI) -- the encryption flag we'd get from this is redundant with
+  the control channel grant, and the late-entry case is rare
+  enough to defer to 7C.2.
+- TDU_LC LC payload parsing -- end-of-call metadata, cosmetic.
+- LDU1 LC + LDU2 ESS payload parsing -- redundant with the
+  control channel grant.
+- Trellis + RS(36,20,17) + RS(24,12,13) + RS(24,16,9) decoders --
+  not needed for any of the focused 7C scope.
+- The vocoder itself -- Phase 7D.
+- RTP audio output -- Phase 7E.
+
+**Verification (pending):** combined with Phase 7A.2 on the next
+flash. Acceptance criteria in `doc/changes/035`:
+`imbe_frames_extracted == (ldu1_count + ldu2_count) * 9` exactly,
+`traffic_lsm_decoder.sync_hits > 0` during an active call,
+`current_call_encrypted` populated correctly, all 62 host tests
+pass.
+
+---
+
 ## [2026-04-11] Phase 7A.2 -- LSM demod chain on traffic side + HDU/TDU/LDU dispatch
 
 **Branch:** fishball-p25

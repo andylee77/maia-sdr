@@ -16,6 +16,50 @@
 
 use super::types::*;
 
+/// P25 service options byte bit constants. Used by all the
+/// channel-grant TSBKs (`GroupVoiceChannelGrant`,
+/// `UnitToUnitVoiceChannelGrant`, `TelephoneInterconnectVoiceChannelGrant`,
+/// etc) to describe per-call attributes.
+///
+/// Verbatim from SDRTrunk upstream `ServiceOptions.java:27-30`
+/// (`module/decode/p25/reference/ServiceOptions.java`):
+///
+/// ```text
+/// EMERGENCY_FLAG  = 0x80   (bit 7)
+/// ENCRYPTION_FLAG = 0x40   (bit 6)
+/// DUPLEX          = 0x20   (bit 5) -- 1 = full, 0 = half
+/// SESSION_MODE    = 0x10   (bit 4) -- 1 = packet, 0 = circuit
+/// PRIORITY        = 0x07   (bits 0-2)
+/// ```
+///
+/// Phase 7C: the `ENCRYPTION_FLAG` is what gates the Phase 7D
+/// vocoder. We read it from the `GroupVoiceChannelGrant` TSBK so
+/// the encrypted-call decision happens at the control channel
+/// (before we retune the traffic DDC) instead of waiting for the
+/// HDU on the voice channel. See
+/// `reference_p25_encryption_flag_from_control_channel.md` memory.
+pub mod service_options {
+    pub const EMERGENCY_FLAG: u8 = 0x80;
+    pub const ENCRYPTION_FLAG: u8 = 0x40;
+    pub const DUPLEX_FLAG: u8 = 0x20;
+    pub const SESSION_MODE_FLAG: u8 = 0x10;
+    pub const PRIORITY_MASK: u8 = 0x07;
+
+    /// Returns true if the service options byte has the encryption
+    /// bit set.
+    #[inline]
+    pub fn is_encrypted(opts: u8) -> bool {
+        opts & ENCRYPTION_FLAG != 0
+    }
+
+    /// Returns true if the service options byte has the emergency
+    /// bit set.
+    #[inline]
+    pub fn is_emergency(opts: u8) -> bool {
+        opts & EMERGENCY_FLAG != 0
+    }
+}
+
 /// TSBK opcodes we care about for control channel tracking
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TsbkOpcode {
@@ -95,15 +139,28 @@ impl From<u8> for TsbkOpcode {
 #[derive(Debug, Clone)]
 pub enum TsbkMessage {
     /// Group Voice Channel Grant (opcode 0x00)
-    /// A talkgroup is granted a traffic channel
+    /// A talkgroup is granted a traffic channel.
+    ///
+    /// `service_options` is the raw 8-bit service options byte
+    /// (SDRTrunk `GroupVoiceChannelGrant.java` SERVICE_OPTIONS at
+    /// bit positions 16-23). Decode bits via `ServiceOptions::*`
+    /// helpers in this module. Phase 7C uses the encryption bit
+    /// (mask `0x40`) to gate the Phase 7D vocoder so we don't try
+    /// to vocode encrypted IMBE frames.
     GroupVoiceChannelGrant {
         channel: Channel,
         talkgroup: Talkgroup,
         source: RadioId,
+        service_options: u8,
     },
 
     /// Group Voice Channel Grant Update (opcode 0x02)
-    /// Updates for one or two active grants
+    /// Updates for one or two active grants. **Does NOT carry
+    /// service options** -- the GVCG_UPDATE TSBK packs two
+    /// (channel, talkgroup) pairs tightly with no service-options
+    /// bytes. The encryption flag must be inherited from the
+    /// original `GroupVoiceChannelGrant` for the same TG (the
+    /// grant store does this in `control_channel.rs`).
     GroupVoiceChannelGrantUpdate {
         channel_a: Channel,
         talkgroup_a: Talkgroup,
@@ -391,7 +448,17 @@ impl TsbkBlock {
 
     /// GRP_V_CH_GRANT (0x00)
     /// Payload: [options(8)][channel(16)][talkgroup(16)][source(24)]
+    ///
+    /// Phase 7C (2026-04-11): now extracts the service options byte
+    /// at `payload[0]`. SDRTrunk `GroupVoiceChannelGrant.java` SERVICE_OPTIONS
+    /// = {16, 17, 18, 19, 20, 21, 22, 23} (bits 16-23 of the TSBK,
+    /// which is `payload[0]` because the maia-sdr `payload` array
+    /// skips the 16-bit TSBK header). The encryption flag is bit 6
+    /// (mask `0x40`); the Phase 7D vocoder reads this from the
+    /// grant store to skip vocoding encrypted calls without
+    /// having to parse the HDU on the voice channel.
     fn decode_grp_v_ch_grant(&self) -> TsbkMessage {
+        let service_options = self.payload[0];
         let channel = Channel(u16::from_be_bytes([self.payload[1], self.payload[2]]));
         let talkgroup = Talkgroup(u16::from_be_bytes([self.payload[3], self.payload[4]]));
         let source = RadioId(
@@ -403,6 +470,7 @@ impl TsbkBlock {
             channel,
             talkgroup,
             source,
+            service_options,
         }
     }
 
@@ -964,12 +1032,54 @@ mod tests {
                 channel,
                 talkgroup,
                 source,
+                service_options,
             } => {
                 assert_eq!(channel.0, 0x0639);
                 assert_eq!(channel.identifier(), 0);
                 assert_eq!(channel.number(), 0x639); // 1593
                 assert_eq!(talkgroup.0, 0x012C); // 300
                 assert_eq!(source.0, 1);
+                // Phase 7C: synthetic test data has options=0
+                // (clear voice, no emergency, no encryption).
+                assert_eq!(service_options, 0x00);
+                assert!(!service_options::is_encrypted(service_options));
+                assert!(!service_options::is_emergency(service_options));
+            }
+            _ => panic!("Expected GroupVoiceChannelGrant"),
+        }
+    }
+
+    /// Phase 7C: synthetic GRP_V_CH_GRANT with the encryption bit
+    /// set in the service options byte. Verifies that the decoder
+    /// reads payload[0] correctly and that the helpers in
+    /// `service_options` mod return true for the right bit.
+    #[test]
+    fn test_grp_v_ch_grant_decode_encrypted() {
+        let mut data = [0u8; 12];
+        data[0] = 0x80; // LB=1, P=0, opcode=0x00
+        data[1] = 0x00; // standard manufacturer
+        // payload: options=0x40 (ENCRYPTED bit set)
+        data[2] = 0x40;
+        data[3] = 0x06;
+        data[4] = 0x39;
+        data[5] = 0x01;
+        data[6] = 0x2C;
+        data[7] = 0x00;
+        data[8] = 0x00;
+        data[9] = 0x01;
+        data[10] = 0x00;
+        data[11] = 0x00;
+
+        let block = TsbkBlock::parse(&data);
+        let msg = block.decode().unwrap();
+        match msg {
+            TsbkMessage::GroupVoiceChannelGrant {
+                service_options,
+                ..
+            } => {
+                assert_eq!(service_options, 0x40);
+                assert!(service_options::is_encrypted(service_options));
+                assert!(!service_options::is_emergency(service_options));
             }
             _ => panic!("Expected GroupVoiceChannelGrant"),
         }

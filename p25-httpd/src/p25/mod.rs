@@ -4,6 +4,7 @@
 
 pub mod control_channel;
 pub mod fec;
-pub mod tsbk;
 pub mod traffic_manager;
+pub mod tsbk;
 pub mod types;
+pub mod voice_frame;

@@ -51,6 +51,16 @@ pub struct ChannelGrant {
     pub source: Option<u32>,
     pub frequency_mhz: Option<f64>,
     pub age_secs: u64,
+    /// Phase 7C: encryption flag from the GroupVoiceChannelGrant
+    /// service options byte (mask 0x40). Defaults to false on
+    /// `Deserialize` for forward-compat with older p25-httpd
+    /// builds that don't surface this field.
+    #[serde(default)]
+    pub encrypted: bool,
+    /// Phase 7C: emergency flag from the same service options byte
+    /// (mask 0x80). Same forward-compat default.
+    #[serde(default)]
+    pub emergency: bool,
 }
 
 /// Frequency band info (from IDEN_UP)
