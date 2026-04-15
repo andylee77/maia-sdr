@@ -79,7 +79,7 @@ import sys
 import os
 
 from amaranth import *
-from amaranth.lib.cdc import FFSynchronizer
+from amaranth.lib.cdc import FFSynchronizer, PulseSynchronizer
 import amaranth.back.verilog
 
 from maia_hdl.axi4_lite import Axi4LiteRegisterBridge
@@ -848,9 +848,48 @@ class P25Core(Elaboratable):
         ]
 
         # DMA sub-buffer completion -> interrupt (sticky bit, cleared by read)
+        #
+        # CDC fix (2026-04-15, P25DDC fork v2 timing closure):
+        # The 5 DMA interrupt pulses all originate in the sync domain
+        # (62.5 MHz clk_out1) but the control_registers bank runs in
+        # s_axi_lite (100 MHz clk_fpga_0) via s_axi_lite_renamer.
+        # maia_hdl.register.Rsticky OR's the input signal directly
+        # into the sticky FF with no explicit synchronizer, so
+        # without CDC the cross-clock path is analysed by Vivado as
+        # a real setup constraint (~2 ns requirement) and fails by
+        # several ns. Phase 10-prep closed timing by placement luck;
+        # v2 doesn't, and the design shouldn't depend on luck.
+        #
+        # Fix: use PulseSynchronizer for each 1-cycle DMA interrupt
+        # pulse. PulseSynchronizer uses a toggle-FF + edge-detect
+        # scheme that guarantees exactly one destination-domain
+        # pulse per source pulse regardless of clock relationship,
+        # so no DMA completion interrupt can be lost. The
+        # synchronized pulses then feed the Rsticky OR inside the
+        # bank normally.
         interrupts_reg = self.control_registers['interrupts']
+
+        m.submodules.dibit_dma_irq_sync = dibit_dma_irq_sync = (
+            PulseSynchronizer('sync', 's_axi_lite'))
+        m.submodules.traffic_dma_irq_sync = traffic_dma_irq_sync = (
+            PulseSynchronizer('sync', 's_axi_lite'))
+        m.submodules.iq_dma_irq_sync = iq_dma_irq_sync = (
+            PulseSynchronizer('sync', 's_axi_lite'))
+        m.submodules.lsm_dibit_dma_irq_sync = lsm_dibit_dma_irq_sync = (
+            PulseSynchronizer('sync', 's_axi_lite'))
+        m.submodules.traffic_lsm_dibit_dma_irq_sync = (
+            traffic_lsm_dibit_dma_irq_sync) = (
+                PulseSynchronizer('sync', 's_axi_lite'))
+
         m.d.comb += [
-            interrupts_reg['dibit_dma'].eq(self.dibit_dma.interrupt),
+            dibit_dma_irq_sync.i.eq(self.dibit_dma.interrupt),
+            traffic_dma_irq_sync.i.eq(self.traffic_dma.interrupt),
+            iq_dma_irq_sync.i.eq(self.iq_dma.interrupt),
+            lsm_dibit_dma_irq_sync.i.eq(self.lsm_dibit_dma.interrupt),
+            traffic_lsm_dibit_dma_irq_sync.i.eq(
+                self.traffic_lsm_dibit_dma.interrupt),
+            # Feed the synchronized pulses into the Rsticky bits.
+            interrupts_reg['dibit_dma'].eq(dibit_dma_irq_sync.o),
         ]
 
         # Demod status registers
@@ -894,7 +933,7 @@ class P25Core(Elaboratable):
         m.d.comb += [
             self.iq_dma.enable.eq(
                 self.iq_registers['iq_dma_control']['iq_enable']),
-            interrupts_reg['iq_dma'].eq(self.iq_dma.interrupt),
+            interrupts_reg['iq_dma'].eq(iq_dma_irq_sync.o),
             self.iq_registers['iq_dma_status']['iq_overflow'].eq(
                 self.iq_packer.overflow),
             self.iq_registers['iq_dma_status']['last_buffer'].eq(
@@ -984,7 +1023,7 @@ class P25Core(Elaboratable):
                 self.lsm_dibit_dma.stream_ready),
             self.lsm_dibit_dma.enable.eq(
                 self.lsm_registers['lsm_control']['lsm_dibit_dma_enable']),
-            interrupts_reg['lsm_dibit_dma'].eq(self.lsm_dibit_dma.interrupt),
+            interrupts_reg['lsm_dibit_dma'].eq(lsm_dibit_dma_irq_sync.o),
         ]
 
         # Stage 6: NID event latching.
@@ -1122,7 +1161,7 @@ class P25Core(Elaboratable):
 
         # Traffic DMA sub-buffer completion -> interrupt
         m.d.comb += [
-            interrupts_reg['traffic_dma'].eq(self.traffic_dma.interrupt),
+            interrupts_reg['traffic_dma'].eq(traffic_dma_irq_sync.o),
         ]
 
         # Traffic demod status registers
@@ -1260,7 +1299,7 @@ class P25Core(Elaboratable):
                 self.traffic_lsm_registers[
                     'traffic_lsm_control']['traffic_lsm_dibit_dma_enable']),
             interrupts_reg['traffic_lsm_dibit_dma'].eq(
-                self.traffic_lsm_dibit_dma.interrupt),
+                traffic_lsm_dibit_dma_irq_sync.o),
         ]
 
         # Stage 6: NID event latching (mirror of control side).
