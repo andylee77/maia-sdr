@@ -54,6 +54,16 @@ pub struct AppState {
     /// Stateless wrapper around sysfs paths -- safe to share without a lock.
     #[cfg(target_os = "linux")]
     pub ad9361: Arc<crate::iio::Ad9361>,
+    /// Original main.rs boot-time front-end config (AD9361 + DDC NCO),
+    /// captured into AppState at startup so `/api/reinit` can restore
+    /// the chip + DDC to the boot state without a board reboot, and
+    /// also live-retune individual fields (control_freq, rx_lo,
+    /// rf_bandwidth, gain_mode) without having to rebuild the firmware.
+    pub boot_rx_lo: u64,
+    pub boot_sample_rate: u32,
+    pub boot_rf_bandwidth: u32,
+    pub boot_control_freq: u64,
+    pub boot_lo_ppm: f64,
     /// Phase 6F.2: PL HDL LSM chain runtime stats, populated by the
     /// HDL LSM heartbeat task. Read by `/api/hdl_lsm`. Single source
     /// of truth for everything the heartbeat task observes about the
@@ -160,9 +170,174 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(get_encrypted_tgs).put(put_encrypted_tgs),
         )
         .route("/api/aliases", get(get_aliases).put(put_aliases))
+        // Runtime front-end re-init + live retune. Default (no params)
+        // restores the main.rs boot values captured in AppState.
+        // Optional query params override individual fields for this
+        // call only, so we can retune the control channel, change
+        // AD9361 gain/BW/SR, or move the RX LO live without a Tezuka
+        // rebuild + flash. Primary recovery path when anything has
+        // clobbered AD9361 / DDC state.
+        .route("/api/reinit", get(get_reinit))
         .route("/ws/events", get(ws_events))
         .route("/ws/audio", get(ws_audio))
         .with_state(state)
+}
+
+/// Runtime front-end re-init + live retune handler.
+///
+/// Re-runs the main.rs boot init sequence for BOTH the AD9361 IIO
+/// device (rx_lo, sample_rate, rf_bandwidth, gain_control_mode) AND
+/// the HDL control DDC NCO (control_freq → nco_offset), without a
+/// board reboot.
+///
+/// With no query params, restores the exact boot defaults captured in
+/// `AppState` at startup. Any of the following optional query params
+/// overrides the corresponding field for this call only:
+///
+/// - `rx_lo`          u64 Hz  — AD9361 RX LO frequency
+/// - `control_freq`   u64 Hz  — desired control-channel center frequency
+/// - `sample_rate`    u32 Hz  — AD9361 sampling frequency
+/// - `rf_bandwidth`   u32 Hz  — AD9361 analog front-end bandwidth
+/// - `gain_mode`      str     — `manual|fast_attack|slow_attack|hybrid`
+///
+/// The DDC NCO is always recomputed as
+/// `control_freq - rx_lo + (-lo_ppm * 1e-6 * rx_lo)` (matching
+/// main.rs line ~339) and written via `ip_core.set_ddc_frequency`.
+///
+/// Examples:
+/// ```text
+/// # Restore boot defaults (recovery after clobber):
+/// curl http://192.168.2.1:8080/api/reinit
+///
+/// # Try fast-attack AGC at boot BW / freq:
+/// curl 'http://192.168.2.1:8080/api/reinit?gain_mode=fast_attack'
+///
+/// # Move RX LO up 2 MHz and let NCO compensate:
+/// curl 'http://192.168.2.1:8080/api/reinit?rx_lo=862500000'
+///
+/// # Retune to a different control channel entirely:
+/// curl 'http://192.168.2.1:8080/api/reinit?control_freq=858237500'
+/// ```
+#[cfg(target_os = "linux")]
+async fn get_reinit(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let rx_lo = params
+        .get("rx_lo")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(state.boot_rx_lo);
+    let control_freq = params
+        .get("control_freq")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(state.boot_control_freq);
+    let sr = params
+        .get("sample_rate")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(state.boot_sample_rate);
+    let bw = params
+        .get("rf_bandwidth")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(state.boot_rf_bandwidth);
+    let gm_str = params
+        .get("gain_mode")
+        .map(String::as_str)
+        .unwrap_or("slow_attack");
+    let gain_mode = match gm_str {
+        "manual" => crate::iio::GainMode::Manual,
+        "fast_attack" => crate::iio::GainMode::FastAttack,
+        "slow_attack" => crate::iio::GainMode::SlowAttack,
+        "hybrid" => crate::iio::GainMode::Hybrid,
+        other => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": format!(
+                    "unknown gain_mode: '{other}'; expected manual|fast_attack|slow_attack|hybrid"
+                ),
+            }));
+        }
+    };
+
+    // DDC NCO offset: same math as main.rs boot path. ppm correction
+    // shifts the NCO by -ppm * 1e-6 * rx_lo so a Pluto crystal error
+    // cancels out at the DDC mixer.
+    let nco_lo_shift_hz = -state.boot_lo_ppm * 1e-6 * rx_lo as f64;
+    let nco_offset_hz = control_freq as f64 - rx_lo as f64 + nco_lo_shift_hz;
+
+    let mut applied: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    match state.ad9361.set_rx_lo_frequency(rx_lo).await {
+        Ok(_) => applied.push(format!("rx_lo={rx_lo}")),
+        Err(e) => errors.push(format!("rx_lo: {e}")),
+    }
+    match state.ad9361.set_sampling_frequency(sr).await {
+        Ok(_) => applied.push(format!("sampling_frequency={sr}")),
+        Err(e) => errors.push(format!("sampling_frequency: {e}")),
+    }
+    match state.ad9361.set_rx_rf_bandwidth(bw).await {
+        Ok(_) => applied.push(format!("rf_bandwidth={bw}")),
+        Err(e) => errors.push(format!("rf_bandwidth: {e}")),
+    }
+    match state.ad9361.set_rx_gain_mode(gain_mode).await {
+        Ok(_) => applied.push(format!("gain_control_mode={gm_str}")),
+        Err(e) => errors.push(format!("gain_control_mode: {e}")),
+    }
+
+    // DDC NCO is a synchronous FPGA register write, but ip_core is
+    // behind an async Mutex to serialize register-bank access with
+    // the rest of the code.
+    {
+        let core = state.ip_core.lock().await;
+        match core.set_ddc_frequency(nco_offset_hz, sr as f64) {
+            Ok(_) => applied.push(format!(
+                "ddc_nco_offset={:.0} (control_freq={control_freq})",
+                nco_offset_hz
+            )),
+            Err(e) => errors.push(format!("ddc_nco_offset: {e}")),
+        }
+    }
+
+    let readback_gain = state.ad9361.get_rx_gain().await.ok();
+    let readback_rssi = state.ad9361.get_rx_rssi().await.ok();
+
+    Json(serde_json::json!({
+        "ok": errors.is_empty(),
+        "applied": applied,
+        "errors": errors,
+        "requested": {
+            "rx_lo":              rx_lo,
+            "control_freq":       control_freq,
+            "sample_rate":        sr,
+            "rf_bandwidth":       bw,
+            "gain_control_mode":  gm_str,
+            "ddc_nco_offset_hz":  nco_offset_hz,
+        },
+        "boot_defaults": {
+            "rx_lo":              state.boot_rx_lo,
+            "control_freq":       state.boot_control_freq,
+            "sample_rate":        state.boot_sample_rate,
+            "rf_bandwidth":       state.boot_rf_bandwidth,
+            "lo_ppm":             state.boot_lo_ppm,
+            "gain_control_mode":  "slow_attack",
+        },
+        "readback": {
+            "hardwaregain_db": readback_gain,
+            "rssi_db":         readback_rssi,
+        },
+        "note": "Re-runs the main.rs boot front-end init for AD9361 + DDC NCO. Defaults restore boot config; query params override individual fields for live retuning without a Tezuka rebuild. Use as recovery path after anything clobbers AD9361 or DDC state.",
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn get_reinit(
+    State(_state): State<Arc<AppState>>,
+    Query(_params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "error": "front-end re-init is only available on the target (linux/arm)",
+    }))
 }
 
 // ── REST Handlers ──────────────────────────────────────────────────────

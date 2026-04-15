@@ -39,7 +39,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-15-phase8c.1-revert-control-lsm-domain-wrap";
+pub const BUILD_TAG: &str = "2026-04-15-phase8c.1-plus-api-reinit";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -2649,6 +2649,13 @@ async fn main() -> anyhow::Result<()> {
         ip_core,
         #[cfg(target_os = "linux")]
         ad9361,
+        // Boot-time front-end config snapshot, used by /api/reinit to
+        // restore the chip + DDC NCO without a board reboot.
+        boot_rx_lo:        args.rx_lo,
+        boot_sample_rate:  args.sample_rate as u32,
+        boot_rf_bandwidth: 5_000_000,
+        boot_control_freq: args.control_freq,
+        boot_lo_ppm:       args.lo_ppm,
         hdl_lsm: hdl_lsm.clone(),
         irq_stats: irq_stats.clone(),
         // Phase 7A.1: traffic-channel grant follower + dibit reader
