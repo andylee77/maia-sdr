@@ -3114,6 +3114,18 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       </tr>
     </tbody>
   </table>
+  <!-- Live control-channel retune. Fires GET /api/reinit with the
+       entered frequency (MHz, converted to Hz) and preserves the
+       current rf_bandwidth so the v2 8 MHz accept condition stays
+       in effect. User can type e.g. "855.4875" to jump to a
+       nearby LSM system without editing boot config. -->
+  <div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:0.85em">
+    <label for="bi_retune_mhz"><b>Retune control</b>:</label>
+    <input type="number" id="bi_retune_mhz" step="0.001" placeholder="MHz (e.g. 855.4875)"
+      style="width:12em;font-family:inherit" />
+    <button id="bi_retune_btn" class="btn" style="padding:3px 10px" onclick="retuneControl()">Tune</button>
+    <span class="v" id="bi_retune_status" style="font-size:0.85em;color:var(--text-dim)">idle</span>
+  </div>
   <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
     Pulled from /api/stats every 2 s. Wall clock is the Linux system
     clock — reads as 1970-... until NTP syncs at boot. Audio WS lag is
@@ -3121,7 +3133,11 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
     saw a browser consumer fall behind); non-zero means the listener
     heard a gap. Distinct from the AudioWorklet underrun counter in
     the playback status line below, which is the browser-side ring
-    running dry.
+    running dry. Retune field takes a control-channel frequency in
+    MHz and hits /api/reinit?control_freq=&lt;Hz&gt;&amp;rf_bandwidth=&lt;current&gt;
+    — the LO stays at boot value and the DDC NCO shifts to land
+    the new channel on the decode path. Board should re-acquire
+    within a few seconds. Blank input resets to boot control_freq.
   </p>
 </div>
 
@@ -3246,6 +3262,61 @@ let aliases = {};
 
 async function fetchJson(url) {
   try { return await (await fetch(url)).json(); } catch { return null; }
+}
+
+// Retune control channel via /api/reinit. Preserves the CURRENT
+// rf_bandwidth read from /api/stats so a live bandwidth override
+// (e.g. iio_attr-set 8 MHz) doesn't get silently reset back to the
+// 4 MHz boot default. Blank input = restore boot control_freq.
+async function retuneControl() {
+  const mhzStr = $('bi_retune_mhz').value.trim();
+  const status = $('bi_retune_status');
+  const btn = $('bi_retune_btn');
+  btn.disabled = true;
+  status.textContent = 'retuning...';
+  status.style.color = 'var(--text-dim)';
+  try {
+    // Grab current rf_bandwidth so we don't drop back to 4 MHz.
+    const curStats = await fetchJson('/api/stats');
+    const curBw = (curStats && curStats.rf_bandwidth_hz) || 0;
+    const params = new URLSearchParams();
+    if (mhzStr !== '') {
+      const mhz = parseFloat(mhzStr);
+      if (!isFinite(mhz) || mhz < 100 || mhz > 6000) {
+        status.textContent = 'bad MHz (100-6000 expected)';
+        status.style.color = 'var(--red)';
+        btn.disabled = false;
+        return;
+      }
+      const hz = Math.round(mhz * 1e6);
+      params.set('control_freq', String(hz));
+    }
+    if (curBw > 0) params.set('rf_bandwidth', String(curBw));
+    const url = '/api/reinit' + (params.toString() ? '?' + params.toString() : '');
+    const res = await fetchJson(url);
+    if (res && res.ok) {
+      const freqMhz = mhzStr !== ''
+        ? parseFloat(mhzStr).toFixed(4)
+        : 'boot default';
+      status.textContent = `tuned to ${freqMhz} MHz, waiting for reacquire...`;
+      status.style.color = 'var(--green)';
+      // Force an immediate refresh so the user sees the new NAC
+      // appear as soon as the decoder locks. The 2 s poll will
+      // keep updating after that.
+      setTimeout(refresh, 500);
+      setTimeout(refresh, 2000);
+      setTimeout(refresh, 5000);
+    } else {
+      const errs = (res && res.errors && res.errors.join('; ')) || 'reinit failed';
+      status.textContent = errs;
+      status.style.color = 'var(--red)';
+    }
+  } catch (e) {
+    status.textContent = 'fetch error: ' + e;
+    status.style.color = 'var(--red)';
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function refresh() {
