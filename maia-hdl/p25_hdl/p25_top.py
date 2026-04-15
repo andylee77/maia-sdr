@@ -85,11 +85,11 @@ import amaranth.back.verilog
 from maia_hdl.axi4_lite import Axi4LiteRegisterBridge
 from maia_hdl.cdc import RegisterCDC, RxIQCDC
 from maia_hdl.clknx import ClkNxCommonEdge
-from maia_hdl.ddc import DDC
 from maia_hdl.dma import DmaStreamRingWrite
 from maia_hdl.pluto_platform import PlutoPlatform
 from maia_hdl.register import Access, Field, Registers, Register, RegisterMap
 
+from .p25ddc import P25DDC
 from .c4fm_demod import C4FMDemod
 from .symbol_timing import SymbolTimingRecovery
 from .dibit_packer import DibitPacker
@@ -160,7 +160,11 @@ class P25Core(Elaboratable):
             2)
 
         # ── Control DDC registers (0x08) ──────────────────────────────
-        self.ddc = DDC('clk3x')
+        # P25DDC: SDRTrunk-faithful v2 fork of maia_hdl.ddc.DDC with
+        # unit-DC-gain coefficient convention and tightened stage 3
+        # filter to fix the LsmDecimator2 fold-back bug. See
+        # p25_hdl/p25ddc.py and doc/changes/041_p25ddc_fork.md.
+        self.ddc = P25DDC('clk3x')
 
         self.sdr_registers = Registers(
             'sdr', {
@@ -405,7 +409,11 @@ class P25Core(Elaboratable):
             3)
 
         # ── Traffic channel DDC + demod chain ─────────────────────────
-        self.traffic_ddc = DDC('clk3x')
+        # Second P25DDC instance for the traffic channel (retuned by
+        # PS on GroupVoiceChannelGrant). Same v2 filter convention as
+        # the control DDC above; coefficient RAM is shared, so both
+        # instances see the same (unit-DC-gain) filter tables.
+        self.traffic_ddc = P25DDC('clk3x')
         self.traffic_c4fm = C4FMDemod()
         self.traffic_timing = SymbolTimingRecovery(samples_per_symbol=13)
         self.traffic_packer = DibitPacker()
