@@ -39,7 +39,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-15-phase10prep-lsm-agc-and-ddc-redesign";
+pub const BUILD_TAG: &str = "2026-04-15-phase10-audio-jitter-tuning";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -2745,6 +2745,10 @@ async fn main() -> anyhow::Result<()> {
         imbe_forwarder: imbe_forwarder.clone(),
         monitor_list: monitor_list.clone(),
         audio_tx: audio_tx.clone(),
+        audio_ws_lag_total: std::sync::Arc::new(
+            std::sync::atomic::AtomicU64::new(0),
+        ),
+        boot_instant: std::time::Instant::now(),
         event_log: event_log.clone(),
     });
 

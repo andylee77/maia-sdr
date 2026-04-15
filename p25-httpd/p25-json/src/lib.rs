@@ -100,6 +100,52 @@ pub struct DecoderStats {
     /// against PlutoSDR + SDRTrunk on the same antenna).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rx_rssi_db: Option<f64>,
+    /// AD9361 RX LO frequency in Hz. Fixed at boot — the P25 follower
+    /// retunes via DDC NCO, not by moving the analog LO.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rx_lo_hz: Option<u64>,
+    /// AD9361 analog RX bandwidth in Hz.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rf_bandwidth_hz: Option<u32>,
+    /// AD9361 ADC sampling frequency in Hz.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling_frequency_hz: Option<u32>,
+    /// AD9361 gain control mode string ("manual" / "fast_attack" / ...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gain_control_mode: Option<String>,
+    /// Signed control-channel offset from RX LO in Hz, i.e. the NCO
+    /// offset the control-side DDC runs at. Computed from the boot-time
+    /// control_freq / rx_lo / lo_ppm triple.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ddc_control_offset_hz: Option<i64>,
+    /// Human-readable DDC decimation chain (e.g. "/4 /4 /8 = /128").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ddc_decimation: Option<String>,
+    /// DDC output rate after all decimation stages, in Hz.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ddc_output_rate_hz: Option<u32>,
+    /// Wall-clock time formatted for display. This is the Linux clock,
+    /// which is only meaningful once NTP has synced at boot. Pre-NTP
+    /// the value is "1970-..." and the operator should treat any
+    /// event-log timestamp older than the first grant as suspect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wall_clock: Option<String>,
+    /// Boot-relative uptime in seconds for the p25-httpd process.
+    /// Always increasing, monotonic, NTP-independent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime_secs: Option<u64>,
+    /// Cumulative count of audio WS `Lagged` events since boot — each
+    /// increment is one broadcast-channel overrun where the /ws/audio
+    /// consumer fell behind and lost chunks. A healthy client on a LAN
+    /// should hold this at 0 forever; non-zero means the browser
+    /// scheduler or network was too slow for the 50 fps audio stream
+    /// and the listener heard a gap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_ws_lag_total: Option<u64>,
+    /// Current number of connected /ws/audio subscribers (broadcast
+    /// channel receiver_count). 0 = nobody listening.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_ws_clients: Option<usize>,
 }
 
 /// Real-time TSBK event (sent over WebSocket)

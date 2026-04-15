@@ -113,6 +113,15 @@ pub struct AppState {
     /// Phase 7E: audio broadcast channel. The vocoder task sends
     /// AudioChunks here; HTTP/WebSocket handlers subscribe.
     pub audio_tx: crate::audio::AudioTx,
+    /// Cumulative count of `Lagged` events observed by /ws/audio
+    /// subscribers since boot. Each increment = one broadcast-channel
+    /// overrun where a consumer fell behind and lost chunks (audible
+    /// gap on the listener side). Surfaced via /api/stats so the
+    /// dashboard can distinguish server-side chunk loss from browser-
+    /// side jitter-buffer underruns.
+    pub audio_ws_lag_total: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Process start time. Used by /api/stats to report uptime_secs.
+    pub boot_instant: std::time::Instant,
     /// Phase 7F.1 (2026-04-14): structured event log ring buffer.
     /// See `src/event_log.rs`. Produced by the follower task, IMBE
     /// forwarder, and vocoder task; consumed by the dashboard's
@@ -501,14 +510,89 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats> {
     // RSSI (relative dB scale; for this band, ~100-110 dB is normal P25
     // reception, lower = quieter). Surfacing these via /api/stats so we
     // never have to ssh in and devmem just to find out the radio is alive.
+    //
+    // Board Info extension: rf_bandwidth, sampling_frequency, gain mode,
+    // and the live RX LO are read the same way so the dashboard's
+    // "Board Info" panel has one endpoint to poll for everything.
     #[cfg(target_os = "linux")]
-    let (rx_gain_db, rx_rssi_db) = {
+    let (
+        rx_gain_db,
+        rx_rssi_db,
+        rx_lo_hz,
+        rf_bandwidth_hz,
+        sampling_frequency_hz,
+        gain_control_mode,
+    ) = {
         let g = state.ad9361.get_rx_gain().await.ok();
         let r = state.ad9361.get_rx_rssi().await.ok();
-        (g, r)
+        let lo = state.ad9361.get_rx_lo_frequency().await.ok();
+        let bw = state.ad9361.get_rx_rf_bandwidth().await.ok();
+        let sr = state.ad9361.get_sampling_frequency().await.ok();
+        let gm = state
+            .ad9361
+            .get_rx_gain_mode()
+            .await
+            .ok()
+            .map(|m| m.to_string());
+        (g, r, lo, bw, sr, gm)
     };
     #[cfg(not(target_os = "linux"))]
-    let (rx_gain_db, rx_rssi_db): (Option<f64>, Option<f64>) = (None, None);
+    let (
+        rx_gain_db,
+        rx_rssi_db,
+        rx_lo_hz,
+        rf_bandwidth_hz,
+        sampling_frequency_hz,
+        gain_control_mode,
+    ): (
+        Option<f64>,
+        Option<f64>,
+        Option<u64>,
+        Option<u32>,
+        Option<u32>,
+        Option<String>,
+    ) = (None, None, None, None, None, None);
+
+    // DDC geometry: the control-side DDC NCO sits at a fixed offset
+    // from the LO (plus a small crystal-ppm correction). Report that
+    // offset so the operator can see "which DDC frequency is the
+    // control channel" without re-deriving it from /api/reinit.
+    let ddc_control_offset_hz: Option<i64> = rx_lo_hz.map(|lo| {
+        let nco_lo_shift_hz = -state.boot_lo_ppm * 1e-6 * lo as f64;
+        (state.boot_control_freq as f64 - lo as f64 + nco_lo_shift_hz) as i64
+    });
+    // Decimation chain is a compile-time constant of the HDL build.
+    // Phase 10-prep redesign: /4 /4 /8 Parks-McClellan split.
+    // 8 MSPS ADC / 128 = 62.5 kSPS into the demod.
+    let ddc_decimation = Some("/4 /4 /8 = /128".to_string());
+    let ddc_output_rate_hz = sampling_frequency_hz.map(|sr| sr / 128);
+
+    // Wall clock: Linux clock value. Pre-NTP this will read 1970-...;
+    // post-NTP it's real. We format it here so the browser doesn't
+    // have to parse a raw u64 seconds-since-epoch.
+    let wall_clock = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|d| {
+                let secs = d.as_secs();
+                // Minimal ISO-ish formatter without pulling chrono in.
+                let (year, month, day, h, m, s) = ts_to_ymd_hms(secs);
+                format!(
+                    "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                    year, month, day, h, m, s
+                )
+            })
+    };
+    let uptime_secs = Some(state.boot_instant.elapsed().as_secs());
+
+    let audio_ws_lag_total = Some(
+        state
+            .audio_ws_lag_total
+            .load(std::sync::atomic::Ordering::Relaxed),
+    );
+    let audio_ws_clients = Some(state.audio_tx.receiver_count());
 
     Json(DecoderStats {
         recent_messages: decoder.recent_messages.len(),
@@ -520,7 +604,41 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats> {
         dma_next_address,
         rx_gain_db,
         rx_rssi_db,
+        rx_lo_hz,
+        rf_bandwidth_hz,
+        sampling_frequency_hz,
+        gain_control_mode,
+        ddc_control_offset_hz,
+        ddc_decimation,
+        ddc_output_rate_hz,
+        wall_clock,
+        uptime_secs,
+        audio_ws_lag_total,
+        audio_ws_clients,
     })
+}
+
+/// Convert Unix epoch seconds (UTC) to (year, month, day, h, m, s).
+/// Proleptic Gregorian, matches chrono's naive conversion. Used only
+/// by /api/stats so pulling chrono in just for this isn't worth it.
+fn ts_to_ymd_hms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
+    let days = (secs / 86_400) as i64;
+    let rem = (secs % 86_400) as u32;
+    let h = rem / 3600;
+    let m = (rem % 3600) / 60;
+    let s = rem % 60;
+    // Civil-from-days algorithm (Howard Hinnant).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = (y + if mo <= 2 { 1 } else { 0 }) as i32;
+    (year, mo, d, h, m, s)
 }
 
 /// Returns recent dibits as a hex string + diagnostic counters.
@@ -2525,6 +2643,7 @@ async fn handle_ws_audio(
     mut socket: axum::extract::ws::WebSocket,
     state: Arc<AppState>,
 ) {
+    use std::sync::atomic::Ordering;
     let mut rx = state.audio_tx.subscribe();
     loop {
         match rx.recv().await {
@@ -2543,7 +2662,16 @@ async fn handle_ws_audio(
                     break;
                 }
             }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                // The broadcast channel dropped `skipped` chunks because
+                // this consumer fell behind. Each lagged chunk is a gap
+                // the listener will hear. Bump the global counter so
+                // /api/stats.audio_ws_lag_total reflects it and the
+                // dashboard can distinguish this (server-side loss) from
+                // browser-side jitter-buffer underruns.
+                state.audio_ws_lag_total.fetch_add(skipped, Ordering::Relaxed);
+                continue;
+            }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
     }
@@ -2944,6 +3072,59 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
 <!-- ═════════════════════ Radio tab (default) ═════════════════════ -->
 <div class="tab-pane active" id="tab-radio">
 
+<!-- ── Phase 10: Board Info ── -->
+<!-- Single-glance health panel: firmware build, uptime, wall clock,
+     AD9361 tuning + gain + RSSI + BW, DDC geometry, and /ws/audio
+     lag/client counters. All driven off /api/stats (which is already
+     polled by the 2 s refresh loop) so adding a second endpoint isn't
+     needed. -->
+<h2>Board Info</h2>
+<div class="card" id="board_info_card">
+  <table style="font-size:0.85em">
+    <tbody>
+      <tr>
+        <th style="width:18%">Build</th>
+        <td class="v" id="bi_build">--</td>
+        <th style="width:18%">Uptime</th>
+        <td class="v" id="bi_uptime">--</td>
+      </tr>
+      <tr>
+        <th>Wall clock</th><td class="v" id="bi_clock">--</td>
+        <th>NAC / WACN</th><td class="v" id="bi_nac">--</td>
+      </tr>
+      <tr>
+        <th>RX LO</th><td class="v" id="bi_rx_lo">--</td>
+        <th>RF BW</th><td class="v" id="bi_rf_bw">--</td>
+      </tr>
+      <tr>
+        <th>Gain / Mode</th><td class="v" id="bi_gain">--</td>
+        <th>RSSI</th><td class="v" id="bi_rssi">--</td>
+      </tr>
+      <tr>
+        <th>Sample rate</th><td class="v" id="bi_sr">--</td>
+        <th>DDC chain</th><td class="v" id="bi_ddc">--</td>
+      </tr>
+      <tr>
+        <th>Control offset</th><td class="v" id="bi_ddc_off">--</td>
+        <th>DDC output</th><td class="v" id="bi_ddc_out">--</td>
+      </tr>
+      <tr>
+        <th>Audio WS clients</th><td class="v" id="bi_ws_clients">--</td>
+        <th>Audio WS lag</th><td class="v" id="bi_ws_lag">--</td>
+      </tr>
+    </tbody>
+  </table>
+  <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
+    Pulled from /api/stats every 2 s. Wall clock is the Linux system
+    clock — reads as 1970-... until NTP syncs at boot. Audio WS lag is
+    the cumulative count of broadcast-channel Lagged events (server
+    saw a browser consumer fall behind); non-zero means the listener
+    heard a gap. Distinct from the AudioWorklet underrun counter in
+    the playback status line below, which is the browser-side ring
+    running dry.
+  </p>
+</div>
+
 <!-- ── Phase 7D: Traffic Channel + Vocoder ── -->
 <h2>Traffic Channel <span id="trf_phase" style="font-size:0.75em;color:var(--text-dim);margin-left:6px"></span></h2>
 <!-- Phase 7E: browser-side live-audio playback (WS /ws/audio) -->
@@ -3223,6 +3404,50 @@ async function refresh() {
     const d = $('dot'), s = $('status');
     if (stats.system_acquired) { d.classList.add('active'); s.textContent = 'Tracking'; }
     else { d.classList.remove('active'); s.textContent = 'Searching'; }
+
+    // ── Board Info panel (Phase 10) ──
+    // sys_* values come from the /api/system fetch above; everything
+    // else lives in /api/stats. All fields are Option<...> server-side,
+    // so guard against missing/null before formatting.
+    const fmtHz = v => (v == null) ? '--' : (v / 1e6).toFixed(4) + ' MHz';
+    const fmtKhz = v => (v == null) ? '--' : (v / 1e3).toFixed(1) + ' kHz';
+    const fmtMsps = v => (v == null) ? '--' : (v / 1e6).toFixed(3) + ' MSPS';
+    const fmtDb = v => (v == null) ? '--' : v.toFixed(1) + ' dB';
+    const fmtUptime = s => {
+      if (s == null) return '--';
+      const d = Math.floor(s / 86400);
+      const h = Math.floor((s % 86400) / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      if (d > 0) return `${d}d ${h}h ${m}m`;
+      if (h > 0) return `${h}h ${m}m ${sec}s`;
+      if (m > 0) return `${m}m ${sec}s`;
+      return `${sec}s`;
+    };
+    $('bi_build').textContent = (sys && sys.build) || '--';
+    $('bi_uptime').textContent = fmtUptime(stats.uptime_secs);
+    $('bi_clock').textContent = stats.wall_clock || '--';
+    if (sys && (sys.nac || sys.wacn)) {
+      $('bi_nac').textContent = (sys.nac || '--') + ' / ' + (sys.wacn || '--');
+    } else {
+      $('bi_nac').textContent = '--';
+    }
+    $('bi_rx_lo').textContent = fmtHz(stats.rx_lo_hz);
+    $('bi_rf_bw').textContent = fmtHz(stats.rf_bandwidth_hz);
+    const gainTxt = (stats.rx_gain_db != null ? fmtDb(stats.rx_gain_db) : '--')
+      + ' / ' + (stats.gain_control_mode || '--');
+    $('bi_gain').textContent = gainTxt;
+    $('bi_rssi').textContent = fmtDb(stats.rx_rssi_db);
+    $('bi_sr').textContent = fmtMsps(stats.sampling_frequency_hz);
+    $('bi_ddc').textContent = stats.ddc_decimation || '--';
+    $('bi_ddc_off').textContent = fmtKhz(stats.ddc_control_offset_hz);
+    $('bi_ddc_out').textContent = (stats.ddc_output_rate_hz == null) ? '--' :
+      (stats.ddc_output_rate_hz / 1e3).toFixed(3) + ' kHz';
+    $('bi_ws_clients').textContent = (stats.audio_ws_clients == null) ?
+      '--' : stats.audio_ws_clients;
+    const lag = stats.audio_ws_lag_total || 0;
+    $('bi_ws_lag').textContent = lag.toLocaleString();
+    $('bi_ws_lag').style.color = lag > 0 ? 'var(--orange)' : '';
   }
 
   // Phase 9 retirement: the `/api/lsm` fetch + "LSM Pipeline"
@@ -3479,33 +3704,239 @@ async function saveAliases() {
   } catch (e) { alert('Invalid JSON: ' + e.message); }
 }
 
-// ── Phase 7E: browser-side live audio player ──
-// Consumes the /ws/audio binary stream (320 bytes = 160 × i16 LE per
-// 20 ms frame @ 8 kHz mono) and schedules contiguous playback via the
-// Web Audio API. A user gesture (click) is required to create/resume
-// the AudioContext, which is why this hangs off a Play button instead
-// of auto-starting.
+// ── Phase 10: AudioWorklet live audio player ──
 //
-// Jitter-buffer parameters (tuned 2026-04-14 after short-call dropouts):
-//   LEAD_IN   -- initial pre-roll on new call/session. 250 ms is enough
-//                to absorb ARM -> WS jitter + browser scheduler wakeups
-//                without being perceptibly laggy.
-//   GAP_RESET -- wall-clock ms with no incoming chunks before the
-//                player treats the next chunk as a new call and does a
-//                clean reset (non-underrun).
+// Replaces the Phase 7E per-chunk BufferSource scheduler, which produced
+// robotic playback even though the server-side IMBE frames were clean
+// (verified 2026-04-15 via /api/audio_test WAV: same bits, different
+// decoder instance, playback is clean). Root cause: each 20 ms incoming
+// chunk was wrapped in its own `AudioBuffer` + `BufferSource` and
+// scheduled independently onto the `AudioContext` timeline, so every
+// chunk got its own transient 8 kHz -> 48 kHz resample with no state
+// carried across chunk boundaries. SDRTrunk's Java pipeline doesn't
+// have this problem because JavaSound provides a blocking
+// `SourceDataLine.write()` into a single 8 kHz ring buffer; the
+// AudioWorklet pattern is the Web Audio equivalent.
+//
+// Architecture (matches SDRTrunk AudioChannel.java conceptually):
+//   1. One `AudioContext` + one `AudioWorkletNode` for the lifetime of
+//      the session.
+//   2. Worklet owns a `Float32Array` ring buffer big enough for a
+//      couple of seconds of 8 kHz audio.
+//   3. Main thread reads incoming WS binary frames, converts i16 -> f32,
+//      and `postMessage`s them to the worklet.
+//   4. Worklet's `process()` callback runs at the `AudioContext`'s
+//      native rate (48 kHz on most browsers) and emits samples via
+//      linear interpolation from the 8 kHz ring. One continuous
+//      resample, no per-chunk state.
+//   5. On an empty ring, the worklet emits silence and increments an
+//      `underruns` counter — matches SDRTrunk's "return null/silence"
+//      behaviour when AudioBuffer has < 160 samples.
+//   6. Status line polls the worklet for `{available, underruns,
+//      totalOut}` every 250 ms over `port.postMessage`.
+//
+// The worklet module itself is defined as a string constant and loaded
+// via a `Blob` URL so there's no separate /audio_worklet.js route.
+
+const AUDIO_WORKLET_CODE = `
+class P25AudioProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    // 2 s of 8 kHz mono = 16384 samples. Bigger than any realistic
+    // broadcast-side burst (9 IMBE frames = 180 ms) plus a full
+    // broadcast::channel(256) worth of backlog, so we can absorb a
+    // server hiccup and still sound continuous.
+    this.RING = 16384;
+    this.ring = new Float32Array(this.RING);
+    this.write = 0;
+    this.read = 0;
+    this.available = 0;
+    this.underruns = 0;
+    this.totalOut = 0;
+    this.totalIn = 0;
+    this.SRC_RATE = 8000;
+    this.ratio = this.SRC_RATE / sampleRate;
+    this.readFrac = 0;
+    // Prefill target: the vocoder task delivers 9 AudioChunks in a
+    // ~1 ms burst once per LDU, then waits ~180 ms for the next LDU
+    // to finish over-the-air. So the incoming stream is bursty with
+    // 180 ms silent gaps between bursts, and the ring naturally
+    // oscillates between 0 and 180 ms of buffered audio. Prefilling
+    // to only 200 ms puts us right at the edge of that oscillation;
+    // any jitter immediately underruns. 4320 samples = 540 ms = 3
+    // LDUs of headroom, which absorbs both LDU-burst jitter and the
+    // occasional main-thread stall from the dashboard's 2 s refresh
+    // loop. Costs ~340 ms of extra initial latency, which is still
+    // well under the 1-2 s "starts late" threshold the operator
+    // would notice relative to visible dashboard state.
+    this.PREFILL = 4320;
+    this.priming = true;
+    this.port.onmessage = (ev) => {
+      const m = ev.data;
+      if (m.type === 'pcm') {
+        const d = m.data;
+        for (let i = 0; i < d.length; i++) {
+          this.ring[this.write] = d[i];
+          this.write = (this.write + 1) % this.RING;
+          if (this.available < this.RING) {
+            this.available++;
+          } else {
+            // Ring full — drop oldest (this should never happen on a
+            // healthy LAN; it means the vocoder produced faster than
+            // sampleRate for >2 s, which would be a real bug).
+            this.read = (this.read + 1) % this.RING;
+          }
+        }
+        this.totalIn += d.length;
+        if (this.priming && this.available >= this.PREFILL) {
+          this.priming = false;
+        }
+      } else if (m.type === 'reset') {
+        this.write = 0; this.read = 0; this.available = 0;
+        this.readFrac = 0; this.priming = true;
+      } else if (m.type === 'stats') {
+        this.port.postMessage({
+          type: 'stats',
+          available: this.available,
+          underruns: this.underruns,
+          totalOut: this.totalOut,
+          totalIn: this.totalIn,
+          priming: this.priming,
+          ringRate: this.SRC_RATE,
+          ctxRate: sampleRate,
+        });
+      }
+    };
+  }
+  process(inputs, outputs) {
+    const out = outputs[0][0];
+    if (!out) return true;
+    const n = out.length;
+    if (this.priming) {
+      // Hold silence until the ring is warm enough.
+      for (let i = 0; i < n; i++) out[i] = 0;
+      return true;
+    }
+    for (let i = 0; i < n; i++) {
+      if (this.available <= 1) {
+        // Absorb the empty slot as a single silence sample and keep
+        // going. Do NOT re-prime — that would hold silence for the
+        // full PREFILL duration (~540 ms) after every jitter event,
+        // which is very audible. Losing individual samples at 8 kHz
+        // is inaudible.
+        out[i] = 0;
+        this.underruns++;
+        continue;
+      }
+      const a = this.ring[this.read];
+      const nextRead = (this.read + 1) % this.RING;
+      const b = this.ring[nextRead];
+      out[i] = a + (b - a) * this.readFrac;
+      this.readFrac += this.ratio;
+      while (this.readFrac >= 1) {
+        this.readFrac -= 1;
+        this.read = (this.read + 1) % this.RING;
+        this.available--;
+        if (this.available <= 0) break;
+      }
+      this.totalOut++;
+    }
+    return true;
+  }
+}
+registerProcessor('p25-audio', P25AudioProcessor);
+`;
+
 const AUDIO = {
   ctx: null,
+  node: null,         // AudioWorkletNode OR ScriptProcessorNode
   gain: null,
   ws: null,
-  nextTime: 0,     // audioCtx-time at which the next chunk should start
   playing: false,
-  chunks: 0,
-  underruns: 0,
-  lastChunkAt: 0,  // wall-clock ms of last arriving frame
-  statusTimer: null,
-  LEAD_IN: 0.25,
-  GAP_RESET_MS: 500,
+  mode: null,         // 'worklet' | 'spn'
+  chunks: 0,          // WS frames received this session
+  underruns: 0,       // mirrored from worklet or read from AUDIO_SPN
+  bufMs: 0,           // available samples converted to ms at 8 kHz
+  lastChunkAt: 0,     // wall-clock ms of last arriving WS frame
+  statsTimer: null,   // periodic port.postMessage({type:'stats'})
+  ctxRate: 0,         // realized AudioContext sample rate
 };
+
+// ── ScriptProcessorNode fallback state ──
+// Insecure-context browsers (http:// to a plain IP, which is how the
+// dashboard is actually reached on the Fishball's direct-connect
+// Ethernet) return `undefined` for `BaseAudioContext.audioWorklet`.
+// In that case the worklet path isn't available, so we fall back to a
+// ScriptProcessorNode running the same ring-buffer / linear-interp
+// logic on the main thread. ScriptProcessorNode is spec-deprecated but
+// still supported universally and has no secure-context gate. Audio
+// quality is identical — same 8 kHz ring, same continuous resample
+// to the context rate, same silence-on-underrun policy.
+const AUDIO_SPN = {
+  RING_SIZE: 16384,     // 2 s @ 8 kHz
+  // 540 ms warm-up = 3 LDUs of headroom; see worklet PREFILL comment
+  // above for the full reasoning. Shares the same tuning.
+  PREFILL: 4320,
+  ring: null,
+  write: 0,
+  read: 0,
+  available: 0,
+  readFrac: 0,
+  ratio: 1.0,           // 8000 / ctxRate, set at startAudio
+  underruns: 0,
+  priming: true,
+};
+function audioSpnReset() {
+  AUDIO_SPN.ring = new Float32Array(AUDIO_SPN.RING_SIZE);
+  AUDIO_SPN.write = 0;
+  AUDIO_SPN.read = 0;
+  AUDIO_SPN.available = 0;
+  AUDIO_SPN.readFrac = 0;
+  AUDIO_SPN.underruns = 0;
+  AUDIO_SPN.priming = true;
+}
+function audioSpnWrite(f32) {
+  const s = AUDIO_SPN;
+  for (let i = 0; i < f32.length; i++) {
+    s.ring[s.write] = f32[i];
+    s.write = (s.write + 1) % s.RING_SIZE;
+    if (s.available < s.RING_SIZE) {
+      s.available++;
+    } else {
+      // Ring full — drop oldest (should be unreachable on a healthy LAN)
+      s.read = (s.read + 1) % s.RING_SIZE;
+    }
+  }
+  if (s.priming && s.available >= s.PREFILL) s.priming = false;
+}
+function audioSpnProcess(e) {
+  const out = e.outputBuffer.getChannelData(0);
+  const n = out.length;
+  const s = AUDIO_SPN;
+  if (s.priming) {
+    for (let i = 0; i < n; i++) out[i] = 0;
+    return;
+  }
+  for (let i = 0; i < n; i++) {
+    if (s.available <= 1) {
+      // Absorb as a single silence sample; don't re-prime (see worklet
+      // comment). Individual-sample underruns are inaudible at 8 kHz.
+      out[i] = 0;
+      s.underruns++;
+      continue;
+    }
+    const a = s.ring[s.read];
+    const b = s.ring[(s.read + 1) % s.RING_SIZE];
+    out[i] = a + (b - a) * s.readFrac;
+    s.readFrac += s.ratio;
+    while (s.readFrac >= 1) {
+      s.readFrac -= 1;
+      s.read = (s.read + 1) % s.RING_SIZE;
+      s.available--;
+      if (s.available <= 0) break;
+    }
+  }
+}
 
 function audioSetStatus(html) {
   $('audioStatus').innerHTML = html;
@@ -3513,8 +3944,13 @@ function audioSetStatus(html) {
 
 function audioUpdateStatus() {
   if (!AUDIO.playing) { audioSetStatus('stopped'); return; }
+  // ScriptProcessor path doesn't use port.postMessage stats — pull
+  // directly from the shared main-thread state.
+  if (AUDIO.mode === 'spn') {
+    AUDIO.bufMs = (AUDIO_SPN.available / 8) | 0;
+    AUDIO.underruns = AUDIO_SPN.underruns;
+  }
   const gapMs = AUDIO.lastChunkAt ? (Date.now() - AUDIO.lastChunkAt) : -1;
-  const buf = Math.max(0, (AUDIO.nextTime - (AUDIO.ctx ? AUDIO.ctx.currentTime : 0)) * 1000);
   let gapCls = 'on', gapTxt = 'live';
   if (gapMs < 0) {
     gapTxt = 'waiting for vocoder…';
@@ -3523,9 +3959,15 @@ function audioUpdateStatus() {
     gapTxt = 'silent ' + (gapMs/1000).toFixed(1) + 's';
     gapCls = 'warn';
   }
+  const rateTxt = AUDIO.ctxRate ? (AUDIO.ctxRate/1000).toFixed(1) + 'k' : '--';
+  const modeTxt = AUDIO.mode === 'worklet' ? 'wkt'
+               : AUDIO.mode === 'spn'     ? 'spn'
+               : '--';
   audioSetStatus(
     '<span class="' + gapCls + '">' + gapTxt + '</span>'
-    + '  &middot;  buf ' + buf.toFixed(0) + ' ms'
+    + '  &middot;  buf ' + AUDIO.bufMs + ' ms'
+    + '  &middot;  rate ' + rateTxt
+    + '  &middot;  ' + modeTxt
     + '  &middot;  chunks ' + AUDIO.chunks.toLocaleString()
     + (AUDIO.underruns ? '  &middot;  <span class="warn">underruns ' + AUDIO.underruns + '</span>' : '')
   );
@@ -3546,25 +3988,75 @@ async function startAudio() {
   try {
     const Ctor = window.AudioContext || window.webkitAudioContext;
     if (!Ctor) { audioSetStatus('<span class="err">Web Audio unsupported</span>'); return; }
+    // Don't pin sampleRate: let the browser pick native (usually 48 kHz).
+    // The ring buffer + linear interp inside either the AudioWorklet
+    // (secure context) or the ScriptProcessorNode fallback handles 8
+    // kHz -> native conversion with one continuous interpolator, which
+    // was the whole point of the 2026-04-15 rewrite.
     AUDIO.ctx = new Ctor();
-    // Some browsers start the context suspended until a user gesture.
-    // Await the resume so the first arriving chunk doesn't get
-    // scheduled against a still-suspended context (which was the
-    // root cause of missed short-call openings before 2026-04-14).
     if (AUDIO.ctx.state === 'suspended') {
       try { await AUDIO.ctx.resume(); } catch {}
     }
-    AUDIO.gain = AUDIO.ctx.createGain();
-    AUDIO.gain.connect(AUDIO.ctx.destination);
-    audioApplyGain();
-    AUDIO.nextTime = 0;
+    AUDIO.ctxRate = AUDIO.ctx.sampleRate;
     AUDIO.chunks = 0;
     AUDIO.underruns = 0;
+    AUDIO.bufMs = 0;
     AUDIO.lastChunkAt = 0;
 
+    // Mode selection:
+    //   (a) Secure context (https:// or localhost) -> AudioWorklet.
+    //       Runs the ring buffer on a dedicated audio thread, best
+    //       real-time characteristics.
+    //   (b) Insecure context (http:// to a LAN IP, which is the
+    //       actual Fishball direct-connect setup) -> the browser
+    //       returns `undefined` for `ctx.audioWorklet` because of the
+    //       [SecureContext] IDL gate in the Web Audio spec. Fall back
+    //       to ScriptProcessorNode, which is spec-deprecated but
+    //       universally supported and runs the same ring buffer on
+    //       the main thread. Quality is identical for 8 kHz P25
+    //       voice; the only downside is main-thread jank sensitivity,
+    //       and at 2 s refresh cadence the dashboard isn't blocking.
+    if (AUDIO.ctx.audioWorklet) {
+      AUDIO.mode = 'worklet';
+      const blob = new Blob([AUDIO_WORKLET_CODE], {type:'application/javascript'});
+      const url = URL.createObjectURL(blob);
+      try {
+        await AUDIO.ctx.audioWorklet.addModule(url);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      AUDIO.node = new AudioWorkletNode(AUDIO.ctx, 'p25-audio');
+      AUDIO.node.port.onmessage = (ev) => {
+        const m = ev.data;
+        if (m && m.type === 'stats') {
+          AUDIO.bufMs = (m.available / 8) | 0;
+          AUDIO.underruns = m.underruns;
+        }
+      };
+    } else if (AUDIO.ctx.createScriptProcessor) {
+      AUDIO.mode = 'spn';
+      audioSpnReset();
+      AUDIO_SPN.ratio = 8000 / AUDIO.ctxRate;
+      // 1024 samples per callback = 21 ms at 48 kHz, 23 ms at 44.1 kHz.
+      // Power-of-two required by ScriptProcessorNode; 1024 is the
+      // sweet spot between latency and callback overhead for our
+      // single-channel 8 kHz source.
+      AUDIO.node = AUDIO.ctx.createScriptProcessor(1024, 0, 1);
+      AUDIO.node.onaudioprocess = audioSpnProcess;
+    } else {
+      audioSetStatus('<span class="err">no usable audio path</span>');
+      AUDIO.ctx.close(); AUDIO.ctx = null;
+      return;
+    }
+
+    AUDIO.gain = AUDIO.ctx.createGain();
+    AUDIO.node.connect(AUDIO.gain);
+    AUDIO.gain.connect(AUDIO.ctx.destination);
+    audioApplyGain();
+
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = proto + '//' + location.host + '/ws/audio';
-    const ws = new WebSocket(url);
+    const wsUrl = proto + '//' + location.host + '/ws/audio';
+    const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       AUDIO.playing = true;
@@ -3572,46 +4064,29 @@ async function startAudio() {
       btn.classList.remove('play-off');
       btn.classList.add('play-on');
       btn.innerHTML = '&#9632; Stop Audio';
-      if (!AUDIO.statusTimer) AUDIO.statusTimer = setInterval(audioUpdateStatus, 250);
+      if (!AUDIO.statsTimer) {
+        AUDIO.statsTimer = setInterval(() => {
+          if (AUDIO.mode === 'worklet' && AUDIO.node) {
+            AUDIO.node.port.postMessage({type:'stats'});
+          }
+          audioUpdateStatus();
+        }, 250);
+      }
       audioUpdateStatus();
     };
     ws.onmessage = (ev) => {
       if (!(ev.data instanceof ArrayBuffer)) return;
-      // 320 bytes = 160 × i16 LE = 20 ms of 8 kHz mono
+      // 320 bytes = 160 × i16 LE = 20 ms of 8 kHz mono.
       const i16 = new Int16Array(ev.data);
-      if (i16.length === 0) return;
-      if (!AUDIO.ctx || AUDIO.ctx.state !== 'running') return;
-      const buffer = AUDIO.ctx.createBuffer(1, i16.length, 8000);
-      const ch = buffer.getChannelData(0);
-      for (let i = 0; i < i16.length; i++) ch[i] = i16[i] / 32768;
-      const src = AUDIO.ctx.createBufferSource();
-      src.buffer = buffer;
-      src.connect(AUDIO.gain);
-
-      // Schedule contiguously. Three cases to distinguish:
-      //   (a) Steady-state: nextTime is in the future, just schedule.
-      //   (b) New call / long gap: last chunk was > GAP_RESET_MS ago
-      //       (or this is the very first chunk). Reset with the full
-      //       LEAD_IN pre-roll -- NOT an underrun.
-      //   (c) True underrun: consecutive chunks with < GAP_RESET_MS
-      //       gap but nextTime fell behind currentTime anyway. Reset
-      //       with a shorter lead-in and bump the underrun counter.
-      const now = AUDIO.ctx.currentTime;
-      const wallGap = AUDIO.lastChunkAt
-        ? (Date.now() - AUDIO.lastChunkAt)
-        : Number.POSITIVE_INFINITY;
-      if (AUDIO.nextTime < now + 0.005) {
-        if (wallGap > AUDIO.GAP_RESET_MS) {
-          // Case (b): new call / session start
-          AUDIO.nextTime = now + AUDIO.LEAD_IN;
-        } else {
-          // Case (c): real underrun
-          AUDIO.underruns++;
-          AUDIO.nextTime = now + 0.10;
-        }
+      if (i16.length === 0 || !AUDIO.node) return;
+      const f32 = new Float32Array(i16.length);
+      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+      if (AUDIO.mode === 'worklet') {
+        // Transfer the buffer so there's no copy on the worklet side.
+        AUDIO.node.port.postMessage({type:'pcm', data:f32}, [f32.buffer]);
+      } else {
+        audioSpnWrite(f32);
       }
-      src.start(AUDIO.nextTime);
-      AUDIO.nextTime += i16.length / 8000;
       AUDIO.chunks++;
       AUDIO.lastChunkAt = Date.now();
     };
@@ -3635,12 +4110,22 @@ function stopAudio() {
   AUDIO.playing = false;
   try { if (AUDIO.ws) AUDIO.ws.close(); } catch {}
   AUDIO.ws = null;
+  try { if (AUDIO.node) AUDIO.node.disconnect(); } catch {}
+  // ScriptProcessorNode keeps its onaudioprocess closure alive until
+  // the node is GC'd, which can prevent AudioContext shutdown. Null
+  // the callback explicitly so the node is inert even if something
+  // else holds a reference briefly.
+  if (AUDIO.node && 'onaudioprocess' in AUDIO.node) {
+    try { AUDIO.node.onaudioprocess = null; } catch {}
+  }
+  AUDIO.node = null;
+  AUDIO.mode = null;
   try { if (AUDIO.gain) AUDIO.gain.disconnect(); } catch {}
   AUDIO.gain = null;
   try { if (AUDIO.ctx) AUDIO.ctx.close(); } catch {}
   AUDIO.ctx = null;
-  AUDIO.nextTime = 0;
-  if (AUDIO.statusTimer) { clearInterval(AUDIO.statusTimer); AUDIO.statusTimer = null; }
+  AUDIO.ctxRate = 0;
+  if (AUDIO.statsTimer) { clearInterval(AUDIO.statsTimer); AUDIO.statsTimer = null; }
   const btn = $('audioBtn');
   btn.classList.remove('play-on');
   btn.classList.add('play-off');
