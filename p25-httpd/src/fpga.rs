@@ -910,22 +910,58 @@ impl IpCore {
     ///      strobes, output latches). The C4FM chain is also
     ///      gated at `traffic_demod_enable = 0`.
     ///   2. Write the new DDC NCO frequency.
-    ///   3. `traffic_lsm_enable = 1`  — Phase 8C domain reset
+    ///   3. **Wait for the DDC FIR pipeline to flush** (2026-04-15
+    ///      fix). The 3-stage cascaded FIR in maia_hdl.ddc.DDC has
+    ///      total tap depth of ~600 µs after the P25DDC v2 fork
+    ///      (176/128/256 taps across /4/4/8 decim stages). When
+    ///      the NCO register is written, the mixer output
+    ///      instantly uses the new frequency, but the
+    ///      downstream FIR tap registers still contain convolution
+    ///      history from samples mixed with the OLD NCO.
+    ///      Convolving new samples with stale tap state produces a
+    ///      transient that looks like a high-frequency chirp to
+    ///      the LSM demod. The PLL immediately chases this phantom
+    ///      signal, saturates its ±π/3 accumulator clamp
+    ///      (pll_reg = ±8580 in Q2.13), and locks there — unable
+    ///      to track the real post-flush signal.
+    ///
+    ///      Observed pre-fix on Duval County NAC 0x3BA, 2026-04-15:
+    ///      control chain `pll_dbg=154` (healthy), traffic chain
+    ///      `pll_dbg=8579` (exactly the ±π/3 Q2.13 saturation
+    ///      limit — PLL stuck at clamp on every retune). Audio
+    ///      was "robotic half the time" because the NID BCH
+    ///      decoder corrected half the LDUs into TDU_LC
+    ///      (all-ones DUID pattern, closest codeword to random
+    ///      noise in the PLL-chase transient).
+    ///
+    ///      Wait duration: 2 ms. At the `rxiq_cdc` 8 MSPS input
+    ///      rate, the FIR cascade pipeline budget is roughly:
+    ///        stage 1 (176 taps @ 8 MSPS) = 22 µs
+    ///        stage 2 (128 taps @ 2 MSPS) = 64 µs
+    ///        stage 3 (256 taps @ 0.5 MSPS) = 512 µs
+    ///        cascade total ≈ 600 µs
+    ///      2 ms = ~3× the flush time, giving generous margin.
+    ///      This is a `std::thread::sleep` because
+    ///      `retune_traffic_chain` is a sync function and 2 ms
+    ///      of tokio-runtime blocking is acceptable for a retune
+    ///      event that happens at most ~1/second during normal
+    ///      grant-follow operation.
+    ///   4. `traffic_lsm_enable = 1`  — Phase 8C domain reset
     ///      deasserts. The chain is live again, but the
     ///      `reset_less=True` accumulators (PLL `pll_reg`,
     ///      timing `sample_point`, diff slicer `prev_*`, sync
     ///      shift register, BCH sweep counter, etc.) still hold
     ///      their pre-disable values.
-    ///   4. Pulse `traffic_lsm_reset` — the Phase 8A explicit
+    ///   5. Pulse `traffic_lsm_reset` — the Phase 8A explicit
     ///      `reset_in` path clears ALL of those `reset_less`
     ///      registers to init inside one sync cycle. This MUST
     ///      come after the domain is re-enabled because
     ///      `m.d.<domain>` assignments only fire when the domain
     ///      is not in reset.
-    ///   5. `traffic_demod_enable = 1` — C4FM chain too (shares
+    ///   6. `traffic_demod_enable = 1` — C4FM chain too (shares
     ///      the same upstream DDC).
     ///
-    /// Without steps 1+3 the carryover of PLL state from the
+    /// Without steps 1+3+5 the carryover of PLL state from the
     /// previous carrier produces corrupted dibits for hundreds
     /// of milliseconds, which is the Phase 7 "1 in 20 calls
     /// intelligible" symptom documented in doc/changes/037.
@@ -937,6 +973,10 @@ impl IpCore {
         self.set_traffic_lsm_enable(false);
         self.set_traffic_demod_enable(false);
         self.set_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
+        // Phase 10D fix: let the DDC FIR cascade flush before
+        // un-freezing the LSM chain. See step 3 in the docstring
+        // above for the measurement that motivated this wait.
+        std::thread::sleep(std::time::Duration::from_millis(2));
         self.set_traffic_lsm_enable(true);
         self.pulse_traffic_lsm_reset();
         self.set_traffic_demod_enable(true);
