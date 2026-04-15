@@ -393,17 +393,44 @@ impl TrafficManager {
     /// `is_lc` is true for TDU_LC (DUID 0xF) -- carries final Link
     /// Control payload. Phase 7C will extract the LC for end-of-call
     /// logging; for 7A.2 we just track the count.
+    ///
+    /// 2026-04-15 fix: idempotent TDU handling matching SDRTrunk
+    /// `P25TrafficChannelEventTracker.completeTraffic()`. Only the
+    /// FIRST TDU after the slot became active starts the hold
+    /// window; subsequent TDU/TDU_LC events inside the same call
+    /// are no-ops (other than bumping the stats counter and
+    /// refreshing last_duid/last_nac). Previously we overwrote
+    /// `post_tdu_hold_until` on every TDU, so the HDL framer's
+    /// phantom TDU_LC burst (20-70 copies of the same end-of-call
+    /// marker at ~80 ms intervals, Phase 10 TODO) kept extending
+    /// the hold and pinned the traffic DDC on dead channels for
+    /// 5-10 s instead of the intended 2 s. Live on-target
+    /// measurement at Duval County NAC 3BA on 2026-04-15 showed
+    /// LDU1+LDU2 = 411 vs TDU_LC = 835 (2:1), with short calls
+    /// missing voice capture entirely because the previous call's
+    /// hold hadn't released yet. SDRTrunk reference (see
+    /// P25TrafficChannelEventTracker.java:272-283): once
+    /// `mComplete = true`, subsequent `completeTraffic()` calls
+    /// return false without touching state.
     pub fn tdu_received(&mut self, now: Instant, nac: u16, is_lc: bool) {
         self.tdus_seen += 1;
         self.last_duid = Some(if is_lc { 0xF } else { 0x3 });
         self.last_nac = Some(nac);
-        // Start the post-TDU hold window. We do NOT touch
-        // last_activity here -- the call_timeout_ms timer continues
-        // running in parallel as the fallback. The hold window is
-        // strictly "release at this specific instant unless dibits
-        // resume in the meantime".
-        self.post_tdu_hold_until = Some(
-            now + std::time::Duration::from_millis(self.post_tdu_hold_ms));
+        // Idempotent: only start the hold window if we are not
+        // already in one. Matches SDRTrunk
+        // P25TrafficChannelEventTracker.completeTraffic()'s
+        // mComplete flag semantics. LDU arrival inside the hold
+        // clears post_tdu_hold_until back to None (see
+        // ldu_received), so a multi-speaker conversation with a
+        // real LDU resume after PTT release still re-arms the
+        // hold correctly on the NEXT real TDU. Phantom TDU_LC
+        // bursts between the first TDU and the hold expiry now
+        // do nothing, capping the dead-channel dwell at exactly
+        // post_tdu_hold_ms.
+        if self.post_tdu_hold_until.is_none() {
+            self.post_tdu_hold_until = Some(
+                now + std::time::Duration::from_millis(self.post_tdu_hold_ms));
+        }
     }
 
     /// Phase 7A.2: LDU1 (DUID 0x5) or LDU2 (DUID 0xA) dispatched from
