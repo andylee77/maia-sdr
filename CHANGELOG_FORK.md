@@ -5,6 +5,247 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-15] Phase 8C.1 -- Control-side `lsm_ctrl_dom` revert + TSBK CRC regression diagnosis
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/038_phase8_runtime_reset.md`, this session's investigation log
+
+Investigation session chasing a PS LSM TSBK CRC pass-rate regression
+(~18-25% vs Phase 6F.9's documented 91.7%) that was unmasked by the
+Phase 9 iq_lsm_decoder retirement removing the dashboard's dual-decoder
+union safety net.
+
+### Phase 8C.1 HDL revert (baked + flashed + tested)
+
+- **`maia-hdl/p25_hdl/p25_top.py`**: reverted the Phase 8C
+  `DomainRenamer({'sync': 'lsm_ctrl_dom'})` wrap around the
+  control-side `lsm_demod` submodule. The `lsm_ctrl_dom`
+  `ClockDomain` declaration, its clock/reset comb assignments,
+  and the `lsm_ctrl_renamer` helper are all removed. The
+  traffic-side `lsm_traffic_dom` wrap **is kept** because
+  Phase 8B's per-call retune flow depends on
+  `traffic_lsm_enable` toggling to clear non-`reset_less`
+  state between calls.
+- **Phase 8A `reset_in` plumbing is unchanged** -- the W1P
+  `lsm_control.lsm_reset` field and the `self.lsm_demod.reset_in`
+  wiring still work; the override block inside LsmPllUpdate /
+  LsmTimingInterp / etc. just runs in the global `sync` domain
+  now instead of `lsm_ctrl_dom`.
+- Vivado timing dramatically improved: **WNS −0.688 ns → −0.093 ns**
+  (6 failing endpoints instead of 95, all PS7 CDC false-positives
+  in `axi_ad9361/up_axi` and `sys_rstgen`). But the TSBK CRC
+  regression **did not improve** post-flash -- still at ~18% pass.
+  The DomainRenamer wrap was hurting Vivado's placer badly but
+  wasn't the cause of the framer-level regression.
+
+### Diagnosis: TSBK CRC regression is symbol-timing drift, not a bug
+
+Bit-exact offline replay via `tools/p25_decode_capture.py` (pure
+Python reimplementation of the same framer/deinterleave/trellis/
+CRC pipeline) demonstrated:
+
+- **Sync dibits**: perfect match (distance 0, rust and python
+  agree bit-for-bit).
+- **NID BCH**: rust and python produce identical NAC/DUID from
+  the same nid_bits word.
+- **TSDU deinterleave** (status-dibit strip + trellis dibit
+  extraction): rust and python produce bit-identical 98-dibit
+  output.
+- **Viterbi trellis decode**: rust and python produce bit-
+  identical 12-byte TSBK output, matching final-state metrics.
+- **CRC check**: python and rust **both** fail the CRC on
+  failing captures -- computed CRC doesn't match the message
+  CRC field either with plain or xored convention.
+
+**Conclusion**: the PS framer pipeline is bit-exact with the
+reference and has no bug. The trellis INPUT dibits have
+enough bit errors to kick the Viterbi onto wrong (internally
+self-consistent) paths that then fail CRC validation.
+
+### Root cause (on-target live readings): Gardner TED sample-point drift
+
+- `/api/hdl_lsm` 1-second window shows `sp_dbg` swinging by
+  ~6000 Q4.12 ULPs (**~1.6 dibit-periods**) every second while
+  the PLL is sitting at its lock point. That's 5-10x more
+  sample-point movement than expected for a locked Gardner.
+- Per-block TSBK CRC pass rates monotonically degrade with
+  block position: **TSBK1 33%, TSBK2 26%, TSBK3 17%** -- classic
+  signature of symbol-timing walk accumulating across the ~35 ms
+  TSDU span. Sync is at the start (clean), and the walk gets
+  worse as you move into the body.
+- NID BCH pass rate (~80% cumulative) matches the Phase 6G.1
+  cold-boot probe baseline of 75-80% from t=0. The LSM chain
+  itself is producing Phase-6G.1-consistent output at the NID
+  level. It's the TSDU BODY dibits that accumulate more errors
+  as Gardner drifts across the 100+ symbol span.
+
+### Reassessment of the Phase 6F.9 "91.7%" baseline
+
+After seeing the diagnostic data, the Phase 6F.9 doc 029
+measurement of 91.7% TSBK pass rate is probably not reproducible
+today, and may have never been a stable steady-state:
+
+- Phase 6G.1 (which came AFTER 6F.9) documented 75-80% NID valid
+  from t=0 in the cold-boot probe. That's what we're seeing now.
+- 6F.9's measurements were taken at "specific post-flash intervals"
+  (3-5 minutes of uptime) and may have captured a favorable
+  environmental moment.
+- The Gardner TED sample-point hunting was likely always present,
+  just not diagnosed because the 1-second window view in
+  `HdlLsmRuntime` didn't exist until Phase 6F.2.
+- SDRTrunk's 20+ TSBKs/s baseline on the same RF is achieved via
+  a completely different symbol-timing architecture (stock C4FM
+  Costas loop tuned for LSM vs. our custom Gardner TED).
+
+### Phase 8C.1 BUILD_TAG
+
+`2026-04-15-phase8c.1-revert-control-lsm-domain-wrap`
+
+### Phase 10 follow-up scope (deferred for next session)
+
+1. **Gardner TED tuning** -- reduce loop gain to stop
+   sample-point hunting, or add proportional + integral
+   control if it's currently proportional-only.
+2. **Capture a sp_dbg time series** (longer than 1 sec) to
+   characterize the drift pattern exactly.
+3. **Compare against SDRTrunk** on the same RF to rule out
+   environmental change (AD9361 LO drift, antenna, RF noise).
+4. **End-of-call TDU_LC burst** (carried over from Phase 8
+   session): TDU_LC-as-terminator or shorter
+   `call_timeout_ms`.
+5. **Duplicate same-TSBK `[TSBK2]` emission** in control_channel.rs
+   decoder dispatch (seen in user's earlier activity logs).
+6. **Optionally retire Phase 7A.2 traffic LSM chain + PS C4FM
+   decoder** if we commit to LSM-only permanently and want to
+   free resources that might be indirectly affecting control-side
+   place-and-route quality.
+
+---
+
+## [2026-04-15] Phase 9 -- Retire the Phase 6D software LSM pipeline
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/039_phase9_retire_phase6d_iq_lsm.md`
+
+Phase-out of PS-side code that was duplicating functionality the PL
+(FPGA gateware) already provides. The Phase 6D pure-Rust software
+LSM pipeline was the "algorithmic development + validation
+reference" before Phase 6E ported the full LSM demod into Amaranth;
+since Phase 6E.9 landed the HDL LSM chain in production (Oct 2025)
+the software pipeline has been dead weight. Phase 9 formally
+retires it.
+
+**What went away:**
+
+- **Phase 6D LSM IQ reader tokio task** (200 lines, read iq_dma →
+  full software LSM demod → soft-sync → directed TSDU dispatch).
+  Gone.
+- **`iq_lsm_decoder` + `lsm_stats` Arc constructions** in `main.rs`;
+  AppState fields dropped.
+- **`iq_dma` HDL ring**: still in the bitstream (dormant dead code),
+  disabled at boot. Can be revived by a future phase for baseband
+  capture or a new in-PL DSP block tapping post-DDC IQ.
+- **`/api/lsm` endpoint + `get_lsm` handler**.
+- **Dashboard "LSM Decoder (Phase 6D)" + "Top NACs (LSM)" cards**.
+- **`/api/decoder_compare` → `ps_iq_lsm` + `ps_phase6d` sections**.
+  The response is now a 3-column matrix: `ps_c4fm` (dormant
+  fallback), `ps_lsm` (PS framer on PL HDL dibits — production),
+  and `pl_hdl` (FPGA gateware heartbeat).
+
+**What got better as a side effect:**
+
+- **Active Grants panel stale-age bug fixed**. `iq_lsm_decoder`
+  had no `expire_grants` loop, so its grants accumulated forever
+  and leaked into the `/api/grants` union, showing entries with
+  186 s / 368 s ages even though the control channel was
+  refreshing them every 2-3 s. Removing the union = single
+  decoder read = single expire loop = no more stuck entries.
+- **PL HDL column on the Decoder Comparison matrix filled in**
+  with derivable aliases (Sync hits / NID attempts / NID BCH
+  failures / NID decoded OK / Total dibits — every row that has
+  a meaningful PL equivalent now shows a number). Rows that are
+  fundamentally PS-only (TSBK framing, active grants, bands) get
+  clearly-labelled tags instead of bare `--`.
+- **ARM CPU drops** — the software demod is no longer running on
+  every iq_dma wake.
+
+**What stayed** (deliberate non-goals):
+
+- PS C4FM `decoder` (framer on HDL c4fm_dibit_dma) — kept as the
+  only path to decode TSBKs on C4FM sites; labelled "dormant on
+  LSM sites" in the dashboard.
+- Traffic C4FM dibit reader task — kept because it still pets
+  the TrafficManager's inactivity timer.
+- libiio ADI IIO DMA chain — orthogonal to iq_dma; kept on the
+  bitstream per the "Keep libiio path on Fishball" memory.
+- `p25-httpd/src/lsm/` module — kept in-tree with
+  `#![allow(dead_code)]` because `nid_fec::T_MAX_ERRORS` and
+  `nid_fec::encode_nid` are still referenced by `/api/bch_t` and
+  the HDL test bench, the full `LsmPipeline` serves as a
+  readable algorithmic reference for the HDL port, and
+  `golden_dump` still feeds the HDL test fixture generator.
+
+Also updated: `doc/P25_API.md` (endpoint catalogue + examples +
+dashboard panels table), `tools/p25_check.py` (ps_iq_lsm section
+replaced with pl_hdl section, /api/lsm section removed),
+`tools/p25_status_and_next_step.py` (decoder_compare rendering +
+endpoint list). BUILD_TAG →
+`2026-04-15-phase9-retire-phase6d-iq-lsm`. `cargo check` clean
+(warnings 132 → 75).
+
+Phase 10 follow-ups: end-of-call TDU_LC burst fix
+(TDU_LC-as-terminator or shorter inactivity timeout), optional
+HDL retirement of `iq_packer` / `iq_dma`.
+
+---
+
+## [2026-04-15] Phase 8 -- LSM runtime reset + clean re-lock on retune
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/037_phase8_hdl_lsm_review.md`,
+`doc/changes/038_phase8_runtime_reset.md`
+
+Root-cause fix for the Phase 7 traffic-audio quality problem
+(1-in-20 calls intelligible on Clay County LSM). Three sub-phases
+in one session:
+
+- **Phase 8A:** HDL runtime reset plumbing. New `reset_in` port
+  cascades from `LsmDemod` through `LsmDemodLoop`,
+  `LsmPllUpdate` (both linearised + CORDIC), `LsmTimingInterp`,
+  `LsmDiffDemodSlicer`, `LsmSyncNidExtract`, `LsmNidBchFec`, and
+  `LsmNidPipeline`, clearing all persistent state to init on a
+  1-cycle pulse. Two new W1P register fields
+  (`lsm_control.lsm_reset`, `traffic_lsm_control.traffic_lsm_reset`)
+  wired into both LsmDemod instances. SVD + PAC regenerated. 4
+  new unit tests (linearised + CORDIC reset clears pll_reg,
+  CORDIC post-reset trajectory bit-exact to cold-start, end-to-
+  end `LsmDemod` reset clears `pll_dbg` + `sample_point_dbg`).
+
+- **Phase 8B:** PS integration. New `fpga.rs` helpers
+  `pulse_traffic_lsm_reset`, `retune_traffic_chain` (atomic
+  freeze-reset-thaw), `pause_traffic_chain`. Follower task in
+  `main.rs` uses `retune_traffic_chain` on every grant retune
+  and `pause_traffic_chain` on Idle/timeout + encryption
+  tear-down. Boot init flipped: `traffic_lsm_enable` starts OFF
+  and is enabled per-call. BUILD_TAG ->
+  `2026-04-15-phase8-lsm-runtime-reset`.
+
+- **Phase 8C:** Local clock domains. Both `LsmDemod` instances
+  moved into per-chain `lsm_ctrl_dom` / `lsm_traffic_dom` local
+  clock domains with reset wired to `~lsm_enable` /
+  `~traffic_lsm_enable`. Disabling the chain now forces a
+  synchronous reset of all non-`reset_less` pipeline + FSM
+  state; the `reset_less=True` accumulators still need the 8A
+  explicit reset pulse, which `retune_traffic_chain` fires AFTER
+  the re-enable so it lands while the domain is active. Phase
+  7G channelizer groundwork.
+
+Verification: all 30 reset-relevant LSM HDL tests pass,
+elaboration + `cargo check` clean. On-target Vivado bake +
+firmware rebuild in flight.
+
+---
+
 ## [2026-04-12] Phase 7D + 7B + 7E -- JMBE vocoder, monitor list, audio streaming
 
 **Branch:** fishball-p25

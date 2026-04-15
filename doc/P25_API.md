@@ -25,7 +25,13 @@ curl -s http://192.168.2.1:8080/api/system | python -m json.tool
 
 ## Endpoint catalogue
 
-All 21 routes registered in `httpd/mod.rs`:
+Phase 9 retirement (2026-04-15): the `/api/lsm` endpoint (Phase 6D
+software LSM pipeline stats) was removed along with the `iq_lsm_decoder`
+and `LsmStats`. The `/api/decoder_compare` response also dropped the
+`ps_iq_lsm` and `ps_phase6d` sections; it is now a 3-column matrix
+(`ps_c4fm`, `ps_lsm`, `pl_hdl`). See
+[`doc/changes/039_phase9_retire_phase6d_iq_lsm.md`](changes/039_phase9_retire_phase6d_iq_lsm.md)
+for the retirement rationale and inventory of what moved where.
 
 | # | Path | Method | Returns | Purpose |
 |---|---|---|---|---|
@@ -34,22 +40,21 @@ All 21 routes registered in `httpd/mod.rs`:
 | 3 | `/api/grants` | GET | `Vec<ChannelGrant>` | Active voice grants (talkgroup-deduped, source preserved across updates) |
 | 4 | `/api/bands` | GET | `Vec<BandInfo>` | Frequency band table from `IDEN_UPDATE` opcodes |
 | 5 | `/api/stats` | GET | `DecoderStats` | Decoder + FPGA-side counters (dibit count, overflow flag, AGC gain, RSSI) |
-| 6 | `/api/lsm` | GET | JSON | PS-side raw IQ + soft sync stats (Phase 6D `LsmPipeline`) |
-| 7 | `/api/hdl_lsm` | GET | JSON | HDL LSM chain runtime stats (cumulative, live, last NID, NID ring buffer) |
-| 8 | `/api/irq_stats` | GET | JSON | Per-IRQ wait counts and average wait times (dibit DMA, IQ DMA, LSM dibit DMA) |
-| 9 | `/api/decoder_compare` | GET | JSON | Side-by-side per-pipeline counters: `pl_hdl`, `ps_c4fm`, `ps_lsm`, `ps_iq_lsm`, `ps_phase6d` |
-| 10 | `/api/dibit_dump` | GET | JSON | Raw dibit DMA dump (inner/outer ratio, raw_duid histogram) |
-| 11 | `/api/lsm_dibit_dump` | GET | JSON | Raw LSM dibit DMA dump from the HDL LSM chain |
-| 12 | `/api/lsm_capture` | GET | JSON | Pull a raw IQ capture window from the IQ DMA ring (for offline cross-validation) |
-| 13 | `/api/lsm_capture_aligned` | GET | JSON | Same as `lsm_capture` but aligned to a sync hit boundary |
-| 14 | `/api/tsbk_opcodes` | GET | JSON | Per-opcode + per-block-position histogram with parsed/unparsed flag and MFID breakdown |
-| 15 | `/api/recent_tsbks` | GET | JSON | Newest 50 TSBKs as `{age_secs, block, summary}` strings |
-| 16 | `/api/sync_tune` | GET, PUT | JSON | Read or set the runtime sync threshold (Phase 6F.7+) |
-| 17 | `/api/decoder_reset` | GET, POST | JSON | Reset the decoder counters to zero (for clean post-flash measurements) |
-| 18 | `/api/lsm_control` | GET | JSON | Read all 3 `lsm_control` bits + optional `?dc_block=0/1` query-param shortcut to toggle the DC blocker without ssh+devmem (Phase 6G.2) |
-| 19 | `/api/traffic` | GET | JSON | **Phase 7A.1** -- traffic-channel grant follower state, dibit DMA counters, optional `?reset_stats=1`, `?follower=on/off`, `?retune_hz=N`, `?demod_enable=0/1` manual controls |
-| 20 | `/api/aliases` | GET, PUT | `AliasMap` | Get or set the talkgroup-id → display-name map |
-| 21 | `/ws/events` | WS upgrade | JSON frames | Real-time TSBK event stream (`TsbkEvent`) — one frame per parsed TSBK |
+| 6 | `/api/hdl_lsm` | GET | JSON | HDL LSM chain runtime stats (cumulative, live, last NID, NID ring buffer) — single source of truth for PL-side LSM telemetry |
+| 7 | `/api/irq_stats` | GET | JSON | Per-IRQ wait counts and average wait times (dibit DMA, LSM dibit DMA, traffic DMA, traffic-LSM dibit DMA) |
+| 8 | `/api/decoder_compare` | GET | JSON | 3-column side-by-side: `ps_c4fm` (dormant fallback), `ps_lsm` (PS framer on PL dibits), `pl_hdl` (FPGA gateware heartbeat) |
+| 9 | `/api/dibit_dump` | GET | JSON | Raw dibit DMA dump (inner/outer ratio, raw_duid histogram) |
+| 10 | `/api/lsm_dibit_dump` | GET | JSON | Raw LSM dibit DMA dump from the HDL LSM chain |
+| 11 | `/api/lsm_capture` | GET | JSON | 2048-dibit rolling capture from the PS LSM framer's ring buffer (Phase 6F.2h) |
+| 12 | `/api/lsm_capture_aligned` | GET | JSON | Arm next-sync-aligned capture (sync dibits + NID + TSDU body + BCH result) |
+| 13 | `/api/tsbk_opcodes` | GET | JSON | Per-opcode + per-block-position histogram with parsed/unparsed flag and MFID breakdown |
+| 14 | `/api/recent_tsbks` | GET | JSON | Newest 50 TSBKs as `{age_secs, block, summary}` strings |
+| 15 | `/api/sync_tune` | GET, PUT | JSON | Read or set the runtime sync threshold (Phase 6F.7+) |
+| 16 | `/api/decoder_reset` | GET, POST | JSON | Reset the decoder counters to zero (for clean post-flash measurements) |
+| 17 | `/api/lsm_control` | GET | JSON | Read all 3 `lsm_control` bits + optional `?dc_block=0/1` query-param shortcut to toggle the DC blocker without ssh+devmem (Phase 6G.2) |
+| 18 | `/api/traffic` | GET | JSON | **Phase 7A.1** -- traffic-channel grant follower state, dibit DMA counters, optional `?reset_stats=1`, `?follower=on/off`, `?retune_hz=N`, `?demod_enable=0/1` manual controls |
+| 19 | `/api/aliases` | GET, PUT | `AliasMap` | Get or set the talkgroup-id → display-name map |
+| 20 | `/ws/events` | WS upgrade | JSON frames | Real-time TSBK event stream (`TsbkEvent`) — one frame per parsed TSBK |
 
 ---
 
@@ -103,11 +108,11 @@ rule.
   also TG-deduped: when a `GroupVoiceChannelGrant` or
   `GroupVoiceChannelGrantUpdate` arrives for an active TG on a new
   channel, the prior entry is dropped.
-- The HTTP handler does a second-pass collapse by talkgroup across
-  the union of `lsm_decoder.grants` and `iq_lsm_decoder.grants`,
-  keeping the youngest entry per TG. Wildcard `talkgroup=0` is
-  excluded from the dedup so unrelated "no-talkgroup" sentinels
-  don't collapse.
+- The HTTP handler reads grants from `lsm_decoder` (single source
+  of truth since the Phase 9 retirement). Pre-Phase-9 this was a
+  union with `iq_lsm_decoder.grants`; removing the union also
+  fixed a "stale age" bug where the retired decoder had no expire
+  loop and its grants stuck at their discovery timestamps forever.
 - `source` is **preserved across updates** (commit `1e29839`):
   `GroupVoiceChannelGrantUpdate` doesn't carry a source, so the
   decoder pulls the prior source from any existing entry for the
@@ -220,15 +225,20 @@ per pipeline:
     "iq_overflow_ticks": 1,
     "dibit_overflow_ticks": 0
   },
-  "ps_c4fm":   { "...": "C4FM software pipeline (HDL c4fm dibit-fed)" },
-  "ps_lsm":    { "...": "LSM software pipeline (HDL lsm dibit-fed)" },
-  "ps_iq_lsm": { "...": "IQ-LSM software pipeline (raw IQ + soft sync -> TSBK)" },
-  "ps_phase6d":{ "...": "Phase 6D sync-only path on raw IQ" }
+  "ps_c4fm": { "...": "C4FM software decoder (HDL C4FM dibit-fed, DORMANT on LSM sites)" },
+  "ps_lsm":  { "...": "PS LSM framer (software framer on PL HDL LSM dibits — production)" }
 }
 ```
 
-Per-pipeline fields for the three full pipelines (`ps_c4fm`,
-`ps_lsm`, `ps_iq_lsm`):
+**Phase 9 retirement (2026-04-15):** the `ps_iq_lsm` and
+`ps_phase6d` sections were removed when the Phase 6D software LSM
+pipeline retired. The response is now a 3-column matrix:
+`ps_c4fm` (kept as a dormant fallback for future C4FM sites),
+`ps_lsm` (the PS framer consuming the PL LSM dibit DMA ring —
+this is the current production control-channel decoder), and
+`pl_hdl` (the FPGA LSM chain's own runtime heartbeat).
+
+Per-pipeline fields for the two PS framers (`ps_c4fm`, `ps_lsm`):
 
 - `tsbk_block_attempts`, `tsbk_crc_ok`, `tsbk_crc_failures`,
   `tsbk_crc_ok_plain`, `tsbk_crc_ok_xored`, `tsbk_unknown_opcode`,
@@ -239,9 +249,19 @@ Per-pipeline fields for the three full pipelines (`ps_c4fm`,
 - `total_dibits`, `messages` (capped at `max_recent`)
 - `active_grants`, `bands_known`, `system_nac`
 
-`pl_hdl` is the HDL chain itself (NID-level only — no PS TSBK
-processing). `ps_phase6d` is the legacy raw-IQ sync detector kept
-for the soft/hard event count comparison.
+`pl_hdl` is the HDL chain heartbeat — NID-level only (no TSBK
+framing, which is the PS framer's job). Because every HDL
+hard-sync hit triggers exactly one BCH decode in gateware, the
+following PL-side aliases are computable from
+`{total_nids, valid_nids}`:
+
+- PL sync hits        = `total_nids` (every HDL sync → NID pipeline)
+- PL NID attempts     = `total_nids` (sync hit == attempt)
+- PL NID decoded OK   = `valid_nids`
+- PL NID BCH failures = `total_nids - valid_nids`
+
+The dashboard's Decoder Comparison table fills those aliases into
+the PL column automatically.
 
 ### `GET /api/sync_tune`
 
@@ -263,7 +283,7 @@ flash so cumulative percentages reflect post-PLL-lock steady state
 rather than including the early acquisition window. Returns:
 
 ```json
-{"ok": true, "reset": ["lsm_decoder", "iq_lsm_decoder", "c4fm_decoder", "phase6d", "hdl_lsm"]}
+{"ok": true, "note": "lsm_decoder counters + histograms cleared. System identity, bands, grants, and aliases preserved."}
 ```
 
 ### `GET /api/lsm_control`
@@ -677,16 +697,14 @@ fetched on a 2-second interval; the WebSocket runs in parallel.
 | Dashboard panel | Endpoint(s) | Notes |
 |---|---|---|
 | Header build tag | `/api/system.build` | the "is the right binary on the box?" check |
-| Decoder Comparison Matrix | `/api/decoder_compare` | side-by-side `pl_hdl` / `ps_c4fm` / `ps_lsm` / `ps_iq_lsm` / `ps_phase6d` counters |
+| Decoder Comparison Matrix | `/api/decoder_compare` | 3-column side-by-side `ps_c4fm` / `ps_lsm` / `pl_hdl` counters (Phase 9 dropped `ps_iq_lsm` + `ps_phase6d`) |
 | System Identity | `/api/system` | NAC, WACN, RFSS/Site, control channel |
 | Decode Stats | `/api/stats` | dibit count, overflow, AGC gain, RSSI |
 | HDL LSM Chain (PL) | `/api/hdl_lsm` | cumulative + live + 1 s window stats; nested `last_window`, `nid_ring`, `top_nacs` keys |
 | HDL LSM NID Ring (last 32) | `/api/hdl_lsm.nid_ring` | per-NID `{t_ms, nac, duid, valid, n_err, sync_d, drop, pll, sp}` |
-| IRQ Source Counters | `/api/irq_stats` | per-source IRQ count + rate (dibit/traffic/iq/lsm_dibit) |
-| LSM Decoder (Phase 6D) | `/api/lsm` | wakeups, IQ samples, hard/soft sync events, `last_sync`, `top_nacs` |
-| Top NACs (LSM) | `/api/lsm.top_nacs` | NAC histogram from soft+hard sync events |
-| PS C4FM Dibit Stream | `/api/dibit_dump` | per-bucket dibit histogram, inner/outer ratio, raw_duid histogram |
-| PS LSM Dibit Stream | `/api/lsm_dibit_dump` | same shape as `/api/dibit_dump` but on the LSM HDL stream |
+| IRQ Source Counters | `/api/irq_stats` | per-source IRQ count + rate (dibit/traffic/lsm_dibit/traffic_lsm_dibit) |
+| PS C4FM Dibit Stream | `/api/dibit_dump` | per-bucket dibit histogram, inner/outer ratio, raw_duid histogram (dormant on LSM sites) |
+| PS LSM Dibit Stream | `/api/lsm_dibit_dump` | same shape as `/api/dibit_dump` but reading from `lsm_decoder`, i.e. the PL HDL LSM dibit output |
 | Active Grants | `/api/grants` | TG-deduped, source-preserved across updates |
 | Frequency Bands | `/api/bands` | unioned across both decoders |
 | Live Activity | **`/ws/events`** | the only WebSocket consumer; richer than `recent_tsbks` |

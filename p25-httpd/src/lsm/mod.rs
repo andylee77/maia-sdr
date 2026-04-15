@@ -7,6 +7,36 @@
 //! in parallel; LSM runs as an independent task that produces its own NID
 //! sync events.
 //!
+//! ## Phase 9 retirement status (2026-04-15)
+//!
+//! Since Phase 6E.x ported the LSM demod into Amaranth gateware, the HDL
+//! LSM chain has been the production decoder and this software pipeline is
+//! no longer wired into any binary-path consumer. Phase 9 formally retired
+//! the `iq_lsm_decoder` + `LsmStats` wiring in `main.rs` / `httpd/mod.rs`
+//! and disabled the `iq_dma` ring at boot so no data flows into this code.
+//!
+//! The module is deliberately kept in-tree for three reasons:
+//!   1. `nid_fec::T_MAX_ERRORS` and `nid_fec::encode_nid` are still
+//!      referenced by `/api/bch_t` (runtime BCH threshold sweep) and
+//!      by the HDL test bench as a software reference.
+//!   2. The full `LsmPipeline` serves as a human-readable algorithmic
+//!      reference for the HDL port — when a new HDL submodule needs
+//!      cross-validation we can resurrect the software path with a
+//!      single `set_iq_dma_enable(true)` + reinstated tokio task.
+//!   3. The `golden_dump` fixture emitter drives off this pipeline and
+//!      is still used by `maia-hdl/test/golden_vectors/`.
+//!
+//! The dead_code warnings for the Phase 6D-specific types (`LsmPipeline`,
+//! `LsmBatch`, `LsmStats`, `LastSync`, `Complex32`, the `demod` /
+//! `filters` / `sync` constants) are suppressed at the module level to
+//! keep the rest of the build clean without editing each symbol
+//! individually. When a future phase re-wires the software pipeline
+//! into a consumer, these `#[allow(dead_code)]` attributes will become
+//! no-ops automatically (the warnings only fire when nothing uses the
+//! symbols). See `doc/changes/039_phase9_retire_phase6d_iq_lsm.md` for
+//! the retirement rationale and inventory.
+#![allow(dead_code)]
+//!
 //! Pipeline (file-by-file mirror of the Python reference):
 //!
 //! ```text

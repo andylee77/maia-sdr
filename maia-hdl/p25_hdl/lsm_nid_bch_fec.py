@@ -183,6 +183,10 @@ class LsmNidBchFec(Elaboratable):
         # ── Inputs ──────────────────────────────────────────────
         self.start = Signal()
         self.received_nid = Signal(CODE_BITS)
+        # Phase 8A: runtime reset. A 1-cycle pulse aborts any
+        # in-flight sweep (~65538 cycles = ~1 ms) and drops the
+        # FSM back to IDLE.
+        self.reset_in = Signal()
 
         # ── Outputs ─────────────────────────────────────────────
         self.done = Signal()
@@ -230,6 +234,11 @@ class LsmNidBchFec(Elaboratable):
                     m.next = "SWEEP"
 
             with m.State("SWEEP"):
+                # Phase 8A: abort the in-flight sweep on runtime
+                # reset. IDLE is already a self-loop so it does not
+                # need this check.
+                with m.If(self.reset_in):
+                    m.next = "IDLE"
                 # The combinational dist/update logic below uses
                 # `sweep_data` and writes `best_dist`/`best_data`
                 # synchronously. Counter advances every cycle until
@@ -303,6 +312,24 @@ class LsmNidBchFec(Elaboratable):
             m.d.sync += [
                 best_dist.eq(dist),
                 best_data.eq(sweep_data),
+            ]
+
+        # ── Phase 8A runtime reset override ─────────────────────
+        # Abort any in-flight sweep, clear the running-min
+        # registers, and reset the output latches so a restart
+        # looks like cold-boot. The FSM itself is forced back to
+        # IDLE by the `m.next = "IDLE"` in SWEEP above.
+        with m.If(self.reset_in):
+            m.d.sync += [
+                counter.eq(0),
+                received_q.eq(0),
+                best_dist.eq(0x7F),
+                best_data.eq(0),
+                self.nac_out.eq(0),
+                self.duid_out.eq(0),
+                self.n_errors_out.eq(0),
+                self.valid_out.eq(0),
+                self.done.eq(0),
             ]
 
         return m

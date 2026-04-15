@@ -74,6 +74,10 @@ class LsmNidPipeline(Elaboratable):
         # ── Inputs ──────────────────────────────────────────────
         self.dibit_in = Signal(2)
         self.dibit_strobe = Signal()
+        # Phase 8A: runtime reset. Propagated to sync_nid and bch
+        # and used to clear the per-NID latched_sync_distance and
+        # the event output registers.
+        self.reset_in = Signal()
 
         # ── Outputs ─────────────────────────────────────────────
         self.nid_event_strobe = Signal()
@@ -91,6 +95,12 @@ class LsmNidPipeline(Elaboratable):
 
         m.submodules.sync_nid = sync_nid = LsmSyncNidExtract()
         m.submodules.bch = bch = LsmNidBchFec()
+
+        # ── Phase 8A runtime reset fan-out ──────────────────────
+        m.d.comb += [
+            sync_nid.reset_in.eq(self.reset_in),
+            bch.reset_in.eq(self.reset_in),
+        ]
 
         # ── Sync detect + NID assembly ─────────────────────────
         m.d.comb += [
@@ -130,6 +140,26 @@ class LsmNidPipeline(Elaboratable):
                 self.valid_out.eq(bch.valid_out),
                 self.sync_distance_out.eq(latched_sync_distance),
                 self.nid_event_strobe.eq(1),
+            ]
+
+        # ── Phase 8A runtime reset override ─────────────────────
+        # Clear the latched sync distance + BCH-result latches +
+        # the NID-drop counter. NOTE that the drop counter is a
+        # diagnostic (should always read 0), and 8A resetting it
+        # on every retune means its semantics become "dropped
+        # since the last retune" instead of "dropped since boot",
+        # which matches the intent of the Phase 8B PS integration
+        # (one reset = one fresh decode window per call).
+        with m.If(self.reset_in):
+            m.d.sync += [
+                latched_sync_distance.eq(0),
+                self.nac_out.eq(0),
+                self.duid_out.eq(0),
+                self.n_errors_out.eq(0),
+                self.valid_out.eq(0),
+                self.sync_distance_out.eq(0),
+                self.nid_event_strobe.eq(0),
+                self.nid_drop_count.eq(0),
             ]
 
         return m

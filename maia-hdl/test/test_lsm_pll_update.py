@@ -508,5 +508,177 @@ class TestLsmPllUpdateCordic(unittest.TestCase):
             f"expected pll > -1500, got {final}")
 
 
+class TestLsmPllUpdateReset(unittest.TestCase):
+    """Phase 8A: `reset_in` runtime reset plumbing.
+
+    Both PLL update flavors (linearised + CORDIC) get a new
+    `reset_in` port. A 1-cycle assertion must zero the integrator
+    accumulator and the pipeline registers within a handful of
+    sync cycles, matching the PS-side retune protocol where the
+    chain is first disabled, then reset-pulsed, then re-enabled.
+    """
+
+    def _drive_saturated(self, dut, *, drain):
+        """Run the PLL far from zero so any failure of the reset to
+        land is easy to detect. Dibit 10 with (+0.5, +0.5) drives
+        the accumulator negative for both forms."""
+        i_q15 = _q(0.5, INPUT_FRAC_BITS, 18)
+        q_q15 = _q(0.5, INPUT_FRAC_BITS, 18)
+        samples = [(i_q15, q_q15, 0b10)] * 60
+        return _drive_pll(dut, samples, drain=drain)
+
+    def _assert_reset_clears_pll(self, dut_cls, *, drain):
+        """Drive dut into a saturated state, pulse reset_in, then
+        verify pll_out returns to 0 and a subsequent same-sign drive
+        retraces the saturation path from 0 (i.e. the post-reset
+        trajectory doesn't inherit anything from the pre-reset one).
+        """
+        dut = dut_cls()
+        pre = []
+        post = []
+
+        async def bench(ctx):
+            # Drive the accumulator deep into saturation.
+            i_q15 = _q(0.5, INPUT_FRAC_BITS, 18)
+            q_q15 = _q(0.5, INPUT_FRAC_BITS, 18)
+            for _ in range(60):
+                ctx.set(dut.i_sym_in, i_q15)
+                ctx.set(dut.q_sym_in, q_q15)
+                ctx.set(dut.dibit_in, 0b10)
+                ctx.set(dut.symbol_strobe, 1)
+                await ctx.tick()
+                ctx.set(dut.symbol_strobe, 0)
+                for _ in range(drain):
+                    await ctx.tick()
+            pll_saturated = ctx.get(dut.pll_out)
+            if pll_saturated >= (1 << 15):
+                pll_saturated -= (1 << 16)
+            pre.append(pll_saturated)
+
+            # Pulse reset_in for one sync cycle. (Mirror of the
+            # p25_top Wpulse semantics.)
+            ctx.set(dut.reset_in, 1)
+            await ctx.tick()
+            ctx.set(dut.reset_in, 0)
+            # One drain cycle so any in-flight pipeline updates
+            # settle and the reset override has taken effect.
+            for _ in range(drain):
+                await ctx.tick()
+
+            pll_after = ctx.get(dut.pll_out)
+            if pll_after >= (1 << 15):
+                pll_after -= (1 << 16)
+            post.append(pll_after)
+
+        sim = Simulator(dut)
+        sim.add_clock(16e-9)
+        sim.add_testbench(bench)
+        sim.run()
+
+        self.assertLess(
+            pre[0], -1000,
+            f"expected pll saturated before reset, got {pre[0]}")
+        self.assertEqual(
+            post[0], 0,
+            f"expected pll_out == 0 after reset pulse, got {post[0]}")
+
+    def test_linearised_reset_clears_pll(self):
+        self._assert_reset_clears_pll(LsmPllUpdateLinearised, drain=4)
+
+    def test_cordic_reset_clears_pll(self):
+        self._assert_reset_clears_pll(LsmPllUpdate, drain=CORDIC_DRAIN)
+
+    def test_cordic_reset_then_reconverge_matches_cold_start(self):
+        """After a reset pulse, a fresh run on the same input must
+        produce the same trajectory as a cold-boot run. This is the
+        acceptance criterion for the Phase 8A retune path: the
+        post-reset PLL behaves identically to a just-instantiated
+        PLL."""
+        drain = CORDIC_DRAIN
+        # Build the same input sequence used by
+        # `test_against_atan2_reference`, just with a reset inserted
+        # at the midpoint.
+        rng = random.Random(0xBEEF)
+        samples = []
+        for _ in range(32):
+            ang = rng.uniform(-math.pi, math.pi)
+            mag = rng.uniform(0.2, 0.6)
+            i = _q(mag * math.cos(ang), INPUT_FRAC_BITS, 18)
+            q = _q(mag * math.sin(ang), INPUT_FRAC_BITS, 18)
+            if i >= 0 and q >= 0:
+                d = 0b00
+            elif i < 0 and q >= 0:
+                d = 0b01
+            elif i >= 0 and q < 0:
+                d = 0b10
+            else:
+                d = 0b11
+            samples.append((i, q, d))
+
+        cold_dut = LsmPllUpdate()
+        cold_out = _drive_pll(cold_dut, samples, drain=drain)
+
+        # Reset-inserted run: poison the accumulator, pulse reset,
+        # THEN drive the same samples.
+        warm_out = []
+
+        async def bench(ctx):
+            # Poison: drive dibit 10 (+ve input) for a while so
+            # pll_reg saturates negative.
+            i_pois = _q(0.5, INPUT_FRAC_BITS, 18)
+            q_pois = _q(0.5, INPUT_FRAC_BITS, 18)
+            for _ in range(60):
+                ctx.set(warm_dut.i_sym_in, i_pois)
+                ctx.set(warm_dut.q_sym_in, q_pois)
+                ctx.set(warm_dut.dibit_in, 0b10)
+                ctx.set(warm_dut.symbol_strobe, 1)
+                await ctx.tick()
+                ctx.set(warm_dut.symbol_strobe, 0)
+                for _ in range(drain):
+                    await ctx.tick()
+
+            # Reset pulse.
+            ctx.set(warm_dut.reset_in, 1)
+            await ctx.tick()
+            ctx.set(warm_dut.reset_in, 0)
+            for _ in range(drain):
+                await ctx.tick()
+
+            # Now drive the same input sequence as the cold run.
+            for (i, q, d) in samples:
+                ctx.set(warm_dut.i_sym_in, i)
+                ctx.set(warm_dut.q_sym_in, q)
+                ctx.set(warm_dut.dibit_in, d)
+                ctx.set(warm_dut.symbol_strobe, 1)
+                await ctx.tick()
+                ctx.set(warm_dut.symbol_strobe, 0)
+                captured = False
+                for _ in range(drain):
+                    await ctx.tick()
+                    if ctx.get(warm_dut.pll_strobe) and not captured:
+                        v = ctx.get(warm_dut.pll_out)
+                        if v >= (1 << 15):
+                            v -= (1 << 16)
+                        warm_out.append(v)
+                        captured = True
+
+        warm_dut = LsmPllUpdate()
+        sim = Simulator(warm_dut)
+        sim.add_clock(16e-9)
+        sim.add_testbench(bench)
+        sim.run()
+
+        self.assertEqual(
+            len(warm_out), len(cold_out),
+            f"warm run emitted {len(warm_out)} samples, "
+            f"cold run had {len(cold_out)}")
+        # Post-reset trajectory should be bit-identical to cold start.
+        for i, (w, c) in enumerate(zip(warm_out, cold_out)):
+            self.assertEqual(
+                w, c,
+                f"sample {i}: warm={w}, cold={c} -- post-reset "
+                f"trajectory must match cold-start exactly")
+
+
 if __name__ == '__main__':
     unittest.main()

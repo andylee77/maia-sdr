@@ -18,6 +18,7 @@ mod httpd;
 #[cfg(target_os = "linux")]
 mod iio;
 mod audio;
+mod event_log;
 mod lsm;
 mod monitor;
 mod p25;
@@ -38,7 +39,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-12-phase7d-jmbe-vocoder";
+pub const BUILD_TAG: &str = "2026-04-15-phase8c.1-revert-control-lsm-domain-wrap";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -206,6 +207,13 @@ pub struct ImbeForwarder {
     pub tdu_lc_count: std::sync::atomic::AtomicU64,
     pub imbe_frames_extracted: std::sync::atomic::AtomicU64,
     pub imbe_frames_dropped: std::sync::atomic::AtomicU64,
+    /// Phase 7F.3 (2026-04-14): count of LDU frame batches the
+    /// forwarder refused to hand to the vocoder because
+    /// `current_talkgroup == 0` (follower is Idle). These are
+    /// framer false-positives extracted from residual dibits on the
+    /// traffic DDC between calls -- the source of the "TG=0 phantom
+    /// call" events in the log.
+    pub imbe_frames_dropped_idle: std::sync::atomic::AtomicU64,
     pub last_imbe_at_millis: std::sync::atomic::AtomicU64,
     /// Vocoder stats -- updated by the vocoder task, read by /api/traffic.
     pub vocoder_pcm_produced: std::sync::atomic::AtomicU64,
@@ -245,6 +253,7 @@ impl ImbeForwarder {
             tdu_lc_count: 0.into(),
             imbe_frames_extracted: 0.into(),
             imbe_frames_dropped: 0.into(),
+            imbe_frames_dropped_idle: 0.into(),
             last_imbe_at_millis: 0.into(),
             vocoder_pcm_produced: 0.into(),
             vocoder_errors: 0.into(),
@@ -270,9 +279,25 @@ impl ImbeForwarder {
 
     fn forward_frames(&self, frames: &[p25::voice_frame::ImbeFrameRaw; 9]) {
         use std::sync::atomic::Ordering;
-        // Stash raw frames in the diagnostic ring buffer
         let tg = self.current_talkgroup.load(Ordering::Relaxed);
         let enc = self.call_encrypted.load(Ordering::Relaxed);
+
+        // Phase 7F.3 (2026-04-14): drop frames that arrive while the
+        // follower is Idle (current_talkgroup == 0). These are
+        // framer false-positives: the traffic LSM HDL chain keeps
+        // producing dibits from whatever the NCO is still pointed
+        // at between calls, and the software framer happily
+        // extracts "LDUs" out of that noise and dispatches them
+        // here. Pushing them to the vocoder produces the "TG=0
+        // phantom call" pattern we saw in the event log (e.g.
+        // `call_end TG=0 frames=18 pcm=2880 (10278 ms)` --
+        // 18 frames decoded as clear over a 10 s window with no
+        // actual call in progress).
+        //
+        // Drop them on the floor and count them so the dashboard
+        // can show the rate. The diagnostic ring buffer still
+        // records them (tagged tg=0) so `/api/imbe_dump` can be
+        // used to inspect what the framer was pulling out.
         if let Ok(mut ring) = self.imbe_ring.lock() {
             for f in frames {
                 if ring.len() >= 128 {
@@ -281,6 +306,12 @@ impl ImbeForwarder {
                 ring.push((tg, enc, f.bits));
             }
         }
+        if tg == 0 {
+            self.imbe_frames_dropped_idle
+                .fetch_add(9, Ordering::Relaxed);
+            return;
+        }
+
         match self.imbe_tx.try_send(*frames) {
             Ok(()) => {}
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
@@ -431,16 +462,30 @@ async fn main() -> anyhow::Result<()> {
     lsm_decoder.set_grant_event_tx(grant_event_tx);
     let lsm_decoder = Arc::new(RwLock::new(lsm_decoder));
 
-    // Phase 6F.9: third parallel `ControlChannelDecoder` driven by the
-    // Phase 6D `LsmPipeline` running on RAW IQ. Soft-decision sync
-    // events from `find_sync_events_soft` get dispatched into
-    // `process_directed_tsdu` to bypass the Hunting state machine
-    // entirely. The hope is to capture the syncs the dibit-domain hard
-    // correlator misses (~9/sec soft vs ~5/sec hard) and turn them
-    // into TSBKs through the same parser path.
-    let mut iq_lsm_decoder = ControlChannelDecoder::new();
-    iq_lsm_decoder.set_event_tx(event_tx.clone());
-    let iq_lsm_decoder = Arc::new(RwLock::new(iq_lsm_decoder));
+    // Phase 9 retirement (2026-04-15): the Phase 6D `iq_lsm_decoder`
+    // has been removed. It was a pure-software LSM demod + TSBK
+    // framer pipeline built in Phase 6D as the "algorithm
+    // development + validation reference", BEFORE Phase 6E ported
+    // the full LSM demod into Amaranth gateware. Since Phase 6E.9
+    // (HDL LSM chain on the control DDC) went green, the HDL path
+    // has been the production decoder and the software pipeline
+    // has been pure dead weight -- an ARM-CPU-expensive cross-check
+    // that never reveals anything the HDL path doesn't already
+    // surface. Phase 9 formally retires it.
+    //
+    // What went with it:
+    //   - 200-line Phase 6D LSM IQ reader tokio task (read
+    //     iq_dma -> LsmPipeline -> process_directed_tsdu). Gone.
+    //   - `LsmStats` + `/api/lsm` endpoint. Gone.
+    //   - Dashboard "LSM Pipeline (Phase 6D)" card + four
+    //     `ps_iq_lsm` / `ps_phase6d` columns in the decoder-compare
+    //     matrix. Gone.
+    //   - `iq_dma` HDL ring stays in the bitstream for now
+    //     (dormant dead weight, ~few hundred LUT + one M_AXI_HP
+    //     channel) but is not enabled by the PS at boot any more.
+    //
+    // See doc/changes/039 for the retirement rationale and the
+    // inventory of what was removed.
 
     // Phase 7C: fourth `ControlChannelDecoder` instance fed by the
     // new `traffic_lsm_dibit_dma` ring (Phase 7A.2 HDL chain). Unlike
@@ -470,12 +515,28 @@ async fn main() -> anyhow::Result<()> {
     traffic_lsm_decoder.set_voice_handler(imbe_forwarder.clone());
     let traffic_lsm_decoder = Arc::new(RwLock::new(traffic_lsm_decoder));
 
-    // Phase 6D dashboard wiring: shared LsmStats mutex, populated by the
-    // LSM IRQ task below and read by the /api/lsm handler. Kept out of
-    // the cfg(linux) block so non-Linux builds still expose the (empty)
-    // endpoint -- useful for host-side cargo test of httpd routing.
-    let lsm_stats = Arc::new(tokio::sync::Mutex::new(lsm::LsmStats::default()));
+    // Phase 7F.1 (2026-04-14): shared structured event log. Capacity
+    // 1024 ≈ ~3-4 minutes of grant/traffic/imbe events on Clay County
+    // at the observed ~5 grants/sec + per-LDU IMBE batches. Tuned so
+    // the dashboard tab can show "recent history" without pagination
+    // while staying well under typical PS memory budgets (1024 * ~400
+    // bytes each = ~400 KB peak).
+    let event_log = Arc::new(crate::event_log::EventLog::new(1024));
+    event_log.push(
+        crate::event_log::LogCategory::System,
+        "p25-httpd startup",
+        serde_json::json!({
+            "build_tag": crate::BUILD_TAG,
+        }),
+    );
 
+    // Phase 9 retirement: `lsm_stats` (the shared `LsmStats` mutex
+    // for the Phase 6D software pipeline) is gone along with the
+    // pipeline itself. The PL HDL LSM runtime stats below (`hdl_lsm`)
+    // are the production source of truth for "is the LSM chain
+    // alive / how many valid NIDs / what NACs" — they tap the HDL
+    // register bank directly instead of recomputing from raw IQ.
+    //
     // Phase 6F.2: shared PL HDL LSM runtime + IRQ stats, populated by
     // their respective tasks below and read by /api/hdl_lsm and
     // /api/irq_stats. Same out-of-cfg(linux) treatment.
@@ -538,10 +599,15 @@ async fn main() -> anyhow::Result<()> {
         ip_core.set_ddc_enable(true);
         // Ring DMA: enable bit is level-triggered, starts continuous writes
         ip_core.set_demod_enable(true);
-        // Phase 6D: also enable the post-DDC IQ ring DMA so the LSM task
-        // can pull raw 62.5 kSPS IQ samples in parallel with the dibit
-        // pipeline. Both rings share the control DDC's output.
-        ip_core.set_iq_dma_enable(true);
+        // Phase 9 retirement: the post-DDC IQ ring DMA
+        // (`iq_dma_enable`) was fed the Phase 6D software LSM
+        // pipeline. That pipeline is gone, so we leave the ring
+        // master disabled at boot. The HDL block is still present
+        // in the bitstream (dormant dead weight) so a future phase
+        // can re-enable it if we need a raw-IQ tap again -- e.g.,
+        // for on-target baseband capture to disk, or for a new
+        // in-PL DSP block that taps post-DDC IQ.
+        ip_core.set_iq_dma_enable(false);
         // Phase 6E.9/6E.10: enable the HDL LSM demod chain (runs alongside
         // the C4FM demod on the same control DDC output) and its dedicated
         // dibit ring DMA. NID events themselves are PS-polled via
@@ -606,36 +672,42 @@ async fn main() -> anyhow::Result<()> {
              (will be flipped on by the grant follower on first GroupVoiceChannelGrant)"
         );
 
-        // Phase 7A.2: enable the traffic-side LSM demod chain
-        // (parallel to the C4FM traffic chain). Mirrors the
-        // control-side LSM init exactly:
-        //   - traffic_lsm_enable: master enable for the LSM datapath
-        //   - traffic_lsm_dibit_dma_enable: ring DMA AW level
-        //   - traffic_lsm_dc_block_enable: front-end DC blocker (on)
-        // The chain runs even when no call is being followed -- it's
-        // gated by the traffic DDC's input strobe, which is fed by
-        // the AD9361 ADC stream. With traffic_demod_enable=false the
-        // C4FM dibit DMA stays quiet, but the LSM dibit DMA chain
-        // ALSO needs traffic_demod_enable to be off OR not needed at
-        // all -- the LSM chain has its own enable bit. Both chains
-        // share the same upstream traffic_ddc, so when the grant
-        // follower retunes the DDC both chains see the new
-        // frequency simultaneously.
-        ip_core.set_traffic_lsm_enable(true);
+        // Phase 7A.2 + Phase 8B: arm the traffic-side LSM demod
+        // chain without enabling it. The LSM master enable
+        // (`traffic_lsm_enable`) is now toggled PER-CALL by the
+        // follower retune path -- it's off at boot and between
+        // calls, on only while a grant is being followed. This
+        // closes the Phase 7 gap where the LSM chain was running
+        // continuously against post-retune-transient dibits and
+        // producing the phantom TDU_LC NID events that flooded
+        // the traffic-side classifier. See doc/changes/038.
+        //
+        //   - traffic_lsm_enable: OFF at boot, flipped on in
+        //       `retune_traffic_chain()` after the NCO write and
+        //       the `traffic_lsm_reset` pulse.
+        //   - traffic_lsm_dibit_dma_enable: armed level-high at
+        //       boot so the ring DMA AW state machine is ready to
+        //       stream as soon as the master enable opens.
+        //   - traffic_lsm_dc_block_enable: on at boot so the
+        //       leaky-integrator DC blocker has already converged
+        //       by the time the first call arrives.
+        ip_core.set_traffic_lsm_enable(false);
         ip_core.set_traffic_lsm_dibit_dma_enable(true);
         ip_core.set_traffic_lsm_dc_block_enable(true);
         let (tlsm_en_rb, tlsm_dma_en_rb, tlsm_dc_block_rb) =
             ip_core.traffic_lsm_control_readback();
         tracing::info!(
-            "Traffic LSM chain enabled: traffic_lsm_enable={tlsm_en_rb}, \
+            "Traffic LSM chain armed: traffic_lsm_enable={tlsm_en_rb} \
+             (Phase 8B: off until first retune), \
              traffic_lsm_dibit_dma_enable={tlsm_dma_en_rb}, \
              traffic_lsm_dc_block_enable={tlsm_dc_block_rb}"
         );
-        if !tlsm_en_rb || !tlsm_dma_en_rb {
+        if tlsm_en_rb || !tlsm_dma_en_rb {
             tracing::error!(
-                "traffic_lsm_control readback mismatch -- expected enable=true \
-                 and dibit_dma_enable=true, got ({tlsm_en_rb},{tlsm_dma_en_rb}); \
-                 traffic-side LSM chain WILL NOT produce NID events"
+                "traffic_lsm_control readback mismatch -- expected enable=false \
+                 (Phase 8B) and dibit_dma_enable=true, got \
+                 ({tlsm_en_rb},{tlsm_dma_en_rb}); traffic-side LSM chain \
+                 WILL NOT behave correctly on retune"
             );
         }
         if !tlsm_dc_block_rb {
@@ -651,7 +723,12 @@ async fn main() -> anyhow::Result<()> {
 
         // 4. Get interrupt waiters before spawning handler
         let dibit_waiter = interrupt_handler.waiter_dibit_dma();
-        let iq_waiter = interrupt_handler.waiter_iq_dma();
+        // Phase 9 retirement: `iq_waiter` (waiter_iq_dma) used to
+        // wake the Phase 6D software LSM pipeline. That pipeline
+        // is gone, so we don't subscribe to the iq_dma interrupt
+        // any more. The `InterruptHandler` still multiplexes the
+        // raw IRQ line, it just doesn't have a PS consumer for
+        // the iq_dma bit.
         let lsm_dibit_waiter = interrupt_handler.waiter_lsm_dibit_dma();
         // Phase 7A.1: traffic dibit DMA wakeups
         let traffic_dibit_waiter = interrupt_handler.waiter_traffic_dma();
@@ -728,229 +805,32 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        // 6b. Spawn Phase 6D LSM reader task. Pulls 62.5 kSPS post-DDC IQ
-        //     from the iq_dma ring, runs the streaming LSM pipeline
-        //     (decimate /2 -> LPF -> RRC -> AGC+PLL+Gardner+slicer ->
-        //     hard+soft sync detectors -> BCH(63,16,11) FEC), logs
-        //     per-IRQ NID accuracy stats, and updates the shared
-        //     `LsmStats` that feeds `GET /api/lsm` on the dashboard.
-        //     Runs in parallel with the dibit reader above; both consume
-        //     the same control DDC output but via separate ring DMAs.
-        let lsm_core = ip_core.clone();
-        let lsm_stats_task = lsm_stats.clone();
-        let iq_lsm_decoder_task = iq_lsm_decoder.clone();
-        tokio::spawn(async move {
-            tracing::info!("LSM IQ reader task started (Phase 6D)");
-            let mut pipeline = lsm::LsmPipeline::new();
-            // Phase 6F.10 cross-batch carry-over with pending event
-            // queue. The Phase 6D LSM IRQ task wakes about every
-            // ~17 ms (one IRQ per ~84 dibits), so a soft sync event
-            // landing near the end of a batch will not have its full
-            // 336-dibit (NID + TSBK1+TSBK2+TSBK3) body in the current
-            // batch -- it needs to wait for the NEXT 1-3 batches.
-            //
-            // 6F.9 simply capped each dispatch at `combined.len()` so
-            // late events only got a fragment of their body (often
-            // just NID + TSBK1, dropping TSBK2/TSBK3). That pulled
-            // `ps_iq_lsm` blocks/TSDU down to 1.86 instead of 3.0.
-            //
-            // 6F.10 tracks each event by its absolute stream position
-            // and stashes it in a pending queue if the full body
-            // isn't available yet. Every batch we walk the queue and
-            // dispatch any event whose 336-dibit body has arrived,
-            // then drop events older than MAX_AGE_DIBITS.
-            let mut prev_tail: Vec<u8> = Vec::new();
-            const CARRY_DIBITS: usize = 1024;
-            // Global stream offset of the FIRST dibit currently in
-            // `prev_tail`. Together with prev_tail.len() and the
-            // new batch's hard_dibits, this lets us address any
-            // dibit by its absolute stream position.
-            let mut stream_offset_at_prev_tail_start: u64 = 0;
-            // Pending events: absolute stream positions of first NID
-            // dibits whose bodies haven't fully arrived yet.
-            let mut pending_events: Vec<u64> = Vec::new();
-            // Drop pending events whose first NID dibit is more than
-            // this many dibits behind the latest data we have. With
-            // CARRY_DIBITS = 1024 anything older than ~700 dibits has
-            // already fallen off the front of prev_tail so it's
-            // unrecoverable.
-            const MAX_AGE_DIBITS: u64 = 700;
-            loop {
-                iq_waiter.wait().await;
-
-                // Snapshot the new sub-buffers and overflow latch under
-                // the lock, then drop it before doing CPU work.
-                let (iq_complex, overflow) = {
-                    let mut core = lsm_core.lock().await;
-                    let buffers = core.read_iq_buffers();
-                    let owned: Vec<Vec<u8>> =
-                        buffers.iter().map(|b| b.to_vec()).collect();
-                    let overflow = core.iq_overflow();
-                    drop(core);
-                    let refs: Vec<&[u8]> =
-                        owned.iter().map(|b| b.as_slice()).collect();
-                    (lsm::ring::sub_buffers_to_complex(&refs), overflow)
-                };
-
-                if overflow {
-                    // Phase 6C HDL hotfix (doc 020): iq_packer.overflow
-                    // used to be a latched level that never cleared, so
-                    // the Rsticky register wrapper re-accumulated it on
-                    // every cycle and this PS-side read saw overflow=1
-                    // on every sub-buffer -- which used to trigger a
-                    // full pipeline.reset() that wiped PLL / Gardner /
-                    // sync-detector state every ~128 ms, so the Rust LSM
-                    // pipeline never converged. With the pulse fix in
-                    // iq_packer.py, this branch now only fires on a real
-                    // back-pressure event. We log + count it, but do NOT
-                    // pipeline.reset(): sample math in doc 014 proved no
-                    // actual data loss, so a streaming reset was always
-                    // the wrong reaction. If a real back-pressure event
-                    // ever causes actual sample loss we need to detect
-                    // it at a higher layer (gap in sample timestamps),
-                    // not here.
-                    tracing::warn!(
-                        target: "p25_lsm",
-                        "iq_dma overflow latched -- counting, NOT resetting pipeline (see doc 020)"
-                    );
-                    lsm_stats_task.lock().await.record_overflow();
-                }
-                if iq_complex.is_empty() {
-                    continue;
-                }
-
-                let batch = pipeline.process_iq(&iq_complex);
-                let wake_iq = iq_complex.len();
-                let wake_dibits = batch.demod.n_symbols();
-                let wake_hard = batch.hard_events.len();
-                let wake_soft = batch.soft_events.len();
-
-                // Phase 6F.10: dispatch soft sync events into the
-                // directed-decode TSBK pipeline with cross-batch
-                // pending-queue defer. Each event is identified by
-                // its absolute stream position; if the full 336-dibit
-                // body isn't available yet, it stays in
-                // `pending_events` until enough dibits have arrived.
-                {
-                    let prev_tail_len = prev_tail.len();
-                    // Combined buffer: prev_tail || new dibits.
-                    let mut combined: Vec<u8> =
-                        Vec::with_capacity(prev_tail_len + wake_dibits);
-                    combined.extend_from_slice(&prev_tail);
-                    combined.extend_from_slice(&batch.demod.hard_dibits);
-
-                    // Absolute stream offset of combined[0].
-                    let combined_start_offset = stream_offset_at_prev_tail_start;
-                    // Absolute stream offset just past combined[len-1].
-                    let combined_end_offset =
-                        combined_start_offset + combined.len() as u64;
-
-                    // Step 1: register every new soft event from this
-                    // batch as an absolute stream position.
-                    for ev in &batch.soft_events {
-                        // ev.symbol_idx is the position of the FIRST
-                        // NID dibit relative to THIS batch's
-                        // hard_dibits, NOT relative to combined. Add
-                        // the offset of "where the new dibits start
-                        // in combined" + the global offset.
-                        let abs_in_combined =
-                            (prev_tail_len + ev.symbol_idx) as u64;
-                        let abs_stream = combined_start_offset + abs_in_combined;
-                        pending_events.push(abs_stream);
-                    }
-
-                    // Step 2: dispatch every pending event whose body
-                    // is fully present in combined. Keep the rest for
-                    // next batch.
-                    if !pending_events.is_empty() {
-                        let mut still_pending: Vec<u64> =
-                            Vec::with_capacity(pending_events.len());
-                        let mut dec = iq_lsm_decoder_task.write().await;
-                        for &abs_stream in &pending_events {
-                            // Translate absolute stream position into
-                            // an offset within `combined`.
-                            if abs_stream < combined_start_offset {
-                                // Fell off the front of prev_tail
-                                // before its body could complete.
-                                // Lost -- drop silently.
-                                continue;
-                            }
-                            let abs_in_combined =
-                                (abs_stream - combined_start_offset) as usize;
-                            // Need 336 dibits to dispatch (full
-                            // 3-block TSDU). Below that, defer.
-                            if abs_in_combined + 336 <= combined.len() {
-                                dec.process_directed_tsdu(
-                                    &combined[abs_in_combined..abs_in_combined + 336],
-                                );
-                            } else if abs_in_combined + 33 <= combined.len()
-                                && combined_end_offset
-                                    .saturating_sub(abs_stream)
-                                    >= MAX_AGE_DIBITS
-                            {
-                                // Body never arrived in time. We have
-                                // the NID at minimum, so dispatch what
-                                // we have (fewer than 3 blocks) and
-                                // give up on the rest.
-                                let end = combined.len();
-                                dec.process_directed_tsdu(
-                                    &combined[abs_in_combined..end],
-                                );
-                            } else {
-                                // Body partially arrived but we still
-                                // have headroom -- keep waiting.
-                                still_pending.push(abs_stream);
-                            }
-                        }
-                        pending_events = still_pending;
-                    }
-
-                    // Step 3: trim combined to the last CARRY_DIBITS
-                    // dibits and use that as the next prev_tail.
-                    // Update the stream offset accordingly.
-                    let new_prev_tail_start_offset =
-                        if combined.len() > CARRY_DIBITS {
-                            let drop = combined.len() - CARRY_DIBITS;
-                            prev_tail = combined[drop..].to_vec();
-                            combined_start_offset + drop as u64
-                        } else {
-                            prev_tail = combined;
-                            combined_start_offset
-                        };
-                    stream_offset_at_prev_tail_start = new_prev_tail_start_offset;
-                }
-
-                // Fold into shared stats + snapshot cumulative totals and
-                // top-3 NACs under the lock, then drop it before logging.
-                let (wakeups, cum_iq, cum_dibits, cum_hard, cum_soft, top3) = {
-                    let mut stats = lsm_stats_task.lock().await;
-                    stats.record_batch(wake_iq, &batch);
-                    (
-                        stats.wakeups,
-                        stats.iq_samples,
-                        stats.dibits,
-                        stats.hard_events,
-                        stats.soft_events,
-                        stats.top_nacs(3),
-                    )
-                };
-
-                if wakeups <= 5 || wakeups % 16 == 0 {
-                    let top_str = top3
-                        .iter()
-                        .map(|(n, c)| format!("0x{:03X}={}", n, c))
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    tracing::info!(
-                        target: "p25_lsm",
-                        "wake #{wakeups}: iq_samples={wake_iq} dibits={wake_dibits} \
-                         hard_syncs={wake_hard} soft_syncs={wake_soft} \
-                         (cum iq={cum_iq} dibits={cum_dibits} hard={cum_hard} soft={cum_soft}) \
-                         top_nacs=[{top_str}]"
-                    );
-                }
-            }
-        });
+        // 6b. [RETIRED -- Phase 9 retirement, 2026-04-15]
+        //
+        // This slot used to be the Phase 6D LSM IQ reader task: it
+        // woke on every iq_dma sub-buffer interrupt, ran a complete
+        // pure-Rust LSM demod pipeline (decimate /2 -> LPF -> RRC ->
+        // AGC+PLL+Gardner+slicer -> hard+soft sync correlators ->
+        // BCH(63,16,11) FEC) on the raw 62.5 kSPS IQ samples,
+        // dispatched soft-sync TSDU events into `iq_lsm_decoder`,
+        // and updated the shared `LsmStats` that fed `/api/lsm`.
+        //
+        // After Phase 6E ported the full LSM demod into Amaranth
+        // gateware (the production `LsmDemod` block running in
+        // `lsm_ctrl_dom`) the software pipeline became pure dead
+        // weight: the HDL chain produced the same TSBKs through
+        // `lsm_decoder` using a fraction of the ARM CPU. Phase 9
+        // formally retires it.
+        //
+        // The `iq_dma` HDL ring is still present in the bitstream
+        // but is now disabled at boot (`set_iq_dma_enable(false)`)
+        // so no data flows and no IRQs fire. It can be re-enabled
+        // by a future phase for baseband capture to disk, a new
+        // in-PL DSP block tapping post-DDC IQ, or reinstating the
+        // software cross-check if a regression ever needs a raw-IQ
+        // reference.
+        //
+        // See doc/changes/039 for the full retirement inventory.
 
         // 6c. Spawn HDL LSM dibit ring drain + TSBK decode task
         //     (Phase 6E.9/6E.10 bring-up).
@@ -1097,7 +977,9 @@ async fn main() -> anyhow::Result<()> {
         //   - final event: TDU or TDU_LC on call end
         let traffic_lsm_core = ip_core.clone();
         let traffic_lsm_decoder_task = traffic_lsm_decoder.clone();
+        let traffic_reader_imbe = imbe_forwarder.clone();
         tokio::spawn(async move {
+            use std::sync::atomic::Ordering;
             tracing::info!(
                 "Traffic LSM dibit reader + voice frame decoder task \
                  started (Phase 7C)"
@@ -1117,6 +999,28 @@ async fn main() -> anyhow::Result<()> {
                         .collect::<Vec<_>>()
                 };
 
+                // Phase 7F.5 (2026-04-14) root-cause gate: if the
+                // follower is Idle (current_talkgroup == 0), the
+                // traffic channel isn't "open" -- but the HDL LSM
+                // chain is still producing dibits from whatever
+                // frequency the NCO is pointed at. Previously the
+                // software framer happily processed every dibit,
+                // extracted noise-shaped LDUs / TDU_LCs via sync
+                // correlator false positives, dispatched them to
+                // the WS activity feed + event log + vocoder, and
+                // the dashboard read as "traffic channel active,
+                // playing packets" when there was no real call.
+                //
+                // Drain the DMA ring (already done above by the
+                // `read_traffic_lsm_dibit_buffers` call so the
+                // hardware doesn't overflow) but DO NOT feed the
+                // dibits to the framer. Counters and hist still
+                // update so we can see raw dibit rate / histogram
+                // via /api/traffic.stats even during Idle.
+                let locked = traffic_reader_imbe
+                    .current_talkgroup
+                    .load(Ordering::Relaxed) != 0;
+
                 let mut wake_bytes = 0usize;
                 let mut wake_dibits = 0usize;
                 for buffer in &buffers {
@@ -1129,9 +1033,11 @@ async fn main() -> anyhow::Result<()> {
                             wake_dibits += 1;
                         }
                     }
-                    let mut dec = traffic_lsm_decoder_task.write().await;
-                    for &word in words {
-                        dec.process_dma_word(word);
+                    if locked {
+                        let mut dec = traffic_lsm_decoder_task.write().await;
+                        for &word in words {
+                            dec.process_dma_word(word);
+                        }
                     }
                 }
                 total_buffers += buffers.len() as u64;
@@ -1811,6 +1717,8 @@ async fn main() -> anyhow::Result<()> {
         let follower_enabled = traffic_follower_enabled.clone();
         let follower_imbe = imbe_forwarder.clone();
         let follower_monitor = monitor_list.clone();
+        let follower_event_log = event_log.clone();
+        let follower_traffic_decoder = traffic_lsm_decoder.clone();
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
             tracing::info!(
@@ -1870,6 +1778,25 @@ async fn main() -> anyhow::Result<()> {
                 retune
             };
 
+            // Phase 9.1 (2026-04-15): the activity log is
+            // DELIBERATELY NOT deduped. Every `P25Event::Grant`
+            // arrival gets its own log line -- even two
+            // back-to-back grants on the same (TG, channel, freq)
+            // that were packed into the same 3-TSBK TSDU by the
+            // trunking system. The correct-handling invariant
+            // lives one layer down in `handle_grant_event` ->
+            // `TrafficManager::handle_grant`: the `same_tg_same_freq`
+            // branch at traffic_manager.rs:258 short-circuits with
+            // `return false` (no retune fires, no second state
+            // transition, no second `retune_traffic_chain()` call)
+            // whenever the new grant matches the current lock.
+            // Auto-promote from Acquiring to Active happens on
+            // that same branch. So the dashboard sees all the
+            // real TSBK arrivals, the follower fires exactly one
+            // retune per real channel change, and no work is
+            // duplicated even if two grants land in the same
+            // millisecond.
+
             loop {
                 tokio::select! {
                     event = grant_event_rx.recv() => {
@@ -1884,7 +1811,67 @@ async fn main() -> anyhow::Result<()> {
 
                         match event {
                             p25::events::P25Event::Grant(g) => {
-                                // Check monitor list
+                                use crate::event_log::LogCategory;
+                                let freq_mhz = g.frequency_hz
+                                    .map(|f| f as f64 / 1e6)
+                                    .unwrap_or(0.0);
+
+                                // Phase 7F.4 (2026-04-14): eager history
+                                // populate. Any grant with encrypted=true
+                                // adds the TG to the persistent history
+                                // RIGHT HERE, before any gate check. The
+                                // previous flash only populated history
+                                // inside the reject path, so a site that
+                                // sometimes-sets / sometimes-doesn't set
+                                // service_options would let us retune to
+                                // the same encrypted TG 3+ times before
+                                // the history eventually caught up. This
+                                // way, the first encrypted=true
+                                // observation for ANY TG permanently
+                                // blocks all subsequent grants for it --
+                                // even ones that arrive missing the
+                                // service-options flag on their next
+                                // transmission.
+                                if g.encrypted {
+                                    if let Ok(mut hist) =
+                                        follower_imbe
+                                            .encrypted_tg_history
+                                            .lock()
+                                    {
+                                        hist.insert(g.talkgroup.0);
+                                    }
+                                }
+
+                                // Raw grant receipt (before any filter).
+                                // Logged unconditionally -- two
+                                // simultaneous grants for the same
+                                // TG/channel/freq are real TSBK
+                                // arrivals and both belong in the
+                                // activity feed. Double-retune
+                                // protection lives in
+                                // TrafficManager::handle_grant's
+                                // `same_tg_same_freq` branch (see
+                                // traffic_manager.rs:258).
+                                follower_event_log.push(
+                                    LogCategory::Grant,
+                                    format!(
+                                        "grant TG={} ch={} {:.4} MHz{}",
+                                        g.talkgroup.0,
+                                        g.channel.0,
+                                        freq_mhz,
+                                        if g.encrypted { " [ENC]" } else { "" },
+                                    ),
+                                    serde_json::json!({
+                                        "tg":        g.talkgroup.0,
+                                        "channel":   g.channel.0,
+                                        "frequency": g.frequency_hz,
+                                        "src":       g.source.map(|r| r.0),
+                                        "encrypted": g.encrypted,
+                                        "emergency": g.emergency,
+                                    }),
+                                );
+
+                                // Monitor list gate
                                 let dominated = {
                                     let monitor = follower_monitor.read().await;
                                     if monitor.is_empty() {
@@ -1893,41 +1880,250 @@ async fn main() -> anyhow::Result<()> {
                                         monitor.contains(g.talkgroup.0)
                                     }
                                 };
-                                if !dominated { continue; }
+                                if !dominated {
+                                    follower_event_log.push(
+                                        LogCategory::Traffic,
+                                        format!(
+                                            "reject: TG={} not in monitor list",
+                                            g.talkgroup.0,
+                                        ),
+                                        serde_json::json!({
+                                            "tg":     g.talkgroup.0,
+                                            "reason": "monitor_list",
+                                        }),
+                                    );
+                                    continue;
+                                }
 
                                 // Sticky-lock check
                                 let mut mgr = follower_mgr.lock().await;
                                 let locked_tg = mgr.current_talkgroup();
                                 match locked_tg {
                                     Some(tg) if tg.0 != g.talkgroup.0 => {
-                                        // Locked on a different TG -- ignore
+                                        follower_event_log.push(
+                                            LogCategory::Traffic,
+                                            format!(
+                                                "reject: TG={} (sticky-locked on TG={})",
+                                                g.talkgroup.0, tg.0,
+                                            ),
+                                            serde_json::json!({
+                                                "tg":        g.talkgroup.0,
+                                                "locked_tg": tg.0,
+                                                "reason":    "sticky_lock",
+                                            }),
+                                        );
                                         continue;
                                     }
                                     _ => {}
                                 }
 
+                                // Encrypted-grant gate (Phase 7F.2,
+                                // 2026-04-14). Runs on EVERY grant
+                                // -- not just new locks -- because
+                                // the real-world failure mode is a
+                                // TG whose first grant has no service
+                                // options (encrypted=false), passes
+                                // through, locks the follower, then
+                                // the next `GrantUpdate` arrives with
+                                // encrypted=true. Previous gate
+                                // (locked_tg.is_none()-only) let that
+                                // path through the sticky-same-TG
+                                // branch and the call ran for 2 s
+                                // before call_timeout_ms released the
+                                // lock -- producing ~72 encrypted
+                                // vocoder frames before the tear-down.
+                                //
+                                // New behaviour: encryption detected,
+                                // always reject the grant AND force
+                                // the manager to Idle + drop
+                                // demod_enable so the decoder stops
+                                // feeding encrypted LDUs forward.
+                                // History is populated eagerly on the
+                                // first encrypted observation for
+                                // each TG so subsequent grants short-
+                                // circuit immediately.
+                                let tg_known_enc = follower_imbe
+                                    .encrypted_tg_history
+                                    .lock()
+                                    .map(|h| h.contains(&g.talkgroup.0))
+                                    .unwrap_or(false);
+                                if g.encrypted || tg_known_enc {
+                                    if g.encrypted {
+                                        if let Ok(mut hist) =
+                                            follower_imbe
+                                                .encrypted_tg_history
+                                                .lock()
+                                        {
+                                            hist.insert(g.talkgroup.0);
+                                        }
+                                    }
+                                    mgr.grants_rejected_encrypted += 1;
+
+                                    // If the encrypted TG happens to
+                                    // be the one we're currently
+                                    // locked on, tear down the lock
+                                    // synchronously. Without this
+                                    // the sticky 2 s timeout would
+                                    // hold the slot until the call
+                                    // naturally ends.
+                                    let was_locked = locked_tg
+                                        .map(|t| t.0 == g.talkgroup.0)
+                                        .unwrap_or(false);
+                                    if was_locked {
+                                        mgr.force_idle();
+                                        drop(mgr);
+                                        // Zero current_talkgroup so
+                                        // the vocoder task's TG-change
+                                        // auto-flush fires and closes
+                                        // the call summary.
+                                        follower_imbe.current_talkgroup
+                                            .store(0, Ordering::Relaxed);
+                                        // DO NOT clear call_encrypted
+                                        // here. Buffered LDU dibits
+                                        // from the previous channel
+                                        // are still in flight in the
+                                        // DMA ring + mpsc channel;
+                                        // clearing the flag would
+                                        // cause the vocoder to DECODE
+                                        // those encrypted LDUs as
+                                        // clear, producing garbled
+                                        // output. Leaving it `true`
+                                        // keeps the skip path active
+                                        // until the next valid retune
+                                        // (which unconditionally
+                                        // writes call_encrypted =
+                                        // new_grant.is_enc).
+                                        #[cfg(target_os = "linux")]
+                                        {
+                                            let core = follower_core
+                                                .lock().await;
+                                            // Phase 8B: quiesce both
+                                            // the LSM and C4FM chains
+                                            // on encrypted tear-down
+                                            // so the traffic LSM demod
+                                            // stops producing phantom
+                                            // NID events during the
+                                            // gap until the next
+                                            // grant.
+                                            core.pause_traffic_chain();
+                                        }
+                                        // Reset the traffic framer --
+                                        // it's mid-frame on encrypted
+                                        // data and will carry bogus
+                                        // state into whatever lock we
+                                        // pick up next.
+                                        {
+                                            let mut dec = follower_traffic_decoder
+                                                .write().await;
+                                            dec.reset_framer_state();
+                                        }
+                                    }
+
+                                    follower_event_log.push(
+                                        LogCategory::Traffic,
+                                        format!(
+                                            "reject TG={} encrypted{}",
+                                            g.talkgroup.0,
+                                            if was_locked {
+                                                " (tore down active lock)"
+                                            } else { "" },
+                                        ),
+                                        serde_json::json!({
+                                            "tg":         g.talkgroup.0,
+                                            "enc_flag":   g.encrypted,
+                                            "in_history": tg_known_enc,
+                                            "was_locked": was_locked,
+                                            "reason":     "encrypted",
+                                        }),
+                                    );
+                                    continue;
+                                }
+
+                                let pre_state = mgr.state_label();
                                 let retune = handle_grant_event(
                                     &g, &mut mgr, &follower_imbe
                                 );
+                                let post_state = mgr.state_label();
                                 drop(mgr);
+
+                                if pre_state != post_state {
+                                    follower_event_log.push(
+                                        LogCategory::Traffic,
+                                        format!(
+                                            "state {} -> {} TG={}",
+                                            pre_state, post_state, g.talkgroup.0,
+                                        ),
+                                        serde_json::json!({
+                                            "from": pre_state,
+                                            "to":   post_state,
+                                            "tg":   g.talkgroup.0,
+                                        }),
+                                    );
+                                }
 
                                 if retune {
                                     let freq_hz = g.frequency_hz.unwrap();
                                     let offset_hz = freq_hz as i64 - follower_rx_lo;
+
+                                    // Phase 7F.1 fix: reset the
+                                    // traffic-side decoder framer
+                                    // *before* the DDC retune so
+                                    // dibits arriving from the new
+                                    // frequency don't get consumed
+                                    // while the framer is mid-state
+                                    // on stale data. Preserves
+                                    // cumulative counters.
+                                    {
+                                        let mut dec = follower_traffic_decoder
+                                            .write().await;
+                                        dec.reset_framer_state();
+                                    }
+
                                     let core = follower_core.lock().await;
-                                    match core.set_traffic_ddc_frequency(
+                                    // Phase 8B: atomic
+                                    // freeze-reset-thaw through the
+                                    // HDL reset plumbing added in
+                                    // Phase 8A. `retune_traffic_chain`
+                                    // disables both the LSM and C4FM
+                                    // chains, writes the new DDC
+                                    // frequency, pulses
+                                    // `traffic_lsm_reset` (clearing
+                                    // the PLL accumulator and all
+                                    // upstream state), then re-enables
+                                    // both chains. The post-retune PLL
+                                    // starts from 0 and converges in
+                                    // ~50-100 ms instead of carrying
+                                    // stale phase from the previous
+                                    // carrier. See doc/changes/038.
+                                    match core.retune_traffic_chain(
                                         offset_hz as f64,
                                         follower_sample_rate,
                                     ) {
                                         Ok(()) => {
-                                            core.set_traffic_demod_enable(true);
                                             tracing::info!(
                                                 target: "p25_traffic",
                                                 "retune: TG={} channel={:?} \
                                                  freq={} Hz offset={:+} Hz \
-                                                 (demod_enable=on)",
+                                                 (LSM freeze-reset-thaw, framer reset)",
                                                 g.talkgroup.0, g.channel,
                                                 freq_hz, offset_hz,
+                                            );
+                                            follower_event_log.push(
+                                                LogCategory::Traffic,
+                                                format!(
+                                                    "retune TG={} -> {:.4} MHz (offset {:+} Hz)",
+                                                    g.talkgroup.0,
+                                                    freq_hz as f64 / 1e6,
+                                                    offset_hz,
+                                                ),
+                                                serde_json::json!({
+                                                    "tg":          g.talkgroup.0,
+                                                    "channel":     g.channel.0,
+                                                    "frequency":   freq_hz,
+                                                    "offset_hz":   offset_hz,
+                                                    "framer_reset": true,
+                                                    "lsm_reset":   true,
+                                                }),
                                             );
                                         }
                                         Err(e) => {
@@ -1938,6 +2134,17 @@ async fn main() -> anyhow::Result<()> {
                                                  offset={:+} Hz: {}",
                                                 g.talkgroup.0, freq_hz,
                                                 offset_hz, e,
+                                            );
+                                            follower_event_log.push(
+                                                LogCategory::Traffic,
+                                                format!(
+                                                    "retune FAILED TG={}: {}",
+                                                    g.talkgroup.0, e,
+                                                ),
+                                                serde_json::json!({
+                                                    "tg":     g.talkgroup.0,
+                                                    "error":  e.to_string(),
+                                                }),
                                             );
                                         }
                                     }
@@ -1954,7 +2161,12 @@ async fn main() -> anyhow::Result<()> {
                         if mgr.check_timeouts() {
                             drop(mgr);
                             let core = follower_core.lock().await;
-                            core.set_traffic_demod_enable(false);
+                            // Phase 8B: pause both chains (LSM +
+                            // C4FM) between calls so the traffic
+                            // LSM demod is quiescent during Idle --
+                            // no phantom NID events, no drift in
+                            // the PLL accumulator against noise.
+                            core.pause_traffic_chain();
                             if let Some(tg) = pre_timeout_tg {
                                 let mut dec =
                                     follower_lsm_decoder.write().await;
@@ -1967,6 +2179,18 @@ async fn main() -> anyhow::Result<()> {
                                      TG {} from grant store, \
                                      demod_enable=off",
                                     tg.0,
+                                );
+                                follower_event_log.push(
+                                    crate::event_log::LogCategory::Traffic,
+                                    format!(
+                                        "state -> Idle (timeout) TG={}",
+                                        tg.0,
+                                    ),
+                                    serde_json::json!({
+                                        "tg":       tg.0,
+                                        "to":       "Idle",
+                                        "reason":   "call_timeout",
+                                    }),
                                 );
                             } else {
                                 tracing::info!(
@@ -2019,6 +2243,8 @@ async fn main() -> anyhow::Result<()> {
         let traffic_lsm_mgr = traffic_manager.clone();
         let traffic_lsm_stats = traffic_stats.clone();
         let traffic_event_tx = event_tx.clone();
+        let traffic_event_log = event_log.clone();
+        let traffic_heartbeat_imbe = imbe_forwarder.clone();
         tokio::spawn(async move {
             tracing::info!(
                 "traffic LSM heartbeat task started (Phase 7A.2, polling \
@@ -2052,6 +2278,28 @@ async fn main() -> anyhow::Result<()> {
                 }
                 nid_events += 1;
 
+                // Phase 7F.5 (2026-04-14) root-cause gate: if the
+                // follower is Idle, skip the entire NID dispatch.
+                // The HDL LSM chain keeps producing NID events on
+                // residual dibits between calls, and before this
+                // gate the heartbeat was calling mgr.hdu_received
+                // / ldu_received / tdu_received / broadcasting WS
+                // activity / pushing event_log entries for every
+                // noise-extracted "NID" -- producing the "TG:--
+                // CH:--" TDU_LC spam in the Live Activity feed
+                // even with no real call.
+                //
+                // We still update `nid_events` above so we can see
+                // the raw rate on /api/traffic_lsm diagnostics,
+                // but from here we're a no-op.
+                use std::sync::atomic::Ordering;
+                if traffic_heartbeat_imbe
+                    .current_talkgroup
+                    .load(Ordering::Relaxed) == 0
+                {
+                    continue;
+                }
+
                 // Dispatch by DUID. Only dispatch on valid NIDs --
                 // BCH-failed NIDs aren't trustworthy enough to drive
                 // call-state transitions.
@@ -2067,7 +2315,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 let now = std::time::Instant::now();
-                {
+                let locked_tg_snapshot = {
                     let mut mgr = traffic_lsm_mgr.lock().await;
                     match duid {
                         0x0 => mgr.hdu_received(now, nac),
@@ -2076,17 +2324,65 @@ async fn main() -> anyhow::Result<()> {
                         0x5 => mgr.ldu_received(now, nac, false),
                         0xA => mgr.ldu_received(now, nac, true),
                         _ => {
-                            // Other DUIDs (PDU 0xC, etc.) are not
-                            // expected on a voice channel; record but
-                            // do not dispatch.
                             mgr.last_duid = Some(duid);
                             mgr.last_nac = Some(nac);
                         }
+                    }
+                    mgr.current_talkgroup().map(|t| t.0).unwrap_or(0)
+                };
+
+                // Log the coarse call boundaries so the event log
+                // reads like a call transcript. LDUs are too frequent
+                // (1 every ~30 ms) to log individually -- the vocoder
+                // task below logs per-call summaries instead.
+                //
+                // Phase 7F.3 (2026-04-14): only log when we're
+                // actually locked on a TG. During Idle the traffic
+                // LSM HDL chain keeps firing NID events on residual
+                // dibits from the last-tuned frequency; they get
+                // classified by the BCH decoder (often as 0xF TDU_LC
+                // when the signal is marginal) and would otherwise
+                // flood the event log with ~20 TG=0 TDU_LC entries
+                // per second. Counters still update in the dispatch
+                // match above -- this only gates the Logs-tab spam.
+                if locked_tg_snapshot != 0 {
+                    match duid {
+                        0x0 => traffic_event_log.push(
+                            crate::event_log::LogCategory::Imbe,
+                            format!("HDU TG={} NAC=0x{:03X}", locked_tg_snapshot, nac),
+                            serde_json::json!({
+                                "duid":    "HDU",
+                                "tg":      locked_tg_snapshot,
+                                "nac":     nac,
+                            }),
+                        ),
+                        0x3 | 0xF => traffic_event_log.push(
+                            crate::event_log::LogCategory::Imbe,
+                            format!(
+                                "{} TG={} NAC=0x{:03X}",
+                                if duid == 0xF { "TDU_LC" } else { "TDU" },
+                                locked_tg_snapshot, nac,
+                            ),
+                            serde_json::json!({
+                                "duid":    if duid == 0xF { "TDU_LC" } else { "TDU" },
+                                "tg":      locked_tg_snapshot,
+                                "nac":     nac,
+                            }),
+                        ),
+                        _ => {}
                     }
                 }
 
                 // Broadcast traffic DUID events to the WebSocket
                 // activity feed so the dashboard shows HDU/LDU/TDU.
+                //
+                // Note: this is unreachable when Idle because the
+                // Idle gate above `continue`s the loop before we
+                // get here. Kept non-conditional so the dashboard
+                // gets every event the heartbeat dispatches,
+                // matching the user's "don't suppress activity"
+                // requirement -- any event that makes it this far
+                // represents a real locked call.
                 {
                     let mgr = traffic_lsm_mgr.lock().await;
                     let duid_label = match duid {
@@ -2189,33 +2485,147 @@ async fn main() -> anyhow::Result<()> {
     // via mbelib, pushes AudioChunks to the broadcast channel, and
     // updates stats atomics. Encryption gating: encrypted frames are
     // counted but not decoded.
+    //
+    // Phase 7F.1 (2026-04-14): per-call summary lines written to the
+    // structured event log. A "call" is defined by the vocoder reset
+    // flag (raised by the follower on Idle->Active transitions);
+    // between resets we accumulate frame count + PCM sample count +
+    // error count per TG and flush a "call_end" summary on reset.
     {
         let voc_forwarder = imbe_forwarder.clone();
         let voc_audio_tx = audio_tx.clone();
+        let voc_event_log = event_log.clone();
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
             let mut decoder = vocoder::JmbeDecoder::new();
             let mut rx = imbe_rx;
             let mut seq: u64 = 0;
+
+            // Per-call accumulators. `call_tg` is the TG the current
+            // accumulator belongs to; flushed on reset or TG change.
+            let mut call_tg: u16 = 0;
+            let mut call_frames_in: u32 = 0;
+            let mut call_frames_skipped_enc: u32 = 0;
+            let mut call_pcm_samples: u64 = 0;
+            let mut call_started: Option<std::time::Instant> = None;
+            // Phase 9.1 (2026-04-15): track the wall clock of the
+            // most recent IMBE frame we decoded so `duration_ms` in
+            // the call_end summary reflects the actual
+            // voice-arrival span, not the full retune-to-retune
+            // interval. Before Phase 9.1, duration_ms used
+            // `started.elapsed()` which is "time since the first
+            // frame of this call was decoded" -- if the follower
+            // stayed locked on a TG for 97 s with only 900 ms of
+            // real voice and the rest silence+noise-TDU_LCs, the
+            // duration was reported as 97244 ms (retune-to-retune
+            // wall clock) instead of ~900 ms (actual audio).
+            let mut call_last_frame_at: Option<std::time::Instant> = None;
+
+            let flush_call_summary = |
+                tg: u16,
+                frames_in: u32,
+                frames_skipped_enc: u32,
+                pcm_samples: u64,
+                started: Option<std::time::Instant>,
+                last_frame_at: Option<std::time::Instant>,
+                log: &std::sync::Arc<crate::event_log::EventLog>,
+            | {
+                if frames_in == 0 && frames_skipped_enc == 0 {
+                    return;
+                }
+                // Phase 9.1: duration = time from first decoded
+                // frame to last decoded frame. When only one burst
+                // of voice lives inside a long retune-to-retune
+                // lock, this shows the real voice length. Falls
+                // back to 0 if we somehow flushed without ever
+                // latching a frame timestamp (shouldn't happen when
+                // frames_in > 0, but be safe).
+                let duration_ms = match (started, last_frame_at) {
+                    (Some(s), Some(l)) => {
+                        l.duration_since(s).as_millis() as u64
+                    }
+                    _ => 0,
+                };
+                log.push(
+                    crate::event_log::LogCategory::Vocoder,
+                    format!(
+                        "call_end TG={} frames={} pcm={} ({} ms){}",
+                        tg, frames_in, pcm_samples, duration_ms,
+                        if frames_skipped_enc > 0 {
+                            format!(" enc_skipped={}", frames_skipped_enc)
+                        } else {
+                            String::new()
+                        },
+                    ),
+                    serde_json::json!({
+                        "tg":                 tg,
+                        "frames_in":          frames_in,
+                        "frames_skipped_enc": frames_skipped_enc,
+                        "pcm_samples":        pcm_samples,
+                        "duration_ms":        duration_ms,
+                    }),
+                );
+            };
+
             tracing::info!(target: "p25_vocoder", "vocoder task started");
             while let Some(frames) = rx.recv().await {
-                // Reset mbelib state on call boundary
+                // Reset on call boundary (raised by the follower on
+                // new retune).
                 if voc_forwarder.vocoder_reset_pending.swap(false, Ordering::Relaxed) {
+                    flush_call_summary(
+                        call_tg, call_frames_in, call_frames_skipped_enc,
+                        call_pcm_samples, call_started, call_last_frame_at,
+                        &voc_event_log,
+                    );
                     decoder.reset();
+                    call_tg = voc_forwarder
+                        .current_talkgroup.load(Ordering::Relaxed);
+                    call_frames_in = 0;
+                    call_frames_skipped_enc = 0;
+                    call_pcm_samples = 0;
+                    call_started = Some(std::time::Instant::now());
+                    call_last_frame_at = None;
+                    voc_event_log.push(
+                        crate::event_log::LogCategory::Vocoder,
+                        format!("call_start TG={}", call_tg),
+                        serde_json::json!({ "tg": call_tg }),
+                    );
                 }
                 let encrypted = voc_forwarder.call_encrypted.load(Ordering::Relaxed);
                 if encrypted {
                     voc_forwarder
                         .vocoder_frames_encrypted
                         .fetch_add(9, Ordering::Relaxed);
+                    call_frames_skipped_enc += 9;
                     continue;
                 }
                 let tg = voc_forwarder.current_talkgroup.load(Ordering::Relaxed);
+                // Auto-flush if TG changed without an explicit reset
+                // (e.g. follower mid-call TG reassignment).
+                if tg != call_tg && (call_frames_in > 0 || call_started.is_some()) {
+                    flush_call_summary(
+                        call_tg, call_frames_in, call_frames_skipped_enc,
+                        call_pcm_samples, call_started, call_last_frame_at,
+                        &voc_event_log,
+                    );
+                    call_tg = tg;
+                    call_frames_in = 0;
+                    call_frames_skipped_enc = 0;
+                    call_pcm_samples = 0;
+                    call_started = Some(std::time::Instant::now());
+                    call_last_frame_at = None;
+                }
                 for frame in &frames {
                     let pcm = decoder.decode_frame(frame);
                     voc_forwarder
                         .vocoder_pcm_produced
                         .fetch_add(vocoder::SAMPLES_PER_FRAME as u64, Ordering::Relaxed);
+                    call_frames_in += 1;
+                    call_pcm_samples += vocoder::SAMPLES_PER_FRAME as u64;
+                    // Phase 9.1: latch the wall clock of this frame
+                    // so the next flush reports the true voice
+                    // span instead of the retune-to-retune gap.
+                    call_last_frame_at = Some(std::time::Instant::now());
                     // Push to audio broadcast (ignore if no subscribers)
                     let _ = voc_audio_tx.send(audio::AudioChunk {
                         pcm,
@@ -2233,13 +2643,12 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(httpd::AppState {
         decoder: decoder.clone(),
         lsm_decoder: lsm_decoder.clone(),
-        iq_lsm_decoder: iq_lsm_decoder.clone(),
+        // Phase 9: `iq_lsm_decoder` + `lsm_stats` removed.
         event_tx,
         #[cfg(target_os = "linux")]
         ip_core,
         #[cfg(target_os = "linux")]
         ad9361,
-        lsm_stats: lsm_stats.clone(),
         hdl_lsm: hdl_lsm.clone(),
         irq_stats: irq_stats.clone(),
         // Phase 7A.1: traffic-channel grant follower + dibit reader
@@ -2251,6 +2660,7 @@ async fn main() -> anyhow::Result<()> {
         imbe_forwarder: imbe_forwarder.clone(),
         monitor_list: monitor_list.clone(),
         audio_tx: audio_tx.clone(),
+        event_log: event_log.clone(),
     });
 
     // Start HTTP server

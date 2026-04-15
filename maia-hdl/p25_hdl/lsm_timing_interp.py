@@ -204,6 +204,12 @@ class LsmTimingInterp(Elaboratable):
         self.timing_adj_in = Signal(signed(iq_width))
         self.timing_adj_strobe_in = Signal()
 
+        # Phase 8A: runtime reset. One-cycle pulse clears the IQ
+        # lookahead FIFO and rewinds `sample_point` to its warmup
+        # init, so the timing recovery acts like cold-start on the
+        # next input sample.
+        self.reset_in = Signal()
+
         # ── Outputs ─────────────────────────────────────────────
         self.i_mid_out = Signal(signed(iq_width), reset_less=True)
         self.q_mid_out = Signal(signed(iq_width), reset_less=True)
@@ -512,5 +518,38 @@ class LsmTimingInterp(Elaboratable):
         # vanishingly low and a 1-cycle delay there is harmless.
         with m.If(self.timing_adj_strobe_in & ~self.strobe_in):
             m.d.sync += sample_point.eq(sample_point + self.timing_adj_in)
+
+        # ── Phase 8A runtime reset override ─────────────────────
+        # Rewind the timing-recovery state so the next cold-start
+        # acquires from scratch on the new carrier. Clears the IQ
+        # lookahead FIFO, the stage-1 latches, and rewinds
+        # `sample_point` to its warmup init. Last-assignment-wins in
+        # `m.d.sync` makes this an override of any update fired by
+        # the strobe_in / timing_adj_strobe_in branches above.
+        with m.If(self.reset_in):
+            m.d.sync += [
+                sample_point.eq(sample_point_init),
+                self.decision_strobe.eq(0),
+                s1_active.eq(0),
+                s1_mu_mid.eq(0),
+                s1_cur_frac.eq(0),
+                s1_a_mid_re.eq(0),
+                s1_b_mid_re.eq(0),
+                s1_a_mid_im.eq(0),
+                s1_b_mid_im.eq(0),
+                s1_a_cur_re.eq(0),
+                s1_b_cur_re.eq(0),
+                s1_a_cur_im.eq(0),
+                s1_b_cur_im.eq(0),
+                self.i_mid_out.eq(0),
+                self.q_mid_out.eq(0),
+                self.i_cur_out.eq(0),
+                self.q_cur_out.eq(0),
+            ]
+            for i in range(N):
+                m.d.sync += [
+                    fifo_re[i].eq(0),
+                    fifo_im[i].eq(0),
+                ]
 
         return m

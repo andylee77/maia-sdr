@@ -210,6 +210,108 @@ class TestLsmDemod(unittest.TestCase):
             f"With DC bias + blocker, LsmDemod emitted {len(dibits)} "
             f"dibits, expected ~{stage.n_symbols}")
 
+    def test_reset_in_clears_pll_and_sample_point(self):
+        """Phase 8A: asserting `reset_in` mid-stream must clear the
+        PLL accumulator and sample-point debug registers to 0 within
+        one sync cycle. This is the direct HDL-level acceptance
+        criterion for the runtime reset plumbing -- the full
+        post-reset re-lock behaviour is validated on-target after
+        the Phase 8B PS integration lands.
+        """
+        stage = load_demod_stage('demod_loop_synthetic')
+
+        SCALE = 0.34
+        scaled_re = [SCALE * x for x in stage.input_re]
+        scaled_im = [SCALE * x for x in stage.input_im]
+        in_re_q = to_fixed(scaled_re, frac_bits=15, width=16)
+        in_im_q = to_fixed(scaled_im, frac_bits=15, width=16)
+
+        # Drive long enough for the PLL to have absorbed a few
+        # symbols' worth of error so pll_dbg has non-zero content.
+        WARMUP_SAMPLES = min(200, stage.n_input)
+
+        pll_pre = None
+        sp_pre = None
+        pll_post = None
+        sp_post = None
+
+        async def bench(ctx):
+            nonlocal pll_pre, sp_pre, pll_post, sp_post
+            for k in range(WARMUP_SAMPLES):
+                ctx.set(dut.re_in, in_re_q[k])
+                ctx.set(dut.im_in, in_im_q[k])
+                ctx.set(dut.strobe_in, 1)
+                await ctx.tick()
+                ctx.set(dut.strobe_in, 0)
+                for _ in range(CYCLES_BETWEEN_STROBES - 1):
+                    await ctx.tick()
+
+            # Let the pipeline fully drain before pulsing reset --
+            # the last IQ strobe above triggers a ~20-cycle chain
+            # through timing -> diff_demod -> rotate -> CORDIC ->
+            # pll post-stages, and we want all of that to have
+            # written back into pll_reg before we sample pll_pre
+            # and fire the reset pulse. This mirrors the PS-side
+            # protocol: disable, WAIT, then reset.
+            for _ in range(128):
+                await ctx.tick()
+
+            pll_pre = ctx.get(dut.pll_dbg)
+            sp_pre = ctx.get(dut.sample_point_dbg)
+
+            # Pulse reset_in for one sync cycle.
+            ctx.set(dut.reset_in, 1)
+            await ctx.tick()
+            ctx.set(dut.reset_in, 0)
+            # Let the reset override land and anything on the
+            # downstream side of the stages resettle. 32 cycles is
+            # well past the 16-cycle CORDIC pipeline depth.
+            for _ in range(32):
+                await ctx.tick()
+
+            pll_post = ctx.get(dut.pll_dbg)
+            sp_post = ctx.get(dut.sample_point_dbg)
+
+        dut = LsmDemod()
+        sim = Simulator(dut)
+        sim.add_clock(16e-9)
+        sim.add_testbench(bench)
+        sim.run()
+
+        # Decode pll_dbg (signed 16-bit).
+        def _s16(v):
+            return v - (1 << 16) if v >= (1 << 15) else v
+
+        def _s18(v):
+            return v - (1 << 18) if v >= (1 << 17) else v
+
+        pll_pre_s = _s16(pll_pre)
+        pll_post_s = _s16(pll_post)
+        sp_pre_s = _s18(sp_pre)
+        sp_post_s = _s18(sp_post)
+
+        # Sanity: the warmup actually moved pll or sample_point away
+        # from their cold init so the test is proving something.
+        # The synthetic golden has no carrier offset so pll_dbg may
+        # legitimately stay near 0; sample_point is the firm signal.
+        # Cold-start sample_point init = SPS_Q12 + (BP_INDEX+2)*ONE_Q12
+        # = 26667 + 28672 = 55339. After many strobes it cycles
+        # through the ~SPS range, rarely re-touching the warmup init.
+        from p25_hdl.lsm_timing_interp import SPS_Q12, ONE_Q12
+        warmup_init = SPS_Q12 + 7 * ONE_Q12  # BP_INDEX=5 so (5+2)=7
+
+        # After reset, sample_point must be back at the warmup init.
+        self.assertEqual(
+            sp_post_s, warmup_init,
+            f"sample_point_dbg should be {warmup_init} after reset, "
+            f"got {sp_post_s} (pre-reset was {sp_pre_s})")
+
+        # pll_dbg should be 0 after reset.
+        self.assertEqual(
+            pll_post_s, 0,
+            f"pll_dbg should be 0 after reset, got {pll_post_s} "
+            f"(pre-reset was {pll_pre_s})")
+
 
 if __name__ == '__main__':
     unittest.main()

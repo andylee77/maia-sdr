@@ -61,6 +61,14 @@ pub struct ChannelGrant {
     /// (mask 0x80). Same forward-compat default.
     #[serde(default)]
     pub emergency: bool,
+    /// Phase 7F.4 (2026-04-14): true if this TG has ever been
+    /// observed with `encrypted=true` on any grant since boot.
+    /// Computed from the follower's `encrypted_tg_history` HashSet.
+    /// Lets the dashboard render an [ENC-HIST] badge on active
+    /// grant rows whose latest TSBK lacked service options but
+    /// whose TG is a known-encrypted one.
+    #[serde(default)]
+    pub in_encrypted_history: bool,
 }
 
 /// Frequency band info (from IDEN_UP)

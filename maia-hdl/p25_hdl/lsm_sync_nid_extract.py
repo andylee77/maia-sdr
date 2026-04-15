@@ -159,6 +159,10 @@ class LsmSyncNidExtract(Elaboratable):
         # ── Inputs ──────────────────────────────────────────────
         self.dibit_in = Signal(2)
         self.dibit_strobe = Signal()
+        # Phase 8A: runtime reset. A 1-cycle pulse clears the
+        # 48-bit sync shift register + fill counter + NID
+        # assembly state and forces the FSM back to IDLE.
+        self.reset_in = Signal()
 
         # ── Outputs ─────────────────────────────────────────────
         self.nid_out = Signal(NID_BITS, reset_less=True)
@@ -198,6 +202,8 @@ class LsmSyncNidExtract(Elaboratable):
                 ~fsm.ongoing("IDLE"))
 
             with m.State("IDLE"):
+                # Phase 8A: handled by the reset override block
+                # below — IDLE doesn't need an m.next change.
                 with m.If(self.dibit_strobe):
                     # Shift the new dibit into the sync register
                     # and bump the fill counter (saturating at
@@ -239,6 +245,9 @@ class LsmSyncNidExtract(Elaboratable):
                         m.next = "COLLECT_NID"
 
             with m.State("COLLECT_NID"):
+                # Phase 8A: force back to IDLE on runtime reset.
+                with m.If(self.reset_in):
+                    m.next = "IDLE"
                 with m.If(self.dibit_strobe):
                     # Skip the status dibit at index
                     # NID_STATUS_DIBIT_INDEX (11), append every
@@ -260,6 +269,9 @@ class LsmSyncNidExtract(Elaboratable):
                         m.next = "EMIT"
 
             with m.State("EMIT"):
+                # Phase 8A: force back to IDLE on runtime reset.
+                with m.If(self.reset_in):
+                    m.next = "IDLE"
                 # One pure-emit cycle so the new nid_word value
                 # registered in COLLECT_NID is visible on nid_out
                 # at the same time as nid_strobe.
@@ -281,5 +293,22 @@ class LsmSyncNidExtract(Elaboratable):
                     sync_reg.eq(0),
                 ]
                 m.next = "IDLE"
+
+        # ── Phase 8A runtime reset override ─────────────────────
+        # Clear all the persistent state registers. The FSM
+        # state-register itself is forced back to IDLE by the
+        # per-state `m.next = "IDLE"` overrides above (IDLE is
+        # already a no-op self-loop, so it doesn't need one).
+        with m.If(self.reset_in):
+            m.d.sync += [
+                sync_reg.eq(0),
+                reg_fill.eq(0),
+                nid_word.eq(0),
+                dibit_count.eq(0),
+                latched_distance.eq(0),
+                self.nid_out.eq(0),
+                self.nid_distance.eq(0),
+                self.nid_strobe.eq(0),
+            ]
 
         return m

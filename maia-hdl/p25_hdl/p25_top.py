@@ -338,6 +338,15 @@ class P25Core(Elaboratable):
                 0b000: Register('lsm_control', [
                     Field('lsm_enable', Access.RW, 1, 0),
                     Field('lsm_dibit_dma_enable', Access.RW, 1, 0),
+                    # Phase 8A: W1P runtime-reset strobe. Writing 1
+                    # drives a 1-cycle `reset_in` pulse into the
+                    # LsmDemod chain (PLL accumulator + timing +
+                    # diff slicer + sync register + BCH sweep state
+                    # all clear back to init). Self-clearing on the
+                    # next sync cycle -- reads as 0. Wired below in
+                    # the LSM chain block. See
+                    # doc/changes/038_phase8_runtime_reset.md.
+                    Field('lsm_reset', Access.Wpulse, 1, 0),
                     # Phase 6G.1: front-end DC blocker enable.
                     # Defaults to 0 (off) at reset to match the
                     # convention of lsm_enable; PS-side code is
@@ -509,6 +518,16 @@ class P25Core(Elaboratable):
                     Field('traffic_lsm_enable', Access.RW, 1, 0),
                     Field('traffic_lsm_dibit_dma_enable', Access.RW, 1, 0),
                     Field('traffic_lsm_dc_block_enable', Access.RW, 1, 0),
+                    # Phase 8A: W1P runtime-reset strobe for the
+                    # traffic LSM chain. Writing 1 pulses the
+                    # LsmDemod reset_in port and clears the PLL
+                    # accumulator, timing state, diff slicer prev,
+                    # sync register, and BCH sweep state. The
+                    # Phase 8B retune path toggles this on every
+                    # traffic-DDC retune so the post-retune
+                    # acquisition starts from a clean cold-start.
+                    # See doc/changes/038_phase8_runtime_reset.md.
+                    Field('traffic_lsm_reset', Access.Wpulse, 1, 0),
                 ]),
                 0b001: Register('traffic_lsm_status', [
                     Field('bch_busy', Access.R, 1, 0),
@@ -600,6 +619,49 @@ class P25Core(Elaboratable):
             self.clk3x,
         ]
 
+        # Phase 8C: local clock domains for the two LSM demod
+        # chains. Both use the `sync` clock (same edges), but each
+        # has its own synchronous reset wired to `~lsm_enable` of
+        # the respective chain. The net effect: toggling
+        # `lsm_control.lsm_enable` or
+        # `traffic_lsm_control.traffic_lsm_enable` becomes a full
+        # reset of every register in that chain that has a reset
+        # wire -- FSM state in LsmSyncNidExtract / LsmNidBchFec /
+        # CORDIC, stage strobes in LsmPllUpdate, output latches,
+        # and the dibit/symbol strobe registers. Registers declared
+        # with `reset_less=True` (pll_reg in LsmPllUpdate,
+        # sample_point's FIFO entries in LsmTimingInterp,
+        # diff-slicer prev_*, sync_reg, etc.) do NOT clear on
+        # domain reset -- the explicit `reset_in` path added in
+        # Phase 8A is still load-bearing for those. The two paths
+        # are complementary: domain reset handles pipeline state
+        # automatically, explicit reset_in handles the reset_less
+        # persistent state.
+        #
+        # Clock drive + reset wire for these domains happens below,
+        # once `lsm_enable` / `traffic_lsm_enable` are in scope.
+        # NOTE: Amaranth deprecated the `local=True` flag -- all
+        # named domains are local to their module by default, so
+        # just construct unnamed `ClockDomain`s here.
+        #
+        # Phase 8C.1 (2026-04-15) regression revert: the control-side
+        # `lsm_ctrl_dom` wrap was bypassed for the next bake. On-target
+        # measurement showed the control-side LSM chain regressed from
+        # the Phase 6F.9 baseline of 91.7% TSBK CRC pass to 24.8% pass
+        # after the Phase 8C wrap landed -- with a 60/40 inner/outer
+        # dibit ratio and per-NID `pll_dbg` swinging by thousands of
+        # ULPs (PLL hunting in steady state). The traffic side keeps
+        # its `lsm_traffic_dom` wrap because Phase 8B's per-call
+        # retune flow needs `traffic_lsm_enable` toggling to clear
+        # non-`reset_less` state between calls. If this revert
+        # restores the control-side CRC pass rate to the 6F.9
+        # baseline, Phase 8C is the confirmed cause and we'll need
+        # a different mechanism than `DomainRenamer` for the Phase
+        # 7G channel-hop infrastructure 8C was prepping for.
+        lsm_traffic_dom = ClockDomain("lsm_traffic_dom")
+        m.domains += [lsm_traffic_dom]
+        lsm_traffic_renamer = DomainRenamer({'sync': 'lsm_traffic_dom'})
+
         s_axi_lite_renamer = DomainRenamer({'sync': 's_axi_lite'})
 
         # ── Submodules ─────────────────────────────────────────────────
@@ -679,8 +741,18 @@ class P25Core(Elaboratable):
             's_axi_lite', 'sync', self.iq_registers.aw)
 
         # Phase 6E.9: control-channel LSM demod chain submodules.
-        # All run in the same sync domain as the C4FM chain and tap
-        # the same DDC output below.
+        # All run in the same `sync` domain alongside the C4FM
+        # chain. Phase 8C tried to wrap `lsm_demod` in its own
+        # `lsm_ctrl_dom` local clock domain (so disabling
+        # `lsm_enable` would force a synchronous reset of the
+        # non-`reset_less` pipeline state), but on-target testing
+        # showed a 67-percentage-point TSBK CRC pass-rate
+        # regression after that wrap landed -- 91.7% (Phase 6F.9
+        # baseline) → 24.8%. Phase 8C.1 reverts the wrap on the
+        # control side; the traffic side keeps `lsm_traffic_dom`
+        # because Phase 8B's per-call retune flow needs it. See
+        # the comment on `lsm_traffic_dom` near the top of
+        # `elaborate()` for the full rationale.
         m.submodules.lsm_decimator = self.lsm_decimator
         m.submodules.lsm_lpf = self.lsm_lpf
         m.submodules.lsm_rrc = self.lsm_rrc
@@ -800,6 +872,15 @@ class P25Core(Elaboratable):
         # sweeps, no spurious dibits).
         lsm_enable = self.lsm_registers['lsm_control']['lsm_enable']
 
+        # Phase 8C.1 (2026-04-15) revert: the lsm_ctrl_dom wiring
+        # used to live here. With the control-side LsmDemod back in
+        # the global `sync` domain, there's no separate clock or
+        # reset to drive. The `lsm_demod.reset_in` Phase 8A wiring
+        # below still works because the Phase 8A override block in
+        # LsmPllUpdate / LsmTimingInterp / etc. is purely
+        # `m.d.sync` (now bound to the global sync domain instead
+        # of the per-chain lsm_ctrl_dom).
+
         # Stage 1: control DDC -> LSM /2 decimator
         m.d.comb += [
             self.lsm_decimator.re_in.eq(self.ddc.re_out),
@@ -835,6 +916,12 @@ class P25Core(Elaboratable):
             self.lsm_demod.strobe_in.eq(self.lsm_rrc.strobe_out),
             self.lsm_demod.dc_block_enable.eq(
                 self.lsm_registers['lsm_control']['lsm_dc_block_enable']),
+            # Phase 8A: runtime reset strobe. `lsm_reset` is a
+            # W1P field, so the Register machinery gives us a
+            # clean 1-sync-cycle pulse per PS write -- feed it
+            # directly into LsmDemod.reset_in.
+            self.lsm_demod.reset_in.eq(
+                self.lsm_registers['lsm_control']['lsm_reset']),
         ]
 
         # Stage 5: LsmDemod dibits -> packer -> ring DMA stream
@@ -1022,10 +1109,17 @@ class P25Core(Elaboratable):
         #   DUID 0x5  LDU1        -> voice + LC, refresh activity
         #   DUID 0xA  LDU2        -> voice + ESS, refresh activity
         #   DUID 0xF  TDU_LC      -> call end with LC payload
+        # Phase 8C: traffic-side LsmDemod moved into its own
+        # `lsm_traffic_dom` local clock domain (see the control
+        # side above for the rationale). The decimator / LPF /
+        # RRC / packer / DMA stay in `sync` so the upstream DDC
+        # strobe + downstream DMA master state survive across
+        # per-call LSM chain resets.
         m.submodules.traffic_lsm_decimator = self.traffic_lsm_decimator
         m.submodules.traffic_lsm_lpf = self.traffic_lsm_lpf
         m.submodules.traffic_lsm_rrc = self.traffic_lsm_rrc
-        m.submodules.traffic_lsm_demod = self.traffic_lsm_demod
+        m.submodules.traffic_lsm_demod = lsm_traffic_renamer(
+            self.traffic_lsm_demod)
         m.submodules.traffic_lsm_dibit_packer = self.traffic_lsm_dibit_packer
         m.submodules.traffic_lsm_dibit_dma = self.traffic_lsm_dibit_dma
         m.submodules.traffic_lsm_registers = self.traffic_lsm_registers
@@ -1035,6 +1129,14 @@ class P25Core(Elaboratable):
 
         traffic_lsm_enable = self.traffic_lsm_registers[
             'traffic_lsm_control']['traffic_lsm_enable']
+
+        # Phase 8C: wire the traffic LSM local clock domain's
+        # clock + reset. Mirrors the control side exactly -- same
+        # `sync` clock, reset driven by `~traffic_lsm_enable`.
+        m.d.comb += [
+            ClockSignal("lsm_traffic_dom").eq(ClockSignal("sync")),
+            ResetSignal("lsm_traffic_dom").eq(~traffic_lsm_enable),
+        ]
 
         # Stage 1: traffic DDC -> LSM /2 decimator
         m.d.comb += [
@@ -1069,6 +1171,16 @@ class P25Core(Elaboratable):
             self.traffic_lsm_demod.dc_block_enable.eq(
                 self.traffic_lsm_registers[
                     'traffic_lsm_control']['traffic_lsm_dc_block_enable']),
+            # Phase 8A: runtime reset strobe for the traffic
+            # chain. `traffic_lsm_reset` is W1P, so a PS write of
+            # 1 gives us a clean 1-sync-cycle pulse that clears
+            # the PLL accumulator, timing state, diff slicer
+            # prev history, sync register, and any in-flight BCH
+            # sweep. The Phase 8B PS retune path toggles this on
+            # every traffic-DDC retune.
+            self.traffic_lsm_demod.reset_in.eq(
+                self.traffic_lsm_registers[
+                    'traffic_lsm_control']['traffic_lsm_reset']),
         ]
 
         # Stage 5: LsmDemod dibits -> packer -> ring DMA stream.

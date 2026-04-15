@@ -133,6 +133,11 @@ class LsmDiffDemodSlicer(Elaboratable):
         self.i_cur_in = Signal(signed(iq_width))
         self.q_cur_in = Signal(signed(iq_width))
         self.decision_strobe = Signal()
+        # Phase 8A: runtime reset. Clears the per-decision prev_*
+        # history registers so the first post-reset decision uses a
+        # clean (0, 0) reference instead of the phase picked up on
+        # the previous carrier.
+        self.reset_in = Signal()
 
         # ── Outputs ─────────────────────────────────────────────
         self.i_mid_demod_out = Signal(signed(demod_width), reset_less=True)
@@ -218,6 +223,30 @@ class LsmDiffDemodSlicer(Elaboratable):
                 self.dibit_out.eq(
                     Cat(i_sym_full[-1], q_sym_full[-1])),
                 self.symbol_strobe.eq(1),
+            ]
+
+        # ── Phase 8A runtime reset override ─────────────────────
+        # Clear the per-decision prev_* history registers, both
+        # pipeline accumulators, and the output latches. After a
+        # reset the first post-reset decision runs against a
+        # (0, 0) reference which matches cold-boot semantics.
+        with m.If(self.reset_in):
+            m.d.sync += [
+                prev_middle_i.eq(0),
+                prev_middle_q.eq(0),
+                prev_current_i.eq(0),
+                prev_current_q.eq(0),
+                i_mid_demod_full.eq(0),
+                q_mid_demod_full.eq(0),
+                i_sym_full.eq(0),
+                q_sym_full.eq(0),
+                decision_q.eq(0),
+                self.i_mid_demod_out.eq(0),
+                self.q_mid_demod_out.eq(0),
+                self.i_sym_out.eq(0),
+                self.q_sym_out.eq(0),
+                self.dibit_out.eq(0),
+                self.symbol_strobe.eq(0),
             ]
 
         return m

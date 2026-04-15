@@ -135,6 +135,14 @@ class LsmDemod(Elaboratable):
         # bitstream that doesn't drive this input still gets the
         # blocker (the right behaviour for fishball7020_p25).
         self.dc_block_enable = Signal(init=1)
+        # Phase 8A: runtime reset. A 1-cycle pulse propagates into
+        # the closed-loop demod and the NID pipeline, clearing the
+        # PLL accumulator, timing state, diff-slicer prev history,
+        # sync register, BCH sweep state, and the event latches.
+        # DC blocker state is deliberately NOT touched -- it holds
+        # a slow-varying ADC offset that does not change between
+        # retunes and re-converges on its own in ~20 ms.
+        self.reset_in = Signal()
 
         # ── Pass-through dibit stream ───────────────────────────
         self.dibit_out = Signal(2)
@@ -167,6 +175,14 @@ class LsmDemod(Elaboratable):
         m.submodules.dc_block_im = dc_block_im = LsmDcBlocker()
         m.submodules.demod_loop = demod_loop = LsmDemodLoop()
         m.submodules.nid_pipeline = nid_pipeline = LsmNidPipeline()
+
+        # Phase 8A runtime reset fan-out: into the closed-loop
+        # demod and the NID pipeline. DC blockers are intentionally
+        # excluded (see __init__ docstring).
+        m.d.comb += [
+            demod_loop.reset_in.eq(self.reset_in),
+            nid_pipeline.reset_in.eq(self.reset_in),
+        ]
 
         # ── Stage 0: per-channel DC blocking ───────────────────
         # Both blockers run off the same enable + the same strobe

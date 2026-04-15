@@ -62,7 +62,7 @@ ENDPOINTS = [
     ("/api/stats",           "stats"),
     ("/api/decoder_compare", "decoder_compare"),
     ("/api/hdl_lsm",         "hdl_lsm"),
-    ("/api/lsm",             "lsm"),
+    # Phase 9 retirement: /api/lsm (Phase 6D software pipeline) is gone.
     ("/api/irq_stats",       "irq_stats"),
     ("/api/dibit_dump",      "dibit_dump"),
     ("/api/lsm_dibit_dump",  "lsm_dibit_dump"),
@@ -182,21 +182,23 @@ def render_grants(grants: list, aliases: dict | None) -> None:
 
 def render_decoder_compare(dc: dict) -> None:
     banner("5. Decoder pipeline counters (decoder_compare)")
+    # Phase 9 retirement: dropped `ps_iq_lsm`. The 3-column matrix is
+    # now `ps_lsm` (PS framer on PL HDL LSM dibits — production),
+    # `ps_c4fm` (dormant C4FM framer, kept for future C4FM sites),
+    # and `pl_hdl` (FPGA gateware heartbeat).
     rows = [
-        ("ps_lsm",    "PS LSM (HDL dibit-fed)"),
-        ("ps_iq_lsm", "PS IQ-LSM (raw IQ + soft sync)"),
-        ("ps_c4fm",   "PS C4FM (HDL c4fm dibit-fed)"),
+        ("ps_lsm",    "PS LSM framer (PL HDL dibit-fed)"),
+        ("ps_c4fm",   "PS C4FM (HDL C4FM dibit-fed, dormant)"),
     ]
-    print(f"  {'pipeline':<32}  {'NIDs ok':>9}  {'TSBK CRC':>12}  "
+    print(f"  {'pipeline':<40}  {'NIDs ok':>9}  {'TSBK CRC':>12}  "
           f"{'pass%':>6}  grants  bands")
     for key, label in rows:
         p = dc.get(key, {})
         nid_ok = p.get("nid_decoded_ok", 0)
-        nid_at = p.get("nid_attempts", 0)
         crc_ok = p.get("tsbk_crc_ok", 0)
         crc_at = p.get("tsbk_block_attempts", 0)
         pct = fmt_pct(crc_ok, crc_at)
-        print(f"  {label:<32}  "
+        print(f"  {label:<40}  "
               f"{fmt_int(nid_ok):>9}  "
               f"{fmt_int(crc_ok):>5}/{fmt_int(crc_at):<6}  "
               f"{pct:>6}  "
@@ -204,12 +206,15 @@ def render_decoder_compare(dc: dict) -> None:
               f"{p.get('bands_known', 0):>5}")
     pl = dc.get("pl_hdl", {})
     print()
-    print(f"  pl_hdl (FPGA) -- valid NIDs:  "
+    print(f"  pl_hdl (FPGA gateware)")
+    print(f"    valid NIDs:   "
           f"{fmt_int(pl.get('valid_nids', 0))} / "
           f"{fmt_int(pl.get('total_nids', 0))}  "
-          f"({pl.get('valid_pct', 0.0):.1f}%)  "
-          f"winner_nac={pl.get('winner_nac', '?')}  "
-          f"drop_count={pl.get('drop_count', 0)}")
+          f"({pl.get('valid_pct', 0.0):.1f}%)")
+    print(f"    winner NAC:   {pl.get('winner_nac', '?')}")
+    print(f"    drop count:   {pl.get('drop_count', 0)}")
+    print(f"    live pll/sp:  pll={pl.get('pll_dbg', '?')} "
+          f"sp={pl.get('sp_dbg', '?')} sync_d={pl.get('sync_distance', '?')}")
 
 
 def render_opcodes(oc: dict) -> None:

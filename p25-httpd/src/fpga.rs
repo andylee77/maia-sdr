@@ -646,6 +646,34 @@ impl IpCore {
             .modify(|_, w| w.lsm_dc_block_enable().bit(enable));
     }
 
+    /// Phase 8A: pulse the control-side LSM chain runtime reset.
+    ///
+    /// Writes `1` to the W1P `lsm_reset` field in `lsm_control`,
+    /// which the Register framework turns into a 1-sync-cycle pulse
+    /// on `LsmDemod.reset_in`. Clears the PLL accumulator + timing
+    /// state + diff slicer history + sync register + BCH sweep
+    /// state back to their init values. Self-clearing -- the PAC
+    /// write-pulse semantics guarantee the field reads back as 0
+    /// on the next cycle.
+    ///
+    /// Use this in conjunction with `set_lsm_enable(false)`
+    /// before/after for the clean freeze+reset+thaw sequence. The
+    /// control-side chain is currently never retuned, so in
+    /// practice this is only called once at boot if at all; the
+    /// helper exists for symmetry with the traffic side and for
+    /// future channel-hopping work (Phase 7G).
+    pub fn pulse_lsm_reset(&self) {
+        // The PAC models Wpulse as a `write_with_zero` register
+        // field -- we need to write ONLY the reset bit, without
+        // clobbering the other RW fields in the same word. Use
+        // `modify()` so the surrounding bits (lsm_enable,
+        // lsm_dibit_dma_enable, lsm_dc_block_enable) are read and
+        // written back unchanged.
+        self.registers
+            .lsm_control()
+            .modify(|_, w| w.lsm_reset().bit(true));
+    }
+
     /// Reads back the `lsm_control` register as `(lsm_enable,
     /// lsm_dibit_dma_enable, lsm_dc_block_enable)`. Used at startup
     /// to confirm the bits we wrote actually stuck in the register
@@ -814,6 +842,87 @@ impl IpCore {
         self.registers
             .traffic_lsm_control()
             .modify(|_, w| w.traffic_lsm_dc_block_enable().bit(enable));
+    }
+
+    /// Phase 8A: pulse the traffic-side LSM chain runtime reset.
+    ///
+    /// Writes `1` to the W1P `traffic_lsm_reset` field in
+    /// `traffic_lsm_control`, which the Register framework turns
+    /// into a 1-sync-cycle pulse on `LsmDemod.reset_in` for the
+    /// traffic chain. Clears the PLL accumulator + timing state +
+    /// diff slicer history + sync register + BCH sweep state back
+    /// to init. Self-clearing.
+    ///
+    /// This is the PRIMARY user of the reset plumbing -- the
+    /// Phase 8B retune path calls this between the DDC frequency
+    /// write and the LSM re-enable so the post-retune PLL
+    /// acquisition starts from cold-boot semantics (pll_reg = 0)
+    /// instead of inheriting the stale phase error from the old
+    /// carrier, which was the root cause of the Phase 7 traffic
+    /// audio quality problem (see doc/changes/037).
+    pub fn pulse_traffic_lsm_reset(&self) {
+        self.registers
+            .traffic_lsm_control()
+            .modify(|_, w| w.traffic_lsm_reset().bit(true));
+    }
+
+    /// Phase 8B + 8C: freeze-reset-thaw the traffic LSM chain
+    /// across a DDC retune. Recommended entry point for the
+    /// follower task whenever it retunes the traffic channel.
+    ///
+    /// Sequence:
+    ///   1. `traffic_lsm_enable = 0`  — Phase 8C's
+    ///      `lsm_traffic_dom` clock domain drops into synchronous
+    ///      reset, clearing all non-`reset_less` state inside
+    ///      LsmDemod in a single sync cycle (FSM state in the
+    ///      sync / BCH / CORDIC submodules, pipeline stage
+    ///      strobes, output latches). The C4FM chain is also
+    ///      gated at `traffic_demod_enable = 0`.
+    ///   2. Write the new DDC NCO frequency.
+    ///   3. `traffic_lsm_enable = 1`  — Phase 8C domain reset
+    ///      deasserts. The chain is live again, but the
+    ///      `reset_less=True` accumulators (PLL `pll_reg`,
+    ///      timing `sample_point`, diff slicer `prev_*`, sync
+    ///      shift register, BCH sweep counter, etc.) still hold
+    ///      their pre-disable values.
+    ///   4. Pulse `traffic_lsm_reset` — the Phase 8A explicit
+    ///      `reset_in` path clears ALL of those `reset_less`
+    ///      registers to init inside one sync cycle. This MUST
+    ///      come after the domain is re-enabled because
+    ///      `m.d.<domain>` assignments only fire when the domain
+    ///      is not in reset.
+    ///   5. `traffic_demod_enable = 1` — C4FM chain too (shares
+    ///      the same upstream DDC).
+    ///
+    /// Without steps 1+3 the carryover of PLL state from the
+    /// previous carrier produces corrupted dibits for hundreds
+    /// of milliseconds, which is the Phase 7 "1 in 20 calls
+    /// intelligible" symptom documented in doc/changes/037.
+    pub fn retune_traffic_chain(
+        &self,
+        frequency_hz: f64,
+        sample_rate_hz: f64,
+    ) -> Result<()> {
+        self.set_traffic_lsm_enable(false);
+        self.set_traffic_demod_enable(false);
+        self.set_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
+        self.set_traffic_lsm_enable(true);
+        self.pulse_traffic_lsm_reset();
+        self.set_traffic_demod_enable(true);
+        Ok(())
+    }
+
+    /// Phase 8B: quiesce the traffic LSM + C4FM chains between
+    /// calls. Counterpart to `retune_traffic_chain` -- used by
+    /// the follower task on Idle→timeout and on encryption
+    /// tear-down so the LSM chain stops producing phantom NID
+    /// events during the gap between calls (which would otherwise
+    /// still be accumulating spurious dibit noise into the BCH
+    /// input, flooding the sync detector with flat-distribution
+    /// noise syncs; see doc/changes/037).
+    pub fn pause_traffic_chain(&self) {
+        self.set_traffic_lsm_enable(false);
+        self.set_traffic_demod_enable(false);
     }
 
     /// Reads back the `traffic_lsm_control` register as

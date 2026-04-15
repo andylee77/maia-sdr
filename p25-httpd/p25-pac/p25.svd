@@ -521,9 +521,15 @@
               <access>read-write</access>
             </field>
             <field>
+              <name>lsm_reset</name>
+              <description>lsm_reset</description>
+              <bitRange>[2:2]</bitRange>
+              <access>write-only</access>
+            </field>
+            <field>
               <name>lsm_dc_block_enable</name>
               <description>lsm_dc_block_enable</description>
-              <bitRange>[2:2]</bitRange>
+              <bitRange>[3:3]</bitRange>
               <access>read-write</access>
             </field>
           </fields>
@@ -675,6 +681,12 @@
               <description>traffic_lsm_dc_block_enable</description>
               <bitRange>[2:2]</bitRange>
               <access>read-write</access>
+            </field>
+            <field>
+              <name>traffic_lsm_reset</name>
+              <description>traffic_lsm_reset</description>
+              <bitRange>[3:3]</bitRange>
+              <access>write-only</access>
             </field>
           </fields>
         </register>

@@ -41,16 +41,12 @@ pub struct AppState {
     /// only ever sees as garbage. Phase 6F.1 dashboard migration --
     /// see doc/changes/024 follow-up notes.
     pub lsm_decoder: Arc<RwLock<ControlChannelDecoder>>,
-    /// **Phase 6F.9 IQ-LSM `ControlChannelDecoder`**, fed by the Phase
-    /// 6D `LsmPipeline` running on RAW IQ from the iq_dma ring. This
-    /// is a third parallel TSBK pipeline that bypasses the HDL slicer
-    /// for sync detection -- the LSM IQ task uses the soft-decision
-    /// sync correlator on `demod.soft_phases` (the same one SDRTrunk
-    /// uses) and dispatches every detected sync into
-    /// `process_directed_tsdu`. The hope is to catch the ~9 syncs/sec
-    /// the soft correlator finds vs the ~5 syncs/sec the dibit-domain
-    /// hard correlator finds. See doc/changes/029.
-    pub iq_lsm_decoder: Arc<RwLock<ControlChannelDecoder>>,
+    // Phase 9 retirement: `iq_lsm_decoder` (Phase 6D software
+    // LSM pipeline's TSBK sink) and `lsm_stats` (Phase 6D pipeline
+    // runtime stats) were removed here. The HDL LSM chain in
+    // `lsm_decoder` and the PL heartbeat `hdl_lsm` runtime below
+    // are the single source of truth for the LSM side now. See
+    // doc/changes/039 for the rationale.
     pub event_tx: broadcast::Sender<String>,
     #[cfg(target_os = "linux")]
     pub ip_core: Arc<tokio::sync::Mutex<crate::fpga::IpCore>>,
@@ -58,11 +54,6 @@ pub struct AppState {
     /// Stateless wrapper around sysfs paths -- safe to share without a lock.
     #[cfg(target_os = "linux")]
     pub ad9361: Arc<crate::iio::Ad9361>,
-    /// Phase 6D: LSM pipeline runtime stats. Populated by the LSM tokio
-    /// task on every iq_dma wake; read by the `/api/lsm` handler to
-    /// surface the parallel LSM decoder on the dashboard alongside the
-    /// existing C4FM dibit pipeline panels.
-    pub lsm_stats: Arc<tokio::sync::Mutex<crate::lsm::LsmStats>>,
     /// Phase 6F.2: PL HDL LSM chain runtime stats, populated by the
     /// HDL LSM heartbeat task. Read by `/api/hdl_lsm`. Single source
     /// of truth for everything the heartbeat task observes about the
@@ -111,6 +102,11 @@ pub struct AppState {
     /// Phase 7E: audio broadcast channel. The vocoder task sends
     /// AudioChunks here; HTTP/WebSocket handlers subscribe.
     pub audio_tx: crate::audio::AudioTx,
+    /// Phase 7F.1 (2026-04-14): structured event log ring buffer.
+    /// See `src/event_log.rs`. Produced by the follower task, IMBE
+    /// forwarder, and vocoder task; consumed by the dashboard's
+    /// `/api/log` endpoint.
+    pub event_log: Arc<crate::event_log::EventLog>,
 }
 
 /// Build the HTTP router
@@ -121,7 +117,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/grants", get(get_grants))
         .route("/api/bands", get(get_bands))
         .route("/api/stats", get(get_stats))
-        .route("/api/lsm", get(get_lsm))
+        // Phase 9: /api/lsm (Phase 6D software pipeline stats) retired.
+        // /api/hdl_lsm is the PL-side runtime endpoint now.
         .route("/api/hdl_lsm", get(get_hdl_lsm))
         .route("/api/irq_stats", get(get_irq_stats))
         .route("/api/decoder_compare", get(get_decoder_compare))
@@ -155,6 +152,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/audio", get(get_audio))
         .route("/api/imbe_dump", get(get_imbe_dump))
         .route("/api/audio_test", get(get_audio_test))
+        .route("/api/log", get(get_event_log))
+        .route("/api/nid_capture", get(get_nid_capture))
+        .route("/api/bch_t", get(get_bch_t).put(put_bch_t))
+        .route(
+            "/api/encrypted_tgs",
+            get(get_encrypted_tgs).put(put_encrypted_tgs),
+        )
         .route("/api/aliases", get(get_aliases).put(put_aliases))
         .route("/ws/events", get(ws_events))
         .route("/ws/audio", get(ws_audio))
@@ -165,26 +169,16 @@ pub fn router(state: Arc<AppState>) -> Router {
 
 async fn get_system(State(state): State<Arc<AppState>>) -> Json<SystemInfo> {
     // Phase 6F.11 API-level merge: read BOTH lsm decoders and pick
-    // the most-populated value for each field. This gives us the
-    // union of state visible to either decoder pipeline. Both
-    // decoders are tracking the same radio, so disagreement is
-    // either (a) a transient where one is ahead of the other, or
-    // (b) one pipeline lost a TSBK that the other caught -- either
-    // way the right answer is "show the populated value".
-    //
-    // Why merge in the API instead of architecturally? Keeps the
-    // diagnostic A/B comparison in /api/decoder_compare intact, and
-    // we don't lose the regression insurance of having two
-    // independent decoder paths. See doc/changes/030 for the
-    // discussion.
-    let dec_a = state.lsm_decoder.read().await;
-    let dec_b = state.iq_lsm_decoder.read().await;
-    let sa = &dec_a.system;
-    let sb = &dec_b.system;
-    fn pick<T: Clone>(a: Option<T>, b: Option<T>) -> Option<T> {
-        a.or(b)
-    }
-    let system_clock_str = pick(sa.last_sync_clock, sb.last_sync_clock).map(
+    // Phase 9 retirement: this handler used to union the
+    // Phase 6D software LSM pipeline (`iq_lsm_decoder`) with the
+    // PL-fed `lsm_decoder` via a `pick()` fallback. After the
+    // software pipeline retired, the PL LSM chain is the single
+    // source of truth for system identity. If this ever shows
+    // stale data the right fix is to make `lsm_decoder` read
+    // fresher, not to resurrect the software cross-check.
+    let dec = state.lsm_decoder.read().await;
+    let s = &dec.system;
+    let system_clock_str = s.last_sync_clock.map(
         |(y, mo, d, h, mn, locked)| {
             format!(
                 "{:04}-{:02}-{:02} {:02}:{:02} {}",
@@ -194,70 +188,60 @@ async fn get_system(State(state): State<Arc<AppState>>) -> Json<SystemInfo> {
         },
     );
     Json(SystemInfo {
-        nac: pick(sa.nac, sb.nac).map(|n| format!("{}", n)),
-        wacn: pick(sa.wacn, sb.wacn).map(|w| format!("{:05X}", w)),
-        system_id: pick(sa.system_id, sb.system_id).map(|s| format!("{:03X}", s)),
-        rfss_id: pick(sa.rfss_id, sb.rfss_id),
-        site_id: pick(sa.site_id, sb.site_id),
-        lra: pick(sa.lra, sb.lra),
-        control_channel: pick(sa.control_channel, sb.control_channel)
-            .map(|c| format!("{}", c)),
-        secondary_cch_a: pick(sa.secondary_cch_a, sb.secondary_cch_a)
-            .map(|c| format!("{}", c)),
-        secondary_cch_b: pick(sa.secondary_cch_b, sb.secondary_cch_b)
-            .map(|c| format!("{}", c)),
-        sndcp_downlink_channel: pick(sa.sndcp_downlink_channel, sb.sndcp_downlink_channel)
-            .map(|c| format!("{}", c)),
-        sndcp_uplink_channel: pick(sa.sndcp_uplink_channel, sb.sndcp_uplink_channel)
-            .map(|c| format!("{}", c)),
+        nac: s.nac.map(|n| format!("{}", n)),
+        wacn: s.wacn.map(|w| format!("{:05X}", w)),
+        system_id: s.system_id.map(|v| format!("{:03X}", v)),
+        rfss_id: s.rfss_id,
+        site_id: s.site_id,
+        lra: s.lra,
+        control_channel: s.control_channel.map(|c| format!("{}", c)),
+        secondary_cch_a: s.secondary_cch_a.map(|c| format!("{}", c)),
+        secondary_cch_b: s.secondary_cch_b.map(|c| format!("{}", c)),
+        sndcp_downlink_channel: s.sndcp_downlink_channel.map(|c| format!("{}", c)),
+        sndcp_uplink_channel: s.sndcp_uplink_channel.map(|c| format!("{}", c)),
         system_clock: system_clock_str,
         build: Some(crate::BUILD_TAG.to_string()),
     })
 }
 
 async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant>> {
-    // Phase 6F.11 API-level merge: union grants from both decoders,
-    // de-duped by channel. If the same channel appears in both we
-    // pick the YOUNGER (smaller age) one since it's more recent.
+    // Phase 9 retirement (2026-04-15): used to union grants from
+    // `lsm_decoder` + `iq_lsm_decoder`. The software pipeline is
+    // gone so this is now a single-decoder read. As a side effect,
+    // the stale-age bug on the Active Grants panel (iq_lsm_decoder
+    // had no expire_grants loop; its grants sat forever) is fixed.
     //
-    // Phase 6G.x: also de-dupe by talkgroup across the union. Each
-    // decoder's `grants` map is now talkgroup-clean internally
-    // (`purge_other_grants_for_talkgroup` runs before insert), but
-    // the cross-decoder union can still hold a stale entry if
-    // decoder A latched TG T on channel X while decoder B latched
-    // the same TG on a different channel Y just before A caught
-    // the update. Treat the YOUNGEST entry per TG as the truth,
-    // matching the per-channel rule.
-    let dec_a = state.lsm_decoder.read().await;
-    let dec_b = state.iq_lsm_decoder.read().await;
+    // Phase 7F.4 (2026-04-14): cross-reference each grant against
+    // the persistent `encrypted_tg_history` HashSet. Grants whose
+    // current TSBK service options lack the encrypted bit but whose
+    // TG has ever been seen encrypted get `in_encrypted_history=true`
+    // so the dashboard can badge them even when the latest
+    // transmission forgot to set the flag.
+    let encrypted_history: std::collections::HashSet<u16> = state
+        .imbe_forwarder
+        .encrypted_tg_history
+        .lock()
+        .map(|h| h.clone())
+        .unwrap_or_default();
+
+    let dec = state.lsm_decoder.read().await;
     let mut by_channel: std::collections::HashMap<u16, ChannelGrant> =
         std::collections::HashMap::new();
-    let push = |dec: &ControlChannelDecoder,
-                map: &mut std::collections::HashMap<u16, ChannelGrant>| {
-        for g in dec.grants.values() {
-            let cg = ChannelGrant {
-                channel: format!("{}", g.channel),
-                talkgroup: g.talkgroup.0,
-                talkgroup_alias: dec.aliases.get(&g.talkgroup.0).cloned(),
-                source: g.source.map(|s| s.0),
-                frequency_mhz: g.frequency_hz.map(|f| f as f64 / 1_000_000.0),
-                age_secs: g.timestamp.elapsed().as_secs(),
-                // Phase 7C: surface the encryption + emergency flags
-                // from the GVCG service options byte. The grant store
-                // already preserves these across GVCG_UPDATE refreshes.
-                encrypted: g.encrypted,
-                emergency: g.emergency,
-            };
-            match map.get(&g.channel.0) {
-                Some(existing) if existing.age_secs <= cg.age_secs => {}
-                _ => {
-                    map.insert(g.channel.0, cg);
-                }
-            }
-        }
-    };
-    push(&dec_a, &mut by_channel);
-    push(&dec_b, &mut by_channel);
+    for g in dec.grants.values() {
+        let in_history = encrypted_history.contains(&g.talkgroup.0);
+        let cg = ChannelGrant {
+            channel: format!("{}", g.channel),
+            talkgroup: g.talkgroup.0,
+            talkgroup_alias: dec.aliases.get(&g.talkgroup.0).cloned(),
+            source: g.source.map(|s| s.0),
+            frequency_mhz: g.frequency_hz.map(|f| f as f64 / 1_000_000.0),
+            age_secs: g.timestamp.elapsed().as_secs(),
+            encrypted: g.encrypted,
+            emergency: g.emergency,
+            in_encrypted_history: in_history,
+        };
+        by_channel.insert(g.channel.0, cg);
+    }
 
     // Second pass: collapse by talkgroup, picking the youngest
     // surviving channel entry per TG. TG 0 is excluded from the
@@ -285,27 +269,20 @@ async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant
 }
 
 async fn get_bands(State(state): State<Arc<AppState>>) -> Json<Vec<BandInfo>> {
-    // Phase 6F.11 API-level merge: union frequency bands from both
-    // decoders, de-duped by identifier. The two pipelines can land
-    // different IDEN_UPDATE blocks at different times, so the union
-    // gives the dashboard the complete table even if either single
-    // pipeline missed a band.
-    let dec_a = state.lsm_decoder.read().await;
-    let dec_b = state.iq_lsm_decoder.read().await;
-    let mut by_id: std::collections::HashMap<u8, BandInfo> =
-        std::collections::HashMap::new();
-    for dec in [&*dec_a, &*dec_b] {
-        for b in dec.bands.values() {
-            by_id.entry(b.identifier).or_insert_with(|| BandInfo {
-                identifier: b.identifier,
-                base_frequency_mhz: b.base_frequency_hz as f64 / 1_000_000.0,
-                channel_spacing_khz: b.channel_spacing_hz as f64 / 1_000.0,
-                transmit_offset_mhz: b.transmit_offset_hz as f64 / 1_000_000.0,
-                bandwidth_khz: b.bandwidth_hz as f64 / 1_000.0,
-            });
-        }
-    }
-    let mut bands: Vec<BandInfo> = by_id.into_values().collect();
+    // Phase 9 retirement: single-decoder read (was unioning
+    // `lsm_decoder` with the retired Phase 6D `iq_lsm_decoder`).
+    let dec = state.lsm_decoder.read().await;
+    let mut bands: Vec<BandInfo> = dec
+        .bands
+        .values()
+        .map(|b| BandInfo {
+            identifier: b.identifier,
+            base_frequency_mhz: b.base_frequency_hz as f64 / 1_000_000.0,
+            channel_spacing_khz: b.channel_spacing_hz as f64 / 1_000.0,
+            transmit_offset_mhz: b.transmit_offset_hz as f64 / 1_000_000.0,
+            bandwidth_khz: b.bandwidth_hz as f64 / 1_000.0,
+        })
+        .collect();
     bands.sort_by_key(|b| b.identifier);
     Json(bands)
 }
@@ -534,21 +511,14 @@ async fn get_sync_tune(
 /// long-lived radio state that shouldn't be wiped just because we
 /// want a clean measurement window.
 async fn get_decoder_reset(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    {
-        let mut dec = state.lsm_decoder.write().await;
-        dec.reset_diagnostics();
-    }
-    {
-        // Phase 6F.9: also reset the iq_lsm decoder so the sweep tool
-        // and `/api/decoder_compare` start from a clean baseline.
-        let mut dec = state.iq_lsm_decoder.write().await;
-        dec.reset_diagnostics();
-    }
+    // Phase 9 retirement: only `lsm_decoder` left to reset (the
+    // Phase 6D `iq_lsm_decoder` is gone).
+    let mut dec = state.lsm_decoder.write().await;
+    dec.reset_diagnostics();
     Json(serde_json::json!({
         "ok": true,
-        "note": "Both lsm_decoder + iq_lsm_decoder counters + histograms \
-                 cleared. System identity, bands, grants, and aliases \
-                 preserved.",
+        "note": "lsm_decoder counters + histograms cleared. System \
+                 identity, bands, grants, and aliases preserved.",
     }))
 }
 
@@ -832,6 +802,7 @@ async fn get_traffic(
         last_offset_hz,
         grants_seen,
         retunes,
+        grants_rejected_encrypted,
         last_retune_at_secs_ago,
         last_duid,
         last_nac,
@@ -849,6 +820,7 @@ async fn get_traffic(
         let offset = mgr.last_offset_hz;
         let seen = mgr.grants_seen;
         let retunes = mgr.retunes;
+        let rejected_enc = mgr.grants_rejected_encrypted;
         let age = mgr
             .last_retune_at
             .map(|t| t.elapsed().as_secs_f64());
@@ -858,8 +830,8 @@ async fn get_traffic(
         let ldus = mgr.ldus_seen;
         let tdus = mgr.tdus_seen;
         let hold = mgr.post_tdu_hold_remaining_ms();
-        (label, ch, tg, freq, nco, offset, seen, retunes, age,
-         duid, nac, hdus, ldus, tdus, hold)
+        (label, ch, tg, freq, nco, offset, seen, retunes, rejected_enc,
+         age, duid, nac, hdus, ldus, tdus, hold)
     };
 
     // Phase 7A.2: read the live traffic_lsm chain health from the
@@ -954,6 +926,7 @@ async fn get_traffic(
             "tdu_lc_count":           c.tdu_lc_count.load(Ordering::Relaxed),
             "imbe_frames_extracted":  c.imbe_frames_extracted.load(Ordering::Relaxed),
             "imbe_frames_dropped":    c.imbe_frames_dropped.load(Ordering::Relaxed),
+            "imbe_frames_dropped_idle": c.imbe_frames_dropped_idle.load(Ordering::Relaxed),
             "last_imbe_secs_ago":     last_imbe_secs_ago,
             "vocoder_pcm_produced":   c.vocoder_pcm_produced.load(Ordering::Relaxed),
             "vocoder_errors":         c.vocoder_errors.load(Ordering::Relaxed),
@@ -1016,6 +989,7 @@ async fn get_traffic(
         "last_offset_hz":            last_offset_hz,
         "grants_seen":               grants_seen,
         "retunes":                   retunes,
+        "grants_rejected_encrypted": grants_rejected_encrypted,
         "last_retune_secs_ago":      last_retune_at_secs_ago,
         // Phase 7A.2: NID event counters and post-TDU hold
         "last_duid":                 last_duid,
@@ -1078,29 +1052,83 @@ async fn get_traffic(
 /// Phase 6F.7: PUT /api/sync_tune?threshold=N -- update the runtime
 /// sync threshold without rebuilding. Validates 0 <= N <= 24.
 async fn put_sync_tune(
+    State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
     use std::sync::atomic::Ordering;
+    // Phase 7F.5 (2026-04-14): add optional ?side= param so the
+    // traffic-side decoder can be tuned independently of the global
+    // threshold. ?side=traffic|control sets the per-decoder
+    // override; omitting ?side= updates the global.
+    let side = params.get("side").cloned();
     let new = params
         .get("threshold")
-        .and_then(|v| v.parse::<u32>().ok());
-    match new {
-        Some(n) if n <= 24 => {
+        .and_then(|v| {
+            if v == "reset" || v == "null" {
+                Some(None)
+            } else {
+                v.parse::<u32>().ok().map(Some)
+            }
+        });
+
+    match (side.as_deref(), new) {
+        (Some("traffic"), Some(Some(n))) if n <= 24 => {
+            state.traffic_lsm_decoder.write().await
+                .set_sync_threshold_override(Some(n));
+            state.event_log.push(
+                crate::event_log::LogCategory::System,
+                format!("sync threshold: traffic-side -> {}", n),
+                serde_json::json!({"side":"traffic","value":n}),
+            );
+            Json(serde_json::json!({
+                "ok": true, "side": "traffic", "current": n,
+            }))
+        }
+        (Some("traffic"), Some(None)) => {
+            state.traffic_lsm_decoder.write().await
+                .set_sync_threshold_override(None);
+            Json(serde_json::json!({
+                "ok": true, "side": "traffic", "current": "reset",
+            }))
+        }
+        (Some("control"), Some(Some(n))) if n <= 24 => {
+            state.lsm_decoder.write().await
+                .set_sync_threshold_override(Some(n));
+            state.event_log.push(
+                crate::event_log::LogCategory::System,
+                format!("sync threshold: control-side -> {}", n),
+                serde_json::json!({"side":"control","value":n}),
+            );
+            Json(serde_json::json!({
+                "ok": true, "side": "control", "current": n,
+            }))
+        }
+        (Some("control"), Some(None)) => {
+            state.lsm_decoder.write().await
+                .set_sync_threshold_override(None);
+            Json(serde_json::json!({
+                "ok": true, "side": "control", "current": "reset",
+            }))
+        }
+        (None, Some(Some(n))) if n <= 24 => {
             let prev = RUNTIME_SYNC_THRESHOLD.swap(n, Ordering::Relaxed);
             Json(serde_json::json!({
                 "ok":            true,
                 "previous":      prev,
                 "current":       n,
                 "default":       SYNC_THRESHOLD,
-                "note":          "Threshold updated. Counters keep accumulating; \
-                                  use /api/sync_tune to verify the new histogram \
-                                  shape after a few seconds of new data.",
+                "note":          "Global threshold updated. Counters keep \
+                                  accumulating; use /api/sync_tune to verify \
+                                  the new histogram shape after a few seconds \
+                                  of new data. Use ?side=traffic|control to \
+                                  set a per-decoder override instead.",
             }))
         }
         _ => Json(serde_json::json!({
             "ok":     false,
-            "error":  "missing or invalid `threshold` query param (must be 0..=24)",
-            "current": RUNTIME_SYNC_THRESHOLD.load(Ordering::Relaxed),
+            "error":  "missing or invalid `threshold` (0..=24 or 'reset'); \
+                       optional ?side=traffic|control for per-decoder override",
+            "current_global": RUNTIME_SYNC_THRESHOLD.load(Ordering::Relaxed),
         })),
     }
 }
@@ -1460,92 +1488,13 @@ fn dibit_dump_json(
 
 /// Phase 6D: snapshot of the LSM pipeline runtime stats.
 ///
-/// Returns everything the dashboard's "LSM Decoder" card needs in one
-/// round trip: task liveness, cumulative counters, top-10 NAC histogram,
-/// and the most recent sync event. The overflow counter is returned
-/// with a note flagging it as a known false positive in the current
-/// Phase 6C gateware (see doc 014 follow-ups).
-///
-/// All times are derived on the server side from `Instant`s inside the
-/// stats struct; the client only sees seconds/milliseconds so there is
-/// no clock skew issue vs the Fishball's wall clock (which runs from
-/// 1970 anyway until NTP lands).
-async fn get_lsm(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    use std::time::Instant;
-    let stats = state.lsm_stats.lock().await;
-    let now = Instant::now();
-
-    let uptime_secs = stats
-        .started_at
-        .map(|t| now.saturating_duration_since(t).as_secs())
-        .unwrap_or(0);
-    let last_wake_ms_ago = stats
-        .last_wake_at
-        .map(|t| now.saturating_duration_since(t).as_millis() as u64);
-
-    // Sort top-10 by count desc (LsmStats::top_nacs handles the ordering).
-    let total_nac_hits: u64 = stats.nac_hist.values().sum();
-    let top_nacs: Vec<serde_json::Value> = stats
-        .top_nacs(10)
-        .into_iter()
-        .map(|(nac, count)| {
-            let pct = if total_nac_hits == 0 {
-                0.0
-            } else {
-                100.0 * (count as f64) / (total_nac_hits as f64)
-            };
-            serde_json::json!({
-                "nac":   format!("0x{:03X}", nac),
-                "count": count,
-                "pct":   pct,
-            })
-        })
-        .collect();
-
-    let last_sync = stats.last_sync.map(|ls| {
-        let age_ms = now.saturating_duration_since(ls.at).as_millis() as u64;
-        serde_json::json!({
-            "nac":           format!("0x{:03X}", ls.nac),
-            "duid":          format!("0x{:X}",   ls.duid),
-            "fec_corrected": ls.fec_corrected,
-            "distance":      ls.distance,
-            "score":         ls.score,
-            "age_ms":        age_ms,
-        })
-    });
-
-    // Steady-state rates (avoid divide-by-zero before the first wake).
-    let iq_rate_sps = if uptime_secs > 0 {
-        stats.iq_samples as f64 / uptime_secs as f64
-    } else {
-        0.0
-    };
-    let dibit_rate_sps = if uptime_secs > 0 {
-        stats.dibits as f64 / uptime_secs as f64
-    } else {
-        0.0
-    };
-
-    Json(serde_json::json!({
-        "running":             stats.started_at.is_some(),
-        "uptime_secs":         uptime_secs,
-        "last_wake_ms_ago":    last_wake_ms_ago,
-        "wakeups":             stats.wakeups,
-        "iq_samples":          stats.iq_samples,
-        "iq_samples_per_sec":  iq_rate_sps,
-        "dibits":              stats.dibits,
-        "dibits_per_sec":      dibit_rate_sps,
-        "hard_events":         stats.hard_events,
-        "soft_events":         stats.soft_events,
-        "overflow_resets":     stats.overflow_resets,
-        "overflow_note":
-            "Phase 6C gateware fires the iq_dma overflow latch spuriously \
-             on every sub-buffer; Rust sample math proves no actual data \
-             loss. Tracked in doc 014 follow-ups.",
-        "top_nacs":            top_nacs,
-        "last_sync":           last_sync,
-    }))
-}
+// Phase 9 retirement: `get_lsm()` (Phase 6D software pipeline stats
+// for the dashboard "LSM Pipeline" card) was removed here along with
+// the `LsmStats` struct it read. The PL-side equivalent is
+// `/api/hdl_lsm` (below), which taps the HDL register bank directly
+// via the `HdlLsmRuntime` heartbeat task. That's the single source of
+// truth for "is the LSM chain alive / how many valid NIDs / what
+// NACs" now.
 
 /// Phase 6F.2: PL HDL LSM chain runtime snapshot.
 ///
@@ -1674,20 +1623,19 @@ async fn get_irq_stats(State(state): State<Arc<AppState>>) -> Json<serde_json::V
     }))
 }
 
-/// Phase 6F.2: side-by-side comparison matrix of all decoder sources.
-///
-/// Returns the same set of metrics for each of:
-///   - PS C4FM software decoder (`state.decoder`)
-///   - PS LSM software decoder (`state.lsm_decoder`)
-///   - PS Phase 6D iq-fed pipeline (`state.lsm_stats`)
-///   - PL HDL LSM chain (`state.hdl_lsm`)
+/// Phase 9: side-by-side comparison matrix of the surviving decoder
+/// sources. Phase 6D software-LSM columns (`ps_iq_lsm` + `ps_phase6d`)
+/// were retired along with the iq_lsm_decoder and LsmStats; the
+/// dashboard decoder matrix is now PS-C4FM (dormant, kept for
+/// future C4FM sites), PS-LSM framer (software framer on HDL LSM
+/// dibits — the current production control-channel path), and
+/// PL-HDL (the FPGA LSM chain's own runtime stats tapped directly
+/// from the register bank).
 async fn get_decoder_compare(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
     let dec_c4fm = state.decoder.read().await;
     let dec_lsm = state.lsm_decoder.read().await;
-    let dec_iq_lsm = state.iq_lsm_decoder.read().await;
-    let lsm_stats = state.lsm_stats.lock().await;
     let hdl_rt = state.hdl_lsm.lock().await;
 
     fn fmt_nac(n: Option<crate::p25::types::Nac>) -> serde_json::Value {
@@ -1698,11 +1646,6 @@ async fn get_decoder_compare(
     }
     fn fmt_nac_u16(n: u16) -> String { format!("0x{:03X}", n) }
 
-    let lsm_winner_nac = lsm_stats
-        .top_nacs(1)
-        .first()
-        .map(|(n, _)| fmt_nac_u16(*n))
-        .unwrap_or_else(|| "--".to_string());
     let hdl_winner_nac = hdl_rt
         .top_nacs(1)
         .first()
@@ -1711,7 +1654,7 @@ async fn get_decoder_compare(
 
     Json(serde_json::json!({
         "ps_c4fm": {
-            "label":           "PS C4FM (software, HDL c4fm dibit-fed)",
+            "label":           "PS C4FM (software, HDL C4FM dibit-fed — DORMANT on LSM sites)",
             "system_nac":      fmt_nac(dec_c4fm.system.nac),
             "messages":        dec_c4fm.recent_messages.len(),
             "active_grants":   dec_c4fm.grants.len(),
@@ -1739,7 +1682,7 @@ async fn get_decoder_compare(
             "tsbk_unknown_opcode":   dec_c4fm.tsbk_unknown_opcode,
         },
         "ps_lsm": {
-            "label":           "PS LSM (software, HDL lsm dibit-fed)",
+            "label":           "PS LSM framer (software framer on HDL LSM dibits — production)",
             "system_nac":      fmt_nac(dec_lsm.system.nac),
             "messages":        dec_lsm.recent_messages.len(),
             "active_grants":   dec_lsm.grants.len(),
@@ -1765,36 +1708,6 @@ async fn get_decoder_compare(
             "tsbk_crc_ok_plain":     dec_lsm.tsbk_crc_ok_plain,
             "tsbk_crc_ok_xored":     dec_lsm.tsbk_crc_ok_xored,
             "tsbk_unknown_opcode":   dec_lsm.tsbk_unknown_opcode,
-        },
-        "ps_iq_lsm": {
-            "label":           "PS IQ-LSM (software, raw IQ + soft sync -> TSBK)",
-            "system_nac":      fmt_nac(dec_iq_lsm.system.nac),
-            "messages":        dec_iq_lsm.recent_messages.len(),
-            "active_grants":   dec_iq_lsm.grants.len(),
-            "bands_known":     dec_iq_lsm.bands.len(),
-            "nid_attempts":          dec_iq_lsm.nid_attempts,
-            "nid_decode_failures":   dec_iq_lsm.nid_decode_failures,
-            "nid_invalid_duid":      dec_iq_lsm.nid_invalid_duid,
-            "nid_decoded_ok":        dec_iq_lsm.nid_decoded_ok,
-            "nid_decoded_tsdu":      dec_iq_lsm.nid_decoded_tsdu,
-            "tsdu_attempts":         dec_iq_lsm.tsdu_attempts,
-            "tsbk_block_attempts":   dec_iq_lsm.tsbk_block_attempts,
-            "tsbk_trellis_failures": dec_iq_lsm.tsbk_trellis_failures,
-            "tsbk_crc_failures":     dec_iq_lsm.tsbk_crc_failures,
-            "tsbk_crc_ok":           dec_iq_lsm.tsbk_crc_ok,
-            "tsbk_crc_ok_plain":     dec_iq_lsm.tsbk_crc_ok_plain,
-            "tsbk_crc_ok_xored":     dec_iq_lsm.tsbk_crc_ok_xored,
-            "tsbk_unknown_opcode":   dec_iq_lsm.tsbk_unknown_opcode,
-        },
-        "ps_phase6d": {
-            "label":           "PS Phase 6D (software, raw IQ-fed -- sync detection only)",
-            "winner_nac":      lsm_winner_nac,
-            "wakeups":         lsm_stats.wakeups,
-            "iq_samples":      lsm_stats.iq_samples,
-            "dibits":          lsm_stats.dibits,
-            "hard_events":     lsm_stats.hard_events,
-            "soft_events":     lsm_stats.soft_events,
-            "overflow_resets": lsm_stats.overflow_resets,
         },
         "pl_hdl": {
             "label":           "PL HDL LSM chain (FPGA gateware)",
@@ -1965,6 +1878,385 @@ async fn put_monitor(
     }
     Json(serde_json::json!({
         "talkgroups": list.list(),
+    }))
+}
+
+// ── Phase 7F.1 (2026-04-14): Event log tail ──────────────────────────
+
+/// GET /api/log -- tail the structured event log.
+///   ?since=N   -- return entries with seq > N (default 0 = all)
+///   ?limit=N   -- return at most N entries (default 200, cap 1000)
+///   ?category=grant|traffic|imbe|vocoder|system
+///              -- server-side filter (optional; dashboard also
+///              filters client-side so the ring is one source of truth)
+///
+/// Response shape:
+/// ```json
+/// {
+///   "last_seq": 12345,
+///   "count":    42,
+///   "entries":  [ { "seq": ..., "timestamp_ms": ..., "category": ...,
+///                    "message": ..., "fields": { ... } }, ... ]
+/// }
+/// ```
+async fn get_event_log(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<
+        std::collections::HashMap<String, String>,
+    >,
+) -> Json<serde_json::Value> {
+    let since = params
+        .get("since")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(200)
+        .min(1000);
+    let category_filter = params.get("category").map(|s| s.to_string());
+
+    let mut entries = state.event_log.recent_since(since, limit);
+    if let Some(cat) = &category_filter {
+        entries.retain(|e| e.category == cat);
+    }
+    let last_seq = state.event_log.last_seq();
+    Json(serde_json::json!({
+        "last_seq": last_seq,
+        "count":    entries.len(),
+        "entries":  entries,
+    }))
+}
+
+// ── Phase 7F.4 (2026-04-14): NID batch capture + runtime BCH-t ──────
+
+/// GET /api/nid_capture -- batch NID capture tail for offline BCH
+/// analysis.
+///
+/// Query params:
+///   side      = "control" (default) | "traffic"
+///   arm       = 1 to arm the ring, 0 to disarm
+///   limit     = ring size when arming (default 256, capped at 1024)
+///   clear     = 1 to drain the ring and disarm (one-shot readout)
+///
+/// Read flow:
+///   1. `?arm=1&limit=256`  — arm the ring, return {armed:true, limit:256}
+///   2. Wait 10-30 s for real traffic to populate the ring
+///   3. `?clear=1`          — drain + disarm, returns the full batch
+///
+/// Offline analysis tool: tools/p25_nid_analyze.py.
+async fn get_nid_capture(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<
+        std::collections::HashMap<String, String>,
+    >,
+) -> Json<serde_json::Value> {
+    let side = params
+        .get("side")
+        .cloned()
+        .unwrap_or_else(|| "control".to_string());
+    let arm = params.get("arm").map(String::as_str) == Some("1");
+    let clear = params.get("clear").map(String::as_str) == Some("1");
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(256)
+        .min(1024);
+
+    // Pick which decoder's ring to hit. `lsm_decoder` for control side
+    // (the NAC-healthy one), `traffic_lsm_decoder` for the DUID-broken
+    // side that actually matters for audio.
+    let decoder_lock = match side.as_str() {
+        "traffic" => state.traffic_lsm_decoder.clone(),
+        _         => state.lsm_decoder.clone(),
+    };
+
+    let mut dec = decoder_lock.write().await;
+
+    let mut action = Vec::new();
+    if clear {
+        let entries: Vec<_> = dec.drain_capture_ring()
+            .into_iter()
+            .map(|e| e.to_json())
+            .collect();
+        action.push("cleared".to_string());
+        return Json(serde_json::json!({
+            "side":    side,
+            "action":  action,
+            "count":   entries.len(),
+            "entries": entries,
+        }));
+    }
+    if arm {
+        dec.arm_capture_ring(limit);
+        action.push(format!("armed limit={}", limit));
+    }
+    let count = dec.capture_ring.len();
+    let armed = dec.capture_ring_armed;
+    let cap_limit = dec.capture_ring_limit;
+    let bch_t = dec.bch_t_override;
+    // Snapshot without draining so the client can poll mid-run.
+    let entries: Vec<_> = dec.snapshot_capture_ring()
+        .into_iter()
+        .map(|e| e.to_json())
+        .collect();
+    Json(serde_json::json!({
+        "side":    side,
+        "action":  action,
+        "armed":   armed,
+        "limit":   cap_limit,
+        "count":   count,
+        "bch_t_override": bch_t,
+        "entries": entries,
+    }))
+}
+
+/// GET /api/bch_t -- read current BCH-t override for both decoder sides.
+async fn get_bch_t(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let control = state.lsm_decoder.read().await.bch_t_override;
+    let traffic = state.traffic_lsm_decoder.read().await.bch_t_override;
+    Json(serde_json::json!({
+        "control":  control,
+        "traffic":  traffic,
+        "default":  crate::lsm::nid_fec::T_MAX_ERRORS,
+        "note":     "null = default (T_MAX_ERRORS = 11). Set via \
+                     PUT /api/bch_t?side=control|traffic|both&value=N \
+                     where N is 0..=11. value=reset or value=null to \
+                     clear the override.",
+    }))
+}
+
+/// PUT /api/bch_t -- set runtime BCH-t override.
+///
+/// Query params:
+///   side   = "control" | "traffic" | "both" (default "traffic")
+///   value  = 0..=11 sets the override; "reset" | "null" clears it
+///
+/// Lower values reject marginal NIDs earlier instead of letting the ML
+/// codebook search return a "corrected" word from far away in Hamming
+/// space. On a noisy signal the default threshold of 11 often pulls
+/// the result toward the all-ones codeword (DUID 0xF = TDU_LC),
+/// explaining the `tdu_lc >> ldu1+ldu2` inversion we see on the traffic
+/// side. Sweep with tools/p25_nid_analyze.py.
+async fn put_bch_t(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<
+        std::collections::HashMap<String, String>,
+    >,
+) -> Json<serde_json::Value> {
+    let side = params
+        .get("side")
+        .cloned()
+        .unwrap_or_else(|| "traffic".to_string());
+    let value_str = params.get("value").cloned().unwrap_or_default();
+    let new_override: Option<u32> = if value_str == "reset"
+        || value_str == "null"
+        || value_str.is_empty()
+    {
+        None
+    } else {
+        match value_str.parse::<u32>() {
+            Ok(v) if v <= crate::lsm::nid_fec::T_MAX_ERRORS => Some(v),
+            Ok(v) => {
+                return Json(serde_json::json!({
+                    "error": format!(
+                        "value={} out of range (max = {})",
+                        v, crate::lsm::nid_fec::T_MAX_ERRORS,
+                    ),
+                }));
+            }
+            Err(_) => {
+                return Json(serde_json::json!({
+                    "error": format!(
+                        "value={:?} not an integer or 'reset'",
+                        value_str,
+                    ),
+                }));
+            }
+        }
+    };
+
+    let mut applied = Vec::new();
+    if side == "control" || side == "both" {
+        state.lsm_decoder.write().await.set_bch_t_override(new_override);
+        applied.push("control".to_string());
+    }
+    if side == "traffic" || side == "both" {
+        state.traffic_lsm_decoder.write().await.set_bch_t_override(new_override);
+        applied.push("traffic".to_string());
+    }
+    state.event_log.push(
+        crate::event_log::LogCategory::System,
+        format!(
+            "bch_t_override set: side={} value={:?}",
+            side, new_override,
+        ),
+        serde_json::json!({
+            "side":  side,
+            "value": new_override,
+        }),
+    );
+    Json(serde_json::json!({
+        "applied": applied,
+        "value":   new_override,
+    }))
+}
+
+// ── Phase 7F.5 (2026-04-14): manual encryption blocklist ───────────
+
+/// GET /api/encrypted_tgs -- read the current encryption blocklist.
+/// Returns the sorted list of TGs in
+/// `ImbeForwarder.encrypted_tg_history`.
+async fn get_encrypted_tgs(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let mut list: Vec<u16> = state
+        .imbe_forwarder
+        .encrypted_tg_history
+        .lock()
+        .map(|h| h.iter().copied().collect())
+        .unwrap_or_default();
+    list.sort_unstable();
+    Json(serde_json::json!({
+        "count":  list.len(),
+        "tgs":    list,
+        "note":   "TGs in this list are permanently rejected by the \
+                   grant follower. Populated eagerly by the follower \
+                   whenever it observes a grant with encrypted=true, \
+                   and manually via ?add=N or ?remove=N. Clear all \
+                   via ?clear=1. Persists for the lifetime of the \
+                   p25-httpd process only (resets on reboot).",
+    }))
+}
+
+/// PUT /api/encrypted_tgs -- mutate the blocklist.
+///
+/// Query params (all optional, multiple can be combined):
+///   add    = NNN     -- add TG NNN to the blocklist
+///   remove = NNN     -- remove TG NNN from the blocklist
+///   clear  = 1       -- clear the whole blocklist
+///
+/// Motivation: on P25 sites that don't consistently set the
+/// service_options `encrypted` bit on every GroupVoiceChannelGrant
+/// TSBK, the eager-history populate can never block a TG because
+/// we never see the flag. Phase 7F.5 adds a manual override so the
+/// operator can say "TG 402 is encrypted on this site, trust me"
+/// and the follower will skip it thereafter.
+async fn put_encrypted_tgs(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<
+        std::collections::HashMap<String, String>,
+    >,
+) -> Json<serde_json::Value> {
+    let mut applied: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    if params.get("clear").map(String::as_str) == Some("1") {
+        if let Ok(mut h) = state.imbe_forwarder.encrypted_tg_history.lock() {
+            let n = h.len();
+            h.clear();
+            applied.push(format!("cleared ({} entries)", n));
+        }
+    }
+    if let Some(v) = params.get("add") {
+        match v.parse::<u16>() {
+            Ok(tg) => {
+                if let Ok(mut h) =
+                    state.imbe_forwarder.encrypted_tg_history.lock()
+                {
+                    if h.insert(tg) {
+                        applied.push(format!("added TG={}", tg));
+                    } else {
+                        applied.push(format!("TG={} already present", tg));
+                    }
+                }
+            }
+            Err(_) => errors.push(format!("add={:?} not an integer", v)),
+        }
+    }
+    if let Some(v) = params.get("remove") {
+        match v.parse::<u16>() {
+            Ok(tg) => {
+                if let Ok(mut h) =
+                    state.imbe_forwarder.encrypted_tg_history.lock()
+                {
+                    if h.remove(&tg) {
+                        applied.push(format!("removed TG={}", tg));
+                    } else {
+                        applied.push(format!("TG={} not in list", tg));
+                    }
+                }
+            }
+            Err(_) => errors.push(format!("remove={:?} not an integer", v)),
+        }
+    }
+
+    // If anything changed, also force-idle the follower if it's
+    // currently locked on a newly-blocked TG. Otherwise the manual
+    // add takes effect only for the NEXT grant for that TG.
+    let currently_locked = state
+        .traffic_manager
+        .lock()
+        .await
+        .current_talkgroup()
+        .map(|t| t.0);
+    if let Some(locked_tg) = currently_locked {
+        let blocked_now = state
+            .imbe_forwarder
+            .encrypted_tg_history
+            .lock()
+            .map(|h| h.contains(&locked_tg))
+            .unwrap_or(false);
+        if blocked_now {
+            let mut mgr = state.traffic_manager.lock().await;
+            mgr.force_idle();
+            drop(mgr);
+            use std::sync::atomic::Ordering;
+            state
+                .imbe_forwarder
+                .current_talkgroup
+                .store(0, Ordering::Relaxed);
+            #[cfg(target_os = "linux")]
+            {
+                let core = state.ip_core.lock().await;
+                core.set_traffic_demod_enable(false);
+            }
+            {
+                let mut dec = state.traffic_lsm_decoder.write().await;
+                dec.reset_framer_state();
+            }
+            applied.push(format!(
+                "force-idle: was locked on TG={} which is now blocked",
+                locked_tg,
+            ));
+        }
+    }
+
+    state.event_log.push(
+        crate::event_log::LogCategory::System,
+        format!("encrypted_tgs update: {}", applied.join(", ")),
+        serde_json::json!({
+            "applied": applied.clone(),
+            "errors":  errors.clone(),
+        }),
+    );
+    let list: Vec<u16> = {
+        let mut v: Vec<u16> = state
+            .imbe_forwarder
+            .encrypted_tg_history
+            .lock()
+            .map(|h| h.iter().copied().collect())
+            .unwrap_or_default();
+        v.sort_unstable();
+        v
+    };
+    Json(serde_json::json!({
+        "applied": applied,
+        "errors":  errors,
+        "count":   list.len(),
+        "tgs":     list,
     }))
 }
 
@@ -2178,6 +2470,61 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
        cursor: pointer; font-size: 0.85em; background: var(--card-bg); color: var(--text); }
 .btn-primary { background: var(--accent); color: #000; border-color: var(--accent); }
 .alias-btn { font-size: 0.8em; color: var(--text-dim); cursor: pointer; margin-left: 8px; }
+/* Live-audio bar (Phase 7E UI hookup) */
+.audio-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+             background: var(--card-bg); border: 1px solid var(--card-border);
+             border-radius: 6px; padding: 8px 12px; margin: 6px 0 10px; }
+.audio-bar .btn.play-on { background: var(--green); border-color: var(--green); color:#000; }
+.audio-bar .btn.play-off { background: var(--red); border-color: var(--red); color:#000; }
+.audio-bar label { font-size: 0.85em; color: var(--text-dim); display:flex;
+                   align-items:center; gap:6px; }
+.audio-bar input[type=range] { width: 120px; vertical-align: middle; }
+.audio-bar .status { font-family: var(--mono); font-size: 0.82em; color: var(--text-dim);
+                     margin-left: auto; }
+.audio-bar .status .on { color: var(--green); }
+.audio-bar .status .warn { color: var(--orange); }
+.audio-bar .status .err { color: var(--red); }
+/* Tab nav (2026-04-14 split: operator "Radio" view vs FPGA "Debug" view) */
+.tab-nav { display: flex; gap: 4px; margin: 6px 0 16px;
+           border-bottom: 1px solid var(--card-border); }
+.tab-nav button { background: transparent; border: 1px solid transparent;
+                  border-bottom: none; padding: 8px 18px; cursor: pointer;
+                  font-size: 0.95em; color: var(--text-dim);
+                  border-top-left-radius: 6px; border-top-right-radius: 6px;
+                  margin-bottom: -1px; font-family: inherit; }
+.tab-nav button:hover { color: var(--text); }
+.tab-nav button.active { background: var(--card-bg); color: var(--accent);
+                         border-color: var(--card-border);
+                         border-bottom: 1px solid var(--card-bg); }
+.tab-nav button .tab-badge { font-size: 0.75em; color: var(--text-dim);
+                             margin-left: 6px; font-family: var(--mono); }
+.tab-pane { display: none; }
+.tab-pane.active { display: block; }
+/* Logs tab (2026-04-14): structured event-log viewer */
+.log-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+               margin: 6px 0 10px; padding: 8px 12px;
+               background: var(--card-bg); border: 1px solid var(--card-border);
+               border-radius: 6px; }
+.log-toolbar label { font-size: 0.85em; color: var(--text-dim); display: flex;
+                     align-items: center; gap: 4px; cursor: pointer; }
+.log-toolbar label input { cursor: pointer; }
+.log-toolbar .log-status { margin-left: auto; font-family: var(--mono);
+                           font-size: 0.82em; color: var(--text-dim); }
+.log-viewer { font-family: var(--mono); font-size: 0.80em;
+              background: var(--bg); border: 1px solid var(--card-border);
+              border-radius: 6px; padding: 10px; max-height: 70vh;
+              overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+.log-entry { display: grid; grid-template-columns: 110px 90px 1fr;
+             gap: 8px; padding: 3px 0; border-bottom: 1px dotted var(--card-border); }
+.log-entry:last-child { border-bottom: none; }
+.log-entry .log-ts { color: var(--text-dim); }
+.log-entry .log-cat { font-weight: 600; }
+.log-entry .log-cat.grant   { color: var(--green); }
+.log-entry .log-cat.traffic { color: var(--accent); }
+.log-entry .log-cat.imbe    { color: #4db6ac; }
+.log-entry .log-cat.vocoder { color: var(--orange); }
+.log-entry .log-cat.system  { color: var(--purple); }
+.log-entry .log-body .log-fields { color: var(--text-dim); margin-left: 6px; font-size: 0.92em; }
 @media (max-width: 768px) { .grid2 { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -2195,27 +2542,47 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   </div>
 </div>
 
-<!-- ── Phase 6F.2: Decoder Comparison Matrix (PS vs PL) ── -->
-<h2>Decoder Comparison (PS vs PL)</h2>
+<!-- Tab bar: Radio (operator) / Debug (FPGA bring-up). Switching
+     is pure display:none toggle; all panes stay in the DOM so the
+     2 s refresh loop updates everything regardless of which tab
+     the user is on. Default tab is persisted in localStorage. -->
+<div class="tab-nav" id="tabNav">
+  <button data-tab="radio" class="active" onclick="switchTab('radio')">&#x1f4fb; Radio</button>
+  <button data-tab="logs" onclick="switchTab('logs')">&#x1f4dc; Logs <span class="tab-badge" id="logs_badge"></span></button>
+  <button data-tab="debug" onclick="switchTab('debug')">&#x1f527; Debug</button>
+</div>
+
+<!-- ═════════════════════ Debug tab ═════════════════════ -->
+<div class="tab-pane" id="tab-debug">
+
+<!-- ── Phase 9: Decoder Comparison Matrix (3-column PS/PL view) ── -->
+<h2>Decoder Comparison (PS framer vs PL gateware)</h2>
 <div class="card">
   <table id="cmp_t" style="font-size:0.85em">
     <thead>
       <tr>
         <th style="width:32%">Metric</th>
-        <th>PS C4FM<br><span style="color:var(--text-dim);font-weight:400">software, HDL c4fm dibits</span></th>
-        <th>PS LSM<br><span style="color:var(--text-dim);font-weight:400">software, HDL lsm dibits</span></th>
-        <th>PS Phase 6D<br><span style="color:var(--text-dim);font-weight:400">software, raw IQ</span></th>
-        <th>PL HDL LSM<br><span style="color:var(--text-dim);font-weight:400">FPGA gateware</span></th>
+        <th>PS C4FM<br><span style="color:var(--text-dim);font-weight:400">software, HDL C4FM dibits (dormant on LSM sites)</span></th>
+        <th>PS LSM framer<br><span style="color:var(--text-dim);font-weight:400">software framer, PL HDL LSM dibit-fed (production)</span></th>
+        <th>PL HDL LSM<br><span style="color:var(--text-dim);font-weight:400">FPGA gateware (heartbeat snapshot)</span></th>
       </tr>
     </thead>
     <tbody id="cmp_body">
-      <tr><td colspan="5" style="color:var(--text-dim)">Loading...</td></tr>
+      <tr><td colspan="4" style="color:var(--text-dim)">Loading...</td></tr>
     </tbody>
   </table>
   <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
-    Side-by-side: same metric across all four decoder paths. PS = Processing
-    System (ARM software), PL = Programmable Logic (FPGA). Winner NAC for
-    Phase 6D / PL HDL is the top of their NAC histogram.
+    Three-column view: PS = Processing System (ARM software), PL =
+    Programmable Logic (FPGA). Phase 9 (2026-04-15) retired the Phase
+    6D pure-software LSM pipeline and its `ps_iq_lsm` + `ps_phase6d`
+    columns — the HDL LSM chain is now the production decoder and the
+    PS-LSM column is a pass-through framer on top of PL-emitted dibits.
+    "(PS only)" marks rows that have no PL equivalent by design
+    (PL is a NID decoder, not a TSBK framer). "(= PS)" marks rows
+    where the PS column is the authoritative counter for a value
+    that's actually generated in the PL. "(HDL: hit-only)" marks the
+    sync near-miss row — the HDL hard-sync correlator only fires when
+    Hamming distance ≤ threshold, so it doesn't count misses.
   </p>
 </div>
 
@@ -2314,35 +2681,15 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   </p>
 </div>
 
-<div class="grid2">
-  <div class="card">
-    <h2>LSM Decoder (Phase 6D) <span id="lsm_status" style="font-size:0.75em;color:var(--text-dim);margin-left:6px">--</span></h2>
-    <table>
-      <tr><th>Uptime</th><td class="v" id="lsm_uptime">--</td></tr>
-      <tr><th>Wakeups</th><td class="v" id="lsm_wakes">0</td></tr>
-      <tr><th>IQ Samples</th><td class="v" id="lsm_iq">0</td></tr>
-      <tr><th>Dibits</th><td class="v" id="lsm_dibits">0</td></tr>
-      <tr><th>Hard / Soft Syncs</th><td class="v" id="lsm_syncs">0 / 0</td></tr>
-      <tr><th>Overflow Resets</th><td class="v" id="lsm_overflows">0</td></tr>
-      <tr><th>Last Sync</th><td class="v" id="lsm_last">--</td></tr>
-    </table>
-    <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px" id="lsm_note">
-      Parallel LSM pipeline output; independent of the C4FM dibit panels above.
-    </p>
-  </div>
-  <div class="card">
-    <h2>Top NACs (LSM)</h2>
-    <table>
-      <thead><tr><th>NAC</th><th>Count</th><th>%</th></tr></thead>
-      <tbody id="lsm_nacs_body"><tr><td colspan="3" style="color:var(--text-dim)">No sync events yet</td></tr></tbody>
-    </table>
-    <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
-      Combined hard + soft sync NAC histogram. Winner = locked on-air site ID.
-    </p>
-  </div>
-</div>
+<!-- Phase 9: the "LSM Decoder (Phase 6D)" + "Top NACs (LSM)"
+     cards that used to sit here were removed along with the
+     Phase 6D software LSM pipeline. The production LSM stats
+     now live in the "PL HDL LSM Chain Detail" card above,
+     which reads from `/api/hdl_lsm` (the heartbeat-populated
+     HdlLsmRuntime struct that taps the FPGA register bank
+     directly). -->
 
-<h2>Dibit Stream Diagnostics (PS C4FM vs PS LSM, side by side)</h2>
+<h2>Dibit Stream Diagnostics (PS C4FM fallback vs PL HDL LSM)</h2>
 <div class="grid2">
   <div class="card">
     <h2>PS C4FM Dibit Stream <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">c4fm_dibit_dma</span></h2>
@@ -2397,8 +2744,20 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   </div>
 </div>
 
+</div><!-- /#tab-debug -->
+
+<!-- ═════════════════════ Radio tab (default) ═════════════════════ -->
+<div class="tab-pane active" id="tab-radio">
+
 <!-- ── Phase 7D: Traffic Channel + Vocoder ── -->
 <h2>Traffic Channel <span id="trf_phase" style="font-size:0.75em;color:var(--text-dim);margin-left:6px"></span></h2>
+<!-- Phase 7E: browser-side live-audio playback (WS /ws/audio) -->
+<div class="audio-bar">
+  <button id="audioBtn" class="btn play-off" onclick="toggleAudio()">&#9654; Play Audio</button>
+  <label><input type="checkbox" id="audioMute"> Mute</label>
+  <label>Vol <input type="range" id="audioVol" min="0" max="100" value="80"></label>
+  <span class="status" id="audioStatus">stopped</span>
+</div>
 <div class="grid2">
   <div class="card">
     <h2>Grant Follower</h2>
@@ -2410,6 +2769,7 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
         <tr><th>Encrypted</th><td class="v" id="trf_enc">--</td></tr>
         <tr><th>Grants Seen</th><td class="v" id="trf_grants">--</td></tr>
         <tr><th>Retunes</th><td class="v" id="trf_retunes">--</td></tr>
+        <tr><th>Encrypted Skipped</th><td class="v" id="trf_rej_enc">--</td></tr>
         <tr><th>Last DUID</th><td class="v" id="trf_duid">--</td></tr>
         <tr><th>Last Retune</th><td class="v" id="trf_last_retune">--</td></tr>
       </tbody>
@@ -2426,6 +2786,7 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
         <tr><th>IMBE Extracted</th><td class="v" id="trf_imbe">0</td></tr>
         <tr><th>IMBE Expected</th><td class="v" id="trf_imbe_exp">0</td></tr>
         <tr><th>IMBE Dropped</th><td class="v" id="trf_imbe_drop">0</td></tr>
+        <tr><th>Dropped Idle (phantom)</th><td class="v" id="trf_imbe_drop_idle">0</td></tr>
         <tr><th>Last IMBE</th><td class="v" id="trf_imbe_ago">--</td></tr>
         <tr><th colspan="2" style="color:var(--text-dim);text-align:left">Vocoder (mbelib)</th></tr>
         <tr><th>PCM Produced</th><td class="v" id="voc_pcm">0</td></tr>
@@ -2472,6 +2833,24 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   <div id="activity"></div>
 </div>
 
+</div><!-- /#tab-radio -->
+
+<!-- ═════════════════════ Logs tab ═════════════════════ -->
+<div class="tab-pane" id="tab-logs">
+<h2>Event Log <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">structured pipeline events (grants, traffic, imbe, vocoder)</span></h2>
+<div class="log-toolbar">
+  <label><input type="checkbox" id="logCatGrant"   checked> Grant</label>
+  <label><input type="checkbox" id="logCatTraffic" checked> Traffic</label>
+  <label><input type="checkbox" id="logCatImbe"    checked> IMBE</label>
+  <label><input type="checkbox" id="logCatVocoder" checked> Vocoder</label>
+  <label><input type="checkbox" id="logCatSystem"  checked> System</label>
+  <label style="margin-left:8px"><input type="checkbox" id="logAutoscroll" checked> Auto-scroll</label>
+  <button class="btn" onclick="logClear()">Clear View</button>
+  <span class="log-status" id="logStatus">--</span>
+</div>
+<div class="log-viewer" id="logViewer"></div>
+</div><!-- /#tab-logs -->
+
 <!-- Aliases Modal -->
 <div class="modal-overlay" id="aliasModal">
   <div class="modal">
@@ -2509,45 +2888,62 @@ async function refresh() {
   if (cmp) {
     const fmtN = v => (v == null) ? '--' : (typeof v === 'number' ? v.toLocaleString() : v);
     const fmtPct = v => (v == null) ? '--' : v.toFixed(1) + '%';
+    // Phase 9: 3-column matrix (was 5). Columns are:
+    //   1. PS C4FM  — dormant fallback, only used on C4FM sites
+    //   2. PS LSM   — software framer on PL HDL LSM dibits (production)
+    //   3. PL HDL   — FPGA LSM chain's own runtime stats from the heartbeat
+    //
+    // PL-derived aliases for metrics that the HDL doesn't expose
+    // verbatim but can be computed from the cumulative event
+    // counters in HdlLsmRuntime:
+    //   - PL sync hits        = total_nid_events (every HDL hard-sync
+    //                            hit fires a NID BCH sweep 1:1)
+    //   - PL NID attempts     = total_nid_events (sync hit == attempt)
+    //   - PL NID BCH failures = total - valid (valid := dist <= 11)
+    //   - PL NID decoded OK   = valid_nid_events
+    //   - PL total dibits     = cmp.ps_lsm.total_dibits (the PS framer
+    //                            is a pass-through dibit counter on
+    //                            the PL LSM dibit DMA ring; same
+    //                            number, different source of truth)
+    const pl_total_nids = cmp.pl_hdl.total_nids || 0;
+    const pl_valid_nids = cmp.pl_hdl.valid_nids || 0;
+    const pl_nid_fail = pl_total_nids - pl_valid_nids;
+    const pl_total_dibits = cmp.ps_lsm.total_dibits; // pass-through
     const rows = [
-      ['NAC (winner)', cmp.ps_c4fm.system_nac, cmp.ps_lsm.system_nac, cmp.ps_phase6d.winner_nac, cmp.pl_hdl.winner_nac],
-      ['Messages decoded', fmtN(cmp.ps_c4fm.messages), fmtN(cmp.ps_lsm.messages), '--', '--'],
-      ['Total NIDs (any source)', '--', '--', fmtN(cmp.ps_phase6d.hard_events + cmp.ps_phase6d.soft_events), fmtN(cmp.pl_hdl.total_nids)],
-      ['Valid NIDs', '--', '--', '--', fmtN(cmp.pl_hdl.valid_nids) + ' (' + fmtPct(cmp.pl_hdl.valid_pct) + ')'],
-      ['Sync hits (frame sync correlator)', fmtN(cmp.ps_c4fm.sync_hits), fmtN(cmp.ps_lsm.sync_hits), '--', '--'],
-      ['Sync near-misses', fmtN(cmp.ps_c4fm.sync_near), fmtN(cmp.ps_lsm.sync_near), '--', '--'],
-      ['Sync best Hamming distance', fmtN(cmp.ps_c4fm.sync_best_dist), fmtN(cmp.ps_lsm.sync_best_dist), '--', fmtN(cmp.pl_hdl.sync_distance)],
-      ['Total dibits processed', fmtN(cmp.ps_c4fm.total_dibits), fmtN(cmp.ps_lsm.total_dibits), fmtN(cmp.ps_phase6d.dibits), '--'],
-      ['Active grants', fmtN(cmp.ps_c4fm.active_grants), fmtN(cmp.ps_lsm.active_grants), '--', '--'],
-      ['Frequency bands known', fmtN(cmp.ps_c4fm.bands_known), fmtN(cmp.ps_lsm.bands_known), '--', '--'],
-      ['Hard sync events', '--', '--', fmtN(cmp.ps_phase6d.hard_events), '--'],
-      ['Soft sync events', '--', '--', fmtN(cmp.ps_phase6d.soft_events), '--'],
-      ['IQ samples processed', '--', '--', fmtN(cmp.ps_phase6d.iq_samples), '--'],
-      ['Drop count (PL only)', '--', '--', '--', fmtN(cmp.pl_hdl.drop_count)],
-      ['Live PLL register', '--', '--', '--', fmtN(cmp.pl_hdl.pll_dbg)],
-      ['Live sample-point register', '--', '--', '--', fmtN(cmp.pl_hdl.sp_dbg)],
-      ['Overflow events', '--', '--', fmtN(cmp.ps_phase6d.overflow_resets), 'dibit:' + fmtN(cmp.pl_hdl.dibit_overflow_ticks) + ' iq:' + fmtN(cmp.pl_hdl.iq_overflow_ticks)],
-      ['── pipeline ──', '', '', '', ''],
-      ['NID attempts (sync hit)', fmtN(cmp.ps_c4fm.nid_attempts), fmtN(cmp.ps_lsm.nid_attempts), '--', '--'],
-      ['NID BCH decode failures', fmtN(cmp.ps_c4fm.nid_decode_failures), fmtN(cmp.ps_lsm.nid_decode_failures), '--', '--'],
-      ['NID invalid DUID after BCH', fmtN(cmp.ps_c4fm.nid_invalid_duid), fmtN(cmp.ps_c4fm.nid_invalid_duid), '--', '--'],
-      ['NID decoded OK (any DUID)', fmtN(cmp.ps_c4fm.nid_decoded_ok), fmtN(cmp.ps_lsm.nid_decoded_ok), '--', '--'],
-      ['NID decoded OK (TSDU only)', fmtN(cmp.ps_c4fm.nid_decoded_tsdu), fmtN(cmp.ps_lsm.nid_decoded_tsdu), '--', '--'],
-      ['TSDU attempts', fmtN(cmp.ps_c4fm.tsdu_attempts), fmtN(cmp.ps_lsm.tsdu_attempts), '--', '--'],
-      ['TSBK block attempts', fmtN(cmp.ps_c4fm.tsbk_block_attempts), fmtN(cmp.ps_lsm.tsbk_block_attempts), '--', '--'],
-      ['TSBK trellis failures', fmtN(cmp.ps_c4fm.tsbk_trellis_failures), fmtN(cmp.ps_lsm.tsbk_trellis_failures), '--', '--'],
-      ['TSBK CRC failures', fmtN(cmp.ps_c4fm.tsbk_crc_failures), fmtN(cmp.ps_lsm.tsbk_crc_failures), '--', '--'],
-      ['TSBK CRC OK', fmtN(cmp.ps_c4fm.tsbk_crc_ok), fmtN(cmp.ps_lsm.tsbk_crc_ok), '--', '--'],
-      ['  - via plain CRC convention', fmtN(cmp.ps_c4fm.tsbk_crc_ok_plain), fmtN(cmp.ps_lsm.tsbk_crc_ok_plain), '--', '--'],
-      ['  - via xored 0xFFFF convention', fmtN(cmp.ps_c4fm.tsbk_crc_ok_xored), fmtN(cmp.ps_lsm.tsbk_crc_ok_xored), '--', '--'],
-      ['TSBK unknown opcode', fmtN(cmp.ps_c4fm.tsbk_unknown_opcode), fmtN(cmp.ps_lsm.tsbk_unknown_opcode), '--', '--'],
+      ['NAC (winner)', cmp.ps_c4fm.system_nac, cmp.ps_lsm.system_nac, cmp.pl_hdl.winner_nac],
+      ['Messages decoded', fmtN(cmp.ps_c4fm.messages), fmtN(cmp.ps_lsm.messages), '(PS only)'],
+      ['Total NIDs', '--', '--', fmtN(pl_total_nids)],
+      ['Valid NIDs', '--', '--', fmtN(pl_valid_nids) + ' (' + fmtPct(cmp.pl_hdl.valid_pct) + ')'],
+      ['Sync hits (frame sync correlator)', fmtN(cmp.ps_c4fm.sync_hits), fmtN(cmp.ps_lsm.sync_hits), fmtN(pl_total_nids)],
+      ['Sync near-misses', fmtN(cmp.ps_c4fm.sync_near), fmtN(cmp.ps_lsm.sync_near), '(HDL: hit-only)'],
+      ['Sync best Hamming distance', fmtN(cmp.ps_c4fm.sync_best_dist), fmtN(cmp.ps_lsm.sync_best_dist), fmtN(cmp.pl_hdl.sync_distance)],
+      ['Total dibits processed', fmtN(cmp.ps_c4fm.total_dibits), fmtN(cmp.ps_lsm.total_dibits), fmtN(pl_total_dibits) + ' (= PS)'],
+      ['Active grants', fmtN(cmp.ps_c4fm.active_grants), fmtN(cmp.ps_lsm.active_grants), '(PS only)'],
+      ['Frequency bands known', fmtN(cmp.ps_c4fm.bands_known), fmtN(cmp.ps_lsm.bands_known), '(PS only)'],
+      ['Drop count (PL only)', '--', '--', fmtN(cmp.pl_hdl.drop_count)],
+      ['Live PLL register', '--', '--', fmtN(cmp.pl_hdl.pll_dbg)],
+      ['Live sample-point register', '--', '--', fmtN(cmp.pl_hdl.sp_dbg)],
+      ['Overflow events', '--', '--', 'dibit:' + fmtN(cmp.pl_hdl.dibit_overflow_ticks) + ' iq:' + fmtN(cmp.pl_hdl.iq_overflow_ticks)],
+      ['── pipeline ──', '', '', ''],
+      ['NID attempts (sync hit)', fmtN(cmp.ps_c4fm.nid_attempts), fmtN(cmp.ps_lsm.nid_attempts), fmtN(pl_total_nids)],
+      ['NID BCH decode failures', fmtN(cmp.ps_c4fm.nid_decode_failures), fmtN(cmp.ps_lsm.nid_decode_failures), fmtN(pl_nid_fail)],
+      ['NID invalid DUID after BCH', fmtN(cmp.ps_c4fm.nid_invalid_duid), fmtN(cmp.ps_lsm.nid_invalid_duid), '(HDL: always valid)'],
+      ['NID decoded OK (any DUID)', fmtN(cmp.ps_c4fm.nid_decoded_ok), fmtN(cmp.ps_lsm.nid_decoded_ok), fmtN(pl_valid_nids)],
+      ['NID decoded OK (TSDU only)', fmtN(cmp.ps_c4fm.nid_decoded_tsdu), fmtN(cmp.ps_lsm.nid_decoded_tsdu), '(PS only)'],
+      ['TSDU attempts', fmtN(cmp.ps_c4fm.tsdu_attempts), fmtN(cmp.ps_lsm.tsdu_attempts), '(PS framer)'],
+      ['TSBK block attempts', fmtN(cmp.ps_c4fm.tsbk_block_attempts), fmtN(cmp.ps_lsm.tsbk_block_attempts), '(PS framer)'],
+      ['TSBK trellis failures', fmtN(cmp.ps_c4fm.tsbk_trellis_failures), fmtN(cmp.ps_lsm.tsbk_trellis_failures), '(PS framer)'],
+      ['TSBK CRC failures', fmtN(cmp.ps_c4fm.tsbk_crc_failures), fmtN(cmp.ps_lsm.tsbk_crc_failures), '(PS framer)'],
+      ['TSBK CRC OK', fmtN(cmp.ps_c4fm.tsbk_crc_ok), fmtN(cmp.ps_lsm.tsbk_crc_ok), '(PS framer)'],
+      ['  - via plain CRC convention', fmtN(cmp.ps_c4fm.tsbk_crc_ok_plain), fmtN(cmp.ps_lsm.tsbk_crc_ok_plain), '(PS framer)'],
+      ['  - via xored 0xFFFF convention', fmtN(cmp.ps_c4fm.tsbk_crc_ok_xored), fmtN(cmp.ps_lsm.tsbk_crc_ok_xored), '(PS framer)'],
+      ['TSBK unknown opcode', fmtN(cmp.ps_c4fm.tsbk_unknown_opcode), fmtN(cmp.ps_lsm.tsbk_unknown_opcode), '(PS framer)'],
     ];
     $('cmp_body').innerHTML = rows.map(r =>
       '<tr><th>' + r[0] + '</th>' +
       '<td class="v">' + r[1] + '</td>' +
       '<td class="v">' + r[2] + '</td>' +
-      '<td class="v">' + r[3] + '</td>' +
-      '<td class="v">' + r[4] + '</td></tr>'
+      '<td class="v">' + r[3] + '</td></tr>'
     ).join('');
   }
 
@@ -2634,48 +3030,10 @@ async function refresh() {
     else { d.classList.remove('active'); s.textContent = 'Searching'; }
   }
 
-  const lsm = await fetchJson('/api/lsm');
-  if (lsm) {
-    const alive = lsm.running && lsm.last_wake_ms_ago != null && lsm.last_wake_ms_ago < 3000;
-    if (!lsm.running) {
-      $('lsm_status').textContent = 'NOT STARTED';
-      $('lsm_status').style.color = 'var(--red)';
-    } else if (alive) {
-      $('lsm_status').textContent = 'ALIVE';
-      $('lsm_status').style.color = 'var(--green)';
-    } else {
-      $('lsm_status').textContent = 'STALLED';
-      $('lsm_status').style.color = 'var(--red)';
-    }
-    $('lsm_uptime').textContent = lsm.uptime_secs + 's';
-    $('lsm_wakes').textContent = lsm.wakeups.toLocaleString();
-    const iqk = Math.round(lsm.iq_samples_per_sec / 1000);
-    $('lsm_iq').textContent = lsm.iq_samples.toLocaleString() + ' (' + iqk + 'k/s)';
-    const dps = Math.round(lsm.dibits_per_sec);
-    $('lsm_dibits').textContent = lsm.dibits.toLocaleString() + ' (' + dps + '/s)';
-    $('lsm_syncs').textContent = lsm.hard_events.toLocaleString() + ' / ' +
-      lsm.soft_events.toLocaleString();
-    $('lsm_overflows').textContent = lsm.overflow_resets.toLocaleString();
-    if (lsm.last_sync) {
-      const fec = lsm.last_sync.fec_corrected ? '\u2713' : '\u2717';
-      const age = Math.round(lsm.last_sync.age_ms / 1000);
-      $('lsm_last').textContent =
-        lsm.last_sync.nac + ' DUID' + lsm.last_sync.duid + ' FEC' + fec +
-        ' (' + age + 's ago)';
-    } else {
-      $('lsm_last').textContent = '--';
-    }
-    if (lsm.top_nacs && lsm.top_nacs.length) {
-      $('lsm_nacs_body').innerHTML = lsm.top_nacs.map(n =>
-        '<tr><td class="v">' + n.nac + '</td>' +
-        '<td>' + n.count.toLocaleString() + '</td>' +
-        '<td>' + n.pct.toFixed(1) + '%</td></tr>'
-      ).join('');
-    } else {
-      $('lsm_nacs_body').innerHTML =
-        '<tr><td colspan="3" style="color:var(--text-dim)">No sync events yet</td></tr>';
-    }
-  }
+  // Phase 9 retirement: the `/api/lsm` fetch + "LSM Pipeline"
+  // card updater went here. Retired along with the Phase 6D
+  // software pipeline; PL HDL stats come from `/api/hdl_lsm`
+  // above.
 
   // Helper to populate one of the dibit-stream cards (C4FM or LSM).
   const renderDibitDump = (dump, ids) => {
@@ -2732,6 +3090,7 @@ async function refresh() {
     $('trf_enc').style.color = trf.current_call_encrypted ? 'var(--red)' : 'var(--green)';
     $('trf_grants').textContent = (trf.grants_seen || 0).toLocaleString();
     $('trf_retunes').textContent = trf.retunes || 0;
+    $('trf_rej_enc').textContent = (trf.grants_rejected_encrypted || 0).toLocaleString();
     $('trf_duid').textContent = (trf.last_duid_label || '--') + ' (' + (trf.last_duid_hex || '--') + ')';
     if (trf.last_retune_secs_ago != null) {
       $('trf_last_retune').textContent = Math.round(trf.last_retune_secs_ago) + 's ago';
@@ -2749,6 +3108,8 @@ async function refresh() {
     $('trf_imbe_exp').textContent = (ldu_total * 9).toLocaleString();
     $('trf_imbe_drop').textContent = (im.imbe_frames_dropped || 0).toLocaleString();
     $('trf_imbe_drop').style.color = (im.imbe_frames_dropped || 0) > 0 ? 'var(--red)' : '';
+    $('trf_imbe_drop_idle').textContent = (im.imbe_frames_dropped_idle || 0).toLocaleString();
+    $('trf_imbe_drop_idle').style.color = (im.imbe_frames_dropped_idle || 0) > 0 ? 'var(--orange)' : '';
     if (im.last_imbe_secs_ago != null) {
       $('trf_imbe_ago').textContent = Math.round(im.last_imbe_secs_ago) + 's ago';
     } else {
@@ -2770,13 +3131,26 @@ async function refresh() {
 
   const grants = await fetchJson('/api/grants');
   if (grants) {
-    $('grants_t').innerHTML = grants.map(g =>
-      `<tr><td>${g.channel}</td>` +
-      `<td class="tg">${g.talkgroup}${g.talkgroup_alias ? ' <span class="alias">' + g.talkgroup_alias + '</span>' : ''}</td>` +
-      `<td>${g.source ?? ''}</td>` +
-      `<td class="freq">${g.frequency_mhz ? g.frequency_mhz.toFixed(4) : ''}</td>` +
-      `<td>${g.age_secs}s</td></tr>`
-    ).join('') || '<tr><td colspan="5" style="color:var(--text-dim)">None</td></tr>';
+    $('grants_t').innerHTML = grants.map(g => {
+      // Red [ENC] badge when the latest TSBK flags it encrypted.
+      // Orange [ENC-HIST] when the flag isn't set on this specific
+      // TSBK but the TG has ever been seen encrypted (service-options
+      // are often absent on Motorola/Harris sites so the history is
+      // the reliable truth).
+      let badge = '';
+      if (g.encrypted) {
+        badge = ' <span style="color:var(--red);font-weight:600">[ENC]</span>';
+      } else if (g.in_encrypted_history) {
+        badge = ' <span style="color:var(--orange);font-weight:600">[ENC-HIST]</span>';
+      }
+      const rowStyle = (g.encrypted || g.in_encrypted_history)
+        ? ' style="opacity:0.6"' : '';
+      return `<tr${rowStyle}><td>${g.channel}</td>` +
+        `<td class="tg">${g.talkgroup}${badge}${g.talkgroup_alias ? ' <span class="alias">' + g.talkgroup_alias + '</span>' : ''}</td>` +
+        `<td>${g.source ?? ''}</td>` +
+        `<td class="freq">${g.frequency_mhz ? g.frequency_mhz.toFixed(4) : ''}</td>` +
+        `<td>${g.age_secs}s</td></tr>`;
+    }).join('') || '<tr><td colspan="5" style="color:var(--text-dim)">None</td></tr>';
     renderFreqMap(grants);
   }
 
@@ -2909,6 +3283,316 @@ async function saveAliases() {
     refresh();
   } catch (e) { alert('Invalid JSON: ' + e.message); }
 }
+
+// ── Phase 7E: browser-side live audio player ──
+// Consumes the /ws/audio binary stream (320 bytes = 160 × i16 LE per
+// 20 ms frame @ 8 kHz mono) and schedules contiguous playback via the
+// Web Audio API. A user gesture (click) is required to create/resume
+// the AudioContext, which is why this hangs off a Play button instead
+// of auto-starting.
+//
+// Jitter-buffer parameters (tuned 2026-04-14 after short-call dropouts):
+//   LEAD_IN   -- initial pre-roll on new call/session. 250 ms is enough
+//                to absorb ARM -> WS jitter + browser scheduler wakeups
+//                without being perceptibly laggy.
+//   GAP_RESET -- wall-clock ms with no incoming chunks before the
+//                player treats the next chunk as a new call and does a
+//                clean reset (non-underrun).
+const AUDIO = {
+  ctx: null,
+  gain: null,
+  ws: null,
+  nextTime: 0,     // audioCtx-time at which the next chunk should start
+  playing: false,
+  chunks: 0,
+  underruns: 0,
+  lastChunkAt: 0,  // wall-clock ms of last arriving frame
+  statusTimer: null,
+  LEAD_IN: 0.25,
+  GAP_RESET_MS: 500,
+};
+
+function audioSetStatus(html) {
+  $('audioStatus').innerHTML = html;
+}
+
+function audioUpdateStatus() {
+  if (!AUDIO.playing) { audioSetStatus('stopped'); return; }
+  const gapMs = AUDIO.lastChunkAt ? (Date.now() - AUDIO.lastChunkAt) : -1;
+  const buf = Math.max(0, (AUDIO.nextTime - (AUDIO.ctx ? AUDIO.ctx.currentTime : 0)) * 1000);
+  let gapCls = 'on', gapTxt = 'live';
+  if (gapMs < 0) {
+    gapTxt = 'waiting for vocoder…';
+    gapCls = 'warn';
+  } else if (gapMs > 1500) {
+    gapTxt = 'silent ' + (gapMs/1000).toFixed(1) + 's';
+    gapCls = 'warn';
+  }
+  audioSetStatus(
+    '<span class="' + gapCls + '">' + gapTxt + '</span>'
+    + '  &middot;  buf ' + buf.toFixed(0) + ' ms'
+    + '  &middot;  chunks ' + AUDIO.chunks.toLocaleString()
+    + (AUDIO.underruns ? '  &middot;  <span class="warn">underruns ' + AUDIO.underruns + '</span>' : '')
+  );
+}
+
+function audioApplyGain() {
+  if (!AUDIO.gain) return;
+  const muted = $('audioMute').checked;
+  const vol = parseInt($('audioVol').value, 10) / 100;
+  AUDIO.gain.gain.value = muted ? 0 : vol;
+}
+
+function toggleAudio() {
+  if (AUDIO.playing) { stopAudio(); } else { startAudio(); }
+}
+
+async function startAudio() {
+  try {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) { audioSetStatus('<span class="err">Web Audio unsupported</span>'); return; }
+    AUDIO.ctx = new Ctor();
+    // Some browsers start the context suspended until a user gesture.
+    // Await the resume so the first arriving chunk doesn't get
+    // scheduled against a still-suspended context (which was the
+    // root cause of missed short-call openings before 2026-04-14).
+    if (AUDIO.ctx.state === 'suspended') {
+      try { await AUDIO.ctx.resume(); } catch {}
+    }
+    AUDIO.gain = AUDIO.ctx.createGain();
+    AUDIO.gain.connect(AUDIO.ctx.destination);
+    audioApplyGain();
+    AUDIO.nextTime = 0;
+    AUDIO.chunks = 0;
+    AUDIO.underruns = 0;
+    AUDIO.lastChunkAt = 0;
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = proto + '//' + location.host + '/ws/audio';
+    const ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => {
+      AUDIO.playing = true;
+      const btn = $('audioBtn');
+      btn.classList.remove('play-off');
+      btn.classList.add('play-on');
+      btn.innerHTML = '&#9632; Stop Audio';
+      if (!AUDIO.statusTimer) AUDIO.statusTimer = setInterval(audioUpdateStatus, 250);
+      audioUpdateStatus();
+    };
+    ws.onmessage = (ev) => {
+      if (!(ev.data instanceof ArrayBuffer)) return;
+      // 320 bytes = 160 × i16 LE = 20 ms of 8 kHz mono
+      const i16 = new Int16Array(ev.data);
+      if (i16.length === 0) return;
+      if (!AUDIO.ctx || AUDIO.ctx.state !== 'running') return;
+      const buffer = AUDIO.ctx.createBuffer(1, i16.length, 8000);
+      const ch = buffer.getChannelData(0);
+      for (let i = 0; i < i16.length; i++) ch[i] = i16[i] / 32768;
+      const src = AUDIO.ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(AUDIO.gain);
+
+      // Schedule contiguously. Three cases to distinguish:
+      //   (a) Steady-state: nextTime is in the future, just schedule.
+      //   (b) New call / long gap: last chunk was > GAP_RESET_MS ago
+      //       (or this is the very first chunk). Reset with the full
+      //       LEAD_IN pre-roll -- NOT an underrun.
+      //   (c) True underrun: consecutive chunks with < GAP_RESET_MS
+      //       gap but nextTime fell behind currentTime anyway. Reset
+      //       with a shorter lead-in and bump the underrun counter.
+      const now = AUDIO.ctx.currentTime;
+      const wallGap = AUDIO.lastChunkAt
+        ? (Date.now() - AUDIO.lastChunkAt)
+        : Number.POSITIVE_INFINITY;
+      if (AUDIO.nextTime < now + 0.005) {
+        if (wallGap > AUDIO.GAP_RESET_MS) {
+          // Case (b): new call / session start
+          AUDIO.nextTime = now + AUDIO.LEAD_IN;
+        } else {
+          // Case (c): real underrun
+          AUDIO.underruns++;
+          AUDIO.nextTime = now + 0.10;
+        }
+      }
+      src.start(AUDIO.nextTime);
+      AUDIO.nextTime += i16.length / 8000;
+      AUDIO.chunks++;
+      AUDIO.lastChunkAt = Date.now();
+    };
+    ws.onclose = () => {
+      if (AUDIO.playing) {
+        audioSetStatus('<span class="warn">disconnected</span>');
+        stopAudio();
+      }
+    };
+    ws.onerror = () => {
+      audioSetStatus('<span class="err">WS error</span>');
+    };
+    AUDIO.ws = ws;
+  } catch (e) {
+    audioSetStatus('<span class="err">' + e.message + '</span>');
+    stopAudio();
+  }
+}
+
+function stopAudio() {
+  AUDIO.playing = false;
+  try { if (AUDIO.ws) AUDIO.ws.close(); } catch {}
+  AUDIO.ws = null;
+  try { if (AUDIO.gain) AUDIO.gain.disconnect(); } catch {}
+  AUDIO.gain = null;
+  try { if (AUDIO.ctx) AUDIO.ctx.close(); } catch {}
+  AUDIO.ctx = null;
+  AUDIO.nextTime = 0;
+  if (AUDIO.statusTimer) { clearInterval(AUDIO.statusTimer); AUDIO.statusTimer = null; }
+  const btn = $('audioBtn');
+  btn.classList.remove('play-on');
+  btn.classList.add('play-off');
+  btn.innerHTML = '&#9654; Play Audio';
+  audioSetStatus('stopped');
+}
+
+// Volume / mute react immediately (script sits at bottom of body)
+$('audioVol').addEventListener('input', audioApplyGain);
+$('audioMute').addEventListener('change', audioApplyGain);
+
+// ── Tab switching (Radio / Logs / Debug) ──
+// All tab panes stay in the DOM and get updated by the 2 s refresh
+// loop regardless of which tab is visible, so switching is instant
+// (just a display:none toggle). Last-selected tab persists in
+// localStorage.
+function switchTab(name) {
+  const panes = document.querySelectorAll('.tab-pane');
+  panes.forEach(p => p.classList.toggle('active', p.id === 'tab-' + name));
+  const buttons = document.querySelectorAll('#tabNav button');
+  buttons.forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  localStorage.setItem('p25_tab', name);
+  if (name === 'logs') { LOGS.unread = 0; logRenderBadge(); }
+}
+(function() {
+  const saved = localStorage.getItem('p25_tab');
+  if (saved === 'radio' || saved === 'debug' || saved === 'logs') switchTab(saved);
+})();
+
+// ── Event log tail (Phase 7F.1 Logs tab) ──
+// Polls GET /api/log?since=<last_seen_seq>&limit=200 on a 1 s cadence.
+// Renders entries into #logViewer in chronological order (oldest at
+// top) up to a rolling cap. Category filter chips are client-side so
+// toggling is instant.
+const LOGS = {
+  lastSeq: 0,
+  entries: [],
+  cap: 500,
+  unread: 0,
+  timer: null,
+};
+
+function logRenderBadge() {
+  const b = $('logs_badge');
+  if (!b) return;
+  b.textContent = LOGS.unread > 0 ? '(' + LOGS.unread + ')' : '';
+  b.style.color = LOGS.unread > 0 ? 'var(--orange)' : '';
+}
+
+function logFilterActive() {
+  return {
+    grant:   $('logCatGrant').checked,
+    traffic: $('logCatTraffic').checked,
+    imbe:    $('logCatImbe').checked,
+    vocoder: $('logCatVocoder').checked,
+    system:  $('logCatSystem').checked,
+  };
+}
+
+function logFmtTs(ms) {
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  const mmm = String(d.getMilliseconds()).padStart(3, '0');
+  return hh + ':' + mm + ':' + ss + '.' + mmm;
+}
+
+function logFmtFields(f) {
+  if (!f || typeof f !== 'object') return '';
+  const parts = [];
+  for (const k of Object.keys(f)) {
+    let v = f[k];
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'object') v = JSON.stringify(v);
+    parts.push(k + '=' + v);
+  }
+  return parts.length ? '{' + parts.join(' ') + '}' : '';
+}
+
+function logRender() {
+  const viewer = $('logViewer');
+  if (!viewer) return;
+  const filt = logFilterActive();
+  const visible = LOGS.entries.filter(e => filt[e.category] !== false);
+  // Build DOM in one pass; for ~500 entries this is fine every 1 s.
+  const html = visible.map(e => {
+    const fields = logFmtFields(e.fields);
+    const esc = s => String(s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+    return '<div class="log-entry">' +
+      '<span class="log-ts">' + logFmtTs(e.timestamp_ms) + '</span>' +
+      '<span class="log-cat ' + e.category + '">' + e.category + '</span>' +
+      '<span class="log-body">' + esc(e.message) +
+        (fields ? '<span class="log-fields">' + esc(fields) + '</span>' : '') +
+      '</span>' +
+    '</div>';
+  }).join('');
+  viewer.innerHTML = html;
+  if ($('logAutoscroll').checked) {
+    viewer.scrollTop = viewer.scrollHeight;
+  }
+  $('logStatus').textContent =
+    LOGS.entries.length + ' entries · ' +
+    visible.length + ' shown · last_seq=' + LOGS.lastSeq;
+}
+
+async function logPoll() {
+  try {
+    const r = await fetch('/api/log?since=' + LOGS.lastSeq + '&limit=200');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d || !Array.isArray(d.entries)) return;
+    if (d.entries.length > 0) {
+      LOGS.entries.push(...d.entries);
+      while (LOGS.entries.length > LOGS.cap) LOGS.entries.shift();
+      LOGS.lastSeq = d.last_seq;
+      // Badge: count entries received while Logs tab isn't active
+      const activeTab = document.querySelector('#tabNav button.active');
+      if (!activeTab || activeTab.dataset.tab !== 'logs') {
+        LOGS.unread += d.entries.length;
+        logRenderBadge();
+      }
+      logRender();
+    }
+  } catch {}
+}
+
+function logClear() {
+  LOGS.entries = [];
+  LOGS.unread = 0;
+  logRenderBadge();
+  logRender();
+}
+
+// Filter checkbox changes re-render immediately
+['logCatGrant', 'logCatTraffic', 'logCatImbe', 'logCatVocoder', 'logCatSystem']
+  .forEach(id => {
+    const el = $(id);
+    if (el) el.addEventListener('change', logRender);
+  });
+
+// Start the 1 s log poller unconditionally -- cheap, keeps the ring
+// warm so switching to the Logs tab has instant history.
+LOGS.timer = setInterval(logPoll, 1000);
+logPoll(); // kick off immediately
 
 loadAliases();
 refresh();

@@ -348,11 +348,14 @@ At 9600 bps, the ARM A9 has trivial CPU load for all protocol processing.
       (better than 6G.1 baseline). All 6 acceptance criteria passed on
       hardware.
 
-    - **Phase 7B: Typed event channel + monitor list + modulation
-      auto-detect** -- DEFERRED. Independent of 7C/7D; gets revisited
-      after vocoder integration. Would replace the 7A.1 polling task
-      with a typed event channel and add modulation auto-detect +
-      `/api/voice_follow_targets` endpoint.
+    - **Phase 7B: Typed event channel + monitor list** -- DONE (commit
+      `91616bd`, change 036). Replaces the 7A.1 50 ms polling task with
+      a typed `P25Event::Grant(GrantEvent)` mpsc channel; the grant
+      follower now runs a `tokio::select!` on the receiver plus a
+      200 ms safety tick. New `MonitorList` (priority-ordered TG set)
+      surfaced through `GET/PUT /api/monitor` (`?add=NNN`, `?remove=NNN`
+      for quick curl). Modulation auto-detect was dropped from scope
+      -- LSM is the day-one target and C4FM can be revisited if needed.
 
     - **Phase 7C: LDU sync + IMBE frame extraction** -- DONE (commit
       `57bb770`, change 035). The traffic-side LSM dibit reader feeds a
@@ -366,46 +369,292 @@ At 9600 bps, the ARM A9 has trivial CPU load for all protocol processing.
       `imbe_frames_extracted == (ldu1+ldu2)*9` holds **exactly** across
       multiple call boundaries.
 
-    - **Phase 7D: IMBE vocoder + audio output** -- NEXT. Convert raw
-      144-bit IMBE frames to PCM audio. The `VoiceHandler` callback
-      chain is already flowing real frames from Clay County calls.
+    - **Phase 7D: IMBE vocoder + audio output** -- DONE (commit
+      `91616bd`, change 036). Two vocoder backends ship side-by-side:
+      a pure-Rust JMBE port (~2500 LOC, primary, ported from
+      DSheirer/jmbe GPL-3.0) and a vendored mbelib C FFI fallback.
+      `ImbeForwarder` replaces `ImbeCounter`, feeding a tokio vocoder
+      task that decodes `[ImbeFrameRaw; 9]` batches and pushes
+      `AudioChunk` onto a broadcast channel. Encryption gating uses
+      sticky `current_call_encrypted` plus a per-TG encryption-history
+      `HashSet` so grant refreshes without service options don't
+      flicker the flag. Hardware verified: vocoder PCM > 0 during
+      clear calls on TG 430, `frames_encrypted` climbs on TG 402/600.
+      All 7 acceptance criteria pass.
 
-      Concrete work:
+    - **Phase 7E: Audio streaming** -- DONE (commit `91616bd`, change
+      036). `audio::AudioChunk` broadcast channel (capacity 256 ≈ 5 s)
+      fans out to three consumers: `GET /api/audio[?format=wav]`
+      (chunked HTTP, VLC-ready), `WS /ws/audio` (binary 320-byte frames
+      for browsers), and `GET /api/audio_test` (offline ring dump to
+      WAV for QA). Dashboard browser-side player (Web Audio API Play
+      / Stop / Mute / Volume bar) landed on the fishball-p25 branch
+      after change 036 — wired to `/ws/audio` with contiguous
+      AudioBufferSourceNode scheduling and underrun recovery.
 
-      1. Choose vocoder library: mbelib (C, grey license,
-         bit-compatible IMBE+AMBE, well-tested) vs codec2 (FOSS, clean
-         license, not bit-compatible) vs DVSI hardware.
-      2. Cross-compile for ARMv7 via Tezuka Buildroot. New recipe in
-         `tezuka_fw/package/mbelib/`.
-      3. Rust FFI bindings in `p25-httpd/src/vocoder/`. Small API:
-         `mbe_initStruct`, `mbe_processImbe7100x4400Data`,
-         `mbe_synthesizeAudio`.
-      4. Spawn vocoder tokio task in `main.rs`. Reads
-         `ImbeFrameRaw` from mpsc channel, outputs 160 PCM samples
-         (20 ms @ 8 kHz) per frame.
-      5. Replace `ImbeCounter` with `ImbeForwarder` (same atomic
-         counters + mpsc sender to vocoder task).
-      6. Encryption gating: skip encrypted calls based on
-         `current_call_encrypted` from grant store.
-      7. Surface vocoder counters in `/api/traffic`: `pcm_samples`,
-         `frames_skipped_encrypted`, `errors`.
+11. **Phase 8: LSM runtime reset + clean re-lock on retune** -- DONE
+    (HDL + PS + 8C domain refactor landed 2026-04-15,
+    see `doc/changes/038_phase8_runtime_reset.md`; on-target bake
+    + verification in flight). Root-cause fix for the Phase 7
+    audio quality problem identified in the 2026-04-14 HDL review
+    (see `doc/changes/037`).
+
+    **Problem statement.** Phase 7 (7A-7F) landed full PS-side grant
+    following + IMBE extraction + JMBE vocoder + audio streaming +
+    browser player + encryption blocklist + NID capture tooling. On
+    an actual Clay County (LSM) site the audio is broken: 1 in 20
+    calls produces intelligible audio; the rest are mostly robotic /
+    noisy / short blips. The Phase 7F capture-ring sweep tooling
+    (`/api/nid_capture`, `tools/p25_nid_analyze.py`) proved the raw
+    DUID histogram is already ~60 % TDU_LC (0xF) at the output of
+    the traffic LSM HDL chain -- so the corruption is upstream of
+    the software BCH / framer, which the Phase 7F t-sweep analyses
+    confirmed.
+
+    **Root cause (from `doc/changes/037`).** Two independent gaps
+    in the Phase 7A.2 HDL port + PS integration:
+
+    1. The PS's `set_traffic_demod_enable(false)` only gates the
+       C4FM `traffic_dma.enable` bit. The LSM chain is gated by a
+       **separate** register (`traffic_lsm_control.traffic_lsm_enable`)
+       that the PS writes ONCE at boot and never toggles per-call.
+       The traffic LSM demod has therefore been running continuously
+       since boot, processing whatever the traffic DDC spits out
+       regardless of follower state.
+    2. The LSM chain's stateful submodules (`LsmPllUpdate`,
+       `LsmTimingInterp`, `LsmDiffDemodSlicer`, `LsmSyncNidExtract`)
+       all declare their state registers with `reset_less=True` and
+       an `init=` value. That's a **configuration-time** initial
+       value only -- there is no runtime reset wire from the PS.
+       When the follower retunes the traffic DDC to a new channel,
+       the PLL accumulator still holds the phase-error it settled to
+       on the old carrier; the CORDIC PLL takes hundreds of ms to
+       re-converge; during that transient the slicer outputs
+       corrupted dibits; sync correlator matches noise; BCH
+       "corrects" the noise to the nearest codeword (usually the
+       all-ones DUID=0xF=TDU_LC because of its large basin of
+       attraction in Hamming space). The sync-distance histogram
+       signature confirms this: control side (never retunes) has a
+       decaying tail, traffic side has a FLAT tail = uniform noise.
+
+    Control-side LSM works because the control DDC never retunes --
+    its PLL locked once at boot and has been happy ever since.
+
+    **Deliverables** (three sub-phases, executed in order):
+
+    - **Phase 8A: HDL runtime reset plumbing** -- add a `reset_in`
+      port to `LsmDemod`, propagate down through `LsmDemodLoop` to
+      `LsmPllUpdate` / `LsmTimingInterp` / `LsmDiffDemodSlicer`, and
+      across to `LsmSyncNidExtract` / `LsmNidBchFec`. Inside each
+      module, when `reset_in` is asserted (1 cycle), clear the
+      stateful registers to their init values (`pll_reg`,
+      `sample_point`, FIFO contents, `prev_i`/`prev_q`, `sync_reg`,
+      `reg_fill`, NID FSM state, BCH sweep abort). Add a new W1P
+      register bit `traffic_lsm_control.traffic_lsm_reset` wired to
+      a 1-cycle strobe generator that drives `traffic_lsm_demod.reset_in`.
+      Mirror on the control side (`lsm_control.lsm_reset` →
+      `lsm_demod.reset_in`) -- trivially zero-cost and future-proofs
+      against Phase 7G channel-hopping.
+
+      Concrete file list (Amaranth):
+
+      1. `maia-hdl/p25_hdl/lsm_pll_update.py` -- add `reset_in`,
+         gate `pll_reg` clear on it
+      2. `maia-hdl/p25_hdl/lsm_timing_interp.py` -- add `reset_in`,
+         clear `sample_point` + FIFO contents
+      3. `maia-hdl/p25_hdl/lsm_diff_demod_slicer.py` -- add `reset_in`,
+         clear `prev_i`/`prev_q`
+      4. `maia-hdl/p25_hdl/lsm_sync_nid_extract.py` -- add `reset_in`,
+         clear `sync_reg`, `reg_fill`, force FSM to `IDLE`
+      5. `maia-hdl/p25_hdl/lsm_nid_bch_fec.py` -- add `reset_in`,
+         abort any in-flight BCH sweep
+      6. `maia-hdl/p25_hdl/lsm_demod_loop.py` -- add `reset_in`,
+         propagate to timing / diff_demod / pll_update
+      7. `maia-hdl/p25_hdl/lsm_demod.py` -- add `reset_in`,
+         propagate to demod_loop + nid_pipeline
+      8. `maia-hdl/p25_hdl/p25_top.py` -- new `lsm_reset` and
+         `traffic_lsm_reset` W1P fields, strobe generators, wiring
+         to the two `LsmDemod` instances
+      9. SVD regen (`maia-hdl/svd/...`) + PAC rebuild
+         (`p25-httpd/p25-pac`) for the new register field
+
+      Unit tests: extend `maia-hdl/test/test_lsm_demod.py` and
+      `test_lsm_pll_update.py` to verify that asserting `reset_in`
+      mid-stream returns `pll_reg` to 0 within 1 cycle and that
+      subsequent convergence matches a cold-start trace. Tests
+      gated by `MAIA_HDL_SLOW_TESTS=1` per the amaranth-sim
+      throughput memory.
+
+      Vivado bake: `./build_fpga.bat --p25`. No timing risk --
+      we're adding async resets to existing registers, not changing
+      the critical path. Budget: ~45 min including synth+place+route.
 
       Acceptance criteria:
 
-      1. Vocoder cross-compiled and packaged in Tezuka.
-      2. FFI bindings in `p25-httpd/src/vocoder/`.
-      3. Vocoder tokio task consuming from mpsc channel.
-      4. `ImbeForwarder` replacing `ImbeCounter`.
-      5. `/api/traffic.vocoder.pcm_samples_produced > 0` during a
-         real clear-voice call.
-      6. Encryption gating verified: encrypted TG shows
-         `frames_skipped_encrypted` incrementing.
-      7. Subjective audio quality check on saved PCM file.
+      1. All new unit tests pass.
+      2. Vivado bake completes with WNS ≥ 0 (no timing regression
+         vs the 7A.2 baseline of -5.253 ns -- we're lower-bounded
+         by the existing slack).
+      3. `traffic_lsm_control.traffic_lsm_reset` is visible in the
+         PAC and readable back as 0 (W1P self-clearing).
+      4. Pulsing the reset from `devmem` on hardware clears
+         `pll_dbg` and `sample_point_dbg` within one heartbeat
+         cycle (16 ms).
 
-    - **Phase 7E: Closing the loop.** `/api/audio` endpoint that ties
-      grant detection + voice follow + vocoder into a single "give me
-      the audio for talkgroup X" handler. RTP or WebSocket audio
-      streaming. The dashboard becomes a real operator console.
+    - **Phase 8B: PS integration + per-call enable gating** -- with
+      the new reset pin available, the retune path becomes:
+
+      ```rust
+      pub fn retune_traffic_chain(&self, freq_hz: u64) -> Result<()> {
+          self.set_traffic_lsm_enable(false);       // freeze chain
+          self.set_traffic_ddc_frequency(freq_hz)?;  // new NCO
+          self.pulse_traffic_lsm_reset();            // clear PLL / timing / sync
+          self.set_traffic_lsm_enable(true);         // re-enable
+          self.set_traffic_demod_enable(true);       // C4FM too
+          Ok(())
+      }
+      ```
+
+      Follower task in `main.rs` calls `retune_traffic_chain`
+      instead of the current ad-hoc sequence. On Idle → timeout or
+      encrypted tear-down, call `pause_traffic_chain` which writes
+      both `traffic_lsm_enable = 0` and `traffic_demod_enable = 0`
+      so neither chain is running between calls.
+
+      No "warmup window" needed (Option A in the review doc
+      suggested a 200 ms warmup as a workaround for the missing
+      reset; 8A makes that unnecessary -- the PLL starts from a
+      clean 0 on every retune and converges in its natural time).
+
+      Files touched: `p25-httpd/src/fpga.rs` (new helper methods),
+      `p25-httpd/src/main.rs` (follower task retune path +
+      Idle/timeout handlers), BUILD_TAG bump.
+
+      Acceptance criteria:
+
+      1. Between calls, the traffic LSM chain is quiescent
+         (`traffic_lsm_enable = 0`, no new NID events).
+      2. After a retune, the PLL (`pll_dbg` register) starts from 0
+         and converges to the new carrier offset within ~50-100 ms.
+      3. The DUID ratio on `/api/traffic` rebalances to realistic
+         P25 values: `tdu_lc` should be ≤ 1-2 per call (only the
+         actual call-end marker), `ldu1 ≈ ldu2`, each at ~5 per
+         second during an active call.
+      4. The `/api/nid_capture` sweep analysis (re-run
+         `tools/p25_nid_analyze.py sweep --side traffic`) should
+         show a post-BCH DUID histogram where real frames dominate.
+
+    - **Phase 8C: LSM chain local clock domain** -- architectural
+      refactor. Move each `LsmDemod` instance into its own
+      `m.domains.lsm_<side> = ClockDomain(local=True)` with reset
+      wired to `~<side>_lsm_enable`. Disabling the enable becomes
+      equivalent to a full reset -- `reset_less=True` registers
+      still carry state across enables, but now we get free,
+      zero-latency "disable = full reset" semantics at the domain
+      boundary. CDC between the LSM domain and the `sync` domain
+      handled by standard gray-coded counters + `FFSynchronizer`
+      on slow control signals.
+
+      This isn't strictly necessary after 8A+8B -- 8A gives us an
+      explicit reset, 8B uses it -- but 8C lays the groundwork for
+      Phase 7G (channelizer + multi-channel follower). The
+      channelizer will instantiate N `LsmDemod` blocks in parallel;
+      having each in its own clock domain with enable = reset
+      means spinning up / tearing down a voice-channel slot is a
+      single register write instead of a coordinated dance.
+
+      8C is the biggest HDL diff but the lowest urgency. Ship 8A
+      and 8B first, verify audio quality, then come back for 8C as
+      a clean-up pass.
+
+      Acceptance criteria:
+
+      1. Both LSM `LsmDemod` instances elaborate into independent
+         clock domains.
+      2. Existing cocotb + amaranth-sim tests still pass (CDC
+         doesn't break the per-module tests since they run in a
+         single domain each).
+      3. Vivado bake WNS ≥ 0; BRAM / DSP / LUT usage unchanged
+         within 2 %.
+      4. Toggling `traffic_lsm_enable` on hardware produces
+         bit-identical dibit output to pulsing `traffic_lsm_reset`
+         (cross-check that the new reset semantics match the
+         explicit reset pulse).
+
+12. **Phase 9: Retire the Phase 6D software LSM pipeline** -- DONE
+    (2026-04-15, see `doc/changes/039_phase9_retire_phase6d_iq_lsm.md`).
+
+    **Motivation.** Before Phase 9 the daemon ran three overlapping
+    control-channel decoders: `decoder` (PS C4FM framer fed by HDL
+    c4fm_dibit_dma), `lsm_decoder` (PS LSM framer fed by HDL
+    lsm_dibit_dma, the current production path), and `iq_lsm_decoder`
+    (the Phase 6D pure-Rust software LSM pipeline fed from the raw
+    `iq_dma` ring). The third has been pure CPU overhead since
+    Phase 6E.9 landed the HDL LSM chain in production -- every
+    iq_dma wake it re-ran the full software demod (atan2, filters,
+    CORDIC, sync correlator) and dispatched soft-decision TSDUs
+    into its own framer whose only visible output was a column in
+    `/api/decoder_compare` that duplicated `lsm_decoder`. On top of
+    that, it had no `expire_grants` loop, so its grants accumulated
+    forever and polluted the `/api/grants` union with stale entries
+    that showed 186 s / 368 s ages on the dashboard while the
+    production `lsm_decoder` half of the union had long since
+    pruned them.
+
+    **Deliverables.**
+
+    - Delete the Phase 6D LSM IQ reader tokio task + its
+      `iq_lsm_decoder` / `lsm_stats` Arc construction in `main.rs`.
+    - Drop `iq_lsm_decoder` + `lsm_stats` fields from `AppState`.
+    - Disable `iq_dma_enable` at boot (HDL block stays in the
+      bitstream, dormant).
+    - Remove `/api/lsm` route + `get_lsm` handler.
+    - Simplify `get_system_info` / `get_grants` / `get_bands` /
+      `post_decoder_reset` to single-decoder reads. The Active
+      Grants stale-age bug falls out for free as a side effect.
+    - Drop `ps_iq_lsm` + `ps_phase6d` JSON sections from
+      `/api/decoder_compare` -- the response is now a 3-column
+      matrix: `ps_c4fm`, `ps_lsm`, `pl_hdl`.
+    - Delete the "LSM Decoder (Phase 6D)" + "Top NACs (LSM)"
+      dashboard cards. The PL HDL chain detail card
+      (`/api/hdl_lsm`) is the single source of truth for
+      LSM-side telemetry.
+    - Relabel the dibit-stream diagnostics section to
+      "PS C4FM fallback vs PL HDL LSM".
+    - Fill in PL-HDL-derivable aliases in the Decoder Comparison
+      matrix for Sync hits / NID attempts / NID BCH failures /
+      NID decoded OK / Total dibits processed, so the PL column
+      has numbers for every row that has a meaningful PL
+      equivalent. Rows that are fundamentally PS-only (TSDU,
+      TSBK CRC, active grants, bands, messages) get tagged
+      labels in the PL column instead of bare `--`.
+    - Update `doc/P25_API.md` and the `tools/p25_check.py` +
+      `tools/p25_status_and_next_step.py` CLI scripts to match
+      the new endpoint and response shapes.
+    - `#![allow(dead_code)]` on the kept-in-tree `lsm/` module
+      with an extended docstring explaining why it stays
+      (nid_fec still referenced, reference implementation,
+      golden_dump fixture emitter).
+    - BUILD_TAG → `2026-04-15-phase9-retire-phase6d-iq-lsm`.
+
+    **Acceptance criteria** (pending re-flash on target):
+
+    1. `cargo check --workspace` clean (warnings dropped from
+       132 to 75). ✔
+    2. Build tag readable via `/api/system.build`.
+    3. `/api/lsm` returns 404.
+    4. `/api/decoder_compare` has no `ps_iq_lsm` / `ps_phase6d`
+       keys.
+    5. Active Grants panel ages rebalance to the 0-5 s range
+       for actively-refreshed grants.
+    6. Dashboard Decoder Comparison Matrix is 3 columns wide.
+    7. ARM CPU load drops (Phase 6D software demod no longer
+       running on every iq_dma wake).
+
+    Phase 10 follow-ups: end-of-call TDU_LC burst fix
+    (TDU_LC-as-terminator OR shorter inactivity timeout),
+    optional HDL-side retirement of `iq_packer` / `iq_dma`,
+    optional PS C4FM decoder retirement (LSM-only commitment).
 
 ### Critical Maia Files Referenced
 

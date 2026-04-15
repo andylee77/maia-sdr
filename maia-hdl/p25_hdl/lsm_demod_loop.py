@@ -122,6 +122,10 @@ class LsmDemodLoop(Elaboratable):
         self.re_in = Signal(signed(16))
         self.im_in = Signal(signed(16))
         self.strobe_in = Signal()
+        # Phase 8A: runtime reset. A 1-cycle pulse is propagated
+        # to every stateful submodule in the closed-loop demod
+        # chain (timing, diff_demod, pll_update).
+        self.reset_in = Signal()
 
         # ── Outputs ─────────────────────────────────────────────
         self.dibit_out = Signal(2, reset_less=True)
@@ -147,6 +151,13 @@ class LsmDemodLoop(Elaboratable):
         else:
             pll_update_cls = LsmPllUpdateLinearised
         m.submodules.pll_update = pll_update = pll_update_cls()
+
+        # ── Phase 8A runtime reset fan-out ──────────────────────
+        m.d.comb += [
+            timing.reset_in.eq(self.reset_in),
+            diff_demod.reset_in.eq(self.reset_in),
+            pll_update.reset_in.eq(self.reset_in),
+        ]
 
         # ── Stage 1: timing recovery + lerp ─────────────────────
         m.d.comb += [
@@ -230,6 +241,18 @@ class LsmDemodLoop(Elaboratable):
             m.d.sync += [
                 self.i_sym_rot_dbg.eq(rotate_sym.i_out),
                 self.q_sym_rot_dbg.eq(rotate_sym.q_out),
+            ]
+
+        # ── Phase 8A runtime reset override on local outputs ───
+        # Clear this module's own registered outputs (the slicer
+        # latch + debug taps) so the PS sees a clean view during
+        # the first ~microsecond after reset.
+        with m.If(self.reset_in):
+            m.d.sync += [
+                self.dibit_out.eq(0),
+                self.symbol_strobe.eq(0),
+                self.i_sym_rot_dbg.eq(0),
+                self.q_sym_rot_dbg.eq(0),
             ]
 
         return m

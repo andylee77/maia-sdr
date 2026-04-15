@@ -187,6 +187,38 @@ pub struct ControlChannelDecoder {
     /// raw NID + body dibits.
     capture_in_flight: Option<CaptureBuilder>,
 
+    // ── Phase 7F.4 NID batch capture ring (2026-04-14) ──
+    /// When `true`, the decoder pushes a minimal `AlignedCapture` (NID
+    /// fields only, no trellis/TSBK) to `capture_ring` on every sync
+    /// event with a populated NID window. Disarms automatically when
+    /// the ring reaches `capture_ring_limit`. Armed via
+    /// `/api/nid_capture?side=control|traffic&arm=1`.
+    pub capture_ring_armed: bool,
+    /// Ring buffer of NID-level captures populated while
+    /// `capture_ring_armed` is true. Read + drained by
+    /// `/api/nid_capture`. Sized at runtime via
+    /// `arm_capture_ring(limit)`; default cap is 256 entries,
+    /// hard ceiling 1024.
+    pub capture_ring: std::collections::VecDeque<AlignedCapture>,
+    /// Maximum entries in `capture_ring` before auto-disarm. Set by
+    /// `arm_capture_ring`. Zero means the ring is disarmed.
+    pub capture_ring_limit: usize,
+
+    // ── Phase 7F.4 runtime BCH-t override (2026-04-14) ──
+    /// When `Some(n)`, the decoder rejects any BCH-corrected NID
+    /// whose `n_errors > n`. When `None`, the default `T_MAX_ERRORS`
+    /// (11) threshold is used.
+    pub bch_t_override: Option<u32>,
+    /// Phase 7F.5 (2026-04-14) per-decoder sync correlator
+    /// threshold override. When `Some(n)`, this decoder instance
+    /// uses `n` as its Hamming-distance cutoff for sync hits
+    /// regardless of `RUNTIME_SYNC_THRESHOLD`. Lets us tighten the
+    /// traffic-side decoder (where noise between real LDU frames
+    /// generates sync false-positives that flood the framer) while
+    /// leaving the control-side decoder permissive enough to catch
+    /// its marginal TSBKs. Tuned via `/api/sync_tune?side=traffic&value=N`.
+    pub sync_threshold_override: Option<u32>,
+
     /// System identity
     pub system: SystemIdentity,
     /// Frequency band table (from IDEN_UP messages)
@@ -592,6 +624,11 @@ impl ControlChannelDecoder {
             sync_distance_hist: [0; 25],
             aligned_capture_armed: false,
             aligned_capture: None,
+            capture_ring_armed: false,
+            capture_ring: std::collections::VecDeque::new(),
+            capture_ring_limit: 0,
+            bch_t_override: None,
+            sync_threshold_override: None,
             capture_in_flight: None,
             system: SystemIdentity::default(),
             bands: HashMap::new(),
@@ -820,6 +857,70 @@ impl ControlChannelDecoder {
     /// and reported per-second rates that conflated lifetime average
     /// with the 30-second post-reset window. This method clears
     /// everything.
+    /// Phase 7F.1 (2026-04-14): reset ONLY the framer state machine,
+    /// preserving cumulative counters. Called by the traffic-channel
+    /// grant follower on every retune so the decoder doesn't carry
+    /// `ReadingNid` / `ReadingDataUnit` state across a frequency
+    /// change (which was producing misaligned frame fetches on the
+    /// new channel -- explains the "robotic audio on most calls,
+    /// clear audio on one in twenty" signature where occasional
+    /// retunes happened to land on the right bit boundary).
+    ///
+    /// Distinct from `reset_diagnostics()` which zeroes counters
+    /// without touching framer state. Both are callable; neither
+    /// touches the installed voice handler, event tx, or the
+    /// per-TG encryption history on the forwarder.
+    /// Phase 7F.4 (2026-04-14): arm the NID batch capture ring.
+    /// Clears any previous contents and enables capture up to
+    /// `limit` entries (hard ceiling 1024). Called by
+    /// `/api/nid_capture?arm=1&limit=N`.
+    pub fn arm_capture_ring(&mut self, limit: usize) {
+        self.capture_ring.clear();
+        self.capture_ring_limit = limit.min(1024);
+        self.capture_ring_armed = self.capture_ring_limit > 0;
+    }
+
+    /// Snapshot the current ring contents without draining. Caller
+    /// typically clones the Vec and pushes it into JSON. Returns an
+    /// empty Vec if no captures yet.
+    pub fn snapshot_capture_ring(&self) -> Vec<AlignedCapture> {
+        self.capture_ring.iter().cloned().collect()
+    }
+
+    /// Drain the ring and disarm. Called by
+    /// `/api/nid_capture?clear=1`.
+    pub fn drain_capture_ring(&mut self) -> Vec<AlignedCapture> {
+        let out = self.capture_ring.drain(..).collect();
+        self.capture_ring_armed = false;
+        self.capture_ring_limit = 0;
+        out
+    }
+
+    /// Phase 7F.4 runtime BCH-t tuner. `None` restores the default
+    /// (T_MAX_ERRORS=11). `Some(n)` rejects any BCH decode whose
+    /// `n_errors > n`, regardless of what the ML codebook search
+    /// returned. Lets `/api/bch_t` sweep the rejection threshold
+    /// live without reflashing.
+    pub fn set_bch_t_override(&mut self, t: Option<u32>) {
+        self.bch_t_override = t;
+    }
+
+    /// Phase 7F.5 per-decoder sync threshold setter. `None` falls
+    /// back to `RUNTIME_SYNC_THRESHOLD` (the global). `Some(n)`
+    /// forces this decoder to reject any sync hit with
+    /// distance > n.
+    pub fn set_sync_threshold_override(&mut self, t: Option<u32>) {
+        self.sync_threshold_override = t;
+    }
+
+    pub fn reset_framer_state(&mut self) {
+        self.state = DecoderState::Hunting;
+        self.sync_register = 0;
+        self.du_buffer.clear();
+        self.du_expected_len = 0;
+        self.tsdu_blocks_decoded = 0;
+    }
+
     pub fn reset_diagnostics(&mut self) {
         // NID/TSBK pipeline counters
         self.nid_attempts = 0;
@@ -979,8 +1080,17 @@ impl ControlChannelDecoder {
                     let bucket = (distance as usize).min(24);
                     self.sync_distance_hist[bucket] += 1;
                 }
-                let runtime_threshold = RUNTIME_SYNC_THRESHOLD
-                    .load(std::sync::atomic::Ordering::Relaxed);
+                // Phase 7F.5: per-decoder override takes precedence
+                // over the global runtime threshold. Lets us tighten
+                // the traffic-side decoder (where noise between real
+                // LDU frames generates sync false-positives) while
+                // leaving control-side permissive for marginal TSBK
+                // recovery.
+                let runtime_threshold = self.sync_threshold_override
+                    .unwrap_or_else(|| {
+                        RUNTIME_SYNC_THRESHOLD
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                    });
                 if distance <= SYNC_NEAR_LOG_THRESHOLD
                     && distance > runtime_threshold
                     && self.dibit_count >= 24
@@ -1005,10 +1115,11 @@ impl ControlChannelDecoder {
                         self.sync_hits, distance, self.total_dibits,
                     );
 
-                    // Phase 6F.2h: if armed, start a capture. Snapshot
-                    // the 24 sync dibits from the sync_register and
-                    // begin accumulating raw NID dibits.
-                    if self.aligned_capture_armed {
+                    // Phase 6F.2h + Phase 7F.4: if EITHER the one-shot
+                    // aligned capture OR the batch ring is armed, start
+                    // an in-flight capture so both paths can populate
+                    // from the same source.
+                    if self.aligned_capture_armed || self.capture_ring_armed {
                         let mut sync_d = Vec::with_capacity(24);
                         for x in 0..24 {
                             let shift = (23 - x) * 2;
@@ -1060,14 +1171,36 @@ impl ControlChannelDecoder {
                 let new_count = dibits_read + 1;
 
                 if new_count >= NID_TRANSMITTED_DIBITS {
-                    // NID complete — decode NAC and DUID. The DUID is
-                    // currently hardcoded to 0x7 (TSDU) inside decode_nid
-                    // because the BCH(64,16) NID FEC is still a stub.
-                    // `raw_duid` is the value before the hardcode, kept
-                    // here for the diagnostic histogram.
-                    let (nac_raw, duid_raw, on_air_duid) =
-                        match GolayDecoder::decode_nid(new_bits) {
-                            Some(v) => v,
+                    // NID complete. Phase 7F.4: call the underlying
+                    // ML decoder directly so we get `n_errors` back,
+                    // then apply the runtime `bch_t_override` if set.
+                    // The standard `GolayDecoder::decode_nid` wrapper
+                    // discards `n_errors`, which we need for both
+                    // the tunable rejection threshold and the ring
+                    // capture's per-entry reporting.
+                    let on_air_duid_raw =
+                        ((new_bits >> 48) & 0xF) as u8;
+                    let bch_result =
+                        crate::lsm::nid_fec::decode_nid(new_bits);
+                    // Apply runtime tolerance threshold (None == default
+                    // T_MAX_ERRORS=11). If `n_errors` exceeds, reject.
+                    let bch_result = match bch_result {
+                        Some(d) => {
+                            let limit = self.bch_t_override
+                                .unwrap_or(crate::lsm::nid_fec::T_MAX_ERRORS);
+                            if d.n_errors as u32 > limit {
+                                None
+                            } else {
+                                Some(d)
+                            }
+                        }
+                        None => None,
+                    };
+
+                    let (nac_raw, duid_raw, on_air_duid, n_errors) =
+                        match bch_result {
+                            Some(d) => (d.nac, d.duid, on_air_duid_raw,
+                                        d.n_errors),
                             None => {
                                 self.nid_decode_failures += 1;
                                 tracing::info!(
@@ -1075,6 +1208,36 @@ impl ControlChannelDecoder {
                                     "NID decode FAILED (raw=0x{:016X}) -> Hunting",
                                     new_bits,
                                 );
+                                // Phase 7F.4: push a ring entry for
+                                // BCH rejects BEFORE consuming the
+                                // in-flight capture for the one-shot
+                                // path. Both paths can fire.
+                                if self.capture_ring_armed {
+                                    let entry = self.capture_in_flight
+                                        .as_ref()
+                                        .map(|cap| AlignedCapture {
+                                            sync_dibits: cap.sync_dibits.clone(),
+                                            sync_distance: cap.sync_distance,
+                                            raw_nid_dibits: cap.raw_nid_dibits.clone(),
+                                            nid_bits: new_bits,
+                                            bch_nac: None,
+                                            bch_duid: None,
+                                            raw_duid: on_air_duid_raw,
+                                            raw_body_dibits: Vec::new(),
+                                            trellis_dibits: Vec::new(),
+                                            tsbk_bytes: Vec::new(),
+                                            crc_result: "nid_bch_reject".to_string(),
+                                            total_dibits_at_capture: cap.total_dibits_at_capture,
+                                        });
+                                    if let Some(e) = entry {
+                                        if self.capture_ring.len() < self.capture_ring_limit {
+                                            self.capture_ring.push_back(e);
+                                        }
+                                        if self.capture_ring.len() >= self.capture_ring_limit {
+                                            self.capture_ring_armed = false;
+                                        }
+                                    }
+                                }
                                 // Phase 6F.2h: finalize the in-flight
                                 // capture as a BCH-reject snapshot.
                                 if let Some(cap) = self.capture_in_flight.take() {
@@ -1085,7 +1248,7 @@ impl ControlChannelDecoder {
                                         nid_bits: new_bits,
                                         bch_nac: None,
                                         bch_duid: None,
-                                        raw_duid: 0,
+                                        raw_duid: on_air_duid_raw,
                                         raw_body_dibits: Vec::new(),
                                         trellis_dibits: Vec::new(),
                                         tsbk_bytes: Vec::new(),
@@ -1099,6 +1262,7 @@ impl ControlChannelDecoder {
                                 return;
                             }
                         };
+                    let _ = n_errors; // reserved for future telemetry
 
                     // Track the actual on-air DUID distribution. Useful
                     // for confirming the BCH-FEC hypothesis empirically:
@@ -1123,6 +1287,37 @@ impl ControlChannelDecoder {
                             cap.bch_nac = Some(nac_raw);
                             cap.bch_duid = Some(duid_raw);
                             cap.raw_duid = on_air_duid;
+                        }
+
+                        // Phase 7F.4: push a ring entry with the
+                        // BCH-success fields. The trellis/TSBK fields
+                        // stay empty -- the ring is NID-only, which
+                        // is what the DUID sweep analysis needs.
+                        if self.capture_ring_armed {
+                            let entry = self.capture_in_flight
+                                .as_ref()
+                                .map(|cap| AlignedCapture {
+                                    sync_dibits: cap.sync_dibits.clone(),
+                                    sync_distance: cap.sync_distance,
+                                    raw_nid_dibits: cap.raw_nid_dibits.clone(),
+                                    nid_bits: new_bits,
+                                    bch_nac: Some(nac_raw),
+                                    bch_duid: Some(duid_raw),
+                                    raw_duid: on_air_duid,
+                                    raw_body_dibits: Vec::new(),
+                                    trellis_dibits: Vec::new(),
+                                    tsbk_bytes: Vec::new(),
+                                    crc_result: "nid_ok".to_string(),
+                                    total_dibits_at_capture: cap.total_dibits_at_capture,
+                                });
+                            if let Some(e) = entry {
+                                if self.capture_ring.len() < self.capture_ring_limit {
+                                    self.capture_ring.push_back(e);
+                                }
+                                if self.capture_ring.len() >= self.capture_ring_limit {
+                                    self.capture_ring_armed = false;
+                                }
+                            }
                         }
 
                         let expected_len = duid.length_dibits();

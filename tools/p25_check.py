@@ -15,17 +15,22 @@ different target.
 Endpoints exercised:
     GET /api/system           -- build tag, NAC/WACN/RFSS/SITE
     GET /api/stats            -- basic decode stats + gain/RSSI
-    GET /api/decoder_compare  -- pipeline counters
+    GET /api/decoder_compare  -- Phase 9 3-column pipeline counters
     GET /api/tsbk_opcodes     -- per-opcode + per-block-position hist
     GET /api/recent_tsbks     -- newest 50 TSBKs with TSBK1/2/3 labels
     GET /api/bands            -- frequency band table
     GET /api/grants           -- active voice grants
-    GET /api/lsm              -- Phase 6D LSM decoder stats
     GET /api/hdl_lsm          -- PL HDL LSM chain stats + NID ring
     GET /api/irq_stats        -- per-source IRQ counters
     GET /api/traffic          -- Phase 7 traffic channel + IMBE stats
     GET /api/lsm_control      -- LSM control register state
     GET /api/sync_tune        -- sync distance histogram + threshold
+
+Phase 9 retirement (2026-04-15): `/api/lsm` (Phase 6D software LSM
+pipeline stats) was removed. The `ps_iq_lsm` + `ps_phase6d` sections
+of `/api/decoder_compare` are gone. The HDL LSM chain is the single
+PL-side source of truth now -- use `/api/hdl_lsm` for everything
+that used to come from `/api/lsm`.
 
 Exit code: 0 if every acceptance check passes, 1 otherwise. Lets you
 shove this in a `while sleep 30; do ...` loop on flash + watch.
@@ -158,46 +163,36 @@ def main() -> int:
        bands_known >= 6)
     kv("active_grants", f"{active_grants} (depends on call activity)")
 
-    # ── /api/decoder_compare → ps_iq_lsm slice (6F.9+) ──
-    banner("IQ-LSM decoder (Phase 6D soft sync -> TSBK, 6F.9+)")
-    iq = dc.get("ps_iq_lsm")
-    if iq is None:
-        print(f"  {DIM}(ps_iq_lsm not in response -- pre-6F.9 build?){RESET}")
+    # ── /api/decoder_compare → pl_hdl slice (Phase 9) ──
+    banner("PL HDL LSM chain (from /api/decoder_compare → pl_hdl)")
+    pl = dc.get("pl_hdl")
+    if pl is None:
+        print(f"  {DIM}(pl_hdl not in response -- pre-Phase-9 build?){RESET}")
     else:
-        iq_tsdu = iq.get("tsdu_attempts", 0)
-        iq_blocks = iq.get("tsbk_block_attempts", 0)
-        iq_crc_ok = iq.get("tsbk_crc_ok", 0)
-        iq_nid_ok = iq.get("nid_decoded_ok", 0)
-        iq_nid_att = iq.get("nid_attempts", 0)
-        iq_msgs = iq.get("messages", 0)
-        iq_bands = iq.get("bands_known", 0)
-        iq_grants = iq.get("active_grants", 0)
-        iq_tsdu_per_s = iq_tsdu / max(seconds, 1.0)
-        iq_block_per_s = iq_blocks / max(seconds, 1.0)
-        iq_crc_per_s = iq_crc_ok / max(seconds, 1.0)
-        iq_nid_pct = 100.0 * iq_nid_ok / max(iq_nid_att, 1)
-        iq_crc_pct = 100.0 * iq_crc_ok / max(iq_blocks, 1)
+        pl_total = pl.get("total_nids", 0)
+        pl_valid = pl.get("valid_nids", 0)
+        pl_pct = pl.get("valid_pct", 0.0)
+        pl_fail = pl_total - pl_valid
+        pl_drop = pl.get("drop_count", 0)
+        pl_pll = pl.get("pll_dbg", 0)
+        pl_sp = pl.get("sp_dbg", 0)
+        pl_sd = pl.get("sync_distance", "--")
+        pl_d_ovf = pl.get("dibit_overflow_ticks", 0)
+        pl_i_ovf = pl.get("iq_overflow_ticks", 0)
 
-        # 6F.10: compare CRC-OK rates instead of the saturated
-        # recent_messages ring count.
-        ratio = iq_crc_per_s / max(crc_ok_per_sec, 0.001)
-        combined_crc_per_s = crc_ok_per_sec + iq_crc_per_s
-
-        kv("nid_attempts", iq_nid_att)
-        kv("nid_decoded_ok", f"{iq_nid_ok} ({iq_nid_pct:.1f}%)")
-        kv("tsdu_attempts", f"{iq_tsdu} ({iq_tsdu_per_s:.2f}/s)")
-        kv("tsbk_block_attempts", f"{iq_blocks} ({iq_block_per_s:.2f}/s)")
-        kv("tsbk_crc_ok",
-           f"{iq_crc_ok} ({iq_crc_pct:.1f}% pass, {iq_crc_per_s:.2f}/s)")
-        kv("recent_msgs ring", f"{iq_msgs}")
-        kv("bands_known", iq_bands)
-        kv("active_grants", iq_grants)
-        kv("vs ps_lsm CRC OK/s",
-           f"{ratio:.2f}x ({crc_ok_per_sec:.2f} -> {iq_crc_per_s:.2f})",
-           ratio >= 0.5)
-        kv("COMBINED CRC OK/s",
-           f"{combined_crc_per_s:.2f}/s (target >= 30/s)",
-           combined_crc_per_s >= 30.0)
+        kv("winner NAC", pl.get("winner_nac", "--"))
+        kv("total NIDs (HDL sync hits)", f"{pl_total}")
+        kv("valid NIDs (BCH dist<=11)",
+           f"{pl_valid} ({pl_pct:.1f}%)",
+           pl_pct >= 75.0)
+        kv("NID BCH failures", pl_fail)
+        kv("NID drop count", pl_drop, pl_drop == 0)
+        kv("live PLL register", pl_pll)
+        kv("live sample-point register", pl_sp)
+        kv("live sync distance", pl_sd)
+        kv("overflow ticks",
+           f"dibit={pl_d_ovf} iq={pl_i_ovf}",
+           pl_d_ovf == 0)
 
     # ── /api/lsm_dibit_dump  (sync distance histogram, 6F.6+) ──
     banner("Sync distance histogram (6F.6+)")
@@ -318,23 +313,8 @@ def main() -> int:
     kv("rx_gain_db", f"{st.get('rx_gain_db', 0):.1f} dB")
     kv("rx_rssi_db", f"{st.get('rx_rssi_db', 0):.2f} dB")
 
-    # ── /api/lsm ──
-    banner("LSM decoder (/api/lsm)")
-    lsm = fetch(target, "/api/lsm")
-    lsm_up = lsm.get("uptime_secs", 0)
-    lsm_running = lsm.get("running", False)
-    kv("running", lsm_running, lsm_running)
-    kv("uptime", f"{lsm_up}s")
-    kv("wakeups", lsm.get("wakeups"))
-    kv("IQ samples", f"{lsm.get('iq_samples', 0):,} ({lsm.get('iq_samples_per_sec', 0):.0f}/s)")
-    kv("dibits", f"{lsm.get('dibits', 0):,} ({lsm.get('dibits_per_sec', 0):.0f}/s)")
-    kv("hard / soft syncs", f"{lsm.get('hard_events', 0):,} / {lsm.get('soft_events', 0):,}")
-    kv("overflow resets", lsm.get("overflow_resets", 0),
-       lsm.get("overflow_resets", 0) == 0)
-    ls = lsm.get("last_sync", {})
-    kv("last sync", f"NAC={ls.get('nac')} DUID={ls.get('duid')} "
-       f"FEC={'OK' if ls.get('fec_corrected') else 'FAIL'} "
-       f"({ls.get('age_ms', '?')}ms ago)")
+    # Phase 9 retirement: /api/lsm (Phase 6D software pipeline stats)
+    # was removed. Use /api/hdl_lsm below for PL-side LSM health.
 
     # ── /api/hdl_lsm ──
     banner("HDL LSM chain (/api/hdl_lsm)")

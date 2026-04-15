@@ -205,6 +205,11 @@ class LsmPllUpdateLinearised(Elaboratable):
         self.q_sym_in = Signal(signed(demod_width))
         self.dibit_in = Signal(2)
         self.symbol_strobe = Signal()
+        # Phase 8A: runtime reset. One-cycle pulse clears the PLL
+        # accumulator + pipeline registers back to init. Wired in
+        # `p25_top.py` from `lsm_control.lsm_reset` (W1P). See
+        # `doc/changes/038_phase8_runtime_reset.md`.
+        self.reset_in = Signal()
 
         # ── Outputs ─────────────────────────────────────────────
         self.pll_out = Signal(signed(pll_width), reset_less=True)
@@ -331,6 +336,25 @@ class LsmPllUpdateLinearised(Elaboratable):
                 self.pll_strobe.eq(1),
             ]
 
+        # ── Phase 8A runtime reset override ─────────────────────
+        # A 1-cycle `reset_in` pulse clears the PLL accumulator and
+        # the pipeline registers. Last-assignment-wins in m.d.sync
+        # makes this an override of any update in flight this cycle.
+        # The PS protocol (p25-httpd retune path) disables the chain
+        # a few sync cycles before pulsing reset, so no new
+        # symbol_strobe is propagating through the pipeline when
+        # this fires — we only need to clear the persistent state.
+        with m.If(self.reset_in):
+            m.d.sync += [
+                pll_reg.eq(0),
+                self.pll_out.eq(0),
+                self.pll_strobe.eq(0),
+                raw_clamped_q.eq(0),
+                stage1_strobe.eq(0),
+                product.eq(0),
+                stage2_strobe.eq(0),
+            ]
+
         return m
 
 
@@ -385,6 +409,8 @@ class LsmPllUpdate(Elaboratable):
         self.q_sym_in = Signal(signed(demod_width))
         self.dibit_in = Signal(2)
         self.symbol_strobe = Signal()
+        # Phase 8A: runtime reset. See LsmPllUpdateLinearised above.
+        self.reset_in = Signal()
 
         # ── Outputs ─────────────────────────────────────────────
         self.pll_out = Signal(signed(pll_width), reset_less=True)
@@ -559,6 +585,26 @@ class LsmPllUpdate(Elaboratable):
                 pll_reg.eq(new_pll_clamped),
                 self.pll_out.eq(new_pll_clamped),
                 self.pll_strobe.eq(1),
+            ]
+
+        # ── Phase 8A runtime reset override ─────────────────────
+        # Clear the persistent PLL accumulator + all post-CORDIC
+        # pipeline registers. The CORDIC submodule itself has no
+        # reset pin (yet) but its 16-cycle pipeline drains naturally
+        # once upstream symbol_strobe stops firing, and the PS
+        # protocol guarantees that drain before it pulses reset.
+        with m.If(self.reset_in):
+            m.d.sync += [
+                pll_reg.eq(0),
+                self.pll_out.eq(0),
+                self.pll_strobe.eq(0),
+                pending_skip.eq(0),
+                clamped_angle_q.eq(0),
+                stage1_strobe.eq(0),
+                stage1_skip.eq(0),
+                product.eq(0),
+                stage2_strobe.eq(0),
+                stage2_skip.eq(0),
             ]
 
         return m

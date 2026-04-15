@@ -72,6 +72,15 @@ pub struct TrafficManager {
     pub retunes: u64,
     /// Wall-clock instant of the most recent retune.
     pub last_retune_at: Option<Instant>,
+    /// Grants the follower refused to lock onto because the call was
+    /// flagged encrypted (either via `service_options.encrypted` on the
+    /// TSBK or via the persistent encrypted-TG history).  Counts only
+    /// the "Idle -> would-be-new-lock" rejects; refreshes for a TG the
+    /// follower is already tracking fall through unchanged so the
+    /// locked call doesn't get interrupted.  Added 2026-04-14 after the
+    /// follower kept sticky-locking on TG 402 (encrypted) and starving
+    /// the non-encrypted grants on the same site.
+    pub grants_rejected_encrypted: u64,
 
     // ── Phase 7A.2: NID/DUID dispatch + post-TDU hold window ──────────
     //
@@ -153,6 +162,7 @@ impl TrafficManager {
             grants_seen: 0,
             retunes: 0,
             last_retune_at: None,
+            grants_rejected_encrypted: 0,
             // Phase 7A.2: post-TDU hold window. 2000 ms matches
             // SDRTrunk's STALE_EVENT_THRESHOLD_MS / the post-TDU
             // hold timer in P25TrafficChannelManager.processP1TrafficCallEnd().
@@ -306,6 +316,21 @@ impl TrafficManager {
         true // DDC retune needed
     }
 
+    /// Phase 7F.2 (2026-04-14): synchronous release path that bypasses
+    /// the `call_timeout_ms` / post-TDU-hold timers. Used by the
+    /// follower when a mid-call encryption detection forces us to
+    /// drop the lock immediately -- waiting the full 2 s call-timeout
+    /// lets encrypted LDUs keep flowing through the vocoder (where
+    /// they get skipped as garbage, not audio).
+    ///
+    /// Behaviour: state -> Idle, post-TDU hold cleared. Counters are
+    /// preserved. Caller is responsible for turning off demod_enable
+    /// on the FPGA core.
+    pub fn force_idle(&mut self) {
+        self.state = TrafficState::Idle;
+        self.post_tdu_hold_until = None;
+    }
+
     /// Called when we detect frame sync on the traffic channel
     pub fn sync_acquired(&mut self) {
         if let TrafficState::Acquiring {
@@ -347,6 +372,15 @@ impl TrafficManager {
         self.last_nac = Some(nac);
         self.last_activity = now;
         self.post_tdu_hold_until = None;
+        // Phase 7F.4 (2026-04-14): fast promote Acquiring -> Active.
+        // Before this, promotion relied on a second same-TG grant
+        // arriving from the control channel -- on slow sites that
+        // could take 1-2 s after the retune, and the dashboard
+        // would show "Acquiring" for the entire lead-in of the call
+        // even though LDUs were already flowing. An HDU is
+        // unambiguous positive proof that the call is live on the
+        // traffic channel, so promote immediately.
+        self.promote_acquiring_to_active();
     }
 
     /// Phase 7A.2: TDU (Terminator, DUID 0x3) or TDU_LC (DUID 0xF)
@@ -385,6 +419,32 @@ impl TrafficManager {
         self.last_activity = now;
         // LDU resumes the conversation -- cancel the post-TDU hold.
         self.post_tdu_hold_until = None;
+        // Phase 7F.4: same fast promote as `hdu_received`. If we
+        // missed the HDU (short lead-in, HDU BCH rejected, or call
+        // mid-speech) the first LDU is still proof the call is live.
+        self.promote_acquiring_to_active();
+    }
+
+    /// Phase 7F.4 (2026-04-14): if we're in Acquiring, transition
+    /// to Active, preserving channel/talkgroup/frequency/started.
+    /// No-op if already Active or Idle. Called from the traffic-
+    /// side heartbeat's HDU/LDU dispatch so the UI doesn't sit on
+    /// "Acquiring" for the first 1-2 seconds of every call.
+    fn promote_acquiring_to_active(&mut self) {
+        if let TrafficState::Acquiring {
+            channel,
+            talkgroup,
+            frequency_hz,
+            started,
+        } = self.state.clone()
+        {
+            self.state = TrafficState::Active {
+                channel,
+                talkgroup,
+                frequency_hz,
+                started,
+            };
+        }
     }
 
     /// Returns the remaining post-TDU hold time in milliseconds, or
