@@ -58,12 +58,13 @@ pub struct AppState {
     /// captured into AppState at startup so `/api/reinit` can restore
     /// the chip + DDC to the boot state without a board reboot, and
     /// also live-retune individual fields (control_freq, rx_lo,
-    /// rf_bandwidth, gain_mode) without having to rebuild the firmware.
+    /// rf_bandwidth, gain_mode, gain_db) without rebuilding firmware.
     pub boot_rx_lo: u64,
     pub boot_sample_rate: u32,
     pub boot_rf_bandwidth: u32,
     pub boot_control_freq: u64,
     pub boot_lo_ppm: f64,
+    pub boot_hardwaregain: f64,
     /// Phase 6F.2: PL HDL LSM chain runtime stats, populated by the
     /// HDL LSM heartbeat task. Read by `/api/hdl_lsm`. Single source
     /// of truth for everything the heartbeat task observes about the
@@ -186,9 +187,9 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// Runtime front-end re-init + live retune handler.
 ///
 /// Re-runs the main.rs boot init sequence for BOTH the AD9361 IIO
-/// device (rx_lo, sample_rate, rf_bandwidth, gain_control_mode) AND
-/// the HDL control DDC NCO (control_freq → nco_offset), without a
-/// board reboot.
+/// device (rx_lo, sample_rate, rf_bandwidth, gain_control_mode,
+/// hardwaregain) AND the HDL control DDC NCO (control_freq →
+/// nco_offset), without a board reboot.
 ///
 /// With no query params, restores the exact boot defaults captured in
 /// `AppState` at startup. Any of the following optional query params
@@ -199,6 +200,9 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// - `sample_rate`    u32 Hz  — AD9361 sampling frequency
 /// - `rf_bandwidth`   u32 Hz  — AD9361 analog front-end bandwidth
 /// - `gain_mode`      str     — `manual|fast_attack|slow_attack|hybrid`
+/// - `gain_db`        f64 dB  — manual gain value (only meaningful when
+///                              gain_mode=manual; written after mode
+///                              switch so the mode change doesn't clobber it)
 ///
 /// The DDC NCO is always recomputed as
 /// `control_freq - rx_lo + (-lo_ppm * 1e-6 * rx_lo)` (matching
@@ -239,10 +243,17 @@ async fn get_reinit(
         .get("rf_bandwidth")
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(state.boot_rf_bandwidth);
+    // Default gain_mode follows the boot config: if main.rs set a
+    // manual hardwaregain, reinit with no params should restore
+    // Manual+boot_hardwaregain, not fall back to slow_attack.
     let gm_str = params
         .get("gain_mode")
         .map(String::as_str)
-        .unwrap_or("slow_attack");
+        .unwrap_or("manual");
+    let gain_db = params
+        .get("gain_db")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(state.boot_hardwaregain);
     let gain_mode = match gm_str {
         "manual" => crate::iio::GainMode::Manual,
         "fast_attack" => crate::iio::GainMode::FastAttack,
@@ -283,6 +294,14 @@ async fn get_reinit(
         Ok(_) => applied.push(format!("gain_control_mode={gm_str}")),
         Err(e) => errors.push(format!("gain_control_mode: {e}")),
     }
+    // Only write hardwaregain in manual mode. In AGC modes the chip
+    // would immediately override anything we wrote.
+    if matches!(gain_mode, crate::iio::GainMode::Manual) {
+        match state.ad9361.set_rx_gain(gain_db).await {
+            Ok(_) => applied.push(format!("hardwaregain={gain_db} dB")),
+            Err(e) => errors.push(format!("hardwaregain: {e}")),
+        }
+    }
 
     // DDC NCO is a synchronous FPGA register write, but ip_core is
     // behind an async Mutex to serialize register-bank access with
@@ -319,7 +338,8 @@ async fn get_reinit(
             "sample_rate":        state.boot_sample_rate,
             "rf_bandwidth":       state.boot_rf_bandwidth,
             "lo_ppm":             state.boot_lo_ppm,
-            "gain_control_mode":  "slow_attack",
+            "gain_control_mode":  "manual",
+            "hardwaregain":       state.boot_hardwaregain,
         },
         "readback": {
             "hardwaregain_db": readback_gain,

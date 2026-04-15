@@ -39,7 +39,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-15-phase8c.1-plus-api-reinit";
+pub const BUILD_TAG: &str = "2026-04-15-phase8c.1-manual-gain-60db";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -391,6 +391,53 @@ struct Args {
     /// and ppm=-0.54, that is +463 Hz added to the nominal NCO.
     #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     lo_ppm: f64,
+
+    /// AD9361 RX hardware gain in dB. Sets gain_control_mode=manual and
+    /// writes this value to `hardwaregain`.
+    ///
+    /// The Maia HDL LSM chain has no software AGC stage (SDRTrunk has one
+    /// at `P25P1DemodulatorLSM.java:157-172`, a per-symbol IIR that
+    /// normalises IQ magnitude to a fixed OBJECTIVE_MAGNITUDE, but we
+    /// don't). Our slicer has fixed integer decision thresholds, so the
+    /// analog front-end gain has to land in a narrow ±5-10 dB window
+    /// around the slicer's expected amplitude or the outer 4FSK symbols
+    /// get clipped (gain too high) or crowded into the inner bins (gain
+    /// too low). The AD9361 AGC in both `slow_attack` and `fast_attack`
+    /// modes does NOT converge to this window on a strong antenna --
+    /// slow_attack lands around 71-73 dB (too high), fast_attack lands
+    /// around 0 dB (too low). Manual gain at 55-60 dB on the Clay County
+    /// test target hits 96-97 % NID success, 72-75 % TSBK CRC pass,
+    /// 20+ msgs/sec -- above the doc 029 historical target.
+    ///
+    /// Default 60 dB was measured on 2026-04-15 with the user's current
+    /// antenna. Re-tune via this CLI arg or via `/api/reinit?gain_db=N`
+    /// if the antenna / site changes. A proper software AGC in the HDL
+    /// chain would eliminate the per-antenna tuning -- see
+    /// doc/changes/040_api_reinit_and_manual_gain.md.
+    #[arg(long, default_value_t = 60.0)]
+    hardwaregain: f64,
+
+    /// AD9361 RX analog front-end filter bandwidth in Hz.
+    ///
+    /// Default 4 MHz. The Maia DDC stage 1 FIR (48 taps, 200 kHz
+    /// cutoff, Kaiser β=6) does not have enough stopband rejection
+    /// at 500 kHz-2 MHz offset to handle wider rf_bandwidth in the
+    /// presence of adjacent P25 emitters (e.g. the Clay County site
+    /// has P25 carriers at 860.0 MHz and 859.35 MHz that leak through
+    /// stage 1 at rf_bandwidth >= 5 MHz and crush the control-channel
+    /// CRC pass rate from ~70 % to ~40 % at 5 MHz and ~15 % at 6-8 MHz.
+    /// See `project_p25_ddc_stage1_filter_weak.md` memory for the
+    /// live sweep measurement, and
+    /// `doc/changes/040_api_reinit_and_manual_gain.md` for the full
+    /// investigation.
+    ///
+    /// **This default will change to 8 MHz once the DDC stage 1 FIR
+    /// is reworked** with deeper adjacent-channel rejection (more
+    /// taps, higher β, or a pre-decimator before stage 1). Until then
+    /// 4 MHz is the only usable production value on sites with
+    /// adjacent emitters inside ±2 MHz of the control channel.
+    #[arg(long, default_value_t = 4_000_000)]
+    rf_bandwidth: u32,
 }
 
 #[tokio::main]
@@ -574,20 +621,37 @@ async fn main() -> anyhow::Result<()> {
         let (ip_core, interrupt_handler) = fpga::IpCore::take().await?;
         tracing::info!("FPGA IP core initialized");
 
-        // 2. Configure AD9361 via IIO
+        // 2. Configure AD9361 via IIO.
+        //
+        // Manual gain is deliberate: the Maia HDL LSM chain has no
+        // software AGC (unlike SDRTrunk's P25P1DemodulatorLSM, which
+        // does a per-symbol IIR normalisation to OBJECTIVE_MAGNITUDE at
+        // lines 157-172). Our slicer's decision thresholds are fixed
+        // integer values in gateware, so the analog front-end gain has
+        // to land in a narrow window (~55-60 dB on this antenna at the
+        // Clay County test target) or the outer 4FSK symbols get
+        // misclassified. AD9361 AGC in both slow_attack and fast_attack
+        // modes converges OUTSIDE that window on a strong antenna --
+        // slow_attack picks 71-73 dB, fast_attack picks ~0 dB. Both
+        // produce ~3 % CRC pass; manual 60 dB produces ~75 % CRC pass.
+        // See doc/changes/040 for the live measurement sweep.
         let ad9361 = iio::Ad9361::new().await?;
         ad9361.set_rx_lo_frequency(args.rx_lo).await?;
         ad9361
             .set_sampling_frequency(args.sample_rate as u32)
             .await?;
-        ad9361.set_rx_rf_bandwidth(5_000_000).await?;
+        ad9361.set_rx_rf_bandwidth(args.rf_bandwidth).await?;
         ad9361
-            .set_rx_gain_mode(iio::GainMode::SlowAttack)
+            .set_rx_gain_mode(iio::GainMode::Manual)
             .await?;
+        ad9361.set_rx_gain(args.hardwaregain).await?;
         tracing::info!(
-            "AD9361 configured: LO={} Hz, Fs={} Hz, BW=5 MHz, AGC=slow_attack",
+            "AD9361 configured: LO={} Hz, Fs={} Hz, BW={} Hz, \
+             gain_mode=manual, hardwaregain={} dB",
             args.rx_lo,
-            args.sample_rate
+            args.sample_rate,
+            args.rf_bandwidth,
+            args.hardwaregain,
         );
 
         // 3. Configure control channel DDC (FIR filters + decimation + NCO).
@@ -2653,9 +2717,10 @@ async fn main() -> anyhow::Result<()> {
         // restore the chip + DDC NCO without a board reboot.
         boot_rx_lo:        args.rx_lo,
         boot_sample_rate:  args.sample_rate as u32,
-        boot_rf_bandwidth: 5_000_000,
+        boot_rf_bandwidth: args.rf_bandwidth,
         boot_control_freq: args.control_freq,
         boot_lo_ppm:       args.lo_ppm,
+        boot_hardwaregain: args.hardwaregain,
         hdl_lsm: hdl_lsm.clone(),
         irq_stats: irq_stats.clone(),
         // Phase 7A.1: traffic-channel grant follower + dibit reader
