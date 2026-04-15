@@ -646,6 +646,27 @@ impl IpCore {
             .modify(|_, w| w.lsm_dc_block_enable().bit(enable));
     }
 
+    /// Enables or disables the Phase 10-prep per-symbol LSM AGC.
+    ///
+    /// When `true`, `LsmAgc` runs inside `LsmDemodLoop` between
+    /// `LsmTimingInterp` and `LsmDiffDemodSlicer`, normalising the
+    /// four interpolated samples' L2 magnitude to 1.0 via a
+    /// SDRTrunk-faithful fixed-point AGC loop (sqrt + division +
+    /// 0.05 IIR lerp + asymmetric clamp at 500). When `false`,
+    /// the AGC is bypassed and samples pass through unchanged.
+    ///
+    /// Production code should always set this to `true` after
+    /// boot. The runtime knob exists so we can A/B the AGC
+    /// on-target against the pre-AGC dibit stream.
+    ///
+    /// Gain state is debug-readable via the `lsm_agc_debug`
+    /// register (`agc_gain_dbg` + `agc_mag_dbg`).
+    pub fn set_lsm_agc_enable(&self, enable: bool) {
+        self.registers
+            .lsm_control()
+            .modify(|_, w| w.lsm_agc_enable().bit(enable));
+    }
+
     /// Phase 8A: pulse the control-side LSM chain runtime reset.
     ///
     /// Writes `1` to the W1P `lsm_reset` field in `lsm_control`,
@@ -842,6 +863,16 @@ impl IpCore {
         self.registers
             .traffic_lsm_control()
             .modify(|_, w| w.traffic_lsm_dc_block_enable().bit(enable));
+    }
+
+    /// Enables or disables the Phase 10-prep per-symbol LSM AGC
+    /// on the traffic chain. Mirrors `set_lsm_agc_enable` on the
+    /// control side. Production code should always set this to
+    /// `true` after boot.
+    pub fn set_traffic_lsm_agc_enable(&self, enable: bool) {
+        self.registers
+            .traffic_lsm_control()
+            .modify(|_, w| w.traffic_lsm_agc_enable().bit(enable));
     }
 
     /// Phase 8A: pulse the traffic-side LSM chain runtime reset.
@@ -1149,47 +1180,90 @@ fn freq_to_nco(frequency_hz: f64, sample_rate_hz: f64) -> u32 {
 
 // ── P25 DDC filter coefficients ──────────────────────────────────────
 //
-// 3-stage FIR decimation: 8 MSPS -> 62.5 kSPS (128x = 16 x 4 x 2)
+// 3-stage FIR decimation: 8 MSPS -> 62.5 kSPS (/128 = /4 /4 /8)
 // P25 Phase 1 channel: 12.5 kHz (±6.25 kHz passband)
-// Output: 62.5 kSPS = 13.0 samples/symbol at 4800 baud
+// Output: 62.5 kSPS = 13 samples/symbol @ 4800 baud
 //
-// Designed with scipy.signal.firwin, Kaiser window, 18-bit quantized.
+// Phase 10-prep redesign (see tools/p25_ddc_filter_design.py and
+// doc/changes/040_ddc_filter_redesign.txt). Previous /16 /4 /2 split
+// with 48 Kaiser beta=6 taps on stage 1 had a transition band wide
+// enough that P25 adjacent-site emitters at ±500 kHz to ±2 MHz
+// only saw 30-50 dB of rejection before being mixed into the
+// control-channel output band, collapsing CRC pass rates at
+// rf_bandwidth >= 5 MHz.
+//
+// New plan: Parks-McClellan equiripple filters on a /4 /4 /8 split
+// so each stage's transition band fits comfortably in the tap
+// budget while anchoring the stopband at the per-stage output
+// Nyquist. Verified cascaded response meets -90+ dB across the
+// full 500 kHz - 4 MHz adjacent range at 0.05 dB passband ripple.
+//
+// Stage 1 (FIR4DSP):  48 taps, pb=300 kHz,  sb=1000 kHz, -93 dB
+// Stage 2 (FIR2DSP):  56 taps, pb=100 kHz,  sb=250  kHz, -93 dB
+// Stage 3 (FIR4DSP): 104 taps, pb=10  kHz,  sb=31   kHz, -90 dB
+//
+// All three tap arrays fit cleanly: stage 1 and stage 3 FIR4DSPs
+// have 256-slot coefficient RAMs each; stage 2 FIR2DSP has 128
+// slots. The operations_minus_one / odd_operations fields are
+// computed at runtime by load_fir1/2/3 from coefficients.len() /
+// decimation, so no other code in this file needs to change when
+// the tap arrays are edited.
+//
+// Close-in adjacents at +/-12.5 / +/-25 kHz intentionally land in
+// stage 3's transition band at -0.6 / -25 dB -- they are finished
+// off by the downstream LsmFir LPF (83 taps, passband 7250 Hz,
+// stopband 8000 Hz, >100 dB) at 31.25 kSPS in the HDL LSM chain.
+// Splitting sharp close-in filtering between the DDC and the
+// LsmFir LPF keeps the stage-3 tap count manageable.
+//
+// To regenerate: `python tools/p25_ddc_filter_design.py`.
 
-const P25_DEC1: usize = 16;
+const P25_DEC1: usize = 4;
 const P25_DEC2: usize = 4;
-const P25_DEC3: usize = 2;
+const P25_DEC3: usize = 8;
 
-// Stage 1 (FIR4DSP): 48 taps, 200 kHz cutoff, Kaiser beta=6, >137 dB stopband
+// Stage 1 (FIR4DSP): 48 taps, pb=300 kHz, sb=1000 kHz,
+// -93 dB Parks-McClellan (fs = 8 MSPS, /4 -> 2 MSPS).
 #[rustfmt::skip]
 const P25_FIR1_COEFFS: &[i32] = &[
-    -277, -402, -419, -220, 325, 1372, 3086, 5640,
-    9190, 13870, 19769, 26920, 35285, 44750, 55123, 66131,
-    77436, 88647, 99339, 109082, 117460, 124103, 128712, 131071,
-    131071, 128712, 124103, 117460, 109082, 99339, 88647, 77436,
-    66131, 55123, 44750, 35285, 26920, 19769, 13870, 9190,
-    5640, 3086, 1372, 325, -220, -419, -402, -277,
+          8,      32,      79,     158,     264,     377,     457,     448,
+        287,     -69,    -623,   -1310,   -1985,   -2436,   -2411,   -1672,
+        -61,    2446,    5696,    9365,   12995,   16078,   18146,   18875,
+      18146,   16078,   12995,    9365,    5696,    2446,     -61,   -1672,
+      -2411,   -2436,   -1985,   -1310,    -623,     -69,     287,     448,
+        457,     377,     264,     158,      79,      32,       8,       0,
 ];
 
-// Stage 2 (FIR2DSP): 32 taps, 50 kHz cutoff, Kaiser beta=7, >140 dB stopband
+// Stage 2 (FIR2DSP): 56 taps, pb=100 kHz, sb=250 kHz,
+// -93 dB Parks-McClellan (fs = 2 MSPS, /4 -> 500 kSPS).
 #[rustfmt::skip]
 const P25_FIR2_COEFFS: &[i32] = &[
-    -25, 87, 530, 1287, 1841, 1156, -1803, -7068,
-    -12694, -14613, -7853, 11060, 41616, 78199, 111332, 131071,
-    131071, 111332, 78199, 41616, 11060, -7853, -14613, -12694,
-    -7068, -1803, 1156, 1841, 1287, 530, 87, -25,
+         -9,     -30,     -68,    -123,    -186,    -232,    -229,    -142,
+         50,     340,     675,     960,    1069,     877,     312,    -603,
+      -1718,   -2755,   -3345,   -3109,   -1751,     843,    4536,    8933,
+      13431,   17332,   19982,   20921,   19982,   17332,   13431,    8933,
+       4536,     843,   -1751,   -3109,   -3345,   -2755,   -1718,    -603,
+        312,     877,    1069,     960,     675,     340,      50,    -142,
+       -229,    -232,    -186,    -123,     -68,     -30,      -9,       0,
 ];
 
-// Stage 3 (FIR4DSP): 64 taps, 8 kHz cutoff, Kaiser beta=9, >166 dB stopband
+// Stage 3 (FIR4DSP): 104 taps, pb=10 kHz, sb=31.25 kHz,
+// -90 dB Parks-McClellan (fs = 500 kSPS, /8 -> 62.5 kSPS).
 #[rustfmt::skip]
 const P25_FIR3_COEFFS: &[i32] = &[
-    1, -8, -37, -92, -173, -258, -305, -250,
-    -21, 434, 1121, 1959, 2766, 3261, 3102, 1965,
-    -357, -3835, -8116, -12478, -15864, -17007, -14631, -7704,
-    4302, 21207, 42029, 65020, 87870, 108017, 123044, 131071,
-    131071, 123044, 108017, 87870, 65020, 42029, 21207, 4302,
-    -7704, -14631, -17007, -15864, -12478, -8116, -3835, -357,
-    1965, 3102, 3261, 2766, 1959, 1121, 434, -21,
-    -250, -305, -258, -173, -92, -37, -8, 1,
+         -2,       0,       1,       5,      10,      20,      32,      50,
+         72,      98,     128,     160,     193,     223,     246,     259,
+        258,     237,     193,     123,      25,    -101,    -252,    -425,
+       -611,    -800,    -980,   -1135,   -1248,   -1303,   -1281,   -1168,
+       -950,    -617,    -164,     409,    1096,    1884,    2756,    3687,
+       4649,    5610,    6536,    7391,    8144,    8764,    9226,    9512,
+       9608,    9512,    9226,    8764,    8144,    7391,    6536,    5610,
+       4649,    3687,    2756,    1884,    1096,     409,    -164,    -617,
+       -950,   -1168,   -1281,   -1303,   -1248,   -1135,    -980,    -800,
+       -611,    -425,    -252,    -101,      25,     123,     193,     237,
+        258,     259,     246,     223,     193,     160,     128,      98,
+         72,      50,      32,      20,      10,       5,       1,       0,
+         -2,       0,       0,       0,       0,       0,       0,       0,
 ];
 
 // ── Interrupt handler ────────────────────────────────────────────────

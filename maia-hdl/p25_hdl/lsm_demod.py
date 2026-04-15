@@ -143,6 +143,11 @@ class LsmDemod(Elaboratable):
         # a slow-varying ADC offset that does not change between
         # retunes and re-converges on its own in ~20 ms.
         self.reset_in = Signal()
+        # Phase 10-prep: per-symbol AGC enable. Passed through to
+        # the LsmDemodLoop submodule. Default high so a bitstream
+        # that doesn't drive this input still runs the AGC (the
+        # right behaviour for fishball7020_p25).
+        self.agc_enable = Signal(init=1)
 
         # ── Pass-through dibit stream ───────────────────────────
         self.dibit_out = Signal(2)
@@ -162,6 +167,12 @@ class LsmDemod(Elaboratable):
         # ── Debug taps from LsmDemodLoop ────────────────────────
         self.pll_dbg = Signal(signed(16))
         self.sample_point_dbg = Signal(signed(18))
+        # Phase 10-prep: AGC debug taps from LsmDemodLoop.agc.
+        # gain_dbg is the Q9.7 truncation of the Q9.11 gain
+        # register (range 0..500); mag_dbg is the most-recent
+        # L2 magnitude in Q1.15 (truncated to 16 bits).
+        self.agc_gain_dbg = Signal(16)
+        self.agc_mag_dbg = Signal(16)
 
     def elaborate(self, platform):
         m = Module()
@@ -182,6 +193,13 @@ class LsmDemod(Elaboratable):
         m.d.comb += [
             demod_loop.reset_in.eq(self.reset_in),
             nid_pipeline.reset_in.eq(self.reset_in),
+        ]
+
+        # Phase 10-prep: AGC enable + debug tap pass-through.
+        m.d.comb += [
+            demod_loop.agc_enable.eq(self.agc_enable),
+            self.agc_gain_dbg.eq(demod_loop.agc_gain_dbg),
+            self.agc_mag_dbg.eq(demod_loop.agc_mag_dbg),
         ]
 
         # ── Stage 0: per-channel DC blocking ───────────────────

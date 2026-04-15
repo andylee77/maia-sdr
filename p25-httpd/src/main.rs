@@ -39,7 +39,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-15-phase8c.1-manual-gain-60db";
+pub const BUILD_TAG: &str = "2026-04-15-phase10prep-lsm-agc-and-ddc-redesign";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -683,6 +683,12 @@ async fn main() -> anyhow::Result<()> {
         ip_core.set_lsm_enable(true);
         ip_core.set_lsm_dibit_dma_enable(true);
         ip_core.set_lsm_dc_block_enable(true);
+        // Phase 10-prep: turn on the per-symbol LSM AGC. Direct
+        // fixed-point port of SDRTrunk's P25P1DemodulatorLSM.java
+        // AGC (L2 sqrt magnitude, `req_gain = 1.0 / mag`, 0.05
+        // IIR lerp, asymmetric clamp at 500). See
+        // maia-hdl/p25_hdl/lsm_agc.py and doc/changes/040.
+        ip_core.set_lsm_agc_enable(true);
         // Read back lsm_control to confirm the bits actually stuck in the
         // register bank. If the readback disagrees with what we wrote we
         // have a register-bank wiring bug (rare; would surface as obvious
@@ -758,6 +764,13 @@ async fn main() -> anyhow::Result<()> {
         ip_core.set_traffic_lsm_enable(false);
         ip_core.set_traffic_lsm_dibit_dma_enable(true);
         ip_core.set_traffic_lsm_dc_block_enable(true);
+        // Phase 10-prep: arm the traffic-side per-symbol LSM AGC
+        // at boot (same SDRTrunk-faithful port as the control
+        // side above). The AGC stays armed across retunes; the
+        // `traffic_lsm_reset` pulse in `retune_traffic_chain`
+        // returns the gain register to GAIN_INIT (= 1.0) on every
+        // retune, matching the clean-cold-start semantics.
+        ip_core.set_traffic_lsm_agc_enable(true);
         let (tlsm_en_rb, tlsm_dma_en_rb, tlsm_dc_block_rb) =
             ip_core.traffic_lsm_control_readback();
         tracing::info!(

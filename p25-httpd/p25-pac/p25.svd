@@ -532,6 +532,12 @@
               <bitRange>[3:3]</bitRange>
               <access>read-write</access>
             </field>
+            <field>
+              <name>lsm_agc_enable</name>
+              <description>lsm_agc_enable</description>
+              <bitRange>[4:4]</bitRange>
+              <access>read-write</access>
+            </field>
           </fields>
         </register>
         <register>
@@ -659,6 +665,26 @@
           </fields>
         </register>
         <register>
+          <name>lsm_agc_debug</name>
+          <description>lsm_agc_debug</description>
+          <addressOffset>0xb8</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>agc_gain_dbg</name>
+              <description>agc_gain_dbg</description>
+              <bitRange>[15:0]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>agc_mag_dbg</name>
+              <description>agc_mag_dbg</description>
+              <bitRange>[31:16]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
           <name>traffic_lsm_control</name>
           <description>traffic_lsm_control</description>
           <addressOffset>0xc0</addressOffset>
@@ -687,6 +713,12 @@
               <description>traffic_lsm_reset</description>
               <bitRange>[3:3]</bitRange>
               <access>write-only</access>
+            </field>
+            <field>
+              <name>traffic_lsm_agc_enable</name>
+              <description>traffic_lsm_agc_enable</description>
+              <bitRange>[4:4]</bitRange>
+              <access>read-write</access>
             </field>
           </fields>
         </register>
@@ -809,6 +841,26 @@
             <field>
               <name>sample_point_dbg</name>
               <description>sample_point_dbg</description>
+              <bitRange>[31:16]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>traffic_lsm_agc_debug</name>
+          <description>traffic_lsm_agc_debug</description>
+          <addressOffset>0xd8</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>agc_gain_dbg</name>
+              <description>agc_gain_dbg</description>
+              <bitRange>[15:0]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>agc_mag_dbg</name>
+              <description>agc_mag_dbg</description>
               <bitRange>[31:16]</bitRange>
               <access>read-only</access>
             </field>

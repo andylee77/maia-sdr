@@ -353,6 +353,14 @@ class P25Core(Elaboratable):
                     # responsible for setting this to 1 in the
                     # same write that turns on lsm_enable.
                     Field('lsm_dc_block_enable', Access.RW, 1, 0),
+                    # Phase 10-prep: per-symbol AGC enable. Drives
+                    # `lsm_demod.agc_enable` (LsmAgc submodule,
+                    # inside LsmDemodLoop, between LsmTimingInterp
+                    # and LsmDiffDemodSlicer). Default 0 at reset
+                    # to match the convention of lsm_enable; PS
+                    # sets it to 1 alongside lsm_enable /
+                    # lsm_dc_block_enable. See `lsm_agc.py`.
+                    Field('lsm_agc_enable', Access.RW, 1, 0),
                 ]),
                 0b001: Register('lsm_status', [
                     Field('bch_busy', Access.R, 1, 0),
@@ -378,6 +386,20 @@ class P25Core(Elaboratable):
                 0b101: Register('lsm_debug', [
                     Field('pll_dbg', Access.R, 16, 0),
                     Field('sample_point_dbg', Access.R, 16, 0),
+                ]),
+                # Phase 10-prep: per-symbol AGC debug taps. Both
+                # fields are read-only and updated on every
+                # decision_strobe_out of LsmAgc (~4800 Hz).
+                #   agc_gain_dbg : Q9.7 truncation of the Q9.11
+                #                  gain register, range 0..500.
+                #                  Shows current AGC gain state.
+                #   agc_mag_dbg  : Q1.15 L2 magnitude of the
+                #                  most-recent current-symbol
+                #                  sample (pre-AGC), top 16 of
+                #                  the 17-bit sqrt output.
+                0b110: Register('lsm_agc_debug', [
+                    Field('agc_gain_dbg', Access.R, 16, 0),
+                    Field('agc_mag_dbg', Access.R, 16, 0),
                 ]),
             },
             3)
@@ -528,6 +550,12 @@ class P25Core(Elaboratable):
                     # acquisition starts from a clean cold-start.
                     # See doc/changes/038_phase8_runtime_reset.md.
                     Field('traffic_lsm_reset', Access.Wpulse, 1, 0),
+                    # Phase 10-prep: per-symbol AGC enable, mirrors
+                    # the control-side `lsm_agc_enable`. Default 0
+                    # at reset; PS sets it alongside
+                    # traffic_lsm_enable in the retune path. See
+                    # `lsm_agc.py`.
+                    Field('traffic_lsm_agc_enable', Access.RW, 1, 0),
                 ]),
                 0b001: Register('traffic_lsm_status', [
                     Field('bch_busy', Access.R, 1, 0),
@@ -553,6 +581,13 @@ class P25Core(Elaboratable):
                 0b101: Register('traffic_lsm_debug', [
                     Field('pll_dbg', Access.R, 16, 0),
                     Field('sample_point_dbg', Access.R, 16, 0),
+                ]),
+                # Phase 10-prep: traffic-side per-symbol AGC debug
+                # taps. Mirrors the control-side layout at slot
+                # 0b110. See `lsm_agc.py`.
+                0b110: Register('traffic_lsm_agc_debug', [
+                    Field('agc_gain_dbg', Access.R, 16, 0),
+                    Field('agc_mag_dbg', Access.R, 16, 0),
                 ]),
             },
             3)
@@ -916,6 +951,9 @@ class P25Core(Elaboratable):
             self.lsm_demod.strobe_in.eq(self.lsm_rrc.strobe_out),
             self.lsm_demod.dc_block_enable.eq(
                 self.lsm_registers['lsm_control']['lsm_dc_block_enable']),
+            # Phase 10-prep: per-symbol AGC enable.
+            self.lsm_demod.agc_enable.eq(
+                self.lsm_registers['lsm_control']['lsm_agc_enable']),
             # Phase 8A: runtime reset strobe. `lsm_reset` is a
             # W1P field, so the Register machinery gives us a
             # clean 1-sync-cycle pulse per PS write -- feed it
@@ -992,6 +1030,13 @@ class P25Core(Elaboratable):
             # trace -- still ~0.25 sample of precision.
             lsm_debug['sample_point_dbg'].eq(
                 self.lsm_demod.sample_point_dbg[2:]),
+        ]
+
+        # Phase 10-prep: per-symbol AGC debug taps.
+        lsm_agc_debug = self.lsm_registers['lsm_agc_debug']
+        m.d.comb += [
+            lsm_agc_debug['agc_gain_dbg'].eq(self.lsm_demod.agc_gain_dbg),
+            lsm_agc_debug['agc_mag_dbg'].eq(self.lsm_demod.agc_mag_dbg),
         ]
 
         # ── Traffic channel DDC + demod chain ─────────────────────────
@@ -1171,6 +1216,10 @@ class P25Core(Elaboratable):
             self.traffic_lsm_demod.dc_block_enable.eq(
                 self.traffic_lsm_registers[
                     'traffic_lsm_control']['traffic_lsm_dc_block_enable']),
+            # Phase 10-prep: per-symbol AGC enable (traffic side).
+            self.traffic_lsm_demod.agc_enable.eq(
+                self.traffic_lsm_registers[
+                    'traffic_lsm_control']['traffic_lsm_agc_enable']),
             # Phase 8A: runtime reset strobe for the traffic
             # chain. `traffic_lsm_reset` is W1P, so a PS write of
             # 1 gives us a clean 1-sync-cycle pulse that clears
@@ -1255,6 +1304,16 @@ class P25Core(Elaboratable):
             traffic_lsm_debug['pll_dbg'].eq(self.traffic_lsm_demod.pll_dbg),
             traffic_lsm_debug['sample_point_dbg'].eq(
                 self.traffic_lsm_demod.sample_point_dbg[2:]),
+        ]
+
+        # Phase 10-prep: traffic-side per-symbol AGC debug taps.
+        traffic_lsm_agc_debug = self.traffic_lsm_registers[
+            'traffic_lsm_agc_debug']
+        m.d.comb += [
+            traffic_lsm_agc_debug['agc_gain_dbg'].eq(
+                self.traffic_lsm_demod.agc_gain_dbg),
+            traffic_lsm_agc_debug['agc_mag_dbg'].eq(
+                self.traffic_lsm_demod.agc_mag_dbg),
         ]
 
         # ── Register crossbar ─────────────────────────────────────────

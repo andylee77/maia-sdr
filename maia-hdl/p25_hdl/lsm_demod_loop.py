@@ -48,18 +48,20 @@
 # scheduler. Resource budget has plenty of room (~10 BRAM18 spare
 # even after 6E.7 BCH FEC), so the simpler form wins.
 #
-# What 6E.6d does NOT do
-# ----------------------
-# - **No AGC.** The Rust loop's AGC scales the lerped IQ by 1/|z|
-#   before the diff demod. Skipping AGC means the diff demod
-#   output magnitude tracks the input magnitude (rather than
-#   normalising to ~1), and the PLL update's small-angle
-#   linearisation has a slightly variable effective loop gain.
-#   For the synthetic test fixture (|z| = 1) this is irrelevant;
-#   for real-world signals it's a robustness gap that can be
-#   closed in a follow-up sub-phase by adding a magnitude
-#   normaliser between LsmTimingInterp and LsmDiffDemodSlicer.
+# Phase 10-prep: AGC added
+# ------------------------
+# An `LsmAgc` submodule was added between LsmTimingInterp and
+# LsmDiffDemodSlicer (doc/changes/040_phase10_lsm_agc.md). It is a
+# direct fixed-point port of SDRTrunk's per-symbol AGC at
+# `P25P1DemodulatorLSM.java:157-172` — L2 magnitude via integer
+# sqrt, `required_gain = OBJECTIVE_MAGNITUDE / magnitude`, exact
+# 0.05 IIR lerp, asymmetric min clamps, applied to all four
+# interpolated samples before the diff demod. See `lsm_agc.py` for
+# the full algorithm and Q-format derivation. The original Phase
+# 6E.6d "no AGC" note below is obsolete.
 #
+# What 6E.6d did NOT do (historical — now addressed above)
+# --------------------------------------------------------
 # - **No `pre_curr` differential demod re-routing.** The Rust loop
 #   has a subtle: it computes diff demod against the
 #   *unrotated* prev sample, then rotates. The HDL does the same
@@ -74,6 +76,7 @@
 from amaranth import *
 
 from .lsm_timing_interp import LsmTimingInterp
+from .lsm_agc import LsmAgc
 from .lsm_diff_demod_slicer import LsmDiffDemodSlicer
 from .lsm_pll_rotate import LsmPllRotate
 from .lsm_gardner_ted import LsmGardnerTed
@@ -124,8 +127,13 @@ class LsmDemodLoop(Elaboratable):
         self.strobe_in = Signal()
         # Phase 8A: runtime reset. A 1-cycle pulse is propagated
         # to every stateful submodule in the closed-loop demod
-        # chain (timing, diff_demod, pll_update).
+        # chain (timing, agc, diff_demod, pll_update).
         self.reset_in = Signal()
+        # Phase 10-prep: per-symbol AGC enable. High (default) runs
+        # the SDRTrunk-faithful amplitude normaliser on the four
+        # timing-interpolated samples before the diff demod. Low
+        # bypasses the AGC (pass-through; gain register holds).
+        self.agc_enable = Signal(init=1)
 
         # ── Outputs ─────────────────────────────────────────────
         self.dibit_out = Signal(2, reset_less=True)
@@ -136,12 +144,17 @@ class LsmDemodLoop(Elaboratable):
         self.sample_point_dbg = Signal(signed(18), reset_less=True)
         self.i_sym_rot_dbg = Signal(signed(18), reset_less=True)
         self.q_sym_rot_dbg = Signal(signed(18), reset_less=True)
+        # Phase 10-prep: AGC debug taps exposed upstream for the
+        # `lsm_agc_debug` register. See lsm_agc.py.
+        self.agc_gain_dbg = Signal(16, reset_less=True)
+        self.agc_mag_dbg = Signal(16, reset_less=True)
 
     def elaborate(self, platform):
         m = Module()
 
         # ── Submodules ──────────────────────────────────────────
         m.submodules.timing = timing = LsmTimingInterp()
+        m.submodules.agc = agc = LsmAgc()
         m.submodules.diff_demod = diff_demod = LsmDiffDemodSlicer()
         m.submodules.rotate_mid = rotate_mid = LsmPllRotate()
         m.submodules.rotate_sym = rotate_sym = LsmPllRotate()
@@ -155,6 +168,7 @@ class LsmDemodLoop(Elaboratable):
         # ── Phase 8A runtime reset fan-out ──────────────────────
         m.d.comb += [
             timing.reset_in.eq(self.reset_in),
+            agc.reset_in.eq(self.reset_in),
             diff_demod.reset_in.eq(self.reset_in),
             pll_update.reset_in.eq(self.reset_in),
         ]
@@ -166,13 +180,29 @@ class LsmDemodLoop(Elaboratable):
             timing.strobe_in.eq(self.strobe_in),
         ]
 
+        # ── Stage 1b: per-symbol AGC on the four lerped samples ─
+        # Direct port of SDRTrunk's P25P1DemodulatorLSM.java lines
+        # 157-172. Adds ~48 sync cycles of latency inside the
+        # feedback loop, which is negligible vs the ~13000-cycle
+        # symbol period; loop stability is unaffected.
+        m.d.comb += [
+            agc.i_mid_in.eq(timing.i_mid_out),
+            agc.q_mid_in.eq(timing.q_mid_out),
+            agc.i_cur_in.eq(timing.i_cur_out),
+            agc.q_cur_in.eq(timing.q_cur_out),
+            agc.decision_strobe_in.eq(timing.decision_strobe),
+            agc.enable_in.eq(self.agc_enable),
+            self.agc_gain_dbg.eq(agc.gain_dbg),
+            self.agc_mag_dbg.eq(agc.mag_dbg),
+        ]
+
         # ── Stage 2: differential demod (per-symbol) ────────────
         m.d.comb += [
-            diff_demod.i_mid_in.eq(timing.i_mid_out),
-            diff_demod.q_mid_in.eq(timing.q_mid_out),
-            diff_demod.i_cur_in.eq(timing.i_cur_out),
-            diff_demod.q_cur_in.eq(timing.q_cur_out),
-            diff_demod.decision_strobe.eq(timing.decision_strobe),
+            diff_demod.i_mid_in.eq(agc.i_mid_out),
+            diff_demod.q_mid_in.eq(agc.q_mid_out),
+            diff_demod.i_cur_in.eq(agc.i_cur_out),
+            diff_demod.q_cur_in.eq(agc.q_cur_out),
+            diff_demod.decision_strobe.eq(agc.decision_strobe_out),
         ]
         # NOTE: diff_demod's own dibit_out is *not* used downstream.
         # We slice the rotated symbol value below.
