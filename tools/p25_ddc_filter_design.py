@@ -253,6 +253,38 @@ def quantise(taps: np.ndarray) -> list[int]:
     return q.tolist()
 
 
+def rescale_to_peak(taps: np.ndarray, target_peak: int = COEFF_MAX) -> np.ndarray:
+    """Rescale ``taps`` so that ``max(|quantised|)`` exactly equals
+    ``target_peak``. Matches the Kaiser-window convention used by the
+    original fpga.rs filter tables (peak tap = Q1.17 max = 131071),
+    which maximally uses the coefficient-RAM range and preserves the
+    ~17x / ~5x / ~8x per-stage DC gains that the downstream Maia DDC
+    MAC accumulator + macc_trunc was tuned for.
+
+    Without this rescaling the remez-output unit-DC-gain filters give
+    ~700x less cascaded signal through the DDC than the original
+    Kaiser filters did, starving the demod chain and causing the
+    LSM PLL to slip into saturation on the first decode cycle.
+    Observed as WNS-met but 0 % LSM NIDs / 55 % C4FM TSBK CRC on
+    the first Phase 10-prep flash (2026-04-15 09:58).
+
+    The rescale is a pure scalar multiplication so the frequency
+    response *shape* (stopband suppression, passband ripple,
+    transition width) is unchanged -- only the overall DC gain
+    shifts. Stopband attenuation numbers reported in the
+    design-time freqz check are therefore still valid in dB-below-
+    passband-peak terms.
+    """
+    scale = 1 << COEFF_FRAC
+    q = np.round(taps * scale)
+    current_peak = np.max(np.abs(q))
+    if current_peak == 0:
+        return taps
+    # Scale so the quantised peak lands exactly at target_peak.
+    factor = target_peak / current_peak
+    return taps * factor
+
+
 def cascaded_response(taps1, taps2, taps3, *, n_points=16384):
     """Compute the cascaded frequency response of the 3-stage DDC
     as seen at the AD9361 input rate. Each downstream filter is
@@ -338,6 +370,17 @@ def main():
     taps1 = design_stage(STAGE1, max_taps=MAX_TAPS_FIR4DSP)
     taps2 = design_stage(STAGE2, max_taps=MAX_TAPS_FIR2DSP)
     taps3 = design_stage(STAGE3, max_taps=MAX_TAPS_FIR4DSP)
+
+    # Rescale each stage so its quantised peak coefficient lands at
+    # Q1.17 max (131071). Matches the original fpga.rs convention
+    # and gives the downstream Maia DDC MAC / macc_trunc chain the
+    # non-unit per-stage DC gains it was tuned for. Without this
+    # step the unit-gain remez outputs starve the demod loop by
+    # ~700x across the cascaded /128 DDC (see first Phase 10-prep
+    # flash 2026-04-15 09:58: 0 % LSM NIDs, 55 % C4FM TSBK CRC).
+    taps1 = rescale_to_peak(taps1)
+    taps2 = rescale_to_peak(taps2)
+    taps3 = rescale_to_peak(taps3)
 
     # Pad to multiples of the respective decimation factors (the
     # DDC loader needs len % decim == 0 to split into equal
