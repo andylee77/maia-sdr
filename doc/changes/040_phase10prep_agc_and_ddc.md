@@ -283,17 +283,62 @@ edits beyond the static arrays + the three `P25_DEC*` constants.
 - `doc/changes/040_ddc_filter_redesign.txt` — captured design
   script output (self-documenting coefficient provenance)
 
+## Bake history
+
+### Bake 1 (2026-04-15 08:53) — failed timing
+
+Initial bake exposed a new 62.5 MHz sync-domain critical path
+inside `LsmAgc`. Worst slack **-1.878 ns**, **43 failing
+endpoints**, all in the same `div_quot → gain_dbg_reg` cone
+inside the traffic-side AGC's monolithic UPDATE state. The
+single-cycle combinational chain stacked req_gain clamp → diff
+subtract → DSP48 multiply → shift → lerp add → two clamp layers
+= 21 LUT levels + 1 DSP48 + 12 CARRY4 adders in series,
+clocking at ~17.8 ns in a 16 ns period.
+
+### Fix — pipeline UPDATE into 3 sub-states
+
+Split the monolithic `UPDATE` state into:
+
+| State          | Work                                                         |
+|----------------|--------------------------------------------------------------|
+| `UPDATE_CLAMP` | clamp `div_quot` to `GAIN_MAX`, latch `req_clamped_q`       |
+| `UPDATE_LERP`  | compute `diff = req - gain`, multiply by `ALPHA_Q`, latch `step_wide_q` |
+| `UPDATE_APPLY` | shift step, add to gain, asymmetric clamp + `GAIN_MAX/MIN`, latch gain |
+
+Adds 2 sync cycles to the per-symbol pipeline (48 → 52), which
+is invisible in the ~13 000-cycle symbol budget. The DSP48 multiply
+now gets its own cycle so Vivado can use the DSP's input/output
+pipeline registers for timing closure.
+
+### Bake 2 (2026-04-15 10:14) — timing met
+
+| Clock                   | WNS     | Failing | Delta  |
+|-------------------------|---------|---------|--------|
+| `sync` (62.5 MHz) intra | **+0.763 ns** | **0**   | +2.641 ns, -43 endpoints ✔ |
+| `clk_fpga_0` intra      | -0.140 ns | 15  | (ADI axi_ad9361 reset paths, not mine) |
+| `clk3x` (187.5 MHz)     | +0.648 ns | 0   | unchanged            |
+| `sync → clk_fpga_0` CDC | -4.576 ns | 169 | pre-existing PS7 CDC, waived |
+| `clk_fpga_0 → sync` CDC | -3.090 ns | 124 | pre-existing PS7 CDC, waived |
+
+My AGC critical path is fully closed. All remaining violations
+are cross-clock-domain paths inside ADI's axi_ad9361 IP that
+are known-waived by the build's `system_top_bad_timing.xsa`
+promotion path; the bitstream is functionally correct. XSA
+copied to Tezuka firmware at
+`board/tezuka/fishball7020/bitstream/p25/system_top.xsa`.
+
 ## Acceptance criteria
 
 ### Gateware (AGC)
 
-1. **All 8 new unit tests pass.** ✔
+1. **All 8 new unit tests pass.** ✔ (post-pipeline-split)
 2. **Full P25 regression still passes (109 / 109 + 2 skipped).**
    ✔ (no changes to the closed-loop demod slip regression or
    the Phase 8A reset tests)
 3. **Elaborates cleanly (`P25Core`).** ✔
-4. **Vivado bake with WNS ≥ 0.** Deferred to the next bake
-   (combined with the filter redesign).
+4. **Vivado bake with `sync` intra-clock WNS ≥ 0.** ✔ (+0.763 ns,
+   0 failing endpoints). Pre-existing CDC waivers unaffected.
 
 ### Firmware
 

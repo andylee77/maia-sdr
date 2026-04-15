@@ -100,23 +100,30 @@
 #
 # State machine
 # -------------
-#     IDLE       -> on decision_strobe_in: latch i_mid/q_mid/i_cur/q_cur,
-#                   compute sq combinationally (i_cur*i_cur +
-#                   q_cur*q_cur), latch sq, go to SQRT_INIT (or
-#                   BYPASS if enable_in=0).
-#     BYPASS     -> emit inputs verbatim, strobe, return to IDLE.
-#     SQRT_INIT  -> seed sqrt state, go to SQRT_ITER.
-#     SQRT_ITER  -> 17 non-restoring sqrt iterations (one per cycle).
-#     DIV_INIT   -> latch magnitude. If mag == 0, skip to APPLY
-#                   without touching gain (SDRTrunk's `if (magnitude
-#                   > 0)` branch). Otherwise seed the divider, go to
-#                   DIV_ITER.
-#     DIV_ITER   -> 26 restoring division iterations.
-#     UPDATE     -> clamp req_gain to GAIN_MAX, exact 0.05 lerp,
-#                   asymmetric min clamps, latch gain.
-#     APPLY      -> compute 4 output samples via gain multiply,
-#                   saturate, latch, emit decision_strobe_out,
-#                   return to IDLE.
+#     IDLE         -> on decision_strobe_in: latch i_mid/q_mid/i_cur/q_cur,
+#                     compute sq combinationally (i_cur*i_cur +
+#                     q_cur*q_cur), latch sq, go to SQRT_INIT (or
+#                     BYPASS if enable_in=0).
+#     BYPASS       -> emit inputs verbatim, strobe, return to IDLE.
+#     SQRT_INIT    -> seed sqrt state, go to SQRT_ITER.
+#     SQRT_ITER    -> 17 non-restoring sqrt iterations (one per cycle).
+#     DIV_INIT     -> latch magnitude. If mag == 0, skip to APPLY
+#                     without touching gain (SDRTrunk's
+#                     `if (magnitude > 0)` branch). Otherwise seed
+#                     the divider, go to DIV_ITER.
+#     DIV_ITER     -> 28 restoring division iterations.
+#     UPDATE_CLAMP -> clamp raw_req (= div_quot) to GAIN_MAX,
+#                     latch into req_clamped_q.
+#     UPDATE_LERP  -> diff = req_clamped_q - gain; step_wide = diff
+#                     * ALPHA_Q (DSP48 multiply), latch into
+#                     step_wide_q. Pipeline stage dedicated to the
+#                     multiply so the 62.5 MHz sync clock closes.
+#     UPDATE_APPLY -> shift step_wide_q right by 20, add to gain,
+#                     asymmetric min(.., req_clamped_q) clamp,
+#                     GAIN_MAX / GAIN_MIN clamp, latch gain.
+#     APPLY        -> compute 4 output samples via gain multiply,
+#                     saturate, latch, emit decision_strobe_out,
+#                     return to IDLE.
 #
 # Every state includes an explicit `with m.If(self.reset_in)` check
 # that forces `m.next = "IDLE"` and clears the persistent gain
@@ -131,12 +138,17 @@
 #   + 1 (SQRT_INIT)
 #   + 17 (SQRT_ITER)
 #   + 1 (DIV_INIT)
-#   + 26 (DIV_ITER)
-#   + 1 (UPDATE)
+#   + 28 (DIV_ITER)
+#   + 1 (UPDATE_CLAMP)
+#   + 1 (UPDATE_LERP)
+#   + 1 (UPDATE_APPLY)
 #   + 1 (APPLY)
-#   = 48 sync cycles.
+#   = 52 sync cycles.
 # At 62.5 MHz sync and 4800 symbols/s the symbol period is ~13000
-# cycles, so the 48-cycle latency is invisible to the symbol budget.
+# cycles, so the 52-cycle latency is invisible to the symbol budget.
+# (The 3-way UPDATE pipeline split exists for timing closure, not
+# for throughput — see the timing-closure note in the DIV_ITERS
+# constant block below.)
 #
 # Resource estimate (Z7020)
 # -------------------------
@@ -212,6 +224,27 @@ MAG_WIDTH = SQRT_ITERS                            # 17
 # any overshoot above GAIN_MAX (~2^20) and saturates.
 DIV_NUM_WIDTH = 28                                # holds TARGET_NUMERATOR
 DIV_ITERS = 28
+
+# UPDATE stage splits into three pipelined sub-states
+# (UPDATE_CLAMP -> UPDATE_LERP -> UPDATE_APPLY) so the gain-update
+# combinational chain fits the 62.5 MHz `sync` clock period.
+#
+# The original monolithic UPDATE state put ~21 LUT levels + 1 DSP48
+# multiply + 12 CARRY4 adders in series through a single comb
+# cone, which clocked at ~17.8 ns in a 16 ns period -- the
+# traffic-side LsmAgc critical path in the Phase 10-prep bake
+# (WNS -1.878 ns, 43 failing endpoints all in this cone). The
+# three-state split cuts the depth to roughly 1/3 per stage:
+#
+#   UPDATE_CLAMP : div_quot -> req_clamped register
+#                  (1 compare + 1 mux + 1 register)
+#   UPDATE_LERP  : req_clamped_q -> diff -> DSP -> step_wide reg
+#                  (1 subtract + 1 DSP48 + 1 register)
+#   UPDATE_APPLY : step_wide_q -> shift -> add -> clamps -> gain reg
+#                  (1 add + 3 compare/mux layers + 1 register)
+#
+# Adds 2 sync cycles to the per-symbol pipeline (was 48, now 50),
+# which is invisible in the ~13 000-cycle symbol budget.
 
 
 class LsmAgc(Elaboratable):
@@ -303,6 +336,15 @@ class LsmAgc(Elaboratable):
         div_num = Signal(DIV_NUM_WIDTH, reset_less=True)
         div_quot = Signal(DIV_ITERS, reset_less=True)
         div_counter = Signal(range(DIV_ITERS + 1), reset_less=True)
+
+        # ── UPDATE pipeline latches (timing closure) ────────────
+        # See the UPDATE pipeline docstring at module level. These
+        # carry state between UPDATE_CLAMP -> UPDATE_LERP ->
+        # UPDATE_APPLY so the DSP multiply + post-multiply clamp
+        # chain get their own sync cycles.
+        req_clamped_q = Signal(GAIN_WIDTH, reset_less=True)
+        step_wide_q = Signal(
+            signed(GAIN_WIDTH + 1 + 18), reset_less=True)
 
         # ── Main FSM ────────────────────────────────────────────
         m.d.sync += self.decision_strobe_out.eq(0)
@@ -466,12 +508,16 @@ class LsmAgc(Elaboratable):
                 ]
 
                 with m.If(div_counter == DIV_ITERS - 1):
-                    m.next = "UPDATE"
+                    m.next = "UPDATE_CLAMP"
                 with m.If(self.reset_in):
                     m.next = "IDLE"
 
-            with m.State("UPDATE"):
-                # Clamp req_gain to GAIN_MAX (= SDRTrunk's 500).
+            with m.State("UPDATE_CLAMP"):
+                # Stage 1: clamp the raw divider quotient to
+                # GAIN_MAX and latch it. The clamp is a single
+                # compare + mux -- trivial combinational depth
+                # that would otherwise stack on top of the later
+                # DSP multiply in one sync cycle.
                 raw_req = div_quot.as_unsigned()
                 req_clamped = Signal(GAIN_WIDTH)
                 with m.If(raw_req > GAIN_MAX):
@@ -479,28 +525,51 @@ class LsmAgc(Elaboratable):
                 with m.Else():
                     m.d.comb += req_clamped.eq(raw_req)
 
-                # Exact 0.05 lerp: step = (req - gain) * ALPHA_Q / 2^20.
+                m.d.sync += req_clamped_q.eq(req_clamped)
+                m.next = "UPDATE_LERP"
+                with m.If(self.reset_in):
+                    m.next = "IDLE"
+
+            with m.State("UPDATE_LERP"):
+                # Stage 2: compute the per-symbol error (diff) and
+                # multiply by the exact 0.05 alpha constant. This
+                # state owns the DSP48 multiply; the `>> 20` shift
+                # is free (bit-select in UPDATE_APPLY below).
                 diff = Signal(signed(GAIN_WIDTH + 1))
                 m.d.comb += diff.eq(
-                    req_clamped.as_signed() - gain.as_signed())
+                    req_clamped_q.as_signed() - gain.as_signed())
 
-                # 21-bit signed * 17-bit signed = 38-bit signed.
-                # ALPHA_Q is a 17-bit positive constant; treat as
-                # signed(18) so Amaranth doesn't widen the diff side.
+                # 21-bit signed * 18-bit signed = 39-bit signed
+                # product. ALPHA_Q is a 17-bit positive constant;
+                # signed(18) keeps the multiplier symmetric so
+                # Vivado infers a single DSP48.
                 alpha_const = Const(ALPHA_Q, signed(18))
                 step_wide = Signal(signed(GAIN_WIDTH + 1 + 18))
                 m.d.comb += step_wide.eq(diff * alpha_const)
+
+                m.d.sync += step_wide_q.eq(step_wide)
+                m.next = "UPDATE_APPLY"
+                with m.If(self.reset_in):
+                    m.next = "IDLE"
+
+            with m.State("UPDATE_APPLY"):
+                # Stage 3: rescale the stored step, add to gain,
+                # apply the asymmetric clamp + GAIN_MAX / GAIN_MIN
+                # limits, and commit the new gain register value.
                 step = Signal(signed(GAIN_WIDTH + 1))
-                m.d.comb += step.eq(step_wide >> ALPHA_SHIFT)
+                m.d.comb += step.eq(step_wide_q >> ALPHA_SHIFT)
 
                 lerp_val = Signal(signed(GAIN_WIDTH + 2))
                 m.d.comb += lerp_val.eq(gain.as_signed() + step)
 
-                # Asymmetric clamps.
+                # Asymmetric clamp: `min(lerp_val, req_clamped_q)`
+                # matches SDRTrunk's second `min(sampleGain,
+                # requiredGain)` line. Implemented as a sign-test
+                # on (lerp_val - req_clamped_q).
                 gain_next = Signal(GAIN_WIDTH)
                 clamp_asymm = Signal(signed(GAIN_WIDTH + 2))
-                with m.If(lerp_val > req_clamped.as_signed()):
-                    m.d.comb += clamp_asymm.eq(req_clamped.as_signed())
+                with m.If(lerp_val > req_clamped_q.as_signed()):
+                    m.d.comb += clamp_asymm.eq(req_clamped_q.as_signed())
                 with m.Else():
                     m.d.comb += clamp_asymm.eq(lerp_val)
 
