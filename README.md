@@ -17,13 +17,57 @@ of Maia SDR's platform. The `fishball-dev` branch carries Maia SDR changes only.
 - **Web UI improvements** -- Double-click to hide panel, CORS fixes
 - **Build scripts** -- Windows/Linux build helpers (`build_hdl.bat/.sh`, `build_fpga.bat`, `sim_hdl.bat/.sh`)
 
-### P25 Radio (fishball-p25 branch)
+### P25 Radio (fishball-p25 / bisect-safety branches)
 
-- **P25 FPGA gateware** -- C4FM demodulator, Gardner symbol timing recovery, dibit packer with DMA
-- **Dual DDC chains** -- Control channel + traffic channel with independent NCO tuning
-- **P25 HTTP daemon** -- Control channel decoder, TSBK parser, traffic manager, web dashboard
-- **Full FEC** -- Golay(23,12), trellis Viterbi, CRC-16
-- **Web dashboard** -- Real-time talkgroup activity, frequency map, WebSocket events
+- **P25DDC v2 filter chain** -- SDRTrunk-faithful Parks-McClellan
+  equiripple cascade with a 248-tap stage 3 FIR for tight
+  adjacent-channel rejection, unit-DC-gain coefficient convention,
+  and explicit per-stage output scaling. Fixes the LsmDecimator2
+  fold-back bug at 8 MHz rf_bandwidth. See
+  [doc/changes/041_p25ddc_fork.md](doc/changes/041_p25ddc_fork.md).
+- **Dual LSM demod chains** -- Independent control and traffic chains
+  each running: DC blocker, per-symbol `LsmAgc` (SDRTrunk port),
+  `LsmPll` carrier recovery, `LsmTimingInterp` Gardner symbol
+  timing, diff-demod slicer, BCH(63,16,23) NID FEC, and universal
+  status-dibit strip.
+- **C4FM demod chain** -- Parallel C4FM decoder (dormant on LSM
+  sites, used for C4FM-only systems like FP&L or St Johns Interop).
+- **Grant-follower retune sequence** -- Atomic freeze/NCO-write/
+  FIR-pipeline-flush/LSM-reset/thaw for traffic-channel retunes,
+  with boot PPM correction and explicit 2 ms FIR cascade flush
+  wait. Traffic chain uses the same PLL/AGC configuration as the
+  control chain for full symmetry.
+- **P25 HTTP daemon** -- Control channel TSBK parser, grant
+  follower, traffic manager with call-end semantics, integrated
+  mbelib IMBE vocoder producing PCM to a WebSocket audio
+  broadcast channel.
+- **Live dashboard** -- Radio/Debug/Logs tabs, real-time talkgroup
+  activity, frequency map, call log, IMBE + vocoder stats,
+  PL HDL register read-back, live retune control, board info
+  panel, and browser audio player (AudioWorklet + fallback).
+- **Runtime-tunable sync threshold** and per-decoder override
+  via `/api/sync_tune` for tightening on noisy sites.
+- **Full FEC** -- Golay(23,12), trellis Viterbi, CRC-16, BCH(63,16,23),
+  Reed-Solomon (24,12,13).
+
+**Timing closure**: the P25DDC v2 redesign required three
+independent fixes to close Vivado timing at WNS +0.267 ns,
+0 failing endpoints. See
+[doc/changes/042_p25ddc_fork_timing_fixes.md](doc/changes/042_p25ddc_fork_timing_fixes.md)
+for the PulseSynchronizer CDC fix, XDC waiver set (ASYNC_REG
+synchronizer chains + RegisterCDC data lanes + ADI AD9361 TX
+counter + sys_rstgen reset fanout + software reset recovery),
+and the local cherry-pick of ADI upstream commit `92534dc1d`
+(`axi_ad9361_tx: Use incrementing cnt to improve timing margin`)
+onto our pinned adi-hdl submodule.
+
+**Sites tested on-target**: Clay County LSM (NAC `0x8A1`,
+860.9625 MHz) as primary target, with Duval County LSM
+(NAC `0x3BA`, 855.4875 MHz, same WACN `0xBEE00`) as secondary.
+Both validated at 8 MHz rf_bandwidth with full voice decode
+and live audio playback. FP&L (935 MHz C4FM) and St Johns
+Interop (774 MHz C4FM) are documented as future cross-band
+test targets.
 
 ## Project structure
 
@@ -67,7 +111,11 @@ of Maia SDR's platform. The `fishball-dev` branch carries Maia SDR changes only.
 - Built by [Tezuka firmware](https://github.com/andylee77/tezuka_fw) Buildroot
 - Cross-compiled for ARM (Zynq-7000) inside the Tezuka Docker build environment
 - **Maia:** `fishball-dev` branch, `fishball_maiasdr_7020_defconfig`
-- **P25:** `fishball-dev` branch (P25 defconfig + device tree TBD -- Phase 5)
+- **P25:** `fishball-dev` branch, includes `p25-httpd`, `mbelib` vocoder,
+  and the P25 device-tree overlay for the P25 Vivado bitstream
+- Flash + boot + `/api/system.build` reports the currently-running
+  firmware BUILD_TAG so rolling p25-httpd updates can be verified
+  without rebaking the FPGA
 
 ## Branch strategy
 
