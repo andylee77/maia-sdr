@@ -55,3 +55,20 @@ runs/
 # /api/lsm_capture_aligned, used as input to tools/p25_decode_capture.py).
 # These are throwaway debug artifacts -- don't commit them.
 /capture*.json
+
+# HDL register-bank snapshot JSONs dumped by /api/hdl_dump or
+# similar diagnostic endpoints during live on-target debugging.
+# Same throwaway category as capture*.json above.
+/hdl_cap*.json
+
+# One-shot vocoder and IMBE test artefacts (raw PCM / wav files
+# written by test scripts during interactive mbelib validation).
+# Not inputs to any committed test; keep them out of history.
+/jmbe_audio_test.wav
+/maia-hdl/decimator_out.cs16
+/maia-hdl/*.cs16
+
+# Voice-capture tool output directories. tools/voice_capture.py
+# writes a new timestamped directory per run (voice_capture_YYYYMMDD_HHMMSS/).
+# These accumulate quickly during live testing -- ignore the pattern.
+/tools/voice_capture_*/
