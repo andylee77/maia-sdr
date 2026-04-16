@@ -502,7 +502,11 @@ ad_ip_parameter axi_ad9361 CONFIG.ID 0
 #LVDS OR CMOS
 if { [info exists fishball]} {
 ad_ip_parameter axi_ad9361 CONFIG.CMOS_OR_LVDS_N 0
-ad_ip_parameter axi_ad9361 CONFIG.MODE_1R1T 0
+# LVDS 1R1T: RX2 is not antenna-connected on Fishball, so 2R2T wastes half
+# the LVDS bus. 1R1T doubles the per-channel sample-rate ceiling at the same
+# DATA_CLK. util_ad9361_divclk auto-switches /4 -> /2 via adc_r1_mode.
+# The Tezuka DTS must also drop `adi,2rx-2tx-mode-enable` to match.
+ad_ip_parameter axi_ad9361 CONFIG.MODE_1R1T 1
 ad_ip_parameter axi_ad9361 CONFIG.ADC_INIT_DELAY 30
 } else {
 ad_ip_parameter axi_ad9361 CONFIG.CMOS_OR_LVDS_N 1

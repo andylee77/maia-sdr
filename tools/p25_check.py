@@ -23,7 +23,7 @@ Endpoints exercised:
     GET /api/hdl_lsm          -- PL HDL LSM chain stats + NID ring
     GET /api/irq_stats        -- per-source IRQ counters
     GET /api/traffic          -- Phase 7 traffic channel + IMBE stats
-    GET /api/lsm_control      -- LSM control register state
+    GET /api/control_lsm_control -- LSM control register state (was /api/lsm_control pre-2026-04-16)
     GET /api/sync_tune        -- sync distance histogram + threshold
 
 Phase 9 retirement (2026-04-15): `/api/lsm` (Phase 6D software LSM
@@ -194,9 +194,9 @@ def main() -> int:
            f"dibit={pl_d_ovf} iq={pl_i_ovf}",
            pl_d_ovf == 0)
 
-    # ── /api/lsm_dibit_dump  (sync distance histogram, 6F.6+) ──
+    # ── /api/control_lsm_dibit_dump  (sync distance histogram, 6F.6+) ──
     banner("Sync distance histogram (6F.6+)")
-    dd = fetch(target, "/api/lsm_dibit_dump")
+    dd = fetch(target, "/api/control_lsm_dibit_dump")
     s = dd.get("sync", {})
     hist = s.get("distance_hist")
     if hist:
@@ -416,9 +416,9 @@ def main() -> int:
     kv("traffic DMA IRQs", tr_irq.get("traffic_dma_total"))
     kv("traffic LSM dibit IRQs", tr_irq.get("traffic_lsm_dibit_total"))
 
-    # ── /api/lsm_control ──
-    banner("LSM control register (/api/lsm_control)")
-    lc = fetch(target, "/api/lsm_control")
+    # ── /api/control_lsm_control ──
+    banner("LSM control register (/api/control_lsm_control)")
+    lc = fetch(target, "/api/control_lsm_control")
     kv("lsm_enable", lc.get("lsm_enable"), lc.get("lsm_enable"))
     kv("lsm_dibit_dma_enable", lc.get("lsm_dibit_dma_enable"),
        lc.get("lsm_dibit_dma_enable"))

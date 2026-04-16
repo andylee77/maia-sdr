@@ -67,6 +67,14 @@ pub enum TsbkOpcode {
     GroupVoiceChannelGrant,
     /// Group Voice Channel Grant Update (0x02)
     GroupVoiceChannelGrantUpdate,
+    /// Group Voice Channel Grant Update Explicit (0x03) — separate
+    /// TX/RX channel pair + a service_options byte that carries the
+    /// encryption flag. Some sites (especially TDMA or split
+    /// TX/RX-frequency systems) use this variant instead of plain
+    /// GVCG, so missing it means we never see the encrypted bit at
+    /// the control-channel moment. SDRTrunk catches it here via
+    /// `GroupVoiceChannelGrantUpdateExplicit.SERVICE_OPTIONS`.
+    GroupVoiceChannelGrantUpdateExplicit,
     /// Unit to Unit Voice Channel Grant (0x04)
     UnitToUnitVoiceChannelGrant,
     /// Unit to Unit Answer Request (0x05) -- private call paging.
@@ -116,6 +124,7 @@ impl From<u8> for TsbkOpcode {
         match val & 0x3F {
             0x00 => Self::GroupVoiceChannelGrant,
             0x02 => Self::GroupVoiceChannelGrantUpdate,
+            0x03 => Self::GroupVoiceChannelGrantUpdateExplicit,
             0x04 => Self::UnitToUnitVoiceChannelGrant,
             0x05 => Self::UnitToUnitAnswerRequest,
             0x08 => Self::TelephoneInterconnectVoiceChannelGrant,
@@ -166,6 +175,32 @@ pub enum TsbkMessage {
         talkgroup_a: Talkgroup,
         channel_b: Channel,
         talkgroup_b: Talkgroup,
+    },
+
+    /// Group Voice Channel Grant Update Explicit (opcode 0x03)
+    /// Single grant with separate transmit + receive channels (used
+    /// on split-frequency TDMA systems and by some sites instead of
+    /// plain GVCG). Unlike GVCG_UPDATE (0x02), this variant DOES
+    /// carry a service_options byte, so the encryption bit is
+    /// observable here. SDRTrunk extracts it as
+    /// `GroupVoiceChannelGrantUpdateExplicit.SERVICE_OPTIONS` at
+    /// bits 16-23 of the TSBK, same position as plain GVCG.
+    ///
+    /// Field layout (from SDRTrunk):
+    /// - bits 16-23: service_options (our `payload[0]`)
+    /// - bits 24-39: transmit_channel (our `payload[1..3]`)
+    /// - bits 40-55: receive_channel (our `payload[3..5]`)
+    /// - bits 56-71: group_address / talkgroup (our `payload[5..7]`)
+    /// - bits 72-79: reserved (our `payload[7]`)
+    ///
+    /// We treat the transmit_channel as the grant channel since
+    /// that's where the voice audio lands. The receive_channel is
+    /// the uplink (mobile-to-site) and not useful for the scanner.
+    GroupVoiceChannelGrantUpdateExplicit {
+        transmit_channel: Channel,
+        receive_channel: Channel,
+        talkgroup: Talkgroup,
+        service_options: u8,
     },
 
     /// Identifier Update VHF/UHF (opcode 0x34)
@@ -409,6 +444,9 @@ impl TsbkBlock {
             TsbkOpcode::GroupVoiceChannelGrantUpdate => {
                 Some(self.decode_grp_v_ch_grant_update())
             }
+            TsbkOpcode::GroupVoiceChannelGrantUpdateExplicit => {
+                Some(self.decode_grp_v_ch_grant_update_explicit())
+            }
             TsbkOpcode::IdentifierUpdate => {
                 Some(self.decode_iden_update_fdma())
             }
@@ -486,6 +524,33 @@ impl TsbkBlock {
             talkgroup_a,
             channel_b,
             talkgroup_b,
+        }
+    }
+
+    /// GRP_V_CH_GRANT_UPDT_EXP (0x03)
+    /// Payload: [options(8)][tx_channel(16)][rx_channel(16)][talkgroup(16)][reserved(8)]
+    ///
+    /// Same SERVICE_OPTIONS position as plain GVCG (bits 16-23 =
+    /// `payload[0]`), so the encryption bit is observable here and
+    /// the pre-retune gate in main.rs can fire on it without
+    /// needing HDU parsing. Matches SDRTrunk
+    /// `GroupVoiceChannelGrantUpdateExplicit.java`.
+    fn decode_grp_v_ch_grant_update_explicit(&self) -> TsbkMessage {
+        let service_options = self.payload[0];
+        let transmit_channel = Channel(u16::from_be_bytes([
+            self.payload[1], self.payload[2],
+        ]));
+        let receive_channel = Channel(u16::from_be_bytes([
+            self.payload[3], self.payload[4],
+        ]));
+        let talkgroup = Talkgroup(u16::from_be_bytes([
+            self.payload[5], self.payload[6],
+        ]));
+        TsbkMessage::GroupVoiceChannelGrantUpdateExplicit {
+            transmit_channel,
+            receive_channel,
+            talkgroup,
+            service_options,
         }
     }
 

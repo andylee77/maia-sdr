@@ -93,9 +93,9 @@ ad_connect adc_q_slice/Dout p25_core/im_in
 # ── AXI-Lite ─────────────────────────────────────────────────────────
 ad_cpu_interconnect 0x7C460000 p25_core
 
-# ── DMA: dibit + traffic + IQ + lsm_dibit + traffic_lsm_dibit on HP1 ─
+# ── DMA: six P25 masters on HP1 ───────────────────────────────────────
 # HP1 was used by maia_sdr/m_axi_spectrometer (now deleted).
-# Reuse HP1 for all five P25 DMA masters. ad_mem_hp1_interconnect is
+# Reuse HP1 for all P25 DMA masters. ad_mem_hp1_interconnect is
 # idempotent — repeated calls extend the same SmartConnect rather than
 # creating a new one. HP1 budget at ~1.7 GB/s easily absorbs:
 #   - dibit             ~1.28 KB/s   (C4FM control-channel dibits)
@@ -104,13 +104,14 @@ ad_cpu_interconnect 0x7C460000 p25_core
 #   - lsm_dibit         ~1.28 KB/s   (Phase 6E.9: LSM control-channel dibits,
 #                                      parallel to the C4FM `dibit` ring so the
 #                                      PS can A/B both demods on one RF capture)
-#   - traffic_lsm_dibit ~1.28 KB/s   (Phase 7A.2: LSM traffic-channel dibits,
-#                                      parallel to the C4FM `traffic` ring on
-#                                      the traffic side -- mirrors the
-#                                      control-side LSM chain. Also feeds the
-#                                      traffic_lsm NID register bank for
-#                                      HDU/TDU/LDU detection on followed voice
-#                                      channels.)
+#   - traffic_lsm_dibit ~1.28 KB/s   (Phase 7A.2: LSM traffic-channel dibits)
+#   - traffic_iq        ~250  KB/s   (2026-04-16 chain-symmetry fix:
+#                                      mirror of `iq` on the traffic side so
+#                                      the dashboard constellation + offline
+#                                      traffic-LSM cross-check have a source
+#                                      of post-DDC IQ samples. Same packing /
+#                                      bandwidth math as `iq`.)
+# Total ~505 KB/s, well under 1.7 GB/s.
 # See doc/P25_ADDRESS_MAP.md for the full carve-out / bandwidth table.
 ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP1 {1}
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 sys_ps7/S_AXI_HP1
@@ -119,6 +120,7 @@ ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_iq
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_lsm_dibit
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_lsm_dibit
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_iq
 
 # ── Interrupt ─────────────────────────────────────────────────────────
 # With maia_iio, pluto base wired:

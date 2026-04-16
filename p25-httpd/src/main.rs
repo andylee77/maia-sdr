@@ -21,7 +21,10 @@ mod audio;
 mod event_log;
 mod lsm;
 mod monitor;
+mod ntp;
 mod p25;
+mod recorder;
+mod spectrum;
 mod vocoder;
 mod jmbe;
 #[cfg(target_os = "linux")]
@@ -39,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-15-traffic-ppm-correction";
+pub const BUILD_TAG: &str = "2026-04-16-bake2-constellation-pi4-reference";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -133,6 +136,8 @@ pub struct IrqStats {
     pub lsm_dibit: u64,
     /// Phase 7A.2: traffic-side LSM dibit DMA wakeups.
     pub traffic_lsm_dibit: u64,
+    /// 2026-04-16: traffic-side post-DDC IQ DMA wakeups (mirror of `iq`).
+    pub traffic_iq: u64,
     pub last_at_secs_ago: f64,
     /// Set to None until the first IRQ; updated only by the IRQ task.
     pub started_at: Option<std::time::Instant>,
@@ -419,24 +424,19 @@ struct Args {
 
     /// AD9361 RX analog front-end filter bandwidth in Hz.
     ///
-    /// Default 4 MHz. The Maia DDC stage 1 FIR (48 taps, 200 kHz
-    /// cutoff, Kaiser β=6) does not have enough stopband rejection
-    /// at 500 kHz-2 MHz offset to handle wider rf_bandwidth in the
-    /// presence of adjacent P25 emitters (e.g. the Clay County site
-    /// has P25 carriers at 860.0 MHz and 859.35 MHz that leak through
-    /// stage 1 at rf_bandwidth >= 5 MHz and crush the control-channel
-    /// CRC pass rate from ~70 % to ~40 % at 5 MHz and ~15 % at 6-8 MHz.
-    /// See `project_p25_ddc_stage1_filter_weak.md` memory for the
-    /// live sweep measurement, and
-    /// `doc/changes/040_api_reinit_and_manual_gain.md` for the full
-    /// investigation.
+    /// Default 8 MHz as of 2026-04-16 after P25DDC v2 landed. The
+    /// old Maia DDC stage 1 FIR (48 taps, 200 kHz cutoff, Kaiser β=6)
+    /// didn't have enough adjacent-channel rejection to tolerate wide
+    /// rf_bandwidth on busy sites (Clay County's 860.0 and 859.35 MHz
+    /// neighbours leaked through stage 1 at ≥5 MHz, crushing CRC from
+    /// ~70 % to ~15 %). The P25DDC v2 fork
+    /// (doc/changes/041_p25ddc_fork.md) tightened stage 3 to -71 dB
+    /// in the fold-back band and relocated the aliasing energy so
+    /// 8 MHz now passes clean — validated on Clay + Duval.
     ///
-    /// **This default will change to 8 MHz once the DDC stage 1 FIR
-    /// is reworked** with deeper adjacent-channel rejection (more
-    /// taps, higher β, or a pre-decimator before stage 1). Until then
-    /// 4 MHz is the only usable production value on sites with
-    /// adjacent emitters inside ±2 MHz of the control channel.
-    #[arg(long, default_value_t = 4_000_000)]
+    /// See `project_p25ddc_v2_validated.md` for the on-target
+    /// bake-vs-CRC measurements that motivated bumping the default.
+    #[arg(long, default_value_t = 8_000_000)]
     rf_bandwidth: u32,
 }
 
@@ -468,6 +468,32 @@ async fn main() -> anyhow::Result<()> {
         "p25-httpd build: {} (dashboard_source=lsm_decoder, Phase 6F.1)",
         BUILD_TAG
     );
+
+    // NTP sync early in boot so event_log + grant timestamps + the
+    // /api/stats wall-clock read as real wall-clock time rather than
+    // the 1970 epoch the kernel initialises to. The Fishball has no
+    // battery-backed RTC so every boot starts with a bogus clock. We
+    // deliberately don't block boot on NTP success: the board still
+    // has to work offline, and event_log ordering is already correct
+    // via the monotonic `seq` field when wall_clock_ms is garbage.
+    // Total cost bound: `servers.len() * per_server_timeout` = 15 s.
+    // Spawn on the blocking pool so we don't park the tokio runtime.
+    match tokio::task::spawn_blocking(|| {
+        ntp::sync_system_clock(
+            &["pool.ntp.org", "time.cloudflare.com", "time.google.com"],
+            std::time::Duration::from_secs(5),
+        )
+    })
+    .await
+    {
+        Ok(Ok(epoch)) => tracing::info!(
+            "NTP sync OK — system clock set to Unix epoch {epoch}"
+        ),
+        Ok(Err(e)) => tracing::warn!(
+            "NTP sync failed ({e}); timestamps will use kernel boot clock"
+        ),
+        Err(e) => tracing::warn!("NTP task panicked: {e}"),
+    }
 
     // Pluto crystal calibration: shift the DDC NCO by -ppm * 1e-6 * rx_lo Hz.
     // See the doc comment on Args::lo_ppm for why this only moves the NCO and
@@ -506,8 +532,20 @@ async fn main() -> anyhow::Result<()> {
 
     let mut lsm_decoder = ControlChannelDecoder::new();
     lsm_decoder.set_event_tx(event_tx.clone());
-    lsm_decoder.set_grant_event_tx(grant_event_tx);
+    lsm_decoder.set_grant_event_tx(grant_event_tx.clone());
     let lsm_decoder = Arc::new(RwLock::new(lsm_decoder));
+
+    // 2026-04-16: also install the grant event sender on the C4FM
+    // decoder so C4FM-site grants reach the follower. On LSM sites
+    // the C4FM decoder receives garbage dibits and rejects them via
+    // BCH + CRC, so this is mostly-harmless on LSM; on C4FM sites
+    // (FP&L, St Johns) this is the only path that produces grant
+    // events. Modulation-mismatch filtering happens in the follower
+    // task by consulting active_modulation before retuning.
+    {
+        let mut d = decoder.write().await;
+        d.set_grant_event_tx(grant_event_tx);
+    }
 
     // Phase 9 retirement (2026-04-15): the Phase 6D `iq_lsm_decoder`
     // has been removed. It was a pure-software LSM demod + TSBK
@@ -613,6 +651,23 @@ async fn main() -> anyhow::Result<()> {
     let traffic_follower_enabled =
         Arc::new(std::sync::atomic::AtomicBool::new(true));
 
+    // Live RX LO tracking (2026-04-16 fix for stale follower_rx_lo).
+    // Initialised from the boot CLI arg, updated by get_reinit after a
+    // successful AD9361 set_rx_lo_frequency, read by the grant follower
+    // on every retune so offset_hz math stays correct when the LO is
+    // moved via /api/reinit?rx_lo=... mid-session.
+    let current_rx_lo = Arc::new(std::sync::atomic::AtomicI64::new(
+        args.rx_lo as i64,
+    ));
+
+    // P25 modulation mode selector (2026-04-16). Declared here so the
+    // grant follower task below can clone it; the auto-detect task
+    // that WRITES to it is spawned later, after both decoders exist.
+    //   0 = Auto (probing)  1 = C4FM  2 = LSM
+    // Defaults to LSM to match the long-running Clay/Duval deploy.
+    let active_modulation =
+        Arc::new(std::sync::atomic::AtomicU8::new(2));
+
     #[cfg(target_os = "linux")]
     let (ip_core, ad9361) = {
         use tokio::sync::Mutex;
@@ -671,7 +726,12 @@ async fn main() -> anyhow::Result<()> {
         // can re-enable it if we need a raw-IQ tap again -- e.g.,
         // for on-target baseband capture to disk, or for a new
         // in-PL DSP block that taps post-DDC IQ.
-        ip_core.set_iq_dma_enable(false);
+        // 2026-04-16: flip this back ON. The Phase 6D software LSM
+        // pipeline is retired, but the iq_dma ring now feeds the new
+        // /api/spectrum and /api/constellation endpoints (software
+        // FFT + scatter on ARM). Cost is 250 KB/s DDR + 1 IRQ per
+        // sub-buffer (~7.8/s) — negligible.
+        ip_core.set_iq_dma_enable(true);
         // Phase 6E.9/6E.10: enable the HDL LSM demod chain (runs alongside
         // the C4FM demod on the same control DDC output) and its dedicated
         // dibit ring DMA. NID events themselves are PS-polled via
@@ -764,6 +824,13 @@ async fn main() -> anyhow::Result<()> {
         ip_core.set_traffic_lsm_enable(false);
         ip_core.set_traffic_lsm_dibit_dma_enable(true);
         ip_core.set_traffic_lsm_dc_block_enable(true);
+        // 2026-04-16: enable the new traffic post-DDC IQ ring DMA so
+        // /api/spectrum?chain=traffic and /api/constellation?chain=
+        // traffic have data. The iq ring is independent of the
+        // LSM demod enable (driven off the traffic_ddc strobe,
+        // which ticks whenever the traffic DDC has valid input)
+        // so it runs continuously without needing the LSM chain on.
+        ip_core.set_traffic_iq_dma_enable(true);
         // Phase 10-prep: arm the traffic-side per-symbol LSM AGC
         // at boot (same SDRTrunk-faithful port as the control
         // side above). The AGC stays armed across retunes; the
@@ -1786,11 +1853,19 @@ async fn main() -> anyhow::Result<()> {
         // We poll `lsm_decoder` (not `decoder` or `iq_lsm_decoder`)
         // because per the AppState doc comment that's the canonical
         // source for the dashboard's Active Grants panel.
+        // 2026-04-16: also hold the C4FM decoder so post-timeout
+        // grant cleanup reaches the right store depending on
+        // active_modulation.
         let follower_lsm_decoder = lsm_decoder.clone();
+        let follower_c4fm_decoder = decoder.clone();
+        let follower_active_mod = active_modulation.clone();
         let follower_mgr = traffic_manager.clone();
         let follower_core = ip_core.clone();
         let follower_sample_rate = args.sample_rate as f64;
-        let follower_rx_lo = args.rx_lo as i64;
+        // 2026-04-16 fix: read current rx_lo per iteration instead of
+        // capturing args.rx_lo once. Prevents stale-offset math when
+        // rx_lo is moved via /api/reinit?rx_lo=... mid-session.
+        let follower_current_rx_lo = current_rx_lo.clone();
         // 2026-04-15 fix: traffic DDC NCO must apply the same
         // boot PPM correction as the control DDC (see
         // p25-httpd/src/httpd/mod.rs::get_reinit() at lines
@@ -2161,11 +2236,18 @@ async fn main() -> anyhow::Result<()> {
                                     // so the traffic PLL doesn't sit at a
                                     // residual -0.46 rad steady-state
                                     // error on every call.
+                                    //
+                                    // rx_lo is read fresh here (not
+                                    // captured at task spawn) so the
+                                    // offset math follows /api/reinit
+                                    // live LO moves.
+                                    let rx_lo_now = follower_current_rx_lo
+                                        .load(std::sync::atomic::Ordering::Relaxed);
                                     let nco_lo_shift_hz =
                                         -follower_lo_ppm * 1e-6
-                                            * follower_rx_lo as f64;
+                                            * rx_lo_now as f64;
                                     let offset_hz = (freq_hz as f64
-                                        - follower_rx_lo as f64
+                                        - rx_lo_now as f64
                                         + nco_lo_shift_hz)
                                         as i64;
 
@@ -2272,8 +2354,17 @@ async fn main() -> anyhow::Result<()> {
                             // the PLL accumulator against noise.
                             core.pause_traffic_chain();
                             if let Some(tg) = pre_timeout_tg {
-                                let mut dec =
-                                    follower_lsm_decoder.write().await;
+                                // 2026-04-16: drop the stale grant
+                                // from whichever decoder the modulation
+                                // selector says is active.
+                                let active = follower_active_mod.load(
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                                let mut dec = if active == 1 {
+                                    follower_c4fm_decoder.write().await
+                                } else {
+                                    follower_lsm_decoder.write().await
+                                };
                                 dec.grants.retain(
                                     |_, g| g.talkgroup.0 != tg.0
                                 );
@@ -2585,6 +2676,84 @@ async fn main() -> anyhow::Result<()> {
     // Phase 7E: audio broadcast channel (vocoder -> HTTP/WebSocket).
     let audio_tx = audio::audio_channel();
 
+    // Call recorder: subscribes to audio_tx and writes per-call WAV
+    // files to /tmp/p25_recordings/. Ring-buffered in RecordingStore
+    // so the dashboard can list / play back recent calls.
+    let recordings = recorder::new_store();
+    {
+        let rx = audio_tx.subscribe();
+        let store = recordings.clone();
+        tokio::spawn(async move {
+            recorder::recorder_task(rx, store).await;
+        });
+    }
+
+    // Modulation auto-detect (SDRTrunk-style). Compares the
+    // nid_decoded_ok delta between the C4FM and LSM decoders once per
+    // second and flips `active_modulation` to whichever has more
+    // valid NIDs in the window. Only runs in Auto mode (code 0);
+    // manual overrides via `/api/modulation?set=c4fm|lsm` freeze the
+    // selection. `active_modulation` itself is declared much earlier
+    // in main() (before the grant follower task spawn) so both tasks
+    // can clone it.
+    {
+        let active_mod = active_modulation.clone();
+        let c4fm_decoder = decoder.clone();
+        let lsm_decoder_probe = lsm_decoder.clone();
+        tokio::spawn(async move {
+            let mut last_c4fm: u64 = 0;
+            let mut last_lsm: u64 = 0;
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(1),
+            );
+            loop {
+                interval.tick().await;
+                // Only run when the user has selected Auto (code 0).
+                // Manual overrides (1 = C4FM, 2 = LSM) stay put.
+                if active_mod.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+                    // Reset the deltas so a later switch back to
+                    // auto re-probes from a clean baseline.
+                    last_c4fm = c4fm_decoder.read().await.nid_decoded_ok;
+                    last_lsm = lsm_decoder_probe.read().await.nid_decoded_ok;
+                    continue;
+                }
+                let now_c4fm = c4fm_decoder.read().await.nid_decoded_ok;
+                let now_lsm = lsm_decoder_probe.read().await.nid_decoded_ok;
+                let d_c4fm = now_c4fm.saturating_sub(last_c4fm);
+                let d_lsm = now_lsm.saturating_sub(last_lsm);
+                last_c4fm = now_c4fm;
+                last_lsm = now_lsm;
+                // Need at least one valid NID on the winning side to
+                // make a call. Both zero -> no signal -> keep whatever
+                // is currently set (or LSM at boot).
+                if d_c4fm == 0 && d_lsm == 0 {
+                    continue;
+                }
+                let winner = if d_c4fm > d_lsm { 1u8 } else { 2u8 };
+                let current = active_mod.load(
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                if current != winner && current != 0 {
+                    // User is manually set — leave them alone.
+                    continue;
+                }
+                // Auto mode stays 0 but we remember the winner via a
+                // companion atomic? Simpler: actually STORE the
+                // winner here so the active_control_decoder() helper
+                // returns the right one. The user can distinguish
+                // "auto-chose LSM" from "manually forced LSM"
+                // through the /api/modulation endpoint which surfaces
+                // raw rates.
+                active_mod.store(winner, std::sync::atomic::Ordering::Relaxed);
+                tracing::info!(
+                    "modulation auto-detect: d_c4fm={d_c4fm} d_lsm={d_lsm} \
+                     → {}",
+                    if winner == 1 { "C4FM" } else { "LSM" }
+                );
+            }
+        });
+    }
+
     // Phase 7D/7E: vocoder task -- reads IMBE frame batches, decodes
     // via mbelib, pushes AudioChunks to the broadcast channel, and
     // updates stats atomics. Encryption gating: encrypted frames are
@@ -2761,6 +2930,7 @@ async fn main() -> anyhow::Result<()> {
         boot_control_freq: args.control_freq,
         boot_lo_ppm:       args.lo_ppm,
         boot_hardwaregain: args.hardwaregain,
+        current_rx_lo:     current_rx_lo.clone(),
         hdl_lsm: hdl_lsm.clone(),
         irq_stats: irq_stats.clone(),
         // Phase 7A.1: traffic-channel grant follower + dibit reader
@@ -2777,6 +2947,8 @@ async fn main() -> anyhow::Result<()> {
         ),
         boot_instant: std::time::Instant::now(),
         event_log: event_log.clone(),
+        recordings: recordings.clone(),
+        active_modulation: active_modulation.clone(),
     });
 
     // Start HTTP server

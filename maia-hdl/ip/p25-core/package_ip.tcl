@@ -76,6 +76,13 @@ ipx::associate_bus_interfaces -busif m_axi_iq -clock clk [ipx::current_core]
 # Parallel to the C4FM m_axi_dibit master so the PS can A/B C4FM vs LSM
 # on a single RF capture. Same clock domain; same HP1 SmartConnect.
 ipx::associate_bus_interfaces -busif m_axi_lsm_dibit -clock clk [ipx::current_core]
+# Phase 7A.2: LSM traffic-channel dibit ring DMA on m_axi_traffic_lsm_dibit.
+# Parallel to the C4FM m_axi_traffic master for the traffic chain.
+ipx::associate_bus_interfaces -busif m_axi_traffic_lsm_dibit -clock clk [ipx::current_core]
+# 2026-04-16: post-DDC IQ ring DMA on m_axi_traffic_iq. Mirror of m_axi_iq
+# on the traffic chain so dashboard constellation + offline traffic-LSM
+# cross-check have a post-DDC IQ source. Same clock, same HP1 SmartConnect.
+ipx::associate_bus_interfaces -busif m_axi_traffic_iq -clock clk [ipx::current_core]
 
 # interrupt
 ipx::add_bus_interface interrupt [ipx::current_core]

@@ -65,10 +65,10 @@ ENDPOINTS = [
     # Phase 9 retirement: /api/lsm (Phase 6D software pipeline) is gone.
     ("/api/irq_stats",       "irq_stats"),
     ("/api/dibit_dump",      "dibit_dump"),
-    ("/api/lsm_dibit_dump",  "lsm_dibit_dump"),
+    ("/api/control_lsm_dibit_dump", "lsm_dibit_dump"),
     ("/api/tsbk_opcodes",    "tsbk_opcodes"),
     ("/api/recent_tsbks",    "recent_tsbks"),
-    ("/api/lsm_control",     "lsm_control"),
+    ("/api/control_lsm_control",   "lsm_control"),
     # Phase 7A.1: traffic-channel grant follower state + counters.
     # Returns None on binaries that predate the endpoint, which is
     # exactly what the Phase 7A.1 roadmap check uses to detect "the
@@ -307,7 +307,7 @@ def render_lsm_control(lc: dict | None) -> None:
     banner("9b. LSM control register (Phase 6G.2)")
     if lc is None:
         kv("status",
-           "/api/lsm_control not present  (binary predates Phase 6G.2)",
+           "/api/control_lsm_control not present  (binary predates Phase 6G.2 or the 2026-04-16 rename)",
            value_color=YELLOW)
         return
     if "error" in lc:
@@ -438,7 +438,7 @@ ROADMAP = [
             # startup; if it reads back as true on a freshly-booted
             # board, the HDL DC blocker is shipped, wired, and on.
             #
-            # If /api/lsm_control isn't on the binary the check below
+            # If /api/control_lsm_control isn't on the binary the check below
             # for Phase 6G.2 will catch that separately.
             s.get("lsm_control") is not None
             and s["lsm_control"].get("lsm_dc_block_enable") is True
@@ -448,7 +448,7 @@ ROADMAP = [
             "closeout binary defaults this to true at startup, so "
             "either the running binary predates Phase 6G.1 (rebuild "
             "p25-httpd in tezuka_fw and re-flash) or someone toggled "
-            "it off via /api/lsm_control?dc_block=0 (re-enable with "
+            "it off via /api/control_lsm_control?dc_block=0 (re-enable with "
             "?dc_block=1)."
         ),
     },
@@ -457,20 +457,20 @@ ROADMAP = [
     # first one and reports it as "the next thing to build".
     {
         "phase": "Phase 6G.2",
-        "name": "Runtime DC blocker bypass via /api/lsm_control endpoint",
+        "name": "Runtime DC blocker bypass via /api/control_lsm_control endpoint",
         "check": lambda s: (
-            # Probes /api/lsm_control directly. Returns False if the
+            # Probes /api/control_lsm_control directly. Returns False if the
             # endpoint isn't on the running binary (404 -> JSONDecodeError
             # -> snapshot["lsm_control"] is None).
             s.get("lsm_control") is not None
             and "lsm_dc_block_enable" in s["lsm_control"]
         ),
         "next_step": (
-            "/api/lsm_control endpoint not present in the running binary. "
+            "/api/control_lsm_control endpoint not present in the running binary. "
             "Rebuild p25-httpd from main (commit 5fcb0e3 or later) and "
             "re-flash via the Tezuka build pipeline. Once present, the "
             "DC blocker can be A/B tested at runtime via "
-            "curl 'http://192.168.2.1:8080/api/lsm_control?dc_block=0|1' "
+            "curl 'http://192.168.2.1:8080/api/control_lsm_control?dc_block=0|1' "
             "instead of ssh + devmem on the board."
         ),
     },

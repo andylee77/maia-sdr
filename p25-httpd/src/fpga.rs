@@ -46,11 +46,18 @@ pub struct IpCore {
     /// the control side. UIO device `p25-traffic-lsm-dibit`,
     /// physical address `0x1B00_0000` (8 x 4 KB ring).
     traffic_lsm_dibit_dma: RxBuffer,
+    /// 2026-04-16 chain-symmetry fix: traffic-side post-DDC IQ ring
+    /// DMA, mirror of `iq_dma` on the control side. UIO device
+    /// `p25-traffic-iq`, physical address `0x1C00_0000` (8 × 32 KB
+    /// ring). Feeds the dashboard constellation scatter and
+    /// offline traffic-LSM cross-check on the PS side.
+    traffic_iq_dma: RxBuffer,
     dibit_last_addr: Option<u32>,
     traffic_last_addr: Option<u32>,
     iq_last_addr: Option<u32>,
     lsm_dibit_last_addr: Option<u32>,
     traffic_lsm_dibit_last_addr: Option<u32>,
+    traffic_iq_last_addr: Option<u32>,
 }
 
 impl IpCore {
@@ -122,6 +129,12 @@ impl IpCore {
         let traffic_lsm_dibit_dma = RxBuffer::new("p25-traffic-lsm-dibit")
             .await
             .context("failed to open p25-traffic-lsm-dibit DMA buffer")?;
+        // 2026-04-16: traffic-side post-DDC IQ ring (8 × 32 KB),
+        // mirror of `iq_dma` on the control side. Requires Tezuka DT
+        // carve-out for p25_traffic_iq_dma@1c000000.
+        let traffic_iq_dma = RxBuffer::new("p25-traffic-iq")
+            .await
+            .context("failed to open p25-traffic-iq DMA buffer")?;
 
         let ip_core = IpCore {
             registers,
@@ -130,11 +143,13 @@ impl IpCore {
             iq_dma,
             lsm_dibit_dma,
             traffic_lsm_dibit_dma,
+            traffic_iq_dma,
             dibit_last_addr: None,
             traffic_last_addr: None,
             iq_last_addr: None,
             lsm_dibit_last_addr: None,
             traffic_lsm_dibit_last_addr: None,
+            traffic_iq_last_addr: None,
         };
 
         let interrupt_handler = InterruptHandler::new(uio, interrupt_registers);
@@ -603,6 +618,55 @@ impl IpCore {
     /// samples = ~131 ms at 62.5 kSPS).
     pub fn read_iq_buffers(&mut self) -> Vec<&[u8]> {
         self.read_dma_buffers(DmaChannel::Iq)
+    }
+
+    // ── Traffic-channel post-DDC IQ ring DMA (2026-04-16) ────────
+    //
+    // Mirror of the control-side iq_dma accessors above, targeting the
+    // traffic-chain equivalent at 0x1C00_0000. Used by the dashboard
+    // constellation (software Gardner TED picks symbol-time points out
+    // of the post-DDC IQ stream) and by offline traffic-LSM software
+    // cross-validation.
+
+    /// Enables or disables the traffic-side post-DDC IQ ring DMA.
+    pub fn set_traffic_iq_dma_enable(&self, enable: bool) {
+        self.registers
+            .traffic_iq_dma_control()
+            .modify(|_, w| w.traffic_iq_enable().bit(enable));
+    }
+
+    /// Index of the most recently completed traffic IQ sub-buffer.
+    pub fn traffic_iq_last_buffer(&self) -> u8 {
+        self.registers
+            .traffic_iq_dma_status()
+            .read()
+            .last_buffer()
+            .bits()
+    }
+
+    /// Reads and clears the traffic IQ ring overflow latch.
+    pub fn traffic_iq_overflow(&self) -> bool {
+        self.registers
+            .traffic_iq_dma_status()
+            .read()
+            .traffic_iq_overflow()
+            .bit()
+    }
+
+    /// Current traffic IQ DMA AW write address (debug).
+    pub fn traffic_iq_next_address(&self) -> u32 {
+        self.registers
+            .traffic_iq_next_address()
+            .read()
+            .next_address()
+            .bits()
+    }
+
+    /// Reads new traffic IQ ring sub-buffers since the last call.
+    /// Same 32-KB-per-buffer, 8192-complex-sample-per-buffer layout as
+    /// `read_iq_buffers` for control.
+    pub fn read_traffic_iq_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::TrafficIq)
     }
 
     // ── LSM chain (Phase 6E.9/6E.10) ─────────────────────────────
@@ -1127,6 +1191,15 @@ impl IpCore {
                     .traffic_lsm_dibit_last_buffer()
                     .bits() as u32,
             ),
+            DmaChannel::TrafficIq => (
+                &self.traffic_iq_dma,
+                &mut self.traffic_iq_last_addr,
+                self.registers
+                    .traffic_iq_dma_status()
+                    .read()
+                    .last_buffer()
+                    .bits() as u32,
+            ),
         };
 
         let num_bufs = dma.num_buffers();
@@ -1182,6 +1255,7 @@ enum DmaChannel {
     Iq,
     LsmDibit,
     TrafficLsmDibit,  // Phase 7A.2
+    TrafficIq,        // 2026-04-16
 }
 
 /// Snapshot of the `lsm_status` register read in a single bus access.
@@ -1424,6 +1498,7 @@ pub struct InterruptHandler {
     notify_iq_dma: Arc<Notify>,
     notify_lsm_dibit_dma: Arc<Notify>,
     notify_traffic_lsm_dibit_dma: Arc<Notify>,  // Phase 7A.2
+    notify_traffic_iq_dma: Arc<Notify>,  // 2026-04-16
 }
 
 impl InterruptHandler {
@@ -1436,6 +1511,7 @@ impl InterruptHandler {
             notify_iq_dma: Arc::new(Notify::new()),
             notify_lsm_dibit_dma: Arc::new(Notify::new()),
             notify_traffic_lsm_dibit_dma: Arc::new(Notify::new()),
+            notify_traffic_iq_dma: Arc::new(Notify::new()),
         }
     }
 
@@ -1481,6 +1557,15 @@ impl InterruptHandler {
         }
     }
 
+    /// Returns a waiter for traffic-side post-DDC IQ ring DMA
+    /// completion interrupts (2026-04-16 chain-symmetry fix).
+    /// Mirror of `waiter_iq_dma` on the control side.
+    pub fn waiter_traffic_iq_dma(&self) -> InterruptWaiter {
+        InterruptWaiter {
+            notify: self.notify_traffic_iq_dma.clone(),
+        }
+    }
+
     /// Runs the interrupt handler loop.
     ///
     /// `irq_stats` is the shared `Arc<Mutex<IrqStats>>` from the
@@ -1499,6 +1584,7 @@ impl InterruptHandler {
         let mut iq_irqs: u64 = 0;
         let mut lsm_dibit_irqs: u64 = 0;
         let mut traffic_lsm_dibit_irqs: u64 = 0;  // Phase 7A.2
+        let mut traffic_iq_irqs: u64 = 0;  // 2026-04-16
         loop {
             self.uio.irq_enable().await?;
             self.uio.irq_wait().await?;
@@ -1509,6 +1595,7 @@ impl InterruptHandler {
             let iq = interrupts.iq_dma().bit();
             let lsm_dibit = interrupts.lsm_dibit_dma().bit();
             let traffic_lsm_dibit = interrupts.traffic_lsm_dibit_dma().bit();
+            let traffic_iq = interrupts.traffic_iq_dma().bit();
             total_irqs += 1;
             if dibit {
                 dibit_irqs += 1;
@@ -1530,6 +1617,10 @@ impl InterruptHandler {
                 traffic_lsm_dibit_irqs += 1;
                 self.notify_traffic_lsm_dibit_dma.notify_waiters();
             }
+            if traffic_iq {
+                traffic_iq_irqs += 1;
+                self.notify_traffic_iq_dma.notify_waiters();
+            }
             // Update shared stats. Cheap async lock, no contention
             // because nothing else writes this struct.
             {
@@ -1544,6 +1635,7 @@ impl InterruptHandler {
                 s.iq = iq_irqs;
                 s.lsm_dibit = lsm_dibit_irqs;
                 s.traffic_lsm_dibit = traffic_lsm_dibit_irqs;
+                s.traffic_iq = traffic_iq_irqs;
                 s.last_at = Some(now);
             }
             // Log first 10 then every 64th to avoid flooding
@@ -1552,9 +1644,11 @@ impl InterruptHandler {
                     target: "p25_irq",
                     "IRQ #{total_irqs}: dibit={dibit} traffic={traffic} iq={iq} \
                      lsm_dibit={lsm_dibit} traffic_lsm_dibit={traffic_lsm_dibit} \
+                     traffic_iq={traffic_iq} \
                      (totals dibit={dibit_irqs} traffic={traffic_irqs} \
                      iq={iq_irqs} lsm_dibit={lsm_dibit_irqs} \
-                     traffic_lsm_dibit={traffic_lsm_dibit_irqs})"
+                     traffic_lsm_dibit={traffic_lsm_dibit_irqs} \
+                     traffic_iq={traffic_iq_irqs})"
                 );
             }
         }

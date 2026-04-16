@@ -124,6 +124,41 @@ class P25Config:
         self.traffic_lsm_dibit_dma_num_buffers_log2 = 3   # 8 sub-buffers
         self.traffic_lsm_dibit_dma_buffer_size = 0x1000   # 4 KB per sub-buffer
 
+        # ── Traffic channel post-DDC IQ ring DMA (2026-04-16) ─────
+        # Mirrors the control-side `iq_dma` (Phase 6C) for the
+        # traffic chain: taps `traffic_ddc.re_out`/`im_out` at 62.5
+        # kSPS and streams the packed 64-bit IQ words to DDR.
+        #
+        # Motivation: the control-vs-traffic chain audit (2026-04-16)
+        # found that traffic had no post-DDC IQ tap, so software
+        # features on the control side (/api/control_iq_capture,
+        # offline software LSM pipeline cross-check, planned
+        # constellation scatter for traffic-chain debug) had no
+        # traffic-side equivalent. Adding full iq_dma parity closes
+        # the asymmetry and unblocks the constellation dashboard
+        # without a separate HDL BRAM-ring one-off.
+        #
+        # Address 0x1C00_0000 continues the 0x100_0000 spacing
+        # pattern established in the earlier rings:
+        #   0x1700 control C4FM dibit
+        #   0x1800 traffic C4FM dibit
+        #   0x1900 control IQ  (256 KB)
+        #   0x1A00 control LSM dibit
+        #   0x1B00 traffic LSM dibit
+        #   0x1C00 traffic IQ  (256 KB) ← new
+        # 0x1D00 onwards remains reserved for the Phase 7G
+        # channelizer slot rings.
+        #
+        # Layout mirrors `iq_dma` exactly (256 KB, 8 × 32 KB
+        # sub-buffers) — same bandwidth math (62.5 kSPS × 4 B =
+        # 250 KB/s, ~7.8 IRQ/s) and the same PS-side reader logic
+        # just swaps the DMA base address.
+        #
+        # Ring base must be aligned to total ring size (256 KB).
+        self.traffic_iq_dma_address = 0x1C00_0000
+        self.traffic_iq_dma_num_buffers_log2 = 3   # 8 sub-buffers
+        self.traffic_iq_dma_buffer_size = 0x8000   # 32 KB per sub-buffer
+
     @property
     def dibit_dma_num_buffers(self):
         return 1 << self.dibit_dma_num_buffers_log2
@@ -165,6 +200,15 @@ class P25Config:
         return (self.traffic_lsm_dibit_dma_num_buffers
                 * self.traffic_lsm_dibit_dma_buffer_size)
 
+    @property
+    def traffic_iq_dma_num_buffers(self):
+        return 1 << self.traffic_iq_dma_num_buffers_log2
+
+    @property
+    def traffic_iq_dma_total_size(self):
+        return (self.traffic_iq_dma_num_buffers
+                * self.traffic_iq_dma_buffer_size)
+
     def validate(self):
         assert self.platform >= 0 and self.platform < 256
         # Ring base addresses must be aligned to total ring size
@@ -185,3 +229,8 @@ class P25Config:
             f'traffic_lsm_dibit_dma_address ' \
             f'{self.traffic_lsm_dibit_dma_address:#x} not aligned to ' \
             f'ring size {self.traffic_lsm_dibit_dma_total_size:#x}'
+        assert self.traffic_iq_dma_address & \
+            (self.traffic_iq_dma_total_size - 1) == 0, \
+            f'traffic_iq_dma_address ' \
+            f'{self.traffic_iq_dma_address:#x} not aligned to ' \
+            f'ring size {self.traffic_iq_dma_total_size:#x}'

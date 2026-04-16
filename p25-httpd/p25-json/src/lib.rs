@@ -40,6 +40,15 @@ pub struct SystemInfo {
     /// useless for this check). Bumped on every feature-flag change.
     #[serde(default)]
     pub build: Option<String>,
+    /// 2026-04-16: P25 air-interface phase label inferred from the
+    /// control channel's band advertisements. "P25 P1" = only
+    /// IDEN_UPDATE (0x3D) or IDEN_UPDATE_VUHF (0x34) bands seen.
+    /// "P25 P1+P2" = at least one IDEN_UPDATE_TDMA (0x33) band seen,
+    /// meaning the site supports Phase 2 TDMA traffic channels. The
+    /// dashboard shows this as the "Phase" field in the System Type
+    /// row. Mirrors SDRTrunk's inference from the same TSBK stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 /// Active voice channel grant

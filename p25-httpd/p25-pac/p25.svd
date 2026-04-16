@@ -18,7 +18,7 @@
       <access>read-write</access>
       <addressBlock>
         <offset>0</offset>
-        <size>0xe0</size>
+        <size>0xe8</size>
         <usage>registers</usage>
       </addressBlock>
       <registers>
@@ -116,6 +116,12 @@
               <name>traffic_lsm_dibit_dma</name>
               <description>traffic_lsm_dibit_dma</description>
               <bitRange>[4:4]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>traffic_iq_dma</name>
+              <description>traffic_iq_dma</description>
+              <bitRange>[5:5]</bitRange>
               <access>read-only</access>
             </field>
           </fields>
@@ -862,6 +868,54 @@
               <name>agc_mag_dbg</name>
               <description>agc_mag_dbg</description>
               <bitRange>[31:16]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>traffic_iq_dma_status</name>
+          <description>traffic_iq_dma_status</description>
+          <addressOffset>0xe0</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>traffic_iq_overflow</name>
+              <description>traffic_iq_overflow</description>
+              <bitRange>[0:0]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>last_buffer</name>
+              <description>last_buffer</description>
+              <bitRange>[3:1]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>traffic_iq_dma_control</name>
+          <description>traffic_iq_dma_control</description>
+          <addressOffset>0xe4</addressOffset>
+          <access>read-write</access>
+          <fields>
+            <field>
+              <name>traffic_iq_enable</name>
+              <description>traffic_iq_enable</description>
+              <bitRange>[0:0]</bitRange>
+              <access>read-write</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>traffic_iq_next_address</name>
+          <description>traffic_iq_next_address</description>
+          <addressOffset>0xe8</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>next_address</name>
+              <description>next_address</description>
+              <bitRange>[31:0]</bitRange>
               <access>read-only</access>
             </field>
           </fields>

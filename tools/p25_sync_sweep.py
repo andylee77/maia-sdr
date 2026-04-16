@@ -67,7 +67,7 @@ def measure(target: str, duration_sec: int) -> dict:
     reset(target)
     time.sleep(duration_sec)
     op = fetch(target, "/api/tsbk_opcodes")
-    dump = fetch(target, "/api/lsm_dibit_dump")
+    dump = fetch(target, "/api/control_lsm_dibit_dump")
 
     pos = op.get("by_position", {})
     pipeline = dump.get("pipeline", {})

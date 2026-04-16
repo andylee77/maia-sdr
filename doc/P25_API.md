@@ -44,14 +44,14 @@ for the retirement rationale and inventory of what moved where.
 | 7 | `/api/irq_stats` | GET | JSON | Per-IRQ wait counts and average wait times (dibit DMA, LSM dibit DMA, traffic DMA, traffic-LSM dibit DMA) |
 | 8 | `/api/decoder_compare` | GET | JSON | 3-column side-by-side: `ps_c4fm` (dormant fallback), `ps_lsm` (PS framer on PL dibits), `pl_hdl` (FPGA gateware heartbeat) |
 | 9 | `/api/dibit_dump` | GET | JSON | Raw dibit DMA dump (inner/outer ratio, raw_duid histogram) |
-| 10 | `/api/lsm_dibit_dump` | GET | JSON | Raw LSM dibit DMA dump from the HDL LSM chain |
-| 11 | `/api/lsm_capture` | GET | JSON | 2048-dibit rolling capture from the PS LSM framer's ring buffer (Phase 6F.2h) |
-| 12 | `/api/lsm_capture_aligned` | GET | JSON | Arm next-sync-aligned capture (sync dibits + NID + TSDU body + BCH result) |
+| 10 | `/api/control_lsm_dibit_dump` | GET | JSON | Raw LSM dibit DMA dump from the HDL LSM chain |
+| 11 | `/api/control_iq_capture` | GET | JSON | 2048-dibit rolling capture from the PS LSM framer's ring buffer (Phase 6F.2h) |
+| 12 | `/api/control_iq_capture_aligned` | GET | JSON | Arm next-sync-aligned capture (sync dibits + NID + TSDU body + BCH result) |
 | 13 | `/api/tsbk_opcodes` | GET | JSON | Per-opcode + per-block-position histogram with parsed/unparsed flag and MFID breakdown |
 | 14 | `/api/recent_tsbks` | GET | JSON | Newest 50 TSBKs as `{age_secs, block, summary}` strings |
 | 15 | `/api/sync_tune` | GET, PUT | JSON | Read or set the runtime sync threshold (Phase 6F.7+) |
 | 16 | `/api/decoder_reset` | GET, POST | JSON | Reset the decoder counters to zero (for clean post-flash measurements) |
-| 17 | `/api/lsm_control` | GET | JSON | Read all 3 `lsm_control` bits + optional `?dc_block=0/1` query-param shortcut to toggle the DC blocker without ssh+devmem (Phase 6G.2) |
+| 17 | `/api/control_lsm_control` | GET | JSON | Read all 3 `lsm_control` bits + optional `?dc_block=0/1` query-param shortcut to toggle the DC blocker without ssh+devmem (Phase 6G.2) |
 | 18 | `/api/traffic` | GET | JSON | **Phase 7A.1** -- traffic-channel grant follower state, dibit DMA counters, optional `?reset_stats=1`, `?follower=on/off`, `?retune_hz=N`, `?demod_enable=0/1` manual controls |
 | 19 | `/api/aliases` | GET, PUT | `AliasMap` | Get or set the talkgroup-id → display-name map |
 | 20 | `/ws/events` | WS upgrade | JSON frames | Real-time TSBK event stream (`TsbkEvent`) — one frame per parsed TSBK |
@@ -286,7 +286,7 @@ rather than including the early acquisition window. Returns:
 {"ok": true, "note": "lsm_decoder counters + histograms cleared. System identity, bands, grants, and aliases preserved."}
 ```
 
-### `GET /api/lsm_control`
+### `GET /api/control_lsm_control`
 
 Phase 6G.2. Read-back of all three `lsm_control` register bits, with
 an optional `?dc_block=0/1` query-param shortcut to toggle the DC
@@ -297,13 +297,13 @@ and the `devmem` escape hatch is still there if you really need it.
 
 ```bash
 # Read current state:
-curl http://192.168.2.1:8080/api/lsm_control
+curl http://192.168.2.1:8080/api/control_lsm_control
 
 # Disable the DC blocker (and read back to confirm):
-curl 'http://192.168.2.1:8080/api/lsm_control?dc_block=0'
+curl 'http://192.168.2.1:8080/api/control_lsm_control?dc_block=0'
 
 # Re-enable:
-curl 'http://192.168.2.1:8080/api/lsm_control?dc_block=1'
+curl 'http://192.168.2.1:8080/api/control_lsm_control?dc_block=1'
 ```
 
 Response shape:
@@ -704,7 +704,7 @@ fetched on a 2-second interval; the WebSocket runs in parallel.
 | HDL LSM NID Ring (last 32) | `/api/hdl_lsm.nid_ring` | per-NID `{t_ms, nac, duid, valid, n_err, sync_d, drop, pll, sp}` |
 | IRQ Source Counters | `/api/irq_stats` | per-source IRQ count + rate (dibit/traffic/lsm_dibit/traffic_lsm_dibit) |
 | PS C4FM Dibit Stream | `/api/dibit_dump` | per-bucket dibit histogram, inner/outer ratio, raw_duid histogram (dormant on LSM sites) |
-| PS LSM Dibit Stream | `/api/lsm_dibit_dump` | same shape as `/api/dibit_dump` but reading from `lsm_decoder`, i.e. the PL HDL LSM dibit output |
+| PS LSM Dibit Stream | `/api/control_lsm_dibit_dump` | same shape as `/api/dibit_dump` but reading from `lsm_decoder`, i.e. the PL HDL LSM dibit output |
 | Active Grants | `/api/grants` | TG-deduped, source-preserved across updates |
 | Frequency Bands | `/api/bands` | unioned across both decoders |
 | Live Activity | **`/ws/events`** | the only WebSocket consumer; richer than `recent_tsbks` |
@@ -713,8 +713,8 @@ fetched on a 2-second interval; the WebSocket runs in parallel.
 Endpoints **not** consumed by the dashboard (snapshot / debugging
 tools only): `/api/recent_tsbks` (used by `tools/p25_check_phase6f4.py`
 and `tools/p25_status_and_next_step.py`), `/api/tsbk_opcodes`
-(opcode coverage report), `/api/lsm_capture` and
-`/api/lsm_capture_aligned` (raw IQ pulls for offline cross-validation),
+(opcode coverage report), `/api/control_iq_capture` and
+`/api/control_iq_capture_aligned` (raw IQ pulls for offline cross-validation),
 `/api/sync_tune` and `/api/decoder_reset` (operator knobs).
 
 ---
@@ -731,7 +731,7 @@ implemented (in roughly the order they'd be useful):
 | `GET /api/audio.opus` (live decoded voice) | Requires IMBE/AMBE vocoder + audio output | Significant + licensing question |
 
 These are real new features for Phase 7+ with their own design
-questions. The previously-missing `/api/lsm_control` runtime
+questions. The previously-missing `/api/control_lsm_control` runtime
 read/write endpoint shipped in Phase 6G.2 and is now in the table
 above.
 

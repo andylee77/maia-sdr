@@ -16,7 +16,7 @@ use std::sync::Arc;
 use axum::{
     extract::{ws::WebSocket, Query, State, WebSocketUpgrade},
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use tokio::sync::{broadcast, RwLock};
@@ -65,6 +65,13 @@ pub struct AppState {
     pub boot_control_freq: u64,
     pub boot_lo_ppm: f64,
     pub boot_hardwaregain: f64,
+    /// Live RX LO tracking. Initialised from boot_rx_lo and updated by
+    /// get_reinit after a successful set_rx_lo_frequency. The grant
+    /// follower in main.rs reads this on every retune so its DDC NCO
+    /// offset math stays correct when rx_lo is moved mid-session via
+    /// /api/reinit?rx_lo=... (fixes the stale-follower_rx_lo bug
+    /// flagged in the 2026-04-15 session close).
+    pub current_rx_lo: std::sync::Arc<std::sync::atomic::AtomicI64>,
     /// Phase 6F.2: PL HDL LSM chain runtime stats, populated by the
     /// HDL LSM heartbeat task. Read by `/api/hdl_lsm`. Single source
     /// of truth for everything the heartbeat task observes about the
@@ -127,6 +134,52 @@ pub struct AppState {
     /// forwarder, and vocoder task; consumed by the dashboard's
     /// `/api/log` endpoint.
     pub event_log: Arc<crate::event_log::EventLog>,
+    /// 2026-04-16: ring of recent call recordings. The recorder
+    /// task in main.rs subscribes to audio_tx and populates this.
+    /// Consumed by `/api/recordings` (JSON list) and
+    /// `/api/recordings/{id}.wav` (file download).
+    pub recordings: crate::recorder::RecordingStore,
+    /// 2026-04-16: P25 modulation mode currently driving the
+    /// dashboard's primary decoder read path + grant-follower
+    /// dispatch. SDRTrunk-style auto-detect: a background task
+    /// compares `decoder.nid_decoded_ok` (C4FM) vs
+    /// `lsm_decoder.nid_decoded_ok` (LSM) delta every second and
+    /// picks the winner. Manual override via `/api/modulation`.
+    ///
+    /// Encoding:
+    ///   0 = Auto (probing; defaults to LSM until first valid NID)
+    ///   1 = C4FM (force control chain, e.g. FP&L 935, St Johns 774)
+    ///   2 = LSM  (force LSM simulcast chain, e.g. Clay/Duval)
+    pub active_modulation: Arc<std::sync::atomic::AtomicU8>,
+}
+
+impl AppState {
+    /// Returns a reference to the currently-active control-channel
+    /// decoder based on the resolved modulation. For Auto mode, picks
+    /// LSM until the auto-detect task has winners to report.
+    pub fn active_control_decoder(
+        &self,
+    ) -> &Arc<RwLock<ControlChannelDecoder>> {
+        match self
+            .active_modulation
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            1 => &self.decoder,
+            _ => &self.lsm_decoder,
+        }
+    }
+
+    /// Human-readable label for the active modulation.
+    pub fn active_modulation_label(&self) -> &'static str {
+        match self
+            .active_modulation
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            1 => "C4FM",
+            2 => "LSM",
+            _ => "Auto",
+        }
+    }
 }
 
 /// Build the HTTP router
@@ -143,9 +196,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/irq_stats", get(get_irq_stats))
         .route("/api/decoder_compare", get(get_decoder_compare))
         .route("/api/dibit_dump", get(get_dibit_dump))
-        .route("/api/lsm_dibit_dump", get(get_lsm_dibit_dump))
-        .route("/api/lsm_capture", get(get_lsm_capture))
-        .route("/api/lsm_capture_aligned", get(get_lsm_capture_aligned))
+        // 2026-04-16 rename: /api/lsm_* → /api/control_lsm_* so the
+        // soon-to-be-added /api/traffic_iq_capture + traffic LSM
+        // endpoints have a symmetric counterpart on the control side.
+        // Previously the "lsm" prefix was misleading for iq_capture
+        // (the IQ ring is post-DDC, before the LSM demod); now each
+        // chain's IQ capture is explicitly named by channel role.
+        .route("/api/control_lsm_dibit_dump", get(get_control_lsm_dibit_dump))
+        .route("/api/control_iq_capture", get(get_control_iq_capture))
+        .route("/api/control_iq_capture_aligned", get(get_control_iq_capture_aligned))
         .route("/api/tsbk_opcodes", get(get_tsbk_opcodes))
         .route("/api/recent_tsbks", get(get_recent_tsbks))
         // Phase 6F.7 testing knobs. Both endpoints accept GET with
@@ -157,12 +216,13 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/decoder_reset",
             get(get_decoder_reset).post(post_decoder_reset),
         )
-        // Phase 6G.2: runtime read/write of the lsm_control register
-        // (lsm_enable, lsm_dibit_dma_enable, lsm_dc_block_enable). The
-        // dc_block_enable bit is the runtime A/B knob the doc 030 PL
-        // port roadmap wanted -- previously had to be poked via
-        // ssh + devmem on the board.
-        .route("/api/lsm_control", get(get_lsm_control))
+        // Phase 6G.2: runtime read/write of the control-chain
+        // `lsm_control` HDL register (lsm_enable, lsm_dibit_dma_enable,
+        // lsm_dc_block_enable). 2026-04-16 rename: was /api/lsm_control;
+        // now /api/control_lsm_control so the traffic-side counterpart
+        // /api/traffic_lsm_control has a symmetric sibling. The HDL
+        // register name ("lsm_control") is unchanged.
+        .route("/api/control_lsm_control", get(get_control_lsm_control))
         // Phase 7A.1: traffic-channel grant follower state + dibit
         // counters. Read-only diagnostic surface for the singleton
         // voice channel scaffold; will gain monitor-list write
@@ -188,6 +248,27 @@ pub fn router(state: Arc<AppState>) -> Router {
         // rebuild + flash. Primary recovery path when anything has
         // clobbered AD9361 / DDC state.
         .route("/api/reinit", get(get_reinit))
+        // Call recording + playback.
+        .route("/api/recordings", get(get_recordings))
+        .route("/api/recordings/{id}", get(get_recording_file))
+        // Modulation selector (C4FM / LSM / Auto). SDRTrunk-style.
+        .route("/api/modulation", get(get_modulation).put(put_modulation))
+        // Browser-pushed wall-clock sync. Zero-infra alternative to
+        // NTP for boards on isolated networks (RNDIS-over-USB, air-
+        // gapped labs). Dashboard auto-posts Date.now() on load.
+        .route("/api/set_time", post(post_set_time))
+        // Narrowband software FFT (2026-04-16, Option A). Runs on the
+        // Zynq ARM over the existing post-DDC IQ ring for one chain
+        // at a time. See src/spectrum.rs. Wideband view (pre-DDC, 8
+        // MSPS) deferred to a future HDL bake.
+        .route("/api/spectrum", get(get_spectrum))
+        // Constellation scatter for the Debug tab — reuses the
+        // retired Phase 6D `lsm::demod` software port to extract
+        // post-PLL symbol-time (I, Q) points from the same iq_dma
+        // rings the /api/spectrum endpoint reads.
+        .route("/api/constellation", get(get_constellation))
+        // Self-describing API catalogue for the dashboard's API tab.
+        .route("/api/endpoints", get(get_endpoints))
         .route("/ws/events", get(ws_events))
         .route("/ws/audio", get(ws_audio))
         .with_state(state)
@@ -288,7 +369,16 @@ async fn get_reinit(
     let mut errors: Vec<String> = Vec::new();
 
     match state.ad9361.set_rx_lo_frequency(rx_lo).await {
-        Ok(_) => applied.push(format!("rx_lo={rx_lo}")),
+        Ok(_) => {
+            // Publish the live rx_lo so the grant follower's retune
+            // math picks it up on the next grant (2026-04-16 stale
+            // follower_rx_lo fix).
+            state.current_rx_lo.store(
+                rx_lo as i64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            applied.push(format!("rx_lo={rx_lo}"));
+        }
         Err(e) => errors.push(format!("rx_lo: {e}")),
     }
     match state.ad9361.set_sampling_frequency(sr).await {
@@ -369,18 +459,750 @@ async fn get_reinit(
     }))
 }
 
+/// `GET /api/recordings`
+///
+/// Returns the ring of recent call recordings, newest first. Each
+/// entry has {id, talkgroup, started_unix_ms, duration_ms,
+/// size_bytes}. Download via `/api/recordings/{id}.wav` or
+/// `/api/recordings/{id}`.
+async fn get_recordings(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let ring = state.recordings.lock().await;
+    let items: Vec<_> = ring.iter().rev().cloned().collect();
+    Json(serde_json::json!({
+        "count": items.len(),
+        "max": crate::recorder::MAX_RECORDINGS,
+        "items": items,
+    }))
+}
+
+/// `GET /api/recordings/{id}`
+///
+/// Streams the WAV file for a recording by id. Trailing `.wav` in
+/// the path is tolerated (strip it). Returns 404 if the id isn't in
+/// the current ring (evicted or never existed).
+async fn get_recording_file(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id_str): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+
+    // Strip optional .wav suffix so both `/api/recordings/123` and
+    // `/api/recordings/123.wav` work.
+    let id_clean = id_str.trim_end_matches(".wav");
+    let id: u64 = match id_clean.parse() {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("bad id '{id_str}'"),
+            )
+                .into_response();
+        }
+    };
+
+    let path = {
+        let ring = state.recordings.lock().await;
+        ring.iter().find(|e| e.id == id).map(|e| e.path.clone())
+    };
+    let Some(path) = path else {
+        return (StatusCode::NOT_FOUND, "recording not found").into_response();
+    };
+
+    // Simple blocking file read — WAVs are at most a few MB and
+    // tmpfs-backed. Avoid axum's Body::from_stream machinery.
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("file read failed: {e}"),
+            )
+                .into_response();
+        }
+    };
+    let filename = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("recording.wav")
+        .to_string();
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "audio/wav".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("inline; filename=\"{filename}\""),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+/// `GET /api/spectrum?chain=control|traffic`
+///
+/// Runs a 4096-point FFT over the most recent 65.5 ms of the
+/// selected post-DDC IQ ring. Returns magnitude in dBFS, fftshifted
+/// so bin 0 is the most-negative frequency (-31.25 kHz relative to
+/// the chain's DDC center). `chain` defaults to `control`.
+///
+/// The traffic chain requires the bake #2 bitstream flashed; on
+/// older binaries the endpoint returns an error explaining the
+/// missing UIO device. The control chain works on any bitstream
+/// that has the Phase 6C `iq_dma` ring.
+#[cfg(target_os = "linux")]
+async fn get_spectrum(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let chain = params
+        .get("chain")
+        .map(String::as_str)
+        .unwrap_or("control");
+
+    // Pull buffers from the requested ring. read_*_buffers() is a
+    // rolling-window reader — call it once to advance our bookkeeping,
+    // then concatenate what we got. If the first call returns empty
+    // (fresh session or we're mid-burst), retry once after a short
+    // sleep so the first spectrum request after boot doesn't just 404.
+    let bytes: Vec<u8> = {
+        let mut core = state.ip_core.lock().await;
+        let mut acc: Vec<u8> = Vec::new();
+        for _retry in 0..2 {
+            let bufs: Vec<&[u8]> = match chain {
+                "control" => core.read_iq_buffers(),
+                "traffic" => core.read_traffic_iq_buffers(),
+                other => {
+                    return Json(serde_json::json!({
+                        "ok": false,
+                        "error": format!(
+                            "unknown chain '{other}'; expected control|traffic"
+                        ),
+                    }));
+                }
+            };
+            if !bufs.is_empty() {
+                for b in bufs {
+                    acc.extend_from_slice(b);
+                }
+                break;
+            }
+            // Drop the lock between retries so the DMA can make
+            // progress on the producer side.
+            drop(core);
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            core = state.ip_core.lock().await;
+        }
+        acc
+    };
+
+    let Some(snap) = crate::spectrum::spectrum_from_bytes(&bytes) else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!(
+                "not enough IQ samples for FFT_SIZE={} on chain={} \
+                 ({} samples available)",
+                crate::spectrum::FFT_SIZE,
+                chain,
+                bytes.len() / 4,
+            ),
+        }));
+    };
+
+    // Center frequency for the display axis. Control chain =
+    // boot_control_freq (matches what /api/stats reports as the
+    // current tuned control center); traffic chain = RX LO +
+    // TrafficManager.last_offset_hz (the follower's per-call NCO).
+    // Fall back to RX LO if the traffic chain hasn't been retuned.
+    let rx_lo = state
+        .ad9361
+        .get_rx_lo_frequency()
+        .await
+        .unwrap_or(state.boot_rx_lo) as f64;
+    let center_hz: f64 = match chain {
+        "control" => state.boot_control_freq as f64,
+        "traffic" => {
+            let mgr = state.traffic_manager.lock().await;
+            rx_lo + mgr.last_offset_hz as f64
+        }
+        _ => rx_lo,
+    };
+
+    Json(serde_json::json!({
+        "ok":              true,
+        "chain":           chain,
+        "center_hz":       center_hz,
+        "sample_rate_hz":  snap.sample_rate_hz,
+        "fft_size":        snap.mag_db.len(),
+        "mag_db":          snap.mag_db,
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn get_spectrum(
+    State(_state): State<Arc<AppState>>,
+    Query(_params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "error": "spectrum only available on the target (linux/arm)",
+    }))
+}
+
+/// `GET /api/constellation?chain=control|traffic`
+///
+/// Runs the retired Phase 6D software LSM demod pipeline
+/// (`lsm::demod::demod_lsm`) over a fresh IQ buffer and returns the
+/// post-PLL soft-symbol (I, Q) points. The dashboard renders these
+/// as a 4-quadrant scatter plot so the user can visually inspect
+/// phase noise, radial compression, and quadrant bias on either
+/// chain. Particularly useful on the traffic chain for diagnosing
+/// robotic-audio / marginal-decode symptoms from scatter cloud
+/// shape.
+#[cfg(target_os = "linux")]
+async fn get_constellation(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let chain = params
+        .get("chain")
+        .map(String::as_str)
+        .unwrap_or("traffic");
+
+    // Same 2-try read pattern as /api/spectrum: drop the lock
+    // between retries so the producer can push new samples.
+    let bytes: Vec<u8> = {
+        let mut core = state.ip_core.lock().await;
+        let mut acc: Vec<u8> = Vec::new();
+        for _retry in 0..2 {
+            let bufs: Vec<&[u8]> = match chain {
+                "control" => core.read_iq_buffers(),
+                "traffic" => core.read_traffic_iq_buffers(),
+                other => {
+                    return Json(serde_json::json!({
+                        "ok": false,
+                        "error": format!(
+                            "unknown chain '{other}'; expected control|traffic"
+                        ),
+                    }));
+                }
+            };
+            if !bufs.is_empty() {
+                for b in bufs {
+                    acc.extend_from_slice(b);
+                }
+                break;
+            }
+            drop(core);
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            core = state.ip_core.lock().await;
+        }
+        acc
+    };
+
+    if bytes.len() < 4 * 512 {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!(
+                "not enough IQ samples for constellation on chain={} \
+                 ({} samples available)",
+                chain,
+                bytes.len() / 4,
+            ),
+        }));
+    }
+
+    // Decode interleaved-IQ bytes → Complex32 vec. 2048 samples ≈
+    // 33 ms at 62.5 kSPS, which produces ~157 symbols at 4800 sym/s.
+    // Enough for a dense scatter without over-spending on the JSON
+    // payload size.
+    let n_samples = std::cmp::min(bytes.len() / 4, 2048);
+    let start = bytes.len() - n_samples * 4;
+    let mut iq: Vec<crate::lsm::Complex32> = Vec::with_capacity(n_samples);
+    for chunk in bytes[start..].chunks_exact(4) {
+        let r = i16::from_le_bytes([chunk[0], chunk[1]]) as f32;
+        let i = i16::from_le_bytes([chunk[2], chunk[3]]) as f32;
+        iq.push(crate::lsm::Complex32::new(r, i));
+    }
+
+    // Run the software LSM demod pipeline. `demod_lsm` handles the
+    // /2 decimator + LPF + RRC + timing recovery + PLL rotate +
+    // differential demod steps internally; soft_symbols are the
+    // post-PLL decision-time (I, Q) points we plot. sample_rate is
+    // the post-DDC 62.5 kSPS.
+    let result = crate::lsm::demod::demod_lsm(
+        &iq,
+        crate::spectrum::SAMPLE_RATE_HZ,
+    );
+
+    // Keep the payload small: return up to 512 most recent points
+    // as packed arrays (two parallel f32 vecs + a clip count).
+    let take = std::cmp::min(result.soft_symbols.len(), 512);
+    let start_sym = result.soft_symbols.len() - take;
+    let (i_arr, q_arr): (Vec<f32>, Vec<f32>) = result
+        .soft_symbols[start_sym..]
+        .iter()
+        .map(|s| (s.re, s.im))
+        .unzip();
+
+    Json(serde_json::json!({
+        "ok":         true,
+        "chain":      chain,
+        "count":      take,
+        "i":          i_arr,
+        "q":          q_arr,
+        "pll_final":  result.pll_trace.last().copied().unwrap_or(0.0),
+        "timing_final": result.timing_trace.last().copied().unwrap_or(0.0),
+        "note": "Post-PLL soft-symbol constellation from the retired Phase 6D \
+                 software LSM demod pipeline. 4 clusters expected for a clean LSM \
+                 signal (±1, ±j quadrants).",
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn get_constellation(
+    State(_state): State<Arc<AppState>>,
+    Query(_params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "error": "constellation only available on the target (linux/arm)",
+    }))
+}
+
+/// `GET /api/modulation` — returns current mode + NID-valid rates
+/// for both decoders so the dashboard can show why auto-detect
+/// picked what it did.
+async fn get_modulation(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let c4fm = state.decoder.read().await;
+    let lsm  = state.lsm_decoder.read().await;
+    Json(serde_json::json!({
+        "mode": state.active_modulation.load(std::sync::atomic::Ordering::Relaxed),
+        "label": state.active_modulation_label(),
+        "nid_decoded_ok": {
+            "c4fm": c4fm.nid_decoded_ok,
+            "lsm":  lsm.nid_decoded_ok,
+        },
+        "tsdu_ok": {
+            "c4fm": c4fm.nid_decoded_tsdu,
+            "lsm":  lsm.nid_decoded_tsdu,
+        },
+        "note": "mode: 0=auto, 1=c4fm, 2=lsm. PUT /api/modulation?set=c4fm|lsm|auto to override.",
+    }))
+}
+
+/// `PUT /api/modulation?set=c4fm|lsm|auto` — manual override. When
+/// `auto`, the background auto-detect task picks whichever decoder
+/// is producing more BCH-valid NIDs.
+async fn put_modulation(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let Some(set) = params.get("set") else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "missing ?set=c4fm|lsm|auto",
+        }));
+    };
+    let code: u8 = match set.as_str() {
+        "auto" | "0" => 0,
+        "c4fm" | "1" => 1,
+        "lsm"  | "2" => 2,
+        other => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": format!("unknown mode '{other}'; expected c4fm|lsm|auto"),
+            }));
+        }
+    };
+    state
+        .active_modulation
+        .store(code, std::sync::atomic::Ordering::Relaxed);
+    Json(serde_json::json!({
+        "ok": true,
+        "mode": code,
+        "label": state.active_modulation_label(),
+    }))
+}
+
+/// `POST /api/set_time?unix_ms=<i64>`
+///
+/// Sets the board's wall clock to the given Unix epoch (in ms).
+/// Designed for isolated networks — on an RNDIS-over-USB link or
+/// any setup without routable internet, the standard NTP-on-boot
+/// path fails, and the board sits at 1970-01-01 forever. The
+/// dashboard calls this with `Date.now()` every time it loads, so
+/// the board ends up with whatever time the browser knows. Not as
+/// precise as real NTP (limited to ~HTTP round-trip-jitter) but
+/// good enough for event-log ordering + wall-clock display.
+///
+/// POST (not PUT) because it mutates system state outside /api/.
+#[cfg(target_os = "linux")]
+async fn post_set_time(
+    State(_state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let Some(ms_str) = params.get("unix_ms") else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "missing ?unix_ms=<epoch_ms>",
+        }));
+    };
+    let ms: i64 = match ms_str.parse() {
+        Ok(v) => v,
+        Err(_) => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": format!("bad unix_ms '{ms_str}' (expected integer)"),
+            }));
+        }
+    };
+    // Sanity: 2020-01-01 to 2070-01-01 in milliseconds. Guards
+    // against a misbehaving browser clock / bogus query.
+    if !(1_577_836_800_000..3_155_760_000_000).contains(&ms) {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!("unix_ms {ms} out of sane range (2020..2070)"),
+        }));
+    }
+    let tv = libc::timeval {
+        tv_sec: (ms / 1000) as libc::time_t,
+        tv_usec: ((ms % 1000) * 1000) as libc::suseconds_t,
+    };
+    let rc = unsafe { libc::settimeofday(&tv, std::ptr::null()) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!("settimeofday failed: {err}"),
+        }));
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "set_unix_ms": ms,
+        "note": "Wall clock updated. Use this on boards with no NTP reachability (RNDIS, air-gapped).",
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn post_set_time(
+    State(_state): State<Arc<AppState>>,
+    Query(_params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "error": "set_time only available on the target (linux/arm)",
+    }))
+}
+
+/// Hand-maintained catalogue of /api/* endpoints. New routes MUST
+/// add an entry here in the same commit that adds them to
+/// `router()`; the dashboard's API tab renders from this list.
+///
+/// Order: routes in alphabetical-by-path order so the table is
+/// deterministic. Method is GET unless noted; mixed-method routes
+/// (GET+PUT/POST) list both.
+struct EndpointDoc {
+    method: &'static str,
+    path: &'static str,
+    params: &'static str,
+    description: &'static str,
+}
+
+const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
+    EndpointDoc {
+        method: "GET",
+        path: "/api/aliases",
+        params: "",
+        description: "Return the talkgroup-alias map (TG number → display name).",
+    },
+    EndpointDoc {
+        method: "PUT",
+        path: "/api/aliases",
+        params: "body=JSON {tg: name, ...}",
+        description: "Replace the alias map. Body is a JSON object keyed by TG number.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/audio",
+        params: "?format=wav",
+        description: "Stream live vocoder PCM as an open-ended WAV (8 kHz 16-bit mono).",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/audio_test",
+        params: "",
+        description: "One-shot ring dump of the vocoder's internal test tone buffer; diagnostic.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/bands",
+        params: "",
+        description: "List known P25 identifier_update frequency bands (base, spacing, offset, BW).",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/bch_t",
+        params: "?side=control|traffic",
+        description: "Read the runtime BCH(63,16,t) error-correction cap for each decoder.",
+    },
+    EndpointDoc {
+        method: "PUT",
+        path: "/api/bch_t",
+        params: "?side=control|traffic&t=<0..11>",
+        description: "Override the BCH-t cap at runtime without rebuilding. Reset with t=reset.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/decoder_compare",
+        params: "",
+        description: "3-column matrix: PS C4FM vs PS LSM framer vs PL HDL LSM runtime stats.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/decoder_reset",
+        params: "?side=control|traffic",
+        description: "Reset the framer state of one of the decoders (keeps cumulative counters).",
+    },
+    EndpointDoc {
+        method: "POST",
+        path: "/api/decoder_reset",
+        params: "?side=control|traffic",
+        description: "Same as GET /api/decoder_reset; HTTP-method-correct variant.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/dibit_dump",
+        params: "",
+        description: "Sample the C4FM dibit ring and return histogram + raw DUID hits for inspection.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/encrypted_tgs",
+        params: "",
+        description: "Read the sticky encrypted-TG history set (TGs ever seen encrypted).",
+    },
+    EndpointDoc {
+        method: "PUT",
+        path: "/api/encrypted_tgs",
+        params: "body=JSON [tg, tg, ...]",
+        description: "Overwrite the encrypted-TG blocklist. Useful for manual curation.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/endpoints",
+        params: "",
+        description: "This catalogue. Self-describing list of every /api/* route.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/grants",
+        params: "",
+        description: "Active voice-channel grants (one entry per TG currently on a traffic channel).",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/hdl_lsm",
+        params: "",
+        description: "PL HDL LSM chain runtime snapshot: NID events, NAC histogram, PLL/sync debug taps.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/imbe_dump",
+        params: "",
+        description: "Dump recent IMBE frame batches for offline vocoder cross-check.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/irq_stats",
+        params: "",
+        description: "Per-source IRQ counters (dibit / iq / lsm_dibit / traffic DMAs).",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/log",
+        params: "?since=<seq>&limit=<n>&category=<name>",
+        description: "Event log ring. Monotonic seq for incremental tail reads.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/control_iq_capture",
+        params: "",
+        description: "One-shot capture of the control chain's post-DDC IQ ring (62.5 kSPS).",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/control_iq_capture_aligned",
+        params: "",
+        description: "Sync-aligned control IQ capture for offline software-pipeline cross-check.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/control_lsm_control",
+        params: "?lsm_enable=0|1&dma_enable=0|1&dc_block=0|1",
+        description: "Runtime read/write of the control-chain lsm_control register bits.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/control_lsm_dibit_dump",
+        params: "",
+        description: "Histogram of the control-chain LSM demod dibit ring (not C4FM).",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/modulation",
+        params: "",
+        description: "Read current P25 modulation (C4FM/LSM/Auto) + per-decoder NID-valid rates.",
+    },
+    EndpointDoc {
+        method: "PUT",
+        path: "/api/modulation",
+        params: "?set=c4fm|lsm|auto",
+        description: "Override or release modulation selection. Auto picks whichever decoder has more valid NIDs.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/monitor",
+        params: "",
+        description: "Read the TG monitor list (when non-empty, only listed TGs get followed).",
+    },
+    EndpointDoc {
+        method: "PUT",
+        path: "/api/monitor",
+        params: "?add=<tg>&remove=<tg>",
+        description: "Add/remove a TG from the monitor list. Empty list = newest-grant-wins.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/nid_capture",
+        params: "",
+        description: "Batched NID capture for t-sweep analysis by tools/p25_nid_analyze.py.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/recent_tsbks",
+        params: "",
+        description: "Last ~50 decoded TSBKs with summaries for the activity feed.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/recordings",
+        params: "",
+        description: "Ring of recent call recordings: id, TG, started_unix_ms, duration_ms, size_bytes.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/recordings/{id}",
+        params: "path id, trailing .wav optional",
+        description: "Download a recording as WAV (8 kHz 16-bit mono).",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/reinit",
+        params: "?rx_lo=&control_freq=&sample_rate=&rf_bandwidth=&gain_mode=&gain_db=",
+        description: "Live front-end + DDC re-init without reboot. Unspecified fields use boot defaults.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/constellation",
+        params: "?chain=control|traffic",
+        description: "Post-PLL soft-symbol (I, Q) scatter via the software LSM demod pipeline.",
+    },
+    EndpointDoc {
+        method: "POST",
+        path: "/api/set_time",
+        params: "?unix_ms=<epoch_ms>",
+        description: "Force the wall clock from a browser-pushed value. Fallback for boards without NTP reachability.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/spectrum",
+        params: "?chain=control|traffic",
+        description: "4096-pt FFT over post-DDC IQ ring, mag_db array fftshifted. Narrowband (~62.5 kHz span).",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/stats",
+        params: "",
+        description: "Decoder stats + AD9361 readback (gain/RSSI/rx_lo/rf_bandwidth/ddc offset/uptime).",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/sync_tune",
+        params: "?side=control|traffic",
+        description: "Read the per-decoder runtime sync threshold.",
+    },
+    EndpointDoc {
+        method: "PUT",
+        path: "/api/sync_tune",
+        params: "?side=control|traffic&threshold=<0..24>|reset",
+        description: "Override the sync-detector Hamming-distance threshold at runtime.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/system",
+        params: "",
+        description: "System identity: WACN/NAC/RFSS/site, build tag, control channel.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/traffic",
+        params: "?follower=on|off&reset_stats=1&retune_hz=<i64>&demod_enable=0|1",
+        description: "Traffic-follower state + manual debug knobs (retune_hz routes through full chain).",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/tsbk_opcodes",
+        params: "",
+        description: "Histogram of TSBK opcodes observed. Labels match SDRTrunk OSP opcode names.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/ws/audio",
+        params: "",
+        description: "WebSocket binary stream of AudioChunk payloads (used by dashboard player).",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/ws/events",
+        params: "",
+        description: "WebSocket text stream of decoder + traffic events as JSON lines.",
+    },
+];
+
+async fn get_endpoints(
+    State(_state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let items: Vec<_> = ENDPOINT_CATALOGUE
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "method":      e.method,
+                "path":        e.path,
+                "params":      e.params,
+                "description": e.description,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({
+        "count": items.len(),
+        "items": items,
+    }))
+}
+
 // ── REST Handlers ──────────────────────────────────────────────────────
 
 async fn get_system(State(state): State<Arc<AppState>>) -> Json<SystemInfo> {
-    // Phase 6F.11 API-level merge: read BOTH lsm decoders and pick
-    // Phase 9 retirement: this handler used to union the
-    // Phase 6D software LSM pipeline (`iq_lsm_decoder`) with the
-    // PL-fed `lsm_decoder` via a `pick()` fallback. After the
-    // software pipeline retired, the PL LSM chain is the single
-    // source of truth for system identity. If this ever shows
-    // stale data the right fix is to make `lsm_decoder` read
-    // fresher, not to resurrect the software cross-check.
-    let dec = state.lsm_decoder.read().await;
+    // 2026-04-16 modulation selector: picks LSM (Clay/Duval) or
+    // C4FM (FP&L, St Johns) based on AppState.active_modulation,
+    // auto-detected by the background task in main.rs that watches
+    // nid_decoded_ok delta across both decoders.
+    let dec = state.active_control_decoder().read().await;
     let s = &dec.system;
     let system_clock_str = s.last_sync_clock.map(
         |(y, mo, d, h, mn, locked)| {
@@ -405,6 +1227,9 @@ async fn get_system(State(state): State<Arc<AppState>>) -> Json<SystemInfo> {
         sndcp_uplink_channel: s.sndcp_uplink_channel.map(|c| format!("{}", c)),
         system_clock: system_clock_str,
         build: Some(crate::BUILD_TAG.to_string()),
+        phase: Some(
+            if s.has_tdma_band { "P25 P1+P2" } else { "P25 P1" }.into(),
+        ),
     })
 }
 
@@ -428,7 +1253,9 @@ async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant
         .map(|h| h.clone())
         .unwrap_or_default();
 
-    let dec = state.lsm_decoder.read().await;
+    // 2026-04-16: read from whichever decoder the modulation selector
+    // picks (LSM for Clay/Duval, C4FM for FP&L/St Johns).
+    let dec = state.active_control_decoder().read().await;
     let mut by_channel: std::collections::HashMap<u16, ChannelGrant> =
         std::collections::HashMap::new();
     for g in dec.grants.values() {
@@ -475,7 +1302,8 @@ async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant
 async fn get_bands(State(state): State<Arc<AppState>>) -> Json<Vec<BandInfo>> {
     // Phase 9 retirement: single-decoder read (was unioning
     // `lsm_decoder` with the retired Phase 6D `iq_lsm_decoder`).
-    let dec = state.lsm_decoder.read().await;
+    // 2026-04-16: now respects active_modulation.
+    let dec = state.active_control_decoder().read().await;
     let mut bands: Vec<BandInfo> = dec
         .bands
         .values()
@@ -492,7 +1320,8 @@ async fn get_bands(State(state): State<Arc<AppState>>) -> Json<Vec<BandInfo>> {
 }
 
 async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats> {
-    let decoder = state.lsm_decoder.read().await;
+    // 2026-04-16: stats read from the active control-chain decoder.
+    let decoder = state.active_control_decoder().read().await;
 
     #[cfg(target_os = "linux")]
     let (dibit_count, overflow, dma_next_address) = {
@@ -655,7 +1484,7 @@ async fn get_dibit_dump(State(state): State<Arc<AppState>>) -> Json<serde_json::
 /// `lsm_dibit_dma`). Lets us compare the LSM dibit stream's histogram /
 /// sync correlator / raw_DUID distribution against the C4FM stream side
 /// by side without having to grep the on-target log.
-async fn get_lsm_dibit_dump(
+async fn get_control_lsm_dibit_dump(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
     let decoder = state.lsm_decoder.read().await;
@@ -671,9 +1500,9 @@ async fn get_lsm_dibit_dump(
 /// time so a follow-up call can detect overlaps.
 ///
 /// Arming the next-sync alignment capture is a separate endpoint
-/// (`/api/lsm_capture_aligned`); this one just returns whatever's
-/// currently in the rolling buffer with no waiting.
-async fn get_lsm_capture(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+/// (`/api/control_iq_capture_aligned`); this one just returns
+/// whatever's currently in the rolling buffer with no waiting.
+async fn get_control_iq_capture(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let decoder = state.lsm_decoder.read().await;
     let dibits: Vec<u8> = decoder.recent_dibits.iter().copied().collect();
     let hex: String = dibits.iter().map(|d| format!("{:1X}", d & 0x3)).collect();
@@ -708,7 +1537,7 @@ async fn get_lsm_capture(State(state): State<Arc<AppState>>) -> Json<serde_json:
 /// capture flag, then waits up to 2 seconds for the next sync hit. If
 /// no sync hits in that window it returns `{"status": "timeout"}`.
 /// Otherwise it returns the snapshot and clears the armed state.
-async fn get_lsm_capture_aligned(
+async fn get_control_iq_capture_aligned(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
     use std::time::{Duration, Instant};
@@ -864,10 +1693,10 @@ async fn post_decoder_reset(state: State<Arc<AppState>>) -> Json<serde_json::Val
 /// request:
 ///
 /// ```text
-/// curl http://192.168.2.1:8080/api/lsm_control?dc_block=0
-/// curl http://192.168.2.1:8080/api/lsm_control?dc_block=1
+/// curl http://192.168.2.1:8080/api/control_lsm_control?dc_block=0
+/// curl http://192.168.2.1:8080/api/control_lsm_control?dc_block=1
 /// ```
-async fn get_lsm_control(
+async fn get_control_lsm_control(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
@@ -904,7 +1733,7 @@ async fn get_lsm_control(
                 "lsm_dibit_dma_enable":  "[1]",
                 "lsm_dc_block_enable":   "[2]"
             },
-            "note": "GET /api/lsm_control?dc_block=0 disables the LSM \
+            "note": "GET /api/control_lsm_control?dc_block=0 disables the LSM \
                      front-end DC blocker; ?dc_block=1 enables it. The \
                      other two bits are not writable from this endpoint \
                      -- toggle them via devmem if you really need to. \
@@ -940,13 +1769,19 @@ async fn get_lsm_control(
 ///    polling task in main.rs. When `off`, manual retunes won't be
 ///    immediately overridden by the next snapshot. Default state is
 ///    `on`; the override does NOT persist across p25-httpd restarts.
-/// 3. `?retune_hz=<i64>` -- manually write the traffic DDC NCO offset
-///    in Hz, signed, relative to the AD9361 RX LO. Bypasses the
-///    grant follower entirely. Does NOT touch `demod_enable` --
-///    explicit by design (see #4).
+/// 3. `?retune_hz=<i64>` -- manually retune the traffic DDC to the
+///    supplied NCO offset in Hz, signed, relative to the AD9361 RX
+///    LO. Routes through the full `retune_traffic_chain` sequence
+///    (disable -> NCO write -> 2 ms FIR flush -> re-enable -> reset
+///    pulse -> demod enable), same as the grant follower. Bypasses
+///    the follower's PPM correction, so the offset you supply is
+///    what the register sees -- useful for measuring PPM error
+///    directly. Resets the traffic framer before the retune.
 /// 4. `?demod_enable=0|1` -- manually flip the
-///    `traffic_demod_control.demod_enable` register bit. Required
-///    after a manual retune to actually start the dibit stream.
+///    `traffic_demod_control.demod_enable` register bit. Rarely
+///    needed now that #3 leaves demod_enable=1, but kept for
+///    explicit debug control (e.g. forcing demod_enable=0 to
+///    snapshot the chain in a quiet state).
 ///
 /// All four params can be combined in one call:
 /// `GET /api/traffic?follower=off&reset_stats=1&retune_hz=2862500&demod_enable=1`
@@ -1015,32 +1850,36 @@ async fn get_traffic(
             Ok(offset_hz) => {
                 #[cfg(target_os = "linux")]
                 {
+                    // 2026-04-16 fix: route manual retune through the
+                    // full retune_traffic_chain sequence (disable ->
+                    // NCO write -> 2 ms FIR flush -> re-enable ->
+                    // reset pulse -> demod enable) so the debug path
+                    // matches the grant follower's production path.
+                    // Also reset the traffic framer so stale dibits
+                    // from the previous NCO don't feed a half-
+                    // processed state on the new frequency.
+                    {
+                        let mut dec = state.traffic_lsm_decoder
+                            .write().await;
+                        dec.reset_framer_state();
+                    }
                     let core = state.ip_core.lock().await;
-                    // Read the AD9361 sample rate from the cached
-                    // register (the same value the startup configure
-                    // call used). For Phase 7A.1 we hard-code this
-                    // from the well-known default; if we ever start
-                    // varying sample rate at runtime this needs to
-                    // come from a shared config struct instead.
                     let sample_rate_hz = 8_000_000.0_f64;
-                    match core.set_traffic_ddc_frequency(
+                    match core.retune_traffic_chain(
                         offset_hz as f64,
                         sample_rate_hz,
                     ) {
                         Ok(()) => {
                             applied.push(format!(
-                                "retune_hz={offset_hz}"
+                                "retune_hz={offset_hz} (full chain)"
                             ));
-                            // Mirror the manager-side bookkeeping so
+                            // Mirror manager-side bookkeeping so
                             // /api/traffic shows the new offset
                             // immediately even though the follower
                             // didn't drive it.
                             let mut mgr =
                                 state.traffic_manager.lock().await;
                             mgr.last_offset_hz = offset_hz;
-                            // Recompute the NCO word the same way
-                            // the helper does, so the dashboard's
-                            // displayed nco_word matches the register.
                             let nco_frac =
                                 offset_hz as f64 / sample_rate_hz;
                             mgr.nco_word = (nco_frac
@@ -1637,6 +2476,17 @@ async fn get_recent_tsbks(
                 "GRP_V_CH_GRANT_UPDT CH_A:{} TG_A:{} CH_B:{} TG_B:{}",
                 channel_a, talkgroup_a, channel_b, talkgroup_b
             ),
+            GroupVoiceChannelGrantUpdateExplicit {
+                transmit_channel, receive_channel, talkgroup, service_options,
+            } => format!(
+                "GRP_V_CH_GRANT_UPDT_EXP TX:{} RX:{} TG:{}{}",
+                transmit_channel, receive_channel, talkgroup,
+                if crate::p25::tsbk::service_options::is_encrypted(*service_options) {
+                    " [ENC]"
+                } else {
+                    ""
+                }
+            ),
             // Phase 6F.11 new opcodes
             SecondaryControlChannelBroadcast {
                 rfss_id, site_id, channel_a, channel_b,
@@ -1918,20 +2768,24 @@ async fn get_irq_stats(State(state): State<Arc<AppState>>) -> Json<serde_json::V
         if uptime_secs == 0 { 0.0 } else { (n as f64) / (uptime_secs as f64) }
     };
     Json(serde_json::json!({
-        "running":         s.started_at.is_some(),
-        "uptime_secs":     uptime_secs,
-        "last_at_ms_ago":  last_at_ms_ago,
-        "total":           s.total,
-        "dibit":           s.dibit,
-        "traffic":         s.traffic,
-        "iq":              s.iq,
-        "lsm_dibit":       s.lsm_dibit,
+        "running":            s.started_at.is_some(),
+        "uptime_secs":        uptime_secs,
+        "last_at_ms_ago":     last_at_ms_ago,
+        "total":              s.total,
+        "dibit":              s.dibit,
+        "traffic":            s.traffic,
+        "iq":                 s.iq,
+        "lsm_dibit":          s.lsm_dibit,
+        "traffic_lsm_dibit":  s.traffic_lsm_dibit,
+        "traffic_iq":         s.traffic_iq,
         "rate_per_sec": {
-            "total":     rate(s.total),
-            "dibit":     rate(s.dibit),
-            "traffic":   rate(s.traffic),
-            "iq":        rate(s.iq),
-            "lsm_dibit": rate(s.lsm_dibit),
+            "total":             rate(s.total),
+            "dibit":             rate(s.dibit),
+            "traffic":           rate(s.traffic),
+            "iq":                rate(s.iq),
+            "lsm_dibit":         rate(s.lsm_dibit),
+            "traffic_lsm_dibit": rate(s.traffic_lsm_dibit),
+            "traffic_iq":        rate(s.traffic_iq),
         },
     }))
 }
@@ -2873,10 +3727,105 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   <button data-tab="radio" class="active" onclick="switchTab('radio')">&#x1f4fb; Radio</button>
   <button data-tab="logs" onclick="switchTab('logs')">&#x1f4dc; Logs <span class="tab-badge" id="logs_badge"></span></button>
   <button data-tab="debug" onclick="switchTab('debug')">&#x1f527; Debug</button>
+  <button data-tab="api" onclick="switchTab('api')">&#x1f4d6; API</button>
+</div>
+
+<!-- ═════════════════════ API tab ═════════════════════ -->
+<div class="tab-pane" id="tab-api">
+  <h2>HTTP API reference</h2>
+  <p style="color:var(--text-dim);font-size:0.9em">
+    Machine-readable list of every `/api/*` route served by this
+    p25-httpd instance. Sourced from the hand-maintained
+    `/api/endpoints` catalogue in `httpd/mod.rs::ENDPOINT_CATALOGUE`;
+    see that constant for the source-of-truth comments.
+  </p>
+  <div class="card">
+    <input type="text" id="api_filter" placeholder="filter by path or keyword (e.g. 'traffic', 'retune', 'dump')"
+      style="width:100%;padding:6px 8px;margin-bottom:8px;font-family:inherit" />
+    <table id="api_table" style="width:100%;font-size:0.85em">
+      <thead>
+        <tr>
+          <th style="width:5em">Method</th>
+          <th style="width:18em">Path</th>
+          <th style="width:14em">Query params</th>
+          <th>Description</th>
+          <th style="width:3em">Try</th>
+        </tr>
+      </thead>
+      <tbody id="api_tbody">
+        <tr><td colspan="5" style="color:var(--text-dim)">Loading /api/endpoints...</td></tr>
+      </tbody>
+    </table>
+  </div>
 </div>
 
 <!-- ═════════════════════ Debug tab ═════════════════════ -->
 <div class="tab-pane" id="tab-debug">
+
+<!-- ── IQ Constellation (2026-04-16) ────────────────────────── -->
+<h2>IQ Constellation <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">post-PLL symbol decision points</span></h2>
+<div class="card">
+  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:6px;font-size:0.85em">
+    <label><b>Chain</b>:
+      <select id="iq_chain" onchange="refreshConstellation()" style="padding:2px 6px;font-family:inherit">
+        <option value="traffic" selected>Traffic</option>
+        <option value="control">Control</option>
+      </select>
+    </label>
+    <label><b>Poll</b>:
+      <select id="iq_rate" onchange="scheduleConstellation()" style="padding:2px 6px;font-family:inherit">
+        <option value="500">2 Hz</option>
+        <option value="1000" selected>1 Hz</option>
+        <option value="2000">0.5 Hz</option>
+        <option value="0">Paused</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="iq_persistence" checked> <b>Persistence (fade)</b></label>
+    <span class="v" id="iq_status" style="font-size:0.85em;color:var(--text-dim)">idle</span>
+  </div>
+  <canvas id="iq_canvas" width="480" height="480"
+    style="width:480px;height:480px;background:#0a0f1a;border:1px solid #1f2937;display:block;margin:0 auto"></canvas>
+  <div style="font-size:0.75em;color:var(--text-dim);margin-top:6px;text-align:center">
+    Post-PLL decision-time (I, Q) points from the Phase 6D software LSM demod.
+    Clean LSM signal = 4 tight clusters near ±1, ±j. Phase rotation ⇒
+    tilt; amplitude compression ⇒ radial shrinkage toward the center;
+    noise ⇒ cloud spread. Updates stop when the tab is inactive.
+  </div>
+</div>
+
+<!-- ── RF Spectrum (narrowband, 2026-04-16) ─────────────────── -->
+<h2>RF Spectrum <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">post-DDC, ±31.25 kHz</span></h2>
+<div class="card">
+  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:6px;font-size:0.85em">
+    <label><b>Chain</b>:
+      <select id="spec_chain" onchange="refreshSpectrum()" style="padding:2px 6px;font-family:inherit">
+        <option value="control">Control</option>
+        <option value="traffic">Traffic</option>
+      </select>
+    </label>
+    <label><b>Poll</b>:
+      <select id="spec_rate" onchange="scheduleSpectrum()" style="padding:2px 6px;font-family:inherit">
+        <option value="500">2 Hz</option>
+        <option value="1000" selected>1 Hz</option>
+        <option value="2000">0.5 Hz</option>
+        <option value="0">Paused</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="spec_peak_hold"> <b>Peak-hold</b></label>
+    <button class="btn" style="padding:2px 10px" onclick="resetSpectrum()">Reset</button>
+    <span class="v" id="spec_status" style="font-size:0.85em;color:var(--text-dim)">idle</span>
+  </div>
+  <canvas id="spec_canvas" width="900" height="240"
+    style="width:100%;height:240px;background:#0a0f1a;border:1px solid #1f2937"></canvas>
+  <div style="font-size:0.75em;color:var(--text-dim);margin-top:6px">
+    Narrowband FFT (4096 pts) over the post-DDC IQ ring, centered on
+    the selected chain's channel. Span = ±31.25 kHz, bin width ≈ 15 Hz.
+    Useful for channel-shape verification, adjacent-channel
+    interference, DC-blocker residuals. Wideband view (full 8 MHz
+    around LO) is a future HDL addition; this software FFT works on
+    any bitstream that has the iq_dma ring.
+  </div>
+</div>
 
 <!-- ── Phase 9: Decoder Comparison Matrix (3-column PS/PL view) ── -->
 <h2>Decoder Comparison (PS framer vs PL gateware)</h2>
@@ -3093,6 +4042,10 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
         <th>NAC / WACN</th><td class="v" id="bi_nac">--</td>
       </tr>
       <tr>
+        <th>System type</th><td class="v" id="bi_sys_type">--</td>
+        <th>Site (RFSS/Site)</th><td class="v" id="bi_rfss">--</td>
+      </tr>
+      <tr>
         <th>RX LO</th><td class="v" id="bi_rx_lo">--</td>
         <th>RF BW</th><td class="v" id="bi_rf_bw">--</td>
       </tr>
@@ -3114,17 +4067,36 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       </tr>
     </tbody>
   </table>
-  <!-- Live control-channel retune. Fires GET /api/reinit with the
-       entered frequency (MHz, converted to Hz) and preserves the
-       current rf_bandwidth so the v2 8 MHz accept condition stays
-       in effect. User can type e.g. "855.4875" to jump to a
-       nearby LSM system without editing boot config. -->
-  <div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:0.85em">
-    <label for="bi_retune_mhz"><b>Retune control</b>:</label>
-    <input type="number" id="bi_retune_mhz" step="0.001" placeholder="MHz (e.g. 855.4875)"
-      style="width:12em;font-family:inherit" />
+  <!-- Live front-end retune. Fires GET /api/reinit with whatever
+       fields the user filled in. Unfilled fields keep their current
+       live value (rf_bandwidth from /api/stats, rx_lo from
+       /api/system). Control freq, center freq (rx_lo), and BW are
+       independently overridable so the user can jump sites, widen /
+       narrow the analog filter, or re-center the LO without editing
+       boot config. If the new control_freq is outside the LO's
+       ±(BW/2) window, auto-nudge rx_lo to keep the NCO in range. -->
+  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px;font-size:0.85em">
+    <label for="bi_retune_mhz"><b>Control (MHz)</b>:</label>
+    <input type="number" id="bi_retune_mhz" step="0.001" placeholder="e.g. 855.4875"
+      style="width:11em;font-family:inherit" />
+    <label for="bi_center_mhz"><b>Center (MHz)</b>:</label>
+    <input type="number" id="bi_center_mhz" step="0.001" placeholder="auto"
+      style="width:10em;font-family:inherit" />
+    <label for="bi_bw_mhz"><b>BW (MHz)</b>:</label>
+    <input type="number" id="bi_bw_mhz" step="0.1" placeholder="keep"
+      style="width:7em;font-family:inherit" />
     <button id="bi_retune_btn" class="btn" style="padding:3px 10px" onclick="retuneControl()">Tune</button>
     <span class="v" id="bi_retune_status" style="font-size:0.85em;color:var(--text-dim)">idle</span>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px;font-size:0.85em">
+    <label for="bi_mod_sel"><b>Modulation</b>:</label>
+    <select id="bi_mod_sel" onchange="setModulation(this.value)"
+      style="padding:3px 6px;font-family:inherit">
+      <option value="auto">Auto-detect</option>
+      <option value="lsm">LSM (Clay, Duval, Jax Sheriff)</option>
+      <option value="c4fm">C4FM (FP&amp;L, St Johns)</option>
+    </select>
+    <span class="v" id="bi_mod_status" style="font-size:0.85em;color:var(--text-dim)">--</span>
   </div>
   <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
     Pulled from /api/stats every 2 s. Wall clock is the Linux system
@@ -3133,11 +4105,13 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
     saw a browser consumer fall behind); non-zero means the listener
     heard a gap. Distinct from the AudioWorklet underrun counter in
     the playback status line below, which is the browser-side ring
-    running dry. Retune field takes a control-channel frequency in
-    MHz and hits /api/reinit?control_freq=&lt;Hz&gt;&amp;rf_bandwidth=&lt;current&gt;
-    — the LO stays at boot value and the DDC NCO shifts to land
-    the new channel on the decode path. Board should re-acquire
-    within a few seconds. Blank input resets to boot control_freq.
+    running dry. Tune posts any filled field to /api/reinit
+    (control_freq / rx_lo / rf_bandwidth). Control-only retune keeps
+    the LO and shifts the DDC NCO. Setting Center moves the LO
+    (required when jumping bands &gt; BW/2 away). If you set Control
+    alone and the target is outside LO ± BW/2, the Center field is
+    filled automatically so the LO follows. Blank fields keep current
+    values; blank Control resets to boot default.
   </p>
 </div>
 
@@ -3187,6 +4161,32 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       </tbody>
     </table>
   </div>
+</div>
+
+<!-- Call recordings. Ring buffer of recent calls, newest first.
+     Each row has an inline <audio> control so the user can play
+     back without leaving the page. -->
+<div class="card" style="margin-top:14px">
+  <h2>Recent Call Recordings <span id="rec_count" style="font-size:0.75em;color:var(--text-dim);margin-left:6px"></span></h2>
+  <table style="width:100%">
+    <thead>
+      <tr>
+        <th style="width:6em">Started</th>
+        <th style="width:5em">TG</th>
+        <th style="width:5em">Duration</th>
+        <th style="width:6em">Size</th>
+        <th>Playback</th>
+      </tr>
+    </thead>
+    <tbody id="rec_tbody">
+      <tr><td colspan="5" style="color:var(--text-dim)">No recordings yet.</td></tr>
+    </tbody>
+  </table>
+  <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
+    Ring-buffered to /tmp/p25_recordings (tmpfs, lost on reboot).
+    Oldest recording is evicted when the ring fills. Encrypted calls
+    and calls shorter than 500 ms are not recorded.
+  </p>
 </div>
 
 <h2>Frequency Map</h2>
@@ -3264,45 +4264,97 @@ async function fetchJson(url) {
   try { return await (await fetch(url)).json(); } catch { return null; }
 }
 
-// Retune control channel via /api/reinit. Preserves the CURRENT
-// rf_bandwidth read from /api/stats so a live bandwidth override
-// (e.g. iio_attr-set 8 MHz) doesn't get silently reset back to the
-// 4 MHz boot default. Blank input = restore boot control_freq.
+// Retune front-end via /api/reinit. Each of the three inputs
+// (Control MHz / Center MHz / BW MHz) is independently optional.
+// Unfilled fields preserve the current live value so a live
+// iio_attr-set 8 MHz BW doesn't get silently reset to the 4 MHz
+// boot default. Auto-LO: if the user sets Control alone and the
+// target falls outside rx_lo ± BW/2, Center is filled automatically
+// so the LO follows. Blank Control = restore boot control_freq.
 async function retuneControl() {
-  const mhzStr = $('bi_retune_mhz').value.trim();
+  const ctrlStr   = $('bi_retune_mhz').value.trim();
+  const centerStr = $('bi_center_mhz').value.trim();
+  const bwStr     = $('bi_bw_mhz').value.trim();
   const status = $('bi_retune_status');
   const btn = $('bi_retune_btn');
   btn.disabled = true;
   status.textContent = 'retuning...';
   status.style.color = 'var(--text-dim)';
   try {
-    // Grab current rf_bandwidth so we don't drop back to 4 MHz.
+    // Current live front-end state. Both rf_bandwidth_hz and rx_lo_hz
+    // come from /api/stats (readback of the AD9361 via libiio).
     const curStats = await fetchJson('/api/stats');
-    const curBw = (curStats && curStats.rf_bandwidth_hz) || 0;
+    const curBwHz = (curStats && curStats.rf_bandwidth_hz) || 0;
+    const curLoHz = (curStats && curStats.rx_lo_hz)        || 0;
     const params = new URLSearchParams();
-    if (mhzStr !== '') {
-      const mhz = parseFloat(mhzStr);
+
+    // --- Control frequency ------------------------------------
+    let ctrlHz = null;
+    if (ctrlStr !== '') {
+      const mhz = parseFloat(ctrlStr);
       if (!isFinite(mhz) || mhz < 100 || mhz > 6000) {
-        status.textContent = 'bad MHz (100-6000 expected)';
+        status.textContent = 'bad Control MHz (100-6000 expected)';
         status.style.color = 'var(--red)';
         btn.disabled = false;
         return;
       }
-      const hz = Math.round(mhz * 1e6);
-      params.set('control_freq', String(hz));
+      ctrlHz = Math.round(mhz * 1e6);
+      params.set('control_freq', String(ctrlHz));
     }
-    if (curBw > 0) params.set('rf_bandwidth', String(curBw));
+
+    // --- rf_bandwidth -----------------------------------------
+    // If user gave an explicit value, use it; otherwise preserve
+    // current live BW so we don't fall back to the 4 MHz boot default.
+    let bwHz = curBwHz;
+    if (bwStr !== '') {
+      const mhz = parseFloat(bwStr);
+      if (!isFinite(mhz) || mhz < 0.2 || mhz > 56) {
+        status.textContent = 'bad BW MHz (0.2-56 expected)';
+        status.style.color = 'var(--red)';
+        btn.disabled = false;
+        return;
+      }
+      bwHz = Math.round(mhz * 1e6);
+    }
+    if (bwHz > 0) params.set('rf_bandwidth', String(bwHz));
+
+    // --- Center / rx_lo ---------------------------------------
+    // Explicit center wins. Otherwise auto-nudge LO if control_freq
+    // would fall outside rx_lo ± bwHz/2. The AD9361 DDC chain can
+    // still decode slightly outside the analog filter but SNR
+    // degrades fast — keep the channel inside the filter skirt.
+    let loHz = null;
+    if (centerStr !== '') {
+      const mhz = parseFloat(centerStr);
+      if (!isFinite(mhz) || mhz < 70 || mhz > 6000) {
+        status.textContent = 'bad Center MHz (70-6000 expected)';
+        status.style.color = 'var(--red)';
+        btn.disabled = false;
+        return;
+      }
+      loHz = Math.round(mhz * 1e6);
+    } else if (ctrlHz != null && curLoHz > 0 && bwHz > 0) {
+      const halfBw = bwHz / 2;
+      if (Math.abs(ctrlHz - curLoHz) > halfBw) {
+        // Park LO on the requested control freq so the DDC sits
+        // inside the filter passband.
+        loHz = ctrlHz;
+      }
+    }
+    if (loHz != null) params.set('rx_lo', String(loHz));
+
     const url = '/api/reinit' + (params.toString() ? '?' + params.toString() : '');
     const res = await fetchJson(url);
     if (res && res.ok) {
-      const freqMhz = mhzStr !== ''
-        ? parseFloat(mhzStr).toFixed(4)
-        : 'boot default';
-      status.textContent = `tuned to ${freqMhz} MHz, waiting for reacquire...`;
+      const parts = [];
+      if (ctrlHz != null)   parts.push(`ctrl=${(ctrlHz/1e6).toFixed(4)}`);
+      if (loHz != null)     parts.push(`lo=${(loHz/1e6).toFixed(3)}`);
+      if (bwStr !== '')     parts.push(`bw=${(bwHz/1e6).toFixed(1)}`);
+      const desc = parts.length ? parts.join(' ') : 'boot defaults';
+      status.textContent = `tuned: ${desc} — waiting for reacquire...`;
       status.style.color = 'var(--green)';
-      // Force an immediate refresh so the user sees the new NAC
-      // appear as soon as the decoder locks. The 2 s poll will
-      // keep updating after that.
+      // Force immediate refreshes so the user sees the new NAC
+      // appear as soon as the decoder locks.
       setTimeout(refresh, 500);
       setTimeout(refresh, 2000);
       setTimeout(refresh, 5000);
@@ -3328,6 +4380,9 @@ async function refresh() {
     $('rfss').textContent = (sys.rfss_id != null ? `${sys.rfss_id} / ${sys.site_id}` : '--');
     $('cc').textContent = sys.control_channel || '--';
     if (sys.build) $('build_tag').textContent = 'build: ' + sys.build;
+    // Stash the phase label for refreshModulation() to use when it
+    // builds the "System type" combined readout (modulation · phase).
+    window._LAST_SYS_PHASE = sys.phase || '';
   }
 
   // ── Phase 6F.2: Decoder Comparison Matrix ──
@@ -3503,6 +4558,12 @@ async function refresh() {
     } else {
       $('bi_nac').textContent = '--';
     }
+    if (sys && (sys.rfss_id != null || sys.site_id != null)) {
+      $('bi_rfss').textContent = (sys.rfss_id != null ? sys.rfss_id : '--')
+        + ' / ' + (sys.site_id != null ? sys.site_id : '--');
+    } else {
+      $('bi_rfss').textContent = '--';
+    }
     $('bi_rx_lo').textContent = fmtHz(stats.rx_lo_hz);
     $('bi_rf_bw').textContent = fmtHz(stats.rf_bandwidth_hz);
     const gainTxt = (stats.rx_gain_db != null ? fmtDb(stats.rx_gain_db) : '--')
@@ -3556,7 +4617,7 @@ async function refresh() {
     hits:'lsy_hits', near:'lsy_near', best:'lsy_best',
     rd_total:'lrd_total', rd_7:'lrd_7', rd_5:'lrd_5', rd_a:'lrd_a', rd_0:'lrd_0'};
   renderDibitDump(await fetchJson('/api/dibit_dump'), c4fmIds);
-  renderDibitDump(await fetchJson('/api/lsm_dibit_dump'), lsmIds);
+  renderDibitDump(await fetchJson('/api/control_lsm_dibit_dump'), lsmIds);
 
   // ── Phase 7D: Traffic Channel + Vocoder panel ──
   const trf = await fetchJson('/api/traffic');
@@ -4345,9 +5406,453 @@ function logClear() {
 LOGS.timer = setInterval(logPoll, 1000);
 logPoll(); // kick off immediately
 
+// Spectrum renderer. Polls /api/spectrum at the rate chosen by the
+// dropdown. Paints the FFT to a <canvas>, with optional peak-hold
+// overlay so slow-moving interferers are visible against the noise
+// floor. Only runs when the Debug tab is active + rate != Paused.
+let SPEC = {
+  timer: null,
+  peak: null,
+  rate: 1000,
+};
+function resetSpectrum() {
+  SPEC.peak = null;
+}
+function scheduleSpectrum() {
+  if (SPEC.timer) { clearInterval(SPEC.timer); SPEC.timer = null; }
+  const r = parseInt($('spec_rate').value, 10);
+  SPEC.rate = r;
+  if (r > 0) {
+    SPEC.timer = setInterval(refreshSpectrum, r);
+    refreshSpectrum(); // kick off immediately
+  }
+}
+async function refreshSpectrum() {
+  // Don't poll when the tab is hidden — pointless CPU on both sides.
+  const pane = $('tab-debug');
+  if (!pane || pane.style.display === 'none') return;
+  const chain = $('spec_chain').value || 'control';
+  const status = $('spec_status');
+  status.textContent = 'fetching...';
+  const data = await fetchJson('/api/spectrum?chain=' + encodeURIComponent(chain));
+  if (!data || !data.ok || !Array.isArray(data.mag_db)) {
+    status.textContent = (data && data.error) || 'no data';
+    status.style.color = 'var(--red)';
+    return;
+  }
+  status.style.color = 'var(--text-dim)';
+  const center_mhz = (data.center_hz || 0) / 1e6;
+  const span_hz = data.sample_rate_hz || 62500;
+  status.textContent = `${chain} @ ${center_mhz.toFixed(4)} MHz, ${(span_hz/1000).toFixed(1)} kHz span`;
+  drawSpectrum(data.mag_db, data.center_hz, span_hz);
+}
+function drawSpectrum(mag_db, center_hz, span_hz) {
+  const c = $('spec_canvas');
+  if (!c) return;
+  const ctx = c.getContext('2d');
+  const w = c.width, h = c.height;
+  ctx.clearRect(0, 0, w, h);
+
+  // Peak-hold accumulate.
+  if ($('spec_peak_hold').checked) {
+    if (!SPEC.peak || SPEC.peak.length !== mag_db.length) {
+      SPEC.peak = mag_db.slice();
+    } else {
+      for (let i = 0; i < mag_db.length; i++) {
+        if (mag_db[i] > SPEC.peak[i]) SPEC.peak[i] = mag_db[i];
+      }
+    }
+  } else {
+    SPEC.peak = null;
+  }
+
+  // Y-axis: fixed dB range — dBFS against i16 full-scale.
+  // Noise floor on a quiet post-DDC signal tends to sit near -80 dB,
+  // strongest P25 channels peak around -30 to -40 dB. Show -100 to 0.
+  const yMin = -100, yMax = 0;
+  const mapY = db => h - ((db - yMin) / (yMax - yMin)) * h;
+
+  // Grid: 10 dB horizontal lines.
+  ctx.strokeStyle = '#1e2a3a';
+  ctx.lineWidth = 1;
+  for (let db = yMin; db <= yMax; db += 10) {
+    const y = mapY(db);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+  }
+  // Grid: vertical lines at every 5 kHz offset.
+  const half_khz = span_hz / 2000;
+  const step_khz = 5;
+  for (let khz = -half_khz; khz <= half_khz; khz += step_khz) {
+    const x = ((khz + half_khz) / (half_khz * 2)) * w;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+    ctx.stroke();
+  }
+
+  // Center tick (channel center).
+  ctx.strokeStyle = '#60a5fa';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(w / 2, 0);
+  ctx.lineTo(w / 2, h);
+  ctx.stroke();
+
+  // Peak-hold (drawn first so live trace covers it).
+  if (SPEC.peak) {
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < SPEC.peak.length; i++) {
+      const x = (i / (SPEC.peak.length - 1)) * w;
+      const y = mapY(SPEC.peak[i]);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  // Live trace.
+  ctx.strokeStyle = '#22c55e';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < mag_db.length; i++) {
+    const x = (i / (mag_db.length - 1)) * w;
+    const y = mapY(mag_db[i]);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Axis labels.
+  ctx.fillStyle = '#9ca3af';
+  ctx.font = '10px system-ui,sans-serif';
+  for (let db = yMin; db <= yMax; db += 20) {
+    ctx.fillText(`${db} dB`, 4, mapY(db) - 2);
+  }
+  const centerMhz = (center_hz || 0) / 1e6;
+  ctx.fillText(
+    `${centerMhz.toFixed(4)} MHz`,
+    w / 2 - 30, h - 4
+  );
+  ctx.fillText(
+    `-${half_khz.toFixed(1)} kHz`,
+    4, h - 4
+  );
+  ctx.fillText(
+    `+${half_khz.toFixed(1)} kHz`,
+    w - 60, h - 4
+  );
+}
+// Lazy-start the poller on first Debug-tab activation. Hooks the
+// existing switchTab() that API tab already overrides.
+const _origSwitchTabForSpec = switchTab;
+switchTab = function(name) {
+  _origSwitchTabForSpec(name);
+  if (name === 'debug') {
+    if (!SPEC.timer && SPEC.rate > 0) scheduleSpectrum();
+    if (!IQ.timer && IQ.rate > 0) scheduleConstellation();
+  }
+};
+
+// Constellation scatter. Pulls post-PLL (I, Q) points from
+// /api/constellation, draws a 4-quadrant scatter with optional
+// persistence fade so moving clouds leave a trail.
+let IQ = {
+  timer: null,
+  rate: 1000,
+  lastI: null,
+  lastQ: null,
+};
+function scheduleConstellation() {
+  if (IQ.timer) { clearInterval(IQ.timer); IQ.timer = null; }
+  const r = parseInt($('iq_rate').value, 10);
+  IQ.rate = r;
+  if (r > 0) {
+    IQ.timer = setInterval(refreshConstellation, r);
+    refreshConstellation();
+  }
+}
+async function refreshConstellation() {
+  const pane = $('tab-debug');
+  if (!pane || pane.style.display === 'none') return;
+  const chain = $('iq_chain').value || 'traffic';
+  const status = $('iq_status');
+  status.textContent = 'fetching...';
+  const data = await fetchJson('/api/constellation?chain=' + encodeURIComponent(chain));
+  if (!data || !data.ok || !Array.isArray(data.i)) {
+    status.textContent = (data && data.error) || 'no data';
+    status.style.color = 'var(--red)';
+    return;
+  }
+  status.style.color = 'var(--text-dim)';
+  status.textContent = `${chain}: ${data.count} points, pll=${(data.pll_final||0).toFixed(3)} rad, timing=${(data.timing_final||0).toFixed(2)} samp`;
+  IQ.lastI = data.i;
+  IQ.lastQ = data.q;
+  drawConstellation(data.i, data.q);
+}
+function drawConstellation(iArr, qArr) {
+  const c = $('iq_canvas');
+  if (!c) return;
+  const ctx = c.getContext('2d');
+  const w = c.width, h = c.height;
+  // Persistence fade: paint a translucent black layer over the
+  // previous frame so old points decay. When unchecked, fully
+  // erase the canvas each tick.
+  const persist = $('iq_persistence').checked;
+  if (persist) {
+    ctx.fillStyle = 'rgba(10, 15, 26, 0.22)';
+    ctx.fillRect(0, 0, w, h);
+  } else {
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#0a0f1a';
+    ctx.fillRect(0, 0, w, h);
+  }
+  // Axes centered. Range ±1.6 nominal (LSM soft symbols sit near
+  // ±1, ±j; allow headroom for over-amplified points).
+  const axisMax = 1.6;
+  const mapX = re => (re + axisMax) / (axisMax * 2) * w;
+  const mapY = im => h - (im + axisMax) / (axisMax * 2) * h;
+
+  // Grid.
+  ctx.strokeStyle = '#1e2a3a';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2);
+  ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h);
+  ctx.stroke();
+  // Unit circle.
+  ctx.strokeStyle = '#2b3b55';
+  ctx.beginPath();
+  ctx.arc(w / 2, h / 2, w / 2 / axisMax, 0, Math.PI * 2);
+  ctx.stroke();
+  // Expected cluster centers for P25 LSM (π/4-DQPSK). Decision
+  // points sit at ±π/4 and ±3π/4, i.e. (±1/√2, ±1/√2). Earlier
+  // version of this code placed them at (±1, 0)/(0, ±j) which is
+  // QPSK convention and doesn't match P25's actual symbol phases.
+  const r4 = Math.SQRT1_2;
+  ctx.fillStyle = 'rgba(96, 165, 250, 0.4)';
+  for (const [cx, cy] of [[r4, r4], [-r4, r4], [-r4, -r4], [r4, -r4]]) {
+    ctx.beginPath();
+    ctx.arc(mapX(cx), mapY(cy), 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Points. Use a soft green so persistence builds up nicely.
+  ctx.fillStyle = 'rgba(34, 197, 94, 0.55)';
+  for (let k = 0; k < iArr.length; k++) {
+    const x = mapX(iArr[k]);
+    const y = mapY(qArr[k]);
+    ctx.fillRect(x - 1, y - 1, 2, 2);
+  }
+
+  // Labels.
+  ctx.fillStyle = '#9ca3af';
+  ctx.font = '10px system-ui,sans-serif';
+  ctx.fillText('+I', w - 18, h / 2 - 4);
+  ctx.fillText('+Q', w / 2 + 4, 12);
+  ctx.fillText('-I', 4, h / 2 - 4);
+  ctx.fillText('-Q', w / 2 + 4, h - 4);
+}
+
+// Modulation selector. GET polls current mode + per-decoder rates
+// so the user can see why auto picked what it did. PUT on change
+// forces one of {c4fm, lsm, auto}.
+async function refreshModulation() {
+  const data = await fetchJson('/api/modulation');
+  if (!data) return;
+  const sel = $('bi_mod_sel');
+  const status = $('bi_mod_status');
+  const rates = data.nid_decoded_ok || {};
+  const c = rates.c4fm || 0;
+  const l = rates.lsm || 0;
+  const label = data.label || '--';
+  status.textContent = `${label} (c4fm NIDs=${c.toLocaleString()} / lsm NIDs=${l.toLocaleString()})`;
+  // Mirror to the prominent Board Info "System type" field. Combines
+  // the live modulation label (from /api/modulation) with the P25
+  // phase label (from /api/system, inferred from IDEN_UPDATE_TDMA
+  // TSBK presence). Example output: "LSM · P25 P1+P2".
+  const sysEl = $('bi_sys_type');
+  if (sysEl) {
+    // Pull the last-cached /api/system response off window so we
+    // don't need an extra fetch. `refresh()` updates it every 2 s.
+    const phase = window._LAST_SYS_PHASE || '';
+    sysEl.textContent = phase ? `${label} \u00B7 ${phase}` : label;
+  }
+  // Only overwrite the dropdown if the server state actually
+  // diverges (avoids fighting the user mid-click).
+  const serverVal = ({0:'auto',1:'c4fm',2:'lsm'})[data.mode] || 'auto';
+  if (sel && sel.value !== serverVal && document.activeElement !== sel) {
+    sel.value = serverVal;
+  }
+}
+async function setModulation(mode) {
+  const status = $('bi_mod_status');
+  status.textContent = `setting to ${mode}...`;
+  const res = await fetchJson('/api/modulation?set=' + encodeURIComponent(mode));
+  if (res && res.ok) {
+    status.style.color = 'var(--green)';
+    refreshModulation();
+  } else {
+    status.style.color = 'var(--red)';
+    status.textContent = (res && res.error) || 'failed';
+  }
+}
+
+// Recordings ring. Poll less often than refresh() — new calls
+// finalise at human-speech cadence so 5 s is plenty, and each WAV
+// payload is kB-scale (header + metadata only, audio blobs are
+// fetched on-demand by the <audio> element). Renders a small table
+// with inline <audio controls> so playback is one click.
+async function refreshRecordings() {
+  const data = await fetchJson('/api/recordings');
+  if (!data) return;
+  const count = data.count || 0;
+  const max = data.max || 0;
+  $('rec_count').textContent = count
+    ? `${count} / ${max}`
+    : `0 / ${max}`;
+  const tbody = $('rec_tbody');
+  if (!Array.isArray(data.items) || data.items.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-dim)">No recordings yet.</td></tr>';
+    return;
+  }
+  // Preserve any already-playing <audio> elements so a poll tick
+  // doesn't interrupt playback. Build a map of existing audio URLs
+  // -> whether they're playing, and skip re-rendering those rows.
+  const playing = new Set();
+  tbody.querySelectorAll('audio').forEach(a => {
+    if (!a.paused && !a.ended) {
+      const src = a.getAttribute('src');
+      if (src) playing.add(src);
+    }
+  });
+
+  const fmtDur = ms => {
+    const s = Math.floor(ms / 1000);
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return m > 0
+      ? `${m}m ${sec.toString().padStart(2, '0')}s`
+      : `${s}.${Math.floor((ms % 1000) / 100)}s`;
+  };
+  const fmtSize = b => {
+    if (b < 1024) return `${b} B`;
+    if (b < 1_048_576) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / 1_048_576).toFixed(2)} MB`;
+  };
+  const fmtClock = ms => {
+    if (!ms) return '--';
+    const d = new Date(ms);
+    const hh = d.getHours().toString().padStart(2, '0');
+    const mm = d.getMinutes().toString().padStart(2, '0');
+    const ss = d.getSeconds().toString().padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+  };
+
+  const rows = data.items.map(it => {
+    const url = `/api/recordings/${it.id}.wav`;
+    return `<tr>
+      <td>${fmtClock(it.started_unix_ms)}</td>
+      <td>${it.talkgroup || '--'}</td>
+      <td>${fmtDur(it.duration_ms)}</td>
+      <td>${fmtSize(it.size_bytes)}</td>
+      <td><audio controls preload="none" style="height:28px" src="${url}"></audio>
+          <a href="${url}" download style="margin-left:6px;font-size:0.85em">⬇</a></td>
+    </tr>`;
+  });
+  tbody.innerHTML = rows.join('');
+}
+
+// API catalogue. Fetch once on first render of the API tab; cheap
+// enough to also refresh on each tab switch so a rebuild with new
+// routes updates the table without a page reload.
+let API_LOADED = false;
+let API_ITEMS = [];
+function renderApi() {
+  const tbody = $('api_tbody');
+  const filter = ($('api_filter').value || '').toLowerCase();
+  if (!API_ITEMS.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-dim)">No endpoints.</td></tr>';
+    return;
+  }
+  const rows = API_ITEMS
+    .filter(it => {
+      if (!filter) return true;
+      return (it.path && it.path.toLowerCase().includes(filter))
+          || (it.description && it.description.toLowerCase().includes(filter))
+          || (it.params && it.params.toLowerCase().includes(filter));
+    })
+    .map(it => {
+      const isGet = it.method === 'GET';
+      // Inline "Try" link only for zero-param GET (clicking a URL
+      // with query params would error; the user needs to edit first).
+      const cleanPath = isGet && !it.params
+        ? `<a href="${it.path}" target="_blank" title="open JSON in new tab">Open</a>`
+        : '<span style="color:var(--text-dim)">--</span>';
+      return `<tr>
+        <td><code>${it.method}</code></td>
+        <td><code>${it.path}</code></td>
+        <td style="font-family:monospace;font-size:0.85em;color:var(--text-dim)">${it.params || ''}</td>
+        <td>${it.description || ''}</td>
+        <td>${cleanPath}</td>
+      </tr>`;
+    });
+  tbody.innerHTML = rows.length
+    ? rows.join('')
+    : '<tr><td colspan="5" style="color:var(--text-dim)">No match.</td></tr>';
+}
+async function loadApiCatalogue() {
+  const data = await fetchJson('/api/endpoints');
+  if (!data || !Array.isArray(data.items)) return;
+  API_ITEMS = data.items;
+  API_LOADED = true;
+  renderApi();
+}
+// Wire the filter input.
+document.addEventListener('DOMContentLoaded', () => {
+  const f = $('api_filter');
+  if (f) f.addEventListener('input', renderApi);
+});
+// Lazy-load on first tab activation so we don't pull 25 lines of
+// JSON on every page load.
+const origSwitchTab = switchTab;
+switchTab = function(name) {
+  origSwitchTab(name);
+  if (name === 'api' && !API_LOADED) loadApiCatalogue();
+};
+
+// Browser-pushed wall-clock sync. On isolated networks (RNDIS,
+// air-gapped) the board's NTP-on-boot can't reach a real server,
+// so we ship it whatever time this browser has. Accuracy is
+// bounded by HTTP round-trip jitter (typically <100 ms), which is
+// fine for event-log ordering and the /api/stats wall_clock field.
+// Fire-and-forget; log the result to console but don't block UI.
+async function syncBoardTime() {
+  try {
+    const ms = Date.now();
+    const r = await fetch('/api/set_time?unix_ms=' + ms,
+                         { method: 'POST' });
+    const j = await r.json();
+    if (j && j.ok) {
+      console.log('board time synced:', new Date(ms).toISOString());
+    } else {
+      console.warn('board time sync failed:', j);
+    }
+  } catch (e) {
+    console.warn('board time sync error:', e);
+  }
+}
+
 loadAliases();
+syncBoardTime();  // fire-and-forget: isolated-network NTP fallback
 refresh();
 setInterval(refresh, 2000);
+refreshRecordings();
+setInterval(refreshRecordings, 5000);
+refreshModulation();
+setInterval(refreshModulation, 3000);
 connectWs();
 </script>
 </body>

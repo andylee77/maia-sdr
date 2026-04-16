@@ -72,3 +72,7 @@ runs/
 # writes a new timestamped directory per run (voice_capture_YYYYMMDD_HHMMSS/).
 # These accumulate quickly during live testing -- ignore the pattern.
 /tools/voice_capture_*/
+
+# Bake output logs
+build_fpga*.log
+build_hdl*.log

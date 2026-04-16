@@ -174,12 +174,12 @@ pub struct ControlChannelDecoder {
     pub sync_distance_hist: [u64; 25],
 
     // ── Phase 6F.2h aligned capture (one-shot diagnostic) ──
-    /// Set to `true` by `/api/lsm_capture_aligned` to request a full
+    /// Set to `true` by `/api/control_iq_capture_aligned` to request a full
     /// pipeline trace on the NEXT sync hit. Cleared by the decoder as
     /// soon as it captures one frame.
     pub aligned_capture_armed: bool,
     /// Snapshot populated when `aligned_capture_armed` was true at the
-    /// moment of a sync hit. Read by `/api/lsm_capture_aligned` and
+    /// moment of a sync hit. Read by `/api/control_iq_capture_aligned` and
     /// then cleared.
     pub aligned_capture: Option<AlignedCapture>,
     /// Internal: when non-None, the decoder is in the middle of
@@ -317,7 +317,7 @@ enum DecoderState {
 
 /// Phase 6F.2h: snapshot of one full TSBK frame as it flows through
 /// the LSM software decoder. Captured one-shot via the
-/// `/api/lsm_capture_aligned` endpoint, used for offline replay /
+/// `/api/control_iq_capture_aligned` endpoint, used for offline replay /
 /// pattern analysis when the on-target dashboard counters say "TSBK
 /// CRC fails on every frame" but we can't tell which pipeline stage is
 /// at fault.
@@ -353,7 +353,7 @@ pub struct AlignedCapture {
     /// CRC validation result: "plain", "xored", or "fail".
     pub crc_result: String,
     /// `total_dibits` counter at the moment the sync hit fired
-    /// (lets us correlate this snapshot with `/api/lsm_capture`).
+    /// (lets us correlate this snapshot with `/api/control_iq_capture`).
     pub total_dibits_at_capture: u64,
 }
 
@@ -428,6 +428,14 @@ pub struct SystemIdentity {
     /// (opcode 0x30). Format: `(year, month, day, hours, minutes,
     /// time_locked)`. Updated on every sync broadcast (~5/sec).
     pub last_sync_clock: Option<(u16, u8, u8, u8, u8, bool)>,
+    /// 2026-04-16: true if the site has advertised a Phase 2 TDMA
+    /// frequency band via Identifier Update TDMA (TSBK opcode 0x33).
+    /// Phase-1-only sites only emit 0x34 (VHF/UHF) and 0x3D (FDMA)
+    /// band identifiers; Phase-2-capable sites ALSO emit 0x33 with
+    /// a channel_type field describing TDMA slot count. The dashboard
+    /// uses this to label the System Type as "P25 P1" vs "P25 P1+P2".
+    /// SDRTrunk does the same inference from the TSBK stream.
+    pub has_tdma_band: bool,
 }
 
 /// Active voice channel grant
@@ -524,7 +532,7 @@ const FRAME_SYNC_MASK: u64 = 0xFFFF_FFFF_FFFF; // 48 bits
 /// 4800 sym/s budget -- still cheap on Cortex-A9.
 ///
 /// **6F.6 also adds a `sync_distance_hist[25]` field** that buckets
-/// every observed sync distance, exposed via `/api/lsm_dibit_dump`.
+/// every observed sync distance, exposed via `/api/control_lsm_dibit_dump`.
 /// If the histogram shows a real sync cluster at 9-14, threshold 14
 /// catches them. If the distribution is essentially flat random with
 /// no cluster at any distance, the syncs aren't recoverable from the
@@ -825,6 +833,16 @@ impl ControlChannelDecoder {
             }
 
             if let Some(msg) = block.decode() {
+                // 2026-04-16: detect P25 Phase 2 (TDMA) capability from
+                // the opcode before the Tdma/Vuhf/FDMA variants collapse
+                // into a common TsbkMessage::IdentifierUpdate. Opcode
+                // 0x33 = IDEN_UPDATE_TDMA; presence means the site has
+                // at least one TDMA band, which the dashboard labels as
+                // "P25 P1+P2". Sticky latch — the site keeps its P2
+                // capability for the rest of this session.
+                if opcode_byte == 0x33 {
+                    self.system.has_tdma_band = true;
+                }
                 self.handle_tsbk(block_idx as u8, msg);
             } else {
                 self.tsbk_unknown_opcode += 1;
@@ -1579,6 +1597,12 @@ impl ControlChannelDecoder {
                     // 3. Decode opcode-specific payload (only on CRC OK)
                     if !block_failed {
                         if let Some(msg) = block.decode() {
+                            // Mirror of the handle_tsbk call site
+                            // above: 0x33 = IDEN_UPDATE_TDMA flags a
+                            // Phase-2-capable site.
+                            if opcode_byte == 0x33 {
+                                self.system.has_tdma_band = true;
+                            }
                             self.handle_tsbk(block_idx as u8, msg);
                         } else {
                             self.tsbk_unknown_opcode += 1;
@@ -1789,6 +1813,49 @@ impl ControlChannelDecoder {
             // Phase 6F.11: UU_ANS_REQ -- private call paging. Pure
             // event for the activity feed.
             TsbkMessage::UnitToUnitAnswerRequest { .. } => {}
+            // Phase 7F.3 (2026-04-16): GVCG_UPDT_EXPLICIT (0x03) —
+            // carries its own service_options byte, unlike plain
+            // GVCG_UPDT (0x02). SDRTrunk extracts the encryption bit
+            // here directly; without this branch we'd silently drop
+            // the grant (it fell through the `_ => {}` catch-all) and
+            // never see the encrypted flag on sites that use this
+            // variant in preference to plain GVCG. We treat the
+            // transmit_channel as the grant channel since that's
+            // where the voice audio lands.
+            TsbkMessage::GroupVoiceChannelGrantUpdateExplicit {
+                transmit_channel,
+                receive_channel: _,
+                talkgroup,
+                service_options,
+            } => {
+                let freq = self.channel_to_frequency(*transmit_channel);
+                let _ = self.take_other_grants_for_talkgroup(*talkgroup);
+                let encrypted =
+                    crate::p25::tsbk::service_options::is_encrypted(*service_options);
+                let emergency =
+                    crate::p25::tsbk::service_options::is_emergency(*service_options);
+                let grant = GrantInfo {
+                    channel: *transmit_channel,
+                    talkgroup: *talkgroup,
+                    // GVCG_UPDT_EXP doesn't carry a source RadioId.
+                    // Preserve from any prior grant for this TG
+                    // (done by take_other_grants_for_talkgroup's OR
+                    // accumulation of preserved.source, but that
+                    // return value is ignored above since we're
+                    // overwriting with fresh service_options here).
+                    // Re-derive by peeking before the take if we
+                    // need it; for now leave None since the grant
+                    // follower only keys off TG and the encryption
+                    // bit, not the source.
+                    source: None,
+                    frequency_hz: freq,
+                    timestamp: Instant::now(),
+                    encrypted,
+                    emergency,
+                };
+                self.emit_grant_event(&grant);
+                self.grants.insert(transmit_channel.0, grant);
+            }
             TsbkMessage::GroupVoiceChannelGrantUpdate {
                 channel_a,
                 talkgroup_a,
@@ -1914,6 +1981,36 @@ impl ControlChannelDecoder {
                     .map(|f| f as f64 / 1e6),
                 source: None,
             },
+            TsbkMessage::GroupVoiceChannelGrantUpdateExplicit {
+                transmit_channel,
+                talkgroup,
+                service_options,
+                ..
+            } => {
+                let freq = self.channel_to_frequency(*transmit_channel);
+                let enc_marker = if crate::p25::tsbk::service_options::is_encrypted(*service_options) {
+                    " [ENC]"
+                } else {
+                    ""
+                };
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "GRANT_UPD_EXP".into(),
+                    summary: format!(
+                        "{}TG:{:05} -> {} ({:.4} MHz){}",
+                        block_prefix,
+                        talkgroup.0,
+                        transmit_channel,
+                        freq.unwrap_or(0) as f64 / 1e6,
+                        enc_marker
+                    ),
+                    talkgroup: Some(talkgroup.0),
+                    talkgroup_alias: self.aliases.get(&talkgroup.0).cloned(),
+                    channel: Some(format!("{}", transmit_channel)),
+                    frequency_mhz: freq.map(|f| f as f64 / 1e6),
+                    source: None,
+                }
+            }
             TsbkMessage::NetworkStatus {
                 wacn,
                 system_id,
