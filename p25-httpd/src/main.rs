@@ -39,7 +39,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-15-retune-ddc-flush-wait";
+pub const BUILD_TAG: &str = "2026-04-15-traffic-ppm-correction";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -1791,6 +1791,20 @@ async fn main() -> anyhow::Result<()> {
         let follower_core = ip_core.clone();
         let follower_sample_rate = args.sample_rate as f64;
         let follower_rx_lo = args.rx_lo as i64;
+        // 2026-04-15 fix: traffic DDC NCO must apply the same
+        // boot PPM correction as the control DDC (see
+        // p25-httpd/src/httpd/mod.rs::get_reinit() at lines
+        // 284-285). Without this, every traffic retune is
+        // off-frequency by -ppm × rx_lo, which for the Fishball
+        // at boot_lo_ppm=-0.54 and rx_lo=858.1 MHz works out to
+        // +463 Hz. The traffic PLL partially tracks this
+        // constant offset and settles at a residual ~26 degree
+        // phase error, which causes marginal symbol slicing
+        // errors and produces mbelib concealment artefacts
+        // that sound like "robotic half the time". Observed
+        // directly as pll_dbg = -1205 on Duval County traffic
+        // chain while control-side pll_dbg = +154.
+        let follower_lo_ppm = args.lo_ppm;
         let follower_enabled = traffic_follower_enabled.clone();
         let follower_imbe = imbe_forwarder.clone();
         let follower_monitor = monitor_list.clone();
@@ -2140,7 +2154,20 @@ async fn main() -> anyhow::Result<()> {
 
                                 if retune {
                                     let freq_hz = g.frequency_hz.unwrap();
-                                    let offset_hz = freq_hz as i64 - follower_rx_lo;
+                                    // PPM correction matching the control
+                                    // DDC path in get_reinit(). Cancels
+                                    // the Pluto crystal trim error (~463
+                                    // Hz at ppm=-0.54, rx_lo=858.1 MHz)
+                                    // so the traffic PLL doesn't sit at a
+                                    // residual -0.46 rad steady-state
+                                    // error on every call.
+                                    let nco_lo_shift_hz =
+                                        -follower_lo_ppm * 1e-6
+                                            * follower_rx_lo as f64;
+                                    let offset_hz = (freq_hz as f64
+                                        - follower_rx_lo as f64
+                                        + nco_lo_shift_hz)
+                                        as i64;
 
                                     // Phase 7F.1 fix: reset the
                                     // traffic-side decoder framer
