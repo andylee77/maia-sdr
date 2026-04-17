@@ -539,24 +539,6 @@ impl IpCore {
             .modify(|_, w| w.demod_enable().bit(enable));
     }
 
-    /// Returns the index of the most recently completed traffic sub-buffer.
-    pub fn traffic_last_buffer(&self) -> u8 {
-        self.registers
-            .traffic_demod_status()
-            .read()
-            .last_buffer()
-            .bits()
-    }
-
-    /// Returns the current traffic DMA AW write address (debug).
-    pub fn traffic_next_address(&self) -> u32 {
-        self.registers
-            .traffic_next_address()
-            .read()
-            .next_address()
-            .bits()
-    }
-
     /// Reads new traffic DMA buffers since the last call.
     pub fn read_traffic_buffers(&mut self) -> Vec<&[u8]> {
         self.read_dma_buffers(DmaChannel::Traffic)
@@ -635,32 +617,6 @@ impl IpCore {
             .modify(|_, w| w.traffic_iq_enable().bit(enable));
     }
 
-    /// Index of the most recently completed traffic IQ sub-buffer.
-    pub fn traffic_iq_last_buffer(&self) -> u8 {
-        self.registers
-            .traffic_iq_dma_status()
-            .read()
-            .last_buffer()
-            .bits()
-    }
-
-    /// Reads and clears the traffic IQ ring overflow latch.
-    pub fn traffic_iq_overflow(&self) -> bool {
-        self.registers
-            .traffic_iq_dma_status()
-            .read()
-            .traffic_iq_overflow()
-            .bit()
-    }
-
-    /// Current traffic IQ DMA AW write address (debug).
-    pub fn traffic_iq_next_address(&self) -> u32 {
-        self.registers
-            .traffic_iq_next_address()
-            .read()
-            .next_address()
-            .bits()
-    }
 
     /// Reads new traffic IQ ring sub-buffers since the last call.
     /// Same 32-KB-per-buffer, 8192-complex-sample-per-buffer layout as
@@ -729,34 +685,6 @@ impl IpCore {
         self.registers
             .lsm_control()
             .modify(|_, w| w.lsm_agc_enable().bit(enable));
-    }
-
-    /// Phase 8A: pulse the control-side LSM chain runtime reset.
-    ///
-    /// Writes `1` to the W1P `lsm_reset` field in `lsm_control`,
-    /// which the Register framework turns into a 1-sync-cycle pulse
-    /// on `LsmDemod.reset_in`. Clears the PLL accumulator + timing
-    /// state + diff slicer history + sync register + BCH sweep
-    /// state back to their init values. Self-clearing -- the PAC
-    /// write-pulse semantics guarantee the field reads back as 0
-    /// on the next cycle.
-    ///
-    /// Use this in conjunction with `set_lsm_enable(false)`
-    /// before/after for the clean freeze+reset+thaw sequence. The
-    /// control-side chain is currently never retuned, so in
-    /// practice this is only called once at boot if at all; the
-    /// helper exists for symmetry with the traffic side and for
-    /// future channel-hopping work (Phase 7G).
-    pub fn pulse_lsm_reset(&self) {
-        // The PAC models Wpulse as a `write_with_zero` register
-        // field -- we need to write ONLY the reset bit, without
-        // clobbering the other RW fields in the same word. Use
-        // `modify()` so the surrounding bits (lsm_enable,
-        // lsm_dibit_dma_enable, lsm_dc_block_enable) are read and
-        // written back unchanged.
-        self.registers
-            .lsm_control()
-            .modify(|_, w| w.lsm_reset().bit(true));
     }
 
     /// Reads back the `lsm_control` register as `(lsm_enable,
@@ -1531,14 +1459,6 @@ impl InterruptHandler {
         }
     }
 
-    /// Returns a waiter for post-DDC IQ ring DMA completion interrupts
-    /// (Phase 6C/6D).
-    pub fn waiter_iq_dma(&self) -> InterruptWaiter {
-        InterruptWaiter {
-            notify: self.notify_iq_dma.clone(),
-        }
-    }
-
     /// Returns a waiter for LSM control-channel dibit DMA completion
     /// interrupts (Phase 6E.9). NID events themselves are PS-polled via
     /// `IpCore::lsm_status()` rather than IRQ-driven.
@@ -1556,15 +1476,6 @@ impl InterruptHandler {
     pub fn waiter_traffic_lsm_dibit_dma(&self) -> InterruptWaiter {
         InterruptWaiter {
             notify: self.notify_traffic_lsm_dibit_dma.clone(),
-        }
-    }
-
-    /// Returns a waiter for traffic-side post-DDC IQ ring DMA
-    /// completion interrupts (2026-04-16 chain-symmetry fix).
-    /// Mirror of `waiter_iq_dma` on the control side.
-    pub fn waiter_traffic_iq_dma(&self) -> InterruptWaiter {
-        InterruptWaiter {
-            notify: self.notify_traffic_iq_dma.clone(),
         }
     }
 

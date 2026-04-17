@@ -11,7 +11,6 @@ use core::f32::consts::PI;
 
 const TWO_PI: f32 = 2.0 * PI;
 const SAMPLES_PER_FRAME: usize = 160;
-const LOG_2: f32 = core::f32::consts::LN_2;
 
 // ============================================================================
 // Deinterleave table (144 entries)
@@ -697,10 +696,6 @@ impl ModelParameters {
         self.error_count_coset0 >= 2
             && self.error_count_total as f32 >= (10.0 + 40.0 * self.error_rate)
     }
-
-    fn requires_adaptive_smoothing(&self) -> bool {
-        self.error_rate > 0.0125 || self.error_count_total > 4
-    }
 }
 
 // ============================================================================
@@ -1201,15 +1196,6 @@ impl WhiteNoiseGenerator {
         self.state ^= self.state << 5;
         // Map to -1.0..1.0
         (self.state as f32 / u32::MAX as f32) * 2.0 - 1.0
-    }
-
-    fn next_buffer(&mut self) -> [f32; 256] {
-        let copy = self.current_buffer;
-        self.current_buffer.copy_within(160..256, 0);
-        for x in 96..256 {
-            self.current_buffer[x] = self.next_random() * WHITE_NOISE_GAIN;
-        }
-        copy
     }
 
     fn get_samples(&mut self, length: usize, gain: f32) -> Vec<f32> {
