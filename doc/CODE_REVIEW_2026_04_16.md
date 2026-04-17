@@ -13,6 +13,7 @@
 | **Stage 1 status (2026-04-17)** | **1.1, 1.2, 1.3, 1.4, 1.9 resolved; 1.5 verified as non-issue. 1.6, 1.7, 1.8, 1.10-1.14 pending. §2 and §3 pending.** |
 | **Stage 2 status (2026-04-17)** | **API-first refactor (commit `db59a01`): 9-module handler split, `/api/sys_health`, WS Lagged handling, `doc/P25_API.md` + `doc/API_CONSUMERS.md`. Section 2.3 Lagged + reconnect-backoff items resolved.** |
 | **Stage 3 status (2026-04-17)** | **Dead-code sweep (`6fc2554`, `31a7e80`) -868 lines + docstring pass (`cad25b8`) + Linux hotfix (`d403375`). Linux build verified via Tezuka. Section 2.3 recording-fingerprint + recording DOM items resolved; §2.2 `DATA_DEINTERLEAVE` assert verified type-safe; §3.4 tool nits partially resolved (nid_analyze, p25_check regex). ~24 remaining Linux dead-code warnings deferred to future pass (see `project_2026_04_17_session_close` memory).** |
+| **Stage 4 status (2026-04-17)** | **Code-review close-out before HDL roadmap: §1.7 `imbe_ring` mutex poison → `unwrap_or_else(\|p\| p.into_inner())` at both callers; §1.8 `TrafficManager` single-owner invariant documented at `impl` block; §1.13 ImbeForwarder `Vec<>` → `VecDeque<>` with `pop_front`/`push_back`; §4.1 vocoder/`TrafficManager` decoupling re-verified (atomic-flag gating only); §4.4 BCH-t runtime override verified as post-decode rejection filter, never downgrades ML capability. `BUILD_TAG=2026-04-17-stage4-code-review-verify`.** |
 
 ## Executive summary
 
@@ -28,7 +29,7 @@
 
 **Stage 2 + 3 additional resolutions (2026-04-17):**
 
-- §1.7 `imbe_ring` mutex poison: effectively mooted by the Stage 3 deletion of `process_directed_tsdu` and the mbelib fallback; remaining `.lock().unwrap()` sites are all on small ring buffers with no panic-capable holders.
+- §1.7 `imbe_ring` mutex poison: **Stage 4 DONE** — both call sites in `httpd/api/traffic.rs` (`/api/imbe_dump`, `/api/audio_test`) now recover with `unwrap_or_else(|p| p.into_inner())`. The ring is a diagnostic buffer; losing its invariant on poison is acceptable.
 - §2.3 WebSocket Lagged handling: DONE in Stage 2 for both `/ws/events` and `/ws/audio`.
 - §2.3 recording-list fingerprint: DONE in Stage 3 (`(id, started_unix_ms)` instead of `(id, size_bytes)`).
 - §2.3 `/ws/events` reconnect backoff: DONE in Stage 2 (exponential 1s→15s).
@@ -373,13 +374,14 @@ The audio-decoupling, status-dibit, encryption, and BCH t=11 claims should be re
 4. ~~Update the IP in [build_fpga.bat:509](../build_fpga.bat#L509) (1.4)~~ — primary switched to `192.168.2.1` with `192.168.120.50` noted as Ethernet alternate (see revised 1.4 above).
 5. ~~Add the AGC bit to the `traffic_lsm_control` readback (1.9)~~ — `traffic_lsm_control_readback()` now returns `(en, dma_en, dc_block, agc)`; all callers updated; dashboard `/api/traffic_lsm_control` and `/api/traffic_lsm` both include the AGC bit. Control chain readback updated symmetrically.
 
-### Next session
+### Next session — Stage 4 outcome (2026-04-17)
 
-6. Convert raw `[idx]` to `.get(idx)?` at the five sites in 1.5 + 1.14.
-7. Document or enforce the `TrafficManager` single-task-owner invariant (1.8).
-8. Re-run full Vivado timing and confirm the Phase 10-prep CDC closure isn't placement-luck (1.6).
-9. Verify item 4.4 — confirm runtime BCH-t gate is diagnostic only.
-10. Verify item 4.1 — re-read the vocoder gating to confirm no `TrafficManager` state coupling crept in.
+1. ~~Convert raw `[idx]` to `.get(idx)?` at the five sites in 1.5 + 1.14.~~ **§1.5 reclassified NOT-a-panic-risk in initial review; §1.14 same invariants apply (type-level `[u8; 18]` / state-machine bounds). No change needed.**
+2. ~~Document or enforce the `TrafficManager` single-task-owner invariant (1.8).~~ **DONE** — doc comment above `impl TrafficManager` cites the `Arc<tokio::sync::Mutex<>>` wrapper in `main.rs` and enumerates the four call-site classes.
+3. Re-run full Vivado timing and confirm the Phase 10-prep CDC closure isn't placement-luck (1.6). — **Deferred to next bake.**
+4. ~~Verify item 4.4 — confirm runtime BCH-t gate is diagnostic only.~~ **DONE** — `bch_t_override` is applied at `control_channel.rs:1053-1056` strictly as a post-ML rejection threshold: the ML codebook search runs at full `T_MAX_ERRORS=11` capability, then the override rejects results whose `n_errors` exceed the live setting. No downgrade.
+5. ~~Verify item 4.1 — re-read the vocoder gating to confirm no `TrafficManager` state coupling crept in.~~ **DONE** — vocoder task consumes from `imbe_tx` mpsc + gates on `ImbeForwarder`'s atomic `call_encrypted` / `current_talkgroup` / `vocoder_reset_pending` flags only. No `TrafficManager` reference in the vocoder path.
+6. ~~§1.13 `Vec::remove(0)` → `VecDeque::pop_front()` swap in `ImbeForwarder.imbe_ring`.~~ **DONE** — field type migrated, both push/evict sites updated, the two `/api/imbe_dump`/`/api/audio_test` readers work unchanged (iteration + `.clone()` are identical on `VecDeque`).
 
 ### Backlog
 

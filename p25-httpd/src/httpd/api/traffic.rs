@@ -487,7 +487,11 @@ pub async fn get_traffic(
 pub async fn get_imbe_dump(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let ring = state.imbe_forwarder.imbe_ring.lock().unwrap();
+    // Recover from a poisoned mutex rather than killing the HTTP task:
+    // the ring is a diagnostic buffer, no invariant is lost on poison.
+    let ring = state.imbe_forwarder.imbe_ring
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let frames: Vec<serde_json::Value> = ring
         .iter()
         .map(|(tg, enc, bits)| {
@@ -513,7 +517,11 @@ pub async fn get_imbe_dump(
 pub async fn get_audio_test(
     State(state): State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
-    let ring = state.imbe_forwarder.imbe_ring.lock().unwrap().clone();
+    // Same poison-recovery as /api/imbe_dump above.
+    let ring = state.imbe_forwarder.imbe_ring
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     let clear: Vec<_> = ring.iter().filter(|(_, enc, _)| !enc).collect();
 
     let mut decoder = crate::vocoder::JmbeDecoder::new();

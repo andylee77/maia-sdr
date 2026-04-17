@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-17-stage3-fix-linux-build";
+pub const BUILD_TAG: &str = "2026-04-17-stage4-code-review-verify";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -240,7 +240,10 @@ pub struct ImbeForwarder {
     pub vocoder_reset_pending: std::sync::atomic::AtomicBool,
     /// Ring buffer of the last N raw IMBE frames for diagnostic capture
     /// via `/api/imbe_dump`. Stores (talkgroup, encrypted, frame_bytes).
-    pub imbe_ring: std::sync::Mutex<Vec<(u16, bool, [u8; 18])>>,
+    /// `VecDeque` so the 128-cap eviction on `push_back` is `O(1)` rather
+    /// than `O(n)` — `/api/imbe_dump` is a hot path when 10 traffic chains
+    /// are active.
+    pub imbe_ring: std::sync::Mutex<std::collections::VecDeque<(u16, bool, [u8; 18])>>,
     /// Channel to the vocoder task. Each send is a batch of 9 frames
     /// (one LDU's worth = 180 ms of audio).
     imbe_tx: tokio::sync::mpsc::Sender<[p25::voice_frame::ImbeFrameRaw; 9]>,
@@ -267,7 +270,7 @@ impl ImbeForwarder {
             current_talkgroup: 0.into(),
             encrypted_tg_history: std::sync::Mutex::new(std::collections::HashSet::new()),
             vocoder_reset_pending: false.into(),
-            imbe_ring: std::sync::Mutex::new(Vec::with_capacity(128)),
+            imbe_ring: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(128)),
             imbe_tx,
         }
     }
@@ -306,9 +309,9 @@ impl ImbeForwarder {
         if let Ok(mut ring) = self.imbe_ring.lock() {
             for f in frames {
                 if ring.len() >= 128 {
-                    ring.remove(0);
+                    ring.pop_front();
                 }
-                ring.push((tg, enc, f.bits));
+                ring.push_back((tg, enc, f.bits));
             }
         }
         if tg == 0 {

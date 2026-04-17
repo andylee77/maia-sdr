@@ -161,6 +161,19 @@ pub struct GrantMapEntry {
     pub last_seen_unix_ms: u64,
 }
 
+// ── Concurrency contract ─────────────────────────────────────────────
+//
+// All `&mut self` methods on `TrafficManager` (`handle_grant`,
+// `hdu_received`, `tdu_received`, `note_activity`, `check_timeouts`,
+// `force_release`, `tally_grant`) assume the caller holds exclusive
+// access. The singleton is owned as `Arc<tokio::sync::Mutex<TrafficManager>>`
+// constructed in `main.rs` (see `traffic_manager` binding near the top
+// of `main()`), and every call site — the 50 ms grant-follower poll
+// loop, the traffic-LSM NID dispatcher, the dibit-reader activity
+// toucher, and all `/api/traffic*` HTTP handlers — acquires the lock
+// with `.lock().await` before touching the manager. Do not add a new
+// caller that bypasses that lock; the manager itself does not
+// serialise internally.
 impl TrafficManager {
     pub fn new(rx_lo_hz: u64, sample_rate_hz: u64) -> Self {
         TrafficManager {
