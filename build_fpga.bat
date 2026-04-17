@@ -506,7 +506,8 @@ if "%BUILD_P25%"=="1" (
 echo.
 echo  2. Flash the .frm/.zip to Fishball via SD card
 echo.
-echo  3. Verify: ssh root@192.168.120.50 "cat /sys/firmware/devicetree/base/model"
+echo  3. Verify: ssh root@192.168.2.1 "cat /sys/firmware/devicetree/base/model"
+echo     (RNDIS USB; use 192.168.120.50 if connected via Ethernet)
 echo.
 goto :end
 

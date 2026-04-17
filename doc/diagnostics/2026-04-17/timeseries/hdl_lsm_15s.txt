@@ -1,0 +1,15 @@
+22:51:13  valid_pct=98.82  pll_range=[-2214..1686]  sp_range=[1318..7668]  events=10  valid=10  iq_rolls=8  iq_kbps=242
+22:51:14  valid_pct=98.82  pll_range=[-1689..1760]  sp_range=[1107..7817]  events=14  valid=13  iq_rolls=7  iq_kbps=242
+22:51:16  valid_pct=98.82  pll_range=[-3029..1480]  sp_range=[1046..7668]  events=11  valid=11  iq_rolls=8  iq_kbps=242
+22:51:17  valid_pct=98.82  pll_range=[-1336..1105]  sp_range=[1236..7661]  events=14  valid=14  iq_rolls=8  iq_kbps=242
+22:51:18  valid_pct=98.81  pll_range=[-2440..1745]  sp_range=[1056..7952]  events=13  valid=12  iq_rolls=8  iq_kbps=242
+22:51:19  valid_pct=98.81  pll_range=[-1254..1410]  sp_range=[1075..7516]  events=12  valid=11  iq_rolls=8  iq_kbps=242
+22:51:21  valid_pct=98.81  pll_range=[-1773..1724]  sp_range=[1075..7742]  events=14  valid=14  iq_rolls=7  iq_kbps=242
+22:51:22  valid_pct=98.81  pll_range=[-657..1655]  sp_range=[1134..7750]  events=12  valid=12  iq_rolls=8  iq_kbps=242
+22:51:23  valid_pct=98.81  pll_range=[-1700..1579]  sp_range=[1107..7765]  events=14  valid=13  iq_rolls=7  iq_kbps=242
+22:51:24  valid_pct=98.81  pll_range=[-1905..1498]  sp_range=[1032..8068]  events=11  valid=11  iq_rolls=8  iq_kbps=242
+22:51:26  valid_pct=98.81  pll_range=[-1277..2139]  sp_range=[1378..7986]  events=14  valid=14  iq_rolls=8  iq_kbps=242
+22:51:27  valid_pct=98.81  pll_range=[-1373..3127]  sp_range=[1084..7886]  events=12  valid=12  iq_rolls=8  iq_kbps=242
+22:51:28  valid_pct=98.81  pll_range=[-2601..1565]  sp_range=[1033..7395]  events=13  valid=13  iq_rolls=8  iq_kbps=242
+22:51:30  valid_pct=98.81  pll_range=[-2589..1128]  sp_range=[1039..7875]  events=13  valid=13  iq_rolls=8  iq_kbps=242
+22:51:31  valid_pct=98.81  pll_range=[-1686..1731]  sp_range=[1114..7764]  events=11  valid=10  iq_rolls=7  iq_kbps=242

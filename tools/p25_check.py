@@ -102,7 +102,7 @@ def main() -> int:
     cc = sys_info.get("control_channel")
 
     import re
-    build_ok = bool(re.search(r"phase[67]", build or ""))
+    build_ok = bool(re.search(r"phase\d+|p\d+prep", build or ""))
     rfss_ok = rfss == 1
     wacn_ok = wacn == "BEE00"
 
@@ -133,6 +133,10 @@ def main() -> int:
     crc_ok_pct = 100.0 * crc_ok / max(block_attempts, 1)
     nid_pct = 100.0 * nid_decoded / max(nid_attempts, 1)
     seconds = total_dibits / 4800.0
+    # "LSM decoder running" = dibits are reaching the sync detector.
+    # This is the lowest bar that proves the control chain is alive;
+    # downstream CRC/band/message checks are stricter.
+    lsm_running = nid_attempts > 0
     # 6F.10: report rates derived from CRC-OK count instead of the
     # `recent_messages` ring buffer length, which capped at 100
     # pre-6F.10 and saturated in ~7 seconds at the steady-state
@@ -166,12 +170,16 @@ def main() -> int:
     # ── /api/decoder_compare → pl_hdl slice (Phase 9) ──
     banner("PL HDL LSM chain (from /api/decoder_compare → pl_hdl)")
     pl = dc.get("pl_hdl")
+    # hdl_pct feeds the acceptance summary below; initialise here so the
+    # variable exists even on pre-Phase-9 builds where pl_hdl is absent.
+    hdl_pct = 0.0
     if pl is None:
         print(f"  {DIM}(pl_hdl not in response -- pre-Phase-9 build?){RESET}")
     else:
         pl_total = pl.get("total_nids", 0)
         pl_valid = pl.get("valid_nids", 0)
         pl_pct = pl.get("valid_pct", 0.0)
+        hdl_pct = pl_pct
         pl_fail = pl_total - pl_valid
         pl_drop = pl.get("drop_count", 0)
         pl_pll = pl.get("pll_dbg", 0)

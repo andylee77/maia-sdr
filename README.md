@@ -85,9 +85,9 @@ test targets.
 - `maia-hdl/projects/fishball7020_iio/` -- Maia Vivado project
 - `maia-hdl/projects/fishball7020_p25/` -- P25 Vivado project
 - `maia-hdl/ip/p25-core/` -- P25 Vivado IP packaging
-- `doc/DEVPLAN.md` -- P25 development roadmap
-- `doc/BUILD_FPGA.md` -- P25 FPGA build guide
-- `doc/changes/` -- Detailed change documentation
+- [DEVPLAN.md](DEVPLAN.md) -- P25 development roadmap
+- [BUILD_FPGA.md](BUILD_FPGA.md) -- P25 FPGA build guide
+- [doc/changes/](doc/changes/) -- Detailed change documentation
 
 ## Target hardware
 

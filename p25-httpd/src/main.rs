@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-16-p10prep-full-dom-reuse";
+pub const BUILD_TAG: &str = "2026-04-17-stage2-api-split-sys-health";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -526,7 +526,7 @@ async fn main() -> anyhow::Result<()> {
     // is how we validate the HDL LSM port (Phase 6E.0-6E.9) against the
     // working Phase 2A C4FM path.
     // Phase 7B: typed grant event channel + monitor list.
-    let (grant_event_tx, mut grant_event_rx) =
+    let (grant_event_tx, _grant_event_rx) =
         tokio::sync::mpsc::channel::<p25::events::P25Event>(128);
     let monitor_list = Arc::new(RwLock::new(monitor::MonitorList::default()));
 
@@ -753,13 +753,14 @@ async fn main() -> anyhow::Result<()> {
         // register bank. If the readback disagrees with what we wrote we
         // have a register-bank wiring bug (rare; would surface as obvious
         // garbage in lsm_status / lsm_nid downstream).
-        let (lsm_en_rb, lsm_dma_en_rb, lsm_dc_block_rb) =
+        let (lsm_en_rb, lsm_dma_en_rb, lsm_dc_block_rb, lsm_agc_rb) =
             ip_core.lsm_control_readback();
         tracing::info!(
             "Control DDC: offset={nco_offset} Hz, dibit + iq + lsm ring DMA enabled \
              (lsm_control readback: lsm_enable={lsm_en_rb}, \
              lsm_dibit_dma_enable={lsm_dma_en_rb}, \
-             lsm_dc_block_enable={lsm_dc_block_rb})"
+             lsm_dc_block_enable={lsm_dc_block_rb}, \
+             lsm_agc_enable={lsm_agc_rb})"
         );
         if !lsm_en_rb || !lsm_dma_en_rb {
             tracing::error!(
@@ -838,13 +839,14 @@ async fn main() -> anyhow::Result<()> {
         // returns the gain register to GAIN_INIT (= 1.0) on every
         // retune, matching the clean-cold-start semantics.
         ip_core.set_traffic_lsm_agc_enable(true);
-        let (tlsm_en_rb, tlsm_dma_en_rb, tlsm_dc_block_rb) =
+        let (tlsm_en_rb, tlsm_dma_en_rb, tlsm_dc_block_rb, tlsm_agc_rb) =
             ip_core.traffic_lsm_control_readback();
         tracing::info!(
             "Traffic LSM chain armed: traffic_lsm_enable={tlsm_en_rb} \
              (Phase 8B: off until first retune), \
              traffic_lsm_dibit_dma_enable={tlsm_dma_en_rb}, \
-             traffic_lsm_dc_block_enable={tlsm_dc_block_rb}"
+             traffic_lsm_dc_block_enable={tlsm_dc_block_rb}, \
+             traffic_lsm_agc_enable={tlsm_agc_rb}"
         );
         if tlsm_en_rb || !tlsm_dma_en_rb {
             tracing::error!(

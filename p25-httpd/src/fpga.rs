@@ -760,15 +760,16 @@ impl IpCore {
     }
 
     /// Reads back the `lsm_control` register as `(lsm_enable,
-    /// lsm_dibit_dma_enable, lsm_dc_block_enable)`. Used at startup
-    /// to confirm the bits we wrote actually stuck in the register
-    /// bank.
-    pub fn lsm_control_readback(&self) -> (bool, bool, bool) {
+    /// lsm_dibit_dma_enable, lsm_dc_block_enable, lsm_agc_enable)`.
+    /// Used at startup to confirm the bits we wrote actually stuck in
+    /// the register bank.
+    pub fn lsm_control_readback(&self) -> (bool, bool, bool, bool) {
         let c = self.registers.lsm_control().read();
         (
             c.lsm_enable().bit(),
             c.lsm_dibit_dma_enable().bit(),
             c.lsm_dc_block_enable().bit(),
+            c.lsm_agc_enable().bit(),
         )
     }
 
@@ -1062,13 +1063,14 @@ impl IpCore {
 
     /// Reads back the `traffic_lsm_control` register as
     /// `(traffic_lsm_enable, traffic_lsm_dibit_dma_enable,
-    /// traffic_lsm_dc_block_enable)`.
-    pub fn traffic_lsm_control_readback(&self) -> (bool, bool, bool) {
+    /// traffic_lsm_dc_block_enable, traffic_lsm_agc_enable)`.
+    pub fn traffic_lsm_control_readback(&self) -> (bool, bool, bool, bool) {
         let c = self.registers.traffic_lsm_control().read();
         (
             c.traffic_lsm_enable().bit(),
             c.traffic_lsm_dibit_dma_enable().bit(),
             c.traffic_lsm_dc_block_enable().bit(),
+            c.traffic_lsm_agc_enable().bit(),
         )
     }
 

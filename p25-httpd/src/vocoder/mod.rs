@@ -11,7 +11,7 @@
 
 use std::os::raw::{c_char, c_int, c_short};
 
-pub use mbelib_sys::{SAMPLES_PER_FRAME, SAMPLE_RATE};
+pub use mbelib_sys::SAMPLES_PER_FRAME;
 
 use crate::p25::voice_frame::ImbeFrameRaw;
 

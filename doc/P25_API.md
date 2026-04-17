@@ -25,36 +25,115 @@ curl -s http://192.168.2.1:8080/api/system | python -m json.tool
 
 ## Endpoint catalogue
 
-Phase 9 retirement (2026-04-15): the `/api/lsm` endpoint (Phase 6D
-software LSM pipeline stats) was removed along with the `iq_lsm_decoder`
-and `LsmStats`. The `/api/decoder_compare` response also dropped the
-`ps_iq_lsm` and `ps_phase6d` sections; it is now a 3-column matrix
-(`ps_c4fm`, `ps_lsm`, `pl_hdl`). See
-[`doc/changes/039_phase9_retire_phase6d_iq_lsm.md`](changes/039_phase9_retire_phase6d_iq_lsm.md)
-for the retirement rationale and inventory of what moved where.
+**Authoritative runtime source:** `GET /api/endpoints` returns the live
+in-code catalogue. The daemon itself is the source of truth; this
+document reflects HEAD at the time of the last Stage 2 refactor
+(2026-04-17). Endpoints below are grouped by the
+[`p25-httpd/src/httpd/api/`](../p25-httpd/src/httpd/api/) module layout
+introduced in Stage 2 — the groupings mirror the consumer-facing
+categories an Android app (or any headless consumer) would reach for
+together.
 
-| # | Path | Method | Returns | Purpose |
-|---|---|---|---|---|
-| 1 | `/` | GET | HTML | Embedded dashboard (`index_html`) |
-| 2 | `/api/system` | GET | `SystemInfo` | System identity (NAC, WACN, RFSS, site, control channel, secondary CCH, SNDCP channels, system clock, build tag) |
-| 3 | `/api/grants` | GET | `Vec<ChannelGrant>` | Active voice grants (talkgroup-deduped, source preserved across updates) |
-| 4 | `/api/bands` | GET | `Vec<BandInfo>` | Frequency band table from `IDEN_UPDATE` opcodes |
-| 5 | `/api/stats` | GET | `DecoderStats` | Decoder + FPGA-side counters (dibit count, overflow flag, AGC gain, RSSI) |
-| 6 | `/api/hdl_lsm` | GET | JSON | HDL LSM chain runtime stats (cumulative, live, last NID, NID ring buffer) — single source of truth for PL-side LSM telemetry |
-| 7 | `/api/irq_stats` | GET | JSON | Per-IRQ wait counts and average wait times (dibit DMA, LSM dibit DMA, traffic DMA, traffic-LSM dibit DMA) |
-| 8 | `/api/decoder_compare` | GET | JSON | 3-column side-by-side: `ps_c4fm` (dormant fallback), `ps_lsm` (PS framer on PL dibits), `pl_hdl` (FPGA gateware heartbeat) |
-| 9 | `/api/dibit_dump` | GET | JSON | Raw dibit DMA dump (inner/outer ratio, raw_duid histogram) |
-| 10 | `/api/control_lsm_dibit_dump` | GET | JSON | Raw LSM dibit DMA dump from the HDL LSM chain |
-| 11 | `/api/control_iq_capture` | GET | JSON | 2048-dibit rolling capture from the PS LSM framer's ring buffer (Phase 6F.2h) |
-| 12 | `/api/control_iq_capture_aligned` | GET | JSON | Arm next-sync-aligned capture (sync dibits + NID + TSDU body + BCH result) |
-| 13 | `/api/tsbk_opcodes` | GET | JSON | Per-opcode + per-block-position histogram with parsed/unparsed flag and MFID breakdown |
-| 14 | `/api/recent_tsbks` | GET | JSON | Newest 50 TSBKs as `{age_secs, block, summary}` strings |
-| 15 | `/api/sync_tune` | GET, PUT | JSON | Read or set the runtime sync threshold (Phase 6F.7+) |
-| 16 | `/api/decoder_reset` | GET, POST | JSON | Reset the decoder counters to zero (for clean post-flash measurements) |
-| 17 | `/api/control_lsm_control` | GET | JSON | Read all 3 `lsm_control` bits + optional `?dc_block=0/1` query-param shortcut to toggle the DC blocker without ssh+devmem (Phase 6G.2) |
-| 18 | `/api/traffic` | GET | JSON | **Phase 7A.1** -- traffic-channel grant follower state, dibit DMA counters, optional `?reset_stats=1`, `?follower=on/off`, `?retune_hz=N`, `?demod_enable=0/1` manual controls |
-| 19 | `/api/aliases` | GET, PUT | `AliasMap` | Get or set the talkgroup-id → display-name map |
-| 20 | `/ws/events` | WS upgrade | JSON frames | Real-time TSBK event stream (`TsbkEvent`) — one frame per parsed TSBK |
+Phase 9 retirement (2026-04-15): `/api/lsm` (Phase 6D software LSM
+pipeline stats) was removed; `/api/hdl_lsm` is the PL-side runtime
+endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
+`ps_phase6d`; it is now a 3-column matrix (`ps_c4fm`, `ps_lsm`,
+`pl_hdl`). See
+[`doc/changes/039_phase9_retire_phase6d_iq_lsm.md`](changes/039_phase9_retire_phase6d_iq_lsm.md).
+
+### `api/system` — identity + health + self-describe
+
+| Path | Method | Returns | Purpose |
+|---|---|---|---|
+| `/` | GET | HTML | Embedded dashboard (`index_html`) |
+| `/api/system` | GET | `SystemInfo` | System identity: NAC, WACN, RFSS, site, control channel, secondary CCH, SNDCP channels, system clock, build tag |
+| `/api/sys_health` | GET | JSON | **Stage 2** — process + kernel health: loadavg, daemon RSS, thread count, free memory. Cheap to poll from a mobile client |
+| `/api/endpoints` | GET | JSON | Self-describing endpoint list (authoritative — the live `ENDPOINT_CATALOGUE`) |
+| `/api/set_time` | POST | JSON | `?unix_ms=<i64>` — push browser/client wall-clock to the board. For RNDIS-USB or air-gapped setups where NTP is unreachable |
+
+### `api/radio` — live radio state (primary-view endpoints)
+
+| Path | Method | Returns | Purpose |
+|---|---|---|---|
+| `/api/stats` | GET | `DecoderStats` | Decoder + AD9361 + FPGA counters: dibit count, overflow flag, AGC gain, RSSI, RX LO, RF bandwidth, sampling freq, gain mode, DDC geometry, wall clock |
+| `/api/grants` | GET | `Vec<ChannelGrant>` | Active voice grants (talkgroup-deduped; `encrypted` + `in_encrypted_history` badges) |
+| `/api/bands` | GET | `Vec<BandInfo>` | Frequency band table from `IDEN_UPDATE*` opcodes |
+| `/api/hdl_lsm` | GET | JSON | HDL LSM chain runtime: cumulative, live, last NID, 32-entry NID ring |
+| `/api/irq_stats` | GET | JSON | Per-IRQ wait counts and average wait (all 6 DMAs) |
+| `/api/decoder_compare` | GET | JSON | 3-column matrix: `ps_c4fm`, `ps_lsm`, `pl_hdl` |
+
+### `api/traffic` — current-call view
+
+| Path | Method | Returns | Purpose |
+|---|---|---|---|
+| `/api/traffic` | GET | JSON | Traffic-follower state + manual knobs: `?follower=on/off`, `?reset_stats=1`, `?retune_hz=<i64>` (routes through full chain), `?demod_enable=0/1` |
+| `/api/imbe_dump` | GET | JSON | Raw IMBE frame ring (diagnostic; vocoder input) |
+| `/api/audio` | GET | WAV | Streaming vocoder PCM as an open-ended WAV file (8 kHz 16-bit mono) |
+| `/api/audio_test` | GET | JSON | One-shot vocoder test-tone ring dump |
+
+### `api/talkgroups` — per-TG metadata
+
+| Path | Method | Returns | Purpose |
+|---|---|---|---|
+| `/api/aliases` | GET, PUT | `AliasMap` | Talkgroup-id → display-name map |
+| `/api/monitor` | GET, PUT | JSON | Monitor list. `?add=N` / `?remove=N` / PUT body `{"talkgroups":[...]}`. When non-empty, grant follower ignores TGs not in the list |
+| `/api/encrypted_tgs` | GET, PUT | JSON | Persistent encryption blocklist. `?add=N` / `?remove=N` / `?clear=1`. Any TG ever seen encrypted is eagerly added |
+| `/api/grant_map` | GET | JSON | Accumulated per-`(tg, freq)` grant map with first/last-seen and encrypted counters; frequency roll-up for LO-centering decisions |
+
+### `api/history` — time-series + retention
+
+| Path | Method | Returns | Purpose |
+|---|---|---|---|
+| `/api/log` | GET | JSON | Event-log ring tail. `?since=<seq>` — incremental read |
+| `/api/recordings` | GET | JSON | Recording list (one row per call) |
+| `/api/recordings/{id}` | GET | WAV | Download a recorded call by id |
+| `/api/recent_tsbks` | GET | JSON | Newest 50 TSBKs as `{age_secs, block, summary}` |
+| `/api/tsbk_opcodes` | GET | JSON | Per-opcode + per-block-position histogram with parsed/unparsed flag + MFID breakdown |
+
+### `api/tuning` — runtime knobs
+
+| Path | Method | Returns | Purpose |
+|---|---|---|---|
+| `/api/reinit` | GET | JSON | Front-end retune. `?rx_lo=<Hz>`, `?control_freq=<Hz>`, `?sample_rate=<Hz>`, `?rf_bandwidth=<Hz>`, `?gain_mode=manual\|agc`, `?gain_db=<int>`. Blank = restore boot value |
+| `/api/rx_gain` | GET, PUT | JSON | AD9361 RX gain knob, `?db=<-3..76>` |
+| `/api/modulation` | GET, PUT | JSON | Active modulation: `auto` / `c4fm` / `lsm`. Changes which control-chain decoder feeds the dashboard |
+| `/api/bch_t` | GET, PUT | JSON | Runtime BCH-t correction cap per decoder. `?side=control\|traffic&t=<0..11>` |
+| `/api/sync_tune` | GET, PUT | JSON | Runtime sync-detector Hamming-distance threshold |
+| `/api/decoder_reset` | GET, POST | JSON | Zero the decoder counters (clean post-flash measurements) |
+
+### `api/chain` — HDL chain internals (control + traffic symmetry)
+
+| Path | Method | Returns | Purpose |
+|---|---|---|---|
+| `/api/dibit_dump` | GET | JSON | Raw C4FM dibit DMA ring (inner/outer ratio, raw_duid histogram) |
+| `/api/control_lsm_dibit_dump` | GET | JSON | Raw control-chain LSM dibit DMA ring |
+| `/api/traffic_lsm_dibit_dump` | GET | JSON | Raw traffic-chain LSM dibit DMA ring (symmetric to control side) |
+| `/api/control_iq_capture` | GET | JSON | Rolling IQ capture from control-chain PS ring (post-DDC) |
+| `/api/traffic_iq_capture` | GET | JSON | Rolling IQ capture from traffic-chain PS ring |
+| `/api/control_iq_capture_aligned` | GET | JSON | Next-sync-aligned capture with sync + NID + TSDU body + BCH result |
+| `/api/traffic_iq_capture_aligned` | GET | JSON | Same alignment scheme, traffic side |
+| `/api/control_lsm_control` | GET | JSON | Read all 4 control-chain `lsm_control` bits (enable / dma_enable / dc_block / agc). `?dc_block=0\|1` toggles DC blocker |
+| `/api/traffic_lsm_control` | GET | JSON | Same, traffic chain. `?dc_block=0\|1` and `?agc=0\|1` writable |
+| `/api/nid_capture` | GET | JSON | Per-DUID NID ring with BCH distance + sync distance |
+
+### `api/debug` — visual diagnostics
+
+| Path | Method | Returns | Purpose |
+|---|---|---|---|
+| `/api/spectrum` | GET | JSON | FFT bins from the IQ ring. `?chain=control\|traffic&fft=<512\|1024\|2048\|4096>` |
+| `/api/constellation` | GET | JSON | IQ scatter from the LSM slicer input. `?chain=control\|traffic` |
+
+### `api/ws` — WebSocket streams
+
+| Path | Method | Framing | Purpose |
+|---|---|---|---|
+| `/ws/events` | WS upgrade | JSON text | Real-time event stream (`TsbkEvent` + system events). **Stage 2**: synthetic `{"event_type":"ws_lag"}` frame sent when the broadcast channel overruns a slow consumer, so the connection stays up instead of closing |
+| `/ws/audio` | WS upgrade | binary + text control | Vocoded PCM at 8 kHz 16-bit mono, 320-byte binary frames (160 samples = 20 ms per frame). **Stage 2**: on Lagged, server sends a text control frame `{"type":"lag","skipped":N}` so the client can flush its jitter buffer |
+
+### Client reconnect guidance
+
+- `/ws/events`: exponential backoff (1s → 2s → 4s → 8s → 15s ceiling). Reset to 1s on first successful message. The embedded dashboard implements this; other clients (Android app) should do the same. A flat reconnect delay hammers the server during daemon restart.
+- `/ws/audio`: user-initiated (Play Audio button). No auto-reconnect today — if the connection drops mid-call the client should show a "disconnected" indicator and let the user retry. Server sends `ws_lag` control frames on broadcast-channel overrun; clients should use them to flush any downstream jitter buffer.
 
 ---
 

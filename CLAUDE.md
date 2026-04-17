@@ -35,8 +35,8 @@ control channel decoder.
 - `p25-httpd/src/` — P25 httpd source
 - `p25-httpd/p25-pac/` — P25 FPGA register PAC (from SVD)
 - `p25-httpd/p25-json/` — P25 JSON API types
-- `doc/DEVPLAN.md` — P25 development roadmap
-- `doc/BUILD_FPGA.md` — P25 FPGA bitstream build guide
+- `DEVPLAN.md` — P25 development roadmap (repo root)
+- `BUILD_FPGA.md` — P25 FPGA bitstream build guide (repo root)
 - `doc/changes/` — Detailed change documentation (Maia + P25)
 - `maia-wasm/src/` — WASM source (waterfall, UI, WebSocket)
 
@@ -48,7 +48,7 @@ control channel decoder.
 - **Amaranth:** Python virtual environment
 - **Maia build:** `build_fpga.bat` (builds fishball7020_iio)
 - **P25 build:** `build_fpga.bat --p25` (builds fishball7020_p25)
-- **P25 build guide:** `doc/BUILD_FPGA.md`
+- **P25 build guide:** `BUILD_FPGA.md` (repo root)
 
 ### Firmware
 
@@ -83,7 +83,7 @@ control channel decoder.
 - WASM build: `maia-wasm/` uses wasm-pack
 - Build outputs go to build-specific directories (gitignored by component)
 - Use `doc/changes/` for detailed technical docs (Maia + P25 changes)
-- P25 dev plan: `doc/DEVPLAN.md`
+- P25 dev plan: `DEVPLAN.md` (repo root)
 - P25 dev log: merged into root `DEVLOG.md`
 - Update `CHANGELOG_FORK.md` with each change (Maia and P25)
 
