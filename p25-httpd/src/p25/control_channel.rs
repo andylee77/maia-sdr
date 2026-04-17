@@ -28,7 +28,7 @@ fn chrono_timestamp() -> String {
     format!("{:02}:{:02}:{:02}.{:03}", hours, mins, s, ms)
 }
 
-use super::fec::{GolayDecoder, TrellisDecoder, TsduDeinterleaver};
+use super::fec::{TrellisDecoder, TsduDeinterleaver};
 use super::tsbk::{FrequencyBand, TsbkBlock, TsbkMessage};
 use super::types::*;
 
@@ -689,7 +689,6 @@ impl ControlChannelDecoder {
                     frequency_hz: info.frequency_hz,
                     encrypted: info.encrypted,
                     emergency: info.emergency,
-                    timestamp: info.timestamp,
                 },
             ));
         }
@@ -705,159 +704,6 @@ impl ControlChannelDecoder {
         handler: Arc<dyn VoiceHandler + Send + Sync>,
     ) {
         self.voice_handler = Some(handler);
-    }
-
-    /// Phase 6F.9: process a TSDU "directed" by an upstream sync
-    /// detector (typically the Phase 6D soft-decision sync correlator
-    /// on raw IQ). The caller knows the dibit position of the first
-    /// NID dibit; we skip the Hunting state machine entirely and run
-    /// NID extraction + multi-block TSBK decode on the supplied buffer.
-    ///
-    /// `nid_and_body` must be at least 33 dibits (just the NID); for a
-    /// full multi-block TSDU it should be 33 + 303 = 336 dibits. Any
-    /// length in between truncates the body read at the buffer end.
-    ///
-    /// **Why this exists.** The HDL dibit slicer is the dominant
-    /// throughput bottleneck (60 / 40 inner / outer ratio costs us
-    /// ~70% of TSDUs at the dibit-correlator hard sync stage). Phase
-    /// 6D's soft-decision raw-IQ correlator picks up roughly twice as
-    /// many syncs from the same signal -- bypassing the slicer means
-    /// we can process those extra syncs through the same TSBK pipeline
-    /// instead of just counting them in `LsmStats`. See doc 029.
-    ///
-    /// All counter updates flow through the same fields as the
-    /// streaming `process_dibit` path so `/api/decoder_compare` and
-    /// `/api/tsbk_opcodes` show a unified view of "what this decoder
-    /// has seen", regardless of whether it came in via Hunting or via
-    /// directed soft sync.
-    pub fn process_directed_tsdu(&mut self, nid_and_body: &[u8]) {
-        if nid_and_body.len() < NID_TRANSMITTED_DIBITS {
-            return;
-        }
-
-        // 1. Extract NID, skipping the in-window status dibit at index 11.
-        let mut nid_bits: u64 = 0;
-        for j in 0..NID_TRANSMITTED_DIBITS {
-            if j == NID_STATUS_DIBIT_INDEX {
-                continue;
-            }
-            nid_bits = (nid_bits << 2) | (nid_and_body[j] as u64 & 0x3);
-        }
-
-        self.nid_attempts += 1;
-        let (nac_raw, duid_raw, on_air_duid) =
-            match GolayDecoder::decode_nid(nid_bits) {
-                Some(v) => v,
-                None => {
-                    self.nid_decode_failures += 1;
-                    return;
-                }
-            };
-        self.raw_duid_hist[(on_air_duid & 0x0F) as usize] += 1;
-
-        let duid = match DataUnit::from_duid(duid_raw) {
-            Some(d) => d,
-            None => {
-                self.nid_invalid_duid += 1;
-                return;
-            }
-        };
-        self.system.nac = Some(Nac::new(nac_raw));
-        self.nid_decoded_ok += 1;
-
-        // 2. We only handle TSDU directed reads for now (Phase 6F.9).
-        //    Other DUIDs (HDU / LDU / TDU) just bump the NID counters
-        //    and return.
-        if !matches!(duid, DataUnit::Tsdu) {
-            return;
-        }
-        self.nid_decoded_tsdu += 1;
-        self.tsdu_attempts += 1;
-
-        // 3. Walk through up to 3 TSBK blocks. Body starts at offset
-        //    NID_TRANSMITTED_DIBITS in the supplied buffer.
-        let body = &nid_and_body[NID_TRANSMITTED_DIBITS..];
-        for block_idx in 0..TsduDeinterleaver::MAX_BLOCKS {
-            let num_blocks = block_idx + 1;
-            let needed = TsduDeinterleaver::body_dibits_for_blocks(num_blocks)
-                .expect("body_dibits_for_blocks returns Some for 1..=3");
-            if body.len() < needed {
-                break;
-            }
-            let body_slice = &body[..needed];
-
-            let data_dibits =
-                TsduDeinterleaver::deinterleave_multi(body_slice, num_blocks);
-            let block_start = block_idx * TsduDeinterleaver::TRELLIS_DATA_DIBITS;
-            let block_end = block_start + TsduDeinterleaver::TRELLIS_DATA_DIBITS;
-            if data_dibits.len() < block_end {
-                break;
-            }
-            let block_dibits = &data_dibits[block_start..block_end];
-            self.tsbk_block_attempts += 1;
-            self.tsbk_block_attempts_by_pos[block_idx] += 1;
-
-            let decoded = match TrellisDecoder::decode(block_dibits) {
-                Some(d) => d,
-                None => {
-                    self.tsbk_trellis_failures += 1;
-                    // Continue to next block (matches the streaming
-                    // process_tsdu_block "continue past failure" model).
-                    continue;
-                }
-            };
-
-            let block = TsbkBlock::parse(&decoded);
-            let opcode_byte = (decoded[0] & 0x3F) as usize;
-            let last_block_bit = block.last_block;
-            match block.crc_valid(&decoded) {
-                None => {
-                    self.tsbk_crc_failures += 1;
-                    self.tsbk_opcode_hist_fail[opcode_byte] += 1;
-                    continue;
-                }
-                Some(crate::p25::tsbk::CrcConvention::Plain) => {
-                    self.tsbk_crc_ok += 1;
-                    self.tsbk_crc_ok_plain += 1;
-                    self.tsbk_crc_ok_by_pos[block_idx] += 1;
-                    self.tsbk_opcode_hist_ok[opcode_byte] += 1;
-                    self.bump_mfid(block.manufacturer);
-                }
-                Some(crate::p25::tsbk::CrcConvention::Xored) => {
-                    self.tsbk_crc_ok += 1;
-                    self.tsbk_crc_ok_xored += 1;
-                    self.tsbk_crc_ok_by_pos[block_idx] += 1;
-                    self.tsbk_opcode_hist_ok[opcode_byte] += 1;
-                    self.bump_mfid(block.manufacturer);
-                }
-            }
-
-            if let Some(msg) = block.decode() {
-                // 2026-04-16: detect P25 Phase 2 (TDMA) capability from
-                // the opcode before the Tdma/Vuhf/FDMA variants collapse
-                // into a common TsbkMessage::IdentifierUpdate. Opcode
-                // 0x33 = IDEN_UPDATE_TDMA; presence means the site has
-                // at least one TDMA band, which the dashboard labels as
-                // "P25 P1+P2". Sticky latch — the site keeps its P2
-                // capability for the rest of this session.
-                if opcode_byte == 0x33 {
-                    self.system.has_tdma_band = true;
-                }
-                self.handle_tsbk(block_idx as u8, msg);
-            } else {
-                self.tsbk_unknown_opcode += 1;
-            }
-
-            // For directed reads we ALWAYS attempt all 3 blocks even
-            // if a clean LB=1 was set early -- the soft sync correlator
-            // gives us the dibit position for free, and at this layer
-            // we don't know how much body is "really" supposed to follow
-            // the LB bit. Reading 3 blocks always wastes at most 2 ×
-            // 98 trellis dibits per "single block" TSDU, ~6 ms of CPU.
-            // The CRC check still rejects garbage so the only "cost"
-            // is a slightly higher tsbk_block_attempts denominator.
-            let _ = last_block_bit;
-        }
     }
 
     /// Phase 6F.8: clear ALL diagnostic counters and histograms (the

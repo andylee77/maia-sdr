@@ -52,9 +52,4 @@ impl MonitorList {
         &self.priority
     }
 
-    /// Given a TG, return its priority index (lower = higher priority).
-    /// Returns `usize::MAX` if not in the list (used for comparison).
-    pub fn priority_of(&self, tg: u16) -> usize {
-        self.priority.iter().position(|&t| t == tg).unwrap_or(usize::MAX)
-    }
 }

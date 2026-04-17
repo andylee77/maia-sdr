@@ -2794,7 +2794,6 @@ async fn main() -> anyhow::Result<()> {
             use std::sync::atomic::Ordering;
             let mut decoder = vocoder::JmbeDecoder::new();
             let mut rx = imbe_rx;
-            let mut seq: u64 = 0;
 
             // Per-call accumulators. `call_tg` is the TG the current
             // accumulator belongs to; flushed on reset or TG change.
@@ -2924,10 +2923,8 @@ async fn main() -> anyhow::Result<()> {
                     // Push to audio broadcast (ignore if no subscribers)
                     let _ = voc_audio_tx.send(audio::AudioChunk {
                         pcm,
-                        seq,
                         talkgroup: tg,
                     });
-                    seq += 1;
                 }
             }
             tracing::warn!(target: "p25_vocoder", "vocoder task exiting (channel closed)");

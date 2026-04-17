@@ -5,63 +5,9 @@
 //!
 //! Reference: TIA-102.BAAA Section 7 (coding and interleaving)
 
-/// Golay(23,12) decoder
-///
-/// The NID contains NAC(12) + DUID(4) = 16 information bits encoded
-/// with extended Golay(24,12) producing 48 bits (24 dibits).
-/// Actually, P25 NID uses two Golay(23,12) codewords:
-///   - First: 12 data bits (NAC) -> 23 coded bits
-///   - Second: 12 data bits (DUID + parity) -> 23 coded bits
-///   - Plus 2 parity bits = 48 bits total
-///
-/// Golay(23,12) can correct up to 3 bit errors.
-pub struct GolayDecoder;
-
-impl GolayDecoder {
-    /// Decode P25 NID from 64 raw bits (32 dibits).
-    ///
-    /// Returns `Some((nac, duid, raw_duid))` if the BCH(63,16,11) FEC
-    /// successfully corrects the NID block (<= 11 bit errors), or `None`
-    /// otherwise. The `raw_duid` is the un-FEC'd 4-bit DUID field as it
-    /// arrived on-air; the caller logs it in the diagnostic histogram so
-    /// we can compare the BCH-corrected DUID against the raw on-air
-    /// distribution. `duid` is the BCH-corrected hard value.
-    ///
-    /// **Implementation:** Delegates to the validated
-    /// [`crate::lsm::nid_fec::decode_nid`] from Phase 6D, which is a port
-    /// of `tools/p25_nid_fec.py` (which is itself a port of SDRTrunk's
-    /// `BCH_63_16_23_P25_Test.java`). Maximum-likelihood decoder over the
-    /// 65,536-entry codebook; bit-exact with SDRTrunk for any received
-    /// word with <= 11 bit errors. The codebook is built lazily on the
-    /// first call via `OnceLock`, ~512 KB resident, <10 ms build time on
-    /// a Cortex-A9.
-    ///
-    /// On-wire NID layout (matches the lsm::nid_fec encoder):
-    ///
-    /// ```text
-    /// bit 63..52 : NAC  (12 bits, MSB-first within the data word)
-    /// bit 51..48 : DUID (4 bits)
-    /// bit 47..0  : 48 BCH parity bits
-    /// ```
-    ///
-    /// The caller in `control_channel.rs::process_dibit` builds the
-    /// `nid_bits` u64 by left-shifting and OR-ing 32 consecutive dibits
-    /// in arrival order, which is the natural P25 on-wire order: the
-    /// first dibit lands at bits [63:62] and the last lands at [1:0],
-    /// putting NAC[11] at bit 63 -- exactly the layout the BCH decoder
-    /// (and the SDRTrunk reference encoder) expects.
-    ///
-    /// **History.** Until 2026-04-10 this was a stub that hardcoded
-    /// `duid = 0x7` (TSDU) because the FEC was unimplemented and the
-    /// raw bits had ~12 errors per NID from slicer/PLL noise, making
-    /// the 4-bit DUID field effectively random. See doc/changes/021
-    /// for the cleanup.
-    pub fn decode_nid(nid_bits: u64) -> Option<(u16, u8, u8)> {
-        let raw_duid = ((nid_bits >> 48) & 0xF) as u8;
-        let decoded = crate::lsm::nid_fec::decode_nid(nid_bits)?;
-        Some((decoded.nac, decoded.duid, raw_duid))
-    }
-}
+// The Phase 6D `crate::lsm::nid_fec::decode_nid` is the live P25
+// NID decoder (BCH(63,16,11) ML codebook). Call it directly — the
+// old `GolayDecoder::decode_nid` wrapper was removed 2026-04-17.
 
 /// P25 1/2 rate trellis coded modulation decoder
 ///
@@ -445,6 +391,14 @@ pub(crate) fn trellis_encode_bytes(bytes: &[u8; 12]) -> [u8; 98] {
 mod tests {
     use super::*;
 
+    /// The `raw_duid` field is the pre-BCH 4-bit DUID straight off the
+    /// wire (u64 bits 51..48). `control_channel.rs::process_dibit`
+    /// computes it inline alongside the BCH decode for the diagnostic
+    /// histogram; tests below reproduce that shape.
+    fn raw_duid_of(nid_bits: u64) -> u8 {
+        ((nid_bits >> 48) & 0xF) as u8
+    }
+
     #[test]
     fn test_nid_decode_clean_clay_county() {
         // Clay County NAC 0x8A1 / DUID 0x7 (TSDU). Encode via the
@@ -452,12 +406,11 @@ mod tests {
         // with the right 48 parity bits, then verify decode_nid round-
         // trips it cleanly.
         let nid_bits = crate::lsm::nid_fec::encode_nid(0x8A1, 0x7);
-        let (nac, duid, raw_duid) = GolayDecoder::decode_nid(nid_bits).unwrap();
-        assert_eq!(nac, 0x8A1);
-        assert_eq!(duid, 0x7);
-        // raw_duid is the un-FEC'd 4-bit DUID field straight off the wire.
-        // For a clean codeword this matches the BCH-corrected value.
-        assert_eq!(raw_duid, 0x7);
+        let decoded = crate::lsm::nid_fec::decode_nid(nid_bits).unwrap();
+        assert_eq!(decoded.nac, 0x8A1);
+        assert_eq!(decoded.duid, 0x7);
+        // For a clean codeword raw matches BCH-corrected.
+        assert_eq!(raw_duid_of(nid_bits), 0x7);
     }
 
     #[test]
@@ -475,9 +428,9 @@ mod tests {
         for &p in &positions {
             corrupted ^= 1u64 << (63 - p);
         }
-        let (nac, duid, _raw) = GolayDecoder::decode_nid(corrupted).unwrap();
-        assert_eq!(nac, 0x8A1);
-        assert_eq!(duid, 0x7);
+        let decoded = crate::lsm::nid_fec::decode_nid(corrupted).unwrap();
+        assert_eq!(decoded.nac, 0x8A1);
+        assert_eq!(decoded.duid, 0x7);
     }
 
     #[test]
@@ -495,11 +448,11 @@ mod tests {
         for p in 0u32..20 {
             corrupted ^= 1u64 << (63 - p);
         }
-        match GolayDecoder::decode_nid(corrupted) {
+        match crate::lsm::nid_fec::decode_nid(corrupted) {
             None => {} // ok -- uncorrectable
-            Some((nac, duid, _)) => {
+            Some(d) => {
                 assert_ne!(
-                    (nac, duid),
+                    (d.nac, d.duid),
                     (0x8A1, 0x7),
                     "20-bit-error word silently decoded as the original NAC/DUID -- BCH bypass?"
                 );
@@ -520,10 +473,10 @@ mod tests {
         // Flip the DUID LSB (on-wire bit 15 = u64 bit 48). 1 bit error
         // is well within the t=11 correction sphere.
         let corrupted = clean ^ (1u64 << 48);
-        let (nac, duid, raw_duid) = GolayDecoder::decode_nid(corrupted).unwrap();
-        assert_eq!(nac, 0xE28);
-        assert_eq!(duid, 0x7); // BCH-corrected
-        assert_eq!(raw_duid, 0x6); // the un-FEC'd LSB-flipped DUID
+        let decoded = crate::lsm::nid_fec::decode_nid(corrupted).unwrap();
+        assert_eq!(decoded.nac, 0xE28);
+        assert_eq!(decoded.duid, 0x7); // BCH-corrected
+        assert_eq!(raw_duid_of(corrupted), 0x6); // the un-FEC'd LSB-flipped DUID
     }
 
     #[test]

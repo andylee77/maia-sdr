@@ -260,7 +260,6 @@ pub enum TsbkMessage {
         requested_access: bool,
         downlink_channel: Channel,
         uplink_channel: Channel,
-        data_access_control: u16,
     },
 
     /// TDMA Synchronization Broadcast (opcode 0x30) -- system
@@ -274,7 +273,6 @@ pub enum TsbkMessage {
         day: u8,
         hours: u8,
         minutes: u8,
-        micro_slots: u16,
     },
 
     /// Telephone Interconnect Voice Channel Grant Update (opcode
@@ -300,11 +298,9 @@ pub enum TsbkMessage {
 #[derive(Debug, Clone)]
 pub struct TsbkBlock {
     pub last_block: bool,
-    pub protected: bool,
     pub opcode: TsbkOpcode,
     pub manufacturer: u8,
     pub payload: [u8; 8],
-    pub crc: u16,
 }
 
 /// Which CRC convention validated a TSBK block. Phase 6F.2d
@@ -368,23 +364,21 @@ pub fn ccitt80_crc(data: &[u8]) -> u16 {
 }
 
 impl TsbkBlock {
-    /// Parse a 12-byte TSBK block
+    /// Parse a 12-byte TSBK block. The trailing 2 CRC bytes are read
+    /// directly from `data[10..12]` by `crc_valid()`; we don't stash
+    /// them in the struct.
     pub fn parse(data: &[u8; 12]) -> Self {
         let lb = (data[0] >> 7) & 1 == 1;
-        let p = (data[0] >> 6) & 1 == 1;
         let opcode = TsbkOpcode::from(data[0]);
         let manufacturer = data[1];
         let mut payload = [0u8; 8];
         payload.copy_from_slice(&data[2..10]);
-        let crc = u16::from_be_bytes([data[10], data[11]]);
 
         TsbkBlock {
             last_block: lb,
-            protected: p,
             opcode,
             manufacturer,
             payload,
-            crc,
         }
     }
 
@@ -569,17 +563,6 @@ impl TsbkBlock {
             out = (out << 1) | bit as u64;
         }
         out
-    }
-
-    /// Sign-extend an n-bit two's-complement value into i32 with sign
-    /// bit at the MSB of `n`.
-    fn sign_extend(val: u64, n: usize) -> i32 {
-        let sign = (val >> (n - 1)) & 1;
-        if sign == 1 {
-            (val | (!0u64 << n)) as i32
-        } else {
-            val as i32
-        }
     }
 
     /// IDEN_UPDATE (opcode 0x3D) -- standard FDMA frequency band entry.
@@ -864,13 +847,11 @@ impl TsbkBlock {
         let requested_access = self.bits(&full, 25, 1) != 0;
         let downlink_channel = Channel(self.bits(&full, 32, 16) as u16);
         let uplink_channel = Channel(self.bits(&full, 48, 16) as u16);
-        let data_access_control = self.bits(&full, 64, 16) as u16;
         TsbkMessage::SndcpDataChannelAnnouncementExplicit {
             autonomous_access,
             requested_access,
             downlink_channel,
             uplink_channel,
-            data_access_control,
         }
     }
 
@@ -902,7 +883,6 @@ impl TsbkBlock {
         let day = self.bits(&full, 51, 5) as u8;
         let hours = self.bits(&full, 56, 5) as u8;
         let minutes = self.bits(&full, 61, 6) as u8;
-        let micro_slots = self.bits(&full, 67, 13) as u16;
         TsbkMessage::TdmaSyncBroadcast {
             time_locked,
             year,
@@ -910,7 +890,6 @@ impl TsbkBlock {
             day,
             hours,
             minutes,
-            micro_slots,
         }
     }
 
@@ -963,21 +942,6 @@ impl TsbkBlock {
 }
 
 /// CRC-16-CCITT (polynomial 0x1021, init 0xFFFF)
-fn crc16_ccitt(data: &[u8]) -> u16 {
-    let mut crc: u16 = 0xFFFF;
-    for &byte in data {
-        crc ^= (byte as u16) << 8;
-        for _ in 0..8 {
-            if crc & 0x8000 != 0 {
-                crc = (crc << 1) ^ 0x1021;
-            } else {
-                crc <<= 1;
-            }
-        }
-    }
-    crc ^ 0xFFFF
-}
-
 /// Frequency band entry from IDEN_UP messages
 #[derive(Debug, Clone)]
 pub struct FrequencyBand {
@@ -1014,25 +978,11 @@ impl FrequencyBand {
         self.base_frequency_hz + (channel_number as u64) * (self.channel_spacing_hz as u64)
     }
 
-    /// Calculate uplink frequency for a channel number
-    pub fn channel_uplink_frequency(&self, channel_number: u16) -> u64 {
-        let dl = self.channel_frequency(channel_number);
-        (dl as i64 + self.transmit_offset_hz as i64) as u64
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_crc16_ccitt() {
-        // Known test vector: CRC-16/CCITT-FALSE with init=0xFFFF, final XOR=0xFFFF
-        // "123456789" -> CRC-16/CCITT-FALSE = 0x29B1, then XOR 0xFFFF = 0xD64E
-        let data = b"123456789";
-        let crc = crc16_ccitt(data);
-        assert_eq!(crc, 0xD64E);
-    }
 
     #[test]
     fn test_ccitt80_crc_known_tsbk() {
@@ -1090,7 +1040,6 @@ mod tests {
 
         let block = TsbkBlock::parse(&data);
         assert!(block.last_block);
-        assert!(!block.protected);
         assert_eq!(block.manufacturer, 0x00);
 
         let msg = block.decode().unwrap();
@@ -1198,9 +1147,5 @@ mod tests {
         // Channel 1593 should be 860.9625 MHz (control channel)
         let freq = band.channel_frequency(1593);
         assert_eq!(freq, 860_962_500);
-
-        // Uplink = 860.9625 - 45.0 = 815.9625 MHz
-        let uplink = band.channel_uplink_frequency(1593);
-        assert_eq!(uplink, 815_962_500);
     }
 }

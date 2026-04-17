@@ -25,5 +25,4 @@ pub struct GrantEvent {
     pub frequency_hz: Option<u64>,
     pub encrypted: bool,
     pub emergency: bool,
-    pub timestamp: std::time::Instant,
 }

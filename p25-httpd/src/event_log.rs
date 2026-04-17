@@ -156,12 +156,6 @@ impl EventLog {
             .collect()
     }
 
-    /// Current length of the ring (diagnostic surface for
-    /// /api/log?stats=1).
-    pub fn len(&self) -> usize {
-        self.entries.lock().map(|g| g.len()).unwrap_or(0)
-    }
-
     /// Monotonic sequence of the last pushed entry, or 0 if empty.
     pub fn last_seq(&self) -> u64 {
         self.next_seq.load(Ordering::Relaxed).saturating_sub(1)

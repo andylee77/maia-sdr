@@ -12,8 +12,6 @@ use tokio::sync::broadcast;
 pub struct AudioChunk {
     /// 160 samples @ 8 kHz, 16-bit signed = 320 bytes = 20 ms.
     pub pcm: [i16; 160],
-    /// Monotonic sequence number (for gap detection).
-    pub seq: u64,
     /// Talkgroup that produced this audio.
     pub talkgroup: u16,
 }
