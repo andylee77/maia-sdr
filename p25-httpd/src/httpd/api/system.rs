@@ -1,7 +1,17 @@
 //! System identity + health + endpoint self-describe.
 //!
-//! Part of the Stage 2 API-first split (2026-04-17). Handlers in this
-//! module were extracted from httpd/mod.rs; behaviour is unchanged.
+//! Consumer orientation: "what radio am I talking to, and is it
+//! healthy right now?" Primary landing page for any new consumer —
+//! a well-behaved client hits `/api/system` on startup (for the
+//! build tag and P25 identity) and may poll `/api/sys_health` at
+//! 1 Hz for CPU/memory health.
+//!
+//! Holds the `ENDPOINT_CATALOGUE` that `/api/endpoints` serves. This
+//! is the runtime spec — Android, diagnostic tools, and any other
+//! consumer MUST use it to discover the live endpoint set rather
+//! than hardcoding against a stale copy of `doc/P25_API.md`. See
+//! [`doc/API_CONSUMERS.md`](../../../../doc/API_CONSUMERS.md) for
+//! the contract.
 
 use std::sync::Arc;
 
@@ -357,8 +367,8 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     EndpointDoc {
         method: "GET",
         path: "/api/spectrum",
-        params: "?chain=control|traffic",
-        description: "4096-pt FFT over post-DDC IQ ring, mag_db array fftshifted. Narrowband (~62.5 kHz span).",
+        params: "?chain=control|traffic&fft=<512|1024|2048|4096>",
+        description: "FFT over post-DDC IQ ring, mag_db array fftshifted. Narrowband (~62.5 kHz span).",
     },
     EndpointDoc {
         method: "GET",

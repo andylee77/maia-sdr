@@ -1,15 +1,36 @@
-//! HTTP server and REST API
+//! HTTP server: `AppState`, router wiring, and the embedded dashboard.
 //!
-//! Endpoints:
-//! - GET  /              -> Dashboard SPA (embedded HTML)
-//! - GET  /api/system    -> System identity
-//! - GET  /api/grants    -> Active voice grants
-//! - GET  /api/bands     -> Frequency band table
-//! - GET  /api/stats     -> Decoder statistics
-//! - GET  /api/lsm       -> LSM pipeline runtime stats (Phase 6D)
-//! - GET  /api/aliases   -> Talkgroup alias map
-//! - PUT  /api/aliases   -> Update alias map
-//! - WS   /ws/events     -> Real-time TSBK event stream
+//! ## Layout
+//!
+//! Post-Stage-2 (2026-04-17), this module is deliberately thin:
+//!
+//!   - [`AppState`] — shared state held across all handlers. Contains
+//!     decoder handles, IIO/FPGA handles, broadcast channels, and a
+//!     couple of runtime toggles. Handler functions receive `State<Arc<AppState>>`.
+//!   - [`router`] — the single `Router` construction. Every route is
+//!     registered here as `get(api::<module>::<handler>)`; handler
+//!     bodies live in the submodules under [`api`].
+//!   - [`index_html`] + `DASHBOARD_HTML` — the `/` route serves the
+//!     dashboard. The HTML itself lives in `dashboard.html` (alongside
+//!     this file) and is included via `include_str!`.
+//!   - [`ts_to_ymd_hms`] — shared wall-clock formatter used by
+//!     `api::radio` and a few others. Promoted to `pub(crate)` so
+//!     submodules can reach it.
+//!
+//! ## Authoritative endpoint list
+//!
+//! At runtime: `GET /api/endpoints` (fed by `ENDPOINT_CATALOGUE` in
+//! `api::system`). Human-readable: [`doc/P25_API.md`](../../../doc/P25_API.md).
+//! Consumer-contract rules: [`doc/API_CONSUMERS.md`](../../../doc/API_CONSUMERS.md).
+//!
+//! ## Adding an endpoint
+//!
+//! 1. Put the handler in the appropriate `api::<module>`.
+//! 2. Register it in [`router`].
+//! 3. Add an `ENDPOINT_CATALOGUE` entry in `api::system`.
+//! 4. Bump `BUILD_TAG` in `main.rs`.
+//!
+//! See `doc/API_CONSUMERS.md` for the full rules.
 
 use std::sync::Arc;
 

@@ -2606,14 +2606,19 @@ async function refreshRecordings() {
     return;
   }
 
-  // Fingerprint = ordered list of IDs + size_bytes per row. If the
-  // server hasn't added or evicted anything since our last render,
-  // skip the whole innerHTML rebuild so any in-flight `<audio>`
-  // element keeps its playback state. We include size_bytes in the
-  // fingerprint so an in-progress recording that's still growing
-  // also triggers a refresh (the size changes as the WAV is
-  // finalized).
-  const fp = data.items.map(i => `${i.id}:${i.size_bytes}`).join(',');
+  // Fingerprint = ordered list of (id, started_unix_ms) per row. If
+  // the server hasn't added or evicted anything since our last
+  // render, skip the whole innerHTML rebuild so any in-flight
+  // `<audio>` element keeps its playback state.
+  //
+  // Previous revisions included `size_bytes` in the fingerprint to
+  // pick up size growth on in-progress recordings — but that meant
+  // the fingerprint changed every poll during active recording,
+  // defeating the whole purpose of the cache and tearing down any
+  // playing `<audio>` element every 5 s (CODE_REVIEW 2.3). In-progress
+  // rows now show a stale size until the recording finalises or a
+  // sibling row joins/leaves the list.
+  const fp = data.items.map(i => `${i.id}:${i.started_unix_ms || 0}`).join(',');
   if (fp === window._REC_LAST_FP) return;
 
   // List changed. Before tearing down, capture any currently-playing

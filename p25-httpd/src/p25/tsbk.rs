@@ -41,9 +41,11 @@ use super::types::*;
 pub mod service_options {
     pub const EMERGENCY_FLAG: u8 = 0x80;
     pub const ENCRYPTION_FLAG: u8 = 0x40;
-    pub const DUPLEX_FLAG: u8 = 0x20;
-    pub const SESSION_MODE_FLAG: u8 = 0x10;
-    pub const PRIORITY_MASK: u8 = 0x07;
+    // DUPLEX_FLAG (0x20), SESSION_MODE_FLAG (0x10), and PRIORITY_MASK
+    // (0x07) were defined alongside the two used flags for
+    // documentation of the full service-options byte layout, but no
+    // code path ever reads them. Deleted 2026-04-17. Reintroduce
+    // alongside their first caller if ever needed.
 
     /// Returns true if the service options byte has the encryption
     /// bit set.

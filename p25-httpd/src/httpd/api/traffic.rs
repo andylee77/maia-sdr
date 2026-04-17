@@ -1,7 +1,16 @@
 //! Current-call view: traffic chain, IMBE, vocoded audio.
 //!
-//! Part of the Stage 2 API-first split (2026-04-17). Handlers in this
-//! module were extracted from httpd/mod.rs; behaviour is unchanged.
+//! Consumer orientation: "what's happening on the traffic channel
+//! right now?" These endpoints are all tied to the in-flight call:
+//! follower state (`/api/traffic`), raw IMBE frames being vocoded
+//! (`/api/imbe_dump`), and the vocoded PCM stream (`/api/audio` as
+//! an open-ended WAV, `/ws/audio` as binary 20-ms frames over
+//! WebSocket — see `api::ws`).
+//!
+//! `/api/traffic` doubles as a manual-override surface: `?retune_hz`,
+//! `?demod_enable`, `?follower=on|off`. The grant follower task in
+//! `main.rs` respects `follower_enabled` on every 50 ms poll, so
+//! toggling it off takes effect within one tick.
 
 use std::sync::Arc;
 

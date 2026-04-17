@@ -1,7 +1,29 @@
 //! WebSocket streams: /ws/events and /ws/audio.
 //!
-//! Part of the Stage 2 API-first split (2026-04-17). Handlers in this
-//! module were extracted from httpd/mod.rs; behaviour is unchanged.
+//! Consumer orientation: "push me updates as they happen." Two
+//! streams, different framing:
+//!
+//!   - `/ws/events` — text frames, one JSON-serialised `TsbkEvent`
+//!     per message. Fed from the `event_tx` broadcast channel on
+//!     `AppState`. Every parsed TSBK + every system event (grant,
+//!     call start/end, retune, error) lands here.
+//!   - `/ws/audio` — binary frames, 320 bytes per message (160 i16
+//!     little-endian = 20 ms of 8 kHz mono). Fed from `audio_tx`
+//!     broadcast. Optional text control frames (`{"type":"lag"}`)
+//!     when the channel overruns.
+//!
+//! Both handlers survive `Lagged` (a slow consumer falling behind
+//! the broadcast ring). The old behaviour was to close on Lagged,
+//! triggering a reconnect cycle per gap; Stage 2 changed this to
+//! send a synthetic lag marker and stay connected. Clients should
+//! use the marker to flush any local jitter buffer rather than
+//! reconnect.
+//!
+//! Reconnect guidance: consumers should use exponential backoff
+//! (1s → 15s ceiling). The dashboard implements this in
+//! `connectWs()` in `dashboard.html`. A flat reconnect delay
+//! hammers the server during daemon restart — see
+//! `doc/API_CONSUMERS.md` §"Rules for adding a consumer".
 
 use std::sync::Arc;
 

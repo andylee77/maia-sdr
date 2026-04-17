@@ -1,7 +1,19 @@
 //! HDL chain internals: dibit dumps, IQ captures, LSM control bits, NID ring.
 //!
-//! Part of the Stage 2 API-first split (2026-04-17). Handlers in this
-//! module were extracted from httpd/mod.rs; behaviour is unchanged.
+//! Consumer orientation: "what is the FPGA gateware actually doing?"
+//! Every endpoint here exposes a raw slice of the HDL pipeline for
+//! cross-validation during bring-up, bake verification, or live
+//! debugging. Not intended for normal consumer screens — high data
+//! volume (dibit rings, IQ captures) and domain-specific
+//! interpretation. Diagnostic tools and the dashboard's "Debug" tab
+//! are the main consumers today.
+//!
+//! **Control/traffic symmetry is deliberate.** Every `/api/control_*`
+//! endpoint has a `/api/traffic_*` counterpart with identical response
+//! shape. Phase 10-prep normalised these. Keep the symmetry when
+//! adding new HDL-exposed data — it makes the control and traffic
+//! chains one-to-one comparable for symmetric debugging (did retune
+//! break the traffic side but not control? etc.).
 
 use std::sync::Arc;
 

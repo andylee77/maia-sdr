@@ -18,69 +18,6 @@
 pub struct GolayDecoder;
 
 impl GolayDecoder {
-    /// Decode a 23-bit Golay(23,12) codeword.
-    /// Returns the 12-bit data word, or None if > 3 errors detected.
-    pub fn decode(codeword: u32) -> Option<u16> {
-        let syndrome = Self::syndrome(codeword);
-        if syndrome == 0 {
-            return Some(((codeword >> 11) & 0xFFF) as u16);
-        }
-
-        // Try to correct up to 3 errors using syndrome lookup
-        // Weight of syndrome
-        let sw = (syndrome as u32).count_ones();
-        if sw <= 3 {
-            // Error is in the parity bits only
-            let corrected = codeword ^ syndrome;
-            return Some(((corrected >> 11) & 0xFFF) as u16);
-        }
-
-        // Try single-bit error in data + syndrome pattern in parity
-        for i in 0..12 {
-            let modified = syndrome ^ Self::parity_of_bit(i);
-            if (modified as u32).count_ones() <= 2 {
-                let corrected = codeword ^ (1 << (22 - i)) ^ (modified as u32);
-                return Some(((corrected >> 11) & 0xFFF) as u16);
-            }
-        }
-
-        // Try with the matrix approach: compute syndrome of rotated codeword
-        // For more than 2-bit patterns, use exhaustive low-weight correction
-        for i in 0..12 {
-            for j in (i + 1)..12 {
-                let trial = (1u32 << (22 - i)) | (1u32 << (22 - j));
-                let trial_syndrome = Self::syndrome(codeword ^ trial);
-                if (trial_syndrome as u32).count_ones() <= 1 {
-                    let corrected = codeword ^ trial ^ (trial_syndrome as u32);
-                    return Some(((corrected >> 11) & 0xFFF) as u16);
-                }
-            }
-        }
-
-        None // Uncorrectable
-    }
-
-    /// Compute 11-bit syndrome for a 23-bit codeword
-    fn syndrome(codeword: u32) -> u32 {
-        // Generator polynomial for Golay(23,12):
-        // x^11 + x^10 + x^6 + x^5 + x^4 + x^2 + 1 = 0xC75
-        const POLY: u32 = 0xC75;
-        let mut remainder = codeword;
-        for i in (11..23).rev() {
-            if remainder & (1 << i) != 0 {
-                remainder ^= POLY << (i - 11);
-            }
-        }
-        remainder & 0x7FF
-    }
-
-    /// Compute the syndrome contributed by a single data bit at position i
-    /// (i=0 is the MSB of the 12-bit data, which is bit 22 of the codeword)
-    fn parity_of_bit(i: usize) -> u32 {
-        // Syndrome of a codeword with only bit (22-i) set
-        Self::syndrome(1 << (22 - i))
-    }
-
     /// Decode P25 NID from 64 raw bits (32 dibits).
     ///
     /// Returns `Some((nac, duid, raw_duid))` if the BCH(63,16,11) FEC
@@ -117,12 +54,8 @@ impl GolayDecoder {
     /// **History.** Until 2026-04-10 this was a stub that hardcoded
     /// `duid = 0x7` (TSDU) because the FEC was unimplemented and the
     /// raw bits had ~12 errors per NID from slicer/PLL noise, making
-    /// the 4-bit DUID field effectively random. The `GolayDecoder::
-    /// decode/syndrome/parity_of_bit` helpers above are leftovers from
-    /// an even earlier (incorrect) design where the NID was thought to
-    /// be Golay(23,12)-coded; they're kept for backwards compatibility
-    /// with the existing tests but are not used by `decode_nid` itself.
-    /// See doc/changes/021 for the cleanup.
+    /// the 4-bit DUID field effectively random. See doc/changes/021
+    /// for the cleanup.
     pub fn decode_nid(nid_bits: u64) -> Option<(u16, u8, u8)> {
         let raw_duid = ((nid_bits >> 48) & 0xF) as u8;
         let decoded = crate::lsm::nid_fec::decode_nid(nid_bits)?;
@@ -511,28 +444,6 @@ pub(crate) fn trellis_encode_bytes(bytes: &[u8; 12]) -> [u8; 98] {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_golay_syndrome_zero() {
-        // A valid codeword should have zero syndrome
-        // The all-zeros codeword is always valid
-        assert_eq!(GolayDecoder::syndrome(0), 0);
-    }
-
-    #[test]
-    fn test_golay_decode_no_errors() {
-        // Encode data=0x000 (all zeros) -> codeword is all zeros
-        let result = GolayDecoder::decode(0);
-        assert_eq!(result, Some(0));
-    }
-
-    #[test]
-    fn test_golay_decode_single_error() {
-        // Introduce a single bit error in a zero codeword
-        let corrupted = 1u32 << 15; // flip one bit
-        let result = GolayDecoder::decode(corrupted);
-        assert_eq!(result, Some(0)); // should correct back to 0
-    }
 
     #[test]
     fn test_nid_decode_clean_clay_county() {

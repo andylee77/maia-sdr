@@ -1,7 +1,22 @@
 //! Time-series data: event log, recordings, TSBK history.
 //!
-//! Part of the Stage 2 API-first split (2026-04-17). Handlers in this
-//! module were extracted from httpd/mod.rs; behaviour is unchanged.
+//! Consumer orientation: "what happened, in order?" Replayable data
+//! with built-in retention limits:
+//!
+//!   - `/api/log` — event ring (bounded, `?since=<seq>` for
+//!     incremental reads). One entry per system event (grant
+//!     received, call start/end, retune, error).
+//!   - `/api/recordings` + `/api/recordings/{id}` — completed call
+//!     recordings. The recorder task owns retention; this API is
+//!     read-only.
+//!   - `/api/recent_tsbks` — last 50 TSBKs as one-line summaries,
+//!     cheap to poll for a scrolling display.
+//!   - `/api/tsbk_opcodes` — per-opcode + per-block-position
+//!     histogram. Diagnostic, not time-series-per-se, but belongs
+//!     with retrospective views.
+//!
+//! Everything here is process-lifetime only — a daemon restart is
+//! a clean slate.
 
 use std::sync::Arc;
 

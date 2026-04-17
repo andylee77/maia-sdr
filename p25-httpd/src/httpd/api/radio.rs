@@ -1,7 +1,16 @@
 //! Live radio state: stats, grants, bands, decoder chains.
 //!
-//! Part of the Stage 2 API-first split (2026-04-17). Handlers in this
-//! module were extracted from httpd/mod.rs; behaviour is unchanged.
+//! Consumer orientation: "show me the radio right now." Every
+//! endpoint here is read-only and reflects the current on-air
+//! decoder state. This is the data plane that drives the dashboard's
+//! main screen and would drive an Android app's home screen.
+//!
+//! Reads from whichever control-chain decoder `AppState::active_modulation`
+//! has picked (C4FM vs LSM vs Auto); all endpoints route through
+//! `state.active_control_decoder()` so switching modulation is
+//! transparent to callers. `/api/decoder_compare` is the exception —
+//! it reads all three decoders at once (PS C4FM, PS LSM, PL HDL)
+//! for side-by-side comparison during bring-up.
 
 use std::sync::Arc;
 

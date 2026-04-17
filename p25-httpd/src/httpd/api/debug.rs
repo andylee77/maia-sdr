@@ -1,7 +1,22 @@
 //! Visual diagnostics: spectrum, constellation.
 //!
-//! Part of the Stage 2 API-first split (2026-04-17). Handlers in this
-//! module were extracted from httpd/mod.rs; behaviour is unchanged.
+//! Consumer orientation: "show me what the signal looks like right
+//! now." Two endpoints, both returning arrays that an SDR-savvy
+//! consumer renders as a 2-D plot:
+//!
+//!   - `/api/spectrum` — FFT magnitudes from the IQ capture ring.
+//!     Hand-rolled Cooley-Tukey under the hood (no external FFT
+//!     dep — see `src/spectrum.rs`). Accepts `?chain=control|traffic`
+//!     and `?fft=<512|1024|2048|4096>`.
+//!   - `/api/constellation` — raw IQ scatter from the LSM slicer
+//!     input. Interpretation notes live in project memory
+//!     `reference_p25_constellation_interpretation`.
+//!
+//! The dashboard's Debug tab renders both. A diagnostic session on
+//! 2026-04-17 (see `doc/diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md`)
+//! caught a Gardner-TED timing-loop problem purely by watching the
+//! constellation X-pattern — this endpoint set is load-bearing for
+//! field debugging.
 
 use std::sync::Arc;
 

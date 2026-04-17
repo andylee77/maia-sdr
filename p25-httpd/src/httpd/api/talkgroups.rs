@@ -1,7 +1,16 @@
 //! Per-talkgroup metadata: aliases, monitor list, encryption, grant map.
 //!
-//! Part of the Stage 2 API-first split (2026-04-17). Handlers in this
-//! module were extracted from httpd/mod.rs; behaviour is unchanged.
+//! Consumer orientation: "which talkgroups do I know about, and what
+//! do I want to do with each?" State held here is process-lifetime
+//! only — alias map, monitor list, and encryption blocklist are all
+//! cleared on daemon restart (per the `API_CONSUMERS.md` contract).
+//! A future persistent-store add would live behind this same API.
+//!
+//! `/api/grant_map` is read-only — it tallies every grant observed
+//! on the control channel into a `(tg, frequency) → count` table.
+//! Used by the dashboard's "frequency heatmap" and by a future
+//! auto-LO-centering endpoint to pick an RX LO that keeps the most
+//! active slots in-band.
 
 use std::sync::Arc;
 

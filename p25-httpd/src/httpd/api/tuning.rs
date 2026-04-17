@@ -1,7 +1,18 @@
 //! Runtime knobs: retune, gain, modulation, BCH/sync thresholds, decoder reset.
 //!
-//! Part of the Stage 2 API-first split (2026-04-17). Handlers in this
-//! module were extracted from httpd/mod.rs; behaviour is unchanged.
+//! Consumer orientation: "change how the radio behaves without a
+//! reboot." Every endpoint here mutates state that would otherwise
+//! require editing `main.rs` + reflashing. If a new HDL parameter or
+//! AD9361 field needs runtime tuning, this is the home — matches the
+//! "no private backchannels" rule in `doc/API_CONSUMERS.md`.
+//!
+//! Not a user-facing screen in the usual sense — these are advanced
+//! controls an Android "expert mode" panel would expose. Most casual
+//! consumers stay on `api::radio`.
+//!
+//! Write semantics: every GET is read-only; writes happen via
+//! optional query params on GET (legacy pattern, e.g. `?dc_block=1`)
+//! or via PUT. Both are documented in the endpoint catalogue.
 
 use std::sync::Arc;
 

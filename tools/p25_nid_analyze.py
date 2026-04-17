@@ -97,7 +97,7 @@ def ml_decode(nid_bits: int, max_t: int) -> tuple[int, int, int] | None:
     custom runtime `t` threshold instead of the hardcoded 11.
     """
     cb, cd = _get_codebook()
-    recv = np.uint64(nid_bits & ((1 << 63) - 1 | (1 << 63)))
+    recv = np.uint64(nid_bits & 0xFFFF_FFFF_FFFF_FFFF)
     diff = cb ^ recv
     distances = p25_nid_fec._popcount64(diff)  # noqa: SLF001
     best_idx = int(np.argmin(distances))
