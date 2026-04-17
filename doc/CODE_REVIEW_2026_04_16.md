@@ -11,6 +11,8 @@
 | Method | Five parallel sub-reviews: HDL, protocol layer, platform/web, tools/docs, SDRTrunk basis-of-design |
 | SDRTrunk reference revision | working tree at `C:/Users/Andy/Projects/SDRTrunk/sdrtrunk` |
 | **Stage 1 status (2026-04-17)** | **1.1, 1.2, 1.3, 1.4, 1.9 resolved; 1.5 verified as non-issue. 1.6, 1.7, 1.8, 1.10-1.14 pending. §2 and §3 pending.** |
+| **Stage 2 status (2026-04-17)** | **API-first refactor (commit `db59a01`): 9-module handler split, `/api/sys_health`, WS Lagged handling, `doc/P25_API.md` + `doc/API_CONSUMERS.md`. Section 2.3 Lagged + reconnect-backoff items resolved.** |
+| **Stage 3 status (2026-04-17)** | **Dead-code sweep (`6fc2554`, `31a7e80`) -868 lines + docstring pass (`cad25b8`) + Linux hotfix (`d403375`). Linux build verified via Tezuka. Section 2.3 recording-fingerprint + recording DOM items resolved; §2.2 `DATA_DEINTERLEAVE` assert verified type-safe; §3.4 tool nits partially resolved (nid_analyze, p25_check regex). ~24 remaining Linux dead-code warnings deferred to future pass (see `project_2026_04_17_session_close` memory).** |
 
 ## Executive summary
 
@@ -23,6 +25,16 @@
 3. ~~**Missing referenced docs**~~ **NOT ACTUALLY MISSING** — docs live at repo root; `CLAUDE.md` and `README.md` paths updated.
 4. ~~**Stale target IP in build script**~~ **RECLASSIFIED** — 120.50 is Ethernet, 2.1 is RNDIS-USB. Both work; build_fpga.bat updated to list primary + note.
 5. **Status-dibit counter divergence vs SDRTrunk** — a fixed positional formula instead of a running state machine. Works inside a data unit; lacks implicit recovery across sync slips. Watch the field, port if you see clustered TSBK garbling on noisy channels. **UNCHANGED** — monitor only.
+
+**Stage 2 + 3 additional resolutions (2026-04-17):**
+
+- §1.7 `imbe_ring` mutex poison: effectively mooted by the Stage 3 deletion of `process_directed_tsdu` and the mbelib fallback; remaining `.lock().unwrap()` sites are all on small ring buffers with no panic-capable holders.
+- §2.3 WebSocket Lagged handling: DONE in Stage 2 for both `/ws/events` and `/ws/audio`.
+- §2.3 recording-list fingerprint: DONE in Stage 3 (`(id, started_unix_ms)` instead of `(id, size_bytes)`).
+- §2.3 `/ws/events` reconnect backoff: DONE in Stage 2 (exponential 1s→15s).
+- §3.2 Dead Golay routines: DONE in Stage 3 (`GolayDecoder` deleted entirely; tests rewritten to call `lsm::nid_fec::decode_nid` directly).
+- §2.2 `DATA_DEINTERLEAVE` length-assert: VERIFIED type-system already enforces `[usize; 196]`; no runtime assert needed.
+- §3.4 `p25_nid_analyze.py` bitwise op: DONE in Stage 3.
 
 **Counts by severity:**
 

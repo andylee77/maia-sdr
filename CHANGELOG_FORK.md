@@ -5,6 +5,68 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-17] Stage 1 + Stage 2 + Stage 3 -- bake-blocking fixes + API-first refactor + dead-code sweep
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-04-17-stage3-fix-linux-build`
+**Commits (5):** `db59a01` (Stages 1+2), `cad25b8` (Stage 3 first pass), `d403375` (Linux hotfix), `6fc2554` (dead-code part 1), `31a7e80` (dead-code part 2)
+**Rebuild scope:** p25-httpd only (no bitstream change)
+
+Multi-stage cleanup session grounded in the 2026-04-16 code review. Net +1,500 / -1,400 lines; zero behavioural change on the radio. Linux build verified via Tezuka.
+
+### Stage 1 -- bake-blocking fixes
+
+- **Dashboard XSS**: new `escHtml()` helper; 5 `innerHTML` interpolation sites (grants alias, event timestamp/type/summary/alias) now escape properly. LAN-exposed dashboard no longer accepts raw HTML from the alias PUT endpoint.
+- **AGC readback parity**: `*_lsm_control_readback()` returns 4-tuple with `agc_enabled`; boot-time tracing + `/api/{control,traffic}_lsm_control` JSON updated.
+- **`tools/p25_check.py`**: fixed `NameError` on `lsm_running` / `hdl_pct` in the acceptance summary; phase-tag regex loosened from `phase[67]` to `phase\d+|p\d+prep` so Phase 10+ is recognised.
+- **`build_fpga.bat`**: IP hint clarified — `192.168.2.1` (RNDIS-USB, primary) with `192.168.120.50` (Ethernet) noted as alternative.
+- **`CLAUDE.md` + `README.md`**: fixed references pointing to `doc/DEVPLAN.md` / `doc/BUILD_FPGA.md` (actual location: repo root).
+- **`p25-pac` lints**: added `#![allow(unknown_lints)]` + `#![allow(mismatched_lifetime_syntaxes)]` at the svd2rust-generated crate root. Correct fix for auto-generated code.
+
+### Stage 2 -- API-first refactor (Android-app prep)
+
+- **Dashboard HTML extraction**: `DASHBOARD_HTML` moved from 2,781-line inline constant to sibling `src/httpd/dashboard.html` via `include_str!`. `httpd/mod.rs` 6,725 → 3,945 lines.
+- **Handler split into 9 consumer-facing modules** under `src/httpd/api/`: `system`, `radio`, `traffic`, `talkgroups`, `history`, `tuning`, `chain`, `debug`, `ws`. Each maps to a logical Android-app screen. `httpd/mod.rs` 3,945 → 320 lines.
+- **New `/api/sys_health`** endpoint: loadavg, daemon RSS, thread count, free memory. Cheap to poll from a mobile client; lets headless consumers distinguish "board alive but CPU-starved" from "board alive and healthy" without SSH.
+- **WebSocket hardening**:
+  - `/ws/events`: on broadcast-channel `Lagged`, sends synthetic `{"event_type":"ws_lag"}` control frame instead of closing the connection. Clients stay connected across slow-consumer events.
+  - `/ws/audio`: on `Lagged`, sends `{"type":"lag","skipped":N}` text control frame so clients can flush their jitter buffer.
+  - Dashboard `/ws/events` reconnect: flat 3 s → exponential backoff (1 s → 15 s ceiling, resets on first healthy message).
+- **`doc/P25_API.md`** catalogue expanded from 20 to all 42 endpoints, grouped by `api/` module.
+- **`doc/API_CONSUMERS.md`** created: governance contract ("one API, all consumers equal, no private backchannels"). Rules for adding endpoints + adding consumers.
+
+### Stage 3 -- section-by-section cleanup (-868 lines of dead code)
+
+Linux-truth-verified via Tezuka build. Windows cargo check flagged 79 dead-code warnings; Linux showed 34 real ones — the 45-warning gap was all `#[cfg(target_os = "linux")]`-gated false positives.
+
+**Deleted this session:**
+
+- **`src/vocoder/mod.rs`** (592 → 141 lines, -76%): removed the mbelib C-FFI `ImbeDecoder` fallback wrapper. JMBE pure-Rust (`vocoder::JmbeDecoder` wrapping `jmbe::ImbeDecoder`) has been the sole live vocoder for weeks. Kept `mbelib-sys` crate only for its `SAMPLES_PER_FRAME = 160` constant.
+- **`src/jmbe/mod.rs`**: 3 dead helpers (`LOG_2` const, `requires_adaptive_smoothing`, `WhiteNoiseGenerator::next_buffer`).
+- **`src/fpga.rs`**: 8 dead register-readback methods kept "for future symmetry" (`traffic_last_buffer`, `traffic_next_address`, `traffic_iq_*`, `pulse_lsm_reset`, `waiter_iq_dma`, `waiter_traffic_iq_dma`).
+- **`src/p25/control_channel.rs`**: `process_directed_tsdu` (~150 lines, retired Phase 6F.9 soft-sync TSDU entry point).
+- **`src/p25/fec.rs`**: `GolayDecoder` struct + `decode_nid` wrapper + the earlier `decode`/`syndrome`/`parity_of_bit` helpers. The live NID decoder is `lsm::nid_fec::decode_nid` (direct); 4 tests rewritten to use it.
+- **`src/p25/tsbk.rs`**: 7 parser-side items (`data_access_control`, `micro_slots`, `protected`, `crc`, `sign_extend`, `crc16_ccitt`, `channel_uplink_frequency`) + tests. Also 3 unused service-options constants (`DUPLEX_FLAG`, `SESSION_MODE_FLAG`, `PRIORITY_MASK`).
+- **Small items**: `AudioChunk.seq` field, `EventLog::len()`, `MonitorList::priority_of()`, `GrantEvent.timestamp` field.
+
+**Linux hotfix (`d403375`)**: Windows `cargo fix` renamed `grant_event_rx` → `_grant_event_rx` and stripped `mut`. The binding is consumed via `.recv()` inside a `cfg(target_os = "linux")` block — Linux build broke. Restored with `#[allow(unused_variables, unused_mut)]` and a comment warning future cargo-fix passes off the rewrite.
+
+**Docstring pass**: `httpd/mod.rs` architecture overview + `api/mod.rs` handler-addition checklist + 10–20-line consumer-facing docstrings on all 9 `api/*.rs` submodules.
+
+**Should-fix items applied**:
+
+- Recording-list fingerprint by `(id, started_unix_ms)` instead of `(id, size_bytes)` — in-progress recordings no longer tear down `<audio>` elements mid-playback every 5 s.
+- `tools/p25_nid_analyze.py`: opaque `(1<<63)-1 | (1<<63)` → explicit `0xFFFF_FFFF_FFFF_FFFF`.
+- `/api/spectrum` catalogue entry now documents the `?fft=` param.
+
+### Verification status
+
+- Windows `cargo check`: clean compile, ~24 remaining warnings (all cfg-gated false positives).
+- Linux `cargo check` via Tezuka build: clean compile, ~24 remaining dead-code warnings all from the small-items deferred list.
+- **On-target**: pending. Next bake should verify XSS fix + AGC readback + `/api/sys_health` + WebSocket Lagged handling end-to-end.
+
+---
+
 ## [2026-04-16] Phase 10 follow-up 2 -- tab-gated polling + audio re-prime + C4FM dashboard retirement
 
 **Branch:** fishball-p25
