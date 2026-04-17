@@ -1,5 +1,15 @@
 # Fishball P25 — Build Performance Analysis (2026-04-17)
 
+> ## CORRECTION 2026-04-17 — sp_dbg interpretation was wrong
+>
+> The Gardner TED analysis in §1.4, the "X-pattern ↔ timing-loop-gain" diagnosis in §3.2–3.5, and the "halve TED_GAIN" recommendation in §6.2-4 / §6.5-12 are **invalidated**. See §A "Corrections" appended below this document for the full write-up.
+>
+> **tl;dr:** `sp_dbg` is Q4.12 oscillating by design through `sps = 6.5104 ≈ 26,667 Q12 units` per symbol ([lsm_timing_interp.py:96-110](../../../maia-hdl/p25_hdl/lsm_timing_interp.py)). The observed ~6,600-unit span is ~25% of one symbol period — normal operation, not "50% of full scale hunting." The "full scale ~13,000 at sps=13" assumption was numerically wrong (sps is 6.5104, not 13). `TED_GAIN = SPS/4.0 = 1.628` is also "verbatim from `demod_lsm_with_state`" and reference-tested to within 6 Q4.12 ULPs of the float Rust reference, which itself is SDRTrunk-faithful. Do not change it on this evidence.
+>
+> The cluster-variance 14× span in 90 s, the TSBK3-vs-TSBK2 9.5 pp CRC spread, the `TDU_LC = 1977` anomaly, and the `vocoder_errors = 0` + 40 %-silent audio are all still real observations — just not attributable to the Gardner TED loop-gain.
+>
+> What remains valid: everything factual (counters, timings, audio stats, constellation PNG captures). What needs re-interpretation: the *attribution* of the X-pattern to timing-loop-gain. See §A.3 for the candidate list.
+
 ## Document metadata
 
 | Field | Value |
@@ -382,3 +392,84 @@ In priority order for "still not solid" fixes:
 - Audio analysis: **one recording** (2.16 s, TG 300). Statistics are strong for this one clip but audio quality can vary across calls; worth repeating with 3-5 recordings across different TGs and durations.
 - ARM load inference: **indirect only.** SSH-less; `/api/sys_health` recommended.
 - TDU_LC anomaly: **confirmed non-incrementing** across 20 s, but root cause not diagnosed. Investigation required.
+
+---
+
+## §A. Corrections (appended 2026-04-17 after peer review)
+
+### §A.1 What was wrong
+
+The original §1.4 interpretation of the `sp_dbg` register range and the §3.3/§6.2-4 attribution of the constellation X-pattern to Gardner TED loop-gain were based on a numerical error and a reference-constant oversight.
+
+**Error 1 — sp_dbg full-scale assumption.** §1.4 stated "Q4.12 signed, full scale ~13,000 at sps=13." The HDL actually uses `sps = 31250 / 4800 = 6.5104` (see [lsm_timing_interp.py:130-141](../../../maia-hdl/p25_hdl/lsm_timing_interp.py#L130-L141)), and `sample_point` oscillates by exactly one `sps` per symbol decision by algorithmic design:
+
+```python
+sample_point -= 1.0                      # every input sample
+if sample_point < 1.0:
+    ...emit decision...
+    sample_point += sps                  # +6.5104 ~= +26,667 Q12 units
+```
+
+So the natural operating range of `sample_point` per symbol period is **0 → sps**, which in Q4.12 is **0 → ~26,667 units**, not "0 → ~13,000." The observed 1 s span of ~6,600 units is therefore **~25% of one symbol period**, not "50% of full scale." This is normal operation of the timing recovery, not loop instability.
+
+**Error 2 — changing a reference-matched constant on local evidence alone.** `TED_GAIN = SPS / 4.0 = 1.628` is explicitly "verbatim from `demod_lsm_with_state`" ([lsm_gardner_ted.py:61-64](../../../maia-hdl/p25_hdl/lsm_gardner_ted.py#L61-L64)), and [test_lsm_gardner_ted.py:143-229](../../../maia-hdl/test/test_lsm_gardner_ted.py#L143-L229) asserts the HDL result is within 6 Q4.12 ULPs of the float Rust reference on randomised inputs. The Rust reference is itself SDRTrunk-faithful. SDRTrunk decodes P25 cleanly on its own production hardware at this gain, so "halve TED_GAIN" is a deliberate divergence from the reference without evidence that the reference is the problem.
+
+See auto-memory `feedback_sdrtrunk_is_the_reference` for the general rule.
+
+### §A.2 Observations that remain valid
+
+Everything in the original document that is a **counter, timing measurement, or raw visual observation** is still correct. The *attribution* of the X-pattern to the Gardner TED is what's invalidated.
+
+Specifically still valid:
+
+- §1.1 Decoder comparison table — NID 98.83%, TSBK CRC 71.6% etc.
+- §1.2 TSBK block CRC: TSBK1 73.44% / TSBK2 75.48% / TSBK3 65.93% — the 9.5 pp TSBK3 spread is real.
+- §1.3 Per-opcode CRC rates.
+- §1.5 IRQ rates and DMA keep-up.
+- §1.6 Traffic/voice counters, including the `TDU_LC = 1977 vs TDU = 35` anomaly.
+- §2 audio recording statistics (40 % silent frames, RMS std/mean = 0.82).
+- §3.1 the 14× cluster-variance span in 90 s.
+- §3.2 the tight-vs-loose montage visual characterisation (tight clusters vs radial streaks vs X-pattern vs arc smearing — all real photographic observations).
+- §5 ARM performance inferences.
+
+### §A.3 Re-attribution candidates for the X-pattern / cluster variance
+
+The X-pattern in the loose-state panels ([constellation/montage_tight_vs_loose.png](constellation/montage_tight_vs_loose.png)) — diagonal lines connecting opposite cluster pairs — is real. The original §3.3 attribution ("Gardner TED sampling mid-transition") is plausible as a mechanism but not supported by the `sp_dbg` range evidence once that range is correctly interpreted. Candidate mechanisms worth investigating, ordered by my current plausibility estimate:
+
+1. **AGC–TED interaction (Phase 10 addition).** The Phase 10 `LsmAgc` with `mag_update_threshold=1024` (see `feedback_agc_noise_floor_gate`) is new since the LSM chain was last stable. Rapid AGC gain transitions rescale the differential-demod inputs to the Gardner TED mid-cycle; if the AGC settles in ~O(10) symbols, its envelope changes can transiently produce X-pattern samples on the output of `LsmPllRotate` even with timing perfectly locked. **Test:** capture constellation while holding AGC disabled (`lsm_agc_enable=0`) on a known-good signal and compare cluster variance distribution to AGC-enabled captures on the same signal.
+2. **DC-blocker transients.** [LsmDcBlocker](../../../maia-hdl/p25_hdl/lsm_dc_blocker.py) is a leaky integrator with a finite time constant. Any DC step (e.g. mode change, AGC gain slam) drives the blocker output through a transient that superimposes on the symbol constellation. **Test:** same as above — disable DC blocker (`lsm_dc_block_enable=0`) and compare.
+3. **Signal-side SNR variation at the captured instants.** The Fishball target is 860.9625 MHz Clay County, antenna on a static mount; multipath + thermal could produce 14× cluster-variance excursions independent of anything in the receiver. **Test:** cross-validate by capturing an IQ dump (`/api/control_iq_capture`) at a "loose" moment and replaying it through SDRTrunk on a PC; if SDRTrunk sees the same X-pattern, the HDL is exonerated and the cause is upstream.
+4. **Sample-point edge case near `< 1.0` threshold.** If the `sample_point < 1.0` check is triggered in back-to-back input samples due to a large Gardner correction, the subsequent symbol decisions land on input samples that are offset differently from normal, and the constellation samples may end up between-cluster. Verified behaviour under dense correction traffic is not currently tested. **Test:** instrument sample_point trajectory through a known "loose" window; look for back-to-back decisions.
+5. **PLL+TED coupling transient.** Even though both loops are individually reference-correct, their interaction under a step in signal envelope (from AGC or from signal itself) is a coupled system with no closed-form analysis. **Test:** same IQ-capture cross-validation as #3; SDRTrunk has the same algorithmic coupling, so if SDRTrunk is clean on the capture, the coupling is not the problem.
+
+Candidates 1 and 2 are Fishball-specific (AGC and DC blocker are both Phase-10-prep HDL additions that SDRTrunk does not have in the same form). Candidate 3 is the cheapest to rule in/out. Candidate 4 is a long-shot but worth checking if 1-3 don't explain the variance.
+
+### §A.4 Re-interpretation of the TSBK3 9.5 pp CRC spread
+
+Original §1.2 attributed TSBK3's lower pass rate to "timing-track tail effect" — accumulated bit errors late in the TSDU. That mechanism is still plausible, but the evidence-chain now has a hole in it (the "timing track wanders" premise was based on the misread sp_dbg range). The TSBK3 spread still warrants investigation; plausible alternatives:
+
+1. **Block-position-dependent deinterleaving or trellis state.** The 196-bit TSBK body is 1/2-rate Viterbi-protected + deinterleaved per-block. If the deinterleaver state reset sequence differs across block positions (e.g. TSBK1 starts fresh, TSBK2/3 inherit state), any bit error in TSBK1 propagates downstream. **Test:** per-block Viterbi error-count telemetry rather than per-block CRC.
+2. **MAC-header / block-length decoding errors.** A mis-decoded TSBK2 length field could bleed into TSBK3 framing, producing block-3-specific failures. **Test:** trace TSBK3 CRC failures conditional on TSBK2 success vs failure.
+3. **Real timing drift during a TSDU.** Still plausible even with the `sp_dbg` data re-interpreted — the drift would need to be characterised differently (e.g. by looking at whether CRC failures cluster temporally, not just per-block).
+
+### §A.5 Re-interpretation of the `vocoder_errors = 0` + robotic-audio contradiction
+
+Original §2 and §6.3-7 diagnosis (mbelib passes bit-marginal frames that synthesize silence/garble) is largely unchanged — that mechanism is true independent of the cause of the bit corruption. The recommended per-frame IMBE quality gate (§6.3-7) is still the right observability addition. What changes: the *cause* of the bit corruption is not necessarily "wandering timing loop"; it could be any of the candidates in §A.3 above.
+
+### §A.6 What the redo should look like
+
+- **Before** making any HDL change, run the cross-validation in §A.3-3: capture an IQ dump from a "loose" moment and replay through SDRTrunk. This single test cleanly separates "Fishball-specific bug" from "signal-side noise."
+- **If SDRTrunk also sees the X-pattern** on the same capture: the cause is upstream (RF/AGC/DC-blocker/environmental), and the fix is on one of those surfaces — not inside the demod loop.
+- **If SDRTrunk decodes cleanly** on the same capture: the cause is a Fishball-local HDL issue (most likely AGC-TED interaction or DC-blocker transient per §A.3). Then and only then is a targeted HDL change warranted — and even then, the first candidates to tweak are the Fishball-added modules (AGC, DC blocker), not the SDRTrunk-matched constants (TED gain, PLL gain).
+- **Observability additions from §6** remain worth doing (per-TSBK-block telemetry, per-frame IMBE quality gate, live traffic constellation). They would have caught this on-target rather than requiring a 90 s constellation harvest.
+
+### §A.7 Roadmap impact
+
+[HDL_LAYOUT_AND_ROADMAP.md](../../HDL_LAYOUT_AND_ROADMAP.md) Phase 10.5 sub-item 1 ("Gardner TED loop-gain retune") is re-scoped to "cluster-variance root-cause investigation with SDRTrunk cross-validation." All other Phase 10.5 sub-items (per-TSBK-block telemetry, TDU_LC audit, IMBE quality gate, live traffic constellation) are unaffected.
+
+### §A.8 Lessons logged
+
+Two auto-memory entries added 2026-04-17 to prevent this pattern from repeating:
+
+- `feedback_sdrtrunk_is_the_reference` — general rule for reference-matched constants.
+- (this correction appendix) — specific incident record.
