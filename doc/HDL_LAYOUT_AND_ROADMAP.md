@@ -4,13 +4,43 @@
 
 | Field | Value |
 |-------|-------|
-| Date | 2026-04-16 |
+| Date | 2026-04-16 (revised 2026-04-17) |
 | Branch | `fishball-p25` |
 | HEAD at review | `70206ec` (Phase 10 — AGC noise-floor gate, traffic API parity, dashboard overhaul) |
+| HEAD at 2026-04-17 revision | `3826652` (Stage 4 code-review close-out) |
 | Scope | `maia-hdl/p25_hdl/`, `maia-hdl/maia_hdl/` (surface only), `maia-hdl/ip/p25-core/`, `maia-hdl/projects/fishball7020_p25/`, `maia-hdl/adi-hdl/` (inventory only) |
 | Purpose | Detailed current-state layout + future-phase plan, with polyphase channelizer as the centrepiece |
 | Method | Three parallel surveys (current P25 HDL, Maia base surface, channelizer landscape + Z7020 budget) synthesised into one document |
 | Confidence | Architectural claims are high-confidence. Specific DSP/LUT/BRAM numbers are estimates from docstrings + design rules — verify against a real Vivado utilisation report before sizing a build |
+| 2026-04-17 revisions | New §0 (diagnostic-driven priority reorder); new Phase 10.5 in §13 (voice-chain stability — Gardner TED loop-gain retune, TDU_LC investigation, per-block TSBK telemetry); new §18 appendix (HDL cleanup + correction checklist aggregating CODE_REVIEW §1.6, 1.10, 1.12, 2.1, 3.1); revised §15 ordering. See [doc/diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md](diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md) for the underlying evidence. |
+
+## 0. Status snapshot — 2026-04-17 diagnostic update
+
+The 2026-04-17 on-target performance capture ([PERFORMANCE_ANALYSIS.md](diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md)) changed the priority ordering of this roadmap. The high-level headlines:
+
+- **Control chain decode is healthy.** NID 98.83% valid / 70k attempts; TSBK CRC 71.6% aggregate; ARM + DMA nowhere near bottleneck (HTTP p90=23 ms, zero dibit overflows, 1 IQ overflow at boot only, 1.6 h uptime).
+- **Voice chain is the weak spot.** 40% silent frames and RMS std/mean=0.82 in a 2.16 s recording, despite `vocoder_errors: 0`. mbelib is accepting bit-marginal IMBE frames that produce garbled/silent audio.
+- **Root cause identified as Gardner TED loop instability, not PLL.** 108 constellation captures show 14× cluster-variance span in 90 s with `pll_final ≈ 0` throughout; `timing_final` tracks the cluster variance directly, and `sp_dbg` register spans ~6,600 units (50% of full scale) within every 1 s window. Classic overshoot in a symbol-timing loop.
+- **TSBK3 block decodes at 65.9%** vs TSBK2 at 75.5% — a 9.5 pp spread. Consistent with in-TSDU timing drift (TSBK3 samples more of the wandering tail of the timing track).
+- **`TDU_LC = 1977` vs `TDU = 35`** is anomalous and did not increment during 20 s live observation. Either cumulative pre-fix burst history or a trigger-conditioned pattern. Not a panic, but worth diagnosing.
+
+### 0.1 Priority reorder
+
+The original roadmap (§13) put Phase 11 (polyphase channelizer front-end) immediately after Phase 10. The 2026-04-17 evidence inserts a **Phase 10.5 — Voice-chain stability and diagnostics** step in between, on the reasoning that scaling to 10 chains with a known timing-loop instability multiplies the problem across chains. Fix the single-chain quality first.
+
+Phase 10.5 scope (full definition in §13):
+
+1. **Gardner TED loop-gain retune** — the 50%-of-full-scale `sp_dbg` span is the smoking gun. Bench-sim at half gain (or clamp `max_timing_adj` in [lsm_gardner_ted.py](../maia-hdl/p25_hdl/lsm_gardner_ted.py)) and measure cluster variance; iterate until span drops below ~20% of full scale. HDL-internal change; no register-map impact.
+2. **Per-TSBK-block telemetry** — expose TSBK1/2/3 pass-rate counters in `lsm_status` or a new debug bank so the in-TSDU drift hypothesis is directly measurable on-target, not inferred from a diagnostic capture.
+3. **TDU_LC counter audit** — diff the Rust-side increment paths against the HDL `traffic_lsm_nid_drop_count` and the dispatcher in [p25-httpd/src/p25/traffic_manager.rs](../p25-httpd/src/p25/traffic_manager.rs). One of three outcomes: (a) confirmed cumulative pre-fix → reset-on-boot + doc note, (b) idempotent fix has a gap → patch, (c) the counter itself aggregates something other than dispatched events → rename.
+4. **Per-frame IMBE quality gate** — measure L4-norm / RMS of synthesised PCM per 144-bit frame; flag near-silent or near-pure-tone frames as "suspected corrupted IMBE" in a new optional counter. Purely additive; gives the first real observability on the robotic-audio failure mode that `vocoder_errors` is missing. Rust-side, not HDL, but scope-adjacent.
+5. **Traffic-chain constellation during-call** — current `/api/constellation?chain=traffic` returns stale data when idle. A forced-live capture during LDU1 symbols lets us confirm whether the X-pattern is worse during voice than on the control channel. If it is, direct evidence linking robotic audio to timing instability.
+
+Estimated effort: ~1 week HDL (TED retune + telemetry registers) + ~1 week Rust/dashboard + 1 bake. Purely subtractive/additive; no architectural commitment.
+
+### 0.2 What did NOT change
+
+The polyphase channelizer decision framework in §11, the Z7020 budget projection in §12, and the Phases 11–15 scope (polyphase → N-param → 8-channel → 10-channel → C4FM retire / soft-sync) all remain valid. Phase 10.5 is inserted ahead of them; the rest of the roadmap is unchanged.
 
 ## How to read this document
 
@@ -665,6 +695,36 @@ Target phases (see §13 for full definitions):
 
 The phase numbers below extend the existing P1–P10 sequence. Each phase is a single bake/flash boundary.
 
+### Phase 10.5 — Voice-chain stability and diagnostics (inserted 2026-04-17)
+
+**Scope:** Fix the Gardner TED timing-loop instability identified in [PERFORMANCE_ANALYSIS.md](diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md). Add the telemetry needed to detect and bound it on future bakes. Investigate and resolve the `TDU_LC = 1977 vs TDU = 35` anomaly. Add a voice-chain quality gate so robotic-audio regressions are observable.
+
+Five sub-items:
+
+1. **Gardner TED loop-gain retune** — target: `sp_dbg` span ≤ ~20% of full scale (Q4.12, ~2,600 units) vs current ~50% (~6,600 units). First attempt: halve `TED_GAIN` in [lsm_gardner_ted.py](../maia-hdl/p25_hdl/lsm_gardner_ted.py) or clamp `max_timing_adj`. Bench-sim on a captured IQ recording at various SNR; pick the lowest gain that still meets pull-in time budget (~50 ms at call start). HDL-internal; no register-map impact.
+2. **Per-TSBK-block CRC telemetry** — three Rsticky counters `tsbk1_crc_ok`, `tsbk2_crc_ok`, `tsbk3_crc_ok` (plus matching `*_crc_fail`) in `lsm_status` or a new debug bank. Counts already exist PS-side, but HDL-side counters let us correlate against `sp_dbg` without the PS round-trip. Rust read-side wires to `/api/decoder_compare` new fields.
+3. **TDU_LC counter audit** — diff increment paths in [p25-httpd/src/p25/traffic_manager.rs](../p25-httpd/src/p25/traffic_manager.rs) against the HDL DUID=0xF dispatcher. Three possible fixes: (a) pure bookkeeping — reset counter on daemon-boot with a comment noting cumulative-pre-fix-history; (b) missed idempotency — patch the specific path; (c) misnamed — rename to what it actually counts.
+4. **Per-frame IMBE quality gate (Rust)** — measure L4-norm or RMS of synthesised PCM per 144-bit frame post-mbelib. Flag near-silent (`rms < 100`) or near-pure-tone (`zero-crossings < 50/frame`) as `vocoder_suspect_frame` in a new atomic counter on `ImbeForwarder`. Scope-adjacent to HDL; purely additive. Makes robotic-audio observable in `/api/traffic`.
+5. **Traffic-chain live constellation** — current `/api/constellation?chain=traffic` returns stale idle data. Force a capture-during-LDU1 path (gate the snapshot trigger on `lsm_status.bch_busy` edge + DUID=0x5/0xA matched). Confirms whether the X-pattern is worse during voice than on the control chain — if it is, robotic-audio ↔ timing instability is proven directly.
+
+**Acceptance:**
+
+- `sp_dbg` span ≤ 2,600 units per 1 s window, measured across a 60 s capture
+- Cluster variance `cv_mean` ≤ 0.025 in ≥ 90% of captures (vs current ~0.04 median)
+- TSBK3 CRC pass rate within 3 pp of TSBK2 (vs current 9.5 pp spread)
+- `TDU_LC` counter semantics documented and match observed increment pattern
+- `vocoder_suspect_frame` rate exposed; baseline measured on a known-good call; threshold chosen such that false-positive rate < 5%
+
+**Risk:**
+
+- TED gain retune may slow pull-in; if initial-lock time exceeds 100 ms, audio onset is perceptibly late on every call. Mitigation: staged gain schedule (high for first N symbols, then step down).
+- Per-TSBK-block HDL counters add 6× `Rsticky` bits but may force a register-bank reshuffle if `lsm_status` fills up. If so, add `lsm_status_tsbk` as a new bank at an unused offset.
+- Forced constellation capture during LDU1 changes HDL trigger logic — test with a capture-during-control path first to confirm the trigger FSM is robust.
+
+**Effort:** ~1 week HDL (TED + counters + constellation trigger) + ~3 days Rust (IMBE quality gate + API wiring + dashboard tile) + 1 bake. Low commitment; can be reverted cleanly.
+
+**Dependencies:** none — all sub-items are independent of each other and of Phase 11+.
+
 ### Phase 11 — Polyphase channelizer front-end (Option B prototype)
 
 **Scope:** Instantiate Maia's FFT block alongside `p25_core`. Wire it into a *diagnostic* DMA (spectrum display only — not yet routing channels). Write and test a single synthesis filter stage that extracts one channel from the FFT output and feeds it into the existing LSM chain.
@@ -742,16 +802,18 @@ Out of HDL scope primarily — these are Rust-side features on the PS. Flagged h
 
 ## 15. Recommendations — concrete next steps
 
-In order, first-to-last:
+In order, first-to-last (revised 2026-04-17):
 
-1. **Run a real Vivado utilisation report on the current P25 bitstream.** Update §12 of this document with the actual DSP / BRAM / LUT / FF counts. Everything else depends on this.
-2. **Verify the sample-rate architecture.** Read the block design; confirm the `sampling` domain rate and the `clk3x` rate. Update §4.
-3. **Do a prototype-filter design pass in Python before any Amaranth.** For the P11 FFT + synthesis filter option, design the prototype FIR and the synthesis filter in `scipy.signal`, test adjacent-channel rejection against real P25 IQ captures (the iq_dma captures from current bitstream are perfect for this). Decide on tap count.
-4. **Wire `check_verilog_stale.ps1` into `build_fpga.bat`** as a hard-failing pre-step, not an advisory. Eliminates the most costly recurring bake bug.
-5. **Add a top-level integration test for `P25Core`** (a `test_p25_top.py` that drives a saved IQ recording end-to-end and asserts dibits land in the ring buffer). Acts as guardrail during the heavy refactor in P12.
-6. **Lock the choice between Option A and Option B** before starting P11. Document the decision + rationale in a new `doc/changes/NNN_channelizer_architecture.md`.
-7. **Commit to a per-channel register layout convention** (unified bank with channel-indexed offsets, not N identical banks). Do this in P12 refactor; it makes the SVD sane.
-8. **Keep the C4FM retirement (P15) as a *subtractive* phase** — no rename-and-delete style refactors; just remove. This is the lowest-risk phase of all and provides the resource headroom P13/P14 need.
+1. **Phase 10.5 voice-chain stability first** (§13 Phase 10.5). The Gardner TED retune is a 1-day HDL change with a 1-bake validation; the per-block TSBK telemetry is a few registers; the IMBE quality gate is purely Rust-side. Ship this before anything channelizer-related — fixing the voice-chain wobble on one chain is ~10× cheaper than fixing it on ten.
+2. **Run a real Vivado utilisation report on the current P25 bitstream.** Update §12 of this document with the actual DSP / BRAM / LUT / FF counts. Still the prerequisite for any Phase 11 sizing decision, just deferred until Phase 10.5 lands.
+3. **Verify the sample-rate architecture.** Read the block design; confirm the `sampling` domain rate and the `clk3x` rate. Update §4.
+4. **Clear the HDL cleanup/correction checklist in §18 in parallel with Phase 10.5.** Most items are small (docstring updates, dB-derivation comments, integration test additions). One bakeable change (§1.10 AGC creep-recovery on silence) can ride along with Phase 10.5 or be deferred to Phase 11.
+5. **Do a prototype-filter design pass in Python before any Amaranth.** For the P11 FFT + synthesis filter option, design the prototype FIR and the synthesis filter in `scipy.signal`, test adjacent-channel rejection against real P25 IQ captures (the iq_dma captures from current bitstream are perfect for this). Decide on tap count.
+6. **Wire `check_verilog_stale.ps1` into `build_fpga.bat`** as a hard-failing pre-step, not an advisory. Eliminates the most costly recurring bake bug.
+7. **Add a top-level integration test for `P25Core`** (a `test_p25_top.py` that drives a saved IQ recording end-to-end and asserts dibits land in the ring buffer). Acts as guardrail during the heavy refactor in P12 — and captures the 8C → 8C.1 CRC cliff case the review flagged (§2.1).
+8. **Lock the choice between Option A and Option B** before starting P11. Document the decision + rationale in a new `doc/changes/NNN_channelizer_architecture.md`.
+9. **Commit to a per-channel register layout convention** (unified bank with channel-indexed offsets, not N identical banks). Do this in P12 refactor; it makes the SVD sane.
+10. **Keep the C4FM retirement (P15) as a *subtractive* phase** — no rename-and-delete style refactors; just remove. This is the lowest-risk phase of all and provides the resource headroom P13/P14 need. Gated on ≥3-site LSM-decodes-C4FM confirmation (FP&L site 1/3 confirmed).
 
 ## 16. Out-of-scope items (recorded for completeness)
 
@@ -777,3 +839,91 @@ The three sub-reviewers' findings are cross-referenced below. Where they disagre
 | CDC IRQ closure is placement-luck | Survey 1 | High (in-source comment) | Fixed with PulseSynchronizer; re-verify WNS |
 
 Anything marked Medium or Low confidence should be re-verified against current code or a Vivado report before acting on it. The recommended first action (§15 item 1) resolves most of the Low-confidence budget items.
+
+---
+
+## 18. Appendix — HDL cleanup + correction checklist
+
+Aggregated from [doc/CODE_REVIEW_2026_04_16.md](CODE_REVIEW_2026_04_16.md) and project memory as of 2026-04-17. Items are grouped by urgency; within each group, by source. Check the listed source link for full context before acting.
+
+### 18.1 Corrections with observable behavioural consequences
+
+| # | Item | Source | Effort | Gate / dependency |
+|---|------|--------|-------:|-------------------|
+| C1 | **Gardner TED loop-gain retune** — `sp_dbg` span 50% of full scale per 1 s; target ≤ 20%. See Phase 10.5 / §0.1. | [PERFORMANCE_ANALYSIS §3, §6.2-4](diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md) | 1 day HDL + bench sim + 1 bake | None |
+| C2 | **CDC closure verification post-Phase-10-prep** — in-source comment at p25_top.py:889 notes "placement luck". Re-run `report_timing_summary`; check WNS on IRQ nets. | CODE_REVIEW §1.6 | 1 bake's timing review | Next bake (any phase) |
+| C3 | **LSM AGC park-at-GAIN_MIN on extended silence** — `mag_update_threshold=1024` blocks recovery after a saturating impulse drives gain to 1. Add slow creep-up or documented bound. | CODE_REVIEW §1.10; [lsm_agc.py:189-190](../maia-hdl/p25_hdl/lsm_agc.py#L189-L190) | ½ day HDL + sim | Phase 10.5 or Phase 11 bake |
+| C4 | **`lsm_timing_interp sample_point` warmup init verification** — docstring asserts `-ONE_Q12` cold-start; confirm numeric constant matches Rust `demod_lsm_with_state` reference. | CODE_REVIEW §1.12; [lsm_timing_interp.py:138-141](../maia-hdl/p25_hdl/lsm_timing_interp.py#L138-L141) | ½ day read + test | None |
+| C5 | **TDU_LC counter audit** — 1977 vs 35 anomaly. See Phase 10.5 sub-item 3. | [PERFORMANCE_ANALYSIS §1.6](diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md) | 1 day Rust + comment pass | None |
+
+### 18.2 Corrections with design-clarity consequences
+
+| # | Item | Source | Effort | Gate / dependency |
+|---|------|--------|-------:|-------------------|
+| C6 | **8C/8C.1 regression test** — the DomainRenamer-based reset that collapsed CRC 91.7% → 24.8% has no automated guard. Add `test_lsm_demod_loop` covering clean + transient signals. | CODE_REVIEW §2.1; [p25_top.py:730-743](../maia-hdl/p25_hdl/p25_top.py#L730-L743) | 1 day test | Land before any HDL reset refactor |
+| C7 | **Traffic LSM reset ordering contract** — `freq write → reset pulse → enable` is not PS-enforced. Surface in Rust retune flow + `doc/P25_ADDRESS_MAP.md`. | CODE_REVIEW §2.1; this doc §5.3 | ½ day | None |
+| C8 | **NID drop counter shadow value** — runtime reset zeroes the counter; PS can't distinguish "fine" from "just-reset". Latch a shadow before clearing, or have PS read before reset. | CODE_REVIEW §2.1; [lsm_nid_pipeline.py:153-162](../maia-hdl/p25_hdl/lsm_nid_pipeline.py#L153-L162) | ½ day HDL | Next bake |
+| C9 | **DibitPacker / IQPacker overflow pulse multi-cycle bound** — `Rsticky` read-clear is single-pulse sensitive. Add sim assertion or single-line comment. | CODE_REVIEW §2.1; [dibit_packer.py:80-102](../maia-hdl/p25_hdl/dibit_packer.py#L80-L102), [iq_packer.py:110-141](../maia-hdl/p25_hdl/iq_packer.py#L110-L141) | ½ day sim | None |
+
+### 18.3 Cleanup — HDL source hygiene
+
+| # | Item | Source | Effort |
+|---|------|--------|-------:|
+| L1 | `P25DDC.macc_trunc` hardcoded in subclass; add `P25Config.ddc_macc_trunc` field. | CODE_REVIEW §3.1 | 1 h |
+| L2 | `LsmDemodLoop` docstring missing AGC latency (~50 cycles) in feedback-loop description. | CODE_REVIEW §3.1; [lsm_demod_loop.py](../maia-hdl/p25_hdl/lsm_demod_loop.py) | 15 min |
+| L3 | `lsm_demod_loop.py` Inputs/Outputs sections don't mention `agc_enable` / `agc_mag_update_threshold` added in Phase 10-prep. | CODE_REVIEW §3.1 | 15 min |
+| L4 | `MAG_UPDATE_THRESHOLD_DEFAULT = 1024` — add dB derivation comment (`margin_dB = 20*log10(23170/1024) ≈ 27 dB`). | CODE_REVIEW §3.1 | 5 min |
+| L5 | `symbol_timing` first-symbol post-reset references implicit `sym_{re,im}_prev = 0`; document explicitly. | CODE_REVIEW §3.1 | 15 min |
+| L6 | `LsmSyncNidExtract` popcount uses `sum()` over `Signal`s — declare `Signal(7)` and assert width. | CODE_REVIEW §3.1 | 15 min |
+| L7 | `iq_dma_address` alignment assertion at [config.py:221-223](../maia-hdl/p25_hdl/config.py#L221-L223) lacks a "why" comment citing `DmaStreamRingWrite` mask-based wrap. | CODE_REVIEW §3.1 | 10 min |
+| L8 | `symbol_timing` counter reload bounds comment — in-range under design clamping; document for future readers. | CODE_REVIEW §3.1 | 15 min |
+
+### 18.4 Cleanup — retirement / subtraction
+
+Ordered by the blockers they're waiting on.
+
+| # | Item | Source | Blocker |
+|---|------|--------|---------|
+| R1 | **C4FM HDL stack retire** — delete `C4FMDemod`, `SymbolTimingRecovery` (C4FM-dedicated), both C4FM `DibitPacker` instances, both C4FM dibit DMA rings. | [project_c4fm_stack_cleanup_todo](../C:/Users/Andy/.claude/projects/c--Users-Andy-Projects-MAIA-SDR-maia-sdr/memory/project_c4fm_stack_cleanup_todo.md); this doc Phase 15 | ≥3-site LSM-decodes-C4FM confirmation. FP&L = 1/3. |
+| R2 | **PS C4FM decoder retire** — delete Rust `c4fm_decoder` + dashboard "PS C4FM" column. | same | Same; can go concurrent with R1. |
+| R3 | **`iq_packer` / IQ DMA retire (optional)** — Phase 6C added IQ DMA for control-channel post-DDC validation; Phase 9 retired PS-side `iq_lsm_decoder`. Ring is currently write-only for diagnostics. Keep while diagnostics are still useful; remove when post-TED-retune baseline is set. | [project_phase10_entry_point](../C:/Users/Andy/.claude/projects/c--Users-Andy-Projects-MAIA-SDR-maia-sdr/memory/project_phase10_entry_point.md) item #2 | Phase 10.5 completion + confirm no PS reader |
+| R4 | **Legacy comments + docstrings referencing retired modules** (search for `iq_lsm_decoder`, `GolayDecoder` after their deletion). | Stage 3 dead-code sweep | Done in Stage 3 for the Rust side; HDL side needs a pass. |
+
+### 18.5 Observability additions (non-subtractive, low-risk)
+
+| # | Item | Source | Effort |
+|---|------|--------|-------:|
+| O1 | **Per-TSBK-block CRC telemetry** (Phase 10.5 sub-item 2). Three counters per chain. | [PERFORMANCE_ANALYSIS §1.2, §6.2-5](diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md) | ½ day HDL + ½ day Rust |
+| O2 | **Per-frame IMBE quality gate** (Phase 10.5 sub-item 4). Rust-side atomic counter. | [PERFORMANCE_ANALYSIS §6.3-7](diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md) | ½ day Rust |
+| O3 | **Traffic-chain live constellation** (Phase 10.5 sub-item 5). Gate capture trigger on LDU1-in-progress. | [PERFORMANCE_ANALYSIS §6.2-6](diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md) | 1 day HDL + dashboard tile |
+| O4 | **Continuous constellation ring** — on-board ring of last 100 low-rate captures for post-hoc grep. | [PERFORMANCE_ANALYSIS §6.5-13](diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md) | 1 day; deferred |
+| O5 | **`/api/sys_health`** — loadavg + RSS + thread count + free mem. | [PERFORMANCE_ANALYSIS §5.3, §6.4-10](diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md) | **DONE in Stage 2** (2026-04-17) — resolved; kept here for cross-ref |
+
+### 18.6 Test infrastructure
+
+| # | Item | Source | Effort |
+|---|------|--------|-------:|
+| T1 | **`P25Core` top-level integration test** (§7.1 gap #1) — drive saved IQ → assert dibits at ring buffer. | This doc §7.1 | 2–3 days |
+| T2 | **8C regression test** (C6 above) | CODE_REVIEW §2.1 | subsumed by T1 if T1 covers reset paths |
+| T3 | **Traffic↔control symmetry test** (§7.1 gap #3) — automated check that both chains stay structurally identical. | This doc §7.1 | 1 day |
+| T4 | **CDC sequencing tests** (§7.1 gap #4) — register-write-before-DDC-reset ordering. | This doc §7.1 | 1 day |
+
+### 18.7 Deferred / out-of-scope for near-term
+
+| # | Item | Rationale |
+|---|------|-----------|
+| D1 | **Direct-traffic-tune mode** (park on fixed freq, bypass grant follower). Rust + minor HDL. | [project_direct_traffic_tune_todo](../C:/Users/Andy/.claude/projects/c--Users-Andy-Projects-MAIA-SDR-maia-sdr/memory/project_direct_traffic_tune_todo.md); gated on TDU_LC burst fix (C5) |
+| D2 | **HDU encryption parse (Phase 7C.2)** — Golay(18,6)+RS(36,20,17) port ~200 LOC. | Control-channel service-options + encrypted-TG history already cover the common case. |
+| D3 | **NTP-on-boot** — firmware, not HDL; mentioned here because it shows up in timestamp-adjacent discussions. | [project_ntp_on_boot_todo](../C:/Users/Andy/.claude/projects/c--Users-Andy-Projects-MAIA-SDR-maia-sdr/memory/project_ntp_on_boot_todo.md) |
+| D4 | **Panel add-on board** (LCD + encoder + speaker daughterboard on JP5). | [project_panel_addon_board_todo](../C:/Users/Andy/.claude/projects/c--Users-Andy-Projects-MAIA-SDR-maia-sdr/memory/project_panel_addon_board_todo.md); hardware project, out of HDL scope |
+
+### 18.8 Superseded — tracked for history
+
+| # | Item | Resolution |
+|---|------|-----------|
+| S1 | `project_next_session_hdl_direction` — "maia-hdl feature survey vs fork". | Both driving items (AGC, DDC stage-1) resolved; memory marked SUPERSEDED 2026-04-17. |
+| S2 | `project_p25_ddc_stage1_filter_weak` — "stage 1 is too weak". | Fix was actually stage 3 (LsmDecimator2 /2 fold-back band). Resolved by P25DDC v2 fork. Memory marked SUPERSEDED 2026-04-17. |
+| S3 | `project_p25ddc_fork_next_project` | v2 validated on-target 2026-04-15 (81.7% CRC at 8 MHz rf_bandwidth). Memory marked SUPERSEDED in index. |
+| S4 | `feedback_bandwidth_sweep_8mhz` | P25DDC v2 resolved the 8 MHz ceiling. Memory was already marked SUPERSEDED. |
+
+Total active items in §18: **5 corrections with behavioural impact (§18.1), 4 with design-clarity impact (§18.2), 8 hygiene (§18.3), 3 retirements pending blockers (§18.4 excluding R4), 4 observability (§18.5), 4 test-infra (§18.6), 4 deferred (§18.7).** Phase 10.5 knocks out C1, C5, O1, O2, O3 in one bake. The rest split between ride-along on Phase 11 bakes and opportunistic PR-sized commits.
