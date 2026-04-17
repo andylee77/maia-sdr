@@ -163,11 +163,6 @@ fn golay23_check_and_correct(frame: &mut [bool; 144], start_index: usize) -> u32
                     xor_bits(&mut copy, 12, 11, syndrome);
                     rotate_right(&mut copy, i, 0, 22);
 
-                    let mut total_errors = errors;
-                    if index >= 0 {
-                        total_errors += 1;
-                    }
-
                     let corrected = get_int_range_vec(&copy, 0, 22);
                     let original = get_int_range(frame, start_index, start_index + 22);
                     let error_count = bit_count(original ^ corrected);
@@ -785,16 +780,17 @@ fn apply_adaptive_smoothing(params: &mut ModelParameters, prev_amp_threshold: i3
     let l = params.l;
 
     // Alg #112
-    let vm: f32;
-    if params.error_rate <= 0.005 && params.error_count_total <= 4 {
-        vm = f32::MAX;
-    } else {
+    // Alg #112 — high-quality path skips the voicing threshold loop
+    // entirely (equivalent to vm = f32::MAX, i.e. no threshold raises
+    // a voicing flag). Only the lower-quality branches compute a
+    // finite vm and apply the Alg #113 adaptive threshold.
+    if !(params.error_rate <= 0.005 && params.error_count_total <= 4) {
         let energy = params.local_energy.powf(0.375);
-        if params.error_rate <= 0.0125 && params.error_count4 == 0 {
-            vm = (45.255 * energy) / (277.26 * params.error_rate).exp();
+        let vm: f32 = if params.error_rate <= 0.0125 && params.error_count4 == 0 {
+            (45.255 * energy) / (277.26 * params.error_rate).exp()
         } else {
-            vm = 1.414 * energy;
-        }
+            1.414 * energy
+        };
 
         // Alg #113 - adaptive threshold on voicing decisions
         for li in 1..=l {

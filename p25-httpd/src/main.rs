@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-17-stage3-dead-code-docstrings";
+pub const BUILD_TAG: &str = "2026-04-17-stage3-fix-linux-build";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -526,7 +526,13 @@ async fn main() -> anyhow::Result<()> {
     // is how we validate the HDL LSM port (Phase 6E.0-6E.9) against the
     // working Phase 2A C4FM path.
     // Phase 7B: typed grant event channel + monitor list.
-    let (grant_event_tx, _grant_event_rx) =
+    // NOTE: `grant_event_rx` LOOKS unused on Windows (cargo fix will
+    // offer to rename it `_grant_event_rx` AND remove `mut`) but it
+    // IS consumed via `.recv()` at line ~1970 inside a
+    // `cfg(target_os = "linux")` block. Do NOT accept either of those
+    // rewrites — they break the Linux build.
+    #[allow(unused_variables, unused_mut)]
+    let (grant_event_tx, mut grant_event_rx) =
         tokio::sync::mpsc::channel::<p25::events::P25Event>(128);
     let monitor_list = Arc::new(RwLock::new(monitor::MonitorList::default()));
 
