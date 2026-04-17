@@ -76,7 +76,7 @@
 from amaranth import *
 
 from .lsm_timing_interp import LsmTimingInterp
-from .lsm_agc import LsmAgc
+from .lsm_agc import LsmAgc, MAG_UPDATE_THRESHOLD_DEFAULT
 from .lsm_diff_demod_slicer import LsmDiffDemodSlicer
 from .lsm_pll_rotate import LsmPllRotate
 from .lsm_gardner_ted import LsmGardnerTed
@@ -114,12 +114,16 @@ class LsmDemodLoop(Elaboratable):
             actually see.
     """
 
-    def __init__(self, *, pll_mode='cordic'):
+    def __init__(self, *, pll_mode='cordic',
+                 agc_mag_update_threshold=MAG_UPDATE_THRESHOLD_DEFAULT):
         if pll_mode not in ('cordic', 'linearised'):
             raise ValueError(
                 f"pll_mode must be 'cordic' or 'linearised', "
                 f"got {pll_mode!r}")
         self.pll_mode = pll_mode
+        # Forwarded to LsmAgc to set the idle-noise gate threshold.
+        # See lsm_agc.MAG_UPDATE_THRESHOLD_DEFAULT docstring.
+        self.agc_mag_update_threshold = agc_mag_update_threshold
 
         # ── Inputs ──────────────────────────────────────────────
         self.re_in = Signal(signed(16))
@@ -148,13 +152,19 @@ class LsmDemodLoop(Elaboratable):
         # `lsm_agc_debug` register. See lsm_agc.py.
         self.agc_gain_dbg = Signal(16, reset_less=True)
         self.agc_mag_dbg = Signal(16, reset_less=True)
+        # Phase 10-prep: count of symbols the AGC gated because
+        # `mag < mag_update_threshold` (noise-floor squelch). Exposed
+        # so the PS can confirm the idle-gate is firing and tune
+        # the threshold if needed.
+        self.agc_gate_dbg = Signal(16, reset_less=True)
 
     def elaborate(self, platform):
         m = Module()
 
         # ── Submodules ──────────────────────────────────────────
         m.submodules.timing = timing = LsmTimingInterp()
-        m.submodules.agc = agc = LsmAgc()
+        m.submodules.agc = agc = LsmAgc(
+            mag_update_threshold=self.agc_mag_update_threshold)
         m.submodules.diff_demod = diff_demod = LsmDiffDemodSlicer()
         m.submodules.rotate_mid = rotate_mid = LsmPllRotate()
         m.submodules.rotate_sym = rotate_sym = LsmPllRotate()
@@ -194,6 +204,7 @@ class LsmDemodLoop(Elaboratable):
             agc.enable_in.eq(self.agc_enable),
             self.agc_gain_dbg.eq(agc.gain_dbg),
             self.agc_mag_dbg.eq(agc.mag_dbg),
+            self.agc_gate_dbg.eq(agc.gate_dbg),
         ]
 
         # ── Stage 2: differential demod (per-symbol) ────────────

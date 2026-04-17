@@ -173,6 +173,11 @@ class LsmDemod(Elaboratable):
         # L2 magnitude in Q1.15 (truncated to 16 bits).
         self.agc_gain_dbg = Signal(16)
         self.agc_mag_dbg = Signal(16)
+        # Phase 10-prep: idle-gate strobe counter. Increments each
+        # symbol the AGC skipped its gain update because the input
+        # magnitude fell below `mag_update_threshold`. See the
+        # MAG_UPDATE_THRESHOLD_DEFAULT docstring in `lsm_agc.py`.
+        self.agc_gate_dbg = Signal(16)
 
     def elaborate(self, platform):
         m = Module()
@@ -200,6 +205,7 @@ class LsmDemod(Elaboratable):
             demod_loop.agc_enable.eq(self.agc_enable),
             self.agc_gain_dbg.eq(demod_loop.agc_gain_dbg),
             self.agc_mag_dbg.eq(demod_loop.agc_mag_dbg),
+            self.agc_gate_dbg.eq(demod_loop.agc_gate_dbg),
         ]
 
         # ── Stage 0: per-channel DC blocking ───────────────────

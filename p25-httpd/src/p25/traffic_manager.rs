@@ -134,6 +134,31 @@ pub struct TrafficManager {
     pub tdus_seen: u64,
     /// Cumulative LDU count (LDU1 + LDU2 combined).
     pub ldus_seen: u64,
+
+    // ── Phase 10-prep: persistent grant-frequency map ────────────────
+    //
+    // Every grant observed (accepted or not) accumulates here, keyed
+    // by (tg, frequency_hz). Used for:
+    //   1. The scanner-mode UI's TG picker.
+    //   2. Future auto-center-LO logic that picks an rx_lo to keep
+    //      the most active traffic channels inside the AD9361 rf_bw
+    //      window.
+    // Populated in `tally_grant`, which `handle_grant` calls on every
+    // incoming grant regardless of the follow decision.
+    pub grant_map: std::collections::HashMap<(u16, u64), GrantMapEntry>,
+}
+
+/// Single row in the grant frequency map.
+#[derive(Debug, Clone, Default)]
+pub struct GrantMapEntry {
+    /// Number of times this (tg, freq) pair has been granted.
+    pub count: u64,
+    /// Number of times the grant was flagged encrypted.
+    pub encrypted_count: u64,
+    /// Unix milliseconds of the first grant on this (tg, freq).
+    pub first_seen_unix_ms: u64,
+    /// Unix milliseconds of the most recent grant on this (tg, freq).
+    pub last_seen_unix_ms: u64,
 }
 
 impl TrafficManager {
@@ -173,7 +198,40 @@ impl TrafficManager {
             hdus_seen: 0,
             tdus_seen: 0,
             ldus_seen: 0,
+            // Phase 10-prep: grant frequency map. Populated on every
+            // observed TSBK grant regardless of follow decision, so
+            // scanner-mode UI / LO auto-center can see the full view
+            // even when `/api/monitor` is filtering most grants out.
+            grant_map: std::collections::HashMap::new(),
         }
+    }
+
+    /// Phase 10-prep: record this grant in the accumulated
+    /// frequency map, regardless of whether it will be followed.
+    /// Called on every TSBK-driven grant before the follow decision.
+    pub fn tally_grant(
+        &mut self,
+        talkgroup: u16,
+        frequency_hz: u64,
+        encrypted: bool,
+    ) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let entry = self.grant_map
+            .entry((talkgroup, frequency_hz))
+            .or_insert_with(|| GrantMapEntry {
+                count: 0,
+                encrypted_count: 0,
+                first_seen_unix_ms: now_ms,
+                last_seen_unix_ms: now_ms,
+            });
+        entry.count += 1;
+        if encrypted {
+            entry.encrypted_count += 1;
+        }
+        entry.last_seen_unix_ms = now_ms;
     }
 
     /// Single-character state label for /api/traffic JSON.

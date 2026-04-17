@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-16-bake2-constellation-pi4-reference";
+pub const BUILD_TAG: &str = "2026-04-16-p10prep-full-dom-reuse";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -2036,6 +2036,20 @@ async fn main() -> anyhow::Result<()> {
                                         "emergency": g.emergency,
                                     }),
                                 );
+
+                                // Phase 10-prep: tally every observed
+                                // grant into the persistent frequency
+                                // map, regardless of follow decision.
+                                // Populates /api/grant_map so the
+                                // scanner-mode UI + future LO auto-
+                                // center can see the whole site's
+                                // grant history, not just followed
+                                // TGs.
+                                if let Some(freq) = g.frequency_hz {
+                                    let mut mgr = follower_mgr.lock().await;
+                                    mgr.tally_grant(
+                                        g.talkgroup.0, freq, g.encrypted);
+                                }
 
                                 // Monitor list gate
                                 let dominated = {

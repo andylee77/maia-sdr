@@ -205,6 +205,25 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/control_lsm_dibit_dump", get(get_control_lsm_dibit_dump))
         .route("/api/control_iq_capture", get(get_control_iq_capture))
         .route("/api/control_iq_capture_aligned", get(get_control_iq_capture_aligned))
+        // Traffic-chain counterparts (Phase 10-prep, 2026-04-16).
+        // Identical response shape to the control-side endpoints,
+        // but read from `traffic_lsm_decoder` + traffic HDL regs.
+        // Needed for symmetric gain / slicer / sync debugging of
+        // the post-retune traffic chain without waiting for a call.
+        .route("/api/traffic_lsm_dibit_dump", get(get_traffic_lsm_dibit_dump))
+        .route("/api/traffic_iq_capture", get(get_traffic_iq_capture))
+        .route("/api/traffic_iq_capture_aligned", get(get_traffic_iq_capture_aligned))
+        .route("/api/traffic_lsm_control", get(get_traffic_lsm_control))
+        // Phase 10-prep: live AD9361 RX gain knob. Previously only
+        // reachable via /api/reinit (which rewrites everything);
+        // having a dedicated read/write lets us A/B gain during
+        // decode debug without disturbing LO / BW / DDC.
+        .route("/api/rx_gain", get(get_rx_gain).put(put_rx_gain))
+        // Grant frequency map (Phase 10-prep). Every grant observed
+        // on the control channel, keyed by (tg, freq), with seen-
+        // count, last-seen timestamp, and encryption history. Used
+        // by the scanner-mode UI + future LO auto-center.
+        .route("/api/grant_map", get(get_grant_map))
         .route("/api/tsbk_opcodes", get(get_tsbk_opcodes))
         .route("/api/recent_tsbks", get(get_recent_tsbks))
         // Phase 6F.7 testing knobs. Both endpoints accept GET with
@@ -484,6 +503,7 @@ async fn get_recordings(
 /// the current ring (evicted or never existed).
 async fn get_recording_file(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(id_str): axum::extract::Path<String>,
 ) -> axum::response::Response {
     use axum::http::{header, StatusCode};
@@ -528,18 +548,76 @@ async fn get_recording_file(
         .and_then(|s| s.to_str())
         .unwrap_or("recording.wav")
         .to_string();
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "audio/wav".to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("inline; filename=\"{filename}\""),
-            ),
-        ],
-        bytes,
-    )
-        .into_response()
+    let total_len = bytes.len() as u64;
+
+    // Phase 10-prep: HTTP Range support. Without this, the HTML5
+    // <audio> element in the dashboard stutters or restarts mid-
+    // playback -- it issues `Range: bytes=0-` probes to test for
+    // seek capability, gets 200 OK with the full body, and re-
+    // interprets the re-send as a stream restart. Implementing
+    // minimal single-range support (206 Partial Content) makes
+    // <audio> happy. Download (`<a href download>`) still works
+    // because the download path doesn't issue Range requests.
+    //
+    // We intentionally parse ONLY `bytes=<start>-<end?>` (single
+    // range, no multipart) since that covers every browser we care
+    // about. Malformed ranges fall back to 200 OK with the full body.
+    let range_hdr = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("bytes="))
+        .and_then(|s| s.split_once('-'))
+        .and_then(|(start, end)| {
+            let start: u64 = start.parse().ok()?;
+            let end: u64 = if end.is_empty() {
+                total_len.saturating_sub(1)
+            } else {
+                end.parse().ok()?
+            };
+            if start > end || start >= total_len {
+                return None;
+            }
+            let end = end.min(total_len - 1);
+            Some((start, end))
+        });
+
+    let (status, start, end) = match range_hdr {
+        Some((s, e)) => (StatusCode::PARTIAL_CONTENT, s, e),
+        None => (StatusCode::OK, 0u64, total_len - 1),
+    };
+
+    let body: Vec<u8> = if status == StatusCode::PARTIAL_CONTENT {
+        bytes[start as usize..=end as usize].to_vec()
+    } else {
+        bytes
+    };
+    let content_length = body.len() as u64;
+
+    let mut builder = axum::response::Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "audio/wav")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("inline; filename=\"{filename}\""),
+        )
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, content_length);
+
+    if status == StatusCode::PARTIAL_CONTENT {
+        builder = builder.header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{total_len}"),
+        );
+    }
+
+    match builder.body(axum::body::Body::from(body)) {
+        Ok(resp) => resp,
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("response build failed: {e}"),
+        )
+            .into_response(),
+    }
 }
 
 /// `GET /api/spectrum?chain=control|traffic`
@@ -1055,6 +1133,48 @@ const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     },
     EndpointDoc {
         method: "GET",
+        path: "/api/traffic_iq_capture",
+        params: "",
+        description: "Traffic-chain twin of /api/control_iq_capture. Rolling dibit snapshot.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/traffic_iq_capture_aligned",
+        params: "",
+        description: "Traffic-chain twin of /api/control_iq_capture_aligned. Arms next sync hit.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/traffic_lsm_control",
+        params: "?dc_block=0|1&agc=0|1",
+        description: "Runtime read/write of the traffic-chain lsm_control register bits.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/traffic_lsm_dibit_dump",
+        params: "",
+        description: "Histogram of the traffic-chain LSM demod dibit ring.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/rx_gain",
+        params: "?db=<i32>",
+        description: "Read or set AD9361 manual RX hardwaregain in dB (range -3..76).",
+    },
+    EndpointDoc {
+        method: "PUT",
+        path: "/api/rx_gain",
+        params: "?db=<i32>",
+        description: "PUT twin for /api/rx_gain — same semantics as the GET form.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/grant_map",
+        params: "",
+        description: "Accumulated grant-frequency map (tg, freq) with counts + last-seen.",
+    },
+    EndpointDoc {
+        method: "GET",
         path: "/api/modulation",
         params: "",
         description: "Read current P25 modulation (C4FM/LSM/Auto) + per-decoder NID-valid rates.",
@@ -1491,6 +1611,19 @@ async fn get_control_lsm_dibit_dump(
     Json(dibit_dump_json(&decoder, "PL HDL LSM chain (lsm_dibit_dma)"))
 }
 
+/// Phase 10-prep: traffic-side counterpart of `/api/control_lsm_dibit_dump`.
+/// Reads from `traffic_lsm_decoder` so we can diagnose the traffic
+/// framer's slicer / sync correlator / raw_DUID distribution without
+/// waiting for a grant. Same response shape as the control-side
+/// endpoint so dashboard / tooling can treat them symmetrically.
+async fn get_traffic_lsm_dibit_dump(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let decoder = state.traffic_lsm_decoder.read().await;
+    Json(dibit_dump_json(
+        &decoder, "PL HDL traffic LSM chain (traffic_lsm_dibit_dma)"))
+}
+
 /// Phase 6F.2h diagnostic capture endpoint.
 ///
 /// Returns the LSM decoder's `recent_dibits` rolling buffer (up to 2048
@@ -1512,6 +1645,25 @@ async fn get_control_iq_capture(State(state): State<Arc<AppState>>) -> Json<serd
         "dibits_hex":   hex,
         "note": "One hex digit per dibit, oldest first. Each digit is the \
                  low 2 bits (00..03). 4800 sym/s -> 2048 dibits ~= 426 ms.",
+    }))
+}
+
+/// Phase 10-prep: traffic-side counterpart of `/api/control_iq_capture`.
+/// Rolling recent-dibits buffer from the traffic LSM decoder.
+async fn get_traffic_iq_capture(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let decoder = state.traffic_lsm_decoder.read().await;
+    let dibits: Vec<u8> = decoder.recent_dibits.iter().copied().collect();
+    let hex: String = dibits.iter().map(|d| format!("{:1X}", d & 0x3)).collect();
+    Json(serde_json::json!({
+        "chain":        "traffic",
+        "captured":     dibits.len(),
+        "total_dibits": decoder.total_dibits(),
+        "dibits_hex":   hex,
+        "note": "Same shape as /api/control_iq_capture, but reads from the \
+                 traffic-chain rolling dibit buffer so post-retune slicer \
+                 behaviour can be inspected without a call being active.",
     }))
 }
 
@@ -1574,6 +1726,50 @@ async fn get_control_iq_capture_aligned(
                          LSM dibit stream is stalled (check IRQ counters) \
                          or the sync correlator is missing every frame \
                          (check best Hamming distance on the LSM dibit dump).",
+            }));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Phase 10-prep: traffic-side counterpart of
+/// `/api/control_iq_capture_aligned`. Same arm + wait protocol but
+/// against the traffic LSM decoder. Useful for debug-capturing a
+/// post-retune TDU or LDU frame to see where the slicer / framer
+/// is landing before the grant follower cancels the retune.
+async fn get_traffic_iq_capture_aligned(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    use std::time::{Duration, Instant};
+
+    {
+        let mut dec = state.traffic_lsm_decoder.write().await;
+        dec.aligned_capture = None;
+        dec.aligned_capture_armed = true;
+    }
+
+    // Traffic framer only sees sync hits while a real call is active
+    // (the noise-gate changes landing in the Phase 10 bake will make
+    // this even more true). Give up to 15 seconds of headroom in
+    // case the user is arming this just before a grant arrives.
+    let deadline = Instant::now() + Duration::from_millis(15000);
+    loop {
+        {
+            let dec = state.traffic_lsm_decoder.read().await;
+            if let Some(snap) = dec.aligned_capture.as_ref() {
+                return Json(snap.to_json());
+            }
+        }
+        if Instant::now() >= deadline {
+            let mut dec = state.traffic_lsm_decoder.write().await;
+            dec.aligned_capture_armed = false;
+            return Json(serde_json::json!({
+                "status": "timeout",
+                "chain":  "traffic",
+                "note": "No sync hit on the traffic chain within 15 s. \
+                         Likely no active call during the capture window -- \
+                         arm again while a grant is in progress for a \
+                         populated snapshot.",
             }));
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1749,6 +1945,210 @@ async fn get_control_lsm_control(
             "error": "lsm_control read/write requires hardware (target_os=linux)",
         }))
     }
+}
+
+/// Phase 10-prep: traffic-side counterpart of
+/// `/api/control_lsm_control`. Reads/writes the `traffic_lsm_control`
+/// HDL register:
+///   bit 0: traffic_lsm_enable
+///   bit 1: traffic_lsm_dibit_dma_enable
+///   bit 2: traffic_lsm_dc_block_enable
+///   bit 3: traffic_lsm_agc_enable  (Phase 10-prep)
+///
+/// Currently only `dc_block` and `agc` are writable from this
+/// endpoint; the enable + dma_enable bits are managed by
+/// `retune_traffic_chain` and shouldn't be flipped out-of-band.
+async fn get_traffic_lsm_control(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let mut updated_dc: Option<bool> = None;
+    let mut updated_agc: Option<bool> = None;
+
+    #[cfg(target_os = "linux")]
+    {
+        let core = state.ip_core.lock().await;
+
+        if let Some(v) = params.get("dc_block") {
+            if let Some(new_bit) = match v.as_str() {
+                "1" | "true" => Some(true),
+                "0" | "false" => Some(false),
+                _ => None,
+            } {
+                let (_, _, prev) = core.traffic_lsm_control_readback();
+                core.set_traffic_lsm_dc_block_enable(new_bit);
+                updated_dc = Some(prev);
+            }
+        }
+
+        if let Some(v) = params.get("agc") {
+            if let Some(new_bit) = match v.as_str() {
+                "1" | "true" => Some(true),
+                "0" | "false" => Some(false),
+                _ => None,
+            } {
+                core.set_traffic_lsm_agc_enable(new_bit);
+                updated_agc = Some(!new_bit);
+            }
+        }
+
+        let (en, dma_en, dc_block) = core.traffic_lsm_control_readback();
+        Json(serde_json::json!({
+            "chain":                        "traffic",
+            "traffic_lsm_enable":           en,
+            "traffic_lsm_dibit_dma_enable": dma_en,
+            "traffic_lsm_dc_block_enable":  dc_block,
+            "updated_dc_block_from":        updated_dc,
+            "updated_agc_from":             updated_agc,
+            "note": "GET /api/traffic_lsm_control?dc_block=0|1 toggles \
+                     the traffic-chain DC blocker; ?agc=0|1 toggles the \
+                     per-symbol AGC. The enable + dibit_dma_enable bits \
+                     are managed by retune_traffic_chain and are \
+                     read-only here.",
+        }))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (state, params, &mut updated_dc, &mut updated_agc);
+        Json(serde_json::json!({
+            "ok": false,
+            "error": "traffic_lsm_control requires hardware (target_os=linux)",
+        }))
+    }
+}
+
+/// Phase 10-prep: GET /api/rx_gain -- AD9361 RX gain knob.
+///
+/// Read-only without params. With `?db=<int>` sets
+/// `in_voltage0_hardwaregain` via IIO and returns the new reading.
+/// Range [-3, 76] dB in 1 dB steps.
+async fn get_rx_gain(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut updated_from: Option<i64> = None;
+        let mut error: Option<String> = None;
+
+        if let Some(v) = params.get("db") {
+            match v.parse::<i64>() {
+                Ok(db) if (-3..=76).contains(&db) => {
+                    let prev = state.ad9361.get_rx_gain().await.ok()
+                        .map(|f: f64| f as i64);
+                    match state.ad9361.set_rx_gain(db as f64).await {
+                        Ok(()) => {
+                            updated_from = prev;
+                            state.event_log.push(
+                                crate::event_log::LogCategory::System,
+                                format!("rx_gain set to {db} dB"),
+                                serde_json::json!({
+                                    "db": db, "previous": prev,
+                                }),
+                            );
+                        }
+                        Err(e) => error = Some(format!("set_rx_gain: {e}")),
+                    }
+                }
+                Ok(_) => error = Some(
+                    "db out of range [-3, 76]".to_string()),
+                Err(e) => error = Some(format!("parse db: {e}")),
+            }
+        }
+
+        let gain: Option<f64> = state.ad9361.get_rx_gain().await.ok();
+        let mode = state.ad9361.get_rx_gain_mode().await.ok()
+            .map(|m| m.to_string());
+        let rssi: Option<f64> = state.ad9361.get_rx_rssi().await.ok();
+
+        Json(serde_json::json!({
+            "gain_db":       gain,
+            "mode":          mode,
+            "rssi_db":       rssi,
+            "updated_from":  updated_from,
+            "error":         error,
+            "range_db":      [-3, 76],
+            "note": "GET /api/rx_gain?db=N sets manual hardwaregain in dB \
+                     (step 1 dB, range [-3, 76]). Returns the live readback.",
+        }))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (state, params);
+        Json(serde_json::json!({
+            "ok": false,
+            "error": "rx_gain requires hardware (target_os=linux)",
+        }))
+    }
+}
+
+/// PUT twin for /api/rx_gain so method-correct clients can call it.
+async fn put_rx_gain(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    get_rx_gain(State(state), axum::extract::Query(params)).await
+}
+
+/// Phase 10-prep: GET /api/grant_map -- accumulated grant-frequency
+/// map. Every grant on the control channel is tallied here by
+/// (tg, frequency) — count, last-seen timestamp, encryption count.
+///
+/// Used by (a) the scanner-mode UI as a TG picker, (b) a future
+/// auto-center-LO endpoint to pick an RX LO that keeps the most
+/// active traffic channels in-band.
+async fn get_grant_map(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let mgr = state.traffic_manager.lock().await;
+    let rows: Vec<serde_json::Value> = mgr.grant_map.iter()
+        .map(|(key, entry)| serde_json::json!({
+            "tg":                key.0,
+            "frequency_hz":      key.1,
+            "count":             entry.count,
+            "encrypted_count":   entry.encrypted_count,
+            "first_seen_unix_ms": entry.first_seen_unix_ms,
+            "last_seen_unix_ms":  entry.last_seen_unix_ms,
+        }))
+        .collect();
+    let total_entries = rows.len();
+    let total_grants: u64 = mgr.grant_map.values().map(|e| e.count).sum();
+
+    // Frequency-only roll-up for LO-centering discussion.
+    let mut freq_counts: std::collections::HashMap<u64, u64> =
+        std::collections::HashMap::new();
+    let mut freq_tgs: std::collections::HashMap<u64,
+        std::collections::HashSet<u16>> =
+        std::collections::HashMap::new();
+    for (key, entry) in mgr.grant_map.iter() {
+        *freq_counts.entry(key.1).or_insert(0) += entry.count;
+        freq_tgs.entry(key.1).or_default().insert(key.0);
+    }
+    let mut frequencies: Vec<serde_json::Value> = freq_counts.into_iter()
+        .map(|(hz, n)| serde_json::json!({
+            "frequency_hz": hz,
+            "count":        n,
+            "distinct_tgs": freq_tgs.get(&hz).map(|s| s.len()).unwrap_or(0),
+        }))
+        .collect();
+    frequencies.sort_by(|a, b| {
+        b.get("count").and_then(|v| v.as_u64()).unwrap_or(0)
+            .cmp(&a.get("count").and_then(|v| v.as_u64()).unwrap_or(0))
+    });
+
+    Json(serde_json::json!({
+        "entries":       rows,
+        "total_entries": total_entries,
+        "total_grants":  total_grants,
+        "frequencies":   frequencies,
+        "note": "Accumulated since p25-httpd start. Each (tg, frequency) \
+                 pair is one row with count + first/last seen. \
+                 Frequencies roll-up groups by frequency only, sorted by \
+                 activity — use the top entries to decide where to center \
+                 the AD9361 LO so the most active slots stay in-band.",
+    }))
 }
 
 /// Phase 7A.1: GET /api/traffic -- traffic-channel grant follower
@@ -3827,34 +4227,33 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   </div>
 </div>
 
-<!-- ── Phase 9: Decoder Comparison Matrix (3-column PS/PL view) ── -->
+<!-- ── Decoder Comparison Matrix (2-column PS LSM / PL HDL view) ── -->
+<!-- 2026-04-16: PS C4FM column removed. The HDL LSM chain decodes
+     both C4FM and LSM sites so the PS C4FM pipeline is dormant
+     everywhere. -->
 <h2>Decoder Comparison (PS framer vs PL gateware)</h2>
 <div class="card">
   <table id="cmp_t" style="font-size:0.85em">
     <thead>
       <tr>
-        <th style="width:32%">Metric</th>
-        <th>PS C4FM<br><span style="color:var(--text-dim);font-weight:400">software, HDL C4FM dibits (dormant on LSM sites)</span></th>
+        <th style="width:40%">Metric</th>
         <th>PS LSM framer<br><span style="color:var(--text-dim);font-weight:400">software framer, PL HDL LSM dibit-fed (production)</span></th>
         <th>PL HDL LSM<br><span style="color:var(--text-dim);font-weight:400">FPGA gateware (heartbeat snapshot)</span></th>
       </tr>
     </thead>
     <tbody id="cmp_body">
-      <tr><td colspan="4" style="color:var(--text-dim)">Loading...</td></tr>
+      <tr><td colspan="3" style="color:var(--text-dim)">Loading...</td></tr>
     </tbody>
   </table>
   <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
-    Three-column view: PS = Processing System (ARM software), PL =
-    Programmable Logic (FPGA). Phase 9 (2026-04-15) retired the Phase
-    6D pure-software LSM pipeline and its `ps_iq_lsm` + `ps_phase6d`
-    columns — the HDL LSM chain is now the production decoder and the
-    PS-LSM column is a pass-through framer on top of PL-emitted dibits.
-    "(PS only)" marks rows that have no PL equivalent by design
-    (PL is a NID decoder, not a TSBK framer). "(= PS)" marks rows
-    where the PS column is the authoritative counter for a value
-    that's actually generated in the PL. "(HDL: hit-only)" marks the
-    sync near-miss row — the HDL hard-sync correlator only fires when
-    Hamming distance ≤ threshold, so it doesn't count misses.
+    PS = Processing System (ARM software framer on top of PL-emitted
+    dibits). PL = Programmable Logic (FPGA gateware). "(PS only)"
+    marks rows with no PL equivalent by design (PL is a NID decoder,
+    not a TSBK framer). "(= PS)" marks rows where the PS column is
+    the authoritative counter for a value that's actually generated
+    in the PL. "(HDL: hit-only)" marks the sync near-miss row — the
+    HDL hard-sync correlator only fires when Hamming distance ≤
+    threshold, so it doesn't count misses.
   </p>
 </div>
 
@@ -3878,13 +4277,18 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       <tr><th>Messages</th><td class="v" id="msgs">0</td></tr>
       <tr><th>Active Grants</th><td class="v" id="grants_n">0</td></tr>
       <tr><th>Bands Known</th><td class="v" id="bands_n">0</td></tr>
-      <tr><th>Dibit Count <span style="color:var(--text-dim);font-size:0.85em">(C4FM HDL)</span></th><td class="v" id="dibits">0</td></tr>
-      <tr><th>Overflow <span style="color:var(--text-dim);font-size:0.85em">(C4FM HDL)</span></th><td class="v" id="overflow">No</td></tr>
     </table>
     <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
-      Decoder counters from PS LSM software decoder. Dibit Count + Overflow are
-      from the C4FM HDL chain DMA ring (not migrated).
+      Decoder counters from the PS LSM software decoder running on
+      PL HDL LSM dibits (production).
     </p>
+    <!-- `dibits`/`overflow` element ids are still referenced by
+         refresh() for historical reasons -- keep them hidden so
+         the JS doesn't throw on missing elements. Harmless once
+         refresh() is rewritten to drop the dibits assignment,
+         which is a future cleanup. -->
+    <span id="dibits" style="display:none">0</span>
+    <span id="overflow" style="display:none">No</span>
   </div>
 </div>
 
@@ -3961,30 +4365,12 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
      HdlLsmRuntime struct that taps the FPGA register bank
      directly). -->
 
-<h2>Dibit Stream Diagnostics (PS C4FM fallback vs PL HDL LSM)</h2>
+<!-- 2026-04-16: PS C4FM dibit diagnostics retired from the dashboard.
+     The HDL LSM chain decodes both C4FM and LSM sites (validated on
+     FP&L + Clay + Duval) so the PS C4FM path is dormant everywhere.
+     The LSM dibit stream card below is what's actually live. -->
+<h2>LSM Dibit Stream Diagnostics <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">PL HDL LSM chain (lsm_dibit_dma)</span></h2>
 <div class="grid2">
-  <div class="card">
-    <h2>PS C4FM Dibit Stream <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">c4fm_dibit_dma</span></h2>
-    <table>
-      <tr><th colspan="2" style="color:var(--text-dim);text-align:left">Histogram</th></tr>
-      <tr><th>Total Dibits</th><td class="v" id="dh_total">0</td></tr>
-      <tr><th>Value 0 (+1)</th><td class="v" id="dh_0">--</td></tr>
-      <tr><th>Value 1 (+3)</th><td class="v" id="dh_1">--</td></tr>
-      <tr><th>Value 2 (-1)</th><td class="v" id="dh_2">--</td></tr>
-      <tr><th>Value 3 (-3)</th><td class="v" id="dh_3">--</td></tr>
-      <tr><th>Inner / Outer ratio</th><td class="v" id="dh_io">--</td></tr>
-      <tr><th colspan="2" style="color:var(--text-dim);text-align:left">Sync correlator</th></tr>
-      <tr><th>Sync hits</th><td class="v" id="sy_hits">0</td></tr>
-      <tr><th>Near misses</th><td class="v" id="sy_near">0</td></tr>
-      <tr><th>Best Hamming distance</th><td class="v" id="sy_best">--</td></tr>
-      <tr><th colspan="2" style="color:var(--text-dim);text-align:left">Raw on-air DUID histogram</th></tr>
-      <tr><th>Total NIDs</th><td class="v" id="rd_total">0</td></tr>
-      <tr><th>Bucket 7 TSDU %</th><td class="v" id="rd_7">--</td></tr>
-      <tr><th>Bucket 5 LDU1 %</th><td class="v" id="rd_5">--</td></tr>
-      <tr><th>Bucket A LDU2 %</th><td class="v" id="rd_a">--</td></tr>
-      <tr><th>Bucket 0 HDU %</th><td class="v" id="rd_0">--</td></tr>
-    </table>
-  </div>
   <div class="card">
     <h2>PS LSM Dibit Stream <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">lsm_dibit_dma</span></h2>
     <table>
@@ -4007,11 +4393,9 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       <tr><th>Bucket 0 HDU %</th><td class="v" id="lrd_0">--</td></tr>
     </table>
     <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
-      Side-by-side: identical metrics on the C4FM HDL dibit stream vs the
-      LSM HDL dibit stream. If histograms differ, the slicers see different
-      signal statistics. If sync best distance differs, frame alignment
-      between the two streams is diverging. If TSDU bucket % is &lt;90% on
-      either, NID payload bits are being corrupted upstream.
+      Live metrics from the PL HDL LSM dibit stream (production
+      decoder for both LSM and C4FM sites). TSDU bucket &lt;90 % means
+      NID payload bits are being corrupted upstream.
     </p>
   </div>
 </div>
@@ -4186,6 +4570,31 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
     Ring-buffered to /tmp/p25_recordings (tmpfs, lost on reboot).
     Oldest recording is evicted when the ring fills. Encrypted calls
     and calls shorter than 500 ms are not recorded.
+  </p>
+</div>
+
+<!-- Phase 10-prep: TG Monitor (scanner mode). When any TG is
+     checked the grant follower only retunes for those TGs. All
+     unchecked = accept-all. List is populated from /api/grant_map
+     (every TG we've ever seen a grant for on this site) so the
+     user can build the watchlist from the real site roster. -->
+<h2>TG Monitor <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">scanner-mode allow-list, hooked into grant pipeline via /api/monitor</span></h2>
+<div class="card">
+  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85em">
+    <span class="v" id="tgmon_status" style="color:var(--text-dim)">loading...</span>
+    <button class="btn" style="padding:2px 10px" onclick="applyMonitorTgs()">Apply</button>
+    <button class="btn" style="padding:2px 10px" onclick="clearMonitorTgs()">Clear all</button>
+    <button class="btn" style="padding:2px 10px" onclick="refreshMonitorTgs()">Refresh roster</button>
+    <label style="margin-left:10px"><input type="checkbox" id="tgmon_hide_enc" checked onchange="renderTgMonitor()"> Hide encrypted TGs</label>
+  </div>
+  <div id="tgmon_body" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px;font-size:0.85em">
+    <span style="color:var(--text-dim)">Waiting for grant_map + monitor state...</span>
+  </div>
+  <p style="color:var(--text-dim);font-size:0.75em;margin-top:8px">
+    Empty allow-list = follower accepts every non-encrypted grant
+    (default). Check one or more TGs + Apply to lock the follower
+    to just those. Encryption filter runs independently and still
+    blocks encrypted TGs even when they're on the list.
   </p>
 </div>
 
@@ -4371,7 +4780,25 @@ async function retuneControl() {
   }
 }
 
+// Phase 10-prep: tab-visibility helper. Used to gate polling so
+// endpoints that only feed one tab don't get fetched when that
+// tab is hidden. Before this, refresh() fetched 10 endpoints every
+// 2 s unconditionally on the Z7020 ARM, which starved /ws/audio
+// chunk delivery and caused the live-audio stutter the user heard
+// mid-call. Now the Debug-tab-only fetches skip when Debug isn't
+// active, and vice versa.
+function activeTab() {
+  const btn = document.querySelector('#tabNav button.active');
+  return btn ? btn.dataset.tab : null;
+}
+
 async function refresh() {
+  const tab = activeTab();
+
+  // /api/system drives the header build tag + NAC/WACN identity
+  // card on both Radio and Debug tabs, so fetch it regardless of
+  // active tab. It's small (a few hundred bytes) and the
+  // header is visible on every tab.
   const sys = await fetchJson('/api/system');
   if (sys) {
     $('nac').textContent = sys.nac || '--';
@@ -4384,6 +4811,14 @@ async function refresh() {
     // builds the "System type" combined readout (modulation · phase).
     window._LAST_SYS_PHASE = sys.phase || '';
   }
+
+  // ── Debug-tab-only block ────────────────────────────────────────
+  // Everything between here and the matching close-brace only
+  // feeds widgets on the Debug tab. Skip entirely when the tab
+  // isn't visible — these endpoints (decoder_compare, hdl_lsm,
+  // irq_stats, control_lsm_dibit_dump) collectively account for
+  // ~half of refresh()'s per-cycle cost on the Zynq-7020.
+  if (tab === 'debug') {
 
   // ── Phase 6F.2: Decoder Comparison Matrix ──
   const cmp = await fetchJson('/api/decoder_compare');
@@ -4411,42 +4846,53 @@ async function refresh() {
     const pl_valid_nids = cmp.pl_hdl.valid_nids || 0;
     const pl_nid_fail = pl_total_nids - pl_valid_nids;
     const pl_total_dibits = cmp.ps_lsm.total_dibits; // pass-through
+    // 2026-04-16: PS C4FM column removed. Matrix is now 2-column
+    // (PS LSM framer | PL HDL LSM gateware) since the HDL LSM
+    // chain decodes both C4FM and LSM sites.
     const rows = [
-      ['NAC (winner)', cmp.ps_c4fm.system_nac, cmp.ps_lsm.system_nac, cmp.pl_hdl.winner_nac],
-      ['Messages decoded', fmtN(cmp.ps_c4fm.messages), fmtN(cmp.ps_lsm.messages), '(PS only)'],
-      ['Total NIDs', '--', '--', fmtN(pl_total_nids)],
-      ['Valid NIDs', '--', '--', fmtN(pl_valid_nids) + ' (' + fmtPct(cmp.pl_hdl.valid_pct) + ')'],
-      ['Sync hits (frame sync correlator)', fmtN(cmp.ps_c4fm.sync_hits), fmtN(cmp.ps_lsm.sync_hits), fmtN(pl_total_nids)],
-      ['Sync near-misses', fmtN(cmp.ps_c4fm.sync_near), fmtN(cmp.ps_lsm.sync_near), '(HDL: hit-only)'],
-      ['Sync best Hamming distance', fmtN(cmp.ps_c4fm.sync_best_dist), fmtN(cmp.ps_lsm.sync_best_dist), fmtN(cmp.pl_hdl.sync_distance)],
-      ['Total dibits processed', fmtN(cmp.ps_c4fm.total_dibits), fmtN(cmp.ps_lsm.total_dibits), fmtN(pl_total_dibits) + ' (= PS)'],
-      ['Active grants', fmtN(cmp.ps_c4fm.active_grants), fmtN(cmp.ps_lsm.active_grants), '(PS only)'],
-      ['Frequency bands known', fmtN(cmp.ps_c4fm.bands_known), fmtN(cmp.ps_lsm.bands_known), '(PS only)'],
-      ['Drop count (PL only)', '--', '--', fmtN(cmp.pl_hdl.drop_count)],
-      ['Live PLL register', '--', '--', fmtN(cmp.pl_hdl.pll_dbg)],
-      ['Live sample-point register', '--', '--', fmtN(cmp.pl_hdl.sp_dbg)],
-      ['Overflow events', '--', '--', 'dibit:' + fmtN(cmp.pl_hdl.dibit_overflow_ticks) + ' iq:' + fmtN(cmp.pl_hdl.iq_overflow_ticks)],
-      ['── pipeline ──', '', '', ''],
-      ['NID attempts (sync hit)', fmtN(cmp.ps_c4fm.nid_attempts), fmtN(cmp.ps_lsm.nid_attempts), fmtN(pl_total_nids)],
-      ['NID BCH decode failures', fmtN(cmp.ps_c4fm.nid_decode_failures), fmtN(cmp.ps_lsm.nid_decode_failures), fmtN(pl_nid_fail)],
-      ['NID invalid DUID after BCH', fmtN(cmp.ps_c4fm.nid_invalid_duid), fmtN(cmp.ps_lsm.nid_invalid_duid), '(HDL: always valid)'],
-      ['NID decoded OK (any DUID)', fmtN(cmp.ps_c4fm.nid_decoded_ok), fmtN(cmp.ps_lsm.nid_decoded_ok), fmtN(pl_valid_nids)],
-      ['NID decoded OK (TSDU only)', fmtN(cmp.ps_c4fm.nid_decoded_tsdu), fmtN(cmp.ps_lsm.nid_decoded_tsdu), '(PS only)'],
-      ['TSDU attempts', fmtN(cmp.ps_c4fm.tsdu_attempts), fmtN(cmp.ps_lsm.tsdu_attempts), '(PS framer)'],
-      ['TSBK block attempts', fmtN(cmp.ps_c4fm.tsbk_block_attempts), fmtN(cmp.ps_lsm.tsbk_block_attempts), '(PS framer)'],
-      ['TSBK trellis failures', fmtN(cmp.ps_c4fm.tsbk_trellis_failures), fmtN(cmp.ps_lsm.tsbk_trellis_failures), '(PS framer)'],
-      ['TSBK CRC failures', fmtN(cmp.ps_c4fm.tsbk_crc_failures), fmtN(cmp.ps_lsm.tsbk_crc_failures), '(PS framer)'],
-      ['TSBK CRC OK', fmtN(cmp.ps_c4fm.tsbk_crc_ok), fmtN(cmp.ps_lsm.tsbk_crc_ok), '(PS framer)'],
-      ['  - via plain CRC convention', fmtN(cmp.ps_c4fm.tsbk_crc_ok_plain), fmtN(cmp.ps_lsm.tsbk_crc_ok_plain), '(PS framer)'],
-      ['  - via xored 0xFFFF convention', fmtN(cmp.ps_c4fm.tsbk_crc_ok_xored), fmtN(cmp.ps_lsm.tsbk_crc_ok_xored), '(PS framer)'],
-      ['TSBK unknown opcode', fmtN(cmp.ps_c4fm.tsbk_unknown_opcode), fmtN(cmp.ps_lsm.tsbk_unknown_opcode), '(PS framer)'],
+      ['NAC (winner)', cmp.ps_lsm.system_nac, cmp.pl_hdl.winner_nac],
+      ['Messages decoded', fmtN(cmp.ps_lsm.messages), '(PS only)'],
+      ['Total NIDs', '--', fmtN(pl_total_nids)],
+      ['Valid NIDs', '--', fmtN(pl_valid_nids) + ' (' + fmtPct(cmp.pl_hdl.valid_pct) + ')'],
+      ['Sync hits (frame sync correlator)', fmtN(cmp.ps_lsm.sync_hits), fmtN(pl_total_nids)],
+      ['Sync near-misses', fmtN(cmp.ps_lsm.sync_near), '(HDL: hit-only)'],
+      ['Sync best Hamming distance', fmtN(cmp.ps_lsm.sync_best_dist), fmtN(cmp.pl_hdl.sync_distance)],
+      ['Total dibits processed', fmtN(cmp.ps_lsm.total_dibits), fmtN(pl_total_dibits) + ' (= PS)'],
+      ['Active grants', fmtN(cmp.ps_lsm.active_grants), '(PS only)'],
+      ['Frequency bands known', fmtN(cmp.ps_lsm.bands_known), '(PS only)'],
+      ['Drop count (PL only)', '--', fmtN(cmp.pl_hdl.drop_count)],
+      ['Live PLL register', '--', fmtN(cmp.pl_hdl.pll_dbg)],
+      ['Live sample-point register', '--', fmtN(cmp.pl_hdl.sp_dbg)],
+      ['Overflow events', '--', 'dibit:' + fmtN(cmp.pl_hdl.dibit_overflow_ticks) + ' iq:' + fmtN(cmp.pl_hdl.iq_overflow_ticks)],
+      ['── pipeline ──', '', ''],
+      ['NID attempts (sync hit)', fmtN(cmp.ps_lsm.nid_attempts), fmtN(pl_total_nids)],
+      ['NID BCH decode failures', fmtN(cmp.ps_lsm.nid_decode_failures), fmtN(pl_nid_fail)],
+      ['NID invalid DUID after BCH', fmtN(cmp.ps_lsm.nid_invalid_duid), '(HDL: always valid)'],
+      ['NID decoded OK (any DUID)', fmtN(cmp.ps_lsm.nid_decoded_ok), fmtN(pl_valid_nids)],
+      ['NID decoded OK (TSDU only)', fmtN(cmp.ps_lsm.nid_decoded_tsdu), '(PS only)'],
+      ['TSDU attempts', fmtN(cmp.ps_lsm.tsdu_attempts), '(PS framer)'],
+      ['TSBK block attempts', fmtN(cmp.ps_lsm.tsbk_block_attempts), '(PS framer)'],
+      ['TSBK trellis failures', fmtN(cmp.ps_lsm.tsbk_trellis_failures), '(PS framer)'],
+      ['TSBK CRC failures', fmtN(cmp.ps_lsm.tsbk_crc_failures), '(PS framer)'],
+      ['TSBK CRC OK', fmtN(cmp.ps_lsm.tsbk_crc_ok), '(PS framer)'],
+      ['  - via plain CRC convention', fmtN(cmp.ps_lsm.tsbk_crc_ok_plain), '(PS framer)'],
+      ['  - via xored 0xFFFF convention', fmtN(cmp.ps_lsm.tsbk_crc_ok_xored), '(PS framer)'],
+      ['TSBK unknown opcode', fmtN(cmp.ps_lsm.tsbk_unknown_opcode), '(PS framer)'],
     ];
-    $('cmp_body').innerHTML = rows.map(r =>
-      '<tr><th>' + r[0] + '</th>' +
-      '<td class="v">' + r[1] + '</td>' +
-      '<td class="v">' + r[2] + '</td>' +
-      '<td class="v">' + r[3] + '</td></tr>'
-    ).join('');
+    diffList($('cmp_body'), r => r[0], rows,
+      () => {
+        const tr = document.createElement('tr');
+        tr.appendChild(document.createElement('th'));
+        const t1 = document.createElement('td'); t1.className = 'v'; tr.appendChild(t1);
+        const t2 = document.createElement('td'); t2.className = 'v'; tr.appendChild(t2);
+        return tr;
+      },
+      (tr, r) => {
+        if (tr.children[0].textContent !== r[0]) tr.children[0].textContent = r[0];
+        const v1 = String(r[1]), v2 = String(r[2]);
+        if (tr.children[1].textContent !== v1) tr.children[1].textContent = v1;
+        if (tr.children[2].textContent !== v2) tr.children[2].textContent = v2;
+      });
   }
 
   // ── Phase 6F.2: PL HDL LSM Chain Detail ──
@@ -4482,22 +4928,31 @@ async function refresh() {
     $('hdl_ovf').textContent = hdl.cumulative.dibit_overflow_ticks + ' / ' + hdl.cumulative.iq_overflow_ticks;
 
     if (hdl.nid_ring && hdl.nid_ring.length) {
-      // Reverse so newest is on top.
       const ring = hdl.nid_ring.slice().reverse();
-      $('nid_ring_body').innerHTML = ring.map(e =>
-        '<tr>' +
-        '<td class="v">' + e.seq + '</td>' +
-        '<td class="v">' + e.t_ms_since_boot + '</td>' +
-        '<td class="v">0x' + e.nac.toString(16).toUpperCase().padStart(3, '0') + '</td>' +
-        '<td class="v">' + e.duid + '</td>' +
-        '<td class="v" style="color:' + (e.valid ? 'var(--green)' : 'var(--red)') + '">' + (e.valid ? '\u2713' : '\u2717') + '</td>' +
-        '<td class="v">' + e.n_errors + '</td>' +
-        '<td class="v">' + e.sync_distance + '</td>' +
-        '<td class="v">' + e.drop_count + '</td>' +
-        '<td class="v">' + e.pll_dbg + '</td>' +
-        '<td class="v">' + e.sp_dbg + '</td>' +
-        '</tr>'
-      ).join('');
+      diffList($('nid_ring_body'), e => e.seq, ring,
+        () => {
+          const tr = document.createElement('tr');
+          for (let i = 0; i < 10; i++) {
+            const td = document.createElement('td');
+            td.className = 'v';
+            tr.appendChild(td);
+          }
+          return tr;
+        },
+        (tr, e) => {
+          const c = tr.children;
+          c[0].textContent = e.seq;
+          c[1].textContent = e.t_ms_since_boot;
+          c[2].textContent = '0x' + e.nac.toString(16).toUpperCase().padStart(3, '0');
+          c[3].textContent = e.duid;
+          c[4].textContent = e.valid ? '\u2713' : '\u2717';
+          c[4].style.color = e.valid ? 'var(--green)' : 'var(--red)';
+          c[5].textContent = e.n_errors;
+          c[6].textContent = e.sync_distance;
+          c[7].textContent = e.drop_count;
+          c[8].textContent = e.pll_dbg;
+          c[9].textContent = e.sp_dbg;
+        });
     }
   }
 
@@ -4519,6 +4974,13 @@ async function refresh() {
     $('irq_uptime').textContent = irq.uptime_secs + 's';
   }
 
+  } // end Debug-tab-only block (cmp/hdl/irq)
+
+  // /api/stats feeds Board Info on Radio (bi_*) AND the small
+  // Decode Stats card on Debug (msgs/grants_n/bands_n/dibits/
+  // overflow) AND the header dot status. Fetch unconditionally;
+  // the per-field updates below are cheap even if the target
+  // card is hidden.
   const stats = await fetchJson('/api/stats');
   if (stats) {
     $('msgs').textContent = stats.recent_messages.toLocaleString();
@@ -4610,14 +5072,23 @@ async function refresh() {
     }
   };
 
-  const c4fmIds = {total:'dh_total', v0:'dh_0', v1:'dh_1', v2:'dh_2', v3:'dh_3', io:'dh_io',
-    hits:'sy_hits', near:'sy_near', best:'sy_best',
-    rd_total:'rd_total', rd_7:'rd_7', rd_5:'rd_5', rd_a:'rd_a', rd_0:'rd_0'};
-  const lsmIds = {total:'ldh_total', v0:'ldh_0', v1:'ldh_1', v2:'ldh_2', v3:'ldh_3', io:'ldh_io',
-    hits:'lsy_hits', near:'lsy_near', best:'lsy_best',
-    rd_total:'lrd_total', rd_7:'lrd_7', rd_5:'lrd_5', rd_a:'lrd_a', rd_0:'lrd_0'};
-  renderDibitDump(await fetchJson('/api/dibit_dump'), c4fmIds);
-  renderDibitDump(await fetchJson('/api/control_lsm_dibit_dump'), lsmIds);
+  // C4FM HDL dibit dump card was removed from the Debug tab on
+  // 2026-04-16 — the HDL LSM chain decodes both C4FM and LSM so
+  // the PS C4FM pipeline is dormant everywhere. Only the LSM
+  // dibit histogram is still interesting.
+  if (tab === 'debug') {
+    const lsmIds = {total:'ldh_total', v0:'ldh_0', v1:'ldh_1', v2:'ldh_2', v3:'ldh_3', io:'ldh_io',
+      hits:'lsy_hits', near:'lsy_near', best:'lsy_best',
+      rd_total:'lrd_total', rd_7:'lrd_7', rd_5:'lrd_5', rd_a:'lrd_a', rd_0:'lrd_0'};
+    renderDibitDump(await fetchJson('/api/control_lsm_dibit_dump'), lsmIds);
+  }
+
+  // ── Radio-tab-only block ────────────────────────────────────────
+  // /api/stats powers the Board Info card; /api/traffic powers the
+  // grant follower + IMBE/vocoder card; /api/grants + /api/bands
+  // feed Active Grants + Frequency Bands. None of these are
+  // visible outside Radio.
+  if (tab === 'radio') {
 
   // ── Phase 7D: Traffic Channel + Vocoder panel ──
   const trf = await fetchJson('/api/traffic');
@@ -4716,6 +5187,8 @@ async function refresh() {
       `<td>${b.bandwidth_khz} kHz</td></tr>`
     ).join('') || '<tr><td colspan="5" style="color:var(--text-dim)">None</td></tr>';
   }
+
+  } // end Radio-tab-only block
 }
 
 // Frequency map rendering
@@ -4903,6 +5376,19 @@ class P25AudioProcessor extends AudioWorkletProcessor {
     // would notice relative to visible dashboard state.
     this.PREFILL = 4320;
     this.priming = true;
+    // Consecutive per-sample underruns before we re-enter priming.
+    // At a typical 48 kHz AudioContext, 4800 samples = 100 ms of
+    // continuous silence. If we've produced 100 ms of underrun in
+    // one stretch the network has genuinely stalled and we should
+    // hold silence until the ring is healthy again, rather than
+    // stuttering out 20 ms bursts each time a single LDU arrives.
+    // The original logic absorbed individual-sample underruns
+    // silently (correct) but never re-primed on sustained gaps,
+    // producing the "sounds like it's cutting out 4 times a
+    // second" effect when the dashboard's debug-tab pollers were
+    // starving /ws/audio chunk delivery.
+    this.UNDERRUN_REPRIME = 4800;
+    this.consecUnderruns = 0;
     this.port.onmessage = (ev) => {
       const m = ev.data;
       if (m.type === 'pcm') {
@@ -4926,6 +5412,7 @@ class P25AudioProcessor extends AudioWorkletProcessor {
       } else if (m.type === 'reset') {
         this.write = 0; this.read = 0; this.available = 0;
         this.readFrac = 0; this.priming = true;
+        this.consecUnderruns = 0;
       } else if (m.type === 'stats') {
         this.port.postMessage({
           type: 'stats',
@@ -4952,14 +5439,28 @@ class P25AudioProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < n; i++) {
       if (this.available <= 1) {
         // Absorb the empty slot as a single silence sample and keep
-        // going. Do NOT re-prime — that would hold silence for the
-        // full PREFILL duration (~540 ms) after every jitter event,
-        // which is very audible. Losing individual samples at 8 kHz
-        // is inaudible.
+        // going -- single-sample underruns are inaudible at 8 kHz.
+        // BUT: if underruns persist long enough to cross
+        // UNDERRUN_REPRIME samples (~100 ms), re-enter priming so
+        // we don't play the next tiny burst as a 20 ms fragment
+        // when more data finally arrives. This is the
+        // audible-stutter mode you hear when /ws/audio is
+        // starved by dashboard polling.
         out[i] = 0;
         this.underruns++;
+        this.consecUnderruns++;
+        if (this.consecUnderruns >= this.UNDERRUN_REPRIME) {
+          this.priming = true;
+          this.consecUnderruns = 0;
+          // Zero out the rest of this quantum then return -- the
+          // next process() call will see priming=true and stay
+          // silent until the ring refills to PREFILL.
+          for (let j = i + 1; j < n; j++) out[j] = 0;
+          return true;
+        }
         continue;
       }
+      this.consecUnderruns = 0;
       const a = this.ring[this.read];
       const nextRead = (this.read + 1) % this.RING;
       const b = this.ring[nextRead];
@@ -5009,6 +5510,9 @@ const AUDIO_SPN = {
   // 540 ms warm-up = 3 LDUs of headroom; see worklet PREFILL comment
   // above for the full reasoning. Shares the same tuning.
   PREFILL: 4320,
+  // Re-prime after ~100 ms of sustained underruns at a typical
+  // 48 kHz AudioContext. Same policy as the worklet path.
+  UNDERRUN_REPRIME: 4800,
   ring: null,
   write: 0,
   read: 0,
@@ -5016,6 +5520,7 @@ const AUDIO_SPN = {
   readFrac: 0,
   ratio: 1.0,           // 8000 / ctxRate, set at startAudio
   underruns: 0,
+  consecUnderruns: 0,
   priming: true,
 };
 function audioSpnReset() {
@@ -5025,6 +5530,7 @@ function audioSpnReset() {
   AUDIO_SPN.available = 0;
   AUDIO_SPN.readFrac = 0;
   AUDIO_SPN.underruns = 0;
+  AUDIO_SPN.consecUnderruns = 0;
   AUDIO_SPN.priming = true;
 }
 function audioSpnWrite(f32) {
@@ -5051,12 +5557,23 @@ function audioSpnProcess(e) {
   }
   for (let i = 0; i < n; i++) {
     if (s.available <= 1) {
-      // Absorb as a single silence sample; don't re-prime (see worklet
-      // comment). Individual-sample underruns are inaudible at 8 kHz.
+      // Absorb individual-sample underruns silently; after
+      // UNDERRUN_REPRIME consecutive ones (~100 ms at 48 kHz)
+      // re-enter priming so the next LDU burst buffers up to
+      // PREFILL before playing, rather than stuttering out as a
+      // 20 ms fragment.
       out[i] = 0;
       s.underruns++;
+      s.consecUnderruns++;
+      if (s.consecUnderruns >= s.UNDERRUN_REPRIME) {
+        s.priming = true;
+        s.consecUnderruns = 0;
+        for (let j = i + 1; j < n; j++) out[j] = 0;
+        return;
+      }
       continue;
     }
+    s.consecUnderruns = 0;
     const a = s.ring[s.read];
     const b = s.ring[(s.read + 1) % s.RING_SIZE];
     out[i] = a + (b - a) * s.readFrac;
@@ -5401,9 +5918,19 @@ function logClear() {
     if (el) el.addEventListener('change', logRender);
   });
 
-// Start the 1 s log poller unconditionally -- cheap, keeps the ring
-// warm so switching to the Logs tab has instant history.
-LOGS.timer = setInterval(logPoll, 1000);
+// Log poller runs at 1 s when the Logs tab is active (so the tail
+// updates smoothly as the user reads it) and 5 s otherwise (enough
+// to keep the unread-count badge on the tab button current without
+// hammering /api/log from every tab). Cadence is reset on every
+// tab switch via the switchTab hook below.
+function logPollCadence() {
+  return activeTab() === 'logs' ? 1000 : 5000;
+}
+function logPollStartTimer() {
+  if (LOGS.timer) clearInterval(LOGS.timer);
+  LOGS.timer = setInterval(logPoll, logPollCadence());
+}
+logPollStartTimer();
 logPoll(); // kick off immediately
 
 // Spectrum renderer. Polls /api/spectrum at the rate chosen by the
@@ -5545,16 +6072,49 @@ function drawSpectrum(mag_db, center_hz, span_hz) {
     w - 60, h - 4
   );
 }
-// Lazy-start the poller on first Debug-tab activation. Hooks the
-// existing switchTab() that API tab already overrides.
+// Lazy-start the poller on first Debug-tab activation, and STOP
+// both pollers when any other tab becomes active. Previously the
+// timers kept firing regardless of the visible tab; the
+// `refreshConstellation` / `refreshSpectrum` bodies had an
+// "is tab visible" early-return, but they used `pane.style.display
+// === 'none'` which never matches the `classList.toggle('active')`
+// model switchTab() actually uses -- so the timers kept burning
+// /api/constellation + /api/spectrum round-trips at 1 Hz on every
+// tab. That starved /ws/audio on the Zynq-7020 ARM and caused
+// audible mid-call stutter in the live-audio stream.
+//
+// Stopping the timers on tab exit is correct: a setInterval doing
+// real work during an invisible tab is pure waste on both client
+// and server. The next activation relaunches them.
 const _origSwitchTabForSpec = switchTab;
 switchTab = function(name) {
   _origSwitchTabForSpec(name);
   if (name === 'debug') {
     if (!SPEC.timer && SPEC.rate > 0) scheduleSpectrum();
     if (!IQ.timer && IQ.rate > 0) scheduleConstellation();
+  } else {
+    if (SPEC.timer) { clearInterval(SPEC.timer); SPEC.timer = null; }
+    if (IQ.timer)   { clearInterval(IQ.timer);   IQ.timer   = null; }
+  }
+  // Reset the log-poll cadence so switching into Logs speeds it
+  // up to 1 s immediately; switching out slows to 5 s.
+  if (typeof logPollStartTimer === 'function') logPollStartTimer();
+  // Kick the Radio-tab refreshers when entering Radio so the
+  // user sees fresh data instead of waiting for the next tick.
+  if (name === 'radio') {
+    if (typeof refresh === 'function') refresh();
+    if (typeof refreshRecordings === 'function') refreshRecordings();
+    if (typeof refreshModulation === 'function') refreshModulation();
+    if (typeof refreshMonitorTgs === 'function') refreshMonitorTgs();
   }
 };
+// At load time the SPEC/IQ timers haven't been scheduled yet
+// (scheduleSpectrum / scheduleConstellation only fire on a user
+// switch to Debug via the switchTab override above), so no
+// cleanup IIFE is needed here. The originally-drafted version
+// accessed `IQ.timer` before `let IQ = {...}` was declared --
+// temporal-dead-zone ReferenceError that silently broke every
+// subsequent `setInterval(refresh, 2000)` etc.
 
 // Constellation scatter. Pulls post-PLL (I, Q) points from
 // /api/constellation, draws a 4-quadrant scatter with optional
@@ -5660,6 +6220,8 @@ function drawConstellation(iArr, qArr) {
 // so the user can see why auto picked what it did. PUT on change
 // forces one of {c4fm, lsm, auto}.
 async function refreshModulation() {
+  // Drives the Board Info "System type" + modulation selector on Radio only.
+  if (activeTab() !== 'radio') return;
   const data = await fetchJson('/api/modulation');
   if (!data) return;
   const sel = $('bi_mod_sel');
@@ -5700,12 +6262,242 @@ async function setModulation(mode) {
   }
 }
 
+// TG Monitor (scanner-mode allow-list). Roster comes from the
+// persistent grant_map; current filter state comes from
+// /api/monitor (which drives the grant-follower gate in main.rs).
+// Local state: a Set of TGs the USER has checked in this render.
+// Rebuilt from /api/monitor on every refreshMonitorTgs() so the UI
+// reflects the actual follower state after any out-of-band change.
+window._TG_MON_STATE = {
+  roster: [],   // [{tg, total, clear, enc, freqs:[{hz,count}]}]
+  active: new Set(), // currently-applied allow-list
+  staged: new Set(), // user's in-progress checkbox state
+  loaded: false,
+};
+async function refreshMonitorTgs() {
+  // TG Monitor picker is Radio-tab only.
+  if (activeTab() !== 'radio') return;
+  // Parallel fetch: grant_map for the roster, /api/monitor for the
+  // applied filter.
+  const [gm, mon] = await Promise.all([
+    fetchJson('/api/grant_map'),
+    fetchJson('/api/monitor'),
+  ]);
+  if (!gm || !mon) {
+    const body = $('tgmon_body');
+    if (body) body.innerHTML = '<span style="color:var(--red)">failed to load</span>';
+    return;
+  }
+  // Roll (tg, freq) rows up to per-TG summaries.
+  const byTg = new Map();
+  for (const e of (gm.entries || [])) {
+    const key = e.tg;
+    const cur = byTg.get(key) || {tg: key, total: 0, clear: 0, enc: 0, freqs: []};
+    cur.total += e.count;
+    cur.clear += e.count - e.encrypted_count;
+    cur.enc += e.encrypted_count;
+    cur.freqs.push({hz: e.frequency_hz, count: e.count});
+    byTg.set(key, cur);
+  }
+  const roster = Array.from(byTg.values());
+  roster.sort((a, b) => b.total - a.total);
+  window._TG_MON_STATE.roster = roster;
+  window._TG_MON_STATE.active = new Set(mon.talkgroups || []);
+  // Seed staged from active on a fresh load so the UI shows the
+  // current filter until the user starts editing.
+  window._TG_MON_STATE.staged = new Set(mon.talkgroups || []);
+  window._TG_MON_STATE.loaded = true;
+  renderTgMonitor();
+}
+
+// DOM-node-reuse render for the TG Monitor picker.
+//
+// Previous implementation rebuilt `tgmon_body.innerHTML` on every
+// refresh tick. That tore down checkboxes + labels even when the
+// roster hadn't changed, causing visible flicker on the 10 s poll
+// cadence and making active checkboxes momentarily un-responsive.
+//
+// New pattern: build <label> nodes once per TG, stash them in a
+// Map<tg, HTMLLabelElement>, and on each render:
+//   - add any newly-observed TGs as fresh nodes (appendChild)
+//   - remove any evicted TGs (parentNode.removeChild)
+//   - update badge text + checkbox.checked in place on existing
+//     nodes without touching the surrounding DOM
+// This is the same strategy we use for refreshRecordings'
+// fingerprint-based skip; the difference is this picker needs
+// per-item granularity because individual badges (clr, ENC, total)
+// update as new grants land while the set of TGs is stable.
+window._TG_MON_NODES = new Map();
+
+function _tgMonBuildNode(tg) {
+  const label = document.createElement('label');
+  label.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 6px;border:1px solid #1f2937;border-radius:4px';
+  label.dataset.tg = tg;
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.dataset.tg = tg;
+  cb.addEventListener('change', onTgMonitorCheck);
+  const tgSpan = document.createElement('span');
+  tgSpan.style.fontFamily = 'var(--mono)';
+  tgSpan.textContent = 'TG ' + tg;
+  const clearSpan = document.createElement('span');
+  clearSpan.className = 'tgmon-clear';
+  clearSpan.style.cssText = 'color:var(--green);font-size:0.8em';
+  const encSpan = document.createElement('span');
+  encSpan.className = 'tgmon-enc';
+  encSpan.style.cssText = 'color:var(--red);font-size:0.8em';
+  const totalSpan = document.createElement('span');
+  totalSpan.className = 'tgmon-total';
+  totalSpan.style.cssText = 'margin-left:auto;color:var(--text-dim);font-size:0.8em';
+  label.appendChild(cb);
+  label.appendChild(tgSpan);
+  label.appendChild(clearSpan);
+  label.appendChild(encSpan);
+  label.appendChild(totalSpan);
+  return label;
+}
+
+function _tgMonEmptyMessage() {
+  const p = document.createElement('span');
+  p.style.color = 'var(--text-dim)';
+  p.dataset.empty = '1';
+  p.textContent = 'No TGs observed yet. Wait for grants or uncheck "Hide encrypted TGs".';
+  return p;
+}
+
+function renderTgMonitor() {
+  const body = $('tgmon_body');
+  const status = $('tgmon_status');
+  if (!body || !status) return;
+  const st = window._TG_MON_STATE;
+  if (!st.loaded) {
+    status.textContent = 'loading...';
+    return;
+  }
+  const hideEnc = $('tgmon_hide_enc') && $('tgmon_hide_enc').checked;
+  let roster = st.roster;
+  if (hideEnc) {
+    // Matches the backend behaviour: once a TG is observed encrypted
+    // even once, it's added to `encrypted_tg_history` and all future
+    // grants are blocked regardless of the per-TSBK encryption flag.
+    // So any TG with `enc > 0` is effectively unusable for monitoring.
+    roster = roster.filter(r => r.enc === 0);
+  }
+
+  // Build the set of TGs we *want* visible right now.
+  const visible = new Set(roster.map(r => r.tg));
+
+  // Remove nodes whose TG is no longer visible.
+  for (const [tg, node] of window._TG_MON_NODES.entries()) {
+    if (!visible.has(tg)) {
+      if (node.parentNode) node.parentNode.removeChild(node);
+      window._TG_MON_NODES.delete(tg);
+    }
+  }
+  // Remove any "empty" placeholder message if we now have rows.
+  const placeholder = body.querySelector('[data-empty="1"]');
+  if (placeholder && roster.length > 0) placeholder.remove();
+
+  if (roster.length === 0) {
+    if (!placeholder) {
+      body.innerHTML = '';
+      body.appendChild(_tgMonEmptyMessage());
+    }
+  } else {
+    // Add + update per roster.
+    for (const r of roster) {
+      let node = window._TG_MON_NODES.get(r.tg);
+      if (!node) {
+        node = _tgMonBuildNode(r.tg);
+        window._TG_MON_NODES.set(r.tg, node);
+        body.appendChild(node);
+      }
+      // Update badges + checkbox without replacing the DOM.
+      const cb = node.querySelector('input[type=checkbox]');
+      if (cb && cb.checked !== st.staged.has(r.tg)) {
+        cb.checked = st.staged.has(r.tg);
+      }
+      const clearSpan = node.querySelector('.tgmon-clear');
+      if (clearSpan) {
+        clearSpan.textContent = r.clear > 0 ? (r.clear + ' clr') : '';
+      }
+      const encSpan = node.querySelector('.tgmon-enc');
+      if (encSpan) {
+        encSpan.textContent = r.enc > 0 ? ('[ENC ' + r.enc + ']') : '';
+      }
+      const totalSpan = node.querySelector('.tgmon-total');
+      if (totalSpan) {
+        totalSpan.textContent = String(r.total);
+      }
+    }
+  }
+
+  // Status line -- this is fine to rebuild since it has no
+  // interactive elements.
+  const active = Array.from(st.active).sort((a, b) => a - b);
+  const staged = Array.from(st.staged).sort((a, b) => a - b);
+  const dirty = active.length !== staged.length ||
+                active.some((v, i) => v !== staged[i]);
+  if (active.length === 0) {
+    status.innerHTML = '<span style="color:var(--text-dim)">Filter: <b>accept-all</b></span>';
+  } else {
+    status.innerHTML = '<span>Filter active: ' + active.map(t => '<b>TG ' + t + '</b>').join(', ') + '</span>';
+  }
+  if (dirty) {
+    status.innerHTML += ' <span style="color:var(--orange);margin-left:8px">(unsaved changes -- click Apply)</span>';
+  }
+}
+
+function onTgMonitorCheck(ev) {
+  const tg = parseInt(ev.target.getAttribute('data-tg'), 10);
+  if (!Number.isFinite(tg)) return;
+  if (ev.target.checked) {
+    window._TG_MON_STATE.staged.add(tg);
+  } else {
+    window._TG_MON_STATE.staged.delete(tg);
+  }
+  renderTgMonitor();
+}
+
+async function applyMonitorTgs() {
+  const staged = Array.from(window._TG_MON_STATE.staged);
+  const body = JSON.stringify({talkgroups: staged});
+  try {
+    const resp = await fetch('/api/monitor', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body,
+    });
+    const data = await resp.json();
+    window._TG_MON_STATE.active = new Set(data.talkgroups || []);
+    window._TG_MON_STATE.staged = new Set(data.talkgroups || []);
+    renderTgMonitor();
+  } catch (e) {
+    const status = $('tgmon_status');
+    if (status) {
+      status.innerHTML = '<span style="color:var(--red)">apply failed: ' + e + '</span>';
+    }
+  }
+}
+
+function clearMonitorTgs() {
+  window._TG_MON_STATE.staged = new Set();
+  renderTgMonitor();
+}
+
 // Recordings ring. Poll less often than refresh() — new calls
 // finalise at human-speech cadence so 5 s is plenty, and each WAV
 // payload is kB-scale (header + metadata only, audio blobs are
 // fetched on-demand by the <audio> element). Renders a small table
 // with inline <audio controls> so playback is one click.
+// Cached fingerprint of the last-rendered recording list so we can
+// skip re-render when nothing changed. Prevents the `<audio>` tags
+// from being torn down every 5 s, which was interrupting playback.
+window._REC_LAST_FP = '';
+
 async function refreshRecordings() {
+  // Recordings card is Radio-tab only.
+  if (activeTab() !== 'radio') return;
   const data = await fetchJson('/api/recordings');
   if (!data) return;
   const count = data.count || 0;
@@ -5715,17 +6507,39 @@ async function refreshRecordings() {
     : `0 / ${max}`;
   const tbody = $('rec_tbody');
   if (!Array.isArray(data.items) || data.items.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-dim)">No recordings yet.</td></tr>';
+    if (window._REC_LAST_FP !== 'empty') {
+      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-dim)">No recordings yet.</td></tr>';
+      window._REC_LAST_FP = 'empty';
+    }
     return;
   }
-  // Preserve any already-playing <audio> elements so a poll tick
-  // doesn't interrupt playback. Build a map of existing audio URLs
-  // -> whether they're playing, and skip re-rendering those rows.
-  const playing = new Set();
+
+  // Fingerprint = ordered list of IDs + size_bytes per row. If the
+  // server hasn't added or evicted anything since our last render,
+  // skip the whole innerHTML rebuild so any in-flight `<audio>`
+  // element keeps its playback state. We include size_bytes in the
+  // fingerprint so an in-progress recording that's still growing
+  // also triggers a refresh (the size changes as the WAV is
+  // finalized).
+  const fp = data.items.map(i => `${i.id}:${i.size_bytes}`).join(',');
+  if (fp === window._REC_LAST_FP) return;
+
+  // List changed. Before tearing down, capture any currently-playing
+  // `<audio>` elements + their playback position so we can restore
+  // them after the rebuild -- the user shouldn't lose playback just
+  // because a new recording appeared or the oldest was evicted.
+  const playingState = new Map(); // id -> {currentTime, volume, muted}
   tbody.querySelectorAll('audio').forEach(a => {
     if (!a.paused && !a.ended) {
-      const src = a.getAttribute('src');
-      if (src) playing.add(src);
+      const src = a.getAttribute('src') || '';
+      const m = src.match(/\/recordings\/(\d+)/);
+      if (m) {
+        playingState.set(m[1], {
+          currentTime: a.currentTime,
+          volume: a.volume,
+          muted: a.muted,
+        });
+      }
     }
   });
 
@@ -5753,7 +6567,7 @@ async function refreshRecordings() {
 
   const rows = data.items.map(it => {
     const url = `/api/recordings/${it.id}.wav`;
-    return `<tr>
+    return `<tr data-rec-id="${it.id}">
       <td>${fmtClock(it.started_unix_ms)}</td>
       <td>${it.talkgroup || '--'}</td>
       <td>${fmtDur(it.duration_ms)}</td>
@@ -5763,6 +6577,29 @@ async function refreshRecordings() {
     </tr>`;
   });
   tbody.innerHTML = rows.join('');
+  window._REC_LAST_FP = fp;
+
+  // Restore playback for any recordings that were playing before
+  // the rebuild. We use `play()` + seek to the saved currentTime
+  // rather than trying to preserve the DOM node, because a row's
+  // position may have changed (new recording pushed it down) and
+  // cloneNode can't transfer the decoded buffer anyway.
+  if (playingState.size > 0) {
+    tbody.querySelectorAll('tr').forEach(tr => {
+      const id = tr.getAttribute('data-rec-id');
+      const st = playingState.get(id);
+      if (!st) return;
+      const audio = tr.querySelector('audio');
+      if (!audio) return;
+      audio.volume = st.volume;
+      audio.muted = st.muted;
+      // Seek-then-play. `play()` returns a promise that resolves
+      // once the seek completes; ignore rejections (user might
+      // have started a different playback in the meantime).
+      audio.currentTime = st.currentTime;
+      audio.play().catch(() => {});
+    });
+  }
 }
 
 // API catalogue. Fetch once on first render of the API tab; cheap
@@ -5853,6 +6690,13 @@ refreshRecordings();
 setInterval(refreshRecordings, 5000);
 refreshModulation();
 setInterval(refreshModulation, 3000);
+// Phase 10-prep: TG monitor picker. Grant map grows over time so
+// we also refresh the roster on a slower cadence than the main
+// poll. The monitor filter state rarely changes (user clicks
+// Apply explicitly) but re-reading it keeps the UI in sync with
+// any out-of-band /api/monitor edits.
+refreshMonitorTgs();
+setInterval(refreshMonitorTgs, 10000);
 connectWs();
 </script>
 </body>

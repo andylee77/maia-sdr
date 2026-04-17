@@ -45,6 +45,7 @@ from p25_hdl.lsm_agc import (
     GAIN_MIN,
     TARGET_NUMERATOR,
     ALPHA_FLOAT,
+    MAG_UPDATE_THRESHOLD_DEFAULT,
 )
 
 
@@ -457,6 +458,138 @@ class TestLsmAgc(unittest.TestCase):
         # small algorithmic tweak doesn't silently break the test.
         self.assertLessEqual(latency['cycles'], AGC_PIPELINE_CYCLES)
         self.assertGreaterEqual(latency['cycles'], 40)
+
+
+    # ──────────────────────────────────────────────────────────────
+    # 9. Idle-noise gate: sub-threshold magnitudes don't move gain
+    # ──────────────────────────────────────────────────────────────
+    def test_mag_update_threshold_gates_gain_update(self):
+        """Warm AGC up on a real signal (mag=0.5), then drive many
+        symbols at mag well below MAG_UPDATE_THRESHOLD_DEFAULT. The
+        gain register must HOLD — no drift toward req_gain=32 that
+        the weak samples would imply. This is the core
+        "don't chase idle noise" fix."""
+        dut = LsmAgc()  # default threshold = MAG_UPDATE_THRESHOLD_DEFAULT
+        states = {}
+        gate_counts = []
+
+        # Warm-up magnitude = 0.5, well above any noise threshold.
+        warm_i = warm_q = q15(0.5 / math.sqrt(2))
+        # Weak magnitude: MAG_UPDATE_THRESHOLD_DEFAULT is 1024 in raw
+        # Q1.15 mag-space. Pick a sample with mag <= half that (~512)
+        # so we're comfortably below the gate. In Q1.15 input space,
+        # mag=512/32768 = 1/64, so i=q=1/64/sqrt(2).
+        weak_mag_float = (MAG_UPDATE_THRESHOLD_DEFAULT - 1) / (1 << SAMPLE_FRAC) / 2
+        weak_i = weak_q = q15(weak_mag_float / math.sqrt(2))
+
+        async def bench(ctx):
+            ctx.set(dut.enable_in, 1)
+            ctx.set(dut.reset_in, 0)
+            # Warm up until settled.
+            for _ in range(40):
+                await self._drive_symbol(
+                    ctx, dut, warm_i, warm_q, warm_i, warm_q)
+            states['warm_gain'] = ctx.get(dut.gain_dbg)
+            gate_counts.append(('after_warm', ctx.get(dut.gate_dbg)))
+
+            # Now drive many symbols with sub-threshold magnitude.
+            # Record the gain_dbg at each step to make sure it does
+            # NOT drift upward.
+            history = []
+            for _ in range(60):
+                await self._drive_symbol(
+                    ctx, dut, weak_i, weak_q, weak_i, weak_q)
+                history.append(ctx.get(dut.gain_dbg))
+            states['history'] = history
+            states['final_gain'] = history[-1]
+            gate_counts.append(('after_weak', ctx.get(dut.gate_dbg)))
+
+        self._simulate(dut, bench)
+
+        # Warm-up should have settled gain near req_gain = 2.0
+        # (mag=0.5 -> req_gain=1/0.5=2.0). Assert it got close.
+        warm = gain_to_float(states['warm_gain'])
+        self.assertGreater(
+            warm, 1.5,
+            f"AGC didn't reach the expected warm-up gain (got {warm:.2f})")
+        self.assertLess(warm, 2.5)
+
+        # After 60 sub-threshold symbols, gain must equal the warm
+        # value: no drift, the gate froze the update.
+        final = gain_to_float(states['final_gain'])
+        self.assertEqual(
+            states['warm_gain'], states['final_gain'],
+            f"gain drifted under sub-threshold input: "
+            f"warm={warm:.3f} final={final:.3f} "
+            f"(difference proves the gate did NOT fire)")
+
+        # Every single weak symbol must have logged as a gate hit.
+        # We drove 60 weak symbols, so gate_dbg must have climbed
+        # by exactly 60.
+        warm_gate = gate_counts[0][1]
+        weak_gate = gate_counts[1][1]
+        self.assertEqual(
+            weak_gate - warm_gate, 60,
+            f"Expected gate_dbg to increment by 60 under weak input; "
+            f"got warm={warm_gate} -> weak={weak_gate} "
+            f"(delta={weak_gate - warm_gate})")
+
+    # ──────────────────────────────────────────────────────────────
+    # 10. Threshold=0 restores exact SDRTrunk-identical behaviour
+    # ──────────────────────────────────────────────────────────────
+    def test_mag_update_threshold_zero_matches_sdrtrunk(self):
+        """Setting mag_update_threshold=0 disables the gate (only
+        strictly zero magnitudes are skipped, matching SDRTrunk's
+        `if magnitude > 0` check exactly). This preserves the
+        pre-fix path for regression comparison."""
+        dut = LsmAgc(mag_update_threshold=0)
+        states = {}
+
+        # mag=1/64 -- would be gated at default threshold=1024, but
+        # should trigger a gain update when threshold=0.
+        weak_i = weak_q = q15((1.0 / 64.0) / math.sqrt(2))
+
+        async def bench(ctx):
+            ctx.set(dut.enable_in, 1)
+            ctx.set(dut.reset_in, 0)
+            # Drive 30 weak symbols and watch gain climb toward
+            # req_gain = 64 (capped by GAIN_MAX=500).
+            gains = []
+            for _ in range(30):
+                await self._drive_symbol(
+                    ctx, dut, weak_i, weak_q, weak_i, weak_q)
+                gains.append(ctx.get(dut.gain_dbg))
+            states['gains'] = gains
+            states['gate'] = ctx.get(dut.gate_dbg)
+
+        self._simulate(dut, bench)
+
+        # With threshold=0 the gate never fires on non-zero mag.
+        self.assertEqual(
+            states['gate'], 0,
+            f"gate_dbg should stay 0 with threshold=0, got {states['gate']}")
+
+        # And gain should have ramped up (monotonic climb, not held).
+        first = gain_to_float(states['gains'][0])
+        last = gain_to_float(states['gains'][-1])
+        self.assertGreater(
+            last, first + 0.5,
+            f"gain didn't climb under weak input with threshold=0 "
+            f"(first={first:.3f} last={last:.3f})")
+
+    # ──────────────────────────────────────────────────────────────
+    # 11. Constructor validation
+    # ──────────────────────────────────────────────────────────────
+    def test_mag_update_threshold_rejects_invalid(self):
+        """Out-of-range threshold raises ValueError at construction
+        time — catches typos like passing a full-scale 32768 where
+        the code expects a 17-bit unsigned mag."""
+        with self.assertRaises(ValueError):
+            LsmAgc(mag_update_threshold=-1)
+        with self.assertRaises(ValueError):
+            LsmAgc(mag_update_threshold=1 << 17)  # MAG_WIDTH = 17
+        # Boundary: 2^17-1 is the largest legal value.
+        LsmAgc(mag_update_threshold=(1 << 17) - 1)  # no raise
 
 
 if __name__ == '__main__':

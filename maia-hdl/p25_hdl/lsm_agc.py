@@ -192,6 +192,34 @@ GAIN_MIN = 1
 # SDRTrunk's OBJECTIVE_MAGNITUDE = 1.0f in Q1.15.
 TARGET_RAW = 1 << SAMPLE_FRAC                     # 32768
 
+# Magnitude-update threshold — noise-floor gate.
+#
+# SDRTrunk's AGC is asymmetric: `gain += (req_gain - gain) * 0.05`
+# is smoothed on the way up, but `gain = min(gain, req_gain)` snaps
+# the gain DOWN immediately. On an idle channel with intermittent
+# noise spikes a single large spike drives `req_gain` tiny and
+# snaps the gain down; the slow 0.05 lerp then cannot climb back
+# because the next spike snaps it down again. The gain register
+# parks at "last worst noise spike" instead of tracking real
+# signal, so when a real call starts the AGC has to unwind from a
+# bad operating point for hundreds of symbols — the
+# "first-call-split" acquisition gap observed on traffic-chain
+# retunes.
+#
+# Fix: below this magnitude, treat the sample as noise and skip
+# the gain update entirely (go straight to APPLY with the current
+# gain). Samples still flow through with the last-valid gain
+# applied, so real signals that briefly dip below the threshold
+# still get scaled correctly from the existing operating point.
+#
+# Default 1024 raw Q1.15 = 1/32 = -30 dBFS relative to unit
+# magnitude. A healthy LSM symbol at the demod output is near
+# 23_170 (= sqrt(2)/2 * 32_768, the corner of the unit-circle
+# quadrant pattern), so 1024 leaves ~27 dB of margin for the
+# "real signal is present" classification. Tunable per-instance
+# via the `mag_update_threshold` constructor kwarg.
+MAG_UPDATE_THRESHOLD_DEFAULT = 1024
+
 # Divider numerator: TARGET_RAW * 2**GAIN_FRAC. See docstring.
 TARGET_NUMERATOR = TARGET_RAW << GAIN_FRAC        # 2**26
 
@@ -278,7 +306,17 @@ class LsmAgc(Elaboratable):
             (top 16 of the 17-bit sqrt output)
     """
 
-    def __init__(self):
+    def __init__(self, *, mag_update_threshold=MAG_UPDATE_THRESHOLD_DEFAULT):
+        # Idle-noise gate threshold (Q1.15 raw, range 0..2^17-1). See
+        # MAG_UPDATE_THRESHOLD_DEFAULT docstring for the rationale.
+        # Value 0 disables the gate and restores the
+        # SDRTrunk-identical behaviour (update on any non-zero mag).
+        if not 0 <= mag_update_threshold < (1 << MAG_WIDTH):
+            raise ValueError(
+                f"mag_update_threshold must be in "
+                f"[0, {1 << MAG_WIDTH}), got {mag_update_threshold!r}")
+        self._mag_update_threshold = mag_update_threshold
+
         # ── Inputs ──────────────────────────────────────────────
         self.i_mid_in = Signal(signed(SAMPLE_WIDTH))
         self.q_mid_in = Signal(signed(SAMPLE_WIDTH))
@@ -298,6 +336,12 @@ class LsmAgc(Elaboratable):
         # ── Debug taps ──────────────────────────────────────────
         self.gain_dbg = Signal(16, reset_less=True)
         self.mag_dbg = Signal(16, reset_less=True)
+        # Cumulative count of symbols whose gain update was gated
+        # by the noise-floor threshold (`mag < mag_update_threshold`).
+        # Lets the PS side observe whether the gate is firing at all
+        # and how often — a stuck-zero reading on a live chain would
+        # indicate the threshold is too low for the observed noise.
+        self.gate_dbg = Signal(16, reset_less=True)
 
     def elaborate(self, platform):
         m = Module()
@@ -467,8 +511,16 @@ class LsmAgc(Elaboratable):
                 ]
                 # SDRTrunk: `if (magnitude > 0 && !isInfinite(...))`.
                 # `!isInfinite` is trivially true in fixed-point.
-                # `> 0` maps to `mag_val != 0`.
-                with m.If(mag_val == 0):
+                # `> 0` maps to `mag_val != 0`. We widen that check
+                # to `mag_val < mag_update_threshold` so sub-noise-
+                # floor magnitudes don't drag the gain around —
+                # see MAG_UPDATE_THRESHOLD_DEFAULT docstring above
+                # for why this matters on an idle traffic channel.
+                # When gated, still go to APPLY so the current gain
+                # is applied to the four stored samples and the
+                # output strobe fires; just skip the gain update.
+                with m.If(mag_val < self._mag_update_threshold):
+                    m.d.sync += self.gate_dbg.eq(self.gate_dbg + 1)
                     m.next = "APPLY"
                 with m.Else():
                     m.d.sync += [
@@ -639,6 +691,7 @@ class LsmAgc(Elaboratable):
                 self.decision_strobe_out.eq(0),
                 self.gain_dbg.eq(0),
                 self.mag_dbg.eq(0),
+                self.gate_dbg.eq(0),
             ]
 
         return m

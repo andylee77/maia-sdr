@@ -5,6 +5,239 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-16] Phase 10 follow-up 2 -- tab-gated polling + audio re-prime + C4FM dashboard retirement
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-04-16-p10prep-tab-gating-audio-reprime-c4fm-retire`
+**Rebuild scope:** p25-httpd only (no bitstream change)
+
+Three UI-layer fixes motivated by on-target observation that the
+live `/ws/audio` stream stuttered mid-call while saved WAV playback
+sounded clean. Root cause: dashboard polling was starving the
+WebSocket audio sender on the Zynq-7020 ARM. `refresh()` was
+hitting 10 HTTP endpoints every 2 s unconditionally, plus
+constellation + spectrum + log-tail pollers running regardless of
+which tab was visible.
+
+### Tab-gated dashboard polling
+
+- **`refresh()` split by tab**: the 10 `fetchJson` calls are now
+  grouped into an always-on block (`/api/system`, `/api/stats`),
+  a Debug-tab-only block (`/api/decoder_compare`, `/api/hdl_lsm`,
+  `/api/irq_stats`, `/api/control_lsm_dibit_dump`), and a
+  Radio-tab-only block (`/api/traffic`, `/api/grants`,
+  `/api/bands`). On Radio, that drops the per-cycle fetch count
+  from 10 to 5. On Debug, same 6. On Logs / API tabs, only 2.
+- **`refreshRecordings`, `refreshModulation`, `refreshMonitorTgs`**
+  early-return when `activeTab() !== 'radio'`. Their target cards
+  are Radio-tab exclusive.
+- **`logPoll` cadence** switches between 1 s (when Logs tab is
+  active so the tail reads live) and 5 s (elsewhere, just keeping
+  the unread-count badge current).
+- **`scheduleSpectrum` / `scheduleConstellation` timers** now
+  stop entirely on switch-away from Debug (previously their
+  bodies had a `pane.style.display === 'none'` early-return that
+  never matched the `classList.toggle('active')` tab model, so
+  the 1 Hz /api/spectrum + /api/constellation fetches kept
+  running on every tab).
+- **`switchTab`** now kicks the Radio-tab refreshers (`refresh`,
+  `refreshRecordings`, `refreshModulation`, `refreshMonitorTgs`)
+  on entry so the user sees fresh data immediately instead of
+  waiting for the next 2 s tick.
+- **`/api/grant_map` + `/api/monitor`** only fetched on Radio.
+
+### AudioWorklet re-prime on sustained underrun
+
+Previously the worklet absorbed every underrun as a single silence
+sample and kept playing as soon as any data arrived. When
+/ws/audio delivery stalled for ~100 ms (dashboard polling
+starvation, LDU spacing jitter, etc.), the worklet would play
+micro-bursts of audio interleaved with silence -- the
+"stuttering 4x/sec" mode the user heard mid-call.
+
+Fix in both the `P25AudioProcessor` worklet path and the
+`AUDIO_SPN` ScriptProcessorNode fallback: after
+`UNDERRUN_REPRIME = 4800` consecutive per-sample underruns
+(~100 ms at a typical 48 kHz AudioContext), re-enter the
+`priming` state and hold silence until the ring refills to
+`PREFILL = 4320` samples. Resumes playback cleanly from a full
+buffer instead of stuttering the next burst.
+
+### C4FM dashboard retirement
+
+The HDL LSM chain decodes both C4FM and LSM sites (validated on
+Clay County NAC 0x8A1, Duval County 0x3BA, and FP&L's C4FM site).
+The PS C4FM pipeline is dormant everywhere. Dashboard content
+retired:
+
+- **"PS C4FM Dibit Stream" card** on Debug tab (with histogram /
+  sync correlator / raw-DUID sections). The companion
+  `/api/dibit_dump` fetch is gone from `refresh()`.
+- **"PS C4FM" column** in the Decoder Comparison Matrix. Matrix
+  is now 2-column (PS LSM framer | PL HDL LSM gateware).
+- **C4FM HDL dibit/overflow rows** in the Decode Stats card
+  (kept the hidden `#dibits` / `#overflow` elements so the
+  existing refresh() logic doesn't error out, marked for deletion
+  in a future cleanup).
+
+Backend code (PS C4FM decoder, HDL c4fm_demod, C4FM dibit DMA
+ring) is **unchanged**. Per memory
+`project_c4fm_stack_cleanup_todo` the full retirement waits for
+LSM-decodes-C4FM confirmation on ≥3 sites. This is dashboard-only.
+
+### Deploy
+
+No HDL change, no PAC change. Re-flash p25-httpd binary only.
+
+---
+
+## [2026-04-16] Phase 10 follow-up -- WAV Range support + TG Monitor UI
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-04-16-p10prep-agc-gate-wavrange-tgmonitor-ui`
+**Rebuild scope:** p25-httpd only (no bitstream change)
+
+Two UI-layer fixes surfaced after the AGC-gate bake landed:
+
+1. **WAV recording playback stuttered in `<audio>` element** -- downloaded
+   files played fine, but clicking Play in the dashboard would start,
+   stop, restart repeatedly. Root cause: `get_recording_file` returned
+   `200 OK` with the full body and no `Accept-Ranges` header; HTML5
+   `<audio>` issues `Range: bytes=0-` probes to test for seek support
+   and was re-interpreting each re-sent full body as a stream restart.
+   Fix in [httpd/mod.rs:504-640](p25-httpd/src/httpd/mod.rs#L504-L640):
+   parse `Range: bytes=<start>-<end?>` request header, emit
+   `206 Partial Content` with `Content-Range` / `Content-Length` /
+   `Accept-Ranges: bytes` for valid ranges, fall back to full `200 OK`
+   for unranged or malformed requests. Single-range only (no
+   multipart) since that covers every browser we care about.
+
+2. **TG selector missing from the dashboard.** The prior change added
+   `/api/grant_map` + relied on the existing `/api/monitor` for the
+   scanner-mode gate, but never added a dashboard widget. Added a
+   new "TG Monitor" card in the Radio tab above Frequency Map:
+   checkbox grid populated from `/api/grant_map` (every TG seen on
+   this site, with clear/encrypted grant counts shown), Apply /
+   Clear all / Refresh roster buttons, "hide encrypted-only TGs"
+   toggle. State machine separates `active` (what the follower
+   currently filters on) from `staged` (what the user has checked);
+   shows an "unsaved changes" hint when they diverge. Apply posts
+   a JSON body to `PUT /api/monitor` and syncs both states from the
+   server response. Auto-refreshes the roster every 10 s so newly-
+   discovered TGs show up without a page reload.
+
+### BUILD_TAG
+
+Bumped to `2026-04-16-p10prep-agc-gate-wavrange-tgmonitor-ui`.
+
+### Deploy note
+
+No HDL change and no PAC change -- **re-flash p25-httpd binary
+only**. The bitstream from the prior Phase 10 bake stays in place.
+
+---
+
+## [2026-04-16] Phase 10 -- LSM AGC noise-floor gate + traffic-chain API parity + grant map
+
+**Branch:** fishball-p25
+**Related:** `doc/changes/045_phase10_agc_gate_and_parity.md`
+**BUILD_TAG:** `2026-04-16-p10prep-agc-gate-traffic-parity-grantmap`
+
+Root-cause fix for the "first call splits into 3+ files" traffic-
+chain acquisition failure seen on Clay County NAC 0x8A1. Live
+idle `/api/constellation` on the traffic chain showed
+`p50(|IQ|) = 0.33`, 23% of samples with `|IQ| < 0.2`, PLL hunting
+at −0.27 rad. Gain sweep (40/50/60/70 dB front-end) showed the
+traffic chain only converged at 70 dB -- not because it was
+starved for signal (86 dB RSSI) but because the idle-channel
+noise was dragging the AGC gain register down via SDRTrunk's
+fast-attack / slow-release asymmetric clamp, and it couldn't
+climb back.
+
+### HDL change (baked)
+
+- **`maia-hdl/p25_hdl/lsm_agc.py`**: added a
+  `mag_update_threshold` kwarg (default 1024 raw Q1.15 =
+  -30 dBFS). In the `DIV_INIT` state, inputs with
+  `mag < threshold` skip the gain-update step entirely and
+  proceed straight to `APPLY` with the current gain. Kills the
+  noise-chase trap while preserving the asymmetric clamp for
+  real fading events. Threshold = 0 restores the exact
+  SDRTrunk-identical behaviour. New 16-bit `gate_dbg` counter
+  (internal signal, not yet exposed via CSR).
+- **`maia-hdl/p25_hdl/lsm_demod_loop.py`** + **`lsm_demod.py`**:
+  plumbed the threshold kwarg and the `agc_gate_dbg` tap
+  upward through the submodule hierarchy so a later bake can
+  land CSR exposure per chain.
+- **`maia-hdl/test/test_lsm_agc.py`**: three new test cases
+  covering the gated-hold path, the `threshold=0` SDRTrunk
+  fallback, and constructor argument validation. All 11 AGC
+  tests + 12 in related `test_lsm_demod_loop` /
+  `test_lsm_demod` / `test_p25ddc` pass.
+
+### Rust change (ships in same bake)
+
+- **`p25-httpd/src/httpd/mod.rs`** -- new endpoints, all
+  behind `#[cfg(target_os = "linux")]` where they touch
+  hardware:
+  - `GET /api/traffic_lsm_dibit_dump` -- twin of
+    `/api/control_lsm_dibit_dump`
+  - `GET /api/traffic_iq_capture` -- twin of
+    `/api/control_iq_capture`
+  - `GET /api/traffic_iq_capture_aligned` -- twin of
+    `/api/control_iq_capture_aligned`
+  - `GET /api/traffic_lsm_control?dc_block=0|1&agc=0|1` --
+    twin of `/api/control_lsm_control`, **plus** a new `agc`
+    toggle matching the new HDL capability.
+  - `GET/PUT /api/rx_gain?db=<N>` -- standalone AD9361
+    hardwaregain knob (range -3..76 dB). Previously the only
+    way to change gain was `/api/reinit`, which rewrites
+    every front-end field.
+  - `GET /api/grant_map` -- accumulated
+    `HashMap<(tg, freq_hz), GrantMapEntry>` with count,
+    encrypted-count, first-seen, last-seen. Plus a
+    `frequencies` roll-up sorted by activity so future LO
+    auto-center logic has the input it needs.
+- **`p25-httpd/src/p25/traffic_manager.rs`** -- new
+  `GrantMapEntry` struct + `grant_map` field on
+  `TrafficManager` + `tally_grant` method. Hooked in
+  `main.rs:2040` right after the raw grant-receipt log entry,
+  **before** the encryption and monitor-list gates, so every
+  observed grant is recorded regardless of follow decision.
+- **Scanner-mode decision**: the existing
+  `/api/monitor` + `monitor::MonitorList` already implement
+  priority-ordered TG allow-list gating in the grant
+  pipeline. No new endpoint added; the draft
+  `/api/monitor_tgs` was dropped before commit.
+- **BUILD_TAG** bumped to
+  `2026-04-16-p10prep-agc-gate-traffic-parity-grantmap`.
+
+### Expected post-flash behaviour
+
+- Idle `p50(|IQ|)` on traffic chain shifts up to match the
+  last real-signal operating point instead of parking at the
+  noise-spike floor.
+- First-call acquisition lands inside the 180 ms LDU budget
+  instead of taking 2-5 s of AGC unwind. Recording files
+  stop fragmenting at call start.
+- Traffic-side `sync_near_misses / sync_hits` ratio drops
+  (fewer noise-sync pickups). Noise-corrupted NIDs stop
+  being "corrected" toward the all-ones TDU_LC codeword, so
+  `tdu_lc` count should drop toward the real ~1 per-call
+  rate.
+
+### Things explicitly not in this change
+
+- `agc_gate_dbg` stays an internal HDL signal; CSR exposure
+  was deferred to avoid SVD/PAC regen scope creep.
+- LO auto-center algorithm: data plumbing (`/api/grant_map`)
+  landed, but no endpoint that acts on the data yet.
+- Frontend work (scanner-mode picker, traffic-chain debug
+  panels, gain slider) will ship in a follow-up PR after
+  on-target validation.
+
+---
+
 ## [2026-04-15] Phase 8C.1 -- Control-side `lsm_ctrl_dom` revert + TSBK CRC regression diagnosis
 
 **Branch:** fishball-p25
