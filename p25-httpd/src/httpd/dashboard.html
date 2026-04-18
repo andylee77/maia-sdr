@@ -254,37 +254,79 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   </div>
 </div>
 
-<!-- ── RF Spectrum (narrowband, 2026-04-16) ─────────────────── -->
-<h2>RF Spectrum <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">post-DDC, ±31.25 kHz</span></h2>
+<!-- ── RF Spectrum (narrowband) ─────────────────────────────── -->
+<!-- Canvas sizing: CSS drives layout (responsive width, fixed
+     height); the drawing buffer is (re)sized to clientWidth * DPR
+     in configureSpecCanvas() so HiDPI displays render crisp rather
+     than scaled from a 900 px buffer. Any change to CSS height
+     needs a matching configureSpecCanvas() trigger. -->
+<h2>RF Spectrum <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">post-DDC narrowband</span></h2>
 <div class="card">
-  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:6px;font-size:0.85em">
+  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:6px;font-size:0.9em">
     <label><b>Chain</b>:
-      <select id="spec_chain" onchange="refreshSpectrum()" style="padding:2px 6px;font-family:inherit">
+      <select id="spec_chain" onchange="refreshSpectrum()" style="padding:3px 6px;font-family:inherit">
         <option value="control">Control</option>
         <option value="traffic">Traffic</option>
       </select>
     </label>
+    <label><b>FFT</b>:
+      <select id="spec_fft" onchange="refreshSpectrum()" style="padding:3px 6px;font-family:inherit">
+        <option value="1024">1024</option>
+        <option value="2048">2048</option>
+        <option value="4096" selected>4096</option>
+        <option value="8192">8192</option>
+        <option value="16384">16384</option>
+      </select>
+    </label>
+    <label><b>Averages</b>:
+      <select id="spec_avg" onchange="refreshSpectrum()" style="padding:3px 6px;font-family:inherit">
+        <option value="1" selected>1</option>
+        <option value="2">2</option>
+        <option value="4">4</option>
+        <option value="8">8</option>
+        <option value="16">16</option>
+      </select>
+    </label>
     <label><b>Poll</b>:
-      <select id="spec_rate" onchange="scheduleSpectrum()" style="padding:2px 6px;font-family:inherit">
+      <select id="spec_rate" onchange="scheduleSpectrum()" style="padding:3px 6px;font-family:inherit">
         <option value="500">2 Hz</option>
         <option value="1000" selected>1 Hz</option>
         <option value="2000">0.5 Hz</option>
         <option value="0">Paused</option>
       </select>
     </label>
+    <label><b>dB range</b>:
+      <select id="spec_range" onchange="drawSpectrumCached()" style="padding:3px 6px;font-family:inherit">
+        <option value="60">60</option>
+        <option value="80">80</option>
+        <option value="100" selected>100</option>
+        <option value="120">120</option>
+      </select>
+    </label>
+    <label><b>Top</b>:
+      <select id="spec_top" onchange="drawSpectrumCached()" style="padding:3px 6px;font-family:inherit">
+        <option value="10">+10</option>
+        <option value="0" selected>0</option>
+        <option value="-10">-10</option>
+        <option value="-20">-20</option>
+      </select>
+    </label>
     <label><input type="checkbox" id="spec_peak_hold"> <b>Peak-hold</b></label>
-    <button class="btn" style="padding:2px 10px" onclick="resetSpectrum()">Reset</button>
-    <span class="v" id="spec_status" style="font-size:0.85em;color:var(--text-dim)">idle</span>
+    <button class="btn" style="padding:3px 10px" onclick="resetSpectrum()">Reset</button>
   </div>
-  <canvas id="spec_canvas" width="900" height="240"
-    style="width:100%;height:240px;background:#0a0f1a;border:1px solid #1f2937"></canvas>
-  <div style="font-size:0.75em;color:var(--text-dim);margin-top:6px">
-    Narrowband FFT (4096 pts) over the post-DDC IQ ring, centered on
-    the selected chain's channel. Span = ±31.25 kHz, bin width ≈ 15 Hz.
-    Useful for channel-shape verification, adjacent-channel
-    interference, DC-blocker residuals. Wideband view (full 8 MHz
-    around LO) is a future HDL addition; this software FFT works on
-    any bitstream that has the iq_dma ring.
+  <div style="font-size:0.85em;color:var(--text-dim);margin-bottom:4px;min-height:1.2em">
+    <span id="spec_status">idle</span>
+  </div>
+  <canvas id="spec_canvas" style="width:100%;height:380px;background:#0a0f1a;border:1px solid #1f2937;display:block"></canvas>
+  <div style="font-size:0.8em;color:var(--text-dim);margin-top:6px">
+    Narrowband FFT over the post-DDC IQ ring (62.5 kSPS), centered on
+    the selected chain. Bin width = sample_rate / FFT (≈ 15 Hz at
+    4096, ≈ 3.8 Hz at 16384). <b>Averages</b> N power-averages N
+    consecutive non-overlapping FFT segments — noise floor drops by
+    ~10·log₁₀(N) dB, carriers stay put, so weak features become
+    visible. <b>Peak-hold</b> latches the per-bin maximum until Reset.
+    <b>dB range / Top</b> set the Y-axis window. Wideband view (full
+    8 MHz around LO) is a future HDL addition.
   </div>
 </div>
 
@@ -2060,34 +2102,66 @@ logPollStartTimer();
 logPoll(); // kick off immediately
 
 // Spectrum renderer. Polls /api/spectrum at the rate chosen by the
-// dropdown. Paints the FFT to a <canvas>, with optional peak-hold
-// overlay so slow-moving interferers are visible against the noise
-// floor. Only runs when the Debug tab is active + rate != Paused.
+// dropdown and paints the FFT to a <canvas>. The canvas is sized to
+// its CSS client area times devicePixelRatio so HiDPI displays
+// render crisp (the pre-2026-04-18 version used a fixed 900x240
+// backing buffer stretched by CSS width:100%, which produced a
+// visibly upscaled plot on any 1.5x+ DPR monitor). Per-pixel
+// min/max rendering collapses arbitrarily large FFTs (1024..16384)
+// into readable traces without aliasing into an unreadable polyline.
+// Only runs when the Debug tab is active + rate != Paused.
 let SPEC = {
   timer: null,
   peak: null,
   rate: 1000,
+  lastData: null,   // {mag_db, center_hz, span_hz} — lets Y-axis knobs redraw without a new fetch
+  dpr: 1,
 };
 function resetSpectrum() {
   SPEC.peak = null;
+  drawSpectrumCached();
 }
+// Match backing buffer to (cssWidth, cssHeight) * devicePixelRatio.
+// Called at init + on resize + on any DPR change. Also triggers a
+// redraw from the last fetched frame so knob changes and window
+// resizes don't leave a blank canvas until the next poll.
+function configureSpecCanvas() {
+  const c = $('spec_canvas');
+  if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = c.clientWidth;
+  const cssH = c.clientHeight;
+  if (cssW <= 0 || cssH <= 0) return;
+  const desiredW = Math.round(cssW * dpr);
+  const desiredH = Math.round(cssH * dpr);
+  if (c.width !== desiredW || c.height !== desiredH) {
+    c.width = desiredW;
+    c.height = desiredH;
+  }
+  SPEC.dpr = dpr;
+  drawSpectrumCached();
+}
+window.addEventListener('resize', configureSpecCanvas);
 function scheduleSpectrum() {
   if (SPEC.timer) { clearInterval(SPEC.timer); SPEC.timer = null; }
   const r = parseInt($('spec_rate').value, 10);
   SPEC.rate = r;
   if (r > 0) {
     SPEC.timer = setInterval(refreshSpectrum, r);
-    refreshSpectrum(); // kick off immediately
+    refreshSpectrum();
   }
 }
 async function refreshSpectrum() {
-  // Don't poll when the tab is hidden — pointless CPU on both sides.
   const pane = $('tab-debug');
   if (!pane || pane.style.display === 'none') return;
   const chain = $('spec_chain').value || 'control';
+  const fft   = $('spec_fft').value   || '4096';
+  const avg   = $('spec_avg').value   || '1';
   const status = $('spec_status');
   status.textContent = 'fetching...';
-  const data = await fetchJson('/api/spectrum?chain=' + encodeURIComponent(chain));
+  const url = `/api/spectrum?chain=${encodeURIComponent(chain)}` +
+              `&fft=${encodeURIComponent(fft)}&averages=${encodeURIComponent(avg)}`;
+  const data = await fetchJson(url);
   if (!data || !data.ok || !Array.isArray(data.mag_db)) {
     status.textContent = (data && data.error) || 'no data';
     status.style.color = 'var(--red)';
@@ -2096,17 +2170,40 @@ async function refreshSpectrum() {
   status.style.color = 'var(--text-dim)';
   const center_mhz = (data.center_hz || 0) / 1e6;
   const span_hz = data.sample_rate_hz || 62500;
-  status.textContent = `${chain} @ ${center_mhz.toFixed(4)} MHz, ${(span_hz/1000).toFixed(1)} kHz span`;
-  drawSpectrum(data.mag_db, data.center_hz, span_hz);
+  const fft_used = data.fft_size || parseInt(fft, 10);
+  const avg_used = data.averages_used || parseInt(avg, 10);
+  const bin_hz = span_hz / fft_used;
+  const bin_label = bin_hz >= 1 ? `${bin_hz.toFixed(1)} Hz` : `${(bin_hz*1000).toFixed(1)} mHz`;
+  // Noise-floor estimate for the status line: median of the lower
+  // quartile of bins, rough but cheap — lets the user see the benefit
+  // of raising Averages in realtime.
+  const sorted = data.mag_db.slice().sort((a,b) => a - b);
+  const nf = sorted[Math.floor(sorted.length * 0.25)];
+  const peak = sorted[sorted.length - 1];
+  status.textContent =
+    `${chain} @ ${center_mhz.toFixed(4)} MHz   ·   ` +
+    `span ${(span_hz/1000).toFixed(1)} kHz   ·   ` +
+    `${fft_used} pts (${bin_label}/bin) × ${avg_used} avg   ·   ` +
+    `floor ≈ ${nf.toFixed(1)} dB   ·   peak ${peak.toFixed(1)} dB`;
+  SPEC.lastData = { mag_db: data.mag_db, center_hz: data.center_hz, span_hz };
+  drawSpectrumCached();
+}
+function drawSpectrumCached() {
+  if (!SPEC.lastData) return;
+  drawSpectrum(SPEC.lastData.mag_db, SPEC.lastData.center_hz, SPEC.lastData.span_hz);
 }
 function drawSpectrum(mag_db, center_hz, span_hz) {
   const c = $('spec_canvas');
   if (!c) return;
   const ctx = c.getContext('2d');
-  const w = c.width, h = c.height;
+  const dpr = SPEC.dpr || window.devicePixelRatio || 1;
+  const w = c.width;   // backing-buffer pixels
+  const h = c.height;
+  const font_px = Math.round(12 * dpr);
+  const small_px = Math.round(10 * dpr);
   ctx.clearRect(0, 0, w, h);
 
-  // Peak-hold accumulate.
+  // Peak-hold accumulate in backend-bin space (same length as mag_db).
   if ($('spec_peak_hold').checked) {
     if (!SPEC.peak || SPEC.peak.length !== mag_db.length) {
       SPEC.peak = mag_db.slice();
@@ -2119,84 +2216,123 @@ function drawSpectrum(mag_db, center_hz, span_hz) {
     SPEC.peak = null;
   }
 
-  // Y-axis: fixed dB range — dBFS against i16 full-scale.
-  // Noise floor on a quiet post-DDC signal tends to sit near -80 dB,
-  // strongest P25 channels peak around -30 to -40 dB. Show -100 to 0.
-  const yMin = -100, yMax = 0;
-  const mapY = db => h - ((db - yMin) / (yMax - yMin)) * h;
+  // Y-axis window from the Top / Range knobs.
+  const yMax = parseFloat($('spec_top').value);
+  const range = parseFloat($('spec_range').value);
+  const yMin = yMax - range;
+  const mapY = db => {
+    if (!isFinite(db)) return h;
+    const clipped = Math.max(yMin, Math.min(yMax, db));
+    return h - ((clipped - yMin) / (yMax - yMin)) * h;
+  };
 
-  // Grid: 10 dB horizontal lines.
+  // Grid — 10 dB horizontals, 5 kHz verticals. Use 0.5 offset so
+  // 1-px lines are crisp (canvas strokes straddle integer coords).
   ctx.strokeStyle = '#1e2a3a';
-  ctx.lineWidth = 1;
-  for (let db = yMin; db <= yMax; db += 10) {
-    const y = mapY(db);
-    ctx.beginPath();
+  ctx.lineWidth = dpr;
+  ctx.beginPath();
+  for (let db = Math.ceil(yMin/10)*10; db <= yMax; db += 10) {
+    const y = Math.round(mapY(db)) + 0.5;
     ctx.moveTo(0, y);
     ctx.lineTo(w, y);
-    ctx.stroke();
   }
-  // Grid: vertical lines at every 5 kHz offset.
   const half_khz = span_hz / 2000;
-  const step_khz = 5;
-  for (let khz = -half_khz; khz <= half_khz; khz += step_khz) {
-    const x = ((khz + half_khz) / (half_khz * 2)) * w;
-    ctx.beginPath();
+  const step_khz = half_khz > 50 ? 10 : 5;
+  for (let khz = -Math.floor(half_khz/step_khz)*step_khz;
+       khz <= half_khz; khz += step_khz) {
+    const x = Math.round(((khz + half_khz) / (half_khz * 2)) * w) + 0.5;
     ctx.moveTo(x, 0);
     ctx.lineTo(x, h);
-    ctx.stroke();
   }
-
-  // Center tick (channel center).
-  ctx.strokeStyle = '#60a5fa';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(w / 2, 0);
-  ctx.lineTo(w / 2, h);
   ctx.stroke();
 
-  // Peak-hold (drawn first so live trace covers it).
+  // Center tick.
+  ctx.strokeStyle = '#60a5fa';
+  ctx.lineWidth = dpr;
+  ctx.beginPath();
+  const xc = Math.round(w/2) + 0.5;
+  ctx.moveTo(xc, 0); ctx.lineTo(xc, h);
+  ctx.stroke();
+
+  // Per-pixel min/max decimation. For each pixel column find the
+  // min and max dB across the bins that map there, then draw a
+  // vertical segment from min to max (and a brighter "top" line at
+  // max). This turns a 16384-bin frame into a readable oscilloscope-
+  // style trace even on a narrow canvas, and shows the inter-bin
+  // variance inside each pixel as the band's thickness.
+  const pixMinMax = (src) => {
+    const n = src.length;
+    const mins = new Float32Array(w);
+    const maxs = new Float32Array(w);
+    for (let x = 0; x < w; x++) { mins[x] = Infinity; maxs[x] = -Infinity; }
+    for (let i = 0; i < n; i++) {
+      const x = Math.min(w - 1, Math.floor((i / (n - 1)) * w));
+      const v = src[i];
+      if (v < mins[x]) mins[x] = v;
+      if (v > maxs[x]) maxs[x] = v;
+    }
+    return { mins, maxs };
+  };
+
+  // Peak-hold: thin orange line across max envelope (behind live).
   if (SPEC.peak) {
+    const { maxs } = pixMinMax(SPEC.peak);
     ctx.strokeStyle = '#f59e0b';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = dpr;
     ctx.beginPath();
-    for (let i = 0; i < SPEC.peak.length; i++) {
-      const x = (i / (SPEC.peak.length - 1)) * w;
-      const y = mapY(SPEC.peak[i]);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    let started = false;
+    for (let x = 0; x < w; x++) {
+      if (maxs[x] === -Infinity) continue;
+      const y = mapY(maxs[x]);
+      if (!started) { ctx.moveTo(x + 0.5, y); started = true; }
+      else ctx.lineTo(x + 0.5, y);
     }
     ctx.stroke();
   }
 
-  // Live trace.
-  ctx.strokeStyle = '#22c55e';
-  ctx.lineWidth = 1;
+  // Live trace — two passes: translucent band (min..max per pixel)
+  // + bright line at max.
+  const { mins, maxs } = pixMinMax(mag_db);
+  ctx.strokeStyle = 'rgba(34,197,94,0.35)';
+  ctx.lineWidth = dpr;
   ctx.beginPath();
-  for (let i = 0; i < mag_db.length; i++) {
-    const x = (i / (mag_db.length - 1)) * w;
-    const y = mapY(mag_db[i]);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  for (let x = 0; x < w; x++) {
+    if (mins[x] === Infinity) continue;
+    ctx.moveTo(x + 0.5, mapY(mins[x]));
+    ctx.lineTo(x + 0.5, mapY(maxs[x]));
+  }
+  ctx.stroke();
+  ctx.strokeStyle = '#22c55e';
+  ctx.lineWidth = dpr;
+  ctx.beginPath();
+  let started = false;
+  for (let x = 0; x < w; x++) {
+    if (maxs[x] === -Infinity) continue;
+    const y = mapY(maxs[x]);
+    if (!started) { ctx.moveTo(x + 0.5, y); started = true; }
+    else ctx.lineTo(x + 0.5, y);
   }
   ctx.stroke();
 
-  // Axis labels.
-  ctx.fillStyle = '#9ca3af';
-  ctx.font = '10px system-ui,sans-serif';
-  for (let db = yMin; db <= yMax; db += 20) {
-    ctx.fillText(`${db} dB`, 4, mapY(db) - 2);
+  // Labels. Use DPR-scaled font so HiDPI displays get crisp text.
+  ctx.fillStyle = '#cbd5e1';
+  ctx.font = `${font_px}px system-ui,sans-serif`;
+  ctx.textBaseline = 'top';
+  for (let db = Math.ceil(yMin/20)*20; db <= yMax; db += 20) {
+    const y = mapY(db);
+    ctx.fillText(`${db} dB`, 6 * dpr, y + 2 * dpr);
   }
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = `${small_px}px system-ui,sans-serif`;
   const centerMhz = (center_hz || 0) / 1e6;
-  ctx.fillText(
-    `${centerMhz.toFixed(4)} MHz`,
-    w / 2 - 30, h - 4
-  );
-  ctx.fillText(
-    `-${half_khz.toFixed(1)} kHz`,
-    4, h - 4
-  );
-  ctx.fillText(
-    `+${half_khz.toFixed(1)} kHz`,
-    w - 60, h - 4
-  );
+  const labelY = h - 6 * dpr;
+  ctx.textAlign = 'center';
+  ctx.fillText(`${centerMhz.toFixed(4)} MHz`, w / 2, labelY);
+  ctx.textAlign = 'left';
+  ctx.fillText(`-${half_khz.toFixed(1)} kHz`, 6 * dpr, labelY);
+  ctx.textAlign = 'right';
+  ctx.fillText(`+${half_khz.toFixed(1)} kHz`, w - 6 * dpr, labelY);
+  ctx.textAlign = 'left';
 }
 // Lazy-start the poller on first Debug-tab activation, and STOP
 // both pollers when any other tab becomes active. Previously the
@@ -2216,6 +2352,9 @@ const _origSwitchTabForSpec = switchTab;
 switchTab = function(name) {
   _origSwitchTabForSpec(name);
   if (name === 'debug') {
+    // Canvas clientWidth is 0 while the pane is display:none, so size
+    // it here — on first activation — rather than on page load.
+    configureSpecCanvas();
     if (!SPEC.timer && SPEC.rate > 0) scheduleSpectrum();
     if (!IQ.timer && IQ.rate > 0) scheduleConstellation();
   } else {
@@ -2241,6 +2380,20 @@ switchTab = function(name) {
 // accessed `IQ.timer` before `let IQ = {...}` was declared --
 // temporal-dead-zone ReferenceError that silently broke every
 // subsequent `setInterval(refresh, 2000)` etc.
+
+// If the user's last session ended on the Debug tab, the initial
+// `switchTab(saved)` IIFE above runs BEFORE the switchTab wrapper is
+// installed — so configureSpecCanvas() is not called and the canvas
+// inherits the 300x150 HTML default. Fire once here to cover that
+// case; scheduleSpectrum() will kick in on the first user interaction
+// or tab re-entry after.
+(function() {
+  const pane = document.getElementById('tab-debug');
+  if (pane && pane.classList.contains('active')) {
+    configureSpecCanvas();
+    if (!SPEC.timer && SPEC.rate > 0) scheduleSpectrum();
+  }
+})();
 
 // Constellation scatter. Pulls post-PLL (I, Q) points from
 // /api/constellation, draws a 4-quadrant scatter with optional

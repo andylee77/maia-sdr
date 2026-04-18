@@ -37,10 +37,18 @@ use crate::p25::control_channel::{
 
 /// `GET /api/spectrum?chain=control|traffic`
 ///
-/// Runs a 4096-point FFT over the most recent 65.5 ms of the
-/// selected post-DDC IQ ring. Returns magnitude in dBFS, fftshifted
-/// so bin 0 is the most-negative frequency (-31.25 kHz relative to
-/// the chain's DDC center). `chain` defaults to `control`.
+/// Runs an N-point FFT (default 4096) over the most recent IQ ring
+/// samples from the selected chain and returns the magnitude
+/// spectrum in dBFS, fftshifted so bin 0 is the most-negative
+/// frequency (-sample_rate_hz/2 relative to the chain's DDC center).
+///
+/// Query params:
+///   - `chain` — `control` (default) or `traffic`
+///   - `fft`   — one of {1024, 2048, 4096, 8192, 16384}; default 4096
+///   - `averages` — 1..floor(65536/fft); default 1. Power-averages N
+///     non-overlapping FFT segments (noise floor drops by
+///     ~10·log10(averages) dB, carriers stay put). Set 1 for live
+///     sweep, 4–16 for noise-floor / channel-shape analysis.
 ///
 /// The traffic chain requires the bake #2 bitstream flashed; on
 /// older binaries the endpoint returns an error explaining the
@@ -56,50 +64,62 @@ pub async fn get_spectrum(
         .map(String::as_str)
         .unwrap_or("control");
 
+    let fft_size = crate::spectrum::clamp_fft_size(
+        params.get("fft").and_then(|s| s.parse::<usize>().ok()),
+    );
+    let averages = crate::spectrum::clamp_averages(
+        params.get("averages").and_then(|s| s.parse::<usize>().ok()),
+        fft_size,
+    );
+    let min_samples = fft_size * averages;
+    let min_bytes = min_samples * 4;
+
     // Pull buffers from the requested ring. read_*_buffers() is a
-    // rolling-window reader — call it once to advance our bookkeeping,
-    // then concatenate what we got. If the first call returns empty
-    // (fresh session or we're mid-burst), retry once after a short
-    // sleep so the first spectrum request after boot doesn't just 404.
+    // rolling-window reader — call it once, accumulate what it
+    // returned, then retry with the lock released if we still don't
+    // have enough samples. For averages=1, fft_size=4096 this is the
+    // original ~65 ms snapshot; for averages=16 it can need up to
+    // ~1 s of ring data.
     let bytes: Vec<u8> = {
-        let mut core = state.ip_core.lock().await;
-        let mut acc: Vec<u8> = Vec::new();
-        for _retry in 0..2 {
-            let bufs: Vec<&[u8]> = match chain {
-                "control" => core.read_iq_buffers(),
-                "traffic" => core.read_traffic_iq_buffers(),
-                other => {
-                    return Json(serde_json::json!({
-                        "ok": false,
-                        "error": format!(
-                            "unknown chain '{other}'; expected control|traffic"
-                        ),
-                    }));
-                }
-            };
-            if !bufs.is_empty() {
+        let mut acc: Vec<u8> = Vec::with_capacity(min_bytes);
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(1500);
+        loop {
+            {
+                let mut core = state.ip_core.lock().await;
+                let bufs: Vec<&[u8]> = match chain {
+                    "control" => core.read_iq_buffers(),
+                    "traffic" => core.read_traffic_iq_buffers(),
+                    other => {
+                        return Json(serde_json::json!({
+                            "ok": false,
+                            "error": format!(
+                                "unknown chain '{other}'; expected control|traffic"
+                            ),
+                        }));
+                    }
+                };
                 for b in bufs {
                     acc.extend_from_slice(b);
                 }
+            }
+            if acc.len() >= min_bytes {
                 break;
             }
-            // Drop the lock between retries so the DMA can make
-            // progress on the producer side.
-            drop(core);
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            core = state.ip_core.lock().await;
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
         }
         acc
     };
 
-    let Some(snap) = crate::spectrum::spectrum_from_bytes(&bytes) else {
+    let Some(snap) = crate::spectrum::spectrum_from_bytes(&bytes, fft_size, averages) else {
         return Json(serde_json::json!({
             "ok": false,
             "error": format!(
-                "not enough IQ samples for FFT_SIZE={} on chain={} \
-                 ({} samples available)",
-                crate::spectrum::FFT_SIZE,
-                chain,
+                "not enough IQ samples for fft={fft_size} on chain={chain} \
+                 ({} samples available, need at least {fft_size})",
                 bytes.len() / 4,
             ),
         }));
@@ -129,7 +149,8 @@ pub async fn get_spectrum(
         "chain":           chain,
         "center_hz":       center_hz,
         "sample_rate_hz":  snap.sample_rate_hz,
-        "fft_size":        snap.mag_db.len(),
+        "fft_size":        snap.fft_size,
+        "averages_used":   snap.averages_used,
         "mag_db":          snap.mag_db,
     }))
 }

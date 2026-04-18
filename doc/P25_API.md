@@ -122,7 +122,7 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 
 | Path | Method | Returns | Purpose |
 |---|---|---|---|
-| `/api/spectrum` | GET | JSON | FFT bins from the IQ ring. `?chain=control\|traffic&fft=<512\|1024\|2048\|4096>` |
+| `/api/spectrum` | GET | JSON | FFT bins from the IQ ring. `?chain=control\|traffic&fft=<1024\|2048\|4096\|8192\|16384>&averages=<N>`. Power-averages N non-overlapping segments — noise floor drops by ~10·log₁₀(N) dB, carriers stay put. Response includes `fft_size` + `averages_used`. |
 | `/api/constellation` | GET | JSON | IQ scatter from the LSM slicer input. `?chain=control\|traffic` |
 
 ### `api/ws` — WebSocket streams

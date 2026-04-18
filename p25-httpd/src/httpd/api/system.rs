@@ -379,8 +379,8 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     EndpointDoc {
         method: "GET",
         path: "/api/spectrum",
-        params: "?chain=control|traffic&fft=<512|1024|2048|4096>",
-        description: "FFT over post-DDC IQ ring, mag_db array fftshifted. Narrowband (~62.5 kHz span).",
+        params: "?chain=control|traffic&fft=<1024|2048|4096|8192|16384>&averages=<N>",
+        description: "FFT over post-DDC IQ ring, mag_db array fftshifted. Averages N non-overlapping segments for noise-floor suppression.",
     },
     EndpointDoc {
         method: "GET",

@@ -22,17 +22,34 @@
 
 use std::f32::consts::PI;
 
-/// FFT size. 4096 complex samples → ~15 Hz bin width at 62.5 kSPS.
-/// Power-of-two required for radix-2 Cooley-Tukey.
-pub const FFT_SIZE: usize = 4096;
+/// Default FFT size when the client omits `?fft=`. 4096 complex
+/// samples → ~15 Hz bin width at 62.5 kSPS.
+pub const DEFAULT_DEFAULT_FFT_SIZE: usize = 4096;
+
+/// Legal FFT sizes for `?fft=`. Must be power-of-two (radix-2
+/// Cooley-Tukey) and bounded above by a value that keeps the per-
+/// request work on the Zynq-7020 Cortex-A9 cheap enough for live
+/// polling. 16384 is ~3.8 Hz bin width at 62.5 kSPS — plenty for
+/// P25 channel-shape analysis.
+pub const LEGAL_DEFAULT_FFT_SIZES: &[usize] = &[1024, 2048, 4096, 8192, 16384];
 
 /// Sample rate of the post-DDC IQ stream. Both chains run at this
 /// rate (control DDC / traffic DDC both terminate at 62.5 kSPS).
 pub const SAMPLE_RATE_HZ: f32 = 62_500.0;
 
+/// Default non-overlapping-segment averages per `/api/spectrum` call.
+/// 1 = raw single-FFT snapshot (original behaviour).
+pub const DEFAULT_AVERAGES: usize = 1;
+
+/// Upper bound on averages × fft_size. Keeps total IQ-sample demand
+/// ≤ ~1 second at 62.5 kSPS so the handler doesn't block waiting for
+/// the iq_dma ring to fill. Clients requesting more get clamped and
+/// the actual `averages` used is echoed in the response.
+pub const MAX_TOTAL_SAMPLES: usize = 65_536;
+
 /// Convert interleaved-IQ bytes (little-endian i16 re, i16 im pairs)
 /// to parallel re / im Vec<f32> arrays. Caller concatenates multiple
-/// 32 KB sub-buffers and slices down to FFT_SIZE samples.
+/// 32 KB sub-buffers and slices down to `fft_size` samples.
 ///
 /// Per the HDL packer (see `iq_packer.py`), the byte layout of each
 /// 64-bit DMA word is:
@@ -123,54 +140,106 @@ fn fft_in_place(re: &mut [f32], im: &mut [f32]) {
 /// Result of one spectrum snapshot.
 pub struct Snapshot {
     /// Magnitudes in dBFS, fftshifted so bin 0 is the most-negative
-    /// frequency and bin n-1 is the most-positive. Length = FFT_SIZE.
+    /// frequency and bin n-1 is the most-positive. Length = `fft_size`.
     pub mag_db: Vec<f32>,
     /// Sample rate in Hz (constant 62.5 kHz for both chains today).
     pub sample_rate_hz: f32,
-    /// Number of samples consumed (always FFT_SIZE).
+    /// Number of complex samples consumed total (`fft_size * averages_used`).
     pub samples: usize,
+    /// FFT length actually used.
+    pub fft_size: usize,
+    /// Number of non-overlapping segments power-averaged into `mag_db`.
+    /// Clamped down from the requested value if the input buffer was
+    /// short; `1` is the degenerate single-snapshot case.
+    pub averages_used: usize,
 }
 
-/// Compute one magnitude spectrum from raw interleaved-IQ bytes.
+/// Clamp a requested FFT size to the nearest legal value (power-of-
+/// two from `LEGAL_DEFAULT_FFT_SIZES`). Invalid / missing returns
+/// `DEFAULT_DEFAULT_FFT_SIZE`. Exposed so the handler can echo the effective
+/// value back to the client.
+pub fn clamp_fft_size(requested: Option<usize>) -> usize {
+    match requested {
+        Some(n) if LEGAL_DEFAULT_FFT_SIZES.contains(&n) => n,
+        _ => DEFAULT_DEFAULT_FFT_SIZE,
+    }
+}
+
+/// Clamp a requested averages count to `[1, MAX_TOTAL_SAMPLES /
+/// fft_size]`. Guarantees `result * fft_size ≤ MAX_TOTAL_SAMPLES`.
+pub fn clamp_averages(requested: Option<usize>, fft_size: usize) -> usize {
+    let max_for_size = (MAX_TOTAL_SAMPLES / fft_size).max(1);
+    requested
+        .unwrap_or(DEFAULT_AVERAGES)
+        .max(1)
+        .min(max_for_size)
+}
+
+/// Compute a magnitude spectrum from raw interleaved-IQ bytes with
+/// optional non-overlapping-segment averaging.
 ///
-/// `bytes` must contain AT LEAST `FFT_SIZE * 4` bytes. The most
-/// recent `FFT_SIZE` samples (end of the buffer) are used so the
-/// snapshot reflects "current" conditions rather than a 131 ms-old
-/// buffer front.
-pub fn spectrum_from_bytes(bytes: &[u8]) -> Option<Snapshot> {
+/// `averages` segments of `fft_size` complex samples each are taken
+/// from the tail of the buffer (most recent data first). Each segment
+/// is Hann-windowed, forward-FFTd, then summed into a running
+/// magnitude-squared accumulator. The accumulator is converted to dB
+/// at the end, which gives a true power average (noise floor drops by
+/// ~10·log10(K) dB relative to a single snapshot, while deterministic
+/// tones stay put — so weak carriers pop out).
+///
+/// `bytes` must contain AT LEAST `fft_size * averages * 4` bytes for
+/// the caller's requested `averages` to be honoured; shorter buffers
+/// fall back to fewer averages, and the actual count is reported in
+/// `Snapshot::averages_used`. Returns `None` only when the buffer
+/// can't even fit one `fft_size` segment.
+pub fn spectrum_from_bytes(
+    bytes: &[u8],
+    fft_size: usize,
+    averages: usize,
+) -> Option<Snapshot> {
+    assert!(fft_size.is_power_of_two() && fft_size >= 2);
     let (re_all, im_all) = bytes_to_iq(bytes);
-    if re_all.len() < FFT_SIZE {
+    if re_all.len() < fft_size {
         return None;
     }
-    // Take the tail: most recent FFT_SIZE samples.
-    let start = re_all.len() - FFT_SIZE;
-    let mut re: Vec<f32> = re_all[start..].to_vec();
-    let mut im: Vec<f32> = im_all[start..].to_vec();
+    let available_segments = re_all.len() / fft_size;
+    let averages_used = averages.max(1).min(available_segments);
 
-    // Apply Hann window in place.
-    let win = hann_window(FFT_SIZE);
-    for i in 0..FFT_SIZE {
-        re[i] *= win[i];
-        im[i] *= win[i];
+    let win = hann_window(fft_size);
+
+    // Accumulate magnitude² across segments (tail-aligned — the most
+    // recent block is always included so the snapshot reflects current
+    // conditions).
+    let mut mag_sq_acc: Vec<f32> = vec![0.0; fft_size];
+    for seg in 0..averages_used {
+        // Segment k counted from the tail: samples [end - (k+1)·N, end - k·N).
+        let end = re_all.len() - seg * fft_size;
+        let start = end - fft_size;
+        let mut re: Vec<f32> = re_all[start..end].to_vec();
+        let mut im: Vec<f32> = im_all[start..end].to_vec();
+
+        for i in 0..fft_size {
+            re[i] *= win[i];
+            im[i] *= win[i];
+        }
+        fft_in_place(&mut re, &mut im);
+
+        for i in 0..fft_size {
+            mag_sq_acc[i] += re[i] * re[i] + im[i] * im[i];
+        }
     }
 
-    // Forward FFT.
-    fft_in_place(&mut re, &mut im);
-
-    // Magnitude² → dB. Reference = i16 full-scale squared = 32768².
-    // Add a tiny epsilon to avoid log of zero on empty bins.
+    let inv_k = 1.0 / averages_used as f32;
     let ref_sq = (32768.0f32).powi(2);
-    let mut mag_db: Vec<f32> = re
+    let mut mag_db: Vec<f32> = mag_sq_acc
         .iter()
-        .zip(im.iter())
-        .map(|(r, i)| {
-            let m2 = r * r + i * i + 1e-12;
-            10.0 * (m2 / ref_sq).log10()
+        .map(|m2| {
+            let m2_avg = m2 * inv_k + 1e-12;
+            10.0 * (m2_avg / ref_sq).log10()
         })
         .collect();
 
     // fftshift: swap halves so bin 0 = most-negative freq.
-    let half = FFT_SIZE / 2;
+    let half = fft_size / 2;
     let second = mag_db.split_off(half);
     let mut shifted = second;
     shifted.extend(mag_db);
@@ -178,7 +247,9 @@ pub fn spectrum_from_bytes(bytes: &[u8]) -> Option<Snapshot> {
     Some(Snapshot {
         mag_db: shifted,
         sample_rate_hz: SAMPLE_RATE_HZ,
-        samples: FFT_SIZE,
+        samples: fft_size * averages_used,
+        fft_size,
+        averages_used,
     })
 }
 
@@ -219,7 +290,7 @@ mod tests {
     fn fft_tone_lands_at_expected_bin() {
         // Pure complex exponential at bin 64: e^(j 2π k 64 / N).
         // After FFT, energy should concentrate at index 64 (pre-shift).
-        let n = FFT_SIZE;
+        let n = DEFAULT_FFT_SIZE;
         let k_target = 64usize;
         let mut re = vec![0f32; n];
         let mut im = vec![0f32; n];
@@ -246,11 +317,11 @@ mod tests {
     #[test]
     fn spectrum_from_dc_input_peaks_at_center() {
         // All-ones (DC) input → after fftshift, the bin at index
-        // FFT_SIZE/2 should be the maximum (DC lives there post-shift).
-        let re: Vec<i16> = vec![1000; FFT_SIZE];
-        let im: Vec<i16> = vec![0; FFT_SIZE];
+        // DEFAULT_FFT_SIZE/2 should be the maximum (DC lives there post-shift).
+        let re: Vec<i16> = vec![1000; DEFAULT_FFT_SIZE];
+        let im: Vec<i16> = vec![0; DEFAULT_FFT_SIZE];
         let bytes = make_iq_bytes(&re, &im);
-        let snap = spectrum_from_bytes(&bytes).unwrap();
+        let snap = spectrum_from_bytes(&bytes, DEFAULT_FFT_SIZE, 1).unwrap();
         let peak = snap
             .mag_db
             .iter()
@@ -258,7 +329,7 @@ mod tests {
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .unwrap()
             .0;
-        assert_eq!(peak, FFT_SIZE / 2,
-            "DC peak at bin {peak}, expected {}", FFT_SIZE / 2);
+        assert_eq!(peak, DEFAULT_FFT_SIZE / 2,
+            "DC peak at bin {peak}, expected {}", DEFAULT_FFT_SIZE / 2);
     }
 }
