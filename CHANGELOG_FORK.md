@@ -5,6 +5,42 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-18] Phase 10.6 -- post-LSM matched-filter IQ taps + bank widening
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-04-18-phase10.6-post-lsm-iq`
+**Commits (2):** `1bf4fc7` (HDL + PAC), `30f18b8` (PS + dashboard)
+**Bake required:** yes — bitstream rebuild + Tezuka firmware rebuild. Tezuka DT change lives in `tezuka_fw` `fishball-dev` commit `629def8`.
+
+Adds two new DMA rings to the P25 core that tap the matched-filter output of each LSM chain (post-RRC, 31.25 kSPS, before timing-recovery / PLL rotation). Dashboard eye plot defaults to this new "matched-filter" source, giving clean decision-crossing eye geometry instead of the raw post-DDC sinusoid.
+
+### HDL (`1bf4fc7`)
+
+- **Address space widened** `axi4_awidth` 7 → 8 bits; bank select `[5:3]` → `[6:3]` (3-bit → 4-bit, 8 → 16 banks max). All existing bank selects rewritten as 4-bit constants; Maia core layout unchanged.
+- **Two new IQ taps** sourced from `lsm_rrc.re_out / im_out` (control) and `traffic_lsm_rrc.re_out / im_out` (traffic). New `IQPacker` + `DmaStreamRingWrite` instances, 256 KB rings (8 × 32 KB sub-buffers) at physical addresses `0x1D00_0000` / `0x1E00_0000`.
+- **Two new register banks** at bank-base `0x100` / `0x120`: `lsm_iq_{dma_status, dma_control, next_address}` + traffic-side mirror. Matches existing `iq_registers` layout byte-for-byte so the PS reader logic reuses without changes.
+- **Two new interrupt bits** (`lsm_iq_dma`, `traffic_lsm_iq_dma`) in the control `interrupts` register with `PulseSynchronizer` CDC into the s_axi_lite domain, same pattern as the existing six DMA IRQ chains.
+- **SVD + PAC regen**: `p25.svd` via `generate_p25_svd.py`; `p25-httpd/p25-pac/src/lib.rs` via svd2rust 0.33.5 with the `unknown_lints` + `mismatched_lifetime_syntaxes` preamble preserved.
+
+### PS + dashboard (`30f18b8`)
+
+- **`fpga.rs`**: new `RxBuffer` fields `lsm_iq_dma` + `traffic_lsm_iq_dma` opened via the UIO devices `p25-lsm-iq` / `p25-traffic-lsm-iq`. Matching `LsmIq` + `TrafficLsmIq` `DmaChannel` variants, dispatch arms, reader methods (`read_lsm_iq_buffers`, `read_traffic_lsm_iq_buffers`), and enable setters. Both rings armed at boot from `main.rs`.
+- **`/ws/iq` gets a `source=post_ddc|post_lsm` query param**. `post_ddc` is the default (backwards-compatible). Hello frame now echoes both `source` and the actual `sample_rate_hz` (62500 for post_ddc, 31250 for post_lsm) so clients can size ring buffers correctly.
+- **Dashboard eye plot**: new "Src" dropdown defaulting to Post-LSM (MF). `IqStream.connect()` takes an optional 4th `source` argument (existing spectrum Live-IQ callers unchanged). `onEyeFrame` pulls `EYE.sps` from the hello-announced rate so source switches are drift-proof.
+
+### Deferred to the next bake
+
+Four items were planned for this bake but carved out to keep the payload observation-only (zero risk of detuning SDRTrunk-matched constants):
+
+- Runtime-writable TED gain / PLL loop BW (needs `LsmDemod` internal refactor + individual A/B validation per param).
+- Runtime-writable DC blocker alpha / AGC attack rate (smaller scope).
+- Signal-quality telemetry register (DC offset leaky-integrator readback, RMS min/max window, `stats_reset` W1P).
+- Pre-DDC wideband IQ tap at 8 MSPS (separate project, distinct DMA question).
+
+Bank widening opened the address-space room for all of these — they're additive-only to the new 16-bank layout.
+
+---
+
 ## [2026-04-17] Stage 1 + Stage 2 + Stage 3 -- bake-blocking fixes + API-first refactor + dead-code sweep
 
 **Branch:** fishball-p25

@@ -34,6 +34,9 @@ must be aligned to its **total ring size** (this is asserted by
 | `iq_dma`                 | `0x1900_0000` | 8 | 32 KB   | 256 KB  | ~1 s     | ~128 ms  | ~250 KB/s    | **Phase 6C:** control-channel post-DDC IQ (16-bit signed I + 16-bit signed Q, 62.5 kSPS, two samples per 64-bit DMA word) |
 | `lsm_dibit_dma`          | `0x1A00_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | **Phase 6E.9:** control-channel LSM dibits (post-`LsmDemod.dibit_out`/`symbol_strobe`, parallel to `dibit_dma` so PS can A/B C4FM and LSM on the same RF capture) |
 | `traffic_lsm_dibit_dma`  | `0x1B00_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | **Phase 7A.2:** traffic-channel LSM dibits (post-`traffic_lsm_demod.dibit_out`/`symbol_strobe`, parallel to `traffic_dma` so PS can A/B C4FM and LSM on the followed voice channel and dispatch HDU/TDU/LDU events from the new `traffic_lsm` register bank) |
+| `traffic_iq_dma`         | `0x1C00_0000` | 8 | 32 KB   | 256 KB  | ~1 s     | ~128 ms  | ~250 KB/s    | **2026-04-16 chain-symmetry fix:** traffic-channel post-DDC IQ, mirror of `iq_dma` (same packing format, same sample rate). Feeds the dashboard constellation scatter + traffic-LSM software cross-check |
+| `lsm_iq_dma`             | `0x1D00_0000` | 8 | 32 KB   | 256 KB  | ~2 s     | ~262 ms  | ~125 KB/s    | **Phase 10.6 2026-04-18:** control-chain post-LSM matched-filter IQ. Tapped from `lsm_rrc.re_out`/`im_out` (after LsmDecimator2 /2 + LPF + 105-tap RRC). 31.25 kSPS (half of post-DDC); same packing format as `iq_dma`. Feeds the dashboard matched-filter eye plot via `/ws/iq?source=post_lsm` |
+| `traffic_lsm_iq_dma`     | `0x1E00_0000` | 8 | 32 KB   | 256 KB  | ~2 s     | ~262 ms  | ~125 KB/s    | **Phase 10.6 2026-04-18:** traffic-chain post-LSM matched-filter IQ. Tapped from `traffic_lsm_rrc.re_out`/`im_out`. Traffic-side twin of `lsm_iq_dma`; same packing + geometry |
 
 **Sample-rate math (control DDC at 62.5 kSPS):**
 
@@ -89,9 +92,10 @@ the order `re0, im0, re1, im1`.
 
 ## AXI-Lite register banks
 
-The AXI-Lite slave is a 7-bit word-addressed bus (= 9-bit byte address,
-512-byte BAR). The bank decoder uses bits **[5:3]** of the word address
-(3 bits → 8 banks max), and bits **[2:0]** select the register within a
+The AXI-Lite slave is an **8-bit word-addressed bus** (= 10-bit byte address,
+1024-byte BAR) as of Phase 10.6 (2026-04-18; was 7-bit / 512-byte prior).
+The bank decoder uses bits **[6:3]** of the word address
+(4 bits → 16 banks max), and bits **[2:0]** select the register within a
 bank (3 bits → 8 registers per bank max). Banks are 0x20 bytes apart.
 
 The IP-XACT core lives at base address **`0x7C46_0000`** in the Zynq GP0
@@ -99,14 +103,17 @@ window (set by `ad_cpu_interconnect 0x7C460000 p25_core` in `system_bd.tcl`).
 
 | Bank | Word base | Byte base (PS view) | Name | Reg-field bits | Registers used / max | Purpose |
 |------|-----------|---------------------|------|----------------|----------------------|---------|
-| 0 | `0x00` | `0x7C46_0000` | `control` | 2 | 4 / 4 | product_id, version, control (sdr_reset), interrupts |
-| 1 | `0x08` | `0x7C46_0020` | `sdr` | 3 | 5 / 8 | control DDC: coeff_addr, coeff, decimation, frequency, control |
-| 2 | `0x10` | `0x7C46_0040` | `demod` | 2 | 3 / 4 | demod_status, demod_control, dibit_next_address |
-| 3 | `0x18` | `0x7C46_0060` | `traffic` | 3 | 6 / 8 | traffic DDC + traffic demod + traffic_next_address |
-| 4 | `0x20` | `0x7C46_0080` | `iq` (Phase 6C) | 2 | 3 / 4 | iq_dma_status, iq_dma_control, iq_next_address |
-| 5 | `0x28` | `0x7C46_00A0` | `lsm` (Phase 6E.9) | 3 | 6 / 8 | lsm_control, lsm_status, lsm_nid, lsm_drop_count, lsm_dibit_next, lsm_debug |
-| 6 | `0x30` | `0x7C46_00C0` | `traffic_lsm` (Phase 7A.2) | 3 | 6 / 8 | traffic_lsm_control, traffic_lsm_status, traffic_lsm_nid, traffic_lsm_drop_count, traffic_lsm_dibit_next, traffic_lsm_debug |
-| 7 | `0x38` | `0x7C46_00E0` | *(free)* | — | — | last bank in the 7-bit word-address space; reserved for the Phase 7G channelizer slot allocator |
+| 0  | `0x00` | `0x7C46_0000` | `control` | 2 | 4 / 4 | product_id, version, control (sdr_reset), interrupts |
+| 1  | `0x08` | `0x7C46_0020` | `sdr` | 3 | 5 / 8 | control DDC: coeff_addr, coeff, decimation, frequency, control |
+| 2  | `0x10` | `0x7C46_0040` | `demod` | 2 | 3 / 4 | demod_status, demod_control, dibit_next_address |
+| 3  | `0x18` | `0x7C46_0060` | `traffic` | 3 | 6 / 8 | traffic DDC + traffic demod + traffic_next_address |
+| 4  | `0x20` | `0x7C46_0080` | `iq` (Phase 6C) | 2 | 3 / 4 | iq_dma_status, iq_dma_control, iq_next_address |
+| 5  | `0x28` | `0x7C46_00A0` | `lsm` (Phase 6E.9) | 3 | 7 / 8 | lsm_control, lsm_status, lsm_nid, lsm_drop_count, lsm_dibit_next, lsm_debug, lsm_agc_debug |
+| 6  | `0x30` | `0x7C46_00C0` | `traffic_lsm` (Phase 7A.2) | 3 | 7 / 8 | traffic_lsm_control, traffic_lsm_status, traffic_lsm_nid, traffic_lsm_drop_count, traffic_lsm_dibit_next, traffic_lsm_debug, traffic_lsm_agc_debug |
+| 7  | `0x38` | `0x7C46_00E0` | `traffic_iq` (2026-04-16) | 2 | 3 / 4 | traffic_iq_dma_status, traffic_iq_dma_control, traffic_iq_next_address |
+| 8  | `0x40` | `0x7C46_0100` | `lsm_iq` (Phase 10.6 2026-04-18) | 2 | 3 / 4 | lsm_iq_dma_status, lsm_iq_dma_control, lsm_iq_next_address |
+| 9  | `0x48` | `0x7C46_0120` | `traffic_lsm_iq` (Phase 10.6 2026-04-18) | 2 | 3 / 4 | traffic_lsm_iq_dma_status, traffic_lsm_iq_dma_control, traffic_lsm_iq_next_address |
+| 10-15 | — | `0x7C46_0140` – `0x7C46_01E0` | *(free, 6 slots)* | — | — | reserved for Phase 10.6-follow-up signal-quality + runtime-params banks (DC offset + RMS window, runtime-writable TED/PLL/AGC) |
 
 ### `iq` bank (Phase 6C) detail — byte offsets relative to `0x7C46_0080`
 

@@ -8,6 +8,7 @@
 | Branch | `fishball-p25` |
 | HEAD at review | `70206ec` (Phase 10 — AGC noise-floor gate, traffic API parity, dashboard overhaul) |
 | HEAD at 2026-04-17 revision | `3826652` (Stage 4 code-review close-out) |
+| HEAD at 2026-04-18 Phase 10.6 | `30f18b8` (post-LSM matched-filter IQ taps + bank widening); HDL-only commit `1bf4fc7` |
 | Scope | `maia-hdl/p25_hdl/`, `maia-hdl/maia_hdl/` (surface only), `maia-hdl/ip/p25-core/`, `maia-hdl/projects/fishball7020_p25/`, `maia-hdl/adi-hdl/` (inventory only) |
 | Purpose | Detailed current-state layout + future-phase plan, with polyphase channelizer as the centrepiece |
 | Method | Three parallel surveys (current P25 HDL, Maia base surface, channelizer landscape + Z7020 budget) synthesised into one document |
@@ -728,6 +729,36 @@ Five sub-items:
 **Effort:** ~1 week HDL (TED + counters + constellation trigger) + ~3 days Rust (IMBE quality gate + API wiring + dashboard tile) + 1 bake. Low commitment; can be reverted cleanly.
 
 **Dependencies:** none — all sub-items are independent of each other and of Phase 11+.
+
+### Phase 10.6 — Post-LSM matched-filter IQ observability (shipped 2026-04-18)
+
+**Status:** HDL + Tezuka DT committed, bake in progress as of 2026-04-18 ~17:16. Validation pending post-flash.
+
+**Scope (observation-only — zero demod-path changes):**
+
+1. **Post-LSM IQ tap × 2.** New `IQPacker` + `DmaStreamRingWrite` instances tapped from `lsm_rrc.re_out / im_out / strobe_out` on each chain. Rings at `0x1D00_0000` (control) and `0x1E00_0000` (traffic), 256 KB each, 31.25 kSPS (half of post-DDC after LsmDecimator2 /2). Feeds the dashboard matched-filter eye plot via `/ws/iq?source=post_lsm`.
+2. **Address space widening.** `axi4_awidth` 7 → 8 bits; bank decode `[5:3]` → `[6:3]` (8 banks → 16 banks). Existing banks unchanged. Opens six free slots for the follow-up signal-quality + runtime-params banks.
+3. **Two new register banks** at `0x100` / `0x120` (`lsm_iq_*` + traffic-side mirror). Layout mirrors the existing `iq_registers` byte-for-byte.
+4. **PS-side driver + API** (`fpga.rs` readers + enable setters, `/ws/iq` `source` query param, dashboard eye-plot Src dropdown).
+5. **Tezuka DT + UIO carve-outs** (tezuka_fw `fishball-dev` commit `629def8`): `p25-lsm-iq` + `p25-traffic-lsm-iq` via `maia-sdr,rxbuffer`.
+
+**Acceptance criteria (validate post-flash):**
+
+- `/api/system` reports `"build":"2026-04-18-phase10.6-post-lsm-iq"`.
+- Debug tab Eye Diagram card has Src dropdown; Post-LSM (MF) default produces an eye with cleanly separated decision crossings on a locked control-channel signal.
+- Backwards compat: Post-DDC (raw) option produces the pre-10.6 sinusoidal waveform identically.
+- Hello frame on `/ws/iq?source=post_lsm` announces `sample_rate_hz=31250`; dashboard `sps` = 6.51 (half the 13.02 that post_ddc reports).
+
+**Risk:** extremely low — observation-only, no demod path touched, bank widening is a mechanical 1-bit extension with no new decode logic.
+
+**Effort:** ~1 day HDL + PS + dashboard (delivered). 1 bake.
+
+**Deferred items (carried into the next bake, slot room already reserved in the widened address space):**
+
+- Runtime-writable TED gain / PLL loop BW (needs `LsmDemod` internal port additions + per-param SDRTrunk-cross-validated A/B).
+- Runtime-writable DC blocker alpha / AGC attack rate.
+- Signal-quality telemetry register: DC offset (leaky-integrator readback from `LsmDcBlocker`), RMS min/max over a windowed snapshot, `stats_reset` W1P to clear drop_count + the new min/max latches.
+- Pre-DDC wideband IQ tap at 8 MSPS (separate project; 8× the rate of post-DDC; distinct DMA question).
 
 ### Phase 11 — Polyphase channelizer front-end (Option B prototype)
 
