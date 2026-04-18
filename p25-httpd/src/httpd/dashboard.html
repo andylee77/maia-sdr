@@ -2180,11 +2180,25 @@ async function refreshSpectrum() {
   const sorted = data.mag_db.slice().sort((a,b) => a - b);
   const nf = sorted[Math.floor(sorted.length * 0.25)];
   const peak = sorted[sorted.length - 1];
-  status.textContent =
+  // Count bins above 0 dBFS — these indicate either a calibration
+  // issue or genuine front-end saturation. Rendered as a red sibling
+  // element (not innerHTML) to stay clear of the XSS/escHtml policy
+  // introduced in Stage 1 cleanup.
+  const over_zero = data.mag_db.reduce((n, v) => n + (v > 0 ? 1 : 0), 0);
+  const base =
     `${chain} @ ${center_mhz.toFixed(4)} MHz   ·   ` +
     `span ${(span_hz/1000).toFixed(1)} kHz   ·   ` +
     `${fft_used} pts (${bin_label}/bin) × ${avg_used} avg   ·   ` +
     `floor ≈ ${nf.toFixed(1)} dB   ·   peak ${peak.toFixed(1)} dB`;
+  status.textContent = base;
+  if (over_zero > 0) {
+    const sep = document.createTextNode('   ·   ');
+    const warn = document.createElement('span');
+    warn.style.color = 'var(--red)';
+    warn.textContent = `${over_zero} bin${over_zero===1?'':'s'} > 0 dBFS`;
+    status.appendChild(sep);
+    status.appendChild(warn);
+  }
   SPEC.lastData = { mag_db: data.mag_db, center_hz: data.center_hz, span_hz };
   drawSpectrumCached();
 }
@@ -2313,6 +2327,18 @@ function drawSpectrum(mag_db, center_hz, span_hz) {
     else ctx.lineTo(x + 0.5, y);
   }
   ctx.stroke();
+
+  // Clip indicator. Any pixel column whose max exceeds the Y-axis
+  // top (yMax) gets a bright red tick at the top row so the user
+  // can tell the trace is being clipped off the top rather than the
+  // signal actually running into 0 dBFS. Most common trigger: the
+  // spectrum reference was miscalibrated OR a front-end gain stage
+  // is genuinely saturating. Either way, the user can see where.
+  const clip_h = Math.max(2, Math.round(3 * dpr));
+  ctx.fillStyle = '#ef4444';
+  for (let x = 0; x < w; x++) {
+    if (maxs[x] > yMax) ctx.fillRect(x, 0, 1, clip_h);
+  }
 
   // Labels. Use DPR-scaled font so HiDPI displays get crisp text.
   ctx.fillStyle = '#cbd5e1';

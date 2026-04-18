@@ -24,14 +24,14 @@ use std::f32::consts::PI;
 
 /// Default FFT size when the client omits `?fft=`. 4096 complex
 /// samples → ~15 Hz bin width at 62.5 kSPS.
-pub const DEFAULT_DEFAULT_FFT_SIZE: usize = 4096;
+pub const DEFAULT_FFT_SIZE: usize = 4096;
 
 /// Legal FFT sizes for `?fft=`. Must be power-of-two (radix-2
 /// Cooley-Tukey) and bounded above by a value that keeps the per-
 /// request work on the Zynq-7020 Cortex-A9 cheap enough for live
 /// polling. 16384 is ~3.8 Hz bin width at 62.5 kSPS — plenty for
 /// P25 channel-shape analysis.
-pub const LEGAL_DEFAULT_FFT_SIZES: &[usize] = &[1024, 2048, 4096, 8192, 16384];
+pub const LEGAL_FFT_SIZES: &[usize] = &[1024, 2048, 4096, 8192, 16384];
 
 /// Sample rate of the post-DDC IQ stream. Both chains run at this
 /// rate (control DDC / traffic DDC both terminate at 62.5 kSPS).
@@ -155,13 +155,13 @@ pub struct Snapshot {
 }
 
 /// Clamp a requested FFT size to the nearest legal value (power-of-
-/// two from `LEGAL_DEFAULT_FFT_SIZES`). Invalid / missing returns
-/// `DEFAULT_DEFAULT_FFT_SIZE`. Exposed so the handler can echo the effective
+/// two from `LEGAL_FFT_SIZES`). Invalid / missing returns
+/// `DEFAULT_FFT_SIZE`. Exposed so the handler can echo the effective
 /// value back to the client.
 pub fn clamp_fft_size(requested: Option<usize>) -> usize {
     match requested {
-        Some(n) if LEGAL_DEFAULT_FFT_SIZES.contains(&n) => n,
-        _ => DEFAULT_DEFAULT_FFT_SIZE,
+        Some(n) if LEGAL_FFT_SIZES.contains(&n) => n,
+        _ => DEFAULT_FFT_SIZE,
     }
 }
 
@@ -228,8 +228,23 @@ pub fn spectrum_from_bytes(
         }
     }
 
+    // dBFS calibration. Peak-of-single-full-scale-tone convention:
+    // a complex tone at amplitude A produces a peak bin with magnitude
+    // |X(k)| = A · Σw, so |X|² = A²·(Σw)². Picking A = 32768 (i16 full
+    // scale) as the 0 dBFS reference and expressing (Σw) explicitly
+    // rather than hard-coding the Hann value means non-Hann windows
+    // Just Work if we swap later.
+    //
+    // Pre-fix: ref_sq was 32768² which effectively reads bin power
+    // *without* compensating for coherent FFT gain, so a full-scale
+    // tone on one bin was reported as ≈ +20·log10(Σw / 1) dB ≈ +66 dB
+    // (N=4096, Hann). Observed on-target: P25 carriers showing peaks
+    // above +10 dBFS, with the plot Y-top at 0 dB clipping them.
+    let window_sum: f32 = win.iter().sum();
+    let ref_amplitude: f32 = 32768.0;
+    let ref_sq: f32 = (ref_amplitude * window_sum).powi(2);
+
     let inv_k = 1.0 / averages_used as f32;
-    let ref_sq = (32768.0f32).powi(2);
     let mut mag_db: Vec<f32> = mag_sq_acc
         .iter()
         .map(|m2| {
@@ -331,5 +346,35 @@ mod tests {
             .0;
         assert_eq!(peak, DEFAULT_FFT_SIZE / 2,
             "DC peak at bin {peak}, expected {}", DEFAULT_FFT_SIZE / 2);
+    }
+
+    #[test]
+    fn spectrum_full_scale_tone_reads_near_0_dbfs() {
+        // A complex full-scale tone should read ≈ 0 dBFS on its
+        // peak bin. Without the window-sum compensation in
+        // spectrum_from_bytes this came out ~+66 dB for N=4096.
+        let n = DEFAULT_FFT_SIZE;
+        let k_target = 100usize;
+        let mut re = vec![0i16; n];
+        let mut im = vec![0i16; n];
+        for k in 0..n {
+            let phase = 2.0 * PI * k_target as f32 * k as f32 / n as f32;
+            re[k] = (32767.0 * phase.cos()) as i16;
+            im[k] = (32767.0 * phase.sin()) as i16;
+        }
+        let bytes = make_iq_bytes(&re, &im);
+        let snap = spectrum_from_bytes(&bytes, n, 1).unwrap();
+        let peak_db = snap
+            .mag_db
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+        // Tolerance covers Hann scalloping (peak not exactly at bin
+        // center under windowing rounding) + 1 ULP of int rounding.
+        // Expect -1 to +0.5 dB for a bin-centered full-scale tone.
+        assert!(
+            peak_db > -2.0 && peak_db < 1.0,
+            "full-scale tone peak = {peak_db} dB, expected near 0 dBFS"
+        );
     }
 }
