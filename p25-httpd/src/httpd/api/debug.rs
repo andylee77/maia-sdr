@@ -75,15 +75,19 @@ pub async fn get_spectrum(
     let min_bytes = min_samples * 4;
 
     // Pull buffers from the requested ring. read_*_buffers() is a
-    // rolling-window reader — call it once, accumulate what it
-    // returned, then retry with the lock released if we still don't
-    // have enough samples. For averages=1, fft_size=4096 this is the
-    // original ~65 ms snapshot; for averages=16 it can need up to
-    // ~1 s of ring data.
+    // rolling-window reader with a single shared cursor per channel,
+    // so every reader (/api/constellation, /ws/iq, another
+    // /api/spectrum tab) partitions the arriving sub-buffers. On
+    // boards where the constellation + spectrum + live-IQ all tick
+    // concurrently, any one reader can be starved for a window.
+    // Retry window is sized for 3 s of wall-clock to survive that
+    // contention — sub-buffers arrive every ~131 ms, so even 50%
+    // contention still gives us ~11 fresh buffers to catch across
+    // 3 s, which covers up to averages=16 × fft=16384.
     let bytes: Vec<u8> = {
         let mut acc: Vec<u8> = Vec::with_capacity(min_bytes);
         let deadline = std::time::Instant::now()
-            + std::time::Duration::from_millis(1500);
+            + std::time::Duration::from_millis(3000);
         loop {
             {
                 let mut core = state.ip_core.lock().await;
@@ -109,7 +113,7 @@ pub async fn get_spectrum(
             if std::time::Instant::now() >= deadline {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         }
         acc
     };

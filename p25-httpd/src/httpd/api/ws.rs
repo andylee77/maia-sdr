@@ -239,9 +239,12 @@ async fn handle_ws_iq(
     }
 
     // Poll cadence: sub-buffers arrive every ~131 ms on a healthy
-    // bitstream. 40 ms polling keeps us responsive without spinning
-    // on the lock — most ticks are empty, cheap.
-    let mut tick = tokio::time::interval(Duration::from_millis(40));
+    // bitstream. 80 ms polling still catches every sub-buffer while
+    // roughly halving the lock pressure on ip_core — important
+    // because /api/spectrum and /api/constellation share the same
+    // DMA cursor and racing with this handler was causing occasional
+    // "not enough IQ samples" misses on the polled spectrum view.
+    let mut tick = tokio::time::interval(Duration::from_millis(80));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {

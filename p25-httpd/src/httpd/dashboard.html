@@ -250,7 +250,7 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       <span class="v" id="iq_status" style="font-size:0.8em;color:var(--text-dim)"></span>
     </div>
     <canvas id="iq_canvas"
-      style="width:100%;aspect-ratio:1/1;background:#0a0f1a;border:1px solid #1f2937;display:block"></canvas>
+      style="width:100%;max-width:360px;aspect-ratio:1/1;background:#0a0f1a;border:1px solid #1f2937;display:block;margin:0 auto"></canvas>
     <div style="font-size:0.75em;color:var(--text-dim);margin-top:4px">
       Post-PLL decision (I, Q) from the Phase 6D software LSM demod.
       Clean LSM = 4 tight clusters near ±1, ±j. Tilt ⇒ phase rotation;
@@ -284,11 +284,11 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
           <option value="4">4</option>
         </select>
       </label>
-      <label><input type="checkbox" id="eye_enable"> <b>Live</b></label>
+      <label><input type="checkbox" id="eye_enable" onchange="restartEye()"> <b>Live</b></label>
       <span class="v" id="eye_status" style="font-size:0.8em;color:var(--text-dim)">disabled</span>
     </div>
     <canvas id="eye_canvas"
-      style="width:100%;aspect-ratio:1/1;background:#0a0f1a;border:1px solid #1f2937;display:block"></canvas>
+      style="width:100%;max-width:360px;aspect-ratio:1/1;background:#0a0f1a;border:1px solid #1f2937;display:block;margin:0 auto"></canvas>
     <div style="font-size:0.75em;color:var(--text-dim);margin-top:4px">
       Raw post-DDC IQ from /ws/iq, sliced into N-symbol windows at the
       P25 symbol rate (4800 sym/s → 13.02 samples/sym @ 62.5 kSPS) and
