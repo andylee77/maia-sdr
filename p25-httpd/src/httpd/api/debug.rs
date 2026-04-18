@@ -192,33 +192,40 @@ pub async fn get_constellation(
         .map(String::as_str)
         .unwrap_or("traffic");
 
-    // Same 2-try read pattern as /api/spectrum: drop the lock
-    // between retries so the producer can push new samples.
+    // Same ring-drain-race mitigation as /api/spectrum: the iq_dma
+    // cursor is shared across all readers, so /ws/iq and /api/spectrum
+    // can drain sub-buffers faster than the constellation poller sees
+    // them. Retry with a 3 s deadline and 60 ms cadence — sub-buffers
+    // arrive every ~131 ms, so 3 s gives ~22 opportunities even under
+    // 50% reader contention. The constellation needs at least 2048
+    // samples (8 KB) = ~33 ms of fresh IQ, well inside the budget.
+    let min_bytes: usize = 4 * 2048;
     let bytes: Vec<u8> = {
-        let mut core = state.ip_core.lock().await;
         let mut acc: Vec<u8> = Vec::new();
-        for _retry in 0..2 {
-            let bufs: Vec<&[u8]> = match chain {
-                "control" => core.read_iq_buffers(),
-                "traffic" => core.read_traffic_iq_buffers(),
-                other => {
-                    return Json(serde_json::json!({
-                        "ok": false,
-                        "error": format!(
-                            "unknown chain '{other}'; expected control|traffic"
-                        ),
-                    }));
-                }
-            };
-            if !bufs.is_empty() {
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(3000);
+        loop {
+            {
+                let mut core = state.ip_core.lock().await;
+                let bufs: Vec<&[u8]> = match chain {
+                    "control" => core.read_iq_buffers(),
+                    "traffic" => core.read_traffic_iq_buffers(),
+                    other => {
+                        return Json(serde_json::json!({
+                            "ok": false,
+                            "error": format!(
+                                "unknown chain '{other}'; expected control|traffic"
+                            ),
+                        }));
+                    }
+                };
                 for b in bufs {
                     acc.extend_from_slice(b);
                 }
-                break;
             }
-            drop(core);
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            core = state.ip_core.lock().await;
+            if acc.len() >= min_bytes { break; }
+            if std::time::Instant::now() >= deadline { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         }
         acc
     };
