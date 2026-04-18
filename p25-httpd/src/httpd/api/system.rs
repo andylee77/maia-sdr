@@ -234,15 +234,21 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     },
     EndpointDoc {
         method: "GET",
-        path: "/api/control_iq_capture",
+        path: "/api/control_dibit_capture",
         params: "",
-        description: "One-shot capture of the control chain's post-DDC IQ ring (62.5 kSPS).",
+        description: "Rolling snapshot of the control LSM decoder's recent dibits (post-demod, up to 2048).",
     },
     EndpointDoc {
         method: "GET",
-        path: "/api/control_iq_capture_aligned",
+        path: "/api/control_dibit_capture_aligned",
         params: "",
-        description: "Sync-aligned control IQ capture for offline software-pipeline cross-check.",
+        description: "Sync-aligned one-shot dibit + decoded-frame trace for offline pipeline cross-check.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/control_iq_dump",
+        params: "?seconds=N (1..60, default 5)",
+        description: "Post-DDC complex IQ from the control chain as a WAV file (stereo i16 @ 62.5 kSPS, I=L / Q=R). SDRTrunk-ingestible.",
     },
     EndpointDoc {
         method: "GET",
@@ -258,15 +264,21 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     },
     EndpointDoc {
         method: "GET",
-        path: "/api/traffic_iq_capture",
+        path: "/api/traffic_dibit_capture",
         params: "",
-        description: "Traffic-chain twin of /api/control_iq_capture. Rolling dibit snapshot.",
+        description: "Traffic-chain twin of /api/control_dibit_capture. Rolling dibit snapshot.",
     },
     EndpointDoc {
         method: "GET",
-        path: "/api/traffic_iq_capture_aligned",
+        path: "/api/traffic_dibit_capture_aligned",
         params: "",
-        description: "Traffic-chain twin of /api/control_iq_capture_aligned. Arms next sync hit.",
+        description: "Traffic-chain twin of /api/control_dibit_capture_aligned. Arms next sync hit.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/traffic_iq_dump",
+        params: "?seconds=N (1..60, default 5)",
+        description: "Traffic-chain twin of /api/control_iq_dump. Post-DDC IQ WAV, centered on the follower's current NCO offset.",
     },
     EndpointDoc {
         method: "GET",

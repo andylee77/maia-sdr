@@ -216,22 +216,24 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/decoder_compare", get(api::radio::get_decoder_compare))
         .route("/api/dibit_dump", get(api::chain::get_dibit_dump))
         // 2026-04-16 rename: /api/lsm_* → /api/control_lsm_* so the
-        // soon-to-be-added /api/traffic_iq_capture + traffic LSM
-        // endpoints have a symmetric counterpart on the control side.
-        // Previously the "lsm" prefix was misleading for iq_capture
-        // (the IQ ring is post-DDC, before the LSM demod); now each
-        // chain's IQ capture is explicitly named by channel role.
+        // traffic-chain endpoints have a symmetric counterpart on the
+        // control side. 2026-04-18 rename: /api/*_iq_capture{,_aligned}
+        // → /api/*_dibit_capture{,_aligned} because those endpoints
+        // return dibits (post-demod), not IQ. /api/*_iq_dump is the
+        // new endpoint that returns actual post-DDC complex IQ as WAV.
         .route("/api/control_lsm_dibit_dump", get(api::chain::get_control_lsm_dibit_dump))
-        .route("/api/control_iq_capture", get(api::chain::get_control_iq_capture))
-        .route("/api/control_iq_capture_aligned", get(api::chain::get_control_iq_capture_aligned))
+        .route("/api/control_dibit_capture", get(api::chain::get_control_dibit_capture))
+        .route("/api/control_dibit_capture_aligned", get(api::chain::get_control_dibit_capture_aligned))
+        .route("/api/control_iq_dump", get(api::chain::get_control_iq_dump))
         // Traffic-chain counterparts (Phase 10-prep, 2026-04-16).
         // Identical response shape to the control-side endpoints,
         // but read from `traffic_lsm_decoder` + traffic HDL regs.
         // Needed for symmetric gain / slicer / sync debugging of
         // the post-retune traffic chain without waiting for a call.
         .route("/api/traffic_lsm_dibit_dump", get(api::chain::get_traffic_lsm_dibit_dump))
-        .route("/api/traffic_iq_capture", get(api::chain::get_traffic_iq_capture))
-        .route("/api/traffic_iq_capture_aligned", get(api::chain::get_traffic_iq_capture_aligned))
+        .route("/api/traffic_dibit_capture", get(api::chain::get_traffic_dibit_capture))
+        .route("/api/traffic_dibit_capture_aligned", get(api::chain::get_traffic_dibit_capture_aligned))
+        .route("/api/traffic_iq_dump", get(api::chain::get_traffic_iq_dump))
         .route("/api/traffic_lsm_control", get(api::chain::get_traffic_lsm_control))
         // Phase 10-prep: live AD9361 RX gain knob. Previously only
         // reachable via /api/reinit (which rewrites everything);

@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::State,
+    response::Response,
     Json,
 };
 
@@ -72,15 +73,16 @@ pub async fn get_traffic_lsm_dibit_dump(
 /// Phase 6F.2h diagnostic capture endpoint.
 ///
 /// Returns the LSM decoder's `recent_dibits` rolling buffer (up to 2048
-/// raw on-air dibits) as a base64-encoded byte array, one byte per
-/// dibit (only the low 2 bits used). Also returns a hex-string view
-/// for human readability and the cumulative dibit counter at capture
-/// time so a follow-up call can detect overlaps.
+/// raw on-air dibits) as a hex string + the cumulative dibit counter
+/// at capture time so a follow-up call can detect overlaps.
 ///
 /// Arming the next-sync alignment capture is a separate endpoint
-/// (`/api/control_iq_capture_aligned`); this one just returns
+/// (`/api/control_dibit_capture_aligned`); this one just returns
 /// whatever's currently in the rolling buffer with no waiting.
-pub async fn get_control_iq_capture(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+///
+/// **Not IQ** — this returns post-demod hard-decision dibits. For raw
+/// post-DDC complex IQ samples use `/api/control_iq_dump`.
+pub async fn get_control_dibit_capture(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let decoder = state.lsm_decoder.read().await;
     let dibits: Vec<u8> = decoder.recent_dibits.iter().copied().collect();
     let hex: String = dibits.iter().map(|d| format!("{:1X}", d & 0x3)).collect();
@@ -94,9 +96,9 @@ pub async fn get_control_iq_capture(State(state): State<Arc<AppState>>) -> Json<
 }
 
 
-/// Phase 10-prep: traffic-side counterpart of `/api/control_iq_capture`.
+/// Phase 10-prep: traffic-side counterpart of `/api/control_dibit_capture`.
 /// Rolling recent-dibits buffer from the traffic LSM decoder.
-pub async fn get_traffic_iq_capture(
+pub async fn get_traffic_dibit_capture(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
     let decoder = state.traffic_lsm_decoder.read().await;
@@ -107,7 +109,7 @@ pub async fn get_traffic_iq_capture(
         "captured":     dibits.len(),
         "total_dibits": decoder.total_dibits(),
         "dibits_hex":   hex,
-        "note": "Same shape as /api/control_iq_capture, but reads from the \
+        "note": "Same shape as /api/control_dibit_capture, but reads from the \
                  traffic-chain rolling dibit buffer so post-retune slicer \
                  behaviour can be inspected without a call being active.",
     }))
@@ -136,7 +138,10 @@ pub async fn get_traffic_iq_capture(
 /// capture flag, then waits up to 2 seconds for the next sync hit. If
 /// no sync hits in that window it returns `{"status": "timeout"}`.
 /// Otherwise it returns the snapshot and clears the armed state.
-pub async fn get_control_iq_capture_aligned(
+///
+/// **Not IQ** — this returns post-demod decoded frame data. For raw
+/// post-DDC complex IQ samples use `/api/control_iq_dump`.
+pub async fn get_control_dibit_capture_aligned(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
     use std::time::{Duration, Instant};
@@ -181,11 +186,11 @@ pub async fn get_control_iq_capture_aligned(
 
 
 /// Phase 10-prep: traffic-side counterpart of
-/// `/api/control_iq_capture_aligned`. Same arm + wait protocol but
+/// `/api/control_dibit_capture_aligned`. Same arm + wait protocol but
 /// against the traffic LSM decoder. Useful for debug-capturing a
 /// post-retune TDU or LDU frame to see where the slicer / framer
 /// is landing before the grant follower cancels the retune.
-pub async fn get_traffic_iq_capture_aligned(
+pub async fn get_traffic_dibit_capture_aligned(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
     use std::time::{Duration, Instant};
@@ -224,6 +229,239 @@ pub async fn get_traffic_iq_capture_aligned(
     }
 }
 
+
+// ── IQ dump endpoints (2026-04-18) ───────────────────────────────
+//
+// Post-DDC complex IQ capture, served as a WAV file so SDRTrunk and
+// similar tools can replay it through their own demod. The ring
+// already exists — /api/spectrum and /api/constellation both read
+// from it — so the endpoint is a thin "accumulate N seconds of sub-
+// buffers and wrap in RIFF". The bytes in each sub-buffer are
+// already little-endian i16 interleaved (re, im), which is exactly
+// WAV stereo i16 PCM layout, so no sample conversion is needed.
+//
+// Primary use case: Phase 10.5 item 1a SDRTrunk cross-validation —
+// capture during a "loose" cluster_var_mean moment, replay on a PC,
+// determine whether the X-pattern is upstream of our demod loop.
+// Also used for eye-plot offline analysis.
+//
+// Sample rate is fixed at post-DDC 62.5 kSPS on both chains; the
+// same value is exported by spectrum::SAMPLE_RATE_HZ.
+
+/// Post-DDC sample rate on both chains. Matches spectrum::SAMPLE_RATE_HZ.
+const IQ_DUMP_SAMPLE_RATE_HZ: u32 = 62_500;
+
+/// Maximum seconds per /api/*_iq_dump request. 60 s × 62.5 kSPS ×
+/// 4 bytes = 14.6 MB; higher values blow HTTP client timeouts and
+/// are better served by multiple back-to-back calls.
+const IQ_DUMP_MAX_SECONDS: u32 = 60;
+
+/// Default seconds when the client omits `?seconds=`.
+const IQ_DUMP_DEFAULT_SECONDS: u32 = 5;
+
+/// Wrap a little-endian i16-stereo-interleaved byte buffer in a PCM
+/// WAV container at the given sample rate. Matches SDRTrunk's own
+/// "save baseband IQ" format, so files written by this endpoint open
+/// natively in SDRTrunk with I→left, Q→right.
+fn wrap_as_wav(iq_bytes: &[u8], sample_rate_hz: u32) -> Vec<u8> {
+    let channels: u16 = 2;
+    let bits_per_sample: u16 = 16;
+    let byte_rate: u32 = sample_rate_hz * channels as u32 * bits_per_sample as u32 / 8;
+    let block_align: u16 = channels * bits_per_sample / 8;
+    let data_size: u32 = iq_bytes.len() as u32;
+    let riff_size: u32 = 36 + data_size;
+
+    let mut out = Vec::with_capacity(44 + iq_bytes.len());
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&riff_size.to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());   // fmt chunk size
+    out.extend_from_slice(&1u16.to_le_bytes());    // PCM
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&sample_rate_hz.to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&block_align.to_le_bytes());
+    out.extend_from_slice(&bits_per_sample.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_size.to_le_bytes());
+    out.extend_from_slice(iq_bytes);
+    out
+}
+
+/// Parse + clamp the `?seconds=` query param. Invalid / missing →
+/// `IQ_DUMP_DEFAULT_SECONDS`; out-of-range → clamp.
+fn parse_seconds(params: &std::collections::HashMap<String, String>) -> u32 {
+    params
+        .get("seconds")
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(IQ_DUMP_DEFAULT_SECONDS)
+        .clamp(1, IQ_DUMP_MAX_SECONDS)
+}
+
+#[cfg(target_os = "linux")]
+fn iq_dump_error_response(msg: String) -> Response {
+    use axum::http::StatusCode;
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            serde_json::json!({ "ok": false, "error": msg }).to_string(),
+        ))
+        .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn wav_response(wav: Vec<u8>, chain: &str, seconds: u32) -> Response {
+    use axum::http::StatusCode;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let filename = format!(
+        "{chain}_{}_{ts}_{seconds}s.wav",
+        IQ_DUMP_SAMPLE_RATE_HZ
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "audio/wav")
+        .header(
+            "content-disposition",
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .header("x-sample-rate-hz", IQ_DUMP_SAMPLE_RATE_HZ.to_string())
+        .header("x-channels", "2")
+        .header("x-format", "i16le-iq-stereo")
+        .body(axum::body::Body::from(wav))
+        .unwrap()
+}
+
+/// `GET /api/control_iq_dump?seconds=N`
+///
+/// Captures N seconds of post-DDC complex IQ from the control chain's
+/// `iq_dma` ring (62.5 kSPS) and returns it as a PCM WAV file with
+/// I=left, Q=right. `seconds` defaults to 5, clamps to 1..60.
+///
+/// The ring emits 32 KB sub-buffers (8192 complex samples ≈ 131 ms)
+/// via DMA, so the handler holds the `ip_core` lock only in short
+/// windows to let the consumer drain without blocking the reader.
+/// Total time-to-respond ≈ `seconds` plus ~200 ms of slack.
+#[cfg(target_os = "linux")]
+pub async fn get_control_iq_dump(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let seconds = parse_seconds(&params);
+    match accumulate_iq(&state, "control", seconds).await {
+        Ok(bytes) => wav_response(wrap_as_wav(&bytes, IQ_DUMP_SAMPLE_RATE_HZ), "control", seconds),
+        Err(msg) => iq_dump_error_response(msg),
+    }
+}
+
+/// `GET /api/traffic_iq_dump?seconds=N`
+///
+/// Traffic-chain counterpart of `/api/control_iq_dump`. Reads the
+/// `traffic_iq_dma` ring instead; the DDC center is the follower's
+/// current NCO offset (RX LO + TrafficManager.last_offset_hz), so the
+/// captured IQ is already centered on whatever traffic frequency the
+/// grant follower last retuned to. Requires the bake-#2 bitstream.
+#[cfg(target_os = "linux")]
+pub async fn get_traffic_iq_dump(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let seconds = parse_seconds(&params);
+    match accumulate_iq(&state, "traffic", seconds).await {
+        Ok(bytes) => wav_response(wrap_as_wav(&bytes, IQ_DUMP_SAMPLE_RATE_HZ), "traffic", seconds),
+        Err(msg) => iq_dump_error_response(msg),
+    }
+}
+
+/// Non-Linux stubs so the workspace still compiles on Windows for
+/// cargo check. Same shape as the other target-gated endpoints.
+#[cfg(not(target_os = "linux"))]
+pub async fn get_control_iq_dump(
+    State(_state): State<Arc<AppState>>,
+    axum::extract::Query(_params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    iq_dump_stub_response()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn get_traffic_iq_dump(
+    State(_state): State<Arc<AppState>>,
+    axum::extract::Query(_params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    iq_dump_stub_response()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn iq_dump_stub_response() -> Response {
+    use axum::http::StatusCode;
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            serde_json::json!({
+                "ok": false,
+                "error": "iq_dump only available on the target (linux/arm)",
+            })
+            .to_string(),
+        ))
+        .unwrap()
+}
+
+/// Core loop: poll the chain's iq_dma ring for `seconds` wall-clock
+/// seconds, accumulating raw bytes. Holds the `ip_core` mutex only
+/// while calling `read_*_iq_buffers()` so other HDL readers are not
+/// starved. Returns the accumulated little-endian-i16-stereo bytes.
+#[cfg(target_os = "linux")]
+async fn accumulate_iq(
+    state: &Arc<AppState>,
+    chain: &str,
+    seconds: u32,
+) -> Result<Vec<u8>, String> {
+    let target_samples: usize = (seconds as usize) * (IQ_DUMP_SAMPLE_RATE_HZ as usize);
+    let target_bytes: usize = target_samples * 4;
+    let mut acc: Vec<u8> = Vec::with_capacity(target_bytes);
+
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis((seconds as u64) * 1000 + 2000);
+
+    while acc.len() < target_bytes && std::time::Instant::now() < deadline {
+        {
+            let mut core = state.ip_core.lock().await;
+            let bufs: Vec<&[u8]> = match chain {
+                "control" => core.read_iq_buffers(),
+                "traffic" => core.read_traffic_iq_buffers(),
+                other => {
+                    return Err(format!(
+                        "unknown chain '{other}'; expected control|traffic"
+                    ));
+                }
+            };
+            for b in bufs {
+                acc.extend_from_slice(b);
+                if acc.len() >= target_bytes {
+                    break;
+                }
+            }
+        }
+        if acc.len() < target_bytes {
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        }
+    }
+
+    if acc.len() < 4 {
+        return Err(format!(
+            "no IQ data available on chain={chain} within {seconds}+2 s; \
+             is iq_dma enabled in the current bitstream?"
+        ));
+    }
+
+    acc.truncate(target_bytes.min(acc.len() - (acc.len() % 4)));
+    Ok(acc)
+}
 
 /// Phase 6G.2: read-back of the `lsm_control` register, plus an
 /// optional GET-with-query-param shortcut for toggling

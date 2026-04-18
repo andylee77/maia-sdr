@@ -13,11 +13,11 @@ check against SDRTrunk.
 
 Usage:
     # Live capture from the radio:
-    wget -qO capture.json http://fishball.local:8080/api/control_iq_capture_aligned
+    wget -qO capture.json http://fishball.local:8080/api/control_dibit_capture_aligned
     python tools/p25_decode_capture.py capture.json
 
     # Or pipe directly:
-    wget -qO - http://fishball.local:8080/api/control_iq_capture_aligned \\
+    wget -qO - http://fishball.local:8080/api/control_dibit_capture_aligned \\
         | python tools/p25_decode_capture.py -
 
 What it prints:

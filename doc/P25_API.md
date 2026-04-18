@@ -108,10 +108,12 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 | `/api/dibit_dump` | GET | JSON | Raw C4FM dibit DMA ring (inner/outer ratio, raw_duid histogram) |
 | `/api/control_lsm_dibit_dump` | GET | JSON | Raw control-chain LSM dibit DMA ring |
 | `/api/traffic_lsm_dibit_dump` | GET | JSON | Raw traffic-chain LSM dibit DMA ring (symmetric to control side) |
-| `/api/control_iq_capture` | GET | JSON | Rolling IQ capture from control-chain PS ring (post-DDC) |
-| `/api/traffic_iq_capture` | GET | JSON | Rolling IQ capture from traffic-chain PS ring |
-| `/api/control_iq_capture_aligned` | GET | JSON | Next-sync-aligned capture with sync + NID + TSDU body + BCH result |
-| `/api/traffic_iq_capture_aligned` | GET | JSON | Same alignment scheme, traffic side |
+| `/api/control_dibit_capture` | GET | JSON | Rolling dibit snapshot from control-chain LSM decoder (post-demod, up to 2048 dibits) |
+| `/api/traffic_dibit_capture` | GET | JSON | Same shape, traffic-chain LSM decoder |
+| `/api/control_dibit_capture_aligned` | GET | JSON | Next-sync-aligned capture with sync + NID + TSDU body + BCH result |
+| `/api/traffic_dibit_capture_aligned` | GET | JSON | Same alignment scheme, traffic side |
+| `/api/control_iq_dump` | GET | WAV (audio/wav) | Post-DDC complex IQ samples as a WAV file (stereo i16 @ 62.5 kSPS, I=L/Q=R). `?seconds=N` (1..60, default 5). SDRTrunk-ingestible |
+| `/api/traffic_iq_dump` | GET | WAV (audio/wav) | Same as control side, centered on the follower's current NCO offset |
 | `/api/control_lsm_control` | GET | JSON | Read all 4 control-chain `lsm_control` bits (enable / dma_enable / dc_block / agc). `?dc_block=0\|1` toggles DC blocker |
 | `/api/traffic_lsm_control` | GET | JSON | Same, traffic chain. `?dc_block=0\|1` and `?agc=0\|1` writable |
 | `/api/nid_capture` | GET | JSON | Per-DUID NID ring with BCH distance + sync distance |
@@ -792,8 +794,9 @@ fetched on a 2-second interval; the WebSocket runs in parallel.
 Endpoints **not** consumed by the dashboard (snapshot / debugging
 tools only): `/api/recent_tsbks` (used by `tools/p25_check_phase6f4.py`
 and `tools/p25_status_and_next_step.py`), `/api/tsbk_opcodes`
-(opcode coverage report), `/api/control_iq_capture` and
-`/api/control_iq_capture_aligned` (raw IQ pulls for offline cross-validation),
+(opcode coverage report), `/api/control_dibit_capture` and
+`/api/control_dibit_capture_aligned` (raw dibit pulls for offline cross-validation),
+`/api/control_iq_dump` and `/api/traffic_iq_dump` (post-DDC IQ WAV for SDRTrunk replay),
 `/api/sync_tune` and `/api/decoder_reset` (operator knobs).
 
 ---
