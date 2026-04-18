@@ -117,7 +117,11 @@ class P25Core(Elaboratable):
     def __init__(self, config=P25Config()):
         config.validate()
         self.config = config
-        self.axi4_awidth = 7  # 7 bits = 128 registers (control, recorder, sdr, demod, traffic)
+        # 2026-04-18 widened 7 → 8 for Phase 10.6 telemetry + post-LSM
+        # IQ DMA banks. 8 bits = 256 bytes address space; the bank
+        # decoder below now uses [6:3] (4 bits = 16 banks of 32 B
+        # each). Previous layout (7 bits, 8 banks) was full.
+        self.axi4_awidth = 8
         self.s_axi_lite = ClockDomain()
         self.sampling = ClockDomain()
         self.sync = ClockDomain()
@@ -159,6 +163,12 @@ class P25Core(Elaboratable):
                     # 2026-04-16: traffic-channel post-DDC IQ ring DMA
                     # (chain-symmetry fix; mirrors `iq_dma`)
                     Field('traffic_iq_dma', Access.Rsticky, 1, 0),
+                    # Phase 10.6 2026-04-18: post-LSM-chain matched-filter
+                    # IQ ring DMAs. One per chain. Semantics match
+                    # `iq_dma` / `traffic_iq_dma` exactly -- fire on
+                    # each sub-buffer completion, PS reads + clears.
+                    Field('lsm_iq_dma', Access.Rsticky, 1, 0),
+                    Field('traffic_lsm_iq_dma', Access.Rsticky, 1, 0),
                 ], interrupt=True),
             },
             2)
@@ -276,6 +286,34 @@ class P25Core(Elaboratable):
                     Field('iq_enable', Access.RW, 1, 0),
                 ]),
                 0b10: Register('iq_next_address', [
+                    Field('next_address', Access.R, 32, 0),
+                ]),
+            },
+            2)
+
+        # ── Control channel post-LSM IQ ring DMA (Phase 10.6, 2026-04-18) ─
+        # Second IQ tap on the control chain, fed from the LSM chain's
+        # RRC matched-filter output (`lsm_rrc.re_out/im_out/strobe_out`).
+        # Matched-filter-eye source for the dashboard; same packing +
+        # DMA layout as `iq_dma`, only the tap point and sample rate
+        # (31.25 kSPS vs 62.5) differ. Register bank at 0x100.
+        self.lsm_iq_packer = IQPacker()
+        self.lsm_iq_dma = DmaStreamRingWrite(
+            config.lsm_iq_dma_address,
+            config.lsm_iq_dma_num_buffers_log2,
+            config.lsm_iq_dma_buffer_size,
+            width=64, axi_awidth=32, name='m_axi_lsm_iq')
+        self.lsm_iq_registers = Registers(
+            'lsm_iq', {
+                0b00: Register('lsm_iq_dma_status', [
+                    Field('lsm_iq_overflow', Access.Rsticky, 1, 0),
+                    Field('last_buffer', Access.R,
+                          config.lsm_iq_dma_num_buffers_log2, -1),
+                ]),
+                0b01: Register('lsm_iq_dma_control', [
+                    Field('lsm_iq_enable', Access.RW, 1, 0),
+                ]),
+                0b10: Register('lsm_iq_next_address', [
                     Field('next_address', Access.R, 32, 0),
                 ]),
             },
@@ -644,6 +682,32 @@ class P25Core(Elaboratable):
             },
             2)
 
+        # ── Traffic channel post-LSM IQ ring DMA (Phase 10.6, 2026-04-18) ─
+        # Traffic-side twin of `lsm_iq_dma`. Tapped from
+        # `traffic_lsm_rrc.re_out/im_out/strobe_out`. Register bank at
+        # 0x120. See the control-side comment above for rate / sizing.
+        self.traffic_lsm_iq_packer = IQPacker()
+        self.traffic_lsm_iq_dma = DmaStreamRingWrite(
+            config.traffic_lsm_iq_dma_address,
+            config.traffic_lsm_iq_dma_num_buffers_log2,
+            config.traffic_lsm_iq_dma_buffer_size,
+            width=64, axi_awidth=32, name='m_axi_traffic_lsm_iq')
+        self.traffic_lsm_iq_registers = Registers(
+            'traffic_lsm_iq', {
+                0b00: Register('traffic_lsm_iq_dma_status', [
+                    Field('traffic_lsm_iq_overflow', Access.Rsticky, 1, 0),
+                    Field('last_buffer', Access.R,
+                          config.traffic_lsm_iq_dma_num_buffers_log2, -1),
+                ]),
+                0b01: Register('traffic_lsm_iq_dma_control', [
+                    Field('traffic_lsm_iq_enable', Access.RW, 1, 0),
+                ]),
+                0b10: Register('traffic_lsm_iq_next_address', [
+                    Field('next_address', Access.R, 32, 0),
+                ]),
+            },
+            2)
+
         # ── Register map ───────────────────────────────────────────────
         metadata = {
             'vendor': 'Andy Lee',
@@ -654,18 +718,21 @@ class P25Core(Elaboratable):
             'description': f'Fishball P25 IP core (platform {config.platform})',
             'licenseText': 'SPDX-License-Identifier: MIT',
         }
-        # Address banks: bits [5:3] of the word address select the bank
-        # (3 bits = 8 banks max). Each bank spans 8 words = 32 bytes (0x20).
+        # Address banks: bits [6:3] of the word address select the bank
+        # (4 bits = 16 banks max as of Phase 10.6; was 3 bits / 8 banks
+        # before 2026-04-18). Each bank spans 8 words = 32 bytes (0x20).
         # See doc/P25_ADDRESS_MAP.md for the canonical bank table.
         self.register_map = RegisterMap({
-            0x00: self.control_registers,
-            0x20: self.sdr_registers,
-            0x40: self.demod_registers,
-            0x60: self.traffic_registers,
-            0x80: self.iq_registers,        # Phase 6C
-            0xA0: self.lsm_registers,       # Phase 6E.9
-            0xC0: self.traffic_lsm_registers,  # Phase 7A.2
-            0xE0: self.traffic_iq_registers,   # 2026-04-16 chain-symmetry
+            0x00:  self.control_registers,
+            0x20:  self.sdr_registers,
+            0x40:  self.demod_registers,
+            0x60:  self.traffic_registers,
+            0x80:  self.iq_registers,             # Phase 6C
+            0xA0:  self.lsm_registers,            # Phase 6E.9
+            0xC0:  self.traffic_lsm_registers,    # Phase 7A.2
+            0xE0:  self.traffic_iq_registers,     # 2026-04-16 chain-symmetry
+            0x100: self.lsm_iq_registers,          # Phase 10.6 2026-04-18
+            0x120: self.traffic_lsm_iq_registers,  # Phase 10.6 2026-04-18
         }, metadata)
 
         # ── I/O signals ────────────────────────────────────────────────
@@ -683,6 +750,8 @@ class P25Core(Elaboratable):
             + self.iq_dma.axi.ports()       # Phase 6C
             + self.lsm_dibit_dma.axi.ports()  # Phase 6E.9
             + self.traffic_iq_dma.axi.ports()  # 2026-04-16
+            + self.lsm_iq_dma.axi.ports()           # Phase 10.6
+            + self.traffic_lsm_iq_dma.axi.ports()   # Phase 10.6
             + [
                 self.re_in,
                 self.im_in,
@@ -820,6 +889,14 @@ class P25Core(Elaboratable):
         m.submodules.iq_registers_cdc = iq_registers_cdc = RegisterCDC(
             's_axi_lite', 'sync', self.iq_registers.aw)
 
+        # Phase 10.6 (2026-04-18): control-chain post-LSM (matched-
+        # filter) IQ tap submodules. Tapped from lsm_rrc below.
+        m.submodules.lsm_iq_packer = self.lsm_iq_packer
+        m.submodules.lsm_iq_dma = self.lsm_iq_dma
+        m.submodules.lsm_iq_registers = self.lsm_iq_registers
+        m.submodules.lsm_iq_registers_cdc = lsm_iq_registers_cdc = RegisterCDC(
+            's_axi_lite', 'sync', self.lsm_iq_registers.aw)
+
         # Phase 6E.9: control-channel LSM demod chain submodules.
         # All run in the same `sync` domain alongside the C4FM
         # chain. Phase 8C tried to wrap `lsm_demod` in its own
@@ -919,6 +996,12 @@ class P25Core(Elaboratable):
                 PulseSynchronizer('sync', 's_axi_lite'))
         m.submodules.traffic_iq_dma_irq_sync = traffic_iq_dma_irq_sync = (
             PulseSynchronizer('sync', 's_axi_lite'))
+        # Phase 10.6 2026-04-18: post-LSM-chain IQ DMA interrupt sync.
+        m.submodules.lsm_iq_dma_irq_sync = lsm_iq_dma_irq_sync = (
+            PulseSynchronizer('sync', 's_axi_lite'))
+        m.submodules.traffic_lsm_iq_dma_irq_sync = (
+            traffic_lsm_iq_dma_irq_sync) = (
+                PulseSynchronizer('sync', 's_axi_lite'))
 
         m.d.comb += [
             dibit_dma_irq_sync.i.eq(self.dibit_dma.interrupt),
@@ -928,8 +1011,14 @@ class P25Core(Elaboratable):
             traffic_lsm_dibit_dma_irq_sync.i.eq(
                 self.traffic_lsm_dibit_dma.interrupt),
             traffic_iq_dma_irq_sync.i.eq(self.traffic_iq_dma.interrupt),
+            lsm_iq_dma_irq_sync.i.eq(self.lsm_iq_dma.interrupt),
+            traffic_lsm_iq_dma_irq_sync.i.eq(
+                self.traffic_lsm_iq_dma.interrupt),
             # Feed the synchronized pulses into the Rsticky bits.
             interrupts_reg['dibit_dma'].eq(dibit_dma_irq_sync.o),
+            interrupts_reg['lsm_iq_dma'].eq(lsm_iq_dma_irq_sync.o),
+            interrupts_reg['traffic_lsm_iq_dma'].eq(
+                traffic_lsm_iq_dma_irq_sync.o),
         ]
 
         # Demod status registers
@@ -1022,6 +1111,32 @@ class P25Core(Elaboratable):
             self.lsm_rrc.im_in.eq(self.lsm_lpf.im_out),
             self.lsm_rrc.strobe_in.eq(self.lsm_lpf.strobe_out),
         ]
+
+        # Phase 10.6 2026-04-18: post-LSM matched-filter IQ tap. The
+        # same `lsm_rrc.re_out / im_out / strobe_out` signals that feed
+        # LsmDemod are also packed into `lsm_iq_packer` -> `lsm_iq_dma`
+        # (256 KB ring at 0x1D00_0000). Running alongside the existing
+        # `iq_dma` (post-DDC tap at 0x1900_0000); PS chooses which to
+        # stream via the /ws/iq?source= API. 31.25 kSPS (half of post-
+        # DDC) — matched-filtered, unwarped by any timing/PLL loop,
+        # ideal as eye-plot source.
+        m.d.comb += [
+            self.lsm_iq_packer.re_in.eq(self.lsm_rrc.re_out),
+            self.lsm_iq_packer.im_in.eq(self.lsm_rrc.im_out),
+            self.lsm_iq_packer.strobe_in.eq(self.lsm_rrc.strobe_out),
+            self.lsm_iq_dma.stream_data.eq(self.lsm_iq_packer.data_out),
+            self.lsm_iq_dma.stream_valid.eq(self.lsm_iq_packer.data_valid),
+            self.lsm_iq_packer.stream_ready.eq(self.lsm_iq_dma.stream_ready),
+            self.lsm_iq_dma.enable.eq(
+                self.lsm_iq_registers['lsm_iq_dma_control']['lsm_iq_enable']),
+            self.lsm_iq_registers['lsm_iq_dma_status']['lsm_iq_overflow'].eq(
+                self.lsm_iq_packer.overflow),
+            self.lsm_iq_registers['lsm_iq_dma_status']['last_buffer'].eq(
+                self.lsm_iq_dma.last_buffer),
+            self.lsm_iq_registers['lsm_iq_next_address']['next_address'].eq(
+                self.lsm_iq_dma.axi.awaddr),
+        ]
+
         # Stage 4: RRC -> LsmDemod (timing recovery + diff demod +
         # PLL rotate + slicer + sync detect + BCH FEC). Outputs:
         # `dibit_out`/`symbol_strobe` (passthrough to dibit DMA) and
@@ -1440,6 +1555,45 @@ class P25Core(Elaboratable):
                 self.traffic_iq_dma.axi.awaddr),
         ]
 
+        # ── Traffic-channel post-LSM IQ ring DMA (Phase 10.6 2026-04-18) ──
+        # Traffic-side twin of `lsm_iq_dma`. Taps the output of
+        # `traffic_lsm_rrc` (the 105-tap RRC matched filter in the
+        # traffic LSM chain). Feeds `traffic_lsm_iq_dma` at
+        # 0x1E00_0000. See the control-chain block for the full
+        # rationale.
+        m.submodules.traffic_lsm_iq_packer = self.traffic_lsm_iq_packer
+        m.submodules.traffic_lsm_iq_dma = self.traffic_lsm_iq_dma
+        m.submodules.traffic_lsm_iq_registers = self.traffic_lsm_iq_registers
+        m.submodules.traffic_lsm_iq_registers_cdc = (
+            traffic_lsm_iq_registers_cdc) = RegisterCDC(
+                's_axi_lite', 'sync', self.traffic_lsm_iq_registers.aw)
+
+        m.d.comb += [
+            self.traffic_lsm_iq_packer.re_in.eq(self.traffic_lsm_rrc.re_out),
+            self.traffic_lsm_iq_packer.im_in.eq(self.traffic_lsm_rrc.im_out),
+            self.traffic_lsm_iq_packer.strobe_in.eq(
+                self.traffic_lsm_rrc.strobe_out),
+            self.traffic_lsm_iq_dma.stream_data.eq(
+                self.traffic_lsm_iq_packer.data_out),
+            self.traffic_lsm_iq_dma.stream_valid.eq(
+                self.traffic_lsm_iq_packer.data_valid),
+            self.traffic_lsm_iq_packer.stream_ready.eq(
+                self.traffic_lsm_iq_dma.stream_ready),
+            self.traffic_lsm_iq_dma.enable.eq(
+                self.traffic_lsm_iq_registers[
+                    'traffic_lsm_iq_dma_control']['traffic_lsm_iq_enable']),
+            self.traffic_lsm_iq_registers[
+                'traffic_lsm_iq_dma_status'][
+                    'traffic_lsm_iq_overflow'].eq(
+                self.traffic_lsm_iq_packer.overflow),
+            self.traffic_lsm_iq_registers[
+                'traffic_lsm_iq_dma_status']['last_buffer'].eq(
+                self.traffic_lsm_iq_dma.last_buffer),
+            self.traffic_lsm_iq_registers[
+                'traffic_lsm_iq_next_address']['next_address'].eq(
+                self.traffic_lsm_iq_dma.axi.awaddr),
+        ]
+
         # ── Register crossbar ─────────────────────────────────────────
         # Address map (word-addressed via AXI4-Lite, 7-bit address):
         # Bank field is bits [5:3] of the word address (3 bits = 8
@@ -1457,15 +1611,21 @@ class P25Core(Elaboratable):
         # bank decoder (bits [6:3]) and an AXI address width bump.
         address = Signal(self.axi4_awidth, reset_less=True)
         wdata = Signal(32, reset_less=True)
-        addr_bank = self.axi4lite.address[3:6]  # bits [5:3]
-        control_regs_select = (addr_bank == 0b000)
-        sdr_regs_select = (addr_bank == 0b001)
-        demod_regs_select = (addr_bank == 0b010)
-        traffic_regs_select = (addr_bank == 0b011)
-        iq_regs_select = (addr_bank == 0b100)       # Phase 6C
-        lsm_regs_select = (addr_bank == 0b101)      # Phase 6E.9
-        traffic_lsm_regs_select = (addr_bank == 0b110)   # Phase 7A.2
-        traffic_iq_regs_select = (addr_bank == 0b111)    # 2026-04-16
+        # 2026-04-18 widened: bank decode now bits [6:3] (4 bits = 16
+        # banks) to make room for the Phase 10.6 lsm_iq + traffic_lsm_iq
+        # register banks at 0x100 / 0x120.
+        addr_bank = self.axi4lite.address[3:7]  # bits [6:3]
+        control_regs_select = (addr_bank == 0b0000)
+        sdr_regs_select = (addr_bank == 0b0001)
+        demod_regs_select = (addr_bank == 0b0010)
+        traffic_regs_select = (addr_bank == 0b0011)
+        iq_regs_select = (addr_bank == 0b0100)       # Phase 6C
+        lsm_regs_select = (addr_bank == 0b0101)      # Phase 6E.9
+        traffic_lsm_regs_select = (addr_bank == 0b0110)   # Phase 7A.2
+        traffic_iq_regs_select = (addr_bank == 0b0111)    # 2026-04-16
+        # Phase 10.6 new banks at 0x100 / 0x120
+        lsm_iq_regs_select = (addr_bank == 0b1000)
+        traffic_lsm_iq_regs_select = (addr_bank == 0b1001)
         m.d.s_axi_lite += [
             self.axi4lite.rdata.eq(self.control_registers.rdata
                                    | sdr_registers_cdc.i_rdata
@@ -1474,7 +1634,9 @@ class P25Core(Elaboratable):
                                    | iq_registers_cdc.i_rdata
                                    | lsm_registers_cdc.i_rdata
                                    | traffic_lsm_registers_cdc.i_rdata
-                                   | traffic_iq_registers_cdc.i_rdata),
+                                   | traffic_iq_registers_cdc.i_rdata
+                                   | lsm_iq_registers_cdc.i_rdata
+                                   | traffic_lsm_iq_registers_cdc.i_rdata),
             self.axi4lite.rdone.eq(self.control_registers.rdone
                                    | sdr_registers_cdc.i_rdone
                                    | demod_registers_cdc.i_rdone
@@ -1482,7 +1644,9 @@ class P25Core(Elaboratable):
                                    | iq_registers_cdc.i_rdone
                                    | lsm_registers_cdc.i_rdone
                                    | traffic_lsm_registers_cdc.i_rdone
-                                   | traffic_iq_registers_cdc.i_rdone),
+                                   | traffic_iq_registers_cdc.i_rdone
+                                   | lsm_iq_registers_cdc.i_rdone
+                                   | traffic_lsm_iq_registers_cdc.i_rdone),
             self.axi4lite.wdone.eq(self.control_registers.wdone
                                    | sdr_registers_cdc.i_wdone
                                    | demod_registers_cdc.i_wdone
@@ -1490,7 +1654,9 @@ class P25Core(Elaboratable):
                                    | iq_registers_cdc.i_wdone
                                    | lsm_registers_cdc.i_wdone
                                    | traffic_lsm_registers_cdc.i_wdone
-                                   | traffic_iq_registers_cdc.i_wdone),
+                                   | traffic_iq_registers_cdc.i_wdone
+                                   | lsm_iq_registers_cdc.i_wdone
+                                   | traffic_lsm_iq_registers_cdc.i_wdone),
             self.control_registers.ren.eq(
                 self.axi4lite.ren & control_regs_select),
             self.control_registers.wstrobe.eq(
@@ -1523,6 +1689,14 @@ class P25Core(Elaboratable):
                 self.axi4lite.ren & traffic_iq_regs_select),
             traffic_iq_registers_cdc.i_wstrobe.eq(
                 Mux(traffic_iq_regs_select, self.axi4lite.wstrobe, 0)),
+            lsm_iq_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & lsm_iq_regs_select),
+            lsm_iq_registers_cdc.i_wstrobe.eq(
+                Mux(lsm_iq_regs_select, self.axi4lite.wstrobe, 0)),
+            traffic_lsm_iq_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & traffic_lsm_iq_regs_select),
+            traffic_lsm_iq_registers_cdc.i_wstrobe.eq(
+                Mux(traffic_lsm_iq_regs_select, self.axi4lite.wstrobe, 0)),
             address.eq(self.axi4lite.address),
             wdata.eq(self.axi4lite.wdata),
         ]
@@ -1543,6 +1717,10 @@ class P25Core(Elaboratable):
             traffic_lsm_registers_cdc.i_wdata.eq(wdata),
             traffic_iq_registers_cdc.i_address.eq(address),
             traffic_iq_registers_cdc.i_wdata.eq(wdata),
+            lsm_iq_registers_cdc.i_address.eq(address),
+            lsm_iq_registers_cdc.i_wdata.eq(wdata),
+            traffic_lsm_iq_registers_cdc.i_address.eq(address),
+            traffic_lsm_iq_registers_cdc.i_wdata.eq(wdata),
         ]
 
         # ── Registers sync domain ────────────────────────────────────
@@ -1629,6 +1807,32 @@ class P25Core(Elaboratable):
                 self.traffic_iq_registers.wdone),
             traffic_iq_registers_cdc.o_rdata.eq(
                 self.traffic_iq_registers.rdata),
+        ]
+        # Phase 10.6 2026-04-18: lsm_iq_registers + traffic_lsm_iq_registers CDC
+        m.d.comb += [
+            self.lsm_iq_registers.ren.eq(lsm_iq_registers_cdc.o_ren),
+            self.lsm_iq_registers.wstrobe.eq(lsm_iq_registers_cdc.o_wstrobe),
+            self.lsm_iq_registers.address.eq(lsm_iq_registers_cdc.o_address),
+            self.lsm_iq_registers.wdata.eq(lsm_iq_registers_cdc.o_wdata),
+            lsm_iq_registers_cdc.o_rdone.eq(self.lsm_iq_registers.rdone),
+            lsm_iq_registers_cdc.o_wdone.eq(self.lsm_iq_registers.wdone),
+            lsm_iq_registers_cdc.o_rdata.eq(self.lsm_iq_registers.rdata),
+        ]
+        m.d.comb += [
+            self.traffic_lsm_iq_registers.ren.eq(
+                traffic_lsm_iq_registers_cdc.o_ren),
+            self.traffic_lsm_iq_registers.wstrobe.eq(
+                traffic_lsm_iq_registers_cdc.o_wstrobe),
+            self.traffic_lsm_iq_registers.address.eq(
+                traffic_lsm_iq_registers_cdc.o_address),
+            self.traffic_lsm_iq_registers.wdata.eq(
+                traffic_lsm_iq_registers_cdc.o_wdata),
+            traffic_lsm_iq_registers_cdc.o_rdone.eq(
+                self.traffic_lsm_iq_registers.rdone),
+            traffic_lsm_iq_registers_cdc.o_wdone.eq(
+                self.traffic_lsm_iq_registers.wdone),
+            traffic_lsm_iq_registers_cdc.o_rdata.eq(
+                self.traffic_lsm_iq_registers.rdata),
         ]
 
         # ── Internal resets ───────────────────────────────────────────

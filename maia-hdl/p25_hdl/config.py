@@ -159,6 +159,45 @@ class P25Config:
         self.traffic_iq_dma_num_buffers_log2 = 3   # 8 sub-buffers
         self.traffic_iq_dma_buffer_size = 0x8000   # 32 KB per sub-buffer
 
+        # ── Control channel post-LSM (matched-filter) IQ DMA (2026-04-18) ─
+        # Phase 10.6: second IQ tap on the control chain, sourced from
+        # the LSM chain's RRC matched-filter output (`lsm_rrc.re_out/
+        # im_out/strobe_out`) rather than the raw post-DDC output. Both
+        # rings run concurrently; the PS chooses which to expose via
+        # the `/ws/iq?source=post_ddc|post_lsm` API.
+        #
+        # Rate: 31.25 kSPS (half of post-DDC after the LsmDecimator2
+        # /2 stage). Packing format is identical to `iq_dma` — two
+        # i16(re, im) pairs per 64-bit DMA word.
+        #
+        # Bandwidth:
+        #     31.25 kSPS × 4 B/sample        = 125 KB/s
+        #     125 KB/s / 32 KB sub-buffer    = ~3.9 IRQ/s = ~256 ms/sub-buffer
+        #     8 × 32 KB                      = 256 KB ring = ~2 s of IQ
+        #
+        # Why it matters: raw post-DDC IQ is an unfiltered, non-
+        # amplitude-normalised view — useful for baseband analysis but
+        # not a matched-filter eye. Post-RRC is the canonical eye-plot
+        # source: the signal has been matched-filtered against its own
+        # pulse shape and ISI is minimised around decision points. Feeds
+        # the browser-side eye-plot renderer (stage 8).
+        #
+        # Address 0x1D00_0000 continues the 0x100_0000 spacing (next
+        # free slot after 0x1C00 traffic IQ). 256 KB aligned.
+        self.lsm_iq_dma_address = 0x1D00_0000
+        self.lsm_iq_dma_num_buffers_log2 = 3   # 8 sub-buffers
+        self.lsm_iq_dma_buffer_size = 0x8000   # 32 KB per sub-buffer
+
+        # ── Traffic channel post-LSM IQ DMA (2026-04-18) ──────────
+        # Symmetric with `lsm_iq_dma`, tapped from `traffic_lsm_rrc`
+        # output. Required for matched-filter eye on voice channels,
+        # which is where the robotic-audio diagnostic work happens.
+        #
+        # Address 0x1E00_0000, 256 KB aligned.
+        self.traffic_lsm_iq_dma_address = 0x1E00_0000
+        self.traffic_lsm_iq_dma_num_buffers_log2 = 3
+        self.traffic_lsm_iq_dma_buffer_size = 0x8000
+
     @property
     def dibit_dma_num_buffers(self):
         return 1 << self.dibit_dma_num_buffers_log2
@@ -209,6 +248,23 @@ class P25Config:
         return (self.traffic_iq_dma_num_buffers
                 * self.traffic_iq_dma_buffer_size)
 
+    @property
+    def lsm_iq_dma_num_buffers(self):
+        return 1 << self.lsm_iq_dma_num_buffers_log2
+
+    @property
+    def lsm_iq_dma_total_size(self):
+        return self.lsm_iq_dma_num_buffers * self.lsm_iq_dma_buffer_size
+
+    @property
+    def traffic_lsm_iq_dma_num_buffers(self):
+        return 1 << self.traffic_lsm_iq_dma_num_buffers_log2
+
+    @property
+    def traffic_lsm_iq_dma_total_size(self):
+        return (self.traffic_lsm_iq_dma_num_buffers
+                * self.traffic_lsm_iq_dma_buffer_size)
+
     def validate(self):
         assert self.platform >= 0 and self.platform < 256
         # Ring base addresses must be aligned to total ring size
@@ -234,3 +290,13 @@ class P25Config:
             f'traffic_iq_dma_address ' \
             f'{self.traffic_iq_dma_address:#x} not aligned to ' \
             f'ring size {self.traffic_iq_dma_total_size:#x}'
+        assert self.lsm_iq_dma_address & \
+            (self.lsm_iq_dma_total_size - 1) == 0, \
+            f'lsm_iq_dma_address ' \
+            f'{self.lsm_iq_dma_address:#x} not aligned to ' \
+            f'ring size {self.lsm_iq_dma_total_size:#x}'
+        assert self.traffic_lsm_iq_dma_address & \
+            (self.traffic_lsm_iq_dma_total_size - 1) == 0, \
+            f'traffic_lsm_iq_dma_address ' \
+            f'{self.traffic_lsm_iq_dma_address:#x} not aligned to ' \
+            f'ring size {self.traffic_lsm_iq_dma_total_size:#x}'
