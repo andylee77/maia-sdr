@@ -295,13 +295,13 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     EndpointDoc {
         method: "GET",
         path: "/api/rx_gain",
-        params: "?db=<i32>",
-        description: "Read or set AD9361 manual RX hardwaregain in dB (range -3..76).",
+        params: "?db=<i32>&mode=manual|slow_attack|fast_attack|hybrid",
+        description: "Read or set AD9361 RX hardwaregain (range -3..76) and AGC mode. mode applied before db if both present.",
     },
     EndpointDoc {
         method: "PUT",
         path: "/api/rx_gain",
-        params: "?db=<i32>",
+        params: "?db=<i32>&mode=manual|slow_attack|fast_attack|hybrid",
         description: "PUT twin for /api/rx_gain — same semantics as the GET form.",
     },
     EndpointDoc {

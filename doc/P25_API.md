@@ -95,7 +95,7 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 | Path | Method | Returns | Purpose |
 |---|---|---|---|
 | `/api/reinit` | GET | JSON | Front-end retune. `?rx_lo=<Hz>`, `?control_freq=<Hz>`, `?sample_rate=<Hz>`, `?rf_bandwidth=<Hz>`, `?gain_mode=manual\|agc`, `?gain_db=<int>`. Blank = restore boot value |
-| `/api/rx_gain` | GET, PUT | JSON | AD9361 RX gain knob, `?db=<-3..76>` |
+| `/api/rx_gain` | GET, PUT | JSON | AD9361 RX gain + AGC mode. `?db=<-3..76>` sets manual hardwaregain; `?mode=manual\|slow_attack\|fast_attack\|hybrid` sets `gain_control_mode`. Both params can be combined; mode applied first |
 | `/api/modulation` | GET, PUT | JSON | Active modulation: `auto` / `c4fm` / `lsm`. Changes which control-chain decoder feeds the dashboard |
 | `/api/bch_t` | GET, PUT | JSON | Runtime BCH-t correction cap per decoder. `?side=control\|traffic&t=<0..11>` |
 | `/api/sync_tune` | GET, PUT | JSON | Runtime sync-detector Hamming-distance threshold |

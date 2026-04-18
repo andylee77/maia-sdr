@@ -368,42 +368,86 @@ pub async fn post_decoder_reset(state: State<Arc<AppState>>) -> Json<serde_json:
 }
 
 
-/// Phase 10-prep: GET /api/rx_gain -- AD9361 RX gain knob.
+/// Phase 10-prep: GET /api/rx_gain -- AD9361 RX gain + AGC mode knob.
 ///
-/// Read-only without params. With `?db=<int>` sets
-/// `in_voltage0_hardwaregain` via IIO and returns the new reading.
-/// Range [-3, 76] dB in 1 dB steps.
+/// Read-only without params. Writeable params (both optional, can be
+/// combined):
+///   - `?mode=manual|slow_attack|fast_attack|hybrid` — sets
+///     `in_voltage0_gain_control_mode`. `slow_attack` is the standard
+///     AGC; the other modes are AD9361-specific options mostly useful
+///     for bursty traffic (fast_attack) or experimentation (hybrid).
+///   - `?db=<int>` — sets `in_voltage0_hardwaregain` via IIO. Range
+///     [-3, 76] dB in 1 dB steps. Only takes effect when the mode is
+///     `manual` — the AD9361 ignores writes in AGC modes — so if both
+///     params are present, the mode change is applied first.
+///
+/// Response: current gain_db, mode, rssi_db, updated_from, error,
+/// valid ranges. Matches the pre-mode-support shape plus `mode_from`.
 pub async fn get_rx_gain(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
     #[cfg(target_os = "linux")]
     {
+        use crate::iio::GainMode;
+
         let mut updated_from: Option<i64> = None;
+        let mut mode_from: Option<String> = None;
         let mut error: Option<String> = None;
 
-        if let Some(v) = params.get("db") {
-            match v.parse::<i64>() {
-                Ok(db) if (-3..=76).contains(&db) => {
-                    let prev = state.ad9361.get_rx_gain().await.ok()
-                        .map(|f: f64| f as i64);
-                    match state.ad9361.set_rx_gain(db as f64).await {
+        // Mode first so a combined "switch to manual + set gain" call
+        // works in one request. Writes to hardwaregain in an AGC mode
+        // are silent no-ops from the AD9361 side.
+        if let Some(v) = params.get("mode") {
+            match v.parse::<GainMode>() {
+                Ok(new_mode) => {
+                    let prev = state.ad9361.get_rx_gain_mode().await.ok()
+                        .map(|m| m.to_string());
+                    match state.ad9361.set_rx_gain_mode(new_mode).await {
                         Ok(()) => {
-                            updated_from = prev;
+                            mode_from = prev.clone();
                             state.event_log.push(
                                 crate::event_log::LogCategory::System,
-                                format!("rx_gain set to {db} dB"),
+                                format!("gain_control_mode set to {new_mode}"),
                                 serde_json::json!({
-                                    "db": db, "previous": prev,
+                                    "mode": new_mode.to_string(),
+                                    "previous": prev,
                                 }),
                             );
                         }
-                        Err(e) => error = Some(format!("set_rx_gain: {e}")),
+                        Err(e) => error = Some(format!("set_rx_gain_mode: {e}")),
                     }
                 }
-                Ok(_) => error = Some(
-                    "db out of range [-3, 76]".to_string()),
-                Err(e) => error = Some(format!("parse db: {e}")),
+                Err(_) => error = Some(format!(
+                    "mode '{v}' invalid; expected manual|slow_attack|fast_attack|hybrid"
+                )),
+            }
+        }
+
+        if error.is_none() {
+            if let Some(v) = params.get("db") {
+                match v.parse::<i64>() {
+                    Ok(db) if (-3..=76).contains(&db) => {
+                        let prev = state.ad9361.get_rx_gain().await.ok()
+                            .map(|f: f64| f as i64);
+                        match state.ad9361.set_rx_gain(db as f64).await {
+                            Ok(()) => {
+                                updated_from = prev;
+                                state.event_log.push(
+                                    crate::event_log::LogCategory::System,
+                                    format!("rx_gain set to {db} dB"),
+                                    serde_json::json!({
+                                        "db": db, "previous": prev,
+                                    }),
+                                );
+                            }
+                            Err(e) => error = Some(format!("set_rx_gain: {e}")),
+                        }
+                    }
+                    Ok(_) => error = Some(
+                        "db out of range [-3, 76]".to_string()),
+                    Err(e) => error = Some(format!("parse db: {e}")),
+                }
             }
         }
 
@@ -417,10 +461,14 @@ pub async fn get_rx_gain(
             "mode":          mode,
             "rssi_db":       rssi,
             "updated_from":  updated_from,
+            "mode_from":     mode_from,
             "error":         error,
             "range_db":      [-3, 76],
-            "note": "GET /api/rx_gain?db=N sets manual hardwaregain in dB \
-                     (step 1 dB, range [-3, 76]). Returns the live readback.",
+            "valid_modes":   ["manual", "slow_attack", "fast_attack", "hybrid"],
+            "note": "GET /api/rx_gain?mode=<m>&db=<N> — mode switches \
+                     gain_control_mode; db sets manual hardwaregain \
+                     (only effective in manual mode). Either param can \
+                     be omitted.",
         }))
     }
 

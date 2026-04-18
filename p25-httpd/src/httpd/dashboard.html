@@ -637,6 +637,28 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
     </select>
     <span class="v" id="bi_mod_status" style="font-size:0.85em;color:var(--text-dim)">--</span>
   </div>
+  <!-- AD9361 RX gain + AGC. Checkbox toggles gain_control_mode
+       between slow_attack (AGC on) and manual; gain dropdown is
+       disabled when AGC is on since the AD9361 ignores hardwaregain
+       writes in AGC modes. Both call /api/rx_gain with the live
+       readback used to refresh the UI. -->
+  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px;font-size:0.85em">
+    <label><input type="checkbox" id="bi_agc_chk" onchange="setAgc(this.checked)"> <b>AGC</b></label>
+    <label for="bi_gain_sel"><b>Gain</b>:</label>
+    <select id="bi_gain_sel" onchange="setGain(this.value)"
+      style="padding:3px 6px;font-family:inherit">
+      <option value="0">0 dB</option>
+      <option value="10">10 dB</option>
+      <option value="20">20 dB</option>
+      <option value="30">30 dB</option>
+      <option value="40">40 dB</option>
+      <option value="50">50 dB</option>
+      <option value="60" selected>60 dB</option>
+      <option value="70">70 dB</option>
+      <option value="76">76 dB (max)</option>
+    </select>
+    <span class="v" id="bi_gain_status" style="font-size:0.85em;color:var(--text-dim)">--</span>
+  </div>
   <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
     Pulled from /api/stats every 2 s. Wall clock is the Linux system
     clock — reads as 1970-... until NTP syncs at boot. Audio WS lag is
@@ -986,6 +1008,48 @@ async function retuneControl() {
   }
 }
 
+// AGC + manual gain controls on the Board Info card. Both target
+// /api/rx_gain which accepts ?mode= and ?db= params (2026-04-18
+// extension). The live AD9361 readback propagates back into the UI
+// via the /api/stats poll in refresh() -- see the "agcOn" /
+// "gainSel.value" sync block there.
+async function setAgc(on) {
+  const status = $('bi_gain_status');
+  const mode = on ? 'slow_attack' : 'manual';
+  if (status) { status.textContent = `setting ${mode}...`; status.style.color = 'var(--text-dim)'; }
+  const res = await fetchJson('/api/rx_gain?mode=' + encodeURIComponent(mode));
+  if (!res || res.error) {
+    if (status) { status.textContent = (res && res.error) || 'error'; status.style.color = 'var(--red)'; }
+    return;
+  }
+  if (status) {
+    status.textContent = `mode=${res.mode} gain=${res.gain_db != null ? res.gain_db.toFixed(0) + ' dB' : '--'}`;
+    status.style.color = 'var(--text-dim)';
+  }
+  // Kick a stats refresh so the live readback + dropdown disable
+  // state update immediately rather than on the next 2 s tick.
+  if (typeof refresh === 'function') refresh();
+}
+async function setGain(dbStr) {
+  const status = $('bi_gain_status');
+  const db = parseInt(dbStr, 10);
+  if (!Number.isFinite(db)) return;
+  // Force manual mode so the hardwaregain write isn't a silent no-op
+  // (AGC modes ignore hardwaregain). The refresh below will update
+  // the AGC checkbox to reflect the live state.
+  if (status) { status.textContent = `setting ${db} dB...`; status.style.color = 'var(--text-dim)'; }
+  const res = await fetchJson(`/api/rx_gain?mode=manual&db=${db}`);
+  if (!res || res.error) {
+    if (status) { status.textContent = (res && res.error) || 'error'; status.style.color = 'var(--red)'; }
+    return;
+  }
+  if (status) {
+    status.textContent = `mode=${res.mode} gain=${res.gain_db != null ? res.gain_db.toFixed(0) + ' dB' : '--'}`;
+    status.style.color = 'var(--text-dim)';
+  }
+  if (typeof refresh === 'function') refresh();
+}
+
 // Phase 10-prep: tab-visibility helper. Used to gate polling so
 // endpoints that only feed one tab don't get fetched when that
 // tab is hidden. Before this, refresh() fetched 10 endpoints every
@@ -1238,6 +1302,32 @@ async function refresh() {
       + ' / ' + (stats.gain_control_mode || '--');
     $('bi_gain').textContent = gainTxt;
     $('bi_rssi').textContent = fmtDb(stats.rx_rssi_db);
+    // Keep the AGC checkbox + gain dropdown in sync with the live
+    // AD9361 state. AGC checkbox reflects "mode != manual" (any auto
+    // mode counts as AGC on). Gain dropdown snaps to the nearest
+    // multiple of 10 that we expose as an option. Guard against the
+    // user actively interacting (focus on the control) to avoid
+    // stomping their in-progress edit.
+    const mode = stats.gain_control_mode || '';
+    const agcOn = mode !== 'manual' && mode !== '';
+    const agcChk = $('bi_agc_chk');
+    if (agcChk && document.activeElement !== agcChk) {
+      agcChk.checked = agcOn;
+    }
+    const gainSel = $('bi_gain_sel');
+    if (gainSel && document.activeElement !== gainSel && stats.rx_gain_db != null) {
+      const liveGain = Math.round(stats.rx_gain_db);
+      const options = Array.from(gainSel.options).map(o => parseInt(o.value, 10));
+      // Snap to nearest option.
+      let best = options[0], bestDist = Math.abs(options[0] - liveGain);
+      for (const v of options) {
+        const d = Math.abs(v - liveGain);
+        if (d < bestDist) { best = v; bestDist = d; }
+      }
+      gainSel.value = String(best);
+      gainSel.disabled = agcOn;
+      gainSel.style.opacity = agcOn ? '0.5' : '';
+    }
     $('bi_sr').textContent = fmtMsps(stats.sampling_frequency_hz);
     $('bi_ddc').textContent = stats.ddc_decimation || '--';
     $('bi_ddc_off').textContent = fmtKhz(stats.ddc_control_offset_hz);
