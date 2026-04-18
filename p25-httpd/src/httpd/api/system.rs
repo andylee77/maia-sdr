@@ -439,8 +439,8 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     EndpointDoc {
         method: "GET",
         path: "/ws/iq",
-        params: "?chain=control|traffic",
-        description: "WebSocket binary stream of raw post-DDC IQ sub-buffers (32 KB each, i16 LE interleaved, 62.5 kSPS). Hello text frame on connect. For browser-side FFT + eye plots.",
+        params: "?chain=control|traffic&source=post_ddc|post_lsm",
+        description: "WebSocket binary stream of IQ sub-buffers (32 KB each, i16 LE interleaved). source=post_ddc (default, 62.5 kSPS unfiltered) or post_lsm (31.25 kSPS, matched-filter output — the eye-plot source). Hello text frame on connect.",
     },
 ];
 

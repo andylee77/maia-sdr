@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-18-constellation-retry-fix";
+pub const BUILD_TAG: &str = "2026-04-18-phase10.6-post-lsm-iq";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -841,6 +841,14 @@ async fn main() -> anyhow::Result<()> {
         // which ticks whenever the traffic DDC has valid input)
         // so it runs continuously without needing the LSM chain on.
         ip_core.set_traffic_iq_dma_enable(true);
+        // Phase 10.6 (2026-04-18): enable both post-LSM matched-filter
+        // IQ rings at boot. Same rationale as the post-DDC rings —
+        // driven off the LSM chain's RRC strobe, always ticking
+        // regardless of whether the chain is actively demodulating.
+        // These feed the dashboard's matched-filter eye plot (via
+        // /ws/iq?source=post_lsm).
+        ip_core.set_lsm_iq_dma_enable(true);
+        ip_core.set_traffic_lsm_iq_dma_enable(true);
         // Phase 10-prep: arm the traffic-side per-symbol LSM AGC
         // at boot (same SDRTrunk-faithful port as the control
         // side above). The AGC stays armed across retunes; the

@@ -270,6 +270,12 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
           <option value="traffic">Traffic</option>
         </select>
       </label>
+      <label><b>Src</b>:
+        <select id="eye_source" onchange="restartEye()" style="padding:2px 6px;font-family:inherit" title="post_ddc = raw post-DDC (62.5 kSPS); post_lsm = RRC matched-filter (31.25 kSPS)">
+          <option value="post_lsm" selected>Post-LSM (MF)</option>
+          <option value="post_ddc">Post-DDC (raw)</option>
+        </select>
+      </label>
       <label><b>Trace</b>:
         <select id="eye_trace" onchange="restartEye()" style="padding:2px 6px;font-family:inherit">
           <option value="i" selected>I only</option>
@@ -2260,15 +2266,17 @@ class IqStream {
   constructor() {
     this.ws = null;
     this.chain = null;
-    this.onFrame = null;      // ({re, im, sampleRate, chain}) => void
+    this.source = 'post_ddc';  // Phase 10.6: 'post_ddc' | 'post_lsm'
+    this.onFrame = null;      // ({re, im, sampleRate, chain, source}) => void
     this.onStatus = null;     // (string) => void
     this.wantOpen = false;
     this.backoffMs = 1000;
     this.sampleRate = 62500;
   }
-  connect(chain, onFrame, onStatus) {
+  connect(chain, onFrame, onStatus, source) {
     this.disconnect();
     this.chain = chain;
+    this.source = source || 'post_ddc';
     this.onFrame = onFrame;
     this.onStatus = onStatus || (() => {});
     this.wantOpen = true;
@@ -2284,7 +2292,9 @@ class IqStream {
   _open() {
     if (!this.wantOpen) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${location.host}/ws/iq?chain=${encodeURIComponent(this.chain)}`;
+    const url = `${proto}://${location.host}/ws/iq`
+      + `?chain=${encodeURIComponent(this.chain)}`
+      + `&source=${encodeURIComponent(this.source)}`;
     const ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
@@ -2314,7 +2324,7 @@ class IqStream {
         im[i] = view.getInt16(i * 4 + 2, true);
       }
       if (this.onFrame) {
-        this.onFrame({ re, im, sampleRate: this.sampleRate, chain: this.chain });
+        this.onFrame({ re, im, sampleRate: this.sampleRate, chain: this.chain, source: this.source });
       }
     });
     ws.addEventListener('close', () => {
@@ -2645,8 +2655,15 @@ function restartEye() {
     if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height);
     return;
   }
-  // Ring big enough to hold enough symbol-windows for a useful overlay.
-  // N windows × N sym × sps samples each. Target ~64 windows overlayed.
+  // Phase 10.6: sps depends on the IQ source. post_ddc runs at
+  // 62.5 kSPS → sps ≈ 13.02; post_lsm is half-rate (after
+  // LsmDecimator2 /2) → sps ≈ 6.51. Ring size + draw both key off
+  // this. The onEyeFrame handler will refresh EYE.sps from the
+  // hello-announced sample_rate_hz so drift between UI state and
+  // actual stream stays impossible.
+  const source = $('eye_source').value || 'post_lsm';
+  const sourceRate = source === 'post_lsm' ? 31250 : 62500;
+  EYE.sps = sourceRate / 4800;
   const nsym = parseInt($('eye_nsym').value, 10) || 2;
   const samples = Math.ceil(nsym * EYE.sps * 64);
   EYE.ring_cap = samples;
@@ -2656,11 +2673,17 @@ function restartEye() {
   const chain = $('eye_chain').value || 'control';
   EYE.stream.connect(chain, onEyeFrame, msg => {
     status.textContent = `live: ${msg}`;
-  });
+  }, source);
 }
 
 function onEyeFrame(frame) {
   if (!EYE.enabled || !EYE.ring_re) return;
+  // Keep sps in sync with what the server announced in its hello.
+  // If the user switched source while the stream was alive, the
+  // ring + draw code still matches the incoming samples.
+  if (frame.sampleRate && frame.sampleRate > 0) {
+    EYE.sps = frame.sampleRate / 4800;
+  }
   // Append to ring (drop oldest if overflow).
   const n = frame.re.length;
   if (n >= EYE.ring_cap) {

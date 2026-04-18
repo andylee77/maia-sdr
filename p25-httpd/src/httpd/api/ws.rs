@@ -184,7 +184,15 @@ pub async fn ws_iq(
         .get("chain")
         .cloned()
         .unwrap_or_else(|| "control".to_string());
-    ws.on_upgrade(move |socket| handle_ws_iq(socket, state, chain))
+    // Phase 10.6 source param: post_ddc (default, backwards-compatible)
+    // reads the `iq_dma` / `traffic_iq_dma` rings at 62.5 kSPS; post_lsm
+    // reads the new `lsm_iq_dma` / `traffic_lsm_iq_dma` rings (post-RRC
+    // matched-filter, 31.25 kSPS).
+    let source = params
+        .get("source")
+        .cloned()
+        .unwrap_or_else(|| "post_ddc".to_string());
+    ws.on_upgrade(move |socket| handle_ws_iq(socket, state, chain, source))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -209,12 +217,13 @@ async fn handle_ws_iq(
     mut socket: axum::extract::ws::WebSocket,
     state: Arc<AppState>,
     chain: String,
+    source: String,
 ) {
     use axum::extract::ws::Message;
     use std::time::Duration;
     use tokio::select;
 
-    // Validate the chain selector up front so the hello frame is
+    // Validate chain + source up front so the hello frame is
     // accurate and the polling loop doesn't have to re-match every tick.
     let chain = match chain.as_str() {
         "control" | "traffic" => chain,
@@ -227,23 +236,34 @@ async fn handle_ws_iq(
             return;
         }
     };
+    let source = match source.as_str() {
+        "post_ddc" | "post_lsm" => source,
+        other => {
+            let err = format!(
+                r#"{{"type":"error","error":"unknown source '{}'; expected post_ddc|post_lsm"}}"#,
+                other.replace('"', "'")
+            );
+            let _ = socket.send(Message::Text(err.into())).await;
+            return;
+        }
+    };
 
-    // Hello frame. buf_bytes matches the iq_dma sub-buffer size so
-    // clients can pre-allocate downstream buffers correctly.
+    // Sample rate depends on source: post-DDC = 62.5 kSPS; post-LSM
+    // = 31.25 kSPS (half, after the LsmDecimator2 /2 stage).
+    let sample_rate_hz: u32 = if source == "post_lsm" { 31_250 } else { 62_500 };
+
+    // Hello frame. buf_bytes matches the underlying DMA sub-buffer
+    // size (both rings are 32 KB regardless of source rate).
     let hello = format!(
-        r#"{{"type":"hello","sample_rate_hz":62500,"format":"i16le-iq-stereo","chain":"{}","buf_bytes":32768}}"#,
-        chain
+        r#"{{"type":"hello","sample_rate_hz":{sample_rate_hz},"format":"i16le-iq-stereo","chain":"{chain}","source":"{source}","buf_bytes":32768}}"#
     );
     if socket.send(Message::Text(hello.into())).await.is_err() {
         return;
     }
 
-    // Poll cadence: sub-buffers arrive every ~131 ms on a healthy
-    // bitstream. 80 ms polling still catches every sub-buffer while
-    // roughly halving the lock pressure on ip_core — important
-    // because /api/spectrum and /api/constellation share the same
-    // DMA cursor and racing with this handler was causing occasional
-    // "not enough IQ samples" misses on the polled spectrum view.
+    // Poll cadence: sub-buffers arrive every ~131 ms (post-DDC) or
+    // ~262 ms (post-LSM, half rate). 80 ms polling catches both with
+    // headroom while halving lock pressure vs the earlier 40 ms tick.
     let mut tick = tokio::time::interval(Duration::from_millis(80));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -261,9 +281,11 @@ async fn handle_ws_iq(
             _ = tick.tick() => {
                 let bufs: Vec<Vec<u8>> = {
                     let mut core = state.ip_core.lock().await;
-                    let raw: Vec<&[u8]> = match chain.as_str() {
-                        "control" => core.read_iq_buffers(),
-                        "traffic" => core.read_traffic_iq_buffers(),
+                    let raw: Vec<&[u8]> = match (chain.as_str(), source.as_str()) {
+                        ("control", "post_ddc") => core.read_iq_buffers(),
+                        ("traffic", "post_ddc") => core.read_traffic_iq_buffers(),
+                        ("control", "post_lsm") => core.read_lsm_iq_buffers(),
+                        ("traffic", "post_lsm") => core.read_traffic_lsm_iq_buffers(),
                         _ => Vec::new(),
                     };
                     raw.into_iter().map(|b| b.to_vec()).collect()

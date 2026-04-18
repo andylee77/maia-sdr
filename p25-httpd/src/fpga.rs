@@ -52,12 +52,25 @@ pub struct IpCore {
     /// ring). Feeds the dashboard constellation scatter and
     /// offline traffic-LSM cross-check on the PS side.
     traffic_iq_dma: RxBuffer,
+    /// Phase 10.6 (2026-04-18): control-chain post-LSM matched-filter
+    /// IQ ring DMA. Tapped from `lsm_rrc.re_out / im_out` inside the
+    /// HDL LSM chain, so samples are Hann-shaped + RRC-filtered but
+    /// not yet timing-recovered. 31.25 kSPS, 8 × 32 KB = 256 KB ring.
+    /// UIO device `p25-lsm-iq`, physical address `0x1D00_0000`.
+    /// Feeds the dashboard matched-filter eye plot.
+    lsm_iq_dma: RxBuffer,
+    /// Phase 10.6 traffic-side twin of `lsm_iq_dma`. Tapped from
+    /// `traffic_lsm_rrc.re_out / im_out`. UIO `p25-traffic-lsm-iq`,
+    /// physical address `0x1E00_0000`.
+    traffic_lsm_iq_dma: RxBuffer,
     dibit_last_addr: Option<u32>,
     traffic_last_addr: Option<u32>,
     iq_last_addr: Option<u32>,
     lsm_dibit_last_addr: Option<u32>,
     traffic_lsm_dibit_last_addr: Option<u32>,
     traffic_iq_last_addr: Option<u32>,
+    lsm_iq_last_addr: Option<u32>,
+    traffic_lsm_iq_last_addr: Option<u32>,
 }
 
 impl IpCore {
@@ -135,6 +148,20 @@ impl IpCore {
         let traffic_iq_dma = RxBuffer::new("p25-traffic-iq")
             .await
             .context("failed to open p25-traffic-iq DMA buffer")?;
+        // Phase 10.6 (2026-04-18): post-LSM matched-filter IQ rings
+        // tapped off `lsm_rrc` / `traffic_lsm_rrc`. Requires Tezuka
+        // DT carve-outs at `p25_lsm_iq_dma@1d000000` and
+        // `p25_traffic_lsm_iq_dma@1e000000`. On older boots that pre-
+        // date the DT change, these opens will fail and the whole
+        // `take()` call errors out — document this clearly in the
+        // bake-handoff note so the firmware + bitstream flashes stay
+        // in lockstep.
+        let lsm_iq_dma = RxBuffer::new("p25-lsm-iq")
+            .await
+            .context("failed to open p25-lsm-iq DMA buffer")?;
+        let traffic_lsm_iq_dma = RxBuffer::new("p25-traffic-lsm-iq")
+            .await
+            .context("failed to open p25-traffic-lsm-iq DMA buffer")?;
 
         let ip_core = IpCore {
             registers,
@@ -144,12 +171,16 @@ impl IpCore {
             lsm_dibit_dma,
             traffic_lsm_dibit_dma,
             traffic_iq_dma,
+            lsm_iq_dma,
+            traffic_lsm_iq_dma,
             dibit_last_addr: None,
             traffic_last_addr: None,
             iq_last_addr: None,
             lsm_dibit_last_addr: None,
             traffic_lsm_dibit_last_addr: None,
             traffic_iq_last_addr: None,
+            lsm_iq_last_addr: None,
+            traffic_lsm_iq_last_addr: None,
         };
 
         let interrupt_handler = InterruptHandler::new(uio, interrupt_registers);
@@ -623,6 +654,42 @@ impl IpCore {
     /// `read_iq_buffers` for control.
     pub fn read_traffic_iq_buffers(&mut self) -> Vec<&[u8]> {
         self.read_dma_buffers(DmaChannel::TrafficIq)
+    }
+
+    // ── Post-LSM matched-filter IQ rings (Phase 10.6 2026-04-18) ──
+    //
+    // Second IQ tap per chain, sourced from `lsm_rrc.re_out / im_out`
+    // (control) / `traffic_lsm_rrc.re_out / im_out` (traffic). The
+    // samples have been decimated /2 + low-pass-filtered + RRC-
+    // matched-filter-applied but NOT timing-recovered or PLL-rotated.
+    // Rate is 31.25 kSPS (half of post-DDC) — 8192 samples per sub-
+    // buffer works out to ~262 ms. Same 32 KB / 8192 complex samples
+    // per sub-buffer layout as the post-DDC taps.
+
+    /// Enables or disables the control-chain post-LSM IQ ring DMA.
+    pub fn set_lsm_iq_dma_enable(&self, enable: bool) {
+        self.registers
+            .lsm_iq_dma_control()
+            .modify(|_, w| w.lsm_iq_enable().bit(enable));
+    }
+
+    /// Enables or disables the traffic-chain post-LSM IQ ring DMA.
+    pub fn set_traffic_lsm_iq_dma_enable(&self, enable: bool) {
+        self.registers
+            .traffic_lsm_iq_dma_control()
+            .modify(|_, w| w.traffic_lsm_iq_enable().bit(enable));
+    }
+
+    /// Reads new control-chain post-LSM IQ sub-buffers since the last
+    /// call. Interleaved 16-bit signed I/Q, same layout as the post-
+    /// DDC taps but at 31.25 kSPS.
+    pub fn read_lsm_iq_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::LsmIq)
+    }
+
+    /// Reads new traffic-chain post-LSM IQ sub-buffers since the last call.
+    pub fn read_traffic_lsm_iq_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::TrafficLsmIq)
     }
 
     // ── LSM chain (Phase 6E.9/6E.10) ─────────────────────────────
@@ -1130,6 +1197,24 @@ impl IpCore {
                     .last_buffer()
                     .bits() as u32,
             ),
+            DmaChannel::LsmIq => (
+                &self.lsm_iq_dma,
+                &mut self.lsm_iq_last_addr,
+                self.registers
+                    .lsm_iq_dma_status()
+                    .read()
+                    .last_buffer()
+                    .bits() as u32,
+            ),
+            DmaChannel::TrafficLsmIq => (
+                &self.traffic_lsm_iq_dma,
+                &mut self.traffic_lsm_iq_last_addr,
+                self.registers
+                    .traffic_lsm_iq_dma_status()
+                    .read()
+                    .last_buffer()
+                    .bits() as u32,
+            ),
         };
 
         let num_bufs = dma.num_buffers();
@@ -1186,6 +1271,8 @@ enum DmaChannel {
     LsmDibit,
     TrafficLsmDibit,  // Phase 7A.2
     TrafficIq,        // 2026-04-16
+    LsmIq,            // Phase 10.6 2026-04-18 (post-RRC matched-filter)
+    TrafficLsmIq,     // Phase 10.6 2026-04-18
 }
 
 /// Snapshot of the `lsm_status` register read in a single bus access.
