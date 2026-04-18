@@ -153,6 +153,128 @@ pub async fn handle_ws_audio(
     }
 }
 
+// ── /ws/iq : post-DDC IQ streaming (2026-04-18) ─────────────────────────
+//
+// Pushes raw post-DDC IQ sub-buffers (32 KB each, 8192 complex samples
+// at 62.5 kSPS ≈ 131 ms) as binary WebSocket frames. Layout is the
+// iq_dma ring's native format — little-endian i16 interleaved
+// (re, im), same as /api/control_iq_dump minus the WAV header.
+//
+// First message is a text hello frame carrying {sample_rate_hz,
+// format, chain, buf_bytes}. All subsequent messages are Binary.
+// Clients should consume Binary frames as IQ and ignore any Text
+// frames they don't recognise (room to add control messages later).
+//
+// Scope — single-consumer. The handler calls read_iq_buffers()
+// directly, which races with /api/spectrum and /api/constellation
+// polling; if multiple consumers ask for ring data in the same
+// window, they split the sub-buffers between them. Multi-consumer
+// broadcast is a follow-up if streaming usage actually collides with
+// spectrum polling on the same board. For the initial browser-FFT /
+// eye-plot / live-constellation use case on the dashboard, single-
+// consumer suffices.
+
+#[cfg(target_os = "linux")]
+pub async fn ws_iq(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let chain = params
+        .get("chain")
+        .cloned()
+        .unwrap_or_else(|| "control".to_string());
+    ws.on_upgrade(move |socket| handle_ws_iq(socket, state, chain))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn ws_iq(
+    ws: WebSocketUpgrade,
+    State(_state): State<Arc<AppState>>,
+    axum::extract::Query(_params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(|mut socket| async move {
+        let _ = socket
+            .send(axum::extract::ws::Message::Text(
+                r#"{"type":"error","error":"ws_iq only available on linux target"}"#
+                    .to_string()
+                    .into(),
+            ))
+            .await;
+    })
+}
+
+#[cfg(target_os = "linux")]
+async fn handle_ws_iq(
+    mut socket: axum::extract::ws::WebSocket,
+    state: Arc<AppState>,
+    chain: String,
+) {
+    use axum::extract::ws::Message;
+    use std::time::Duration;
+    use tokio::select;
+
+    // Validate the chain selector up front so the hello frame is
+    // accurate and the polling loop doesn't have to re-match every tick.
+    let chain = match chain.as_str() {
+        "control" | "traffic" => chain,
+        other => {
+            let err = format!(
+                r#"{{"type":"error","error":"unknown chain '{}'; expected control|traffic"}}"#,
+                other.replace('"', "'")
+            );
+            let _ = socket.send(Message::Text(err.into())).await;
+            return;
+        }
+    };
+
+    // Hello frame. buf_bytes matches the iq_dma sub-buffer size so
+    // clients can pre-allocate downstream buffers correctly.
+    let hello = format!(
+        r#"{{"type":"hello","sample_rate_hz":62500,"format":"i16le-iq-stereo","chain":"{}","buf_bytes":32768}}"#,
+        chain
+    );
+    if socket.send(Message::Text(hello.into())).await.is_err() {
+        return;
+    }
+
+    // Poll cadence: sub-buffers arrive every ~131 ms on a healthy
+    // bitstream. 40 ms polling keeps us responsive without spinning
+    // on the lock — most ticks are empty, cheap.
+    let mut tick = tokio::time::interval(Duration::from_millis(40));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        select! {
+            biased;
+            // Client sent us something (usually Close).
+            recv = socket.recv() => {
+                match recv {
+                    Some(Ok(Message::Close(_))) | None => return,
+                    Some(Ok(_)) => {},
+                    Some(Err(_)) => return,
+                }
+            }
+            _ = tick.tick() => {
+                let bufs: Vec<Vec<u8>> = {
+                    let mut core = state.ip_core.lock().await;
+                    let raw: Vec<&[u8]> = match chain.as_str() {
+                        "control" => core.read_iq_buffers(),
+                        "traffic" => core.read_traffic_iq_buffers(),
+                        _ => Vec::new(),
+                    };
+                    raw.into_iter().map(|b| b.to_vec()).collect()
+                };
+                for b in bufs {
+                    if socket.send(Message::Binary(b.into())).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ── Dashboard HTML ─────────────────────────────────────────────────────
 
 

@@ -311,6 +311,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/endpoints", get(api::system::get_endpoints))
         .route("/ws/events", get(api::ws::ws_events))
         .route("/ws/audio", get(api::ws::ws_audio))
+        .route("/ws/iq", get(api::ws::ws_iq))
         .with_state(state)
 }
 

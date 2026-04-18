@@ -223,35 +223,81 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
 <!-- ═════════════════════ Debug tab ═════════════════════ -->
 <div class="tab-pane" id="tab-debug">
 
+<!-- Constellation + Eye sit side-by-side so all three live visuals
+     (constellation, eye, spectrum) fit on one 1080p screen without
+     scrolling. Both canvases are responsive-sized + DPR-aware. -->
+<div class="grid2">
 <!-- ── IQ Constellation (2026-04-16) ────────────────────────── -->
-<h2>IQ Constellation <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">post-PLL symbol decision points</span></h2>
-<div class="card">
-  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:6px;font-size:0.85em">
-    <label><b>Chain</b>:
-      <select id="iq_chain" onchange="refreshConstellation()" style="padding:2px 6px;font-family:inherit">
-        <option value="traffic" selected>Traffic</option>
-        <option value="control">Control</option>
-      </select>
-    </label>
-    <label><b>Poll</b>:
-      <select id="iq_rate" onchange="scheduleConstellation()" style="padding:2px 6px;font-family:inherit">
-        <option value="500">2 Hz</option>
-        <option value="1000" selected>1 Hz</option>
-        <option value="2000">0.5 Hz</option>
-        <option value="0">Paused</option>
-      </select>
-    </label>
-    <label><input type="checkbox" id="iq_persistence" checked> <b>Persistence (fade)</b></label>
-    <span class="v" id="iq_status" style="font-size:0.85em;color:var(--text-dim)">idle</span>
+<div>
+  <h2 style="margin-top:0">IQ Constellation <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">post-PLL symbol decisions</span></h2>
+  <div class="card">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px;font-size:0.85em">
+      <label><b>Chain</b>:
+        <select id="iq_chain" onchange="refreshConstellation()" style="padding:2px 6px;font-family:inherit">
+          <option value="traffic" selected>Traffic</option>
+          <option value="control">Control</option>
+        </select>
+      </label>
+      <label><b>Poll</b>:
+        <select id="iq_rate" onchange="scheduleConstellation()" style="padding:2px 6px;font-family:inherit">
+          <option value="500">2 Hz</option>
+          <option value="1000" selected>1 Hz</option>
+          <option value="2000">0.5 Hz</option>
+          <option value="0">Paused</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="iq_persistence" checked> <b>Persistence</b></label>
+      <span class="v" id="iq_status" style="font-size:0.8em;color:var(--text-dim)"></span>
+    </div>
+    <canvas id="iq_canvas"
+      style="width:100%;aspect-ratio:1/1;background:#0a0f1a;border:1px solid #1f2937;display:block"></canvas>
+    <div style="font-size:0.75em;color:var(--text-dim);margin-top:4px">
+      Post-PLL decision (I, Q) from the Phase 6D software LSM demod.
+      Clean LSM = 4 tight clusters near ±1, ±j. Tilt ⇒ phase rotation;
+      radial shrinkage ⇒ amplitude compression; cloud spread ⇒ noise.
+    </div>
   </div>
-  <canvas id="iq_canvas" width="480" height="480"
-    style="width:480px;height:480px;background:#0a0f1a;border:1px solid #1f2937;display:block;margin:0 auto"></canvas>
-  <div style="font-size:0.75em;color:var(--text-dim);margin-top:6px;text-align:center">
-    Post-PLL decision-time (I, Q) points from the Phase 6D software LSM demod.
-    Clean LSM signal = 4 tight clusters near ±1, ±j. Phase rotation ⇒
-    tilt; amplitude compression ⇒ radial shrinkage toward the center;
-    noise ⇒ cloud spread. Updates stop when the tab is inactive.
+</div>
+
+<!-- ── Eye Diagram (2026-04-18, browser-rendered from /ws/iq) ── -->
+<div>
+  <h2 style="margin-top:0">Eye Diagram <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">raw post-DDC, overlapped symbol windows</span></h2>
+  <div class="card">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px;font-size:0.85em">
+      <label><b>Chain</b>:
+        <select id="eye_chain" onchange="restartEye()" style="padding:2px 6px;font-family:inherit">
+          <option value="control" selected>Control</option>
+          <option value="traffic">Traffic</option>
+        </select>
+      </label>
+      <label><b>Trace</b>:
+        <select id="eye_trace" onchange="restartEye()" style="padding:2px 6px;font-family:inherit">
+          <option value="i" selected>I only</option>
+          <option value="q">Q only</option>
+          <option value="iq">I + Q</option>
+        </select>
+      </label>
+      <label><b>Symbols</b>:
+        <select id="eye_nsym" onchange="restartEye()" style="padding:2px 6px;font-family:inherit">
+          <option value="2" selected>2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="eye_enable"> <b>Live</b></label>
+      <span class="v" id="eye_status" style="font-size:0.8em;color:var(--text-dim)">disabled</span>
+    </div>
+    <canvas id="eye_canvas"
+      style="width:100%;aspect-ratio:1/1;background:#0a0f1a;border:1px solid #1f2937;display:block"></canvas>
+    <div style="font-size:0.75em;color:var(--text-dim);margin-top:4px">
+      Raw post-DDC IQ from /ws/iq, sliced into N-symbol windows at the
+      P25 symbol rate (4800 sym/s → 13.02 samples/sym @ 62.5 kSPS) and
+      overlapped on the canvas. Open eye ⇒ clean amplitude + timing.
+      Closed eye / jitter ⇒ ISI, poor symbol timing, or SNR too low.
+      Live stream; disable to stop traffic.
+    </div>
   </div>
+</div>
 </div>
 
 <!-- ── RF Spectrum (narrowband) ─────────────────────────────── -->
@@ -269,8 +315,14 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
         <option value="traffic">Traffic</option>
       </select>
     </label>
+    <label><b>Mode</b>:
+      <select id="spec_mode" onchange="restartSpectrumMode()" style="padding:3px 6px;font-family:inherit">
+        <option value="server" selected>Server FFT</option>
+        <option value="live">Live IQ</option>
+      </select>
+    </label>
     <label><b>FFT</b>:
-      <select id="spec_fft" onchange="refreshSpectrum()" style="padding:3px 6px;font-family:inherit">
+      <select id="spec_fft" onchange="onSpecSizeChange()" style="padding:3px 6px;font-family:inherit">
         <option value="1024">1024</option>
         <option value="2048">2048</option>
         <option value="4096" selected>4096</option>
@@ -279,7 +331,7 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       </select>
     </label>
     <label><b>Averages</b>:
-      <select id="spec_avg" onchange="refreshSpectrum()" style="padding:3px 6px;font-family:inherit">
+      <select id="spec_avg" onchange="onSpecSizeChange()" style="padding:3px 6px;font-family:inherit">
         <option value="1" selected>1</option>
         <option value="2">2</option>
         <option value="4">4</option>
@@ -2101,22 +2153,515 @@ function logPollStartTimer() {
 logPollStartTimer();
 logPoll(); // kick off immediately
 
-// Spectrum renderer. Polls /api/spectrum at the rate chosen by the
-// dropdown and paints the FFT to a <canvas>. The canvas is sized to
-// its CSS client area times devicePixelRatio so HiDPI displays
-// render crisp (the pre-2026-04-18 version used a fixed 900x240
-// backing buffer stretched by CSS width:100%, which produced a
-// visibly upscaled plot on any 1.5x+ DPR monitor). Per-pixel
-// min/max rendering collapses arbitrarily large FFTs (1024..16384)
-// into readable traces without aliasing into an unreadable polyline.
-// Only runs when the Debug tab is active + rate != Paused.
+// ════════════════════════════════════════════════════════════════════
+// IQ streaming, browser-side FFT, eye diagram — all consume /ws/iq.
+// Added 2026-04-18 to give the dashboard client-side visualization
+// without round-tripping an FFT through the Zynq ARM. The existing
+// /api/spectrum polling path remains the default; the user switches
+// modes via the Mode dropdown in the RF Spectrum card.
+// ════════════════════════════════════════════════════════════════════
+
+// IqStream -- WebSocket client for /ws/iq. Handles the hello frame,
+// decodes binary frames into Float32Array (re, im), forwards to a
+// user-provided onFrame callback, reconnects on drop with exponential
+// backoff. Single instance per chain; callers can call connect('...')
+// multiple times -- subsequent calls close the old socket first.
+class IqStream {
+  constructor() {
+    this.ws = null;
+    this.chain = null;
+    this.onFrame = null;      // ({re, im, sampleRate, chain}) => void
+    this.onStatus = null;     // (string) => void
+    this.wantOpen = false;
+    this.backoffMs = 1000;
+    this.sampleRate = 62500;
+  }
+  connect(chain, onFrame, onStatus) {
+    this.disconnect();
+    this.chain = chain;
+    this.onFrame = onFrame;
+    this.onStatus = onStatus || (() => {});
+    this.wantOpen = true;
+    this._open();
+  }
+  disconnect() {
+    this.wantOpen = false;
+    if (this.ws) {
+      try { this.ws.close(); } catch (e) {}
+      this.ws = null;
+    }
+  }
+  _open() {
+    if (!this.wantOpen) return;
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = `${proto}://${location.host}/ws/iq?chain=${encodeURIComponent(this.chain)}`;
+    const ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+    this.ws = ws;
+    this.onStatus('connecting...');
+    ws.addEventListener('open', () => {
+      this.onStatus('connected');
+      this.backoffMs = 1000;
+    });
+    ws.addEventListener('message', (ev) => {
+      if (typeof ev.data === 'string') {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'hello' && msg.sample_rate_hz) {
+            this.sampleRate = msg.sample_rate_hz;
+          }
+        } catch (e) {}
+        return;
+      }
+      const buf = ev.data; // ArrayBuffer
+      const n = buf.byteLength >> 2; // 4 bytes per complex i16 sample
+      if (n === 0) return;
+      const view = new DataView(buf);
+      const re = new Float32Array(n);
+      const im = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        re[i] = view.getInt16(i * 4, true);
+        im[i] = view.getInt16(i * 4 + 2, true);
+      }
+      if (this.onFrame) {
+        this.onFrame({ re, im, sampleRate: this.sampleRate, chain: this.chain });
+      }
+    });
+    ws.addEventListener('close', () => {
+      this.ws = null;
+      if (!this.wantOpen) return;
+      const delay = Math.min(this.backoffMs, 15000);
+      this.onStatus(`reconnecting in ${Math.round(delay/1000)}s`);
+      setTimeout(() => this._open(), delay);
+      this.backoffMs = Math.min(this.backoffMs * 2, 15000);
+    });
+    ws.addEventListener('error', () => {
+      this.onStatus('error');
+    });
+  }
+}
+
+// Hand-rolled radix-2 Cooley-Tukey FFT -- mirrors spectrum.rs so the
+// browser and the server produce identical mag_db arrays from the
+// same IQ input. In-place on re/im Float32Arrays. The twiddle loop
+// burns a cos/sin per stage; negligible next to the butterfly cost
+// for N ≤ 16384.
+function fftInPlace(re, im) {
+  const n = re.length;
+  // Bit-reversal permutation
+  let j = 0;
+  for (let i = 1; i < n; i++) {
+    let bit = n >> 1;
+    while (j & bit) { j ^= bit; bit >>= 1; }
+    j ^= bit;
+    if (i < j) {
+      const tr = re[i]; re[i] = re[j]; re[j] = tr;
+      const ti = im[i]; im[i] = im[j]; im[j] = ti;
+    }
+  }
+  for (let stage = 1; stage < n; stage *= 2) {
+    const theta = -Math.PI / stage;
+    const wRe = Math.cos(theta);
+    const wIm = Math.sin(theta);
+    for (let k = 0; k < n; k += stage * 2) {
+      let cr = 1, ci = 0;
+      for (let m = 0; m < stage; m++) {
+        const tr = cr * re[k + m + stage] - ci * im[k + m + stage];
+        const ti = cr * im[k + m + stage] + ci * re[k + m + stage];
+        re[k + m + stage] = re[k + m] - tr;
+        im[k + m + stage] = im[k + m] - ti;
+        re[k + m] += tr;
+        im[k + m] += ti;
+        const nr = cr * wRe - ci * wIm;
+        const ni = cr * wIm + ci * wRe;
+        cr = nr; ci = ni;
+      }
+    }
+  }
+}
+
+// Hann window cache keyed by N. Hann is the only window used in
+// spectrum_from_bytes; if that changes, update here too.
+const _hannCache = new Map();
+function hannWindow(n) {
+  let w = _hannCache.get(n);
+  if (w) return w;
+  w = new Float32Array(n);
+  const k = 2 * Math.PI / (n - 1);
+  for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos(k * i);
+  _hannCache.set(n, w);
+  return w;
+}
+
+// Compute a fftshifted mag-dB spectrum from a complex sample stream.
+// Matches spectrum.rs math exactly including the calibrated reference
+// (full-scale tone → 0 dBFS). Samples arg is a Float32Array pair
+// {re, im} longer than fft_size * averages; tail-aligned so the most
+// recent block lands in the snapshot.
+function spectrumFromIq(re_all, im_all, fftSize, averages) {
+  const available = Math.floor(re_all.length / fftSize);
+  const K = Math.max(1, Math.min(averages, available));
+  const win = hannWindow(fftSize);
+  const acc = new Float32Array(fftSize);
+  const re = new Float32Array(fftSize);
+  const im = new Float32Array(fftSize);
+  for (let seg = 0; seg < K; seg++) {
+    const end = re_all.length - seg * fftSize;
+    const start = end - fftSize;
+    for (let i = 0; i < fftSize; i++) {
+      re[i] = re_all[start + i] * win[i];
+      im[i] = im_all[start + i] * win[i];
+    }
+    fftInPlace(re, im);
+    for (let i = 0; i < fftSize; i++) {
+      acc[i] += re[i] * re[i] + im[i] * im[i];
+    }
+  }
+  // Reference: (32768 · Σw)² so a full-scale bin-centered tone = 0 dBFS.
+  let wSum = 0;
+  for (let i = 0; i < fftSize; i++) wSum += win[i];
+  const refSq = (32768.0 * wSum) * (32768.0 * wSum);
+  const invK = 1.0 / K;
+  const mag_db = new Float32Array(fftSize);
+  for (let i = 0; i < fftSize; i++) {
+    mag_db[i] = 10 * Math.log10((acc[i] * invK + 1e-12) / refSq);
+  }
+  // fftshift
+  const half = fftSize >> 1;
+  const out = new Float32Array(fftSize);
+  out.set(mag_db.subarray(half), 0);
+  out.set(mag_db.subarray(0, half), half);
+  return { mag_db: out, fft_size: fftSize, averages_used: K };
+}
+
+// Shared ring buffer for Live-IQ spectrum mode: keep enough samples
+// for the current fft × averages budget, discard older. Rebuilt when
+// the fft/avg controls change (see restartSpectrumMode).
+class IqRing {
+  constructor() { this.re = null; this.im = null; this.filled = 0; this.cap = 0; }
+  configure(cap) {
+    if (this.cap === cap) { this.filled = 0; return; }
+    this.cap = cap;
+    this.re = new Float32Array(cap);
+    this.im = new Float32Array(cap);
+    this.filled = 0;
+  }
+  push(re_in, im_in) {
+    if (!this.re) return;
+    const n = re_in.length;
+    if (n >= this.cap) {
+      // Fresh frame is larger than the ring -- keep only the tail.
+      this.re.set(re_in.subarray(n - this.cap));
+      this.im.set(im_in.subarray(n - this.cap));
+      this.filled = this.cap;
+      return;
+    }
+    if (this.filled + n <= this.cap) {
+      this.re.set(re_in, this.filled);
+      this.im.set(im_in, this.filled);
+      this.filled += n;
+    } else {
+      // Shift old samples out of the front, append new at the end.
+      const shift = this.filled + n - this.cap;
+      this.re.copyWithin(0, shift, this.filled);
+      this.im.copyWithin(0, shift, this.filled);
+      this.filled -= shift;
+      this.re.set(re_in, this.filled);
+      this.im.set(im_in, this.filled);
+      this.filled += n;
+    }
+  }
+  ready() { return this.filled >= this.cap; }
+}
+
+// ── Spectrum renderer ───────────────────────────────────────────────
+// Polls /api/spectrum at the rate chosen by the dropdown AND/OR runs
+// a browser-side FFT on /ws/iq data when Mode = Live IQ. Paints the
+// FFT to a <canvas>. The canvas is sized to its CSS client area
+// times devicePixelRatio so HiDPI displays render crisp (the
+// pre-2026-04-18 version used a fixed 900x240 backing buffer
+// stretched by CSS width:100%, which produced a visibly upscaled
+// plot on any 1.5x+ DPR monitor). Per-pixel min/max rendering
+// collapses arbitrarily large FFTs (1024..16384) into readable
+// traces without aliasing into an unreadable polyline. Only runs
+// when the Debug tab is active + rate != Paused.
+const SPEC_IQ_STREAM = new IqStream();
+const SPEC_IQ_RING   = new IqRing();
 let SPEC = {
   timer: null,
   peak: null,
   rate: 1000,
   lastData: null,   // {mag_db, center_hz, span_hz} — lets Y-axis knobs redraw without a new fetch
   dpr: 1,
+  mode: 'server',   // 'server' = poll /api/spectrum, 'live' = /ws/iq + browser FFT
+  liveCenterHz: 0,  // cached from /api/stats when mode=live
 };
+
+function onSpecSizeChange() {
+  // Live mode needs the ring re-sized to the new fft*avg budget;
+  // server mode just kicks a fresh poll so the new size is fetched.
+  if (SPEC.mode === 'live') {
+    restartSpectrumMode();
+  } else {
+    refreshSpectrum();
+  }
+}
+
+function restartSpectrumMode() {
+  const modeSel = $('spec_mode');
+  SPEC.mode = modeSel ? modeSel.value : 'server';
+  // Always tear down both producers so we don't double-feed the canvas.
+  if (SPEC.timer) { clearInterval(SPEC.timer); SPEC.timer = null; }
+  SPEC_IQ_STREAM.disconnect();
+  SPEC_IQ_RING.configure(0);
+  SPEC.lastData = null;
+
+  if (SPEC.mode === 'live') {
+    const fft = parseInt($('spec_fft').value, 10) || 4096;
+    const avg = parseInt($('spec_avg').value, 10) || 1;
+    SPEC_IQ_RING.configure(fft * avg);
+    // Cache center freq + LO for the x-axis label. Stats carries both
+    // chain-neutral data; we only need the center for the selected
+    // chain, derived below on each fetch of stats.
+    fetchJson('/api/stats').then(stats => {
+      if (!stats) return;
+      const chain = $('spec_chain').value || 'control';
+      // control center = rx_lo + control NCO; traffic = rx_lo + traffic NCO.
+      const lo = (stats.rx_lo_hz || 0);
+      if (chain === 'control') {
+        SPEC.liveCenterHz = stats.boot_control_freq_hz || lo;
+      } else {
+        // Stats doesn't expose the follower NCO directly -- fall back
+        // to the server FFT path for the reading. A quick extra fetch
+        // is cheaper than a new stats field and won't need a bake.
+        fetchJson('/api/spectrum?chain=traffic&fft=1024&averages=1').then(d => {
+          if (d && d.ok) SPEC.liveCenterHz = d.center_hz;
+        });
+      }
+    });
+    const chain = $('spec_chain').value || 'control';
+    SPEC_IQ_STREAM.connect(chain, onSpecIqFrame, msg => {
+      const s = $('spec_status'); if (s) s.textContent = `live: ${msg}`;
+    });
+  } else {
+    // Server mode: kick the polling timer.
+    scheduleSpectrum();
+  }
+}
+
+function onSpecIqFrame(frame) {
+  // Push new IQ, recompute spectrum when we have enough samples.
+  SPEC_IQ_RING.push(frame.re, frame.im);
+  if (!SPEC_IQ_RING.ready()) return;
+  const fft = parseInt($('spec_fft').value, 10) || 4096;
+  const avg = parseInt($('spec_avg').value, 10) || 1;
+  const snap = spectrumFromIq(SPEC_IQ_RING.re, SPEC_IQ_RING.im, fft, avg);
+  // Match the server response shape so drawSpectrum + the status
+  // line treat both modes identically.
+  const data = {
+    ok: true,
+    chain: frame.chain,
+    center_hz: SPEC.liveCenterHz,
+    sample_rate_hz: frame.sampleRate,
+    fft_size: snap.fft_size,
+    averages_used: snap.averages_used,
+    mag_db: Array.from(snap.mag_db),
+  };
+  renderSpectrumPayload(data);
+}
+
+function renderSpectrumPayload(data) {
+  const chain = data.chain || $('spec_chain').value || 'control';
+  const status = $('spec_status');
+  const center_mhz = (data.center_hz || 0) / 1e6;
+  const span_hz = data.sample_rate_hz || 62500;
+  const fft_used = data.fft_size;
+  const avg_used = data.averages_used;
+  const bin_hz = span_hz / fft_used;
+  const bin_label = bin_hz >= 1 ? `${bin_hz.toFixed(1)} Hz` : `${(bin_hz*1000).toFixed(1)} mHz`;
+  const sorted = data.mag_db.slice().sort((a,b) => a - b);
+  const nf = sorted[Math.floor(sorted.length * 0.25)];
+  const peak = sorted[sorted.length - 1];
+  const over_zero = data.mag_db.reduce((n, v) => n + (v > 0 ? 1 : 0), 0);
+  const prefix = (SPEC.mode === 'live') ? 'live ' : '';
+  const base =
+    `${prefix}${chain} @ ${center_mhz.toFixed(4)} MHz   ·   ` +
+    `span ${(span_hz/1000).toFixed(1)} kHz   ·   ` +
+    `${fft_used} pts (${bin_label}/bin) × ${avg_used} avg   ·   ` +
+    `floor ≈ ${nf.toFixed(1)} dB   ·   peak ${peak.toFixed(1)} dB`;
+  status.textContent = base;
+  status.style.color = 'var(--text-dim)';
+  if (over_zero > 0) {
+    const sep = document.createTextNode('   ·   ');
+    const warn = document.createElement('span');
+    warn.style.color = 'var(--red)';
+    warn.textContent = `${over_zero} bin${over_zero===1?'':'s'} > 0 dBFS`;
+    status.appendChild(sep);
+    status.appendChild(warn);
+  }
+  SPEC.lastData = { mag_db: data.mag_db, center_hz: data.center_hz, span_hz };
+  drawSpectrumCached();
+}
+
+// ── Eye diagram ─────────────────────────────────────────────────────
+// Subscribes to /ws/iq on demand (user ticks "Live"), accumulates
+// samples into a small ring, and overlays N consecutive N-symbol
+// windows on the canvas. Not a true matched-filter eye (that would
+// need RRC-filtered + AGC'd samples; those live inside the HDL LSM
+// chain and aren't exposed to the IQ ring) -- this is the raw
+// post-DDC waveform showing signal-shape consistency. Clean signal
+// = tight overlap → "open eye"; poor timing / ISI / SNR = smeared
+// bundle → "closed eye".
+const EYE = {
+  stream: new IqStream(),
+  ring_re: null,
+  ring_im: null,
+  ring_pos: 0,
+  ring_cap: 0,
+  dpr: 1,
+  sps: 62500 / 4800, // 13.021
+  enabled: false,
+};
+
+function configureEyeCanvas() {
+  const c = $('eye_canvas');
+  if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = c.clientWidth;
+  const cssH = c.clientHeight;
+  if (cssW <= 0 || cssH <= 0) return;
+  const desiredW = Math.round(cssW * dpr);
+  const desiredH = Math.round(cssH * dpr);
+  if (c.width !== desiredW || c.height !== desiredH) {
+    c.width = desiredW;
+    c.height = desiredH;
+  }
+  EYE.dpr = dpr;
+  drawEyeCached();
+}
+window.addEventListener('resize', configureEyeCanvas);
+
+function restartEye() {
+  const on = $('eye_enable').checked;
+  EYE.enabled = on;
+  EYE.stream.disconnect();
+  EYE.ring_re = null;
+  EYE.ring_im = null;
+  const status = $('eye_status');
+  if (!on) {
+    status.textContent = 'disabled';
+    status.style.color = 'var(--text-dim)';
+    const c = $('eye_canvas');
+    if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height);
+    return;
+  }
+  // Ring big enough to hold enough symbol-windows for a useful overlay.
+  // N windows × N sym × sps samples each. Target ~64 windows overlayed.
+  const nsym = parseInt($('eye_nsym').value, 10) || 2;
+  const samples = Math.ceil(nsym * EYE.sps * 64);
+  EYE.ring_cap = samples;
+  EYE.ring_re = new Float32Array(samples);
+  EYE.ring_im = new Float32Array(samples);
+  EYE.ring_pos = 0;
+  const chain = $('eye_chain').value || 'control';
+  EYE.stream.connect(chain, onEyeFrame, msg => {
+    status.textContent = `live: ${msg}`;
+  });
+}
+
+function onEyeFrame(frame) {
+  if (!EYE.enabled || !EYE.ring_re) return;
+  // Append to ring (drop oldest if overflow).
+  const n = frame.re.length;
+  if (n >= EYE.ring_cap) {
+    EYE.ring_re.set(frame.re.subarray(n - EYE.ring_cap));
+    EYE.ring_im.set(frame.im.subarray(n - EYE.ring_cap));
+    EYE.ring_pos = EYE.ring_cap;
+  } else if (EYE.ring_pos + n <= EYE.ring_cap) {
+    EYE.ring_re.set(frame.re, EYE.ring_pos);
+    EYE.ring_im.set(frame.im, EYE.ring_pos);
+    EYE.ring_pos += n;
+  } else {
+    const shift = EYE.ring_pos + n - EYE.ring_cap;
+    EYE.ring_re.copyWithin(0, shift, EYE.ring_pos);
+    EYE.ring_im.copyWithin(0, shift, EYE.ring_pos);
+    EYE.ring_pos -= shift;
+    EYE.ring_re.set(frame.re, EYE.ring_pos);
+    EYE.ring_im.set(frame.im, EYE.ring_pos);
+    EYE.ring_pos += n;
+  }
+  drawEyeCached();
+  const st = $('eye_status');
+  if (st) st.textContent = `live: ${EYE.ring_pos} / ${EYE.ring_cap} samples`;
+}
+
+function drawEyeCached() {
+  if (!EYE.ring_re || EYE.ring_pos < 2 * EYE.sps) return;
+  const c = $('eye_canvas');
+  if (!c) return;
+  const ctx = c.getContext('2d');
+  const dpr = EYE.dpr || 1;
+  const w = c.width, h = c.height;
+  ctx.clearRect(0, 0, w, h);
+
+  // Normalize: find abs-max across the live buffer to set Y-axis.
+  let amax = 1;
+  for (let i = 0; i < EYE.ring_pos; i++) {
+    const a = Math.abs(EYE.ring_re[i]); if (a > amax) amax = a;
+    const b = Math.abs(EYE.ring_im[i]); if (b > amax) amax = b;
+  }
+
+  const nsym = parseInt($('eye_nsym').value, 10) || 2;
+  const win_len = nsym * EYE.sps;
+  const mapX = t => (t / win_len) * w;
+  const mapY = v => h/2 - (v / amax) * (h/2 - 4 * dpr);
+
+  // Grid.
+  ctx.strokeStyle = '#1e2a3a';
+  ctx.lineWidth = dpr;
+  ctx.beginPath();
+  for (let s = 0; s <= nsym; s++) {
+    const x = Math.round((s / nsym) * w) + 0.5;
+    ctx.moveTo(x, 0); ctx.lineTo(x, h);
+  }
+  for (let f = -1; f <= 1; f += 0.5) {
+    const y = Math.round(mapY(f * amax)) + 0.5;
+    ctx.moveTo(0, y); ctx.lineTo(w, y);
+  }
+  ctx.stroke();
+
+  const trace = $('eye_trace').value || 'i';
+  const step = Math.max(1, Math.floor(win_len));  // window size in samples
+  const overlap = Math.max(1, Math.floor(win_len / 2));
+  ctx.lineWidth = Math.max(1, dpr * 0.8);
+
+  const drawTrace = (src, stroke) => {
+    ctx.strokeStyle = stroke;
+    ctx.beginPath();
+    for (let start = 0; start + step <= EYE.ring_pos; start += overlap) {
+      for (let k = 0; k < step; k++) {
+        const x = mapX(k);
+        const y = mapY(src[start + k]);
+        if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+  };
+
+  if (trace === 'i' || trace === 'iq') {
+    drawTrace(EYE.ring_re, 'rgba(34,197,94,0.45)');
+  }
+  if (trace === 'q' || trace === 'iq') {
+    drawTrace(EYE.ring_im, 'rgba(96,165,250,0.45)');
+  }
+
+  ctx.fillStyle = '#cbd5e1';
+  ctx.font = `${Math.round(11 * dpr)}px system-ui,sans-serif`;
+  ctx.textBaseline = 'top';
+  ctx.fillText(`${nsym} symbol(s) · sps=${EYE.sps.toFixed(2)} · |max|≈${amax.toFixed(0)}`,
+               6 * dpr, 4 * dpr);
+}
+
 function resetSpectrum() {
   SPEC.peak = null;
   drawSpectrumCached();
@@ -2152,6 +2697,7 @@ function scheduleSpectrum() {
   }
 }
 async function refreshSpectrum() {
+  if (SPEC.mode === 'live') return;  // live mode is WebSocket-driven
   const pane = $('tab-debug');
   if (!pane || pane.style.display === 'none') return;
   const chain = $('spec_chain').value || 'control';
@@ -2167,40 +2713,7 @@ async function refreshSpectrum() {
     status.style.color = 'var(--red)';
     return;
   }
-  status.style.color = 'var(--text-dim)';
-  const center_mhz = (data.center_hz || 0) / 1e6;
-  const span_hz = data.sample_rate_hz || 62500;
-  const fft_used = data.fft_size || parseInt(fft, 10);
-  const avg_used = data.averages_used || parseInt(avg, 10);
-  const bin_hz = span_hz / fft_used;
-  const bin_label = bin_hz >= 1 ? `${bin_hz.toFixed(1)} Hz` : `${(bin_hz*1000).toFixed(1)} mHz`;
-  // Noise-floor estimate for the status line: median of the lower
-  // quartile of bins, rough but cheap — lets the user see the benefit
-  // of raising Averages in realtime.
-  const sorted = data.mag_db.slice().sort((a,b) => a - b);
-  const nf = sorted[Math.floor(sorted.length * 0.25)];
-  const peak = sorted[sorted.length - 1];
-  // Count bins above 0 dBFS — these indicate either a calibration
-  // issue or genuine front-end saturation. Rendered as a red sibling
-  // element (not innerHTML) to stay clear of the XSS/escHtml policy
-  // introduced in Stage 1 cleanup.
-  const over_zero = data.mag_db.reduce((n, v) => n + (v > 0 ? 1 : 0), 0);
-  const base =
-    `${chain} @ ${center_mhz.toFixed(4)} MHz   ·   ` +
-    `span ${(span_hz/1000).toFixed(1)} kHz   ·   ` +
-    `${fft_used} pts (${bin_label}/bin) × ${avg_used} avg   ·   ` +
-    `floor ≈ ${nf.toFixed(1)} dB   ·   peak ${peak.toFixed(1)} dB`;
-  status.textContent = base;
-  if (over_zero > 0) {
-    const sep = document.createTextNode('   ·   ');
-    const warn = document.createElement('span');
-    warn.style.color = 'var(--red)';
-    warn.textContent = `${over_zero} bin${over_zero===1?'':'s'} > 0 dBFS`;
-    status.appendChild(sep);
-    status.appendChild(warn);
-  }
-  SPEC.lastData = { mag_db: data.mag_db, center_hz: data.center_hz, span_hz };
-  drawSpectrumCached();
+  renderSpectrumPayload(data);
 }
 function drawSpectrumCached() {
   if (!SPEC.lastData) return;
@@ -2379,13 +2892,20 @@ switchTab = function(name) {
   _origSwitchTabForSpec(name);
   if (name === 'debug') {
     // Canvas clientWidth is 0 while the pane is display:none, so size
-    // it here — on first activation — rather than on page load.
+    // the three live-visual canvases here — on first activation —
+    // rather than on page load.
     configureSpecCanvas();
-    if (!SPEC.timer && SPEC.rate > 0) scheduleSpectrum();
+    configureIqCanvas();
+    configureEyeCanvas();
+    if (!SPEC.timer && SPEC.rate > 0 && SPEC.mode !== 'live') scheduleSpectrum();
     if (!IQ.timer && IQ.rate > 0) scheduleConstellation();
   } else {
     if (SPEC.timer) { clearInterval(SPEC.timer); SPEC.timer = null; }
     if (IQ.timer)   { clearInterval(IQ.timer);   IQ.timer   = null; }
+    // Tear down any live IQ streams so we don't burn server CPU +
+    // bandwidth while the user is on another tab.
+    SPEC_IQ_STREAM.disconnect();
+    EYE.stream.disconnect();
   }
   // Reset the log-poll cadence so switching into Logs speeds it
   // up to 1 s immediately; switching out slows to 5 s.
@@ -2429,7 +2949,25 @@ let IQ = {
   rate: 1000,
   lastI: null,
   lastQ: null,
+  dpr: 1,
 };
+function configureIqCanvas() {
+  const c = $('iq_canvas');
+  if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = c.clientWidth;
+  const cssH = c.clientHeight;
+  if (cssW <= 0 || cssH <= 0) return;
+  const desiredW = Math.round(cssW * dpr);
+  const desiredH = Math.round(cssH * dpr);
+  if (c.width !== desiredW || c.height !== desiredH) {
+    c.width = desiredW;
+    c.height = desiredH;
+  }
+  IQ.dpr = dpr;
+  if (IQ.lastI && IQ.lastQ) drawConstellation(IQ.lastI, IQ.lastQ);
+}
+window.addEventListener('resize', configureIqCanvas);
 function scheduleConstellation() {
   if (IQ.timer) { clearInterval(IQ.timer); IQ.timer = null; }
   const r = parseInt($('iq_rate').value, 10);
@@ -2480,45 +3018,49 @@ function drawConstellation(iArr, qArr) {
   const mapX = re => (re + axisMax) / (axisMax * 2) * w;
   const mapY = im => h - (im + axisMax) / (axisMax * 2) * h;
 
+  const dprLocal = IQ.dpr || 1;
   // Grid.
   ctx.strokeStyle = '#1e2a3a';
-  ctx.lineWidth = 1;
+  ctx.lineWidth = dprLocal;
   ctx.beginPath();
   ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2);
   ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h);
   ctx.stroke();
   // Unit circle.
   ctx.strokeStyle = '#2b3b55';
+  ctx.lineWidth = dprLocal;
   ctx.beginPath();
   ctx.arc(w / 2, h / 2, w / 2 / axisMax, 0, Math.PI * 2);
   ctx.stroke();
   // Expected cluster centers for P25 LSM (π/4-DQPSK). Decision
-  // points sit at ±π/4 and ±3π/4, i.e. (±1/√2, ±1/√2). Earlier
-  // version of this code placed them at (±1, 0)/(0, ±j) which is
-  // QPSK convention and doesn't match P25's actual symbol phases.
+  // points sit at ±π/4 and ±3π/4, i.e. (±1/√2, ±1/√2).
   const r4 = Math.SQRT1_2;
   ctx.fillStyle = 'rgba(96, 165, 250, 0.4)';
+  const cr = Math.max(3, 3 * dprLocal);
   for (const [cx, cy] of [[r4, r4], [-r4, r4], [-r4, -r4], [r4, -r4]]) {
     ctx.beginPath();
-    ctx.arc(mapX(cx), mapY(cy), 3, 0, Math.PI * 2);
+    ctx.arc(mapX(cx), mapY(cy), cr, 0, Math.PI * 2);
     ctx.fill();
   }
 
   // Points. Use a soft green so persistence builds up nicely.
   ctx.fillStyle = 'rgba(34, 197, 94, 0.55)';
+  const pr = Math.max(1, Math.round(dprLocal));
   for (let k = 0; k < iArr.length; k++) {
     const x = mapX(iArr[k]);
     const y = mapY(qArr[k]);
-    ctx.fillRect(x - 1, y - 1, 2, 2);
+    ctx.fillRect(x - pr / 2, y - pr / 2, pr, pr);
   }
 
-  // Labels.
-  ctx.fillStyle = '#9ca3af';
-  ctx.font = '10px system-ui,sans-serif';
-  ctx.fillText('+I', w - 18, h / 2 - 4);
-  ctx.fillText('+Q', w / 2 + 4, 12);
-  ctx.fillText('-I', 4, h / 2 - 4);
-  ctx.fillText('-Q', w / 2 + 4, h - 4);
+  // Labels. DPR-scaled so HiDPI displays stay readable after the
+  // switch from fixed 480x480 to responsive CSS sizing.
+  const dpr = IQ.dpr || 1;
+  ctx.fillStyle = '#cbd5e1';
+  ctx.font = `${Math.round(11 * dpr)}px system-ui,sans-serif`;
+  ctx.fillText('+I', w - 22 * dpr, h / 2 - 4 * dpr);
+  ctx.fillText('+Q', w / 2 + 4 * dpr, 14 * dpr);
+  ctx.fillText('-I', 4 * dpr, h / 2 - 4 * dpr);
+  ctx.fillText('-Q', w / 2 + 4 * dpr, h - 4 * dpr);
 }
 
 // Modulation selector. GET polls current mode + per-decoder rates

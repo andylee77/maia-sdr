@@ -436,6 +436,12 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
         params: "",
         description: "WebSocket text stream of decoder + traffic events as JSON lines.",
     },
+    EndpointDoc {
+        method: "GET",
+        path: "/ws/iq",
+        params: "?chain=control|traffic",
+        description: "WebSocket binary stream of raw post-DDC IQ sub-buffers (32 KB each, i16 LE interleaved, 62.5 kSPS). Hello text frame on connect. For browser-side FFT + eye plots.",
+    },
 ];
 
 

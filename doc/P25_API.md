@@ -131,11 +131,13 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 |---|---|---|---|
 | `/ws/events` | WS upgrade | JSON text | Real-time event stream (`TsbkEvent` + system events). **Stage 2**: synthetic `{"event_type":"ws_lag"}` frame sent when the broadcast channel overruns a slow consumer, so the connection stays up instead of closing |
 | `/ws/audio` | WS upgrade | binary + text control | Vocoded PCM at 8 kHz 16-bit mono, 320-byte binary frames (160 samples = 20 ms per frame). **Stage 2**: on Lagged, server sends a text control frame `{"type":"lag","skipped":N}` so the client can flush its jitter buffer |
+| `/ws/iq` | WS upgrade | binary + text hello | Raw post-DDC complex IQ from the selected chain (`?chain=control\|traffic`). First message is a JSON `{"type":"hello","sample_rate_hz":62500,"format":"i16le-iq-stereo","chain":"...","buf_bytes":32768}`. Subsequent messages are binary, one 32 KB sub-buffer each (8192 complex i16 samples ≈ 131 ms). For browser-side FFT + eye plots + live constellation. **Single-consumer today** — multiple subscribers race with `/api/spectrum` for ring sub-buffers; multi-consumer broadcast is a follow-up if the race becomes measurable |
 
 ### Client reconnect guidance
 
 - `/ws/events`: exponential backoff (1s → 2s → 4s → 8s → 15s ceiling). Reset to 1s on first successful message. The embedded dashboard implements this; other clients (Android app) should do the same. A flat reconnect delay hammers the server during daemon restart.
 - `/ws/audio`: user-initiated (Play Audio button). No auto-reconnect today — if the connection drops mid-call the client should show a "disconnected" indicator and let the user retry. Server sends `ws_lag` control frames on broadcast-channel overrun; clients should use them to flush any downstream jitter buffer.
+- `/ws/iq`: user-initiated (Debug tab's Live toggle on the eye / spectrum card). Dashboard implements exponential backoff 1 s → 15 s ceiling.
 
 ---
 
