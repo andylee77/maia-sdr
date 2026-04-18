@@ -2744,14 +2744,21 @@ function drawEyeCached() {
   ctx.stroke();
 
   const trace = $('eye_trace').value || 'i';
-  const step = Math.max(1, Math.floor(win_len));  // window size in samples
-  const overlap = Math.max(1, Math.floor(win_len / 2));
+  const step = Math.max(1, Math.round(win_len));
+  // Stride by exactly one symbol per overlay (fractional sps tracked
+  // in float to avoid drift). Each N-symbol window starts on the next
+  // symbol boundary, which is the only stride that makes consecutive
+  // overlays align on the symbol decision grid regardless of nsym.
+  // Prior code strided by win_len/2 (= nsym/2 symbols), which made
+  // nsym=4 look 2-periodic and nsym=2 mis-align by 0.5 symbols.
+  const stride = EYE.sps;
   ctx.lineWidth = Math.max(1, dpr * 0.8);
 
   const drawTrace = (src, stroke) => {
     ctx.strokeStyle = stroke;
     ctx.beginPath();
-    for (let start = 0; start + step <= EYE.ring_pos; start += overlap) {
+    for (let s_f = 0; Math.floor(s_f) + step <= EYE.ring_pos; s_f += stride) {
+      const start = Math.floor(s_f);
       for (let k = 0; k < step; k++) {
         const x = mapX(k);
         const y = mapY(src[start + k]);
