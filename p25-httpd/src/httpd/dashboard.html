@@ -1537,9 +1537,51 @@ function getActiveFilters() {
 //
 // Backoff sequence: 1s, 2s, 4s, 8s, 15s, 15s, ... (capped). Resets to
 // 1s once a message successfully arrives (server confirmed healthy).
-// Motivation: the previous flat 3s reconnect hammered the server when
-// the daemon was down for a restart and multiple tabs were open.
+//
+// Main-thread budget: TSBK events arrive in bursts (3-4 per TSDU,
+// ~30-50 events/sec on an active control channel). Each message is
+// parsed cheaply, then queued for a single rAF-scheduled DOM flush.
+// Doing per-message `act.prepend()` + `refresh()` used to spend
+// ~10-20 ms per message on DOM reflow + /api/system fetch, which
+// starved the ScriptProcessorNode audio callback in insecure-context
+// (http://) playback and caused audible dropouts whenever a TSDU
+// burst coincided with an LDU burst. That is why /api/recordings
+// playback was always clean and only live /ws/audio dropped —
+// recordings don't compete for main-thread cycles.
 let _wsBackoffMs = 1000;
+const _evtQueue = [];
+let _evtFlushScheduled = false;
+function _flushEvtQueue() {
+  _evtFlushScheduled = false;
+  if (_evtQueue.length === 0) return;
+  const act = $('activity');
+  if (!act) { _evtQueue.length = 0; return; }
+  const filters = getActiveFilters();
+  // Build a DocumentFragment so we touch the DOM once per rAF tick
+  // instead of once per event. Browser only computes one reflow.
+  const frag = document.createDocumentFragment();
+  // column-reverse → first fragment child is at the bottom visually.
+  // Append events in reverse-arrival order so the newest ends up at
+  // the top of the visible list after a single prepend.
+  for (let i = _evtQueue.length - 1; i >= 0; i--) {
+    const evt = _evtQueue[i];
+    if (!filters.has(evt.event_type)) continue;
+    const el = document.createElement('div');
+    el.className = 'evt';
+    el.dataset.type = evt.event_type;
+    const alias = evt.talkgroup_alias ? ` <span class="alias">${escHtml(evt.talkgroup_alias)}</span>` : '';
+    el.innerHTML =
+      `<span class="evt-time">${escHtml(evt.timestamp)}</span>` +
+      `<span class="evt-type ${escHtml(evt.event_type)}">${escHtml(evt.event_type)}</span>` +
+      `<span class="evt-detail">${escHtml(evt.summary)}${alias}</span>`;
+    frag.appendChild(el);
+  }
+  _evtQueue.length = 0;
+  if (frag.childNodes.length > 0) {
+    act.prepend(frag);
+    while (act.children.length > 300) act.lastChild.remove();
+  }
+}
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws/events`);
@@ -1550,22 +1592,16 @@ function connectWs() {
       // Server-sent lag marker (broadcast channel overran). Not
       // a user-visible event — skip the activity-log render path.
       if (evt.event_type === 'ws_lag') return;
-      const filters = getActiveFilters();
-      if (!filters.has(evt.event_type)) return;
-      const el = document.createElement('div');
-      el.className = 'evt';
-      el.dataset.type = evt.event_type;
-      const alias = evt.talkgroup_alias ? ` <span class="alias">${escHtml(evt.talkgroup_alias)}</span>` : '';
-      el.innerHTML =
-        `<span class="evt-time">${escHtml(evt.timestamp)}</span>` +
-        `<span class="evt-type ${escHtml(evt.event_type)}">${escHtml(evt.event_type)}</span>` +
-        `<span class="evt-detail">${escHtml(evt.summary)}${alias}</span>`;
-      const act = $('activity');
-      // column-reverse: first child is at the bottom (newest visually at top)
-      act.prepend(el);
-      while (act.children.length > 300) act.lastChild.remove();
+      _evtQueue.push(evt);
+      if (!_evtFlushScheduled) {
+        _evtFlushScheduled = true;
+        requestAnimationFrame(_flushEvtQueue);
+      }
     } catch {}
-    refresh();
+    // NOTE: we intentionally do NOT call refresh() here. refresh()
+    // runs on a 2 s setInterval; calling it from every /ws/events
+    // message hammered the Zynq ARM with /api/system fetches and
+    // blocked the main thread long enough to starve SPN audio.
   };
   ws.onclose = () => {
     const delay = _wsBackoffMs;
@@ -1664,47 +1700,39 @@ class P25AudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     // 2 s of 8 kHz mono = 16384 samples. Bigger than any realistic
-    // broadcast-side burst (9 IMBE frames = 180 ms) plus a full
-    // broadcast::channel(256) worth of backlog, so we can absorb a
-    // server hiccup and still sound continuous.
+    // burst; the extra headroom is cheap.
     this.RING = 16384;
     this.ring = new Float32Array(this.RING);
     this.write = 0;
     this.read = 0;
     this.available = 0;
-    this.underruns = 0;
+    this.underruns = 0;         // events, not samples; cleared by 'reset'
     this.totalOut = 0;
     this.totalIn = 0;
     this.SRC_RATE = 8000;
     this.ratio = this.SRC_RATE / sampleRate;
     this.readFrac = 0;
-    // Prefill target: the vocoder task delivers 9 AudioChunks in a
-    // ~1 ms burst once per LDU, then waits ~180 ms for the next LDU
-    // to finish over-the-air. So the incoming stream is bursty with
-    // 180 ms silent gaps between bursts, and the ring naturally
-    // oscillates between 0 and 180 ms of buffered audio. Prefilling
-    // to only 200 ms puts us right at the edge of that oscillation;
-    // any jitter immediately underruns. 4320 samples = 540 ms = 3
-    // LDUs of headroom, which absorbs both LDU-burst jitter and the
-    // occasional main-thread stall from the dashboard's 2 s refresh
-    // loop. Costs ~340 ms of extra initial latency, which is still
-    // well under the 1-2 s "starts late" threshold the operator
-    // would notice relative to visible dashboard state.
-    this.PREFILL = 4320;
+    // Prefill before starting playback. Source paces at real-time
+    // (9 chunks per 180 ms LDU), so the ring reaches steady state
+    // around ~200 ms during a call. 150 ms prefill gets us listening
+    // one LDU into the call with minimal added latency. Was 540 ms
+    // (3 LDUs of headroom) which turned routine single-LDU losses
+    // into audible "drops out" events after re-prime.
+    this.PREFILL = 1200;
     this.priming = true;
-    // Consecutive per-sample underruns before we re-enter priming.
-    // At a typical 48 kHz AudioContext, 4800 samples = 100 ms of
-    // continuous silence. If we've produced 100 ms of underrun in
-    // one stretch the network has genuinely stalled and we should
-    // hold silence until the ring is healthy again, rather than
-    // stuttering out 20 ms bursts each time a single LDU arrives.
-    // The original logic absorbed individual-sample underruns
-    // silently (correct) but never re-primed on sustained gaps,
-    // producing the "sounds like it's cutting out 4 times a
-    // second" effect when the dashboard's debug-tab pollers were
-    // starving /ws/audio chunk delivery.
-    this.UNDERRUN_REPRIME = 4800;
+    // Re-prime only on catastrophic stall — 2 s of continuous empty
+    // ring. Routine single-LDU losses (180 ms gaps from sync-loss
+    // or drop_count events) are played as the honest silence they
+    // represent, NOT overlaid with an additional 540 ms prefill
+    // pause. End-of-call naturally drains the ring and re-primes
+    // before the next call.
+    this.UNDERRUN_REPRIME = Math.max(4800, Math.round(sampleRate * 2));
     this.consecUnderruns = 0;
+    // True when we're currently inside a continuous underrun
+    // sequence, so we only count one event per gap regardless of
+    // its length. Much more useful health signal than a per-sample
+    // counter that constantly ticks up during inter-LDU silence.
+    this.inUnderrunRun = false;
     this.port.onmessage = (ev) => {
       const m = ev.data;
       if (m.type === 'pcm') {
@@ -1754,29 +1782,28 @@ class P25AudioProcessor extends AudioWorkletProcessor {
     }
     for (let i = 0; i < n; i++) {
       if (this.available <= 1) {
-        // Absorb the empty slot as a single silence sample and keep
-        // going -- single-sample underruns are inaudible at 8 kHz.
-        // BUT: if underruns persist long enough to cross
-        // UNDERRUN_REPRIME samples (~100 ms), re-enter priming so
-        // we don't play the next tiny burst as a 20 ms fragment
-        // when more data finally arrives. This is the
-        // audible-stutter mode you hear when /ws/audio is
-        // starved by dashboard polling.
+        // Absorb the empty slot as silence and keep going. Routine
+        // LDU losses (~180 ms) play as the honest gap they are;
+        // only a genuine 2 s stall re-enters priming.
         out[i] = 0;
-        this.underruns++;
+        if (!this.inUnderrunRun) {
+          this.underruns++;
+          this.inUnderrunRun = true;
+        }
         this.consecUnderruns++;
         if (this.consecUnderruns >= this.UNDERRUN_REPRIME) {
           this.priming = true;
           this.consecUnderruns = 0;
-          // Zero out the rest of this quantum then return -- the
-          // next process() call will see priming=true and stay
-          // silent until the ring refills to PREFILL.
+          this.inUnderrunRun = false;
+          // Zero out the rest of this quantum; next process() call
+          // sees priming=true until the ring refills to PREFILL.
           for (let j = i + 1; j < n; j++) out[j] = 0;
           return true;
         }
         continue;
       }
       this.consecUnderruns = 0;
+      this.inUnderrunRun = false;
       const a = this.ring[this.read];
       const nextRead = (this.read + 1) % this.RING;
       const b = this.ring[nextRead];
@@ -1823,20 +1850,22 @@ const AUDIO = {
 // to the context rate, same silence-on-underrun policy.
 const AUDIO_SPN = {
   RING_SIZE: 16384,     // 2 s @ 8 kHz
-  // 540 ms warm-up = 3 LDUs of headroom; see worklet PREFILL comment
-  // above for the full reasoning. Shares the same tuning.
-  PREFILL: 4320,
-  // Re-prime after ~100 ms of sustained underruns at a typical
-  // 48 kHz AudioContext. Same policy as the worklet path.
-  UNDERRUN_REPRIME: 4800,
+  // 150 ms warm-up — same reasoning as the worklet PREFILL above.
+  // Source paces at real-time so a large prefill adds only latency.
+  PREFILL: 1200,
+  // Re-prime only on a 2 s stall. Set at startAudio once we know
+  // the AudioContext sample rate. Routine LDU losses (~180 ms)
+  // play as honest silence without a 540 ms prefill pause on top.
+  UNDERRUN_REPRIME: 96000,   // default; overwritten in startAudio
   ring: null,
   write: 0,
   read: 0,
   available: 0,
   readFrac: 0,
   ratio: 1.0,           // 8000 / ctxRate, set at startAudio
-  underruns: 0,
+  underruns: 0,         // events, not samples
   consecUnderruns: 0,
+  inUnderrunRun: false,
   priming: true,
 };
 function audioSpnReset() {
@@ -1847,6 +1876,7 @@ function audioSpnReset() {
   AUDIO_SPN.readFrac = 0;
   AUDIO_SPN.underruns = 0;
   AUDIO_SPN.consecUnderruns = 0;
+  AUDIO_SPN.inUnderrunRun = false;
   AUDIO_SPN.priming = true;
 }
 function audioSpnWrite(f32) {
@@ -1873,23 +1903,26 @@ function audioSpnProcess(e) {
   }
   for (let i = 0; i < n; i++) {
     if (s.available <= 1) {
-      // Absorb individual-sample underruns silently; after
-      // UNDERRUN_REPRIME consecutive ones (~100 ms at 48 kHz)
-      // re-enter priming so the next LDU burst buffers up to
-      // PREFILL before playing, rather than stuttering out as a
-      // 20 ms fragment.
+      // Absorb as silence. Only re-prime after UNDERRUN_REPRIME
+      // samples (~2 s) of continuous empty ring — a genuine stall,
+      // not a routine LDU loss.
       out[i] = 0;
-      s.underruns++;
+      if (!s.inUnderrunRun) {
+        s.underruns++;
+        s.inUnderrunRun = true;
+      }
       s.consecUnderruns++;
       if (s.consecUnderruns >= s.UNDERRUN_REPRIME) {
         s.priming = true;
         s.consecUnderruns = 0;
+        s.inUnderrunRun = false;
         for (let j = i + 1; j < n; j++) out[j] = 0;
         return;
       }
       continue;
     }
     s.consecUnderruns = 0;
+    s.inUnderrunRun = false;
     const a = s.ring[s.read];
     const b = s.ring[(s.read + 1) % s.RING_SIZE];
     out[i] = a + (b - a) * s.readFrac;
@@ -2002,6 +2035,10 @@ async function startAudio() {
       AUDIO.mode = 'spn';
       audioSpnReset();
       AUDIO_SPN.ratio = 8000 / AUDIO.ctxRate;
+      // Re-prime only after 2 s of continuous empty ring. Computed
+      // in ctx samples so the threshold is 2 s of real time on any
+      // ctx rate the browser picks (typically 48 kHz).
+      AUDIO_SPN.UNDERRUN_REPRIME = Math.max(4800, Math.round(AUDIO.ctxRate * 2));
       // 1024 samples per callback = 21 ms at 48 kHz, 23 ms at 44.1 kHz.
       // Power-of-two required by ScriptProcessorNode; 1024 is the
       // sweet spot between latency and callback overhead for our
