@@ -745,6 +745,40 @@ function escHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
+// Keyed DOM-node reuse for list containers. Why: rebuilding a list
+// with innerHTML tears down any stateful child element (most
+// importantly <audio controls>, which aborts mid-playback on re-parse
+// -- see feedback_dashboard_innerhtml_kills_audio). diffList keeps
+// existing rows whose key is still present, updates them in place via
+// updateFn, creates new rows via createFn, drops rows whose key is
+// gone, and reorders to match `items` order. Keys are stringified and
+// stored in data-key on the row.
+function diffList(container, keyFn, items, createFn, updateFn) {
+  if (!container) return;
+  const existing = new Map();
+  for (const row of Array.from(container.children)) {
+    const k = row.dataset ? row.dataset.key : null;
+    if (k !== null && k !== undefined) existing.set(k, row);
+    else row.remove();
+  }
+  let anchor = null;
+  for (const item of items) {
+    const key = String(keyFn(item));
+    let row = existing.get(key);
+    if (row) {
+      existing.delete(key);
+    } else {
+      row = createFn();
+      row.dataset.key = key;
+    }
+    updateFn(row, item);
+    const nextSibling = anchor ? anchor.nextSibling : container.firstChild;
+    if (row !== nextSibling) container.insertBefore(row, nextSibling);
+    anchor = row;
+  }
+  for (const stale of existing.values()) stale.remove();
+}
+
 let aliases = {};
 
 async function fetchJson(url) {
