@@ -93,7 +93,7 @@ ad_connect adc_q_slice/Dout p25_core/im_in
 # ── AXI-Lite ─────────────────────────────────────────────────────────
 ad_cpu_interconnect 0x7C460000 p25_core
 
-# ── DMA: six P25 masters on HP1 ───────────────────────────────────────
+# ── DMA: eight P25 masters on HP1 ─────────────────────────────────────
 # HP1 was used by maia_sdr/m_axi_spectrometer (now deleted).
 # Reuse HP1 for all P25 DMA masters. ad_mem_hp1_interconnect is
 # idempotent — repeated calls extend the same SmartConnect rather than
@@ -111,7 +111,11 @@ ad_cpu_interconnect 0x7C460000 p25_core
 #                                      traffic-LSM cross-check have a source
 #                                      of post-DDC IQ samples. Same packing /
 #                                      bandwidth math as `iq`.)
-# Total ~505 KB/s, well under 1.7 GB/s.
+#   - lsm_iq            ~125  KB/s   (Phase 10.6: 31.25 kSPS post-RRC matched-
+#                                      filter IQ tap, control chain. Drives the
+#                                      dashboard matched-filter eye plot.)
+#   - traffic_lsm_iq    ~125  KB/s   (Phase 10.6: mirror on the traffic chain.)
+# Total ~755 KB/s, well under 1.7 GB/s.
 # See doc/P25_ADDRESS_MAP.md for the full carve-out / bandwidth table.
 ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP1 {1}
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 sys_ps7/S_AXI_HP1
@@ -121,6 +125,8 @@ ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_iq
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_lsm_dibit
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_lsm_dibit
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_iq
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_lsm_iq
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_lsm_iq
 
 # ── Interrupt ─────────────────────────────────────────────────────────
 # With maia_iio, pluto base wired:
