@@ -1839,12 +1839,27 @@ impl ControlChannelDecoder {
             _ => {}
         }
 
-        // Broadcast event over WebSocket
+        // Broadcast event over WebSocket + mirror into the structured
+        // event_log so exported /api/log dumps have the same decoded-
+        // message trail that the dashboard activity feed sees. Every
+        // FEC-passed TSBK gets one Grant-category entry regardless of
+        // opcode — matches SDRTrunk's `decoded_messages.log` coverage
+        // (one line per successfully-decoded message).
+        let tsbk_event = self.tsbk_to_event(block_idx, &msg);
         if let Some(ref tx) = self.event_tx {
-            let event = self.tsbk_to_event(block_idx, &msg);
-            if let Ok(json) = serde_json::to_string(&event) {
+            if let Ok(json) = serde_json::to_string(&tsbk_event) {
                 let _ = tx.send(json);
             }
+        }
+        if let Some(ref log) = self.event_log {
+            let summary = tsbk_event.summary.clone();
+            let fields = serde_json::to_value(&tsbk_event)
+                .unwrap_or(serde_json::Value::Null);
+            log.push(
+                crate::event_log::LogCategory::Grant,
+                summary,
+                fields,
+            );
         }
 
         // Log the message with its TSBK block index (0/1/2 = TSBK1/2/3).

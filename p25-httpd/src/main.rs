@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-19-bare-tdu-speakerend";
+pub const BUILD_TAG: &str = "2026-04-19-activity-log-unified";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -419,6 +419,28 @@ impl ImbeForwarder {
 }
 
 impl ImbeForwarder {
+    /// Dual-dispatch every activity-log event: WebSocket for the
+    /// dashboard, event_log ring for /api/log + /api/recordings/{id}/events.
+    /// 2026-04-19 late: previously every decoded-message emit site had
+    /// its own `if let Some(ws) = self.ws_event_tx.get() { ... }` block
+    /// and a fraction of them also pushed to event_log. Result: the
+    /// dashboard activity log showed decoded messages that the
+    /// structured log didn't, so exported log files couldn't be used
+    /// to reconstruct what was seen. This helper makes every activity
+    /// emit land in both sinks.
+    fn emit_activity(&self, summary: &str, evt: serde_json::Value) {
+        if let Some(ws) = self.ws_event_tx.get() {
+            let _ = ws.send(evt.to_string());
+        }
+        if let Some(log) = self.event_log.get() {
+            log.push(
+                crate::event_log::LogCategory::Imbe,
+                summary.to_string(),
+                evt,
+            );
+        }
+    }
+
     /// Emit one Duid-category log entry per dispatched data unit.
     /// Fires at the top of every on_hdu / on_ldu1 / on_ldu2 / on_tdu /
     /// on_tdu_lc handler so the `duid` log shows exactly what the
@@ -486,29 +508,14 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
             "LDU1 FM:{} TO:{} NAC:0x{:03X}",
             source, tg_locked, nac
         );
-        if let Some(log) = self.event_log.get() {
-            log.push(
-                crate::event_log::LogCategory::Imbe,
-                summary.clone(),
-                serde_json::json!({
-                    "duid": "LDU1_LC",
-                    "lcw":  "GVCU",
-                    "tg":   tg_locked,
-                    "fm":   source,
-                    "nac":  nac,
-                }),
-            );
-        }
-        if let Some(ws) = self.ws_event_tx.get() {
-            let evt = serde_json::json!({
-                "timestamp":  p25::control_channel::chrono_timestamp(),
-                "event_type": "TRF_LDU1_LC",
-                "summary":    summary,
-                "tg":         tg_locked,
-                "source":     source,
-            });
-            let _ = ws.send(evt.to_string());
-        }
+        self.emit_activity(&summary, serde_json::json!({
+            "timestamp":  p25::control_channel::chrono_timestamp(),
+            "event_type": "TRF_LDU1_LC",
+            "summary":    summary,
+            "tg":         tg_locked,
+            "source":     source,
+            "nac":        nac,
+        }));
         if let Some(tx) = self.call_boundary_tx.get() {
             let _ = tx.send(audio::CallBoundary {
                 kind: audio::CallBoundaryKind::TdulcComplete {
@@ -551,26 +558,23 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         // Sticky-true: once any ESS reports encrypted, the rest of the
         // call stays encrypted regardless of grant refresh behaviour.
         self.call_encrypted.store(true, Ordering::Relaxed);
-        if let Some(ws) = self.ws_event_tx.get() {
-            let mi_hex: String = ess
-                .message_indicator
-                .iter()
-                .map(|b| format!("{:02X}", b))
-                .collect();
-            let summary = format!(
-                "LDU2 ESS ENCRYPTION:0x{:02X} KEY:{} MI:{}",
-                ess.algorithm_id, ess.key_id, mi_hex
-            );
-            let evt = serde_json::json!({
-                "timestamp":  p25::control_channel::chrono_timestamp(),
-                "event_type": "TRF_LDU2_ESS",
-                "summary":    summary,
-                "algorithm":  ess.algorithm_id,
-                "key_id":     ess.key_id,
-                "mi":         mi_hex,
-            });
-            let _ = ws.send(evt.to_string());
-        }
+        let mi_hex: String = ess
+            .message_indicator
+            .iter()
+            .map(|b| format!("{:02X}", b))
+            .collect();
+        let summary = format!(
+            "LDU2 ESS ENCRYPTION:0x{:02X} KEY:{} MI:{}",
+            ess.algorithm_id, ess.key_id, mi_hex
+        );
+        self.emit_activity(&summary, serde_json::json!({
+            "timestamp":  p25::control_channel::chrono_timestamp(),
+            "event_type": "TRF_LDU2_ESS",
+            "summary":    summary,
+            "algorithm":  ess.algorithm_id,
+            "key_id":     ess.key_id,
+            "mi":         mi_hex,
+        }));
     }
 
     fn on_hdu(&self, body_raw: &[u8]) {
@@ -596,31 +600,28 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         if hdr.is_encrypted() {
             self.call_encrypted.store(true, Ordering::Relaxed);
         }
-        if let Some(ws) = self.ws_event_tx.get() {
-            let summary = if hdr.is_encrypted() {
-                let mi_hex: String = hdr
-                    .message_indicator
-                    .iter()
-                    .map(|b| format!("{:02X}", b))
-                    .collect();
-                format!(
-                    "HDU TG:{} ENCRYPTION:0x{:02X} KEY:{} MI:{}",
-                    hdr.talkgroup, hdr.algorithm_id, hdr.key_id, mi_hex,
-                )
-            } else {
-                format!("HDU TG:{} UNENCRYPTED", hdr.talkgroup)
-            };
-            let evt = serde_json::json!({
-                "timestamp":  p25::control_channel::chrono_timestamp(),
-                "event_type": "TRF_HDU_INFO",
-                "summary":    summary,
-                "tg":         hdr.talkgroup,
-                "encrypted":  hdr.is_encrypted(),
-                "algorithm":  hdr.algorithm_id,
-                "key_id":     hdr.key_id,
-            });
-            let _ = ws.send(evt.to_string());
-        }
+        let summary = if hdr.is_encrypted() {
+            let mi_hex: String = hdr
+                .message_indicator
+                .iter()
+                .map(|b| format!("{:02X}", b))
+                .collect();
+            format!(
+                "HDU TG:{} ENCRYPTION:0x{:02X} KEY:{} MI:{}",
+                hdr.talkgroup, hdr.algorithm_id, hdr.key_id, mi_hex,
+            )
+        } else {
+            format!("HDU TG:{} UNENCRYPTED", hdr.talkgroup)
+        };
+        self.emit_activity(&summary, serde_json::json!({
+            "timestamp":  p25::control_channel::chrono_timestamp(),
+            "event_type": "TRF_HDU_INFO",
+            "summary":    summary,
+            "tg":         hdr.talkgroup,
+            "encrypted":  hdr.is_encrypted(),
+            "algorithm":  hdr.algorithm_id,
+            "key_id":     hdr.key_id,
+        }));
     }
 
     fn on_tdu(&self) {
@@ -703,29 +704,14 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                     "TDULC MOTOROLA TALK COMPLETE BY:{} TG:{}",
                     by_radio_id, tg,
                 );
-                if let Some(log) = self.event_log.get() {
-                    log.push(
-                        crate::event_log::LogCategory::Imbe,
-                        summary.clone(),
-                        serde_json::json!({
-                            "duid": "TDULC",
-                            "lcw":  "MOTOROLA_TALK_COMPLETE",
-                            "tg":   tg,
-                            "by":   by_radio_id,
-                            "nac":  nac,
-                        }),
-                    );
-                }
-                if let Some(ws) = self.ws_event_tx.get() {
-                    let evt = serde_json::json!({
-                        "timestamp":  p25::control_channel::chrono_timestamp(),
-                        "event_type": "TRF_TDULC_MOT",
-                        "summary":    summary,
-                        "tg":         tg,
-                        "source":     by_radio_id,
-                    });
-                    let _ = ws.send(evt.to_string());
-                }
+                self.emit_activity(&summary, serde_json::json!({
+                    "timestamp":  p25::control_channel::chrono_timestamp(),
+                    "event_type": "TRF_TDULC_MOT",
+                    "summary":    summary,
+                    "tg":         tg,
+                    "source":     by_radio_id,
+                    "nac":        nac,
+                }));
             }
             Some(p25::voice_frame::TdulcLcw::GroupVoiceChannelUser {
                 talkgroup: lc_tg,
@@ -737,18 +723,15 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                 // (tail burst), so route them at Imbe category level
                 // — the dashboard already collapses duplicates for
                 // TRF_TDU_LC events by type.
-                if let Some(ws) = self.ws_event_tx.get() {
-                    let evt = serde_json::json!({
-                        "timestamp":  p25::control_channel::chrono_timestamp(),
-                        "event_type": "TRF_TDULC",
-                        "summary":    format!(
-                            "TDULC GROUP VOICE CHANNEL USER FM:0 TO:{}",
-                            lc_tg
-                        ),
-                        "tg":         tg,
-                    });
-                    let _ = ws.send(evt.to_string());
-                }
+                let summary = format!(
+                    "TDULC GROUP VOICE CHANNEL USER FM:0 TO:{}", lc_tg
+                );
+                self.emit_activity(&summary, serde_json::json!({
+                    "timestamp":  p25::control_channel::chrono_timestamp(),
+                    "event_type": "TRF_TDULC",
+                    "summary":    summary,
+                    "tg":         tg,
+                }));
             }
             Some(p25::voice_frame::TdulcLcw::GroupVoiceChannelUpdate {
                 talkgroup_a, channel_a_band, channel_a_number,
@@ -756,27 +739,24 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                 has_channel_b,
             }) => {
                 self.tdulc_parse_other.fetch_add(1, Ordering::Relaxed);
-                if let Some(ws) = self.ws_event_tx.get() {
-                    let summary = if has_channel_b {
-                        format!(
-                            "TDULC GROUP VOICE CHANNEL UPDATE TG_A:{} CH_A:{}-{} TG_B:{} CH_B:{}-{}",
-                            talkgroup_a, channel_a_band, channel_a_number,
-                            talkgroup_b, channel_b_band, channel_b_number,
-                        )
-                    } else {
-                        format!(
-                            "TDULC GROUP VOICE CHANNEL UPDATE TG_A:{} CH_A:{}-{}",
-                            talkgroup_a, channel_a_band, channel_a_number,
-                        )
-                    };
-                    let evt = serde_json::json!({
-                        "timestamp":  p25::control_channel::chrono_timestamp(),
-                        "event_type": "TRF_TDULC_GVU",
-                        "summary":    summary,
-                        "tg":         tg,
-                    });
-                    let _ = ws.send(evt.to_string());
-                }
+                let summary = if has_channel_b {
+                    format!(
+                        "TDULC GROUP VOICE CHANNEL UPDATE TG_A:{} CH_A:{}-{} TG_B:{} CH_B:{}-{}",
+                        talkgroup_a, channel_a_band, channel_a_number,
+                        talkgroup_b, channel_b_band, channel_b_number,
+                    )
+                } else {
+                    format!(
+                        "TDULC GROUP VOICE CHANNEL UPDATE TG_A:{} CH_A:{}-{}",
+                        talkgroup_a, channel_a_band, channel_a_number,
+                    )
+                };
+                self.emit_activity(&summary, serde_json::json!({
+                    "timestamp":  p25::control_channel::chrono_timestamp(),
+                    "event_type": "TRF_TDULC_GVU",
+                    "summary":    summary,
+                    "tg":         tg,
+                }));
             }
             Some(p25::voice_frame::TdulcLcw::CallTermination { by_radio_id }) => {
                 self.tdulc_parse_other.fetch_add(1, Ordering::Relaxed);
@@ -792,87 +772,71 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                     nac,
                     talkgroup: Some(tg),
                 });
-                if let Some(ws) = self.ws_event_tx.get() {
-                    // Relabel the well-known system-controller teardown
-                    // addresses per SDRTrunk `LCCallTermination`
-                    // (MOTOROLA_SYSTEM_CONTROLLER_1 = 0xFFFFFD,
-                    // MOTOROLA_SYSTEM_CONTROLLER_2 = 0xFFFFFF,
-                    // HARRIS_SYSTEM_CONTROLLER = 0x000000). Every
-                    // call on a Motorola network terminates with
-                    // BY:0xFFFFFD — rendering the raw ID 55× in a
-                    // row was confusing; the label keeps the info
-                    // without the repetition.
-                    let by_label = match by_radio_id {
-                        0xFFFFFD => "MOTOROLA SYS CTRL (0xFFFFFD)".to_string(),
-                        0xFFFFFF => "MOTOROLA SYS CTRL (0xFFFFFF)".to_string(),
-                        0x000000 => "HARRIS SYS CTRL".to_string(),
-                        id => format!("{}", id),
-                    };
-                    let evt = serde_json::json!({
-                        "timestamp":  p25::control_channel::chrono_timestamp(),
-                        "event_type": "TRF_TDULC_CALL_TERM",
-                        "summary":    format!(
-                            "TDULC CALL TERMINATION BY:{}",
-                            by_label,
-                        ),
-                        "tg":         tg,
-                        "by":         by_radio_id,
-                    });
-                    let _ = ws.send(evt.to_string());
-                }
+                // Relabel the well-known system-controller teardown
+                // addresses per SDRTrunk `LCCallTermination`
+                // (MOTOROLA_SYSTEM_CONTROLLER_1 = 0xFFFFFD,
+                // MOTOROLA_SYSTEM_CONTROLLER_2 = 0xFFFFFF,
+                // HARRIS_SYSTEM_CONTROLLER = 0x000000).
+                let by_label = match by_radio_id {
+                    0xFFFFFD => "MOTOROLA SYS CTRL (0xFFFFFD)".to_string(),
+                    0xFFFFFF => "MOTOROLA SYS CTRL (0xFFFFFF)".to_string(),
+                    0x000000 => "HARRIS SYS CTRL".to_string(),
+                    id => format!("{}", id),
+                };
+                let summary = format!("TDULC CALL TERMINATION BY:{}", by_label);
+                self.emit_activity(&summary, serde_json::json!({
+                    "timestamp":  p25::control_channel::chrono_timestamp(),
+                    "event_type": "TRF_TDULC_CALL_TERM",
+                    "summary":    summary,
+                    "tg":         tg,
+                    "by":         by_radio_id,
+                }));
             }
             Some(p25::voice_frame::TdulcLcw::RfssStatusBroadcast {
                 lra, system_id, rfss_id, site_id,
                 channel_band, channel_number, service_class,
             }) => {
                 self.tdulc_parse_other.fetch_add(1, Ordering::Relaxed);
-                if let Some(ws) = self.ws_event_tx.get() {
-                    let evt = serde_json::json!({
-                        "timestamp":  p25::control_channel::chrono_timestamp(),
-                        "event_type": "TRF_TDULC_RFSS_STS",
-                        "summary":    format!(
-                            "TDULC RFSS STATUS BROADCAST LRA:{} SYS:{:03X} RFSS:{} SITE:{} CH:{}-{} SVC:0x{:02X}",
-                            lra, system_id, rfss_id, site_id,
-                            channel_band, channel_number, service_class,
-                        ),
-                        "tg":         tg,
-                    });
-                    let _ = ws.send(evt.to_string());
-                }
+                let summary = format!(
+                    "TDULC RFSS STATUS BROADCAST LRA:{} SYS:{:03X} RFSS:{} SITE:{} CH:{}-{} SVC:0x{:02X}",
+                    lra, system_id, rfss_id, site_id,
+                    channel_band, channel_number, service_class,
+                );
+                self.emit_activity(&summary, serde_json::json!({
+                    "timestamp":  p25::control_channel::chrono_timestamp(),
+                    "event_type": "TRF_TDULC_RFSS_STS",
+                    "summary":    summary,
+                    "tg":         tg,
+                }));
             }
             Some(p25::voice_frame::TdulcLcw::NetStatusBroadcast {
                 wacn, system_id,
                 channel_band, channel_number, service_class,
             }) => {
                 self.tdulc_parse_other.fetch_add(1, Ordering::Relaxed);
-                if let Some(ws) = self.ws_event_tx.get() {
-                    let evt = serde_json::json!({
-                        "timestamp":  p25::control_channel::chrono_timestamp(),
-                        "event_type": "TRF_TDULC_NET_STS",
-                        "summary":    format!(
-                            "TDULC NET STATUS BROADCAST WACN:{:05X} SYS:{:03X} CH:{}-{} SVC:0x{:02X}",
-                            wacn, system_id,
-                            channel_band, channel_number, service_class,
-                        ),
-                        "tg":         tg,
-                    });
-                    let _ = ws.send(evt.to_string());
-                }
+                let summary = format!(
+                    "TDULC NET STATUS BROADCAST WACN:{:05X} SYS:{:03X} CH:{}-{} SVC:0x{:02X}",
+                    wacn, system_id,
+                    channel_band, channel_number, service_class,
+                );
+                self.emit_activity(&summary, serde_json::json!({
+                    "timestamp":  p25::control_channel::chrono_timestamp(),
+                    "event_type": "TRF_TDULC_NET_STS",
+                    "summary":    summary,
+                    "tg":         tg,
+                }));
             }
             Some(p25::voice_frame::TdulcLcw::Other { opcode, mfid }) => {
                 self.tdulc_parse_other.fetch_add(1, Ordering::Relaxed);
-                if let Some(ws) = self.ws_event_tx.get() {
-                    let evt = serde_json::json!({
-                        "timestamp":  p25::control_channel::chrono_timestamp(),
-                        "event_type": "TRF_TDULC_OTHER",
-                        "summary":    format!(
-                            "TDULC OTHER OP:0x{:02X} MFID:0x{:02X}",
-                            opcode, mfid
-                        ),
-                        "tg":         tg,
-                    });
-                    let _ = ws.send(evt.to_string());
-                }
+                let summary = format!(
+                    "TDULC OTHER OP:0x{:02X} MFID:0x{:02X}", opcode, mfid
+                );
+                self.emit_activity(&summary, serde_json::json!({
+                    "timestamp":  p25::control_channel::chrono_timestamp(),
+                    "event_type": "TRF_TDULC_OTHER",
+                    "summary":    summary,
+                    "tg":         tg,
+                }));
             }
             None => {
                 self.tdulc_parse_none.fetch_add(1, Ordering::Relaxed);
