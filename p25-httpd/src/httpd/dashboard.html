@@ -316,7 +316,7 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
 <div class="card">
   <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:6px;font-size:0.9em">
     <label><b>Chain</b>:
-      <select id="spec_chain" onchange="refreshSpectrum()" style="padding:3px 6px;font-family:inherit">
+      <select id="spec_chain" onchange="onSpecChainChange()" style="padding:3px 6px;font-family:inherit">
         <option value="control">Control</option>
         <option value="traffic">Traffic</option>
       </select>
@@ -2537,6 +2537,20 @@ let SPEC = {
 function onSpecSizeChange() {
   // Live mode needs the ring re-sized to the new fft*avg budget;
   // server mode just kicks a fresh poll so the new size is fetched.
+  if (SPEC.mode === 'live') {
+    restartSpectrumMode();
+  } else {
+    refreshSpectrum();
+  }
+}
+
+function onSpecChainChange() {
+  // Server mode just polls the new chain on the next fetch. Live
+  // mode holds an open /ws/iq that was subscribed to the old chain
+  // — we have to tear it down and reconnect to the new chain, which
+  // is what restartSpectrumMode() does. Previously this onchange
+  // went straight to refreshSpectrum() which bails out in live mode,
+  // so changing Chain while Live was selected silently did nothing.
   if (SPEC.mode === 'live') {
     restartSpectrumMode();
   } else {
