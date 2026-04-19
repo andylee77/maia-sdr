@@ -223,13 +223,32 @@ fn write_wav(path: &Path, pcm: &[i16]) -> std::io::Result<u64> {
 /// Finalise an ActiveCall into a RecordingEntry (writes WAV, adds
 /// to store, evicts oldest if needed). No-op if the call is too
 /// short to be interesting.
-async fn finalize(store: &RecordingStore, call: ActiveCall, id: u64) {
+async fn finalize(
+    store: &RecordingStore,
+    call: ActiveCall,
+    id: u64,
+    event_log: Option<&Arc<crate::event_log::EventLog>>,
+) {
     let duration_ms = call.duration_ms();
     if duration_ms < MIN_KEEPABLE_MS {
         tracing::debug!(
             "skipping too-short recording TG={} duration={}ms",
             call.talkgroup, duration_ms
         );
+        if let Some(l) = event_log {
+            l.push(
+                crate::event_log::LogCategory::Recorder,
+                "call_discard".to_string(),
+                serde_json::json!({
+                    "recording_id": id,
+                    "reason":       "too_short",
+                    "duration_ms":  duration_ms,
+                    "min_keepable_ms": MIN_KEEPABLE_MS,
+                    "tg":           call.talkgroup,
+                    "source":       call.source,
+                }),
+            );
+        }
         return;
     }
     // 2026-04-19: include the speaker radio ID in the filename when
@@ -252,9 +271,37 @@ async fn finalize(store: &RecordingStore, call: ActiveCall, id: u64) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("recorder: WAV write failed: {e}");
+            if let Some(l) = event_log {
+                l.push(
+                    crate::event_log::LogCategory::Recorder,
+                    "call_discard".to_string(),
+                    serde_json::json!({
+                        "recording_id": id,
+                        "reason":       "wav_write_failed",
+                        "error":        format!("{}", e),
+                        "tg":           call.talkgroup,
+                        "source":       call.source,
+                    }),
+                );
+            }
             return;
         }
     };
+    if let Some(l) = event_log {
+        l.push(
+            crate::event_log::LogCategory::Recorder,
+            "call_saved".to_string(),
+            serde_json::json!({
+                "recording_id": id,
+                "tg":           call.talkgroup,
+                "source":       call.source,
+                "filename":     &filename,
+                "duration_ms":  duration_ms,
+                "size_bytes":   size,
+                "pcm_samples":  call.pcm.len(),
+            }),
+        );
+    }
     let entry = RecordingEntry {
         id,
         talkgroup: call.talkgroup,
@@ -283,7 +330,21 @@ pub async fn recorder_task(
     mut boundary_rx: tokio::sync::broadcast::Receiver<CallBoundary>,
     store: RecordingStore,
     diag: RecorderDiagArc,
+    event_log: Option<Arc<crate::event_log::EventLog>>,
 ) {
+    // Structured-event helper. Every recorder decision (open, finalise,
+    // source stamp, TG-guard skip, etc.) emits one of these so the
+    // per-recording timeline can be reconstructed after the fact.
+    // SDRTrunk's `decoded_messages.log` equivalent.
+    let log_ev = |msg: &str, fields: serde_json::Value| {
+        if let Some(ref l) = event_log {
+            l.push(
+                crate::event_log::LogCategory::Recorder,
+                msg.to_string(),
+                fields,
+            );
+        }
+    };
     use std::sync::atomic::Ordering;
     // Ensure storage dir exists. If this fails, keep running but
     // log; finalize() will also fail and the recording is lost.
@@ -327,9 +388,29 @@ pub async fn recorder_task(
                             None => {
                                 let mut c = ActiveCall::new(chunk.talkgroup);
                                 c.append(&chunk);
+                                log_ev("call_open", serde_json::json!({
+                                    "recording_id":  next_id,
+                                    "tg":            chunk.talkgroup,
+                                    "chunk_source":  chunk.source,
+                                    "reason":        "first_chunk",
+                                }));
                                 active = Some(c);
                             }
                             Some(c) if c.talkgroup == chunk.talkgroup => {
+                                // Log per-chunk source change so a
+                                // recording's event tail shows every
+                                // source stamp that happened mid-call.
+                                if chunk.source != 0
+                                    && c.source != Some(chunk.source)
+                                {
+                                    log_ev("source_stamp_chunk", serde_json::json!({
+                                        "recording_id": next_id,
+                                        "tg":           c.talkgroup,
+                                        "old_source":   c.source,
+                                        "new_source":   chunk.source,
+                                        "via":          "audio_chunk",
+                                    }));
+                                }
                                 c.append(&chunk);
                             }
                             Some(_) => {
@@ -340,10 +421,24 @@ pub async fn recorder_task(
                                 if let Some(old) = active.take() {
                                     let id = next_id;
                                     next_id += 1;
-                                    finalize(&store, old, id).await;
+                                    log_ev("call_finalise", serde_json::json!({
+                                        "recording_id": id,
+                                        "reason":       "tg_change",
+                                        "old_tg":       old.talkgroup,
+                                        "new_tg":       chunk.talkgroup,
+                                        "duration_ms":  old.duration_ms(),
+                                        "source":       old.source,
+                                    }));
+                                    finalize(&store, old, id, event_log.as_ref()).await;
                                 }
                                 let mut c = ActiveCall::new(chunk.talkgroup);
                                 c.append(&chunk);
+                                log_ev("call_open", serde_json::json!({
+                                    "recording_id":  next_id,
+                                    "tg":            chunk.talkgroup,
+                                    "chunk_source":  chunk.source,
+                                    "reason":        "tg_change",
+                                }));
                                 active = Some(c);
                             }
                         }
@@ -358,7 +453,7 @@ pub async fn recorder_task(
                         // Sender gone. Flush and exit.
                         if let Some(old) = active.take() {
                             let id = next_id;
-                            finalize(&store, old, id).await;
+                            finalize(&store, old, id, event_log.as_ref()).await;
                         }
                         return;
                     }
@@ -370,6 +465,14 @@ pub async fn recorder_task(
                     Ok(boundary) => match boundary.kind {
                         CallBoundaryKind::HduStart => {
                             diag.boundaries_hdu.fetch_add(1, Ordering::Relaxed);
+                            log_ev("boundary_recv", serde_json::json!({
+                                "kind":          "hdu_start",
+                                "nac":           format!("0x{:03X}", boundary.nac),
+                                "tg":            boundary.talkgroup,
+                                "active_rec_id": active.as_ref().map(|_| next_id),
+                                "active_tg":     active.as_ref().map(|c| c.talkgroup),
+                                "active_src":    active.as_ref().and_then(|c| c.source),
+                            }));
                             // Fresh PTT on the traffic channel.
                             // Finalise the in-progress recording --
                             // the next PCM chunk will open a new
@@ -377,10 +480,26 @@ pub async fn recorder_task(
                             if let Some(old) = active.take() {
                                 let id = next_id;
                                 next_id += 1;
-                                finalize(&store, old, id).await;
+                                log_ev("call_finalise", serde_json::json!({
+                                    "recording_id": id,
+                                    "reason":       "hdu_start",
+                                    "tg":           old.talkgroup,
+                                    "source":       old.source,
+                                    "duration_ms":  old.duration_ms(),
+                                }));
+                                finalize(&store, old, id, event_log.as_ref()).await;
                             }
                         }
                         CallBoundaryKind::SpeakerEnd { source } => {
+                            log_ev("boundary_recv", serde_json::json!({
+                                "kind":          "speaker_end",
+                                "nac":           format!("0x{:03X}", boundary.nac),
+                                "tg":            boundary.talkgroup,
+                                "lcw_source":    source,
+                                "active_rec_id": active.as_ref().map(|_| next_id),
+                                "active_tg":     active.as_ref().map(|c| c.talkgroup),
+                                "active_src":    active.as_ref().and_then(|c| c.source),
+                            }));
                             // Protocol-level end-of-speaker (Motorola
                             // TALK_COMPLETE) or end-of-call (standard
                             // CALL_TERMINATION) from TDULC. Only fires
@@ -401,22 +520,52 @@ pub async fn recorder_task(
                                 (None, _) => false,
                             };
                             if !tg_matches {
+                                log_ev("boundary_skip", serde_json::json!({
+                                    "kind":      "speaker_end",
+                                    "reason":    "tg_mismatch_guard",
+                                    "event_tg":  boundary.talkgroup,
+                                    "active_tg": active.as_ref().map(|c| c.talkgroup),
+                                }));
                                 continue;
                             }
                             if let Some(c) = active.as_mut() {
                                 if source.is_some() {
+                                    let old_src = c.source;
                                     c.source = source;
                                     diag.source_stamps_applied
                                         .fetch_add(1, Ordering::Relaxed);
+                                    log_ev("source_stamp_boundary", serde_json::json!({
+                                        "recording_id": next_id,
+                                        "tg":           c.talkgroup,
+                                        "old_source":   old_src,
+                                        "new_source":   source,
+                                        "via":          "speaker_end",
+                                    }));
                                 }
                             }
                             if let Some(old) = active.take() {
                                 let id = next_id;
                                 next_id += 1;
-                                finalize(&store, old, id).await;
+                                log_ev("call_finalise", serde_json::json!({
+                                    "recording_id": id,
+                                    "reason":       "speaker_end",
+                                    "tg":           old.talkgroup,
+                                    "source":       old.source,
+                                    "duration_ms":  old.duration_ms(),
+                                }));
+                                finalize(&store, old, id, event_log.as_ref()).await;
                             }
                         }
                         CallBoundaryKind::TdulcComplete { source } => {
+                            log_ev("boundary_recv", serde_json::json!({
+                                "kind":          "tdulc_complete",
+                                "nac":           format!("0x{:03X}", boundary.nac),
+                                "tg":            boundary.talkgroup,
+                                "lcw_source":    source,
+                                "active_rec_id": active.as_ref().map(|_| next_id),
+                                "active_tg":     active.as_ref().map(|c| c.talkgroup),
+                                "active_src":    active.as_ref().and_then(|c| c.source),
+                            }));
                             if source.is_some() {
                                 diag.boundaries_tdulc_with_source
                                     .fetch_add(1, Ordering::Relaxed);
@@ -432,13 +581,25 @@ pub async fn recorder_task(
                             // splits on a single-speaker call.
                             if let Some(c) = active.as_mut() {
                                 if source.is_some() {
+                                    let old_src = c.source;
                                     c.source = source;
                                     diag.source_stamps_applied
                                         .fetch_add(1, Ordering::Relaxed);
+                                    log_ev("source_stamp_boundary", serde_json::json!({
+                                        "recording_id": next_id,
+                                        "tg":           c.talkgroup,
+                                        "old_source":   old_src,
+                                        "new_source":   source,
+                                        "via":          "tdulc_complete",
+                                    }));
                                 }
                             } else if source.is_some() {
                                 diag.source_stamps_lost_no_active
                                     .fetch_add(1, Ordering::Relaxed);
+                                log_ev("source_stamp_lost", serde_json::json!({
+                                    "source": source,
+                                    "reason": "no_active_recording",
+                                }));
                             }
                         }
                     },
@@ -468,7 +629,15 @@ pub async fn recorder_task(
                         if let Some(old) = active.take() {
                             let id = next_id;
                             next_id += 1;
-                            finalize(&store, old, id).await;
+                            log_ev("call_finalise", serde_json::json!({
+                                "recording_id":    id,
+                                "reason":          "grace_window",
+                                "tg":              old.talkgroup,
+                                "source":          old.source,
+                                "duration_ms":     old.duration_ms(),
+                                "silence_ms":      FINALIZE_GRACE.as_millis() as u64,
+                            }));
+                            finalize(&store, old, id, event_log.as_ref()).await;
                         }
                     }
                 }

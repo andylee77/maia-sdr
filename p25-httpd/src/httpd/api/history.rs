@@ -54,6 +54,39 @@ pub async fn get_recordings(
 }
 
 
+/// `GET /api/recordings/{id}/events`
+///
+/// Returns the per-recording event timeline: every `recorder`-category
+/// log entry whose `fields.recording_id` matches the requested id.
+/// This is the SDRTrunk `decoded_messages.log` equivalent for this one
+/// recording — every boundary event, source stamp, finalise reason,
+/// discard reason in wall-clock order. Mount with the recording
+/// itself to trace "why does this file exist / why was it split /
+/// why does the filename have this source?"
+pub async fn get_recording_events(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<u64>,
+) -> Json<serde_json::Value> {
+    // Pull all Recorder-category events and filter by recording_id
+    // field. The ring is bounded (1024 entries) so at most that many
+    // comparisons per request.
+    let all = state.event_log.recent_since(0, 10_000);
+    let items: Vec<_> = all.into_iter()
+        .filter(|e| {
+            e.category == "recorder"
+                && e.fields
+                    .get("recording_id")
+                    .and_then(|v| v.as_u64())
+                    == Some(id)
+        })
+        .collect();
+    Json(serde_json::json!({
+        "recording_id": id,
+        "count": items.len(),
+        "items": items,
+    }))
+}
+
 /// `GET /api/recordings/{id}`
 ///
 /// Streams the WAV file for a recording by id. Trailing `.wav` in

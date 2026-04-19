@@ -49,6 +49,17 @@ pub enum LogCategory {
     /// Anything that doesn't fit the above: framer resets, monitor
     /// list changes, follower enable/disable.
     System,
+    /// Recorder decisions: open / append-source-change / finalise /
+    /// discard, each tagged with the recording id and a reason field.
+    /// Lets a debugger reconstruct the causal chain behind any
+    /// `/api/recordings/{id}` entry.
+    Recorder,
+    /// Raw DUID decode history — one entry per successful NID decode
+    /// on either chain (control or traffic). Purely observational;
+    /// fires *before* any dispatch or action, so comparing Duid entries
+    /// to Grant / Imbe / Recorder entries tells you what we *saw* vs
+    /// what we *acted on*. SDRTrunk `decoded_messages.log` equivalent.
+    Duid,
 }
 
 impl LogCategory {
@@ -59,6 +70,8 @@ impl LogCategory {
             LogCategory::Imbe => "imbe",
             LogCategory::Vocoder => "vocoder",
             LogCategory::System => "system",
+            LogCategory::Recorder => "recorder",
+            LogCategory::Duid => "duid",
         }
     }
 }

@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-19-ldu1-revert-tg-guard";
+pub const BUILD_TAG: &str = "2026-04-19-recorder-debug-log";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -427,6 +427,34 @@ impl ImbeForwarder {
     }
 }
 
+impl ImbeForwarder {
+    /// Emit one Duid-category log entry per dispatched data unit.
+    /// Fires at the top of every on_hdu / on_ldu1 / on_ldu2 / on_tdu /
+    /// on_tdu_lc handler so the `duid` log shows exactly what the
+    /// framer dispatched — independent of anything we subsequently
+    /// act on. Comparing this to the Grant / Imbe / Recorder trails
+    /// answers "did we see it?" separately from "did we act on it?".
+    fn log_duid(&self, duid: &'static str) {
+        use std::sync::atomic::Ordering;
+        if let Some(log) = self.event_log.get() {
+            let nac = self.last_observed_nac.load(Ordering::Relaxed);
+            let tg = self.current_talkgroup.load(Ordering::Relaxed);
+            let src = self.current_source.load(Ordering::Relaxed);
+            log.push(
+                crate::event_log::LogCategory::Duid,
+                format!("traffic {} TG={} NAC=0x{:03X}", duid, tg, nac),
+                serde_json::json!({
+                    "chain":  "traffic",
+                    "duid":   duid,
+                    "tg":     tg,
+                    "nac":    format!("0x{:03X}", nac),
+                    "source": src,
+                }),
+            );
+        }
+    }
+}
+
 impl p25::control_channel::VoiceHandler for ImbeForwarder {
     fn on_ldu1(
         &self,
@@ -434,6 +462,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         body_raw: &[u8],
     ) {
         use std::sync::atomic::Ordering;
+        self.log_duid("LDU1");
         self.ldu1_count.fetch_add(1, Ordering::Relaxed);
         self.touch_imbe(9);
         self.forward_frames(frames);
@@ -507,6 +536,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         body_raw: &[u8],
     ) {
         use std::sync::atomic::Ordering;
+        self.log_duid("LDU2");
         self.ldu2_count.fetch_add(1, Ordering::Relaxed);
         self.touch_imbe(9);
         self.forward_frames(frames);
@@ -554,6 +584,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
 
     fn on_hdu(&self, body_raw: &[u8]) {
         use std::sync::atomic::Ordering;
+        self.log_duid("HDU");
         self.hdu_count.fetch_add(1, Ordering::Relaxed);
 
         // 2026-04-19: decode HDU body via Golay18 + RS(63,47,17).
@@ -602,11 +633,13 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
     }
 
     fn on_tdu(&self) {
+        self.log_duid("TDU");
         self.tdu_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn on_tdu_lc(&self, body_raw: &[u8]) {
         use std::sync::atomic::Ordering;
+        self.log_duid("TDU_LC");
         self.tdu_lc_count.fetch_add(1, Ordering::Relaxed);
 
         // 2026-04-19: Motorola TALK_COMPLETE LCW -> boundary event
@@ -1133,9 +1166,14 @@ async fn main() -> anyhow::Result<()> {
     // 1024 ≈ ~3-4 minutes of grant/traffic/imbe events on Clay County
     // at the observed ~5 grants/sec + per-LDU IMBE batches. Tuned so
     // the dashboard tab can show "recent history" without pagination
-    // while staying well under typical PS memory budgets (1024 * ~400
-    // bytes each = ~400 KB peak).
-    let event_log = Arc::new(crate::event_log::EventLog::new(1024));
+    // while staying well under typical PS memory budgets. 2026-04-19
+    // late: bumped 1024 → 4096 after adding the Duid + Recorder
+    // categories — with every dispatched data unit and every recorder
+    // decision logged, the per-call event-tail view needs more
+    // headroom so that `/api/recordings/{id}/events` returns the full
+    // lifecycle even for long or late-in-session recordings. 4096
+    // entries × ~400 B = ~1.6 MB peak, still trivial on the Zynq.
+    let event_log = Arc::new(crate::event_log::EventLog::new(4096));
     event_log.push(
         crate::event_log::LogCategory::System,
         "p25-httpd startup",
@@ -3295,8 +3333,9 @@ async fn main() -> anyhow::Result<()> {
         let boundary_rx = call_boundary_tx.subscribe();
         let store = recordings.clone();
         let diag = recorder_diag.clone();
+        let log = Some(event_log.clone());
         tokio::spawn(async move {
-            recorder::recorder_task(rx, boundary_rx, store, diag).await;
+            recorder::recorder_task(rx, boundary_rx, store, diag, log).await;
         });
     }
 

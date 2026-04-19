@@ -316,6 +316,7 @@ pub fn router(
         // Call recording + playback.
         .route("/api/recordings", get(api::history::get_recordings))
         .route("/api/recordings/{id}", get(api::history::get_recording_file))
+        .route("/api/recordings/{id}/events", get(api::history::get_recording_events))
         // Modulation selector (C4FM / LSM / Auto). SDRTrunk-style.
         .route("/api/modulation", get(api::tuning::get_modulation).put(api::tuning::put_modulation))
         // Browser-pushed wall-clock sync. Zero-infra alternative to
