@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-19-tg0-context-aware";
+pub const BUILD_TAG: &str = "2026-04-19-bare-tdu-speakerend";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -624,8 +624,28 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
     }
 
     fn on_tdu(&self) {
+        use std::sync::atomic::Ordering;
         self.log_duid("TDU");
-        self.tdu_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.tdu_count.fetch_add(1, Ordering::Relaxed);
+        // 2026-04-19 late: bare TDU is a real end-of-call signal too
+        // (it just lacks the Link Control payload that TDU_LC carries).
+        // Previously we didn't route it through SpeakerEnd, which
+        // meant calls that ended with bare TDU fell back to the 1.5 s
+        // grace window — inflating grace-finalise rate to ~37 % of all
+        // finalises on Clay County. Fire SpeakerEnd here so end-of-call
+        // recorder splits happen on the protocol signal instead of
+        // on the grace timeout. `source: None` — bare TDU carries no
+        // speaker ID, so we don't overwrite whatever the LDU1 LC / grant
+        // already stamped into the active recording.
+        let nac = self.last_observed_nac.load(Ordering::Relaxed);
+        let tg = self.current_talkgroup.load(Ordering::Relaxed);
+        if let Some(tx) = self.call_boundary_tx.get() {
+            let _ = tx.send(audio::CallBoundary {
+                kind: audio::CallBoundaryKind::SpeakerEnd { source: None },
+                nac,
+                talkgroup: if tg == 0 { None } else { Some(tg) },
+            });
+        }
     }
 
     fn on_tdu_lc(&self, body_raw: &[u8]) {

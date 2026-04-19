@@ -269,8 +269,11 @@ The only FEC-layer capability SDRTrunk has that Fishball doesn't is the **TSBK C
 - State: `Option<ActiveCall>` + finalize-grace timer.
 - Start triggers: first non-zero-TG `AudioChunk`, or different-TG chunk (TG change without Idle).
 - TG=0 chunks: **append to active recording if one exists** (mid-call grant-refresh flicker), **ignore otherwise** (between-calls noise — don't spuriously open recording with unknown TG). Introduced 2026-04-19 late to fix audio skips in legit calls caused by transient `current_talkgroup.store(0)` races.
-- Split triggers: `HduStart` finalises + idles (reason=hdu_start); `SpeakerEnd{source}` stamps source and finalises (reason=speaker_end, TG-mismatch guarded); `TdulcComplete{source}` stamps source but does **not** finalise.
-- Grace finalise: 1.5 s no chunks (reason=grace_window).
+- **Finalise triggers — protocol-level (primary):**
+  - `HduStart` (DUID 0x0) → finalise + idle (reason=hdu_start) — new speaker keys up.
+  - `SpeakerEnd{source}` from TDU (DUID 0x3) OR TDULC MotorolaTalkComplete (0x0F MFID 0x90) OR TDULC CallTermination (0x0F MFID 0x00) → stamp source (if known) and finalise (reason=speaker_end, TG-mismatch guarded).
+  - `TdulcComplete{source}` from LDU1 LC GroupVoiceChannelUser → stamp source but does **not** finalise (mid-call source refresh only).
+- **Finalise fallback — grace window (1500 ms no chunks, reason=grace_window).** Only used when neither HDU nor SpeakerEnd fired within the call — typically weak-signal calls where the FEC couldn't recover the terminator. Live observed rate ~37 % of finalises on Clay County pre-bare-TDU-routing, should drop to single digits after commit `<this>` routes bare TDU through SpeakerEnd.
 - Filename: `rec_<start_unix_ms>_<id>_tg<TG>[_from<source>].wav` in `/tmp/p25_recordings/`.
 - 8 kHz PCM-16 mono WAV, fixed format (same as vocoder output).
 - Per-recording event timeline via `/api/recordings/{id}/events` — every recorder-category log entry whose `fields.recording_id` matches. Every open / finalise / discard / source stamp / boundary receive / TG-mismatch-guard skip is logged with a reason enum.
