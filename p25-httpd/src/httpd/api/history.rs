@@ -579,16 +579,30 @@ pub async fn get_event_log(
         .get("since")
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
+    // Cap aligned with the event-log ring size (16 384) so callers
+    // can pull the full history if needed. Was .min(1000); raised
+    // 2026-04-19 after adding the high-volume Duid category where
+    // 1000 entries cover only ~30-60 s of decode activity and drop
+    // sparse Recorder / Grant entries below the filter window.
     let limit = params
         .get("limit")
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(200)
-        .min(1000);
+        .min(16384);
     let category_filter = params.get("category").map(|s| s.to_string());
 
-    let mut entries = state.event_log.recent_since(since, limit);
+    // When a category filter is set, pull the whole ring first and
+    // filter before applying `limit` — otherwise a sparse category
+    // like `recorder` or `grant` can return empty because the 1k
+    // newest entries are all `duid` (the most common category).
+    let mut entries = if category_filter.is_some() {
+        state.event_log.recent_since(since, usize::MAX)
+    } else {
+        state.event_log.recent_since(since, limit)
+    };
     if let Some(cat) = &category_filter {
         entries.retain(|e| e.category == cat);
+        entries.truncate(limit);
     }
     let last_seq = state.event_log.last_seq();
     Json(serde_json::json!({
