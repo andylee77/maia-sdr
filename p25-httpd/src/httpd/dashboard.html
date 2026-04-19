@@ -1825,19 +1825,116 @@ registerProcessor('p25-audio', P25AudioProcessor);
 
 const AUDIO = {
   ctx: null,
-  node: null,         // AudioWorkletNode (worklet mode only)
-  gain: null,         // GainNode (worklet mode only)
-  ws: null,           // /ws/audio (worklet mode only)
-  audioEl: null,      // <audio> element (native mode)
+  node: null,         // AudioWorkletNode OR ScriptProcessorNode
+  gain: null,
+  ws: null,
   playing: false,
-  mode: null,         // 'worklet' | 'native'
-  chunks: 0,          // WS frames received (worklet mode)
-  underruns: 0,       // worklet underrun events
-  bufMs: 0,           // worklet ring fill in ms
-  lastChunkAt: 0,     // wall-clock ms of last WS chunk (worklet mode)
-  statsTimer: null,
-  ctxRate: 0,
+  mode: null,         // 'worklet' | 'spn'
+  chunks: 0,          // WS frames received this session
+  underruns: 0,       // mirrored from worklet or read from AUDIO_SPN
+  bufMs: 0,           // available samples converted to ms at 8 kHz
+  lastChunkAt: 0,     // wall-clock ms of last arriving WS frame
+  statsTimer: null,   // periodic port.postMessage({type:'stats'})
+  ctxRate: 0,         // realized AudioContext sample rate
 };
+
+// ── ScriptProcessorNode fallback state ──
+// Insecure-context browsers (http:// to a plain IP, which is how the
+// dashboard is actually reached on the Fishball's direct-connect
+// Ethernet) return `undefined` for `BaseAudioContext.audioWorklet`.
+// In that case the worklet path isn't available, so we fall back to a
+// ScriptProcessorNode running the same ring-buffer / linear-interp
+// logic on the main thread. ScriptProcessorNode is spec-deprecated but
+// still supported universally and has no secure-context gate. Audio
+// quality is identical — same 8 kHz ring, same continuous resample
+// to the context rate, same silence-on-underrun policy.
+const AUDIO_SPN = {
+  RING_SIZE: 16384,     // 2 s @ 8 kHz
+  // 150 ms warm-up — same reasoning as the worklet PREFILL above.
+  // Source paces at real-time so a large prefill adds only latency.
+  PREFILL: 1200,
+  // Re-prime only on a 2 s stall. Set at startAudio once we know
+  // the AudioContext sample rate. Routine LDU losses (~180 ms)
+  // play as honest silence without a 540 ms prefill pause on top.
+  UNDERRUN_REPRIME: 96000,   // default; overwritten in startAudio
+  ring: null,
+  write: 0,
+  read: 0,
+  available: 0,
+  readFrac: 0,
+  ratio: 1.0,           // 8000 / ctxRate, set at startAudio
+  underruns: 0,         // events, not samples
+  consecUnderruns: 0,
+  inUnderrunRun: false,
+  priming: true,
+};
+function audioSpnReset() {
+  AUDIO_SPN.ring = new Float32Array(AUDIO_SPN.RING_SIZE);
+  AUDIO_SPN.write = 0;
+  AUDIO_SPN.read = 0;
+  AUDIO_SPN.available = 0;
+  AUDIO_SPN.readFrac = 0;
+  AUDIO_SPN.underruns = 0;
+  AUDIO_SPN.consecUnderruns = 0;
+  AUDIO_SPN.inUnderrunRun = false;
+  AUDIO_SPN.priming = true;
+}
+function audioSpnWrite(f32) {
+  const s = AUDIO_SPN;
+  for (let i = 0; i < f32.length; i++) {
+    s.ring[s.write] = f32[i];
+    s.write = (s.write + 1) % s.RING_SIZE;
+    if (s.available < s.RING_SIZE) {
+      s.available++;
+    } else {
+      // Ring full — drop oldest (should be unreachable on a healthy LAN)
+      s.read = (s.read + 1) % s.RING_SIZE;
+    }
+  }
+  if (s.priming && s.available >= s.PREFILL) s.priming = false;
+}
+function audioSpnProcess(e) {
+  const out = e.outputBuffer.getChannelData(0);
+  const n = out.length;
+  const s = AUDIO_SPN;
+  if (s.priming) {
+    for (let i = 0; i < n; i++) out[i] = 0;
+    return;
+  }
+  for (let i = 0; i < n; i++) {
+    if (s.available <= 1) {
+      // Absorb as silence. Only re-prime after UNDERRUN_REPRIME
+      // samples (~2 s) of continuous empty ring — a genuine stall,
+      // not a routine LDU loss.
+      out[i] = 0;
+      if (!s.inUnderrunRun) {
+        s.underruns++;
+        s.inUnderrunRun = true;
+      }
+      s.consecUnderruns++;
+      if (s.consecUnderruns >= s.UNDERRUN_REPRIME) {
+        s.priming = true;
+        s.consecUnderruns = 0;
+        s.inUnderrunRun = false;
+        for (let j = i + 1; j < n; j++) out[j] = 0;
+        return;
+      }
+      continue;
+    }
+    s.consecUnderruns = 0;
+    s.inUnderrunRun = false;
+    const a = s.ring[s.read];
+    const b = s.ring[(s.read + 1) % s.RING_SIZE];
+    out[i] = a + (b - a) * s.readFrac;
+    s.readFrac += s.ratio;
+    while (s.readFrac >= 1) {
+      s.readFrac -= 1;
+      s.read = (s.read + 1) % s.RING_SIZE;
+      s.available--;
+      if (s.available <= 0) break;
+    }
+  }
+}
 
 function audioSetStatus(html) {
   $('audioStatus').innerHTML = html;
@@ -1845,27 +1942,12 @@ function audioSetStatus(html) {
 
 function audioUpdateStatus() {
   if (!AUDIO.playing) { audioSetStatus('stopped'); return; }
-
-  if (AUDIO.mode === 'native') {
-    // <audio> element path — browser owns the decoder + buffer so we
-    // only get the coarse playback state. readyState >= 3
-    // (HAVE_FUTURE_DATA) means the browser has enough buffered to
-    // play without stalling.
-    const el = AUDIO.audioEl;
-    if (!el) return;
-    let state = 'playing', cls = 'on';
-    if (el.paused) { state = 'paused'; cls = 'warn'; }
-    else if (el.readyState < 2) { state = 'buffering'; cls = 'warn'; }
-    audioSetStatus(
-      '<span class="' + cls + '">' + state + '</span>'
-      + '  &middot;  mode: native &lt;audio&gt;'
-      + '  &middot;  vol ' + Math.round(el.volume * 100) + '%'
-      + (el.muted ? ' (muted)' : '')
-    );
-    return;
+  // ScriptProcessor path doesn't use port.postMessage stats — pull
+  // directly from the shared main-thread state.
+  if (AUDIO.mode === 'spn') {
+    AUDIO.bufMs = (AUDIO_SPN.available / 8) | 0;
+    AUDIO.underruns = AUDIO_SPN.underruns;
   }
-
-  // AudioWorklet path — rich stats from the worklet.
   const gapMs = AUDIO.lastChunkAt ? (Date.now() - AUDIO.lastChunkAt) : -1;
   let gapCls = 'on', gapTxt = 'live';
   if (gapMs < 0) {
@@ -1876,186 +1958,154 @@ function audioUpdateStatus() {
     gapCls = 'warn';
   }
   const rateTxt = AUDIO.ctxRate ? (AUDIO.ctxRate/1000).toFixed(1) + 'k' : '--';
+  const modeTxt = AUDIO.mode === 'worklet' ? 'wkt'
+               : AUDIO.mode === 'spn'     ? 'spn'
+               : '--';
   audioSetStatus(
     '<span class="' + gapCls + '">' + gapTxt + '</span>'
     + '  &middot;  buf ' + AUDIO.bufMs + ' ms'
     + '  &middot;  rate ' + rateTxt
-    + '  &middot;  wkt'
+    + '  &middot;  ' + modeTxt
     + '  &middot;  chunks ' + AUDIO.chunks.toLocaleString()
     + (AUDIO.underruns ? '  &middot;  <span class="warn">underruns ' + AUDIO.underruns + '</span>' : '')
   );
 }
 
 function audioApplyGain() {
+  if (!AUDIO.gain) return;
   const muted = $('audioMute').checked;
   const vol = parseInt($('audioVol').value, 10) / 100;
-  if (AUDIO.gain) {
-    // AudioWorklet path — GainNode in the Web Audio graph.
-    AUDIO.gain.gain.value = muted ? 0 : vol;
-  } else if (AUDIO.audioEl) {
-    // Native <audio> element path — built-in volume/muted props.
-    AUDIO.audioEl.volume = vol;
-    AUDIO.audioEl.muted = muted;
-  }
+  AUDIO.gain.gain.value = muted ? 0 : vol;
 }
 
 function toggleAudio() {
   if (AUDIO.playing) { stopAudio(); } else { startAudio(); }
 }
 
-// Two playback paths:
-//
-//   (a) AudioWorklet over /ws/audio   — secure context only
-//       (https:// or localhost). Dedicated audio thread, lowest
-//       latency (~150 ms), per-chunk buffer visibility, GainNode
-//       volume. This is the best path when available.
-//
-//   (b) Native <audio> over /api/audio?format=wav — everywhere,
-//       including insecure http:// to a LAN IP (the Fishball USB
-//       direct-connect setup). Browser's own audio decoder runs
-//       on its own thread, independent of the main JS thread, so
-//       it's immune to the dashboard's periodic refresh() + event-
-//       log + eye-plot rendering work that starved the previous
-//       ScriptProcessorNode fallback and caused audible dropouts.
-//       Fewer diagnostic hooks (no ring, no underrun counter) but
-//       structurally robust.
-//
-// Selection is automatic: AudioWorklet if `ctx.audioWorklet` is
-// truthy (secure context per Web Audio IDL), otherwise <audio>.
 async function startAudio() {
   try {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) { audioSetStatus('<span class="err">Web Audio unsupported</span>'); return; }
+    // Don't pin sampleRate: let the browser pick native (usually 48 kHz).
+    // The ring buffer + linear interp inside either the AudioWorklet
+    // (secure context) or the ScriptProcessorNode fallback handles 8
+    // kHz -> native conversion with one continuous interpolator, which
+    // was the whole point of the 2026-04-15 rewrite.
+    AUDIO.ctx = new Ctor();
+    if (AUDIO.ctx.state === 'suspended') {
+      try { await AUDIO.ctx.resume(); } catch {}
+    }
+    AUDIO.ctxRate = AUDIO.ctx.sampleRate;
     AUDIO.chunks = 0;
     AUDIO.underruns = 0;
     AUDIO.bufMs = 0;
     AUDIO.lastChunkAt = 0;
 
-    const Ctor = window.AudioContext || window.webkitAudioContext;
-    const probeCtx = Ctor ? new Ctor() : null;
-    const workletAvailable = !!(probeCtx && probeCtx.audioWorklet);
-    if (!workletAvailable && probeCtx) {
-      try { probeCtx.close(); } catch {}
-    }
-
-    if (workletAvailable) {
-      await startAudioWorklet(Ctor, probeCtx);
+    // Mode selection:
+    //   (a) Secure context (https:// or localhost) -> AudioWorklet.
+    //       Runs the ring buffer on a dedicated audio thread, best
+    //       real-time characteristics.
+    //   (b) Insecure context (http:// to a LAN IP, which is the
+    //       actual Fishball direct-connect setup) -> the browser
+    //       returns `undefined` for `ctx.audioWorklet` because of the
+    //       [SecureContext] IDL gate in the Web Audio spec. Fall back
+    //       to ScriptProcessorNode, which is spec-deprecated but
+    //       universally supported and runs the same ring buffer on
+    //       the main thread. Quality is identical for 8 kHz P25
+    //       voice; the only downside is main-thread jank sensitivity,
+    //       and at 2 s refresh cadence the dashboard isn't blocking.
+    if (AUDIO.ctx.audioWorklet) {
+      AUDIO.mode = 'worklet';
+      const blob = new Blob([AUDIO_WORKLET_CODE], {type:'application/javascript'});
+      const url = URL.createObjectURL(blob);
+      try {
+        await AUDIO.ctx.audioWorklet.addModule(url);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      AUDIO.node = new AudioWorkletNode(AUDIO.ctx, 'p25-audio');
+      AUDIO.node.port.onmessage = (ev) => {
+        const m = ev.data;
+        if (m && m.type === 'stats') {
+          AUDIO.bufMs = (m.available / 8) | 0;
+          AUDIO.underruns = m.underruns;
+        }
+      };
+    } else if (AUDIO.ctx.createScriptProcessor) {
+      AUDIO.mode = 'spn';
+      audioSpnReset();
+      AUDIO_SPN.ratio = 8000 / AUDIO.ctxRate;
+      // Re-prime only after 2 s of continuous empty ring. Computed
+      // in ctx samples so the threshold is 2 s of real time on any
+      // ctx rate the browser picks (typically 48 kHz).
+      AUDIO_SPN.UNDERRUN_REPRIME = Math.max(4800, Math.round(AUDIO.ctxRate * 2));
+      // 1024 samples per callback = 21 ms at 48 kHz, 23 ms at 44.1 kHz.
+      // Power-of-two required by ScriptProcessorNode; 1024 is the
+      // sweet spot between latency and callback overhead for our
+      // single-channel 8 kHz source.
+      AUDIO.node = AUDIO.ctx.createScriptProcessor(1024, 0, 1);
+      AUDIO.node.onaudioprocess = audioSpnProcess;
     } else {
-      await startAudioNative();
+      audioSetStatus('<span class="err">no usable audio path</span>');
+      AUDIO.ctx.close(); AUDIO.ctx = null;
+      return;
     }
+
+    AUDIO.gain = AUDIO.ctx.createGain();
+    AUDIO.node.connect(AUDIO.gain);
+    AUDIO.gain.connect(AUDIO.ctx.destination);
+    audioApplyGain();
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = proto + '//' + location.host + '/ws/audio';
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => {
+      AUDIO.playing = true;
+      const btn = $('audioBtn');
+      btn.classList.remove('play-off');
+      btn.classList.add('play-on');
+      btn.innerHTML = '&#9632; Stop Audio';
+      if (!AUDIO.statsTimer) {
+        AUDIO.statsTimer = setInterval(() => {
+          if (AUDIO.mode === 'worklet' && AUDIO.node) {
+            AUDIO.node.port.postMessage({type:'stats'});
+          }
+          audioUpdateStatus();
+        }, 250);
+      }
+      audioUpdateStatus();
+    };
+    ws.onmessage = (ev) => {
+      if (!(ev.data instanceof ArrayBuffer)) return;
+      // 320 bytes = 160 × i16 LE = 20 ms of 8 kHz mono.
+      const i16 = new Int16Array(ev.data);
+      if (i16.length === 0 || !AUDIO.node) return;
+      const f32 = new Float32Array(i16.length);
+      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+      if (AUDIO.mode === 'worklet') {
+        // Transfer the buffer so there's no copy on the worklet side.
+        AUDIO.node.port.postMessage({type:'pcm', data:f32}, [f32.buffer]);
+      } else {
+        audioSpnWrite(f32);
+      }
+      AUDIO.chunks++;
+      AUDIO.lastChunkAt = Date.now();
+    };
+    ws.onclose = () => {
+      if (AUDIO.playing) {
+        audioSetStatus('<span class="warn">disconnected</span>');
+        stopAudio();
+      }
+    };
+    ws.onerror = () => {
+      audioSetStatus('<span class="err">WS error</span>');
+    };
+    AUDIO.ws = ws;
   } catch (e) {
     audioSetStatus('<span class="err">' + e.message + '</span>');
     stopAudio();
   }
-}
-
-async function startAudioWorklet(Ctor, ctx) {
-  AUDIO.ctx = ctx;
-  if (AUDIO.ctx.state === 'suspended') {
-    try { await AUDIO.ctx.resume(); } catch {}
-  }
-  AUDIO.ctxRate = AUDIO.ctx.sampleRate;
-  AUDIO.mode = 'worklet';
-
-  const blob = new Blob([AUDIO_WORKLET_CODE], {type:'application/javascript'});
-  const url = URL.createObjectURL(blob);
-  try {
-    await AUDIO.ctx.audioWorklet.addModule(url);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-  AUDIO.node = new AudioWorkletNode(AUDIO.ctx, 'p25-audio');
-  AUDIO.node.port.onmessage = (ev) => {
-    const m = ev.data;
-    if (m && m.type === 'stats') {
-      AUDIO.bufMs = (m.available / 8) | 0;
-      AUDIO.underruns = m.underruns;
-    }
-  };
-
-  AUDIO.gain = AUDIO.ctx.createGain();
-  AUDIO.node.connect(AUDIO.gain);
-  AUDIO.gain.connect(AUDIO.ctx.destination);
-  audioApplyGain();
-
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(proto + '//' + location.host + '/ws/audio');
-  ws.binaryType = 'arraybuffer';
-  ws.onopen = () => {
-    AUDIO.playing = true;
-    _audioMarkPlaying();
-    if (!AUDIO.statsTimer) {
-      AUDIO.statsTimer = setInterval(() => {
-        if (AUDIO.node) AUDIO.node.port.postMessage({type:'stats'});
-        audioUpdateStatus();
-      }, 250);
-    }
-    audioUpdateStatus();
-  };
-  ws.onmessage = (ev) => {
-    if (!(ev.data instanceof ArrayBuffer)) return;
-    const i16 = new Int16Array(ev.data);
-    if (i16.length === 0 || !AUDIO.node) return;
-    const f32 = new Float32Array(i16.length);
-    for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
-    AUDIO.node.port.postMessage({type:'pcm', data:f32}, [f32.buffer]);
-    AUDIO.chunks++;
-    AUDIO.lastChunkAt = Date.now();
-  };
-  ws.onclose = () => {
-    if (AUDIO.playing) {
-      audioSetStatus('<span class="warn">disconnected</span>');
-      stopAudio();
-    }
-  };
-  ws.onerror = () => audioSetStatus('<span class="err">WS error</span>');
-  AUDIO.ws = ws;
-}
-
-async function startAudioNative() {
-  AUDIO.mode = 'native';
-  const el = document.createElement('audio');
-  // Infinite-length streaming WAV from the server. Content-Length is
-  // not known, so the browser treats this as a live stream: it plays
-  // as chunks arrive rather than pre-buffering. `preload=none` keeps
-  // the browser from making a HEAD request before play() is called.
-  el.src = '/api/audio?format=wav';
-  el.preload = 'none';
-  el.autoplay = false;
-  el.crossOrigin = 'anonymous';
-  el.volume = parseInt($('audioVol').value, 10) / 100;
-  el.muted = $('audioMute').checked;
-  // Readout markers so audioUpdateStatus can show playing/buffering.
-  el.addEventListener('playing',    () => audioUpdateStatus());
-  el.addEventListener('waiting',    () => audioUpdateStatus());
-  el.addEventListener('stalled',    () => audioUpdateStatus());
-  el.addEventListener('ended',      () => { if (AUDIO.playing) stopAudio(); });
-  el.addEventListener('error',      () => {
-    audioSetStatus('<span class="err">audio element error</span>');
-    stopAudio();
-  });
-  AUDIO.audioEl = el;
-  try {
-    await el.play();
-  } catch (e) {
-    // Autoplay policy can reject without a user gesture — the Play
-    // button itself IS the gesture, so this normally succeeds. If
-    // it doesn't, surface the error and give up.
-    audioSetStatus('<span class="err">' + e.message + '</span>');
-    stopAudio();
-    return;
-  }
-  AUDIO.playing = true;
-  _audioMarkPlaying();
-  if (!AUDIO.statsTimer) {
-    AUDIO.statsTimer = setInterval(audioUpdateStatus, 500);
-  }
-  audioUpdateStatus();
-}
-
-function _audioMarkPlaying() {
-  const btn = $('audioBtn');
-  btn.classList.remove('play-off');
-  btn.classList.add('play-on');
-  btn.innerHTML = '&#9632; Stop Audio';
 }
 
 function stopAudio() {
@@ -2063,18 +2113,20 @@ function stopAudio() {
   try { if (AUDIO.ws) AUDIO.ws.close(); } catch {}
   AUDIO.ws = null;
   try { if (AUDIO.node) AUDIO.node.disconnect(); } catch {}
+  // ScriptProcessorNode keeps its onaudioprocess closure alive until
+  // the node is GC'd, which can prevent AudioContext shutdown. Null
+  // the callback explicitly so the node is inert even if something
+  // else holds a reference briefly.
+  if (AUDIO.node && 'onaudioprocess' in AUDIO.node) {
+    try { AUDIO.node.onaudioprocess = null; } catch {}
+  }
   AUDIO.node = null;
+  AUDIO.mode = null;
   try { if (AUDIO.gain) AUDIO.gain.disconnect(); } catch {}
   AUDIO.gain = null;
   try { if (AUDIO.ctx) AUDIO.ctx.close(); } catch {}
   AUDIO.ctx = null;
   AUDIO.ctxRate = 0;
-  if (AUDIO.audioEl) {
-    try { AUDIO.audioEl.pause(); } catch {}
-    try { AUDIO.audioEl.src = ''; } catch {}
-    AUDIO.audioEl = null;
-  }
-  AUDIO.mode = null;
   if (AUDIO.statsTimer) { clearInterval(AUDIO.statsTimer); AUDIO.statsTimer = null; }
   const btn = $('audioBtn');
   btn.classList.remove('play-on');
