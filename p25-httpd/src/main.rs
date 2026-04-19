@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-18-phase10.6-silent-gate-revert-native";
+pub const BUILD_TAG: &str = "2026-04-18-phase10.6-https-audioworklet";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -374,6 +374,32 @@ struct Args {
     /// HTTP listen address
     #[arg(long, default_value = "0.0.0.0:8080")]
     listen: String,
+
+    /// HTTPS listen address. HTTPS server is only started if both
+    /// --ssl-cert and --ssl-key are provided; otherwise this argument
+    /// is ignored.
+    #[arg(long, default_value = "0.0.0.0:8443")]
+    listen_https: std::net::SocketAddr,
+
+    /// Path to PEM-encoded SSL certificate for the HTTPS server.
+    /// Unless both --ssl-cert and --ssl-key are present the HTTPS
+    /// server is not started. Generated at first boot by the
+    /// S50p25-httpd-certificates init script into
+    /// /mnt/jffs2/p25-httpd.crt on the Tezuka flashed image.
+    #[arg(long)]
+    ssl_cert: Option<std::path::PathBuf>,
+
+    /// Path to PEM-encoded SSL private key paired with --ssl-cert.
+    /// Default target on Tezuka: /mnt/jffs2/p25-httpd.key.
+    #[arg(long)]
+    ssl_key: Option<std::path::PathBuf>,
+
+    /// Path to PEM-encoded CA certificate. When provided the CA is
+    /// served at /ca.crt so browsers can download + trust it to
+    /// eliminate the "self-signed" warning. Default target on Tezuka:
+    /// /mnt/jffs2/p25-sdr-ca.crt.
+    #[arg(long)]
+    ca_cert: Option<std::path::PathBuf>,
 
     /// AD9361 RX LO frequency in Hz
     #[arg(long, default_value_t = 858_100_000)]
@@ -3018,11 +3044,50 @@ async fn main() -> anyhow::Result<()> {
         active_modulation: active_modulation.clone(),
     });
 
-    // Start HTTP server
-    let app = httpd::router(state);
-    let listener = tokio::net::TcpListener::bind(&args.listen).await?;
-    tracing::info!("Dashboard at http://{}", args.listen);
-    axum::serve(listener, app).await?;
+    // Start HTTP (and optionally HTTPS) server. The HTTPS half is what
+    // unlocks AudioWorklet on the dashboard — browsers only expose it
+    // in secure contexts, so http:// to a LAN IP falls back to the
+    // deprecated ScriptProcessorNode running on the main thread, which
+    // contends with periodic refresh() / event-log / eye-plot work and
+    // produces audible dropouts. HTTPS pattern matches maia-httpd.
+    let app = httpd::router(state, args.ca_cert.clone());
+
+    let http_addr: std::net::SocketAddr = args.listen.parse()
+        .map_err(|e| anyhow::anyhow!("invalid --listen {}: {e}", args.listen))?;
+    tracing::info!("Dashboard at http://{}", http_addr);
+
+    match (args.ssl_cert.as_ref(), args.ssl_key.as_ref()) {
+        (Some(cert), Some(key)) => {
+            use axum_server::tls_rustls::RustlsConfig;
+            let tls = RustlsConfig::from_pem_file(cert, key).await
+                .map_err(|e| anyhow::anyhow!(
+                    "loading TLS cert/key from {cert:?} / {key:?}: {e}"
+                ))?;
+            tracing::info!("Dashboard also at https://{}", args.listen_https);
+            let http_server = axum_server::bind(http_addr)
+                .serve(app.clone().into_make_service());
+            let https_server = axum_server::bind_rustls(args.listen_https, tls)
+                .serve(app.into_make_service());
+            tokio::select! {
+                r = http_server  => r?,
+                r = https_server => r?,
+            };
+        }
+        _ => {
+            // Cert args missing — HTTP-only. Prints why so operators
+            // can tell an intentional HTTP-only run (missing args in
+            // the init script) from a cert-load failure above.
+            if args.ssl_cert.is_some() || args.ssl_key.is_some() {
+                tracing::warn!(
+                    "--ssl-cert and --ssl-key must both be provided; \
+                     running HTTP-only"
+                );
+            }
+            axum_server::bind(http_addr)
+                .serve(app.into_make_service())
+                .await?;
+        }
+    }
     Ok(())
 }
 

@@ -200,9 +200,22 @@ impl AppState {
     }
 }
 
-/// Build the HTTP router
-pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+/// Build the HTTP router.
+///
+/// If `ca_cert` is `Some`, the referenced PEM is served at `/ca.crt` so
+/// browsers can download and install the self-signed CA that signed the
+/// HTTPS cert, eliminating the "Your connection is not private" warning.
+pub fn router(
+    state: Arc<AppState>,
+    ca_cert: Option<std::path::PathBuf>,
+) -> Router {
+    let mut r = Router::new();
+    if let Some(ca) = ca_cert {
+        // ServeFile streams the file from disk on each hit — cheap,
+        // and avoids baking the CA into the binary (per-board certs).
+        r = r.route_service("/ca.crt", tower_http::services::ServeFile::new(ca));
+    }
+    r
         .route("/", get(index_html))
         .route("/api/system", get(api::system::get_system))
         .route("/api/sys_health", get(api::system::get_sys_health))
