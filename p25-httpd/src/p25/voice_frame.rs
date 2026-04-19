@@ -303,7 +303,13 @@ pub enum TdulcLcw {
     /// Standard LCW opcode 0x00 — `GROUP VOICE CHANNEL USER`. Only
     /// the talkgroup is carried by the TDULC variant (SDRTrunk shows
     /// `FM:0`); LDU1 carries a real source address at bit 48.
-    GroupVoiceChannelUser { talkgroup: u16 },
+    ///
+    /// `source_radio_id` holds the 24-bit FM: field at LC bits 48-71
+    /// (SDRTrunk `OCTET_6_BIT_48`). On TDULC GVCU this is always 0 per
+    /// spec; on LDU1 GVCU it is the speaker's radio ID. Populating it
+    /// here in `classify_lcw` means `parse_ldu1_source` doesn't need to
+    /// re-run the Hamming + RS chain to pull the same field out.
+    GroupVoiceChannelUser { talkgroup: u16, source_radio_id: u32 },
 
     /// Motorola MFID 0x90 + opcode 0x0F — `TALK_COMPLETE`. Carries
     /// the last speaker's 24-bit radio ID in the ADDRESS field
@@ -514,6 +520,7 @@ fn classify_lcw(lc_bits: &[bool; 72]) -> TdulcLcw {
         // frames where a caller inspected it.
         0x00 => TdulcLcw::GroupVoiceChannelUser {
             talkgroup: byte(32, 16) as u16,
+            source_radio_id: byte(48, 24),
         },
         // LCGroupVoiceChannelUpdate:
         //   FREQ_BAND_A  OCTET_1_BIT_8  (4 bits)
@@ -689,15 +696,11 @@ pub fn parse_ldu1_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
 pub fn parse_ldu1_source(body_raw: &[u8]) -> Option<u32> {
     match parse_ldu1_lcw(body_raw)? {
         TdulcLcw::MotorolaTalkComplete { by_radio_id } => Some(by_radio_id),
-        // For GVCU, dig into the LC bytes to get the source address.
-        // We already have the LCW classified; re-extract via the
-        // generic bytes helper.
-        TdulcLcw::GroupVoiceChannelUser { .. } => {
-            let bytes = ldu1_lc_bytes(body_raw)?;
-            let src = ((bytes[6] as u32) << 16)
-                | ((bytes[7] as u32) << 8)
-                | (bytes[8] as u32);
-            if src == 0 { None } else { Some(src) }
+        // 2026-04-19 late: source_radio_id is now carried on the LCW
+        // variant directly (populated at classify_lcw time from bits
+        // 48-71 of the FEC'd 72-bit LC). No second Hamming + RS pass.
+        TdulcLcw::GroupVoiceChannelUser { source_radio_id, .. } => {
+            if source_radio_id == 0 { None } else { Some(source_radio_id) }
         }
         // New variants don't carry a voice "FM:<source>" — GVU and
         // the status broadcasts are non-speaker LCWs, and

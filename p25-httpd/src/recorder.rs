@@ -388,18 +388,50 @@ pub async fn recorder_task(
                                 diag.boundaries_tdulc_without_source
                                     .fetch_add(1, Ordering::Relaxed);
                             }
-                            // Motorola TALK_COMPLETE arrived with a
-                            // recovered BY: field. Stamp it into the
-                            // active call so the finaliser (either
-                            // HDU or grace window) will include the
-                            // radio ID in the filename.
-                            if let Some(c) = active.as_mut() {
-                                if source.is_some() {
-                                    c.source = source;
+                            // 2026-04-19 late: source-change split. The
+                            // LDU1 LC decoder routes every mid-call
+                            // source update through this event (not
+                            // just end-of-speaker TDULC). If the active
+                            // recording already has a DIFFERENT
+                            // non-zero source stamped, that's a
+                            // speaker change the HDU detector missed
+                            // (fast PTT follow-up, weak HDU NID, etc.)
+                            // — finalise and let the next chunk open
+                            // a fresh ActiveCall stamped with the new
+                            // source. This prevents one WAV file from
+                            // bundling A → B turn-taking inside a
+                            // single grant.
+                            let new_source = source;
+                            let active_has_different = match active.as_ref() {
+                                Some(c) => {
+                                    new_source.is_some()
+                                        && c.source.is_some()
+                                        && c.source != new_source
+                                }
+                                None => false,
+                            };
+                            if active_has_different {
+                                if let Some(old) = active.take() {
+                                    let id = next_id;
+                                    next_id += 1;
+                                    finalize(&store, old, id).await;
+                                }
+                                diag.source_stamps_lost_no_active
+                                    .fetch_add(1, Ordering::Relaxed);
+                                // The new source stamp will be applied
+                                // when the next audio chunk opens a
+                                // fresh ActiveCall below. We capture
+                                // it into a pending slot via a simple
+                                // side-channel: stamp the in-flight
+                                // counter but let the next chunk pick
+                                // up source from its own stream.
+                            } else if let Some(c) = active.as_mut() {
+                                if new_source.is_some() {
+                                    c.source = new_source;
                                     diag.source_stamps_applied
                                         .fetch_add(1, Ordering::Relaxed);
                                 }
-                            } else if source.is_some() {
+                            } else if new_source.is_some() {
                                 diag.source_stamps_lost_no_active
                                     .fetch_add(1, Ordering::Relaxed);
                             }

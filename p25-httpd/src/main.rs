@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-19-recordings-src-filename-cols";
+pub const BUILD_TAG: &str = "2026-04-19-silent-pass-agc-split-sourcecache";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -501,6 +501,13 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                 talkgroup: Some(tg_locked),
             });
         }
+        // 2026-04-19 late: also refresh `current_source` so the next
+        // AudioChunk's source field reflects the speaker the LDU1 LC
+        // just revealed. Without this, chunks keep carrying whatever
+        // the grant's FM: set at call-start (or 0 if the grant had
+        // none), and the recorder's source-change logic never sees
+        // the mid-call speaker flip.
+        self.current_source.store(source, Ordering::Relaxed);
     }
 
     fn on_ldu2(
@@ -667,6 +674,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
             }
             Some(p25::voice_frame::TdulcLcw::GroupVoiceChannelUser {
                 talkgroup: lc_tg,
+                source_radio_id: _,
             }) => {
                 self.tdulc_parse_gvcu.fetch_add(1, Ordering::Relaxed);
                 // Mirror SDRTrunk's `TDULC GROUP VOICE CHANNEL USER
@@ -3361,6 +3369,28 @@ async fn main() -> anyhow::Result<()> {
             let mut call_frames_skipped_enc: u32 = 0;
             let mut call_pcm_samples: u64 = 0;
             let mut call_started: Option<std::time::Instant> = None;
+
+            // 2026-04-19 late: post-vocoder PCM AGC. JMBE outputs raw
+            // PCM at whatever level each radio's mic + deviation
+            // produced. Different speakers → different levels → the
+            // user hears "loud and quiet" because we emit them as-is.
+            // SDRTrunk's audio stage applies per-call normalisation;
+            // this is the equivalent — a slow-attack EMA on the
+            // voiced-frame RMS that scales toward `AGC_TARGET_RMS`.
+            // Silent frames (peak under `SILENT_PEAK`) don't update
+            // the EMA, so inter-word pauses don't pump the gain up.
+            let mut agc_rms_ema: f32 = 2500.0;  // seed at target
+            let mut agc_scale: f32 = 1.0;
+            const AGC_TARGET_RMS: f32 = 2500.0;
+            // ~40-frame (800 ms) time constant on the RMS tracker.
+            const AGC_RMS_ALPHA: f32 = 0.025;
+            // Scale smoothing keeps per-frame gain changes gentle
+            // even if the RMS EMA jumps between speakers.
+            const AGC_SCALE_ALPHA: f32 = 0.08;
+            const AGC_MIN_SCALE: f32 = 0.25;
+            const AGC_MAX_SCALE: f32 = 8.0;
+            // Hard ceiling to prevent clipping on scaled output.
+            const AGC_PCM_CLAMP: f32 = 30000.0;
             // Phase 9.1 (2026-04-15): track the wall clock of the
             // most recent IMBE frame we decoded so `duration_ms` in
             // the call_end summary reflects the actual
@@ -3480,22 +3510,16 @@ async fn main() -> anyhow::Result<()> {
                     // span instead of the retune-to-retune gap.
                     call_last_frame_at = Some(std::time::Instant::now());
 
-                    // Silent-chunk gate (2026-04-18). JMBE outputs
-                    // near-zero PCM for IMBE frames whose internal
-                    // Golay/Hamming parity fails past correction —
-                    // the typical signature of a garbage-bit LDU
-                    // produced when the framer latches onto all-1s
-                    // or all-0s dibit runs during an AGC/PLL glitch.
-                    // These chunks created "empty" recordings that
-                    // the recorder couldn't distinguish from real
-                    // quiet calls; dropping them upstream of the
-                    // broadcast removes the symptom without affecting
-                    // counters. Threshold 16 is 0.05% of full-scale
-                    // i16 — well below the ~50-200 range of real
-                    // comfort-noise PCM during speaker pause, so no
-                    // risk of muting legitimate quiet speech. TG
-                    // events, call-start/end boundaries, and the
-                    // per-frame counters all continue unchanged.
+                    // 2026-04-19 late: the silent-chunk drop was
+                    // causing single-speaker calls to split into
+                    // multiple recordings — a burst of JMBE-silent
+                    // frames exceeded the recorder's 1500 ms grace
+                    // window and forced a finalise + new-file. The
+                    // counter stays for observability, but silent
+                    // frames now pass through so the recorder sees
+                    // continuous audio. The original "empty WAV"
+                    // concern is handled by MIN_KEEPABLE_MS on the
+                    // recorder side.
                     const SILENT_PEAK: u16 = 16;
                     let peak = pcm.iter()
                         .map(|s| s.unsigned_abs())
@@ -3505,7 +3529,6 @@ async fn main() -> anyhow::Result<()> {
                         voc_forwarder
                             .vocoder_frames_silent_suppressed
                             .fetch_add(1, Ordering::Relaxed);
-                        continue;
                     }
 
                     // 2026-04-19: pull the currently-stashed source
@@ -3518,9 +3541,40 @@ async fn main() -> anyhow::Result<()> {
                     let source = voc_forwarder
                         .current_source
                         .load(Ordering::Relaxed);
+
+                    // Post-vocoder AGC. Only voiced frames drive the
+                    // RMS EMA; silent frames get the current scale
+                    // applied but don't update gain state. Updates
+                    // are exponential so speaker A → speaker B level
+                    // change is tracked over ~1 s, which is fast
+                    // enough to be audible-correct without pumping
+                    // on individual loud syllables.
+                    let mut scaled = pcm;
+                    if peak >= SILENT_PEAK {
+                        let sum_sq: f64 = scaled
+                            .iter()
+                            .map(|&s| (s as f64) * (s as f64))
+                            .sum();
+                        let rms = (sum_sq / scaled.len() as f64).sqrt() as f32;
+                        if rms > 0.0 {
+                            agc_rms_ema =
+                                (1.0 - AGC_RMS_ALPHA) * agc_rms_ema
+                                + AGC_RMS_ALPHA * rms;
+                            let target = (AGC_TARGET_RMS / agc_rms_ema.max(1.0))
+                                .clamp(AGC_MIN_SCALE, AGC_MAX_SCALE);
+                            agc_scale =
+                                (1.0 - AGC_SCALE_ALPHA) * agc_scale
+                                + AGC_SCALE_ALPHA * target;
+                        }
+                    }
+                    for s in scaled.iter_mut() {
+                        let v = (*s as f32) * agc_scale;
+                        *s = v.clamp(-AGC_PCM_CLAMP, AGC_PCM_CLAMP) as i16;
+                    }
+
                     // Push to audio broadcast (ignore if no subscribers)
                     let _ = voc_audio_tx.send(audio::AudioChunk {
-                        pcm,
+                        pcm: scaled,
                         talkgroup: tg,
                         source,
                     });
