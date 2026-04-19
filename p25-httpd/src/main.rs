@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-18-phase10.6-audio-drop-and-eye-trigger";
+pub const BUILD_TAG: &str = "2026-04-18-phase10.6-native-audio-and-silent-gate";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -224,6 +224,13 @@ pub struct ImbeForwarder {
     pub vocoder_pcm_produced: std::sync::atomic::AtomicU64,
     pub vocoder_errors: std::sync::atomic::AtomicU64,
     pub vocoder_frames_encrypted: std::sync::atomic::AtomicU64,
+    /// Count of silent frames suppressed by the silent-chunk gate
+    /// (Phase 10.6 / 2026-04-18). Frames whose decoded PCM peak is
+    /// below SILENT_PEAK are JMBE's "uncorrectable IMBE = zero out"
+    /// signature — typically the framer latched onto garbage bits
+    /// from an AGC/PLL glitch. Dropping them upstream of the
+    /// broadcast stops the recorder from writing empty WAVs.
+    pub vocoder_frames_silent_suppressed: std::sync::atomic::AtomicU64,
     /// Set by the grant follower task when it locks onto a TG. The
     /// vocoder task reads this to skip encrypted calls.
     pub call_encrypted: std::sync::atomic::AtomicBool,
@@ -266,6 +273,7 @@ impl ImbeForwarder {
             vocoder_pcm_produced: 0.into(),
             vocoder_errors: 0.into(),
             vocoder_frames_encrypted: 0.into(),
+            vocoder_frames_silent_suppressed: 0.into(),
             call_encrypted: false.into(),
             current_talkgroup: 0.into(),
             encrypted_tg_history: std::sync::Mutex::new(std::collections::HashSet::new()),
@@ -2931,6 +2939,35 @@ async fn main() -> anyhow::Result<()> {
                     // so the next flush reports the true voice
                     // span instead of the retune-to-retune gap.
                     call_last_frame_at = Some(std::time::Instant::now());
+
+                    // Silent-chunk gate (2026-04-18). JMBE outputs
+                    // near-zero PCM for IMBE frames whose internal
+                    // Golay/Hamming parity fails past correction —
+                    // the typical signature of a garbage-bit LDU
+                    // produced when the framer latches onto all-1s
+                    // or all-0s dibit runs during an AGC/PLL glitch.
+                    // These chunks created "empty" recordings that
+                    // the recorder couldn't distinguish from real
+                    // quiet calls; dropping them upstream of the
+                    // broadcast removes the symptom without affecting
+                    // counters. Threshold 16 is 0.05% of full-scale
+                    // i16 — well below the ~50-200 range of real
+                    // comfort-noise PCM during speaker pause, so no
+                    // risk of muting legitimate quiet speech. TG
+                    // events, call-start/end boundaries, and the
+                    // per-frame counters all continue unchanged.
+                    const SILENT_PEAK: u16 = 16;
+                    let peak = pcm.iter()
+                        .map(|s| s.unsigned_abs())
+                        .max()
+                        .unwrap_or(0);
+                    if peak < SILENT_PEAK {
+                        voc_forwarder
+                            .vocoder_frames_silent_suppressed
+                            .fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+
                     // Push to audio broadcast (ignore if no subscribers)
                     let _ = voc_audio_tx.send(audio::AudioChunk {
                         pcm,

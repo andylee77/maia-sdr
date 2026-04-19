@@ -362,6 +362,8 @@ pub async fn get_traffic(
             "vocoder_pcm_produced":   c.vocoder_pcm_produced.load(Ordering::Relaxed),
             "vocoder_errors":         c.vocoder_errors.load(Ordering::Relaxed),
             "vocoder_frames_encrypted": c.vocoder_frames_encrypted.load(Ordering::Relaxed),
+            "vocoder_frames_silent_suppressed":
+                c.vocoder_frames_silent_suppressed.load(Ordering::Relaxed),
         })
     };
 
