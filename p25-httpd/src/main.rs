@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-19-full-duid-log-fix2";
+pub const BUILD_TAG: &str = "2026-04-19-remove-tg0-gate";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -385,22 +385,18 @@ impl ImbeForwarder {
         let tg = self.current_talkgroup.load(Ordering::Relaxed);
         let enc = self.call_encrypted.load(Ordering::Relaxed);
 
-        // Phase 7F.3 (2026-04-14): drop frames that arrive while the
-        // follower is Idle (current_talkgroup == 0). These are
-        // framer false-positives: the traffic LSM HDL chain keeps
-        // producing dibits from whatever the NCO is still pointed
-        // at between calls, and the software framer happily
-        // extracts "LDUs" out of that noise and dispatches them
-        // here. Pushing them to the vocoder produces the "TG=0
-        // phantom call" pattern we saw in the event log (e.g.
-        // `call_end TG=0 frames=18 pcm=2880 (10278 ms)` --
-        // 18 frames decoded as clear over a 10 s window with no
-        // actual call in progress).
-        //
-        // Drop them on the floor and count them so the dashboard
-        // can show the rate. The diagnostic ring buffer still
-        // records them (tagged tg=0) so `/api/imbe_dump` can be
-        // used to inspect what the framer was pulling out.
+        // 2026-04-19 late: TG-0 frame drop gate removed. The original
+        // Phase 7F.3 gate was meant to suppress "phantom LDU" frames
+        // the framer extracted from between-call noise, but in
+        // practice it was also dropping real mid-call frames whenever
+        // `current_talkgroup` flickered to 0 transiently (grant
+        // refresh races, brief Idle bounce on retune). Result was
+        // audible audio skips in legit calls. The ring-buffer trace
+        // below still records tg=0 frames for diagnostic use via
+        // `/api/imbe_dump`; only the vocoder-side drop is gone.
+        // `imbe_frames_dropped_idle` is preserved as-a-counter so
+        // existing dashboard fields don't break, but it no longer
+        // increments.
         if let Ok(mut ring) = self.imbe_ring.lock() {
             for f in frames {
                 if ring.len() >= 128 {
@@ -408,11 +404,6 @@ impl ImbeForwarder {
                 }
                 ring.push_back((tg, enc, f.bits));
             }
-        }
-        if tg == 0 {
-            self.imbe_frames_dropped_idle
-                .fetch_add(9, Ordering::Relaxed);
-            return;
         }
 
         match self.imbe_tx.try_send(*frames) {
