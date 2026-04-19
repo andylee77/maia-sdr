@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-19-activity-log-unified";
+pub const BUILD_TAG: &str = "2026-04-19-activity-log-unified-v2";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -3476,6 +3476,14 @@ async fn main() -> anyhow::Result<()> {
                 if frames_in == 0 && frames_skipped_enc == 0 {
                     return;
                 }
+                // 2026-04-19 late: suppress TG=0 call summaries. These
+                // fire when the follower flickered Idle mid-call and
+                // post-flicker IMBE frames went through the vocoder
+                // with tg=0. They're diagnostic noise in the unified
+                // log — SDRTrunk's reference log has no TG:0 lines.
+                if tg == 0 {
+                    return;
+                }
                 // Phase 9.1: duration = time from first decoded
                 // frame to last decoded frame. When only one burst
                 // of voice lives inside a long retune-to-retune
@@ -3528,11 +3536,16 @@ async fn main() -> anyhow::Result<()> {
                     call_pcm_samples = 0;
                     call_started = Some(std::time::Instant::now());
                     call_last_frame_at = None;
-                    voc_event_log.push(
-                        crate::event_log::LogCategory::Vocoder,
-                        format!("call_start TG={}", call_tg),
-                        serde_json::json!({ "tg": call_tg }),
-                    );
+                    // Suppress TG=0 call_start entries (noise from
+                    // Idle-flicker phantom frames — SDRTrunk's
+                    // reference log has no TG:0 lines).
+                    if call_tg != 0 {
+                        voc_event_log.push(
+                            crate::event_log::LogCategory::Vocoder,
+                            format!("call_start TG={}", call_tg),
+                            serde_json::json!({ "tg": call_tg }),
+                        );
+                    }
                 }
                 let encrypted = voc_forwarder.call_encrypted.load(Ordering::Relaxed);
                 if encrypted {

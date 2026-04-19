@@ -53,13 +53,54 @@ def status_from(entry: dict) -> str:
     return "FAILED"
 
 
+def source_column(entry: dict) -> str:
+    """Match SDRTrunk's `<src-col>` — `CC` for control chain,
+    `T1 <freq MHz>` for traffic chain (we don't track concurrent traffic
+    channels yet, so always T1), `PS` for ps_c4fm dormant chain."""
+    f = entry.get("fields", {})
+    chain = f.get("chain", "")
+    cat = entry.get("category", "")
+    if chain == "control" or cat == "grant":
+        return "CC"
+    if chain == "traffic" or cat in ("imbe", "recorder"):
+        return "T1"
+    if chain == "ps_c4fm":
+        return "PS"
+    return cat.upper()[:3] if cat else "-"
+
+
+def nac_decimal_hex(entry: dict) -> str:
+    """SDRTrunk renders NAC as `NAC:<decimal>/x<hex>`. Our fields store
+    hex only, so reconstruct decimal from the hex string."""
+    f = entry.get("fields", {})
+    nac_field = f.get("nac")
+    if isinstance(nac_field, str) and nac_field.startswith("0x"):
+        try:
+            n = int(nac_field, 16)
+            return f"NAC:{n}/x{n:03X}"
+        except ValueError:
+            return ""
+    if isinstance(nac_field, int):
+        return f"NAC:{nac_field}/x{nac_field:03X}"
+    return ""
+
+
 def render_sdrtrunk_line(entry: dict) -> str:
+    """SDRTrunk-timeline-style line. Matches the shape of
+    doc/diagnostics/2026-04-19/sdrtrunk_call_timeline/timeline_unified.log:
+
+        HH:MM:SS  <src>  PASSED    NAC:<dec>/x<hex> <message>
+
+    For non-NAC-bearing categories (recorder, vocoder, system) the
+    NAC column is blank so the columns still line up in editors."""
     ts_ms = entry.get("timestamp_ms", 0)
-    dts = dt.datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    cat = entry.get("category", "?").upper()
-    msg = entry.get("message", "")
+    dts = dt.datetime.fromtimestamp(ts_ms / 1000).strftime("%H:%M:%S")
+    src = source_column(entry)
     status = status_from(entry)
-    return f"{dts} ,{status:<10},{cat:<9}, {msg}"
+    nac = nac_decimal_hex(entry)
+    msg = entry.get("message", "")
+    nac_cell = f"{nac} " if nac else ""
+    return f"{dts}  {src:<14}  {status:<9}  {nac_cell}{msg}"
 
 
 def main() -> int:
