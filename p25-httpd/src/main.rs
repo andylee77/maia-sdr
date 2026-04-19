@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-19-gate-cross-tg-enc-leak";
+pub const BUILD_TAG: &str = "2026-04-19-sdrtrunk-format-parity";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -504,9 +504,20 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
             return;
         };
         let nac = self.last_observed_nac.load(Ordering::Relaxed);
+        // Pull service_options byte off the LDU1 GVCU LCW to render
+        // "PRI<n> CIRCUIT" / "... ENCRYPTED" matching SDRTrunk's LDU1
+        // VOICE line format ("SERVICE OPTIONS:PRI4 CIRCUIT").
+        let svc_opts = match p25::voice_frame::parse_ldu1_lcw(body_raw) {
+            Some(p25::voice_frame::TdulcLcw::GroupVoiceChannelUser {
+                service_options, ..
+            }) => service_options,
+            _ => 0,
+        };
+        let svc_opts_render =
+            p25::tsbk::service_options::render(svc_opts);
         let summary = format!(
-            "LDU1 FM:{} TO:{} NAC:0x{:03X}",
-            source, tg_locked, nac
+            "LDU1 VOICE GROUP VOICE CHANNEL USER FM:{} TO:{} SERVICE OPTIONS:{}",
+            source, tg_locked, svc_opts_render,
         );
         self.emit_activity(&summary, serde_json::json!({
             "timestamp":  p25::control_channel::chrono_timestamp(),
@@ -515,6 +526,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
             "tg":         tg_locked,
             "source":     source,
             "nac":        nac,
+            "service_options": svc_opts,
         }));
         if let Some(tx) = self.call_boundary_tx.get() {
             let _ = tx.send(audio::CallBoundary {
@@ -540,41 +552,47 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         self.forward_frames(frames);
 
         // 2026-04-19: decode LDU2 ESS via Hamming10 + RS(24,16,9) and
-        // mirror SDRTrunk's `LDU2 VOICE LSD:... ENCRYPTION:<alg>
-        // KEY:<id> MSG INDICATOR:<hex>` line when the frame is
-        // encrypted. Non-encrypted ESS still carries an all-zero MI /
-        // algorithm = 0x80; skip the emit in that case to avoid
-        // flooding the activity log.
+        // mirror SDRTrunk's `LDU2 VOICE LSD:... <encryption>` line.
+        // Emit for both encrypted and unencrypted cases (SDRTrunk does
+        // — `LDU2 VOICE LSD:0000 UNENCRYPTED` appears every LDU2).
         let Some(ess) = p25::voice_frame::parse_ldu2_ess(body_raw)
         else {
             return;
         };
-        if !ess.is_encrypted() {
-            return;
-        }
-        // 2026-04-19 late: refresh the call_encrypted flag from the LDU2
-        // ESS. The TSBK grant was the primary signal at call-start, but
-        // a mid-call key change / encryption re-flag lands here too.
-        // Sticky-true: once any ESS reports encrypted, the rest of the
-        // call stays encrypted regardless of grant refresh behaviour.
-        self.call_encrypted.store(true, Ordering::Relaxed);
-        let mi_hex: String = ess
-            .message_indicator
-            .iter()
-            .map(|b| format!("{:02X}", b))
-            .collect();
-        let summary = format!(
-            "LDU2 ESS ENCRYPTION:0x{:02X} KEY:{} MI:{}",
-            ess.algorithm_id, ess.key_id, mi_hex
-        );
-        self.emit_activity(&summary, serde_json::json!({
-            "timestamp":  p25::control_channel::chrono_timestamp(),
-            "event_type": "TRF_LDU2_ESS",
-            "summary":    summary,
-            "algorithm":  ess.algorithm_id,
-            "key_id":     ess.key_id,
-            "mi":         mi_hex,
-        }));
+        let (summary, fields) = if ess.is_encrypted() {
+            // Refresh call_encrypted sticky-true from ESS — grant flag
+            // is stale if a mid-call key change happens.
+            self.call_encrypted.store(true, Ordering::Relaxed);
+            let mi_hex: String = ess
+                .message_indicator
+                .iter()
+                .map(|b| format!("{:02X}", b))
+                .collect();
+            let summary = format!(
+                "LDU2 VOICE ENCRYPTED ENCRYPTION:0x{:02X} KEY:{} MI:{}",
+                ess.algorithm_id, ess.key_id, mi_hex
+            );
+            let fields = serde_json::json!({
+                "timestamp":  p25::control_channel::chrono_timestamp(),
+                "event_type": "TRF_LDU2_ESS",
+                "summary":    summary,
+                "encrypted":  true,
+                "algorithm":  ess.algorithm_id,
+                "key_id":     ess.key_id,
+                "mi":         mi_hex,
+            });
+            (summary, fields)
+        } else {
+            let summary = "LDU2 VOICE UNENCRYPTED".to_string();
+            let fields = serde_json::json!({
+                "timestamp":  p25::control_channel::chrono_timestamp(),
+                "event_type": "TRF_LDU2_ESS",
+                "summary":    summary,
+                "encrypted":  false,
+            });
+            (summary, fields)
+        };
+        self.emit_activity(&summary, fields);
     }
 
     fn on_hdu(&self, body_raw: &[u8]) {
@@ -607,11 +625,11 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                 .map(|b| format!("{:02X}", b))
                 .collect();
             format!(
-                "HDU TG:{} ENCRYPTION:0x{:02X} KEY:{} MI:{}",
+                "HDU TALKGROUP:{} ENCRYPTION:0x{:02X} KEY:{} MI:{}",
                 hdr.talkgroup, hdr.algorithm_id, hdr.key_id, mi_hex,
             )
         } else {
-            format!("HDU TG:{} UNENCRYPTED", hdr.talkgroup)
+            format!("HDU TALKGROUP:{} UNENCRYPTED", hdr.talkgroup)
         };
         self.emit_activity(&summary, serde_json::json!({
             "timestamp":  p25::control_channel::chrono_timestamp(),
@@ -716,6 +734,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
             Some(p25::voice_frame::TdulcLcw::GroupVoiceChannelUser {
                 talkgroup: lc_tg,
                 source_radio_id: _,
+                service_options: _,
             }) => {
                 self.tdulc_parse_gvcu.fetch_add(1, Ordering::Relaxed);
                 // Mirror SDRTrunk's `TDULC GROUP VOICE CHANNEL USER

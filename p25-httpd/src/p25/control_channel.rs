@@ -1874,6 +1874,30 @@ impl ControlChannelDecoder {
     /// ("TSBK1"/"TSBK2"/"TSBK3") so the dashboard event feed matches
     /// the format of SDRTrunk's `decoded_messages.log`.
     fn tsbk_to_event(&self, block_idx: u8, msg: &TsbkMessage) -> p25_json::TsbkEvent {
+        let mut event = self.tsbk_to_event_inner(block_idx, msg);
+        // SDRTrunk-format post-processing: turn `[TSBK2] TG:00300 ...`
+        // into `TSBK2 GRP_VCH_GRANT TG:00300 ...` so lines grep-compare
+        // against SDRTrunk's decoded_messages.log (which uses
+        // `TSBK<N> <OPCODE_NAME> <payload>`).
+        let block_label = match block_idx {
+            0 => "TSBK1",
+            1 => "TSBK2",
+            2 => "TSBK3",
+            _ => "TSBK?",
+        };
+        let old = format!("[{}] ", block_label);
+        let new = format!("{} {} ", block_label, event.event_type);
+        if event.summary.starts_with(&old) {
+            event.summary = event.summary.replacen(&old, &new, 1);
+        } else {
+            event.summary = format!(
+                "{} {} {}", block_label, event.event_type, event.summary
+            );
+        }
+        event
+    }
+
+    fn tsbk_to_event_inner(&self, block_idx: u8, msg: &TsbkMessage) -> p25_json::TsbkEvent {
         let now = chrono_timestamp();
         let block_label = match block_idx {
             0 => "TSBK1",
@@ -1897,7 +1921,7 @@ impl ControlChannelDecoder {
                 };
                 p25_json::TsbkEvent {
                     timestamp: now,
-                    event_type: "GRP_GRANT".into(),
+                    event_type: "GRP_VCH_GRANT".into(),
                     summary: format!(
                         "{}TG:{:05} SRC:{:05} -> {} ({:.4} MHz){}",
                         block_prefix,
@@ -1920,7 +1944,7 @@ impl ControlChannelDecoder {
                 ..
             } => p25_json::TsbkEvent {
                 timestamp: now,
-                event_type: "GRANT_UPD".into(),
+                event_type: "GRP_VCH_GRNT_UPD".into(),
                 summary: format!("{}TG:{:05} -> {}", block_prefix, talkgroup_a.0, channel_a),
                 talkgroup: Some(talkgroup_a.0),
                 talkgroup_alias: self.aliases.get(&talkgroup_a.0).cloned(),
@@ -1944,7 +1968,7 @@ impl ControlChannelDecoder {
                 };
                 p25_json::TsbkEvent {
                     timestamp: now,
-                    event_type: "GRANT_UPD_EXP".into(),
+                    event_type: "GRP_VCH_GRNT_UPD_EXP".into(),
                     summary: format!(
                         "{}TG:{:05} -> {} ({:.4} MHz){}",
                         block_prefix,
@@ -1966,7 +1990,7 @@ impl ControlChannelDecoder {
                 channel,
             } => p25_json::TsbkEvent {
                 timestamp: now,
-                event_type: "NET_STS".into(),
+                event_type: "NET_STS_BCAST".into(),
                 summary: format!("{}WACN:{:05X} SYS:{:03X} CH:{}", block_prefix, wacn, system_id, channel),
                 talkgroup: None,
                 talkgroup_alias: None,
@@ -1978,7 +2002,7 @@ impl ControlChannelDecoder {
                 rfss_id, site_id, ..
             } => p25_json::TsbkEvent {
                 timestamp: now,
-                event_type: "RFSS_STS".into(),
+                event_type: "RFSS_STS_BCAST".into(),
                 summary: format!("{}RFSS:{:02} SITE:{:02}", block_prefix, rfss_id, site_id),
                 talkgroup: None,
                 talkgroup_alias: None,
@@ -1993,7 +2017,7 @@ impl ControlChannelDecoder {
                 ..
             } => p25_json::TsbkEvent {
                 timestamp: now,
-                event_type: "IDEN_UP".into(),
+                event_type: "IDEN_UPDATE".into(),
                 summary: format!(
                     "{}Band:{} base:{:.5} MHz spacing:{} Hz",
                     block_prefix,
@@ -2014,7 +2038,7 @@ impl ControlChannelDecoder {
                 ..
             } => p25_json::TsbkEvent {
                 timestamp: now,
-                event_type: "ADJ_STS".into(),
+                event_type: "ADJ_STS_BCAST".into(),
                 summary: format!(
                     "{}SYS:{:03X} RFSS:{:02} SITE:{:02}",
                     block_prefix, system_id, rfss_id, site_id
@@ -2030,7 +2054,7 @@ impl ControlChannelDecoder {
                 channel_a, channel_b, ..
             } => p25_json::TsbkEvent {
                 timestamp: now,
-                event_type: "SCCB".into(),
+                event_type: "SCCB_EXP".into(),
                 summary: format!(
                     "{}A:{} B:{}",
                     block_prefix, channel_a, channel_b
@@ -2049,7 +2073,7 @@ impl ControlChannelDecoder {
                 ..
             } => p25_json::TsbkEvent {
                 timestamp: now,
-                event_type: "SNDCP_ANN".into(),
+                event_type: "SNDCP_DCH_ANN_EX".into(),
                 summary: format!(
                     "{}DL:{} UL:{}",
                     block_prefix, downlink_channel, uplink_channel
@@ -2066,7 +2090,7 @@ impl ControlChannelDecoder {
                 year, month, day, hours, minutes, time_locked, ..
             } => p25_json::TsbkEvent {
                 timestamp: now,
-                event_type: "TDMA_SYNC".into(),
+                event_type: "TDMA_SYNC_BCST".into(),
                 summary: format!(
                     "{}{:04}-{:02}-{:02} {:02}:{:02} {}",
                     block_prefix, year, month, day, hours, minutes,
@@ -2084,7 +2108,7 @@ impl ControlChannelDecoder {
                 let freq = self.channel_to_frequency(*channel);
                 p25_json::TsbkEvent {
                     timestamp: now,
-                    event_type: "TEL_INT_GRANT_UPD".into(),
+                    event_type: "TEL_INT_V_CH_GRANT_UPD".into(),
                     summary: format!(
                         "{}UNIT:{} CH:{} ({:.4} MHz) timer:{}s",
                         block_prefix, unit_id, channel,
@@ -2136,7 +2160,7 @@ impl ControlChannelDecoder {
                 let freq = self.channel_to_frequency(*downlink_channel);
                 p25_json::TsbkEvent {
                     timestamp: now,
-                    event_type: "SNDCP_GRANT".into(),
+                    event_type: "SNDCP_DCH_GRANT".into(),
                     summary: format!(
                         "{}DL:{} UL:{} TGT:{}",
                         block_prefix, downlink_channel, uplink_channel, target,
@@ -2151,7 +2175,7 @@ impl ControlChannelDecoder {
             TsbkMessage::SndcpDataPageRequest { target, source, .. } => {
                 p25_json::TsbkEvent {
                     timestamp: now,
-                    event_type: "SNDCP_PAGE".into(),
+                    event_type: "SNDCP_DCH_PAG_RQ".into(),
                     summary: format!(
                         "{}TGT:{} SRC:{}", block_prefix, target, source
                     ),
@@ -2270,7 +2294,7 @@ impl ControlChannelDecoder {
                 };
                 p25_json::TsbkEvent {
                     timestamp: now,
-                    event_type: "VENDOR".into(),
+                    event_type: "MFR_SPECIFIC".into(),
                     summary: format!(
                         "{}{} MFID:0x{:02X} OP:0x{:02X}",
                         block_prefix, vendor, mfid, opcode

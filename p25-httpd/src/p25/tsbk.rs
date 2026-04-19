@@ -60,6 +60,24 @@ pub mod service_options {
     pub fn is_emergency(opts: u8) -> bool {
         opts & EMERGENCY_FLAG != 0
     }
+
+    /// SDRTrunk-style renderer for the service options byte, e.g.
+    /// "PRI4 CIRCUIT", "PRI0 PACKET ENCRYPTED", "PRI4 CIRCUIT EMERGENCY".
+    /// Mirrors SDRTrunk's `ServiceOptions.toString()` output.
+    pub fn render(opts: u8) -> String {
+        const DUPLEX_FLAG: u8 = 0x20;
+        const PRIORITY_MASK: u8 = 0x07;
+        let priority = opts & PRIORITY_MASK;
+        let mode = if opts & DUPLEX_FLAG == 0 { "CIRCUIT" } else { "PACKET" };
+        let mut s = format!("PRI{} {}", priority, mode);
+        if is_encrypted(opts) {
+            s.push_str(" ENCRYPTED");
+        }
+        if is_emergency(opts) {
+            s.push_str(" EMERGENCY");
+        }
+        s
+    }
 }
 
 /// TSBK opcodes we care about for control channel tracking

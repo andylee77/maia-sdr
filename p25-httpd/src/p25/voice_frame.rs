@@ -309,7 +309,14 @@ pub enum TdulcLcw {
     /// spec; on LDU1 GVCU it is the speaker's radio ID. Populating it
     /// here in `classify_lcw` means `parse_ldu1_source` doesn't need to
     /// re-run the Hamming + RS chain to pull the same field out.
-    GroupVoiceChannelUser { talkgroup: u16, source_radio_id: u32 },
+    /// `service_options` is the 8-bit service-options byte at LC bits
+    /// 16-23 (SDRTrunk `OCTET_2_BIT_16`) — emergency/encryption/duplex/
+    /// priority flags. Rendered like SDRTrunk's "PRI4 CIRCUIT".
+    GroupVoiceChannelUser {
+        talkgroup: u16,
+        source_radio_id: u32,
+        service_options: u8,
+    },
 
     /// Motorola MFID 0x90 + opcode 0x0F — `TALK_COMPLETE`. Carries
     /// the last speaker's 24-bit radio ID in the ADDRESS field
@@ -521,6 +528,7 @@ fn classify_lcw(lc_bits: &[bool; 72]) -> TdulcLcw {
         0x00 => TdulcLcw::GroupVoiceChannelUser {
             talkgroup: byte(32, 16) as u16,
             source_radio_id: byte(48, 24),
+            service_options: byte(16, 8) as u8,
         },
         // LCGroupVoiceChannelUpdate:
         //   FREQ_BAND_A  OCTET_1_BIT_8  (4 bits)
