@@ -113,6 +113,17 @@ def main() -> int:
         help="If set, only write entries of this category",
     )
     ap.add_argument("--limit", type=int, default=16384)
+    ap.add_argument(
+        "--sdrtrunk-strict",
+        action="store_true",
+        help=(
+            "Drop entries whose decoded TG is 0 before rendering the "
+            "text log — matches SDRTrunk's TalkgroupIdentifier.isValid() "
+            "filter (MutableIdentifierCollection.java:125). Off by "
+            "default so raw observability is preserved; turn on when "
+            "grep-comparing against a SDRTrunk decoded_messages.log."
+        ),
+    )
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -137,8 +148,30 @@ def main() -> int:
         json.dump(data, f, indent=2)
     print(f"wrote raw JSON: {json_path}")
 
+    def keep(entry: dict) -> bool:
+        if not args.sdrtrunk_strict:
+            return True
+        # SDRTrunk-strict: drop entries that reference TG=0 in their
+        # message or fields. Matches TalkgroupIdentifier.isValid() >0
+        # filter so exported log grep-compares directly against
+        # SDRTrunk's decoded_messages.log.
+        f = entry.get("fields", {})
+        if f.get("tg") == 0:
+            return False
+        msg = entry.get("message", "")
+        if "TG=0 " in msg or msg.endswith("TG=0") or "TO:0 " in msg:
+            return False
+        return True
+
+    filtered = [e for e in entries if keep(e)]
+    if args.sdrtrunk_strict:
+        print(
+            f"--sdrtrunk-strict: kept {len(filtered)}/{len(entries)} "
+            f"entries (dropped {len(entries) - len(filtered)} TG=0 lines)"
+        )
+
     with open(text_path, "w", encoding="utf-8") as f:
-        for e in entries:
+        for e in filtered:
             f.write(render_sdrtrunk_line(e))
             f.write("\n")
     print(f"wrote SDRTrunk-style: {text_path}")
