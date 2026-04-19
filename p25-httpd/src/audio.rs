@@ -62,14 +62,18 @@ pub enum CallBoundaryKind {
     /// recorder should close out the previous `ActiveCall` (if any)
     /// and start a new one for the next PCM chunks.
     HduStart,
-    /// DUID 0xF — TDULC arrived. `source` is the Motorola vendor
-    /// `TALK_COMPLETE` BY: field when the LCW parser was able to
-    /// recover it, otherwise `None`. The recorder stamps
-    /// `ActiveCall.source` when Some, but does NOT finalize on this
-    /// event — finalize still waits for either an HDU or the grace
-    /// window, matching SDRTrunk's "close on new speaker or on
-    /// sync-loss" model.
+    /// Mid-call source stamp. Fires when an LDU1 LC successfully
+    /// decodes a `GRP_V_CH_USER` (standard LCW opcode 0x00) and recovers
+    /// the FM: speaker radio ID. Stamps `ActiveCall.source` but does
+    /// NOT finalise — speaker is still talking.
     TdulcComplete { source: Option<u32> },
+    /// End-of-speaker or end-of-call LCW. Fires on Motorola
+    /// `TALK_COMPLETE` (opcode 0x0F MFID 0x90) and standard
+    /// `CALL_TERMINATION` (opcode 0x0F MFID 0x00). The recorder stamps
+    /// `source` (if Some) and then **finalises** the active recording.
+    /// This is the protocol-level split signal — cleaner than waiting
+    /// for the grace window and not dependent on HDU detection hit rate.
+    SpeakerEnd { source: Option<u32> },
 }
 
 pub type CallBoundaryTx = broadcast::Sender<CallBoundary>;

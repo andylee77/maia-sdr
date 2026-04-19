@@ -380,6 +380,26 @@ pub async fn recorder_task(
                                 finalize(&store, old, id).await;
                             }
                         }
+                        CallBoundaryKind::SpeakerEnd { source } => {
+                            // Protocol-level end-of-speaker (Motorola
+                            // TALK_COMPLETE) or end-of-call (standard
+                            // CALL_TERMINATION). Stamp the recovered
+                            // source if present, then finalise the
+                            // active recording. The next audio chunk
+                            // opens a fresh ActiveCall.
+                            if let Some(c) = active.as_mut() {
+                                if source.is_some() {
+                                    c.source = source;
+                                    diag.source_stamps_applied
+                                        .fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                            if let Some(old) = active.take() {
+                                let id = next_id;
+                                next_id += 1;
+                                finalize(&store, old, id).await;
+                            }
+                        }
                         CallBoundaryKind::TdulcComplete { source } => {
                             if source.is_some() {
                                 diag.boundaries_tdulc_with_source
