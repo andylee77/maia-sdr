@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-19-sdrtrunk-format-parity";
+pub const BUILD_TAG: &str = "2026-04-19-grant-reorder-ch-reuse";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -2705,53 +2705,73 @@ async fn main() -> anyhow::Result<()> {
                                     continue;
                                 }
 
-                                // Sticky-lock check
                                 let mut mgr = follower_mgr.lock().await;
                                 let locked_tg = mgr.current_talkgroup();
-                                match locked_tg {
-                                    Some(tg) if tg.0 != g.talkgroup.0 => {
-                                        follower_event_log.push(
-                                            LogCategory::Traffic,
-                                            format!(
-                                                "reject: TG={} (sticky-locked on TG={})",
-                                                g.talkgroup.0, tg.0,
-                                            ),
-                                            serde_json::json!({
-                                                "tg":        g.talkgroup.0,
-                                                "locked_tg": tg.0,
-                                                "reason":    "sticky_lock",
-                                            }),
-                                        );
-                                        continue;
-                                    }
-                                    _ => {}
-                                }
+                                let locked_ch = mgr.current_channel();
 
-                                // Encrypted-grant gate (Phase 7F.2,
-                                // 2026-04-14). Runs on EVERY grant
-                                // -- not just new locks -- because
-                                // the real-world failure mode is a
-                                // TG whose first grant has no service
-                                // options (encrypted=false), passes
-                                // through, locks the follower, then
-                                // the next `GrantUpdate` arrives with
-                                // encrypted=true. Previous gate
-                                // (locked_tg.is_none()-only) let that
-                                // path through the sticky-same-TG
-                                // branch and the call ran for 2 s
-                                // before call_timeout_ms released the
-                                // lock -- producing ~72 encrypted
-                                // vocoder frames before the tear-down.
-                                //
-                                // New behaviour: encryption detected,
-                                // always reject the grant AND force
-                                // the manager to Idle + drop
-                                // demod_enable so the decoder stops
-                                // feeding encrypted LDUs forward.
-                                // History is populated eagerly on the
-                                // first encrypted observation for
-                                // each TG so subsequent grants short-
-                                // circuit immediately.
+                                // 2026-04-19 late: channel-reuse
+                                // detection. If this grant's channel
+                                // matches the channel we're currently
+                                // locked to, but the TG is different,
+                                // the trunking system has reassigned
+                                // our voice channel to a different TG.
+                                // The old call on that channel is done.
+                                // Tear down the lock so we can follow
+                                // the new TG (if allowed by encryption
+                                // / monitor-list / etc. gates that run
+                                // below). Previously the sticky-lock
+                                // reject would fire here and we'd stay
+                                // tuned to a dead channel for up to
+                                // the 2 s call_timeout_ms.
+                                let is_channel_reuse =
+                                    locked_ch.map(|c| c == g.channel).unwrap_or(false)
+                                    && locked_tg.map(|t| t.0 != g.talkgroup.0).unwrap_or(false);
+                                if is_channel_reuse {
+                                    let prev_tg = locked_tg.map(|t| t.0).unwrap_or(0);
+                                    follower_event_log.push(
+                                        LogCategory::Traffic,
+                                        format!(
+                                            "channel reuse: ch={} was TG={}, now TG={} — teardown",
+                                            g.channel, prev_tg, g.talkgroup.0,
+                                        ),
+                                        serde_json::json!({
+                                            "channel":  format!("{}", g.channel),
+                                            "prev_tg":  prev_tg,
+                                            "new_tg":   g.talkgroup.0,
+                                            "reason":   "channel_reuse",
+                                        }),
+                                    );
+                                    mgr.force_idle();
+                                    follower_imbe.current_talkgroup
+                                        .store(0, Ordering::Relaxed);
+                                    // Fall through — re-evaluate the
+                                    // grant as if we were starting
+                                    // Idle. The encrypted check +
+                                    // sticky-lock check below now see
+                                    // locked_tg = None and proceed.
+                                }
+                                // Re-read after the possible force_idle
+                                // so the downstream checks see fresh
+                                // state.
+                                let locked_tg = mgr.current_talkgroup();
+
+                                // 2026-04-19 late: encrypted check
+                                // runs BEFORE sticky-lock check. Order
+                                // mattered — previously a TG 406 [ENC]
+                                // grant arriving while locked on TG 301
+                                // hit the sticky-lock `continue` first
+                                // and never reached the encrypted gate,
+                                // so the encrypted_tg_history never
+                                // learned about TG 406. If we later
+                                // went Idle and TG 406 re-emitted with
+                                // a flipped service-options byte
+                                // (FEC-marginal), we'd accept it.
+                                // Running encrypted gate first means:
+                                //   - every encrypted grant populates
+                                //     history regardless of lock state
+                                //   - grants_rejected_encrypted stat
+                                //     reflects reality
+                                //   - log line names the correct reason
                                 let tg_known_enc = follower_imbe
                                     .encrypted_tg_history
                                     .lock()
@@ -2847,6 +2867,32 @@ async fn main() -> anyhow::Result<()> {
                                         }),
                                     );
                                     continue;
+                                }
+
+                                // Sticky-lock check runs AFTER the
+                                // channel-reuse + encrypted gates
+                                // above. If this grant is for a
+                                // different TG on a different channel
+                                // than our current lock, it's an
+                                // unrelated call and we should stay
+                                // put.
+                                let locked_tg_final = mgr.current_talkgroup();
+                                if let Some(tg) = locked_tg_final {
+                                    if tg.0 != g.talkgroup.0 {
+                                        follower_event_log.push(
+                                            LogCategory::Traffic,
+                                            format!(
+                                                "reject: TG={} (sticky-locked on TG={})",
+                                                g.talkgroup.0, tg.0,
+                                            ),
+                                            serde_json::json!({
+                                                "tg":        g.talkgroup.0,
+                                                "locked_tg": tg.0,
+                                                "reason":    "sticky_lock",
+                                            }),
+                                        );
+                                        continue;
+                                    }
                                 }
 
                                 let pre_state = mgr.state_label();
