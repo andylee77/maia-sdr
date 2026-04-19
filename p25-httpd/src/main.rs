@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-19-activity-log-unified-v3";
+pub const BUILD_TAG: &str = "2026-04-19-gate-cross-tg-enc-leak";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -2493,49 +2493,65 @@ async fn main() -> anyhow::Result<()> {
                     None => return false,
                 };
                 let retune = mgr.handle_grant(g.channel, g.talkgroup, freq_hz);
-                imbe.current_talkgroup.store(g.talkgroup.0, Ordering::Relaxed);
-                // 2026-04-19: stash the grant's FM:<source> so the
-                // recorder can stamp filenames from the CONTROL
-                // channel (GRP_VCH_GRANT carries source; GRP_VCH_
-                // GRNT_UPD does not). Overwrite on every grant so a
-                // mid-call speaker change reflected in a fresh
-                // GRP_VCH_GRANT updates the atomic. `0` marks
-                // "unknown" — GRNT_UPD won't clobber a previously-set
-                // source.
-                if let Some(src) = g.source {
-                    if src.0 != 0 {
-                        imbe.current_source
-                            .store(src.0, Ordering::Relaxed);
-                    }
-                }
+
+                // 2026-04-19 late: only update the ImbeForwarder's
+                // active-call state (current_talkgroup, current_source,
+                // call_encrypted) when this grant is actually for the
+                // call we're following. Previously these atomics were
+                // updated unconditionally, so a grant for TG 700 [ENC]
+                // arriving while sticky-locked on unencrypted TG 300
+                // would set call_encrypted=true on the TG 300 audio
+                // path and subsequent IMBE frames got encryption-
+                // skipped. Gate on:
+                //   - retune=true: we just switched to this TG, so it
+                //     IS the active call now.
+                //   - mgr.current_talkgroup() == Some(g.tg): this grant
+                //     is a refresh for the already-active call.
+                let grant_is_for_active = retune
+                    || mgr.current_talkgroup() == Some(g.talkgroup);
 
                 // Determine encryption: check the grant flag, then
-                // fall back to TG history (remembers TGs that were
-                // ever seen encrypted).
+                // fall back to TG history. History is updated on every
+                // grant regardless of whether we follow it, so the
+                // encrypted_tgs blocklist learns about TG 700 being
+                // encrypted even while we stay locked on TG 300.
                 let is_enc = if g.encrypted {
-                    // Record this TG as encrypted for future lookups
                     if let Ok(mut hist) = imbe.encrypted_tg_history.lock() {
                         hist.insert(g.talkgroup.0);
                     }
                     true
                 } else {
-                    // Grant doesn't say encrypted -- check history
                     imbe.encrypted_tg_history.lock()
                         .map(|h| h.contains(&g.talkgroup.0))
                         .unwrap_or(false)
                 };
 
-                if retune {
-                    // New call: set encryption and reset vocoder
-                    imbe.call_encrypted.store(is_enc, Ordering::Relaxed);
-                    imbe.vocoder_reset_pending.store(true, Ordering::Relaxed);
-                } else if is_enc {
-                    // Sticky-true within a call
-                    imbe.call_encrypted.store(true, Ordering::Relaxed);
+                if grant_is_for_active {
+                    imbe.current_talkgroup
+                        .store(g.talkgroup.0, Ordering::Relaxed);
+                    // Stash the grant's FM:<source> so the recorder
+                    // can stamp filenames from the CONTROL channel.
+                    // Only overwrite on a genuine active-call grant —
+                    // previously any grant could clobber this.
+                    if let Some(src) = g.source {
+                        if src.0 != 0 {
+                            imbe.current_source
+                                .store(src.0, Ordering::Relaxed);
+                        }
+                    }
+                    if retune {
+                        // New call: set encryption and reset vocoder
+                        imbe.call_encrypted.store(is_enc, Ordering::Relaxed);
+                        imbe.vocoder_reset_pending
+                            .store(true, Ordering::Relaxed);
+                    } else if is_enc {
+                        // Sticky-true within an active call
+                        imbe.call_encrypted.store(true, Ordering::Relaxed);
+                    }
+                    // Note: we deliberately do NOT set call_encrypted
+                    // = false on a grant refresh where g.encrypted ==
+                    // false. The flag is cleared only on Idle.
                 }
-                // Note: we deliberately do NOT set call_encrypted=false
-                // on a grant refresh where g.encrypted==false. The flag
-                // is cleared only on Idle transition.
                 retune
             };
 
