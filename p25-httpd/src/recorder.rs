@@ -383,10 +383,26 @@ pub async fn recorder_task(
                         CallBoundaryKind::SpeakerEnd { source } => {
                             // Protocol-level end-of-speaker (Motorola
                             // TALK_COMPLETE) or end-of-call (standard
-                            // CALL_TERMINATION). Stamp the recovered
-                            // source if present, then finalise the
-                            // active recording. The next audio chunk
-                            // opens a fresh ActiveCall.
+                            // CALL_TERMINATION) from TDULC. Only fires
+                            // from the FEC-strong TDULC path; LDU1 LC
+                            // routing was reverted as too noisy.
+                            //
+                            // Guard: if the active call's TG doesn't
+                            // match the boundary's TG, this SpeakerEnd
+                            // is a late teardown-tail signal from the
+                            // previous call that arrived after the new
+                            // call started (busy-site race). Don't
+                            // finalise in that case.
+                            let tg_matches = match (
+                                active.as_ref(), boundary.talkgroup,
+                            ) {
+                                (Some(c), Some(btg)) => c.talkgroup == btg,
+                                (Some(_), None) => true,
+                                (None, _) => false,
+                            };
+                            if !tg_matches {
+                                continue;
+                            }
                             if let Some(c) = active.as_mut() {
                                 if source.is_some() {
                                     c.source = source;
@@ -408,50 +424,19 @@ pub async fn recorder_task(
                                 diag.boundaries_tdulc_without_source
                                     .fetch_add(1, Ordering::Relaxed);
                             }
-                            // 2026-04-19 late: source-change split. The
-                            // LDU1 LC decoder routes every mid-call
-                            // source update through this event (not
-                            // just end-of-speaker TDULC). If the active
-                            // recording already has a DIFFERENT
-                            // non-zero source stamped, that's a
-                            // speaker change the HDU detector missed
-                            // (fast PTT follow-up, weak HDU NID, etc.)
-                            // — finalise and let the next chunk open
-                            // a fresh ActiveCall stamped with the new
-                            // source. This prevents one WAV file from
-                            // bundling A → B turn-taking inside a
-                            // single grant.
-                            let new_source = source;
-                            let active_has_different = match active.as_ref() {
-                                Some(c) => {
-                                    new_source.is_some()
-                                        && c.source.is_some()
-                                        && c.source != new_source
-                                }
-                                None => false,
-                            };
-                            if active_has_different {
-                                if let Some(old) = active.take() {
-                                    let id = next_id;
-                                    next_id += 1;
-                                    finalize(&store, old, id).await;
-                                }
-                                diag.source_stamps_lost_no_active
-                                    .fetch_add(1, Ordering::Relaxed);
-                                // The new source stamp will be applied
-                                // when the next audio chunk opens a
-                                // fresh ActiveCall below. We capture
-                                // it into a pending slot via a simple
-                                // side-channel: stamp the in-flight
-                                // counter but let the next chunk pick
-                                // up source from its own stream.
-                            } else if let Some(c) = active.as_mut() {
-                                if new_source.is_some() {
-                                    c.source = new_source;
+                            // Mid-call source stamp only. Experimental
+                            // source-change split was reverted because
+                            // LDU1 LC FEC is too weak to distinguish a
+                            // real speaker change from a bit-corrupt
+                            // source field, which produced excess
+                            // splits on a single-speaker call.
+                            if let Some(c) = active.as_mut() {
+                                if source.is_some() {
+                                    c.source = source;
                                     diag.source_stamps_applied
                                         .fetch_add(1, Ordering::Relaxed);
                                 }
-                            } else if new_source.is_some() {
+                            } else if source.is_some() {
                                 diag.source_stamps_lost_no_active
                                     .fetch_add(1, Ordering::Relaxed);
                             }

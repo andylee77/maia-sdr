@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-19-use-decoded-fields";
+pub const BUILD_TAG: &str = "2026-04-19-ldu1-revert-tg-guard";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -449,112 +449,56 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         if tg_locked == 0 {
             return;
         }
-        // 2026-04-19 late: full LDU1 LC classification (was: only
-        // parse_ldu1_source). End-of-speaker LCWs (MotorolaTalkComplete,
-        // CallTermination) CAN appear on LDU1 as well as TDULC; route
-        // them through SpeakerEnd so the recorder finalises immediately
-        // on the protocol signal rather than waiting for the 1500 ms
-        // grace window.
-        let Some(lcw) = p25::voice_frame::parse_ldu1_lcw(body_raw)
+        // LDU1 LC FEC = Hamming(10,6,3) + RS(24,12,13) is weaker than
+        // TDULC's Golay(24,12,7) + RS chain. Earlier this session we
+        // also routed LDU1-classified MotorolaTalkComplete /
+        // CallTermination LCWs through SpeakerEnd (end-of-call finalise)
+        // but that false-positive'd on noisy LDU1 LCs and over-split
+        // single-speaker calls into 4+ files. Reverted to GVCU-only:
+        // mid-call source stamp, no end-of-call routing on LDU1. TDULC
+        // is FEC-stronger and still carries the end-of-call signal.
+        let Some(source) = p25::voice_frame::parse_ldu1_source(body_raw)
         else {
             return;
         };
         let nac = self.last_observed_nac.load(Ordering::Relaxed);
-        let tx = self.call_boundary_tx.get();
-        match lcw {
-            p25::voice_frame::TdulcLcw::GroupVoiceChannelUser {
-                source_radio_id,
-                ..
-            } if source_radio_id != 0 => {
-                let source = source_radio_id;
-                let summary = format!(
-                    "LDU1 FM:{} TO:{} NAC:0x{:03X}",
-                    source, tg_locked, nac
-                );
-                if let Some(log) = self.event_log.get() {
-                    log.push(
-                        crate::event_log::LogCategory::Imbe,
-                        summary.clone(),
-                        serde_json::json!({
-                            "duid": "LDU1_LC",
-                            "lcw":  "GVCU",
-                            "tg":   tg_locked,
-                            "fm":   source,
-                            "nac":  nac,
-                        }),
-                    );
-                }
-                if let Some(ws) = self.ws_event_tx.get() {
-                    let evt = serde_json::json!({
-                        "timestamp":  p25::control_channel::chrono_timestamp(),
-                        "event_type": "TRF_LDU1_LC",
-                        "summary":    summary,
-                        "tg":         tg_locked,
-                        "source":     source,
-                    });
-                    let _ = ws.send(evt.to_string());
-                }
-                if let Some(tx) = tx {
-                    let _ = tx.send(audio::CallBoundary {
-                        kind: audio::CallBoundaryKind::TdulcComplete {
-                            source: Some(source),
-                        },
-                        nac,
-                        talkgroup: Some(tg_locked),
-                    });
-                }
-                // Refresh current_source so subsequent AudioChunks
-                // carry the new speaker ID.
-                self.current_source.store(source, Ordering::Relaxed);
-            }
-            p25::voice_frame::TdulcLcw::MotorolaTalkComplete { by_radio_id } => {
-                if let Some(ws) = self.ws_event_tx.get() {
-                    let evt = serde_json::json!({
-                        "timestamp":  p25::control_channel::chrono_timestamp(),
-                        "event_type": "TRF_LDU1_MOTOROLA_TC",
-                        "summary":    format!(
-                            "LDU1 MOTOROLA TALK COMPLETE BY:{} TG:{}",
-                            by_radio_id, tg_locked,
-                        ),
-                        "tg":         tg_locked,
-                        "by":         by_radio_id,
-                    });
-                    let _ = ws.send(evt.to_string());
-                }
-                if let Some(tx) = tx {
-                    let _ = tx.send(audio::CallBoundary {
-                        kind: audio::CallBoundaryKind::SpeakerEnd {
-                            source: Some(by_radio_id),
-                        },
-                        nac,
-                        talkgroup: Some(tg_locked),
-                    });
-                }
-            }
-            p25::voice_frame::TdulcLcw::CallTermination { .. } => {
-                if let Some(ws) = self.ws_event_tx.get() {
-                    let evt = serde_json::json!({
-                        "timestamp":  p25::control_channel::chrono_timestamp(),
-                        "event_type": "TRF_LDU1_CALL_TERM",
-                        "summary":    format!(
-                            "LDU1 CALL TERMINATION TG:{}", tg_locked,
-                        ),
-                        "tg":         tg_locked,
-                    });
-                    let _ = ws.send(evt.to_string());
-                }
-                if let Some(tx) = tx {
-                    let _ = tx.send(audio::CallBoundary {
-                        kind: audio::CallBoundaryKind::SpeakerEnd { source: None },
-                        nac,
-                        talkgroup: Some(tg_locked),
-                    });
-                }
-            }
-            // Non-speaker LCWs on LDU1 (GVU status broadcasts etc.):
-            // ignore for call-handling. Already surfaced via other paths.
-            _ => {}
+        let summary = format!(
+            "LDU1 FM:{} TO:{} NAC:0x{:03X}",
+            source, tg_locked, nac
+        );
+        if let Some(log) = self.event_log.get() {
+            log.push(
+                crate::event_log::LogCategory::Imbe,
+                summary.clone(),
+                serde_json::json!({
+                    "duid": "LDU1_LC",
+                    "lcw":  "GVCU",
+                    "tg":   tg_locked,
+                    "fm":   source,
+                    "nac":  nac,
+                }),
+            );
         }
+        if let Some(ws) = self.ws_event_tx.get() {
+            let evt = serde_json::json!({
+                "timestamp":  p25::control_channel::chrono_timestamp(),
+                "event_type": "TRF_LDU1_LC",
+                "summary":    summary,
+                "tg":         tg_locked,
+                "source":     source,
+            });
+            let _ = ws.send(evt.to_string());
+        }
+        if let Some(tx) = self.call_boundary_tx.get() {
+            let _ = tx.send(audio::CallBoundary {
+                kind: audio::CallBoundaryKind::TdulcComplete {
+                    source: Some(source),
+                },
+                nac,
+                talkgroup: Some(tg_locked),
+            });
+        }
+        self.current_source.store(source, Ordering::Relaxed);
     }
 
     fn on_ldu2(
