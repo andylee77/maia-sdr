@@ -1,0 +1,369 @@
+{
+  "blocks_per_tsdu": 2.9999110320284696,
+  "by_position": {
+    "tsbk1": {
+      "attempts": 11240,
+      "crc_ok": 9574,
+      "crc_ok_pct": 85.1779359430605
+    },
+    "tsbk2": {
+      "attempts": 11240,
+      "crc_ok": 10163,
+      "crc_ok_pct": 90.41814946619218
+    },
+    "tsbk3": {
+      "attempts": 11239,
+      "crc_ok": 9063,
+      "crc_ok_pct": 80.63884687249755
+    }
+  },
+  "crc_fail_total": 4919,
+  "crc_ok_pct": 85.41178564014353,
+  "crc_ok_total": 28800,
+  "mfid_breakdown": {
+    "harris_0xA4": 0,
+    "motorola_0x90": 6227,
+    "other": 0,
+    "standard_0x00": 22573
+  },
+  "opcodes": [
+    {
+      "fail": 584,
+      "label": "SNDCP_DCH_ANN_EX",
+      "ok": 4977,
+      "opcode": "0x16",
+      "parsed": true
+    },
+    {
+      "fail": 148,
+      "label": "IDEN_UPDATE",
+      "ok": 3930,
+      "opcode": "0x3D",
+      "parsed": true
+    },
+    {
+      "fail": 201,
+      "label": "IDEN_UPDATE_TDMA",
+      "ok": 3843,
+      "opcode": "0x33",
+      "parsed": true
+    },
+    {
+      "fail": 18,
+      "label": "NET_STATUS_BCAST",
+      "ok": 2616,
+      "opcode": "0x3B",
+      "parsed": true
+    },
+    {
+      "fail": 14,
+      "label": "RFSS_STATUS_BCST",
+      "ok": 2557,
+      "opcode": "0x3A",
+      "parsed": true
+    },
+    {
+      "fail": 233,
+      "label": "TDMA_SYNC_BCST",
+      "ok": 2525,
+      "opcode": "0x30",
+      "parsed": true
+    },
+    {
+      "fail": 240,
+      "label": "SEC_CCH_BROADCST",
+      "ok": 2425,
+      "opcode": "0x39",
+      "parsed": true
+    },
+    {
+      "fail": 786,
+      "label": "UU_ANS_REQ",
+      "ok": 2005,
+      "opcode": "0x05",
+      "parsed": true
+    },
+    {
+      "fail": 1000,
+      "label": "TELE_INT_V_CH_GRANT_UPDT",
+      "ok": 1236,
+      "opcode": "0x09",
+      "parsed": true
+    },
+    {
+      "fail": 54,
+      "label": "GRP_V_CH_GRANT_UPDT",
+      "ok": 998,
+      "opcode": "0x02",
+      "parsed": true
+    },
+    {
+      "fail": 679,
+      "label": "(unknown)",
+      "ok": 770,
+      "opcode": "0x0B",
+      "parsed": false
+    },
+    {
+      "fail": 13,
+      "label": "SNDCP_DCH_PAG_RQ",
+      "ok": 229,
+      "opcode": "0x15",
+      "parsed": false
+    },
+    {
+      "fail": 41,
+      "label": "ACK_RESPONSE_FNE",
+      "ok": 218,
+      "opcode": "0x20",
+      "parsed": false
+    },
+    {
+      "fail": 22,
+      "label": "SNDCP_DCH_GRANT",
+      "ok": 187,
+      "opcode": "0x14",
+      "parsed": false
+    },
+    {
+      "fail": 117,
+      "label": "GRP_V_CH_GRANT",
+      "ok": 186,
+      "opcode": "0x00",
+      "parsed": true
+    },
+    {
+      "fail": 2,
+      "label": "DE_REGIST_ACK",
+      "ok": 33,
+      "opcode": "0x2F",
+      "parsed": false
+    },
+    {
+      "fail": 8,
+      "label": "IDEN_UP_VUHF_EXP",
+      "ok": 26,
+      "opcode": "0x2C",
+      "parsed": false
+    },
+    {
+      "fail": 4,
+      "label": "SCCB",
+      "ok": 18,
+      "opcode": "0x28",
+      "parsed": false
+    },
+    {
+      "fail": 2,
+      "label": "NET_STS_BCST_EXP",
+      "ok": 13,
+      "opcode": "0x2A",
+      "parsed": false
+    },
+    {
+      "fail": 65,
+      "label": "ADJ_STS_BCST_EXP",
+      "ok": 8,
+      "opcode": "0x2B",
+      "parsed": false
+    },
+    {
+      "fail": 6,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x01",
+      "parsed": false
+    },
+    {
+      "fail": 2,
+      "label": "GRP_V_CH_GRANT_UPDT_EXP",
+      "ok": 0,
+      "opcode": "0x03",
+      "parsed": false
+    },
+    {
+      "fail": 2,
+      "label": "UU_V_CH_GRANT",
+      "ok": 0,
+      "opcode": "0x04",
+      "parsed": false
+    },
+    {
+      "fail": 4,
+      "label": "TELE_INT_V_CH_GRANT",
+      "ok": 0,
+      "opcode": "0x08",
+      "parsed": false
+    },
+    {
+      "fail": 6,
+      "label": "TELE_INT_ANS_REQ",
+      "ok": 0,
+      "opcode": "0x0A",
+      "parsed": false
+    },
+    {
+      "fail": 1,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x0C",
+      "parsed": false
+    },
+    {
+      "fail": 2,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x0E",
+      "parsed": false
+    },
+    {
+      "fail": 18,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x10",
+      "parsed": false
+    },
+    {
+      "fail": 83,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x11",
+      "parsed": false
+    },
+    {
+      "fail": 20,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x13",
+      "parsed": false
+    },
+    {
+      "fail": 4,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x17",
+      "parsed": false
+    },
+    {
+      "fail": 1,
+      "label": "STS_UPDT",
+      "ok": 0,
+      "opcode": "0x18",
+      "parsed": false
+    },
+    {
+      "fail": 36,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x19",
+      "parsed": false
+    },
+    {
+      "fail": 1,
+      "label": "MSG_UPDT",
+      "ok": 0,
+      "opcode": "0x1C",
+      "parsed": false
+    },
+    {
+      "fail": 5,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x1E",
+      "parsed": false
+    },
+    {
+      "fail": 237,
+      "label": "QUEUED_RESP",
+      "ok": 0,
+      "opcode": "0x21",
+      "parsed": false
+    },
+    {
+      "fail": 2,
+      "label": "EXT_FNCT_CMD",
+      "ok": 0,
+      "opcode": "0x22",
+      "parsed": false
+    },
+    {
+      "fail": 139,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x23",
+      "parsed": false
+    },
+    {
+      "fail": 17,
+      "label": "DENY_RESPONSE",
+      "ok": 0,
+      "opcode": "0x24",
+      "parsed": false
+    },
+    {
+      "fail": 31,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x25",
+      "parsed": false
+    },
+    {
+      "fail": 6,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x26",
+      "parsed": false
+    },
+    {
+      "fail": 2,
+      "label": "GRP_AFFIL_RESP",
+      "ok": 0,
+      "opcode": "0x27",
+      "parsed": false
+    },
+    {
+      "fail": 27,
+      "label": "RFSS_STS_BCST_EXP",
+      "ok": 0,
+      "opcode": "0x29",
+      "parsed": false
+    },
+    {
+      "fail": 18,
+      "label": "DENY_RESPONSE_EXP",
+      "ok": 0,
+      "opcode": "0x2D",
+      "parsed": false
+    },
+    {
+      "fail": 12,
+      "label": "(unknown)",
+      "ok": 0,
+      "opcode": "0x2E",
+      "parsed": false
+    },
+    {
+      "fail": 2,
+      "label": "AUTH_DMD",
+      "ok": 0,
+      "opcode": "0x31",
+      "parsed": false
+    },
+    {
+      "fail": 1,
+      "label": "IDEN_UPDATE_VUHF",
+      "ok": 0,
+      "opcode": "0x34",
+      "parsed": true
+    },
+    {
+      "fail": 3,
+      "label": "PROT_PARAM_BCST",
+      "ok": 0,
+      "opcode": "0x3E",
+      "parsed": false
+    }
+  ],
+  "tsbk_block_attempts_total": 33719,
+  "tsdu_attempts": 11240
+}

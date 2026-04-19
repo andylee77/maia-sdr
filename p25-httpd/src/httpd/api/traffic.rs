@@ -231,6 +231,8 @@ pub async fn get_traffic(
         nco_word,
         last_offset_hz,
         grants_seen,
+        grants_seen_new,
+        grants_seen_update,
         retunes,
         grants_rejected_encrypted,
         last_retune_at_secs_ago,
@@ -249,6 +251,8 @@ pub async fn get_traffic(
         let nco = mgr.nco_word;
         let offset = mgr.last_offset_hz;
         let seen = mgr.grants_seen;
+        let seen_new = mgr.grants_seen_new;
+        let seen_update = mgr.grants_seen_update;
         let retunes = mgr.retunes;
         let rejected_enc = mgr.grants_rejected_encrypted;
         let age = mgr
@@ -260,8 +264,8 @@ pub async fn get_traffic(
         let ldus = mgr.ldus_seen;
         let tdus = mgr.tdus_seen;
         let hold = mgr.post_tdu_hold_remaining_ms();
-        (label, ch, tg, freq, nco, offset, seen, retunes, rejected_enc,
-         age, duid, nac, hdus, ldus, tdus, hold)
+        (label, ch, tg, freq, nco, offset, seen, seen_new, seen_update,
+         retunes, rejected_enc, age, duid, nac, hdus, ldus, tdus, hold)
     };
 
     // Phase 7A.2: read the live traffic_lsm chain health from the
@@ -364,6 +368,52 @@ pub async fn get_traffic(
             "vocoder_frames_encrypted": c.vocoder_frames_encrypted.load(Ordering::Relaxed),
             "vocoder_frames_silent_suppressed":
                 c.vocoder_frames_silent_suppressed.load(Ordering::Relaxed),
+            // 2026-04-19 TDULC LCW parse diagnostics. Sum of the
+            // four should equal `tdulc_parse_attempts`, which is in
+            // turn `tdu_lc_count` minus the entries that arrived
+            // while the traffic follower was Idle (current_tg==0).
+            "tdulc_parse_attempts":
+                c.tdulc_parse_attempts.load(Ordering::Relaxed),
+            "tdulc_parse_motorola":
+                c.tdulc_parse_motorola.load(Ordering::Relaxed),
+            "tdulc_parse_gvcu":
+                c.tdulc_parse_gvcu.load(Ordering::Relaxed),
+            "tdulc_parse_other":
+                c.tdulc_parse_other.load(Ordering::Relaxed),
+            "tdulc_parse_none":
+                c.tdulc_parse_none.load(Ordering::Relaxed),
+            "tdulc_last_lc_bytes":
+                c.tdulc_last_lc_bytes
+                    .lock()
+                    .map(|b| b.iter().map(|x| format!("{:02X}", x))
+                        .collect::<Vec<_>>().join(" "))
+                    .unwrap_or_else(|_| "(poisoned)".into()),
+            // 2026-04-19: recorder-side boundary event counts — lets
+            // us pinpoint whether a Motorola source stamp fired from
+            // the framer but arrived at the recorder after `active`
+            // was already finalised by the grace window.
+            "recorder_boundaries_hdu":
+                state.recorder_diag.boundaries_hdu.load(Ordering::Relaxed),
+            "recorder_boundaries_tdulc_with_source":
+                state.recorder_diag
+                    .boundaries_tdulc_with_source
+                    .load(Ordering::Relaxed),
+            "recorder_boundaries_tdulc_without_source":
+                state.recorder_diag
+                    .boundaries_tdulc_without_source
+                    .load(Ordering::Relaxed),
+            "recorder_source_stamps_applied":
+                state.recorder_diag
+                    .source_stamps_applied
+                    .load(Ordering::Relaxed),
+            "recorder_source_stamps_lost_no_active":
+                state.recorder_diag
+                    .source_stamps_lost_no_active
+                    .load(Ordering::Relaxed),
+            "recorder_boundary_lag_events":
+                state.recorder_diag
+                    .boundary_lag_events
+                    .load(Ordering::Relaxed),
         })
     };
 
@@ -421,6 +471,12 @@ pub async fn get_traffic(
         "nco_word_hex":              format!("0x{:08X}", nco_word),
         "last_offset_hz":            last_offset_hz,
         "grants_seen":               grants_seen,
+        // 2026-04-19 dedup counters: `grants_seen` counts every decode
+        // of any grant-family TSBK (SDRTrunk-unfriendly over-count);
+        // `_new` / `_update` split by the 2 s (TG, freq) dedup window
+        // so callers can reconcile against SDRTrunk semantics.
+        "grants_seen_new":           grants_seen_new,
+        "grants_seen_update":        grants_seen_update,
         "retunes":                   retunes,
         "grants_rejected_encrypted": grants_rejected_encrypted,
         "last_retune_secs_ago":      last_retune_at_secs_ago,

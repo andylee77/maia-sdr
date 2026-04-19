@@ -1,13 +1,24 @@
 //! Call recording + playback.
 //!
-//! Subscribes to the `audio_tx` broadcast channel and writes per-call
-//! WAV files to `/tmp/p25_recordings/`. The recorder boundaries are
-//! driven by the `talkgroup` field on each `AudioChunk`:
+//! Subscribes to `audio_tx` + `call_boundary_tx` and writes per-call
+//! WAV files to `/tmp/p25_recordings/`. Boundaries come from two
+//! signals:
 //!
-//! - First non-zero TG chunk after a gap → start new recording
-//! - TG changes to a different non-zero TG → finalise + start new
-//! - TG goes to 0 (idle) → finalise after a short grace window so
-//!   back-to-back PTT bursts on the same TG don't fragment
+//! 1. **Audio chunks** (talkgroup field):
+//!    - First non-zero TG chunk after a gap → start new recording
+//!    - TG changes to a different non-zero TG → finalise + start new
+//!    - TG goes to 0 (idle) → finalise after `FINALIZE_GRACE`
+//!
+//! 2. **Call boundary events** (2026-04-19):
+//!    - `HduStart` → finalise the in-progress recording (if any) and
+//!      leave `active = None`. The next PCM chunk begins a fresh
+//!      `ActiveCall`. This is what lets the recorder split a
+//!      dispatcher ↔ unit conversation (same TG, multiple speakers)
+//!      into per-PTT files, matching SDRTrunk.
+//!    - `TdulcComplete { source }` → when `source` is `Some(id)`,
+//!      stamps `active.source` so the final filename includes the
+//!      speaker's radio ID (`TO_<TG>_FROM_<source>.wav`). Does NOT
+//!      finalise — we wait for HDU or the grace window.
 //!
 //! The ring buffer is capped at `MAX_RECORDINGS` entries; evicting
 //! an entry also deletes its WAV file. WAV format is 8 kHz 16-bit
@@ -25,7 +36,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::Mutex;
 
-use crate::audio::AudioChunk;
+use crate::audio::{AudioChunk, CallBoundary, CallBoundaryKind};
 
 /// Max number of recordings kept in the ring. Oldest evicted when
 /// the ring fills. 40 entries at ~30 s each ≈ 20 minutes of recent
@@ -53,6 +64,12 @@ pub struct RecordingEntry {
     pub id: u64,
     /// Talkgroup the recording belongs to.
     pub talkgroup: u16,
+    /// 2026-04-19: speaker radio ID (`FM:<n>` in SDRTrunk parlance,
+    /// `BY:<n>` on the terminating Motorola TDULC) when the TDULC
+    /// LCW parser was able to recover it; `None` otherwise (including
+    /// on non-Motorola sites which don't emit the
+    /// `TALK_COMPLETE` vendor LC).
+    pub source: Option<u32>,
     /// Unix epoch milliseconds at which the recording started.
     /// Reads as wall-clock time if NTP synced, else kernel boot
     /// clock (post-NTP-on-boot landing, this should be real).
@@ -65,6 +82,11 @@ pub struct RecordingEntry {
     pub path: PathBuf,
     /// WAV file size in bytes.
     pub size_bytes: u64,
+    /// Basename of `path` — `rec_<ms>_<id>_tg<tg>[_from<src>].wav`.
+    /// Exposed in the JSON so the dashboard can render the on-disk
+    /// name next to each row; debugging "why isn't the source
+    /// stamped?" used to require SSHing into /tmp to check.
+    pub filename: String,
 }
 
 /// Shared ring buffer of completed recordings. Newest at the back.
@@ -74,10 +96,48 @@ pub fn new_store() -> RecordingStore {
     Arc::new(Mutex::new(VecDeque::with_capacity(MAX_RECORDINGS)))
 }
 
+/// 2026-04-19 diagnostics: counters for CallBoundary events the
+/// recorder actually received. Surfaced via /api/traffic so we can
+/// see whether the Motorola `TdulcComplete { source }` events fired
+/// by the software framer are arriving at the recorder, and whether
+/// there was an ActiveCall to stamp them onto.
+#[derive(Default)]
+pub struct RecorderDiag {
+    pub boundaries_hdu: std::sync::atomic::AtomicU64,
+    pub boundaries_tdulc_with_source: std::sync::atomic::AtomicU64,
+    pub boundaries_tdulc_without_source:
+        std::sync::atomic::AtomicU64,
+    /// TdulcComplete events where `active` was None at arrival —
+    /// these source stamps were lost. If > 0 while
+    /// `tdulc_parse_motorola` > 0, the parser is emitting events
+    /// but they arrive after the last ActiveCall has been
+    /// finalised by the grace window.
+    pub source_stamps_lost_no_active: std::sync::atomic::AtomicU64,
+    /// TdulcComplete events where `active.source` was successfully
+    /// set. Should equal the number of recordings whose filename
+    /// contains `_from<n>`.
+    pub source_stamps_applied: std::sync::atomic::AtomicU64,
+    /// `broadcast::Receiver::recv` lagged events — messages the
+    /// recorder missed because it fell behind the broadcaster.
+    pub boundary_lag_events: std::sync::atomic::AtomicU64,
+}
+
+pub type RecorderDiagArc = Arc<RecorderDiag>;
+
+pub fn new_diag() -> RecorderDiagArc {
+    Arc::new(RecorderDiag::default())
+}
+
 /// In-progress recording buffer. Not shared — lives inside the
 /// recorder task.
 struct ActiveCall {
     talkgroup: u16,
+    /// 2026-04-19: speaker radio ID, populated from a `CallBoundary`
+    /// TDULC event when the Motorola `TALK_COMPLETE` BY: field is
+    /// recoverable. `None` means "unknown source" — recorder just
+    /// omits the `_from<n>` suffix in that case.
+    source: Option<u32>,
+    #[allow(dead_code)]
     started_at: Instant,
     started_unix_ms: u64,
     pcm: Vec<i16>,
@@ -92,6 +152,7 @@ impl ActiveCall {
             .unwrap_or(0);
         Self {
             talkgroup,
+            source: None,
             started_at: Instant::now(),
             started_unix_ms,
             pcm: Vec::with_capacity(8_000 * 10), // pre-size for 10 s
@@ -102,6 +163,18 @@ impl ActiveCall {
     fn append(&mut self, chunk: &AudioChunk) {
         self.pcm.extend_from_slice(&chunk.pcm);
         self.last_chunk_at = Instant::now();
+        // 2026-04-19: if the audio chunk carries a known source (set
+        // by the vocoder from `ImbeForwarder.current_source` — which
+        // the grant follower wrote from `GRP_VCH_GRANT.FM`), stamp
+        // it as soon as audio starts flowing. Keeps the recorder
+        // aligned with SDRTrunk's source-attribution priority
+        // (control-channel grant first, traffic LC second, TDULC
+        // end code third). A later LC/TDULC boundary event can
+        // still update the source — whichever value is most recent
+        // wins for the eventual `_fromN.wav` filename.
+        if chunk.source != 0 {
+            self.source = Some(chunk.source);
+        }
     }
 
     fn duration_ms(&self) -> u64 {
@@ -159,11 +232,22 @@ async fn finalize(store: &RecordingStore, call: ActiveCall, id: u64) {
         );
         return;
     }
-    let filename = format!(
-        "rec_{}_{}_tg{}.wav",
-        call.started_unix_ms, id, call.talkgroup
-    );
-    let path = Path::new(STORAGE_DIR).join(filename);
+    // 2026-04-19: include the speaker radio ID in the filename when
+    // known, matching SDRTrunk's `TO_<TG>_FROM_<source>.mp3` layout.
+    // When the TDULC LC parser couldn't recover source (or the site
+    // isn't Motorola-infrastructure), omit the `_from<n>` suffix so
+    // the old `rec_<ms>_<id>_tg<n>.wav` shape is still emitted.
+    let filename = match call.source {
+        Some(s) => format!(
+            "rec_{}_{}_tg{}_from{}.wav",
+            call.started_unix_ms, id, call.talkgroup, s,
+        ),
+        None => format!(
+            "rec_{}_{}_tg{}.wav",
+            call.started_unix_ms, id, call.talkgroup,
+        ),
+    };
+    let path = Path::new(STORAGE_DIR).join(&filename);
     let size = match write_wav(&path, &call.pcm) {
         Ok(s) => s,
         Err(e) => {
@@ -174,10 +258,12 @@ async fn finalize(store: &RecordingStore, call: ActiveCall, id: u64) {
     let entry = RecordingEntry {
         id,
         talkgroup: call.talkgroup,
+        source: call.source,
         started_unix_ms: call.started_unix_ms,
         duration_ms,
         path,
         size_bytes: size,
+        filename,
     };
     let mut ring = store.lock().await;
     ring.push_back(entry);
@@ -189,14 +275,16 @@ async fn finalize(store: &RecordingStore, call: ActiveCall, id: u64) {
 }
 
 /// Recorder background task. Runs for the lifetime of the process.
-/// Subscribes to the audio broadcast; one task per subscription is
-/// standard for tokio broadcast (slow subscribers don't block the
-/// vocoder because the vocoder owns the tx side and lagging
-/// receivers just get Lagged errors, which we log and ignore).
+/// Subscribes to the audio broadcast AND the call-boundary broadcast
+/// so HDU-triggered splits can happen the instant a new speaker
+/// starts, independent of vocoder latency.
 pub async fn recorder_task(
     mut audio_rx: tokio::sync::broadcast::Receiver<AudioChunk>,
+    mut boundary_rx: tokio::sync::broadcast::Receiver<CallBoundary>,
     store: RecordingStore,
+    diag: RecorderDiagArc,
 ) {
+    use std::sync::atomic::Ordering;
     // Ensure storage dir exists. If this fails, keep running but
     // log; finalize() will also fail and the recording is lost.
     if let Err(e) = std::fs::create_dir_all(STORAGE_DIR) {
@@ -273,6 +361,62 @@ pub async fn recorder_task(
                             finalize(&store, old, id).await;
                         }
                         return;
+                    }
+                }
+            }
+            // 2026-04-19 HDU-driven call split.
+            recv = boundary_rx.recv() => {
+                match recv {
+                    Ok(boundary) => match boundary.kind {
+                        CallBoundaryKind::HduStart => {
+                            diag.boundaries_hdu.fetch_add(1, Ordering::Relaxed);
+                            // Fresh PTT on the traffic channel.
+                            // Finalise the in-progress recording --
+                            // the next PCM chunk will open a new
+                            // ActiveCall with the (possibly-same) TG.
+                            if let Some(old) = active.take() {
+                                let id = next_id;
+                                next_id += 1;
+                                finalize(&store, old, id).await;
+                            }
+                        }
+                        CallBoundaryKind::TdulcComplete { source } => {
+                            if source.is_some() {
+                                diag.boundaries_tdulc_with_source
+                                    .fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                diag.boundaries_tdulc_without_source
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                            // Motorola TALK_COMPLETE arrived with a
+                            // recovered BY: field. Stamp it into the
+                            // active call so the finaliser (either
+                            // HDU or grace window) will include the
+                            // radio ID in the filename.
+                            if let Some(c) = active.as_mut() {
+                                if source.is_some() {
+                                    c.source = source;
+                                    diag.source_stamps_applied
+                                        .fetch_add(1, Ordering::Relaxed);
+                                }
+                            } else if source.is_some() {
+                                diag.source_stamps_lost_no_active
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    },
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        diag.boundary_lag_events
+                            .fetch_add(n, Ordering::Relaxed);
+                        tracing::warn!(
+                            "recorder: {n} call-boundary events lagged; \
+                             a PTT split may have been missed (grace \
+                             window will still finalise the call)"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        // Boundary channel closed but audio may still
+                        // flow; keep running in grace-window-only mode.
                     }
                 }
             }

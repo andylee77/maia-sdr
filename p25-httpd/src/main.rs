@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-18-phase10.6-https-audioworklet";
+pub const BUILD_TAG: &str = "2026-04-19-recordings-src-filename-cols";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -237,6 +237,16 @@ pub struct ImbeForwarder {
     /// Current talkgroup (set by grant follower, read by vocoder
     /// to tag AudioChunks). 0 = idle / unknown.
     pub current_talkgroup: std::sync::atomic::AtomicU16,
+    /// 2026-04-19: current source radio ID, set by the grant
+    /// follower from `GRP_VCH_GRANT.FM`. 0 = unknown (grant carried
+    /// no source, or we only have a `GRP_VCH_GRNT_UPD` which doesn't
+    /// carry source). Read by the recorder to stamp the filename as
+    /// soon as audio starts flowing — no need to wait for the
+    /// traffic-channel LDU1 LC / TDULC Motorola end-code path. The
+    /// two traffic-side sources still refresh this atomic so the
+    /// most-recent wins (mid-call source switches on a rebroadcast
+    /// grant would otherwise miss the recorder).
+    pub current_source: std::sync::atomic::AtomicU32,
     /// TGs that have ever been observed encrypted. Once a TG is in
     /// this set, the follower defaults to encrypted even if the
     /// current grant doesn't carry service options.
@@ -254,6 +264,50 @@ pub struct ImbeForwarder {
     /// Channel to the vocoder task. Each send is a batch of 9 frames
     /// (one LDU's worth = 180 ms of audio).
     imbe_tx: tokio::sync::mpsc::Sender<[p25::voice_frame::ImbeFrameRaw; 9]>,
+    /// 2026-04-19: optional broadcast channel for call-boundary
+    /// events emitted from the software decoder's voice handler. Set
+    /// after `ImbeForwarder::new` via `set_boundary_tx`. `None` on
+    /// decoder instances that don't split calls (e.g. control-channel
+    /// decoders — they never see traffic DUIDs).
+    call_boundary_tx:
+        std::sync::OnceLock<audio::CallBoundaryTx>,
+    /// 2026-04-19: last NAC observed by the software framer, used to
+    /// tag the `CallBoundary` events emitted from `on_tdu_lc`. Set by
+    /// the traffic-LSM heartbeat whenever it forwards a NID event.
+    pub last_observed_nac: std::sync::atomic::AtomicU16,
+    /// 2026-04-19: event-log ring reference so TDULC LCW parses can
+    /// emit `MOTOROLA TALK COMPLETE BY:<src>` / `GROUP VOICE CHANNEL
+    /// USER` entries into the dashboard activity feed (matching
+    /// SDRTrunk's `decoded_messages.log` style). `None` until
+    /// `set_event_log` is called post-construction.
+    pub event_log:
+        std::sync::OnceLock<std::sync::Arc<crate::event_log::EventLog>>,
+    /// 2026-04-19: WebSocket event tx for the live activity feed.
+    /// Plain `String` broadcast — same channel the control-channel
+    /// decoder uses — so TDULC LCW events appear inline with TSBK
+    /// events in the dashboard's Live Activity stream.
+    pub ws_event_tx: std::sync::OnceLock<
+        tokio::sync::broadcast::Sender<String>,
+    >,
+
+    // 2026-04-19 TDULC LCW parse diagnostics. All four counters fire
+    // from `on_tdu_lc` — the sum is the number of TDULC bodies the
+    // parser actually ran against (i.e. tg != 0 at dispatch time).
+    // Surfaces via /api/traffic so we can see whether:
+    //   - the parser is reaching every TDULC (attempts should track
+    //     tdu_lc_count once the follower is active), and
+    //   - the site is emitting Motorola `TALK_COMPLETE` at all
+    //     (motorola vs gvcu vs other distribution).
+    pub tdulc_parse_attempts: std::sync::atomic::AtomicU64,
+    pub tdulc_parse_motorola: std::sync::atomic::AtomicU64,
+    pub tdulc_parse_gvcu: std::sync::atomic::AtomicU64,
+    pub tdulc_parse_other: std::sync::atomic::AtomicU64,
+    pub tdulc_parse_none: std::sync::atomic::AtomicU64,
+    /// First 9 bytes (72 bits) of the most recent post-dibits LC
+    /// payload, for offline inspection when the Motorola counter is
+    /// stuck at zero. Mutex-behind because it's a single sample, not
+    /// a hot counter.
+    pub tdulc_last_lc_bytes: std::sync::Mutex<[u8; 9]>,
 }
 
 impl ImbeForwarder {
@@ -276,11 +330,44 @@ impl ImbeForwarder {
             vocoder_frames_silent_suppressed: 0.into(),
             call_encrypted: false.into(),
             current_talkgroup: 0.into(),
+            current_source: 0.into(),
             encrypted_tg_history: std::sync::Mutex::new(std::collections::HashSet::new()),
             vocoder_reset_pending: false.into(),
             imbe_ring: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(128)),
             imbe_tx,
+            call_boundary_tx: std::sync::OnceLock::new(),
+            last_observed_nac: 0.into(),
+            tdulc_parse_attempts: 0.into(),
+            tdulc_parse_motorola: 0.into(),
+            tdulc_parse_gvcu: 0.into(),
+            tdulc_parse_other: 0.into(),
+            tdulc_parse_none: 0.into(),
+            tdulc_last_lc_bytes: std::sync::Mutex::new([0u8; 9]),
+            event_log: std::sync::OnceLock::new(),
+            ws_event_tx: std::sync::OnceLock::new(),
         }
+    }
+
+    pub fn set_event_log(
+        &self,
+        log: std::sync::Arc<crate::event_log::EventLog>,
+    ) {
+        let _ = self.event_log.set(log);
+    }
+
+    pub fn set_ws_event_tx(
+        &self,
+        tx: tokio::sync::broadcast::Sender<String>,
+    ) {
+        let _ = self.ws_event_tx.set(tx);
+    }
+
+    /// Wire the `CallBoundaryTx` so the software decoder's TDULC LCW
+    /// path can publish source-stamped boundary events. `OnceLock`
+    /// keeps the setter lock-free on the hot path (TDULC arrives
+    /// ~1×/call).
+    pub fn set_boundary_tx(&self, tx: audio::CallBoundaryTx) {
+        let _ = self.call_boundary_tx.set(tx);
     }
 
     fn touch_imbe(&self, n_frames: u64) {
@@ -341,30 +428,381 @@ impl ImbeForwarder {
 }
 
 impl p25::control_channel::VoiceHandler for ImbeForwarder {
-    fn on_ldu1(&self, frames: &[p25::voice_frame::ImbeFrameRaw; 9]) {
+    fn on_ldu1(
+        &self,
+        frames: &[p25::voice_frame::ImbeFrameRaw; 9],
+        body_raw: &[u8],
+    ) {
         use std::sync::atomic::Ordering;
         self.ldu1_count.fetch_add(1, Ordering::Relaxed);
         self.touch_imbe(9);
         self.forward_frames(frames);
+
+        // 2026-04-19: parse the embedded LDU1 Link Control Word so we
+        // get the mid-call source (FM:) / TG (TO:) the way SDRTrunk
+        // logs `LDU1 VOICE ... GROUP VOICE CHANNEL USER FM:<src>
+        // TO:<TG>`. When the parser finds a non-zero source, push a
+        // boundary event so the recorder stamps it into the active
+        // call's filename — no need to wait for the end-of-speaker
+        // Motorola TALK_COMPLETE TDULC.
+        let tg_locked = self.current_talkgroup.load(Ordering::Relaxed);
+        if tg_locked == 0 {
+            return;
+        }
+        let Some(source) = p25::voice_frame::parse_ldu1_source(body_raw)
+        else {
+            return;
+        };
+        // Push to activity log once per LDU1 so the dashboard shows
+        // the same FM:<source> per-frame transcript SDRTrunk does.
+        // (Can get chatty — 2 × per second per active call — but
+        // matches user ask.)
+        let nac = self.last_observed_nac.load(Ordering::Relaxed);
+        let summary = format!(
+            "LDU1 FM:{} TO:{} NAC:0x{:03X}",
+            source, tg_locked, nac
+        );
+        if let Some(log) = self.event_log.get() {
+            log.push(
+                crate::event_log::LogCategory::Imbe,
+                summary.clone(),
+                serde_json::json!({
+                    "duid": "LDU1_LC",
+                    "lcw":  "GVCU",
+                    "tg":   tg_locked,
+                    "fm":   source,
+                    "nac":  nac,
+                }),
+            );
+        }
+        if let Some(ws) = self.ws_event_tx.get() {
+            // Dashboard filter reads `evt.event_type` (control_channel.rs
+            // convention) — emitting `"type"` here silently dropped every
+            // TRF_LDU1_LC event from the activity log.
+            let evt = serde_json::json!({
+                "timestamp":  p25::control_channel::chrono_timestamp(),
+                "event_type": "TRF_LDU1_LC",
+                "summary":    summary,
+                "tg":         tg_locked,
+                "source":     source,
+            });
+            let _ = ws.send(evt.to_string());
+        }
+        // Stamp source into the active recording via the same
+        // boundary channel the Motorola TDULC uses. The recorder
+        // accepts either — whichever arrives first sets
+        // `active.source`.
+        if let Some(tx) = self.call_boundary_tx.get() {
+            let _ = tx.send(audio::CallBoundary {
+                kind: audio::CallBoundaryKind::TdulcComplete {
+                    source: Some(source),
+                },
+                nac,
+                talkgroup: Some(tg_locked),
+            });
+        }
     }
 
-    fn on_ldu2(&self, frames: &[p25::voice_frame::ImbeFrameRaw; 9]) {
+    fn on_ldu2(
+        &self,
+        frames: &[p25::voice_frame::ImbeFrameRaw; 9],
+        body_raw: &[u8],
+    ) {
         use std::sync::atomic::Ordering;
         self.ldu2_count.fetch_add(1, Ordering::Relaxed);
         self.touch_imbe(9);
         self.forward_frames(frames);
+
+        // 2026-04-19: decode LDU2 ESS via Hamming10 + RS(24,16,9) and
+        // mirror SDRTrunk's `LDU2 VOICE LSD:... ENCRYPTION:<alg>
+        // KEY:<id> MSG INDICATOR:<hex>` line when the frame is
+        // encrypted. Non-encrypted ESS still carries an all-zero MI /
+        // algorithm = 0x80; skip the emit in that case to avoid
+        // flooding the activity log.
+        let Some(ess) = p25::voice_frame::parse_ldu2_ess(body_raw)
+        else {
+            return;
+        };
+        if !ess.is_encrypted() {
+            return;
+        }
+        if let Some(ws) = self.ws_event_tx.get() {
+            let mi_hex: String = ess
+                .message_indicator
+                .iter()
+                .map(|b| format!("{:02X}", b))
+                .collect();
+            let summary = format!(
+                "LDU2 ESS ENCRYPTION:0x{:02X} KEY:{} MI:{}",
+                ess.algorithm_id, ess.key_id, mi_hex
+            );
+            let evt = serde_json::json!({
+                "timestamp":  p25::control_channel::chrono_timestamp(),
+                "event_type": "TRF_LDU2_ESS",
+                "summary":    summary,
+                "algorithm":  ess.algorithm_id,
+                "key_id":     ess.key_id,
+                "mi":         mi_hex,
+            });
+            let _ = ws.send(evt.to_string());
+        }
     }
 
-    fn on_hdu(&self) {
-        self.hdu_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    fn on_hdu(&self, body_raw: &[u8]) {
+        use std::sync::atomic::Ordering;
+        self.hdu_count.fetch_add(1, Ordering::Relaxed);
+
+        // 2026-04-19: decode HDU body via Golay18 + RS(63,47,17).
+        // SDRTrunk equivalent: `HDU TALKGROUP:<tg> [ENCRYPTION:<alg>
+        // KEY:<id> MI:<hex> | UNENCRYPTED]`. Always emit — unlike
+        // LDU2_ESS we don't fire every frame; HDU is once per speaker.
+        let Some(hdr) = p25::voice_frame::parse_hdu_body(body_raw)
+        else {
+            return;
+        };
+        if let Some(ws) = self.ws_event_tx.get() {
+            let summary = if hdr.is_encrypted() {
+                let mi_hex: String = hdr
+                    .message_indicator
+                    .iter()
+                    .map(|b| format!("{:02X}", b))
+                    .collect();
+                format!(
+                    "HDU TG:{} ENCRYPTION:0x{:02X} KEY:{} MI:{}",
+                    hdr.talkgroup, hdr.algorithm_id, hdr.key_id, mi_hex,
+                )
+            } else {
+                format!("HDU TG:{} UNENCRYPTED", hdr.talkgroup)
+            };
+            let evt = serde_json::json!({
+                "timestamp":  p25::control_channel::chrono_timestamp(),
+                "event_type": "TRF_HDU_INFO",
+                "summary":    summary,
+                "tg":         hdr.talkgroup,
+                "encrypted":  hdr.is_encrypted(),
+                "algorithm":  hdr.algorithm_id,
+                "key_id":     hdr.key_id,
+            });
+            let _ = ws.send(evt.to_string());
+        }
     }
 
     fn on_tdu(&self) {
         self.tdu_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    fn on_tdu_lc(&self) {
-        self.tdu_lc_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    fn on_tdu_lc(&self, body_raw: &[u8]) {
+        use std::sync::atomic::Ordering;
+        self.tdu_lc_count.fetch_add(1, Ordering::Relaxed);
+
+        // 2026-04-19: Motorola TALK_COMPLETE LCW -> boundary event
+        // with the BY: source field. Only emit when the parser
+        // returned the `MotorolaTalkComplete` variant; `Other` /
+        // `GroupVoiceChannelUser` have nothing to contribute (and on
+        // non-Motorola sites we'll always land there).
+        let Some(tx) = self.call_boundary_tx.get() else { return; };
+        let tg = self.current_talkgroup.load(Ordering::Relaxed);
+        if tg == 0 {
+            return;
+        }
+
+        self.tdulc_parse_attempts.fetch_add(1, Ordering::Relaxed);
+        let parsed = p25::voice_frame::parse_tdulc_lcw(body_raw);
+
+        // Snapshot the first 9 bytes of the post-extraction LC so a
+        // live `/api/traffic` poll shows what the parser is seeing
+        // when the Motorola counter won't budge. Only update on the
+        // handful of TDULCs that aren't Motorola TALK_COMPLETE (the
+        // interesting failure case).
+        if let Some(bytes) = p25::voice_frame::tdulc_lc_bytes(body_raw) {
+            if let Ok(mut slot) = self.tdulc_last_lc_bytes.lock() {
+                *slot = bytes;
+            }
+        }
+
+        match parsed {
+            Some(p25::voice_frame::TdulcLcw::MotorolaTalkComplete {
+                by_radio_id,
+            }) => {
+                self.tdulc_parse_motorola.fetch_add(1, Ordering::Relaxed);
+                let nac = self.last_observed_nac.load(Ordering::Relaxed);
+                let _ = tx.send(audio::CallBoundary {
+                    kind: audio::CallBoundaryKind::TdulcComplete {
+                        source: Some(by_radio_id),
+                    },
+                    nac,
+                    talkgroup: Some(tg),
+                });
+                // 2026-04-19: mirror SDRTrunk's
+                // `TDULC MOTOROLA TALK COMPLETE BY:<src>` line into
+                // the dashboard activity feed + event log so the
+                // decoded end-of-speaker marker is visible.
+                let summary = format!(
+                    "TDULC MOTOROLA TALK COMPLETE BY:{} TG:{}",
+                    by_radio_id, tg,
+                );
+                if let Some(log) = self.event_log.get() {
+                    log.push(
+                        crate::event_log::LogCategory::Imbe,
+                        summary.clone(),
+                        serde_json::json!({
+                            "duid": "TDULC",
+                            "lcw":  "MOTOROLA_TALK_COMPLETE",
+                            "tg":   tg,
+                            "by":   by_radio_id,
+                            "nac":  nac,
+                        }),
+                    );
+                }
+                if let Some(ws) = self.ws_event_tx.get() {
+                    let evt = serde_json::json!({
+                        "timestamp":  p25::control_channel::chrono_timestamp(),
+                        "event_type": "TRF_TDULC_MOT",
+                        "summary":    summary,
+                        "tg":         tg,
+                        "source":     by_radio_id,
+                    });
+                    let _ = ws.send(evt.to_string());
+                }
+            }
+            Some(p25::voice_frame::TdulcLcw::GroupVoiceChannelUser {
+                talkgroup: lc_tg,
+            }) => {
+                self.tdulc_parse_gvcu.fetch_add(1, Ordering::Relaxed);
+                // Mirror SDRTrunk's `TDULC GROUP VOICE CHANNEL USER
+                // FM:0 TO:<TG>` line. These fire many times per call
+                // (tail burst), so route them at Imbe category level
+                // — the dashboard already collapses duplicates for
+                // TRF_TDU_LC events by type.
+                if let Some(ws) = self.ws_event_tx.get() {
+                    let evt = serde_json::json!({
+                        "timestamp":  p25::control_channel::chrono_timestamp(),
+                        "event_type": "TRF_TDULC",
+                        "summary":    format!(
+                            "TDULC GROUP VOICE CHANNEL USER FM:0 TO:{}",
+                            lc_tg
+                        ),
+                        "tg":         tg,
+                    });
+                    let _ = ws.send(evt.to_string());
+                }
+            }
+            Some(p25::voice_frame::TdulcLcw::GroupVoiceChannelUpdate {
+                talkgroup_a, channel_a_band, channel_a_number,
+                talkgroup_b, channel_b_band, channel_b_number,
+                has_channel_b,
+            }) => {
+                self.tdulc_parse_other.fetch_add(1, Ordering::Relaxed);
+                if let Some(ws) = self.ws_event_tx.get() {
+                    let summary = if has_channel_b {
+                        format!(
+                            "TDULC GROUP VOICE CHANNEL UPDATE TG_A:{} CH_A:{}-{} TG_B:{} CH_B:{}-{}",
+                            talkgroup_a, channel_a_band, channel_a_number,
+                            talkgroup_b, channel_b_band, channel_b_number,
+                        )
+                    } else {
+                        format!(
+                            "TDULC GROUP VOICE CHANNEL UPDATE TG_A:{} CH_A:{}-{}",
+                            talkgroup_a, channel_a_band, channel_a_number,
+                        )
+                    };
+                    let evt = serde_json::json!({
+                        "timestamp":  p25::control_channel::chrono_timestamp(),
+                        "event_type": "TRF_TDULC_GVU",
+                        "summary":    summary,
+                        "tg":         tg,
+                    });
+                    let _ = ws.send(evt.to_string());
+                }
+            }
+            Some(p25::voice_frame::TdulcLcw::CallTermination { by_radio_id }) => {
+                self.tdulc_parse_other.fetch_add(1, Ordering::Relaxed);
+                if let Some(ws) = self.ws_event_tx.get() {
+                    // Relabel the well-known system-controller teardown
+                    // addresses per SDRTrunk `LCCallTermination`
+                    // (MOTOROLA_SYSTEM_CONTROLLER_1 = 0xFFFFFD,
+                    // MOTOROLA_SYSTEM_CONTROLLER_2 = 0xFFFFFF,
+                    // HARRIS_SYSTEM_CONTROLLER = 0x000000). Every
+                    // call on a Motorola network terminates with
+                    // BY:0xFFFFFD — rendering the raw ID 55× in a
+                    // row was confusing; the label keeps the info
+                    // without the repetition.
+                    let by_label = match by_radio_id {
+                        0xFFFFFD => "MOTOROLA SYS CTRL (0xFFFFFD)".to_string(),
+                        0xFFFFFF => "MOTOROLA SYS CTRL (0xFFFFFF)".to_string(),
+                        0x000000 => "HARRIS SYS CTRL".to_string(),
+                        id => format!("{}", id),
+                    };
+                    let evt = serde_json::json!({
+                        "timestamp":  p25::control_channel::chrono_timestamp(),
+                        "event_type": "TRF_TDULC_CALL_TERM",
+                        "summary":    format!(
+                            "TDULC CALL TERMINATION BY:{}",
+                            by_label,
+                        ),
+                        "tg":         tg,
+                        "by":         by_radio_id,
+                    });
+                    let _ = ws.send(evt.to_string());
+                }
+            }
+            Some(p25::voice_frame::TdulcLcw::RfssStatusBroadcast {
+                lra, system_id, rfss_id, site_id,
+                channel_band, channel_number, service_class,
+            }) => {
+                self.tdulc_parse_other.fetch_add(1, Ordering::Relaxed);
+                if let Some(ws) = self.ws_event_tx.get() {
+                    let evt = serde_json::json!({
+                        "timestamp":  p25::control_channel::chrono_timestamp(),
+                        "event_type": "TRF_TDULC_RFSS_STS",
+                        "summary":    format!(
+                            "TDULC RFSS STATUS BROADCAST LRA:{} SYS:{:03X} RFSS:{} SITE:{} CH:{}-{} SVC:0x{:02X}",
+                            lra, system_id, rfss_id, site_id,
+                            channel_band, channel_number, service_class,
+                        ),
+                        "tg":         tg,
+                    });
+                    let _ = ws.send(evt.to_string());
+                }
+            }
+            Some(p25::voice_frame::TdulcLcw::NetStatusBroadcast {
+                wacn, system_id,
+                channel_band, channel_number, service_class,
+            }) => {
+                self.tdulc_parse_other.fetch_add(1, Ordering::Relaxed);
+                if let Some(ws) = self.ws_event_tx.get() {
+                    let evt = serde_json::json!({
+                        "timestamp":  p25::control_channel::chrono_timestamp(),
+                        "event_type": "TRF_TDULC_NET_STS",
+                        "summary":    format!(
+                            "TDULC NET STATUS BROADCAST WACN:{:05X} SYS:{:03X} CH:{}-{} SVC:0x{:02X}",
+                            wacn, system_id,
+                            channel_band, channel_number, service_class,
+                        ),
+                        "tg":         tg,
+                    });
+                    let _ = ws.send(evt.to_string());
+                }
+            }
+            Some(p25::voice_frame::TdulcLcw::Other { opcode, mfid }) => {
+                self.tdulc_parse_other.fetch_add(1, Ordering::Relaxed);
+                if let Some(ws) = self.ws_event_tx.get() {
+                    let evt = serde_json::json!({
+                        "timestamp":  p25::control_channel::chrono_timestamp(),
+                        "event_type": "TRF_TDULC_OTHER",
+                        "summary":    format!(
+                            "TDULC OTHER OP:0x{:02X} MFID:0x{:02X}",
+                            opcode, mfid
+                        ),
+                        "tg":         tg,
+                    });
+                    let _ = ws.send(evt.to_string());
+                }
+            }
+            None => {
+                self.tdulc_parse_none.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -635,6 +1073,23 @@ async fn main() -> anyhow::Result<()> {
         tokio::sync::mpsc::channel::<[p25::voice_frame::ImbeFrameRaw; 9]>(16);
     let imbe_forwarder = Arc::new(ImbeForwarder::new(imbe_tx));
 
+    // 2026-04-19: call-boundary broadcast (traffic-LSM heartbeat ->
+    // recorder + ImbeForwarder::on_tdu_lc -> recorder). Created
+    // here — BEFORE the traffic LSM heartbeat task is spawned 1900
+    // lines down — because both of those paths clone the tx handle
+    // before the recorder-spawn site would otherwise declare it.
+    // Used to be declared alongside audio_tx near the recorder spawn;
+    // moved up 2026-04-19 to fix the "cannot find value
+    // `call_boundary_tx` in this scope" compile error.
+    let call_boundary_tx = audio::call_boundary_channel();
+    // Plug the boundary tx into ImbeForwarder so its on_tdu_lc can
+    // publish Motorola TALK_COMPLETE source stamps.
+    imbe_forwarder.set_boundary_tx(call_boundary_tx.clone());
+    // 2026-04-19: WS event tx wired here; `event_log` wiring is
+    // deferred until that ring is constructed further down (search
+    // for "set_event_log(event_log").
+    imbe_forwarder.set_ws_event_tx(event_tx.clone());
+
     let mut traffic_lsm_decoder = ControlChannelDecoder::new();
     traffic_lsm_decoder.set_event_tx(event_tx.clone());
     // Phase 7D: install the IMBE forwarder as the decoder's voice
@@ -657,6 +1112,12 @@ async fn main() -> anyhow::Result<()> {
             "build_tag": crate::BUILD_TAG,
         }),
     );
+    // 2026-04-19: now that the event-log ring exists, plumb it into
+    // the IMBE forwarder so TDULC LCW parses (Motorola
+    // `TALK_COMPLETE` + Standard GVCU) emit entries into the
+    // dashboard Activity feed alongside the heartbeat's HDU/LDU/TDU
+    // lines.
+    imbe_forwarder.set_event_log(event_log.clone());
 
     // Phase 9 retirement: `lsm_stats` (the shared `LsmStats` mutex
     // for the Phase 6D software pipeline) is gone along with the
@@ -1966,6 +2427,20 @@ async fn main() -> anyhow::Result<()> {
                 };
                 let retune = mgr.handle_grant(g.channel, g.talkgroup, freq_hz);
                 imbe.current_talkgroup.store(g.talkgroup.0, Ordering::Relaxed);
+                // 2026-04-19: stash the grant's FM:<source> so the
+                // recorder can stamp filenames from the CONTROL
+                // channel (GRP_VCH_GRANT carries source; GRP_VCH_
+                // GRNT_UPD does not). Overwrite on every grant so a
+                // mid-call speaker change reflected in a fresh
+                // GRP_VCH_GRANT updates the atomic. `0` marks
+                // "unknown" — GRNT_UPD won't clobber a previously-set
+                // source.
+                if let Some(src) = g.source {
+                    if src.0 != 0 {
+                        imbe.current_source
+                            .store(src.0, Ordering::Relaxed);
+                    }
+                }
 
                 // Determine encryption: check the grant flag, then
                 // fall back to TG history (remembers TGs that were
@@ -2467,6 +2942,13 @@ async fn main() -> anyhow::Result<()> {
                             follower_imbe.current_talkgroup.store(
                                 0, Ordering::Relaxed,
                             );
+                            // 2026-04-19: clear stashed source on
+                            // Idle transition so a subsequent call
+                            // with no FM: in its grant doesn't
+                            // inherit the previous speaker's ID.
+                            follower_imbe.current_source.store(
+                                0, Ordering::Relaxed,
+                            );
                         }
                     }
                 }
@@ -2507,6 +2989,7 @@ async fn main() -> anyhow::Result<()> {
         let traffic_event_tx = event_tx.clone();
         let traffic_event_log = event_log.clone();
         let traffic_heartbeat_imbe = imbe_forwarder.clone();
+        let traffic_boundary_tx = call_boundary_tx.clone();
         tokio::spawn(async move {
             tracing::info!(
                 "traffic LSM heartbeat task started (Phase 7A.2, polling \
@@ -2593,6 +3076,26 @@ async fn main() -> anyhow::Result<()> {
                     mgr.current_talkgroup().map(|t| t.0).unwrap_or(0)
                 };
 
+                // 2026-04-19: fan out HDU boundaries so the recorder
+                // can split per-PTT. TDULC boundaries are NOT emitted
+                // here — they require the LC body to extract the
+                // Motorola BY: source, which only the software framer
+                // sees. The ImbeForwarder::on_tdu_lc path publishes
+                // TdulcComplete with `source: Some(id)` when the LCW
+                // parser recognises Motorola TALK_COMPLETE. Keep the
+                // heartbeat stashing the latest NAC so that path can
+                // tag its event.
+                traffic_heartbeat_imbe
+                    .last_observed_nac
+                    .store(nac, Ordering::Relaxed);
+                if locked_tg_snapshot != 0 && duid == 0x0 {
+                    let _ = traffic_boundary_tx.send(audio::CallBoundary {
+                        kind: audio::CallBoundaryKind::HduStart,
+                        nac,
+                        talkgroup: Some(locked_tg_snapshot),
+                    });
+                }
+
                 // Log the coarse call boundaries so the event log
                 // reads like a call transcript. LDUs are too frequent
                 // (1 every ~30 ms) to log individually -- the vocoder
@@ -2608,30 +3111,34 @@ async fn main() -> anyhow::Result<()> {
                 // per second. Counters still update in the dispatch
                 // match above -- this only gates the Logs-tab spam.
                 if locked_tg_snapshot != 0 {
-                    match duid {
-                        0x0 => traffic_event_log.push(
-                            crate::event_log::LogCategory::Imbe,
-                            format!("HDU TG={} NAC=0x{:03X}", locked_tg_snapshot, nac),
-                            serde_json::json!({
-                                "duid":    "HDU",
-                                "tg":      locked_tg_snapshot,
-                                "nac":     nac,
-                            }),
-                        ),
-                        0x3 | 0xF => traffic_event_log.push(
+                    // 2026-04-19: log EVERY DUID (HDU, LDU1, LDU2,
+                    // TDU, TDU_LC) to the activity feed so the
+                    // dashboard shows the full per-frame transcript
+                    // the way SDRTrunk's `decoded_messages.log` does.
+                    // LDU lines previously only went to the WS
+                    // broadcast — now they appear in `/api/log` too,
+                    // which is what the Activity tab reads.
+                    let duid_label = match duid {
+                        0x0 => "HDU",
+                        0x3 => "TDU",
+                        0x5 => "LDU1",
+                        0xA => "LDU2",
+                        0xF => "TDU_LC",
+                        _ => "DUID?",
+                    };
+                    if duid_label != "DUID?" {
+                        traffic_event_log.push(
                             crate::event_log::LogCategory::Imbe,
                             format!(
                                 "{} TG={} NAC=0x{:03X}",
-                                if duid == 0xF { "TDU_LC" } else { "TDU" },
-                                locked_tg_snapshot, nac,
+                                duid_label, locked_tg_snapshot, nac,
                             ),
                             serde_json::json!({
-                                "duid":    if duid == 0xF { "TDU_LC" } else { "TDU" },
-                                "tg":      locked_tg_snapshot,
-                                "nac":     nac,
+                                "duid": duid_label,
+                                "tg":   locked_tg_snapshot,
+                                "nac":  nac,
                             }),
-                        ),
-                        _ => {}
+                        );
                     }
                 }
 
@@ -2742,16 +3249,23 @@ async fn main() -> anyhow::Result<()> {
 
     // Phase 7E: audio broadcast channel (vocoder -> HTTP/WebSocket).
     let audio_tx = audio::audio_channel();
+    // Note: `call_boundary_tx` is created up with `imbe_forwarder`
+    // (~line 682) so the traffic-LSM heartbeat task — which is
+    // spawned well before this point — can clone the tx.
 
     // Call recorder: subscribes to audio_tx and writes per-call WAV
     // files to /tmp/p25_recordings/. Ring-buffered in RecordingStore
-    // so the dashboard can list / play back recent calls.
+    // so the dashboard can list / play back recent calls. Also
+    // subscribes to call_boundary_tx for HDU-driven call splitting.
     let recordings = recorder::new_store();
+    let recorder_diag = recorder::new_diag();
     {
         let rx = audio_tx.subscribe();
+        let boundary_rx = call_boundary_tx.subscribe();
         let store = recordings.clone();
+        let diag = recorder_diag.clone();
         tokio::spawn(async move {
-            recorder::recorder_task(rx, store).await;
+            recorder::recorder_task(rx, boundary_rx, store, diag).await;
         });
     }
 
@@ -2994,10 +3508,21 @@ async fn main() -> anyhow::Result<()> {
                         continue;
                     }
 
+                    // 2026-04-19: pull the currently-stashed source
+                    // radio ID off the ImbeForwarder atomic. Set by
+                    // the grant follower from `GRP_VCH_GRANT.FM`
+                    // (primary) and refreshed by the traffic LDU1
+                    // LC decoder / Motorola TDULC TALK_COMPLETE
+                    // (fallback). `0` = unknown, in which case the
+                    // recorder leaves the `_fromN` suffix off.
+                    let source = voc_forwarder
+                        .current_source
+                        .load(Ordering::Relaxed);
                     // Push to audio broadcast (ignore if no subscribers)
                     let _ = voc_audio_tx.send(audio::AudioChunk {
                         pcm,
                         talkgroup: tg,
+                        source,
                     });
                 }
             }
@@ -3035,12 +3560,14 @@ async fn main() -> anyhow::Result<()> {
         imbe_forwarder: imbe_forwarder.clone(),
         monitor_list: monitor_list.clone(),
         audio_tx: audio_tx.clone(),
+        call_boundary_tx: call_boundary_tx.clone(),
         audio_ws_lag_total: std::sync::Arc::new(
             std::sync::atomic::AtomicU64::new(0),
         ),
         boot_instant: std::time::Instant::now(),
         event_log: event_log.clone(),
         recordings: recordings.clone(),
+        recorder_diag: recorder_diag.clone(),
         active_modulation: active_modulation.clone(),
     });
 

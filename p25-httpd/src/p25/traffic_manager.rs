@@ -68,6 +68,28 @@ pub struct TrafficManager {
     /// the polling task forwarded; some are duplicates that don't
     /// trigger a retune).
     pub grants_seen: u64,
+    /// 2026-04-19: unique `(tg, freq)` grants first observed within the
+    /// last `grant_dedup_window_ms`. SDRTrunk's per-call log typically
+    /// shows ~3 `GRP_V_CH_GRANT` events per real call (one on first
+    /// issue, two on rebroadcast over the ~12 s of voice) while our
+    /// `grants_seen` counts every decode of any grant-family opcode,
+    /// producing a ~20× over-count vs the SDRTrunk "unique grant"
+    /// semantic. Splitting into `_new` / `_update` lets the dashboard
+    /// reconcile the two semantics without losing the raw count.
+    pub grants_seen_new: u64,
+    /// 2026-04-19: refreshes of a `(tg, freq)` seen inside the dedup
+    /// window. `grants_seen == grants_seen_new + grants_seen_update`
+    /// modulo dedup-cache eviction.
+    pub grants_seen_update: u64,
+    /// LRU-ish cache: `(tg, freq_hz) -> last_seen Instant`. Entries
+    /// older than `grant_dedup_window_ms` are evicted on the next
+    /// `handle_grant` call to keep the map bounded.
+    grant_dedup_last_seen:
+        std::collections::HashMap<(u16, u64), Instant>,
+    /// 2 s dedup window. Spec says "1-2 s"; we go with 2 s so a
+    /// once-per-second GVCG rebroadcast still collapses into one new
+    /// grant.
+    grant_dedup_window_ms: u64,
     /// Total retunes triggered (handle_grant calls that returned true).
     pub retunes: u64,
     /// Wall-clock instant of the most recent retune.
@@ -198,6 +220,10 @@ impl TrafficManager {
             call_timeout_ms: 2000,
             last_activity: Instant::now(),
             grants_seen: 0,
+            grants_seen_new: 0,
+            grants_seen_update: 0,
+            grant_dedup_last_seen: std::collections::HashMap::new(),
+            grant_dedup_window_ms: 2_000,
             retunes: 0,
             last_retune_at: None,
             grants_rejected_encrypted: 0,
@@ -305,6 +331,30 @@ impl TrafficManager {
         frequency_hz: u64,
     ) -> bool {
         self.grants_seen += 1;
+
+        // 2026-04-19: split the raw count into `_new` and `_update`
+        // buckets so the dashboard can reconcile Fishball's
+        // every-decode counter with SDRTrunk's one-per-unique-grant
+        // semantics. A `(tg, freq)` pair seen within the dedup window
+        // counts as an update; otherwise it's a new grant event and
+        // we remember its timestamp. Evict stale entries on each call
+        // so the map stays O(active calls) rather than growing with
+        // every historical grant.
+        let now = Instant::now();
+        let window =
+            std::time::Duration::from_millis(self.grant_dedup_window_ms);
+        self.grant_dedup_last_seen
+            .retain(|_, &mut last| now.duration_since(last) <= window);
+        let key = (talkgroup.0, frequency_hz);
+        match self.grant_dedup_last_seen.get(&key) {
+            Some(&last) if now.duration_since(last) <= window => {
+                self.grants_seen_update += 1;
+            }
+            _ => {
+                self.grants_seen_new += 1;
+            }
+        }
+        self.grant_dedup_last_seen.insert(key, now);
 
         // Same call (same TG)? Refresh activity. If the network
         // moved the TG to a new frequency, fall through to the

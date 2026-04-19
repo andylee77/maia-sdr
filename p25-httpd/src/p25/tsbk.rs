@@ -87,10 +87,43 @@ pub enum TsbkOpcode {
     /// Telephone Interconnect Voice Channel Grant Update (0x09).
     /// Phase 6F.11.
     TelephoneInterconnectVoiceChannelGrantUpdate,
+    /// Radio Unit Monitor Command (0x0B) -- site commands a specific
+    /// radio to transmit so dispatch can audit it. Low volume on
+    /// voice-only systems; clears the "Unknown 0x0B" histogram entry
+    /// seen on Clay County.
+    RadioUnitMonitorCommand,
+    /// SNDCP Data Channel Grant (0x14) -- data-channel grant for
+    /// packet services (sister to 0x16 `SNDCP_DCH_ANN_EX`). Not all
+    /// sites carry data, but when they do the follower has to be
+    /// able to tell a data grant from a voice grant.
+    SndcpDataChannelGrant,
+    /// SNDCP Data Page Request (0x15) -- pages a unit to receive a
+    /// data call. Rare but appears on SNDCP-capable sites.
+    SndcpDataPageRequest,
     /// SNDCP Data Channel Announcement Explicit (0x16) -- which
     /// downlink/uplink channel carries SNDCP packet data services.
     /// Phase 6F.11.
     SndcpDataChannelAnnouncementExplicit,
+    /// Acknowledge Response — Network Entity (0x20). The FNE
+    /// (network) acks a unit-originated action (registration,
+    /// affiliation, etc.). Useful for diagnosing why a unit isn't
+    /// getting grants.
+    AcknowledgeResponseFne,
+    /// Group Affiliation Response (0x28). FNE's accept/deny reply to
+    /// a group-affiliation request.
+    GroupAffiliationResponse,
+    /// Group Affiliation Query (0x2A). FNE queries a unit for its
+    /// current group affiliations.
+    GroupAffiliationQuery,
+    /// Location Registration Response (0x2B). FNE acks/denies the
+    /// RFSS-level registration for a unit.
+    LocationRegistrationResponse,
+    /// Unit Registration Response (0x2C). FNE acks/denies unit
+    /// registration onto the system.
+    UnitRegistrationResponse,
+    /// Unit De-Registration Acknowledge (0x2F). FNE confirms a unit
+    /// leaving the system.
+    UnitDeRegistrationAcknowledge,
     /// TDMA Synchronization Broadcast (0x30) -- system date/time +
     /// microslot rollover info. Phase 6F.11.
     TdmaSyncBroadcast,
@@ -131,7 +164,16 @@ impl From<u8> for TsbkOpcode {
             0x05 => Self::UnitToUnitAnswerRequest,
             0x08 => Self::TelephoneInterconnectVoiceChannelGrant,
             0x09 => Self::TelephoneInterconnectVoiceChannelGrantUpdate,
+            0x0B => Self::RadioUnitMonitorCommand,
+            0x14 => Self::SndcpDataChannelGrant,
+            0x15 => Self::SndcpDataPageRequest,
             0x16 => Self::SndcpDataChannelAnnouncementExplicit,
+            0x20 => Self::AcknowledgeResponseFne,
+            0x28 => Self::GroupAffiliationResponse,
+            0x2A => Self::GroupAffiliationQuery,
+            0x2B => Self::LocationRegistrationResponse,
+            0x2C => Self::UnitRegistrationResponse,
+            0x2F => Self::UnitDeRegistrationAcknowledge,
             0x30 => Self::TdmaSyncBroadcast,
             0x33 => Self::IdentifierUpdateTdma,
             0x34 => Self::IdentifierUpdateVuhf,
@@ -292,6 +334,116 @@ pub enum TsbkMessage {
         target: RadioId,
         source: RadioId,
     },
+
+    /// Radio Unit Monitor Command (opcode 0x0B). Site commands
+    /// `target` to transmit so `source` can audit the channel.
+    /// SDRTrunk `RadioUnitMonitorCommand.java` bit layout: source at
+    /// 32-55, target at 56-79.
+    RadioUnitMonitorCommand {
+        source: RadioId,
+        target: RadioId,
+    },
+
+    /// SNDCP Data Channel Grant (opcode 0x14). Packet-data grant for
+    /// `target` on (`downlink_channel`, `uplink_channel`). SDRTrunk
+    /// `SNDCPDataChannelGrant.java`: service options 16-23, downlink
+    /// channel 24-39, uplink channel 40-55, target 56-79.
+    SndcpDataChannelGrant {
+        service_options: u8,
+        downlink_channel: Channel,
+        uplink_channel: Channel,
+        target: RadioId,
+    },
+
+    /// SNDCP Data Page Request (opcode 0x15). Paging `target` from
+    /// `source` for a data call. SDRTrunk `SNDCPDataPageRequest.java`:
+    /// service options 16-23, target 32-55, source 56-79.
+    SndcpDataPageRequest {
+        service_options: u8,
+        target: RadioId,
+        source: RadioId,
+    },
+
+    /// Acknowledge Response — FNE (opcode 0x20). FNE acknowledging a
+    /// unit-originated action. SDRTrunk `AcknowledgeResponse.java`:
+    /// service_type at 18-23, source 32-55, target 56-79. The
+    /// additional/extended-info flags at bits 16/17 pick which of the
+    /// overlapping WACN / SYSTEM fields are meaningful; we expose the
+    /// flags + always-present addresses and leave the conditional
+    /// fields to a future need.
+    AcknowledgeResponseFne {
+        service_type: u8,
+        additional_info: bool,
+        extended_info: bool,
+        source: RadioId,
+        target: RadioId,
+    },
+
+    /// Group Affiliation Response (opcode 0x28). FNE's accept/deny
+    /// for a group-affiliation request. SDRTrunk
+    /// `GroupAffiliationResponse.java`: global_local flag at bit 16,
+    /// response 22-23, announcement group 24-39, group 40-55, target
+    /// 56-79.
+    GroupAffiliationResponse {
+        response: u8,
+        announcement_group: Talkgroup,
+        group: Talkgroup,
+        target: RadioId,
+    },
+
+    /// Group Affiliation Query (opcode 0x2A). FNE asking `target`
+    /// what groups it's affiliated with. SDRTrunk
+    /// `GroupAffiliationQuery.java`: target 32-55, source 56-79.
+    GroupAffiliationQuery {
+        target: RadioId,
+        source: RadioId,
+    },
+
+    /// Location Registration Response (opcode 0x2B). FNE's
+    /// accept/deny for an RFSS-level registration. SDRTrunk
+    /// `LocationRegistrationResponse.java`: response 22-23, group
+    /// 24-39, RFSS 40-47, site 48-55, target 56-79.
+    LocationRegistrationResponse {
+        response: u8,
+        group: Talkgroup,
+        rfss_id: u8,
+        site_id: u8,
+        target: RadioId,
+    },
+
+    /// Unit Registration Response (opcode 0x2C). FNE's accept/deny
+    /// for unit registration onto the system. SDRTrunk
+    /// `UnitRegistrationResponse.java`: response 18-19, system_id
+    /// 20-31, source_id 32-55, source_address 56-79.
+    UnitRegistrationResponse {
+        response: u8,
+        system_id: u16,
+        source_id: RadioId,
+        source_address: RadioId,
+    },
+
+    /// Unit De-Registration Acknowledge (opcode 0x2F). FNE confirms
+    /// `target` leaving the system. SDRTrunk
+    /// `UnitDeRegistrationAcknowledge.java`: WACN 24-43, system
+    /// 44-55, target 56-79.
+    UnitDeRegistrationAcknowledge {
+        wacn: u32,
+        system_id: u16,
+        target: RadioId,
+    },
+
+    /// Manufacturer-specific (non-standard MFID) TSBK. Captured as an
+    /// opaque opcode + payload so the message counts appear in the
+    /// histogram / recent-TSBK feed instead of silently dropping. On
+    /// Clay County this carries the Motorola `MFID=0x90` frames
+    /// (`SYSTEM LOADING`, `TDMA DATA CHANNEL NOT ACTIVE`, `TRAFFIC
+    /// CHANNEL`). Other vendor MFIDs (Harris 0xA4, etc.) also land
+    /// here.
+    ManufacturerSpecific {
+        mfid: u8,
+        opcode: u8,
+        payload: [u8; 8],
+    },
 }
 
 /// A raw TSBK block (12 bytes after trellis + RS decode)
@@ -299,6 +451,12 @@ pub enum TsbkMessage {
 pub struct TsbkBlock {
     pub last_block: bool,
     pub opcode: TsbkOpcode,
+    /// Raw 6-bit opcode byte (data[0] & 0x3F). Kept alongside the
+    /// typed `opcode` so the vendor (non-MFID-0x00) path in
+    /// `decode()` can carry the value forward into the
+    /// `ManufacturerSpecific` message without having to reverse-map
+    /// from the enum.
+    pub opcode_raw: u8,
     pub manufacturer: u8,
     pub payload: [u8; 8],
 }
@@ -369,6 +527,7 @@ impl TsbkBlock {
     /// them in the struct.
     pub fn parse(data: &[u8; 12]) -> Self {
         let lb = (data[0] >> 7) & 1 == 1;
+        let opcode_raw = data[0] & 0x3F;
         let opcode = TsbkOpcode::from(data[0]);
         let manufacturer = data[1];
         let mut payload = [0u8; 8];
@@ -377,6 +536,7 @@ impl TsbkBlock {
         TsbkBlock {
             last_block: lb,
             opcode,
+            opcode_raw,
             manufacturer,
             payload,
         }
@@ -426,11 +586,23 @@ impl TsbkBlock {
         }
     }
 
-    /// Decode the payload into a typed message
+    /// Decode the payload into a typed message.
+    ///
+    /// Non-standard MFID frames (Motorola 0x90, Harris 0xA4, etc) are
+    /// emitted as `TsbkMessage::ManufacturerSpecific` with the raw
+    /// opcode + payload so callers still see the event (counter, log
+    /// line) without us having to port every vendor's OSP table. The
+    /// LSM decoder's own TSBK histogram already buckets them by MFID
+    /// via `tsbk_mfid_hist_ok` -- this `decode()` return path just
+    /// makes sure the message appears in `recent_messages` / the
+    /// dashboard activity feed.
     pub fn decode(&self) -> Option<TsbkMessage> {
-        // Skip non-standard manufacturer messages
         if self.manufacturer != 0x00 {
-            return None;
+            return Some(TsbkMessage::ManufacturerSpecific {
+                mfid: self.manufacturer,
+                opcode: self.opcode_raw,
+                payload: self.payload,
+            });
         }
 
         match self.opcode {
@@ -475,6 +647,33 @@ impl TsbkBlock {
             }
             TsbkOpcode::UnitToUnitAnswerRequest => {
                 Some(self.decode_uu_ans_req())
+            }
+            TsbkOpcode::RadioUnitMonitorCommand => {
+                Some(self.decode_radio_unit_monitor_command())
+            }
+            TsbkOpcode::SndcpDataChannelGrant => {
+                Some(self.decode_sndcp_data_channel_grant())
+            }
+            TsbkOpcode::SndcpDataPageRequest => {
+                Some(self.decode_sndcp_data_page_request())
+            }
+            TsbkOpcode::AcknowledgeResponseFne => {
+                Some(self.decode_acknowledge_response_fne())
+            }
+            TsbkOpcode::GroupAffiliationResponse => {
+                Some(self.decode_group_affiliation_response())
+            }
+            TsbkOpcode::GroupAffiliationQuery => {
+                Some(self.decode_group_affiliation_query())
+            }
+            TsbkOpcode::LocationRegistrationResponse => {
+                Some(self.decode_location_registration_response())
+            }
+            TsbkOpcode::UnitRegistrationResponse => {
+                Some(self.decode_unit_registration_response())
+            }
+            TsbkOpcode::UnitDeRegistrationAcknowledge => {
+                Some(self.decode_unit_deregistration_ack())
             }
             _ => None,
         }
@@ -938,6 +1137,191 @@ impl TsbkBlock {
         let target = RadioId(self.bits(&full, 32, 24) as u32);
         let source = RadioId(self.bits(&full, 56, 24) as u32);
         TsbkMessage::UnitToUnitAnswerRequest { target, source }
+    }
+
+    /// RADIO_UNIT_MONITOR_COMMAND (0x0B). SDRTrunk
+    /// `RadioUnitMonitorCommand.java`: source 32-55, target 56-79.
+    fn decode_radio_unit_monitor_command(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let source = RadioId(self.bits(&full, 32, 24) as u32);
+        let target = RadioId(self.bits(&full, 56, 24) as u32);
+        TsbkMessage::RadioUnitMonitorCommand { source, target }
+    }
+
+    /// SNDCP_DATA_CHANNEL_GRANT (0x14). SDRTrunk
+    /// `SNDCPDataChannelGrant.java`:
+    ///
+    /// | Field                    | Bits  | Width |
+    /// |--------------------------|-------|-------|
+    /// | data service options     | 16-23 | 8     |
+    /// | downlink freq band       | 24-27 | 4     |
+    /// | downlink channel number  | 28-39 | 12    |
+    /// | uplink freq band         | 40-43 | 4     |
+    /// | uplink channel number    | 44-55 | 12    |
+    /// | target address           | 56-79 | 24    |
+    fn decode_sndcp_data_channel_grant(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let service_options = self.bits(&full, 16, 8) as u8;
+        let downlink_channel = Channel(self.bits(&full, 24, 16) as u16);
+        let uplink_channel = Channel(self.bits(&full, 40, 16) as u16);
+        let target = RadioId(self.bits(&full, 56, 24) as u32);
+        TsbkMessage::SndcpDataChannelGrant {
+            service_options,
+            downlink_channel,
+            uplink_channel,
+            target,
+        }
+    }
+
+    /// SNDCP_DATA_PAGE_REQUEST (0x15). SDRTrunk
+    /// `SNDCPDataPageRequest.java`: data service options 16-23, target
+    /// 32-55, source 56-79.
+    fn decode_sndcp_data_page_request(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let service_options = self.bits(&full, 16, 8) as u8;
+        let target = RadioId(self.bits(&full, 32, 24) as u32);
+        let source = RadioId(self.bits(&full, 56, 24) as u32);
+        TsbkMessage::SndcpDataPageRequest {
+            service_options,
+            target,
+            source,
+        }
+    }
+
+    /// ACKNOWLEDGE_RESPONSE_FNE (0x20). SDRTrunk
+    /// `AcknowledgeResponse.java`:
+    ///
+    /// | Field                 | Bits  | Width |
+    /// |-----------------------|-------|-------|
+    /// | additional info flag  | 16    | 1     |
+    /// | extended info flag    | 17    | 1     |
+    /// | service type          | 18-23 | 6     |
+    /// | source address        | 32-55 | 24    |
+    /// | target address        | 56-79 | 24    |
+    ///
+    /// (The SDRTrunk decoder also maps overlapping WACN 24-43 /
+    /// SYSTEM 44-55 fields selected by the two flags, but we emit
+    /// just the always-present pieces plus the flags so callers can
+    /// re-extract those if ever needed.)
+    fn decode_acknowledge_response_fne(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let additional_info = self.bits(&full, 16, 1) != 0;
+        let extended_info = self.bits(&full, 17, 1) != 0;
+        let service_type = self.bits(&full, 18, 6) as u8;
+        let source = RadioId(self.bits(&full, 32, 24) as u32);
+        let target = RadioId(self.bits(&full, 56, 24) as u32);
+        TsbkMessage::AcknowledgeResponseFne {
+            service_type,
+            additional_info,
+            extended_info,
+            source,
+            target,
+        }
+    }
+
+    /// GROUP_AFFILIATION_RESPONSE (0x28). SDRTrunk
+    /// `GroupAffiliationResponse.java`:
+    ///
+    /// | Field                   | Bits  | Width |
+    /// |-------------------------|-------|-------|
+    /// | response                | 22-23 | 2     |
+    /// | announcement group      | 24-39 | 16    |
+    /// | group address           | 40-55 | 16    |
+    /// | target address          | 56-79 | 24    |
+    fn decode_group_affiliation_response(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let response = self.bits(&full, 22, 2) as u8;
+        let announcement_group = Talkgroup(self.bits(&full, 24, 16) as u16);
+        let group = Talkgroup(self.bits(&full, 40, 16) as u16);
+        let target = RadioId(self.bits(&full, 56, 24) as u32);
+        TsbkMessage::GroupAffiliationResponse {
+            response,
+            announcement_group,
+            group,
+            target,
+        }
+    }
+
+    /// GROUP_AFFILIATION_QUERY (0x2A). SDRTrunk
+    /// `GroupAffiliationQuery.java`: target 32-55, source 56-79.
+    fn decode_group_affiliation_query(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let target = RadioId(self.bits(&full, 32, 24) as u32);
+        let source = RadioId(self.bits(&full, 56, 24) as u32);
+        TsbkMessage::GroupAffiliationQuery { target, source }
+    }
+
+    /// LOCATION_REGISTRATION_RESPONSE (0x2B). SDRTrunk
+    /// `LocationRegistrationResponse.java`:
+    ///
+    /// | Field            | Bits  | Width |
+    /// |------------------|-------|-------|
+    /// | response         | 22-23 | 2     |
+    /// | group address    | 24-39 | 16    |
+    /// | RFSS             | 40-47 | 8     |
+    /// | site             | 48-55 | 8     |
+    /// | target address   | 56-79 | 24    |
+    fn decode_location_registration_response(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let response = self.bits(&full, 22, 2) as u8;
+        let group = Talkgroup(self.bits(&full, 24, 16) as u16);
+        let rfss_id = self.bits(&full, 40, 8) as u8;
+        let site_id = self.bits(&full, 48, 8) as u8;
+        let target = RadioId(self.bits(&full, 56, 24) as u32);
+        TsbkMessage::LocationRegistrationResponse {
+            response,
+            group,
+            rfss_id,
+            site_id,
+            target,
+        }
+    }
+
+    /// UNIT_REGISTRATION_RESPONSE (0x2C). SDRTrunk
+    /// `UnitRegistrationResponse.java`:
+    ///
+    /// | Field            | Bits  | Width |
+    /// |------------------|-------|-------|
+    /// | response         | 18-19 | 2     |
+    /// | system ID        | 20-31 | 12    |
+    /// | source ID        | 32-55 | 24    |
+    /// | source address   | 56-79 | 24    |
+    fn decode_unit_registration_response(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let response = self.bits(&full, 18, 2) as u8;
+        let system_id = self.bits(&full, 20, 12) as u16;
+        let source_id = RadioId(self.bits(&full, 32, 24) as u32);
+        let source_address = RadioId(self.bits(&full, 56, 24) as u32);
+        TsbkMessage::UnitRegistrationResponse {
+            response,
+            system_id,
+            source_id,
+            source_address,
+        }
+    }
+
+    /// UNIT_DE_REGISTRATION_ACKNOWLEDGE (0x2F). SDRTrunk
+    /// `UnitDeRegistrationAcknowledge.java`: WACN 24-43 (20 bits),
+    /// system 44-55 (12 bits), target 56-79 (24 bits).
+    fn decode_unit_deregistration_ack(&self) -> TsbkMessage {
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
+        let wacn = self.bits(&full, 24, 20) as u32;
+        let system_id = self.bits(&full, 44, 12) as u16;
+        let target = RadioId(self.bits(&full, 56, 24) as u32);
+        TsbkMessage::UnitDeRegistrationAcknowledge {
+            wacn,
+            system_id,
+            target,
+        }
     }
 }
 

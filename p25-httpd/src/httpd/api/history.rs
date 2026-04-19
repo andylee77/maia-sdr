@@ -192,6 +192,12 @@ pub async fn get_tsbk_opcodes(
     // appear in `Opcode.java` for the OSP direction (control-channel
     // outbound). Lowercase here means we don't recognise it as a P25
     // opcode at all (probably trellis-decode garbage).
+    // Labels sourced from SDRTrunk `Opcode.java` (the `OSP_*` outbound
+    // table). 2026-04-19 fix: previous table had 0x27 / 0x28 / 0x2A /
+    // 0x2B / 0x2C mis-labeled against their SDRTrunk equivalents,
+    // which is what let the on-target histogram claim things like
+    // "NET_STS_BCST_EXP" for a Clay County frame that SDRTrunk's own
+    // log called `GRP_AFFIL_QUERY`.
     fn label(op: u8) -> &'static str {
         match op {
             0x00 => "GRP_V_CH_GRANT",
@@ -203,30 +209,32 @@ pub async fn get_tsbk_opcodes(
             0x08 => "TELE_INT_V_CH_GRANT",
             0x09 => "TELE_INT_V_CH_GRANT_UPDT",
             0x0A => "TELE_INT_ANS_REQ",
+            0x0B => "RAD_MON_CMD",
             0x14 => "SNDCP_DCH_GRANT",
             0x15 => "SNDCP_DCH_PAG_RQ",
             0x16 => "SNDCP_DCH_ANN_EX",
             0x18 => "STS_UPDT",
+            0x1A => "STS_Q",
             0x1C => "MSG_UPDT",
+            0x1D => "RAD_MON_ENH_CMD",
             0x1F => "CALL_ALERT",
-            0x20 => "ACK_RESPONSE_FNE",
-            0x21 => "QUEUED_RESP",
-            0x22 => "EXT_FNCT_CMD",
-            0x24 => "DENY_RESPONSE",
-            0x27 => "GRP_AFFIL_RESP",
-            0x28 => "SCCB",
-            0x29 => "RFSS_STS_BCST_EXP",
-            0x2A => "NET_STS_BCST_EXP",
-            0x2B => "ADJ_STS_BCST_EXP",
-            0x2C => "IDEN_UP_VUHF_EXP",
-            0x2D => "DENY_RESPONSE_EXP",
-            0x2F => "DE_REGIST_ACK",
+            0x20 => "ACK_RESP_FNE",
+            0x21 => "QUE_RSP",
+            0x24 => "EXT_FNCT_CMD",
+            0x27 => "DENY_RSP",
+            0x28 => "GRP_AFF_RSP",
+            0x29 => "SCCB_EXP",
+            0x2A => "GRP_AFF_Q",
+            0x2B => "LOC_RG_RSP",
+            0x2C => "U_REG_RSP",
+            0x2D => "U_REG_CMD",
+            0x2F => "U_DE_REG_ACK",
             0x30 => "TDMA_SYNC_BCST",
             0x31 => "AUTH_DMD",
-            0x32 => "AUTH_FNE_RESULT",
+            0x32 => "AUTH_FNE_RESP",
             0x33 => "IDEN_UPDATE_TDMA",
             0x34 => "IDEN_UPDATE_VUHF",
-            0x36 => "TIME_DATE",
+            0x36 => "TIME_DATE_ANN",
             0x37 => "ROAM_ADDR_CMD",
             0x38 => "SYS_SRV_BCST",
             0x39 => "SEC_CCH_BROADCST",
@@ -256,6 +264,10 @@ pub async fn get_tsbk_opcodes(
                 0x00 | 0x02 | 0x33 | 0x34 | 0x3A | 0x3B | 0x3C | 0x3D
                 // 6F.11: 5 new parsers added in this phase.
                 | 0x05 | 0x09 | 0x16 | 0x30 | 0x39
+                // 2026-04-19: registration/affiliation + SNDCP data +
+                // radio-monitor + FNE ack. See tsbk.rs decode().
+                | 0x03 | 0x0B | 0x14 | 0x15 | 0x20
+                | 0x28 | 0x2A | 0x2B | 0x2C | 0x2F
             );
             entries.push(serde_json::json!({
                 "opcode": format!("0x{:02X}", op),
@@ -414,6 +426,68 @@ pub async fn get_recent_tsbks(
             UnitToUnitAnswerRequest { target, source } => format!(
                 "UU_ANS_REQ TGT:{} SRC:{}", target, source
             ),
+            // 2026-04-19 new parsers:
+            RadioUnitMonitorCommand { source, target } => format!(
+                "RAD_MON_CMD SRC:{} TGT:{}", source, target
+            ),
+            SndcpDataChannelGrant {
+                service_options, downlink_channel, uplink_channel, target,
+            } => format!(
+                "SNDCP_DCH_GRANT DL:{} UL:{} TGT:{} OPTS:0x{:02X}",
+                downlink_channel, uplink_channel, target, service_options
+            ),
+            SndcpDataPageRequest {
+                service_options, target, source,
+            } => format!(
+                "SNDCP_DCH_PAG_RQ TGT:{} SRC:{} OPTS:0x{:02X}",
+                target, source, service_options
+            ),
+            AcknowledgeResponseFne {
+                service_type, additional_info, extended_info, source, target,
+            } => format!(
+                "ACK_RESP_FNE SVC:0x{:02X}{}{} SRC:{} TGT:{}",
+                service_type,
+                if *additional_info { " AI" } else { "" },
+                if *extended_info { " EI" } else { "" },
+                source, target
+            ),
+            GroupAffiliationResponse {
+                response, announcement_group, group, target,
+            } => format!(
+                "GRP_AFF_RSP RSP:{} TG:{} ANN_TG:{} TGT:{}",
+                response, group, announcement_group, target
+            ),
+            GroupAffiliationQuery { target, source } => format!(
+                "GRP_AFF_Q TGT:{} SRC:{}", target, source
+            ),
+            LocationRegistrationResponse {
+                response, group, rfss_id, site_id, target,
+            } => format!(
+                "LOC_RG_RSP RSP:{} TG:{} RFSS:{} SITE:{} TGT:{}",
+                response, group, rfss_id, site_id, target
+            ),
+            UnitRegistrationResponse {
+                response, system_id, source_id, source_address,
+            } => format!(
+                "U_REG_RSP RSP:{} SYS:{:03X} SRC_ID:{} SRC_ADDR:{}",
+                response, system_id, source_id, source_address
+            ),
+            UnitDeRegistrationAcknowledge { wacn, system_id, target } => format!(
+                "U_DE_REG_ACK WACN:{:05X} SYS:{:03X} TGT:{}",
+                wacn, system_id, target
+            ),
+            ManufacturerSpecific { mfid, opcode, .. } => {
+                let vendor = match mfid {
+                    0x90 => "MOT",
+                    0xA4 => "HAR",
+                    0x68 => "DVSI",
+                    _ => "VEN",
+                };
+                format!(
+                    "{} MFID:0x{:02X} OP:0x{:02X}",
+                    vendor, mfid, opcode
+                )
+            }
         }
     };
 

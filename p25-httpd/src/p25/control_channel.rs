@@ -16,7 +16,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
 /// Simple ISO 8601-ish timestamp for events
-fn chrono_timestamp() -> String {
+pub fn chrono_timestamp() -> String {
     let dur = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -284,24 +284,53 @@ pub trait VoiceHandler {
     ///
     /// Default impl is a no-op so implementations can choose to
     /// only override the methods they care about.
-    fn on_ldu1(&self, _frames: &[crate::p25::voice_frame::ImbeFrameRaw; 9]) {}
+    ///
+    /// 2026-04-19 signature change: `body_raw` is now also passed so
+    /// the handler can parse the LDU1 Link Control Word via
+    /// `voice_frame::parse_ldu1_lcw` to recover the mid-call
+    /// `FM:<source>` / `TO:<TG>` / encryption flag. Pre-existing
+    /// consumers that only want the 9 IMBE frames can keep ignoring
+    /// `body_raw`.
+    fn on_ldu1(
+        &self,
+        _frames: &[crate::p25::voice_frame::ImbeFrameRaw; 9],
+        _body_raw: &[u8],
+    ) {
+    }
 
     /// Called once per successfully-framed LDU2.
-    fn on_ldu2(&self, _frames: &[crate::p25::voice_frame::ImbeFrameRaw; 9]) {}
+    ///
+    /// 2026-04-19 signature change: `body_raw` is now also passed so
+    /// the handler can parse the LDU2 Encryption Sync Signature via
+    /// `voice_frame::parse_ldu2_ess` and recover the 72-bit MI +
+    /// algorithm + key id refreshed by every LDU2.
+    fn on_ldu2(
+        &self,
+        _frames: &[crate::p25::voice_frame::ImbeFrameRaw; 9],
+        _body_raw: &[u8],
+    ) {
+    }
 
-    /// Called once per HDU. Phase 7C ships with payload extraction
-    /// deferred (the encryption flag comes from the control channel
-    /// grant per `reference_p25_encryption_flag_from_control_channel.md`)
-    /// so this just signals "an HDU arrived" with no payload.
-    fn on_hdu(&self) {}
+    /// Called once per HDU.
+    ///
+    /// 2026-04-19 signature change: `body_raw` is now passed so the
+    /// handler can run `voice_frame::parse_hdu_body` and recover the
+    /// 120-bit header (MI, Algorithm, Key ID, TG) via Golay18 +
+    /// RS(63,47,17). Pre-2026-04-19 consumers that treated HDU as a
+    /// "call start" tick with no payload can keep ignoring `body_raw`.
+    fn on_hdu(&self, _body_raw: &[u8]) {}
 
     /// Called once per TDU (DUID 0x3, no payload).
     fn on_tdu(&self) {}
 
-    /// Called once per TDU_LC (DUID 0xF). Phase 7C ships without
-    /// LC payload extraction (defer the RS(24,12,13) decode to
-    /// 7C.2 / 7B); this just signals "a TDU_LC arrived".
-    fn on_tdu_lc(&self) {}
+    /// Called once per TDU_LC (DUID 0xF). 2026-04-19: now receives
+    /// the raw body dibit slice (159 dibits incl. status) so the
+    /// handler can parse the Link Control Word with
+    /// `voice_frame::parse_tdulc_lcw` and pick up the Motorola
+    /// `TALK_COMPLETE` BY: source. Phase 7C original implementation
+    /// was a bare `fn on_tdu_lc(&self)` counter — pre-2026-04-19
+    /// handlers just ignored the body.
+    fn on_tdu_lc(&self, _body_raw: &[u8]) {}
 }
 
 /// Decoder state machine
@@ -1246,7 +1275,7 @@ impl ControlChannelDecoder {
                             self.ldu1_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
                                 if let Some(frames) = crate::p25::voice_frame::extract_imbe_frames(&self.du_buffer) {
-                                    handler.on_ldu1(&frames);
+                                    handler.on_ldu1(&frames, &self.du_buffer);
                                 }
                             }
                             true
@@ -1255,7 +1284,12 @@ impl ControlChannelDecoder {
                             self.ldu2_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
                                 if let Some(frames) = crate::p25::voice_frame::extract_imbe_frames(&self.du_buffer) {
-                                    handler.on_ldu2(&frames);
+                                    // 2026-04-19: `body_raw` is now also
+                                    // passed so the handler can parse the
+                                    // LDU2 Encryption Sync Signature via
+                                    // `voice_frame::parse_ldu2_ess` and
+                                    // recover the per-LDU refreshed MI.
+                                    handler.on_ldu2(&frames, &self.du_buffer);
                                 }
                             }
                             true
@@ -1263,7 +1297,12 @@ impl ControlChannelDecoder {
                         DataUnit::Hdu => {
                             self.hdu_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
-                                handler.on_hdu();
+                                // 2026-04-19: dispatch HDU body to the
+                                // handler so it can run the Golay18 +
+                                // RS(63,47,17) chain via
+                                // `voice_frame::parse_hdu_body` and
+                                // recover algorithm / key / MI.
+                                handler.on_hdu(&self.du_buffer);
                             }
                             true
                         }
@@ -1282,7 +1321,7 @@ impl ControlChannelDecoder {
                         DataUnit::TduLc => {
                             self.tdu_lc_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
-                                handler.on_tdu_lc();
+                                handler.on_tdu_lc(&self.du_buffer);
                             }
                             true
                         }
@@ -2008,6 +2047,175 @@ impl ControlChannelDecoder {
                     channel: None,
                     frequency_mhz: None,
                     source: Some(source.0),
+                }
+            }
+            // 2026-04-19 new TSBK parsers: registration / affiliation /
+            // SNDCP data / radio monitor / FNE ack / vendor-specific.
+            // Event feed only — these don't feed the grant store.
+            TsbkMessage::RadioUnitMonitorCommand { source, target } => {
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "RAD_MON_CMD".into(),
+                    summary: format!(
+                        "{}SRC:{} TGT:{}", block_prefix, source, target
+                    ),
+                    talkgroup: None,
+                    talkgroup_alias: None,
+                    channel: None,
+                    frequency_mhz: None,
+                    source: Some(source.0),
+                }
+            }
+            TsbkMessage::SndcpDataChannelGrant {
+                downlink_channel, uplink_channel, target, ..
+            } => {
+                let freq = self.channel_to_frequency(*downlink_channel);
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "SNDCP_GRANT".into(),
+                    summary: format!(
+                        "{}DL:{} UL:{} TGT:{}",
+                        block_prefix, downlink_channel, uplink_channel, target,
+                    ),
+                    talkgroup: None,
+                    talkgroup_alias: None,
+                    channel: Some(format!("{}", downlink_channel)),
+                    frequency_mhz: freq.map(|f| f as f64 / 1e6),
+                    source: Some(target.0),
+                }
+            }
+            TsbkMessage::SndcpDataPageRequest { target, source, .. } => {
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "SNDCP_PAGE".into(),
+                    summary: format!(
+                        "{}TGT:{} SRC:{}", block_prefix, target, source
+                    ),
+                    talkgroup: None,
+                    talkgroup_alias: None,
+                    channel: None,
+                    frequency_mhz: None,
+                    source: Some(source.0),
+                }
+            }
+            TsbkMessage::AcknowledgeResponseFne {
+                service_type, source, target, ..
+            } => {
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "ACK_RESP".into(),
+                    summary: format!(
+                        "{}SVC:0x{:02X} SRC:{} TGT:{}",
+                        block_prefix, service_type, source, target
+                    ),
+                    talkgroup: None,
+                    talkgroup_alias: None,
+                    channel: None,
+                    frequency_mhz: None,
+                    source: Some(source.0),
+                }
+            }
+            TsbkMessage::GroupAffiliationResponse {
+                response, group, target, ..
+            } => {
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "GRP_AFF_RSP".into(),
+                    summary: format!(
+                        "{}RSP:{} TG:{} TGT:{}",
+                        block_prefix, response, group, target
+                    ),
+                    talkgroup: Some(group.0),
+                    talkgroup_alias: self.aliases.get(&group.0).cloned(),
+                    channel: None,
+                    frequency_mhz: None,
+                    source: Some(target.0),
+                }
+            }
+            TsbkMessage::GroupAffiliationQuery { target, source } => {
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "GRP_AFF_Q".into(),
+                    summary: format!(
+                        "{}TGT:{} SRC:{}", block_prefix, target, source
+                    ),
+                    talkgroup: None,
+                    talkgroup_alias: None,
+                    channel: None,
+                    frequency_mhz: None,
+                    source: Some(source.0),
+                }
+            }
+            TsbkMessage::LocationRegistrationResponse {
+                response, group, rfss_id, site_id, target,
+            } => {
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "LOC_RG_RSP".into(),
+                    summary: format!(
+                        "{}RSP:{} TG:{} RFSS:{:02} SITE:{:02} TGT:{}",
+                        block_prefix, response, group, rfss_id, site_id, target
+                    ),
+                    talkgroup: Some(group.0),
+                    talkgroup_alias: self.aliases.get(&group.0).cloned(),
+                    channel: None,
+                    frequency_mhz: None,
+                    source: Some(target.0),
+                }
+            }
+            TsbkMessage::UnitRegistrationResponse {
+                response, system_id, source_id, source_address,
+            } => {
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "U_REG_RSP".into(),
+                    summary: format!(
+                        "{}RSP:{} SYS:{:03X} SRC_ID:{} SRC_ADDR:{}",
+                        block_prefix, response, system_id, source_id, source_address
+                    ),
+                    talkgroup: None,
+                    talkgroup_alias: None,
+                    channel: None,
+                    frequency_mhz: None,
+                    source: Some(source_address.0),
+                }
+            }
+            TsbkMessage::UnitDeRegistrationAcknowledge {
+                wacn, system_id, target,
+            } => {
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "U_DE_REG_ACK".into(),
+                    summary: format!(
+                        "{}WACN:{:05X} SYS:{:03X} TGT:{}",
+                        block_prefix, wacn, system_id, target
+                    ),
+                    talkgroup: None,
+                    talkgroup_alias: None,
+                    channel: None,
+                    frequency_mhz: None,
+                    source: Some(target.0),
+                }
+            }
+            TsbkMessage::ManufacturerSpecific { mfid, opcode, .. } => {
+                let vendor = match mfid {
+                    0x90 => "MOT",
+                    0xA4 => "HAR",
+                    0x68 => "DVSI",
+                    _ => "VEN",
+                };
+                p25_json::TsbkEvent {
+                    timestamp: now,
+                    event_type: "VENDOR".into(),
+                    summary: format!(
+                        "{}{} MFID:0x{:02X} OP:0x{:02X}",
+                        block_prefix, vendor, mfid, opcode
+                    ),
+                    talkgroup: None,
+                    talkgroup_alias: None,
+                    channel: None,
+                    frequency_mhz: None,
+                    source: None,
                 }
             }
         }

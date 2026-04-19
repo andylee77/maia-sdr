@@ -78,6 +78,17 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
 .evt-type.TRF_HDU { color: #4fc3f7; }
 .evt-type.TRF_LDU1, .evt-type.TRF_LDU2 { color: #4db6ac; }
 .evt-type.TRF_TDU, .evt-type.TRF_TDU_LC { color: #ffb74d; }
+/* 2026-04-19 decoded-LC variants */
+.evt-type.TRF_TDULC_MOT { color: #ef5350; font-weight: bold; }
+.evt-type.TRF_TDULC { color: #ffa726; }
+.evt-type.TRF_TDULC_OTHER { color: #9e9e9e; }
+.evt-type.TRF_TDULC_GVU { color: #ab47bc; }
+.evt-type.TRF_TDULC_CALL_TERM { color: #7e57c2; font-weight: bold; }
+.evt-type.TRF_TDULC_RFSS_STS { color: #5c6bc0; }
+.evt-type.TRF_TDULC_NET_STS { color: #42a5f5; }
+.evt-type.TRF_LDU1_LC { color: #26a69a; font-weight: bold; }
+.evt-type.TRF_HDU_INFO { color: #66bb6a; font-weight: bold; }
+.evt-type.TRF_LDU2_ESS { color: #8d6e63; }
 .evt-detail { flex: 1; }
 
 /* Frequency map */
@@ -740,13 +751,15 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       <tr>
         <th style="width:6em">Started</th>
         <th style="width:5em">TG</th>
+        <th style="width:7em">Source</th>
         <th style="width:5em">Duration</th>
         <th style="width:6em">Size</th>
+        <th>Filename</th>
         <th>Playback</th>
       </tr>
     </thead>
     <tbody id="rec_tbody">
-      <tr><td colspan="5" style="color:var(--text-dim)">No recordings yet.</td></tr>
+      <tr><td colspan="7" style="color:var(--text-dim)">No recordings yet.</td></tr>
     </tbody>
   </table>
   <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
@@ -811,7 +824,33 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   <label class="af"><input type="checkbox" data-types="SNDCP_ANN"><span class="af-swatch" style="background:var(--text-dim)"></span>SNDCP</label>
   <label class="af"><input type="checkbox" data-types="TDMA_SYNC"><span class="af-swatch" style="background:var(--text-dim)"></span>TDMA Sync</label>
   <label class="af"><input type="checkbox" data-types="UU_ANS_REQ" checked><span class="af-swatch" style="background:var(--text)"></span>UU Calls</label>
-  <label class="af"><input type="checkbox" data-types="TRF_HDU,TRF_LDU1,TRF_LDU2,TRF_TDU,TRF_TDU_LC" checked><span class="af-swatch" style="background:#4db6ac"></span>Traffic CH</label>
+  <!-- 2026-04-19: per-DUID traffic-channel filters. The old generic
+       "Traffic CH" umbrella masked individual frame types and required
+       every user to opt out of the full firehose. Each DUID now has
+       its own toggle so HDU / LDU1 / LDU2 / TDU / TDU_LC can be
+       enabled independently. Default: all off (noisy). -->
+  <label class="af"><input type="checkbox" data-types="TRF_HDU"><span class="af-swatch" style="background:#4fc3f7"></span>HDU</label>
+  <label class="af"><input type="checkbox" data-types="TRF_LDU1"><span class="af-swatch" style="background:#4db6ac"></span>LDU1</label>
+  <label class="af"><input type="checkbox" data-types="TRF_LDU2"><span class="af-swatch" style="background:#4db6ac"></span>LDU2</label>
+  <label class="af"><input type="checkbox" data-types="TRF_TDU"><span class="af-swatch" style="background:#ffb74d"></span>TDU</label>
+  <label class="af"><input type="checkbox" data-types="TRF_TDU_LC"><span class="af-swatch" style="background:#ffb74d"></span>TDU_LC</label>
+  <!-- Decoded-LC filters. TDULC_MOT = end-of-speaker Motorola
+       TALK_COMPLETE with BY:<src>; TDULC = standard GVCU tail;
+       LDU1_LC = mid-call FM:<src> TO:<TG> from the Hamming+RS decoded
+       Link Control Word inside LDU1 frames; TDULC_GVU / _CALL_TERM /
+       _RFSS_STS / _NET_STS = new 2026-04-19 standard LCW opcodes;
+       HDU_INFO / LDU2_ESS = Golay18+RS decoded HDU and LDU2
+       encryption-sync parameters. -->
+  <label class="af"><input type="checkbox" data-types="TRF_TDULC_MOT" checked><span class="af-swatch" style="background:#ef5350"></span>End Code (Motorola)</label>
+  <label class="af"><input type="checkbox" data-types="TRF_TDULC"><span class="af-swatch" style="background:#ffa726"></span>TDULC Standard</label>
+  <label class="af"><input type="checkbox" data-types="TRF_TDULC_OTHER"><span class="af-swatch" style="background:#9e9e9e"></span>TDULC Other</label>
+  <label class="af"><input type="checkbox" data-types="TRF_TDULC_GVU"><span class="af-swatch" style="background:#ab47bc"></span>TDULC GVU</label>
+  <label class="af"><input type="checkbox" data-types="TRF_TDULC_CALL_TERM" checked><span class="af-swatch" style="background:#7e57c2"></span>TDULC Call Term</label>
+  <label class="af"><input type="checkbox" data-types="TRF_TDULC_RFSS_STS"><span class="af-swatch" style="background:#5c6bc0"></span>TDULC RFSS Sts</label>
+  <label class="af"><input type="checkbox" data-types="TRF_TDULC_NET_STS"><span class="af-swatch" style="background:#42a5f5"></span>TDULC Net Sts</label>
+  <label class="af"><input type="checkbox" data-types="TRF_LDU1_LC" checked><span class="af-swatch" style="background:#26a69a"></span>LDU1 LC (FM:src)</label>
+  <label class="af"><input type="checkbox" data-types="TRF_HDU_INFO" checked><span class="af-swatch" style="background:#66bb6a"></span>HDU Info (ENC / TG)</label>
+  <label class="af"><input type="checkbox" data-types="TRF_LDU2_ESS"><span class="af-swatch" style="background:#8d6e63"></span>LDU2 ESS (MI)</label>
 </div>
 <div class="card">
   <div id="activity"></div>
@@ -3540,7 +3579,7 @@ async function refreshRecordings() {
   const tbody = $('rec_tbody');
   if (!Array.isArray(data.items) || data.items.length === 0) {
     if (window._REC_LAST_FP !== 'empty') {
-      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-dim)">No recordings yet.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-dim)">No recordings yet.</td></tr>';
       window._REC_LAST_FP = 'empty';
     }
     return;
@@ -3604,11 +3643,15 @@ async function refreshRecordings() {
 
   const rows = data.items.map(it => {
     const url = `/api/recordings/${it.id}.wav`;
+    const src = (it.source != null && it.source !== 0) ? it.source : '--';
+    const fn = it.filename || '--';
     return `<tr data-rec-id="${it.id}">
       <td>${fmtClock(it.started_unix_ms)}</td>
       <td>${it.talkgroup || '--'}</td>
+      <td>${src}</td>
       <td>${fmtDur(it.duration_ms)}</td>
       <td>${fmtSize(it.size_bytes)}</td>
+      <td style="font-family:monospace;font-size:0.85em;color:var(--text-dim);word-break:break-all">${escHtml(fn)}</td>
       <td><audio controls preload="none" style="height:28px" src="${url}"></audio>
           <a href="${url}" download style="margin-left:6px;font-size:0.85em">⬇</a></td>
     </tr>`;
