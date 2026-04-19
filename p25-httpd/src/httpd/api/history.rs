@@ -67,10 +67,11 @@ pub async fn get_recording_events(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<u64>,
 ) -> Json<serde_json::Value> {
-    // Pull all Recorder-category events and filter by recording_id
-    // field. The ring is bounded (1024 entries) so at most that many
-    // comparisons per request.
-    let all = state.event_log.recent_since(0, 10_000);
+    // Pull the whole ring (recorder entries are rare vs DUIDs) and
+    // filter by recording_id. 2026-04-19 fix: was capped at 10 000,
+    // which missed events for recordings whose entries were near the
+    // top of a full 16 384-entry ring.
+    let all = state.event_log.recent_since(0, usize::MAX);
     let items: Vec<_> = all.into_iter()
         .filter(|e| {
             e.category == "recorder"
