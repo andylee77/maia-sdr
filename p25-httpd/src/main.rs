@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-19-recorder-debug-log";
+pub const BUILD_TAG: &str = "2026-04-19-full-duid-log";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -1167,13 +1167,14 @@ async fn main() -> anyhow::Result<()> {
     // at the observed ~5 grants/sec + per-LDU IMBE batches. Tuned so
     // the dashboard tab can show "recent history" without pagination
     // while staying well under typical PS memory budgets. 2026-04-19
-    // late: bumped 1024 → 4096 after adding the Duid + Recorder
-    // categories — with every dispatched data unit and every recorder
-    // decision logged, the per-call event-tail view needs more
-    // headroom so that `/api/recordings/{id}/events` returns the full
-    // lifecycle even for long or late-in-session recordings. 4096
-    // entries × ~400 B = ~1.6 MB peak, still trivial on the Zynq.
-    let event_log = Arc::new(crate::event_log::EventLog::new(4096));
+    // late: bumped 1024 → 16384 to carry the full Duid + Recorder
+    // decode trail. With ~5-10 TSDUs/sec on control + bursts of 10
+    // LDU/sec on active traffic calls, 16k entries hold ~8-15 min of
+    // every-DUID history — enough for a debug-session to be
+    // reproducible after the fact via `/api/log?category=duid` without
+    // needing external tooling. 16384 × ~400 B = ~6.4 MB peak, still
+    // trivial on the Zynq (512 MB total, ~85 % free pre-log).
+    let event_log = Arc::new(crate::event_log::EventLog::new(16384));
     event_log.push(
         crate::event_log::LogCategory::System,
         "p25-httpd startup",
@@ -1187,6 +1188,28 @@ async fn main() -> anyhow::Result<()> {
     // dashboard Activity feed alongside the heartbeat's HDU/LDU/TDU
     // lines.
     imbe_forwarder.set_event_log(event_log.clone());
+
+    // 2026-04-19 late: pipe the event log + chain label into each
+    // ControlChannelDecoder so every successful NID decode emits one
+    // `Duid` category entry. `/api/log?category=duid` then returns a
+    // timestamped 100% decode trail across both chains, independent
+    // of the Grant / Imbe / Recorder categories. Chain labels line up
+    // with the dashboard's "decoder_compare" table.
+    {
+        let mut d = decoder.write().await;
+        d.event_log = Some(event_log.clone());
+        d.chain_label = "ps_c4fm";
+    }
+    {
+        let mut d = lsm_decoder.write().await;
+        d.event_log = Some(event_log.clone());
+        d.chain_label = "control";
+    }
+    {
+        let mut d = traffic_lsm_decoder.write().await;
+        d.event_log = Some(event_log.clone());
+        d.chain_label = "traffic";
+    }
 
     // Phase 9 retirement: `lsm_stats` (the shared `LsmStats` mutex
     // for the Phase 6D software pipeline) is gone along with the

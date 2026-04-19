@@ -252,6 +252,16 @@ pub struct ControlChannelDecoder {
     /// to whatever downstream consumer (Phase 7D vocoder, mpsc
     /// channel, etc).
     pub voice_handler: Option<Arc<dyn VoiceHandler + Send + Sync>>,
+    /// Optional structured event log. When set, the decoder emits one
+    /// `Duid` entry per successful NID decode (post-BCH, pre-dispatch)
+    /// including the chain label, NAC, DUID, and BCH-error count.
+    /// Paired with the `chain_label` field — "control" / "traffic" /
+    /// "ps_c4fm" — so log consumers can filter by chain.
+    pub event_log: Option<Arc<crate::event_log::EventLog>>,
+    /// Label inserted into every `Duid` log entry emitted by this
+    /// decoder. Defaults to "control"; main.rs overrides for the
+    /// traffic and C4FM decoder instances.
+    pub chain_label: &'static str,
     /// Phase 7C: cumulative count of LDU1 frames the decoder has
     /// successfully framed and dispatched. Per-call rate is computed
     /// downstream from successive snapshots.
@@ -686,6 +696,8 @@ impl ControlChannelDecoder {
             // decoders leave it None; the new traffic_lsm_decoder
             // sets it to forward IMBE frames downstream.
             voice_handler: None,
+            event_log: None,
+            chain_label: "control",
             ldu1_count: 0,
             ldu2_count: 0,
             hdu_count: 0,
@@ -1155,8 +1167,6 @@ impl ControlChannelDecoder {
                                 return;
                             }
                         };
-                    let _ = n_errors; // reserved for future telemetry
-
                     // Track the actual on-air DUID distribution. Useful
                     // for confirming the BCH-FEC hypothesis empirically:
                     // a working FEC would land bucket 7 at ~100%; a
@@ -1169,6 +1179,45 @@ impl ControlChannelDecoder {
                         // Update NAC if we see a valid one
                         self.system.nac = Some(nac);
                         self.nid_decoded_ok += 1;
+
+                        // 2026-04-19 late: structured DUID log. Fires
+                        // for every successful NID decode on every
+                        // chain (control / traffic / ps_c4fm) so
+                        // `/api/log?category=duid` returns a 100%
+                        // timestamped trail of what each decoder saw
+                        // independent of downstream dispatch. Chain
+                        // label + DUID name + NAC + BCH error count
+                        // + raw-vs-corrected-DUID so we can spot FEC
+                        // corrections.
+                        if let Some(ref log) = self.event_log {
+                            let duid_name: &'static str = match duid {
+                                DataUnit::Hdu => "HDU",
+                                DataUnit::Tdu => "TDU",
+                                DataUnit::Ldu1 => "LDU1",
+                                DataUnit::Tsdu => "TSDU",
+                                DataUnit::Ldu2 => "LDU2",
+                                DataUnit::Pdu => "PDU",
+                                DataUnit::TduLc => "TDU_LC",
+                            };
+                            log.push(
+                                crate::event_log::LogCategory::Duid,
+                                format!(
+                                    "{} {} NAC=0x{:03X} bch_err={}",
+                                    self.chain_label,
+                                    duid_name,
+                                    nac_raw,
+                                    n_errors,
+                                ),
+                                serde_json::json!({
+                                    "chain":      self.chain_label,
+                                    "duid":       duid_name,
+                                    "nac":        format!("0x{:03X}", nac_raw),
+                                    "bch_errors": n_errors,
+                                    "raw_duid":   format!("0x{:X}", on_air_duid & 0xF),
+                                    "bch_duid":   format!("0x{:X}", duid_raw & 0xF),
+                                }),
+                            );
+                        }
                         if matches!(duid, DataUnit::Tsdu) {
                             self.nid_decoded_tsdu += 1;
                         }
