@@ -2782,10 +2782,24 @@ function drawEyeCached() {
 
   const trace = $('eye_trace').value || 'i';
   const step = Math.max(1, Math.round(win_len));
-  // Stride by exactly one symbol per overlay (fractional sps tracked
-  // in float to avoid drift). Each N-symbol window starts on the next
-  // symbol boundary, which is the only stride that makes consecutive
-  // overlays align on the symbol decision grid regardless of nsym.
+  // Trigger: find the first rising zero-crossing of I within the ring
+  // and anchor the overlay sequence there instead of at ring[0]. Each
+  // WS frame replaces the ring with a different window of live
+  // samples, so without a trigger the overlay's starting sub-symbol
+  // phase is effectively random per redraw and the eye pattern walks
+  // horizontally. A zero-crossing happens at the same symbol phase
+  // every time (the signal's symbol clock is what defines it), so
+  // anchoring there locks the pattern. Falls back to 0 if no crossing
+  // exists in the first (ring_pos - step) samples — signal is
+  // all-positive or all-negative, nothing to trigger on.
+  let triggerStart = 0;
+  const triggerLimit = Math.max(0, EYE.ring_pos - step - 1);
+  for (let i = 0; i < triggerLimit; i++) {
+    if (EYE.ring_re[i] <= 0 && EYE.ring_re[i + 1] > 0) {
+      triggerStart = i;
+      break;
+    }
+  }
   // Prior code strided by win_len/2 (= nsym/2 symbols), which made
   // nsym=4 look 2-periodic and nsym=2 mis-align by 0.5 symbols.
   const stride = EYE.sps;
@@ -2794,7 +2808,7 @@ function drawEyeCached() {
   const drawTrace = (src, stroke) => {
     ctx.strokeStyle = stroke;
     ctx.beginPath();
-    for (let s_f = 0; Math.floor(s_f) + step <= EYE.ring_pos; s_f += stride) {
+    for (let s_f = triggerStart; Math.floor(s_f) + step <= EYE.ring_pos; s_f += stride) {
       const start = Math.floor(s_f);
       for (let k = 0; k < step; k++) {
         const x = mapX(k);
@@ -2815,7 +2829,7 @@ function drawEyeCached() {
   ctx.fillStyle = '#cbd5e1';
   ctx.font = `${Math.round(11 * dpr)}px system-ui,sans-serif`;
   ctx.textBaseline = 'top';
-  ctx.fillText(`${nsym} symbol(s) · sps=${EYE.sps.toFixed(2)} · |max|≈${amax.toFixed(0)}`,
+  ctx.fillText(`${nsym} symbol(s) · sps=${EYE.sps.toFixed(2)} · |max|≈${amax.toFixed(0)} · trig@${triggerStart}`,
                6 * dpr, 4 * dpr);
 }
 
