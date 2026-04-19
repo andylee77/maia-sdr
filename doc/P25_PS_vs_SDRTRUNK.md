@@ -267,11 +267,13 @@ The only FEC-layer capability SDRTrunk has that Fishball doesn't is the **TSBK C
 **Fishball** [recorder.rs](../p25-httpd/src/recorder.rs):
 
 - State: `Option<ActiveCall>` + finalize-grace timer.
-- Start triggers: first non-zero-TG `AudioChunk`, or different-TG chunk.
-- Split triggers: `HduStart` finalises + idles; `SpeakerEnd{source}` stamps source and finalises (TG-mismatch guarded); `TdulcComplete{source}` stamps source but does **not** finalise.
-- Grace finalise: 1.5 s no chunks.
+- Start triggers: first non-zero-TG `AudioChunk`, or different-TG chunk (TG change without Idle).
+- TG=0 chunks: **append to active recording if one exists** (mid-call grant-refresh flicker), **ignore otherwise** (between-calls noise — don't spuriously open recording with unknown TG). Introduced 2026-04-19 late to fix audio skips in legit calls caused by transient `current_talkgroup.store(0)` races.
+- Split triggers: `HduStart` finalises + idles (reason=hdu_start); `SpeakerEnd{source}` stamps source and finalises (reason=speaker_end, TG-mismatch guarded); `TdulcComplete{source}` stamps source but does **not** finalise.
+- Grace finalise: 1.5 s no chunks (reason=grace_window).
 - Filename: `rec_<start_unix_ms>_<id>_tg<TG>[_from<source>].wav` in `/tmp/p25_recordings/`.
 - 8 kHz PCM-16 mono WAV, fixed format (same as vocoder output).
+- Per-recording event timeline via `/api/recordings/{id}/events` — every recorder-category log entry whose `fields.recording_id` matches. Every open / finalise / discard / source stamp / boundary receive / TG-mismatch-guard skip is logged with a reason enum.
 
 **SDRTrunk** `P25P1CallSequenceRecorder`:
 

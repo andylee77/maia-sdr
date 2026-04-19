@@ -375,13 +375,28 @@ pub async fn recorder_task(
             recv = audio_rx.recv() => {
                 match recv {
                     Ok(chunk) => {
-                        // Chunk semantics: talkgroup == 0 is "no
-                        // call active" (vocoder emits this between
-                        // calls). Non-zero is active voice.
+                        // TG=0 semantics: either (a) follower is
+                        // genuinely idle between calls, or (b) a
+                        // transient flicker during a grant-refresh
+                        // race mid-call. Previously we dropped all
+                        // TG=0 chunks unconditionally, which matches
+                        // (a) but produced audio skips in (b) — real
+                        // audio samples were discarded while the
+                        // atomic briefly read 0 in the middle of a
+                        // call.
+                        //
+                        // 2026-04-19 late: context-aware handling.
+                        // If there's an active recording, append the
+                        // chunk (treat as mid-call flicker). If
+                        // there's no active recording, drop (treat
+                        // as between-calls noise — don't spuriously
+                        // open a new recording with unknown TG). The
+                        // grace window still finalises when real
+                        // silence persists.
                         if chunk.talkgroup == 0 {
-                            // The grace-window tick below will
-                            // finalise the active call if this
-                            // persists. Don't append zero-TG chunks.
+                            if let Some(c) = active.as_mut() {
+                                c.append(&chunk);
+                            }
                             continue;
                         }
                         match active.as_mut() {
