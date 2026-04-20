@@ -426,9 +426,10 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         self.log_duid("HDU");
         self.hdu_count.fetch_add(1, Ordering::Relaxed);
 
-        // Do NOT clear `current_source` here. On Clay County the CC
-        // grant with fresh SRC arrives 1-2 s BEFORE HDU on the traffic
-        // chain, so clearing at HDU time wipes the good CC-grant SRC.
+        // Do NOT clear `current_source` here. In observed operation
+        // the CC grant with fresh SRC arrives 1-2 s BEFORE HDU on the
+        // traffic chain, so clearing at HDU time wipes the good
+        // CC-grant SRC.
         // With LDU1 LC stamping removed, the grant follower is the only
         // writer to `current_source`; end-of-speaker MOT_TC TDULC
         // (Golay24+RS) provides a second-opinion stamp at finalise.
@@ -479,7 +480,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         // Bare TDU is a real end-of-call signal (just without the Link
         // Control payload TDU_LC carries). Route through SpeakerEnd so
         // end-of-call splits happen on the protocol signal rather than
-        // the 1.5 s grace timeout (on Clay County this pulled
+        // the 1.5 s grace timeout (on the test target this pulled
         // grace-finalise rate from ~37 % back into the noise).
         // `source: None` — bare TDU carries no speaker ID.
         let nac = self.last_observed_nac.load(Ordering::Relaxed);

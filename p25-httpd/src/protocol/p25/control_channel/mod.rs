@@ -384,8 +384,8 @@ const SYNC_NEAR_LOG_THRESHOLD: u32 = 20;
 ///
 // NID_TRANSMITTED_DIBITS / NID_STATUS_DIBIT_INDEX imported above from
 // `crate::protocol::p25::wire`. See doc/changes/022 for the status-
-// dibit fix history (NAC=0x8A1 → 0xE28 miscorrection that forced the
-// 33-not-32 geometry + index-11 skip).
+// dibit fix history (NAC=0x8A1 → 0xE28 miscorrection observed on the
+// test target, which forced the 33-not-32 geometry + index-11 skip).
 
 impl ControlChannelDecoder {
     pub fn new() -> Self {
@@ -1119,9 +1119,9 @@ impl ControlChannelDecoder {
     /// }
     /// ```
     ///
-    /// On the Clay County test target almost every TSDU is a 3-block
-    /// frame; aborting on TSBK1 CRC fail dropped TSBK2/TSBK3 ~55% of
-    /// the time (capped `tsbk_block_attempts/tsdu_attempts` at ~1.6
+    /// On the test target almost every TSDU is a 3-block frame;
+    /// aborting on TSBK1 CRC fail dropped TSBK2/TSBK3 ~55% of the
+    /// time (capped `tsbk_block_attempts/tsdu_attempts` at ~1.6
     /// instead of the theoretical 3.0).
     ///
     /// Called once per `du_expected_len` boundary:

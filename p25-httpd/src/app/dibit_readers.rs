@@ -47,7 +47,7 @@ pub fn spawn_ps_c4fm_control_reader(
         let reader_core = ip_core.clone();
         let reader_decoder = decoder.clone();
         // 2026-04-19 phantom-TSBK fix. When active_modulation is LSM
-        // (mode == 2, the default for Clay / Duval) the PS C4FM
+        // (mode == 2, the default for simulcast sites) the PS C4FM
         // framer + trellis + CRC pipeline below produces nothing of
         // value: the control DDC carries an LSM signal and the C4FM
         // slicer produces random-ish dibits that occasionally pass
@@ -255,8 +255,8 @@ pub fn spawn_hdl_lsm_traffic_reader(
         //
         // The decoder runs the same state machine as the control
         // side -- it'll go through Hunting until a sync hit, decode
-        // the NID, then dispatch by DUID. On a real call (Clay
-        // County voice channel locked) we expect:
+        // the NID, then dispatch by DUID. On a real call (voice
+        // channel locked) we expect:
         //   - first event: HDU on call start
         //   - then 9-10x LDU1 / LDU2 alternation per second
         //   - final event: TDU or TDU_LC on call end
@@ -372,12 +372,11 @@ pub fn spawn_ps_c4fm_traffic_reader(
         // traffic_dma sub-buffer interrupt, drains the ring via
         // `read_traffic_buffers()`, counts dibits + maintains a per-dibit
         // histogram, and updates the shared `TrafficStats`. Does NOT
-        // feed a decoder -- the C4FM chain produces garbage on the LSM
-        // Clay County voice channels we are validating against. The
-        // histogram alone is enough to confirm "the chain is alive": a
-        // dead chain produces all-zero dibits, a live chain produces an
-        // even-ish spread across {0,1,2,3} (LSM through a C4FM slicer
-        // looks essentially random).
+        // feed a decoder -- the C4FM chain produces garbage on LSM
+        // voice channels. The histogram alone is enough to confirm
+        // "the chain is alive": a dead chain produces all-zero dibits,
+        // a live chain produces an even-ish spread across {0,1,2,3}
+        // (LSM through a C4FM slicer looks essentially random).
         //
         // Mirrors the control-channel dibit reader at line ~358 above
         // but against the traffic_dma ring + traffic stats sink. Bumps

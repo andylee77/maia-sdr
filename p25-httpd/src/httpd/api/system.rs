@@ -469,10 +469,10 @@ pub async fn get_endpoints(
 
 
 pub async fn get_system(State(state): State<Arc<AppState>>) -> Json<SystemInfo> {
-    // 2026-04-16 modulation selector: picks LSM (Clay/Duval) or
-    // C4FM (FP&L, St Johns) based on AppState.active_modulation,
-    // auto-detected by the background task in main.rs that watches
-    // nid_decoded_ok delta across both decoders.
+    // 2026-04-16 modulation selector: picks LSM (simulcast) or
+    // C4FM (FDMA) based on AppState.active_modulation, auto-detected
+    // by the background task in main.rs that watches nid_decoded_ok
+    // delta across both decoders.
     let dec = state.active_control_decoder().read().await;
     let s = &dec.system;
     let system_clock_str = s.last_sync_clock.map(

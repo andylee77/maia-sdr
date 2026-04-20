@@ -537,10 +537,9 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
      HdlLsmRuntime struct that taps the FPGA register bank
      directly). -->
 
-<!-- 2026-04-16: PS C4FM dibit diagnostics retired from the dashboard.
-     The HDL LSM chain decodes both C4FM and LSM sites (validated on
-     FP&L + Clay + Duval) so the PS C4FM path is dormant everywhere.
-     The LSM dibit stream card below is what's actually live. -->
+<!-- PS C4FM dibit diagnostics retired from the dashboard. The HDL
+     LSM chain decodes both C4FM and LSM sites, so the PS C4FM path
+     is dormant. The LSM dibit stream card below is the live one. -->
 <h2>LSM Dibit Stream Diagnostics <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">PL HDL LSM chain (lsm_dibit_dma)</span></h2>
 <div class="grid2">
   <div class="card">
@@ -633,7 +632,7 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
        ±(BW/2) window, auto-nudge rx_lo to keep the NCO in range. -->
   <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px;font-size:0.85em">
     <label for="bi_retune_mhz"><b>Control (MHz)</b>:</label>
-    <input type="number" id="bi_retune_mhz" step="0.001" placeholder="e.g. 855.4875"
+    <input type="number" id="bi_retune_mhz" step="0.001" placeholder="MHz"
       style="width:11em;font-family:inherit" />
     <label for="bi_center_mhz"><b>Center (MHz)</b>:</label>
     <input type="number" id="bi_center_mhz" step="0.001" placeholder="auto"
@@ -649,8 +648,8 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
     <select id="bi_mod_sel" onchange="setModulation(this.value)"
       style="padding:3px 6px;font-family:inherit">
       <option value="auto">Auto-detect</option>
-      <option value="lsm">LSM (Clay, Duval, Jax Sheriff)</option>
-      <option value="c4fm">C4FM (FP&amp;L, St Johns)</option>
+      <option value="lsm">LSM (simulcast)</option>
+      <option value="c4fm">C4FM</option>
     </select>
     <span class="v" id="bi_mod_status" style="font-size:0.85em;color:var(--text-dim)">--</span>
   </div>

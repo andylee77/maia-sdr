@@ -54,10 +54,9 @@ pub struct AppState {
     /// Phase 6E.10 LSM `ControlChannelDecoder`, fed by the HDL LSM chain
     /// via `lsm_dibit_dma`. This is now the source of truth for the
     /// dashboard's System Identity, Decode Stats, Active Grants, and
-    /// Frequency Bands panels because the test target (Clay County NAC
-    /// 0x8A1) is an LSM simulcast control channel that the C4FM decoder
-    /// only ever sees as garbage. Phase 6F.1 dashboard migration --
-    /// see doc/changes/024 follow-up notes.
+    /// Frequency Bands panels because LSM simulcast control channels
+    /// only decode as garbage through the C4FM chain. Phase 6F.1
+    /// dashboard migration -- see doc/changes/024 follow-up notes.
     pub lsm_decoder: Arc<RwLock<ControlChannelDecoder>>,
     // Phase 9 retirement: `iq_lsm_decoder` (Phase 6D software
     // LSM pipeline's TSBK sink) and `lsm_stats` (Phase 6D pipeline
@@ -178,8 +177,8 @@ pub struct AppState {
     ///
     /// Encoding:
     ///   0 = Auto (probing; defaults to LSM until first valid NID)
-    ///   1 = C4FM (force control chain, e.g. FP&L 935, St Johns 774)
-    ///   2 = LSM  (force LSM simulcast chain, e.g. Clay/Duval)
+    ///   1 = C4FM (force C4FM control chain)
+    ///   2 = LSM  (force LSM simulcast control chain)
     pub active_modulation: Arc<std::sync::atomic::AtomicU8>,
 }
 

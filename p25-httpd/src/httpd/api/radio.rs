@@ -50,7 +50,7 @@ pub async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelG
         .unwrap_or_default();
 
     // 2026-04-16: read from whichever decoder the modulation selector
-    // picks (LSM for Clay/Duval, C4FM for FP&L/St Johns).
+    // picks (LSM for simulcast sites, C4FM for FDMA sites).
     let dec = state.active_control_decoder().read().await;
     let mut by_channel: std::collections::HashMap<u16, ChannelGrant> =
         std::collections::HashMap::new();

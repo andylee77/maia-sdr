@@ -526,7 +526,7 @@ impl TrafficManager {
     /// marker at ~80 ms intervals, Phase 10 TODO) kept extending
     /// the hold and pinned the traffic DDC on dead channels for
     /// 5-10 s instead of the intended 2 s. Live on-target
-    /// measurement at Duval County NAC 3BA on 2026-04-15 showed
+    /// on-target measurement showed
     /// LDU1+LDU2 = 411 vs TDU_LC = 835 (2:1), with short calls
     /// missing voice capture entirely because the previous call's
     /// hold hadn't released yet. SDRTrunk reference (see

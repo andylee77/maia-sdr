@@ -107,8 +107,8 @@ pub enum TsbkOpcode {
     TelephoneInterconnectVoiceChannelGrantUpdate,
     /// Radio Unit Monitor Command (0x0B) -- site commands a specific
     /// radio to transmit so dispatch can audit it. Low volume on
-    /// voice-only systems; clears the "Unknown 0x0B" histogram entry
-    /// seen on Clay County.
+    /// voice-only systems; clears occasional "Unknown 0x0B" histogram
+    /// hits.
     RadioUnitMonitorCommand,
     /// SNDCP Data Channel Grant (0x14) -- data-channel grant for
     /// packet services (sister to 0x16 `SNDCP_DCH_ANN_EX`). Not all
@@ -157,10 +157,10 @@ pub enum TsbkOpcode {
     /// Secondary Control Channel Broadcast (0x39) -- backup CCH A/B
     /// channels for trunking failover. Phase 6F.11.
     SecondaryControlChannelBroadcast,
-    /// Identifier Update standard FDMA (0x3D) -- THE common one on
-    /// Clay County and most P25 sites. 9-bit bandwidth, 8-bit transmit
-    /// offset at bits 30-37. NOT the same as opcode 0x34 (VUHF) which
-    /// has a different field layout.
+    /// Identifier Update standard FDMA (0x3D) -- the common one on
+    /// most P25 sites. 9-bit bandwidth, 8-bit transmit offset at
+    /// bits 30-37. NOT the same as opcode 0x34 (VUHF) which has a
+    /// different field layout.
     IdentifierUpdate,
     /// RFSS Status Broadcast (0x3A)
     RfssStatusBroadcast,
@@ -453,7 +453,7 @@ pub enum TsbkMessage {
     /// Manufacturer-specific (non-standard MFID) TSBK. Captured as an
     /// opaque opcode + payload so the message counts appear in the
     /// histogram / recent-TSBK feed instead of silently dropping. On
-    /// Clay County this carries the Motorola `MFID=0x90` frames
+    /// Motorola sites this typically carries `MFID=0x90` frames
     /// (`SYSTEM LOADING`, `TDMA DATA CHANNEL NOT ACTIVE`, `TRAFFIC
     /// CHANNEL`). Other vendor MFIDs (Harris 0xA4, etc.) also land
     /// here.
@@ -802,12 +802,11 @@ impl TsbkBlock {
     /// variant since the downstream `FrequencyBand` consumer cares
     /// about the same fields.
     ///
-    /// Phase 6F.4 fix: this opcode (0x3D) is the one Clay County
-    /// actually broadcasts. Until Phase 6F.4 we mapped 0x34 to
-    /// `IdentifierUpdate` and never decoded 0x3D, which is why
-    /// `bands_known` stayed at 0 even after the multi-block 6F.3 work
-    /// landed. Verified against the SDRTrunk reference recording from
-    /// 2026-04-11: every `TSBK1/2/3 IDEN_UPDATE` line in the log uses
+    /// Phase 6F.4 fix: this is the opcode most sites actually broadcast.
+    /// Until Phase 6F.4 we mapped 0x34 to `IdentifierUpdate` and never
+    /// decoded 0x3D, which is why `bands_known` stayed at 0 even after
+    /// the multi-block 6F.3 work landed. Verified against the SDRTrunk
+    /// reference recordings: every `TSBK1/2/3 IDEN_UPDATE` line uses
     /// FDMA layout, never VUHF.
     fn decode_iden_update_fdma(&self) -> TsbkMessage {
         // We need the full 12-byte TSBK to bit-extract from absolute
@@ -903,10 +902,10 @@ impl TsbkBlock {
     /// ```
     ///
     /// Until 6F.5 we used `* 250_000` and the resulting offset was
-    /// wrong by a factor of `250000 / channel_spacing` -- on the Clay
-    /// County 12.5 kHz TDMA bands that's `250000 / 12500 = 20`, so
-    /// band 5 reported -780 MHz instead of -39 MHz. Verified
-    /// against the SDRTrunk reference recording.
+    /// wrong by a factor of `250000 / channel_spacing` -- on 12.5 kHz
+    /// TDMA bands that's `250000 / 12500 = 20`, so a -39 MHz band
+    /// offset was reported as -780 MHz. Verified against the
+    /// SDRTrunk reference recording.
     fn decode_iden_update_tdma(&self) -> TsbkMessage {
         let mut full = [0u8; 12];
         full[2..10].copy_from_slice(&self.payload);
@@ -969,9 +968,8 @@ impl TsbkBlock {
     ///
     /// Phase 6F.4 fix: until 6F.4 we read RFSS from `payload[2]`
     /// (= bits 32-39, which is actually the LOW byte of the SYSTEM
-    /// field). On Clay County `system_id = 0x8A0`, low byte = 0xA0 =
-    /// 160 -- exactly the wrong value we were reporting via
-    /// `/api/system`. Same off-by-one shift on site/channel.
+    /// field), so a system_id like 0x8A0 would surface as RFSS=0xA0.
+    /// Same off-by-one shift on site/channel.
     fn decode_rfss_sts_bcst(&self) -> TsbkMessage {
         let mut full = [0u8; 12];
         full[2..10].copy_from_slice(&self.payload);

@@ -242,8 +242,8 @@ impl TrellisDecoder {
 /// `num_blocks * 98` trellis-coded dibits.
 ///
 /// **Phase 6F.2j (2026-04-11):** TSBK1 single-block path was confirmed
-/// against SDRTrunk and decodes the Clay County control channel
-/// end-to-end (see doc/changes/026). **Phase 6F.3 (2026-04-11):** added
+/// against SDRTrunk and decodes the control channel end-to-end
+/// (see doc/changes/026). **Phase 6F.3 (2026-04-11):** added
 /// multi-block TSBK2/TSBK3 support per SDRTrunk's
 /// `P25P1DataUnitID.TRUNKING_SIGNALING_BLOCK_{1,2,3}` table:
 ///

@@ -67,13 +67,12 @@ use crate::protocol::p25::control_channel::{
 /// MHz, and turn on the demod -- in that order, so the histogram
 /// counts only what arrives after the retune.
 ///
-/// At Phase 7A.1 the traffic chain is C4FM-only and Clay County is
-/// LSM, so the dibit *content* is expected garbage on real LSM voice
-/// channels. The histogram is included as a sanity check: a dead
-/// chain produces all-zero dibits, a live chain produces a roughly
-/// even spread across all four dibit values. Phase 7A.2 will add an
-/// LSM parallel chain on the traffic side and the histogram will
-/// become decode-quality data.
+/// At Phase 7A.1 the traffic chain is C4FM-only, so the dibit *content*
+/// is expected garbage on real LSM voice channels. The histogram is
+/// included as a sanity check: a dead chain produces all-zero dibits,
+/// a live chain produces a roughly even spread across all four dibit
+/// values. Phase 7A.2 will add an LSM parallel chain on the traffic
+/// side and the histogram will become decode-quality data.
 pub async fn get_traffic(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<

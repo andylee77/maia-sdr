@@ -230,8 +230,8 @@ pub async fn get_tsbk_opcodes(
     // table). 2026-04-19 fix: previous table had 0x27 / 0x28 / 0x2A /
     // 0x2B / 0x2C mis-labeled against their SDRTrunk equivalents,
     // which is what let the on-target histogram claim things like
-    // "NET_STS_BCST_EXP" for a Clay County frame that SDRTrunk's own
-    // log called `GRP_AFFIL_QUERY`.
+    // "NET_STS_BCST_EXP" for a frame that SDRTrunk's own log called
+    // `GRP_AFFIL_QUERY`.
     fn label(op: u8) -> &'static str {
         match op {
             0x00 => "GRP_V_CH_GRANT",

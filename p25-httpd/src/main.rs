@@ -238,9 +238,10 @@ struct Args {
     #[arg(long, default_value_t = 8_000_000)]
     sample_rate: u64,
 
-    /// P25 control channel frequency in Hz
-    #[arg(long, default_value_t = 860_962_500)]
-    control_freq: u64,
+    /// P25 control channel frequency in Hz. No default — must be set
+    /// per-site via this arg or `/api/reinit?control_freq=...`.
+    #[arg(long)]
+    control_freq: Option<u64>,
 
     /// Pluto LO PPM offset for crystal calibration.
     ///
@@ -252,8 +253,8 @@ struct Args {
     /// shift actually lands.
     ///
     /// Negative ppm = slow crystal (signals appear above expected IF).
-    /// Clay County test Pluto: -0.54 ppm. SDRTrunk's tuner panel
-    /// exposes the same setting — use that as the reference value.
+    /// Match whatever value SDRTrunk's tuner panel reports for the
+    /// same radio.
     ///
     /// Math: nco_shift = -ppm * 1e-6 * rx_lo Hz.
     #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
@@ -268,9 +269,10 @@ struct Args {
     /// thresholds, so front-end gain has to land in a narrow ±5-10 dB
     /// window or outer 4FSK symbols clip (too high) or crowd into
     /// inner bins (too low). AD9361 AGC does NOT converge to this
-    /// window on a strong antenna — slow_attack picks 71-73 dB,
-    /// fast_attack picks ~0 dB, both yielding ~3% CRC pass; manual
-    /// 55-60 dB yields 72-75% on the Clay County test target.
+    /// window on a strong antenna — slow_attack picks 71-73 dB and
+    /// fast_attack picks ~0 dB, both yielding very poor CRC pass
+    /// rates; manual gain in the 55–60 dB range typically lands in
+    /// the lock window on strong signals. Tune per antenna + site.
     ///
     /// Retune via this arg or `/api/reinit?gain_db=N`. A proper HDL
     /// software AGC would eliminate per-antenna tuning. See
@@ -282,11 +284,11 @@ struct Args {
     ///
     /// 8 MHz default requires P25DDC v2 (doc/changes/041_p25ddc_fork.md):
     /// the old stage-1 FIR had insufficient adjacent-channel rejection
-    /// and Clay County's 860.0/859.35 MHz neighbours leaked through at
-    /// ≥5 MHz, crushing CRC from ~70% to ~15%. v2 tightened stage 3 to
-    /// -71 dB in the fold-back band — 8 MHz now validates clean on
-    /// Clay + Duval. See `project_p25ddc_v2_validated.md` for the
-    /// bake-vs-CRC measurements that motivated bumping the default.
+    /// and close-in neighbour carriers leaked through at ≥5 MHz,
+    /// crushing CRC pass rates. v2 tightened stage 3 to -71 dB in the
+    /// fold-back band, so 8 MHz now validates clean. See
+    /// `project_p25ddc_v2_validated.md` for the bake-vs-CRC
+    /// measurements that motivated bumping the default.
     #[arg(long, default_value_t = 8_000_000)]
     rf_bandwidth: u32,
 }
@@ -305,6 +307,16 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // Require --control_freq explicitly. No built-in default — the
+    // right value is site-specific and a wrong default would
+    // silently decode noise.
+    let control_freq: u64 = args.control_freq.ok_or_else(|| {
+        anyhow::anyhow!(
+            "--control_freq <Hz> is required (P25 control channel frequency \
+             for the target site; e.g. --control_freq 851012500)"
+        )
+    })?;
 
     tracing::info!(
         "p25-httpd build: {} (dashboard_source=lsm_decoder)",
@@ -344,7 +356,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         "Fishball P25 starting: RX LO={} Hz, control_freq={} Hz, lo_ppm={:+} ({:+.1} Hz NCO shift)",
         args.rx_lo,
-        args.control_freq,
+        control_freq,
         args.lo_ppm,
         nco_lo_shift_hz
     );
@@ -482,8 +494,9 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // P25 modulation: 0 = Auto (probing), 1 = C4FM, 2 = LSM. Defaults
-    // to LSM (Clay/Duval deploy). Declared here so the grant follower
-    // can clone it; auto-detect task (writer) spawned later.
+    // to LSM (simulcast sites are the common case). Declared here so
+    // the grant follower can clone it; auto-detect task (writer)
+    // spawned later.
     let active_modulation =
         Arc::new(std::sync::atomic::AtomicU8::new(2));
 
@@ -520,7 +533,7 @@ async fn main() -> anyhow::Result<()> {
         // Configure control DDC (FIR + decimation + NCO). lo_ppm
         // crystal calibration folds into the NCO — see Args::lo_ppm.
         let nco_offset =
-            args.control_freq as f64 - args.rx_lo as f64 + nco_lo_shift_hz;
+            control_freq as f64 - args.rx_lo as f64 + nco_lo_shift_hz;
         ip_core.configure_ddc(nco_offset, args.sample_rate as f64)?;
         ip_core.set_ddc_enable(true);
         // Ring DMA enable bit is level-triggered, starts continuous writes
@@ -1528,7 +1541,7 @@ async fn main() -> anyhow::Result<()> {
         boot_rx_lo:        args.rx_lo,
         boot_sample_rate:  args.sample_rate as u32,
         boot_rf_bandwidth: args.rf_bandwidth,
-        boot_control_freq: args.control_freq,
+        boot_control_freq: control_freq,
         boot_lo_ppm:       args.lo_ppm,
         boot_hardwaregain: args.hardwaregain,
         current_rx_lo:     current_rx_lo.clone(),
