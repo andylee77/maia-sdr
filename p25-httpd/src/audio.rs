@@ -54,6 +54,16 @@ pub struct CallBoundary {
     /// event fired. Useful so the recorder doesn't have to rejoin the
     /// manager lock to resolve context.
     pub talkgroup: Option<u16>,
+    /// 2026-04-19 count-based close. Snapshot of
+    /// `ImbeForwarder::frames_submitted` at the moment this boundary
+    /// was dispatched. The recorder waits until the vocoder has
+    /// *consumed* this many frames before actually calling
+    /// `finalize()` — that way the tail PCM chunks corresponding to
+    /// the LDUs submitted just before the boundary get appended to
+    /// the closing recording instead of spawning a new 60-ms-and-
+    /// discarded fragment. A 200 ms timer still guards the case
+    /// where consumption stalls (e.g. encrypted skip streak).
+    pub expected_submit_count: u64,
 }
 
 #[derive(Debug, Clone, Copy)]

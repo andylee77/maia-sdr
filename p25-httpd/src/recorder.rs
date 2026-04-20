@@ -50,7 +50,43 @@ pub const STORAGE_DIR: &str = "/tmp/p25_recordings";
 /// current recording. A TDU naturally drives talkgroup → 0, but
 /// back-to-back PTT bursts on the same TG can produce brief gaps
 /// we don't want to shatter a call over.
-const FINALIZE_GRACE: Duration = Duration::from_millis(1500);
+/// Grace window before the recorder closes a call via the
+/// last-chunk-timestamp fallback (as opposed to an explicit
+/// SpeakerEnd/HduStart boundary). Was 1500 ms; bumped to 3000 ms
+/// 2026-04-19 to stop brief mid-call stalls (imbe_frames_dropped
+/// burst during retune, IMBE frames queued behind encryption skip,
+/// etc.) from splitting a single speaker's turn into multiple
+/// recordings. The trade-off is that a call ending *without* any
+/// explicit boundary event now takes 3 s of dead air before the
+/// file appears in /api/recordings. All end-of-call paths that do
+/// fire an explicit TDU / MOT_TC / CALL_TERM boundary close via
+/// the VOCODER_TAIL_WINDOW pending-finalise path, which is much
+/// faster (sub-second when count-driven).
+const FINALIZE_GRACE: Duration = Duration::from_millis(3000);
+
+/// 2026-04-19 vocoder-tail window. When a `SpeakerEnd` or `HduStart`
+/// boundary arrives, the recorder defers the actual `finalize()` call
+/// by this duration. During the window, trailing PCM chunks for the
+/// just-ended speaker's last LDU frames (still being synthesised by
+/// the vocoder at the moment the boundary fires) are appended to the
+/// closing recording instead of opening a new, 60-ms, doomed-to-be-
+/// discarded tail fragment.
+///
+/// The mbelib / JMBE pipeline emits 9 PCM chunks per LDU1 over
+/// roughly 180 ms of wall-clock time. First 2026-04-19 count-based-
+/// close metrics (post-flash-3 log) showed `closed_by=timer` firing
+/// on 53% of deferred finalises with up to 144 frames (2.88 s) of
+/// queued audio un-consumed at boundary-receipt — meaning 200 ms was
+/// too short to let the vocoder drain the full queue and trailing
+/// PCM chunks were still being dropped into discarded tail fragments.
+///
+/// Bumped to 1500 ms. This is a BACKUP timer only — the happy-path
+/// close is count-driven (`frames_consumed >= expected_submit_count`)
+/// and fires as soon as the vocoder catches up, which for a non-
+/// lagging pipeline is within tens of ms. The longer backup just
+/// ensures we don't prematurely close when the queue has multiple
+/// pending LDU batches still to synthesise.
+const VOCODER_TAIL_WINDOW: Duration = Duration::from_millis(1500);
 
 /// Minimum duration before a recording is worth keeping. Guards
 /// against accidental 1-frame "calls" from phantom TDU_LC bursts.
@@ -142,10 +178,29 @@ struct ActiveCall {
     started_unix_ms: u64,
     pcm: Vec<i16>,
     last_chunk_at: Instant,
+    /// 2026-04-19 IMBE drop snapshot at `call_open` so we can log
+    /// the delta at finalise — identifies which specific calls
+    /// took audio loss from the IMBE-queue-full path.
+    imbe_drops_at_open: u64,
+    /// 2026-04-19 deferred finalise. Set when a `SpeakerEnd` or
+    /// `HduStart` boundary arrives. Tuple of:
+    ///   - `Instant` — hard-deadline timer (`VOCODER_TAIL_WINDOW`
+    ///     from boundary receipt). Backup for cases where the
+    ///     consumed counter stalls (long encryption skip, channel
+    ///     lag, vocoder wedge). Guarantees eventual finalise.
+    ///   - `u64` — snapshot of `ImbeForwarder::frames_submitted`
+    ///     at the moment the boundary was dispatched. Tick runs
+    ///     finalise as soon as `frames_consumed >= expected`, so
+    ///     the tail PCM chunks from the LDUs submitted just
+    ///     before the boundary have been appended to the closing
+    ///     recording. Happy-path close is count-driven; the timer
+    ///     just bounds worst-case.
+    ///   - `&'static str` — reason label for the log.
+    pending_finalise: Option<(Instant, u64, &'static str)>,
 }
 
 impl ActiveCall {
-    fn new(talkgroup: u16) -> Self {
+    fn new(talkgroup: u16, imbe_drops_at_open: u64) -> Self {
         let started_unix_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -157,6 +212,8 @@ impl ActiveCall {
             started_unix_ms,
             pcm: Vec::with_capacity(8_000 * 10), // pre-size for 10 s
             last_chunk_at: Instant::now(),
+            imbe_drops_at_open,
+            pending_finalise: None,
         }
     }
 
@@ -180,6 +237,17 @@ impl ActiveCall {
     fn duration_ms(&self) -> u64 {
         // 8 kHz, so one sample is 0.125 ms.
         (self.pcm.len() as u64) * 1000 / 8_000
+    }
+
+    /// Wall-clock duration from call_open to now. Used alongside
+    /// `duration_ms` to measure audio loss: `pcm/wall` ratio shows
+    /// how much of the recording window actually contained audio.
+    /// <50% = heavy IMBE drop / vocoder stall / encryption skip.
+    /// ~100% = clean call. >100% = vocoder tail chunks arrived
+    /// after the recording closed (count-based tail window
+    /// captured them).
+    fn wall_duration_ms(&self) -> u64 {
+        self.started_at.elapsed().as_millis() as u64
     }
 }
 
@@ -325,12 +393,22 @@ async fn finalize(
 /// Subscribes to the audio broadcast AND the call-boundary broadcast
 /// so HDU-triggered splits can happen the instant a new speaker
 /// starts, independent of vocoder latency.
+// 2026-04-19 count-based recorder close — `frames_consumed` is the
+// vocoder-side counter advanced on every frame batch popped from
+// `imbe_rx`. The recorder uses it to know when all frames submitted
+// up to a boundary's snapshot have been consumed, so the trailing
+// PCM chunks have already been appended to the closing recording
+// and it's safe to finalize(). `imbe_drops` is the same atomic
+// surfaced via /api/traffic — used here to log the drop-delta for
+// each recording's lifetime.
 pub async fn recorder_task(
     mut audio_rx: tokio::sync::broadcast::Receiver<AudioChunk>,
     mut boundary_rx: tokio::sync::broadcast::Receiver<CallBoundary>,
     store: RecordingStore,
     diag: RecorderDiagArc,
     event_log: Option<Arc<crate::event_log::EventLog>>,
+    frames_consumed: Arc<std::sync::atomic::AtomicU64>,
+    imbe_drops: Arc<std::sync::atomic::AtomicU64>,
 ) {
     // Structured-event helper. Every recorder decision (open, finalise,
     // source stamp, TG-guard skip, etc.) emits one of these so the
@@ -368,7 +446,12 @@ pub async fn recorder_task(
 
     let mut active: Option<ActiveCall> = None;
     let mut next_id: u64 = 1;
-    let mut tick = tokio::time::interval(Duration::from_millis(500));
+    // 50 ms tick. Fast enough that `pending_finalise` fires within
+    // ~50 ms of the `VOCODER_TAIL_WINDOW` deadline, so we capture the
+    // tail audio without lingering far past it. The grace-window
+    // check (1.5 s threshold) also runs every tick but only acts
+    // when `last_chunk_at.elapsed() >= FINALIZE_GRACE`.
+    let mut tick = tokio::time::interval(Duration::from_millis(50));
 
     loop {
         tokio::select! {
@@ -401,7 +484,10 @@ pub async fn recorder_task(
                         }
                         match active.as_mut() {
                             None => {
-                                let mut c = ActiveCall::new(chunk.talkgroup);
+                                let mut c = ActiveCall::new(
+                                    chunk.talkgroup,
+                                    imbe_drops.load(Ordering::Relaxed),
+                                );
                                 c.append(&chunk);
                                 log_ev("call_open", serde_json::json!({
                                     "recording_id":  next_id,
@@ -436,17 +522,33 @@ pub async fn recorder_task(
                                 if let Some(old) = active.take() {
                                     let id = next_id;
                                     next_id += 1;
+                                    let wall_ms = old.wall_duration_ms();
+                                    let pcm_ms = old.duration_ms();
+                                    let fill_pct = if wall_ms > 0 {
+                                        100 * pcm_ms / wall_ms
+                                    } else {
+                                        0
+                                    };
+                                    let drops_in_call = imbe_drops
+                                        .load(Ordering::Relaxed)
+                                        .saturating_sub(old.imbe_drops_at_open);
                                     log_ev("call_finalise", serde_json::json!({
-                                        "recording_id": id,
-                                        "reason":       "tg_change",
-                                        "old_tg":       old.talkgroup,
-                                        "new_tg":       chunk.talkgroup,
-                                        "duration_ms":  old.duration_ms(),
-                                        "source":       old.source,
+                                        "recording_id":      id,
+                                        "reason":            "tg_change",
+                                        "old_tg":            old.talkgroup,
+                                        "new_tg":            chunk.talkgroup,
+                                        "duration_ms":       pcm_ms,
+                                        "wall_duration_ms":  wall_ms,
+                                        "pcm_fill_pct":      fill_pct,
+                                        "imbe_drops_in_call": drops_in_call,
+                                        "source":            old.source,
                                     }));
                                     finalize(&store, old, id, event_log.as_ref()).await;
                                 }
-                                let mut c = ActiveCall::new(chunk.talkgroup);
+                                let mut c = ActiveCall::new(
+                                    chunk.talkgroup,
+                                    imbe_drops.load(Ordering::Relaxed),
+                                );
                                 c.append(&chunk);
                                 log_ev("call_open", serde_json::json!({
                                     "recording_id":  next_id,
@@ -487,22 +589,33 @@ pub async fn recorder_task(
                                 "active_rec_id": active.as_ref().map(|_| next_id),
                                 "active_tg":     active.as_ref().map(|c| c.talkgroup),
                                 "active_src":    active.as_ref().and_then(|c| c.source),
+                                "expected":      boundary.expected_submit_count,
+                                "consumed":      frames_consumed.load(Ordering::Relaxed),
                             }));
                             // Fresh PTT on the traffic channel.
-                            // Finalise the in-progress recording --
-                            // the next PCM chunk will open a new
-                            // ActiveCall with the (possibly-same) TG.
-                            if let Some(old) = active.take() {
-                                let id = next_id;
-                                next_id += 1;
-                                log_ev("call_finalise", serde_json::json!({
-                                    "recording_id": id,
-                                    "reason":       "hdu_start",
-                                    "tg":           old.talkgroup,
-                                    "source":       old.source,
-                                    "duration_ms":  old.duration_ms(),
-                                }));
-                                finalize(&store, old, id, event_log.as_ref()).await;
+                            // 2026-04-19 deferred finalise: the HDU
+                            // fires on-wire BEFORE the vocoder has
+                            // emitted the last PCM chunks for the
+                            // previous speaker's tail LDUs. If we
+                            // finalise immediately, those trailing
+                            // chunks open a new 60-ms recording that
+                            // fails too_short and gets discarded —
+                            // real audio lost. Instead, set a
+                            // deferred-finalise deadline and let the
+                            // trailing chunks append to the closing
+                            // recording. Tick checks the deadline
+                            // every 50 ms and runs finalize() when
+                            // it passes. Back-to-back HDU phantoms
+                            // (common from bit-corrupt NID decodes
+                            // during one speaker's turn) just push
+                            // the deadline out — they don't split
+                            // the recording.
+                            if let Some(c) = active.as_mut() {
+                                c.pending_finalise = Some((
+                                    Instant::now() + VOCODER_TAIL_WINDOW,
+                                    boundary.expected_submit_count,
+                                    "hdu_start",
+                                ));
                             }
                         }
                         CallBoundaryKind::SpeakerEnd { source } => {
@@ -514,6 +627,8 @@ pub async fn recorder_task(
                                 "active_rec_id": active.as_ref().map(|_| next_id),
                                 "active_tg":     active.as_ref().map(|c| c.talkgroup),
                                 "active_src":    active.as_ref().and_then(|c| c.source),
+                                "expected":      boundary.expected_submit_count,
+                                "consumed":      frames_consumed.load(Ordering::Relaxed),
                             }));
                             // Protocol-level end-of-speaker (Motorola
                             // TALK_COMPLETE) or end-of-call (standard
@@ -557,18 +672,18 @@ pub async fn recorder_task(
                                         "via":          "speaker_end",
                                     }));
                                 }
-                            }
-                            if let Some(old) = active.take() {
-                                let id = next_id;
-                                next_id += 1;
-                                log_ev("call_finalise", serde_json::json!({
-                                    "recording_id": id,
-                                    "reason":       "speaker_end",
-                                    "tg":           old.talkgroup,
-                                    "source":       old.source,
-                                    "duration_ms":  old.duration_ms(),
-                                }));
-                                finalize(&store, old, id, event_log.as_ref()).await;
+                                // 2026-04-19 deferred finalise — same
+                                // reasoning as HduStart above. Stamp
+                                // is already applied, PCM tail chunks
+                                // will append over the next 200 ms
+                                // or until `frames_consumed` reaches
+                                // the boundary's snapshotted submit
+                                // count, whichever comes first.
+                                c.pending_finalise = Some((
+                                    Instant::now() + VOCODER_TAIL_WINDOW,
+                                    boundary.expected_submit_count,
+                                    "speaker_end",
+                                ));
                             }
                         }
                         CallBoundaryKind::TdulcComplete { source } => {
@@ -634,6 +749,78 @@ pub async fn recorder_task(
                 }
             }
             _ = tick.tick() => {
+                // 2026-04-19 deferred-finalise check. A SpeakerEnd /
+                // HduStart boundary set `pending_finalise` to
+                // (now + VOCODER_TAIL_WINDOW, expected_submit_count,
+                // reason). Two ways to trigger the actual finalise:
+                //
+                //   1. Count-driven (happy path): `frames_consumed`
+                //      has reached the snapshotted `expected`. The
+                //      vocoder has pulled every frame submitted up
+                //      to the boundary, so any PCM those frames
+                //      produced has already landed in this
+                //      recording's `pcm` buffer. Safe to close.
+                //   2. Timer-driven (fallback): the hard deadline
+                //      passed. Covers the case where consumption
+                //      stalls — e.g. an encryption skip-streak that
+                //      never emits PCM, or a channel lag.
+                //
+                // Evaluated BEFORE the grace_window check so a
+                // pending deferred finalise always takes priority
+                // over the 1.5-s grace fallback.
+                let pending_done = active.as_ref()
+                    .and_then(|c| c.pending_finalise.as_ref())
+                    .map(|(deadline, expected, _)| {
+                        let consumed = frames_consumed.load(Ordering::Relaxed);
+                        consumed >= *expected || Instant::now() >= *deadline
+                    })
+                    .unwrap_or(false);
+                if pending_done {
+                    if let Some(old) = active.take() {
+                        let id = next_id;
+                        next_id += 1;
+                        let (deadline, expected, reason) = old
+                            .pending_finalise
+                            .as_ref()
+                            .map(|(d, e, r)| (*d, *e, *r))
+                            .unwrap_or((Instant::now(), 0, "deferred"));
+                        let consumed = frames_consumed.load(Ordering::Relaxed);
+                        let closed_by = if consumed >= expected {
+                            "count"
+                        } else if Instant::now() >= deadline {
+                            "timer"
+                        } else {
+                            "unknown"
+                        };
+                        let wall_ms = old.wall_duration_ms();
+                        let pcm_ms = old.duration_ms();
+                        let fill_pct = if wall_ms > 0 {
+                            100 * pcm_ms / wall_ms
+                        } else {
+                            0
+                        };
+                        let drops_in_call = imbe_drops
+                            .load(Ordering::Relaxed)
+                            .saturating_sub(old.imbe_drops_at_open);
+                        log_ev("call_finalise", serde_json::json!({
+                            "recording_id":      id,
+                            "reason":            reason,
+                            "tg":                old.talkgroup,
+                            "source":            old.source,
+                            "duration_ms":       pcm_ms,
+                            "wall_duration_ms":  wall_ms,
+                            "pcm_fill_pct":      fill_pct,
+                            "imbe_drops_in_call": drops_in_call,
+                            "deferred":          true,
+                            "closed_by":         closed_by,
+                            "expected":          expected,
+                            "consumed":          consumed,
+                        }));
+                        finalize(&store, old, id, event_log.as_ref()).await;
+                    }
+                    continue;
+                }
+
                 // Grace-window finaliser. If there's an active call
                 // and the last chunk was more than FINALIZE_GRACE
                 // ago, close it out. Handles the normal end-of-call
@@ -644,13 +831,26 @@ pub async fn recorder_task(
                         if let Some(old) = active.take() {
                             let id = next_id;
                             next_id += 1;
+                            let wall_ms = old.wall_duration_ms();
+                            let pcm_ms = old.duration_ms();
+                            let fill_pct = if wall_ms > 0 {
+                                100 * pcm_ms / wall_ms
+                            } else {
+                                0
+                            };
+                            let drops_in_call = imbe_drops
+                                .load(Ordering::Relaxed)
+                                .saturating_sub(old.imbe_drops_at_open);
                             log_ev("call_finalise", serde_json::json!({
-                                "recording_id":    id,
-                                "reason":          "grace_window",
-                                "tg":              old.talkgroup,
-                                "source":          old.source,
-                                "duration_ms":     old.duration_ms(),
-                                "silence_ms":      FINALIZE_GRACE.as_millis() as u64,
+                                "recording_id":      id,
+                                "reason":            "grace_window",
+                                "tg":                old.talkgroup,
+                                "source":            old.source,
+                                "duration_ms":       pcm_ms,
+                                "wall_duration_ms":  wall_ms,
+                                "pcm_fill_pct":      fill_pct,
+                                "imbe_drops_in_call": drops_in_call,
+                                "silence_ms":        FINALIZE_GRACE.as_millis() as u64,
                             }));
                             finalize(&store, old, id, event_log.as_ref()).await;
                         }

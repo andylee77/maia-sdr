@@ -42,7 +42,7 @@ use p25::control_channel::ControlChannelDecoder;
 /// `wget -qO- http://target:8080/api/system | grep build`). Don't try
 /// to be clever with mtimes (Buildroot zeros them) or doc-comment
 /// strings (they don't survive into the binary).
-pub const BUILD_TAG: &str = "2026-04-19-grant-reorder-ch-reuse";
+pub const BUILD_TAG: &str = "2026-04-19-vocoder-osthread-grace3s";
 
 /// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
 /// gateware). Populated by the HDL LSM heartbeat task and read by
@@ -211,7 +211,12 @@ pub struct ImbeForwarder {
     pub tdu_count: std::sync::atomic::AtomicU64,
     pub tdu_lc_count: std::sync::atomic::AtomicU64,
     pub imbe_frames_extracted: std::sync::atomic::AtomicU64,
-    pub imbe_frames_dropped: std::sync::atomic::AtomicU64,
+    /// 2026-04-19 Arc-wrapped so the recorder task can hold a
+    /// cloneable handle and log per-call drop-delta into each
+    /// finalise event. Same underlying counter still surfaced via
+    /// `/api/traffic` and incremented in `forward_frames` when
+    /// the vocoder input queue is full.
+    pub imbe_frames_dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Phase 7F.3 (2026-04-14): count of LDU frame batches the
     /// forwarder refused to hand to the vocoder because
     /// `current_talkgroup == 0` (follower is Idle). These are
@@ -224,13 +229,15 @@ pub struct ImbeForwarder {
     pub vocoder_pcm_produced: std::sync::atomic::AtomicU64,
     pub vocoder_errors: std::sync::atomic::AtomicU64,
     pub vocoder_frames_encrypted: std::sync::atomic::AtomicU64,
-    /// Count of silent frames suppressed by the silent-chunk gate
-    /// (Phase 10.6 / 2026-04-18). Frames whose decoded PCM peak is
-    /// below SILENT_PEAK are JMBE's "uncorrectable IMBE = zero out"
-    /// signature — typically the framer latched onto garbage bits
-    /// from an AGC/PLL glitch. Dropping them upstream of the
-    /// broadcast stops the recorder from writing empty WAVs.
-    pub vocoder_frames_silent_suppressed: std::sync::atomic::AtomicU64,
+    /// Observability-only count of silent frames (peak below
+    /// `SILENT_PEAK`) emitted by JMBE. Originally (Phase 10.6 /
+    /// 2026-04-18) this gate DROPPED silent frames, but 2026-04-19
+    /// late we reverted the drop — a burst of JMBE-silent frames
+    /// during a single speaker's turn was exceeding the recorder's
+    /// grace window and splitting one call into multiple files.
+    /// Silent frames now pass through to both recorder and audio
+    /// broadcast; the counter just tallies them for diagnostics.
+    pub vocoder_frames_silent_observed: std::sync::atomic::AtomicU64,
     /// Set by the grant follower task when it locks onto a TG. The
     /// vocoder task reads this to skip encrypted calls.
     pub call_encrypted: std::sync::atomic::AtomicBool,
@@ -308,6 +315,27 @@ pub struct ImbeForwarder {
     /// stuck at zero. Mutex-behind because it's a single sample, not
     /// a hot counter.
     pub tdulc_last_lc_bytes: std::sync::Mutex<[u8; 9]>,
+    /// 2026-04-19 count-based recorder close. Total IMBE frames
+    /// successfully pushed to the vocoder's `imbe_tx` queue
+    /// (increments by 9 per successful `forward_frames`). When a
+    /// `CallBoundary` is dispatched, this value is snapshot into
+    /// `CallBoundary::expected_submit_count`. The recorder waits
+    /// until `frames_consumed` reaches the snapshotted value before
+    /// actually calling `finalize()`, ensuring trailing PCM chunks
+    /// append to the closing recording rather than opening a new
+    /// to-be-discarded tail fragment.
+    pub frames_submitted: std::sync::atomic::AtomicU64,
+    /// 2026-04-19 count-based recorder close. Incremented by the
+    /// vocoder task each time it pops a batch of frames off
+    /// `imbe_rx` (by 9 per recv), regardless of whether those
+    /// frames were synthesised into PCM or skipped (encrypted
+    /// call, malformed IMBE). Read by the recorder task to match
+    /// against `CallBoundary::expected_submit_count`.
+    ///
+    /// Wrapped in `Arc` so the recorder task can hold an
+    /// independent handle without needing a reference to the whole
+    /// `ImbeForwarder`.
+    pub frames_consumed: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl ImbeForwarder {
@@ -321,13 +349,13 @@ impl ImbeForwarder {
             tdu_count: 0.into(),
             tdu_lc_count: 0.into(),
             imbe_frames_extracted: 0.into(),
-            imbe_frames_dropped: 0.into(),
+            imbe_frames_dropped: std::sync::Arc::new(0.into()),
             imbe_frames_dropped_idle: 0.into(),
             last_imbe_at_millis: 0.into(),
             vocoder_pcm_produced: 0.into(),
             vocoder_errors: 0.into(),
             vocoder_frames_encrypted: 0.into(),
-            vocoder_frames_silent_suppressed: 0.into(),
+            vocoder_frames_silent_observed: 0.into(),
             call_encrypted: false.into(),
             current_talkgroup: 0.into(),
             current_source: 0.into(),
@@ -345,6 +373,8 @@ impl ImbeForwarder {
             tdulc_last_lc_bytes: std::sync::Mutex::new([0u8; 9]),
             event_log: std::sync::OnceLock::new(),
             ws_event_tx: std::sync::OnceLock::new(),
+            frames_submitted: 0.into(),
+            frames_consumed: std::sync::Arc::new(0.into()),
         }
     }
 
@@ -407,7 +437,15 @@ impl ImbeForwarder {
         }
 
         match self.imbe_tx.try_send(*frames) {
-            Ok(()) => {}
+            Ok(()) => {
+                // 2026-04-19 count-based recorder close — advance the
+                // submitted counter only when the frames actually
+                // entered the vocoder queue. A dropped send (queue
+                // full / closed) never produces PCM, so we mustn't
+                // advance or the recorder would wait forever for
+                // chunks that will never come.
+                self.frames_submitted.fetch_add(9, Ordering::Relaxed);
+            }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 self.imbe_frames_dropped.fetch_add(9, Ordering::Relaxed);
             }
@@ -528,16 +566,35 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
             "nac":        nac,
             "service_options": svc_opts,
         }));
-        if let Some(tx) = self.call_boundary_tx.get() {
-            let _ = tx.send(audio::CallBoundary {
-                kind: audio::CallBoundaryKind::TdulcComplete {
-                    source: Some(source),
-                },
-                nac,
-                talkgroup: Some(tg_locked),
-            });
-        }
-        self.current_source.store(source, Ordering::Relaxed);
+        // 2026-04-19 LDU1-LC-as-stamp removal. Previously we both
+        //   (a) emitted a `TdulcComplete { source }` boundary event
+        //       which the recorder used to stamp `c.source`, AND
+        //   (b) stored `source` into `self.current_source` atomic
+        //       which every subsequent AudioChunk then inherits.
+        //
+        // Both paths turned out to be wrong for source attribution:
+        // LDU1 LC FEC is Hamming10 + RS(24,12,13), which accepts
+        // near-valid codewords even on bit-corrupt input. In a
+        // single 3.5-second speaker turn on 2026-04-19 we observed
+        // `FM:` decode to 3599082, 3596970, 12511914, 2392716, and
+        // back to 3599082 — only the first and last of which are
+        // plausible radio IDs. Stamping from any one of those
+        // produced a filename that LIES about who was talking.
+        //
+        // SDRTrunk uses the control-channel GRP_VCH_GRANT SRC field
+        // (TSBK trellis + CRC — strong FEC) as the authoritative
+        // source for per-speaker call attribution. The grant
+        // follower in this daemon already writes `current_source`
+        // from that path (main.rs around line 2644). We keep the
+        // activity-log emit above so the operator can see what
+        // LDU1 LC *thinks* the source is (useful telemetry when FEC
+        // is working), but we stop using it to stamp recordings.
+        //
+        // End-of-speaker MOT_TC TDULC still fires a SpeakerEnd
+        // boundary with `source: Some(by_radio_id)` (Golay24 +
+        // RS — stronger FEC), which the recorder uses as a
+        // second-opinion source stamp at call finalise.
+        let _ = (nac, tg_locked);
     }
 
     fn on_ldu2(
@@ -560,6 +617,36 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
             return;
         };
         let (summary, fields) = if ess.is_encrypted() {
+            // 2026-04-19 phantom-ENC fix. Two guards apply before we
+            // trust this frame:
+            //
+            //  1. `is_spec_algorithm`: reject algorithm_id bytes not
+            //     in TIA-102.AABD + the SDRTrunk Motorola extensions.
+            //     RS(24,16,9) will accept near-valid codewords; on a
+            //     clear transmission with weak SNR the FEC produces
+            //     random bytes (observed 0x08, 0x50, 0xB4 in the
+            //     2026-04-19 19:55 log).
+            //
+            //  2. HDU-trust: if the HDU of this call said UNENCRYPTED
+            //     we do NOT let a subsequent LDU2 ESS flip the gate.
+            //     The HDU FEC (Golay18 + RS(63,47,17)) is much
+            //     stronger than LDU2 ESS FEC, so HDU is authoritative.
+            //     Without this guard, a single bit-corrupt LDU2 on a
+            //     clear call trips `call_encrypted` sticky-true and
+            //     the vocoder drops every subsequent IMBE frame until
+            //     the next grant arrives (observed 4,401 frames
+            //     `Encrypted Skipped` on TG 301).
+            //
+            // Legit mid-call key-refresh still works: an encrypted HDU
+            // sets the gate, and every LDU2 after it refreshes here.
+            if !ess.is_spec_algorithm() {
+                return;
+            }
+            if !self.call_encrypted.load(Ordering::Relaxed) {
+                // HDU said clear — silently drop this ESS. Don't
+                // emit (log stays clean) and don't trip the gate.
+                return;
+            }
             // Refresh call_encrypted sticky-true from ESS — grant flag
             // is stale if a mid-call key change happens.
             self.call_encrypted.store(true, Ordering::Relaxed);
@@ -600,6 +687,30 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         self.log_duid("HDU");
         self.hdu_count.fetch_add(1, Ordering::Relaxed);
 
+        // 2026-04-19 earlier: added `current_source.store(0)` here to
+        // prevent the next recording from inheriting the prior
+        // speaker's FM:<id>. REVERTED 2026-04-19 late. On Clay County
+        // the CC grant with a fresh SRC field arrives 1-2 s BEFORE
+        // the HDU fires on the traffic chain. Clearing current_source
+        // at HDU time wiped that good CC-grant SRC, and since LDU1 LC
+        // stamping was removed in the same flash, there was nothing
+        // left to re-populate the atomic. Result: recordings opened
+        // with source=0 → filename stamped `_from0.wav`.
+        //
+        // With LDU1 LC stamping gone and the grant follower as the
+        // only writer to `current_source`, a stale atomic value from
+        // the previous speaker can only persist if:
+        //   (a) no fresh CC grant for the active TG arrives between
+        //       speakers — but Clay County issues a fresh
+        //       `GRP_VCH_GRANT` with a new SRC for every speaker
+        //       change, so this is rare in practice, AND
+        //   (b) the recorder's HDU-start handler doesn't get to run
+        //       before the first chunk of the new speaker arrives.
+        // Both conditions would have to hit at once, and the end-of-
+        // speaker TDULC MOT_TC boundary (Golay24+RS — strong FEC)
+        // still stamps `c.source` at finalise time from its BY:<id>
+        // field as a second opinion.
+
         // 2026-04-19: decode HDU body via Golay18 + RS(63,47,17).
         // SDRTrunk equivalent: `HDU TALKGROUP:<tg> [ENCRYPTION:<alg>
         // KEY:<id> MI:<hex> | UNENCRYPTED]`. Always emit — unlike
@@ -615,7 +726,13 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         // trusted the grant, which is stale if a subsequent HDU on the
         // same grant re-keys. Sticky-true within the call (matches how
         // the grant path sets it).
-        if hdr.is_encrypted() {
+        //
+        // 2026-04-19 phantom-ENC fix: also require `is_spec_algorithm`
+        // so a bit-corrupt HDU FEC decode can't trip the gate with a
+        // nonsense algorithm byte. HDU FEC is stronger than LDU2 ESS
+        // so this is belt-and-suspenders, but the LDU2 path has the
+        // same guard and the two should stay symmetric.
+        if hdr.is_encrypted() && hdr.is_spec_algorithm() {
             self.call_encrypted.store(true, Ordering::Relaxed);
         }
         let summary = if hdr.is_encrypted() {
@@ -663,6 +780,9 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                 kind: audio::CallBoundaryKind::SpeakerEnd { source: None },
                 nac,
                 talkgroup: if tg == 0 { None } else { Some(tg) },
+                expected_submit_count: self
+                    .frames_submitted
+                    .load(Ordering::Relaxed),
             });
         }
     }
@@ -712,6 +832,9 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                         source: Some(by_radio_id),
                     },
                     nac,
+                    expected_submit_count: self
+                        .frames_submitted
+                        .load(Ordering::Relaxed),
                     talkgroup: Some(tg),
                 });
                 // 2026-04-19: mirror SDRTrunk's
@@ -790,6 +913,9 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                     kind: audio::CallBoundaryKind::SpeakerEnd { source: None },
                     nac,
                     talkgroup: Some(tg),
+                    expected_submit_count: self
+                        .frames_submitted
+                        .load(Ordering::Relaxed),
                 });
                 // Relabel the well-known system-controller teardown
                 // addresses per SDRTrunk `LCCallTermination`
@@ -1492,6 +1618,22 @@ async fn main() -> anyhow::Result<()> {
         // 6. Spawn dibit reader task
         let reader_core = ip_core.clone();
         let reader_decoder = decoder.clone();
+        // 2026-04-19 phantom-TSBK fix. When active_modulation is LSM
+        // (mode == 2, the default for Clay / Duval) the PS C4FM
+        // framer + trellis + CRC pipeline below produces nothing of
+        // value: the control DDC carries an LSM signal and the C4FM
+        // slicer produces random-ish dibits that occasionally pass
+        // BCH/CRC with phantom NACs (observed 4348 CRC-OK phantom
+        // TSBKs, system_nac=0xE21, in a 30-min boot probe). Those
+        // phantoms get fed into `grant_event_tx` and can trigger
+        // bogus retunes.
+        //
+        // We still drain the DMA buffers every wake so the ring
+        // doesn't back up and the histogram keeps advancing, but we
+        // skip `process_dma_word` (which runs the expensive framer)
+        // when mode != C4FM. Mode is the u8 atomic at
+        // `AppState::active_modulation`: 0=auto, 1=c4fm, 2=lsm.
+        let reader_active_mod = active_modulation.clone();
         tokio::spawn(async move {
             tracing::info!("dibit reader task started");
             let mut wakeups: u64 = 0;
@@ -1499,6 +1641,7 @@ async fn main() -> anyhow::Result<()> {
             let mut total_bytes: u64 = 0;
             // Cumulative dibit histogram across all reads
             let mut hist = [0u64; 4];
+            let mut framer_skipped: u64 = 0;
             loop {
                 dibit_waiter.wait().await;
                 wakeups += 1;
@@ -1509,6 +1652,12 @@ async fn main() -> anyhow::Result<()> {
                         .map(|b| b.to_vec())
                         .collect::<Vec<_>>()
                 };
+
+                // Snapshot mode once per wake so the decision is
+                // atomic across all buffers in this batch.
+                let mode = reader_active_mod
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let feed_framer = mode == 0 /* auto */ || mode == 1 /* c4fm */;
 
                 let mut wake_bytes = 0usize;
                 let mut wake_dibits = 0usize;
@@ -1523,9 +1672,13 @@ async fn main() -> anyhow::Result<()> {
                             wake_dibits += 1;
                         }
                     }
-                    let mut dec = reader_decoder.write().await;
-                    for &word in words {
-                        dec.process_dma_word(word);
+                    if feed_framer {
+                        let mut dec = reader_decoder.write().await;
+                        for &word in words {
+                            dec.process_dma_word(word);
+                        }
+                    } else {
+                        framer_skipped += words.len() as u64;
                     }
                 }
                 total_buffers += buffers.len() as u64;
@@ -1537,9 +1690,16 @@ async fn main() -> anyhow::Result<()> {
                         if total_dibits == 0 { 0.0 }
                         else { 100.0 * v as f64 / total_dibits as f64 }
                     };
+                    let mode_label = match mode {
+                        0 => "auto",
+                        1 => "c4fm",
+                        2 => "lsm-gate",
+                        _ => "?",
+                    };
                     tracing::info!(
                         target: "p25_reader",
                         "wake #{wakeups}: bufs={} bytes={} dibits={} \
+                         mode={mode_label} framer_skipped={framer_skipped} \
                          (cum bufs={total_buffers} bytes={total_bytes}) \
                          hist 0={:.1}% 1={:.1}% 2={:.1}% 3={:.1}%",
                         buffers.len(), wake_bytes, wake_dibits,
@@ -3241,6 +3401,9 @@ async fn main() -> anyhow::Result<()> {
                         kind: audio::CallBoundaryKind::HduStart,
                         nac,
                         talkgroup: Some(locked_tg_snapshot),
+                        expected_submit_count: traffic_heartbeat_imbe
+                            .frames_submitted
+                            .load(Ordering::Relaxed),
                     });
                 }
 
@@ -3413,8 +3576,21 @@ async fn main() -> anyhow::Result<()> {
         let store = recordings.clone();
         let diag = recorder_diag.clone();
         let log = Some(event_log.clone());
+        // 2026-04-19 count-based close — share the vocoder-side
+        // frames_consumed counter with the recorder so it can wait
+        // for consumption to catch up to a boundary's snapshotted
+        // submit count before calling finalize(). Also share the
+        // imbe_frames_dropped counter so each call_finalise event
+        // can log the drop-delta that occurred during the
+        // recording (surfaces IMBE-queue-full events that caused
+        // audio loss on specific recordings).
+        let frames_consumed = imbe_forwarder.frames_consumed.clone();
+        let imbe_drops_handle = imbe_forwarder.imbe_frames_dropped.clone();
         tokio::spawn(async move {
-            recorder::recorder_task(rx, boundary_rx, store, diag, log).await;
+            recorder::recorder_task(
+                rx, boundary_rx, store, diag, log, frames_consumed,
+                imbe_drops_handle,
+            ).await;
         });
     }
 
@@ -3498,7 +3674,29 @@ async fn main() -> anyhow::Result<()> {
         let voc_forwarder = imbe_forwarder.clone();
         let voc_audio_tx = audio_tx.clone();
         let voc_event_log = event_log.clone();
-        tokio::spawn(async move {
+        // 2026-04-19 dedicated OS thread for the vocoder. Previously
+        // this ran as a `tokio::spawn(async move ...)` task on the
+        // shared tokio worker pool, which meant:
+        //   - JMBE synthesis blocks the worker thread for the duration
+        //     of `decoder.decode(...)` (5-15 ms per frame on ARM).
+        //   - An HTTP request / log-export / broadcast fanout on the
+        //     same worker preempts the vocoder task's next wake-up
+        //     until the blocking call finishes.
+        //   - Occasional worker-pool scheduling delays cause the
+        //     `imbe_tx` queue (capacity 16 batches) to back up to
+        //     full, at which point `try_send` returns `Err(Full)` and
+        //     frames are dropped — manifesting as live-playback
+        //     buffer-to-0 jitter + recording splits.
+        //
+        // Moving synthesis to its own OS thread via std::thread::spawn
+        // takes it off the tokio pool entirely. The OS scheduler handles
+        // preemption, and NO other tokio task can starve the vocoder's
+        // wake-ups. Playback latency doesn't increase — we use
+        // `blocking_recv()` instead of `.await`, same backpressure
+        // semantics.
+        std::thread::Builder::new()
+            .name("p25-vocoder".into())
+            .spawn(move || {
             use std::sync::atomic::Ordering;
             let mut decoder = vocoder::JmbeDecoder::new();
             let mut rx = imbe_rx;
@@ -3600,8 +3798,21 @@ async fn main() -> anyhow::Result<()> {
                 );
             };
 
-            tracing::info!(target: "p25_vocoder", "vocoder task started");
-            while let Some(frames) = rx.recv().await {
+            tracing::info!(target: "p25_vocoder", "vocoder thread started (dedicated OS thread)");
+            while let Some(frames) = rx.blocking_recv() {
+                // 2026-04-19 count-based recorder close — advance
+                // the consumed counter for EVERY batch pulled off
+                // the queue, including batches that will be skipped
+                // (encrypted call) or dropped (TG-change mid-batch).
+                // Must stay in lockstep with `frames_submitted`
+                // (bumped by 9 in forward_frames on successful
+                // send). The recorder reads this to know the
+                // vocoder has advanced past a given boundary's
+                // `expected_submit_count`.
+                voc_forwarder
+                    .frames_consumed
+                    .fetch_add(9, Ordering::Relaxed);
+
                 // Reset on call boundary (raised by the follower on
                 // new retune).
                 if voc_forwarder.vocoder_reset_pending.swap(false, Ordering::Relaxed) {
@@ -3677,7 +3888,7 @@ async fn main() -> anyhow::Result<()> {
                         .unwrap_or(0);
                     if peak < SILENT_PEAK {
                         voc_forwarder
-                            .vocoder_frames_silent_suppressed
+                            .vocoder_frames_silent_observed
                             .fetch_add(1, Ordering::Relaxed);
                     }
 
@@ -3730,8 +3941,8 @@ async fn main() -> anyhow::Result<()> {
                     });
                 }
             }
-            tracing::warn!(target: "p25_vocoder", "vocoder task exiting (channel closed)");
-        });
+            tracing::warn!(target: "p25_vocoder", "vocoder thread exiting (channel closed)");
+        }).expect("failed to spawn p25-vocoder OS thread");
     }
 
     // Build app state

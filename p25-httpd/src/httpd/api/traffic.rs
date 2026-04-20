@@ -366,8 +366,8 @@ pub async fn get_traffic(
             "vocoder_pcm_produced":   c.vocoder_pcm_produced.load(Ordering::Relaxed),
             "vocoder_errors":         c.vocoder_errors.load(Ordering::Relaxed),
             "vocoder_frames_encrypted": c.vocoder_frames_encrypted.load(Ordering::Relaxed),
-            "vocoder_frames_silent_suppressed":
-                c.vocoder_frames_silent_suppressed.load(Ordering::Relaxed),
+            "vocoder_frames_silent_observed":
+                c.vocoder_frames_silent_observed.load(Ordering::Relaxed),
             // 2026-04-19 TDULC LCW parse diagnostics. Sum of the
             // four should equal `tdulc_parse_attempts`, which is in
             // turn `tdu_lc_count` minus the entries that arrived

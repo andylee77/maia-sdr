@@ -1074,6 +1074,14 @@ impl HduHeader {
     pub fn is_encrypted(&self) -> bool {
         self.algorithm_id != 0x80
     }
+
+    /// True iff `algorithm_id` is in the TIA-102.AABD / SDRTrunk
+    /// `Encryption.fromValue` known set. Used by the call-encrypted
+    /// gate to reject byte values that only a bit-corrupt FEC decode
+    /// could have produced. See 2026-04-19 phantom-ENC investigation.
+    pub fn is_spec_algorithm(&self) -> bool {
+        is_spec_algorithm_id(self.algorithm_id)
+    }
 }
 
 /// Parse the HDU body through SDRTrunk's Golay18 + RS(63,47,17) FEC
@@ -1202,6 +1210,35 @@ impl Ldu2Ess {
     pub fn is_encrypted(&self) -> bool {
         self.algorithm_id != 0x80
     }
+
+    /// See [`HduHeader::is_spec_algorithm`].
+    pub fn is_spec_algorithm(&self) -> bool {
+        is_spec_algorithm_id(self.algorithm_id)
+    }
+}
+
+/// Set of algorithm IDs recognised by TIA-102.AABD + the widely-used
+/// Motorola extensions catalogued in SDRTrunk `Encryption.java`.
+///
+/// The LDU2 ESS FEC [RS(24,16,9) over GF(2^6)] and the HDU FEC
+/// [Golay(18,6,8) + RS(63,47,17)] both accept near-valid codewords
+/// even when the input bits are corrupt. A successful decode with
+/// `algorithm_id` outside this set is evidence the codeword was
+/// bit-corrupt, not that we've discovered a new encryption algorithm.
+/// Callers that drive the `call_encrypted` gate on a clear talkgroup
+/// should reject these phantoms.
+pub fn is_spec_algorithm_id(id: u8) -> bool {
+    matches!(
+        id,
+        // Type-1 (classified) algorithms
+        0x00 | 0x01 | 0x02 | 0x03 | 0x04 | 0x05 | 0x41
+        // Mainstream open standards
+        | 0x80 | 0x81 | 0x82 | 0x83 | 0x84 | 0x85 | 0x88 | 0x89
+        // Motorola + SDRTrunk-catalogued 0x9F..=0xB0 range
+        | 0x9F | 0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5 | 0xA6
+        | 0xA7 | 0xA8 | 0xA9 | 0xAA | 0xAB | 0xAC | 0xAD | 0xAE
+        | 0xAF | 0xB0
+    )
 }
 
 /// Parse the LDU2 ESS through Hamming10 + RS(24,16,9). `body_raw`
