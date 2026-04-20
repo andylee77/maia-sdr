@@ -1,21 +1,16 @@
-//! Phase 7D: IMBE vocoder.
+//! IMBE vocoder.
 //!
 //! Converts raw 144-bit IMBE frames (`ImbeFrameRaw`) to 160-sample
 //! PCM audio at 8 kHz (20 ms per frame).
 //!
-//! The live backend is **JMBE** — a pure-Rust port of the Java MBE
-//! library (SDRTrunk's `jmbe` fork). Implementation lives in
-//! [`crate::jmbe`]; this module wraps it in [`JmbeDecoder`] which
-//! handles the i16 PCM conversion the rest of the daemon expects.
-//!
-//! History: an mbelib-backed `ImbeDecoder` FFI wrapper existed
-//! alongside JMBE as a fallback. It was deleted 2026-04-17 after
-//! JMBE had been running in production for weeks with no regression.
-//! The `mbelib-sys` crate is kept only for its `SAMPLES_PER_FRAME`
-//! constant (re-exported below). If a fallback is ever needed again,
-//! reinstate from git history.
+//! Backend is **JMBE** — a pure-Rust port of the Java MBE library
+//! (SDRTrunk's `jmbe` fork). Implementation lives in [`crate::jmbe`];
+//! this module wraps it in [`JmbeDecoder`] which handles the i16 PCM
+//! conversion the rest of the daemon expects. An earlier mbelib C-FFI
+//! wrapper existed as a fallback; recoverable from git if ever needed.
 
-pub use mbelib_sys::SAMPLES_PER_FRAME;
+/// Samples per 20 ms IMBE frame at 8 kHz (160 mono samples).
+pub const SAMPLES_PER_FRAME: usize = 160;
 
 use crate::protocol::p25::voice_frame::ImbeFrameRaw;
 
