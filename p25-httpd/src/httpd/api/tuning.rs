@@ -586,7 +586,7 @@ pub async fn get_bch_t(
     Json(serde_json::json!({
         "control":  control,
         "traffic":  traffic,
-        "default":  crate::lsm::nid_fec::T_MAX_ERRORS,
+        "default":  crate::protocol::p25::fec::bch::T_MAX_ERRORS,
         "note":     "null = default (T_MAX_ERRORS = 11). Set via \
                      PUT /api/bch_t?side=control|traffic|both&value=N \
                      where N is 0..=11. value=reset or value=null to \
@@ -625,12 +625,12 @@ pub async fn put_bch_t(
         None
     } else {
         match value_str.parse::<u32>() {
-            Ok(v) if v <= crate::lsm::nid_fec::T_MAX_ERRORS => Some(v),
+            Ok(v) if v <= crate::protocol::p25::fec::bch::T_MAX_ERRORS => Some(v),
             Ok(v) => {
                 return Json(serde_json::json!({
                     "error": format!(
                         "value={} out of range (max = {})",
-                        v, crate::lsm::nid_fec::T_MAX_ERRORS,
+                        v, crate::protocol::p25::fec::bch::T_MAX_ERRORS,
                     ),
                 }));
             }

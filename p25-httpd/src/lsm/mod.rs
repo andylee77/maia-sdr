@@ -69,8 +69,13 @@
 
 pub mod demod;
 pub mod filters;
-pub mod nid_fec;
 pub mod sync;
+
+// `nid_fec` moved to `crate::protocol::p25::fec::bch` on 2026-04-19
+// (BCH(63,16,11) is a P25 protocol concern, not an LSM modulation
+// concern). Back-compat alias kept so the existing import paths
+// inside lsm/* still resolve.
+pub use crate::protocol::p25::fec::bch as nid_fec;
 
 #[cfg(target_os = "linux")]
 pub mod ring;

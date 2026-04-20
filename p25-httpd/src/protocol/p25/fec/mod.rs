@@ -8,12 +8,13 @@
 //!
 //! Reference: TIA-102.BAAA Section 7 (coding and interleaving)
 
+pub mod bch;
 pub mod rs_24_12_13;
 pub mod rs_24_16_9;
 pub mod rs_63_47_17;
 pub mod rs_p25;
 
-// The Phase 6D `crate::lsm::nid_fec::decode_nid` is the live P25
+// The Phase 6D `crate::protocol::p25::fec::bch::decode_nid` is the live P25
 // NID decoder (BCH(63,16,11) ML codebook). Call it directly — the
 // old `GolayDecoder::decode_nid` wrapper was removed 2026-04-17.
 
@@ -413,8 +414,8 @@ mod tests {
         // validated lsm::nid_fec encoder so we get a real BCH codeword
         // with the right 48 parity bits, then verify decode_nid round-
         // trips it cleanly.
-        let nid_bits = crate::lsm::nid_fec::encode_nid(0x8A1, 0x7);
-        let decoded = crate::lsm::nid_fec::decode_nid(nid_bits).unwrap();
+        let nid_bits = crate::protocol::p25::fec::bch::encode_nid(0x8A1, 0x7);
+        let decoded = crate::protocol::p25::fec::bch::decode_nid(nid_bits).unwrap();
         assert_eq!(decoded.nac, 0x8A1);
         assert_eq!(decoded.duid, 0x7);
         // For a clean codeword raw matches BCH-corrected.
@@ -428,7 +429,7 @@ mod tests {
         // codeword and verify the decoder still recovers the original
         // NAC/DUID, matching the existing
         // lsm::nid_fec::error_correction_sweep_up_to_t11 test.
-        let clean = crate::lsm::nid_fec::encode_nid(0x8A1, 0x7);
+        let clean = crate::protocol::p25::fec::bch::encode_nid(0x8A1, 0x7);
         // 11 fixed bit positions from the parity field (avoid bit 63
         // which is the SDRTrunk-test convention).
         let positions = [0u32, 5, 9, 14, 20, 27, 33, 40, 46, 51, 58];
@@ -436,7 +437,7 @@ mod tests {
         for &p in &positions {
             corrupted ^= 1u64 << (63 - p);
         }
-        let decoded = crate::lsm::nid_fec::decode_nid(corrupted).unwrap();
+        let decoded = crate::protocol::p25::fec::bch::decode_nid(corrupted).unwrap();
         assert_eq!(decoded.nac, 0x8A1);
         assert_eq!(decoded.duid, 0x7);
     }
@@ -450,13 +451,13 @@ mod tests {
         // original (NAC, DUID) pair, because that would be undetectably
         // wrong. The strict assertion is "either None, or a different
         // (NAC, DUID)".
-        let clean = crate::lsm::nid_fec::encode_nid(0x8A1, 0x7);
+        let clean = crate::protocol::p25::fec::bch::encode_nid(0x8A1, 0x7);
         // Flip the first 20 bits.
         let mut corrupted = clean;
         for p in 0u32..20 {
             corrupted ^= 1u64 << (63 - p);
         }
-        match crate::lsm::nid_fec::decode_nid(corrupted) {
+        match crate::protocol::p25::fec::bch::decode_nid(corrupted) {
             None => {} // ok -- uncorrectable
             Some(d) => {
                 assert_ne!(
@@ -477,11 +478,11 @@ mod tests {
         // expose for the diagnostic histogram should still be the
         // PRE-correction value (so the histogram measures slicer noise,
         // not BCH-corrected output).
-        let clean = crate::lsm::nid_fec::encode_nid(0xE28, 0x7);
+        let clean = crate::protocol::p25::fec::bch::encode_nid(0xE28, 0x7);
         // Flip the DUID LSB (on-wire bit 15 = u64 bit 48). 1 bit error
         // is well within the t=11 correction sphere.
         let corrupted = clean ^ (1u64 << 48);
-        let decoded = crate::lsm::nid_fec::decode_nid(corrupted).unwrap();
+        let decoded = crate::protocol::p25::fec::bch::decode_nid(corrupted).unwrap();
         assert_eq!(decoded.nac, 0xE28);
         assert_eq!(decoded.duid, 0x7); // BCH-corrected
         assert_eq!(raw_duid_of(corrupted), 0x6); // the un-FEC'd LSB-flipped DUID

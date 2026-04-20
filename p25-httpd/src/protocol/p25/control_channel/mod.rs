@@ -813,13 +813,13 @@ impl ControlChannelDecoder {
                     let on_air_duid_raw =
                         ((new_bits >> 48) & 0xF) as u8;
                     let bch_result =
-                        crate::lsm::nid_fec::decode_nid(new_bits);
+                        crate::protocol::p25::fec::bch::decode_nid(new_bits);
                     // Apply runtime tolerance (None = default
                     // T_MAX_ERRORS=11). If n_errors exceeds, reject.
                     let bch_result = match bch_result {
                         Some(d) => {
                             let limit = self.bch_t_override
-                                .unwrap_or(crate::lsm::nid_fec::T_MAX_ERRORS);
+                                .unwrap_or(crate::protocol::p25::fec::bch::T_MAX_ERRORS);
                             if d.n_errors as u32 > limit {
                                 None
                             } else {
