@@ -47,10 +47,10 @@ pub struct ControlChannelDecoder {
     /// Expected data unit length
     du_expected_len: usize,
     /// Number of TSBK blocks already decoded from the current TSDU
-    /// (0..=3). Phase 6F.3 multi-block TSBK support: when TSBK1
-    /// finishes and `last_block` is not set, we extend `du_expected_len`
-    /// to 231 (TSBK2) or 303 (TSBK3) and bump this counter on each
-    /// successful decode. Reset to 0 on every Hunting transition.
+    /// (0..=3). When TSBK1 finishes and `last_block` is not set we
+    /// extend `du_expected_len` to 231 (TSBK2) or 303 (TSBK3) and
+    /// bump this counter on each successful decode. Reset to 0 on
+    /// every Hunting transition.
     tsdu_blocks_decoded: usize,
 
     // ── Diagnostic counters (for tracing/logging only) ──
@@ -68,14 +68,12 @@ pub struct ControlChannelDecoder {
     last_log_dibits: u64,
     /// Rolling capture of recent dibits for /api/dibit_dump (oldest first)
     pub recent_dibits: std::collections::VecDeque<u8>,
-    /// Histogram of the *raw* DUID values that decode_nid sees, before
-    /// the temporary "always TSDU" hardcode (see fec::GolayDecoder::decode_nid).
-    /// 16 buckets, indexed by raw 4-bit DUID. Lets us observe the actual
-    /// on-air DUID distribution while the BCH(64,16) NID FEC is still missing
-    /// -- a healthy control channel should be ~100% in bucket 7 (TSDU).
+    /// Histogram of the *raw* DUID values seen before BCH correction.
+    /// 16 buckets, indexed by raw 4-bit DUID. A healthy control channel
+    /// should be ~100% in bucket 7 (TSDU).
     raw_duid_hist: [u64; 16],
 
-    // ── Phase 6F.2 diagnostic counters: pipeline failure breakdown ─
+    // ── Diagnostic counters: pipeline failure breakdown ─
     /// Number of times a frame sync hit triggered a NID read attempt.
     /// This is the same as `sync_hits` but kept separate for clarity.
     pub nid_attempts: u64,
@@ -106,76 +104,62 @@ pub struct ControlChannelDecoder {
     /// TSBK blocks where `TrellisDecoder::decode` returned None.
     pub tsbk_trellis_failures: u64,
     /// TSBK blocks where trellis succeeded but `block.crc_valid` was
-    /// false. **This is the canonical "we have dibits but they're
-    /// corrupted past trellis FEC capacity" indicator.**
+    /// false. Canonical "we have dibits but they're corrupted past
+    /// trellis FEC capacity" indicator.
     pub tsbk_crc_failures: u64,
     /// TSBK blocks that decoded cleanly through CRC and produced a
     /// `TsbkMessage`.
     pub tsbk_crc_ok: u64,
-    /// Subset of `tsbk_crc_ok` where the CRC validated under the
-    /// **plain** convention (`crc16_ccitt(data) == msg_crc`). Phase
-    /// 6F.2d diagnostic: lets us see in the dashboard which CRC
-    /// convention real on-air TSBKs use, and whether the population
-    /// is mixed or single-convention.
+    /// Subset of `tsbk_crc_ok` where CRC validated as **plain**
+    /// (`crc16_ccitt(data) == msg_crc`). Diagnostic for which CRC
+    /// convention real on-air TSBKs use.
     pub tsbk_crc_ok_plain: u64,
-    /// Subset of `tsbk_crc_ok` where the CRC validated under the
-    /// **xor 0xFFFF** convention (`crc16_ccitt(data) ^ 0xFFFF ==
-    /// msg_crc`). Phase 6F.2d diagnostic, see `tsbk_crc_ok_plain`.
+    /// Subset of `tsbk_crc_ok` where CRC validated as **xor 0xFFFF**
+    /// (`crc16_ccitt(data) ^ 0xFFFF == msg_crc`).
     pub tsbk_crc_ok_xored: u64,
     /// TSBK blocks that survived CRC but the opcode parser couldn't
     /// turn into a known TsbkMessage variant.
     pub tsbk_unknown_opcode: u64,
 
-    // ── Phase 6F.4 diagnostic histograms ──
+    // ── Diagnostic histograms ──
     /// Per-opcode histogram of CRC-OK TSBK blocks. Indexed by the
-    /// 6-bit opcode value (`bytes[0] & 0x3F`). Lets the dashboard show
-    /// the actual on-air opcode distribution and figure out which
-    /// opcodes we're missing parsers for. Phase 6F.4 added this so we
-    /// can stop guessing why `bands_known` stays at 0.
+    /// 6-bit opcode value (`bytes[0] & 0x3F`). Shows the on-air opcode
+    /// distribution and which opcodes we're missing parsers for.
     pub tsbk_opcode_hist_ok: [u64; 64],
     /// Per-opcode histogram of CRC-FAIL TSBK blocks. Same layout as
     /// `tsbk_opcode_hist_ok`. A high count for a particular opcode
-    /// suggests the trellis-decoded bytes are mostly garbage (the
-    /// "opcode" was randomly distributed) -- a low count and clean
-    /// distribution match the CRC-OK histogram for confirmed real
-    /// opcodes that just had bit errors past trellis correction.
+    /// with a clean distribution matches confirmed real opcodes that
+    /// just had bit errors past trellis correction.
     pub tsbk_opcode_hist_fail: [u64; 64],
     /// Per-vendor-mfid histogram on CRC-OK blocks. Index 0 = standard
-    /// (mfid==0x00), other indices are bucketed by mfid value (we
-    /// only track mfid 0x00, 0x90 = Motorola, 0x10 = Icom etc, and
-    /// "other"). Diagnostic for "how much of our traffic is vendor
-    /// proprietary?".
+    /// (0x00), 1 = Motorola (0x90), 2 = Harris/Tait (0xA4),
+    /// 3 = other.
     pub tsbk_mfid_hist_ok: [u64; 4],
     /// Per-block-position attempt counters (block 0 = TSBK1,
-    /// 1 = TSBK2, 2 = TSBK3). Increments when the decoder feeds the
-    /// trellis for that block index. Confirms multi-block continuation
+    /// 1 = TSBK2, 2 = TSBK3). Confirms multi-block continuation
     /// is actually firing.
     pub tsbk_block_attempts_by_pos: [u64; 3],
-    /// Per-block-position CRC-OK counters. Compares against
-    /// `tsbk_block_attempts_by_pos` to give a per-position CRC success
-    /// rate -- if block 1 / block 2 have substantially worse rates than
-    /// block 0, the multi-block dibit alignment is wrong.
+    /// Per-block-position CRC-OK counters. Compared against
+    /// `tsbk_block_attempts_by_pos` for per-position CRC success rate.
     pub tsbk_crc_ok_by_pos: [u64; 3],
 
-    /// **Phase 6F.6 sync distance histogram.** Indexed by Hamming
-    /// distance bucket (0..=23, with bucket 24 = "anything ≥ 24").
-    /// Bumped on every dibit shift in Hunting state once we have a
-    /// full 24-dibit sync window. Lets the dashboard see whether real
-    /// syncs cluster at low distances (slicer is fine, just need to
-    /// match) or high distances (slicer is corrupting half the
-    /// outer-symbol bits in the all-outer sync pattern, sync widening
+    /// Sync distance histogram. Indexed by Hamming distance bucket
+    /// (0..=23, with bucket 24 = "anything ≥ 24"). Bumped on every
+    /// dibit shift in Hunting state once we have a full 24-dibit sync
+    /// window. Diagnostic for whether real syncs cluster at low
+    /// distances (slicer fine, just need to widen threshold) or smear
+    /// across higher distances (slicer is corrupting half the
+    /// outer-symbol bits in the all-outer sync pattern, widening
     /// can't help).
     ///
-    /// 6F.4 verification showed the PS hard correlator and PL HDL hard
-    /// correlator both stuck at ~4.7 sync hits/sec while the Phase 6D
-    /// soft-decision IQ correlator gets 9/sec on the same signal. The
+    /// Verification showed the PS hard correlator and PL HDL hard
+    /// correlator both stuck at ~4.7 sync hits/sec while the soft-
+    /// decision IQ correlator gets 9/sec on the same signal. The
     /// dibit-correlator hard sync rate is the dominant throughput
-    /// bottleneck. Without this histogram we can't tell whether the
-    /// missing 4.3 syncs/sec are at salvageable distances (e.g. 9-14)
-    /// or not (e.g. 18-24, where they overlap random data).
+    /// bottleneck.
     pub sync_distance_hist: [u64; 25],
 
-    // ── Phase 6F.2h aligned capture (one-shot diagnostic) ──
+    // ── Aligned capture (one-shot diagnostic) ──
     /// Set to `true` by `/api/control_iq_capture_aligned` to request a full
     /// pipeline trace on the NEXT sync hit. Cleared by the decoder as
     /// soon as it captures one frame.
@@ -189,7 +173,7 @@ pub struct ControlChannelDecoder {
     /// raw NID + body dibits.
     capture_in_flight: Option<CaptureBuilder>,
 
-    // ── Phase 7F.4 NID batch capture ring (2026-04-14) ──
+    // ── NID batch capture ring ──
     /// When `true`, the decoder pushes a minimal `AlignedCapture` (NID
     /// fields only, no trellis/TSBK) to `capture_ring` on every sync
     /// event with a populated NID window. Disarms automatically when
@@ -206,19 +190,18 @@ pub struct ControlChannelDecoder {
     /// `arm_capture_ring`. Zero means the ring is disarmed.
     pub capture_ring_limit: usize,
 
-    // ── Phase 7F.4 runtime BCH-t override (2026-04-14) ──
+    // ── Runtime BCH-t override ──
     /// When `Some(n)`, the decoder rejects any BCH-corrected NID
     /// whose `n_errors > n`. When `None`, the default `T_MAX_ERRORS`
     /// (11) threshold is used.
     pub bch_t_override: Option<u32>,
-    /// Phase 7F.5 (2026-04-14) per-decoder sync correlator
-    /// threshold override. When `Some(n)`, this decoder instance
-    /// uses `n` as its Hamming-distance cutoff for sync hits
-    /// regardless of `RUNTIME_SYNC_THRESHOLD`. Lets us tighten the
-    /// traffic-side decoder (where noise between real LDU frames
-    /// generates sync false-positives that flood the framer) while
-    /// leaving the control-side decoder permissive enough to catch
-    /// its marginal TSBKs. Tuned via `/api/sync_tune?side=traffic&value=N`.
+    /// Per-decoder sync correlator threshold override. When `Some(n)`,
+    /// this decoder instance uses `n` as its Hamming-distance cutoff
+    /// for sync hits regardless of `RUNTIME_SYNC_THRESHOLD`. Lets us
+    /// tighten the traffic-side decoder (where inter-LDU noise
+    /// generates sync false-positives) while leaving control-side
+    /// permissive for marginal TSBK recovery. Tuned via
+    /// `/api/sync_tune?side=traffic&value=N`.
     pub sync_threshold_override: Option<u32>,
 
     /// System identity
@@ -229,9 +212,8 @@ pub struct ControlChannelDecoder {
     pub grants: HashMap<u16, GrantInfo>,
     /// Recent TSBK messages for logging. Tuple is `(instant, block_idx,
     /// message)` where `block_idx` is 0/1/2 = TSBK1/TSBK2/TSBK3 within
-    /// the parent TSDU. Phase 6F.4: added `block_idx` so the dashboard
-    /// can show which block each message came from, matching SDRTrunk's
-    /// `decoded_messages.log` format ("TSBK1 NET_STS_BCAST...").
+    /// the parent TSDU, matching SDRTrunk's `decoded_messages.log`
+    /// format ("TSBK1 NET_STS_BCAST...").
     pub recent_messages: Vec<(Instant, u8, TsbkMessage)>,
     /// Max recent messages to keep
     max_recent: usize,
@@ -239,20 +221,15 @@ pub struct ControlChannelDecoder {
     pub aliases: HashMap<u16, String>,
     /// Broadcast channel for WebSocket events
     event_tx: Option<broadcast::Sender<String>>,
-    /// Phase 7B: typed grant event channel for the grant follower task.
+    /// Typed grant event channel for the grant follower task.
     grant_event_tx: Option<tokio::sync::mpsc::Sender<super::events::P25Event>>,
-    /// Phase 7C: optional voice frame handler. When set, the decoder
-    /// dispatches HDU/LDU1/LDU2/TDU/TDU_LC bodies to the handler in
-    /// addition to the normal TSDU dispatch. Set on the new
-    /// `traffic_lsm_decoder` instance in main.rs (which feeds off the
-    /// new `traffic_lsm_dibit_dma` ring); left `None` on the three
-    /// existing control-channel decoder instances which never see
-    /// voice channel frames anyway. The handler is called from
-    /// `process_dibit` after a complete data unit body has been
-    /// collected -- it owns the decoded payload (e.g. an
-    /// `ImbeFrameRaw` for LDUs) and is responsible for forwarding it
-    /// to whatever downstream consumer (Phase 7D vocoder, mpsc
-    /// channel, etc).
+    /// Optional voice frame handler. When set, the decoder dispatches
+    /// HDU/LDU1/LDU2/TDU/TDU_LC bodies to the handler in addition to
+    /// the normal TSDU dispatch. Set on the `traffic_lsm_decoder`
+    /// instance in main.rs; left `None` on the control-channel
+    /// decoder instances which never see voice channel frames. The
+    /// handler owns the decoded payload (e.g. `ImbeFrameRaw` for LDUs)
+    /// and forwards it downstream.
     pub voice_handler: Option<Arc<dyn VoiceHandler + Send + Sync>>,
     /// Optional structured event log. When set, the decoder emits one
     /// `Duid` entry per successful NID decode (post-BCH, pre-dispatch)
@@ -264,9 +241,9 @@ pub struct ControlChannelDecoder {
     /// decoder. Defaults to "control"; main.rs overrides for the
     /// traffic and C4FM decoder instances.
     pub chain_label: &'static str,
-    /// Phase 7C: cumulative count of LDU1 frames the decoder has
-    /// successfully framed and dispatched. Per-call rate is computed
-    /// downstream from successive snapshots.
+    /// Cumulative count of LDU1 frames the decoder has successfully
+    /// framed and dispatched. Per-call rate is computed downstream
+    /// from successive snapshots.
     pub ldu1_count: u64,
     pub ldu2_count: u64,
     pub hdu_count: u64,
@@ -274,35 +251,28 @@ pub struct ControlChannelDecoder {
     pub tdu_lc_count: u64,
 }
 
-/// Phase 7C: voice frame handler trait. Implementations consume the
-/// 9 raw IMBE frames extracted from each LDU and forward them to a
-/// downstream consumer (Phase 7D vocoder, RTP broadcaster, file
-/// recorder, etc).
+/// Voice frame handler trait. Implementations consume the 9 raw IMBE
+/// frames extracted from each LDU and forward them to a downstream
+/// consumer (vocoder, RTP broadcaster, file recorder, etc).
 ///
 /// Methods take `&self` so the trait object can be shared across
 /// the decoder + the downstream consumer. Implementations are
 /// expected to use interior mutability (e.g. an mpsc Sender, an
 /// AtomicU64 counter) where state is needed.
 ///
-/// **Why a trait instead of a concrete type:** the decoder lives in
-/// the `p25` module which has no knowledge of `tokio::sync::mpsc`,
-/// `TrafficStats`, or any of the per-binary types. Wiring through a
-/// trait keeps the decoder library-style and lets `main.rs` plug in
-/// whatever consumer it wants.
+/// The decoder lives in the `p25` module which has no knowledge of
+/// `tokio::sync::mpsc`, `TrafficStats`, or any of the per-binary
+/// types. A trait keeps the decoder library-style and lets `main.rs`
+/// plug in whatever consumer it wants.
 pub trait VoiceHandler {
     /// Called once per successfully-framed LDU1 with the 9 raw IMBE
-    /// frames in transmission order. The decoder has already
-    /// stripped status dibits and applied the LDU1 bit layout.
+    /// frames in transmission order. `body_raw` is passed so the
+    /// handler can parse the LDU1 Link Control Word via
+    /// `voice_frame::parse_ldu1_lcw` to recover the mid-call
+    /// `FM:<source>` / `TO:<TG>` / encryption flag.
     ///
     /// Default impl is a no-op so implementations can choose to
     /// only override the methods they care about.
-    ///
-    /// 2026-04-19 signature change: `body_raw` is now also passed so
-    /// the handler can parse the LDU1 Link Control Word via
-    /// `voice_frame::parse_ldu1_lcw` to recover the mid-call
-    /// `FM:<source>` / `TO:<TG>` / encryption flag. Pre-existing
-    /// consumers that only want the 9 IMBE frames can keep ignoring
-    /// `body_raw`.
     fn on_ldu1(
         &self,
         _frames: &[crate::protocol::p25::voice_frame::ImbeFrameRaw; 9],
@@ -310,10 +280,8 @@ pub trait VoiceHandler {
     ) {
     }
 
-    /// Called once per successfully-framed LDU2.
-    ///
-    /// 2026-04-19 signature change: `body_raw` is now also passed so
-    /// the handler can parse the LDU2 Encryption Sync Signature via
+    /// Called once per successfully-framed LDU2. `body_raw` is passed
+    /// so the handler can parse the LDU2 Encryption Sync Signature via
     /// `voice_frame::parse_ldu2_ess` and recover the 72-bit MI +
     /// algorithm + key id refreshed by every LDU2.
     fn on_ldu2(
@@ -323,25 +291,18 @@ pub trait VoiceHandler {
     ) {
     }
 
-    /// Called once per HDU.
-    ///
-    /// 2026-04-19 signature change: `body_raw` is now passed so the
-    /// handler can run `voice_frame::parse_hdu_body` and recover the
-    /// 120-bit header (MI, Algorithm, Key ID, TG) via Golay18 +
-    /// RS(63,47,17). Pre-2026-04-19 consumers that treated HDU as a
-    /// "call start" tick with no payload can keep ignoring `body_raw`.
+    /// Called once per HDU. `body_raw` is passed so the handler can
+    /// run `voice_frame::parse_hdu_body` and recover the 120-bit
+    /// header (MI, Algorithm, Key ID, TG) via Golay18 + RS(63,47,17).
     fn on_hdu(&self, _body_raw: &[u8]) {}
 
     /// Called once per TDU (DUID 0x3, no payload).
     fn on_tdu(&self) {}
 
-    /// Called once per TDU_LC (DUID 0xF). 2026-04-19: now receives
-    /// the raw body dibit slice (159 dibits incl. status) so the
-    /// handler can parse the Link Control Word with
-    /// `voice_frame::parse_tdulc_lcw` and pick up the Motorola
-    /// `TALK_COMPLETE` BY: source. Phase 7C original implementation
-    /// was a bare `fn on_tdu_lc(&self)` counter — pre-2026-04-19
-    /// handlers just ignored the body.
+    /// Called once per TDU_LC (DUID 0xF). `body_raw` is the raw body
+    /// dibit slice (159 dibits incl. status) so the handler can parse
+    /// the Link Control Word with `voice_frame::parse_tdulc_lcw` and
+    /// pick up the Motorola `TALK_COMPLETE` BY: source.
     fn on_tdu_lc(&self, _body_raw: &[u8]) {}
 }
 
@@ -360,79 +321,56 @@ const FRAME_SYNC_MASK: u64 = 0xFFFF_FFFF_FFFF; // 48 bits
 
 /// Maximum Hamming distance for sync detection.
 ///
-/// **Phase 6F.7 (2026-04-11):** sync threshold is now RUNTIME-TUNABLE
-/// via the new `RUNTIME_SYNC_THRESHOLD` AtomicU32. The constant below
-/// is just the boot default. Use `/api/sync_tune?threshold=N` to
-/// experiment without reflashing -- the 6F.6 verification showed the
-/// optimal threshold depends on PLL lock state and varies over time.
+/// Sync threshold is RUNTIME-TUNABLE via `RUNTIME_SYNC_THRESHOLD`
+/// (AtomicU32). This constant is the boot default. Use
+/// `/api/sync_tune?threshold=N` to experiment without reflashing --
+/// the optimal threshold depends on PLL lock state and varies over
+/// time.
 ///
-/// **Phase 6F.6 history (2026-04-11):** raised from 8 → 14 after 6F.5
-/// verification showed widening 4 → 8 had no effect on sync hit rate.
-/// The 6F.5 dibit dump:
-///
-/// ```text
-/// SYNC_THRESHOLD       = 8
-/// sync hits            = 470 (4.59/sec)
-/// sync near (5..14)    = 3243 (31.67/sec)   ← still missing
-/// ```
-///
-/// The hits/sec is the SAME at threshold 8 and threshold 4 because
+/// History: widening 4 → 8 had no effect on sync hit rate because
 /// there are essentially no real syncs at distance 5-8 in this
-/// signal. The big mass of "near" sync events at distance 9-14 is
-/// what we need to capture, so 6F.6 raises threshold to 14.
-///
-/// Cross-checked against the PL HDL gateware NID extractor (which
-/// runs its OWN hard sync detector in firmware): also stuck at
-/// ~4.7 NID events/sec. So both PS and PL hard correlators on the
-/// HDL slicer's dibit stream agree -- the slicer is producing too
-/// many bit errors per outer-symbol sync dibit for the dibit-level
-/// correlator to find better matches. The Phase 6D soft-decision IQ
+/// signal. A mass of "near" sync events at distance 9-14 suggested
+/// widening to 14 — cross-checked against the PL HDL gateware NID
+/// extractor (its own hard sync detector) which also stuck at
+/// ~4.7 NID events/sec. Both PS and PL hard correlators on the HDL
+/// slicer's dibit stream agree: the slicer is producing too many
+/// bit errors per outer-symbol sync dibit for the dibit-level
+/// correlator to find better matches. The soft-decision IQ
 /// correlator on raw IQ samples gets 9/sec, confirming syncs ARE
 /// out there at the sample level but the slicer is dropping them.
 ///
-/// At threshold 14 the random-false-positive rate is much higher
-/// than threshold 8: `P(48-bit random ≤ 14 of fixed)` ≈ 6×10⁻³.
-/// At ~2400 sliding windows/sec that's ~14 false syncs/sec. The
-/// downstream BCH(63,16,11) NID FEC catches them (~10⁻⁴ pass-through
-/// rate for random 64-bit words → ~0.001 false TSDU events/sec,
-/// negligible). Each false sync costs ~33 dibits of wasted NID
-/// read work; at 14 false/sec that's 462 dibits/sec ≈ 10 % of the
-/// 4800 sym/s budget -- still cheap on Cortex-A9.
+/// At threshold 14 the random-false-positive rate is ~6×10⁻³
+/// (P(48-bit random ≤ 14 of fixed)). At ~2400 sliding windows/sec
+/// that's ~14 false syncs/sec. The downstream BCH(63,16,11) NID FEC
+/// catches them (~10⁻⁴ pass-through → ~0.001 false TSDU events/sec).
+/// Each false sync costs ~33 dibits of wasted NID read work; at
+/// 14 false/sec that's ~10 % of the 4800 sym/s budget -- cheap on
+/// Cortex-A9.
 ///
-/// **6F.6 also adds a `sync_distance_hist[25]` field** that buckets
-/// every observed sync distance, exposed via `/api/control_lsm_dibit_dump`.
-/// If the histogram shows a real sync cluster at 9-14, threshold 14
-/// catches them. If the distribution is essentially flat random with
-/// no cluster at any distance, the syncs aren't recoverable from the
-/// current dibit stream and we need to either (a) fix the HDL DC
-/// blocker / slicer or (b) wire the Phase 6D soft sync events into
-/// the TSBK pipeline.
+/// The `sync_distance_hist[25]` field buckets every observed sync
+/// distance, exposed via `/api/control_lsm_dibit_dump`. If the
+/// histogram shows a real sync cluster at 9-14, widening catches
+/// them. If flat random, syncs aren't recoverable from the current
+/// dibit stream and we need to either (a) fix the HDL DC blocker /
+/// slicer or (b) wire the soft sync events into the TSBK pipeline.
 ///
-/// Phase 6F.2e history: dropped 10 → 4 because the LSM stream was
-/// "much cleaner" than legacy C4FM. That was optimistic; both 6F.5
-/// (8) and 6F.6 (14) have walked it back as the noise budget became
-/// clear from on-target measurement.
-/// Boot-time default for the runtime-tunable sync threshold. Code
-/// reads `RUNTIME_SYNC_THRESHOLD.load(Relaxed)` everywhere instead of
-/// this constant directly. The 6F.6 distance histogram showed this is
-/// a moving target -- 6 is a sane middle ground between
-/// "perfect-only" (4) and "noise-flooded" (14), but the optimum
-/// shifts with PLL lock state, so the right tool is `/api/sync_tune`.
+/// 6 is a sane middle ground between "perfect-only" (4) and
+/// "noise-flooded" (14), but the optimum shifts with PLL lock state,
+/// so the right tool is `/api/sync_tune`.
 pub const SYNC_THRESHOLD: u32 = 6;
 
-/// Phase 6F.7 runtime-tunable sync threshold. Reads inside the dibit
-/// hot loop go through this AtomicU32 (Relaxed ordering -- the value
-/// only changes when an operator hits `/api/sync_tune`, and a one-
-/// dibit lag is fine). Initial value is set in
-/// `ControlChannelDecoder::new()` from `SYNC_THRESHOLD`.
+/// Runtime-tunable sync threshold. Reads inside the dibit hot loop
+/// go through this AtomicU32 (Relaxed ordering -- the value only
+/// changes when an operator hits `/api/sync_tune`, a one-dibit lag
+/// is fine). Initialised from `SYNC_THRESHOLD`.
 pub static RUNTIME_SYNC_THRESHOLD: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(SYNC_THRESHOLD);
 
-/// Logging threshold: any candidate with distance ≤ this is logged as a "near miss"
-/// to give visibility into how close the bit stream is to a real sync.
-/// 6F.6: bumped from 14 to 20 since SYNC_THRESHOLD is now 14 -- we want
-/// the near counter to show us the distance 15-20 bucket so we can
-/// decide whether widening further is worthwhile.
+/// Logging threshold: any candidate with distance ≤ this is logged
+/// as a "near miss" to give visibility into how close the bit stream
+/// is to a real sync. Kept wider than SYNC_THRESHOLD so the near
+/// counter shows the margin bucket (useful for deciding whether
+/// widening further is worthwhile).
 const SYNC_NEAR_LOG_THRESHOLD: u32 = 20;
 
 /// The P25 NID payload is 64 bits = 32 content dibits, but the first P25
@@ -442,19 +380,19 @@ const SYNC_NEAR_LOG_THRESHOLD: u32 = 20;
 /// HDL `LsmSyncNidExtract` which both read 33 dibits and skip index 11
 /// before packing the remaining 32 into the 64-bit BCH codeword.
 ///
-/// Historical note: until 2026-04-10 this constant was 32 and the
-/// decoder skipped nothing, which silently corrupted bits 41..40 of the
-/// NID codeword with the status dibit value and shifted the remaining
-/// parity bits out of position. The Phase 2A C4FM decoder "worked"
-/// because its `decode_nid` stub only extracted bits 63..48 (NAC+DUID)
-/// from the top of the word -- those come from on-air dibits 0..7, all
-/// BEFORE the status dibit at index 11, so the stub got the right
-/// NAC/raw_DUID despite the corrupted parity region. Porting the
-/// validated BCH(63,16,11) FEC into the decoder exposed the bug: the
-/// LSM-side decoder consistently miscorrected clean Clay County NIDs
-/// (NAC=0x8A1, DUID=0x7) to a spurious fixed codeword
-/// (NAC=0xE28, DUID=0x5) because the status-dibit corruption was
-/// deterministic. See doc/changes/022 for the fix log.
+/// Historical note: when this constant was 32 and the decoder skipped
+/// nothing, bits 41..40 of the NID codeword were silently corrupted by
+/// the status dibit value and the remaining parity bits were shifted
+/// out of position. The earlier C4FM decoder "worked" because its
+/// `decode_nid` stub only extracted bits 63..48 (NAC+DUID) from the top
+/// of the word -- those come from on-air dibits 0..7, all BEFORE the
+/// status dibit at index 11, so the stub got the right NAC/raw_DUID
+/// despite the corrupted parity region. Porting the validated
+/// BCH(63,16,11) FEC exposed the bug: the LSM-side decoder
+/// consistently miscorrected clean Clay County NIDs (NAC=0x8A1,
+/// DUID=0x7) to a spurious fixed codeword (NAC=0xE28, DUID=0x5)
+/// because the status-dibit corruption was deterministic. See
+/// doc/changes/022 for the fix log.
 const NID_TRANSMITTED_DIBITS: usize = 33;
 /// Index within the 33-dibit on-air NID window where the first P25
 /// status dibit lands. The decoder must read this dibit (so the
@@ -510,20 +448,16 @@ impl ControlChannelDecoder {
             bands: HashMap::new(),
             grants: HashMap::new(),
             recent_messages: Vec::new(),
-            // 6F.10: bumped from 100 -> 1000. At the steady-state PS LSM
-            // throughput of ~14 messages/sec the 100 cap saturates in 7
-            // seconds, which made the verification script's
-            // `messages / uptime` headline rate report a misleading
-            // 1.1 msg/sec instead of the real 14.8/sec. 1000 holds ~70
-            // seconds of activity, enough for `/api/recent_tsbks` to
-            // show a representative window.
+            // At steady-state ~14 messages/sec a 100-entry cap
+            // saturated in 7 seconds and skewed `/api/recent_tsbks`.
+            // 1000 holds ~70 seconds of activity.
             max_recent: 1000,
             aliases: HashMap::new(),
             event_tx: None,
             grant_event_tx: None,
-            // Phase 7C: voice handler is opt-in. Control-channel
-            // decoders leave it None; the new traffic_lsm_decoder
-            // sets it to forward IMBE frames downstream.
+            // Voice handler is opt-in. Control-channel decoders
+            // leave it None; the traffic_lsm_decoder sets it to
+            // forward IMBE frames downstream.
             voice_handler: None,
             event_log: None,
             chain_label: "control",
@@ -540,7 +474,7 @@ impl ControlChannelDecoder {
         self.event_tx = Some(tx);
     }
 
-    /// Phase 7B: set the typed grant event channel.
+    /// Set the typed grant event channel.
     pub fn set_grant_event_tx(
         &mut self,
         tx: tokio::sync::mpsc::Sender<super::events::P25Event>,
@@ -548,7 +482,7 @@ impl ControlChannelDecoder {
         self.grant_event_tx = Some(tx);
     }
 
-    /// Phase 7B: push a grant event to the typed channel (non-blocking).
+    /// Push a grant event to the typed channel (non-blocking).
     fn emit_grant_event(&self, info: &GrantInfo) {
         if let Some(ref tx) = self.grant_event_tx {
             let _ = tx.try_send(super::events::P25Event::Grant(
@@ -564,11 +498,11 @@ impl ControlChannelDecoder {
         }
     }
 
-    /// Phase 7C: install a voice frame handler. The decoder will
-    /// dispatch HDU/LDU1/LDU2/TDU/TDU_LC events to the handler in
-    /// addition to the normal TSDU dispatch. Set on the
-    /// `traffic_lsm_decoder` instance in `main.rs`; left unset on the
-    /// three control-channel decoders which never see voice frames.
+    /// Install a voice frame handler. The decoder will dispatch
+    /// HDU/LDU1/LDU2/TDU/TDU_LC events to the handler in addition to
+    /// the normal TSDU dispatch. Set on the `traffic_lsm_decoder`
+    /// instance in `main.rs`; left unset on control-channel decoders
+    /// which never see voice frames.
     pub fn set_voice_handler(
         &mut self,
         handler: Arc<dyn VoiceHandler + Send + Sync>,
@@ -576,38 +510,9 @@ impl ControlChannelDecoder {
         self.voice_handler = Some(handler);
     }
 
-    /// Phase 6F.8: clear ALL diagnostic counters and histograms (the
-    /// `/api/decoder_reset` backend). Lets us measure a new
-    /// `SYNC_THRESHOLD` value against a clean baseline window without
-    /// rebooting. Preserves long-lived radio state (system identity,
-    /// frequency band table, active grants, talkgroup aliases) so
-    /// resetting doesn't wipe state the operator wants to keep.
-    ///
-    /// **6F.8 fix:** in 6F.7 the `/api/decoder_reset` handler only
-    /// cleared a subset of counters and missed `sync_hits`,
-    /// `sync_near_misses`, `total_dibits`, `dibit_hist`, and
-    /// `recent_dibits`. The sweep tool divided the cumulative
-    /// (lifetime) `sync_hits` by `total_dibits/4800` (also lifetime)
-    /// and reported per-second rates that conflated lifetime average
-    /// with the 30-second post-reset window. This method clears
-    /// everything.
-    /// Phase 7F.1 (2026-04-14): reset ONLY the framer state machine,
-    /// preserving cumulative counters. Called by the traffic-channel
-    /// grant follower on every retune so the decoder doesn't carry
-    /// `ReadingNid` / `ReadingDataUnit` state across a frequency
-    /// change (which was producing misaligned frame fetches on the
-    /// new channel -- explains the "robotic audio on most calls,
-    /// clear audio on one in twenty" signature where occasional
-    /// retunes happened to land on the right bit boundary).
-    ///
-    /// Distinct from `reset_diagnostics()` which zeroes counters
-    /// without touching framer state. Both are callable; neither
-    /// touches the installed voice handler, event tx, or the
-    /// per-TG encryption history on the forwarder.
-    /// Phase 7F.4 (2026-04-14): arm the NID batch capture ring.
-    /// Clears any previous contents and enables capture up to
-    /// `limit` entries (hard ceiling 1024). Called by
-    /// `/api/nid_capture?arm=1&limit=N`.
+    /// Arm the NID batch capture ring. Clears any previous contents
+    /// and enables capture up to `limit` entries (hard ceiling 1024).
+    /// Called by `/api/nid_capture?arm=1&limit=N`.
     pub fn arm_capture_ring(&mut self, limit: usize) {
         self.capture_ring.clear();
         self.capture_ring_limit = limit.min(1024);
@@ -630,7 +535,7 @@ impl ControlChannelDecoder {
         out
     }
 
-    /// Phase 7F.4 runtime BCH-t tuner. `None` restores the default
+    /// Runtime BCH-t tuner. `None` restores the default
     /// (T_MAX_ERRORS=11). `Some(n)` rejects any BCH decode whose
     /// `n_errors > n`, regardless of what the ML codebook search
     /// returned. Lets `/api/bch_t` sweep the rejection threshold
@@ -639,14 +544,20 @@ impl ControlChannelDecoder {
         self.bch_t_override = t;
     }
 
-    /// Phase 7F.5 per-decoder sync threshold setter. `None` falls
-    /// back to `RUNTIME_SYNC_THRESHOLD` (the global). `Some(n)`
-    /// forces this decoder to reject any sync hit with
-    /// distance > n.
+    /// Per-decoder sync threshold setter. `None` falls back to
+    /// `RUNTIME_SYNC_THRESHOLD` (the global). `Some(n)` forces this
+    /// decoder to reject any sync hit with distance > n.
     pub fn set_sync_threshold_override(&mut self, t: Option<u32>) {
         self.sync_threshold_override = t;
     }
 
+    /// Reset ONLY the framer state machine, preserving cumulative
+    /// counters. Called by the traffic-channel grant follower on
+    /// every retune so the decoder doesn't carry `ReadingNid` /
+    /// `ReadingDataUnit` state across a frequency change (which
+    /// produced misaligned frame fetches on the new channel).
+    /// Distinct from `reset_diagnostics()` which zeroes counters
+    /// without touching framer state.
     pub fn reset_framer_state(&mut self) {
         self.state = DecoderState::Hunting;
         self.sync_register = 0;
@@ -655,6 +566,12 @@ impl ControlChannelDecoder {
         self.tsdu_blocks_decoded = 0;
     }
 
+    /// Clear ALL diagnostic counters and histograms (the
+    /// `/api/decoder_reset` backend). Preserves long-lived radio
+    /// state (system identity, frequency band table, active grants,
+    /// talkgroup aliases). `total_dibits` MUST be reset for the
+    /// sweep tool's per-sec calculation to make sense in a
+    /// post-reset measurement window.
     pub fn reset_diagnostics(&mut self) {
         // NID/TSBK pipeline counters
         self.nid_attempts = 0;
@@ -675,20 +592,17 @@ impl ControlChannelDecoder {
         self.tsbk_mfid_hist_ok = [0; 4];
         self.tsbk_block_attempts_by_pos = [0; 3];
         self.tsbk_crc_ok_by_pos = [0; 3];
-        // Sync stats (these were missed in 6F.7)
+        // Sync stats
         self.sync_hits = 0;
         self.sync_near_misses = 0;
         self.best_sync_distance = u32::MAX;
         self.sync_distance_hist = [0; 25];
-        // Dibit stats (also missed in 6F.7) -- total_dibits drives
-        // the sweep tool's per-sec calculation, so it MUST be reset
-        // for measurement windows to make sense.
+        // Dibit stats
         self.total_dibits = 0;
         self.dibit_hist = [0; 4];
         self.last_log_dibits = 0;
         self.raw_duid_hist = [0; 16];
         self.recent_dibits.clear();
-        // Recent message log
         self.recent_messages.clear();
     }
 
@@ -803,23 +717,21 @@ impl ControlChannelDecoder {
                     self.best_sync_distance = distance;
                 }
 
-                // Phase 6F.6: bump the sync distance histogram on every
-                // dibit shift once we have a full sync window. The hist
-                // is the most informative diagnostic for "is the slicer
-                // garbage?" -- if real syncs cluster at low distances
-                // we just need to widen the threshold; if they smear
-                // across distance 9-20 the slicer is corrupting half
-                // the outer symbols and we need to fix the slicer.
+                // Bump the sync distance histogram on every dibit
+                // shift once we have a full sync window. Most
+                // informative diagnostic for "is the slicer garbage?"
+                // -- real syncs at low distances = widen threshold;
+                // smeared across 9-20 = slicer is corrupting half the
+                // outer symbols.
                 if self.dibit_count >= 24 {
                     let bucket = (distance as usize).min(24);
                     self.sync_distance_hist[bucket] += 1;
                 }
-                // Phase 7F.5: per-decoder override takes precedence
-                // over the global runtime threshold. Lets us tighten
-                // the traffic-side decoder (where noise between real
-                // LDU frames generates sync false-positives) while
-                // leaving control-side permissive for marginal TSBK
-                // recovery.
+                // Per-decoder override takes precedence over the
+                // global runtime threshold. Lets us tighten the
+                // traffic-side decoder (inter-LDU noise generates
+                // false positives) while leaving control-side
+                // permissive for marginal TSBK recovery.
                 let runtime_threshold = self.sync_threshold_override
                     .unwrap_or_else(|| {
                         RUNTIME_SYNC_THRESHOLD
@@ -849,10 +761,9 @@ impl ControlChannelDecoder {
                         self.sync_hits, distance, self.total_dibits,
                     );
 
-                    // Phase 6F.2h + Phase 7F.4: if EITHER the one-shot
-                    // aligned capture OR the batch ring is armed, start
-                    // an in-flight capture so both paths can populate
-                    // from the same source.
+                    // If EITHER the one-shot aligned capture OR the
+                    // batch ring is armed, start an in-flight capture
+                    // so both paths populate from the same source.
                     if self.aligned_capture_armed || self.capture_ring_armed {
                         let mut sync_d = Vec::with_capacity(24);
                         for x in 0..24 {
@@ -891,8 +802,8 @@ impl ControlChannelDecoder {
                 // if it isn't the status slot. The resulting 64-bit
                 // `nid_bits` is bit-for-bit compatible with the BCH
                 // codeword layout produced by `lsm::nid_fec::encode_nid`.
-                // Phase 6F.2h: append every NID-window dibit to the
-                // in-flight capture (raw, including the status dibit).
+                // Append every NID-window dibit to the in-flight
+                // capture (raw, including the status dibit).
                 if let Some(cap) = self.capture_in_flight.as_mut() {
                     cap.raw_nid_dibits.push(dibit & 0x03);
                 }
@@ -905,19 +816,19 @@ impl ControlChannelDecoder {
                 let new_count = dibits_read + 1;
 
                 if new_count >= NID_TRANSMITTED_DIBITS {
-                    // NID complete. Phase 7F.4: call the underlying
-                    // ML decoder directly so we get `n_errors` back,
-                    // then apply the runtime `bch_t_override` if set.
-                    // The standard `GolayDecoder::decode_nid` wrapper
-                    // discards `n_errors`, which we need for both
-                    // the tunable rejection threshold and the ring
-                    // capture's per-entry reporting.
+                    // NID complete. Call the underlying ML decoder
+                    // directly so we get `n_errors` back, then apply
+                    // the runtime `bch_t_override` if set. The
+                    // standard `GolayDecoder::decode_nid` wrapper
+                    // discards `n_errors`, which we need for the
+                    // tunable rejection threshold and per-entry
+                    // ring-capture reporting.
                     let on_air_duid_raw =
                         ((new_bits >> 48) & 0xF) as u8;
                     let bch_result =
                         crate::lsm::nid_fec::decode_nid(new_bits);
-                    // Apply runtime tolerance threshold (None == default
-                    // T_MAX_ERRORS=11). If `n_errors` exceeds, reject.
+                    // Apply runtime tolerance (None = default
+                    // T_MAX_ERRORS=11). If n_errors exceeds, reject.
                     let bch_result = match bch_result {
                         Some(d) => {
                             let limit = self.bch_t_override
@@ -942,10 +853,10 @@ impl ControlChannelDecoder {
                                     "NID decode FAILED (raw=0x{:016X}) -> Hunting",
                                     new_bits,
                                 );
-                                // Phase 7F.4: push a ring entry for
-                                // BCH rejects BEFORE consuming the
-                                // in-flight capture for the one-shot
-                                // path. Both paths can fire.
+                                // Push a ring entry for BCH rejects
+                                // BEFORE consuming the in-flight
+                                // capture for the one-shot path.
+                                // Both paths can fire.
                                 if self.capture_ring_armed {
                                     let entry = self.capture_in_flight
                                         .as_ref()
@@ -972,8 +883,8 @@ impl ControlChannelDecoder {
                                         }
                                     }
                                 }
-                                // Phase 6F.2h: finalize the in-flight
-                                // capture as a BCH-reject snapshot.
+                                // Finalize the in-flight capture as
+                                // a BCH-reject snapshot.
                                 if let Some(cap) = self.capture_in_flight.take() {
                                     self.aligned_capture = Some(AlignedCapture {
                                         sync_dibits: cap.sync_dibits,
@@ -996,11 +907,8 @@ impl ControlChannelDecoder {
                                 return;
                             }
                         };
-                    // Track the actual on-air DUID distribution. Useful
-                    // for confirming the BCH-FEC hypothesis empirically:
-                    // a working FEC would land bucket 7 at ~100%; a
-                    // missing FEC + ~12-bit-error NIDs lands bits all
-                    // over the place.
+                    // Track actual on-air DUID distribution. A working
+                    // FEC lands bucket 7 at ~100%; a broken one scatters.
                     self.raw_duid_hist[(on_air_duid & 0x0F) as usize] += 1;
 
                     let nac = Nac::new(nac_raw);
@@ -1009,15 +917,14 @@ impl ControlChannelDecoder {
                         self.system.nac = Some(nac);
                         self.nid_decoded_ok += 1;
 
-                        // 2026-04-19 late: structured DUID log. Fires
-                        // for every successful NID decode on every
-                        // chain (control / traffic / ps_c4fm) so
-                        // `/api/log?category=duid` returns a 100%
-                        // timestamped trail of what each decoder saw
-                        // independent of downstream dispatch. Chain
-                        // label + DUID name + NAC + BCH error count
-                        // + raw-vs-corrected-DUID so we can spot FEC
-                        // corrections.
+                        // Structured DUID log. Fires for every
+                        // successful NID decode on every chain
+                        // (control / traffic / ps_c4fm) so
+                        // `/api/log?category=duid` returns a
+                        // timestamped trail independent of downstream
+                        // dispatch. Logs chain + DUID + NAC + BCH
+                        // errors + raw-vs-corrected DUID for spotting
+                        // FEC corrections.
                         if let Some(ref log) = self.event_log {
                             let duid_name: &'static str = match duid {
                                 DataUnit::Hdu => "HDU",
@@ -1051,8 +958,8 @@ impl ControlChannelDecoder {
                             self.nid_decoded_tsdu += 1;
                         }
 
-                        // Phase 6F.2h: stash BCH-success fields into the
-                        // in-flight capture so process_tsdu can finalize.
+                        // Stash BCH-success fields into the in-flight
+                        // capture so process_tsdu can finalize.
                         if let Some(cap) = self.capture_in_flight.as_mut() {
                             cap.nid_bits = new_bits;
                             cap.bch_nac = Some(nac_raw);
@@ -1060,10 +967,9 @@ impl ControlChannelDecoder {
                             cap.raw_duid = on_air_duid;
                         }
 
-                        // Phase 7F.4: push a ring entry with the
-                        // BCH-success fields. The trellis/TSBK fields
-                        // stay empty -- the ring is NID-only, which
-                        // is what the DUID sweep analysis needs.
+                        // Push a ring entry with BCH-success fields.
+                        // Trellis/TSBK fields stay empty -- the ring
+                        // is NID-only for DUID sweep analysis.
                         if self.capture_ring_armed {
                             let entry = self.capture_in_flight
                                 .as_ref()
@@ -1129,8 +1035,8 @@ impl ControlChannelDecoder {
             DecoderState::ReadingDataUnit { duid } => {
                 self.du_buffer.push(dibit);
 
-                // Phase 6F.2h: append every body dibit to the in-flight
-                // capture so process_tsdu has the raw input to dump.
+                // Append every body dibit to the in-flight capture
+                // so process_tsdu has the raw input to dump.
                 if let Some(cap) = self.capture_in_flight.as_mut() {
                     cap.raw_body_dibits.push(dibit & 0x03);
                 }
@@ -1141,14 +1047,14 @@ impl ControlChannelDecoder {
                     // whether more dibits are needed.
                     let done = match duid {
                         DataUnit::Tsdu => self.process_tsdu_block(),
-                        // Phase 7C: voice channel data unit dispatch.
-                        // The framer has already read `length_dibits()`
-                        // raw dibits (status dibits in place); the
-                        // payload extractors below strip status dibits
-                        // and apply the SDRTrunk-documented bit
-                        // positions. The voice handler is opt-in -- on
-                        // control-channel decoders it's None and these
-                        // arms reduce to "count + return true".
+                        // Voice channel data unit dispatch. The framer
+                        // has already read `length_dibits()` raw dibits
+                        // (status dibits in place); the payload
+                        // extractors below strip status dibits and apply
+                        // the SDRTrunk-documented bit positions. The
+                        // voice handler is opt-in -- on control-channel
+                        // decoders it's None and these arms reduce to
+                        // "count + return true".
                         DataUnit::Ldu1 => {
                             self.ldu1_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
@@ -1162,11 +1068,6 @@ impl ControlChannelDecoder {
                             self.ldu2_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
                                 if let Some(frames) = crate::protocol::p25::voice_frame::extract_imbe_frames(&self.du_buffer) {
-                                    // 2026-04-19: `body_raw` is now also
-                                    // passed so the handler can parse the
-                                    // LDU2 Encryption Sync Signature via
-                                    // `voice_frame::parse_ldu2_ess` and
-                                    // recover the per-LDU refreshed MI.
                                     handler.on_ldu2(&frames, &self.du_buffer);
                                 }
                             }
@@ -1175,21 +1076,14 @@ impl ControlChannelDecoder {
                         DataUnit::Hdu => {
                             self.hdu_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
-                                // 2026-04-19: dispatch HDU body to the
-                                // handler so it can run the Golay18 +
-                                // RS(63,47,17) chain via
-                                // `voice_frame::parse_hdu_body` and
-                                // recover algorithm / key / MI.
                                 handler.on_hdu(&self.du_buffer);
                             }
                             true
                         }
                         DataUnit::Tdu => {
-                            // length_dibits() is now 15 (Phase 7C
-                            // correction), so the framer DOES read
-                            // the trailing 15 raw dibits before we
-                            // get here -- we just dispatch the event
-                            // and return.
+                            // length_dibits() is 15 so the framer DOES
+                            // read the trailing 15 raw dibits before
+                            // we get here -- just dispatch and return.
                             self.tdu_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
                                 handler.on_tdu();
@@ -1203,8 +1097,7 @@ impl ControlChannelDecoder {
                             }
                             true
                         }
-                        // PDU is rare on voice channels and not part
-                        // of Phase 7C scope; just consume + return.
+                        // PDU is rare on voice channels; consume + return.
                         _ => true,
                     };
                     if done {
@@ -1221,19 +1114,15 @@ impl ControlChannelDecoder {
 
     /// Process the next TSBK block of the in-flight TSDU.
     ///
-    /// **Phase 6F.3 (2026-04-11) multi-block TSBK support, refined in
-    /// 6F.4 to continue past CRC failures.**
-    ///
     /// A single TSDU can carry one, two, or three TSBK blocks per
     /// SDRTrunk's `P25P1DataUnitID.TRUNKING_SIGNALING_BLOCK_{1,2,3}`
     /// table; the block-1 header bit `LB` (last block) tells the
     /// receiver whether more blocks follow.
     ///
-    /// **Phase 6F.4 change vs 6F.3:** when the current block fails
-    /// trellis or CRC, we no longer abort the multi-block read.
-    /// Instead, we treat it as `last_block=0` and continue to the next
-    /// block boundary, mirroring SDRTrunk's
-    /// `P25P1MessageFramer.dispatchTSBK()` behaviour:
+    /// When the current block fails trellis or CRC we do NOT abort
+    /// the multi-block read -- we treat it as `last_block=0` and
+    /// continue to the next block boundary, mirroring SDRTrunk's
+    /// `P25P1MessageFramer.dispatchTSBK()`:
     ///
     /// ```java
     /// else if(tsbk1.isValid() && tsbk1.isLastBlock()) {
@@ -1244,21 +1133,18 @@ impl ControlChannelDecoder {
     /// ```
     ///
     /// On the Clay County test target almost every TSDU is a 3-block
-    /// frame (TSBK1+TSBK2+TSBK3). Aborting on TSBK1 CRC fail meant we
-    /// dropped TSBK2/TSBK3 ~55 % of the time, capping
-    /// `tsbk_block_attempts/tsdu_attempts` at ~1.6 instead of the
-    /// theoretical 3.0.
+    /// frame; aborting on TSBK1 CRC fail dropped TSBK2/TSBK3 ~55% of
+    /// the time (capped `tsbk_block_attempts/tsdu_attempts` at ~1.6
+    /// instead of the theoretical 3.0).
     ///
-    /// This function is called once per `du_expected_len` boundary in
-    /// the state machine. It:
+    /// Called once per `du_expected_len` boundary:
     ///
     /// 1. Re-runs `TsduDeinterleaver::deinterleave_multi` over the
-    ///    entire buffered body for the current block count
-    ///    (`tsdu_blocks_decoded + 1`). O(303) once per TSDU.
-    /// 2. Slices out the trellis dibits for THIS block (positions
-    ///    `[block_idx*98 .. (block_idx+1)*98]`) and runs the Viterbi.
-    /// 3. Validates the CRC, populates diagnostic histograms,
-    ///    dispatches the parsed message via `handle_tsbk`.
+    ///    entire buffered body for the current block count.
+    /// 2. Slices out trellis dibits for THIS block (positions
+    ///    `[block_idx*98 .. (block_idx+1)*98]`) and runs Viterbi.
+    /// 3. Validates CRC, populates diagnostic histograms,
+    ///    dispatches via `handle_tsbk`.
     /// 4. Decides whether to continue:
     ///    - block index 2 (TSBK3): always done.
     ///    - CRC OK + LB=1: legitimately done.
@@ -1292,8 +1178,8 @@ impl ControlChannelDecoder {
 
         // Defensive: short buffer means deinterleave_multi returned
         // less than expected. Treat as a hard failure for this block
-        // but still continue to the next block boundary (Phase 6F.4
-        // continue-past-failure model).
+        // but still continue to the next block boundary
+        // (continue-past-failure model).
         let mut block_failed = false;
         let mut block_last_bit = false;
 
@@ -1377,8 +1263,8 @@ impl ControlChannelDecoder {
 
         self.tsdu_blocks_decoded += 1;
 
-        // Phase 6F.4 continue-past-failure: stop only if we got LB=1
-        // from a CLEAN (CRC-OK) block, OR we just finished block 3.
+        // Continue-past-failure: stop only if we got LB=1 from a
+        // CLEAN (CRC-OK) block, OR we just finished block 3.
         let cleanly_done = !block_failed && block_last_bit;
         let max_reached = self.tsdu_blocks_decoded >= TsduDeinterleaver::MAX_BLOCKS;
 
@@ -1421,10 +1307,9 @@ impl ControlChannelDecoder {
         }
     }
 
-    /// Phase 6F.4 mfid bucketing helper. We track three named
-    /// vendors (standard 0x00, Motorola 0x90, Harris/Tait 0xA4) plus
-    /// "other" so the dashboard can show the vendor mix without
-    /// blowing up to a 256-entry histogram.
+    /// MFID bucketing helper. Tracks three named vendors (standard
+    /// 0x00, Motorola 0x90, Harris/Tait 0xA4) plus "other" so the
+    /// dashboard gets the vendor mix without a 256-entry histogram.
     fn bump_mfid(&mut self, mfid: u8) {
         match mfid {
             0x00 => self.tsbk_mfid_hist_ok[0] += 1,
@@ -1434,10 +1319,8 @@ impl ControlChannelDecoder {
         }
     }
 
-    /// Phase 6F.2h aligned-capture finaliser. Splits out so the
-    /// multi-block process_tsdu_block has one place to drain the
-    /// in-flight capture without duplicating the AlignedCapture
-    /// construction.
+    /// Aligned-capture finaliser. Single drain point for the in-flight
+    /// capture from the multi-block `process_tsdu_block`.
     ///
     /// `block_idx` is purely for documentation; the capture itself is
     /// always the TSBK1 snapshot.
@@ -1487,31 +1370,26 @@ impl ControlChannelDecoder {
     }
 
     /// Drop any existing grants that match `talkgroup` and return the
-    /// `source` RadioId from the first matching entry (if any), so the
-    /// caller can preserve the original caller ID across a refresh.
+    /// preserved fields (source RadioId, encryption flag, emergency
+    /// flag) from the first matching entry, so the caller can keep
+    /// state across a refresh.
     ///
     /// In real trunking, a single talkgroup is on one voice channel
     /// at a time -- when the system grants TG `T` to a new channel,
-    /// any prior `T` grant on a different channel is by definition
-    /// no longer active. The decoder's `grants` map is keyed by
-    /// channel number (so a grant on channel A and a grant on
-    /// channel B are two HashMap entries even if they're for the
-    /// same TG), which means the natural insert path leaves the old
-    /// A entry sitting around until `expire_grants` reaps it.
+    /// any prior `T` grant on a different channel is no longer active.
+    /// The `grants` map is keyed by channel, so without this dedup
+    /// the old entry sits around until `expire_grants` reaps it.
     ///
-    /// Returning the prior `source` lets `GroupVoiceChannelGrantUpdate`
-    /// preserve the caller ID across refreshes -- the
-    /// `GroupVoiceChannelGrant` opcode includes a source RadioId, but
-    /// `GroupVoiceChannelGrantUpdate` does NOT, so without this preserve
-    /// path the source would get wiped to `None` the first time the
-    /// trunking system refreshed an active call. The caller in
-    /// `handle_tsbk` gets to decide whether to use the returned source
-    /// (update path) or ignore it and use a fresh source from the TSBK
-    /// itself (initial-grant path).
+    /// `GroupVoiceChannelGrantUpdate` does NOT carry a source RadioId,
+    /// so without preservation the source would get wiped to `None` on
+    /// the first update after an initial grant. Encryption + emergency
+    /// flags are similarly absent from update TSBKs. The "any prior
+    /// grant said true" rule for flags (boolean OR) is intentional: a
+    /// TG that was once marked encrypted/emergency stays so for the
+    /// call's duration -- matches SDRTrunk's call-session semantics.
     ///
     /// Wildcard TG 0 is excluded because the grant-update path already
-    /// filters it as a sentinel and dropping all "TG 0" entries would
-    /// clobber unrelated state.
+    /// filters it as a sentinel.
     fn take_other_grants_for_talkgroup(
         &mut self,
         talkgroup: Talkgroup,
@@ -1522,26 +1400,13 @@ impl ControlChannelDecoder {
         let mut preserved = PreservedGrantFields::default();
         self.grants.retain(|_, g| {
             if g.talkgroup == talkgroup {
-                // Capture the source from the first match. Don't
-                // overwrite if we already have one (in case the map
-                // somehow holds two stale entries for the same TG).
+                // Capture the source from the first match.
                 if preserved.source.is_none() && g.source.is_some() {
                     preserved.source = g.source;
                 }
-                // Phase 7C: also preserve the encryption + emergency
-                // flags. These come from the GVCG service options
-                // byte and don't refresh on GVCG_UPDATE, so without
-                // this preservation we'd lose them on the first
-                // update TSBK after the original grant.
-                //
-                // The "any prior grant said true" rule (boolean OR
-                // accumulation) is intentional: a TG that was once
-                // marked encrypted/emergency stays so for the
-                // duration of the call even if some intermediate
-                // tracker entry got the flag wrong. This matches
-                // the SDRTrunk semantics where encryption is a
-                // property of the call session, not of individual
-                // TSBK refreshes.
+                // Preserve encryption + emergency flags (absent from
+                // GVCG_UPDATE). See function-level docstring for the
+                // boolean-OR rationale.
                 if g.encrypted {
                     preserved.encrypted = true;
                 }
@@ -1615,7 +1480,7 @@ mod tests {
             channel: Channel(0x045D), // band 0, ch 1117
             talkgroup: Talkgroup(300),
             source: RadioId(1011),
-            service_options: 0, // Phase 7C: clear voice, no emergency
+            service_options: 0, // clear voice, no emergency
         });
 
         assert!(decoder.grants.contains_key(&0x045D));
@@ -1780,14 +1645,8 @@ mod tests {
     /// Drive the decoder end-to-end with a frame sync + 33-dibit NID
     /// (with a deliberately-wrong status dibit injected at index 11)
     /// and verify the BCH FEC still decodes the correct NAC/DUID.
-    ///
-    /// This is the regression guard for doc/changes/022 -- before the
-    /// NID_STATUS_DIBIT_INDEX skip was added, the decoder read 32
-    /// consecutive dibits and deterministically miscorrected clean
-    /// Clay County NIDs to a spurious fixed (NAC=0xE28, DUID=0x5)
-    /// because the on-air status dibit at position 11 corrupted bits
-    /// 41..40 of the BCH codeword and shifted the rest of the parity
-    /// region.
+    /// Regression guard for doc/changes/022 (see NID_TRANSMITTED_DIBITS
+    /// const docstring for the full incident).
     #[test]
     fn test_nid_status_dibit_skip_e2e() {
         use crate::lsm::nid_fec;
@@ -1848,25 +1707,20 @@ mod tests {
         );
     }
 
-    /// **Phase 6F.3 multi-block TSBK e2e regression guard.** Build a
-    /// real 2-block TSDU body (TSBK1 last_block=0, TSBK2 last_block=1)
-    /// with valid CCITT_80 CRCs, trellis-encode each 12-byte block, and
-    /// splice in the 7 status dibits at body raw positions
-    /// {13,49,85,121,157,193,229} plus 28 trailing null padding dibits.
-    /// Drive the decoder end-to-end (sync + NID + body) and verify:
+    /// Multi-block TSBK end-to-end regression guard. Builds a real
+    /// 2-block TSDU body (TSBK1 last_block=0, TSBK2 last_block=1)
+    /// with valid CCITT_80 CRCs, trellis-encodes each 12-byte block,
+    /// and splices the 7 status dibits at body positions
+    /// {13,49,85,121,157,193,229} plus 28 trailing null padding
+    /// dibits. Verifies:
     ///
-    /// 1. `tsdu_attempts` == 1 (one TSDU sync hit)
-    /// 2. `tsbk_block_attempts` == 2 (two TSBK blocks decoded)
-    /// 3. `tsbk_crc_ok` == 2 (both CRCs validated)
-    /// 4. The two messages dispatched correctly:
-    ///    - Block 1: NetworkStatusBroadcast (0x3B) updates `system.wacn`
-    ///    - Block 2: RfssStatusBroadcast (0x3A) updates `system.rfss_id`
+    /// 1. `tsdu_attempts` == 1
+    /// 2. `tsbk_block_attempts` == 2
+    /// 3. `tsbk_crc_ok` == 2
+    /// 4. Both messages dispatched:
+    ///    - Block 1: NetworkStatusBroadcast (0x3B) → `system.wacn`
+    ///    - Block 2: RfssStatusBroadcast (0x3A) → `system.rfss_id`
     /// 5. Decoder returns to Hunting after the second block.
-    ///
-    /// Until 6F.3 the decoder always read 123 raw body dibits and
-    /// stopped, so a 2-block TSDU would either get cut off at TSBK1
-    /// (losing TSBK2 entirely) or fail TSBK1 CRC because the
-    /// status-dibit positions for TSBK2 hadn't yet been consumed.
     #[test]
     fn test_multi_block_tsbk_e2e() {
         use crate::lsm::nid_fec;
@@ -1894,9 +1748,7 @@ mod tests {
             bytes
         }
 
-        // ── TSBK1: NET_STS_BCST (opcode 0x3B), LB=0 (NOT last block) ──
-        // Same payload layout as test_net_sts_bcst_decode but with
-        // LB=0 in the header byte.
+        // ── TSBK1: NET_STS_BCST (opcode 0x3B), LB=0 ──
         let tsbk1_raw = [
             0x3B, // LB=0, P=0, opcode=0x3B (NetworkStatusBroadcast)
             0x00, // standard manufacturer
@@ -1912,8 +1764,8 @@ mod tests {
         ];
         let tsbk1 = finalize_tsbk(tsbk1_raw);
 
-        // ── TSBK2: RFSS_STS_BCST (opcode 0x3A), LB=1 (LAST block) ──
-        // Phase 6F.4 layout (matches SDRTrunk RFSSStatusBroadcast.java):
+        // ── TSBK2: RFSS_STS_BCST (opcode 0x3A), LB=1 ──
+        // Matches SDRTrunk RFSSStatusBroadcast.java:
         // payload[0] = LRA, payload[1..2] = system_id (12 bits at bits
         // 28-39), payload[3] = RFSS, payload[4] = SITE,
         // payload[5..6] = freq_band(4) | channel_number(12).

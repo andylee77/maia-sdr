@@ -33,18 +33,13 @@ use services::{event_log, monitor, ntp};
 
 /// Build tag, logged at startup and exposed via `/api/system`.
 ///
-/// **Bump this string whenever a feature flag changes** so on-target
-/// "is the binary I just flashed actually the one I just built?" is a
-/// trivial check (`grep "p25-httpd build" /var/log/p25-httpd.log` or
-/// `wget -qO- http://target:8080/api/system | grep build`). Don't try
-/// to be clever with mtimes (Buildroot zeros them) or doc-comment
-/// strings (they don't survive into the binary).
+/// Bump this whenever a feature flag changes so on-target verification
+/// ("is this the binary I just flashed?") is a trivial grep. Buildroot
+/// zeroes mtimes and doc-comment strings don't survive into the binary.
 pub const BUILD_TAG: &str = "2026-04-19-vocoder-osthread-grace3s";
 
-/// Cumulative + snapshot stats for the HDL LSM chain (Phase 6E PL
-/// gateware). Populated by the HDL LSM heartbeat task and read by
-/// `/api/hdl_lsm`. Single source of truth for everything the
-/// heartbeat task used to keep in task-local variables.
+/// Cumulative + snapshot stats for the HDL LSM chain. Populated by the
+/// HDL LSM heartbeat task, read by `/api/hdl_lsm`.
 #[derive(Debug, Clone, Default)]
 pub struct HdlLsmRuntime {
     pub started_at: Option<std::time::Instant>,
@@ -131,9 +126,9 @@ pub struct IrqStats {
     pub traffic: u64,
     pub iq: u64,
     pub lsm_dibit: u64,
-    /// Phase 7A.2: traffic-side LSM dibit DMA wakeups.
+    /// Traffic-side LSM dibit DMA wakeups.
     pub traffic_lsm_dibit: u64,
-    /// 2026-04-16: traffic-side post-DDC IQ DMA wakeups (mirror of `iq`).
+    /// Traffic-side post-DDC IQ DMA wakeups (mirror of `iq`).
     pub traffic_iq: u64,
     pub last_at_secs_ago: f64,
     /// Set to None until the first IRQ; updated only by the IRQ task.
@@ -141,20 +136,9 @@ pub struct IrqStats {
     pub last_at: Option<std::time::Instant>,
 }
 
-/// Phase 7A.1: data-side counters for the traffic DMA path. Distinct
-/// from `IrqStats.traffic` (which counts wakeups) -- this struct
-/// tracks the bytes / dibits actually consumed by the traffic dibit
-/// reader task. Both are exposed via `/api/traffic`.
-///
-/// At Phase 7A.1 the traffic chain is C4FM-only and Clay County is
-/// LSM, so the dibit *content* is expected garbage; we are only
-/// validating that the chain comes alive when the DDC is retuned.
-/// The histogram is included for sanity (a dead chain produces all
-/// zeros; a live chain produces a roughly even spread across all 4
-/// dibits even on garbage). Phase 7A.2 will add an LSM traffic chain
-/// that produces decodable content; once that's in, the histogram
-/// will skew toward the C4FM all-zero pattern on dead air and the
-/// LSM-decoded dibit pattern on active calls.
+/// Data-side counters for the traffic DMA path. Distinct from
+/// `IrqStats.traffic` (wakeups) — this tracks bytes/dibits actually
+/// consumed by the traffic dibit reader. Exposed via `/api/traffic`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TrafficStats {
     pub started_at: Option<std::time::Instant>,
@@ -164,27 +148,18 @@ pub struct TrafficStats {
     pub total_bytes: u64,
     pub total_dibits: u64,
     pub dibit_hist: [u64; 4],
-    // ── Phase 7C: IMBE frame extraction counters ──────────────────
-    //
-    // Updated by the `ImbeForwarder` voice handler that's wired into
-    // the `traffic_lsm_decoder` instance. Each successful LDU1/LDU2
-    // body extraction yields 9 IMBE frames (~180 ms of audio at 50
-    // frames/sec when locked). Phase 7D will consume these frames
-    // from a separate mpsc channel and produce PCM audio; for 7C
-    // these counters are the only observable proof that the IMBE
-    // extraction pipeline is alive.
+    // IMBE frame extraction counters — updated by the `ImbeForwarder`
+    // voice handler. Each LDU1/LDU2 yields 9 IMBE frames (~180 ms audio).
     pub hdu_count: u64,
     pub ldu1_count: u64,
     pub ldu2_count: u64,
     pub tdu_count: u64,
     pub tdu_lc_count: u64,
-    /// Total IMBE frames pushed to the (future) Phase 7D vocoder
-    /// channel. Should equal `(ldu1_count + ldu2_count) * 9` in
-    /// steady state -- any divergence indicates a frame extraction
-    /// failure (e.g. wrong dibit count, status-strip math off).
+    /// Total IMBE frames pushed to the vocoder channel. Should equal
+    /// `(ldu1_count + ldu2_count) * 9`; divergence signals extraction
+    /// failure (wrong dibit count / status-strip math off).
     pub imbe_frames_extracted: u64,
-    /// Wall-clock instant of the most recent IMBE frame batch.
-    /// Used to compute "frames per second" for the dashboard.
+    /// Wall-clock of most recent IMBE batch; feeds "frames/sec" UI.
     pub last_imbe_at: Option<std::time::Instant>,
 }
 
@@ -236,63 +211,48 @@ struct Args {
 
     /// Pluto LO PPM offset for crystal calibration.
     ///
-    /// Compensates the AD9361 crystal frequency error by shifting the
-    /// DDC NCO (NOT the AD9361 LO request -- the LO synthesizer step
-    /// at our operating range is much coarser than the typical PPM-
-    /// scale shift, so a small LO shift gets rounded back to the
-    /// nominal value while the NCO computation still moves, doubling
-    /// the post-DDC offset and breaking lock. The DDC NCO is generated
-    /// in fabric at 1 Hz precision and is the only place a sub-step
-    /// shift can actually be applied).
+    /// Shifts the DDC NCO (NOT the AD9361 LO request) — the LO
+    /// synthesizer step is much coarser than a PPM-scale shift, so a
+    /// small LO shift rounds back to nominal while the NCO math still
+    /// moves, doubling the post-DDC offset and breaking lock. The DDC
+    /// NCO runs at 1 Hz precision and is the only place a sub-step
+    /// shift actually lands.
     ///
-    /// Negative ppm means the Pluto crystal is slow (real signals
-    /// appear above their expected IF). For the Clay County test
-    /// Pluto: -0.54 ppm. SDRTrunk's tuner panel exposes the same
-    /// setting and is the reference for the value to use here.
+    /// Negative ppm = slow crystal (signals appear above expected IF).
+    /// Clay County test Pluto: -0.54 ppm. SDRTrunk's tuner panel
+    /// exposes the same setting — use that as the reference value.
     ///
-    /// Math: nco_shift = -ppm * 1e-6 * rx_lo Hz. With rx_lo=858 MHz
-    /// and ppm=-0.54, that is +463 Hz added to the nominal NCO.
+    /// Math: nco_shift = -ppm * 1e-6 * rx_lo Hz.
     #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     lo_ppm: f64,
 
-    /// AD9361 RX hardware gain in dB. Sets gain_control_mode=manual and
-    /// writes this value to `hardwaregain`.
+    /// AD9361 RX hardware gain in dB. Sets gain_control_mode=manual
+    /// and writes this value to `hardwaregain`.
     ///
-    /// The Maia HDL LSM chain has no software AGC stage (SDRTrunk has one
-    /// at `P25P1DemodulatorLSM.java:157-172`, a per-symbol IIR that
-    /// normalises IQ magnitude to a fixed OBJECTIVE_MAGNITUDE, but we
-    /// don't). Our slicer has fixed integer decision thresholds, so the
-    /// analog front-end gain has to land in a narrow ±5-10 dB window
-    /// around the slicer's expected amplitude or the outer 4FSK symbols
-    /// get clipped (gain too high) or crowded into the inner bins (gain
-    /// too low). The AD9361 AGC in both `slow_attack` and `fast_attack`
-    /// modes does NOT converge to this window on a strong antenna --
-    /// slow_attack lands around 71-73 dB (too high), fast_attack lands
-    /// around 0 dB (too low). Manual gain at 55-60 dB on the Clay County
-    /// test target hits 96-97 % NID success, 72-75 % TSBK CRC pass,
-    /// 20+ msgs/sec -- above the doc 029 historical target.
+    /// The Maia HDL LSM chain has no software AGC (SDRTrunk's
+    /// `P25P1DemodulatorLSM.java:157-172` does a per-symbol IIR to
+    /// OBJECTIVE_MAGNITUDE; we don't). The slicer has fixed integer
+    /// thresholds, so front-end gain has to land in a narrow ±5-10 dB
+    /// window or outer 4FSK symbols clip (too high) or crowd into
+    /// inner bins (too low). AD9361 AGC does NOT converge to this
+    /// window on a strong antenna — slow_attack picks 71-73 dB,
+    /// fast_attack picks ~0 dB, both yielding ~3% CRC pass; manual
+    /// 55-60 dB yields 72-75% on the Clay County test target.
     ///
-    /// Default 60 dB was measured on 2026-04-15 with the user's current
-    /// antenna. Re-tune via this CLI arg or via `/api/reinit?gain_db=N`
-    /// if the antenna / site changes. A proper software AGC in the HDL
-    /// chain would eliminate the per-antenna tuning -- see
+    /// Retune via this arg or `/api/reinit?gain_db=N`. A proper HDL
+    /// software AGC would eliminate per-antenna tuning. See
     /// doc/changes/040_api_reinit_and_manual_gain.md.
     #[arg(long, default_value_t = 60.0)]
     hardwaregain: f64,
 
     /// AD9361 RX analog front-end filter bandwidth in Hz.
     ///
-    /// Default 8 MHz as of 2026-04-16 after P25DDC v2 landed. The
-    /// old Maia DDC stage 1 FIR (48 taps, 200 kHz cutoff, Kaiser β=6)
-    /// didn't have enough adjacent-channel rejection to tolerate wide
-    /// rf_bandwidth on busy sites (Clay County's 860.0 and 859.35 MHz
-    /// neighbours leaked through stage 1 at ≥5 MHz, crushing CRC from
-    /// ~70 % to ~15 %). The P25DDC v2 fork
-    /// (doc/changes/041_p25ddc_fork.md) tightened stage 3 to -71 dB
-    /// in the fold-back band and relocated the aliasing energy so
-    /// 8 MHz now passes clean — validated on Clay + Duval.
-    ///
-    /// See `project_p25ddc_v2_validated.md` for the on-target
+    /// 8 MHz default requires P25DDC v2 (doc/changes/041_p25ddc_fork.md):
+    /// the old stage-1 FIR had insufficient adjacent-channel rejection
+    /// and Clay County's 860.0/859.35 MHz neighbours leaked through at
+    /// ≥5 MHz, crushing CRC from ~70% to ~15%. v2 tightened stage 3 to
+    /// -71 dB in the fold-back band — 8 MHz now validates clean on
+    /// Clay + Duval. See `project_p25ddc_v2_validated.md` for the
     /// bake-vs-CRC measurements that motivated bumping the default.
     #[arg(long, default_value_t = 8_000_000)]
     rf_bandwidth: u32,
@@ -300,10 +260,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Default log level: info for our crate, warn for everything else.
-    // Honour RUST_LOG when set, otherwise emit a sensible default so the
-    // user actually sees the dibit reader / IRQ / decoder logs without
-    // having to manually configure tracing.
+    // Default log level: info for our crate, warn for everything
+    // else. Honour RUST_LOG when set.
     use tracing_subscriber::{fmt, EnvFilter};
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,p25_httpd=info"));
@@ -315,27 +273,18 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    // Build marker. Bump the BUILD_TAG string whenever a feature flag changes
-    // so on-target verification of "is this binary the one I just built" is a
-    // single grep instead of guessing from mtimes (Buildroot zeros mtimes to
-    // 1970) or doc-comment strings (which don't survive into the binary).
-    //
-    // BUILD_TAG also lands in /api/system as the `build` field so the browser
-    // can show the deployed build at a glance.
     tracing::info!(
-        "p25-httpd build: {} (dashboard_source=lsm_decoder, Phase 6F.1)",
+        "p25-httpd build: {} (dashboard_source=lsm_decoder)",
         BUILD_TAG
     );
 
-    // NTP sync early in boot so event_log + grant timestamps + the
-    // /api/stats wall-clock read as real wall-clock time rather than
-    // the 1970 epoch the kernel initialises to. The Fishball has no
-    // battery-backed RTC so every boot starts with a bogus clock. We
-    // deliberately don't block boot on NTP success: the board still
-    // has to work offline, and event_log ordering is already correct
+    // NTP sync early so event_log + grant timestamps + /api/stats
+    // wall-clock read as real time rather than the 1970 epoch.
+    // Fishball has no battery-backed RTC. Non-blocking: the board
+    // must work offline, and event_log ordering is already correct
     // via the monotonic `seq` field when wall_clock_ms is garbage.
-    // Total cost bound: `servers.len() * per_server_timeout` = 15 s.
-    // Spawn on the blocking pool so we don't park the tokio runtime.
+    // Cost bound: servers.len() * per_server_timeout = 15 s.
+    // Blocking pool so we don't park the tokio runtime.
     match tokio::task::spawn_blocking(|| {
         ntp::sync_system_clock(
             &["pool.ntp.org", "time.cloudflare.com", "time.google.com"],
@@ -353,10 +302,10 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => tracing::warn!("NTP task panicked: {e}"),
     }
 
-    // Pluto crystal calibration: shift the DDC NCO by -ppm * 1e-6 * rx_lo Hz.
-    // See the doc comment on Args::lo_ppm for why this only moves the NCO and
-    // not the LO request. nco_lo_shift_hz is folded into nco_offset further
-    // down inside the cfg(linux) block where the IP core gets configured.
+    // Pluto crystal calibration — shift DDC NCO by
+    // -ppm * 1e-6 * rx_lo Hz. See Args::lo_ppm for why this moves
+    // only the NCO, not the LO request. Folded into nco_offset
+    // further down inside cfg(linux).
     let nco_lo_shift_hz = -args.lo_ppm * 1e-6 * args.rx_lo as f64;
 
     tracing::info!(
@@ -372,23 +321,15 @@ async fn main() -> anyhow::Result<()> {
     decoder.set_event_tx(event_tx.clone());
     let decoder = Arc::new(RwLock::new(decoder));
 
-    // Phase 6E.10 bring-up: a second independent `ControlChannelDecoder`
-    // instance fed by the HDL LSM dibit stream from `lsm_dibit_dma`.
-    // Runs the identical Hunting -> ReadingNid -> ReadingDu -> trellis
-    // -> CRC -> TsbkMessage pipeline as the C4FM decoder above, just
-    // against a different dibit source. Shares the same event_tx
-    // broadcast channel so both decoders' TSBKs land on the same
-    // dashboard WebSocket (with distinct trace targets in the server
-    // log so they can be separated post-hoc). Both instances operate
-    // in parallel against the same RF capture on bring-up days -- this
-    // is how we validate the HDL LSM port (Phase 6E.0-6E.9) against the
-    // working Phase 2A C4FM path.
-    // Phase 7B: typed grant event channel + monitor list.
+    // A second independent `ControlChannelDecoder` fed by the HDL LSM
+    // dibit stream. Same pipeline as the C4FM decoder, different dibit
+    // source. Shares `event_tx` so both decoders' TSBKs land on the
+    // same WS; distinct trace targets separate them in the server log.
+    //
     // NOTE: `grant_event_rx` LOOKS unused on Windows (cargo fix will
     // offer to rename it `_grant_event_rx` AND remove `mut`) but it
-    // IS consumed via `.recv()` at line ~1970 inside a
-    // `cfg(target_os = "linux")` block. Do NOT accept either of those
-    // rewrites — they break the Linux build.
+    // IS consumed via `.recv()` inside a `cfg(target_os = "linux")`
+    // block. Do NOT accept either rewrite — they break the Linux build.
     #[allow(unused_variables, unused_mut)]
     let (grant_event_tx, mut grant_event_rx) =
         tokio::sync::mpsc::channel::<p25::events::P25Event>(128);
@@ -399,100 +340,51 @@ async fn main() -> anyhow::Result<()> {
     lsm_decoder.set_grant_event_tx(grant_event_tx.clone());
     let lsm_decoder = Arc::new(RwLock::new(lsm_decoder));
 
-    // 2026-04-16: also install the grant event sender on the C4FM
-    // decoder so C4FM-site grants reach the follower. On LSM sites
-    // the C4FM decoder receives garbage dibits and rejects them via
-    // BCH + CRC, so this is mostly-harmless on LSM; on C4FM sites
-    // (FP&L, St Johns) this is the only path that produces grant
-    // events. Modulation-mismatch filtering happens in the follower
-    // task by consulting active_modulation before retuning.
+    // Also install the grant event sender on the C4FM decoder so
+    // C4FM-site grants reach the follower. On LSM sites the C4FM
+    // decoder rejects garbage dibits via BCH+CRC (harmless); on C4FM
+    // sites this is the only path that produces grant events.
+    // Modulation-mismatch filtering happens in the follower task.
     {
         let mut d = decoder.write().await;
         d.set_grant_event_tx(grant_event_tx);
     }
 
-    // Phase 9 retirement (2026-04-15): the Phase 6D `iq_lsm_decoder`
-    // has been removed. It was a pure-software LSM demod + TSBK
-    // framer pipeline built in Phase 6D as the "algorithm
-    // development + validation reference", BEFORE Phase 6E ported
-    // the full LSM demod into Amaranth gateware. Since Phase 6E.9
-    // (HDL LSM chain on the control DDC) went green, the HDL path
-    // has been the production decoder and the software pipeline
-    // has been pure dead weight -- an ARM-CPU-expensive cross-check
-    // that never reveals anything the HDL path doesn't already
-    // surface. Phase 9 formally retires it.
-    //
-    // What went with it:
-    //   - 200-line Phase 6D LSM IQ reader tokio task (read
-    //     iq_dma -> LsmPipeline -> process_directed_tsdu). Gone.
-    //   - `LsmStats` + `/api/lsm` endpoint. Gone.
-    //   - Dashboard "LSM Pipeline (Phase 6D)" card + four
-    //     `ps_iq_lsm` / `ps_phase6d` columns in the decoder-compare
-    //     matrix. Gone.
-    //   - `iq_dma` HDL ring stays in the bitstream for now
-    //     (dormant dead weight, ~few hundred LUT + one M_AXI_HP
-    //     channel) but is not enabled by the PS at boot any more.
-    //
-    // See doc/changes/039 for the retirement rationale and the
-    // inventory of what was removed.
+    // The pure-software Phase 6D LSM pipeline was retired after the
+    // HDL LSM chain went green; see doc/changes/039. The `iq_dma`
+    // ring stays dormant in the bitstream for future raw-IQ use.
 
-    // Phase 7C: fourth `ControlChannelDecoder` instance fed by the
-    // new `traffic_lsm_dibit_dma` ring (Phase 7A.2 HDL chain). Unlike
-    // the three control-channel decoders above, this one runs on the
-    // FOLLOWED VOICE CHANNEL and produces HDU/LDU1/LDU2/TDU/TDU_LC
-    // events instead of TSDUs. The voice handler installed below
-    // forwards extracted IMBE frames to a counter on `TrafficStats`
-    // (Phase 7C) and will forward to the vocoder mpsc channel in
-    // Phase 7D.
+    // Traffic-channel `ControlChannelDecoder` fed by the
+    // `traffic_lsm_dibit_dma` ring. Runs on the FOLLOWED VOICE channel
+    // and produces HDU/LDU1/LDU2/TDU/TDU_LC events. Voice handler
+    // installed below forwards extracted IMBE frames to the vocoder.
     //
-    // The decoder runs the same Hunting -> ReadingNid -> ReadingDataUnit
-    // state machine as the control side, just with the new LDU/HDU/TDU
-    // dispatch arms in `process_dibit` (added in Phase 7C) doing the
-    // work instead of the TSDU dispatch arm.
-    // Phase 7D: mpsc channel for IMBE frame batches from the voice
-    // handler to the vocoder task. Buffer 16 LDU batches (~2.9 s of
-    // audio) to absorb jitter without dropping.
+    // mpsc channel: 16 LDU batches (~2.9 s audio) absorbs jitter.
     let (imbe_tx, imbe_rx) =
         tokio::sync::mpsc::channel::<[p25::voice_frame::ImbeFrameRaw; 9]>(16);
     let imbe_forwarder = Arc::new(ImbeForwarder::new(imbe_tx));
 
-    // 2026-04-19: call-boundary broadcast (traffic-LSM heartbeat ->
-    // recorder + ImbeForwarder::on_tdu_lc -> recorder). Created
-    // here — BEFORE the traffic LSM heartbeat task is spawned 1900
-    // lines down — because both of those paths clone the tx handle
-    // before the recorder-spawn site would otherwise declare it.
-    // Used to be declared alongside audio_tx near the recorder spawn;
-    // moved up 2026-04-19 to fix the "cannot find value
-    // `call_boundary_tx` in this scope" compile error.
+    // Call-boundary broadcast (traffic-LSM heartbeat -> recorder;
+    // ImbeForwarder::on_tdu_lc -> recorder). Declared here because
+    // the traffic heartbeat task (spawned later) clones this tx.
     let call_boundary_tx = audio::call_boundary_channel();
-    // Plug the boundary tx into ImbeForwarder so its on_tdu_lc can
-    // publish Motorola TALK_COMPLETE source stamps.
+    // Lets on_tdu_lc publish Motorola TALK_COMPLETE source stamps.
     imbe_forwarder.set_boundary_tx(call_boundary_tx.clone());
-    // 2026-04-19: WS event tx wired here; `event_log` wiring is
-    // deferred until that ring is constructed further down (search
-    // for "set_event_log(event_log").
+    // `event_log` wiring is deferred until that ring is constructed
+    // further down (search "set_event_log(event_log").
     imbe_forwarder.set_ws_event_tx(event_tx.clone());
 
     let mut traffic_lsm_decoder = ControlChannelDecoder::new();
     traffic_lsm_decoder.set_event_tx(event_tx.clone());
-    // Phase 7D: install the IMBE forwarder as the decoder's voice
-    // handler. Counts events AND pushes frame batches to the vocoder
-    // task via try_send.
+    // IMBE forwarder as voice handler — counts events AND pushes
+    // frame batches to the vocoder task via try_send.
     traffic_lsm_decoder.set_voice_handler(imbe_forwarder.clone());
     let traffic_lsm_decoder = Arc::new(RwLock::new(traffic_lsm_decoder));
 
-    // Phase 7F.1 (2026-04-14): shared structured event log. Capacity
-    // 1024 ≈ ~3-4 minutes of grant/traffic/imbe events on Clay County
-    // at the observed ~5 grants/sec + per-LDU IMBE batches. Tuned so
-    // the dashboard tab can show "recent history" without pagination
-    // while staying well under typical PS memory budgets. 2026-04-19
-    // late: bumped 1024 → 16384 to carry the full Duid + Recorder
-    // decode trail. With ~5-10 TSDUs/sec on control + bursts of 10
-    // LDU/sec on active traffic calls, 16k entries hold ~8-15 min of
-    // every-DUID history — enough for a debug-session to be
-    // reproducible after the fact via `/api/log?category=duid` without
-    // needing external tooling. 16384 × ~400 B = ~6.4 MB peak, still
-    // trivial on the Zynq (512 MB total, ~85 % free pre-log).
+    // Shared structured event log. 16384 entries carry the full
+    // Duid + Recorder decode trail: at ~5-10 TSDUs/sec control +
+    // ~10 LDU/sec during active calls, holds ~8-15 min of every-DUID
+    // history. ~6.4 MB peak — trivial vs 512 MB DDR.
     let event_log = Arc::new(crate::services::event_log::EventLog::new(16384));
     event_log.push(
         crate::services::event_log::LogCategory::System,
@@ -501,19 +393,17 @@ async fn main() -> anyhow::Result<()> {
             "build_tag": crate::BUILD_TAG,
         }),
     );
-    // 2026-04-19: now that the event-log ring exists, plumb it into
-    // the IMBE forwarder so TDULC LCW parses (Motorola
-    // `TALK_COMPLETE` + Standard GVCU) emit entries into the
-    // dashboard Activity feed alongside the heartbeat's HDU/LDU/TDU
-    // lines.
+    // Now the event-log ring exists — plumb it into the IMBE
+    // forwarder so TDULC LCW parses (Motorola `TALK_COMPLETE` +
+    // Standard GVCU) emit Activity-feed entries alongside
+    // HDU/LDU/TDU heartbeat lines.
     imbe_forwarder.set_event_log(event_log.clone());
 
-    // 2026-04-19 late: pipe the event log + chain label into each
-    // ControlChannelDecoder so every successful NID decode emits one
-    // `Duid` category entry. `/api/log?category=duid` then returns a
-    // timestamped 100% decode trail across both chains, independent
-    // of the Grant / Imbe / Recorder categories. Chain labels line up
-    // with the dashboard's "decoder_compare" table.
+    // Pipe event_log + chain label into each ControlChannelDecoder so
+    // every successful NID decode emits one `Duid` category entry.
+    // `/api/log?category=duid` then returns a timestamped decode trail
+    // across both chains. Chain labels match the dashboard's
+    // "decoder_compare" table.
     {
         let mut d = decoder.write().await;
         d.event_log = Some(event_log.clone());
@@ -530,44 +420,27 @@ async fn main() -> anyhow::Result<()> {
         d.chain_label = "traffic";
     }
 
-    // Phase 9 retirement: `lsm_stats` (the shared `LsmStats` mutex
-    // for the Phase 6D software pipeline) is gone along with the
-    // pipeline itself. The PL HDL LSM runtime stats below (`hdl_lsm`)
-    // are the production source of truth for "is the LSM chain
-    // alive / how many valid NIDs / what NACs" — they tap the HDL
-    // register bank directly instead of recomputing from raw IQ.
-    //
-    // Phase 6F.2: shared PL HDL LSM runtime + IRQ stats, populated by
-    // their respective tasks below and read by /api/hdl_lsm and
-    // /api/irq_stats. Same out-of-cfg(linux) treatment.
+    // Shared PL HDL LSM runtime + IRQ stats. Populated by their
+    // respective tasks, read by /api/hdl_lsm and /api/irq_stats.
+    // Declared out of cfg(linux) so AppState builds on every target.
     let hdl_lsm = Arc::new(tokio::sync::Mutex::new(HdlLsmRuntime::default()));
     let irq_stats = Arc::new(tokio::sync::Mutex::new(IrqStats::default()));
 
-    // Phase 7A.1: traffic-channel grant follower + dibit-reader stats.
-    // Created out of cfg(linux) so the AppState construction below sees
-    // them on every target. The polling task that drives the
-    // TrafficManager and the dibit reader task that updates TrafficStats
-    // both live INSIDE the cfg(linux) block (they touch ip_core).
-    //
-    // Note: TrafficManager::new takes (rx_lo_hz, sample_rate_hz) so it
-    // can compute NCO offsets at runtime; both come straight from the
-    // CLI args and never change after startup.
+    // Traffic-channel grant follower + dibit-reader stats. Created out
+    // of cfg(linux) so AppState sees them on every target. The tasks
+    // that touch ip_core live INSIDE cfg(linux).
     let traffic_manager = Arc::new(tokio::sync::Mutex::new(
         p25::traffic_manager::TrafficManager::new(args.rx_lo, args.sample_rate),
     ));
     let traffic_stats = Arc::new(tokio::sync::Mutex::new(TrafficStats::default()));
-    // Phase 7A.1 manual control: when this is `false`, the grant
-    // follower task skips its entire loop iteration (no grant snapshot,
-    // no retune, no timeout sweep). The user can flip this off via
+    // When `false`, the grant follower skips its entire loop iteration
+    // (no retune, no timeout sweep). User flips via
     // `GET /api/traffic?follower=off` to take manual control of the
-    // traffic DDC NCO + demod_enable bits without the polling task
-    // immediately yanking them back. Default is on; the state does NOT
-    // persist across restarts (process-lifetime only).
+    // traffic DDC. Process-lifetime only, does not persist.
     let traffic_follower_enabled =
         Arc::new(std::sync::atomic::AtomicBool::new(true));
 
-    // Live RX LO tracking (2026-04-16 fix for stale follower_rx_lo).
-    // Initialised from the boot CLI arg, updated by get_reinit after a
+    // Live RX LO. Initialised from CLI, updated by get_reinit after a
     // successful AD9361 set_rx_lo_frequency, read by the grant follower
     // on every retune so offset_hz math stays correct when the LO is
     // moved via /api/reinit?rx_lo=... mid-session.
@@ -575,11 +448,9 @@ async fn main() -> anyhow::Result<()> {
         args.rx_lo as i64,
     ));
 
-    // P25 modulation mode selector (2026-04-16). Declared here so the
-    // grant follower task below can clone it; the auto-detect task
-    // that WRITES to it is spawned later, after both decoders exist.
-    //   0 = Auto (probing)  1 = C4FM  2 = LSM
-    // Defaults to LSM to match the long-running Clay/Duval deploy.
+    // P25 modulation: 0 = Auto (probing), 1 = C4FM, 2 = LSM. Defaults
+    // to LSM (Clay/Duval deploy). Declared here so the grant follower
+    // can clone it; auto-detect task (writer) spawned later.
     let active_modulation =
         Arc::new(std::sync::atomic::AtomicU8::new(2));
 
@@ -591,20 +462,9 @@ async fn main() -> anyhow::Result<()> {
         let (ip_core, interrupt_handler) = fpga::IpCore::take().await?;
         tracing::info!("FPGA IP core initialized");
 
-        // 2. Configure AD9361 via IIO.
-        //
-        // Manual gain is deliberate: the Maia HDL LSM chain has no
-        // software AGC (unlike SDRTrunk's P25P1DemodulatorLSM, which
-        // does a per-symbol IIR normalisation to OBJECTIVE_MAGNITUDE at
-        // lines 157-172). Our slicer's decision thresholds are fixed
-        // integer values in gateware, so the analog front-end gain has
-        // to land in a narrow window (~55-60 dB on this antenna at the
-        // Clay County test target) or the outer 4FSK symbols get
-        // misclassified. AD9361 AGC in both slow_attack and fast_attack
-        // modes converges OUTSIDE that window on a strong antenna --
-        // slow_attack picks 71-73 dB, fast_attack picks ~0 dB. Both
-        // produce ~3 % CRC pass; manual 60 dB produces ~75 % CRC pass.
-        // See doc/changes/040 for the live measurement sweep.
+        // Configure AD9361 via IIO. Manual gain is deliberate — see
+        // the doc comment on Args::hardwaregain. doc/changes/040
+        // has the live measurement sweep.
         let ad9361 = iio::Ad9361::new().await?;
         ad9361.set_rx_lo_frequency(args.rx_lo).await?;
         ad9361
@@ -624,45 +484,29 @@ async fn main() -> anyhow::Result<()> {
             args.hardwaregain,
         );
 
-        // 3. Configure control channel DDC (FIR filters + decimation + NCO).
-        // The lo_ppm crystal calibration is folded into the NCO here -- see
-        // the doc comment on Args::lo_ppm for the rationale and the math.
+        // Configure control DDC (FIR + decimation + NCO). lo_ppm
+        // crystal calibration folds into the NCO — see Args::lo_ppm.
         let nco_offset =
             args.control_freq as f64 - args.rx_lo as f64 + nco_lo_shift_hz;
         ip_core.configure_ddc(nco_offset, args.sample_rate as f64)?;
         ip_core.set_ddc_enable(true);
-        // Ring DMA: enable bit is level-triggered, starts continuous writes
+        // Ring DMA enable bit is level-triggered, starts continuous writes
         ip_core.set_demod_enable(true);
-        // Phase 9 retirement: the post-DDC IQ ring DMA
-        // (`iq_dma_enable`) was fed the Phase 6D software LSM
-        // pipeline. That pipeline is gone, so we leave the ring
-        // master disabled at boot. The HDL block is still present
-        // in the bitstream (dormant dead weight) so a future phase
-        // can re-enable it if we need a raw-IQ tap again -- e.g.,
-        // for on-target baseband capture to disk, or for a new
-        // in-PL DSP block that taps post-DDC IQ.
-        // 2026-04-16: flip this back ON. The Phase 6D software LSM
-        // pipeline is retired, but the iq_dma ring now feeds the new
-        // /api/spectrum and /api/constellation endpoints (software
-        // FFT + scatter on ARM). Cost is 250 KB/s DDR + 1 IRQ per
-        // sub-buffer (~7.8/s) — negligible.
+        // iq_dma ring feeds /api/spectrum and /api/constellation
+        // (software FFT + scatter on ARM). 250 KB/s DDR + ~8 IRQ/s.
         ip_core.set_iq_dma_enable(true);
-        // Phase 6E.9/6E.10: enable the HDL LSM demod chain (runs alongside
-        // the C4FM demod on the same control DDC output) and its dedicated
-        // dibit ring DMA. NID events themselves are PS-polled via
-        // lsm_status below.
-        // Phase 6G.1: also turn on the front-end DC blocker -- this is
-        // the production-correct state and removes the slow IQ DC bias
-        // that otherwise gives the slicer a 60/40 inner/outer dibit
-        // ratio for 2-3 minutes after PLL start. See doc/changes/031.
+        // HDL LSM demod chain runs alongside the C4FM demod on the
+        // same control DDC output. Front-end DC blocker is
+        // production-correct (see doc/changes/031); without it the
+        // slicer sees a 60/40 inner/outer dibit ratio for ~2-3 min
+        // after PLL start.
         ip_core.set_lsm_enable(true);
         ip_core.set_lsm_dibit_dma_enable(true);
         ip_core.set_lsm_dc_block_enable(true);
-        // Phase 10-prep: turn on the per-symbol LSM AGC. Direct
-        // fixed-point port of SDRTrunk's P25P1DemodulatorLSM.java
-        // AGC (L2 sqrt magnitude, `req_gain = 1.0 / mag`, 0.05
-        // IIR lerp, asymmetric clamp at 500). See
-        // maia-hdl/p25_hdl/lsm_agc.py and doc/changes/040.
+        // Per-symbol LSM AGC — fixed-point port of SDRTrunk's
+        // P25P1DemodulatorLSM.java AGC (L2 sqrt magnitude,
+        // `req_gain = 1.0 / mag`, 0.05 IIR lerp, asymmetric clamp
+        // at 500). See maia-hdl/p25_hdl/lsm_agc.py + doc/changes/040.
         ip_core.set_lsm_agc_enable(true);
         // Read back lsm_control to confirm the bits actually stuck in the
         // register bank. If the readback disagrees with what we wrote we
@@ -693,23 +537,10 @@ async fn main() -> anyhow::Result<()> {
             );
         }
 
-        // Phase 7A.1: configure the traffic-channel DDC the same way the
-        // control DDC is set up, then leave it disabled. The grant
-        // follower task below flips the demod_enable bit and writes the
-        // NCO frequency on demand whenever the control channel reports a
-        // GroupVoiceChannelGrant.
-        //
-        // The traffic chain has been instantiated in HDL since Phase 4
-        // (doc 007) but never driven from PS until now -- the existing
-        // bitstream from Phase 6G.1 (08f7607) already contains it, so no
-        // FPGA rebake is needed for 7A.1. The chain is C4FM-only at this
-        // phase; Phase 7A.2 adds an LSM parallel chain on the traffic
-        // side mirroring what Phase 6E.9 did on the control side.
-        //
-        // Initial NCO = 0 (centred on RX LO) so the chain has a defined
-        // state before the first grant arrives. demod_enable starts at 0
-        // to keep the dibit ring quiet until there's actually a call to
-        // follow.
+        // Configure the traffic DDC but leave it disabled. The grant
+        // follower flips demod_enable and writes NCO on demand on
+        // each GroupVoiceChannelGrant. Initial NCO=0 (centred on RX
+        // LO) gives a defined state before first grant.
         ip_core.configure_traffic_ddc(0.0, args.sample_rate as f64)?;
         ip_core.set_traffic_ddc_enable(true);
         ip_core.set_traffic_demod_enable(false);
@@ -718,55 +549,40 @@ async fn main() -> anyhow::Result<()> {
              (will be flipped on by the grant follower on first GroupVoiceChannelGrant)"
         );
 
-        // Phase 7A.2 + Phase 8B: arm the traffic-side LSM demod
-        // chain without enabling it. The LSM master enable
-        // (`traffic_lsm_enable`) is now toggled PER-CALL by the
-        // follower retune path -- it's off at boot and between
-        // calls, on only while a grant is being followed. This
-        // closes the Phase 7 gap where the LSM chain was running
-        // continuously against post-retune-transient dibits and
-        // producing the phantom TDU_LC NID events that flooded
-        // the traffic-side classifier. See doc/changes/038.
-        //
-        //   - traffic_lsm_enable: OFF at boot, flipped on in
-        //       `retune_traffic_chain()` after the NCO write and
-        //       the `traffic_lsm_reset` pulse.
-        //   - traffic_lsm_dibit_dma_enable: armed level-high at
-        //       boot so the ring DMA AW state machine is ready to
-        //       stream as soon as the master enable opens.
-        //   - traffic_lsm_dc_block_enable: on at boot so the
-        //       leaky-integrator DC blocker has already converged
-        //       by the time the first call arrives.
+        // Arm the traffic-side LSM chain without enabling it. The
+        // master enable is toggled PER-CALL by the follower retune
+        // path — off at boot + between calls, on only while a grant
+        // is followed. Closes the Phase 7 gap where running
+        // continuously against post-retune-transient dibits
+        // produced phantom TDU_LC NID events. See doc/changes/038.
+        //   - traffic_lsm_enable: off now, on in retune_traffic_chain
+        //     after NCO write + traffic_lsm_reset pulse.
+        //   - dibit_dma_enable: armed so the ring DMA is ready.
+        //   - dc_block_enable: on so the leaky integrator converges
+        //     before the first call.
         ip_core.set_traffic_lsm_enable(false);
         ip_core.set_traffic_lsm_dibit_dma_enable(true);
         ip_core.set_traffic_lsm_dc_block_enable(true);
-        // 2026-04-16: enable the new traffic post-DDC IQ ring DMA so
-        // /api/spectrum?chain=traffic and /api/constellation?chain=
-        // traffic have data. The iq ring is independent of the
-        // LSM demod enable (driven off the traffic_ddc strobe,
-        // which ticks whenever the traffic DDC has valid input)
-        // so it runs continuously without needing the LSM chain on.
+        // Traffic post-DDC IQ ring feeds /api/spectrum?chain=traffic
+        // and /api/constellation?chain=traffic. Driven off the
+        // traffic_ddc strobe so it runs continuously, independent of
+        // the LSM demod enable.
         ip_core.set_traffic_iq_dma_enable(true);
-        // Phase 10.6 (2026-04-18): enable both post-LSM matched-filter
-        // IQ rings at boot. Same rationale as the post-DDC rings —
-        // driven off the LSM chain's RRC strobe, always ticking
-        // regardless of whether the chain is actively demodulating.
-        // These feed the dashboard's matched-filter eye plot (via
-        // /ws/iq?source=post_lsm).
+        // Post-LSM matched-filter IQ rings — driven off the RRC
+        // strobe, always tick regardless of LSM chain activity.
+        // Feed the dashboard MF eye plot (/ws/iq?source=post_lsm).
         ip_core.set_lsm_iq_dma_enable(true);
         ip_core.set_traffic_lsm_iq_dma_enable(true);
-        // Phase 10-prep: arm the traffic-side per-symbol LSM AGC
-        // at boot (same SDRTrunk-faithful port as the control
-        // side above). The AGC stays armed across retunes; the
-        // `traffic_lsm_reset` pulse in `retune_traffic_chain`
-        // returns the gain register to GAIN_INIT (= 1.0) on every
-        // retune, matching the clean-cold-start semantics.
+        // Traffic-side per-symbol LSM AGC — same SDRTrunk port as
+        // above. Stays armed across retunes; the traffic_lsm_reset
+        // pulse in retune_traffic_chain returns gain to GAIN_INIT
+        // (= 1.0) for clean-cold-start semantics.
         ip_core.set_traffic_lsm_agc_enable(true);
         let (tlsm_en_rb, tlsm_dma_en_rb, tlsm_dc_block_rb, tlsm_agc_rb) =
             ip_core.traffic_lsm_control_readback();
         tracing::info!(
             "Traffic LSM chain armed: traffic_lsm_enable={tlsm_en_rb} \
-             (Phase 8B: off until first retune), \
+             (off until first retune), \
              traffic_lsm_dibit_dma_enable={tlsm_dma_en_rb}, \
              traffic_lsm_dc_block_enable={tlsm_dc_block_rb}, \
              traffic_lsm_agc_enable={tlsm_agc_rb}"
@@ -774,7 +590,7 @@ async fn main() -> anyhow::Result<()> {
         if tlsm_en_rb || !tlsm_dma_en_rb {
             tracing::error!(
                 "traffic_lsm_control readback mismatch -- expected enable=false \
-                 (Phase 8B) and dibit_dma_enable=true, got \
+                 and dibit_dma_enable=true, got \
                  ({tlsm_en_rb},{tlsm_dma_en_rb}); traffic-side LSM chain \
                  WILL NOT behave correctly on retune"
             );
@@ -790,23 +606,13 @@ async fn main() -> anyhow::Result<()> {
         let ip_core = Arc::new(Mutex::new(ip_core));
         let ad9361 = Arc::new(ad9361);
 
-        // 4. Get interrupt waiters before spawning handler
+        // Interrupt waiters before spawning handler.
         let dibit_waiter = interrupt_handler.waiter_dibit_dma();
-        // Phase 9 retirement: `iq_waiter` (waiter_iq_dma) used to
-        // wake the Phase 6D software LSM pipeline. That pipeline
-        // is gone, so we don't subscribe to the iq_dma interrupt
-        // any more. The `InterruptHandler` still multiplexes the
-        // raw IRQ line, it just doesn't have a PS consumer for
-        // the iq_dma bit.
         let lsm_dibit_waiter = interrupt_handler.waiter_lsm_dibit_dma();
-        // Phase 7A.1: traffic dibit DMA wakeups
         let traffic_dibit_waiter = interrupt_handler.waiter_traffic_dma();
-        // Phase 7A.2 + 7C: traffic-side LSM dibit DMA wakeups. The
-        // dibit reader task spawned below feeds the traffic_lsm_decoder
-        // (which has the IMBE counter voice handler installed).
         let traffic_lsm_dibit_waiter = interrupt_handler.waiter_traffic_lsm_dibit_dma();
 
-        // 5. Spawn interrupt handler
+        // Interrupt handler.
         let irq_stats_for_handler = irq_stats.clone();
         tokio::spawn(async move {
             if let Err(e) = interrupt_handler.run(irq_stats_for_handler).await {
@@ -814,8 +620,7 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        // PS C4FM control reader — body in
-        // `crate::app::dibit_readers`.
+        // PS C4FM control reader — body in `crate::app::dibit_readers`.
         app::dibit_readers::spawn_ps_c4fm_control_reader(
             dibit_waiter,
             ip_core.clone(),
@@ -823,76 +628,20 @@ async fn main() -> anyhow::Result<()> {
             active_modulation.clone(),
         );
 
-        // 6b. [RETIRED -- Phase 9 retirement, 2026-04-15]
-        //
-        // This slot used to be the Phase 6D LSM IQ reader task: it
-        // woke on every iq_dma sub-buffer interrupt, ran a complete
-        // pure-Rust LSM demod pipeline (decimate /2 -> LPF -> RRC ->
-        // AGC+PLL+Gardner+slicer -> hard+soft sync correlators ->
-        // BCH(63,16,11) FEC) on the raw 62.5 kSPS IQ samples,
-        // dispatched soft-sync TSDU events into `iq_lsm_decoder`,
-        // and updated the shared `LsmStats` that fed `/api/lsm`.
-        //
-        // After Phase 6E ported the full LSM demod into Amaranth
-        // gateware (the production `LsmDemod` block running in
-        // `lsm_ctrl_dom`) the software pipeline became pure dead
-        // weight: the HDL chain produced the same TSBKs through
-        // `lsm_decoder` using a fraction of the ARM CPU. Phase 9
-        // formally retires it.
-        //
-        // The `iq_dma` HDL ring is still present in the bitstream
-        // but is now disabled at boot (`set_iq_dma_enable(false)`)
-        // so no data flows and no IRQs fire. It can be re-enabled
-        // by a future phase for baseband capture to disk, a new
-        // in-PL DSP block tapping post-DDC IQ, or reinstating the
-        // software cross-check if a regression ever needs a raw-IQ
-        // reference.
-        //
-        // See doc/changes/039 for the full retirement inventory.
-
-        // 6c. Spawn HDL LSM dibit ring drain + TSBK decode task
-        //     (Phase 6E.9/6E.10 bring-up).
-        //
-        //     The HDL LSM demod chain produces its own dibit stream via
-        //     `lsm_dibit_dma`, parallel to the C4FM `dibit_dma` ring on
-        //     the same control DDC output. We feed that stream into a
-        //     SECOND, independent `ControlChannelDecoder` instance
-        //     (`lsm_decoder`) which runs the identical Hunting ->
-        //     ReadingNid -> ReadingDu -> trellis -> CRC -> TsbkMessage
-        //     pipeline as the C4FM decoder above, just against a
-        //     different dibit source. Both decoders land events on the
-        //     same WebSocket broadcast channel so the dashboard sees a
-        //     unified TSBK stream; the distinct trace targets
-        //     (`p25_decoder` vs `p25_hdl_lsm_decoder`) let operators
-        //     separate them in the server log.
-        //
-        //     **Why a separate instance instead of feeding into the
-        //     existing decoder:** the two dibit streams come from two
-        //     independent HDL demod chains with independent symbol
-        //     timing loops. Frame sync alignment, NID boundaries, and
-        //     TSU framing state are all specific to the stream they
-        //     came from -- sharing state would corrupt either or both
-        //     decoders. Two parallel instances is cheap (~300 bytes of
-        //     state each on an ARM Cortex-A9) and gives us the
-        //     cross-validation we want for bring-up: both decoders
-        //     should emit IDENTICAL TSBK streams against the same RF
-        //     capture, confirming the HDL LSM port is equivalent to
-        //     the working Phase 2A C4FM path.
-        //
-        //     The existing Phase 6D in-PS Rust LSM pipeline keeps
-        //     running in parallel (task 6b below) as a third
-        //     independent sanity check. Retiring it is a Phase 6F
-        //     decision after all three paths converge on hardware.
-        // Phase 6E HDL LSM control reader — body in
-        // `crate::app::dibit_readers`.
+        // HDL LSM dibit drain + TSBK decode — separate decoder
+        // instance from the C4FM path. Two independent HDL demod
+        // chains have independent symbol timing, NID boundaries,
+        // framing state — sharing would corrupt both. Two instances
+        // also give cross-validation: both should emit identical
+        // TSBKs against the same RF. See doc/changes/039 for the
+        // Phase 6D software-pipeline retirement.
         app::dibit_readers::spawn_hdl_lsm_control_reader(
             lsm_dibit_waiter,
             ip_core.clone(),
             lsm_decoder.clone(),
         );
 
-        // Phase 7C HDL LSM traffic reader — body in
-        // `crate::app::dibit_readers`.
+        // HDL LSM traffic reader — body in `crate::app::dibit_readers`.
         app::dibit_readers::spawn_hdl_lsm_traffic_reader(
             traffic_lsm_dibit_waiter,
             ip_core.clone(),
@@ -900,52 +649,23 @@ async fn main() -> anyhow::Result<()> {
             imbe_forwarder.clone(),
         );
 
-        // 6d. Spawn HDL LSM heartbeat / NID event poller (Phase 6E.9/6E.10).
+        // HDL LSM heartbeat + NID event poller. Reads lsm_status +
+        // lsm_debug on every 16ms tick (~60 Hz) — lets us see the
+        // chain's state even when it isn't producing NIDs. Emits:
+        //   1. NID event log (throttled 5 Hz on a busy site)
+        //   2. Heartbeat log (every ~1 s, windowed pll/sp/sync_dist
+        //      + iq_dma health)
+        //   3. Crash dump — first time nid_evts==0 after healthy
+        //      traffic, dumps the full 32-deep NID ring buffer.
         //
-        //     Reads `lsm_status` + `lsm_debug` on EVERY tick at 60 Hz,
-        //     not just when `nid_event` fires. This lets us see the
-        //     state of the HDL LSM chain even when it isn't producing
-        //     NID events, which is exactly the bring-up situation we
-        //     hit on real RF.
-        //
-        //     Outputs per loop iteration:
-        //     1. **NID event log** -- as before, fires only when
-        //        `lsm_status.nid_event` (Rsticky) is high. Throttled to
-        //        5 Hz on a busy site (~70 NIDs/sec) but always logs the
-        //        first 10 events. Every event is ALSO captured into a
-        //        32-deep ring buffer for the crash-transition dump
-        //        described below.
-        //     2. **Heartbeat log** -- fires every ~1 s regardless of
-        //        whether NIDs are being decoded, dumping the windowed
-        //        min/max of `pll_dbg` + `sample_point_dbg` + the lowest
-        //        `sync_distance` seen in the window + iq_dma health
-        //        + how many ticks of the window observed `bch_busy` /
-        //        `in_nid_window` / `nid_event` / `dibit_overflow`.
-        //     3. **Crash dump** -- the FIRST time `nid_evts == 0` in
-        //        a heartbeat window after we've seen any healthy
-        //        traffic, dump the full 32-deep NID ring buffer. This
-        //        captures the exact NID events leading up to the
-        //        transition from healthy to stalled, with no log
-        //        throttling.
-        //
-        //     **Watchdog removed** (was Phase 6E.6 doc 023). Investigation
-        //     after the 2026-04-10 CORDIC bake confirmed sdr_reset is
-        //     fundamentally unsafe to pulse during operation -- it
-        //     resets the entire `sync` clock domain, which interrupts
-        //     in-flight AXI HP DMA writes, deadlocks the AXI HP slave
-        //     in the PS DDR controller, and causes a hard kernel panic
-        //     reboot. The previous "watchdog" was silently broken
-        //     (CDC corruption swallowed its writes after the chain
-        //     transitioned to the degraded state) -- if it had ever
-        //     fired correctly, it would have crashed the board. The
-        //     code is removed entirely; recovery from the degraded
-        //     state requires either a power cycle or a future safer
-        //     reset mechanism that drains in-flight AXI before
-        //     asserting reset.
+        // No watchdog: sdr_reset is unsafe during operation — resets
+        // the sync clock domain mid-DMA and deadlocks the AXI HP
+        // slave, causing kernel panic reboot. See doc/changes/024.
+        // Recovery from stall requires a power cycle.
         let lsm_nid_core = ip_core.clone();
         let lsm_nid_runtime = hdl_lsm.clone();
         tokio::spawn(async move {
-            tracing::info!("HDL LSM heartbeat + NID poller task started (Phase 6E)");
+            tracing::info!("HDL LSM heartbeat + NID poller task started");
             // Stamp the start time as soon as we run.
             {
                 let mut rt = lsm_nid_runtime.lock().await;
@@ -956,16 +676,14 @@ async fn main() -> anyhow::Result<()> {
             );
             tick.tick().await;
 
-            // ── NID event tracking (cumulative) ─────────────────────
+            // NID event tracking (cumulative).
             let mut event_count: u64 = 0;
             let mut valid_count: u64 = 0;
             let mut last_drop_count: u16 = 0;
             let mut last_event_log = std::time::Instant::now();
 
-            // ── NID event ring buffer for crash-transition dump ────
-            // Captures the last 32 NID events with full state. Dumped
-            // unconditionally on the first "nid_evts == 0" heartbeat
-            // after at least one healthy heartbeat has been seen.
+            // NID event ring buffer for crash-transition dump —
+            // last 32 events with full state.
             const NID_RING_DEPTH: usize = 32;
             #[derive(Clone, Copy, Default)]
             struct NidRingEntry {
@@ -988,7 +706,7 @@ async fn main() -> anyhow::Result<()> {
             let mut crash_dump_fired = false;
             let task_start = std::time::Instant::now();
 
-            // ── iq_dma drain-rate tracking for the heartbeat ───────
+            // iq_dma drain-rate tracking for the heartbeat.
             let mut last_iq_next_addr: u32 = 0;
             let mut last_iq_last_buffer: u8 = 0xFF;
             let mut hb_iq_addr_advance: u64 = 0;
@@ -996,15 +714,15 @@ async fn main() -> anyhow::Result<()> {
             let mut hb_iq_overflow_ticks: u32 = 0;
             let mut last_iq_overflow_log = std::time::Instant::now();
 
-            // ── Heartbeat windowed stats (reset on each emission) ──
-            // Reset every ~1 s of polling = ~60 ticks at 16 ms.
+            // Heartbeat windowed stats — reset each emission
+            // (~1 s = ~60 ticks at 16 ms).
             let mut hb_ticks: u32 = 0;
             let mut hb_pll_min: i16 = i16::MAX;
             let mut hb_pll_max: i16 = i16::MIN;
             let mut hb_sp_min: i16 = i16::MAX;
             let mut hb_sp_max: i16 = i16::MIN;
-            // sync_distance is u8 0..47; track the BEST (lowest) hit in
-            // the window. 99 is a "no observations yet" sentinel.
+            // sync_distance is u8 0..47; track BEST (lowest) in window.
+            // 99 = "no observations yet" sentinel.
             let mut hb_sync_dist_best: u8 = 99;
             let mut hb_bch_busy_ticks: u32 = 0;
             let mut hb_in_window_ticks: u32 = 0;
@@ -1019,11 +737,9 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 tick.tick().await;
 
-                // EVERY tick: snapshot the full status + debug pair
-                // PLUS the iq_dma health indicators. We read coherently
+                // Snapshot status + debug + iq_dma health coherently
                 // under the mutex so the heartbeat observes the same
-                // instant the optional nid_event payload would
-                // describe.
+                // instant the nid_event payload would describe.
                 let (
                     status,
                     nac,
@@ -1049,20 +765,14 @@ async fn main() -> anyhow::Result<()> {
                     )
                 };
 
-                // ── iq_dma health bookkeeping for this tick ─────────
-                // Track AW address advance + last_buffer rollover rate.
-                // In healthy operation iq_next_addr advances ~5 KB per
-                // tick (62.5kSPS * 4 bytes/sample / 60 Hz). If it
-                // stops advancing or advances at <50 % of nominal, the
-                // iq_dma write side has stalled.
+                // iq_dma health: AW address advance + last_buffer
+                // rollover rate. Healthy = ~5 KB/tick
+                // (62.5kSPS*4B / 60Hz). Stuck or <50% = write side
+                // stalled. Ring wraps every 32 KB so a single tick
+                // shouldn't advance by more than 8 KB; the 0x10000
+                // guard filters spurious backward jumps from CDC races.
                 if last_iq_next_addr != 0 {
-                    // Compute forward delta with wrap. Buffers in the
-                    // ring are 4 KB and the ring wraps every 32 KB,
-                    // so a single tick should never advance by more
-                    // than 8 KB even at peak rate.
                     let delta = iq_next_addr.wrapping_sub(last_iq_next_addr);
-                    // Filter out spurious huge backward jumps that
-                    // would happen on a CDC read race.
                     if delta < 0x10000 {
                         hb_iq_addr_advance += delta as u64;
                     }
@@ -1074,8 +784,8 @@ async fn main() -> anyhow::Result<()> {
                 last_iq_last_buffer = iq_last_buffer;
                 if iq_overflow {
                     hb_iq_overflow_ticks += 1;
-                    // Throttle the per-tick warning to once per second
-                    // so a stuck overflow doesn't drown the log.
+                    // Warning throttled to 1 Hz — a stuck overflow
+                    // would otherwise drown the log.
                     if last_iq_overflow_log.elapsed()
                         >= std::time::Duration::from_secs(1)
                     {
@@ -1088,7 +798,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                // ── Fold this tick into the heartbeat window ────────
+                // Fold this tick into the heartbeat window.
                 hb_ticks += 1;
                 if pll_dbg < hb_pll_min { hb_pll_min = pll_dbg; }
                 if pll_dbg > hb_pll_max { hb_pll_max = pll_dbg; }
@@ -1098,34 +808,27 @@ async fn main() -> anyhow::Result<()> {
                 if status.in_nid_window { hb_in_window_ticks += 1; }
                 if status.nid_event     { hb_nid_event_ticks += 1; }
                 if status.dibit_overflow { hb_overflow_ticks += 1; }
-                // Track the lowest sync_distance we ever see across
-                // the window, regardless of whether nid_event fires.
-                // The HDL latches sync_distance at the moment a sync
-                // hit fires so it stays constant between events.
-                // sync_distance == 0 sentinel after a perfect hit is
-                // also legitimate, and the rsticky bits decay on read,
-                // so we just take min over the raw reads.
+                // Lowest sync_distance across the window, regardless
+                // of nid_event. HDL latches at sync-hit so it stays
+                // constant between events; rsticky bits decay on read,
+                // so min over raw reads is the right aggregate.
                 if status.sync_distance < hb_sync_dist_best {
                     hb_sync_dist_best = status.sync_distance;
                 }
 
-                // ── Per-tick: dibit overflow latch warning ──────────
+                // Per-tick: dibit overflow latch. Throttled via the
+                // shared iq-side 1 Hz gate (both signal the same
+                // upstream stall; we want one warn/second total).
                 if status.dibit_overflow {
-                    // Throttled to 1 Hz so a stuck overflow doesn't
-                    // dominate the log (it used to fire every poll).
                     if last_iq_overflow_log.elapsed()
                         >= std::time::Duration::from_secs(1)
                     {
-                        // (Reuse the same throttle as iq overflow --
-                        // both signal the same upstream stall and
-                        // we want one warn per second total.)
+                        // throttle managed iq-side; count only
                     }
-                    // Don't reset the throttle here; let the iq side
-                    // manage it. We just count for the heartbeat.
                 }
 
-                // ── Phase 6F.2: live PL register snapshot to shared
-                //    HdlLsmRuntime so /api/hdl_lsm can read it ───────
+                // Live PL register snapshot to shared HdlLsmRuntime
+                // so /api/hdl_lsm can read it.
                 {
                     let mut rt = lsm_nid_runtime.lock().await;
                     rt.last_tick_at = Some(std::time::Instant::now());
@@ -1147,7 +850,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                // ── Per-tick: NID event handling ────────────────────
+                // Per-tick: NID event handling.
                 if status.nid_event {
                     event_count += 1;
                     hb_window_event_count += 1;
@@ -1156,9 +859,8 @@ async fn main() -> anyhow::Result<()> {
                         hb_window_valid_count += 1;
                     }
 
-                    // ALWAYS push the event into the ring buffer
-                    // (regardless of throttling). This is what the
-                    // crash dump reads.
+                    // Always push into the ring regardless of log
+                    // throttling — this is what the crash dump reads.
                     let entry = NidRingEntry {
                         seq: event_count,
                         t_ms_since_boot: task_start.elapsed().as_millis(),
@@ -1180,7 +882,7 @@ async fn main() -> anyhow::Result<()> {
                     // seen any healthy traffic.
                     crash_dump_armed = true;
 
-                    // ── Phase 6F.2: NID-event update to shared runtime
+                    // NID-event update to shared runtime.
                     {
                         let mut rt = lsm_nid_runtime.lock().await;
                         rt.total_nid_events = event_count;
@@ -1247,7 +949,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                // ── Heartbeat log (every ~1 s of polling) ───────────
+                // Heartbeat log (every ~1 s of polling).
                 if last_hb.elapsed() >= std::time::Duration::from_secs(1) {
                     let pll_range = if hb_pll_min == i16::MAX {
                         "[no samples]".to_string()
@@ -1281,18 +983,10 @@ async fn main() -> anyhow::Result<()> {
                          cum NIDs: {valid_count}/{event_count})"
                     );
 
-                    // ── Crash-transition NID ring dump ──────────────
-                    //
-                    // The MOMENT this is the first heartbeat with
-                    // zero NID events after we've seen at least one
-                    // healthy heartbeat, dump the full ring buffer.
-                    // This captures up to 32 NID events with full
-                    // pll/sp/sync_dist/n_errors/drop_count state, no
-                    // throttling. Compare entries N..N+5 (the
-                    // tail) for the moment things went wrong.
-                    //
-                    // Fires exactly once per boot. Subsequent stuck
-                    // heartbeats just emit the regular HB line.
+                    // Crash-transition NID ring dump. First heartbeat
+                    // with zero NIDs after any healthy one — dump the
+                    // full 32-deep ring with pll/sp/sync_dist/n_errors/
+                    // drop_count, no throttling. Fires once per boot.
                     if crash_dump_armed
                         && !crash_dump_fired
                         && hb_window_event_count == 0
@@ -1346,8 +1040,8 @@ async fn main() -> anyhow::Result<()> {
                         );
                     }
 
-                    // ── Phase 6F.2: snapshot completed window into the
-                    //    shared runtime BEFORE we reset accumulators ──
+                    // Snapshot completed window into shared runtime
+                    // BEFORE we reset accumulators.
                     {
                         let mut rt = lsm_nid_runtime.lock().await;
                         rt.hb_pll_min = if hb_pll_min == i16::MAX { 0 } else { hb_pll_min };
@@ -1387,7 +1081,7 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        // 7. Spawn periodic stats task — polls FPGA registers every 2s
+        // Periodic stats task — polls FPGA registers every 2s.
         let stats_core = ip_core.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -1409,8 +1103,7 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        // Phase 7A.1 (a) traffic dibit reader — body in
-        // `crate::app::dibit_readers`.
+        // Traffic dibit reader — body in `crate::app::dibit_readers`.
         app::dibit_readers::spawn_ps_c4fm_traffic_reader(
             traffic_dibit_waiter,
             ip_core.clone(),
@@ -1418,9 +1111,9 @@ async fn main() -> anyhow::Result<()> {
             traffic_manager.clone(),
         );
 
-        // Phase 7A.1 (b): traffic grant follower task. Body lives
-        // in `crate::app::follower`. See that module for the
-        // polling / sticky-lock / encryption policy rationale.
+        // Traffic grant follower — body in `crate::app::follower`.
+        // See that module for polling / sticky-lock / encryption
+        // policy rationale.
         app::follower::spawn_traffic_grant_follower(
             lsm_decoder.clone(),
             decoder.clone(),
@@ -1438,33 +1131,16 @@ async fn main() -> anyhow::Result<()> {
             grant_event_rx,
         );
 
-        // Phase 7A.2 (c): traffic LSM heartbeat task. Polls
-        // `traffic_lsm_status` at 16 ms cadence (matches the typical
-        // NID arrival rate of one per ~14 ms on a P25 voice channel:
-        // HDU + LDU1 + LDU2 + LDU1 + LDU2 + ... + TDU). On every
-        // `nid_event=true` read, dispatches the latched NAC + DUID
-        // to the appropriate TrafficManager handler:
-        //
-        //   DUID 0x0  HDU         -> hdu_received(now, nac)
-        //   DUID 0x3  TDU         -> tdu_received(now, nac, false)
-        //   DUID 0xF  TDU_LC      -> tdu_received(now, nac, true)
-        //   DUID 0x5  LDU1        -> ldu_received(now, nac, false)
-        //   DUID 0xA  LDU2        -> ldu_received(now, nac, true)
-        //
-        // The 16 ms cadence is fine-grained enough that we won't
-        // miss back-to-back NIDs (which arrive ~14 ms apart on a
-        // sustained voice channel). Phase 7A.1 polled
-        // `lsm_decoder.grants` at 50 ms; this is faster because each
-        // missed NID event is a strict information loss (the Rsticky
-        // bit gets cleared on the next read but the latched fields
-        // are overwritten).
-        //
-        // Note: this is structured almost identically to the existing
-        // HDL LSM heartbeat task in p25-httpd that polls
-        // `lsm_status` for the control side. We could refactor both
-        // into a shared helper later -- for Phase 7A.2 the duplicated
-        // code is acceptable because the dispatch handlers differ
-        // (TrafficManager vs ControlChannelDecoder).
+        // Traffic LSM heartbeat. Polls traffic_lsm_status @ 16 ms —
+        // fine enough that we don't miss back-to-back NIDs (~14 ms
+        // apart on a sustained voice channel). Missing one is a
+        // strict loss: Rsticky clears on next read but latched
+        // fields get overwritten. On nid_event, dispatches NAC+DUID:
+        //   0x0 HDU    -> hdu_received
+        //   0x3 TDU    -> tdu_received(..., false)
+        //   0xF TDU_LC -> tdu_received(..., true)
+        //   0x5 LDU1   -> ldu_received(..., false)
+        //   0xA LDU2   -> ldu_received(..., true)
         let traffic_lsm_core = ip_core.clone();
         let traffic_lsm_mgr = traffic_manager.clone();
         let traffic_lsm_stats = traffic_stats.clone();
@@ -1474,7 +1150,7 @@ async fn main() -> anyhow::Result<()> {
         let traffic_boundary_tx = call_boundary_tx.clone();
         tokio::spawn(async move {
             tracing::info!(
-                "traffic LSM heartbeat task started (Phase 7A.2, polling \
+                "traffic LSM heartbeat task started (polling \
                  traffic_lsm_status @ 16 ms)"
             );
             let mut tick =
@@ -1505,20 +1181,13 @@ async fn main() -> anyhow::Result<()> {
                 }
                 nid_events += 1;
 
-                // Phase 7F.5 (2026-04-14) root-cause gate: if the
-                // follower is Idle, skip the entire NID dispatch.
-                // The HDL LSM chain keeps producing NID events on
-                // residual dibits between calls, and before this
-                // gate the heartbeat was calling mgr.hdu_received
-                // / ldu_received / tdu_received / broadcasting WS
-                // activity / pushing event_log entries for every
-                // noise-extracted "NID" -- producing the "TG:--
-                // CH:--" TDU_LC spam in the Live Activity feed
-                // even with no real call.
-                //
-                // We still update `nid_events` above so we can see
-                // the raw rate on /api/traffic_lsm diagnostics,
-                // but from here we're a no-op.
+                // Idle gate: skip dispatch when no TG is locked. The
+                // HDL LSM chain keeps firing NIDs on residual dibits
+                // between calls; without this gate the heartbeat
+                // flooded the Activity feed with "TG:-- CH:-- TDU_LC"
+                // spam for every noise-extracted "NID". nid_events
+                // still increments above so /api/traffic_lsm shows
+                // the raw rate.
                 use std::sync::atomic::Ordering;
                 if traffic_heartbeat_imbe
                     .current_talkgroup
@@ -1558,15 +1227,15 @@ async fn main() -> anyhow::Result<()> {
                     mgr.current_talkgroup().map(|t| t.0).unwrap_or(0)
                 };
 
-                // 2026-04-19: fan out HDU boundaries so the recorder
-                // can split per-PTT. TDULC boundaries are NOT emitted
-                // here — they require the LC body to extract the
-                // Motorola BY: source, which only the software framer
-                // sees. The ImbeForwarder::on_tdu_lc path publishes
+                // Fan out HDU boundaries so the recorder can split
+                // per-PTT. TDULC boundaries are NOT emitted here —
+                // they need the LC body for the Motorola BY: source,
+                // which only the software framer sees. The
+                // ImbeForwarder::on_tdu_lc path publishes
                 // TdulcComplete with `source: Some(id)` when the LCW
-                // parser recognises Motorola TALK_COMPLETE. Keep the
-                // heartbeat stashing the latest NAC so that path can
-                // tag its event.
+                // parser recognises Motorola TALK_COMPLETE. The
+                // heartbeat just stashes the latest NAC so that path
+                // can tag its event.
                 traffic_heartbeat_imbe
                     .last_observed_nac
                     .store(nac, Ordering::Relaxed);
@@ -1581,28 +1250,14 @@ async fn main() -> anyhow::Result<()> {
                     });
                 }
 
-                // Log the coarse call boundaries so the event log
-                // reads like a call transcript. LDUs are too frequent
-                // (1 every ~30 ms) to log individually -- the vocoder
-                // task below logs per-call summaries instead.
-                //
-                // Phase 7F.3 (2026-04-14): only log when we're
-                // actually locked on a TG. During Idle the traffic
-                // LSM HDL chain keeps firing NID events on residual
-                // dibits from the last-tuned frequency; they get
-                // classified by the BCH decoder (often as 0xF TDU_LC
-                // when the signal is marginal) and would otherwise
-                // flood the event log with ~20 TG=0 TDU_LC entries
-                // per second. Counters still update in the dispatch
-                // match above -- this only gates the Logs-tab spam.
+                // Log per-DUID to /api/log (Activity tab) only when
+                // locked on a real TG. Without this gate, marginal-
+                // signal BCH classifies residual dibits as 0xF TDU_LC
+                // and would flood the log with ~20 TG=0 TDU_LC/sec.
+                // Counters in the dispatch match still update — this
+                // only gates log noise. Mirrors SDRTrunk's
+                // decoded_messages.log style.
                 if locked_tg_snapshot != 0 {
-                    // 2026-04-19: log EVERY DUID (HDU, LDU1, LDU2,
-                    // TDU, TDU_LC) to the activity feed so the
-                    // dashboard shows the full per-frame transcript
-                    // the way SDRTrunk's `decoded_messages.log` does.
-                    // LDU lines previously only went to the WS
-                    // broadcast — now they appear in `/api/log` too,
-                    // which is what the Activity tab reads.
                     let duid_label = match duid {
                         0x0 => "HDU",
                         0x3 => "TDU",
@@ -1627,16 +1282,10 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                // Broadcast traffic DUID events to the WebSocket
-                // activity feed so the dashboard shows HDU/LDU/TDU.
-                //
-                // Note: this is unreachable when Idle because the
-                // Idle gate above `continue`s the loop before we
-                // get here. Kept non-conditional so the dashboard
-                // gets every event the heartbeat dispatches,
-                // matching the user's "don't suppress activity"
-                // requirement -- any event that makes it this far
-                // represents a real locked call.
+                // Broadcast traffic DUID events to the WS activity
+                // feed. Unconditional — the Idle gate above already
+                // `continue`s before we get here, so every event
+                // that reaches this point represents a locked call.
                 {
                     let mgr = traffic_lsm_mgr.lock().await;
                     let duid_label = match duid {
@@ -1691,19 +1340,15 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
 
-                // Stash the latest NAC into traffic_stats for the
-                // /api/traffic snapshot (the manager has the per-DUID
-                // counters; this is just an extra dashboard surface).
-                let _ = traffic_lsm_stats.lock().await; // touch to satisfy unused-import
+                // Touch traffic_lsm_stats so the binding isn't
+                // flagged as unused; per-DUID counters live on mgr.
+                let _ = traffic_lsm_stats.lock().await;
             }
         });
 
-        // 8. Spawn periodic grant-expiry task. The control channel decoder
-        //    accumulates voice grants in a HashMap as it sees TSBK_GRANT
-        //    messages. Without periodic pruning the table only ever grows
-        //    -- the dashboard's "Active Grants" count would never decay
-        //    even after a call ended. Expire any grant whose TSBK was last
-        //    seen more than 30 seconds ago (P25 typical call timeout).
+        // Periodic grant expiry. Without this the decoder's grant
+        // HashMap only grows — Active Grants count would never decay.
+        // 30 s matches P25 typical call timeout.
         let expiry_decoder = decoder.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -1715,9 +1360,8 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        // Phase 6F.1: same expiry sweep for the LSM decoder. Without it,
-        // grants accumulated by the LSM decoder (which now feeds the
-        // dashboard's Active Grants panel) would never time out.
+        // Same expiry sweep for the LSM decoder (feeds the Active
+        // Grants panel).
         let lsm_expiry_decoder = lsm_decoder.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -1732,16 +1376,15 @@ async fn main() -> anyhow::Result<()> {
         (ip_core, ad9361)
     };
 
-    // Phase 7E: audio broadcast channel (vocoder -> HTTP/WebSocket).
+    // Audio broadcast channel (vocoder -> HTTP/WebSocket).
+    // `call_boundary_tx` is created up with `imbe_forwarder` so the
+    // traffic-LSM heartbeat task (spawned above) can clone it.
     let audio_tx = audio::audio_channel();
-    // Note: `call_boundary_tx` is created up with `imbe_forwarder`
-    // (~line 682) so the traffic-LSM heartbeat task — which is
-    // spawned well before this point — can clone the tx.
 
-    // Call recorder: subscribes to audio_tx and writes per-call WAV
-    // files to /tmp/p25_recordings/. Ring-buffered in RecordingStore
-    // so the dashboard can list / play back recent calls. Also
-    // subscribes to call_boundary_tx for HDU-driven call splitting.
+    // Call recorder: subscribes to audio_tx, writes per-call WAVs to
+    // /tmp/p25_recordings/. Ring-buffered in RecordingStore for the
+    // dashboard. Also subscribes to call_boundary_tx for HDU-driven
+    // splitting.
     let recordings = recorder::new_store();
     let recorder_diag = recorder::new_diag();
     {
@@ -1750,14 +1393,12 @@ async fn main() -> anyhow::Result<()> {
         let store = recordings.clone();
         let diag = recorder_diag.clone();
         let log = Some(event_log.clone());
-        // 2026-04-19 count-based close — share the vocoder-side
-        // frames_consumed counter with the recorder so it can wait
-        // for consumption to catch up to a boundary's snapshotted
-        // submit count before calling finalize(). Also share the
-        // imbe_frames_dropped counter so each call_finalise event
-        // can log the drop-delta that occurred during the
-        // recording (surfaces IMBE-queue-full events that caused
-        // audio loss on specific recordings).
+        // Count-based close: share frames_consumed so the recorder
+        // waits for consumption to catch up to a boundary's
+        // snapshotted submit count before finalize(). Share
+        // imbe_frames_dropped so each call_finalise event can log
+        // the drop-delta during the recording (surfaces IMBE-queue-
+        // full events that caused audio loss on specific calls).
         let frames_consumed = imbe_forwarder.frames_consumed.clone();
         let imbe_drops_handle = imbe_forwarder.imbe_frames_dropped.clone();
         tokio::spawn(async move {
@@ -1768,14 +1409,10 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Modulation auto-detect (SDRTrunk-style). Compares the
-    // nid_decoded_ok delta between the C4FM and LSM decoders once per
-    // second and flips `active_modulation` to whichever has more
-    // valid NIDs in the window. Only runs in Auto mode (code 0);
-    // manual overrides via `/api/modulation?set=c4fm|lsm` freeze the
-    // selection. `active_modulation` itself is declared much earlier
-    // in main() (before the grant follower task spawn) so both tasks
-    // can clone it.
+    // Modulation auto-detect (SDRTrunk-style). Compares nid_decoded_ok
+    // delta between C4FM and LSM decoders once per second, flips
+    // `active_modulation` to the winner. Only runs in Auto mode (0);
+    // manual overrides via /api/modulation?set=c4fm|lsm freeze it.
     {
         let active_mod = active_modulation.clone();
         let c4fm_decoder = decoder.clone();
@@ -1817,13 +1454,9 @@ async fn main() -> anyhow::Result<()> {
                     // User is manually set — leave them alone.
                     continue;
                 }
-                // Auto mode stays 0 but we remember the winner via a
-                // companion atomic? Simpler: actually STORE the
-                // winner here so the active_control_decoder() helper
-                // returns the right one. The user can distinguish
-                // "auto-chose LSM" from "manually forced LSM"
-                // through the /api/modulation endpoint which surfaces
-                // raw rates.
+                // Store the winner so active_control_decoder() returns
+                // the right one. "auto-chose LSM" vs "manually forced
+                // LSM" is distinguishable via /api/modulation (raw rates).
                 active_mod.store(winner, std::sync::atomic::Ordering::Relaxed);
                 tracing::info!(
                     "modulation auto-detect: d_c4fm={d_c4fm} d_lsm={d_lsm} \
@@ -1834,10 +1467,9 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Phase 7D/7E: vocoder task -- reads IMBE frame batches, decodes
-    // via JMBE, pushes AudioChunks to the broadcast channel, and
-    // updates stats atomics. Runs on a dedicated OS thread; see
-    // vocoder_task.rs for the full body.
+    // Vocoder task — reads IMBE batches, decodes via JMBE, pushes
+    // AudioChunks to the broadcast channel, updates stats atomics.
+    // Dedicated OS thread; body in vocoder_task.rs.
     vocoder_task::spawn_vocoder_thread(
         imbe_rx,
         imbe_forwarder.clone(),
@@ -1845,18 +1477,17 @@ async fn main() -> anyhow::Result<()> {
         event_log.clone(),
     );
 
-    // Build app state
+    // App state.
     let state = Arc::new(httpd::AppState {
         decoder: decoder.clone(),
         lsm_decoder: lsm_decoder.clone(),
-        // Phase 9: `iq_lsm_decoder` + `lsm_stats` removed.
         event_tx,
         #[cfg(target_os = "linux")]
         ip_core,
         #[cfg(target_os = "linux")]
         ad9361,
-        // Boot-time front-end config snapshot, used by /api/reinit to
-        // restore the chip + DDC NCO without a board reboot.
+        // Boot front-end snapshot — used by /api/reinit to restore
+        // the chip + DDC NCO without a board reboot.
         boot_rx_lo:        args.rx_lo,
         boot_sample_rate:  args.sample_rate as u32,
         boot_rf_bandwidth: args.rf_bandwidth,
@@ -1866,11 +1497,9 @@ async fn main() -> anyhow::Result<()> {
         current_rx_lo:     current_rx_lo.clone(),
         hdl_lsm: hdl_lsm.clone(),
         irq_stats: irq_stats.clone(),
-        // Phase 7A.1: traffic-channel grant follower + dibit reader
         traffic_manager: traffic_manager.clone(),
         traffic_stats: traffic_stats.clone(),
         traffic_follower_enabled: traffic_follower_enabled.clone(),
-        // Phase 7C: traffic LSM voice decoder + IMBE counter
         traffic_lsm_decoder: traffic_lsm_decoder.clone(),
         imbe_forwarder: imbe_forwarder.clone(),
         monitor_list: monitor_list.clone(),
@@ -1886,12 +1515,11 @@ async fn main() -> anyhow::Result<()> {
         active_modulation: active_modulation.clone(),
     });
 
-    // Start HTTP (and optionally HTTPS) server. The HTTPS half is what
-    // unlocks AudioWorklet on the dashboard — browsers only expose it
-    // in secure contexts, so http:// to a LAN IP falls back to the
-    // deprecated ScriptProcessorNode running on the main thread, which
-    // contends with periodic refresh() / event-log / eye-plot work and
-    // produces audible dropouts. HTTPS pattern matches maia-httpd.
+    // Start HTTP (and optionally HTTPS). HTTPS unlocks AudioWorklet
+    // on the dashboard — browsers only expose it in secure contexts,
+    // so http:// to a LAN IP falls back to ScriptProcessorNode on the
+    // main thread, contending with refresh/event-log/eye-plot work
+    // and causing audible dropouts. Pattern matches maia-httpd.
     let app = httpd::router(state, args.ca_cert.clone());
 
     let http_addr: std::net::SocketAddr = args.listen.parse()

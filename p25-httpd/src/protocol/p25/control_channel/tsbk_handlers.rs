@@ -1,11 +1,5 @@
 //! TSBK opcode dispatch + per-opcode handlers.
 //!
-//! Split from control_channel/mod.rs on 2026-04-19. Methods are kept
-//! as a separate `impl ControlChannelDecoder` block; because this
-//! module is a CHILD of `control_channel`, it has full visibility
-//! into ControlChannelDecoder's private fields without needing any
-//! `pub(super)` annotations on the struct itself.
-//!
 //! Every TSBK opcode landing in the decoder flows through
 //! `handle_tsbk` here: grant store updates (`bands`, `grants`),
 //! event broadcast (`event_tx`, `event_log`), and per-variant
@@ -53,12 +47,9 @@ impl ControlChannelDecoder {
                 service_options,
             } => {
                 let freq = self.channel_to_frequency(*channel);
-                // Drop any prior grant for this TG on a different
-                // channel. The TSBK includes a fresh source RadioId
-                // and a fresh service_options byte so we discard
-                // the preserved values here -- the new call's
-                // caller and encryption flag are what we want to
-                // record.
+                // Drop any prior grant for this TG on a different channel.
+                // TSBK carries fresh source + service_options so preserved
+                // values are discarded -- new call's caller/encryption win.
                 let _ = self.take_other_grants_for_talkgroup(*talkgroup);
                 let encrypted =
                     crate::protocol::p25::tsbk::service_options::is_encrypted(*service_options);
@@ -76,10 +67,8 @@ impl ControlChannelDecoder {
                 self.emit_grant_event(&grant);
                 self.grants.insert(channel.0, grant);
             }
-            // Phase 6F.11: Secondary Control Channel Broadcast --
-            // record the backup CCH A/B channels for the trunking
-            // failover view. RFSS/SITE come along for the ride and
-            // overwrite (always identical to the primary in practice).
+            // Backup CCH A/B channels for the trunking failover view.
+            // RFSS/SITE overwrite (always identical to primary in practice).
             TsbkMessage::SecondaryControlChannelBroadcast {
                 rfss_id,
                 site_id,
@@ -91,8 +80,6 @@ impl ControlChannelDecoder {
                 self.system.secondary_cch_a = Some(*channel_a);
                 self.system.secondary_cch_b = Some(*channel_b);
             }
-            // Phase 6F.11: SNDCP Data Channel Announcement Explicit --
-            // record the data services channels.
             TsbkMessage::SndcpDataChannelAnnouncementExplicit {
                 downlink_channel,
                 uplink_channel,
@@ -101,8 +88,7 @@ impl ControlChannelDecoder {
                 self.system.sndcp_downlink_channel = Some(*downlink_channel);
                 self.system.sndcp_uplink_channel = Some(*uplink_channel);
             }
-            // Phase 6F.11: TDMA Sync Broadcast -- snapshot system
-            // clock for the activity feed / debug.
+            // Snapshot system clock for the activity feed / debug.
             TsbkMessage::TdmaSyncBroadcast {
                 time_locked,
                 year,
@@ -115,25 +101,18 @@ impl ControlChannelDecoder {
                 self.system.last_sync_clock =
                     Some((*year, *month, *day, *hours, *minutes, *time_locked));
             }
-            // Phase 6F.11: TELE_INT_VCH_GRANT_UPDATE -- another grant
-            // type, but unit-to-phone (no talkgroup). Surface it via
-            // the activity feed but DON'T push into `grants`, which
-            // is talkgroup-keyed for now.
+            // Unit-to-phone grant (no talkgroup). Event-feed only;
+            // `grants` is talkgroup-keyed.
             TsbkMessage::TelephoneInterconnectVoiceChannelGrantUpdate {
                 ..
             } => {}
-            // Phase 6F.11: UU_ANS_REQ -- private call paging. Pure
-            // event for the activity feed.
+            // Private call paging. Pure event for the activity feed.
             TsbkMessage::UnitToUnitAnswerRequest { .. } => {}
-            // Phase 7F.3 (2026-04-16): GVCG_UPDT_EXPLICIT (0x03) —
-            // carries its own service_options byte, unlike plain
-            // GVCG_UPDT (0x02). SDRTrunk extracts the encryption bit
-            // here directly; without this branch we'd silently drop
-            // the grant (it fell through the `_ => {}` catch-all) and
-            // never see the encrypted flag on sites that use this
-            // variant in preference to plain GVCG. We treat the
-            // transmit_channel as the grant channel since that's
-            // where the voice audio lands.
+            // GVCG_UPDT_EXPLICIT (0x03) carries its own service_options
+            // byte, unlike plain GVCG_UPDT (0x02). SDRTrunk extracts the
+            // encryption bit here; without this branch we'd drop the
+            // grant and miss the encrypted flag on sites that use this
+            // variant. transmit_channel is the grant channel (voice).
             TsbkMessage::GroupVoiceChannelGrantUpdateExplicit {
                 transmit_channel,
                 receive_channel: _,
@@ -150,15 +129,7 @@ impl ControlChannelDecoder {
                     channel: *transmit_channel,
                     talkgroup: *talkgroup,
                     // GVCG_UPDT_EXP doesn't carry a source RadioId.
-                    // Preserve from any prior grant for this TG
-                    // (done by take_other_grants_for_talkgroup's OR
-                    // accumulation of preserved.source, but that
-                    // return value is ignored above since we're
-                    // overwriting with fresh service_options here).
-                    // Re-derive by peeking before the take if we
-                    // need it; for now leave None since the grant
-                    // follower only keys off TG and the encryption
-                    // bit, not the source.
+                    // Grant follower keys off TG + encryption, not source.
                     source: None,
                     frequency_hz: freq,
                     timestamp: Instant::now(),
@@ -175,14 +146,11 @@ impl ControlChannelDecoder {
                 talkgroup_b,
             } => {
                 let freq_a = self.channel_to_frequency(*channel_a);
-                // Drop any prior grant for talkgroup_a on a different
-                // channel and PRESERVE its source + encryption +
-                // emergency flags -- the update TSBK doesn't carry
-                // service options or a source, so without this we'd
-                // wipe the caller ID AND the encryption flag we
+                // Drop prior grant for talkgroup_a on a different channel
+                // and PRESERVE source + encryption + emergency: the update
+                // TSBK doesn't carry service_options or a source, so without
+                // this we'd wipe both the caller ID and the encryption flag
                 // recorded from the original GroupVoiceChannelGrant.
-                // Phase 7C extension of the Phase 6G.1 source-only
-                // preservation (commit 1e29839).
                 let preserved_a =
                     self.take_other_grants_for_talkgroup(*talkgroup_a);
                 let grant_a = GrantInfo {
@@ -217,12 +185,10 @@ impl ControlChannelDecoder {
             _ => {}
         }
 
-        // Broadcast event over WebSocket + mirror into the structured
-        // event_log so exported /api/log dumps have the same decoded-
-        // message trail that the dashboard activity feed sees. Every
-        // FEC-passed TSBK gets one Grant-category entry regardless of
-        // opcode — matches SDRTrunk's `decoded_messages.log` coverage
-        // (one line per successfully-decoded message).
+        // Broadcast event over WebSocket + mirror into structured
+        // event_log so /api/log exports match the dashboard feed.
+        // Every FEC-passed TSBK -> one Grant-category entry, matching
+        // SDRTrunk's `decoded_messages.log` (one line per decode).
         let tsbk_event = self.tsbk_to_event(block_idx, &msg);
         if let Some(ref tx) = self.event_tx {
             if let Ok(json) = serde_json::to_string(&tsbk_event) {
@@ -240,23 +206,19 @@ impl ControlChannelDecoder {
             );
         }
 
-        // Log the message with its TSBK block index (0/1/2 = TSBK1/2/3).
         self.recent_messages.push((Instant::now(), block_idx, msg));
         if self.recent_messages.len() > self.max_recent {
             self.recent_messages.remove(0);
         }
     }
 
-    /// Convert a TSBK message to a WebSocket event. Phase 6F.4: each
-    /// event is now prefixed with the originating block label
-    /// ("TSBK1"/"TSBK2"/"TSBK3") so the dashboard event feed matches
-    /// the format of SDRTrunk's `decoded_messages.log`.
+    /// Convert a TSBK message to a WebSocket event. Each event is
+    /// prefixed with the originating block label ("TSBK1"/"TSBK2"/
+    /// "TSBK3") to match SDRTrunk's `decoded_messages.log` format.
     fn tsbk_to_event(&self, block_idx: u8, msg: &TsbkMessage) -> p25_json::TsbkEvent {
         let mut event = self.tsbk_to_event_inner(block_idx, msg);
-        // SDRTrunk-format post-processing: turn `[TSBK2] TG:00300 ...`
-        // into `TSBK2 GRP_VCH_GRANT TG:00300 ...` so lines grep-compare
-        // against SDRTrunk's decoded_messages.log (which uses
-        // `TSBK<N> <OPCODE_NAME> <payload>`).
+        // Rewrite `[TSBK2] TG:00300 ...` -> `TSBK2 GRP_VCH_GRANT TG:00300 ...`
+        // to match SDRTrunk's `TSBK<N> <OPCODE_NAME> <payload>` format.
         let block_label = match block_idx {
             0 => "TSBK1",
             1 => "TSBK2",
@@ -427,7 +389,6 @@ impl ControlChannelDecoder {
                 frequency_mhz: None,
                 source: None,
             },
-            // Phase 6F.11 new opcodes
             TsbkMessage::SecondaryControlChannelBroadcast {
                 channel_a, channel_b, ..
             } => p25_json::TsbkEvent {
@@ -515,9 +476,8 @@ impl ControlChannelDecoder {
                     source: Some(source.0),
                 }
             }
-            // 2026-04-19 new TSBK parsers: registration / affiliation /
-            // SNDCP data / radio monitor / FNE ack / vendor-specific.
-            // Event feed only — these don't feed the grant store.
+            // Registration / affiliation / SNDCP data / radio monitor /
+            // FNE ack / vendor-specific: event feed only, not grant store.
             TsbkMessage::RadioUnitMonitorCommand { source, target } => {
                 p25_json::TsbkEvent {
                     timestamp: now,

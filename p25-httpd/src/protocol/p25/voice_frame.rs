@@ -1,73 +1,46 @@
-//! P25 Phase 1 voice frame extraction (Phase 7C)
+//! P25 Phase 1 voice frame extraction.
 //!
 //! Extracts the 9 raw 144-bit IMBE voice frames from an LDU1 or LDU2
-//! body dibit stream.
+//! body dibit stream. Sits between the `ControlChannelDecoder` framer
+//! and the vocoder.
 //!
-//! # Architecture
+//! Pipeline:
+//!   1. Strip body status dibits at raw positions `{13, 49, 85, 121,
+//!      ..., 13 + 36*k}` -- they carry network-status info, not voice
+//!      payload.
+//!   2. Pack the resulting 784 data dibits into 1568 bits, MSB-first
+//!      big-endian within each dibit (dibit `0bAB` -> `[A, B]`).
+//!      Matches SDRTrunk's `BinaryMessage` ordering.
+//!   3. Extract 9 raw 144-bit IMBE frames at fixed bit positions
+//!      `[0, 144, 328, 512, 696, 880, 1064, 1248, 1424]` from
+//!      `LDUMessage.java:32-40`.
+//!   4. Each frame becomes `ImbeFrameRaw { bits: [u8; 18] }`,
+//!      MSB-first within each byte -- format accepted directly by
+//!      both JMBE and mbelib.
 //!
-//! Sits BETWEEN the existing `ControlChannelDecoder` framer and the
-//! Phase 7D vocoder. The decoder framer feeds it the 807-dibit body
-//! of an LDU1/LDU2 (raw, including in-body status dibits at the
-//! universal `is_body_status_dibit` positions). This module:
-//!
-//!   1. **Strips body status dibits** (those at body raw positions
-//!      `{13, 49, 85, 121, ..., 13 + 36*k}`). Status dibits carry
-//!      network-status information for the channel and are NOT part
-//!      of the voice payload -- they must be removed before applying
-//!      the SDRTrunk-documented IMBE bit positions.
-//!   2. **Packs the resulting 784 data dibits** into a `BitVec` of
-//!      1568 bits, MSB-first big-endian within each dibit. Dibit
-//!      `0bAB` becomes bits `[A, B]` in the bit string. This matches
-//!      SDRTrunk's `BinaryMessage` ordering.
-//!   3. **Extracts 9 raw 144-bit IMBE frames** at the fixed bit
-//!      positions `[0, 144, 328, 512, 696, 880, 1064, 1248, 1424]`
-//!      from `LDUMessage.java:32-40`.
-//!   4. Each frame becomes an `ImbeFrameRaw { bits: [u8; 18] }` --
-//!      144 bits packed into 18 bytes, MSB-first within each byte.
-//!      This is exactly the format both JMBE (`P25P1AudioModule.java:134-149`)
-//!      and mbelib expect.
-//!
-//! # What this module does NOT do
-//!
-//! - **No FEC**: the 144 raw bits per IMBE frame include the
-//!   Golay(23,12,7) + Hamming(15,11,3) + derand internals that
-//!   the vocoder library handles internally. SDRTrunk hands the
-//!   raw 144 bits straight to JMBE; we mirror that for mbelib in
-//!   Phase 7D.
-//! - **No LC / ESS / LSD parsing**: those bits live at other
-//!   positions in the LDU body and would feed Phase 7C.2 / 7B work
-//!   (encryption flag from LDU2 ESS for late-entry, end-of-call LC
-//!   from LDU1, etc). The encryption flag for active grants comes
-//!   from the control-channel `GroupVoiceChannelGrant` service
-//!   options byte instead -- see
-//!   `reference_p25_encryption_flag_from_control_channel.md` memory.
-//! - **No vocoder**: that's Phase 7D.
+//! This module does no IMBE FEC (vocoder handles it) and no LC/ESS/LSD
+//! parsing in `extract_imbe_frames` (separate helpers below).
 //!
 //! # Reference
 //!
 //! - SDRTrunk `LDUMessage.java:32-40`, `LDU1Message.java`,
-//!   `LDU2Message.java` (all upstream-verified, no fork modifications)
-//! - `reference_p25_ldu_bit_layout.md` memory for the full bit
-//!   layout including LC / ESS / LSD positions
+//!   `LDU2Message.java` (upstream-verified)
+//! - `reference_p25_ldu_bit_layout.md` memory for full bit layout
 
 use super::types::{is_body_status_dibit, DataUnit};
 
-// ── Hamming(10,6,3) decoder for LDU1 LC hexbits (2026-04-19) ─────────
+// ── Hamming(10,6,3) decoder for LDU1 LC hexbits ──────────────────────
 //
-// LDU1's Link Control Word hexbits are protected by Hamming(10,6,3),
-// not Golay(24,12) like TDULC. Each 10-bit codeword carries 6 data
-// bits + 4 parity bits and can correct 1 bit error. Used in series
-// with RS(24,12,13) across the 24 hexbits (12 LC payload + 12 RS
-// parity) to recover the 72-bit LCW during an active call — giving
-// `FM:<source>` AND `TO:<TG>` AND encryption flag mid-speaker,
-// rather than waiting for the end-of-speaker Motorola TDULC.
+// LDU1's Link Control Word hexbits use Hamming(10,6,3) (not Golay(24,12)
+// like TDULC). Each 10-bit codeword: 6 data bits + 4 parity bits,
+// corrects 1 bit error. Used in series with RS(24,12,13) across the 24
+// hexbits (12 LC payload + 12 RS parity) to recover the 72-bit LCW
+// mid-call.
 //
-// Checksum table verbatim from SDRTrunk `Hamming10.CHECKSUMS`.
-// Syndrome → flip-position decoding via the switch table in
-// SDRTrunk `Hamming10.checkAndCorrect`: syndromes 1..=14 (odd parity)
-// correspond to single-bit errors at specific positions; even
-// syndromes 5, 6, 9, 10, 15 indicate 2+ bit errors and are not
-// correctable.
+// Checksum table verbatim from SDRTrunk `Hamming10.CHECKSUMS`. Syndrome
+// -> flip-position via `Hamming10.checkAndCorrect`: odd syndromes 1..=14
+// are single-bit correctable; even syndromes 5, 6, 9, 10, 15 indicate
+// 2+ bit errors and are not correctable.
 
 const HAMMING10_CHECKSUMS: [u8; 6] = [0x0E, 0x0D, 0x0B, 0x07, 0x03, 0x0C];
 
@@ -99,8 +72,7 @@ fn hamming10_syndrome(cw: &[bool; 10]) -> u8 {
 ///     downstream RS(24,12,13) can try to recover
 pub(crate) fn hamming10_correct(cw: &mut [bool; 10]) -> Option<u32> {
     let syn = hamming10_syndrome(cw);
-    // Mapping from SDRTrunk `Hamming10.checkAndCorrect`. Each case
-    // comment shows which position flips for that syndrome.
+    // Mapping from SDRTrunk `Hamming10.checkAndCorrect`.
     match syn {
         0 => Some(0),
         1 => { cw[9] ^= true; Some(1) }  // Parity 1
@@ -118,24 +90,17 @@ pub(crate) fn hamming10_correct(cw: &mut [bool; 10]) -> Option<u32> {
     }
 }
 
-// ── Golay(24,12,7) decoder for TDULC LC (2026-04-19) ─────────────────
+// ── Golay(24,12,7) decoder for TDULC LC ──────────────────────────────
 //
-// The 288-bit TDULC FEC block is 12 × 24-bit Golay codewords. Each
-// codeword has 12 data bits (positions 0-11), 11 parity bits
-// (positions 12-22), and a final overall-parity bit (position 23).
-// Golay(24,12) can correct any pattern of ≤ 3 bit errors per
-// codeword — which is the difference between the ~80 % TDULC parse
-// rate we see without FEC (single-bit MFID / opcode flips push real
-// Standard-LCW frames into the `Other` bucket) and the ~100 %
-// SDRTrunk reports after it runs the identical Golay correction.
+// 288-bit TDULC FEC block = 12 x 24-bit Golay codewords. Each codeword:
+// 12 data bits (pos 0-11), 11 parity bits (pos 12-22), overall parity
+// bit (pos 23). Corrects <= 3 bit errors per codeword.
 //
 // Checksums table verbatim from SDRTrunk `Golay24.CHECKSUMS`
-// (`CRCUtil.generate(12, 11, 0xC75, 0x0, true)` in the source
-// comment). First 12 entries encode the parity contribution of each
-// of the 12 data bits; entries 12..=22 are powers of 2 so the
-// existing parity bits XOR in at their own bit positions. Computing
-// the syndrome is therefore a single XOR loop over the set bits in
-// the full 23-bit Golay message.
+// (`CRCUtil.generate(12, 11, 0xC75, 0x0, true)`). First 12 entries
+// encode the parity contribution of each data bit; entries 12..=22 are
+// powers of 2 so existing parity bits XOR in at their own positions.
+// Syndrome = single XOR loop over set bits in the 23-bit Golay message.
 
 const GOLAY24_CHECKSUMS: [u16; 23] = [
     0x63A, 0x31D, 0x7B4, 0x3DA, 0x1ED, 0x6CC, 0x366, 0x1B3,
@@ -161,14 +126,12 @@ fn golay24_syndrome(cw: &[bool; 24]) -> u16 {
 
 /// Correct up to 3 bit errors in a 24-bit Golay codeword in place.
 /// Returns the Hamming-distance between the original and corrected
-/// codewords (0..=3), or `None` if no error pattern of weight ≤ 3
+/// codewords (0..=3), or `None` if no error pattern of weight <= 3
 /// explains the syndrome.
 ///
-/// Implementation: brute-force syndrome → error-pattern search over
-/// the 23 syndrome-contributing positions. 23 + 253 + 1771 = 2047
-/// candidate patterns, each a single 16-bit XOR + equality compare.
-/// Equivalent to the SDRTrunk cyclic-rotation algorithm for any
-/// pattern the code can correct, and simpler to verify.
+/// Brute-force syndrome -> error-pattern search over the 23
+/// syndrome-contributing positions: 23 + 253 + 1771 = 2047 candidates,
+/// each a single 16-bit XOR + equality compare.
 pub(crate) fn golay24_correct(cw: &mut [bool; 24]) -> Option<u32> {
     let syn = golay24_syndrome(cw);
     if syn == 0 {
@@ -193,8 +156,7 @@ pub(crate) fn golay24_correct(cw: &mut [bool; 24]) -> Option<u32> {
             }
         }
     }
-    // Weight-3 errors. Only reached for heavily-noised frames; cheap
-    // enough (~1770 XOR/compare pairs) per codeword at 1 TDULC/call.
+    // Weight-3 errors. ~1770 XOR/compare triples per codeword.
     for e1 in 0..23 {
         let s1 = GOLAY24_CHECKSUMS[e1];
         for e2 in (e1 + 1)..23 {
@@ -233,21 +195,12 @@ pub(crate) fn golay18_correct(cw: &mut [bool; 18]) -> Option<u32> {
     Some(errs)
 }
 
-// ── TDULC Link Control Word parsing (2026-04-19) ─────────────────────
+// ── TDULC Link Control Word parsing ──────────────────────────────────
 //
-// A TDULC carries 72 bits of Link Control wrapped in 12×Golay(24,12)
-// per-hexbit protection + Reed-Solomon(24,12,13) across all 24 hexbits
-// (per SDRTrunk `TDULCMessage.createLinkControlWord`). This module
-// does **no FEC** — it reaches directly into the raw body dibits and
-// extracts the LC bits at the positions SDRTrunk uses AFTER Golay +
-// RS have been applied. That's tenable because Golay(24,12) is
-// systematic (data bits stay at positions 0-11 of each 24-bit
-// codeword) and the fields we need (MFID, ADDRESS) are tiny — a
-// bit-error in them just fails the MFID==0x90 gate and we emit nothing.
-//
-// Future work: port `Golay24::checkAndCorrect` (~40 lines) and the RS
-// decoder (~150 lines) so source extraction survives the noisier
-// sites. Tracked in `reference_tdulc_lcw_variants.md`.
+// TDULC carries 72 bits of Link Control wrapped in 12 x Golay(24,12)
+// per-hexbit protection + RS(24,12,13) across all 24 hexbits (per
+// SDRTrunk `TDULCMessage.createLinkControlWord`). See
+// `reference_tdulc_lcw_variants.md`.
 
 /// Position of each LC hexbit in the 288-bit TDULC body before any
 /// FEC. Sourced verbatim from SDRTrunk
@@ -270,20 +223,15 @@ const LC_HEX_POSITIONS: [usize; 12] = [
 
 /// TDULC-specific body status dibit positions. SDRTrunk's framer
 /// increments `mStatusSymbolDibitCounter` starting at 21 immediately
-/// AFTER NID detection (pre-body), then inserts a status dibit
-/// whenever the counter hits 36 — which puts the FIRST body status
-/// at body position 14 (counter goes 22, 23, ..., 36 at body dibit
-/// 14), and subsequent ones at +36 intervals. Our shared
-/// `is_body_status_dibit` function in `types.rs` uses the +13 pattern
-/// (correct for TSDUs / control-channel frames where the Rust
-/// framer's `mStatusSymbolDibitCounter` equivalent has a different
-/// offset at body start); for TDULC specifically we need the +14
-/// pattern. Cross-checked against SDRTrunk `.bits` files on
-/// 2026-04-19: with the +14 pattern, LC bytes decode cleanly as
-/// `GROUP VOICE CHANNEL USER FM:0 TO:300` (matching SDRTrunk's
-/// `decoded_messages.log`); with +13 the extracted LC was shifted
-/// by a couple of bit positions and the MFID byte read as 0x02
-/// instead of 0x00.
+/// AFTER NID detection, inserting a status dibit whenever the counter
+/// hits 36 -- putting the FIRST body status at position 14, and
+/// subsequent ones at +36 intervals.
+///
+/// The shared `is_body_status_dibit` in `types.rs` uses the +13 pattern
+/// (correct for TSDUs / control-channel frames); TDULC specifically
+/// needs +14. Cross-checked against SDRTrunk `.bits` files: +14 decodes
+/// cleanly as `GROUP VOICE CHANNEL USER FM:0 TO:300`; +13 shifted bits
+/// and misread MFID as 0x02 instead of 0x00.
 const TDULC_BODY_STATUS_POSITIONS: [usize; 5] = [14, 50, 86, 122, 158];
 
 fn is_tdulc_body_status(pos: usize) -> bool {
@@ -300,33 +248,27 @@ fn is_tdulc_body_status(pos: usize) -> bool {
 /// them diagnostically without trusting field values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TdulcLcw {
-    /// Standard LCW opcode 0x00 — `GROUP VOICE CHANNEL USER`. Only
-    /// the talkgroup is carried by the TDULC variant (SDRTrunk shows
-    /// `FM:0`); LDU1 carries a real source address at bit 48.
+    /// Standard LCW opcode 0x00 -- `GROUP VOICE CHANNEL USER`.
     ///
-    /// `source_radio_id` holds the 24-bit FM: field at LC bits 48-71
-    /// (SDRTrunk `OCTET_6_BIT_48`). On TDULC GVCU this is always 0 per
-    /// spec; on LDU1 GVCU it is the speaker's radio ID. Populating it
-    /// here in `classify_lcw` means `parse_ldu1_source` doesn't need to
-    /// re-run the Hamming + RS chain to pull the same field out.
-    /// `service_options` is the 8-bit service-options byte at LC bits
-    /// 16-23 (SDRTrunk `OCTET_2_BIT_16`) — emergency/encryption/duplex/
-    /// priority flags. Rendered like SDRTrunk's "PRI4 CIRCUIT".
+    /// `source_radio_id` is the 24-bit FM: field at LC bits 48-71
+    /// (SDRTrunk `OCTET_6_BIT_48`). TDULC GVCU always has 0 per spec;
+    /// LDU1 GVCU carries the speaker's radio ID. `service_options` is
+    /// the 8-bit byte at LC bits 16-23 (`OCTET_2_BIT_16`) --
+    /// emergency/encryption/duplex/priority flags.
     GroupVoiceChannelUser {
         talkgroup: u16,
         source_radio_id: u32,
         service_options: u8,
     },
 
-    /// Motorola MFID 0x90 + opcode 0x0F — `TALK_COMPLETE`. Carries
-    /// the last speaker's 24-bit radio ID in the ADDRESS field
-    /// (bits 48-71). Exactly one per speaker on Motorola sites.
+    /// Motorola MFID 0x90 + opcode 0x0F -- `TALK_COMPLETE`. Carries
+    /// the last speaker's 24-bit radio ID in ADDRESS (bits 48-71).
+    /// Exactly one per speaker on Motorola sites.
     MotorolaTalkComplete { by_radio_id: u32 },
 
-    /// Standard LCW opcode 0x02 — `GROUP VOICE CHANNEL UPDATE`.
-    /// Announces two (TG, channel) pairs actively used for group
-    /// calls. Channel B is optional per SDRTrunk's
-    /// `hasChannelB() == CHAN_B != 0 && GROUP_A != GROUP_B`.
+    /// Standard LCW opcode 0x02 -- `GROUP VOICE CHANNEL UPDATE`.
+    /// Announces two (TG, channel) pairs. Channel B is optional per
+    /// SDRTrunk's `hasChannelB() == CHAN_B != 0 && GROUP_A != GROUP_B`.
     GroupVoiceChannelUpdate {
         talkgroup_a: u16,
         channel_a_band: u8,
@@ -337,13 +279,12 @@ pub enum TdulcLcw {
         has_channel_b: bool,
     },
 
-    /// Standard LCW opcode 0x0F — `CALL TERMINATION`. Carries a
-    /// 24-bit radio ID at bits 48-71 identifying who ended the call
-    /// (or 0xFFFFFD / 0xFFFFFF for Motorola / 0x000000 for Harris
-    /// system-controller teardowns).
+    /// Standard LCW opcode 0x0F -- `CALL TERMINATION`. Carries the
+    /// 24-bit radio ID at bits 48-71 that ended the call (or
+    /// 0xFFFFFD / 0xFFFFFF / 0x000000 for system-controller teardowns).
     CallTermination { by_radio_id: u32 },
 
-    /// Standard LCW opcode 0x23 (35) — `RFSS STATUS BROADCAST`.
+    /// Standard LCW opcode 0x23 (35) -- `RFSS STATUS BROADCAST`.
     RfssStatusBroadcast {
         lra: u8,
         system_id: u16,
@@ -354,7 +295,7 @@ pub enum TdulcLcw {
         service_class: u8,
     },
 
-    /// Standard LCW opcode 0x24 (36) — `NET STATUS BROADCAST`.
+    /// Standard LCW opcode 0x24 (36) -- `NET STATUS BROADCAST`.
     NetStatusBroadcast {
         wacn: u32,
         system_id: u16,
@@ -373,11 +314,8 @@ pub enum TdulcLcw {
 ///
 /// Expects exactly `DataUnit::TduLc.length_dibits()` (159) dibits in
 /// the same format the software decoder's `du_buffer` holds.
-/// Returns `None` if the length is wrong.
-///
-/// No FEC: if the channel has bit errors the MFID byte will often
-/// mismatch 0x90 and we'll return `TdulcLcw::Other`, which the caller
-/// should treat as "no actionable LC in this frame."
+/// Returns `None` if the length is wrong; returns `TdulcLcw::Other`
+/// for unrecognized opcodes or bit-corrupt frames.
 pub fn parse_tdulc_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
     if body_raw.len() != DataUnit::TduLc.length_dibits() {
         return None;
@@ -404,22 +342,15 @@ pub fn parse_tdulc_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
         return None;
     }
 
-    // 2026-04-19 FEC chain (SDRTrunk `TDULCMessage.createLinkControlWord`
-    // parity):
-    //   1. Golay(24,12) on each of the 12 × 24-bit codewords in the
-    //      288-bit TDULC FEC block. Fixes ≤ 3 bit errors per codeword.
-    //   2. RS(24,12,13) on the resulting 24 × 6-bit hexbits. Fixes
-    //      ≤ 6 hexbit errors across the full LC.
+    // FEC chain (SDRTrunk `TDULCMessage.createLinkControlWord`):
+    //   1. Golay(24,12) on each of the 12 x 24-bit codewords in the
+    //      288-bit TDULC FEC block. Fixes <= 3 bit errors per codeword.
+    //   2. RS(24,12,13) on the resulting 24 x 6-bit hexbits. Fixes
+    //      <= 6 hexbit errors across the full LC.
     //
-    // On its own Golay handles the common single-bit-flip case;
-    // layering RS catches the harder frames where Golay mis-corrects
-    // or a codeword has 4+ bit errors it can't fix. SDRTrunk runs
-    // exactly this stack, and matching it gets us to ~100 % parity
-    // on the Clay County `.bits` captures.
-    // 288 bits / 24-bit codeword = 12 Golay codewords. Bits 0..144
-    // carry the 12 LC-payload hexbits; bits 144..288 carry the 12
-    // RS-parity hexbits. Run Golay on all of them so the hexbits
-    // feeding RS are pre-cleaned the same way SDRTrunk's decoder does.
+    // Bits 0..144 carry the 12 LC-payload hexbits; bits 144..288 carry
+    // the 12 RS-parity hexbits. Run Golay on all 12 so the hexbits
+    // feeding RS are pre-cleaned.
     let mut corrected_bits = [false; 288];
     for cw_idx in 0..12 {
         let base = cw_idx * 24;
@@ -521,10 +452,7 @@ fn classify_lcw(lc_bits: &[bool; 72]) -> TdulcLcw {
     // below.
     match opcode {
         // LCGroupVoiceChannelUser: GROUP_ADDRESS at OCTET_4_BIT_32
-        // (bits 32-47). Our previous offset of 40 was off by one
-        // byte — it read bytes 5-6 of the LC instead of 4-5, so the
-        // activity-log summary's `TO:<tg>` was gibberish on the rare
-        // frames where a caller inspected it.
+        // (bits 32-47).
         0x00 => TdulcLcw::GroupVoiceChannelUser {
             talkgroup: byte(32, 16) as u16,
             source_radio_id: byte(48, 24),
@@ -607,26 +535,21 @@ const LDU1_RS_HEX_POSITIONS: [usize; 12] = [
 ];
 
 /// Parse the Link Control Word embedded in an LDU1 voice frame.
-/// Produces the same [`TdulcLcw`] variants as [`parse_tdulc_lcw`] —
-/// the 72-bit LCW structure is identical between LDU1 and TDULC, only
-/// the FEC stack (Hamming+RS here vs Golay+RS for TDULC) and hexbit
-/// positions differ.
+/// Produces the same [`TdulcLcw`] variants as [`parse_tdulc_lcw`] --
+/// the 72-bit LCW structure is identical; only the FEC stack
+/// (Hamming+RS vs Golay+RS) and hexbit positions differ.
 ///
-/// `body_raw` must be the full 807-dibit LDU1 body (including the 23
-/// body status dibits). Returns `None` if the length is wrong.
+/// `body_raw` must be the full 807-dibit LDU1 body (including 23 body
+/// status dibits). Returns `None` if the length is wrong.
 ///
-/// This is what gets us `FM:<source>` and `TO:<TG>` *during* the call
-/// — SDRTrunk's `LDU1  VOICE LSD:0000 GROUP VOICE CHANNEL USER FM:1014
-/// TO:300 SERVICE OPTIONS:PRI4 CIRCUIT` lines — without having to wait
-/// for the end-of-speaker Motorola `TALK_COMPLETE` TDULC.
+/// Gives `FM:<source>` and `TO:<TG>` mid-call, without waiting for
+/// the end-of-speaker Motorola TDULC.
 pub fn parse_ldu1_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
     if body_raw.len() != LDU_RAW_DIBITS {
         return None;
     }
-    // Status-dibit strip → 784 data dibits → 1568 data bits. Use the
-    // shared `strip_body_status_dibits` since LDU1 / LDU2 / HDU all
-    // follow the "+13" pattern (verified by the IMBE-extraction unit
-    // tests in this module).
+    // Status-dibit strip -> 784 data dibits -> 1568 data bits.
+    // LDU1/LDU2/HDU all follow the shared "+13" pattern.
     let data_dibits = strip_body_status_dibits(body_raw);
     if data_dibits.len() != DataUnit::Ldu1.data_dibits() {
         return None;
@@ -637,7 +560,7 @@ pub fn parse_ldu1_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
     }
 
     // Run Hamming(10,6,3) across all 24 hexbit codewords. Leave
-    // uncorrectable codewords untouched — RS(24,12,13) can handle up
+    // uncorrectable codewords untouched -- RS(24,12,13) handles up
     // to 6 hexbit errors so a handful of Hamming failures is fine.
     let starts: [usize; 24] = {
         let mut s = [0usize; 24];
@@ -645,9 +568,6 @@ pub fn parse_ldu1_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
         s[12..].copy_from_slice(&LDU1_RS_HEX_POSITIONS);
         s
     };
-    // Clone `bits` into a mutable vector (lives on the stack for 1568
-    // bits = 1568 bytes of bool) so we can flip Hamming-corrected
-    // positions in place.
     let mut corrected = bits;
     for &st in &starts {
         let mut cw = [false; 10];
@@ -660,9 +580,9 @@ pub fn parse_ldu1_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
         }
     }
 
-    // Pack the 24 corrected hexbits into RS input, same reverse order
-    // SDRTrunk uses (`input[0]..=[11]` = RS_HEX_11..0, `input[12..23]`
-    // = CW_HEX_11..0, `input[24..63]` zero-padded).
+    // Pack 24 corrected hexbits into RS input, reverse order per
+    // SDRTrunk: input[0..=11] = RS_HEX_11..0, input[12..=23] =
+    // CW_HEX_11..0, input[24..63] zero-padded.
     let hex_at = |start: usize| -> u32 {
         let mut v = 0u32;
         for b in 0..6 {
@@ -695,25 +615,18 @@ pub fn parse_ldu1_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
     Some(classify_lcw(&lc_bits))
 }
 
-/// Same idea as [`parse_ldu1_lcw`] but returns the raw 24-bit source
-/// radio ID extracted from the LC (bits 48-71 of the 72-bit LC, which
-/// is SDRTrunk's `SOURCE_ADDRESS` at `OCTET_6_BIT_48`). Useful for
-/// stamping into the recorder even when the LCW type itself isn't
-/// Motorola TALK_COMPLETE — every LDU1 LC with `opcode=0x00,
-/// mfid=0x00` (standard GVCU) carries a FM:<source> value there.
+/// Returns the raw 24-bit source radio ID from the LDU1 LC (bits
+/// 48-71 = SDRTrunk's `SOURCE_ADDRESS` at `OCTET_6_BIT_48`). Every
+/// LDU1 standard GVCU LC carries a FM:<source> value there.
 pub fn parse_ldu1_source(body_raw: &[u8]) -> Option<u32> {
     match parse_ldu1_lcw(body_raw)? {
         TdulcLcw::MotorolaTalkComplete { by_radio_id } => Some(by_radio_id),
-        // 2026-04-19 late: source_radio_id is now carried on the LCW
-        // variant directly (populated at classify_lcw time from bits
-        // 48-71 of the FEC'd 72-bit LC). No second Hamming + RS pass.
         TdulcLcw::GroupVoiceChannelUser { source_radio_id, .. } => {
             if source_radio_id == 0 { None } else { Some(source_radio_id) }
         }
-        // New variants don't carry a voice "FM:<source>" — GVU and
-        // the status broadcasts are non-speaker LCWs, and
-        // CallTermination's ADDRESS is the radio that terminated the
-        // call (not the speaker). Mirror SDRTrunk: no source stamp.
+        // GVU + status broadcasts are non-speaker LCWs; CallTermination's
+        // ADDRESS is the terminating radio, not the speaker. Mirror
+        // SDRTrunk: no source stamp.
         TdulcLcw::GroupVoiceChannelUpdate { .. }
         | TdulcLcw::CallTermination { .. }
         | TdulcLcw::RfssStatusBroadcast { .. }
@@ -789,13 +702,9 @@ pub fn ldu1_lc_bytes(body_raw: &[u8]) -> Option<[u8; 9]> {
 }
 
 /// Returns the 72-bit LC as 9 bytes (MSB-first) extracted from a
-/// TDULC body dibit slice. Same extraction `parse_tdulc_lcw` uses
-/// internally but exposed separately so callers can log the raw LC
-/// bytes for offline inspection. `None` if the body length is wrong.
-///
-/// The first two bytes are the LCW opcode / MFID; `bytes[6..9]` is
-/// the Motorola ADDRESS field. Noisy bytes are the expected failure
-/// mode on sites without Golay(24,12) correction.
+/// TDULC body dibit slice. First two bytes are opcode / MFID;
+/// `bytes[6..9]` is the Motorola ADDRESS field. `None` if the body
+/// length is wrong.
 pub fn tdulc_lc_bytes(body_raw: &[u8]) -> Option<[u8; 9]> {
     if body_raw.len() != DataUnit::TduLc.length_dibits() {
         return None;
@@ -817,10 +726,8 @@ pub fn tdulc_lc_bytes(body_raw: &[u8]) -> Option<[u8; 9]> {
     if raw_bits.len() < 288 {
         return None;
     }
-    // Same Golay(24,12) + RS(24,12,13) correction as parse_tdulc_lcw
-    // so the dumped bytes match what the parser classified against.
-    // 288 bits / 24 bits-per-codeword = 12 Golay codewords total
-    // (6 on the LC side, 6 on the RS-parity side).
+    // Same Golay(24,12) + RS(24,12,13) as parse_tdulc_lcw so dumped
+    // bytes match what the parser classified against.
     let mut corrected_bits = [false; 288];
     for cw_idx in 0..12 {
         let base = cw_idx * 24;
@@ -905,10 +812,9 @@ impl ImbeFrameRaw {
 /// IMBE_FRAME_7 = 1064,  IMBE_FRAME_8 = 1248,  IMBE_FRAME_9 = 1424
 /// ```
 ///
-/// Each frame is exactly 144 bits (`IMBE_FRAME_BITS`). The
-/// non-uniform spacing comes from LC/ESS/LSD chunks interleaved
-/// between consecutive frames -- see
-/// `reference_p25_ldu_bit_layout.md` for the full layout.
+/// Each frame is exactly 144 bits. Non-uniform spacing comes from
+/// LC/ESS/LSD chunks interleaved between frames -- see
+/// `reference_p25_ldu_bit_layout.md`.
 pub const IMBE_FRAME_BIT_POSITIONS: [usize; 9] = [
     0, 144, 328, 512, 696, 880, 1064, 1248, 1424,
 ];
@@ -921,15 +827,11 @@ pub const LDU_DATA_BITS: usize = 1568;
 /// dibits. Equals `DataUnit::Ldu1.length_dibits()` = 807.
 pub const LDU_RAW_DIBITS: usize = 807;
 
-/// Strips body status dibits from a raw body dibit slice.
+/// Strips body status dibits from a raw body dibit slice. Returns
+/// only the data dibits, in the same order.
 ///
-/// Returns a new `Vec<u8>` containing only the data dibits, in the
-/// same order. The output length is `body_raw.len() - n_status_dibits`
-/// where `n_status_dibits = floor((body_raw.len() - 14) / 36) + 1`
-/// (clamped to zero if body_raw.len() < 14).
-///
-/// This is the universal body status pattern -- it works for any
-/// P25 Phase 1 data unit (HDU, TDU, LDU1, LDU2, TSDU, TDU_LC).
+/// Universal body status pattern -- works for any P25 Phase 1 data
+/// unit (HDU, TDU, LDU1, LDU2, TSDU, TDU_LC).
 pub fn strip_body_status_dibits(body_raw: &[u8]) -> Vec<u8> {
     body_raw
         .iter()
@@ -946,13 +848,7 @@ pub fn strip_body_status_dibits(body_raw: &[u8]) -> Vec<u8> {
 
 /// Packs a sequence of dibits into a bit string, MSB-first within
 /// each dibit. Dibit `0bAB` (with A as the MSB) becomes bits
-/// `[A, B]` in the output. The output is a `Vec<bool>` indexed by
-/// bit position (bit 0 = first bit on-air = first dibit's MSB).
-///
-/// We use a `Vec<bool>` rather than a `BitVec` to keep the
-/// dependency tree minimal -- the LDU pack/unpack happens once per
-/// LDU (~140 ms) so the per-bit overhead is negligible vs. the
-/// 144 IMBE bits per frame this enables.
+/// `[A, B]`. Output bit 0 = first bit on-air = first dibit's MSB.
 pub fn dibits_to_bits(dibits: &[u8]) -> Vec<bool> {
     let mut bits = Vec::with_capacity(dibits.len() * 2);
     for &d in dibits {
@@ -966,15 +862,9 @@ pub fn dibits_to_bits(dibits: &[u8]) -> Vec<bool> {
 /// Extracts the 9 raw 144-bit IMBE frames from an LDU body raw dibit
 /// slice (807 dibits, including body status dibits).
 ///
-/// Returns `None` if the input length doesn't match `LDU_RAW_DIBITS`.
-/// On success, returns 9 `ImbeFrameRaw` entries in transmission
-/// order (frame 0 = first IMBE in the LDU = oldest 20 ms of audio,
-/// frame 8 = last = newest).
-///
-/// **Each LDU represents 9 * 20 ms = 180 ms of audio.** At the P25
-/// Phase 1 voice channel rate of one LDU per ~140 ms (LDU1 + LDU2
-/// alternating), the IMBE frame stream is continuous: 50
-/// frames/second per active call.
+/// Returns 9 frames in transmission order (frame 0 = oldest 20 ms,
+/// frame 8 = newest). Each LDU = 9 * 20 ms = 180 ms of audio; at
+/// one LDU per ~140 ms the stream is continuous 50 frames/second.
 pub fn extract_imbe_frames(body_raw: &[u8]) -> Option<[ImbeFrameRaw; 9]> {
     if body_raw.len() != LDU_RAW_DIBITS {
         return None;
@@ -1002,27 +892,26 @@ pub fn extract_imbe_frames(body_raw: &[u8]) -> Option<[ImbeFrameRaw; 9]> {
     Some(frames)
 }
 
-// ── HDU header parsing (2026-04-19) ─────────────────────────────────
+// ── HDU header parsing ──────────────────────────────────────────────
 //
 // HDU body layout (329 post-status-strip data dibits = 658 data bits,
 // 648 used):
 //
-// - 36 Golay18 codewords at 18-bit intervals (positions 0, 18, 36, …,
-//   630). Each codeword is 6 data bits (the hexbit) followed by 12
-//   Golay18 parity bits. SDRTrunk's GOLAY_WORD_STARTS table has a typo
-//   at index 21 (`278` where `378` is required by the `+18*k` rule);
-//   we compute the array programmatically instead of copy-pasting.
-// - After Golay18: 36 hexbits split into 20 CW (data payload) + 16 RS
-//   parity. Fed to RS(63,47,17) which corrects up to 8 hexbit errors.
-// - 120-bit HDU header emerges from the 20 corrected CW hexbits,
-//   laid out per `HeaderData.java`:
-//     * bits  0–71: Message Indicator (72-bit encryption IV)
-//     * bits 72–79: Vendor ID
-//     * bits 80–87: Algorithm ID (0x80 = UNENCRYPTED per TIA-102.AABD)
-//     * bits 88–103: Key ID
-//     * bits 104–119: Talkgroup ID
+// - 36 Golay18 codewords at 18-bit intervals (positions 0, 18, 36, ...,
+//   630). Each codeword = 6 data bits (hexbit) + 12 Golay18 parity bits.
+//   SDRTrunk's GOLAY_WORD_STARTS has a typo at index 21 (`278` where
+//   `378` is required by `+18*k`); computed programmatically below.
+// - After Golay18: 36 hexbits = 20 CW (payload) + 16 RS parity. Fed to
+//   RS(63,47,17) which corrects up to 8 hexbit errors.
+// - 120-bit HDU header emerges from 20 corrected CW hexbits, per
+//   `HeaderData.java`:
+//     * bits   0-71: Message Indicator (72-bit encryption IV)
+//     * bits  72-79: Vendor ID
+//     * bits  80-87: Algorithm ID (0x80 = UNENCRYPTED per TIA-102.AABD)
+//     * bits  88-103: Key ID
+//     * bits 104-119: Talkgroup ID
 
-/// HDU Golay18 codeword start positions (0, 18, …, 630) computed
+/// HDU Golay18 codeword start positions (0, 18, ..., 630) computed
 /// programmatically from the `+18*k` rule to dodge SDRTrunk's typo.
 const HDU_GOLAY_STARTS: [usize; 36] = {
     let mut s = [0usize; 36];
@@ -1076,9 +965,9 @@ impl HduHeader {
     }
 
     /// True iff `algorithm_id` is in the TIA-102.AABD / SDRTrunk
-    /// `Encryption.fromValue` known set. Used by the call-encrypted
-    /// gate to reject byte values that only a bit-corrupt FEC decode
-    /// could have produced. See 2026-04-19 phantom-ENC investigation.
+    /// `Encryption.fromValue` known set. The call-encrypted gate uses
+    /// this to reject byte values that only a bit-corrupt FEC decode
+    /// could have produced (phantom-ENC guard).
     pub fn is_spec_algorithm(&self) -> bool {
         is_spec_algorithm_id(self.algorithm_id)
     }
@@ -1091,7 +980,7 @@ pub fn parse_hdu_body(body_raw: &[u8]) -> Option<HduHeader> {
     if body_raw.len() != DataUnit::Hdu.length_dibits() {
         return None;
     }
-    // HDU follows the universal `+13 pattern` status dibit layout.
+    // HDU follows the universal +13 status dibit pattern.
     let data_dibits = strip_body_status_dibits(body_raw);
     if data_dibits.len() != DataUnit::Hdu.data_dibits() {
         return None;
@@ -1119,11 +1008,9 @@ pub fn parse_hdu_body(body_raw: &[u8]) -> Option<HduHeader> {
         v
     };
     // SDRTrunk's RS input order:
-    //   input[0..=15] = RS_HEX_15..0 (reverse)
+    //   input[0..=15]  = RS_HEX_15..0 (reverse)
     //   input[16..=35] = CW_HEX_19..0 (reverse)
-    //   input[36..63] = 0 (virtual padding — RS(63,47,17) is NOT
-    //   shortened from the caller's side despite only 36 data-bearing
-    //   positions, since SDRTrunk models it as the full 63-symbol code)
+    //   input[36..63]  = 0 (virtual padding for the full 63-symbol code)
     let mut rs_input = [0u32; 63];
     for i in 0..16 {
         rs_input[i] = hex_at(HDU_RS_HEX_POSITIONS[15 - i]);
@@ -1135,9 +1022,9 @@ pub fn parse_hdu_body(body_raw: &[u8]) -> Option<HduHeader> {
         Ok(v) => v,
         Err(v) => v,
     };
-    // Corrected CW hexbits at output[35..=16]; pack them into the
-    // 120-bit header in CW_HEX_0..=CW_HEX_19 order (so bit 0 of the
-    // header is the MSB of CW_HEX_0 = first MI bit).
+    // Corrected CW hexbits at output[35..=16]; pack into the 120-bit
+    // header in CW_HEX_0..=CW_HEX_19 order (bit 0 = MSB of CW_HEX_0
+    // = first MI bit).
     let mut header_bits = [false; 120];
     for i in 0..20 {
         let hex = rs_output[35 - i];
@@ -1167,20 +1054,20 @@ pub fn parse_hdu_body(body_raw: &[u8]) -> Option<HduHeader> {
     })
 }
 
-// ── LDU2 ESS (Encryption Sync Signature) parsing (2026-04-19) ────────
+// ── LDU2 ESS (Encryption Sync Signature) parsing ────────────────────
 //
-// LDU2 carries 9 IMBE voice frames AND a 96-bit ESS that refreshes
-// the encryption state every LDU (~180 ms). The ESS is protected by:
+// LDU2 carries 9 IMBE voice frames + a 96-bit ESS that refreshes the
+// encryption state every LDU (~180 ms). ESS is protected by:
 //
-// - 24 Hamming(10,6,3) codewords at the positions SDRTrunk calls
-//   `GOLAY_WORD_STARTS` (288, 298, …, 1238 — scattered between IMBE
-//   frames, NOT a contiguous region).
+// - 24 Hamming(10,6,3) codewords at SDRTrunk's `GOLAY_WORD_STARTS`
+//   (288, 298, ..., 1238 -- scattered between IMBE frames, NOT
+//   contiguous).
 // - RS(24,16,9) across the 24 resulting hexbits (16 CW + 8 RS parity).
 //
 // Decoded ESS layout per `EncryptionSyncParameters.java`:
-//     * bits  0–71: Message Indicator (refreshed per LDU2)
-//     * bits 72–79: Algorithm ID
-//     * bits 80–95: Key ID
+//     * bits  0-71: Message Indicator (refreshed per LDU2)
+//     * bits 72-79: Algorithm ID
+//     * bits 80-95: Key ID
 
 /// LDU2 Hamming(10,6,3) codeword starts. 24 codewords; the first 16
 /// carry CW hexbits, the last 8 carry RS parity.
@@ -1217,16 +1104,15 @@ impl Ldu2Ess {
     }
 }
 
-/// Set of algorithm IDs recognised by TIA-102.AABD + the widely-used
+/// Set of algorithm IDs recognised by TIA-102.AABD + widely-used
 /// Motorola extensions catalogued in SDRTrunk `Encryption.java`.
 ///
-/// The LDU2 ESS FEC [RS(24,16,9) over GF(2^6)] and the HDU FEC
+/// LDU2 ESS FEC [RS(24,16,9) over GF(2^6)] and HDU FEC
 /// [Golay(18,6,8) + RS(63,47,17)] both accept near-valid codewords
-/// even when the input bits are corrupt. A successful decode with
-/// `algorithm_id` outside this set is evidence the codeword was
-/// bit-corrupt, not that we've discovered a new encryption algorithm.
-/// Callers that drive the `call_encrypted` gate on a clear talkgroup
-/// should reject these phantoms.
+/// even when input bits are corrupt. A successful decode with
+/// `algorithm_id` outside this set is evidence of a bit-corrupt
+/// codeword, not a new algorithm. The `call_encrypted` gate on a
+/// clear talkgroup rejects these phantoms.
 pub fn is_spec_algorithm_id(id: u8) -> bool {
     matches!(
         id,
@@ -1316,25 +1202,22 @@ pub fn parse_ldu2_ess(body_raw: &[u8]) -> Option<Ldu2Ess> {
 mod tests {
     use super::*;
 
-    /// Golay-encode 12 data bits → 24-bit codeword (data first, then
-    /// 11 parity bits reconstructed from CHECKSUMS, bit 23 = overall
-    /// parity). Used by unit tests to build known-good codewords.
+    /// Golay-encode 12 data bits -> 24-bit codeword (data + 11 parity
+    /// bits from CHECKSUMS + overall parity at bit 23). Builds
+    /// known-good codewords for unit tests.
     fn golay_encode(data: u16) -> [bool; 24] {
         let mut cw = [false; 24];
         for i in 0..12 {
             cw[i] = (data >> (11 - i)) & 1 != 0;
         }
-        // Parity bits at positions 12..=22 are the XOR of
-        // CHECKSUMS[i] for the set data bits, masked to the relevant
-        // bit position.
         let mut syn: u16 = 0;
         for i in 0..12 {
             if cw[i] {
                 syn ^= GOLAY24_CHECKSUMS[i];
             }
         }
-        // Spread syn across positions 12..22 so bit 10 of syn goes
-        // to cw[12] and bit 0 of syn goes to cw[22].
+        // Spread syn across positions 12..22: bit 10 -> cw[12],
+        // bit 0 -> cw[22].
         for i in 0..11 {
             cw[12 + i] = (syn >> (10 - i)) & 1 != 0;
         }
@@ -1391,8 +1274,6 @@ mod tests {
     }
 
     /// 807 dibits with status dibits stripped -> 784 data dibits.
-    /// Verifies the strip helper against the SDRTrunk-documented
-    /// status positions.
     #[test]
     fn strip_807_dibits_yields_784() {
         let raw: Vec<u8> = (0..807).map(|i| (i & 0x03) as u8).collect();
@@ -1422,9 +1303,7 @@ mod tests {
         );
     }
 
-    /// End-to-end: extract IMBE frames from a body where every dibit
-    /// is uniformly 0b11 (all-ones). After strip + bit-pack we expect
-    /// 1568 ones, so every IMBE frame should be 18 bytes of 0xFF.
+    /// All-ones body: every IMBE frame should be 18 bytes of 0xFF.
     #[test]
     fn extract_all_ones_body_yields_all_ones_frames() {
         let raw = vec![0b11_u8; LDU_RAW_DIBITS];
@@ -1436,16 +1315,12 @@ mod tests {
         }
     }
 
-    /// Place a known marker bit at IMBE frame 0 bit 0 (the first
-    /// MSB of the LDU body data) and verify extract_imbe_frames
-    /// finds it at frame 0 byte 0 bit 7.
+    /// Marker bit at IMBE frame 0 bit 0 should land at frame 0
+    /// byte 0 bit 7.
     #[test]
     fn extract_first_bit_position() {
-        // Build a body of all-zeros, then set body data dibit 0
-        // to 0b10 (bit 0 = '1', bit 1 = '0'). After strip and pack,
-        // bit 0 of the bit-string should be true and bit 1 false.
-        // Frame 0 starts at bit 0, so byte 0 bit 7 is the marker
-        // and byte 0 bit 6 is zero.
+        // Set body data dibit 0 to 0b10 -> bit 0 = true, bit 1 = false.
+        // Frame 0 starts at bit 0 so byte 0 bit 7 is the marker.
         let mut raw = vec![0b00_u8; LDU_RAW_DIBITS];
         raw[0] = 0b10; // body dibit 0
         let frames = extract_imbe_frames(&raw).expect("len matches");
@@ -1458,22 +1333,12 @@ mod tests {
         }
     }
 
-    /// Frame 1 starts at LDU data bit 144. Set the dibit at body
-    /// data position 72 (= bit 144) to 0b11, leave everything else
-    /// zero, and verify frame 1 byte 0 == 0xC0.
-    ///
-    /// Note: body data position 72 is NOT body raw position 72,
-    /// because status dibits at body raw positions {13, 49} have
-    /// already been removed by then. body data 72 = body raw 74
-    /// (skipping over status at 13 and 49 which are <72 raw, but
-    /// remember body data position 72 = body raw position
-    /// 72 + (status before 72)). Status dibits with raw pos < 74:
-    /// {13, 49} = 2 dibits. So body raw 74 -> body data 72.
+    /// Frame 1 starts at LDU data bit 144 (body data dibit 72).
+    /// Body data 72 = body raw 74 after skipping status dibits at
+    /// raw positions {13, 49}.
     #[test]
     fn extract_frame_1_marker_bit() {
         let mut raw = vec![0b00_u8; LDU_RAW_DIBITS];
-        // body data dibit 72 -> body raw dibit (72 + 2) = 74
-        // (we skip raw positions 13 and 49 which are status dibits).
         raw[74] = 0b11;
         let frames = extract_imbe_frames(&raw).expect("len matches");
         // All frame 0 bytes should be zero.

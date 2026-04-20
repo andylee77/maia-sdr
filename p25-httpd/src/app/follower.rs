@@ -1,11 +1,10 @@
 //! Traffic-channel grant follower task.
 //!
-//! Extracted from main.rs on 2026-04-19. Polls the canonical LSM
-//! control-channel decoder for GroupVoiceChannelGrant TSBKs, applies
-//! the sticky-lock / monitor-list / encryption policies, dispatches
-//! traffic-DDC retunes, and refreshes the ImbeForwarder's
-//! current_talkgroup / current_source / call_encrypted atomics. See
-//! the 2026-04-19 session memos for the per-check policy rationale.
+//! Consumes GroupVoiceChannelGrant TSBKs from the canonical LSM
+//! control-channel decoder, applies the sticky-lock / monitor-list /
+//! encryption policies, dispatches traffic-DDC retunes, and refreshes
+//! the ImbeForwarder's current_talkgroup / current_source /
+//! call_encrypted atomics.
 //!
 //! Linux-only: dispatches retunes via `fpga::IpCore`, so the module
 //! is gated with `#![cfg(target_os = "linux")]` to keep dev-side
@@ -46,15 +45,14 @@ pub fn spawn_traffic_grant_follower(
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
             tracing::info!(
-                "traffic grant follower task started (Phase 7B, \
-                 event-driven via mpsc + 200 ms timeout tick)"
+                "traffic grant follower task started \
+                 (event-driven via mpsc + 200 ms timeout tick)"
             );
             let mut timeout_tick =
                 tokio::time::interval(std::time::Duration::from_millis(200));
             timeout_tick.tick().await; // discard immediate first tick
 
-            // Helper closure: process a grant event. Returns true if
-            // a retune was performed.
+            // Process a grant event; returns true if a retune was performed.
             //
             // Sticky-lock policy (from SDRTrunk PR #2010):
             // - If locked on a TG, only accept grants for that TG.
@@ -71,19 +69,16 @@ pub fn spawn_traffic_grant_follower(
                 };
                 let retune = mgr.handle_grant(g.channel, g.talkgroup, freq_hz);
 
-                // 2026-04-19 late: only update the ImbeForwarder's
-                // active-call state (current_talkgroup, current_source,
-                // call_encrypted) when this grant is actually for the
-                // call we're following. Previously these atomics were
-                // updated unconditionally, so a grant for TG 700 [ENC]
-                // arriving while sticky-locked on unencrypted TG 300
-                // would set call_encrypted=true on the TG 300 audio
-                // path and subsequent IMBE frames got encryption-
-                // skipped. Gate on:
-                //   - retune=true: we just switched to this TG, so it
-                //     IS the active call now.
-                //   - mgr.current_talkgroup() == Some(g.tg): this grant
-                //     is a refresh for the already-active call.
+                // Only update the ImbeForwarder's active-call atomics
+                // (current_talkgroup, current_source, call_encrypted)
+                // when this grant is for the call we're following.
+                // Otherwise a grant for TG 700 [ENC] arriving while
+                // sticky-locked on unencrypted TG 300 would set
+                // call_encrypted=true on the TG 300 path and IMBE
+                // frames would be encryption-skipped. Gate on:
+                //   - retune=true: we just switched to this TG.
+                //   - mgr.current_talkgroup() == Some(g.tg): grant is
+                //     a refresh for the already-active call.
                 let grant_is_for_active = retune
                     || mgr.current_talkgroup() == Some(g.talkgroup);
 
@@ -108,8 +103,7 @@ pub fn spawn_traffic_grant_follower(
                         .store(g.talkgroup.0, Ordering::Relaxed);
                     // Stash the grant's FM:<source> so the recorder
                     // can stamp filenames from the CONTROL channel.
-                    // Only overwrite on a genuine active-call grant —
-                    // previously any grant could clobber this.
+                    // Only overwrite on a genuine active-call grant.
                     if let Some(src) = g.source {
                         if src.0 != 0 {
                             imbe.current_source
@@ -132,24 +126,16 @@ pub fn spawn_traffic_grant_follower(
                 retune
             };
 
-            // Phase 9.1 (2026-04-15): the activity log is
-            // DELIBERATELY NOT deduped. Every `P25Event::Grant`
-            // arrival gets its own log line -- even two
+            // Activity log is DELIBERATELY NOT deduped: every
+            // `P25Event::Grant` arrival gets its own line, even
             // back-to-back grants on the same (TG, channel, freq)
-            // that were packed into the same 3-TSBK TSDU by the
-            // trunking system. The correct-handling invariant
-            // lives one layer down in `handle_grant_event` ->
-            // `TrafficManager::handle_grant`: the `same_tg_same_freq`
-            // branch at traffic_manager.rs:258 short-circuits with
-            // `return false` (no retune fires, no second state
-            // transition, no second `retune_traffic_chain()` call)
-            // whenever the new grant matches the current lock.
-            // Auto-promote from Acquiring to Active happens on
-            // that same branch. So the dashboard sees all the
-            // real TSBK arrivals, the follower fires exactly one
-            // retune per real channel change, and no work is
-            // duplicated even if two grants land in the same
-            // millisecond.
+            // packed into one 3-TSBK TSDU. The correct-handling
+            // invariant lives in `TrafficManager::handle_grant`:
+            // the `same_tg_same_freq` branch at
+            // traffic_manager.rs:258 short-circuits with
+            // `return false` (no retune, no second transition)
+            // whenever the grant matches the current lock, and
+            // Acquiring->Active auto-promotes on that same branch.
 
             loop {
                 tokio::select! {
@@ -170,22 +156,17 @@ pub fn spawn_traffic_grant_follower(
                                     .map(|f| f as f64 / 1e6)
                                     .unwrap_or(0.0);
 
-                                // Phase 7F.4 (2026-04-14): eager history
-                                // populate. Any grant with encrypted=true
-                                // adds the TG to the persistent history
-                                // RIGHT HERE, before any gate check. The
-                                // previous flash only populated history
-                                // inside the reject path, so a site that
-                                // sometimes-sets / sometimes-doesn't set
-                                // service_options would let us retune to
-                                // the same encrypted TG 3+ times before
-                                // the history eventually caught up. This
-                                // way, the first encrypted=true
-                                // observation for ANY TG permanently
-                                // blocks all subsequent grants for it --
-                                // even ones that arrive missing the
-                                // service-options flag on their next
-                                // transmission.
+                                // Eager history populate: any
+                                // encrypted=true grant adds the TG to
+                                // the persistent history before any
+                                // gate check runs. Otherwise a site
+                                // that sometimes-sets / sometimes-
+                                // doesn't set service_options would
+                                // let us retune to the same encrypted
+                                // TG multiple times before history
+                                // caught up. First encrypted=true
+                                // observation for a TG permanently
+                                // blocks all subsequent grants for it.
                                 if g.encrypted {
                                     if let Ok(mut hist) =
                                         follower_imbe
@@ -196,16 +177,12 @@ pub fn spawn_traffic_grant_follower(
                                     }
                                 }
 
-                                // Raw grant receipt (before any filter).
-                                // Logged unconditionally -- two
-                                // simultaneous grants for the same
-                                // TG/channel/freq are real TSBK
-                                // arrivals and both belong in the
-                                // activity feed. Double-retune
+                                // Raw grant receipt (pre-filter).
+                                // Logged unconditionally; double-retune
                                 // protection lives in
                                 // TrafficManager::handle_grant's
-                                // `same_tg_same_freq` branch (see
-                                // traffic_manager.rs:258).
+                                // `same_tg_same_freq` branch
+                                // (traffic_manager.rs:258).
                                 follower_event_log.push(
                                     LogCategory::Grant,
                                     format!(
@@ -225,14 +202,11 @@ pub fn spawn_traffic_grant_follower(
                                     }),
                                 );
 
-                                // Phase 10-prep: tally every observed
-                                // grant into the persistent frequency
-                                // map, regardless of follow decision.
-                                // Populates /api/grant_map so the
-                                // scanner-mode UI + future LO auto-
-                                // center can see the whole site's
-                                // grant history, not just followed
-                                // TGs.
+                                // Tally every observed grant into the
+                                // persistent frequency map regardless
+                                // of follow decision; populates
+                                // /api/grant_map for scanner-mode UI
+                                // and future LO auto-center.
                                 if let Some(freq) = g.frequency_hz {
                                     let mut mgr = follower_mgr.lock().await;
                                     mgr.tally_grant(
@@ -267,20 +241,17 @@ pub fn spawn_traffic_grant_follower(
                                 let locked_tg = mgr.current_talkgroup();
                                 let locked_ch = mgr.current_channel();
 
-                                // 2026-04-19 late: channel-reuse
-                                // detection. If this grant's channel
-                                // matches the channel we're currently
-                                // locked to, but the TG is different,
-                                // the trunking system has reassigned
-                                // our voice channel to a different TG.
-                                // The old call on that channel is done.
-                                // Tear down the lock so we can follow
-                                // the new TG (if allowed by encryption
-                                // / monitor-list / etc. gates that run
-                                // below). Previously the sticky-lock
-                                // reject would fire here and we'd stay
-                                // tuned to a dead channel for up to
-                                // the 2 s call_timeout_ms.
+                                // Channel-reuse detection: if the
+                                // grant's channel matches our current
+                                // lock but the TG differs, the trunking
+                                // system has reassigned our voice
+                                // channel to a different TG and the old
+                                // call is done. Tear down so we can
+                                // follow the new TG (subject to the
+                                // gates below). Without this the
+                                // sticky-lock reject would keep us on
+                                // a dead channel for up to
+                                // call_timeout_ms (2 s).
                                 let is_channel_reuse =
                                     locked_ch.map(|c| c == g.channel).unwrap_or(false)
                                     && locked_tg.map(|t| t.0 != g.talkgroup.0).unwrap_or(false);
@@ -303,33 +274,26 @@ pub fn spawn_traffic_grant_follower(
                                     follower_imbe.current_talkgroup
                                         .store(0, Ordering::Relaxed);
                                     // Fall through — re-evaluate the
-                                    // grant as if we were starting
-                                    // Idle. The encrypted check +
-                                    // sticky-lock check below now see
+                                    // grant as if Idle. Encrypted +
+                                    // sticky-lock checks below now see
                                     // locked_tg = None and proceed.
                                 }
-                                // Re-read after the possible force_idle
-                                // so the downstream checks see fresh
-                                // state.
+                                // Re-read after the possible force_idle.
                                 let locked_tg = mgr.current_talkgroup();
 
-                                // 2026-04-19 late: encrypted check
-                                // runs BEFORE sticky-lock check. Order
-                                // mattered — previously a TG 406 [ENC]
-                                // grant arriving while locked on TG 301
-                                // hit the sticky-lock `continue` first
-                                // and never reached the encrypted gate,
-                                // so the encrypted_tg_history never
-                                // learned about TG 406. If we later
+                                // Encrypted check runs BEFORE the
+                                // sticky-lock check. Order matters: a
+                                // TG 406 [ENC] grant arriving while
+                                // locked on TG 301 must reach the
+                                // encrypted gate so encrypted_tg_history
+                                // learns TG 406; otherwise if we later
                                 // went Idle and TG 406 re-emitted with
                                 // a flipped service-options byte
-                                // (FEC-marginal), we'd accept it.
-                                // Running encrypted gate first means:
-                                //   - every encrypted grant populates
-                                //     history regardless of lock state
-                                //   - grants_rejected_encrypted stat
-                                //     reflects reality
-                                //   - log line names the correct reason
+                                // (FEC-marginal), we'd accept it. This
+                                // ordering also keeps the
+                                // grants_rejected_encrypted stat
+                                // accurate and names the correct reason
+                                // in the log line.
                                 let tg_known_enc = follower_imbe
                                     .encrypted_tg_history
                                     .lock()
@@ -347,13 +311,12 @@ pub fn spawn_traffic_grant_follower(
                                     }
                                     mgr.grants_rejected_encrypted += 1;
 
-                                    // If the encrypted TG happens to
-                                    // be the one we're currently
-                                    // locked on, tear down the lock
-                                    // synchronously. Without this
-                                    // the sticky 2 s timeout would
-                                    // hold the slot until the call
-                                    // naturally ends.
+                                    // If the encrypted TG is our
+                                    // current lock, tear down
+                                    // synchronously — otherwise the
+                                    // sticky 2 s timeout holds the
+                                    // slot until the call ends
+                                    // naturally.
                                     let was_locked = locked_tg
                                         .map(|t| t.0 == g.talkgroup.0)
                                         .unwrap_or(false);
@@ -371,35 +334,32 @@ pub fn spawn_traffic_grant_follower(
                                         // from the previous channel
                                         // are still in flight in the
                                         // DMA ring + mpsc channel;
-                                        // clearing the flag would
-                                        // cause the vocoder to DECODE
-                                        // those encrypted LDUs as
-                                        // clear, producing garbled
-                                        // output. Leaving it `true`
-                                        // keeps the skip path active
-                                        // until the next valid retune
-                                        // (which unconditionally
-                                        // writes call_encrypted =
+                                        // clearing the flag would let
+                                        // the vocoder DECODE those
+                                        // encrypted LDUs as clear and
+                                        // produce garbled output.
+                                        // Leaving it `true` keeps the
+                                        // skip path active until the
+                                        // next retune (which
+                                        // unconditionally writes
+                                        // call_encrypted =
                                         // new_grant.is_enc).
                                         #[cfg(target_os = "linux")]
                                         {
                                             let core = follower_core
                                                 .lock().await;
-                                            // Phase 8B: quiesce both
-                                            // the LSM and C4FM chains
-                                            // on encrypted tear-down
-                                            // so the traffic LSM demod
-                                            // stops producing phantom
-                                            // NID events during the
-                                            // gap until the next
-                                            // grant.
+                                            // Quiesce both LSM + C4FM
+                                            // chains on encrypted
+                                            // teardown so the traffic
+                                            // LSM demod stops emitting
+                                            // phantom NID events until
+                                            // the next grant.
                                             core.pause_traffic_chain();
                                         }
                                         // Reset the traffic framer --
                                         // it's mid-frame on encrypted
-                                        // data and will carry bogus
-                                        // state into whatever lock we
-                                        // pick up next.
+                                        // data and would carry bogus
+                                        // state into the next lock.
                                         {
                                             let mut dec = follower_traffic_decoder
                                                 .write().await;
@@ -428,12 +388,10 @@ pub fn spawn_traffic_grant_follower(
                                 }
 
                                 // Sticky-lock check runs AFTER the
-                                // channel-reuse + encrypted gates
-                                // above. If this grant is for a
-                                // different TG on a different channel
-                                // than our current lock, it's an
-                                // unrelated call and we should stay
-                                // put.
+                                // channel-reuse + encrypted gates. A
+                                // grant for a different TG on a
+                                // different channel is an unrelated
+                                // call; stay on the current lock.
                                 let locked_tg_final = mgr.current_talkgroup();
                                 if let Some(tg) = locked_tg_final {
                                     if tg.0 != g.talkgroup.0 {
@@ -481,14 +439,13 @@ pub fn spawn_traffic_grant_follower(
                                     // DDC path in get_reinit(). Cancels
                                     // the Pluto crystal trim error (~463
                                     // Hz at ppm=-0.54, rx_lo=858.1 MHz)
-                                    // so the traffic PLL doesn't sit at a
-                                    // residual -0.46 rad steady-state
+                                    // so the traffic PLL doesn't sit at
+                                    // a residual -0.46 rad steady-state
                                     // error on every call.
                                     //
-                                    // rx_lo is read fresh here (not
-                                    // captured at task spawn) so the
-                                    // offset math follows /api/reinit
-                                    // live LO moves.
+                                    // rx_lo read fresh (not captured at
+                                    // spawn) so offset math follows
+                                    // /api/reinit live LO moves.
                                     let rx_lo_now = follower_current_rx_lo
                                         .load(std::sync::atomic::Ordering::Relaxed);
                                     let nco_lo_shift_hz =
@@ -499,14 +456,12 @@ pub fn spawn_traffic_grant_follower(
                                         + nco_lo_shift_hz)
                                         as i64;
 
-                                    // Phase 7F.1 fix: reset the
-                                    // traffic-side decoder framer
-                                    // *before* the DDC retune so
-                                    // dibits arriving from the new
-                                    // frequency don't get consumed
-                                    // while the framer is mid-state
-                                    // on stale data. Preserves
-                                    // cumulative counters.
+                                    // Reset the traffic-side framer
+                                    // BEFORE the DDC retune so dibits
+                                    // from the new frequency aren't
+                                    // consumed while the framer is
+                                    // mid-state on stale data.
+                                    // Preserves cumulative counters.
                                     {
                                         let mut dec = follower_traffic_decoder
                                             .write().await;
@@ -514,21 +469,18 @@ pub fn spawn_traffic_grant_follower(
                                     }
 
                                     let core = follower_core.lock().await;
-                                    // Phase 8B: atomic
-                                    // freeze-reset-thaw through the
-                                    // HDL reset plumbing added in
-                                    // Phase 8A. `retune_traffic_chain`
-                                    // disables both the LSM and C4FM
-                                    // chains, writes the new DDC
-                                    // frequency, pulses
-                                    // `traffic_lsm_reset` (clearing
-                                    // the PLL accumulator and all
-                                    // upstream state), then re-enables
-                                    // both chains. The post-retune PLL
-                                    // starts from 0 and converges in
-                                    // ~50-100 ms instead of carrying
-                                    // stale phase from the previous
-                                    // carrier. See doc/changes/038.
+                                    // Atomic freeze-reset-thaw:
+                                    // `retune_traffic_chain` disables
+                                    // both LSM and C4FM chains, writes
+                                    // the new DDC frequency, pulses
+                                    // `traffic_lsm_reset` (clearing the
+                                    // PLL accumulator and upstream
+                                    // state), then re-enables. Post-
+                                    // retune PLL starts from 0 and
+                                    // converges in ~50-100 ms instead
+                                    // of carrying stale phase from the
+                                    // previous carrier. See
+                                    // doc/changes/038.
                                     match core.retune_traffic_chain(
                                         offset_hz as f64,
                                         follower_sample_rate,
@@ -595,16 +547,15 @@ pub fn spawn_traffic_grant_follower(
                         if mgr.check_timeouts() {
                             drop(mgr);
                             let core = follower_core.lock().await;
-                            // Phase 8B: pause both chains (LSM +
-                            // C4FM) between calls so the traffic
-                            // LSM demod is quiescent during Idle --
-                            // no phantom NID events, no drift in
-                            // the PLL accumulator against noise.
+                            // Pause both LSM + C4FM chains between
+                            // calls so the traffic demod is quiescent
+                            // during Idle — no phantom NID events and
+                            // no PLL drift against noise.
                             core.pause_traffic_chain();
                             if let Some(tg) = pre_timeout_tg {
-                                // 2026-04-16: drop the stale grant
-                                // from whichever decoder the modulation
-                                // selector says is active.
+                                // Drop the stale grant from whichever
+                                // decoder the modulation selector says
+                                // is active.
                                 let active = follower_active_mod.load(
                                     std::sync::atomic::Ordering::Relaxed,
                                 );
@@ -648,10 +599,10 @@ pub fn spawn_traffic_grant_follower(
                             follower_imbe.current_talkgroup.store(
                                 0, Ordering::Relaxed,
                             );
-                            // 2026-04-19: clear stashed source on
-                            // Idle transition so a subsequent call
-                            // with no FM: in its grant doesn't
-                            // inherit the previous speaker's ID.
+                            // Clear stashed source on Idle so a
+                            // subsequent call with no FM: in its grant
+                            // doesn't inherit the previous speaker's
+                            // ID.
                             follower_imbe.current_source.store(
                                 0, Ordering::Relaxed,
                             );

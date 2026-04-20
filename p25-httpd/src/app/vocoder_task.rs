@@ -1,10 +1,9 @@
 //! Vocoder OS thread — JMBE synthesis off the tokio worker pool.
 //!
-//! Extracted from main.rs on 2026-04-19. Spawned from main during
-//! startup; consumes IMBE frame batches from the control-channel
-//! decoder's voice handler, runs JMBE, applies a post-vocoder AGC,
-//! and broadcasts AudioChunks for both the live WebSocket stream and
-//! the per-call recorder. Runs on a dedicated std::thread so blocking
+//! Consumes IMBE frame batches from the control-channel decoder's voice
+//! handler, runs JMBE, applies a post-vocoder AGC, and broadcasts
+//! AudioChunks for both the live WebSocket stream and the per-call
+//! recorder. Runs on a dedicated std::thread so blocking
 //! `decoder.decode(...)` calls (5-15 ms/frame on ARM) cannot starve
 //! the rest of the daemon.
 
@@ -24,17 +23,13 @@ use crate::vocoder;
 /// broadcasts on `voc_audio_tx`, logs per-call summaries into
 /// `voc_event_log`.
 ///
-/// 2026-04-19: runs synthesis on a `std::thread` rather than a
-/// `tokio::spawn(async move ...)` task. Moves JMBE decode off the
-/// shared tokio worker pool so:
-///   - JMBE blocking (5-15 ms/frame on ARM) can't preempt other
-///     tokio tasks;
-///   - HTTP request / log-export / broadcast fanout cannot preempt
-///     the vocoder's next wake-up;
-///   - the `imbe_tx` queue (cap 16) can't back up and start
-///     dropping frames on worker-pool scheduling jitter.
-/// `blocking_recv()` keeps the same backpressure semantics as the
-/// async version.
+/// Runs synthesis on a `std::thread` rather than `tokio::spawn` to
+/// move JMBE decode (5-15 ms/frame on ARM) off the shared tokio
+/// worker pool — prevents JMBE blocking from preempting other tokio
+/// tasks, prevents HTTP/log/broadcast work from preempting the
+/// vocoder's next wake-up, and keeps the `imbe_tx` queue (cap 16)
+/// from backing up on worker-pool scheduling jitter. `blocking_recv()`
+/// preserves the backpressure semantics of the async version.
 pub fn spawn_vocoder_thread(
     imbe_rx: Receiver<[ImbeFrameRaw; 9]>,
     voc_forwarder: Arc<ImbeForwarder>,
@@ -56,15 +51,13 @@ pub fn spawn_vocoder_thread(
             let mut call_pcm_samples: u64 = 0;
             let mut call_started: Option<std::time::Instant> = None;
 
-            // 2026-04-19 late: post-vocoder PCM AGC. JMBE outputs raw
-            // PCM at whatever level each radio's mic + deviation
-            // produced. Different speakers → different levels → the
-            // user hears "loud and quiet" because we emit them as-is.
-            // SDRTrunk's audio stage applies per-call normalisation;
-            // this is the equivalent — a slow-attack EMA on the
-            // voiced-frame RMS that scales toward `AGC_TARGET_RMS`.
-            // Silent frames (peak under `SILENT_PEAK`) don't update
-            // the EMA, so inter-word pauses don't pump the gain up.
+            // Post-vocoder PCM AGC. JMBE outputs raw PCM at whatever
+            // level each radio's mic + deviation produced, so different
+            // speakers arrive at different levels. Mirrors SDRTrunk's
+            // per-call normalisation: slow-attack EMA on voiced-frame
+            // RMS that scales toward `AGC_TARGET_RMS`. Silent frames
+            // (peak under `SILENT_PEAK`) don't update the EMA, so
+            // inter-word pauses don't pump the gain up.
             let mut agc_rms_ema: f32 = 2500.0;  // seed at target
             let mut agc_scale: f32 = 1.0;
             const AGC_TARGET_RMS: f32 = 2500.0;
@@ -77,17 +70,9 @@ pub fn spawn_vocoder_thread(
             const AGC_MAX_SCALE: f32 = 8.0;
             // Hard ceiling to prevent clipping on scaled output.
             const AGC_PCM_CLAMP: f32 = 30000.0;
-            // Phase 9.1 (2026-04-15): track the wall clock of the
-            // most recent IMBE frame we decoded so `duration_ms` in
-            // the call_end summary reflects the actual
-            // voice-arrival span, not the full retune-to-retune
-            // interval. Before Phase 9.1, duration_ms used
-            // `started.elapsed()` which is "time since the first
-            // frame of this call was decoded" -- if the follower
-            // stayed locked on a TG for 97 s with only 900 ms of
-            // real voice and the rest silence+noise-TDU_LCs, the
-            // duration was reported as 97244 ms (retune-to-retune
-            // wall clock) instead of ~900 ms (actual audio).
+            // Wall clock of the most recent decoded IMBE frame, so
+            // `duration_ms` in call_end reflects first-frame to
+            // last-frame voice span, not retune-to-retune interval.
             let mut call_last_frame_at: Option<std::time::Instant> = None;
 
             let flush_call_summary = |
@@ -102,22 +87,14 @@ pub fn spawn_vocoder_thread(
                 if frames_in == 0 && frames_skipped_enc == 0 {
                     return;
                 }
-                // 2026-04-19 late: DO emit TG=0 summaries. These fire
-                // when an Idle flicker lets IMBE frames reach the
-                // vocoder with tg=0 — they're useful telemetry and we
-                // want them in the log ring for debug. SDRTrunk's
-                // TalkgroupIdentifier.isValid() filters TG=0 at render
-                // time (MutableIdentifierCollection.java:125), so for
-                // side-by-side SDRTrunk comparison run the exporter
-                // with --sdrtrunk-strict to drop these from the
-                // rendered output. The raw /api/log ring keeps them.
-                // Phase 9.1: duration = time from first decoded
-                // frame to last decoded frame. When only one burst
-                // of voice lives inside a long retune-to-retune
-                // lock, this shows the real voice length. Falls
-                // back to 0 if we somehow flushed without ever
-                // latching a frame timestamp (shouldn't happen when
-                // frames_in > 0, but be safe).
+                // TG=0 summaries are emitted (useful telemetry when an
+                // Idle flicker lets IMBE frames through with tg=0).
+                // SDRTrunk's TalkgroupIdentifier.isValid() filters TG=0
+                // at render time (MutableIdentifierCollection.java:125);
+                // run the exporter with --sdrtrunk-strict to match.
+                // duration_ms = first decoded frame → last decoded
+                // frame; falls back to 0 if we flushed without ever
+                // latching a frame timestamp.
                 let duration_ms = match (started, last_frame_at) {
                     (Some(s), Some(l)) => {
                         l.duration_since(s).as_millis() as u64
@@ -147,14 +124,13 @@ pub fn spawn_vocoder_thread(
 
             tracing::info!(target: "p25_vocoder", "vocoder thread started (dedicated OS thread)");
             while let Some(frames) = rx.blocking_recv() {
-                // 2026-04-19 count-based recorder close — advance
-                // the consumed counter for EVERY batch pulled off
-                // the queue, including batches that will be skipped
-                // (encrypted call) or dropped (TG-change mid-batch).
-                // Must stay in lockstep with `frames_submitted`
-                // (bumped by 9 in forward_frames on successful
-                // send). The recorder reads this to know the
-                // vocoder has advanced past a given boundary's
+                // Count-based recorder close: advance the consumed
+                // counter for EVERY batch pulled off the queue,
+                // including skipped (encrypted) and dropped (TG change
+                // mid-batch). Must stay in lockstep with
+                // `frames_submitted` (bumped by 9 in forward_frames on
+                // successful send); the recorder reads this to know
+                // the vocoder has advanced past a boundary's
                 // `expected_submit_count`.
                 voc_forwarder
                     .frames_consumed
@@ -213,21 +189,16 @@ pub fn spawn_vocoder_thread(
                         .fetch_add(vocoder::SAMPLES_PER_FRAME as u64, Ordering::Relaxed);
                     call_frames_in += 1;
                     call_pcm_samples += vocoder::SAMPLES_PER_FRAME as u64;
-                    // Phase 9.1: latch the wall clock of this frame
-                    // so the next flush reports the true voice
-                    // span instead of the retune-to-retune gap.
+                    // Latch frame wall clock for the first-frame to
+                    // last-frame duration_ms in call_end.
                     call_last_frame_at = Some(std::time::Instant::now());
 
-                    // 2026-04-19 late: the silent-chunk drop was
-                    // causing single-speaker calls to split into
-                    // multiple recordings — a burst of JMBE-silent
-                    // frames exceeded the recorder's 1500 ms grace
-                    // window and forced a finalise + new-file. The
-                    // counter stays for observability, but silent
-                    // frames now pass through so the recorder sees
-                    // continuous audio. The original "empty WAV"
-                    // concern is handled by MIN_KEEPABLE_MS on the
-                    // recorder side.
+                    // Silent frames pass through so the recorder sees
+                    // continuous audio and single-speaker calls don't
+                    // split across JMBE-silent bursts exceeding the
+                    // 1500 ms grace window. Counter stays for
+                    // observability; empty-WAV is handled by
+                    // MIN_KEEPABLE_MS on the recorder side.
                     const SILENT_PEAK: u16 = 16;
                     let peak = pcm.iter()
                         .map(|s| s.unsigned_abs())
@@ -239,12 +210,10 @@ pub fn spawn_vocoder_thread(
                             .fetch_add(1, Ordering::Relaxed);
                     }
 
-                    // 2026-04-19: pull the currently-stashed source
-                    // radio ID off the ImbeForwarder atomic. Set by
-                    // the grant follower from `GRP_VCH_GRANT.FM`
-                    // (primary) and refreshed by the traffic LDU1
-                    // LC decoder / Motorola TDULC TALK_COMPLETE
-                    // (fallback). `0` = unknown, in which case the
+                    // Source radio ID: set by the grant follower from
+                    // `GRP_VCH_GRANT.FM` (primary); refreshed by the
+                    // traffic LDU1 LC decoder / Motorola TDULC
+                    // TALK_COMPLETE (fallback). `0` = unknown →
                     // recorder leaves the `_fromN` suffix off.
                     let source = voc_forwarder
                         .current_source
