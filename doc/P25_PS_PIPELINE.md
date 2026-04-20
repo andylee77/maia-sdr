@@ -2,7 +2,7 @@
 
 **Scope:** everything the Zynq ARM (PS) does with P25 data **after** it leaves the FPGA (PL). Starts at the DMA ring buffers and ends at WAV files on disk / WebSocket frames to the browser.
 
-**Target commit:** `fishball-p25` @ `e5d20ca` (2026-04-19). All line references are against that tree.
+**Target commit:** `fishball-p25` @ `fa6ae59` (2026-04-19, post-refactor-sweep). All line references are against that tree. The refactor moved top-level modules into `app/ audio/ hardware/ httpd/ protocol/ services/` domain folders and split the former `main.rs` / `control_channel.rs` god-modules; older revisions of this doc that pointed at flat `src/p25/*.rs` paths are out of date.
 
 **Sibling docs:**
 
@@ -36,20 +36,27 @@ Two almost-identical decoder chains, running in parallel on the same `p25-httpd`
  └──────────────────────────────────────────────────────────────────────┘
 ```
 
-Both chains share one piece of code — [control_channel.rs](../p25-httpd/src/p25/control_channel.rs) — parameterised by what kind of `VoiceHandler` it has wired in and which DMA ring it reads from. The control instance emits TSBK grants; the traffic instance emits voice.
+Both chains share one piece of code — [protocol/p25/control_channel/mod.rs](../p25-httpd/src/protocol/p25/control_channel/mod.rs) — parameterised by what kind of `VoiceHandler` it has wired in and which DMA ring it reads from. The control instance emits TSBK grants; the traffic instance emits voice.
 
-Key file sizes (signal of where the complexity lives):
+Key file sizes (signal of where the complexity lives, production code only — sibling `_tests.rs` files excluded):
 
 | File | Lines | Role |
 |------|------:|------|
-| [main.rs](../p25-httpd/src/main.rs) | 3768 | Tokio task orchestration, ImbeForwarder, DMA pump loops |
-| [p25/control_channel.rs](../p25-httpd/src/p25/control_channel.rs) | 2893 | Frame sync → NID → DUID → body dispatch |
-| [p25/tsbk.rs](../p25-httpd/src/p25/tsbk.rs) | 1535 | 40+ TSBK opcode parsers |
-| [p25/voice_frame.rs](../p25-httpd/src/p25/voice_frame.rs) | 1444 | IMBE extract + HDU / LDU / TDULC FEC + LCW parsers |
-| [p25/traffic_manager.rs](../p25-httpd/src/p25/traffic_manager.rs) | 753 | Grant follower, DDC retune, state machine |
-| [recorder.rs](../p25-httpd/src/recorder.rs) | 647 | Per-call WAV writer |
-| [p25/fec.rs](../p25-httpd/src/p25/fec.rs) | 662 | 1/2-rate Trellis Viterbi + TSDU de-interleave |
-| [p25/rs_p25.rs](../p25-httpd/src/p25/rs_p25.rs) | 412 | Shared Berlekamp-Massey RS over GF(2^6) |
+| [main.rs](../p25-httpd/src/main.rs) | 1622 | Startup, `AppState`, task spawning (no DMA / voice logic) |
+| [protocol/p25/control_channel/mod.rs](../p25-httpd/src/protocol/p25/control_channel/mod.rs) | 1414 | Frame sync → NID → DUID → body dispatch |
+| [protocol/p25/tsbk.rs](../p25-httpd/src/protocol/p25/tsbk.rs) | 1384 | 40+ TSBK opcode parsers |
+| [protocol/p25/voice_frame.rs](../p25-httpd/src/protocol/p25/voice_frame.rs) | 1209 | IMBE extract + HDU / LDU / TDULC FEC + LCW parsers |
+| [audio/recorder.rs](../p25-httpd/src/audio/recorder.rs) | 825 | Per-call WAV writer + event-timeline log |
+| [protocol/p25/traffic_manager.rs](../p25-httpd/src/protocol/p25/traffic_manager.rs) | 693 | Grant follower, DDC retune, state machine |
+| [app/imbe_forwarder.rs](../p25-httpd/src/app/imbe_forwarder.rs) | 689 | `VoiceHandler` impl + IMBE → mpsc pump |
+| [protocol/p25/control_channel/tsbk_handlers.rs](../p25-httpd/src/protocol/p25/control_channel/tsbk_handlers.rs) | 649 | TSBK dispatch from framer to opcode parsers |
+| [app/follower.rs](../p25-httpd/src/app/follower.rs) | 621 | Grant follower tokio task (polls `TrafficManager`) |
+| [app/dibit_readers.rs](../p25-httpd/src/app/dibit_readers.rs) | 470 | DMA pump loops (one spawn fn per ring) |
+| [protocol/p25/fec/mod.rs](../p25-httpd/src/protocol/p25/fec/mod.rs) | 400 | 1/2-rate Trellis Viterbi + TSDU de-interleave |
+| [protocol/p25/fec/rs_p25.rs](../p25-httpd/src/protocol/p25/fec/rs_p25.rs) | 337 | Shared Berlekamp-Massey RS over GF(2^6) |
+| [app/vocoder_task.rs](../p25-httpd/src/app/vocoder_task.rs) | 263 | JMBE decode loop + PCM AGC |
+| [protocol/p25/fec/bch.rs](../p25-httpd/src/protocol/p25/fec/bch.rs) | 168 | BCH(63,16,23) NID decoder (was `lsm/nid_fec.rs`) |
+| [protocol/p25/wire.rs](../p25-httpd/src/protocol/p25/wire.rs) | 70 | Single source of truth for on-air wire constants |
 
 ---
 
@@ -57,7 +64,7 @@ Key file sizes (signal of where the complexity lives):
 
 ### 1.1 DMA rings
 
-The PL writes into six (sometimes eight, depending on branch) kernel-mmap'd ring buffers. Each is 8 × 4 KB (dibit rings) or 8 × 32 KB (IQ rings). The PS side reads via [rxbuffer.rs](../p25-httpd/src/rxbuffer.rs), which wraps a UIO device (`/dev/uioN`) and a kernel-exported buffer memory region.
+The PL writes into six (sometimes eight, depending on branch) kernel-mmap'd ring buffers. Each is 8 × 4 KB (dibit rings) or 8 × 32 KB (IQ rings). The PS side reads via [hardware/rxbuffer.rs](../p25-httpd/src/hardware/rxbuffer.rs), which wraps a UIO device (`/dev/uioN`) and a kernel-exported buffer memory region.
 
 | Ring                        | Device name               | Rate              | Purpose                                  |
 |-----------------------------|---------------------------|-------------------|------------------------------------------|
@@ -70,11 +77,11 @@ The PL writes into six (sometimes eight, depending on branch) kernel-mmap'd ring
 | `lsm_iq_dma` (10.6)         | `p25-lsm-iq`              | 31.25 kSPS `f32×2`| Post-RRC matched-filter IQ               |
 | `traffic_lsm_iq_dma` (10.6) | `p25-traffic-lsm-iq`      | 31.25 kSPS `f32×2`| Post-RRC matched-filter IQ, traffic      |
 
-Ownership is in [fpga.rs](../p25-httpd/src/fpga.rs), `IpCore` struct. It just holds a `RxBuffer` per ring and surfaces `read_*_dma()` futures.
+Ownership is in [hardware/fpga.rs](../p25-httpd/src/hardware/fpga.rs), `IpCore` struct. It just holds a `RxBuffer` per ring and surfaces `read_*_dma()` futures.
 
 ### 1.2 Pump loops
 
-Spawned from `main.rs` during startup. One tokio task per dibit ring. The pattern is always:
+Spawned from `main.rs` during startup via the `spawn_*_reader` functions in [app/dibit_readers.rs](../p25-httpd/src/app/dibit_readers.rs). One tokio task per dibit ring. The pattern is always:
 
 ```rust
 loop {
@@ -94,17 +101,17 @@ The traffic pump invokes a **different** `ControlChannelDecoder` instance than t
 
 ## 2. Frame Synchronization
 
-[control_channel.rs — `process_dibit`](../p25-httpd/src/p25/control_channel.rs) is the hot loop. A state machine walks four states: `Hunting → ReadingNid → ReadingDataUnit → (back to Hunting)`.
+[control_channel/mod.rs — `process_dibit`](../p25-httpd/src/protocol/p25/control_channel/mod.rs) is the hot loop. A state machine walks four states: `Hunting → ReadingNid → ReadingDataUnit → (back to Hunting)`.
 
 ### 2.1 Sync detection
 
-Every P25 frame opens with a 48-bit sync pattern (24 dibits). We hold a rolling 48-bit window in a `u64` shift register and compare against the canonical `0x5575F5FF77FF` (frame sync word) each symbol.
+Every P25 frame opens with a 48-bit sync pattern (24 dibits). We hold a rolling 48-bit window in a `u64` shift register and compare against the canonical `0x5575F5FF77FF` (`FRAME_SYNC_PATTERN` in [wire.rs](../p25-httpd/src/protocol/p25/wire.rs)) each symbol.
 
 The comparison is a **soft Hamming distance** on the 48 bits, not a strict equality. If `popcount(window ^ SYNC) ≤ threshold` the decoder declares a sync hit and jumps to `ReadingNid`.
 
 Runtime-tunable threshold:
 
-- Default: 6 (`SYNC_THRESHOLD` in [control_channel.rs:592](../p25-httpd/src/p25/control_channel.rs#L592))
+- Default: 6 (`CC_SYNC_THRESHOLD` in [control_channel/mod.rs:362](../p25-httpd/src/protocol/p25/control_channel/mod.rs#L362); renamed from `SYNC_THRESHOLD` on 2026-04-19 to avoid collision with `lsm::sync::LSM_SYNC_THRESHOLD`)
 - Global override: `PUT /api/sync_tune?threshold=N` (0..=24)
 - Per-chain override: `PUT /api/sync_tune?threshold=N&side=traffic|control`
 - Reset a per-chain override: `PUT /api/sync_tune?threshold=reset&side=...`
@@ -112,7 +119,7 @@ Runtime-tunable threshold:
 
 ### 2.2 Status dibit removal
 
-P25 interleaves a **status dibit** every 36 dibits in the body (first one 13 dibits after the NID for LDU/TSBK, 14 for TDULC). These are scheduling/busy bits, not payload, and must be stripped before FEC. The helper is `is_body_status_dibit(raw_pos)` in [types.rs](../p25-httpd/src/p25/types.rs). TDULC overrides it because its boundary is one dibit later.
+P25 interleaves a **status dibit** every 36 dibits in the body (first one 13 dibits after the NID for LDU/TSBK, 14 for TDULC). These are scheduling/busy bits, not payload, and must be stripped before FEC. The interval constants live in [wire.rs](../p25-httpd/src/protocol/p25/wire.rs) (`BODY_STATUS_FIRST_DIBIT`, `BODY_STATUS_INTERVAL`); the helper is `is_body_status_dibit(raw_pos)` in [protocol/p25/types.rs](../p25-httpd/src/protocol/p25/types.rs). TDULC overrides the position because its boundary is one dibit later.
 
 ### 2.3 Bit / dibit ordering
 
@@ -126,7 +133,7 @@ After a sync hit the decoder reads 33 raw dibits (66 bits), strips the in-NID st
 
 - **Code:** shortened BCH(63,16) with minimum distance d=23, so t=11 errors correctable.
 - **Payload:** 12-bit NAC + 4-bit DUID = 16 data bits. Remaining 48 bits are parity.
-- **Implementation:** [lsm/nid_fec.rs](../p25-httpd/src/lsm/nid_fec.rs). A one-time `codebook()` call expands all `2^16 = 65536` valid codewords into a `[u64; 65536]` lookup table. Decode is a linear scan:
+- **Implementation:** [protocol/p25/fec/bch.rs](../p25-httpd/src/protocol/p25/fec/bch.rs) (`decode_nid`; moved out of `lsm/nid_fec.rs` in commit 842c933 — BCH is protocol FEC, not modulation). A one-time `codebook()` call expands all `2^16 = 65536` valid codewords into a `[u64; 65536]` lookup table. Decode is a linear scan:
 
 ```rust
 for (idx, &cw) in codebook.iter().enumerate() {
@@ -141,7 +148,7 @@ About 1 ms per frame on the Zynq Cortex-A9 — fine at 4800 sym/s (one NID every
 
 ### 3.1 DUID dispatch
 
-`duid = (16-bit recovered payload) & 0xF`. [types.rs](../p25-httpd/src/p25/types.rs) has the enum:
+`duid = (16-bit recovered payload) & 0xF`. DUID code constants live in [wire.rs](../p25-httpd/src/protocol/p25/wire.rs); the parsed [protocol/p25/types.rs](../p25-httpd/src/protocol/p25/types.rs) `DataUnit` enum is:
 
 | DUID | Name     | Meaning                            |
 |-----:|----------|------------------------------------|
@@ -170,7 +177,7 @@ Multi-block is supported (Phase 6F.3). After stripping status dibits, the body i
 | 2      | 231        | 7 @ {13,49,…,229}                 | 28       | 196 →  24 bytes  |
 | 3      | 303        | 9 @ {13,49,…,301}                 |  0       | 294 →  36 bytes  |
 
-**Trellis Viterbi** lives in [p25/fec.rs](../p25-httpd/src/p25/fec.rs). A 4-state, 4-input/4-output 1/2-rate code. The critical correctness detail: the trellis input must be de-interleaved against TIA-102 BAAA Table 7-7 **before** the Viterbi pass — without that, the decoder finds Hamming-random paths. Constant table is `DATA_DEINTERLEAVE`; the bug that drove this fix was in Phase 6F.2j (2026-04-11).
+**Trellis Viterbi** lives in [protocol/p25/fec/mod.rs](../p25-httpd/src/protocol/p25/fec/mod.rs). A 4-state, 4-input/4-output 1/2-rate code. The critical correctness detail: the trellis input must be de-interleaved against TIA-102 BAAA Table 7-7 **before** the Viterbi pass — without that, the decoder finds Hamming-random paths. Constant table is `DATA_DEINTERLEAVE`; the bug that drove this fix was in Phase 6F.2j (2026-04-11).
 
 Step by step:
 
@@ -181,7 +188,7 @@ Step by step:
 5. Traceback from state 0 (the encoder's flush-input guarantees this is the MLE endpoint).
 6. Keep the 48 two-bit inputs (drop the 49th flush bit), pack into 12 bytes.
 
-**CRC-16** (TIA-102 BAAA): [tsbk.rs](../p25-httpd/src/p25/tsbk.rs) checks both plain and XOR'd (`^ 0xFFFF`) conventions — both appear in the wild.
+**CRC-16** (TIA-102 BAAA): [protocol/p25/tsbk.rs](../p25-httpd/src/protocol/p25/tsbk.rs) checks both plain and XOR'd (`^ 0xFFFF`) conventions — both appear in the wild.
 
 **Opcode dispatch:** TSBK has ~40 defined opcodes. The ones that drive the system:
 
@@ -203,8 +210,8 @@ All opcodes are parsed — even ones we don't act on — so [/api/recent_tsbks](
 
 **FEC stack:**
 
-- **Inner:** Golay(18,6,8) per hexbit. 36 codewords of 18 bits each. Implementation: [voice_frame.rs:228 golay18_correct](../p25-httpd/src/p25/voice_frame.rs#L228). Corrects up to t=3 per hexbit.
-- **Outer:** **Reed-Solomon(63,47,17) shortened to (36,20,17)** over GF(2^6) with primitive poly `x^6 + x + 1`. Corrects up to t=8 hexbit errors. Implementation: [rs_63_47_17.rs](../p25-httpd/src/p25/rs_63_47_17.rs), delegating to the shared decoder in [rs_p25.rs](../p25-httpd/src/p25/rs_p25.rs).
+- **Inner:** Golay(18,6,8) per hexbit. 36 codewords of 18 bits each. Implementation: [voice_frame.rs:195 golay18_correct](../p25-httpd/src/protocol/p25/voice_frame.rs#L195). Corrects up to t=3 per hexbit.
+- **Outer:** **Reed-Solomon(63,47,17) shortened to (36,20,17)** over GF(2^6) with primitive poly `x^6 + x + 1`. Corrects up to t=8 hexbit errors. Implementation: [fec/rs_63_47_17.rs](../p25-httpd/src/protocol/p25/fec/rs_63_47_17.rs), delegating to the shared decoder in [fec/rs_p25.rs](../p25-httpd/src/protocol/p25/fec/rs_p25.rs).
 
 **Payload (120 bits):**
 
@@ -214,7 +221,7 @@ All opcodes are parsed — even ones we don't act on — so [/api/recent_tsbks](
 - Key ID (16 bits)
 - Talkgroup (16 bits)
 
-**Handler:** `ImbeForwarder::on_hdu` in [main.rs](../p25-httpd/src/main.rs) calls [voice_frame::parse_hdu_body](../p25-httpd/src/p25/voice_frame.rs#L1074). If `is_encrypted()` is true it latches `call_encrypted = true` (sticky until TDU). It also emits a `TRF_HDU_INFO` event on `/ws/events` with the full metadata and fires a `CallBoundary::HduStart` so the recorder can finalise the previous call.
+**Handler:** [`ImbeForwarder::on_hdu`](../p25-httpd/src/app/imbe_forwarder.rs#L424) calls [voice_frame::parse_hdu_body](../p25-httpd/src/protocol/p25/voice_frame.rs#L986). If `is_encrypted()` is true it latches `call_encrypted = true` (sticky until TDU). It also emits a `TRF_HDU_INFO` event on `/ws/events` with the full metadata and fires a `CallBoundary::HduStart` so the recorder can finalise the previous call.
 
 ### 4.3 LDU1 — Voice + Link Control
 
@@ -225,14 +232,14 @@ All opcodes are parsed — even ones we don't act on — so [/api/recent_tsbks](
 
 **FEC implementations:**
 
-- **Hamming(10,6,3)** — [voice_frame.rs:100](../p25-httpd/src/p25/voice_frame.rs#L100) (`hamming10_correct`; syndrome helper at [:76](../p25-httpd/src/p25/voice_frame.rs#L76)). Single-bit correction via syndrome table.
-- **RS(24,12,13)** — [rs_24_12_13.rs](../p25-httpd/src/p25/rs_24_12_13.rs) → shared BM in [rs_p25.rs](../p25-httpd/src/p25/rs_p25.rs). Corrects t=6 hexbit errors.
+- **Hamming(10,6,3)** — [voice_frame.rs:73](../p25-httpd/src/protocol/p25/voice_frame.rs#L73) (`hamming10_correct`; syndrome helper at [:49](../p25-httpd/src/protocol/p25/voice_frame.rs#L49)). Single-bit correction via syndrome table.
+- **RS(24,12,13)** — [fec/rs_24_12_13.rs](../p25-httpd/src/protocol/p25/fec/rs_24_12_13.rs) → shared BM in [fec/rs_p25.rs](../p25-httpd/src/protocol/p25/fec/rs_p25.rs). Corrects t=6 hexbit errors.
 
-**Handler:** `ImbeForwarder::on_ldu1`:
+**Handler:** [`ImbeForwarder::on_ldu1`](../p25-httpd/src/app/imbe_forwarder.rs#L288):
 
 1. Bump counters (`ldu1_count`, `touch_imbe(9)`).
 2. `forward_frames(frames)` — try-send into an mpsc queue to the vocoder task.
-3. `parse_ldu1_source(body_raw)` — recover the source radio ID and emit a `CallBoundary::TdulcComplete` event the recorder consumes for per-speaker filename stamping.
+3. [`parse_ldu1_source(body_raw)`](../p25-httpd/src/protocol/p25/voice_frame.rs#L631) — recover the source radio ID and emit a `CallBoundary::TdulcComplete` event the recorder consumes for per-speaker filename stamping.
 
 ### 4.4 LDU2 — Voice + Encryption Sync Signature (ESS)
 
@@ -241,9 +248,9 @@ Same bit layout as LDU1 (9 IMBE frames at the same offsets). The non-voice paylo
 - **ESS = 96 bits**, FEC'd as Hamming(10,6,3) × 16 + **Reed-Solomon(24,16,9)** (corrects t=4 hexbit errors).
 - Content: Algorithm ID (8), Key ID (16), Message Indicator (72).
 
-**RS(24,16,9):** [rs_24_16_9.rs](../p25-httpd/src/p25/rs_24_16_9.rs) → shared BM in rs_p25.rs.
+**RS(24,16,9):** [fec/rs_24_16_9.rs](../p25-httpd/src/protocol/p25/fec/rs_24_16_9.rs) → shared BM in `rs_p25.rs`.
 
-**Handler:** `ImbeForwarder::on_ldu2` forwards the frames and calls [parse_ldu2_ess](../p25-httpd/src/p25/voice_frame.rs#L1202). If the ESS's algorithm ID says encrypted and we didn't already know it from the HDU or the TSBK grant, it still latches `call_encrypted = true`. Redundant with the HDU in theory; real signals occasionally miss an HDU and LDU2 is the backstop.
+**Handler:** [`ImbeForwarder::on_ldu2`](../p25-httpd/src/app/imbe_forwarder.rs#L350) forwards the frames and calls [parse_ldu2_ess](../p25-httpd/src/protocol/p25/voice_frame.rs#L1140). If the ESS's algorithm ID says encrypted and we didn't already know it from the HDU or the TSBK grant, it still latches `call_encrypted = true`. Redundant with the HDU in theory; real signals occasionally miss an HDU and LDU2 is the backstop.
 
 ### 4.5 TDU — Termination Data Unit
 
@@ -253,9 +260,9 @@ Trivial body (15 dibits, no FEC, no payload). Handler just bumps a counter and f
 
 Same LC payload shape as LDU1 (72 bits), FEC'd as **Golay(24,12,7) × 12** + **RS(24,12,13)**. Note this is Golay24, not Hamming10 — TDULC protects its LC with a stronger code than LDU1 does.
 
-**Golay(24,12,7):** [voice_frame.rs:172](../p25-httpd/src/p25/voice_frame.rs#L172) (`golay24_correct`; syndrome helper at [:152](../p25-httpd/src/p25/voice_frame.rs#L152)). Syndrome-based, corrects t=3 bits per 24-bit codeword. (Golay18 is a shortened / zero-padded special case of the same decoder.)
+**Golay(24,12,7):** [voice_frame.rs:140](../p25-httpd/src/protocol/p25/voice_frame.rs#L140) (`golay24_correct`; syndrome helper at [:122](../p25-httpd/src/protocol/p25/voice_frame.rs#L122)). Syndrome-based, corrects t=3 bits per 24-bit codeword. (Golay18 is a shortened / zero-padded special case of the same decoder.)
 
-TDULC is not one message — it's a family keyed by LCW opcode + MFID. [parse_tdulc_lcw](../p25-httpd/src/p25/voice_frame.rs#L374) dispatches to a variant:
+TDULC is not one message — it's a family keyed by LCW opcode + MFID. [parse_tdulc_lcw](../p25-httpd/src/protocol/p25/voice_frame.rs#L332) dispatches to a variant:
 
 | Variant                              | Opcode | MFID  | Payload                                             |
 |--------------------------------------|-------:|------:|-----------------------------------------------------|
@@ -265,7 +272,7 @@ TDULC is not one message — it's a family keyed by LCW opcode + MFID. [parse_td
 | `MotorolaTalkComplete` (vendor)      |   0x0F | 0x90  | **Last-speaker radio ID** — the only way to get the |
 |                                      |        |       | final speaker when multiple people keyed the grant  |
 
-**Why MotorolaTalkComplete matters:** on a single TSBK grant, the radios can hand off the mic several times. SDRTrunk breaks a grant into per-speaker recordings using this LCW. We do the same — the handler in main.rs fires `CallBoundary::SpeakerEnd { source: Some(by_radio_id) }` to tell the recorder to split the WAV.
+**Why MotorolaTalkComplete matters:** on a single TSBK grant, the radios can hand off the mic several times. SDRTrunk breaks a grant into per-speaker recordings using this LCW. We do the same — the handler in [imbe_forwarder.rs:500 `on_tdu_lc`](../p25-httpd/src/app/imbe_forwarder.rs#L500) fires `CallBoundary::SpeakerEnd { source: Some(by_radio_id) }` to tell the recorder to split the WAV.
 
 ---
 
@@ -273,19 +280,19 @@ TDULC is not one message — it's a family keyed by LCW opcode + MFID. [parse_td
 
 All primitives needed for P25 Phase 1 voice are **implemented in this tree**. There are no remaining stubs — a claim that was true two weeks ago but stopped being true once `rs_p25.rs` landed.
 
-| Code                       | Where                                                                    | Corrects   | Used by       |
-|----------------------------|--------------------------------------------------------------------------|-----------:|---------------|
-| BCH(63,16,23)              | [lsm/nid_fec.rs](../p25-httpd/src/lsm/nid_fec.rs)                        | t=11 bits  | NID           |
-| Hamming(10,6,3)            | [voice_frame.rs:100](../p25-httpd/src/p25/voice_frame.rs#L100)           | t=1 bit    | LDU1 LC, LDU2 ESS |
-| Golay(24,12,7)             | [voice_frame.rs:172](../p25-httpd/src/p25/voice_frame.rs#L172)           | t=3 bits   | TDULC LC      |
-| Golay(18,6,8)              | [voice_frame.rs:228](../p25-httpd/src/p25/voice_frame.rs#L228)           | t=3 bits   | HDU inner     |
-| RS(24,12,13)               | [rs_24_12_13.rs](../p25-httpd/src/p25/rs_24_12_13.rs) + rs_p25.rs        | t=6 hexbits| LDU1 LC, TDULC LC |
-| RS(24,16,9)                | [rs_24_16_9.rs](../p25-httpd/src/p25/rs_24_16_9.rs) + rs_p25.rs          | t=4 hexbits| LDU2 ESS      |
-| RS(63,47,17) → (36,20,17)  | [rs_63_47_17.rs](../p25-httpd/src/p25/rs_63_47_17.rs) + rs_p25.rs        | t=8 hexbits| HDU outer     |
-| 1/2-rate Trellis + BAAA de-interleave | [p25/fec.rs](../p25-httpd/src/p25/fec.rs)                     | Viterbi    | TSBK          |
-| CRC-16 (plain + xor 0xFFFF)| [p25/tsbk.rs](../p25-httpd/src/p25/tsbk.rs)                              | —          | TSBK          |
+| Code                       | Where                                                                                   | Corrects   | Used by       |
+|----------------------------|-----------------------------------------------------------------------------------------|-----------:|---------------|
+| BCH(63,16,23)              | [fec/bch.rs](../p25-httpd/src/protocol/p25/fec/bch.rs)                                  | t=11 bits  | NID           |
+| Hamming(10,6,3)            | [voice_frame.rs:73](../p25-httpd/src/protocol/p25/voice_frame.rs#L73)                   | t=1 bit    | LDU1 LC, LDU2 ESS |
+| Golay(24,12,7)             | [voice_frame.rs:140](../p25-httpd/src/protocol/p25/voice_frame.rs#L140)                 | t=3 bits   | TDULC LC      |
+| Golay(18,6,8)              | [voice_frame.rs:195](../p25-httpd/src/protocol/p25/voice_frame.rs#L195)                 | t=3 bits   | HDU inner     |
+| RS(24,12,13)               | [fec/rs_24_12_13.rs](../p25-httpd/src/protocol/p25/fec/rs_24_12_13.rs) + rs_p25.rs      | t=6 hexbits| LDU1 LC, TDULC LC |
+| RS(24,16,9)                | [fec/rs_24_16_9.rs](../p25-httpd/src/protocol/p25/fec/rs_24_16_9.rs) + rs_p25.rs        | t=4 hexbits| LDU2 ESS      |
+| RS(63,47,17) → (36,20,17)  | [fec/rs_63_47_17.rs](../p25-httpd/src/protocol/p25/fec/rs_63_47_17.rs) + rs_p25.rs      | t=8 hexbits| HDU outer     |
+| 1/2-rate Trellis + BAAA de-interleave | [fec/mod.rs](../p25-httpd/src/protocol/p25/fec/mod.rs)                       | Viterbi    | TSBK          |
+| CRC-16 (plain + xor 0xFFFF)| [tsbk.rs](../p25-httpd/src/protocol/p25/tsbk.rs)                                        | —          | TSBK          |
 
-All three Reed-Solomon variants are thin shims — each crate module sets `(NN, KK, PRIM_POLY)` consts and calls the shared Berlekamp-Massey in [rs_p25.rs](../p25-httpd/src/p25/rs_p25.rs). Tests for each live in `rs_p25.rs::tests` (`rs_24_16_9_three_errors`, `rs_63_47_17_six_errors`, etc.).
+All three Reed-Solomon variants are thin shims — each crate module sets `(NN, KK, PRIM_POLY)` consts and calls the shared Berlekamp-Massey in [fec/rs_p25.rs](../p25-httpd/src/protocol/p25/fec/rs_p25.rs). Tests live in sibling [fec/rs_p25_tests.rs](../p25-httpd/src/protocol/p25/fec/rs_p25_tests.rs) (the 2026-04-19 refactor moved inline `mod tests` blocks out into dedicated `_tests.rs` files across the tree).
 
 ---
 
@@ -297,33 +304,37 @@ An LDU hands the PS nine 144-bit frames. The wire format is the literal IMBE bit
 
 ### 6.2 JMBE vocoder
 
-[vocoder/mod.rs](../p25-httpd/src/vocoder/mod.rs) wraps [jmbe](../p25-httpd/src/jmbe/mod.rs) — a pure-Rust port of mbelib with spectral enhancement. mbelib FFI bindings were removed on 2026-04-17; `mbelib-sys` is still a workspace member but only for the `SAMPLES_PER_FRAME = 160` constant.
+[vocoder/mod.rs](../p25-httpd/src/vocoder/mod.rs) wraps [jmbe/mod.rs](../p25-httpd/src/jmbe/mod.rs) — a pure-Rust port of mbelib with spectral enhancement. The mbelib FFI wrapper was deleted on 2026-04-17 and the `mbelib-sys` crate was retired entirely on 2026-04-19 (commit 971f654); the `SAMPLES_PER_FRAME = 160` constant now lives in [vocoder/mod.rs](../p25-httpd/src/vocoder/mod.rs#L13).
 
 Per-frame: 18 input bytes → `[f32; 160]` → scaled to `[i16; 160]`. At 20 ms per frame, 9 frames per LDU = 180 ms of 8 kHz mono PCM per LDU.
 
-### 6.3 Forwarding, gating, silence
+### 6.3 Forwarding, gating
 
-`ImbeForwarder` in [main.rs](../p25-httpd/src/main.rs) owns the policy on whether to vocode a given frame group:
+Split across two files after the refactor: [app/imbe_forwarder.rs](../p25-httpd/src/app/imbe_forwarder.rs) receives frames from the control-channel dispatcher; [app/vocoder_task.rs](../p25-httpd/src/app/vocoder_task.rs) is the tokio task that pulls from the mpsc, runs JMBE, and broadcasts PCM. Policy gates as of `fa6ae59`:
 
-1. **TG = 0 gate** — follower is idle → drop (`imbe_frames_dropped_idle++`).
-2. **Channel full** — mpsc `try_send` back-pressure → drop (`imbe_frames_dropped++`).
-3. **Encryption gate** — `call_encrypted.load()` true → skip vocoder entirely (`vocoder_frames_encrypted++`).
-4. **Silent frame suppression (Phase 10.6)** — after JMBE, if `max(|pcm|) < 500` treat as uncorrectable and don't broadcast (`vocoder_frames_silent_suppressed++`).
+1. **Channel full** — mpsc `try_send` back-pressure → drop (`imbe_frames_dropped += 9`).
+2. **Encryption gate** — `call_encrypted.load()` true → skip JMBE entirely (`vocoder_frames_encrypted += 9`). Checked inside the vocoder task per-LDU.
+3. **Silent-frame observation** — after JMBE, if `max(|pcm|) < 16` the frame is counted (`vocoder_frames_silent_observed++`) but **not** suppressed; it flows through to the broadcast so the recorder sees continuous audio and single-speaker calls don't split across JMBE-silent bursts that exceed the 1500 ms grace window. Empty-WAV guard lives on the recorder side (`MIN_KEEPABLE_MS`).
 
-Anything that survives those four gates gets wrapped in an `AudioChunk { pcm, talkgroup, source, timestamp }` and pushed to a `tokio::sync::broadcast::Sender<AudioChunk>`. Two consumers subscribe:
+Notable removals:
+
+- **TG = 0 drop gate is gone** (see [imbe_forwarder.rs:205](../p25-httpd/src/app/imbe_forwarder.rs#L205) comment): `current_talkgroup` briefly flickering to 0 during grant refresh / retune races was dropping real mid-call frames and producing audible skips. `imbe_frames_dropped_idle` is now a vestigial counter that never increments.
+- **Silent-frame suppression is gone**: the old Phase 10.6 hard threshold (`|pcm| < 500`) is replaced by the pass-through + observation counter above.
+
+Surviving frames get wrapped in `AudioChunk { pcm, talkgroup, source, timestamp }` and pushed to a `tokio::sync::broadcast::Sender<AudioChunk>`. Two consumers subscribe:
 
 - The WebSocket handler for `/ws/audio`.
 - The recorder task.
 
 ### 6.4 PCM AGC
 
-2026-04-19: a simple peak-hold AGC runs on the broadcast path before it reaches the WebSocket, so live-player volume tracks varying radio loudness. Recorder gets pre-AGC samples. This is the silent-pass-through + PCM-AGC change from commit `e700351`.
+2026-04-19: a simple peak-hold + RMS-EMA AGC runs inside the vocoder task on its way out to the broadcast, so live-player volume tracks varying radio loudness. Voiced frames update the EMA; silent frames inherit the current scale without changing gain. Recorder gets pre-AGC samples. This is the silent-pass-through + PCM-AGC change from commit `e700351`.
 
 ---
 
 ## 7. Call / Grant Handling — TrafficManager
 
-[p25/traffic_manager.rs](../p25-httpd/src/p25/traffic_manager.rs). Three states:
+[protocol/p25/traffic_manager.rs](../p25-httpd/src/protocol/p25/traffic_manager.rs). Three states:
 
 ```rust
 enum TrafficState {
@@ -335,7 +346,7 @@ enum TrafficState {
 
 ### 7.1 Grant arrival path
 
-The control decoder stuffs every fresh `GRP_VCH_GRANT` into a `HashMap<Channel, GrantInfo>` and fires it on `grant_event_tx`. A 50 ms polling task in main.rs snapshots the map, picks the newest grant, and calls `handle_grant`.
+The control decoder stuffs every fresh `GRP_VCH_GRANT` into a `HashMap<Channel, GrantInfo>` and fires it on `grant_event_tx`. A 50 ms polling task in [app/follower.rs](../p25-httpd/src/app/follower.rs) snapshots the map, picks the newest grant, and calls `handle_grant`.
 
 `handle_grant` gates on:
 
@@ -347,7 +358,7 @@ The control decoder stuffs every fresh `GRP_VCH_GRANT` into a `HashMap<Channel, 
 
 ### 7.2 Traffic-chain DUID dispatch
 
-Meanwhile, the traffic chain is independently running its own decoder on `traffic_lsm_dibit_dma`. When it decodes DUIDs, a heartbeat task in main.rs feeds them back to the traffic manager:
+Meanwhile, the traffic chain is independently running its own decoder on `traffic_lsm_dibit_dma`. When it decodes DUIDs, a heartbeat task in [app/follower.rs](../p25-httpd/src/app/follower.rs) feeds them back to the traffic manager:
 
 - HDU → `hdu_received(now)` — clears post-TDU hold, bumps counters.
 - LDU1 / LDU2 → `note_activity()` — renews liveness watchdog.
@@ -365,7 +376,7 @@ The polling loop also checks an activity timeout: if `TrafficState::Active` and 
 
 ## 8. Recording Pipeline
 
-[recorder.rs](../p25-httpd/src/recorder.rs) is a single tokio task owning two broadcast receivers: `AudioChunk` and `CallBoundary`. It maintains `Option<ActiveCall>` and drives a deterministic state machine:
+[audio/recorder.rs](../p25-httpd/src/audio/recorder.rs) is a single tokio task owning two broadcast receivers: `AudioChunk` and `CallBoundary` (both defined in [audio/mod.rs](../p25-httpd/src/audio/mod.rs)). It maintains `Option<ActiveCall>` and drives a deterministic state machine:
 
 | Event                                   | Idle       | Active (same TG)                           | Active (different TG)              |
 |-----------------------------------------|------------|--------------------------------------------|------------------------------------|
@@ -390,7 +401,7 @@ And indexes it in a `VecDeque<RecordingEntry>` exposed through the REST API.
 - `SpeakerEnd` (Motorola `TALK_COMPLETE` via TDU_LC) stamps source then finalises, so per-speaker filenames land even when the new speaker keys up inside the 1.5 s grace window.
 - `TdulcComplete` is a mid-call source stamp only — it does **not** finalise; the source field on the current recording is updated so the eventual filename reflects the last-known speaker.
 
-**Residual gap** ([project_recordings_span_two_sources.md](../../.claude/projects/c--Users-Andy-Projects-MAIA-SDR-maia-sdr/memory/project_recordings_span_two_sources.md)): on sites that do **not** emit Motorola `TALK_COMPLETE` (vendor MFID 0x90), a single grant that carries A→B turn-taking still produces one WAV. There is no standards-mandated mid-call signal for "speaker changed but the TG didn't" — both we and SDRTrunk rely on the Motorola vendor LCW for this.
+**Residual gap** (tracked in memory as `project_recordings_span_two_sources`): on sites that do **not** emit Motorola `TALK_COMPLETE` (vendor MFID 0x90), a single grant that carries A→B turn-taking still produces one WAV. There is no standards-mandated mid-call signal for "speaker changed but the TG didn't" — both we and SDRTrunk rely on the Motorola vendor LCW for this.
 
 ---
 
@@ -439,60 +450,93 @@ TRF_TDULC_GVU      — dual-channel update
 
 ## 10. Module Map
 
+Post-refactor-sweep (2026-04-19) domain-folder layout. Production code sits in six top-level folders by role; every folder with inline `mod tests` blocks before the refactor now has a sibling `_tests.rs` file instead.
+
 ```text
 p25-httpd/src/
-├── main.rs                  — 3768 lines; tokio task orchestration,
-│                              ImbeForwarder (the VoiceHandler impl),
-│                              DMA pump loops, process startup
+├── main.rs                  — 1622 lines; startup, AppState assembly,
+│                              task spawning (no DMA / voice logic)
 │
-├── p25/                     — protocol core
-│   ├── control_channel.rs   — state machine: Hunting → NID → DataUnit
-│   ├── types.rs             — DataUnit enum, GrantInfo, FrequencyBand
-│   ├── fec.rs               — 1/2-rate Trellis Viterbi + BAAA de-interleave
-│   ├── tsbk.rs              — TSBK opcode parsers (~40 variants)
-│   ├── voice_frame.rs       — IMBE extraction, HDU / LDU1 / LDU2 / TDULC
-│   │                          FEC + LCW parsing, Golay/Hamming primitives
-│   ├── rs_p25.rs            — shared Berlekamp-Massey RS over GF(2^6)
-│   ├── rs_24_12_13.rs       — thin shim (LDU1 LC, TDULC LC)
-│   ├── rs_24_16_9.rs        — thin shim (LDU2 ESS)
-│   ├── rs_63_47_17.rs       — thin shim (HDU outer)
-│   ├── traffic_manager.rs   — grant follower state machine
-│   ├── events.rs            — P25Event enum for /ws/events
-│   └── sdrtrunk_bits_test.rs — golden-vector tests against SDRTrunk dumps
+├── app/                     — application wiring (the former main.rs tail)
+│   ├── dibit_readers.rs     — spawn_ps_c4fm_control_reader,
+│   │                          spawn_hdl_lsm_control_reader,
+│   │                          spawn_hdl_lsm_traffic_reader,
+│   │                          spawn_ps_c4fm_traffic_reader
+│   ├── follower.rs          — grant-follower polling + DUID heartbeat
+│   ├── imbe_forwarder.rs    — ImbeForwarder: the VoiceHandler impl
+│   │                          (on_hdu / on_ldu1 / on_ldu2 / on_tdu / on_tdu_lc)
+│   └── vocoder_task.rs      — JMBE decode loop + PCM AGC
 │
-├── lsm/                     — LSM demod reference + NID FEC
-│   ├── nid_fec.rs           — LIVE, BCH(63,16) decoder for all chains
-│   ├── mod.rs, filters.rs,  — retired reference implementations kept
-│   │ demod.rs, sync.rs,       for bit-exact comparison against HDL
-│   │ ring.rs                   (dead_code allowed)
+├── audio/                   — PCM broadcast + WAV recorder
+│   ├── mod.rs               — AudioChunk + CallBoundary + CallBoundaryKind
+│   └── recorder.rs          — per-call WAV writer + /api/recordings/{id}/events
+│
+├── hardware/                — Zynq I/O layer
+│   ├── fpga.rs              — IpCore: 8 DMA ring wrappers + register access
+│   ├── uio.rs               — UIO device mapper
+│   ├── rxbuffer.rs          — kernel ring buffer adapter
+│   └── iio.rs               — AD9361 IIO sysfs wrapper
+│
+├── httpd/                   — HTTP/WS server
+│   ├── mod.rs               — router, AppState
+│   ├── dashboard.html       — served at /
+│   └── api/
+│       ├── chain.rs, radio.rs, traffic.rs, tuning.rs,
+│       ├── talkgroups.rs, history.rs, debug.rs, system.rs, ws.rs
 │
 ├── jmbe/                    — pure-Rust IMBE decoder
-├── vocoder/mod.rs           — JMBE wrapper, emits PCM
+├── vocoder/mod.rs           — JMBE wrapper + SAMPLES_PER_FRAME (formerly in mbelib-sys)
 │
-├── audio.rs                 — AudioChunk + CallBoundary broadcast types
-├── recorder.rs              — per-call WAV writer
-├── event_log.rs             — structured event ring
-├── monitor.rs               — TG monitor list
-├── ntp.rs                   — boot-time NTP sync
-├── spectrum.rs              — FFT on post-DDC IQ
+├── lsm/                     — LSM demod reference implementations
+│   ├── mod.rs, filters.rs,  — retired reference code kept for bit-exact
+│   │ demod.rs, sync.rs,       comparison against HDL (#[allow(dead_code)])
+│   │ ring.rs, golden_dump.rs
+│   └── *_tests.rs           — sibling test files
+│   (NID BCH decoder was moved OUT of here into protocol/p25/fec/bch.rs)
 │
-├── fpga.rs                  — IpCore: 8 DMA ring wrappers + register access
-├── uio.rs                   — UIO device mapper
-├── rxbuffer.rs              — kernel ring buffer adapter
-├── iio.rs                   — AD9361 IIO sysfs wrapper
+├── protocol/
+│   ├── mod.rs
+│   └── p25/                 — P25 Phase 1 protocol core
+│       ├── mod.rs
+│       ├── wire.rs          — DUID codes, FRAME_SYNC_PATTERN, status dibit
+│       │                      geometry, ALGORITHM_CLEAR — single source of
+│       │                      truth for on-air magic numbers
+│       ├── types.rs         — DataUnit enum, GrantInfo, FrequencyBand
+│       ├── events.rs        — P25Event enum for /ws/events
+│       ├── tsbk.rs          — TSBK opcode parsers (~40 variants)
+│       ├── voice_frame.rs   — IMBE extraction + HDU / LDU1 / LDU2 / TDULC
+│       │                      FEC + LCW parsing, Golay/Hamming primitives
+│       ├── traffic_manager.rs — grant follower state machine
+│       ├── test_fixtures.rs — shared golden-vector fixtures
+│       ├── sdrtrunk_bits_test.rs — golden-vector tests vs SDRTrunk dumps
+│       ├── *_tests.rs       — siblings for tsbk / traffic_manager / types /
+│       │                      voice_frame
+│       ├── control_channel/
+│       │   ├── mod.rs       — state machine: Hunting → NID → DataUnit
+│       │   ├── tsbk_handlers.rs — dispatcher from framer to opcode parsers
+│       │   ├── types.rs     — decoder-internal state types
+│       │   └── tests.rs
+│       └── fec/
+│           ├── mod.rs       — 1/2-rate Trellis Viterbi + BAAA de-interleave
+│           ├── bch.rs       — BCH(63,16,23) NID decoder (decode_nid)
+│           ├── rs_p25.rs    — shared Berlekamp-Massey RS over GF(2^6)
+│           ├── rs_24_12_13.rs — thin shim (LDU1 LC, TDULC LC)
+│           ├── rs_24_16_9.rs  — thin shim (LDU2 ESS)
+│           ├── rs_63_47_17.rs — thin shim (HDU outer)
+│           └── {bch,rs_p25,tests}_tests.rs
 │
-└── httpd/                   — HTTP/WS server
-    ├── mod.rs               — router, AppState
-    └── api/
-        ├── chain.rs, radio.rs, traffic.rs, tuning.rs,
-        ├── talkgroups.rs, history.rs, debug.rs, system.rs, ws.rs
+└── services/                — cross-cutting services
+    ├── event_log.rs         — structured event ring + per-recording filter
+    ├── monitor.rs           — TG monitor list
+    ├── ntp.rs               — boot-time NTP sync
+    └── spectrum.rs          — FFT on post-DDC IQ
 ```
 
 ### Sub-crates
 
 - [p25-httpd/p25-json](../p25-httpd/p25-json/) — serde types on the API boundary (`SystemInfo`, `ChannelGrant`, `BandInfo`, `DecoderStats`).
 - [p25-httpd/p25-pac](../p25-httpd/p25-pac/) — SVD-generated register PAC for the PL.
-- [p25-httpd/mbelib-sys](../p25-httpd/mbelib-sys/) — vestigial; only `SAMPLES_PER_FRAME`.
+- ~~`mbelib-sys`~~ — retired 2026-04-19 (commit 971f654). `SAMPLES_PER_FRAME` now lives in `vocoder/mod.rs`.
 
 ---
 
@@ -506,7 +550,7 @@ t=0 ms    control-chain: TSBK GRP_VCH_GRANT TG=1234 on CH=0x1003 → 860.9875 MH
           → NCO write, traffic DDC retuned, state=Acquiring
           → /ws/events: { "type": "GRANT", "tg": 1234, "freq_hz": 860987500 }
 
-t=80 ms   traffic-chain sync lock, NID decoded: NAC=0x8A1 DUID=0x0 (HDU)
+t=80 ms   traffic-chain sync lock, NID decoded: NAC=0xABC DUID=0x0 (HDU)
           → voice_frame::parse_hdu_body → HduHeader { tg: 1234, algo: 0x80, ... }
           → ImbeForwarder::on_hdu:
              - call_encrypted = false
