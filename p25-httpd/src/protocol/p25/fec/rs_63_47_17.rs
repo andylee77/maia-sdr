@@ -18,9 +18,14 @@
 
 pub use super::rs_p25::NN;
 
+/// Information-symbol count `kk` passed to the shared Berlekamp-Massey
+/// core. Unlike the shortened variants, this one is the full 63-symbol
+/// code.
+pub const KK: usize = 47;
+
 /// Decode a (full-length, nominally 36-symbol data-bearing) RS(63,47,17)
 /// codeword. Caller populates `input` in SDRTrunk's HDU RS-input
 /// order and zero-fills unused positions.
 pub fn decode(input: &[u32; NN]) -> Result<[u32; NN], [u32; NN]> {
-    super::rs_p25::decode(input, 47)
+    super::rs_p25::decode(input, KK)
 }

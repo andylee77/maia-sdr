@@ -206,6 +206,14 @@ pub(crate) fn golay18_correct(cw: &mut [bool; 18]) -> Option<u32> {
 /// FEC. Sourced verbatim from SDRTrunk
 /// `TDULCMessage.LC_HEX_0..11` arrays. 12 hexbits × 6 bits = 72-bit
 /// post-FEC Link Control Word.
+/// Starting bit offsets of the 12 RS(24,12,13) parity hexbits inside
+/// a 294-bit TDULC body (after Hamming10 + Golay24 correction). Used
+/// by both the TDULC parser and the LDU1 LCW reader. Matches
+/// SDRTrunk's `TDULCMessage.RS_HEX_0..11` array.
+const TDULC_RS_HEX_POSITIONS: [usize; 12] = [
+    144, 150, 168, 174, 192, 198, 216, 222, 240, 246, 264, 270,
+];
+
 const LC_HEX_POSITIONS: [usize; 12] = [
     0,   // LC_HEX_0  -> LC bits 0-5
     6,   // LC_HEX_1  -> LC bits 6-11
@@ -370,9 +378,6 @@ pub fn parse_tdulc_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
     //   input[0..=11]  = RS_HEX_11 .. RS_HEX_0
     //   input[12..=23] = LC_HEX_11 .. LC_HEX_0
     //   input[24..=62] = 0  (shortened code virtual padding)
-    const RS_HEX_POSITIONS: [usize; 12] = [
-        144, 150, 168, 174, 192, 198, 216, 222, 240, 246, 264, 270,
-    ];
     let hex_at = |start: usize| -> u32 {
         let mut v = 0u32;
         for b in 0..6 {
@@ -383,7 +388,7 @@ pub fn parse_tdulc_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
     let mut rs_input = [0u32; 63];
     // indices 0..=11 = RS parity hexbits in reverse (RS_HEX_11 first)
     for i in 0..12 {
-        rs_input[i] = hex_at(RS_HEX_POSITIONS[11 - i]);
+        rs_input[i] = hex_at(TDULC_RS_HEX_POSITIONS[11 - i]);
     }
     // indices 12..=23 = LC payload hexbits in reverse (LC_HEX_11 first)
     for i in 0..12 {
@@ -740,9 +745,6 @@ pub fn tdulc_lc_bytes(body_raw: &[u8]) -> Option<[u8; 9]> {
             corrected_bits[base + b] = cw[b];
         }
     }
-    const RS_HEX_POSITIONS: [usize; 12] = [
-        144, 150, 168, 174, 192, 198, 216, 222, 240, 246, 264, 270,
-    ];
     let hex_at = |start: usize| -> u32 {
         let mut v = 0u32;
         for b in 0..6 {
@@ -752,7 +754,7 @@ pub fn tdulc_lc_bytes(body_raw: &[u8]) -> Option<[u8; 9]> {
     };
     let mut rs_input = [0u32; 63];
     for i in 0..12 {
-        rs_input[i] = hex_at(RS_HEX_POSITIONS[11 - i]);
+        rs_input[i] = hex_at(TDULC_RS_HEX_POSITIONS[11 - i]);
     }
     for i in 0..12 {
         rs_input[12 + i] = hex_at(LC_HEX_POSITIONS[11 - i]);

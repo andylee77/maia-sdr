@@ -10,7 +10,7 @@
 use core::f32::consts::PI;
 
 const TWO_PI: f32 = 2.0 * PI;
-const SAMPLES_PER_FRAME: usize = 160;
+use crate::vocoder::SAMPLES_PER_FRAME;
 
 // ============================================================================
 // Deinterleave table (144 entries)

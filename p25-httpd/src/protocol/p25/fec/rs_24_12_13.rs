@@ -11,10 +11,14 @@
 
 pub use super::rs_p25::NN;
 
+/// Information-symbol count `kk` passed to the shared Berlekamp-Massey
+/// core for this shortened variant. 63 - kk = 12 data symbols.
+pub const KK: usize = 51;
+
 /// Decode a shortened RS(24,12,13) codeword. Caller packs the 24
 /// hexbits into `input[0..24]` in SDRTrunk's RS-input order (RS_HEX_11
 /// first, ..., RS_HEX_0, then LC_HEX_11, ..., LC_HEX_0) and leaves
 /// `input[24..63]` zero-filled.
 pub fn decode(input: &[u32; NN]) -> Result<[u32; NN], [u32; NN]> {
-    super::rs_p25::decode(input, 51)
+    super::rs_p25::decode(input, KK)
 }
