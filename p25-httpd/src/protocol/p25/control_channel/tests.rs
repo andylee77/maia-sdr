@@ -1,0 +1,526 @@
+//! Unit tests for the sibling production module.
+//!
+//! Attached as a child via `#[cfg(test)] #[path = "..."]
+//! mod tests;` in the production file, so `use super::*;`
+//! resolves to the parent module's private items.
+
+use super::*;
+use crate::protocol::p25::test_fixtures::*;
+
+#[test]
+fn test_system_identity_tracking() {
+    let mut decoder = ControlChannelDecoder::new();
+
+    // Simulate NET_STS_BCST
+    decoder.handle_tsbk(0, TsbkMessage::NetworkStatus {
+        wacn: FLORIDA_WACN,
+        system_id: CLAY_SYSTEM_ID,
+        channel: Channel(0x0639),
+    });
+
+    assert_eq!(decoder.system.wacn, Some(FLORIDA_WACN));
+    assert_eq!(decoder.system.system_id, Some(CLAY_SYSTEM_ID));
+    assert_eq!(decoder.system.control_channel.unwrap().0, 0x0639);
+}
+
+#[test]
+fn test_frequency_band_table() {
+    let mut decoder = ControlChannelDecoder::new();
+
+    // Add Clay County band 0
+    decoder.handle_tsbk(0, TsbkMessage::IdentifierUpdate {
+        identifier: 0,
+        bw: 100, // 12500 Hz
+        transmit_offset: -45_000_000,
+        channel_spacing: 6_250,
+        base_frequency: 851_006_250,
+    });
+
+    // Resolve control channel
+    let freq = decoder
+        .channel_to_frequency(Channel(0x0639))
+        .unwrap();
+    assert_eq!(freq, CLAY_CONTROL_FREQ_HZ); // 860.9625 MHz
+}
+
+#[test]
+fn test_grant_tracking() {
+    let mut decoder = ControlChannelDecoder::new();
+
+    // Add band first
+    decoder.handle_tsbk(0, TsbkMessage::IdentifierUpdate {
+        identifier: 0,
+        bw: 100,
+        transmit_offset: -45_000_000,
+        channel_spacing: 6_250,
+        base_frequency: 851_006_250,
+    });
+
+    // Voice grant
+    decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
+        channel: Channel(0x045D), // band 0, ch 1117
+        talkgroup: Talkgroup(300),
+        source: RadioId(1011),
+        service_options: 0, // clear voice, no emergency
+    });
+
+    assert!(decoder.grants.contains_key(&0x045D));
+    let grant = &decoder.grants[&0x045D];
+    assert_eq!(grant.talkgroup.0, 300);
+    assert_eq!(grant.frequency_hz, Some(857_987_500)); // 857.9875 MHz
+}
+
+/// A new grant for the same talkgroup on a different channel
+/// must drop the prior grant entry. The dashboard's
+/// `/api/grants` was showing the same TG repeated 5+ times across
+/// different channels with ages spanning ~30 minutes -- the
+/// underlying state machine was carrying stale rows in
+/// `decoder.grants` because the map is keyed by channel.
+#[test]
+fn test_grant_dedup_by_talkgroup() {
+    let mut decoder = ControlChannelDecoder::new();
+    decoder.handle_tsbk(0, TsbkMessage::IdentifierUpdate {
+        identifier: 0,
+        bw: 100,
+        transmit_offset: -45_000_000,
+        channel_spacing: 6_250,
+        base_frequency: 851_006_250,
+    });
+
+    // First grant: TG 202 on channel 0x0345.
+    decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
+        channel: Channel(0x0345),
+        talkgroup: Talkgroup(202),
+        source: RadioId(1011),
+        service_options: 0,
+    });
+    // Independent TG on a third channel -- must NOT be cleared.
+    decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
+        channel: Channel(0x0500),
+        talkgroup: Talkgroup(300),
+        source: RadioId(2022),
+        service_options: 0,
+    });
+    assert_eq!(decoder.grants.len(), 2);
+
+    // Second grant: same TG 202 on a different channel. The
+    // prior 0x0345 entry should be dropped, leaving exactly two
+    // grants total (the new TG 202 + the unrelated TG 300).
+    decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
+        channel: Channel(0x045D),
+        talkgroup: Talkgroup(202),
+        source: RadioId(1011),
+        service_options: 0,
+    });
+    assert_eq!(decoder.grants.len(), 2);
+    assert!(!decoder.grants.contains_key(&0x0345));
+    assert!(decoder.grants.contains_key(&0x045D));
+    assert!(decoder.grants.contains_key(&0x0500));
+
+    // GroupVoiceChannelGrantUpdate must dedupe the same way.
+    decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrantUpdate {
+        channel_a: Channel(0x0789),
+        talkgroup_a: Talkgroup(202),
+        channel_b: Channel(0),
+        talkgroup_b: Talkgroup(0),
+    });
+    assert_eq!(decoder.grants.len(), 2);
+    assert!(!decoder.grants.contains_key(&0x045D));
+    assert!(decoder.grants.contains_key(&0x0789));
+    assert!(decoder.grants.contains_key(&0x0500));
+}
+
+/// `GroupVoiceChannelGrantUpdate` does not carry a source RadioId
+/// field, but the original `GroupVoiceChannelGrant` does. When an
+/// update arrives for an existing TG the dedup path must
+/// **preserve** the prior source so the dashboard's caller ID
+/// doesn't drop to None on every periodic refresh.
+#[test]
+fn test_grant_update_preserves_source_id() {
+    let mut decoder = ControlChannelDecoder::new();
+    decoder.handle_tsbk(0, TsbkMessage::IdentifierUpdate {
+        identifier: 0,
+        bw: 100,
+        transmit_offset: -45_000_000,
+        channel_spacing: 6_250,
+        base_frequency: 851_006_250,
+    });
+
+    // Initial grant: TG 202, source = radio 1011, on channel 0x0345.
+    decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
+        channel: Channel(0x0345),
+        talkgroup: Talkgroup(202),
+        source: RadioId(1011),
+        service_options: 0,
+    });
+    assert_eq!(
+        decoder.grants[&0x0345].source,
+        Some(RadioId(1011)),
+        "initial grant should record the source from the TSBK",
+    );
+
+    // Update on the SAME channel: source should be preserved.
+    decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrantUpdate {
+        channel_a: Channel(0x0345),
+        talkgroup_a: Talkgroup(202),
+        channel_b: Channel(0),
+        talkgroup_b: Talkgroup(0),
+    });
+    assert_eq!(decoder.grants.len(), 1);
+    assert_eq!(
+        decoder.grants[&0x0345].source,
+        Some(RadioId(1011)),
+        "update on the same channel must preserve the original source",
+    );
+
+    // Update that MOVES the call to a different channel: source
+    // should still be preserved across the dedup-and-reinsert.
+    decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrantUpdate {
+        channel_a: Channel(0x0789),
+        talkgroup_a: Talkgroup(202),
+        channel_b: Channel(0),
+        talkgroup_b: Talkgroup(0),
+    });
+    assert_eq!(decoder.grants.len(), 1);
+    assert!(!decoder.grants.contains_key(&0x0345));
+    assert!(decoder.grants.contains_key(&0x0789));
+    assert_eq!(
+        decoder.grants[&0x0789].source,
+        Some(RadioId(1011)),
+        "update across channels must still preserve the original source",
+    );
+
+    // A NEW initial grant for the same TG with a DIFFERENT source
+    // (a new caller starting a new call) must overwrite the source
+    // with the fresh value, not preserve the stale 1011.
+    decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
+        channel: Channel(0x0900),
+        talkgroup: Talkgroup(202),
+        source: RadioId(2022),
+        service_options: 0,
+    });
+    assert_eq!(decoder.grants.len(), 1);
+    assert!(decoder.grants.contains_key(&0x0900));
+    assert_eq!(
+        decoder.grants[&0x0900].source,
+        Some(RadioId(2022)),
+        "a new initial grant must use the new source from the TSBK, \
+         not preserve the prior caller",
+    );
+
+    // Update for a TG we've never seen before -- nothing to
+    // preserve, source must be None.
+    decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrantUpdate {
+        channel_a: Channel(0x0AA0),
+        talkgroup_a: Talkgroup(555),
+        channel_b: Channel(0),
+        talkgroup_b: Talkgroup(0),
+    });
+    assert_eq!(
+        decoder.grants[&0x0AA0].source,
+        None,
+        "update for a previously-unseen TG must have source = None",
+    );
+}
+
+/// Drive the decoder end-to-end with a frame sync + 33-dibit NID
+/// (with a deliberately-wrong status dibit injected at index 11)
+/// and verify the BCH FEC still decodes the correct NAC/DUID.
+/// Regression guard for doc/changes/022 (see NID_TRANSMITTED_DIBITS
+/// const docstring for the full incident).
+#[test]
+fn test_nid_status_dibit_skip_e2e() {
+    use crate::lsm::nid_fec;
+
+    // Helper: unpack a 48-bit pattern into 24 dibits MSB-first,
+    // or a 64-bit word into 32 dibits.
+    fn unpack_dibits(bits: u64, n_dibits: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(n_dibits);
+        for i in (0..n_dibits).rev() {
+            out.push(((bits >> (i * 2)) & 0x3) as u8);
+        }
+        out
+    }
+
+    // Clean Clay County NID: NAC=0x8A1, DUID=0x7 (TSDU).
+    let nid_bits = nid_fec::encode_nid(CLAY_NAC, 0x7);
+    let nid_dibits_32 = unpack_dibits(nid_bits, 32);
+
+    // Build the 33-dibit on-air NID window: splice a DELIBERATELY
+    // WRONG status dibit (value 0x3 = "-3") at index 11. If the
+    // decoder folds this into nid_bits, the BCH codeword gets
+    // corrupted and the test fails. If the decoder correctly
+    // skips index 11, the test passes.
+    let mut on_air_nid: Vec<u8> = Vec::with_capacity(33);
+    on_air_nid.extend_from_slice(&nid_dibits_32[..11]);
+    on_air_nid.push(0x3); // garbage status dibit
+    on_air_nid.extend_from_slice(&nid_dibits_32[11..]);
+    assert_eq!(on_air_nid.len(), 33);
+
+    // Frame sync pattern unpacked into 24 dibits. Matches the
+    // decoder's FRAME_SYNC_DIBIT_PATTERN constant at the top of
+    // this file.
+    let fs_dibits = unpack_dibits(FRAME_SYNC_DIBIT_PATTERN, 24);
+    assert_eq!(fs_dibits.len(), 24);
+
+    // Drive the decoder: first 24 dibits of frame sync (to arm
+    // the correlator) followed by the 33 dibits of the on-air NID
+    // window (with status spliced in).
+    let mut decoder = ControlChannelDecoder::new();
+    for &d in &fs_dibits {
+        decoder.process_dibit(d);
+    }
+    for &d in &on_air_nid {
+        decoder.process_dibit(d);
+    }
+
+    // After the NID is fully consumed the decoder should have
+    // latched the Clay County NAC into `system.nac`. Anything
+    // else means the BCH decoder either rejected the codeword or
+    // miscorrected to a different NAC -- either way the status
+    // dibit skip is broken.
+    assert_eq!(
+        decoder.system.nac,
+        Some(Nac::new(CLAY_NAC)),
+        "decoder should land on the clean Clay County NAC after \
+         skipping the status dibit at position 11; got {:?}",
+        decoder.system.nac,
+    );
+}
+
+/// Multi-block TSBK end-to-end regression guard. Builds a real
+/// 2-block TSDU body (TSBK1 last_block=0, TSBK2 last_block=1)
+/// with valid CCITT_80 CRCs, trellis-encodes each 12-byte block,
+/// and splices the 7 status dibits at body positions
+/// {13,49,85,121,157,193,229} plus 28 trailing null padding
+/// dibits. Verifies:
+///
+/// 1. `tsdu_attempts` == 1
+/// 2. `tsbk_block_attempts` == 2
+/// 3. `tsbk_crc_ok` == 2
+/// 4. Both messages dispatched:
+///    - Block 1: NetworkStatusBroadcast (0x3B) → `system.wacn`
+///    - Block 2: RfssStatusBroadcast (0x3A) → `system.rfss_id`
+/// 5. Decoder returns to Hunting after the second block.
+#[test]
+fn test_multi_block_tsbk_e2e() {
+    use crate::lsm::nid_fec;
+    use crate::protocol::p25::fec::trellis_encode_bytes;
+    use crate::protocol::p25::tsbk::ccitt80_crc;
+
+    fn unpack_dibits(bits: u64, n_dibits: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(n_dibits);
+        for i in (0..n_dibits).rev() {
+            out.push(((bits >> (i * 2)) & 0x3) as u8);
+        }
+        out
+    }
+
+    // Helper: take 12 TSBK bytes minus the trailing CRC, compute
+    // the CCITT_80 CRC for "Plain" convention (residual==0), and
+    // splice it into bytes[10..12]. Returns the finalized 12-byte
+    // block ready for trellis_encode_bytes.
+    fn finalize_tsbk(mut bytes: [u8; 12]) -> [u8; 12] {
+        // The CRC covers the first 80 bits = bytes[0..10]. We want
+        // residual = calc XOR msg_crc == 0, so msg_crc = calc.
+        let calc = ccitt80_crc(&bytes);
+        bytes[10] = (calc >> 8) as u8;
+        bytes[11] = (calc & 0xFF) as u8;
+        bytes
+    }
+
+    // ── TSBK1: NET_STS_BCST (opcode 0x3B), LB=0 ──
+    let tsbk1_raw = [
+        0x3B, // LB=0, P=0, opcode=0x3B (NetworkStatusBroadcast)
+        0x00, // standard manufacturer
+        0x00, // payload[0]: LRA
+        0xBE, // payload[1]: WACN bits 19-12
+        0xE0, // payload[2]: WACN bits 11-4
+        0x08, // payload[3]: WACN bits 3-0 | system_id bits 11-8
+        0xA0, // payload[4]: system_id bits 7-0
+        0x06, // payload[5]: channel high
+        0x39, // payload[6]: channel low
+        0x00, // payload[7]: services
+        0x00, 0x00, // CRC placeholder
+    ];
+    let tsbk1 = finalize_tsbk(tsbk1_raw);
+
+    // ── TSBK2: RFSS_STS_BCST (opcode 0x3A), LB=1 ──
+    // Matches SDRTrunk RFSSStatusBroadcast.java:
+    // payload[0] = LRA, payload[1..2] = system_id (12 bits at bits
+    // 28-39), payload[3] = RFSS, payload[4] = SITE,
+    // payload[5..6] = freq_band(4) | channel_number(12).
+    let tsbk2_raw = [
+        0xBA, // LB=1, P=0, opcode=0x3A
+        0x00, // standard manufacturer
+        0x00, // payload[0]: LRA
+        0x00, // payload[1]: bits 24-27 reserved/active flag,
+              //              bits 28-31 = system high nibble (0)
+        0x00, // payload[2]: bits 32-39 = system low byte (0)
+        0x01, // payload[3]: RFSS ID = 1
+        0x01, // payload[4]: SITE ID = 1
+        0x06, // payload[5]: freq_band(4)=0 | channel_number high(4)=0x6
+        0x39, // payload[6]: channel_number low(8)=0x39
+        0x00, // payload[7]: system service class
+        0x00, 0x00, // CRC placeholder
+    ];
+    let tsbk2 = finalize_tsbk(tsbk2_raw);
+
+    // Trellis-encode each block to 98 on-air dibits.
+    let tsbk1_dibits = trellis_encode_bytes(&tsbk1);
+    let tsbk2_dibits = trellis_encode_bytes(&tsbk2);
+
+    // Concatenate the two blocks → 196 trellis dibits, then
+    // append 28 null dibits → 224 dibits, then splice in the 7
+    // status dibits at positions {13,49,85,121,157,193,229} →
+    // 231 raw body dibits. The decoder will reverse this.
+    let mut data: Vec<u8> = Vec::with_capacity(224);
+    data.extend_from_slice(&tsbk1_dibits);
+    data.extend_from_slice(&tsbk2_dibits);
+    // 28 trailing null dibits (value doesn't matter -- gets stripped)
+    for _ in 0..28 {
+        data.push(0);
+    }
+    assert_eq!(data.len(), 224);
+
+    let status_positions = [13usize, 49, 85, 121, 157, 193, 229];
+    let mut body: Vec<u8> = Vec::with_capacity(231);
+    let mut data_iter = data.into_iter();
+    for i in 0..231 {
+        if status_positions.contains(&i) {
+            body.push(0x01); // status dibit -- value gets stripped
+        } else {
+            body.push(data_iter.next().unwrap());
+        }
+    }
+    assert_eq!(body.len(), 231);
+
+    // Build sync + NID for Clay County NAC=0x8A1, DUID=0x7 (TSDU).
+    let nid_bits = nid_fec::encode_nid(CLAY_NAC, 0x7);
+    let nid_dibits_32 = unpack_dibits(nid_bits, 32);
+    let mut on_air_nid: Vec<u8> = Vec::with_capacity(33);
+    on_air_nid.extend_from_slice(&nid_dibits_32[..11]);
+    on_air_nid.push(0x0); // status dibit (value irrelevant -- skipped)
+    on_air_nid.extend_from_slice(&nid_dibits_32[11..]);
+    let fs_dibits = unpack_dibits(FRAME_SYNC_DIBIT_PATTERN, 24);
+
+    // Drive the decoder.
+    let mut decoder = ControlChannelDecoder::new();
+    for &d in &fs_dibits {
+        decoder.process_dibit(d);
+    }
+    for &d in &on_air_nid {
+        decoder.process_dibit(d);
+    }
+    for &d in &body {
+        decoder.process_dibit(d);
+    }
+
+    // Verify counters: one TSDU, two blocks, both CRCs OK.
+    assert_eq!(
+        decoder.tsdu_attempts, 1,
+        "expected 1 TSDU attempt, got {}",
+        decoder.tsdu_attempts
+    );
+    assert_eq!(
+        decoder.tsbk_block_attempts, 2,
+        "expected 2 TSBK block attempts (TSBK1 + TSBK2), got {}",
+        decoder.tsbk_block_attempts
+    );
+    assert_eq!(
+        decoder.tsbk_crc_ok, 2,
+        "expected 2 TSBK CRC successes, got {} (failures: trellis={} crc={})",
+        decoder.tsbk_crc_ok,
+        decoder.tsbk_trellis_failures,
+        decoder.tsbk_crc_failures,
+    );
+
+    // Verify both messages dispatched: TSBK1 set wacn,
+    // TSBK2 set rfss_id.
+    assert_eq!(
+        decoder.system.wacn,
+        Some(FLORIDA_WACN),
+        "TSBK1 NetworkStatus should have set wacn=0xBEE00"
+    );
+    assert_eq!(
+        decoder.system.rfss_id,
+        Some(0x01),
+        "TSBK2 RfssStatus should have set rfss_id=1"
+    );
+}
+
+/// Single-block TSBK regression: confirm `last_block=1` on the
+/// FIRST block correctly terminates after TSBK1 without trying to
+/// read 108 more dibits for an imaginary TSBK2. Otherwise the
+/// decoder would silently consume the next sync window's dibits
+/// and fall out of sync.
+#[test]
+fn test_single_block_tsbk_terminates_on_lb1() {
+    use crate::lsm::nid_fec;
+    use crate::protocol::p25::fec::trellis_encode_bytes;
+    use crate::protocol::p25::tsbk::ccitt80_crc;
+
+    fn unpack_dibits(bits: u64, n_dibits: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(n_dibits);
+        for i in (0..n_dibits).rev() {
+            out.push(((bits >> (i * 2)) & 0x3) as u8);
+        }
+        out
+    }
+
+    let mut tsbk1_raw = [
+        0xBB, // LB=1, opcode=0x3B
+        0x00, 0x00, 0xBE, 0xE0, 0x08, 0xA0, 0x06, 0x39, 0x00, 0x00, 0x00,
+    ];
+    let calc = ccitt80_crc(&tsbk1_raw);
+    tsbk1_raw[10] = (calc >> 8) as u8;
+    tsbk1_raw[11] = (calc & 0xFF) as u8;
+
+    let tsbk1_dibits = trellis_encode_bytes(&tsbk1_raw);
+    // 98 trellis + 21 null = 119 non-status dibits, then splice 4
+    // status dibits at body positions {13,49,85,121} → 123 raw.
+    let mut data: Vec<u8> = Vec::with_capacity(119);
+    data.extend_from_slice(&tsbk1_dibits);
+    for _ in 0..21 {
+        data.push(0);
+    }
+    let status_positions = [13usize, 49, 85, 121];
+    let mut body: Vec<u8> = Vec::with_capacity(123);
+    let mut data_iter = data.into_iter();
+    for i in 0..123 {
+        if status_positions.contains(&i) {
+            body.push(0x01);
+        } else {
+            body.push(data_iter.next().unwrap());
+        }
+    }
+
+    let nid_bits = nid_fec::encode_nid(CLAY_NAC, 0x7);
+    let nid_dibits_32 = unpack_dibits(nid_bits, 32);
+    let mut on_air_nid: Vec<u8> = Vec::with_capacity(33);
+    on_air_nid.extend_from_slice(&nid_dibits_32[..11]);
+    on_air_nid.push(0x0);
+    on_air_nid.extend_from_slice(&nid_dibits_32[11..]);
+    let fs_dibits = unpack_dibits(FRAME_SYNC_DIBIT_PATTERN, 24);
+
+    let mut decoder = ControlChannelDecoder::new();
+    for &d in &fs_dibits {
+        decoder.process_dibit(d);
+    }
+    for &d in &on_air_nid {
+        decoder.process_dibit(d);
+    }
+    for &d in &body {
+        decoder.process_dibit(d);
+    }
+
+    assert_eq!(decoder.tsdu_attempts, 1);
+    assert_eq!(
+        decoder.tsbk_block_attempts, 1,
+        "single-block TSBK with LB=1 must NOT trigger a second block read"
+    );
+    assert_eq!(decoder.tsbk_crc_ok, 1);
+    assert_eq!(decoder.system.wacn, Some(FLORIDA_WACN));
+    // After TSBK1 with LB=1, we should be back in Hunting.
+    assert!(matches!(decoder.state, DecoderState::Hunting));
+}
