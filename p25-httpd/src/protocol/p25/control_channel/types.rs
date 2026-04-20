@@ -4,10 +4,8 @@
 //! module so private fields remain visible to the parent without
 //! `pub(super)` annotations on each one.
 
-use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::protocol::p25::tsbk::TsbkMessage;
 use crate::protocol::p25::types::{Channel, DataUnit, Nac, RadioId, Talkgroup};
 
 /// Decoder state machine

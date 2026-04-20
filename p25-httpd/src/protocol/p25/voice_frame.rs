@@ -645,72 +645,6 @@ pub fn parse_ldu1_source(body_raw: &[u8]) -> Option<u32> {
     }
 }
 
-/// LDU1 variant of [`tdulc_lc_bytes`]. Exposed for diagnostics + so
-/// [`parse_ldu1_source`] can extract the full source address from a
-/// standard GVCU LCW without a second parse.
-pub fn ldu1_lc_bytes(body_raw: &[u8]) -> Option<[u8; 9]> {
-    if body_raw.len() != LDU_RAW_DIBITS {
-        return None;
-    }
-    let data_dibits = strip_body_status_dibits(body_raw);
-    let bits = dibits_to_bits(&data_dibits);
-    if bits.len() < 1248 {
-        return None;
-    }
-    let mut corrected = bits;
-    let starts: [usize; 24] = {
-        let mut s = [0usize; 24];
-        s[..12].copy_from_slice(&LDU1_CW_HEX_POSITIONS);
-        s[12..].copy_from_slice(&LDU1_RS_HEX_POSITIONS);
-        s
-    };
-    for &st in &starts {
-        let mut cw = [false; 10];
-        for b in 0..10 {
-            cw[b] = corrected[st + b];
-        }
-        let _ = hamming10_correct(&mut cw);
-        for b in 0..10 {
-            corrected[st + b] = cw[b];
-        }
-    }
-    let hex_at = |start: usize| -> u32 {
-        let mut v = 0u32;
-        for b in 0..6 {
-            v = (v << 1) | if corrected[start + b] { 1 } else { 0 };
-        }
-        v
-    };
-    let mut rs_input = [0u32; 63];
-    for i in 0..12 {
-        rs_input[i] = hex_at(LDU1_RS_HEX_POSITIONS[11 - i]);
-    }
-    for i in 0..12 {
-        rs_input[12 + i] = hex_at(LDU1_CW_HEX_POSITIONS[11 - i]);
-    }
-    let rs_output = match super::fec::rs_24_12_13::decode(&rs_input) {
-        Ok(v) => v,
-        Err(v) => v,
-    };
-    let mut lc_bits = [false; 72];
-    for i in 0..12 {
-        let hexbit_val = rs_output[23 - i];
-        for b in 0..6 {
-            lc_bits[i * 6 + b] =
-                ((hexbit_val >> (5 - b)) & 1) != 0;
-        }
-    }
-    let mut out = [0u8; 9];
-    for (byte_i, byte) in out.iter_mut().enumerate() {
-        let mut v = 0u8;
-        for b in 0..8 {
-            v = (v << 1) | if lc_bits[byte_i * 8 + b] { 1 } else { 0 };
-        }
-        *byte = v;
-    }
-    Some(out)
-}
-
 /// Returns the 72-bit LC as 9 bytes (MSB-first) extracted from a
 /// TDULC body dibit slice. First two bytes are opcode / MFID;
 /// `bytes[6..9]` is the Motorola ADDRESS field. `None` if the body
@@ -799,7 +733,6 @@ pub struct ImbeFrameRaw {
 }
 
 impl ImbeFrameRaw {
-    pub const BITS: usize = 144;
     pub const BYTES: usize = 18;
 
     /// All-zero placeholder. Used as a default when extraction fails

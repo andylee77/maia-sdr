@@ -38,30 +38,21 @@ fn bytemuck_cast(buffer: &[u8]) -> &[u64] {
 }
 
 pub fn spawn_ps_c4fm_control_reader(
-    mut dibit_waiter: fpga::InterruptWaiter,
+    dibit_waiter: fpga::InterruptWaiter,
     reader_core: Arc<Mutex<fpga::IpCore>>,
     reader_decoder: Arc<RwLock<ControlChannelDecoder>>,
     reader_active_mod: Arc<AtomicU8>,
 ) {
-        // 6. Spawn dibit reader task
-        let reader_core = ip_core.clone();
-        let reader_decoder = decoder.clone();
         // 2026-04-19 phantom-TSBK fix. When active_modulation is LSM
         // (mode == 2, the default for simulcast sites) the PS C4FM
         // framer + trellis + CRC pipeline below produces nothing of
         // value: the control DDC carries an LSM signal and the C4FM
         // slicer produces random-ish dibits that occasionally pass
-        // BCH/CRC with phantom NACs (observed 4348 CRC-OK phantom
-        // TSBKs, system_nac=0xE21, in a 30-min boot probe). Those
-        // phantoms get fed into `grant_event_tx` and can trigger
-        // bogus retunes.
-        //
-        // We still drain the DMA buffers every wake so the ring
-        // doesn't back up and the histogram keeps advancing, but we
-        // skip `process_dma_word` (which runs the expensive framer)
-        // when mode != C4FM. Mode is the u8 atomic at
-        // `AppState::active_modulation`: 0=auto, 1=c4fm, 2=lsm.
-        let reader_active_mod = active_modulation.clone();
+        // BCH/CRC with phantom NACs. We still drain the DMA buffers
+        // so the ring doesn't back up, but skip `process_dma_word`
+        // (which runs the expensive framer) when mode != C4FM.
+        // Mode is the u8 atomic at `AppState::active_modulation`:
+        // 0=auto, 1=c4fm, 2=lsm.
         tokio::spawn(async move {
             tracing::info!("dibit reader task started");
             let mut wakeups: u64 = 0;
@@ -139,12 +130,10 @@ pub fn spawn_ps_c4fm_control_reader(
 }
 
 pub fn spawn_hdl_lsm_control_reader(
-    mut lsm_dibit_waiter: fpga::InterruptWaiter,
+    lsm_dibit_waiter: fpga::InterruptWaiter,
     lsm_dibit_core: Arc<Mutex<fpga::IpCore>>,
     lsm_dibit_decoder: Arc<RwLock<ControlChannelDecoder>>,
 ) {
-        let lsm_dibit_core = ip_core.clone();
-        let lsm_dibit_decoder = lsm_decoder.clone();
         tokio::spawn(async move {
             tracing::info!(
                 "HDL LSM dibit reader + TSBK decoder task started (Phase 6E)"
@@ -227,7 +216,7 @@ pub fn spawn_hdl_lsm_control_reader(
 }
 
 pub fn spawn_hdl_lsm_traffic_reader(
-    mut traffic_lsm_dibit_waiter: fpga::InterruptWaiter,
+    traffic_lsm_dibit_waiter: fpga::InterruptWaiter,
     traffic_lsm_core: Arc<Mutex<fpga::IpCore>>,
     traffic_lsm_decoder_task: Arc<RwLock<ControlChannelDecoder>>,
     traffic_reader_imbe: Arc<ImbeForwarder>,
@@ -260,9 +249,6 @@ pub fn spawn_hdl_lsm_traffic_reader(
         //   - first event: HDU on call start
         //   - then 9-10x LDU1 / LDU2 alternation per second
         //   - final event: TDU or TDU_LC on call end
-        let traffic_lsm_core = ip_core.clone();
-        let traffic_lsm_decoder_task = traffic_lsm_decoder.clone();
-        let traffic_reader_imbe = imbe_forwarder.clone();
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
             tracing::info!(
@@ -363,7 +349,7 @@ pub fn spawn_hdl_lsm_traffic_reader(
 }
 
 pub fn spawn_ps_c4fm_traffic_reader(
-    mut traffic_dibit_waiter: fpga::InterruptWaiter,
+    traffic_dibit_waiter: fpga::InterruptWaiter,
     traffic_reader_core: Arc<Mutex<fpga::IpCore>>,
     traffic_reader_stats: Arc<Mutex<crate::TrafficStats>>,
     traffic_reader_mgr: Arc<Mutex<TrafficManager>>,
@@ -382,9 +368,6 @@ pub fn spawn_ps_c4fm_traffic_reader(
         // but against the traffic_dma ring + traffic stats sink. Bumps
         // `note_activity()` on the TrafficManager whenever new bytes
         // arrive so the call_timeout_ms inactivity detector resets.
-        let traffic_reader_core = ip_core.clone();
-        let traffic_reader_stats = traffic_stats.clone();
-        let traffic_reader_mgr = traffic_manager.clone();
         tokio::spawn(async move {
             tracing::info!("traffic dibit reader task started (Phase 7A.1)");
             loop {

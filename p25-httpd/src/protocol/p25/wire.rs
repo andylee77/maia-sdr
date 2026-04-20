@@ -50,16 +50,6 @@ pub const NID_TRANSMITTED_DIBITS: usize = 33;
 pub const NID_STATUS_DIBIT_INDEX: usize = 11;
 
 // ===================================================================
-// Body status dibits — inserted every 36 on-air dibits, starting at
-// offset 13 from the first post-NID dibit. Applies to HDU / LDU1 /
-// LDU2 / TDU bodies uniformly. TDU_LC uses a shifted pattern
-// (+14 offset) captured in voice_frame.rs::TDULC_BODY_STATUS_POSITIONS.
-// ===================================================================
-
-pub const BODY_STATUS_FIRST_DIBIT: usize = 13;
-pub const BODY_STATUS_INTERVAL:    usize = 36;
-
-// ===================================================================
 // Encryption — algorithm_id sentinel.
 // ===================================================================
 

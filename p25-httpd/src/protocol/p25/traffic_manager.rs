@@ -58,8 +58,6 @@ pub struct TrafficManager {
     pub nco_word: u32,
     /// Last NCO offset (Hz, signed) -- diagnostic surface for /api/traffic.
     pub last_offset_hz: i64,
-    /// Timeout for sync acquisition (ms)
-    acquire_timeout_ms: u64,
     /// Timeout for call inactivity before returning to idle (ms)
     call_timeout_ms: u64,
     /// Last dibit activity timestamp
@@ -204,7 +202,6 @@ impl TrafficManager {
             sample_rate_hz,
             nco_word: 0,
             last_offset_hz: 0,
-            acquire_timeout_ms: 200,
             // Phase 7A.1 sticky-lock: 2000 ms matches SDRTrunk
             // upstream PR #2010 / commit 1b3ce431's
             // STALE_EVENT_THRESHOLD_MS = 2000 in
@@ -452,7 +449,10 @@ impl TrafficManager {
         self.post_tdu_hold_until = None;
     }
 
-    /// Called when we detect frame sync on the traffic channel
+    /// Called when we detect frame sync on the traffic channel.
+    /// Test-only today; the production path moves Acquiring->Active
+    /// via `handle_grant` + `note_activity`.
+    #[cfg(test)]
     pub fn sync_acquired(&mut self) {
         if let TrafficState::Acquiring {
             channel,
@@ -665,7 +665,9 @@ impl TrafficManager {
         false
     }
 
-    /// Check if we're currently following a call
+    /// Check if we're currently following a call. Test-only today;
+    /// production reads `current_talkgroup().is_some()` directly.
+    #[cfg(test)]
     pub fn is_active(&self) -> bool {
         !matches!(self.state, TrafficState::Idle)
     }

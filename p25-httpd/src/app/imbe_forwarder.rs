@@ -5,8 +5,6 @@
 //! mpsc sender to the vocoder task and the call-boundary broadcast tx that
 //! feeds the recorder.
 
-use std::sync::atomic::Ordering;
-
 use crate::audio;
 use crate::protocol::p25;
 

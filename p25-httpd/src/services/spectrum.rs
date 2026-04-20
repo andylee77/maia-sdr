@@ -144,8 +144,6 @@ pub struct Snapshot {
     pub mag_db: Vec<f32>,
     /// Sample rate in Hz (constant 62.5 kHz for both chains today).
     pub sample_rate_hz: f32,
-    /// Number of complex samples consumed total (`fft_size * averages_used`).
-    pub samples: usize,
     /// FFT length actually used.
     pub fft_size: usize,
     /// Number of non-overlapping segments power-averaged into `mag_db`.
@@ -262,7 +260,6 @@ pub fn spectrum_from_bytes(
     Some(Snapshot {
         mag_db: shifted,
         sample_rate_hz: SAMPLE_RATE_HZ,
-        samples: fft_size * averages_used,
         fft_size,
         averages_used,
     })

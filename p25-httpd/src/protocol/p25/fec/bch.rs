@@ -59,7 +59,9 @@ const DUID_BITS: u32 = 4;
 const DATA_BITS: u32 = NAC_BITS + DUID_BITS;
 /// Bits in the parity field.
 const PARITY_BITS: u32 = 48;
-/// Bits in the full code word.
+/// Bits in the full code word. Test-only today; kept pub because
+/// `bch_tests.rs` exercises the full 64-bit syndrome calc with it.
+#[cfg(test)]
 pub const CODE_BITS: u32 = DATA_BITS + PARITY_BITS;
 /// Maximum bit errors the BCH(63,16,23) code can correct: (d-1)/2 = 11.
 pub const T_MAX_ERRORS: u32 = 11;

@@ -128,21 +128,9 @@ impl Uio {
         self.read_mapping_hex(mapping, "offset").await
     }
 
-    /// Returns the physical address of a UIO mapping.
-    pub async fn map_addr(&self, mapping: usize) -> Result<usize> {
-        self.read_mapping_hex(mapping, "addr").await
-    }
-
     /// Enables interrupts by writing `1` to the UIO device file.
     pub async fn irq_enable(&mut self) -> Result<()> {
         let bytes = 1u32.to_ne_bytes();
-        self.file.write_all(&bytes).await?;
-        Ok(())
-    }
-
-    /// Disables interrupts by writing `0` to the UIO device file.
-    pub async fn irq_disable(&mut self) -> Result<()> {
-        let bytes = 0u32.to_ne_bytes();
         self.file.write_all(&bytes).await?;
         Ok(())
     }

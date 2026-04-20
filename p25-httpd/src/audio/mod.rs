@@ -78,6 +78,11 @@ pub enum CallBoundaryKind {
     /// decodes a `GRP_V_CH_USER` (standard LCW opcode 0x00) and recovers
     /// the FM: speaker radio ID. Stamps `ActiveCall.source` but does
     /// NOT finalise — speaker is still talking.
+    ///
+    /// Designed-but-unwired: the match arm in `recorder.rs` is live,
+    /// but no emitter currently dispatches this. Kept so LDU1 LC
+    /// source emission can be wired up later without enum churn.
+    #[allow(dead_code)]
     TdulcComplete { source: Option<u32> },
     /// End-of-speaker or end-of-call LCW. Fires on Motorola
     /// `TALK_COMPLETE` (opcode 0x0F MFID 0x90) and standard

@@ -137,12 +137,6 @@ pub struct AppState {
     /// Phase 7E: audio broadcast channel. The vocoder task sends
     /// AudioChunks here; HTTP/WebSocket handlers subscribe.
     pub audio_tx: crate::audio::AudioTx,
-    /// 2026-04-19: call-boundary broadcast channel. The traffic-LSM
-    /// heartbeat task publishes `HduStart` on DUID 0x0 and
-    /// `TdulcComplete` on DUID 0xF. The recorder task subscribes to
-    /// split recordings on PTT boundaries. Other subscribers (e.g.
-    /// a future "who's talking" dashboard widget) can join here too.
-    pub call_boundary_tx: crate::audio::CallBoundaryTx,
     /// Cumulative count of `Lagged` events observed by /ws/audio
     /// subscribers since boot. Each increment = one broadcast-channel
     /// overrun where a consumer fell behind and lost chunks (audible

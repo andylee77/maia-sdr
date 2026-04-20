@@ -8,7 +8,6 @@
 //! the rest of the daemon.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::broadcast;

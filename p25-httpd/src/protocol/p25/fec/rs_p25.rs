@@ -48,7 +48,7 @@ fn generate_gf() -> ([u32; NN + 1], [i32; NN + 1]) {
         mask <<= 1;
     }
     index_of[alpha_to[MM] as usize] = MM as i32;
-    let mut mask = mask >> 1;
+    let mask = mask >> 1;
     for i in (MM + 1)..NN {
         if alpha_to[i - 1] >= mask {
             alpha_to[i] = alpha_to[MM] ^ ((alpha_to[i - 1] ^ mask) << 1);

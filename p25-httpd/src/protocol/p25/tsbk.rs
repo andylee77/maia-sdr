@@ -460,7 +460,6 @@ pub enum TsbkMessage {
     ManufacturerSpecific {
         mfid: u8,
         opcode: u8,
-        payload: [u8; 8],
     },
 }
 
@@ -619,7 +618,6 @@ impl TsbkBlock {
             return Some(TsbkMessage::ManufacturerSpecific {
                 mfid: self.manufacturer,
                 opcode: self.opcode_raw,
-                payload: self.payload,
             });
         }
 

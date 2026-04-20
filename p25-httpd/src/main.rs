@@ -29,14 +29,14 @@ use audio::recorder;
 use hardware::{fpga, iio};
 use protocol::p25;
 use protocol::p25::control_channel::ControlChannelDecoder;
-use services::{event_log, monitor, ntp};
+use services::{monitor, ntp};
 
 /// Build tag, logged at startup and exposed via `/api/system`.
 ///
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-19-refactor-sweep";
+pub const BUILD_TAG: &str = "2026-04-20-warning-cleanup";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -1554,7 +1554,6 @@ async fn main() -> anyhow::Result<()> {
         imbe_forwarder: imbe_forwarder.clone(),
         monitor_list: monitor_list.clone(),
         audio_tx: audio_tx.clone(),
-        call_boundary_tx: call_boundary_tx.clone(),
         audio_ws_lag_total: std::sync::Arc::new(
             std::sync::atomic::AtomicU64::new(0),
         ),
@@ -1611,12 +1610,3 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Safe cast of a byte buffer to u64 slice (assumes alignment from DMA).
-#[cfg(target_os = "linux")]
-fn bytemuck_cast(buffer: &[u8]) -> &[u64] {
-    let len = buffer.len() / 8;
-    if len == 0 {
-        return &[];
-    }
-    unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const u64, len) }
-}

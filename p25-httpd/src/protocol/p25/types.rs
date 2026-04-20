@@ -7,12 +7,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dibit(pub u8);
 
-impl Dibit {
-    pub fn value(self) -> u8 {
-        self.0 & 0x03
-    }
-}
-
 /// P25 Network Access Code (12 bits)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Nac(pub u16);
@@ -197,16 +191,3 @@ impl std::fmt::Display for Channel {
     }
 }
 
-/// 48-bit frame sync unpacked into individual bits (MSB-first).
-/// TIA-102.BAAA Table 7-1. The packed-dibit u64 form lives at
-/// `super::wire::FRAME_SYNC_PATTERN`; this array is kept for call
-/// sites that walk the bits individually.
-///
-/// Renamed from `FRAME_SYNC_DIBITS` on 2026-04-19 to avoid a name
-/// collision with `lsm::sync::FRAME_SYNC_DIBITS` (a scalar count).
-pub const FRAME_SYNC_DIBIT_ARRAY: [u8; 48] = [
-    0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, // 0x5575
-    1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, // F5FF
-    0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, // 77FF
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // (continued)
-];

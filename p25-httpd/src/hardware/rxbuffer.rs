@@ -69,11 +69,6 @@ impl RxBuffer {
         })
     }
 
-    /// Size in bytes of each buffer in the ring.
-    pub fn buffer_size(&self) -> usize {
-        self.buffer_size
-    }
-
     /// Number of buffers in the ring.
     pub fn num_buffers(&self) -> usize {
         self.num_buffers
