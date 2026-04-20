@@ -38,6 +38,39 @@ use services::{event_log, monitor, ntp};
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
 pub const BUILD_TAG: &str = "2026-04-19-vocoder-osthread-grace3s";
 
+// ── Runtime / timing constants ─────────────────────────────────────
+//
+// Values are in milliseconds (suffix `_MS`) or seconds (suffix `_SECS`)
+// to match the `Duration::from_millis` / `Duration::from_secs`
+// constructor at the call site. Only named here if the literal is
+// non-obvious in context or appears in more than one call site; one-off
+// obvious durations (e.g. the 5 s NTP timeout, 1 s elapsed() gates
+// whose meaning is clear from the surrounding log message) remain
+// inline.
+
+/// HDL LSM heartbeat poll tick (~60 Hz). Used by both the control-
+/// channel and traffic-chain heartbeat tasks to sample `lsm_status` /
+/// `lsm_debug` registers. Matches the ~60 Hz loop called out in the
+/// task's banner log.
+const LSM_HEARTBEAT_TICK_MS: u64 = 16;
+
+/// NID-event log throttle on the control-channel heartbeat. A busy
+/// site emits ~70 NIDs/s; 200 ms caps verbose logging at 5 Hz while
+/// still capturing sub-second bursts. First 10 events are always
+/// logged.
+const NID_EVENT_LOG_THROTTLE_MS: u64 = 200;
+
+/// FPGA register stats poll interval — the periodic log task that
+/// dumps `dibit_count`, overflow flags, and buffer cursors. Low
+/// enough to see drift, high enough to not spam.
+const STATS_POLL_INTERVAL_SECS: u64 = 2;
+
+/// Periodic grant-expiry sweep cadence. Without this sweep the
+/// decoder's grant HashMap would only grow and the Active Grants
+/// panel would never decay. Actual per-grant expiry age is 30 s
+/// (P25 typical call timeout) — this just sets how often we look.
+const GRANT_EXPIRY_SWEEP_SECS: u64 = 5;
+
 /// Cumulative + snapshot stats for the HDL LSM chain. Populated by the
 /// HDL LSM heartbeat task, read by `/api/hdl_lsm`.
 #[derive(Debug, Clone, Default)]
@@ -672,7 +705,7 @@ async fn main() -> anyhow::Result<()> {
                 rt.started_at = Some(std::time::Instant::now());
             }
             let mut tick = tokio::time::interval(
-                std::time::Duration::from_millis(16),
+                std::time::Duration::from_millis(LSM_HEARTBEAT_TICK_MS),
             );
             tick.tick().await;
 
@@ -931,7 +964,8 @@ async fn main() -> anyhow::Result<()> {
                     // Throttle event logging to 5 Hz on a busy site
                     // (~70 NIDs/sec); always log the first 10.
                     let log_now = event_count <= 10
-                        || last_event_log.elapsed() >= std::time::Duration::from_millis(200);
+                        || last_event_log.elapsed()
+                            >= std::time::Duration::from_millis(NID_EVENT_LOG_THROTTLE_MS);
                     if log_now {
                         last_event_log = std::time::Instant::now();
                         tracing::info!(
@@ -1084,7 +1118,8 @@ async fn main() -> anyhow::Result<()> {
         // Periodic stats task — polls FPGA registers every 2s.
         let stats_core = ip_core.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            let mut tick = tokio::time::interval(
+                std::time::Duration::from_secs(STATS_POLL_INTERVAL_SECS));
             tick.tick().await; // discard first immediate tick
             loop {
                 tick.tick().await;
@@ -1154,7 +1189,7 @@ async fn main() -> anyhow::Result<()> {
                  traffic_lsm_status @ 16 ms)"
             );
             let mut tick =
-                tokio::time::interval(std::time::Duration::from_millis(16));
+                tokio::time::interval(std::time::Duration::from_millis(LSM_HEARTBEAT_TICK_MS));
             tick.tick().await; // discard immediate first tick
             // Track cumulative NID counters locally for periodic
             // logging (TrafficManager already tracks hdus_seen /
@@ -1351,7 +1386,8 @@ async fn main() -> anyhow::Result<()> {
         // 30 s matches P25 typical call timeout.
         let expiry_decoder = decoder.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut tick = tokio::time::interval(
+                std::time::Duration::from_secs(GRANT_EXPIRY_SWEEP_SECS));
             tick.tick().await;
             loop {
                 tick.tick().await;
@@ -1364,7 +1400,8 @@ async fn main() -> anyhow::Result<()> {
         // Grants panel).
         let lsm_expiry_decoder = lsm_decoder.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut tick = tokio::time::interval(
+                std::time::Duration::from_secs(GRANT_EXPIRY_SWEEP_SECS));
             tick.tick().await;
             loop {
                 tick.tick().await;

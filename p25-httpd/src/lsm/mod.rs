@@ -311,6 +311,7 @@ mod stats_tests {
     use super::*;
     use crate::lsm::demod::DemodResult;
     use crate::lsm::sync::SyncEvent;
+    use crate::protocol::p25::test_fixtures::*;
 
     fn mk_event(nac: u16, duid: u8) -> SyncEvent {
         SyncEvent {
@@ -342,12 +343,12 @@ mod stats_tests {
     #[test]
     fn record_batch_accumulates_counters_and_nac_hist() {
         let mut stats = LsmStats::default();
-        let b = mk_batch(vec![mk_event(0x8A1, 7), mk_event(0x8A1, 7), mk_event(0x12E, 7)]);
+        let b = mk_batch(vec![mk_event(CLAY_NAC, 7), mk_event(CLAY_NAC, 7), mk_event(0x12E, 7)]);
         stats.record_batch(8192, &b);
         assert_eq!(stats.wakeups, 1);
         assert_eq!(stats.iq_samples, 8192);
         assert_eq!(stats.hard_events, 3);
-        assert_eq!(stats.nac_hist.get(&0x8A1), Some(&2));
+        assert_eq!(stats.nac_hist.get(&CLAY_NAC), Some(&2));
         assert_eq!(stats.nac_hist.get(&0x12E), Some(&1));
         assert!(stats.last_sync.is_some());
         let ls = stats.last_sync.unwrap();
@@ -361,16 +362,16 @@ mod stats_tests {
         stats.record_batch(
             1,
             &mk_batch(vec![
-                mk_event(0x8A1, 7),
-                mk_event(0x8A1, 7),
-                mk_event(0x8A1, 7),
+                mk_event(CLAY_NAC, 7),
+                mk_event(CLAY_NAC, 7),
+                mk_event(CLAY_NAC, 7),
                 mk_event(0x12E, 7),
                 mk_event(0x12E, 7),
                 mk_event(0xABB, 7),
             ]),
         );
         let top = stats.top_nacs(3);
-        assert_eq!(top, vec![(0x8A1, 3), (0x12E, 2), (0xABB, 1)]);
+        assert_eq!(top, vec![(CLAY_NAC, 3), (0x12E, 2), (0xABB, 1)]);
     }
 
     #[test]

@@ -1412,6 +1412,7 @@ impl ControlChannelDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::p25::test_fixtures::*;
 
     #[test]
     fn test_system_identity_tracking() {
@@ -1419,13 +1420,13 @@ mod tests {
 
         // Simulate NET_STS_BCST
         decoder.handle_tsbk(0, TsbkMessage::NetworkStatus {
-            wacn: 0xBEE00,
-            system_id: 0x8A0,
+            wacn: FLORIDA_WACN,
+            system_id: CLAY_SYSTEM_ID,
             channel: Channel(0x0639),
         });
 
-        assert_eq!(decoder.system.wacn, Some(0xBEE00));
-        assert_eq!(decoder.system.system_id, Some(0x8A0));
+        assert_eq!(decoder.system.wacn, Some(FLORIDA_WACN));
+        assert_eq!(decoder.system.system_id, Some(CLAY_SYSTEM_ID));
         assert_eq!(decoder.system.control_channel.unwrap().0, 0x0639);
     }
 
@@ -1446,7 +1447,7 @@ mod tests {
         let freq = decoder
             .channel_to_frequency(Channel(0x0639))
             .unwrap();
-        assert_eq!(freq, 860_962_500); // 860.9625 MHz
+        assert_eq!(freq, CLAY_CONTROL_FREQ_HZ); // 860.9625 MHz
     }
 
     #[test]
@@ -1649,7 +1650,7 @@ mod tests {
         }
 
         // Clean Clay County NID: NAC=0x8A1, DUID=0x7 (TSDU).
-        let nid_bits = nid_fec::encode_nid(0x8A1, 0x7);
+        let nid_bits = nid_fec::encode_nid(CLAY_NAC, 0x7);
         let nid_dibits_32 = unpack_dibits(nid_bits, 32);
 
         // Build the 33-dibit on-air NID window: splice a DELIBERATELY
@@ -1687,7 +1688,7 @@ mod tests {
         // dibit skip is broken.
         assert_eq!(
             decoder.system.nac,
-            Some(Nac::new(0x8A1)),
+            Some(Nac::new(CLAY_NAC)),
             "decoder should land on the clean Clay County NAC after \
              skipping the status dibit at position 11; got {:?}",
             decoder.system.nac,
@@ -1802,7 +1803,7 @@ mod tests {
         assert_eq!(body.len(), 231);
 
         // Build sync + NID for Clay County NAC=0x8A1, DUID=0x7 (TSDU).
-        let nid_bits = nid_fec::encode_nid(0x8A1, 0x7);
+        let nid_bits = nid_fec::encode_nid(CLAY_NAC, 0x7);
         let nid_dibits_32 = unpack_dibits(nid_bits, 32);
         let mut on_air_nid: Vec<u8> = Vec::with_capacity(33);
         on_air_nid.extend_from_slice(&nid_dibits_32[..11]);
@@ -1845,7 +1846,7 @@ mod tests {
         // TSBK2 set rfss_id.
         assert_eq!(
             decoder.system.wacn,
-            Some(0xBEE00),
+            Some(FLORIDA_WACN),
             "TSBK1 NetworkStatus should have set wacn=0xBEE00"
         );
         assert_eq!(
@@ -1901,7 +1902,7 @@ mod tests {
             }
         }
 
-        let nid_bits = nid_fec::encode_nid(0x8A1, 0x7);
+        let nid_bits = nid_fec::encode_nid(CLAY_NAC, 0x7);
         let nid_dibits_32 = unpack_dibits(nid_bits, 32);
         let mut on_air_nid: Vec<u8> = Vec::with_capacity(33);
         on_air_nid.extend_from_slice(&nid_dibits_32[..11]);
@@ -1926,7 +1927,7 @@ mod tests {
             "single-block TSBK with LB=1 must NOT trigger a second block read"
         );
         assert_eq!(decoder.tsbk_crc_ok, 1);
-        assert_eq!(decoder.system.wacn, Some(0xBEE00));
+        assert_eq!(decoder.system.wacn, Some(FLORIDA_WACN));
         // After TSBK1 with LB=1, we should be back in Hunting.
         assert!(matches!(decoder.state, DecoderState::Hunting));
     }

@@ -250,6 +250,7 @@ pub fn find_sync_events_soft(soft_phases: &[f32], hard_dibits: &[u8]) -> Vec<Syn
 mod tests {
     use super::super::nid_fec::encode_nid;
     use super::*;
+    use crate::protocol::p25::test_fixtures::*;
 
     /// Build a clean dibit stream containing the sync pattern followed by
     /// a known NID encoded for NAC=0x8A1 / DUID=7. The hard detector must
@@ -265,7 +266,7 @@ mod tests {
         }
         // Append the 33-dibit NID window: 11 dibits of NID, 1 status
         // dibit (anything — we choose 0), 21 more dibits of NID.
-        let nid = encode_nid(0x8A1, 7);
+        let nid = encode_nid(CLAY_NAC, 7);
         let mut nid_dibits: [u8; 32] = [0; 32];
         for j in 0..32 {
             let shift = (31 - j) * 2;
@@ -286,10 +287,10 @@ mod tests {
         let e = events[0];
         assert_eq!(e.distance, 0);
         assert_eq!(e.nid_raw, nid);
-        assert_eq!(e.nac, 0x8A1);
+        assert_eq!(e.nac, CLAY_NAC);
         assert_eq!(e.duid, 7);
         let fec = e.fec.expect("clean NID must decode");
-        assert_eq!(fec.nac, 0x8A1);
+        assert_eq!(fec.nac, CLAY_NAC);
         assert_eq!(fec.duid, 7);
         assert_eq!(fec.n_errors, 0);
     }
@@ -376,7 +377,7 @@ mod tests {
     /// dibit must NOT affect the extracted NID.
     #[test]
     fn status_dibit_is_skipped() {
-        let nid = encode_nid(0x8A1, 7);
+        let nid = encode_nid(CLAY_NAC, 7);
         let mut payload: [u8; 32] = [0; 32];
         for j in 0..32 {
             payload[j] = ((nid >> ((31 - j) * 2)) & 0x3) as u8;
@@ -397,7 +398,7 @@ mod tests {
         let a = extract_nid_skipping_status(&make_stream(0), 0).unwrap();
         let b = extract_nid_skipping_status(&make_stream(3), 0).unwrap();
         assert_eq!(a, b);
-        assert_eq!(a.0, 0x8A1);
+        assert_eq!(a.0, CLAY_NAC);
         assert_eq!(a.1, 7);
         assert_eq!(a.2, nid);
     }

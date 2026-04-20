@@ -692,6 +692,7 @@ impl TrafficManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::p25::test_fixtures::*;
 
     #[test]
     fn test_nco_calculation() {
@@ -702,7 +703,7 @@ mod tests {
         let retune = mgr.handle_grant(
             Channel(0x0639),
             Talkgroup(300),
-            860_962_500,
+            CLAY_CONTROL_FREQ_HZ,
         );
         assert!(retune);
 

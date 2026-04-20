@@ -110,6 +110,11 @@ const GOLAY24_CHECKSUMS: [u16; 23] = [
     0x004, 0x002, 0x001,
 ];
 
+/// Bit width of a full Golay(24,12,7) codeword: 12 data bits + 11 Golay
+/// parity bits + 1 overall parity bit. Used to slice and rebuild 24-bit
+/// codewords out of the TDULC 288-bit FEC block.
+const GOLAY24_CODEWORD_BITS: usize = 24;
+
 /// 11-bit Golay(23,12) syndrome of a 24-bit codeword. Bit 23 (the
 /// 24th bit) is the overall parity — not part of the syndrome math
 /// but flipped if `parity_error` is true so the caller can use it
@@ -361,13 +366,13 @@ pub fn parse_tdulc_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
     // feeding RS are pre-cleaned.
     let mut corrected_bits = [false; 288];
     for cw_idx in 0..12 {
-        let base = cw_idx * 24;
-        let mut cw = [false; 24];
-        for b in 0..24 {
+        let base = cw_idx * GOLAY24_CODEWORD_BITS;
+        let mut cw = [false; GOLAY24_CODEWORD_BITS];
+        for b in 0..GOLAY24_CODEWORD_BITS {
             cw[b] = raw_bits[base + b];
         }
         let _ = golay24_correct(&mut cw);
-        for b in 0..24 {
+        for b in 0..GOLAY24_CODEWORD_BITS {
             corrected_bits[base + b] = cw[b];
         }
     }
@@ -735,13 +740,13 @@ pub fn tdulc_lc_bytes(body_raw: &[u8]) -> Option<[u8; 9]> {
     // bytes match what the parser classified against.
     let mut corrected_bits = [false; 288];
     for cw_idx in 0..12 {
-        let base = cw_idx * 24;
-        let mut cw = [false; 24];
-        for b in 0..24 {
+        let base = cw_idx * GOLAY24_CODEWORD_BITS;
+        let mut cw = [false; GOLAY24_CODEWORD_BITS];
+        for b in 0..GOLAY24_CODEWORD_BITS {
             cw[b] = raw_bits[base + b];
         }
         let _ = golay24_correct(&mut cw);
-        for b in 0..24 {
+        for b in 0..GOLAY24_CODEWORD_BITS {
             corrected_bits[base + b] = cw[b];
         }
     }

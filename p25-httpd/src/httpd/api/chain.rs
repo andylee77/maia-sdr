@@ -33,6 +33,34 @@ use crate::protocol::p25::control_channel::{
     ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, CC_SYNC_THRESHOLD,
 };
 
+// ── API-wait cadence + deadline constants ─────────────────────────
+//
+// Several aligned-capture and IQ-dump endpoints arm a flag, then
+// poll for the async HDL reader to populate a buffer. The cadence
+// and deadline constants below are shared across those endpoints.
+
+/// Poll cadence for the aligned dibit-capture endpoints. Fast enough
+/// that the arm-and-wait loop returns within ~50 ms of the reader
+/// populating the snapshot.
+const CAPTURE_POLL_INTERVAL_MS: u64 = 50;
+
+/// Deadline for `/api/control_dibit_capture_aligned`. The LSM dibit
+/// reader IRQ fires only about every 3.5 s (one buffer per IRQ) and
+/// holds the decoder write() lock while draining — 10 s gives us at
+/// least 3 cycles of headroom before declaring the chain stalled.
+const CONTROL_CAPTURE_TIMEOUT_MS: u64 = 10_000;
+
+/// Deadline for `/api/traffic_dibit_capture_aligned`. The traffic
+/// framer only sees sync hits while a real call is active, so 15 s
+/// covers arming just before a grant arrives.
+const TRAFFIC_CAPTURE_TIMEOUT_MS: u64 = 15_000;
+
+/// Retry delay for `/api/iq_dump` when not enough sub-buffers have
+/// arrived yet. Sub-buffers are ~131 ms wide post-DDC, so 60 ms is
+/// faster than the arrival rate — tight enough to not miss one, but
+/// not so tight it spins on the lock.
+const IQ_DRAIN_RETRY_MS: u64 = 60;
+
 /// Returns recent dibits as a hex string + diagnostic counters.
 ///
 /// Each pair of hex chars = 8 dibits. Useful for sanity-checking
@@ -160,7 +188,7 @@ pub async fn get_control_dibit_capture_aligned(
     // before it can read a populated capture. 10 s gives us at least
     // 3 cycles of headroom -- if no sync hits in that long, the chain
     // is genuinely stalled.
-    let deadline = Instant::now() + Duration::from_millis(10000);
+    let deadline = Instant::now() + Duration::from_millis(CONTROL_CAPTURE_TIMEOUT_MS);
     loop {
         {
             let dec = state.lsm_decoder.read().await;
@@ -180,7 +208,7 @@ pub async fn get_control_dibit_capture_aligned(
                          (check best Hamming distance on the LSM dibit dump).",
             }));
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(CAPTURE_POLL_INTERVAL_MS)).await;
     }
 }
 
@@ -205,7 +233,7 @@ pub async fn get_traffic_dibit_capture_aligned(
     // (the noise-gate changes landing in the Phase 10 bake will make
     // this even more true). Give up to 15 seconds of headroom in
     // case the user is arming this just before a grant arrives.
-    let deadline = Instant::now() + Duration::from_millis(15000);
+    let deadline = Instant::now() + Duration::from_millis(TRAFFIC_CAPTURE_TIMEOUT_MS);
     loop {
         {
             let dec = state.traffic_lsm_decoder.read().await;
@@ -225,7 +253,7 @@ pub async fn get_traffic_dibit_capture_aligned(
                          populated snapshot.",
             }));
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(CAPTURE_POLL_INTERVAL_MS)).await;
     }
 }
 
@@ -448,7 +476,7 @@ async fn accumulate_iq(
             }
         }
         if acc.len() < target_bytes {
-            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(IQ_DRAIN_RETRY_MS)).await;
         }
     }
 

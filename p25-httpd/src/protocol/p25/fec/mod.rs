@@ -399,6 +399,7 @@ pub(crate) fn trellis_encode_bytes(bytes: &[u8; 12]) -> [u8; 98] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::p25::test_fixtures::*;
 
     /// The `raw_duid` field is the pre-BCH 4-bit DUID straight off the
     /// wire (u64 bits 51..48). `control_channel.rs::process_dibit`
@@ -414,9 +415,9 @@ mod tests {
         // validated lsm::nid_fec encoder so we get a real BCH codeword
         // with the right 48 parity bits, then verify decode_nid round-
         // trips it cleanly.
-        let nid_bits = crate::protocol::p25::fec::bch::encode_nid(0x8A1, 0x7);
+        let nid_bits = crate::protocol::p25::fec::bch::encode_nid(CLAY_NAC, 0x7);
         let decoded = crate::protocol::p25::fec::bch::decode_nid(nid_bits).unwrap();
-        assert_eq!(decoded.nac, 0x8A1);
+        assert_eq!(decoded.nac, CLAY_NAC);
         assert_eq!(decoded.duid, 0x7);
         // For a clean codeword raw matches BCH-corrected.
         assert_eq!(raw_duid_of(nid_bits), 0x7);
@@ -429,7 +430,7 @@ mod tests {
         // codeword and verify the decoder still recovers the original
         // NAC/DUID, matching the existing
         // lsm::nid_fec::error_correction_sweep_up_to_t11 test.
-        let clean = crate::protocol::p25::fec::bch::encode_nid(0x8A1, 0x7);
+        let clean = crate::protocol::p25::fec::bch::encode_nid(CLAY_NAC, 0x7);
         // 11 fixed bit positions from the parity field (avoid bit 63
         // which is the SDRTrunk-test convention).
         let positions = [0u32, 5, 9, 14, 20, 27, 33, 40, 46, 51, 58];
@@ -438,7 +439,7 @@ mod tests {
             corrupted ^= 1u64 << (63 - p);
         }
         let decoded = crate::protocol::p25::fec::bch::decode_nid(corrupted).unwrap();
-        assert_eq!(decoded.nac, 0x8A1);
+        assert_eq!(decoded.nac, CLAY_NAC);
         assert_eq!(decoded.duid, 0x7);
     }
 
@@ -451,7 +452,7 @@ mod tests {
         // original (NAC, DUID) pair, because that would be undetectably
         // wrong. The strict assertion is "either None, or a different
         // (NAC, DUID)".
-        let clean = crate::protocol::p25::fec::bch::encode_nid(0x8A1, 0x7);
+        let clean = crate::protocol::p25::fec::bch::encode_nid(CLAY_NAC, 0x7);
         // Flip the first 20 bits.
         let mut corrupted = clean;
         for p in 0u32..20 {
@@ -462,7 +463,7 @@ mod tests {
             Some(d) => {
                 assert_ne!(
                     (d.nac, d.duid),
-                    (0x8A1, 0x7),
+                    (CLAY_NAC, 0x7),
                     "20-bit-error word silently decoded as the original NAC/DUID -- BCH bypass?"
                 );
             }

@@ -75,6 +75,13 @@ const VOCODER_TAIL_WINDOW: Duration = Duration::from_millis(1500);
 /// against accidental 1-frame "calls" from phantom TDU_LC bursts.
 const MIN_KEEPABLE_MS: u64 = 500;
 
+/// Recorder task main-loop tick. Fast enough that `pending_finalise`
+/// fires within ~50 ms of the `VOCODER_TAIL_WINDOW` deadline, so we
+/// capture the tail audio without lingering far past it. The
+/// `FINALIZE_GRACE` timer check also runs every tick but only acts
+/// when `last_chunk_at.elapsed() >= FINALIZE_GRACE`.
+const RECORDER_TICK_MS: u64 = 50;
+
 /// Metadata for a completed recording, returned by /api/recordings.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RecordingEntry {
@@ -422,12 +429,8 @@ pub async fn recorder_task(
 
     let mut active: Option<ActiveCall> = None;
     let mut next_id: u64 = 1;
-    // 50 ms tick. Fast enough that `pending_finalise` fires within
-    // ~50 ms of the `VOCODER_TAIL_WINDOW` deadline, so we capture the
-    // tail audio without lingering far past it. The grace-window
-    // check (1.5 s threshold) also runs every tick but only acts
-    // when `last_chunk_at.elapsed() >= FINALIZE_GRACE`.
-    let mut tick = tokio::time::interval(Duration::from_millis(50));
+    // See `RECORDER_TICK_MS` for the rationale behind this cadence.
+    let mut tick = tokio::time::interval(Duration::from_millis(RECORDER_TICK_MS));
 
     loop {
         tokio::select! {

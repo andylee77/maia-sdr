@@ -43,6 +43,12 @@ use axum::{
     response::IntoResponse,
 };
 
+/// Poll cadence for the `/ws/iq` + related IQ streaming handlers.
+/// Sub-buffers arrive every ~131 ms (post-DDC) or ~262 ms (post-LSM,
+/// half rate). 80 ms catches both with headroom while halving lock
+/// pressure vs the earlier 40 ms tick.
+const IQ_POLL_INTERVAL_MS: u64 = 80;
+
 pub async fn ws_events(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
@@ -264,7 +270,7 @@ async fn handle_ws_iq(
     // Poll cadence: sub-buffers arrive every ~131 ms (post-DDC) or
     // ~262 ms (post-LSM, half rate). 80 ms polling catches both with
     // headroom while halving lock pressure vs the earlier 40 ms tick.
-    let mut tick = tokio::time::interval(Duration::from_millis(80));
+    let mut tick = tokio::time::interval(Duration::from_millis(IQ_POLL_INTERVAL_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {

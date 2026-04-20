@@ -25,6 +25,12 @@ use crate::protocol::p25::{self, control_channel::ControlChannelDecoder,
 use crate::services::event_log::EventLog;
 use crate::services::monitor::MonitorList;
 
+/// Grant-follower timeout tick. The follower is event-driven (mpsc
+/// receiver) for the happy path; this tick exists only so the
+/// per-call timeout logic (sticky-lock decay, grant expiry) gets a
+/// chance to fire even when no new grant events are arriving.
+const FOLLOWER_TIMEOUT_TICK_MS: u64 = 200;
+
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_traffic_grant_follower(
     follower_lsm_decoder: Arc<RwLock<ControlChannelDecoder>>,
@@ -49,7 +55,7 @@ pub fn spawn_traffic_grant_follower(
                  (event-driven via mpsc + 200 ms timeout tick)"
             );
             let mut timeout_tick =
-                tokio::time::interval(std::time::Duration::from_millis(200));
+                tokio::time::interval(std::time::Duration::from_millis(FOLLOWER_TIMEOUT_TICK_MS));
             timeout_tick.tick().await; // discard immediate first tick
 
             // Process a grant event; returns true if a retune was performed.

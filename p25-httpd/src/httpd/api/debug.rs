@@ -28,6 +28,23 @@ use axum::{
 #[allow(unused_imports)]
 use p25_json::*;
 
+// ── IQ drain cadence constants ────────────────────────────────────
+//
+// /api/spectrum and /api/constellation both read the shared iq_dma
+// ring. Competing readers (/ws/iq, the constellation poller, the
+// spectrum poller) can starve one endpoint's drain for a window;
+// these retry-with-deadline constants survive that contention.
+
+/// Deadline for accumulating enough IQ sub-buffers for one FFT /
+/// constellation snapshot. Sub-buffers arrive every ~131 ms; 3 s
+/// gives ~22 opportunities even under 50% reader contention.
+const IQ_DRAIN_DEADLINE_MS: u64 = 3000;
+
+/// Retry cadence while waiting for sub-buffers. Faster than the
+/// ~131 ms arrival rate so we don't miss one, slow enough to not
+/// spin on the `ip_core` lock.
+const IQ_DRAIN_RETRY_MS: u64 = 60;
+
 #[allow(unused_imports)]
 use crate::httpd::AppState;
 #[allow(unused_imports)]
@@ -87,7 +104,7 @@ pub async fn get_spectrum(
     let bytes: Vec<u8> = {
         let mut acc: Vec<u8> = Vec::with_capacity(min_bytes);
         let deadline = std::time::Instant::now()
-            + std::time::Duration::from_millis(3000);
+            + std::time::Duration::from_millis(IQ_DRAIN_DEADLINE_MS);
         loop {
             {
                 let mut core = state.ip_core.lock().await;
@@ -113,7 +130,7 @@ pub async fn get_spectrum(
             if std::time::Instant::now() >= deadline {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(IQ_DRAIN_RETRY_MS)).await;
         }
         acc
     };
@@ -203,7 +220,7 @@ pub async fn get_constellation(
     let bytes: Vec<u8> = {
         let mut acc: Vec<u8> = Vec::new();
         let deadline = std::time::Instant::now()
-            + std::time::Duration::from_millis(3000);
+            + std::time::Duration::from_millis(IQ_DRAIN_DEADLINE_MS);
         loop {
             {
                 let mut core = state.ip_core.lock().await;
@@ -225,7 +242,7 @@ pub async fn get_constellation(
             }
             if acc.len() >= min_bytes { break; }
             if std::time::Instant::now() >= deadline { break; }
-            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(IQ_DRAIN_RETRY_MS)).await;
         }
         acc
     };

@@ -1385,6 +1385,7 @@ impl FrequencyBand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::p25::test_fixtures::*;
 
     #[test]
     fn test_ccitt80_crc_known_tsbk() {
@@ -1527,8 +1528,8 @@ mod tests {
                 system_id,
                 channel,
             } => {
-                assert_eq!(wacn, 0xBEE00);
-                assert_eq!(system_id, 0x8A0);
+                assert_eq!(wacn, FLORIDA_WACN);
+                assert_eq!(system_id, CLAY_SYSTEM_ID);
                 assert_eq!(channel.0, 0x0639);
             }
             _ => panic!("Expected NetworkStatus"),
@@ -1548,6 +1549,6 @@ mod tests {
 
         // Channel 1593 should be 860.9625 MHz (control channel)
         let freq = band.channel_frequency(1593);
-        assert_eq!(freq, 860_962_500);
+        assert_eq!(freq, CLAY_CONTROL_FREQ_HZ);
     }
 }

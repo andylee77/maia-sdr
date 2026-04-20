@@ -167,6 +167,7 @@ pub fn decode_nid(received_nid: u64) -> Option<DecodedNid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::p25::test_fixtures::*;
 
     /// Golden vector from `BCH_63_16_23_P25_Test.java` line 35-40:
     ///   NAC=1 (0x001), DUID=0 (HDU) -> 0x00103185B7E9E224
@@ -185,7 +186,7 @@ mod tests {
         let pairs: &[(u16, u8)] = &[
             (0x000, 0),
             (0x001, 0),
-            (0x8A1, 7), // Clay County NAC
+            (CLAY_NAC, 7), // Clay County NAC
             (0xFFF, 0xF),
             (0x534, 2),
             (0x123, 5),
@@ -205,7 +206,7 @@ mod tests {
     /// so the test is reproducible without bringing in `rand`.
     #[test]
     fn error_correction_sweep_up_to_t11() {
-        let base = encode_nid(0x8A1, 7);
+        let base = encode_nid(CLAY_NAC, 7);
         let mut rng = XorShift64::new(0xDEAD_BEEF_CAFE_BABE);
         const TRIALS_PER_LEVEL: usize = 50;
         for n_errors in 1..=11u32 {
@@ -226,7 +227,7 @@ mod tests {
                 }
                 let decoded = decode_nid(corrupted)
                     .expect("within sphere -> must decode");
-                assert_eq!(decoded.nac, 0x8A1);
+                assert_eq!(decoded.nac, CLAY_NAC);
                 assert_eq!(decoded.duid, 7);
                 assert_eq!(decoded.n_errors as u32, n_errors);
             }
@@ -238,7 +239,7 @@ mod tests {
     /// uncorrectable, or land on a different valid codeword (also fine).
     #[test]
     fn errors_beyond_sphere_dont_silently_corrupt() {
-        let base = encode_nid(0x8A1, 7);
+        let base = encode_nid(CLAY_NAC, 7);
         let mut rng = XorShift64::new(0xC0FFEE);
         let mut wrong_or_uncorrectable = 0;
         const TRIALS: usize = 100;
@@ -258,7 +259,7 @@ mod tests {
             }
             match decode_nid(corrupted) {
                 None => wrong_or_uncorrectable += 1,
-                Some(d) if (d.nac, d.duid) != (0x8A1, 7) => {
+                Some(d) if (d.nac, d.duid) != (CLAY_NAC, 7) => {
                     wrong_or_uncorrectable += 1
                 }
                 Some(_) => {}

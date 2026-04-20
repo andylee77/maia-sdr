@@ -17,3 +17,9 @@ pub mod wire;
 // at runtime so it's a no-op when SDRTrunk captures aren't present.
 #[cfg(test)]
 mod sdrtrunk_bits_test;
+
+// Shared test-only constants (Clay County NAC/WACN/freq, Duval County
+// NAC/freq, etc.). Module is `#[cfg(test)]` so it does not leak into
+// production builds.
+#[cfg(test)]
+pub(crate) mod test_fixtures;
