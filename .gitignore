@@ -76,3 +76,28 @@ runs/
 # Bake output logs
 build_fpga*.log
 build_hdl*.log
+
+# ── Field-diagnostic dumps (not curated repo content) ─────────────
+
+# On-target diagnostic captures written by tools/p25_* scripts or
+# by /api/*_capture endpoints. Eye diagrams, constellation plots,
+# debug log rings, retune probes, audio analyses — one-shot
+# artefacts from field testing, sometimes GB-scale, never source
+# of truth. Keep them out of git history.
+doc/diagnostics/
+
+# EPS / health-probe outputs written by tools/*.py
+/eps.json
+/eps_*.json
+
+# Timeseries JSONL / CSV dumps
+*.jsonl
+
+# Per-recording WAV fragments (real storage is /tmp/p25_recordings
+# on target; root-level .wav is always a stray test artefact).
+/p25_recordings/
+/*.wav
+
+# On-host Rust build droppings that occasionally escape target/
+Cargo.lock.bak
+*.rlib.bak
