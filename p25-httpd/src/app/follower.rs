@@ -443,11 +443,11 @@ pub fn spawn_traffic_grant_follower(
                                     let freq_hz = g.frequency_hz.unwrap();
                                     // PPM correction matching the control
                                     // DDC path in get_reinit(). Cancels
-                                    // the Pluto crystal trim error (~463
-                                    // Hz at ppm=-0.54, rx_lo=858.1 MHz)
-                                    // so the traffic PLL doesn't sit at
-                                    // a residual -0.46 rad steady-state
-                                    // error on every call.
+                                    // the Pluto crystal trim error (a
+                                    // few hundred Hz depending on lo_ppm
+                                    // and rx_lo) so the traffic PLL
+                                    // doesn't sit at a residual steady-
+                                    // state phase error on every call.
                                     //
                                     // rx_lo read fresh (not captured at
                                     // spawn) so offset math follows

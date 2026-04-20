@@ -1531,26 +1531,28 @@ async function refresh() {
   } // end Radio-tab-only block
 }
 
-// Frequency map rendering
-const LCN_DATA = [
-  {lcn:1,freq:855.2375},{lcn:2,freq:856.4375},{lcn:3,freq:857.2125},
-  {lcn:4,freq:857.4375},{lcn:5,freq:857.9875},{lcn:6,freq:858.4375},
-  {lcn:7,freq:858.4625},{lcn:8,freq:858.9875},{lcn:9,freq:859.4375},
-  {lcn:10,freq:860.4375},{lcn:11,freq:860.9625}
-];
+// Frequency map rendering.
+//
+// Populated at runtime from /api/system's band table — the hardcoded
+// LCN list previously shipped here was a specific test site's channel
+// plan and rendered wrong everywhere else. Until the API-driven path
+// lands, the panel simply stays empty.
+let LCN_DATA = [];
 
 function renderFreqMap(grants) {
   const map = $('freqmap');
-  if (!LCN_DATA.length) return;
+  if (!LCN_DATA.length) { map.innerHTML = ''; return; }
   const minF = LCN_DATA[0].freq - 0.5;
   const maxF = LCN_DATA[LCN_DATA.length-1].freq + 0.5;
   const range = maxF - minF;
   const activeFreqs = new Set((grants||[]).map(g => g.frequency_mhz ? g.frequency_mhz.toFixed(4) : null).filter(Boolean));
+  const controlFreq = (window.BOARD_INFO && window.BOARD_INFO.control_freq_mhz) || null;
 
   let html = '';
   for (const lcn of LCN_DATA) {
     const pct = ((lcn.freq - minF) / range * 100).toFixed(1);
-    const isCC = lcn.lcn === 11;
+    const isCC = controlFreq !== null &&
+                 Math.abs(lcn.freq - controlFreq) < 1e-4;
     const isActive = activeFreqs.has(lcn.freq.toFixed(4));
     const cls = isCC ? 'cc' : (isActive ? 'active' : '');
     html += `<div class="freq-marker ${cls}" style="left:${pct}%"></div>`;

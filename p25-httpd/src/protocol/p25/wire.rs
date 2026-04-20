@@ -45,8 +45,8 @@ pub const NID_TRANSMITTED_DIBITS: usize = 33;
 /// Position within the 33-dibit NID window where the first in-NID
 /// P25 status dibit lands. Callers must ADVANCE the cursor past this
 /// index but MUST NOT fold the dibit value into the 64-bit BCH
-/// codeword. See doc/changes/022 for the NAC=0x8A1→0xE28
-/// miscorrection incident that forced this constant.
+/// codeword. See doc/changes/022 for the status-dibit miscorrection
+/// incident that forced this constant.
 pub const NID_STATUS_DIBIT_INDEX: usize = 11;
 
 // ===================================================================

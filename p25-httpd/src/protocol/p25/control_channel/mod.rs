@@ -384,8 +384,9 @@ const SYNC_NEAR_LOG_THRESHOLD: u32 = 20;
 ///
 // NID_TRANSMITTED_DIBITS / NID_STATUS_DIBIT_INDEX imported above from
 // `crate::protocol::p25::wire`. See doc/changes/022 for the status-
-// dibit fix history (NAC=0x8A1 → 0xE28 miscorrection observed on the
-// test target, which forced the 33-not-32 geometry + index-11 skip).
+// dibit fix history — clean NIDs were being deterministically
+// miscorrected to a different fixed codeword, forcing the 33-not-32
+// geometry + index-11 skip.
 
 impl ControlChannelDecoder {
     pub fn new() -> Self {

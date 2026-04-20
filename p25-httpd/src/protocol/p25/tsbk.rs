@@ -968,7 +968,7 @@ impl TsbkBlock {
     ///
     /// Phase 6F.4 fix: until 6F.4 we read RFSS from `payload[2]`
     /// (= bits 32-39, which is actually the LOW byte of the SYSTEM
-    /// field), so a system_id like 0x8A0 would surface as RFSS=0xA0.
+    /// field), so RFSS was reported as the low byte of system_id.
     /// Same off-by-one shift on site/channel.
     fn decode_rfss_sts_bcst(&self) -> TsbkMessage {
         let mut full = [0u8; 12];

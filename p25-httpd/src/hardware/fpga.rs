@@ -985,14 +985,13 @@ impl IpCore {
     ///      (pll_reg = ±8580 in Q2.13), and locks there — unable
     ///      to track the real post-flush signal.
     ///
-    ///      Observed pre-fix on NAC 0x3BA, 2026-04-15:
-    ///      control chain `pll_dbg=154` (healthy), traffic chain
-    ///      `pll_dbg=8579` (exactly the ±π/3 Q2.13 saturation
-    ///      limit — PLL stuck at clamp on every retune). Audio
-    ///      was "robotic half the time" because the NID BCH
-    ///      decoder corrected half the LDUs into TDU_LC
-    ///      (all-ones DUID pattern, closest codeword to random
-    ///      noise in the PLL-chase transient).
+    ///      Fingerprint pre-fix: control chain `pll_dbg ≈ 154`
+    ///      (healthy), traffic chain `pll_dbg = ±8579` (exactly
+    ///      the ±π/3 Q2.13 saturation limit — PLL stuck at clamp
+    ///      on every retune). Audio was "robotic half the time"
+    ///      because the NID BCH decoder corrected half the LDUs
+    ///      into TDU_LC (all-ones DUID pattern, closest codeword
+    ///      to random noise in the PLL-chase transient).
     ///
     ///      Wait duration: 2 ms. At the `rxiq_cdc` 8 MSPS input
     ///      rate, the FIR cascade pipeline budget is roughly:
