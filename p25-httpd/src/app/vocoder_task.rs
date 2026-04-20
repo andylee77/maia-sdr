@@ -15,9 +15,9 @@ use tokio::sync::mpsc::Receiver;
 use tokio::sync::broadcast;
 
 use crate::audio::{self, AudioChunk};
-use crate::event_log::EventLog;
-use crate::imbe_forwarder::ImbeForwarder;
-use crate::p25::voice_frame::ImbeFrameRaw;
+use crate::services::event_log::EventLog;
+use crate::app::imbe_forwarder::ImbeForwarder;
+use crate::protocol::p25::voice_frame::ImbeFrameRaw;
 use crate::vocoder;
 
 /// Spawn the dedicated vocoder OS thread. Consumes `imbe_rx`,
@@ -97,7 +97,7 @@ pub fn spawn_vocoder_thread(
                 pcm_samples: u64,
                 started: Option<std::time::Instant>,
                 last_frame_at: Option<std::time::Instant>,
-                log: &std::sync::Arc<crate::event_log::EventLog>,
+                log: &std::sync::Arc<crate::services::event_log::EventLog>,
             | {
                 if frames_in == 0 && frames_skipped_enc == 0 {
                     return;
@@ -125,7 +125,7 @@ pub fn spawn_vocoder_thread(
                     _ => 0,
                 };
                 log.push(
-                    crate::event_log::LogCategory::Vocoder,
+                    crate::services::event_log::LogCategory::Vocoder,
                     format!(
                         "call_end TG={} frames={} pcm={} ({} ms){}",
                         tg, frames_in, pcm_samples, duration_ms,
@@ -177,7 +177,7 @@ pub fn spawn_vocoder_thread(
                     call_started = Some(std::time::Instant::now());
                     call_last_frame_at = None;
                     voc_event_log.push(
-                        crate::event_log::LogCategory::Vocoder,
+                        crate::services::event_log::LogCategory::Vocoder,
                         format!("call_start TG={}", call_tg),
                         serde_json::json!({ "tg": call_tg }),
                     );

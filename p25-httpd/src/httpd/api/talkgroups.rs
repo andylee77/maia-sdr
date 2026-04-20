@@ -26,7 +26,7 @@ use p25_json::*;
 #[allow(unused_imports)]
 use crate::httpd::AppState;
 #[allow(unused_imports)]
-use crate::p25::control_channel::{
+use crate::protocol::p25::control_channel::{
     ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, SYNC_THRESHOLD,
 };
 
@@ -284,7 +284,7 @@ pub async fn put_encrypted_tgs(
     }
 
     state.event_log.push(
-        crate::event_log::LogCategory::System,
+        crate::services::event_log::LogCategory::System,
         format!("encrypted_tgs update: {}", applied.join(", ")),
         serde_json::json!({
             "applied": applied.clone(),

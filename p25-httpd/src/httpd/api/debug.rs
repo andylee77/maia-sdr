@@ -31,7 +31,7 @@ use p25_json::*;
 #[allow(unused_imports)]
 use crate::httpd::AppState;
 #[allow(unused_imports)]
-use crate::p25::control_channel::{
+use crate::protocol::p25::control_channel::{
     ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, SYNC_THRESHOLD,
 };
 
@@ -64,10 +64,10 @@ pub async fn get_spectrum(
         .map(String::as_str)
         .unwrap_or("control");
 
-    let fft_size = crate::spectrum::clamp_fft_size(
+    let fft_size = crate::services::spectrum::clamp_fft_size(
         params.get("fft").and_then(|s| s.parse::<usize>().ok()),
     );
-    let averages = crate::spectrum::clamp_averages(
+    let averages = crate::services::spectrum::clamp_averages(
         params.get("averages").and_then(|s| s.parse::<usize>().ok()),
         fft_size,
     );
@@ -118,7 +118,7 @@ pub async fn get_spectrum(
         acc
     };
 
-    let Some(snap) = crate::spectrum::spectrum_from_bytes(&bytes, fft_size, averages) else {
+    let Some(snap) = crate::services::spectrum::spectrum_from_bytes(&bytes, fft_size, averages) else {
         return Json(serde_json::json!({
             "ok": false,
             "error": format!(
@@ -262,7 +262,7 @@ pub async fn get_constellation(
     // the post-DDC 62.5 kSPS.
     let result = crate::lsm::demod::demod_lsm(
         &iq,
-        crate::spectrum::SAMPLE_RATE_HZ,
+        crate::services::spectrum::SAMPLE_RATE_HZ,
     );
 
     // Keep the payload small: return up to 512 most recent points

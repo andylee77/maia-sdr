@@ -458,7 +458,7 @@ pub fn parse_tdulc_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
     for i in 0..12 {
         rs_input[12 + i] = hex_at(LC_HEX_POSITIONS[11 - i]);
     }
-    let rs_output = match super::rs_24_12_13::decode(&rs_input) {
+    let rs_output = match super::fec::rs_24_12_13::decode(&rs_input) {
         Ok(v) => v,
         Err(v) => v,
     };
@@ -677,7 +677,7 @@ pub fn parse_ldu1_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
     for i in 0..12 {
         rs_input[12 + i] = hex_at(LDU1_CW_HEX_POSITIONS[11 - i]);
     }
-    let rs_output = match super::rs_24_12_13::decode(&rs_input) {
+    let rs_output = match super::fec::rs_24_12_13::decode(&rs_input) {
         Ok(v) => v,
         Err(v) => v,
     };
@@ -765,7 +765,7 @@ pub fn ldu1_lc_bytes(body_raw: &[u8]) -> Option<[u8; 9]> {
     for i in 0..12 {
         rs_input[12 + i] = hex_at(LDU1_CW_HEX_POSITIONS[11 - i]);
     }
-    let rs_output = match super::rs_24_12_13::decode(&rs_input) {
+    let rs_output = match super::fec::rs_24_12_13::decode(&rs_input) {
         Ok(v) => v,
         Err(v) => v,
     };
@@ -850,7 +850,7 @@ pub fn tdulc_lc_bytes(body_raw: &[u8]) -> Option<[u8; 9]> {
     for i in 0..12 {
         rs_input[12 + i] = hex_at(LC_HEX_POSITIONS[11 - i]);
     }
-    let rs_output = match super::rs_24_12_13::decode(&rs_input) {
+    let rs_output = match super::fec::rs_24_12_13::decode(&rs_input) {
         Ok(v) => v,
         Err(v) => v,
     };
@@ -1131,7 +1131,7 @@ pub fn parse_hdu_body(body_raw: &[u8]) -> Option<HduHeader> {
     for i in 0..20 {
         rs_input[16 + i] = hex_at(HDU_CW_HEX_POSITIONS[19 - i]);
     }
-    let rs_output = match super::rs_63_47_17::decode(&rs_input) {
+    let rs_output = match super::fec::rs_63_47_17::decode(&rs_input) {
         Ok(v) => v,
         Err(v) => v,
     };
@@ -1281,7 +1281,7 @@ pub fn parse_ldu2_ess(body_raw: &[u8]) -> Option<Ldu2Ess> {
     for i in 0..16 {
         rs_input[8 + i] = hex_at(LDU2_CW_HEX_POSITIONS[15 - i]);
     }
-    let rs_output = match super::rs_24_16_9::decode(&rs_input) {
+    let rs_output = match super::fec::rs_24_16_9::decode(&rs_input) {
         Ok(v) => v,
         Err(v) => v,
     };

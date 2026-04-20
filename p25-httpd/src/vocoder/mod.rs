@@ -17,7 +17,7 @@
 
 pub use mbelib_sys::SAMPLES_PER_FRAME;
 
-use crate::p25::voice_frame::ImbeFrameRaw;
+use crate::protocol::p25::voice_frame::ImbeFrameRaw;
 
 /// JMBE-based IMBE decoder. Pure Rust, no FFI. Better audio quality
 /// than mbelib due to spectral enhancement and adaptive smoothing.

@@ -31,7 +31,7 @@ use p25_json::*;
 #[allow(unused_imports)]
 use crate::httpd::AppState;
 #[allow(unused_imports)]
-use crate::p25::control_channel::{
+use crate::protocol::p25::control_channel::{
     ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, SYNC_THRESHOLD,
 };
 
@@ -48,7 +48,7 @@ pub async fn get_recordings(
     let items: Vec<_> = ring.iter().rev().cloned().collect();
     Json(serde_json::json!({
         "count": items.len(),
-        "max": crate::recorder::MAX_RECORDINGS,
+        "max": crate::audio::recorder::MAX_RECORDINGS,
         "items": items,
     }))
 }
@@ -377,8 +377,8 @@ pub async fn get_recent_tsbks(
     let dec = state.lsm_decoder.read().await;
     let now = std::time::Instant::now();
 
-    let summarize = |msg: &crate::p25::tsbk::TsbkMessage| -> String {
-        use crate::p25::tsbk::TsbkMessage::*;
+    let summarize = |msg: &crate::protocol::p25::tsbk::TsbkMessage| -> String {
+        use crate::protocol::p25::tsbk::TsbkMessage::*;
         match msg {
             NetworkStatus { wacn, system_id, channel } => format!(
                 "NET_STATUS_BCAST WACN:{:05X} SYS:{:03X} CH:{}",
@@ -405,7 +405,7 @@ pub async fn get_recent_tsbks(
             GroupVoiceChannelGrant { channel, talkgroup, source, service_options } => format!(
                 "GRP_V_CH_GRANT CH:{} TG:{} SRC:{}{}",
                 channel, talkgroup, source,
-                if crate::p25::tsbk::service_options::is_encrypted(*service_options) {
+                if crate::protocol::p25::tsbk::service_options::is_encrypted(*service_options) {
                     " [ENC]"
                 } else {
                     ""
@@ -422,7 +422,7 @@ pub async fn get_recent_tsbks(
             } => format!(
                 "GRP_V_CH_GRANT_UPDT_EXP TX:{} RX:{} TG:{}{}",
                 transmit_channel, receive_channel, talkgroup,
-                if crate::p25::tsbk::service_options::is_encrypted(*service_options) {
+                if crate::protocol::p25::tsbk::service_options::is_encrypted(*service_options) {
                     " [ENC]"
                 } else {
                     ""

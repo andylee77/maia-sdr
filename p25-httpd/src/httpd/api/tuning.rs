@@ -27,7 +27,7 @@ use p25_json::*;
 #[allow(unused_imports)]
 use crate::httpd::AppState;
 #[allow(unused_imports)]
-use crate::p25::control_channel::{
+use crate::protocol::p25::control_channel::{
     ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, SYNC_THRESHOLD,
 };
 
@@ -102,10 +102,10 @@ pub async fn get_reinit(
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(state.boot_hardwaregain);
     let gain_mode = match gm_str {
-        "manual" => crate::iio::GainMode::Manual,
-        "fast_attack" => crate::iio::GainMode::FastAttack,
-        "slow_attack" => crate::iio::GainMode::SlowAttack,
-        "hybrid" => crate::iio::GainMode::Hybrid,
+        "manual" => crate::hardware::iio::GainMode::Manual,
+        "fast_attack" => crate::hardware::iio::GainMode::FastAttack,
+        "slow_attack" => crate::hardware::iio::GainMode::SlowAttack,
+        "hybrid" => crate::hardware::iio::GainMode::Hybrid,
         other => {
             return Json(serde_json::json!({
                 "ok": false,
@@ -152,7 +152,7 @@ pub async fn get_reinit(
     }
     // Only write hardwaregain in manual mode. In AGC modes the chip
     // would immediately override anything we wrote.
-    if matches!(gain_mode, crate::iio::GainMode::Manual) {
+    if matches!(gain_mode, crate::hardware::iio::GainMode::Manual) {
         match state.ad9361.set_rx_gain(gain_db).await {
             Ok(_) => applied.push(format!("hardwaregain={gain_db} dB")),
             Err(e) => errors.push(format!("hardwaregain: {e}")),
@@ -389,7 +389,7 @@ pub async fn get_rx_gain(
 ) -> Json<serde_json::Value> {
     #[cfg(target_os = "linux")]
     {
-        use crate::iio::GainMode;
+        use crate::hardware::iio::GainMode;
 
         let mut updated_from: Option<i64> = None;
         let mut mode_from: Option<String> = None;
@@ -407,7 +407,7 @@ pub async fn get_rx_gain(
                         Ok(()) => {
                             mode_from = prev.clone();
                             state.event_log.push(
-                                crate::event_log::LogCategory::System,
+                                crate::services::event_log::LogCategory::System,
                                 format!("gain_control_mode set to {new_mode}"),
                                 serde_json::json!({
                                     "mode": new_mode.to_string(),
@@ -434,7 +434,7 @@ pub async fn get_rx_gain(
                             Ok(()) => {
                                 updated_from = prev;
                                 state.event_log.push(
-                                    crate::event_log::LogCategory::System,
+                                    crate::services::event_log::LogCategory::System,
                                     format!("rx_gain set to {db} dB"),
                                     serde_json::json!({
                                         "db": db, "previous": prev,
@@ -519,7 +519,7 @@ pub async fn put_sync_tune(
             state.traffic_lsm_decoder.write().await
                 .set_sync_threshold_override(Some(n));
             state.event_log.push(
-                crate::event_log::LogCategory::System,
+                crate::services::event_log::LogCategory::System,
                 format!("sync threshold: traffic-side -> {}", n),
                 serde_json::json!({"side":"traffic","value":n}),
             );
@@ -538,7 +538,7 @@ pub async fn put_sync_tune(
             state.lsm_decoder.write().await
                 .set_sync_threshold_override(Some(n));
             state.event_log.push(
-                crate::event_log::LogCategory::System,
+                crate::services::event_log::LogCategory::System,
                 format!("sync threshold: control-side -> {}", n),
                 serde_json::json!({"side":"control","value":n}),
             );
@@ -655,7 +655,7 @@ pub async fn put_bch_t(
         applied.push("traffic".to_string());
     }
     state.event_log.push(
-        crate::event_log::LogCategory::System,
+        crate::services::event_log::LogCategory::System,
         format!(
             "bch_t_override set: side={} value={:?}",
             side, new_override,

@@ -1059,8 +1059,8 @@ fn control_channel_tsbk_parity_with_sdrtrunk() {
 /// Translate one of our TsbkMessage variants into the short label
 /// SDRTrunk uses in `decoded_messages.log` — lets the CC parity test
 /// compare histograms across vocabularies.
-fn our_label(msg: &crate::p25::tsbk::TsbkMessage) -> &'static str {
-    use crate::p25::tsbk::TsbkMessage::*;
+fn our_label(msg: &crate::protocol::p25::tsbk::TsbkMessage) -> &'static str {
+    use crate::protocol::p25::tsbk::TsbkMessage::*;
     match msg {
         GroupVoiceChannelGrant { .. } => "GRP_VCH_GRANT",
         GroupVoiceChannelGrantUpdate { .. } => "GRP_VCH_GRNT_UPD",

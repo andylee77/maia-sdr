@@ -2,8 +2,16 @@
 //!
 //! - Golay(23,12): Used in NID to protect NAC + DUID
 //! - 1/2 rate trellis coded modulation: Used in TSBK encoding within TSDUs
+//! - RS(24,12,13) / RS(24,16,9) / RS(63,47,17): Reed-Solomon codes
+//!   over GF(2^6), grouped in the `rs_*` submodules with the shared
+//!   Berlekamp-Massey core in `rs_p25`.
 //!
 //! Reference: TIA-102.BAAA Section 7 (coding and interleaving)
+
+pub mod rs_24_12_13;
+pub mod rs_24_16_9;
+pub mod rs_63_47_17;
+pub mod rs_p25;
 
 // The Phase 6D `crate::lsm::nid_fec::decode_nid` is the live P25
 // NID decoder (BCH(63,16,11) ML codebook). Call it directly — the

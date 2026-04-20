@@ -257,7 +257,7 @@ pub struct ControlChannelDecoder {
     /// including the chain label, NAC, DUID, and BCH-error count.
     /// Paired with the `chain_label` field — "control" / "traffic" /
     /// "ps_c4fm" — so log consumers can filter by chain.
-    pub event_log: Option<Arc<crate::event_log::EventLog>>,
+    pub event_log: Option<Arc<crate::services::event_log::EventLog>>,
     /// Label inserted into every `Duid` log entry emitted by this
     /// decoder. Defaults to "control"; main.rs overrides for the
     /// traffic and C4FM decoder instances.
@@ -303,7 +303,7 @@ pub trait VoiceHandler {
     /// `body_raw`.
     fn on_ldu1(
         &self,
-        _frames: &[crate::p25::voice_frame::ImbeFrameRaw; 9],
+        _frames: &[crate::protocol::p25::voice_frame::ImbeFrameRaw; 9],
         _body_raw: &[u8],
     ) {
     }
@@ -316,7 +316,7 @@ pub trait VoiceHandler {
     /// algorithm + key id refreshed by every LDU2.
     fn on_ldu2(
         &self,
-        _frames: &[crate::p25::voice_frame::ImbeFrameRaw; 9],
+        _frames: &[crate::protocol::p25::voice_frame::ImbeFrameRaw; 9],
         _body_raw: &[u8],
     ) {
     }
@@ -1200,7 +1200,7 @@ impl ControlChannelDecoder {
                                 DataUnit::TduLc => "TDU_LC",
                             };
                             log.push(
-                                crate::event_log::LogCategory::Duid,
+                                crate::services::event_log::LogCategory::Duid,
                                 format!(
                                     "{} {} NAC=0x{:03X} bch_err={}",
                                     self.chain_label,
@@ -1323,7 +1323,7 @@ impl ControlChannelDecoder {
                         DataUnit::Ldu1 => {
                             self.ldu1_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
-                                if let Some(frames) = crate::p25::voice_frame::extract_imbe_frames(&self.du_buffer) {
+                                if let Some(frames) = crate::protocol::p25::voice_frame::extract_imbe_frames(&self.du_buffer) {
                                     handler.on_ldu1(&frames, &self.du_buffer);
                                 }
                             }
@@ -1332,7 +1332,7 @@ impl ControlChannelDecoder {
                         DataUnit::Ldu2 => {
                             self.ldu2_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
-                                if let Some(frames) = crate::p25::voice_frame::extract_imbe_frames(&self.du_buffer) {
+                                if let Some(frames) = crate::protocol::p25::voice_frame::extract_imbe_frames(&self.du_buffer) {
                                     // 2026-04-19: `body_raw` is now also
                                     // passed so the handler can parse the
                                     // LDU2 Encryption Sync Signature via
@@ -1506,7 +1506,7 @@ impl ControlChannelDecoder {
                                 capture_crc_result = "crc_fail".to_string();
                             }
                         }
-                        Some(crate::p25::tsbk::CrcConvention::Plain) => {
+                        Some(crate::protocol::p25::tsbk::CrcConvention::Plain) => {
                             self.tsbk_crc_ok += 1;
                             self.tsbk_crc_ok_plain += 1;
                             self.tsbk_crc_ok_by_pos[block_idx] += 1;
@@ -1516,7 +1516,7 @@ impl ControlChannelDecoder {
                                 capture_crc_result = "plain".to_string();
                             }
                         }
-                        Some(crate::p25::tsbk::CrcConvention::Xored) => {
+                        Some(crate::protocol::p25::tsbk::CrcConvention::Xored) => {
                             self.tsbk_crc_ok += 1;
                             self.tsbk_crc_ok_xored += 1;
                             self.tsbk_crc_ok_by_pos[block_idx] += 1;
@@ -1683,9 +1683,9 @@ impl ControlChannelDecoder {
                 // record.
                 let _ = self.take_other_grants_for_talkgroup(*talkgroup);
                 let encrypted =
-                    crate::p25::tsbk::service_options::is_encrypted(*service_options);
+                    crate::protocol::p25::tsbk::service_options::is_encrypted(*service_options);
                 let emergency =
-                    crate::p25::tsbk::service_options::is_emergency(*service_options);
+                    crate::protocol::p25::tsbk::service_options::is_emergency(*service_options);
                 let grant = GrantInfo {
                     channel: *channel,
                     talkgroup: *talkgroup,
@@ -1765,9 +1765,9 @@ impl ControlChannelDecoder {
                 let freq = self.channel_to_frequency(*transmit_channel);
                 let _ = self.take_other_grants_for_talkgroup(*talkgroup);
                 let encrypted =
-                    crate::p25::tsbk::service_options::is_encrypted(*service_options);
+                    crate::protocol::p25::tsbk::service_options::is_encrypted(*service_options);
                 let emergency =
-                    crate::p25::tsbk::service_options::is_emergency(*service_options);
+                    crate::protocol::p25::tsbk::service_options::is_emergency(*service_options);
                 let grant = GrantInfo {
                     channel: *transmit_channel,
                     talkgroup: *talkgroup,
@@ -1856,7 +1856,7 @@ impl ControlChannelDecoder {
             let fields = serde_json::to_value(&tsbk_event)
                 .unwrap_or(serde_json::Value::Null);
             log.push(
-                crate::event_log::LogCategory::Grant,
+                crate::services::event_log::LogCategory::Grant,
                 summary,
                 fields,
             );
@@ -1914,7 +1914,7 @@ impl ControlChannelDecoder {
                 service_options,
             } => {
                 let freq = self.channel_to_frequency(*channel);
-                let enc_marker = if crate::p25::tsbk::service_options::is_encrypted(*service_options) {
+                let enc_marker = if crate::protocol::p25::tsbk::service_options::is_encrypted(*service_options) {
                     " [ENC]"
                 } else {
                     ""
@@ -1961,7 +1961,7 @@ impl ControlChannelDecoder {
                 ..
             } => {
                 let freq = self.channel_to_frequency(*transmit_channel);
-                let enc_marker = if crate::p25::tsbk::service_options::is_encrypted(*service_options) {
+                let enc_marker = if crate::protocol::p25::tsbk::service_options::is_encrypted(*service_options) {
                     " [ENC]"
                 } else {
                     ""
@@ -2708,8 +2708,8 @@ mod tests {
     #[test]
     fn test_multi_block_tsbk_e2e() {
         use crate::lsm::nid_fec;
-        use crate::p25::fec::trellis_encode_bytes;
-        use crate::p25::tsbk::ccitt80_crc;
+        use crate::protocol::p25::fec::trellis_encode_bytes;
+        use crate::protocol::p25::tsbk::ccitt80_crc;
 
         fn unpack_dibits(bits: u64, n_dibits: usize) -> Vec<u8> {
             let mut out = Vec::with_capacity(n_dibits);
@@ -2862,8 +2862,8 @@ mod tests {
     #[test]
     fn test_single_block_tsbk_terminates_on_lb1() {
         use crate::lsm::nid_fec;
-        use crate::p25::fec::trellis_encode_bytes;
-        use crate::p25::tsbk::ccitt80_crc;
+        use crate::protocol::p25::fec::trellis_encode_bytes;
+        use crate::protocol::p25::tsbk::ccitt80_crc;
 
         fn unpack_dibits(bits: u64, n_dibits: usize) -> Vec<u8> {
             let mut out = Vec::with_capacity(n_dibits);

@@ -40,7 +40,7 @@ use axum::{
 };
 use tokio::sync::{broadcast, RwLock};
 
-use crate::p25::control_channel::ControlChannelDecoder;
+use crate::protocol::p25::control_channel::ControlChannelDecoder;
 
 pub mod api;
 
@@ -67,11 +67,11 @@ pub struct AppState {
     // doc/changes/039 for the rationale.
     pub event_tx: broadcast::Sender<String>,
     #[cfg(target_os = "linux")]
-    pub ip_core: Arc<tokio::sync::Mutex<crate::fpga::IpCore>>,
+    pub ip_core: Arc<tokio::sync::Mutex<crate::hardware::fpga::IpCore>>,
     /// AD9361 IIO handle for live AGC gain / RSSI readback in /api/stats.
     /// Stateless wrapper around sysfs paths -- safe to share without a lock.
     #[cfg(target_os = "linux")]
-    pub ad9361: Arc<crate::iio::Ad9361>,
+    pub ad9361: Arc<crate::hardware::iio::Ad9361>,
     /// Original main.rs boot-time front-end config (AD9361 + DDC NCO),
     /// captured into AppState at startup so `/api/reinit` can restore
     /// the chip + DDC to the boot state without a board reboot, and
@@ -106,7 +106,7 @@ pub struct AppState {
     /// NCO offset, and retune counters. Phase 7H will replace the
     /// singleton with a slot allocator over a channelizer.
     pub traffic_manager:
-        Arc<tokio::sync::Mutex<crate::p25::traffic_manager::TrafficManager>>,
+        Arc<tokio::sync::Mutex<crate::protocol::p25::traffic_manager::TrafficManager>>,
     /// Phase 7A.1: data-side counters for the traffic dibit DMA path,
     /// updated by the traffic dibit reader task in main.rs. Read by
     /// `/api/traffic` alongside the TrafficManager state.
@@ -134,7 +134,7 @@ pub struct AppState {
     /// Phase 7B: talkgroup monitor list. When non-empty, only grants
     /// for TGs in the list are followed. When empty, newest-grant
     /// wins (Phase 7A.1 backward compat).
-    pub monitor_list: Arc<RwLock<crate::monitor::MonitorList>>,
+    pub monitor_list: Arc<RwLock<crate::services::monitor::MonitorList>>,
     /// Phase 7E: audio broadcast channel. The vocoder task sends
     /// AudioChunks here; HTTP/WebSocket handlers subscribe.
     pub audio_tx: crate::audio::AudioTx,
@@ -157,18 +157,18 @@ pub struct AppState {
     /// See `src/event_log.rs`. Produced by the follower task, IMBE
     /// forwarder, and vocoder task; consumed by the dashboard's
     /// `/api/log` endpoint.
-    pub event_log: Arc<crate::event_log::EventLog>,
+    pub event_log: Arc<crate::services::event_log::EventLog>,
     /// 2026-04-16: ring of recent call recordings. The recorder
     /// task in main.rs subscribes to audio_tx and populates this.
     /// Consumed by `/api/recordings` (JSON list) and
     /// `/api/recordings/{id}.wav` (file download).
-    pub recordings: crate::recorder::RecordingStore,
+    pub recordings: crate::audio::recorder::RecordingStore,
     /// 2026-04-19: recorder task diagnostics — call-boundary event
     /// counters + lag counts. Visible via `/api/traffic` so we can
     /// see whether Motorola TALK_COMPLETE source stamps are arriving
     /// at the recorder before the matching `ActiveCall` gets
     /// finalised by the grace window.
-    pub recorder_diag: crate::recorder::RecorderDiagArc,
+    pub recorder_diag: crate::audio::recorder::RecorderDiagArc,
     /// 2026-04-16: P25 modulation mode currently driving the
     /// dashboard's primary decoder read path + grant-follower
     /// dispatch. SDRTrunk-style auto-detect: a background task

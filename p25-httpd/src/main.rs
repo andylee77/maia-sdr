@@ -12,30 +12,24 @@ use std::sync::Arc;
 use clap::Parser;
 use tokio::sync::{broadcast, RwLock};
 
-#[cfg(target_os = "linux")]
-mod fpga;
-mod httpd;
-#[cfg(target_os = "linux")]
-mod iio;
+mod app;
 mod audio;
-mod event_log;
-mod imbe_forwarder;
-mod lsm;
-mod monitor;
-mod ntp;
-mod p25;
-mod recorder;
-mod spectrum;
-mod vocoder;
-mod vocoder_task;
+mod hardware;
+mod httpd;
 mod jmbe;
-#[cfg(target_os = "linux")]
-mod rxbuffer;
-#[cfg(target_os = "linux")]
-mod uio;
+mod lsm;
+mod protocol;
+mod services;
+mod vocoder;
 
-use p25::control_channel::ControlChannelDecoder;
-use imbe_forwarder::ImbeForwarder;
+use app::imbe_forwarder::ImbeForwarder;
+use app::vocoder_task;
+use audio::recorder;
+#[cfg(target_os = "linux")]
+use hardware::{fpga, iio};
+use protocol::p25;
+use protocol::p25::control_channel::ControlChannelDecoder;
+use services::{event_log, monitor, ntp};
 
 /// Build tag, logged at startup and exposed via `/api/system`.
 ///
@@ -499,9 +493,9 @@ async fn main() -> anyhow::Result<()> {
     // reproducible after the fact via `/api/log?category=duid` without
     // needing external tooling. 16384 × ~400 B = ~6.4 MB peak, still
     // trivial on the Zynq (512 MB total, ~85 % free pre-log).
-    let event_log = Arc::new(crate::event_log::EventLog::new(16384));
+    let event_log = Arc::new(crate::services::event_log::EventLog::new(16384));
     event_log.push(
-        crate::event_log::LogCategory::System,
+        crate::services::event_log::LogCategory::System,
         "p25-httpd startup",
         serde_json::json!({
             "build_tag": crate::BUILD_TAG,
@@ -1972,7 +1966,7 @@ async fn main() -> anyhow::Result<()> {
 
                         match event {
                             p25::events::P25Event::Grant(g) => {
-                                use crate::event_log::LogCategory;
+                                use crate::services::event_log::LogCategory;
                                 let freq_mhz = g.frequency_hz
                                     .map(|f| f as f64 / 1e6)
                                     .unwrap_or(0.0);
@@ -2431,7 +2425,7 @@ async fn main() -> anyhow::Result<()> {
                                     tg.0,
                                 );
                                 follower_event_log.push(
-                                    crate::event_log::LogCategory::Traffic,
+                                    crate::services::event_log::LogCategory::Traffic,
                                     format!(
                                         "state -> Idle (timeout) TG={}",
                                         tg.0,
@@ -2644,7 +2638,7 @@ async fn main() -> anyhow::Result<()> {
                     };
                     if duid_label != "DUID?" {
                         traffic_event_log.push(
-                            crate::event_log::LogCategory::Imbe,
+                            crate::services::event_log::LogCategory::Imbe,
                             format!(
                                 "{} TG={} NAC=0x{:03X}",
                                 duid_label, locked_tg_snapshot, nac,

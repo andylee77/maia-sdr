@@ -5,10 +5,6 @@
 pub mod control_channel;
 pub mod events;
 pub mod fec;
-pub mod rs_24_12_13;
-pub mod rs_24_16_9;
-pub mod rs_63_47_17;
-pub mod rs_p25;
 pub mod traffic_manager;
 pub mod tsbk;
 pub mod types;

@@ -1,14 +1,15 @@
 //! ImbeForwarder — traffic-chain voice handler.
 //!
 //! Extracted from main.rs on 2026-04-19. Implements
-//! crate::p25::control_channel::VoiceHandler over the raw LDU/TDU
+//! crate::protocol::p25::control_channel::VoiceHandler over the raw LDU/TDU
 //! callbacks from the traffic LSM decoder. Owns the IMBE-batch
 //! mpsc sender to the vocoder task and the call-boundary broadcast
 //! tx that feeds the recorder.
 
 use std::sync::atomic::Ordering;
 
-use crate::{audio, p25};
+use crate::audio;
+use crate::protocol::p25;
 
 /// Phase 7D: voice frame handler that counts IMBE events AND forwards
 /// raw frames to the vocoder task via an mpsc channel.
@@ -107,7 +108,7 @@ pub struct ImbeForwarder {
     /// SDRTrunk's `decoded_messages.log` style). `None` until
     /// `set_event_log` is called post-construction.
     pub event_log:
-        std::sync::OnceLock<std::sync::Arc<crate::event_log::EventLog>>,
+        std::sync::OnceLock<std::sync::Arc<crate::services::event_log::EventLog>>,
     /// 2026-04-19: WebSocket event tx for the live activity feed.
     /// Plain `String` broadcast — same channel the control-channel
     /// decoder uses — so TDULC LCW events appear inline with TSBK
@@ -199,7 +200,7 @@ impl ImbeForwarder {
 
     pub fn set_event_log(
         &self,
-        log: std::sync::Arc<crate::event_log::EventLog>,
+        log: std::sync::Arc<crate::services::event_log::EventLog>,
     ) {
         let _ = self.event_log.set(log);
     }
@@ -291,7 +292,7 @@ impl ImbeForwarder {
         }
         if let Some(log) = self.event_log.get() {
             log.push(
-                crate::event_log::LogCategory::Imbe,
+                crate::services::event_log::LogCategory::Imbe,
                 summary.to_string(),
                 evt,
             );
@@ -311,7 +312,7 @@ impl ImbeForwarder {
             let tg = self.current_talkgroup.load(Ordering::Relaxed);
             let src = self.current_source.load(Ordering::Relaxed);
             log.push(
-                crate::event_log::LogCategory::Duid,
+                crate::services::event_log::LogCategory::Duid,
                 format!("traffic {} TG={} NAC=0x{:03X}", duid, tg, nac),
                 serde_json::json!({
                     "chain":  "traffic",

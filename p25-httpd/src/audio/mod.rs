@@ -5,6 +5,8 @@
 //! so multiple consumers (HTTP streaming, WebSocket, future WAV
 //! recorder) can independently read the audio stream.
 
+pub mod recorder;
+
 use tokio::sync::broadcast;
 
 /// One chunk of decoded PCM audio (20 ms, one IMBE frame).

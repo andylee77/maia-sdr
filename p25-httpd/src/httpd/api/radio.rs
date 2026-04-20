@@ -25,7 +25,7 @@ use p25_json::*;
 #[allow(unused_imports)]
 use crate::httpd::{AppState, ts_to_ymd_hms};
 #[allow(unused_imports)]
-use crate::p25::control_channel::{
+use crate::protocol::p25::control_channel::{
     ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, SYNC_THRESHOLD,
 };
 
@@ -394,7 +394,7 @@ pub async fn get_decoder_compare(
     let dec_lsm = state.lsm_decoder.read().await;
     let hdl_rt = state.hdl_lsm.lock().await;
 
-    fn fmt_nac(n: Option<crate::p25::types::Nac>) -> serde_json::Value {
+    fn fmt_nac(n: Option<crate::protocol::p25::types::Nac>) -> serde_json::Value {
         match n {
             Some(v) => serde_json::Value::String(format!("{}", v)),
             None => serde_json::Value::Null,

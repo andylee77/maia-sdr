@@ -1,7 +1,7 @@
 //! IQ ring buffer adapter for the LSM pipeline.
 //!
 //! Phase 6D plumbing on top of the Phase 6C `iq_dma` ring exposed by
-//! `crate::fpga::IpCore`. The FPGA writes 64-bit DMA words in the layout:
+//! `crate::hardware::fpga::IpCore`. The FPGA writes 64-bit DMA words in the layout:
 //!
 //! ```text
 //! bit 63                                                              bit 0

@@ -295,7 +295,7 @@ async fn finalize(
     store: &RecordingStore,
     call: ActiveCall,
     id: u64,
-    event_log: Option<&Arc<crate::event_log::EventLog>>,
+    event_log: Option<&Arc<crate::services::event_log::EventLog>>,
 ) {
     let duration_ms = call.duration_ms();
     if duration_ms < MIN_KEEPABLE_MS {
@@ -305,7 +305,7 @@ async fn finalize(
         );
         if let Some(l) = event_log {
             l.push(
-                crate::event_log::LogCategory::Recorder,
+                crate::services::event_log::LogCategory::Recorder,
                 "call_discard".to_string(),
                 serde_json::json!({
                     "recording_id": id,
@@ -341,7 +341,7 @@ async fn finalize(
             tracing::warn!("recorder: WAV write failed: {e}");
             if let Some(l) = event_log {
                 l.push(
-                    crate::event_log::LogCategory::Recorder,
+                    crate::services::event_log::LogCategory::Recorder,
                     "call_discard".to_string(),
                     serde_json::json!({
                         "recording_id": id,
@@ -357,7 +357,7 @@ async fn finalize(
     };
     if let Some(l) = event_log {
         l.push(
-            crate::event_log::LogCategory::Recorder,
+            crate::services::event_log::LogCategory::Recorder,
             "call_saved".to_string(),
             serde_json::json!({
                 "recording_id": id,
@@ -406,7 +406,7 @@ pub async fn recorder_task(
     mut boundary_rx: tokio::sync::broadcast::Receiver<CallBoundary>,
     store: RecordingStore,
     diag: RecorderDiagArc,
-    event_log: Option<Arc<crate::event_log::EventLog>>,
+    event_log: Option<Arc<crate::services::event_log::EventLog>>,
     frames_consumed: Arc<std::sync::atomic::AtomicU64>,
     imbe_drops: Arc<std::sync::atomic::AtomicU64>,
 ) {
@@ -417,7 +417,7 @@ pub async fn recorder_task(
     let log_ev = |msg: &str, fields: serde_json::Value| {
         if let Some(ref l) = event_log {
             l.push(
-                crate::event_log::LogCategory::Recorder,
+                crate::services::event_log::LogCategory::Recorder,
                 msg.to_string(),
                 fields,
             );

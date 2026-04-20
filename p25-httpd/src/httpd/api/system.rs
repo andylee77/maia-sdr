@@ -26,7 +26,7 @@ use p25_json::*;
 #[allow(unused_imports)]
 use crate::httpd::AppState;
 #[allow(unused_imports)]
-use crate::p25::control_channel::{
+use crate::protocol::p25::control_channel::{
     ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, SYNC_THRESHOLD,
 };
 

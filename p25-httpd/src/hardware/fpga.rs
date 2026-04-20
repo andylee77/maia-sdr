@@ -9,8 +9,8 @@ use std::ops::Deref;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-use crate::rxbuffer::RxBuffer;
-use crate::uio::{Mapping, Uio};
+use crate::hardware::rxbuffer::RxBuffer;
+use crate::hardware::uio::{Mapping, Uio};
 
 /// Expected product ID in the FPGA register (ASCII "p25f" = 0x70323566).
 const PRODUCT_ID: u32 = 0x7032_3566;
