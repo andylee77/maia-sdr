@@ -313,11 +313,10 @@ pub use types::{
 use types::{CaptureBuilder, DecoderState};
 
 
-/// Frame sync pattern as dibits packed into u64
-/// The sync word is 24 symbols (48 bits): 0x5575F5FF77FF
-/// Stored as 24 dibits in the low 48 bits
-const FRAME_SYNC_DIBIT_PATTERN: u64 = 0x5575_F5FF_77FF;
-const FRAME_SYNC_MASK: u64 = 0xFFFF_FFFF_FFFF; // 48 bits
+use crate::protocol::p25::wire::{
+    FRAME_SYNC_PATTERN as FRAME_SYNC_DIBIT_PATTERN,
+    FRAME_SYNC_MASK, NID_STATUS_DIBIT_INDEX, NID_TRANSMITTED_DIBITS,
+};
 
 /// Maximum Hamming distance for sync detection.
 ///
@@ -357,14 +356,17 @@ const FRAME_SYNC_MASK: u64 = 0xFFFF_FFFF_FFFF; // 48 bits
 /// 6 is a sane middle ground between "perfect-only" (4) and
 /// "noise-flooded" (14), but the optimum shifts with PLL lock state,
 /// so the right tool is `/api/sync_tune`.
-pub const SYNC_THRESHOLD: u32 = 6;
+///
+/// Renamed from `SYNC_THRESHOLD` on 2026-04-19 to avoid collision
+/// with the LSM-side `lsm::sync::LSM_SYNC_THRESHOLD` (value 4).
+pub const CC_SYNC_THRESHOLD: u32 = 6;
 
 /// Runtime-tunable sync threshold. Reads inside the dibit hot loop
 /// go through this AtomicU32 (Relaxed ordering -- the value only
 /// changes when an operator hits `/api/sync_tune`, a one-dibit lag
-/// is fine). Initialised from `SYNC_THRESHOLD`.
+/// is fine). Initialised from `CC_SYNC_THRESHOLD`.
 pub static RUNTIME_SYNC_THRESHOLD: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(SYNC_THRESHOLD);
+    std::sync::atomic::AtomicU32::new(CC_SYNC_THRESHOLD);
 
 /// Logging threshold: any candidate with distance ≤ this is logged
 /// as a "near miss" to give visibility into how close the bit stream
@@ -380,25 +382,10 @@ const SYNC_NEAR_LOG_THRESHOLD: u32 = 20;
 /// HDL `LsmSyncNidExtract` which both read 33 dibits and skip index 11
 /// before packing the remaining 32 into the 64-bit BCH codeword.
 ///
-/// Historical note: when this constant was 32 and the decoder skipped
-/// nothing, bits 41..40 of the NID codeword were silently corrupted by
-/// the status dibit value and the remaining parity bits were shifted
-/// out of position. The earlier C4FM decoder "worked" because its
-/// `decode_nid` stub only extracted bits 63..48 (NAC+DUID) from the top
-/// of the word -- those come from on-air dibits 0..7, all BEFORE the
-/// status dibit at index 11, so the stub got the right NAC/raw_DUID
-/// despite the corrupted parity region. Porting the validated
-/// BCH(63,16,11) FEC exposed the bug: the LSM-side decoder
-/// consistently miscorrected clean Clay County NIDs (NAC=0x8A1,
-/// DUID=0x7) to a spurious fixed codeword (NAC=0xE28, DUID=0x5)
-/// because the status-dibit corruption was deterministic. See
-/// doc/changes/022 for the fix log.
-const NID_TRANSMITTED_DIBITS: usize = 33;
-/// Index within the 33-dibit on-air NID window where the first P25
-/// status dibit lands. The decoder must read this dibit (so the
-/// dibit-stream cursor keeps advancing) but must NOT fold its value
-/// into the 64-bit BCH codeword.
-const NID_STATUS_DIBIT_INDEX: usize = 11;
+// NID_TRANSMITTED_DIBITS / NID_STATUS_DIBIT_INDEX imported above from
+// `crate::protocol::p25::wire`. See doc/changes/022 for the status-
+// dibit fix history (NAC=0x8A1 → 0xE28 miscorrection that forced the
+// 33-not-32 geometry + index-11 skip).
 
 impl ControlChannelDecoder {
     pub fn new() -> Self {

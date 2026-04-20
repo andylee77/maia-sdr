@@ -30,7 +30,7 @@ use p25_json::*;
 use crate::httpd::AppState;
 #[allow(unused_imports)]
 use crate::protocol::p25::control_channel::{
-    ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, SYNC_THRESHOLD,
+    ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, CC_SYNC_THRESHOLD,
 };
 
 /// Returns recent dibits as a hex string + diagnostic counters.
@@ -651,7 +651,7 @@ pub fn dibit_dump_json(
     // symbol-rate slicer: random P25 data should give ~50/50, and a
     // residual DC bias on sym_diff_re skews it. Today (2026-04-09) we're
     // running at ~70/30 inner/outer because of post-DDC DC pedestal,
-    // which is why SYNC_THRESHOLD is currently 10 instead of 4.
+    // which is why CC_SYNC_THRESHOLD is currently 10 instead of 4.
     let inner = hist[0] + hist[2]; // values 0 (+1) and 2 (-1)
     let outer = hist[1] + hist[3]; // values 1 (+3) and 3 (-3)
 
@@ -688,7 +688,7 @@ pub fn dibit_dump_json(
             "near_misses":   decoder.sync_near_misses(),
             "best_distance": decoder.best_sync_distance(),
             "threshold":     RUNTIME_SYNC_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed),
-            "threshold_default": SYNC_THRESHOLD,
+            "threshold_default": CC_SYNC_THRESHOLD,
             // Phase 6F.6 distance histogram. Bucket i = count of dibit
             // shifts where the sync_register matched at exactly Hamming
             // distance i. Bucket 24 collects everything ≥ 24. The cluster

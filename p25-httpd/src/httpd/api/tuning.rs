@@ -28,7 +28,7 @@ use p25_json::*;
 use crate::httpd::AppState;
 #[allow(unused_imports)]
 use crate::protocol::p25::control_channel::{
-    ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, SYNC_THRESHOLD,
+    ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, CC_SYNC_THRESHOLD,
 };
 
 /// Runtime front-end re-init + live retune handler.
@@ -319,7 +319,7 @@ pub async fn get_sync_tune(
 
     Json(serde_json::json!({
         "current_threshold":   cur,
-        "default_threshold":   SYNC_THRESHOLD,
+        "default_threshold":   CC_SYNC_THRESHOLD,
         "updated_from":        updated_from,
         "total_observations":  total,
         "cumulative_at_threshold": cumulative,
@@ -559,7 +559,7 @@ pub async fn put_sync_tune(
                 "ok":            true,
                 "previous":      prev,
                 "current":       n,
-                "default":       SYNC_THRESHOLD,
+                "default":       CC_SYNC_THRESHOLD,
                 "note":          "Global threshold updated. Counters keep \
                                   accumulating; use /api/sync_tune to verify \
                                   the new histogram shape after a few seconds \

@@ -26,7 +26,7 @@ use p25_json::*;
 use crate::httpd::{AppState, ts_to_ymd_hms};
 #[allow(unused_imports)]
 use crate::protocol::p25::control_channel::{
-    ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, SYNC_THRESHOLD,
+    ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, CC_SYNC_THRESHOLD,
 };
 
 pub async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant>> {

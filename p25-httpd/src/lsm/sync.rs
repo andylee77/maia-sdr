@@ -22,23 +22,20 @@
 use super::nid_fec::{decode_nid as bch_decode_nid, DecodedNid};
 use std::f32::consts::PI;
 
-/// 48-bit P25 frame sync (24 dibits), packed dibits-MSB-first into a u64.
-/// Same constant SDRTrunk uses (`P25P1SyncDetector.SYNC_PATTERN`); matches
-/// TIA-102.BAAA.
-pub const FRAME_SYNC_DIBIT_PATTERN: u64 = 0x5575_F5FF_77FF;
-/// Mask of the 48 sync bits inside the u64 register.
-pub const FRAME_SYNC_MASK: u64 = 0xFFFF_FFFF_FFFF;
-/// Number of dibits in the sync pattern.
-pub const FRAME_SYNC_DIBITS: usize = 24;
+// Frame-sync + NID geometry live in `crate::protocol::p25::wire`.
+// Re-exported here so the existing `lsm::sync::FRAME_SYNC_*` paths
+// still resolve (back-compat for a handful of test imports).
+pub use crate::protocol::p25::wire::{
+    FRAME_SYNC_MASK, NID_STATUS_DIBIT_INDEX, NID_TRANSMITTED_DIBITS,
+};
+pub use crate::protocol::p25::wire::FRAME_SYNC_PATTERN as FRAME_SYNC_DIBIT_PATTERN;
+pub use crate::protocol::p25::wire::FRAME_SYNC_DIBIT_COUNT as FRAME_SYNC_DIBITS;
 
-/// 33 dibits transmitted for the NID, including 1 status dibit at index 11.
-pub const NID_TRANSMITTED_DIBITS: usize = 33;
-/// Position (within the 33-dibit window) of the inserted status dibit.
-pub const NID_STATUS_DIBIT_INDEX: usize = 11;
-
-/// Hamming distance threshold for the hard sync detector. Same value the
-/// Python reference uses (`SYNC_THRESHOLD = 4`).
-pub const SYNC_THRESHOLD: u32 = 4;
+/// Hamming distance threshold for the LSM hard sync detector.
+/// Renamed from `SYNC_THRESHOLD` on 2026-04-19 to avoid collision with
+/// the PS-side `control_channel::SYNC_THRESHOLD` (value 6), which
+/// serves a different pipeline.
+pub const LSM_SYNC_THRESHOLD: u32 = 4;
 
 /// Soft sync correlation threshold. Same value SDRTrunk's
 /// `P25P1MessageFramer.SYNC_DETECTION_THRESHOLD` uses (60.0). A perfect
@@ -124,7 +121,7 @@ pub fn find_sync_events_hard(dibits: &[u8]) -> Vec<SyncEvent> {
             continue;
         }
         let dist = (sync_register ^ FRAME_SYNC_DIBIT_PATTERN).count_ones();
-        if dist <= SYNC_THRESHOLD {
+        if dist <= LSM_SYNC_THRESHOLD {
             let Some((nac, duid, nid_bits)) = extract_nid_skipping_status(dibits, i) else {
                 break;
             };

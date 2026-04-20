@@ -50,14 +50,18 @@ pub enum DataUnit {
 
 impl DataUnit {
     pub fn from_duid(val: u8) -> Option<Self> {
+        use super::wire::{
+            DUID_HDU, DUID_LDU1, DUID_LDU2, DUID_PDU, DUID_TDU,
+            DUID_TDU_LC, DUID_TSDU,
+        };
         match val & 0xF {
-            0x0 => Some(Self::Hdu),
-            0x3 => Some(Self::Tdu),
-            0x5 => Some(Self::Ldu1),
-            0x7 => Some(Self::Tsdu),
-            0xA => Some(Self::Ldu2),
-            0xC => Some(Self::Pdu),
-            0xF => Some(Self::TduLc),
+            DUID_HDU    => Some(Self::Hdu),
+            DUID_TDU    => Some(Self::Tdu),
+            DUID_LDU1   => Some(Self::Ldu1),
+            DUID_TSDU   => Some(Self::Tsdu),
+            DUID_LDU2   => Some(Self::Ldu2),
+            DUID_PDU    => Some(Self::Pdu),
+            DUID_TDU_LC => Some(Self::TduLc),
             _ => None,
         }
     }
@@ -238,19 +242,16 @@ impl std::fmt::Display for Channel {
     }
 }
 
-/// NID (Network Identifier) - 64 bits (48 transmitted dibits after frame sync)
-/// Contains NAC (12 bits) + DUID (4 bits) + Golay parity
+/// 48-bit frame sync unpacked into individual bits (MSB-first).
+/// TIA-102.BAAA Table 7-1. The packed-dibit u64 form lives at
+/// `super::wire::FRAME_SYNC_PATTERN`; this array is kept for call
+/// sites that walk the bits individually.
 ///
-/// Frame sync pattern: 48 dibits = 96 bits
-/// 0x5575F5FF77FF (TIA-102.BAAA Table 7-1)
-pub const FRAME_SYNC_DIBITS: [u8; 48] = [
+/// Renamed from `FRAME_SYNC_DIBITS` on 2026-04-19 to avoid a name
+/// collision with `lsm::sync::FRAME_SYNC_DIBITS` (a scalar count).
+pub const FRAME_SYNC_DIBIT_ARRAY: [u8; 48] = [
     0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, // 0x5575
     1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, // F5FF
     0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, // 77FF
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // (continued)
 ];
-
-/// Frame sync as 64-bit value for fast correlation
-/// Each dibit maps: 01->1, 00->0, 10->2, 11->3
-/// But for correlation we use the raw dibit bits
-pub const FRAME_SYNC_BITS: u64 = 0x5575F5FF77FF;

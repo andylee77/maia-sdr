@@ -9,6 +9,7 @@ pub mod traffic_manager;
 pub mod tsbk;
 pub mod types;
 pub mod voice_frame;
+pub mod wire;
 
 // Offline SDRTrunk `.bits` cross-check for the TDULC LCW parser +
 // framer integration. Hidden behind `#[cfg(test)]` so it only shows

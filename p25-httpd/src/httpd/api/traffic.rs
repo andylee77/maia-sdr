@@ -26,7 +26,7 @@ use p25_json::*;
 use crate::httpd::AppState;
 #[allow(unused_imports)]
 use crate::protocol::p25::control_channel::{
-    ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, SYNC_THRESHOLD,
+    ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, CC_SYNC_THRESHOLD,
 };
 
 /// Phase 7A.1: GET /api/traffic -- traffic-channel grant follower

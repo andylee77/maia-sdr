@@ -961,7 +961,7 @@ pub struct HduHeader {
 impl HduHeader {
     /// Per SDRTrunk `HeaderData.isEncryptedAudio` / `Encryption.UNENCRYPTED`.
     pub fn is_encrypted(&self) -> bool {
-        self.algorithm_id != 0x80
+        self.algorithm_id != super::wire::ALGORITHM_CLEAR
     }
 
     /// True iff `algorithm_id` is in the TIA-102.AABD / SDRTrunk
@@ -1095,7 +1095,7 @@ pub struct Ldu2Ess {
 
 impl Ldu2Ess {
     pub fn is_encrypted(&self) -> bool {
-        self.algorithm_id != 0x80
+        self.algorithm_id != super::wire::ALGORITHM_CLEAR
     }
 
     /// See [`HduHeader::is_spec_algorithm`].
