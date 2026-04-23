@@ -345,8 +345,15 @@ class Progress:
         print(f"{stamp} pkg        {pkg_fmt:<28} {ver:>8}  {action}",
               flush=True)
 
+    _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
     def handle(self, line: str) -> None:
-        line = line.rstrip()
+        # Strip terminal colour codes before matching. Docker's live
+        # output preserves them (so `\e[0;32m[BUILD]\e[0m === foo`
+        # doesn't match `\[BUILD\] === foo` without stripping). Files
+        # saved from a terminal that stripped ANSI pass through
+        # unchanged.
+        line = self._ANSI_RE.sub("", line).rstrip()
         for regex, key, label in self.compiled:
             m = regex.search(line)
             if not m:
