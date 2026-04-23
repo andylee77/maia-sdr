@@ -70,9 +70,14 @@ pub struct CallBoundary {
 
 #[derive(Debug, Clone, Copy)]
 pub enum CallBoundaryKind {
-    /// DUID 0x0 — header arrived. A fresh speaker is keying up: the
-    /// recorder should close out the previous `ActiveCall` (if any)
-    /// and start a new one for the next PCM chunks.
+    /// DUID 0x0 — header arrived. Logged as an informational
+    /// timeline marker only. 2026-04-22 fragmentation fix: HDU no
+    /// longer closes the active recording — it fires at DUID=0
+    /// before the LC is decoded, so the source is unknown, and
+    /// using it as a split trigger fragmented same-speaker PTT
+    /// re-keys. The new-speaker split now happens in the
+    /// audio_chunk arm of the recorder when `chunk.source`
+    /// changes to a different non-zero ID on the same TG.
     HduStart,
     /// Mid-call source stamp. Fires when an LDU1 LC successfully
     /// decodes a `GRP_V_CH_USER` (standard LCW opcode 0x00) and recovers
@@ -84,12 +89,14 @@ pub enum CallBoundaryKind {
     /// source emission can be wired up later without enum churn.
     #[allow(dead_code)]
     TdulcComplete { source: Option<u32> },
-    /// End-of-speaker or end-of-call LCW. Fires on Motorola
-    /// `TALK_COMPLETE` (opcode 0x0F MFID 0x90) and standard
-    /// `CALL_TERMINATION` (opcode 0x0F MFID 0x00). The recorder stamps
-    /// `source` (if Some) and then **finalises** the active recording.
-    /// This is the protocol-level split signal — cleaner than waiting
-    /// for the grace window and not dependent on HDU detection hit rate.
+    /// End-of-speaker / end-of-call LCW. Fires on Motorola
+    /// `TALK_COMPLETE` (opcode 0x0F MFID 0x90), standard
+    /// `CALL_TERMINATION` (opcode 0x0F MFID 0x00), and bare TDU.
+    /// 2026-04-22 fragmentation fix: the recorder stamps
+    /// `source` (if Some) onto the active WAV but does NOT finalise.
+    /// Phantom TDU_LC decodes on all-1s dibits were closing calls
+    /// mid-turn; the grace window + source-change split now handle
+    /// real end-of-speaker transitions.
     SpeakerEnd { source: Option<u32> },
 }
 

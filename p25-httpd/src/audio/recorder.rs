@@ -4,21 +4,30 @@
 //! WAV files to `/tmp/p25_recordings/`. Boundaries come from two
 //! signals:
 //!
-//! 1. **Audio chunks** (talkgroup field):
+//! 1. **Audio chunks** (talkgroup + source fields):
 //!    - First non-zero TG chunk after a gap → start new recording
 //!    - TG changes to a different non-zero TG → finalise + start new
+//!    - `chunk.source` changes to a different non-zero speaker ID on
+//!      the same TG → finalise + start new (this is the real
+//!      "new speaker" split, driven by grant-resolved source rather
+//!      than HDU detection)
 //!    - TG goes to 0 (idle) → finalise after `FINALIZE_GRACE`
 //!
-//! 2. **Call boundary events**:
-//!    - `HduStart` → finalise the in-progress recording (if any) and
-//!      leave `active = None`. The next PCM chunk begins a fresh
-//!      `ActiveCall`. This is what lets the recorder split a
-//!      dispatcher ↔ unit conversation (same TG, multiple speakers)
-//!      into per-PTT files, matching SDRTrunk.
-//!    - `TdulcComplete { source }` → when `source` is `Some(id)`,
-//!      stamps `active.source` so the final filename includes the
-//!      speaker's radio ID (`TO_<TG>_FROM_<source>.wav`). Does NOT
-//!      finalise — we wait for HDU or the grace window.
+//! 2. **Call boundary events (stamp + log only, never close)**:
+//!    2026-04-22 recorder_source_ids fragmentation fix: TDU/TDULC
+//!    and HDU no longer close the recording. They stamp source when
+//!    it's known, log the event for the timeline, and get out of the
+//!    way. The close triggers are now (a) source change on a valid
+//!    chunk, (b) TG change, (c) `FINALIZE_GRACE` of silence. This
+//!    matches SDRTrunk's "calls end only on sync loss or grant
+//!    release" model.
+//!    - `HduStart` → log only. A same-speaker PTT re-key must NOT
+//!      fragment the WAV; the source-change path above handles the
+//!      genuine new-speaker case.
+//!    - `SpeakerEnd { source }` → stamp `active.source` if `Some(id)`
+//!      so the filename shows the radio ID. Does NOT finalise.
+//!    - `TdulcComplete { source }` → stamps `active.source` like
+//!      `SpeakerEnd` but without the end-of-speaker connotation.
 //!
 //! The ring buffer is capped at `MAX_RECORDINGS` entries; evicting
 //! an entry also deletes its WAV file. WAV format is 8 kHz 16-bit
@@ -47,39 +56,29 @@ pub const MAX_RECORDINGS: usize = 40;
 pub const STORAGE_DIR: &str = "/tmp/p25_recordings";
 
 /// Grace window before the recorder closes a call via the
-/// last-chunk-timestamp fallback (as opposed to an explicit
-/// SpeakerEnd/HduStart boundary). 3000 ms (not 1500 ms) so brief
-/// mid-call stalls — imbe_frames_dropped bursts during retune,
-/// IMBE frames queued behind encryption skip — don't split one
-/// speaker's turn into multiple recordings. Trade-off: a call
-/// ending without any explicit boundary takes 3 s of dead air
-/// before the file appears. Paths that do fire an explicit
-/// TDU / MOT_TC / CALL_TERM close via the VOCODER_TAIL_WINDOW
-/// pending-finalise path, which is sub-second when count-driven.
-const FINALIZE_GRACE: Duration = Duration::from_millis(3000);
-
-/// Vocoder-tail window. When a `SpeakerEnd` or `HduStart` boundary
-/// arrives, the recorder defers `finalize()` by this duration so
-/// trailing PCM chunks for the just-ended speaker's last LDU frames
-/// (still being synthesised by the vocoder) append to the closing
-/// recording instead of a doomed 60-ms fragment.
+/// last-chunk-timestamp fallback. 5000 ms.
 ///
-/// BACKUP timer only — happy path is count-driven
-/// (`frames_consumed >= expected_submit_count`) and fires in tens
-/// of ms. 1500 ms covers queues with multiple pending LDU batches;
-/// shorter values let `closed_by=timer` hit while frames are still
-/// un-consumed.
-const VOCODER_TAIL_WINDOW: Duration = Duration::from_millis(1500);
+/// 2026-04-22 recorder_source_ids fragmentation fix: bumped
+/// 3000→5000 ms. Boundary events (TDU/TDULC/HDU) no longer close
+/// the recording, so this grace is the dominant close trigger
+/// alongside TG-change and source-change. 3 s was too tight — a
+/// PTT release + re-key within the same grant produced a ~3 s
+/// silence that grace closed, fragmenting one call across two WAVs.
+/// 5 s comfortably spans re-key gaps observed in the log ring
+/// while still separating genuine inter-call gaps (typically
+/// ≥ 10 s when one grant releases before the next lands). Reopen
+/// and raise further if a future field sample shows re-key gaps
+/// between 5 and ~10 s.
+const FINALIZE_GRACE: Duration = Duration::from_millis(5000);
 
 /// Minimum duration before a recording is worth keeping. Guards
 /// against accidental 1-frame "calls" from phantom TDU_LC bursts.
 const MIN_KEEPABLE_MS: u64 = 500;
 
-/// Recorder task main-loop tick. Fast enough that `pending_finalise`
-/// fires within ~50 ms of the `VOCODER_TAIL_WINDOW` deadline, so we
-/// capture the tail audio without lingering far past it. The
-/// `FINALIZE_GRACE` timer check also runs every tick but only acts
-/// when `last_chunk_at.elapsed() >= FINALIZE_GRACE`.
+/// Recorder task main-loop tick. The `FINALIZE_GRACE` timer check
+/// runs every tick but only acts when
+/// `last_chunk_at.elapsed() >= FINALIZE_GRACE`. Fast cadence means
+/// grace fires within ~50 ms of the deadline.
 const RECORDER_TICK_MS: u64 = 50;
 
 /// Metadata for a completed recording, returned by /api/recordings.
@@ -169,20 +168,6 @@ struct ActiveCall {
     /// IMBE drop snapshot at `call_open`; the delta at finalise
     /// identifies calls that took audio loss from IMBE queue full.
     imbe_drops_at_open: u64,
-    /// Deferred finalise. Set when a `SpeakerEnd` or `HduStart`
-    /// boundary arrives. Tuple of:
-    ///   - `Instant` — hard-deadline timer (`VOCODER_TAIL_WINDOW`
-    ///     from boundary receipt). Backup when the consumed
-    ///     counter stalls (long encryption skip, channel lag,
-    ///     vocoder wedge). Guarantees eventual finalise.
-    ///   - `u64` — snapshot of `ImbeForwarder::frames_submitted`
-    ///     at boundary dispatch. Tick runs finalise as soon as
-    ///     `frames_consumed >= expected`, so tail PCM chunks from
-    ///     LDUs submitted just before the boundary land in the
-    ///     closing recording. Happy-path is count-driven; timer
-    ///     bounds worst-case.
-    ///   - `&'static str` — reason label for the log.
-    pending_finalise: Option<(Instant, u64, &'static str)>,
 }
 
 impl ActiveCall {
@@ -199,21 +184,18 @@ impl ActiveCall {
             pcm: Vec::with_capacity(8_000 * 10), // pre-size for 10 s
             last_chunk_at: Instant::now(),
             imbe_drops_at_open,
-            pending_finalise: None,
         }
     }
 
     fn append(&mut self, chunk: &AudioChunk) {
         self.pcm.extend_from_slice(&chunk.pcm);
         self.last_chunk_at = Instant::now();
-        // If the audio chunk carries a known source (set by the
-        // vocoder from `ImbeForwarder.current_source`, written by
-        // the grant follower from `GRP_VCH_GRANT.FM`), stamp it as
-        // soon as audio flows. Matches SDRTrunk source-attribution
-        // priority (control-channel grant first, traffic LC second,
-        // TDULC end code third). Later LC/TDULC boundary events can
-        // still update the source — most recent wins.
-        if chunk.source != 0 {
+        // First-known-source stamp only. Source CHANGE (chunk.source
+        // != 0 and c.source is Some(other)) is handled by the audio
+        // match arm upstream — it finalises + reopens a new recording
+        // rather than mutating this recording's source mid-stream.
+        // See recorder_source_ids/ANALYSIS.md Bug B.
+        if chunk.source != 0 && self.source.is_none() {
             self.source = Some(chunk.source);
         }
     }
@@ -375,13 +357,12 @@ async fn finalize(
 
 /// Recorder background task. Runs for the lifetime of the process.
 /// Subscribes to the audio broadcast AND the call-boundary broadcast
-/// so HDU-triggered splits can happen the instant a new speaker
-/// starts, independent of vocoder latency.
-// Count-based recorder close — `frames_consumed` is the vocoder-side
-// counter advanced on every frame batch popped from `imbe_rx`. The
-// recorder uses it to know when all frames submitted up to a
-// boundary's snapshot have been consumed, so trailing PCM chunks
-// have landed in the closing recording and it's safe to finalize().
+/// so new-speaker splits can happen (via source change on the audio
+/// chunk; boundary events are stamp + log only post-2026-04-22).
+//
+// `frames_consumed` is the vocoder-side counter advanced on every
+// frame batch popped from `imbe_rx`. It's no longer used to drive
+// close decisions — logged on boundary_recv events for diagnostics.
 // `imbe_drops` is the same atomic surfaced via /api/traffic — used
 // here to log the drop-delta for each recording's lifetime.
 pub async fn recorder_task(
@@ -468,21 +449,81 @@ pub async fn recorder_task(
                                 active = Some(c);
                             }
                             Some(c) if c.talkgroup == chunk.talkgroup => {
-                                // Log per-chunk source change so a
-                                // recording's event tail shows every
-                                // source stamp that happened mid-call.
-                                if chunk.source != 0
-                                    && c.source != Some(chunk.source)
-                                {
-                                    log_ev("source_stamp_chunk", serde_json::json!({
-                                        "recording_id": next_id,
-                                        "tg":           c.talkgroup,
-                                        "old_source":   c.source,
-                                        "new_source":   chunk.source,
-                                        "via":          "audio_chunk",
+                                // Source-change split. Same TG, but
+                                // `chunk.source` is a known speaker
+                                // different from the one this WAV has
+                                // been recording. A new speaker on the
+                                // same grant (A→B turn-taking) →
+                                // finalise the current WAV with its
+                                // original speaker, open a new one for
+                                // the new speaker. Replaces the old
+                                // source-mutation-in-place behaviour
+                                // (Bug B in recorder_source_ids/
+                                // ANALYSIS.md) and the HDU-triggered
+                                // split (which fired even when source
+                                // was unchanged).
+                                let is_source_change = chunk.source != 0
+                                    && matches!(
+                                        c.source,
+                                        Some(cur) if cur != chunk.source
+                                    );
+                                if is_source_change {
+                                    if let Some(old) = active.take() {
+                                        let id = next_id;
+                                        next_id += 1;
+                                        let wall_ms = old.wall_duration_ms();
+                                        let pcm_ms = old.duration_ms();
+                                        let fill_pct = if wall_ms > 0 {
+                                            100 * pcm_ms / wall_ms
+                                        } else {
+                                            0
+                                        };
+                                        let drops_in_call = imbe_drops
+                                            .load(Ordering::Relaxed)
+                                            .saturating_sub(old.imbe_drops_at_open);
+                                        log_ev("call_finalise", serde_json::json!({
+                                            "recording_id":      id,
+                                            "reason":            "source_change",
+                                            "tg":                old.talkgroup,
+                                            "old_source":        old.source,
+                                            "new_source":        chunk.source,
+                                            "duration_ms":       pcm_ms,
+                                            "wall_duration_ms":  wall_ms,
+                                            "pcm_fill_pct":      fill_pct,
+                                            "imbe_drops_in_call": drops_in_call,
+                                        }));
+                                        finalize(&store, old, id, event_log.as_ref()).await;
+                                    }
+                                    let mut c = ActiveCall::new(
+                                        chunk.talkgroup,
+                                        imbe_drops.load(Ordering::Relaxed),
+                                    );
+                                    c.append(&chunk);
+                                    log_ev("call_open", serde_json::json!({
+                                        "recording_id":  next_id,
+                                        "tg":            chunk.talkgroup,
+                                        "chunk_source":  chunk.source,
+                                        "reason":        "source_change",
                                     }));
+                                    active = Some(c);
+                                } else {
+                                    // Log first-known-source stamp so
+                                    // the timeline shows when a
+                                    // previously-unknown speaker's ID
+                                    // landed.
+                                    if chunk.source != 0
+                                        && c.source.is_none()
+                                    {
+                                        log_ev("source_stamp_chunk", serde_json::json!({
+                                            "recording_id": next_id,
+                                            "tg":           c.talkgroup,
+                                            "old_source":   c.source,
+                                            "new_source":   chunk.source,
+                                            "via":          "audio_chunk",
+                                        }));
+                                    }
+                                    c.append(&chunk);
                                 }
-                                c.append(&chunk);
                             }
                             Some(_) => {
                                 // TG switched without going idle in
@@ -562,26 +603,15 @@ pub async fn recorder_task(
                                 "expected":      boundary.expected_submit_count,
                                 "consumed":      frames_consumed.load(Ordering::Relaxed),
                             }));
-                            // Fresh PTT on the traffic channel.
-                            // Deferred finalise: HDU fires on-wire
-                            // BEFORE the vocoder emits the last PCM
-                            // chunks for the previous speaker's tail
-                            // LDUs. Immediate finalise would push
-                            // those chunks into a new 60-ms
-                            // recording that fails too_short —
-                            // audio lost. Instead, set a deferred
-                            // deadline so trailing chunks append to
-                            // the closing recording. Back-to-back
-                            // HDU phantoms (bit-corrupt NID decodes
-                            // mid-turn) push the deadline out; they
-                            // don't split the recording.
-                            if let Some(c) = active.as_mut() {
-                                c.pending_finalise = Some((
-                                    Instant::now() + VOCODER_TAIL_WINDOW,
-                                    boundary.expected_submit_count,
-                                    "hdu_start",
-                                ));
-                            }
+                            // 2026-04-22 fragmentation fix: HDU no
+                            // longer closes the recording. HDU fires
+                            // at DUID=0 before the LC is decoded, so
+                            // its source is unknown — using it as a
+                            // split trigger forced a new WAV even on
+                            // same-speaker re-keys. The source-change
+                            // path in the audio_chunk arm now owns the
+                            // new-speaker split, driven by the
+                            // grant-resolved source ID.
                         }
                         CallBoundaryKind::SpeakerEnd { source } => {
                             log_ev("boundary_recv", serde_json::json!({
@@ -595,18 +625,20 @@ pub async fn recorder_task(
                                 "expected":      boundary.expected_submit_count,
                                 "consumed":      frames_consumed.load(Ordering::Relaxed),
                             }));
-                            // Protocol-level end-of-speaker (Motorola
-                            // TALK_COMPLETE) or end-of-call (standard
-                            // CALL_TERMINATION) from TDULC. Only fires
-                            // from the FEC-strong TDULC path; LDU1 LC
-                            // routing was reverted as too noisy.
+                            // 2026-04-22 fragmentation fix: SpeakerEnd
+                            // is stamp-only, no finalise. Phantom
+                            // TDU_LC decodes on all-1s dibits were
+                            // closing WAVs mid-turn; the grace window
+                            // + source-change split now handle real
+                            // end-of-speaker transitions.
                             //
-                            // Guard: if the active call's TG doesn't
-                            // match the boundary's TG, this SpeakerEnd
-                            // is a late teardown-tail signal from the
-                            // previous call that arrived after the new
-                            // call started (busy-site race). Don't
-                            // finalise in that case.
+                            // TG guard: if the active call's TG
+                            // doesn't match the boundary's TG, this
+                            // SpeakerEnd is a late teardown-tail
+                            // signal from the previous call that
+                            // arrived after a new call started on a
+                            // different TG (busy-site race). Skip
+                            // the stamp.
                             let tg_matches = match (
                                 active.as_ref(), boundary.talkgroup,
                             ) {
@@ -637,17 +669,6 @@ pub async fn recorder_task(
                                         "via":          "speaker_end",
                                     }));
                                 }
-                                // Deferred finalise — same reasoning
-                                // as HduStart above. Stamp already
-                                // applied; PCM tail chunks append
-                                // until `frames_consumed` reaches
-                                // the boundary's snapshotted submit
-                                // count or the window expires.
-                                c.pending_finalise = Some((
-                                    Instant::now() + VOCODER_TAIL_WINDOW,
-                                    boundary.expected_submit_count,
-                                    "speaker_end",
-                                ));
                             }
                         }
                         CallBoundaryKind::TdulcComplete { source } => {
@@ -713,82 +734,12 @@ pub async fn recorder_task(
                 }
             }
             _ = tick.tick() => {
-                // Deferred-finalise check. A SpeakerEnd / HduStart
-                // boundary set `pending_finalise` to
-                // (now + VOCODER_TAIL_WINDOW, expected_submit_count,
-                // reason). Two ways to trigger actual finalise:
-                //
-                //   1. Count-driven (happy path): `frames_consumed`
-                //      reached the snapshotted `expected`. Vocoder
-                //      has pulled every frame submitted up to the
-                //      boundary; any PCM those frames produced has
-                //      landed in this recording's `pcm` buffer.
-                //      Safe to close.
-                //   2. Timer-driven (fallback): hard deadline
-                //      passed. Covers consumption stalls — e.g.
-                //      encryption skip-streak that never emits PCM,
-                //      or channel lag.
-                //
-                // Evaluated BEFORE the grace_window check so a
-                // pending deferred finalise always takes priority.
-                let pending_done = active.as_ref()
-                    .and_then(|c| c.pending_finalise.as_ref())
-                    .map(|(deadline, expected, _)| {
-                        let consumed = frames_consumed.load(Ordering::Relaxed);
-                        consumed >= *expected || Instant::now() >= *deadline
-                    })
-                    .unwrap_or(false);
-                if pending_done {
-                    if let Some(old) = active.take() {
-                        let id = next_id;
-                        next_id += 1;
-                        let (deadline, expected, reason) = old
-                            .pending_finalise
-                            .as_ref()
-                            .map(|(d, e, r)| (*d, *e, *r))
-                            .unwrap_or((Instant::now(), 0, "deferred"));
-                        let consumed = frames_consumed.load(Ordering::Relaxed);
-                        let closed_by = if consumed >= expected {
-                            "count"
-                        } else if Instant::now() >= deadline {
-                            "timer"
-                        } else {
-                            "unknown"
-                        };
-                        let wall_ms = old.wall_duration_ms();
-                        let pcm_ms = old.duration_ms();
-                        let fill_pct = if wall_ms > 0 {
-                            100 * pcm_ms / wall_ms
-                        } else {
-                            0
-                        };
-                        let drops_in_call = imbe_drops
-                            .load(Ordering::Relaxed)
-                            .saturating_sub(old.imbe_drops_at_open);
-                        log_ev("call_finalise", serde_json::json!({
-                            "recording_id":      id,
-                            "reason":            reason,
-                            "tg":                old.talkgroup,
-                            "source":            old.source,
-                            "duration_ms":       pcm_ms,
-                            "wall_duration_ms":  wall_ms,
-                            "pcm_fill_pct":      fill_pct,
-                            "imbe_drops_in_call": drops_in_call,
-                            "deferred":          true,
-                            "closed_by":         closed_by,
-                            "expected":          expected,
-                            "consumed":          consumed,
-                        }));
-                        finalize(&store, old, id, event_log.as_ref()).await;
-                    }
-                    continue;
-                }
-
                 // Grace-window finaliser. If there's an active call
                 // and the last chunk was more than FINALIZE_GRACE
-                // ago, close it out. Handles the normal end-of-call
-                // path where the vocoder stops emitting chunks
-                // without ever sending a TG=0 boundary.
+                // ago, close it out. Post-2026-04-22 fragmentation
+                // fix this is the primary close trigger alongside
+                // TG-change and source-change; boundary events
+                // (TDU/TDULC/HDU) no longer close the recording.
                 if let Some(c) = active.as_ref() {
                     if c.last_chunk_at.elapsed() >= FINALIZE_GRACE {
                         if let Some(old) = active.take() {
