@@ -14,9 +14,9 @@ Two things need to be separated:
 
 ### What a reference-quality plot shows
 
-An Anritsu MT8212 / Aeroflex 3920 / OP25 HDR-style display is
+Both the Anritsu P25 analyser and the OP25 **Datascope** view are
 **post-matched-filter, post-PLL-derotation, post-Gardner-timing-
-recovery, post-slicer**. The signal has been:
+recovery, pre-slicer**. The signal has been:
 
 1. Matched-filtered (RRC, alpha = 0.2, span 16) so the pulse shape
    is restored to its ideal form.
@@ -26,19 +26,34 @@ recovery, post-slicer**. The signal has been:
 3. Timing-recovered by the Gardner TED so every overlay lands at
    exactly the symbol phase (`t = k * T_sym + t0`), not a random
    sub-sample offset.
-4. Sliced — each symbol is a decided dibit ∈ {00, 01, 10, 11}
-   mapped to {−3, −1, +1, +3}.
 
-After all four, the eye has four clean crossings at the symbol rate,
-the constellation has four tight point clusters, and the deviation
-plot is a staircase between ±1.8 kHz (C4FM) / ±3 normalised units
-(LSM).
+After those three, the eye has four clean crossings per symbol, the
+constellation has four tight point clusters, and the deviation plot
+is a staircase between ±1.8 kHz (C4FM) / ±3 normalised units (LSM).
 
-The Anritsu screenshot attached to this doc shows this ideal state
-driven by a **test-pattern generator** (`p25_lsm_1011`) — a perfectly
-repetitive known signal. Mod Fidelity 1.97 %, BER 0.000 %, Symbol
-Dev 1773 Hz. That is the calibration upper bound, not what you see
-on a live off-air P25 channel.
+### Reference images in this doc
+
+- **Anritsu P25 analyser (attached to the tuning session).** Both
+  test-pattern captures (e.g. `p25_lsm_1011`, NAC 293h) and live
+  off-air captures from real P25 systems produce the same clean
+  constellation + eye when the analyser has lock. The test-pattern
+  capture is tighter on BER / Mod Fidelity because the source is
+  noise-free, but the *shape* of the plots is what off-air should
+  look like too — it's not a "test-gen only" pattern.
+- **OP25 Datascope view.** Same idea as an Anritsu eye but rendered
+  by the OP25 Python plotter over live off-air audio. The
+  `op25_repeater/apps/rx.py --plot datascope` trace shows ~10
+  symbol periods on the x-axis with decided levels pinned at
+  roughly ±1 and ±3, and clear diagonal crossings at the inter-
+  symbol boundaries. The screenshot the user attached to this doc
+  is exactly that view off a live P25 system — the four horizontal
+  rails and the diamond-shaped inter-symbol eye openings at x ≈ 0.5,
+  1.5, 2.5, … are the canonical "this is locked" fingerprint.
+
+Both are what a correctly presented eye plot off this hardware
+*should* look like when the post-PLL tap is in place. The Anritsu
+test-pattern BER number is the calibration ceiling; the OP25
+Datascope picture is the everyday off-air target.
 
 ### What *our* plots currently show
 
@@ -191,23 +206,20 @@ window width, not anything the eye sees.
 
 ## 4. Why ours ≠ Anritsu / OP25 / SDRTrunk (summary)
 
-| Property | Anritsu / OP25 | Fishball today |
+| Property | Anritsu / OP25 Datascope | Fishball today |
 |---|---|---|
 | Matched filter | yes (RRC α = 0.2) | yes (`LsmFir` RRC, same taps) |
 | AGC | yes | yes (`LsmAgc`, per-symbol) |
 | PLL derotation | **yes** | **no (for plots)** — slicer runs on it, but no tap |
 | Timing recovery | **yes** | **no (for plots)** — same |
-| Slicer | yes | yes (`LsmDiffDemodSlicer`) |
-| Plot tap | post-slicer | pre-PLL, pre-timing (except `/api/constellation`) |
+| Plot tap | post-PLL, post-timing, pre-slicer (Datascope) or post-slicer (Anritsu constellation) | pre-PLL, pre-timing (except `/api/constellation`) |
 
-So the gap between the Anritsu screenshot and our dashboard eye is
-exactly the two "no" rows. Closing them is §7.
-
-The Anritsu is additionally driven by a **test-pattern generator**
-(`p25_lsm_1011` at NAC 293h) — a perfectly repeating pseudorandom
-dibit stream with no noise. A real off-air signal will always be a
-bit noisier than that reference picture even when the whole post-PLL
-chain is in place.
+So the gap between a reference plot and our dashboard eye is exactly
+the two "no" rows. Closing them is §7. Preset choice, sample rate,
+amplitude scaling, and non-integer SPS are all red herrings — OP25
+Datascope runs on a non-integer SPS too (its Gardner TED recovers
+symbol time regardless), and its output still looks like the
+attached screenshot.
 
 ## 5. What the Anritsu fields mean (as a reference target)
 
@@ -354,8 +366,11 @@ Upstream references for what "right" looks like:
 - **SDRTrunk** ([reference_sdrtrunk_paths.md](../../../.claude/projects/c--Users-Andy-Projects-MAIA-SDR-maia-sdr/memory/reference_sdrtrunk_paths.md)):
   `io.github.dsheirer.dsp.psk` — the reference Gardner TED + PLL we
   already mirror in `src/lsm/`.
-- **OP25** (`op25_repeater/apps/rx.py` eye-plot path) — same general
-  approach; useful as a sanity check on plot layout conventions.
+- **OP25 Datascope** (`op25_repeater/apps/rx.py --plot datascope`)
+  — the canonical off-air P25 eye plot. Ten symbol periods on the
+  x-axis, soft symbols overlaid, four rails at ±1 / ±3, diamond
+  inter-symbol openings at x ≈ k + 0.5. This is the target output
+  shape for our eye widget once Path A or Path B in §7 is done.
 - **P25 TIA-102.BAAA-A** — Symbol Dev / Mod Fidelity / Freq Err
   tolerances that the deviation-plot metrics should calibrate
   against.
@@ -371,7 +386,10 @@ change):
 
 ## 9. TL;DR
 
-- **Anritsu / OP25 plot = post-PLL + post-timing.**
+- **Anritsu / OP25 Datascope = post-PLL + post-timing-recovery.**
+  Both work on real off-air P25 signals, not just test generators;
+  the Anritsu test-pattern capture is just the noise-free calibration
+  ceiling of the same view.
 - **Fishball today** — only `/api/constellation` is post-PLL. The
   WebSocket IQ eye plots are pre-PLL and pre-timing, so they look
   smeared and pre-RRC plots look wavy.
