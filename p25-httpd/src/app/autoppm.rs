@@ -79,6 +79,14 @@ const SEARCH_WINDOW_HZ: f64 = 10_000.0;
 #[cfg(target_os = "linux")]
 const PLL_SETTLE_SECS: u64 = 3;
 
+/// Number of wideband FFT frames to average in stage A. A single
+/// frame has ±1-2 dB bin-level noise which turns into ~100 Hz
+/// peak-position jitter through parabolic interpolation. √N
+/// averaging drops that by ~2.8× at N=8 — enough to make stage A
+/// converge run-to-run.
+#[cfg(target_os = "linux")]
+const STAGE_A_FRAMES: usize = 8;
+
 /// Number of `pll_dbg` samples to take for the stage-B mean.
 #[cfg(target_os = "linux")]
 const PLL_SAMPLES: usize = 30;
@@ -131,12 +139,35 @@ pub async fn run_calibration(
     let expected_offset = control_freq - rx_lo;
 
     // ── Stage A: wideband FFT peak-find ─────────────────────────
-    let bytes = grab_wideband_frame(state, Duration::from_millis(500))
-        .await?;
-    let mag_db = wideband_power_db(&bytes);
-    if mag_db.is_empty() {
-        return Err(anyhow!("wideband buffer too short"));
+    // Average STAGE_A_FRAMES independent frames (power-domain mean,
+    // linear sum of mag_db is wrong since dB isn't power; convert
+    // back to linear, sum, convert back). This tames the ~100 Hz
+    // per-frame peak jitter that single-frame parabolic interp
+    // picks up from adjacent-bin dB noise.
+    let mut mag_linear: Vec<f64> =
+        vec![0.0; crate::services::spectrum::WIDEBAND_FFT_SIZE];
+    let mut frames_seen: usize = 0;
+    for _ in 0..STAGE_A_FRAMES {
+        let bytes = match grab_wideband_frame(
+            state, Duration::from_millis(500)).await {
+            Ok(b) => b,
+            Err(_) => break,
+        };
+        let db = wideband_power_db(&bytes);
+        if db.len() != mag_linear.len() {
+            break;
+        }
+        for (i, &d) in db.iter().enumerate() {
+            mag_linear[i] += 10f64.powf(d as f64 / 10.0);
+        }
+        frames_seen += 1;
     }
+    if frames_seen == 0 {
+        return Err(anyhow!("no wideband frames captured"));
+    }
+    let mag_db: Vec<f32> = mag_linear.iter()
+        .map(|&v| (10.0 * (v / frames_seen as f64).log10()) as f32)
+        .collect();
     let (peak_bin_f, peak_db, actual_offset) =
         find_peak_near(&mag_db, sample_rate, expected_offset,
                        SEARCH_WINDOW_HZ)?;
@@ -194,16 +225,28 @@ pub async fn run_calibration(
     // Persist to disk so the next boot picks up the calibration
     // without re-running it. Best-effort — a permissions or I/O
     // failure here doesn't fail the calibration itself.
-    let persisted = PersistedPpm {
-        lo_shift_hz:      hz_int,
-        lo_ppm:           final_lo_ppm,
-        rx_lo_hz:         rx_lo as i64,
-        control_freq_hz:  state.boot_control_freq,
-        unix_secs,
-        method:           "auto_stage_a_b".to_string(),
-    };
-    if let Err(e) = save_persisted(&persisted) {
-        tracing::warn!("auto-PPM: persistence failed: {e:#}");
+    //
+    // Guard: skip persistence if we haven't got a real wall clock
+    // yet (pre-NTP the kernel reports seconds-since-boot, i.e. a
+    // 1970-ish value). The cal value itself is fine; we just don't
+    // want to stamp the file with an invalid timestamp and have it
+    // look "1h ago" forever.
+    const EPOCH_YEAR_2001: i64 = 1_000_000_000;
+    if unix_secs >= EPOCH_YEAR_2001 {
+        let persisted = PersistedPpm {
+            lo_shift_hz:      hz_int,
+            lo_ppm:           final_lo_ppm,
+            rx_lo_hz:         rx_lo as i64,
+            control_freq_hz:  state.boot_control_freq,
+            unix_secs,
+            method:           "auto_stage_a_b".to_string(),
+        };
+        if let Err(e) = save_persisted(&persisted) {
+            tracing::warn!("auto-PPM: persistence failed: {e:#}");
+        }
+    } else {
+        tracing::info!(
+            "auto-PPM: skipping persistence (pre-NTP unix_secs={unix_secs})");
     }
 
     Ok(CalibrationResult {
@@ -355,9 +398,12 @@ pub fn spawn_boot_autoppm(state: Arc<AppState>) {
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        // One extra 3 s cushion once acquired — lets the PLL settle
-        // at the post-lock operating point before we measure.
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // 15 s cushion once acquired — `system_acquired` fires on
+        // the FIRST valid NID, but the PLL integrator keeps drifting
+        // for another 10+ s as BCH and IID settle. Running the boot
+        // cal too early gave noisy stage-A results (-0.26 ppm one
+        // run, -0.71 the next). 15 s lets both stages converge.
+        tokio::time::sleep(Duration::from_secs(15)).await;
         match run_calibration(&state).await {
             Ok(r) => tracing::info!(
                 "auto-PPM (boot): final_lo_ppm={:.4} shift={:.0} Hz  \
@@ -366,6 +412,103 @@ pub fn spawn_boot_autoppm(state: Arc<AppState>) {
                 r.stage_a_delta_hz, r.stage_b_residual_hz, r.duration_ms),
             Err(e) => tracing::warn!(
                 "auto-PPM (boot): calibration failed: {e:#}"),
+        }
+    });
+}
+
+/// Interval between periodic fine-tune checks.
+#[cfg(target_os = "linux")]
+const FINE_TUNE_INTERVAL_SECS: u64 = 900;    // 15 min
+
+/// Threshold (|PLL residual| in Hz) above which a fine-tune commits
+/// a correction. Below this the loop is good enough — committing
+/// ~10 Hz tweaks every 15 min would be churn without audible benefit.
+#[cfg(target_os = "linux")]
+const FINE_TUNE_THRESHOLD_HZ: f64 = 30.0;
+
+/// Spawn a long-lived task that periodically samples `pll_dbg`,
+/// computes the residual in Hz, and applies it to the DDC NCO if it
+/// exceeds `FINE_TUNE_THRESHOLD_HZ`. This is stage-B-only — no
+/// wideband FFT, no settle wait — because the loop is already
+/// tracking and we just need to slide the reference. Runs for the
+/// life of the process.
+///
+/// Crystal drift over temperature is typically <0.1 ppm/°C, so
+/// over an hour of ambient-temperature change you might see 10-30 Hz
+/// at 1 GHz. This task catches that slowly without interrupting the
+/// decode path (no NCO discontinuity large enough to unlock the PLL).
+#[cfg(target_os = "linux")]
+pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(
+                Duration::from_secs(FINE_TUNE_INTERVAL_SECS)).await;
+            let acquired = {
+                let dec = state.lsm_decoder.read().await;
+                dec.system.wacn.is_some()
+            };
+            if !acquired { continue; }
+            // Sample PLL briefly — this runs while decode is live so
+            // we keep it short to minimise lock contention on ip_core.
+            const N: usize = 20;
+            let mut sum: i64 = 0;
+            for _ in 0..N {
+                let core = state.ip_core.lock().await;
+                let (pll, _) = core.lsm_debug();
+                drop(core);
+                sum += pll as i64;
+                tokio::time::sleep(
+                    Duration::from_millis(PLL_SAMPLE_INTERVAL_MS)).await;
+            }
+            let pll_mean = sum as f64 / N as f64;
+            let hz_per_q213 = SYM_RATE_HZ / (2.0 * std::f64::consts::PI
+                                             * 8192.0);
+            let residual_hz = pll_mean * hz_per_q213;
+            if residual_hz.abs() < FINE_TUNE_THRESHOLD_HZ {
+                continue;
+            }
+            // Nudge the DDC NCO by residual_hz. Small step, PLL will
+            // re-lock immediately (residual by construction <=
+            // PLL capture range).
+            let sample_rate = state.current_sample_rate_hz
+                .load(Ordering::Relaxed) as f64;
+            let rx_lo = state.current_rx_lo
+                .load(Ordering::Relaxed) as f64;
+            let control_freq = state.current_control_freq
+                .load(Ordering::Relaxed) as f64;
+            let old_shift = state.current_lo_shift_hz
+                .load(Ordering::Relaxed) as f64;
+            let new_shift = old_shift + residual_hz;
+            let new_nco = control_freq - rx_lo + new_shift;
+            let applied = {
+                let core = state.ip_core.lock().await;
+                core.set_ddc_frequency(new_nco, sample_rate).is_ok()
+            };
+            if !applied { continue; }
+            state.current_lo_shift_hz.store(
+                new_shift.round() as i64, Ordering::Relaxed);
+            let unix_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64).unwrap_or(0);
+            state.last_ppm_cal_unix_secs.store(
+                unix_secs, Ordering::Relaxed);
+            tracing::info!(
+                "auto-PPM (fine-tune): residual {:+.1} Hz -> shift {:+.0} Hz \
+                 ({:+.4} ppm)",
+                residual_hz, new_shift,
+                -new_shift / (rx_lo * 1e-6));
+            // Persist the update so a reboot picks it up.
+            if unix_secs >= 1_000_000_000 {
+                let persisted = PersistedPpm {
+                    lo_shift_hz:     new_shift.round() as i64,
+                    lo_ppm:          -new_shift / (rx_lo * 1e-6),
+                    rx_lo_hz:        rx_lo as i64,
+                    control_freq_hz: state.boot_control_freq,
+                    unix_secs,
+                    method:          "fine_tune".to_string(),
+                };
+                let _ = save_persisted(&persisted);
+            }
         }
     });
 }

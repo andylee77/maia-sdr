@@ -975,6 +975,11 @@ async function refreshPpm() {
         last_el.textContent = r.boot_lo_ppm !== 0
           ? 'cal: boot flag'
           : 'cal: persisted/none';
+      } else if (r.last_cal_unix_secs < 1_000_000_000) {
+        // Pre-NTP stamp — the cal value is valid but the timestamp
+        // was seconds-since-boot, not a real unix time. Show that
+        // instead of a nonsense age.
+        last_el.textContent = 'cal: early boot';
       } else {
         const age_s = Math.max(0,
           Math.floor(Date.now() / 1000) - r.last_cal_unix_secs);

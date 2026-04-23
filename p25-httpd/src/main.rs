@@ -35,7 +35,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-23-autoppm-dashboard-widget";
+pub const BUILD_TAG: &str = "2026-04-23-autoppm-avg8-finetune-15m";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -1630,6 +1630,11 @@ async fn main() -> anyhow::Result<()> {
     if ppm_source != "persisted" {
         app::autoppm::spawn_boot_autoppm(state.clone());
     }
+    // Periodic fine-tune: every 15 min, if |PLL residual| > 30 Hz,
+    // nudge the DDC NCO by the residual. Catches slow crystal
+    // drift over temperature without re-running stage A.
+    #[cfg(target_os = "linux")]
+    app::autoppm::spawn_periodic_fine_tune(state.clone());
 
     // Start HTTP (and optionally HTTPS). HTTPS unlocks AudioWorklet
     // on the dashboard — browsers only expose it in secure contexts,
