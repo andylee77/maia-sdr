@@ -58,7 +58,7 @@ import time
 # Order matters — the first matching pattern on a line wins. Patterns
 # target the same lines Claude's Monitor filter used during the bake.
 
-PATTERNS = [
+FPGA_PATTERNS = [
     # Outer build_fpga.bat markers
     (r"^\[Step 0\]", "begin", "Vivado search"),
     (r"^\[Step 2\]", "verilog", "Verilog staleness check"),
@@ -116,13 +116,78 @@ PATTERNS = [
      "route.mid", "routing intermediate timing"),
 ]
 
-COMPILED = [(re.compile(p), key, label) for p, key, label in PATTERNS]
+TEZUKA_PATTERNS = [
+    # Outer build.bat markers
+    (r"=== Tezuka Firmware Build", "tez.begin", "Tezuka build starting"),
+    (r"\[OK\] Docker image:", "tez.docker", "Docker image ready"),
+
+    # Inner build.sh steps (see tezuka_fw/build.sh)
+    (r"\[BUILD\] Step 1: Syncing source", "tez.sync", "source sync"),
+    (r"\[BUILD\]\s+✓ Source synced", "tez.sync.done", "source synced"),
+    (r"\[BUILD\] Step 2: Fixing CRLF", "tez.crlf", "CRLF conversion"),
+    (r"\[BUILD\]\s+✓ CRLF", "tez.crlf.done", "CRLF done"),
+    (r"\[BUILD\] Step 5:", "tez.external", "BR2_EXTERNAL setup"),
+    (r"\[BUILD\] Step 6: Applying defconfig", "tez.defconfig",
+     "applying defconfig"),
+    (r"\[BUILD\]\s+✓ Defconfig applied", "tez.defconfig.done",
+     "defconfig applied"),
+    (r"\[BUILD\] Step 7: Building firmware", "tez.make.start",
+     "Buildroot make starting"),
+    (r"\[BUILD\] === Build Complete ===", "tez.done",
+     "TEZUKA BUILD COMPLETE"),
+    (r"^\[BUILD\] ", "tez.log", None),  # generic [BUILD] lines
+
+    # Buildroot per-package progression. Format:
+    #   >>> <package> <version> <action>
+    # Actions we care about: Extracting | Configuring | Building |
+    # Installing to staging | Installing to target | Installing to
+    # images | Finalizing. Fresh builds emit ~200 lines of these for
+    # ~100+ packages; suppress all but the "Building" and final
+    # "Installing to target" for each package.
+    (r"^>>>\s+Finalizing target directory", "tez.finalize",
+     "finalizing target directory"),
+    (r"^>>>\s+Sanitizing", "tez.sanitize", "sanitizing target"),
+    (r"^>>>\s+Executing post-build", "tez.postbuild",
+     "post-build scripts"),
+    (r"^>>>\s+Generating filesystem image", "tez.fsimage",
+     "generating filesystem images"),
+    (r"^>>>\s+Executing post-image", "tez.postimage",
+     "post-image scripts"),
+    (r"^>>> (\S+) (\S+) Extracting", "tez.pkg.extract", None),
+    (r"^>>> (\S+) (\S+) Patching", "tez.pkg.patch", None),
+    (r"^>>> (\S+) (\S+) Configuring", "tez.pkg.config", None),
+    (r"^>>> (\S+) (\S+) Building", "tez.pkg.build", None),
+    (r"^>>> (\S+) (\S+) Installing to staging", "tez.pkg.stage", None),
+    (r"^>>> (\S+) (\S+) Installing to target", "tez.pkg.target", None),
+    (r"^>>> (\S+) (\S+) Installing to images", "tez.pkg.images", None),
+
+    # Error surfaces — same as FPGA
+    (r"^error(?:\[E\d+\])?:", "tez.rust_err", "Rust compile error"),
+    (r"^make: \*\*\* .*? Error \d+", "tez.make_err", "Make error"),
+    (r"^\[ERROR\]", "tez.build_err", "Build error"),
+    (r"^FATAL", "tez.fatal", "FATAL"),
+]
+
+FPGA_COMPILED = [(re.compile(p), k, l) for p, k, l in FPGA_PATTERNS]
+TEZUKA_COMPILED = [(re.compile(p), k, l) for p, k, l in TEZUKA_PATTERNS]
+
+
+def detect_mode(first_lines: list[str]) -> str:
+    """Auto-pick FPGA or Tezuka mode from the first ~20 lines."""
+    blob = "\n".join(first_lines)
+    if "Tezuka Firmware Build" in blob or "DEFCONFIG=" in blob:
+        return "tezuka"
+    if "Vivado" in blob or "FPGA Bitstream Build" in blob:
+        return "fpga"
+    # Default to FPGA for back-compat.
+    return "fpga"
 
 
 # Keys that should emit exactly once, even if the same log line appears
 # many times (Vivado re-prints timing summaries as it iterates). We let
 # `route.mid` repeat (it's the progress signal) but cap most others.
 SINGLE_SHOT = {
+    # FPGA
     "begin", "verilog", "pkg.maia", "pkg.p25", "impl.start",
     "synth.elab", "synth.done",
     "opt.start", "opt.done",
@@ -131,6 +196,16 @@ SINGLE_SHOT = {
     "route.start", "route.final", "route.done",
     "bit.start", "bit.write", "bit.done", "xsa.done",
     "build.ok",
+    # Tezuka top-level
+    "tez.begin", "tez.docker",
+    "tez.sync", "tez.sync.done",
+    "tez.crlf", "tez.crlf.done",
+    "tez.external",
+    "tez.defconfig", "tez.defconfig.done",
+    "tez.make.start",
+    "tez.finalize", "tez.sanitize", "tez.postbuild",
+    "tez.fsimage", "tez.postimage",
+    "tez.done",
 }
 
 # Last-seen-time suppression for repeating lines — print at most once
@@ -186,11 +261,17 @@ def parse_vivado_elapsed(line: str) -> str:
 
 
 class Progress:
-    def __init__(self) -> None:
+    def __init__(self, mode: str = "fpga") -> None:
+        self.mode = mode
+        self.compiled = TEZUKA_COMPILED if mode == "tezuka" else FPGA_COMPILED
         self.seen: set[str] = set()
         self.last_print_at: dict[str, float] = {}
         self.start_time: float | None = None
         self.phase_start_s: dict[str, float] = {}
+        # Tezuka: track the package currently being worked on so we
+        # emit one line per package (not one per action).
+        self.last_pkg: str | None = None
+        self.last_pkg_action: str | None = None
 
     def emit(self, key: str, text: str) -> None:
         now = time.monotonic()
@@ -218,9 +299,55 @@ class Progress:
         dt = time.monotonic() - self.phase_start_s[start_key]
         return f" ({fmt_elapsed(dt)})"
 
+    # Actions we care about visually for Buildroot packages. Others
+    # (Extracting, Patching, Configuring, Installing to staging) are
+    # routine and contribute noise if printed.
+    _INTERESTING_ACTIONS = {
+        "tez.pkg.build":  "Building",
+        "tez.pkg.target": "Installing",
+        "tez.pkg.images": "Installing images",
+    }
+
+    def _handle_tez_pkg(self, key: str, m: re.Match, line: str) -> None:
+        """Emit one line per package-action transition for Buildroot.
+
+        To avoid the 200-400-line noise of every Extract/Patch/Config/
+        Build/Install step, only print 'Building' and the final
+        'Installing to target' for each package. A fresh build still
+        emits roughly one line per package (~100 lines), which is the
+        right granularity.
+        """
+        pkg = m.group(1) if m.lastindex and m.lastindex >= 1 else "?"
+        ver = m.group(2) if m.lastindex and m.lastindex >= 2 else ""
+        # Git-SHA versions (kernel, u-boot) are 40 chars; truncate for
+        # column alignment. Semver-style versions stay untouched.
+        if len(ver) > 12 and all(c in "0123456789abcdef" for c in ver):
+            ver = ver[:8] + "..."
+        action = self._INTERESTING_ACTIONS.get(key)
+        if not action:
+            return
+        # De-dup: only emit once per (pkg, action) combo.
+        dedup = f"{pkg}:{action}"
+        if dedup in self.seen:
+            return
+        self.seen.add(dedup)
+        now = time.monotonic()
+        if self.start_time is None:
+            self.start_time = now
+        elapsed = now - self.start_time
+        stamp = ansi("gray") + f"[{fmt_elapsed(elapsed)}]" + ansi("reset")
+        # Color-code important packages. p25-httpd is our Rust daemon;
+        # linux is the kernel; u-boot / zynq-fsbl are boot chain.
+        highlight = {"p25-httpd", "maia-httpd", "jmbe", "linux",
+                     "u-boot", "zynq-fsbl"}
+        pkg_fmt = (f"{ansi('cyan')}{pkg}{ansi('reset')}"
+                   if pkg in highlight else pkg)
+        print(f"{stamp} pkg        {pkg_fmt:<28} {ver:>8}  {action}",
+              flush=True)
+
     def handle(self, line: str) -> None:
         line = line.rstrip()
-        for regex, key, label in COMPILED:
+        for regex, key, label in self.compiled:
             m = regex.search(line)
             if not m:
                 continue
@@ -298,6 +425,64 @@ class Progress:
             elif key == "build.ok":
                 self.emit(key, f"{ansi('green')}BUILD{ansi('reset')}      "
                           f"SUCCESSFUL")
+            # ── Tezuka keys ───────────────────────────────────────
+            elif key == "tez.begin":
+                self.emit(key, f"{ansi('cyan')}tezuka{ansi('reset')}     "
+                          f"build starting")
+            elif key == "tez.docker":
+                self.emit(key, f"docker     image OK")
+            elif key == "tez.sync":
+                self.phase_start_s["tez.sync"] = time.monotonic()
+                self.emit(key, f"source     syncing")
+            elif key == "tez.sync.done":
+                self.emit(key, f"{ansi('green')}source{ansi('reset')}     "
+                          f"synced{self.phase_elapsed('tez.sync')}")
+            elif key == "tez.crlf":
+                self.phase_start_s["tez.crlf"] = time.monotonic()
+                self.emit(key, f"CRLF       converting")
+            elif key == "tez.crlf.done":
+                self.emit(key, f"{ansi('green')}CRLF{ansi('reset')}       "
+                          f"done{self.phase_elapsed('tez.crlf')}")
+            elif key == "tez.external":
+                self.emit(key, f"BR2_EXT    set")
+            elif key == "tez.defconfig":
+                self.phase_start_s["tez.defconfig"] = time.monotonic()
+                self.emit(key, f"defconfig  applying")
+            elif key == "tez.defconfig.done":
+                self.emit(key, f"{ansi('green')}defconfig{ansi('reset')}  "
+                          f"done{self.phase_elapsed('tez.defconfig')}")
+            elif key == "tez.make.start":
+                self.phase_start_s["tez.make"] = time.monotonic()
+                self.emit(key, f"{ansi('cyan')}buildroot{ansi('reset')}  "
+                          f"make starting (main phase; takes 20-90 min)")
+            elif key == "tez.finalize":
+                self.emit(key, f"rootfs     finalizing target")
+            elif key == "tez.sanitize":
+                self.emit(key, f"rootfs     sanitizing")
+            elif key == "tez.postbuild":
+                self.emit(key, f"rootfs     post-build scripts")
+            elif key == "tez.fsimage":
+                self.emit(key, f"image      generating filesystem")
+            elif key == "tez.postimage":
+                self.emit(key, f"image      post-image scripts")
+            elif key == "tez.done":
+                self.emit(key, f"{ansi('green')}TEZUKA{ansi('reset')}     "
+                          f"BUILD COMPLETE"
+                          f"{self.phase_elapsed('tez.make')}")
+            elif key in ("tez.pkg.extract", "tez.pkg.patch",
+                         "tez.pkg.config", "tez.pkg.build",
+                         "tez.pkg.stage", "tez.pkg.target",
+                         "tez.pkg.images"):
+                self._handle_tez_pkg(key, m, line)
+            elif key == "tez.rust_err" or key == "tez.make_err" \
+                    or key == "tez.build_err" or key == "tez.fatal":
+                # Error lines: print unconditionally.
+                print(f"{ansi('red')}!! {line}{ansi('reset')}", flush=True)
+            elif key == "tez.log":
+                # Generic [BUILD] passthrough for anything not caught
+                # specifically. Suppress — the specific lines handle
+                # what we want.
+                pass
             elif key == "error":
                 print(f"{ansi('red')}!! {line}{ansi('reset')}", flush=True)
             elif key == "critwarn":
@@ -347,19 +532,54 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--tail", metavar="LOGFILE",
-                   help="Live-follow a log file; keeps running until Ctrl-C.")
+                   help="Live-follow a log file; runs until Ctrl-C.")
     g.add_argument("--replay", metavar="LOGFILE",
                    help="Parse an existing log once and exit.")
+    ap.add_argument("--mode", choices=("auto", "fpga", "tezuka"),
+                    default="auto",
+                    help="Pattern set to use. 'auto' sniffs the first "
+                         "~20 lines of the log.")
     args = ap.parse_args()
 
-    progress = Progress()
+    # Resolve mode. Auto needs a peek at the log (either a file or
+    # stdin). For stdin we buffer the first 20 lines, detect, then
+    # replay them into the Progress.
+    mode = args.mode
+    prebuffered: list[str] = []
+    if mode == "auto":
+        if args.tail or args.replay:
+            path = args.tail or args.replay
+            try:
+                with open(path, "r", encoding="utf-8",
+                          errors="replace") as f:
+                    first = [f.readline() for _ in range(20)]
+                mode = detect_mode(first)
+            except OSError:
+                mode = "fpga"
+        else:
+            # Stdin: buffer up to 20 lines, then decide.
+            for _ in range(20):
+                line = sys.stdin.readline()
+                if not line:
+                    break
+                prebuffered.append(line)
+            mode = detect_mode(prebuffered)
+
+    progress = Progress(mode=mode)
+    # Announce the mode on stderr so users know which patterns fired.
+    sys.stderr.write(
+        f"{ansi('gray')}[build_progress] mode={mode}{ansi('reset')}\n")
+    sys.stderr.flush()
+
     try:
+        # Replay any pre-buffered stdin lines first.
+        for line in prebuffered:
+            progress.handle(line)
         if args.tail:
             tail_file(progress, args.tail, follow=True)
         elif args.replay:
             tail_file(progress, args.replay, follow=False)
         else:
-            # Read from stdin (pipeline wrapper usage).
             tail_stdin(progress)
     except KeyboardInterrupt:
         pass
