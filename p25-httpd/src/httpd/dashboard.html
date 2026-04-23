@@ -4127,29 +4127,77 @@ function drawPlotSpectrum(magDb, centerHz, spanHz, title) {
   const { ctx, W, H } = beginDraw();
   ctx.fillStyle = '#0a0f1c'; ctx.fillRect(0, 0, W, H);
   if (!magDb || magDb.length === 0) return;
-  let lo =  1e9, hi = -1e9;
+
+  // --- layout: reserve a left gutter for dB labels and a bottom gutter
+  //     for MHz labels so the trace doesn't collide with them.
+  const PAD_L = 48, PAD_R = 8, PAD_T = 24, PAD_B = 26;
+  const plotW = W - PAD_L - PAD_R;
+  const plotH = H - PAD_T - PAD_B;
+
+  let lo = 1e9, hi = -1e9;
   for (const v of magDb) { if (v < lo) lo = v; if (v > hi) hi = v; }
   const pad = 6; lo -= pad; hi += pad;
+  const yOf = v => PAD_T + plotH - ((v - lo) / (hi - lo)) * plotH;
+  const xOf = i => PAD_L + i * plotW / (magDb.length - 1);
+
+  const fLow  = (centerHz - spanHz/2) / 1e6;
+  const fHigh = (centerHz + spanHz/2) / 1e6;
+  const fCtr  = centerHz / 1e6;
+
+  // --- gridlines + frequency ticks.
+  // Pick a grid step: aim for ~10 vertical lines across the span.
+  const spanMhz = spanHz / 1e6;
+  const stepCandidates = [0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 2.5, 5.0];
+  let gridStep = stepCandidates[0];
+  for (const s of stepCandidates) {
+    if (spanMhz / s <= 12) { gridStep = s; break; }
+  }
+  const firstTick = Math.ceil(fLow / gridStep) * gridStep;
+  ctx.strokeStyle = '#1a2033'; ctx.lineWidth = linePx(1);
+  ctx.fillStyle = '#778'; ctx.font = fontPx(12); ctx.textAlign = 'center';
+  for (let f = firstTick; f <= fHigh + 1e-9; f += gridStep) {
+    const x = PAD_L + (f - fLow) / spanMhz * plotW;
+    ctx.beginPath(); ctx.moveTo(x, PAD_T); ctx.lineTo(x, PAD_T + plotH); ctx.stroke();
+    // Decide label precision based on step.
+    const lbl = gridStep < 1 ? f.toFixed(2) : f.toFixed(1);
+    ctx.fillText(lbl, x, H - 8);
+  }
+  // Emphasise the center (= LO, = DC).
+  {
+    const xc = PAD_L + (fCtr - fLow) / spanMhz * plotW;
+    ctx.strokeStyle = '#2a3048'; ctx.lineWidth = linePx(1);
+    ctx.beginPath(); ctx.moveTo(xc, PAD_T); ctx.lineTo(xc, PAD_T + plotH); ctx.stroke();
+  }
+
+  // --- dB ticks (5 or 10 dB spacing depending on range).
+  const dbRange = hi - lo;
+  const dbStep = dbRange > 70 ? 10 : (dbRange > 30 ? 5 : 2);
+  const firstDb = Math.ceil(lo / dbStep) * dbStep;
+  ctx.strokeStyle = '#1a2033';
+  ctx.textAlign = 'right';
+  for (let v = firstDb; v <= hi; v += dbStep) {
+    const y = yOf(v);
+    ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + plotW, y); ctx.stroke();
+    ctx.fillText(`${v.toFixed(0)}`, PAD_L - 4, y + 4);
+  }
+
+  // --- trace.
   ctx.strokeStyle = '#4cf'; ctx.lineWidth = linePx(1); ctx.beginPath();
   for (let i = 0; i < magDb.length; i++) {
-    const x = i * W / (magDb.length - 1);
-    const y = H - ((magDb[i] - lo) / (hi - lo)) * H;
+    const x = xOf(i);
+    const y = yOf(magDb[i]);
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.stroke();
-  ctx.fillStyle = '#aab';
-  ctx.font = fontPx(13);
-  const fLow  = (centerHz - spanHz/2) / 1e6;
-  const fHigh = (centerHz + spanHz/2) / 1e6;
-  ctx.textAlign = 'left';
-  ctx.fillText(`${fLow.toFixed(3)} MHz`, 6, H - 6);
-  ctx.fillText(`${hi.toFixed(0)} dB`, 6, 18);
-  ctx.fillText(`${lo.toFixed(0)} dB`, 6, H - 24);
+
+  // --- corner labels.
+  ctx.fillStyle = '#aab'; ctx.font = fontPx(13); ctx.textAlign = 'left';
+  ctx.fillText('dB', 6, PAD_T - 8);
   ctx.textAlign = 'right';
-  ctx.fillText(`${fHigh.toFixed(3)} MHz`, W - 6, H - 6);
+  ctx.fillText('MHz', W - 6, H - 8);
   if (title) {
     ctx.textAlign = 'center';
-    ctx.fillText(title, W/2, 18);
+    ctx.fillText(title, PAD_L + plotW/2, PAD_T - 8);
   }
   ctx.textAlign = 'left';
 }

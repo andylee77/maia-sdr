@@ -269,19 +269,28 @@ pub fn spectrum_from_bytes(
 pub const WIDEBAND_FFT_SIZE: usize = 4096;
 
 /// Unpack one 32 KB wideband spectrometer DMA sub-buffer into a
-/// 4096-bin magnitude vector in dB. The HDL packs each bin as a
-/// 64-bit word with a 47-bit mantissa at bits [0:47] and a 3-bit
-/// exponent at bits [56:59] (see spectrometer.py:128-135):
+/// 4096-bin magnitude vector in dB, DC-centered (bin 0 = -Fs/2,
+/// bin N/2 = DC, bin N-1 = +Fs/2 - Δf).
+///
+/// Bit layout matches `maia-httpd/src/spectrometer.rs::buffer_u64fp_to_f32`
+/// (Maia SDR upstream):
 ///
 ///     bits [ 0:47] = integrator.rdata_value  (unsigned 47-bit mantissa)
 ///     bits [47:56] = 0 padding
-///     bits [56:59] = integrator.rdata_exponent (3-bit exponent)
-///     bits [59:61] = 0 padding
+///     bits [56:58] = integrator.rdata_exponent (**2-bit** exponent)
+///     bits [58:61] = padding
 ///     bits [61:64] = fastlock_profile (unused here)
 ///
-/// Linear power = mantissa × 2^exponent. We convert to dB with a
-/// fixed reference so cross-spectrum comparisons stay meaningful,
-/// then fft-shift so bin 0 is the most-negative frequency.
+/// Linear power = mantissa × 4^exponent (exponent represents powers
+/// of 4, NOT 2 — see maia-hdl/maia_hdl/spectrometer.py:128-135 and the
+/// upstream PS-side decoder). Equivalent to left-shifting the mantissa
+/// by `2 * exponent` bits.
+///
+/// **The HDL Spectrometer emits its output already DC-centered**, so
+/// no PS-side fft-shift is applied here. Empirical verification: the
+/// Clay County control channel at +2.863 MHz from LO = HDL bin
+/// (N/2 + 1466) = 3514, and the DC/LO-feedthrough spur appears at
+/// bin N/2 = 2048.
 ///
 /// Returns an empty Vec if the buffer is shorter than
 /// `WIDEBAND_FFT_SIZE * 8` bytes.
@@ -290,33 +299,23 @@ pub fn wideband_power_db(bytes: &[u8]) -> Vec<f32> {
     if bytes.len() < need {
         return Vec::new();
     }
-    let mut linear = Vec::with_capacity(WIDEBAND_FFT_SIZE);
+    const DB_REF: f64 = 96.0;
+    let mut out = Vec::with_capacity(WIDEBAND_FFT_SIZE);
     for i in 0..WIDEBAND_FFT_SIZE {
         let base = i * 8;
         let w = u64::from_le_bytes(bytes[base..base + 8].try_into().unwrap());
-        let mantissa = (w & 0x7FFF_FFFF_FFFF) as f64;
-        let exponent = ((w >> 56) & 0x07) as i32;
-        linear.push(mantissa * 2f64.powi(exponent));
+        let mantissa = w & ((1u64 << 47) - 1);
+        let exponent = ((w >> 56) & 0x03) as u32;
+        // power ∝ mantissa × 4^exponent  (powers-of-4 exponent per
+        // maia-httpd upstream, which stores `y = value << (2*exp)`).
+        let power = (mantissa as f64) * (1u64 << (2 * exponent)) as f64;
+        let db = if power > 0.0 {
+            (10.0 * power.log10() - DB_REF) as f32
+        } else {
+            -120.0
+        };
+        out.push(db);
     }
-    // Reference: subtract a constant so the noise floor on a typical
-    // AD9361 capture sits near ~-60 dBFS. Empirical; tuneable when we
-    // see real spectra.
-    const DB_REF: f64 = 96.0;
-    let mag_db: Vec<f32> = linear
-        .iter()
-        .map(|&p| {
-            if p > 0.0 {
-                (10.0 * p.log10() - DB_REF) as f32
-            } else {
-                -120.0
-            }
-        })
-        .collect();
-    // fftshift so bin 0 = most-negative frequency (-Fs/2).
-    let half = WIDEBAND_FFT_SIZE / 2;
-    let mut out = Vec::with_capacity(WIDEBAND_FFT_SIZE);
-    out.extend_from_slice(&mag_db[half..]);
-    out.extend_from_slice(&mag_db[..half]);
     out
 }
 
