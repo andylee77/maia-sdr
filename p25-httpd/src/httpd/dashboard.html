@@ -4084,12 +4084,13 @@ function plotConstellation() {
     const CAP = 1024;
     while (sym.length > CAP) sym.shift();
     frames++;
-    // Peak-normalise for display so clusters always land near (±1, ±1).
+    // Mean-magnitude normalise (NOT peak): the HDL post-PLL stream has
+    // occasional outlier peaks that collapse peak-normalised clusters
+    // to ~0.22, while mean |z| is a stable estimate of cluster radius
+    // so clusters land near (±1, ±1) independent of outliers.
     let mag = 0;
-    for (const p of sym) {
-      const m = Math.hypot(p[0], p[1]);
-      if (m > mag) mag = m;
-    }
+    for (const p of sym) mag += Math.hypot(p[0], p[1]);
+    mag /= Math.max(1, sym.length);
     const norm = mag > 1e-6 ? 1 / mag : 1;
     const iArr = sym.map(p => p[0] * norm);
     const qArr = sym.map(p => p[1] * norm);
@@ -4277,26 +4278,73 @@ function drawPlotEye(iq) {
   const { ctx, W, H } = beginDraw();
   ctx.fillStyle = '#0a0f1c'; ctx.fillRect(0, 0, W, H);
   if (iq.length < 8) return;
-  const SPS = 2, overlayLen = SPS * 2;
-  ctx.strokeStyle = '#4cf'; ctx.lineWidth = linePx(1); ctx.globalAlpha = 0.35;
-  let peak = 1;
-  for (const p of iq) if (Math.abs(p[0]) > peak) peak = Math.abs(p[0]);
-  const scaleY = H * 0.4 / peak;
-  const scaleX = W / (overlayLen - 1);
+
+  // P25 eye convention: overlay many symbol periods, decision-level
+  // rails at ±1 (both LSM + C4FM) and ±3 (C4FM only). We scale by
+  // mean |z| so LSM signals land at ±1 on the inner rails — if the
+  // chain ever gates through C4FM with the same rendering, the ±3
+  // rails will show the outer-symbol values.
+  const PAD_L = 56, PAD_R = 16, PAD_T = 24, PAD_B = 22;
+  const plotW = W - PAD_L - PAD_R;
+  const plotH = H - PAD_T - PAD_B;
+
+  // Mean-|z| normalisation (same convention as the constellation
+  // renderer — see plotConstellation).
+  let mmag = 0;
+  for (const p of iq) mmag += Math.hypot(p[0], p[1]);
+  mmag = (mmag / Math.max(1, iq.length)) || 1;
+
+  // ±4 covers the ±3 rails with headroom for overshoot / C4FM peaks.
+  const YMAX = 4.0;
+  const yOf = v => PAD_T + plotH/2 - (v / YMAX) * (plotH/2);
+
+  // Rails.
+  for (const lvl of [-3, -1, 1, 3]) {
+    ctx.strokeStyle = (lvl === 1 || lvl === -1) ? '#456' : '#334';
+    ctx.setLineDash(lvl === 1 || lvl === -1 ? [] : [4, 4]);
+    ctx.lineWidth = linePx(1);
+    ctx.beginPath();
+    ctx.moveTo(PAD_L, yOf(lvl));
+    ctx.lineTo(PAD_L + plotW, yOf(lvl));
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.strokeStyle = '#223'; ctx.lineWidth = linePx(1);
+  ctx.beginPath();
+  ctx.moveTo(PAD_L, yOf(0)); ctx.lineTo(PAD_L + plotW, yOf(0)); ctx.stroke();
+
+  // Y-axis tick labels.
+  ctx.fillStyle = '#aab'; ctx.font = fontPx(12); ctx.textAlign = 'right';
+  for (const lvl of [-3, -1, 0, 1, 3]) {
+    ctx.fillText(`${lvl}`, PAD_L - 6, yOf(lvl) + 4);
+  }
+
+  // Overlay: 2 samples per symbol in the HDL post-PLL ring, so 4
+  // samples = 2 symbols of horizontal span per overlay line.
+  const SPS = 2;
+  const overlayLen = SPS * 2;
+  const scaleX = plotW / (overlayLen - 1);
+  ctx.strokeStyle = '#4cf'; ctx.lineWidth = linePx(1); ctx.globalAlpha = 0.15;
   for (let start = 0; start + overlayLen < iq.length; start += SPS) {
     ctx.beginPath();
     for (let k = 0; k < overlayLen; k++) {
-      const x = k * scaleX;
-      const y = H/2 - iq[start + k][0] * scaleY;
+      const x = PAD_L + k * scaleX;
+      // Scale sample by (3/mmag) so LSM decision points land at ±1
+      // on the labeled rails.
+      const y = yOf((iq[start + k][0] / mmag) * 1.0);
       if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
-  ctx.strokeStyle = '#234'; ctx.lineWidth = linePx(1);
-  ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
-  ctx.fillStyle = '#aab'; ctx.font = fontPx(13);
-  ctx.fillText(`Eye \u00B7 post-PLL \u00B7 ${iq.length} samples buffered`, 6, 18);
+
+  ctx.fillStyle = '#aab'; ctx.textAlign = 'left';
+  ctx.fillText(
+    `Eye \u00B7 I channel \u00B7 post-PLL \u00B7 ${iq.length} samples \u00B7 ±1 rails = LSM decisions, ±3 reference`,
+    PAD_L, PAD_T - 8);
+  ctx.textAlign = 'right';
+  ctx.fillText('symbol periods', PAD_L + plotW, H - 6);
+  ctx.textAlign = 'left';
 }
 
 function drawPlotDeviation(soft, hard) {
