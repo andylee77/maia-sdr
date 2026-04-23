@@ -3949,6 +3949,8 @@ const PLOT = {
   chain:  'control',
   canvas: null,
   ctx:    null,
+  dpr:    1,
+  lastDraw: null,          // last renderer + args, for re-draw on resize
   metricsEl: null,
   statusEl:  null,
   pollHandle: null,
@@ -3956,6 +3958,28 @@ const PLOT = {
   eyeBuffer:  [],          // rolling IQ pairs for eye/constellation
   eyeCapBytes: 64 * 1024,  // ~1.7 s at 9.6 kSPS
 };
+
+// Size the canvas drawing buffer to clientWidth * devicePixelRatio so text
+// and 1-pixel strokes render crisp on HiDPI (1080p scaled, 4K, retina).
+// All draw* helpers work in CSS pixels; we setTransform(dpr,0,0,dpr,0,0)
+// so a coord of (W,H) means (clientW, clientH) in CSS units.
+function configurePlotCanvas() {
+  const c = PLOT.canvas;
+  if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = c.clientWidth;
+  const cssH = c.clientHeight;
+  if (cssW <= 0 || cssH <= 0) return;
+  const desiredW = Math.round(cssW * dpr);
+  const desiredH = Math.round(cssH * dpr);
+  if (c.width !== desiredW || c.height !== desiredH) {
+    c.width  = desiredW;
+    c.height = desiredH;
+  }
+  PLOT.dpr = dpr;
+  if (PLOT.lastDraw) PLOT.lastDraw();
+}
+window.addEventListener('resize', configurePlotCanvas);
 
 function plotInit() {
   if (PLOT.canvas) return;
@@ -3973,6 +3997,7 @@ function plotInit() {
   });
   PLOT.picker = document.getElementById('plot_picker').value;
   PLOT.chain  = document.getElementById('plot_chain').value;
+  configurePlotCanvas();
 }
 
 function plotStop() {
@@ -4084,43 +4109,57 @@ function plotDeviation() {
 }
 
 // ── shared canvas utilities ──
-function drawPlotSpectrum(magDb, centerHz, spanHz, title) {
+// `beginDraw()` resets the drawing context to CSS pixels: all renderers
+// use (W, H) = (clientWidth, clientHeight) in CSS units and DPR-scaled
+// font/line sizes via `fontPx()` / `linePx()`. setTransform replaces any
+// prior transform so we are safe to call once per frame.
+function beginDraw() {
   const c = PLOT.canvas, ctx = PLOT.ctx;
-  const W = c.width, H = c.height;
+  const dpr = PLOT.dpr || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { c, ctx, dpr, W: c.clientWidth || 1200, H: c.clientHeight || 500 };
+}
+function fontPx(size) { return `${size}px monospace`; }
+function linePx(units) { return units; }
+
+function drawPlotSpectrum(magDb, centerHz, spanHz, title) {
+  PLOT.lastDraw = () => drawPlotSpectrum(magDb, centerHz, spanHz, title);
+  const { ctx, W, H } = beginDraw();
   ctx.fillStyle = '#0a0f1c'; ctx.fillRect(0, 0, W, H);
   if (!magDb || magDb.length === 0) return;
   let lo =  1e9, hi = -1e9;
   for (const v of magDb) { if (v < lo) lo = v; if (v > hi) hi = v; }
   const pad = 6; lo -= pad; hi += pad;
-  ctx.strokeStyle = '#4cf'; ctx.lineWidth = 1; ctx.beginPath();
+  ctx.strokeStyle = '#4cf'; ctx.lineWidth = linePx(1); ctx.beginPath();
   for (let i = 0; i < magDb.length; i++) {
     const x = i * W / (magDb.length - 1);
     const y = H - ((magDb[i] - lo) / (hi - lo)) * H;
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.stroke();
-  // Axis labels.
-  ctx.fillStyle = '#aab'; ctx.font = '11px monospace';
+  ctx.fillStyle = '#aab';
+  ctx.font = fontPx(13);
   const fLow  = (centerHz - spanHz/2) / 1e6;
   const fHigh = (centerHz + spanHz/2) / 1e6;
-  ctx.fillText(`${fLow.toFixed(3)} MHz`, 4, H - 4);
-  ctx.textAlign = 'right'; ctx.fillText(`${fHigh.toFixed(3)} MHz`, W - 4, H - 4);
   ctx.textAlign = 'left';
-  ctx.fillText(`${hi.toFixed(0)} dB`, 4, 14);
-  ctx.fillText(`${lo.toFixed(0)} dB`, 4, H - 18);
+  ctx.fillText(`${fLow.toFixed(3)} MHz`, 6, H - 6);
+  ctx.fillText(`${hi.toFixed(0)} dB`, 6, 18);
+  ctx.fillText(`${lo.toFixed(0)} dB`, 6, H - 24);
+  ctx.textAlign = 'right';
+  ctx.fillText(`${fHigh.toFixed(3)} MHz`, W - 6, H - 6);
   if (title) {
     ctx.textAlign = 'center';
-    ctx.fillText(title, W/2, 14);
-    ctx.textAlign = 'left';
+    ctx.fillText(title, W/2, 18);
   }
+  ctx.textAlign = 'left';
 }
 
 function drawPlotConstellation(iArr, qArr) {
-  const c = PLOT.canvas, ctx = PLOT.ctx;
-  const W = c.width, H = c.height, cx = W/2, cy = H/2;
+  PLOT.lastDraw = () => drawPlotConstellation(iArr, qArr);
+  const { ctx, W, H } = beginDraw();
+  const cx = W/2, cy = H/2;
   ctx.fillStyle = '#0a0f1c'; ctx.fillRect(0, 0, W, H);
-  // Axes + unit circle guides.
-  ctx.strokeStyle = '#234'; ctx.lineWidth = 1;
+  ctx.strokeStyle = '#234'; ctx.lineWidth = linePx(1);
   ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy);
                    ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
   const scale = Math.min(W, H) * 0.35;
@@ -4129,22 +4168,23 @@ function drawPlotConstellation(iArr, qArr) {
     ctx.beginPath(); ctx.arc(cx, cy, scale * r/3, 0, Math.PI*2); ctx.stroke();
   }
   ctx.fillStyle = '#8df';
+  const dot = 2;
   for (let i = 0; i < iArr.length; i++) {
     const x = cx + iArr[i] * scale/3;
     const y = cy - qArr[i] * scale/3;
-    ctx.fillRect(x-1, y-1, 2, 2);
+    ctx.fillRect(x - dot/2, y - dot/2, dot, dot);
   }
+  ctx.fillStyle = '#aab'; ctx.font = fontPx(13);
+  ctx.fillText(`Constellation \u00B7 ${iArr.length} post-PLL symbols`, 6, 18);
 }
 
 function drawPlotEye(iq) {
-  const c = PLOT.canvas, ctx = PLOT.ctx;
-  const W = c.width, H = c.height;
+  PLOT.lastDraw = () => drawPlotEye(iq);
+  const { ctx, W, H } = beginDraw();
   ctx.fillStyle = '#0a0f1c'; ctx.fillRect(0, 0, W, H);
   if (iq.length < 8) return;
-  // 2 samples per symbol in the post-PLL ring; overlay 2 symbols (4 samples).
   const SPS = 2, overlayLen = SPS * 2;
-  ctx.strokeStyle = '#4cf'; ctx.lineWidth = 1; ctx.globalAlpha = 0.35;
-  // Auto-scale on I range.
+  ctx.strokeStyle = '#4cf'; ctx.lineWidth = linePx(1); ctx.globalAlpha = 0.35;
   let peak = 1;
   for (const p of iq) if (Math.abs(p[0]) > peak) peak = Math.abs(p[0]);
   const scaleY = H * 0.4 / peak;
@@ -4159,31 +4199,34 @@ function drawPlotEye(iq) {
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
-  ctx.strokeStyle = '#234';
+  ctx.strokeStyle = '#234'; ctx.lineWidth = linePx(1);
   ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
-  ctx.fillStyle = '#aab'; ctx.font = '11px monospace';
-  ctx.fillText(`Eye \u00B7 post-PLL \u00B7 ${iq.length} samples buffered`, 4, 14);
+  ctx.fillStyle = '#aab'; ctx.font = fontPx(13);
+  ctx.fillText(`Eye \u00B7 post-PLL \u00B7 ${iq.length} samples buffered`, 6, 18);
 }
 
 function drawPlotDeviation(soft, hard) {
-  const c = PLOT.canvas, ctx = PLOT.ctx;
-  const W = c.width, H = c.height;
+  PLOT.lastDraw = () => drawPlotDeviation(soft, hard);
+  const { ctx, W, H } = beginDraw();
   ctx.fillStyle = '#0a0f1c'; ctx.fillRect(0, 0, W, H);
   if (!soft || soft.length === 0) return;
-  const scaleY = H * 0.4 / 3.5;        // symbols span ±3
+  const scaleY = H * 0.4 / 3.5;
   const scaleX = W / soft.length;
-  // Hard (staircase): bold orange.
-  ctx.strokeStyle = '#f90'; ctx.lineWidth = 2; ctx.beginPath();
+  // Reference rails first so the data draws on top.
+  ctx.strokeStyle = '#234'; ctx.lineWidth = linePx(1);
+  for (const lvl of [-3, -1, 1, 3]) {
+    ctx.beginPath();
+    const y = H/2 - lvl * scaleY;
+    ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.strokeStyle = '#f90'; ctx.lineWidth = linePx(2); ctx.beginPath();
   for (let i = 0; i < hard.length; i++) {
     const x = i * scaleX;
     const y = H/2 - hard[i] * scaleY;
-    if (i === 0) ctx.moveTo(x, y); else {
-      ctx.lineTo(x, y);
-    }
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.stroke();
-  // Soft (overlay): faint cyan.
-  ctx.strokeStyle = '#4cf'; ctx.lineWidth = 1; ctx.globalAlpha = 0.6;
+  ctx.strokeStyle = '#4cf'; ctx.lineWidth = linePx(1); ctx.globalAlpha = 0.6;
   ctx.beginPath();
   for (let i = 0; i < soft.length; i++) {
     const x = i * scaleX;
@@ -4192,15 +4235,8 @@ function drawPlotDeviation(soft, hard) {
   }
   ctx.stroke();
   ctx.globalAlpha = 1;
-  // Reference rails at ±1, ±3.
-  ctx.strokeStyle = '#234';
-  for (const lvl of [-3, -1, 1, 3]) {
-    ctx.beginPath();
-    const y = H/2 - lvl * scaleY;
-    ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-  }
-  ctx.fillStyle = '#aab'; ctx.font = '11px monospace';
-  ctx.fillText(`Deviation \u00B7 ${soft.length} symbols \u00B7 soft (cyan) vs hard (orange)`, 4, 14);
+  ctx.fillStyle = '#aab'; ctx.font = fontPx(13);
+  ctx.fillText(`Deviation \u00B7 ${soft.length} symbols \u00B7 soft (cyan) / hard (orange)`, 6, 18);
 }
 
 // Hook switchTab so the Plots renderer starts/stops automatically.
@@ -4208,7 +4244,7 @@ function drawPlotDeviation(soft, hard) {
   const orig = switchTab;
   switchTab = function(name) {
     orig(name);
-    if (name === 'plots') { plotInit(); plotRestart(); }
+    if (name === 'plots') { plotInit(); configurePlotCanvas(); plotRestart(); }
     else                  { plotStop(); }
   };
 })();
