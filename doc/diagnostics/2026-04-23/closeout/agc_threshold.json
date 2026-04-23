@@ -1,0 +1,1 @@
+{"control":256,"control_f":0.0078125,"default":256,"note":"Q1.15 raw; 256 = -42 dBFS; 0 disables gate","ok":true,"traffic":256,"traffic_f":0.0078125,"valid_range":[0,65535]}
