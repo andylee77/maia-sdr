@@ -190,14 +190,15 @@ pub async fn ws_iq(
         .get("chain")
         .cloned()
         .unwrap_or_else(|| "control".to_string());
-    // Phase 10.6 source param: post_ddc (default, backwards-compatible)
-    // reads the `iq_dma` / `traffic_iq_dma` rings at 62.5 kSPS; post_lsm
-    // reads the new `lsm_iq_dma` / `traffic_lsm_iq_dma` rings (post-RRC
-    // matched-filter, 31.25 kSPS).
+    // Phase 10.8: the only live IQ source on the new bitstream is
+    // `pre_diff` (tapped inside LsmDemod after rotate+AGC but before
+    // the diff-demod/slicer). The retired `post_ddc` / `post_lsm` /
+    // `post_pll` values produced `iq_dma` / `lsm_iq_dma` / `post_pll_
+    // iq_dma` buffers on the old bitstream; those rings are gone.
     let source = params
         .get("source")
         .cloned()
-        .unwrap_or_else(|| "post_ddc".to_string());
+        .unwrap_or_else(|| "pre_diff".to_string());
     ws.on_upgrade(move |socket| handle_ws_iq(socket, state, chain, source))
 }
 
@@ -243,13 +244,14 @@ async fn handle_ws_iq(
         }
     };
     let source = match source.as_str() {
-        // Phase 10.7: `post_pll` is the canonical clean-eye source. The
-        // two pre-PLL options stay for diagnostics/legacy access but
-        // the Plots tab only surfaces `post_pll`.
-        "post_ddc" | "post_lsm" | "post_pll" => source,
+        // Phase 10.8: `pre_diff` is the only live source. It taps
+        // inside LsmDemod after `LsmPllRotate` + AGC but BEFORE the
+        // diff-demod/slicer, so samples sit on the 4-cluster LSM
+        // constellation at 9.6 kSPS (2 samples per symbol interleaved).
+        "pre_diff" => source,
         other => {
             let err = format!(
-                r#"{{"type":"error","error":"unknown source '{}'; expected post_ddc|post_lsm|post_pll"}}"#,
+                r#"{{"type":"error","error":"unknown source '{}'; expected pre_diff"}}"#,
                 other.replace('"', "'")
             );
             let _ = socket.send(Message::Text(err.into())).await;
@@ -257,15 +259,9 @@ async fn handle_ws_iq(
         }
     };
 
-    // Sample rate depends on source:
-    //   post_ddc = 62.5 kSPS (post-DDC)
-    //   post_lsm = 31.25 kSPS (post-RRC matched filter)
-    //   post_pll = 9.6 kSPS (post-LsmPllRotate, 2 samples per symbol)
-    let sample_rate_hz: u32 = match source.as_str() {
-        "post_lsm" => 31_250,
-        "post_pll" => 9_600,
-        _ => 62_500,
-    };
+    // Sample rate is always 9.6 kSPS for the pre-diff tap (2 samples
+    // per symbol at the P25 4800 sym/s rate).
+    let sample_rate_hz: u32 = 9_600;
 
     // Hello frame. buf_bytes matches the underlying DMA sub-buffer
     // size (both rings are 32 KB regardless of source rate).
@@ -297,12 +293,8 @@ async fn handle_ws_iq(
                 let bufs: Vec<Vec<u8>> = {
                     let mut core = state.ip_core.lock().await;
                     let raw: Vec<&[u8]> = match (chain.as_str(), source.as_str()) {
-                        ("control", "post_ddc") => core.read_iq_buffers(),
-                        ("traffic", "post_ddc") => core.read_traffic_iq_buffers(),
-                        ("control", "post_lsm") => core.read_lsm_iq_buffers(),
-                        ("traffic", "post_lsm") => core.read_traffic_lsm_iq_buffers(),
-                        ("control", "post_pll") => core.read_post_pll_iq_buffers(),
-                        ("traffic", "post_pll") => core.read_traffic_post_pll_iq_buffers(),
+                        ("control", "pre_diff") => core.read_pre_diff_iq_buffers(),
+                        ("traffic", "pre_diff") => core.read_traffic_pre_diff_iq_buffers(),
                         _ => Vec::new(),
                     };
                     raw.into_iter().map(|b| b.to_vec()).collect()

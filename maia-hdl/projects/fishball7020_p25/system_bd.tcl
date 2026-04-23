@@ -5,7 +5,7 @@
 # What we KEEP from maia_iio: axi_dmac (RX+TX DMA), util_cpack2/upack2,
 # AD9361 IIO streaming, 8-bit mode support, FIR filters.
 # What we REMOVE: maia_sdr IP (spectrometer + recorder).
-# What we ADD: p25_core (DDC + C4FM demod + dibit DMA).
+# What we ADD: p25_core (DDC + LSM demod + dibit DMA + pre-diff IQ DMA).
 
 set LVDS_ENABLE "LVDS_ENABLE"
 set fishball "fishball"
@@ -99,49 +99,40 @@ ad_connect adc_q_slice/Dout p25_core/im_in
 # ── AXI-Lite ─────────────────────────────────────────────────────────
 ad_cpu_interconnect 0x7C460000 p25_core
 
-# ── DMA: eight P25 masters on HP1 ─────────────────────────────────────
+# ── DMA: seven P25 masters on HP1 ─────────────────────────────────────
 # HP1 was used by maia_sdr/m_axi_spectrometer (now deleted).
 # Reuse HP1 for all P25 DMA masters. ad_mem_hp1_interconnect is
 # idempotent — repeated calls extend the same SmartConnect rather than
 # creating a new one. HP1 budget at ~1.7 GB/s easily absorbs:
-#   - dibit             ~1.28 KB/s   (C4FM control-channel dibits)
-#   - traffic           ~1.28 KB/s   (C4FM traffic-channel dibits)
-#   - iq                ~250  KB/s   (Phase 6C: 62.5 kSPS x 4 B post-DDC IQ)
-#   - lsm_dibit         ~1.28 KB/s   (Phase 6E.9: LSM control-channel dibits,
-#                                      parallel to the C4FM `dibit` ring so the
-#                                      PS can A/B both demods on one RF capture)
-#   - traffic_lsm_dibit ~1.28 KB/s   (Phase 7A.2: LSM traffic-channel dibits)
-#   - traffic_iq        ~250  KB/s   (2026-04-16 chain-symmetry fix:
-#                                      mirror of `iq` on the traffic side so
-#                                      the dashboard constellation + offline
-#                                      traffic-LSM cross-check have a source
-#                                      of post-DDC IQ samples. Same packing /
-#                                      bandwidth math as `iq`.)
-#   - lsm_iq            ~125  KB/s   (Phase 10.6: 31.25 kSPS post-RRC matched-
-#                                      filter IQ tap, control chain. Drives the
-#                                      dashboard matched-filter eye plot.)
-#   - traffic_lsm_iq    ~125  KB/s   (Phase 10.6: mirror on the traffic chain.)
-#   - post_pll_iq       ~38   KB/s   (Phase 10.7: 9.6 kSPS post-PLL IQ tap,
-#                                      control chain. Clean eye + deviation.)
-#   - traffic_post_pll_iq ~38 KB/s   (Phase 10.7: mirror on the traffic chain.)
-#   - wideband_spec     ~32   KB/s   (Phase 10.7: 4096-bin spectrometer, 5-10 Hz)
-# Total ~863 KB/s, still well under 1.7 GB/s. Plan risk register (§9.14 of
-# doc/DASHBOARD_PLOTS.md) called out HP2 as an option for the spectrometer
-# but we're taking the fallback -- HP1 has plenty of headroom.
+#   - iq                 ~250  KB/s   (Phase 6C: 62.5 kSPS x 4 B post-DDC IQ)
+#   - lsm_dibit          ~1.28 KB/s   (Phase 6E.9: LSM control-channel dibits)
+#   - traffic_lsm_dibit  ~1.28 KB/s   (Phase 7A.2: LSM traffic-channel dibits)
+#   - traffic_iq         ~250  KB/s   (2026-04-16: mirror of `iq` on traffic side)
+#   - pre_diff_iq        ~38   KB/s   (Phase 10.8: carrier-derotated, AGC-scaled,
+#                                       pre-slicer IQ tap -- control chain.
+#                                       Clean eye + constellation + deviation.)
+#   - traffic_pre_diff_iq ~38 KB/s    (Phase 10.8: mirror on traffic chain.)
+#   - wideband_spec      ~32   KB/s   (Phase 10.7: 4096-bin spectrometer, 5-10 Hz)
+# Total ~611 KB/s, still well under 1.7 GB/s.
+#
+# Phase 10.8 retirements (freed DMA channels):
+#   - dibit (C4FM control dibits)       -- superseded by lsm_dibit
+#   - traffic (C4FM traffic dibits)     -- superseded by traffic_lsm_dibit
+#   - lsm_iq (post-RRC matched-filter)  -- superseded by pre_diff_iq
+#   - traffic_lsm_iq (traffic twin)     -- superseded by traffic_pre_diff_iq
+#   - post_pll_iq (post-PLL interleave) -- superseded by pre_diff_iq
+#   - traffic_post_pll_iq (traffic twin) -- superseded by traffic_pre_diff_iq
 # See doc/P25_ADDRESS_MAP.md for the full carve-out / bandwidth table.
 ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP1 {1}
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 sys_ps7/S_AXI_HP1
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_dibit
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_iq
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_lsm_dibit
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_lsm_dibit
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_iq
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_lsm_iq
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_lsm_iq
-# Phase 10.7 masters.
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_post_pll_iq
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_post_pll_iq
+# Phase 10.8 masters.
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_pre_diff_iq
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_pre_diff_iq
+# Phase 10.7 master.
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_wideband_spec
 
 # ── Interrupt ─────────────────────────────────────────────────────────

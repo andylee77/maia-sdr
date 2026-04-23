@@ -189,7 +189,11 @@ pub async fn get_traffic(
         }
     }
 
-    // ── 4. demod_enable ──
+    // ── 4. demod_enable ── (retired in Phase 10.8 along with the
+    //    HDL C4FM chain). The param now just routes to `traffic_lsm_
+    //    enable` so old external scripts don't error out, but LSM
+    //    enablement is normally driven by the grant follower's
+    //    retune_traffic_chain path.
     if let Some(v) = params.get("demod_enable") {
         let parsed = match v.as_str() {
             "1" | "on" | "true" => Some(true),
@@ -201,8 +205,8 @@ pub async fn get_traffic(
                 #[cfg(target_os = "linux")]
                 {
                     let core = state.ip_core.lock().await;
-                    core.set_traffic_demod_enable(bit);
-                    applied.push(format!("demod_enable={bit}"));
+                    core.set_traffic_lsm_enable(bit);
+                    applied.push(format!("demod_enable={bit} (→ traffic_lsm_enable)"));
                 }
                 #[cfg(not(target_os = "linux"))]
                 {

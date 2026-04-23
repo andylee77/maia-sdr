@@ -14,7 +14,7 @@ decision instant, group traces by the four P25 symbol values (+3, +1,
      stdev, and "clean fraction" (how many traces land within a
      tight margin of the nominal ±1 / ±3 rail).
 
-Input: /ws/iq?source=post_pll from the board. The HDL stream is
+Input: /ws/iq?source=pre_diff from the board. The HDL stream is
 interleaved (mid, sym, mid, sym, ...) at 9.6 kSPS (2 samples per
 symbol). Decisions are made from sign(I), sign(Q) at the sym samples
 (same rule the HDL slicer uses — see
@@ -71,7 +71,7 @@ def dibit_to_symbol(i: float, q: float) -> int:
 
 
 async def stream(host: str, chain: str, seconds: float) -> np.ndarray:
-    uri = f"ws://{host}/ws/iq?source=post_pll&chain={chain}"
+    uri = f"ws://{host}/ws/iq?source=pre_diff&chain={chain}"
     print(f"connecting {uri}", file=sys.stderr)
     pairs: list[tuple[int, int]] = []
     async with websockets.connect(uri, max_size=None) as ws:

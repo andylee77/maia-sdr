@@ -75,30 +75,21 @@ set_property value ACTIVE_HIGH [ipx::get_bus_parameters POLARITY -of_objects [ip
 # associate buses to clocks
 ipx::associate_bus_interfaces -busif s_axi_lite -clock clk -remove [ipx::current_core]
 ipx::associate_bus_interfaces -busif s_axi_lite -clock s_axi_lite_clk [ipx::current_core]
-ipx::associate_bus_interfaces -busif m_axi_dibit -clock clk [ipx::current_core]
-ipx::associate_bus_interfaces -busif m_axi_traffic -clock clk [ipx::current_core]
 # Phase 6C: control-channel post-DDC IQ ring DMA on m_axi_iq.
-# Same clock domain as the dibit/traffic masters; SmartConnect on the
-# block-design side handles arbitration to HP1.
 ipx::associate_bus_interfaces -busif m_axi_iq -clock clk [ipx::current_core]
 # Phase 6E.9: LSM control-channel dibit ring DMA on m_axi_lsm_dibit.
-# Parallel to the C4FM m_axi_dibit master so the PS can A/B C4FM vs LSM
-# on a single RF capture. Same clock domain; same HP1 SmartConnect.
 ipx::associate_bus_interfaces -busif m_axi_lsm_dibit -clock clk [ipx::current_core]
 # Phase 7A.2: LSM traffic-channel dibit ring DMA on m_axi_traffic_lsm_dibit.
-# Parallel to the C4FM m_axi_traffic master for the traffic chain.
 ipx::associate_bus_interfaces -busif m_axi_traffic_lsm_dibit -clock clk [ipx::current_core]
-# 2026-04-16: post-DDC IQ ring DMA on m_axi_traffic_iq. Mirror of m_axi_iq
-# on the traffic chain so dashboard constellation + offline traffic-LSM
-# cross-check have a post-DDC IQ source. Same clock, same HP1 SmartConnect.
+# 2026-04-16: post-DDC IQ ring DMA on m_axi_traffic_iq (traffic mirror of m_axi_iq).
 ipx::associate_bus_interfaces -busif m_axi_traffic_iq -clock clk [ipx::current_core]
-# Phase 10.6: post-LSM matched-filter IQ rings (control + traffic).
-ipx::associate_bus_interfaces -busif m_axi_lsm_iq -clock clk [ipx::current_core]
-ipx::associate_bus_interfaces -busif m_axi_traffic_lsm_iq -clock clk [ipx::current_core]
-# Phase 10.7: post-PLL IQ rings (control + traffic) and the wideband
-# spectrometer. All in the sync domain; SmartConnect handles HP1 arbitration.
-ipx::associate_bus_interfaces -busif m_axi_post_pll_iq -clock clk [ipx::current_core]
-ipx::associate_bus_interfaces -busif m_axi_traffic_post_pll_iq -clock clk [ipx::current_core]
+# Phase 10.8: pre-diff IQ rings (control + traffic). Tap inside LsmDemodLoop
+# after LsmPllRotate + mid/sym interleave, before the differential slicer.
+# Supersedes the retired m_axi_lsm_iq / m_axi_traffic_lsm_iq / m_axi_post_pll_iq
+# / m_axi_traffic_post_pll_iq masters.
+ipx::associate_bus_interfaces -busif m_axi_pre_diff_iq -clock clk [ipx::current_core]
+ipx::associate_bus_interfaces -busif m_axi_traffic_pre_diff_iq -clock clk [ipx::current_core]
+# Phase 10.7: wideband spectrometer DMA master.
 ipx::associate_bus_interfaces -busif m_axi_wideband_spec -clock clk [ipx::current_core]
 
 # interrupt

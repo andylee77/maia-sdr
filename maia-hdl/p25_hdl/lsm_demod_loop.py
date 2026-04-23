@@ -161,6 +161,20 @@ class LsmDemodLoop(Elaboratable):
         self.q_rot_out = Signal(signed(16), reset_less=True)
         self.rot_strobe_out = Signal()
 
+        # ── Pre-diff post-PLL IQ tap (Phase 10.8) ───────────────
+        # Applies the same pll_update.pll_out rotation but to the
+        # *AGC-output* samples (pre-differential-demod). Phase noise
+        # on the raw samples is half that of the diff-demod product,
+        # so the resulting constellation / eye / distribution plots
+        # render with clusters ~sqrt(2)× tighter — matching the
+        # Datascope / Anritsu view the user expects.
+        # Mid + cur samples interleaved on adjacent sync cycles,
+        # same pattern as `i_rot_out` but sourced from AGC instead
+        # of diff_demod. 9.6 kSPS, Q1.15 signed 16.
+        self.i_pre_diff_out = Signal(signed(16), reset_less=True)
+        self.q_pre_diff_out = Signal(signed(16), reset_less=True)
+        self.pre_diff_strobe_out = Signal()
+
         # ── Debug taps ──────────────────────────────────────────
         self.pll_dbg = Signal(signed(16), reset_less=True)
         self.sample_point_dbg = Signal(signed(18), reset_less=True)
@@ -186,6 +200,11 @@ class LsmDemodLoop(Elaboratable):
         m.submodules.diff_demod = diff_demod = LsmDiffDemodSlicer()
         m.submodules.rotate_mid = rotate_mid = LsmPllRotate()
         m.submodules.rotate_sym = rotate_sym = LsmPllRotate()
+        # Phase 10.8: pre-diff rotates (AGC output, no diff-demod).
+        # AGC outputs are Q1.15 signed 16, so instantiate with
+        # iq_width=16 and no post-rotate right-shift.
+        m.submodules.rotate_mid_pre = rotate_mid_pre = LsmPllRotate(iq_width=16)
+        m.submodules.rotate_cur_pre = rotate_cur_pre = LsmPllRotate(iq_width=16)
         m.submodules.gardner = gardner = LsmGardnerTed()
         if self.pll_mode == 'cordic':
             pll_update_cls = LsmPllUpdate
@@ -249,6 +268,22 @@ class LsmDemodLoop(Elaboratable):
             rotate_sym.q_in.eq(diff_demod.q_sym_out),
             rotate_sym.pll_in.eq(pll_update.pll_out),
             rotate_sym.strobe_in.eq(diff_demod.symbol_strobe),
+
+            # Phase 10.8: pre-diff rotates, fed from AGC directly
+            # with the same PLL correction and at the same symbol
+            # strobe as the diff-demod pipeline. AGC outputs lead
+            # diff_demod by 1 cycle (diff_demod registers its inputs
+            # on decision_strobe_in); driving off the same strobe
+            # keeps the mid/cur samples timed with the diff rotate.
+            rotate_mid_pre.i_in.eq(agc.i_mid_out),
+            rotate_mid_pre.q_in.eq(agc.q_mid_out),
+            rotate_mid_pre.pll_in.eq(pll_update.pll_out),
+            rotate_mid_pre.strobe_in.eq(agc.decision_strobe_out),
+
+            rotate_cur_pre.i_in.eq(agc.i_cur_out),
+            rotate_cur_pre.q_in.eq(agc.q_cur_out),
+            rotate_cur_pre.pll_in.eq(pll_update.pll_out),
+            rotate_cur_pre.strobe_in.eq(agc.decision_strobe_out),
         ]
 
         # ── Stage 4: slice rotated current-symbol value ─────────
@@ -335,6 +370,36 @@ class LsmDemodLoop(Elaboratable):
                 self.rot_strobe_out.eq(1),
             ]
 
+        # ── Phase 10.8: pre-diff post-PLL IQ tap interleave ─────
+        # Same interleave pattern as the post-diff tap above, but
+        # sourced from `rotate_mid_pre` / `rotate_cur_pre` which
+        # rotate the AGC outputs directly (no diff-demod). AGC
+        # outputs are Q1.15 signed 16, and LsmPllRotate here was
+        # instantiated with iq_width=16, so no right-shift is needed.
+        pending_pre_i = Signal(signed(16))
+        pending_pre_q = Signal(signed(16))
+        pending_pre_valid = Signal()
+
+        m.d.sync += [
+            self.pre_diff_strobe_out.eq(0),
+            pending_pre_valid.eq(0),
+        ]
+        with m.If(rotate_mid_pre.strobe_out):
+            m.d.sync += [
+                self.i_pre_diff_out.eq(rotate_mid_pre.i_out),
+                self.q_pre_diff_out.eq(rotate_mid_pre.q_out),
+                self.pre_diff_strobe_out.eq(1),
+                pending_pre_i.eq(rotate_cur_pre.i_out),
+                pending_pre_q.eq(rotate_cur_pre.q_out),
+                pending_pre_valid.eq(1),
+            ]
+        with m.Elif(pending_pre_valid):
+            m.d.sync += [
+                self.i_pre_diff_out.eq(pending_pre_i),
+                self.q_pre_diff_out.eq(pending_pre_q),
+                self.pre_diff_strobe_out.eq(1),
+            ]
+
         # ── Phase 8A runtime reset override on local outputs ───
         # Clear this module's own registered outputs (the slicer
         # latch + debug taps) so the PS sees a clean view during
@@ -349,6 +414,11 @@ class LsmDemodLoop(Elaboratable):
                 self.q_rot_out.eq(0),
                 self.rot_strobe_out.eq(0),
                 pending_sym_valid.eq(0),
+                # Phase 10.8: reset pre-diff interleave state too.
+                self.i_pre_diff_out.eq(0),
+                self.q_pre_diff_out.eq(0),
+                self.pre_diff_strobe_out.eq(0),
+                pending_pre_valid.eq(0),
             ]
 
         return m

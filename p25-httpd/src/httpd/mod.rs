@@ -327,18 +327,18 @@ pub fn router(
         // at a time. See src/spectrum.rs. Wideband view (pre-DDC, 8
         // MSPS) deferred to a future HDL bake.
         .route("/api/spectrum", get(api::debug::get_spectrum))
-        // Constellation scatter for the Debug tab — reuses the
-        // retired Phase 6D `lsm::demod` software port to extract
-        // post-PLL symbol-time (I, Q) points from the same iq_dma
-        // rings the /api/spectrum endpoint reads.
-        .route("/api/constellation", get(api::debug::get_constellation))
-        // Phase 10.7 2026-04-22: wideband FFT (pre-DDC, HDL
-        // spectrometer) — no PS FFT, just unpack the HDL output.
+        // Phase 10.7: wideband FFT (pre-DDC, HDL spectrometer) — no
+        // PS FFT, just unpack the HDL output.
         .route("/api/spectrum_wide", get(api::debug::get_spectrum_wide))
-        // Phase 10.7: Anritsu-style modulation metrics pulled from
-        // the post-PLL IQ ring (HDL rotate output, already derotated
-        // + AGC-scaled). Feeds the Plots tab deviation panel.
+        // Phase 10.8 (2026-04-23): Anritsu-style modulation metrics
+        // from the pre-differential IQ ring (HDL rotate output +
+        // per-symbol AGC, taken before the diff-demod/slicer). Feeds
+        // the Plots tab deviation panel.
         .route("/api/deviation", get(api::debug::get_deviation))
+        // Phase 10.8: symbol-time atan2 histogram scaled to Hz
+        // (±600 Hz inner, ±1800 Hz outer). Feeds the Plots tab
+        // "distribution" panel.
+        .route("/api/distribution", get(api::debug::get_distribution))
         // Self-describing API catalogue for the dashboard's API tab.
         .route("/api/endpoints", get(api::system::get_endpoints))
         .route("/ws/events", get(api::ws::ws_events))

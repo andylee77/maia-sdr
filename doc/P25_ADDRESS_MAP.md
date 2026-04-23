@@ -27,19 +27,26 @@ device tree (Phase 6D will pin the exact carve-out range). Each ring base
 must be aligned to its **total ring size** (this is asserted by
 `P25Config.validate()`).
 
-| Name | Base | Sub-buffers | Sub-buffer size | Total | Ring depth | IRQ rate | Byte rate | Source |
-|------|------|-------------|-----------------|-------|------------|----------|-----------|--------|
-| `dibit_dma`              | `0x1700_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | control-channel C4FM dibits (post-slicer, post-symbol-timing) |
-| `traffic_dma`            | `0x1800_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | traffic-channel C4FM dibits (post-slicer, post-symbol-timing) |
-| `iq_dma`                 | `0x1900_0000` | 8 | 32 KB   | 256 KB  | ~1 s     | ~128 ms  | ~250 KB/s    | **Phase 6C:** control-channel post-DDC IQ (16-bit signed I + 16-bit signed Q, 62.5 kSPS, two samples per 64-bit DMA word) |
-| `lsm_dibit_dma`          | `0x1A00_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | **Phase 6E.9:** control-channel LSM dibits (post-`LsmDemod.dibit_out`/`symbol_strobe`, parallel to `dibit_dma` so PS can A/B C4FM and LSM on the same RF capture) |
-| `traffic_lsm_dibit_dma`  | `0x1B00_0000` | 8 | 4 KB    | 32 KB   | ~25 s    | ~3.2 s   | ~1.28 KB/s   | **Phase 7A.2:** traffic-channel LSM dibits (post-`traffic_lsm_demod.dibit_out`/`symbol_strobe`, parallel to `traffic_dma` so PS can A/B C4FM and LSM on the followed voice channel and dispatch HDU/TDU/LDU events from the new `traffic_lsm` register bank) |
-| `traffic_iq_dma`         | `0x1C00_0000` | 8 | 32 KB   | 256 KB  | ~1 s     | ~128 ms  | ~250 KB/s    | **2026-04-16 chain-symmetry fix:** traffic-channel post-DDC IQ, mirror of `iq_dma` (same packing format, same sample rate). Feeds the dashboard constellation scatter + traffic-LSM software cross-check |
-| `lsm_iq_dma`             | `0x1D00_0000` | 8 | 32 KB   | 256 KB  | ~2 s     | ~262 ms  | ~125 KB/s    | **Phase 10.6 2026-04-18:** control-chain post-LSM matched-filter IQ. Tapped from `lsm_rrc.re_out`/`im_out` (after LsmDecimator2 /2 + LPF + 105-tap RRC). 31.25 kSPS (half of post-DDC); same packing format as `iq_dma`. Feeds the dashboard matched-filter eye plot via `/ws/iq?source=post_lsm` |
-| `traffic_lsm_iq_dma`     | `0x1E00_0000` | 8 | 32 KB   | 256 KB  | ~2 s     | ~262 ms  | ~125 KB/s    | **Phase 10.6 2026-04-18:** traffic-chain post-LSM matched-filter IQ. Tapped from `traffic_lsm_rrc.re_out`/`im_out`. Traffic-side twin of `lsm_iq_dma`; same packing + geometry |
-| `post_pll_iq_dma`        | `0x1F00_0000` | 8 | 32 KB   | 256 KB  | ~27 s    | ~3.4 s   | ~38 KB/s     | **Phase 10.7 2026-04-22:** control-chain **post-PLL** IQ. Tapped from `LsmPllRotate` outputs (interleaved mid + sym → 9.6 kSPS, 2 samples/symbol). Same 64-bit packing as `iq_dma` / `lsm_iq_dma`; I/Q are already PLL-derotated + AGC-scaled. Feeds `/ws/iq?source=post_pll` (clean eye), `/api/deviation` (Anritsu-style Symbol Dev / Mod Fidelity / Freq Err / Sym Rate Err / BER / NAC), and the new Plots-tab constellation. Ring deliberately oversized for the rate so the PS can pull a 1-second window without cache pressure. |
-| `traffic_post_pll_iq_dma`| `0x2000_0000` | 8 | 32 KB   | 256 KB  | ~27 s    | ~3.4 s   | ~38 KB/s     | **Phase 10.7 2026-04-22:** traffic-chain post-PLL IQ. Traffic-side twin of `post_pll_iq_dma`. |
-| `wideband_spec_dma`      | `0x2100_0000` | 4 | 16 KB   | 64 KB   | ~2 s     | ~500 ms  | ~32 KB/s     | **Phase 10.7 2026-04-22:** wideband spectrometer output from a `Spectrometer` sub-module tapped **pre-DDC** on `rxiq_cdc.re_out`/`im_out`. 4096-bin FFT × 64-bit spectrum words (47-bit mantissa + 8-bit exponent per [spectrometer.py:128–135](../maia-hdl/maia_hdl/spectrometer.py#L128-L135)) = 32 KB per integrated spectrum; hardware integrator averages 5–10 Hz to the ring. Span = AD9361 sample rate (preset-dependent, 2–16 MHz). Feeds `/api/spectrum_wide` (no PS FFT). |
+| Name | Base | Sub-buffers | Sub-buffer size | Total | Byte rate | Source |
+|------|------|-------------|-----------------|-------|-----------|--------|
+| `iq_dma`                   | `0x1900_0000` | 8 | 32 KB | 256 KB | ~250 KB/s | **Phase 6C:** control-channel post-DDC IQ. 62.5 kSPS, two samples per 64-bit word. Feeds `/api/spectrum?chain=control` (narrowband). |
+| `lsm_dibit_dma`            | `0x1A00_0000` | 8 | 4 KB  | 32 KB  | ~1.28 KB/s | **Phase 6E.9:** control-channel LSM dibits. Primary decoder input. |
+| `traffic_lsm_dibit_dma`    | `0x1B00_0000` | 8 | 4 KB  | 32 KB  | ~1.28 KB/s | **Phase 7A.2:** traffic-channel LSM dibits. Primary voice-chain decoder input. |
+| `traffic_iq_dma`           | `0x1C00_0000` | 8 | 32 KB | 256 KB | ~250 KB/s | **2026-04-16:** traffic-chain post-DDC IQ. Feeds `/api/spectrum?chain=traffic` (narrowband). |
+| `pre_diff_iq_dma`          | `0x1F00_0000` | 8 | 32 KB | 256 KB | ~38 KB/s  | **Phase 10.8 2026-04-23:** control-chain **pre-diff post-PLL** IQ. Tapped from two new `LsmPllRotate` instances inside `LsmDemodLoop` that rotate the AGC-interpolated samples directly (no diff-demod). Interleaved mid + cur at 9.6 kSPS, Q1.15 signed 16. Feeds `/ws/iq?source=pre_diff`, `/api/deviation`, `/api/distribution`, and the Plots-tab constellation + eye. Phase noise is ~sqrt(2)× smaller than a post-diff tap so LSM decision points sit tightly on the ±3 / ±1 rails of the OP25 Datascope-style deviation eye. |
+| `traffic_pre_diff_iq_dma`  | `0x2000_0000` | 8 | 32 KB | 256 KB | ~38 KB/s  | **Phase 10.8 2026-04-23:** traffic-chain pre-diff post-PLL IQ. Traffic-side twin of `pre_diff_iq_dma`. |
+| `wideband_spec_dma`        | `0x2100_0000` | 4 | 32 KB | 128 KB | ~32 KB/s  | **Phase 10.7 2026-04-22:** wideband spectrometer output. 4096-bin FFT, HW-integrated at 5–10 Hz. Feeds `/api/spectrum_wide` (no PS FFT). |
+
+**Phase 10.8 retirements (2026-04-23):** the following rings / carve-outs were removed to collapse 11 rings into 7. Their address ranges are free.
+
+| Retired ring | Base | Reason |
+|---|---|---|
+| `dibit_dma` | `0x1700_0000` | PS C4FM chain retired; LSM decodes both CQPSK and C4FM. |
+| `traffic_dma` | `0x1800_0000` | Same. |
+| `lsm_iq_dma` | `0x1D00_0000` | Phase 10.6 pre-rotate matched-filter eye — superseded by the pre-diff post-PLL tap. |
+| `traffic_lsm_iq_dma` | `0x1E00_0000` | Traffic twin of the above. |
+| `post_pll_iq_dma` | `0x1F00_0000` | Phase 10.7 post-diff tap — wrong point in the chain for clean plots (2× phase noise). Address repurposed for `pre_diff_iq_dma`. |
+| `traffic_post_pll_iq_dma` | `0x2000_0000` | Same. Address repurposed for `traffic_pre_diff_iq_dma`. |
 
 **Sample-rate math (control DDC at 62.5 kSPS):**
 

@@ -1,22 +1,24 @@
-//! Visual diagnostics: spectrum, constellation.
+//! Visual diagnostics: spectrum, deviation, distribution.
 //!
 //! Consumer orientation: "show me what the signal looks like right
-//! now." Two endpoints, both returning arrays that an SDR-savvy
-//! consumer renders as a 2-D plot:
+//! now." The endpoints return arrays that an SDR-savvy consumer
+//! renders as a 2-D plot:
 //!
-//!   - `/api/spectrum` — FFT magnitudes from the IQ capture ring.
-//!     Hand-rolled Cooley-Tukey under the hood (no external FFT
-//!     dep — see `src/spectrum.rs`). Accepts `?chain=control|traffic`
-//!     and `?fft=<512|1024|2048|4096>`.
-//!   - `/api/constellation` — raw IQ scatter from the LSM slicer
-//!     input. Interpretation notes live in project memory
-//!     `reference_p25_constellation_interpretation`.
+//!   - `/api/spectrum` — narrowband FFT magnitudes from the post-DDC
+//!     IQ ring (software FFT on ARM). Accepts
+//!     `?chain=control|traffic` and `?fft=<512..16384>`.
+//!   - `/api/spectrum_wide` — wideband FFT unpacked from the HDL
+//!     spectrometer (no PS FFT). Spans the full AD9361 sample rate.
+//!   - `/api/deviation` — Anritsu-style modulation metrics pulled
+//!     from the pre-differential IQ ring (post-rotate + post-AGC but
+//!     pre-diff-demod). `sign(I)/sign(Q)` hard decisions, EVM / BER /
+//!     cluster-radius.
+//!   - `/api/distribution` — symbol-time atan2 histogram scaled to
+//!     Hz (±600 inner dibits, ±1800 outer). Feeds the Plots-tab
+//!     "distribution" panel.
 //!
-//! The dashboard's Debug tab renders both. A diagnostic session on
-//! 2026-04-17 (see `doc/diagnostics/2026-04-17/PERFORMANCE_ANALYSIS.md`)
-//! caught a Gardner-TED timing-loop problem purely by watching the
-//! constellation X-pattern — this endpoint set is load-bearing for
-//! field debugging.
+//! All four endpoints source samples from the same set of rings that
+//! `/ws/iq` / the dashboard's live plots use.
 
 use std::sync::Arc;
 
@@ -30,14 +32,14 @@ use p25_json::*;
 
 // ── IQ drain cadence constants ────────────────────────────────────
 //
-// /api/spectrum and /api/constellation both read the shared iq_dma
-// ring. Competing readers (/ws/iq, the constellation poller, the
-// spectrum poller) can starve one endpoint's drain for a window;
-// these retry-with-deadline constants survive that contention.
+// /api/spectrum, /api/deviation, and /api/distribution all read
+// shared DMA rings. Competing readers (/ws/iq, other endpoints) can
+// starve one endpoint's drain for a window; these retry-with-deadline
+// constants survive that contention.
 
 /// Deadline for accumulating enough IQ sub-buffers for one FFT /
-/// constellation snapshot. Sub-buffers arrive every ~131 ms; 3 s
-/// gives ~22 opportunities even under 50% reader contention.
+/// metrics snapshot. Sub-buffers arrive every ~131 ms; 3 s gives ~22
+/// opportunities even under 50% reader contention.
 const IQ_DRAIN_DEADLINE_MS: u64 = 3000;
 
 /// Retry cadence while waiting for sub-buffers. Faster than the
@@ -60,17 +62,9 @@ use crate::protocol::p25::control_channel::{
 /// frequency (-sample_rate_hz/2 relative to the chain's DDC center).
 ///
 /// Query params:
-///   - `chain` — `control` (default) or `traffic`
-///   - `fft`   — one of {1024, 2048, 4096, 8192, 16384}; default 4096
-///   - `averages` — 1..floor(65536/fft); default 1. Power-averages N
-///     non-overlapping FFT segments (noise floor drops by
-///     ~10·log10(averages) dB, carriers stay put). Set 1 for live
-///     sweep, 4–16 for noise-floor / channel-shape analysis.
-///
-/// The traffic chain requires the bake #2 bitstream flashed; on
-/// older binaries the endpoint returns an error explaining the
-/// missing UIO device. The control chain works on any bitstream
-/// that has the Phase 6C `iq_dma` ring.
+///   - `chain`    — `control` (default) or `traffic`
+///   - `fft`      — one of {1024, 2048, 4096, 8192, 16384}; default 4096
+///   - `averages` — 1..floor(65536/fft); default 1
 #[cfg(target_os = "linux")]
 pub async fn get_spectrum(
     State(state): State<Arc<AppState>>,
@@ -91,16 +85,6 @@ pub async fn get_spectrum(
     let min_samples = fft_size * averages;
     let min_bytes = min_samples * 4;
 
-    // Pull buffers from the requested ring. read_*_buffers() is a
-    // rolling-window reader with a single shared cursor per channel,
-    // so every reader (/api/constellation, /ws/iq, another
-    // /api/spectrum tab) partitions the arriving sub-buffers. On
-    // boards where the constellation + spectrum + live-IQ all tick
-    // concurrently, any one reader can be starved for a window.
-    // Retry window is sized for 3 s of wall-clock to survive that
-    // contention — sub-buffers arrive every ~131 ms, so even 50%
-    // contention still gives us ~11 fresh buffers to catch across
-    // 3 s, which covers up to averages=16 × fft=16384.
     let bytes: Vec<u8> = {
         let mut acc: Vec<u8> = Vec::with_capacity(min_bytes);
         let deadline = std::time::Instant::now()
@@ -146,11 +130,6 @@ pub async fn get_spectrum(
         }));
     };
 
-    // Center frequency for the display axis. Control chain =
-    // boot_control_freq (matches what /api/stats reports as the
-    // current tuned control center); traffic chain = RX LO +
-    // TrafficManager.last_offset_hz (the follower's per-call NCO).
-    // Fall back to RX LO if the traffic chain hasn't been retuned.
     let rx_lo = state
         .ad9361
         .get_rx_lo_frequency()
@@ -189,153 +168,18 @@ pub async fn get_spectrum(
     }))
 }
 
-
-/// `GET /api/constellation?chain=control|traffic`
+/// `GET /api/spectrum_wide` — wideband spectrum from the HDL
+/// spectrometer.
 ///
-/// Runs the retired Phase 6D software LSM demod pipeline
-/// (`lsm::demod::demod_lsm`) over a fresh IQ buffer and returns the
-/// post-PLL soft-symbol (I, Q) points. The dashboard renders these
-/// as a 4-quadrant scatter plot so the user can visually inspect
-/// phase noise, radial compression, and quadrant bias on either
-/// chain. Particularly useful on the traffic chain for diagnosing
-/// robotic-audio / marginal-decode symptoms from scatter cloud
-/// shape.
-#[cfg(target_os = "linux")]
-pub async fn get_constellation(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
-) -> Json<serde_json::Value> {
-    let chain = params
-        .get("chain")
-        .map(String::as_str)
-        .unwrap_or("traffic");
-
-    // Same ring-drain-race mitigation as /api/spectrum: the iq_dma
-    // cursor is shared across all readers, so /ws/iq and /api/spectrum
-    // can drain sub-buffers faster than the constellation poller sees
-    // them. Retry with a 3 s deadline and 60 ms cadence — sub-buffers
-    // arrive every ~131 ms, so 3 s gives ~22 opportunities even under
-    // 50% reader contention. The constellation needs at least 2048
-    // samples (8 KB) = ~33 ms of fresh IQ, well inside the budget.
-    let min_bytes: usize = 4 * 2048;
-    let bytes: Vec<u8> = {
-        let mut acc: Vec<u8> = Vec::new();
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_millis(IQ_DRAIN_DEADLINE_MS);
-        loop {
-            {
-                let mut core = state.ip_core.lock().await;
-                let bufs: Vec<&[u8]> = match chain {
-                    "control" => core.read_iq_buffers(),
-                    "traffic" => core.read_traffic_iq_buffers(),
-                    other => {
-                        return Json(serde_json::json!({
-                            "ok": false,
-                            "error": format!(
-                                "unknown chain '{other}'; expected control|traffic"
-                            ),
-                        }));
-                    }
-                };
-                for b in bufs {
-                    acc.extend_from_slice(b);
-                }
-            }
-            if acc.len() >= min_bytes { break; }
-            if std::time::Instant::now() >= deadline { break; }
-            tokio::time::sleep(std::time::Duration::from_millis(IQ_DRAIN_RETRY_MS)).await;
-        }
-        acc
-    };
-
-    if bytes.len() < 4 * 512 {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": format!(
-                "not enough IQ samples for constellation on chain={} \
-                 ({} samples available)",
-                chain,
-                bytes.len() / 4,
-            ),
-        }));
-    }
-
-    // Decode interleaved-IQ bytes → Complex32 vec. 2048 samples ≈
-    // 33 ms at 62.5 kSPS, which produces ~157 symbols at 4800 sym/s.
-    // Enough for a dense scatter without over-spending on the JSON
-    // payload size.
-    let n_samples = std::cmp::min(bytes.len() / 4, 2048);
-    let start = bytes.len() - n_samples * 4;
-    let mut iq: Vec<crate::lsm::Complex32> = Vec::with_capacity(n_samples);
-    for chunk in bytes[start..].chunks_exact(4) {
-        let r = i16::from_le_bytes([chunk[0], chunk[1]]) as f32;
-        let i = i16::from_le_bytes([chunk[2], chunk[3]]) as f32;
-        iq.push(crate::lsm::Complex32::new(r, i));
-    }
-
-    // Run the software LSM demod pipeline. `demod_lsm` handles the
-    // /2 decimator + LPF + RRC + timing recovery + PLL rotate +
-    // differential demod steps internally; soft_symbols are the
-    // post-PLL decision-time (I, Q) points we plot. sample_rate is
-    // the post-DDC 62.5 kSPS.
-    let result = crate::lsm::demod::demod_lsm(
-        &iq,
-        crate::services::spectrum::SAMPLE_RATE_HZ,
-    );
-
-    // Keep the payload small: return up to 512 most recent points
-    // as packed arrays (two parallel f32 vecs + a clip count).
-    let take = std::cmp::min(result.soft_symbols.len(), 512);
-    let start_sym = result.soft_symbols.len() - take;
-    let (i_arr, q_arr): (Vec<f32>, Vec<f32>) = result
-        .soft_symbols[start_sym..]
-        .iter()
-        .map(|s| (s.re, s.im))
-        .unzip();
-
-    Json(serde_json::json!({
-        "ok":         true,
-        "chain":      chain,
-        "count":      take,
-        "i":          i_arr,
-        "q":          q_arr,
-        "pll_final":  result.pll_trace.last().copied().unwrap_or(0.0),
-        "timing_final": result.timing_trace.last().copied().unwrap_or(0.0),
-        "note": "Post-PLL soft-symbol constellation from the retired Phase 6D \
-                 software LSM demod pipeline. 4 clusters expected for a clean LSM \
-                 signal (±1, ±j quadrants).",
-    }))
-}
-
-
-#[cfg(not(target_os = "linux"))]
-pub async fn get_constellation(
-    State(_state): State<Arc<AppState>>,
-    Query(_params): Query<std::collections::HashMap<String, String>>,
-) -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "ok": false,
-        "error": "constellation only available on the target (linux/arm)",
-    }))
-}
-
-/// `GET /api/spectrum_wide` — Phase 10.7 wideband spectrum.
-///
-/// Reads one completed integration from the HDL wideband spectrometer
-/// (`wideband_spec_dma` ring, BRAM-backed DMA, 4096-bin FFT averaged in
-/// hardware at 5-10 Hz). **No PS FFT** — the PS just unpacks the 47-bit
-/// mantissa + 3-bit exponent per bin to `f32` dB and fft-shifts for
-/// display. Span = AD9361 sample rate (preset-dependent, 2-16 MHz).
-///
-/// Query params: none for v1 (num_integrations etc. are set once in
-/// boot).
+/// Reads one completed integration from `wideband_spec_dma`
+/// (BRAM-backed, 4096-bin FFT averaged in hardware). **No PS FFT** —
+/// the PS just unpacks the 47-bit mantissa + 3-bit exponent per bin
+/// to f32 dB and fft-shifts for display. Span = AD9361 sample rate
+/// (preset-dependent, 2-16 MHz).
 #[cfg(target_os = "linux")]
 pub async fn get_spectrum_wide(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    // Grab the latest integration. If none is ready since the last
-    // call, wait briefly — at default 256 integrations / 8 MSPS ≈ 8 Hz
-    // the cadence is ~125 ms; we give up to 500 ms to catch one.
     const DEADLINE_MS: u64 = 500;
     const RETRY_MS: u64 = 50;
     let bytes: Option<Vec<u8>> = {
@@ -368,7 +212,6 @@ pub async fn get_spectrum_wide(
             "error": "wideband buffer shorter than 32 KB",
         }));
     }
-    // Span metadata: AD9361 sample rate from the active tuning preset.
     let rx_lo = state
         .current_rx_lo
         .load(std::sync::atomic::Ordering::SeqCst) as f64;
@@ -395,24 +238,79 @@ pub async fn get_spectrum_wide(
     }))
 }
 
+// ── Pre-differential IQ helpers (shared between deviation + distribution) ──
+
+/// Drain enough pre-diff IQ from the selected chain to cover
+/// `min_bytes`, or hit the deadline. Returns the accumulated raw
+/// buffer (interleaved i16 LE pairs, 2 samples per symbol packed).
+#[cfg(target_os = "linux")]
+async fn drain_pre_diff(
+    state: &Arc<AppState>,
+    chain: &str,
+    min_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let mut acc: Vec<u8> = Vec::new();
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(IQ_DRAIN_DEADLINE_MS);
+    loop {
+        {
+            let mut core = state.ip_core.lock().await;
+            let bufs: Vec<&[u8]> = match chain {
+                "control" => core.read_pre_diff_iq_buffers(),
+                "traffic" => core.read_traffic_pre_diff_iq_buffers(),
+                other => {
+                    return Err(format!(
+                        "unknown chain '{other}'; expected control|traffic"
+                    ));
+                }
+            };
+            for b in bufs {
+                acc.extend_from_slice(b);
+            }
+        }
+        if acc.len() >= min_bytes {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(
+            std::time::Duration::from_millis(IQ_DRAIN_RETRY_MS)).await;
+    }
+    Ok(acc)
+}
+
+/// Decode interleaved i16 LE pairs to (re, im) f32 at Q1.13 scale.
+/// The HDL pre-diff ring interleaves rotate_mid (even idx) with
+/// rotate_sym (odd); the odd-indexed samples are the decision points.
+#[cfg(target_os = "linux")]
+fn pre_diff_sym_points(bytes: &[u8], max_syms: usize) -> Vec<(f32, f32)> {
+    const Q13_SCALE: f32 = 1.0 / 8192.0;
+    bytes
+        .chunks_exact(4)
+        .map(|c| {
+            let r = i16::from_le_bytes([c[0], c[1]]) as f32;
+            let i = i16::from_le_bytes([c[2], c[3]]) as f32;
+            (r * Q13_SCALE, i * Q13_SCALE)
+        })
+        .skip(1)            // rotate_mid first, rotate_sym second
+        .step_by(2)         // every other pair is a decision point
+        .take(max_syms)
+        .collect()
+}
+
 /// `GET /api/deviation?chain=control|traffic&window_syms=N`
 ///
-/// Anritsu-style modulation metrics from the HDL post-PLL IQ ring.
-/// Samples are already carrier-derotated + AGC-scaled, so the PS work
-/// is just: project each sample onto the I axis (soft symbol), slice
-/// to the nearest {-3,-1,+1,+3}, compute error stats over a 1-second
-/// window.
+/// Anritsu-style modulation metrics pulled from the pre-differential
+/// IQ ring. Samples are carrier-derotated + AGC-scaled but before the
+/// diff-demod; the hard decision is `sign(I) / sign(Q)` — one of four
+/// quadrant clusters at (±1, ±1). Metrics:
 ///
-/// Returns:
-/// - `soft`: [f32; N]     — post-PLL I values at symbol time
-/// - `hard`: [i8; N]      — decided symbols {-3,-1,+1,+3}
-/// - `metrics`:
-///     - `symbol_dev_hz`  — median |hard|, scaled to the P25 ideal
-///                          C4FM ±1800 Hz deviation
-///     - `mod_fidelity`   — RMS(error) / RMS(hard)  (fraction; ×100
-///                          for percent)
-///     - `ber`            — fraction of samples whose soft-to-hard
-///                          slice error exceeded the slicer margin
+/// - `evm` (aka mod_fidelity): RMS error / RMS reference (fraction).
+/// - `ambiguous_frac` (BER proxy): samples crossing decision margin.
+/// - `cluster_radius`: mean |z|, ≈1 when AGC is healthy.
+/// - `peak_mag`: raw Q1.13-scaled peak magnitude.
+/// - `quad_balance`: histogram of the four quadrants.
 #[cfg(target_os = "linux")]
 pub async fn get_deviation(
     State(state): State<Arc<AppState>>,
@@ -428,73 +326,30 @@ pub async fn get_deviation(
         .unwrap_or(4800)
         .clamp(64, 9600);
 
-    // Two samples per symbol in the post-PLL ring (mid + sym), so we
-    // need `2 * window_syms` complex samples = `8 * window_syms` bytes.
+    // Two samples per symbol in the pre-diff ring (rotate_mid +
+    // rotate_sym), so we need `8 * window_syms` bytes.
     let min_bytes: usize = 8 * window_syms;
-    let bytes: Vec<u8> = {
-        let mut acc: Vec<u8> = Vec::new();
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_millis(IQ_DRAIN_DEADLINE_MS);
-        loop {
-            {
-                let mut core = state.ip_core.lock().await;
-                let bufs: Vec<&[u8]> = match chain {
-                    "control" => core.read_post_pll_iq_buffers(),
-                    "traffic" => core.read_traffic_post_pll_iq_buffers(),
-                    other => {
-                        return Json(serde_json::json!({
-                            "ok": false,
-                            "error": format!(
-                                "unknown chain '{other}'; expected control|traffic"
-                            ),
-                        }));
-                    }
-                };
-                for b in bufs {
-                    acc.extend_from_slice(b);
-                }
-            }
-            if acc.len() >= min_bytes {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(
-                std::time::Duration::from_millis(IQ_DRAIN_RETRY_MS)).await;
+    let bytes = match drain_pre_diff(&state, chain, min_bytes).await {
+        Ok(b) => b,
+        Err(msg) => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": msg,
+            }));
         }
-        acc
     };
 
     if bytes.len() < 8 * 64 {
         return Json(serde_json::json!({
             "ok": false,
             "error": format!(
-                "not enough post-PLL IQ samples on chain={} ({} bytes)",
+                "not enough pre-diff IQ samples on chain={} ({} bytes)",
                 chain, bytes.len()
             ),
         }));
     }
 
-    // Decode: each 4-byte pair is (re, im) i16 LE in Q1.13. The
-    // HDL interleaves rotate_mid (even idx) with rotate_sym (odd).
-    // The decision-point samples are the odd-indexed `sym` ones.
-    let samples: Vec<(f32, f32)> = bytes
-        .chunks_exact(4)
-        .map(|c| {
-            let r = i16::from_le_bytes([c[0], c[1]]) as f32;
-            let i = i16::from_le_bytes([c[2], c[3]]) as f32;
-            (r, i)
-        })
-        .collect();
-    const Q13_SCALE: f32 = 1.0 / 8192.0;
-    let symbol_pts: Vec<(f32, f32)> = samples
-        .iter()
-        .skip(1)
-        .step_by(2)
-        .take(window_syms)
-        .map(|&(r, i)| (r * Q13_SCALE, i * Q13_SCALE))
-        .collect();
+    let symbol_pts = pre_diff_sym_points(&bytes, window_syms);
     if symbol_pts.is_empty() {
         return Json(serde_json::json!({
             "ok": false,
@@ -503,20 +358,14 @@ pub async fn get_deviation(
     }
 
     // LSM / CQPSK: the ideal constellation sits at (±1, ±1) — four
-    // points, one per quadrant. This is NOT C4FM — there is no ±3 /
-    // ±1 / -1 / -3 projection; soft values are 2D.
-    //
-    // Peak-normalise so the observed cluster magnitude maps to 1.0,
-    // then per-sample hard = (sign(I), sign(Q)) packed into a dibit
-    // (2 bits) and error = |soft − ideal_quadrant|.
+    // points, one per quadrant. Mean-magnitude normalise so the
+    // observed cluster mean |z| maps to ≈1 (more stable than peak
+    // alone against a single outlier pulling the scale).
     let peak = symbol_pts
         .iter()
         .map(|&(r, i)| (r * r + i * i).sqrt())
         .fold(0.0f32, f32::max)
         .max(1e-6);
-    // Normalise the cluster mean magnitude to ≈1 (assumes four
-    // roughly balanced quadrants). This is more stable than peak
-    // alone against a single outlier pulling the scale.
     let mean_mag: f32 = symbol_pts
         .iter()
         .map(|&(r, i)| (r * r + i * i).sqrt())
@@ -525,10 +374,6 @@ pub async fn get_deviation(
     let cluster_radius = mean_mag.max(1e-6);
     let norm = 1.0 / cluster_radius;
 
-    // soft: parallel Vec<[f32;2]> serialised as interleaved I,Q pairs
-    //       so the dashboard JSON stays small.
-    // hard: dibit index 0..3 (bit0 = sign(Q) flipped bit, bit1 = sign(I))
-    //       — only the 4 valid LSM points, never ±3.
     let mut soft_iq: Vec<f32> = Vec::with_capacity(symbol_pts.len() * 2);
     let mut hard: Vec<u8> = Vec::with_capacity(symbol_pts.len());
     let mut quad_counts = [0usize; 4];
@@ -552,13 +397,8 @@ pub async fn get_deviation(
         hard.push(h);
     }
     let n = symbol_pts.len() as f64;
-    // EVM / modulation fidelity: RMS error / RMS reference.
-    // For balanced ±1±j ideals, RMS(ref) = sqrt(2), so scale accordingly.
     let evm = (err_sq / n).sqrt() / (evm_ref_sq / n).sqrt();
 
-    // BER estimate: count samples where the soft point would cross a
-    // decision boundary (|I|<0.25 or |Q|<0.25 after normalisation —
-    // arbitrary margin, tuned for readability not BER spec).
     let ambiguity_margin = 0.25_f32;
     let ambiguous = symbol_pts
         .iter()
@@ -568,26 +408,20 @@ pub async fn get_deviation(
         .count();
     let ber = ambiguous as f64 / n;
 
-    // Symbol deviation placeholder — P25 C4FM spec is ±1800 Hz peak,
-    // but we're LSM so it's not applicable. Report the normalised
-    // cluster radius so the dashboard can surface AGC health instead.
     Json(serde_json::json!({
         "ok":             true,
         "chain":          chain,
         "window_syms":    hard.len(),
         "sample_rate_hz": 4800,
         "modulation":     "LSM",
-        // soft is interleaved [I0, Q0, I1, Q1, ...] normalised so
-        // ideal LSM clusters land at (±1, ±1).
         "soft_iq":        soft_iq,
-        // hard is a 2-bit quadrant index: bit1 = sign(I), bit0 = sign(Q).
         "hard":           hard,
         "metrics": {
-            "evm":              evm,              // aka Mod Fidelity (fraction)
-            "ambiguous_frac":   ber,              // "BER proxy"
-            "cluster_radius":   cluster_radius,   // ≈1 when AGC is healthy
-            "peak_mag":         peak,             // raw Q1.13-scaled
-            "quad_balance":     quad_counts,      // [--, -+, +-, ++]
+            "evm":              evm,
+            "ambiguous_frac":   ber,
+            "cluster_radius":   cluster_radius,
+            "peak_mag":         peak,
+            "quad_balance":     quad_counts,
         },
     }))
 }
@@ -603,4 +437,114 @@ pub async fn get_deviation(
     }))
 }
 
+/// `GET /api/distribution?chain=control|traffic`
+///
+/// Returns a symbol-time phase histogram scaled to deviation in Hz.
+/// For each decision-time sample in the pre-diff ring, compute
+/// `atan2(Q, I) * 600 / (π/4)` — which gives deviation in Hz:
+/// ±600 Hz for the inner dibits and ±1800 Hz for the outer dibits.
+/// Histogrammed into 240 bins spanning ±2400 Hz for display.
+///
+/// Response shape:
+///   `{ok, chain, bins, edges_hz: [f32; N+1], counts: [u32; N], peak_index}`
+#[cfg(target_os = "linux")]
+pub async fn get_distribution(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    const BINS: usize = 240;
+    const RANGE_HZ: f32 = 2400.0;
+    const WINDOW_SYMS: usize = 2400;
 
+    let chain = params
+        .get("chain")
+        .map(String::as_str)
+        .unwrap_or("control");
+
+    let min_bytes: usize = 8 * WINDOW_SYMS;
+    let bytes = match drain_pre_diff(&state, chain, min_bytes).await {
+        Ok(b) => b,
+        Err(msg) => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": msg,
+            }));
+        }
+    };
+
+    if bytes.len() < 8 * 64 {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!(
+                "not enough pre-diff IQ samples on chain={} ({} bytes)",
+                chain, bytes.len()
+            ),
+        }));
+    }
+
+    let symbol_pts = pre_diff_sym_points(&bytes, WINDOW_SYMS);
+    if symbol_pts.is_empty() {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "no symbol-time points recovered",
+        }));
+    }
+
+    // Build uniform bin edges spanning ±RANGE_HZ, then histogram
+    // the Hz-scaled atan2. Scale factor: π/4 on the unit circle
+    // corresponds to 600 Hz inner-dibit deviation → multiplier is
+    // 600 / (π/4) = 600 * 4/π ≈ 763.944.
+    let scale_hz = 600.0 / (std::f32::consts::PI / 4.0);
+    let mut counts = vec![0u32; BINS];
+    let edges_hz: Vec<f32> = (0..=BINS)
+        .map(|i| {
+            -RANGE_HZ + (2.0 * RANGE_HZ) * (i as f32) / (BINS as f32)
+        })
+        .collect();
+    let bin_width = (2.0 * RANGE_HZ) / BINS as f32;
+    for &(r, i) in &symbol_pts {
+        if r == 0.0 && i == 0.0 {
+            continue;
+        }
+        let dev_hz = i.atan2(r) * scale_hz;
+        if !dev_hz.is_finite() {
+            continue;
+        }
+        let mut idx = ((dev_hz + RANGE_HZ) / bin_width).floor() as isize;
+        if idx < 0 {
+            idx = 0;
+        }
+        if idx >= BINS as isize {
+            idx = (BINS - 1) as isize;
+        }
+        counts[idx as usize] += 1;
+    }
+
+    let peak_index = counts
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, &c)| c)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+
+    Json(serde_json::json!({
+        "ok":          true,
+        "chain":       chain,
+        "bins":        BINS,
+        "edges_hz":    edges_hz,
+        "counts":      counts,
+        "peak_index":  peak_index,
+        "window_syms": symbol_pts.len(),
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn get_distribution(
+    State(_state): State<Arc<AppState>>,
+    Query(_params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "error": "distribution only available on the target (linux/arm)",
+    }))
+}

@@ -230,7 +230,7 @@ fn test_grant_update_preserves_source_id() {
 /// const docstring for the full incident).
 #[test]
 fn test_nid_status_dibit_skip_e2e() {
-    use crate::lsm::nid_fec;
+    use crate::protocol::p25::fec::bch as nid_fec;
 
     // Helper: unpack a 48-bit pattern into 24 dibits MSB-first,
     // or a 64-bit word into 32 dibits.
@@ -304,7 +304,7 @@ fn test_nid_status_dibit_skip_e2e() {
 /// 5. Decoder returns to Hunting after the second block.
 #[test]
 fn test_multi_block_tsbk_e2e() {
-    use crate::lsm::nid_fec;
+    use crate::protocol::p25::fec::bch as nid_fec;
     use crate::protocol::p25::fec::trellis_encode_bytes;
     use crate::protocol::p25::tsbk::ccitt80_crc;
 
@@ -456,7 +456,7 @@ fn test_multi_block_tsbk_e2e() {
 /// and fall out of sync.
 #[test]
 fn test_single_block_tsbk_terminates_on_lb1() {
-    use crate::lsm::nid_fec;
+    use crate::protocol::p25::fec::bch as nid_fec;
     use crate::protocol::p25::fec::trellis_encode_bytes;
     use crate::protocol::p25::tsbk::ccitt80_crc;
 

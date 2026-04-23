@@ -171,6 +171,12 @@ class LsmDemod(Elaboratable):
         self.q_rot_out = Signal(signed(16))
         self.rot_strobe_out = Signal()
 
+        # ── Pre-diff post-PLL IQ tap (Phase 10.8) ──────────────
+        # Pass-through from LsmDemodLoop. Feeds pre_diff_iq_dma.
+        self.i_pre_diff_out = Signal(signed(16))
+        self.q_pre_diff_out = Signal(signed(16))
+        self.pre_diff_strobe_out = Signal()
+
         # ── Debug taps from LsmDemodLoop ────────────────────────
         self.pll_dbg = Signal(signed(16))
         self.sample_point_dbg = Signal(signed(18))
@@ -246,6 +252,10 @@ class LsmDemod(Elaboratable):
             self.i_rot_out.eq(demod_loop.i_rot_out),
             self.q_rot_out.eq(demod_loop.q_rot_out),
             self.rot_strobe_out.eq(demod_loop.rot_strobe_out),
+            # Phase 10.8: pre-diff post-PLL IQ pass-through.
+            self.i_pre_diff_out.eq(demod_loop.i_pre_diff_out),
+            self.q_pre_diff_out.eq(demod_loop.q_pre_diff_out),
+            self.pre_diff_strobe_out.eq(demod_loop.pre_diff_strobe_out),
         ]
 
         # ── Stage 2: dibits -> sync + NID + BCH ────────────────

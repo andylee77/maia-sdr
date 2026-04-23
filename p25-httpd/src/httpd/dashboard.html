@@ -283,9 +283,8 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
         </select>
       </label>
       <label><b>Src</b>:
-        <select id="eye_source" onchange="restartEye()" style="padding:2px 6px;font-family:inherit" title="post_ddc = raw post-DDC (62.5 kSPS); post_lsm = RRC matched-filter (31.25 kSPS)">
-          <option value="post_lsm" selected>Post-LSM (MF)</option>
-          <option value="post_ddc">Post-DDC (raw)</option>
+        <select id="eye_source" onchange="restartEye()" style="padding:2px 6px;font-family:inherit" title="pre_diff = post-rotate + post-AGC, pre-diff-demod (9.6 kSPS = 2 samples/symbol)">
+          <option value="pre_diff" selected>Pre-diff (HDL)</option>
         </select>
       </label>
       <label><b>Trace</b>:
@@ -588,9 +587,10 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       <select id="plot_picker" style="padding:4px 8px;font-family:inherit">
         <option value="spectrum_wide">Wideband spectrum (HDL FFT, full AD9361 band)</option>
         <option value="spectrum">Narrowband spectrum (post-DDC, &plusmn;31.25 kHz)</option>
-        <option value="constellation">Constellation (post-PLL, software pipeline)</option>
-        <option value="eye">Eye (post-PLL, HDL tap)</option>
-        <option value="deviation">Deviation + metrics (post-PLL)</option>
+        <option value="constellation">Constellation (pre-diff HDL tap)</option>
+        <option value="eye">Eye (pre-diff HDL tap)</option>
+        <option value="deviation">Deviation + metrics (pre-diff)</option>
+        <option value="distribution">Distribution (atan2 → Hz histogram)</option>
       </select>
       <label for="plot_chain" style="color:var(--text-dim);font-size:0.9em">
         Chain:
@@ -2897,14 +2897,13 @@ function restartEye() {
     if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height);
     return;
   }
-  // Phase 10.6: sps depends on the IQ source. post_ddc runs at
-  // 62.5 kSPS → sps ≈ 13.02; post_lsm is half-rate (after
-  // LsmDecimator2 /2) → sps ≈ 6.51. Ring size + draw both key off
-  // this. The onEyeFrame handler will refresh EYE.sps from the
-  // hello-announced sample_rate_hz so drift between UI state and
-  // actual stream stays impossible.
-  const source = $('eye_source').value || 'post_lsm';
-  const sourceRate = source === 'post_lsm' ? 31250 : 62500;
+  // Phase 10.8: the only live source is pre_diff at 9.6 kSPS
+  // (2 samples per symbol). Ring size + draw both key off EYE.sps.
+  // The onEyeFrame handler will refresh EYE.sps from the hello-
+  // announced sample_rate_hz so drift between UI state and actual
+  // stream stays impossible.
+  const source = $('eye_source').value || 'pre_diff';
+  const sourceRate = 9600;
   EYE.sps = sourceRate / 4800;
   const nsym = parseInt($('eye_nsym').value, 10) || 2;
   const samples = Math.ceil(nsym * EYE.sps * 64);
@@ -3359,17 +3358,32 @@ async function refreshConstellation() {
   const chain = $('iq_chain').value || 'traffic';
   const status = $('iq_status');
   status.textContent = 'fetching...';
-  const data = await fetchJson('/api/constellation?chain=' + encodeURIComponent(chain));
-  if (!data || !data.ok || !Array.isArray(data.i)) {
+  // Phase 10.8: /api/constellation retired; pull pre-differential
+  // soft_iq from /api/deviation and unpack the interleaved
+  // [I0,Q0,I1,Q1,...] pairs into two parallel arrays.
+  const data = await fetchJson(
+    '/api/deviation?chain=' + encodeURIComponent(chain) +
+    '&window_syms=512',
+  );
+  if (!data || !data.ok || !Array.isArray(data.soft_iq)) {
     status.textContent = (data && data.error) || 'no data';
     status.style.color = 'var(--red)';
     return;
   }
+  const iArr = [];
+  const qArr = [];
+  for (let k = 0; k < data.soft_iq.length; k += 2) {
+    iArr.push(data.soft_iq[k]);
+    qArr.push(data.soft_iq[k + 1]);
+  }
   status.style.color = 'var(--text-dim)';
-  status.textContent = `${chain}: ${data.count} points, pll=${(data.pll_final||0).toFixed(3)} rad, timing=${(data.timing_final||0).toFixed(2)} samp`;
-  IQ.lastI = data.i;
-  IQ.lastQ = data.q;
-  drawConstellation(data.i, data.q);
+  const evm = data.metrics ? (data.metrics.evm * 100).toFixed(2) : '--';
+  status.textContent =
+    `${chain}: ${iArr.length} pts \u00B7 EVM ${evm}% \u00B7 radius ` +
+    (data.metrics ? data.metrics.cluster_radius.toFixed(3) : '--');
+  IQ.lastI = iArr;
+  IQ.lastQ = qArr;
+  drawConstellation(iArr, qArr);
 }
 function drawConstellation(iArr, qArr) {
   const c = $('iq_canvas');
@@ -4017,6 +4031,7 @@ function plotRestart() {
     case 'constellation':  plotConstellation();  break;
     case 'eye':            plotEye();            break;
     case 'deviation':      plotDeviation();      break;
+    case 'distribution':   plotDistribution();   break;
   }
 }
 
@@ -4061,7 +4076,7 @@ function plotSpectrumNarrow() {
 // real signal does.
 function plotConstellation() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${proto}//${location.host}/ws/iq?source=post_pll&chain=${PLOT.chain}`;
+  const url = `${proto}//${location.host}/ws/iq?source=pre_diff&chain=${PLOT.chain}`;
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   PLOT.wsHandle = ws;
@@ -4108,7 +4123,7 @@ function plotEye() {
   // S50p25-httpd-certificates has run — a hardcoded ws:// gets
   // blocked as mixed content and the eye silently stays empty).
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${proto}//${location.host}/ws/iq?source=post_pll&chain=${PLOT.chain}`;
+  const url = `${proto}//${location.host}/ws/iq?source=pre_diff&chain=${PLOT.chain}`;
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   PLOT.wsHandle = ws;
@@ -4141,14 +4156,30 @@ function plotDeviation() {
     try {
       const r = await fetchJson(`/api/deviation?chain=${PLOT.chain}&window_syms=1200`);
       if (!r.ok) { PLOT.statusEl.textContent = r.error || 'no data'; return; }
-      drawPlotDeviation(r.soft, r.hard);
+      drawPlotDeviation(r.soft_iq, r.hard);
       const m = r.metrics;
       PLOT.metricsEl.textContent =
-        `Mod Fidelity: ${(m.mod_fidelity*100).toFixed(2)} %` +
-        `\u2003BER: ${(m.ber*100).toFixed(3)} %` +
-        `\u2003Symbol Dev: ${m.symbol_dev_hz.toFixed(0)} Hz` +
-        `\u2003Peak I: ${m.peak_i.toFixed(3)}` +
+        `Mod Fidelity (EVM): ${(m.evm*100).toFixed(2)} %` +
+        `\u2003Ambiguous: ${(m.ambiguous_frac*100).toFixed(3)} %` +
+        `\u2003Cluster radius: ${m.cluster_radius.toFixed(3)}` +
+        `\u2003Peak mag: ${m.peak_mag.toFixed(3)}` +
         `\u2003Window: ${r.window_syms} symbols`;
+    } catch (e) { PLOT.statusEl.textContent = 'error: ' + e.message; }
+  };
+  tick();
+  PLOT.pollHandle = setInterval(tick, 1000);
+}
+
+// ── renderer: distribution (atan2 → Hz histogram) ──
+function plotDistribution() {
+  const tick = async () => {
+    try {
+      const r = await fetchJson(`/api/distribution?chain=${PLOT.chain}`);
+      if (!r.ok) { PLOT.statusEl.textContent = r.error || 'no data'; return; }
+      drawPlotDistribution(r.edges_hz, r.counts, r.peak_index);
+      PLOT.statusEl.textContent =
+        `${r.bins} bins \u00B7 ${r.window_syms} symbols \u00B7 ` +
+        `peak bin @ ${r.edges_hz[r.peak_index].toFixed(0)} Hz`;
     } catch (e) { PLOT.statusEl.textContent = 'error: ' + e.message; }
   };
   tick();
@@ -4404,6 +4435,84 @@ function drawPlotDeviation(soft, hard) {
   ctx.globalAlpha = 1;
   ctx.fillStyle = '#aab'; ctx.font = fontPx(13);
   ctx.fillText(`Deviation \u00B7 ${soft.length} symbols \u00B7 soft (cyan) / hard (orange)`, 6, 18);
+}
+
+function drawPlotDistribution(edgesHz, counts, peakIndex) {
+  PLOT.lastDraw = () => drawPlotDistribution(edgesHz, counts, peakIndex);
+  const { ctx, W, H } = beginDraw();
+  ctx.fillStyle = '#0a0f1c'; ctx.fillRect(0, 0, W, H);
+  if (!counts || counts.length === 0) return;
+
+  const PAD_L = 56, PAD_R = 12, PAD_T = 28, PAD_B = 40;
+  const plotW = W - PAD_L - PAD_R;
+  const plotH = H - PAD_T - PAD_B;
+
+  // Bin edges span ±2400 Hz (241 edges for 240 bins). X axis maps
+  // Hz → pixels; Y axis maps count → pixels.
+  const xMin = edgesHz[0];
+  const xMax = edgesHz[edgesHz.length - 1];
+  let yMax = 1;
+  for (const c of counts) if (c > yMax) yMax = c;
+  yMax = Math.ceil(yMax * 1.05);
+
+  const xOfHz = hz => PAD_L + (hz - xMin) / (xMax - xMin) * plotW;
+  const yOfCt = c  => PAD_T + plotH - (c / yMax) * plotH;
+
+  // --- gridlines at the four P25 decision levels.
+  const DECISION_LEVELS = [-1800, -600, 600, 1800];
+  ctx.strokeStyle = '#2a3048'; ctx.lineWidth = linePx(1);
+  for (const lvl of DECISION_LEVELS) {
+    const x = xOfHz(lvl);
+    ctx.beginPath(); ctx.moveTo(x, PAD_T); ctx.lineTo(x, PAD_T + plotH); ctx.stroke();
+  }
+  // Centre (0 Hz) gridline + zero baseline.
+  ctx.strokeStyle = '#1a2033';
+  ctx.beginPath(); ctx.moveTo(xOfHz(0), PAD_T); ctx.lineTo(xOfHz(0), PAD_T + plotH); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(PAD_L, PAD_T + plotH); ctx.lineTo(PAD_L + plotW, PAD_T + plotH); ctx.stroke();
+
+  // --- bars.
+  ctx.fillStyle = '#4cf';
+  const binPx = plotW / counts.length;
+  for (let i = 0; i < counts.length; i++) {
+    if (counts[i] === 0) continue;
+    const x = xOfHz(edgesHz[i]);
+    const y = yOfCt(counts[i]);
+    const h = PAD_T + plotH - y;
+    const w = Math.max(1, binPx - 0.5);
+    ctx.fillRect(x, y, w, h);
+  }
+
+  // --- highlight the peak bin.
+  if (peakIndex !== undefined && peakIndex >= 0 && peakIndex < counts.length) {
+    const x = xOfHz(edgesHz[peakIndex]);
+    const y = yOfCt(counts[peakIndex]);
+    const h = PAD_T + plotH - y;
+    const w = Math.max(1, binPx - 0.5);
+    ctx.fillStyle = '#f90';
+    ctx.fillRect(x, y, w, h);
+  }
+
+  // --- x-axis labels (decision levels + zero).
+  ctx.fillStyle = '#ddd'; ctx.font = fontPx(12); ctx.textAlign = 'center';
+  for (const lvl of [-1800, -600, 0, 600, 1800]) {
+    ctx.fillText(`${lvl}`, xOfHz(lvl), H - 20);
+  }
+  ctx.fillText('Hz', PAD_L + plotW/2, H - 6);
+
+  // --- y-axis ticks.
+  ctx.fillStyle = '#aab'; ctx.textAlign = 'right';
+  const ySteps = 4;
+  for (let i = 0; i <= ySteps; i++) {
+    const v = (yMax * i / ySteps) | 0;
+    ctx.fillText(`${v}`, PAD_L - 4, yOfCt(v) + 4);
+  }
+
+  // --- title.
+  ctx.fillStyle = '#ddd'; ctx.textAlign = 'left';
+  ctx.fillText(
+    `Distribution \u00B7 atan2(Q,I) × 600 / (π/4) [Hz]`,
+    PAD_L, PAD_T - 10,
+  );
 }
 
 // Hook switchTab so the Plots renderer starts/stops automatically.

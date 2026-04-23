@@ -17,7 +17,6 @@ mod audio;
 mod hardware;
 mod httpd;
 mod jmbe;
-mod lsm;
 mod protocol;
 mod services;
 mod vocoder;
@@ -36,7 +35,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-22-phase-10-7-plots";
+pub const BUILD_TAG: &str = "2026-04-23-phase-10-8-pre-diff";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -152,6 +151,11 @@ impl HdlLsmRuntime {
 }
 
 /// Per-source IRQ counters maintained by the InterruptHandler task.
+///
+/// The `dibit` / `traffic` fields are retained for /api/irq_stats JSON
+/// shape stability (dashboard tolerates stale 0s); they correspond to
+/// the retired PS C4FM `dibit_dma` / `traffic_dma` rings and are never
+/// incremented post-Phase-10.8.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IrqStats {
     pub total: u64,
@@ -163,6 +167,10 @@ pub struct IrqStats {
     pub traffic_lsm_dibit: u64,
     /// Traffic-side post-DDC IQ DMA wakeups (mirror of `iq`).
     pub traffic_iq: u64,
+    /// Phase 10.8: control-side pre-differential IQ DMA wakeups.
+    pub pre_diff_iq: u64,
+    /// Phase 10.8: traffic-side pre-differential IQ DMA wakeups.
+    pub traffic_pre_diff_iq: u64,
     pub last_at_secs_ago: f64,
     /// Set to None until the first IRQ; updated only by the IRQ task.
     pub started_at: Option<std::time::Instant>,
@@ -563,10 +571,8 @@ async fn main() -> anyhow::Result<()> {
             control_freq as f64 - args.rx_lo as f64 + nco_lo_shift_hz;
         ip_core.configure_ddc(nco_offset, boot_preset)?;
         ip_core.set_ddc_enable(true);
-        // Ring DMA enable bit is level-triggered, starts continuous writes
-        ip_core.set_demod_enable(true);
-        // iq_dma ring feeds /api/spectrum and /api/constellation
-        // (software FFT + scatter on ARM). 250 KB/s DDR + ~8 IRQ/s.
+        // iq_dma ring feeds /api/spectrum (software FFT over post-DDC
+        // IQ on ARM). 250 KB/s DDR + ~8 IRQ/s.
         ip_core.set_iq_dma_enable(true);
         // HDL LSM demod chain runs alongside the C4FM demod on the
         // same control DDC output. Front-end DC blocker is
@@ -610,16 +616,15 @@ async fn main() -> anyhow::Result<()> {
             );
         }
 
-        // Configure the traffic DDC but leave it disabled. The grant
-        // follower flips demod_enable and writes NCO on demand on
-        // each GroupVoiceChannelGrant. Initial NCO=0 (centred on RX
-        // LO) gives a defined state before first grant.
+        // Configure the traffic DDC but leave the LSM chain disabled.
+        // The grant follower flips `traffic_lsm_enable` + writes NCO
+        // on demand on each GroupVoiceChannelGrant. Initial NCO=0
+        // (centred on RX LO) gives a defined state before first grant.
         ip_core.configure_traffic_ddc(0.0, boot_preset)?;
         ip_core.set_traffic_ddc_enable(true);
-        ip_core.set_traffic_demod_enable(false);
         tracing::info!(
-            "Traffic DDC armed: NCO=0 Hz, ddc_enable=true, demod_enable=false \
-             (will be flipped on by the grant follower on first GroupVoiceChannelGrant)"
+            "Traffic DDC armed: NCO=0 Hz, ddc_enable=true \
+             (traffic_lsm_enable=false until the grant follower retunes)"
         );
 
         // Arm the traffic-side LSM chain without enabling it. The
@@ -636,24 +641,21 @@ async fn main() -> anyhow::Result<()> {
         ip_core.set_traffic_lsm_enable(false);
         ip_core.set_traffic_lsm_dibit_dma_enable(true);
         ip_core.set_traffic_lsm_dc_block_enable(true);
-        // Traffic post-DDC IQ ring feeds /api/spectrum?chain=traffic
-        // and /api/constellation?chain=traffic. Driven off the
-        // traffic_ddc strobe so it runs continuously, independent of
-        // the LSM demod enable.
+        // Traffic post-DDC IQ ring feeds /api/spectrum?chain=traffic.
+        // Driven off the traffic_ddc strobe so it runs continuously,
+        // independent of the LSM demod enable.
         ip_core.set_traffic_iq_dma_enable(true);
-        // Post-LSM matched-filter IQ rings — driven off the RRC
-        // strobe, always tick regardless of LSM chain activity.
-        // Feed the dashboard MF eye plot (/ws/iq?source=post_lsm).
-        ip_core.set_lsm_iq_dma_enable(true);
-        ip_core.set_traffic_lsm_iq_dma_enable(true);
-        // Phase 10.7 2026-04-22: post-PLL IQ rings + wideband
-        // spectrometer. The post-PLL rings tap inside LsmDemod
-        // after `LsmPllRotate`, so samples are carrier-derotated
-        // + AGC-scaled; they tick on the rotate-strobe which only
-        // fires when the LSM chain is enabled. Feed the Plots tab
-        // eye + constellation + /api/deviation.
-        ip_core.set_post_pll_iq_dma_enable(true);
-        ip_core.set_traffic_post_pll_iq_dma_enable(true);
+        // Phase 10.8 2026-04-23: pre-differential IQ rings. Tapped
+        // inside LsmDemod after `LsmPllRotate` + AGC but BEFORE the
+        // diff-demod / slicer, so samples sit on the 4-cluster
+        // (±1, ±1) LSM constellation at 9.6 kSPS (2 samples/symbol
+        // interleaved). Feed the Plots tab constellation + eye +
+        // /api/deviation + /api/distribution. The rotate strobe only
+        // fires when the LSM chain is enabled, so the traffic ring
+        // stays idle between calls — same behaviour as the retired
+        // post-PLL ring.
+        ip_core.set_pre_diff_iq_dma_enable(true);
+        ip_core.set_traffic_pre_diff_iq_dma_enable(true);
         // Wideband spectrometer runs pre-DDC on `rxiq_cdc`,
         // independent of every demod. Default 256 integrations at
         // 8 MSPS = ~8 Hz update cadence.
@@ -693,11 +695,16 @@ async fn main() -> anyhow::Result<()> {
         let ip_core = Arc::new(Mutex::new(ip_core));
         let ad9361 = Arc::new(ad9361);
 
-        // Interrupt waiters before spawning handler.
-        let dibit_waiter = interrupt_handler.waiter_dibit_dma();
+        // Interrupt waiters before spawning handler. The PS C4FM
+        // dibit / traffic_dma rings were retired in Phase 10.8 along
+        // with the HDL C4FM chain, so only the LSM dibit waiters +
+        // the post-DDC IQ waiter (used implicitly via /ws/iq polling)
+        // are live. The `decoder` ControlChannelDecoder stays alive
+        // as an API-level placeholder (it just never gets fed dibits
+        // now) so the dashboard's modulation-picker UI still resolves.
         let lsm_dibit_waiter = interrupt_handler.waiter_lsm_dibit_dma();
-        let traffic_dibit_waiter = interrupt_handler.waiter_traffic_dma();
         let traffic_lsm_dibit_waiter = interrupt_handler.waiter_traffic_lsm_dibit_dma();
+        let _ = &decoder; // keep the binding live for the Auto-mod probe task
 
         // Interrupt handler.
         let irq_stats_for_handler = irq_stats.clone();
@@ -707,21 +714,10 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        // PS C4FM control reader — body in `crate::app::dibit_readers`.
-        app::dibit_readers::spawn_ps_c4fm_control_reader(
-            dibit_waiter,
-            ip_core.clone(),
-            decoder.clone(),
-            active_modulation.clone(),
-        );
-
-        // HDL LSM dibit drain + TSBK decode — separate decoder
-        // instance from the C4FM path. Two independent HDL demod
-        // chains have independent symbol timing, NID boundaries,
-        // framing state — sharing would corrupt both. Two instances
-        // also give cross-validation: both should emit identical
-        // TSBKs against the same RF. See doc/changes/039 for the
-        // Phase 6D software-pipeline retirement.
+        // HDL LSM dibit drain + TSBK decode — the single production
+        // source of truth for control-channel TSBK parsing. Formerly
+        // paralleled by a PS C4FM reader fed from the retired
+        // `dibit_dma` ring; that path was removed in Phase 10.8.
         app::dibit_readers::spawn_hdl_lsm_control_reader(
             lsm_dibit_waiter,
             ip_core.clone(),
@@ -1180,25 +1176,19 @@ async fn main() -> anyhow::Result<()> {
                 let core = stats_core.lock().await;
                 tracing::info!(
                     target: "p25_stats",
-                    "regs: dibit_count={} overflow={} last_buffer={} next_addr=0x{:08X} \
-                     lsm_last_buffer={} lsm_next_addr=0x{:08X}",
-                    core.dibit_count(),
-                    core.demod_overflow(),
-                    core.dibit_last_buffer(),
-                    core.dibit_next_address(),
+                    "regs: lsm_last_buffer={} lsm_next_addr=0x{:08X}",
                     core.lsm_dibit_last_buffer(),
                     core.lsm_dibit_next_address(),
                 );
             }
         });
 
-        // Traffic dibit reader — body in `crate::app::dibit_readers`.
-        app::dibit_readers::spawn_ps_c4fm_traffic_reader(
-            traffic_dibit_waiter,
-            ip_core.clone(),
-            traffic_stats.clone(),
-            traffic_manager.clone(),
-        );
+        // `spawn_ps_c4fm_traffic_reader` was retired in Phase 10.8 —
+        // the `traffic_dma` ring and `traffic_demod_*` registers are
+        // gone. `traffic_stats` (dibit histogram, byte counters) stays
+        // in AppState so the dashboard's /api/traffic panel keeps its
+        // JSON shape; it just never gets populated now.
+        let _ = &traffic_stats;
 
         // Traffic grant follower — body in `crate::app::follower`.
         // See that module for polling / sticky-lock / encryption

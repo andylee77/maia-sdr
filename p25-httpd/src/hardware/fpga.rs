@@ -1,8 +1,32 @@
 //! FPGA IP core driver.
 //!
 //! Accesses the P25 core registers via UIO (userspace I/O) and reads
-//! dibit DMA buffers via the maia-sdr kernel module rxbuffer device.
+//! ring-DMA buffers via the maia-sdr kernel module rxbuffer device.
 //! Pattern adapted from maia-httpd/src/fpga.rs.
+//!
+//! ## Phase 10.8 PS-side refactor (2026-04-23)
+//!
+//! The HDL was reorganised so the PS side no longer owns:
+//!
+//! - the PS C4FM chain (both control `dibit_dma` and traffic `traffic_dma`
+//!   rings, plus every `*_demod_*` register), and
+//! - the post-RRC matched-filter IQ taps (`lsm_iq_dma`,
+//!   `traffic_lsm_iq_dma`), and
+//! - the post-PLL IQ taps (`post_pll_iq_dma`,
+//!   `traffic_post_pll_iq_dma`).
+//!
+//! In their place the gateware now exposes two new taps that sit
+//! *directly on the LSM decision-point symbols* — one per chain:
+//!
+//! - `pre_diff_iq_dma` / `traffic_pre_diff_iq_dma` at 9.6 kSPS
+//!   (2 samples/symbol), carrier-derotated + AGC-scaled, but taken
+//!   *before* the differential-demod / slicer stage. That means the
+//!   4-cluster LSM constellation sits at (±1, ±1) — the ideal shape
+//!   the dashboard plots want anyway — without any PS post-processing.
+//!
+//! Everything retired here is also gone from the PAC; this file now
+//! only touches register banks that still exist in `p25-pac` post-HDL-
+//! refactor.
 
 use anyhow::{Context, Result};
 use std::ops::Deref;
@@ -34,61 +58,40 @@ impl Deref for Registers {
 
 /// FPGA IP core handle.
 ///
-/// Provides register access for DDC configuration, demod control, and
-/// DMA buffer reading for both control and traffic channels.
+/// Provides register access for DDC configuration, LSM demod control,
+/// and DMA buffer reading for both control and traffic chains.
 pub struct IpCore {
     registers: Registers,
-    dibit_dma: RxBuffer,
-    traffic_dma: RxBuffer,
     iq_dma: RxBuffer,
     lsm_dibit_dma: RxBuffer,
-    /// Phase 7A.2: traffic-side LSM dibit DMA ring (parallel to the
-    /// existing C4FM `traffic_dma` ring). Mirrors `lsm_dibit_dma` on
-    /// the control side. UIO device `p25-traffic-lsm-dibit`,
-    /// physical address `0x1B00_0000` (8 x 4 KB ring).
+    /// Phase 7A.2: traffic-side LSM dibit DMA ring. Mirrors
+    /// `lsm_dibit_dma` on the control side. UIO device
+    /// `p25-traffic-lsm-dibit`.
     traffic_lsm_dibit_dma: RxBuffer,
-    /// 2026-04-16 chain-symmetry fix: traffic-side post-DDC IQ ring
-    /// DMA, mirror of `iq_dma` on the control side. UIO device
-    /// `p25-traffic-iq`, physical address `0x1C00_0000` (8 × 32 KB
-    /// ring). Feeds the dashboard constellation scatter and
-    /// offline traffic-LSM cross-check on the PS side.
+    /// Traffic-side post-DDC IQ ring, mirror of `iq_dma` on the
+    /// control side. UIO device `p25-traffic-iq`.
     traffic_iq_dma: RxBuffer,
-    /// Phase 10.6 (2026-04-18): control-chain post-LSM matched-filter
-    /// IQ ring DMA. Tapped from `lsm_rrc.re_out / im_out` inside the
-    /// HDL LSM chain, so samples are Hann-shaped + RRC-filtered but
-    /// not yet timing-recovered. 31.25 kSPS, 8 × 32 KB = 256 KB ring.
-    /// UIO device `p25-lsm-iq`, physical address `0x1D00_0000`.
-    /// Feeds the dashboard matched-filter eye plot.
-    lsm_iq_dma: RxBuffer,
-    /// Phase 10.6 traffic-side twin of `lsm_iq_dma`. Tapped from
-    /// `traffic_lsm_rrc.re_out / im_out`. UIO `p25-traffic-lsm-iq`,
-    /// physical address `0x1E00_0000`.
-    traffic_lsm_iq_dma: RxBuffer,
-    /// Phase 10.7 (2026-04-22): control-chain post-PLL IQ ring DMA.
-    /// Tapped from inside `lsm_demod` after `LsmPllRotate`, so samples
-    /// are carrier-derotated + AGC-scaled. 2 samples/symbol (mid + sym
-    /// interleaved) at 9.6 kSPS. UIO `p25-post-pll-iq`, physical
-    /// address `0x1F00_0000` (8 × 32 KB ring). Feeds the Plots tab eye
-    /// + constellation + `/api/deviation` Anritsu-style metrics.
-    post_pll_iq_dma: RxBuffer,
-    /// Phase 10.7 traffic-side twin of `post_pll_iq_dma`.
-    /// UIO `p25-traffic-post-pll-iq`, `0x2000_0000`.
-    traffic_post_pll_iq_dma: RxBuffer,
-    /// Phase 10.7: wideband spectrometer output ring (4096-bin FFT,
-    /// HW-integrated, pre-DDC tap on `rxiq_cdc`). UIO
-    /// `p25-wideband-spec`, physical `0x2100_0000` (4 × 32 KB = 128 KB).
-    /// Feeds `/api/spectrum_wide`; no PS FFT.
+    /// Phase 10.8 (2026-04-23): control-chain pre-differential IQ ring.
+    /// Tapped inside `LsmDemod` after `LsmPllRotate` + AGC but BEFORE
+    /// the diff-demod / slicer. Samples sit on the LSM ideal
+    /// constellation (±1, ±1). 9.6 kSPS (2 samples per symbol
+    /// interleaved). UIO `p25-pre-diff-iq`. Feeds the Plots tab
+    /// constellation + eye + `/api/deviation` + `/api/distribution`.
+    pre_diff_iq_dma: RxBuffer,
+    /// Phase 10.8 traffic-side twin of `pre_diff_iq_dma`. UIO
+    /// `p25-traffic-pre-diff-iq`.
+    traffic_pre_diff_iq_dma: RxBuffer,
+    /// Wideband spectrometer output ring (4096-bin FFT, HW-integrated,
+    /// pre-DDC tap on `rxiq_cdc`). UIO `p25-wideband-spec`. Feeds
+    /// `/api/spectrum_wide`; no PS FFT.
     wideband_spec_dma: RxBuffer,
-    dibit_last_addr: Option<u32>,
-    traffic_last_addr: Option<u32>,
+
     iq_last_addr: Option<u32>,
     lsm_dibit_last_addr: Option<u32>,
     traffic_lsm_dibit_last_addr: Option<u32>,
     traffic_iq_last_addr: Option<u32>,
-    lsm_iq_last_addr: Option<u32>,
-    traffic_lsm_iq_last_addr: Option<u32>,
-    post_pll_iq_last_addr: Option<u32>,
-    traffic_post_pll_iq_last_addr: Option<u32>,
+    pre_diff_iq_last_addr: Option<u32>,
+    traffic_pre_diff_iq_last_addr: Option<u32>,
     wideband_spec_last_buffer: Option<u8>,
 }
 
@@ -132,95 +135,48 @@ impl IpCore {
             .control()
             .modify(|_, w| w.sdr_reset().clear_bit());
 
-        // Open DMA buffer devices
-        let dibit_dma = RxBuffer::new("p25-dibit")
-            .await
-            .context("failed to open p25-dibit DMA buffer")?;
-        let traffic_dma = RxBuffer::new("p25-traffic")
-            .await
-            .context("failed to open p25-traffic DMA buffer")?;
-        // Phase 6D: post-DDC IQ ring (8 x 32 KB), parallel to the dibit
-        // path. Optional — older boots without the iq_dma DT entry will
-        // simply skip the LSM pipeline.
+        // Open DMA buffer devices. Every Phase 10.8 flashed image MUST
+        // expose exactly this set — the DT carve-outs are the single
+        // source of truth for what the PS can tap. Any `open` failure
+        // here bails the whole `take()` so bring-up doesn't silently
+        // run against a partial ring set.
         let iq_dma = RxBuffer::new("p25-iq")
             .await
             .context("failed to open p25-iq DMA buffer")?;
-        // Phase 6E.9/6E.10: LSM control-channel dibit ring (8 x 4 KB),
-        // parallel to the C4FM dibit path so the PS can A/B both demods
-        // on one RF capture. Requires Tezuka DT carve-out for
-        // p25_lsm_dibit_dma@1a000000.
         let lsm_dibit_dma = RxBuffer::new("p25-lsm-dibit")
             .await
             .context("failed to open p25-lsm-dibit DMA buffer")?;
-        // Phase 7A.2: LSM traffic-channel dibit ring (8 x 4 KB),
-        // parallel to the C4FM traffic_dma ring on the traffic side.
-        // The traffic_lsm HDL chain decodes voice-channel NIDs (HDU,
-        // TDU, LDU1, LDU2) so the PS dispatcher can implement
-        // sub-second TDU release on followed calls. Requires Tezuka
-        // DT carve-out for p25_traffic_lsm_dibit_dma@1b000000.
         let traffic_lsm_dibit_dma = RxBuffer::new("p25-traffic-lsm-dibit")
             .await
             .context("failed to open p25-traffic-lsm-dibit DMA buffer")?;
-        // 2026-04-16: traffic-side post-DDC IQ ring (8 × 32 KB),
-        // mirror of `iq_dma` on the control side. Requires Tezuka DT
-        // carve-out for p25_traffic_iq_dma@1c000000.
         let traffic_iq_dma = RxBuffer::new("p25-traffic-iq")
             .await
             .context("failed to open p25-traffic-iq DMA buffer")?;
-        // Phase 10.6 (2026-04-18): post-LSM matched-filter IQ rings
-        // tapped off `lsm_rrc` / `traffic_lsm_rrc`. Requires Tezuka
-        // DT carve-outs at `p25_lsm_iq_dma@1d000000` and
-        // `p25_traffic_lsm_iq_dma@1e000000`. On older boots that pre-
-        // date the DT change, these opens will fail and the whole
-        // `take()` call errors out — document this clearly in the
-        // bake-handoff note so the firmware + bitstream flashes stay
-        // in lockstep.
-        let lsm_iq_dma = RxBuffer::new("p25-lsm-iq")
+        let pre_diff_iq_dma = RxBuffer::new("p25-pre-diff-iq")
             .await
-            .context("failed to open p25-lsm-iq DMA buffer")?;
-        let traffic_lsm_iq_dma = RxBuffer::new("p25-traffic-lsm-iq")
+            .context("failed to open p25-pre-diff-iq DMA buffer")?;
+        let traffic_pre_diff_iq_dma = RxBuffer::new("p25-traffic-pre-diff-iq")
             .await
-            .context("failed to open p25-traffic-lsm-iq DMA buffer")?;
-        // Phase 10.7 (2026-04-22): post-PLL IQ rings + wideband
-        // spectrometer. Requires Tezuka DT carve-outs at
-        // `p25_post_pll_iq_dma@1f000000`,
-        // `p25_traffic_post_pll_iq_dma@20000000`, and
-        // `p25_wideband_spec_dma@21000000`. On older boots that
-        // pre-date the DT change, these opens fail and the whole
-        // `take()` call errors out.
-        let post_pll_iq_dma = RxBuffer::new("p25-post-pll-iq")
-            .await
-            .context("failed to open p25-post-pll-iq DMA buffer")?;
-        let traffic_post_pll_iq_dma = RxBuffer::new("p25-traffic-post-pll-iq")
-            .await
-            .context("failed to open p25-traffic-post-pll-iq DMA buffer")?;
+            .context("failed to open p25-traffic-pre-diff-iq DMA buffer")?;
         let wideband_spec_dma = RxBuffer::new("p25-wideband-spec")
             .await
             .context("failed to open p25-wideband-spec DMA buffer")?;
 
         let ip_core = IpCore {
             registers,
-            dibit_dma,
-            traffic_dma,
             iq_dma,
             lsm_dibit_dma,
             traffic_lsm_dibit_dma,
             traffic_iq_dma,
-            lsm_iq_dma,
-            traffic_lsm_iq_dma,
-            post_pll_iq_dma,
-            traffic_post_pll_iq_dma,
+            pre_diff_iq_dma,
+            traffic_pre_diff_iq_dma,
             wideband_spec_dma,
-            dibit_last_addr: None,
-            traffic_last_addr: None,
             iq_last_addr: None,
             lsm_dibit_last_addr: None,
             traffic_lsm_dibit_last_addr: None,
             traffic_iq_last_addr: None,
-            lsm_iq_last_addr: None,
-            traffic_lsm_iq_last_addr: None,
-            post_pll_iq_last_addr: None,
-            traffic_post_pll_iq_last_addr: None,
+            pre_diff_iq_last_addr: None,
+            traffic_pre_diff_iq_last_addr: None,
             wideband_spec_last_buffer: None,
         };
 
@@ -270,9 +226,6 @@ impl IpCore {
     }
 
     /// Sets the control channel DDC NCO frequency.
-    ///
-    /// `frequency_hz` is the offset from the RX LO center.
-    /// `sample_rate_hz` is the AD9361 ADC sample rate.
     pub fn set_ddc_frequency(
         &self,
         frequency_hz: f64,
@@ -421,97 +374,20 @@ impl IpCore {
         Ok(())
     }
 
-    // ── Control channel demod ────────────────────────────────────
-
-    /// Enables or disables the C4FM demodulator.
-    pub fn set_demod_enable(&self, enable: bool) {
-        self.registers
-            .demod_control()
-            .modify(|_, w| w.demod_enable().bit(enable));
-    }
-
-    /// Returns the dibit counter value (16-bit, wraps).
-    pub fn dibit_count(&self) -> u16 {
-        self.registers
-            .demod_status()
-            .read()
-            .dibit_count()
-            .bits()
-    }
-
-    /// Returns true if the demod has overflowed (sticky).
-    pub fn demod_overflow(&self) -> bool {
-        self.registers
-            .demod_status()
-            .read()
-            .demod_overflow()
-            .bit()
-    }
-
-    /// Returns the index of the most recently completed sub-buffer.
-    /// Initialised to all-ones (-1) so the first read after enable
-    /// indicates "no buffers completed yet".
-    pub fn dibit_last_buffer(&self) -> u8 {
-        self.registers
-            .demod_status()
-            .read()
-            .last_buffer()
-            .bits()
-    }
-
-    /// Returns the current AW write address for the dibit channel (debug).
-    pub fn dibit_next_address(&self) -> u32 {
-        self.registers
-            .dibit_next_address()
-            .read()
-            .next_address()
-            .bits()
-    }
-
-    /// Reads new dibit DMA buffers since the last call.
-    ///
-    /// Returns an iterator of byte slices, each containing packed 64-bit
-    /// dibit words. Call `cache_invalidate` is handled internally.
-    pub fn read_dibit_buffers(&mut self) -> Vec<&[u8]> {
-        self.read_dma_buffers(DmaChannel::Dibit)
-    }
-
     // ── Traffic channel DDC ──────────────────────────────────────
 
     /// Configures the traffic channel DDC: decimation, operations, NCO.
     ///
-    /// Mirrors `configure_ddc()` but writes the **traffic_** register
-    /// bank (offset 0x60) instead of the control DDC (`sdr_*`, offset
-    /// 0x20). FIR coefficients are NOT loaded here -- the traffic DDC
-    /// shares its FIR coefficient ROM with the control DDC at the HDL
-    /// level (see `maia-hdl/p25_hdl/p25_top.py` lines 801-807, which
-    /// drive `traffic_ddc.coeff_*` from the control `sdr_registers.ddc_coeff_*`).
-    /// Therefore `configure_ddc()` must be called BEFORE this function
-    /// so that the shared coefficient RAM is loaded by the time the
-    /// traffic DDC is enabled.
-    ///
-    /// `frequency_hz` is the initial NCO offset from the RX LO. The
-    /// caller will typically pass 0.0 here and call
-    /// `set_traffic_ddc_frequency()` later when a grant is followed.
-    /// `sample_rate_hz` is the AD9361 ADC sample rate.
-    ///
-    /// Phase 7A.1: this is the first PS-side use of the traffic chain.
-    /// The traffic chain has been instantiated and wired in HDL since
-    /// doc 007 (Phase 4) but never driven from PS until now. The
-    /// traffic_dma RxBuffer, IRQ counter, and helper functions have
-    /// also been in fpga.rs since Phase 4 -- only the startup init
-    /// (this function) and the runtime grant-follower task in main.rs
-    /// were missing.
+    /// Mirrors `configure_ddc()` but writes the `traffic_*` register
+    /// bank instead of the control bank. FIR coefficients are shared
+    /// with the control DDC at the HDL level (see
+    /// `maia-hdl/p25_hdl/p25_top.py`), so `configure_ddc()` must be
+    /// called first.
     pub fn configure_traffic_ddc(
         &self,
         frequency_hz: f64,
         preset: &DdcPreset,
     ) -> Result<()> {
-        // Compute decimation / operations / odd-operations for each FIR
-        // stage from the preset's coefficient tables, then write them
-        // into the traffic_ddc_decimation + traffic_ddc_control
-        // register bank. We do NOT touch coefficient RAM (shared with
-        // control DDC); configure_ddc() must have run first.
         let dec1 = u8::try_from(preset.decim1).unwrap();
         let dec2 = u8::try_from(preset.decim2).unwrap();
         let dec3 = u8::try_from(preset.decim3).unwrap();
@@ -560,7 +436,6 @@ impl IpCore {
                 .clear_bit()
         });
 
-        // Initial NCO. Caller will typically retune this on every grant.
         self.set_traffic_ddc_frequency(
             frequency_hz, preset.sample_rate_hz as f64)?;
 
@@ -608,31 +483,12 @@ impl IpCore {
             .modify(|_, w| w.enable_input().bit(enable));
     }
 
-    /// Enables or disables the traffic channel demodulator.
-    pub fn set_traffic_demod_enable(&self, enable: bool) {
-        self.registers
-            .traffic_demod_control()
-            .modify(|_, w| w.demod_enable().bit(enable));
-    }
-
-    /// Reads new traffic DMA buffers since the last call.
-    pub fn read_traffic_buffers(&mut self) -> Vec<&[u8]> {
-        self.read_dma_buffers(DmaChannel::Traffic)
-    }
-
-    // ── IQ ring (Phase 6C/6D) ────────────────────────────────────
-    //
-    // The third DDC tap streams post-decimation 62.5 kSPS interleaved
-    // 16-bit signed I/Q to a separate 256 KB ring (8 x 32 KB sub-buffers)
-    // at physical 0x19000000. The PS LSM demod reads from this ring while
-    // the existing dibit pipeline keeps running unchanged.
+    // ── IQ ring (control, post-DDC) ──────────────────────────────
     //
     // Per 64-bit DMA word: { im[1] s16, re[1] s16, im[0] s16, re[0] s16 }
-    // — i.e. natural little-endian interleaved-IQ byte order. See
-    // doc/changes/013_phase6c_iq_dma.md and the Phase 6D entry-point note.
+    // — i.e. natural little-endian interleaved-IQ byte order.
 
     /// Enables or disables the post-DDC IQ ring DMA. Level-triggered.
-    /// When false, the AW channel is held idle and the packer back-pressures.
     pub fn set_iq_dma_enable(&self, enable: bool) {
         self.registers
             .iq_dma_control()
@@ -640,8 +496,6 @@ impl IpCore {
     }
 
     /// Returns the index of the most recently completed IQ sub-buffer.
-    /// Initialised to all-ones (-1) by the gateware so the first read after
-    /// enable indicates "no buffers completed yet".
     pub fn iq_last_buffer(&self) -> u8 {
         self.registers
             .iq_dma_status()
@@ -651,9 +505,6 @@ impl IpCore {
     }
 
     /// Reads and clears the IQ ring overflow latch (Rsticky bit).
-    /// True means the packer stalled at least once since the last read —
-    /// indicates the PS isn't draining sub-buffers fast enough or the AW
-    /// channel was disabled.
     pub fn iq_overflow(&self) -> bool {
         self.registers
             .iq_dma_status()
@@ -671,20 +522,12 @@ impl IpCore {
             .bits()
     }
 
-    /// Reads new IQ ring sub-buffers since the last call. Each returned
-    /// slice is 32 KB of interleaved 16-bit signed I/Q (8192 complex
-    /// samples = ~131 ms at 62.5 kSPS).
+    /// Reads new IQ ring sub-buffers since the last call.
     pub fn read_iq_buffers(&mut self) -> Vec<&[u8]> {
         self.read_dma_buffers(DmaChannel::Iq)
     }
 
-    // ── Traffic-channel post-DDC IQ ring DMA (2026-04-16) ────────
-    //
-    // Mirror of the control-side iq_dma accessors above, targeting the
-    // traffic-chain equivalent at 0x1C00_0000. Used by the dashboard
-    // constellation (software Gardner TED picks symbol-time points out
-    // of the post-DDC IQ stream) and by offline traffic-LSM software
-    // cross-validation.
+    // ── Traffic-channel post-DDC IQ ring DMA ─────────────────────
 
     /// Enables or disables the traffic-side post-DDC IQ ring DMA.
     pub fn set_traffic_iq_dma_enable(&self, enable: bool) {
@@ -693,102 +536,51 @@ impl IpCore {
             .modify(|_, w| w.traffic_iq_enable().bit(enable));
     }
 
-
     /// Reads new traffic IQ ring sub-buffers since the last call.
-    /// Same 32-KB-per-buffer, 8192-complex-sample-per-buffer layout as
-    /// `read_iq_buffers` for control.
     pub fn read_traffic_iq_buffers(&mut self) -> Vec<&[u8]> {
         self.read_dma_buffers(DmaChannel::TrafficIq)
     }
 
-    // ── Post-LSM matched-filter IQ rings (Phase 10.6 2026-04-18) ──
+    // ── Pre-differential IQ rings (Phase 10.8 2026-04-23) ─────────
     //
-    // Second IQ tap per chain, sourced from `lsm_rrc.re_out / im_out`
-    // (control) / `traffic_lsm_rrc.re_out / im_out` (traffic). The
-    // samples have been decimated /2 + low-pass-filtered + RRC-
-    // matched-filter-applied but NOT timing-recovered or PLL-rotated.
-    // Rate is 31.25 kSPS (half of post-DDC) — 8192 samples per sub-
-    // buffer works out to ~262 ms. Same 32 KB / 8192 complex samples
-    // per sub-buffer layout as the post-DDC taps.
+    // Tap inside `LsmDemod` after `LsmPllRotate` + per-symbol AGC but
+    // before the differential demod / slicer. Samples sit on the
+    // 4-cluster (±1, ±1) LSM constellation at 9.6 kSPS (2 samples per
+    // symbol interleaved, same packing as the retired `post_pll_iq_dma`).
+    // This is the "direct constellation" — no PS post-processing is
+    // needed to recover the clusters.
 
-    /// Enables or disables the control-chain post-LSM IQ ring DMA.
-    pub fn set_lsm_iq_dma_enable(&self, enable: bool) {
+    /// Enables or disables the control-chain pre-diff IQ ring DMA.
+    pub fn set_pre_diff_iq_dma_enable(&self, enable: bool) {
         self.registers
-            .lsm_iq_dma_control()
-            .modify(|_, w| w.lsm_iq_enable().bit(enable));
+            .pre_diff_iq_dma_control()
+            .modify(|_, w| w.pre_diff_iq_enable().bit(enable));
     }
 
-    /// Enables or disables the traffic-chain post-LSM IQ ring DMA.
-    pub fn set_traffic_lsm_iq_dma_enable(&self, enable: bool) {
+    /// Enables or disables the traffic-chain pre-diff IQ ring DMA.
+    pub fn set_traffic_pre_diff_iq_dma_enable(&self, enable: bool) {
         self.registers
-            .traffic_lsm_iq_dma_control()
-            .modify(|_, w| w.traffic_lsm_iq_enable().bit(enable));
+            .traffic_pre_diff_iq_dma_control()
+            .modify(|_, w| w.traffic_pre_diff_iq_enable().bit(enable));
     }
 
-    /// Reads new control-chain post-LSM IQ sub-buffers since the last
-    /// call. Interleaved 16-bit signed I/Q, same layout as the post-
-    /// DDC taps but at 31.25 kSPS.
-    pub fn read_lsm_iq_buffers(&mut self) -> Vec<&[u8]> {
-        self.read_dma_buffers(DmaChannel::LsmIq)
+    /// Reads new control-chain pre-diff IQ sub-buffers since the last call.
+    pub fn read_pre_diff_iq_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::PreDiffIq)
     }
 
-    /// Reads new traffic-chain post-LSM IQ sub-buffers since the last call.
-    pub fn read_traffic_lsm_iq_buffers(&mut self) -> Vec<&[u8]> {
-        self.read_dma_buffers(DmaChannel::TrafficLsmIq)
+    /// Reads new traffic-chain pre-diff IQ sub-buffers since the last call.
+    pub fn read_traffic_pre_diff_iq_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::TrafficPreDiffIq)
     }
 
-    // ── Post-PLL IQ rings (Phase 10.7 2026-04-22) ───────────────
+    // ── Wideband spectrometer ───────────────────────────────────
     //
-    // Third IQ tap per chain, sourced from inside `LsmDemod` *after*
-    // the `LsmPllRotate` stage (and after the per-symbol AGC and the
-    // diff-demod). Samples are carrier-derotated + AGC-scaled, so no
-    // further PS-side processing is needed to render a clean eye or
-    // run the Anritsu-style deviation metrics. Rate: 9.6 kSPS
-    // (2 samples per symbol — rotate_mid and rotate_sym interleaved
-    // on adjacent sync cycles). Packing is the same 64-bit two-
-    // samples-per-word layout as `iq_dma` / `lsm_iq_dma`.
+    // Pre-DDC FFT tapped off `rxiq_cdc` at the full AD9361 sample rate
+    // (preset-dependent, 2–16 MSPS). 4096-bin output, hardware-
+    // averaged at `spec_num_integrations` samples per spectrum.
 
-    /// Enables or disables the control-chain post-PLL IQ ring DMA.
-    pub fn set_post_pll_iq_dma_enable(&self, enable: bool) {
-        self.registers
-            .post_pll_iq_dma_control()
-            .modify(|_, w| w.post_pll_iq_enable().bit(enable));
-    }
-
-    /// Enables or disables the traffic-chain post-PLL IQ ring DMA.
-    pub fn set_traffic_post_pll_iq_dma_enable(&self, enable: bool) {
-        self.registers
-            .traffic_post_pll_iq_dma_control()
-            .modify(|_, w| w.traffic_post_pll_iq_enable().bit(enable));
-    }
-
-    /// Reads new control-chain post-PLL IQ sub-buffers since the last
-    /// call. Interleaved 16-bit signed I/Q (Q1.13 post-rotate), same
-    /// packing as `read_iq_buffers` but at 9.6 kSPS.
-    pub fn read_post_pll_iq_buffers(&mut self) -> Vec<&[u8]> {
-        self.read_dma_buffers(DmaChannel::PostPllIq)
-    }
-
-    /// Reads new traffic-chain post-PLL IQ sub-buffers.
-    pub fn read_traffic_post_pll_iq_buffers(&mut self) -> Vec<&[u8]> {
-        self.read_dma_buffers(DmaChannel::TrafficPostPllIq)
-    }
-
-    // ── Wideband spectrometer (Phase 10.7) ──────────────────────
-    //
-    // Pre-DDC FFT tapped off `rxiq_cdc` at the full AD9361 sample
-    // rate (preset-dependent, 2–16 MSPS). 4096-bin output, hardware-
-    // averaged at `spec_num_integrations` samples per spectrum. Each
-    // completed integration writes 32 KB (4096 × 8 B packed float)
-    // to the next sub-buffer in `wideband_spec_dma`; `spec_status.
-    // last_buffer` advances on completion. The DMA is BRAM-backed
-    // (`DmaBRAMWrite`), so we track last-buffer by comparing against
-    // the cached value rather than an AW address like the streaming
-    // ring DMAs.
-
-    /// Master enable for the wideband spectrometer. When disabled,
-    /// the FFT pipeline freezes (strobe gating); re-enabling resumes
-    /// integration where it left off.
+    /// Master enable for the wideband spectrometer.
     pub fn set_wideband_spec_enable(&self, enable: bool) {
         self.registers
             .spec_control()
@@ -796,8 +588,6 @@ impl IpCore {
     }
 
     /// Sets the number of FFT frames averaged per output spectrum.
-    /// At 8 MSPS the FFT rate is ~1953 frames/s, so 256 integrations
-    /// produces ~8 Hz update; 1024 produces ~2 Hz.
     pub fn set_wideband_spec_integrations(&self, n: u16) {
         self.registers
             .spec_control()
@@ -815,16 +605,15 @@ impl IpCore {
     }
 
     /// Fires a 1-cycle abort pulse: ends the in-flight integration
-    /// early and flushes to the next DMA buffer. Useful after a tune
-    /// change so the next spectrum reflects the new RF state.
+    /// early and flushes to the next DMA buffer.
     pub fn wideband_spec_abort(&self) {
         self.registers
             .spec_control()
             .modify(|_, w| w.spec_abort().bit(true));
     }
 
-    /// Returns the most recently completed wideband spectrum as
-    /// 4096 `u64` words (sign-extended mantissa + exponent; see
+    /// Returns the most recently completed wideband spectrum as 32 KB
+    /// of packed mantissa + exponent (see
     /// `services/spectrum.rs::wideband_power_db` for unpacking).
     /// Returns `None` if no new integration has completed since the
     /// last call.
@@ -849,62 +638,32 @@ impl IpCore {
         Some(self.wideband_spec_dma.buffer_as_slice(idx))
     }
 
-    // ── LSM chain (Phase 6E.9/6E.10) ─────────────────────────────
-    //
-    // LSM demod chain (LsmDecimator2 -> LsmFir(LPF) -> LsmFir(RRC) ->
-    // LsmDemod) sits alongside the C4FM chain on the control channel
-    // DDC output. Produces its own dibit stream via `lsm_dibit_dma`
-    // (parallel ring at 0x1A000000) and exposes BCH-decoded NID events
-    // via the `lsm_*` register bank. See doc/P25_ADDRESS_MAP.md for
-    // the full layout.
+    // ── LSM chain (control) ─────────────────────────────────────
 
     /// Master enable for the LSM chain (decimator + FIRs + LsmDemod).
-    /// Gates the strobe at the front so all downstream blocks go
-    /// quiescent when false.
     pub fn set_lsm_enable(&self, enable: bool) {
         self.registers
             .lsm_control()
             .modify(|_, w| w.lsm_enable().bit(enable));
     }
 
-    /// Enables or disables the LSM dibit ring DMA. Level-triggered;
-    /// mirrors the C4FM `dibit_dma` enable convention.
+    /// Enables or disables the LSM dibit ring DMA. Level-triggered.
     pub fn set_lsm_dibit_dma_enable(&self, enable: bool) {
         self.registers
             .lsm_control()
             .modify(|_, w| w.lsm_dibit_dma_enable().bit(enable));
     }
 
-    /// Enables or disables the front-end LSM DC blocker (Phase 6G.1).
-    ///
-    /// When `true`, a one-pole leaky-integrator DC blocker runs on
-    /// both I and Q at the input to `LsmDemod` -- this removes the
-    /// slow IQ DC bias from the AD9361 that otherwise gives the
-    /// slicer a 60/40 inner/outer dibit ratio for the first 2-3
-    /// minutes after PLL start. Production code should always set
-    /// this to `true`. The runtime knob exists so we can A/B the
-    /// blocker on-target during bring-up. See doc/changes/031.
+    /// Enables or disables the front-end LSM DC blocker. Production
+    /// code should always set this to `true`.
     pub fn set_lsm_dc_block_enable(&self, enable: bool) {
         self.registers
             .lsm_control()
             .modify(|_, w| w.lsm_dc_block_enable().bit(enable));
     }
 
-    /// Enables or disables the Phase 10-prep per-symbol LSM AGC.
-    ///
-    /// When `true`, `LsmAgc` runs inside `LsmDemodLoop` between
-    /// `LsmTimingInterp` and `LsmDiffDemodSlicer`, normalising the
-    /// four interpolated samples' L2 magnitude to 1.0 via a
-    /// SDRTrunk-faithful fixed-point AGC loop (sqrt + division +
-    /// 0.05 IIR lerp + asymmetric clamp at 500). When `false`,
-    /// the AGC is bypassed and samples pass through unchanged.
-    ///
-    /// Production code should always set this to `true` after
-    /// boot. The runtime knob exists so we can A/B the AGC
-    /// on-target against the pre-AGC dibit stream.
-    ///
-    /// Gain state is debug-readable via the `lsm_agc_debug`
-    /// register (`agc_gain_dbg` + `agc_mag_dbg`).
+    /// Enables or disables the per-symbol LSM AGC. Production code
+    /// should always set this to `true` after boot.
     pub fn set_lsm_agc_enable(&self, enable: bool) {
         self.registers
             .lsm_control()
@@ -913,8 +672,6 @@ impl IpCore {
 
     /// Reads back the `lsm_control` register as `(lsm_enable,
     /// lsm_dibit_dma_enable, lsm_dc_block_enable, lsm_agc_enable)`.
-    /// Used at startup to confirm the bits we wrote actually stuck in
-    /// the register bank.
     pub fn lsm_control_readback(&self) -> (bool, bool, bool, bool) {
         let c = self.registers.lsm_control().read();
         (
@@ -925,74 +682,7 @@ impl IpCore {
         )
     }
 
-    // ── DELETED: reset_and_reinit() (Phase 6E.6 watchdog, doc 023) ──
-    //
-    // The PS-side `sdr_reset` watchdog from commit 0ef0d09 was found
-    // to be FUNDAMENTALLY UNSAFE during the 2026-04-10 CORDIC bake
-    // diagnostic session. Pulsing `sdr_reset` mid-operation causes a
-    // hard kernel panic reboot. Mechanism:
-    //
-    //   1. Watchdog sets sdr_reset bit via AXI-Lite.
-    //   2. The bit propagates through FFSynchronizer into the `sync`
-    //      clock domain reset of the maia_sdr_clk core domain.
-    //   3. All `m.d.sync` flops reset to init values, INCLUDING the
-    //      iq_dma / lsm_dibit_dma / traffic_dma AXI master state
-    //      machines that are mid-burst on AXI HP.
-    //   4. The AW phase of the in-flight burst is forgotten by the
-    //      FPGA but the PS DDR controller is still waiting for
-    //      WLAST=1 + BVALID=1 to retire the transaction.
-    //   5. AXI HP slave hangs waiting for handshake that never comes.
-    //   6. Kernel watchdog detects AXI deadlock and panics.
-    //   7. Hard reboot.
-    //
-    // Confirmed empirically by direct devmem write to the sdr_reset
-    // bit on a stuck system: the board immediately rebooted on the
-    // assertion edge.
-    //
-    // The watchdog as previously deployed in commit 0ef0d09 was
-    // ALSO silently broken in a separate way: in the chain's
-    // degraded state, the lsm_registers AXI CDC returns shifted /
-    // wrong data on reads (we don't yet know why -- the same bug
-    // we're now hunting via the NID-event ring buffer dump in
-    // main.rs). The PAC `modify()` does a read-modify-write, which
-    // reads garbage from the broken CDC and writes garbage back.
-    // The actual sdr_reset bit never toggled, the system never
-    // rebooted, and the heartbeat just incremented its `recoveries:`
-    // counter while the chain stayed stuck. From the user's
-    // perspective the watchdog was firing but doing nothing -- the
-    // worst possible failure mode.
-    //
-    // Removing `reset_and_reinit()` entirely is the right move:
-    //   - No caller can accidentally invoke it.
-    //   - The dangerous mid-operation use of sdr_reset is gone.
-    //   - Recovery from the degraded state is now a power cycle,
-    //     which is honest about what's actually possible.
-    //
-    // A future safer recovery path would need to:
-    //   - Quiesce the AXI HP DMA masters (writes drain to completion)
-    //   - Then assert reset only on the LSM datapath (not the DMA
-    //     master state machines)
-    //   - Then de-assert and re-arm the masters
-    // That's substantially more complex than a single bit pulse and
-    // requires HDL gateware changes (separate reset domains for the
-    // demod chain vs the AXI master state). Out of scope for now;
-    // see doc/changes/024 for the full analysis.
-    //
-    // If you find yourself wanting to reintroduce a watchdog, FIRST
-    // read doc/changes/024 and the on-target devmem evidence in the
-    // commit message of the diagnostic-instrumentation commit.
-
     /// Reads the `lsm_status` register and returns a coherent snapshot.
-    ///
-    /// **Important:** the `nid_event` bit is Rsticky -- a single read
-    /// clears it. Callers that need to inspect multiple fields of the
-    /// same NID event must rely on the returned snapshot (not
-    /// re-read the register) because `n_errors`, `sync_distance`, and
-    /// `nid_valid` are latched into Signal()s on each
-    /// `nid_event_strobe` pulse and will not update again until the
-    /// next NID arrives -- so the snapshot + a follow-up `lsm_nid()`
-    /// + `lsm_drop_count()` read together form a coherent per-event
-    /// picture.
     pub fn lsm_status(&self) -> LsmStatusSnapshot {
         let s = self.registers.lsm_status().read();
         LsmStatusSnapshot {
@@ -1012,14 +702,13 @@ impl IpCore {
         (n.nac().bits(), n.duid().bits())
     }
 
-    /// Reads the saturating NID drop counter. Should always be 0 in
-    /// normal operation (BCH decode is ~656 us, NIDs are ~14 ms apart).
+    /// Reads the saturating NID drop counter.
     pub fn lsm_drop_count(&self) -> u16 {
         self.registers.lsm_drop_count().read().drop_count().bits()
     }
 
     /// Returns the index of the most recently completed LSM dibit
-    /// sub-buffer. Mirrors the C4FM `dibit_last_buffer` semantics.
+    /// sub-buffer.
     pub fn lsm_dibit_last_buffer(&self) -> u8 {
         self.registers
             .lsm_drop_count()
@@ -1044,22 +733,14 @@ impl IpCore {
         (d.pll_dbg().bits() as i16, d.sample_point_dbg().bits() as i16)
     }
 
-    /// Reads new LSM dibit DMA buffers since the last call. Same
-    /// format as `read_dibit_buffers()` -- packed 64-bit dibit words.
+    /// Reads new LSM dibit DMA buffers since the last call.
     pub fn read_lsm_dibit_buffers(&mut self) -> Vec<&[u8]> {
         self.read_dma_buffers(DmaChannel::LsmDibit)
     }
 
-    // ── Traffic-side LSM chain (Phase 7A.2) ──────────────────────
-    //
-    // Mirrors the control-side LSM helpers above (lines 600-768) but
-    // against the new `traffic_lsm` register bank (offset 0xC0).
-    // Same field semantics throughout -- the PS-side dispatcher polls
-    // `traffic_lsm_status()` the same way the control-side
-    // `lsm_status()` is polled.
+    // ── Traffic-side LSM chain ──────────────────────────────────
 
-    /// Master enable for the traffic-side LSM chain. Mirrors
-    /// `set_lsm_enable` for the control side.
+    /// Master enable for the traffic-side LSM chain.
     pub fn set_traffic_lsm_enable(&self, enable: bool) {
         self.registers
             .traffic_lsm_control()
@@ -1074,142 +755,70 @@ impl IpCore {
     }
 
     /// Enables or disables the traffic LSM front-end DC blocker.
-    /// Same one-pole leaky-integrator design as the control side.
-    /// Production code should always set this to `true`.
     pub fn set_traffic_lsm_dc_block_enable(&self, enable: bool) {
         self.registers
             .traffic_lsm_control()
             .modify(|_, w| w.traffic_lsm_dc_block_enable().bit(enable));
     }
 
-    /// Enables or disables the Phase 10-prep per-symbol LSM AGC
-    /// on the traffic chain. Mirrors `set_lsm_agc_enable` on the
-    /// control side. Production code should always set this to
-    /// `true` after boot.
+    /// Enables or disables the per-symbol LSM AGC on the traffic chain.
     pub fn set_traffic_lsm_agc_enable(&self, enable: bool) {
         self.registers
             .traffic_lsm_control()
             .modify(|_, w| w.traffic_lsm_agc_enable().bit(enable));
     }
 
-    /// Phase 8A: pulse the traffic-side LSM chain runtime reset.
-    ///
-    /// Writes `1` to the W1P `traffic_lsm_reset` field in
-    /// `traffic_lsm_control`, which the Register framework turns
-    /// into a 1-sync-cycle pulse on `LsmDemod.reset_in` for the
-    /// traffic chain. Clears the PLL accumulator + timing state +
-    /// diff slicer history + sync register + BCH sweep state back
-    /// to init. Self-clearing.
-    ///
-    /// This is the PRIMARY user of the reset plumbing -- the
-    /// Phase 8B retune path calls this between the DDC frequency
-    /// write and the LSM re-enable so the post-retune PLL
-    /// acquisition starts from cold-boot semantics (pll_reg = 0)
-    /// instead of inheriting the stale phase error from the old
-    /// carrier, which was the root cause of the Phase 7 traffic
-    /// audio quality problem (see doc/changes/037).
+    /// Pulse the traffic-side LSM chain runtime reset (W1P,
+    /// self-clearing). Used between the DDC retune and the LSM
+    /// re-enable to start the PLL acquisition from cold-boot
+    /// semantics after a retune.
     pub fn pulse_traffic_lsm_reset(&self) {
         self.registers
             .traffic_lsm_control()
             .modify(|_, w| w.traffic_lsm_reset().bit(true));
     }
 
-    /// Phase 8B + 8C: freeze-reset-thaw the traffic LSM chain
-    /// across a DDC retune. Recommended entry point for the
-    /// follower task whenever it retunes the traffic channel.
+    /// Freeze-reset-thaw the traffic LSM chain across a DDC retune.
     ///
     /// Sequence:
-    ///   1. `traffic_lsm_enable = 0`  — Phase 8C's
-    ///      `lsm_traffic_dom` clock domain drops into synchronous
-    ///      reset, clearing all non-`reset_less` state inside
-    ///      LsmDemod in a single sync cycle (FSM state in the
-    ///      sync / BCH / CORDIC submodules, pipeline stage
-    ///      strobes, output latches). The C4FM chain is also
-    ///      gated at `traffic_demod_enable = 0`.
+    ///   1. `traffic_lsm_enable = 0`  — synchronous reset of the
+    ///      `lsm_traffic_dom` clock domain inside LsmDemod.
     ///   2. Write the new DDC NCO frequency.
-    ///   3. **Wait for the DDC FIR pipeline to flush** (2026-04-15
-    ///      fix). The 3-stage cascaded FIR in maia_hdl.ddc.DDC has
-    ///      total tap depth of ~600 µs after the P25DDC v2 fork
-    ///      (176/128/256 taps across /4/4/8 decim stages). When
-    ///      the NCO register is written, the mixer output
-    ///      instantly uses the new frequency, but the
-    ///      downstream FIR tap registers still contain convolution
-    ///      history from samples mixed with the OLD NCO.
-    ///      Convolving new samples with stale tap state produces a
-    ///      transient that looks like a high-frequency chirp to
-    ///      the LSM demod. The PLL immediately chases this phantom
-    ///      signal, saturates its ±π/3 accumulator clamp
-    ///      (pll_reg = ±8580 in Q2.13), and locks there — unable
-    ///      to track the real post-flush signal.
-    ///
-    ///      Fingerprint pre-fix: control chain `pll_dbg ≈ 154`
-    ///      (healthy), traffic chain `pll_dbg = ±8579` (exactly
-    ///      the ±π/3 Q2.13 saturation limit — PLL stuck at clamp
-    ///      on every retune). Audio was "robotic half the time"
-    ///      because the NID BCH decoder corrected half the LDUs
-    ///      into TDU_LC (all-ones DUID pattern, closest codeword
-    ///      to random noise in the PLL-chase transient).
-    ///
-    ///      Wait duration: 2 ms. At the `rxiq_cdc` 8 MSPS input
-    ///      rate, the FIR cascade pipeline budget is roughly:
-    ///        stage 1 (176 taps @ 8 MSPS) = 22 µs
-    ///        stage 2 (128 taps @ 2 MSPS) = 64 µs
-    ///        stage 3 (256 taps @ 0.5 MSPS) = 512 µs
-    ///        cascade total ≈ 600 µs
-    ///      2 ms = ~3× the flush time, giving generous margin.
-    ///      This is a `std::thread::sleep` because
-    ///      `retune_traffic_chain` is a sync function and 2 ms
-    ///      of tokio-runtime blocking is acceptable for a retune
-    ///      event that happens at most ~1/second during normal
-    ///      grant-follow operation.
-    ///   4. `traffic_lsm_enable = 1`  — Phase 8C domain reset
-    ///      deasserts. The chain is live again, but the
-    ///      `reset_less=True` accumulators (PLL `pll_reg`,
-    ///      timing `sample_point`, diff slicer `prev_*`, sync
-    ///      shift register, BCH sweep counter, etc.) still hold
-    ///      their pre-disable values.
-    ///   5. Pulse `traffic_lsm_reset` — the Phase 8A explicit
-    ///      `reset_in` path clears ALL of those `reset_less`
-    ///      registers to init inside one sync cycle. This MUST
-    ///      come after the domain is re-enabled because
-    ///      `m.d.<domain>` assignments only fire when the domain
-    ///      is not in reset.
-    ///   6. `traffic_demod_enable = 1` — C4FM chain too (shares
-    ///      the same upstream DDC).
+    ///   3. Wait 2 ms for the DDC FIR pipeline to flush so the LSM
+    ///      PLL doesn't chase an old-NCO convolution transient.
+    ///   4. `traffic_lsm_enable = 1`  — domain reset deasserts.
+    ///   5. Pulse `traffic_lsm_reset` — explicit `reset_in` clears
+    ///      the `reset_less=True` accumulators (PLL, timing, diff
+    ///      slicer, sync, BCH sweep) inside one sync cycle.
     ///
     /// Without steps 1+3+5 the carryover of PLL state from the
-    /// previous carrier produces corrupted dibits for hundreds
-    /// of milliseconds, which is the Phase 7 "1 in 20 calls
-    /// intelligible" symptom documented in doc/changes/037.
+    /// previous carrier produces corrupted dibits for hundreds of
+    /// milliseconds — the Phase 7 "1 in 20 calls intelligible"
+    /// symptom documented in doc/changes/037.
     pub fn retune_traffic_chain(
         &self,
         frequency_hz: f64,
         sample_rate_hz: f64,
     ) -> Result<()> {
         self.set_traffic_lsm_enable(false);
-        self.set_traffic_demod_enable(false);
         self.set_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
-        // Phase 10D fix: let the DDC FIR cascade flush before
-        // un-freezing the LSM chain. See step 3 in the docstring
-        // above for the measurement that motivated this wait.
+        // Let the DDC FIR cascade flush before un-freezing the LSM
+        // chain. 2 ms is ~3× the worst-case pipeline depth (600 us at
+        // 8 MSPS with /4 /4 /8 = 176+128+256 taps). See
+        // doc/changes/037 for the measurement that motivated this.
         std::thread::sleep(std::time::Duration::from_millis(2));
         self.set_traffic_lsm_enable(true);
         self.pulse_traffic_lsm_reset();
-        self.set_traffic_demod_enable(true);
         Ok(())
     }
 
-    /// Phase 8B: quiesce the traffic LSM + C4FM chains between
-    /// calls. Counterpart to `retune_traffic_chain` -- used by
-    /// the follower task on Idle→timeout and on encryption
-    /// tear-down so the LSM chain stops producing phantom NID
-    /// events during the gap between calls (which would otherwise
-    /// still be accumulating spurious dibit noise into the BCH
-    /// input, flooding the sync detector with flat-distribution
-    /// noise syncs; see doc/changes/037).
+    /// Quiesce the traffic LSM chain between calls. Counterpart to
+    /// `retune_traffic_chain` — used by the follower task on
+    /// Idle→timeout and on encryption tear-down so the LSM chain
+    /// stops producing phantom NID events during the gap between
+    /// calls.
     pub fn pause_traffic_chain(&self) {
         self.set_traffic_lsm_enable(false);
-        self.set_traffic_demod_enable(false);
     }
 
     /// Reads back the `traffic_lsm_control` register as
@@ -1225,9 +834,7 @@ impl IpCore {
         )
     }
 
-    /// Reads the `traffic_lsm_status` register and returns a coherent
-    /// snapshot. Same Rsticky semantics as `lsm_status()` -- the
-    /// `nid_event` bit is cleared on read.
+    /// Reads the `traffic_lsm_status` register as a coherent snapshot.
     pub fn traffic_lsm_status(&self) -> LsmStatusSnapshot {
         let s = self.registers.traffic_lsm_status().read();
         LsmStatusSnapshot {
@@ -1275,48 +882,23 @@ impl IpCore {
             .bits()
     }
 
-    /// Reads the traffic LSM debug taps: `pll_dbg` (signed Q2.13)
-    /// and `sample_point_dbg` (signed Q4.10).
+    /// Reads the traffic LSM debug taps: `pll_dbg` (signed Q2.13) and
+    /// `sample_point_dbg` (signed Q4.10).
     pub fn traffic_lsm_debug(&self) -> (i16, i16) {
         let d = self.registers.traffic_lsm_debug().read();
         (d.pll_dbg().bits() as i16, d.sample_point_dbg().bits() as i16)
     }
 
     /// Reads new traffic LSM dibit DMA buffers since the last call.
-    /// Same format as `read_dibit_buffers()` -- packed 64-bit dibit
-    /// words.
     pub fn read_traffic_lsm_dibit_buffers(&mut self) -> Vec<&[u8]> {
         self.read_dma_buffers(DmaChannel::TrafficLsmDibit)
     }
 
     // ── DMA buffer helpers ───────────────────────────────────────
 
-    /// Reads new dibit/traffic ring sub-buffers since the last call.
-    ///
-    /// Uses the FPGA's `last_buffer` field (updated by the ring DMA's
-    /// B-channel completion logic) to determine which sub-buffers are
-    /// newly available. Sub-buffer N becomes valid the cycle after the
-    /// FPGA finishes writing it (response received from DDR).
+    /// Reads new ring sub-buffers since the last call.
     fn read_dma_buffers(&mut self, channel: DmaChannel) -> Vec<&[u8]> {
         let (dma, last_seen_idx, current_last) = match channel {
-            DmaChannel::Dibit => (
-                &self.dibit_dma,
-                &mut self.dibit_last_addr,
-                self.registers
-                    .demod_status()
-                    .read()
-                    .last_buffer()
-                    .bits() as u32,
-            ),
-            DmaChannel::Traffic => (
-                &self.traffic_dma,
-                &mut self.traffic_last_addr,
-                self.registers
-                    .traffic_demod_status()
-                    .read()
-                    .last_buffer()
-                    .bits() as u32,
-            ),
             DmaChannel::Iq => (
                 &self.iq_dma,
                 &mut self.iq_last_addr,
@@ -1353,38 +935,20 @@ impl IpCore {
                     .last_buffer()
                     .bits() as u32,
             ),
-            DmaChannel::LsmIq => (
-                &self.lsm_iq_dma,
-                &mut self.lsm_iq_last_addr,
+            DmaChannel::PreDiffIq => (
+                &self.pre_diff_iq_dma,
+                &mut self.pre_diff_iq_last_addr,
                 self.registers
-                    .lsm_iq_dma_status()
+                    .pre_diff_iq_dma_status()
                     .read()
                     .last_buffer()
                     .bits() as u32,
             ),
-            DmaChannel::TrafficLsmIq => (
-                &self.traffic_lsm_iq_dma,
-                &mut self.traffic_lsm_iq_last_addr,
+            DmaChannel::TrafficPreDiffIq => (
+                &self.traffic_pre_diff_iq_dma,
+                &mut self.traffic_pre_diff_iq_last_addr,
                 self.registers
-                    .traffic_lsm_iq_dma_status()
-                    .read()
-                    .last_buffer()
-                    .bits() as u32,
-            ),
-            DmaChannel::PostPllIq => (
-                &self.post_pll_iq_dma,
-                &mut self.post_pll_iq_last_addr,
-                self.registers
-                    .post_pll_iq_dma_status()
-                    .read()
-                    .last_buffer()
-                    .bits() as u32,
-            ),
-            DmaChannel::TrafficPostPllIq => (
-                &self.traffic_post_pll_iq_dma,
-                &mut self.traffic_post_pll_iq_last_addr,
-                self.registers
-                    .traffic_post_pll_iq_dma_status()
+                    .traffic_pre_diff_iq_dma_status()
                     .read()
                     .last_buffer()
                     .bits() as u32,
@@ -1396,7 +960,6 @@ impl IpCore {
             return Vec::new();
         }
 
-        // Mask to num_buffers_log2 bits (last_buffer is N bits wide)
         let mask = (num_bufs - 1) as u32;
         let current_idx = (current_last & mask) as usize;
 
@@ -1404,15 +967,11 @@ impl IpCore {
             Some(prev) => {
                 let prev_idx = (prev & mask) as usize;
                 if prev_idx == current_idx {
-                    // No new buffers since last poll
                     return Vec::new();
                 }
                 (prev_idx + 1) % num_bufs
             }
             None => {
-                // First call: snapshot current and return empty.
-                // last_buffer initialises to all-1s in HW; on the first
-                // sub-buffer completion it wraps to 0.
                 *last_seen_idx = Some(current_last);
                 return Vec::new();
             }
@@ -1420,7 +979,6 @@ impl IpCore {
 
         *last_seen_idx = Some(current_last);
 
-        // Collect new sub-buffers, walking the ring forward to current_idx
         let mut result = Vec::new();
         let mut idx = start_idx;
         loop {
@@ -1439,41 +997,24 @@ impl IpCore {
 }
 
 enum DmaChannel {
-    Dibit,
-    Traffic,
     Iq,
     LsmDibit,
-    TrafficLsmDibit,   // Phase 7A.2
-    TrafficIq,         // 2026-04-16
-    LsmIq,             // Phase 10.6 2026-04-18 (post-RRC matched-filter)
-    TrafficLsmIq,      // Phase 10.6 2026-04-18
-    PostPllIq,         // Phase 10.7 2026-04-22 (post-PLL control)
-    TrafficPostPllIq,  // Phase 10.7 2026-04-22 (post-PLL traffic)
+    TrafficLsmDibit,
+    TrafficIq,
+    PreDiffIq,
+    TrafficPreDiffIq,
 }
 
-/// Snapshot of the `lsm_status` register read in a single bus access.
-///
-/// See `IpCore::lsm_status` for the per-NID coherency protocol.
+/// Snapshot of the `lsm_status` / `traffic_lsm_status` register read in
+/// a single bus access.
 #[derive(Debug, Clone, Copy)]
 pub struct LsmStatusSnapshot {
-    /// High while `LsmNidBchFec` is sweeping a candidate NID (~656 us).
     pub bch_busy: bool,
-    /// High while `LsmSyncNidExtract` is collecting the 33-dibit NID
-    /// payload after a sync hit (useful as a "have lock" indicator).
     pub in_nid_window: bool,
-    /// Rsticky -- latches on each `nid_event_strobe`, cleared by this
-    /// very read. True means a new NID event is described by the
-    /// other fields in this snapshot + a follow-up `lsm_nid()` read.
     pub nid_event: bool,
-    /// Latched copy of `LsmDemod.valid_out` for the most recent NID
-    /// event: true when BCH Hamming distance <= 11.
     pub nid_valid: bool,
-    /// Latched BCH Hamming distance (0..63) for the most recent NID.
     pub n_errors: u8,
-    /// Latched 48-bit sync hit Hamming distance (0..47).
     pub sync_distance: u8,
-    /// Rsticky -- latches when the LSM DibitPacker back-pressured the
-    /// LSM dibit DMA ring.
     pub dibit_overflow: bool,
 }
 
@@ -1484,7 +1025,6 @@ fn freq_to_nco(frequency_hz: f64, sample_rate_hz: f64) -> u32 {
     let cycles_per_sample = frequency_hz / sample_rate_hz;
     (cycles_per_sample * scale).round() as i32 as u32
 }
-
 
 // ── Interrupt handler ────────────────────────────────────────────────
 
@@ -1502,18 +1042,15 @@ impl InterruptWaiter {
 }
 
 /// Interrupt handler for the P25 FPGA core.
-///
-/// Runs in a background task, reads the UIO interrupt, checks the
-/// interrupt status register, and notifies the appropriate waiters.
 pub struct InterruptHandler {
     uio: Uio,
     registers: Registers,
-    notify_dibit_dma: Arc<Notify>,
-    notify_traffic_dma: Arc<Notify>,
     notify_iq_dma: Arc<Notify>,
     notify_lsm_dibit_dma: Arc<Notify>,
-    notify_traffic_lsm_dibit_dma: Arc<Notify>,  // Phase 7A.2
-    notify_traffic_iq_dma: Arc<Notify>,  // 2026-04-16
+    notify_traffic_lsm_dibit_dma: Arc<Notify>,
+    notify_traffic_iq_dma: Arc<Notify>,
+    notify_pre_diff_iq_dma: Arc<Notify>,
+    notify_traffic_pre_diff_iq_dma: Arc<Notify>,
 }
 
 impl InterruptHandler {
@@ -1521,31 +1058,24 @@ impl InterruptHandler {
         InterruptHandler {
             uio,
             registers,
-            notify_dibit_dma: Arc::new(Notify::new()),
-            notify_traffic_dma: Arc::new(Notify::new()),
             notify_iq_dma: Arc::new(Notify::new()),
             notify_lsm_dibit_dma: Arc::new(Notify::new()),
             notify_traffic_lsm_dibit_dma: Arc::new(Notify::new()),
             notify_traffic_iq_dma: Arc::new(Notify::new()),
+            notify_pre_diff_iq_dma: Arc::new(Notify::new()),
+            notify_traffic_pre_diff_iq_dma: Arc::new(Notify::new()),
         }
     }
 
-    /// Returns a waiter for dibit DMA completion interrupts.
-    pub fn waiter_dibit_dma(&self) -> InterruptWaiter {
+    /// Returns a waiter for post-DDC IQ DMA completion interrupts.
+    pub fn waiter_iq_dma(&self) -> InterruptWaiter {
         InterruptWaiter {
-            notify: self.notify_dibit_dma.clone(),
-        }
-    }
-
-    /// Returns a waiter for traffic DMA completion interrupts.
-    pub fn waiter_traffic_dma(&self) -> InterruptWaiter {
-        InterruptWaiter {
-            notify: self.notify_traffic_dma.clone(),
+            notify: self.notify_iq_dma.clone(),
         }
     }
 
     /// Returns a waiter for LSM control-channel dibit DMA completion
-    /// interrupts (Phase 6E.9). NID events themselves are PS-polled via
+    /// interrupts. NID events themselves are PS-polled via
     /// `IpCore::lsm_status()` rather than IRQ-driven.
     pub fn waiter_lsm_dibit_dma(&self) -> InterruptWaiter {
         InterruptWaiter {
@@ -1553,56 +1083,62 @@ impl InterruptHandler {
         }
     }
 
-    /// Returns a waiter for traffic-side LSM dibit DMA completion
-    /// interrupts (Phase 7A.2). Same convention as the control side:
-    /// NID events for HDU/TDU/LDU dispatch are PS-polled via
-    /// `IpCore::traffic_lsm_status()`, IRQ-driven only for the dibit
-    /// DMA ring drain.
+    /// Returns a waiter for traffic-side LSM dibit DMA completion interrupts.
     pub fn waiter_traffic_lsm_dibit_dma(&self) -> InterruptWaiter {
         InterruptWaiter {
             notify: self.notify_traffic_lsm_dibit_dma.clone(),
         }
     }
 
+    /// Returns a waiter for traffic-side post-DDC IQ DMA completion interrupts.
+    pub fn waiter_traffic_iq_dma(&self) -> InterruptWaiter {
+        InterruptWaiter {
+            notify: self.notify_traffic_iq_dma.clone(),
+        }
+    }
+
+    /// Returns a waiter for control-side pre-diff IQ DMA completion interrupts.
+    pub fn waiter_pre_diff_iq_dma(&self) -> InterruptWaiter {
+        InterruptWaiter {
+            notify: self.notify_pre_diff_iq_dma.clone(),
+        }
+    }
+
+    /// Returns a waiter for traffic-side pre-diff IQ DMA completion interrupts.
+    pub fn waiter_traffic_pre_diff_iq_dma(&self) -> InterruptWaiter {
+        InterruptWaiter {
+            notify: self.notify_traffic_pre_diff_iq_dma.clone(),
+        }
+    }
+
     /// Runs the interrupt handler loop.
     ///
-    /// `irq_stats` is the shared `Arc<Mutex<IrqStats>>` from the
-    /// dashboard wiring; the handler updates it on every IRQ so the
-    /// `/api/irq_stats` endpoint can return live counters without
-    /// having to grep the log.
-    ///
-    /// This should be spawned as a background tokio task.
+    /// `irq_stats` is shared with the dashboard wiring; the handler
+    /// updates it on every IRQ so `/api/irq_stats` returns live counters
+    /// without having to grep the log.
     pub async fn run(
         mut self,
         irq_stats: std::sync::Arc<tokio::sync::Mutex<crate::IrqStats>>,
     ) -> Result<()> {
         let mut total_irqs: u64 = 0;
-        let mut dibit_irqs: u64 = 0;
-        let mut traffic_irqs: u64 = 0;
         let mut iq_irqs: u64 = 0;
         let mut lsm_dibit_irqs: u64 = 0;
-        let mut traffic_lsm_dibit_irqs: u64 = 0;  // Phase 7A.2
-        let mut traffic_iq_irqs: u64 = 0;  // 2026-04-16
+        let mut traffic_lsm_dibit_irqs: u64 = 0;
+        let mut traffic_iq_irqs: u64 = 0;
+        let mut pre_diff_iq_irqs: u64 = 0;
+        let mut traffic_pre_diff_iq_irqs: u64 = 0;
         loop {
             self.uio.irq_enable().await?;
             self.uio.irq_wait().await?;
 
             let interrupts = self.registers.interrupts().read();
-            let dibit = interrupts.dibit_dma().bit();
-            let traffic = interrupts.traffic_dma().bit();
             let iq = interrupts.iq_dma().bit();
             let lsm_dibit = interrupts.lsm_dibit_dma().bit();
             let traffic_lsm_dibit = interrupts.traffic_lsm_dibit_dma().bit();
             let traffic_iq = interrupts.traffic_iq_dma().bit();
+            let pre_diff_iq = interrupts.pre_diff_iq_dma().bit();
+            let traffic_pre_diff_iq = interrupts.traffic_pre_diff_iq_dma().bit();
             total_irqs += 1;
-            if dibit {
-                dibit_irqs += 1;
-                self.notify_dibit_dma.notify_waiters();
-            }
-            if traffic {
-                traffic_irqs += 1;
-                self.notify_traffic_dma.notify_waiters();
-            }
             if iq {
                 iq_irqs += 1;
                 self.notify_iq_dma.notify_waiters();
@@ -1619,6 +1155,14 @@ impl InterruptHandler {
                 traffic_iq_irqs += 1;
                 self.notify_traffic_iq_dma.notify_waiters();
             }
+            if pre_diff_iq {
+                pre_diff_iq_irqs += 1;
+                self.notify_pre_diff_iq_dma.notify_waiters();
+            }
+            if traffic_pre_diff_iq {
+                traffic_pre_diff_iq_irqs += 1;
+                self.notify_traffic_pre_diff_iq_dma.notify_waiters();
+            }
             // Update shared stats. Cheap async lock, no contention
             // because nothing else writes this struct.
             {
@@ -1628,25 +1172,27 @@ impl InterruptHandler {
                     s.started_at = Some(now);
                 }
                 s.total = total_irqs;
-                s.dibit = dibit_irqs;
-                s.traffic = traffic_irqs;
                 s.iq = iq_irqs;
                 s.lsm_dibit = lsm_dibit_irqs;
                 s.traffic_lsm_dibit = traffic_lsm_dibit_irqs;
                 s.traffic_iq = traffic_iq_irqs;
+                s.pre_diff_iq = pre_diff_iq_irqs;
+                s.traffic_pre_diff_iq = traffic_pre_diff_iq_irqs;
                 s.last_at = Some(now);
             }
             // Log first 10 then every 64th to avoid flooding
             if total_irqs <= 10 || total_irqs % 64 == 0 {
                 tracing::info!(
                     target: "p25_irq",
-                    "IRQ #{total_irqs}: dibit={dibit} traffic={traffic} iq={iq} \
-                     lsm_dibit={lsm_dibit} traffic_lsm_dibit={traffic_lsm_dibit} \
-                     traffic_iq={traffic_iq} \
-                     (totals dibit={dibit_irqs} traffic={traffic_irqs} \
-                     iq={iq_irqs} lsm_dibit={lsm_dibit_irqs} \
+                    "IRQ #{total_irqs}: iq={iq} lsm_dibit={lsm_dibit} \
+                     traffic_lsm_dibit={traffic_lsm_dibit} \
+                     traffic_iq={traffic_iq} pre_diff_iq={pre_diff_iq} \
+                     traffic_pre_diff_iq={traffic_pre_diff_iq} \
+                     (totals iq={iq_irqs} lsm_dibit={lsm_dibit_irqs} \
                      traffic_lsm_dibit={traffic_lsm_dibit_irqs} \
-                     traffic_iq={traffic_iq_irqs})"
+                     traffic_iq={traffic_iq_irqs} \
+                     pre_diff_iq={pre_diff_iq_irqs} \
+                     traffic_pre_diff_iq={traffic_pre_diff_iq_irqs})"
                 );
             }
         }

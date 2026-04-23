@@ -13,30 +13,31 @@
 #     transmitters radiate the same signal -- LSM's pulse shape gives
 #     cleaner overlap than C4FM. Data is in carrier phase, not frequency.
 #
-# CURRENT STATUS (Phase 7A.2, 2026-04-11): BOTH the control channel
-# AND the traffic channel run the C4FM and LSM demod chains in
-# parallel. Each side has its own DDC + parallel C4FM and LSM
-# pipelines feeding independent ring DMAs:
+# CURRENT STATUS (Phase 10.8, 2026-04-22): The C4FM HDL chain was
+# retired in Phase 10.8 after extended FP&L testing showed the LSM
+# chain decodes BOTH modulations cleanly on-air -- the LSM front-end's
+# matched filter + Costas PLL + diff slicer copes with C4FM just fine,
+# and we don't need a separate C4FM pipeline to keep around. Both the
+# control channel AND the traffic channel now run a single LSM demod
+# chain:
 #
 #   Control side:
-#     ddc -> c4fm_demod  -> dibit_packer     -> dibit_dma     (0x1700_0000)
-#         \-> lsm chain  -> lsm_dibit_packer -> lsm_dibit_dma (0x1A00_0000)
-#         \-> iq_packer  ----------------------> iq_dma       (0x1900_0000)
+#     ddc -> iq_packer ------------------------------> iq_dma             (0x1900_0000)
+#         \-> lsm chain -> lsm_dibit_packer         -> lsm_dibit_dma      (0x1A00_0000)
+#                      \-> pre_diff_iq_packer      -> pre_diff_iq_dma    (0x1F00_0000)
 #
 #   Traffic side:
-#     traffic_ddc -> traffic_c4fm     -> traffic_packer         -> traffic_dma         (0x1800_0000)
-#                 \-> traffic_lsm chain -> traffic_lsm_dibit_packer -> traffic_lsm_dibit_dma (0x1B00_0000)
-#                 \-> traffic_iq_packer ---------------------------> traffic_iq_dma    (0x1C00_0000)
+#     traffic_ddc -> traffic_iq_packer --------------------> traffic_iq_dma             (0x1C00_0000)
+#                 \-> traffic_lsm chain -> traffic_lsm_dibit_packer -> traffic_lsm_dibit_dma    (0x1B00_0000)
+#                                       \-> traffic_pre_diff_iq_packer -> traffic_pre_diff_iq_dma (0x2000_0000)
 #
 # Recovered NIDs from each LSM chain are surfaced via separate AXI
-# register banks: `lsm` at 0xA0 (control side, bank 5, Phase 6E.9)
-# and `traffic_lsm` at 0xC0 (traffic side, bank 6, Phase 7A.2). The
-# PS dispatches DUID events for HDU/TDU/LDU on the traffic side
-# the same way it dispatches NID events on the control side.
+# register banks: `lsm` at 0xA0 (control side, bank 5) and
+# `traffic_lsm` at 0xC0 (traffic side, bank 6).
 #
-# LSM chain pipeline (added in 6E.9):
+# LSM chain pipeline:
 #
-#   control DDC out (62.5 kSPS)
+#   DDC out (62.5 kSPS)
 #       |
 #       v
 #   LsmDecimator2  (/2)              -> 31.25 kSPS
@@ -48,29 +49,26 @@
 #   LsmFir(RRC_TAPS_31250)           -- 105-tap matched filter (alpha=0.2)
 #       |
 #       v
-#   LsmDemod                          -- timing recovery + diff demod
-#       |                                + Costas-style PLL rotate +
-#       |                                slicer + sync detect + BCH
+#   LsmDemod                          -- timing recovery + Costas PLL +
+#       |                                pre-diff rotate + interleave +
+#       |                                diff slicer + sync detect + BCH
 #       |
-#       +--> dibit_out / symbol_strobe -> lsm_dibit_packer -> lsm_dibit_dma
-#       |
-#       +--> nid_event_strobe + (NAC, DUID, n_errors, ...) -> `lsm` register bank
+#       +--> dibit_out / symbol_strobe    -> lsm_dibit_packer -> lsm_dibit_dma
+#       +--> i_pre_diff_out / q_pre_diff_out / pre_diff_strobe_out
+#       |                                 -> pre_diff_iq_packer -> pre_diff_iq_dma
+#       +--> nid_event_strobe + (NAC, DUID, n_errors, ...)
+#                                          -> `lsm` register bank
 #
-# The LSM chain is master-enabled by `lsm.lsm_control.lsm_enable`, which
-# gates the strobe at the very front of LsmDecimator2 so all downstream
-# blocks go quiescent when 0. The lsm_dibit_dma ring is independently
-# enabled by `lsm.lsm_control.lsm_dibit_dma_enable` (mirroring the
-# dibit_dma / iq_dma pattern).
-#
-# C4FM chain detail (unchanged from Phase 6E.0)
-# ---------------------------------------------
-# The C4FM chain runs the same symbol-rate differential slicer it has
-# since Phase 4: raw post-DDC IQ feeds SymbolTimingRecovery's symbol-
-# rate `z[k]*conj(z[k-1])` slicer (4 DSP48E1), and `C4FMDemod.diff_im`
-# (the FM cross-product) drives Gardner TED for clock recovery. The
-# slicer decodes C4FM cleanly but produces ~random dibits on LSM
-# (empirically confirmed against Clay County NAC 0x8A1, 2026-04-09),
-# which is exactly why the LSM chain above exists in parallel.
+# Retired in Phase 10.8 (see doc/changes/ for the full list):
+#   * C4FMDemod / SymbolTimingRecovery / DibitPacker on control chain
+#     (and the traffic-side C4FM twins) -- LSM covers both modulations.
+#   * dibit_dma / traffic_dma rings + their banks -- superseded by LSM.
+#   * lsm_iq_dma / traffic_lsm_iq_dma (post-RRC matched-filter IQ
+#     rings) + post_pll_iq_dma / traffic_post_pll_iq_dma (mid+sym
+#     interleaved post-PLL rings) -- all superseded by the single
+#     pre_diff_iq_dma / traffic_pre_diff_iq_dma pair added here
+#     (carrier-derotated, AGC-scaled, pre-diff-slicer -- clean eye +
+#     constellation with no PS-side rotate).
 #
 # SPDX-License-Identifier: MIT
 #
@@ -92,9 +90,6 @@ from maia_hdl.register import Access, Field, Registers, Register, RegisterMap
 from maia_hdl.spectrometer import Spectrometer
 
 from .p25ddc import P25DDC
-from .c4fm_demod import C4FMDemod
-from .symbol_timing import SymbolTimingRecovery
-from .dibit_packer import DibitPacker
 from .iq_packer import IQPacker
 from .lsm_decimator import LsmDecimator2
 from .lsm_fir import LsmFir, LPF_TAPS_31250, RRC_TAPS_31250
@@ -110,18 +105,17 @@ class P25Core(Elaboratable):
     """Fishball P25 top-level IP core
 
     FPGA DSP pipeline for P25 Phase 1 trunking radio:
-      AD9361 IQ -> DDC (tune + decimate) -> C4FM demod -> symbol timing
-      -> dibit packer -> DMA to PS
+      AD9361 IQ -> DDC (tune + decimate) -> LSM demod chain ->
+      dibit DMA + pre-diff IQ DMA + post-DDC IQ DMA to PS.
 
     Reuses Maia SDR DDC, register infrastructure, and DMA modules.
     """
     def __init__(self, config=P25Config()):
         config.validate()
         self.config = config
-        # 2026-04-18 widened 7 → 8 for Phase 10.6 telemetry + post-LSM
-        # IQ DMA banks. 8 bits = 256 bytes address space; the bank
-        # decoder below now uses [6:3] (4 bits = 16 banks of 32 B
-        # each). Previous layout (7 bits, 8 banks) was full.
+        # 8-bit AXI address = 256 bytes. Bank decoder below uses bits
+        # [6:3] (4 bits = 16 banks of 32 B each). Highest bank used
+        # after Phase 10.8 is 14 (traffic_pre_diff_iq at 0x1C0).
         self.axi4_awidth = 8
         self.s_axi_lite = ClockDomain()
         self.sampling = ClockDomain()
@@ -157,8 +151,6 @@ class P25Core(Elaboratable):
                     Field('sdr_reset', Access.RW, 1, 1),
                 ]),
                 0b11: Register('interrupts', [
-                    Field('dibit_dma', Access.Rsticky, 1, 0),
-                    Field('traffic_dma', Access.Rsticky, 1, 0),
                     # Phase 6C: control-channel post-DDC IQ ring DMA
                     Field('iq_dma', Access.Rsticky, 1, 0),
                     # Phase 6E.9: control-channel LSM dibit ring DMA
@@ -166,20 +158,15 @@ class P25Core(Elaboratable):
                     # Phase 7A.2: traffic-channel LSM dibit ring DMA
                     Field('traffic_lsm_dibit_dma', Access.Rsticky, 1, 0),
                     # 2026-04-16: traffic-channel post-DDC IQ ring DMA
-                    # (chain-symmetry fix; mirrors `iq_dma`)
                     Field('traffic_iq_dma', Access.Rsticky, 1, 0),
-                    # Phase 10.6 2026-04-18: post-LSM-chain matched-filter
-                    # IQ ring DMAs. One per chain. Semantics match
-                    # `iq_dma` / `traffic_iq_dma` exactly -- fire on
-                    # each sub-buffer completion, PS reads + clears.
-                    Field('lsm_iq_dma', Access.Rsticky, 1, 0),
-                    Field('traffic_lsm_iq_dma', Access.Rsticky, 1, 0),
-                    # Phase 10.7 2026-04-22: post-PLL IQ ring DMAs
-                    # (control + traffic) + wideband spectrometer.
-                    # Feed the new Plots tab. See doc/DASHBOARD_PLOTS.md
-                    # §9 and P25_ADDRESS_MAP.md.
-                    Field('post_pll_iq_dma', Access.Rsticky, 1, 0),
-                    Field('traffic_post_pll_iq_dma', Access.Rsticky, 1, 0),
+                    # Phase 10.8 2026-04-22: pre-diff IQ ring DMAs
+                    # (control + traffic). Tapped inside LsmDemodLoop
+                    # after PLL rotate + mid/sym interleave, before
+                    # the differential slicer. Feed the Plots tab
+                    # (eye + constellation + deviation).
+                    Field('pre_diff_iq_dma', Access.Rsticky, 1, 0),
+                    Field('traffic_pre_diff_iq_dma', Access.Rsticky, 1, 0),
+                    # Phase 10.7: wideband spectrometer.
                     Field('wideband_spec_dma', Access.Rsticky, 1, 0),
                 ], interrupt=True),
             },
@@ -226,47 +213,12 @@ class P25Core(Elaboratable):
                     ]),
             }, 3)
 
-        # ── Control channel demod chain ───────────────────────────────
-        self.c4fm_demod = C4FMDemod()
-        # 8 MSPS ADC / 128x DDC decimation = 62.5 kSPS / 4800 sym/s ≈ 13 samp/sym
-        self.symbol_timing = SymbolTimingRecovery(samples_per_symbol=13)
-        self.dibit_packer = DibitPacker()
-        # Continuous ring DMA: fires interrupt on each sub-buffer completion
-        self.dibit_dma = DmaStreamRingWrite(
-            config.dibit_dma_address,
-            config.dibit_dma_num_buffers_log2,
-            config.dibit_dma_buffer_size,
-            width=64, axi_awidth=32, name='m_axi_dibit')
-
-        # ── Control channel demod registers (0x40) ────────────────────
-        self.demod_registers = Registers(
-            'demod',
-            {
-                0b00: Register('demod_status', [
-                    Field('dibit_count', Access.R, 16, 0),
-                    Field('demod_overflow', Access.Rsticky, 1, 0),
-                    Field('last_buffer', Access.R,
-                          config.dibit_dma_num_buffers_log2, -1),
-                ]),
-                0b01: Register('demod_control', [
-                    # Single enable bit for ring DMA (replaces start/stop pulses)
-                    Field('demod_enable', Access.RW, 1, 0),
-                ]),
-                0b10: Register('dibit_next_address', [
-                    Field('next_address', Access.R, 32, 0),
-                ]),
-            },
-            2)
-
         # ── Control-channel post-DDC IQ ring DMA (Phase 6C) ───────────
-        # Third tap of the control DDC output (alongside c4fm_demod and
-        # symbol_timing). The packer buffers two consecutive (re, im)
-        # pairs into a 64-bit DMA word; see iq_packer.py for the bit
-        # layout. The DMA mirrors the dibit_dma pattern: continuous
-        # ring write, sub-buffer-completion interrupt, level-enable.
+        # Third tap of the control DDC output. The packer buffers two
+        # consecutive (re, im) pairs into a 64-bit DMA word; see
+        # iq_packer.py for the bit layout.
         #
         # Address: 0x1900_0000 / 256 KB ring (8 x 32 KB sub-buffers).
-        # See doc/P25_ADDRESS_MAP.md for the full picture.
         self.iq_packer = IQPacker()
         self.iq_dma = DmaStreamRingWrite(
             config.iq_dma_address,
@@ -274,17 +226,7 @@ class P25Core(Elaboratable):
             config.iq_dma_buffer_size,
             width=64, axi_awidth=32, name='m_axi_iq')
 
-        # ── Control channel IQ DMA registers (0x80) ───────────────────
-        # Bank 4 in the AXI-Lite register space (next free bank after
-        # control/sdr/demod/traffic). The bank decoder in elaborate()
-        # already covers bits [5:3] of the word address (3 bits = 8
-        # banks max), so this slot does not require any address-width
-        # change. See doc/P25_ADDRESS_MAP.md for the bank table.
-        #
-        # Layout intentionally mirrors the demod_status / dibit_next_address
-        # pair from the control-channel block, with iq_overflow at bit 0
-        # (Rsticky, clears on read) and last_buffer at bits [16+:N] to
-        # leave the low half free for future flags.
+        # ── Control channel IQ DMA registers (0x80, bank 4) ───────────
         self.iq_registers = Registers(
             'iq', {
                 0b00: Register('iq_dma_status', [
@@ -293,8 +235,6 @@ class P25Core(Elaboratable):
                           config.iq_dma_num_buffers_log2, -1),
                 ]),
                 0b01: Register('iq_dma_control', [
-                    # Single enable bit for ring DMA AW channel
-                    # (level signal, not pulse) - mirrors dibit_dma.
                     Field('iq_enable', Access.RW, 1, 0),
                 ]),
                 0b10: Register('iq_next_address', [
@@ -303,97 +243,64 @@ class P25Core(Elaboratable):
             },
             2)
 
-        # ── Control channel post-LSM IQ ring DMA (Phase 10.6, 2026-04-18) ─
-        # Second IQ tap on the control chain, fed from the LSM chain's
-        # RRC matched-filter output (`lsm_rrc.re_out/im_out/strobe_out`).
-        # Matched-filter-eye source for the dashboard; same packing +
-        # DMA layout as `iq_dma`, only the tap point and sample rate
-        # (31.25 kSPS vs 62.5) differ. Register bank at 0x100.
-        self.lsm_iq_packer = IQPacker()
-        self.lsm_iq_dma = DmaStreamRingWrite(
-            config.lsm_iq_dma_address,
-            config.lsm_iq_dma_num_buffers_log2,
-            config.lsm_iq_dma_buffer_size,
-            width=64, axi_awidth=32, name='m_axi_lsm_iq')
-        self.lsm_iq_registers = Registers(
-            'lsm_iq', {
-                0b00: Register('lsm_iq_dma_status', [
-                    Field('lsm_iq_overflow', Access.Rsticky, 1, 0),
-                    Field('last_buffer', Access.R,
-                          config.lsm_iq_dma_num_buffers_log2, -1),
-                ]),
-                0b01: Register('lsm_iq_dma_control', [
-                    Field('lsm_iq_enable', Access.RW, 1, 0),
-                ]),
-                0b10: Register('lsm_iq_next_address', [
-                    Field('next_address', Access.R, 32, 0),
-                ]),
-            },
-            2)
-
-        # ── Control channel post-PLL IQ ring DMA (Phase 10.7) ─────────
-        # Third IQ tap on the control chain, fed from inside LsmDemod
-        # (i_rot_out/q_rot_out/rot_strobe_out — mid + sym interleaved
-        # on adjacent sync cycles after `LsmPllRotate`). Samples are
-        # already carrier-derotated and AGC-scaled, so the PS renders
-        # a clean open-eye + tight constellation with no additional
-        # signal processing. Also backs the Anritsu-style
-        # `/api/deviation` metrics. Register bank at 0x140.
-        self.post_pll_iq_packer = IQPacker()
-        self.post_pll_iq_dma = DmaStreamRingWrite(
-            config.post_pll_iq_dma_address,
-            config.post_pll_iq_dma_num_buffers_log2,
-            config.post_pll_iq_dma_buffer_size,
-            width=64, axi_awidth=32, name='m_axi_post_pll_iq')
-        self.post_pll_iq_registers = Registers(
-            'post_pll_iq', {
-                0b00: Register('post_pll_iq_dma_status', [
-                    Field('post_pll_iq_overflow', Access.Rsticky, 1, 0),
-                    Field('last_buffer', Access.R,
-                          config.post_pll_iq_dma_num_buffers_log2, -1),
-                ]),
-                0b01: Register('post_pll_iq_dma_control', [
-                    Field('post_pll_iq_enable', Access.RW, 1, 0),
-                ]),
-                0b10: Register('post_pll_iq_next_address', [
-                    Field('next_address', Access.R, 32, 0),
-                ]),
-            },
-            2)
-
         # ── Control channel LSM demod chain (Phase 6E.9) ──────────────
-        # Sits in parallel with the C4FM chain on the control channel.
-        # Both consume the same control DDC output (62.5 kSPS, 16-bit
-        # signed I+Q). The LSM chain decimates by 2 down to 31.25 kSPS,
+        # Single control-channel demod chain (replaces the retired
+        # C4FM path). Consumes the control DDC output (62.5 kSPS,
+        # 16-bit signed I+Q), decimates by 2 down to 31.25 kSPS,
         # filters with the 83-tap baseband LPF and the 105-tap RRC,
-        # then runs LsmDemod (timing recovery + diff demod + Costas
-        # PLL rotate + slicer + sync detect + BCH FEC). The recovered
-        # dibits exit via lsm_dibit_dma; the recovered NIDs are
-        # surfaced via the new `lsm` register bank.
+        # then runs LsmDemod (timing recovery + Costas PLL rotate +
+        # mid/sym interleave + diff demod + slicer + sync detect +
+        # BCH FEC). The recovered dibits exit via lsm_dibit_dma; the
+        # recovered NIDs are surfaced via the `lsm` register bank.
         #
-        # All four blocks live at top level (not wrapped) for the same
-        # reason the C4FM chain does: keeps each block visible in the
-        # Vivado hierarchy and amaranth-sim waveforms during bring-up.
-        #
-        # Resource budget per the 6E.8 estimate (doc 017):
-        #   LsmDecimator2  : ~30 LUT, 0 DSP, 0 BRAM
-        #   LsmFir x 2     : ~2 DSP48 (sequential MAC, one per FIR),
-        #                    0 BRAM (taps live in distributed ROM)
-        #   LsmDemod       : ~30 DSP48, 2 BRAM18, ~3940 LUT
-        #   Total          : ~32 DSP48 (15% of Z7020), 2 BRAM18 (1.4%)
+        # All four blocks live at top level (not wrapped) so each
+        # block stays visible in the Vivado hierarchy + amaranth-sim
+        # waveforms during bring-up.
         self.lsm_decimator = LsmDecimator2(width=16)
         self.lsm_lpf = LsmFir(LPF_TAPS_31250)
         self.lsm_rrc = LsmFir(RRC_TAPS_31250)
         self.lsm_demod = LsmDemod()
-        # Reuse the existing DibitPacker for the LSM dibit stream so
-        # the LSM ring DMA word format is bit-identical to the C4FM
-        # ring DMA -- the PS reads both rings the same way.
+        # DibitPacker is bit-identical to the IQPacker pattern on the
+        # wire side -- we just reuse it under a different name for
+        # the LSM chain's dibit output so the PS ring DMA word format
+        # matches the historical layout.
+        from .dibit_packer import DibitPacker
         self.lsm_dibit_packer = DibitPacker()
         self.lsm_dibit_dma = DmaStreamRingWrite(
             config.lsm_dibit_dma_address,
             config.lsm_dibit_dma_num_buffers_log2,
             config.lsm_dibit_dma_buffer_size,
             width=64, axi_awidth=32, name='m_axi_lsm_dibit')
+
+        # ── Control channel pre-diff IQ ring DMA (Phase 10.8) ─────────
+        # Tap inside LsmDemodLoop after LsmPllRotate but BEFORE the
+        # differential slicer. Feeds `pre_diff_iq_dma` at
+        # 0x1F00_0000. Packing + register layout mirror `iq_dma`.
+        # Samples are carrier-derotated + AGC-scaled + interleaved
+        # (mid, sym, mid, sym, ...) on adjacent strobe cycles, so the
+        # PS renders a clean eye + constellation without PS-side
+        # signal processing.
+        self.pre_diff_iq_packer = IQPacker()
+        self.pre_diff_iq_dma = DmaStreamRingWrite(
+            config.pre_diff_iq_dma_address,
+            config.pre_diff_iq_dma_num_buffers_log2,
+            config.pre_diff_iq_dma_buffer_size,
+            width=64, axi_awidth=32, name='m_axi_pre_diff_iq')
+        self.pre_diff_iq_registers = Registers(
+            'pre_diff_iq', {
+                0b00: Register('pre_diff_iq_dma_status', [
+                    Field('pre_diff_iq_overflow', Access.Rsticky, 1, 0),
+                    Field('last_buffer', Access.R,
+                          config.pre_diff_iq_dma_num_buffers_log2, -1),
+                ]),
+                0b01: Register('pre_diff_iq_dma_control', [
+                    Field('pre_diff_iq_enable', Access.RW, 1, 0),
+                ]),
+                0b10: Register('pre_diff_iq_next_address', [
+                    Field('next_address', Access.R, 32, 0),
+                ]),
+            },
+            2)
 
         # ── LSM register bank (0xA0, bank 5) ──────────────────────────
         # See doc/P25_ADDRESS_MAP.md for the canonical layout, including
@@ -403,7 +310,7 @@ class P25Core(Elaboratable):
         # Bit-layout shorthand (bit positions inside each 32-bit word):
         #   lsm_control [0]   lsm_enable
         #               [1]   lsm_dibit_dma_enable
-        #               [2]   lsm_dc_block_enable   (Phase 6G.1)
+        #               [2]   lsm_dc_block_enable
         #   lsm_status  [0]   bch_busy
         #               [1]   in_nid_window
         #               [2]   nid_event             (Rsticky)
@@ -428,26 +335,11 @@ class P25Core(Elaboratable):
                     Field('lsm_dibit_dma_enable', Access.RW, 1, 0),
                     # Phase 8A: W1P runtime-reset strobe. Writing 1
                     # drives a 1-cycle `reset_in` pulse into the
-                    # LsmDemod chain (PLL accumulator + timing +
-                    # diff slicer + sync register + BCH sweep state
-                    # all clear back to init). Self-clearing on the
-                    # next sync cycle -- reads as 0. Wired below in
-                    # the LSM chain block. See
-                    # doc/changes/038_phase8_runtime_reset.md.
+                    # LsmDemod chain.
                     Field('lsm_reset', Access.Wpulse, 1, 0),
                     # Phase 6G.1: front-end DC blocker enable.
-                    # Defaults to 0 (off) at reset to match the
-                    # convention of lsm_enable; PS-side code is
-                    # responsible for setting this to 1 in the
-                    # same write that turns on lsm_enable.
                     Field('lsm_dc_block_enable', Access.RW, 1, 0),
-                    # Phase 10-prep: per-symbol AGC enable. Drives
-                    # `lsm_demod.agc_enable` (LsmAgc submodule,
-                    # inside LsmDemodLoop, between LsmTimingInterp
-                    # and LsmDiffDemodSlicer). Default 0 at reset
-                    # to match the convention of lsm_enable; PS
-                    # sets it to 1 alongside lsm_enable /
-                    # lsm_dc_block_enable. See `lsm_agc.py`.
+                    # Phase 10-prep: per-symbol AGC enable.
                     Field('lsm_agc_enable', Access.RW, 1, 0),
                 ]),
                 0b001: Register('lsm_status', [
@@ -475,16 +367,7 @@ class P25Core(Elaboratable):
                     Field('pll_dbg', Access.R, 16, 0),
                     Field('sample_point_dbg', Access.R, 16, 0),
                 ]),
-                # Phase 10-prep: per-symbol AGC debug taps. Both
-                # fields are read-only and updated on every
-                # decision_strobe_out of LsmAgc (~4800 Hz).
-                #   agc_gain_dbg : Q9.7 truncation of the Q9.11
-                #                  gain register, range 0..500.
-                #                  Shows current AGC gain state.
-                #   agc_mag_dbg  : Q1.15 L2 magnitude of the
-                #                  most-recent current-symbol
-                #                  sample (pre-AGC), top 16 of
-                #                  the 17-bit sqrt output.
+                # Phase 10-prep: per-symbol AGC debug taps.
                 0b110: Register('lsm_agc_debug', [
                     Field('agc_gain_dbg', Access.R, 16, 0),
                     Field('agc_mag_dbg', Access.R, 16, 0),
@@ -492,23 +375,18 @@ class P25Core(Elaboratable):
             },
             3)
 
-        # ── Traffic channel DDC + demod chain ─────────────────────────
+        # ── Traffic channel DDC ───────────────────────────────────────
         # Second P25DDC instance for the traffic channel (retuned by
         # PS on GroupVoiceChannelGrant). Same v2 filter convention as
         # the control DDC above; coefficient RAM is shared, so both
         # instances see the same (unit-DC-gain) filter tables.
         self.traffic_ddc = P25DDC('clk3x')
-        self.traffic_c4fm = C4FMDemod()
-        self.traffic_timing = SymbolTimingRecovery(samples_per_symbol=13)
-        self.traffic_packer = DibitPacker()
-        self.traffic_dma = DmaStreamRingWrite(
-            config.traffic_dma_address,
-            config.traffic_dma_num_buffers_log2,
-            config.traffic_dma_buffer_size,
-            width=64, axi_awidth=32, name='m_axi_traffic')
 
         # ── Traffic channel registers (0x60) ──────────────────────────
-        # Independent DDC NCO + decimation for PS-controlled retuning
+        # Phase 10.8: C4FM-related fields (traffic_demod_status /
+        # traffic_demod_control / traffic_next_address) retired
+        # alongside the C4FM chain. Only the DDC config registers
+        # remain here.
         self.traffic_registers = Registers(
             'traffic', {
                 0b000: Register(
@@ -532,67 +410,18 @@ class P25Core(Elaboratable):
                         Field('decimation2', Access.RW, 6, 0),
                         Field('decimation3', Access.RW, 7, 0),
                     ]),
-                0b011: Register(
-                    'traffic_demod_status', [
-                        Field('dibit_count', Access.R, 16, 0),
-                        Field('demod_overflow', Access.Rsticky, 1, 0),
-                        Field('last_buffer', Access.R,
-                              config.traffic_dma_num_buffers_log2, -1),
-                    ]),
-                0b100: Register(
-                    'traffic_demod_control', [
-                        Field('demod_enable', Access.RW, 1, 0),
-                    ]),
-                0b101: Register(
-                    'traffic_next_address', [
-                        Field('next_address', Access.R, 32, 0),
-                    ]),
             }, 3)
 
         # ── Traffic channel LSM demod chain (Phase 7A.2) ──────────────
-        # Sits in parallel with the C4FM traffic chain on the traffic
-        # side, identical structure to the control-side LSM chain
-        # (Phase 6E.9). Both consume the same `traffic_ddc` output;
-        # the LSM chain decimates by 2 (62.5 -> 31.25 kSPS), runs the
-        # 83-tap baseband LPF and the 105-tap RRC matched filter,
-        # then feeds LsmDemod which does timing recovery + diff demod
-        # + Costas-style PLL rotate + slicer + sync detect + BCH FEC.
-        # Recovered dibits exit via `traffic_lsm_dibit_dma`; recovered
-        # NIDs are surfaced via the new `traffic_lsm` register bank
-        # (bank 6 at offset 0xC0).
-        #
-        # Phase 7A.2 is the FPGA prerequisite for HDU + TDU detection
-        # on the voice channel. Once the LSM chain is producing NID
-        # events on the traffic side, the PS dispatcher classifies
-        # each DUID:
-        #
-        #   0x0  HDU         -> call start
-        #   0x3  TDU         -> call end
-        #   0x5  LDU1        -> voice + Link Control     -> activity
-        #   0xA  LDU2        -> voice + Encryption Sync  -> activity
-        #   0xF  TDU_LC      -> call end with LC payload
-        #
-        # IMBE frame extraction (Phase 7C) and the vocoder (Phase 7D)
-        # build on this same NID + dibit infrastructure.
-        #
-        # Resource budget per the 6E.8 estimate (doc 017), same numbers
-        # as the control-side LSM chain because the blocks are
-        # bit-identical:
-        #   LsmDecimator2  : ~30 LUT, 0 DSP, 0 BRAM
-        #   LsmFir x 2     : ~2 DSP48 (sequential MAC, one per FIR)
-        #   LsmDemod       : ~30 DSP48, 2 BRAM18, ~3940 LUT
-        #   Total          : ~32 DSP48, 2 BRAM18 (~14% / ~1.4% of Z7020)
-        #
-        # Z7020 has plenty of room: control-side LSM was ~25% LUT
-        # and ~16% DSP at Phase 6G.1, so the doubled total still
-        # leaves >50% headroom for the Phase 7G channelizer.
+        # Mirror of the control-side LSM chain. Both consume the same
+        # `rxiq_cdc` output through independent DDC NCOs and share
+        # coefficient RAM. Recovered dibits exit via
+        # `traffic_lsm_dibit_dma`; recovered NIDs are surfaced via the
+        # `traffic_lsm` register bank (bank 6 at offset 0xC0).
         self.traffic_lsm_decimator = LsmDecimator2(width=16)
         self.traffic_lsm_lpf = LsmFir(LPF_TAPS_31250)
         self.traffic_lsm_rrc = LsmFir(RRC_TAPS_31250)
         self.traffic_lsm_demod = LsmDemod()
-        # Reuse DibitPacker so the new ring DMA word format is
-        # bit-identical to the control LSM ring DMA -- the PS reads
-        # both rings the same way.
         self.traffic_lsm_dibit_packer = DibitPacker()
         self.traffic_lsm_dibit_dma = DmaStreamRingWrite(
             config.traffic_lsm_dibit_dma_address,
@@ -602,51 +431,13 @@ class P25Core(Elaboratable):
 
         # ── Traffic LSM register bank (0xC0, bank 6) ──────────────────
         # Identical layout to the control-side `lsm` bank (0xA0).
-        # Field semantics are also identical -- the PS-side dispatcher
-        # for HDU/TDU/LDU events polls this bank with the same
-        # heartbeat pattern as the control-side `lsm_status` poll.
-        #
-        # Bit-layout shorthand (bit positions inside each 32-bit word):
-        #   traffic_lsm_control [0]   traffic_lsm_enable
-        #                       [1]   traffic_lsm_dibit_dma_enable
-        #                       [2]   traffic_lsm_dc_block_enable
-        #   traffic_lsm_status  [0]   bch_busy
-        #                       [1]   in_nid_window
-        #                       [2]   nid_event             (Rsticky)
-        #                       [3]   nid_valid
-        #                       [10:4]  n_errors            (7 bits)
-        #                       [17:11] sync_distance       (7 bits)
-        #                       [18]  traffic_lsm_dibit_overflow (Rsticky)
-        #   traffic_lsm_nid     [11:0]  nac                 (12 bits)
-        #                       [15:12] duid                (4 bits)
-        #   traffic_lsm_drop_count
-        #                       [15:0]  drop_count          (16 bits)
-        #                       [18:16] traffic_lsm_dibit_last_buffer
-        #                                                   (3 bits, init -1)
-        #   traffic_lsm_dibit_next [31:0] next_address       (32 bits)
-        #   traffic_lsm_debug   [15:0]  pll_dbg             (signed Q2.13)
-        #                       [31:16] sample_point_dbg    (signed Q4.10)
         self.traffic_lsm_registers = Registers(
             'traffic_lsm', {
                 0b000: Register('traffic_lsm_control', [
                     Field('traffic_lsm_enable', Access.RW, 1, 0),
                     Field('traffic_lsm_dibit_dma_enable', Access.RW, 1, 0),
                     Field('traffic_lsm_dc_block_enable', Access.RW, 1, 0),
-                    # Phase 8A: W1P runtime-reset strobe for the
-                    # traffic LSM chain. Writing 1 pulses the
-                    # LsmDemod reset_in port and clears the PLL
-                    # accumulator, timing state, diff slicer prev,
-                    # sync register, and BCH sweep state. The
-                    # Phase 8B retune path toggles this on every
-                    # traffic-DDC retune so the post-retune
-                    # acquisition starts from a clean cold-start.
-                    # See doc/changes/038_phase8_runtime_reset.md.
                     Field('traffic_lsm_reset', Access.Wpulse, 1, 0),
-                    # Phase 10-prep: per-symbol AGC enable, mirrors
-                    # the control-side `lsm_agc_enable`. Default 0
-                    # at reset; PS sets it alongside
-                    # traffic_lsm_enable in the retune path. See
-                    # `lsm_agc.py`.
                     Field('traffic_lsm_agc_enable', Access.RW, 1, 0),
                 ]),
                 0b001: Register('traffic_lsm_status', [
@@ -674,9 +465,6 @@ class P25Core(Elaboratable):
                     Field('pll_dbg', Access.R, 16, 0),
                     Field('sample_point_dbg', Access.R, 16, 0),
                 ]),
-                # Phase 10-prep: traffic-side per-symbol AGC debug
-                # taps. Mirrors the control-side layout at slot
-                # 0b110. See `lsm_agc.py`.
                 0b110: Register('traffic_lsm_agc_debug', [
                     Field('agc_gain_dbg', Access.R, 16, 0),
                     Field('agc_mag_dbg', Access.R, 16, 0),
@@ -686,15 +474,7 @@ class P25Core(Elaboratable):
 
         # ── Traffic-channel post-DDC IQ ring DMA (2026-04-16) ─────────
         # Mirror of the control-side `iq_packer` + `iq_dma` (Phase 6C).
-        # Taps the same `traffic_ddc.re_out`/`im_out`/`strobe_out` that
-        # already feed `traffic_c4fm` and the traffic LSM chain, packs
-        # two consecutive IQ pairs into a 64-bit DMA word, and streams
-        # to DDR. Used by the constellation dashboard (software Gardner
-        # TED picks symbol-time points from the post-DDC IQ) and for
-        # offline cross-validation of the traffic LSM software port.
-        #
-        # Address: 0x1C00_0000, 256 KB ring (8 × 32 KB sub-buffers) —
-        # identical layout to control `iq_dma`.
+        # Address 0x1C00_0000, 256 KB ring.
         self.traffic_iq_packer = IQPacker()
         self.traffic_iq_dma = DmaStreamRingWrite(
             config.traffic_iq_dma_address,
@@ -703,11 +483,6 @@ class P25Core(Elaboratable):
             width=64, axi_awidth=32, name='m_axi_traffic_iq')
 
         # ── Traffic IQ DMA registers (0xE0, bank 7) ───────────────────
-        # Layout mirrors `iq_registers` exactly so the PS reader path
-        # can share helpers. Bank 7 uses the top slot of the 3-bit bank
-        # decoder (bits [5:3] of the word address); no further slots
-        # remain in this decoder (future banks would need a 4-bit
-        # decode, i.e. bits [6:3], which is a separate change).
         self.traffic_iq_registers = Registers(
             'traffic_iq', {
                 0b00: Register('traffic_iq_dma_status', [
@@ -724,54 +499,28 @@ class P25Core(Elaboratable):
             },
             2)
 
-        # ── Traffic channel post-LSM IQ ring DMA (Phase 10.6, 2026-04-18) ─
-        # Traffic-side twin of `lsm_iq_dma`. Tapped from
-        # `traffic_lsm_rrc.re_out/im_out/strobe_out`. Register bank at
-        # 0x120. See the control-side comment above for rate / sizing.
-        self.traffic_lsm_iq_packer = IQPacker()
-        self.traffic_lsm_iq_dma = DmaStreamRingWrite(
-            config.traffic_lsm_iq_dma_address,
-            config.traffic_lsm_iq_dma_num_buffers_log2,
-            config.traffic_lsm_iq_dma_buffer_size,
-            width=64, axi_awidth=32, name='m_axi_traffic_lsm_iq')
-        self.traffic_lsm_iq_registers = Registers(
-            'traffic_lsm_iq', {
-                0b00: Register('traffic_lsm_iq_dma_status', [
-                    Field('traffic_lsm_iq_overflow', Access.Rsticky, 1, 0),
-                    Field('last_buffer', Access.R,
-                          config.traffic_lsm_iq_dma_num_buffers_log2, -1),
-                ]),
-                0b01: Register('traffic_lsm_iq_dma_control', [
-                    Field('traffic_lsm_iq_enable', Access.RW, 1, 0),
-                ]),
-                0b10: Register('traffic_lsm_iq_next_address', [
-                    Field('next_address', Access.R, 32, 0),
-                ]),
-            },
-            2)
-
-        # ── Traffic channel post-PLL IQ ring DMA (Phase 10.7) ─────────
-        # Traffic-side twin of `post_pll_iq_dma`. Tapped from inside
-        # `traffic_lsm_demod` (i_rot_out/q_rot_out/rot_strobe_out).
-        # Register bank at 0x160. See control-side comment above.
-        self.traffic_post_pll_iq_packer = IQPacker()
-        self.traffic_post_pll_iq_dma = DmaStreamRingWrite(
-            config.traffic_post_pll_iq_dma_address,
-            config.traffic_post_pll_iq_dma_num_buffers_log2,
-            config.traffic_post_pll_iq_dma_buffer_size,
-            width=64, axi_awidth=32, name='m_axi_traffic_post_pll_iq')
-        self.traffic_post_pll_iq_registers = Registers(
-            'traffic_post_pll_iq', {
-                0b00: Register('traffic_post_pll_iq_dma_status', [
-                    Field('traffic_post_pll_iq_overflow',
+        # ── Traffic channel pre-diff IQ ring DMA (Phase 10.8) ─────────
+        # Traffic-side twin of `pre_diff_iq_dma`. Tap is
+        # `traffic_lsm_demod.i_pre_diff_out / q_pre_diff_out /
+        # pre_diff_strobe_out`. Register bank at 0x1C0 (bank 14).
+        self.traffic_pre_diff_iq_packer = IQPacker()
+        self.traffic_pre_diff_iq_dma = DmaStreamRingWrite(
+            config.traffic_pre_diff_iq_dma_address,
+            config.traffic_pre_diff_iq_dma_num_buffers_log2,
+            config.traffic_pre_diff_iq_dma_buffer_size,
+            width=64, axi_awidth=32, name='m_axi_traffic_pre_diff_iq')
+        self.traffic_pre_diff_iq_registers = Registers(
+            'traffic_pre_diff_iq', {
+                0b00: Register('traffic_pre_diff_iq_dma_status', [
+                    Field('traffic_pre_diff_iq_overflow',
                           Access.Rsticky, 1, 0),
                     Field('last_buffer', Access.R,
-                          config.traffic_post_pll_iq_dma_num_buffers_log2, -1),
+                          config.traffic_pre_diff_iq_dma_num_buffers_log2, -1),
                 ]),
-                0b01: Register('traffic_post_pll_iq_dma_control', [
-                    Field('traffic_post_pll_iq_enable', Access.RW, 1, 0),
+                0b01: Register('traffic_pre_diff_iq_dma_control', [
+                    Field('traffic_pre_diff_iq_enable', Access.RW, 1, 0),
                 ]),
-                0b10: Register('traffic_post_pll_iq_next_address', [
+                0b10: Register('traffic_pre_diff_iq_next_address', [
                     Field('next_address', Access.R, 32, 0),
                 ]),
             },
@@ -785,10 +534,6 @@ class P25Core(Elaboratable):
         # sample rate (preset-dependent, 2-16 MSPS). 4096-bin FFT + HW
         # integrator writes one 32 KB spectrum per completed
         # integration to `wideband_spec_dma`. Register bank at 0x180.
-        #
-        # Uses clk2x/clk3x (shared with P25DDC). `common_edge_2x`/
-        # `common_edge_3x` come from the existing `ClkNxCommonEdge`
-        # instance that already feeds P25DDC.
         self.wideband_spec = Spectrometer(
             config.wideband_spec_dma_address,
             config.wideband_spec_dma_num_buffers_log2,
@@ -825,23 +570,35 @@ class P25Core(Elaboratable):
             'licenseText': 'SPDX-License-Identifier: MIT',
         }
         # Address banks: bits [6:3] of the word address select the bank
-        # (4 bits = 16 banks max as of Phase 10.6; was 3 bits / 8 banks
-        # before 2026-04-18). Each bank spans 8 words = 32 bytes (0x20).
+        # (4 bits = 16 banks max). Each bank spans 8 words = 32 bytes
+        # (0x20). Phase 10.8 layout (after C4FM + superseded post-PLL /
+        # post-LSM rings were retired):
+        #
+        #   0x00  bank 0   control       (product_id / version / ctrl / interrupts)
+        #   0x20  bank 1   sdr           (control DDC config)
+        #   0x60  bank 3   traffic       (traffic DDC config; C4FM fields dropped)
+        #   0x80  bank 4   iq            (control post-DDC IQ DMA)
+        #   0xA0  bank 5   lsm           (control LSM: dibit DMA + NID events)
+        #   0xC0  bank 6   traffic_lsm   (traffic LSM: dibit DMA + NID events)
+        #   0xE0  bank 7   traffic_iq    (traffic post-DDC IQ DMA)
+        #   0x180 bank 12  spectrometer  (wideband FFT DMA)
+        #   0x1A0 bank 13  pre_diff_iq          (control pre-diff IQ DMA)  -- new
+        #   0x1C0 bank 14  traffic_pre_diff_iq  (traffic pre-diff IQ DMA)  -- new
+        #
+        # Banks 2, 8-11 are intentionally vacant (C4FM demod, post-LSM
+        # matched-filter IQ, post-PLL IQ -- all retired).
         # See doc/P25_ADDRESS_MAP.md for the canonical bank table.
         self.register_map = RegisterMap({
             0x00:  self.control_registers,
             0x20:  self.sdr_registers,
-            0x40:  self.demod_registers,
             0x60:  self.traffic_registers,
-            0x80:  self.iq_registers,             # Phase 6C
-            0xA0:  self.lsm_registers,            # Phase 6E.9
-            0xC0:  self.traffic_lsm_registers,    # Phase 7A.2
-            0xE0:  self.traffic_iq_registers,     # 2026-04-16 chain-symmetry
-            0x100: self.lsm_iq_registers,          # Phase 10.6 2026-04-18
-            0x120: self.traffic_lsm_iq_registers,  # Phase 10.6 2026-04-18
-            0x140: self.post_pll_iq_registers,     # Phase 10.7 2026-04-22
-            0x160: self.traffic_post_pll_iq_registers,  # Phase 10.7
-            0x180: self.wideband_spec_registers,        # Phase 10.7
+            0x80:  self.iq_registers,                     # Phase 6C
+            0xA0:  self.lsm_registers,                    # Phase 6E.9
+            0xC0:  self.traffic_lsm_registers,            # Phase 7A.2
+            0xE0:  self.traffic_iq_registers,             # 2026-04-16
+            0x180: self.wideband_spec_registers,          # Phase 10.7
+            0x1A0: self.pre_diff_iq_registers,            # Phase 10.8
+            0x1C0: self.traffic_pre_diff_iq_registers,    # Phase 10.8
         }, metadata)
 
         # ── I/O signals ────────────────────────────────────────────────
@@ -853,16 +610,12 @@ class P25Core(Elaboratable):
     def ports(self):
         return (
             self.axi4lite.axi.ports()
-            + self.dibit_dma.axi.ports()
-            + self.traffic_dma.axi.ports()
             + self.traffic_lsm_dibit_dma.axi.ports()  # Phase 7A.2
             + self.iq_dma.axi.ports()       # Phase 6C
             + self.lsm_dibit_dma.axi.ports()  # Phase 6E.9
             + self.traffic_iq_dma.axi.ports()  # 2026-04-16
-            + self.lsm_iq_dma.axi.ports()           # Phase 10.6
-            + self.traffic_lsm_iq_dma.axi.ports()   # Phase 10.6
-            + self.post_pll_iq_dma.axi.ports()      # Phase 10.7
-            + self.traffic_post_pll_iq_dma.axi.ports()  # Phase 10.7
+            + self.pre_diff_iq_dma.axi.ports()           # Phase 10.8
+            + self.traffic_pre_diff_iq_dma.axi.ports()   # Phase 10.8
             + self.wideband_spec.dma.axi.ports()    # Phase 10.7
             + [
                 self.re_in,
@@ -892,40 +645,12 @@ class P25Core(Elaboratable):
             self.clk2x,
         ]
 
-        # Phase 8C: local clock domains for the two LSM demod
-        # chains. Both use the `sync` clock (same edges), but each
-        # has its own synchronous reset wired to `~lsm_enable` of
-        # the respective chain. The net effect: toggling
-        # `lsm_control.lsm_enable` or
-        # `traffic_lsm_control.traffic_lsm_enable` becomes a full
-        # reset of every register in that chain that has a reset
-        # wire -- FSM state in LsmSyncNidExtract / LsmNidBchFec /
-        # CORDIC, stage strobes in LsmPllUpdate, output latches,
-        # and the dibit/symbol strobe registers. Registers declared
-        # with `reset_less=True` (pll_reg in LsmPllUpdate,
-        # sample_point's FIFO entries in LsmTimingInterp,
-        # diff-slicer prev_*, sync_reg, etc.) do NOT clear on
-        # domain reset -- the explicit `reset_in` path added in
-        # Phase 8A is still load-bearing for those. The two paths
-        # are complementary: domain reset handles pipeline state
-        # automatically, explicit reset_in handles the reset_less
-        # persistent state.
-        #
-        # Phase 8C.1 (2026-04-15) revert on CONTROL + 2026-04-16 revert
-        # on TRAFFIC. The Phase 8C wrap (DomainRenamer for a local LSM
-        # clock domain whose reset tied to ~lsm_enable) was rolled back
-        # on control after the 91.7% → 24.8% TSBK CRC regression. The
-        # traffic side kept its wrap for a while because Phase 8B's
-        # per-call retune flow wanted the free domain-reset-wipe of
-        # non-reset_less state on every disable. 2026-04-16 audit
-        # concluded the explicit `pulse_traffic_lsm_reset` (Phase 8A
-        # reset_in path) is sufficient, and chain symmetry with control
-        # is worth more than the free wipe — so the traffic wrap is
-        # reverted here too. No local clock domain for either LSM chain
-        # now; both live in the global `sync` domain and rely on
-        # `reset_in` (Phase 8A) + strobe gating at the decimator for
-        # their per-call reset.
-
+        # Both LSM demod chains live in the global `sync` domain and
+        # rely on (1) the explicit Phase 8A `reset_in` pulse fed from
+        # the `lsm_reset` / `traffic_lsm_reset` Wpulse fields, plus
+        # (2) strobe gating at the decimator (masked by
+        # `lsm_enable` / `traffic_lsm_enable`) for per-call /
+        # per-retune reset. No local per-chain clock domain.
         s_axi_lite_renamer = DomainRenamer({'sync': 's_axi_lite'})
 
         # ── Submodules ─────────────────────────────────────────────────
@@ -986,45 +711,23 @@ class P25Core(Elaboratable):
             self.ddc.im_in.eq(rxiq_cdc.im_out),
         ]
 
-        # ── C4FM Demod chain ──────────────────────────────────────────
-        m.submodules.c4fm_demod = self.c4fm_demod
-        m.submodules.symbol_timing = self.symbol_timing
-        m.submodules.dibit_packer = self.dibit_packer
-        m.submodules.dibit_dma = self.dibit_dma
-        m.submodules.demod_registers = self.demod_registers
-        m.submodules.demod_registers_cdc = demod_registers_cdc = RegisterCDC(
-            's_axi_lite', 'sync', self.demod_registers.aw)
-
         # Phase 6C: control-channel post-DDC IQ ring DMA submodules.
-        # Both run in the same sync domain as dibit_dma and tap the
-        # same DDC output below.
         m.submodules.iq_packer = self.iq_packer
         m.submodules.iq_dma = self.iq_dma
         m.submodules.iq_registers = self.iq_registers
         m.submodules.iq_registers_cdc = iq_registers_cdc = RegisterCDC(
             's_axi_lite', 'sync', self.iq_registers.aw)
 
-        # Phase 10.6 (2026-04-18): control-chain post-LSM (matched-
-        # filter) IQ tap submodules. Tapped from lsm_rrc below.
-        m.submodules.lsm_iq_packer = self.lsm_iq_packer
-        m.submodules.lsm_iq_dma = self.lsm_iq_dma
-        m.submodules.lsm_iq_registers = self.lsm_iq_registers
-        m.submodules.lsm_iq_registers_cdc = lsm_iq_registers_cdc = RegisterCDC(
-            's_axi_lite', 'sync', self.lsm_iq_registers.aw)
+        # Phase 10.8: control-chain pre-diff IQ tap submodules.
+        # Tapped from lsm_demod below.
+        m.submodules.pre_diff_iq_packer = self.pre_diff_iq_packer
+        m.submodules.pre_diff_iq_dma = self.pre_diff_iq_dma
+        m.submodules.pre_diff_iq_registers = self.pre_diff_iq_registers
+        m.submodules.pre_diff_iq_registers_cdc = (
+            pre_diff_iq_registers_cdc) = RegisterCDC(
+                's_axi_lite', 'sync', self.pre_diff_iq_registers.aw)
 
         # Phase 6E.9: control-channel LSM demod chain submodules.
-        # All run in the same `sync` domain alongside the C4FM
-        # chain. Phase 8C tried to wrap `lsm_demod` in its own
-        # `lsm_ctrl_dom` local clock domain (so disabling
-        # `lsm_enable` would force a synchronous reset of the
-        # non-`reset_less` pipeline state), but on-target testing
-        # showed a 67-percentage-point TSBK CRC pass-rate
-        # regression after that wrap landed -- 91.7% (Phase 6F.9
-        # baseline) → 24.8%. Phase 8C.1 reverts the wrap on the
-        # control side; 2026-04-16 reverts it on the traffic side
-        # too for chain symmetry. Both chains now rely on the
-        # explicit Phase 8A `reset_in` pulse + strobe gating at the
-        # decimator for per-call / per-retune reset.
         m.submodules.lsm_decimator = self.lsm_decimator
         m.submodules.lsm_lpf = self.lsm_lpf
         m.submodules.lsm_rrc = self.lsm_rrc
@@ -1035,73 +738,16 @@ class P25Core(Elaboratable):
         m.submodules.lsm_registers_cdc = lsm_registers_cdc = RegisterCDC(
             's_axi_lite', 'sync', self.lsm_registers.aw)
 
-        # DDC output -> C4FM discriminator
-        m.d.comb += [
-            self.c4fm_demod.re_in.eq(self.ddc.re_out),
-            self.c4fm_demod.im_in.eq(self.ddc.im_out),
-            self.c4fm_demod.strobe_in.eq(self.ddc.strobe_out),
-        ]
-
-        # Symbol timing + slicer
-        # - Raw post-DDC IQ samples feed the symbol-rate differential
-        #   slicer inside SymbolTimingRecovery (4 DSP48E1 multiplies)
-        # - diff_im (the FM cross-product from C4FMDemod) feeds the
-        #   Gardner TED for clock recovery
-        # The slicer computes z_sym[k] * conj(z_sym[k-1]) at the
-        # symbol decision point; sign bits give the 4-quadrant dibit.
-        m.d.comb += [
-            self.symbol_timing.re_in.eq(self.ddc.re_out),
-            self.symbol_timing.im_in.eq(self.ddc.im_out),
-            self.symbol_timing.diff_im_in.eq(self.c4fm_demod.diff_im_out),
-            self.symbol_timing.strobe_in.eq(self.c4fm_demod.strobe_out),
-        ]
-
-        # Symbol timing -> Dibit packer
-        m.d.comb += [
-            self.dibit_packer.dibit_in.eq(self.symbol_timing.dibit_out),
-            self.dibit_packer.symbol_strobe.eq(
-                self.symbol_timing.symbol_strobe),
-        ]
-
-        # Dibit packer -> ring DMA stream
-        m.d.comb += [
-            self.dibit_dma.stream_data.eq(self.dibit_packer.data_out),
-            self.dibit_dma.stream_valid.eq(self.dibit_packer.data_valid),
-            self.dibit_packer.stream_ready.eq(self.dibit_dma.stream_ready),
-        ]
-
-        # Ring DMA enable from demod_control register (level, not pulse)
-        m.d.comb += [
-            self.dibit_dma.enable.eq(
-                self.demod_registers['demod_control']['demod_enable']),
-        ]
-
-        # DMA sub-buffer completion -> interrupt (sticky bit, cleared by read)
-        #
-        # CDC fix (2026-04-15, P25DDC fork v2 timing closure):
-        # The 5 DMA interrupt pulses all originate in the sync domain
-        # (62.5 MHz clk_out1) but the control_registers bank runs in
-        # s_axi_lite (100 MHz clk_fpga_0) via s_axi_lite_renamer.
-        # maia_hdl.register.Rsticky OR's the input signal directly
-        # into the sticky FF with no explicit synchronizer, so
-        # without CDC the cross-clock path is analysed by Vivado as
-        # a real setup constraint (~2 ns requirement) and fails by
-        # several ns. Phase 10-prep closed timing by placement luck;
-        # v2 doesn't, and the design shouldn't depend on luck.
-        #
-        # Fix: use PulseSynchronizer for each 1-cycle DMA interrupt
-        # pulse. PulseSynchronizer uses a toggle-FF + edge-detect
-        # scheme that guarantees exactly one destination-domain
-        # pulse per source pulse regardless of clock relationship,
-        # so no DMA completion interrupt can be lost. The
-        # synchronized pulses then feed the Rsticky OR inside the
-        # bank normally.
+        # DMA sub-buffer completion -> interrupt (sticky bit, cleared
+        # by read). All DMA interrupts originate in the sync domain
+        # (62.5 MHz clk_out1) but `control_registers` runs in
+        # s_axi_lite (100 MHz clk_fpga_0). Use PulseSynchronizer per
+        # pulse to guarantee exactly one destination-domain pulse per
+        # source pulse regardless of clock relationship. See the
+        # 2026-04-15 P25DDC v2 timing-closure CDC fix for the full
+        # rationale.
         interrupts_reg = self.control_registers['interrupts']
 
-        m.submodules.dibit_dma_irq_sync = dibit_dma_irq_sync = (
-            PulseSynchronizer('sync', 's_axi_lite'))
-        m.submodules.traffic_dma_irq_sync = traffic_dma_irq_sync = (
-            PulseSynchronizer('sync', 's_axi_lite'))
         m.submodules.iq_dma_irq_sync = iq_dma_irq_sync = (
             PulseSynchronizer('sync', 's_axi_lite'))
         m.submodules.lsm_dibit_dma_irq_sync = lsm_dibit_dma_irq_sync = (
@@ -1111,79 +757,44 @@ class P25Core(Elaboratable):
                 PulseSynchronizer('sync', 's_axi_lite'))
         m.submodules.traffic_iq_dma_irq_sync = traffic_iq_dma_irq_sync = (
             PulseSynchronizer('sync', 's_axi_lite'))
-        # Phase 10.6 2026-04-18: post-LSM-chain IQ DMA interrupt sync.
-        m.submodules.lsm_iq_dma_irq_sync = lsm_iq_dma_irq_sync = (
-            PulseSynchronizer('sync', 's_axi_lite'))
-        m.submodules.traffic_lsm_iq_dma_irq_sync = (
-            traffic_lsm_iq_dma_irq_sync) = (
+        # Phase 10.8: pre-diff IQ DMA interrupts.
+        m.submodules.pre_diff_iq_dma_irq_sync = (
+            pre_diff_iq_dma_irq_sync) = (
                 PulseSynchronizer('sync', 's_axi_lite'))
-        # Phase 10.7 2026-04-22: post-PLL IQ + wideband spectrometer
-        # interrupt sync. Spectrometer's interrupt_out lives in the
-        # sync domain (the spectrometer's integrator runs there).
-        m.submodules.post_pll_iq_dma_irq_sync = (
-            post_pll_iq_dma_irq_sync) = (
+        m.submodules.traffic_pre_diff_iq_dma_irq_sync = (
+            traffic_pre_diff_iq_dma_irq_sync) = (
                 PulseSynchronizer('sync', 's_axi_lite'))
-        m.submodules.traffic_post_pll_iq_dma_irq_sync = (
-            traffic_post_pll_iq_dma_irq_sync) = (
-                PulseSynchronizer('sync', 's_axi_lite'))
+        # Phase 10.7: wideband spectrometer.
         m.submodules.wideband_spec_dma_irq_sync = (
             wideband_spec_dma_irq_sync) = (
                 PulseSynchronizer('sync', 's_axi_lite'))
 
         m.d.comb += [
-            dibit_dma_irq_sync.i.eq(self.dibit_dma.interrupt),
-            traffic_dma_irq_sync.i.eq(self.traffic_dma.interrupt),
             iq_dma_irq_sync.i.eq(self.iq_dma.interrupt),
             lsm_dibit_dma_irq_sync.i.eq(self.lsm_dibit_dma.interrupt),
             traffic_lsm_dibit_dma_irq_sync.i.eq(
                 self.traffic_lsm_dibit_dma.interrupt),
             traffic_iq_dma_irq_sync.i.eq(self.traffic_iq_dma.interrupt),
-            lsm_iq_dma_irq_sync.i.eq(self.lsm_iq_dma.interrupt),
-            traffic_lsm_iq_dma_irq_sync.i.eq(
-                self.traffic_lsm_iq_dma.interrupt),
-            # Phase 10.7: post-PLL + spectrometer sync inputs.
-            post_pll_iq_dma_irq_sync.i.eq(
-                self.post_pll_iq_dma.interrupt),
-            traffic_post_pll_iq_dma_irq_sync.i.eq(
-                self.traffic_post_pll_iq_dma.interrupt),
+            pre_diff_iq_dma_irq_sync.i.eq(
+                self.pre_diff_iq_dma.interrupt),
+            traffic_pre_diff_iq_dma_irq_sync.i.eq(
+                self.traffic_pre_diff_iq_dma.interrupt),
             wideband_spec_dma_irq_sync.i.eq(
                 self.wideband_spec.interrupt_out),
             # Feed the synchronized pulses into the Rsticky bits.
-            interrupts_reg['dibit_dma'].eq(dibit_dma_irq_sync.o),
-            interrupts_reg['lsm_iq_dma'].eq(lsm_iq_dma_irq_sync.o),
-            interrupts_reg['traffic_lsm_iq_dma'].eq(
-                traffic_lsm_iq_dma_irq_sync.o),
-            interrupts_reg['post_pll_iq_dma'].eq(
-                post_pll_iq_dma_irq_sync.o),
-            interrupts_reg['traffic_post_pll_iq_dma'].eq(
-                traffic_post_pll_iq_dma_irq_sync.o),
+            interrupts_reg['pre_diff_iq_dma'].eq(
+                pre_diff_iq_dma_irq_sync.o),
+            interrupts_reg['traffic_pre_diff_iq_dma'].eq(
+                traffic_pre_diff_iq_dma_irq_sync.o),
             interrupts_reg['wideband_spec_dma'].eq(
                 wideband_spec_dma_irq_sync.o),
         ]
 
-        # Demod status registers
-        dibit_counter = Signal(16, reset_less=True)
-        with m.If(self.symbol_timing.symbol_strobe):
-            m.d.sync += dibit_counter.eq(dibit_counter + 1)
-        m.d.comb += [
-            self.demod_registers['demod_status']['dibit_count'].eq(
-                dibit_counter),
-            self.demod_registers['demod_status']['demod_overflow'].eq(
-                self.dibit_packer.overflow),
-            self.demod_registers['demod_status']['last_buffer'].eq(
-                self.dibit_dma.last_buffer),
-            # next_address is no longer exposed by ring DMA — report
-            # the AW write address from inside the AXI interface for debug.
-            self.demod_registers['dibit_next_address']['next_address'].eq(
-                self.dibit_dma.axi.awaddr),
-        ]
-
         # ── Control-channel IQ ring DMA (Phase 6C) ────────────────────
-        # Third tap of the control DDC output. The packer fans the
-        # same re_out / im_out / strobe_out signals that already feed
-        # c4fm_demod and symbol_timing into a 64-bit DMA stream
-        # (two IQ pairs per word, sample 0 in the low half).
-        # See iq_packer.py for the bit layout and
+        # Tap of the control DDC output. The packer fans the same
+        # re_out / im_out / strobe_out that feed the LSM chain below
+        # into a 64-bit DMA stream (two IQ pairs per word, sample 0 in
+        # the low half). See iq_packer.py for the bit layout and
         # doc/P25_ADDRESS_MAP.md for the DDR carve-out.
         m.d.comb += [
             self.iq_packer.re_in.eq(self.ddc.re_out),
@@ -1215,22 +826,14 @@ class P25Core(Elaboratable):
         # Pipeline:
         #   DDC (62.5 kSPS) -> /2 decimator -> LPF -> RRC ->
         #     LsmDemod -> { dibit_packer -> lsm_dibit_dma,
+        #                   pre_diff taps -> pre_diff_iq_packer -> pre_diff_iq_dma,
         #                   nid event registers }
         #
-        # Master enable: lsm_control.lsm_enable gates the strobe at the
-        # very front of LsmDecimator2, so when 0 every downstream block
-        # sees no strobes and goes quiescent (no PLL drift, no BCH
-        # sweeps, no spurious dibits).
+        # Master enable: lsm_control.lsm_enable gates the strobe at
+        # the very front of LsmDecimator2, so when 0 every downstream
+        # block sees no strobes and goes quiescent (no PLL drift, no
+        # BCH sweeps, no spurious dibits).
         lsm_enable = self.lsm_registers['lsm_control']['lsm_enable']
-
-        # Phase 8C.1 (2026-04-15) revert: the lsm_ctrl_dom wiring
-        # used to live here. With the control-side LsmDemod back in
-        # the global `sync` domain, there's no separate clock or
-        # reset to drive. The `lsm_demod.reset_in` Phase 8A wiring
-        # below still works because the Phase 8A override block in
-        # LsmPllUpdate / LsmTimingInterp / etc. is purely
-        # `m.d.sync` (now bound to the global sync domain instead
-        # of the per-chain lsm_ctrl_dom).
 
         # Stage 1: control DDC -> LSM /2 decimator
         m.d.comb += [
@@ -1252,41 +855,13 @@ class P25Core(Elaboratable):
             self.lsm_rrc.strobe_in.eq(self.lsm_lpf.strobe_out),
         ]
 
-        # Phase 10.6 2026-04-18: post-LSM matched-filter IQ tap. The
-        # same `lsm_rrc.re_out / im_out / strobe_out` signals that feed
-        # LsmDemod are also packed into `lsm_iq_packer` -> `lsm_iq_dma`
-        # (256 KB ring at 0x1D00_0000). Running alongside the existing
-        # `iq_dma` (post-DDC tap at 0x1900_0000); PS chooses which to
-        # stream via the /ws/iq?source= API. 31.25 kSPS (half of post-
-        # DDC) — matched-filtered, unwarped by any timing/PLL loop,
-        # ideal as eye-plot source.
-        m.d.comb += [
-            self.lsm_iq_packer.re_in.eq(self.lsm_rrc.re_out),
-            self.lsm_iq_packer.im_in.eq(self.lsm_rrc.im_out),
-            self.lsm_iq_packer.strobe_in.eq(self.lsm_rrc.strobe_out),
-            self.lsm_iq_dma.stream_data.eq(self.lsm_iq_packer.data_out),
-            self.lsm_iq_dma.stream_valid.eq(self.lsm_iq_packer.data_valid),
-            self.lsm_iq_packer.stream_ready.eq(self.lsm_iq_dma.stream_ready),
-            self.lsm_iq_dma.enable.eq(
-                self.lsm_iq_registers['lsm_iq_dma_control']['lsm_iq_enable']),
-            self.lsm_iq_registers['lsm_iq_dma_status']['lsm_iq_overflow'].eq(
-                self.lsm_iq_packer.overflow),
-            self.lsm_iq_registers['lsm_iq_dma_status']['last_buffer'].eq(
-                self.lsm_iq_dma.last_buffer),
-            self.lsm_iq_registers['lsm_iq_next_address']['next_address'].eq(
-                self.lsm_iq_dma.axi.awaddr),
-        ]
-
         # Stage 4: RRC -> LsmDemod (timing recovery + diff demod +
         # PLL rotate + slicer + sync detect + BCH FEC). Outputs:
-        # `dibit_out`/`symbol_strobe` (passthrough to dibit DMA) and
-        # `nid_event_strobe` + (NAC, DUID, ...) latched into the
-        # lsm register bank below.
-        #
-        # Phase 6G.1: dc_block_enable is driven from the new
-        # lsm_control.lsm_dc_block_enable PS bit. Defaults to 0 at
-        # reset; the P25 daemon's `lsm_control` write turns it on
-        # at the same time as `lsm_enable`.
+        # `dibit_out`/`symbol_strobe` (passthrough to dibit DMA),
+        # `i_pre_diff_out`/`q_pre_diff_out`/`pre_diff_strobe_out`
+        # (post-PLL, pre-slicer, interleaved -- feed the Phase 10.8
+        # pre-diff IQ DMA), and `nid_event_strobe` + the NID fields
+        # (latched into the lsm register bank below).
         m.d.comb += [
             self.lsm_demod.re_in.eq(self.lsm_rrc.re_out),
             self.lsm_demod.im_in.eq(self.lsm_rrc.im_out),
@@ -1296,16 +871,12 @@ class P25Core(Elaboratable):
             # Phase 10-prep: per-symbol AGC enable.
             self.lsm_demod.agc_enable.eq(
                 self.lsm_registers['lsm_control']['lsm_agc_enable']),
-            # Phase 8A: runtime reset strobe. `lsm_reset` is a
-            # W1P field, so the Register machinery gives us a
-            # clean 1-sync-cycle pulse per PS write -- feed it
-            # directly into LsmDemod.reset_in.
+            # Phase 8A: runtime reset strobe.
             self.lsm_demod.reset_in.eq(
                 self.lsm_registers['lsm_control']['lsm_reset']),
         ]
 
-        # Stage 5: LsmDemod dibits -> packer -> ring DMA stream
-        # Mirrors the C4FM dibit_packer / dibit_dma wiring exactly.
+        # Stage 5: LsmDemod dibits -> packer -> ring DMA stream.
         m.d.comb += [
             self.lsm_dibit_packer.dibit_in.eq(self.lsm_demod.dibit_out),
             self.lsm_dibit_packer.symbol_strobe.eq(
@@ -1321,10 +892,37 @@ class P25Core(Elaboratable):
             interrupts_reg['lsm_dibit_dma'].eq(lsm_dibit_dma_irq_sync.o),
         ]
 
+        # Stage 5b: Phase 10.8 pre-diff IQ tap. LsmDemod surfaces
+        # carrier-derotated + AGC-scaled samples interleaved on
+        # adjacent `pre_diff_strobe_out` cycles (mid, sym, mid, sym,
+        # ...). Pack two samples per 64-bit word with the same
+        # layout as `iq_dma` (sample 0 in low half).
+        m.d.comb += [
+            self.pre_diff_iq_packer.re_in.eq(self.lsm_demod.i_pre_diff_out),
+            self.pre_diff_iq_packer.im_in.eq(self.lsm_demod.q_pre_diff_out),
+            self.pre_diff_iq_packer.strobe_in.eq(
+                self.lsm_demod.pre_diff_strobe_out),
+            self.pre_diff_iq_dma.stream_data.eq(
+                self.pre_diff_iq_packer.data_out),
+            self.pre_diff_iq_dma.stream_valid.eq(
+                self.pre_diff_iq_packer.data_valid),
+            self.pre_diff_iq_packer.stream_ready.eq(
+                self.pre_diff_iq_dma.stream_ready),
+            self.pre_diff_iq_dma.enable.eq(
+                self.pre_diff_iq_registers[
+                    'pre_diff_iq_dma_control']['pre_diff_iq_enable']),
+            self.pre_diff_iq_registers[
+                'pre_diff_iq_dma_status']['pre_diff_iq_overflow'].eq(
+                self.pre_diff_iq_packer.overflow),
+            self.pre_diff_iq_registers[
+                'pre_diff_iq_dma_status']['last_buffer'].eq(
+                self.pre_diff_iq_dma.last_buffer),
+            self.pre_diff_iq_registers[
+                'pre_diff_iq_next_address']['next_address'].eq(
+                self.pre_diff_iq_dma.axi.awaddr),
+        ]
+
         # Stage 6: NID event latching.
-        # Latched copies of the BCH-decoded NID fields. Updated on
-        # every nid_event_strobe pulse so the PS sees a coherent
-        # snapshot when it reads after observing nid_event sticky.
         latched_nac = Signal(12, reset_less=True)
         latched_duid = Signal(4, reset_less=True)
         latched_n_errors = Signal(7, reset_less=True)
@@ -1339,11 +937,6 @@ class P25Core(Elaboratable):
                 latched_sync_distance.eq(self.lsm_demod.sync_distance_out),
             ]
 
-        # Continuous-read live signals + the latched NID fields, all
-        # surfaced as R / Rsticky fields in the lsm bank. The
-        # nid_event sticky bit is fed by nid_event_strobe directly --
-        # the Rsticky machinery in `Register` does the latch + clear-
-        # on-read.
         lsm_status = self.lsm_registers['lsm_status']
         lsm_nid = self.lsm_registers['lsm_nid']
         lsm_drop = self.lsm_registers['lsm_drop_count']
@@ -1364,12 +957,7 @@ class P25Core(Elaboratable):
                 self.lsm_dibit_dma.last_buffer),
             self.lsm_registers['lsm_dibit_next']['next_address'].eq(
                 self.lsm_dibit_dma.axi.awaddr),
-            # pll_dbg is signed Q2.13 (16 bits), drop straight in.
             lsm_debug['pll_dbg'].eq(self.lsm_demod.pll_dbg),
-            # sample_point_dbg is signed Q4.12 (18 bits); take the top
-            # 16 bits to get a Q4.10 view that fits the field. Losing
-            # 2 LSBs of fractional resolution is fine for a dashboard
-            # trace -- still ~0.25 sample of precision.
             lsm_debug['sample_point_dbg'].eq(
                 self.lsm_demod.sample_point_dbg[2:]),
         ]
@@ -1381,18 +969,14 @@ class P25Core(Elaboratable):
             lsm_agc_debug['agc_mag_dbg'].eq(self.lsm_demod.agc_mag_dbg),
         ]
 
-        # ── Traffic channel DDC + demod chain ─────────────────────────
+        # ── Traffic channel DDC ───────────────────────────────────────
         m.submodules.traffic_ddc = self.traffic_ddc
-        m.submodules.traffic_c4fm = self.traffic_c4fm
-        m.submodules.traffic_timing = self.traffic_timing
-        m.submodules.traffic_packer = self.traffic_packer
-        m.submodules.traffic_dma = self.traffic_dma
         m.submodules.traffic_registers = self.traffic_registers
         m.submodules.traffic_registers_cdc = traffic_registers_cdc = RegisterCDC(
             's_axi_lite', 'sync', self.traffic_registers.aw)
 
-        # Traffic DDC shares the same IQ input as control DDC
-        # but has its own NCO frequency for independent tuning
+        # Traffic DDC shares the same IQ input as control DDC but has
+        # its own NCO frequency for independent tuning.
         m.d.comb += [
             self.traffic_ddc.common_edge.eq(common_edge_3x.common_edge),
             self.traffic_ddc.enable_input.eq(
@@ -1432,76 +1016,13 @@ class P25Core(Elaboratable):
             self.traffic_ddc.im_in.eq(rxiq_cdc.im_out),
         ]
 
-        # Traffic DDC -> differential demod -> timing -> packer -> ring DMA
-        # Same C4FM/LSM-unified differential approach as the control chain:
-        # raw IQ feeds the symbol-rate slicer, diff_im feeds Gardner TED.
-        m.d.comb += [
-            self.traffic_c4fm.re_in.eq(self.traffic_ddc.re_out),
-            self.traffic_c4fm.im_in.eq(self.traffic_ddc.im_out),
-            self.traffic_c4fm.strobe_in.eq(self.traffic_ddc.strobe_out),
-            self.traffic_timing.re_in.eq(self.traffic_ddc.re_out),
-            self.traffic_timing.im_in.eq(self.traffic_ddc.im_out),
-            self.traffic_timing.diff_im_in.eq(self.traffic_c4fm.diff_im_out),
-            self.traffic_timing.strobe_in.eq(self.traffic_c4fm.strobe_out),
-            self.traffic_packer.dibit_in.eq(self.traffic_timing.dibit_out),
-            self.traffic_packer.symbol_strobe.eq(
-                self.traffic_timing.symbol_strobe),
-            self.traffic_dma.stream_data.eq(self.traffic_packer.data_out),
-            self.traffic_dma.stream_valid.eq(self.traffic_packer.data_valid),
-            self.traffic_packer.stream_ready.eq(
-                self.traffic_dma.stream_ready),
-            self.traffic_dma.enable.eq(
-                self.traffic_registers['traffic_demod_control']['demod_enable']),
-        ]
-
-        # Traffic DMA sub-buffer completion -> interrupt
-        m.d.comb += [
-            interrupts_reg['traffic_dma'].eq(traffic_dma_irq_sync.o),
-        ]
-
-        # Traffic demod status registers
-        traffic_dibit_counter = Signal(16, reset_less=True)
-        with m.If(self.traffic_timing.symbol_strobe):
-            m.d.sync += traffic_dibit_counter.eq(
-                traffic_dibit_counter + 1)
-        m.d.comb += [
-            self.traffic_registers['traffic_demod_status']['dibit_count'].eq(
-                traffic_dibit_counter),
-            self.traffic_registers['traffic_demod_status']['demod_overflow'].eq(
-                self.traffic_packer.overflow),
-            self.traffic_registers['traffic_demod_status']['last_buffer'].eq(
-                self.traffic_dma.last_buffer),
-            self.traffic_registers['traffic_next_address']['next_address'].eq(
-                self.traffic_dma.axi.awaddr),
-        ]
-
         # ── Traffic-channel LSM demod chain (Phase 7A.2) ──────────────
-        # Pipeline (mirror of the control-side LSM chain at Phase 6E.9):
+        # Pipeline (mirror of the control-side LSM chain):
         #   traffic_ddc (62.5 kSPS) -> /2 decimator -> LPF -> RRC ->
         #     LsmDemod -> { dibit_packer -> traffic_lsm_dibit_dma,
+        #                   pre_diff taps -> traffic_pre_diff_iq_packer
+        #                                 -> traffic_pre_diff_iq_dma,
         #                   nid event registers (traffic_lsm bank) }
-        #
-        # Master enable: traffic_lsm_control.traffic_lsm_enable gates
-        # the strobe at the very front of LsmDecimator2, so when 0
-        # every downstream block sees no strobes and goes quiescent.
-        # Identical semantics to the control-side lsm_enable.
-        #
-        # Phase 7A.2 is the FPGA prerequisite for HDU + TDU detection
-        # on the voice channel. The PS-side dispatcher reads
-        # traffic_lsm_status (and optionally drains traffic_lsm_dibit_dma
-        # for IMBE extraction in Phase 7C) to classify each NID:
-        #
-        #   DUID 0x0  HDU         -> call start
-        #   DUID 0x3  TDU         -> call end (release lock)
-        #   DUID 0x5  LDU1        -> voice + LC, refresh activity
-        #   DUID 0xA  LDU2        -> voice + ESS, refresh activity
-        #   DUID 0xF  TDU_LC      -> call end with LC payload
-        #
-        # 2026-04-16: traffic-side LsmDemod lives in the global
-        # `sync` domain (matches control-side post-8C.1 revert). The
-        # per-call reset is handled by the explicit
-        # `pulse_traffic_lsm_reset` (Phase 8A `reset_in` path) plus
-        # decimator strobe gating on `traffic_lsm_enable`.
         m.submodules.traffic_lsm_decimator = self.traffic_lsm_decimator
         m.submodules.traffic_lsm_lpf = self.traffic_lsm_lpf
         m.submodules.traffic_lsm_rrc = self.traffic_lsm_rrc
@@ -1537,10 +1058,7 @@ class P25Core(Elaboratable):
             self.traffic_lsm_rrc.strobe_in.eq(
                 self.traffic_lsm_lpf.strobe_out),
         ]
-        # Stage 4: RRC -> LsmDemod (timing recovery + diff demod +
-        # Costas-style PLL rotate + slicer + sync detect + BCH FEC).
-        # Identical block to the control-side LsmDemod -- bit-identical
-        # behavior, just fed by the traffic DDC.
+        # Stage 4: RRC -> LsmDemod (identical to control side).
         m.d.comb += [
             self.traffic_lsm_demod.re_in.eq(self.traffic_lsm_rrc.re_out),
             self.traffic_lsm_demod.im_in.eq(self.traffic_lsm_rrc.im_out),
@@ -1549,27 +1067,15 @@ class P25Core(Elaboratable):
             self.traffic_lsm_demod.dc_block_enable.eq(
                 self.traffic_lsm_registers[
                     'traffic_lsm_control']['traffic_lsm_dc_block_enable']),
-            # Phase 10-prep: per-symbol AGC enable (traffic side).
             self.traffic_lsm_demod.agc_enable.eq(
                 self.traffic_lsm_registers[
                     'traffic_lsm_control']['traffic_lsm_agc_enable']),
-            # Phase 8A: runtime reset strobe for the traffic
-            # chain. `traffic_lsm_reset` is W1P, so a PS write of
-            # 1 gives us a clean 1-sync-cycle pulse that clears
-            # the PLL accumulator, timing state, diff slicer
-            # prev history, sync register, and any in-flight BCH
-            # sweep. The Phase 8B PS retune path toggles this on
-            # every traffic-DDC retune.
             self.traffic_lsm_demod.reset_in.eq(
                 self.traffic_lsm_registers[
                     'traffic_lsm_control']['traffic_lsm_reset']),
         ]
 
         # Stage 5: LsmDemod dibits -> packer -> ring DMA stream.
-        # Mirrors the control-side LSM dibit_packer / dibit_dma wiring
-        # exactly. Phase 7C will tap traffic_lsm_demod.dibit_out /
-        # symbol_strobe in PARALLEL to feed an LDU/IMBE extractor; the
-        # ring DMA path is independent of that future tap.
         m.d.comb += [
             self.traffic_lsm_dibit_packer.dibit_in.eq(
                 self.traffic_lsm_demod.dibit_out),
@@ -1589,9 +1095,6 @@ class P25Core(Elaboratable):
         ]
 
         # Stage 6: NID event latching (mirror of control side).
-        # Latched copies of the BCH-decoded NID fields. Updated on
-        # every nid_event_strobe pulse so the PS sees a coherent
-        # snapshot when it reads after observing nid_event sticky.
         traffic_latched_nac = Signal(12, reset_less=True)
         traffic_latched_duid = Signal(4, reset_less=True)
         traffic_latched_n_errors = Signal(7, reset_less=True)
@@ -1651,12 +1154,10 @@ class P25Core(Elaboratable):
 
         # ── Traffic-channel post-DDC IQ ring DMA (2026-04-16) ─────────
         # Mirrors the control-side `iq_dma` wiring (Phase 6C) for the
-        # traffic chain. Taps the same traffic_ddc.re_out/im_out/
-        # strobe_out that already feed traffic_c4fm and the traffic
-        # LSM chain; IQPacker buffers two consecutive (re, im) pairs
-        # into a 64-bit DMA word and streams to DDR at
-        # 0x1C00_0000. See iq_packer.py for bit layout and
-        # doc/P25_ADDRESS_MAP.md for the DDR carve-out.
+        # traffic chain. Taps the same `traffic_ddc.re_out/im_out/
+        # strobe_out` that also feed the traffic LSM chain, packs two
+        # consecutive IQ pairs into a 64-bit DMA word, and streams to
+        # DDR at 0x1C00_0000.
         m.submodules.traffic_iq_packer = self.traffic_iq_packer
         m.submodules.traffic_iq_dma = self.traffic_iq_dma
         m.submodules.traffic_iq_registers = self.traffic_iq_registers
@@ -1695,142 +1196,58 @@ class P25Core(Elaboratable):
                 self.traffic_iq_dma.axi.awaddr),
         ]
 
-        # ── Traffic-channel post-LSM IQ ring DMA (Phase 10.6 2026-04-18) ──
-        # Traffic-side twin of `lsm_iq_dma`. Taps the output of
-        # `traffic_lsm_rrc` (the 105-tap RRC matched filter in the
-        # traffic LSM chain). Feeds `traffic_lsm_iq_dma` at
-        # 0x1E00_0000. See the control-chain block for the full
-        # rationale.
-        m.submodules.traffic_lsm_iq_packer = self.traffic_lsm_iq_packer
-        m.submodules.traffic_lsm_iq_dma = self.traffic_lsm_iq_dma
-        m.submodules.traffic_lsm_iq_registers = self.traffic_lsm_iq_registers
-        m.submodules.traffic_lsm_iq_registers_cdc = (
-            traffic_lsm_iq_registers_cdc) = RegisterCDC(
-                's_axi_lite', 'sync', self.traffic_lsm_iq_registers.aw)
-
-        m.d.comb += [
-            self.traffic_lsm_iq_packer.re_in.eq(self.traffic_lsm_rrc.re_out),
-            self.traffic_lsm_iq_packer.im_in.eq(self.traffic_lsm_rrc.im_out),
-            self.traffic_lsm_iq_packer.strobe_in.eq(
-                self.traffic_lsm_rrc.strobe_out),
-            self.traffic_lsm_iq_dma.stream_data.eq(
-                self.traffic_lsm_iq_packer.data_out),
-            self.traffic_lsm_iq_dma.stream_valid.eq(
-                self.traffic_lsm_iq_packer.data_valid),
-            self.traffic_lsm_iq_packer.stream_ready.eq(
-                self.traffic_lsm_iq_dma.stream_ready),
-            self.traffic_lsm_iq_dma.enable.eq(
-                self.traffic_lsm_iq_registers[
-                    'traffic_lsm_iq_dma_control']['traffic_lsm_iq_enable']),
-            self.traffic_lsm_iq_registers[
-                'traffic_lsm_iq_dma_status'][
-                    'traffic_lsm_iq_overflow'].eq(
-                self.traffic_lsm_iq_packer.overflow),
-            self.traffic_lsm_iq_registers[
-                'traffic_lsm_iq_dma_status']['last_buffer'].eq(
-                self.traffic_lsm_iq_dma.last_buffer),
-            self.traffic_lsm_iq_registers[
-                'traffic_lsm_iq_next_address']['next_address'].eq(
-                self.traffic_lsm_iq_dma.axi.awaddr),
-        ]
-
-        # ── Phase 10.7: control-chain post-PLL IQ ring DMA ────────────
-        # Third IQ tap on the control chain, downstream of
-        # `LsmPllRotate` inside LsmDemod. `i_rot_out / q_rot_out /
-        # rot_strobe_out` deliver two samples per symbol (mid + sym
-        # interleaved onto adjacent sync cycles by LsmDemodLoop) of
-        # 16-bit Q1.13 carrier-derotated + AGC-scaled IQ. Feeds
-        # `post_pll_iq_dma` at 0x1F00_0000. Packing + register layout
-        # mirror `lsm_iq_dma`.
-        m.submodules.post_pll_iq_packer = self.post_pll_iq_packer
-        m.submodules.post_pll_iq_dma = self.post_pll_iq_dma
-        m.submodules.post_pll_iq_registers = self.post_pll_iq_registers
-        m.submodules.post_pll_iq_registers_cdc = (
-            post_pll_iq_registers_cdc) = RegisterCDC(
-                's_axi_lite', 'sync', self.post_pll_iq_registers.aw)
-
-        m.d.comb += [
-            self.post_pll_iq_packer.re_in.eq(self.lsm_demod.i_rot_out),
-            self.post_pll_iq_packer.im_in.eq(self.lsm_demod.q_rot_out),
-            self.post_pll_iq_packer.strobe_in.eq(
-                self.lsm_demod.rot_strobe_out),
-            self.post_pll_iq_dma.stream_data.eq(
-                self.post_pll_iq_packer.data_out),
-            self.post_pll_iq_dma.stream_valid.eq(
-                self.post_pll_iq_packer.data_valid),
-            self.post_pll_iq_packer.stream_ready.eq(
-                self.post_pll_iq_dma.stream_ready),
-            self.post_pll_iq_dma.enable.eq(
-                self.post_pll_iq_registers[
-                    'post_pll_iq_dma_control']['post_pll_iq_enable']),
-            self.post_pll_iq_registers[
-                'post_pll_iq_dma_status']['post_pll_iq_overflow'].eq(
-                self.post_pll_iq_packer.overflow),
-            self.post_pll_iq_registers[
-                'post_pll_iq_dma_status']['last_buffer'].eq(
-                self.post_pll_iq_dma.last_buffer),
-            self.post_pll_iq_registers[
-                'post_pll_iq_next_address']['next_address'].eq(
-                self.post_pll_iq_dma.axi.awaddr),
-        ]
-
-        # ── Phase 10.7: traffic-chain post-PLL IQ ring DMA ────────────
-        # Traffic-side twin. Tap is `traffic_lsm_demod.i_rot_out/
-        # q_rot_out/rot_strobe_out`.
-        m.submodules.traffic_post_pll_iq_packer = (
-            self.traffic_post_pll_iq_packer)
-        m.submodules.traffic_post_pll_iq_dma = self.traffic_post_pll_iq_dma
-        m.submodules.traffic_post_pll_iq_registers = (
-            self.traffic_post_pll_iq_registers)
-        m.submodules.traffic_post_pll_iq_registers_cdc = (
-            traffic_post_pll_iq_registers_cdc) = RegisterCDC(
+        # ── Traffic-channel pre-diff IQ ring DMA (Phase 10.8) ─────────
+        # Traffic-side twin of `pre_diff_iq_dma`. Tap is
+        # `traffic_lsm_demod.i_pre_diff_out / q_pre_diff_out /
+        # pre_diff_strobe_out`.
+        m.submodules.traffic_pre_diff_iq_packer = (
+            self.traffic_pre_diff_iq_packer)
+        m.submodules.traffic_pre_diff_iq_dma = self.traffic_pre_diff_iq_dma
+        m.submodules.traffic_pre_diff_iq_registers = (
+            self.traffic_pre_diff_iq_registers)
+        m.submodules.traffic_pre_diff_iq_registers_cdc = (
+            traffic_pre_diff_iq_registers_cdc) = RegisterCDC(
                 's_axi_lite', 'sync',
-                self.traffic_post_pll_iq_registers.aw)
+                self.traffic_pre_diff_iq_registers.aw)
 
         m.d.comb += [
-            self.traffic_post_pll_iq_packer.re_in.eq(
-                self.traffic_lsm_demod.i_rot_out),
-            self.traffic_post_pll_iq_packer.im_in.eq(
-                self.traffic_lsm_demod.q_rot_out),
-            self.traffic_post_pll_iq_packer.strobe_in.eq(
-                self.traffic_lsm_demod.rot_strobe_out),
-            self.traffic_post_pll_iq_dma.stream_data.eq(
-                self.traffic_post_pll_iq_packer.data_out),
-            self.traffic_post_pll_iq_dma.stream_valid.eq(
-                self.traffic_post_pll_iq_packer.data_valid),
-            self.traffic_post_pll_iq_packer.stream_ready.eq(
-                self.traffic_post_pll_iq_dma.stream_ready),
-            self.traffic_post_pll_iq_dma.enable.eq(
-                self.traffic_post_pll_iq_registers[
-                    'traffic_post_pll_iq_dma_control'][
-                        'traffic_post_pll_iq_enable']),
-            self.traffic_post_pll_iq_registers[
-                'traffic_post_pll_iq_dma_status'][
-                    'traffic_post_pll_iq_overflow'].eq(
-                self.traffic_post_pll_iq_packer.overflow),
-            self.traffic_post_pll_iq_registers[
-                'traffic_post_pll_iq_dma_status']['last_buffer'].eq(
-                self.traffic_post_pll_iq_dma.last_buffer),
-            self.traffic_post_pll_iq_registers[
-                'traffic_post_pll_iq_next_address']['next_address'].eq(
-                self.traffic_post_pll_iq_dma.axi.awaddr),
+            self.traffic_pre_diff_iq_packer.re_in.eq(
+                self.traffic_lsm_demod.i_pre_diff_out),
+            self.traffic_pre_diff_iq_packer.im_in.eq(
+                self.traffic_lsm_demod.q_pre_diff_out),
+            self.traffic_pre_diff_iq_packer.strobe_in.eq(
+                self.traffic_lsm_demod.pre_diff_strobe_out),
+            self.traffic_pre_diff_iq_dma.stream_data.eq(
+                self.traffic_pre_diff_iq_packer.data_out),
+            self.traffic_pre_diff_iq_dma.stream_valid.eq(
+                self.traffic_pre_diff_iq_packer.data_valid),
+            self.traffic_pre_diff_iq_packer.stream_ready.eq(
+                self.traffic_pre_diff_iq_dma.stream_ready),
+            self.traffic_pre_diff_iq_dma.enable.eq(
+                self.traffic_pre_diff_iq_registers[
+                    'traffic_pre_diff_iq_dma_control'][
+                        'traffic_pre_diff_iq_enable']),
+            self.traffic_pre_diff_iq_registers[
+                'traffic_pre_diff_iq_dma_status'][
+                    'traffic_pre_diff_iq_overflow'].eq(
+                self.traffic_pre_diff_iq_packer.overflow),
+            self.traffic_pre_diff_iq_registers[
+                'traffic_pre_diff_iq_dma_status']['last_buffer'].eq(
+                self.traffic_pre_diff_iq_dma.last_buffer),
+            self.traffic_pre_diff_iq_registers[
+                'traffic_pre_diff_iq_next_address']['next_address'].eq(
+                self.traffic_pre_diff_iq_dma.axi.awaddr),
         ]
 
         # ── Phase 10.7: wideband spectrometer ─────────────────────────
         # Direct instantiation of the Maia SDR `Spectrometer`
-        # sub-module (NOT the monolithic maia_sdr IP). Tap is pre-DDC
-        # off `rxiq_cdc` at AD9361 sample rate (preset-dependent);
-        # the spectrometer's window + FFT + integrator produce one
-        # 4096-bin spectrum per completed integration to
-        # `wideband_spec_dma` at 0x2100_0000. Running in the sync
-        # domain with strobe_in = rxiq_cdc.strobe_out keeps the bin
-        # rate equal to the RX sample rate, which is what
-        # `/api/spectrum_wide` expects.
+        # sub-module. Tap is pre-DDC off `rxiq_cdc` at AD9361 sample
+        # rate (preset-dependent). The spectrometer's window + FFT +
+        # integrator produce one 4096-bin spectrum per completed
+        # integration to `wideband_spec_dma` at 0x2100_0000.
         #
         # `rxiq_cdc.re_out / im_out` are 12-bit unsigned wrappers of
-        # 12-bit signed two's complement; reinterpret as signed and
-        # assign to the 16-bit signed spectrometer inputs for
-        # automatic sign extension.
+        # 12-bit signed two's complement; reinterpret as signed.
         m.submodules.common_edge_2x = common_edge_2x = ClkNxCommonEdge(
             'sync', 'clk2x', 2)
         m.submodules.wideband_spec = self.wideband_spec
@@ -1845,9 +1262,7 @@ class P25Core(Elaboratable):
             self.wideband_spec.re_in.eq(rxiq_cdc.re_out.as_signed()),
             self.wideband_spec.im_in.eq(rxiq_cdc.im_out.as_signed()),
             # Gate the strobe on `spec_enable` so the spectrometer can
-            # be idled without tearing down the whole P25 chain. The
-            # FFT pipeline freezes when strobe_in is deasserted (clken
-            # gating), so this cleanly pauses integration.
+            # be idled without tearing down the whole P25 chain.
             self.wideband_spec.strobe_in.eq(
                 rxiq_cdc.strobe_out & spec_ctrl['spec_enable']),
             self.wideband_spec.common_edge_2x.eq(
@@ -1867,80 +1282,66 @@ class P25Core(Elaboratable):
         ]
 
         # ── Register crossbar ─────────────────────────────────────────
-        # Address map (word-addressed via AXI4-Lite, 7-bit address):
-        # Bank field is bits [5:3] of the word address (3 bits = 8
+        # Address map (word-addressed via AXI4-Lite, 8-bit address):
+        # Bank field is bits [6:3] of the word address (4 bits = 16
         # banks max). See doc/P25_ADDRESS_MAP.md for the canonical table.
         #
-        #   word 0x00-0x07: control registers      (bits [5:3] == 000)
-        #   word 0x08-0x0F: SDR/DDC registers      (bits [5:3] == 001)
-        #   word 0x10-0x17: demod registers        (bits [5:3] == 010)
-        #   word 0x18-0x1F: traffic registers      (bits [5:3] == 011)
-        #   word 0x20-0x27: IQ DMA registers       (bits [5:3] == 100) [Phase 6C]
-        #   word 0x28-0x2F: LSM registers          (bits [5:3] == 101) [Phase 6E.9]
-        #   word 0x30-0x37: traffic_lsm registers  (bits [5:3] == 110) [Phase 7A.2]
-        #   word 0x38-0x3F: traffic_iq registers   (bits [5:3] == 111) [2026-04-16]
-        # All 8 banks now used; any further bank adds need a 4-bit
-        # bank decoder (bits [6:3]) and an AXI address width bump.
+        # Phase 10.8 layout:
+        #   word 0x00-0x07: control          (bank 0)
+        #   word 0x08-0x0F: SDR/DDC          (bank 1)
+        #   word 0x18-0x1F: traffic          (bank 3)
+        #   word 0x20-0x27: IQ DMA           (bank 4)
+        #   word 0x28-0x2F: LSM              (bank 5)
+        #   word 0x30-0x37: traffic_lsm      (bank 6)
+        #   word 0x38-0x3F: traffic_iq       (bank 7)
+        #   word 0x60-0x67: spectrometer     (bank 12)
+        #   word 0x68-0x6F: pre_diff_iq      (bank 13)
+        #   word 0x70-0x77: traffic_pre_diff_iq (bank 14)
+        # Banks 2, 8-11 and 15 are intentionally vacant.
         address = Signal(self.axi4_awidth, reset_less=True)
         wdata = Signal(32, reset_less=True)
-        # 2026-04-18 widened: bank decode now bits [6:3] (4 bits = 16
-        # banks) to make room for the Phase 10.6 lsm_iq + traffic_lsm_iq
-        # register banks at 0x100 / 0x120.
         addr_bank = self.axi4lite.address[3:7]  # bits [6:3]
         control_regs_select = (addr_bank == 0b0000)
         sdr_regs_select = (addr_bank == 0b0001)
-        demod_regs_select = (addr_bank == 0b0010)
         traffic_regs_select = (addr_bank == 0b0011)
-        iq_regs_select = (addr_bank == 0b0100)       # Phase 6C
-        lsm_regs_select = (addr_bank == 0b0101)      # Phase 6E.9
-        traffic_lsm_regs_select = (addr_bank == 0b0110)   # Phase 7A.2
-        traffic_iq_regs_select = (addr_bank == 0b0111)    # 2026-04-16
-        # Phase 10.6 new banks at 0x100 / 0x120
-        lsm_iq_regs_select = (addr_bank == 0b1000)
-        traffic_lsm_iq_regs_select = (addr_bank == 0b1001)
-        # Phase 10.7 new banks at 0x140 / 0x160 / 0x180
-        post_pll_iq_regs_select = (addr_bank == 0b1010)
-        traffic_post_pll_iq_regs_select = (addr_bank == 0b1011)
+        iq_regs_select = (addr_bank == 0b0100)
+        lsm_regs_select = (addr_bank == 0b0101)
+        traffic_lsm_regs_select = (addr_bank == 0b0110)
+        traffic_iq_regs_select = (addr_bank == 0b0111)
         spec_regs_select = (addr_bank == 0b1100)
+        pre_diff_iq_regs_select = (addr_bank == 0b1101)
+        traffic_pre_diff_iq_regs_select = (addr_bank == 0b1110)
+
         m.d.s_axi_lite += [
             self.axi4lite.rdata.eq(self.control_registers.rdata
                                    | sdr_registers_cdc.i_rdata
-                                   | demod_registers_cdc.i_rdata
                                    | traffic_registers_cdc.i_rdata
                                    | iq_registers_cdc.i_rdata
                                    | lsm_registers_cdc.i_rdata
                                    | traffic_lsm_registers_cdc.i_rdata
                                    | traffic_iq_registers_cdc.i_rdata
-                                   | lsm_iq_registers_cdc.i_rdata
-                                   | traffic_lsm_iq_registers_cdc.i_rdata
-                                   | post_pll_iq_registers_cdc.i_rdata
-                                   | traffic_post_pll_iq_registers_cdc.i_rdata
+                                   | pre_diff_iq_registers_cdc.i_rdata
+                                   | traffic_pre_diff_iq_registers_cdc.i_rdata
                                    | wideband_spec_registers_cdc.i_rdata),
             self.axi4lite.rdone.eq(self.control_registers.rdone
                                    | sdr_registers_cdc.i_rdone
-                                   | demod_registers_cdc.i_rdone
                                    | traffic_registers_cdc.i_rdone
                                    | iq_registers_cdc.i_rdone
                                    | lsm_registers_cdc.i_rdone
                                    | traffic_lsm_registers_cdc.i_rdone
                                    | traffic_iq_registers_cdc.i_rdone
-                                   | lsm_iq_registers_cdc.i_rdone
-                                   | traffic_lsm_iq_registers_cdc.i_rdone
-                                   | post_pll_iq_registers_cdc.i_rdone
-                                   | traffic_post_pll_iq_registers_cdc.i_rdone
+                                   | pre_diff_iq_registers_cdc.i_rdone
+                                   | traffic_pre_diff_iq_registers_cdc.i_rdone
                                    | wideband_spec_registers_cdc.i_rdone),
             self.axi4lite.wdone.eq(self.control_registers.wdone
                                    | sdr_registers_cdc.i_wdone
-                                   | demod_registers_cdc.i_wdone
                                    | traffic_registers_cdc.i_wdone
                                    | iq_registers_cdc.i_wdone
                                    | lsm_registers_cdc.i_wdone
                                    | traffic_lsm_registers_cdc.i_wdone
                                    | traffic_iq_registers_cdc.i_wdone
-                                   | lsm_iq_registers_cdc.i_wdone
-                                   | traffic_lsm_iq_registers_cdc.i_wdone
-                                   | post_pll_iq_registers_cdc.i_wdone
-                                   | traffic_post_pll_iq_registers_cdc.i_wdone
+                                   | pre_diff_iq_registers_cdc.i_wdone
+                                   | traffic_pre_diff_iq_registers_cdc.i_wdone
                                    | wideband_spec_registers_cdc.i_wdone),
             self.control_registers.ren.eq(
                 self.axi4lite.ren & control_regs_select),
@@ -1950,10 +1351,6 @@ class P25Core(Elaboratable):
                 self.axi4lite.ren & sdr_regs_select),
             sdr_registers_cdc.i_wstrobe.eq(
                 Mux(sdr_regs_select, self.axi4lite.wstrobe, 0)),
-            demod_registers_cdc.i_ren.eq(
-                self.axi4lite.ren & demod_regs_select),
-            demod_registers_cdc.i_wstrobe.eq(
-                Mux(demod_regs_select, self.axi4lite.wstrobe, 0)),
             traffic_registers_cdc.i_ren.eq(
                 self.axi4lite.ren & traffic_regs_select),
             traffic_registers_cdc.i_wstrobe.eq(
@@ -1974,28 +1371,20 @@ class P25Core(Elaboratable):
                 self.axi4lite.ren & traffic_iq_regs_select),
             traffic_iq_registers_cdc.i_wstrobe.eq(
                 Mux(traffic_iq_regs_select, self.axi4lite.wstrobe, 0)),
-            lsm_iq_registers_cdc.i_ren.eq(
-                self.axi4lite.ren & lsm_iq_regs_select),
-            lsm_iq_registers_cdc.i_wstrobe.eq(
-                Mux(lsm_iq_regs_select, self.axi4lite.wstrobe, 0)),
-            traffic_lsm_iq_registers_cdc.i_ren.eq(
-                self.axi4lite.ren & traffic_lsm_iq_regs_select),
-            traffic_lsm_iq_registers_cdc.i_wstrobe.eq(
-                Mux(traffic_lsm_iq_regs_select, self.axi4lite.wstrobe, 0)),
-            # Phase 10.7 bank selects
-            post_pll_iq_registers_cdc.i_ren.eq(
-                self.axi4lite.ren & post_pll_iq_regs_select),
-            post_pll_iq_registers_cdc.i_wstrobe.eq(
-                Mux(post_pll_iq_regs_select, self.axi4lite.wstrobe, 0)),
-            traffic_post_pll_iq_registers_cdc.i_ren.eq(
-                self.axi4lite.ren & traffic_post_pll_iq_regs_select),
-            traffic_post_pll_iq_registers_cdc.i_wstrobe.eq(
-                Mux(traffic_post_pll_iq_regs_select,
-                    self.axi4lite.wstrobe, 0)),
             wideband_spec_registers_cdc.i_ren.eq(
                 self.axi4lite.ren & spec_regs_select),
             wideband_spec_registers_cdc.i_wstrobe.eq(
                 Mux(spec_regs_select, self.axi4lite.wstrobe, 0)),
+            # Phase 10.8 bank selects
+            pre_diff_iq_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & pre_diff_iq_regs_select),
+            pre_diff_iq_registers_cdc.i_wstrobe.eq(
+                Mux(pre_diff_iq_regs_select, self.axi4lite.wstrobe, 0)),
+            traffic_pre_diff_iq_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & traffic_pre_diff_iq_regs_select),
+            traffic_pre_diff_iq_registers_cdc.i_wstrobe.eq(
+                Mux(traffic_pre_diff_iq_regs_select,
+                    self.axi4lite.wstrobe, 0)),
             address.eq(self.axi4lite.address),
             wdata.eq(self.axi4lite.wdata),
         ]
@@ -2004,8 +1393,6 @@ class P25Core(Elaboratable):
             self.control_registers.wdata.eq(wdata),
             sdr_registers_cdc.i_address.eq(address),
             sdr_registers_cdc.i_wdata.eq(wdata),
-            demod_registers_cdc.i_address.eq(address),
-            demod_registers_cdc.i_wdata.eq(wdata),
             traffic_registers_cdc.i_address.eq(address),
             traffic_registers_cdc.i_wdata.eq(wdata),
             iq_registers_cdc.i_address.eq(address),
@@ -2016,15 +1403,10 @@ class P25Core(Elaboratable):
             traffic_lsm_registers_cdc.i_wdata.eq(wdata),
             traffic_iq_registers_cdc.i_address.eq(address),
             traffic_iq_registers_cdc.i_wdata.eq(wdata),
-            lsm_iq_registers_cdc.i_address.eq(address),
-            lsm_iq_registers_cdc.i_wdata.eq(wdata),
-            traffic_lsm_iq_registers_cdc.i_address.eq(address),
-            traffic_lsm_iq_registers_cdc.i_wdata.eq(wdata),
-            # Phase 10.7 CDC address/wdata fan-out
-            post_pll_iq_registers_cdc.i_address.eq(address),
-            post_pll_iq_registers_cdc.i_wdata.eq(wdata),
-            traffic_post_pll_iq_registers_cdc.i_address.eq(address),
-            traffic_post_pll_iq_registers_cdc.i_wdata.eq(wdata),
+            pre_diff_iq_registers_cdc.i_address.eq(address),
+            pre_diff_iq_registers_cdc.i_wdata.eq(wdata),
+            traffic_pre_diff_iq_registers_cdc.i_address.eq(address),
+            traffic_pre_diff_iq_registers_cdc.i_wdata.eq(wdata),
             wideband_spec_registers_cdc.i_address.eq(address),
             wideband_spec_registers_cdc.i_wdata.eq(wdata),
         ]
@@ -2039,16 +1421,6 @@ class P25Core(Elaboratable):
             sdr_registers_cdc.o_rdone.eq(self.sdr_registers.rdone),
             sdr_registers_cdc.o_wdone.eq(self.sdr_registers.wdone),
             sdr_registers_cdc.o_rdata.eq(self.sdr_registers.rdata),
-        ]
-        # demod_registers CDC
-        m.d.comb += [
-            self.demod_registers.ren.eq(demod_registers_cdc.o_ren),
-            self.demod_registers.wstrobe.eq(demod_registers_cdc.o_wstrobe),
-            self.demod_registers.address.eq(demod_registers_cdc.o_address),
-            self.demod_registers.wdata.eq(demod_registers_cdc.o_wdata),
-            demod_registers_cdc.o_rdone.eq(self.demod_registers.rdone),
-            demod_registers_cdc.o_wdone.eq(self.demod_registers.wdone),
-            demod_registers_cdc.o_rdata.eq(self.demod_registers.rdata),
         ]
         # traffic_registers CDC
         m.d.comb += [
@@ -2114,65 +1486,38 @@ class P25Core(Elaboratable):
             traffic_iq_registers_cdc.o_rdata.eq(
                 self.traffic_iq_registers.rdata),
         ]
-        # Phase 10.6 2026-04-18: lsm_iq_registers + traffic_lsm_iq_registers CDC
+        # Phase 10.8: pre_diff_iq + traffic_pre_diff_iq register CDCs.
         m.d.comb += [
-            self.lsm_iq_registers.ren.eq(lsm_iq_registers_cdc.o_ren),
-            self.lsm_iq_registers.wstrobe.eq(lsm_iq_registers_cdc.o_wstrobe),
-            self.lsm_iq_registers.address.eq(lsm_iq_registers_cdc.o_address),
-            self.lsm_iq_registers.wdata.eq(lsm_iq_registers_cdc.o_wdata),
-            lsm_iq_registers_cdc.o_rdone.eq(self.lsm_iq_registers.rdone),
-            lsm_iq_registers_cdc.o_wdone.eq(self.lsm_iq_registers.wdone),
-            lsm_iq_registers_cdc.o_rdata.eq(self.lsm_iq_registers.rdata),
+            self.pre_diff_iq_registers.ren.eq(
+                pre_diff_iq_registers_cdc.o_ren),
+            self.pre_diff_iq_registers.wstrobe.eq(
+                pre_diff_iq_registers_cdc.o_wstrobe),
+            self.pre_diff_iq_registers.address.eq(
+                pre_diff_iq_registers_cdc.o_address),
+            self.pre_diff_iq_registers.wdata.eq(
+                pre_diff_iq_registers_cdc.o_wdata),
+            pre_diff_iq_registers_cdc.o_rdone.eq(
+                self.pre_diff_iq_registers.rdone),
+            pre_diff_iq_registers_cdc.o_wdone.eq(
+                self.pre_diff_iq_registers.wdone),
+            pre_diff_iq_registers_cdc.o_rdata.eq(
+                self.pre_diff_iq_registers.rdata),
         ]
         m.d.comb += [
-            self.traffic_lsm_iq_registers.ren.eq(
-                traffic_lsm_iq_registers_cdc.o_ren),
-            self.traffic_lsm_iq_registers.wstrobe.eq(
-                traffic_lsm_iq_registers_cdc.o_wstrobe),
-            self.traffic_lsm_iq_registers.address.eq(
-                traffic_lsm_iq_registers_cdc.o_address),
-            self.traffic_lsm_iq_registers.wdata.eq(
-                traffic_lsm_iq_registers_cdc.o_wdata),
-            traffic_lsm_iq_registers_cdc.o_rdone.eq(
-                self.traffic_lsm_iq_registers.rdone),
-            traffic_lsm_iq_registers_cdc.o_wdone.eq(
-                self.traffic_lsm_iq_registers.wdone),
-            traffic_lsm_iq_registers_cdc.o_rdata.eq(
-                self.traffic_lsm_iq_registers.rdata),
-        ]
-        # Phase 10.7 2026-04-22: post_pll_iq + traffic_post_pll_iq +
-        # wideband spectrometer register CDCs.
-        m.d.comb += [
-            self.post_pll_iq_registers.ren.eq(
-                post_pll_iq_registers_cdc.o_ren),
-            self.post_pll_iq_registers.wstrobe.eq(
-                post_pll_iq_registers_cdc.o_wstrobe),
-            self.post_pll_iq_registers.address.eq(
-                post_pll_iq_registers_cdc.o_address),
-            self.post_pll_iq_registers.wdata.eq(
-                post_pll_iq_registers_cdc.o_wdata),
-            post_pll_iq_registers_cdc.o_rdone.eq(
-                self.post_pll_iq_registers.rdone),
-            post_pll_iq_registers_cdc.o_wdone.eq(
-                self.post_pll_iq_registers.wdone),
-            post_pll_iq_registers_cdc.o_rdata.eq(
-                self.post_pll_iq_registers.rdata),
-        ]
-        m.d.comb += [
-            self.traffic_post_pll_iq_registers.ren.eq(
-                traffic_post_pll_iq_registers_cdc.o_ren),
-            self.traffic_post_pll_iq_registers.wstrobe.eq(
-                traffic_post_pll_iq_registers_cdc.o_wstrobe),
-            self.traffic_post_pll_iq_registers.address.eq(
-                traffic_post_pll_iq_registers_cdc.o_address),
-            self.traffic_post_pll_iq_registers.wdata.eq(
-                traffic_post_pll_iq_registers_cdc.o_wdata),
-            traffic_post_pll_iq_registers_cdc.o_rdone.eq(
-                self.traffic_post_pll_iq_registers.rdone),
-            traffic_post_pll_iq_registers_cdc.o_wdone.eq(
-                self.traffic_post_pll_iq_registers.wdone),
-            traffic_post_pll_iq_registers_cdc.o_rdata.eq(
-                self.traffic_post_pll_iq_registers.rdata),
+            self.traffic_pre_diff_iq_registers.ren.eq(
+                traffic_pre_diff_iq_registers_cdc.o_ren),
+            self.traffic_pre_diff_iq_registers.wstrobe.eq(
+                traffic_pre_diff_iq_registers_cdc.o_wstrobe),
+            self.traffic_pre_diff_iq_registers.address.eq(
+                traffic_pre_diff_iq_registers_cdc.o_address),
+            self.traffic_pre_diff_iq_registers.wdata.eq(
+                traffic_pre_diff_iq_registers_cdc.o_wdata),
+            traffic_pre_diff_iq_registers_cdc.o_rdone.eq(
+                self.traffic_pre_diff_iq_registers.rdone),
+            traffic_pre_diff_iq_registers_cdc.o_wdone.eq(
+                self.traffic_pre_diff_iq_registers.wdone),
+            traffic_pre_diff_iq_registers_cdc.o_rdata.eq(
+                self.traffic_pre_diff_iq_registers.rdata),
         ]
         m.d.comb += [
             self.wideband_spec_registers.ren.eq(

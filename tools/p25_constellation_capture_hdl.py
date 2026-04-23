@@ -2,7 +2,7 @@
 """
 Capture constellation snapshots from the Phase 10.7 HDL post-PLL ring.
 
-Streams /ws/iq?source=post_pll (9.6 kSPS, 2 samples per symbol — mid+sym
+Streams /ws/iq?source=pre_diff (9.6 kSPS, 2 samples per symbol — mid+sym
 interleaved) from the board, windows into N-second blocks, computes the
 same per-block metrics as `p25_constellation_capture.py` (radius_mean,
 cluster_var_mean, angle_std, PLL-lock proxy), and writes PNGs plus a
@@ -117,29 +117,42 @@ def render_eye(both: np.ndarray, out_path: str, meta: dict) -> None:
     SPS = 2 * UPSAMPLE                  # samples per symbol after upsample
     OVERLAY_SYMS = 9
     OVERLAY = SPS * OVERLAY_SYMS        # 90 samples per overlay trace
+    MAX_OVERLAYS = 60                   # fewer, distinct traces over noise
 
-    # Linear-interpolate I and Q up to 10 sps, then compute atan2·4/π.
-    # Interpolating I/Q and then atan2 is safer than atan2 + unwrap +
-    # interpolate because consecutive atan2 values can jump ±2π and
-    # unwrapping is fragile at strong signal transitions.
+    # Compute sparse-sample phase first, unwrap, then interpolate in
+    # phase space. Linear interp of I/Q chords through the unit circle
+    # creates amplitude dips that manifest as spurious phase wobble in
+    # atan2; phase-space interp follows the actual signal trajectory
+    # along the circle so rail-to-rail transitions render as smooth
+    # monotone curves rather than interp-bent lines.
+    phase_sparse = np.unwrap(np.arctan2(both[:, 1], both[:, 0]))
     t0 = np.arange(both.shape[0])
     t1 = np.linspace(0, t0[-1], both.shape[0] * UPSAMPLE)
-    i_up = np.interp(t1, t0, both[:, 0])
-    q_up = np.interp(t1, t0, both[:, 1])
-    phase = np.arctan2(q_up, i_up) * (4.0 / np.pi)
+    phase_up = np.interp(t1, t0, phase_sparse)
+    # Wrap back to principal branch [-π, π] and scale to P25 ±3 / ±1.
+    phase = np.mod(phase_up + np.pi, 2.0 * np.pi) - np.pi
+    phase *= (4.0 / np.pi)
 
-    # matplotlib default colour cycle (tab10) — 10 distinct colours so
-    # consecutive overlays are easy to tell apart.
     cmap = plt.get_cmap("tab10")
 
     fig, ax = plt.subplots(figsize=(8.5, 4.5), dpi=110)
-    x = np.arange(OVERLAY) / SPS        # x axis in symbol periods (0..9)
-    # Skip the first/last symbols to avoid edge artefacts from np.interp.
+    x = np.arange(OVERLAY) / SPS        # symbol periods 0..9
     n_overlays = (phase.size - 2 * SPS - OVERLAY) // SPS
-    for k in range(min(n_overlays, 400)):
+    # Stride through the buffer so the overlay sample is
+    # representative rather than all from the first second.
+    stride = max(1, n_overlays // MAX_OVERLAYS)
+    drawn = 0
+    for k in range(0, n_overlays, stride):
+        if drawn >= MAX_OVERLAYS: break
         start = SPS + k * SPS
         trace = phase[start:start + OVERLAY]
-        ax.plot(x, trace, color=cmap(k % 10), lw=0.9, alpha=1.0)
+        # Drop any trace that contains an unwrapping discontinuity
+        # (adjacent samples jumping > 2 ≈ half-symbol in normalised
+        # P25 units), which would show as a spurious vertical stroke.
+        if np.any(np.abs(np.diff(trace)) > 2.0):
+            continue
+        ax.plot(x, trace, color=cmap(drawn % 10), lw=1.0, alpha=1.0)
+        drawn += 1
     # P25 decision-level rails.
     for lvl in (+3, +1, -1, -3):
         ax.axhline(lvl, color="#222", lw=0.8, ls="-")
@@ -169,7 +182,7 @@ def render_eye(both: np.ndarray, out_path: str, meta: dict) -> None:
 
 async def stream(host: str, chain: str, seconds: float,
                  outdir: str, window_s: float) -> list[dict]:
-    uri = f"ws://{host}/ws/iq?source=post_pll&chain={chain}"
+    uri = f"ws://{host}/ws/iq?source=pre_diff&chain={chain}"
     print(f"connecting {uri}", file=sys.stderr)
     pairs: list[tuple[int, int]] = []
     hello = None
@@ -193,7 +206,7 @@ async def stream(host: str, chain: str, seconds: float,
         except asyncio.TimeoutError:
             print("ws recv timed out (end of capture)", file=sys.stderr)
     if not pairs:
-        raise SystemExit("no data received on /ws/iq?source=post_pll")
+        raise SystemExit("no data received on /ws/iq?source=pre_diff")
     arr = np.array(pairs, dtype=np.int32).astype(np.float32) * Q13_SCALE
     # Odd-indexed samples are rotate_sym (decision-time); even are rotate_mid.
     sym = arr[1::2]

@@ -121,16 +121,12 @@ pub async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats>
     // 2026-04-16: stats read from the active control-chain decoder.
     let decoder = state.active_control_decoder().read().await;
 
+    // Phase 10.8: the PS C4FM chain's `demod_status` / `dibit_next_
+    // address` registers are retired with the HDL C4FM chain. The
+    // `/api/stats` JSON shape keeps the three fields so the
+    // dashboard's KPI strip doesn't break; all three read 0 now.
     #[cfg(target_os = "linux")]
-    let (dibit_count, overflow, dma_next_address) = {
-        let core = state.ip_core.lock().await;
-        (
-            core.dibit_count() as u32,
-            core.demod_overflow(),
-            core.dibit_next_address(),
-        )
-    };
-    #[cfg(not(target_os = "linux"))]
+    let _ = &state.ip_core;
     let (dibit_count, overflow, dma_next_address) = (0u32, false, 0u32);
 
     // AD9361 health: AGC gain (high = AGC searching for weak signal) and
