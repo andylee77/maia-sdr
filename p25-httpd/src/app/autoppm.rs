@@ -213,9 +213,30 @@ pub async fn run_calibration(
     // main.rs::nco_lo_shift_hz formula: shift = -ppm * 1e-6 * rx_lo).
     let final_lo_ppm = -final_lo_shift / (rx_lo * 1e-6);
 
-    // Persist to AppState so /api/ppm can read it.
+    // Persist to AppState so /api/ppm can read it. A full cal also
+    // resets the baseline — this IS the new "known-good" reference
+    // that the periodic fine-tune is allowed to wander ±0.2 ppm off.
     let hz_int = final_lo_shift.round() as i64;
     state.current_lo_shift_hz.store(hz_int, Ordering::Relaxed);
+    state.baseline_lo_shift_hz.store(hz_int, Ordering::Relaxed);
+
+    // Event-log the calibration so /api/log has an audit trail of
+    // shift changes, not just tracing/stdout.
+    state.event_log.push(
+        crate::services::event_log::LogCategory::System,
+        format!("auto-PPM calibration: stage A delta {:+.1} Hz, \
+                 stage B residual {:+.1} Hz -> shift {:+} Hz \
+                 ({:+.4} ppm, baseline reset)",
+                stage_a_delta, pll_residual_hz,
+                hz_int, final_lo_ppm),
+        serde_json::json!({
+            "kind":             "ppm.calibrate",
+            "stage_a_delta_hz": stage_a_delta,
+            "stage_b_residual_hz": pll_residual_hz,
+            "final_lo_shift_hz": hz_int,
+            "final_lo_ppm":     final_lo_ppm,
+        }),
+    );
     let unix_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -457,6 +478,15 @@ const FINE_TUNE_MIN_AGC_PRODUCT: f64 = 0.6;
 #[cfg(target_os = "linux")]
 const SYNC_LOST_RESET_SECS: u64 = 300;
 
+/// Maximum ppm fine-tune is allowed to wander off the baseline that
+/// the last full calibration / operator override established. A full
+/// recal (POST /api/ppm_calibrate) or manual PUT /api/ppm resets
+/// this baseline. Fine-tune is a tracking correction, NOT a redefine;
+/// if the crystal has drifted more than this we want operator
+/// attention, not silent accumulation.
+#[cfg(target_os = "linux")]
+const FINE_TUNE_MAX_PPM_OFF_BASELINE: f64 = 0.2;
+
 /// Spawn a long-lived task that periodically samples `pll_dbg`,
 /// computes the residual in Hz, and applies it to the DDC NCO if it
 /// exceeds `FINE_TUNE_THRESHOLD_HZ`. This is stage-B-only — no
@@ -504,6 +534,17 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
                             "auto-PPM (fine-tune): sync lost for {:.0}s, \
                              shift reset to 0 (was {:+} Hz)",
                             lost.elapsed().as_secs_f64(), old);
+                        state.event_log.push(
+                            crate::services::event_log::LogCategory::System,
+                            format!("auto-PPM RESET: sync lost {:.0}s, \
+                                     shift 0 (was {:+} Hz)",
+                                     lost.elapsed().as_secs_f64(), old),
+                            serde_json::json!({
+                                "kind":        "ppm.sync_lost_reset",
+                                "lost_secs":   lost.elapsed().as_secs_f64(),
+                                "old_shift":   old,
+                            }),
+                        );
                         sync_lost_since = Some(Instant::now());
                     }
                 }
@@ -511,17 +552,26 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
             }
             sync_lost_since = None;
 
-            // AGC-health gate. If the HDL AGC loop isn't tracking
-            // (agc_product well below 1.0), pll_dbg is noise and
-            // applying it as a "correction" just walks the shift
-            // in a random direction. Skip until the loop recovers.
-            let (agc_product, pll_raw) = {
+            // Decode-health + AGC-health gate. If decode is visibly
+            // clean (sync_distance=0, nid_valid, low n_errors) AND
+            // the AGC loop is tracking (agc_product near 1.0), we
+            // trust the PLL and let it measure. If either is soft,
+            // we skip — a wobbly PLL reading isn't a real offset.
+            //
+            // Operator ask 2026-04-23: "if we have 100% decodes we
+            // should not adjust". Tight sync + no NID errors = the
+            // decode path is healthy. Why push the shift around?
+            let (agc_product, health_ok) = {
                 let core = state.ip_core.lock().await;
                 let (g_q9_7, m_q1_15) = core.lsm_agc_debug();
-                let (pll, _) = core.lsm_debug();
+                let st = core.lsm_status();
                 let g = g_q9_7 as f64 / 128.0;
                 let m = m_q1_15 as f64 / 32768.0;
-                (g * m, pll)
+                let product = g * m;
+                let decode_healthy = st.nid_valid
+                    && st.sync_distance == 0
+                    && st.n_errors <= 2;
+                (product, decode_healthy)
             };
             if agc_product < FINE_TUNE_MIN_AGC_PRODUCT {
                 tracing::debug!(
@@ -530,7 +580,12 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
                     agc_product, FINE_TUNE_MIN_AGC_PRODUCT);
                 continue;
             }
-            let _ = pll_raw;  // keep the initial read for logging
+            if !health_ok {
+                tracing::debug!(
+                    "auto-PPM (fine-tune): skip, decode not clean \
+                     (sync_distance / n_errors / nid_valid check)");
+                continue;
+            }
 
             // Sample PLL briefly — this runs while decode is live so
             // we keep it short to minimise lock contention on ip_core.
@@ -573,6 +628,8 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
                 .load(Ordering::Relaxed) as f64;
             let old_shift = state.current_lo_shift_hz
                 .load(Ordering::Relaxed) as f64;
+            let baseline = state.baseline_lo_shift_hz
+                .load(Ordering::Relaxed) as f64;
             let new_shift = old_shift + clamped_residual;
 
             // Absolute-value guard. AD9361 crystal drift doesn't
@@ -585,6 +642,41 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
                     "auto-PPM (fine-tune): new_shift {:+.0} Hz would \
                      exceed ±{:.0} Hz envelope; skipping. Check RF.",
                     new_shift, FINE_TUNE_MAX_ABS_SHIFT_HZ);
+                continue;
+            }
+
+            // Baseline guard (operator-requested 2026-04-23).
+            // Fine-tune is a tracking correction, NOT a redefinition
+            // of the setpoint. Anything more than ±0.2 ppm off the
+            // baseline (which is reset by full recal / manual
+            // override) is unusual enough to warrant refusing and
+            // surfacing an event for operator review.
+            let max_off_baseline =
+                FINE_TUNE_MAX_PPM_OFF_BASELINE * rx_lo * 1e-6;
+            let off_baseline = (new_shift - baseline).abs();
+            if off_baseline > max_off_baseline {
+                tracing::warn!(
+                    "auto-PPM (fine-tune): would push {:+.0} Hz off \
+                     baseline (limit {:.0} Hz = ±{:.1} ppm); skipping",
+                    new_shift - baseline, max_off_baseline,
+                    FINE_TUNE_MAX_PPM_OFF_BASELINE);
+                state.event_log.push(
+                    crate::services::event_log::LogCategory::System,
+                    format!("auto-PPM fine-tune REFUSED: \
+                             {:+.0} Hz off baseline (cap {:.0} Hz = \
+                             ±{:.1} ppm)",
+                             new_shift - baseline, max_off_baseline,
+                             FINE_TUNE_MAX_PPM_OFF_BASELINE),
+                    serde_json::json!({
+                        "kind":         "ppm.finetune.refused",
+                        "residual_hz":  residual_hz,
+                        "old_shift":    old_shift,
+                        "new_shift":    new_shift,
+                        "baseline":     baseline,
+                        "off_baseline": new_shift - baseline,
+                        "limit_hz":     max_off_baseline,
+                    }),
+                );
                 continue;
             }
 
@@ -601,11 +693,28 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
                 .map(|d| d.as_secs() as i64).unwrap_or(0);
             state.last_ppm_cal_unix_secs.store(
                 unix_secs, Ordering::Relaxed);
+            let new_ppm = -new_shift / (rx_lo * 1e-6);
             tracing::info!(
                 "auto-PPM (fine-tune): residual {:+.1} Hz (raw {:+.1}) \
                  agc_product {:.3} -> shift {:+.0} Hz ({:+.4} ppm)",
                 clamped_residual, residual_hz, agc_product, new_shift,
-                -new_shift / (rx_lo * 1e-6));
+                new_ppm);
+            state.event_log.push(
+                crate::services::event_log::LogCategory::System,
+                format!("auto-PPM fine-tune: residual {:+.1} Hz -> \
+                         shift {:+.0} Hz ({:+.4} ppm)",
+                         clamped_residual, new_shift, new_ppm),
+                serde_json::json!({
+                    "kind":             "ppm.finetune",
+                    "residual_hz_raw":  residual_hz,
+                    "residual_hz_used": clamped_residual,
+                    "agc_product":      agc_product,
+                    "old_shift":        old_shift,
+                    "new_shift":        new_shift,
+                    "baseline":         baseline,
+                    "new_lo_ppm":       new_ppm,
+                }),
+            );
             if unix_secs >= 1_000_000_000 {
                 let persisted = PersistedPpm {
                     lo_shift_hz:     new_shift.round() as i64,
@@ -627,6 +736,7 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
 #[cfg(target_os = "linux")]
 async fn reset_shift_to_zero(state: &Arc<AppState>) {
     state.current_lo_shift_hz.store(0, Ordering::Relaxed);
+    state.baseline_lo_shift_hz.store(0, Ordering::Relaxed);
     let sample_rate = state.current_sample_rate_hz
         .load(Ordering::Relaxed) as f64;
     let rx_lo = state.current_rx_lo

@@ -35,7 +35,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-23-finetune-bounded-sync-lost-reset";
+pub const BUILD_TAG: &str = "2026-04-23-finetune-baseline-decode-gate";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -1612,6 +1612,9 @@ async fn main() -> anyhow::Result<()> {
         boot_lo_ppm:       args.lo_ppm,
         boot_control_freq: control_freq,
         current_lo_shift_hz: std::sync::Arc::new(
+            std::sync::atomic::AtomicI64::new(
+                nco_lo_shift_hz.round() as i64)),
+        baseline_lo_shift_hz: std::sync::Arc::new(
             std::sync::atomic::AtomicI64::new(
                 nco_lo_shift_hz.round() as i64)),
         last_ppm_cal_unix_secs: std::sync::Arc::new(

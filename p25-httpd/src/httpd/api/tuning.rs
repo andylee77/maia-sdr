@@ -1010,7 +1010,10 @@ pub async fn put_ppm(
     }
 
     // Apply to AppState so subsequent /api/tune calls pick it up.
+    // A manual override sets the baseline — fine-tune will then
+    // track ±0.2 ppm off this operator-chosen value.
     state.current_lo_shift_hz.store(shift_hz, Ordering::Relaxed);
+    state.baseline_lo_shift_hz.store(shift_hz, Ordering::Relaxed);
 
     // Reprogram the DDC NCO NOW so decode recovers without a retune.
     let rx_lo = state.current_rx_lo.load(Ordering::Relaxed) as f64;
@@ -1038,6 +1041,21 @@ pub async fn put_ppm(
     let lo_ppm = if rx_lo > 0.0 {
         -(shift_hz as f64) / (rx_lo * 1e-6)
     } else { 0.0 };
+
+    // Event-log the override so operators can audit PPM changes via
+    // /api/log, not just via tracing output.
+    state.event_log.push(
+        crate::services::event_log::LogCategory::System,
+        format!("manual PPM override: lo_shift_hz={shift_hz:+} \
+                 ({lo_ppm:+.4} ppm, baseline reset)"),
+        serde_json::json!({
+            "kind":        "ppm.override",
+            "lo_shift_hz": shift_hz,
+            "lo_ppm":      lo_ppm,
+            "nco_offset":  nco_offset,
+        }),
+    );
+
     (StatusCode::OK, Json(serde_json::json!({
         "ok":          true,
         "lo_shift_hz": shift_hz,

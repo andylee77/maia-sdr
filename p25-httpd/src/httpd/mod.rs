@@ -84,6 +84,14 @@ pub struct AppState {
     /// the `/api/tune` retune path so PPM survives frequency changes.
     pub current_lo_shift_hz:
         std::sync::Arc<std::sync::atomic::AtomicI64>,
+    /// Reference shift that the periodic fine-tune task is NOT
+    /// allowed to wander more than ±0.2 ppm away from. Set whenever
+    /// a full calibration or operator override establishes a new
+    /// "known-good" setpoint (boot-time load, /api/ppm_calibrate,
+    /// PUT /api/ppm). Fine-tune can only nibble ±0.2 ppm × rx_lo
+    /// off this value.
+    pub baseline_lo_shift_hz:
+        std::sync::Arc<std::sync::atomic::AtomicI64>,
     /// Unix seconds of the last successful auto-PPM calibration, 0 if
     /// never calibrated. Read by `/api/ppm` so dashboards can show
     /// "last calibrated N min ago".
