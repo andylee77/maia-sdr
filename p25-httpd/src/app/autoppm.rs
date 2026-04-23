@@ -22,6 +22,8 @@
 //! starting point, fully overridden by the calibration result.
 
 #[cfg(target_os = "linux")]
+use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::Ordering;
@@ -35,6 +37,28 @@ use anyhow::{anyhow, Result};
 use crate::httpd::AppState;
 #[cfg(target_os = "linux")]
 use crate::services::spectrum::{wideband_power_db, WIDEBAND_FFT_SIZE};
+
+/// On-disk persistence path. Survives reboots so the board doesn't
+/// need to re-learn the crystal trim every time power cycles.
+/// `/mnt/jffs2` is the Tezuka persistent JFFS2 flash partition (same
+/// place SSL certs live in `S50p25-httpd-certificates`). It is
+/// mounted by the init scripts before p25-httpd starts, so this
+/// path is reachable by the time the calibration task runs.
+/// `/var/lib` on this board is tmpfs and does NOT survive reboots.
+#[cfg(target_os = "linux")]
+pub const PPM_CAL_FILE: &str = "/mnt/jffs2/p25-ppm-cal.json";
+
+/// JSON schema for `PPM_CAL_FILE`.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PersistedPpm {
+    pub lo_shift_hz:       i64,
+    pub lo_ppm:            f64,
+    pub rx_lo_hz:          i64,
+    pub control_freq_hz:   u64,
+    pub unix_secs:         i64,
+    pub method:            String,
+}
 
 /// P25 control-channel symbol rate. The PLL in `LsmPllUpdate` runs
 /// on `symbol_strobe`, so its Q2.13 output scales by this rate when
@@ -161,12 +185,26 @@ pub async fn run_calibration(
     // Persist to AppState so /api/ppm can read it.
     let hz_int = final_lo_shift.round() as i64;
     state.current_lo_shift_hz.store(hz_int, Ordering::Relaxed);
-    state.last_ppm_cal_unix_secs.store(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0) as i64,
-        Ordering::Relaxed);
+    let unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    state.last_ppm_cal_unix_secs.store(unix_secs, Ordering::Relaxed);
+
+    // Persist to disk so the next boot picks up the calibration
+    // without re-running it. Best-effort — a permissions or I/O
+    // failure here doesn't fail the calibration itself.
+    let persisted = PersistedPpm {
+        lo_shift_hz:      hz_int,
+        lo_ppm:           final_lo_ppm,
+        rx_lo_hz:         rx_lo as i64,
+        control_freq_hz:  state.boot_control_freq,
+        unix_secs,
+        method:           "auto_stage_a_b".to_string(),
+    };
+    if let Err(e) = save_persisted(&persisted) {
+        tracing::warn!("auto-PPM: persistence failed: {e:#}");
+    }
 
     Ok(CalibrationResult {
         rx_lo_hz:            rx_lo,
@@ -265,6 +303,71 @@ fn find_peak_near(
     let peak_bin_f = best_bin as f64 + delta;
     let actual_offset = (peak_bin_f - center_bin) * bw;
     Ok((peak_bin_f, best_db, actual_offset))
+}
+
+/// Load a previous calibration from disk, if present. Returns `None`
+/// silently on missing file or any parse error — boot should continue
+/// with the CLI `--lo-ppm` value in those cases.
+#[cfg(target_os = "linux")]
+pub fn load_persisted() -> Option<PersistedPpm> {
+    let path = Path::new(PPM_CAL_FILE);
+    if !path.exists() { return None; }
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice::<PersistedPpm>(&bytes).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn save_persisted(p: &PersistedPpm) -> Result<()> {
+    let path = Path::new(PPM_CAL_FILE);
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let body = serde_json::to_vec_pretty(p)?;
+    std::fs::write(path, body)?;
+    Ok(())
+}
+
+/// Spawn a one-shot background task that waits for the PLL to reach
+/// acquisition (system_acquired = true on the control-channel
+/// decoder), then runs auto-PPM. Called from `main` once at boot so
+/// the board self-calibrates after its first lock. Idempotent — if
+/// the system never acquires, the task exits after the deadline.
+#[cfg(target_os = "linux")]
+pub fn spawn_boot_autoppm(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        // Give the PLL time to converge on the boot NCO before
+        // running stage A. 30 s covers the worst-case
+        // "cold-boot + find sync" case we see in logs.
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let acquired = {
+                let dec = state.lsm_decoder.read().await;
+                dec.system.wacn.is_some()
+            };
+            if acquired { break; }
+            if Instant::now() > deadline {
+                tracing::info!(
+                    "auto-PPM: boot-trigger timed out waiting for system_acquired; \
+                     skipping initial calibration");
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        // One extra 3 s cushion once acquired — lets the PLL settle
+        // at the post-lock operating point before we measure.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        match run_calibration(&state).await {
+            Ok(r) => tracing::info!(
+                "auto-PPM (boot): final_lo_ppm={:.4} shift={:.0} Hz  \
+                 stage_a={:.0} stage_b={:.1}  duration={}ms",
+                r.final_lo_ppm, r.final_lo_shift_hz,
+                r.stage_a_delta_hz, r.stage_b_residual_hz, r.duration_ms),
+            Err(e) => tracing::warn!(
+                "auto-PPM (boot): calibration failed: {e:#}"),
+        }
+    });
 }
 
 #[cfg(not(target_os = "linux"))]

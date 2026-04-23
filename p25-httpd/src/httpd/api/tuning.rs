@@ -218,10 +218,14 @@ pub async fn post_preset(
     }
 
     // 2. DDC — load new FIR coefficients + decimation + NCO offset
-    //    for the current control-channel frequency. Same NCO math as
-    //    boot (PPM-corrected).
-    let nco_lo_shift_hz = -state.boot_lo_ppm * 1e-6 * new_rx_lo as f64;
-    let nco_offset_hz = state.boot_control_freq as f64
+    //    for the current control-channel frequency. Uses the live
+    //    crystal-trim correction (`current_lo_shift_hz`) so any
+    //    auto-PPM run survives a preset reload.
+    let nco_lo_shift_hz = state.current_lo_shift_hz
+        .load(Ordering::Relaxed) as f64;
+    let current_radio = state.current_control_freq
+        .load(Ordering::Relaxed) as f64;
+    let nco_offset_hz = current_radio
         - new_rx_lo as f64 + nco_lo_shift_hz;
     {
         let core = state.ip_core.lock().await;
@@ -285,6 +289,14 @@ pub struct TuneBody {
     /// only; 409 if outside window.
     #[serde(default)]
     pub center_mode: Option<String>,
+    /// Optional explicit LO (center) frequency in Hz. When set, the
+    /// AD9361 LO is commanded to this value directly and the NCO is
+    /// programmed as `radio_freq_hz - center_hz + lo_shift`. Ignores
+    /// the window/guard check — the operator is in charge when they
+    /// pick a center. Matches scanner UIs that have a "center freq"
+    /// field separate from the channel-select dial.
+    #[serde(default)]
+    pub center_hz: Option<u64>,
 }
 
 
@@ -330,7 +342,12 @@ pub async fn post_tune(
     let offset_at_current_lo: i64 = radio - rx_lo_now;
     let in_window = offset_at_current_lo.abs() <= usable_half;
 
-    let (new_rx_lo, lo_moved) = if in_window {
+    let (new_rx_lo, lo_moved) = if let Some(center) = body.center_hz {
+        // Explicit center-freq command. Bypass window checks — the
+        // operator is telling us exactly where the LO should sit.
+        let c = center as i64;
+        if c != rx_lo_now { (c, true) } else { (rx_lo_now, false) }
+    } else if in_window {
         (rx_lo_now, false)
     } else if lock_req {
         return (StatusCode::CONFLICT, Json(serde_json::json!({
@@ -354,7 +371,11 @@ pub async fn post_tune(
         (rounded, true)
     };
 
-    let nco_lo_shift_hz = -state.boot_lo_ppm * 1e-6 * new_rx_lo as f64;
+    // Use the live PPM-correction shift (auto-PPM results survive
+    // retunes). On a fresh boot this equals the CLI-derived value;
+    // after /api/ppm_calibrate it tracks the calibration.
+    let nco_lo_shift_hz = state.current_lo_shift_hz
+        .load(Ordering::Relaxed) as f64;
     let nco_offset_hz = radio as f64 - new_rx_lo as f64 + nco_lo_shift_hz;
 
     let mut applied: Vec<String> = Vec::new();
@@ -379,6 +400,13 @@ pub async fn post_tune(
     }
     // Reflect the lock state requested by this call.
     state.center_locked.store(lock_req, Ordering::Relaxed);
+    // Record the operator-facing radio frequency so /api/stats +
+    // dashboard can show what we're actually tuned to. Only commit
+    // on DDC success.
+    if errors.is_empty() {
+        state.current_control_freq.store(
+            radio as u64, Ordering::Relaxed);
+    }
 
     let status = if errors.is_empty() {
         StatusCode::OK

@@ -180,9 +180,16 @@ pub async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats>
     // from the LO (plus a small crystal-ppm correction). Report that
     // offset so the operator can see "which DDC frequency is the
     // control channel" without re-deriving it from /api/reinit.
+    // Live PPM-correction shift (boot default OR last auto-PPM result).
+    let lo_shift_hz_live = state
+        .current_lo_shift_hz
+        .load(std::sync::atomic::Ordering::Relaxed) as f64;
+    // Current operator-facing radio frequency — updated on each tune.
+    let current_radio_hz = state
+        .current_control_freq
+        .load(std::sync::atomic::Ordering::Relaxed);
     let ddc_control_offset_hz: Option<i64> = rx_lo_hz.map(|lo| {
-        let nco_lo_shift_hz = -state.boot_lo_ppm * 1e-6 * lo as f64;
-        (state.boot_control_freq as f64 - lo as f64 + nco_lo_shift_hz) as i64
+        (current_radio_hz as f64 - lo as f64 + lo_shift_hz_live) as i64
     });
     // Decimation chain is a compile-time constant of the HDL build.
     // Phase 10-prep redesign: /4 /4 /8 Parks-McClellan split.
@@ -232,6 +239,7 @@ pub async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats>
         sampling_frequency_hz,
         gain_control_mode,
         ddc_control_offset_hz,
+        radio_freq_hz: Some(current_radio_hz),
         ddc_decimation,
         ddc_output_rate_hz,
         wall_clock,

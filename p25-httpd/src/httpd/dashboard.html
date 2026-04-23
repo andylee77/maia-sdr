@@ -540,7 +540,10 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       <button id="tune_tune_btn" class="btn" style="padding:3px 10px" onclick="tuneRadio()">Tune</button>
     </div>
     <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
-      <label><b>Center</b>:</label>
+      <label for="tune_center_mhz"><b>Center (MHz)</b>:</label>
+      <input type="number" id="tune_center_mhz" step="0.1"
+        placeholder="MHz" style="width:9em;font-family:inherit" />
+      <button class="btn" style="padding:3px 10px" onclick="setCenter()">Set center</button>
       <label style="font-weight:normal"><input type="radio" name="tune_center_mode" value="auto" checked onchange="setCenterMode('auto')"> auto</label>
       <label style="font-weight:normal"><input type="radio" name="tune_center_mode" value="lock" onchange="setCenterMode('lock')"> lock</label>
       <span class="v" id="tune_center_hz" style="color:var(--text-dim)">RX LO: --</span>
@@ -940,6 +943,54 @@ async function applyPreset() {
   }
 }
 
+// Commit the Center (MHz) textbox. Posts /api/tune with an explicit
+// center_hz so the LO moves to that value; the NCO recomputes to
+// preserve the current radio freq if it still fits, otherwise the
+// server returns an error and we clear the field.
+async function setCenter() {
+  const str = $('tune_center_mhz').value.trim();
+  if (str === '') return;
+  const mhz = parseFloat(str);
+  if (!isFinite(mhz) || mhz < 70 || mhz > 6000) {
+    $('tune_status').textContent = 'bad center MHz (70-6000 expected)';
+    $('tune_status').style.color = 'var(--red)';
+    return;
+  }
+  // Use the current radio freq if the operator hasn't typed one.
+  const radio_str = $('tune_radio_mhz').value.trim();
+  const radio_hz = radio_str !== ''
+    ? Math.round(parseFloat(radio_str) * 1e6)
+    : (TUNE_CUR_RX_LO_HZ || 0);
+  if (!radio_hz) {
+    $('tune_status').textContent = 'no radio freq to preserve';
+    return;
+  }
+  try {
+    const res = await fetch('/api/tune', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        radio_freq_hz: radio_hz,
+        center_hz:     Math.round(mhz * 1e6),
+      }),
+    });
+    const j = await res.json();
+    const status = $('tune_status');
+    if (res.ok && j.ok) {
+      status.textContent =
+        `center ${mhz.toFixed(3)} MHz  NCO=${(j.nco_offset_hz/1e3).toFixed(1)} kHz`;
+      status.style.color = 'var(--green)';
+      TUNE_CUR_RX_LO_HZ = j.rx_lo_hz;
+    } else {
+      status.textContent = (j && j.error) || 'center failed';
+      status.style.color = 'var(--red)';
+    }
+  } catch (e) {
+    $('tune_status').textContent = 'error: ' + e.message;
+    $('tune_status').style.color = 'var(--red)';
+  }
+}
+
 // Commit the current Radio Freq textbox via POST /api/tune with the
 // active center_mode. Empty textbox is a no-op.
 async function tuneRadio() {
@@ -1333,6 +1384,25 @@ async function refresh() {
     if ($('tune_nco_off') && stats.ddc_control_offset_hz != null) {
       $('tune_nco_off').textContent =
         `NCO: ${(stats.ddc_control_offset_hz/1e3).toFixed(2)} kHz`;
+    }
+    // Seed the Radio Freq input with the current tuned radio
+    // frequency (the operator-visible number, NOT rx_lo+nco which
+    // includes the PPM-correction shift). Comes from the server's
+    // `current_control_freq_hz` atomic, updated on every successful
+    // POST /api/tune. Guarded against stomping an in-progress edit.
+    const tf = $('tune_radio_mhz');
+    if (tf && stats.radio_freq_hz != null
+        && document.activeElement !== tf) {
+      const live_mhz = (stats.radio_freq_hz / 1e6).toFixed(6);
+      if (tf.value !== live_mhz) tf.value = live_mhz;
+    }
+    // Same pattern for the Center (MHz) input — mirror the live LO
+    // so the operator can edit-in-place from a known baseline.
+    const cf = $('tune_center_mhz');
+    if (cf && stats.rx_lo_hz != null
+        && document.activeElement !== cf) {
+      const live_mhz = (stats.rx_lo_hz / 1e6).toFixed(3);
+      if (cf.value !== live_mhz) cf.value = live_mhz;
     }
     const gainTxt = (stats.rx_gain_db != null ? fmtDb(stats.rx_gain_db) : '--')
       + ' / ' + (stats.gain_control_mode || '--');

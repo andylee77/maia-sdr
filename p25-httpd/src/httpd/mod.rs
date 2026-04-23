@@ -80,7 +80,8 @@ pub struct AppState {
     /// Current DDC NCO shift in Hz, tracking crystal-trim correction.
     /// Boot-initialised from `-boot_lo_ppm * 1e-6 * rx_lo` so the first
     /// read matches the CLI default. Updated by `app::autoppm` each
-    /// time a calibration runs; read by `/api/ppm` for display.
+    /// time a calibration runs; read by `/api/ppm` for display AND by
+    /// the `/api/tune` retune path so PPM survives frequency changes.
     pub current_lo_shift_hz:
         std::sync::Arc<std::sync::atomic::AtomicI64>,
     /// Unix seconds of the last successful auto-PPM calibration, 0 if
@@ -88,6 +89,13 @@ pub struct AppState {
     /// "last calibrated N min ago".
     pub last_ppm_cal_unix_secs:
         std::sync::Arc<std::sync::atomic::AtomicI64>,
+    /// Operator-facing tuned frequency in Hz. Boot-initialised from
+    /// the CLI `--control-freq`; updated on every successful
+    /// `POST /api/tune`. This is the NUMBER A HUMAN TYPES — not the
+    /// DDC NCO setpoint (which bakes in PPM correction). Exposed in
+    /// `/api/stats` as `radio_freq_hz` so the dashboard tuner widget
+    /// can populate its input without the operator re-deriving it.
+    pub current_control_freq: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Live RX LO, sample rate, and preset index. Written by the
     /// `/api/preset` and `/api/tune` handlers; read by the grant
     /// follower on every retune and by `/api/stats` / `/api/system`

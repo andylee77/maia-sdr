@@ -127,6 +127,13 @@ pub struct DecoderStats {
     /// control_freq / rx_lo / lo_ppm triple.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ddc_control_offset_hz: Option<i64>,
+    /// Current operator-facing radio frequency in Hz (the control
+    /// channel we're tuned to). Updated on every successful
+    /// `POST /api/tune`; initialised from the CLI `--control-freq`.
+    /// This is the number a human types into a dial — NOT the
+    /// internal DDC NCO setpoint (which bakes in PPM correction).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub radio_freq_hz: Option<u64>,
     /// Human-readable DDC decimation chain (e.g. "/4 /4 /8 = /128").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ddc_decimation: Option<String>,

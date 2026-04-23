@@ -35,7 +35,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-23-autoppm-stage-a-b";
+pub const BUILD_TAG: &str = "2026-04-23-autoppm-persist-tuner-fix";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -368,17 +368,38 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Pluto crystal calibration — shift DDC NCO by
-    // -ppm * 1e-6 * rx_lo Hz. See Args::lo_ppm for why this moves
-    // only the NCO, not the LO request. Folded into nco_offset
-    // further down inside cfg(linux).
-    let nco_lo_shift_hz = -args.lo_ppm * 1e-6 * args.rx_lo as f64;
+    // -ppm * 1e-6 * rx_lo Hz. Boot order of precedence:
+    //   1. --lo-ppm CLI flag if explicitly non-zero (operator override).
+    //   2. Persisted /var/lib/p25-httpd/ppm_cal.json from last auto-PPM.
+    //   3. CLI default (0.0) -> no shift, relies on first post-boot
+    //      auto-PPM to converge.
+    // This lets the init script ship `--lo-ppm 0` and still get a
+    // correct shift applied across reboots, without a hardcoded
+    // per-unit value.
+    let mut nco_lo_shift_hz: f64 =
+        -args.lo_ppm * 1e-6 * args.rx_lo as f64;
+    let mut ppm_source = "cli";
+    #[cfg(target_os = "linux")]
+    if args.lo_ppm == 0.0 {
+        if let Some(p) = app::autoppm::load_persisted() {
+            nco_lo_shift_hz = p.lo_shift_hz as f64;
+            ppm_source = "persisted";
+            tracing::info!(
+                "auto-PPM: loaded persisted calibration lo_ppm={:+.4} \
+                 shift={:+.0} Hz (from {} @ unix {})",
+                p.lo_ppm, p.lo_shift_hz,
+                app::autoppm::PPM_CAL_FILE, p.unix_secs);
+        }
+    }
 
     tracing::info!(
-        "Fishball P25 starting: RX LO={} Hz, control_freq={} Hz, lo_ppm={:+} ({:+.1} Hz NCO shift)",
+        "Fishball P25 starting: RX LO={} Hz, control_freq={} Hz, \
+         lo_ppm={:+} ({:+.1} Hz NCO shift, src={})",
         args.rx_lo,
         control_freq,
         args.lo_ppm,
-        nco_lo_shift_hz
+        nco_lo_shift_hz,
+        ppm_source
     );
 
     let (event_tx, _) = broadcast::channel::<String>(256);
@@ -1576,6 +1597,8 @@ async fn main() -> anyhow::Result<()> {
                 nco_lo_shift_hz.round() as i64)),
         last_ppm_cal_unix_secs: std::sync::Arc::new(
             std::sync::atomic::AtomicI64::new(0)),
+        current_control_freq: std::sync::Arc::new(
+            std::sync::atomic::AtomicU64::new(control_freq)),
         current_rx_lo:           current_rx_lo.clone(),
         current_sample_rate_hz:  current_sample_rate_hz.clone(),
         current_preset_idx:      current_preset_idx.clone(),
@@ -1598,6 +1621,15 @@ async fn main() -> anyhow::Result<()> {
         recorder_diag: recorder_diag.clone(),
         active_modulation: active_modulation.clone(),
     });
+
+    // Boot-time auto-PPM: wait for system acquisition then run one
+    // full stage A + B calibration, persisting the result. Does
+    // nothing if persisted calibration was already loaded at boot
+    // (in that case we expect fast re-lock on the stored shift).
+    #[cfg(target_os = "linux")]
+    if ppm_source != "persisted" {
+        app::autoppm::spawn_boot_autoppm(state.clone());
+    }
 
     // Start HTTP (and optionally HTTPS). HTTPS unlocks AudioWorklet
     // on the dashboard — browsers only expose it in secure contexts,
