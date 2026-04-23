@@ -908,6 +908,35 @@ impl IpCore {
         (d.agc_gain_dbg().bits(), d.agc_mag_dbg().bits())
     }
 
+    /// Reads the control LSM AGC idle-gate threshold (Q1.15 raw).
+    /// Samples with `mag < mag_update_threshold` don't trigger an
+    /// AGC update — the gate keeps idle-channel noise from dragging
+    /// gain around. Default 256 (Q1.15 = -42 dBFS). 0 disables the
+    /// gate (update on any non-zero mag).
+    pub fn lsm_agc_threshold(&self) -> u16 {
+        self.registers.lsm_agc_config().read()
+            .mag_update_threshold().bits()
+    }
+
+    /// Writes the control LSM AGC idle-gate threshold.
+    pub fn set_lsm_agc_threshold(&self, v: u16) {
+        self.registers.lsm_agc_config()
+            .modify(|_, w| unsafe { w.mag_update_threshold().bits(v) });
+    }
+
+    /// Reads the traffic LSM AGC idle-gate threshold; see
+    /// `lsm_agc_threshold`.
+    pub fn traffic_lsm_agc_threshold(&self) -> u16 {
+        self.registers.traffic_lsm_agc_config().read()
+            .mag_update_threshold().bits()
+    }
+
+    /// Writes the traffic LSM AGC idle-gate threshold.
+    pub fn set_traffic_lsm_agc_threshold(&self, v: u16) {
+        self.registers.traffic_lsm_agc_config()
+            .modify(|_, w| unsafe { w.mag_update_threshold().bits(v) });
+    }
+
     /// Reads new traffic LSM dibit DMA buffers since the last call.
     pub fn read_traffic_lsm_dibit_buffers(&mut self) -> Vec<&[u8]> {
         self.read_dma_buffers(DmaChannel::TrafficLsmDibit)

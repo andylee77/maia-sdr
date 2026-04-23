@@ -335,6 +335,11 @@ pub fn router(
         // applies crystal-trim correction to the DDC NCO live.
         .route("/api/ppm",           get(api::tuning::get_ppm))
         .route("/api/ppm_calibrate", post(api::tuning::post_ppm_calibrate))
+        // HDL LSM AGC idle-gate threshold. Defaults to 256 (Q1.15);
+        // retunable per site without rebaking HDL.
+        .route("/api/agc_threshold",
+               get(api::tuning::get_agc_threshold)
+               .put(api::tuning::put_agc_threshold))
         // Call recording + playback.
         .route("/api/recordings", get(api::history::get_recordings))
         .route("/api/recordings/{id}", get(api::history::get_recording_file))

@@ -283,6 +283,7 @@ pub async fn get_traffic(
         let next_addr = core.traffic_lsm_dibit_next_address();
         let (pll_dbg, sample_point_dbg) = core.traffic_lsm_debug();
         let (agc_gain_q9_7, agc_mag_q1_15) = core.traffic_lsm_agc_debug();
+        let traffic_threshold = core.traffic_lsm_agc_threshold();
         let (en, dma_en, dc_block, agc) = core.traffic_lsm_control_readback();
         // Convert AGC debug fields to float representations for
         // easier operator reading. gain_dbg is Q9.7 truncation of
@@ -315,6 +316,8 @@ pub async fn get_traffic(
             "agc_product":        agc_product,
             "agc_gain_raw_q9_7":  agc_gain_q9_7,
             "agc_mag_raw_q1_15":  agc_mag_q1_15,
+            "mag_update_threshold":     traffic_threshold,
+            "mag_update_threshold_f":   (traffic_threshold as f64) / 32768.0,
         })
     };
     #[cfg(not(target_os = "linux"))]
@@ -328,6 +331,7 @@ pub async fn get_traffic(
         let core = state.ip_core.lock().await;
         let (pll_dbg, sp_dbg) = core.lsm_debug();
         let (gain_q9_7, mag_q1_15) = core.lsm_agc_debug();
+        let threshold = core.lsm_agc_threshold();
         let gain = (gain_q9_7 as f64) / 128.0;
         let mag  = (mag_q1_15 as f64) / 32768.0;
         serde_json::json!({
@@ -338,6 +342,8 @@ pub async fn get_traffic(
             "agc_product":        gain * mag,
             "agc_gain_raw_q9_7":  gain_q9_7,
             "agc_mag_raw_q1_15":  mag_q1_15,
+            "mag_update_threshold":     threshold,
+            "mag_update_threshold_f":   (threshold as f64) / 32768.0,
         })
     };
     #[cfg(not(target_os = "linux"))]

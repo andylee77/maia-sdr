@@ -589,6 +589,20 @@
           </fields>
         </register>
         <register>
+          <name>lsm_agc_config</name>
+          <description>lsm_agc_config</description>
+          <addressOffset>0xbc</addressOffset>
+          <access>read-write</access>
+          <fields>
+            <field>
+              <name>mag_update_threshold</name>
+              <description>mag_update_threshold</description>
+              <bitRange>[15:0]</bitRange>
+              <access>read-write</access>
+            </field>
+          </fields>
+        </register>
+        <register>
           <name>traffic_lsm_control</name>
           <description>traffic_lsm_control</description>
           <addressOffset>0xc0</addressOffset>
@@ -771,6 +785,20 @@
           </fields>
         </register>
         <register>
+          <name>traffic_lsm_agc_config</name>
+          <description>traffic_lsm_agc_config</description>
+          <addressOffset>0xdc</addressOffset>
+          <access>read-write</access>
+          <fields>
+            <field>
+              <name>mag_update_threshold</name>
+              <description>mag_update_threshold</description>
+              <bitRange>[15:0]</bitRange>
+              <access>read-write</access>
+            </field>
+          </fields>
+        </register>
+        <register>
           <name>traffic_iq_dma_status</name>
           <description>traffic_iq_dma_status</description>
           <addressOffset>0xe0</addressOffset>
@@ -865,7 +893,7 @@
             <field>
               <name>spec_last_buffer</name>
               <description>spec_last_buffer</description>
-              <bitRange>[2:1]</bitRange>
+              <bitRange>[1:1]</bitRange>
               <access>read-only</access>
             </field>
           </fields>

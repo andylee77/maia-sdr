@@ -212,13 +212,22 @@ TARGET_RAW = 1 << SAMPLE_FRAC                     # 32768
 # applied, so real signals that briefly dip below the threshold
 # still get scaled correctly from the existing operating point.
 #
-# Default 1024 raw Q1.15 = 1/32 = -30 dBFS relative to unit
-# magnitude. A healthy LSM symbol at the demod output is near
-# 23_170 (= sqrt(2)/2 * 32_768, the corner of the unit-circle
-# quadrant pattern), so 1024 leaves ~27 dB of margin for the
-# "real signal is present" classification. Tunable per-instance
-# via the `mag_update_threshold` constructor kwarg.
-MAG_UPDATE_THRESHOLD_DEFAULT = 1024
+# Default 256 raw Q1.15 = 1/128 = -42 dBFS relative to unit
+# magnitude. Retuned down from 1024 on 2026-04-23 after live
+# diagnosis showed the control-channel signal at the AGC input
+# arrives at ~0.016 raw (the DDC narrowing from 8 MHz to 62.5 kHz
+# attenuates anything narrower than the DDC passband). At 1024 the
+# gate was above actual signal level, the AGC never updated, and
+# cluster_radius at the pre-diff tap sat at 0.45–0.82 depending on
+# whatever value the gain register was stuck at since boot.
+#
+# 256 sits below the observed signal (512) but comfortably above
+# the estimated in-band noise (~144 for current chain). It is also
+# runtime-tunable via `LsmAgc.mag_update_threshold_in`, which
+# `p25_top` hooks up to the `lsm_agc_config` / `traffic_lsm_agc_config`
+# register. The compile-time default is only what the register
+# resets to on power-on; operators can tune per-site from the PS.
+MAG_UPDATE_THRESHOLD_DEFAULT = 256
 
 # Divider numerator: TARGET_RAW * 2**GAIN_FRAC. See docstring.
 TARGET_NUMERATOR = TARGET_RAW << GAIN_FRAC        # 2**26
@@ -311,11 +320,18 @@ class LsmAgc(Elaboratable):
         # MAG_UPDATE_THRESHOLD_DEFAULT docstring for the rationale.
         # Value 0 disables the gate and restores the
         # SDRTrunk-identical behaviour (update on any non-zero mag).
+        #
+        # 2026-04-23: this constructor kwarg is now just the
+        # compile-time initial value used when no register override is
+        # provided during elaboration. The preferred path is to drive
+        # `mag_update_threshold_in` from `p25_top`'s
+        # `lsm_agc_config.mag_update_threshold` register, so operators
+        # can retune per-site without rebuilding.
         if not 0 <= mag_update_threshold < (1 << MAG_WIDTH):
             raise ValueError(
                 f"mag_update_threshold must be in "
                 f"[0, {1 << MAG_WIDTH}), got {mag_update_threshold!r}")
-        self._mag_update_threshold = mag_update_threshold
+        self._mag_update_threshold_default = mag_update_threshold
 
         # ── Inputs ──────────────────────────────────────────────
         self.i_mid_in = Signal(signed(SAMPLE_WIDTH))
@@ -325,6 +341,13 @@ class LsmAgc(Elaboratable):
         self.decision_strobe_in = Signal()
         self.enable_in = Signal(init=1)
         self.reset_in = Signal()
+        # Runtime gate threshold. 16 bits is enough for any practical
+        # value (the observed signal is <1% of full scale even at
+        # strong RF); the AGC-side comparison pads up to MAG_WIDTH.
+        # Default matches the compile-time constructor kwarg so
+        # standalone tests don't have to wire a register.
+        self.mag_update_threshold_in = Signal(
+            unsigned(16), init=mag_update_threshold & 0xFFFF)
 
         # ── Outputs ─────────────────────────────────────────────
         self.i_mid_out = Signal(signed(SAMPLE_WIDTH), reset_less=True)
@@ -519,7 +542,7 @@ class LsmAgc(Elaboratable):
                 # When gated, still go to APPLY so the current gain
                 # is applied to the four stored samples and the
                 # output strobe fires; just skip the gain update.
-                with m.If(mag_val < self._mag_update_threshold):
+                with m.If(mag_val < self.mag_update_threshold_in):
                     m.d.sync += self.gate_dbg.eq(self.gate_dbg + 1)
                     m.next = "APPLY"
                 with m.Else():

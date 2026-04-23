@@ -372,6 +372,13 @@ class P25Core(Elaboratable):
                     Field('agc_gain_dbg', Access.R, 16, 0),
                     Field('agc_mag_dbg', Access.R, 16, 0),
                 ]),
+                # 2026-04-23: runtime AGC idle-gate threshold. Q1.15
+                # raw. Default 256 = -42 dBFS relative to unit mag;
+                # set to 0 to disable the gate (SDRTrunk-identical
+                # behaviour). See lsm_agc.MAG_UPDATE_THRESHOLD_DEFAULT.
+                0b111: Register('lsm_agc_config', [
+                    Field('mag_update_threshold', Access.RW, 16, 256),
+                ]),
             },
             3)
 
@@ -468,6 +475,13 @@ class P25Core(Elaboratable):
                 0b110: Register('traffic_lsm_agc_debug', [
                     Field('agc_gain_dbg', Access.R, 16, 0),
                     Field('agc_mag_dbg', Access.R, 16, 0),
+                ]),
+                # 2026-04-23: mirror of lsm_agc_config for the traffic
+                # chain. Independent so control/traffic gates can be
+                # tuned separately (traffic may sit idle between
+                # grants, where a different threshold is useful).
+                0b111: Register('traffic_lsm_agc_config', [
+                    Field('mag_update_threshold', Access.RW, 16, 256),
                 ]),
             },
             3)
@@ -968,6 +982,13 @@ class P25Core(Elaboratable):
             lsm_agc_debug['agc_gain_dbg'].eq(self.lsm_demod.agc_gain_dbg),
             lsm_agc_debug['agc_mag_dbg'].eq(self.lsm_demod.agc_mag_dbg),
         ]
+        # 2026-04-23: runtime AGC idle-gate threshold (control chain).
+        # Defaults via register reset to 256 (see lsm_agc_config init).
+        lsm_agc_config = self.lsm_registers['lsm_agc_config']
+        m.d.comb += [
+            self.lsm_demod.agc_mag_update_threshold_in.eq(
+                lsm_agc_config['mag_update_threshold']),
+        ]
 
         # ── Traffic channel DDC ───────────────────────────────────────
         m.submodules.traffic_ddc = self.traffic_ddc
@@ -1150,6 +1171,13 @@ class P25Core(Elaboratable):
                 self.traffic_lsm_demod.agc_gain_dbg),
             traffic_lsm_agc_debug['agc_mag_dbg'].eq(
                 self.traffic_lsm_demod.agc_mag_dbg),
+        ]
+        # 2026-04-23: runtime AGC idle-gate threshold (traffic chain).
+        traffic_lsm_agc_config = self.traffic_lsm_registers[
+            'traffic_lsm_agc_config']
+        m.d.comb += [
+            self.traffic_lsm_demod.agc_mag_update_threshold_in.eq(
+                traffic_lsm_agc_config['mag_update_threshold']),
         ]
 
         # ── Traffic-channel post-DDC IQ ring DMA (2026-04-16) ─────────

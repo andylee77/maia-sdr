@@ -148,6 +148,10 @@ class LsmDemod(Elaboratable):
         # that doesn't drive this input still runs the AGC (the
         # right behaviour for fishball7020_p25).
         self.agc_enable = Signal(init=1)
+        # 2026-04-23: runtime AGC idle-gate threshold pass-through.
+        # Default matches LsmAgc constructor kwarg default so tests /
+        # simulations without a driving register still work.
+        self.agc_mag_update_threshold_in = Signal(unsigned(16))
 
         # ── Pass-through dibit stream ───────────────────────────
         self.dibit_out = Signal(2)
@@ -216,6 +220,9 @@ class LsmDemod(Elaboratable):
         # Phase 10-prep: AGC enable + debug tap pass-through.
         m.d.comb += [
             demod_loop.agc_enable.eq(self.agc_enable),
+            # 2026-04-23: runtime AGC idle-gate threshold.
+            demod_loop.agc_mag_update_threshold_in.eq(
+                self.agc_mag_update_threshold_in),
             self.agc_gain_dbg.eq(demod_loop.agc_gain_dbg),
             self.agc_mag_dbg.eq(demod_loop.agc_mag_dbg),
             self.agc_gate_dbg.eq(demod_loop.agc_gate_dbg),

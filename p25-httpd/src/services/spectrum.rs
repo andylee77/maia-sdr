@@ -264,9 +264,11 @@ pub fn spectrum_from_bytes(
         averages_used,
     })
 }
-/// Number of bins produced by the HDL wideband spectrometer (Phase 10.7).
-/// Matches `Spectrometer.fft_order_log2 = 12` in `maia_hdl/spectrometer.py`.
-pub const WIDEBAND_FFT_SIZE: usize = 4096;
+/// Number of bins produced by the HDL wideband spectrometer.
+/// Matches `Spectrometer.fft_order_log2 = 14` in `maia_hdl/spectrometer.py`.
+/// 2026-04-23: bumped 12 -> 14 (4096 -> 16384 bins) for 488 Hz/bin
+/// resolution (was 1.95 kHz/bin).
+pub const WIDEBAND_FFT_SIZE: usize = 16384;
 
 /// Unpack one 32 KB wideband spectrometer DMA sub-buffer into a
 /// 4096-bin magnitude vector in dB, DC-centered (bin 0 = -Fs/2,

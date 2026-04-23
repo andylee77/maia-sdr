@@ -150,6 +150,13 @@ class LsmDemodLoop(Elaboratable):
         # timing-interpolated samples before the diff demod. Low
         # bypasses the AGC (pass-through; gain register holds).
         self.agc_enable = Signal(init=1)
+        # 2026-04-23: runtime AGC idle-gate threshold. Passes through
+        # to `LsmAgc.mag_update_threshold_in`. Default matches the
+        # compile-time constructor kwarg so standalone tests don't
+        # have to wire anything.
+        self.agc_mag_update_threshold_in = Signal(
+            unsigned(16),
+            init=self.agc_mag_update_threshold & 0xFFFF)
 
         # ── Outputs ─────────────────────────────────────────────
         self.dibit_out = Signal(2, reset_less=True)
@@ -218,6 +225,9 @@ class LsmDemodLoop(Elaboratable):
             agc.reset_in.eq(self.reset_in),
             diff_demod.reset_in.eq(self.reset_in),
             pll_update.reset_in.eq(self.reset_in),
+            # 2026-04-23: runtime-tunable AGC gate threshold.
+            agc.mag_update_threshold_in.eq(
+                self.agc_mag_update_threshold_in),
         ]
 
         # ── Stage 1: timing recovery + lerp ─────────────────────

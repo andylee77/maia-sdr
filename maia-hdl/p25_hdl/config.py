@@ -90,13 +90,17 @@ class P25Config:
         self.traffic_pre_diff_iq_dma_buffer_size = 0x8000
 
         # ── Wideband spectrometer DMA (Phase 10.7) ────────────────
-        # `DmaBRAMWrite`, fixed 4096-bin FFT geometry.
-        # 4 buffers × 32 KB = 128 KB ring. 5-10 Hz integrator.
-        # Address 0x2100_0000, 128 KB aligned.
+        # `DmaBRAMWrite`, 16384-bin FFT geometry (2026-04-23 bump
+        # from 4096). 2 buffers × 128 KB = 256 KB ring. 5-10 Hz
+        # integrator. Address 0x2100_0000, 256 KB aligned.
+        # Buffer count reduced 4 -> 2 to keep total BRAM footprint
+        # manageable on Z7020 (was 128 KB, now 256 KB; at 4 buffers
+        # it would be 512 KB which leaves little headroom for the
+        # FFT core BRAM).
         self.wideband_spec_dma_address = 0x2100_0000
-        self.wideband_spec_dma_num_buffers_log2 = 2   # 4 sub-buffers
-        # Spectrometer FFT is 4096 bins (order_log2=12) × 8 B/word.
-        self.wideband_spec_dma_buffer_size = (1 << 12) * 8
+        self.wideband_spec_dma_num_buffers_log2 = 1   # 2 sub-buffers
+        # Spectrometer FFT is 16384 bins (order_log2=14) × 8 B/word.
+        self.wideband_spec_dma_buffer_size = (1 << 14) * 8
 
     @property
     def iq_dma_num_buffers(self):

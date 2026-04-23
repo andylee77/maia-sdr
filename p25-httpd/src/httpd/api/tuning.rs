@@ -973,3 +973,115 @@ pub async fn post_ppm_calibrate(
     (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
 }
 
+// ── HDL LSM AGC idle-gate threshold knob (2026-04-23) ──────────
+//
+// Exposes the per-chain `mag_update_threshold` register (Q1.15 raw,
+// 16-bit unsigned). Default 256 = -42 dBFS; below this magnitude
+// the AGC treats the sample as noise and skips the gain update.
+// Tunable per site/antenna from the PS — no HDL rebuild needed.
+
+/// `GET /api/agc_threshold[?chain=control|traffic]`
+///
+/// Returns the current threshold for both chains (`control_hz` /
+/// `traffic_hz`) plus Q1.15 float equivalents. `?chain=` param is
+/// accepted for symmetry with `/api/traffic` but doesn't filter the
+/// response — both chains are always reported in one call so you
+/// can diff them.
+#[cfg(target_os = "linux")]
+pub async fn get_agc_threshold(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let core = state.ip_core.lock().await;
+    let ctrl = core.lsm_agc_threshold();
+    let trf  = core.traffic_lsm_agc_threshold();
+    Json(serde_json::json!({
+        "ok":              true,
+        "control":         ctrl,
+        "control_f":       (ctrl as f64) / 32768.0,
+        "traffic":         trf,
+        "traffic_f":       (trf as f64) / 32768.0,
+        "valid_range":     [0, 65535],
+        "default":         256,
+        "note":            "Q1.15 raw; 256 = -42 dBFS; 0 disables gate",
+    }))
+}
+
+/// `PUT /api/agc_threshold?chain=control|traffic&value=<u16>`
+///
+/// Writes the threshold for the selected chain. `?chain=both`
+/// sets both at once.
+#[cfg(target_os = "linux")]
+pub async fn put_agc_threshold(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params):
+        axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let chain = params.get("chain")
+        .map(String::as_str).unwrap_or("both");
+    let value: u32 = match params.get("value")
+        .and_then(|v| v.parse().ok()) {
+        Some(v) => v,
+        None => {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "ok": false,
+                "error": "missing or invalid 'value' (u16 0..65535)",
+            }))).into_response();
+        }
+    };
+    if value > 0xFFFF {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "ok": false,
+            "error": format!("value {value} out of range [0, 65535]"),
+        }))).into_response();
+    }
+    let v = value as u16;
+    let core = state.ip_core.lock().await;
+    let (applied_ctrl, applied_trf) = match chain {
+        "control" => { core.set_lsm_agc_threshold(v); (true, false) }
+        "traffic" => { core.set_traffic_lsm_agc_threshold(v); (false, true) }
+        "both" => {
+            core.set_lsm_agc_threshold(v);
+            core.set_traffic_lsm_agc_threshold(v);
+            (true, true)
+        }
+        other => {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "ok": false,
+                "error": format!("unknown chain '{other}'; expected control|traffic|both"),
+            }))).into_response();
+        }
+    };
+    let ctrl_now = core.lsm_agc_threshold();
+    let trf_now  = core.traffic_lsm_agc_threshold();
+    (StatusCode::OK, Json(serde_json::json!({
+        "ok":               true,
+        "applied_control":  applied_ctrl,
+        "applied_traffic":  applied_trf,
+        "control":          ctrl_now,
+        "traffic":          trf_now,
+    }))).into_response()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn get_agc_threshold(
+    State(_state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "error": "agc_threshold requires hardware (target_os=linux)",
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn put_agc_threshold(
+    State(_state): State<Arc<AppState>>,
+    axum::extract::Query(_params):
+        axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let body = serde_json::json!({
+        "ok": false,
+        "error": "agc_threshold requires hardware (target_os=linux)",
+    });
+    (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
+}
+

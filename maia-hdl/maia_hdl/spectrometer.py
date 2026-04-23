@@ -67,7 +67,13 @@ class Spectrometer(Elaboratable):
                  domain_2x='clk2x', domain_3x='clk3x'):
         self._domain_2x = domain_2x
         self._domain_3x = domain_3x
-        self.fft_order_log2 = 12
+        # 2026-04-23: bumped 12 -> 14 (4096 -> 16384 bins) for better
+        # autoppm parabolic-interp precision (488 Hz/bin vs 1.95 kHz)
+        # and cleaner wideband visual resolution. R22 FFT requires
+        # even order, so 12 -> 14 is the natural step; 13 would need
+        # a structural change. BRAM cost estimate: ~60-90 BRAM18 vs
+        # ~16-24 at order 12 (Z7020 has 280 BRAM18 budget).
+        self.fft_order_log2 = 14
         self.width_in = 16
 
         self.nint_width = 10
@@ -108,7 +114,26 @@ class Spectrometer(Elaboratable):
     def elaborate(self, platform):
         m = Module()
 
-        truncates = [[0, 1]] * (self.fft_order_log2 // 2)
+        # Compute truncation pattern so the FFT output width stays at
+        # 22 bits regardless of `fft_order_log2`. Radix-22 pairs grow
+        # by 2 bits each; truncates subtract. `target_trunc` bits
+        # across `num_pairs` slots, filled as [0,1] by default with
+        # any excess packed into [1,1] at the final (largest-dynamic-
+        # range) pair so the extra bit is discarded after the
+        # accumulated growth.
+        num_pairs = self.fft_order_log2 // 2
+        target_trunc = self.width_in + self.fft_order_log2 - 22
+        # List comprehension so each pair is a fresh list (using *
+        # shares references and mutation breaks everything).
+        truncates = [[0, 1] for _ in range(num_pairs)]
+        extra = target_trunc - num_pairs
+        if extra > 0:
+            for i in range(extra):
+                truncates[num_pairs - 1 - i][0] = 1
+        elif extra < 0:
+            # Shouldn't happen for orders 12/14; guard anyway.
+            for i in range(-extra):
+                truncates[i][1] = 0
         m.submodules.fft = fft = FFT(
             self.width_in, self.fft_order_log2, 'R22',
             width_twiddle=16, truncates=truncates,
@@ -116,7 +141,8 @@ class Spectrometer(Elaboratable):
             cmult3x=True,
             domain_2x=self._domain_2x, domain_3x=self._domain_3x)
         width_fft_out = len(fft.re_out)
-        assert width_fft_out == 22
+        assert width_fft_out == 22, \
+            f"FFT output width {width_fft_out} != 22 (order={self.fft_order_log2})"
 
         spectrum_fp_width = 18
         m.submodules.integrator = integrator = SpectrumIntegrator(
