@@ -299,7 +299,27 @@ pub fn wideband_power_db(bytes: &[u8]) -> Vec<f32> {
     if bytes.len() < need {
         return Vec::new();
     }
-    const DB_REF: f64 = 96.0;
+    // Empirical dB reference for wideband FFT output.
+    //
+    // The HDL `Spectrometer` integrator emits raw linear power in
+    // arbitrary units (mantissa * 4^exponent). Converting to dBm
+    // requires a constant offset that rolls up:
+    //   * FFT+window processing gain
+    //   * ADC full-scale to dBm mapping
+    //   * Fixed gain/loss between antenna and ADC (cable, matching,
+    //     AD9361 internal gain distribution we don't separate out)
+    //
+    // 2026-04-23 calibration pass: operator reports noise floor
+    // around -90 to -100 dBm at AD9361 rx_gain=60 dB (cross-checked
+    // against SDRTrunk on the same RF chain). Our raw `10*log10(power)
+    // - 96` was reading -42.7 dB for that same floor → offset is
+    // ~52 dB low. `148` brings the readout to ~ -95 dBm noise floor
+    // at 60 dB, matching SDRTrunk.
+    //
+    // NOT laboratory-calibrated — if someone injects a known tone
+    // with a lab source, adjust this to match. See memory
+    // `project_wideband_narrowband_db_calibration_todo.md`.
+    const DB_REF: f64 = 148.0;
     let mut out = Vec::with_capacity(WIDEBAND_FFT_SIZE);
     for i in 0..WIDEBAND_FFT_SIZE {
         let base = i * 8;
@@ -312,7 +332,7 @@ pub fn wideband_power_db(bytes: &[u8]) -> Vec<f32> {
         let db = if power > 0.0 {
             (10.0 * power.log10() - DB_REF) as f32
         } else {
-            -120.0
+            -170.0
         };
         out.push(db);
     }

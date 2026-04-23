@@ -282,7 +282,17 @@ pub async fn get_traffic(
         let last_buffer = core.traffic_lsm_dibit_last_buffer();
         let next_addr = core.traffic_lsm_dibit_next_address();
         let (pll_dbg, sample_point_dbg) = core.traffic_lsm_debug();
+        let (agc_gain_q9_7, agc_mag_q1_15) = core.traffic_lsm_agc_debug();
         let (en, dma_en, dc_block, agc) = core.traffic_lsm_control_readback();
+        // Convert AGC debug fields to float representations for
+        // easier operator reading. gain_dbg is Q9.7 truncation of
+        // the Q9.11 gain register, range 0..500. mag_dbg is Q1.15
+        // unsigned. At AGC steady state the PRODUCT gain*mag ≈
+        // TARGET (= 1.0 in Q1.15); we report it so a glance tells
+        // you if the AGC is tracking or stuck.
+        let agc_gain = (agc_gain_q9_7 as f64) / 128.0;   // Q9.7 -> f
+        let agc_mag  = (agc_mag_q1_15 as f64) / 32768.0; // Q1.15 -> f
+        let agc_product = agc_gain * agc_mag;
         serde_json::json!({
             "enabled":            en,
             "dibit_dma_enabled":  dma_en,
@@ -300,10 +310,38 @@ pub async fn get_traffic(
             "dibit_next_addr":    format!("0x{:08X}", next_addr),
             "pll_dbg":            pll_dbg,
             "sample_point_dbg":   sample_point_dbg,
+            "agc_gain":           agc_gain,
+            "agc_mag":            agc_mag,
+            "agc_product":        agc_product,
+            "agc_gain_raw_q9_7":  agc_gain_q9_7,
+            "agc_mag_raw_q1_15":  agc_mag_q1_15,
         })
     };
     #[cfg(not(target_os = "linux"))]
     let traffic_lsm_chain_json = serde_json::json!(null);
+
+    // Control-chain AGC snapshot, sibling of traffic_lsm_chain.
+    // Added so a single /api/traffic call surfaces both AGC states
+    // for diagnosis ("is the control AGC at the expected product?").
+    #[cfg(target_os = "linux")]
+    let control_agc_json = {
+        let core = state.ip_core.lock().await;
+        let (pll_dbg, sp_dbg) = core.lsm_debug();
+        let (gain_q9_7, mag_q1_15) = core.lsm_agc_debug();
+        let gain = (gain_q9_7 as f64) / 128.0;
+        let mag  = (mag_q1_15 as f64) / 32768.0;
+        serde_json::json!({
+            "pll_dbg":            pll_dbg,
+            "sample_point_dbg":   sp_dbg,
+            "agc_gain":           gain,
+            "agc_mag":            mag,
+            "agc_product":        gain * mag,
+            "agc_gain_raw_q9_7":  gain_q9_7,
+            "agc_mag_raw_q1_15":  mag_q1_15,
+        })
+    };
+    #[cfg(not(target_os = "linux"))]
+    let control_agc_json = serde_json::json!(null);
 
     let stats_json = {
         let s = state.traffic_stats.lock().await;
@@ -505,6 +543,7 @@ pub async fn get_traffic(
         "stats":                     stats_json,
         "irq":                       irq_json,
         "traffic_lsm_chain":         traffic_lsm_chain_json,
+        "control_lsm_agc":           control_agc_json,
         "applied":                   applied,
         "errors":                    errors,
         "phase":                     "7C",

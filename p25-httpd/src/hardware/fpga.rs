@@ -889,6 +889,25 @@ impl IpCore {
         (d.pll_dbg().bits() as i16, d.sample_point_dbg().bits() as i16)
     }
 
+    /// Reads the control LSM AGC debug taps: `gain_dbg` (unsigned
+    /// Q9.7 truncation of the Q9.11 gain register, range 0..500) and
+    /// `mag_dbg` (unsigned Q1.15 most recent L2 magnitude of the
+    /// AGC's input sample). At AGC steady state: `gain × mag / 2^11
+    /// ≈ TARGET_RAW (= 32768 = 1.0 in Q1.15)`. If the product is
+    /// consistently below TARGET the AGC is under-shooting (loop
+    /// bandwidth / clamp / timing issue); if consistently above,
+    /// over-shooting / saturation.
+    pub fn lsm_agc_debug(&self) -> (u16, u16) {
+        let d = self.registers.lsm_agc_debug().read();
+        (d.agc_gain_dbg().bits(), d.agc_mag_dbg().bits())
+    }
+
+    /// Reads the traffic LSM AGC debug taps; see `lsm_agc_debug`.
+    pub fn traffic_lsm_agc_debug(&self) -> (u16, u16) {
+        let d = self.registers.traffic_lsm_agc_debug().read();
+        (d.agc_gain_dbg().bits(), d.agc_mag_dbg().bits())
+    }
+
     /// Reads new traffic LSM dibit DMA buffers since the last call.
     pub fn read_traffic_lsm_dibit_buffers(&mut self) -> Vec<&[u8]> {
         self.read_dma_buffers(DmaChannel::TrafficLsmDibit)
