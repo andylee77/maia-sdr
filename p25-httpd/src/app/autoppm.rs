@@ -426,6 +426,37 @@ const FINE_TUNE_INTERVAL_SECS: u64 = 900;    // 15 min
 #[cfg(target_os = "linux")]
 const FINE_TUNE_THRESHOLD_HZ: f64 = 30.0;
 
+/// Maximum correction the fine-tune loop is allowed to apply in a
+/// single iteration. Crystal trim physically drifts at <0.1 ppm/°C;
+/// over 15 min at most tens of Hz. A reading larger than this is
+/// almost always a transient signal disturbance (brief fade, traffic
+/// retune glitch, ADC overload) — clamp so the loop can't accumulate
+/// catastrophically from bad data. Hit 2026-04-23: running 11+ h
+/// without this cap drifted shift to ~5 ppm via 16+ bad iterations.
+#[cfg(target_os = "linux")]
+const FINE_TUNE_MAX_STEP_HZ: f64 = 150.0;
+
+/// Hard cap on the absolute shift the fine-tune loop can drive to.
+/// Matches the boot loader's MAX_PLAUSIBLE_HZ. AD9361 crystals don't
+/// land outside ±1 ppm on healthy hardware (800 Hz at 858 MHz LO).
+#[cfg(target_os = "linux")]
+const FINE_TUNE_MAX_ABS_SHIFT_HZ: f64 = 1000.0;
+
+/// Minimum `agc_product` (gain × mag, ideal = 1.0) required before
+/// we trust `pll_dbg` enough to fine-tune on it. Below this, the
+/// AGC loop is wobbling and the PLL error reading is noise, not a
+/// real frequency offset.
+#[cfg(target_os = "linux")]
+const FINE_TUNE_MIN_AGC_PRODUCT: f64 = 0.6;
+
+/// How long the control decoder can be deacquired before the
+/// fine-tune task resets `current_lo_shift_hz` to 0 as a baseline.
+/// Premise: if we've been unable to decode for this long, the
+/// persisted shift can't be trusted — better to start fresh and
+/// let the boot / manual auto-PPM path reacquire.
+#[cfg(target_os = "linux")]
+const SYNC_LOST_RESET_SECS: u64 = 300;
+
 /// Spawn a long-lived task that periodically samples `pll_dbg`,
 /// computes the residual in Hz, and applies it to the DDC NCO if it
 /// exceeds `FINE_TUNE_THRESHOLD_HZ`. This is stage-B-only — no
@@ -440,14 +471,67 @@ const FINE_TUNE_THRESHOLD_HZ: f64 = 30.0;
 #[cfg(target_os = "linux")]
 pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
     tokio::spawn(async move {
+        let mut sync_lost_since: Option<Instant> = None;
         loop {
             tokio::time::sleep(
                 Duration::from_secs(FINE_TUNE_INTERVAL_SECS)).await;
+
             let acquired = {
                 let dec = state.lsm_decoder.read().await;
                 dec.system.wacn.is_some()
             };
-            if !acquired { continue; }
+
+            // Sync-loss guard. If we've been unable to acquire for
+            // `SYNC_LOST_RESET_SECS`, the current shift is almost
+            // certainly wrong (that's probably WHY we're not
+            // acquiring). Reset to 0 as baseline so the next
+            // reacquisition starts from a known-good state rather
+            // than compounding whatever drove us off.
+            if !acquired {
+                let lost = match sync_lost_since {
+                    Some(t) => t,
+                    None => {
+                        sync_lost_since = Some(Instant::now());
+                        continue;
+                    }
+                };
+                if lost.elapsed() >= Duration::from_secs(SYNC_LOST_RESET_SECS) {
+                    let old = state.current_lo_shift_hz
+                        .load(Ordering::Relaxed);
+                    if old != 0 {
+                        reset_shift_to_zero(&state).await;
+                        tracing::warn!(
+                            "auto-PPM (fine-tune): sync lost for {:.0}s, \
+                             shift reset to 0 (was {:+} Hz)",
+                            lost.elapsed().as_secs_f64(), old);
+                        sync_lost_since = Some(Instant::now());
+                    }
+                }
+                continue;
+            }
+            sync_lost_since = None;
+
+            // AGC-health gate. If the HDL AGC loop isn't tracking
+            // (agc_product well below 1.0), pll_dbg is noise and
+            // applying it as a "correction" just walks the shift
+            // in a random direction. Skip until the loop recovers.
+            let (agc_product, pll_raw) = {
+                let core = state.ip_core.lock().await;
+                let (g_q9_7, m_q1_15) = core.lsm_agc_debug();
+                let (pll, _) = core.lsm_debug();
+                let g = g_q9_7 as f64 / 128.0;
+                let m = m_q1_15 as f64 / 32768.0;
+                (g * m, pll)
+            };
+            if agc_product < FINE_TUNE_MIN_AGC_PRODUCT {
+                tracing::debug!(
+                    "auto-PPM (fine-tune): skip, agc_product {:.3} < \
+                     {:.2} (loop not tracking)",
+                    agc_product, FINE_TUNE_MIN_AGC_PRODUCT);
+                continue;
+            }
+            let _ = pll_raw;  // keep the initial read for logging
+
             // Sample PLL briefly — this runs while decode is live so
             // we keep it short to minimise lock contention on ip_core.
             const N: usize = 20;
@@ -467,9 +551,20 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
             if residual_hz.abs() < FINE_TUNE_THRESHOLD_HZ {
                 continue;
             }
-            // Nudge the DDC NCO by residual_hz. Small step, PLL will
-            // re-lock immediately (residual by construction <=
-            // PLL capture range).
+
+            // Per-iteration cap. A reading beyond this is almost
+            // always a transient; clamp so one bad sample can't
+            // accumulate catastrophically over many iterations.
+            let clamped_residual = residual_hz.clamp(
+                -FINE_TUNE_MAX_STEP_HZ, FINE_TUNE_MAX_STEP_HZ);
+            if residual_hz.abs() > FINE_TUNE_MAX_STEP_HZ {
+                tracing::warn!(
+                    "auto-PPM (fine-tune): residual {:+.1} Hz > cap \
+                     ±{:.0}; clamping to {:+.1}",
+                    residual_hz, FINE_TUNE_MAX_STEP_HZ,
+                    clamped_residual);
+            }
+
             let sample_rate = state.current_sample_rate_hz
                 .load(Ordering::Relaxed) as f64;
             let rx_lo = state.current_rx_lo
@@ -478,7 +573,21 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
                 .load(Ordering::Relaxed) as f64;
             let old_shift = state.current_lo_shift_hz
                 .load(Ordering::Relaxed) as f64;
-            let new_shift = old_shift + residual_hz;
+            let new_shift = old_shift + clamped_residual;
+
+            // Absolute-value guard. AD9361 crystal drift doesn't
+            // physically reach ±1 ppm on healthy hardware; anything
+            // past that limit indicates accumulated error and we
+            // refuse to apply it. The user can still manually
+            // override via PUT /api/ppm.
+            if new_shift.abs() > FINE_TUNE_MAX_ABS_SHIFT_HZ {
+                tracing::warn!(
+                    "auto-PPM (fine-tune): new_shift {:+.0} Hz would \
+                     exceed ±{:.0} Hz envelope; skipping. Check RF.",
+                    new_shift, FINE_TUNE_MAX_ABS_SHIFT_HZ);
+                continue;
+            }
+
             let new_nco = control_freq - rx_lo + new_shift;
             let applied = {
                 let core = state.ip_core.lock().await;
@@ -493,11 +602,10 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
             state.last_ppm_cal_unix_secs.store(
                 unix_secs, Ordering::Relaxed);
             tracing::info!(
-                "auto-PPM (fine-tune): residual {:+.1} Hz -> shift {:+.0} Hz \
-                 ({:+.4} ppm)",
-                residual_hz, new_shift,
+                "auto-PPM (fine-tune): residual {:+.1} Hz (raw {:+.1}) \
+                 agc_product {:.3} -> shift {:+.0} Hz ({:+.4} ppm)",
+                clamped_residual, residual_hz, agc_product, new_shift,
                 -new_shift / (rx_lo * 1e-6));
-            // Persist the update so a reboot picks it up.
             if unix_secs >= 1_000_000_000 {
                 let persisted = PersistedPpm {
                     lo_shift_hz:     new_shift.round() as i64,
@@ -511,6 +619,39 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
             }
         }
     });
+}
+
+/// Reset `current_lo_shift_hz` to 0 and reprogram the DDC NCO to
+/// match. Used when sync is lost long enough that we stop trusting
+/// the current shift.
+#[cfg(target_os = "linux")]
+async fn reset_shift_to_zero(state: &Arc<AppState>) {
+    state.current_lo_shift_hz.store(0, Ordering::Relaxed);
+    let sample_rate = state.current_sample_rate_hz
+        .load(Ordering::Relaxed) as f64;
+    let rx_lo = state.current_rx_lo
+        .load(Ordering::Relaxed) as f64;
+    let control_freq = state.current_control_freq
+        .load(Ordering::Relaxed) as f64;
+    let nco_offset = control_freq - rx_lo;
+    let core = state.ip_core.lock().await;
+    let _ = core.set_ddc_frequency(nco_offset, sample_rate);
+    // Also overwrite the persisted file so a reboot picks up 0,
+    // not the stale bad value that got us here.
+    let unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64).unwrap_or(0);
+    if unix_secs >= 1_000_000_000 {
+        let persisted = PersistedPpm {
+            lo_shift_hz:     0,
+            lo_ppm:          0.0,
+            rx_lo_hz:        rx_lo as i64,
+            control_freq_hz: state.boot_control_freq,
+            unix_secs,
+            method:          "sync_lost_reset".to_string(),
+        };
+        let _ = save_persisted(&persisted);
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

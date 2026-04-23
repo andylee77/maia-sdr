@@ -35,7 +35,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-23-dt-carveout-ppm-guard-manual-override";
+pub const BUILD_TAG: &str = "2026-04-23-finetune-bounded-sync-lost-reset";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
