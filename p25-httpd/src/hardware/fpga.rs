@@ -618,12 +618,17 @@ impl IpCore {
     /// Returns `None` if no new integration has completed since the
     /// last call.
     pub fn read_wideband_spec_buffer(&mut self) -> Option<&[u8]> {
-        let last = self
+        // `spec_last_buffer` is `BitReader` (1 bit) now that
+        // wideband_spec_dma_num_buffers_log2 = 1. svd2rust emits
+        // `.bit() -> bool` instead of `.bits() -> u8` when the
+        // field is a single bit. Cast to u8 so the surrounding code
+        // (which stores it as Option<u8>) keeps working.
+        let last: u8 = self
             .registers
             .spec_status()
             .read()
             .spec_last_buffer()
-            .bits();
+            .bit() as u8;
         if self.wideband_spec_last_buffer == Some(last) {
             return None;
         }
