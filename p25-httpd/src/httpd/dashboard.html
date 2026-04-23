@@ -4068,22 +4068,33 @@ function plotConstellation() {
 
 // ── renderer: eye (post-PLL WS, HDL-rotated IQ) ──
 function plotEye() {
-  const url = `ws://${location.host}/ws/iq?source=post_pll&chain=${PLOT.chain}`;
+  // Match the page's protocol (dashboard is served over HTTPS when
+  // S50p25-httpd-certificates has run — a hardcoded ws:// gets
+  // blocked as mixed content and the eye silently stays empty).
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/ws/iq?source=post_pll&chain=${PLOT.chain}`;
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   PLOT.wsHandle = ws;
-  ws.onopen = () => { PLOT.statusEl.textContent = 'post-PLL WS connected'; };
-  ws.onerror = () => { PLOT.statusEl.textContent = 'post-PLL WS error'; };
+  let frames = 0;
+  ws.onopen  = () => { PLOT.statusEl.textContent = 'post-PLL WS connected'; };
+  ws.onerror = (e) => { PLOT.statusEl.textContent = 'post-PLL WS error'; };
   ws.onclose = () => { PLOT.statusEl.textContent = 'post-PLL WS closed'; };
-  ws.onmessage = (ev) => {
-    if (typeof ev.data === 'string') return;   // hello frame; ignore
-    const samples = new Int16Array(ev.data);
-    // Interleaved I/Q (i16 LE). Accumulate up to eyeCapBytes then drop oldest.
+  ws.onmessage = async (ev) => {
+    let buf = ev.data;
+    if (typeof buf === 'string') return;        // hello frame
+    if (buf instanceof Blob) buf = await buf.arrayBuffer();
+    const samples = new Int16Array(buf);
     const n = samples.length / 2;
     for (let i = 0; i < n; i++) {
       PLOT.eyeBuffer.push([samples[2*i], samples[2*i + 1]]);
     }
     while (PLOT.eyeBuffer.length * 4 > PLOT.eyeCapBytes) PLOT.eyeBuffer.shift();
+    frames++;
+    if (frames % 5 === 0) {
+      PLOT.statusEl.textContent =
+        `post-PLL \u00B7 ${PLOT.eyeBuffer.length} samples buffered \u00B7 ${frames} frames`;
+    }
     drawPlotEye(PLOT.eyeBuffer);
   };
 }

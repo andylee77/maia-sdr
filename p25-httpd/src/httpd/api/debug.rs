@@ -476,10 +476,9 @@ pub async fn get_deviation(
         }));
     }
 
-    // Decode: each 4-byte pair is (re, im) i16 LE. Interleave of
-    // rotate_mid / rotate_sym means every *other* sample is the one
-    // sliced by the demod (rotate_sym). We take the odd-indexed
-    // samples as symbol-time points.
+    // Decode: each 4-byte pair is (re, im) i16 LE in Q1.13. The
+    // HDL interleaves rotate_mid (even idx) with rotate_sym (odd).
+    // The decision-point samples are the odd-indexed `sym` ones.
     let samples: Vec<(f32, f32)> = bytes
         .chunks_exact(4)
         .map(|c| {
@@ -488,10 +487,7 @@ pub async fn get_deviation(
             (r, i)
         })
         .collect();
-    // Q1.13 scaling: divide by 2^13 so the ideal constellation sits
-    // at ~±1 on each axis (with AGC magnitude ≈ 1).
     const Q13_SCALE: f32 = 1.0 / 8192.0;
-    // Every 2nd sample starting from index 1 = rotate_sym output.
     let symbol_pts: Vec<(f32, f32)> = samples
         .iter()
         .skip(1)
@@ -506,74 +502,92 @@ pub async fn get_deviation(
         }));
     }
 
-    // Soft = projection onto I axis (post-rotate, should be real).
-    // Hard = nearest P25 C4FM decision level {-3,-1,+1,+3}.
-    // Since the AGC targets a unit-circle magnitude, we pick the
-    // "±3" and "±1" thresholds relative to the observed peak.
-    let abs_i: Vec<f32> = symbol_pts.iter().map(|&(r, _)| r.abs()).collect();
-    let peak = abs_i
+    // LSM / CQPSK: the ideal constellation sits at (±1, ±1) — four
+    // points, one per quadrant. This is NOT C4FM — there is no ±3 /
+    // ±1 / -1 / -3 projection; soft values are 2D.
+    //
+    // Peak-normalise so the observed cluster magnitude maps to 1.0,
+    // then per-sample hard = (sign(I), sign(Q)) packed into a dibit
+    // (2 bits) and error = |soft − ideal_quadrant|.
+    let peak = symbol_pts
         .iter()
-        .copied()
-        .fold(0.0f32, |a, b| a.max(b))
+        .map(|&(r, i)| (r * r + i * i).sqrt())
+        .fold(0.0f32, f32::max)
         .max(1e-6);
-    // Outer-rail threshold = midpoint between ±1 and ±3 in normalised
-    // units = 2/3 of peak. Inner-rail threshold = 0.
-    let outer_thresh = peak * (2.0 / 3.0);
-    let mut soft: Vec<f32> = Vec::with_capacity(symbol_pts.len());
-    let mut hard: Vec<i8> = Vec::with_capacity(symbol_pts.len());
-    let mut err_sq = 0.0f64;
-    let mut hard_sq = 0.0f64;
-    let mut slice_errors: usize = 0;
-    for &(r, _) in &symbol_pts {
-        let h: i8 = if r > outer_thresh {
-            3
-        } else if r > 0.0 {
-            1
-        } else if r > -outer_thresh {
-            -1
-        } else {
-            -3
-        };
-        // Normalise soft to the same ±3 scale as hard.
-        let soft_norm = r / (peak / 3.0);
-        let e = soft_norm - h as f32;
-        // Slice "error" indicator: soft on the wrong side of the
-        // decision boundary for its hard symbol.
-        let boundary = match h {
-            3 => outer_thresh,
-            1 => 0.0,
-            -1 => -outer_thresh,
-            _ => f32::NEG_INFINITY,
-        };
-        if (h > 0 && r <= boundary) || (h < 0 && r >= boundary) {
-            slice_errors += 1;
-        }
-        err_sq += (e as f64).powi(2);
-        hard_sq += (h as f64).powi(2);
-        soft.push(soft_norm);
+    // Normalise the cluster mean magnitude to ≈1 (assumes four
+    // roughly balanced quadrants). This is more stable than peak
+    // alone against a single outlier pulling the scale.
+    let mean_mag: f32 = symbol_pts
+        .iter()
+        .map(|&(r, i)| (r * r + i * i).sqrt())
+        .sum::<f32>()
+        / symbol_pts.len() as f32;
+    let cluster_radius = mean_mag.max(1e-6);
+    let norm = 1.0 / cluster_radius;
+
+    // soft: parallel Vec<[f32;2]> serialised as interleaved I,Q pairs
+    //       so the dashboard JSON stays small.
+    // hard: dibit index 0..3 (bit0 = sign(Q) flipped bit, bit1 = sign(I))
+    //       — only the 4 valid LSM points, never ±3.
+    let mut soft_iq: Vec<f32> = Vec::with_capacity(symbol_pts.len() * 2);
+    let mut hard: Vec<u8> = Vec::with_capacity(symbol_pts.len());
+    let mut quad_counts = [0usize; 4];
+    let mut err_sq: f64 = 0.0;
+    let mut evm_ref_sq: f64 = 0.0;
+    for &(r, i) in &symbol_pts {
+        let rn = r * norm;
+        let in_ = i * norm;
+        let bit_i = (rn > 0.0) as u8;
+        let bit_q = (in_ > 0.0) as u8;
+        let h = (bit_i << 1) | bit_q;
+        quad_counts[h as usize] += 1;
+        let ix = if bit_i == 1 { 1.0 } else { -1.0 };
+        let iy = if bit_q == 1 { 1.0 } else { -1.0 };
+        let dr = (rn - ix) as f64;
+        let di = (in_ - iy) as f64;
+        err_sq += dr * dr + di * di;
+        evm_ref_sq += (ix * ix + iy * iy) as f64;
+        soft_iq.push(rn);
+        soft_iq.push(in_);
         hard.push(h);
     }
     let n = symbol_pts.len() as f64;
-    let mod_fidelity = (err_sq / n).sqrt() / (hard_sq / n).sqrt();
-    let ber = slice_errors as f64 / n;
+    // EVM / modulation fidelity: RMS error / RMS reference.
+    // For balanced ±1±j ideals, RMS(ref) = sqrt(2), so scale accordingly.
+    let evm = (err_sq / n).sqrt() / (evm_ref_sq / n).sqrt();
 
-    // Symbol deviation: P25 C4FM spec is ±1800 Hz for the ±3 symbols.
-    // Our "3" in normalised units corresponds to the outer rail ≈ peak;
-    // scale so median-outer-peak maps to 1800 Hz.
-    let symbol_dev_hz = 1800.0;
+    // BER estimate: count samples where the soft point would cross a
+    // decision boundary (|I|<0.25 or |Q|<0.25 after normalisation —
+    // arbitrary margin, tuned for readability not BER spec).
+    let ambiguity_margin = 0.25_f32;
+    let ambiguous = symbol_pts
+        .iter()
+        .filter(|&&(r, i)| {
+            (r * norm).abs() < ambiguity_margin || (i * norm).abs() < ambiguity_margin
+        })
+        .count();
+    let ber = ambiguous as f64 / n;
 
+    // Symbol deviation placeholder — P25 C4FM spec is ±1800 Hz peak,
+    // but we're LSM so it's not applicable. Report the normalised
+    // cluster radius so the dashboard can surface AGC health instead.
     Json(serde_json::json!({
         "ok":             true,
         "chain":          chain,
-        "window_syms":    soft.len(),
+        "window_syms":    hard.len(),
         "sample_rate_hz": 4800,
-        "soft":           soft,
+        "modulation":     "LSM",
+        // soft is interleaved [I0, Q0, I1, Q1, ...] normalised so
+        // ideal LSM clusters land at (±1, ±1).
+        "soft_iq":        soft_iq,
+        // hard is a 2-bit quadrant index: bit1 = sign(I), bit0 = sign(Q).
         "hard":           hard,
         "metrics": {
-            "symbol_dev_hz":  symbol_dev_hz,
-            "mod_fidelity":   mod_fidelity,
-            "ber":            ber,
-            "peak_i":         peak,
+            "evm":              evm,              // aka Mod Fidelity (fraction)
+            "ambiguous_frac":   ber,              // "BER proxy"
+            "cluster_radius":   cluster_radius,   // ≈1 when AGC is healthy
+            "peak_mag":         peak,             // raw Q1.13-scaled
+            "quad_balance":     quad_counts,      // [--, -+, +-, ++]
         },
     }))
 }
