@@ -18,6 +18,8 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Query, State},
+    http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 
@@ -25,196 +27,388 @@ use axum::{
 use p25_json::*;
 
 #[allow(unused_imports)]
+use crate::hardware::ddc_presets::{self, DdcPreset};
+#[allow(unused_imports)]
 use crate::httpd::AppState;
 #[allow(unused_imports)]
 use crate::protocol::p25::control_channel::{
     ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, CC_SYNC_THRESHOLD,
 };
 
-/// Runtime front-end re-init + live retune handler.
-///
-/// Re-runs the main.rs boot init sequence for BOTH the AD9361 IIO
-/// device (rx_lo, sample_rate, rf_bandwidth, gain_control_mode,
-/// hardwaregain) AND the HDL control DDC NCO (control_freq →
-/// nco_offset), without a board reboot.
-///
-/// With no query params, restores the exact boot defaults captured in
-/// `AppState` at startup. Any of the following optional query params
-/// overrides the corresponding field for this call only:
-///
-/// - `rx_lo`          u64 Hz  — AD9361 RX LO frequency
-/// - `control_freq`   u64 Hz  — desired control-channel center frequency
-/// - `sample_rate`    u32 Hz  — AD9361 sampling frequency
-/// - `rf_bandwidth`   u32 Hz  — AD9361 analog front-end bandwidth
-/// - `gain_mode`      str     — `manual|fast_attack|slow_attack|hybrid`
-/// - `gain_db`        f64 dB  — manual gain value (only meaningful when
-///                              gain_mode=manual; written after mode
-///                              switch so the mode change doesn't clobber it)
-///
-/// The DDC NCO is always recomputed as
-/// `control_freq - rx_lo + (-lo_ppm * 1e-6 * rx_lo)` (matching
-/// main.rs line ~339) and written via `ip_core.set_ddc_frequency`.
-///
-/// Examples:
-/// ```text
-/// # Restore boot defaults (recovery after clobber):
-/// curl http://192.168.2.1:8080/api/reinit
-///
-/// # Try fast-attack AGC at boot BW / freq:
-/// curl 'http://192.168.2.1:8080/api/reinit?gain_mode=fast_attack'
-///
-/// # Move RX LO up 2 MHz and let NCO compensate:
-/// curl 'http://192.168.2.1:8080/api/reinit?rx_lo=862500000'
-///
-/// # Retune to a different control channel entirely:
-/// curl 'http://192.168.2.1:8080/api/reinit?control_freq=858237500'
-/// ```
-#[cfg(target_os = "linux")]
-pub async fn get_reinit(
+/// Scanner guard band. `/api/tune` in Auto mode recenters the LO
+/// whenever the requested radio frequency falls within
+/// `(BW/2 − GUARD_HZ)` of either window edge. Keeps the NCO well
+/// clear of the DDC stage-1 transition band.
+const TUNE_GUARD_HZ: i64 = 100_000;
+/// In Auto-recenter, round the new LO to this step so the AD9361
+/// PLL doesn't re-settle on every kHz of operator scrolling.
+const TUNE_LO_STEP_HZ: i64 = 100_000;
+
+// ── Tuning API (2026-04-22 redesign) ──────────────────────────────
+//
+// Three endpoints replace the old `/api/reinit`:
+//
+//   GET  /api/presets     — list every DDC preset + its spec.
+//   POST /api/preset      — apply a preset (slow path: AD9361 resettle
+//                            + DDC coefficient reload). Optional
+//                            center frequency + gain override.
+//   POST /api/tune        — move the radio frequency (fast path:
+//                            NCO-only) or auto-recenter the LO when
+//                            the window would be exceeded. Lock mode
+//                            refuses LO moves and returns 409 instead.
+//
+// The two POST endpoints are JSON-in / JSON-out; the GET is read-only.
+
+
+/// `GET /api/presets` — enumerate every DDC preset available at
+/// runtime. The current live preset is identified by
+/// `current_preset.name`. The dashboard reads this once at page load
+/// to populate the sample-rate / BW dropdown.
+pub async fn get_presets(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
-    let rx_lo = params
-        .get("rx_lo")
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(state.boot_rx_lo);
-    let control_freq = params
-        .get("control_freq")
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(state.boot_control_freq);
-    let sr = params
-        .get("sample_rate")
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(state.boot_sample_rate);
-    let bw = params
-        .get("rf_bandwidth")
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(state.boot_rf_bandwidth);
-    // Default gain_mode follows the boot config: if main.rs set a
-    // manual hardwaregain, reinit with no params should restore
-    // Manual+boot_hardwaregain, not fall back to slow_attack.
-    let gm_str = params
-        .get("gain_mode")
-        .map(String::as_str)
-        .unwrap_or("manual");
-    let gain_db = params
-        .get("gain_db")
-        .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(state.boot_hardwaregain);
-    let gain_mode = match gm_str {
-        "manual" => crate::hardware::iio::GainMode::Manual,
-        "fast_attack" => crate::hardware::iio::GainMode::FastAttack,
-        "slow_attack" => crate::hardware::iio::GainMode::SlowAttack,
-        "hybrid" => crate::hardware::iio::GainMode::Hybrid,
-        other => {
-            return Json(serde_json::json!({
-                "ok": false,
+    use std::sync::atomic::Ordering;
+    let cur_idx = state.current_preset_idx.load(Ordering::Relaxed);
+    let cur = ddc_presets::PRESETS
+        .get(cur_idx)
+        .copied()
+        .unwrap_or(ddc_presets::DEFAULT_PRESET);
+
+    let list: Vec<serde_json::Value> = ddc_presets::PRESETS
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "name":             p.name,
+                "sample_rate_hz":   p.sample_rate_hz,
+                "rf_bandwidth_hz":  p.rf_bandwidth_hz,
+                "total_decim":      p.total_decim(),
+                "decim":            [p.decim1, p.decim2, p.decim3],
+                "nco_half_window_hz": p.nco_half_window_hz(),
+                "rejection_25k_db": p.rejection_25k_db,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "presets":        list,
+        "current":        cur.name,
+        "default":        ddc_presets::DEFAULT_PRESET.name,
+        "center_locked":  state.center_locked.load(Ordering::Relaxed),
+        "note":           "Every preset produces 62.5 kSPS at the DDC \
+                           output by construction. Preset choice controls \
+                           AD9361 sample rate + RF bandwidth + the NCO \
+                           window width (= sample_rate/2).",
+    }))
+}
+
+
+/// `POST /api/preset` body — applied by `post_preset`.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresetBody {
+    /// Preset name (e.g. "8M"). Must exist in `PRESETS`.
+    pub preset: String,
+    /// Optional center (RX LO) override in Hz. If omitted, the live
+    /// RX LO is preserved across the preset change.
+    #[serde(default)]
+    pub center_freq_hz: Option<u64>,
+    /// Optional gain-mode override ("manual", "slow_attack",
+    /// "fast_attack", "hybrid"). Omitted = no change.
+    #[serde(default)]
+    pub gain_mode: Option<String>,
+    /// Manual gain in dB, only meaningful when gain_mode == "manual".
+    #[serde(default)]
+    pub gain_db: Option<f64>,
+}
+
+
+/// `POST /api/preset` — slow path: resettle the AD9361 + reload DDC
+/// coefficients for a new sample-rate / BW preset. The control
+/// channel is retuned to `boot_control_freq` (no scanner semantics
+/// on a preset change — the operator is explicitly picking a new
+/// front-end state, so we re-center on the known-good site freq).
+#[cfg(target_os = "linux")]
+pub async fn post_preset(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PresetBody>,
+) -> impl IntoResponse {
+    use std::sync::atomic::Ordering;
+
+    let Some(preset) = ddc_presets::find_preset(&body.preset) else {
+        let names: Vec<&str> = ddc_presets::PRESETS
+            .iter().map(|p| p.name).collect();
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "ok":    false,
+            "error": format!(
+                "unknown preset '{}'; known: {}",
+                body.preset, names.join(", "),
+            ),
+        })));
+    };
+    let preset_idx = ddc_presets::PRESETS
+        .iter().position(|p| p.name == preset.name).unwrap();
+
+    let new_rx_lo = body.center_freq_hz.unwrap_or_else(||
+        state.current_rx_lo.load(Ordering::Relaxed) as u64);
+
+    let gain_mode = match body.gain_mode.as_deref() {
+        None => None,
+        Some("manual") => Some(crate::hardware::iio::GainMode::Manual),
+        Some("slow_attack") => Some(
+            crate::hardware::iio::GainMode::SlowAttack),
+        Some("fast_attack") => Some(
+            crate::hardware::iio::GainMode::FastAttack),
+        Some("hybrid") => Some(crate::hardware::iio::GainMode::Hybrid),
+        Some(other) => {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "ok":    false,
                 "error": format!(
-                    "unknown gain_mode: '{other}'; expected manual|fast_attack|slow_attack|hybrid"
+                    "unknown gain_mode '{other}'; expected \
+                     manual|slow_attack|fast_attack|hybrid"
                 ),
-            }));
+            })));
         }
     };
-
-    // DDC NCO offset: same math as main.rs boot path. ppm correction
-    // shifts the NCO by -ppm * 1e-6 * rx_lo so a Pluto crystal error
-    // cancels out at the DDC mixer.
-    let nco_lo_shift_hz = -state.boot_lo_ppm * 1e-6 * rx_lo as f64;
-    let nco_offset_hz = control_freq as f64 - rx_lo as f64 + nco_lo_shift_hz;
 
     let mut applied: Vec<String> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
-    match state.ad9361.set_rx_lo_frequency(rx_lo).await {
+    // 1. AD9361 — LO, sample rate, RF bandwidth, optional gain mode +
+    //    manual gain. Order matters: change gain_mode BEFORE writing
+    //    gain_db so the mode change doesn't clobber the new value.
+    match state.ad9361.set_rx_lo_frequency(new_rx_lo).await {
         Ok(_) => {
-            // Publish the live rx_lo so the grant follower's retune
-            // math picks it up on the next grant (2026-04-16 stale
-            // follower_rx_lo fix).
             state.current_rx_lo.store(
-                rx_lo as i64,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            applied.push(format!("rx_lo={rx_lo}"));
+                new_rx_lo as i64, Ordering::Relaxed);
+            applied.push(format!("rx_lo={new_rx_lo}"));
         }
         Err(e) => errors.push(format!("rx_lo: {e}")),
     }
-    match state.ad9361.set_sampling_frequency(sr).await {
-        Ok(_) => applied.push(format!("sampling_frequency={sr}")),
+    match state.ad9361
+        .set_sampling_frequency(preset.sample_rate_hz).await
+    {
+        Ok(_) => {
+            state.current_sample_rate_hz.store(
+                preset.sample_rate_hz, Ordering::Relaxed);
+            applied.push(format!(
+                "sampling_frequency={}", preset.sample_rate_hz));
+        }
         Err(e) => errors.push(format!("sampling_frequency: {e}")),
     }
-    match state.ad9361.set_rx_rf_bandwidth(bw).await {
-        Ok(_) => applied.push(format!("rf_bandwidth={bw}")),
+    match state.ad9361
+        .set_rx_rf_bandwidth(preset.rf_bandwidth_hz).await
+    {
+        Ok(_) => applied.push(format!(
+            "rf_bandwidth={}", preset.rf_bandwidth_hz)),
         Err(e) => errors.push(format!("rf_bandwidth: {e}")),
     }
-    match state.ad9361.set_rx_gain_mode(gain_mode).await {
-        Ok(_) => applied.push(format!("gain_control_mode={gm_str}")),
-        Err(e) => errors.push(format!("gain_control_mode: {e}")),
-    }
-    // Only write hardwaregain in manual mode. In AGC modes the chip
-    // would immediately override anything we wrote.
-    if matches!(gain_mode, crate::hardware::iio::GainMode::Manual) {
-        match state.ad9361.set_rx_gain(gain_db).await {
-            Ok(_) => applied.push(format!("hardwaregain={gain_db} dB")),
-            Err(e) => errors.push(format!("hardwaregain: {e}")),
+    if let Some(gm) = gain_mode {
+        match state.ad9361.set_rx_gain_mode(gm).await {
+            Ok(_) => applied.push(format!("gain_mode={gm}")),
+            Err(e) => errors.push(format!("gain_mode: {e}")),
+        }
+        if matches!(gm, crate::hardware::iio::GainMode::Manual) {
+            if let Some(db) = body.gain_db {
+                match state.ad9361.set_rx_gain(db).await {
+                    Ok(_) => applied.push(format!("gain_db={db}")),
+                    Err(e) => errors.push(format!("gain_db: {e}")),
+                }
+            }
         }
     }
 
-    // DDC NCO is a synchronous FPGA register write, but ip_core is
-    // behind an async Mutex to serialize register-bank access with
-    // the rest of the code.
+    // 2. DDC — load new FIR coefficients + decimation + NCO offset
+    //    for the current control-channel frequency. Same NCO math as
+    //    boot (PPM-corrected).
+    let nco_lo_shift_hz = -state.boot_lo_ppm * 1e-6 * new_rx_lo as f64;
+    let nco_offset_hz = state.boot_control_freq as f64
+        - new_rx_lo as f64 + nco_lo_shift_hz;
     {
         let core = state.ip_core.lock().await;
-        match core.set_ddc_frequency(nco_offset_hz, sr as f64) {
-            Ok(_) => applied.push(format!(
-                "ddc_nco_offset={:.0} (control_freq={control_freq})",
-                nco_offset_hz
-            )),
-            Err(e) => errors.push(format!("ddc_nco_offset: {e}")),
+        match core.configure_ddc(nco_offset_hz, preset) {
+            Ok(_) => {
+                state.current_preset_idx.store(
+                    preset_idx, Ordering::Relaxed);
+                applied.push(format!(
+                    "configure_ddc preset={} nco_offset_hz={:.0}",
+                    preset.name, nco_offset_hz));
+            }
+            Err(e) => errors.push(format!("configure_ddc: {e}")),
         }
     }
 
     let readback_gain = state.ad9361.get_rx_gain().await.ok();
     let readback_rssi = state.ad9361.get_rx_rssi().await.ok();
 
-    Json(serde_json::json!({
-        "ok": errors.is_empty(),
-        "applied": applied,
-        "errors": errors,
-        "requested": {
-            "rx_lo":              rx_lo,
-            "control_freq":       control_freq,
-            "sample_rate":        sr,
-            "rf_bandwidth":       bw,
-            "gain_control_mode":  gm_str,
-            "ddc_nco_offset_hz":  nco_offset_hz,
-        },
-        "boot_defaults": {
-            "rx_lo":              state.boot_rx_lo,
-            "control_freq":       state.boot_control_freq,
-            "sample_rate":        state.boot_sample_rate,
-            "rf_bandwidth":       state.boot_rf_bandwidth,
-            "lo_ppm":             state.boot_lo_ppm,
-            "gain_control_mode":  "manual",
-            "hardwaregain":       state.boot_hardwaregain,
-        },
+    let status = if errors.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (status, Json(serde_json::json!({
+        "ok":       errors.is_empty(),
+        "applied":  applied,
+        "errors":   errors,
+        "preset":   preset.name,
+        "sample_rate_hz":  preset.sample_rate_hz,
+        "rf_bandwidth_hz": preset.rf_bandwidth_hz,
+        "rx_lo_hz":        new_rx_lo,
+        "nco_offset_hz":   nco_offset_hz,
         "readback": {
             "hardwaregain_db": readback_gain,
             "rssi_db":         readback_rssi,
         },
-        "note": "Re-runs the main.rs boot front-end init for AD9361 + DDC NCO. Defaults restore boot config; query params override individual fields for live retuning without a Tezuka rebuild. Use as recovery path after anything clobbers AD9361 or DDC state.",
-    }))
+    })))
 }
 
 
 #[cfg(not(target_os = "linux"))]
-pub async fn get_reinit(
+pub async fn post_preset(
     State(_state): State<Arc<AppState>>,
-    Query(_params): Query<std::collections::HashMap<String, String>>,
-) -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "ok": false,
-        "error": "front-end re-init is only available on the target (linux/arm)",
-    }))
+    Json(_body): Json<PresetBody>,
+) -> impl IntoResponse {
+    (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+        "ok":    false,
+        "error": "preset apply is only available on the target (linux/arm)",
+    })))
+}
+
+
+/// `POST /api/tune` body — applied by `post_tune`.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TuneBody {
+    /// Target radio (channel) frequency in Hz.
+    pub radio_freq_hz: u64,
+    /// Optional center-mode override. When omitted, uses the live
+    /// `center_locked` flag. "auto" = may move the LO. "lock" = NCO
+    /// only; 409 if outside window.
+    #[serde(default)]
+    pub center_mode: Option<String>,
+}
+
+
+/// `POST /api/tune` — scanner-style retune. In Auto mode the LO
+/// moves only when the NCO window would be exceeded, so stepping
+/// inside the current BW is a pure register write (fast). In Lock
+/// mode the LO never moves; out-of-window requests return 409.
+#[cfg(target_os = "linux")]
+pub async fn post_tune(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TuneBody>,
+) -> impl IntoResponse {
+    use std::sync::atomic::Ordering;
+
+    let lock_req = match body.center_mode.as_deref() {
+        None => state.center_locked.load(Ordering::Relaxed),
+        Some("auto") => false,
+        Some("lock") => true,
+        Some(other) => {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "ok":    false,
+                "error": format!(
+                    "unknown center_mode '{other}'; expected 'auto' or 'lock'"
+                ),
+            })));
+        }
+    };
+
+    let preset_idx = state.current_preset_idx.load(Ordering::Relaxed);
+    let preset = ddc_presets::PRESETS
+        .get(preset_idx)
+        .copied()
+        .unwrap_or(ddc_presets::DEFAULT_PRESET);
+    let sample_rate_hz = preset.sample_rate_hz as f64;
+    let rx_lo_now: i64 = state.current_rx_lo.load(Ordering::Relaxed);
+    let radio: i64 = body.radio_freq_hz as i64;
+    let half_window: i64 = preset.nco_half_window_hz() as i64;
+    let usable_half: i64 = half_window - TUNE_GUARD_HZ;
+
+    // Compute the NCO offset at the existing LO. If it fits the
+    // guard-banded window we can do a pure NCO move regardless of
+    // mode. Otherwise Lock returns 409, Auto recenters.
+    let offset_at_current_lo: i64 = radio - rx_lo_now;
+    let in_window = offset_at_current_lo.abs() <= usable_half;
+
+    let (new_rx_lo, lo_moved) = if in_window {
+        (rx_lo_now, false)
+    } else if lock_req {
+        return (StatusCode::CONFLICT, Json(serde_json::json!({
+            "ok":    false,
+            "error": "radio frequency outside locked window",
+            "radio_freq_hz":     radio,
+            "rx_lo_hz":          rx_lo_now,
+            "window_half_hz":    usable_half,
+            "preset":            preset.name,
+            "hint":              "Unlock center (POST /api/tune body \
+                                  center_mode=\"auto\") or pick a preset \
+                                  with a wider NCO window.",
+        })));
+    } else {
+        // Auto recenter: round the radio frequency to the nearest
+        // TUNE_LO_STEP_HZ multiple. That lands the NCO at ~0 Hz for
+        // a typical grid frequency and keeps the AD9361 PLL from
+        // resettling on sub-step scrolls.
+        let rounded = ((radio + TUNE_LO_STEP_HZ / 2) / TUNE_LO_STEP_HZ)
+            * TUNE_LO_STEP_HZ;
+        (rounded, true)
+    };
+
+    let nco_lo_shift_hz = -state.boot_lo_ppm * 1e-6 * new_rx_lo as f64;
+    let nco_offset_hz = radio as f64 - new_rx_lo as f64 + nco_lo_shift_hz;
+
+    let mut applied: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    if lo_moved {
+        match state.ad9361.set_rx_lo_frequency(new_rx_lo as u64).await {
+            Ok(_) => {
+                state.current_rx_lo.store(new_rx_lo, Ordering::Relaxed);
+                applied.push(format!("rx_lo={new_rx_lo}"));
+            }
+            Err(e) => errors.push(format!("rx_lo: {e}")),
+        }
+    }
+    {
+        let core = state.ip_core.lock().await;
+        match core.set_ddc_frequency(nco_offset_hz, sample_rate_hz) {
+            Ok(_) => applied.push(format!(
+                "ddc_nco_offset={:.0}", nco_offset_hz)),
+            Err(e) => errors.push(format!("ddc_nco_offset: {e}")),
+        }
+    }
+    // Reflect the lock state requested by this call.
+    state.center_locked.store(lock_req, Ordering::Relaxed);
+
+    let status = if errors.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (status, Json(serde_json::json!({
+        "ok":              errors.is_empty(),
+        "applied":         applied,
+        "errors":          errors,
+        "radio_freq_hz":   radio,
+        "rx_lo_hz":        new_rx_lo,
+        "nco_offset_hz":   nco_offset_hz,
+        "lo_moved":        lo_moved,
+        "center_locked":   lock_req,
+        "preset":          preset.name,
+        "window_half_hz":  usable_half,
+    })))
+}
+
+
+#[cfg(not(target_os = "linux"))]
+pub async fn post_tune(
+    State(_state): State<Arc<AppState>>,
+    Json(_body): Json<TuneBody>,
+) -> impl IntoResponse {
+    (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+        "ok":    false,
+        "error": "tune is only available on the target (linux/arm)",
+    })))
 }
 
 

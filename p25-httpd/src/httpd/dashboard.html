@@ -622,26 +622,45 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       </tr>
     </tbody>
   </table>
-  <!-- Live front-end retune. Fires GET /api/reinit with whatever
-       fields the user filled in. Unfilled fields keep their current
-       live value (rf_bandwidth from /api/stats, rx_lo from
-       /api/system). Control freq, center freq (rx_lo), and BW are
-       independently overridable so the user can jump sites, widen /
-       narrow the analog filter, or re-center the LO without editing
-       boot config. If the new control_freq is outside the LO's
-       ±(BW/2) window, auto-nudge rx_lo to keep the NCO in range. -->
-  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px;font-size:0.85em">
-    <label for="bi_retune_mhz"><b>Control (MHz)</b>:</label>
-    <input type="number" id="bi_retune_mhz" step="0.001" placeholder="MHz"
-      style="width:11em;font-family:inherit" />
-    <label for="bi_center_mhz"><b>Center (MHz)</b>:</label>
-    <input type="number" id="bi_center_mhz" step="0.001" placeholder="auto"
-      style="width:10em;font-family:inherit" />
-    <label for="bi_bw_mhz"><b>BW (MHz)</b>:</label>
-    <input type="number" id="bi_bw_mhz" step="0.1" placeholder="keep"
-      style="width:7em;font-family:inherit" />
-    <button id="bi_retune_btn" class="btn" style="padding:3px 10px" onclick="retuneControl()">Tune</button>
-    <span class="v" id="bi_retune_status" style="font-size:0.85em;color:var(--text-dim)">idle</span>
+  <!-- 2026-04-22 tuning redesign. Three-input "type a control freq,
+       center and BW" row is gone; scanner-style widget replaces it.
+       Preset dropdown = sample rate + RF BW (locked together, picked
+       from /api/presets at page load). Radio Freq is the operator's
+       primary handle with 6.25 / 12.5 kHz step buttons. Center has
+       Auto / Lock semantics — Auto lets POST /api/tune recenter the
+       RX LO when the NCO window would be exceeded; Lock pins the LO
+       and returns 409 on out-of-window requests. NCO offset is
+       surfaced live so the operator can see how much window is left.
+       -->
+  <div id="tune_widget" style="margin-top:8px;font-size:0.85em;display:flex;flex-direction:column;gap:6px">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+      <label for="tune_preset_sel"><b>Preset</b>:</label>
+      <select id="tune_preset_sel" style="padding:3px 6px;font-family:inherit">
+        <!-- Populated at runtime from /api/presets -->
+      </select>
+      <span class="v" id="tune_preset_spec" style="color:var(--text-dim)">--</span>
+      <button id="tune_preset_btn" class="btn" style="padding:3px 10px" onclick="applyPreset()">Apply preset</button>
+      <span class="v" id="tune_preset_status" style="color:var(--text-dim)">idle</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+      <label for="tune_radio_mhz"><b>Radio Freq (MHz)</b>:</label>
+      <input type="number" id="tune_radio_mhz" step="0.00625"
+        placeholder="MHz" style="width:11em;font-family:inherit"
+        onkeydown="radioFreqKey(event)" />
+      <button class="btn" style="padding:3px 8px" onclick="stepRadio(-12500)">-12.5k</button>
+      <button class="btn" style="padding:3px 8px" onclick="stepRadio(-6250)">-6.25k</button>
+      <button class="btn" style="padding:3px 8px" onclick="stepRadio(+6250)">+6.25k</button>
+      <button class="btn" style="padding:3px 8px" onclick="stepRadio(+12500)">+12.5k</button>
+      <button id="tune_tune_btn" class="btn" style="padding:3px 10px" onclick="tuneRadio()">Tune</button>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+      <label><b>Center</b>:</label>
+      <label style="font-weight:normal"><input type="radio" name="tune_center_mode" value="auto" checked onchange="setCenterMode('auto')"> auto</label>
+      <label style="font-weight:normal"><input type="radio" name="tune_center_mode" value="lock" onchange="setCenterMode('lock')"> lock</label>
+      <span class="v" id="tune_center_hz" style="color:var(--text-dim)">RX LO: --</span>
+      <span class="v" id="tune_nco_off" style="color:var(--text-dim)">NCO: --</span>
+      <span class="v" id="tune_status" style="color:var(--text-dim)">idle</span>
+    </div>
   </div>
   <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px;font-size:0.85em">
     <label for="bi_mod_sel"><b>Modulation</b>:</label>
@@ -945,103 +964,178 @@ async function fetchJson(url) {
   try { return await (await fetch(url)).json(); } catch { return null; }
 }
 
-// Retune front-end via /api/reinit. Each of the three inputs
-// (Control MHz / Center MHz / BW MHz) is independently optional.
-// Unfilled fields preserve the current live value so a live
-// iio_attr-set 8 MHz BW doesn't get silently reset to the 4 MHz
-// boot default. Auto-LO: if the user sets Control alone and the
-// target falls outside rx_lo ± BW/2, Center is filled automatically
-// so the LO follows. Blank Control = restore boot control_freq.
-async function retuneControl() {
-  const ctrlStr   = $('bi_retune_mhz').value.trim();
-  const centerStr = $('bi_center_mhz').value.trim();
-  const bwStr     = $('bi_bw_mhz').value.trim();
-  const status = $('bi_retune_status');
-  const btn = $('bi_retune_btn');
+// ── Scanner-style tuning widget (2026-04-22 redesign) ────────────
+//
+// POSTs /api/preset (slow path: AD9361 resettle + DDC reload) and
+// /api/tune (fast path: NCO only, or auto-recenter the LO when the
+// window would be exceeded). The old GET /api/reinit endpoint is
+// gone. Preset dropdown is populated from /api/presets on load.
+// Radio Freq step buttons commit immediately; typing in the textbox
+// requires pressing Enter or clicking Tune.
+
+// Cached preset list from /api/presets (name -> {sample_rate_hz,
+// rf_bandwidth_hz, nco_half_window_hz, ...}). Refreshed on load.
+let PRESETS_BY_NAME = {};
+// Last-known live RX LO in Hz (fed by refresh()'s /api/stats poll).
+let TUNE_CUR_RX_LO_HZ = 0;
+// Current preset name (starts empty until /api/presets returns).
+let TUNE_CUR_PRESET = '';
+// Center-mode radio buttons mirror `center_locked` returned by the
+// server; applying a mode here is just local state — the actual
+// toggle happens inside `/api/tune`'s body.
+let TUNE_CENTER_MODE = 'auto';
+
+async function loadPresets() {
+  const res = await fetchJson('/api/presets');
+  if (!res || !res.presets) return;
+  const sel = $('tune_preset_sel');
+  sel.innerHTML = '';
+  PRESETS_BY_NAME = {};
+  for (const p of res.presets) {
+    PRESETS_BY_NAME[p.name] = p;
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = `${p.name}  (${(p.sample_rate_hz/1e6).toFixed(0)} MHz SR, ${(p.rf_bandwidth_hz/1e6).toFixed(0)} MHz BW)`;
+    sel.appendChild(opt);
+  }
+  TUNE_CUR_PRESET = res.current || res.default;
+  sel.value = TUNE_CUR_PRESET;
+  renderPresetSpec();
+  // Reflect server-side center_locked into the radio buttons.
+  TUNE_CENTER_MODE = res.center_locked ? 'lock' : 'auto';
+  const r = document.querySelector(`input[name=tune_center_mode][value=${TUNE_CENTER_MODE}]`);
+  if (r) r.checked = true;
+  sel.onchange = renderPresetSpec;
+}
+
+function renderPresetSpec() {
+  const sel = $('tune_preset_sel');
+  const p = PRESETS_BY_NAME[sel.value];
+  const spec = $('tune_preset_spec');
+  if (!p) { spec.textContent = '--'; return; }
+  spec.textContent = `/${p.decim[0]}/${p.decim[1]}/${p.decim[2]}  NCO ±${(p.nco_half_window_hz/1e6).toFixed(2)} MHz  25k rej ${p.rejection_25k_db.toFixed(1)} dB`;
+}
+
+function setCenterMode(mode) {
+  TUNE_CENTER_MODE = mode;
+}
+
+async function applyPreset() {
+  const sel = $('tune_preset_sel');
+  const name = sel.value;
+  const status = $('tune_preset_status');
+  const btn = $('tune_preset_btn');
   btn.disabled = true;
-  status.textContent = 'retuning...';
+  status.textContent = 'applying...';
   status.style.color = 'var(--text-dim)';
+  const body = { preset: name };
   try {
-    // Current live front-end state. Both rf_bandwidth_hz and rx_lo_hz
-    // come from /api/stats (readback of the AD9361 via libiio).
-    const curStats = await fetchJson('/api/stats');
-    const curBwHz = (curStats && curStats.rf_bandwidth_hz) || 0;
-    const curLoHz = (curStats && curStats.rx_lo_hz)        || 0;
-    const params = new URLSearchParams();
-
-    // --- Control frequency ------------------------------------
-    let ctrlHz = null;
-    if (ctrlStr !== '') {
-      const mhz = parseFloat(ctrlStr);
-      if (!isFinite(mhz) || mhz < 100 || mhz > 6000) {
-        status.textContent = 'bad Control MHz (100-6000 expected)';
-        status.style.color = 'var(--red)';
-        btn.disabled = false;
-        return;
-      }
-      ctrlHz = Math.round(mhz * 1e6);
-      params.set('control_freq', String(ctrlHz));
-    }
-
-    // --- rf_bandwidth -----------------------------------------
-    // If user gave an explicit value, use it; otherwise preserve
-    // current live BW so we don't fall back to the 4 MHz boot default.
-    let bwHz = curBwHz;
-    if (bwStr !== '') {
-      const mhz = parseFloat(bwStr);
-      if (!isFinite(mhz) || mhz < 0.2 || mhz > 56) {
-        status.textContent = 'bad BW MHz (0.2-56 expected)';
-        status.style.color = 'var(--red)';
-        btn.disabled = false;
-        return;
-      }
-      bwHz = Math.round(mhz * 1e6);
-    }
-    if (bwHz > 0) params.set('rf_bandwidth', String(bwHz));
-
-    // --- Center / rx_lo ---------------------------------------
-    // Explicit center wins. Otherwise auto-nudge LO if control_freq
-    // would fall outside rx_lo ± bwHz/2. The AD9361 DDC chain can
-    // still decode slightly outside the analog filter but SNR
-    // degrades fast — keep the channel inside the filter skirt.
-    let loHz = null;
-    if (centerStr !== '') {
-      const mhz = parseFloat(centerStr);
-      if (!isFinite(mhz) || mhz < 70 || mhz > 6000) {
-        status.textContent = 'bad Center MHz (70-6000 expected)';
-        status.style.color = 'var(--red)';
-        btn.disabled = false;
-        return;
-      }
-      loHz = Math.round(mhz * 1e6);
-    } else if (ctrlHz != null && curLoHz > 0 && bwHz > 0) {
-      const halfBw = bwHz / 2;
-      if (Math.abs(ctrlHz - curLoHz) > halfBw) {
-        // Park LO on the requested control freq so the DDC sits
-        // inside the filter passband.
-        loHz = ctrlHz;
-      }
-    }
-    if (loHz != null) params.set('rx_lo', String(loHz));
-
-    const url = '/api/reinit' + (params.toString() ? '?' + params.toString() : '');
-    const res = await fetchJson(url);
+    const res = await fetch('/api/preset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(r => r.json());
     if (res && res.ok) {
-      const parts = [];
-      if (ctrlHz != null)   parts.push(`ctrl=${(ctrlHz/1e6).toFixed(4)}`);
-      if (loHz != null)     parts.push(`lo=${(loHz/1e6).toFixed(3)}`);
-      if (bwStr !== '')     parts.push(`bw=${(bwHz/1e6).toFixed(1)}`);
-      const desc = parts.length ? parts.join(' ') : 'boot defaults';
-      status.textContent = `tuned: ${desc} — waiting for reacquire...`;
+      status.textContent = `applied ${res.preset} @ ${(res.rx_lo_hz/1e6).toFixed(3)} MHz`;
       status.style.color = 'var(--green)';
-      // Force immediate refreshes so the user sees the new NAC
-      // appear as soon as the decoder locks.
+      TUNE_CUR_PRESET = res.preset;
+      renderPresetSpec();
       setTimeout(refresh, 500);
       setTimeout(refresh, 2000);
-      setTimeout(refresh, 5000);
     } else {
-      const errs = (res && res.errors && res.errors.join('; ')) || 'reinit failed';
-      status.textContent = errs;
+      status.textContent = (res && res.error) || 'preset failed';
+      status.style.color = 'var(--red)';
+    }
+  } catch (e) {
+    status.textContent = 'fetch error: ' + e;
+    status.style.color = 'var(--red)';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Commit the current Radio Freq textbox via POST /api/tune with the
+// active center_mode. Empty textbox is a no-op.
+async function tuneRadio() {
+  const str = $('tune_radio_mhz').value.trim();
+  if (str === '') return;
+  const mhz = parseFloat(str);
+  if (!isFinite(mhz) || mhz < 70 || mhz > 6000) {
+    $('tune_status').textContent = 'bad MHz (70-6000 expected)';
+    $('tune_status').style.color = 'var(--red)';
+    return;
+  }
+  await postTune(Math.round(mhz * 1e6));
+}
+
+// Step buttons + keyboard arrows. Base is the current textbox if
+// filled, otherwise the live RX LO + NCO offset.
+async function stepRadio(delta_hz) {
+  let base_hz;
+  const str = $('tune_radio_mhz').value.trim();
+  if (str !== '') {
+    const mhz = parseFloat(str);
+    if (!isFinite(mhz)) return;
+    base_hz = Math.round(mhz * 1e6);
+  } else {
+    // Fall back to last-known live RX LO + NCO so step buttons work
+    // even if the operator hasn't typed anything yet.
+    base_hz = TUNE_CUR_RX_LO_HZ; // approximation; NCO is close to 0
+  }
+  await postTune(base_hz + delta_hz);
+}
+
+// Arrow-key shortcuts on the radio-freq textbox. ArrowUp / Down =
+// ±12.5 kHz; Shift modifies to ±6.25 kHz. Enter commits the typed
+// value. All commits go through postTune() so center_mode is honored.
+function radioFreqKey(ev) {
+  if (ev.key === 'Enter') { ev.preventDefault(); tuneRadio(); return; }
+  let delta = 0;
+  if (ev.key === 'ArrowUp')   delta = ev.shiftKey ? +6250 : +12500;
+  if (ev.key === 'ArrowDown') delta = ev.shiftKey ? -6250 : -12500;
+  if (delta === 0) return;
+  ev.preventDefault();
+  stepRadio(delta);
+}
+
+async function postTune(radio_hz) {
+  const status = $('tune_status');
+  const btn = $('tune_tune_btn');
+  btn.disabled = true;
+  status.textContent = 'tuning...';
+  status.style.color = 'var(--text-dim)';
+  const body = {
+    radio_freq_hz: radio_hz,
+    center_mode:   TUNE_CENTER_MODE,
+  };
+  try {
+    const res = await fetch('/api/tune', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await res.json();
+    if (res.ok && j.ok) {
+      const mhz = (radio_hz / 1e6).toFixed(6);
+      const lo_mhz = (j.rx_lo_hz / 1e6).toFixed(3);
+      const nco_khz = (j.nco_offset_hz / 1e3).toFixed(2);
+      status.textContent =
+        `tuned ${mhz} MHz  LO=${lo_mhz}  NCO=${nco_khz} kHz`
+        + (j.lo_moved ? '  [LO moved]' : '');
+      status.style.color = 'var(--green)';
+      $('tune_radio_mhz').value = mhz;
+      TUNE_CUR_RX_LO_HZ = j.rx_lo_hz;
+      $('tune_center_hz').textContent =
+        `RX LO: ${lo_mhz} MHz`;
+      $('tune_nco_off').textContent = `NCO: ${nco_khz} kHz`;
+      setTimeout(refresh, 300);
+      setTimeout(refresh, 1500);
+    } else if (res.status === 409) {
+      status.textContent =
+        `locked: outside ±${(j.window_half_hz/1e6).toFixed(2)} MHz window`;
+      status.style.color = 'var(--red)';
+    } else {
+      status.textContent = (j && j.error) || 'tune failed';
       status.style.color = 'var(--red)';
     }
   } catch (e) {
@@ -1342,6 +1436,18 @@ async function refresh() {
     }
     $('bi_rx_lo').textContent = fmtHz(stats.rx_lo_hz);
     $('bi_rf_bw').textContent = fmtHz(stats.rf_bandwidth_hz);
+    // Feed the scanner widget's cached LO + NCO display from the
+    // same stats poll so step buttons work without the widget
+    // maintaining its own poll loop.
+    if (stats.rx_lo_hz) TUNE_CUR_RX_LO_HZ = stats.rx_lo_hz;
+    if ($('tune_center_hz')) {
+      $('tune_center_hz').textContent =
+        `RX LO: ${(stats.rx_lo_hz/1e6).toFixed(3)} MHz`;
+    }
+    if ($('tune_nco_off') && stats.ddc_control_offset_hz != null) {
+      $('tune_nco_off').textContent =
+        `NCO: ${(stats.ddc_control_offset_hz/1e3).toFixed(2)} kHz`;
+    }
     const gainTxt = (stats.rx_gain_db != null ? fmtDb(stats.rx_gain_db) : '--')
       + ' / ' + (stats.gain_control_mode || '--');
     $('bi_gain').textContent = gainTxt;
@@ -3732,6 +3838,10 @@ async function loadApiCatalogue() {
 document.addEventListener('DOMContentLoaded', () => {
   const f = $('api_filter');
   if (f) f.addEventListener('input', renderApi);
+  // Populate the scanner-widget preset dropdown + read live
+  // center_locked flag. One-shot — preset names don't change at
+  // runtime.
+  if (typeof loadPresets === 'function') loadPresets();
 });
 // Lazy-load on first tab activation so we don't pull 25 lines of
 // JSON on every page load.

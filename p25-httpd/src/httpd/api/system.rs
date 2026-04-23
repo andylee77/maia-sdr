@@ -360,9 +360,21 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     },
     EndpointDoc {
         method: "GET",
-        path: "/api/reinit",
-        params: "?rx_lo=&control_freq=&sample_rate=&rf_bandwidth=&gain_mode=&gain_db=",
-        description: "Live front-end + DDC re-init without reboot. Unspecified fields use boot defaults.",
+        path: "/api/presets",
+        params: "",
+        description: "List every DDC preset (name, sample rate, RF BW, NCO window) and the current live preset.",
+    },
+    EndpointDoc {
+        method: "POST",
+        path: "/api/preset",
+        params: "JSON: {preset, center_freq_hz?, gain_mode?, gain_db?}",
+        description: "Apply a DDC preset. Slow path: AD9361 resettle + FIR coefficient reload.",
+    },
+    EndpointDoc {
+        method: "POST",
+        path: "/api/tune",
+        params: "JSON: {radio_freq_hz, center_mode?}",
+        description: "Scanner-style retune. Auto moves LO only when window exceeded; Lock refuses LO moves (409).",
     },
     EndpointDoc {
         method: "GET",

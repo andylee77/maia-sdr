@@ -94,7 +94,9 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 
 | Path | Method | Returns | Purpose |
 |---|---|---|---|
-| `/api/reinit` | GET | JSON | Front-end retune. `?rx_lo=<Hz>`, `?control_freq=<Hz>`, `?sample_rate=<Hz>`, `?rf_bandwidth=<Hz>`, `?gain_mode=manual\|agc`, `?gain_db=<int>`. Blank = restore boot value |
+| `/api/presets` | GET | JSON | List DDC presets: `presets[]` with `name`, `sample_rate_hz`, `rf_bandwidth_hz`, `decim[3]`, `nco_half_window_hz`, `rejection_25k_db`; plus `current`, `default`, `center_locked` |
+| `/api/preset` | POST | JSON | Apply a preset. Body `{preset, center_freq_hz?, gain_mode?, gain_db?}`. Slow path: AD9361 resettle + DDC coefficient reload |
+| `/api/tune` | POST | JSON | Scanner retune. Body `{radio_freq_hz, center_mode?}`. Auto recenters LO only when window exceeded; Lock returns 409 if outside window |
 | `/api/rx_gain` | GET, PUT | JSON | AD9361 RX gain + AGC mode. `?db=<-3..76>` sets manual hardwaregain; `?mode=manual\|slow_attack\|fast_attack\|hybrid` sets `gain_control_mode`. Both params can be combined; mode applied first |
 | `/api/modulation` | GET, PUT | JSON | Active modulation: `auto` / `c4fm` / `lsm`. Changes which control-chain decoder feeds the dashboard |
 | `/api/bch_t` | GET, PUT | JSON | Runtime BCH-t correction cap per decoder. `?side=control\|traffic&t=<0..11>` |

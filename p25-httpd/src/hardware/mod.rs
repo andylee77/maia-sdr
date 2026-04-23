@@ -1,6 +1,13 @@
 //! Linux-only hardware glue: UIO, FPGA IP-core, IIO (AD9361), DMA
 //! ring buffers. The entire module is a no-op on non-Linux host
 //! builds so developer-side `cargo check` still works.
+//!
+//! The `ddc_presets` submodule is pure data (coefficient tables +
+//! the `DdcPreset` struct) with no hardware dependency, so it is
+//! compiled on every platform — AppState carries a preset handle
+//! even on host builds where `fpga.rs` is stubbed out.
+
+pub mod ddc_presets;
 
 #[cfg(target_os = "linux")]
 pub mod fpga;

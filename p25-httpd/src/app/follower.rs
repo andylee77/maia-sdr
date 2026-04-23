@@ -38,7 +38,7 @@ pub fn spawn_traffic_grant_follower(
     follower_active_mod: Arc<AtomicU8>,
     follower_mgr: Arc<Mutex<TrafficManager>>,
     follower_core: Arc<Mutex<fpga::IpCore>>,
-    follower_sample_rate: f64,
+    follower_current_sample_rate_hz: Arc<std::sync::atomic::AtomicU32>,
     follower_current_rx_lo: Arc<AtomicI64>,
     follower_lo_ppm: f64,
     follower_enabled: Arc<AtomicBool>,
@@ -449,11 +449,18 @@ pub fn spawn_traffic_grant_follower(
                                     // doesn't sit at a residual steady-
                                     // state phase error on every call.
                                     //
-                                    // rx_lo read fresh (not captured at
-                                    // spawn) so offset math follows
-                                    // /api/reinit live LO moves.
+                                    // rx_lo + sample rate read fresh
+                                    // (not captured at spawn) so offset
+                                    // math follows live LO or preset
+                                    // changes (POST /api/preset moves
+                                    // sample rate; POST /api/tune moves
+                                    // rx_lo in Auto mode).
                                     let rx_lo_now = follower_current_rx_lo
                                         .load(std::sync::atomic::Ordering::Relaxed);
+                                    let sample_rate_now =
+                                        follower_current_sample_rate_hz
+                                            .load(std::sync::atomic::Ordering::Relaxed)
+                                            as f64;
                                     let nco_lo_shift_hz =
                                         -follower_lo_ppm * 1e-6
                                             * rx_lo_now as f64;
@@ -489,7 +496,7 @@ pub fn spawn_traffic_grant_follower(
                                     // doc/changes/038.
                                     match core.retune_traffic_chain(
                                         offset_hz as f64,
-                                        follower_sample_rate,
+                                        sample_rate_now,
                                     ) {
                                         Ok(()) => {
                                             tracing::info!(

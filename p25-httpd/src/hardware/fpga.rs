@@ -9,6 +9,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+use crate::hardware::ddc_presets::DdcPreset;
 use crate::hardware::rxbuffer::RxBuffer;
 use crate::hardware::uio::{Mapping, Uio};
 
@@ -191,35 +192,39 @@ impl IpCore {
 
     /// Configures the complete DDC: FIR coefficients, decimation, NCO.
     ///
-    /// This must be called before enabling the DDC. Loads the 3-stage
-    /// FIR filters (P25 12.5 kHz channel filter, 128x decimation) and
-    /// programs the NCO frequency for the given channel offset.
+    /// `preset` selects the AD9361 sample rate and the matching FIR
+    /// coefficient / decimation tables. Every preset produces 62.5 kSPS
+    /// at the DDC output by construction, so the downstream LSM chain
+    /// stays valid across preset changes. `frequency_hz` is the NCO
+    /// offset from the RX LO at `preset.sample_rate_hz`.
     pub fn configure_ddc(
         &self,
         frequency_hz: f64,
-        sample_rate_hz: f64,
+        preset: &DdcPreset,
     ) -> Result<()> {
-        // P25 channel filter: 8 MSPS -> 62.5 kSPS (16x4x2 = 128x)
-        // Designed with scipy.signal.firwin, Kaiser window, 18-bit quantized
-        self.load_fir1(&P25_FIR1_COEFFS, P25_DEC1)?;
-        self.load_fir2(&P25_FIR2_COEFFS, P25_DEC2)?;
-        self.load_fir3(&P25_FIR3_COEFFS, P25_DEC3)?;
+        self.load_fir1(preset.fir1_coeffs, preset.decim1)?;
+        self.load_fir2(preset.fir2_coeffs, preset.decim2)?;
+        self.load_fir3(preset.fir3_coeffs, preset.decim3)?;
 
         // Enable all 3 stages (no bypass)
         self.registers.ddc_control().modify(|_, w| {
             w.bypass2().clear_bit().bypass3().clear_bit()
         });
 
-        self.set_ddc_frequency(frequency_hz, sample_rate_hz)?;
+        self.set_ddc_frequency(frequency_hz, preset.sample_rate_hz as f64)?;
 
-        let total_dec = P25_DEC1 * P25_DEC2 * P25_DEC3;
         tracing::info!(
-            "DDC configured: NCO={} Hz, 3-stage FIR ({}/{}/{} taps), \
-             {}x{}x{}={}x decimation, output={} Hz",
+            "DDC configured: preset={} NCO={} Hz, 3-stage FIR ({}/{}/{} taps), \
+             {}x{}x{}={}x decimation, output={} Hz (25 kHz rejection {:+.1} dB)",
+            preset.name,
             frequency_hz as i64,
-            P25_FIR1_COEFFS.len(), P25_FIR2_COEFFS.len(), P25_FIR3_COEFFS.len(),
-            P25_DEC1, P25_DEC2, P25_DEC3, total_dec,
-            sample_rate_hz as u64 / total_dec as u64,
+            preset.fir1_coeffs.len(),
+            preset.fir2_coeffs.len(),
+            preset.fir3_coeffs.len(),
+            preset.decim1, preset.decim2, preset.decim3,
+            preset.total_decim(),
+            preset.sample_rate_hz as u64 / preset.total_decim() as u64,
+            preset.rejection_25k_db,
         );
         Ok(())
     }
@@ -460,29 +465,29 @@ impl IpCore {
     pub fn configure_traffic_ddc(
         &self,
         frequency_hz: f64,
-        sample_rate_hz: f64,
+        preset: &DdcPreset,
     ) -> Result<()> {
         // Compute decimation / operations / odd-operations for each FIR
-        // stage from the same constants the control DDC uses, then write
-        // them into the traffic_ddc_decimation + traffic_ddc_control
+        // stage from the preset's coefficient tables, then write them
+        // into the traffic_ddc_decimation + traffic_ddc_control
         // register bank. We do NOT touch coefficient RAM (shared with
-        // control DDC).
-        let dec1 = u8::try_from(P25_DEC1).unwrap();
-        let dec2 = u8::try_from(P25_DEC2).unwrap();
-        let dec3 = u8::try_from(P25_DEC3).unwrap();
+        // control DDC); configure_ddc() must have run first.
+        let dec1 = u8::try_from(preset.decim1).unwrap();
+        let dec2 = u8::try_from(preset.decim2).unwrap();
+        let dec3 = u8::try_from(preset.decim3).unwrap();
 
         // FIR1 (FIR4DSP, folded): same math as load_fir1.
-        let fir1_branch_len = P25_FIR1_COEFFS.len().div_ceil(P25_DEC1);
+        let fir1_branch_len = preset.fir1_coeffs.len().div_ceil(preset.decim1);
         let fir1_operations = fir1_branch_len.div_ceil(2);
         let fir1_odd = fir1_branch_len % 2 == 1;
         let opm1_1 = u8::try_from(fir1_operations - 1).unwrap();
 
         // FIR2 (FIR2DSP, no folding): same math as load_fir2.
-        let fir2_operations = P25_FIR2_COEFFS.len().div_ceil(P25_DEC2);
+        let fir2_operations = preset.fir2_coeffs.len().div_ceil(preset.decim2);
         let opm1_2 = u8::try_from(fir2_operations - 1).unwrap();
 
         // FIR3 (FIR4DSP, folded): same math as load_fir3.
-        let fir3_branch_len = P25_FIR3_COEFFS.len().div_ceil(P25_DEC3);
+        let fir3_branch_len = preset.fir3_coeffs.len().div_ceil(preset.decim3);
         let fir3_operations = fir3_branch_len.div_ceil(2);
         let fir3_odd = fir3_branch_len % 2 == 1;
         let opm1_3 = u8::try_from(fir3_operations - 1).unwrap();
@@ -516,18 +521,18 @@ impl IpCore {
         });
 
         // Initial NCO. Caller will typically retune this on every grant.
-        self.set_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
+        self.set_traffic_ddc_frequency(
+            frequency_hz, preset.sample_rate_hz as f64)?;
 
-        let total_dec = P25_DEC1 * P25_DEC2 * P25_DEC3;
         tracing::info!(
-            "Traffic DDC configured: NCO={} Hz, {}x{}x{}={}x decimation \
-             (FIR coeffs shared with control DDC), output={} Hz",
+            "Traffic DDC configured: preset={} NCO={} Hz, \
+             {}x{}x{}={}x decimation (FIR coeffs shared with control DDC), \
+             output={} Hz",
+            preset.name,
             frequency_hz as i64,
-            P25_DEC1,
-            P25_DEC2,
-            P25_DEC3,
-            total_dec,
-            sample_rate_hz as u64 / total_dec as u64,
+            preset.decim1, preset.decim2, preset.decim3,
+            preset.total_decim(),
+            preset.sample_rate_hz as u64 / preset.total_decim() as u64,
         );
         Ok(())
     }
@@ -1308,184 +1313,6 @@ fn freq_to_nco(frequency_hz: f64, sample_rate_hz: f64) -> u32 {
     (cycles_per_sample * scale).round() as i32 as u32
 }
 
-// ── P25 DDC filter coefficients ──────────────────────────────────────
-//
-// 3-stage FIR decimation: 8 MSPS -> 62.5 kSPS (/128 = /4 /4 /8)
-// P25 Phase 1 channel: 12.5 kHz (±6.25 kHz passband)
-// Output: 62.5 kSPS = 13 samples/symbol @ 4800 baud
-//
-// Phase 10-prep redesign (see tools/p25_ddc_filter_design.py and
-// doc/changes/040_ddc_filter_redesign.txt). Previous /16 /4 /2 split
-// with 48 Kaiser beta=6 taps on stage 1 had a transition band wide
-// enough that P25 adjacent-site emitters at ±500 kHz to ±2 MHz
-// only saw 30-50 dB of rejection before being mixed into the
-// control-channel output band, collapsing CRC pass rates at
-// rf_bandwidth >= 5 MHz.
-//
-// New plan: Parks-McClellan equiripple filters on a /4 /4 /8 split
-// so each stage's transition band fits comfortably in the tap
-// budget while anchoring the stopband at the per-stage output
-// Nyquist. Verified cascaded response meets -90+ dB across the
-// full 500 kHz - 4 MHz adjacent range at 0.05 dB passband ripple.
-//
-// Stage 1 (FIR4DSP):  48 taps, pb=300 kHz,  sb=1000 kHz, -93 dB
-// Stage 2 (FIR2DSP):  56 taps, pb=100 kHz,  sb=250  kHz, -93 dB
-// Stage 3 (FIR4DSP): 104 taps, pb=10  kHz,  sb=31   kHz, -90 dB
-//
-// All three tap arrays fit cleanly: stage 1 and stage 3 FIR4DSPs
-// have 256-slot coefficient RAMs each; stage 2 FIR2DSP has 128
-// slots. The operations_minus_one / odd_operations fields are
-// computed at runtime by load_fir1/2/3 from coefficients.len() /
-// decimation, so no other code in this file needs to change when
-// the tap arrays are edited.
-//
-// Close-in adjacents at +/-12.5 / +/-25 kHz intentionally land in
-// stage 3's transition band at -0.6 / -25 dB -- they are finished
-// off by the downstream LsmFir LPF (83 taps, passband 7250 Hz,
-// stopband 8000 Hz, >100 dB) at 31.25 kSPS in the HDL LSM chain.
-// Splitting sharp close-in filtering between the DDC and the
-// LsmFir LPF keeps the stage-3 tap count manageable.
-//
-// Peak-scaling convention
-// -----------------------
-// Each stage's coefficients are scaled so the maximum
-// |quantised| tap lands exactly at Q1.17 max (131071). This
-// matches the original Kaiser-filter convention in this file and
-// gives the downstream Maia DDC MAC + macc_trunc chain the
-// non-unit per-stage DC gains it was tuned for (~7x / ~6x / ~14x,
-// cascaded ~600x). The FIRST Phase 10-prep flash used unit-DC-gain
-// remez outputs and starved the demod chain by ~700x, producing
-// 0 % LSM NIDs + 55 % C4FM CRC on-target; the peak-scale rescale
-// fixes that without touching the filter *shape* (it's a pure
-// scalar multiplication). See doc/changes/040 for the full
-// debrief.
-//
-// To regenerate: `python tools/p25_ddc_filter_design.py`.
-
-// P25DDC fork v2: SDRTrunk-faithful, unit-DC-gain coefficient
-// convention. Replaces the Phase 10-prep peak-rescaled tables. See
-// doc/changes/041_p25ddc_fork.md for the design rationale and
-// doc/changes/041_p25ddc_fork.txt for the raw design output.
-//
-// Key differences from the Phase 10-prep (040) tables:
-//
-//   * Each stage is unit DC gain (sum of coefficients ~= 131072 =
-//     1 << 17). No peak-rescaling. This decouples coefficient
-//     design from output scale -- the explicit per-stage
-//     amplification now lives in P25DDC's macc_trunc=[14, 17, 17]
-//     default (see maia-hdl/p25_hdl/p25ddc.py).
-//
-//   * Stage 3 uses the full FIR4DSP 256-tap budget (vs 104 in
-//     Phase 10-prep). Passband tightened to 7.25 kHz (SDRTrunk's
-//     baseband LPF passband edge). This is what fixes the 25 kHz
-//     LsmDecimator2 fold-back: rejection at that offset goes from
-//     -25 dB (Phase 10-prep) to -71 dB (v2).
-//
-//   * Stage 2 uses the full FIR2DSP 128-tap budget.
-//
-//   * Stage 1 stops at 176 taps because scipy's remez is
-//     numerically unstable at higher counts for the specific
-//     200 kHz / 1 MHz band configuration. -109 dB stopband is
-//     already 35+ dB below the 12-bit ADC noise floor, so growing
-//     further would be pure RAM waste.
-//
-// To regenerate: `python tools/p25_ddc_filter_design.py`.
-
-const P25_DEC1: usize = 4;
-const P25_DEC2: usize = 4;
-const P25_DEC3: usize = 8;
-
-// Stage 1 (FIR4DSP): 176 taps, pb=200 kHz, sb=1000 kHz,
-// PM equiripple, unit DC gain. fs = 8 MSPS, /4 -> 2 MSPS.
-#[rustfmt::skip]
-const P25_FIR1_COEFFS: &[i32] = &[
-          0,       0,       0,       0,       0,       0,       0,       0,
-          0,       0,       0,       0,       0,       0,       0,       0,
-          0,       0,       0,       0,       0,       0,       0,       0,
-          0,       0,       0,       1,       1,       1,       0,       0,
-         -1,      -3,      -4,      -5,      -5,      -3,       0,       6,
-         12,      19,      23,      23,      17,       3,     -18,     -42,
-        -66,     -82,     -83,     -62,     -18,      48,     124,     196,
-        243,     244,     186,      63,    -113,    -316,    -501,    -618,
-       -620,    -474,    -174,     249,     726,    1157,    1428,    1433,
-       1102,     423,    -535,   -1627,   -2636,   -3308,   -3393,   -2692,
-      -1099,    1360,    4521,    8090,   11681,   14869,   17255,   18532,
-      18532,   17255,   14869,   11681,    8090,    4521,    1360,   -1099,
-      -2692,   -3393,   -3308,   -2636,   -1627,    -535,     423,    1102,
-       1433,    1428,    1157,     726,     249,    -174,    -474,    -620,
-       -618,    -501,    -316,    -113,      63,     186,     244,     243,
-        196,     124,      48,     -18,     -62,     -83,     -82,     -66,
-        -42,     -18,       3,      17,      23,      23,      19,      12,
-          6,       0,      -3,      -5,      -5,      -4,      -3,      -1,
-          0,       0,       1,       1,       1,       0,       0,       0,
-          0,       0,       0,       0,       0,       0,       0,       0,
-          0,       0,       0,       0,       0,       0,       0,       0,
-          0,       0,       0,       0,       0,       0,       0,       0,
-];
-
-// Stage 2 (FIR2DSP): 128 taps, pb=60 kHz, sb=250 kHz,
-// PM equiripple, unit DC gain. fs = 2 MSPS, /4 -> 500 kSPS.
-#[rustfmt::skip]
-const P25_FIR2_COEFFS: &[i32] = &[
-          0,       0,       0,       0,       0,       0,       0,       0,
-          0,       0,       0,       0,      -1,      -1,      -1,       0,
-          1,       2,       4,       6,       7,       6,       2,      -5,
-        -15,     -27,     -36,     -40,     -32,     -10,      26,      72,
-        119,     153,     158,     118,      28,    -106,    -264,    -409,
-       -496,    -478,    -325,     -32,     368,     802,    1164,    1335,
-       1210,     731,     -86,   -1136,   -2221,   -3076,   -3412,   -2970,
-      -1581,     784,    3988,    7732,   11588,   15068,   17703,   19122,
-      19122,   17703,   15068,   11588,    7732,    3988,     784,   -1581,
-      -2970,   -3412,   -3076,   -2221,   -1136,     -86,     731,    1210,
-       1335,    1164,     802,     368,     -32,    -325,    -478,    -496,
-       -409,    -264,    -106,      28,     118,     158,     153,     119,
-         72,      26,     -10,     -32,     -40,     -36,     -27,     -15,
-         -5,       2,       6,       7,       6,       4,       2,       1,
-          0,      -1,      -1,      -1,       0,       0,       0,       0,
-          0,       0,       0,       0,       0,       0,       0,       0,
-];
-
-// Stage 3 (FIR4DSP): 256 taps, pb=7.25 kHz, sb=31.25 kHz,
-// PM equiripple, unit DC gain. fs = 500 kSPS, /8 -> 62.5 kSPS.
-// This is the critical one: fills the full FIR4DSP 256-tap budget
-// for a very steep equiripple transition, which is what pushes
-// 25 kHz fold-back rejection from -25 dB (Phase 10-prep) to
-// -71 dB (v2). See doc/changes/041_p25ddc_fork.md.
-#[rustfmt::skip]
-const P25_FIR3_COEFFS: &[i32] = &[
-          0,       0,       0,       0,       0,       0,       0,       0,
-          0,       0,       0,       0,       0,       0,       0,       0,
-          0,       0,       0,       0,       0,       0,       0,       0,
-          0,       0,       0,       0,      -1,      -1,      -1,      -1,
-         -1,      -1,      -2,      -2,      -2,      -2,      -2,      -2,
-         -2,      -1,      -1,       0,       1,       2,       4,       6,
-          8,      10,      13,      15,      18,      20,      21,      23,
-         23,      22,      20,      17,      12,       5,      -3,     -13,
-        -25,     -38,     -52,     -67,     -81,     -94,    -106,    -115,
-       -120,    -121,    -116,    -105,     -87,     -62,     -30,       9,
-         55,     106,     160,     217,     272,     324,     370,     406,
-        430,     437,     427,     395,     340,     262,     161,      38,
-       -105,    -265,    -435,    -611,    -786,    -950,   -1096,   -1214,
-      -1295,   -1330,   -1311,   -1230,   -1081,    -860,    -564,    -193,
-        250,     760,    1332,    1954,    2616,    3303,    4002,    4694,
-       5365,    5996,    6573,    7079,    7502,    7830,    8053,    8166,
-       8166,    8053,    7830,    7502,    7079,    6573,    5996,    5365,
-       4694,    4002,    3303,    2616,    1954,    1332,     760,     250,
-       -193,    -564,    -860,   -1081,   -1230,   -1311,   -1330,   -1295,
-      -1214,   -1096,    -950,    -786,    -611,    -435,    -265,    -105,
-         38,     161,     262,     340,     395,     427,     437,     430,
-        406,     370,     324,     272,     217,     160,     106,      55,
-          9,     -30,     -62,     -87,    -105,    -116,    -121,    -120,
-       -115,    -106,     -94,     -81,     -67,     -52,     -38,     -25,
-        -13,      -3,       5,      12,      17,      20,      22,      23,
-         23,      21,      20,      18,      15,      13,      10,       8,
-          6,       4,       2,       1,       0,      -1,      -1,      -2,
-         -2,      -2,      -2,      -2,      -2,      -2,      -1,      -1,
-         -1,      -1,      -1,      -1,       0,       0,       0,       0,
-          0,       0,       0,       0,       0,       0,       0,       0,
-          0,       0,       0,       0,       0,       0,       0,       0,
-          0,       0,       0,       0,       0,       0,       0,       0,
-];
 
 // ── Interrupt handler ────────────────────────────────────────────────
 

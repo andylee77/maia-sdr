@@ -71,24 +71,30 @@ pub struct AppState {
     /// Stateless wrapper around sysfs paths -- safe to share without a lock.
     #[cfg(target_os = "linux")]
     pub ad9361: Arc<crate::hardware::iio::Ad9361>,
-    /// Original main.rs boot-time front-end config (AD9361 + DDC NCO),
-    /// captured into AppState at startup so `/api/reinit` can restore
-    /// the chip + DDC to the boot state without a board reboot, and
-    /// also live-retune individual fields (control_freq, rx_lo,
-    /// rf_bandwidth, gain_mode, gain_db) without rebuilding firmware.
-    pub boot_rx_lo: u64,
-    pub boot_sample_rate: u32,
-    pub boot_rf_bandwidth: u32,
-    pub boot_control_freq: u64,
+    /// Boot-time Pluto crystal calibration (ppm) and the initial
+    /// control-channel frequency from the CLI. These don't change at
+    /// runtime; they're captured here for `/api/system` reporting and
+    /// for the tuning handlers' NCO-offset math.
     pub boot_lo_ppm: f64,
-    pub boot_hardwaregain: f64,
-    /// Live RX LO tracking. Initialised from boot_rx_lo and updated by
-    /// get_reinit after a successful set_rx_lo_frequency. The grant
-    /// follower in main.rs reads this on every retune so its DDC NCO
-    /// offset math stays correct when rx_lo is moved mid-session via
-    /// /api/reinit?rx_lo=... (fixes the stale-follower_rx_lo bug
-    /// flagged in the 2026-04-15 session close).
+    pub boot_control_freq: u64,
+    /// Live RX LO, sample rate, and preset index. Written by the
+    /// `/api/preset` and `/api/tune` handlers; read by the grant
+    /// follower on every retune and by `/api/stats` / `/api/system`
+    /// for display.
     pub current_rx_lo: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    pub current_sample_rate_hz:
+        std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// Index into `ddc_presets::PRESETS` for the live preset. Kept as
+    /// an atomic (vs a lock) so the grant follower can read it cheaply.
+    pub current_preset_idx:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Scanner center-lock flag. When true, `/api/tune` refuses to
+    /// move the AD9361 LO (only the DDC NCO moves) and returns 409 if
+    /// the requested radio frequency falls outside ±(BW/2 − guard) of
+    /// the current LO. When false, `/api/tune` auto-recenters the LO
+    /// on the nearest 100 kHz step whenever the window would be
+    /// exceeded.
+    pub center_locked: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Phase 6F.2: PL HDL LSM chain runtime stats, populated by the
     /// HDL LSM heartbeat task. Read by `/api/hdl_lsm`. Single source
     /// of truth for everything the heartbeat task observes about the
@@ -298,14 +304,14 @@ pub fn router(
             get(api::talkgroups::get_encrypted_tgs).put(api::talkgroups::put_encrypted_tgs),
         )
         .route("/api/aliases", get(api::talkgroups::get_aliases).put(api::talkgroups::put_aliases))
-        // Runtime front-end re-init + live retune. Default (no params)
-        // restores the main.rs boot values captured in AppState.
-        // Optional query params override individual fields for this
-        // call only, so we can retune the control channel, change
-        // AD9361 gain/BW/SR, or move the RX LO live without a Tezuka
-        // rebuild + flash. Primary recovery path when anything has
-        // clobbered AD9361 / DDC state.
-        .route("/api/reinit", get(api::tuning::get_reinit))
+        // 2026-04-22 tuning redesign. /api/reinit is gone; these
+        // three replace it. See doc/P25_TUNING_REDESIGN.md.
+        //   GET  /api/presets — list every DDC preset.
+        //   POST /api/preset  — apply a preset (slow path).
+        //   POST /api/tune    — scanner-style radio retune (fast path).
+        .route("/api/presets", get(api::tuning::get_presets))
+        .route("/api/preset",  post(api::tuning::post_preset))
+        .route("/api/tune",    post(api::tuning::post_tune))
         // Call recording + playback.
         .route("/api/recordings", get(api::history::get_recordings))
         .route("/api/recordings/{id}", get(api::history::get_recording_file))

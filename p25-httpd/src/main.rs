@@ -36,7 +36,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-20-warning-cleanup";
+pub const BUILD_TAG: &str = "2026-04-22-tuning-redesign";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -230,16 +230,22 @@ struct Args {
     #[arg(long)]
     ca_cert: Option<std::path::PathBuf>,
 
-    /// AD9361 RX LO frequency in Hz
+    /// AD9361 RX LO frequency in Hz at boot. Can be moved live via
+    /// `POST /api/tune` (auto mode) or overridden by `POST /api/preset`.
     #[arg(long, default_value_t = 858_100_000)]
     rx_lo: u64,
 
-    /// AD9361 sample rate in Hz
-    #[arg(long, default_value_t = 8_000_000)]
-    sample_rate: u64,
+    /// DDC preset name at boot. Controls AD9361 sample rate, RF
+    /// bandwidth, and per-stage FIR coefficients. Every preset
+    /// produces 62.5 kSPS at the DDC output; the choice is between
+    /// NCO window width (= sample_rate/2) and FPGA / AD9361 load.
+    /// Runtime retune via `POST /api/preset`. Known names are listed
+    /// by `GET /api/presets`; see `hardware/ddc_presets.rs`.
+    #[arg(long, default_value = "8M")]
+    preset: String,
 
     /// P25 control channel frequency in Hz. No default — must be set
-    /// per-site via this arg or `/api/reinit?control_freq=...`.
+    /// per-site via this arg or `POST /api/tune`.
     #[arg(long)]
     control_freq: Option<u64>,
 
@@ -274,23 +280,11 @@ struct Args {
     /// rates; manual gain in the 55–60 dB range typically lands in
     /// the lock window on strong signals. Tune per antenna + site.
     ///
-    /// Retune via this arg or `/api/reinit?gain_db=N`. A proper HDL
+    /// Retune via this arg or `POST /api/preset`. A proper HDL
     /// software AGC would eliminate per-antenna tuning. See
     /// doc/changes/040_api_reinit_and_manual_gain.md.
     #[arg(long, default_value_t = 60.0)]
     hardwaregain: f64,
-
-    /// AD9361 RX analog front-end filter bandwidth in Hz.
-    ///
-    /// 8 MHz default requires P25DDC v2 (doc/changes/041_p25ddc_fork.md):
-    /// the old stage-1 FIR had insufficient adjacent-channel rejection
-    /// and close-in neighbour carriers leaked through at ≥5 MHz,
-    /// crushing CRC pass rates. v2 tightened stage 3 to -71 dB in the
-    /// fold-back band, so 8 MHz now validates clean. See
-    /// `project_p25ddc_v2_validated.md` for the bake-vs-CRC
-    /// measurements that motivated bumping the default.
-    #[arg(long, default_value_t = 8_000_000)]
-    rf_bandwidth: u32,
 }
 
 #[tokio::main]
@@ -317,6 +311,24 @@ async fn main() -> anyhow::Result<()> {
              for the target site; e.g. --control_freq 851012500)"
         )
     })?;
+
+    // Resolve --preset to a static preset handle. Bails at startup
+    // rather than silently falling back to the default so a typo is
+    // surfaced immediately.
+    let boot_preset = hardware::ddc_presets::find_preset(&args.preset)
+        .ok_or_else(|| {
+            let names: Vec<&str> = hardware::ddc_presets::PRESETS
+                .iter().map(|p| p.name).collect();
+            anyhow::anyhow!(
+                "unknown --preset '{}'; known presets: {}",
+                args.preset,
+                names.join(", "),
+            )
+        })?;
+    let boot_preset_idx = hardware::ddc_presets::PRESETS
+        .iter()
+        .position(|p| p.name == boot_preset.name)
+        .expect("resolved preset must be in PRESETS table");
 
     tracing::info!(
         "p25-httpd build: {} (dashboard_source=lsm_decoder)",
@@ -475,7 +487,8 @@ async fn main() -> anyhow::Result<()> {
     // of cfg(linux) so AppState sees them on every target. The tasks
     // that touch ip_core live INSIDE cfg(linux).
     let traffic_manager = Arc::new(tokio::sync::Mutex::new(
-        p25::traffic_manager::TrafficManager::new(args.rx_lo, args.sample_rate),
+        p25::traffic_manager::TrafficManager::new(
+            args.rx_lo, boot_preset.sample_rate_hz as u64),
     ));
     let traffic_stats = Arc::new(tokio::sync::Mutex::new(TrafficStats::default()));
     // When `false`, the grant follower skips its entire loop iteration
@@ -485,13 +498,23 @@ async fn main() -> anyhow::Result<()> {
     let traffic_follower_enabled =
         Arc::new(std::sync::atomic::AtomicBool::new(true));
 
-    // Live RX LO. Initialised from CLI, updated by get_reinit after a
-    // successful AD9361 set_rx_lo_frequency, read by the grant follower
-    // on every retune so offset_hz math stays correct when the LO is
-    // moved via /api/reinit?rx_lo=... mid-session.
+    // Live RX LO, sample rate, preset index, center-lock. Initialised
+    // from CLI, updated by the /api/preset and /api/tune handlers.
+    // The grant follower reads current_rx_lo and current_sample_rate_hz
+    // on every retune so its NCO-offset math stays correct after a
+    // preset change or a scanner-mode LO recenter.
     let current_rx_lo = Arc::new(std::sync::atomic::AtomicI64::new(
         args.rx_lo as i64,
     ));
+    let current_sample_rate_hz = Arc::new(
+        std::sync::atomic::AtomicU32::new(boot_preset.sample_rate_hz),
+    );
+    let current_preset_idx = Arc::new(
+        std::sync::atomic::AtomicUsize::new(boot_preset_idx),
+    );
+    let center_locked = Arc::new(
+        std::sync::atomic::AtomicBool::new(false),
+    );
 
     // P25 modulation: 0 = Auto (probing), 1 = C4FM, 2 = LSM. Defaults
     // to LSM (simulcast sites are the common case). Declared here so
@@ -508,25 +531,29 @@ async fn main() -> anyhow::Result<()> {
         let (ip_core, interrupt_handler) = fpga::IpCore::take().await?;
         tracing::info!("FPGA IP core initialized");
 
-        // Configure AD9361 via IIO. Manual gain is deliberate — see
-        // the doc comment on Args::hardwaregain. doc/changes/040
-        // has the live measurement sweep.
+        // Configure AD9361 via IIO. Sample rate and RF bandwidth come
+        // from the boot preset (ddc_presets.rs). Manual gain is
+        // deliberate — see the doc comment on Args::hardwaregain.
+        // doc/changes/040 has the live measurement sweep.
         let ad9361 = iio::Ad9361::new().await?;
         ad9361.set_rx_lo_frequency(args.rx_lo).await?;
         ad9361
-            .set_sampling_frequency(args.sample_rate as u32)
+            .set_sampling_frequency(boot_preset.sample_rate_hz)
             .await?;
-        ad9361.set_rx_rf_bandwidth(args.rf_bandwidth).await?;
+        ad9361
+            .set_rx_rf_bandwidth(boot_preset.rf_bandwidth_hz)
+            .await?;
         ad9361
             .set_rx_gain_mode(iio::GainMode::Manual)
             .await?;
         ad9361.set_rx_gain(args.hardwaregain).await?;
         tracing::info!(
-            "AD9361 configured: LO={} Hz, Fs={} Hz, BW={} Hz, \
+            "AD9361 configured: preset={} LO={} Hz, Fs={} Hz, BW={} Hz, \
              gain_mode=manual, hardwaregain={} dB",
+            boot_preset.name,
             args.rx_lo,
-            args.sample_rate,
-            args.rf_bandwidth,
+            boot_preset.sample_rate_hz,
+            boot_preset.rf_bandwidth_hz,
             args.hardwaregain,
         );
 
@@ -534,7 +561,7 @@ async fn main() -> anyhow::Result<()> {
         // crystal calibration folds into the NCO — see Args::lo_ppm.
         let nco_offset =
             control_freq as f64 - args.rx_lo as f64 + nco_lo_shift_hz;
-        ip_core.configure_ddc(nco_offset, args.sample_rate as f64)?;
+        ip_core.configure_ddc(nco_offset, boot_preset)?;
         ip_core.set_ddc_enable(true);
         // Ring DMA enable bit is level-triggered, starts continuous writes
         ip_core.set_demod_enable(true);
@@ -587,7 +614,7 @@ async fn main() -> anyhow::Result<()> {
         // follower flips demod_enable and writes NCO on demand on
         // each GroupVoiceChannelGrant. Initial NCO=0 (centred on RX
         // LO) gives a defined state before first grant.
-        ip_core.configure_traffic_ddc(0.0, args.sample_rate as f64)?;
+        ip_core.configure_traffic_ddc(0.0, boot_preset)?;
         ip_core.set_traffic_ddc_enable(true);
         ip_core.set_traffic_demod_enable(false);
         tracing::info!(
@@ -1168,7 +1195,7 @@ async fn main() -> anyhow::Result<()> {
             active_modulation.clone(),
             traffic_manager.clone(),
             ip_core.clone(),
-            args.sample_rate as f64,
+            current_sample_rate_hz.clone(),
             current_rx_lo.clone(),
             args.lo_ppm,
             traffic_follower_enabled.clone(),
@@ -1536,15 +1563,14 @@ async fn main() -> anyhow::Result<()> {
         ip_core,
         #[cfg(target_os = "linux")]
         ad9361,
-        // Boot front-end snapshot — used by /api/reinit to restore
-        // the chip + DDC NCO without a board reboot.
-        boot_rx_lo:        args.rx_lo,
-        boot_sample_rate:  args.sample_rate as u32,
-        boot_rf_bandwidth: args.rf_bandwidth,
-        boot_control_freq: control_freq,
+        // Boot scalars for /api/system. Everything else tunable at
+        // runtime lives in the current_* atomics below.
         boot_lo_ppm:       args.lo_ppm,
-        boot_hardwaregain: args.hardwaregain,
-        current_rx_lo:     current_rx_lo.clone(),
+        boot_control_freq: control_freq,
+        current_rx_lo:           current_rx_lo.clone(),
+        current_sample_rate_hz:  current_sample_rate_hz.clone(),
+        current_preset_idx:      current_preset_idx.clone(),
+        center_locked:           center_locked.clone(),
         hdl_lsm: hdl_lsm.clone(),
         irq_stats: irq_stats.clone(),
         traffic_manager: traffic_manager.clone(),

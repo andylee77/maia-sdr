@@ -155,7 +155,8 @@ pub async fn get_spectrum(
         .ad9361
         .get_rx_lo_frequency()
         .await
-        .unwrap_or(state.boot_rx_lo) as f64;
+        .unwrap_or(state.current_rx_lo.load(
+            std::sync::atomic::Ordering::Relaxed) as u64) as f64;
     let center_hz: f64 = match chain {
         "control" => state.boot_control_freq as f64,
         "traffic" => {
