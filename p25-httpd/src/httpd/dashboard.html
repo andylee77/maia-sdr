@@ -235,169 +235,11 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
 <!-- ═════════════════════ Debug tab ═════════════════════ -->
 <div class="tab-pane" id="tab-debug">
 
-<!-- Constellation + Eye sit side-by-side so all three live visuals
-     (constellation, eye, spectrum) fit on one 1080p screen without
-     scrolling. Both canvases are responsive-sized + DPR-aware. -->
-<div class="grid2">
-<!-- ── IQ Constellation (2026-04-16) ────────────────────────── -->
-<div>
-  <h2 style="margin-top:0">IQ Constellation <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">post-PLL symbol decisions</span></h2>
-  <div class="card">
-    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px;font-size:0.85em">
-      <label><b>Chain</b>:
-        <select id="iq_chain" onchange="refreshConstellation()" style="padding:2px 6px;font-family:inherit">
-          <option value="traffic" selected>Traffic</option>
-          <option value="control">Control</option>
-        </select>
-      </label>
-      <label><b>Poll</b>:
-        <select id="iq_rate" onchange="scheduleConstellation()" style="padding:2px 6px;font-family:inherit">
-          <option value="500">2 Hz</option>
-          <option value="1000" selected>1 Hz</option>
-          <option value="2000">0.5 Hz</option>
-          <option value="0">Paused</option>
-        </select>
-      </label>
-      <label><input type="checkbox" id="iq_persistence" checked> <b>Persistence</b></label>
-      <span class="v" id="iq_status" style="font-size:0.8em;color:var(--text-dim)"></span>
-    </div>
-    <canvas id="iq_canvas"
-      style="width:100%;max-width:360px;aspect-ratio:1/1;background:#0a0f1a;border:1px solid #1f2937;display:block;margin:0 auto"></canvas>
-    <div style="font-size:0.75em;color:var(--text-dim);margin-top:4px">
-      Post-PLL decision (I, Q) from the Phase 6D software LSM demod.
-      Clean LSM = 4 tight clusters near ±1, ±j. Tilt ⇒ phase rotation;
-      radial shrinkage ⇒ amplitude compression; cloud spread ⇒ noise.
-    </div>
-  </div>
-</div>
-
-<!-- ── Eye Diagram (2026-04-18, browser-rendered from /ws/iq) ── -->
-<div>
-  <h2 style="margin-top:0">Eye Diagram <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">raw post-DDC, overlapped symbol windows</span></h2>
-  <div class="card">
-    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px;font-size:0.85em">
-      <label><b>Chain</b>:
-        <select id="eye_chain" onchange="restartEye()" style="padding:2px 6px;font-family:inherit">
-          <option value="control" selected>Control</option>
-          <option value="traffic">Traffic</option>
-        </select>
-      </label>
-      <label><b>Src</b>:
-        <select id="eye_source" onchange="restartEye()" style="padding:2px 6px;font-family:inherit" title="pre_diff = post-rotate + post-AGC, pre-diff-demod (9.6 kSPS = 2 samples/symbol)">
-          <option value="pre_diff" selected>Pre-diff (HDL)</option>
-        </select>
-      </label>
-      <label><b>Trace</b>:
-        <select id="eye_trace" onchange="restartEye()" style="padding:2px 6px;font-family:inherit">
-          <option value="i" selected>I only</option>
-          <option value="q">Q only</option>
-          <option value="iq">I + Q</option>
-        </select>
-      </label>
-      <label><b>Symbols</b>:
-        <select id="eye_nsym" onchange="restartEye()" style="padding:2px 6px;font-family:inherit">
-          <option value="2" selected>2</option>
-          <option value="3">3</option>
-          <option value="4">4</option>
-        </select>
-      </label>
-      <label><input type="checkbox" id="eye_enable" onchange="restartEye()"> <b>Live</b></label>
-      <span class="v" id="eye_status" style="font-size:0.8em;color:var(--text-dim)">disabled</span>
-    </div>
-    <canvas id="eye_canvas"
-      style="width:100%;max-width:360px;aspect-ratio:1/1;background:#0a0f1a;border:1px solid #1f2937;display:block;margin:0 auto"></canvas>
-    <div style="font-size:0.75em;color:var(--text-dim);margin-top:4px">
-      Raw post-DDC IQ from /ws/iq, sliced into N-symbol windows at the
-      P25 symbol rate (4800 sym/s → 13.02 samples/sym @ 62.5 kSPS) and
-      overlapped on the canvas. Open eye ⇒ clean amplitude + timing.
-      Closed eye / jitter ⇒ ISI, poor symbol timing, or SNR too low.
-      Live stream; disable to stop traffic.
-    </div>
-  </div>
-</div>
-</div>
-
-<!-- ── RF Spectrum (narrowband) ─────────────────────────────── -->
-<!-- Canvas sizing: CSS drives layout (responsive width, fixed
-     height); the drawing buffer is (re)sized to clientWidth * DPR
-     in configureSpecCanvas() so HiDPI displays render crisp rather
-     than scaled from a 900 px buffer. Any change to CSS height
-     needs a matching configureSpecCanvas() trigger. -->
-<h2>RF Spectrum <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">post-DDC narrowband</span></h2>
-<div class="card">
-  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:6px;font-size:0.9em">
-    <label><b>Chain</b>:
-      <select id="spec_chain" onchange="onSpecChainChange()" style="padding:3px 6px;font-family:inherit">
-        <option value="control">Control</option>
-        <option value="traffic">Traffic</option>
-      </select>
-    </label>
-    <label><b>Mode</b>:
-      <select id="spec_mode" onchange="restartSpectrumMode()" style="padding:3px 6px;font-family:inherit">
-        <option value="server" selected>Server FFT</option>
-        <option value="live">Live IQ</option>
-      </select>
-    </label>
-    <label><b>FFT</b>:
-      <select id="spec_fft" onchange="onSpecSizeChange()" style="padding:3px 6px;font-family:inherit">
-        <option value="1024">1024</option>
-        <option value="2048">2048</option>
-        <option value="4096" selected>4096</option>
-        <option value="8192">8192</option>
-        <option value="16384">16384</option>
-      </select>
-    </label>
-    <label><b>Averages</b>:
-      <select id="spec_avg" onchange="onSpecSizeChange()" style="padding:3px 6px;font-family:inherit">
-        <option value="1" selected>1</option>
-        <option value="2">2</option>
-        <option value="4">4</option>
-        <option value="8">8</option>
-        <option value="16">16</option>
-      </select>
-    </label>
-    <label><b>Poll</b>:
-      <select id="spec_rate" onchange="scheduleSpectrum()" style="padding:3px 6px;font-family:inherit">
-        <option value="500">2 Hz</option>
-        <option value="1000" selected>1 Hz</option>
-        <option value="2000">0.5 Hz</option>
-        <option value="0">Paused</option>
-      </select>
-    </label>
-    <label><b>dB range</b>:
-      <select id="spec_range" onchange="drawSpectrumCached()" style="padding:3px 6px;font-family:inherit">
-        <option value="60">60</option>
-        <option value="80">80</option>
-        <option value="100" selected>100</option>
-        <option value="120">120</option>
-      </select>
-    </label>
-    <label><b>Top</b>:
-      <select id="spec_top" onchange="drawSpectrumCached()" style="padding:3px 6px;font-family:inherit">
-        <option value="10">+10</option>
-        <option value="0" selected>0</option>
-        <option value="-10">-10</option>
-        <option value="-20">-20</option>
-      </select>
-    </label>
-    <label><input type="checkbox" id="spec_peak_hold"> <b>Peak-hold</b></label>
-    <button class="btn" style="padding:3px 10px" onclick="resetSpectrum()">Reset</button>
-  </div>
-  <div style="font-size:0.85em;color:var(--text-dim);margin-bottom:4px;min-height:1.2em">
-    <span id="spec_status">idle</span>
-  </div>
-  <canvas id="spec_canvas" style="width:100%;height:380px;background:#0a0f1a;border:1px solid #1f2937;display:block"></canvas>
-  <div style="font-size:0.8em;color:var(--text-dim);margin-top:6px">
-    Narrowband FFT over the post-DDC IQ ring (62.5 kSPS), centered on
-    the selected chain. Bin width = sample_rate / FFT (≈ 15 Hz at
-    4096, ≈ 3.8 Hz at 16384). <b>Averages</b> N power-averages N
-    consecutive non-overlapping FFT segments — noise floor drops by
-    ~10·log₁₀(N) dB, carriers stay put, so weak features become
-    visible. <b>Peak-hold</b> latches the per-bin maximum until Reset.
-    <b>dB range / Top</b> set the Y-axis window. Wideband view (full
-    8 MHz around LO) is a future HDL addition.
-  </div>
-</div>
+<!-- Phase 10.8 (2026-04-23): the IQ Constellation, Eye Diagram, and
+     narrowband RF Spectrum cards that used to live here have been
+     retired. All three views now live on the Plots tab, sourced from
+     the HDL pre-diff post-PLL ring. Debug tab is now decoder-focused
+     only. -->
 
 <!-- ── Decoder Comparison Matrix (2-column PS LSM / PL HDL view) ── -->
 <!-- 2026-04-16: PS C4FM column removed. The HDL LSM chain decodes
@@ -4018,6 +3860,7 @@ function plotStop() {
   if (PLOT.pollHandle) { clearInterval(PLOT.pollHandle); PLOT.pollHandle = null; }
   if (PLOT.wsHandle)   { try { PLOT.wsHandle.close(); } catch {} PLOT.wsHandle = null; }
   PLOT.eyeBuffer = [];
+  PLOT.lastEyeSym = null;
   if (PLOT.statusEl) PLOT.statusEl.textContent = '';
   if (PLOT.metricsEl) PLOT.metricsEl.textContent = '';
 }
@@ -4090,25 +3933,46 @@ function plotConstellation() {
     if (typeof buf === 'string') return;
     if (buf instanceof Blob) buf = await buf.arrayBuffer();
     const samples = new Int16Array(buf);
-    // Interleaved HDL pairs: even index = rotate_mid, odd = rotate_sym.
-    // Only the sym samples are decision-point; use those for the scatter.
+    // Interleaved HDL pairs: even index = rotate_mid, odd = rotate_cur.
+    // Only the cur samples are decision-point; use those for the scatter.
+    // Phase 10.8: pre-diff tap is native Q1.15 (divide by 32768), NOT
+    // Q1.13 (which was the post-diff tap's truncated 18-bit Q3.15).
     const nPairs = samples.length / 2;
     for (let k = 1; k < nPairs; k += 2) {
-      sym.push([samples[2*k] / 8192, samples[2*k+1] / 8192]);
+      sym.push([samples[2*k] / 32768, samples[2*k+1] / 32768]);
     }
-    const CAP = 1024;
+    // SDRTrunk-style 4-dot view: keep a small rolling window so the
+    // 4 clusters are visible as distinct blobs at (±√2/2, ±√2/2)
+    // rather than merging into a ring via alpha-overdraw.
+    const CAP = 200;
     while (sym.length > CAP) sym.shift();
     frames++;
-    // Mean-magnitude normalise (NOT peak): the HDL post-PLL stream has
-    // occasional outlier peaks that collapse peak-normalised clusters
-    // to ~0.22, while mean |z| is a stable estimate of cluster radius
-    // so clusters land near (±1, ±1) independent of outliers.
+    // P25 LSM is DIFFERENTIALLY encoded. The pre-diff post-PLL tap
+    // gives us carrier-derotated decision-time samples, but the
+    // symbol lives in the phase CHANGE between consecutive samples.
+    // Compute d[n] = z[n] * conj(z[n-1]) and scatter that instead
+    // of the raw samples. Without this step the scatter is a full
+    // ring (absolute phase walks with the symbol sequence).
+    const diff = [];
+    for (let k = 1; k < sym.length; k++) {
+      const i0 = sym[k-1][0], q0 = sym[k-1][1];
+      const i1 = sym[k][0],   q1 = sym[k][1];
+      diff.push([i1*i0 + q1*q0, q1*i0 - i1*q0]);
+    }
+    // Normalise by the mean diff magnitude so the 4 ideal rails land
+    // at radius ≈1 on average, but keep per-sample amplitude so the
+    // clusters render as 2D blobs (SDRTrunk-style), not arcs along
+    // the unit circle.
     let mag = 0;
-    for (const p of sym) mag += Math.hypot(p[0], p[1]);
-    mag /= Math.max(1, sym.length);
-    const norm = mag > 1e-6 ? 1 / mag : 1;
-    const iArr = sym.map(p => p[0] * norm);
-    const qArr = sym.map(p => p[1] * norm);
+    for (const d of diff) mag += Math.hypot(d[0], d[1]);
+    mag /= Math.max(1, diff.length);
+    const norm = mag > 1e-9 ? 1 / mag : 1;
+    const iArr = new Array(diff.length);
+    const qArr = new Array(diff.length);
+    for (let k = 0; k < diff.length; k++) {
+      iArr[k] = diff[k][0] * norm;
+      qArr[k] = diff[k][1] * norm;
+    }
     drawPlotConstellation(iArr, qArr);
     if (frames % 8 === 0) {
       PLOT.statusEl.textContent =
@@ -4136,9 +4000,25 @@ function plotEye() {
     if (typeof buf === 'string') return;        // hello frame
     if (buf instanceof Blob) buf = await buf.arrayBuffer();
     const samples = new Int16Array(buf);
-    const n = samples.length / 2;
-    for (let i = 0; i < n; i++) {
-      PLOT.eyeBuffer.push([samples[2*i], samples[2*i + 1]]);
+    // Pull decision-time (odd-indexed) samples only, then apply the
+    // differential d[n] = z[n] * conj(z[n-1]) so the drawPlotEye
+    // atan2 maps to the ±3 / ±1 LSM rails. Without the diff, absolute
+    // phase wanders with the symbol sequence, and the eye "wraps" at
+    // ±π leaving only the centre eye visible.
+    const nPairs = samples.length / 2;
+    const sym = [];
+    for (let k = 1; k < nPairs; k += 2) {
+      sym.push([samples[2*k] / 32768, samples[2*k+1] / 32768]);
+    }
+    // Prepend the last sym from the previous frame (if any) so the
+    // diff at the frame boundary is continuous.
+    const tail = PLOT.lastEyeSym;
+    if (tail) sym.unshift(tail);
+    if (sym.length >= 2) PLOT.lastEyeSym = sym[sym.length - 1];
+    for (let k = 1; k < sym.length; k++) {
+      const i0 = sym[k-1][0], q0 = sym[k-1][1];
+      const i1 = sym[k][0],   q1 = sym[k][1];
+      PLOT.eyeBuffer.push([i1*i0 + q1*q0, q1*i0 - i1*q0]);
     }
     while (PLOT.eyeBuffer.length * 4 > PLOT.eyeCapBytes) PLOT.eyeBuffer.shift();
     frames++;
@@ -4293,12 +4173,30 @@ function drawPlotConstellation(iArr, qArr) {
   for (const r of [1, 2, 3]) {
     ctx.beginPath(); ctx.arc(cx, cy, scale * r/3, 0, Math.PI*2); ctx.stroke();
   }
-  ctx.fillStyle = '#8df';
-  const dot = 2;
+  // SDRTrunk-style blob rendering: semi-transparent filled dots
+  // large enough to form visible clusters rather than single pixels.
+  // Ideal rails at (±√2/2, ±√2/2) on the unit circle → in plot
+  // space that's scale/3 * cos(π/4) from centre.
+  ctx.fillStyle = '#4fdb6f';
+  ctx.globalAlpha = 0.55;
+  const dot = linePx(5);
   for (let i = 0; i < iArr.length; i++) {
     const x = cx + iArr[i] * scale/3;
     const y = cy - qArr[i] * scale/3;
-    ctx.fillRect(x - dot/2, y - dot/2, dot, dot);
+    ctx.beginPath();
+    ctx.arc(x, y, dot, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  // Ideal-rail crosses at the four constellation points.
+  ctx.strokeStyle = '#ff9999';
+  ctx.lineWidth = linePx(1.8);
+  const r0 = scale/3 * Math.SQRT1_2;
+  for (const [ix, iy] of [[+r0, +r0], [-r0, +r0], [-r0, -r0], [+r0, -r0]]) {
+    const x = cx + ix, y = cy - iy;
+    ctx.beginPath(); ctx.moveTo(x - 8, y); ctx.lineTo(x + 8, y);
+                     ctx.moveTo(x, y - 8); ctx.lineTo(x, y + 8);
+    ctx.stroke();
   }
   ctx.fillStyle = '#aab'; ctx.font = fontPx(13);
   ctx.fillText(`Constellation \u00B7 ${iArr.length} post-PLL symbols`, 6, 18);

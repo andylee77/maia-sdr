@@ -280,37 +280,67 @@ async fn drain_pre_diff(
     Ok(acc)
 }
 
-/// Decode interleaved i16 LE pairs to (re, im) f32 at Q1.13 scale.
-/// The HDL pre-diff ring interleaves rotate_mid (even idx) with
-/// rotate_sym (odd); the odd-indexed samples are the decision points.
+/// Decode interleaved i16 LE pairs to (re, im) f32 at Q1.15 scale.
+/// The HDL pre-diff ring is NATIVE Q1.15 signed 16. `LsmPllRotate`
+/// was instantiated with `iq_width=16` for the pre-diff path, so
+/// samples come out at the full Q1.15 range; scale = 1/32768.
+///
+/// Interleave: rotate_mid (even idx) then rotate_cur (odd idx). Only
+/// the cur samples are decision-instant; mid is a half-symbol crossing
+/// for timing recovery and is dropped here.
 #[cfg(target_os = "linux")]
 fn pre_diff_sym_points(bytes: &[u8], max_syms: usize) -> Vec<(f32, f32)> {
-    const Q13_SCALE: f32 = 1.0 / 8192.0;
+    const Q15_SCALE: f32 = 1.0 / 32768.0;
     bytes
         .chunks_exact(4)
         .map(|c| {
             let r = i16::from_le_bytes([c[0], c[1]]) as f32;
             let i = i16::from_le_bytes([c[2], c[3]]) as f32;
-            (r * Q13_SCALE, i * Q13_SCALE)
+            (r * Q15_SCALE, i * Q15_SCALE)
         })
-        .skip(1)            // rotate_mid first, rotate_sym second
+        .skip(1)            // rotate_mid first, rotate_cur second
         .step_by(2)         // every other pair is a decision point
         .take(max_syms)
         .collect()
 }
 
+/// Apply differential demod to a stream of consecutive symbol-time
+/// samples: `d[n] = z[n] * conj(z[n-1])`. P25 LSM/CQPSK encodes the
+/// symbol in the phase change between consecutive symbols, not in the
+/// absolute phase, so endpoints that score symbols (deviation /
+/// distribution / EVM) operate on the differential, not the raw
+/// pre-diff samples.
+///
+/// Output length = input length - 1.
+#[cfg(target_os = "linux")]
+fn differentiate(syms: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    if syms.len() < 2 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(syms.len() - 1);
+    for k in 1..syms.len() {
+        let (i0, q0) = syms[k - 1];
+        let (i1, q1) = syms[k];
+        // (i1 + j q1) * (i0 - j q0) = (i1 i0 + q1 q0) + j (q1 i0 - i1 q0)
+        out.push((i1 * i0 + q1 * q0, q1 * i0 - i1 * q0));
+    }
+    out
+}
+
 /// `GET /api/deviation?chain=control|traffic&window_syms=N`
 ///
-/// Anritsu-style modulation metrics pulled from the pre-differential
-/// IQ ring. Samples are carrier-derotated + AGC-scaled but before the
-/// diff-demod; the hard decision is `sign(I) / sign(Q)` — one of four
-/// quadrant clusters at (±1, ±1). Metrics:
+/// Anritsu-style modulation metrics pulled from the pre-diff post-PLL
+/// ring, with the differential applied in software. P25 LSM encodes
+/// the symbol in the phase change between consecutive symbols, so we
+/// compute `d[n] = z[n] * conj(z[n-1])` and score the four
+/// differential rails (±π/4 inner, ±3π/4 outer) by quadrant. Metrics:
 ///
-/// - `evm` (aka mod_fidelity): RMS error / RMS reference (fraction).
-/// - `ambiguous_frac` (BER proxy): samples crossing decision margin.
-/// - `cluster_radius`: mean |z|, ≈1 when AGC is healthy.
-/// - `peak_mag`: raw Q1.13-scaled peak magnitude.
-/// - `quad_balance`: histogram of the four quadrants.
+/// - `evm` (aka mod_fidelity): RMS error / RMS reference on diff.
+/// - `ambiguous_frac` (BER proxy): diff samples crossing decision margin.
+/// - `cluster_radius`: mean |z| of the raw pre-diff samples; ≈1 when
+///   AGC is healthy (a value tied to AGC, not the diff product).
+/// - `peak_mag`: raw pre-diff peak magnitude.
+/// - `quad_balance`: histogram of the four diff-quadrant hits.
 #[cfg(target_os = "linux")]
 pub async fn get_deviation(
     State(state): State<Arc<AppState>>,
@@ -350,17 +380,15 @@ pub async fn get_deviation(
     }
 
     let symbol_pts = pre_diff_sym_points(&bytes, window_syms);
-    if symbol_pts.is_empty() {
+    if symbol_pts.len() < 2 {
         return Json(serde_json::json!({
             "ok": false,
-            "error": "no symbol-time points recovered",
+            "error": "not enough symbol-time points recovered",
         }));
     }
 
-    // LSM / CQPSK: the ideal constellation sits at (±1, ±1) — four
-    // points, one per quadrant. Mean-magnitude normalise so the
-    // observed cluster mean |z| maps to ≈1 (more stable than peak
-    // alone against a single outlier pulling the scale).
+    // `peak` and `cluster_radius` characterise the AGC on the raw
+    // pre-diff samples (should be ≈1 when AGC is healthy).
     let peak = symbol_pts
         .iter()
         .map(|&(r, i)| (r * r + i * i).sqrt())
@@ -372,16 +400,26 @@ pub async fn get_deviation(
         .sum::<f32>()
         / symbol_pts.len() as f32;
     let cluster_radius = mean_mag.max(1e-6);
-    let norm = 1.0 / cluster_radius;
 
-    let mut soft_iq: Vec<f32> = Vec::with_capacity(symbol_pts.len() * 2);
-    let mut hard: Vec<u8> = Vec::with_capacity(symbol_pts.len());
+    // Apply the differential and score four rails. `d[n]` lives at
+    // approximately unit-magnitude-squared after AGC, so normalise
+    // by mean |d| to bring the rail magnitudes back to ≈1.
+    let diff_pts = differentiate(&symbol_pts);
+    let diff_mean_mag: f32 = diff_pts
+        .iter()
+        .map(|&(r, i)| (r * r + i * i).sqrt())
+        .sum::<f32>()
+        / diff_pts.len() as f32;
+    let diff_norm = 1.0 / diff_mean_mag.max(1e-6);
+
+    let mut soft_iq: Vec<f32> = Vec::with_capacity(diff_pts.len() * 2);
+    let mut hard: Vec<u8> = Vec::with_capacity(diff_pts.len());
     let mut quad_counts = [0usize; 4];
     let mut err_sq: f64 = 0.0;
     let mut evm_ref_sq: f64 = 0.0;
-    for &(r, i) in &symbol_pts {
-        let rn = r * norm;
-        let in_ = i * norm;
+    for &(r, i) in &diff_pts {
+        let rn = r * diff_norm;
+        let in_ = i * diff_norm;
         let bit_i = (rn > 0.0) as u8;
         let bit_q = (in_ > 0.0) as u8;
         let h = (bit_i << 1) | bit_q;
@@ -396,14 +434,15 @@ pub async fn get_deviation(
         soft_iq.push(in_);
         hard.push(h);
     }
-    let n = symbol_pts.len() as f64;
+    let n = diff_pts.len() as f64;
     let evm = (err_sq / n).sqrt() / (evm_ref_sq / n).sqrt();
 
     let ambiguity_margin = 0.25_f32;
-    let ambiguous = symbol_pts
+    let ambiguous = diff_pts
         .iter()
         .filter(|&&(r, i)| {
-            (r * norm).abs() < ambiguity_margin || (i * norm).abs() < ambiguity_margin
+            (r * diff_norm).abs() < ambiguity_margin
+                || (i * diff_norm).abs() < ambiguity_margin
         })
         .count();
     let ber = ambiguous as f64 / n;
@@ -440,10 +479,11 @@ pub async fn get_deviation(
 /// `GET /api/distribution?chain=control|traffic`
 ///
 /// Returns a symbol-time phase histogram scaled to deviation in Hz.
-/// For each decision-time sample in the pre-diff ring, compute
-/// `atan2(Q, I) * 600 / (π/4)` — which gives deviation in Hz:
-/// ±600 Hz for the inner dibits and ±1800 Hz for the outer dibits.
-/// Histogrammed into 240 bins spanning ±2400 Hz for display.
+/// For each decision-time sample, apply the differential
+/// `d[n] = z[n] * conj(z[n-1])`, then compute `atan2(Q, I) * 600/(π/4)`
+/// on the diff. That gives deviation in Hz: ±600 for the inner dibits
+/// and ±1800 for the outer dibits — clean sharp peaks on a healthy
+/// signal. Histogrammed into 240 bins spanning ±2400 Hz for display.
 ///
 /// Response shape:
 ///   `{ok, chain, bins, edges_hz: [f32; N+1], counts: [u32; N], peak_index}`
@@ -483,26 +523,24 @@ pub async fn get_distribution(
     }
 
     let symbol_pts = pre_diff_sym_points(&bytes, WINDOW_SYMS);
-    if symbol_pts.is_empty() {
+    let diff_pts = differentiate(&symbol_pts);
+    if diff_pts.is_empty() {
         return Json(serde_json::json!({
             "ok": false,
-            "error": "no symbol-time points recovered",
+            "error": "not enough symbol-time points recovered",
         }));
     }
 
     // Build uniform bin edges spanning ±RANGE_HZ, then histogram
-    // the Hz-scaled atan2. Scale factor: π/4 on the unit circle
-    // corresponds to 600 Hz inner-dibit deviation → multiplier is
-    // 600 / (π/4) = 600 * 4/π ≈ 763.944.
+    // atan2 of the diff. π/4 on the diff-unit-circle corresponds to
+    // 600 Hz inner-dibit deviation → multiplier = 600 * 4/π ≈ 763.944.
     let scale_hz = 600.0 / (std::f32::consts::PI / 4.0);
     let mut counts = vec![0u32; BINS];
     let edges_hz: Vec<f32> = (0..=BINS)
-        .map(|i| {
-            -RANGE_HZ + (2.0 * RANGE_HZ) * (i as f32) / (BINS as f32)
-        })
+        .map(|i| -RANGE_HZ + (2.0 * RANGE_HZ) * (i as f32) / (BINS as f32))
         .collect();
     let bin_width = (2.0 * RANGE_HZ) / BINS as f32;
-    for &(r, i) in &symbol_pts {
+    for &(r, i) in &diff_pts {
         if r == 0.0 && i == 0.0 {
             continue;
         }
@@ -534,7 +572,7 @@ pub async fn get_distribution(
         "edges_hz":    edges_hz,
         "counts":      counts,
         "peak_index":  peak_index,
-        "window_syms": symbol_pts.len(),
+        "window_syms": diff_pts.len(),
     }))
 }
 
