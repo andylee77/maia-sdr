@@ -550,6 +550,21 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       <span class="v" id="tune_nco_off" style="color:var(--text-dim)">NCO: --</span>
       <span class="v" id="tune_status" style="color:var(--text-dim)">idle</span>
     </div>
+    <!-- ── PPM calibration row ──────────────────────────────────
+         Live readout of the auto-PPM state (crystal-trim shift the
+         DDC NCO is running with). "Recalibrate" triggers a fresh
+         stage-A + stage-B pass over the current signal. Persisted
+         to /mnt/jffs2/p25-ppm-cal.json so the next boot picks it
+         up without re-running. -->
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+      <label><b>PPM cal</b>:</label>
+      <span class="v" id="ppm_value" style="color:var(--text-dim)">--</span>
+      <span class="v" id="ppm_shift" style="color:var(--text-dim)">--</span>
+      <span class="v" id="ppm_last"  style="color:var(--text-dim)">--</span>
+      <button class="btn" id="ppm_cal_btn" style="padding:3px 10px"
+        onclick="recalibratePpm()">Recalibrate</button>
+      <span class="v" id="ppm_status" style="color:var(--text-dim)">idle</span>
+    </div>
   </div>
   <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px;font-size:0.85em">
     <label for="bi_mod_sel"><b>Modulation</b>:</label>
@@ -943,6 +958,71 @@ async function applyPreset() {
   }
 }
 
+// Refresh the PPM readout spans from /api/ppm. Called on each
+// refresh() tick so cal age stays current. Silent on network
+// errors — we don't want to spam the status box with transients.
+async function refreshPpm() {
+  try {
+    const r = await fetchJson('/api/ppm');
+    if (!r || !r.ok) return;
+    const ppm_el  = $('ppm_value');
+    const sh_el   = $('ppm_shift');
+    const last_el = $('ppm_last');
+    if (ppm_el)  ppm_el.textContent  = `${r.lo_ppm.toFixed(3)} ppm`;
+    if (sh_el)   sh_el.textContent   = `shift ${r.lo_shift_hz.toFixed(0)} Hz`;
+    if (last_el) {
+      if (!r.calibrated_this_session) {
+        last_el.textContent = r.boot_lo_ppm !== 0
+          ? 'cal: boot flag'
+          : 'cal: persisted/none';
+      } else {
+        const age_s = Math.max(0,
+          Math.floor(Date.now() / 1000) - r.last_cal_unix_secs);
+        const pretty =
+          age_s < 60   ? `${age_s}s ago` :
+          age_s < 3600 ? `${Math.floor(age_s/60)}m ago` :
+                         `${Math.floor(age_s/3600)}h ago`;
+        last_el.textContent = `cal: ${pretty}`;
+      }
+    }
+  } catch (e) { /* ignore transient */ }
+}
+
+// Trigger a fresh calibration. Disables the button while the
+// server is working (can take ~7 s end-to-end). Reports the
+// summary into #ppm_status and refreshes the readout.
+async function recalibratePpm() {
+  const btn    = $('ppm_cal_btn');
+  const status = $('ppm_status');
+  if (btn) { btn.disabled = true; btn.textContent = 'Calibrating...'; }
+  if (status) {
+    status.textContent = 'running stage A + B (~7s)';
+    status.style.color = 'var(--text-dim)';
+  }
+  try {
+    const res = await fetch('/api/ppm_calibrate', { method: 'POST' });
+    const j = await res.json();
+    if (res.ok && j.ok && j.result) {
+      const r = j.result;
+      status.textContent =
+        `new ppm ${r.final_lo_ppm.toFixed(3)} ` +
+        `(A: ${r.stage_a_delta_hz.toFixed(0)} Hz, ` +
+        `B: ${r.stage_b_residual_hz.toFixed(1)} Hz) ` +
+        `${r.duration_ms}ms`;
+      status.style.color = 'var(--green)';
+    } else {
+      status.textContent = (j && j.error) || 'calibration failed';
+      status.style.color = 'var(--red)';
+    }
+  } catch (e) {
+    status.textContent = 'error: ' + e.message;
+    status.style.color = 'var(--red)';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Recalibrate'; }
+    refreshPpm();
+  }
+}
+
 // Commit the Center (MHz) textbox. Posts /api/tune with an explicit
 // center_hz so the LO moves to that value; the NCO recomputes to
 // preserve the current radio freq if it still fits, otherwise the
@@ -1139,6 +1219,11 @@ function activeTab() {
 
 async function refresh() {
   const tab = activeTab();
+
+  // PPM readout is cheap and always visible on the Radio tab,
+  // so refresh it every tick alongside /api/system. Silent on
+  // errors.
+  refreshPpm();
 
   // /api/system drives the header build tag + NAC/WACN identity
   // card on both Radio and Debug tabs, so fetch it regardless of
