@@ -4051,19 +4051,54 @@ function plotSpectrumNarrow() {
   PLOT.pollHandle = setInterval(tick, 500);
 }
 
-// ── renderer: constellation (existing /api/constellation) ──
+// ── renderer: constellation (HDL post-PLL ring, NOT /api/constellation) ──
+// The Plots-tab constellation reads the same post-PLL WS as the eye.
+// This avoids the breathing pattern the /api/constellation endpoint
+// inherits from re-running the software Gardner+PLL on each 33 ms
+// snapshot (the PLL never fully settles in 156 symbols, so cluster
+// tightness oscillates between snapshots). The HDL ring is
+// continuously locked, so cluster tightness only breathes when the
+// real signal does.
 function plotConstellation() {
-  const tick = async () => {
-    try {
-      const r = await fetchJson(`/api/constellation?chain=${PLOT.chain}`);
-      if (!r.ok) { PLOT.statusEl.textContent = r.error || 'no data'; return; }
-      drawPlotConstellation(r.i, r.q);
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/ws/iq?source=post_pll&chain=${PLOT.chain}`;
+  const ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+  PLOT.wsHandle = ws;
+  const sym = [];  // rolling decision-time symbols (sym-slot only)
+  let frames = 0;
+  ws.onopen  = () => { PLOT.statusEl.textContent = 'post-PLL WS connected'; };
+  ws.onerror = () => { PLOT.statusEl.textContent = 'post-PLL WS error'; };
+  ws.onclose = () => { PLOT.statusEl.textContent = 'post-PLL WS closed'; };
+  ws.onmessage = async (ev) => {
+    let buf = ev.data;
+    if (typeof buf === 'string') return;
+    if (buf instanceof Blob) buf = await buf.arrayBuffer();
+    const samples = new Int16Array(buf);
+    // Interleaved HDL pairs: even index = rotate_mid, odd = rotate_sym.
+    // Only the sym samples are decision-point; use those for the scatter.
+    const nPairs = samples.length / 2;
+    for (let k = 1; k < nPairs; k += 2) {
+      sym.push([samples[2*k] / 8192, samples[2*k+1] / 8192]);
+    }
+    const CAP = 1024;
+    while (sym.length > CAP) sym.shift();
+    frames++;
+    // Peak-normalise for display so clusters always land near (±1, ±1).
+    let mag = 0;
+    for (const p of sym) {
+      const m = Math.hypot(p[0], p[1]);
+      if (m > mag) mag = m;
+    }
+    const norm = mag > 1e-6 ? 1 / mag : 1;
+    const iArr = sym.map(p => p[0] * norm);
+    const qArr = sym.map(p => p[1] * norm);
+    drawPlotConstellation(iArr, qArr);
+    if (frames % 8 === 0) {
       PLOT.statusEl.textContent =
-        `${r.count} post-PLL symbols \u00B7 PLL=${r.pll_final?.toFixed(3)}`;
-    } catch (e) { PLOT.statusEl.textContent = 'error: ' + e.message; }
+        `post-PLL HDL ring \u00B7 ${sym.length} symbols \u00B7 ${frames} frames`;
+    }
   };
-  tick();
-  PLOT.pollHandle = setInterval(tick, 400);
 }
 
 // ── renderer: eye (post-PLL WS, HDL-rotated IQ) ──
