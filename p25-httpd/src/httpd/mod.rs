@@ -332,6 +332,13 @@ pub fn router(
         // post-PLL symbol-time (I, Q) points from the same iq_dma
         // rings the /api/spectrum endpoint reads.
         .route("/api/constellation", get(api::debug::get_constellation))
+        // Phase 10.7 2026-04-22: wideband FFT (pre-DDC, HDL
+        // spectrometer) — no PS FFT, just unpack the HDL output.
+        .route("/api/spectrum_wide", get(api::debug::get_spectrum_wide))
+        // Phase 10.7: Anritsu-style modulation metrics pulled from
+        // the post-PLL IQ ring (HDL rotate output, already derotated
+        // + AGC-scaled). Feeds the Plots tab deviation panel.
+        .route("/api/deviation", get(api::debug::get_deviation))
         // Self-describing API catalogue for the dashboard's API tab.
         .route("/api/endpoints", get(api::system::get_endpoints))
         .route("/ws/events", get(api::ws::ws_events))

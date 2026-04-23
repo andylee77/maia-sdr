@@ -40,6 +40,15 @@ set_property bus_type_vlnv xilinx.com:signal:clock:1.0 \
     [ipx::get_bus_interfaces clk3x_clk -of_objects [ipx::current_core]]
 ipx::add_bus_parameter FREQ_HZ [ipx::get_bus_interfaces clk3x_clk -of_objects [ipx::current_core]]
 
+# Phase 10.7: clk2x_clk interface (2 x sync = 125 MHz) for the
+# wideband spectrometer's window + FFT twiddle path.
+ipx::add_bus_interface clk2x_clk [ipx::current_core]
+set_property abstraction_type_vlnv xilinx.com:signal:clock_rtl:1.0 \
+    [ipx::get_bus_interfaces clk2x_clk -of_objects [ipx::current_core]]
+set_property bus_type_vlnv xilinx.com:signal:clock:1.0 \
+    [ipx::get_bus_interfaces clk2x_clk -of_objects [ipx::current_core]]
+ipx::add_bus_parameter FREQ_HZ [ipx::get_bus_interfaces clk2x_clk -of_objects [ipx::current_core]]
+
 # rst output
 ipx::add_bus_parameter POLARITY [ipx::get_bus_interfaces rst -of_objects [ipx::current_core]]
 set_property value ACTIVE_HIGH \
@@ -83,6 +92,14 @@ ipx::associate_bus_interfaces -busif m_axi_traffic_lsm_dibit -clock clk [ipx::cu
 # on the traffic chain so dashboard constellation + offline traffic-LSM
 # cross-check have a post-DDC IQ source. Same clock, same HP1 SmartConnect.
 ipx::associate_bus_interfaces -busif m_axi_traffic_iq -clock clk [ipx::current_core]
+# Phase 10.6: post-LSM matched-filter IQ rings (control + traffic).
+ipx::associate_bus_interfaces -busif m_axi_lsm_iq -clock clk [ipx::current_core]
+ipx::associate_bus_interfaces -busif m_axi_traffic_lsm_iq -clock clk [ipx::current_core]
+# Phase 10.7: post-PLL IQ rings (control + traffic) and the wideband
+# spectrometer. All in the sync domain; SmartConnect handles HP1 arbitration.
+ipx::associate_bus_interfaces -busif m_axi_post_pll_iq -clock clk [ipx::current_core]
+ipx::associate_bus_interfaces -busif m_axi_traffic_post_pll_iq -clock clk [ipx::current_core]
+ipx::associate_bus_interfaces -busif m_axi_wideband_spec -clock clk [ipx::current_core]
 
 # interrupt
 ipx::add_bus_interface interrupt [ipx::current_core]

@@ -89,6 +89,7 @@ from maia_hdl.clknx import ClkNxCommonEdge
 from maia_hdl.dma import DmaStreamRingWrite
 from maia_hdl.pluto_platform import PlutoPlatform
 from maia_hdl.register import Access, Field, Registers, Register, RegisterMap
+from maia_hdl.spectrometer import Spectrometer
 
 from .p25ddc import P25DDC
 from .c4fm_demod import C4FMDemod
@@ -126,6 +127,10 @@ class P25Core(Elaboratable):
         self.sampling = ClockDomain()
         self.sync = ClockDomain()
         self.clk3x = ClockDomain()
+        # Phase 10.7: 2x domain for the wideband spectrometer's
+        # Blackman-Harris window and FFT twiddle pipeline. Driven by
+        # a new PS7 FCLK set to 2 × sync frequency (125 MHz).
+        self.clk2x = ClockDomain()
 
         self.axi4lite = Axi4LiteRegisterBridge(
             self.axi4_awidth, name='s_axi_lite')
@@ -169,6 +174,13 @@ class P25Core(Elaboratable):
                     # each sub-buffer completion, PS reads + clears.
                     Field('lsm_iq_dma', Access.Rsticky, 1, 0),
                     Field('traffic_lsm_iq_dma', Access.Rsticky, 1, 0),
+                    # Phase 10.7 2026-04-22: post-PLL IQ ring DMAs
+                    # (control + traffic) + wideband spectrometer.
+                    # Feed the new Plots tab. See doc/DASHBOARD_PLOTS.md
+                    # §9 and P25_ADDRESS_MAP.md.
+                    Field('post_pll_iq_dma', Access.Rsticky, 1, 0),
+                    Field('traffic_post_pll_iq_dma', Access.Rsticky, 1, 0),
+                    Field('wideband_spec_dma', Access.Rsticky, 1, 0),
                 ], interrupt=True),
             },
             2)
@@ -314,6 +326,36 @@ class P25Core(Elaboratable):
                     Field('lsm_iq_enable', Access.RW, 1, 0),
                 ]),
                 0b10: Register('lsm_iq_next_address', [
+                    Field('next_address', Access.R, 32, 0),
+                ]),
+            },
+            2)
+
+        # ── Control channel post-PLL IQ ring DMA (Phase 10.7) ─────────
+        # Third IQ tap on the control chain, fed from inside LsmDemod
+        # (i_rot_out/q_rot_out/rot_strobe_out — mid + sym interleaved
+        # on adjacent sync cycles after `LsmPllRotate`). Samples are
+        # already carrier-derotated and AGC-scaled, so the PS renders
+        # a clean open-eye + tight constellation with no additional
+        # signal processing. Also backs the Anritsu-style
+        # `/api/deviation` metrics. Register bank at 0x140.
+        self.post_pll_iq_packer = IQPacker()
+        self.post_pll_iq_dma = DmaStreamRingWrite(
+            config.post_pll_iq_dma_address,
+            config.post_pll_iq_dma_num_buffers_log2,
+            config.post_pll_iq_dma_buffer_size,
+            width=64, axi_awidth=32, name='m_axi_post_pll_iq')
+        self.post_pll_iq_registers = Registers(
+            'post_pll_iq', {
+                0b00: Register('post_pll_iq_dma_status', [
+                    Field('post_pll_iq_overflow', Access.Rsticky, 1, 0),
+                    Field('last_buffer', Access.R,
+                          config.post_pll_iq_dma_num_buffers_log2, -1),
+                ]),
+                0b01: Register('post_pll_iq_dma_control', [
+                    Field('post_pll_iq_enable', Access.RW, 1, 0),
+                ]),
+                0b10: Register('post_pll_iq_next_address', [
                     Field('next_address', Access.R, 32, 0),
                 ]),
             },
@@ -708,6 +750,70 @@ class P25Core(Elaboratable):
             },
             2)
 
+        # ── Traffic channel post-PLL IQ ring DMA (Phase 10.7) ─────────
+        # Traffic-side twin of `post_pll_iq_dma`. Tapped from inside
+        # `traffic_lsm_demod` (i_rot_out/q_rot_out/rot_strobe_out).
+        # Register bank at 0x160. See control-side comment above.
+        self.traffic_post_pll_iq_packer = IQPacker()
+        self.traffic_post_pll_iq_dma = DmaStreamRingWrite(
+            config.traffic_post_pll_iq_dma_address,
+            config.traffic_post_pll_iq_dma_num_buffers_log2,
+            config.traffic_post_pll_iq_dma_buffer_size,
+            width=64, axi_awidth=32, name='m_axi_traffic_post_pll_iq')
+        self.traffic_post_pll_iq_registers = Registers(
+            'traffic_post_pll_iq', {
+                0b00: Register('traffic_post_pll_iq_dma_status', [
+                    Field('traffic_post_pll_iq_overflow',
+                          Access.Rsticky, 1, 0),
+                    Field('last_buffer', Access.R,
+                          config.traffic_post_pll_iq_dma_num_buffers_log2, -1),
+                ]),
+                0b01: Register('traffic_post_pll_iq_dma_control', [
+                    Field('traffic_post_pll_iq_enable', Access.RW, 1, 0),
+                ]),
+                0b10: Register('traffic_post_pll_iq_next_address', [
+                    Field('next_address', Access.R, 32, 0),
+                ]),
+            },
+            2)
+
+        # ── Wideband spectrometer (Phase 10.7) ────────────────────────
+        # Directly instantiate the Maia SDR `Spectrometer` sub-module
+        # (NOT the full `maia_sdr` IP wrapper, which would drag the
+        # recorder + old DDC + its own register bank along for the
+        # ride). Tap is pre-DDC off `rxiq_cdc` at the full AD9361
+        # sample rate (preset-dependent, 2-16 MSPS). 4096-bin FFT + HW
+        # integrator writes one 32 KB spectrum per completed
+        # integration to `wideband_spec_dma`. Register bank at 0x180.
+        #
+        # Uses clk2x/clk3x (shared with P25DDC). `common_edge_2x`/
+        # `common_edge_3x` come from the existing `ClkNxCommonEdge`
+        # instance that already feeds P25DDC.
+        self.wideband_spec = Spectrometer(
+            config.wideband_spec_dma_address,
+            config.wideband_spec_dma_num_buffers_log2,
+            dma_name='m_axi_wideband_spec',
+            domain_2x='clk2x', domain_3x='clk3x')
+        self.wideband_spec_registers = Registers(
+            'spectrometer', {
+                0b00: Register('spec_control', [
+                    Field('spec_enable', Access.RW, 1, 0),
+                    Field('spec_peak_detect', Access.RW, 1, 0),
+                    Field('spec_abort', Access.Wpulse, 1, 0),
+                    Field('spec_num_integrations',
+                          Access.RW, self.wideband_spec.nint_width, -1),
+                ]),
+                0b01: Register('spec_status', [
+                    Field('spec_overflow', Access.Rsticky, 1, 0),
+                    Field('spec_last_buffer', Access.R,
+                          len(self.wideband_spec.last_buffer), -1),
+                ]),
+                0b10: Register('spec_next_address', [
+                    Field('next_address', Access.R, 32, 0),
+                ]),
+            },
+            2)
+
         # ── Register map ───────────────────────────────────────────────
         metadata = {
             'vendor': 'Andy Lee',
@@ -733,6 +839,9 @@ class P25Core(Elaboratable):
             0xE0:  self.traffic_iq_registers,     # 2026-04-16 chain-symmetry
             0x100: self.lsm_iq_registers,          # Phase 10.6 2026-04-18
             0x120: self.traffic_lsm_iq_registers,  # Phase 10.6 2026-04-18
+            0x140: self.post_pll_iq_registers,     # Phase 10.7 2026-04-22
+            0x160: self.traffic_post_pll_iq_registers,  # Phase 10.7
+            0x180: self.wideband_spec_registers,        # Phase 10.7
         }, metadata)
 
         # ── I/O signals ────────────────────────────────────────────────
@@ -752,6 +861,9 @@ class P25Core(Elaboratable):
             + self.traffic_iq_dma.axi.ports()  # 2026-04-16
             + self.lsm_iq_dma.axi.ports()           # Phase 10.6
             + self.traffic_lsm_iq_dma.axi.ports()   # Phase 10.6
+            + self.post_pll_iq_dma.axi.ports()      # Phase 10.7
+            + self.traffic_post_pll_iq_dma.axi.ports()  # Phase 10.7
+            + self.wideband_spec.dma.axi.ports()    # Phase 10.7
             + [
                 self.re_in,
                 self.im_in,
@@ -762,6 +874,7 @@ class P25Core(Elaboratable):
                 self.sync.clk,
                 self.sync.rst,
                 self.clk3x.clk,
+                self.clk2x.clk,
             ]
         )
 
@@ -775,6 +888,8 @@ class P25Core(Elaboratable):
             self.sampling,
             self.sync,
             self.clk3x,
+            # Phase 10.7: 2x domain for the wideband spectrometer.
+            self.clk2x,
         ]
 
         # Phase 8C: local clock domains for the two LSM demod
@@ -1002,6 +1117,18 @@ class P25Core(Elaboratable):
         m.submodules.traffic_lsm_iq_dma_irq_sync = (
             traffic_lsm_iq_dma_irq_sync) = (
                 PulseSynchronizer('sync', 's_axi_lite'))
+        # Phase 10.7 2026-04-22: post-PLL IQ + wideband spectrometer
+        # interrupt sync. Spectrometer's interrupt_out lives in the
+        # sync domain (the spectrometer's integrator runs there).
+        m.submodules.post_pll_iq_dma_irq_sync = (
+            post_pll_iq_dma_irq_sync) = (
+                PulseSynchronizer('sync', 's_axi_lite'))
+        m.submodules.traffic_post_pll_iq_dma_irq_sync = (
+            traffic_post_pll_iq_dma_irq_sync) = (
+                PulseSynchronizer('sync', 's_axi_lite'))
+        m.submodules.wideband_spec_dma_irq_sync = (
+            wideband_spec_dma_irq_sync) = (
+                PulseSynchronizer('sync', 's_axi_lite'))
 
         m.d.comb += [
             dibit_dma_irq_sync.i.eq(self.dibit_dma.interrupt),
@@ -1014,11 +1141,24 @@ class P25Core(Elaboratable):
             lsm_iq_dma_irq_sync.i.eq(self.lsm_iq_dma.interrupt),
             traffic_lsm_iq_dma_irq_sync.i.eq(
                 self.traffic_lsm_iq_dma.interrupt),
+            # Phase 10.7: post-PLL + spectrometer sync inputs.
+            post_pll_iq_dma_irq_sync.i.eq(
+                self.post_pll_iq_dma.interrupt),
+            traffic_post_pll_iq_dma_irq_sync.i.eq(
+                self.traffic_post_pll_iq_dma.interrupt),
+            wideband_spec_dma_irq_sync.i.eq(
+                self.wideband_spec.interrupt_out),
             # Feed the synchronized pulses into the Rsticky bits.
             interrupts_reg['dibit_dma'].eq(dibit_dma_irq_sync.o),
             interrupts_reg['lsm_iq_dma'].eq(lsm_iq_dma_irq_sync.o),
             interrupts_reg['traffic_lsm_iq_dma'].eq(
                 traffic_lsm_iq_dma_irq_sync.o),
+            interrupts_reg['post_pll_iq_dma'].eq(
+                post_pll_iq_dma_irq_sync.o),
+            interrupts_reg['traffic_post_pll_iq_dma'].eq(
+                traffic_post_pll_iq_dma_irq_sync.o),
+            interrupts_reg['wideband_spec_dma'].eq(
+                wideband_spec_dma_irq_sync.o),
         ]
 
         # Demod status registers
@@ -1594,6 +1734,138 @@ class P25Core(Elaboratable):
                 self.traffic_lsm_iq_dma.axi.awaddr),
         ]
 
+        # ── Phase 10.7: control-chain post-PLL IQ ring DMA ────────────
+        # Third IQ tap on the control chain, downstream of
+        # `LsmPllRotate` inside LsmDemod. `i_rot_out / q_rot_out /
+        # rot_strobe_out` deliver two samples per symbol (mid + sym
+        # interleaved onto adjacent sync cycles by LsmDemodLoop) of
+        # 16-bit Q1.13 carrier-derotated + AGC-scaled IQ. Feeds
+        # `post_pll_iq_dma` at 0x1F00_0000. Packing + register layout
+        # mirror `lsm_iq_dma`.
+        m.submodules.post_pll_iq_packer = self.post_pll_iq_packer
+        m.submodules.post_pll_iq_dma = self.post_pll_iq_dma
+        m.submodules.post_pll_iq_registers = self.post_pll_iq_registers
+        m.submodules.post_pll_iq_registers_cdc = (
+            post_pll_iq_registers_cdc) = RegisterCDC(
+                's_axi_lite', 'sync', self.post_pll_iq_registers.aw)
+
+        m.d.comb += [
+            self.post_pll_iq_packer.re_in.eq(self.lsm_demod.i_rot_out),
+            self.post_pll_iq_packer.im_in.eq(self.lsm_demod.q_rot_out),
+            self.post_pll_iq_packer.strobe_in.eq(
+                self.lsm_demod.rot_strobe_out),
+            self.post_pll_iq_dma.stream_data.eq(
+                self.post_pll_iq_packer.data_out),
+            self.post_pll_iq_dma.stream_valid.eq(
+                self.post_pll_iq_packer.data_valid),
+            self.post_pll_iq_packer.stream_ready.eq(
+                self.post_pll_iq_dma.stream_ready),
+            self.post_pll_iq_dma.enable.eq(
+                self.post_pll_iq_registers[
+                    'post_pll_iq_dma_control']['post_pll_iq_enable']),
+            self.post_pll_iq_registers[
+                'post_pll_iq_dma_status']['post_pll_iq_overflow'].eq(
+                self.post_pll_iq_packer.overflow),
+            self.post_pll_iq_registers[
+                'post_pll_iq_dma_status']['last_buffer'].eq(
+                self.post_pll_iq_dma.last_buffer),
+            self.post_pll_iq_registers[
+                'post_pll_iq_next_address']['next_address'].eq(
+                self.post_pll_iq_dma.axi.awaddr),
+        ]
+
+        # ── Phase 10.7: traffic-chain post-PLL IQ ring DMA ────────────
+        # Traffic-side twin. Tap is `traffic_lsm_demod.i_rot_out/
+        # q_rot_out/rot_strobe_out`.
+        m.submodules.traffic_post_pll_iq_packer = (
+            self.traffic_post_pll_iq_packer)
+        m.submodules.traffic_post_pll_iq_dma = self.traffic_post_pll_iq_dma
+        m.submodules.traffic_post_pll_iq_registers = (
+            self.traffic_post_pll_iq_registers)
+        m.submodules.traffic_post_pll_iq_registers_cdc = (
+            traffic_post_pll_iq_registers_cdc) = RegisterCDC(
+                's_axi_lite', 'sync',
+                self.traffic_post_pll_iq_registers.aw)
+
+        m.d.comb += [
+            self.traffic_post_pll_iq_packer.re_in.eq(
+                self.traffic_lsm_demod.i_rot_out),
+            self.traffic_post_pll_iq_packer.im_in.eq(
+                self.traffic_lsm_demod.q_rot_out),
+            self.traffic_post_pll_iq_packer.strobe_in.eq(
+                self.traffic_lsm_demod.rot_strobe_out),
+            self.traffic_post_pll_iq_dma.stream_data.eq(
+                self.traffic_post_pll_iq_packer.data_out),
+            self.traffic_post_pll_iq_dma.stream_valid.eq(
+                self.traffic_post_pll_iq_packer.data_valid),
+            self.traffic_post_pll_iq_packer.stream_ready.eq(
+                self.traffic_post_pll_iq_dma.stream_ready),
+            self.traffic_post_pll_iq_dma.enable.eq(
+                self.traffic_post_pll_iq_registers[
+                    'traffic_post_pll_iq_dma_control'][
+                        'traffic_post_pll_iq_enable']),
+            self.traffic_post_pll_iq_registers[
+                'traffic_post_pll_iq_dma_status'][
+                    'traffic_post_pll_iq_overflow'].eq(
+                self.traffic_post_pll_iq_packer.overflow),
+            self.traffic_post_pll_iq_registers[
+                'traffic_post_pll_iq_dma_status']['last_buffer'].eq(
+                self.traffic_post_pll_iq_dma.last_buffer),
+            self.traffic_post_pll_iq_registers[
+                'traffic_post_pll_iq_next_address']['next_address'].eq(
+                self.traffic_post_pll_iq_dma.axi.awaddr),
+        ]
+
+        # ── Phase 10.7: wideband spectrometer ─────────────────────────
+        # Direct instantiation of the Maia SDR `Spectrometer`
+        # sub-module (NOT the monolithic maia_sdr IP). Tap is pre-DDC
+        # off `rxiq_cdc` at AD9361 sample rate (preset-dependent);
+        # the spectrometer's window + FFT + integrator produce one
+        # 4096-bin spectrum per completed integration to
+        # `wideband_spec_dma` at 0x2100_0000. Running in the sync
+        # domain with strobe_in = rxiq_cdc.strobe_out keeps the bin
+        # rate equal to the RX sample rate, which is what
+        # `/api/spectrum_wide` expects.
+        #
+        # `rxiq_cdc.re_out / im_out` are 12-bit unsigned wrappers of
+        # 12-bit signed two's complement; reinterpret as signed and
+        # assign to the 16-bit signed spectrometer inputs for
+        # automatic sign extension.
+        m.submodules.common_edge_2x = common_edge_2x = ClkNxCommonEdge(
+            'sync', 'clk2x', 2)
+        m.submodules.wideband_spec = self.wideband_spec
+        m.submodules.wideband_spec_registers = self.wideband_spec_registers
+        m.submodules.wideband_spec_registers_cdc = (
+            wideband_spec_registers_cdc) = RegisterCDC(
+                's_axi_lite', 'sync', self.wideband_spec_registers.aw)
+
+        spec_ctrl = self.wideband_spec_registers['spec_control']
+        spec_stat = self.wideband_spec_registers['spec_status']
+        m.d.comb += [
+            self.wideband_spec.re_in.eq(rxiq_cdc.re_out.as_signed()),
+            self.wideband_spec.im_in.eq(rxiq_cdc.im_out.as_signed()),
+            # Gate the strobe on `spec_enable` so the spectrometer can
+            # be idled without tearing down the whole P25 chain. The
+            # FFT pipeline freezes when strobe_in is deasserted (clken
+            # gating), so this cleanly pauses integration.
+            self.wideband_spec.strobe_in.eq(
+                rxiq_cdc.strobe_out & spec_ctrl['spec_enable']),
+            self.wideband_spec.common_edge_2x.eq(
+                common_edge_2x.common_edge),
+            self.wideband_spec.common_edge_3x.eq(
+                common_edge_3x.common_edge),
+            self.wideband_spec.number_integrations.eq(
+                spec_ctrl['spec_num_integrations']),
+            self.wideband_spec.peak_detect.eq(
+                spec_ctrl['spec_peak_detect']),
+            self.wideband_spec.abort.eq(spec_ctrl['spec_abort']),
+            spec_stat['spec_last_buffer'].eq(
+                self.wideband_spec.last_buffer),
+            self.wideband_spec_registers[
+                'spec_next_address']['next_address'].eq(
+                self.wideband_spec.dma.axi.awaddr),
+        ]
+
         # ── Register crossbar ─────────────────────────────────────────
         # Address map (word-addressed via AXI4-Lite, 7-bit address):
         # Bank field is bits [5:3] of the word address (3 bits = 8
@@ -1626,6 +1898,10 @@ class P25Core(Elaboratable):
         # Phase 10.6 new banks at 0x100 / 0x120
         lsm_iq_regs_select = (addr_bank == 0b1000)
         traffic_lsm_iq_regs_select = (addr_bank == 0b1001)
+        # Phase 10.7 new banks at 0x140 / 0x160 / 0x180
+        post_pll_iq_regs_select = (addr_bank == 0b1010)
+        traffic_post_pll_iq_regs_select = (addr_bank == 0b1011)
+        spec_regs_select = (addr_bank == 0b1100)
         m.d.s_axi_lite += [
             self.axi4lite.rdata.eq(self.control_registers.rdata
                                    | sdr_registers_cdc.i_rdata
@@ -1636,7 +1912,10 @@ class P25Core(Elaboratable):
                                    | traffic_lsm_registers_cdc.i_rdata
                                    | traffic_iq_registers_cdc.i_rdata
                                    | lsm_iq_registers_cdc.i_rdata
-                                   | traffic_lsm_iq_registers_cdc.i_rdata),
+                                   | traffic_lsm_iq_registers_cdc.i_rdata
+                                   | post_pll_iq_registers_cdc.i_rdata
+                                   | traffic_post_pll_iq_registers_cdc.i_rdata
+                                   | wideband_spec_registers_cdc.i_rdata),
             self.axi4lite.rdone.eq(self.control_registers.rdone
                                    | sdr_registers_cdc.i_rdone
                                    | demod_registers_cdc.i_rdone
@@ -1646,7 +1925,10 @@ class P25Core(Elaboratable):
                                    | traffic_lsm_registers_cdc.i_rdone
                                    | traffic_iq_registers_cdc.i_rdone
                                    | lsm_iq_registers_cdc.i_rdone
-                                   | traffic_lsm_iq_registers_cdc.i_rdone),
+                                   | traffic_lsm_iq_registers_cdc.i_rdone
+                                   | post_pll_iq_registers_cdc.i_rdone
+                                   | traffic_post_pll_iq_registers_cdc.i_rdone
+                                   | wideband_spec_registers_cdc.i_rdone),
             self.axi4lite.wdone.eq(self.control_registers.wdone
                                    | sdr_registers_cdc.i_wdone
                                    | demod_registers_cdc.i_wdone
@@ -1656,7 +1938,10 @@ class P25Core(Elaboratable):
                                    | traffic_lsm_registers_cdc.i_wdone
                                    | traffic_iq_registers_cdc.i_wdone
                                    | lsm_iq_registers_cdc.i_wdone
-                                   | traffic_lsm_iq_registers_cdc.i_wdone),
+                                   | traffic_lsm_iq_registers_cdc.i_wdone
+                                   | post_pll_iq_registers_cdc.i_wdone
+                                   | traffic_post_pll_iq_registers_cdc.i_wdone
+                                   | wideband_spec_registers_cdc.i_wdone),
             self.control_registers.ren.eq(
                 self.axi4lite.ren & control_regs_select),
             self.control_registers.wstrobe.eq(
@@ -1697,6 +1982,20 @@ class P25Core(Elaboratable):
                 self.axi4lite.ren & traffic_lsm_iq_regs_select),
             traffic_lsm_iq_registers_cdc.i_wstrobe.eq(
                 Mux(traffic_lsm_iq_regs_select, self.axi4lite.wstrobe, 0)),
+            # Phase 10.7 bank selects
+            post_pll_iq_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & post_pll_iq_regs_select),
+            post_pll_iq_registers_cdc.i_wstrobe.eq(
+                Mux(post_pll_iq_regs_select, self.axi4lite.wstrobe, 0)),
+            traffic_post_pll_iq_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & traffic_post_pll_iq_regs_select),
+            traffic_post_pll_iq_registers_cdc.i_wstrobe.eq(
+                Mux(traffic_post_pll_iq_regs_select,
+                    self.axi4lite.wstrobe, 0)),
+            wideband_spec_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & spec_regs_select),
+            wideband_spec_registers_cdc.i_wstrobe.eq(
+                Mux(spec_regs_select, self.axi4lite.wstrobe, 0)),
             address.eq(self.axi4lite.address),
             wdata.eq(self.axi4lite.wdata),
         ]
@@ -1721,6 +2020,13 @@ class P25Core(Elaboratable):
             lsm_iq_registers_cdc.i_wdata.eq(wdata),
             traffic_lsm_iq_registers_cdc.i_address.eq(address),
             traffic_lsm_iq_registers_cdc.i_wdata.eq(wdata),
+            # Phase 10.7 CDC address/wdata fan-out
+            post_pll_iq_registers_cdc.i_address.eq(address),
+            post_pll_iq_registers_cdc.i_wdata.eq(wdata),
+            traffic_post_pll_iq_registers_cdc.i_address.eq(address),
+            traffic_post_pll_iq_registers_cdc.i_wdata.eq(wdata),
+            wideband_spec_registers_cdc.i_address.eq(address),
+            wideband_spec_registers_cdc.i_wdata.eq(wdata),
         ]
 
         # ── Registers sync domain ────────────────────────────────────
@@ -1834,9 +2140,62 @@ class P25Core(Elaboratable):
             traffic_lsm_iq_registers_cdc.o_rdata.eq(
                 self.traffic_lsm_iq_registers.rdata),
         ]
+        # Phase 10.7 2026-04-22: post_pll_iq + traffic_post_pll_iq +
+        # wideband spectrometer register CDCs.
+        m.d.comb += [
+            self.post_pll_iq_registers.ren.eq(
+                post_pll_iq_registers_cdc.o_ren),
+            self.post_pll_iq_registers.wstrobe.eq(
+                post_pll_iq_registers_cdc.o_wstrobe),
+            self.post_pll_iq_registers.address.eq(
+                post_pll_iq_registers_cdc.o_address),
+            self.post_pll_iq_registers.wdata.eq(
+                post_pll_iq_registers_cdc.o_wdata),
+            post_pll_iq_registers_cdc.o_rdone.eq(
+                self.post_pll_iq_registers.rdone),
+            post_pll_iq_registers_cdc.o_wdone.eq(
+                self.post_pll_iq_registers.wdone),
+            post_pll_iq_registers_cdc.o_rdata.eq(
+                self.post_pll_iq_registers.rdata),
+        ]
+        m.d.comb += [
+            self.traffic_post_pll_iq_registers.ren.eq(
+                traffic_post_pll_iq_registers_cdc.o_ren),
+            self.traffic_post_pll_iq_registers.wstrobe.eq(
+                traffic_post_pll_iq_registers_cdc.o_wstrobe),
+            self.traffic_post_pll_iq_registers.address.eq(
+                traffic_post_pll_iq_registers_cdc.o_address),
+            self.traffic_post_pll_iq_registers.wdata.eq(
+                traffic_post_pll_iq_registers_cdc.o_wdata),
+            traffic_post_pll_iq_registers_cdc.o_rdone.eq(
+                self.traffic_post_pll_iq_registers.rdone),
+            traffic_post_pll_iq_registers_cdc.o_wdone.eq(
+                self.traffic_post_pll_iq_registers.wdone),
+            traffic_post_pll_iq_registers_cdc.o_rdata.eq(
+                self.traffic_post_pll_iq_registers.rdata),
+        ]
+        m.d.comb += [
+            self.wideband_spec_registers.ren.eq(
+                wideband_spec_registers_cdc.o_ren),
+            self.wideband_spec_registers.wstrobe.eq(
+                wideband_spec_registers_cdc.o_wstrobe),
+            self.wideband_spec_registers.address.eq(
+                wideband_spec_registers_cdc.o_address),
+            self.wideband_spec_registers.wdata.eq(
+                wideband_spec_registers_cdc.o_wdata),
+            wideband_spec_registers_cdc.o_rdone.eq(
+                self.wideband_spec_registers.rdone),
+            wideband_spec_registers_cdc.o_wdone.eq(
+                self.wideband_spec_registers.wdone),
+            wideband_spec_registers_cdc.o_rdata.eq(
+                self.wideband_spec_registers.rdata),
+        ]
 
         # ── Internal resets ───────────────────────────────────────────
-        for internal in ['sync', 'clk3x', 'sampling']:
+        # Phase 10.7: include clk2x (driven by the new PS7 FCLK for
+        # the wideband spectrometer's Blackman-Harris window + FFT
+        # twiddle path).
+        for internal in ['sync', 'clk3x', 'clk2x', 'sampling']:
             setattr(m.submodules, f'{internal}_rst', FFSynchronizer(
                 self.control_registers['control']['sdr_reset'],
                 ResetSignal(internal), o_domain=internal,

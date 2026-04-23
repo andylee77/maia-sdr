@@ -36,7 +36,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-22-tuning-redesign";
+pub const BUILD_TAG: &str = "2026-04-22-phase-10-7-plots";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -646,6 +646,20 @@ async fn main() -> anyhow::Result<()> {
         // Feed the dashboard MF eye plot (/ws/iq?source=post_lsm).
         ip_core.set_lsm_iq_dma_enable(true);
         ip_core.set_traffic_lsm_iq_dma_enable(true);
+        // Phase 10.7 2026-04-22: post-PLL IQ rings + wideband
+        // spectrometer. The post-PLL rings tap inside LsmDemod
+        // after `LsmPllRotate`, so samples are carrier-derotated
+        // + AGC-scaled; they tick on the rotate-strobe which only
+        // fires when the LSM chain is enabled. Feed the Plots tab
+        // eye + constellation + /api/deviation.
+        ip_core.set_post_pll_iq_dma_enable(true);
+        ip_core.set_traffic_post_pll_iq_dma_enable(true);
+        // Wideband spectrometer runs pre-DDC on `rxiq_cdc`,
+        // independent of every demod. Default 256 integrations at
+        // 8 MSPS = ~8 Hz update cadence.
+        ip_core.set_wideband_spec_integrations(256);
+        ip_core.set_wideband_spec_peak_detect(false);
+        ip_core.set_wideband_spec_enable(true);
         // Traffic-side per-symbol LSM AGC — same SDRTrunk port as
         // above. Stays armed across retunes; the traffic_lsm_reset
         // pulse in retune_traffic_chain returns gain to GAIN_INIT

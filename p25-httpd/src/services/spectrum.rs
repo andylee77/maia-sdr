@@ -264,6 +264,62 @@ pub fn spectrum_from_bytes(
         averages_used,
     })
 }
+/// Number of bins produced by the HDL wideband spectrometer (Phase 10.7).
+/// Matches `Spectrometer.fft_order_log2 = 12` in `maia_hdl/spectrometer.py`.
+pub const WIDEBAND_FFT_SIZE: usize = 4096;
+
+/// Unpack one 32 KB wideband spectrometer DMA sub-buffer into a
+/// 4096-bin magnitude vector in dB. The HDL packs each bin as a
+/// 64-bit word with a 47-bit mantissa at bits [0:47] and a 3-bit
+/// exponent at bits [56:59] (see spectrometer.py:128-135):
+///
+///     bits [ 0:47] = integrator.rdata_value  (unsigned 47-bit mantissa)
+///     bits [47:56] = 0 padding
+///     bits [56:59] = integrator.rdata_exponent (3-bit exponent)
+///     bits [59:61] = 0 padding
+///     bits [61:64] = fastlock_profile (unused here)
+///
+/// Linear power = mantissa × 2^exponent. We convert to dB with a
+/// fixed reference so cross-spectrum comparisons stay meaningful,
+/// then fft-shift so bin 0 is the most-negative frequency.
+///
+/// Returns an empty Vec if the buffer is shorter than
+/// `WIDEBAND_FFT_SIZE * 8` bytes.
+pub fn wideband_power_db(bytes: &[u8]) -> Vec<f32> {
+    let need = WIDEBAND_FFT_SIZE * 8;
+    if bytes.len() < need {
+        return Vec::new();
+    }
+    let mut linear = Vec::with_capacity(WIDEBAND_FFT_SIZE);
+    for i in 0..WIDEBAND_FFT_SIZE {
+        let base = i * 8;
+        let w = u64::from_le_bytes(bytes[base..base + 8].try_into().unwrap());
+        let mantissa = (w & 0x7FFF_FFFF_FFFF) as f64;
+        let exponent = ((w >> 56) & 0x07) as i32;
+        linear.push(mantissa * 2f64.powi(exponent));
+    }
+    // Reference: subtract a constant so the noise floor on a typical
+    // AD9361 capture sits near ~-60 dBFS. Empirical; tuneable when we
+    // see real spectra.
+    const DB_REF: f64 = 96.0;
+    let mag_db: Vec<f32> = linear
+        .iter()
+        .map(|&p| {
+            if p > 0.0 {
+                (10.0 * p.log10() - DB_REF) as f32
+            } else {
+                -120.0
+            }
+        })
+        .collect();
+    // fftshift so bin 0 = most-negative frequency (-Fs/2).
+    let half = WIDEBAND_FFT_SIZE / 2;
+    let mut out = Vec::with_capacity(WIDEBAND_FFT_SIZE);
+    out.extend_from_slice(&mag_db[half..]);
+    out.extend_from_slice(&mag_db[..half]);
+    out
+}
+
 #[cfg(test)]
 #[path = "spectrum_tests.rs"]
 mod tests;

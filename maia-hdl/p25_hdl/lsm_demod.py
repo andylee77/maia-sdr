@@ -164,6 +164,13 @@ class LsmDemod(Elaboratable):
         self.bch_busy = Signal()
         self.nid_drop_count = Signal(16)
 
+        # ── Post-PLL IQ tap (Phase 10.7) ───────────────────────
+        # Pass-through from LsmDemodLoop. Feeds the post-PLL IQ
+        # DMA ring; see lsm_demod_loop.py docstring for packing.
+        self.i_rot_out = Signal(signed(16))
+        self.q_rot_out = Signal(signed(16))
+        self.rot_strobe_out = Signal()
+
         # ── Debug taps from LsmDemodLoop ────────────────────────
         self.pll_dbg = Signal(signed(16))
         self.sample_point_dbg = Signal(signed(18))
@@ -235,6 +242,10 @@ class LsmDemod(Elaboratable):
             self.symbol_strobe.eq(demod_loop.symbol_strobe),
             self.pll_dbg.eq(demod_loop.pll_dbg),
             self.sample_point_dbg.eq(demod_loop.sample_point_dbg),
+            # Phase 10.7: post-PLL IQ pass-through to p25_top.
+            self.i_rot_out.eq(demod_loop.i_rot_out),
+            self.q_rot_out.eq(demod_loop.q_rot_out),
+            self.rot_strobe_out.eq(demod_loop.rot_strobe_out),
         ]
 
         # ── Stage 2: dibits -> sync + NID + BCH ────────────────

@@ -106,6 +106,18 @@ class LsmDemodLoop(Elaboratable):
         dibit_out     : Signal(2)
         symbol_strobe : Signal()
 
+    Post-PLL IQ tap (sync domain) — Phase 10.7, feeds the dashboard
+    Plots tab (eye + constellation + deviation) via `post_pll_iq_dma`.
+    Two samples per symbol at 9.6 kSPS (mid + sym emitted on
+    adjacent sync cycles). Truncated from the underlying 18-bit
+    Q3.15 `LsmPllRotate` outputs to signed 16 Q1.13 (arithmetic
+    `>> 2`) so the packer can reuse the existing 16-bit `iq_dma`
+    packing format. Q1.13 fits the nominal ±1.4 post-AGC
+    constellation comfortably.
+        i_rot_out, q_rot_out : signed 16
+        rot_strobe_out       : Signal() -- one cycle per rotated
+            sample; fires twice per symbol (first mid, then sym).
+
     Debug taps (sync domain):
         pll_dbg          : signed 16  Q2.13 (current PLL value)
         sample_point_dbg : signed 16  Q4.12 (current sample_point)
@@ -142,6 +154,12 @@ class LsmDemodLoop(Elaboratable):
         # ── Outputs ─────────────────────────────────────────────
         self.dibit_out = Signal(2, reset_less=True)
         self.symbol_strobe = Signal()
+
+        # ── Post-PLL IQ tap (Phase 10.7) ────────────────────────
+        # See class docstring; feeds post_pll_iq_dma.
+        self.i_rot_out = Signal(signed(16), reset_less=True)
+        self.q_rot_out = Signal(signed(16), reset_less=True)
+        self.rot_strobe_out = Signal()
 
         # ── Debug taps ──────────────────────────────────────────
         self.pll_dbg = Signal(signed(16), reset_less=True)
@@ -284,6 +302,39 @@ class LsmDemodLoop(Elaboratable):
                 self.q_sym_rot_dbg.eq(rotate_sym.q_out),
             ]
 
+        # ── Phase 10.7: post-PLL IQ tap interleave ──────────────
+        # `rotate_mid.strobe_out` and `rotate_sym.strobe_out` fire
+        # on the same sync cycle (both triggered by
+        # `diff_demod.symbol_strobe`, same 3-cycle LUT pipeline).
+        # To expose both as a single IQ stream, emit `rotate_mid`
+        # first and hold `rotate_sym` for the next cycle. The
+        # downstream IQPacker sees 2 strobes/symbol → 1 packed
+        # 64-bit DMA word/symbol at 4800 Hz = 38 KB/s.
+        pending_sym_i = Signal(signed(16))
+        pending_sym_q = Signal(signed(16))
+        pending_sym_valid = Signal()
+
+        m.d.sync += [
+            self.rot_strobe_out.eq(0),
+            pending_sym_valid.eq(0),
+        ]
+        with m.If(rotate_mid.strobe_out):
+            # Arithmetic right-shift 18-bit Q3.15 → 16-bit Q1.13.
+            m.d.sync += [
+                self.i_rot_out.eq(rotate_mid.i_out >> 2),
+                self.q_rot_out.eq(rotate_mid.q_out >> 2),
+                self.rot_strobe_out.eq(1),
+                pending_sym_i.eq(rotate_sym.i_out >> 2),
+                pending_sym_q.eq(rotate_sym.q_out >> 2),
+                pending_sym_valid.eq(1),
+            ]
+        with m.Elif(pending_sym_valid):
+            m.d.sync += [
+                self.i_rot_out.eq(pending_sym_i),
+                self.q_rot_out.eq(pending_sym_q),
+                self.rot_strobe_out.eq(1),
+            ]
+
         # ── Phase 8A runtime reset override on local outputs ───
         # Clear this module's own registered outputs (the slicer
         # latch + debug taps) so the PS sees a clean view during
@@ -294,6 +345,10 @@ class LsmDemodLoop(Elaboratable):
                 self.symbol_strobe.eq(0),
                 self.i_sym_rot_dbg.eq(0),
                 self.q_sym_rot_dbg.eq(0),
+                self.i_rot_out.eq(0),
+                self.q_rot_out.eq(0),
+                self.rot_strobe_out.eq(0),
+                pending_sym_valid.eq(0),
             ]
 
         return m

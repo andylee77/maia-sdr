@@ -243,10 +243,13 @@ async fn handle_ws_iq(
         }
     };
     let source = match source.as_str() {
-        "post_ddc" | "post_lsm" => source,
+        // Phase 10.7: `post_pll` is the canonical clean-eye source. The
+        // two pre-PLL options stay for diagnostics/legacy access but
+        // the Plots tab only surfaces `post_pll`.
+        "post_ddc" | "post_lsm" | "post_pll" => source,
         other => {
             let err = format!(
-                r#"{{"type":"error","error":"unknown source '{}'; expected post_ddc|post_lsm"}}"#,
+                r#"{{"type":"error","error":"unknown source '{}'; expected post_ddc|post_lsm|post_pll"}}"#,
                 other.replace('"', "'")
             );
             let _ = socket.send(Message::Text(err.into())).await;
@@ -254,9 +257,15 @@ async fn handle_ws_iq(
         }
     };
 
-    // Sample rate depends on source: post-DDC = 62.5 kSPS; post-LSM
-    // = 31.25 kSPS (half, after the LsmDecimator2 /2 stage).
-    let sample_rate_hz: u32 = if source == "post_lsm" { 31_250 } else { 62_500 };
+    // Sample rate depends on source:
+    //   post_ddc = 62.5 kSPS (post-DDC)
+    //   post_lsm = 31.25 kSPS (post-RRC matched filter)
+    //   post_pll = 9.6 kSPS (post-LsmPllRotate, 2 samples per symbol)
+    let sample_rate_hz: u32 = match source.as_str() {
+        "post_lsm" => 31_250,
+        "post_pll" => 9_600,
+        _ => 62_500,
+    };
 
     // Hello frame. buf_bytes matches the underlying DMA sub-buffer
     // size (both rings are 32 KB regardless of source rate).
@@ -292,6 +301,8 @@ async fn handle_ws_iq(
                         ("traffic", "post_ddc") => core.read_traffic_iq_buffers(),
                         ("control", "post_lsm") => core.read_lsm_iq_buffers(),
                         ("traffic", "post_lsm") => core.read_traffic_lsm_iq_buffers(),
+                        ("control", "post_pll") => core.read_post_pll_iq_buffers(),
+                        ("traffic", "post_pll") => core.read_traffic_post_pll_iq_buffers(),
                         _ => Vec::new(),
                     };
                     raw.into_iter().map(|b| b.to_vec()).collect()

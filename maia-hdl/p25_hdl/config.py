@@ -198,6 +198,50 @@ class P25Config:
         self.traffic_lsm_iq_dma_num_buffers_log2 = 3
         self.traffic_lsm_iq_dma_buffer_size = 0x8000
 
+        # ── Control channel post-PLL IQ DMA (Phase 10.7, 2026-04-22)
+        # Tapped from `LsmPllRotate` outputs (mid + sym interleaved
+        # onto a single strobe; 2 samples/symbol → 9.6 kSPS).
+        # Samples are already carrier-derotated and AGC-scaled, so
+        # this is the first dashboard tap that produces a clean
+        # open-eye + tight constellation without any PS-side signal
+        # processing. Feeds the new Plots tab (eye + constellation +
+        # deviation) and `/api/deviation`. See doc/DASHBOARD_PLOTS.md
+        # §9 and the `post_pll_iq` bank detail in P25_ADDRESS_MAP.md.
+        #
+        # Ring deliberately oversized for the rate (~38 KB/s × 256 KB
+        # = ~7 s of IQ) so the PS can pull a 1-second deviation
+        # window without cache pressure.
+        # Address 0x1F00_0000, 256 KB aligned.
+        self.post_pll_iq_dma_address = 0x1F00_0000
+        self.post_pll_iq_dma_num_buffers_log2 = 3
+        self.post_pll_iq_dma_buffer_size = 0x8000
+
+        # ── Traffic channel post-PLL IQ DMA (Phase 10.7) ──────────
+        # Traffic-side twin of `post_pll_iq_dma`. Same packing, same
+        # geometry, different tap (traffic-chain LSM rotate).
+        # Address 0x2000_0000, 256 KB aligned.
+        self.traffic_post_pll_iq_dma_address = 0x2000_0000
+        self.traffic_post_pll_iq_dma_num_buffers_log2 = 3
+        self.traffic_post_pll_iq_dma_buffer_size = 0x8000
+
+        # ── Wideband spectrometer DMA (Phase 10.7) ────────────────
+        # Output of the `Spectrometer` sub-module tapped pre-DDC off
+        # `rxiq_cdc`. Uses `DmaBRAMWrite` rather than the streaming
+        # ring DMA, so the buffer size is fixed by the FFT geometry:
+        # `fft_order_log2 = 12` → 4096 bins × 8 bytes = 32 KB per
+        # integrated spectrum. Total carve-out = num_buffers × 32 KB.
+        #
+        # 4 buffers × 32 KB = 128 KB ring. Hardware integrator
+        # averages at 5-10 Hz cadence; PS reads latest buffer via
+        # `spec_status.last_buffer`. Span = AD9361 sample rate
+        # (preset-dependent, 2-16 MHz). Feeds `/api/spectrum_wide`;
+        # no PS FFT.
+        # Address 0x2100_0000, 128 KB aligned.
+        self.wideband_spec_dma_address = 0x2100_0000
+        self.wideband_spec_dma_num_buffers_log2 = 2   # 4 sub-buffers
+        # Spectrometer FFT is 4096 bins (order_log2=12) × 8 B/word.
+        self.wideband_spec_dma_buffer_size = (1 << 12) * 8
+
     @property
     def dibit_dma_num_buffers(self):
         return 1 << self.dibit_dma_num_buffers_log2
@@ -265,6 +309,33 @@ class P25Config:
         return (self.traffic_lsm_iq_dma_num_buffers
                 * self.traffic_lsm_iq_dma_buffer_size)
 
+    @property
+    def post_pll_iq_dma_num_buffers(self):
+        return 1 << self.post_pll_iq_dma_num_buffers_log2
+
+    @property
+    def post_pll_iq_dma_total_size(self):
+        return (self.post_pll_iq_dma_num_buffers
+                * self.post_pll_iq_dma_buffer_size)
+
+    @property
+    def traffic_post_pll_iq_dma_num_buffers(self):
+        return 1 << self.traffic_post_pll_iq_dma_num_buffers_log2
+
+    @property
+    def traffic_post_pll_iq_dma_total_size(self):
+        return (self.traffic_post_pll_iq_dma_num_buffers
+                * self.traffic_post_pll_iq_dma_buffer_size)
+
+    @property
+    def wideband_spec_dma_num_buffers(self):
+        return 1 << self.wideband_spec_dma_num_buffers_log2
+
+    @property
+    def wideband_spec_dma_total_size(self):
+        return (self.wideband_spec_dma_num_buffers
+                * self.wideband_spec_dma_buffer_size)
+
     def validate(self):
         assert self.platform >= 0 and self.platform < 256
         # Ring base addresses must be aligned to total ring size
@@ -300,3 +371,18 @@ class P25Config:
             f'traffic_lsm_iq_dma_address ' \
             f'{self.traffic_lsm_iq_dma_address:#x} not aligned to ' \
             f'ring size {self.traffic_lsm_iq_dma_total_size:#x}'
+        assert self.post_pll_iq_dma_address & \
+            (self.post_pll_iq_dma_total_size - 1) == 0, \
+            f'post_pll_iq_dma_address ' \
+            f'{self.post_pll_iq_dma_address:#x} not aligned to ' \
+            f'ring size {self.post_pll_iq_dma_total_size:#x}'
+        assert self.traffic_post_pll_iq_dma_address & \
+            (self.traffic_post_pll_iq_dma_total_size - 1) == 0, \
+            f'traffic_post_pll_iq_dma_address ' \
+            f'{self.traffic_post_pll_iq_dma_address:#x} not aligned to ' \
+            f'ring size {self.traffic_post_pll_iq_dma_total_size:#x}'
+        assert self.wideband_spec_dma_address & \
+            (self.wideband_spec_dma_total_size - 1) == 0, \
+            f'wideband_spec_dma_address ' \
+            f'{self.wideband_spec_dma_address:#x} not aligned to ' \
+            f'ring size {self.wideband_spec_dma_total_size:#x}'

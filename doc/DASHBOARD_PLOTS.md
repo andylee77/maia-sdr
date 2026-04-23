@@ -384,7 +384,262 @@ change):
 - [diagnostics/2026-04-19/PERFORMANCE_ANALYSIS_V2.md](diagnostics/2026-04-19/PERFORMANCE_ANALYSIS_V2.md) —
   timing reference for where the PS software PLL spends its cycles.
 
-## 9. TL;DR
+## 9. Phase 10.7 — Plots & Observability (implementation plan)
+
+This is the committed plan for fixing every item in §§1–8 in one
+bake. It slots between Phase 10.5 (voice-chain stability) and
+Phase 11 (polyphase channelizer) in
+[HDL_LAYOUT_AND_ROADMAP.md](HDL_LAYOUT_AND_ROADMAP.md). The whole
+point is **measuring what the PL actually does** rather than
+reconstructing it on the PS. Every rendered plot has a PL-sourced
+tap; the PS touches data only to format it.
+
+### 9.1 Decisions already locked
+
+- **Don't un-delete `maia_sdr`.** That IP bundles recorder +
+  old Maia DDC + its own register bank + multiple DMA masters.
+  Instead, instantiate the three sub-modules we actually want —
+  [spectrometer.py](../maia-hdl/maia_hdl/spectrometer.py),
+  [fft.py](../maia-hdl/maia_hdl/fft.py),
+  [spectrum_integrator.py](../maia-hdl/maia_hdl/spectrum_integrator.py)
+  — directly inside `P25Core`.
+- **Path A from §7 (post-PLL HDL tap) wins.** Paths B/C are not
+  implemented. We spend the bake once and get the clean signal at
+  the source instead of re-deriving it per-repaint in JS.
+- **One canonical plot per category, no user variants.** No more
+  "fast spectrogram vs slow spectrogram", no more `source=post_ddc`
+  vs `source=post_lsm` eye options.
+- **Plots live in their own tab.** Radio tab keeps the widgets it
+  already has; the new Plots tab has a single fullscreen canvas
+  with a picker.
+
+### 9.2 HDL — new DDR carve-outs
+
+Extends the DDR table in
+[P25_ADDRESS_MAP.md](P25_ADDRESS_MAP.md). Source-of-truth remains
+that doc; this section is a summary.
+
+| Name | Base | Sub-buffers × size | Total | Rate | Purpose |
+|------|------|--------------------|-------|------|---------|
+| `post_pll_iq_dma`         | `0x1F00_0000` | 8 × 32 KB | 256 KB | ~9.6 kSPS × 4 B ≈ 38 KB/s | Control-chain rotated IQ (mid + sym) after `LsmPllRotate`. Feeds the eye + deviation + constellation — one ring, three plots. |
+| `traffic_post_pll_iq_dma` | `0x2000_0000` | 8 × 32 KB | 256 KB | 38 KB/s | Traffic-chain twin. |
+| `wideband_spec_dma`       | `0x2100_0000` | 4 × 16 KB | 64 KB  | ~32 KB/s @ 5–10 Hz | 4096-bin wideband FFT from `Spectrometer`, pre-DDC tap off `rxiq_cdc`. |
+
+Total new DDR: 576 KB (well inside the existing reserved region).
+
+### 9.3 HDL — new register banks
+
+Slots 10–15 are currently free
+([P25_ADDRESS_MAP.md §AXI-Lite register banks](P25_ADDRESS_MAP.md#axi-lite-register-banks)).
+Phase 10.7 claims 10, 11, 12:
+
+| Bank | Byte base | Name | Registers | Mirrors |
+|------|-----------|------|-----------|---------|
+| 10 | `0x7C46_0140` | `post_pll_iq` | status (overflow + last_buffer), control (enable), next_address | bank 8 (`lsm_iq`) |
+| 11 | `0x7C46_0160` | `traffic_post_pll_iq` | status, control, next_address | bank 9 (`traffic_lsm_iq`) |
+| 12 | `0x7C46_0180` | `spectrometer` | `spec_num_integrations` (RW), `spec_peak_detect` (RW), `spec_abort` (Wpulse), `spec_last_buffer` (R), `spec_next_address` (R) | new layout |
+
+No bank-decoder change needed — Phase 10.6 already widened to
+4 bits (16 banks).
+
+### 9.4 HDL — new IRQ bits
+
+Extends the `control.interrupts` table:
+
+| Bit | Name | Source |
+|-----|------|--------|
+| 5 | `post_pll_iq_dma` | `post_pll_iq_dma.interrupt` |
+| 6 | `traffic_post_pll_iq_dma` | `traffic_post_pll_iq_dma.interrupt` |
+| 7 | `wideband_spec_dma` | `spectrometer.interrupt_out` |
+
+### 9.5 HDL — signal changes
+
+**[lsm_demod_loop.py](../maia-hdl/p25_hdl/lsm_demod_loop.py):** add
+outputs that expose the already-computed rotated IQ as first-class
+ports instead of leaving them as debug taps:
+
+```python
+# New outputs (sync domain)
+self.i_rot_out        = Signal(signed(16))   # Q1.15 rotated IQ
+self.q_rot_out        = Signal(signed(16))   # (narrowed from
+                                             #  rotate_sym's 18-bit Q3.15)
+self.rot_strobe_out   = Signal()             # 1 cycle per rotated
+                                             # sample (mid + sym
+                                             # interleaved → 9.6 kSPS
+                                             # with 4800 Hz symbol
+                                             # rate)
+```
+
+Wire to `rotate_sym.re_out / im_out / strobe_out` plus an interleave
+with `rotate_mid.re_out / im_out` so the eye plot sees two samples
+per symbol (enough to see the eye diamond; not as dense as 4×
+but matches OP25 Datascope's typical render).
+
+**[lsm_demod.py](../maia-hdl/p25_hdl/lsm_demod.py):** pass-through
+the new signals from `LsmDemodLoop` to the top level.
+
+**[p25_top.py](../maia-hdl/p25_hdl/p25_top.py):**
+
+1. Two new `IQPacker` + `DmaStreamRingWrite` pairs for the post-PLL
+   rings — copy the Phase 10.6 `lsm_iq_dma` template verbatim.
+2. Instantiate `Spectrometer(dma_base_address=0x2100_0000,
+   dma_buffers_log2=2, dma_name='wideband_spec')` with its 16-bit
+   IQ inputs wired off `rxiq_cdc.re_out / im_out` (pre-DDC, full
+   AD9361 sampling rate). Requires adding `clk2x` / `clk3x` domains
+   to `P25Core` if not already present (P25DDC already uses
+   `clk3x`).
+3. Three new `Registers` blocks + `RegisterMap` entries for banks
+   10/11/12.
+4. Three new `PulseSynchronizer` instances for the new interrupt
+   sources (sync → s_axi_lite).
+
+### 9.6 HDL — system_bd.tcl + package_ip.tcl
+
+- [system_bd.tcl](../maia-hdl/projects/fishball7020_p25/system_bd.tcl):
+  three new `ad_mem_hp1_interconnect` calls (still plenty of HP1
+  headroom per §B of the scoping survey — ~755 KB/s used of
+  1.7 GB/s). Alternatively, put the wideband spectrometer on HP2
+  to keep the narrowband P25 rings isolated from the wideband
+  bandwidth spike (HP2 is currently unused; §HP-port wiring table
+  in the address map). **Decision: HP2 for the spectrometer, HP1
+  for the two post-PLL IQ rings.**
+- [package_ip.tcl](../maia-hdl/ip/p25-core/package_ip.tcl): add
+  `ipx::associate_bus_interfaces` for the three new AXI masters.
+
+### 9.7 HDL — regeneration + bake
+
+Per the [future-self checklist](P25_ADDRESS_MAP.md#future-self-checklist-when-adding-a-new-register-bank-or-dma):
+
+1. Update `P25Config` for new DDR carve-outs + `validate()`.
+2. Regenerate `p25.svd` via `P25Core.svd()` (calls from the
+   `p25_top.py` main entry point).
+3. `build_hdl.bat --verilog-only --p25` then `build_fpga.bat --p25`.
+4. `svd2rust` on p25-pac/ to regenerate bindings.
+
+### 9.8 Tezuka device tree
+
+Add three `reserved-memory` nodes + three UIO devices:
+
+- `p25-post-pll-iq` (0x1F00_0000, 256 KB)
+- `p25-traffic-post-pll-iq` (0x2000_0000, 256 KB)
+- `p25-wideband-spec` (0x2100_0000, 64 KB)
+
+Follows the pattern of `p25-lsm-iq` in
+`tezuka_fw/board/tezuka/fishball7020/dts/fishball-p25.dtsi`.
+
+### 9.9 p25-httpd — PS side
+
+**[hardware/fpga.rs](../p25-httpd/src/hardware/fpga.rs):** three
+new `RxBuffer` fields plus three `read_*_buffers()` methods, all
+copying the `lsm_iq_dma` reader pattern (poll `*_next_address`,
+compare against cached last, then `cache_invalidate()` plus
+`buffer_as_slice()`).
+
+**[httpd/api/debug.rs](../p25-httpd/src/httpd/api/debug.rs):**
+
+```text
+GET /api/spectrum_wide?averages=M
+    → { center_hz, span_hz, bins: 4096, power_db: [f32; 4096],
+        peak_detect: bool, integration_ms: u32 }
+```
+
+Reads from `wideband_spec_dma`. `power_db` is a direct exponential
+unpack of the spectrometer's 47-bit mantissa + 8-bit exponent
+(per [spectrometer.py:128–135](../maia-hdl/maia_hdl/spectrometer.py#L128-L135)).
+**No PS FFT.** `span_hz` = AD9361 sample rate (preset-dependent,
+2–16 MHz).
+
+```text
+GET /api/deviation?chain=control|traffic&window_syms=4800
+    → { soft: [f32; N], hard: [i8; N],
+        metrics: { symbol_dev_hz, mod_fidelity, freq_error_hz,
+                   sym_rate_err_hz, ber, nac } }
+```
+
+Reads from `post_pll_iq_dma`. The IQ is **already PL-rotated** so
+the PS work reduces to: project onto I-axis to get soft symbol,
+slice to `{-3,-1,+1,+3}` for hard, compute error + Anritsu-style
+metrics over a 1-second window. Matches the spec sketched in §6
+but cleaner because there is no PS PLL/TED running per-request.
+
+**[httpd/api/ws.rs](../p25-httpd/src/httpd/api/ws.rs):** add
+`"post_pll"` case to the `source=` dispatcher, reading from
+`read_post_pll_iq_buffers()` at 9.6 kSPS.
+
+### 9.10 Dashboard — new Plots tab
+
+**One new tab.** [dashboard.html](../p25-httpd/src/httpd/dashboard.html)
+structure:
+
+```html
+<div class="tab-pane" id="tab-plots">
+  <select id="plot_picker">
+    <option value="spectrum_wide">Wideband spectrum</option>
+    <option value="spectrum">Narrowband spectrum</option>
+    <option value="constellation">Constellation</option>
+    <option value="eye">Eye (post-PLL)</option>
+    <option value="deviation">Deviation + metrics</option>
+  </select>
+  <canvas id="plot_canvas"></canvas>
+  <div id="plot_metrics"></div>   <!-- shown for deviation -->
+</div>
+```
+
+One canvas, five renderers, picker selects which is active. Each
+renderer knows its own poll cadence. No fullscreen toggle beyond
+"the tab is the plot" — the canvas fills the tab.
+
+### 9.11 Dashboard — what gets retired
+
+- `/ws/iq?source=post_ddc` and `?source=post_lsm` in the Debug tab
+  → **deleted**. They were pre-PLL smeared-eye options. The eye
+  plot in the new Plots tab is post-PLL only.
+- The two competing spectrogram JS paths in
+  `drawSpectrum*` → **collapsed to one**, driven by
+  `/api/spectrum_wide`.
+- The narrowband `/api/spectrum` stays, but as a *single* picker
+  option, not multiple fast/slow variants.
+
+### 9.12 BUILD_TAG
+
+`2026-04-22-phase-10-7-plots` on merge of the HDL + PS + frontend
+commits. Updated per-commit on the PS/frontend side to track
+progress within the phase.
+
+### 9.13 Order of work
+
+1. This section (you are reading it).
+2. P25_ADDRESS_MAP.md update — DDR + banks + IRQs.
+3. HDL signal plumbing (LsmDemodLoop + LsmDemod).
+4. HDL p25_top.py wiring + register banks + SVD regen.
+5. HDL system_bd.tcl + package_ip.tcl.
+6. p25-pac regen.
+7. PS fpga.rs readers.
+8. PS endpoints + WS source.
+9. Dashboard Plots tab + retire legacy.
+10. BUILD_TAG + commit stack ready for bake.
+
+### 9.14 Risk register
+
+- **HP2 first use.** `ad_mem_hp1_interconnect` has always been the
+  P25 pattern; adding HP2 is novel. Fall-back: put the wideband
+  spectrometer on HP1 like the other rings (plenty of headroom).
+- **Spectrometer clock domain.** `clk2x`/`clk3x` already exist in
+  `P25Core` for `P25DDC`. The `Spectrometer` uses `common_edge_2x`
+  / `common_edge_3x` — need to share the `ClkNxCommonEdge`
+  generator (not duplicate it).
+- **SVD regen not CI'd.** Manual step. Phase 10.6 proved it works;
+  just don't forget it.
+- **`p25.svd` checked in stale.** The generated file must be
+  committed alongside the p25_top.py change, otherwise p25-pac
+  builds the old register layout and everything silently
+  references wrong addresses.
+- **Eye-plot density.** Two samples per symbol is enough for the
+  diamond to open, but OP25 Datascope uses more. If it looks thin
+  on target we can rotate all four Lagrange-interpolated samples
+  (adds one `LsmPllRotate` instance → +1 BRAM18) as a follow-up.
+
+## 10. TL;DR
 
 - **Anritsu / OP25 Datascope = post-PLL + post-timing-recovery.**
   Both work on real off-air P25 signals, not just test generators;

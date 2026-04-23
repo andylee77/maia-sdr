@@ -64,6 +64,21 @@ pub struct IpCore {
     /// `traffic_lsm_rrc.re_out / im_out`. UIO `p25-traffic-lsm-iq`,
     /// physical address `0x1E00_0000`.
     traffic_lsm_iq_dma: RxBuffer,
+    /// Phase 10.7 (2026-04-22): control-chain post-PLL IQ ring DMA.
+    /// Tapped from inside `lsm_demod` after `LsmPllRotate`, so samples
+    /// are carrier-derotated + AGC-scaled. 2 samples/symbol (mid + sym
+    /// interleaved) at 9.6 kSPS. UIO `p25-post-pll-iq`, physical
+    /// address `0x1F00_0000` (8 × 32 KB ring). Feeds the Plots tab eye
+    /// + constellation + `/api/deviation` Anritsu-style metrics.
+    post_pll_iq_dma: RxBuffer,
+    /// Phase 10.7 traffic-side twin of `post_pll_iq_dma`.
+    /// UIO `p25-traffic-post-pll-iq`, `0x2000_0000`.
+    traffic_post_pll_iq_dma: RxBuffer,
+    /// Phase 10.7: wideband spectrometer output ring (4096-bin FFT,
+    /// HW-integrated, pre-DDC tap on `rxiq_cdc`). UIO
+    /// `p25-wideband-spec`, physical `0x2100_0000` (4 × 32 KB = 128 KB).
+    /// Feeds `/api/spectrum_wide`; no PS FFT.
+    wideband_spec_dma: RxBuffer,
     dibit_last_addr: Option<u32>,
     traffic_last_addr: Option<u32>,
     iq_last_addr: Option<u32>,
@@ -72,6 +87,9 @@ pub struct IpCore {
     traffic_iq_last_addr: Option<u32>,
     lsm_iq_last_addr: Option<u32>,
     traffic_lsm_iq_last_addr: Option<u32>,
+    post_pll_iq_last_addr: Option<u32>,
+    traffic_post_pll_iq_last_addr: Option<u32>,
+    wideband_spec_last_buffer: Option<u8>,
 }
 
 impl IpCore {
@@ -163,6 +181,22 @@ impl IpCore {
         let traffic_lsm_iq_dma = RxBuffer::new("p25-traffic-lsm-iq")
             .await
             .context("failed to open p25-traffic-lsm-iq DMA buffer")?;
+        // Phase 10.7 (2026-04-22): post-PLL IQ rings + wideband
+        // spectrometer. Requires Tezuka DT carve-outs at
+        // `p25_post_pll_iq_dma@1f000000`,
+        // `p25_traffic_post_pll_iq_dma@20000000`, and
+        // `p25_wideband_spec_dma@21000000`. On older boots that
+        // pre-date the DT change, these opens fail and the whole
+        // `take()` call errors out.
+        let post_pll_iq_dma = RxBuffer::new("p25-post-pll-iq")
+            .await
+            .context("failed to open p25-post-pll-iq DMA buffer")?;
+        let traffic_post_pll_iq_dma = RxBuffer::new("p25-traffic-post-pll-iq")
+            .await
+            .context("failed to open p25-traffic-post-pll-iq DMA buffer")?;
+        let wideband_spec_dma = RxBuffer::new("p25-wideband-spec")
+            .await
+            .context("failed to open p25-wideband-spec DMA buffer")?;
 
         let ip_core = IpCore {
             registers,
@@ -174,6 +208,9 @@ impl IpCore {
             traffic_iq_dma,
             lsm_iq_dma,
             traffic_lsm_iq_dma,
+            post_pll_iq_dma,
+            traffic_post_pll_iq_dma,
+            wideband_spec_dma,
             dibit_last_addr: None,
             traffic_last_addr: None,
             iq_last_addr: None,
@@ -182,6 +219,9 @@ impl IpCore {
             traffic_iq_last_addr: None,
             lsm_iq_last_addr: None,
             traffic_lsm_iq_last_addr: None,
+            post_pll_iq_last_addr: None,
+            traffic_post_pll_iq_last_addr: None,
+            wideband_spec_last_buffer: None,
         };
 
         let interrupt_handler = InterruptHandler::new(uio, interrupt_registers);
@@ -695,6 +735,118 @@ impl IpCore {
     /// Reads new traffic-chain post-LSM IQ sub-buffers since the last call.
     pub fn read_traffic_lsm_iq_buffers(&mut self) -> Vec<&[u8]> {
         self.read_dma_buffers(DmaChannel::TrafficLsmIq)
+    }
+
+    // ── Post-PLL IQ rings (Phase 10.7 2026-04-22) ───────────────
+    //
+    // Third IQ tap per chain, sourced from inside `LsmDemod` *after*
+    // the `LsmPllRotate` stage (and after the per-symbol AGC and the
+    // diff-demod). Samples are carrier-derotated + AGC-scaled, so no
+    // further PS-side processing is needed to render a clean eye or
+    // run the Anritsu-style deviation metrics. Rate: 9.6 kSPS
+    // (2 samples per symbol — rotate_mid and rotate_sym interleaved
+    // on adjacent sync cycles). Packing is the same 64-bit two-
+    // samples-per-word layout as `iq_dma` / `lsm_iq_dma`.
+
+    /// Enables or disables the control-chain post-PLL IQ ring DMA.
+    pub fn set_post_pll_iq_dma_enable(&self, enable: bool) {
+        self.registers
+            .post_pll_iq_dma_control()
+            .modify(|_, w| w.post_pll_iq_enable().bit(enable));
+    }
+
+    /// Enables or disables the traffic-chain post-PLL IQ ring DMA.
+    pub fn set_traffic_post_pll_iq_dma_enable(&self, enable: bool) {
+        self.registers
+            .traffic_post_pll_iq_dma_control()
+            .modify(|_, w| w.traffic_post_pll_iq_enable().bit(enable));
+    }
+
+    /// Reads new control-chain post-PLL IQ sub-buffers since the last
+    /// call. Interleaved 16-bit signed I/Q (Q1.13 post-rotate), same
+    /// packing as `read_iq_buffers` but at 9.6 kSPS.
+    pub fn read_post_pll_iq_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::PostPllIq)
+    }
+
+    /// Reads new traffic-chain post-PLL IQ sub-buffers.
+    pub fn read_traffic_post_pll_iq_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::TrafficPostPllIq)
+    }
+
+    // ── Wideband spectrometer (Phase 10.7) ──────────────────────
+    //
+    // Pre-DDC FFT tapped off `rxiq_cdc` at the full AD9361 sample
+    // rate (preset-dependent, 2–16 MSPS). 4096-bin output, hardware-
+    // averaged at `spec_num_integrations` samples per spectrum. Each
+    // completed integration writes 32 KB (4096 × 8 B packed float)
+    // to the next sub-buffer in `wideband_spec_dma`; `spec_status.
+    // last_buffer` advances on completion. The DMA is BRAM-backed
+    // (`DmaBRAMWrite`), so we track last-buffer by comparing against
+    // the cached value rather than an AW address like the streaming
+    // ring DMAs.
+
+    /// Master enable for the wideband spectrometer. When disabled,
+    /// the FFT pipeline freezes (strobe gating); re-enabling resumes
+    /// integration where it left off.
+    pub fn set_wideband_spec_enable(&self, enable: bool) {
+        self.registers
+            .spec_control()
+            .modify(|_, w| w.spec_enable().bit(enable));
+    }
+
+    /// Sets the number of FFT frames averaged per output spectrum.
+    /// At 8 MSPS the FFT rate is ~1953 frames/s, so 256 integrations
+    /// produces ~8 Hz update; 1024 produces ~2 Hz.
+    pub fn set_wideband_spec_integrations(&self, n: u16) {
+        self.registers
+            .spec_control()
+            .modify(|_, w| unsafe {
+                w.spec_num_integrations().bits(n & 0x3FF)
+            });
+    }
+
+    /// Peak-hold mode (max-value integration) versus the default
+    /// average-power integration.
+    pub fn set_wideband_spec_peak_detect(&self, enable: bool) {
+        self.registers
+            .spec_control()
+            .modify(|_, w| w.spec_peak_detect().bit(enable));
+    }
+
+    /// Fires a 1-cycle abort pulse: ends the in-flight integration
+    /// early and flushes to the next DMA buffer. Useful after a tune
+    /// change so the next spectrum reflects the new RF state.
+    pub fn wideband_spec_abort(&self) {
+        self.registers
+            .spec_control()
+            .modify(|_, w| w.spec_abort().bit(true));
+    }
+
+    /// Returns the most recently completed wideband spectrum as
+    /// 4096 `u64` words (sign-extended mantissa + exponent; see
+    /// `services/spectrum.rs::wideband_power_db` for unpacking).
+    /// Returns `None` if no new integration has completed since the
+    /// last call.
+    pub fn read_wideband_spec_buffer(&mut self) -> Option<&[u8]> {
+        let last = self
+            .registers
+            .spec_status()
+            .read()
+            .spec_last_buffer()
+            .bits();
+        if self.wideband_spec_last_buffer == Some(last) {
+            return None;
+        }
+        self.wideband_spec_last_buffer = Some(last);
+        let idx = last as usize;
+        if let Err(e) = self.wideband_spec_dma.cache_invalidate(idx) {
+            tracing::warn!(
+                "cache invalidate failed for wideband_spec buf {idx}: {e}"
+            );
+            return None;
+        }
+        Some(self.wideband_spec_dma.buffer_as_slice(idx))
     }
 
     // ── LSM chain (Phase 6E.9/6E.10) ─────────────────────────────
@@ -1219,6 +1371,24 @@ impl IpCore {
                     .last_buffer()
                     .bits() as u32,
             ),
+            DmaChannel::PostPllIq => (
+                &self.post_pll_iq_dma,
+                &mut self.post_pll_iq_last_addr,
+                self.registers
+                    .post_pll_iq_dma_status()
+                    .read()
+                    .last_buffer()
+                    .bits() as u32,
+            ),
+            DmaChannel::TrafficPostPllIq => (
+                &self.traffic_post_pll_iq_dma,
+                &mut self.traffic_post_pll_iq_last_addr,
+                self.registers
+                    .traffic_post_pll_iq_dma_status()
+                    .read()
+                    .last_buffer()
+                    .bits() as u32,
+            ),
         };
 
         let num_bufs = dma.num_buffers();
@@ -1273,10 +1443,12 @@ enum DmaChannel {
     Traffic,
     Iq,
     LsmDibit,
-    TrafficLsmDibit,  // Phase 7A.2
-    TrafficIq,        // 2026-04-16
-    LsmIq,            // Phase 10.6 2026-04-18 (post-RRC matched-filter)
-    TrafficLsmIq,     // Phase 10.6 2026-04-18
+    TrafficLsmDibit,   // Phase 7A.2
+    TrafficIq,         // 2026-04-16
+    LsmIq,             // Phase 10.6 2026-04-18 (post-RRC matched-filter)
+    TrafficLsmIq,      // Phase 10.6 2026-04-18
+    PostPllIq,         // Phase 10.7 2026-04-22 (post-PLL control)
+    TrafficPostPllIq,  // Phase 10.7 2026-04-22 (post-PLL traffic)
 }
 
 /// Snapshot of the `lsm_status` register read in a single bus access.

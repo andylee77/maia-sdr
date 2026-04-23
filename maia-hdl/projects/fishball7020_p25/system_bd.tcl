@@ -83,6 +83,12 @@ create_bd_cell -type ip \
 ad_connect sys_cpu_clk p25_core/s_axi_lite_clk
 ad_connect sys_cpu_reset p25_core/s_axi_lite_rst
 ad_connect maia_sdr_clk/clk_out1 p25_core/clk
+# Phase 10.7: reconnect clk_out2 (125 MHz = 2 x sync) for the
+# wideband spectrometer's window + FFT twiddle path. pluto base
+# configures maia_sdr_clk with 3 outputs; clk_out2 was previously
+# wired to maia_sdr/clk2x_clk and got disconnected when we deleted
+# the maia_sdr IP. Reconnect to p25_core.
+ad_connect maia_sdr_clk/clk_out2 p25_core/clk2x_clk
 ad_connect maia_sdr_clk/clk_out3 p25_core/clk3x_clk
 ad_connect p25_core/sampling_clk util_ad9361_divclk/clk_out
 
@@ -115,7 +121,13 @@ ad_cpu_interconnect 0x7C460000 p25_core
 #                                      filter IQ tap, control chain. Drives the
 #                                      dashboard matched-filter eye plot.)
 #   - traffic_lsm_iq    ~125  KB/s   (Phase 10.6: mirror on the traffic chain.)
-# Total ~755 KB/s, well under 1.7 GB/s.
+#   - post_pll_iq       ~38   KB/s   (Phase 10.7: 9.6 kSPS post-PLL IQ tap,
+#                                      control chain. Clean eye + deviation.)
+#   - traffic_post_pll_iq ~38 KB/s   (Phase 10.7: mirror on the traffic chain.)
+#   - wideband_spec     ~32   KB/s   (Phase 10.7: 4096-bin spectrometer, 5-10 Hz)
+# Total ~863 KB/s, still well under 1.7 GB/s. Plan risk register (§9.14 of
+# doc/DASHBOARD_PLOTS.md) called out HP2 as an option for the spectrometer
+# but we're taking the fallback -- HP1 has plenty of headroom.
 # See doc/P25_ADDRESS_MAP.md for the full carve-out / bandwidth table.
 ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP1 {1}
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 sys_ps7/S_AXI_HP1
@@ -127,6 +139,10 @@ ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_lsm_dibit
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_iq
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_lsm_iq
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_lsm_iq
+# Phase 10.7 masters.
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_post_pll_iq
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_post_pll_iq
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_wideband_spec
 
 # ── Interrupt ─────────────────────────────────────────────────────────
 # With maia_iio, pluto base wired:

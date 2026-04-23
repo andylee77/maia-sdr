@@ -37,6 +37,9 @@ must be aligned to its **total ring size** (this is asserted by
 | `traffic_iq_dma`         | `0x1C00_0000` | 8 | 32 KB   | 256 KB  | ~1 s     | ~128 ms  | ~250 KB/s    | **2026-04-16 chain-symmetry fix:** traffic-channel post-DDC IQ, mirror of `iq_dma` (same packing format, same sample rate). Feeds the dashboard constellation scatter + traffic-LSM software cross-check |
 | `lsm_iq_dma`             | `0x1D00_0000` | 8 | 32 KB   | 256 KB  | ~2 s     | ~262 ms  | ~125 KB/s    | **Phase 10.6 2026-04-18:** control-chain post-LSM matched-filter IQ. Tapped from `lsm_rrc.re_out`/`im_out` (after LsmDecimator2 /2 + LPF + 105-tap RRC). 31.25 kSPS (half of post-DDC); same packing format as `iq_dma`. Feeds the dashboard matched-filter eye plot via `/ws/iq?source=post_lsm` |
 | `traffic_lsm_iq_dma`     | `0x1E00_0000` | 8 | 32 KB   | 256 KB  | ~2 s     | ~262 ms  | ~125 KB/s    | **Phase 10.6 2026-04-18:** traffic-chain post-LSM matched-filter IQ. Tapped from `traffic_lsm_rrc.re_out`/`im_out`. Traffic-side twin of `lsm_iq_dma`; same packing + geometry |
+| `post_pll_iq_dma`        | `0x1F00_0000` | 8 | 32 KB   | 256 KB  | ~27 s    | ~3.4 s   | ~38 KB/s     | **Phase 10.7 2026-04-22:** control-chain **post-PLL** IQ. Tapped from `LsmPllRotate` outputs (interleaved mid + sym → 9.6 kSPS, 2 samples/symbol). Same 64-bit packing as `iq_dma` / `lsm_iq_dma`; I/Q are already PLL-derotated + AGC-scaled. Feeds `/ws/iq?source=post_pll` (clean eye), `/api/deviation` (Anritsu-style Symbol Dev / Mod Fidelity / Freq Err / Sym Rate Err / BER / NAC), and the new Plots-tab constellation. Ring deliberately oversized for the rate so the PS can pull a 1-second window without cache pressure. |
+| `traffic_post_pll_iq_dma`| `0x2000_0000` | 8 | 32 KB   | 256 KB  | ~27 s    | ~3.4 s   | ~38 KB/s     | **Phase 10.7 2026-04-22:** traffic-chain post-PLL IQ. Traffic-side twin of `post_pll_iq_dma`. |
+| `wideband_spec_dma`      | `0x2100_0000` | 4 | 16 KB   | 64 KB   | ~2 s     | ~500 ms  | ~32 KB/s     | **Phase 10.7 2026-04-22:** wideband spectrometer output from a `Spectrometer` sub-module tapped **pre-DDC** on `rxiq_cdc.re_out`/`im_out`. 4096-bin FFT × 64-bit spectrum words (47-bit mantissa + 8-bit exponent per [spectrometer.py:128–135](../maia-hdl/maia_hdl/spectrometer.py#L128-L135)) = 32 KB per integrated spectrum; hardware integrator averages 5–10 Hz to the ring. Span = AD9361 sample rate (preset-dependent, 2–16 MHz). Feeds `/api/spectrum_wide` (no PS FFT). |
 
 **Sample-rate math (control DDC at 62.5 kSPS):**
 
@@ -113,7 +116,10 @@ window (set by `ad_cpu_interconnect 0x7C460000 p25_core` in `system_bd.tcl`).
 | 7  | `0x38` | `0x7C46_00E0` | `traffic_iq` (2026-04-16) | 2 | 3 / 4 | traffic_iq_dma_status, traffic_iq_dma_control, traffic_iq_next_address |
 | 8  | `0x40` | `0x7C46_0100` | `lsm_iq` (Phase 10.6 2026-04-18) | 2 | 3 / 4 | lsm_iq_dma_status, lsm_iq_dma_control, lsm_iq_next_address |
 | 9  | `0x48` | `0x7C46_0120` | `traffic_lsm_iq` (Phase 10.6 2026-04-18) | 2 | 3 / 4 | traffic_lsm_iq_dma_status, traffic_lsm_iq_dma_control, traffic_lsm_iq_next_address |
-| 10-15 | — | `0x7C46_0140` – `0x7C46_01E0` | *(free, 6 slots)* | — | — | reserved for Phase 10.6-follow-up signal-quality + runtime-params banks (DC offset + RMS window, runtime-writable TED/PLL/AGC) |
+| 10 | `0x50` | `0x7C46_0140` | `post_pll_iq` (Phase 10.7 2026-04-22) | 2 | 3 / 4 | post_pll_iq_dma_status, post_pll_iq_dma_control, post_pll_iq_next_address |
+| 11 | `0x58` | `0x7C46_0160` | `traffic_post_pll_iq` (Phase 10.7 2026-04-22) | 2 | 3 / 4 | traffic_post_pll_iq_dma_status, traffic_post_pll_iq_dma_control, traffic_post_pll_iq_next_address |
+| 12 | `0x60` | `0x7C46_0180` | `spectrometer` (Phase 10.7 2026-04-22) | 3 | 5 / 8 | spec_control (num_integrations + peak_detect + abort_pulse + enable), spec_status (last_buffer + overflow), spec_next_address |
+| 13-15 | — | `0x7C46_01A0` – `0x7C46_01E0` | *(free, 3 slots)* | — | — | reserved for Phase 10.6-follow-up signal-quality + runtime-params banks (DC offset + RMS window, runtime-writable TED/PLL/AGC) |
 
 ### `iq` bank (Phase 6C) detail — byte offsets relative to `0x7C46_0080`
 
@@ -232,6 +238,63 @@ then dispatch by DUID. All latched fields stay valid until the next
 `nid_event_strobe` pulse so the snapshot is coherent across the two
 register reads.
 
+### `post_pll_iq` bank (Phase 10.7) detail — byte offsets relative to `0x7C46_0140`
+
+The post-PLL IQ tap sits inside `LsmDemod`, downstream of the
+`LsmPllRotate` stage. Samples are already carrier-derotated and
+AGC-scaled by the time they reach the packer, so the PS needs no
+additional signal processing to render a clean eye, constellation,
+or deviation plot. The interleave rule is: **`rotate_mid` output
+strobed first, then `rotate_sym` output** — giving two samples per
+symbol at 9.6 kSPS total. This is enough for the OP25-Datascope-
+style eye diamond; if denser sampling is ever needed, rotating all
+four Lagrange-interpolated samples costs one additional
+`LsmPllRotate` instance (+1 BRAM18).
+
+Layout is identical to the Phase 10.6 `lsm_iq` bank at
+`0x7C46_0100` — same field positions, same Rsticky semantics, same
+PS-side polling protocol.
+
+| Byte offset | Register | Field | Bits | Access | Description |
+|-------------|----------|-------|------|--------|-------------|
+| `0x00` | `post_pll_iq_dma_status`  | `post_pll_iq_overflow` | `[0]`     | Rsticky | latches when the post-PLL `IQPacker.data_valid` asserts while `post_pll_iq_dma.stream_ready` is low; cleared on read |
+| `0x00` | `post_pll_iq_dma_status`  | `last_buffer`          | `[19:16]` | R       | index of most recently completed sub-buffer; width = 3 bits |
+| `0x04` | `post_pll_iq_dma_control` | `post_pll_iq_enable`   | `[0]`     | RW      | enable bit for the ring DMA's AW channel |
+| `0x08` | `post_pll_iq_next_address`| `next_address`         | `[31:0]`  | R       | current AW write address inside the ring (debug only) |
+
+### `traffic_post_pll_iq` bank (Phase 10.7) detail — byte offsets relative to `0x7C46_0160`
+
+Traffic-side twin of `post_pll_iq`. Layout is bit-identical; the
+only difference is the tap point (traffic-chain `LsmPllRotate`
+instances instead of control-chain). Field prefix is
+`traffic_post_pll_iq_*` on every register for PS-side clarity.
+
+### `spectrometer` bank (Phase 10.7) detail — byte offsets relative to `0x7C46_0180`
+
+The wideband spectrometer is an instance of
+[`Spectrometer`](../maia-hdl/maia_hdl/spectrometer.py) (the Maia SDR
+spectrometer sub-module, instantiated directly inside `P25Core`
+without re-enabling the `maia_sdr` wrapper IP). Tap is pre-DDC, on
+`rxiq_cdc.re_out / im_out` at the full AD9361 sample rate
+(preset-dependent, 2–16 MSPS). Output is a 4096-bin
+power-spectral-density integrated in hardware at 5–10 Hz, written
+to `wideband_spec_dma`. PS reads finished integrations via
+`spec_status.last_buffer` (updates each completed integration).
+
+| Byte offset | Register | Field | Bits | Access | Description |
+|-------------|----------|-------|------|--------|-------------|
+| `0x00` | `spec_control`  | `spec_enable`          | `[0]`     | RW      | master enable for the spectrometer pipeline (FFT + integrator + DMA) |
+| `0x00` | `spec_control`  | `spec_peak_detect`     | `[1]`     | RW      | 0 = average-power integration; 1 = peak-hold mode (useful for transient / paging capture) |
+| `0x00` | `spec_control`  | `spec_abort`           | `[2]`     | Wpulse  | 1-cycle pulse ends the current integration early and flushes to DMA; self-clearing |
+| `0x00` | `spec_control`  | `spec_num_integrations`| `[15:6]`  | RW      | number of FFT frames averaged per output spectrum (10-bit, 1..1023). 128 × ~4 ms at 8 MSPS ≈ 2 Hz update; 256 ≈ 1 Hz. |
+| `0x04` | `spec_status`   | `spec_overflow`        | `[0]`     | Rsticky | latches when `wideband_spec_dma.stream_ready` is low during integrator flush; cleared on read |
+| `0x04` | `spec_status`   | `spec_last_buffer`     | `[17:16]` | R       | index of most recently completed sub-buffer (mirrors `wideband_spec_dma.last_buffer`); width = `wideband_spec_dma_num_buffers_log2` = 2 bits |
+| `0x08` | `spec_next_address` | `next_address`     | `[31:0]`  | R       | current AW write address inside the ring (debug only) |
+
+PS-side flow: read `spec_status`, note `last_buffer` change, read
+the corresponding 32 KB sub-buffer, unpack 4096 × 64-bit words
+into `f32` power-dB, render.
+
 ## IRQ assignments
 
 The P25 IP exposes a single `interrupt_out` line that is the OR of all
@@ -245,6 +308,9 @@ sticky interrupt bits in `control.interrupts`. It is connected to
 | 2 | `iq_dma` (Phase 6C) | `iq_dma.interrupt` | sub-buffer of control-channel IQ ring filled |
 | 3 | `lsm_dibit_dma` (Phase 6E.9) | `lsm_dibit_dma.interrupt` | sub-buffer of control-channel LSM dibit ring filled. **NID events themselves are PS-polled via `lsm_status.nid_event` rather than IRQ-driven**, because at one NID per ~14 ms a 60 Hz dashboard poll already catches every event. |
 | 4 | `traffic_lsm_dibit_dma` (Phase 7A.2) | `traffic_lsm_dibit_dma.interrupt` | sub-buffer of traffic-channel LSM dibit ring filled. Same poll convention as `lsm_dibit_dma`: NID events are PS-polled via `traffic_lsm_status.nid_event` from a dedicated 16 ms heartbeat task in `main.rs`. |
+| 5 | `post_pll_iq_dma` (Phase 10.7) | `post_pll_iq_dma.interrupt` | sub-buffer of control-channel post-PLL IQ ring filled |
+| 6 | `traffic_post_pll_iq_dma` (Phase 10.7) | `traffic_post_pll_iq_dma.interrupt` | sub-buffer of traffic-channel post-PLL IQ ring filled |
+| 7 | `wideband_spec_dma` (Phase 10.7) | `spectrometer.interrupt_out` | completed integration flushed to wideband spectrometer ring |
 
 All bits are `Rsticky` — they latch on the source pulse and clear on read.
 
@@ -260,9 +326,13 @@ The Zynq HP1 slave port hosts all three DMA masters via Vivado SmartConnect
 | `m_axi_iq`                | HP1 | ~250 KB/s  | ~0.015% |
 | `m_axi_lsm_dibit`         | HP1 | ~1.28 KB/s | <0.001% |
 | `m_axi_traffic_lsm_dibit` | HP1 | ~1.28 KB/s | <0.001% |
+| `m_axi_post_pll_iq` (Phase 10.7)         | HP1 | ~38 KB/s   | ~0.002% |
+| `m_axi_traffic_post_pll_iq` (Phase 10.7) | HP1 | ~38 KB/s   | ~0.002% |
+| `m_axi_wideband_spec` (Phase 10.7)       | HP2 | ~32 KB/s   | ~0.002% (fresh HP port) |
 
-HP1 is wildly overprovisioned for these consumers; HP2/HP3 are unused and
-remain available for future high-bandwidth needs (e.g. wideband recorder).
+HP1 is wildly overprovisioned for these consumers; Phase 10.7 brings HP2
+online for the wideband spectrometer to keep its burst-heavy integration
+flushes isolated from the narrowband P25 rings. HP3 remains unused.
 
 ## Future-self checklist when adding a new register bank or DMA
 
