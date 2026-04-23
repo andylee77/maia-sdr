@@ -35,7 +35,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-23-agc-thresh-fft16k-fix-bitreader";
+pub const BUILD_TAG: &str = "2026-04-23-dt-carveout-ppm-guard-manual-override";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -382,13 +382,32 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     if args.lo_ppm == 0.0 {
         if let Some(p) = app::autoppm::load_persisted() {
-            nco_lo_shift_hz = p.lo_shift_hz as f64;
-            ppm_source = "persisted";
-            tracing::info!(
-                "auto-PPM: loaded persisted calibration lo_ppm={:+.4} \
-                 shift={:+.0} Hz (from {} @ unix {})",
-                p.lo_ppm, p.lo_shift_hz,
-                app::autoppm::PPM_CAL_FILE, p.unix_secs);
+            // Sanity-check the persisted shift. AD9361 crystal trim
+            // is typically ±1 ppm, occasionally up to ±5. Anything
+            // beyond ~800 Hz at an 858 MHz LO (≈1 ppm) is almost
+            // certainly garbage from an earlier broken calibration
+            // (hit 2026-04-23: a stale file had +1.37 ppm / -1178 Hz
+            // after the wideband DT carveout broke stage A). Reject
+            // it and fall through to 0 shift rather than permanently
+            // lock the PLL out of capture range.
+            const MAX_PLAUSIBLE_HZ: f64 = 1000.0;
+            let shift = p.lo_shift_hz as f64;
+            if shift.abs() <= MAX_PLAUSIBLE_HZ {
+                nco_lo_shift_hz = shift;
+                ppm_source = "persisted";
+                tracing::info!(
+                    "auto-PPM: loaded persisted calibration \
+                     lo_ppm={:+.4} shift={:+.0} Hz (from {} @ unix {})",
+                    p.lo_ppm, p.lo_shift_hz,
+                    app::autoppm::PPM_CAL_FILE, p.unix_secs);
+            } else {
+                tracing::warn!(
+                    "auto-PPM: REJECTED persisted calibration \
+                     lo_shift_hz={:+.0} (>{:.0} Hz, implausible at \
+                     rx_lo={} Hz); falling through to 0 shift",
+                    shift, MAX_PLAUSIBLE_HZ, args.rx_lo);
+                ppm_source = "persisted-rejected";
+            }
         }
     }
 

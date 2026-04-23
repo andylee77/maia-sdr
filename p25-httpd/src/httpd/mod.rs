@@ -333,7 +333,8 @@ pub fn router(
         .route("/api/tune",    post(api::tuning::post_tune))
         // Auto-PPM calibration. Reads wideband FFT + PLL residual,
         // applies crystal-trim correction to the DDC NCO live.
-        .route("/api/ppm",           get(api::tuning::get_ppm))
+        .route("/api/ppm",           get(api::tuning::get_ppm)
+                                      .put(api::tuning::put_ppm))
         .route("/api/ppm_calibrate", post(api::tuning::post_ppm_calibrate))
         // HDL LSM AGC idle-gate threshold. Defaults to 256 (Q1.15);
         // retunable per site without rebaking HDL.

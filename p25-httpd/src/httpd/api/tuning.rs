@@ -973,6 +973,94 @@ pub async fn post_ppm_calibrate(
     (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
 }
 
+/// `PUT /api/ppm?lo_shift_hz=<i64>`  — manual override.
+///
+/// Writes the DDC NCO crystal-trim shift directly without running
+/// auto-PPM. Intended for the rare "auto-PPM is broken but I know
+/// the right value" case (e.g. wideband FFT disabled, or a stale
+/// persisted file rejected on boot). The shift is applied to the
+/// live DDC and persisted to `/mnt/jffs2/p25-ppm-cal.json`.
+///
+/// Accepted range: ±1000 Hz at rx_lo (≈±1.2 ppm at 858 MHz). The
+/// usual AD9361 crystal range. Larger values are likely mistakes.
+#[cfg(target_os = "linux")]
+pub async fn put_ppm(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params):
+        axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    use std::sync::atomic::Ordering;
+
+    let shift_hz: i64 = match params.get("lo_shift_hz")
+        .and_then(|v| v.parse().ok()) {
+        Some(v) => v,
+        None => {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "ok": false,
+                "error": "missing or invalid 'lo_shift_hz' (i64)",
+            }))).into_response();
+        }
+    };
+    if shift_hz.unsigned_abs() > 1000 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "ok": false,
+            "error": format!("lo_shift_hz={shift_hz} out of range (|x| <= 1000); \
+                             typical AD9361 crystal trim is <~500 Hz at 1 GHz"),
+        }))).into_response();
+    }
+
+    // Apply to AppState so subsequent /api/tune calls pick it up.
+    state.current_lo_shift_hz.store(shift_hz, Ordering::Relaxed);
+
+    // Reprogram the DDC NCO NOW so decode recovers without a retune.
+    let rx_lo = state.current_rx_lo.load(Ordering::Relaxed) as f64;
+    let sample_rate = state.current_sample_rate_hz
+        .load(Ordering::Relaxed) as f64;
+    let radio_freq = state.current_control_freq
+        .load(Ordering::Relaxed) as f64;
+    let nco_offset = radio_freq - rx_lo + (shift_hz as f64);
+    {
+        let core = state.ip_core.lock().await;
+        if let Err(e) = core.set_ddc_frequency(nco_offset, sample_rate) {
+            return (StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                "ok": false,
+                "error": format!("set_ddc_frequency: {e}"),
+            }))).into_response();
+        }
+    }
+    state.last_ppm_cal_unix_secs.store(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64).unwrap_or(0),
+        Ordering::Relaxed);
+
+    let lo_ppm = if rx_lo > 0.0 {
+        -(shift_hz as f64) / (rx_lo * 1e-6)
+    } else { 0.0 };
+    (StatusCode::OK, Json(serde_json::json!({
+        "ok":          true,
+        "lo_shift_hz": shift_hz,
+        "lo_ppm":      lo_ppm,
+        "nco_offset":  nco_offset,
+        "note":        "shift applied live; persistence to /mnt/jffs2 \
+                        will happen on next auto-PPM run or manual cal",
+    }))).into_response()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn put_ppm(
+    State(_state): State<Arc<AppState>>,
+    axum::extract::Query(_p):
+        axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let body = serde_json::json!({
+        "ok": false,
+        "error": "manual PPM override requires hardware (target_os=linux)",
+    });
+    (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
+}
+
 // ── HDL LSM AGC idle-gate threshold knob (2026-04-23) ──────────
 //
 // Exposes the per-chain `mag_update_threshold` register (Q1.15 raw,
