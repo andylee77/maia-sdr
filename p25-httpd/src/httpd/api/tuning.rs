@@ -867,4 +867,81 @@ pub async fn put_bch_t(
 
 // ── Phase 7F.5 (2026-04-14): manual encryption blocklist ───────────
 
+// ── Auto-PPM (2026-04-23) ─────────────────────────────────────────
+//
+// One-shot wideband FFT peak-find + PLL residual, applied to the
+// control DDC NCO. Implementation in `app::autoppm`; this module
+// just hosts the HTTP surface.
+
+/// `GET /api/ppm` — current crystal-trim correction state.
+///
+/// Returns the live DDC NCO shift in Hz and equivalent ppm at the
+/// current RX LO, plus the timestamp of the last successful
+/// `POST /api/ppm_calibrate` (0 if never calibrated this session —
+/// the value shown is then the boot-time `--lo-ppm` value).
+pub async fn get_ppm(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    use std::sync::atomic::Ordering;
+    let lo_shift_hz = state.current_lo_shift_hz
+        .load(Ordering::Relaxed) as f64;
+    let rx_lo_hz = state.current_rx_lo
+        .load(Ordering::Relaxed) as f64;
+    let ppm = if rx_lo_hz > 0.0 {
+        -lo_shift_hz / (rx_lo_hz * 1e-6)
+    } else { 0.0 };
+    let last_cal = state.last_ppm_cal_unix_secs
+        .load(Ordering::Relaxed);
+    Json(serde_json::json!({
+        "ok":                     true,
+        "lo_shift_hz":            lo_shift_hz,
+        "lo_ppm":                 ppm,
+        "rx_lo_hz":               rx_lo_hz,
+        "boot_lo_ppm":            state.boot_lo_ppm,
+        "last_cal_unix_secs":     last_cal,
+        "calibrated_this_session": last_cal != 0,
+    }))
+}
+
+/// `POST /api/ppm_calibrate` — run one auto-PPM pass (Linux only).
+///
+/// Grabs one wideband FFT frame, locates the control-channel peak in
+/// a ±10 kHz window around the expected offset, applies the delta to
+/// the DDC NCO, waits ~3 s for the PLL to re-settle, samples
+/// `pll_dbg` ~30 × over 3 s, converts the mean to Hz, and applies the
+/// residual. Total runtime ~7 s. Result JSON includes every
+/// intermediate so operators can sanity-check.
+#[cfg(target_os = "linux")]
+pub async fn post_ppm_calibrate(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match crate::app::autoppm::run_calibration(&state).await {
+        Ok(result) => {
+            let body = serde_json::json!({
+                "ok":     true,
+                "result": result,
+            });
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(e) => {
+            let body = serde_json::json!({
+                "ok":    false,
+                "error": e.to_string(),
+            });
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(body))
+                .into_response()
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn post_ppm_calibrate(
+    State(_state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let body = serde_json::json!({
+        "ok": false,
+        "error": "auto-PPM requires the target (Linux/ARM) — this build has no hardware",
+    });
+    (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
+}
 

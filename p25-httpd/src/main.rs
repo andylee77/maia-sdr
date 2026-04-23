@@ -35,7 +35,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-23-phase-10-8-diff-in-sw";
+pub const BUILD_TAG: &str = "2026-04-23-autoppm-stage-a-b";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -1571,6 +1571,11 @@ async fn main() -> anyhow::Result<()> {
         // runtime lives in the current_* atomics below.
         boot_lo_ppm:       args.lo_ppm,
         boot_control_freq: control_freq,
+        current_lo_shift_hz: std::sync::Arc::new(
+            std::sync::atomic::AtomicI64::new(
+                nco_lo_shift_hz.round() as i64)),
+        last_ppm_cal_unix_secs: std::sync::Arc::new(
+            std::sync::atomic::AtomicI64::new(0)),
         current_rx_lo:           current_rx_lo.clone(),
         current_sample_rate_hz:  current_sample_rate_hz.clone(),
         current_preset_idx:      current_preset_idx.clone(),

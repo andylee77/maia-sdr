@@ -77,6 +77,17 @@ pub struct AppState {
     /// for the tuning handlers' NCO-offset math.
     pub boot_lo_ppm: f64,
     pub boot_control_freq: u64,
+    /// Current DDC NCO shift in Hz, tracking crystal-trim correction.
+    /// Boot-initialised from `-boot_lo_ppm * 1e-6 * rx_lo` so the first
+    /// read matches the CLI default. Updated by `app::autoppm` each
+    /// time a calibration runs; read by `/api/ppm` for display.
+    pub current_lo_shift_hz:
+        std::sync::Arc<std::sync::atomic::AtomicI64>,
+    /// Unix seconds of the last successful auto-PPM calibration, 0 if
+    /// never calibrated. Read by `/api/ppm` so dashboards can show
+    /// "last calibrated N min ago".
+    pub last_ppm_cal_unix_secs:
+        std::sync::Arc<std::sync::atomic::AtomicI64>,
     /// Live RX LO, sample rate, and preset index. Written by the
     /// `/api/preset` and `/api/tune` handlers; read by the grant
     /// follower on every retune and by `/api/stats` / `/api/system`
@@ -312,6 +323,10 @@ pub fn router(
         .route("/api/presets", get(api::tuning::get_presets))
         .route("/api/preset",  post(api::tuning::post_preset))
         .route("/api/tune",    post(api::tuning::post_tune))
+        // Auto-PPM calibration. Reads wideband FFT + PLL residual,
+        // applies crystal-trim correction to the DDC NCO live.
+        .route("/api/ppm",           get(api::tuning::get_ppm))
+        .route("/api/ppm_calibrate", post(api::tuning::post_ppm_calibrate))
         // Call recording + playback.
         .route("/api/recordings", get(api::history::get_recordings))
         .route("/api/recordings/{id}", get(api::history::get_recording_file))
