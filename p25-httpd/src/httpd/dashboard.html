@@ -4276,75 +4276,100 @@ function drawPlotConstellation(iArr, qArr) {
 function drawPlotEye(iq) {
   PLOT.lastDraw = () => drawPlotEye(iq);
   const { ctx, W, H } = beginDraw();
-  ctx.fillStyle = '#0a0f1c'; ctx.fillRect(0, 0, W, H);
-  if (iq.length < 8) return;
+  ctx.fillStyle = '#1c1c1c'; ctx.fillRect(0, 0, W, H);
+  if (iq.length < 32) return;
 
-  // P25 eye convention: overlay many symbol periods, decision-level
-  // rails at ±1 (both LSM + C4FM) and ±3 (C4FM only). We scale by
-  // mean |z| so LSM signals land at ±1 on the inner rails — if the
-  // chain ever gates through C4FM with the same rendering, the ±3
-  // rails will show the outer-symbol values.
-  const PAD_L = 56, PAD_R = 16, PAD_T = 24, PAD_B = 22;
+  // OP25 Datascope-style eye convention:
+  //   * 9-symbol overlay
+  //   * upsample 2 sps → 10 sps via linear interp of I/Q before atan2
+  //     so transitions render as smooth curves rather than straight-
+  //     line segments
+  //   * deviation = atan2(Q, I) * 4/π → decision levels at ±3 and ±1
+  //   * colour-cycled traces (tab10 palette) so consecutive overlays
+  //     are visually separable
+  const PAD_L = 60, PAD_R = 20, PAD_T = 28, PAD_B = 28;
   const plotW = W - PAD_L - PAD_R;
   const plotH = H - PAD_T - PAD_B;
 
-  // Mean-|z| normalisation (same convention as the constellation
-  // renderer — see plotConstellation).
-  let mmag = 0;
-  for (const p of iq) mmag += Math.hypot(p[0], p[1]);
-  mmag = (mmag / Math.max(1, iq.length)) || 1;
+  const UPSAMPLE = 5;                  // 2 sps × 5 = 10 sps
+  const SPS      = 2 * UPSAMPLE;       // samples per symbol post-upsample
+  const OVERLAY_SYMS = 9;
+  const OVERLAY = SPS * OVERLAY_SYMS;  // 90 samples per overlay trace
 
-  // ±4 covers the ±3 rails with headroom for overshoot / C4FM peaks.
+  // Linear-interpolate I/Q 5× then compute atan2·4/π.
+  const n0 = iq.length;
+  const n1 = (n0 - 1) * UPSAMPLE + 1;
+  const phase = new Float32Array(n1);
+  for (let k = 0; k < n1 - 1; k++) {
+    const pos = k / UPSAMPLE;
+    const lo  = Math.floor(pos);
+    const frac = pos - lo;
+    const hi = Math.min(lo + 1, n0 - 1);
+    const i = iq[lo][0] * (1 - frac) + iq[hi][0] * frac;
+    const q = iq[lo][1] * (1 - frac) + iq[hi][1] * frac;
+    phase[k] = Math.atan2(q, i) * (4.0 / Math.PI);
+  }
+  phase[n1 - 1] = Math.atan2(iq[n0-1][1], iq[n0-1][0]) * (4.0 / Math.PI);
+
+  // ±4 covers the ±3 rails with headroom.
   const YMAX = 4.0;
   const yOf = v => PAD_T + plotH/2 - (v / YMAX) * (plotH/2);
+  const xOf = s => PAD_L + s * plotW / OVERLAY_SYMS;  // s in symbol units
 
-  // Rails.
+  // --- grid lines first so traces draw on top.
+  ctx.strokeStyle = '#222'; ctx.lineWidth = linePx(1);
   for (const lvl of [-3, -1, 1, 3]) {
-    ctx.strokeStyle = (lvl === 1 || lvl === -1) ? '#456' : '#334';
-    ctx.setLineDash(lvl === 1 || lvl === -1 ? [] : [4, 4]);
-    ctx.lineWidth = linePx(1);
-    ctx.beginPath();
-    ctx.moveTo(PAD_L, yOf(lvl));
-    ctx.lineTo(PAD_L + plotW, yOf(lvl));
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(PAD_L, yOf(lvl));
+    ctx.lineTo(PAD_L + plotW, yOf(lvl)); ctx.stroke();
   }
-  ctx.setLineDash([]);
-  ctx.strokeStyle = '#223'; ctx.lineWidth = linePx(1);
-  ctx.beginPath();
-  ctx.moveTo(PAD_L, yOf(0)); ctx.lineTo(PAD_L + plotW, yOf(0)); ctx.stroke();
+  ctx.strokeStyle = '#333'; ctx.lineWidth = linePx(0.5);
+  for (let s = 0; s <= OVERLAY_SYMS; s++) {
+    ctx.beginPath(); ctx.moveTo(xOf(s), PAD_T);
+    ctx.lineTo(xOf(s), PAD_T + plotH); ctx.stroke();
+  }
+  ctx.strokeStyle = '#333';
+  ctx.beginPath(); ctx.moveTo(PAD_L, yOf(0));
+  ctx.lineTo(PAD_L + plotW, yOf(0)); ctx.stroke();
 
-  // Y-axis tick labels.
-  ctx.fillStyle = '#aab'; ctx.font = fontPx(12); ctx.textAlign = 'right';
+  // --- axis labels.
+  ctx.fillStyle = '#ddd'; ctx.font = fontPx(13); ctx.textAlign = 'right';
   for (const lvl of [-3, -1, 0, 1, 3]) {
     ctx.fillText(`${lvl}`, PAD_L - 6, yOf(lvl) + 4);
   }
+  ctx.textAlign = 'center';
+  for (let s = 0; s <= OVERLAY_SYMS; s++) {
+    ctx.fillText(`${s}`, xOf(s), H - 8);
+  }
+  ctx.textAlign = 'left';
 
-  // Overlay: 2 samples per symbol in the HDL post-PLL ring, so 4
-  // samples = 2 symbols of horizontal span per overlay line.
-  const SPS = 2;
-  const overlayLen = SPS * 2;
-  const scaleX = plotW / (overlayLen - 1);
-  ctx.strokeStyle = '#4cf'; ctx.lineWidth = linePx(1); ctx.globalAlpha = 0.15;
-  for (let start = 0; start + overlayLen < iq.length; start += SPS) {
+  // --- colour-cycled traces.
+  // Tab10 palette — matplotlib default.
+  const COLORS = [
+    '#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd',
+    '#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'
+  ];
+  ctx.lineWidth = linePx(1.1); ctx.globalAlpha = 1.0;
+  const step = SPS;  // advance one symbol per overlay
+  let drawn = 0;
+  const maxDraw = 260;
+  for (let start = SPS; start + OVERLAY < phase.length - SPS; start += step) {
+    ctx.strokeStyle = COLORS[drawn % COLORS.length];
     ctx.beginPath();
-    for (let k = 0; k < overlayLen; k++) {
-      const x = PAD_L + k * scaleX;
-      // Scale sample by (3/mmag) so LSM decision points land at ±1
-      // on the labeled rails.
-      const y = yOf((iq[start + k][0] / mmag) * 1.0);
+    for (let k = 0; k < OVERLAY; k++) {
+      const x = PAD_L + (k / SPS) * (plotW / OVERLAY_SYMS);
+      const y = yOf(phase[start + k]);
       if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
+    drawn++;
+    if (drawn >= maxDraw) break;
   }
-  ctx.globalAlpha = 1;
 
-  ctx.fillStyle = '#aab'; ctx.textAlign = 'left';
+  // Title.
+  ctx.fillStyle = '#ddd'; ctx.textAlign = 'left';
   ctx.fillText(
-    `Eye \u00B7 I channel \u00B7 post-PLL \u00B7 ${iq.length} samples \u00B7 ±1 rails = LSM decisions, ±3 reference`,
-    PAD_L, PAD_T - 8);
-  ctx.textAlign = 'right';
-  ctx.fillText('symbol periods', PAD_L + plotW, H - 6);
-  ctx.textAlign = 'left';
+    `Eye \u00B7 post-PLL \u00B7 atan2 \u00B7 4/\u03c0 \u00B7 ${drawn} overlays`,
+    PAD_L, PAD_T - 10);
 }
 
 function drawPlotDeviation(soft, hard) {

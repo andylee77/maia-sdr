@@ -97,50 +97,73 @@ def render_constellation(i: np.ndarray, q: np.ndarray,
 
 
 def render_eye(both: np.ndarray, out_path: str, meta: dict) -> None:
-    """P25 / OP25 Datascope-style eye: overlay many symbol periods of
-    the deviation-equivalent waveform, rails at ±3 / ±1.
+    """OP25 Datascope-style eye: 9-symbol overlay, colour-cycled traces,
+    rails at ±3 / ±1, phase-unwrapped atan2·4/π deviation signal.
 
-    The HDL post-PLL ring outputs post-diff-demod (rotated) complex
-    samples z[n] = z_pre[n] * conj(z_pre[n-1]). For clean CQPSK/LSM or
-    C4FM, arg(z[n]) takes one of four values at symbol instants:
-      +π/4 → +1    +3π/4 → +3
-      −π/4 → −1    −3π/4 → −3
-    This phase angle IS the P25 symbol-deviation signal; scaling by
-    4/π lands the rails exactly on ±1 and ±3 (three eye openings).
+    Key choices (to match the reference view):
+      - Upsample 2 → 10 sps by linear interpolation in I/Q *before*
+        computing atan2, so inter-symbol transitions render as smooth
+        curves instead of straight-line segments.
+      - 9-symbol overlay (= 90 samples at 10 sps). OP25 uses ~9-10.
+      - Colour-cycle traces so individual symbol sequences remain
+        visually separable (matplotlib default cycle).
+      - Solid lines at 1 alpha (no transparency overlay trick).
 
-    `both` is the interleaved (mid, sym, mid, sym, ...) series at
-    2 samples per symbol.
+    `both` is the HDL interleaved (mid, sym, mid, sym, ...) series at
+    2 samples per symbol — one each at the mid-symbol and decision
+    instant.
     """
-    SPS = 2
-    OVERLAY = SPS * 2  # 2 symbols per overlay trace
+    UPSAMPLE = 5                        # 2 sps × 5 = 10 sps
+    SPS = 2 * UPSAMPLE                  # samples per symbol after upsample
+    OVERLAY_SYMS = 9
+    OVERLAY = SPS * OVERLAY_SYMS        # 90 samples per overlay trace
 
-    # arg(z) for every sample → scale to ±3 / ±1 rails.
-    phase = np.arctan2(both[:, 1], both[:, 0]) * (4.0 / np.pi)
+    # Linear-interpolate I and Q up to 10 sps, then compute atan2·4/π.
+    # Interpolating I/Q and then atan2 is safer than atan2 + unwrap +
+    # interpolate because consecutive atan2 values can jump ±2π and
+    # unwrapping is fragile at strong signal transitions.
+    t0 = np.arange(both.shape[0])
+    t1 = np.linspace(0, t0[-1], both.shape[0] * UPSAMPLE)
+    i_up = np.interp(t1, t0, both[:, 0])
+    q_up = np.interp(t1, t0, both[:, 1])
+    phase = np.arctan2(q_up, i_up) * (4.0 / np.pi)
 
-    fig, ax = plt.subplots(figsize=(7.0, 4.0), dpi=110)
-    x = np.arange(OVERLAY) / (OVERLAY - 1)
-    for start in range(0, phase.size - OVERLAY, SPS):
-        ax.plot(x, phase[start:start + OVERLAY],
-                color="#4cf", lw=0.4, alpha=0.12)
+    # matplotlib default colour cycle (tab10) — 10 distinct colours so
+    # consecutive overlays are easy to tell apart.
+    cmap = plt.get_cmap("tab10")
+
+    fig, ax = plt.subplots(figsize=(8.5, 4.5), dpi=110)
+    x = np.arange(OVERLAY) / SPS        # x axis in symbol periods (0..9)
+    # Skip the first/last symbols to avoid edge artefacts from np.interp.
+    n_overlays = (phase.size - 2 * SPS - OVERLAY) // SPS
+    for k in range(min(n_overlays, 400)):
+        start = SPS + k * SPS
+        trace = phase[start:start + OVERLAY]
+        ax.plot(x, trace, color=cmap(k % 10), lw=0.9, alpha=1.0)
     # P25 decision-level rails.
-    for lvl, style in ((+3, "--"), (+1, "--"), (-1, "--"), (-3, "--")):
-        ax.axhline(lvl, color="#678", lw=0.7, ls=style)
-    ax.axhline(0, color="#223", lw=0.5)
-    ax.set_ylabel("symbol deviation", color="#aab")
+    for lvl in (+3, +1, -1, -3):
+        ax.axhline(lvl, color="#222", lw=0.8, ls="-")
+    ax.axhline(0, color="#444", lw=0.4)
+    # Symbol-boundary grid (one vertical line per integer symbol period).
+    for s in range(OVERLAY_SYMS + 1):
+        ax.axvline(s, color="#222", lw=0.4, alpha=0.6)
+    ax.set_ylabel("deviation (P25 ±3 / ±1)", color="#ddd")
     ax.set_ylim(-4.0, 4.0)
     ax.set_yticks([-3, -1, 0, 1, 3])
-    ax.set_xlabel("symbol periods (2-sps overlay)", color="#aab")
-    ax.set_facecolor("#0a0f1c")
-    ax.tick_params(colors="#aab", labelsize=9)
+    ax.set_xlim(0, OVERLAY_SYMS)
+    ax.set_xticks(range(0, OVERLAY_SYMS + 1))
+    ax.set_xlabel("symbol periods", color="#ddd")
+    ax.set_facecolor("#2a2a2a")
+    ax.tick_params(colors="#ddd", labelsize=9)
     for spine in ax.spines.values():
-        spine.set_color("#223")
+        spine.set_color("#444")
     title = (f"eye t={meta['t']}s  n={meta['n']}  "
              f"cvar={meta['cluster_var_mean']:.3f}  "
-             f"SPS=2 (HDL post-PLL, atan2·4/π)")
-    ax.set_title(title, fontsize=9, color="#aab")
-    fig.patch.set_facecolor("#0a0f1c")
+             f"10 sps (HDL post-PLL, 2→10 upsampled)")
+    ax.set_title(title, fontsize=9, color="#ddd")
+    fig.patch.set_facecolor("#2a2a2a")
     fig.tight_layout()
-    fig.savefig(out_path, facecolor="#0a0f1c", dpi=110)
+    fig.savefig(out_path, facecolor="#2a2a2a", dpi=110)
     plt.close(fig)
 
 
