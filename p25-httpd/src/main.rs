@@ -476,7 +476,7 @@ async fn main() -> anyhow::Result<()> {
     // start of next call was not saved under actual call" (2026-04-24
     // field observation).
     let (imbe_tx, imbe_rx) =
-        tokio::sync::mpsc::channel::<(u16, u32, [p25::voice_frame::ImbeFrameRaw; 9])>(32);
+        tokio::sync::mpsc::channel::<(u16, u32, u64, [p25::voice_frame::ImbeFrameRaw; 9])>(32);
     let imbe_forwarder = Arc::new(ImbeForwarder::new(imbe_tx));
 
     // Call-boundary broadcast (traffic-LSM heartbeat -> recorder;

@@ -192,7 +192,11 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn mirror_active(active: &Option<ActiveCall>, shared: &ActiveCallShared) {
+fn mirror_active(
+    active: &Option<ActiveCall>,
+    shared: &ActiveCallShared,
+    forwarder: &Arc<ImbeForwarder>,
+) {
     if let Ok(mut s) = shared.lock() {
         *s = active.as_ref().map(|c| ActiveCallSnapshot {
             call_id: c.call_id,
@@ -205,6 +209,13 @@ fn mirror_active(active: &Option<ActiveCall>, shared: &ActiveCallShared) {
             started_unix_ms: c.started_unix_ms,
         });
     }
+    // Phase 2h (2026-04-25): broadcast the active call_id to the
+    // forwarder so every IMBE batch + every emitted AudioChunk gets
+    // stamped with it. Recorder routes by chunk.call_id directly.
+    let cid = active.as_ref().map(|c| c.call_id).unwrap_or(0);
+    forwarder
+        .current_call_id
+        .store(cid, Ordering::Relaxed);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -360,7 +371,7 @@ pub fn spawn_call_lifecycle(
                                     CloseReason::Timeout,
                                     call.source, expected);
                             }
-                            mirror_active(&active, &active_call);
+                            mirror_active(&active, &active_call, &forwarder);
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
@@ -369,7 +380,7 @@ pub fn spawn_call_lifecycle(
                         boundary, &mut active, &mut next_call_id,
                         &tracker_tx, &forwarder,
                     );
-                    mirror_active(&active, &active_call);
+                    mirror_active(&active, &active_call, &forwarder);
                 }
                 recv = audio_rx.recv() => {
                     match recv {
@@ -394,7 +405,7 @@ pub fn spawn_call_lifecycle(
                                 CloseReason::Timeout,
                                 call.source, expected);
                         }
-                        mirror_active(&active, &active_call);
+                        mirror_active(&active, &active_call, &forwarder);
                     }
                 }
             }

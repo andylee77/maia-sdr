@@ -25,6 +25,16 @@ pub struct AudioChunk {
     /// filename from the very first audio chunk of the call without
     /// waiting for a boundary event to race in.
     pub source: u32,
+    /// Phase 2h (2026-04-25): the GrantFollower call_id active when
+    /// the IMBE batch was submitted to the vocoder. Captured in
+    /// `ImbeForwarder::forward_frames` (which reads
+    /// `current_call_id`) and propagated through the vocoder thread
+    /// onto every emitted chunk. The recorder routes by this
+    /// directly — no more tg+source heuristic, no cross-call bleed
+    /// from in-flight PCM. `0` = "no active call known at submit
+    /// time" (e.g. follower idle, retune race); recorder still
+    /// appends those to the active call defensively.
+    pub call_id: u64,
 }
 
 pub type AudioTx = broadcast::Sender<AudioChunk>;

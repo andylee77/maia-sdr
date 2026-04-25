@@ -30,7 +30,7 @@ use crate::vocoder;
 /// from backing up on worker-pool scheduling jitter. `blocking_recv()`
 /// preserves the backpressure semantics of the async version.
 pub fn spawn_vocoder_thread(
-    imbe_rx: Receiver<(u16, u32, [ImbeFrameRaw; 9])>,
+    imbe_rx: Receiver<(u16, u32, u64, [ImbeFrameRaw; 9])>,
     voc_forwarder: Arc<ImbeForwarder>,
     voc_audio_tx: broadcast::Sender<AudioChunk>,
     voc_event_log: Arc<EventLog>,
@@ -122,7 +122,7 @@ pub fn spawn_vocoder_thread(
             };
 
             tracing::info!(target: "p25_vocoder", "vocoder thread started (dedicated OS thread)");
-            while let Some((batch_tg, batch_source, frames)) = rx.blocking_recv() {
+            while let Some((batch_tg, batch_source, batch_call_id, frames)) = rx.blocking_recv() {
                 // Surface the TG of the batch we're ABOUT to decode
                 // on /api/traffic. Distinct from current_talkgroup
                 // (follower's intent) — this is what the audio path
@@ -261,11 +261,17 @@ pub fn spawn_vocoder_thread(
                         *s = v.clamp(-AGC_PCM_CLAMP, AGC_PCM_CLAMP) as i16;
                     }
 
-                    // Push to audio broadcast (ignore if no subscribers)
+                    // Push to audio broadcast (ignore if no subscribers).
+                    // Phase 2h (2026-04-25): batch_call_id stamps every
+                    // chunk with the GrantFollower call_id active when
+                    // forward_frames submitted the batch. The recorder
+                    // routes by this directly — no tg+source heuristic,
+                    // no cross-call bleed from in-flight PCM.
                     let _ = voc_audio_tx.send(audio::AudioChunk {
                         pcm: scaled,
                         talkgroup: tg,
                         source,
+                        call_id: batch_call_id,
                     });
                 }
             }

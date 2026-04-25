@@ -73,6 +73,13 @@ pub struct ImbeForwarder {
     /// Mutex<String> rather than an atomic — short, only written on
     /// retune. Empty = unknown.
     pub current_channel: std::sync::Mutex<String>,
+    /// Phase 2h (2026-04-25): GrantFollower call_id stamped onto
+    /// every IMBE batch in `forward_frames` so the vocoder can
+    /// attach it to emitted AudioChunks. Recorder routes by
+    /// chunk.call_id directly, eliminating the prior tg+source
+    /// heuristic. Set on `CallTrackerEvent::CallOpen` from
+    /// `spawn_call_lifecycle`; reset to 0 on `CallClose`.
+    pub current_call_id: std::sync::atomic::AtomicU64,
     /// TGs that have ever been observed encrypted. Once a TG is in
     /// this set, the follower defaults to encrypted even if the
     /// current grant doesn't carry service options.
@@ -92,7 +99,7 @@ pub struct ImbeForwarder {
     /// of call N keep OLD TG even after follower retunes to call N+1 —
     /// prevents OLD tail being decoded with NEW JMBE state and routed
     /// into NEW call's recording. 2026-04-24 field-observed bug.
-    imbe_tx: tokio::sync::mpsc::Sender<(u16, u32, [p25::voice_frame::ImbeFrameRaw; 9])>,
+    imbe_tx: tokio::sync::mpsc::Sender<(u16, u32, u64, [p25::voice_frame::ImbeFrameRaw; 9])>,
     /// Optional broadcast channel for call-boundary events emitted
     /// from the voice handler. `None` on decoder instances that don't
     /// split calls (e.g. control-channel decoders).
@@ -346,7 +353,7 @@ impl ImbeForwarder {
 
 impl ImbeForwarder {
     pub fn new(
-        imbe_tx: tokio::sync::mpsc::Sender<(u16, u32, [p25::voice_frame::ImbeFrameRaw; 9])>,
+        imbe_tx: tokio::sync::mpsc::Sender<(u16, u32, u64, [p25::voice_frame::ImbeFrameRaw; 9])>,
     ) -> Self {
         Self {
             hdu_count: 0.into(),
@@ -366,6 +373,7 @@ impl ImbeForwarder {
             current_talkgroup: 0.into(),
             current_source: 0.into(),
             current_frequency_hz: 0.into(),
+            current_call_id: 0.into(),
             current_channel: std::sync::Mutex::new(String::new()),
             encrypted_tg_history: std::sync::Mutex::new(std::collections::HashSet::new()),
             vocoder_reset_pending: false.into(),
@@ -518,14 +526,17 @@ impl ImbeForwarder {
             }
         }
 
-        // TG + source captured HERE, not on the receiver side. If the
-        // follower retunes or updates current_source between this send
-        // and the vocoder pulling the batch, the batch still carries
-        // THIS call's labels — vocoder decodes + routes correctly, no
-        // tail-drain-mislabeling splits at the recorder (pre-2026-04-24
-        // zero-LDU fragments came from exactly this race on `source`).
+        // TG + source + call_id captured HERE, not on the receiver
+        // side. If the follower retunes or updates current_* between
+        // this send and the vocoder pulling the batch, the batch
+        // still carries THIS call's labels — vocoder decodes + routes
+        // correctly, no tail-drain-mislabelling splits at the
+        // recorder. Phase 2h (2026-04-25) added call_id so the
+        // recorder routes by GrantFollower call_id directly instead
+        // of the prior tg+source heuristic.
         let src = self.current_source.load(Ordering::Relaxed);
-        match self.imbe_tx.try_send((tg, src, *frames)) {
+        let call_id = self.current_call_id.load(Ordering::Relaxed);
+        match self.imbe_tx.try_send((tg, src, call_id, *frames)) {
             Ok(()) => {
                 // Only advance when frames actually entered the queue —
                 // a dropped send never produces PCM, so advancing would

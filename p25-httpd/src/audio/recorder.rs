@@ -633,54 +633,39 @@ pub async fn recorder_task(
                             // the parked freq.
                             continue;
                         };
-                        // TG=0 chunks are mid-call flicker during the
-                        // grant-refresh race; append silently. The
-                        // forwarder uses chunk.talkgroup=0 as "carrier
-                        // present, TG attribution unavailable right now".
-                        if chunk.talkgroup == 0 {
-                            c.append(&chunk);
-                            continue;
-                        }
-                        // Phase 2b: TG mismatch is a call_tracker bug
-                        // OR a tracker_rx broadcast lag. Trust the
-                        // tracker — drop the chunk rather than
-                        // commingling another TG's audio into this WAV.
-                        if c.talkgroup != chunk.talkgroup {
-                            tracing::trace!(
-                                target: "p25_recorder",
-                                "audio chunk tg={} mismatch active tg={} \
-                                 (call_id={}) — dropping",
-                                chunk.talkgroup, c.talkgroup, c.call_id,
-                            );
-                            continue;
-                        }
-                        // 2026-04-25 source-match gate: when both
-                        // chunk.source and active.source are known
-                        // and disagree, the chunk belongs to a
-                        // different speaker (typically the previous
-                        // one whose WAV closed milliseconds ago, but
-                        // whose JMBE-decoded PCM is still arriving).
-                        // Dropping prevents cross-speaker bleed
-                        // (observed 2026-04-25: rec=8 src=1012 had
-                        // ~480 ms of src=3599085 audio leak in).
-                        if chunk.source != 0
-                            && c.source.is_some()
-                            && c.source != Some(chunk.source)
+                        // Phase 2h (2026-04-25): chunk.call_id is the
+                        // GrantFollower call_id active when the IMBE
+                        // batch was submitted. Route by it directly —
+                        // a chunk for a different call (typical: a
+                        // late chunk from the previous call that the
+                        // vocoder decoded after CallClose) gets
+                        // dropped here so it can't bleed into the new
+                        // recording. The trailing-PCM drain in the
+                        // CallClose path handles the OPPOSITE
+                        // direction (late chunks for the call that
+                        // just closed, while no new call is yet open).
+                        //
+                        // call_id == 0 is "no active call known at
+                        // submit time" — typically follower idle or
+                        // mid-retune. We append defensively rather
+                        // than drop, matching the prior behaviour
+                        // where TG=0 chunks were appended.
+                        if chunk.call_id != 0
+                            && chunk.call_id != c.call_id
                         {
                             tracing::trace!(
                                 target: "p25_recorder",
-                                "audio chunk src={} mismatch active src={:?} \
-                                 (call_id={}, tg={}) — dropping",
-                                chunk.source, c.source, c.call_id,
-                                c.talkgroup,
+                                "audio chunk call_id={} mismatch active \
+                                 call_id={} (tg={}) — dropping (likely \
+                                 trailing PCM from prior call)",
+                                chunk.call_id, c.call_id, c.talkgroup,
                             );
                             continue;
                         }
-                        // Defensive first-known-source stamp: if call_
-                        // tracker hasn't emitted SourceUpdate yet but
-                        // the chunk carries a source, fill it in. Only
-                        // applies when c.source is None (CC was None
-                        // and LDU1 LC voting hasn't converged yet).
+                        // Defensive first-known-source stamp: if
+                        // GrantFollower hasn't emitted SourceUpdate
+                        // yet but the chunk carries a source, fill it
+                        // in. Only applies when c.source is None.
                         if chunk.source != 0 && c.source.is_none() {
                             log_ev("source_stamp_chunk", serde_json::json!({
                                 "recording_id": c.call_id,
@@ -905,12 +890,19 @@ pub async fn recorder_task(
                                         biased;
                                         chunk_result = audio_rx.recv() => match chunk_result {
                                             Ok(chunk) => {
-                                                let tg_match = chunk.talkgroup == old.talkgroup
-                                                    || chunk.talkgroup == 0;
-                                                let source_match = chunk.source == 0
-                                                    || old.source.is_none()
-                                                    || old.source == Some(chunk.source);
-                                                if tg_match && source_match {
+                                                // Phase 2h drain match: chunk
+                                                // belongs to OLD if its call_id
+                                                // matches old.call_id, or if
+                                                // call_id==0 (forwarder idle
+                                                // / no active call known —
+                                                // most chunks during the
+                                                // drain window fall here
+                                                // because GrantFollower
+                                                // already cleared
+                                                // current_call_id on close).
+                                                if chunk.call_id == 0
+                                                    || chunk.call_id == old.call_id
+                                                {
                                                     old.append(&chunk);
                                                 }
                                             }
