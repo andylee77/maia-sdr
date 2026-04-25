@@ -353,8 +353,10 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
     </table>
     <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
       Live FPGA register reads from the heartbeat task (16 ms cadence).
-      pll_dbg / sp_dbg are signed 16-bit. Healthy lock for our test target:
-      pll near 0, sp ~3000-6000, sync_dist 0.
+      pll_dbg / sp_dbg are signed 16-bit register reads.
+      pll_dbg is Q2.13 radians/symbol; multiply by 0.0933 for Hz at 4800 sym/s
+      (matches SDRTrunk's "Carrier Offset" display). Healthy lock:
+      |pll_hz| < 250, sp ~3000-6000, sync_dist 0.
     </p>
   </div>
   <div class="card">
@@ -1501,7 +1503,7 @@ async function refresh() {
       ['Active grants', fmtN(cmp.ps_lsm.active_grants), '(PS only)'],
       ['Frequency bands known', fmtN(cmp.ps_lsm.bands_known), '(PS only)'],
       ['Drop count (PL only)', '--', fmtN(cmp.pl_hdl.drop_count)],
-      ['Live PLL register', '--', fmtN(cmp.pl_hdl.pll_dbg)],
+      ['Live PLL (Hz / Q2.13)', '--', cmp.pl_hdl.pll_dbg != null ? (cmp.pl_hdl.pll_dbg * 0.0933).toFixed(0) + ' Hz (' + fmtN(cmp.pl_hdl.pll_dbg) + ')' : '--'],
       ['Live sample-point register', '--', fmtN(cmp.pl_hdl.sp_dbg)],
       ['Overflow events', '--', 'dibit:' + fmtN(cmp.pl_hdl.dibit_overflow_ticks) + ' iq:' + fmtN(cmp.pl_hdl.iq_overflow_ticks)],
       ['── pipeline ──', '', ''],
@@ -1555,7 +1557,11 @@ async function refresh() {
     $('hdl_last_nac').textContent = hdl.live.last_nac;
     $('hdl_last_duid').textContent = '0x' + hdl.live.last_duid.toString(16).toUpperCase();
     $('hdl_drop').textContent = hdl.live.last_drop_count;
-    $('hdl_pll').textContent = hdl.live.pll_dbg;
+    // Q2.13 -> Hz: pll_dbg * 4800 / (2π * 8192) ≈ pll_dbg * 0.0933.
+    // Matches SDRTrunk's "Carrier Offset" reading; healthy lock <250 Hz.
+    $('hdl_pll').textContent = hdl.live.pll_dbg != null
+      ? (hdl.live.pll_dbg * 0.0933).toFixed(0) + ' Hz (' + hdl.live.pll_dbg + ')'
+      : '--';
     $('hdl_sp').textContent = hdl.live.sp_dbg;
     $('hdl_sd_now').textContent = hdl.live.sync_distance;
     $('hdl_sd_best').textContent = hdl.last_window.sync_dist_best === 99 ? '--' : hdl.last_window.sync_dist_best;
@@ -1590,7 +1596,9 @@ async function refresh() {
           c[5].textContent = e.n_errors;
           c[6].textContent = e.sync_distance;
           c[7].textContent = e.drop_count;
-          c[8].textContent = e.pll_dbg;
+          c[8].textContent = e.pll_dbg != null
+            ? (e.pll_dbg * 0.0933).toFixed(0) + ' Hz'
+            : '--';
           c[9].textContent = e.sp_dbg;
         });
     }
@@ -4138,7 +4146,7 @@ function renderPipeline(p) {
     kv('  nid_valid',       c.nid_valid);
     kv('  dibit_overflow',  c.dibit_overflow);
     kv('  drop_count',      c.drop_count);
-    kv('  pll_dbg (Q2.13)', c.pll_dbg);
+    kv('  pll_dbg',         c.pll_dbg != null ? (c.pll_dbg * 0.0933).toFixed(0) + ' Hz (' + c.pll_dbg + ' Q2.13)' : '--');
     kv('  agc_product',     c.agc_product);
   }
 

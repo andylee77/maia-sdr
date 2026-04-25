@@ -1361,42 +1361,26 @@ pub fn spawn_grant_follower(
                                         }
                                     }
                                 } else if pre_state == "Idle" && post_state != "Idle" {
-                                    // Phase 2f NCO write-skip path:
-                                    // TrafficChain.handle_grant
-                                    // recognised that the chain's
-                                    // currently-loaded NCO already
-                                    // matches this grant's freq and
-                                    // promoted Idle -> Active without
-                                    // a retune. The CallTracker-driven
-                                    // CallClose path paused the LSM
-                                    // (set_traffic_lsm_enable=false) at
-                                    // call end, so we MUST re-enable
-                                    // the chain here — otherwise no
-                                    // dibits flow on the new call,
-                                    // ImbeForwarder never sees an LDU,
-                                    // and recordings come up empty
-                                    // even though the FPGA NID
-                                    // heartbeat keeps incrementing
-                                    // hdus_seen / ldus_seen on its
-                                    // own register-poll path.
-                                    //
-                                    // Skip the NCO write + 2 ms FIR
-                                    // flush (no NCO change, FIR
-                                    // already converged) — just thaw
-                                    // + reset PLL accumulator.
+                                    // Phase 2f NCO write-skip path,
+                                    // post-2026-04-25 design: chain
+                                    // is already running on this
+                                    // freq from the previous call
+                                    // (no pause on CallClose), PLL
+                                    // is still locked, FIR is still
+                                    // valid. Zero FPGA work needed
+                                    // — just reset the software
+                                    // framer state in case it was
+                                    // mid-frame on between-call
+                                    // noise dibits.
                                     {
                                         let mut dec = follower_traffic_decoder
                                             .write().await;
                                         dec.reset_framer_state();
                                     }
-                                    let core = follower_core.lock().await;
-                                    core.set_traffic_lsm_enable(true);
-                                    core.pulse_traffic_lsm_reset();
-                                    drop(core);
                                     follower_event_log.push(
                                         LogCategory::Traffic,
                                         format!(
-                                            "nco_skip TG={} (chain re-enabled, no retune)",
+                                            "nco_skip TG={} (chain already locked on freq, no FPGA work)",
                                             g.talkgroup.0,
                                         ),
                                         serde_json::json!({
@@ -1404,8 +1388,9 @@ pub fn spawn_grant_follower(
                                             "channel":        g.channel.0,
                                             "frequency":      g.frequency_hz,
                                             "framer_reset":   true,
-                                            "lsm_reset":      true,
+                                            "lsm_reset":      false,
                                             "nco_write":      false,
+                                            "lsm_enable":     "unchanged",
                                         }),
                                     );
                                 }
@@ -1448,34 +1433,38 @@ pub fn spawn_grant_follower(
 
                         let mut mgr = follower_mgr.lock().await;
                         let pre_close_tg = mgr.current_talkgroup();
+                        // Soft state release only — TrafficChain
+                        // goes Idle so the next grant's NCO-skip
+                        // detection sees Idle as the precondition.
+                        // The FPGA LSM chain stays ENABLED on the
+                        // last freq so the PLL keeps its lock for
+                        // the next same-freq call (the dominant
+                        // case on a busy site). Phantom NID events
+                        // from running on noise are filtered out
+                        // upstream by BCH t=4 and downstream by the
+                        // grant follower (only acts on TSBK grants
+                        // from the CC, not on heartbeat NIDs).
                         mgr.force_idle();
                         drop(mgr);
-
-                        let core = follower_core.lock().await;
-                        // Pause both LSM + C4FM chains between calls
-                        // so the traffic demod is quiescent during
-                        // Idle — no phantom NID events and no PLL
-                        // drift against noise.
-                        core.pause_traffic_chain();
-                        drop(core);
 
                         if let Some(tg) = pre_close_tg {
                             tracing::info!(
                                 target: "p25_traffic",
                                 "traffic Idle (CallClose {:?}) TG {} -- \
-                                 demod_enable=off",
+                                 chain stays parked on last freq",
                                 reason, tg.0,
                             );
                             follower_event_log.push(
                                 crate::services::event_log::LogCategory::Traffic,
                                 format!(
-                                    "state -> Idle ({:?}) TG={}",
+                                    "state -> Idle ({:?}) TG={} (chain parked)",
                                     reason, tg.0,
                                 ),
                                 serde_json::json!({
-                                    "tg":       tg.0,
-                                    "to":       "Idle",
-                                    "reason":   format!("{:?}", reason),
+                                    "tg":             tg.0,
+                                    "to":             "Idle",
+                                    "reason":         format!("{:?}", reason),
+                                    "chain_parked":   true,
                                 }),
                             );
                         }

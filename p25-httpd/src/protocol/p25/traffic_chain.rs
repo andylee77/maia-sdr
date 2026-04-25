@@ -370,14 +370,22 @@ impl TrafficChain {
         let new_nco_word =
             (nco_frac * (1u64 << 28) as f64) as i32 as u32 & 0x0FFF_FFFF;
 
-        // Phase 2f (2026-04-25): NCO write-skip. If the chain is Idle
-        // and the new grant's NCO word matches what's already loaded
-        // (the call before this one was on the same freq), the DDC is
-        // physically on the right freq. Promote directly to Active —
-        // no FPGA NCO write, no PLL/AGC settle penalty. Common on
-        // sites with a small number of voice channels in heavy use.
+        // Phase 2f (2026-04-25): NCO write-skip. Chain is Idle, the
+        // new grant's NCO word matches what's already loaded, AND
+        // we've retuned at least once before (so the LSM chain is
+        // actually enabled — at boot it's disabled and nco_word
+        // starts at 0, so without `retunes > 0` we'd skip a grant
+        // whose computed NCO accidentally equals 0). Promote
+        // directly to Active — no FPGA write, no PLL/AGC settle
+        // penalty.
+        //
+        // 2026-04-25 follow-up: this is now the dominant path
+        // because the follower no longer pauses the chain between
+        // calls — same-freq calls reuse the live PLL lock with
+        // zero settle latency.
         if new_nco_word == self.nco_word
             && matches!(self.state, TrafficState::Idle)
+            && self.retunes > 0
         {
             self.last_offset_hz = offset_hz;
             self.state = TrafficState::Active {
