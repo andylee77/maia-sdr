@@ -628,6 +628,20 @@ pub fn parse_ldu1_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
 /// Returns the raw 24-bit source radio ID from the LDU1 LC (bits
 /// 48-71 = SDRTrunk's `SOURCE_ADDRESS` at `OCTET_6_BIT_48`). Every
 /// LDU1 standard GVCU LC carries a FM:<source> value there.
+///
+/// **2026-04-25 KNOWN BUG (Phase 2j deferred):** this parser
+/// produces garbage RIDs on real LDU1 captures where SDRTrunk
+/// decodes a clean value. Code review of the FEC stack
+/// (Hamming10 + RS(24,12,13)) and hexbit positions
+/// (`LDU1_CW_HEX_POSITIONS` / `LDU1_RS_HEX_POSITIONS`) didn't
+/// surface an obvious off-by-one — likely needs an on-target
+/// LDU1 capture-vs-SDRTrunk diff to localise. Operator hypothesis
+/// (2026-04-25 session): the upstream defect is more likely a
+/// PLL offset ceiling issue (-500 Hz seen on barely-working
+/// channels; need <250 Hz for stable LDU FEC) than a parser bug.
+/// Until the parser fix lands, downstream consumers (CallTracker,
+/// `/api/recordings`) treat the returned RID as advisory and
+/// **never** override the CC `GRP_VCH_GRANT.SRC` value.
 pub fn parse_ldu1_source(body_raw: &[u8]) -> Option<u32> {
     match parse_ldu1_lcw(body_raw)? {
         TdulcLcw::MotorolaTalkComplete { by_radio_id } => Some(by_radio_id),
