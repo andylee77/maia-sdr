@@ -273,6 +273,7 @@ pub async fn get_traffic(
         ldus_seen,
         tdus_seen,
         nco_skips,
+        parked_freq_hz,
     ) = {
         let mgr = state.traffic_chain.lock().await;
         let label = mgr.state_label();
@@ -295,8 +296,10 @@ pub async fn get_traffic(
         let ldus = mgr.ldus_seen;
         let tdus = mgr.tdus_seen;
         let skips = mgr.nco_skips;
+        let parked = mgr.parked_freq_hz;
         (label, ch, tg, freq, nco, offset, seen, seen_new, seen_update,
-         retunes, rejected_enc, age, duid, nac, hdus, ldus, tdus, skips)
+         retunes, rejected_enc, age, duid, nac, hdus, ldus, tdus, skips,
+         parked)
     };
 
     // Phase 7A.2: read the live traffic_lsm chain health from the
@@ -605,6 +608,11 @@ pub async fn get_traffic(
         "current_channel":           current_channel,
         "current_talkgroup":         current_talkgroup,
         "current_frequency_hz":      current_frequency_hz,
+        // 2026-04-25: physical freq the FPGA chain is parked on.
+        // Stays populated between calls (chain doesn't pause), so the
+        // dashboard can show "Traffic Channel: 858.4625 MHz" even
+        // when no call is active. None at boot before first retune.
+        "parked_freq_hz":            parked_freq_hz,
         "nco_word":                  nco_word,
         "nco_word_hex":              format!("0x{:08X}", nco_word),
         "last_offset_hz":            last_offset_hz,

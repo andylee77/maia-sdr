@@ -96,6 +96,15 @@ pub struct TrafficChain {
     /// /api/traffic so the operator can see how often the optimisation
     /// fires on a busy site.
     pub nco_skips: u64,
+    /// 2026-04-25: physical freq the FPGA traffic chain is parked on.
+    /// Set on every retune AND on the Phase 2f skip path; NOT cleared
+    /// by `force_idle`. With the post-2026-04-25 park-chain design the
+    /// LSM stays enabled on this freq between calls, so this is the
+    /// authoritative "what's the chain physically tuned to" reading
+    /// regardless of whether a call is currently active. None at boot
+    /// before the first retune. Dashboard Traffic Channel panel reads
+    /// this so the Frequency display stays accurate between calls.
+    pub parked_freq_hz: Option<u64>,
     /// Grants the follower refused to lock onto because the call was
     /// flagged encrypted (either via `service_options.encrypted` on the
     /// TSBK or via the persistent encrypted-TG history).  Counts only
@@ -186,6 +195,7 @@ impl TrafficChain {
             retunes: 0,
             last_retune_at: None,
             nco_skips: 0,
+            parked_freq_hz: None,
             grants_rejected_encrypted: 0,
             last_duid: None,
             last_nac: None,
@@ -388,6 +398,7 @@ impl TrafficChain {
             && self.retunes > 0
         {
             self.last_offset_hz = offset_hz;
+            self.parked_freq_hz = Some(frequency_hz);
             self.state = TrafficState::Active {
                 channel,
                 talkgroup,
@@ -402,6 +413,7 @@ impl TrafficChain {
 
         self.nco_word = new_nco_word;
         self.last_offset_hz = offset_hz;
+        self.parked_freq_hz = Some(frequency_hz);
 
         self.state = TrafficState::Acquiring {
             channel,

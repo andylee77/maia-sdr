@@ -879,30 +879,43 @@ pub fn spawn_grant_follower(
                                     }
                                 }
 
-                                // Raw grant receipt (pre-filter).
-                                // Logged unconditionally; double-retune
-                                // protection lives in
-                                // TrafficChain::handle_grant's
-                                // `same_tg_same_freq` branch
-                                // (traffic_chain.rs:258).
-                                follower_event_log.push(
-                                    LogCategory::Grant,
-                                    format!(
-                                        "grant TG={} ch={} {:.4} MHz{}",
-                                        g.talkgroup.0,
-                                        g.channel.0,
-                                        freq_mhz,
-                                        if g.encrypted { " [ENC]" } else { "" },
-                                    ),
-                                    serde_json::json!({
-                                        "tg":        g.talkgroup.0,
-                                        "channel":   g.channel.0,
-                                        "frequency": g.frequency_hz,
-                                        "src":       g.source.map(|r| r.0),
-                                        "encrypted": g.encrypted,
-                                        "emergency": g.emergency,
-                                    }),
-                                );
+                                // 2026-04-25: only log NEW grants, not
+                                // GVCG_UPDATE keep-alives. The
+                                // pre-2026-04-25 unconditional log
+                                // produced ~30 entries/sec from CC
+                                // refreshes for a single stuck call,
+                                // which pushed real call activity out
+                                // of the 1000-entry log ring within
+                                // seconds (TG 600 had 68 entries vs
+                                // TG 300 having zero in a 80-entry
+                                // sample). is_update=true comes from
+                                // GVCG_UPDATE / GVCG_UPDATE_EXP
+                                // refresh TSBKs; is_update=false is
+                                // only the initial GVCG / GVCG_EXP
+                                // for a new call. One log entry per
+                                // call instead of one per refresh.
+                                if !g.is_update {
+                                    follower_event_log.push(
+                                        LogCategory::Grant,
+                                        format!(
+                                            "grant TG={} ch={} {:.4} MHz src={}{}",
+                                            g.talkgroup.0,
+                                            g.channel.0,
+                                            freq_mhz,
+                                            g.source.map(|r| r.0).unwrap_or(0),
+                                            if g.encrypted { " [ENC]" } else { "" },
+                                        ),
+                                        serde_json::json!({
+                                            "tg":        g.talkgroup.0,
+                                            "channel":   g.channel.0,
+                                            "frequency": g.frequency_hz,
+                                            "src":       g.source.map(|r| r.0),
+                                            "encrypted": g.encrypted,
+                                            "emergency": g.emergency,
+                                            "is_update": false,
+                                        }),
+                                    );
+                                }
 
                                 // Tally every observed grant into the
                                 // persistent frequency map regardless
