@@ -131,12 +131,14 @@ pub struct AppState {
     /// Phase 6F.2: per-source IRQ counters from the InterruptHandler
     /// task. Read by `/api/irq_stats`.
     pub irq_stats: Arc<tokio::sync::Mutex<crate::IrqStats>>,
-    /// Phase 7A.1: traffic-channel grant follower. Singleton, driven by
-    /// the 50 ms polling task in main.rs that snapshots
-    /// `lsm_decoder.grants` and forwards the newest entry. Read by
-    /// `/api/traffic` to surface state, current TG/channel/frequency,
-    /// NCO offset, and retune counters. Phase 7H will replace the
-    /// singleton with a slot allocator over a channelizer.
+    /// Phase 7A.1: traffic-channel grant follower. Singleton, driven
+    /// by `app::follower::spawn_traffic_grant_follower` consuming the
+    /// typed `GrantEvent` mpsc broadcast emitted by the LSM control-
+    /// channel decoder. Read by `/api/traffic` to surface state,
+    /// current TG/channel/frequency, NCO offset, and retune counters.
+    /// Phase 2g will replace the singleton + sticky-lock policy with
+    /// the three-layer split (TrafficChain + GrantFollower + per-grant
+    /// CallTracker).
     pub traffic_manager:
         Arc<tokio::sync::Mutex<crate::protocol::p25::traffic_manager::TrafficManager>>,
     /// Phase 7A.1: data-side counters for the traffic dibit DMA path,
@@ -218,6 +220,16 @@ pub struct AppState {
     /// `grant_stats` task that subscribes to `CallBoundary` events.
     /// Consumed by `/api/grant_decode_stats`.
     pub grant_decode_stats: crate::app::grant_stats::GrantStatsRing,
+
+    /// 2026-04-25 Phase 2e: pull-side mirror of the call_tracker's
+    /// currently-active call (None when idle). Replaces the long-
+    /// lived `ControlChannelDecoder.grants` HashMap as the source of
+    /// truth for `/api/grants`, `/api/stats.active_grants`, and the
+    /// dashboard's Active Grants panel. Mirrored on every
+    /// CallTracker mutation; reads under the std::sync::Mutex are
+    /// short-lived (microseconds) so HTTP handlers don't need async.
+    pub active_call_snapshot:
+        crate::app::call_tracker::ActiveCallShared,
 
     /// 2026-04-24: shared auto-PPM tracker ring. The sampler task
     /// pushes estimates, the updater reads + clamps + applies. Shared

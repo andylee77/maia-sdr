@@ -13,7 +13,7 @@
 #![cfg(target_os = "linux")]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8};
+use std::sync::atomic::{AtomicBool, AtomicI64};
 
 use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::Receiver;
@@ -34,9 +34,6 @@ const FOLLOWER_TIMEOUT_TICK_MS: u64 = 200;
 
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_traffic_grant_follower(
-    follower_lsm_decoder: Arc<RwLock<ControlChannelDecoder>>,
-    follower_c4fm_decoder: Arc<RwLock<ControlChannelDecoder>>,
-    follower_active_mod: Arc<AtomicU8>,
     follower_mgr: Arc<Mutex<TrafficManager>>,
     follower_core: Arc<Mutex<fpga::IpCore>>,
     follower_current_sample_rate_hz: Arc<std::sync::atomic::AtomicU32>,
@@ -753,24 +750,15 @@ pub fn spawn_traffic_grant_follower(
                             // no PLL drift against noise.
                             core.pause_traffic_chain();
                             if let Some(tg) = pre_timeout_tg {
-                                // Drop the stale grant from whichever
-                                // decoder the modulation selector says
-                                // is active.
-                                let active = follower_active_mod.load(
-                                    std::sync::atomic::Ordering::Relaxed,
-                                );
-                                let mut dec = if active == 1 {
-                                    follower_c4fm_decoder.write().await
-                                } else {
-                                    follower_lsm_decoder.write().await
-                                };
-                                dec.grants.retain(
-                                    |_, g| g.talkgroup.0 != tg.0
-                                );
+                                // Phase 2e (2026-04-25): the per-decoder
+                                // grant store is gone — call lifecycle
+                                // lives in `app::call_tracker`. Just
+                                // log the Idle transition; CallTracker's
+                                // own timeout sweep already closed the
+                                // matching call seconds earlier.
                                 tracing::info!(
                                     target: "p25_traffic",
-                                    "traffic Idle (timeout) -- removed \
-                                     TG {} from grant store, \
+                                    "traffic Idle (timeout) TG {} -- \
                                      demod_enable=off",
                                     tg.0,
                                 );

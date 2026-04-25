@@ -150,24 +150,13 @@ pub struct GrantInfo {
     pub source: Option<RadioId>,
     pub frequency_hz: Option<u64>,
     pub timestamp: Instant,
-    /// Phase 7C: encryption flag from the `GroupVoiceChannelGrant`
-    /// TSBK service options byte (mask 0x40). Preserved across
-    /// `GroupVoiceChannelGrantUpdate` refreshes via
-    /// `take_other_grants_for_talkgroup` since the update TSBK
-    /// doesn't carry service options.
-    ///
-    /// **Operational use:** Phase 7D vocoder reads this and skips
-    /// vocoding encrypted IMBE frames (matches SDRTrunk's
-    /// `mIgnoreEncryptedCalls` semantics, gated EARLIER -- at the
-    /// control channel grant moment, BEFORE the traffic DDC
-    /// retunes). See
-    /// `reference_p25_encryption_flag_from_control_channel.md`
-    /// memory.
-    ///
-    /// **Late-entry caveat:** if we missed the original
-    /// `GroupVoiceChannelGrant` and only see updates, this stays
-    /// `false`. The HDU on the voice channel would tell us, but
-    /// HDU payload parsing is deferred to Phase 7C.2.
+    /// Encryption flag from the `GroupVoiceChannelGrant` TSBK
+    /// service options byte (mask 0x40). Phase 2e (2026-04-25):
+    /// per-decoder grant retention is gone — `GrantInfo` is built
+    /// once per TSBK, broadcast via `emit_grant_event`, then
+    /// dropped. CallTracker latches encrypted on `CcGrantArrival`
+    /// and ignores it on subsequent refreshes; cross-call
+    /// inheritance lives in `imbe_forwarder.encrypted_tg_history`.
     pub encrypted: bool,
     /// Phase 7C: emergency flag from the same service options byte
     /// (mask 0x80). Surfaced for the dashboard "active calls" view
@@ -175,15 +164,3 @@ pub struct GrantInfo {
     pub emergency: bool,
 }
 
-/// Phase 7C: fields preserved across grant updates by
-/// `take_other_grants_for_talkgroup`. The original
-/// `GroupVoiceChannelGrant` carries the source RadioId and the
-/// service options byte (encryption + emergency flags); the
-/// `GroupVoiceChannelGrantUpdate` carries neither, so the update
-/// handler inherits both from the prior grant for the same TG.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PreservedGrantFields {
-    pub source: Option<RadioId>,
-    pub encrypted: bool,
-    pub emergency: bool,
-}

@@ -64,12 +64,6 @@ const NID_EVENT_LOG_THROTTLE_MS: u64 = 200;
 /// enough to see drift, high enough to not spam.
 const STATS_POLL_INTERVAL_SECS: u64 = 2;
 
-/// Periodic grant-expiry sweep cadence. Without this sweep the
-/// decoder's grant HashMap would only grow and the Active Grants
-/// panel would never decay. Actual per-grant expiry age is 30 s
-/// (P25 typical call timeout) — this just sets how often we look.
-const GRANT_EXPIRY_SWEEP_SECS: u64 = 5;
-
 /// Cumulative + snapshot stats for the HDL LSM chain. Populated by the
 /// HDL LSM heartbeat task, read by `/api/hdl_lsm`.
 #[derive(Debug, Clone, Default)]
@@ -1254,9 +1248,6 @@ async fn main() -> anyhow::Result<()> {
         // See that module for polling / sticky-lock / encryption
         // policy rationale.
         app::follower::spawn_traffic_grant_follower(
-            lsm_decoder.clone(),
-            decoder.clone(),
-            active_modulation.clone(),
             traffic_manager.clone(),
             ip_core.clone(),
             current_sample_rate_hz.clone(),
@@ -1487,34 +1478,12 @@ async fn main() -> anyhow::Result<()> {
             }
         });
 
-        // Periodic grant expiry. Without this the decoder's grant
-        // HashMap only grows — Active Grants count would never decay.
-        // 30 s matches P25 typical call timeout.
-        let expiry_decoder = decoder.clone();
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(
-                std::time::Duration::from_secs(GRANT_EXPIRY_SWEEP_SECS));
-            tick.tick().await;
-            loop {
-                tick.tick().await;
-                let mut dec = expiry_decoder.write().await;
-                dec.expire_grants(30);
-            }
-        });
-
-        // Same expiry sweep for the LSM decoder (feeds the Active
-        // Grants panel).
-        let lsm_expiry_decoder = lsm_decoder.clone();
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(
-                std::time::Duration::from_secs(GRANT_EXPIRY_SWEEP_SECS));
-            tick.tick().await;
-            loop {
-                tick.tick().await;
-                let mut dec = lsm_expiry_decoder.write().await;
-                dec.expire_grants(30);
-            }
-        });
+        // Phase 2e (2026-04-25): the periodic grant-expiry sweeps
+        // (one per control decoder) were removed alongside the
+        // decoder's `grants` HashMap. The dashboard's Active Grants
+        // panel now reads `state.active_call_snapshot` (mirrored from
+        // call_tracker) which drops to None within seconds of TDU /
+        // timeout — no zombie 30 s entries to reap.
 
         (ip_core, ad9361)
     };
@@ -1530,11 +1499,14 @@ async fn main() -> anyhow::Result<()> {
     // BEFORE the recorder spawn so we can subscribe in order.
     // grant_stats also subscribes to this channel (spawn below).
     let call_tracker_tx = crate::app::call_tracker::new_event_tx();
+    let active_call_snapshot =
+        crate::app::call_tracker::new_active_call_shared();
     crate::app::call_tracker::spawn_call_tracker(
         call_boundary_tx.clone(),
         audio_tx.clone(),
         call_tracker_tx.clone(),
         imbe_forwarder.clone(),
+        active_call_snapshot.clone(),
     );
 
     // Call recorder: subscribes to audio_tx (for PCM) AND
@@ -1676,6 +1648,7 @@ async fn main() -> anyhow::Result<()> {
         recorder_diag: recorder_diag.clone(),
         active_modulation: active_modulation.clone(),
         grant_decode_stats: crate::app::grant_stats::new_ring(),
+        active_call_snapshot: active_call_snapshot.clone(),
         ppm_tracker_ring: std::sync::Arc::new(
             std::sync::Mutex::new(
                 std::collections::VecDeque::with_capacity(300))),

@@ -30,69 +30,59 @@ use crate::protocol::p25::control_channel::{
 };
 
 pub async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant>> {
-    // Phase 9 retirement (2026-04-15): used to union grants from
-    // `lsm_decoder` + `iq_lsm_decoder`. The software pipeline is
-    // gone so this is now a single-decoder read. As a side effect,
-    // the stale-age bug on the Active Grants panel (iq_lsm_decoder
-    // had no expire_grants loop; its grants sat forever) is fixed.
-    //
-    // Phase 7F.4 (2026-04-14): cross-reference each grant against
-    // the persistent `encrypted_tg_history` HashSet. Grants whose
-    // current TSBK service options lack the encrypted bit but whose
-    // TG has ever been seen encrypted get `in_encrypted_history=true`
-    // so the dashboard can badge them even when the latest
-    // transmission forgot to set the flag.
-    let encrypted_history: std::collections::HashSet<u16> = state
+    // Phase 2e (2026-04-25): single source of truth is
+    // `active_call_snapshot`, mirrored from `app::call_tracker`.
+    // Returns at most one entry (the chain follows one call at a
+    // time). Empty when idle. The 30 s zombie-grant problem from
+    // the prior decoder-side HashMap is gone — snapshots clear
+    // on TDU/timeout via the CallTracker authority.
+    let snapshot = state
+        .active_call_snapshot
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
+
+    let Some(a) = snapshot else { return Json(Vec::new()); };
+
+    let in_history = state
         .imbe_forwarder
         .encrypted_tg_history
         .lock()
-        .map(|h| h.clone())
-        .unwrap_or_default();
+        .map(|h| h.contains(&a.tg))
+        .unwrap_or(false);
 
-    // 2026-04-16: read from whichever decoder the modulation selector
-    // picks (LSM for simulcast sites, C4FM for FDMA sites).
-    let dec = state.active_control_decoder().read().await;
-    let mut by_channel: std::collections::HashMap<u16, ChannelGrant> =
-        std::collections::HashMap::new();
-    for g in dec.grants.values() {
-        let in_history = encrypted_history.contains(&g.talkgroup.0);
-        let cg = ChannelGrant {
-            channel: format!("{}", g.channel),
-            talkgroup: g.talkgroup.0,
-            talkgroup_alias: dec.aliases.get(&g.talkgroup.0).cloned(),
-            source: g.source.map(|s| s.0),
-            frequency_mhz: g.frequency_hz.map(|f| f as f64 / 1_000_000.0),
-            age_secs: g.timestamp.elapsed().as_secs(),
-            encrypted: g.encrypted,
-            emergency: g.emergency,
-            in_encrypted_history: in_history,
-        };
-        by_channel.insert(g.channel.0, cg);
-    }
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let age_secs = if a.started_unix_ms > 0 && now_unix_ms >= a.started_unix_ms {
+        (now_unix_ms - a.started_unix_ms) / 1000
+    } else {
+        0
+    };
 
-    // Second pass: collapse by talkgroup, picking the youngest
-    // surviving channel entry per TG. TG 0 is excluded from the
-    // dedup (matches the decoder-side wildcard sentinel) so we
-    // never collapse multiple unrelated "no-talkgroup" entries.
-    let mut by_talkgroup: std::collections::HashMap<u16, ChannelGrant> =
-        std::collections::HashMap::new();
-    let mut tg0_passthrough: Vec<ChannelGrant> = Vec::new();
-    for cg in by_channel.into_values() {
-        if cg.talkgroup == 0 {
-            tg0_passthrough.push(cg);
-            continue;
-        }
-        match by_talkgroup.get(&cg.talkgroup) {
-            Some(existing) if existing.age_secs <= cg.age_secs => {}
-            _ => {
-                by_talkgroup.insert(cg.talkgroup, cg);
-            }
-        }
-    }
-    let mut grants: Vec<ChannelGrant> = by_talkgroup.into_values().collect();
-    grants.extend(tg0_passthrough);
-    grants.sort_by_key(|g| g.age_secs);
-    Json(grants)
+    let alias = state
+        .active_control_decoder()
+        .read()
+        .await
+        .aliases
+        .get(&a.tg)
+        .cloned();
+
+    Json(vec![ChannelGrant {
+        channel: a.channel.unwrap_or_default(),
+        talkgroup: a.tg,
+        talkgroup_alias: alias,
+        source: a.source,
+        frequency_mhz: a.freq_hz.map(|f| f as f64 / 1_000_000.0),
+        age_secs,
+        encrypted: a.encrypted,
+        // CallTracker doesn't model emergency separately. The flag
+        // is rare (genuine emergency PTT on Clay County is sub-
+        // weekly); restore via Phase 2g if/when it matters.
+        emergency: false,
+        in_encrypted_history: in_history,
+    }])
 }
 
 
@@ -224,9 +214,19 @@ pub async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats>
     );
     let audio_ws_clients = Some(state.audio_tx.receiver_count());
 
+    // Phase 2e (2026-04-25): active_grants reads from the
+    // call_tracker mirror — 0 or 1, never zombies.
+    let active_grants = state
+        .active_call_snapshot
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .map(|_| 1usize)
+        .unwrap_or(0);
+
     Json(DecoderStats {
         recent_messages: decoder.recent_messages.len(),
-        active_grants: decoder.grants.len(),
+        active_grants,
         bands_known: decoder.bands.len(),
         system_acquired: decoder.system.wacn.is_some(),
         dibit_count,
@@ -412,12 +412,24 @@ pub async fn get_decoder_compare(
         .map(|(n, _)| fmt_nac_u16(*n))
         .unwrap_or_else(|| "--".to_string());
 
+    // Phase 2e (2026-04-25): active_grants is now global (call_tracker
+    // single source of truth). Both per-decoder slots in this
+    // comparison see the same value — there's only one chain
+    // following one call.
+    let active_grants = state
+        .active_call_snapshot
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .map(|_| 1usize)
+        .unwrap_or(0);
+
     Json(serde_json::json!({
         "ps_c4fm": {
             "label":           "PS C4FM (software, HDL C4FM dibit-fed — DORMANT on LSM sites)",
             "system_nac":      fmt_nac(dec_c4fm.system.nac),
             "messages":        dec_c4fm.recent_messages.len(),
-            "active_grants":   dec_c4fm.grants.len(),
+            "active_grants":   active_grants,
             "bands_known":     dec_c4fm.bands.len(),
             "sync_hits":       dec_c4fm.sync_hits(),
             "sync_near":       dec_c4fm.sync_near_misses(),
@@ -445,7 +457,7 @@ pub async fn get_decoder_compare(
             "label":           "PS LSM framer (software framer on HDL LSM dibits — production)",
             "system_nac":      fmt_nac(dec_lsm.system.nac),
             "messages":        dec_lsm.recent_messages.len(),
-            "active_grants":   dec_lsm.grants.len(),
+            "active_grants":   active_grants,
             "bands_known":     dec_lsm.bands.len(),
             "sync_hits":       dec_lsm.sync_hits(),
             "sync_near":       dec_lsm.sync_near_misses(),

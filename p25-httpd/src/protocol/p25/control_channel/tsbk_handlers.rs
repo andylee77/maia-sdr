@@ -46,11 +46,13 @@ impl ControlChannelDecoder {
                 source,
                 service_options,
             } => {
+                // Phase 2e (2026-04-25): the long-lived
+                // `decoder.grants` HashMap was removed; the call
+                // lifecycle is owned by `app::call_tracker`. We still
+                // build a `GrantInfo` here purely to feed the typed
+                // grant-event broadcast (grant follower -> CallBoundary
+                // -> CallTracker). Nothing in the decoder retains it.
                 let freq = self.channel_to_frequency(*channel);
-                // Drop any prior grant for this TG on a different channel.
-                // TSBK carries fresh source + service_options so preserved
-                // values are discarded -- new call's caller/encryption win.
-                let _ = self.take_other_grants_for_talkgroup(*talkgroup);
                 let encrypted =
                     crate::protocol::p25::tsbk::service_options::is_encrypted(*service_options);
                 let emergency =
@@ -67,7 +69,6 @@ impl ControlChannelDecoder {
                 // GroupVoiceChannelGrant (opcode 0x00) = full grant.
                 // is_update = false → CcGrantArrival, can open OpenGrant.
                 self.emit_grant_event(&grant, false);
-                self.grants.insert(channel.0, grant);
             }
             // Backup CCH A/B channels for the trunking failover view.
             // RFSS/SITE overwrite (always identical to primary in practice).
@@ -122,7 +123,6 @@ impl ControlChannelDecoder {
                 service_options,
             } => {
                 let freq = self.channel_to_frequency(*transmit_channel);
-                let _ = self.take_other_grants_for_talkgroup(*talkgroup);
                 let encrypted =
                     crate::protocol::p25::tsbk::service_options::is_encrypted(*service_options);
                 let emergency =
@@ -142,7 +142,6 @@ impl ControlChannelDecoder {
                 // (the encrypted flag) so we treat it as a full arrival,
                 // not a refresh — is_update = false.
                 self.emit_grant_event(&grant, false);
-                self.grants.insert(transmit_channel.0, grant);
             }
             TsbkMessage::GroupVoiceChannelGrantUpdate {
                 channel_a,
@@ -150,44 +149,38 @@ impl ControlChannelDecoder {
                 channel_b,
                 talkgroup_b,
             } => {
+                // Phase 2e (2026-04-25): GVCG_UPDATE has no SRC and no
+                // service_options on the wire, so encryption +
+                // emergency + source are emitted as defaults. This is
+                // not a regression: the downstream CallTracker
+                // `CcGrantUpdate` arm refreshes ttl only and never
+                // touches the active call's encryption flag (which CC
+                // recorded on `CcGrantArrival`). Encryption inheritance
+                // for follow gating still works via
+                // `imbe_forwarder.encrypted_tg_history` (follower.rs).
                 let freq_a = self.channel_to_frequency(*channel_a);
-                // Drop prior grant for talkgroup_a on a different channel
-                // and PRESERVE source + encryption + emergency: the update
-                // TSBK doesn't carry service_options or a source, so without
-                // this we'd wipe both the caller ID and the encryption flag
-                // recorded from the original GroupVoiceChannelGrant.
-                let preserved_a =
-                    self.take_other_grants_for_talkgroup(*talkgroup_a);
                 let grant_a = GrantInfo {
                     channel: *channel_a,
                     talkgroup: *talkgroup_a,
-                    source: preserved_a.source,
+                    source: None,
                     frequency_hz: freq_a,
                     timestamp: Instant::now(),
-                    encrypted: preserved_a.encrypted,
-                    emergency: preserved_a.emergency,
+                    encrypted: false,
+                    emergency: false,
                 };
-                // GRP_VCH_GRNT_UPD (opcode 0x02) keep-alive: no SRC,
-                // no service_options. is_update = true → CcGrantUpdate,
-                // refresh-only semantics in grant_stats.
                 self.emit_grant_event(&grant_a, true);
-                self.grants.insert(channel_a.0, grant_a);
                 if talkgroup_b.0 != 0 {
                     let freq_b = self.channel_to_frequency(*channel_b);
-                    let preserved_b =
-                        self.take_other_grants_for_talkgroup(*talkgroup_b);
                     let grant_b = GrantInfo {
                         channel: *channel_b,
                         talkgroup: *talkgroup_b,
-                        source: preserved_b.source,
+                        source: None,
                         frequency_hz: freq_b,
                         timestamp: Instant::now(),
-                        encrypted: preserved_b.encrypted,
-                        emergency: preserved_b.emergency,
+                        encrypted: false,
+                        emergency: false,
                     };
                     self.emit_grant_event(&grant_b, true);
-                    self.grants.insert(channel_b.0, grant_b
-                    );
                 }
             }
             _ => {}

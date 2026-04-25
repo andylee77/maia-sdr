@@ -14,12 +14,12 @@
 //!   FIR flush + sync acquisition: ~40ms
 //!   Total: ~60ms (P25 allows ~200ms)
 //!
-//! Phase 7A.1 (2026-04-11): wired into main.rs as a singleton driven by
-//! a 50 ms polling task that snapshots the canonical `lsm_decoder.grants`
-//! HashMap and forwards the newest entry. Polling rather than typed
-//! events because the existing broadcast channel is `Sender<String>` --
-//! see doc/changes/033 for the rationale and the upgrade path to typed
-//! events in Phase 7B.
+//! Phase 7A.1 (2026-04-11): wired into main.rs as a singleton driven
+//! by `app::follower::spawn_traffic_grant_follower` consuming typed
+//! `GrantEvent` messages from the control-channel decoder's mpsc
+//! broadcast. Phase 2e (2026-04-25): the prior `lsm_decoder.grants`
+//! HashMap was removed; lifecycle now flows through `app::call_tracker`
+//! (CallTrackerEvent) and the snapshot mirror in AppState.
 
 use std::time::Instant;
 

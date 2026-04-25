@@ -183,6 +183,51 @@ pub fn new_event_tx() -> CallTrackerEventTx {
     broadcast::channel(64).0
 }
 
+/// Pull-based snapshot of the currently-active call. Mirrored from
+/// the spawn_call_tracker task on every state mutation so HTTP
+/// handlers can read "what's active right now" without subscribing
+/// to the broadcast.
+///
+/// Phase 2e (2026-04-25): replaces the long-lived
+/// `ControlChannelDecoder.grants` HashMap as the source of truth for
+/// the dashboard's Active Grants panel. The HashMap accumulated
+/// zombie entries because grants only expired on a 30 s sweep; the
+/// CallTracker authority closes calls within seconds of TDU /
+/// timeout, so reads here track real call state.
+#[derive(Debug, Clone)]
+pub struct ActiveCallSnapshot {
+    pub call_id: u64,
+    pub tg: u16,
+    pub nac: u16,
+    pub source: Option<u32>,
+    pub freq_hz: Option<u64>,
+    pub channel: Option<String>,
+    pub encrypted: bool,
+    pub started_unix_ms: u64,
+}
+
+pub type ActiveCallShared =
+    std::sync::Arc<std::sync::Mutex<Option<ActiveCallSnapshot>>>;
+
+pub fn new_active_call_shared() -> ActiveCallShared {
+    std::sync::Arc::new(std::sync::Mutex::new(None))
+}
+
+fn mirror_active(active: &Option<ActiveCall>, shared: &ActiveCallShared) {
+    if let Ok(mut s) = shared.lock() {
+        *s = active.as_ref().map(|c| ActiveCallSnapshot {
+            call_id: c.call_id,
+            tg: c.tg,
+            nac: c.nac,
+            source: c.source,
+            freq_hz: c.freq_hz,
+            channel: c.channel.clone(),
+            encrypted: c.encrypted,
+            started_unix_ms: c.started_unix_ms,
+        });
+    }
+}
+
 struct ActiveCall {
     call_id: u64,
     tg: u16,
@@ -365,6 +410,7 @@ pub fn spawn_call_tracker(
     audio_tx: broadcast::Sender<AudioChunk>,
     tracker_tx: CallTrackerEventTx,
     forwarder: Arc<ImbeForwarder>,
+    active_call: ActiveCallShared,
 ) {
     let mut boundary_rx = boundary_tx.subscribe();
     let mut audio_rx = audio_tx.subscribe();
@@ -396,6 +442,7 @@ pub fn spawn_call_tracker(
                                     CloseReason::Timeout,
                                     call.source, expected);
                             }
+                            mirror_active(&active, &active_call);
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
@@ -404,6 +451,7 @@ pub fn spawn_call_tracker(
                         boundary, &mut active, &mut next_call_id,
                         &tracker_tx, &forwarder,
                     );
+                    mirror_active(&active, &active_call);
                 }
                 recv = audio_rx.recv() => {
                     match recv {
@@ -432,6 +480,7 @@ pub fn spawn_call_tracker(
                                 CloseReason::Timeout,
                                 call.source, expected);
                         }
+                        mirror_active(&active, &active_call);
                     }
                 }
             }

@@ -216,8 +216,6 @@ pub struct ControlChannelDecoder {
     pub system: SystemIdentity,
     /// Frequency band table (from IDEN_UP messages)
     pub bands: HashMap<u8, FrequencyBand>,
-    /// Active grants (channel -> grant info)
-    pub grants: HashMap<u16, GrantInfo>,
     /// Recent TSBK messages for logging. Tuple is `(instant, block_idx,
     /// message)` where `block_idx` is 0/1/2 = TSBK1/TSBK2/TSBK3 within
     /// the parent TSDU, matching SDRTrunk's `decoded_messages.log`
@@ -316,7 +314,7 @@ pub trait VoiceHandler {
 
 mod types;
 pub use types::{
-    AlignedCapture, SystemIdentity, GrantInfo, PreservedGrantFields,
+    AlignedCapture, SystemIdentity, GrantInfo,
 };
 use types::{CaptureBuilder, DecoderState};
 
@@ -443,7 +441,6 @@ impl ControlChannelDecoder {
             capture_in_flight: None,
             system: SystemIdentity::default(),
             bands: HashMap::new(),
-            grants: HashMap::new(),
             recent_messages: Vec::new(),
             // At steady-state ~14 messages/sec a 100-entry cap
             // saturated in 7 seconds and skewed `/api/recent_tsbks`.
@@ -1403,65 +1400,6 @@ impl ControlChannelDecoder {
             .map(|band| band.channel_frequency(channel.number()))
     }
 
-    /// Expire old grants (calls that ended)
-    pub fn expire_grants(&mut self, max_age_secs: u64) {
-        let now = Instant::now();
-        self.grants.retain(|_, grant| {
-            now.duration_since(grant.timestamp).as_secs() < max_age_secs
-        });
-    }
-
-    /// Drop any existing grants that match `talkgroup` and return the
-    /// preserved fields (source RadioId, encryption flag, emergency
-    /// flag) from the first matching entry, so the caller can keep
-    /// state across a refresh.
-    ///
-    /// In real trunking, a single talkgroup is on one voice channel
-    /// at a time -- when the system grants TG `T` to a new channel,
-    /// any prior `T` grant on a different channel is no longer active.
-    /// The `grants` map is keyed by channel, so without this dedup
-    /// the old entry sits around until `expire_grants` reaps it.
-    ///
-    /// `GroupVoiceChannelGrantUpdate` does NOT carry a source RadioId,
-    /// so without preservation the source would get wiped to `None` on
-    /// the first update after an initial grant. Encryption + emergency
-    /// flags are similarly absent from update TSBKs. The "any prior
-    /// grant said true" rule for flags (boolean OR) is intentional: a
-    /// TG that was once marked encrypted/emergency stays so for the
-    /// call's duration -- matches SDRTrunk's call-session semantics.
-    ///
-    /// Wildcard TG 0 is excluded because the grant-update path already
-    /// filters it as a sentinel.
-    fn take_other_grants_for_talkgroup(
-        &mut self,
-        talkgroup: Talkgroup,
-    ) -> PreservedGrantFields {
-        if talkgroup.0 == 0 {
-            return PreservedGrantFields::default();
-        }
-        let mut preserved = PreservedGrantFields::default();
-        self.grants.retain(|_, g| {
-            if g.talkgroup == talkgroup {
-                // Capture the source from the first match.
-                if preserved.source.is_none() && g.source.is_some() {
-                    preserved.source = g.source;
-                }
-                // Preserve encryption + emergency flags (absent from
-                // GVCG_UPDATE). See function-level docstring for the
-                // boolean-OR rationale.
-                if g.encrypted {
-                    preserved.encrypted = true;
-                }
-                if g.emergency {
-                    preserved.emergency = true;
-                }
-                false
-            } else {
-                true
-            }
-        });
-        preserved
-    }
 }
 #[cfg(test)]
 #[path = "tests.rs"]
