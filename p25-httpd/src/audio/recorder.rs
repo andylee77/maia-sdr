@@ -1,7 +1,7 @@
 //! Call recording + playback.
 //!
 //! Phase 2b (2026-04-25): the recorder subscribes to `CallTrackerEvent`
-//! from `app::call_tracker`, the single authority for call identity.
+//! from `app::grant_follower`, the single authority for call identity.
 //! It no longer makes its own open/close decisions from raw boundary
 //! events or audio chunks — those decisions live in one place now.
 //!
@@ -42,7 +42,7 @@
 //! - chunk-source-change splits.
 //! - chunk-TG-change splits.
 //!
-//! All of those decisions now live in `app::call_tracker`. See
+//! All of those decisions now live in `app::grant_follower`. See
 //! `doc/diagnostics/2026-04-25/UNIFIED_CALL_LIFECYCLE.md` for the
 //! design rationale.
 //!
@@ -60,7 +60,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
 use crate::audio::AudioChunk;
-use crate::app::call_tracker::{
+use crate::app::grant_follower::{
     CallTrackerEvent, CallTrackerEventKind, CloseReason,
 };
 
@@ -73,7 +73,7 @@ pub const MAX_RECORDINGS: usize = 40;
 pub const STORAGE_DIR: &str = "/tmp/p25_recordings";
 
 /// Safety-net grace window. Phase 2b (2026-04-25): the primary close
-/// trigger is `CallTrackerEvent::CallClose` from `app::call_tracker`,
+/// trigger is `CallTrackerEvent::CallClose` from `app::grant_follower`,
 /// which emits at the end of `CALL_TIMEOUT_MS = 10 s` of inactivity.
 /// This grace runs longer (15 s) so it only fires if the tracker
 /// broadcast lagged, the spawn wiring broke, or call_tracker missed
@@ -202,7 +202,7 @@ pub fn new_diag() -> RecorderDiagArc {
 
 /// In-progress recording buffer. Not shared — lives inside the
 /// recorder task. Phase 2b: `call_id` is now populated from the
-/// `app::call_tracker` `CallTrackerEvent::CallOpen` event and used as
+/// `app::grant_follower` `CallTrackerEvent::CallOpen` event and used as
 /// the recording's identifier all the way through finalise. Same id
 /// joins the recording row to its `grant_decode_stats` summary
 /// (downstream of the same `CallTrackerEvent` stream).
@@ -499,7 +499,7 @@ async fn finalize(
 
 /// Recorder background task. Runs for the lifetime of the process.
 /// Phase 2b (2026-04-25): subscribes to the audio broadcast AND
-/// `CallTrackerEvent` from `app::call_tracker`. Lifecycle decisions
+/// `CallTrackerEvent` from `app::grant_follower`. Lifecycle decisions
 /// (when does a call open, close, or change speaker) are owned
 /// exclusively by `call_tracker` — this task is now a thin WAV writer
 /// driven by the events `call_tracker` broadcasts.

@@ -31,7 +31,7 @@ use crate::protocol::p25::control_channel::{
 
 pub async fn get_grants(State(state): State<Arc<AppState>>) -> Json<Vec<ChannelGrant>> {
     // Phase 2e (2026-04-25): single source of truth is
-    // `active_call_snapshot`, mirrored from `app::call_tracker`.
+    // `active_call_snapshot`, mirrored from `app::grant_follower`.
     // Returns at most one entry (the chain follows one call at a
     // time). Empty when idle. The 30 s zombie-grant problem from
     // the prior decoder-side HashMap is gone — snapshots clear

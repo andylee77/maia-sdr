@@ -488,7 +488,7 @@ async fn main() -> anyhow::Result<()> {
     // block) can subscribe and release the chain on CallClose. The
     // CallTracker authority task itself is spawned further down where
     // its dependencies (audio_tx + active_call_snapshot) are ready.
-    let call_tracker_tx = crate::app::call_tracker::new_event_tx();
+    let call_tracker_tx = crate::app::grant_follower::new_event_tx();
     // Lets on_tdu_lc publish Motorola TALK_COMPLETE source stamps.
     imbe_forwarder.set_boundary_tx(call_boundary_tx.clone());
     // `event_log` wiring is deferred until that ring is constructed
@@ -550,8 +550,8 @@ async fn main() -> anyhow::Result<()> {
     // Traffic-channel grant follower + dibit-reader stats. Created out
     // of cfg(linux) so AppState sees them on every target. The tasks
     // that touch ip_core live INSIDE cfg(linux).
-    let traffic_manager = Arc::new(tokio::sync::Mutex::new(
-        p25::traffic_manager::TrafficManager::new(
+    let traffic_chain = Arc::new(tokio::sync::Mutex::new(
+        p25::traffic_chain::TrafficChain::new(
             args.rx_lo, boot_preset.sample_rate_hz as u64),
     ));
     let traffic_stats = Arc::new(tokio::sync::Mutex::new(TrafficStats::default()));
@@ -1255,8 +1255,8 @@ async fn main() -> anyhow::Result<()> {
         // policy rationale. Phase 2c (2026-04-25) wires the
         // CallTrackerEvent broadcast into the follower so it can
         // release the chain on CallClose.
-        app::follower::spawn_traffic_grant_follower(
-            traffic_manager.clone(),
+        app::grant_follower::spawn_grant_follower(
+            traffic_chain.clone(),
             ip_core.clone(),
             current_sample_rate_hz.clone(),
             current_rx_lo.clone(),
@@ -1283,7 +1283,7 @@ async fn main() -> anyhow::Result<()> {
         //   0x5 LDU1   -> ldu_received(..., false)
         //   0xA LDU2   -> ldu_received(..., true)
         let traffic_lsm_core = ip_core.clone();
-        let traffic_lsm_mgr = traffic_manager.clone();
+        let traffic_lsm_mgr = traffic_chain.clone();
         let traffic_lsm_stats = traffic_stats.clone();
         let traffic_event_tx = event_tx.clone();
         let traffic_event_log = event_log.clone();
@@ -1298,7 +1298,7 @@ async fn main() -> anyhow::Result<()> {
                 tokio::time::interval(std::time::Duration::from_millis(LSM_HEARTBEAT_TICK_MS));
             tick.tick().await; // discard immediate first tick
             // Track cumulative NID counters locally for periodic
-            // logging (TrafficManager already tracks hdus_seen /
+            // logging (TrafficChain already tracks hdus_seen /
             // ldus_seen / tdus_seen).
             let mut total_polls: u64 = 0;
             let mut nid_events: u64 = 0;
@@ -1360,7 +1360,7 @@ async fn main() -> anyhow::Result<()> {
                         0xA => mgr.ldu_received(now, nac, true),
                         // Phase 2c (2026-04-25): TDU/TDU_LC NIDs no
                         // longer drive lifecycle here. Lifecycle is
-                        // owned by `app::call_tracker` which sees
+                        // owned by `app::grant_follower` which sees
                         // `CallBoundaryKind::SpeakerEnd` from the LSM
                         // voice handler. Keep the stats counter +
                         // last_duid/last_nac mirror for the dashboard.
@@ -1519,8 +1519,8 @@ async fn main() -> anyhow::Result<()> {
     // alongside `call_boundary_tx` so the cfg(linux) grant follower
     // can subscribe too.
     let active_call_snapshot =
-        crate::app::call_tracker::new_active_call_shared();
-    crate::app::call_tracker::spawn_call_tracker(
+        crate::app::grant_follower::new_active_call_shared();
+    crate::app::grant_follower::spawn_call_lifecycle(
         call_boundary_tx.clone(),
         audio_tx.clone(),
         call_tracker_tx.clone(),
@@ -1650,7 +1650,7 @@ async fn main() -> anyhow::Result<()> {
         center_locked:           center_locked.clone(),
         hdl_lsm: hdl_lsm.clone(),
         irq_stats: irq_stats.clone(),
-        traffic_manager: traffic_manager.clone(),
+        traffic_chain: traffic_chain.clone(),
         traffic_stats: traffic_stats.clone(),
         traffic_follower_enabled: traffic_follower_enabled.clone(),
         traffic_lock_freq:        traffic_lock_freq.clone(),

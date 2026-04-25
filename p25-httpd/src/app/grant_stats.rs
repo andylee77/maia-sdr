@@ -25,7 +25,7 @@ use std::sync::atomic::Ordering;
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use crate::app::call_tracker::{
+use crate::app::grant_follower::{
     CallTrackerEvent, CallTrackerEventKind, CallTrackerEventTx, CloseReason,
 };
 use crate::app::imbe_forwarder::ImbeForwarder;

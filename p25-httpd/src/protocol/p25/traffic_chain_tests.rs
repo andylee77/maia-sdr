@@ -11,7 +11,7 @@ use crate::protocol::p25::test_fixtures::*;
 #[test]
 fn test_nco_calculation() {
     // RX LO at 858.1 MHz, sample rate 8 MSPS
-    let mut mgr = TrafficManager::new(858_100_000, 8_000_000);
+    let mut mgr = TrafficChain::new(858_100_000, 8_000_000);
 
     // Retune to 860.9625 MHz (control channel, +2.8625 MHz offset)
     let retune = mgr.handle_grant(
@@ -32,7 +32,7 @@ fn test_nco_calculation() {
 #[test]
 fn test_negative_offset() {
     // RX LO at 858.1 MHz, target 855.2375 MHz (-2.8625 MHz)
-    let mut mgr = TrafficManager::new(858_100_000, 8_000_000);
+    let mut mgr = TrafficChain::new(858_100_000, 8_000_000);
 
     let retune = mgr.handle_grant(
         Channel(0x0001),
@@ -46,7 +46,7 @@ fn test_negative_offset() {
 
 #[test]
 fn test_grant_lifecycle() {
-    let mut mgr = TrafficManager::new(858_100_000, 8_000_000);
+    let mut mgr = TrafficChain::new(858_100_000, 8_000_000);
 
     // Start idle
     assert!(!mgr.is_active());

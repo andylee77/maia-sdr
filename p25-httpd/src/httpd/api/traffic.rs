@@ -33,7 +33,7 @@ use crate::protocol::p25::control_channel::{
 /// state + dibit DMA counters, with optional manual control via
 /// query parameters.
 ///
-/// **Read-side** (no params): returns a snapshot of the TrafficManager
+/// **Read-side** (no params): returns a snapshot of the TrafficChain
 /// state machine, the TrafficStats counters, and the traffic_dma IRQ
 /// count.
 ///
@@ -183,7 +183,7 @@ pub async fn get_traffic(
                             // immediately even though the follower
                             // didn't drive it.
                             let mut mgr =
-                                state.traffic_manager.lock().await;
+                                state.traffic_chain.lock().await;
                             mgr.last_offset_hz = offset_hz;
                             let nco_frac =
                                 offset_hz as f64 / sample_rate_hz;
@@ -274,7 +274,7 @@ pub async fn get_traffic(
         tdus_seen,
         nco_skips,
     ) = {
-        let mgr = state.traffic_manager.lock().await;
+        let mgr = state.traffic_chain.lock().await;
         let label = mgr.state_label();
         let ch = mgr.current_channel().map(|c| c.0);
         let tg = mgr.current_talkgroup().map(|t| t.0);
@@ -575,7 +575,7 @@ pub async fn get_traffic(
     };
 
     // Phase 7C: pull the encryption flag from the currently-locked
-    // grant, if any. The grant follower's TrafficManager holds the
+    // grant, if any. The grant follower's TrafficChain holds the
     // Phase 7D: the encryption flag shown on the dashboard comes from
     // the ImbeForwarder's `call_encrypted` atomic, which is the same
     // flag the vocoder task reads to decide whether to decode or skip.
@@ -584,7 +584,7 @@ pub async fn get_traffic(
     // Single source of truth: what the vocoder sees = what the
     // dashboard shows.
     let current_call_encrypted = {
-        let mgr = state.traffic_manager.lock().await;
+        let mgr = state.traffic_chain.lock().await;
         if mgr.current_talkgroup().is_some() {
             Some(state.imbe_forwarder.call_encrypted.load(
                 std::sync::atomic::Ordering::Relaxed,

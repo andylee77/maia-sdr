@@ -139,7 +139,7 @@ pub async fn get_spectrum(
     let center_hz: f64 = match chain {
         "control" => state.boot_control_freq as f64,
         "traffic" => {
-            let mgr = state.traffic_manager.lock().await;
+            let mgr = state.traffic_chain.lock().await;
             rx_lo + mgr.last_offset_hz as f64
         }
         _ => rx_lo,

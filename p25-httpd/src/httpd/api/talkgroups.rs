@@ -40,7 +40,7 @@ use crate::protocol::p25::control_channel::{
 pub async fn get_grant_map(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let mgr = state.traffic_manager.lock().await;
+    let mgr = state.traffic_chain.lock().await;
     let rows: Vec<serde_json::Value> = mgr.grant_map.iter()
         .map(|(key, entry)| serde_json::json!({
             "tg":                key.0,
@@ -246,7 +246,7 @@ pub async fn put_encrypted_tgs(
     // currently locked on a newly-blocked TG. Otherwise the manual
     // add takes effect only for the NEXT grant for that TG.
     let currently_locked = state
-        .traffic_manager
+        .traffic_chain
         .lock()
         .await
         .current_talkgroup()
@@ -259,7 +259,7 @@ pub async fn put_encrypted_tgs(
             .map(|h| h.contains(&locked_tg))
             .unwrap_or(false);
         if blocked_now {
-            let mut mgr = state.traffic_manager.lock().await;
+            let mut mgr = state.traffic_chain.lock().await;
             mgr.force_idle();
             drop(mgr);
             use std::sync::atomic::Ordering;

@@ -48,7 +48,7 @@ impl ControlChannelDecoder {
             } => {
                 // Phase 2e (2026-04-25): the long-lived
                 // `decoder.grants` HashMap was removed; the call
-                // lifecycle is owned by `app::call_tracker`. We still
+                // lifecycle is owned by `app::grant_follower`. We still
                 // build a `GrantInfo` here purely to feed the typed
                 // grant-event broadcast (grant follower -> CallBoundary
                 // -> CallTracker). Nothing in the decoder retains it.

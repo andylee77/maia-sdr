@@ -1,37 +1,661 @@
-//! Traffic-channel grant follower task.
+//! Grant Follower — single owner of the active P25 grant.
 //!
-//! Consumes GroupVoiceChannelGrant TSBKs from the canonical LSM
-//! control-channel decoder, applies the sticky-lock / monitor-list /
-//! encryption policies, dispatches traffic-DDC retunes, and refreshes
-//! the ImbeForwarder's current_talkgroup / current_source /
-//! call_encrypted atomics.
+//! Phase 2g (2026-04-25): consolidated module owning everything
+//! "grant following" — the prior `app::follower` (CC GrantEvent →
+//! traffic-chain retune, sticky-lock / monitor-list / encryption
+//! gates) AND the prior `app::call_tracker` (CallBoundary →
+//! CallTrackerEvent broadcast, ActiveCall lifecycle). One file,
+//! one mental model.
 //!
-//! Linux-only: dispatches retunes via `fpga::IpCore`, so the module
-//! is gated with `#![cfg(target_os = "linux")]` to keep dev-side
-//! `cargo check` on Windows passing.
-
-#![cfg(target_os = "linux")]
+//! Layout
+//! ------
+//!
+//! 1. **Cross-platform types** (top of file, no cfg):
+//!    `CallTrackerEvent` + variants, `CloseReason`, `OpenReason`,
+//!    `SourceUpdateVia`, `ActiveCallSnapshot`, `ActiveCallShared`,
+//!    `new_event_tx`, `new_active_call_shared`. AppState +
+//!    grant_stats + recorder import these.
+//!
+//! 2. **Lifecycle authority** (`spawn_call_lifecycle`, portable):
+//!    Subscribes to `CallBoundary` + `AudioChunk`, owns
+//!    `Option<ActiveCall>`, publishes `CallTrackerEvent`. Mirrors
+//!    the active call into `ActiveCallShared` for HTTP pull-side
+//!    reads. Handles HduStart-after-gap split logic, LDU1 LC
+//!    voted-source filling, MotorolaTalkComplete BY: stamping,
+//!    timeout sweep.
+//!
+//! 3. **Routing + chain control** (`spawn_grant_follower`,
+//!    cfg(linux)): consumes `GrantEvent` from the CC decoder,
+//!    applies the gates (monitor list, encryption, sticky lock,
+//!    channel reuse, traffic_lock_freq), dispatches FPGA retunes
+//!    via `fpga::IpCore`, refreshes ImbeForwarder atomics for the
+//!    active call. Subscribes to `CallTrackerEvent::CallClose` to
+//!    release the chain (force_idle TC, pause demod, clear atomics).
+//!
+//! Why two spawned tasks instead of one
+//! ------------------------------------
+//!
+//! The lifecycle authority (#2) has no FPGA dependency and
+//! benefits from being host-testable on Windows. The routing path
+//! (#3) is intrinsically Linux-only because it drives the FPGA
+//! traffic chain. Sharing this file makes the boundary obvious
+//! (one re-export surface, one set of types) without forcing the
+//! lifecycle into the cfg(linux) cage. Communication between #2
+//! and #3 is via the existing `CallBoundary` and `CallTrackerEvent`
+//! broadcast channels — same shapes pre-Phase-2g, just relocated.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
+
+use tokio::sync::broadcast;
+
+use crate::app::imbe_forwarder::ImbeForwarder;
+use crate::audio::{AudioChunk, CallBoundary, CallBoundaryKind};
+
+// ── Phase 2c: timeout constants for the lifecycle sweep ──────────
+
+/// Maximum gap between CC grants of the same `(tg, source)` to
+/// treat the second as a retransmit (no new call).
+const RETRANSMIT_WINDOW_MS: u64 = 6_000;
+
+/// Inactivity window before an active call is closed by timeout.
+/// Phase 2d (2026-04-25): tightened 10000 -> 2000 to match
+/// SDRTrunk's `STALE_EVENT_THRESHOLD_MS = 2000`.
+const CALL_TIMEOUT_MS: u64 = 2_000;
+
+/// Cadence of the periodic timeout sweep.
+const TIMEOUT_TICK_MS: u64 = 500;
+
+/// Minimum quiescence gap before HduStart triggers a new-call
+/// split. Below: same-speaker PTT re-key. Above: new speaker.
+const HDU_SPLIT_GAP_MIN_MS: u64 = 500;
+
+// ── Public types (cross-platform; consumed by AppState +
+//    grant_stats + recorder + dashboard API) ────────────────────
+
+#[derive(Debug, Clone)]
+pub struct CallTrackerEvent {
+    pub call_id: u64,
+    pub timestamp_unix_ms: u64,
+    pub kind: CallTrackerEventKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum CallTrackerEventKind {
+    CallOpen {
+        tg: u16,
+        nac: u16,
+        source: Option<u32>,
+        freq_hz: Option<u64>,
+        channel: Option<String>,
+        encrypted: bool,
+        not_followed: Option<&'static str>,
+        opened_via: OpenReason,
+        baseline_frames_submitted: u64,
+    },
+    SourceUpdate {
+        new_source: u32,
+        via: SourceUpdateVia,
+    },
+    ActualSpeakerObserved {
+        speaker: u32,
+        agrees_with_cc: bool,
+    },
+    CallClose {
+        reason: CloseReason,
+        final_source: Option<u32>,
+        final_actual_speaker: Option<u32>,
+        started_unix_ms: u64,
+        ended_unix_ms: u64,
+        first_audio_at_unix_ms: Option<u64>,
+        first_hdu_at_unix_ms: Option<u64>,
+        expected_submit_count: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenReason {
+    CcGrant,
+    SpeakerChange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceUpdateVia {
+    CcRefresh,
+    Ldu1LcVote,
+    TdulcMotTc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseReason {
+    SpeakerEnd,
+    Timeout,
+    SpeakerChange,
+    TgChange,
+    NotFollowedExpire,
+}
+
+pub type CallTrackerEventTx = broadcast::Sender<CallTrackerEvent>;
+
+pub fn new_event_tx() -> CallTrackerEventTx {
+    broadcast::channel(64).0
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveCallSnapshot {
+    pub call_id: u64,
+    pub tg: u16,
+    pub nac: u16,
+    pub source: Option<u32>,
+    pub freq_hz: Option<u64>,
+    pub channel: Option<String>,
+    pub encrypted: bool,
+    pub started_unix_ms: u64,
+}
+
+pub type ActiveCallShared =
+    std::sync::Arc<std::sync::Mutex<Option<ActiveCallSnapshot>>>;
+
+pub fn new_active_call_shared() -> ActiveCallShared {
+    std::sync::Arc::new(std::sync::Mutex::new(None))
+}
+
+// ── Lifecycle internals (portable) ───────────────────────────────
+
+struct ActiveCall {
+    call_id: u64,
+    tg: u16,
+    nac: u16,
+    source: Option<u32>,
+    actual_speaker: Option<u32>,
+    freq_hz: Option<u64>,
+    channel: Option<String>,
+    encrypted: bool,
+    not_followed: Option<&'static str>,
+    started_unix_ms: u64,
+    started_instant: Instant,
+    last_activity_ms: u64,
+    first_audio_at_unix_ms: Option<u64>,
+    first_hdu_at_unix_ms: Option<u64>,
+    #[allow(dead_code)]
+    baseline_frames_submitted: u64,
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn mirror_active(active: &Option<ActiveCall>, shared: &ActiveCallShared) {
+    if let Ok(mut s) = shared.lock() {
+        *s = active.as_ref().map(|c| ActiveCallSnapshot {
+            call_id: c.call_id,
+            tg: c.tg,
+            nac: c.nac,
+            source: c.source,
+            freq_hz: c.freq_hz,
+            channel: c.channel.clone(),
+            encrypted: c.encrypted,
+            started_unix_ms: c.started_unix_ms,
+        });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_open(
+    tx: &CallTrackerEventTx,
+    call_id: u64,
+    tg: u16,
+    nac: u16,
+    source: Option<u32>,
+    freq_hz: Option<u64>,
+    channel: Option<String>,
+    encrypted: bool,
+    not_followed: Option<&'static str>,
+    opened_via: OpenReason,
+    baseline_frames_submitted: u64,
+    started_unix_ms: u64,
+) {
+    let _ = tx.send(CallTrackerEvent {
+        call_id,
+        timestamp_unix_ms: started_unix_ms,
+        kind: CallTrackerEventKind::CallOpen {
+            tg, nac, source, freq_hz, channel,
+            encrypted, not_followed, opened_via,
+            baseline_frames_submitted,
+        },
+    });
+}
+
+fn emit_close(
+    tx: &CallTrackerEventTx,
+    call: &ActiveCall,
+    reason: CloseReason,
+    final_source: Option<u32>,
+    expected_submit_count: u64,
+) {
+    let now = now_unix_ms();
+    let _ = tx.send(CallTrackerEvent {
+        call_id: call.call_id,
+        timestamp_unix_ms: now,
+        kind: CallTrackerEventKind::CallClose {
+            reason,
+            final_source,
+            final_actual_speaker: call.actual_speaker,
+            started_unix_ms: call.started_unix_ms,
+            ended_unix_ms: now,
+            first_audio_at_unix_ms: call.first_audio_at_unix_ms,
+            first_hdu_at_unix_ms: call.first_hdu_at_unix_ms,
+            expected_submit_count,
+        },
+    });
+}
+
+fn emit_source_update(
+    tx: &CallTrackerEventTx,
+    call_id: u64,
+    new_source: u32,
+    via: SourceUpdateVia,
+) {
+    let _ = tx.send(CallTrackerEvent {
+        call_id,
+        timestamp_unix_ms: now_unix_ms(),
+        kind: CallTrackerEventKind::SourceUpdate { new_source, via },
+    });
+}
+
+enum ArrivalDisposition {
+    Retransmit { source_upgrade: Option<u32> },
+    Ignore,
+    TgChange,
+    SpeakerChange,
+}
+
+fn classify_cc_arrival(
+    active: &ActiveCall,
+    new_tg: u16,
+    new_source: Option<u32>,
+    new_freq_hz: Option<u64>,
+    now_ms: u64,
+) -> ArrivalDisposition {
+    if let (Some(a_freq), Some(n_freq)) = (active.freq_hz, new_freq_hz) {
+        if a_freq != n_freq {
+            return ArrivalDisposition::Ignore;
+        }
+    }
+    if active.tg != new_tg {
+        return ArrivalDisposition::TgChange;
+    }
+    let stale = now_ms.saturating_sub(active.last_activity_ms)
+        >= RETRANSMIT_WINDOW_MS;
+    if stale {
+        return match (active.source, new_source) {
+            (Some(_), Some(_)) if active.source != new_source => {
+                ArrivalDisposition::SpeakerChange
+            }
+            _ => ArrivalDisposition::Retransmit { source_upgrade: None },
+        };
+    }
+    match (active.source, new_source) {
+        (None, None) => ArrivalDisposition::Retransmit {
+            source_upgrade: None,
+        },
+        (None, Some(s)) => ArrivalDisposition::Retransmit {
+            source_upgrade: Some(s),
+        },
+        (Some(_), None) => ArrivalDisposition::Retransmit {
+            source_upgrade: None,
+        },
+        (Some(a), Some(b)) if a == b => ArrivalDisposition::Retransmit {
+            source_upgrade: None,
+        },
+        (Some(_), Some(_)) => ArrivalDisposition::SpeakerChange,
+    }
+}
+
+/// Lifecycle authority task. Subscribes to the `CallBoundary`
+/// broadcast (CC arrivals from the grant follower, voice-frame
+/// boundaries from `imbe_forwarder`) and the audio broadcast,
+/// publishes `CallTrackerEvent` to subscribers. Portable.
+pub fn spawn_call_lifecycle(
+    boundary_tx: crate::audio::CallBoundaryTx,
+    audio_tx: broadcast::Sender<AudioChunk>,
+    tracker_tx: CallTrackerEventTx,
+    forwarder: Arc<ImbeForwarder>,
+    active_call: ActiveCallShared,
+) {
+    let mut boundary_rx = boundary_tx.subscribe();
+    let mut audio_rx = audio_tx.subscribe();
+
+    tokio::spawn(async move {
+        let mut active: Option<ActiveCall> = None;
+        let mut next_call_id: u64 = 1;
+        let mut tick = tokio::time::interval(
+            Duration::from_millis(TIMEOUT_TICK_MS),
+        );
+        tick.tick().await;
+
+        loop {
+            tokio::select! {
+                recv = boundary_rx.recv() => {
+                    let boundary = match recv {
+                        Ok(b) => b,
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(
+                                target: "p25_call_lifecycle",
+                                "boundary lagged by {n} events; \
+                                 dropping in-flight call to avoid \
+                                 stale state",
+                            );
+                            if let Some(call) = active.take() {
+                                let expected = forwarder
+                                    .frames_submitted.load(Ordering::Relaxed);
+                                emit_close(&tracker_tx, &call,
+                                    CloseReason::Timeout,
+                                    call.source, expected);
+                            }
+                            mirror_active(&active, &active_call);
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    };
+                    handle_boundary(
+                        boundary, &mut active, &mut next_call_id,
+                        &tracker_tx, &forwarder,
+                    );
+                    mirror_active(&active, &active_call);
+                }
+                recv = audio_rx.recv() => {
+                    match recv {
+                        Ok(chunk) => {
+                            handle_audio(chunk, &mut active);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                _ = tick.tick() => {
+                    let now = now_unix_ms();
+                    let should_close = active.as_ref()
+                        .map(|c| now.saturating_sub(c.last_activity_ms)
+                                    > CALL_TIMEOUT_MS)
+                        .unwrap_or(false);
+                    if should_close {
+                        if let Some(call) = active.take() {
+                            let expected = forwarder
+                                .frames_submitted.load(Ordering::Relaxed);
+                            emit_close(&tracker_tx, &call,
+                                CloseReason::Timeout,
+                                call.source, expected);
+                        }
+                        mirror_active(&active, &active_call);
+                    }
+                }
+            }
+        }
+        tracing::warn!(
+            target: "p25_call_lifecycle",
+            "call lifecycle task exiting (channels closed)",
+        );
+    });
+}
+
+fn handle_boundary(
+    boundary: CallBoundary,
+    active: &mut Option<ActiveCall>,
+    next_call_id: &mut u64,
+    tx: &CallTrackerEventTx,
+    forwarder: &Arc<ImbeForwarder>,
+) {
+    match boundary.kind {
+        CallBoundaryKind::CcGrantArrival {
+            tg, source, freq_hz, channel, encrypted, not_followed,
+        } => {
+            let now = now_unix_ms();
+            let channel_str = if channel == 0 {
+                None
+            } else {
+                Some(format!("{}", channel))
+            };
+
+            let (close_existing, opened_via) = match active.as_ref() {
+                None => (false, OpenReason::CcGrant),
+                Some(a) => match classify_cc_arrival(a, tg, source, freq_hz, now) {
+                    ArrivalDisposition::Retransmit { source_upgrade } => {
+                        let a_mut = active.as_mut().unwrap();
+                        a_mut.last_activity_ms = now;
+                        if let Some(s) = source_upgrade {
+                            a_mut.source = Some(s);
+                            emit_source_update(
+                                tx, a_mut.call_id, s,
+                                SourceUpdateVia::CcRefresh,
+                            );
+                        }
+                        if not_followed.is_some()
+                            && a_mut.not_followed.is_none()
+                        {
+                            a_mut.not_followed = not_followed;
+                        }
+                        if encrypted {
+                            a_mut.encrypted = true;
+                        }
+                        return;
+                    }
+                    ArrivalDisposition::Ignore => return,
+                    ArrivalDisposition::SpeakerChange => {
+                        (true, OpenReason::SpeakerChange)
+                    }
+                    ArrivalDisposition::TgChange => {
+                        (true, OpenReason::CcGrant)
+                    }
+                },
+            };
+
+            if close_existing {
+                if let Some(prev) = active.take() {
+                    let reason = match opened_via {
+                        OpenReason::SpeakerChange =>
+                            CloseReason::SpeakerChange,
+                        OpenReason::CcGrant => CloseReason::TgChange,
+                    };
+                    let expected = forwarder
+                        .frames_submitted.load(Ordering::Relaxed);
+                    emit_close(tx, &prev, reason, prev.source, expected);
+                }
+            }
+
+            let call_id = *next_call_id;
+            *next_call_id += 1;
+            let baseline = forwarder
+                .frames_submitted.load(Ordering::Relaxed);
+            *active = Some(ActiveCall {
+                call_id,
+                tg,
+                nac: boundary.nac,
+                source,
+                actual_speaker: None,
+                freq_hz,
+                channel: channel_str.clone(),
+                encrypted,
+                not_followed,
+                started_unix_ms: now,
+                started_instant: Instant::now(),
+                last_activity_ms: now,
+                first_audio_at_unix_ms: None,
+                first_hdu_at_unix_ms: None,
+                baseline_frames_submitted: baseline,
+            });
+            emit_open(
+                tx, call_id, tg, boundary.nac, source, freq_hz,
+                channel_str, encrypted, not_followed, opened_via,
+                baseline, now,
+            );
+        }
+
+        CallBoundaryKind::CcGrantUpdate { tg, .. } => {
+            if let Some(a) = active.as_mut() {
+                if a.tg == tg {
+                    a.last_activity_ms = now_unix_ms();
+                }
+            }
+        }
+
+        CallBoundaryKind::HduStart => {
+            let now = now_unix_ms();
+            let split = if let Some(a) = active.as_ref() {
+                if a.source.is_some() {
+                    false
+                } else {
+                    let gap_ms = now.saturating_sub(a.last_activity_ms);
+                    gap_ms >= HDU_SPLIT_GAP_MIN_MS && gap_ms < CALL_TIMEOUT_MS
+                }
+            } else {
+                false
+            };
+            if split {
+                if let Some(prev) = active.take() {
+                    let expected = forwarder
+                        .frames_submitted.load(Ordering::Relaxed);
+                    emit_close(tx, &prev, CloseReason::SpeakerChange,
+                               prev.source, expected);
+                    let call_id = *next_call_id;
+                    *next_call_id += 1;
+                    let baseline = forwarder
+                        .frames_submitted.load(Ordering::Relaxed);
+                    *active = Some(ActiveCall {
+                        call_id,
+                        tg: prev.tg,
+                        nac: boundary.nac.max(prev.nac),
+                        source: prev.source,
+                        actual_speaker: None,
+                        freq_hz: prev.freq_hz,
+                        channel: prev.channel.clone(),
+                        encrypted: prev.encrypted,
+                        not_followed: prev.not_followed,
+                        started_unix_ms: now,
+                        started_instant: Instant::now(),
+                        last_activity_ms: now,
+                        first_audio_at_unix_ms: Some(now),
+                        first_hdu_at_unix_ms: Some(now),
+                        baseline_frames_submitted: baseline,
+                    });
+                    emit_open(
+                        tx, call_id, prev.tg,
+                        boundary.nac.max(prev.nac), prev.source,
+                        prev.freq_hz, prev.channel, prev.encrypted,
+                        prev.not_followed, OpenReason::SpeakerChange,
+                        baseline, now,
+                    );
+                }
+            } else if let Some(a) = active.as_mut() {
+                if a.first_hdu_at_unix_ms.is_none() {
+                    a.first_hdu_at_unix_ms = Some(now);
+                }
+                if a.first_audio_at_unix_ms.is_none() {
+                    a.first_audio_at_unix_ms = Some(now);
+                }
+                a.last_activity_ms = now;
+                if a.nac == 0 && boundary.nac != 0 {
+                    a.nac = boundary.nac;
+                }
+            }
+        }
+
+        CallBoundaryKind::TdulcComplete { source } => {
+            if let Some(a) = active.as_mut() {
+                a.last_activity_ms = now_unix_ms();
+                if let Some(s) = source {
+                    let agrees_with_cc = match a.source {
+                        Some(cc) => cc == s,
+                        None => false,
+                    };
+                    if a.source.is_none() {
+                        a.source = Some(s);
+                        emit_source_update(
+                            tx, a.call_id, s,
+                            SourceUpdateVia::Ldu1LcVote,
+                        );
+                    }
+                    if a.actual_speaker != Some(s) {
+                        a.actual_speaker = Some(s);
+                        let _ = tx.send(CallTrackerEvent {
+                            call_id: a.call_id,
+                            timestamp_unix_ms: now_unix_ms(),
+                            kind: CallTrackerEventKind::ActualSpeakerObserved {
+                                speaker: s,
+                                agrees_with_cc,
+                            },
+                        });
+                    }
+                }
+            }
+        }
+
+        CallBoundaryKind::SpeakerEnd { source } => {
+            if let Some(call) = active.take() {
+                let final_source = call.source.or(source);
+                let expected = forwarder
+                    .frames_submitted.load(Ordering::Relaxed);
+                if final_source != call.source {
+                    if let Some(s) = final_source {
+                        emit_source_update(
+                            tx, call.call_id, s,
+                            SourceUpdateVia::TdulcMotTc,
+                        );
+                    }
+                }
+                emit_close(tx, &call,
+                    CloseReason::SpeakerEnd, final_source, expected);
+            }
+        }
+    }
+}
+
+fn handle_audio(chunk: AudioChunk, active: &mut Option<ActiveCall>) {
+    if let Some(a) = active.as_mut() {
+        let now = now_unix_ms();
+        a.last_activity_ms = now;
+        if a.first_audio_at_unix_ms.is_none() {
+            a.first_audio_at_unix_ms = Some(now);
+        }
+        if chunk.talkgroup != a.tg && chunk.talkgroup != 0 {
+            tracing::trace!(
+                target: "p25_call_lifecycle",
+                "audio chunk tg={} mismatch active tg={} — ignoring",
+                chunk.talkgroup, a.tg,
+            );
+        }
+    }
+}
+
+// ── Routing + chain control (Linux-only) ─────────────────────────
+
+#[cfg(target_os = "linux")]
+mod routing {
+
 use std::sync::atomic::{AtomicBool, AtomicI64};
 
 use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::Receiver;
 
-use crate::app::call_tracker::{
-    CallTrackerEventKind, CallTrackerEventTx,
-};
+use super::{Arc, CallTrackerEventKind, CallTrackerEventTx};
 use crate::app::imbe_forwarder::ImbeForwarder;
 use crate::audio;
 use crate::hardware::fpga;
 use crate::protocol::p25::{self, control_channel::ControlChannelDecoder,
-    traffic_manager::TrafficManager};
+    traffic_chain::TrafficChain};
 use crate::services::event_log::EventLog;
 use crate::services::monitor::MonitorList;
 
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_traffic_grant_follower(
-    follower_mgr: Arc<Mutex<TrafficManager>>,
+pub fn spawn_grant_follower(
+    follower_mgr: Arc<Mutex<TrafficChain>>,
     follower_core: Arc<Mutex<fpga::IpCore>>,
     follower_current_sample_rate_hz: Arc<std::sync::atomic::AtomicU32>,
     follower_current_rx_lo: Arc<AtomicI64>,
@@ -66,7 +690,7 @@ pub fn spawn_traffic_grant_follower(
             //   (or newest if monitor list is empty).
             let handle_grant_event =
                 |g: &p25::events::GrantEvent,
-                 mgr: &mut p25::traffic_manager::TrafficManager,
+                 mgr: &mut p25::traffic_chain::TrafficChain,
                  imbe: &ImbeForwarder| -> bool
             {
                 let freq_hz = match g.frequency_hz {
@@ -147,9 +771,9 @@ pub fn spawn_traffic_grant_follower(
             // `P25Event::Grant` arrival gets its own line, even
             // back-to-back grants on the same (TG, channel, freq)
             // packed into one 3-TSBK TSDU. The correct-handling
-            // invariant lives in `TrafficManager::handle_grant`:
+            // invariant lives in `TrafficChain::handle_grant`:
             // the `same_tg_same_freq` branch at
-            // traffic_manager.rs:258 short-circuits with
+            // traffic_chain.rs:258 short-circuits with
             // `return false` (no retune, no second transition)
             // whenever the grant matches the current lock, and
             // Acquiring->Active auto-promotes on that same branch.
@@ -247,9 +871,9 @@ pub fn spawn_traffic_grant_follower(
                                 // Raw grant receipt (pre-filter).
                                 // Logged unconditionally; double-retune
                                 // protection lives in
-                                // TrafficManager::handle_grant's
+                                // TrafficChain::handle_grant's
                                 // `same_tg_same_freq` branch
-                                // (traffic_manager.rs:258).
+                                // (traffic_chain.rs:258).
                                 follower_event_log.push(
                                     LogCategory::Grant,
                                     format!(
@@ -583,7 +1207,7 @@ pub fn spawn_traffic_grant_follower(
                                     }
                                     // Same freq as parked — fall through.
                                     // handle_grant_event will return
-                                    // retune=false (TrafficManager sees
+                                    // retune=false (TrafficChain sees
                                     // matching channel/freq), the imbe
                                     // atomics get updated, the call state
                                     // advances, and the recorder /
@@ -820,3 +1444,8 @@ pub fn spawn_traffic_grant_follower(
             tracing::warn!("grant follower task exiting (channel closed)");
         });
 }
+
+} // mod routing
+
+#[cfg(target_os = "linux")]
+pub use routing::spawn_grant_follower;

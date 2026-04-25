@@ -390,7 +390,7 @@ pub async fn get_control_iq_dump(
 ///
 /// Traffic-chain counterpart of `/api/control_iq_dump`. Reads the
 /// `traffic_iq_dma` ring instead; the DDC center is the follower's
-/// current NCO offset (RX LO + TrafficManager.last_offset_hz), so the
+/// current NCO offset (RX LO + TrafficChain.last_offset_hz), so the
 /// captured IQ is already centered on whatever traffic frequency the
 /// grant follower last retuned to. Requires the bake-#2 bitstream.
 #[cfg(target_os = "linux")]

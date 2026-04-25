@@ -36,7 +36,7 @@ pub enum LogCategory {
     /// Raw TSBK grant / grant-update received from the control channel
     /// decoder (before the follower has decided what to do with it).
     Grant,
-    /// TrafficManager state transitions + retune decisions from the
+    /// TrafficChain state transitions + retune decisions from the
     /// follower task (accepted, rejected-sticky, rejected-encrypted,
     /// retune executed, call Idle transition).
     Traffic,

@@ -131,19 +131,16 @@ pub struct AppState {
     /// Phase 6F.2: per-source IRQ counters from the InterruptHandler
     /// task. Read by `/api/irq_stats`.
     pub irq_stats: Arc<tokio::sync::Mutex<crate::IrqStats>>,
-    /// Phase 7A.1: traffic-channel grant follower. Singleton, driven
-    /// by `app::follower::spawn_traffic_grant_follower` consuming the
-    /// typed `GrantEvent` mpsc broadcast emitted by the LSM control-
-    /// channel decoder. Read by `/api/traffic` to surface state,
-    /// current TG/channel/frequency, NCO offset, and retune counters.
-    /// Phase 2g will replace the singleton + sticky-lock policy with
-    /// the three-layer split (TrafficChain + GrantFollower + per-grant
-    /// CallTracker).
-    pub traffic_manager:
-        Arc<tokio::sync::Mutex<crate::protocol::p25::traffic_manager::TrafficManager>>,
+    /// Traffic-channel singleton, driven by
+    /// `app::grant_follower::spawn_grant_follower` consuming the typed
+    /// `GrantEvent` mpsc broadcast emitted by the LSM control-channel
+    /// decoder. Read by `/api/traffic` to surface state, current
+    /// TG/channel/frequency, NCO offset, and retune counters.
+    pub traffic_chain:
+        Arc<tokio::sync::Mutex<crate::protocol::p25::traffic_chain::TrafficChain>>,
     /// Phase 7A.1: data-side counters for the traffic dibit DMA path,
     /// updated by the traffic dibit reader task in main.rs. Read by
-    /// `/api/traffic` alongside the TrafficManager state.
+    /// `/api/traffic` alongside the TrafficChain state.
     pub traffic_stats: Arc<tokio::sync::Mutex<crate::TrafficStats>>,
     /// Phase 7A.1: when false, the grant follower task in main.rs
     /// skips its 50 ms poll iteration entirely (no retunes, no
@@ -229,7 +226,7 @@ pub struct AppState {
     /// CallTracker mutation; reads under the std::sync::Mutex are
     /// short-lived (microseconds) so HTTP handlers don't need async.
     pub active_call_snapshot:
-        crate::app::call_tracker::ActiveCallShared,
+        crate::app::grant_follower::ActiveCallShared,
 
     /// 2026-04-24: shared auto-PPM tracker ring. The sampler task
     /// pushes estimates, the updater reads + clamps + applies. Shared

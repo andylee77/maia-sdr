@@ -1,11 +1,15 @@
-//! Traffic Channel Manager
+//! Traffic Channel
 //!
-//! When a voice channel grant is detected on the control channel:
-//! 1. Map logical channel number to RF frequency (via IDEN_UP table)
-//! 2. Compute DDC NCO offset for the traffic channel frequency
-//! 3. Command the traffic DDC to retune (write NCO frequency register)
-//! 4. Start traffic DMA and monitor dibit stream for voice frames
-//! 5. Manage call lifecycle (grant -> active -> teardown)
+//! Owns the traffic-side DDC chain: NCO state, FPGA retune, and
+//! per-frame counters from the LSM heartbeat (HDU / LDU / TDU
+//! observations). State machine is `Idle | Acquiring | Active`.
+//!
+//! Phase 2g (2026-04-25): renamed from TrafficManager to reflect
+//! the post-2c-2f role — this struct no longer owns lifecycle
+//! (timers, post-TDU hold, TDU dispatch). Lifecycle is owned by
+//! `app::grant_follower`, which calls `handle_grant` to acquire,
+//! `force_idle` to release, and reads state for /api/traffic
+//! diagnostics.
 //!
 //! Grant following latency budget (from DEVPLAN):
 //!   TSBK received: ~20ms
@@ -13,13 +17,6 @@
 //!   DDC retune (register write): ~1µs
 //!   FIR flush + sync acquisition: ~40ms
 //!   Total: ~60ms (P25 allows ~200ms)
-//!
-//! Phase 7A.1 (2026-04-11): wired into main.rs as a singleton driven
-//! by `app::follower::spawn_traffic_grant_follower` consuming typed
-//! `GrantEvent` messages from the control-channel decoder's mpsc
-//! broadcast. Phase 2e (2026-04-25): the prior `lsm_decoder.grants`
-//! HashMap was removed; lifecycle now flows through `app::call_tracker`
-//! (CallTrackerEvent) and the snapshot mirror in AppState.
 
 use std::time::Instant;
 
@@ -47,7 +44,7 @@ pub enum TrafficState {
 }
 
 /// Traffic channel manager
-pub struct TrafficManager {
+pub struct TrafficChain {
     /// Current state
     pub state: TrafficState,
     /// RX LO frequency (center of AD9361 capture band)
@@ -59,7 +56,7 @@ pub struct TrafficManager {
     /// Last NCO offset (Hz, signed) -- diagnostic surface for /api/traffic.
     pub last_offset_hz: i64,
     /// Last activity timestamp (HDU/LDU dispatch + retune). Diagnostic
-    /// only after Phase 2c — release timing is owned by `app::call_tracker`
+    /// only after Phase 2c — release timing is owned by `app::grant_follower`
     /// and applied to the chain via `force_idle` from a CallTrackerEvent
     /// subscriber in the grant follower.
     last_activity: Instant,
@@ -117,7 +114,7 @@ pub struct TrafficManager {
     //
     // Phase 2c (2026-04-25): TDU events are NO LONGER routed here.
     // Call lifecycle (start / TDU / timeout / release) is owned by
-    // `app::call_tracker`, which broadcasts CallTrackerEvent::CallClose
+    // `app::grant_follower`, which broadcasts CallTrackerEvent::CallClose
     // to subscribers. The grant follower's CallClose subscriber
     // calls `force_idle()` on this manager to drive the state back
     // to Idle. The post-TDU hold window + `check_timeouts` /
@@ -164,17 +161,17 @@ pub struct GrantMapEntry {
 
 // ── Concurrency contract ─────────────────────────────────────────────
 //
-// All `&mut self` methods on `TrafficManager` (`handle_grant`,
+// All `&mut self` methods on `TrafficChain` (`handle_grant`,
 // `hdu_received`, `ldu_received`, `force_idle`, `tally_grant`)
 // assume the caller holds exclusive access. The singleton is owned
-// as `Arc<tokio::sync::Mutex<TrafficManager>>` constructed in
+// as `Arc<tokio::sync::Mutex<TrafficChain>>` constructed in
 // `main.rs`, and every call site (grant-follower task, traffic-LSM
 // NID dispatcher, all `/api/traffic*` HTTP handlers) acquires the
 // lock with `.lock().await` before touching the manager. Do not
 // add a new caller that bypasses that lock.
-impl TrafficManager {
+impl TrafficChain {
     pub fn new(rx_lo_hz: u64, sample_rate_hz: u64) -> Self {
-        TrafficManager {
+        TrafficChain {
             state: TrafficState::Idle,
             rx_lo_hz,
             sample_rate_hz,
@@ -279,7 +276,7 @@ impl TrafficManager {
     ///   call -- the manager itself does not enforce stickiness.
     ///
     /// Phase 2c (2026-04-25): the Idle->next-grant transition is
-    /// driven externally by `app::call_tracker` — when CallTracker
+    /// driven externally by `app::grant_follower` — when CallTracker
     /// closes a call (TDU / timeout / speaker-change), the grant
     /// follower's CallTrackerEvent subscriber calls `force_idle()`
     /// here. Once Idle, any new grant is accepted via the same code
@@ -515,5 +512,5 @@ impl TrafficManager {
     }
 }
 #[cfg(test)]
-#[path = "traffic_manager_tests.rs"]
+#[path = "traffic_chain_tests.rs"]
 mod tests;

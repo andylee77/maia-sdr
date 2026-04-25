@@ -48,7 +48,7 @@ fn test_frequency_band_table() {
 // test_grant_dedup_by_talkgroup, test_grant_update_preserves_source_id)
 // asserted on `decoder.grants` directly. Equivalent semantics —
 // per-call lifecycle, source-update-on-refresh, dedup — now live
-// in `app::call_tracker` and are covered by call_tracker's tests.
+// in `app::grant_follower` and are covered by lifecycle tests there.
 
 /// Drive the decoder end-to-end with a frame sync + 33-dibit NID
 /// (with a deliberately-wrong status dibit injected at index 11)
