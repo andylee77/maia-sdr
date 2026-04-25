@@ -64,7 +64,9 @@ impl ControlChannelDecoder {
                     encrypted,
                     emergency,
                 };
-                self.emit_grant_event(&grant);
+                // GroupVoiceChannelGrant (opcode 0x00) = full grant.
+                // is_update = false → CcGrantArrival, can open OpenGrant.
+                self.emit_grant_event(&grant, false);
                 self.grants.insert(channel.0, grant);
             }
             // Backup CCH A/B channels for the trunking failover view.
@@ -136,7 +138,10 @@ impl ControlChannelDecoder {
                     encrypted,
                     emergency,
                 };
-                self.emit_grant_event(&grant);
+                // GVCG_UPDT_EXP (opcode 0x03) carries service_options
+                // (the encrypted flag) so we treat it as a full arrival,
+                // not a refresh — is_update = false.
+                self.emit_grant_event(&grant, false);
                 self.grants.insert(transmit_channel.0, grant);
             }
             TsbkMessage::GroupVoiceChannelGrantUpdate {
@@ -162,7 +167,10 @@ impl ControlChannelDecoder {
                     encrypted: preserved_a.encrypted,
                     emergency: preserved_a.emergency,
                 };
-                self.emit_grant_event(&grant_a);
+                // GRP_VCH_GRNT_UPD (opcode 0x02) keep-alive: no SRC,
+                // no service_options. is_update = true → CcGrantUpdate,
+                // refresh-only semantics in grant_stats.
+                self.emit_grant_event(&grant_a, true);
                 self.grants.insert(channel_a.0, grant_a);
                 if talkgroup_b.0 != 0 {
                     let freq_b = self.channel_to_frequency(*channel_b);
@@ -177,7 +185,7 @@ impl ControlChannelDecoder {
                         encrypted: preserved_b.encrypted,
                         emergency: preserved_b.emergency,
                     };
-                    self.emit_grant_event(&grant_b);
+                    self.emit_grant_event(&grant_b, true);
                     self.grants.insert(channel_b.0, grant_b
                     );
                 }
@@ -189,21 +197,44 @@ impl ControlChannelDecoder {
         // event_log so /api/log exports match the dashboard feed.
         // Every FEC-passed TSBK -> one Grant-category entry, matching
         // SDRTrunk's `decoded_messages.log` (one line per decode).
+        //
+        // 2026-04-25: filter system housekeeping TSBKs (network /
+        // RFSS / iden / TDMA / SCCB / SNDCP-announce / Motorola
+        // vendor noise) out of the activity log + websocket. These
+        // fire ~30/sec and drown out actual call activity in the
+        // ring (operator post-flash 2026-04-25: "we dont need to log
+        // all station id and info that are constantly going on").
+        // Counters in /api/tsbk_opcodes still tally everything; only
+        // the time-series log gets the filter.
         let tsbk_event = self.tsbk_to_event(block_idx, &msg);
-        if let Some(ref tx) = self.event_tx {
-            if let Ok(json) = serde_json::to_string(&tsbk_event) {
-                let _ = tx.send(json);
+        let suppressed = matches!(tsbk_event.event_type.as_str(),
+            // System identity / timing — pure background, fire ~10/sec
+            "TDMA_SYNC_BCST" | "RFSS_STS_BCAST" | "NET_STS_BCAST"
+            | "ADJ_STS_BCAST"
+            // Channel-plan beacons — only useful at boot
+            | "IDEN_UPDATE" | "SCCB_EXP"
+            // SNDCP availability beacons — fire ~5/sec
+            | "SNDCP_DCH_ANN_EX"
+            // Motorola vendor housekeeping (fires ~10/sec; vendor
+            // opcode set we don't decode beyond the bucket)
+            | "MFR_SPECIFIC"
+        );
+        if !suppressed {
+            if let Some(ref tx) = self.event_tx {
+                if let Ok(json) = serde_json::to_string(&tsbk_event) {
+                    let _ = tx.send(json);
+                }
             }
-        }
-        if let Some(ref log) = self.event_log {
-            let summary = tsbk_event.summary.clone();
-            let fields = serde_json::to_value(&tsbk_event)
-                .unwrap_or(serde_json::Value::Null);
-            log.push(
-                crate::services::event_log::LogCategory::Grant,
-                summary,
-                fields,
-            );
+            if let Some(ref log) = self.event_log {
+                let summary = tsbk_event.summary.clone();
+                let fields = serde_json::to_value(&tsbk_event)
+                    .unwrap_or(serde_json::Value::Null);
+                log.push(
+                    crate::services::event_log::LogCategory::Grant,
+                    summary,
+                    fields,
+                );
+            }
         }
 
         self.recent_messages.push((Instant::now(), block_idx, msg));

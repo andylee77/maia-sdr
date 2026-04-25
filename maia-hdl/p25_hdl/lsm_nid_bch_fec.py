@@ -119,7 +119,18 @@ DATA_BITS = NAC_BITS + DUID_BITS    # 16
 PARITY_BITS = 48
 CODE_BITS = DATA_BITS + PARITY_BITS  # 64
 N_CODEWORDS = 1 << DATA_BITS         # 65536
-T_MAX_ERRORS = 11
+# 2026-04-24: tightened from 11 to 4. P25 BCH(63,16,23) has dmin=23
+# so the code can theoretically correct up to t=11 errors. But at
+# t=11 the false-positive rate on RANDOM bit patterns is ~10 %
+# (65536 codewords × C(63,11) ≈ 1e15 / 2^63 ≈ 0.1). During PLL/AGC
+# settle on a freshly-tuned traffic channel, this floods the
+# heartbeat with false-valid NIDs that trigger ghost HduStart
+# events, ghost grant_decode_stats entries, and false call splits.
+# t=4 keeps the false-positive rate <1e-6 while still recovering
+# almost all real frames (typical BER on a locked LSM signal is
+# 0-2 errors per NID; 3-4 covers marginal SNR; >4 is usually
+# unrecoverable garbage anyway).
+T_MAX_ERRORS = 4
 
 # 16-row systematic generator matrix from
 # `BCH_63_16_23_P25_Test.java` -- octal literals copied verbatim

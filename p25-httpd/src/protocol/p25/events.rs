@@ -25,4 +25,12 @@ pub struct GrantEvent {
     pub frequency_hz: Option<u64>,
     pub encrypted: bool,
     pub emergency: bool,
+    /// 2026-04-24 CC-grant-centric refactor: distinguishes
+    /// `GroupVoiceChannelGrantUpdate` (0x02, keep-alive refresh)
+    /// from the full `GroupVoiceChannelGrant` (0x00) and
+    /// `GroupVoiceChannelGrantUpdateExplicit` (0x03) TSBKs. Set by
+    /// the control-channel decoder when emitting the event. The
+    /// follower uses this to dispatch `CallBoundaryKind::CcGrantUpdate`
+    /// (refresh only) vs `CcGrantArrival` (can open a new OpenGrant).
+    pub is_update: bool,
 }

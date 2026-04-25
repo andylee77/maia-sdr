@@ -30,7 +30,7 @@ use crate::vocoder;
 /// from backing up on worker-pool scheduling jitter. `blocking_recv()`
 /// preserves the backpressure semantics of the async version.
 pub fn spawn_vocoder_thread(
-    imbe_rx: Receiver<[ImbeFrameRaw; 9]>,
+    imbe_rx: Receiver<(u16, u32, [ImbeFrameRaw; 9])>,
     voc_forwarder: Arc<ImbeForwarder>,
     voc_audio_tx: broadcast::Sender<AudioChunk>,
     voc_event_log: Arc<EventLog>,
@@ -122,7 +122,12 @@ pub fn spawn_vocoder_thread(
             };
 
             tracing::info!(target: "p25_vocoder", "vocoder thread started (dedicated OS thread)");
-            while let Some(frames) = rx.blocking_recv() {
+            while let Some((batch_tg, batch_source, frames)) = rx.blocking_recv() {
+                // Surface the TG of the batch we're ABOUT to decode
+                // on /api/traffic. Distinct from current_talkgroup
+                // (follower's intent) — this is what the audio path
+                // is actually working on.
+                voc_forwarder.last_batch_tg.store(batch_tg, Ordering::Relaxed);
                 // Count-based recorder close: advance the consumed
                 // counter for EVERY batch pulled off the queue,
                 // including skipped (encrypted) and dropped (TG change
@@ -135,17 +140,38 @@ pub fn spawn_vocoder_thread(
                     .frames_consumed
                     .fetch_add(9, Ordering::Relaxed);
 
-                // Reset on call boundary (raised by the follower on
-                // new retune).
-                if voc_forwarder.vocoder_reset_pending.swap(false, Ordering::Relaxed) {
+                // Resolve the effective TG for THIS batch. batch_tg is
+                // the TG the forwarder captured at send time. A 0
+                // (briefly during retune races, or no-TG-yet start-up)
+                // keeps the previous call_tg so a single idle flicker
+                // doesn't split a call. A real non-zero change from
+                // the prior call's TG is our cue to flush + reset.
+                let effective_tg = if batch_tg == 0 { call_tg } else { batch_tg };
+
+                // Consume (and ignore) the reset_pending flag. With
+                // per-batch TG labelling, the batch's own TG is the
+                // sole boundary signal — reset_pending from the
+                // follower raced the tail of the previous call and
+                // was causing premature JMBE resets on frames that
+                // belonged to the OLD call. Kept as a no-op swap
+                // so the follower's store is consumed (prevents
+                // stale flag surviving across multiple retunes).
+                let _ = voc_forwarder
+                    .vocoder_reset_pending
+                    .swap(false, Ordering::Relaxed);
+
+                // Call boundary = the batch's TG differs from the
+                // prior call's TG. Flush summary, reset JMBE, reseed.
+                let tg_changed = effective_tg != call_tg
+                    && (call_frames_in > 0 || call_started.is_some());
+                if tg_changed {
                     flush_call_summary(
                         call_tg, call_frames_in, call_frames_skipped_enc,
                         call_pcm_samples, call_started, call_last_frame_at,
                         &voc_event_log,
                     );
                     decoder.reset();
-                    call_tg = voc_forwarder
-                        .current_talkgroup.load(Ordering::Relaxed);
+                    call_tg = effective_tg;
                     call_frames_in = 0;
                     call_frames_skipped_enc = 0;
                     call_pcm_samples = 0;
@@ -165,22 +191,7 @@ pub fn spawn_vocoder_thread(
                     call_frames_skipped_enc += 9;
                     continue;
                 }
-                let tg = voc_forwarder.current_talkgroup.load(Ordering::Relaxed);
-                // Auto-flush if TG changed without an explicit reset
-                // (e.g. follower mid-call TG reassignment).
-                if tg != call_tg && (call_frames_in > 0 || call_started.is_some()) {
-                    flush_call_summary(
-                        call_tg, call_frames_in, call_frames_skipped_enc,
-                        call_pcm_samples, call_started, call_last_frame_at,
-                        &voc_event_log,
-                    );
-                    call_tg = tg;
-                    call_frames_in = 0;
-                    call_frames_skipped_enc = 0;
-                    call_pcm_samples = 0;
-                    call_started = Some(std::time::Instant::now());
-                    call_last_frame_at = None;
-                }
+                let tg = effective_tg;
                 for frame in &frames {
                     let pcm = decoder.decode_frame(frame);
                     voc_forwarder
@@ -209,14 +220,16 @@ pub fn spawn_vocoder_thread(
                             .fetch_add(1, Ordering::Relaxed);
                     }
 
-                    // Source radio ID: set by the grant follower from
-                    // `GRP_VCH_GRANT.FM` (primary); refreshed by the
-                    // traffic LDU1 LC decoder / Motorola TDULC
-                    // TALK_COMPLETE (fallback). `0` = unknown →
-                    // recorder leaves the `_fromN` suffix off.
-                    let source = voc_forwarder
-                        .current_source
-                        .load(Ordering::Relaxed);
+                    // Source radio ID bundled with the batch at submit
+                    // time by the forwarder. Pre-2026-04-24 the vocoder
+                    // read `current_source` here, which created a race:
+                    // a follower retune updating current_source mid-
+                    // tail-drain would stamp in-flight audio with the
+                    // NEW speaker's source, making the recorder split
+                    // the tail into a zero-LDU fragment file. Per-batch
+                    // source eliminates the race the same way per-batch
+                    // TG did for talkgroup.
+                    let source = batch_source;
 
                     // Post-vocoder AGC. Only voiced frames drive the
                     // RMS EMA; silent frames get the current scale

@@ -78,16 +78,25 @@ pub enum CallBoundaryKind {
     /// re-keys. The new-speaker split now happens in the
     /// audio_chunk arm of the recorder when `chunk.source`
     /// changes to a different non-zero ID on the same TG.
-    HduStart,
-    /// Mid-call source stamp. Fires when an LDU1 LC successfully
-    /// decodes a `GRP_V_CH_USER` (standard LCW opcode 0x00) and recovers
-    /// the FM: speaker radio ID. Stamps `ActiveCall.source` but does
-    /// NOT finalise — speaker is still talking.
     ///
-    /// Designed-but-unwired: the match arm in `recorder.rs` is live,
-    /// but no emitter currently dispatches this. Kept so LDU1 LC
-    /// source emission can be wired up later without enum churn.
-    #[allow(dead_code)]
+    /// 2026-04-24 CC-grant-centric refactor: HDU is now ENRICHMENT
+    /// ONLY. It stamps `first_audio_at_unix_ms` on an existing
+    /// `OpenGrant` (created by `CcGrantArrival`) but never opens a
+    /// new one on its own. An HDU with no matching OpenGrant is a
+    /// silent no-op — heartbeat false-positives from BCH t=11 noise
+    /// during PLL/AGC settle can't pollute the calls ring.
+    HduStart,
+    /// Mid-call source stamp. Fires from `imbe_forwarder.on_ldu1`
+    /// when the rolling 3-of-4 LDU1 LC FM: vote agrees on a new
+    /// plausibility-passed RID (see `LDU1_FM_VOTE_M` /
+    /// `LDU1_FM_VOTE_N`). Stamps `ActiveCall.source` but does NOT
+    /// finalise — speaker is still talking.
+    ///
+    /// 2026-04-24: wired live. The N-of-M voting + plausibility gate
+    /// in the emitter means every `TdulcComplete` represents a stable
+    /// FEC-corroborated source observation, not a single-packet
+    /// decode. `grant_stats` uses fill-in-only semantics — never
+    /// overrides a CC-derived OpenGrant.source.
     TdulcComplete { source: Option<u32> },
     /// End-of-speaker / end-of-call LCW. Fires on Motorola
     /// `TALK_COMPLETE` (opcode 0x0F MFID 0x90), standard
@@ -98,6 +107,40 @@ pub enum CallBoundaryKind {
     /// mid-turn; the grace window + source-change split now handle
     /// real end-of-speaker transitions.
     SpeakerEnd { source: Option<u32> },
+    /// 2026-04-24 CC-grant-centric refactor: every control-channel
+    /// `GRP_VCH_GRANT` (opcode 0x00) and `GVCG_UPDT_EXP` (0x03) fires
+    /// one of these. Carries everything the CC announced about the
+    /// call. `not_followed = Some(reason)` means the follower
+    /// declined to retune (monitor-list miss, encrypted, sticky-lock,
+    /// diagnostic traffic-lock) — the call still gets a `grant_stats`
+    /// entry so dashboards show ALL P25 activity even when we only
+    /// decode a subset. `not_followed = None` means the call was
+    /// accepted for normal follow-and-decode.
+    ///
+    /// `channel` is the P25 channel identifier (low 12 bits of the
+    /// ChannelId tuple); pair with NetworkStatus.band to reconstruct
+    /// frequency if `freq_hz` is absent. Copy-able: downstream
+    /// formatters render `{band}-{ch}` if needed.
+    CcGrantArrival {
+        tg: u16,
+        source: Option<u32>,
+        freq_hz: Option<u64>,
+        channel: u16,
+        encrypted: bool,
+        not_followed: Option<&'static str>,
+    },
+    /// 2026-04-24 CC-grant-centric refactor: plain
+    /// `GRP_VCH_GRNT_UPD` (opcode 0x02) keep-alive. Carries neither
+    /// SRC nor service_options; only refreshes the ttl on an
+    /// existing `OpenGrant` for the same TG. If no OpenGrant is
+    /// open this event is a silent no-op (came-up-mid-call edge case
+    /// — the design doc accepts that we'd miss a call started before
+    /// we booted).
+    CcGrantUpdate {
+        tg: u16,
+        freq_hz: Option<u64>,
+        channel: u16,
+    },
 }
 
 pub type CallBoundaryTx = broadcast::Sender<CallBoundary>;

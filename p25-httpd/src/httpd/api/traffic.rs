@@ -118,6 +118,34 @@ pub async fn get_traffic(
         }
     }
 
+    // ── 2b. lock_freq (diagnostic: park chain on current freq) ──
+    //   When `lock=on`, the grant follower stops dispatching
+    //   retunes and the idle-timeout teardown is suppressed. The
+    //   chain stays on whatever freq is currently set so the
+    //   operator can measure AGC/PLL/sync settle behaviour against
+    //   a known signal without retunes interfering.
+    if let Some(v) = params.get("lock") {
+        match v.as_str() {
+            "on" | "1" | "true" => {
+                state
+                    .traffic_lock_freq
+                    .store(true, Ordering::Relaxed);
+                applied.push("lock=on".into());
+            }
+            "off" | "0" | "false" => {
+                state
+                    .traffic_lock_freq
+                    .store(false, Ordering::Relaxed);
+                applied.push("lock=off".into());
+            }
+            other => {
+                errors.push(format!(
+                    "lock={other}: expected on|off|1|0|true|false"
+                ));
+            }
+        }
+    }
+
     // ── 3. retune_hz (manual NCO write) ──
     //    Linux-only because it touches the FPGA registers via the
     //    ip_core lock. The non-Linux build path simply records an
@@ -400,21 +428,74 @@ pub async fn get_traffic(
         } else {
             Some((now_millis.saturating_sub(last_imbe_at_millis)) as f64 / 1000.0)
         };
+        // Current-call deltas: cumulative minus baseline snapshotted
+        // on the most recent HDU. 0 when no call has started this
+        // session.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let hdu_tot = c.hdu_count.load(Ordering::Relaxed);
+        let ldu1_tot = c.ldu1_count.load(Ordering::Relaxed);
+        let ldu2_tot = c.ldu2_count.load(Ordering::Relaxed);
+        let tdu_tot = c.tdu_count.load(Ordering::Relaxed);
+        let tdulc_tot = c.tdu_lc_count.load(Ordering::Relaxed);
+        let ext_tot = c.imbe_frames_extracted.load(Ordering::Relaxed);
+        let drop_tot = c.imbe_frames_dropped.load(Ordering::Relaxed);
+        let pcm_tot = c.vocoder_pcm_produced.load(Ordering::Relaxed);
+        let err_tot = c.vocoder_errors.load(Ordering::Relaxed);
+        let silent_tot = c.vocoder_frames_silent_observed.load(Ordering::Relaxed);
+        let call_start_ms = c.call_baseline_unix_ms.load(Ordering::Relaxed);
+        let call_duration_ms = if call_start_ms == 0 { 0 }
+            else { now_ms.saturating_sub(call_start_ms) };
+        let cc_tg = c.current_talkgroup.load(Ordering::Relaxed);
+        let cc_src = c.current_source.load(Ordering::Relaxed);
+        let current_call_json = serde_json::json!({
+            "started_unix_ms":  if call_start_ms == 0 { None }
+                                else { Some(call_start_ms) },
+            "duration_ms":      call_duration_ms,
+            "tg":               if cc_tg == 0 { None } else { Some(cc_tg) },
+            "source":           if cc_src == 0 { None } else { Some(cc_src) },
+            "hdu":              hdu_tot.saturating_sub(
+                c.call_baseline_hdu.load(Ordering::Relaxed)),
+            "ldu1":             ldu1_tot.saturating_sub(
+                c.call_baseline_ldu1.load(Ordering::Relaxed)),
+            "ldu2":             ldu2_tot.saturating_sub(
+                c.call_baseline_ldu2.load(Ordering::Relaxed)),
+            "tdu":              tdu_tot.saturating_sub(
+                c.call_baseline_tdu.load(Ordering::Relaxed)),
+            "tdu_lc":           tdulc_tot.saturating_sub(
+                c.call_baseline_tdu_lc.load(Ordering::Relaxed)),
+            "imbe_extracted":   ext_tot.saturating_sub(
+                c.call_baseline_imbe_extracted.load(Ordering::Relaxed)),
+            "imbe_dropped":     drop_tot.saturating_sub(
+                c.call_baseline_imbe_dropped.load(Ordering::Relaxed)),
+            "vocoder_pcm":      pcm_tot.saturating_sub(
+                c.call_baseline_pcm.load(Ordering::Relaxed)),
+            "vocoder_errors":   err_tot.saturating_sub(
+                c.call_baseline_errors.load(Ordering::Relaxed)),
+            "vocoder_silent":   silent_tot.saturating_sub(
+                c.call_baseline_silent.load(Ordering::Relaxed)),
+        });
         serde_json::json!({
-            "hdu_count":              c.hdu_count.load(Ordering::Relaxed),
-            "ldu1_count":             c.ldu1_count.load(Ordering::Relaxed),
-            "ldu2_count":             c.ldu2_count.load(Ordering::Relaxed),
-            "tdu_count":              c.tdu_count.load(Ordering::Relaxed),
-            "tdu_lc_count":           c.tdu_lc_count.load(Ordering::Relaxed),
-            "imbe_frames_extracted":  c.imbe_frames_extracted.load(Ordering::Relaxed),
-            "imbe_frames_dropped":    c.imbe_frames_dropped.load(Ordering::Relaxed),
+            "hdu_count":              hdu_tot,
+            "ldu1_count":             ldu1_tot,
+            "ldu2_count":             ldu2_tot,
+            "tdu_count":              tdu_tot,
+            "tdu_lc_count":           tdulc_tot,
+            "imbe_frames_extracted":  ext_tot,
+            "imbe_frames_dropped":    drop_tot,
             "imbe_frames_dropped_idle": c.imbe_frames_dropped_idle.load(Ordering::Relaxed),
             "last_imbe_secs_ago":     last_imbe_secs_ago,
-            "vocoder_pcm_produced":   c.vocoder_pcm_produced.load(Ordering::Relaxed),
-            "vocoder_errors":         c.vocoder_errors.load(Ordering::Relaxed),
+            "last_batch_tg":          c.last_batch_tg.load(Ordering::Relaxed),
+            "queue_depth":            c.queue_depth_now(),
+            "queue_capacity":         c.queue_capacity_max(),
+            "queue_high_water":       c.queue_high_water.load(Ordering::Relaxed),
+            "current_call":           current_call_json,
+            "vocoder_pcm_produced":   pcm_tot,
+            "vocoder_errors":         err_tot,
             "vocoder_frames_encrypted": c.vocoder_frames_encrypted.load(Ordering::Relaxed),
-            "vocoder_frames_silent_observed":
-                c.vocoder_frames_silent_observed.load(Ordering::Relaxed),
+            "vocoder_frames_silent_observed": silent_tot,
             // 2026-04-19 TDULC LCW parse diagnostics. Sum of the
             // four should equal `tdulc_parse_attempts`, which is in
             // turn `tdu_lc_count` minus the entries that arrived
@@ -425,10 +506,18 @@ pub async fn get_traffic(
                 c.tdulc_parse_motorola.load(Ordering::Relaxed),
             "tdulc_parse_gvcu":
                 c.tdulc_parse_gvcu.load(Ordering::Relaxed),
+            "tdulc_parse_gvu":
+                c.tdulc_parse_gvu.load(Ordering::Relaxed),
+            "tdulc_parse_callterm":
+                c.tdulc_parse_callterm.load(Ordering::Relaxed),
             "tdulc_parse_other":
                 c.tdulc_parse_other.load(Ordering::Relaxed),
             "tdulc_parse_none":
                 c.tdulc_parse_none.load(Ordering::Relaxed),
+            "speaker_end_deduplicated":
+                c.speaker_end_deduplicated.load(Ordering::Relaxed),
+            "speaker_end_invalid":
+                c.speaker_end_invalid.load(Ordering::Relaxed),
             "tdulc_last_lc_bytes":
                 c.tdulc_last_lc_bytes
                     .lock()
@@ -507,10 +596,12 @@ pub async fn get_traffic(
 
     let follower_on =
         state.traffic_follower_enabled.load(Ordering::Relaxed);
+    let lock_on = state.traffic_lock_freq.load(Ordering::Relaxed);
 
     Json(serde_json::json!({
         "state":                     state_label,
         "follower_enabled":          follower_on,
+        "lock_freq":                 lock_on,
         "current_channel":           current_channel,
         "current_talkgroup":         current_talkgroup,
         "current_frequency_hz":      current_frequency_hz,

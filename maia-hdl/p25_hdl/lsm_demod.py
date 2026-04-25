@@ -78,7 +78,7 @@
 #     nac_out          : Signal(12)
 #     duid_out         : Signal(4)
 #     n_errors_out     : Signal(7)     -- 0..63, BCH Hamming dist
-#     valid_out        : Signal()      -- 1 if n_errors_out <= 11
+#     valid_out        : Signal()      -- 1 if n_errors_out <= T_MAX_ERRORS (4)
 #     sync_distance_out: Signal(7)     -- the SYNC hit Hamming dist
 #                                         (0..47, separate from
 #                                         the BCH n_errors)

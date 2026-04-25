@@ -101,3 +101,38 @@ doc/diagnostics/
 # On-host Rust build droppings that occasionally escape target/
 Cargo.lock.bak
 *.rlib.bak
+
+# 2026-04-25: additional on-host probe + dump artefacts produced
+# during the unified-call-lifecycle / AGC / auto-PPM debug work.
+# Same throwaway category as capture*.json above — not source.
+
+# AGC, PPM, signal-quality, log/stats/system probes from
+# tools/*.py + /api/* one-shot dumps.
+/agc_*.json
+/ppm_*.json
+/dev.json
+/dev_*.json
+/dist_*.json
+/health_*.json
+/stats.json
+/stats_*.json
+/sys_*.json
+/log_*.json
+/wb.json
+/wb_*.json
+/narrow.json
+/const.json
+/traffic_*.json
+
+# Tezuka build logs scraped to host for analysis
+/tezuka_*.log
+/tezuka_*.out
+/bake*.log
+
+# On-host validation + sweep output directories
+/_validation/
+/gain_sweep/
+/wb_frames_check/
+
+# p25-httpd full-API JSON dumps
+/p25-httpd/log_full.json

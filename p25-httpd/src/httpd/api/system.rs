@@ -360,6 +360,12 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     },
     EndpointDoc {
         method: "GET",
+        path: "/api/freq_health",
+        params: "",
+        description: "Per-channel quality aggregator over grant_decode_stats + recordings rings: drop rate, silent rate, first_imbe_ms quantiles, speakers seen.",
+    },
+    EndpointDoc {
+        method: "GET",
         path: "/api/presets",
         params: "",
         description: "List every DDC preset (name, sample rate, RF BW, NCO window) and the current live preset.",
@@ -563,6 +569,369 @@ pub async fn get_sys_health(
 ) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "error": "sys_health requires /proc (target_os=linux)",
+    }))
+}
+
+/// `GET /api/pipeline`
+///
+/// Stage-by-stage snapshot of every queue, buffer, and health gauge
+/// from RF front-end to audio broadcast, organized by pipeline stage
+/// so an operator can scan one endpoint and see whether ANY stage is
+/// unhealthy. Atomic reads only — cheap enough to poll at 1 Hz.
+///
+/// Distinct from `/api/traffic` (oriented around traffic-chain
+/// state) and `/api/stats` (oriented around RF config) — this one
+/// is for "show me the whole chain at once".
+#[cfg(target_os = "linux")]
+pub async fn get_pipeline(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    use std::sync::atomic::Ordering;
+    let f = &state.imbe_forwarder;
+
+    // RF front-end — live reads via the AD9361 driver, same path
+    // /api/stats uses. All return Option so a transient iiod failure
+    // shows up as null rather than cratering the whole endpoint.
+    let rf_json = {
+        let rx_lo = state.ad9361.get_rx_lo_frequency().await.ok();
+        let bw    = state.ad9361.get_rx_rf_bandwidth().await.ok();
+        let sr    = state.ad9361.get_sampling_frequency().await.ok();
+        let rssi  = state.ad9361.get_rx_rssi().await.ok();
+        let gain  = state.ad9361.get_rx_gain().await.ok();
+        serde_json::json!({
+            "rx_lo_hz":           rx_lo,
+            "rf_bandwidth_hz":    bw,
+            "sample_rate_hz":     sr,
+            "rx_rssi_db":         rssi,
+            "rx_gain_db":         gain,
+            "radio_freq_hz":      state.current_control_freq
+                                     .load(Ordering::Relaxed),
+        })
+    };
+
+    // PPM state.
+    let ppm_json = {
+        let shift = state.current_lo_shift_hz.load(Ordering::Relaxed);
+        let rx_lo = state.current_rx_lo.load(Ordering::Relaxed) as f64;
+        let ppm = if rx_lo > 0.0 {
+            -(shift as f64) / (rx_lo * 1e-6)
+        } else { 0.0 };
+        serde_json::json!({
+            "lo_shift_hz":        shift,
+            "lo_ppm":             ppm,
+            "last_cal_unix_secs": state.last_ppm_cal_unix_secs
+                .load(Ordering::Relaxed),
+        })
+    };
+
+    // HDL chains — reads the live registers once, same source the
+    // dedicated /api/hdl_lsm + /api/traffic endpoints use.
+    let hdl_json = {
+        let core = state.ip_core.lock().await;
+        let cs = core.lsm_status();
+        let c_drop = core.lsm_drop_count();
+        let (c_pll, c_sp) = core.lsm_debug();
+        let (c_g, c_m) = core.lsm_agc_debug();
+        let ts = core.traffic_lsm_status();
+        let t_drop = core.traffic_lsm_drop_count();
+        let (t_pll, t_sp) = core.traffic_lsm_debug();
+        let (t_g, t_m) = core.traffic_lsm_agc_debug();
+        let c_agc_prod = (c_g as f64 / 128.0) * (c_m as f64 / 32768.0);
+        let t_agc_prod = (t_g as f64 / 128.0) * (t_m as f64 / 32768.0);
+        serde_json::json!({
+            "control": {
+                "sync_distance":   cs.sync_distance,
+                "nid_valid":       cs.nid_valid,
+                "dibit_overflow":  cs.dibit_overflow,
+                "drop_count":      c_drop,
+                "pll_dbg":         c_pll,
+                "sample_point":    c_sp,
+                "agc_product":     c_agc_prod,
+            },
+            "traffic": {
+                "sync_distance":   ts.sync_distance,
+                "nid_valid":       ts.nid_valid,
+                "dibit_overflow":  ts.dibit_overflow,
+                "drop_count":      t_drop,
+                "pll_dbg":         t_pll,
+                "sample_point":    t_sp,
+                "agc_product":     t_agc_prod,
+            },
+        })
+    };
+
+    // Framers — control + traffic decoder stats.
+    let framers_json = {
+        let c_dec = state.lsm_decoder.read().await;
+        let t_dec = state.traffic_lsm_decoder.read().await;
+        serde_json::json!({
+            "control": {
+                "nid_attempts":          c_dec.nid_attempts,
+                "nid_decoded_ok":        c_dec.nid_decoded_ok,
+                "nid_decode_failures":   c_dec.nid_decode_failures,
+                "nid_entropy_rejected":  c_dec.nid_entropy_rejected,
+                "sync_hits":             c_dec.sync_hits(),
+                "sync_near_misses":      c_dec.sync_near_misses(),
+                "tsbk_crc_ok":           c_dec.tsbk_crc_ok,
+                "tsbk_crc_failures":     c_dec.tsbk_crc_failures,
+            },
+            "traffic": {
+                "nid_attempts":          t_dec.nid_attempts,
+                "nid_decoded_ok":        t_dec.nid_decoded_ok,
+                "nid_decode_failures":   t_dec.nid_decode_failures,
+                "nid_entropy_rejected":  t_dec.nid_entropy_rejected,
+                "sync_hits":             t_dec.sync_hits(),
+                "sync_near_misses":      t_dec.sync_near_misses(),
+            },
+        })
+    };
+
+    // IMBE mpsc queue — live depth, capacity, high-water, throughput.
+    let submitted = f.frames_submitted.load(Ordering::Relaxed);
+    let consumed = f.frames_consumed.load(Ordering::Relaxed);
+    let dropped = f.imbe_frames_dropped.load(Ordering::Relaxed);
+    let imbe_queue_json = serde_json::json!({
+        "depth":             f.queue_depth_now(),
+        "capacity":          f.queue_capacity_max(),
+        "high_water":        f.queue_high_water.load(Ordering::Relaxed),
+        "frames_submitted":  submitted,
+        "frames_consumed":   consumed,
+        "frames_dropped":    dropped,
+        "drop_events":       dropped / 9,
+        "last_batch_tg":     f.last_batch_tg.load(Ordering::Relaxed),
+    });
+
+    let vocoder_json = serde_json::json!({
+        "frames_extracted":  f.imbe_frames_extracted.load(Ordering::Relaxed),
+        "pcm_samples":       f.vocoder_pcm_produced.load(Ordering::Relaxed),
+        "errors_over_4bit":  f.vocoder_errors.load(Ordering::Relaxed),
+        "silent_observed":   f.vocoder_frames_silent_observed
+                              .load(Ordering::Relaxed),
+        "encrypted_skipped": f.vocoder_frames_encrypted.load(Ordering::Relaxed),
+    });
+
+    let audio_bcast_json = serde_json::json!({
+        "subscribers":       state.audio_tx.receiver_count(),
+        "lag_total":         state.audio_ws_lag_total.load(Ordering::Relaxed),
+    });
+
+    let recorder_json = {
+        let d = &state.recorder_diag;
+        let store = state.recordings.lock().await;
+        serde_json::json!({
+            "store_count":        store.len(),
+            "store_max":          crate::audio::recorder::MAX_RECORDINGS,
+            "boundaries_hdu":     d.boundaries_hdu.load(Ordering::Relaxed),
+            "src_stamps_applied": d.source_stamps_applied.load(Ordering::Relaxed),
+            "src_stamps_lost":    d.source_stamps_lost_no_active
+                                   .load(Ordering::Relaxed),
+            "boundary_lag":       d.boundary_lag_events.load(Ordering::Relaxed),
+        })
+    };
+
+    let event_log_json = serde_json::json!({
+        "depth":     state.event_log.len(),
+        "capacity":  state.event_log.capacity(),
+        "last_seq":  state.event_log.last_seq(),
+    });
+
+    let grant_stats_json = {
+        let r = state.grant_decode_stats.lock()
+            .map(|r| r.len()).unwrap_or(0);
+        serde_json::json!({
+            "completed_grants_buffered": r,
+            "capacity":                  20,
+        })
+    };
+
+    Json(serde_json::json!({
+        "build_tag":         crate::BUILD_TAG,
+        "uptime_secs":       state.boot_instant.elapsed().as_secs(),
+        "rf":                rf_json,
+        "ppm":               ppm_json,
+        "hdl_chains":        hdl_json,
+        "framers":           framers_json,
+        "imbe_queue":        imbe_queue_json,
+        "vocoder":           vocoder_json,
+        "audio_broadcast":   audio_bcast_json,
+        "recorder":          recorder_json,
+        "event_log":         event_log_json,
+        "grant_stats":       grant_stats_json,
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn get_pipeline(
+    State(_state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "error": "pipeline requires hardware access (target_os=linux)",
+    }))
+}
+
+/// `GET /api/freq_health`
+///
+/// Per-channel quality aggregator. Walks the grant_decode_stats ring
+/// (master) + recordings ring (supplemental), groups by
+/// (channel, freq_hz), reports per-channel call count, IMBE drop
+/// rate, silent-frame rate, first_imbe_ms quantiles, and
+/// recency. Designed to answer the operator's question: "are some
+/// traffic channels working better than others?"
+///
+/// No new server-side state — both rings already carry per-call
+/// freq + channel (added 2026-04-24-per-call-freq-tag). Entries
+/// without a channel/freq are aggregated under a synthetic
+/// `(unknown)` bucket so pre-tag data still shows up.
+pub async fn get_freq_health(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    use std::collections::BTreeMap;
+
+    // Per-bucket accumulator. Bucket key is the channel string when
+    // present, otherwise the freq_hz formatted, otherwise "(unknown)".
+    #[derive(Default)]
+    struct Acc {
+        channel: Option<String>,
+        freq_hz: Option<u64>,
+        calls: u64,
+        ldu_total: u64,
+        imbe_extracted: u64,
+        imbe_dropped: u64,
+        vocoder_pcm_samples: u64,
+        vocoder_silent: u64,
+        vocoder_errors: u64,
+        encrypted_calls: u64,
+        first_imbe_ms: Vec<u64>,
+        duration_ms: Vec<u64>,
+        sources: std::collections::HashSet<u32>,
+        last_call_unix_ms: u64,
+    }
+
+    let mut buckets: BTreeMap<String, Acc> = BTreeMap::new();
+    let bucket_key = |ch: &Option<String>, fh: Option<u64>| -> String {
+        if let Some(c) = ch.as_ref() { return c.clone(); }
+        if let Some(f) = fh { return format!("freq:{}", f); }
+        "(unknown)".to_string()
+    };
+
+    // Pass 1: grants — the master. Each entry = one completed grant
+    // with per-call deltas already computed.
+    if let Ok(ring) = state.grant_decode_stats.lock() {
+        for g in ring.iter() {
+            let key = bucket_key(&g.channel, g.freq_hz);
+            let acc = buckets.entry(key).or_default();
+            if acc.channel.is_none() && g.channel.is_some() {
+                acc.channel = g.channel.clone();
+            }
+            if acc.freq_hz.is_none() && g.freq_hz.is_some() {
+                acc.freq_hz = g.freq_hz;
+            }
+            acc.calls += 1;
+            acc.ldu_total += g.ldu1_count + g.ldu2_count;
+            acc.imbe_extracted += g.imbe_extracted;
+            acc.imbe_dropped += g.imbe_dropped;
+            acc.vocoder_pcm_samples += g.vocoder_pcm_samples;
+            acc.vocoder_silent += g.vocoder_silent;
+            acc.vocoder_errors += g.vocoder_errors;
+            if g.encrypted { acc.encrypted_calls += 1; }
+            if let Some(f) = g.first_imbe_ms { acc.first_imbe_ms.push(f); }
+            if g.duration_ms > 0 { acc.duration_ms.push(g.duration_ms); }
+            if let Some(s) = g.source { acc.sources.insert(s); }
+            if g.ended_unix_ms > acc.last_call_unix_ms {
+                acc.last_call_unix_ms = g.ended_unix_ms;
+            }
+        }
+    }
+
+    // Quantile helper. Returns (min, median, max) over a slice.
+    fn quantiles(v: &mut Vec<u64>) -> Option<(u64, u64, u64)> {
+        if v.is_empty() { return None; }
+        v.sort_unstable();
+        let n = v.len();
+        Some((v[0], v[n/2], v[n-1]))
+    }
+
+    // Vocoder-frame count. PCM samples / 160 = vocoder frames
+    // (160 samples per IMBE frame at 8 kHz).
+    let voc_frames = |pcm_samples: u64| pcm_samples / 160;
+
+    // Build per-channel JSON.
+    let mut channels: Vec<serde_json::Value> = Vec::new();
+    for (key, mut acc) in buckets {
+        let drop_rate = if acc.imbe_extracted + acc.imbe_dropped > 0 {
+            acc.imbe_dropped as f64
+                / (acc.imbe_extracted + acc.imbe_dropped) as f64
+        } else { 0.0 };
+        let voc_total = voc_frames(acc.vocoder_pcm_samples);
+        let silent_rate = if voc_total > 0 {
+            acc.vocoder_silent as f64 / voc_total as f64
+        } else { 0.0 };
+        let first_q = quantiles(&mut acc.first_imbe_ms);
+        let dur_sum: u64 = acc.duration_ms.iter().sum();
+        let dur_q = quantiles(&mut acc.duration_ms);
+        let freq_mhz = acc.freq_hz.map(|f| (f as f64) / 1.0e6);
+
+        channels.push(serde_json::json!({
+            "key":               key,
+            "channel":           acc.channel,
+            "freq_hz":           acc.freq_hz,
+            "freq_mhz":          freq_mhz,
+            "calls":             acc.calls,
+            "ldu_total":         acc.ldu_total,
+            "imbe_extracted":    acc.imbe_extracted,
+            "imbe_dropped":      acc.imbe_dropped,
+            "imbe_drop_rate":    drop_rate,
+            "vocoder_silent":    acc.vocoder_silent,
+            "vocoder_silent_rate": silent_rate,
+            "vocoder_errors":    acc.vocoder_errors,
+            "encrypted_calls":   acc.encrypted_calls,
+            "first_imbe_ms":     first_q.map(|(min,med,max)|
+                serde_json::json!({"min": min, "median": med, "max": max})),
+            "duration_ms":       dur_q.map(|(_min,med,_max)|
+                serde_json::json!({"sum": dur_sum, "median": med})),
+            "speakers_seen":     acc.sources.len() as u64,
+            "last_call_unix_ms": if acc.last_call_unix_ms > 0 {
+                Some(acc.last_call_unix_ms) } else { None },
+        }));
+    }
+
+    // Quality score for ranking: 1.0 - drop_rate - silent_rate.
+    // High score = clean channel; low score = drops or silent.
+    // Skip channels with <2 calls (insufficient sample size).
+    let scored: Vec<(String, f64)> = channels.iter()
+        .filter_map(|c| {
+            let calls = c["calls"].as_u64().unwrap_or(0);
+            if calls < 2 { return None; }
+            let dr = c["imbe_drop_rate"].as_f64().unwrap_or(0.0);
+            let sr = c["vocoder_silent_rate"].as_f64().unwrap_or(0.0);
+            let key = c["key"].as_str().unwrap_or("?").to_string();
+            Some((key, 1.0 - dr - sr))
+        }).collect();
+    let best = scored.iter()
+        .max_by(|a,b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let worst = scored.iter()
+        .min_by(|a,b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let calls_total: u64 = channels.iter()
+        .map(|c| c["calls"].as_u64().unwrap_or(0)).sum();
+
+    // Newest-first by last_call_unix_ms; channels with no recency
+    // sink to the bottom.
+    channels.sort_by(|a, b| {
+        let ta = a["last_call_unix_ms"].as_u64().unwrap_or(0);
+        let tb = b["last_call_unix_ms"].as_u64().unwrap_or(0);
+        tb.cmp(&ta)
+    });
+
+    Json(serde_json::json!({
+        "channels": channels,
+        "summary": {
+            "channels_seen": scored.len() as u64,
+            "calls_total":   calls_total,
+            "best_channel":  best.map(|(k,s)|
+                serde_json::json!({"channel": k, "score": s})),
+            "worst_channel": worst.map(|(k,s)|
+                serde_json::json!({"channel": k, "score": s})),
+        }
     }))
 }
 

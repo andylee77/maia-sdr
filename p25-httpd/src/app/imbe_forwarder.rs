@@ -62,6 +62,17 @@ pub struct ImbeForwarder {
     /// Mid-call source switches on a rebroadcast grant refresh here so
     /// most-recent wins.
     pub current_source: std::sync::atomic::AtomicU32,
+    /// 2026-04-24: traffic-channel frequency (Hz) for the active
+    /// call, set by the grant follower from `GRP_VCH_GRANT.frequency_hz`.
+    /// Allows `RecordingEntry` and `GrantDecodeSummary` to be tagged
+    /// with which physical channel a call landed on, so per-channel
+    /// quality (drop rate, silent rate, first_imbe_ms) can be diffed
+    /// across the site's traffic frequencies. 0 = unknown.
+    pub current_frequency_hz: std::sync::atomic::AtomicU64,
+    /// 2026-04-24: channel string from the grant, e.g. "0-1117".
+    /// Mutex<String> rather than an atomic — short, only written on
+    /// retune. Empty = unknown.
+    pub current_channel: std::sync::Mutex<String>,
     /// TGs that have ever been observed encrypted. Once a TG is in
     /// this set, the follower defaults to encrypted even if the
     /// current grant doesn't carry service options.
@@ -76,9 +87,12 @@ pub struct ImbeForwarder {
     /// than `O(n)` — `/api/imbe_dump` is a hot path when 10 traffic chains
     /// are active.
     pub imbe_ring: std::sync::Mutex<std::collections::VecDeque<(u16, bool, [u8; 18])>>,
-    /// Channel to the vocoder task. Each send is a batch of 9 frames
-    /// (one LDU's worth = 180 ms of audio).
-    imbe_tx: tokio::sync::mpsc::Sender<[p25::voice_frame::ImbeFrameRaw; 9]>,
+    /// Channel to the vocoder task. Each send is `(talkgroup_at_send_time,
+    /// batch_of_9_frames)`. TG is captured at send time so tail frames
+    /// of call N keep OLD TG even after follower retunes to call N+1 —
+    /// prevents OLD tail being decoded with NEW JMBE state and routed
+    /// into NEW call's recording. 2026-04-24 field-observed bug.
+    imbe_tx: tokio::sync::mpsc::Sender<(u16, u32, [p25::voice_frame::ImbeFrameRaw; 9])>,
     /// Optional broadcast channel for call-boundary events emitted
     /// from the voice handler. `None` on decoder instances that don't
     /// split calls (e.g. control-channel decoders).
@@ -110,6 +124,16 @@ pub struct ImbeForwarder {
     pub tdulc_parse_attempts: std::sync::atomic::AtomicU64,
     pub tdulc_parse_motorola: std::sync::atomic::AtomicU64,
     pub tdulc_parse_gvcu: std::sync::atomic::AtomicU64,
+    /// GroupVoiceChannelUpdate LCW (opcode 0x02) — mid-call channel-
+    /// reuse beacon, does NOT close. Separated from
+    /// `tdulc_parse_other` 2026-04-24 so "how many GVU vs CallTerm"
+    /// is directly readable from /api/traffic instead of needing to
+    /// subtract counters manually.
+    pub tdulc_parse_gvu: std::sync::atomic::AtomicU64,
+    /// CallTermination LCW (opcode 0x0F MFID 0x00) — fires SpeakerEnd.
+    /// Split out from `other` so we can measure the ratio against
+    /// HDU count (should be ~1 per call).
+    pub tdulc_parse_callterm: std::sync::atomic::AtomicU64,
     pub tdulc_parse_other: std::sync::atomic::AtomicU64,
     pub tdulc_parse_none: std::sync::atomic::AtomicU64,
     /// First 9 bytes (72 bits) of the most recent post-dibits LC
@@ -126,11 +150,203 @@ pub struct ImbeForwarder {
     /// finalising so trailing PCM appends to the closing recording.
     /// `Arc` so the recorder task holds an independent handle.
     pub frames_consumed: std::sync::Arc<std::sync::atomic::AtomicU64>,
+
+    /// 2026-04-24: TG of the most recent IMBE batch the vocoder actually
+    /// consumed. Distinct from `current_talkgroup` (which is the
+    /// follower's intent) — this is what the AUDIO PATH is decoding
+    /// right now. Disagreement between the two means tail frames are
+    /// in flight.
+    pub last_batch_tg: std::sync::atomic::AtomicU16,
+
+    /// 2026-04-24: baseline counters snapshotted on each `on_hdu`.
+    /// /api/traffic exposes `current_call_* = <global> - <baseline>`
+    /// so the dashboard can show per-CURRENT-call metrics separate
+    /// from cumulative session totals.
+    pub call_baseline_hdu:            std::sync::atomic::AtomicU64,
+    pub call_baseline_ldu1:           std::sync::atomic::AtomicU64,
+    pub call_baseline_ldu2:           std::sync::atomic::AtomicU64,
+    pub call_baseline_tdu:            std::sync::atomic::AtomicU64,
+    pub call_baseline_tdu_lc:         std::sync::atomic::AtomicU64,
+    pub call_baseline_imbe_extracted: std::sync::atomic::AtomicU64,
+    pub call_baseline_imbe_dropped:   std::sync::atomic::AtomicU64,
+    pub call_baseline_pcm:            std::sync::atomic::AtomicU64,
+    pub call_baseline_errors:         std::sync::atomic::AtomicU64,
+    pub call_baseline_silent:         std::sync::atomic::AtomicU64,
+    pub call_baseline_unix_ms:        std::sync::atomic::AtomicU64,
+
+    /// 2026-04-24: high-water mark on the imbe_tx queue depth. Updated
+    /// on every successful `try_send` in `forward_frames`. Live depth
+    /// is derived from `imbe_tx.max_capacity() - imbe_tx.capacity()`
+    /// via the public methods below — no atomic needed for the gauge
+    /// itself, only the running max.
+    pub queue_high_water: std::sync::atomic::AtomicU64,
+
+    /// 2026-04-24 SpeakerEnd cooldown: timestamp (unix ms) of the
+    /// most recent SpeakerEnd we emitted. Subsequent SpeakerEnds
+    /// within `SPEAKER_END_COOLDOWN_MS` are dropped silently —
+    /// they're almost always false-positive LCW decodes
+    /// (Motorola TALK_COMPLETE / standard CallTermination /
+    /// phantom-TDU) on degenerate dibit streams that happen to
+    /// pass BCH by chance. Pre-cooldown we saw ~7 closes per
+    /// real call; first-one-wins gets it to ~1/call.
+    pub last_speaker_end_ms: std::sync::atomic::AtomicU64,
+    /// Count of SpeakerEnds rejected by the cooldown gate. Watch
+    /// this vs real-call count — if it's near 6× HDU count the
+    /// cooldown is doing its job.
+    pub speaker_end_deduplicated: std::sync::atomic::AtomicU64,
+    /// 2026-04-24 validity rejects: SpeakerEnd candidates dropped
+    /// because the follower wasn't on a real call (current_talkgroup
+    /// == 0) or the LCW source field was nonsensical (0 or a
+    /// well-known system-controller address for a path that's
+    /// supposed to carry a real speaker RID). Separate counter from
+    /// dedup so we can see which filter is doing the work.
+    pub speaker_end_invalid: std::sync::atomic::AtomicU64,
+
+    /// 2026-04-24 CC-centric refactor: rolling window of recent
+    /// LDU1 LC FM: decodes used to gate the emission of
+    /// `TdulcComplete { source }` boundary events.
+    ///
+    /// LDU1 LC FEC is Hamming(10,6,3) + RS(24,12,13) — the weakest
+    /// FEC in the P25 stack. A single LDU1 LC decode can produce a
+    /// plausible-looking but wrong RID (2026-04-24 log audit found
+    /// two 8-digit RIDs that never appear as any CC grant SRC).
+    /// Requiring N-of-M agreement across consecutive LDU1 packets
+    /// before emitting filters isolated flips — the protocol hands us
+    /// ~326 ms between LDU1s and real speakers hold PTT for seconds,
+    /// so a legitimate FM: will repeat ≥ 3 times within the ring
+    /// before we emit.
+    ///
+    /// Resets when `current_talkgroup` changes (new call). Emission
+    /// de-duplicates: only fires when the voted-consensus FM:
+    /// CHANGES from the last emitted value (avoids flooding grant_
+    /// stats with the same stamp every 326 ms mid-call).
+    pub ldu1_fm_history: std::sync::Mutex<Ldu1FmHistory>,
+
+    /// Count of LDU1-LC-source-derived `TdulcComplete` boundary
+    /// events emitted (passed plausibility + N-of-M voting). Watch
+    /// vs `ldu1_count` — should be roughly one per distinct speaker
+    /// per call.
+    pub ldu1_lc_source_emitted: std::sync::atomic::AtomicU64,
+
+    /// Count of LDU1 LC FM: values rejected by the plausibility
+    /// gate (source == 0, system-controller address, or not in
+    /// 24-bit range). Primarily for diagnostics — these would be
+    /// FEC corrupted in almost every case.
+    pub ldu1_lc_source_rejected_implausible:
+        std::sync::atomic::AtomicU64,
+
+    /// 2026-04-25: count of LDU1 LC FM: values that disagreed with
+    /// the CC `current_source` (Trellis+CRC, authoritative) when
+    /// both were known. Operator philosophy: log every disagreement,
+    /// don't act on any of them. CC stays authoritative; LDU1 LC
+    /// provides forensic data on FEC corruption / signal quality.
+    /// Watching this counter alongside per-call IMBE counts tells
+    /// us whether LC FEC is failing in lockstep with whole-frame
+    /// quality issues.
+    pub ldu1_lc_cc_mismatch_count:
+        std::sync::atomic::AtomicU64,
+
+    /// 2026-04-25: most recent LDU1 LC ↔ CC SRC disagreement, with
+    /// raw body bytes for forensic inspection. Lets us pull the
+    /// failing LC body off the live board and replay through an
+    /// independent decoder (or compare against SDRTrunk) without
+    /// having to retrigger the failure. Single sample; overwritten
+    /// on each new mismatch.
+    pub ldu1_last_mismatch:
+        std::sync::Mutex<Option<Ldu1LcMismatch>>,
+}
+
+/// Forensic snapshot of a single LDU1-LC-vs-CC-SRC disagreement.
+#[derive(Debug, Clone)]
+pub struct Ldu1LcMismatch {
+    /// Wall-clock unix_ms at the moment of disagreement.
+    pub timestamp_ms: u64,
+    /// Active TG when the LDU1 LC was decoded.
+    pub tg: u16,
+    /// What the CC's `GRP_VCH_GRANT.SRC` had stamped (authoritative).
+    pub cc_source: u32,
+    /// What our LDU1 LC parser produced from the body bytes.
+    pub ldu1_lc_source: u32,
+    /// LDU1 body raw bytes (first 24 — covers the LC field across
+    /// all 5 segments after status-dibit removal). Replay through
+    /// `voice_frame::parse_ldu1_lcw` to verify the parser is reading
+    /// the correct offset.
+    pub raw_body_first_24: [u8; 24],
+}
+
+/// N-of-M voting ring for LDU1 LC FM: source stabilisation.
+/// M = ring capacity; N = minimum agreement count to emit.
+#[derive(Debug)]
+pub struct Ldu1FmHistory {
+    /// Talkgroup the ring applies to. Ring clears on TG change
+    /// (new call = fresh voting).
+    pub tg: u16,
+    /// Recent plausibility-passed FM: values. Newest on the right.
+    pub recent: std::collections::VecDeque<u32>,
+    /// Most recently emitted consensus FM: value. `0` = never
+    /// emitted within this TG's ring. Emission suppressed until
+    /// consensus differs from this.
+    pub last_emitted: u32,
+}
+
+impl Ldu1FmHistory {
+    pub fn new() -> Self {
+        Self {
+            tg: 0,
+            recent: std::collections::VecDeque::with_capacity(
+                LDU1_FM_VOTE_M,
+            ),
+            last_emitted: 0,
+        }
+    }
+}
+
+/// Size of the LDU1 LC FM: voting ring. Four packets span ~1.3 s
+/// of voice (LDU1 cadence 326 ms). Short enough to catch a real
+/// speaker change within ~1 s; long enough that isolated FEC flips
+/// can't reach the agreement threshold.
+pub const LDU1_FM_VOTE_M: usize = 4;
+
+/// Minimum agreement count within the ring to emit consensus.
+/// 3-of-4 means one FEC flip is harmless; two consecutive flips
+/// with the SAME corrupted value would be needed to fool the vote,
+/// which is astronomically unlikely for random Hamming10 errors.
+pub const LDU1_FM_VOTE_N: usize = 3;
+
+/// Cooldown window for SpeakerEnd emission. 1500 ms is longer than
+/// any real TDU/TDU_LC cluster inside a single call (typical spacing
+/// ~180 ms) and shorter than a realistic new-call gap between two
+/// speakers (seconds at a minimum with retune + HDU).
+#[cfg(target_os = "linux")]
+const SPEAKER_END_COOLDOWN_MS: u64 = 1500;
+
+// Same constant but non-linux (for compilation on Windows host).
+#[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
+const SPEAKER_END_COOLDOWN_MS: u64 = 1500;
+
+impl ImbeForwarder {
+    /// Total capacity of the IMBE batch queue (the mpsc bound).
+    pub fn queue_capacity_max(&self) -> usize {
+        self.imbe_tx.max_capacity()
+    }
+    /// Remaining slots in the IMBE batch queue. `max_capacity() -
+    /// this` = current depth.
+    pub fn queue_capacity_remaining(&self) -> usize {
+        self.imbe_tx.capacity()
+    }
+    /// Current depth of the IMBE batch queue. Racy by at most one
+    /// slot under concurrent producer/consumer — for a gauge that's
+    /// fine.
+    pub fn queue_depth_now(&self) -> usize {
+        self.queue_capacity_max()
+            .saturating_sub(self.queue_capacity_remaining())
+    }
 }
 
 impl ImbeForwarder {
     pub fn new(
-        imbe_tx: tokio::sync::mpsc::Sender<[p25::voice_frame::ImbeFrameRaw; 9]>,
+        imbe_tx: tokio::sync::mpsc::Sender<(u16, u32, [p25::voice_frame::ImbeFrameRaw; 9])>,
     ) -> Self {
         Self {
             hdu_count: 0.into(),
@@ -149,6 +365,8 @@ impl ImbeForwarder {
             call_encrypted: false.into(),
             current_talkgroup: 0.into(),
             current_source: 0.into(),
+            current_frequency_hz: 0.into(),
+            current_channel: std::sync::Mutex::new(String::new()),
             encrypted_tg_history: std::sync::Mutex::new(std::collections::HashSet::new()),
             vocoder_reset_pending: false.into(),
             imbe_ring: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(128)),
@@ -158,6 +376,8 @@ impl ImbeForwarder {
             tdulc_parse_attempts: 0.into(),
             tdulc_parse_motorola: 0.into(),
             tdulc_parse_gvcu: 0.into(),
+            tdulc_parse_gvu: 0.into(),
+            tdulc_parse_callterm: 0.into(),
             tdulc_parse_other: 0.into(),
             tdulc_parse_none: 0.into(),
             tdulc_last_lc_bytes: std::sync::Mutex::new([0u8; 9]),
@@ -165,7 +385,86 @@ impl ImbeForwarder {
             ws_event_tx: std::sync::OnceLock::new(),
             frames_submitted: 0.into(),
             frames_consumed: std::sync::Arc::new(0.into()),
+            last_batch_tg: 0.into(),
+            call_baseline_hdu: 0.into(),
+            call_baseline_ldu1: 0.into(),
+            call_baseline_ldu2: 0.into(),
+            call_baseline_tdu: 0.into(),
+            call_baseline_tdu_lc: 0.into(),
+            call_baseline_imbe_extracted: 0.into(),
+            call_baseline_imbe_dropped: 0.into(),
+            call_baseline_pcm: 0.into(),
+            call_baseline_errors: 0.into(),
+            call_baseline_silent: 0.into(),
+            call_baseline_unix_ms: 0.into(),
+            queue_high_water: 0.into(),
+            last_speaker_end_ms: 0.into(),
+            speaker_end_deduplicated: 0.into(),
+            speaker_end_invalid: 0.into(),
+            ldu1_fm_history: std::sync::Mutex::new(Ldu1FmHistory::new()),
+            ldu1_lc_source_emitted: 0.into(),
+            ldu1_lc_source_rejected_implausible: 0.into(),
+            ldu1_lc_cc_mismatch_count: 0.into(),
+            ldu1_last_mismatch: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Validity precondition for any SpeakerEnd candidate — the
+    /// follower must be actively locked on a talkgroup. A SpeakerEnd
+    /// arriving while the follower is idle is either (a) a late tail
+    /// of a prior call that already closed or (b) a false BCH-decoded
+    /// LCW during a gap. Either way there's no active call for it to
+    /// end, so reject.
+    fn speaker_end_precondition_ok(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let tg = self.current_talkgroup.load(Ordering::Relaxed);
+        if tg == 0 {
+            self.speaker_end_invalid.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        true
+    }
+
+    /// Secondary validity check for LCW variants that are supposed
+    /// to carry a real individual RID as the "BY:" field (Motorola
+    /// TALK_COMPLETE). Reject if zero or a well-known system-
+    /// controller address — those values indicate the LC FEC
+    /// corrected garbage into a plausible-looking codeword.
+    ///
+    /// Standard LCCallTermination addresses (FFFFFD = MOTOROLA
+    /// SYSTEM CONTROLLER 1, FFFFFF = MOTOROLA SYSTEM CONTROLLER 2,
+    /// FFFFFE = TIA STANDARD) are LEGITIMATE on standard
+    /// CallTermination but NOT on Motorola TALK_COMPLETE.
+    fn radio_id_plausible(rid: u32) -> bool {
+        rid != 0 && rid < 0xFF_FFFD
+    }
+
+    /// Common entry-point for firing `SpeakerEnd`. Checks the
+    /// cooldown window and returns false (counting the dedup) if
+    /// a SpeakerEnd was emitted too recently. Callers use the
+    /// result to decide whether to still run their other side
+    /// effects (activity-feed entry, counter bumps, etc.) — those
+    /// are informational and safe either way; only the broadcast
+    /// send is gated.
+    fn try_emit_speaker_end(
+        &self,
+        tx: &audio::CallBoundaryTx,
+        boundary: audio::CallBoundary,
+    ) -> bool {
+        use std::sync::atomic::Ordering;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let last = self.last_speaker_end_ms.load(Ordering::Relaxed);
+        if last != 0 && now_ms.saturating_sub(last) < SPEAKER_END_COOLDOWN_MS {
+            self.speaker_end_deduplicated
+                .fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        self.last_speaker_end_ms.store(now_ms, Ordering::Relaxed);
+        let _ = tx.send(boundary);
+        true
     }
 
     pub fn set_event_log(
@@ -219,12 +518,27 @@ impl ImbeForwarder {
             }
         }
 
-        match self.imbe_tx.try_send(*frames) {
+        // TG + source captured HERE, not on the receiver side. If the
+        // follower retunes or updates current_source between this send
+        // and the vocoder pulling the batch, the batch still carries
+        // THIS call's labels — vocoder decodes + routes correctly, no
+        // tail-drain-mislabeling splits at the recorder (pre-2026-04-24
+        // zero-LDU fragments came from exactly this race on `source`).
+        let src = self.current_source.load(Ordering::Relaxed);
+        match self.imbe_tx.try_send((tg, src, *frames)) {
             Ok(()) => {
                 // Only advance when frames actually entered the queue —
                 // a dropped send never produces PCM, so advancing would
                 // make the recorder wait forever.
                 self.frames_submitted.fetch_add(9, Ordering::Relaxed);
+                // Update the session high-water mark on the queue
+                // depth. Racy read (capacity can change between the
+                // send returning and this load) but a gauge is fine.
+                let depth = self.queue_depth_now() as u64;
+                let hw = self.queue_high_water.load(Ordering::Relaxed);
+                if depth > hw {
+                    self.queue_high_water.store(depth, Ordering::Relaxed);
+                }
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 self.imbe_frames_dropped.fetch_add(9, Ordering::Relaxed);
@@ -248,7 +562,7 @@ impl ImbeForwarder {
         }
         if let Some(log) = self.event_log.get() {
             log.push(
-                crate::services::event_log::LogCategory::Imbe,
+                crate::services::event_log::LogCategory::Voice,
                 summary.to_string(),
                 evt,
             );
@@ -324,6 +638,13 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
             "LDU1 VOICE GROUP VOICE CHANNEL USER FM:{} TO:{} SERVICE OPTIONS:{}",
             source, tg_locked, svc_opts_render,
         );
+        // 2026-04-25: enrich the activity log entry with CC cross-
+        // check fields so the dashboard can filter LDU1 LC entries
+        // for cc_match=false. Operator philosophy: log every
+        // disagreement, don't act on any of them.
+        let cc_source_now = self.current_source.load(Ordering::Relaxed);
+        let cc_known = cc_source_now != 0;
+        let cc_match = !cc_known || cc_source_now == source;
         self.emit_activity(&summary, serde_json::json!({
             "timestamp":  p25::control_channel::chrono_timestamp(),
             "event_type": "TRF_LDU1_LC",
@@ -332,17 +653,134 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
             "source":     source,
             "nac":        nac,
             "service_options": svc_opts,
+            "cc_src":     if cc_known { Some(cc_source_now) } else { None },
+            "cc_match":   cc_match,
         }));
-        // LDU1 LC is NOT used to stamp the recording source. Its FEC
-        // (Hamming10 + RS(24,12,13)) accepts near-valid codewords on
-        // bit-corrupt input — a single speaker's turn produced 5
-        // different `FM:` values in one observed 3.5 s call, only 2
-        // plausible. Authoritative source comes from the control-channel
-        // GRP_VCH_GRANT SRC field (TSBK trellis + CRC) via the grant
-        // follower, with end-of-speaker MOT_TC TDULC (Golay24 + RS) as
-        // a second-opinion stamp at finalise. The activity-log emit
-        // above is kept purely as telemetry.
-        let _ = (nac, tg_locked);
+
+        // 2026-04-24 CC-centric refactor: LDU1 LC FM: is now used for
+        // source enrichment via `CallBoundaryKind::TdulcComplete`, but
+        // ONLY after two FEC-defence gates:
+        //
+        //   1. Plausibility — reject `0` (null), system-controller
+        //      addresses (`>= 0xFF_FFFD`), and out-of-24-bit values.
+        //      Catches isolated corruptions into system-reserved
+        //      codeword regions.
+        //   2. N-of-M voting over a rolling ring (`ldu1_fm_history`) —
+        //      emit only when `LDU1_FM_VOTE_N` of the last
+        //      `LDU1_FM_VOTE_M` decodes agree. The P25 redundancy
+        //      principle: 326 ms LDU1 cadence × a real speaker holding
+        //      PTT for seconds = ≥ 3 repeats of a legitimate FM:
+        //      value before emission, while isolated FEC flips appear
+        //      once and lose the vote.
+        //
+        // Downstream (`grant_stats::handle_boundary`) uses TdulcComplete
+        // fill-in-only: updates OpenGrant.source if it was None (rare —
+        // CC GRANT.SRC usually populates it first), never replaces an
+        // existing CC-derived source. History audit 2026-04-24: 312/345
+        // LDU1 LC FM: matched CC SRC exactly; the 3 true anomalies
+        // (8-digit corrupted RIDs) are exactly what these gates block.
+        if !Self::radio_id_plausible(source) {
+            self.ldu1_lc_source_rejected_implausible
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+
+        // 2026-04-25 CC-cross-check observation (NON-suppressing).
+        //
+        // Operator design philosophy: LDU1 LC FM: is the ACTUAL
+        // CURRENT SPEAKER — the radio that's keying right now. CC
+        // `GRP_VCH_GRANT.SRC` is the CHANNEL OWNER — who reserved
+        // the call. They're DIFFERENT facts and we want BOTH.
+        //
+        // When they disagree, we still emit `TdulcComplete` with
+        // the voted LDU1 LC FM so downstream (call_tracker /
+        // grant_stats) can populate the `actual_speaker` field
+        // separately from the CC `source`. The recorder's Fix 1
+        // (fill-in-only on c.source) keeps the recording filename
+        // stamped with CC SRC; the LDU1 LC value flows through as
+        // a parallel signal, not a competing source.
+        //
+        // We ALSO capture forensic data on each disagreement:
+        //
+        //   1. Counter `ldu1_lc_cc_mismatch_count` increments so
+        //      mismatch rate is observable per-call vs per-site.
+        //   2. Most recent failing LC body bytes get latched into
+        //      `ldu1_last_mismatch` (with timestamp + cc_src +
+        //      ldu1_lc_source) for replay through an independent
+        //      decoder / SDRTrunk comparison.
+        //   3. Activity log entry above carries `cc_src`
+        //      + `cc_match=false` so the dashboard can filter for
+        //      these without touching extra endpoints.
+        //
+        // The IMBE frames themselves were already submitted to the
+        // vocoder via `forward_frames()` at the top of `on_ldu1`,
+        // BEFORE we reached this LC-parsing path — so the LC
+        // observation has zero effect on audio decode either way.
+        if cc_known && cc_source_now != source {
+            self.ldu1_lc_cc_mismatch_count.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut slot) = self.ldu1_last_mismatch.lock() {
+                let mut raw = [0u8; 24];
+                let n = body_raw.len().min(24);
+                raw[..n].copy_from_slice(&body_raw[..n]);
+                *slot = Some(Ldu1LcMismatch {
+                    timestamp_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                    tg: tg_locked,
+                    cc_source: cc_source_now,
+                    ldu1_lc_source: source,
+                    raw_body_first_24: raw,
+                });
+            }
+            // No early return — fall through to the voting + emission
+            // path. CC stays authoritative for `source`; LDU1 LC fills
+            // the `actual_speaker` slot.
+        }
+
+        let emit_consensus: Option<u32> = {
+            let Ok(mut hist) = self.ldu1_fm_history.lock() else {
+                return;
+            };
+            // Reset ring on TG change so a new call starts fresh
+            // (previous speaker's FM: can't pollute the new vote).
+            if hist.tg != tg_locked {
+                hist.tg = tg_locked;
+                hist.recent.clear();
+                hist.last_emitted = 0;
+            }
+            if hist.recent.len() >= LDU1_FM_VOTE_M {
+                hist.recent.pop_front();
+            }
+            hist.recent.push_back(source);
+            // Count how many of the ring agree with the just-pushed
+            // value. Self-counting `source` means at least 1; the
+            // gate requires ≥ N across the ring.
+            let votes = hist.recent.iter()
+                .filter(|&&x| x == source)
+                .count();
+            if votes >= LDU1_FM_VOTE_N && hist.last_emitted != source {
+                hist.last_emitted = source;
+                Some(source)
+            } else {
+                None
+            }
+        };
+        if let Some(consensus) = emit_consensus {
+            self.ldu1_lc_source_emitted.fetch_add(1, Ordering::Relaxed);
+            if let Some(tx) = self.call_boundary_tx.get() {
+                let _ = tx.send(audio::CallBoundary {
+                    kind: audio::CallBoundaryKind::TdulcComplete {
+                        source: Some(consensus),
+                    },
+                    nac,
+                    talkgroup: Some(tg_locked),
+                    expected_submit_count: self
+                        .frames_submitted
+                        .load(Ordering::Relaxed),
+                });
+            }
+        }
     }
 
     fn on_ldu2(
@@ -424,6 +862,36 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         self.log_duid("HDU");
         self.hdu_count.fetch_add(1, Ordering::Relaxed);
 
+        // Snapshot current cumulative counters as the baseline for
+        // this call. /api/traffic exposes `current_call_* = global
+        // - baseline` so the dashboard shows per-current-call numbers
+        // distinct from session totals.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.call_baseline_hdu.store(
+            self.hdu_count.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.call_baseline_ldu1.store(
+            self.ldu1_count.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.call_baseline_ldu2.store(
+            self.ldu2_count.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.call_baseline_tdu.store(
+            self.tdu_count.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.call_baseline_tdu_lc.store(
+            self.tdu_lc_count.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.call_baseline_imbe_extracted.store(
+            self.imbe_frames_extracted.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.call_baseline_imbe_dropped.store(
+            self.imbe_frames_dropped.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.call_baseline_pcm.store(
+            self.vocoder_pcm_produced.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.call_baseline_errors.store(
+            self.vocoder_errors.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.call_baseline_silent.store(
+            self.vocoder_frames_silent_observed.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.call_baseline_unix_ms.store(now_ms, Ordering::Relaxed);
+
         // Do NOT clear `current_source` here. In observed operation
         // the CC grant with fresh SRC arrives 1-2 s BEFORE HDU on the
         // traffic chain, so clearing at HDU time wipes the good
@@ -483,15 +951,47 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         // `source: None` — bare TDU carries no speaker ID.
         let nac = self.last_observed_nac.load(Ordering::Relaxed);
         let tg = self.current_talkgroup.load(Ordering::Relaxed);
-        if let Some(tx) = self.call_boundary_tx.get() {
-            let _ = tx.send(audio::CallBoundary {
-                kind: audio::CallBoundaryKind::SpeakerEnd { source: None },
-                nac,
-                talkgroup: if tg == 0 { None } else { Some(tg) },
-                expected_submit_count: self
-                    .frames_submitted
-                    .load(Ordering::Relaxed),
-            });
+        // Bare TDU: precondition is current_talkgroup != 0 AND we
+        // saw IMBE voice frames recently (≤ RECENT_IMBE_MS). Bare
+        // TDU has no LCW payload, so we can't do the per-field
+        // cross-check we do on Motorola TALK_COMPLETE. What we CAN
+        // do is require evidence that a call was genuinely flowing —
+        // a TDU arriving after a long idle is almost certainly a
+        // false BCH-decoded DUID nibble. IMBE within the last 2 s
+        // is a tight gate: a real end-of-call TDU follows the last
+        // LDU by ~180 ms at most.
+        let imbe_recent = {
+            let last_imbe_ms = self.last_imbe_at_millis
+                .load(Ordering::Relaxed);
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64).unwrap_or(0);
+            last_imbe_ms != 0
+                && now_ms.saturating_sub(last_imbe_ms) < 2_000
+        };
+        if self.speaker_end_precondition_ok() && imbe_recent {
+            if let Some(tx) = self.call_boundary_tx.get() {
+                // Same treatment as CallTermination: carry the
+                // follower's current_source on the boundary so a
+                // bare TDU that wins the cooldown race doesn't erase
+                // a legitimate source we already know.
+                let current_src = self.current_source
+                    .load(Ordering::Relaxed);
+                let src_for_boundary = if current_src != 0
+                    { Some(current_src) } else { None };
+                self.try_emit_speaker_end(tx, audio::CallBoundary {
+                    kind: audio::CallBoundaryKind::SpeakerEnd {
+                        source: src_for_boundary,
+                    },
+                    nac,
+                    talkgroup: if tg == 0 { None } else { Some(tg) },
+                    expected_submit_count: self
+                        .frames_submitted
+                        .load(Ordering::Relaxed),
+                });
+            }
+        } else if !imbe_recent {
+            self.speaker_end_invalid.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -526,19 +1026,56 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
             }) => {
                 self.tdulc_parse_motorola.fetch_add(1, Ordering::Relaxed);
                 let nac = self.last_observed_nac.load(Ordering::Relaxed);
-                // End-of-speaker -> SpeakerEnd. Recorder finalises on
-                // this protocol marker rather than on HDU detection,
-                // so A -> B turn-taking splits cleanly.
-                let _ = tx.send(audio::CallBoundary {
-                    kind: audio::CallBoundaryKind::SpeakerEnd {
-                        source: Some(by_radio_id),
-                    },
-                    nac,
-                    expected_submit_count: self
-                        .frames_submitted
-                        .load(Ordering::Relaxed),
-                    talkgroup: Some(tg),
-                });
+                // Three-way cross-check for validity:
+                //   1. current_talkgroup != 0 (follower active)
+                //   2. by_radio_id is a plausible individual RID
+                //      (non-zero, not a system controller)
+                //   3. **by_radio_id matches current_source** — the
+                //      grant follower already stamped the speaker's
+                //      RID from the CC's GRP_VCH_GRANT.SRC. A
+                //      legitimate TDULC Motorola TALK_COMPLETE on
+                //      this call carries the SAME RID in its BY:
+                //      field. A false BCH-corrected LCW producing a
+                //      different RID fails this check and is
+                //      rejected.
+                //
+                //   If current_source is 0 (grant didn't carry SRC,
+                //   pre-LDU1 timing, or follower not yet populated),
+                //   fall back to (1)+(2) only — can't cross-check
+                //   against a blank.
+                let current_src = self.current_source
+                    .load(Ordering::Relaxed);
+                let src_ok = current_src == 0
+                    || current_src == by_radio_id;
+                if self.speaker_end_precondition_ok()
+                    && Self::radio_id_plausible(by_radio_id)
+                    && src_ok
+                {
+                    self.try_emit_speaker_end(tx, audio::CallBoundary {
+                        kind: audio::CallBoundaryKind::SpeakerEnd {
+                            source: Some(by_radio_id),
+                        },
+                        nac,
+                        expected_submit_count: self
+                            .frames_submitted
+                            .load(Ordering::Relaxed),
+                        talkgroup: Some(tg),
+                    });
+                } else {
+                    self.speaker_end_invalid
+                        .fetch_add(1, Ordering::Relaxed);
+                    // Log the rejection — helps pattern-match
+                    // "phantom TalkComplete with wrong BY:" in the
+                    // SDRTrunk-style timeseries log.
+                    if current_src != 0 && current_src != by_radio_id {
+                        tracing::debug!(
+                            target: "p25_traffic",
+                            "TDULC MOT_TC BY:{} does not match \
+                             current_source:{} on TG:{} — rejected",
+                            by_radio_id, current_src, tg,
+                        );
+                    }
+                }
                 // Mirror SDRTrunk's `TDULC MOTOROLA TALK COMPLETE BY:<src>`
                 // line into the activity feed + event log.
                 let summary = format!(
@@ -578,7 +1115,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                 talkgroup_b, channel_b_band, channel_b_number,
                 has_channel_b,
             }) => {
-                self.tdulc_parse_other.fetch_add(1, Ordering::Relaxed);
+                self.tdulc_parse_gvu.fetch_add(1, Ordering::Relaxed);
                 let summary = if has_channel_b {
                     format!(
                         "TDULC GROUP VOICE CHANNEL UPDATE TG_A:{} CH_A:{}-{} TG_B:{} CH_B:{}-{}",
@@ -599,20 +1136,52 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                 }));
             }
             Some(p25::voice_frame::TdulcLcw::CallTermination { by_radio_id }) => {
-                self.tdulc_parse_other.fetch_add(1, Ordering::Relaxed);
-                // Standard CALL_TERMINATION -> SpeakerEnd so the
-                // recorder finalises immediately (no 1500 ms grace).
-                // `by_radio_id` is a system-controller address, not a
-                // real speaker — don't stamp it as source.
-                let nac = self.last_observed_nac.load(Ordering::Relaxed);
-                let _ = tx.send(audio::CallBoundary {
-                    kind: audio::CallBoundaryKind::SpeakerEnd { source: None },
-                    nac,
-                    talkgroup: Some(tg),
-                    expected_submit_count: self
-                        .frames_submitted
-                        .load(Ordering::Relaxed),
-                });
+                self.tdulc_parse_callterm.fetch_add(1, Ordering::Relaxed);
+                // Standard CALL_TERMINATION: `by_radio_id` should be
+                // a well-known system-controller address (FFFFFD /
+                // FFFFFE / FFFFFF). If it ISN'T one of those AND
+                // isn't zero, the LC FEC probably corrected noise
+                // into a plausible-looking codeword — reject rather
+                // than fire a spurious SpeakerEnd on a call we don't
+                // actually think ended.
+                //
+                // Precondition also applies: current_talkgroup must
+                // be non-zero (follower actively on a call).
+                let legit_controller = by_radio_id == 0xFFFFFD
+                    || by_radio_id == 0xFFFFFE
+                    || by_radio_id == 0xFFFFFF;
+                if self.speaker_end_precondition_ok()
+                    && legit_controller
+                {
+                    let nac = self.last_observed_nac.load(Ordering::Relaxed);
+                    // Carry current_source (set by grant follower
+                    // from GVCG.SRC) on the boundary event. Observed
+                    // 2026-04-20 log pattern: a call ends with 4
+                    // consecutive CALL_TERMINATION packets followed
+                    // by 1 MOT_TC. The first CALL_TERMINATION wins
+                    // the cooldown and dedups the later MOT_TC, so
+                    // if we leave source=None here the recorder
+                    // loses the speaker RID on grants that didn't
+                    // carry SRC. Passing current_source keeps the
+                    // stamp intact.
+                    let current_src = self.current_source
+                        .load(Ordering::Relaxed);
+                    let src_for_boundary = if current_src != 0
+                        { Some(current_src) } else { None };
+                    self.try_emit_speaker_end(tx, audio::CallBoundary {
+                        kind: audio::CallBoundaryKind::SpeakerEnd {
+                            source: src_for_boundary,
+                        },
+                        nac,
+                        talkgroup: Some(tg),
+                        expected_submit_count: self
+                            .frames_submitted
+                            .load(Ordering::Relaxed),
+                    });
+                } else {
+                    self.speaker_end_invalid
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 // Relabel the well-known system-controller teardown
                 // addresses per SDRTrunk `LCCallTermination`
                 // (MOTOROLA_SYSTEM_CONTROLLER_1 = 0xFFFFFD,

@@ -150,6 +150,13 @@ pub struct AppState {
     /// demod_enable bits without the polling task immediately
     /// overriding them. Default true; process-lifetime only.
     pub traffic_follower_enabled: Arc<std::sync::atomic::AtomicBool>,
+    /// 2026-04-24 diagnostic — when true, the grant follower stops
+    /// dispatching retunes. The traffic chain stays parked on its
+    /// current frequency. Lets an operator measure AGC/PLL/sync
+    /// settle behaviour against a known-active traffic channel
+    /// without the follower retuning away on the next grant. Toggled
+    /// via `POST /api/traffic_lock`.
+    pub traffic_lock_freq: Arc<std::sync::atomic::AtomicBool>,
     /// Phase 7C: fourth `ControlChannelDecoder` instance fed by the
     /// new `traffic_lsm_dibit_dma` ring (Phase 7A.2 HDL chain).
     /// Runs HDU/LDU1/LDU2/TDU/TDU_LC dispatch via its installed
@@ -207,6 +214,44 @@ pub struct AppState {
     ///   1 = C4FM (force C4FM control chain)
     ///   2 = LSM  (force LSM simulcast control chain)
     pub active_modulation: Arc<std::sync::atomic::AtomicU8>,
+    /// 2026-04-24: per-grant decode summary ring. Populated by the
+    /// `grant_stats` task that subscribes to `CallBoundary` events.
+    /// Consumed by `/api/grant_decode_stats`.
+    pub grant_decode_stats: crate::app::grant_stats::GrantStatsRing,
+
+    /// 2026-04-24: shared auto-PPM tracker ring. The sampler task
+    /// pushes estimates, the updater reads + clamps + applies. Shared
+    /// via AppState so `run_calibration` (and any future code that
+    /// changes shift out-of-band) can clear it — stale estimates from
+    /// pre-shift-change corrupt the trimmed mean otherwise.
+    pub ppm_tracker_ring:
+        std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<f64>>>,
+    /// 2026-04-24: timestamp (unix ms) of the most recent shift
+    /// change — updated by tracker applies and forced calibrations.
+    /// Sampler skips sampling for a few seconds after this to let
+    /// the Costas PLL reconverge on the new NCO position.
+    pub ppm_last_shift_change_ms:
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
+
+    /// 2026-04-24: auto-PPM apply gate. When false the tracker still
+    /// samples + exposes `tracker_estimate_hz` as advisory, but does
+    /// NOT reprogram the NCO. Toggled from the dashboard.
+    pub auto_ppm_enabled:
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+
+    /// 2026-04-24: anchor window (Hz). Tracker only applies an estimate
+    /// within ±this distance of `last_recal_shift_hz`. Prevents a
+    /// biased pll_dbg reading from walking shift away from the
+    /// spectrum peak-find's ground-truth position. 0 = no anchor
+    /// restriction (legacy behaviour).
+    pub auto_ppm_anchor_hz:
+        std::sync::Arc<std::sync::atomic::AtomicU32>,
+
+    /// 2026-04-24: snapshot of `current_lo_shift_hz` at the most
+    /// recent successful forced recalibration. Used as the anchor
+    /// centre for the tracker. 0 until the first recal this session.
+    pub last_recal_shift_hz:
+        std::sync::Arc<std::sync::atomic::AtomicI64>,
 }
 
 impl AppState {
@@ -257,6 +302,8 @@ pub fn router(
         .route("/", get(index_html))
         .route("/api/system", get(api::system::get_system))
         .route("/api/sys_health", get(api::system::get_sys_health))
+        .route("/api/pipeline",   get(api::system::get_pipeline))
+        .route("/api/freq_health", get(api::system::get_freq_health))
         .route("/api/grants", get(api::radio::get_grants))
         .route("/api/bands", get(api::radio::get_bands))
         .route("/api/stats", get(api::radio::get_stats))
@@ -344,6 +391,8 @@ pub fn router(
         .route("/api/ppm",           get(api::tuning::get_ppm)
                                       .put(api::tuning::put_ppm))
         .route("/api/ppm_calibrate", post(api::tuning::post_ppm_calibrate))
+        .route("/api/ppm/auto",      post(api::tuning::post_ppm_auto))
+        .route("/api/ppm/nudge",     post(api::tuning::post_ppm_nudge))
         // HDL LSM AGC idle-gate threshold. Defaults to 256 (Q1.15);
         // retunable per site without rebaking HDL.
         .route("/api/agc_threshold",
@@ -351,6 +400,7 @@ pub fn router(
                .put(api::tuning::put_agc_threshold))
         // Call recording + playback.
         .route("/api/recordings", get(api::history::get_recordings))
+        .route("/api/grant_decode_stats", get(api::history::get_grant_decode_stats))
         .route("/api/recordings/{id}", get(api::history::get_recording_file))
         .route("/api/recordings/{id}/events", get(api::history::get_recording_events))
         // Modulation selector (C4FM / LSM / Auto). SDRTrunk-style.

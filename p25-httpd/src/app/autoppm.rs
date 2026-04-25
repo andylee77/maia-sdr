@@ -243,6 +243,24 @@ pub async fn run_calibration(
         .unwrap_or(0) as i64;
     state.last_ppm_cal_unix_secs.store(unix_secs, Ordering::Relaxed);
 
+    // Clear the tracker ring — stale pre-recal estimates would
+    // contaminate the trimmed mean and drag shift back toward the
+    // old (wrong) value. Bump last_shift_change_ms so the sampler
+    // skips for PLL_TRACKER_SETTLE_MS while the Costas loop
+    // reconverges on the newly-applied NCO position.
+    if let Ok(mut ring) = state.ppm_tracker_ring.lock() {
+        ring.clear();
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    state.ppm_last_shift_change_ms.store(now_ms, Ordering::Relaxed);
+    // Stamp the recal anchor. The tracker's apply gate won't move
+    // shift more than ±auto_ppm_anchor_hz from this until the next
+    // forced recal.
+    state.last_recal_shift_hz.store(hz_int, Ordering::Relaxed);
+
     // Persist to disk so the next boot picks up the calibration
     // without re-running it. Best-effort — a permissions or I/O
     // failure here doesn't fail the calibration itself.
@@ -437,247 +455,298 @@ pub fn spawn_boot_autoppm(state: Arc<AppState>) {
     });
 }
 
-/// Interval between periodic fine-tune checks.
-#[cfg(target_os = "linux")]
-const FINE_TUNE_INTERVAL_SECS: u64 = 900;    // 15 min
+// ── Continuous PPM tracker (replaces the old fine-tune task) ─────
+// Approach 2026-04-24: instead of a discrete fire-every-15-min
+// correction with thresholds and gates that misfire, run a
+// continuous low-rate sampler that maintains a trimmed-mean
+// estimate of the PLL residual, and apply it on a slow cadence.
+// The PPM correction is a single scalar applied to the DDC NCO —
+// it does not move the AD9361 LO and does not retune anything —
+// so smooth continuous updates are safe.
+//
+// Why this design:
+//   - Old fine-tune fired once per 15 min on a 2 s PLL average.
+//     A bursty TSDU control channel has AGC product swinging
+//     0.3–1.0 across symbols, so the snapshot was dice-roll —
+//     gates would skip even when a real correction was needed
+//     (observed 2026-04-24: boot landed −0.27 ppm, true −0.54,
+//     fine-tune did not converge).
+//   - Trimmed-mean over a long window naturally rejects bursts,
+//     spurs, and brief fades without needing per-iteration step
+//     caps or off-baseline guards.
+//   - Continuous sampling is cheap (one register read per second)
+//     and the long average is robust to anything except a real
+//     crystal drift, which is exactly what we want to track.
 
-/// Threshold (|PLL residual| in Hz) above which a fine-tune commits
-/// a correction. Below this the loop is good enough — committing
-/// ~10 Hz tweaks every 15 min would be churn without audible benefit.
+/// How often we sample pll_dbg / agc_product into the ring.
 #[cfg(target_os = "linux")]
-const FINE_TUNE_THRESHOLD_HZ: f64 = 30.0;
+const PPM_TRACKER_SAMPLE_INTERVAL_MS: u64 = 1_000;
 
-/// Maximum correction the fine-tune loop is allowed to apply in a
-/// single iteration. Crystal trim physically drifts at <0.1 ppm/°C;
-/// over 15 min at most tens of Hz. A reading larger than this is
-/// almost always a transient signal disturbance (brief fade, traffic
-/// retune glitch, ADC overload) — clamp so the loop can't accumulate
-/// catastrophically from bad data. Hit 2026-04-23: running 11+ h
-/// without this cap drifted shift to ~5 ppm via 16+ bad iterations.
+/// Ring length. 300 samples × 1 s = 5 min of history.
 #[cfg(target_os = "linux")]
-const FINE_TUNE_MAX_STEP_HZ: f64 = 150.0;
+const PPM_TRACKER_WINDOW_SAMPLES: usize = 300;
 
-/// Hard cap on the absolute shift the fine-tune loop can drive to.
-/// Matches the boot loader's MAX_PLAUSIBLE_HZ. AD9361 crystals don't
-/// land outside ±1 ppm on healthy hardware (800 Hz at 858 MHz LO).
+/// Fraction trimmed off each tail before computing the mean.
+/// 0.10 → drop top 10% + bottom 10% = 20% of samples thrown out.
+/// Catches RF transients, traffic-retune glitches, momentary
+/// ADC clipping. The remaining 80% is the steady-state estimate.
 #[cfg(target_os = "linux")]
-const FINE_TUNE_MAX_ABS_SHIFT_HZ: f64 = 1000.0;
+const PPM_TRACKER_TRIM_FRAC: f64 = 0.10;
 
-/// Minimum `agc_product` (gain × mag, ideal = 1.0) required before
-/// we trust `pll_dbg` enough to fine-tune on it. Below this, the
-/// AGC loop is wobbling and the PLL error reading is noise, not a
-/// real frequency offset.
+/// How often we recompute + apply the trimmed mean.
 #[cfg(target_os = "linux")]
-const FINE_TUNE_MIN_AGC_PRODUCT: f64 = 0.6;
+const PPM_TRACKER_APPLY_INTERVAL_SECS: u64 = 60;
 
-/// How long the control decoder can be deacquired before the
-/// fine-tune task resets `current_lo_shift_hz` to 0 as a baseline.
-/// Premise: if we've been unable to decode for this long, the
-/// persisted shift can't be trusted — better to start fresh and
-/// let the boot / manual auto-PPM path reacquire.
+/// Minimum samples in the ring before the trimmed mean is
+/// allowed to fire. 60 = 1 min of clean data minimum.
 #[cfg(target_os = "linux")]
-const SYNC_LOST_RESET_SECS: u64 = 300;
+const PPM_TRACKER_MIN_SAMPLES: usize = 60;
 
-/// Maximum ppm fine-tune is allowed to wander off the baseline that
-/// the last full calibration / operator override established. A full
-/// recal (POST /api/ppm_calibrate) or manual PUT /api/ppm resets
-/// this baseline. Fine-tune is a tracking correction, NOT a redefine;
-/// if the crystal has drifted more than this we want operator
-/// attention, not silent accumulation.
+/// AGC-product floor for "this sample is signal, not noise".
+/// 2026-04-24 revision: tightened from 0.3 → 0.6. The old gate
+/// admitted idle-between-TSDU samples where the PLL had no signal
+/// to track; those contaminated the trimmed mean and dragged shift
+/// away from the correct post-recal value. 0.6 requires a clear
+/// burst presence (product = gain × mag typically hits 1-3 during
+/// a TSDU, drops to 0.1-0.3 between), so only actually-locked
+/// samples feed the estimator.
 #[cfg(target_os = "linux")]
-const FINE_TUNE_MAX_PPM_OFF_BASELINE: f64 = 0.2;
+const PPM_TRACKER_MIN_AGC_PRODUCT: f64 = 0.6;
 
-/// Spawn a long-lived task that periodically samples `pll_dbg`,
-/// computes the residual in Hz, and applies it to the DDC NCO if it
-/// exceeds `FINE_TUNE_THRESHOLD_HZ`. This is stage-B-only — no
-/// wideband FFT, no settle wait — because the loop is already
-/// tracking and we just need to slide the reference. Runs for the
-/// life of the process.
+/// 2026-04-24: seconds to skip sampling after any shift change.
+/// The Costas loop takes ~3 s to reconverge after the NCO moves;
+/// pll_dbg during that transient is the INTEGRATOR UNWINDING, not
+/// true error. Sampling through the transient was the primary
+/// cause of the "tracker pulls toward 0 after recalibrate" bug —
+/// fresh samples at the new shift with garbage residuals averaged
+/// in with old accurate samples and dragged the estimate down.
+#[cfg(target_os = "linux")]
+const PPM_TRACKER_SETTLE_MS: u64 = 3_000;
+
+/// Hard envelope on the resulting shift, in PPM. Real crystals don't
+/// drift past ±1 ppm on healthy hardware. The tracker CLAMPS to this,
+/// so no amount of bad data or pll_dbg bias can walk shift past the
+/// ceiling. Operator invariant: auto-PPM will never produce a shift
+/// whose |ppm| exceeds this value.
+#[cfg(target_os = "linux")]
+const PPM_TRACKER_ENVELOPE_PPM: f64 = 1.0;
+
+/// Minimum |Δshift| from currently-applied shift before we bother
+/// reprogramming the NCO. Avoids continuous 1-Hz nudges that
+/// burn JFFS2 wear on the persistence file.
+#[cfg(target_os = "linux")]
+const PPM_TRACKER_MIN_APPLY_DELTA_HZ: f64 = 2.0;
+
+/// Persistence: only re-save the on-disk file if the shift moved
+/// by at least this much from the last save. JFFS2 wear-leveling
+/// matters; this caps saves at ≈6/h in steady state.
+#[cfg(target_os = "linux")]
+const PPM_TRACKER_PERSIST_DELTA_HZ: f64 = 5.0;
+
+/// Spawn the continuous PPM tracker. Replaces the old
+/// `spawn_periodic_fine_tune`. Two cooperating tasks:
 ///
-/// Crystal drift over temperature is typically <0.1 ppm/°C, so
-/// over an hour of ambient-temperature change you might see 10-30 Hz
-/// at 1 GHz. This task catches that slowly without interrupting the
-/// decode path (no NCO discontinuity large enough to unlock the PLL).
+///   1. **Sampler** ticks at 1 Hz, pushes (pll_dbg, agc_product)
+///      into a ring buffer. Drops the sample if AGC product is
+///      below the noise floor or the system is deacquired.
+///   2. **Updater** wakes every 60 s, reads the ring, computes the
+///      trimmed mean, converts to Hz, and applies the resulting
+///      shift to the DDC NCO. Persists if the shift moved enough.
+///
+/// No discrete thresholds, no step clamps, no off-baseline guard.
+/// The trimmed mean over 5 min handles all of those.
 #[cfg(target_os = "linux")]
 pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
-    tokio::spawn(async move {
-        let mut sync_lost_since: Option<Instant> = None;
-        loop {
-            tokio::time::sleep(
-                Duration::from_secs(FINE_TUNE_INTERVAL_SECS)).await;
+    // Ring holds ESTIMATES OF THE TRUE SHIFT in Hz (floats), not raw
+    // residuals. 2026-04-24: the old integrator form
+    // (new_shift = old_shift + residual) had no fixed point — any
+    // systematic bias in pll_dbg walked shift indefinitely until the
+    // safety envelope clamped. See
+    // doc/diagnostics/2026-04-24/AUDIO_DROPS_ANALYSIS.md §Issue 1.
+    //
+    // Each sample estimates where the true shift is RIGHT NOW:
+    //     estimate_i = shift_at_sample_i + residual_in_hz_at_sample_i
+    // Trimmed mean of those estimates is the running best guess of
+    // the steady-state truth. Updater ASSIGNS (not adds) the mean to
+    // shift, clamped to ±1 ppm.
+    //
+    // Ring lives on AppState so `run_calibration` can clear it on a
+    // forced /api/ppm_calibrate — otherwise pre-recal estimates stay
+    // in the trimmed mean and pull shift back toward the old value.
+    let ring = state.ppm_tracker_ring.clone();
+    let last_shift_change = state.ppm_last_shift_change_ms.clone();
 
-            let acquired = {
-                let dec = state.lsm_decoder.read().await;
-                dec.system.wacn.is_some()
-            };
-
-            // Sync-loss guard. If we've been unable to acquire for
-            // `SYNC_LOST_RESET_SECS`, the current shift is almost
-            // certainly wrong (that's probably WHY we're not
-            // acquiring). Reset to 0 as baseline so the next
-            // reacquisition starts from a known-good state rather
-            // than compounding whatever drove us off.
-            if !acquired {
-                let lost = match sync_lost_since {
-                    Some(t) => t,
-                    None => {
-                        sync_lost_since = Some(Instant::now());
-                        continue;
-                    }
+    // Sampler task — 1 Hz, pushes (shift_now + residual_hz_now).
+    // Skips the sample if (a) system isn't acquired, (b) AGC product
+    // is below burst threshold, or (c) within the PLL-settle window
+    // after a shift change (NCO moved → Costas reconverging → garbage
+    // pll_dbg transient).
+    {
+        let state = state.clone();
+        let ring = ring.clone();
+        let last_shift_change = last_shift_change.clone();
+        tokio::spawn(async move {
+            let hz_per_q213 = SYM_RATE_HZ
+                / (2.0 * std::f64::consts::PI * 8192.0);
+            loop {
+                tokio::time::sleep(Duration::from_millis(
+                    PPM_TRACKER_SAMPLE_INTERVAL_MS)).await;
+                let acquired = {
+                    let dec = state.lsm_decoder.read().await;
+                    dec.system.wacn.is_some()
                 };
-                if lost.elapsed() >= Duration::from_secs(SYNC_LOST_RESET_SECS) {
-                    let old = state.current_lo_shift_hz
-                        .load(Ordering::Relaxed);
-                    if old != 0 {
-                        reset_shift_to_zero(&state).await;
-                        tracing::warn!(
-                            "auto-PPM (fine-tune): sync lost for {:.0}s, \
-                             shift reset to 0 (was {:+} Hz)",
-                            lost.elapsed().as_secs_f64(), old);
-                        state.event_log.push(
-                            crate::services::event_log::LogCategory::System,
-                            format!("auto-PPM RESET: sync lost {:.0}s, \
-                                     shift 0 (was {:+} Hz)",
-                                     lost.elapsed().as_secs_f64(), old),
-                            serde_json::json!({
-                                "kind":        "ppm.sync_lost_reset",
-                                "lost_secs":   lost.elapsed().as_secs_f64(),
-                                "old_shift":   old,
-                            }),
-                        );
-                        sync_lost_since = Some(Instant::now());
-                    }
+                if !acquired { continue; }
+                // PLL settle gate — skip samples within N ms of the
+                // most recent shift change (forced recal or tracker
+                // apply). During that window pll_dbg reflects the
+                // loop integrator unwinding, not a true residual.
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let last_change = last_shift_change
+                    .load(Ordering::Relaxed);
+                if last_change > 0
+                    && now_ms.saturating_sub(last_change)
+                        < PPM_TRACKER_SETTLE_MS
+                {
+                    continue;
                 }
-                continue;
+                let (pll, agc_product) = {
+                    let core = state.ip_core.lock().await;
+                    let (pll, _) = core.lsm_debug();
+                    let (g_q9_7, m_q1_15) = core.lsm_agc_debug();
+                    let g = g_q9_7 as f64 / 128.0;
+                    let m = m_q1_15 as f64 / 32768.0;
+                    (pll, g * m)
+                };
+                if agc_product < PPM_TRACKER_MIN_AGC_PRODUCT {
+                    continue;
+                }
+                // Read the shift that was applied when this pll_dbg
+                // was measured. Racy by one sample at worst; the
+                // trimmed mean drowns out single-sample races.
+                let shift_now = state.current_lo_shift_hz
+                    .load(Ordering::Relaxed) as f64;
+                let residual_hz = pll as f64 * hz_per_q213;
+                let estimate_hz = shift_now + residual_hz;
+                let mut r = ring.lock().unwrap();
+                if r.len() == PPM_TRACKER_WINDOW_SAMPLES {
+                    r.pop_front();
+                }
+                r.push_back(estimate_hz);
             }
-            sync_lost_since = None;
+        });
+    }
 
-            // Decode-health + AGC-health gate. If decode is visibly
-            // clean (sync_distance=0, nid_valid, low n_errors) AND
-            // the AGC loop is tracking (agc_product near 1.0), we
-            // trust the PLL and let it measure. If either is soft,
-            // we skip — a wobbly PLL reading isn't a real offset.
-            //
-            // Operator ask 2026-04-23: "if we have 100% decodes we
-            // should not adjust". Tight sync + no NID errors = the
-            // decode path is healthy. Why push the shift around?
-            let (agc_product, health_ok) = {
-                let core = state.ip_core.lock().await;
-                let (g_q9_7, m_q1_15) = core.lsm_agc_debug();
-                let st = core.lsm_status();
-                let g = g_q9_7 as f64 / 128.0;
-                let m = m_q1_15 as f64 / 32768.0;
-                let product = g * m;
-                let decode_healthy = st.nid_valid
-                    && st.sync_distance == 0
-                    && st.n_errors <= 2;
-                (product, decode_healthy)
+    // Updater task — every 60 s, trimmed mean of estimates → NCO.
+    tokio::spawn(async move {
+        let mut last_persisted_shift: f64 = state.current_lo_shift_hz
+            .load(Ordering::Relaxed) as f64;
+        loop {
+            tokio::time::sleep(Duration::from_secs(
+                PPM_TRACKER_APPLY_INTERVAL_SECS)).await;
+
+            let samples: Vec<f64> = {
+                let r = ring.lock().unwrap();
+                r.iter().copied().collect()
             };
-            if agc_product < FINE_TUNE_MIN_AGC_PRODUCT {
+            if samples.len() < PPM_TRACKER_MIN_SAMPLES {
                 tracing::debug!(
-                    "auto-PPM (fine-tune): skip, agc_product {:.3} < \
-                     {:.2} (loop not tracking)",
-                    agc_product, FINE_TUNE_MIN_AGC_PRODUCT);
-                continue;
-            }
-            if !health_ok {
-                tracing::debug!(
-                    "auto-PPM (fine-tune): skip, decode not clean \
-                     (sync_distance / n_errors / nid_valid check)");
+                    "auto-PPM tracker: only {} samples, need {}; skipping",
+                    samples.len(), PPM_TRACKER_MIN_SAMPLES);
                 continue;
             }
 
-            // Sample PLL briefly — this runs while decode is live so
-            // we keep it short to minimise lock contention on ip_core.
-            const N: usize = 20;
-            let mut sum: i64 = 0;
-            for _ in 0..N {
-                let core = state.ip_core.lock().await;
-                let (pll, _) = core.lsm_debug();
-                drop(core);
-                sum += pll as i64;
-                tokio::time::sleep(
-                    Duration::from_millis(PLL_SAMPLE_INTERVAL_MS)).await;
-            }
-            let pll_mean = sum as f64 / N as f64;
-            let hz_per_q213 = SYM_RATE_HZ / (2.0 * std::f64::consts::PI
-                                             * 8192.0);
-            let residual_hz = pll_mean * hz_per_q213;
-            if residual_hz.abs() < FINE_TUNE_THRESHOLD_HZ {
-                continue;
-            }
+            // Trimmed mean: sort, drop top + bottom TRIM_FRAC,
+            // average what's left.
+            let mut sorted = samples.clone();
+            sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(
+                std::cmp::Ordering::Equal));
+            let trim = (sorted.len() as f64
+                * PPM_TRACKER_TRIM_FRAC).floor() as usize;
+            let kept = &sorted[trim..sorted.len() - trim];
+            let mean_estimate_hz = kept.iter().sum::<f64>()
+                / kept.len() as f64;
 
-            // Per-iteration cap. A reading beyond this is almost
-            // always a transient; clamp so one bad sample can't
-            // accumulate catastrophically over many iterations.
-            let clamped_residual = residual_hz.clamp(
-                -FINE_TUNE_MAX_STEP_HZ, FINE_TUNE_MAX_STEP_HZ);
-            if residual_hz.abs() > FINE_TUNE_MAX_STEP_HZ {
-                tracing::warn!(
-                    "auto-PPM (fine-tune): residual {:+.1} Hz > cap \
-                     ±{:.0}; clamping to {:+.1}",
-                    residual_hz, FINE_TUNE_MAX_STEP_HZ,
-                    clamped_residual);
-            }
-
-            let sample_rate = state.current_sample_rate_hz
-                .load(Ordering::Relaxed) as f64;
             let rx_lo = state.current_rx_lo
                 .load(Ordering::Relaxed) as f64;
             let control_freq = state.current_control_freq
                 .load(Ordering::Relaxed) as f64;
+            let sample_rate = state.current_sample_rate_hz
+                .load(Ordering::Relaxed) as f64;
             let old_shift = state.current_lo_shift_hz
                 .load(Ordering::Relaxed) as f64;
-            let baseline = state.baseline_lo_shift_hz
-                .load(Ordering::Relaxed) as f64;
-            let new_shift = old_shift + clamped_residual;
 
-            // Absolute-value guard. AD9361 crystal drift doesn't
-            // physically reach ±1 ppm on healthy hardware; anything
-            // past that limit indicates accumulated error and we
-            // refuse to apply it. The user can still manually
-            // override via PUT /api/ppm.
-            if new_shift.abs() > FINE_TUNE_MAX_ABS_SHIFT_HZ {
-                tracing::warn!(
-                    "auto-PPM (fine-tune): new_shift {:+.0} Hz would \
-                     exceed ±{:.0} Hz envelope; skipping. Check RF.",
-                    new_shift, FINE_TUNE_MAX_ABS_SHIFT_HZ);
+            // Hard 1 ppm envelope. Clamp, not skip — if the estimate
+            // wanders into nonsense the operator still sees a bounded
+            // shift, not the old behaviour where the updater gave up
+            // and the shift stayed at yesterday's value.
+            let envelope_hz = (rx_lo * 1e-6) * PPM_TRACKER_ENVELOPE_PPM;
+            let new_shift = mean_estimate_hz
+                .clamp(-envelope_hz, envelope_hz);
+            let clamped = (mean_estimate_hz - new_shift).abs() > 0.5;
+
+            if (new_shift - old_shift).abs()
+                < PPM_TRACKER_MIN_APPLY_DELTA_HZ {
                 continue;
             }
 
-            // Baseline guard (operator-requested 2026-04-23).
-            // Fine-tune is a tracking correction, NOT a redefinition
-            // of the setpoint. Anything more than ±0.2 ppm off the
-            // baseline (which is reset by full recal / manual
-            // override) is unusual enough to warrant refusing and
-            // surfacing an event for operator review.
-            let max_off_baseline =
-                FINE_TUNE_MAX_PPM_OFF_BASELINE * rx_lo * 1e-6;
-            let off_baseline = (new_shift - baseline).abs();
-            if off_baseline > max_off_baseline {
-                tracing::warn!(
-                    "auto-PPM (fine-tune): would push {:+.0} Hz off \
-                     baseline (limit {:.0} Hz = ±{:.1} ppm); skipping",
-                    new_shift - baseline, max_off_baseline,
-                    FINE_TUNE_MAX_PPM_OFF_BASELINE);
-                state.event_log.push(
-                    crate::services::event_log::LogCategory::System,
-                    format!("auto-PPM fine-tune REFUSED: \
-                             {:+.0} Hz off baseline (cap {:.0} Hz = \
-                             ±{:.1} ppm)",
-                             new_shift - baseline, max_off_baseline,
-                             FINE_TUNE_MAX_PPM_OFF_BASELINE),
-                    serde_json::json!({
-                        "kind":         "ppm.finetune.refused",
-                        "residual_hz":  residual_hz,
-                        "old_shift":    old_shift,
-                        "new_shift":    new_shift,
-                        "baseline":     baseline,
-                        "off_baseline": new_shift - baseline,
-                        "limit_hz":     max_off_baseline,
-                    }),
-                );
+            // Apply gates — check BEFORE touching hardware so the
+            // estimate is still surfaced advisory via /api/ppm even
+            // when apply is blocked.
+            //
+            //   1. Auto-PPM toggle off → advisory-only.
+            //   2. Anchor window: tracker can only move shift within
+            //      ±auto_ppm_anchor_hz of the last forced recal.
+            //      Stage A (wideband peak-find) is ground truth for
+            //      the carrier position; tracker can fine-tune near
+            //      it but not walk away from it. 0 anchor disables
+            //      the restriction (legacy unrestricted mode).
+            //   3. No recal this session → no anchor → skip apply.
+            if !state.auto_ppm_enabled.load(Ordering::Relaxed) {
+                tracing::debug!(
+                    "auto-PPM tracker: apply suppressed (auto disabled), \
+                     estimate {:+.1} Hz vs current {:+.0} Hz",
+                    mean_estimate_hz, old_shift);
                 continue;
+            }
+            let anchor = state.auto_ppm_anchor_hz
+                .load(Ordering::Relaxed) as i64;
+            let last_recal = state.last_recal_shift_hz
+                .load(Ordering::Relaxed);
+            if anchor > 0 {
+                if last_recal == 0 {
+                    tracing::debug!(
+                        "auto-PPM tracker: apply suppressed (no recal \
+                         anchor set), estimate {:+.1} Hz",
+                        mean_estimate_hz);
+                    continue;
+                }
+                let delta = (new_shift as i64 - last_recal).abs();
+                if delta > anchor {
+                    tracing::info!(
+                        "auto-PPM tracker: estimate {:+.1} Hz is \
+                         {:+} Hz from recal anchor {} (>±{}); \
+                         skipping apply",
+                        mean_estimate_hz,
+                        new_shift as i64 - last_recal,
+                        last_recal, anchor);
+                    state.event_log.push(
+                        crate::services::event_log::LogCategory::System,
+                        format!("auto-PPM: estimate {:+.0} Hz outside \
+                                 anchor (recal={}, ±{}); not applied",
+                                 mean_estimate_hz, last_recal, anchor),
+                        serde_json::json!({
+                            "kind":        "ppm.tracker_blocked",
+                            "estimate_hz": mean_estimate_hz,
+                            "recal_hz":    last_recal,
+                            "anchor_hz":   anchor,
+                            "reason":      "outside_anchor",
+                        }),
+                    );
+                    continue;
+                }
             }
 
             let new_nco = control_freq - rx_lo + new_shift;
@@ -693,38 +762,63 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
                 .map(|d| d.as_secs() as i64).unwrap_or(0);
             state.last_ppm_cal_unix_secs.store(
                 unix_secs, Ordering::Relaxed);
+            // Reset the ring + stamp the settle timer. Any samples
+            // taken AT THE OLD SHIFT are stale against the new NCO
+            // position — keeping them in the ring biases subsequent
+            // means back toward the old value. Combined with the
+            // sampler's settle gate this gives the PLL ~3 s to
+            // reconverge before the first new sample lands.
+            {
+                let mut r = ring.lock().unwrap();
+                r.clear();
+            }
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            last_shift_change.store(now_ms, Ordering::Relaxed);
             let new_ppm = -new_shift / (rx_lo * 1e-6);
+            let clamp_note = if clamped { " [CLAMPED]" } else { "" };
             tracing::info!(
-                "auto-PPM (fine-tune): residual {:+.1} Hz (raw {:+.1}) \
-                 agc_product {:.3} -> shift {:+.0} Hz ({:+.4} ppm)",
-                clamped_residual, residual_hz, agc_product, new_shift,
-                new_ppm);
+                "auto-PPM tracker: estimate {:+.1} Hz (n={} of {}) \
+                 -> shift {:+.0} Hz ({:+.4} ppm){}",
+                mean_estimate_hz, kept.len(), samples.len(),
+                new_shift, new_ppm, clamp_note);
             state.event_log.push(
                 crate::services::event_log::LogCategory::System,
-                format!("auto-PPM fine-tune: residual {:+.1} Hz -> \
-                         shift {:+.0} Hz ({:+.4} ppm)",
-                         clamped_residual, new_shift, new_ppm),
+                format!("auto-PPM tracker: est {:+.1} Hz -> shift \
+                         {:+.0} Hz ({:+.4} ppm, n={}){}",
+                         mean_estimate_hz, new_shift, new_ppm,
+                         kept.len(), clamp_note),
                 serde_json::json!({
-                    "kind":             "ppm.finetune",
-                    "residual_hz_raw":  residual_hz,
-                    "residual_hz_used": clamped_residual,
-                    "agc_product":      agc_product,
-                    "old_shift":        old_shift,
-                    "new_shift":        new_shift,
-                    "baseline":         baseline,
-                    "new_lo_ppm":       new_ppm,
+                    "kind":            "ppm.tracker",
+                    "estimate_hz":     mean_estimate_hz,
+                    "old_shift":       old_shift,
+                    "new_shift":       new_shift,
+                    "new_lo_ppm":      new_ppm,
+                    "envelope_hz":     envelope_hz,
+                    "clamped":         clamped,
+                    "samples_total":   samples.len(),
+                    "samples_kept":    kept.len(),
                 }),
             );
-            if unix_secs >= 1_000_000_000 {
+
+            // Persist if drifted enough from last persisted value.
+            if (new_shift - last_persisted_shift).abs()
+                >= PPM_TRACKER_PERSIST_DELTA_HZ
+                && unix_secs >= 1_000_000_000
+            {
                 let persisted = PersistedPpm {
                     lo_shift_hz:     new_shift.round() as i64,
-                    lo_ppm:          -new_shift / (rx_lo * 1e-6),
+                    lo_ppm:          new_ppm,
                     rx_lo_hz:        rx_lo as i64,
                     control_freq_hz: state.boot_control_freq,
                     unix_secs,
-                    method:          "fine_tune".to_string(),
+                    method:          "tracker".to_string(),
                 };
-                let _ = save_persisted(&persisted);
+                if save_persisted(&persisted).is_ok() {
+                    last_persisted_shift = new_shift;
+                }
             }
         }
     });

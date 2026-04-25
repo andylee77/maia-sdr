@@ -54,6 +54,33 @@ pub async fn get_recordings(
 }
 
 
+/// `GET /api/grant_decode_stats`
+///
+/// Ring of recent completed grants with per-call decode deltas:
+/// IMBE extracted / dropped, vocoder samples / errors / silent,
+/// duration, first_imbe_ms, encryption, source, etc. Populated by
+/// the `grant_stats` subscriber on the CallBoundary broadcast.
+/// Newest-first, cap 20.
+///
+/// Designed to attribute audio-quality issues per-call: short vs
+/// long, first-LDU latency, drop-count distribution, silent-frame
+/// rate — without cross-referencing global counters.
+pub async fn get_grant_decode_stats(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let items: Vec<_> = {
+        match state.grant_decode_stats.lock() {
+            Ok(r) => r.iter().rev().cloned().collect(),
+            Err(_) => Vec::new(),
+        }
+    };
+    Json(serde_json::json!({
+        "count": items.len(),
+        "items": items,
+    }))
+}
+
+
 /// `GET /api/recordings/{id}/events`
 ///
 /// Returns the per-recording event timeline: every `recorder`-category

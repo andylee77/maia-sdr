@@ -93,6 +93,14 @@ pub struct ControlChannelDecoder {
     /// On a healthy control channel this should converge on
     /// `nid_decoded_ok` because nearly every NID is a TSDU.
     pub nid_decoded_tsdu: u64,
+    /// 2026-04-24: NID candidates dropped by the dibit-entropy
+    /// gate — degenerate input dibits (any one value > 75% of 32)
+    /// that would otherwise have been BCH-"corrected" into a
+    /// valid-looking codeword. Expect this to count roughly
+    /// `sync_hits - nid_decoded_ok` when the stream is noisy, i.e.
+    /// most false matches in idle windows now land here instead
+    /// of creating phantom TSBKs / TDU_LCs downstream.
+    pub nid_entropy_rejected: u64,
 
     /// Number of TSDU data units that finished `process_tsdu` (the de-
     /// interleave + extract). This is the count of "we tried to decode
@@ -410,6 +418,7 @@ impl ControlChannelDecoder {
             nid_invalid_duid: 0,
             nid_decoded_ok: 0,
             nid_decoded_tsdu: 0,
+            nid_entropy_rejected: 0,
             tsdu_attempts: 0,
             tsbk_block_attempts: 0,
             tsbk_trellis_failures: 0,
@@ -471,7 +480,12 @@ impl ControlChannelDecoder {
     }
 
     /// Push a grant event to the typed channel (non-blocking).
-    fn emit_grant_event(&self, info: &GrantInfo) {
+    ///
+    /// `is_update`: true for `GroupVoiceChannelGrantUpdate` (0x02,
+    /// refresh); false for full `GroupVoiceChannelGrant` (0x00) and
+    /// `GroupVoiceChannelGrantUpdateExplicit` (0x03). Drives
+    /// CC-grant-centric boundary dispatch in the follower.
+    fn emit_grant_event(&self, info: &GrantInfo, is_update: bool) {
         if let Some(ref tx) = self.grant_event_tx {
             let _ = tx.try_send(super::events::P25Event::Grant(
                 super::events::GrantEvent {
@@ -481,6 +495,7 @@ impl ControlChannelDecoder {
                     frequency_hz: info.frequency_hz,
                     encrypted: info.encrypted,
                     emergency: info.emergency,
+                    is_update,
                 },
             ));
         }
@@ -813,8 +828,47 @@ impl ControlChannelDecoder {
                     // ring-capture reporting.
                     let on_air_duid_raw =
                         ((new_bits >> 48) & 0xF) as u8;
-                    let bch_result =
-                        crate::protocol::p25::fec::bch::decode_nid(new_bits);
+
+                    // 2026-04-24: dibit-entropy gate. Count how many
+                    // of the 32 NID dibits (skipping the injected
+                    // status dibit) are each of 0..3. If any value
+                    // dominates above 75% (>24 of 32), the input
+                    // stream is degenerate — either an all-idle or
+                    // noise-dominated window — and BCH's wide
+                    // correction capacity (t=11) will happily
+                    // "correct" garbage into a valid-looking
+                    // codeword. On this site we were observing ~7×
+                    // false SpeakerEnds per real call from exactly
+                    // this path. Reject before BCH runs.
+                    //
+                    // Real NIDs are BCH-coded output with ~uniform
+                    // dibit histogram (each value ~25% ± noise) —
+                    // never exceeds 75% single-value dominance, so
+                    // this gate costs nothing for legitimate traffic.
+                    let mut dibit_hist = [0u32; 4];
+                    for i in 0..32 {
+                        let d = ((new_bits >> (i * 2)) & 0x3) as usize;
+                        dibit_hist[d] += 1;
+                    }
+                    let max_dibit_count = *dibit_hist.iter().max().unwrap_or(&0);
+                    const DIBIT_DOMINANCE_THRESHOLD: u32 = 24; // 75% of 32
+                    let dibit_degenerate =
+                        max_dibit_count > DIBIT_DOMINANCE_THRESHOLD;
+
+                    let bch_result = if dibit_degenerate {
+                        self.nid_entropy_rejected += 1;
+                        tracing::debug!(
+                            target: "p25_decoder",
+                            "NID entropy gate REJECT: dibit hist \
+                             [{},{},{},{}] dominant={} > {} of 32",
+                            dibit_hist[0], dibit_hist[1],
+                            dibit_hist[2], dibit_hist[3],
+                            max_dibit_count, DIBIT_DOMINANCE_THRESHOLD,
+                        );
+                        None
+                    } else {
+                        crate::protocol::p25::fec::bch::decode_nid(new_bits)
+                    };
                     // Apply runtime tolerance (None = default
                     // T_MAX_ERRORS=11). If n_errors exceeds, reject.
                     let bch_result = match bch_result {

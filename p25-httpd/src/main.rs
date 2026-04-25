@@ -35,7 +35,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-23-finetune-baseline-decode-gate";
+pub const BUILD_TAG: &str = "2026-04-25-phase2b-trailing-pcm-source-gate";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -464,9 +464,25 @@ async fn main() -> anyhow::Result<()> {
     // and produces HDU/LDU1/LDU2/TDU/TDU_LC events. Voice handler
     // installed below forwards extracted IMBE frames to the vocoder.
     //
-    // mpsc channel: 16 LDU batches (~2.9 s audio) absorbs jitter.
+    // mpsc channel: 32 LDU batches (~5.8 s audio) absorbs jitter.
+    // Sized up from 16 on 2026-04-24 after field observation that a
+    // ~4% IMBE drop rate lines up exactly with 17 LDU-batch overflow
+    // events over a session where 409 LDUs were extracted. Each
+    // JMBE-decode batch takes ~90 ms worst case on this ARM; during
+    // a momentary scheduler stall or a run of slow frames the producer
+    // bursts past the 16-slot depth. Doubling is cheap — worst-case
+    // added latency is only realised if the vocoder actually stalls,
+    // and recovery is shorter than the old-build drop.
+    //
+    // Each batch is a tuple of (talkgroup_at_submission, frames). The
+    // TG is captured at send time by the forwarder (not read by the
+    // vocoder at receive time) so that tail frames of call N retain
+    // their OLD TG even after the follower has retuned and advanced
+    // `current_talkgroup` to call N+1. Fixes "end of call audio at
+    // start of next call was not saved under actual call" (2026-04-24
+    // field observation).
     let (imbe_tx, imbe_rx) =
-        tokio::sync::mpsc::channel::<[p25::voice_frame::ImbeFrameRaw; 9]>(16);
+        tokio::sync::mpsc::channel::<(u16, u32, [p25::voice_frame::ImbeFrameRaw; 9])>(32);
     let imbe_forwarder = Arc::new(ImbeForwarder::new(imbe_tx));
 
     // Call-boundary broadcast (traffic-LSM heartbeat -> recorder;
@@ -545,6 +561,10 @@ async fn main() -> anyhow::Result<()> {
     // traffic DDC. Process-lifetime only, does not persist.
     let traffic_follower_enabled =
         Arc::new(std::sync::atomic::AtomicBool::new(true));
+    // 2026-04-24 diagnostic: when true, follower will not dispatch
+    // retunes — chain stays on whatever freq is set. Off by default.
+    let traffic_lock_freq =
+        Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Live RX LO, sample rate, preset index, center-lock. Initialised
     // from CLI, updated by the /api/preset and /api/tune handlers.
@@ -1248,6 +1268,8 @@ async fn main() -> anyhow::Result<()> {
             event_log.clone(),
             traffic_lsm_decoder.clone(),
             grant_event_rx,
+            traffic_lock_freq.clone(),
+            call_boundary_tx.clone(),
         );
 
         // Traffic LSM heartbeat. Polls traffic_lsm_status @ 16 ms —
@@ -1387,7 +1409,7 @@ async fn main() -> anyhow::Result<()> {
                     };
                     if duid_label != "DUID?" {
                         traffic_event_log.push(
-                            crate::services::event_log::LogCategory::Imbe,
+                            crate::services::event_log::LogCategory::Voice,
                             format!(
                                 "{} TG={} NAC=0x{:03X}",
                                 duid_label, locked_tg_snapshot, nac,
@@ -1502,30 +1524,40 @@ async fn main() -> anyhow::Result<()> {
     // traffic-LSM heartbeat task (spawned above) can clone it.
     let audio_tx = audio::audio_channel();
 
-    // Call recorder: subscribes to audio_tx, writes per-call WAVs to
-    // /tmp/p25_recordings/. Ring-buffered in RecordingStore for the
-    // dashboard. Also subscribes to call_boundary_tx for HDU-driven
-    // splitting.
+    // Phase 2b (2026-04-25): the recorder subscribes to
+    // `CallTrackerEvent` for lifecycle, not raw `CallBoundary`
+    // events. Build the tracker channel + spawn the authority task
+    // BEFORE the recorder spawn so we can subscribe in order.
+    // grant_stats also subscribes to this channel (spawn below).
+    let call_tracker_tx = crate::app::call_tracker::new_event_tx();
+    crate::app::call_tracker::spawn_call_tracker(
+        call_boundary_tx.clone(),
+        audio_tx.clone(),
+        call_tracker_tx.clone(),
+        imbe_forwarder.clone(),
+    );
+
+    // Call recorder: subscribes to audio_tx (for PCM) AND
+    // call_tracker_tx (for CallOpen / SourceUpdate / CallClose
+    // events). Writes per-call WAVs to /tmp/p25_recordings/. Ring-
+    // buffered in RecordingStore for the dashboard.
     let recordings = recorder::new_store();
     let recorder_diag = recorder::new_diag();
     {
         let rx = audio_tx.subscribe();
-        let boundary_rx = call_boundary_tx.subscribe();
+        let tracker_rx = call_tracker_tx.subscribe();
         let store = recordings.clone();
         let diag = recorder_diag.clone();
         let log = Some(event_log.clone());
-        // Count-based close: share frames_consumed so the recorder
-        // waits for consumption to catch up to a boundary's
-        // snapshotted submit count before finalize(). Share
-        // imbe_frames_dropped so each call_finalise event can log
-        // the drop-delta during the recording (surfaces IMBE-queue-
-        // full events that caused audio loss on specific calls).
-        let frames_consumed = imbe_forwarder.frames_consumed.clone();
+        // Share imbe_frames_dropped so each call_finalise event can
+        // log the drop-delta during the recording (surfaces IMBE-
+        // queue-full events that caused audio loss on specific calls).
         let imbe_drops_handle = imbe_forwarder.imbe_frames_dropped.clone();
+        let forwarder_for_recorder = Some(imbe_forwarder.clone());
         tokio::spawn(async move {
             recorder::recorder_task(
-                rx, boundary_rx, store, diag, log, frames_consumed,
-                imbe_drops_handle,
+                rx, tracker_rx, store, diag, log,
+                imbe_drops_handle, forwarder_for_recorder,
             ).await;
         });
     }
@@ -1630,6 +1662,7 @@ async fn main() -> anyhow::Result<()> {
         traffic_manager: traffic_manager.clone(),
         traffic_stats: traffic_stats.clone(),
         traffic_follower_enabled: traffic_follower_enabled.clone(),
+        traffic_lock_freq:        traffic_lock_freq.clone(),
         traffic_lsm_decoder: traffic_lsm_decoder.clone(),
         imbe_forwarder: imbe_forwarder.clone(),
         monitor_list: monitor_list.clone(),
@@ -1642,7 +1675,37 @@ async fn main() -> anyhow::Result<()> {
         recordings: recordings.clone(),
         recorder_diag: recorder_diag.clone(),
         active_modulation: active_modulation.clone(),
+        grant_decode_stats: crate::app::grant_stats::new_ring(),
+        ppm_tracker_ring: std::sync::Arc::new(
+            std::sync::Mutex::new(
+                std::collections::VecDeque::with_capacity(300))),
+        ppm_last_shift_change_ms: std::sync::Arc::new(
+            std::sync::atomic::AtomicU64::new(0)),
+        // Default: auto-PPM apply ENABLED with a 50 Hz anchor window.
+        // 50 Hz ≈ 0.06 ppm at 858 MHz — tight enough to keep the
+        // tracker contained near the Stage A peak-find ground truth,
+        // loose enough to track genuine thermal drift. The first
+        // forced Recalibrate this session sets the anchor centre;
+        // before that the tracker stays advisory (can't apply).
+        auto_ppm_enabled: std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(true)),
+        auto_ppm_anchor_hz: std::sync::Arc::new(
+            std::sync::atomic::AtomicU32::new(50)),
+        last_recal_shift_hz: std::sync::Arc::new(
+            std::sync::atomic::AtomicI64::new(0)),
     });
+
+    // Phase 2b unified call lifecycle: call_tracker is spawned up
+    // alongside the recorder (so the recorder can subscribe to its
+    // CallTrackerEvent broadcast at construction time). grant_stats
+    // also subscribes to the same broadcast — both consumers now
+    // share a single source of truth for call identity.
+    // See `doc/diagnostics/2026-04-25/UNIFIED_CALL_LIFECYCLE.md`.
+    crate::app::grant_stats::spawn_grant_stats_task(
+        call_tracker_tx.clone(),
+        state.imbe_forwarder.clone(),
+        state.grant_decode_stats.clone(),
+    );
 
     // Boot-time auto-PPM: wait for system acquisition then run one
     // full stage A + B calibration, persisting the result. Does

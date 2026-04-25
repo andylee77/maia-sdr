@@ -43,6 +43,7 @@ h2 { color: var(--green); margin: 12px 0 6px; font-size: 1em; font-weight: 600; 
 .theme-btn { background: none; border: 1px solid var(--card-border); color: var(--text);
               padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
 .card { background: var(--card-bg); border: 1px solid var(--card-border);
         border-radius: 6px; padding: 10px; }
 table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
@@ -170,11 +171,12 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
 .log-entry .log-cat { font-weight: 600; }
 .log-entry .log-cat.grant   { color: var(--green); }
 .log-entry .log-cat.traffic { color: var(--accent); }
-.log-entry .log-cat.imbe    { color: #4db6ac; }
+.log-entry .log-cat.voice   { color: #4db6ac; }
 .log-entry .log-cat.vocoder { color: var(--orange); }
 .log-entry .log-cat.system  { color: var(--purple); }
 .log-entry .log-body .log-fields { color: var(--text-dim); margin-left: 6px; font-size: 0.92em; }
-@media (max-width: 768px) { .grid2 { grid-template-columns: 1fr; } }
+@media (max-width: 768px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .grid3 { grid-template-columns: 1fr 1fr; } }
 </style>
 </head>
 <body>
@@ -240,6 +242,31 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
      retired. All three views now live on the Plots tab, sourced from
      the HDL pre-diff post-PLL ring. Debug tab is now decoder-focused
      only. -->
+
+<!-- ── Pipeline Status (2026-04-24) ──
+     Stage-by-stage snapshot of every queue, buffer, and gauge from
+     RF front-end to audio broadcast. Opt-in polling so the checkbox
+     pattern stays consistent with the Log Tail panel — no competing
+     load on the live audio path unless the operator asks. -->
+<h2>Pipeline Status <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">full-chain snapshot from /api/pipeline; opt-in</span></h2>
+<div class="card" style="margin-bottom:10px">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+    <label style="font-size:0.85em">
+      <input type="checkbox" id="pipeEnabled" onchange="togglePipeline()">
+      Poll pipeline
+    </label>
+    <label style="font-size:0.85em">Interval
+      <select id="pipeInterval" style="padding:2px 6px;font-size:0.85em">
+        <option value="2000">2 s</option>
+        <option value="3000" selected>3 s</option>
+        <option value="5000">5 s</option>
+      </select>
+    </label>
+    <button class="btn" style="padding:2px 10px;font-size:0.85em" onclick="refreshPipelineOnce()">Refresh now</button>
+    <span id="pipeStatus" style="color:var(--text-dim);font-size:0.8em;margin-left:auto">off</span>
+  </div>
+  <pre id="pipePane" style="font-family:monospace;font-size:0.78em;max-height:560px;overflow:auto;white-space:pre;margin:0;color:var(--text)">(pipeline poll off — tick the checkbox or click "Refresh now")</pre>
+</div>
 
 <!-- ── Decoder Comparison Matrix (2-column PS LSM / PL HDL view) ── -->
 <!-- 2026-04-16: PS C4FM column removed. The HDL LSM chain decodes
@@ -565,6 +592,29 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
         onclick="recalibratePpm()">Recalibrate</button>
       <span class="v" id="ppm_status" style="color:var(--text-dim)">idle</span>
     </div>
+    <!-- Auto-PPM tracker controls (2026-04-24). The continuous tracker
+         samples pll_dbg at 1 Hz and proposes a corrected shift. Apply
+         is gated by (a) the Auto checkbox and (b) the anchor window —
+         the tracker is only allowed to move shift within ±anchor of
+         the most recent forced Recalibrate result. Prevents a biased
+         pll_dbg reading from walking shift past where Stage A says
+         the carrier actually is. Estimate is ALWAYS displayed for
+         comparison even when apply is disabled. -->
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:0.85em">
+      <label><b>Auto PPM</b>:</label>
+      <label><input type="checkbox" id="ppm_auto_chk" onchange="setAutoPpm()"> enabled</label>
+      <label>Anchor ±
+        <select id="ppm_auto_anchor" onchange="setAutoPpm()" style="padding:2px 6px;font-family:inherit">
+          <option value="25">25 Hz</option>
+          <option value="50" selected>50 Hz</option>
+          <option value="100">100 Hz</option>
+          <option value="200">200 Hz</option>
+          <option value="500">500 Hz</option>
+        </select>
+      </label>
+      <span class="v" id="ppm_tracker_est" style="color:var(--text-dim)">est: --</span>
+      <span class="v" id="ppm_tracker_status" style="color:var(--text-dim)"></span>
+    </div>
   </div>
   <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px;font-size:0.85em">
     <label for="bi_mod_sel"><b>Modulation</b>:</label>
@@ -624,7 +674,7 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   <label>Vol <input type="range" id="audioVol" min="0" max="100" value="80"></label>
   <span class="status" id="audioStatus">stopped</span>
 </div>
-<div class="grid2">
+<div class="grid3">
   <div class="card">
     <h2>Grant Follower</h2>
     <table>
@@ -642,53 +692,61 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
     </table>
   </div>
   <div class="card">
-    <h2>IMBE + Vocoder <span id="voc_status" style="font-size:0.75em;color:var(--green);margin-left:6px"></span></h2>
+    <h2>Traffic Channel <span style="font-size:0.7em;color:var(--text-dim);margin-left:6px">what the traffic chain is actually receiving</span></h2>
+    <div id="tune_big_freq" style="font-size:1.7em;font-weight:600;color:var(--accent);text-align:center;margin:4px 0 8px 0;letter-spacing:0.01em">--</div>
+    <div id="tune_big_label" style="text-align:center;color:var(--text-dim);font-size:0.8em;margin-bottom:10px">listening</div>
     <table>
       <tbody>
-        <tr><th>HDU</th><td class="v" id="trf_hdu">0</td></tr>
-        <tr><th>LDU1</th><td class="v" id="trf_ldu1">0</td></tr>
-        <tr><th>LDU2</th><td class="v" id="trf_ldu2">0</td></tr>
-        <tr><th>TDU / TDU_LC</th><td class="v" id="trf_tdu">0 / 0</td></tr>
-        <tr><th>IMBE Extracted</th><td class="v" id="trf_imbe">0</td></tr>
-        <tr><th>IMBE Expected</th><td class="v" id="trf_imbe_exp">0</td></tr>
-        <tr><th>IMBE Dropped</th><td class="v" id="trf_imbe_drop">0</td></tr>
-        <tr><th>Dropped Idle (phantom)</th><td class="v" id="trf_imbe_drop_idle">0</td></tr>
-        <tr><th>Last IMBE</th><td class="v" id="trf_imbe_ago">--</td></tr>
-        <tr><th colspan="2" style="color:var(--text-dim);text-align:left">Vocoder (JMBE)</th></tr>
-        <tr><th>PCM Produced</th><td class="v" id="voc_pcm">0</td></tr>
-        <tr><th>Errors (>4 bit)</th><td class="v" id="voc_err">0</td></tr>
-        <tr><th>Encrypted Skip</th><td class="v" id="voc_enc">0</td></tr>
+        <tr><th>Current Batch TG</th><td class="v" id="tune_batch_tg">--</td></tr>
+        <tr><th>Last Traffic DUID</th><td class="v" id="tune_trf_duid">--</td></tr>
+        <tr><th>Traffic NAC</th><td class="v" id="tune_trf_nac">--</td></tr>
+        <tr><th>Traffic Offset</th><td class="v" id="tune_trf_off">--</td></tr>
+        <tr><th>Traffic Sync</th><td class="v" id="tune_trf_sync">--</td></tr>
+        <tr><th>Traffic PLL</th><td class="v" id="tune_trf_pll">--</td></tr>
+        <tr><th>Traffic AGC</th><td class="v" id="tune_trf_agc">--</td></tr>
+        <tr><th>Modulation</th><td class="v" id="tune_mod">--</td></tr>
+        <tr><th>IMBE Queue</th><td class="v" id="tune_imbe_queue">--</td></tr>
       </tbody>
     </table>
+    <div style="margin-top:8px;font-size:0.8em;display:flex;align-items:center;gap:6px" title="When on, the grant follower stops dispatching retunes and the chain stays parked on its current frequency. Lets you measure AGC/PLL/sync settle behaviour against a known-active channel without retunes interfering. Diagnostic only — calls on other frequencies will be ignored while locked.">
+      <input type="checkbox" id="trf_lock" onchange="toggleTrafficLock(this.checked)">
+      <label for="trf_lock" style="cursor:pointer">Lock to this freq (diagnostic)</label>
+      <span id="trf_lock_status" style="color:var(--text-dim);font-size:0.85em"></span>
+    </div>
   </div>
-</div>
-
-<!-- Call recordings. Ring buffer of recent calls, newest first.
-     Each row has an inline <audio> control so the user can play
-     back without leaving the page. -->
-<div class="card" style="margin-top:14px">
-  <h2>Recent Call Recordings <span id="rec_count" style="font-size:0.75em;color:var(--text-dim);margin-left:6px"></span></h2>
-  <table style="width:100%">
-    <thead>
-      <tr>
-        <th style="width:6em">Started</th>
-        <th style="width:5em">TG</th>
-        <th style="width:7em">Source</th>
-        <th style="width:5em">Duration</th>
-        <th style="width:6em">Size</th>
-        <th>Filename</th>
-        <th>Playback</th>
-      </tr>
-    </thead>
-    <tbody id="rec_tbody">
-      <tr><td colspan="7" style="color:var(--text-dim)">No recordings yet.</td></tr>
-    </tbody>
-  </table>
-  <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
-    Ring-buffered to /tmp/p25_recordings (tmpfs, lost on reboot).
-    Oldest recording is evicted when the ring fills. Encrypted calls
-    and calls shorter than 500 ms are not recorded.
-  </p>
+  <div class="card">
+    <h2>IMBE + Vocoder <span id="voc_status" style="font-size:0.75em;color:var(--green);margin-left:6px"></span></h2>
+    <!-- Current call section: per-call deltas since the last HDU.
+         Reads imbe.current_call_* from /api/traffic. Zeros when no
+         call is active. -->
+    <div style="font-size:0.75em;color:var(--text-dim);margin-bottom:4px;letter-spacing:0.04em">CURRENT CALL</div>
+    <table>
+      <tbody>
+        <tr><th>Call TG / Duration</th><td class="v" id="cc_tg_dur">--</td></tr>
+        <tr><th>HDU / LDU1 / LDU2</th><td class="v" id="cc_duids1">0 / 0 / 0</td></tr>
+        <tr><th>TDU / TDU_LC</th><td class="v" id="cc_duids2">0 / 0</td></tr>
+        <tr><th>IMBE Ext / Drop</th><td class="v" id="cc_imbe">0 / 0</td></tr>
+        <tr><th>Voc PCM / Err / Silent</th><td class="v" id="cc_voc">0 / 0 / 0</td></tr>
+      </tbody>
+    </table>
+    <details style="margin-top:10px">
+      <summary style="cursor:pointer;color:var(--text-dim);font-size:0.8em">Session totals</summary>
+      <table style="margin-top:4px">
+        <tbody>
+          <tr><th>HDU</th><td class="v" id="trf_hdu">0</td></tr>
+          <tr><th>LDU1 / LDU2</th><td class="v" id="trf_ldus">0 / 0</td></tr>
+          <tr><th>TDU / TDU_LC</th><td class="v" id="trf_tdu">0 / 0</td></tr>
+          <tr><th>IMBE Extracted</th><td class="v" id="trf_imbe">0</td></tr>
+          <tr><th>IMBE Dropped</th><td class="v" id="trf_imbe_drop">0</td></tr>
+          <tr><th>Last IMBE</th><td class="v" id="trf_imbe_ago">--</td></tr>
+          <tr><th>PCM Produced</th><td class="v" id="voc_pcm">0</td></tr>
+          <tr><th>Errors (&gt;4 bit)</th><td class="v" id="voc_err">0</td></tr>
+          <tr><th>Silent Frames</th><td class="v" id="voc_silent">0</td></tr>
+          <tr><th>Encrypted Skip</th><td class="v" id="voc_enc">0</td></tr>
+        </tbody>
+      </table>
+    </details>
+  </div>
 </div>
 
 <!-- Phase 10-prep: TG Monitor (scanner mode). When any TG is
@@ -734,6 +792,72 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       <tbody id="bands_t"></tbody>
     </table>
   </div>
+</div>
+
+<!-- Recent Calls. Master view = /api/grant_decode_stats (every
+     HduStart produces one entry, regardless of whether audio was
+     produced). /api/recordings is joined in by (tg + start time
+     within window) so calls WITHOUT a matching recording are still
+     visible — that's the diagnostic for "got the grant but never
+     produced audio" (start-of-call PLL/AGC drop, encryption, etc).
+     Inline <audio> control on rows that DO have a recording. -->
+<div class="card" style="margin-top:14px">
+  <h2>Recent Calls <span id="rec_count" style="font-size:0.75em;color:var(--text-dim);margin-left:6px"></span></h2>
+  <table style="width:100%">
+    <thead>
+      <tr>
+        <th style="width:6em">Started</th>
+        <th style="width:5em">TG</th>
+        <th style="width:7em">Source</th>
+        <th style="width:7em" title="Traffic-channel frequency from grant">Freq</th>
+        <th style="width:5em" title="HduStart → first IMBE frame latency. >800 ms flags start-of-call PLL/AGC drop.">First</th>
+        <th style="width:5em">Duration</th>
+        <th style="width:13em" title="LDUs (L1/L2) · IMBE ext/drop · voc err/silent">Decode (per call)</th>
+        <th>Recording</th>
+      </tr>
+    </thead>
+    <tbody id="rec_tbody">
+      <tr><td colspan="8" style="color:var(--text-dim)">No calls yet.</td></tr>
+    </tbody>
+  </table>
+  <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
+    Master = /api/grant_decode_stats (per-HDU). Recordings joined by
+    TG + start time. Rows without audio show why
+    (encrypted / no_imbe / too_short). Recordings are ring-buffered
+    to /tmp/p25_recordings (tmpfs, lost on reboot).
+  </p>
+</div>
+
+<!-- SDRTrunk-style log-tail panel. Pulls /api/log entries and
+     renders them as HH:MM:SS.mmm [CATEGORY] message. Opt-in via the
+     "Live tail" checkbox — polling adds server + browser load, and
+     while unlikely to touch live-audio playback directly (it's on a
+     separate HTTP endpoint, not the audio WS), keeping it gated
+     matches the operator's preference for explicit control over
+     anything that could compete with the audio path.
+     Fetches since=<last_seq> incrementally so the payload stays
+     small even over long tail sessions. -->
+<h2>Log Tail <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">SDRTrunk-style; opt-in</span></h2>
+<div class="card" style="margin-top:6px">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+    <label style="font-size:0.85em">
+      <input type="checkbox" id="logTailEnabled" onchange="toggleLogTail()">
+      Live tail
+    </label>
+    <label style="font-size:0.85em">Interval
+      <select id="logTailInterval" style="padding:2px 6px;font-size:0.85em">
+        <option value="1000">1 s</option>
+        <option value="2000" selected>2 s</option>
+        <option value="5000">5 s</option>
+      </select>
+    </label>
+    <label style="font-size:0.85em">Filter
+      <input type="text" id="logTailFilter" placeholder="text / category" style="padding:2px 6px;font-size:0.85em;width:12em">
+    </label>
+    <button class="btn" style="padding:2px 10px;font-size:0.85em" onclick="clearLogTail()">Clear</button>
+    <span id="logTailStatus" style="color:var(--text-dim);font-size:0.8em;margin-left:auto">stopped</span>
+  </div>
+  <pre id="logTailPane" style="font-family:monospace;font-size:0.78em;max-height:400px;overflow:auto;white-space:pre-wrap;margin:0;color:var(--text)">(live tail off — tick the checkbox to stream events)</pre>
 </div>
 
 <h2>Live Activity</h2>
@@ -970,6 +1094,66 @@ async function refreshPpm() {
     const last_el = $('ppm_last');
     if (ppm_el)  ppm_el.textContent  = `${r.lo_ppm.toFixed(3)} ppm`;
     if (sh_el)   sh_el.textContent   = `shift ${r.lo_shift_hz.toFixed(0)} Hz`;
+
+    // Auto-PPM checkbox + anchor mirror server state (don't stomp
+    // if user is actively interacting).
+    const chk = $('ppm_auto_chk');
+    if (chk && document.activeElement !== chk) {
+      chk.checked = !!r.auto_ppm_enabled;
+    }
+    const anchSel = $('ppm_auto_anchor');
+    if (anchSel && document.activeElement !== anchSel
+        && r.auto_ppm_anchor_hz != null) {
+      const wanted = String(r.auto_ppm_anchor_hz);
+      const hasOpt = Array.from(anchSel.options)
+        .some(o => o.value === wanted);
+      if (hasOpt && anchSel.value !== wanted) anchSel.value = wanted;
+    }
+    // Tracker estimate — always shown as advisory. Colour by whether
+    // the anchor gate would actually apply it.
+    const estEl = $('ppm_tracker_est');
+    const statEl = $('ppm_tracker_status');
+    if (estEl) {
+      if (r.tracker_estimate_hz == null) {
+        estEl.textContent = `est: -- (${r.tracker_samples || 0} samples)`;
+        estEl.style.color = 'var(--text-dim)';
+      } else {
+        const est = r.tracker_estimate_hz;
+        const delta = est - (r.lo_shift_hz || 0);
+        const estPpm = r.rx_lo_hz > 0
+          ? -est / (r.rx_lo_hz * 1e-6) : 0;
+        estEl.textContent =
+          `est: ${est.toFixed(1)} Hz (${estPpm.toFixed(3)} ppm, Δ${delta>=0?'+':''}${delta.toFixed(1)} Hz)`;
+      }
+    }
+    if (statEl) {
+      const wa = r.would_apply || {};
+      if (wa.reason === 'within_anchor') {
+        statEl.textContent = `→ auto apply ok (Δ${wa.delta_from_recal_hz>=0?'+':''}${wa.delta_from_recal_hz} Hz from recal)`;
+        statEl.style.color = 'var(--green)';
+      } else if (wa.reason === 'outside_anchor') {
+        statEl.textContent = `→ blocked: Δ${wa.delta_from_recal_hz} Hz outside anchor`;
+        statEl.style.color = 'var(--orange)';
+      } else if (wa.reason === 'auto_disabled') {
+        statEl.textContent = '→ auto disabled (advisory only)';
+        statEl.style.color = 'var(--text-dim)';
+      } else if (wa.reason === 'no_recal_anchor') {
+        statEl.textContent = '→ no recal anchor yet';
+        statEl.style.color = 'var(--text-dim)';
+      } else if (wa.reason === 'insufficient_samples') {
+        statEl.textContent = '→ ring filling';
+        statEl.style.color = 'var(--text-dim)';
+      } else if (wa.reason === 'unrestricted') {
+        statEl.textContent = '→ auto apply ok (no anchor)';
+        statEl.style.color = 'var(--green)';
+      } else {
+        statEl.textContent = '';
+      }
+    }
+    if (estEl && r.tracker_estimate_hz != null && r.would_apply) {
+      estEl.style.color = r.would_apply.applied
+        ? 'var(--green)' : 'var(--orange)';
+    }
     if (last_el) {
       if (!r.calibrated_this_session) {
         last_el.textContent = r.boot_lo_ppm !== 0
@@ -991,6 +1175,27 @@ async function refreshPpm() {
       }
     }
   } catch (e) { /* ignore transient */ }
+}
+
+// Push the Auto-PPM checkbox + anchor dropdown to the server. Called
+// on change of either; sends both so a single-field change still
+// leaves the other in sync. Reply is ignored — next refreshPpm()
+// tick will reflect the new state.
+async function setAutoPpm() {
+  const chk = $('ppm_auto_chk');
+  const anchSel = $('ppm_auto_anchor');
+  const enabled = chk && chk.checked ? '1' : '0';
+  const anchor = (anchSel && anchSel.value) || '50';
+  try {
+    await fetch(`/api/ppm/auto?enabled=${enabled}&anchor=${anchor}`,
+      { method: 'POST' });
+    // Kick an immediate refresh so the status updates without
+    // waiting for the next poll tick.
+    refreshPpm();
+  } catch (e) {
+    const status = $('ppm_tracker_status');
+    if (status) status.textContent = 'set failed: ' + (e?.message || e);
+  }
 }
 
 // Trigger a fresh calibration. Disables the button while the
@@ -1585,6 +1790,16 @@ async function refresh() {
   // ── Phase 7D: Traffic Channel + Vocoder panel ──
   const trf = await fetchJson('/api/traffic');
   if (trf) {
+    // Sync the lock checkbox + status label with the live state.
+    const trfLock = $('trf_lock');
+    if (trfLock) {
+      trfLock.checked = !!trf.lock_freq;
+      const status = $('trf_lock_status');
+      if (status) {
+        status.textContent = trf.lock_freq ? 'LOCKED — retunes blocked' : '';
+        status.style.color = trf.lock_freq ? 'var(--orange)' : 'var(--text-dim)';
+      }
+    }
     $('trf_phase').textContent = 'Phase ' + (trf.phase || '?');
     $('trf_state').textContent = trf.state || '--';
     if (trf.current_talkgroup != null) {
@@ -1613,18 +1828,15 @@ async function refresh() {
       $('trf_last_retune').textContent = '--';
     }
     const im = trf.imbe || {};
+    // Session totals (collapsed section of IMBE card).
     $('trf_hdu').textContent = (im.hdu_count || 0).toLocaleString();
-    $('trf_ldu1').textContent = (im.ldu1_count || 0).toLocaleString();
-    $('trf_ldu2').textContent = (im.ldu2_count || 0).toLocaleString();
+    $('trf_ldus').textContent = (im.ldu1_count || 0).toLocaleString() + ' / ' +
+      (im.ldu2_count || 0).toLocaleString();
     $('trf_tdu').textContent = (im.tdu_count || 0).toLocaleString() + ' / ' +
       (im.tdu_lc_count || 0).toLocaleString();
     $('trf_imbe').textContent = (im.imbe_frames_extracted || 0).toLocaleString();
-    const ldu_total = (im.ldu1_count || 0) + (im.ldu2_count || 0);
-    $('trf_imbe_exp').textContent = (ldu_total * 9).toLocaleString();
     $('trf_imbe_drop').textContent = (im.imbe_frames_dropped || 0).toLocaleString();
     $('trf_imbe_drop').style.color = (im.imbe_frames_dropped || 0) > 0 ? 'var(--red)' : '';
-    $('trf_imbe_drop_idle').textContent = (im.imbe_frames_dropped_idle || 0).toLocaleString();
-    $('trf_imbe_drop_idle').style.color = (im.imbe_frames_dropped_idle || 0) > 0 ? 'var(--orange)' : '';
     if (im.last_imbe_secs_ago != null) {
       $('trf_imbe_ago').textContent = Math.round(im.last_imbe_secs_ago) + 's ago';
     } else {
@@ -1632,7 +1844,33 @@ async function refresh() {
     }
     $('voc_pcm').textContent = (im.vocoder_pcm_produced || 0).toLocaleString();
     $('voc_err').textContent = (im.vocoder_errors || 0).toLocaleString();
+    $('voc_silent').textContent = (im.vocoder_frames_silent_observed || 0).toLocaleString();
     $('voc_enc').textContent = (im.vocoder_frames_encrypted || 0).toLocaleString();
+
+    // Current-call section: per-call deltas from HDU baseline. Zero
+    // when no call is active; populated while a call is in flight
+    // so operators can watch drops/errors accumulate for THIS call.
+    const cc = im.current_call || {};
+    const ccActive = (cc.started_unix_ms != null)
+      && ((cc.ldu1 || 0) + (cc.hdu || 0)) > 0;
+    if (ccActive) {
+      const durS = Math.round((cc.duration_ms || 0) / 100) / 10;
+      const callTg = cc.tg ?? trf.current_talkgroup ?? '?';
+      const callSrc = cc.source ? ' · src ' + cc.source : '';
+      $('cc_tg_dur').textContent = 'TG ' + callTg + callSrc + ' · ' + durS + 's';
+      $('cc_tg_dur').style.color = 'var(--green)';
+    } else {
+      $('cc_tg_dur').textContent = '(idle)';
+      $('cc_tg_dur').style.color = 'var(--text-dim)';
+    }
+    $('cc_duids1').textContent = (cc.hdu || 0) + ' / '
+      + (cc.ldu1 || 0) + ' / ' + (cc.ldu2 || 0);
+    $('cc_duids2').textContent = (cc.tdu || 0) + ' / ' + (cc.tdu_lc || 0);
+    $('cc_imbe').textContent = (cc.imbe_extracted || 0) + ' / '
+      + (cc.imbe_dropped || 0);
+    $('cc_imbe').style.color = (cc.imbe_dropped || 0) > 0 ? 'var(--red)' : '';
+    $('cc_voc').textContent = (cc.vocoder_pcm || 0).toLocaleString() + ' / '
+      + (cc.vocoder_errors || 0) + ' / ' + (cc.vocoder_silent || 0);
     // Status indicator
     const pcm = im.vocoder_pcm_produced || 0;
     if (pcm > 0) {
@@ -1641,6 +1879,94 @@ async function refresh() {
     } else {
       $('voc_status').textContent = 'WAITING';
       $('voc_status').style.color = 'var(--text-dim)';
+    }
+  }
+
+  // ── Traffic Channel card (middle of the 3-card row) ──
+  // Pipeline-stage view: what the TRAFFIC chain is seeing, distinct
+  // from the follower's control-derived intent (left card) and the
+  // audio path's per-call decode (right card). Disagreement between
+  // the three surfaces pipeline bugs — the whole point of this card
+  // is to let the operator spot those gaps at a glance.
+  if (trf) {
+    const fmtKhz2  = v => (v == null) ? '--' : (v / 1e3).toFixed(1) + ' kHz';
+    const activeTrfHz = trf.current_frequency_hz || null;
+    const showHz = activeTrfHz;
+    if (showHz != null) {
+      $('tune_big_freq').textContent = (showHz / 1e6).toFixed(4) + ' MHz';
+      $('tune_big_freq').style.color = 'var(--accent)';
+    } else {
+      $('tune_big_freq').textContent = '—';
+      $('tune_big_freq').style.color = 'var(--text-dim)';
+    }
+    $('tune_big_label').textContent = activeTrfHz
+      ? ('traffic · TG ' + (trf.current_talkgroup ?? '?'))
+      : 'idle · no active grant';
+    $('tune_big_label').style.color = activeTrfHz ? 'var(--green)' : 'var(--text-dim)';
+    // Current batch TG — the TG of the most recent IMBE batch the
+    // vocoder CONSUMED. Disagreement with Grant Follower's TG means
+    // tail frames are in flight (expected briefly at every retune);
+    // persistent disagreement indicates the stranded-tail bug.
+    const im = trf.imbe || {};
+    const batchTg = im.last_batch_tg;
+    const followerTg = trf.current_talkgroup;
+    if (batchTg == null || batchTg === 0) {
+      $('tune_batch_tg').textContent = '(no batches yet)';
+      $('tune_batch_tg').style.color = 'var(--text-dim)';
+    } else {
+      const mismatch = followerTg && batchTg !== followerTg;
+      $('tune_batch_tg').textContent = 'TG ' + batchTg
+        + (mismatch ? ' (follower: ' + followerTg + ')' : '');
+      $('tune_batch_tg').style.color = mismatch ? 'var(--orange)' : '';
+    }
+    // Last traffic-chain DUID.
+    if (trf.last_duid_label) {
+      $('tune_trf_duid').textContent =
+        trf.last_duid_label + ' (' + (trf.last_duid_hex || '--') + ')';
+    } else {
+      $('tune_trf_duid').textContent = '--';
+    }
+    $('tune_trf_nac').textContent = (trf.last_nac_hex || '--');
+    $('tune_trf_off').textContent = (trf.last_offset_hz != null)
+      ? fmtKhz2(trf.last_offset_hz) : '--';
+    // Traffic-chain health from the dedicated traffic_lsm_chain bank.
+    const tch = trf.traffic_lsm_chain || {};
+    if (tch.sync_distance != null) {
+      $('tune_trf_sync').textContent = 'dist=' + tch.sync_distance
+        + (tch.nid_valid ? ' · NID ok' : '');
+      $('tune_trf_sync').style.color = tch.nid_valid ? '' : 'var(--text-dim)';
+    } else {
+      $('tune_trf_sync').textContent = '--';
+    }
+    if (tch.pll_dbg != null) {
+      // Q2.13 -> Hz: pll_dbg * sym_rate/(2π·8192) ≈ pll_dbg * 0.0933
+      const hz = (tch.pll_dbg * 0.0933).toFixed(0);
+      $('tune_trf_pll').textContent = hz + ' Hz (' + tch.pll_dbg + ' Q2.13)';
+    } else {
+      $('tune_trf_pll').textContent = '--';
+    }
+    if (tch.agc_product != null) {
+      $('tune_trf_agc').textContent = tch.agc_product.toFixed(3);
+      $('tune_trf_agc').style.color = tch.agc_product < 0.5 ? 'var(--orange)' : '';
+    } else {
+      $('tune_trf_agc').textContent = '--';
+    }
+    $('tune_mod').textContent = trf.modulation || '--';
+    // IMBE queue depth / capacity / session high-water. Red if
+    // currently near-full, orange if high-water has ever exceeded
+    // 75% of capacity this session — either indicates jitter pressure.
+    const qd = im.queue_depth;
+    const qc = im.queue_capacity;
+    const qhw = im.queue_high_water;
+    if (qc != null && qd != null) {
+      $('tune_imbe_queue').textContent =
+        `${qd} / ${qc} (hw ${qhw ?? 0})`;
+      let col = '';
+      if (qd > qc * 0.75) col = 'var(--red)';
+      else if ((qhw || 0) > qc * 0.75) col = 'var(--orange)';
+      $('tune_imbe_queue').style.color = col;
+    } else {
+      $('tune_imbe_queue').textContent = '--';
     }
   }
 
@@ -3698,6 +4024,33 @@ function onTgMonitorCheck(ev) {
   renderTgMonitor();
 }
 
+// Diagnostic: pin the traffic chain to its current frequency so the
+// operator can measure AGC/PLL/sync settle behaviour against a known
+// signal. While locked, the grant follower stops dispatching retunes
+// AND idle-timeout teardown is suppressed. Calls on other frequencies
+// will be ignored. Off by default.
+async function toggleTrafficLock(checked) {
+  const status = document.getElementById('trf_lock_status');
+  if (status) {
+    status.textContent = checked ? 'locking…' : 'releasing…';
+    status.style.color = 'var(--text-dim)';
+  }
+  try {
+    const resp = await fetch('/api/traffic?lock=' + (checked ? 'on' : 'off'));
+    const j = await resp.json();
+    if (status) {
+      const on = !!j.lock_freq;
+      status.textContent = on ? 'LOCKED — retunes blocked' : '';
+      status.style.color = on ? 'var(--orange)' : 'var(--text-dim)';
+    }
+  } catch (err) {
+    if (status) {
+      status.textContent = 'error: ' + err;
+      status.style.color = 'var(--red)';
+    }
+  }
+}
+
 async function applyMonitorTgs() {
   const staged = Array.from(window._TG_MON_STATE.staged);
   const body = JSON.stringify({talkgroups: staged});
@@ -3734,45 +4087,401 @@ function clearMonitorTgs() {
 // from being torn down every 5 s, which was interrupting playback.
 window._REC_LAST_FP = '';
 
+// ── Pipeline Status (Debug tab) ───────────────────────────────────
+// Polls /api/pipeline on a configurable cadence. Opt-in so it doesn't
+// compete with the live audio WS path. Rendered as a plain-text
+// stage-by-stage dump — the endpoint returns JSON but eyeball-parsing
+// a one-screen text block beats clicking through collapsible JSON
+// trees when you're comparing stages.
+const PIPE = { enabled: false, handle: null };
+
+function fmtKVal(v) {
+  if (v == null) return 'null';
+  if (typeof v === 'number') {
+    if (Number.isInteger(v)) return v.toLocaleString();
+    return v.toFixed(3);
+  }
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  return String(v);
+}
+
+function renderPipeline(p) {
+  if (!p) return '(no data)';
+  const lines = [];
+  const hr = (title) => lines.push(
+    '\n── ' + title + ' ' + '─'.repeat(Math.max(0, 60 - title.length)));
+  const kv = (k, v, pad = 20) => lines.push(
+    '  ' + k.padEnd(pad) + fmtKVal(v));
+
+  lines.push(`build:  ${p.build_tag}    uptime: ${p.uptime_secs}s`);
+
+  hr('RF front-end');
+  const rf = p.rf || {};
+  kv('radio_freq_hz',     rf.radio_freq_hz);
+  kv('rx_lo_hz',          rf.rx_lo_hz);
+  kv('rf_bandwidth_hz',   rf.rf_bandwidth_hz);
+  kv('sample_rate_hz',    rf.sample_rate_hz);
+  kv('rx_rssi_db',        rf.rx_rssi_db);
+  kv('rx_gain_db',        rf.rx_gain_db);
+
+  hr('PPM');
+  const ppm = p.ppm || {};
+  kv('lo_shift_hz',       ppm.lo_shift_hz);
+  kv('lo_ppm',            ppm.lo_ppm);
+  kv('last_cal_unix_secs', ppm.last_cal_unix_secs);
+
+  hr('HDL chains');
+  for (const name of ['control', 'traffic']) {
+    const c = (p.hdl_chains || {})[name] || {};
+    lines.push('  [' + name + ']');
+    kv('  sync_distance',   c.sync_distance);
+    kv('  nid_valid',       c.nid_valid);
+    kv('  dibit_overflow',  c.dibit_overflow);
+    kv('  drop_count',      c.drop_count);
+    kv('  pll_dbg (Q2.13)', c.pll_dbg);
+    kv('  agc_product',     c.agc_product);
+  }
+
+  hr('Framers');
+  for (const name of ['control', 'traffic']) {
+    const f = (p.framers || {})[name] || {};
+    lines.push('  [' + name + ']');
+    kv('  nid_attempts',        f.nid_attempts);
+    kv('  nid_decoded_ok',      f.nid_decoded_ok);
+    kv('  nid_decode_failures', f.nid_decode_failures);
+    kv('  sync_hits',           f.sync_hits);
+    kv('  sync_near_misses',    f.sync_near_misses);
+    if (f.tsbk_crc_ok != null) {
+      kv('  tsbk_crc_ok',       f.tsbk_crc_ok);
+      kv('  tsbk_crc_failures', f.tsbk_crc_failures);
+    }
+  }
+
+  hr('IMBE queue (producer -> vocoder mpsc)');
+  const q = p.imbe_queue || {};
+  const depth = q.depth ?? 0, cap = q.capacity ?? 0;
+  const pct = cap > 0 ? Math.round(100 * depth / cap) : 0;
+  kv('depth / capacity',  `${depth} / ${cap} (${pct}%)`);
+  kv('high_water',        q.high_water);
+  kv('frames_submitted',  q.frames_submitted);
+  kv('frames_consumed',   q.frames_consumed);
+  kv('frames_dropped',    q.frames_dropped);
+  kv('drop_events',       q.drop_events);
+  kv('last_batch_tg',     q.last_batch_tg);
+
+  hr('Vocoder');
+  const v = p.vocoder || {};
+  kv('frames_extracted',  v.frames_extracted);
+  kv('pcm_samples',       v.pcm_samples);
+  kv('errors_over_4bit',  v.errors_over_4bit);
+  kv('silent_observed',   v.silent_observed);
+  kv('encrypted_skipped', v.encrypted_skipped);
+
+  hr('Audio broadcast (/ws/audio subscribers)');
+  const ab = p.audio_broadcast || {};
+  kv('subscribers',       ab.subscribers);
+  kv('lag_total',         ab.lag_total);
+
+  hr('Recorder');
+  const r = p.recorder || {};
+  kv('store_count / max', `${r.store_count ?? 0} / ${r.store_max ?? 0}`);
+  kv('boundaries_hdu',    r.boundaries_hdu);
+  kv('src_stamps_applied', r.src_stamps_applied);
+  kv('src_stamps_lost',   r.src_stamps_lost);
+  kv('boundary_lag',      r.boundary_lag);
+
+  hr('Event log');
+  const el = p.event_log || {};
+  kv('depth / capacity', `${el.depth ?? 0} / ${el.capacity ?? 0}`);
+  kv('last_seq',         el.last_seq);
+
+  hr('Grant decode stats ring');
+  const gs = p.grant_stats || {};
+  kv('buffered / capacity',
+     `${gs.completed_grants_buffered ?? 0} / ${gs.capacity ?? 0}`);
+
+  return lines.join('\n');
+}
+
+async function pipelinePoll() {
+  try {
+    const p = await fetchJson('/api/pipeline');
+    if (!p) return;
+    const pane = $('pipePane');
+    const wasAtBottom = pane.scrollTop + pane.clientHeight
+      >= pane.scrollHeight - 20;
+    pane.textContent = renderPipeline(p);
+    if (wasAtBottom) pane.scrollTop = 0;  // scroll to top — fresh snapshot
+    $('pipeStatus').textContent =
+      PIPE.enabled ? 'polling' : 'one-shot · ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    $('pipeStatus').textContent = 'error: ' + (e?.message || e);
+  }
+}
+
+async function refreshPipelineOnce() {
+  await pipelinePoll();
+}
+
+function togglePipeline() {
+  const chk = $('pipeEnabled');
+  PIPE.enabled = !!chk.checked;
+  if (PIPE.handle) { clearInterval(PIPE.handle); PIPE.handle = null; }
+  if (PIPE.enabled) {
+    const iv = parseInt($('pipeInterval').value || '3000', 10);
+    pipelinePoll();
+    PIPE.handle = setInterval(pipelinePoll, iv);
+    $('pipeStatus').textContent = 'polling...';
+  } else {
+    $('pipeStatus').textContent = 'off';
+  }
+}
+
+// ── Log Tail (SDRTrunk-style) ─────────────────────────────────────
+// Checkbox-gated because polling /api/log is OFF by default — saves
+// server cycles and avoids any perceived competition with the live
+// audio WS path on slow links. Incremental `?since=<seq>` keeps
+// payloads small over long tail sessions.
+const LOG_TAIL = {
+  enabled: false,
+  handle: null,
+  lastSeq: 0,
+  lines: [],       // most recent 500 rendered lines, newest last
+  maxLines: 500,
+};
+
+function logTailFormatEntry(e) {
+  const t = e.timestamp_ms ?? 0;
+  const d = new Date(t);
+  const pad = (n, w = 2) => String(n).padStart(w, '0');
+  const hms = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+  const cat = (e.category || '?').toUpperCase();
+  return `${hms}  [${cat.padEnd(8)}] ${e.message || ''}`;
+}
+
+async function logTailPoll() {
+  if (!LOG_TAIL.enabled) return;
+  try {
+    const q = LOG_TAIL.lastSeq > 0
+      ? `/api/log?since=${LOG_TAIL.lastSeq}`
+      : '/api/log?limit=200';
+    const r = await fetchJson(q);
+    if (!r || !Array.isArray(r.entries)) return;
+    if (r.entries.length > 0) {
+      for (const e of r.entries) {
+        LOG_TAIL.lines.push(logTailFormatEntry(e));
+        if ((e.seq || 0) > LOG_TAIL.lastSeq) LOG_TAIL.lastSeq = e.seq;
+      }
+      // Cap at maxLines, newest last.
+      if (LOG_TAIL.lines.length > LOG_TAIL.maxLines) {
+        LOG_TAIL.lines = LOG_TAIL.lines.slice(-LOG_TAIL.maxLines);
+      }
+      const filter = ($('logTailFilter').value || '').toLowerCase();
+      const shown = filter
+        ? LOG_TAIL.lines.filter(l => l.toLowerCase().includes(filter))
+        : LOG_TAIL.lines;
+      const pane = $('logTailPane');
+      const wasAtBottom = pane.scrollTop + pane.clientHeight
+        >= pane.scrollHeight - 20;
+      pane.textContent = shown.join('\n');
+      if (wasAtBottom) pane.scrollTop = pane.scrollHeight;
+    }
+    $('logTailStatus').textContent =
+      `${LOG_TAIL.lines.length} lines · seq ${LOG_TAIL.lastSeq}`;
+  } catch (e) {
+    $('logTailStatus').textContent = 'error: ' + (e?.message || e);
+  }
+}
+
+function toggleLogTail() {
+  const chk = $('logTailEnabled');
+  LOG_TAIL.enabled = !!chk.checked;
+  if (LOG_TAIL.handle) {
+    clearInterval(LOG_TAIL.handle);
+    LOG_TAIL.handle = null;
+  }
+  if (LOG_TAIL.enabled) {
+    const interval = parseInt(
+      $('logTailInterval').value || '2000', 10);
+    logTailPoll();  // immediate first fetch
+    LOG_TAIL.handle = setInterval(logTailPoll, interval);
+    $('logTailStatus').textContent = 'starting...';
+    $('logTailPane').textContent = '';
+  } else {
+    $('logTailStatus').textContent = 'stopped';
+  }
+}
+
+function clearLogTail() {
+  LOG_TAIL.lines = [];
+  LOG_TAIL.lastSeq = 0;
+  $('logTailPane').textContent = LOG_TAIL.enabled
+    ? '(cleared; awaiting next poll)'
+    : '(live tail off — tick the checkbox to stream events)';
+}
+
+// Toggle the per-call event timeline row. Pulls /api/log filtered
+// to the call's time window [start - 2s, end + 2s] so the operator
+// sees framer / grant / recorder events in their natural sequence
+// for ONE call — including calls that produced NO audio (the
+// diagnostic for "got the grant but never recorded"). Single
+// one-shot fetch on open, no polling.
+async function toggleCallEvents(key, startMs, endMs) {
+  const row = document.querySelector(`tr[data-call-events-key="${key}"]`);
+  if (!row) return;
+  if (row.style.display === 'none') {
+    row.style.display = '';
+    const pane = document.getElementById(`call_events_${key}`);
+    if (pane && !pane.dataset.loaded) {
+      pane.textContent = 'loading...';
+      try {
+        const r = await fetchJson('/api/log?limit=16384');
+        if (!r || !Array.isArray(r.entries)) {
+          pane.textContent = r?.error || 'no events';
+          return;
+        }
+        const lo = Number(startMs) - 2000;
+        const hi = Number(endMs) + 2000;
+        // Skip the `duid` category by default — it fires on every
+        // TSDU (~1 every 1.5 ms), drowning the recorder/grant/framer
+        // events the operator actually wants to see for one call.
+        // Time-window of a 5 s call would render ~3000 duid lines.
+        const filtered = r.entries.filter(e => {
+          const t = e.timestamp_ms ?? 0;
+          if (t < lo || t > hi) return false;
+          if (e.category === 'duid') return false;
+          return true;
+        });
+        if (filtered.length === 0) {
+          pane.textContent = '(no events in this call window — log ring may have rolled past)';
+          return;
+        }
+        pane.textContent = filtered.map(e => {
+          const t = e.timestamp_ms ?? 0;
+          const d = new Date(t);
+          const pad = (n, w=2) => String(n).padStart(w, '0');
+          const hms = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(),3)}`;
+          const fields = e.fields ? ' ' + JSON.stringify(e.fields) : '';
+          return `${hms}  [${(e.category||'?').toUpperCase()}]  ${e.message||''}${fields}`;
+        }).join('\n');
+        pane.dataset.loaded = '1';
+      } catch (err) {
+        pane.textContent = 'error: ' + (err?.message || err);
+      }
+    }
+  } else {
+    row.style.display = 'none';
+  }
+}
+
 async function refreshRecordings() {
-  // Recordings card is Radio-tab only.
+  // Calls card is Radio-tab only.
   if (activeTab() !== 'radio') return;
-  const data = await fetchJson('/api/recordings');
-  if (!data) return;
-  const count = data.count || 0;
-  const max = data.max || 0;
-  $('rec_count').textContent = count
-    ? `${count} / ${max}`
-    : `0 / ${max}`;
+  // Master = grant_decode_stats (one entry per HduStart, even when
+  // the call produced no audio). Recordings join in by TG + start
+  // time so unmatched grants stay visible — that's the diagnostic
+  // for "got the grant but never recorded" (PLL drop / encryption /
+  // too short).
+  const [grants, recs] = await Promise.all([
+    fetchJson('/api/grant_decode_stats'),
+    fetchJson('/api/recordings'),
+  ]);
+  if (!grants) return;
+  const grantItems = Array.isArray(grants.items) ? grants.items : [];
+  const recItems = (recs && Array.isArray(recs.items)) ? recs.items : [];
+
+  // Join algorithm — verified against live /api/grant_decode_stats +
+  // /api/recordings on 2026-04-24:
+  //
+  // Real-world observation: rec.started_unix_ms can LEAD
+  // grant.started_unix_ms by several seconds. The recorder opens on
+  // the first audio chunk; the HDU event that drives grant_stats is
+  // parsed downstream of the demod and can arrive after audio is
+  // already flowing. So a pure causal "rec >= grant" constraint
+  // wrongly orphans real pairs.
+  //
+  // Strategy: two-pass, oldest-first iteration to avoid newest-first
+  // greedy mis-pairing of adjacent same-TG calls.
+  //   Pass 1: grants WITH src — nearest-time same-(tg,src) within
+  //           ±10s. (tg,src) is a strong identity; widening the
+  //           window is safe because same-(tg,src) pairs typically
+  //           recur minutes apart.
+  //   Pass 2: grants WITHOUT src — nearest-time same-tg within ±3s.
+  //           Tighter because tg-only is ambiguous.
+  const recsByTg = new Map();
+  for (const r of recItems) {
+    const tg = r.talkgroup;
+    if (!recsByTg.has(tg)) recsByTg.set(tg, []);
+    recsByTg.get(tg).push(r);
+  }
+  const matchedRecIds = new Set();
+  const grantToRec = new Map(); // grant identity → recording
+  const grantKey = g => `${g.started_unix_ms}_${g.tg}_${g.source||0}`;
+  const oldestFirst = [...grantItems].sort(
+    (a,b) => (a.started_unix_ms||0) - (b.started_unix_ms||0));
+  // Pass 1: src-confirmed pairs.
+  for (const g of oldestFirst) {
+    if (g.source == null || g.source === 0) continue;
+    const candidates = recsByTg.get(g.tg) || [];
+    let best = null, bestAbs = Infinity;
+    for (const r of candidates) {
+      if (matchedRecIds.has(r.id)) continue;
+      if (r.source !== g.source) continue;
+      const delta = (r.started_unix_ms||0) - (g.started_unix_ms||0);
+      if (delta < -10000 || delta > 10000) continue;
+      const ad = Math.abs(delta);
+      if (ad < bestAbs) { best = r; bestAbs = ad; }
+    }
+    if (best) {
+      matchedRecIds.add(best.id);
+      grantToRec.set(grantKey(g), best);
+    }
+  }
+  // Pass 2: src-unknown grants → tg-only nearest-time, tight window.
+  for (const g of oldestFirst) {
+    if (g.source != null && g.source !== 0) continue;
+    const candidates = recsByTg.get(g.tg) || [];
+    let best = null, bestAbs = Infinity;
+    for (const r of candidates) {
+      if (matchedRecIds.has(r.id)) continue;
+      const delta = (r.started_unix_ms||0) - (g.started_unix_ms||0);
+      if (delta < -3000 || delta > 3000) continue;
+      const ad = Math.abs(delta);
+      if (ad < bestAbs) { best = r; bestAbs = ad; }
+    }
+    if (best) {
+      matchedRecIds.add(best.id);
+      grantToRec.set(grantKey(g), best);
+    }
+  }
+  const findMatch = g => grantToRec.get(grantKey(g)) || null;
+
+  // Newest-first across both rings. Grants drive ordering; any
+  // unmatched recordings get appended after so the operator still
+  // sees them (grant ring rolled past, or HDU was missed entirely).
+  $('rec_count').textContent =
+    `${grantItems.length} calls · ${recItems.length} recordings`;
+
   const tbody = $('rec_tbody');
-  if (!Array.isArray(data.items) || data.items.length === 0) {
+  if (grantItems.length === 0 && recItems.length === 0) {
     if (window._REC_LAST_FP !== 'empty') {
-      tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-dim)">No recordings yet.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="color:var(--text-dim)">No calls yet.</td></tr>';
       window._REC_LAST_FP = 'empty';
     }
     return;
   }
 
-  // Fingerprint = ordered list of (id, started_unix_ms) per row. If
-  // the server hasn't added or evicted anything since our last
-  // render, skip the whole innerHTML rebuild so any in-flight
-  // `<audio>` element keeps its playback state.
-  //
-  // Previous revisions included `size_bytes` in the fingerprint to
-  // pick up size growth on in-progress recordings — but that meant
-  // the fingerprint changed every poll during active recording,
-  // defeating the whole purpose of the cache and tearing down any
-  // playing `<audio>` element every 5 s (CODE_REVIEW 2.3). In-progress
-  // rows now show a stale size until the recording finalises or a
-  // sibling row joins/leaves the list.
-  const fp = data.items.map(i => `${i.id}:${i.started_unix_ms || 0}`).join(',');
+  // Fingerprint covers grants + recordings — rebuild only when the
+  // joined set actually changes. Skipping size_bytes for the same
+  // reason as before (in-progress recordings keep growing).
+  const fp = grantItems.map(g =>
+      `g${g.started_unix_ms || 0}:${g.tg}:${g.source||0}:${g.duration_ms||0}`
+    ).join(',') + '|' +
+    recItems.map(r => `r${r.id}:${r.started_unix_ms||0}`).join(',');
   if (fp === window._REC_LAST_FP) return;
 
-  // List changed. Before tearing down, capture any currently-playing
-  // `<audio>` elements + their playback position so we can restore
-  // them after the rebuild -- the user shouldn't lose playback just
-  // because a new recording appeared or the oldest was evicted.
-  const playingState = new Map(); // id -> {currentTime, volume, muted}
+  // Capture in-flight playback so we can restore after the rebuild.
+  const playingState = new Map();
   tbody.querySelectorAll('audio').forEach(a => {
     if (!a.paused && !a.ended) {
       const src = a.getAttribute('src') || '';
@@ -3795,11 +4504,6 @@ async function refreshRecordings() {
       ? `${m}m ${sec.toString().padStart(2, '0')}s`
       : `${s}.${Math.floor((ms % 1000) / 100)}s`;
   };
-  const fmtSize = b => {
-    if (b < 1024) return `${b} B`;
-    if (b < 1_048_576) return `${(b / 1024).toFixed(1)} KB`;
-    return `${(b / 1_048_576).toFixed(2)} MB`;
-  };
   const fmtClock = ms => {
     if (!ms) return '--';
     const d = new Date(ms);
@@ -3808,30 +4512,121 @@ async function refreshRecordings() {
     const ss = d.getSeconds().toString().padStart(2, '0');
     return `${hh}:${mm}:${ss}`;
   };
+  // first_imbe_ms cell: red >800 ms (start-of-call drop), orange
+  // 400-800, green <400, dim "--" if grant closed without IMBE.
+  const fmtFirst = g => {
+    const f = g.first_imbe_ms;
+    if (f == null) return '<span style="color:var(--text-dim)">--</span>';
+    const c = f > 800 ? 'var(--red)'
+            : f > 400 ? 'var(--orange)'
+                      : 'var(--green)';
+    return `<span style="color:${c};font-family:monospace">${f}ms</span>`;
+  };
+  // Decode stats: "L1/L2 · ext/drop · err/silent" from grant deltas.
+  const fmtStats = g => {
+    const drop = g.imbe_dropped || 0;
+    const err = g.vocoder_errors || 0;
+    const dropColor = drop > 0 ? 'var(--red)' : 'var(--text-dim)';
+    const errColor = err > 0 ? 'var(--orange)' : 'var(--text-dim)';
+    return `<span style="font-family:monospace;font-size:0.85em">`
+      + `${g.ldu1_count ?? '-'}/${g.ldu2_count ?? '-'} · `
+      + `${g.imbe_extracted ?? '-'}/<span style="color:${dropColor}">${drop}</span> · `
+      + `<span style="color:${errColor}">${err}</span>/${g.vocoder_silent ?? '-'}`
+      + `</span>`;
+  };
+  const fmtFreq = it => {
+    const fh = it.freq_hz;
+    const ch = it.channel;
+    if (fh == null && !ch) return '<span style="color:var(--text-dim)">--</span>';
+    const mhz = fh != null ? `${(fh/1e6).toFixed(4)} MHz` : '';
+    const chPart = ch ? `<div style="font-size:0.7em;color:var(--text-dim);font-family:monospace">${escHtml(ch)}</div>` : '';
+    return `<div>${mhz}</div>${chPart}`;
+  };
+  // Recording cell: playback + download if a matching recording
+  // exists; otherwise classify why no audio (encrypted / no_imbe /
+  // ring_full).
+  const fmtRecording = (g, rec) => {
+    const startMs = g.started_unix_ms || 0;
+    const endMs = g.ended_unix_ms || (startMs + (g.duration_ms || 0));
+    const key = `${startMs}_${g.tg || 0}`;
+    const evtsBtn = `<button class="btn" style="padding:1px 6px;font-size:0.75em;margin-left:4px" onclick="toggleCallEvents('${key}', ${startMs}, ${endMs})">Events</button>`;
+    if (rec) {
+      const url = `/api/recordings/${rec.id}.wav`;
+      return `<span style="color:var(--text-dim);font-family:monospace;font-size:0.8em;margin-right:4px" title="recording id">#${rec.id}</span>`
+        + `<audio controls preload="none" style="height:28px;vertical-align:middle" src="${url}"></audio>`
+        + ` <a href="${url}" download style="font-size:0.85em">⬇</a>`
+        + evtsBtn;
+    }
+    let reason = '(no audio)';
+    if (g.encrypted) reason = '(encrypted)';
+    else if ((g.imbe_extracted || 0) === 0) reason = '(no IMBE)';
+    else if ((g.duration_ms || 0) < 500) reason = '(too short)';
+    return `<span style="color:var(--text-dim);font-style:italic">${reason}</span>${evtsBtn}`;
+  };
 
-  const rows = data.items.map(it => {
-    const url = `/api/recordings/${it.id}.wav`;
-    const src = (it.source != null && it.source !== 0) ? it.source : '--';
-    const fn = it.filename || '--';
-    return `<tr data-rec-id="${it.id}">
-      <td>${fmtClock(it.started_unix_ms)}</td>
-      <td>${it.talkgroup || '--'}</td>
+  const rows = grantItems.map(g => {
+    const rec = findMatch(g);
+    const startMs = g.started_unix_ms || 0;
+    const endMs = g.ended_unix_ms || (startMs + (g.duration_ms || 0));
+    const key = `${startMs}_${g.tg || 0}`;
+    const src = (g.source != null && g.source !== 0) ? g.source : '--';
+    return `<tr data-call-key="${key}"${rec ? ` data-rec-id="${rec.id}"` : ''}>
+      <td>${fmtClock(g.started_unix_ms)}</td>
+      <td>${g.tg || '--'}</td>
       <td>${src}</td>
-      <td>${fmtDur(it.duration_ms)}</td>
-      <td>${fmtSize(it.size_bytes)}</td>
-      <td style="font-family:monospace;font-size:0.85em;color:var(--text-dim);word-break:break-all">${escHtml(fn)}</td>
-      <td><audio controls preload="none" style="height:28px" src="${url}"></audio>
-          <a href="${url}" download style="margin-left:6px;font-size:0.85em">⬇</a></td>
+      <td>${fmtFreq(g)}</td>
+      <td>${fmtFirst(g)}</td>
+      <td>${fmtDur(g.duration_ms)}</td>
+      <td>${fmtStats(g)}</td>
+      <td style="white-space:nowrap">${fmtRecording(g, rec)}</td>
+    </tr>
+    <tr data-call-events-key="${key}" style="display:none">
+      <td colspan="8" style="background:rgba(128,128,128,0.06);padding:6px 10px">
+        <div id="call_events_${key}" style="font-family:monospace;font-size:0.78em;max-height:320px;overflow:auto;white-space:pre-wrap">loading...</div>
+      </td>
     </tr>`;
   });
+
+  // Append recordings that didn't match any grant (grant ring rolled
+  // past, or follower never saw the HDU). Surfaced so audio is never
+  // silently lost from the operator's view.
+  const orphanRecs = recItems.filter(r => !matchedRecIds.has(r.id));
+  if (orphanRecs.length > 0) {
+    rows.push(`<tr><td colspan="8" style="color:var(--text-dim);font-size:0.75em;padding-top:10px">Recordings without a matching grant (HDU missed or grant ring rolled):</td></tr>`);
+    for (const r of orphanRecs) {
+      const url = `/api/recordings/${r.id}.wav`;
+      const src = (r.source != null && r.source !== 0) ? r.source : '--';
+      const startMs = r.started_unix_ms || 0;
+      const endMs = startMs + (r.duration_ms || 0);
+      const key = `rec${r.id}`;
+      rows.push(`<tr data-rec-id="${r.id}">
+        <td>${fmtClock(r.started_unix_ms)}</td>
+        <td>${r.talkgroup || '--'}</td>
+        <td>${src}</td>
+        <td>${fmtFreq(r)}</td>
+        <td><span style="color:var(--text-dim)">--</span></td>
+        <td>${fmtDur(r.duration_ms)}</td>
+        <td>${fmtStats(r)}</td>
+        <td style="white-space:nowrap">
+          <span style="color:var(--text-dim);font-family:monospace;font-size:0.8em;margin-right:4px" title="recording id">#${r.id}</span>
+          <audio controls preload="none" style="height:28px;vertical-align:middle" src="${url}"></audio>
+          <a href="${url}" download style="margin-left:6px;font-size:0.85em">⬇</a>
+          <button class="btn" style="padding:1px 6px;font-size:0.75em;margin-left:4px" onclick="toggleCallEvents('${key}', ${startMs}, ${endMs})">Events</button>
+        </td>
+      </tr>
+      <tr data-call-events-key="${key}" style="display:none">
+        <td colspan="8" style="background:rgba(128,128,128,0.06);padding:6px 10px">
+          <div id="call_events_${key}" style="font-family:monospace;font-size:0.78em;max-height:320px;overflow:auto;white-space:pre-wrap">loading...</div>
+        </td>
+      </tr>`);
+    }
+  }
+
   tbody.innerHTML = rows.join('');
   window._REC_LAST_FP = fp;
 
-  // Restore playback for any recordings that were playing before
-  // the rebuild. We use `play()` + seek to the saved currentTime
-  // rather than trying to preserve the DOM node, because a row's
-  // position may have changed (new recording pushed it down) and
-  // cloneNode can't transfer the decoded buffer anyway.
+  // Restore in-flight playback. `play()` + seek; cloneNode can't
+  // transfer the decoded buffer.
   if (playingState.size > 0) {
     tbody.querySelectorAll('tr').forEach(tr => {
       const id = tr.getAttribute('data-rec-id');
@@ -3841,9 +4636,6 @@ async function refreshRecordings() {
       if (!audio) return;
       audio.volume = st.volume;
       audio.muted = st.muted;
-      // Seek-then-play. `play()` returns a promise that resolves
-      // once the seek completes; ignore rejections (user might
-      // have started a different playback in the meantime).
       audio.currentTime = st.currentTime;
       audio.play().catch(() => {});
     });
@@ -3973,6 +4765,13 @@ const PLOT = {
   wsHandle:   null,
   eyeBuffer:  [],          // rolling IQ pairs for eye/constellation
   eyeCapBytes: 64 * 1024,  // ~1.7 s at 9.6 kSPS
+  // Generation counter — bumped on every plotStop(). Each tick captures
+  // the current generation; if a tick's awaited fetch resolves AFTER the
+  // user changed the picker, the captured generation no longer matches
+  // and the draw is dropped. Fixes the picker-bounce bug where a stale
+  // /api/spectrum_wide response paints over a freshly-started
+  // constellation render.
+  generation: 0,
 };
 
 // Size the canvas drawing buffer to clientWidth * devicePixelRatio so text
@@ -4017,6 +4816,7 @@ function plotInit() {
 }
 
 function plotStop() {
+  PLOT.generation++;       // any in-flight async tick from a prior renderer is now stale
   if (PLOT.pollHandle) { clearInterval(PLOT.pollHandle); PLOT.pollHandle = null; }
   if (PLOT.wsHandle)   { try { PLOT.wsHandle.close(); } catch {} PLOT.wsHandle = null; }
   PLOT.eyeBuffer = [];
@@ -4039,31 +4839,44 @@ function plotRestart() {
 }
 
 // ── renderer: wideband spectrum (HDL FFT, no PS processing) ──
+// Poll cadence is 500 ms (was 200 ms): at 16384 bins the JSON payload
+// is ~320 KB; 5 Hz poll = 1.6 MB/s of JSON encode/parse, which made
+// the dashboard feel sluggish. 2 Hz is plenty for a visual spectrum.
 function plotSpectrumWide() {
   const tick = async () => {
+    const myGen = PLOT.generation;
     try {
       const r = await fetchJson('/api/spectrum_wide');
+      if (myGen !== PLOT.generation) return;   // picker changed; drop stale draw
       if (!r.ok) { PLOT.statusEl.textContent = r.error || 'no data'; return; }
       drawPlotSpectrum(r.mag_db, r.center_hz, r.span_hz, 'Wideband (HDL FFT)');
       PLOT.statusEl.textContent =
         `${r.bins} bins \u00B7 span ${(r.span_hz/1e6).toFixed(2)} MHz`;
-    } catch (e) { PLOT.statusEl.textContent = 'error: ' + e.message; }
+    } catch (e) {
+      if (myGen !== PLOT.generation) return;
+      PLOT.statusEl.textContent = 'error: ' + e.message;
+    }
   };
   tick();
-  PLOT.pollHandle = setInterval(tick, 200);
+  PLOT.pollHandle = setInterval(tick, 500);
 }
 
 // ── renderer: narrowband spectrum (software FFT over post-DDC IQ) ──
 function plotSpectrumNarrow() {
   const tick = async () => {
+    const myGen = PLOT.generation;
     try {
       const r = await fetchJson(`/api/spectrum?chain=${PLOT.chain}&fft=4096&averages=2`);
+      if (myGen !== PLOT.generation) return;   // picker changed; drop stale draw
       if (!r.ok) { PLOT.statusEl.textContent = r.error || 'no data'; return; }
       drawPlotSpectrum(r.mag_db, r.center_hz, r.sample_rate_hz,
                        `Narrowband (${PLOT.chain})`);
       PLOT.statusEl.textContent =
         `${r.fft_size}-pt \u00B7 ${r.averages_used}x avg \u00B7 ${(r.sample_rate_hz/1e3).toFixed(1)} kHz span`;
-    } catch (e) { PLOT.statusEl.textContent = 'error: ' + e.message; }
+    } catch (e) {
+      if (myGen !== PLOT.generation) return;
+      PLOT.statusEl.textContent = 'error: ' + e.message;
+    }
   };
   tick();
   PLOT.pollHandle = setInterval(tick, 500);

@@ -920,6 +920,61 @@ pub async fn get_ppm(
     } else { 0.0 };
     let last_cal = state.last_ppm_cal_unix_secs
         .load(Ordering::Relaxed);
+
+    // Tracker diagnostic — shows what the continuous tracker is
+    // currently estimating + how many samples it has in its ring.
+    // Useful when shift and ppm look right but the tracker is still
+    // proposing a correction (or vice-versa).
+    let (tracker_samples, tracker_estimate_hz) = {
+        let ring = state.ppm_tracker_ring.lock();
+        match ring {
+            Ok(r) => {
+                let n = r.len();
+                if n >= 60 {
+                    let mut sorted: Vec<f64> = r.iter().copied().collect();
+                    sorted.sort_by(|a, b| a.partial_cmp(b)
+                        .unwrap_or(std::cmp::Ordering::Equal));
+                    let trim = (n as f64 * 0.10).floor() as usize;
+                    let kept = &sorted[trim..n - trim];
+                    let mean = kept.iter().sum::<f64>() / kept.len() as f64;
+                    (n, Some(mean))
+                } else { (n, None) }
+            }
+            Err(_) => (0, None),
+        }
+    };
+    let last_shift_change_ms = state.ppm_last_shift_change_ms
+        .load(Ordering::Relaxed);
+
+    let auto_enabled = state.auto_ppm_enabled.load(Ordering::Relaxed);
+    let anchor_hz = state.auto_ppm_anchor_hz.load(Ordering::Relaxed);
+    let recal_shift = state.last_recal_shift_hz.load(Ordering::Relaxed);
+    // Pre-compute whether the current estimate would be applied
+    // given the anchor — dashboard can show WHY a non-null estimate
+    // isn't moving shift (outside anchor / no recal yet).
+    let would_apply = if !auto_enabled {
+        serde_json::json!({ "applied": false, "reason": "auto_disabled" })
+    } else if anchor_hz == 0 {
+        serde_json::json!({ "applied": true, "reason": "unrestricted" })
+    } else if recal_shift == 0 {
+        serde_json::json!({ "applied": false, "reason": "no_recal_anchor" })
+    } else if let Some(est) = tracker_estimate_hz {
+        let delta = (est.round() as i64 - recal_shift).abs();
+        if delta <= anchor_hz as i64 {
+            serde_json::json!({
+                "applied": true, "reason": "within_anchor",
+                "delta_from_recal_hz": (est.round() as i64 - recal_shift),
+            })
+        } else {
+            serde_json::json!({
+                "applied": false, "reason": "outside_anchor",
+                "delta_from_recal_hz": (est.round() as i64 - recal_shift),
+            })
+        }
+    } else {
+        serde_json::json!({ "applied": false, "reason": "insufficient_samples" })
+    };
+
     Json(serde_json::json!({
         "ok":                     true,
         "lo_shift_hz":            lo_shift_hz,
@@ -928,6 +983,166 @@ pub async fn get_ppm(
         "boot_lo_ppm":            state.boot_lo_ppm,
         "last_cal_unix_secs":     last_cal,
         "calibrated_this_session": last_cal != 0,
+        "tracker_samples":        tracker_samples,
+        "tracker_estimate_hz":    tracker_estimate_hz,
+        "last_shift_change_ms":   last_shift_change_ms,
+        "auto_ppm_enabled":       auto_enabled,
+        "auto_ppm_anchor_hz":     anchor_hz,
+        "last_recal_shift_hz":    recal_shift,
+        "would_apply":            would_apply,
+    }))
+}
+
+/// `POST /api/ppm/nudge?delta_hz=<n>[&absolute=<shift>]`
+///
+/// Manual shift adjustment for investigating `pll_dbg` semantics.
+/// Either increments current `lo_shift_hz` by `delta_hz` (signed) or
+/// sets it absolutely with `absolute=<shift>`. Clamped to ±1 ppm at
+/// current `rx_lo`. Reprograms the DDC NCO, bumps the tracker settle
+/// timestamp (so the 3 s gate applies), clears the ring.
+///
+/// Response includes the new shift + current `pll_dbg` + agc_product
+/// so a sweep caller can build a `shift vs pll_dbg` table in one go.
+///
+/// Linux-only — no AD9361 on host builds.
+#[cfg(target_os = "linux")]
+pub async fn post_ppm_nudge(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params):
+        axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    use std::sync::atomic::Ordering;
+    let rx_lo = state.current_rx_lo.load(Ordering::Relaxed) as f64;
+    let control_freq = state.current_control_freq
+        .load(Ordering::Relaxed) as f64;
+    let sample_rate = state.current_sample_rate_hz
+        .load(Ordering::Relaxed) as f64;
+    if rx_lo <= 0.0 || sample_rate <= 0.0 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "ok": false,
+            "error": "radio not tuned yet",
+        }))).into_response();
+    }
+
+    let cur_shift = state.current_lo_shift_hz
+        .load(Ordering::Relaxed) as f64;
+    let target = if let Some(v) = params.get("absolute") {
+        match v.parse::<f64>() {
+            Ok(n) => n,
+            Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "ok": false, "error": "absolute must be a number (Hz)",
+            }))).into_response(),
+        }
+    } else if let Some(v) = params.get("delta_hz") {
+        match v.parse::<f64>() {
+            Ok(n) => cur_shift + n,
+            Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "ok": false, "error": "delta_hz must be a number (Hz)",
+            }))).into_response(),
+        }
+    } else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "ok": false,
+            "error": "provide delta_hz=<signed Hz> or absolute=<Hz>",
+        }))).into_response();
+    };
+
+    // Clamp to ±1 ppm at current rx_lo — same envelope the tracker
+    // uses. Protects against fat-fingered absolute=1000000 typos.
+    let envelope = rx_lo * 1e-6;
+    let new_shift = target.clamp(-envelope, envelope);
+    let clamped = (target - new_shift).abs() > 0.5;
+
+    // Reprogram DDC NCO.
+    let new_nco = control_freq - rx_lo + new_shift;
+    let applied = {
+        let core = state.ip_core.lock().await;
+        core.set_ddc_frequency(new_nco, sample_rate).is_ok()
+    };
+    if !applied {
+        return (StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+            "ok": false, "error": "set_ddc_frequency failed",
+        }))).into_response();
+    }
+    state.current_lo_shift_hz.store(
+        new_shift.round() as i64, Ordering::Relaxed);
+    // Clear tracker ring + arm settle gate so the tracker doesn't
+    // immediately try to correct what we just set.
+    if let Ok(mut r) = state.ppm_tracker_ring.lock() { r.clear(); }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    state.ppm_last_shift_change_ms.store(now_ms, Ordering::Relaxed);
+
+    // Short settle before reading pll_dbg so caller gets a post-
+    // transient snapshot. 300 ms is enough for the Costas to
+    // re-lock within ±100 Hz of shift; we still recommend the
+    // 3 s settle via /api/ppm polling for a truly steady read.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let (pll_dbg, agc_product) = {
+        let core = state.ip_core.lock().await;
+        let (pll, _) = core.lsm_debug();
+        let (g, m) = core.lsm_agc_debug();
+        let agc = (g as f64 / 128.0) * (m as f64 / 32768.0);
+        (pll, agc)
+    };
+    let hz_per_q213 = 4800.0_f64 / (2.0 * std::f64::consts::PI * 8192.0);
+    let pll_residual_hz = pll_dbg as f64 * hz_per_q213;
+    let new_ppm = -new_shift / (rx_lo * 1e-6);
+
+    (StatusCode::OK, Json(serde_json::json!({
+        "ok":                true,
+        "old_shift_hz":      cur_shift,
+        "new_shift_hz":      new_shift,
+        "lo_ppm":            new_ppm,
+        "clamped":           clamped,
+        "envelope_hz":       envelope,
+        "pll_dbg_q213":      pll_dbg,
+        "pll_residual_hz":   pll_residual_hz,
+        "agc_product":       agc_product,
+        "settle_ms_waited":  300,
+        "note": "Post-300ms snapshot. Poll /api/ppm for a fully-settled reading.",
+    }))).into_response()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn post_ppm_nudge(
+    State(_state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let body = serde_json::json!({
+        "ok":    false,
+        "error": "ppm/nudge requires hardware access (target_os=linux)",
+    });
+    (StatusCode::NOT_IMPLEMENTED, Json(body)).into_response()
+}
+
+/// `POST /api/ppm/auto?enabled=0|1&anchor=<hz>`
+///
+/// Set the auto-PPM apply gate (checkbox) and/or anchor window.
+/// Either parameter is optional. Returns the resulting state.
+pub async fn post_ppm_auto(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params):
+        axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    use std::sync::atomic::Ordering;
+    if let Some(v) = params.get("enabled") {
+        let on = v == "1" || v == "true" || v == "on";
+        state.auto_ppm_enabled.store(on, Ordering::Relaxed);
+    }
+    if let Some(v) = params.get("anchor") {
+        if let Ok(hz) = v.parse::<u32>() {
+            state.auto_ppm_anchor_hz.store(hz, Ordering::Relaxed);
+        }
+    }
+    Json(serde_json::json!({
+        "ok":                  true,
+        "auto_ppm_enabled":    state.auto_ppm_enabled.load(Ordering::Relaxed),
+        "auto_ppm_anchor_hz":  state.auto_ppm_anchor_hz.load(Ordering::Relaxed),
+        "last_recal_shift_hz": state.last_recal_shift_hz.load(Ordering::Relaxed),
     }))
 }
 

@@ -40,9 +40,16 @@ pub enum LogCategory {
     /// follower task (accepted, rejected-sticky, rejected-encrypted,
     /// retune executed, call Idle transition).
     Traffic,
-    /// IMBE frame extraction events from the traffic LSM decoder's
-    /// voice handler: HDU / LDU1 / LDU2 / TDU batches.
-    Imbe,
+    /// Voice-channel frame metadata decoded from LDU1 / LDU2 / HDU /
+    /// TDU/TDU_LC bodies — Link Control Word (`TRF_LDU1_LC`),
+    /// Encryption Sync Signaling (`TRF_LDU2_ESS`), HDU info,
+    /// MOT_TC/CALL_TERM/GVU TDULC variants. Plus heartbeat-detected
+    /// DUID nibble events when a NID is observed on the traffic
+    /// chain. Renamed from `Imbe` 2026-04-25: the original name was
+    /// misleading because actual IMBE codec frames flow through the
+    /// vocoder mpsc and never get logged. These events are voice-
+    /// channel SIGNALING metadata, not codec output.
+    Voice,
     /// Vocoder task: per-call summary (start, end, total frames in /
     /// PCM samples out), plus decode errors.
     Vocoder,
@@ -57,7 +64,7 @@ pub enum LogCategory {
     /// Raw DUID decode history — one entry per successful NID decode
     /// on either chain (control or traffic). Purely observational;
     /// fires *before* any dispatch or action, so comparing Duid entries
-    /// to Grant / Imbe / Recorder entries tells you what we *saw* vs
+    /// to Grant / Voice / Recorder entries tells you what we *saw* vs
     /// what we *acted on*. SDRTrunk `decoded_messages.log` equivalent.
     Duid,
 }
@@ -67,7 +74,7 @@ impl LogCategory {
         match self {
             LogCategory::Grant => "grant",
             LogCategory::Traffic => "traffic",
-            LogCategory::Imbe => "imbe",
+            LogCategory::Voice => "voice",
             LogCategory::Vocoder => "vocoder",
             LogCategory::System => "system",
             LogCategory::Recorder => "recorder",
@@ -172,5 +179,16 @@ impl EventLog {
     /// Monotonic sequence of the last pushed entry, or 0 if empty.
     pub fn last_seq(&self) -> u64 {
         self.next_seq.load(Ordering::Relaxed).saturating_sub(1)
+    }
+
+    /// Ring capacity (fixed at construction).
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Current depth of the ring. Used by /api/pipeline to show
+    /// whether the event log is full or still growing.
+    pub fn len(&self) -> usize {
+        self.entries.lock().map(|g| g.len()).unwrap_or(0)
     }
 }
