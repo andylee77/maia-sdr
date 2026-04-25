@@ -1360,6 +1360,54 @@ pub fn spawn_grant_follower(
                                             );
                                         }
                                     }
+                                } else if pre_state == "Idle" && post_state != "Idle" {
+                                    // Phase 2f NCO write-skip path:
+                                    // TrafficChain.handle_grant
+                                    // recognised that the chain's
+                                    // currently-loaded NCO already
+                                    // matches this grant's freq and
+                                    // promoted Idle -> Active without
+                                    // a retune. The CallTracker-driven
+                                    // CallClose path paused the LSM
+                                    // (set_traffic_lsm_enable=false) at
+                                    // call end, so we MUST re-enable
+                                    // the chain here — otherwise no
+                                    // dibits flow on the new call,
+                                    // ImbeForwarder never sees an LDU,
+                                    // and recordings come up empty
+                                    // even though the FPGA NID
+                                    // heartbeat keeps incrementing
+                                    // hdus_seen / ldus_seen on its
+                                    // own register-poll path.
+                                    //
+                                    // Skip the NCO write + 2 ms FIR
+                                    // flush (no NCO change, FIR
+                                    // already converged) — just thaw
+                                    // + reset PLL accumulator.
+                                    {
+                                        let mut dec = follower_traffic_decoder
+                                            .write().await;
+                                        dec.reset_framer_state();
+                                    }
+                                    let core = follower_core.lock().await;
+                                    core.set_traffic_lsm_enable(true);
+                                    core.pulse_traffic_lsm_reset();
+                                    drop(core);
+                                    follower_event_log.push(
+                                        LogCategory::Traffic,
+                                        format!(
+                                            "nco_skip TG={} (chain re-enabled, no retune)",
+                                            g.talkgroup.0,
+                                        ),
+                                        serde_json::json!({
+                                            "tg":             g.talkgroup.0,
+                                            "channel":        g.channel.0,
+                                            "frequency":      g.frequency_hz,
+                                            "framer_reset":   true,
+                                            "lsm_reset":      true,
+                                            "nco_write":      false,
+                                        }),
+                                    );
                                 }
                             }
                         }
