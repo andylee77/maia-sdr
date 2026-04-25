@@ -1818,13 +1818,11 @@ async function refresh() {
       $('trf_tg').textContent = '(idle)';
       $('trf_tg').style.color = 'var(--text-dim)';
     }
-    // 2026-04-25: prefer parked_freq_hz (chain physical tune, stays
-    // populated between calls) over current_frequency_hz (clears to
-    // null when state goes Idle). Falls back to current_frequency_hz
-    // for backward compat / pre-first-retune state.
-    const grantFreq = trf.parked_freq_hz ?? trf.current_frequency_hz;
-    if (grantFreq != null) {
-      $('trf_freq').textContent = (grantFreq / 1e6).toFixed(4) + ' MHz';
+    // Grant Follower panel shows ACTIVE-CALL state only. Between
+    // calls everything clears to idle ("--"). The persistent
+    // chain-parked freq lives on the Traffic Channel panel below.
+    if (trf.current_frequency_hz != null) {
+      $('trf_freq').textContent = (trf.current_frequency_hz / 1e6).toFixed(4) + ' MHz';
     } else {
       $('trf_freq').textContent = '--';
     }
