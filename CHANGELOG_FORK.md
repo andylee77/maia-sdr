@@ -5,6 +5,65 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-25] Phase 2c-2h -- unified call lifecycle
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-04-25-phase2c-2h-call-lifecycle`
+**Commits (6):** `8e98d5b` (2e), `894e84b` (2c+2d), `b960e0e` (2f), `d32928e` (2j defer), `170e2af` (2g), `c47c07f` (2h), plus this wrap-up.
+**Bake required:** no -- p25-httpd source only. Tezuka rebuild + flash.
+
+Six-phase arc that consolidates the P25 call-lifecycle authority into a single `app::grant_follower` module owning routing, lifecycle, and chain control, and replaces the recorder's tg+source heuristic with explicit `call_id` propagation through the audio path.
+
+### Phase 2e -- delete decoder grant HashMap
+
+Drops `ControlChannelDecoder.grants: HashMap<u16, GrantInfo>`, `expire_grants(...)`, and `take_other_grants_for_talkgroup(...)`. The dashboard's Active Grants panel had a 30 s zombie-grant problem because grants only expired on a 30 s sweep; calls that had ended (TDU / chain Idle) sat in the panel for tens of seconds. Reroute `/api/grants`, `/api/stats.active_grants`, and `/api/decoder_compare` to read from a new `ActiveCallShared` mirror populated by the call_tracker authority. Empty when idle, single entry when active. Deletes the two `expire_grants(30)` periodic spawn tasks in `main.rs` and the `dec.grants.retain(...)` block in the follower's Idle/timeout handler. Removes `PreservedGrantFields` (no remaining caller). Three control_channel grant tests retired -- equivalent semantics now live in the lifecycle layer.
+
+### Phase 2c -- TrafficManager timer retirement
+
+Pre-2c the TrafficManager and CallTracker were parallel lifecycle judges with different timeouts (TM 2 s + post-TDU 2 s; tracker 10 s) and different TDU-handling rules. Drops `call_timeout_ms`, `post_tdu_hold_ms`, `post_tdu_hold_until` fields and `note_activity` / `tdu_received` / `check_timeouts` / `post_tdu_hold_remaining_ms` methods. `force_idle` becomes the only release path -- driven by the grant follower's `CallTrackerEvent::CallClose` subscription. The 200 ms `timeout_tick` poller in the follower is replaced with a `tracker_rx.recv()` arm. TDU/TDU_LC NIDs from the LSM heartbeat no longer dispatch to TM; lifecycle TDUs flow exclusively through the LSM voice handler -> CallBoundary::SpeakerEnd -> CallTracker.
+
+### Phase 2d -- shrink call_tracker timeout
+
+Tighten `CALL_TIMEOUT_MS` from 10000 to 2000 to match SDRTrunk's `STALE_EVENT_THRESHOLD_MS = 2000`. Recent Calls panel updates within 2 s of call end instead of 10 s. Affects only the no-explicit-close fallback; CC-driven and TDU-driven closes still fire promptly via CallBoundary.
+
+### Phase 2f -- TrafficChain NCO write-skip
+
+When the chain releases (Idle) and the next grant lands on a frequency that happens to equal the currently-loaded NCO word, skip the FPGA write and promote directly to Active. Common pattern on busy sites with a small voice-channel pool: back-to-back calls on the same TG (or different TGs that the trunking system reassigns to the same freq) reuse the chain's existing tuning. Adds `nco_skips: u64` counter surfaced via `/api/traffic`.
+
+### Phase 2j -- LDU1 LC parser fix DEFERRED
+
+Originally scoped as mandatory before Phase 2g per `CALL_LIFECYCLE_IMPLEMENTATION.md`. Operator decision 2026-04-25: skip in this session. Code review of `parse_ldu1_source` / `parse_ldu1_lcw` / `hamming10_correct` / `rs_24_12_13` didn't surface an obvious bit-offset / hexbit-position bug. Without an on-target LDU1 capture where SDRTrunk decoded a clean `FM:<rid>`, blind fixes risk regression. Operator's working hypothesis: traffic decode failures (garbage RIDs, intermittent gaps) more likely caused by upstream PLL offset > 250 Hz than by a parser bug -- field measurement against SDRTrunk on the same site planned next. Phase 2g design adjusted to keep the deferral safe: the proposed `observed_sources: Vec<u32>` field is NOT introduced; existing `actual_speaker: Option<u32>` continues to capture LDU1 LC voted consensus internally. CC `GRP_VCH_GRANT.SRC` stays authoritative.
+
+### Phase 2g -- module reorg into clear layer boundaries
+
+Operator intent: file structure should reflect the three architectural layers -- ControlChannel (CC dibits -> grant events), TrafficChain (traffic dibits -> frame events), GrantFollower (owns the active grant: routing + lifecycle + IMBE forwarder atomics + recorder coordination + source tracking).
+
+Renames:
+
+- `protocol/p25/traffic_manager.rs` -> `traffic_chain.rs`. Struct `TrafficManager` -> `TrafficChain`.
+- `protocol/p25/traffic_manager_tests.rs` -> `traffic_chain_tests.rs`.
+- `app/follower.rs` + `app/call_tracker.rs` -> `app/grant_follower.rs`. Single file owning grant following + lifecycle authority. Cross-platform types (`CallTrackerEvent`, `CloseReason`, `OpenReason`, `SourceUpdateVia`, `ActiveCallSnapshot`, `ActiveCallShared`, `new_event_tx`, `new_active_call_shared`) live at the top with no cfg gating. `spawn_call_lifecycle` (renamed from `spawn_call_tracker`) is portable. `spawn_grant_follower` (renamed from `spawn_traffic_grant_follower`) is `cfg(target_os = "linux")` -- lives in a `mod routing` block inside `grant_follower.rs` and is re-exported at module level. File-level `#![cfg(target_os = "linux")]` removed; cfg now applied per-item so the lifecycle types stay portable.
+
+Behavior preserved: `spawn_call_lifecycle` body unchanged from prior `spawn_call_tracker`. `spawn_grant_follower` body unchanged from prior `spawn_traffic_grant_follower`. TrafficChain method signatures and field shapes unchanged from the post-2c-2f TrafficManager. `/api/traffic` JSON shape unchanged.
+
+### Phase 2h -- call_id through the audio path
+
+The recorder used to route AudioChunks by tg+source heuristic with a "source-match gate" guarding against in-flight PCM from a just-closed call landing in the new call's WAV. Phase 2h replaces the heuristic with explicit `call_id` propagation: every IMBE batch is stamped with the GrantFollower call_id active at submit time, the vocoder propagates it onto every emitted AudioChunk, and the recorder routes by `chunk.call_id` directly. Cross-call PCM bleed becomes structurally impossible.
+
+- `audio/mod.rs`: `AudioChunk` gains `call_id: u64`.
+- `app/imbe_forwarder.rs`: new `current_call_id: AtomicU64` field. `forward_frames` reads it and includes in the `imbe_tx` tuple, which becomes `(tg, src, call_id, frames)`.
+- `app/vocoder_task.rs`: receives 4-tuple, stamps `batch_call_id` onto every emitted AudioChunk.
+- `app/grant_follower.rs`: `mirror_active` now also writes `forwarder.current_call_id` (the active call's id, or 0 when idle) on every state mutation.
+- `audio/recorder.rs`: replaces tg-mismatch + source-match gates with `chunk.call_id != 0 && chunk.call_id != c.call_id` drop. Trailing-PCM drain in CallClose matches by `call_id` too.
+
+### Notes
+
+- BCH t=4 tightening (HDL `lsm_nid_bch_fec.py`) was already in the Phase 2b checkpoint commit `b9cab02`; surfaces here only because the bake includes that bitstream.
+- `cargo check` + `cargo test` green on Windows host between every phase (64 tests pass).
+- Linux build / on-target observation deferred to operator's `build.bat --p25` + flash step.
+
+---
+
 ## [2026-04-18] Phase 10.6 -- post-LSM matched-filter IQ taps + bank widening
 
 **Branch:** fishball-p25
