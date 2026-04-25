@@ -56,7 +56,12 @@ const RETRANSMIT_WINDOW_MS: u64 = 6_000;
 
 /// Inactivity window before an active call is closed by timeout.
 /// Refreshed by audio chunks, CC updates, HduStart, and TdulcComplete.
-const CALL_TIMEOUT_MS: u64 = 10_000;
+/// Phase 2d (2026-04-25): tightened 10000 -> 2000 to match SDRTrunk's
+/// `STALE_EVENT_THRESHOLD_MS = 2000`. The dashboard's Recent Calls
+/// panel updates within 2 s of call end instead of 10 s. Real-time
+/// closes still fire on explicit TDU / SpeakerEnd via CallBoundary —
+/// this constant only affects the no-explicit-close fallback.
+const CALL_TIMEOUT_MS: u64 = 2_000;
 
 /// Cadence of the periodic timeout sweep. Frequent enough that
 /// timeouts feel snappy on the dashboard but cheap (no shared lock).

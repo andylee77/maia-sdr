@@ -18,6 +18,9 @@ use std::sync::atomic::{AtomicBool, AtomicI64};
 use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::Receiver;
 
+use crate::app::call_tracker::{
+    CallTrackerEventKind, CallTrackerEventTx,
+};
 use crate::app::imbe_forwarder::ImbeForwarder;
 use crate::audio;
 use crate::hardware::fpga;
@@ -25,12 +28,6 @@ use crate::protocol::p25::{self, control_channel::ControlChannelDecoder,
     traffic_manager::TrafficManager};
 use crate::services::event_log::EventLog;
 use crate::services::monitor::MonitorList;
-
-/// Grant-follower timeout tick. The follower is event-driven (mpsc
-/// receiver) for the happy path; this tick exists only so the
-/// per-call timeout logic (sticky-lock decay, grant expiry) gets a
-/// chance to fire even when no new grant events are arriving.
-const FOLLOWER_TIMEOUT_TICK_MS: u64 = 200;
 
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_traffic_grant_follower(
@@ -47,16 +44,19 @@ pub fn spawn_traffic_grant_follower(
     mut grant_event_rx: Receiver<p25::events::P25Event>,
     follower_lock_freq: Arc<AtomicBool>,
     follower_boundary_tx: audio::CallBoundaryTx,
+    follower_tracker_tx: CallTrackerEventTx,
 ) {
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
             tracing::info!(
                 "traffic grant follower task started \
-                 (event-driven via mpsc + 200 ms timeout tick)"
+                 (grant events + CallTrackerEvent::CallClose)"
             );
-            let mut timeout_tick =
-                tokio::time::interval(std::time::Duration::from_millis(FOLLOWER_TIMEOUT_TICK_MS));
-            timeout_tick.tick().await; // discard immediate first tick
+            // Phase 2c (2026-04-25): replaced the 200 ms timeout-tick
+            // poller (which called `mgr.check_timeouts()`) with a
+            // CallTrackerEvent subscription. CallClose drives release;
+            // CallTracker's timeout sweep is the upstream timer.
+            let mut tracker_rx = follower_tracker_tx.subscribe();
 
             // Process a grant event; returns true if a retune was performed.
             //
@@ -729,77 +729,90 @@ pub fn spawn_traffic_grant_follower(
                             }
                         }
                     }
-                    _ = timeout_tick.tick() => {
-                        if !follower_enabled.load(Ordering::Relaxed) {
-                            continue;
-                        }
-                        // Diagnostic lock also suppresses idle timeout
-                        // so the chain stays Active on the parked freq
-                        // and the demod keeps running between calls.
+                    tracker_event = tracker_rx.recv() => {
+                        let event = match tracker_event {
+                            Ok(e) => e,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!(
+                                    target: "p25_traffic",
+                                    "follower tracker_rx lagged by {n} events; \
+                                     skipping",
+                                );
+                                continue;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        };
+                        // Phase 2c (2026-04-25): release the chain on
+                        // CallTracker CallClose. CallTracker is the
+                        // upstream lifecycle authority — TDU /
+                        // SpeakerEnd / TgChange / SpeakerChange /
+                        // Timeout all converge here. Other event
+                        // kinds (CallOpen / SourceUpdate /
+                        // ActualSpeakerObserved) are no-ops at this
+                        // layer.
+                        let close_reason = match &event.kind {
+                            CallTrackerEventKind::CallClose { reason, .. } => Some(*reason),
+                            _ => None,
+                        };
+                        let Some(reason) = close_reason else { continue; };
+
+                        // Diagnostic lock keeps the chain on the
+                        // parked freq even at call end so the demod
+                        // stays running for measurement.
                         if follower_lock_freq.load(Ordering::Relaxed) {
                             continue;
                         }
+
                         let mut mgr = follower_mgr.lock().await;
-                        let pre_timeout_tg = mgr.current_talkgroup();
-                        if mgr.check_timeouts() {
-                            drop(mgr);
-                            let core = follower_core.lock().await;
-                            // Pause both LSM + C4FM chains between
-                            // calls so the traffic demod is quiescent
-                            // during Idle — no phantom NID events and
-                            // no PLL drift against noise.
-                            core.pause_traffic_chain();
-                            if let Some(tg) = pre_timeout_tg {
-                                // Phase 2e (2026-04-25): the per-decoder
-                                // grant store is gone — call lifecycle
-                                // lives in `app::call_tracker`. Just
-                                // log the Idle transition; CallTracker's
-                                // own timeout sweep already closed the
-                                // matching call seconds earlier.
-                                tracing::info!(
-                                    target: "p25_traffic",
-                                    "traffic Idle (timeout) TG {} -- \
-                                     demod_enable=off",
-                                    tg.0,
-                                );
-                                follower_event_log.push(
-                                    crate::services::event_log::LogCategory::Traffic,
-                                    format!(
-                                        "state -> Idle (timeout) TG={}",
-                                        tg.0,
-                                    ),
-                                    serde_json::json!({
-                                        "tg":       tg.0,
-                                        "to":       "Idle",
-                                        "reason":   "call_timeout",
-                                    }),
-                                );
-                            } else {
-                                tracing::info!(
-                                    target: "p25_traffic",
-                                    "traffic Idle (timeout) -- \
-                                     demod_enable=off"
-                                );
-                            }
-                            follower_imbe.call_encrypted.store(
-                                false, Ordering::Relaxed,
+                        let pre_close_tg = mgr.current_talkgroup();
+                        mgr.force_idle();
+                        drop(mgr);
+
+                        let core = follower_core.lock().await;
+                        // Pause both LSM + C4FM chains between calls
+                        // so the traffic demod is quiescent during
+                        // Idle — no phantom NID events and no PLL
+                        // drift against noise.
+                        core.pause_traffic_chain();
+                        drop(core);
+
+                        if let Some(tg) = pre_close_tg {
+                            tracing::info!(
+                                target: "p25_traffic",
+                                "traffic Idle (CallClose {:?}) TG {} -- \
+                                 demod_enable=off",
+                                reason, tg.0,
                             );
-                            follower_imbe.current_talkgroup.store(
-                                0, Ordering::Relaxed,
+                            follower_event_log.push(
+                                crate::services::event_log::LogCategory::Traffic,
+                                format!(
+                                    "state -> Idle ({:?}) TG={}",
+                                    reason, tg.0,
+                                ),
+                                serde_json::json!({
+                                    "tg":       tg.0,
+                                    "to":       "Idle",
+                                    "reason":   format!("{:?}", reason),
+                                }),
                             );
-                            // Clear stashed source on Idle so a
-                            // subsequent call with no FM: in its grant
-                            // doesn't inherit the previous speaker's
-                            // ID.
-                            follower_imbe.current_source.store(
-                                0, Ordering::Relaxed,
-                            );
-                            follower_imbe.current_frequency_hz.store(
-                                0, Ordering::Relaxed,
-                            );
-                            if let Ok(mut s) = follower_imbe.current_channel.lock() {
-                                s.clear();
-                            }
+                        }
+                        follower_imbe.call_encrypted.store(
+                            false, Ordering::Relaxed,
+                        );
+                        follower_imbe.current_talkgroup.store(
+                            0, Ordering::Relaxed,
+                        );
+                        // Clear stashed source on Idle so a
+                        // subsequent call with no FM: in its grant
+                        // doesn't inherit the previous speaker's ID.
+                        follower_imbe.current_source.store(
+                            0, Ordering::Relaxed,
+                        );
+                        follower_imbe.current_frequency_hz.store(
+                            0, Ordering::Relaxed,
+                        );
+                        if let Ok(mut s) = follower_imbe.current_channel.lock() {
+                            s.clear();
                         }
                     }
                 }

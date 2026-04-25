@@ -483,6 +483,12 @@ async fn main() -> anyhow::Result<()> {
     // ImbeForwarder::on_tdu_lc -> recorder). Declared here because
     // the traffic heartbeat task (spawned later) clones this tx.
     let call_boundary_tx = audio::call_boundary_channel();
+    // Phase 2c (2026-04-25): the CallTracker broadcast is constructed
+    // here so the traffic grant follower (spawned in the cfg(linux)
+    // block) can subscribe and release the chain on CallClose. The
+    // CallTracker authority task itself is spawned further down where
+    // its dependencies (audio_tx + active_call_snapshot) are ready.
+    let call_tracker_tx = crate::app::call_tracker::new_event_tx();
     // Lets on_tdu_lc publish Motorola TALK_COMPLETE source stamps.
     imbe_forwarder.set_boundary_tx(call_boundary_tx.clone());
     // `event_log` wiring is deferred until that ring is constructed
@@ -1246,7 +1252,9 @@ async fn main() -> anyhow::Result<()> {
 
         // Traffic grant follower — body in `crate::app::follower`.
         // See that module for polling / sticky-lock / encryption
-        // policy rationale.
+        // policy rationale. Phase 2c (2026-04-25) wires the
+        // CallTrackerEvent broadcast into the follower so it can
+        // release the chain on CallClose.
         app::follower::spawn_traffic_grant_follower(
             traffic_manager.clone(),
             ip_core.clone(),
@@ -1261,6 +1269,7 @@ async fn main() -> anyhow::Result<()> {
             grant_event_rx,
             traffic_lock_freq.clone(),
             call_boundary_tx.clone(),
+            call_tracker_tx.clone(),
         );
 
         // Traffic LSM heartbeat. Polls traffic_lsm_status @ 16 ms —
@@ -1347,10 +1356,19 @@ async fn main() -> anyhow::Result<()> {
                     let mut mgr = traffic_lsm_mgr.lock().await;
                     match duid {
                         0x0 => mgr.hdu_received(now, nac),
-                        0x3 => mgr.tdu_received(now, nac, false),
-                        0xF => mgr.tdu_received(now, nac, true),
                         0x5 => mgr.ldu_received(now, nac, false),
                         0xA => mgr.ldu_received(now, nac, true),
+                        // Phase 2c (2026-04-25): TDU/TDU_LC NIDs no
+                        // longer drive lifecycle here. Lifecycle is
+                        // owned by `app::call_tracker` which sees
+                        // `CallBoundaryKind::SpeakerEnd` from the LSM
+                        // voice handler. Keep the stats counter +
+                        // last_duid/last_nac mirror for the dashboard.
+                        0x3 | 0xF => {
+                            mgr.tdus_seen += 1;
+                            mgr.last_duid = Some(duid);
+                            mgr.last_nac = Some(nac);
+                        }
                         _ => {
                             mgr.last_duid = Some(duid);
                             mgr.last_nac = Some(nac);
@@ -1495,10 +1513,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Phase 2b (2026-04-25): the recorder subscribes to
     // `CallTrackerEvent` for lifecycle, not raw `CallBoundary`
-    // events. Build the tracker channel + spawn the authority task
-    // BEFORE the recorder spawn so we can subscribe in order.
-    // grant_stats also subscribes to this channel (spawn below).
-    let call_tracker_tx = crate::app::call_tracker::new_event_tx();
+    // events. Spawn the authority task BEFORE the recorder spawn so
+    // we can subscribe in order. grant_stats also subscribes to this
+    // channel (spawn below). The tx itself was constructed earlier
+    // alongside `call_boundary_tx` so the cfg(linux) grant follower
+    // can subscribe too.
     let active_call_snapshot =
         crate::app::call_tracker::new_active_call_shared();
     crate::app::call_tracker::spawn_call_tracker(

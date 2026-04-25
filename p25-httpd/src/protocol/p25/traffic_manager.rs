@@ -58,9 +58,10 @@ pub struct TrafficManager {
     pub nco_word: u32,
     /// Last NCO offset (Hz, signed) -- diagnostic surface for /api/traffic.
     pub last_offset_hz: i64,
-    /// Timeout for call inactivity before returning to idle (ms)
-    call_timeout_ms: u64,
-    /// Last dibit activity timestamp
+    /// Last activity timestamp (HDU/LDU dispatch + retune). Diagnostic
+    /// only after Phase 2c — release timing is owned by `app::call_tracker`
+    /// and applied to the chain via `force_idle` from a CallTrackerEvent
+    /// subscriber in the grant follower.
     last_activity: Instant,
     /// Total handle_grant() calls (Phase 7A.1: counts grant snapshots
     /// the polling task forwarded; some are duplicates that don't
@@ -102,49 +103,23 @@ pub struct TrafficManager {
     /// the non-encrypted grants on the same site.
     pub grants_rejected_encrypted: u64,
 
-    // ── Phase 7A.2: NID/DUID dispatch + post-TDU hold window ──────────
+    // ── NID/DUID stats from the traffic LSM HDL chain ─────────────
     //
-    // The traffic-side LSM HDL chain produces a stream of NID events
-    // via the new traffic_lsm register bank (bank 6 at 0xC0). PS-side
-    // dispatcher classifies each NID by DUID and feeds it to one of
-    // these methods:
+    // The PS-side heartbeat dispatches HDU / LDU NID events to the
+    // methods below. They update counters + last_duid/last_nac and
+    // (for HDU/LDU) auto-promote Acquiring -> Active for the UI.
     //
-    //   - `hdu_received(now)`  -- DUID 0x0 = HDU = call start
-    //   - `tdu_received(now)`  -- DUID 0x3 / 0xF = TDU / TDU_LC = end
-    //   - `note_activity()`    -- DUID 0x5 / 0xA = LDU1 / LDU2 = voice
+    // Phase 2c (2026-04-25): TDU events are NO LONGER routed here.
+    // Call lifecycle (start / TDU / timeout / release) is owned by
+    // `app::call_tracker`, which broadcasts CallTrackerEvent::CallClose
+    // to subscribers. The grant follower's CallClose subscriber
+    // calls `force_idle()` on this manager to drive the state back
+    // to Idle. The post-TDU hold window + `check_timeouts` /
+    // `note_activity` / `tdu_received` machinery were retired — the
+    // CallTracker timeout sweep + TDU detection cover the same
+    // ground at the lifecycle layer with no parallel-judges bug.
     //
-    // The post-TDU hold window matches SDRTrunk upstream PR #2010
-    // semantics: a TDU does NOT immediately deallocate the slot. The
-    // slot stays bound to the same TG for `post_tdu_hold_ms` after the
-    // TDU so that back-to-back transmissions from another speaker on
-    // the same TG (PTT release between speakers in a conversation)
-    // reuse the same slot instead of looking like two separate calls.
-    // SDRTrunk's `STALE_EVENT_THRESHOLD_MS = 2000` is the same value
-    // we use for `call_timeout_ms` -- the post-TDU hold runs in
-    // parallel and serves a different purpose: the timeout is
-    // "release if NOTHING is happening", the hold is "stay bound even
-    // if dibits stop, in case TG resumes within the window".
-    //
-    // The two semantics differ subtly:
-    //
-    //   - With NO TDU events arriving (Phase 7A.1 fallback):
-    //     `call_timeout_ms` does the work and we release on 2 s of
-    //     no activity.
-    //
-    //   - With TDU events arriving (Phase 7A.2 onward):
-    //     A TDU is a strong "this transmission ended" signal. We
-    //     start the post-TDU hold immediately. If the TG resumes
-    //     within the hold, we cancel it and stay bound. Otherwise
-    //     the hold expires and we release.
-    //
-    /// 2 s post-TDU hold window matching SDRTrunk PR #2010.
-    post_tdu_hold_ms: u64,
-    /// When `Some(t)`, the call is in the post-TDU hold window and
-    /// will release at instant `t` if no further activity arrives.
-    /// Cleared by `note_activity()` and `hdu_received()`.
-    pub post_tdu_hold_until: Option<Instant>,
-    /// Most recent DUID observed on the traffic LSM chain
-    /// (Phase 7A.2 dispatch surface).
+    /// Most recent DUID observed on the traffic LSM chain.
     pub last_duid: Option<u8>,
     /// Most recent NAC observed on the traffic LSM chain.
     pub last_nac: Option<u16>,
@@ -184,16 +159,13 @@ pub struct GrantMapEntry {
 // ── Concurrency contract ─────────────────────────────────────────────
 //
 // All `&mut self` methods on `TrafficManager` (`handle_grant`,
-// `hdu_received`, `tdu_received`, `note_activity`, `check_timeouts`,
-// `force_release`, `tally_grant`) assume the caller holds exclusive
-// access. The singleton is owned as `Arc<tokio::sync::Mutex<TrafficManager>>`
-// constructed in `main.rs` (see `traffic_manager` binding near the top
-// of `main()`), and every call site — the 50 ms grant-follower poll
-// loop, the traffic-LSM NID dispatcher, the dibit-reader activity
-// toucher, and all `/api/traffic*` HTTP handlers — acquires the lock
-// with `.lock().await` before touching the manager. Do not add a new
-// caller that bypasses that lock; the manager itself does not
-// serialise internally.
+// `hdu_received`, `ldu_received`, `force_idle`, `tally_grant`)
+// assume the caller holds exclusive access. The singleton is owned
+// as `Arc<tokio::sync::Mutex<TrafficManager>>` constructed in
+// `main.rs`, and every call site (grant-follower task, traffic-LSM
+// NID dispatcher, all `/api/traffic*` HTTP handlers) acquires the
+// lock with `.lock().await` before touching the manager. Do not
+// add a new caller that bypasses that lock.
 impl TrafficManager {
     pub fn new(rx_lo_hz: u64, sample_rate_hz: u64) -> Self {
         TrafficManager {
@@ -202,19 +174,6 @@ impl TrafficManager {
             sample_rate_hz,
             nco_word: 0,
             last_offset_hz: 0,
-            // Phase 7A.1 sticky-lock: 2000 ms matches SDRTrunk
-            // upstream PR #2010 / commit 1b3ce431's
-            // STALE_EVENT_THRESHOLD_MS = 2000 in
-            // P25TrafficChannelEventTracker.java. Years of P25
-            // monitoring on the SDRTrunk codebase have settled on
-            // 2 s as the right "this call is really over" gap; any
-            // longer and we hold a singleton DDC slot through real
-            // call ends, any shorter and we drop calls during PTT
-            // releases between speakers in the same conversation.
-            // Phase 7C will replace this with a TDU-based release
-            // (with a 2 s post-TDU hold window, also from PR #2010)
-            // once we have LDU/TDU sync detection.
-            call_timeout_ms: 2000,
             last_activity: Instant::now(),
             grants_seen: 0,
             grants_seen_new: 0,
@@ -224,11 +183,6 @@ impl TrafficManager {
             retunes: 0,
             last_retune_at: None,
             grants_rejected_encrypted: 0,
-            // Phase 7A.2: post-TDU hold window. 2000 ms matches
-            // SDRTrunk's STALE_EVENT_THRESHOLD_MS / the post-TDU
-            // hold timer in P25TrafficChannelManager.processP1TrafficCallEnd().
-            post_tdu_hold_ms: 2000,
-            post_tdu_hold_until: None,
             last_duid: None,
             last_nac: None,
             hdus_seen: 0,
@@ -317,10 +271,12 @@ impl TrafficManager {
     ///   handle_grant will accept the new TG and start a new
     ///   call -- the manager itself does not enforce stickiness.
     ///
-    /// The Idle->next-grant transition is gated entirely by the
-    /// `call_timeout_ms` inactivity timer (2000 ms, matching
-    /// SDRTrunk's STALE_EVENT_THRESHOLD_MS). Once Idle, any new
-    /// grant is accepted via the same code path.
+    /// Phase 2c (2026-04-25): the Idle->next-grant transition is
+    /// driven externally by `app::call_tracker` — when CallTracker
+    /// closes a call (TDU / timeout / speaker-change), the grant
+    /// follower's CallTrackerEvent subscriber calls `force_idle()`
+    /// here. Once Idle, any new grant is accepted via the same code
+    /// path.
     pub fn handle_grant(
         &mut self,
         channel: Channel,
@@ -357,22 +313,12 @@ impl TrafficManager {
         // moved the TG to a new frequency, fall through to the
         // retune path so we follow it.
         //
-        // Phase 7A.1 bug-fix (same commit, post-on-target observation):
-        // also auto-promote Acquiring -> Active here. The original
-        // design had `sync_acquired()` as the only way to promote out
-        // of Acquiring, but Phase 7A.1 has no sync detector (Phase 7C
-        // will add LDU sync extraction). Without auto-promotion the
-        // state stayed in Acquiring forever, and `check_timeouts`'s
-        // Acquiring branch uses the 200 ms `acquire_timeout_ms`
-        // against `started`, not `last_activity` -- so the call
-        // unconditionally timed out 200 ms after the retune and was
-        // immediately re-acquired by the next poll, producing a
-        // ~4 retunes/sec thrashing cycle even with sticky lock
-        // working correctly. Promoting on the very next matching
-        // poll (50 ms after the retune) puts us in the Active
-        // branch's 2 s `call_timeout_ms` window, which is the right
-        // semantics for the Phase 7A.1 "no real sync detection yet"
-        // state.
+        // Auto-promote Acquiring -> Active when a same-TG grant
+        // arrives. Originally a workaround for the absence of a real
+        // sync detector — kept post-Phase 2c because the LSM
+        // heartbeat's hdu_received/ldu_received also promote, so this
+        // covers the rare case of a CC keep-alive landing before the
+        // first voice-frame dispatch.
         let same_tg_same_freq = match &self.state {
             TrafficState::Active {
                 talkgroup: t,
@@ -434,24 +380,18 @@ impl TrafficManager {
         true // DDC retune needed
     }
 
-    /// Phase 7F.2 (2026-04-14): synchronous release path that bypasses
-    /// the `call_timeout_ms` / post-TDU-hold timers. Used by the
-    /// follower when a mid-call encryption detection forces us to
-    /// drop the lock immediately -- waiting the full 2 s call-timeout
-    /// lets encrypted LDUs keep flowing through the vocoder (where
-    /// they get skipped as garbage, not audio).
-    ///
-    /// Behaviour: state -> Idle, post-TDU hold cleared. Counters are
-    /// preserved. Caller is responsible for turning off demod_enable
-    /// on the FPGA core.
+    /// Synchronous release path. Phase 2c (2026-04-25): the only
+    /// release driver — called by the grant follower's
+    /// `CallTrackerEvent::CallClose` subscriber and by
+    /// `/api/talkgroups` when an operator force-clears a slot.
+    /// Counters preserved. Caller pauses the FPGA traffic chain.
     pub fn force_idle(&mut self) {
         self.state = TrafficState::Idle;
-        self.post_tdu_hold_until = None;
     }
 
     /// Called when we detect frame sync on the traffic channel.
     /// Test-only today; the production path moves Acquiring->Active
-    /// via `handle_grant` + `note_activity`.
+    /// via `handle_grant` + the LDU/HDU dispatch.
     #[cfg(test)]
     pub fn sync_acquired(&mut self) {
         if let TrafficState::Acquiring {
@@ -471,105 +411,27 @@ impl TrafficManager {
         }
     }
 
-    /// Called on each traffic channel dibit (or LDU NID event) to
-    /// refresh activity timer. Also clears any in-flight post-TDU
-    /// hold window -- if dibits are flowing again, the call is alive.
-    pub fn note_activity(&mut self) {
-        self.last_activity = Instant::now();
-        self.post_tdu_hold_until = None;
-    }
+    // ── NID/DUID dispatch methods ─────────────────────────────────
 
-    // ── Phase 7A.2: NID/DUID dispatch methods ─────────────────────
-
-    /// Phase 7A.2: HDU (Header Data Unit, DUID 0x0) dispatched from
-    /// the traffic LSM heartbeat task. Marks the call start. Refreshes
-    /// activity (and clears any post-TDU hold from the previous call).
-    /// Phase 7C will extend this to extract the HDU payload (algorithm
-    /// ID, key ID, source RadioID, MFID); for 7A.2 we just count and
-    /// timestamp.
+    /// HDU (Header Data Unit, DUID 0x0) dispatched from the traffic
+    /// LSM heartbeat. Bumps counters and fast-promotes
+    /// Acquiring -> Active so the dashboard label flips immediately
+    /// once the chain has decoded a frame.
     pub fn hdu_received(&mut self, now: Instant, nac: u16) {
         self.hdus_seen += 1;
         self.last_duid = Some(0x0);
         self.last_nac = Some(nac);
         self.last_activity = now;
-        self.post_tdu_hold_until = None;
-        // Phase 7F.4 (2026-04-14): fast promote Acquiring -> Active.
-        // Before this, promotion relied on a second same-TG grant
-        // arriving from the control channel -- on slow sites that
-        // could take 1-2 s after the retune, and the dashboard
-        // would show "Acquiring" for the entire lead-in of the call
-        // even though LDUs were already flowing. An HDU is
-        // unambiguous positive proof that the call is live on the
-        // traffic channel, so promote immediately.
         self.promote_acquiring_to_active();
     }
 
-    /// Phase 7A.2: TDU (Terminator, DUID 0x3) or TDU_LC (DUID 0xF)
-    /// dispatched from the traffic LSM heartbeat task. Starts the
-    /// post-TDU hold window. The slot stays bound to the same TG
-    /// for `post_tdu_hold_ms` after the TDU so that PTT releases
-    /// between speakers in a multi-speaker conversation reuse the
-    /// same slot. SDRTrunk PR #2010 semantics.
-    ///
-    /// `is_lc` is true for TDU_LC (DUID 0xF) -- carries final Link
-    /// Control payload. Phase 7C will extract the LC for end-of-call
-    /// logging; for 7A.2 we just track the count.
-    ///
-    /// 2026-04-15 fix: idempotent TDU handling matching SDRTrunk
-    /// `P25TrafficChannelEventTracker.completeTraffic()`. Only the
-    /// FIRST TDU after the slot became active starts the hold
-    /// window; subsequent TDU/TDU_LC events inside the same call
-    /// are no-ops (other than bumping the stats counter and
-    /// refreshing last_duid/last_nac). Previously we overwrote
-    /// `post_tdu_hold_until` on every TDU, so the HDL framer's
-    /// phantom TDU_LC burst (20-70 copies of the same end-of-call
-    /// marker at ~80 ms intervals, Phase 10 TODO) kept extending
-    /// the hold and pinned the traffic DDC on dead channels for
-    /// 5-10 s instead of the intended 2 s. Live on-target
-    /// on-target measurement showed
-    /// LDU1+LDU2 = 411 vs TDU_LC = 835 (2:1), with short calls
-    /// missing voice capture entirely because the previous call's
-    /// hold hadn't released yet. SDRTrunk reference (see
-    /// P25TrafficChannelEventTracker.java:272-283): once
-    /// `mComplete = true`, subsequent `completeTraffic()` calls
-    /// return false without touching state.
-    pub fn tdu_received(&mut self, now: Instant, nac: u16, is_lc: bool) {
-        self.tdus_seen += 1;
-        self.last_duid = Some(if is_lc { 0xF } else { 0x3 });
-        self.last_nac = Some(nac);
-        // Idempotent: only start the hold window if we are not
-        // already in one. Matches SDRTrunk
-        // P25TrafficChannelEventTracker.completeTraffic()'s
-        // mComplete flag semantics. LDU arrival inside the hold
-        // clears post_tdu_hold_until back to None (see
-        // ldu_received), so a multi-speaker conversation with a
-        // real LDU resume after PTT release still re-arms the
-        // hold correctly on the NEXT real TDU. Phantom TDU_LC
-        // bursts between the first TDU and the hold expiry now
-        // do nothing, capping the dead-channel dwell at exactly
-        // post_tdu_hold_ms.
-        if self.post_tdu_hold_until.is_none() {
-            self.post_tdu_hold_until = Some(
-                now + std::time::Duration::from_millis(self.post_tdu_hold_ms));
-        }
-    }
-
-    /// Phase 7A.2: LDU1 (DUID 0x5) or LDU2 (DUID 0xA) dispatched from
-    /// the traffic LSM heartbeat task. These are the voice frames --
-    /// each carries 9 IMBE frames (88 bits each, 20 ms of audio per
-    /// frame, 180 ms of audio per LDU). Phase 7C will extract the
-    /// IMBE bits and feed them to the vocoder; for 7A.2 we just
-    /// refresh activity.
+    /// LDU1 (DUID 0x5) / LDU2 (DUID 0xA) — voice frames. Bumps
+    /// counters, refreshes activity, and fast-promotes if Acquiring.
     pub fn ldu_received(&mut self, now: Instant, nac: u16, is_ldu2: bool) {
         self.ldus_seen += 1;
         self.last_duid = Some(if is_ldu2 { 0xA } else { 0x5 });
         self.last_nac = Some(nac);
         self.last_activity = now;
-        // LDU resumes the conversation -- cancel the post-TDU hold.
-        self.post_tdu_hold_until = None;
-        // Phase 7F.4: same fast promote as `hdu_received`. If we
-        // missed the HDU (short lead-in, HDU BCH rejected, or call
-        // mid-speech) the first LDU is still proof the call is live.
         self.promote_acquiring_to_active();
     }
 
@@ -593,76 +455,6 @@ impl TrafficManager {
                 started,
             };
         }
-    }
-
-    /// Returns the remaining post-TDU hold time in milliseconds, or
-    /// None if no hold is active. Surfaced via /api/traffic for
-    /// debugging.
-    pub fn post_tdu_hold_remaining_ms(&self) -> Option<u64> {
-        self.post_tdu_hold_until.map(|t| {
-            let now = Instant::now();
-            if t > now {
-                t.duration_since(now).as_millis() as u64
-            } else {
-                0
-            }
-        })
-    }
-
-    /// Check for timeouts and return to idle if needed.
-    /// Returns true if state changed to Idle.
-    ///
-    /// Phase 7A.2: now also honours the post-TDU hold window. If a
-    /// hold is active and has expired (and we're still in
-    /// Active/Acquiring on the same call), release. The
-    /// `call_timeout_ms` fallback continues to run in parallel for
-    /// the case where TDUs are not arriving (e.g. before the LSM
-    /// chain has locked, or for non-LSM voice channels).
-    pub fn check_timeouts(&mut self) -> bool {
-        let now = Instant::now();
-        let elapsed_ms = now.duration_since(self.last_activity).as_millis() as u64;
-
-        // Phase 7A.2: post-TDU hold window has priority. If a hold
-        // is set and has expired, release immediately.
-        if let Some(hold_until) = self.post_tdu_hold_until {
-            if now >= hold_until {
-                self.state = TrafficState::Idle;
-                self.post_tdu_hold_until = None;
-                return true;
-            }
-            // Hold window still active -- don't release on the
-            // timeout below either, even if call_timeout_ms has
-            // elapsed. The hold is the authoritative release
-            // signal when TDUs are arriving.
-            return false;
-        }
-
-        match &self.state {
-            TrafficState::Acquiring { .. } => {
-                // Phase 7A.1 fix: use last_activity, not `started`,
-                // and apply the same call_timeout_ms as Active. The
-                // 200 ms acquire_timeout_ms was a Phase 7C concern
-                // (real sync detection) -- without sync detection
-                // we can't distinguish "haven't locked yet" from
-                // "locked and decoding". The Acquiring auto-promote
-                // in handle_grant pushes us into Active within
-                // 50 ms anyway, so this branch rarely runs in
-                // practice.
-                if elapsed_ms > self.call_timeout_ms {
-                    self.state = TrafficState::Idle;
-                    return true;
-                }
-            }
-            TrafficState::Active { .. } => {
-                if elapsed_ms > self.call_timeout_ms {
-                    self.state = TrafficState::Idle;
-                    return true;
-                }
-            }
-            TrafficState::Idle => {}
-        }
-
-        false
     }
 
     /// Check if we're currently following a call. Test-only today;

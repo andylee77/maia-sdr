@@ -272,7 +272,6 @@ pub async fn get_traffic(
         hdus_seen,
         ldus_seen,
         tdus_seen,
-        post_tdu_hold_remaining_ms,
     ) = {
         let mgr = state.traffic_manager.lock().await;
         let label = mgr.state_label();
@@ -294,9 +293,8 @@ pub async fn get_traffic(
         let hdus = mgr.hdus_seen;
         let ldus = mgr.ldus_seen;
         let tdus = mgr.tdus_seen;
-        let hold = mgr.post_tdu_hold_remaining_ms();
         (label, ch, tg, freq, nco, offset, seen, seen_new, seen_update,
-         retunes, rejected_enc, age, duid, nac, hdus, ldus, tdus, hold)
+         retunes, rejected_enc, age, duid, nac, hdus, ldus, tdus)
     };
 
     // Phase 7A.2: read the live traffic_lsm chain health from the
@@ -636,7 +634,6 @@ pub async fn get_traffic(
         "hdus_seen":                 hdus_seen,
         "ldus_seen":                 ldus_seen,
         "tdus_seen":                 tdus_seen,
-        "post_tdu_hold_remaining_ms": post_tdu_hold_remaining_ms,
         "stats":                     stats_json,
         "irq":                       irq_json,
         "traffic_lsm_chain":         traffic_lsm_chain_json,
