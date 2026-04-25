@@ -93,6 +93,12 @@ pub struct TrafficManager {
     pub retunes: u64,
     /// Wall-clock instant of the most recent retune.
     pub last_retune_at: Option<Instant>,
+    /// Phase 2f (2026-04-25): grants that hit the NCO write-skip path
+    /// (Idle + new grant freq matches currently-loaded NCO word). Each
+    /// skip avoids a full PLL/AGC settle. Diagnostic surface in
+    /// /api/traffic so the operator can see how often the optimisation
+    /// fires on a busy site.
+    pub nco_skips: u64,
     /// Grants the follower refused to lock onto because the call was
     /// flagged encrypted (either via `service_options.encrypted` on the
     /// TSBK or via the persistent encrypted-TG history).  Counts only
@@ -182,6 +188,7 @@ impl TrafficManager {
             grant_dedup_window_ms: 2_000,
             retunes: 0,
             last_retune_at: None,
+            nco_skips: 0,
             grants_rejected_encrypted: 0,
             last_duid: None,
             last_nac: None,
@@ -359,11 +366,36 @@ impl TrafficManager {
 
         // Either a fresh call (different TG, or no current call)
         // OR same TG that has been reassigned to a new frequency.
-        // Both paths require a retune.
+        // Both paths require a retune (modulo the Phase 2f skip below).
         let offset_hz = frequency_hz as i64 - self.rx_lo_hz as i64;
         let nco_frac = offset_hz as f64 / self.sample_rate_hz as f64;
         // Convert to 28-bit unsigned (two's complement wrapping)
-        self.nco_word = (nco_frac * (1u64 << 28) as f64) as i32 as u32 & 0x0FFF_FFFF;
+        let new_nco_word =
+            (nco_frac * (1u64 << 28) as f64) as i32 as u32 & 0x0FFF_FFFF;
+
+        // Phase 2f (2026-04-25): NCO write-skip. If the chain is Idle
+        // and the new grant's NCO word matches what's already loaded
+        // (the call before this one was on the same freq), the DDC is
+        // physically on the right freq. Promote directly to Active —
+        // no FPGA NCO write, no PLL/AGC settle penalty. Common on
+        // sites with a small number of voice channels in heavy use.
+        if new_nco_word == self.nco_word
+            && matches!(self.state, TrafficState::Idle)
+        {
+            self.last_offset_hz = offset_hz;
+            self.state = TrafficState::Active {
+                channel,
+                talkgroup,
+                frequency_hz,
+                started: Instant::now(),
+            };
+            let now = Instant::now();
+            self.last_activity = now;
+            self.nco_skips = self.nco_skips.saturating_add(1);
+            return false; // No FPGA retune needed
+        }
+
+        self.nco_word = new_nco_word;
         self.last_offset_hz = offset_hz;
 
         self.state = TrafficState::Acquiring {
