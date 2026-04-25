@@ -4572,10 +4572,14 @@ async function refreshRecordings() {
         + ` <a href="${url}" download style="font-size:0.85em">⬇</a>`
         + evtsBtn;
     }
+    // 2026-04-25: dropped the "(too short)" sub-500ms filter — it
+    // hid real short PTT recordings. Real discard reasons are now
+    // either "(encrypted)" (skipped by gate) or "(no IMBE)" (chain
+    // never decoded an LDU). Anything that DID decode IMBE should
+    // have a recording.
     let reason = '(no audio)';
     if (g.encrypted) reason = '(encrypted)';
     else if ((g.imbe_extracted || 0) === 0) reason = '(no IMBE)';
-    else if ((g.duration_ms || 0) < 500) reason = '(too short)';
     return `<span style="color:var(--text-dim);font-style:italic">${reason}</span>${evtsBtn}`;
   };
 

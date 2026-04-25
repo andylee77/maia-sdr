@@ -35,7 +35,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-25-session-close-channelizer-redesign-pending";
+pub const BUILD_TAG: &str = "2026-04-25-keep-short-recordings-update-redesign-doc";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //

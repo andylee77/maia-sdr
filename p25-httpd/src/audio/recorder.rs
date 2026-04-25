@@ -83,9 +83,15 @@ pub const STORAGE_DIR: &str = "/tmp/p25_recordings";
 /// close.
 const FINALIZE_GRACE: Duration = Duration::from_millis(15_000);
 
-/// Minimum duration before a recording is worth keeping. Guards
-/// against accidental 1-frame "calls" from phantom TDU_LC bursts.
-const MIN_KEEPABLE_MS: u64 = 500;
+/// Minimum duration before a recording is worth keeping. Originally
+/// 500 ms to guard against phantom 1-frame "calls" from TDU_LC
+/// bursts; 2026-04-25 lowered to 0 because real short PTTs ("yes",
+/// "10-4", quick acks) routinely run under 500 ms and were being
+/// silently discarded with `(too short)` in the dashboard. Phantom
+/// no-audio calls are now caught via the `pcm.is_empty()` gate
+/// below — the duration cap was a stand-in for that and the
+/// stand-in was hiding real recordings.
+const MIN_KEEPABLE_MS: u64 = 0;
 
 /// Recorder task main-loop tick. The `FINALIZE_GRACE` timer check
 /// runs every tick but only acts when
@@ -370,10 +376,21 @@ async fn finalize(
     forwarder: Option<&Arc<crate::app::imbe_forwarder::ImbeForwarder>>,
 ) {
     let duration_ms = call.duration_ms();
-    if duration_ms < MIN_KEEPABLE_MS {
+    // 2026-04-25: discard only if the call produced ZERO PCM
+    // samples. Duration alone is no longer the gate — real short
+    // PTTs (149 ms first IMBE, ~200 ms total) are valid recordings.
+    // The MIN_KEEPABLE_MS guard against phantom 1-frame calls is now
+    // covered structurally: phantom calls (no IMBE → no PCM) hit
+    // this empty-PCM check; real short calls keep their WAV.
+    if call.pcm.is_empty() || duration_ms < MIN_KEEPABLE_MS {
+        let reason = if call.pcm.is_empty() {
+            "no_pcm"
+        } else {
+            "too_short"
+        };
         tracing::debug!(
-            "skipping too-short recording TG={} duration={}ms",
-            call.talkgroup, duration_ms
+            "skipping {} recording TG={} duration={}ms pcm_len={}",
+            reason, call.talkgroup, duration_ms, call.pcm.len(),
         );
         if let Some(l) = event_log {
             l.push(
@@ -381,9 +398,9 @@ async fn finalize(
                 "call_discard".to_string(),
                 serde_json::json!({
                     "recording_id": id,
-                    "reason":       "too_short",
+                    "reason":       reason,
                     "duration_ms":  duration_ms,
-                    "min_keepable_ms": MIN_KEEPABLE_MS,
+                    "pcm_samples":  call.pcm.len(),
                     "tg":           call.talkgroup,
                     "source":       call.source,
                 }),
