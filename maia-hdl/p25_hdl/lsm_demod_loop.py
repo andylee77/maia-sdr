@@ -157,6 +157,14 @@ class LsmDemodLoop(Elaboratable):
         self.agc_mag_update_threshold_in = Signal(
             unsigned(16),
             init=self.agc_mag_update_threshold & 0xFFFF)
+        # 2026-04-26: warm-start PLL + AGC seeds. Latched into the
+        # respective accumulators on `reset_in`. Wired in `p25_top.py`
+        # from the `traffic_lsm_seed` register so the PS can copy the
+        # converged control-chain values into the traffic chain on
+        # every retune. Both default to zero (legacy cold start).
+        # See doc/diagnostics/2026-04-25/CHANNELIZER_REDESIGN.md.
+        self.pll_seed_in = Signal(signed(16))
+        self.agc_seed_in = Signal(20)
 
         # ── Outputs ─────────────────────────────────────────────
         self.dibit_out = Signal(2, reset_less=True)
@@ -228,6 +236,9 @@ class LsmDemodLoop(Elaboratable):
             # 2026-04-23: runtime-tunable AGC gate threshold.
             agc.mag_update_threshold_in.eq(
                 self.agc_mag_update_threshold_in),
+            # 2026-04-26: warm-start seeds latched on reset_in pulse.
+            pll_update.seed_in.eq(self.pll_seed_in),
+            agc.seed_in.eq(self.agc_seed_in),
         ]
 
         # ── Stage 1: timing recovery + lerp ─────────────────────

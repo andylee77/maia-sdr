@@ -446,6 +446,14 @@ class P25Core(Elaboratable):
                     Field('traffic_lsm_dc_block_enable', Access.RW, 1, 0),
                     Field('traffic_lsm_reset', Access.Wpulse, 1, 0),
                     Field('traffic_lsm_agc_enable', Access.RW, 1, 0),
+                    # 2026-04-26: PLL warm-start seed (Q2.13 signed,
+                    # 16 bits). Latched into the traffic Costas PLL
+                    # accumulator on the next traffic_lsm_reset pulse.
+                    # Zero -> legacy cold start. PS retune copies the
+                    # converged control-chain pll_dbg here so the
+                    # traffic chain skips the 100-500 ms PLL acquire.
+                    # See doc/diagnostics/2026-04-25/CHANNELIZER_REDESIGN.md
+                    Field('traffic_pll_seed', Access.RW, 16, 0),
                 ]),
                 0b001: Register('traffic_lsm_status', [
                     Field('bch_busy', Access.R, 1, 0),
@@ -482,6 +490,18 @@ class P25Core(Elaboratable):
                 # grants, where a different threshold is useful).
                 0b111: Register('traffic_lsm_agc_config', [
                     Field('mag_update_threshold', Access.RW, 16, 256),
+                    # 2026-04-26: AGC warm-start seed (Q9.7 unsigned,
+                    # 16 bits). Latched into the traffic AGC gain
+                    # register on the next traffic_lsm_reset pulse.
+                    # Wired through a 4-bit left-shift to the 20-bit
+                    # Q9.11 internal gain (recovers Q9.11 with bottom
+                    # 4 fractional bits = 0). Zero -> legacy load of
+                    # GAIN_INIT (= 1.0). Lossy round-trip: PS reads the
+                    # control chain's `agc_gain_dbg` field (already
+                    # Q9.7) and writes it back here, so no precision
+                    # is lost vs the upstream debug readout. See
+                    # doc/diagnostics/2026-04-25/CHANNELIZER_REDESIGN.md
+                    Field('traffic_agc_seed', Access.RW, 16, 0),
                 ]),
             },
             3)
@@ -1178,6 +1198,27 @@ class P25Core(Elaboratable):
         m.d.comb += [
             self.traffic_lsm_demod.agc_mag_update_threshold_in.eq(
                 traffic_lsm_agc_config['mag_update_threshold']),
+        ]
+        # 2026-04-26: PLL + AGC warm-start seeds (traffic chain only).
+        # The control chain stays cold-start so its PLL still tracks
+        # whatever's actually on the control frequency. The traffic
+        # chain copies the converged control-side values via these
+        # seed registers on every retune; the FPGA latches them on
+        # the next traffic_lsm_reset pulse.
+        #
+        # AGC seed is Q9.7; the 4-bit left-shift below recovers the
+        # 20-bit Q9.11 the gain register expects (bottom 4 fractional
+        # bits = 0). The PS reads the matching Q9.7 field on the
+        # control side (`lsm_agc_debug.agc_gain_dbg`) and writes the
+        # raw 16-bit value here, so the round-trip is lossless vs
+        # what the operator sees on /api/decoder_compare.
+        m.d.comb += [
+            self.traffic_lsm_demod.pll_seed_in.eq(
+                self.traffic_lsm_registers[
+                    'traffic_lsm_control']['traffic_pll_seed']),
+            self.traffic_lsm_demod.agc_seed_in.eq(
+                Cat(Const(0, 4),
+                    traffic_lsm_agc_config['traffic_agc_seed'])),
         ]
 
         # ── Traffic-channel post-DDC IQ ring DMA (2026-04-16) ─────────

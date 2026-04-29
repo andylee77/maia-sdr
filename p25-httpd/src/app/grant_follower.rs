@@ -51,25 +51,58 @@ use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
 use crate::app::imbe_forwarder::ImbeForwarder;
-use crate::audio::{AudioChunk, CallBoundary, CallBoundaryKind};
+use crate::audio::{AudioChunk, CallBoundary, CallBoundaryKind, TerminatorKind};
 
-// ── Phase 2c: timeout constants for the lifecycle sweep ──────────
+// ── 2026-04-26 session-lifecycle refactor: constants ─────────────
 
-/// Maximum gap between CC grants of the same `(tg, source)` to
-/// treat the second as a retransmit (no new call).
-const RETRANSMIT_WINDOW_MS: u64 = 6_000;
+/// Cadence of the periodic timeout / drain-elapsed sweep. 100 ms
+/// gives sub-second responsiveness on terminator-driven close
+/// (terminator + drain → finalize within drain_ms + 100 ms).
+const TIMEOUT_TICK_MS: u64 = 100;
 
-/// Inactivity window before an active call is closed by timeout.
-/// Phase 2d (2026-04-25): tightened 10000 -> 2000 to match
-/// SDRTrunk's `STALE_EVENT_THRESHOLD_MS = 2000`.
-const CALL_TIMEOUT_MS: u64 = 2_000;
+/// Hard timeout — `now() - last_audio_at_ms > HARD_TIMEOUT_MS`
+/// while no terminator has fired. Covers two cases:
+///   (a) session opened, chain never produced audio (encrypted,
+///       PLL/AGC fail, freq mis-tuned).
+///   (b) audio was flowing, stopped without a terminator landing.
+///
+/// 2026-04-26 first set to 5 s. On-target observation revealed
+/// chain settle on a fresh retune can take 7+ s before the framer
+/// produces a real HDU dispatch (false-positive NID heartbeats
+/// happen earlier, but those don't trigger on_hdu — and our HDU
+/// boundary handler only fires on real body parse).
+/// `2026-04-26-not-followed-no-preempt` flash reproduced: TG 300
+/// src 3400011 PTT, retune at 15:01:29.208, real HDU at
+/// 15:01:36.120 (7 s settle). 5 s timeout closed the session at
+/// 34.213, before any real audio landed. Subsequent 6 s of clear
+/// audio dropped to no_active. Bumped to 10 s to cover worst-
+/// observed settle. HDU/audio events refresh the timer, so a
+/// healthy session never closes on this — only stuck ones do.
+const HARD_TIMEOUT_MS: u64 = 10_000;
 
-/// Cadence of the periodic timeout sweep.
-const TIMEOUT_TICK_MS: u64 = 500;
+// Closing-state drain lives on the recorder side: once we emit
+// CallClose, the recorder keeps the WAV open for ~2 s and routes
+// any straggling chunks whose `captured_at_ms` is `<=` close_at_ms
+// into it. Lifecycle emits CallClose synchronously on the
+// terminator parse; close_at_ms == terminator_at_ms is carried in
+// the event's `ended_unix_ms` field for the recorder to compare
+// against.
 
-/// Minimum quiescence gap before HduStart triggers a new-call
-/// split. Below: same-speaker PTT re-key. Above: new speaker.
-const HDU_SPLIT_GAP_MIN_MS: u64 = 500;
+/// 2026-04-27 dedup window for primary GRP_VCH_GRANT arrivals.
+/// P25 broadcasts each grant 2-3× within a single TSDU
+/// (TSBK1/TSBK2/TSBK3 packed) and may re-broadcast during the
+/// call. Without dedup each TSBK fires its own synthetic emit
+/// (for not_followed grants) or its own state mutation,
+/// flooding `grant_stats` Recent Calls — observed 2026-04-27:
+/// ENC GRANT spam rolling the 200-slot ring past clear-call
+/// entries before recordings could pair by call_id, leaving
+/// most clear-call recordings under "Recordings without a
+/// matching grant".  200 ms covers the TSDU triplet (members
+/// arrive within ~30 ms) without affecting genuinely distinct
+/// calls (seconds apart). Applied at the entry point so the
+/// followed (active+Bundle) and not_followed (synthetic-emit)
+/// paths share the dedup behaviour.
+const GRANT_DEDUP_MS: u64 = 200;
 
 // ── Public types (cross-platform; consumed by AppState +
 //    grant_stats + recorder + dashboard API) ────────────────────
@@ -111,14 +144,25 @@ pub enum CallTrackerEventKind {
         first_audio_at_unix_ms: Option<u64>,
         first_hdu_at_unix_ms: Option<u64>,
         expected_submit_count: u64,
+        /// 2026-04-26 session-lifecycle refactor: every distinct
+        /// SRC observed during the session — primary GRANT.SRC,
+        /// LDU1 LC voted SRC, TDULC MOT BY: — in insertion order.
+        /// Recorder mirrors this onto the WAV's metadata so the
+        /// dashboard can show "speakers heard" when bundling
+        /// multiple PTTs in one session.
+        sources_observed: Vec<u32>,
     },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OpenReason {
+    /// First primary `GRP_VCH_GRANT` for a (TG, channel) tuple
+    /// with no matching open session.
     CcGrant,
-    SpeakerChange,
+    /// Pre-empt: previous session was closed because a primary
+    /// GRANT arrived on the same channel with a different TG.
+    TgChange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -132,11 +176,19 @@ pub enum SourceUpdateVia {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CloseReason {
-    SpeakerEnd,
+    /// 5 s without an audio chunk — covers chain-never-decoded,
+    /// audio-stopped, and missed-terminator. The lifecycle's only
+    /// non-preemption close path. Operator-confirmed 2026-04-26:
+    /// dispatcher-final PTTs don't emit TDULC_MOT, and TDULC
+    /// terminators in general can fire mid-grant on multi-PTT
+    /// sessions, so terminator-driven close was retired in favour
+    /// of this single hard backstop.
     Timeout,
-    SpeakerChange,
+    /// Pre-empt: primary GRANT on same channel for a different TG.
+    /// The only "real" close path during normal operation.
     TgChange,
-    NotFollowedExpire,
+    /// Boundary stream lagged — drop active to avoid stale state.
+    StreamLag,
 }
 
 pub type CallTrackerEventTx = broadcast::Sender<CallTrackerEvent>;
@@ -170,6 +222,9 @@ struct ActiveCall {
     call_id: u64,
     tg: u16,
     nac: u16,
+    /// "Primary" source — the most-recently observed SRC. Backwards
+    /// compat with downstream consumers that take a single ID.
+    /// Multi-speaker sessions also populate `sources_observed`.
     source: Option<u32>,
     actual_speaker: Option<u32>,
     freq_hz: Option<u64>,
@@ -177,12 +232,33 @@ struct ActiveCall {
     encrypted: bool,
     not_followed: Option<&'static str>,
     started_unix_ms: u64,
+    #[allow(dead_code)]
     started_instant: Instant,
-    last_activity_ms: u64,
     first_audio_at_unix_ms: Option<u64>,
     first_hdu_at_unix_ms: Option<u64>,
     #[allow(dead_code)]
     baseline_frames_submitted: u64,
+    /// Wall time of the most recent audio chunk seen for this
+    /// call. Zero until the first chunk arrives. Drives the 5 s
+    /// hard timeout.
+    last_audio_at_ms: u64,
+    /// Every distinct SRC observed during the session — primary
+    /// GRANT.SRC, LDU1 LC voted SRC, TDULC MOT BY: — in insertion
+    /// order. Deduped on push.
+    sources_observed: Vec<u32>,
+}
+
+impl ActiveCall {
+    fn observe_source(&mut self, src: u32) -> bool {
+        if src == 0 {
+            return false;
+        }
+        if self.sources_observed.contains(&src) {
+            return false;
+        }
+        self.sources_observed.push(src);
+        true
+    }
 }
 
 fn now_unix_ms() -> u64 {
@@ -212,10 +288,28 @@ fn mirror_active(
     // Phase 2h (2026-04-25): broadcast the active call_id to the
     // forwarder so every IMBE batch + every emitted AudioChunk gets
     // stamped with it. Recorder routes by chunk.call_id directly.
-    let cid = active.as_ref().map(|c| c.call_id).unwrap_or(0);
-    forwarder
-        .current_call_id
-        .store(cid, Ordering::Relaxed);
+    //
+    // 2026-04-26: when there's no active call (between calls), HOLD
+    // the previous call_id instead of clearing to 0. Late chunks of
+    // the closing call get tagged with the closing-call id and the
+    // recorder's drain captures them (or mismatch-drops cleanly into
+    // /dev/null if the drain has ended). Inter-call gap chunks also
+    // carry the old id, so they CAN'T be defensively appended to the
+    // next recording via the call_id=0 path — eliminating the cross-
+    // contamination observed 2026-04-26 (rec 24 had 86 zero-callid
+    // chunks = 1.72 s of OTHER speakers' audio glued in; rec 27 had
+    // 141 = 2.82 s).
+    //
+    // The next CallOpen WILL update current_call_id to the new id
+    // (the `Some(c)` branch below), so this only affects the
+    // inter-call gap.
+    if let Some(c) = active.as_ref() {
+        forwarder
+            .current_call_id
+            .store(c.call_id, Ordering::Relaxed);
+    }
+    // else: leave current_call_id alone — it stays at the last
+    // known call_id until the next CallOpen overwrites it.
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -264,6 +358,7 @@ fn emit_close(
             first_audio_at_unix_ms: call.first_audio_at_unix_ms,
             first_hdu_at_unix_ms: call.first_hdu_at_unix_ms,
             expected_submit_count,
+            sources_observed: call.sources_observed.clone(),
         },
     });
 }
@@ -281,19 +376,26 @@ fn emit_source_update(
     });
 }
 
+/// 2026-04-26 session-lifecycle refactor: how a primary GRANT
+/// arrival relates to the open session. Operator-confirmed: TG
+/// change is the only split trigger. Encryption-flag changes on
+/// the same TG never happen in real P25 traffic at this site —
+/// each TG has a fixed enc state.
 enum ArrivalDisposition {
-    Retransmit { source_upgrade: Option<u32> },
+    /// Same TG and freq as the open session — bundle (refresh +
+    /// add new SRC if any).
+    Bundle,
+    /// Different freq from the open session — sticky-locked
+    /// elsewhere; ignore.
     Ignore,
+    /// Same channel, different TG — close current, open new.
     TgChange,
-    SpeakerChange,
 }
 
 fn classify_cc_arrival(
     active: &ActiveCall,
     new_tg: u16,
-    new_source: Option<u32>,
     new_freq_hz: Option<u64>,
-    now_ms: u64,
 ) -> ArrivalDisposition {
     if let (Some(a_freq), Some(n_freq)) = (active.freq_hz, new_freq_hz) {
         if a_freq != n_freq {
@@ -303,31 +405,7 @@ fn classify_cc_arrival(
     if active.tg != new_tg {
         return ArrivalDisposition::TgChange;
     }
-    let stale = now_ms.saturating_sub(active.last_activity_ms)
-        >= RETRANSMIT_WINDOW_MS;
-    if stale {
-        return match (active.source, new_source) {
-            (Some(_), Some(_)) if active.source != new_source => {
-                ArrivalDisposition::SpeakerChange
-            }
-            _ => ArrivalDisposition::Retransmit { source_upgrade: None },
-        };
-    }
-    match (active.source, new_source) {
-        (None, None) => ArrivalDisposition::Retransmit {
-            source_upgrade: None,
-        },
-        (None, Some(s)) => ArrivalDisposition::Retransmit {
-            source_upgrade: Some(s),
-        },
-        (Some(_), None) => ArrivalDisposition::Retransmit {
-            source_upgrade: None,
-        },
-        (Some(a), Some(b)) if a == b => ArrivalDisposition::Retransmit {
-            source_upgrade: None,
-        },
-        (Some(_), Some(_)) => ArrivalDisposition::SpeakerChange,
-    }
+    ArrivalDisposition::Bundle
 }
 
 /// Lifecycle authority task. Subscribes to the `CallBoundary`
@@ -347,6 +425,19 @@ pub fn spawn_call_lifecycle(
     tokio::spawn(async move {
         let mut active: Option<ActiveCall> = None;
         let mut next_call_id: u64 = 1;
+        // 2026-04-27 not_followed dedup. P25 broadcasts each
+        // primary GRP_VCH_GRANT 2-3× within a TSDU and re-
+        // broadcasts during the call, so one encrypted PTT
+        // produces 5-10 GRANT TSBKs. Without dedup, each one
+        // fires its own synthetic CallOpen+CallClose pair,
+        // flooding `grant_stats` Recent Calls and rolling the
+        // ring past clear-call entries before recordings can
+        // pair by call_id. Track last emit per (tg, freq,
+        // encrypted); skip if a duplicate arrives within
+        // NOT_FOLLOWED_DEDUP_MS.
+        let mut not_followed_dedup:
+            std::collections::HashMap<(u16, Option<u64>, bool), u64>
+            = std::collections::HashMap::new();
         let mut tick = tokio::time::interval(
             Duration::from_millis(TIMEOUT_TICK_MS),
         );
@@ -368,7 +459,7 @@ pub fn spawn_call_lifecycle(
                                 let expected = forwarder
                                     .frames_submitted.load(Ordering::Relaxed);
                                 emit_close(&tracker_tx, &call,
-                                    CloseReason::Timeout,
+                                    CloseReason::StreamLag,
                                     call.source, expected);
                             }
                             mirror_active(&active, &active_call, &forwarder);
@@ -379,6 +470,7 @@ pub fn spawn_call_lifecycle(
                     handle_boundary(
                         boundary, &mut active, &mut next_call_id,
                         &tracker_tx, &forwarder,
+                        &mut not_followed_dedup,
                     );
                     mirror_active(&active, &active_call, &forwarder);
                 }
@@ -392,18 +484,31 @@ pub fn spawn_call_lifecycle(
                     }
                 }
                 _ = tick.tick() => {
+                    // 2026-04-26 session-lifecycle refactor: tick only
+                    // covers the 5 s hard-timeout backstop. Terminators
+                    // fire CallClose synchronously in handle_boundary;
+                    // the closing-state drain lives on the recorder side.
                     let now = now_unix_ms();
-                    let should_close = active.as_ref()
-                        .map(|c| now.saturating_sub(c.last_activity_ms)
-                                    > CALL_TIMEOUT_MS)
-                        .unwrap_or(false);
-                    if should_close {
+                    let close_decision: Option<CloseReason> = active
+                        .as_ref()
+                        .and_then(|c| {
+                            let last = if c.last_audio_at_ms != 0 {
+                                c.last_audio_at_ms
+                            } else {
+                                c.started_unix_ms
+                            };
+                            if now.saturating_sub(last) > HARD_TIMEOUT_MS {
+                                Some(CloseReason::Timeout)
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some(reason) = close_decision {
                         if let Some(call) = active.take() {
                             let expected = forwarder
                                 .frames_submitted.load(Ordering::Relaxed);
                             emit_close(&tracker_tx, &call,
-                                CloseReason::Timeout,
-                                call.source, expected);
+                                reason, call.source, expected);
                         }
                         mirror_active(&active, &active_call, &forwarder);
                     }
@@ -423,68 +528,206 @@ fn handle_boundary(
     next_call_id: &mut u64,
     tx: &CallTrackerEventTx,
     forwarder: &Arc<ImbeForwarder>,
+    grant_dedup: &mut std::collections::HashMap<(u16, Option<u64>, bool), u64>,
 ) {
     match boundary.kind {
+        // 2026-04-26 session-lifecycle refactor: primary
+        // GRP_VCH_GRANT (`is_update=false`). Open-or-bundle-or-
+        // split, no audio-driven anything.
         CallBoundaryKind::CcGrantArrival {
             tg, source, freq_hz, channel, encrypted, not_followed,
         } => {
             let now = now_unix_ms();
+            // 2026-04-27 entry-point dedup. Skip GRANTs arriving
+            // within GRANT_DEDUP_MS of a prior identical (tg,
+            // freq, encrypted) — kills the TSDU triplet
+            // re-broadcasts (TSBK1/2/3 in one TSDU, ~30 ms apart)
+            // before they fan out to either the followed
+            // (active+Bundle) or not_followed (synthetic-emit)
+            // paths. Genuinely distinct calls (>200 ms apart)
+            // pass through unchanged.
+            let dedup_key = (tg, freq_hz, encrypted);
+            if let Some(&last) = grant_dedup.get(&dedup_key) {
+                if now.saturating_sub(last) < GRANT_DEDUP_MS {
+                    return;
+                }
+            }
+            grant_dedup.insert(dedup_key, now);
+            // Bound the dedup map. Distinct (tg, freq, enc)
+            // tuples on a single P25 site are ~10. Prune entries
+            // older than 60 s on every insert to keep the map
+            // small without a separate GC tick.
+            grant_dedup.retain(|_, &mut t| now.saturating_sub(t) < 60_000);
+
             let channel_str = if channel == 0 {
                 None
             } else {
                 Some(format!("{}", channel))
             };
 
-            let (close_existing, opened_via) = match active.as_ref() {
-                None => (false, OpenReason::CcGrant),
-                Some(a) => match classify_cc_arrival(a, tg, source, freq_hz, now) {
-                    ArrivalDisposition::Retransmit { source_upgrade } => {
-                        let a_mut = active.as_mut().unwrap();
-                        a_mut.last_activity_ms = now;
-                        if let Some(s) = source_upgrade {
-                            a_mut.source = Some(s);
+            // Disposition decides whether this GRANT bundles into
+            // the active session, ignores (sticky-locked elsewhere),
+            // or pre-empts (TG change).
+            //
+            // 2026-04-26 not-followed-aware preempt: if the new
+            // primary GRANT is `not_followed` (encrypted / sticky /
+            // monitor-rejected), the follower won't retune the chain
+            // for it. The chain keeps decoding whatever was on the
+            // current freq. Pre-empting the active session in that
+            // case attributes the chain's continued audio to a
+            // session we're not actually serving. Confirmed on-target
+            // 2026-04-26: TG 300 (clear) → TG 402 (ENC) GRANT on same
+            // channel produced 459 IMBE attributed to TG 402 with
+            // `not_followed=encrypted` (bug). Treat not_followed
+            // grants as Ignore — leave the active session alone.
+            let action = match active.as_ref() {
+                // No active session, grant IS followable: open as
+                // the new active. Recorder will create a recording.
+                None if not_followed.is_none() =>
+                    OpenAction::Open(OpenReason::CcGrant),
+                // No active session, grant is NOT followed
+                // (encrypted/sticky/monitor-rejected). Don't keep
+                // it as the active session — that would put TG-402
+                // ENC in /api/grants for 10 s of timeout window
+                // even though we never actually followed it. Use
+                // the synthetic-emit-only pattern: emit CallOpen
+                // + CallClose for grant_stats visibility, leave
+                // active=None.
+                None => {
+                    let now = now_unix_ms();
+                    let synthetic_call_id = *next_call_id;
+                    *next_call_id += 1;
+                    let baseline = forwarder
+                        .frames_submitted.load(Ordering::Relaxed);
+                    emit_open(
+                        tx, synthetic_call_id, tg, boundary.nac,
+                        source, freq_hz, channel_str.clone(),
+                        encrypted, not_followed,
+                        OpenReason::CcGrant, baseline, now,
+                    );
+                    let mut synth_sources = Vec::new();
+                    if let Some(s) = source { synth_sources.push(s); }
+                    let synth_call = ActiveCall {
+                        call_id: synthetic_call_id,
+                        tg, nac: boundary.nac,
+                        source, actual_speaker: None,
+                        freq_hz, channel: channel_str.clone(),
+                        encrypted, not_followed,
+                        started_unix_ms: now,
+                        started_instant: Instant::now(),
+                        first_audio_at_unix_ms: None,
+                        first_hdu_at_unix_ms: None,
+                        baseline_frames_submitted: baseline,
+                        last_audio_at_ms: 0,
+                        sources_observed: synth_sources,
+                    };
+                    emit_close(
+                        tx, &synth_call, CloseReason::Timeout,
+                        source, baseline,
+                    );
+                    return;
+                }
+                // Active session, new GRANT is not_followed: leave
+                // the active session alone but still emit a
+                // synthetic CallOpen+CallClose pair so grant_stats
+                // surfaces the not-followed grant in Recent Calls
+                // (operator confirmed: every CC GRANT must be
+                // visible). Recorder filters not_followed CallOpens
+                // so no recording is opened. Confirmed on-target
+                // 2026-04-26: TG 300 → TG 402 (ENC, same freq)
+                // preempt produced 459 IMBE attributed to TG 402
+                // with `not_followed=encrypted` (bug). Synthetic
+                // emit preserves visibility without the misattribution.
+                Some(_) if not_followed.is_some() => {
+                    let now = now_unix_ms();
+                    let synthetic_call_id = *next_call_id;
+                    *next_call_id += 1;
+                    let baseline = forwarder
+                        .frames_submitted.load(Ordering::Relaxed);
+                    emit_open(
+                        tx, synthetic_call_id, tg, boundary.nac,
+                        source, freq_hz, channel_str.clone(),
+                        encrypted, not_followed,
+                        OpenReason::CcGrant, baseline, now,
+                    );
+                    let mut synth_sources = Vec::new();
+                    if let Some(s) = source { synth_sources.push(s); }
+                    let synth_call = ActiveCall {
+                        call_id: synthetic_call_id,
+                        tg, nac: boundary.nac,
+                        source, actual_speaker: None,
+                        freq_hz, channel: channel_str.clone(),
+                        encrypted, not_followed,
+                        started_unix_ms: now,
+                        started_instant: Instant::now(),
+                        first_audio_at_unix_ms: None,
+                        first_hdu_at_unix_ms: None,
+                        baseline_frames_submitted: baseline,
+                        last_audio_at_ms: 0,
+                        sources_observed: synth_sources,
+                    };
+                    emit_close(
+                        tx, &synth_call, CloseReason::Timeout,
+                        source, baseline,
+                    );
+                    return;
+                }
+                Some(a) => match classify_cc_arrival(a, tg, freq_hz) {
+                    ArrivalDisposition::Bundle => OpenAction::Bundle,
+                    ArrivalDisposition::Ignore => OpenAction::None,
+                    ArrivalDisposition::TgChange => OpenAction::Preempt(
+                        CloseReason::TgChange, OpenReason::TgChange,
+                    ),
+                },
+            };
+
+            match action {
+                OpenAction::None => return,
+                OpenAction::Bundle => {
+                    let a_mut = active.as_mut().unwrap();
+                    if let Some(s) = source {
+                        if a_mut.observe_source(s) {
                             emit_source_update(
                                 tx, a_mut.call_id, s,
                                 SourceUpdateVia::CcRefresh,
                             );
                         }
-                        if not_followed.is_some()
-                            && a_mut.not_followed.is_none()
-                        {
-                            a_mut.not_followed = not_followed;
+                        if a_mut.source.is_none() {
+                            a_mut.source = Some(s);
                         }
-                        if encrypted {
-                            a_mut.encrypted = true;
-                        }
-                        return;
                     }
-                    ArrivalDisposition::Ignore => return,
-                    ArrivalDisposition::SpeakerChange => {
-                        (true, OpenReason::SpeakerChange)
+                    if not_followed.is_some()
+                        && a_mut.not_followed.is_none()
+                    {
+                        a_mut.not_followed = not_followed;
                     }
-                    ArrivalDisposition::TgChange => {
-                        (true, OpenReason::CcGrant)
-                    }
-                },
-            };
-
-            if close_existing {
-                if let Some(prev) = active.take() {
-                    let reason = match opened_via {
-                        OpenReason::SpeakerChange =>
-                            CloseReason::SpeakerChange,
-                        OpenReason::CcGrant => CloseReason::TgChange,
-                    };
-                    let expected = forwarder
-                        .frames_submitted.load(Ordering::Relaxed);
-                    emit_close(tx, &prev, reason, prev.source, expected);
+                    return;
                 }
+                OpenAction::Preempt(close_reason, _) => {
+                    if let Some(prev) = active.take() {
+                        let expected = forwarder
+                            .frames_submitted.load(Ordering::Relaxed);
+                        emit_close(tx, &prev, close_reason,
+                                   prev.source, expected);
+                    }
+                }
+                OpenAction::Open(_) => {}
             }
+
+            let opened_via = match action {
+                OpenAction::Open(r) => r,
+                OpenAction::Preempt(_, r) => r,
+                _ => OpenReason::CcGrant,
+            };
 
             let call_id = *next_call_id;
             *next_call_id += 1;
             let baseline = forwarder
                 .frames_submitted.load(Ordering::Relaxed);
+            let mut sources_observed = Vec::new();
+            if let Some(s) = source {
+                sources_observed.push(s);
+            }
             *active = Some(ActiveCall {
                 call_id,
                 tg,
@@ -497,10 +740,11 @@ fn handle_boundary(
                 not_followed,
                 started_unix_ms: now,
                 started_instant: Instant::now(),
-                last_activity_ms: now,
                 first_audio_at_unix_ms: None,
                 first_hdu_at_unix_ms: None,
                 baseline_frames_submitted: baseline,
+                last_audio_at_ms: 0,
+                sources_observed,
             });
             emit_open(
                 tx, call_id, tg, boundary.nac, source, freq_hz,
@@ -509,89 +753,69 @@ fn handle_boundary(
             );
         }
 
+        // GRP_VCH_GRNT_UPD: refresh-only. Does NOT carry SRC or
+        // service_options — confirmed empirically 2026-04-26 in
+        // the on-target log: every UPDATE shows source=None and
+        // enc_flag pulled from per-channel history. Cannot signal
+        // a speaker change, TG change, or encryption flip. Treat
+        // as a pure keep-alive — the existing `last_audio_at_ms`
+        // timeout is the lifeline anyway, but we still nudge it
+        // here so a session that has CC keep-alive traffic but no
+        // audio doesn't time out as fast as one with no CC at all.
         CallBoundaryKind::CcGrantUpdate { tg, .. } => {
             if let Some(a) = active.as_mut() {
                 if a.tg == tg {
-                    a.last_activity_ms = now_unix_ms();
+                    // No-op: the spec says UPDATE doesn't gate
+                    // the timeout. last_audio_at_ms is the truth.
+                    // Kept as a structural arm for log-readability.
                 }
             }
         }
 
+        // HDU: informational + activity refresh. Bundling speakers
+        // means we no longer split per-PTT — multiple HDUs in one
+        // session is expected (e.g. dispatcher then field radio on
+        // same grant). 2026-04-26: HDU also refreshes
+        // `last_audio_at_ms` so the 5 s hard timeout extends past
+        // chain settle. Confirmed on-target: chain settle on
+        // retune can take 6-9 s, but HDU dispatch (chain detected
+        // a P25 voice frame start) is strong evidence the session
+        // is alive even before LDUs land.
         CallBoundaryKind::HduStart => {
             let now = now_unix_ms();
-            let split = if let Some(a) = active.as_ref() {
-                if a.source.is_some() {
-                    false
-                } else {
-                    let gap_ms = now.saturating_sub(a.last_activity_ms);
-                    gap_ms >= HDU_SPLIT_GAP_MIN_MS && gap_ms < CALL_TIMEOUT_MS
-                }
-            } else {
-                false
-            };
-            if split {
-                if let Some(prev) = active.take() {
-                    let expected = forwarder
-                        .frames_submitted.load(Ordering::Relaxed);
-                    emit_close(tx, &prev, CloseReason::SpeakerChange,
-                               prev.source, expected);
-                    let call_id = *next_call_id;
-                    *next_call_id += 1;
-                    let baseline = forwarder
-                        .frames_submitted.load(Ordering::Relaxed);
-                    *active = Some(ActiveCall {
-                        call_id,
-                        tg: prev.tg,
-                        nac: boundary.nac.max(prev.nac),
-                        source: prev.source,
-                        actual_speaker: None,
-                        freq_hz: prev.freq_hz,
-                        channel: prev.channel.clone(),
-                        encrypted: prev.encrypted,
-                        not_followed: prev.not_followed,
-                        started_unix_ms: now,
-                        started_instant: Instant::now(),
-                        last_activity_ms: now,
-                        first_audio_at_unix_ms: Some(now),
-                        first_hdu_at_unix_ms: Some(now),
-                        baseline_frames_submitted: baseline,
-                    });
-                    emit_open(
-                        tx, call_id, prev.tg,
-                        boundary.nac.max(prev.nac), prev.source,
-                        prev.freq_hz, prev.channel, prev.encrypted,
-                        prev.not_followed, OpenReason::SpeakerChange,
-                        baseline, now,
-                    );
-                }
-            } else if let Some(a) = active.as_mut() {
+            if let Some(a) = active.as_mut() {
                 if a.first_hdu_at_unix_ms.is_none() {
                     a.first_hdu_at_unix_ms = Some(now);
                 }
                 if a.first_audio_at_unix_ms.is_none() {
                     a.first_audio_at_unix_ms = Some(now);
                 }
-                a.last_activity_ms = now;
+                a.last_audio_at_ms = now;
                 if a.nac == 0 && boundary.nac != 0 {
                     a.nac = boundary.nac;
                 }
             }
         }
 
+        // LDU1 LC voted SRC. Add to sources_observed; update
+        // actual_speaker (may differ from CC.SRC — dispatcher-
+        // grant → field-radio-FM mismatch is a known Clay County
+        // pattern, not a bug).
         CallBoundaryKind::TdulcComplete { source } => {
             if let Some(a) = active.as_mut() {
-                a.last_activity_ms = now_unix_ms();
                 if let Some(s) = source {
                     let agrees_with_cc = match a.source {
                         Some(cc) => cc == s,
                         None => false,
                     };
-                    if a.source.is_none() {
-                        a.source = Some(s);
+                    if a.observe_source(s) {
                         emit_source_update(
                             tx, a.call_id, s,
                             SourceUpdateVia::Ldu1LcVote,
                         );
+                    }
+                    if a.source.is_none() {
+                        a.source = Some(s);
                     }
                     if a.actual_speaker != Some(s) {
                         a.actual_speaker = Some(s);
@@ -608,30 +832,62 @@ fn handle_boundary(
             }
         }
 
-        CallBoundaryKind::SpeakerEnd { source } => {
-            if let Some(call) = active.take() {
-                let final_source = call.source.or(source);
-                let expected = forwarder
-                    .frames_submitted.load(Ordering::Relaxed);
-                if final_source != call.source {
-                    if let Some(s) = final_source {
+        // 2026-04-26 session-lifecycle refactor (operator clarification):
+        // we model GRANTS, not speakers. A grant can carry multiple
+        // PTTs back-to-back (each emitting its own TDULC_MOT
+        // BY:<field-radio> terminator). Closing on TDULC_MOT would
+        // cut the grant after speaker 1 and miss speakers 2..N.
+        // Closing on TDULC_CALL_TERM is also unsafe — within a
+        // multi-PTT grant only the LAST PTT typically carries it,
+        // but BCH false-positives can produce phantom CALL_TERMs
+        // mid-grant.
+        //
+        // So all SpeakerEnd flavours are SOURCE-STAMP-ONLY here.
+        // The session closes only on TG-change-via-new-GRANT
+        // (handled in the CcGrantArrival arm) or the 5 s no-audio
+        // hard timeout (handled in the periodic tick).
+        CallBoundaryKind::SpeakerEnd { source, kind: _ } => {
+            if let Some(a) = active.as_mut() {
+                if let Some(s) = source {
+                    if a.observe_source(s) {
                         emit_source_update(
-                            tx, call.call_id, s,
+                            tx, a.call_id, s,
                             SourceUpdateVia::TdulcMotTc,
                         );
                     }
+                    if a.source.is_none() {
+                        a.source = Some(s);
+                    }
                 }
-                emit_close(tx, &call,
-                    CloseReason::SpeakerEnd, final_source, expected);
             }
         }
     }
 }
 
+/// 2026-04-26 session-lifecycle refactor: encodes the four ways a
+/// `CcGrantArrival` can affect the active session.
+enum OpenAction {
+    /// No active session — open new with the given reason.
+    Open(OpenReason),
+    /// Active session matches (TG, enc, channel) — refresh in
+    /// place + add SRC to sources_observed.
+    Bundle,
+    /// Active session was on a different TG or different enc on
+    /// the same channel — close it (with the given reason),
+    /// then open new (with the given OpenReason).
+    Preempt(CloseReason, OpenReason),
+    /// Active session is sticky-locked elsewhere — drop the
+    /// arrival.
+    None,
+}
+
 fn handle_audio(chunk: AudioChunk, active: &mut Option<ActiveCall>) {
     if let Some(a) = active.as_mut() {
+        // The recorder routes by chunk.captured_at_ms vs the
+        // session window. The lifecycle layer only needs to know
+        // "audio is still flowing" for the hard-timeout gate.
         let now = now_unix_ms();
-        a.last_activity_ms = now;
+        a.last_audio_at_ms = now;
         if a.first_audio_at_unix_ms.is_none() {
             a.first_audio_at_unix_ms = Some(now);
         }
@@ -917,6 +1173,43 @@ pub fn spawn_grant_follower(
                                     );
                                 }
 
+                                // 2026-04-26 GVCG_UPD fast-path. CC
+                                // pumps GRP_VCH_GRNT_UPD at ~10-30/sec
+                                // per active call as a keep-alive; the
+                                // pre-2026-04-26 path ran every update
+                                // through the full lock chain
+                                // (mgr.lock().await, decoder.write().
+                                // await, core.lock().await, ±2 ms FIR
+                                // sleep on retune) which serialised
+                                // every grant. Field observation: a
+                                // single GRP_VCH_GRANT for TG 300
+                                // landed 76 log events (≈ 1.4 s) after
+                                // the parser had already extracted it
+                                // from the CC dibits — the follower
+                                // task was draining queued updates.
+                                //
+                                // This branch fires CcGrantUpdate
+                                // without acquiring any of the heavy
+                                // locks when the chain is already on
+                                // the TG. Lifecycle's
+                                // CallBoundaryKind::CcGrantUpdate
+                                // handler refreshes last_activity_ms
+                                // and returns. Initial GRANTs (and
+                                // updates that disagree with the
+                                // current lock) still take the full
+                                // path below.
+                                if g.is_update {
+                                    let mgr = follower_mgr.lock().await;
+                                    let chain_tg = mgr.current_talkgroup();
+                                    drop(mgr);
+                                    if chain_tg.map(|t| t.0 == g.talkgroup.0)
+                                        .unwrap_or(false)
+                                    {
+                                        send_cc_boundary(&g, None);
+                                        continue;
+                                    }
+                                }
+
                                 // Tally every observed grant into the
                                 // persistent frequency map regardless
                                 // of follow decision; populates
@@ -1154,19 +1447,45 @@ pub fn spawn_grant_follower(
                                 // grant for a different TG on a
                                 // different channel is an unrelated
                                 // call; stay on the current lock.
+                                //
+                                // 2026-04-26: log the rejected grant's
+                                // freq + source + parked_freq so the
+                                // operator can audit which TG was lost
+                                // and whether it was on a different
+                                // physical channel (real preempt cost)
+                                // or the same channel (channel-reuse
+                                // detection should have caught it —
+                                // missing log = missing-data bug).
                                 let locked_tg_final = mgr.current_talkgroup();
                                 if let Some(tg) = locked_tg_final {
                                     if tg.0 != g.talkgroup.0 {
+                                        let parked_freq = follower_imbe
+                                            .current_frequency_hz
+                                            .load(Ordering::Relaxed);
+                                        let same_freq = parked_freq != 0
+                                            && g.frequency_hz == Some(parked_freq);
                                         follower_event_log.push(
                                             LogCategory::Traffic,
                                             format!(
-                                                "reject: TG={} (sticky-locked on TG={})",
-                                                g.talkgroup.0, tg.0,
+                                                "reject: TG={} src={} freq={} \
+                                                 (sticky-locked on TG={} \
+                                                 parked_freq={}{})",
+                                                g.talkgroup.0,
+                                                g.source.map(|r| r.0).unwrap_or(0),
+                                                g.frequency_hz.unwrap_or(0),
+                                                tg.0, parked_freq,
+                                                if same_freq {
+                                                    " — SAME FREQ, channel-reuse miss?"
+                                                } else { "" },
                                             ),
                                             serde_json::json!({
-                                                "tg":        g.talkgroup.0,
-                                                "locked_tg": tg.0,
-                                                "reason":    "sticky_lock",
+                                                "tg":          g.talkgroup.0,
+                                                "src":         g.source.map(|r| r.0),
+                                                "grant_freq":  g.frequency_hz,
+                                                "locked_tg":   tg.0,
+                                                "parked_freq": parked_freq,
+                                                "same_freq":   same_freq,
+                                                "reason":      "sticky_lock",
                                             }),
                                         );
                                         send_cc_boundary(&g, Some("sticky_lock"));
@@ -1320,11 +1639,15 @@ pub fn spawn_grant_follower(
                                     // of carrying stale phase from the
                                     // previous carrier. See
                                     // doc/changes/038.
+                                    let agc_seed = follower_imbe
+                                        .agc_seed_for_freq(freq_hz)
+                                        .unwrap_or(0);
                                     match core.retune_traffic_chain(
                                         offset_hz as f64,
                                         sample_rate_now,
+                                        agc_seed,
                                     ) {
-                                        Ok(()) => {
+                                        Ok(diag) => {
                                             tracing::info!(
                                                 target: "p25_traffic",
                                                 "retune: TG={} channel={:?} \
@@ -1336,10 +1659,11 @@ pub fn spawn_grant_follower(
                                             follower_event_log.push(
                                                 LogCategory::Traffic,
                                                 format!(
-                                                    "retune TG={} -> {:.4} MHz (offset {:+} Hz)",
+                                                    "retune TG={} -> {:.4} MHz (offset {:+} Hz, agc_seed={})",
                                                     g.talkgroup.0,
                                                     freq_hz as f64 / 1e6,
                                                     offset_hz,
+                                                    agc_seed,
                                                 ),
                                                 serde_json::json!({
                                                     "tg":          g.talkgroup.0,
@@ -1348,8 +1672,39 @@ pub fn spawn_grant_follower(
                                                     "offset_hz":   offset_hz,
                                                     "framer_reset": true,
                                                     "lsm_reset":   true,
+                                                    "pll_seed_written":      diag.pll_seed_written,
+                                                    "traffic_pll_pre_reset": diag.traffic_pll_pre_reset,
+                                                    "traffic_pll_post_reset": diag.traffic_pll_post_reset,
+                                                    "seed_drift":            diag.drift(),
+                                                    "seed_load_buggy":       diag.looks_buggy(),
+                                                    "agc_seed_written":      diag.agc_seed_written,
+                                                    "traffic_agc_pre_reset": diag.traffic_agc_pre_reset,
+                                                    "traffic_agc_post_reset": diag.traffic_agc_post_reset,
+                                                    "agc_drift":             diag.agc_drift(),
+                                                    "agc_cache_hit":         agc_seed != 0,
                                                 }),
                                             );
+                                            if diag.looks_buggy() {
+                                                follower_event_log.push(
+                                                    LogCategory::Traffic,
+                                                    format!(
+                                                        "PLL seed-load mismatch on retune: \
+                                                         seed={} pre={} post={} drift={}",
+                                                        diag.pll_seed_written,
+                                                        diag.traffic_pll_pre_reset,
+                                                        diag.traffic_pll_post_reset,
+                                                        diag.drift(),
+                                                    ),
+                                                    serde_json::json!({
+                                                        "tg":   g.talkgroup.0,
+                                                        "kind": "pll_seed_load_mismatch",
+                                                        "pll_seed_written":      diag.pll_seed_written,
+                                                        "traffic_pll_pre_reset": diag.traffic_pll_pre_reset,
+                                                        "traffic_pll_post_reset": diag.traffic_pll_post_reset,
+                                                        "seed_drift":            diag.drift(),
+                                                    }),
+                                                );
+                                            }
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -1374,37 +1729,97 @@ pub fn spawn_grant_follower(
                                         }
                                     }
                                 } else if pre_state == "Idle" && post_state != "Idle" {
-                                    // Phase 2f NCO write-skip path,
-                                    // post-2026-04-25 design: chain
-                                    // is already running on this
-                                    // freq from the previous call
-                                    // (no pause on CallClose), PLL
-                                    // is still locked, FIR is still
-                                    // valid. Zero FPGA work needed
-                                    // — just reset the software
-                                    // framer state in case it was
-                                    // mid-frame on between-call
-                                    // noise dibits.
+                                    // Phase 2f NCO write-skip path: same
+                                    // freq as the previous call, so the
+                                    // DDC NCO + FIR can stay as-is (no
+                                    // 2 ms FIR-flush sleep, no DDC
+                                    // write). But the LSM chain has
+                                    // been processing noise during the
+                                    // inter-call gap, and the Costas
+                                    // PLL random-walks on noise — by
+                                    // grant time it's drifted away
+                                    // from the converged value. So we
+                                    // still need to seed the PLL/AGC
+                                    // from the control chain and pulse
+                                    // reset to load them. This is the
+                                    // 2026-04-26 follow-up to the
+                                    // seeding work: every grant gets a
+                                    // fresh seeded start, only true
+                                    // retunes pay the DDC-flush cost.
+                                    // See doc/diagnostics/2026-04-25/
+                                    // CHANNELIZER_REDESIGN.md.
                                     {
                                         let mut dec = follower_traffic_decoder
                                             .write().await;
                                         dec.reset_framer_state();
                                     }
+                                    let nco_skip_diag: Option<(i16, i16, i16)>;
+                                    {
+                                        // 2026-04-26: AGC seeding
+                                        // disabled — see retune_traffic_chain
+                                        // in fpga.rs for the full
+                                        // rationale. Field observation
+                                        // showed control-chain gain of
+                                        // ~33× saturated the traffic
+                                        // chain at a freq with a
+                                        // stronger signal, biasing
+                                        // every NID toward DUID=0xF
+                                        // (TDU_LC) and producing zero
+                                        // real LDU dispatches. PLL
+                                        // seeding remains since the
+                                        // shared crystal trim makes
+                                        // the converged value portable
+                                        // across freqs.
+                                        let core = follower_core.lock().await;
+                                        let (pll_seed, _) = core.lsm_debug();
+                                        let (pre, _) = core.traffic_lsm_debug();
+                                        // 2026-04-26 per-freq AGC
+                                        // seed for the nco_skip path
+                                        // too. Same lookup as the
+                                        // full retune path — same
+                                        // freq, same expected gain.
+                                        // freq_hz isn't bound in this
+                                        // scope (the retune branch
+                                        // shadows it from g.frequency_hz);
+                                        // pull it locally here.
+                                        let agc_seed = g.frequency_hz
+                                            .and_then(|f|
+                                                follower_imbe
+                                                    .agc_seed_for_freq(f))
+                                            .unwrap_or(0);
+                                        core.set_traffic_lsm_seeds(
+                                            pll_seed, agc_seed,
+                                        );
+                                        core.pulse_traffic_lsm_reset();
+                                        let (post, _) = core.traffic_lsm_debug();
+                                        nco_skip_diag = Some((pll_seed, pre, post));
+                                    }
+                                    let mut fields = serde_json::json!({
+                                        "tg":             g.talkgroup.0,
+                                        "channel":        g.channel.0,
+                                        "frequency":      g.frequency_hz,
+                                        "framer_reset":   true,
+                                        "lsm_reset":      true,
+                                        "nco_write":      false,
+                                        "lsm_enable":     "unchanged",
+                                    });
+                                    if let Some((seed, pre, post)) = nco_skip_diag {
+                                        let drift = (post as i32) - (seed as i32);
+                                        if let serde_json::Value::Object(ref mut m) = fields {
+                                            m.insert("pll_seed_written".to_string(), serde_json::json!(seed));
+                                            m.insert("traffic_pll_pre_reset".to_string(), serde_json::json!(pre));
+                                            m.insert("traffic_pll_post_reset".to_string(), serde_json::json!(post));
+                                            m.insert("seed_drift".to_string(), serde_json::json!(drift));
+                                            m.insert("seed_load_buggy".to_string(), serde_json::json!(drift.abs() > 2));
+                                        }
+                                    }
                                     follower_event_log.push(
                                         LogCategory::Traffic,
                                         format!(
-                                            "nco_skip TG={} (chain already locked on freq, no FPGA work)",
+                                            "nco_skip TG={} (same freq, seed+reset only)",
                                             g.talkgroup.0,
                                         ),
-                                        serde_json::json!({
-                                            "tg":             g.talkgroup.0,
-                                            "channel":        g.channel.0,
-                                            "frequency":      g.frequency_hz,
-                                            "framer_reset":   true,
-                                            "lsm_reset":      false,
-                                            "nco_write":      false,
-                                            "lsm_enable":     "unchanged",
-                                        }),
+                                        fields,
                                     );
                                 }
                             }

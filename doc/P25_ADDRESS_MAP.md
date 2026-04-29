@@ -237,6 +237,9 @@ in parallel for IMBE frame extraction.
 | `0x10` | `traffic_lsm_dibit_next` | `next_address`              | `[31:0]`  | R       | current AW write address inside the `traffic_lsm_dibit_dma` ring (debug only) |
 | `0x14` | `traffic_lsm_debug`   | `pll_dbg`                      | `[15:0]`  | R       | snapshot of `traffic_lsm_demod.pll_dbg` (signed Q2.13) |
 | `0x14` | `traffic_lsm_debug`   | `sample_point_dbg`             | `[31:16]` | R       | snapshot of `traffic_lsm_demod.sample_point_dbg[17:2]` (signed Q4.10) |
+| `0x00` | `traffic_lsm_control` | `traffic_pll_seed`             | `[20:5]`  | RW      | warm-start seed (Q2.13 signed) latched into the traffic Costas PLL accumulator on the next `traffic_lsm_reset` pulse. Zero = legacy cold start. PS retune copies `lsm_debug.pll_dbg` here so the traffic chain skips PLL acquire — see `doc/diagnostics/2026-04-25/CHANNELIZER_REDESIGN.md`. |
+| `0x1C` | `traffic_lsm_agc_config` | `mag_update_threshold`     | `[15:0]`  | RW      | runtime AGC idle-gate threshold (Q1.15 raw). Default 256 = -42 dBFS. Zero disables the gate. |
+| `0x1C` | `traffic_lsm_agc_config` | `traffic_agc_seed`         | `[31:16]` | RW      | warm-start seed (Q9.7 unsigned) latched into the traffic AGC gain register on the next `traffic_lsm_reset` pulse. FPGA pads to Q9.11 with bottom 4 fractional bits = 0. Zero = legacy load of GAIN_INIT (= 1.0). PS retune copies `lsm_agc_debug.agc_gain_dbg` here. |
 
 The PS-side dispatch flow uses the same coherency protocol as the
 control-side `lsm` bank: read `traffic_lsm_status` (which clears

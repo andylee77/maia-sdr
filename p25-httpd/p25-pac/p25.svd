@@ -638,6 +638,12 @@
               <bitRange>[4:4]</bitRange>
               <access>read-write</access>
             </field>
+            <field>
+              <name>traffic_pll_seed</name>
+              <description>traffic_pll_seed</description>
+              <bitRange>[20:5]</bitRange>
+              <access>read-write</access>
+            </field>
           </fields>
         </register>
         <register>
@@ -794,6 +800,12 @@
               <name>mag_update_threshold</name>
               <description>mag_update_threshold</description>
               <bitRange>[15:0]</bitRange>
+              <access>read-write</access>
+            </field>
+            <field>
+              <name>traffic_agc_seed</name>
+              <description>traffic_agc_seed</description>
+              <bitRange>[31:16]</bitRange>
               <access>read-write</access>
             </field>
           </fields>

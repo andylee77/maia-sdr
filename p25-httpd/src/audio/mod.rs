@@ -35,6 +35,15 @@ pub struct AudioChunk {
     /// time" (e.g. follower idle, retune race); recorder still
     /// appends those to the active call defensively.
     pub call_id: u64,
+    /// 2026-04-26 session-lifecycle refactor: wall-clock unix ms
+    /// stamped at LDU dispatch in the framer (i.e. when the chain
+    /// SAW these dibits, NOT when the vocoder produced PCM). Lets
+    /// the recorder route by capture time vs the active session's
+    /// `[open_at_ms, close_at_ms]` window — late chunks for a
+    /// just-closed session still land in the right WAV regardless
+    /// of vocoder/queue lag. All 9 IMBE frames in one batch share
+    /// the same captured_at_ms (they came from one LDU dispatch).
+    pub captured_at_ms: u64,
 }
 
 pub type AudioTx = broadcast::Sender<AudioChunk>;
@@ -78,6 +87,25 @@ pub struct CallBoundary {
     pub expected_submit_count: u64,
 }
 
+/// 2026-04-26 session-lifecycle refactor: the three terminator
+/// flavours that can fire `CallBoundaryKind::SpeakerEnd`. Operator-
+/// confirmed semantics (Clay County observation):
+/// - `MotTalkComplete`: TDULC with Motorola MFID 0x90 TalkComplete
+///   LCW. Carries a 7-digit field-radio SRC. Dispatcher consoles do
+///   NOT emit this — only field radios. Reliable terminator.
+/// - `CallTermination`: TDULC with standard CallTermination LCW
+///   (opcode 0x0F MFID 0x00). The "BY:" field is a system-controller
+///   address (FFFFFD/E/F), not a real radio ID. Reliable terminator.
+/// - `BareTdu`: DUID=0x3 with no LCW payload. Heavily false-positive
+///   on degenerate dibit streams (BCH false-pass on idle/noise);
+///   the lifecycle layer treats this as informational only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminatorKind {
+    BareTdu,
+    MotTalkComplete,
+    CallTermination,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum CallBoundaryKind {
     /// DUID 0x0 — header arrived. Logged as an informational
@@ -111,12 +139,18 @@ pub enum CallBoundaryKind {
     /// End-of-speaker / end-of-call LCW. Fires on Motorola
     /// `TALK_COMPLETE` (opcode 0x0F MFID 0x90), standard
     /// `CALL_TERMINATION` (opcode 0x0F MFID 0x00), and bare TDU.
-    /// 2026-04-22 fragmentation fix: the recorder stamps
-    /// `source` (if Some) onto the active WAV but does NOT finalise.
-    /// Phantom TDU_LC decodes on all-1s dibits were closing calls
-    /// mid-turn; the grace window + source-change split now handle
-    /// real end-of-speaker transitions.
-    SpeakerEnd { source: Option<u32> },
+    /// 2026-04-26 session-lifecycle refactor: `kind` distinguishes
+    /// the source (operator-confirmed: dispatcher consoles never
+    /// emit Motorola TALK_COMPLETE; only field radios do, so kind
+    /// = MotTalkComplete carries the field-radio RID). The
+    /// lifecycle layer closes the session on `MotTalkComplete` or
+    /// `CallTermination`; `BareTdu` is informational only (bare
+    /// TDUs are heavily false-positive on degenerate dibit
+    /// streams; the 5 s no-audio timeout is the backstop).
+    SpeakerEnd {
+        source: Option<u32>,
+        kind: TerminatorKind,
+    },
     /// 2026-04-24 CC-grant-centric refactor: every control-channel
     /// `GRP_VCH_GRANT` (opcode 0x00) and `GVCG_UPDT_EXP` (0x03) fires
     /// one of these. Carries everything the CC announced about the

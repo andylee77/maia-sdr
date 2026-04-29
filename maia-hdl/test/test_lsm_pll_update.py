@@ -680,5 +680,119 @@ class TestLsmPllUpdateReset(unittest.TestCase):
                 f"trajectory must match cold-start exactly")
 
 
+class TestLsmPllUpdateSeed(unittest.TestCase):
+    """2026-04-26: warm-start seed plumbing (`seed_in` port).
+
+    A 1-cycle `reset_in` pulse with a non-zero `seed_in` must load
+    the seed value into `pll_reg` (and therefore appear on
+    `pll_out` post-pulse). Tests both the linearised and CORDIC
+    forms — both have the same seed-load semantics in HDL.
+
+    On-target observation 2026-04-26 motivated this test: traffic
+    chain `pll_dbg` differed from control by 3254 LSBs after a
+    retune+reset, despite seeding being supposedly active.
+    Possibilities: (a) seed_in not propagating (HDL wiring bug),
+    (b) seed_in propagating but pll_reg not loading from it on
+    reset_in (HDL logic bug), (c) PS-side seed write isn't
+    landing in the register (PS bug). This class isolates (a)
+    and (b) — if the test passes, the HDL is correct and the
+    bug is on the PS side.
+    """
+
+    def _assert_seed_loads_on_reset(self, dut_cls, *, drain, seed_q13):
+        """Drive dut into a saturated state, set seed_in to a known
+        non-zero value, pulse reset_in, then verify pll_out reads
+        back the seed (not 0, not the saturated value)."""
+        dut = dut_cls()
+        results = {}
+
+        async def bench(ctx):
+            # Set the seed BEFORE the reset pulse and hold it. The
+            # HDL latches `pll_reg <= seed_in` on `reset_in`, so the
+            # seed must be present at the rising edge that also
+            # samples reset_in==1.
+            ctx.set(dut.seed_in, seed_q13)
+
+            # Drive the accumulator far from the seed value to
+            # guarantee the seed-load is what we observe (not a
+            # pre-existing match).
+            i_q15 = _q(0.5, INPUT_FRAC_BITS, 18)
+            q_q15 = _q(0.5, INPUT_FRAC_BITS, 18)
+            for _ in range(60):
+                ctx.set(dut.i_sym_in, i_q15)
+                ctx.set(dut.q_sym_in, q_q15)
+                ctx.set(dut.dibit_in, 0b10)
+                ctx.set(dut.symbol_strobe, 1)
+                await ctx.tick()
+                ctx.set(dut.symbol_strobe, 0)
+                for _ in range(drain):
+                    await ctx.tick()
+            pll_pre = ctx.get(dut.pll_out)
+            if pll_pre >= (1 << 15):
+                pll_pre -= (1 << 16)
+            results['pre'] = pll_pre
+
+            # Pulse reset_in for one sync cycle.
+            ctx.set(dut.reset_in, 1)
+            await ctx.tick()
+            ctx.set(dut.reset_in, 0)
+            for _ in range(drain):
+                await ctx.tick()
+
+            pll_post = ctx.get(dut.pll_out)
+            if pll_post >= (1 << 15):
+                pll_post -= (1 << 16)
+            results['post'] = pll_post
+
+        sim = Simulator(dut)
+        sim.add_clock(16e-9)
+        sim.add_testbench(bench)
+        sim.run()
+
+        # Pre-reset must be saturated (far from seed) so the
+        # post-reset seed-load is unambiguous.
+        self.assertNotEqual(
+            results['pre'], seed_q13,
+            f"pre-reset pll_out happened to equal seed ({seed_q13}); "
+            f"test cannot distinguish seed-load from coincidence")
+        # Post-reset must equal the seed.
+        self.assertEqual(
+            results['post'], seed_q13,
+            f"expected pll_out == seed_in ({seed_q13}) after reset "
+            f"pulse, got {results['post']} (delta = "
+            f"{results['post'] - seed_q13})")
+
+    def test_linearised_seed_loads_positive(self):
+        # Q2.13 representation of ~+0.150 rad/symbol drift — well
+        # within +/- pi/3 clamp, like a typical control-side
+        # converged value.
+        self._assert_seed_loads_on_reset(
+            LsmPllUpdateLinearised, drain=4, seed_q13=1234)
+
+    def test_linearised_seed_loads_negative(self):
+        # Mirror of the on-target observation: control chain
+        # converges to a negative pll_dbg (~-519 in the diagnostic
+        # capture).
+        self._assert_seed_loads_on_reset(
+            LsmPllUpdateLinearised, drain=4, seed_q13=-1234)
+
+    def test_cordic_seed_loads_positive(self):
+        # CORDIC_DRAIN is defined elsewhere; use 16 to match
+        # CORDIC pipeline depth in the rest of the file.
+        self._assert_seed_loads_on_reset(
+            LsmPllUpdate, drain=16, seed_q13=1234)
+
+    def test_cordic_seed_loads_negative(self):
+        self._assert_seed_loads_on_reset(
+            LsmPllUpdate, drain=16, seed_q13=-1234)
+
+    def test_cordic_seed_zero_matches_old_behavior(self):
+        """seed_in=0 (the default) must keep the old reset-clears
+        semantics — pll_reg loads 0, same as the pre-2026-04-26
+        runtime reset behavior."""
+        self._assert_seed_loads_on_reset(
+            LsmPllUpdate, drain=16, seed_q13=0)
+
+
 if __name__ == '__main__':
     unittest.main()

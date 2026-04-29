@@ -210,6 +210,10 @@ class LsmPllUpdateLinearised(Elaboratable):
         # `p25_top.py` from `lsm_control.lsm_reset` (W1P). See
         # `doc/changes/038_phase8_runtime_reset.md`.
         self.reset_in = Signal()
+        # 2026-04-26: warm-start seed (Q2.13 signed). Mirrors the
+        # CORDIC form's seed_in so LsmDemodLoop can wire the same
+        # signal regardless of pll_mode.
+        self.seed_in = Signal(signed(pll_width))
 
         # ── Outputs ─────────────────────────────────────────────
         self.pll_out = Signal(signed(pll_width), reset_less=True)
@@ -346,8 +350,8 @@ class LsmPllUpdateLinearised(Elaboratable):
         # this fires — we only need to clear the persistent state.
         with m.If(self.reset_in):
             m.d.sync += [
-                pll_reg.eq(0),
-                self.pll_out.eq(0),
+                pll_reg.eq(self.seed_in),
+                self.pll_out.eq(self.seed_in),
                 self.pll_strobe.eq(0),
                 raw_clamped_q.eq(0),
                 stage1_strobe.eq(0),
@@ -411,6 +415,12 @@ class LsmPllUpdate(Elaboratable):
         self.symbol_strobe = Signal()
         # Phase 8A: runtime reset. See LsmPllUpdateLinearised above.
         self.reset_in = Signal()
+        # 2026-04-26: warm-start seed loaded into pll_reg on reset_in.
+        # Q2.13 signed (same format as pll_out). Zero -> legacy cold
+        # start. Non-zero -> traffic chain warm-starts at the converged
+        # control-chain PLL value, eliminating the 100-500 ms acquire.
+        # See doc/diagnostics/2026-04-25/CHANNELIZER_REDESIGN.md.
+        self.seed_in = Signal(signed(pll_width))
 
         # ── Outputs ─────────────────────────────────────────────
         self.pll_out = Signal(signed(pll_width), reset_less=True)
@@ -595,8 +605,11 @@ class LsmPllUpdate(Elaboratable):
         # protocol guarantees that drain before it pulses reset.
         with m.If(self.reset_in):
             m.d.sync += [
-                pll_reg.eq(0),
-                self.pll_out.eq(0),
+                # Load seed (zero = legacy cold start). The post-CORDIC
+                # pipeline still drains/clears since those are derived
+                # from the symbol stream, not from pll_reg.
+                pll_reg.eq(self.seed_in),
+                self.pll_out.eq(self.seed_in),
                 self.pll_strobe.eq(0),
                 pending_skip.eq(0),
                 clamped_angle_q.eq(0),

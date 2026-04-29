@@ -956,15 +956,20 @@ impl ControlChannelDecoder {
                         self.system.nac = Some(nac);
                         self.nid_decoded_ok += 1;
 
-                        // Structured DUID log. Fires for every
-                        // successful NID decode on every chain
-                        // (control / traffic / ps_c4fm) so
-                        // `/api/log?category=duid` returns a
-                        // timestamped trail independent of downstream
-                        // dispatch. Logs chain + DUID + NAC + BCH
-                        // errors + raw-vs-corrected DUID for spotting
-                        // FEC corrections.
-                        if let Some(ref log) = self.event_log {
+                        // Structured DUID log. 2026-04-26 session-
+                        // lifecycle refactor: throttled to ONLY fire
+                        // when BCH corrected at least one error.
+                        // Previously fired on every NID decode on
+                        // every chain — on busy CCs this was 95%+
+                        // bch_err=0 noise that evicted GRANT /
+                        // recorder events from the 200-entry ring.
+                        // Aggregate counters on /api/chain
+                        // (`raw_duid_total`, `nid_decoded_tsdu`,
+                        // `nid_decoded_ok`) cover the "did we see
+                        // it" diagnostic; this log is now reserved
+                        // for the "FEC is correcting" diagnostic.
+                        if n_errors > 0 {
+                            if let Some(ref log) = self.event_log {
                             let duid_name: &'static str = match duid {
                                 DataUnit::Hdu => "HDU",
                                 DataUnit::Tdu => "TDU",
@@ -992,6 +997,7 @@ impl ControlChannelDecoder {
                                     "bch_duid":   format!("0x{:X}", duid_raw & 0xF),
                                 }),
                             );
+                            }
                         }
                         if matches!(duid, DataUnit::Tsdu) {
                             self.nid_decoded_tsdu += 1;
@@ -1037,7 +1043,9 @@ impl ControlChannelDecoder {
                         }
 
                         let expected_len = duid.length_dibits();
-                        tracing::info!(
+                        // 2026-04-27: downgraded INFO -> DEBUG.
+                        // Fires per successful NID (~10/sec).
+                        tracing::debug!(
                             target: "p25_decoder",
                             "NID OK: NAC=0x{:03X} DUID=0x{:X} ({:?}) raw_DUID=0x{:X} len={}",
                             nac_raw, duid_raw, duid, on_air_duid, expected_len,

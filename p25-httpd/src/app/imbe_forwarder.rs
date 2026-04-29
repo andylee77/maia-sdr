@@ -99,7 +99,7 @@ pub struct ImbeForwarder {
     /// of call N keep OLD TG even after follower retunes to call N+1 —
     /// prevents OLD tail being decoded with NEW JMBE state and routed
     /// into NEW call's recording. 2026-04-24 field-observed bug.
-    imbe_tx: tokio::sync::mpsc::Sender<(u16, u32, u64, [p25::voice_frame::ImbeFrameRaw; 9])>,
+    imbe_tx: tokio::sync::mpsc::Sender<(u16, u32, u64, u64, [p25::voice_frame::ImbeFrameRaw; 9])>,
     /// Optional broadcast channel for call-boundary events emitted
     /// from the voice handler. `None` on decoder instances that don't
     /// split calls (e.g. control-channel decoders).
@@ -208,6 +208,27 @@ pub struct ImbeForwarder {
     /// supposed to carry a real speaker RID). Separate counter from
     /// dedup so we can see which filter is doing the work.
     pub speaker_end_invalid: std::sync::atomic::AtomicU64,
+
+    /// 2026-04-26 per-call AGC tracking: the most recent
+    /// `traffic_lsm_agc_debug.agc_gain_dbg` (Q9.7 raw u16) sampled
+    /// by the periodic AGC poller spawned in `main.rs::cfg(linux)`.
+    /// `grant_stats` reads this at CallClose to record the
+    /// converged AGC gain per call. Useful for: (a) per-frequency
+    /// AGC seed cache (next step), (b) sanity-checking which calls
+    /// settled vs which never reached steady state.
+    pub last_traffic_agc_gain_q97: std::sync::atomic::AtomicU16,
+
+    /// 2026-04-26 per-freq AGC seed cache. Key = freq_hz of the
+    /// call. Value = exponential-moving-average of converged AGC
+    /// gain (Q9.7 raw u16) observed at CallClose for clear calls
+    /// on that freq. EMA smooths per-call variance (different
+    /// speakers, different signal levels) so the seed lands in
+    /// the ballpark instead of chasing one-shot values.
+    /// `update_agc_cache` adds samples; `agc_seed_for_freq` reads
+    /// for retune. In-memory only — first call after boot on a
+    /// new freq still cold-starts.
+    pub traffic_agc_freq_cache:
+        std::sync::Mutex<std::collections::HashMap<u64, u16>>,
 
     /// 2026-04-24 CC-centric refactor: rolling window of recent
     /// LDU1 LC FM: decodes used to gate the emission of
@@ -349,11 +370,53 @@ impl ImbeForwarder {
         self.queue_capacity_max()
             .saturating_sub(self.queue_capacity_remaining())
     }
+
+    /// 2026-04-26 per-freq AGC cache: blend a new sample.
+    /// EMA alpha = 0.3 (new samples weighed 30%, history 70%) —
+    /// smooths per-call variance from speaker level differences
+    /// and end-of-call AGC drift while still tracking medium-term
+    /// signal-strength shifts. Q9.7 arithmetic done in u32 to
+    /// avoid overflow on the multiply.
+    pub fn update_agc_cache(&self, freq_hz: u64, sample_q97: u16) {
+        if sample_q97 == 0 {
+            return; // ignore zero samples (uninitialised reads)
+        }
+        let Ok(mut cache) = self.traffic_agc_freq_cache.lock() else {
+            return;
+        };
+        let entry = cache.entry(freq_hz).or_insert(sample_q97);
+        // 0.3 * sample + 0.7 * existing, in fixed-point.
+        let blended = ((*entry as u32) * 7 + (sample_q97 as u32) * 3) / 10;
+        *entry = blended.min(u16::MAX as u32) as u16;
+    }
+
+    /// 2026-04-26 per-freq AGC cache lookup. Returns Q9.7 EMA
+    /// gain for `freq_hz` if any clear call has previously closed
+    /// on it. None on cache miss → caller falls back to GAIN_INIT
+    /// (= 0 in the seed register, which the HDL Mux loads as 1.0×).
+    pub fn agc_seed_for_freq(&self, freq_hz: u64) -> Option<u16> {
+        self.traffic_agc_freq_cache.lock().ok()
+            .and_then(|c| c.get(&freq_hz).copied())
+    }
+
+    /// 2026-04-26 snapshot of the AGC cache for /api/traffic.
+    /// Returns sorted (freq_hz, q97_gain, gain_float) tuples so
+    /// the dashboard can render a small "AGC seeds" panel.
+    pub fn agc_cache_snapshot(&self) -> Vec<(u64, u16, f32)> {
+        let Ok(cache) = self.traffic_agc_freq_cache.lock() else {
+            return Vec::new();
+        };
+        let mut v: Vec<(u64, u16, f32)> = cache.iter()
+            .map(|(&f, &g)| (f, g, g as f32 / 128.0))
+            .collect();
+        v.sort_by_key(|&(f, _, _)| f);
+        v
+    }
 }
 
 impl ImbeForwarder {
     pub fn new(
-        imbe_tx: tokio::sync::mpsc::Sender<(u16, u32, u64, [p25::voice_frame::ImbeFrameRaw; 9])>,
+        imbe_tx: tokio::sync::mpsc::Sender<(u16, u32, u64, u64, [p25::voice_frame::ImbeFrameRaw; 9])>,
     ) -> Self {
         Self {
             hdu_count: 0.into(),
@@ -409,6 +472,9 @@ impl ImbeForwarder {
             last_speaker_end_ms: 0.into(),
             speaker_end_deduplicated: 0.into(),
             speaker_end_invalid: 0.into(),
+            last_traffic_agc_gain_q97: 0.into(),
+            traffic_agc_freq_cache: std::sync::Mutex::new(
+                std::collections::HashMap::new()),
             ldu1_fm_history: std::sync::Mutex::new(Ldu1FmHistory::new()),
             ldu1_lc_source_emitted: 0.into(),
             ldu1_lc_source_rejected_implausible: 0.into(),
@@ -536,7 +602,15 @@ impl ImbeForwarder {
         // of the prior tg+source heuristic.
         let src = self.current_source.load(Ordering::Relaxed);
         let call_id = self.current_call_id.load(Ordering::Relaxed);
-        match self.imbe_tx.try_send((tg, src, call_id, *frames)) {
+        // Wall-clock capture time stamped at LDU dispatch so the
+        // recorder can route chunks to the right session by capture
+        // time vs (open_at_ms, close_at_ms) — late chunks crossing
+        // a CallClose still land in the closing recording's WAV.
+        let captured_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        match self.imbe_tx.try_send((tg, src, call_id, captured_at_ms, *frames)) {
             Ok(()) => {
                 // Only advance when frames actually entered the queue —
                 // a dropped send never produces PCM, so advancing would
@@ -614,7 +688,6 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         body_raw: &[u8],
     ) {
         use std::sync::atomic::Ordering;
-        self.log_duid("LDU1");
         self.ldu1_count.fetch_add(1, Ordering::Relaxed);
         self.touch_imbe(9);
         self.forward_frames(frames);
@@ -646,8 +719,8 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         let svc_opts_render =
             p25::tsbk::service_options::render(svc_opts);
         let summary = format!(
-            "LDU1 VOICE GROUP VOICE CHANNEL USER FM:{} TO:{} SERVICE OPTIONS:{}",
-            source, tg_locked, svc_opts_render,
+            "LDU1 GROUP VOICE CHANNEL USER TG={} SRC={} OPTS:{}",
+            tg_locked, source, svc_opts_render,
         );
         // 2026-04-25: enrich the activity log entry with CC cross-
         // check fields so the dashboard can filter LDU1 LC entries
@@ -800,7 +873,6 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         body_raw: &[u8],
     ) {
         use std::sync::atomic::Ordering;
-        self.log_duid("LDU2");
         self.ldu2_count.fetch_add(1, Ordering::Relaxed);
         self.touch_imbe(9);
         self.forward_frames(frames);
@@ -870,7 +942,6 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
 
     fn on_hdu(&self, body_raw: &[u8]) {
         use std::sync::atomic::Ordering;
-        self.log_duid("HDU");
         self.hdu_count.fetch_add(1, Ordering::Relaxed);
 
         // Snapshot current cumulative counters as the baseline for
@@ -952,7 +1023,6 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
 
     fn on_tdu(&self) {
         use std::sync::atomic::Ordering;
-        self.log_duid("TDU");
         self.tdu_count.fetch_add(1, Ordering::Relaxed);
         // Bare TDU is a real end-of-call signal (just without the Link
         // Control payload TDU_LC carries). Route through SpeakerEnd so
@@ -993,6 +1063,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                 self.try_emit_speaker_end(tx, audio::CallBoundary {
                     kind: audio::CallBoundaryKind::SpeakerEnd {
                         source: src_for_boundary,
+                        kind: audio::TerminatorKind::BareTdu,
                     },
                     nac,
                     talkgroup: if tg == 0 { None } else { Some(tg) },
@@ -1008,7 +1079,6 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
 
     fn on_tdu_lc(&self, body_raw: &[u8]) {
         use std::sync::atomic::Ordering;
-        self.log_duid("TDU_LC");
         self.tdu_lc_count.fetch_add(1, Ordering::Relaxed);
 
         // Motorola TALK_COMPLETE LCW -> boundary event with BY: source.
@@ -1065,6 +1135,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                     self.try_emit_speaker_end(tx, audio::CallBoundary {
                         kind: audio::CallBoundaryKind::SpeakerEnd {
                             source: Some(by_radio_id),
+                            kind: audio::TerminatorKind::MotTalkComplete,
                         },
                         nac,
                         expected_submit_count: self
@@ -1090,8 +1161,8 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                 // Mirror SDRTrunk's `TDULC MOTOROLA TALK COMPLETE BY:<src>`
                 // line into the activity feed + event log.
                 let summary = format!(
-                    "TDULC MOTOROLA TALK COMPLETE BY:{} TG:{}",
-                    by_radio_id, tg,
+                    "TDULC MOTOROLA TALK COMPLETE TG={} SRC={}",
+                    tg, by_radio_id,
                 );
                 self.emit_activity(&summary, serde_json::json!({
                     "timestamp":  p25::control_channel::chrono_timestamp(),
@@ -1112,7 +1183,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                 // FM:0 TO:<TG>`. Fires many times per call (tail burst);
                 // dashboard collapses duplicates by type.
                 let summary = format!(
-                    "TDULC GROUP VOICE CHANNEL USER FM:0 TO:{}", lc_tg
+                    "TDULC GROUP VOICE CHANNEL USER TG={}", lc_tg,
                 );
                 self.emit_activity(&summary, serde_json::json!({
                     "timestamp":  p25::control_channel::chrono_timestamp(),
@@ -1182,6 +1253,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                     self.try_emit_speaker_end(tx, audio::CallBoundary {
                         kind: audio::CallBoundaryKind::SpeakerEnd {
                             source: src_for_boundary,
+                            kind: audio::TerminatorKind::CallTermination,
                         },
                         nac,
                         talkgroup: Some(tg),

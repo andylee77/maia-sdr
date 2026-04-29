@@ -54,29 +54,53 @@ pub async fn get_recordings(
 }
 
 
-/// `GET /api/grant_decode_stats`
+/// `GET /api/grant_decode_stats[?include_enc=1]`
 ///
 /// Ring of recent completed grants with per-call decode deltas:
 /// IMBE extracted / dropped, vocoder samples / errors / silent,
 /// duration, first_imbe_ms, encryption, source, etc. Populated by
 /// the `grant_stats` subscriber on the CallBoundary broadcast.
-/// Newest-first, cap 20.
+/// Newest-first.
+///
+/// 2026-04-29: split into two rings — clear (followed, audio-
+/// bearing) and encrypted/not_followed. Default returns clear
+/// only so heavy ENC site activity doesn't crowd out clear-call
+/// entries that recordings need to pair against by call_id.
+/// `?include_enc=1` merges the encrypted ring on top.
 ///
 /// Designed to attribute audio-quality issues per-call: short vs
 /// long, first-LDU latency, drop-count distribution, silent-frame
 /// rate — without cross-referencing global counters.
 pub async fn get_grant_decode_stats(
     State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<
+        std::collections::HashMap<String, String>,
+    >,
 ) -> Json<serde_json::Value> {
-    let items: Vec<_> = {
+    let include_enc = params.get("include_enc")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    let mut items: Vec<_> = {
         match state.grant_decode_stats.lock() {
             Ok(r) => r.iter().rev().cloned().collect(),
             Err(_) => Vec::new(),
         }
     };
+    let enc_count = state.enc_grant_decode_stats.lock()
+        .map(|r| r.len()).unwrap_or(0);
+    if include_enc {
+        let enc_items: Vec<_> = state.enc_grant_decode_stats.lock()
+            .map(|r| r.iter().rev().cloned().collect())
+            .unwrap_or_default();
+        items.extend(enc_items);
+        // Sort merged list newest-first by started_unix_ms.
+        items.sort_by_key(|x| std::cmp::Reverse(x.started_unix_ms));
+    }
     Json(serde_json::json!({
         "count": items.len(),
         "items": items,
+        "include_enc": include_enc,
+        "enc_ring_size": enc_count,
     }))
 }
 

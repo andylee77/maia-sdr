@@ -30,7 +30,7 @@ use crate::vocoder;
 /// from backing up on worker-pool scheduling jitter. `blocking_recv()`
 /// preserves the backpressure semantics of the async version.
 pub fn spawn_vocoder_thread(
-    imbe_rx: Receiver<(u16, u32, u64, [ImbeFrameRaw; 9])>,
+    imbe_rx: Receiver<(u16, u32, u64, u64, [ImbeFrameRaw; 9])>,
     voc_forwarder: Arc<ImbeForwarder>,
     voc_audio_tx: broadcast::Sender<AudioChunk>,
     voc_event_log: Arc<EventLog>,
@@ -122,7 +122,7 @@ pub fn spawn_vocoder_thread(
             };
 
             tracing::info!(target: "p25_vocoder", "vocoder thread started (dedicated OS thread)");
-            while let Some((batch_tg, batch_source, batch_call_id, frames)) = rx.blocking_recv() {
+            while let Some((batch_tg, batch_source, batch_call_id, batch_captured_at_ms, frames)) = rx.blocking_recv() {
                 // Surface the TG of the batch we're ABOUT to decode
                 // on /api/traffic. Distinct from current_talkgroup
                 // (follower's intent) — this is what the audio path
@@ -272,6 +272,7 @@ pub fn spawn_vocoder_thread(
                         talkgroup: tg,
                         source,
                         call_id: batch_call_id,
+                        captured_at_ms: batch_captured_at_ms,
                     });
                 }
             }

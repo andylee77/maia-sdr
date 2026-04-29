@@ -783,6 +783,24 @@ impl IpCore {
             .modify(|_, w| w.traffic_lsm_reset().bit(true));
     }
 
+    /// Write the traffic LSM warm-start seeds. The PLL seed (Q2.13
+    /// signed) is latched into the traffic Costas accumulator and
+    /// the AGC seed (Q9.7 unsigned, FPGA pads to Q9.11 internally)
+    /// is latched into the traffic AGC gain register on the next
+    /// `pulse_traffic_lsm_reset()`. Zero values fall back to the
+    /// legacy cold-start (pll=0, gain=GAIN_INIT). See
+    /// `retune_traffic_chain` for the standard call site.
+    pub fn set_traffic_lsm_seeds(&self, pll_q213: i16, agc_q97: u16) {
+        self.registers
+            .traffic_lsm_control()
+            .modify(|_, w| unsafe {
+                w.traffic_pll_seed().bits(pll_q213 as u16)
+            });
+        self.registers
+            .traffic_lsm_agc_config()
+            .modify(|_, w| unsafe { w.traffic_agc_seed().bits(agc_q97) });
+    }
+
     /// Freeze-reset-thaw the traffic LSM chain across a DDC retune.
     ///
     /// Sequence:
@@ -804,7 +822,19 @@ impl IpCore {
         &self,
         frequency_hz: f64,
         sample_rate_hz: f64,
-    ) -> Result<()> {
+        agc_seed_q97: u16,
+    ) -> Result<SeedLoadDiag> {
+        // Order matters here. Pre-2026-04-26 we did seed+reset AFTER
+        // re-enabling the chain, which left a microsecond window
+        // where the demod ran with stale pll_reg/gain values from
+        // the previous freq before the reset pulse latched the new
+        // seeds. On-target observation showed retune-path calls
+        // still hit the cold-acquire fingerprint (~3.5 s to first
+        // IMBE) while nco_skip-path calls converged in <100 ms —
+        // the difference was that brief stale-state window. Now we
+        // write seeds + pulse reset WHILE THE CHAIN IS DISABLED,
+        // then flip enable. The chain comes alive already at the
+        // seeded lock value with no transient pipeline state.
         self.set_traffic_lsm_enable(false);
         self.set_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
         // Let the DDC FIR cascade flush before un-freezing the LSM
@@ -812,9 +842,52 @@ impl IpCore {
         // 8 MSPS with /4 /4 /8 = 176+128+256 taps). See
         // doc/changes/037 for the measurement that motivated this.
         std::thread::sleep(std::time::Duration::from_millis(2));
-        self.set_traffic_lsm_enable(true);
+        // Read control-chain converged PLL + AGC. Both chains share
+        // the same crystal trim, so this is the correct lock value
+        // for any P25 carrier on this board (per the SDRTrunk PPM-
+        // sweep evidence in CHANNELIZER_REDESIGN.md).
+        //
+        // 2026-04-26: AGC seeding disabled. Field observation: when
+        // control chain converged to a high gain (e.g., 33×) on a
+        // weak control-freq signal, seeding that into the traffic
+        // chain on a different freq with a stronger signal saturated
+        // the slicer — every dibit biased to 0b11, BCH "corrected"
+        // every NID to DUID=0xF (TDU_LC), producing 16 false
+        // TDU_LC dispatches per second and zero real LDU frames.
+        // PLL seeding is fine (shared crystal trim makes it portable
+        // across freqs); AGC seeding isn't (per-freq signal level
+        // varies). Pass 0 → HDL Mux loads GAIN_INIT (= 1.0); the
+        // AGC re-converges from unity in ~100 ms.
+        let (pll_seed, _) = self.lsm_debug();
+        let (traffic_pll_pre, _) = self.traffic_lsm_debug();
+        let (traffic_agc_pre, _) = self.traffic_lsm_agc_debug();
+        // 2026-04-26 per-freq AGC seed. Caller passes a Q9.7 cache
+        // hit (or 0 for cold-start fallback to GAIN_INIT). PLL seed
+        // is always the control chain's converged value.
+        self.set_traffic_lsm_seeds(pll_seed, agc_seed_q97);
+        // Pulse reset while still disabled. The reset_in pulse
+        // propagates to the LSM submodules even with strobes gated
+        // (gating is at LsmDecimator2's strobe input; reset_in is a
+        // separate sync-domain signal that still drives the FSM/reg
+        // assignments). After this the demod state is at the seeded
+        // values, ready to run on the first strobe post-enable.
         self.pulse_traffic_lsm_reset();
-        Ok(())
+        // 2026-04-26 seed-load diagnostic. PLL diff > 2 = HDL/CDC
+        // bug. AGC diff is informational — when seed=0, HDL loads
+        // GAIN_INIT (=128 Q9.7 = 1.0×), so post != 0 in that case
+        // is expected. When seed!=0, post should match seed within
+        // CDC jitter.
+        let (traffic_pll_post, _) = self.traffic_lsm_debug();
+        let (traffic_agc_post, _) = self.traffic_lsm_agc_debug();
+        self.set_traffic_lsm_enable(true);
+        Ok(SeedLoadDiag {
+            pll_seed_written: pll_seed,
+            traffic_pll_pre_reset: traffic_pll_pre,
+            traffic_pll_post_reset: traffic_pll_post,
+            agc_seed_written: agc_seed_q97,
+            traffic_agc_pre_reset: traffic_agc_pre,
+            traffic_agc_post_reset: traffic_agc_post,
+        })
     }
 
     /// Quiesce the traffic LSM chain between calls. Counterpart to
@@ -1056,6 +1129,52 @@ enum DmaChannel {
     TrafficIq,
     PreDiffIq,
     TrafficPreDiffIq,
+}
+
+/// 2026-04-26 PLL seed-load diagnostic returned from
+/// `retune_traffic_chain`. Lets the caller emit an event_log
+/// entry visible via `/api/log` (no SSH/journal required).
+///
+/// `pll_seed_written` is the Q2.13 value the PS pulled from
+/// `lsm_debug()` (control chain converged) and wrote to the
+/// `traffic_pll_seed` register before pulsing reset.
+/// `traffic_pll_post_reset` is the Q2.13 value read back from
+/// `traffic_lsm_debug.pll_dbg` immediately after the reset pulse
+/// — should equal `pll_seed_written` within CDC sync jitter
+/// (~+/-2 LSB) if the seed is loading correctly.
+/// `traffic_pll_pre_reset` is the value before the seed write,
+/// useful for spotting drift between calls.
+#[derive(Debug, Clone, Copy)]
+pub struct SeedLoadDiag {
+    pub pll_seed_written: i16,
+    pub traffic_pll_pre_reset: i16,
+    pub traffic_pll_post_reset: i16,
+    /// 2026-04-26 AGC seed (Q9.7 raw u16). 0 = no cache hit; HDL
+    /// Mux loads GAIN_INIT (= 1.0×) on seed_in==0. Non-zero =
+    /// per-freq cache value passed in by the caller.
+    pub agc_seed_written: u16,
+    pub traffic_agc_pre_reset: u16,
+    pub traffic_agc_post_reset: u16,
+}
+
+impl SeedLoadDiag {
+    /// Drift between intended PLL seed and observed pll_dbg post-reset.
+    pub fn drift(&self) -> i32 {
+        (self.traffic_pll_post_reset as i32)
+            - (self.pll_seed_written as i32)
+    }
+    /// True if the PLL readback is far enough from the intended
+    /// seed that we suspect the seed didn't propagate.
+    pub fn looks_buggy(&self) -> bool {
+        self.drift().abs() > 2
+    }
+    /// AGC drift (post - intended). For seed=0 the HDL loads
+    /// GAIN_INIT, so post can be quite different — only check
+    /// AGC drift when a non-zero seed was passed.
+    pub fn agc_drift(&self) -> i32 {
+        (self.traffic_agc_post_reset as i32)
+            - (self.agc_seed_written as i32)
+    }
 }
 
 /// Snapshot of the `lsm_status` / `traffic_lsm_status` register read in

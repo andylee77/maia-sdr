@@ -152,6 +152,11 @@ class LsmDemod(Elaboratable):
         # Default matches LsmAgc constructor kwarg default so tests /
         # simulations without a driving register still work.
         self.agc_mag_update_threshold_in = Signal(unsigned(16))
+        # 2026-04-26: warm-start seeds passed through to LsmDemodLoop.
+        # Latched on `reset_in` pulse. Zero -> legacy cold start. See
+        # doc/diagnostics/2026-04-25/CHANNELIZER_REDESIGN.md.
+        self.pll_seed_in = Signal(signed(16))
+        self.agc_seed_in = Signal(20)
 
         # ── Pass-through dibit stream ───────────────────────────
         self.dibit_out = Signal(2)
@@ -226,6 +231,9 @@ class LsmDemod(Elaboratable):
             self.agc_gain_dbg.eq(demod_loop.agc_gain_dbg),
             self.agc_mag_dbg.eq(demod_loop.agc_mag_dbg),
             self.agc_gate_dbg.eq(demod_loop.agc_gate_dbg),
+            # 2026-04-26: PLL + AGC warm-start seeds.
+            demod_loop.pll_seed_in.eq(self.pll_seed_in),
+            demod_loop.agc_seed_in.eq(self.agc_seed_in),
         ]
 
         # ── Stage 0: per-channel DC blocking ───────────────────

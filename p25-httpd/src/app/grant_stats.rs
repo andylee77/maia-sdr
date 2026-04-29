@@ -30,10 +30,15 @@ use crate::app::grant_follower::{
 };
 use crate::app::imbe_forwarder::ImbeForwarder;
 
-/// Ring cap. 50 most-recent completed grants. Bigger than the pre-
-/// 2026-04-24 cap of 20 because the CC-centric model also enters
-/// sticky-rejected, monitor-rejected, and encrypted grants.
-const RING_CAP: usize = 50;
+/// Ring cap. Most-recent completed grants. 2026-04-26 raised from
+/// 50 to 200 because grants are heavily dominated by encrypted
+/// not-followed entries (every TG-402 ENC GRANT TSBK enters here
+/// with no audio), and the dashboard joins recordings to grants by
+/// `call_id`. With 50, the grant ring rolls past every recording
+/// older than ~10 minutes of activity, orphaning them. 200 covers
+/// a busy hour comfortably and keeps recordings paired with their
+/// grant metadata. Per-entry size ~250 B → 50 KB total worst case.
+const RING_CAP: usize = 200;
 
 /// Shared ring of completed grant summaries.
 pub type GrantStatsRing = Arc<Mutex<VecDeque<GrantDecodeSummary>>>;
@@ -81,6 +86,21 @@ pub struct GrantDecodeSummary {
     /// 2026-04-25 Phase 2: serialised close reason from
     /// `call_tracker::CloseReason`.
     pub close_reason: CloseReason,
+    /// 2026-04-26 session-lifecycle refactor: every distinct SRC
+    /// observed during the bundled grant — primary GRANT.SRC,
+    /// LDU1 LC voted SRC, TDULC MOT BY:. Insertion order. Single-
+    /// speaker calls have one entry (or zero if no SRC landed).
+    /// Multi-speaker bundled grants list every speaker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources_observed: Vec<u32>,
+    /// 2026-04-26 per-call AGC tracking. Q9.7 raw u16 sampled
+    /// from `traffic_lsm_agc_debug.agc_gain_dbg` at CallClose.
+    /// Equals last value written by the periodic AGC poller
+    /// (250 ms cadence in main.rs). Display value: `raw / 128.0`.
+    /// `None` when no audio landed (chain produced nothing —
+    /// either encrypted, sticky-rejected, or chain settle failed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agc_gain_q97_at_close: Option<u16>,
 }
 
 struct ActiveSummary {
@@ -93,7 +113,6 @@ struct ActiveSummary {
     not_followed: Option<&'static str>,
     started_unix_ms: u64,
     started_instant: Instant,
-    last_imbe_ms_at_open: u64,
     base: Counters,
     freq_hz: Option<u64>,
     channel: Option<String>,
@@ -133,16 +152,24 @@ impl Counters {
 
 /// Spawn the grant_stats subscriber task. Subscribes to the
 /// `CallTrackerEvent` broadcast.
+///
+/// 2026-04-29: takes two rings — `clear_ring` for followed
+/// (audio-bearing) calls and `enc_ring` for encrypted /
+/// not_followed grants. Routing happens at CallClose by
+/// inspecting `summary.encrypted` and `summary.not_followed`.
+/// Recordings only pair against `clear_ring`'s call_ids, so
+/// heavy ENC activity can't crowd out clear entries.
 pub fn spawn_grant_stats_task(
     tracker_tx: CallTrackerEventTx,
     forwarder: Arc<ImbeForwarder>,
-    ring: GrantStatsRing,
+    clear_ring: GrantStatsRing,
+    enc_ring: GrantStatsRing,
 ) {
     let mut rx = tracker_tx.subscribe();
     tokio::spawn(async move {
         let mut active: Option<ActiveSummary> = None;
         while let Ok(event) = rx.recv().await {
-            handle_event(event, &mut active, &forwarder, &ring).await;
+            handle_event(event, &mut active, &forwarder, &clear_ring, &enc_ring).await;
         }
     });
 }
@@ -151,7 +178,8 @@ async fn handle_event(
     event: CallTrackerEvent,
     active: &mut Option<ActiveSummary>,
     forwarder: &Arc<ImbeForwarder>,
-    ring: &GrantStatsRing,
+    clear_ring: &GrantStatsRing,
+    enc_ring: &GrantStatsRing,
 ) {
     match event.kind {
         CallTrackerEventKind::CallOpen {
@@ -170,13 +198,11 @@ async fn handle_event(
                 );
                 let summary = finalise_summary(
                     &prev, prev.source, prev.actual_speaker,
-                    CloseReason::Timeout, forwarder,
+                    CloseReason::Timeout, None, forwarder,
                 );
-                push(ring, summary);
+                route_push(clear_ring, enc_ring, summary);
             }
             let base = Counters::snapshot(forwarder);
-            let last_imbe_ms_at_open = forwarder
-                .last_imbe_at_millis.load(Ordering::Relaxed);
             *active = Some(ActiveSummary {
                 call_id: event.call_id,
                 tg,
@@ -187,7 +213,6 @@ async fn handle_event(
                 not_followed,
                 started_unix_ms: event.timestamp_unix_ms,
                 started_instant: Instant::now(),
-                last_imbe_ms_at_open,
                 base,
                 freq_hz,
                 channel,
@@ -212,7 +237,8 @@ async fn handle_event(
 
         CallTrackerEventKind::CallClose {
             reason, final_source, final_actual_speaker,
-            expected_submit_count, ..
+            expected_submit_count, first_audio_at_unix_ms,
+            sources_observed, ..
         } => {
             let Some(prev) = active.take() else { return; };
             if prev.call_id != event.call_id {
@@ -239,10 +265,22 @@ async fn handle_event(
                     std::time::Duration::from_millis(50)).await;
             }
 
-            let summary = finalise_summary(
-                &prev, final_source, final_actual_speaker, reason, forwarder,
+            let mut summary = finalise_summary(
+                &prev, final_source, final_actual_speaker, reason,
+                first_audio_at_unix_ms, forwarder,
             );
-            push_if_interesting(ring, summary);
+            summary.sources_observed = sources_observed;
+            // 2026-04-26 per-freq AGC EMA cache. Update on every
+            // clear call that produced audio; the next retune to
+            // this freq will seed AGC from the cache.
+            if summary.imbe_extracted > 0 {
+                if let (Some(freq), Some(gain)) =
+                    (summary.freq_hz, summary.agc_gain_q97_at_close)
+                {
+                    forwarder.update_agc_cache(freq, gain);
+                }
+            }
+            route_push(clear_ring, enc_ring, summary);
         }
     }
 }
@@ -252,6 +290,7 @@ fn finalise_summary(
     final_source: Option<u32>,
     final_actual_speaker: Option<u32>,
     close_reason: CloseReason,
+    first_audio_at_unix_ms: Option<u64>,
     forwarder: &ImbeForwarder,
 ) -> GrantDecodeSummary {
     let now_ms = std::time::SystemTime::now()
@@ -261,15 +300,17 @@ fn finalise_summary(
     let now_counters = Counters::snapshot(forwarder);
     let dur_ms = a.started_instant.elapsed().as_millis() as u64;
 
-    let last_imbe_ms_now = forwarder
-        .last_imbe_at_millis.load(Ordering::Relaxed);
-    let first_imbe_ms = if last_imbe_ms_now > a.last_imbe_ms_at_open
-        && a.started_unix_ms > 0
-    {
-        Some(last_imbe_ms_now.saturating_sub(a.started_unix_ms))
-    } else {
-        None
-    };
+    // 2026-04-26: replace the old `last_imbe_at_millis - started`
+    // computation (which was misnamed and reported `last - start`,
+    // i.e. essentially the call duration) with the call_tracker's
+    // `first_audio_at_unix_ms` — a real first-audio timestamp set
+    // by the lifecycle owner the moment the first HDU/audio chunk
+    // arrives. Now `first_imbe_ms` actually means "milliseconds
+    // from CallOpen to first audio bit", which is the seeding /
+    // PLL-acquire metric we wanted.
+    let first_imbe_ms = first_audio_at_unix_ms
+        .filter(|&t| a.started_unix_ms > 0 && t >= a.started_unix_ms)
+        .map(|t| t.saturating_sub(a.started_unix_ms));
 
     GrantDecodeSummary {
         call_id: a.call_id,
@@ -288,7 +329,7 @@ fn finalise_summary(
         ended_unix_ms: now_ms,
         duration_ms: dur_ms,
         first_imbe_ms,
-        first_audio_at_unix_ms: None, // populated by call_tracker via SourceUpdate / CallClose; reserved for next pass
+        first_audio_at_unix_ms,
         hdu_count:
             now_counters.hdu.saturating_sub(a.base.hdu),
         ldu1_count:
@@ -316,26 +357,57 @@ fn finalise_summary(
         freq_hz: a.freq_hz,
         channel: a.channel.clone(),
         close_reason,
+        sources_observed: Vec::new(),
+        // 2026-04-26 per-call AGC: read the periodic poller's
+        // last sample. None when no audio landed in this call
+        // (chain produced nothing → no meaningful "converged"
+        // value).
+        agc_gain_q97_at_close: {
+            let imbe_extracted_delta = now_counters
+                .imbe_extracted.saturating_sub(a.base.imbe_extracted);
+            if imbe_extracted_delta > 0 {
+                Some(forwarder.last_traffic_agc_gain_q97
+                    .load(Ordering::Relaxed))
+            } else {
+                None
+            }
+        },
     }
 }
 
 /// Drop heartbeat-ghost summaries — zero IMBE, no HDU, no rejection
 /// reason. Belt-and-braces guard.
-fn push_if_interesting(ring: &GrantStatsRing, summary: GrantDecodeSummary) {
-    let interesting = summary.imbe_extracted > 0
-        || summary.hdu_count > 0
-        || summary.not_followed.is_some();
-    if interesting {
-        push(ring, summary);
-    }
-}
 
-fn push(ring: &GrantStatsRing, summary: GrantDecodeSummary) {
+fn push(ring: &GrantStatsRing, summary: GrantDecodeSummary, cap: usize) {
     if let Ok(mut r) = ring.lock() {
-        if r.len() >= RING_CAP { r.pop_front(); }
+        if r.len() >= cap { r.pop_front(); }
         r.push_back(summary);
     }
 }
+
+/// 2026-04-29: route a finalised summary into the clear or enc
+/// ring based on its encryption / not_followed status. Encrypted
+/// or not_followed grants go to the enc ring (smaller cap, kept
+/// separate so heavy ENC activity doesn't crowd out clear-call
+/// entries that recordings need to pair against by call_id).
+fn route_push(
+    clear_ring: &GrantStatsRing,
+    enc_ring: &GrantStatsRing,
+    summary: GrantDecodeSummary,
+) {
+    if summary.encrypted || summary.not_followed.is_some() {
+        push(enc_ring, summary, ENC_RING_CAP);
+    } else {
+        push(clear_ring, summary, RING_CAP);
+    }
+}
+
+/// 2026-04-29 enc-side ring cap. Smaller than the clear ring
+/// because the encrypted ring's only consumer is the dashboard
+/// (operator visibility into ENC activity); recordings never
+/// pair against it. 50 covers a few minutes of ENC chatter on
+/// a busy site.
+const ENC_RING_CAP: usize = 50;
 
 pub fn new_ring() -> GrantStatsRing {
     Arc::new(Mutex::new(VecDeque::with_capacity(RING_CAP)))

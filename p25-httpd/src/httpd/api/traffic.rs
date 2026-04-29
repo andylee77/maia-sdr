@@ -170,13 +170,22 @@ pub async fn get_traffic(
                     }
                     let core = state.ip_core.lock().await;
                     let sample_rate_hz = 8_000_000.0_f64;
+                    // Manual retune via /api/traffic?retune_hz=...
+                    // is for diagnostics — pass agc_seed=0 (cold
+                    // start) since we have no freq context here.
                     match core.retune_traffic_chain(
                         offset_hz as f64,
                         sample_rate_hz,
+                        0,
                     ) {
-                        Ok(()) => {
+                        Ok(diag) => {
                             applied.push(format!(
-                                "retune_hz={offset_hz} (full chain)"
+                                "retune_hz={offset_hz} (full chain) \
+                                 seed={} pre={} post={} drift={}",
+                                diag.pll_seed_written,
+                                diag.traffic_pll_pre_reset,
+                                diag.traffic_pll_post_reset,
+                                diag.drift(),
                             ));
                             // Mirror manager-side bookkeeping so
                             // /api/traffic shows the new offset
@@ -553,6 +562,28 @@ pub async fn get_traffic(
                 state.recorder_diag
                     .boundary_lag_events
                     .load(Ordering::Relaxed),
+            // 2026-04-26 routing-loss diagnostics. Each = 1 IMBE
+            // frame = 20 ms of dropped audio. Should both stay near
+            // 0; non-zero values quantify the audio lost between
+            // vocoder and recorder.
+            //
+            // `chunks_dropped_call_id_mismatch`: forwarder stamped
+            // a chunk with a call_id that didn't match the active
+            // recording's. Suggests `mirror_active` is propagating
+            // `current_call_id` slower than the audio path.
+            //
+            // `chunks_dropped_no_active`: chunk arrived when the
+            // recorder had no active recording — typically the gap
+            // between trailing-PCM drain end and the next CallOpen.
+            // The dominant short-call loss path observed 2026-04-26.
+            "recorder_chunks_dropped_call_id_mismatch":
+                state.recorder_diag
+                    .chunks_dropped_call_id_mismatch
+                    .load(Ordering::Relaxed),
+            "recorder_chunks_dropped_no_active":
+                state.recorder_diag
+                    .chunks_dropped_no_active
+                    .load(Ordering::Relaxed),
         })
     };
 
@@ -576,6 +607,21 @@ pub async fn get_traffic(
             "tdu_lc":             d.tdu_lc_count,
         })
     };
+
+    // 2026-04-26 per-freq AGC seed cache snapshot. Each entry is
+    // the EMA of converged AGC gain seen at CallClose for clear
+    // calls on that freq. Used by retune_traffic_chain to seed
+    // the chain's AGC at known-good values instead of the cold
+    // GAIN_INIT (1.0×). Empty = no clear calls have closed yet.
+    let agc_freq_cache_json: Vec<serde_json::Value> = state.imbe_forwarder
+        .agc_cache_snapshot()
+        .into_iter()
+        .map(|(f, q97, gain)| serde_json::json!({
+            "freq_hz": f,
+            "gain_q97": q97,
+            "gain": gain,
+        }))
+        .collect();
 
     // Phase 7C: pull the encryption flag from the currently-locked
     // grant, if any. The grant follower's TrafficChain holds the
@@ -649,6 +695,7 @@ pub async fn get_traffic(
         "irq":                       irq_json,
         "traffic_lsm_chain":         traffic_lsm_chain_json,
         "control_lsm_agc":           control_agc_json,
+        "agc_freq_cache":            agc_freq_cache_json,
         "applied":                   applied,
         "errors":                    errors,
         "phase":                     "7C",

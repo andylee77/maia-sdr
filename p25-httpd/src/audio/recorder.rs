@@ -83,6 +83,18 @@ pub const STORAGE_DIR: &str = "/tmp/p25_recordings";
 /// close.
 const FINALIZE_GRACE: Duration = Duration::from_millis(15_000);
 
+/// 2026-04-26 session-lifecycle refactor: closing-state drain.
+/// When CallClose arrives, the recorder sets `active.close_at_ms`
+/// and keeps the recording open in the active slot. Audio chunks
+/// with `captured_at_ms <= close_at_ms` continue to land via the
+/// normal capture-time-window route. The periodic tick finalises
+/// the recording `CLOSING_DRAIN_MS` after `close_at_ms`. 2 s is
+/// generous vs observed worst-case vocoder + queue lag (~250-400
+/// ms typical, multi-second only during chain settle on retune
+/// — and captured_at_ms timestamping makes that case irrelevant
+/// here).
+const CLOSING_DRAIN_MS: u64 = 2_000;
+
 /// Minimum duration before a recording is worth keeping. Originally
 /// 500 ms to guard against phantom 1-frame "calls" from TDU_LC
 /// bursts; 2026-04-25 lowered to 0 because real short PTTs ("yes",
@@ -166,6 +178,42 @@ pub struct RecordingEntry {
     /// grant. None on pre-2026-04-24 entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
+    /// 2026-04-26 routing-loss attribution. One chunk = 1 IMBE frame
+    /// = 160 PCM samples = 20 ms. `chunks_match` chunks landed via
+    /// exact `chunk.call_id == self.call_id`; `chunks_zero_callid`
+    /// chunks were defensively appended on `chunk.call_id == 0`
+    /// (forwarder hadn't yet received `mirror_active`'s update);
+    /// `chunks_drain` chunks were captured during the post-CallClose
+    /// trailing-PCM drain. Sum = chunks actually appended. Compare
+    /// against `imbe_extracted` (global-counter delta) to spot
+    /// routing loss — large delta = frames escaping this recording.
+    /// `first_chunk_after_open_ms` is the time from CallOpen to the
+    /// first chunk appended HERE (not the global last_imbe atomic).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunks_match: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunks_zero_callid: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunks_drain: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_chunk_after_open_ms: Option<u64>,
+    /// 2026-04-26 session-lifecycle refactor: every distinct SRC
+    /// observed during the session, in insertion order. Single-
+    /// speaker calls have `[primary_src]` (or empty if no SRC
+    /// landed). Multi-speaker bundled grants carry the full list.
+    /// Dashboard renders comma-separated when len > 1.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources_observed: Vec<u32>,
+    /// 2026-04-26 lag instrumentation: max value of
+    /// `arrived_at_ms - chunk.captured_at_ms` over the recording.
+    /// Tells us worst-case end-to-end pipeline delay (LDU dispatch
+    /// → vocoder PCM → broadcast → recorder). Sizes the
+    /// CLOSING_DRAIN_MS empirically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_chunk_lag_ms: Option<u64>,
+    /// Mean lag across all chunks of this recording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_chunk_lag_ms: Option<u64>,
 }
 
 /// Shared ring buffer of completed recordings. Newest at the back.
@@ -198,6 +246,21 @@ pub struct RecorderDiag {
     /// `broadcast::Receiver::recv` lagged events — messages the
     /// recorder missed because it fell behind the broadcaster.
     pub boundary_lag_events: std::sync::atomic::AtomicU64,
+    /// 2026-04-26: chunks rejected because `chunk.call_id` was
+    /// non-zero and didn't match the active recording's call_id.
+    /// Each chunk = 1 IMBE frame = 20 ms of audio. Should stay near
+    /// 0; non-zero indicates the lifecycle layer's `mirror_active`
+    /// hasn't propagated `current_call_id` to the forwarder fast
+    /// enough — chunks carry stale call_ids and miss their target.
+    pub chunks_dropped_call_id_mismatch:
+        std::sync::atomic::AtomicU64,
+    /// 2026-04-26: chunks that arrived when `active` was None —
+    /// either before the first CallOpen of the session OR during
+    /// the gap between recording finalise and the next CallOpen.
+    /// Late frames that arrive after the trailing-PCM drain window
+    /// closes hit this path. Each = 20 ms of lost audio.
+    pub chunks_dropped_no_active:
+        std::sync::atomic::AtomicU64,
 }
 
 pub type RecorderDiagArc = Arc<RecorderDiag>;
@@ -223,7 +286,6 @@ struct ActiveCall {
     /// (c) defensive first-known-source stamp from `chunk.source`
     /// when the chain produced audio before any of (a)/(b) landed.
     source: Option<u32>,
-    #[allow(dead_code)]
     started_at: Instant,
     started_unix_ms: u64,
     pcm: Vec<i16>,
@@ -241,6 +303,55 @@ struct ActiveCall {
     /// `forwarder.current_frequency_hz` for per-call attribution.
     freq_hz_at_open: Option<u64>,
     channel_at_open: Option<String>,
+    /// 2026-04-26 routing-loss instrumentation. One chunk = one IMBE
+    /// frame = 160 PCM samples = 20 ms of audio. Surfaced on the
+    /// recording entry + close-event log so we can see the routing
+    /// breakdown per call without parsing the trace log.
+    ///
+    /// `chunks_match`: chunk.call_id == self.call_id (the happy path
+    ///   — forwarder had `current_call_id` correctly set when it
+    ///   stamped the IMBE batch).
+    /// `chunks_zero`: chunk.call_id == 0 (forwarder idle / mid-retune
+    ///   / mirror_active hadn't propagated yet — defensively
+    ///   appended so the audio isn't lost).
+    /// `chunks_drain`: appended during the post-CallClose trailing-
+    ///   PCM drain window (independent count regardless of whether
+    ///   the chunk's call_id matched 0 or self).
+    /// `first_chunk_at`: instant the first chunk was appended;
+    ///   together with `started_at` gives "time from CallOpen to
+    ///   first audio bit" — the actual acquire latency for THIS
+    ///   recording (independent of the global last_imbe atomic).
+    chunks_match: u64,
+    chunks_zero: u64,
+    chunks_drain: u64,
+    first_chunk_at: Option<Instant>,
+    /// 2026-04-26 session-lifecycle refactor: audio chunks route by
+    /// `chunk.captured_at_ms ∈ [open_at_ms, close_at_ms or u64::MAX]`,
+    /// not by `chunk.call_id`. open_at_ms is set on CallOpen.
+    open_at_ms: u64,
+    /// 2026-04-26 session-lifecycle refactor: set when CallClose
+    /// arrives with `ended_unix_ms`. While close_at_ms is Some,
+    /// the recording is in "closing" state — chunks with
+    /// `captured_at_ms <= close_at_ms` still append (drain
+    /// captures late vocoder output for THIS call), chunks with
+    /// `captured_at_ms > close_at_ms` are dropped (they belong
+    /// to the next session). The recording is finalised by the
+    /// periodic tick `CLOSING_DRAIN_MS` after close_at_ms.
+    close_at_ms: Option<u64>,
+    /// 2026-04-26 session-lifecycle refactor: every distinct SRC
+    /// observed during the session, in insertion order. Populated
+    /// from CallOpen.source, CcRefresh updates (bundled GRANTs in
+    /// multi-speaker sessions), LDU1 LC voted SRC, and TDULC MOT
+    /// BY:. Recorder JSON shows this so the dashboard can display
+    /// "speakers: 1012, 3402164" for multi-speaker grants.
+    sources_observed: Vec<u32>,
+    /// 2026-04-26 lag instrumentation: max value of
+    /// `chunk_arrived_at_ms - chunk.captured_at_ms` over the
+    /// recording. Tells us worst-case pipeline delay (vocoder +
+    /// queue) for sizing the drain window.
+    max_chunk_lag_ms: u64,
+    total_chunk_lag_ms: u64,
+    lag_count: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -295,10 +406,23 @@ impl ActiveCall {
             stats_at_open: None,
             freq_hz_at_open: None,
             channel_at_open: None,
+            chunks_match: 0,
+            chunks_zero: 0,
+            chunks_drain: 0,
+            first_chunk_at: None,
+            open_at_ms: started_unix_ms,
+            close_at_ms: None,
+            sources_observed: Vec::new(),
+            max_chunk_lag_ms: 0,
+            total_chunk_lag_ms: 0,
+            lag_count: 0,
         }
     }
 
     fn append(&mut self, chunk: &AudioChunk) {
+        if self.first_chunk_at.is_none() {
+            self.first_chunk_at = Some(Instant::now());
+        }
         self.pcm.extend_from_slice(&chunk.pcm);
         self.last_chunk_at = Instant::now();
         // First-known-source stamp only. Source CHANGE (chunk.source
@@ -309,6 +433,22 @@ impl ActiveCall {
         if chunk.source != 0 && self.source.is_none() {
             self.source = Some(chunk.source);
         }
+        if chunk.source != 0 && !self.sources_observed.contains(&chunk.source) {
+            self.sources_observed.push(chunk.source);
+        }
+        // 2026-04-26 lag instrumentation: stamp delta from
+        // capture (LDU dispatch in framer) to recorder receipt.
+        // Includes vocoder time, mpsc queueing, broadcast fan-out.
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let lag = now_ms.saturating_sub(chunk.captured_at_ms);
+        if lag > self.max_chunk_lag_ms {
+            self.max_chunk_lag_ms = lag;
+        }
+        self.total_chunk_lag_ms = self.total_chunk_lag_ms.saturating_add(lag);
+        self.lag_count = self.lag_count.saturating_add(1);
     }
 
     fn duration_ms(&self) -> u64 {
@@ -483,6 +623,28 @@ async fn finalize(
             }
             _ => (None, None, None, None, None, None, None, None, None, None),
         };
+    // 2026-04-26: routing-loss attribution per recording.
+    // chunks_match + chunks_zero + chunks_drain = chunks actually
+    // appended to this WAV. Each = 20 ms = 160 PCM samples.
+    // imbe_extracted (above) is the GLOBAL counter delta during this
+    // call's wall-time window — includes frames that were stamped
+    // with a different call_id and routed elsewhere. If
+    // imbe_extracted >> chunks_total, frames are escaping this
+    // recording (likely to the next via call_id mismatch, or to
+    // /dev/null via the no-active path).
+    let chunks_match = Some(call.chunks_match);
+    let chunks_zero_callid = Some(call.chunks_zero);
+    let chunks_drain = Some(call.chunks_drain);
+    let first_chunk_after_open_ms = call.first_chunk_at
+        .map(|t| t.saturating_duration_since(call.started_at)
+            .as_millis() as u64);
+    let max_chunk_lag_ms = if call.lag_count > 0 { Some(call.max_chunk_lag_ms) } else { None };
+    let mean_chunk_lag_ms = if call.lag_count > 0 {
+        Some(call.total_chunk_lag_ms / call.lag_count)
+    } else {
+        None
+    };
+
     let entry = RecordingEntry {
         id,
         talkgroup: call.talkgroup,
@@ -504,6 +666,13 @@ async fn finalize(
         vocoder_silent,
         freq_hz: call.freq_hz_at_open,
         channel: call.channel_at_open.clone(),
+        chunks_match,
+        chunks_zero_callid,
+        chunks_drain,
+        first_chunk_after_open_ms,
+        sources_observed: call.sources_observed.clone(),
+        max_chunk_lag_ms,
+        mean_chunk_lag_ms,
     };
     let mut ring = store.lock().await;
     ring.push_back(entry);
@@ -608,6 +777,15 @@ pub async fn recorder_task(
             .load(Ordering::Relaxed)
             .saturating_sub(old.imbe_drops_at_open);
         if let Some(l) = event_log {
+            // 2026-04-26: routing-breakdown fields. `chunks_*` are in
+            // IMBE-frame units (1 chunk = 20 ms). `first_chunk_after_open_ms`
+            // is the actual time from CallOpen to first appended chunk
+            // — independent of the global `last_imbe_at_millis` atomic.
+            let first_chunk_ms = old.first_chunk_at
+                .map(|t| t.saturating_duration_since(old.started_at)
+                    .as_millis() as u64);
+            let chunks_total =
+                old.chunks_match + old.chunks_zero + old.chunks_drain;
             let mut fields = serde_json::json!({
                 "recording_id":      id,
                 "reason":            reason,
@@ -617,6 +795,11 @@ pub async fn recorder_task(
                 "wall_duration_ms":  wall_ms,
                 "pcm_fill_pct":      fill_pct,
                 "imbe_drops_in_call": drops_in_call,
+                "chunks_total":            chunks_total,
+                "chunks_match":            old.chunks_match,
+                "chunks_zero_callid":      old.chunks_zero,
+                "chunks_drain":            old.chunks_drain,
+                "first_chunk_after_open_ms": first_chunk_ms,
             });
             if let (serde_json::Value::Object(ref mut a),
                     serde_json::Value::Object(b)) = (&mut fields, extra_fields) {
@@ -636,53 +819,59 @@ pub async fn recorder_task(
             recv = audio_rx.recv() => {
                 match recv {
                     Ok(chunk) => {
-                        // Phase 2b: audio chunks NEVER open a recording.
-                        // call_tracker is the authority — `CallOpen`
-                        // creates the ActiveCall, audio chunks just fill
-                        // its PCM buffer.
+                        // 2026-04-26 session-lifecycle refactor: route
+                        // by `chunk.captured_at_ms` (stamped at LDU
+                        // dispatch in the framer) vs the active
+                        // recording's [open_at_ms, close_at_ms or now]
+                        // window. Capture-time routing handles the
+                        // dominant audio-loss paths the previous
+                        // call_id-routing missed:
+                        //   - Late chunks (vocoder lag) crossing a
+                        //     CallClose: captured_at_ms <= close_at_ms
+                        //     so they STILL land in the closing
+                        //     recording, regardless of arrival time.
+                        //   - Chunks for the next session arriving
+                        //     before its CallOpen has propagated:
+                        //     captured_at_ms > close_at_ms so they
+                        //     are dropped (they belong to next call).
                         let Some(c) = active.as_mut() else {
-                            // No active call → drop. Came-up-mid-call
-                            // edge case where CC grant was missed: by
-                            // design we lose the audio rather than open
-                            // a sourceless WAV. If this shows up
-                            // repeatedly in /api/log, check that the
-                            // follower is emitting CcGrantArrival for
-                            // the parked freq.
+                            diag.chunks_dropped_no_active
+                                .fetch_add(1, Ordering::Relaxed);
                             continue;
                         };
-                        // Phase 2h (2026-04-25): chunk.call_id is the
-                        // GrantFollower call_id active when the IMBE
-                        // batch was submitted. Route by it directly —
-                        // a chunk for a different call (typical: a
-                        // late chunk from the previous call that the
-                        // vocoder decoded after CallClose) gets
-                        // dropped here so it can't bleed into the new
-                        // recording. The trailing-PCM drain in the
-                        // CallClose path handles the OPPOSITE
-                        // direction (late chunks for the call that
-                        // just closed, while no new call is yet open).
-                        //
-                        // call_id == 0 is "no active call known at
-                        // submit time" — typically follower idle or
-                        // mid-retune. We append defensively rather
-                        // than drop, matching the prior behaviour
-                        // where TG=0 chunks were appended.
-                        if chunk.call_id != 0
-                            && chunk.call_id != c.call_id
-                        {
-                            tracing::trace!(
-                                target: "p25_recorder",
-                                "audio chunk call_id={} mismatch active \
-                                 call_id={} (tg={}) — dropping (likely \
-                                 trailing PCM from prior call)",
-                                chunk.call_id, c.call_id, c.talkgroup,
-                            );
+                        // Capture-time window check.
+                        if chunk.captured_at_ms < c.open_at_ms {
+                            // Captured before THIS recording opened —
+                            // belongs to a prior session that already
+                            // finalized. Drop.
+                            diag.chunks_dropped_call_id_mismatch
+                                .fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
-                        // Defensive first-known-source stamp: if
-                        // GrantFollower hasn't emitted SourceUpdate
-                        // yet but the chunk carries a source, fill it
-                        // in. Only applies when c.source is None.
+                        if let Some(close_ms) = c.close_at_ms {
+                            if chunk.captured_at_ms > close_ms {
+                                // Captured after this session's
+                                // terminator/timeout fired — belongs
+                                // to the NEXT session (whose CallOpen
+                                // just hasn't propagated to the
+                                // recorder yet). Drop here; it'll
+                                // come back as no_active until
+                                // CallOpen lands.
+                                diag.chunks_dropped_call_id_mismatch
+                                    .fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            }
+                            // Within drain window: captured before
+                            // close, arrived after close. Late chunk
+                            // captured for THIS recording — append.
+                            c.chunks_drain += 1;
+                        } else {
+                            // Steady state: session open, no close
+                            // signaled yet.
+                            c.chunks_match += 1;
+                        }
+                        // First-known-source stamp. Defensive: most
+                        // sources arrive via CallOpen / SourceUpdate.
                         if chunk.source != 0 && c.source.is_none() {
                             log_ev("source_stamp_chunk", serde_json::json!({
                                 "recording_id": c.call_id,
@@ -774,6 +963,15 @@ pub async fn recorder_task(
                                 imbe_drops.load(Ordering::Relaxed),
                             );
                             c.source = source;
+                            // 2026-04-26 session-lifecycle refactor: open_at_ms
+                            // sourced from the event timestamp (= when the
+                            // primary GRP_VCH_GRANT was processed). Capture-
+                            // time routing uses this + close_at_ms (set on
+                            // CallClose) to bracket which chunks belong here.
+                            c.open_at_ms = ev.timestamp_unix_ms;
+                            if let Some(s) = source {
+                                c.sources_observed.push(s);
+                            }
                             c.freq_hz_at_open = freq_hz;
                             c.channel_at_open = channel.clone();
                             c.stats_at_open = forwarder.as_ref()
@@ -792,11 +990,13 @@ pub async fn recorder_task(
                         CallTrackerEventKind::SourceUpdate {
                             new_source, via,
                         } => {
-                            // call_tracker emits SourceUpdate only as
-                            // fill-in (CC SRC is authoritative; LDU1
-                            // LC vote / TDULC MOT_TC fill in for None
-                            // calls only). Mirror that discipline here:
-                            // never override a known source.
+                            // 2026-04-26 session-lifecycle refactor:
+                            // SourceUpdate now adds to `sources_observed`
+                            // for multi-speaker bundling. Primary `source`
+                            // field still uses fill-in-only semantics
+                            // (CC GRANT.SRC wins, LDU1 LC / TDULC fill
+                            // None-only). The dashboard renders the full
+                            // sources_observed list when len > 1.
                             if let Some(c) = active.as_mut() {
                                 if c.call_id != ev.call_id {
                                     log_ev("source_update_stale", serde_json::json!({
@@ -804,31 +1004,23 @@ pub async fn recorder_task(
                                         "active_call_id": c.call_id,
                                         "new_source":     new_source,
                                     }));
-                                } else if c.source.is_none() {
-                                    let old_src = c.source;
-                                    c.source = Some(new_source);
-                                    diag.source_stamps_applied
-                                        .fetch_add(1, Ordering::Relaxed);
-                                    log_ev("source_stamp_boundary", serde_json::json!({
-                                        "recording_id": c.call_id,
-                                        "tg":           c.talkgroup,
-                                        "old_source":   old_src,
-                                        "new_source":   new_source,
-                                        "via":          serde_json::to_value(via).unwrap_or(serde_json::Value::Null),
-                                    }));
-                                } else if c.source != Some(new_source) {
-                                    // Tracker shouldn't emit this case
-                                    // (it pre-filters). If we see it,
-                                    // log for diagnostics but don't
-                                    // override.
-                                    log_ev("source_stamp_rejected", serde_json::json!({
-                                        "recording_id": c.call_id,
-                                        "tg":           c.talkgroup,
-                                        "cc_source":    c.source,
-                                        "tracker_voted": new_source,
-                                        "via":          serde_json::to_value(via).unwrap_or(serde_json::Value::Null),
-                                        "reason":       "active_source_already_set",
-                                    }));
+                                } else {
+                                    if !c.sources_observed.contains(&new_source) {
+                                        c.sources_observed.push(new_source);
+                                    }
+                                    if c.source.is_none() {
+                                        let old_src = c.source;
+                                        c.source = Some(new_source);
+                                        diag.source_stamps_applied
+                                            .fetch_add(1, Ordering::Relaxed);
+                                        log_ev("source_stamp_boundary", serde_json::json!({
+                                            "recording_id": c.call_id,
+                                            "tg":           c.talkgroup,
+                                            "old_source":   old_src,
+                                            "new_source":   new_source,
+                                            "via":          serde_json::to_value(via).unwrap_or(serde_json::Value::Null),
+                                        }));
+                                    }
                                 }
                             } else {
                                 diag.source_stamps_lost_no_active
@@ -847,9 +1039,20 @@ pub async fn recorder_task(
                             // CallTrackerEvent subscription.
                         }
                         CallTrackerEventKind::CallClose {
-                            reason, final_source,
-                            expected_submit_count, ..
+                            reason, final_source, ended_unix_ms, ..
                         } => {
+                            // 2026-04-26 session-lifecycle refactor:
+                            // CallClose just stamps `close_at_ms` on
+                            // the active recording. Audio chunks
+                            // continue to land via the normal capture-
+                            // time-window route (the audio_rx arm
+                            // checks `chunk.captured_at_ms <=
+                            // close_at_ms`). The periodic tick
+                            // finalises the recording CLOSING_DRAIN_MS
+                            // after `close_at_ms`. No inline drain
+                            // loop needed — the main select! continues
+                            // to service audio + tracker + tick events
+                            // through the drain window.
                             let matches = active.as_ref()
                                 .map(|c| c.call_id == ev.call_id)
                                 .unwrap_or(false);
@@ -861,96 +1064,31 @@ pub async fn recorder_task(
                                 }));
                                 continue;
                             }
-                            if let Some(mut old) = active.take() {
-                                if old.source.is_none() {
+                            if let Some(c) = active.as_mut() {
+                                if c.source.is_none() {
                                     if let Some(s) = final_source {
-                                        old.source = Some(s);
+                                        c.source = Some(s);
                                     }
                                 }
-                                // 2026-04-25 trailing-PCM drain.
-                                // Vocoder lags CC by ~200-400 ms; if we
-                                // finalise immediately, those late
-                                // chunks bleed into the next CallOpen's
-                                // recording. Hold the audio_rx loop
-                                // open against `old`, applying the same
-                                // tg+source-match gates as the steady-
-                                // state path, until vocoder catches up
-                                // (frames_consumed >= expected) plus a
-                                // brief grace OR TRAILING_PCM_TIMEOUT.
-                                const TRAILING_PCM_TIMEOUT_MS: u64 = 500;
-                                const POST_CONSUME_GRACE_MS: u64 = 50;
-                                let drain_deadline = Instant::now()
-                                    + Duration::from_millis(TRAILING_PCM_TIMEOUT_MS);
-                                let mut consumed_caught_up_at: Option<Instant> = None;
-                                let starting_pcm_len = old.pcm.len();
-                                loop {
-                                    let now = Instant::now();
-                                    if now >= drain_deadline { break; }
-                                    if let Some(f) = forwarder.as_ref() {
-                                        let consumed = f.frames_consumed
-                                            .load(Ordering::Relaxed);
-                                        if consumed >= expected_submit_count {
-                                            match consumed_caught_up_at {
-                                                None => consumed_caught_up_at = Some(now),
-                                                Some(t) if now.duration_since(t)
-                                                    >= Duration::from_millis(POST_CONSUME_GRACE_MS) => break,
-                                                _ => {}
-                                            }
-                                        }
-                                    }
-                                    let select_timeout = match consumed_caught_up_at {
-                                        Some(t) => Duration::from_millis(POST_CONSUME_GRACE_MS)
-                                            .saturating_sub(now.duration_since(t)),
-                                        None => Duration::from_millis(20),
-                                    };
-                                    tokio::select! {
-                                        biased;
-                                        chunk_result = audio_rx.recv() => match chunk_result {
-                                            Ok(chunk) => {
-                                                // Phase 2h drain match: chunk
-                                                // belongs to OLD if its call_id
-                                                // matches old.call_id, or if
-                                                // call_id==0 (forwarder idle
-                                                // / no active call known —
-                                                // most chunks during the
-                                                // drain window fall here
-                                                // because GrantFollower
-                                                // already cleared
-                                                // current_call_id on close).
-                                                if chunk.call_id == 0
-                                                    || chunk.call_id == old.call_id
-                                                {
-                                                    old.append(&chunk);
-                                                }
-                                            }
-                                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                                // Late chunks may have been lost.
-                                                // Continue draining what's left.
-                                            }
-                                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                                        },
-                                        _ = tokio::time::sleep(select_timeout) => {}
+                                if let Some(s) = final_source {
+                                    if !c.sources_observed.contains(&s) {
+                                        c.sources_observed.push(s);
                                     }
                                 }
-                                let drained_samples = old.pcm.len()
-                                    .saturating_sub(starting_pcm_len);
+                                c.close_at_ms = Some(ended_unix_ms);
                                 let reason_str = match reason {
-                                    CloseReason::SpeakerEnd => "speaker_end",
                                     CloseReason::Timeout => "timeout",
-                                    CloseReason::SpeakerChange => "speaker_change",
                                     CloseReason::TgChange => "tg_change",
-                                    CloseReason::NotFollowedExpire =>
-                                        "not_followed_expire",
+                                    CloseReason::StreamLag => "stream_lag",
                                 };
-                                finalise_call(
-                                    old, reason_str,
-                                    serde_json::json!({
-                                        "trailing_pcm_drained_samples":
-                                            drained_samples,
-                                    }),
-                                    &store, event_log.as_ref(),
-                                    forwarder.as_ref(), &imbe_drops,
-                                ).await;
+                                log_ev("call_closing", serde_json::json!({
+                                    "recording_id":   c.call_id,
+                                    "tg":             c.talkgroup,
+                                    "reason":         reason_str,
+                                    "close_at_ms":    ended_unix_ms,
+                                    "drain_ms":       CLOSING_DRAIN_MS,
+                                    "pcm_so_far_samples": c.pcm.len(),
+                                }));
                             }
                         }
                     },
@@ -973,17 +1111,38 @@ pub async fn recorder_task(
                 }
             }
             _ = tick.tick() => {
-                // Safety-net grace finaliser. Should never fire — see
-                // FINALIZE_GRACE doc. Investigate boundary_lag_events
-                // if it does.
-                let should_close = active.as_ref()
-                    .map(|c| c.last_chunk_at.elapsed() >= FINALIZE_GRACE)
-                    .unwrap_or(false);
-                if should_close {
+                // 2026-04-26 session-lifecycle refactor: tick now has
+                // two finalisers:
+                //  (1) Closing-drain-elapsed: CallClose set
+                //      `close_at_ms`; once CLOSING_DRAIN_MS has passed,
+                //      finalise. This is the normal close path under
+                //      the new model.
+                //  (2) Safety-net grace: 15 s with no audio AND no
+                //      close_at_ms (tracker desync — broadcast lag,
+                //      panic). Should rarely fire; investigate
+                //      `boundary_lag_events` if it does.
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let close_decision = active.as_ref().and_then(|c| {
+                    if let Some(close_at) = c.close_at_ms {
+                        if now_ms.saturating_sub(close_at) >= CLOSING_DRAIN_MS {
+                            return Some("closing_drain_elapsed");
+                        }
+                        return None;
+                    }
+                    if c.last_chunk_at.elapsed() >= FINALIZE_GRACE {
+                        return Some("grace_window_safety");
+                    }
+                    None
+                });
+                if let Some(reason) = close_decision {
                     if let Some(old) = active.take() {
                         finalise_call(
-                            old, "grace_window_safety",
+                            old, reason,
                             serde_json::json!({
+                                "drain_ms":  CLOSING_DRAIN_MS,
                                 "silence_ms": FINALIZE_GRACE.as_millis() as u64,
                             }),
                             &store, event_log.as_ref(),
