@@ -5,6 +5,217 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-04-29] PS perf + scanner pivot — `/api/ps_cores`, `/ws/audio` close-detect, JMBE recurrence, AGC dbg fix
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-04-29-jmbe-cos-recurrence`
+**Bake required:** YES — HDL `lsm_agc.py` reset block update + bitstream rebuild for `gain_dbg` mirror.
+
+Strategic pivot mid-session: dropped multi-traffic-channel goal, refocused
+on a highly optimized single-chain scanner. See
+`doc/changes/049_ps_perf_and_scanner_pivot.md` for the full session arc
+and `doc/diagnostics/2026-04-29/SESSION_LOG.md` for the chronological log.
+
+**PS — new endpoint + jitter fixes:**
+
+- `GET /api/ps_cores?interval_ms=&top_n=` — per-core CPU% + per-thread CPU%
+  over a configurable window (default 250 ms). Two `/proc` reads, no state
+  plumbing. Dashboard System Health gains a "PS Cores" card (2 s poll, only
+  on Radio tab) showing per-core busy bars + top threads.
+- `/ws/audio` handler now drives socket recv concurrently with audio
+  broadcast. Old loop blocked on `rx.recv().await` and only noticed dead
+  sockets when the next chunk failed to send — caused ghost subscribers
+  during idle (operator observation: dashboard reported 3 audio WS
+  clients with one real listener).
+
+**JMBE optimization — cos/sin recurrence on the synthesis hot path:**
+
+- Restructured `get_voiced` from outer-n / inner-li (~16 k libm `cos`
+  calls per 20 ms frame) to outer-li / inner-n with the trig recurrence
+  `cos(θ + Δ) = cos(θ)·cos(Δ) − sin(θ)·sin(Δ)`. Linear-phase branches
+  (Algs #131/#132/#133) now use the recurrence, ~10× speedup on the
+  inner loop. Quadratic-phase branch (Alg #136, ~14 % of harmonics)
+  retained direct cos for now.
+- New `accumulate_linear_window` helper does 2 transcendentals per
+  harmonic-term (initial `sin_cos` for base + step) plus 4-mul-1-add-1-sub
+  per sample.
+- Hoisted `synthesis_window(n)` and `synthesis_window(n - SPF)` table
+  lookups outside the harmonic loop into precomputed 160-element arrays.
+- Bit-equivalence reference test (`test_synthesis_signature_stable`)
+  added with values captured from real IMBE frames pulled from
+  `/api/imbe_dump` during a live TG 301 call. Tolerance: 1 % relative
+  on RMS/peak, 2 % on per-sample, 2e-5 absolute floor — accommodates
+  ULP drift over 160-sample recurrence iterations.
+
+Expected on-target: vocoder thread drops from ~100 % of one core during
+a call to ~25-30 %, freeing core 1 for channelizer/scanner experiments.
+
+**HDL — AGC seed diagnostic fix:**
+
+- `maia-hdl/p25_hdl/lsm_agc.py:725-727` — reset block previously clobbered
+  `gain_dbg.eq(0)` in the same cycle it loaded the gain register from
+  `seed_in`, so the PS-side seed-load diagnostic structurally always read
+  0 (pre/post drift = -agc_seed_written every retune). Data path was fine
+  the whole time — only the readback was broken. Reset block now mirrors
+  the seeded value into `gain_dbg` (Q9.7 truncation of seed, or
+  GAIN_INIT >> 4 when seed=0). After flash, `traffic_agc_post_reset`
+  matches `agc_seed_written` and `agc_drift` becomes a real diagnostic.
+
+**Tooling — settle measurement:**
+
+- `tools/p25_settle_measure.py` — anchors on `/api/log` retune/nco_skip
+  events with seed diagnostic, times to next `voice` TRF_HDU/LDU1/LDU2
+  event. Heartbeat mode polls `/api/traffic_lsm_dibit_dump` for
+  sync.hits + nid_attempts deltas to isolate which stage owns the
+  settle budget. Setup flags `--lock-freq` (chain park) and `--agc-off`
+  (disable per-symbol AGC), both with auto-restore on exit. CSV row
+  per retune + summary stats (median / p90 first-frame latency, cache
+  hit rate, drift sanity).
+
+**Findings worth documenting:**
+
+- 3.4 s cold settle floor on retunes (n=33, median=3276 ms, p90=3444 ms).
+  Bimodal: same-chain follow-on = 50 ms, cold = 3.4 s. Frame-sync
+  acquisition (2-3 LDU periods × 1.35 s) is the dominant component;
+  PLL + AGC seeding only saves ~500 ms of front porch.
+- mosquitto + api_controller from legacy Tezuka DATV stack were the
+  startup-CPU spike for ~5 min post-boot. Removed in `tezuka_fw` build
+  via new `post-build-p25.sh`. Chronic <1 % overhead, but exposed as
+  unnecessary for p25 builds.
+- Vocoder pegging core 1 was normal-mode JMBE cost on no-NEON-tuned
+  decode, not a starvation symptom — core 0 was 96 % idle during the
+  same window. Recurrence shipped above addresses it.
+
+## [2026-04-26] not_followed grants no longer preempt the active session
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-04-26-not-followed-no-preempt`
+**Bake required:** NO -- PS only.
+
+Post-flash bug observed: TG 300 (clear) on channel 1193 active, then a
+TG 402 (encrypted) primary GRANT arrives also on channel 1193. The
+session-lifecycle refactor's preempt-on-TG-change rule fired, closed
+the TG 300 session, and opened TG 402 with `not_followed=encrypted`.
+But the follower DID NOT retune the chain (per not_followed). The
+chain stayed on 858.4625, kept decoding the continued TG 300
+transmissions, and the new lifecycle attributed 459 IMBE / 73440 PCM
+samples / 3 distinct sources to the encrypted TG 402 entry. User
+heard the audio play live (vocoder produced PCM because the encrypted
+atomic was never set — grant-was-not-followed shortcut bypassed it),
+but no recording landed because the session was tagged encrypted.
+
+Fix: `CcGrantArrival` handler now treats `not_followed=Some(...)`
+as "ignore for active session" — the chain isn't retuning, so the
+lifecycle shouldn't change either. To preserve the operator's
+"show every CC GRANT in Recent Calls" rule, a synthetic
+`CallOpen+CallClose` pair fires for the not-followed grant so
+`grant_stats` still records it (recorder filters not_followed
+CallOpens, so no recording).
+
+Also: discovered that Buildroot caches per-package build state across
+runs. After a build failure at `target-finalize`, a subsequent run
+sees `p25-httpd` as already-installed and skips it, producing a
+firmware image with the *previous* run's binary. To pick up
+p25-httpd source changes after a partial build, run
+`make p25-httpd-dirclean` (or equivalent) before re-running the
+build. This is now in
+[Build cache gotcha memory](memory/feedback_buildroot_pkg_cache.md).
+
+---
+
+## [2026-04-26] Session lifecycle refactor — capture-time routing + GRANT-driven open/close + multi-speaker bundling
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-04-26-session-lifecycle-refactor`
+**Bake required:** NO -- PS only.
+
+Post-flash diagnostics on `2026-04-26-audio-driven-speakerend` showed
+`recorder_chunks_dropped_no_active = 1980` over a 30-min run — about 40 s
+of audio that played live but never landed in any recording (capture
+rate 18 % of vocoder output). Operator-clarified spec:
+
+- Primary `GRP_VCH_GRANT` opens a session.
+- First audio block starts the audio; last block ends it.
+- Grant tolerates audio gaps; closes only on TG change or 5 s timeout.
+- TDULC terminators (MOT, CALL_TERM) and bare TDU never close — they fire
+  multiple times per multi-PTT grant and dispatchers don't emit MOT at
+  all, so terminator-driven close fragments real continuous sessions.
+
+Implementation:
+
+- `AudioChunk.captured_at_ms` stamped at LDU dispatch in
+  `ImbeForwarder::forward_frames`. Plumbed through
+  `(tg, src, call_id, captured_at_ms, frames)` tuple → vocoder →
+  broadcast → recorder. Decouples routing from vocoder/queue lag.
+- Recorder routes by `captured_at_ms ∈ [active.open_at_ms,
+  active.close_at_ms or u64::MAX]`. Late chunks for closed sessions
+  still land in the right WAV regardless of vocoder lag.
+- Closing-state drain owned by recorder: `CallClose` stamps
+  `close_at_ms`, periodic tick finalises after `CLOSING_DRAIN_MS = 2 s`.
+  Replaced the inline `audio_rx` drain loop.
+- `grant_follower` rewritten:
+  - Constants reduced to `HARD_TIMEOUT_MS = 5_000` and `TIMEOUT_TICK_MS = 100`.
+  - `ArrivalDisposition` ∈ `{Bundle, Ignore, TgChange}`.
+  - `CloseReason` ∈ `{Timeout, TgChange, StreamLag}` (was 5).
+  - `ActiveCall.sources_observed: Vec<u32>` accumulates every distinct
+    SRC seen (CC GRANT, LDU1 LC, TDULC MOT BY:).
+  - `SpeakerEnd { kind }` boundaries are source-stamp-only.
+  - HDU never splits.
+- `audio::TerminatorKind` enum (`BareTdu | MotTalkComplete | CallTermination`)
+  added so emission sites tag which terminator fired (lifecycle ignores
+  the kind for now; available for future heuristics).
+- Lag instrumentation: `RecordingEntry.max_chunk_lag_ms` /
+  `mean_chunk_lag_ms` per recording (`now_ms - chunk.captured_at_ms`).
+- `RecordingEntry.sources_observed` and `GrantDecodeSummary.sources_observed`
+  surfaced through APIs; dashboard renders comma-separated list when
+  multiple speakers landed in one bundled grant.
+
+Validation: 64 Rust tests green; cargo check clean.
+
+doc/changes/048_session_lifecycle_refactor.md.
+
+---
+
+## [2026-04-26] Traffic LSM PLL + AGC seeding from control chain
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-04-26-traffic-pll-agc-seeding`
+**Bake required:** YES -- p25_top register-bank field positions changed.
+
+First step of the channelizer redesign (Option D from
+`doc/diagnostics/2026-04-25/CHANNELIZER_REDESIGN.md`). The on-target
+problem was 700-3400 ms between traffic-chain retune and first IMBE,
+mostly Costas PLL cold-acquire on a freshly-tuned channel. SDRTrunk
+hits ~0 ms because per-channel decoders stay always-locked. We can't
+match that with a single FPGA chain, but the operator's PPM-sweep
+evidence shows the converged Costas value is the same on every channel
+(crystal trim is the dominant carrier-error source). So we copy the
+control chain's already-converged PLL accumulator + AGC gain into the
+traffic chain on every retune.
+
+HDL: `LsmPllUpdate` / `LsmPllUpdateLinearised` / `LsmAgc` gain
+`seed_in` ports that load on `reset_in` (zero = legacy cold start).
+`LsmDemodLoop` + `LsmDemod` plumb the seeds through. `p25_top.py` adds
+two RW fields: `traffic_pll_seed[20:5]` on `traffic_lsm_control`
+(Q2.13 signed) and `traffic_agc_seed[31:16]` on `traffic_lsm_agc_config`
+(Q9.7 unsigned, FPGA pads to Q9.11 internally). Control chain unchanged
+-- it stays cold-start so it tracks whatever's actually on the control
+frequency.
+
+PS: `fpga.rs::set_traffic_lsm_seeds` writes both fields; `retune_traffic_chain`
+reads `lsm_debug.pll_dbg` + `lsm_agc_debug.agc_gain_dbg`, calls the
+setter, then pulses `traffic_lsm_reset` (which latches the seeds in
+the same cycle as the reset). Q9.7-truncated AGC seed is fine -- AGC
+re-corrects within ~10 symbols, well inside the < 50 ms target.
+
+Validation: 30 HDL tests + 64 Rust tests green, P25Core elaborates +
+SVD round-trips. Field validation = `first_imbe_ms` per call after
+flash.
+
+See `doc/changes/047_traffic_pll_agc_seeding.md`.
+
+---
+
 ## [2026-04-25] Phase 2c-2h -- unified call lifecycle
 
 **Branch:** fishball-p25

@@ -348,6 +348,13 @@ class LsmAgc(Elaboratable):
         # standalone tests don't have to wire a register.
         self.mag_update_threshold_in = Signal(
             unsigned(16), init=mag_update_threshold & 0xFFFF)
+        # 2026-04-26: warm-start seed loaded into `gain` on reset_in.
+        # Q9.11 unsigned (same format as the gain register). Zero ->
+        # legacy cold start (load GAIN_INIT). Non-zero -> traffic chain
+        # warm-starts at the converged control-chain AGC gain,
+        # eliminating the ~100 ms AGC settle on retune. See
+        # doc/diagnostics/2026-04-25/CHANNELIZER_REDESIGN.md.
+        self.seed_in = Signal(GAIN_WIDTH)
 
         # ── Outputs ─────────────────────────────────────────────
         self.i_mid_out = Signal(signed(SAMPLE_WIDTH), reset_less=True)
@@ -703,16 +710,26 @@ class LsmAgc(Elaboratable):
         # ── Phase 8A runtime reset persistent-state override ────
         # The FSM `next`-state arbitration above handles the
         # control flow side of reset. This block handles the data
-        # side: clears the persistent gain register back to
-        # GAIN_INIT and the debug taps to zero on a single reset
-        # pulse. Last-assignment-wins in `m.d.sync` makes this an
-        # override of any normal-path update that fired in the
-        # same cycle.
+        # side: clears the persistent gain register to the seeded
+        # value (or GAIN_INIT) and the magnitude/gate taps to zero.
+        # Last-assignment-wins in `m.d.sync` makes this an override
+        # of any normal-path update that fired in the same cycle.
+        #
+        # gain_dbg is the *only* PS-visible readback for the gain
+        # register, so it must mirror what `gain` was just loaded
+        # with — Q9.7 truncation of seed (when non-zero) or the
+        # Q9.7 truncation of GAIN_INIT. Pre-2026-04-29 the reset
+        # block forced gain_dbg.eq(0), which made the PS-side seed
+        # diagnostic structurally always read 0 even though the
+        # data path was correctly seeded; see
+        # memory/project_agc_seed_dbg_clobber.md.
         with m.If(self.reset_in):
             m.d.sync += [
-                gain.eq(GAIN_INIT),
+                gain.eq(Mux(self.seed_in != 0, self.seed_in, GAIN_INIT)),
                 self.decision_strobe_out.eq(0),
-                self.gain_dbg.eq(0),
+                self.gain_dbg.eq(Mux(self.seed_in != 0,
+                                     self.seed_in[GAIN_FRAC - 7:GAIN_FRAC + 9],
+                                     GAIN_INIT >> (GAIN_FRAC - 7))),
                 self.mag_dbg.eq(0),
                 self.gate_dbg.eq(0),
             ]

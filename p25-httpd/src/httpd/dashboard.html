@@ -667,6 +667,28 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
   </p>
 </div>
 
+<!-- ── 2026-04-29: PS core/thread monitor ── -->
+<!-- Polls /api/ps_cores at 2 s. Per-core busy% + top threads by CPU%.
+     Diagnoses realtime audio jitter and per-task starvation. -->
+<h2>PS Cores <span style="font-size:0.75em;color:var(--text-dim);margin-left:6px">/api/ps_cores · 2 s poll</span></h2>
+<div class="card" id="ps_cores_card">
+  <div id="ps_cores_summary" style="font-size:0.85em;color:var(--text-dim);margin-bottom:6px">--</div>
+  <div id="ps_cores_grid" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px"></div>
+  <table id="ps_threads_tbl" style="font-size:0.85em;width:100%">
+    <thead>
+      <tr>
+        <th style="text-align:left">Thread</th>
+        <th style="text-align:right;width:8%">TID</th>
+        <th style="text-align:right;width:10%">CPU %</th>
+        <th style="text-align:center;width:8%">St</th>
+        <th style="text-align:right;width:14%">vol Δ</th>
+        <th style="text-align:right;width:14%">invol Δ</th>
+      </tr>
+    </thead>
+    <tbody id="ps_threads_tbody"></tbody>
+  </table>
+</div>
+
 <!-- ── Phase 7D: Traffic Channel + Vocoder ── -->
 <h2>Traffic Channel <span id="trf_phase" style="font-size:0.75em;color:var(--text-dim);margin-left:6px"></span></h2>
 <!-- Phase 7E: browser-side live-audio playback (WS /ws/audio) -->
@@ -804,7 +826,11 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
      produced audio" (start-of-call PLL/AGC drop, encryption, etc).
      Inline <audio> control on rows that DO have a recording. -->
 <div class="card" style="margin-top:14px">
-  <h2>Recent Calls <span id="rec_count" style="font-size:0.75em;color:var(--text-dim);margin-left:6px"></span></h2>
+  <h2>Recent Calls <span id="rec_count" style="font-size:0.75em;color:var(--text-dim);margin-left:6px"></span>
+    <label style="font-size:0.65em;color:var(--text-dim);margin-left:12px;font-weight:normal;cursor:pointer">
+      <input type="checkbox" id="rec_show_enc" style="vertical-align:middle"> Show encrypted history
+    </label>
+  </h2>
   <table style="width:100%">
     <thead>
       <tr>
@@ -3799,6 +3825,52 @@ function drawConstellation(iArr, qArr) {
 // Modulation selector. GET polls current mode + per-decoder rates
 // so the user can see why auto picked what it did. PUT on change
 // forces one of {c4fm, lsm, auto}.
+async function refreshPsCores() {
+  // Skip work when the panel can't be seen — same gate as the other
+  // Radio-tab pollers. /api/ps_cores has a built-in 250 ms wait so we
+  // don't want to fire it from a hidden tab.
+  if (activeTab() !== 'radio') return;
+  const grid = $('ps_cores_grid');
+  const tbody = $('ps_threads_tbody');
+  const summary = $('ps_cores_summary');
+  if (!grid || !tbody) return;
+  const data = await fetchJson('/api/ps_cores?top_n=12');
+  if (!data || !data.cpus) return;
+  // Per-core block. Simple bar+label per CPU.
+  const blocks = data.cpus.map(c => {
+    const busy = c.busy_pct || 0;
+    const fill = Math.max(0, Math.min(100, busy));
+    const colour = busy > 80 ? '#e54' : (busy > 50 ? '#ea3' : '#4a8');
+    return `<div style="min-width:140px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;font-size:0.8em">
+      <div style="display:flex;justify-content:space-between"><b>cpu${c.id}</b><span>${busy.toFixed(1)}%</span></div>
+      <div style="height:6px;background:var(--bg-dim);border-radius:3px;margin:4px 0">
+        <div style="width:${fill}%;height:100%;background:${colour};border-radius:3px"></div>
+      </div>
+      <div style="color:var(--text-dim)">u ${c.user_pct}% · s ${c.system_pct}% · irq ${c.irq_pct}% · io ${c.iowait_pct}%</div>
+    </div>`;
+  });
+  grid.innerHTML = blocks.join('');
+  summary.textContent = `${data.num_cpus} cores · ${data.total_threads} threads · loadavg(1m)=${data.loadavg_1.toFixed(2)} · sample ${data.interval_ms} ms`;
+  // Top threads. innerHTML is fine here — the panel is read-only and
+  // contains no interactive children that would lose state on rebuild.
+  const rows = (data.threads || []).map(t => `
+    <tr>
+      <td>${escapeHtml(t.name)}</td>
+      <td style="text-align:right;color:var(--text-dim)">${t.tid}</td>
+      <td style="text-align:right"><b>${(t.cpu_pct||0).toFixed(1)}</b></td>
+      <td style="text-align:center;color:var(--text-dim)">${t.state}</td>
+      <td style="text-align:right;color:var(--text-dim)">${t.vol_ctxsw_delta}</td>
+      <td style="text-align:right;color:var(--text-dim)">${t.invol_ctxsw_delta}</td>
+    </tr>`);
+  tbody.innerHTML = rows.join('');
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 async function refreshModulation() {
   // Drives the Board Info "System type" + modulation selector on Radio only.
   if (activeTab() !== 'radio') return;
@@ -4397,8 +4469,15 @@ async function refreshRecordings() {
   // time so unmatched grants stay visible — that's the diagnostic
   // for "got the grant but never recorded" (PLL drop / encryption /
   // too short).
+  // 2026-04-29: include_enc toggle. Default off — Recent Calls
+  // shows clear (followed, audio-bearing) calls only. Operator
+  // checks "Show encrypted history" to merge in the enc ring.
+  const includeEnc = $('rec_show_enc') && $('rec_show_enc').checked;
+  const grantsUrl = includeEnc
+    ? '/api/grant_decode_stats?include_enc=1'
+    : '/api/grant_decode_stats';
   const [grants, recs] = await Promise.all([
-    fetchJson('/api/grant_decode_stats'),
+    fetchJson(grantsUrl),
     fetchJson('/api/recordings'),
   ]);
   if (!grants) return;
@@ -4423,53 +4502,24 @@ async function refreshRecordings() {
   //           recur minutes apart.
   //   Pass 2: grants WITHOUT src — nearest-time same-tg within ±3s.
   //           Tighter because tg-only is ambiguous.
-  const recsByTg = new Map();
+  // 2026-04-26: direct join on call_id. Both grant_decode_stats
+  // entries and recordings carry the same monotonic call_id; the
+  // recording's RecordingEntry.id IS the lifecycle call_id assigned
+  // at CallOpen. The pre-2026-04-26 fuzzy tg+source+time matching
+  // produced "Recordings without a matching grant" rows under
+  // perfectly normal conditions (e.g., grant ring rolled past, or
+  // the tg+source+timestamp delta exceeded the window). Direct
+  // call_id join is exact and never orphans.
+  const recById = new Map();
   for (const r of recItems) {
-    const tg = r.talkgroup;
-    if (!recsByTg.has(tg)) recsByTg.set(tg, []);
-    recsByTg.get(tg).push(r);
+    recById.set(r.id, r);
   }
   const matchedRecIds = new Set();
-  const grantToRec = new Map(); // grant identity → recording
-  const grantKey = g => `${g.started_unix_ms}_${g.tg}_${g.source||0}`;
-  const oldestFirst = [...grantItems].sort(
-    (a,b) => (a.started_unix_ms||0) - (b.started_unix_ms||0));
-  // Pass 1: src-confirmed pairs.
-  for (const g of oldestFirst) {
-    if (g.source == null || g.source === 0) continue;
-    const candidates = recsByTg.get(g.tg) || [];
-    let best = null, bestAbs = Infinity;
-    for (const r of candidates) {
-      if (matchedRecIds.has(r.id)) continue;
-      if (r.source !== g.source) continue;
-      const delta = (r.started_unix_ms||0) - (g.started_unix_ms||0);
-      if (delta < -10000 || delta > 10000) continue;
-      const ad = Math.abs(delta);
-      if (ad < bestAbs) { best = r; bestAbs = ad; }
-    }
-    if (best) {
-      matchedRecIds.add(best.id);
-      grantToRec.set(grantKey(g), best);
-    }
+  for (const g of grantItems) {
+    const r = recById.get(g.call_id);
+    if (r) matchedRecIds.add(r.id);
   }
-  // Pass 2: src-unknown grants → tg-only nearest-time, tight window.
-  for (const g of oldestFirst) {
-    if (g.source != null && g.source !== 0) continue;
-    const candidates = recsByTg.get(g.tg) || [];
-    let best = null, bestAbs = Infinity;
-    for (const r of candidates) {
-      if (matchedRecIds.has(r.id)) continue;
-      const delta = (r.started_unix_ms||0) - (g.started_unix_ms||0);
-      if (delta < -3000 || delta > 3000) continue;
-      const ad = Math.abs(delta);
-      if (ad < bestAbs) { best = r; bestAbs = ad; }
-    }
-    if (best) {
-      matchedRecIds.add(best.id);
-      grantToRec.set(grantKey(g), best);
-    }
-  }
-  const findMatch = g => grantToRec.get(grantKey(g)) || null;
+  const findMatch = g => recById.get(g.call_id) || null;
 
   // Newest-first across both rings. Grants drive ordering; any
   // unmatched recordings get appended after so the operator still
@@ -4543,10 +4593,20 @@ async function refreshRecordings() {
     const err = g.vocoder_errors || 0;
     const dropColor = drop > 0 ? 'var(--red)' : 'var(--text-dim)';
     const errColor = err > 0 ? 'var(--orange)' : 'var(--text-dim)';
+    // 2026-04-26 per-call AGC display. Q9.7 raw → float gain.
+    // Helps spot which calls converged (gain ~10-50) vs which
+    // didn't decode (gain stuck at GAIN_INIT=128 = 1.0× or
+    // hunting at 6400+ = 50×).
+    let agc = '';
+    if (g.agc_gain_q97_at_close != null) {
+      const gain = g.agc_gain_q97_at_close / 128.0;
+      agc = ` · <span style="color:var(--text-dim)" title="AGC gain at close (Q9.7 raw=${g.agc_gain_q97_at_close})">${gain.toFixed(1)}×</span>`;
+    }
     return `<span style="font-family:monospace;font-size:0.85em">`
       + `${g.ldu1_count ?? '-'}/${g.ldu2_count ?? '-'} · `
       + `${g.imbe_extracted ?? '-'}/<span style="color:${dropColor}">${drop}</span> · `
       + `<span style="color:${errColor}">${err}</span>/${g.vocoder_silent ?? '-'}`
+      + agc
       + `</span>`;
   };
   const fmtFreq = it => {
@@ -4583,12 +4643,24 @@ async function refreshRecordings() {
     return `<span style="color:var(--text-dim);font-style:italic">${reason}</span>${evtsBtn}`;
   };
 
+  // 2026-04-26 session-lifecycle refactor: prefer the bundled
+  // sources_observed list over a single `source` field. Single-
+  // speaker calls render unchanged; multi-speaker bundled grants
+  // show a comma-separated list (e.g. "1012, 3402164").
+  const fmtSources = (obj) => {
+    const list = (obj && Array.isArray(obj.sources_observed)) ? obj.sources_observed : [];
+    if (list.length > 1) return list.join(', ');
+    if (list.length === 1) return list[0];
+    if (obj && obj.source != null && obj.source !== 0) return obj.source;
+    return '--';
+  };
+
   const rows = grantItems.map(g => {
     const rec = findMatch(g);
     const startMs = g.started_unix_ms || 0;
     const endMs = g.ended_unix_ms || (startMs + (g.duration_ms || 0));
     const key = `${startMs}_${g.tg || 0}`;
-    const src = (g.source != null && g.source !== 0) ? g.source : '--';
+    const src = fmtSources(g);
     return `<tr data-call-key="${key}"${rec ? ` data-rec-id="${rec.id}"` : ''}>
       <td>${fmtClock(g.started_unix_ms)}</td>
       <td>${g.tg || '--'}</td>
@@ -4614,7 +4686,7 @@ async function refreshRecordings() {
     rows.push(`<tr><td colspan="8" style="color:var(--text-dim);font-size:0.75em;padding-top:10px">Recordings without a matching grant (HDU missed or grant ring rolled):</td></tr>`);
     for (const r of orphanRecs) {
       const url = `/api/recordings/${r.id}.wav`;
-      const src = (r.source != null && r.source !== 0) ? r.source : '--';
+      const src = fmtSources(r);
       const startMs = r.started_unix_ms || 0;
       const endMs = startMs + (r.duration_ms || 0);
       const key = `rec${r.id}`;
@@ -4753,6 +4825,8 @@ refreshRecordings();
 setInterval(refreshRecordings, 5000);
 refreshModulation();
 setInterval(refreshModulation, 3000);
+refreshPsCores();
+setInterval(refreshPsCores, 2000);
 // Phase 10-prep: TG monitor picker. Grant map grows over time so
 // we also refresh the roster on a slower cadence than the main
 // poll. The monitor filter state rarely changes (user clicks

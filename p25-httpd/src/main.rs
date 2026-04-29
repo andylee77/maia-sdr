@@ -7,6 +7,12 @@
 //! - Decode P25 control channel (sync, TSBK parsing, state machine)
 //! - Serve web UI for monitoring talkgroups and grants
 
+// 2026-04-26: bumped from default 128 because the /api/traffic
+// response object hit the recursion limit on the serde_json::json!
+// macro after adding the `agc_freq_cache` field. 256 gives plenty
+// of headroom for further additions.
+#![recursion_limit = "256"]
+
 use std::sync::Arc;
 
 use clap::Parser;
@@ -35,7 +41,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-25-keep-short-recordings-update-redesign-doc";
+pub const BUILD_TAG: &str = "2026-04-29-jmbe-cos-recurrence";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -291,11 +297,20 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Default log level: info for our crate, warn for everything
-    // else. Honour RUST_LOG when set.
+    // 2026-04-27: default log level was `info,p25_httpd=info`,
+    // which produced ~30 lines/sec on a busy CC site (per-NID,
+    // per-SYNC-HIT, per-IRQ tracing) and filled the 500 MB tmpfs
+    // at /tmp (where /var/log is symlinked) in ~24 hours, killing
+    // the daemon when ENOSPC came back from the next write().
+    //
+    // The file log is unused — operators read /api/log instead,
+    // which is a separate in-process ring buffer (services::
+    // event_log) that's not subject to tracing filters. So drop
+    // the stdout filter to `warn` by default: only real issues
+    // hit the file. RUST_LOG env still wins for debugging.
     use tracing_subscriber::{fmt, EnvFilter};
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,p25_httpd=info"));
+        .unwrap_or_else(|_| EnvFilter::new("warn"));
     fmt()
         .with_env_filter(filter)
         .with_target(true)
@@ -476,7 +491,7 @@ async fn main() -> anyhow::Result<()> {
     // start of next call was not saved under actual call" (2026-04-24
     // field observation).
     let (imbe_tx, imbe_rx) =
-        tokio::sync::mpsc::channel::<(u16, u32, u64, [p25::voice_frame::ImbeFrameRaw; 9])>(32);
+        tokio::sync::mpsc::channel::<(u16, u32, u64, u64, [p25::voice_frame::ImbeFrameRaw; 9])>(32);
     let imbe_forwarder = Arc::new(ImbeForwarder::new(imbe_tx));
 
     // Call-boundary broadcast (traffic-LSM heartbeat -> recorder;
@@ -1667,6 +1682,7 @@ async fn main() -> anyhow::Result<()> {
         recorder_diag: recorder_diag.clone(),
         active_modulation: active_modulation.clone(),
         grant_decode_stats: crate::app::grant_stats::new_ring(),
+        enc_grant_decode_stats: crate::app::grant_stats::new_ring(),
         active_call_snapshot: active_call_snapshot.clone(),
         ppm_tracker_ring: std::sync::Arc::new(
             std::sync::Mutex::new(
@@ -1697,7 +1713,52 @@ async fn main() -> anyhow::Result<()> {
         call_tracker_tx.clone(),
         state.imbe_forwarder.clone(),
         state.grant_decode_stats.clone(),
+        state.enc_grant_decode_stats.clone(),
     );
+
+    // 2026-04-26 per-call AGC tracking. Tiny poller updates
+    // ImbeForwarder.last_traffic_agc_gain_q97 every 250 ms from the
+    // FPGA's traffic LSM AGC debug register. grant_stats reads the
+    // atomic at CallClose to record per-call converged gain.
+    // 250 ms is fine grain enough to catch the converged value
+    // within an LDU pair of the close, no measurable register-bus
+    // load. cfg(linux) only — no fpga::IpCore on the host stub.
+    //
+    // Guard: only sample when the AGC loop is actually enabled.
+    // If `agc_enabled` is false, the gain register holds whatever
+    // static value was last latched — sampling it pollutes the
+    // per-freq cache with bogus values that look like converged
+    // gains but aren't (operator-observed 2026-04-26: AGC silently
+    // disabled, cache populated with values 5-10× higher than
+    // real converged gain). When disabled, write 0 to the atomic;
+    // the cache update path in grant_stats already skips q97==0
+    // samples.
+    #[cfg(target_os = "linux")]
+    {
+        let agc_forwarder = state.imbe_forwarder.clone();
+        let agc_core = state.ip_core.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(
+                std::time::Duration::from_millis(250));
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let core = agc_core.lock().await;
+                let (_en, _dma, _dc, agc_enabled) =
+                    core.traffic_lsm_control_readback();
+                let value = if agc_enabled {
+                    let (gain_q97, _mag) = core.traffic_lsm_agc_debug();
+                    gain_q97
+                } else {
+                    0
+                };
+                drop(core);
+                agc_forwarder.last_traffic_agc_gain_q97
+                    .store(value,
+                           std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+    }
 
     // Boot-time auto-PPM: wait for system acquisition then run one
     // full stage A + B calibration, persisting the result. Does

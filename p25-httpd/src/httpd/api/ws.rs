@@ -113,48 +113,62 @@ pub async fn ws_audio(
 
 
 pub async fn handle_ws_audio(
-    mut socket: axum::extract::ws::WebSocket,
+    socket: axum::extract::ws::WebSocket,
     state: Arc<AppState>,
 ) {
     use std::sync::atomic::Ordering;
+    use futures::{SinkExt, StreamExt};
     let mut rx = state.audio_tx.subscribe();
+    // Split so we can concurrently drive a recv (to observe Close
+    // frames + remote drops) and a send (audio chunks). Without this
+    // split the loop blocks on rx.recv().await during idle and stale
+    // tabs accumulate in audio_tx.receiver_count() until the next
+    // broadcast send fails — which is what produced the "3 audio WS
+    // clients" reading on the dashboard with only one real listener.
+    let (mut tx_sock, mut rx_sock) = socket.split();
     loop {
-        match rx.recv().await {
-            Ok(chunk) => {
-                let mut buf = [0u8; 320];
-                for (i, &sample) in chunk.pcm.iter().enumerate() {
-                    let le = sample.to_le_bytes();
-                    buf[i * 2] = le[0];
-                    buf[i * 2 + 1] = le[1];
-                }
-                if socket
-                    .send(axum::extract::ws::Message::Binary(buf.to_vec().into()))
-                    .await
-                    .is_err()
-                {
-                    break;
+        tokio::select! {
+            // Audio broadcast → push to client.
+            broadcast = rx.recv() => {
+                match broadcast {
+                    Ok(chunk) => {
+                        let mut buf = [0u8; 320];
+                        for (i, &sample) in chunk.pcm.iter().enumerate() {
+                            let le = sample.to_le_bytes();
+                            buf[i * 2] = le[0];
+                            buf[i * 2 + 1] = le[1];
+                        }
+                        if tx_sock
+                            .send(axum::extract::ws::Message::Binary(buf.to_vec().into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        state.audio_ws_lag_total.fetch_add(skipped, Ordering::Relaxed);
+                        let ctrl = format!(r#"{{"type":"lag","skipped":{skipped}}}"#);
+                        let _ = tx_sock
+                            .send(axum::extract::ws::Message::Text(ctrl.into()))
+                            .await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                // The broadcast channel dropped `skipped` chunks because
-                // this consumer fell behind. Each lagged chunk is a gap
-                // the listener will hear. Bump the global counter so
-                // /api/stats.audio_ws_lag_total reflects it and the
-                // dashboard can distinguish this (server-side loss) from
-                // browser-side jitter-buffer underruns.
-                state.audio_ws_lag_total.fetch_add(skipped, Ordering::Relaxed);
-                // Also tell the client so it can flush its jitter
-                // buffer rather than blending the pre-gap and post-gap
-                // samples into a click. Sent as a Text frame; the
-                // current client's binary-only filter ignores it, but
-                // future clients (Android app) can react on it.
-                let ctrl = format!(r#"{{"type":"lag","skipped":{skipped}}}"#);
-                let _ = socket
-                    .send(axum::extract::ws::Message::Text(ctrl.into()))
-                    .await;
-                continue;
+            // Client → server. We don't expect any messages, but we
+            // must drive the receive side so Close frames + transport
+            // errors are observed promptly. Without this branch a
+            // browser tab closed mid-call goes undetected for as long
+            // as the chain is idle.
+            ws_in = rx_sock.next() => {
+                match ws_in {
+                    None => break,                          // peer closed cleanly
+                    Some(Err(_)) => break,                  // transport error
+                    Some(Ok(axum::extract::ws::Message::Close(_))) => break,
+                    Some(Ok(_)) => { /* ignore other client messages */ }
+                }
             }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
     }
 }

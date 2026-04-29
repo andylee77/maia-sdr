@@ -426,6 +426,12 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     },
     EndpointDoc {
         method: "GET",
+        path: "/api/ps_cores",
+        params: "?interval_ms=<50..2000>&top_n=<1..256>",
+        description: "Per-core CPU% + per-thread CPU% over a short interval (default 250 ms). Top threads by busy%.",
+    },
+    EndpointDoc {
+        method: "GET",
         path: "/api/system",
         params: "",
         description: "System identity: WACN/NAC/RFSS/site, build tag, control channel.",
@@ -966,6 +972,314 @@ fn read_self_status() -> (Option<u64>, Option<u64>) {
         }
     }
     (rss, threads)
+}
+
+/// `GET /api/ps_cores` — live per-core CPU + per-thread CPU usage.
+///
+/// Takes two snapshots of `/proc/stat` and `/proc/self/task/*/stat`
+/// 250 ms apart and returns deltas as percentages. No state plumbing,
+/// each request is self-contained. Cost: ~250 ms wall clock + two
+/// /proc walks (sub-ms on a Z7020).
+///
+/// Per-core percentages sum to 100 (user + system + idle + iowait +
+/// irq + softirq + steal). Per-thread `cpu_pct` is "% of one core" —
+/// a thread pinning a core reads 100, a thread split across both
+/// cores at 50 % each reads 100 (sum). Top threads by CPU% are
+/// returned, capped at `top_n` (default 16).
+///
+/// Designed for the dashboard System Health panel and for diagnosing
+/// realtime audio jitter / starvation against the FFT, vocoder, and
+/// WS broadcast tasks.
+#[cfg(target_os = "linux")]
+pub async fn get_ps_cores(
+    State(_state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let interval_ms: u64 = params
+        .get("interval_ms")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(250)
+        .clamp(50, 2000);
+    let top_n: usize = params
+        .get("top_n")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(16)
+        .min(256);
+
+    let snap_a = read_ps_snapshot();
+    tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+    let snap_b = read_ps_snapshot();
+
+    let elapsed_s = (snap_b.wall_ms - snap_a.wall_ms) as f64 / 1000.0;
+    let user_hz = snap_a.user_hz.max(1) as f64;
+
+    let cpus: Vec<serde_json::Value> = snap_a
+        .cpus
+        .iter()
+        .zip(snap_b.cpus.iter())
+        .map(|(a, b)| {
+            let total = (b.total() - a.total()).max(1) as f64;
+            let user = (b.user.saturating_sub(a.user)) as f64 / total * 100.0;
+            let nice = (b.nice.saturating_sub(a.nice)) as f64 / total * 100.0;
+            let system = (b.system.saturating_sub(a.system)) as f64 / total * 100.0;
+            let idle = (b.idle.saturating_sub(a.idle)) as f64 / total * 100.0;
+            let iowait = (b.iowait.saturating_sub(a.iowait)) as f64 / total * 100.0;
+            let irq = (b.irq.saturating_sub(a.irq)) as f64 / total * 100.0;
+            let softirq = (b.softirq.saturating_sub(a.softirq)) as f64 / total * 100.0;
+            let steal = (b.steal.saturating_sub(a.steal)) as f64 / total * 100.0;
+            let busy = 100.0 - idle - iowait;
+            serde_json::json!({
+                "id":          b.id,
+                "user_pct":    round1(user + nice),
+                "system_pct":  round1(system),
+                "idle_pct":    round1(idle),
+                "iowait_pct":  round1(iowait),
+                "irq_pct":     round1(irq + softirq),
+                "steal_pct":   round1(steal),
+                "busy_pct":    round1(busy),
+            })
+        })
+        .collect();
+
+    // Per-thread deltas. Build map from snap_a TIDs and look up in snap_b
+    // so threads that vanished during the sample drop out cleanly.
+    let mut threads: Vec<serde_json::Value> = Vec::with_capacity(snap_a.threads.len());
+    for ta in &snap_a.threads {
+        let Some(tb) = snap_b.threads.iter().find(|t| t.tid == ta.tid) else {
+            continue;
+        };
+        let utime_d = tb.utime.saturating_sub(ta.utime);
+        let stime_d = tb.stime.saturating_sub(ta.stime);
+        let jiffies = (utime_d + stime_d) as f64;
+        // Wall-clock-normalised: 100% = one core fully busy for `elapsed_s`.
+        let cpu_pct = if elapsed_s > 0.0 {
+            (jiffies / (elapsed_s * user_hz)) * 100.0
+        } else {
+            0.0
+        };
+        threads.push(serde_json::json!({
+            "tid":      tb.tid,
+            "name":     tb.comm,
+            "cpu_pct":  round1(cpu_pct),
+            "state":    tb.state,
+            "vol_ctxsw_delta":   tb.vol_ctxsw.saturating_sub(ta.vol_ctxsw),
+            "invol_ctxsw_delta": tb.invol_ctxsw.saturating_sub(ta.invol_ctxsw),
+        }));
+    }
+    // Sort descending by cpu_pct and trim.
+    threads.sort_by(|a, b| {
+        let av = a["cpu_pct"].as_f64().unwrap_or(0.0);
+        let bv = b["cpu_pct"].as_f64().unwrap_or(0.0);
+        bv.partial_cmp(&av).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let total_threads = threads.len();
+    threads.truncate(top_n);
+
+    Json(serde_json::json!({
+        "interval_ms":       (snap_b.wall_ms - snap_a.wall_ms) as u64,
+        "user_hz":           snap_a.user_hz,
+        "num_cpus":          cpus.len(),
+        "cpus":              cpus,
+        "threads":           threads,
+        "total_threads":     total_threads,
+        "loadavg_1":         read_loadavg().0,
+        "note":              "Two /proc reads `interval_ms` apart, deltas \
+                              normalised to wall-clock. cpu_pct is %-of-one-core. \
+                              busy_pct = 100 - idle - iowait. Truncated to \
+                              top_n (default 16) by cpu_pct desc.",
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn get_ps_cores(
+    State(_state): State<Arc<AppState>>,
+    Query(_params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "error": "ps_cores requires /proc (target_os=linux)",
+    }))
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct PsCoreSnap {
+    wall_ms: u128,
+    user_hz: u64,
+    cpus: Vec<CpuStat>,
+    threads: Vec<ThreadStat>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default, Clone, Copy)]
+struct CpuStat {
+    id: u32,
+    user: u64,
+    nice: u64,
+    system: u64,
+    idle: u64,
+    iowait: u64,
+    irq: u64,
+    softirq: u64,
+    steal: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl CpuStat {
+    fn total(&self) -> u64 {
+        self.user
+            + self.nice
+            + self.system
+            + self.idle
+            + self.iowait
+            + self.irq
+            + self.softirq
+            + self.steal
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default, Clone)]
+struct ThreadStat {
+    tid: u32,
+    comm: String,
+    state: String,
+    utime: u64,
+    stime: u64,
+    vol_ctxsw: u64,
+    invol_ctxsw: u64,
+}
+
+#[cfg(target_os = "linux")]
+fn read_ps_snapshot() -> PsCoreSnap {
+    let wall_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let user_hz = read_user_hz();
+    let cpus = read_proc_stat_cpus();
+    let threads = read_self_task_stats();
+    PsCoreSnap { wall_ms, user_hz, cpus, threads }
+}
+
+#[cfg(target_os = "linux")]
+fn read_user_hz() -> u64 {
+    // sysconf(_SC_CLK_TCK). Almost always 100 on Linux/ARM. We avoid
+    // libc here and just hardcode 100 — if a kernel ever ships with a
+    // different value the resulting cpu_pct will be off by a constant
+    // factor that's still useful for relative comparison.
+    100
+}
+
+#[cfg(target_os = "linux")]
+fn read_proc_stat_cpus() -> Vec<CpuStat> {
+    let Ok(s) = std::fs::read_to_string("/proc/stat") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in s.lines() {
+        // Skip the aggregate "cpu " line (starts with "cpu " not "cpuN ").
+        if !line.starts_with("cpu") {
+            break;
+        }
+        let mut parts = line.split_ascii_whitespace();
+        let head = parts.next().unwrap_or("");
+        if head == "cpu" || !head.starts_with("cpu") {
+            continue;
+        }
+        let Some(id) = head[3..].parse::<u32>().ok() else {
+            continue;
+        };
+        let f: Vec<u64> = parts.filter_map(|v| v.parse().ok()).collect();
+        if f.len() < 8 {
+            continue;
+        }
+        out.push(CpuStat {
+            id,
+            user: f[0],
+            nice: f[1],
+            system: f[2],
+            idle: f[3],
+            iowait: f[4],
+            irq: f[5],
+            softirq: f[6],
+            steal: *f.get(7).unwrap_or(&0),
+        });
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn read_self_task_stats() -> Vec<ThreadStat> {
+    let Ok(rd) = std::fs::read_dir("/proc/self/task") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in rd.flatten() {
+        let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+            continue;
+        };
+        let Ok(tid) = name.parse::<u32>() else { continue };
+        let stat_path = entry.path().join("stat");
+        let Ok(stat) = std::fs::read_to_string(&stat_path) else {
+            continue;
+        };
+        // /proc/<pid>/stat fields after comm: state utime stime ...
+        // comm may contain spaces and parens, so split on the LAST ')'.
+        let Some(rp) = stat.rfind(')') else { continue };
+        let comm_start = stat.find('(').map(|p| p + 1).unwrap_or(0);
+        let comm = stat[comm_start..rp].to_string();
+        let rest = &stat[rp + 1..];
+        let parts: Vec<&str> = rest.split_ascii_whitespace().collect();
+        if parts.len() < 13 {
+            continue;
+        }
+        // After ')' the field indices are 0=state, 1=ppid, ..., 11=utime,
+        // 12=stime. Reference: man 5 proc, /proc/[pid]/stat — field
+        // numbers there are 1-based and counted from PID, so utime is
+        // field 14 of the file but index 11 of `rest` after splitting
+        // off "PID (comm) ".
+        let state = parts[0].to_string();
+        let utime: u64 = parts[11].parse().unwrap_or(0);
+        let stime: u64 = parts[12].parse().unwrap_or(0);
+        // Context-switch counters live in `status`, not `stat`. Cheap
+        // enough on a 2-core ARM with ~10 daemon threads.
+        let mut vol = 0u64;
+        let mut invol = 0u64;
+        if let Ok(status) = std::fs::read_to_string(entry.path().join("status")) {
+            for line in status.lines() {
+                if let Some(rest) = line.strip_prefix("voluntary_ctxt_switches:") {
+                    vol = rest
+                        .split_ascii_whitespace()
+                        .next()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                } else if let Some(rest) =
+                    line.strip_prefix("nonvoluntary_ctxt_switches:")
+                {
+                    invol = rest
+                        .split_ascii_whitespace()
+                        .next()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                }
+            }
+        }
+        out.push(ThreadStat {
+            tid,
+            comm,
+            state,
+            utime,
+            stime,
+            vol_ctxsw: vol,
+            invol_ctxsw: invol,
+        });
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn round1(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
 }
 
 /// Parse `/proc/meminfo` for `MemTotal` and `MemAvailable`.

@@ -213,10 +213,20 @@ pub struct AppState {
     ///   1 = C4FM (force C4FM control chain)
     ///   2 = LSM  (force LSM simulcast control chain)
     pub active_modulation: Arc<std::sync::atomic::AtomicU8>,
-    /// 2026-04-24: per-grant decode summary ring. Populated by the
-    /// `grant_stats` task that subscribes to `CallBoundary` events.
-    /// Consumed by `/api/grant_decode_stats`.
+    /// 2026-04-24: per-grant decode summary ring for **clear /
+    /// followed** calls. 2026-04-29: split from the encrypted ring
+    /// (below) so heavy ENC GRANT activity (which produces 0-IMBE
+    /// synthetic-emit entries) can't push clear-call entries out
+    /// of the dashboard ring before recordings can pair by
+    /// call_id. Consumed by `/api/grant_decode_stats` (the default
+    /// without `?include_enc=1`).
     pub grant_decode_stats: crate::app::grant_stats::GrantStatsRing,
+    /// 2026-04-29: per-grant decode summary ring for **encrypted
+    /// or not_followed** grants. Smaller cap (50) — operator
+    /// visibility into ENC activity without crowding the clear
+    /// ring. `/api/grant_decode_stats?include_enc=1` merges this
+    /// in. Dashboard checkbox controls the query.
+    pub enc_grant_decode_stats: crate::app::grant_stats::GrantStatsRing,
 
     /// 2026-04-25 Phase 2e: pull-side mirror of the call_tracker's
     /// currently-active call (None when idle). Replaces the long-
@@ -311,6 +321,7 @@ pub fn router(
         .route("/", get(index_html))
         .route("/api/system", get(api::system::get_system))
         .route("/api/sys_health", get(api::system::get_sys_health))
+        .route("/api/ps_cores", get(api::system::get_ps_cores))
         .route("/api/pipeline",   get(api::system::get_pipeline))
         .route("/api/freq_health", get(api::system::get_freq_health))
         .route("/api/grants", get(api::radio::get_grants))
