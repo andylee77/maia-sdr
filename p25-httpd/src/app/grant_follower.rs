@@ -1211,6 +1211,13 @@ pub fn spawn_grant_follower(
                 });
             };
 
+            // 2026-05-02 same-freq chain-reset gate. Tracks the last
+            // frequency we programmed into the traffic DDC so we can
+            // skip the LSM reset pulse on PTT bursts that stay on the
+            // same channel. See `IpCore::retune_traffic_chain` for the
+            // full operational rationale.
+            let mut last_traffic_freq_hz: Option<u64> = None;
+
             loop {
                 tokio::select! {
                     event = grant_event_rx.recv() => {
@@ -1780,24 +1787,36 @@ pub fn spawn_grant_follower(
                                     let _ = follower_imbe
                                         .agc_seed_for_freq(freq_hz)
                                         .unwrap_or(0);
+                                    // Same-freq chain-reset gate: only pulse the
+                                    // LSM reset when the frequency actually
+                                    // moved. PTT bursts that stay on the same
+                                    // channel preserve AGC / Costas / Gardner /
+                                    // sync state across the gap between calls,
+                                    // dropping First IMBE acquisition from
+                                    // ~3-5 s back to ~150 ms.
+                                    let freq_changed =
+                                        last_traffic_freq_hz != Some(freq_hz);
                                     let retune_result = {
                                         let core = follower_core.lock().await;
                                         core.retune_traffic_chain(
                                             offset_hz as f64,
-                                            sample_rate_now)
+                                            sample_rate_now,
+                                            freq_changed)
                                     };
                                     if let Err(ref e) = retune_result {
                                         tracing::warn!(
                                             target: "p25_traffic",
                                             "retune_traffic_chain failed: {e}"
                                         );
+                                    } else {
+                                        last_traffic_freq_hz = Some(freq_hz);
                                     }
                                     tracing::info!(
                                         target: "p25_traffic",
                                         "retune (dual-DDC): TG={} channel={:?} \
-                                         freq={} Hz offset={:+} Hz",
+                                         freq={} Hz offset={:+} Hz freq_changed={}",
                                         g.talkgroup.0, g.channel,
-                                        freq_hz, offset_hz,
+                                        freq_hz, offset_hz, freq_changed,
                                     );
                                     follower_event_log.push(
                                         LogCategory::Traffic,

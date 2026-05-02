@@ -1024,13 +1024,31 @@ impl IpCore {
 
     /// Programs the traffic DDC NCO + pulses the traffic LSM reset
     /// + enables the chain.
+    ///
+    /// `freq_changed` controls whether `pulse_traffic_lsm_reset` fires.
+    /// When `true` (frequency actually moved), the LSM chain's AGC /
+    /// Costas PLL / Gardner timing-recovery / sync correlator all reset
+    /// because the IF position changed and any retained state would be
+    /// stale. When `false` (next grant on the same frequency), the
+    /// pulse is skipped — the chain has already converged to this
+    /// channel's signal characteristics during the previous PTT, so
+    /// preserving that state lets the next grant acquire in
+    /// ~100-250 ms instead of paying a 3-5 second cold-start tax.
+    ///
+    /// 2026-05-02 operator-confirmed pattern: every "first call after
+    /// a frequency change" misses (3-5 s First IMBE, often longer than
+    /// the call itself); subsequent same-freq grants acquire in
+    /// ~150 ms. This gate preserves the cross-PTT warmth.
     pub fn retune_traffic_chain(
         &self,
         frequency_hz: f64,
         sample_rate_hz: f64,
+        freq_changed: bool,
     ) -> Result<()> {
         self.set_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
-        self.pulse_traffic_lsm_reset();
+        if freq_changed {
+            self.pulse_traffic_lsm_reset();
+        }
         self.set_traffic_lsm_enable(true);
         Ok(())
     }

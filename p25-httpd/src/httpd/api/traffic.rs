@@ -178,9 +178,13 @@ pub async fn get_traffic(
                             .load(std::sync::atomic::Ordering::Relaxed);
                     let retune_result = {
                         let core = state.ip_core.lock().await;
+                        // Manual debug retune always passes freq_changed=true
+                        // — operator-initiated sweeps want the chain re-seeded
+                        // regardless of the previous offset.
                         core.retune_traffic_chain(
                             offset_hz as f64,
-                            sample_rate_hz as f64)
+                            sample_rate_hz as f64,
+                            true)
                     };
                     if let Err(ref e) = retune_result {
                         errors.push(format!(
