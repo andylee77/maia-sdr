@@ -87,14 +87,9 @@ fn snap_lo_includes_lo_shift() {
 
 #[test]
 fn parse_clay_seed() {
-    // Round-trip the checked-in clay.json seed through the loader.
-    // Only valid when CARGO_MANIFEST_DIR is set (cargo test default).
-    let dir = option_env!("CARGO_MANIFEST_DIR");
-    if dir.is_none() {
-        eprintln!("skipping parse_clay_seed (CARGO_MANIFEST_DIR not set)");
-        return;
-    }
-    // Force the loader to look at the repo seed only.
+    // Round-trip the embedded clay seed through the loader. Force
+    // the overlay dir to a tmp location so an operator's persisted
+    // overlay can't bleed into this test.
     std::env::set_var(
         "P25_SITES_OVERLAY_DIR",
         std::env::temp_dir().join("p25_sites_test_empty").to_string_lossy().to_string(),

@@ -149,66 +149,82 @@ impl Site {
 
 // ── Loaders / savers ────────────────────────────────────────────
 
-/// Repo-seed directory: `p25-httpd/sites/`.
-fn repo_seed_dir() -> PathBuf {
-    // CARGO_MANIFEST_DIR points at `p25-httpd/`; sites live next to
-    // src/. On the target board this falls back to a relative path
-    // since CARGO_MANIFEST_DIR isn't preserved in the binary by
-    // default.
-    let manifest = option_env!("CARGO_MANIFEST_DIR").unwrap_or(".");
-    PathBuf::from(manifest).join("sites")
+/// Repo seeds embedded at compile time. CARGO_MANIFEST_DIR-based
+/// filesystem lookup doesn't survive cross-compile to the Zynq
+/// target (the path baked in points at the Buildroot host build
+/// directory which isn't present on the device). Embedding makes
+/// the seeds part of the binary so they're always available.
+///
+/// Add a new site by dropping `<name>.json` into `p25-httpd/sites/`
+/// AND adding a tuple to this slice. The runtime overlay layer
+/// (writable, persistent flash) handles per-site updates without
+/// recompilation.
+const EMBEDDED_SEEDS: &[(&str, &str)] = &[
+    ("clay",  include_str!("../../sites/clay.json")),
+    ("duval", include_str!("../../sites/duval.json")),
+];
+
+fn embedded_seed_for(name: &str) -> Option<&'static str> {
+    EMBEDDED_SEEDS
+        .iter()
+        .find_map(|(n, body)| if *n == name { Some(*body) } else { None })
 }
 
-/// Runtime-overlay directory: `/mnt/data/p25/` on the target,
-/// configurable via `P25_SITES_OVERLAY_DIR` env var for testing.
+/// Runtime-overlay directory: `/mnt/jffs2/p25-sites/` on the target
+/// (same persistent JFFS2 partition `app::autoppm` writes
+/// `p25-ppm-cal.json` to). Configurable via `P25_SITES_OVERLAY_DIR`
+/// env var for testing.
 pub fn runtime_overlay_dir() -> PathBuf {
     if let Ok(p) = std::env::var("P25_SITES_OVERLAY_DIR") {
         PathBuf::from(p)
     } else {
-        PathBuf::from("/mnt/data/p25")
+        PathBuf::from("/mnt/jffs2/p25-sites")
     }
 }
 
-/// List the names of every available site (union of repo seed +
-/// runtime overlay).
+/// List the names of every available site (union of embedded
+/// seeds + runtime overlay files).
 pub fn list_sites() -> Vec<String> {
     let mut names = std::collections::BTreeSet::new();
-    for dir in [repo_seed_dir(), runtime_overlay_dir()] {
-        if let Ok(rd) = std::fs::read_dir(&dir) {
-            for ent in rd.flatten() {
-                let path = ent.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("json") {
+    for (n, _) in EMBEDDED_SEEDS {
+        names.insert((*n).to_string());
+    }
+    if let Ok(rd) = std::fs::read_dir(runtime_overlay_dir()) {
+        for ent in rd.flatten() {
+            let path = ent.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                // Ignore reserved control files (e.g. `active.json`).
+                if stem.starts_with('_') || stem == "active" {
                     continue;
                 }
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    // Ignore reserved control files (e.g. `active.json`).
-                    if stem.starts_with('_') || stem == "active" {
-                        continue;
-                    }
-                    names.insert(stem.to_string());
-                }
+                names.insert(stem.to_string());
             }
         }
     }
     names.into_iter().collect()
 }
 
-/// Load the named site from disk: repo seed first, then overlay
-/// fields override. Returns Err if neither layer has the file.
+/// Load the named site: embedded seed first, then overlay fields
+/// override. Returns Err if neither layer has the site.
 pub fn load_site(name: &str) -> anyhow::Result<Site> {
-    let seed_path = repo_seed_dir().join(format!("{name}.json"));
     let overlay_path = runtime_overlay_dir().join(format!("{name}.json"));
 
-    let mut site = read_site_file(&seed_path)
-        .or_else(|seed_err| {
-            // Repo seed missing — try overlay alone.
-            read_site_file(&overlay_path).map_err(|overlay_err| {
-                anyhow::anyhow!(
-                    "site '{name}' not found in repo seed ({seed_err}) \
-                     or runtime overlay ({overlay_err})"
-                )
-            })
-        })?;
+    let mut site = if let Some(body) = embedded_seed_for(name) {
+        serde_json::from_str::<Site>(body)
+            .map_err(|e| anyhow::anyhow!("parse embedded seed '{name}': {e}"))?
+    } else {
+        // No embedded seed for this name — try overlay alone.
+        read_site_file(&overlay_path).map_err(|overlay_err| {
+            anyhow::anyhow!(
+                "site '{name}' not in embedded seeds (known: {known:?}) \
+                 and not in runtime overlay ({overlay_err})",
+                known = EMBEDDED_SEEDS.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            )
+        })?
+    };
 
     // Overlay wins for runtime-only fields if it exists. Don't
     // overwrite seed-only fields (label / preset_default / etc.) if
