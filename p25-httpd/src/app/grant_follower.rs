@@ -1218,6 +1218,34 @@ pub fn spawn_grant_follower(
             // full operational rationale.
             let mut last_traffic_freq_hz: Option<u64> = None;
 
+            // 2026-05-02 quality gate on state preservation. Skipping
+            // the LSM reset pulse on a same-freq grant inherits the
+            // chain's end-of-call register state. If the prior call
+            // ended cleanly (TG change, healthy IMBE rate, low silent
+            // ratio), that state was a good steady-state lock and is
+            // worth keeping. If the prior call ended with the chain
+            // mid-fade (timeout, high silent ratio, near-zero IMBE),
+            // its state is degenerate and should be cleared. Captured
+            // at CallClose; consumed at the next retune.
+            #[derive(Clone, Copy)]
+            struct LastCallQuality {
+                freq_hz: u64,
+                imbe_extracted: u64,
+                silent_frames: u64,
+                close_reason: CloseReason,
+            }
+            impl LastCallQuality {
+                fn was_clean(&self) -> bool {
+                    // Healthy: ≥1.5 s of decoded audio, < 5% silent,
+                    // ended via clean TG-change preempt (not timeout
+                    // / stream-lag).
+                    self.imbe_extracted >= 30
+                        && self.silent_frames * 20 < self.imbe_extracted
+                        && matches!(self.close_reason, CloseReason::TgChange)
+                }
+            }
+            let mut last_call_quality: Option<LastCallQuality> = None;
+
             loop {
                 tokio::select! {
                     event = grant_event_rx.recv() => {
@@ -1787,15 +1815,21 @@ pub fn spawn_grant_follower(
                                     let _ = follower_imbe
                                         .agc_seed_for_freq(freq_hz)
                                         .unwrap_or(0);
-                                    // Same-freq chain-reset gate: only pulse the
-                                    // LSM reset when the frequency actually
-                                    // moved. PTT bursts that stay on the same
-                                    // channel preserve AGC / Costas / Gardner /
-                                    // sync state across the gap between calls,
-                                    // dropping First IMBE acquisition from
-                                    // ~3-5 s back to ~150 ms.
-                                    let freq_changed =
-                                        last_traffic_freq_hz != Some(freq_hz);
+                                    // Same-freq chain-reset gate, with a quality
+                                    // gate on top: the chain's state is only
+                                    // worth preserving if the previous same-freq
+                                    // call ended in a clean steady-state lock.
+                                    // If it ended in a degenerate state (timeout
+                                    // mid-fade, high silent ratio, near-zero
+                                    // IMBE), inheriting that state hurts more
+                                    // than a fresh reset. See LastCallQuality.
+                                    let same_freq =
+                                        last_traffic_freq_hz == Some(freq_hz);
+                                    let prev_clean = last_call_quality
+                                        .as_ref()
+                                        .map(|q| q.freq_hz == freq_hz && q.was_clean())
+                                        .unwrap_or(false);
+                                    let freq_changed = !(same_freq && prev_clean);
                                     let retune_result = {
                                         let core = follower_core.lock().await;
                                         core.retune_traffic_chain(
@@ -1814,9 +1848,11 @@ pub fn spawn_grant_follower(
                                     tracing::info!(
                                         target: "p25_traffic",
                                         "retune (dual-DDC): TG={} channel={:?} \
-                                         freq={} Hz offset={:+} Hz freq_changed={}",
+                                         freq={} Hz offset={:+} Hz \
+                                         same_freq={} prev_clean={} freq_changed={}",
                                         g.talkgroup.0, g.channel,
-                                        freq_hz, offset_hz, freq_changed,
+                                        freq_hz, offset_hz,
+                                        same_freq, prev_clean, freq_changed,
                                     );
                                     follower_event_log.push(
                                         LogCategory::Traffic,
@@ -1910,6 +1946,38 @@ pub fn spawn_grant_follower(
                             _ => None,
                         };
                         let Some(reason) = close_reason else { continue; };
+
+                        // Snapshot the just-closed call's quality stats
+                        // for the next retune's chain-reset gate. Read
+                        // (global - call_baseline) to get this call's
+                        // own IMBE / silent counts (same pattern as the
+                        // /api/traffic current_call_* exposure).
+                        if let Some(freq_hz) = last_traffic_freq_hz {
+                            use std::sync::atomic::Ordering;
+                            let global_imbe = follower_imbe
+                                .imbe_frames_extracted.load(Ordering::Relaxed);
+                            let global_silent = follower_imbe
+                                .vocoder_frames_silent_observed.load(Ordering::Relaxed);
+                            let baseline_imbe = follower_imbe
+                                .call_baseline_imbe_extracted.load(Ordering::Relaxed);
+                            let baseline_silent = follower_imbe
+                                .call_baseline_silent.load(Ordering::Relaxed);
+                            let call_imbe = global_imbe.saturating_sub(baseline_imbe);
+                            let call_silent = global_silent.saturating_sub(baseline_silent);
+                            last_call_quality = Some(LastCallQuality {
+                                freq_hz,
+                                imbe_extracted: call_imbe,
+                                silent_frames: call_silent,
+                                close_reason: reason,
+                            });
+                            tracing::info!(
+                                target: "p25_traffic",
+                                "call quality captured for next retune: \
+                                 freq={} Hz imbe={} silent={} reason={:?} clean={}",
+                                freq_hz, call_imbe, call_silent, reason,
+                                last_call_quality.as_ref().unwrap().was_clean(),
+                            );
+                        }
 
                         // Diagnostic lock keeps the chain on the
                         // parked freq even at call end so the demod

@@ -43,7 +43,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-05-03-same-freq-no-reset";
+pub const BUILD_TAG: &str = "2026-05-03-same-freq-quality-gate";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //

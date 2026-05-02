@@ -208,6 +208,13 @@ impl ControlChannelDecoder {
             | "IDEN_UPDATE" | "SCCB_EXP"
             // SNDCP availability beacons — fire ~5/sec
             | "SNDCP_DCH_ANN_EX"
+            // SNDCP data-channel grants + page requests — the trunking
+            // system manages data sessions on these (e.g. CHAN 0-1193
+            // on Clay County). The grant follower never acts on them
+            // (only voice-grant TSBK opcodes drive retunes), so they're
+            // pure log noise. Counters in /api/tsbk_opcodes still tally
+            // them.
+            | "SNDCP_DCH_GRANT" | "SNDCP_DCH_PAG_RQ"
             // Motorola vendor housekeeping (fires ~10/sec; vendor
             // opcode set we don't decode beyond the bucket)
             | "MFR_SPECIFIC"
