@@ -139,6 +139,38 @@ pub async fn get_recording_events(
     }))
 }
 
+/// `GET /api/recordings/{id}/sync_trace`
+///
+/// Per-NID PLL / AGC / sync register samples captured during the
+/// recording's call. Each sample is one traffic-LSM `nid_event`
+/// while `current_call_id == id`. nid_valid=false samples are
+/// included on purpose — they're the diagnostic gold for "framer
+/// locking onto jittery symbols mid-call." See
+/// `project_post_pacer_next_steps.md`.
+///
+/// Response shape:
+/// ```json
+/// {
+///   "recording_id": <u64>,
+///   "count":        <usize>,
+///   "samples":      [SyncTraceSample, ...]
+/// }
+/// ```
+pub async fn get_recording_sync_trace(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<u64>,
+) -> Json<serde_json::Value> {
+    let samples: Vec<_> = match state.sync_trace_ring.lock() {
+        Ok(r) => r.iter().filter(|s| s.call_id == id).cloned().collect(),
+        Err(_) => Vec::new(),
+    };
+    Json(serde_json::json!({
+        "recording_id": id,
+        "count":        samples.len(),
+        "samples":      samples,
+    }))
+}
+
 /// `GET /api/recordings/{id}`
 ///
 /// Streams the WAV file for a recording by id. Trailing `.wav` in

@@ -101,33 +101,39 @@
               <access>read-only</access>
             </field>
             <field>
-              <name>traffic_lsm_dibit_dma</name>
-              <description>traffic_lsm_dibit_dma</description>
-              <bitRange>[2:2]</bitRange>
-              <access>read-only</access>
-            </field>
-            <field>
-              <name>traffic_iq_dma</name>
-              <description>traffic_iq_dma</description>
-              <bitRange>[3:3]</bitRange>
-              <access>read-only</access>
-            </field>
-            <field>
               <name>pre_diff_iq_dma</name>
               <description>pre_diff_iq_dma</description>
-              <bitRange>[4:4]</bitRange>
-              <access>read-only</access>
-            </field>
-            <field>
-              <name>traffic_pre_diff_iq_dma</name>
-              <description>traffic_pre_diff_iq_dma</description>
-              <bitRange>[5:5]</bitRange>
+              <bitRange>[2:2]</bitRange>
               <access>read-only</access>
             </field>
             <field>
               <name>wideband_spec_dma</name>
               <description>wideband_spec_dma</description>
+              <bitRange>[3:3]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>traffic_lsm_dibit_dma</name>
+              <description>traffic_lsm_dibit_dma</description>
+              <bitRange>[4:4]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>traffic_iq_dma</name>
+              <description>traffic_iq_dma</description>
+              <bitRange>[5:5]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>traffic_pre_diff_iq_dma</name>
+              <description>traffic_pre_diff_iq_dma</description>
               <bitRange>[6:6]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>wideband_iq_dma</name>
+              <description>wideband_iq_dma</description>
+              <bitRange>[7:7]</bitRange>
               <access>read-only</access>
             </field>
           </fields>
@@ -263,14 +269,74 @@
           </fields>
         </register>
         <register>
-          <name>traffic_ddc_frequency</name>
-          <description>traffic_ddc_frequency</description>
-          <addressOffset>0x60</addressOffset>
+          <name>traffic_ddc_coeff_addr</name>
+          <description>traffic_ddc_coeff_addr</description>
+          <addressOffset>0x40</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
-              <name>frequency</name>
-              <description>frequency</description>
+              <name>traffic_coeff_waddr</name>
+              <description>traffic_coeff_waddr</description>
+              <bitRange>[9:0]</bitRange>
+              <access>read-write</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>traffic_ddc_coeff</name>
+          <description>traffic_ddc_coeff</description>
+          <addressOffset>0x48</addressOffset>
+          <access>read-write</access>
+          <fields>
+            <field>
+              <name>traffic_coeff_wren</name>
+              <description>traffic_coeff_wren</description>
+              <bitRange>[0:0]</bitRange>
+              <access>write-only</access>
+            </field>
+            <field>
+              <name>traffic_coeff_wdata</name>
+              <description>traffic_coeff_wdata</description>
+              <bitRange>[18:1]</bitRange>
+              <access>read-write</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>traffic_ddc_decimation</name>
+          <description>traffic_ddc_decimation</description>
+          <addressOffset>0x4c</addressOffset>
+          <access>read-write</access>
+          <fields>
+            <field>
+              <name>traffic_decimation1</name>
+              <description>traffic_decimation1</description>
+              <bitRange>[6:0]</bitRange>
+              <access>read-write</access>
+            </field>
+            <field>
+              <name>traffic_decimation2</name>
+              <description>traffic_decimation2</description>
+              <bitRange>[12:7]</bitRange>
+              <access>read-write</access>
+            </field>
+            <field>
+              <name>traffic_decimation3</name>
+              <description>traffic_decimation3</description>
+              <bitRange>[19:13]</bitRange>
+              <access>read-write</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>traffic_ddc_frequency</name>
+          <description>traffic_ddc_frequency</description>
+          <addressOffset>0x50</addressOffset>
+          <access>read-write</access>
+          <fields>
+            <field>
+              <name>traffic_frequency</name>
+              <description>traffic_frequency</description>
               <bitRange>[27:0]</bitRange>
               <access>read-write</access>
             </field>
@@ -279,82 +345,104 @@
         <register>
           <name>traffic_ddc_control</name>
           <description>traffic_ddc_control</description>
-          <addressOffset>0x64</addressOffset>
+          <addressOffset>0x54</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
-              <name>operations_minus_one1</name>
-              <description>operations_minus_one1</description>
+              <name>traffic_operations_minus_one1</name>
+              <description>traffic_operations_minus_one1</description>
               <bitRange>[6:0]</bitRange>
               <access>read-write</access>
             </field>
             <field>
-              <name>operations_minus_one2</name>
-              <description>operations_minus_one2</description>
+              <name>traffic_operations_minus_one2</name>
+              <description>traffic_operations_minus_one2</description>
               <bitRange>[12:7]</bitRange>
               <access>read-write</access>
             </field>
             <field>
-              <name>operations_minus_one3</name>
-              <description>operations_minus_one3</description>
+              <name>traffic_operations_minus_one3</name>
+              <description>traffic_operations_minus_one3</description>
               <bitRange>[19:13]</bitRange>
               <access>read-write</access>
             </field>
             <field>
-              <name>odd_operations1</name>
-              <description>odd_operations1</description>
+              <name>traffic_odd_operations1</name>
+              <description>traffic_odd_operations1</description>
               <bitRange>[20:20]</bitRange>
               <access>read-write</access>
             </field>
             <field>
-              <name>odd_operations3</name>
-              <description>odd_operations3</description>
+              <name>traffic_odd_operations3</name>
+              <description>traffic_odd_operations3</description>
               <bitRange>[21:21]</bitRange>
               <access>read-write</access>
             </field>
             <field>
-              <name>bypass2</name>
-              <description>bypass2</description>
+              <name>traffic_bypass2</name>
+              <description>traffic_bypass2</description>
               <bitRange>[22:22]</bitRange>
               <access>read-write</access>
             </field>
             <field>
-              <name>bypass3</name>
-              <description>bypass3</description>
+              <name>traffic_bypass3</name>
+              <description>traffic_bypass3</description>
               <bitRange>[23:23]</bitRange>
               <access>read-write</access>
             </field>
             <field>
-              <name>enable_input</name>
-              <description>enable_input</description>
+              <name>traffic_enable_input</name>
+              <description>traffic_enable_input</description>
               <bitRange>[24:24]</bitRange>
               <access>read-write</access>
             </field>
           </fields>
         </register>
         <register>
-          <name>traffic_ddc_decimation</name>
-          <description>traffic_ddc_decimation</description>
-          <addressOffset>0x68</addressOffset>
+          <name>traffic_iq_dma_status</name>
+          <description>traffic_iq_dma_status</description>
+          <addressOffset>0x60</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>traffic_iq_overflow</name>
+              <description>traffic_iq_overflow</description>
+              <bitRange>[0:0]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>traffic_iq_last_buffer</name>
+              <description>traffic_iq_last_buffer</description>
+              <bitRange>[3:1]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>traffic_iq_dma_control</name>
+          <description>traffic_iq_dma_control</description>
+          <addressOffset>0x64</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
-              <name>decimation1</name>
-              <description>decimation1</description>
-              <bitRange>[6:0]</bitRange>
+              <name>traffic_iq_enable</name>
+              <description>traffic_iq_enable</description>
+              <bitRange>[0:0]</bitRange>
               <access>read-write</access>
             </field>
+          </fields>
+        </register>
+        <register>
+          <name>traffic_iq_next_address</name>
+          <description>traffic_iq_next_address</description>
+          <addressOffset>0x68</addressOffset>
+          <access>read-only</access>
+          <fields>
             <field>
-              <name>decimation2</name>
-              <description>decimation2</description>
-              <bitRange>[12:7]</bitRange>
-              <access>read-write</access>
-            </field>
-            <field>
-              <name>decimation3</name>
-              <description>decimation3</description>
-              <bitRange>[19:13]</bitRange>
-              <access>read-write</access>
+              <name>next_address</name>
+              <description>next_address</description>
+              <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
             </field>
           </fields>
         </register>
@@ -621,27 +709,21 @@
               <access>read-write</access>
             </field>
             <field>
-              <name>traffic_lsm_dc_block_enable</name>
-              <description>traffic_lsm_dc_block_enable</description>
-              <bitRange>[2:2]</bitRange>
-              <access>read-write</access>
-            </field>
-            <field>
               <name>traffic_lsm_reset</name>
               <description>traffic_lsm_reset</description>
-              <bitRange>[3:3]</bitRange>
+              <bitRange>[2:2]</bitRange>
               <access>write-only</access>
+            </field>
+            <field>
+              <name>traffic_lsm_dc_block_enable</name>
+              <description>traffic_lsm_dc_block_enable</description>
+              <bitRange>[3:3]</bitRange>
+              <access>read-write</access>
             </field>
             <field>
               <name>traffic_lsm_agc_enable</name>
               <description>traffic_lsm_agc_enable</description>
               <bitRange>[4:4]</bitRange>
-              <access>read-write</access>
-            </field>
-            <field>
-              <name>traffic_pll_seed</name>
-              <description>traffic_pll_seed</description>
-              <bitRange>[20:5]</bitRange>
               <access>read-write</access>
             </field>
           </fields>
@@ -802,51 +884,45 @@
               <bitRange>[15:0]</bitRange>
               <access>read-write</access>
             </field>
-            <field>
-              <name>traffic_agc_seed</name>
-              <description>traffic_agc_seed</description>
-              <bitRange>[31:16]</bitRange>
-              <access>read-write</access>
-            </field>
           </fields>
         </register>
         <register>
-          <name>traffic_iq_dma_status</name>
-          <description>traffic_iq_dma_status</description>
+          <name>wideband_iq_dma_status</name>
+          <description>wideband_iq_dma_status</description>
           <addressOffset>0xe0</addressOffset>
           <access>read-only</access>
           <fields>
             <field>
-              <name>traffic_iq_overflow</name>
-              <description>traffic_iq_overflow</description>
+              <name>wideband_iq_overflow</name>
+              <description>wideband_iq_overflow</description>
               <bitRange>[0:0]</bitRange>
               <access>read-only</access>
             </field>
             <field>
               <name>last_buffer</name>
               <description>last_buffer</description>
-              <bitRange>[3:1]</bitRange>
+              <bitRange>[4:1]</bitRange>
               <access>read-only</access>
             </field>
           </fields>
         </register>
         <register>
-          <name>traffic_iq_dma_control</name>
-          <description>traffic_iq_dma_control</description>
+          <name>wideband_iq_dma_control</name>
+          <description>wideband_iq_dma_control</description>
           <addressOffset>0xe4</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
-              <name>traffic_iq_enable</name>
-              <description>traffic_iq_enable</description>
+              <name>wideband_iq_enable</name>
+              <description>wideband_iq_enable</description>
               <bitRange>[0:0]</bitRange>
               <access>read-write</access>
             </field>
           </fields>
         </register>
         <register>
-          <name>traffic_iq_next_address</name>
-          <description>traffic_iq_next_address</description>
+          <name>wideband_iq_next_address</name>
+          <description>wideband_iq_next_address</description>
           <addressOffset>0xe8</addressOffset>
           <access>read-only</access>
           <fields>
@@ -985,8 +1061,8 @@
               <access>read-only</access>
             </field>
             <field>
-              <name>last_buffer</name>
-              <description>last_buffer</description>
+              <name>traffic_pre_diff_iq_last_buffer</name>
+              <description>traffic_pre_diff_iq_last_buffer</description>
               <bitRange>[3:1]</bitRange>
               <access>read-only</access>
             </field>

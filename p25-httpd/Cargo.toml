@@ -24,6 +24,8 @@ paste = "1.0"
 p25-json = { path = "p25-json", version = "0.1.0" }
 p25-pac = { path = "p25-pac", version = "0.1.0" }
 pm-remez = { version = "0.1.5", features = ["openblas-static"], optional = true }
+realfft = "3"
+rustfft = "6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["fs", "rt", "rt-multi-thread", "sync"] }

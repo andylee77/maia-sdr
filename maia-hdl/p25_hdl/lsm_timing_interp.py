@@ -125,8 +125,10 @@
 from amaranth import *
 
 
-# Symbol rate vs sample rate constants. Hard-coded to the P25
-# 31.25 kSPS / 4800 sym-per-sec ratio used by the LSM chain.
+# Default LSM symbol-rate constant.  The sample-rate is now a
+# constructor parameter so the same module can be instantiated at
+# 31.25 kSPS (control chain, sps=6.51) and 25 kSPS (post-2026-05-03
+# traffic chain, sps=5.21).
 P25_LSM_SAMPLE_RATE_HZ = 31_250
 P25_SYMBOL_RATE_HZ = 4_800
 
@@ -134,6 +136,11 @@ P25_SYMBOL_RATE_HZ = 4_800
 # Q4.12 puts the fractional point at bit 12.
 SAMPLE_POINT_FRAC_BITS = 12
 ONE_Q12 = 1 << SAMPLE_POINT_FRAC_BITS  # 4096
+
+# Legacy module-level constants. Computed for the default 31.25 kSPS
+# rate and kept so external callers / tests that imported these
+# names keep working. Per-instance values are derived inside
+# ``LsmTimingInterp.__init__`` from the ``sample_rate_hz`` kwarg.
 SPS_Q12 = round(P25_LSM_SAMPLE_RATE_HZ / P25_SYMBOL_RATE_HZ * ONE_Q12)
 HALF_SPS_Q12 = round(SPS_Q12 / 2)
 # Sanity: SPS_Q12 / ONE_Q12 ≈ 6.5104, HALF_SPS_Q12 / ONE_Q12 ≈ 3.2552.
@@ -168,26 +175,44 @@ class LsmTimingInterp(Elaboratable):
             cycle (registered, then held until the next decision).
     """
 
-    def __init__(self, *, iq_width=16, fifo_depth=8):
+    def __init__(self, *, iq_width=16, fifo_depth=8,
+                 sample_rate_hz=P25_LSM_SAMPLE_RATE_HZ,
+                 symbol_rate_hz=P25_SYMBOL_RATE_HZ):
         if fifo_depth < 6:
             raise ValueError(
                 f"fifo_depth {fifo_depth} too small for "
                 f"half_sps lookahead (need >= 6)")
         self.iq_width = iq_width
         self.fifo_depth = fifo_depth
+        self.sample_rate_hz = sample_rate_hz
+        self.symbol_rate_hz = symbol_rate_hz
+
+        # Per-instance Q4.12 timing constants derived from the
+        # sample-rate / symbol-rate kwargs.
+        self.sps_q12 = round(sample_rate_hz / symbol_rate_hz * ONE_Q12)
+        self.half_sps_q12 = round(self.sps_q12 / 2)
+
+        # Half-sps integer-part range. With Rust's
+        #   ptr = sample_point + half_sps   in [half_sps, sps + half_sps)
+        # the integer part of ptr can be floor(half_sps) or
+        # floor(half_sps) + 1.  For sps≈6.51 (half_sps≈3.255) that's
+        # 3 or 4; for sps≈5.21 (half_sps≈2.604) it's 2 or 3.  These
+        # values determine the FIFO offsets the cur_int mux selects.
+        self.cur_int_lo = self.half_sps_q12 >> SAMPLE_POINT_FRAC_BITS
+        self.cur_int_hi = self.cur_int_lo + 1
 
         # Fixed integer position in the FIFO that corresponds to the
         # Rust loop's "current decision point" (`buf[bp]` after `bp +=
         # 1`). One-ahead lookups use BP_INDEX - 1 (the slot one
         # closer to the head), and the half-sps-ahead lookups use
-        # BP_INDEX - {3 or 4}.
+        # BP_INDEX - (cur_int_lo + 1) and BP_INDEX - (cur_int_hi + 1).
         self.BP_INDEX = fifo_depth - 3  # = 5 for depth 8
-        # Sanity: with sps=6.51, the integer part of (sample_point +
-        # half_sps) is 3 or 4, so the smallest valid index we read
-        # is BP_INDEX - 4 = 1. fifo[0] is the newest sample (one
-        # input ahead of bp). fifo[BP_INDEX] is bp.
-        # Required: BP_INDEX - 4 >= 0  AND  BP_INDEX <= depth - 1.
-        assert self.BP_INDEX - 4 >= 0
+        # Sanity: smallest valid index we read is
+        # BP_INDEX - (cur_int_hi + 1).  Must be >= 0.  fifo[0] is the
+        # newest sample (one input ahead of bp); fifo[BP_INDEX] is bp.
+        assert self.BP_INDEX - (self.cur_int_hi + 1) >= 0, (
+            f"BP_INDEX {self.BP_INDEX} too small for "
+            f"cur_int_hi {self.cur_int_hi} -- bump fifo_depth")
         assert self.BP_INDEX <= fifo_depth - 1
 
         # ── Inputs ──────────────────────────────────────────────
@@ -317,7 +342,7 @@ class LsmTimingInterp(Elaboratable):
         # range is +/-32 in Q4.12 -- comfortable headroom for the
         # warmup init AND for any future increase to BP_INDEX.
         warmup_offset = (self.BP_INDEX + 2) * ONE_Q12
-        sample_point_init = SPS_Q12 + warmup_offset
+        sample_point_init = self.sps_q12 + warmup_offset
         sample_point = Signal(signed(18), init=sample_point_init)
         m.d.comb += self.sample_point_dbg.eq(sample_point)
 
@@ -411,11 +436,11 @@ class LsmTimingInterp(Elaboratable):
                 m.d.comb += mu_mid.eq(sp_dec[:SAMPLE_POINT_FRAC_BITS])
 
                 # ── Current-symbol sample lookup ────────────────
-                # ptr   = sp_dec + HALF_SPS_Q12  (still Q4.12)
-                # int   = ptr >> 12  ∈ {3, 4}
+                # ptr   = sp_dec + half_sps_q12  (still Q4.12)
+                # int   = ptr >> 12  ∈ {cur_int_lo, cur_int_hi}
                 # frac  = ptr[:12]               (lerp residual)
                 ptr = Signal(signed(16), name="cur_ptr")
-                m.d.comb += ptr.eq(sp_dec + HALF_SPS_Q12)
+                m.d.comb += ptr.eq(sp_dec + self.half_sps_q12)
                 cur_int = Signal(unsigned(4), name="cur_int")
                 cur_frac = Signal(unsigned(SAMPLE_POINT_FRAC_BITS),
                                   name="cur_frac")
@@ -436,22 +461,23 @@ class LsmTimingInterp(Elaboratable):
                 b_cur_re = Signal(signed(W), name="b_cur_re_mux")
                 a_cur_im = Signal(signed(W), name="a_cur_im_mux")
                 b_cur_im = Signal(signed(W), name="b_cur_im_mux")
-                with m.If(cur_int == 3):
+                lo = self.cur_int_lo
+                hi = self.cur_int_hi
+                with m.If(cur_int == lo):
                     m.d.comb += [
-                        a_cur_re.eq(fifo_re[BP - 3]),
-                        b_cur_re.eq(fifo_re[BP - 4]),
-                        a_cur_im.eq(fifo_im[BP - 3]),
-                        b_cur_im.eq(fifo_im[BP - 4]),
+                        a_cur_re.eq(fifo_re[BP - lo]),
+                        b_cur_re.eq(fifo_re[BP - (lo + 1)]),
+                        a_cur_im.eq(fifo_im[BP - lo]),
+                        b_cur_im.eq(fifo_im[BP - (lo + 1)]),
                     ]
                 with m.Else():
-                    # cur_int == 4 (the only other possible value
-                    # given ptr's range [HALF_SPS_Q12, ONE_Q12 +
-                    # HALF_SPS_Q12) = [13334, 17430)).
+                    # cur_int == hi (the only other possible value
+                    # given ptr's range [half_sps, ONE_Q12 + half_sps)).
                     m.d.comb += [
-                        a_cur_re.eq(fifo_re[BP - 4]),
-                        b_cur_re.eq(fifo_re[BP - 5]),
-                        a_cur_im.eq(fifo_im[BP - 4]),
-                        b_cur_im.eq(fifo_im[BP - 5]),
+                        a_cur_re.eq(fifo_re[BP - hi]),
+                        b_cur_re.eq(fifo_re[BP - (hi + 1)]),
+                        a_cur_im.eq(fifo_im[BP - hi]),
+                        b_cur_im.eq(fifo_im[BP - (hi + 1)]),
                     ]
 
                 # ── Latch stage 1 + advance sample_point ────────
@@ -467,9 +493,9 @@ class LsmTimingInterp(Elaboratable):
                     s1_b_cur_re.eq(b_cur_re),
                     s1_a_cur_im.eq(a_cur_im),
                     s1_b_cur_im.eq(b_cur_im),
-                    # Schedule the next decision: add SPS_Q12 to
+                    # Schedule the next decision: add sps_q12 to
                     # the post-decrement value.
-                    sample_point.eq(sp_dec + SPS_Q12),
+                    sample_point.eq(sp_dec + self.sps_q12),
                 ]
 
         # ── Stage 2: lerps from stage 1 snapshot ────────────────

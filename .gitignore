@@ -136,3 +136,7 @@ Cargo.lock.bak
 
 # p25-httpd full-API JSON dumps
 /p25-httpd/log_full.json
+
+# Runtime event-log dumps + WS audio capture output dirs (tools/p25_ws_audio_capture.py)
+/p25_log.json
+/ws_audio_capture/

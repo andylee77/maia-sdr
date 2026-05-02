@@ -181,11 +181,22 @@ pub async fn get_stats(State(state): State<Arc<AppState>>) -> Json<DecoderStats>
     let ddc_control_offset_hz: Option<i64> = rx_lo_hz.map(|lo| {
         (current_radio_hz as f64 - lo as f64 + lo_shift_hz_live) as i64
     });
-    // Decimation chain is a compile-time constant of the HDL build.
-    // Phase 10-prep redesign: /4 /4 /8 Parks-McClellan split.
-    // 8 MSPS ADC / 128 = 62.5 kSPS into the demod.
-    let ddc_decimation = Some("/4 /4 /8 = /128".to_string());
-    let ddc_output_rate_hz = sampling_frequency_hz.map(|sr| sr / 128);
+    // Decimation chain depends on the live preset. 2026-05-03 dual-DDC
+    // retune: every preset lands at 50 kSPS at the DDC output (then
+    // LsmDecimator2 /2 → 25 kSPS at the LSM front end).
+    let cur_preset = crate::hardware::ddc_presets::PRESETS
+        .get(state.current_preset_idx.load(std::sync::atomic::Ordering::Relaxed))
+        .copied()
+        .unwrap_or(crate::hardware::ddc_presets::DEFAULT_PRESET);
+    let ddc_decimation = Some(format!(
+        "/{} /{} /{} = /{}",
+        cur_preset.decim1,
+        cur_preset.decim2,
+        cur_preset.decim3,
+        cur_preset.total_decim(),
+    ));
+    let ddc_output_rate_hz =
+        sampling_frequency_hz.map(|sr| sr / cur_preset.total_decim() as u32);
 
     // Wall clock: Linux clock value. Pre-NTP this will read 1970-...;
     // post-NTP it's real. We format it here so the browser doesn't
@@ -370,6 +381,8 @@ pub async fn get_irq_stats(State(state): State<Arc<AppState>>) -> Json<serde_jso
         "lsm_dibit":          s.lsm_dibit,
         "traffic_lsm_dibit":  s.traffic_lsm_dibit,
         "traffic_iq":         s.traffic_iq,
+        "pre_diff_iq":        s.pre_diff_iq,
+        "wideband_iq":        s.wideband_iq,
         "rate_per_sec": {
             "total":             rate(s.total),
             "dibit":             rate(s.dibit),
@@ -378,6 +391,8 @@ pub async fn get_irq_stats(State(state): State<Arc<AppState>>) -> Json<serde_jso
             "lsm_dibit":         rate(s.lsm_dibit),
             "traffic_lsm_dibit": rate(s.traffic_lsm_dibit),
             "traffic_iq":        rate(s.traffic_iq),
+            "pre_diff_iq":       rate(s.pre_diff_iq),
+            "wideband_iq":       rate(s.wideband_iq),
         },
     }))
 }

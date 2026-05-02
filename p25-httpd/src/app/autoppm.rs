@@ -399,7 +399,7 @@ pub fn load_persisted() -> Option<PersistedPpm> {
 }
 
 #[cfg(target_os = "linux")]
-fn save_persisted(p: &PersistedPpm) -> Result<()> {
+pub fn save_persisted(p: &PersistedPpm) -> Result<()> {
     let path = Path::new(PPM_CAL_FILE);
     if let Some(parent) = path.parent() {
         if !parent.exists() {

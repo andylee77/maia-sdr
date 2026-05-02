@@ -75,7 +75,11 @@
 
 from amaranth import *
 
-from .lsm_timing_interp import LsmTimingInterp
+from .lsm_timing_interp import (
+    LsmTimingInterp,
+    P25_LSM_SAMPLE_RATE_HZ as DEFAULT_LSM_SAMPLE_RATE_HZ,
+    P25_SYMBOL_RATE_HZ as DEFAULT_LSM_SYMBOL_RATE_HZ,
+)
 from .lsm_agc import LsmAgc, MAG_UPDATE_THRESHOLD_DEFAULT
 from .lsm_diff_demod_slicer import LsmDiffDemodSlicer
 from .lsm_pll_rotate import LsmPllRotate
@@ -127,7 +131,9 @@ class LsmDemodLoop(Elaboratable):
     """
 
     def __init__(self, *, pll_mode='cordic',
-                 agc_mag_update_threshold=MAG_UPDATE_THRESHOLD_DEFAULT):
+                 agc_mag_update_threshold=MAG_UPDATE_THRESHOLD_DEFAULT,
+                 sample_rate_hz=DEFAULT_LSM_SAMPLE_RATE_HZ,
+                 symbol_rate_hz=DEFAULT_LSM_SYMBOL_RATE_HZ):
         if pll_mode not in ('cordic', 'linearised'):
             raise ValueError(
                 f"pll_mode must be 'cordic' or 'linearised', "
@@ -136,6 +142,13 @@ class LsmDemodLoop(Elaboratable):
         # Forwarded to LsmAgc to set the idle-noise gate threshold.
         # See lsm_agc.MAG_UPDATE_THRESHOLD_DEFAULT docstring.
         self.agc_mag_update_threshold = agc_mag_update_threshold
+        # 2026-05-03: forwarded to LsmTimingInterp + LsmGardnerTed.
+        # Default 31_250 / 4_800 keeps the legacy control-chain
+        # bit-identical to before the parameterisation. The traffic
+        # chain post-2026-05-03 instantiates with 25_000 / 4_800
+        # (sps≈5.21) to match the SDRTrunk-bit-exact PS pipeline.
+        self.sample_rate_hz = sample_rate_hz
+        self.symbol_rate_hz = symbol_rate_hz
 
         # ── Inputs ──────────────────────────────────────────────
         self.re_in = Signal(signed(16))
@@ -209,7 +222,9 @@ class LsmDemodLoop(Elaboratable):
         m = Module()
 
         # ── Submodules ──────────────────────────────────────────
-        m.submodules.timing = timing = LsmTimingInterp()
+        m.submodules.timing = timing = LsmTimingInterp(
+            sample_rate_hz=self.sample_rate_hz,
+            symbol_rate_hz=self.symbol_rate_hz)
         m.submodules.agc = agc = LsmAgc(
             mag_update_threshold=self.agc_mag_update_threshold)
         m.submodules.diff_demod = diff_demod = LsmDiffDemodSlicer()
@@ -220,7 +235,9 @@ class LsmDemodLoop(Elaboratable):
         # iq_width=16 and no post-rotate right-shift.
         m.submodules.rotate_mid_pre = rotate_mid_pre = LsmPllRotate(iq_width=16)
         m.submodules.rotate_cur_pre = rotate_cur_pre = LsmPllRotate(iq_width=16)
-        m.submodules.gardner = gardner = LsmGardnerTed()
+        m.submodules.gardner = gardner = LsmGardnerTed(
+            sample_rate_hz=self.sample_rate_hz,
+            symbol_rate_hz=self.symbol_rate_hz)
         if self.pll_mode == 'cordic':
             pll_update_cls = LsmPllUpdate
         else:

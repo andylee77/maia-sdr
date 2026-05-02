@@ -148,8 +148,75 @@ pub async fn post_preset(
     let preset_idx = ddc_presets::PRESETS
         .iter().position(|p| p.name == preset.name).unwrap();
 
-    let new_rx_lo = body.center_freq_hz.unwrap_or_else(||
-        state.current_rx_lo.load(Ordering::Relaxed) as u64);
+    // 2026-05-03: auto-snap the LO when the requested preset's IF
+    // window is too narrow to keep the active CC in range, OR when
+    // the active site has a `cc_position` that places the CC away
+    // from the IF centre (e.g. Clay: traffic 852-861 below CC, snap
+    // CC to top of window). An explicit `center_freq_hz` in the
+    // request body still overrides (caller knows best).
+    let nco_lo_shift_hz = state.current_lo_shift_hz
+        .load(Ordering::Relaxed) as f64;
+    let current_radio = state.current_control_freq
+        .load(Ordering::Relaxed) as f64;
+    let half_sr = preset.sample_rate_hz as f64 / 2.0;
+    // Active-site cc_position drives the snap target; default
+    // Center if no site is loaded (legacy behaviour).
+    let cc_position = state
+        .active_site
+        .read()
+        .await
+        .as_ref()
+        .map(|s| s.cc_position)
+        .unwrap_or(crate::services::sites::CcPosition::Center);
+    // Margin between CC and IF window edge (Top / Bottom only).
+    // 250 kHz keeps the CC clear of the AD9361 transition band.
+    const LO_SNAP_MARGIN_HZ: f64 = 250_000.0;
+    let new_rx_lo = if let Some(req_lo) = body.center_freq_hz {
+        req_lo
+    } else {
+        // Compute the snap target for this site's cc_position. NCO
+        // sees `(cc - lo)`; we want it to land at +offset where:
+        //   Top    → +(half_sr - margin)  [CC near top of IF]
+        //   Center →  0                    [CC at IF centre]
+        //   Bottom → -(half_sr - margin)  [CC near bottom of IF]
+        // → lo = cc - offset (+ ppm correction).
+        let target_offset = match cc_position {
+            crate::services::sites::CcPosition::Top => {
+                half_sr - LO_SNAP_MARGIN_HZ
+            }
+            crate::services::sites::CcPosition::Center => 0.0,
+            crate::services::sites::CcPosition::Bottom => {
+                -(half_sr - LO_SNAP_MARGIN_HZ)
+            }
+        };
+        let snapped = current_radio - target_offset + nco_lo_shift_hz;
+        let prev_lo = state.current_rx_lo.load(Ordering::Relaxed) as f64;
+        let raw_nco_at_prev = current_radio - prev_lo + nco_lo_shift_hz;
+        // Always snap if cc_position is non-Center (the operator
+        // selected a site whose traffic spread asks for it). For
+        // Center, keep the legacy behaviour: only snap if the
+        // current LO would put the NCO out of window.
+        let must_snap = !matches!(
+            cc_position,
+            crate::services::sites::CcPosition::Center,
+        ) || raw_nco_at_prev.abs() > half_sr;
+        if must_snap {
+            tracing::info!(
+                target: "p25_preset",
+                "LO snap (cc_position={cc_position:?}): prev_lo={} \
+                 raw_nco={:+.0} Hz @ {} preset → snapping to {} \
+                 (target offset {:+.0} Hz)",
+                prev_lo as i64,
+                raw_nco_at_prev,
+                preset.name,
+                snapped.round() as i64,
+                target_offset,
+            );
+            snapped.round() as u64
+        } else {
+            prev_lo as u64
+        }
+    };
 
     let gain_mode = match body.gain_mode.as_deref() {
         None => None,
@@ -219,12 +286,9 @@ pub async fn post_preset(
 
     // 2. DDC — load new FIR coefficients + decimation + NCO offset
     //    for the current control-channel frequency. Uses the live
-    //    crystal-trim correction (`current_lo_shift_hz`) so any
-    //    auto-PPM run survives a preset reload.
-    let nco_lo_shift_hz = state.current_lo_shift_hz
-        .load(Ordering::Relaxed) as f64;
-    let current_radio = state.current_control_freq
-        .load(Ordering::Relaxed) as f64;
+    //    crystal-trim correction (`current_lo_shift_hz`) — captured
+    //    above for the LO-snap calculation. Re-uses the snapped
+    //    `new_rx_lo` so the post-snap NCO stays inside the window.
     let nco_offset_hz = current_radio
         - new_rx_lo as f64 + nco_lo_shift_hz;
     {
@@ -343,10 +407,48 @@ pub async fn post_tune(
     let in_window = offset_at_current_lo.abs() <= usable_half;
 
     let (new_rx_lo, lo_moved) = if let Some(center) = body.center_hz {
-        // Explicit center-freq command. Bypass window checks — the
-        // operator is telling us exactly where the LO should sit.
+        // Explicit center-freq command. Operator is telling us where
+        // the LO should sit — but if the resulting NCO would be out of
+        // the sample-rate window, that's not a valid combination. In
+        // auto mode we still snap the LO to bring NCO into range
+        // (operator picked the wrong center for this rate); in lock
+        // mode we 409 with a clear hint.
+        // 2026-05-03: previously this branch unconditionally honored
+        // `center_hz` and skipped the window check, leaving the chain
+        // in a broken state when (e.g.) a preset apply at 4 MSPS left
+        // the LO 2.86 MHz off from the active control freq.
         let c = center as i64;
-        if c != rx_lo_now { (c, true) } else { (rx_lo_now, false) }
+        let resulting_nco = (radio - c).abs();
+        if resulting_nco > usable_half && !lock_req {
+            // Snap LO to center the radio freq; ignore the requested
+            // center because honoring it would break the chain.
+            let rounded = ((radio + TUNE_LO_STEP_HZ / 2) / TUNE_LO_STEP_HZ)
+                * TUNE_LO_STEP_HZ;
+            tracing::info!(
+                target: "p25_tune",
+                "tune: requested center_hz={} would put NCO {:+} Hz outside \
+                 ±{} Hz window for preset {}; auto-snapping LO to {}",
+                c, radio - c, usable_half, preset.name, rounded,
+            );
+            (rounded, rounded != rx_lo_now)
+        } else if resulting_nco > usable_half {
+            return (StatusCode::CONFLICT, Json(serde_json::json!({
+                "ok":    false,
+                "error": "explicit center_hz puts NCO outside locked window",
+                "radio_freq_hz":     radio,
+                "requested_center":  c,
+                "resulting_nco_hz":  radio - c,
+                "window_half_hz":    usable_half,
+                "preset":            preset.name,
+                "hint":              "Unlock center (auto mode) so the LO \
+                                      can move, or omit center_hz, or pick \
+                                      a wider preset.",
+            })));
+        } else if c != rx_lo_now {
+            (c, true)
+        } else {
+            (rx_lo_now, false)
+        }
     } else if in_window {
         (rx_lo_now, false)
     } else if lock_req {
@@ -1247,37 +1349,61 @@ pub async fn put_ppm(
             }))).into_response();
         }
     }
-    state.last_ppm_cal_unix_secs.store(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64).unwrap_or(0),
-        Ordering::Relaxed);
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64).unwrap_or(0);
+    state.last_ppm_cal_unix_secs.store(now_unix, Ordering::Relaxed);
 
     let lo_ppm = if rx_lo > 0.0 {
         -(shift_hz as f64) / (rx_lo * 1e-6)
     } else { 0.0 };
+
+    // 2026-05-02: actually persist the override to JFFS2 so the next
+    // boot picks it up. Previously the doc-comment claimed persistence
+    // but only the auto-PPM tracker code path wrote the file —
+    // operator-flagged when manual +470 kept getting overridden by
+    // the tracker re-loading 353/394 from disk after reboot.
+    let persisted = crate::app::autoppm::PersistedPpm {
+        lo_shift_hz:     shift_hz,
+        lo_ppm,
+        rx_lo_hz:        rx_lo as i64,
+        control_freq_hz: state.current_control_freq.load(Ordering::Relaxed),
+        unix_secs:       now_unix,
+        method:          "manual_override".to_string(),
+    };
+    let persist_status = match crate::app::autoppm::save_persisted(&persisted) {
+        Ok(_) => "persisted".to_string(),
+        Err(e) => {
+            tracing::warn!(
+                "failed to persist manual PPM override: {e} \
+                 (live shift still applied)");
+            format!("not persisted ({e})")
+        }
+    };
 
     // Event-log the override so operators can audit PPM changes via
     // /api/log, not just via tracing output.
     state.event_log.push(
         crate::services::event_log::LogCategory::System,
         format!("manual PPM override: lo_shift_hz={shift_hz:+} \
-                 ({lo_ppm:+.4} ppm, baseline reset)"),
+                 ({lo_ppm:+.4} ppm, baseline reset, {persist_status})"),
         serde_json::json!({
-            "kind":        "ppm.override",
-            "lo_shift_hz": shift_hz,
-            "lo_ppm":      lo_ppm,
-            "nco_offset":  nco_offset,
+            "kind":           "ppm.override",
+            "lo_shift_hz":    shift_hz,
+            "lo_ppm":         lo_ppm,
+            "nco_offset":     nco_offset,
+            "persist_status": persist_status,
         }),
     );
 
     (StatusCode::OK, Json(serde_json::json!({
-        "ok":          true,
-        "lo_shift_hz": shift_hz,
-        "lo_ppm":      lo_ppm,
-        "nco_offset":  nco_offset,
-        "note":        "shift applied live; persistence to /mnt/jffs2 \
-                        will happen on next auto-PPM run or manual cal",
+        "ok":             true,
+        "lo_shift_hz":    shift_hz,
+        "lo_ppm":         lo_ppm,
+        "nco_offset":     nco_offset,
+        "persist_status": persist_status,
+        "note":           format!(
+            "shift applied live and persistence: {persist_status}"),
     }))).into_response()
 }
 

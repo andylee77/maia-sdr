@@ -90,17 +90,37 @@ class P25Config:
         self.traffic_pre_diff_iq_dma_buffer_size = 0x8000
 
         # ── Wideband spectrometer DMA (Phase 10.7) ────────────────
-        # `DmaBRAMWrite`, 16384-bin FFT geometry (2026-04-23 bump
-        # from 4096). 2 buffers × 128 KB = 256 KB ring. 5-10 Hz
-        # integrator. Address 0x2100_0000, 256 KB aligned.
-        # Buffer count reduced 4 -> 2 to keep total BRAM footprint
-        # manageable on Z7020 (was 128 KB, now 256 KB; at 4 buffers
-        # it would be 512 KB which leaves little headroom for the
-        # FFT core BRAM).
+        # `DmaBRAMWrite`, 4096-bin FFT geometry. 2 buffers × 32 KB =
+        # 64 KB ring. 5-10 Hz integrator. Address 0x2100_0000, 64 KB
+        # aligned. ~1.95 kHz/bin at 8 MSPS input.
+        # History: bumped 4096 -> 16384 in 2026-04-23, then back to
+        # 4096 in 2026-05-01 nominally for polyphase BRAM, but field-
+        # tested 14 was significantly slower with no operationally
+        # useful extra detail vs 12 — so 4096 is kept post the
+        # 2026-05-03 dual-DDC pivot on operational grounds.
         self.wideband_spec_dma_address = 0x2100_0000
         self.wideband_spec_dma_num_buffers_log2 = 1   # 2 sub-buffers
-        # Spectrometer FFT is 16384 bins (order_log2=14) × 8 B/word.
-        self.wideband_spec_dma_buffer_size = (1 << 14) * 8
+        # Spectrometer FFT is 4096 bins (order_log2=12) × 8 B/word.
+        self.wideband_spec_dma_buffer_size = (1 << 12) * 8
+
+        # ── Wideband raw IQ DMA (2026-05-03) ──────────────────────
+        # Pre-DDC, post-rxiq_cdc 8 MSPS / 8 MHz BW IQ stream straight
+        # from AD9361. 12-bit signed I/Q sign-extended to 16-bit and
+        # packed two samples per 64-bit word -- same layout as
+        # `iq_dma`. Bandwidth math:
+        #     8 MSPS x 4 B/sample             = 32 MB/s
+        #     16 sub-buffers x 1 MB           = 16 MB ring = ~0.5 s
+        # Sub-buffer turns over every ~31 ms => ~32 IRQs/s.
+        #
+        # Built so the PS can run a software P25 stack (polyphase
+        # channelizer -> per-target DDC -> LSM demod) in parallel
+        # with the HDL traffic chain. HDL stays in the bitstream;
+        # PS picks which path drives audio per call.
+        #
+        # Ring base must be aligned to total ring size (16 MB).
+        self.wideband_iq_dma_address = 0x2200_0000
+        self.wideband_iq_dma_num_buffers_log2 = 4   # 16 sub-buffers
+        self.wideband_iq_dma_buffer_size = 0x10_0000   # 1 MB
 
     @property
     def iq_dma_num_buffers(self):
@@ -163,6 +183,15 @@ class P25Config:
         return (self.wideband_spec_dma_num_buffers
                 * self.wideband_spec_dma_buffer_size)
 
+    @property
+    def wideband_iq_dma_num_buffers(self):
+        return 1 << self.wideband_iq_dma_num_buffers_log2
+
+    @property
+    def wideband_iq_dma_total_size(self):
+        return (self.wideband_iq_dma_num_buffers
+                * self.wideband_iq_dma_buffer_size)
+
     def validate(self):
         assert self.platform >= 0 and self.platform < 256
         # Ring base addresses must be aligned to total ring size
@@ -197,3 +226,8 @@ class P25Config:
             f'wideband_spec_dma_address ' \
             f'{self.wideband_spec_dma_address:#x} not aligned to ' \
             f'ring size {self.wideband_spec_dma_total_size:#x}'
+        assert self.wideband_iq_dma_address & \
+            (self.wideband_iq_dma_total_size - 1) == 0, \
+            f'wideband_iq_dma_address ' \
+            f'{self.wideband_iq_dma_address:#x} not aligned to ' \
+            f'ring size {self.wideband_iq_dma_total_size:#x}'

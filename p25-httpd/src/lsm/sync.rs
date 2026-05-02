@@ -1,0 +1,250 @@
+//! P25 NID frame-sync detectors and status-aware NID extractor.
+//!
+//! Phase 6D port of `find_sync_events_hard`, `find_sync_events_soft`, and
+//! `_extract_nid_skipping_status` from `tools/p25_lsm_demod.py`. Both the
+//! hard and soft detectors are provided so we can A/B compare them at
+//! runtime exactly like the Python reference does.
+//!
+//! - **Hard detector** — sliding 48-bit register, Hamming distance to the
+//!   `0x5575_F5FF_77FF` sync pattern, threshold ≤ 4. The same algorithm
+//!   p25-httpd's existing C4FM dibit pipeline uses, easy to port to HDL.
+//! - **Soft detector** — port of `P25P1SoftSyncDetectorScalar` in SDRTrunk:
+//!   inner product of the 24 ideal sync phases (`±3π/4`) with the
+//!   demod's soft phase output. Threshold = 60. SDRTrunk's chosen detector
+//!   for LSM because it picks up syncs the hard detector misses on noisy
+//!   data.
+//!
+//! Both detectors share the same status-dibit-aware NID extractor: read 33
+//! dibits past the sync hit and skip index 11 (the position where the
+//! 35-dibit-cycle status symbol falls inside the NID block, given that
+//! `P25P1MessageFramer` resets the status counter on sync detection).
+
+use super::nid_fec::{decode_nid as bch_decode_nid, DecodedNid};
+use std::f32::consts::PI;
+
+// Frame-sync + NID geometry live in `crate::protocol::p25::wire`.
+// Re-exported here so the existing `lsm::sync::FRAME_SYNC_*` paths
+// still resolve (back-compat for a handful of test imports).
+pub use crate::protocol::p25::wire::{
+    FRAME_SYNC_MASK, NID_STATUS_DIBIT_INDEX, NID_TRANSMITTED_DIBITS,
+};
+pub use crate::protocol::p25::wire::FRAME_SYNC_PATTERN as FRAME_SYNC_DIBIT_PATTERN;
+pub use crate::protocol::p25::wire::FRAME_SYNC_DIBIT_COUNT as FRAME_SYNC_DIBITS;
+
+/// Hamming distance threshold for the LSM hard sync detector.
+/// Renamed from `SYNC_THRESHOLD` on 2026-04-19 to avoid collision with
+/// the PS-side `control_channel::SYNC_THRESHOLD` (value 6), which
+/// serves a different pipeline.
+pub const LSM_SYNC_THRESHOLD: u32 = 4;
+
+/// Soft sync correlation threshold. Same value SDRTrunk's
+/// `P25P1MessageFramer.SYNC_DETECTION_THRESHOLD` uses (60.0). A perfect
+/// lock on the sync pattern produces ~133, this threshold is roughly half
+/// of that — generous tolerance for noisy syncs.
+pub const SYNC_SCORE_THRESHOLD: f32 = 60.0;
+
+/// One frame-sync match -> NID extraction (raw + BCH-corrected).
+///
+/// Mirrors the `SyncEvent` dataclass in the Python reference.
+#[derive(Debug, Clone, Copy)]
+pub struct SyncEvent {
+    /// Symbol index of the dibit immediately after the sync window.
+    pub symbol_idx: usize,
+    /// Hamming distance of the sync match (hard detector only; -1 for soft).
+    pub distance: i32,
+    /// Soft correlation score (soft detector only; 0.0 for hard).
+    pub score: f32,
+    /// 12-bit NAC, raw extraction (no FEC).
+    pub nac: u16,
+    /// 4-bit DUID, raw extraction (no FEC).
+    pub duid: u8,
+    /// Full 64-bit NID word, status dibit already skipped.
+    pub nid_raw: u64,
+    /// Result of running the 64-bit NID through the BCH(63,16,11) decoder.
+    /// `None` means the FEC declared the word uncorrectable (>11 errors).
+    pub fec: Option<DecodedNid>,
+}
+
+impl SyncEvent {
+    /// Convenience: NAC after FEC if correctable, else raw NAC.
+    pub fn best_nac(&self) -> u16 {
+        self.fec.map(|d| d.nac).unwrap_or(self.nac)
+    }
+
+    /// Convenience: DUID after FEC if correctable, else raw DUID.
+    pub fn best_duid(&self) -> u8 {
+        self.fec.map(|d| d.duid).unwrap_or(self.duid)
+    }
+}
+
+/// Read 33 dibits starting at `start_idx`, skip index 11 (status dibit),
+/// pack the remaining 32 dibits into a 64-bit NID word, and split out
+/// (NAC, DUID).
+///
+/// Returns `None` if `dibits` doesn't have enough room past `start_idx`.
+/// The third return value is the full 64-bit NID, suitable for handing
+/// directly to `nid_fec::decode_nid`.
+fn extract_nid_skipping_status(dibits: &[u8], start_idx: usize) -> Option<(u16, u8, u64)> {
+    let end = start_idx + NID_TRANSMITTED_DIBITS;
+    if end > dibits.len() {
+        return None;
+    }
+    let mut nid_bits: u64 = 0;
+    for j in 0..NID_TRANSMITTED_DIBITS {
+        if j == NID_STATUS_DIBIT_INDEX {
+            continue;
+        }
+        nid_bits = (nid_bits << 2) | (dibits[start_idx + j] as u64 & 0x3);
+    }
+    let nac = ((nid_bits >> 52) & 0xFFF) as u16;
+    let duid = ((nid_bits >> 48) & 0xF) as u8;
+    Some((nac, duid, nid_bits))
+}
+
+/// Hard-decision Hamming-distance sync correlator. The simple HDL-friendly
+/// version. Slides a 48-bit register over the dibit stream and emits a
+/// sync event whenever the register lands within `SYNC_THRESHOLD` Hamming
+/// distance of `FRAME_SYNC_DIBIT_PATTERN`.
+///
+/// After each hit we skip past the 33-dibit NID window before resuming
+/// search, exactly like SDRTrunk's `P25P1MessageFramer` suppresses sync
+/// detection during message assembly. Without this skip we false-trigger
+/// on dibit content immediately following the sync.
+pub fn find_sync_events_hard(dibits: &[u8]) -> Vec<SyncEvent> {
+    let mut sync_register: u64 = 0;
+    let mut out: Vec<SyncEvent> = Vec::new();
+    let mut i: usize = 0;
+    while i < dibits.len() {
+        sync_register = ((sync_register << 2) | (dibits[i] as u64 & 0x3)) & FRAME_SYNC_MASK;
+        i += 1;
+        if i < FRAME_SYNC_DIBITS {
+            continue;
+        }
+        let dist = (sync_register ^ FRAME_SYNC_DIBIT_PATTERN).count_ones();
+        if dist <= LSM_SYNC_THRESHOLD {
+            let Some((nac, duid, nid_bits)) = extract_nid_skipping_status(dibits, i) else {
+                break;
+            };
+            let fec = bch_decode_nid(nid_bits);
+            out.push(SyncEvent {
+                symbol_idx: i,
+                distance: dist as i32,
+                score: 0.0,
+                nac,
+                duid,
+                nid_raw: nid_bits,
+                fec,
+            });
+            // Skip past the 33-dibit NID window so we don't false-trigger
+            // on its contents.
+            i += NID_TRANSMITTED_DIBITS;
+            sync_register = 0;
+        }
+    }
+    out
+}
+
+/// Build the 24 ideal symbol phases of the sync pattern.
+///
+/// Mirrors `_build_sync_pattern_phases` in the Python reference and
+/// `P25P1SyncDetector.syncPatternToSymbols()` in SDRTrunk: extract dibits
+/// MSB-first, map `01 → +3π/4` and `11 → -3π/4` (the sync pattern is all
+/// outer ±3 symbols, no inner ±1).
+fn build_sync_pattern_phases() -> [f32; 24] {
+    let mut out = [0.0_f32; 24];
+    for x in 0..24 {
+        let shift = (23 - x) * 2;
+        let dibit = (FRAME_SYNC_DIBIT_PATTERN >> shift) & 0x3;
+        match dibit {
+            0b01 => out[x] = 3.0 * PI / 4.0,
+            0b11 => out[x] = -3.0 * PI / 4.0,
+            _ => panic!(
+                "sync pattern dibit {x} = {dibit:02b}; expected only ±3 symbols"
+            ),
+        }
+    }
+    out
+}
+
+/// Soft-symbol sync correlator. Direct port of
+/// `P25P1SoftSyncDetectorScalar` in SDRTrunk and `find_sync_events_soft`
+/// in the Python reference.
+///
+/// For every soft symbol position k:
+///
+/// ```text
+///     score[k] = sum_{x=0..23}( SYNC_PATTERN_PHASES[x] * soft_phases[k+x] )
+/// ```
+///
+/// A perfect lock on the sync pattern gives `score = 24 * (3π/4)² ≈ 133`.
+/// SDRTrunk uses threshold 60 (about half the maximum). The window for
+/// score k spans soft phases [k .. k+23]; the sync window thus *ends* at
+/// dibit index `k + 24 - 1`, and the first NID dibit is at `k + 24`.
+///
+/// We pick local maxima above threshold to suppress double-triggering on
+/// adjacent positions of the same sync event, and use the corresponding
+/// `hard_dibits` for NID extraction so the NID/FEC stages are bit-identical
+/// across hard and soft paths.
+pub fn find_sync_events_soft(soft_phases: &[f32], hard_dibits: &[u8]) -> Vec<SyncEvent> {
+    let mut out: Vec<SyncEvent> = Vec::new();
+    let n = soft_phases.len();
+    if n < FRAME_SYNC_DIBITS + 1 {
+        return out;
+    }
+    let pattern = build_sync_pattern_phases();
+
+    // Score length = n - 24 + 1 (matches np.correlate(..., mode='valid')).
+    let score_len = n - FRAME_SYNC_DIBITS + 1;
+    let mut scores: Vec<f32> = Vec::with_capacity(score_len);
+    for k in 0..score_len {
+        let mut s = 0.0_f32;
+        for x in 0..FRAME_SYNC_DIBITS {
+            s += pattern[x] * soft_phases[k + x];
+        }
+        scores.push(s);
+    }
+
+    // Walk through above-threshold windows and emit local maxima only.
+    // SyncEvent positions follow the Python reference: symbol_idx points
+    // to the FIRST dibit of the NID payload (sync_end + 1).
+    let mut last_emit: i64 = -10_000_000;
+    for k in 0..score_len {
+        if scores[k] <= SYNC_SCORE_THRESHOLD {
+            continue;
+        }
+        let sync_end = k + FRAME_SYNC_DIBITS - 1;
+        if (sync_end as i64) - last_emit < FRAME_SYNC_DIBITS as i64 {
+            continue;
+        }
+        let prev = if k > 0 { scores[k - 1] } else { f32::MIN };
+        let nxt = if k + 1 < score_len {
+            scores[k + 1]
+        } else {
+            f32::MIN
+        };
+        if !(scores[k] >= prev && scores[k] >= nxt) {
+            continue;
+        }
+        let first_nid_idx = sync_end + 1;
+        let Some((nac, duid, nid_bits)) =
+            extract_nid_skipping_status(hard_dibits, first_nid_idx)
+        else {
+            break;
+        };
+        let fec = bch_decode_nid(nid_bits);
+        out.push(SyncEvent {
+            symbol_idx: first_nid_idx,
+            distance: -1,
+            score: scores[k],
+            nac,
+            duid,
+            nid_raw: nid_bits,
+            fec,
+        });
+        last_emit = (sync_end + NID_TRANSMITTED_DIBITS) as i64;
+    }
+    out
+}
+#[cfg(test)]
+#[path = "sync_tests.rs"]
+mod tests;

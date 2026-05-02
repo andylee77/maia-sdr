@@ -23,8 +23,10 @@ mod audio;
 mod hardware;
 mod httpd;
 mod jmbe;
+mod lsm;
 mod protocol;
 mod services;
+mod sw_demod;
 mod vocoder;
 
 use app::imbe_forwarder::ImbeForwarder;
@@ -41,7 +43,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-04-29-jmbe-cos-recurrence";
+pub const BUILD_TAG: &str = "2026-05-03-dual-ddc-25k";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -171,6 +173,9 @@ pub struct IrqStats {
     pub pre_diff_iq: u64,
     /// Phase 10.8: traffic-side pre-differential IQ DMA wakeups.
     pub traffic_pre_diff_iq: u64,
+    /// 2026-05-03: pre-DDC raw 8 MSPS / 8 MHz IQ DMA wakeups (PS-side
+    /// software P25 stack).
+    pub wideband_iq: u64,
     pub last_at_secs_ago: f64,
     /// Set to None until the first IRQ; updated only by the IRQ task.
     pub started_at: Option<std::time::Instant>,
@@ -430,6 +435,17 @@ async fn main() -> anyhow::Result<()> {
         ppm_source
     );
 
+    // 2026-04-30 traffic-PPM-fix: hoist the live DDC NCO crystal-trim
+    // shift atomic so the grant follower (spawned below) can read it
+    // on every retune. Previously the follower received the static
+    // `args.lo_ppm` at spawn and never picked up auto-PPM apply nor
+    // boot-loaded persisted shifts — control NCO was corrected,
+    // traffic NCO wasn't, leaving the traffic Costas loop with the
+    // full residual.
+    let current_lo_shift_hz = std::sync::Arc::new(
+        std::sync::atomic::AtomicI64::new(
+            nco_lo_shift_hz.round() as i64));
+
     let (event_tx, _) = broadcast::channel::<String>(256);
     let mut decoder = ControlChannelDecoder::new();
     decoder.set_event_tx(event_tx.clone());
@@ -498,6 +514,11 @@ async fn main() -> anyhow::Result<()> {
     // ImbeForwarder::on_tdu_lc -> recorder). Declared here because
     // the traffic heartbeat task (spawned later) clones this tx.
     let call_boundary_tx = audio::call_boundary_channel();
+    // 2026-04-30 sync diagnostic ring. Owned by AppState; cloned into
+    // the traffic LSM heartbeat task so per-NID PLL/AGC/sync samples
+    // are pushed during active calls. Filtered by call_id at
+    // /api/recordings/{id}/sync_trace.
+    let sync_trace_ring = crate::services::sync_trace::new_ring();
     // Phase 2c (2026-04-25): the CallTracker broadcast is constructed
     // here so the traffic grant follower (spawned in the cfg(linux)
     // block) can subscribe and release the chain on CallClose. The
@@ -515,13 +536,37 @@ async fn main() -> anyhow::Result<()> {
     // IMBE forwarder as voice handler — counts events AND pushes
     // frame batches to the vocoder task via try_send.
     traffic_lsm_decoder.set_voice_handler(imbe_forwarder.clone());
+    // 2026-04-30: REVERTED the strict bake-in (sync ≤ 4, BCH ≤ 4).
+    // Field-tested on Clay County and broke every call: 5/6 grants
+    // produced 0 IMBEs, the 1 that extracted 117 IMBEs synthesised
+    // pure silence (peak=10, rms=3.2, 0 % of samples above noise
+    // floor). After PUT /api/{bch_t,sync_tune} reset to defaults,
+    // calls produced real audio (peak=16469, rms=1103, 78 % above
+    // floor). The HDL's t=4 works on its own internal pristine
+    // dibits; the PS framer running over dibit DMA needs the wider
+    // sphere to recall real LDU NIDs. Defenders: NAC mismatch guard
+    // (added in this build) catches the over-correction false
+    // positives without throwing away the recall.
     let traffic_lsm_decoder = Arc::new(RwLock::new(traffic_lsm_decoder));
 
-    // Shared structured event log. 16384 entries carry the full
-    // Duid + Recorder decode trail: at ~5-10 TSDUs/sec control +
-    // ~10 LDU/sec during active calls, holds ~8-15 min of every-DUID
-    // history. ~6.4 MB peak — trivial vs 512 MB DDR.
+    // Shared structured event log. 16384 entries; with verbose=off
+    // (default) only operator-actionable categories land (Vocoder,
+    // Traffic, Recorder, Grant, System), so the ring tails several
+    // hours of meaningful events. Verbose=on captures every Voice
+    // TDULC / per-frame Duid for offline analysis but rolls in
+    // seconds. Toggle via `P25_LOG_VERBOSE=1` env var. Either way,
+    // `tracing::info!` writes everything to journalctl.
     let event_log = Arc::new(crate::services::event_log::EventLog::new(16384));
+    if std::env::var("P25_LOG_VERBOSE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        event_log.set_verbose(true);
+        tracing::info!(
+            target: "p25_event_log",
+            "verbose log mode ON (P25_LOG_VERBOSE) — Voice/Duid events land in ring",
+        );
+    }
     event_log.push(
         crate::services::event_log::LogCategory::System,
         "p25-httpd startup",
@@ -607,7 +652,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(std::sync::atomic::AtomicU8::new(2));
 
     #[cfg(target_os = "linux")]
-    let (ip_core, ad9361) = {
+    let (ip_core, ad9361, wideband_iq_capture, sw_demod_enabled, sw_demod_stats) = {
         use tokio::sync::Mutex;
 
         // 1. Initialize FPGA IP core via UIO
@@ -691,61 +736,33 @@ async fn main() -> anyhow::Result<()> {
             );
         }
 
-        // Configure the traffic DDC but leave the LSM chain disabled.
-        // The grant follower flips `traffic_lsm_enable` + writes NCO
-        // on demand on each GroupVoiceChannelGrant. Initial NCO=0
-        // (centred on RX LO) gives a defined state before first grant.
+        // 2026-05-03 dual-DDC pivot: traffic side rebuilt around a
+        // dedicated `traffic_ddc` (mirror of the control DDC). FIRs +
+        // decim + initial NCO=0 are loaded at boot; per-call retunes
+        // just write the NCO via `retune_traffic_chain`.
+        ip_core.set_pre_diff_iq_dma_enable(true);
+        // Configure traffic DDC with the same boot preset as the
+        // control side. NCO starts at 0 (no target); the first grant
+        // from the follower writes it to `grant_freq - traffic_lo`.
         ip_core.configure_traffic_ddc(0.0, boot_preset)?;
         ip_core.set_traffic_ddc_enable(true);
-        tracing::info!(
-            "Traffic DDC armed: NCO=0 Hz, ddc_enable=true \
-             (traffic_lsm_enable=false until the grant follower retunes)"
-        );
-
-        // Arm the traffic-side LSM chain without enabling it. The
-        // master enable is toggled PER-CALL by the follower retune
-        // path — off at boot + between calls, on only while a grant
-        // is followed. Closes the Phase 7 gap where running
-        // continuously against post-retune-transient dibits
-        // produced phantom TDU_LC NID events. See doc/changes/038.
-        //   - traffic_lsm_enable: off now, on in retune_traffic_chain
-        //     after NCO write + traffic_lsm_reset pulse.
-        //   - dibit_dma_enable: armed so the ring DMA is ready.
-        //   - dc_block_enable: on so the leaky integrator converges
-        //     before the first call.
+        // Traffic post-DDC IQ ring (50 kSPS, mirror of `iq_dma`)
+        // feeds /api/spectrum?chain=traffic.
+        ip_core.set_traffic_iq_dma_enable(true);
+        // Traffic pre-diff IQ ring (mirror of `pre_diff_iq_dma`)
+        // feeds Plots tab traffic-side eye / constellation.
+        ip_core.set_traffic_pre_diff_iq_dma_enable(true);
+        // Arm the traffic LSM chain without enabling its master
+        // gate. The grant follower flips traffic_lsm_enable on per
+        // call via `retune_traffic_chain` and off in `pause_traffic_chain`.
         ip_core.set_traffic_lsm_enable(false);
         ip_core.set_traffic_lsm_dibit_dma_enable(true);
         ip_core.set_traffic_lsm_dc_block_enable(true);
-        // Traffic post-DDC IQ ring feeds /api/spectrum?chain=traffic.
-        // Driven off the traffic_ddc strobe so it runs continuously,
-        // independent of the LSM demod enable.
-        ip_core.set_traffic_iq_dma_enable(true);
-        // Phase 10.8 2026-04-23: pre-differential IQ rings. Tapped
-        // inside LsmDemod after `LsmPllRotate` + AGC but BEFORE the
-        // diff-demod / slicer, so samples sit on the 4-cluster
-        // (±1, ±1) LSM constellation at 9.6 kSPS (2 samples/symbol
-        // interleaved). Feed the Plots tab constellation + eye +
-        // /api/deviation + /api/distribution. The rotate strobe only
-        // fires when the LSM chain is enabled, so the traffic ring
-        // stays idle between calls — same behaviour as the retired
-        // post-PLL ring.
-        ip_core.set_pre_diff_iq_dma_enable(true);
-        ip_core.set_traffic_pre_diff_iq_dma_enable(true);
-        // Wideband spectrometer runs pre-DDC on `rxiq_cdc`,
-        // independent of every demod. Default 256 integrations at
-        // 8 MSPS = ~8 Hz update cadence.
-        ip_core.set_wideband_spec_integrations(256);
-        ip_core.set_wideband_spec_peak_detect(false);
-        ip_core.set_wideband_spec_enable(true);
-        // Traffic-side per-symbol LSM AGC — same SDRTrunk port as
-        // above. Stays armed across retunes; the traffic_lsm_reset
-        // pulse in retune_traffic_chain returns gain to GAIN_INIT
-        // (= 1.0) for clean-cold-start semantics.
         ip_core.set_traffic_lsm_agc_enable(true);
         let (tlsm_en_rb, tlsm_dma_en_rb, tlsm_dc_block_rb, tlsm_agc_rb) =
             ip_core.traffic_lsm_control_readback();
         tracing::info!(
-            "Traffic LSM chain armed: traffic_lsm_enable={tlsm_en_rb} \
+            "Traffic chain armed (dual-DDC): traffic_lsm_enable={tlsm_en_rb} \
              (off until first retune), \
              traffic_lsm_dibit_dma_enable={tlsm_dma_en_rb}, \
              traffic_lsm_dc_block_enable={tlsm_dc_block_rb}, \
@@ -753,19 +770,18 @@ async fn main() -> anyhow::Result<()> {
         );
         if tlsm_en_rb || !tlsm_dma_en_rb {
             tracing::error!(
-                "traffic_lsm_control readback mismatch -- expected enable=false \
-                 and dibit_dma_enable=true, got \
-                 ({tlsm_en_rb},{tlsm_dma_en_rb}); traffic-side LSM chain \
-                 WILL NOT behave correctly on retune"
+                "traffic_lsm_control readback mismatch -- expected \
+                 enable=false and dibit_dma_enable=true, got \
+                 ({tlsm_en_rb},{tlsm_dma_en_rb})"
             );
         }
-        if !tlsm_dc_block_rb {
-            tracing::warn!(
-                "traffic_lsm_dc_block_enable readback is false -- expected true; \
-                 the LSM PLL acquisition transient on traffic-channel retunes \
-                 will be longer than necessary"
-            );
-        }
+        // Wideband spectrometer runs pre-DDC on `rxiq_cdc`,
+        // independent of every demod. Default 256 integrations at
+        // 8 MSPS = ~8 Hz update cadence.
+        ip_core.set_wideband_spec_integrations(256);
+        ip_core.set_wideband_spec_peak_detect(false);
+        ip_core.set_wideband_spec_enable(true);
+        let _ = boot_preset;
 
         let ip_core = Arc::new(Mutex::new(ip_core));
         let ad9361 = Arc::new(ad9361);
@@ -778,7 +794,10 @@ async fn main() -> anyhow::Result<()> {
         // as an API-level placeholder (it just never gets fed dibits
         // now) so the dashboard's modulation-picker UI still resolves.
         let lsm_dibit_waiter = interrupt_handler.waiter_lsm_dibit_dma();
-        let traffic_lsm_dibit_waiter = interrupt_handler.waiter_traffic_lsm_dibit_dma();
+        let traffic_lsm_dibit_waiter =
+            interrupt_handler.waiter_traffic_lsm_dibit_dma();
+        let wideband_iq_waiter =
+            interrupt_handler.waiter_wideband_iq_dma();
         let _ = &decoder; // keep the binding live for the Auto-mod probe task
 
         // Interrupt handler.
@@ -799,12 +818,57 @@ async fn main() -> anyhow::Result<()> {
             lsm_decoder.clone(),
         );
 
-        // HDL LSM traffic reader — body in `crate::app::dibit_readers`.
+        // M2B 2026-05-02: spawn_hdl_lsm_traffic_reader restored,
+        // fed off the new mux-based dibit DMA ring.
         app::dibit_readers::spawn_hdl_lsm_traffic_reader(
             traffic_lsm_dibit_waiter,
             ip_core.clone(),
             traffic_lsm_decoder.clone(),
             imbe_forwarder.clone(),
+        );
+
+        // 2026-05-03: wideband raw IQ reader (PS-side software P25
+        // stack stage 1). Drains the new 8 MSPS / 8 MHz BW IQ DMA
+        // ring fed straight from rxiq_cdc. Logs throughput, optionally
+        // captures to tmpfs for offline analysis, AND tees Complex32
+        // chunks to the live software demod task (Stage 2B).
+        let wideband_iq_capture =
+            std::sync::Arc::new(app::wideband_iq_task::WidebandIqCaptureState::default());
+
+        // mpsc to the live software demod. Bounded — drop on full
+        // (the wideband_iq_task tracks dropped count). 64 chunks @
+        // ~30 chunks/s = ~2 s of slack before dropping.
+        let (sw_demod_tx, sw_demod_rx) =
+            tokio::sync::mpsc::channel::<Vec<crate::lsm::Complex32>>(64);
+        // 2026-05-03 dual-DDC pivot: sw_demod is no longer the
+        // production path — the HDL traffic chain (dedicated
+        // `traffic_ddc` mirror of the control DDC) drives audio.
+        // Default to OFF so the wideband_iq DMA + MultistageDdc +
+        // LsmPipeline don't burn ~50-70% CPU servicing chunks the
+        // framer never consumes. Operator can re-enable for offline
+        // capture / SDRTrunk-bit-exact diagnostics via
+        // `POST /api/sw_demod?enabled=1`.
+        let sw_demod_enabled =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sw_demod_stats =
+            std::sync::Arc::new(app::sw_demod_task::SwDemodStats::default());
+
+        app::wideband_iq_task::spawn_wideband_iq_reader(
+            wideband_iq_waiter,
+            ip_core.clone(),
+            wideband_iq_capture.clone(),
+            Some(sw_demod_tx),
+        );
+
+        app::sw_demod_task::spawn_sw_demod(
+            sw_demod_rx,
+            sw_demod_enabled.clone(),
+            ip_core.clone(),
+            traffic_chain.clone(),
+            traffic_lsm_decoder.clone(),
+            current_rx_lo.clone(),
+            current_lo_shift_hz.clone(),
+            sw_demod_stats.clone(),
         );
 
         // HDL LSM heartbeat + NID event poller. Reads lsm_status +
@@ -1275,7 +1339,7 @@ async fn main() -> anyhow::Result<()> {
             ip_core.clone(),
             current_sample_rate_hz.clone(),
             current_rx_lo.clone(),
-            args.lo_ppm,
+            current_lo_shift_hz.clone(),
             traffic_follower_enabled.clone(),
             imbe_forwarder.clone(),
             monitor_list.clone(),
@@ -1287,16 +1351,11 @@ async fn main() -> anyhow::Result<()> {
             call_tracker_tx.clone(),
         );
 
-        // Traffic LSM heartbeat. Polls traffic_lsm_status @ 16 ms —
-        // fine enough that we don't miss back-to-back NIDs (~14 ms
-        // apart on a sustained voice channel). Missing one is a
-        // strict loss: Rsticky clears on next read but latched
-        // fields get overwritten. On nid_event, dispatches NAC+DUID:
-        //   0x0 HDU    -> hdu_received
-        //   0x3 TDU    -> tdu_received(..., false)
-        //   0xF TDU_LC -> tdu_received(..., true)
-        //   0x5 LDU1   -> ldu_received(..., false)
-        //   0xA LDU2   -> ldu_received(..., true)
+        // M2B 2026-05-02: traffic LSM heartbeat task restored. Polls
+        // traffic_lsm_status @ 16 ms — fine enough we don't miss
+        // back-to-back NIDs (~14 ms apart). On nid_event, dispatches
+        // NAC+DUID into TrafficChain (HDU/LDU lifecycle) and
+        // broadcasts to sync_trace + call_boundary + activity feed.
         let traffic_lsm_core = ip_core.clone();
         let traffic_lsm_mgr = traffic_chain.clone();
         let traffic_lsm_stats = traffic_stats.clone();
@@ -1304,32 +1363,27 @@ async fn main() -> anyhow::Result<()> {
         let traffic_event_log = event_log.clone();
         let traffic_heartbeat_imbe = imbe_forwarder.clone();
         let traffic_boundary_tx = call_boundary_tx.clone();
+        let traffic_sync_trace_ring = sync_trace_ring.clone();
         tokio::spawn(async move {
             tracing::info!(
                 "traffic LSM heartbeat task started (polling \
                  traffic_lsm_status @ 16 ms)"
             );
-            let mut tick =
-                tokio::time::interval(std::time::Duration::from_millis(LSM_HEARTBEAT_TICK_MS));
-            tick.tick().await; // discard immediate first tick
-            // Track cumulative NID counters locally for periodic
-            // logging (TrafficChain already tracks hdus_seen /
-            // ldus_seen / tdus_seen).
+            let mut tick = tokio::time::interval(
+                std::time::Duration::from_millis(LSM_HEARTBEAT_TICK_MS));
+            tick.tick().await;
             let mut total_polls: u64 = 0;
             let mut nid_events: u64 = 0;
             loop {
                 tick.tick().await;
                 total_polls += 1;
-
-                // Read the status, NAC/DUID, and debug taps under one
-                // brief lock acquisition. Per the lsm_status() doc
-                // comment in fpga.rs, the snapshot + follow-up
-                // traffic_lsm_nid() form a coherent per-NID picture.
-                let (status, nac, duid) = {
+                let (status, nac, duid, pll_dbg, sample_point_dbg, agc_gain, agc_mag) = {
                     let core = traffic_lsm_core.lock().await;
                     let s = core.traffic_lsm_status();
                     let (n, d) = core.traffic_lsm_nid();
-                    (s, n, d)
+                    let (pll, sp) = core.traffic_lsm_debug();
+                    let (g, m) = core.traffic_lsm_agc_debug();
+                    (s, n, d, pll, sp, g, m)
                 };
 
                 if !status.nid_event {
@@ -1337,14 +1391,34 @@ async fn main() -> anyhow::Result<()> {
                 }
                 nid_events += 1;
 
-                // Idle gate: skip dispatch when no TG is locked. The
-                // HDL LSM chain keeps firing NIDs on residual dibits
-                // between calls; without this gate the heartbeat
-                // flooded the Activity feed with "TG:-- CH:-- TDU_LC"
-                // spam for every noise-extracted "NID". nid_events
-                // still increments above so /api/traffic_lsm shows
-                // the raw rate.
                 use std::sync::atomic::Ordering;
+                let sync_trace_call_id = traffic_heartbeat_imbe
+                    .current_call_id
+                    .load(Ordering::Relaxed);
+                if sync_trace_call_id != 0 {
+                    let unix_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    crate::services::sync_trace::push(
+                        &traffic_sync_trace_ring,
+                        crate::services::sync_trace::SyncTraceSample {
+                            call_id: sync_trace_call_id,
+                            unix_ms,
+                            duid,
+                            nac,
+                            nid_valid: status.nid_valid,
+                            bch_busy: status.bch_busy,
+                            n_errors: status.n_errors,
+                            sync_distance: status.sync_distance,
+                            pll_dbg,
+                            sample_point_dbg,
+                            agc_gain,
+                            agc_mag,
+                        },
+                    );
+                }
+
                 if traffic_heartbeat_imbe
                     .current_talkgroup
                     .load(Ordering::Relaxed) == 0
@@ -1352,9 +1426,6 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 }
 
-                // Dispatch by DUID. Only dispatch on valid NIDs --
-                // BCH-failed NIDs aren't trustworthy enough to drive
-                // call-state transitions.
                 if !status.nid_valid {
                     if total_polls % 64 == 0 || total_polls < 16 {
                         tracing::debug!(
@@ -1373,12 +1444,6 @@ async fn main() -> anyhow::Result<()> {
                         0x0 => mgr.hdu_received(now, nac),
                         0x5 => mgr.ldu_received(now, nac, false),
                         0xA => mgr.ldu_received(now, nac, true),
-                        // Phase 2c (2026-04-25): TDU/TDU_LC NIDs no
-                        // longer drive lifecycle here. Lifecycle is
-                        // owned by `app::grant_follower` which sees
-                        // `CallBoundaryKind::SpeakerEnd` from the LSM
-                        // voice handler. Keep the stats counter +
-                        // last_duid/last_nac mirror for the dashboard.
                         0x3 | 0xF => {
                             mgr.tdus_seen += 1;
                             mgr.last_duid = Some(duid);
@@ -1392,15 +1457,6 @@ async fn main() -> anyhow::Result<()> {
                     mgr.current_talkgroup().map(|t| t.0).unwrap_or(0)
                 };
 
-                // Fan out HDU boundaries so the recorder can split
-                // per-PTT. TDULC boundaries are NOT emitted here —
-                // they need the LC body for the Motorola BY: source,
-                // which only the software framer sees. The
-                // ImbeForwarder::on_tdu_lc path publishes
-                // TdulcComplete with `source: Some(id)` when the LCW
-                // parser recognises Motorola TALK_COMPLETE. The
-                // heartbeat just stashes the latest NAC so that path
-                // can tag its event.
                 traffic_heartbeat_imbe
                     .last_observed_nac
                     .store(nac, Ordering::Relaxed);
@@ -1415,13 +1471,6 @@ async fn main() -> anyhow::Result<()> {
                     });
                 }
 
-                // Log per-DUID to /api/log (Activity tab) only when
-                // locked on a real TG. Without this gate, marginal-
-                // signal BCH classifies residual dibits as 0xF TDU_LC
-                // and would flood the log with ~20 TG=0 TDU_LC/sec.
-                // Counters in the dispatch match still update — this
-                // only gates log noise. Mirrors SDRTrunk's
-                // decoded_messages.log style.
                 if locked_tg_snapshot != 0 {
                     let duid_label = match duid {
                         0x0 => "HDU",
@@ -1447,10 +1496,6 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                // Broadcast traffic DUID events to the WS activity
-                // feed. Unconditional — the Idle gate above already
-                // `continue`s before we get here, so every event
-                // that reaches this point represents a locked call.
                 {
                     let mgr = traffic_lsm_mgr.lock().await;
                     let duid_label = match duid {
@@ -1491,8 +1536,6 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                // Periodic log so the on-target dashboard log shows
-                // we're seeing NID events.
                 if nid_events <= 10 || nid_events % 50 == 0 {
                     let mgr = traffic_lsm_mgr.lock().await;
                     tracing::info!(
@@ -1505,8 +1548,6 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
 
-                // Touch traffic_lsm_stats so the binding isn't
-                // flagged as unused; per-DUID counters live on mgr.
                 let _ = traffic_lsm_stats.lock().await;
             }
         });
@@ -1518,7 +1559,7 @@ async fn main() -> anyhow::Result<()> {
         // call_tracker) which drops to None within seconds of TDU /
         // timeout — no zombie 30 s entries to reap.
 
-        (ip_core, ad9361)
+        (ip_core, ad9361, wideband_iq_capture, sw_demod_enabled, sw_demod_stats)
     };
 
     // Audio broadcast channel (vocoder -> HTTP/WebSocket).
@@ -1626,13 +1667,24 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Audio pacer — gates vocoder→broadcast at exactly 20 ms
+    // wall-clock per chunk. Vocoder writes to the mpsc; pacer drains
+    // it at native source rate and broadcasts to all subscribers.
+    // Without this, post-Tier-A JMBE decode bursts 9 chunks of an LDU
+    // batch (180 ms of audio) onto the broadcast in <5 ms, then
+    // nothing for 175 ms — the AudioWorklet PLL can't lock on that
+    // shape and clients hear ring oscillation. See app::audio_pacer
+    // for the full rationale.
+    let (pacer_input_tx, pacer_input_rx) = app::audio_pacer::pacer_input_channel();
+    app::audio_pacer::spawn_audio_pacer(pacer_input_rx, audio_tx.clone());
+
     // Vocoder task — reads IMBE batches, decodes via JMBE, pushes
-    // AudioChunks to the broadcast channel, updates stats atomics.
+    // AudioChunks to the pacer's mpsc, updates stats atomics.
     // Dedicated OS thread; body in vocoder_task.rs.
     vocoder_task::spawn_vocoder_thread(
         imbe_rx,
         imbe_forwarder.clone(),
-        audio_tx.clone(),
+        pacer_input_tx,
         event_log.clone(),
     );
 
@@ -1649,9 +1701,7 @@ async fn main() -> anyhow::Result<()> {
         // runtime lives in the current_* atomics below.
         boot_lo_ppm:       args.lo_ppm,
         boot_control_freq: control_freq,
-        current_lo_shift_hz: std::sync::Arc::new(
-            std::sync::atomic::AtomicI64::new(
-                nco_lo_shift_hz.round() as i64)),
+        current_lo_shift_hz: current_lo_shift_hz.clone(),
         baseline_lo_shift_hz: std::sync::Arc::new(
             std::sync::atomic::AtomicI64::new(
                 nco_lo_shift_hz.round() as i64)),
@@ -1701,6 +1751,31 @@ async fn main() -> anyhow::Result<()> {
             std::sync::atomic::AtomicU32::new(50)),
         last_recal_shift_hz: std::sync::Arc::new(
             std::sync::atomic::AtomicI64::new(0)),
+        sync_trace_ring: sync_trace_ring.clone(),
+        #[cfg(target_os = "linux")]
+        wideband_iq_capture: wideband_iq_capture.clone(),
+        #[cfg(target_os = "linux")]
+        sw_demod_enabled: sw_demod_enabled.clone(),
+        #[cfg(target_os = "linux")]
+        sw_demod_stats: sw_demod_stats.clone(),
+        active_site: {
+            // 2026-05-03: hydrate the active site at boot from the
+            // last-active marker (or fall back to "clay"). Failure to
+            // load is non-fatal: the receiver still functions, the
+            // site selector just shows "no site" until the operator
+            // picks one.
+            let name = crate::services::sites::read_active_site_name();
+            let site = match crate::services::sites::load_site(&name) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    tracing::warn!(
+                        "active site '{name}' unavailable at boot: {e}"
+                    );
+                    None
+                }
+            };
+            Arc::new(tokio::sync::RwLock::new(site))
+        },
     });
 
     // Phase 2b unified call lifecycle: call_tracker is spawned up
@@ -1733,6 +1808,14 @@ async fn main() -> anyhow::Result<()> {
     // real converged gain). When disabled, write 0 to the atomic;
     // the cache update path in grant_stats already skips q97==0
     // samples.
+    // M2B 2026-05-02: per-call traffic AGC poller restored. Tiny
+    // poller updates ImbeForwarder.last_traffic_agc_gain_q97 every
+    // 250 ms from the FPGA's traffic LSM AGC debug register.
+    // grant_stats reads the atomic at CallClose to record per-call
+    // converged gain. Guarded on `agc_enabled` — when disabled, the
+    // gain register holds a stale latched value (per-freq cache
+    // would otherwise be polluted). When disabled we write 0 so
+    // the cache update path in grant_stats skips the sample.
     #[cfg(target_os = "linux")]
     {
         let agc_forwarder = state.imbe_forwarder.clone();
@@ -1785,6 +1868,12 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("invalid --listen {}: {e}", args.listen))?;
     tracing::info!("Dashboard at http://{}", http_addr);
 
+    // TCP_NODELAY on every accepted connection. Default acceptor
+    // leaves Nagle on (40 ms ACK delay), which coalesces the small
+    // 320-byte /ws/audio frames and adds avoidable latency to the
+    // live audio path. NoDelayAcceptor is a tiny wrapper that calls
+    // set_nodelay(true) on each TcpStream.
+    use axum_server::accept::NoDelayAcceptor;
     match (args.ssl_cert.as_ref(), args.ssl_key.as_ref()) {
         (Some(cert), Some(key)) => {
             use axum_server::tls_rustls::RustlsConfig;
@@ -1794,8 +1883,10 @@ async fn main() -> anyhow::Result<()> {
                 ))?;
             tracing::info!("Dashboard also at https://{}", args.listen_https);
             let http_server = axum_server::bind(http_addr)
+                .acceptor(NoDelayAcceptor::new())
                 .serve(app.clone().into_make_service());
             let https_server = axum_server::bind_rustls(args.listen_https, tls)
+                .map(|rustls| rustls.acceptor(NoDelayAcceptor::new()))
                 .serve(app.into_make_service());
             tokio::select! {
                 r = http_server  => r?,
@@ -1813,6 +1904,7 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             axum_server::bind(http_addr)
+                .acceptor(NoDelayAcceptor::new())
                 .serve(app.into_make_service())
                 .await?;
         }

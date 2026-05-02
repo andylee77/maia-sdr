@@ -228,6 +228,24 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     },
     EndpointDoc {
         method: "GET",
+        path: "/api/sites",
+        params: "",
+        description: "List known site baselines (Clay / Duval / ...) + active flag.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/sites/{name}",
+        params: "",
+        description: "Full site detail (NAC, WACN, IDEN bands, CC, alt CCs, traffic_freqs_hz, cc_position).",
+    },
+    EndpointDoc {
+        method: "POST",
+        path: "/api/site",
+        params: "?name=<site>&no_apply=<bool>",
+        description: "Switch active site. Updates AppState + persists boot default. Caller follows up with /api/preset to apply LO snap.",
+    },
+    EndpointDoc {
+        method: "GET",
         path: "/api/log",
         params: "?since=<seq>&limit=<n>&category=<name>",
         description: "Event log ring. Monotonic seq for incremental tail reads.",
@@ -357,6 +375,12 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
         path: "/api/recordings/{id}",
         params: "path id, trailing .wav optional",
         description: "Download a recording as WAV (8 kHz 16-bit mono).",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/recordings/{id}/sync_trace",
+        params: "path id",
+        description: "Per-NID PLL/AGC/sync register samples captured during the call. Diagnostic for mid-call sync loss.",
     },
     EndpointDoc {
         method: "GET",
@@ -676,6 +700,7 @@ pub async fn get_pipeline(
                 "nid_decoded_ok":        c_dec.nid_decoded_ok,
                 "nid_decode_failures":   c_dec.nid_decode_failures,
                 "nid_entropy_rejected":  c_dec.nid_entropy_rejected,
+                "nid_nac_mismatch":      c_dec.nid_nac_mismatch,
                 "sync_hits":             c_dec.sync_hits(),
                 "sync_near_misses":      c_dec.sync_near_misses(),
                 "tsbk_crc_ok":           c_dec.tsbk_crc_ok,
@@ -686,6 +711,7 @@ pub async fn get_pipeline(
                 "nid_decoded_ok":        t_dec.nid_decoded_ok,
                 "nid_decode_failures":   t_dec.nid_decode_failures,
                 "nid_entropy_rejected":  t_dec.nid_entropy_rejected,
+                "nid_nac_mismatch":      t_dec.nid_nac_mismatch,
                 "sync_hits":             t_dec.sync_hits(),
                 "sync_near_misses":      t_dec.sync_near_misses(),
             },
@@ -1013,6 +1039,14 @@ pub async fn get_ps_cores(
     let elapsed_s = (snap_b.wall_ms - snap_a.wall_ms) as f64 / 1000.0;
     let user_hz = snap_a.user_hz.max(1) as f64;
 
+    // 10-second rolling window. The 250 ms two-shot above produces a
+    // binomial 0/100 % reading on bursty threads (e.g. p25-vocoder
+    // releases its 5 ms work batch on LDU boundaries — caught at
+    // ~2 % when sampled, missed entirely otherwise). The cumulative
+    // value is a steady measure of the thread's actual budget share
+    // and is what the dashboard wants for `# of one core` columns.
+    let cpu_pct_10s_map = update_and_compute_10s_history(&snap_b, user_hz);
+
     let cpus: Vec<serde_json::Value> = snap_a
         .cpus
         .iter()
@@ -1057,20 +1091,32 @@ pub async fn get_ps_cores(
         } else {
             0.0
         };
+        let cpu_pct_10s = cpu_pct_10s_map
+            .get(&tb.tid)
+            .copied()
+            // No 10 s history yet (first-call cold start): fall back
+            // to the 250 ms reading so the column is never blank.
+            .unwrap_or(cpu_pct);
         threads.push(serde_json::json!({
-            "tid":      tb.tid,
-            "name":     tb.comm,
-            "cpu_pct":  round1(cpu_pct),
-            "state":    tb.state,
+            "tid":         tb.tid,
+            "name":        tb.comm,
+            "cpu_pct":     round1(cpu_pct),
+            "cpu_pct_10s": round1(cpu_pct_10s),
+            "state":       tb.state,
             "vol_ctxsw_delta":   tb.vol_ctxsw.saturating_sub(ta.vol_ctxsw),
             "invol_ctxsw_delta": tb.invol_ctxsw.saturating_sub(ta.invol_ctxsw),
         }));
     }
-    // Sort descending by cpu_pct and trim.
+    // Sort descending by max(cpu_pct, cpu_pct_10s) so bursty threads
+    // whose 250 ms sample landed in an idle gap (e.g. p25-vocoder
+    // releasing on LDU boundaries) still bubble to the top of the
+    // panel based on their steady-state share.
     threads.sort_by(|a, b| {
-        let av = a["cpu_pct"].as_f64().unwrap_or(0.0);
-        let bv = b["cpu_pct"].as_f64().unwrap_or(0.0);
-        bv.partial_cmp(&av).unwrap_or(std::cmp::Ordering::Equal)
+        let am = a["cpu_pct"].as_f64().unwrap_or(0.0)
+            .max(a["cpu_pct_10s"].as_f64().unwrap_or(0.0));
+        let bm = b["cpu_pct"].as_f64().unwrap_or(0.0)
+            .max(b["cpu_pct_10s"].as_f64().unwrap_or(0.0));
+        bm.partial_cmp(&am).unwrap_or(std::cmp::Ordering::Equal)
     });
     let total_threads = threads.len();
     threads.truncate(top_n);
@@ -1085,6 +1131,9 @@ pub async fn get_ps_cores(
         "loadavg_1":         read_loadavg().0,
         "note":              "Two /proc reads `interval_ms` apart, deltas \
                               normalised to wall-clock. cpu_pct is %-of-one-core. \
+                              cpu_pct_10s is the same metric but averaged over \
+                              the last ~10 s of history (steady-state reading; \
+                              cpu_pct itself is a 250 ms binomial). \
                               busy_pct = 100 - idle - iowait. Truncated to \
                               top_n (default 16) by cpu_pct desc.",
     }))
@@ -1280,6 +1329,100 @@ fn read_self_task_stats() -> Vec<ThreadStat> {
 #[cfg(target_os = "linux")]
 fn round1(x: f64) -> f64 {
     (x * 10.0).round() / 10.0
+}
+
+// ── 10 s rolling history for /api/ps_cores ─────────────────────────────
+//
+// Stored as a small in-process ring of past `read_ps_snapshot` results.
+// On each call we:
+//   1. Trim entries older than ~15 s (a little slack past the 10 s
+//      window so a slow consumer can still find a usable anchor).
+//   2. Push the fresh snapshot.
+//   3. Pick the oldest entry whose age is ≥ ~5 s and ≤ ~12 s as the
+//      anchor (target ~10 s back). On the first call there's no
+//      anchor; the caller falls back to the 250 ms reading.
+//   4. For each TID in the fresh snapshot, compute
+//      (utime+stime - anchor.utime+stime) / (Δwall × USER_HZ) × 100.
+//
+// Cap the ring at 32 entries — at 1 sample per ~2 s panel cadence
+// that's a minute of headroom. Each entry stores HashMap<u32, u64>;
+// memory is small (a few kB).
+#[cfg(target_os = "linux")]
+struct PsHistEntry {
+    wall_ms: u128,
+    jiffies: std::collections::HashMap<u32, u64>,
+}
+
+#[cfg(target_os = "linux")]
+fn ps_history()
+    -> &'static std::sync::Mutex<std::collections::VecDeque<PsHistEntry>>
+{
+    static H: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::VecDeque<PsHistEntry>>,
+    > = std::sync::OnceLock::new();
+    H.get_or_init(|| std::sync::Mutex::new(std::collections::VecDeque::new()))
+}
+
+#[cfg(target_os = "linux")]
+fn update_and_compute_10s_history(
+    snap: &PsCoreSnap,
+    user_hz: f64,
+) -> std::collections::HashMap<u32, f64> {
+    use std::collections::HashMap;
+    let mut hist = ps_history().lock().unwrap();
+    let now = snap.wall_ms;
+
+    // Drop entries older than 15 s. Also drop anything in the future
+    // (defensive — a wall-clock jump backwards via NTP shouldn't
+    // poison the history).
+    while let Some(front) = hist.front() {
+        if now > front.wall_ms && now - front.wall_ms > 15_000 {
+            hist.pop_front();
+        } else if front.wall_ms > now {
+            hist.pop_front();
+        } else {
+            break;
+        }
+    }
+
+    // Pick the best anchor: oldest entry with age in [5s, 12s].
+    // Falls back to the oldest available if nothing's that old yet.
+    let mut anchor: Option<&PsHistEntry> = None;
+    for e in hist.iter() {
+        if now <= e.wall_ms { continue; }
+        let age = now - e.wall_ms;
+        if age >= 5_000 && age <= 12_000 {
+            anchor = Some(e);
+            break;
+        }
+    }
+    if anchor.is_none() {
+        anchor = hist.front();
+    }
+
+    let mut out = HashMap::with_capacity(snap.threads.len());
+    if let Some(a) = anchor {
+        let dt_s = (now.saturating_sub(a.wall_ms)) as f64 / 1000.0;
+        if dt_s > 0.5 {
+            for t in &snap.threads {
+                let now_j = (t.utime + t.stime) as i128;
+                let then_j = a.jiffies.get(&t.tid).copied().unwrap_or(0) as i128;
+                let dj = (now_j - then_j).max(0) as f64;
+                let pct = dj / (dt_s * user_hz) * 100.0;
+                out.insert(t.tid, pct);
+            }
+        }
+    }
+
+    // Push current snapshot.
+    let mut jiffies = HashMap::with_capacity(snap.threads.len());
+    for t in &snap.threads {
+        jiffies.insert(t.tid, t.utime + t.stime);
+    }
+    hist.push_back(PsHistEntry { wall_ms: now, jiffies });
+    while hist.len() > 32 { hist.pop_front(); }
+
+    out
 }
 
 /// Parse `/proc/meminfo` for `MemTotal` and `MemAvailable`.

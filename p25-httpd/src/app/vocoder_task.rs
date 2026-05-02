@@ -9,8 +9,7 @@
 
 use std::sync::Arc;
 
-use tokio::sync::mpsc::Receiver;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::audio::{self, AudioChunk};
 use crate::services::event_log::EventLog;
@@ -18,9 +17,9 @@ use crate::app::imbe_forwarder::ImbeForwarder;
 use crate::protocol::p25::voice_frame::ImbeFrameRaw;
 use crate::vocoder;
 
-/// Spawn the dedicated vocoder OS thread. Consumes `imbe_rx`,
-/// broadcasts on `voc_audio_tx`, logs per-call summaries into
-/// `voc_event_log`.
+/// Spawn the dedicated vocoder OS thread. Consumes `imbe_rx`, pushes
+/// decoded `AudioChunk`s into the audio pacer's mpsc inbox, logs
+/// per-call summaries into `voc_event_log`.
 ///
 /// Runs synthesis on a `std::thread` rather than `tokio::spawn` to
 /// move JMBE decode (5-15 ms/frame on ARM) off the shared tokio
@@ -29,10 +28,17 @@ use crate::vocoder;
 /// vocoder's next wake-up, and keeps the `imbe_tx` queue (cap 16)
 /// from backing up on worker-pool scheduling jitter. `blocking_recv()`
 /// preserves the backpressure semantics of the async version.
+///
+/// `voc_audio_tx` is the mpsc input to `app::audio_pacer`; the pacer
+/// drains it at exactly one chunk per 20 ms of wall-clock and
+/// broadcasts on the existing `audio::AudioTx`. Vocoder uses
+/// `blocking_send` so transient bursts that exceed the pacer's input
+/// capacity (5 s @ 50 fps) backpressure the vocoder thread instead of
+/// silently dropping audio.
 pub fn spawn_vocoder_thread(
     imbe_rx: Receiver<(u16, u32, u64, u64, [ImbeFrameRaw; 9])>,
     voc_forwarder: Arc<ImbeForwarder>,
-    voc_audio_tx: broadcast::Sender<AudioChunk>,
+    voc_audio_tx: Sender<AudioChunk>,
     voc_event_log: Arc<EventLog>,
 ) {
     std::thread::Builder::new()
@@ -45,6 +51,17 @@ pub fn spawn_vocoder_thread(
             // Per-call accumulators. `call_tg` is the TG the current
             // accumulator belongs to; flushed on reset or TG change.
             let mut call_tg: u16 = 0;
+            // 2026-04-30 agc-speaker-reset: track the SRC of the most
+            // recent batch so we can snap the AGC EMA on speaker
+            // change within a multi-speaker call. Without this, a
+            // quiet field-radio first half of a bundled call leaves
+            // the AGC scale cranked up; the dispatcher taking over
+            // mid-call gets crackle from tanh saturation until the
+            // ~800 ms RMS EMA tau catches up. 2026-04-30 rec 176
+            // confirmed: same dispatcher (1013) on rec 171 had
+            // R=0.94 (clean), but second half of rec 176 dropped to
+            // R=0.22-0.54 with every window peaking at -0.2 dBFS.
+            let mut call_source: u32 = 0;
             let mut call_frames_in: u32 = 0;
             let mut call_frames_skipped_enc: u32 = 0;
             let mut call_pcm_samples: u64 = 0;
@@ -67,12 +84,36 @@ pub fn spawn_vocoder_thread(
             const AGC_SCALE_ALPHA: f32 = 0.08;
             const AGC_MIN_SCALE: f32 = 0.25;
             const AGC_MAX_SCALE: f32 = 8.0;
-            // Hard ceiling to prevent clipping on scaled output.
-            const AGC_PCM_CLAMP: f32 = 30000.0;
+            // Soft-knee limiter (post-AGC). Linear pass-through up to
+            // ±AGC_KNEE; beyond that, samples saturate via tanh toward
+            // ±AGC_CEIL — well inside the i16 range (±32767). Replaced
+            // a flat hard clamp at ±30000 which produced harsh clip
+            // distortion on loud transients (e.g. console mic peaks).
+            // Cost: one tanh call per saturated sample, taken only on
+            // the rare overshoots.
+            //
+            // 2026-04-30 v2: KNEE set ABOVE JMBE's natural peak so
+            // normal voice passes linearly. JMBE clips synthesis at
+            // MAX_AUDIO_AMPLITUDE=0.95 (= 31128 in i16). Earlier
+            // attempt (24000/28000) had the inverse intuition — a
+            // knee BELOW 31128 means every loud transient
+            // tanh-saturates. KNEE=31000 puts the soft-knee at
+            // JMBE's clip line; CEIL=32700 leaves margin before i16
+            // wrap. Limiter therefore engages only on AGC-overshoot
+            // peaks (when AGC scaled a quiet source up enough that
+            // scaled-output exceeds the i16 range) — exactly the use
+            // case it exists for.
+            const AGC_KNEE: f32 = 31000.0;
+            const AGC_CEIL: f32 = 32700.0;
             // Wall clock of the most recent decoded IMBE frame, so
             // `duration_ms` in call_end reflects first-frame to
             // last-frame voice span, not retune-to-retune interval.
             let mut call_last_frame_at: Option<std::time::Instant> = None;
+
+            // Per-frame stage timings accumulated across the call.
+            // Flushed (sorted, summarised) by flush_call_summary on
+            // call boundary. One entry per IMBE frame decoded.
+            let mut call_stage_times: Vec<vocoder::DecodeStageTimes> = Vec::new();
 
             let flush_call_summary = |
                 tg: u16,
@@ -81,6 +122,7 @@ pub fn spawn_vocoder_thread(
                 pcm_samples: u64,
                 started: Option<std::time::Instant>,
                 last_frame_at: Option<std::time::Instant>,
+                stage_times: Vec<vocoder::DecodeStageTimes>,
                 log: &std::sync::Arc<crate::services::event_log::EventLog>,
             | {
                 if frames_in == 0 && frames_skipped_enc == 0 {
@@ -100,11 +142,24 @@ pub fn spawn_vocoder_thread(
                     }
                     _ => 0,
                 };
+
+                // Per-stage profile. Sort each stage's u32 vector once,
+                // pull median / p99 / max / mean. With a 30 s call at
+                // ~50 frames/sec, each Vec is 1500 entries — sort is
+                // ~12 µs once per call.
+                let stage_summary = summarise_stage_times(&stage_times);
+
                 log.push(
                     crate::services::event_log::LogCategory::Vocoder,
                     format!(
-                        "call_end TG={} frames={} pcm={} ({} ms){}",
+                        "call_end TG={} frames={} pcm={} ({} ms) total_med_us={}{}",
                         tg, frames_in, pcm_samples, duration_ms,
+                        stage_summary
+                            .as_ref()
+                            .and_then(|s| s.get("total"))
+                            .and_then(|t| t.get("median"))
+                            .and_then(|m| m.as_u64())
+                            .unwrap_or(0),
                         if frames_skipped_enc > 0 {
                             format!(" enc_skipped={}", frames_skipped_enc)
                         } else {
@@ -117,6 +172,7 @@ pub fn spawn_vocoder_thread(
                         "frames_skipped_enc": frames_skipped_enc,
                         "pcm_samples":        pcm_samples,
                         "duration_ms":        duration_ms,
+                        "stage_us":           stage_summary,
                     }),
                 );
             };
@@ -168,10 +224,17 @@ pub fn spawn_vocoder_thread(
                     flush_call_summary(
                         call_tg, call_frames_in, call_frames_skipped_enc,
                         call_pcm_samples, call_started, call_last_frame_at,
+                        std::mem::take(&mut call_stage_times),
                         &voc_event_log,
                     );
                     decoder.reset();
                     call_tg = effective_tg;
+                    // Fresh call: clear source tracking + snap AGC
+                    // to seed so a previous-call's adapted gain
+                    // doesn't bleed into the new TG's first frames.
+                    call_source = 0;
+                    agc_rms_ema = AGC_TARGET_RMS;
+                    agc_scale = 1.0;
                     call_frames_in = 0;
                     call_frames_skipped_enc = 0;
                     call_pcm_samples = 0;
@@ -182,6 +245,41 @@ pub fn spawn_vocoder_thread(
                         format!("call_start TG={}", call_tg),
                         serde_json::json!({ "tg": call_tg }),
                     );
+                }
+
+                // 2026-04-30 agc-speaker-reset. Same TG, different
+                // speaker (multi-source bundled call) — the prior
+                // speaker's AGC adapted gain is wrong for this one.
+                // Snap the EMA back to TARGET so the new speaker's
+                // first ~5 frames adapt fresh, instead of riding
+                // the limiter for ~800 ms while the EMA drifts.
+                // Gates: both sides non-zero (a 0 batch_source is a
+                // racey-no-source-yet artefact, not a real change),
+                // and we already have at least one frame in the
+                // call (so we don't trigger on call open before
+                // call_source has been seeded).
+                if batch_source != 0
+                    && call_source != 0
+                    && batch_source != call_source
+                    && call_frames_in > 0
+                {
+                    agc_rms_ema = AGC_TARGET_RMS;
+                    agc_scale = 1.0;
+                    voc_event_log.push(
+                        crate::services::event_log::LogCategory::Vocoder,
+                        format!(
+                            "agc_reset TG={} src {} -> {}",
+                            call_tg, call_source, batch_source,
+                        ),
+                        serde_json::json!({
+                            "tg":         call_tg,
+                            "from_src":   call_source,
+                            "to_src":     batch_source,
+                        }),
+                    );
+                }
+                if batch_source != 0 {
+                    call_source = batch_source;
                 }
                 let encrypted = voc_forwarder.call_encrypted.load(Ordering::Relaxed);
                 if encrypted {
@@ -194,6 +292,7 @@ pub fn spawn_vocoder_thread(
                 let tg = effective_tg;
                 for frame in &frames {
                     let pcm = decoder.decode_frame(frame);
+                    call_stage_times.push(decoder.last_decode_times());
                     voc_forwarder
                         .vocoder_pcm_produced
                         .fetch_add(vocoder::SAMPLES_PER_FRAME as u64, Ordering::Relaxed);
@@ -258,16 +357,31 @@ pub fn spawn_vocoder_thread(
                     }
                     for s in scaled.iter_mut() {
                         let v = (*s as f32) * agc_scale;
-                        *s = v.clamp(-AGC_PCM_CLAMP, AGC_PCM_CLAMP) as i16;
+                        let abs_v = v.abs();
+                        let limited = if abs_v <= AGC_KNEE {
+                            v
+                        } else {
+                            let span = AGC_CEIL - AGC_KNEE;
+                            let soft = span * ((abs_v - AGC_KNEE) / span).tanh();
+                            v.signum() * (AGC_KNEE + soft)
+                        };
+                        *s = limited as i16;
                     }
 
-                    // Push to audio broadcast (ignore if no subscribers).
+                    // Hand off to the audio pacer (mpsc, bounded). Pacer
+                    // drains at 20 ms wall-clock cadence and broadcasts
+                    // to all subscribers. `blocking_send` matches the
+                    // OS-thread context: a full pacer mpsc means we've
+                    // produced > 5 s of audio faster than realtime, at
+                    // which point the right behaviour is to backpressure
+                    // the vocoder (=> backpressure the IMBE forwarder
+                    // => surface as imbe_queue depth) rather than drop.
                     // Phase 2h (2026-04-25): batch_call_id stamps every
                     // chunk with the GrantFollower call_id active when
                     // forward_frames submitted the batch. The recorder
                     // routes by this directly — no tg+source heuristic,
                     // no cross-call bleed from in-flight PCM.
-                    let _ = voc_audio_tx.send(audio::AudioChunk {
+                    let _ = voc_audio_tx.blocking_send(audio::AudioChunk {
                         pcm: scaled,
                         talkgroup: tg,
                         source,
@@ -279,4 +393,65 @@ pub fn spawn_vocoder_thread(
             tracing::warn!(target: "p25_vocoder", "vocoder thread exiting (channel closed)");
         })
         .expect("failed to spawn p25-vocoder OS thread");
+}
+
+/// Sort + summarise per-frame stage timings for a single call.
+///
+/// Returns `Some` only if at least one frame was decoded; the
+/// `flush_call_summary` early-out for `frames_in == 0` already covers
+/// the empty case but the `None` here keeps the JSON tidy if the call
+/// was all-encrypted.
+fn summarise_stage_times(
+    times: &[vocoder::DecodeStageTimes],
+) -> Option<serde_json::Value> {
+    if times.is_empty() {
+        return None;
+    }
+
+    let n = times.len();
+    let mut fec: Vec<u32> = Vec::with_capacity(n);
+    let mut voiced: Vec<u32> = Vec::with_capacity(n);
+    let mut unvoiced: Vec<u32> = Vec::with_capacity(n);
+    let mut mix: Vec<u32> = Vec::with_capacity(n);
+    let mut pcm_convert: Vec<u32> = Vec::with_capacity(n);
+    let mut total: Vec<u32> = Vec::with_capacity(n);
+    for t in times {
+        fec.push(t.fec_us);
+        voiced.push(t.voiced_us);
+        unvoiced.push(t.unvoiced_us);
+        mix.push(t.mix_us);
+        pcm_convert.push(t.pcm_convert_us);
+        total.push(t.total_us);
+    }
+    Some(serde_json::json!({
+        "frames":      n,
+        "fec":         stage_stats(&mut fec),
+        "voiced":      stage_stats(&mut voiced),
+        "unvoiced":    stage_stats(&mut unvoiced),
+        "mix":         stage_stats(&mut mix),
+        "pcm_convert": stage_stats(&mut pcm_convert),
+        "total":       stage_stats(&mut total),
+    }))
+}
+
+/// Sort in place, return median / p99 / max / mean as JSON.
+/// Sort is stable across the call (~12 µs at 1500 frames per call).
+fn stage_stats(samples: &mut [u32]) -> serde_json::Value {
+    if samples.is_empty() {
+        return serde_json::json!({"median": 0, "p99": 0, "max": 0, "mean": 0});
+    }
+    samples.sort_unstable();
+    let n = samples.len();
+    let median = samples[n / 2];
+    // p99 index — round-down is fine for our sample sizes.
+    let p99_idx = ((n as f32 * 0.99) as usize).min(n - 1);
+    let p99 = samples[p99_idx];
+    let max = *samples.last().unwrap();
+    let mean = (samples.iter().map(|&x| x as u64).sum::<u64>() / n as u64) as u32;
+    serde_json::json!({
+        "median": median,
+        "p99":    p99,
+        "max":    max,
+        "mean":   mean,
+    })
 }

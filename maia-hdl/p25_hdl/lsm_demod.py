@@ -115,7 +115,11 @@
 from amaranth import *
 
 from .lsm_dc_blocker import LsmDcBlocker
-from .lsm_demod_loop import LsmDemodLoop
+from .lsm_demod_loop import (
+    LsmDemodLoop,
+    DEFAULT_LSM_SAMPLE_RATE_HZ,
+    DEFAULT_LSM_SYMBOL_RATE_HZ,
+)
 from .lsm_nid_pipeline import LsmNidPipeline
 
 
@@ -126,7 +130,17 @@ class LsmDemod(Elaboratable):
     handshake conventions, and resource estimate.
     """
 
-    def __init__(self):
+    def __init__(self, *,
+                 sample_rate_hz=DEFAULT_LSM_SAMPLE_RATE_HZ,
+                 symbol_rate_hz=DEFAULT_LSM_SYMBOL_RATE_HZ):
+        # 2026-05-03: forwarded to ``LsmDemodLoop`` (-> ``LsmTimingInterp``
+        # + ``LsmGardnerTed``).  Default 31_250 / 4_800 keeps the
+        # control-chain instantiation bit-identical to the pre-2026-05-03
+        # design.  The traffic chain passes 25_000 / 4_800 to match the
+        # SDRTrunk-bit-exact PS pipeline.
+        self.sample_rate_hz = sample_rate_hz
+        self.symbol_rate_hz = symbol_rate_hz
+
         # ── Inputs ──────────────────────────────────────────────
         self.re_in = Signal(signed(16))
         self.im_in = Signal(signed(16))
@@ -211,7 +225,9 @@ class LsmDemod(Elaboratable):
         # samples on its own input strobe.
         m.submodules.dc_block_re = dc_block_re = LsmDcBlocker()
         m.submodules.dc_block_im = dc_block_im = LsmDcBlocker()
-        m.submodules.demod_loop = demod_loop = LsmDemodLoop()
+        m.submodules.demod_loop = demod_loop = LsmDemodLoop(
+            sample_rate_hz=self.sample_rate_hz,
+            symbol_rate_hz=self.symbol_rate_hz)
         m.submodules.nid_pipeline = nid_pipeline = LsmNidPipeline()
 
         # Phase 8A runtime reset fan-out: into the closed-loop

@@ -156,3 +156,115 @@ fn test_synthesis_signature_stable() {
         "Mean drifted: got {mean} expected {ref_mean} ± {tol_mean}"
     );
 }
+
+/// Offline replay of a SDRTrunk .mbe file through our JMBE vocoder.
+/// Reads MBE_INPUT (path to .mbe JSON) and MBE_OUTPUT (WAV path to write).
+/// Run with: `MBE_INPUT=path.mbe MBE_OUTPUT=out.wav cargo test --release \
+///   mbe_offline_replay -- --ignored --nocapture`
+/// Used to isolate "vocoder regression" vs "framer extraction regression"
+/// when on-target audio comes out silent — feeding SDRTrunk's known-good
+/// IMBE bytes through our vocoder bypasses our framer entirely.
+#[test]
+#[ignore]
+fn mbe_offline_replay() {
+    let in_path = std::env::var("MBE_INPUT")
+        .expect("set MBE_INPUT to a SDRTrunk .mbe file path");
+    let out_path = std::env::var("MBE_OUTPUT")
+        .unwrap_or_else(|_| "mbe_replay.wav".to_string());
+
+    let raw = std::fs::read_to_string(&in_path)
+        .expect("could not read MBE_INPUT");
+    // SDRTrunk .mbe is JSON: {"frames":[{"time":..., "hex":"6C42..."},...]}
+    // Pull every "hex" field via a manual scan rather than dragging in
+    // serde / regex deps for a one-off test.
+    let mut frames: Vec<[u8; 18]> = Vec::new();
+    let needle = "\"hex\"";
+    let mut cur = 0usize;
+    while let Some(off) = raw[cur..].find(needle) {
+        let abs = cur + off + needle.len();
+        // skip past `"hex"` then to the opening quote of the value
+        let bytes = raw.as_bytes();
+        let mut p = abs;
+        while p < bytes.len() && bytes[p] != b'"' { p += 1; }
+        if p == bytes.len() { break; }
+        p += 1; // past opening quote
+        let start = p;
+        while p < bytes.len() && bytes[p] != b'"' { p += 1; }
+        if p - start != 36 {
+            cur = p;
+            continue;
+        }
+        let hex = &raw[start..p];
+        let mut out = [0u8; 18];
+        let mut ok = true;
+        for i in 0..18 {
+            match u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16) {
+                Ok(v) => out[i] = v,
+                Err(_) => { ok = false; break; }
+            }
+        }
+        if ok {
+            frames.push(out);
+        }
+        cur = p;
+    }
+
+    eprintln!("loaded {} IMBE frames from {}", frames.len(), in_path);
+    assert!(!frames.is_empty(), "no frames in .mbe file");
+
+    let mut decoder = ImbeDecoder::new();
+    let mut pcm_i16: Vec<i16> = Vec::with_capacity(frames.len() * 160);
+    let mut peak_global: i16 = 0;
+    let mut sum_sq: f64 = 0.0;
+    let mut silent_frames = 0usize;
+    for (i, frame) in frames.iter().enumerate() {
+        let pcm = decoder.decode_frame(frame);
+        let mut frame_peak: i16 = 0;
+        for &s in &pcm {
+            // f32 in ~[-1.0, 1.0] -> i16
+            let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+            pcm_i16.push(v);
+            if v.unsigned_abs() as i16 > frame_peak {
+                frame_peak = v.unsigned_abs() as i16;
+            }
+            sum_sq += (v as f64) * (v as f64);
+        }
+        if frame_peak < 16 {
+            silent_frames += 1;
+        }
+        if frame_peak > peak_global {
+            peak_global = frame_peak;
+        }
+        if i < 5 || i % 50 == 0 {
+            eprintln!("  frame {i:4} peak={frame_peak}");
+        }
+    }
+    let rms = (sum_sq / pcm_i16.len() as f64).sqrt();
+    eprintln!(
+        "RESULT: peak={peak_global} rms={rms:.1} silent_frames={silent_frames}/{}",
+        frames.len()
+    );
+
+    // Write a minimal 8 kHz mono 16-bit WAV.
+    use std::io::Write;
+    let mut f = std::fs::File::create(&out_path).expect("create WAV");
+    let data_len = (pcm_i16.len() * 2) as u32;
+    let chunk_size = 36 + data_len;
+    f.write_all(b"RIFF").unwrap();
+    f.write_all(&chunk_size.to_le_bytes()).unwrap();
+    f.write_all(b"WAVEfmt ").unwrap();
+    f.write_all(&16u32.to_le_bytes()).unwrap(); // fmt chunk size
+    f.write_all(&1u16.to_le_bytes()).unwrap();  // PCM
+    f.write_all(&1u16.to_le_bytes()).unwrap();  // mono
+    f.write_all(&8000u32.to_le_bytes()).unwrap(); // sample rate
+    f.write_all(&16000u32.to_le_bytes()).unwrap(); // byte rate
+    f.write_all(&2u16.to_le_bytes()).unwrap();  // block align
+    f.write_all(&16u16.to_le_bytes()).unwrap(); // bits per sample
+    f.write_all(b"data").unwrap();
+    f.write_all(&data_len.to_le_bytes()).unwrap();
+    for s in &pcm_i16 {
+        f.write_all(&s.to_le_bytes()).unwrap();
+    }
+    eprintln!("wrote {} ({} samples = {:.2}s)", out_path, pcm_i16.len(),
+        pcm_i16.len() as f32 / 8000.0);
+}

@@ -261,6 +261,18 @@ pub struct RecorderDiag {
     /// closes hit this path. Each = 20 ms of lost audio.
     pub chunks_dropped_no_active:
         std::sync::atomic::AtomicU64,
+    /// 2026-04-30: chunks rejected because `chunk.tg` was non-zero
+    /// and didn't match the active recording's talkgroup. This is
+    /// the cross-TG bleed gate: on a same-freq channel-reuse
+    /// retune, the framer's reset doesn't drain in-flight IMBE
+    /// batches already queued for the vocoder, so those decode
+    /// 100s of ms after the new recording opens and arrive carrying
+    /// the OLD TG. Without this gate they'd append to the new
+    /// recording (capture-time stamps fall inside the new window).
+    /// Non-zero values are diagnostic of how much old-TG audio
+    /// the gate caught.
+    pub chunks_dropped_tg_mismatch:
+        std::sync::atomic::AtomicU64,
 }
 
 pub type RecorderDiagArc = Arc<RecorderDiag>;
@@ -753,6 +765,15 @@ pub async fn recorder_task(
     }
 
     let mut active: Option<ActiveCall> = None;
+    // 2026-04-30: when CallOpen fires while `active` is still set
+    // (channel-reuse: same physical freq, new TG), the prior call is
+    // moved to `draining` instead of being finalised on the spot. The
+    // vocoder's IMBE queue holds in-flight OLD-TG batches that decode
+    // 100s of ms past the retune; routing those by chunk.tg keeps
+    // them in the OLD-TG recording until its drain expires. Only
+    // single-deep — if a third call arrives while draining is set,
+    // the existing draining recording is force-finalised.
+    let mut draining: Option<ActiveCall> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(RECORDER_TICK_MS));
 
     // Helper: finalise + push the WAV through `finalize()`, logging
@@ -819,55 +840,68 @@ pub async fn recorder_task(
             recv = audio_rx.recv() => {
                 match recv {
                     Ok(chunk) => {
-                        // 2026-04-26 session-lifecycle refactor: route
-                        // by `chunk.captured_at_ms` (stamped at LDU
-                        // dispatch in the framer) vs the active
-                        // recording's [open_at_ms, close_at_ms or now]
-                        // window. Capture-time routing handles the
-                        // dominant audio-loss paths the previous
-                        // call_id-routing missed:
-                        //   - Late chunks (vocoder lag) crossing a
-                        //     CallClose: captured_at_ms <= close_at_ms
-                        //     so they STILL land in the closing
-                        //     recording, regardless of arrival time.
-                        //   - Chunks for the next session arriving
-                        //     before its CallOpen has propagated:
-                        //     captured_at_ms > close_at_ms so they
-                        //     are dropped (they belong to next call).
-                        let Some(c) = active.as_mut() else {
-                            diag.chunks_dropped_no_active
-                                .fetch_add(1, Ordering::Relaxed);
-                            continue;
+                        // 2026-04-30 v2 routing model. Two slots: `active`
+                        // (current call) and `draining` (previous call
+                        // whose drain window hasn't elapsed). Slot
+                        // selection is purely by `captured_at_ms` vs
+                        // each slot's [open_at_ms, close_at_ms+drain]
+                        // window. The capture timestamp IS the call
+                        // assignment — it identifies which grant's
+                        // air-time the LDU body came from.
+                        //
+                        // Prior model (v1) routed by TG-match first,
+                        // then capture-time as defense. That broke
+                        // post-build-4 when consecutive calls share
+                        // the TG (per-grant call_track design): a
+                        // chunk decoded from the OLD call's air arrived
+                        // labelled tg=300, routed to ACTIVE (also TG
+                        // 300, the new call), then failed the capture-
+                        // time check and was dropped. Single rec lost
+                        // 125+ chunks of legitimate audio that should
+                        // have routed to the draining slot. Now slot
+                        // selection respects that the timestamp belongs
+                        // to one specific grant's window.
+                        enum Slot { Active, Draining, None }
+                        let in_window = |c: &ActiveCall| -> bool {
+                            if chunk.captured_at_ms < c.open_at_ms {
+                                return false;
+                            }
+                            match c.close_at_ms {
+                                Some(cm) => chunk.captured_at_ms <= cm + CLOSING_DRAIN_MS,
+                                None => true,
+                            }
                         };
-                        // Capture-time window check.
-                        if chunk.captured_at_ms < c.open_at_ms {
-                            // Captured before THIS recording opened —
-                            // belongs to a prior session that already
-                            // finalized. Drop.
-                            diag.chunks_dropped_call_id_mismatch
-                                .fetch_add(1, Ordering::Relaxed);
-                            continue;
-                        }
-                        if let Some(close_ms) = c.close_at_ms {
-                            if chunk.captured_at_ms > close_ms {
-                                // Captured after this session's
-                                // terminator/timeout fired — belongs
-                                // to the NEXT session (whose CallOpen
-                                // just hasn't propagated to the
-                                // recorder yet). Drop here; it'll
-                                // come back as no_active until
-                                // CallOpen lands.
-                                diag.chunks_dropped_call_id_mismatch
-                                    .fetch_add(1, Ordering::Relaxed);
+                        let route = match (active.as_ref(), draining.as_ref()) {
+                            (Some(a), _) if in_window(a) => Slot::Active,
+                            (_, Some(d)) if in_window(d) => Slot::Draining,
+                            _ => Slot::None,
+                        };
+                        let c = match route {
+                            Slot::Active => active.as_mut().unwrap(),
+                            Slot::Draining => draining.as_mut().unwrap(),
+                            Slot::None => {
+                                if active.is_none() && draining.is_none() {
+                                    diag.chunks_dropped_no_active
+                                        .fetch_add(1, Ordering::Relaxed);
+                                } else {
+                                    // Capture-time outside both slots'
+                                    // windows. Most common cause: a
+                                    // stale tail chunk whose origin
+                                    // grant evicted from both slots
+                                    // (more than one call ago). Counter
+                                    // surfaces this for diagnostics.
+                                    diag.chunks_dropped_call_id_mismatch
+                                        .fetch_add(1, Ordering::Relaxed);
+                                }
                                 continue;
                             }
-                            // Within drain window: captured before
-                            // close, arrived after close. Late chunk
-                            // captured for THIS recording — append.
+                        };
+                        // Bookkeeping: increment drain counter if the
+                        // matching slot is in its post-close drain
+                        // window, else the steady-state match counter.
+                        if c.close_at_ms.is_some() {
                             c.chunks_drain += 1;
                         } else {
-                            // Steady state: session open, no close
-                            // signaled yet.
                             c.chunks_match += 1;
                         }
                         // First-known-source stamp. Defensive: most
@@ -893,6 +927,14 @@ pub async fn recorder_task(
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         // Sender gone. Flush and exit.
+                        if let Some(old) = draining.take() {
+                            finalise_call(
+                                old, "audio_channel_closed",
+                                serde_json::json!({}),
+                                &store, event_log.as_ref(),
+                                forwarder.as_ref(), &imbe_drops,
+                            ).await;
+                        }
                         if let Some(old) = active.take() {
                             finalise_call(
                                 old, "audio_channel_closed",
@@ -936,27 +978,51 @@ pub async fn recorder_task(
                                 }));
                                 continue;
                             }
-                            // Defensive: if a previous CallClose was
-                            // missed (broadcast lag, panic in tracker),
-                            // we still have an `active` here. Finalise
-                            // it before opening the new one so we don't
-                            // lose data.
-                            if let Some(old) = active.take() {
+                            // 2026-04-30: CallOpen-while-active path.
+                            // Channel-reuse (same freq, new TG) lands
+                            // here: the prior call's vocoder backlog
+                            // hasn't drained, so its trailing chunks
+                            // are still on the way. Move the prior call
+                            // to `draining` instead of finalising
+                            // immediately — late OLD-TG chunks then
+                            // route to it by TG until its drain window
+                            // (CLOSING_DRAIN_MS = 2 s) elapses.
+                            //
+                            // If `draining` already holds a recording
+                            // (a third call arrived inside the prior
+                            // drain window), force-finalise the
+                            // existing draining one. Single-deep is
+                            // sufficient for observed traffic; deeper
+                            // accumulation indicates stuck broadcasts.
+                            if let Some(stale) = draining.take() {
                                 tracing::warn!(
                                     target: "p25_recorder",
-                                    "CallOpen(call_id={}) arrived while \
-                                     call_id={} still active — finalising \
-                                     stale recording defensively",
-                                    ev.call_id, old.call_id,
+                                    "force-finalising prior draining \
+                                     call_id={} (third CallOpen arrived \
+                                     inside drain window)",
+                                    stale.call_id,
                                 );
                                 finalise_call(
-                                    old, "call_open_without_close",
+                                    stale, "draining_displaced",
                                     serde_json::json!({
                                         "new_call_id": ev.call_id,
                                     }),
                                     &store, event_log.as_ref(),
                                     forwarder.as_ref(), &imbe_drops,
                                 ).await;
+                            }
+                            if let Some(mut old) = active.take() {
+                                old.close_at_ms = Some(ev.timestamp_unix_ms);
+                                log_ev("call_draining", serde_json::json!({
+                                    "recording_id":  old.call_id,
+                                    "tg":            old.talkgroup,
+                                    "close_at_ms":   ev.timestamp_unix_ms,
+                                    "drain_ms":      CLOSING_DRAIN_MS,
+                                    "new_call_id":   ev.call_id,
+                                    "new_tg":        tg,
+                                    "reason":        "call_open_without_close",
+                                }));
+                                draining = Some(old);
                             }
                             let mut c = ActiveCall::new(
                                 ev.call_id, tg,
@@ -1144,6 +1210,30 @@ pub async fn recorder_task(
                             serde_json::json!({
                                 "drain_ms":  CLOSING_DRAIN_MS,
                                 "silence_ms": FINALIZE_GRACE.as_millis() as u64,
+                            }),
+                            &store, event_log.as_ref(),
+                            forwarder.as_ref(), &imbe_drops,
+                        ).await;
+                    }
+                }
+                // 2026-04-30: drain the `draining` slot. Its close_at_ms
+                // was set when it was demoted from active; finalise once
+                // CLOSING_DRAIN_MS has elapsed past that.
+                let drain_ready = draining.as_ref().and_then(|d| {
+                    d.close_at_ms.and_then(|close_at| {
+                        if now_ms.saturating_sub(close_at) >= CLOSING_DRAIN_MS {
+                            Some(())
+                        } else {
+                            None
+                        }
+                    })
+                }).is_some();
+                if drain_ready {
+                    if let Some(old) = draining.take() {
+                        finalise_call(
+                            old, "draining_drain_elapsed",
+                            serde_json::json!({
+                                "drain_ms": CLOSING_DRAIN_MS,
                             }),
                             &store, event_log.as_ref(),
                             forwarder.as_ref(), &imbe_drops,

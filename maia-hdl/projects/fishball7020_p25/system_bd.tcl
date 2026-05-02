@@ -127,13 +127,18 @@ ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP1 {1}
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 sys_ps7/S_AXI_HP1
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_iq
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_lsm_dibit
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_lsm_dibit
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_iq
 # Phase 10.8 masters.
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_pre_diff_iq
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_pre_diff_iq
 # Phase 10.7 master.
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_wideband_spec
+# M2B 2026-05-02: traffic LSM dibit DMA on the new mux-fed chain.
+# m_axi_traffic_iq and m_axi_traffic_pre_diff_iq stay retired until
+# their use-case re-emerges.
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_lsm_dibit
+# 2026-05-03: pre-DDC raw 8 MSPS IQ tap for the PS-side software P25
+# stack. 32 MB/s sustained — well within HP1's headroom alongside the
+# narrowband rings.
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_wideband_iq
 
 # ── Interrupt ─────────────────────────────────────────────────────────
 # With maia_iio, pluto base wired:

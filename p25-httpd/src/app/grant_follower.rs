@@ -51,7 +51,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
 use crate::app::imbe_forwarder::ImbeForwarder;
-use crate::audio::{AudioChunk, CallBoundary, CallBoundaryKind, TerminatorKind};
+use crate::audio::{AudioChunk, CallBoundary, CallBoundaryKind};
 
 // ── 2026-04-26 session-lifecycle refactor: constants ─────────────
 
@@ -60,25 +60,23 @@ use crate::audio::{AudioChunk, CallBoundary, CallBoundaryKind, TerminatorKind};
 /// (terminator + drain → finalize within drain_ms + 100 ms).
 const TIMEOUT_TICK_MS: u64 = 100;
 
-/// Hard timeout — `now() - last_audio_at_ms > HARD_TIMEOUT_MS`
-/// while no terminator has fired. Covers two cases:
-///   (a) session opened, chain never produced audio (encrypted,
-///       PLL/AGC fail, freq mis-tuned).
-///   (b) audio was flowing, stopped without a terminator landing.
+/// Close trigger: `now() - max(last_upd_at_ms, last_audio_at_ms) > IDLE_TIMEOUT_MS`.
+/// Either the CC heartbeat OR audio activity keeps the call alive. Whichever
+/// is more recent wins. Closes only after BOTH have been silent for the
+/// timeout.
 ///
-/// 2026-04-26 first set to 5 s. On-target observation revealed
-/// chain settle on a fresh retune can take 7+ s before the framer
-/// produces a real HDU dispatch (false-positive NID heartbeats
-/// happen earlier, but those don't trigger on_hdu — and our HDU
-/// boundary handler only fires on real body parse).
-/// `2026-04-26-not-followed-no-preempt` flash reproduced: TG 300
-/// src 3400011 PTT, retune at 15:01:29.208, real HDU at
-/// 15:01:36.120 (7 s settle). 5 s timeout closed the session at
-/// 34.213, before any real audio landed. Subsequent 6 s of clear
-/// audio dropped to no_active. Bumped to 10 s to cover worst-
-/// observed settle. HDU/audio events refresh the timer, so a
-/// healthy session never closes on this — only stuck ones do.
-const HARD_TIMEOUT_MS: u64 = 10_000;
+/// 2026-05-02 we tried UPD-only at 3 s — broke every call. Field evidence
+/// (2026-04-30 18:29:49 capture, 14 UPDs for the active TG): UPDs cluster
+/// at t=0 (call open burst) then go SILENT for ~3.3 s, then resume after
+/// the call ends. Our CC decoder stalls during traffic-chain activity (see
+/// `project_cc_decoder_stalls_during_traffic.md` — separate bug). With
+/// UPD-only the timeout fires at t=+3 s on every call, truncating recordings
+/// to ~3 s regardless of actual call length.
+///
+/// Going hybrid restores the pre-2026-05-02 robust behaviour (audio
+/// keep-alive) while still letting UPDs extend encrypted/no-audio calls
+/// for the diagnostic air-time metric.
+const IDLE_TIMEOUT_MS: u64 = 10_000;
 
 // Closing-state drain lives on the recorder side: once we emit
 // CallClose, the recorder keeps the WAV open for ~2 s and routes
@@ -151,6 +149,13 @@ pub enum CallTrackerEventKind {
         /// dashboard can show "speakers heard" when bundling
         /// multiple PTTs in one session.
         sources_observed: Vec<u32>,
+        /// 2026-04-30 air-time tracking. Wall time of the most
+        /// recent `GRP_VCH_GRNT_UPD` beacon for this call's TG.
+        /// Zero if no UPDs landed (e.g. very short call, or chain
+        /// missed all updates). Combined with started_unix_ms in
+        /// grant_stats to derive `air_duration_ms` — the speaker's
+        /// on-air duration independent of audio extraction success.
+        last_upd_at_unix_ms: u64,
     },
 }
 
@@ -176,13 +181,14 @@ pub enum SourceUpdateVia {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CloseReason {
-    /// 5 s without an audio chunk — covers chain-never-decoded,
-    /// audio-stopped, and missed-terminator. The lifecycle's only
-    /// non-preemption close path. Operator-confirmed 2026-04-26:
-    /// dispatcher-final PTTs don't emit TDULC_MOT, and TDULC
-    /// terminators in general can fire mid-grant on multi-PTT
-    /// sessions, so terminator-driven close was retired in favour
-    /// of this single hard backstop.
+    /// `IDLE_TIMEOUT_MS` (10 s) with NEITHER a CC GRP_VCH_GRNT_UPD
+    /// beacon for the active TG NOR an audio chunk arriving. The
+    /// hybrid keep-alive (`max(last_upd, last_audio)`) is robust
+    /// against the CC-decoder-stall-during-traffic bug where UPDs
+    /// disappear from the lifecycle for ~3 s mid-call. TDULC
+    /// terminators (Motorola TalkComplete, CallTermination) remain
+    /// source-stamp-only — closing on those would fragment multi-PTT
+    /// grants and break the grant=call 1:1.
     Timeout,
     /// Pre-empt: primary GRANT on same channel for a different TG.
     /// The only "real" close path during normal operation.
@@ -238,9 +244,23 @@ struct ActiveCall {
     first_hdu_at_unix_ms: Option<u64>,
     #[allow(dead_code)]
     baseline_frames_submitted: u64,
-    /// Wall time of the most recent audio chunk seen for this
-    /// call. Zero until the first chunk arrives. Drives the 5 s
-    /// hard timeout.
+    /// Wall time of the most recent CC heartbeat for this call: the
+    /// primary GRP_VCH_GRANT that opened the session, every Bundle-
+    /// path GRP_VCH_GRANT/_EXP refresh, and every plain
+    /// GRP_VCH_GRNT_UPD for the active TG. With `last_audio_at_ms`,
+    /// drives the close trigger via `now - max(audio, upd) > IDLE_TIMEOUT_MS`.
+    /// Also pairs with `started_unix_ms` to derive `air_duration_ms`
+    /// at finalise (the speaker's physical airtime regardless of
+    /// whether the chain extracted audio — useful for followed calls
+    /// where audio dropped, and not_followed calls where we never
+    /// decoded).
+    last_upd_at_ms: u64,
+    /// Wall time of the most recent audio chunk observed for this call.
+    /// Restored 2026-05-02: was removed in the UPD-only attempt but
+    /// CC decoder stalls during traffic activity (see
+    /// IDLE_TIMEOUT_MS doc) leave UPD-only at the mercy of that bug.
+    /// Audio keep-alive bypasses the CC stall — when chain is decoding
+    /// voice, audio chunks arrive every ~20 ms regardless of CC health.
     last_audio_at_ms: u64,
     /// Every distinct SRC observed during the session — primary
     /// GRANT.SRC, LDU1 LC voted SRC, TDULC MOT BY: — in insertion
@@ -359,6 +379,7 @@ fn emit_close(
             first_hdu_at_unix_ms: call.first_hdu_at_unix_ms,
             expected_submit_count,
             sources_observed: call.sources_observed.clone(),
+            last_upd_at_unix_ms: call.last_upd_at_ms,
         },
     });
 }
@@ -393,19 +414,25 @@ enum ArrivalDisposition {
 }
 
 fn classify_cc_arrival(
-    active: &ActiveCall,
-    new_tg: u16,
-    new_freq_hz: Option<u64>,
+    _active: &ActiveCall,
+    _new_tg: u16,
+    _new_freq_hz: Option<u64>,
 ) -> ArrivalDisposition {
-    if let (Some(a_freq), Some(n_freq)) = (active.freq_hz, new_freq_hz) {
-        if a_freq != n_freq {
-            return ArrivalDisposition::Ignore;
-        }
-    }
-    if active.tg != new_tg {
-        return ArrivalDisposition::TgChange;
-    }
-    ArrivalDisposition::Bundle
+    // 2026-04-30 design pivot per operator instruction: every
+    // GRP_VCH_GRANT (after the entry-point `grant_dedup` filters the
+    // TSDU triplet re-broadcasts) creates a NEW call_track. Same TG,
+    // same freq, same source = still a new call (different speaker
+    // turn). Same TG, different freq = new call AND retune. Same TG,
+    // different source = new call. Bundling and same-freq-only
+    // refresh are both gone — only GRP_VCH_GRNT_UPD events take the
+    // refresh path (separate `CcRefresh` boundary, handled below).
+    //
+    // The `Bundle` and `Ignore` arms previously here matched a
+    // 2026-04-26 design that's been superseded. Kept as a thin
+    // function (rather than inlining `Preempt` at the call site) so
+    // future LDU-driven splits or per-TG-filter rules can come back
+    // here cleanly without reshaping the action-dispatch match.
+    ArrivalDisposition::TgChange
 }
 
 /// Lifecycle authority task. Subscribes to the `CallBoundary`
@@ -436,7 +463,7 @@ pub fn spawn_call_lifecycle(
         // encrypted); skip if a duplicate arrives within
         // NOT_FOLLOWED_DEDUP_MS.
         let mut not_followed_dedup:
-            std::collections::HashMap<(u16, Option<u64>, bool), u64>
+            std::collections::HashMap<(u16, u32, Option<u64>, bool), u64>
             = std::collections::HashMap::new();
         let mut tick = tokio::time::interval(
             Duration::from_millis(TIMEOUT_TICK_MS),
@@ -484,20 +511,23 @@ pub fn spawn_call_lifecycle(
                     }
                 }
                 _ = tick.tick() => {
-                    // 2026-04-26 session-lifecycle refactor: tick only
-                    // covers the 5 s hard-timeout backstop. Terminators
-                    // fire CallClose synchronously in handle_boundary;
-                    // the closing-state drain lives on the recorder side.
+                    // 2026-05-02 hybrid close trigger: keep alive on
+                    // EITHER CC UPD heartbeat OR audio activity. We
+                    // observed (18:29:49 capture) that CC UPDs disappear
+                    // for 3.3 s mid-call because the CC decoder stalls
+                    // during traffic-chain activity (separate bug). With
+                    // UPD-only, every call truncated at 3 s. Hybrid =
+                    // close only when BOTH have been silent for the full
+                    // IDLE_TIMEOUT_MS — audio bridges over the CC stall,
+                    // UPDs bridge over no-audio (encrypted) calls.
                     let now = now_unix_ms();
                     let close_decision: Option<CloseReason> = active
                         .as_ref()
                         .and_then(|c| {
-                            let last = if c.last_audio_at_ms != 0 {
-                                c.last_audio_at_ms
-                            } else {
-                                c.started_unix_ms
-                            };
-                            if now.saturating_sub(last) > HARD_TIMEOUT_MS {
+                            let last = c.last_audio_at_ms
+                                .max(c.last_upd_at_ms)
+                                .max(c.started_unix_ms);
+                            if now.saturating_sub(last) > IDLE_TIMEOUT_MS {
                                 Some(CloseReason::Timeout)
                             } else {
                                 None
@@ -528,7 +558,7 @@ fn handle_boundary(
     next_call_id: &mut u64,
     tx: &CallTrackerEventTx,
     forwarder: &Arc<ImbeForwarder>,
-    grant_dedup: &mut std::collections::HashMap<(u16, Option<u64>, bool), u64>,
+    grant_dedup: &mut std::collections::HashMap<(u16, u32, Option<u64>, bool), u64>,
 ) {
     match boundary.kind {
         // 2026-04-26 session-lifecycle refactor: primary
@@ -538,15 +568,22 @@ fn handle_boundary(
             tg, source, freq_hz, channel, encrypted, not_followed,
         } => {
             let now = now_unix_ms();
-            // 2026-04-27 entry-point dedup. Skip GRANTs arriving
-            // within GRANT_DEDUP_MS of a prior identical (tg,
-            // freq, encrypted) — kills the TSDU triplet
-            // re-broadcasts (TSBK1/2/3 in one TSDU, ~30 ms apart)
-            // before they fan out to either the followed
-            // (active+Bundle) or not_followed (synthetic-emit)
-            // paths. Genuinely distinct calls (>200 ms apart)
-            // pass through unchanged.
-            let dedup_key = (tg, freq_hz, encrypted);
+            // 2026-04-27 entry-point dedup, 2026-04-30 source-aware.
+            // Skip GRANTs arriving within GRANT_DEDUP_MS of a prior
+            // IDENTICAL grant — kills the TSDU triplet re-broadcasts
+            // (TSBK1/2/3 of one TSDU, ~30 ms apart). 2026-04-30: key
+            // now includes `source` so two distinct speakers granted
+            // back-to-back on the same TG/freq (~50 ms apart) are
+            // both honoured as separate calls. Without `source` in
+            // the key, e.g. a TG=300 SRC=1013 grant followed 49 ms
+            // later by a TG=300 SRC=3402071 grant on the same freq
+            // was being silently dropped — making rec 14 lose
+            // speakers from `sources_observed`. SRC=0 (some
+            // dispatch radios omit FM) collapses to a single class,
+            // which is acceptable: those grants are typically
+            // dispatcher-console rebroadcasts of an active speaker.
+            let dedup_source = source.unwrap_or(0);
+            let dedup_key = (tg, dedup_source, freq_hz, encrypted);
             if let Some(&last) = grant_dedup.get(&dedup_key) {
                 if now.saturating_sub(last) < GRANT_DEDUP_MS {
                     return;
@@ -618,6 +655,7 @@ fn handle_boundary(
                         first_audio_at_unix_ms: None,
                         first_hdu_at_unix_ms: None,
                         baseline_frames_submitted: baseline,
+                        last_upd_at_ms: 0,
                         last_audio_at_ms: 0,
                         sources_observed: synth_sources,
                     };
@@ -627,18 +665,42 @@ fn handle_boundary(
                     );
                     return;
                 }
-                // Active session, new GRANT is not_followed: leave
-                // the active session alone but still emit a
+                // Active session, new GRANT is not_followed: emit a
                 // synthetic CallOpen+CallClose pair so grant_stats
                 // surfaces the not-followed grant in Recent Calls
                 // (operator confirmed: every CC GRANT must be
                 // visible). Recorder filters not_followed CallOpens
-                // so no recording is opened. Confirmed on-target
-                // 2026-04-26: TG 300 → TG 402 (ENC, same freq)
-                // preempt produced 459 IMBE attributed to TG 402
-                // with `not_followed=encrypted` (bug). Synthetic
-                // emit preserves visibility without the misattribution.
+                // so no recording is opened. The 2026-04-26
+                // misattribution bug — TG 300 → TG 402 (ENC, same
+                // freq) preempt producing 459 IMBE attributed to
+                // TG 402 — is what motivated the synthetic-emit
+                // pattern.
+                //
+                // 2026-04-30 add: if the not_followed grant is for
+                // the SAME freq as the active session, the air on
+                // that freq is now hosting the encrypted/sticky/
+                // monitor-rejected call. The previous clear call
+                // physically ended (one voice channel per freq).
+                // Close active first; then emit the synthetic
+                // pair. Cross-freq not_followed grants still leave
+                // active alone because they don't affect what the
+                // chain is decoding.
                 Some(_) if not_followed.is_some() => {
+                    if let Some(a) = active.as_ref() {
+                        if a.freq_hz.is_some()
+                            && a.freq_hz == freq_hz
+                        {
+                            let prev = active.take().unwrap();
+                            let expected = forwarder
+                                .frames_submitted
+                                .load(Ordering::Relaxed);
+                            emit_close(
+                                tx, &prev,
+                                CloseReason::TgChange,
+                                prev.source, expected,
+                            );
+                        }
+                    }
                     let now = now_unix_ms();
                     let synthetic_call_id = *next_call_id;
                     *next_call_id += 1;
@@ -663,6 +725,7 @@ fn handle_boundary(
                         first_audio_at_unix_ms: None,
                         first_hdu_at_unix_ms: None,
                         baseline_frames_submitted: baseline,
+                        last_upd_at_ms: 0,
                         last_audio_at_ms: 0,
                         sources_observed: synth_sources,
                     };
@@ -685,6 +748,12 @@ fn handle_boundary(
                 OpenAction::None => return,
                 OpenAction::Bundle => {
                     let a_mut = active.as_mut().unwrap();
+                    // CcGrantArrival on the same TG is itself a CC
+                    // heartbeat — refresh the UPD timer so the close
+                    // trigger sees the GRP_VCH_GRNT_UPD_EXP variant
+                    // (which routes through here, not CcGrantUpdate)
+                    // and re-issued primary GRANTs as activity.
+                    a_mut.last_upd_at_ms = now_unix_ms();
                     if let Some(s) = source {
                         if a_mut.observe_source(s) {
                             emit_source_update(
@@ -743,6 +812,11 @@ fn handle_boundary(
                 first_audio_at_unix_ms: None,
                 first_hdu_at_unix_ms: None,
                 baseline_frames_submitted: baseline,
+                // The primary GRP_VCH_GRANT that opened this session
+                // is itself the first CC heartbeat — bootstrap the UPD
+                // timer so the close trigger doesn't fire before the
+                // first GRP_VCH_GRNT_UPD lands.
+                last_upd_at_ms: now,
                 last_audio_at_ms: 0,
                 sources_observed,
             });
@@ -757,30 +831,49 @@ fn handle_boundary(
         // service_options — confirmed empirically 2026-04-26 in
         // the on-target log: every UPDATE shows source=None and
         // enc_flag pulled from per-channel history. Cannot signal
-        // a speaker change, TG change, or encryption flip. Treat
-        // as a pure keep-alive — the existing `last_audio_at_ms`
-        // timeout is the lifeline anyway, but we still nudge it
-        // here so a session that has CC keep-alive traffic but no
-        // audio doesn't time out as fast as one with no CC at all.
-        CallBoundaryKind::CcGrantUpdate { tg, .. } => {
+        // a speaker change, TG change, or encryption flip.
+        // 2026-05-02: this beacon now drives the close trigger
+        // directly — `a.last_upd_at_ms = now` keeps the call alive,
+        // and a UPD_TIMEOUT_MS gap closes it.
+        CallBoundaryKind::CcGrantUpdate { tg, freq_hz, channel } => {
+            // 2026-04-30 dedup TSDU triplet duplicates of the same
+            // UPD (TSBK1/2/3 of one TSDU, ~30 ms apart, identical
+            // payload). Mirrors the primary-GRANT dedup at the top
+            // of CcGrantArrival. Without this, last_upd_at_ms
+            // advances 3× per UPD broadcast, which is noise vs the
+            // 5 s steady-state UPD cadence — but doing it cleanly
+            // keeps the event accounting symmetric with primary
+            // grants. Re-uses the same map and the same window.
+            // UPDs don't carry source; key the dedup with
+            // source=0 + the channel-or-freq tuple.
+            let dedup_key = (tg, 0u32, freq_hz.or(Some(channel as u64)), false);
+            if let Some(&last) = grant_dedup.get(&dedup_key) {
+                if now_unix_ms().saturating_sub(last) < GRANT_DEDUP_MS {
+                    return;
+                }
+            }
+            grant_dedup.insert(dedup_key, now_unix_ms());
             if let Some(a) = active.as_mut() {
                 if a.tg == tg {
-                    // No-op: the spec says UPDATE doesn't gate
-                    // the timeout. last_audio_at_ms is the truth.
-                    // Kept as a structural arm for log-readability.
+                    // 2026-04-30 air-time tracking. UPD beacons are
+                    // the only signal that the speaker is still
+                    // keyed when the chain itself extracts no audio
+                    // — encrypted calls, sync-loss calls, and
+                    // chains that fail body extraction all still
+                    // get UPDs from the CC. Drives both the CallClose
+                    // trigger (UPD_TIMEOUT_MS gap → close) and the
+                    // `air_duration_ms` derivation at finalise.
+                    a.last_upd_at_ms = now_unix_ms();
                 }
             }
         }
 
-        // HDU: informational + activity refresh. Bundling speakers
-        // means we no longer split per-PTT — multiple HDUs in one
-        // session is expected (e.g. dispatcher then field radio on
-        // same grant). 2026-04-26: HDU also refreshes
-        // `last_audio_at_ms` so the 5 s hard timeout extends past
-        // chain settle. Confirmed on-target: chain settle on
-        // retune can take 6-9 s, but HDU dispatch (chain detected
-        // a P25 voice frame start) is strong evidence the session
-        // is alive even before LDUs land.
+        // HDU: informational only. Bundling speakers means we no
+        // longer split per-PTT — multiple HDUs in one session is
+        // expected (e.g. dispatcher then field radio on same grant).
+        // 2026-05-02: no longer refreshes any timeout — close trigger
+        // is the CC UPD heartbeat, which is independent of chain
+        // decoder health.
         CallBoundaryKind::HduStart => {
             let now = now_unix_ms();
             if let Some(a) = active.as_mut() {
@@ -790,6 +883,10 @@ fn handle_boundary(
                 if a.first_audio_at_unix_ms.is_none() {
                     a.first_audio_at_unix_ms = Some(now);
                 }
+                // HDU = chain found a P25 voice frame start. Strong
+                // evidence the call is alive — refresh the audio-side
+                // keep-alive so the hybrid timeout has a fresh anchor
+                // even before the first PCM chunk lands.
                 a.last_audio_at_ms = now;
                 if a.nac == 0 && boundary.nac != 0 {
                     a.nac = boundary.nac;
@@ -883,9 +980,11 @@ enum OpenAction {
 
 fn handle_audio(chunk: AudioChunk, active: &mut Option<ActiveCall>) {
     if let Some(a) = active.as_mut() {
-        // The recorder routes by chunk.captured_at_ms vs the
-        // session window. The lifecycle layer only needs to know
-        // "audio is still flowing" for the hard-timeout gate.
+        // The recorder routes by chunk.captured_at_ms vs the session
+        // window. We refresh `last_audio_at_ms` here so the hybrid
+        // close trigger sees audio activity as a keep-alive — needed
+        // because the CC UPD heartbeat is unreliable mid-call (CC
+        // decoder stalls during traffic — see IDLE_TIMEOUT_MS doc).
         let now = now_unix_ms();
         a.last_audio_at_ms = now;
         if a.first_audio_at_unix_ms.is_none() {
@@ -920,13 +1019,30 @@ use crate::protocol::p25::{self, control_channel::ControlChannelDecoder,
 use crate::services::event_log::EventLog;
 use crate::services::monitor::MonitorList;
 
+// 2026-05-03 dual-DDC pivot: the polyphase-channelizer-specific
+// helpers (`CHANNELIZER_M`, `CHANNELIZER_FFT_LAG`, `bit_reverse_6`,
+// `offset_to_bin_and_nco`, plus their unit tests) have been retired.
+// Retunes now write a frequency offset directly to the dedicated
+// `traffic_ddc` NCO via `IpCore::retune_traffic_chain`, mirroring the
+// control-side DDC. See `doc/changes/` for the dual-DDC pivot.
+
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_grant_follower(
     follower_mgr: Arc<Mutex<TrafficChain>>,
     follower_core: Arc<Mutex<fpga::IpCore>>,
     follower_current_sample_rate_hz: Arc<std::sync::atomic::AtomicU32>,
     follower_current_rx_lo: Arc<AtomicI64>,
-    follower_lo_ppm: f64,
+    // 2026-04-30: live DDC NCO crystal-trim shift, mirroring the
+    // control chain's NCO programming. Read on every retune so the
+    // traffic chain's offset_hz includes the same PPM correction the
+    // control chain bakes in via `tuning.rs`. Previously this slot
+    // was a static `f64 lo_ppm` captured at spawn from `args.lo_ppm`,
+    // which left the traffic Costas loop absorbing the full residual
+    // any time auto-PPM (or a manual `PUT /api/ppm`) had moved
+    // `current_lo_shift_hz` away from the boot value — diagnosed via
+    // `pll_dbg ≈ -5200` (≈ -480 Hz) on traffic vs `-2658` on control
+    // in `2026-04-30-sync-trace`.
+    follower_current_lo_shift_hz: Arc<AtomicI64>,
     follower_enabled: Arc<AtomicBool>,
     follower_imbe: Arc<ImbeForwarder>,
     follower_monitor: Arc<RwLock<MonitorList>>,
@@ -1208,6 +1324,23 @@ pub fn spawn_grant_follower(
                                         send_cc_boundary(&g, None);
                                         continue;
                                     }
+                                    // Updates are keep-alives. They must
+                                    // NEVER bring the chain out of Idle
+                                    // or pull it onto a different TG —
+                                    // initial GVCG / GVCG_EXP is the
+                                    // only acquisition trigger. Without
+                                    // this gate, a TG whose initial
+                                    // grant we missed (or one whose
+                                    // encryption flag we couldn't
+                                    // learn — UPD opcodes carry no
+                                    // service_options) would slip past
+                                    // the encrypted check and force a
+                                    // retune to a freq we shouldn't
+                                    // touch. Field hit 2026-04-30: TG
+                                    // 700 (encrypted) update pulled the
+                                    // chain off-Idle.
+                                    send_cc_boundary(&g, Some("update_no_lock"));
+                                    continue;
                                 }
 
                                 // Tally every observed grant into the
@@ -1400,14 +1533,12 @@ pub fn spawn_grant_follower(
                                         // new_grant.is_enc).
                                         #[cfg(target_os = "linux")]
                                         {
-                                            let core = follower_core
-                                                .lock().await;
-                                            // Quiesce both LSM + C4FM
-                                            // chains on encrypted
-                                            // teardown so the traffic
-                                            // LSM demod stops emitting
-                                            // phantom NID events until
-                                            // the next grant.
+                                            let core = follower_core.lock().await;
+                                            // M2B 2026-05-02: pause via
+                                            // traffic_lsm_enable=0 so the
+                                            // new mux-fed chain stops
+                                            // emitting NID events on the
+                                            // encrypted teardown.
                                             core.pause_traffic_chain();
                                         }
                                         // Reset the traffic framer --
@@ -1606,9 +1737,20 @@ pub fn spawn_grant_follower(
                                         follower_current_sample_rate_hz
                                             .load(std::sync::atomic::Ordering::Relaxed)
                                             as f64;
+                                    // 2026-04-30: read the LIVE DDC
+                                    // NCO crystal-trim shift, the same
+                                    // value `tuning.rs` uses when
+                                    // programming the control chain's
+                                    // NCO. Static `lo_ppm` was wrong
+                                    // here — it never tracked
+                                    // auto-PPM apply, manual
+                                    // `PUT /api/ppm`, or boot-loaded
+                                    // persisted shifts, leaving traffic
+                                    // Costas with the full residual.
                                     let nco_lo_shift_hz =
-                                        -follower_lo_ppm * 1e-6
-                                            * rx_lo_now as f64;
+                                        follower_current_lo_shift_hz
+                                            .load(std::sync::atomic::Ordering::Relaxed)
+                                            as f64;
                                     let offset_hz = (freq_hz as f64
                                         - rx_lo_now as f64
                                         + nco_lo_shift_hz)
@@ -1626,200 +1768,98 @@ pub fn spawn_grant_follower(
                                         dec.reset_framer_state();
                                     }
 
-                                    let core = follower_core.lock().await;
-                                    // Atomic freeze-reset-thaw:
-                                    // `retune_traffic_chain` disables
-                                    // both LSM and C4FM chains, writes
-                                    // the new DDC frequency, pulses
-                                    // `traffic_lsm_reset` (clearing the
-                                    // PLL accumulator and upstream
-                                    // state), then re-enables. Post-
-                                    // retune PLL starts from 0 and
-                                    // converges in ~50-100 ms instead
-                                    // of carrying stale phase from the
-                                    // previous carrier. See
-                                    // doc/changes/038.
-                                    let agc_seed = follower_imbe
+                                    // 2026-05-03 dual-DDC: retune writes
+                                    // the traffic DDC NCO to `offset_hz`,
+                                    // pulses traffic LSM reset, enables
+                                    // the chain. AGC seed is implicit in
+                                    // the AGC tracker — legacy
+                                    // `agc_seed_for_freq` cache is
+                                    // currently a no-op since the new HDL
+                                    // doesn't accept a seed register
+                                    // (revisit if convergence is slow).
+                                    let _ = follower_imbe
                                         .agc_seed_for_freq(freq_hz)
                                         .unwrap_or(0);
-                                    match core.retune_traffic_chain(
-                                        offset_hz as f64,
-                                        sample_rate_now,
-                                        agc_seed,
-                                    ) {
-                                        Ok(diag) => {
-                                            tracing::info!(
-                                                target: "p25_traffic",
-                                                "retune: TG={} channel={:?} \
-                                                 freq={} Hz offset={:+} Hz \
-                                                 (LSM freeze-reset-thaw, framer reset)",
-                                                g.talkgroup.0, g.channel,
-                                                freq_hz, offset_hz,
-                                            );
-                                            follower_event_log.push(
-                                                LogCategory::Traffic,
-                                                format!(
-                                                    "retune TG={} -> {:.4} MHz (offset {:+} Hz, agc_seed={})",
-                                                    g.talkgroup.0,
-                                                    freq_hz as f64 / 1e6,
-                                                    offset_hz,
-                                                    agc_seed,
-                                                ),
-                                                serde_json::json!({
-                                                    "tg":          g.talkgroup.0,
-                                                    "channel":     g.channel.0,
-                                                    "frequency":   freq_hz,
-                                                    "offset_hz":   offset_hz,
-                                                    "framer_reset": true,
-                                                    "lsm_reset":   true,
-                                                    "pll_seed_written":      diag.pll_seed_written,
-                                                    "traffic_pll_pre_reset": diag.traffic_pll_pre_reset,
-                                                    "traffic_pll_post_reset": diag.traffic_pll_post_reset,
-                                                    "seed_drift":            diag.drift(),
-                                                    "seed_load_buggy":       diag.looks_buggy(),
-                                                    "agc_seed_written":      diag.agc_seed_written,
-                                                    "traffic_agc_pre_reset": diag.traffic_agc_pre_reset,
-                                                    "traffic_agc_post_reset": diag.traffic_agc_post_reset,
-                                                    "agc_drift":             diag.agc_drift(),
-                                                    "agc_cache_hit":         agc_seed != 0,
-                                                }),
-                                            );
-                                            if diag.looks_buggy() {
-                                                follower_event_log.push(
-                                                    LogCategory::Traffic,
-                                                    format!(
-                                                        "PLL seed-load mismatch on retune: \
-                                                         seed={} pre={} post={} drift={}",
-                                                        diag.pll_seed_written,
-                                                        diag.traffic_pll_pre_reset,
-                                                        diag.traffic_pll_post_reset,
-                                                        diag.drift(),
-                                                    ),
-                                                    serde_json::json!({
-                                                        "tg":   g.talkgroup.0,
-                                                        "kind": "pll_seed_load_mismatch",
-                                                        "pll_seed_written":      diag.pll_seed_written,
-                                                        "traffic_pll_pre_reset": diag.traffic_pll_pre_reset,
-                                                        "traffic_pll_post_reset": diag.traffic_pll_post_reset,
-                                                        "seed_drift":            diag.drift(),
-                                                    }),
-                                                );
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                target: "p25_traffic",
-                                                "traffic DDC retune failed: \
-                                                 TG={} freq={} Hz \
-                                                 offset={:+} Hz: {}",
-                                                g.talkgroup.0, freq_hz,
-                                                offset_hz, e,
-                                            );
-                                            follower_event_log.push(
-                                                LogCategory::Traffic,
-                                                format!(
-                                                    "retune FAILED TG={}: {}",
-                                                    g.talkgroup.0, e,
-                                                ),
-                                                serde_json::json!({
-                                                    "tg":     g.talkgroup.0,
-                                                    "error":  e.to_string(),
-                                                }),
-                                            );
-                                        }
+                                    let retune_result = {
+                                        let core = follower_core.lock().await;
+                                        core.retune_traffic_chain(
+                                            offset_hz as f64,
+                                            sample_rate_now)
+                                    };
+                                    if let Err(ref e) = retune_result {
+                                        tracing::warn!(
+                                            target: "p25_traffic",
+                                            "retune_traffic_chain failed: {e}"
+                                        );
                                     }
+                                    tracing::info!(
+                                        target: "p25_traffic",
+                                        "retune (dual-DDC): TG={} channel={:?} \
+                                         freq={} Hz offset={:+} Hz",
+                                        g.talkgroup.0, g.channel,
+                                        freq_hz, offset_hz,
+                                    );
+                                    follower_event_log.push(
+                                        LogCategory::Traffic,
+                                        format!(
+                                            "retune TG={} -> {:.4} MHz \
+                                             (offset {:+} Hz)",
+                                            g.talkgroup.0,
+                                            freq_hz as f64 / 1e6,
+                                            offset_hz,
+                                        ),
+                                        serde_json::json!({
+                                            "tg":          g.talkgroup.0,
+                                            "channel":     g.channel.0,
+                                            "frequency":   freq_hz,
+                                            "offset_hz":   offset_hz,
+                                            "framer_reset": true,
+                                        }),
+                                    );
                                 } else if pre_state == "Idle" && post_state != "Idle" {
-                                    // Phase 2f NCO write-skip path: same
-                                    // freq as the previous call, so the
-                                    // DDC NCO + FIR can stay as-is (no
-                                    // 2 ms FIR-flush sleep, no DDC
-                                    // write). But the LSM chain has
-                                    // been processing noise during the
-                                    // inter-call gap, and the Costas
-                                    // PLL random-walks on noise — by
-                                    // grant time it's drifted away
-                                    // from the converged value. So we
-                                    // still need to seed the PLL/AGC
-                                    // from the control chain and pulse
-                                    // reset to load them. This is the
-                                    // 2026-04-26 follow-up to the
-                                    // seeding work: every grant gets a
-                                    // fresh seeded start, only true
-                                    // retunes pay the DDC-flush cost.
-                                    // See doc/diagnostics/2026-04-25/
-                                    // CHANNELIZER_REDESIGN.md.
+                                    // M2B 2026-05-02: same-freq new call
+                                    // (Idle -> Active on the bin we
+                                    // last followed). Per design, the
+                                    // chain stays parked + enabled on
+                                    // the last freq through CallClose,
+                                    // so the PLL/AGC carry across the
+                                    // inter-call gap. Only thing that
+                                    // needs reset is the PS framer
+                                    // state machine (it was mid-search
+                                    // when the previous call ended).
+                                    //
+                                    // No traffic_lsm_reset. No NCO
+                                    // re-write. No retune. Subsequent
+                                    // dedup'd grants for this same
+                                    // call are no-ops at this layer.
                                     {
                                         let mut dec = follower_traffic_decoder
                                             .write().await;
                                         dec.reset_framer_state();
                                     }
-                                    let nco_skip_diag: Option<(i16, i16, i16)>;
-                                    {
-                                        // 2026-04-26: AGC seeding
-                                        // disabled — see retune_traffic_chain
-                                        // in fpga.rs for the full
-                                        // rationale. Field observation
-                                        // showed control-chain gain of
-                                        // ~33× saturated the traffic
-                                        // chain at a freq with a
-                                        // stronger signal, biasing
-                                        // every NID toward DUID=0xF
-                                        // (TDU_LC) and producing zero
-                                        // real LDU dispatches. PLL
-                                        // seeding remains since the
-                                        // shared crystal trim makes
-                                        // the converged value portable
-                                        // across freqs.
+                                    let pll_pre = {
                                         let core = follower_core.lock().await;
-                                        let (pll_seed, _) = core.lsm_debug();
                                         let (pre, _) = core.traffic_lsm_debug();
-                                        // 2026-04-26 per-freq AGC
-                                        // seed for the nco_skip path
-                                        // too. Same lookup as the
-                                        // full retune path — same
-                                        // freq, same expected gain.
-                                        // freq_hz isn't bound in this
-                                        // scope (the retune branch
-                                        // shadows it from g.frequency_hz);
-                                        // pull it locally here.
-                                        let agc_seed = g.frequency_hz
-                                            .and_then(|f|
-                                                follower_imbe
-                                                    .agc_seed_for_freq(f))
-                                            .unwrap_or(0);
-                                        core.set_traffic_lsm_seeds(
-                                            pll_seed, agc_seed,
-                                        );
-                                        core.pulse_traffic_lsm_reset();
-                                        let (post, _) = core.traffic_lsm_debug();
-                                        nco_skip_diag = Some((pll_seed, pre, post));
-                                    }
-                                    let mut fields = serde_json::json!({
-                                        "tg":             g.talkgroup.0,
-                                        "channel":        g.channel.0,
-                                        "frequency":      g.frequency_hz,
-                                        "framer_reset":   true,
-                                        "lsm_reset":      true,
-                                        "nco_write":      false,
-                                        "lsm_enable":     "unchanged",
-                                    });
-                                    if let Some((seed, pre, post)) = nco_skip_diag {
-                                        let drift = (post as i32) - (seed as i32);
-                                        if let serde_json::Value::Object(ref mut m) = fields {
-                                            m.insert("pll_seed_written".to_string(), serde_json::json!(seed));
-                                            m.insert("traffic_pll_pre_reset".to_string(), serde_json::json!(pre));
-                                            m.insert("traffic_pll_post_reset".to_string(), serde_json::json!(post));
-                                            m.insert("seed_drift".to_string(), serde_json::json!(drift));
-                                            m.insert("seed_load_buggy".to_string(), serde_json::json!(drift.abs() > 2));
-                                        }
-                                    }
+                                        pre
+                                    };
+                                    let _ = &follower_imbe;
                                     follower_event_log.push(
                                         LogCategory::Traffic,
                                         format!(
-                                            "nco_skip TG={} (same freq, seed+reset only)",
-                                            g.talkgroup.0,
+                                            "same-freq resume TG={} \
+                                             (no reset; pll preserved={})",
+                                            g.talkgroup.0, pll_pre,
                                         ),
-                                        fields,
+                                        serde_json::json!({
+                                            "tg":             g.talkgroup.0,
+                                            "channel":        g.channel.0,
+                                            "frequency":      g.frequency_hz,
+                                            "framer_reset":   true,
+                                            "lsm_reset":      false,
+                                            "nco_write":      false,
+                                            "lsm_enable":     "unchanged",
+                                            "pll_pre_resume": pll_pre,
+                                        }),
                                     );
                                 }
                             }

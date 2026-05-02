@@ -35,29 +35,33 @@
 # register banks: `lsm` at 0xA0 (control side, bank 5) and
 # `traffic_lsm` at 0xC0 (traffic side, bank 6).
 #
-# LSM chain pipeline:
+# LSM chain pipeline (control vs. traffic — different rates 2026-05-03):
 #
-#   DDC out (62.5 kSPS)
-#       |
-#       v
-#   LsmDecimator2  (/2)              -> 31.25 kSPS
-#       |
-#       v
-#   LsmFir(LPF_TAPS_31250)           -- 83-tap baseband LPF
-#       |
-#       v
-#   LsmFir(RRC_TAPS_31250)           -- 105-tap matched filter (alpha=0.2)
-#       |
-#       v
-#   LsmDemod                          -- timing recovery + Costas PLL +
-#       |                                pre-diff rotate + interleave +
-#       |                                diff slicer + sync detect + BCH
-#       |
-#       +--> dibit_out / symbol_strobe    -> lsm_dibit_packer -> lsm_dibit_dma
-#       +--> i_pre_diff_out / q_pre_diff_out / pre_diff_strobe_out
-#       |                                 -> pre_diff_iq_packer -> pre_diff_iq_dma
+#   Control chain (31.25 kSPS, unchanged):
+#     P25DDC out (62.5 kSPS)
+#       -> LsmDecimator2  (/2)             -> 31.25 kSPS
+#       -> LsmFir(LPF_TAPS_31250)          -- 83-tap baseband LPF
+#       -> LsmFir(RRC_TAPS_31250)          -- 105-tap matched filter (alpha=0.2)
+#       -> LsmDemod(sample_rate_hz=31_250) -- timing recovery + Costas PLL +
+#                                             pre-diff rotate + interleave +
+#                                             diff slicer + sync detect + BCH
+#
+#   Traffic chain (25 kSPS, post-2026-05-03; matches SDRTrunk-bit-exact PS):
+#     polyphase_channelizer + per_target_ddc + mux  (8 MSPS / 64 / 5 = 25 kSPS)
+#       -> LsmFir(LPF_TAPS_25K)            -- 121-tap baseband LPF
+#       -> LsmFir(RRC_TAPS_25K)            -- 42-tap RRC (SDRTrunk-exact)
+#       -> LsmDemod(sample_rate_hz=25_000) -- same demod pipeline; the
+#                                             timing-recovery + Gardner
+#                                             constants track sps via the
+#                                             sample_rate_hz parameter.
+#
+#   Both chains drive the same downstream pattern:
+#       +--> dibit_out / symbol_strobe   -> {lsm,traffic_lsm}_dibit_packer
+#                                          -> {lsm,traffic_lsm}_dibit_dma
+#       +--> i_pre_diff_out / q_pre_diff_out / pre_diff_strobe_out (control only)
+#                                          -> pre_diff_iq_packer -> pre_diff_iq_dma
 #       +--> nid_event_strobe + (NAC, DUID, n_errors, ...)
-#                                          -> `lsm` register bank
+#                                          -> `lsm` / `traffic_lsm` register bank
 #
 # Retired in Phase 10.8 (see doc/changes/ for the full list):
 #   * C4FMDemod / SymbolTimingRecovery / DibitPacker on control chain
@@ -92,8 +96,20 @@ from maia_hdl.spectrometer import Spectrometer
 from .p25ddc import P25DDC
 from .iq_packer import IQPacker
 from .lsm_decimator import LsmDecimator2
-from .lsm_fir import LsmFir, LPF_TAPS_31250, RRC_TAPS_31250
+from .lsm_fir import (
+    LsmFir,
+    LPF_TAPS_31250, RRC_TAPS_31250,
+    LPF_TAPS_25K, RRC_TAPS_25K,
+)
 from .lsm_demod import LsmDemod
+# 2026-05-03 dual-DDC pivot: polyphase channelizer / per_target_ddc /
+# traffic_pipeline / signal_energy modules retired from this top, kept
+# in tree for a future scanner mode. Re-import here when re-enabling.
+# from .polyphase_channelizer import PolyphaseChannelizer
+# from .signal_energy import SignalEnergy
+# from .polyphase_proto_coeffs import PROTO_COEFFS, M as PROTO_M, K as PROTO_K
+# from .per_target_ddc import design_decim_fir
+# from .traffic_pipeline import TrafficPipeline
 from .config import P25Config
 from . import configs
 
@@ -155,19 +171,35 @@ class P25Core(Elaboratable):
                     Field('iq_dma', Access.Rsticky, 1, 0),
                     # Phase 6E.9: control-channel LSM dibit ring DMA
                     Field('lsm_dibit_dma', Access.Rsticky, 1, 0),
-                    # Phase 7A.2: traffic-channel LSM dibit ring DMA
-                    Field('traffic_lsm_dibit_dma', Access.Rsticky, 1, 0),
-                    # 2026-04-16: traffic-channel post-DDC IQ ring DMA
-                    Field('traffic_iq_dma', Access.Rsticky, 1, 0),
-                    # Phase 10.8 2026-04-22: pre-diff IQ ring DMAs
-                    # (control + traffic). Tapped inside LsmDemodLoop
-                    # after PLL rotate + mid/sym interleave, before
-                    # the differential slicer. Feed the Plots tab
-                    # (eye + constellation + deviation).
+                    # Phase 10.8 2026-04-22: control-side pre-diff IQ
+                    # ring DMA. Tapped inside LsmDemodLoop after PLL
+                    # rotate + mid/sym interleave, before the
+                    # differential slicer. Feeds the Plots tab.
                     Field('pre_diff_iq_dma', Access.Rsticky, 1, 0),
-                    Field('traffic_pre_diff_iq_dma', Access.Rsticky, 1, 0),
                     # Phase 10.7: wideband spectrometer.
                     Field('wideband_spec_dma', Access.Rsticky, 1, 0),
+                    # 2026-05-03 dual-DDC: traffic-side LSM dibit ring
+                    # DMA (fed by traffic_ddc -> LsmDecimator2 -> LPF
+                    # -> RRC -> LsmDemod, mirroring the control chain).
+                    Field('traffic_lsm_dibit_dma',
+                          Access.Rsticky, 1, 0),
+                    # 2026-05-03 dual-DDC parity: traffic-side post-DDC
+                    # IQ ring DMA. Mirror of `iq_dma` on the traffic
+                    # chain; feeds /api/spectrum?chain=traffic.
+                    Field('traffic_iq_dma',
+                          Access.Rsticky, 1, 0),
+                    # 2026-05-03 dual-DDC parity: traffic-side pre-diff
+                    # post-PLL IQ ring DMA. Mirror of `pre_diff_iq_dma`
+                    # on the traffic chain; feeds Plots tab traffic-
+                    # side eye / constellation / deviation views.
+                    Field('traffic_pre_diff_iq_dma',
+                          Access.Rsticky, 1, 0),
+                    # 2026-05-03: pre-DDC raw 8 MSPS / 8 MHz BW IQ
+                    # tap, fed by rxiq_cdc directly. Diagnostic /
+                    # offline-capture tap (e.g. .cs16 dump for
+                    # SDRTrunk reference comparison).
+                    Field('wideband_iq_dma',
+                          Access.Rsticky, 1, 0),
                 ], interrupt=True),
             },
             2)
@@ -177,7 +209,15 @@ class P25Core(Elaboratable):
         # unit-DC-gain coefficient convention and tightened stage 3
         # filter to fix the LsmDecimator2 fold-back bug. See
         # p25_hdl/p25ddc.py and doc/changes/041_p25ddc_fork.md.
+        # 2026-05-03: dual-DDC pivot — control + traffic each get
+        # their own independent P25DDC instance (NCO + per-stage FIR
+        # coeffs are programmed independently from PS), restoring
+        # the pre-channelizer architecture. Polyphase / per_target_ddc
+        # / traffic_pipeline modules remain in tree (see
+        # `polyphase_channelizer.py` etc.) for future scanner mode but
+        # are not instantiated here.
         self.ddc = P25DDC('clk3x')
+        self.traffic_ddc = P25DDC('clk3x')
 
         self.sdr_registers = Registers(
             'sdr', {
@@ -213,6 +253,45 @@ class P25Core(Elaboratable):
                     ]),
             }, 3)
 
+        # ── Traffic DDC registers (bank 2 @ 0x40) ────────────────────
+        # Mirror of `sdr_registers` (control DDC) so the PS can
+        # program the traffic DDC's NCO + per-stage FIR coefficients
+        # independently. Field names get a `traffic_` prefix so the
+        # SVD-generated PAC reads naturally.
+        self.traffic_sdr_registers = Registers(
+            'traffic_sdr', {
+                0b000: Register(
+                    'traffic_ddc_coeff_addr', [
+                        Field('traffic_coeff_waddr', Access.RW, 10, 0),
+                    ]),
+                0b010: Register(
+                    'traffic_ddc_coeff', [
+                        Field('traffic_coeff_wren', Access.Wpulse, 1, 0),
+                        Field('traffic_coeff_wdata', Access.RW, 18, 0),
+                    ]),
+                0b011: Register(
+                    'traffic_ddc_decimation', [
+                        Field('traffic_decimation1', Access.RW, 7, 0),
+                        Field('traffic_decimation2', Access.RW, 6, 0),
+                        Field('traffic_decimation3', Access.RW, 7, 0),
+                    ]),
+                0b100: Register(
+                    'traffic_ddc_frequency', [
+                        Field('traffic_frequency', Access.RW, 28, 0),
+                    ]),
+                0b101: Register(
+                    'traffic_ddc_control', [
+                        Field('traffic_operations_minus_one1', Access.RW, 7, 0),
+                        Field('traffic_operations_minus_one2', Access.RW, 6, 0),
+                        Field('traffic_operations_minus_one3', Access.RW, 7, 0),
+                        Field('traffic_odd_operations1', Access.RW, 1, 0),
+                        Field('traffic_odd_operations3', Access.RW, 1, 0),
+                        Field('traffic_bypass2', Access.RW, 1, 0),
+                        Field('traffic_bypass3', Access.RW, 1, 0),
+                        Field('traffic_enable_input', Access.RW, 1, 0),
+                    ]),
+            }, 3)
+
         # ── Control-channel post-DDC IQ ring DMA (Phase 6C) ───────────
         # Third tap of the control DDC output. The packer buffers two
         # consecutive (re, im) pairs into a 64-bit DMA word; see
@@ -245,21 +324,24 @@ class P25Core(Elaboratable):
 
         # ── Control channel LSM demod chain (Phase 6E.9) ──────────────
         # Single control-channel demod chain (replaces the retired
-        # C4FM path). Consumes the control DDC output (62.5 kSPS,
-        # 16-bit signed I+Q), decimates by 2 down to 31.25 kSPS,
-        # filters with the 83-tap baseband LPF and the 105-tap RRC,
-        # then runs LsmDemod (timing recovery + Costas PLL rotate +
-        # mid/sym interleave + diff demod + slicer + sync detect +
-        # BCH FEC). The recovered dibits exit via lsm_dibit_dma; the
-        # recovered NIDs are surfaced via the `lsm` register bank.
+        # C4FM path). Consumes the control DDC output (50 kSPS post
+        # 2026-05-03 retune, 16-bit signed I+Q), decimates by 2 down
+        # to 25 kSPS, filters with the 121-tap baseband LPF and the
+        # 42-tap SDRTrunk-exact RRC matched filter, then runs LsmDemod
+        # (timing recovery + Costas PLL rotate + mid/sym interleave +
+        # diff demod + slicer + sync detect + BCH FEC). The recovered
+        # dibits exit via lsm_dibit_dma; the recovered NIDs are
+        # surfaced via the `lsm` register bank.
         #
-        # All four blocks live at top level (not wrapped) so each
-        # block stays visible in the Vivado hierarchy + amaranth-sim
-        # waveforms during bring-up.
+        # 2026-05-03: rate dropped 31.25 → 25 kSPS to match SDRTrunk's
+        # native LSM front-end rate. DDC presets regenerated to land
+        # at 50 kSPS DDC output (was 62.5); LsmDecimator2 /2 unchanged;
+        # LSM front-end filters swapped to the 25K variants;
+        # LsmDemod parameterised by sample_rate_hz.
         self.lsm_decimator = LsmDecimator2(width=16)
-        self.lsm_lpf = LsmFir(LPF_TAPS_31250)
-        self.lsm_rrc = LsmFir(RRC_TAPS_31250)
-        self.lsm_demod = LsmDemod()
+        self.lsm_lpf = LsmFir(LPF_TAPS_25K)
+        self.lsm_rrc = LsmFir(RRC_TAPS_25K)
+        self.lsm_demod = LsmDemod(sample_rate_hz=25_000)
         # DibitPacker is bit-identical to the IQPacker pattern on the
         # wire side -- we just reuse it under a different name for
         # the LSM chain's dibit output so the PS ring DMA word format
@@ -297,6 +379,34 @@ class P25Core(Elaboratable):
                     Field('pre_diff_iq_enable', Access.RW, 1, 0),
                 ]),
                 0b10: Register('pre_diff_iq_next_address', [
+                    Field('next_address', Access.R, 32, 0),
+                ]),
+            },
+            2)
+
+        # ── Wideband raw IQ DMA (2026-05-03) ──────────────────────────
+        # Pre-DDC tap of `rxiq_cdc.{re_out,im_out,strobe_out}` at 8 MSPS
+        # (12-bit signed I/Q sign-extended to 16-bit). Same packer +
+        # ring DMA pattern as `iq_dma`, just a much larger ring (16 MB
+        # = 0.5 s) because the byte rate is 128x higher (32 MB/s vs
+        # 250 KB/s).
+        self.wideband_iq_packer = IQPacker()
+        self.wideband_iq_dma = DmaStreamRingWrite(
+            config.wideband_iq_dma_address,
+            config.wideband_iq_dma_num_buffers_log2,
+            config.wideband_iq_dma_buffer_size,
+            width=64, axi_awidth=32, name='m_axi_wideband_iq')
+        self.wideband_iq_registers = Registers(
+            'wideband_iq', {
+                0b00: Register('wideband_iq_dma_status', [
+                    Field('wideband_iq_overflow', Access.Rsticky, 1, 0),
+                    Field('last_buffer', Access.R,
+                          config.wideband_iq_dma_num_buffers_log2, -1),
+                ]),
+                0b01: Register('wideband_iq_dma_control', [
+                    Field('wideband_iq_enable', Access.RW, 1, 0),
+                ]),
+                0b10: Register('wideband_iq_next_address', [
                     Field('next_address', Access.R, 32, 0),
                 ]),
             },
@@ -382,78 +492,52 @@ class P25Core(Elaboratable):
             },
             3)
 
-        # ── Traffic channel DDC ───────────────────────────────────────
-        # Second P25DDC instance for the traffic channel (retuned by
-        # PS on GroupVoiceChannelGrant). Same v2 filter convention as
-        # the control DDC above; coefficient RAM is shared, so both
-        # instances see the same (unit-DC-gain) filter tables.
-        self.traffic_ddc = P25DDC('clk3x')
-
-        # ── Traffic channel registers (0x60) ──────────────────────────
-        # Phase 10.8: C4FM-related fields (traffic_demod_status /
-        # traffic_demod_control / traffic_next_address) retired
-        # alongside the C4FM chain. Only the DDC config registers
-        # remain here.
-        self.traffic_registers = Registers(
-            'traffic', {
-                0b000: Register(
-                    'traffic_ddc_frequency', [
-                        Field('frequency', Access.RW, 28, 0),
-                    ]),
-                0b001: Register(
-                    'traffic_ddc_control', [
-                        Field('operations_minus_one1', Access.RW, 7, 0),
-                        Field('operations_minus_one2', Access.RW, 6, 0),
-                        Field('operations_minus_one3', Access.RW, 7, 0),
-                        Field('odd_operations1', Access.RW, 1, 0),
-                        Field('odd_operations3', Access.RW, 1, 0),
-                        Field('bypass2', Access.RW, 1, 0),
-                        Field('bypass3', Access.RW, 1, 0),
-                        Field('enable_input', Access.RW, 1, 0),
-                    ]),
-                0b010: Register(
-                    'traffic_ddc_decimation', [
-                        Field('decimation1', Access.RW, 7, 0),
-                        Field('decimation2', Access.RW, 6, 0),
-                        Field('decimation3', Access.RW, 7, 0),
-                    ]),
-            }, 3)
-
-        # ── Traffic channel LSM demod chain (Phase 7A.2) ──────────────
-        # Mirror of the control-side LSM chain. Both consume the same
-        # `rxiq_cdc` output through independent DDC NCOs and share
-        # coefficient RAM. Recovered dibits exit via
-        # `traffic_lsm_dibit_dma`; recovered NIDs are surfaced via the
-        # `traffic_lsm` register bank (bank 6 at offset 0xC0).
+        # ── Traffic LSM demod chain (dual-DDC pivot, 2026-05-03) ─────
+        # Pipeline (mirrors the control chain block-for-block):
+        #   traffic_ddc out (50 kSPS post-2026-05-03 retune)
+        #     -> LsmDecimator2 /2     (-> 25 kSPS)
+        #     -> LsmFir(LPF_TAPS_25K) (121-tap baseband LPF)
+        #     -> LsmFir(RRC_TAPS_25K) (42-tap SDRTrunk-exact RRC)
+        #     -> LsmDemod(sample_rate_hz=25_000)
+        #         -> { dibit_packer -> traffic_lsm_dibit_dma,
+        #              NID event registers }
+        #
+        # Why dual-DDC instead of polyphase channelizer + per-target
+        # DDC: testing 2026-05-02/03 showed the polyphase path didn't
+        # land any of the audio-quality wins it promised, while the
+        # extra runtime gating (per-target enable / NCO programming)
+        # destabilised live decode. Dual-DDC matches SDRTrunk's
+        # baseline architecture (one heterodyne + decimate per
+        # channel) and is what the operator's PS-side stack already
+        # assumed. Polyphase + per_target_ddc + traffic_pipeline
+        # modules remain in tree for a future scanner mode (multi-
+        # traffic-channel monitoring) but are not instantiated here.
         self.traffic_lsm_decimator = LsmDecimator2(width=16)
-        self.traffic_lsm_lpf = LsmFir(LPF_TAPS_31250)
-        self.traffic_lsm_rrc = LsmFir(RRC_TAPS_31250)
-        self.traffic_lsm_demod = LsmDemod()
+        self.traffic_lsm_lpf = LsmFir(LPF_TAPS_25K)
+        self.traffic_lsm_rrc = LsmFir(RRC_TAPS_25K)
+        self.traffic_lsm_demod = LsmDemod(sample_rate_hz=25_000)
         self.traffic_lsm_dibit_packer = DibitPacker()
         self.traffic_lsm_dibit_dma = DmaStreamRingWrite(
             config.traffic_lsm_dibit_dma_address,
             config.traffic_lsm_dibit_dma_num_buffers_log2,
             config.traffic_lsm_dibit_dma_buffer_size,
-            width=64, axi_awidth=32, name='m_axi_traffic_lsm_dibit')
+            width=64, axi_awidth=32,
+            name='m_axi_traffic_lsm_dibit')
 
-        # ── Traffic LSM register bank (0xC0, bank 6) ──────────────────
-        # Identical layout to the control-side `lsm` bank (0xA0).
+        # ── Traffic LSM register bank (0xC0, bank 6) ─────────────────
+        # Mirror of `lsm_registers` (bank 5). Field names use the
+        # `traffic_lsm_*` prefix so the SVD-generated PAC reads
+        # naturally on the PS side.
         self.traffic_lsm_registers = Registers(
             'traffic_lsm', {
                 0b000: Register('traffic_lsm_control', [
                     Field('traffic_lsm_enable', Access.RW, 1, 0),
-                    Field('traffic_lsm_dibit_dma_enable', Access.RW, 1, 0),
-                    Field('traffic_lsm_dc_block_enable', Access.RW, 1, 0),
+                    Field('traffic_lsm_dibit_dma_enable',
+                          Access.RW, 1, 0),
                     Field('traffic_lsm_reset', Access.Wpulse, 1, 0),
+                    Field('traffic_lsm_dc_block_enable',
+                          Access.RW, 1, 0),
                     Field('traffic_lsm_agc_enable', Access.RW, 1, 0),
-                    # 2026-04-26: PLL warm-start seed (Q2.13 signed,
-                    # 16 bits). Latched into the traffic Costas PLL
-                    # accumulator on the next traffic_lsm_reset pulse.
-                    # Zero -> legacy cold start. PS retune copies the
-                    # converged control-chain pll_dbg here so the
-                    # traffic chain skips the 100-500 ms PLL acquire.
-                    # See doc/diagnostics/2026-04-25/CHANNELIZER_REDESIGN.md
-                    Field('traffic_pll_seed', Access.RW, 16, 0),
                 ]),
                 0b001: Register('traffic_lsm_status', [
                     Field('bch_busy', Access.R, 1, 0),
@@ -462,7 +546,8 @@ class P25Core(Elaboratable):
                     Field('nid_valid', Access.R, 1, 0),
                     Field('n_errors', Access.R, 7, 0),
                     Field('sync_distance', Access.R, 7, 0),
-                    Field('traffic_lsm_dibit_overflow', Access.Rsticky, 1, 0),
+                    Field('traffic_lsm_dibit_overflow',
+                          Access.Rsticky, 1, 0),
                 ]),
                 0b010: Register('traffic_lsm_nid', [
                     Field('nac', Access.R, 12, 0),
@@ -471,7 +556,8 @@ class P25Core(Elaboratable):
                 0b011: Register('traffic_lsm_drop_count', [
                     Field('drop_count', Access.R, 16, 0),
                     Field('traffic_lsm_dibit_last_buffer', Access.R,
-                          config.traffic_lsm_dibit_dma_num_buffers_log2, -1),
+                          config.traffic_lsm_dibit_dma_num_buffers_log2,
+                          -1),
                 ]),
                 0b100: Register('traffic_lsm_dibit_next', [
                     Field('next_address', Access.R, 32, 0),
@@ -484,31 +570,17 @@ class P25Core(Elaboratable):
                     Field('agc_gain_dbg', Access.R, 16, 0),
                     Field('agc_mag_dbg', Access.R, 16, 0),
                 ]),
-                # 2026-04-23: mirror of lsm_agc_config for the traffic
-                # chain. Independent so control/traffic gates can be
-                # tuned separately (traffic may sit idle between
-                # grants, where a different threshold is useful).
                 0b111: Register('traffic_lsm_agc_config', [
                     Field('mag_update_threshold', Access.RW, 16, 256),
-                    # 2026-04-26: AGC warm-start seed (Q9.7 unsigned,
-                    # 16 bits). Latched into the traffic AGC gain
-                    # register on the next traffic_lsm_reset pulse.
-                    # Wired through a 4-bit left-shift to the 20-bit
-                    # Q9.11 internal gain (recovers Q9.11 with bottom
-                    # 4 fractional bits = 0). Zero -> legacy load of
-                    # GAIN_INIT (= 1.0). Lossy round-trip: PS reads the
-                    # control chain's `agc_gain_dbg` field (already
-                    # Q9.7) and writes it back here, so no precision
-                    # is lost vs the upstream debug readout. See
-                    # doc/diagnostics/2026-04-25/CHANNELIZER_REDESIGN.md
-                    Field('traffic_agc_seed', Access.RW, 16, 0),
                 ]),
             },
             3)
 
-        # ── Traffic-channel post-DDC IQ ring DMA (2026-04-16) ─────────
-        # Mirror of the control-side `iq_packer` + `iq_dma` (Phase 6C).
-        # Address 0x1C00_0000, 256 KB ring.
+        # ── Traffic-channel post-DDC IQ ring DMA (2026-05-03) ─────────
+        # Mirror of the control `iq_dma`. Tapped off `traffic_ddc.re_out`
+        # / `im_out` at the DDC output rate (50 kSPS post-2026-05-03).
+        # Feeds /api/spectrum?chain=traffic + the traffic-side narrow-
+        # band waterfall.
         self.traffic_iq_packer = IQPacker()
         self.traffic_iq_dma = DmaStreamRingWrite(
             config.traffic_iq_dma_address,
@@ -516,12 +588,12 @@ class P25Core(Elaboratable):
             config.traffic_iq_dma_buffer_size,
             width=64, axi_awidth=32, name='m_axi_traffic_iq')
 
-        # ── Traffic IQ DMA registers (0xE0, bank 7) ───────────────────
+        # ── Traffic IQ DMA registers (bank 3 @ 0x60) ──────────────────
         self.traffic_iq_registers = Registers(
             'traffic_iq', {
                 0b00: Register('traffic_iq_dma_status', [
                     Field('traffic_iq_overflow', Access.Rsticky, 1, 0),
-                    Field('last_buffer', Access.R,
+                    Field('traffic_iq_last_buffer', Access.R,
                           config.traffic_iq_dma_num_buffers_log2, -1),
                 ]),
                 0b01: Register('traffic_iq_dma_control', [
@@ -533,23 +605,27 @@ class P25Core(Elaboratable):
             },
             2)
 
-        # ── Traffic channel pre-diff IQ ring DMA (Phase 10.8) ─────────
-        # Traffic-side twin of `pre_diff_iq_dma`. Tap is
-        # `traffic_lsm_demod.i_pre_diff_out / q_pre_diff_out /
-        # pre_diff_strobe_out`. Register bank at 0x1C0 (bank 14).
+        # ── Traffic-chain pre-diff post-PLL IQ ring DMA (2026-05-03) ──
+        # Mirror of the control `pre_diff_iq_dma`. Tapped inside the
+        # traffic-side LsmDemod after LsmPllRotate but BEFORE the
+        # differential slicer (i.e. AGC-scaled + carrier-derotated;
+        # mid+sym interleave). Feeds the dashboard Plots tab when the
+        # chain selector is set to `traffic`.
         self.traffic_pre_diff_iq_packer = IQPacker()
         self.traffic_pre_diff_iq_dma = DmaStreamRingWrite(
             config.traffic_pre_diff_iq_dma_address,
             config.traffic_pre_diff_iq_dma_num_buffers_log2,
             config.traffic_pre_diff_iq_dma_buffer_size,
-            width=64, axi_awidth=32, name='m_axi_traffic_pre_diff_iq')
+            width=64, axi_awidth=32,
+            name='m_axi_traffic_pre_diff_iq')
         self.traffic_pre_diff_iq_registers = Registers(
             'traffic_pre_diff_iq', {
                 0b00: Register('traffic_pre_diff_iq_dma_status', [
                     Field('traffic_pre_diff_iq_overflow',
                           Access.Rsticky, 1, 0),
-                    Field('last_buffer', Access.R,
-                          config.traffic_pre_diff_iq_dma_num_buffers_log2, -1),
+                    Field('traffic_pre_diff_iq_last_buffer', Access.R,
+                          config.traffic_pre_diff_iq_dma_num_buffers_log2,
+                          -1),
                 ]),
                 0b01: Register('traffic_pre_diff_iq_dma_control', [
                     Field('traffic_pre_diff_iq_enable', Access.RW, 1, 0),
@@ -593,6 +669,16 @@ class P25Core(Elaboratable):
             },
             2)
 
+        # 2026-05-03 dual-DDC pivot: the polyphase channelizer +
+        # per_target_ddc pool + traffic_pipeline + traffic_pipe
+        # registers used to live here, fed by `rxiq_cdc` pre-DDC, and
+        # produced one selected channel into `traffic_lsm_*`. They
+        # have been removed in favour of a dedicated `traffic_ddc =
+        # P25DDC(...)` mirroring the control DDC (instantiated near
+        # `self.ddc` above).  The polyphase / per_target_ddc /
+        # traffic_pipeline source modules remain in tree (unused) for
+        # a future scanner mode.
+
         # ── Register map ───────────────────────────────────────────────
         metadata = {
             'vendor': 'Andy Lee',
@@ -605,34 +691,36 @@ class P25Core(Elaboratable):
         }
         # Address banks: bits [6:3] of the word address select the bank
         # (4 bits = 16 banks max). Each bank spans 8 words = 32 bytes
-        # (0x20). Phase 10.8 layout (after C4FM + superseded post-PLL /
-        # post-LSM rings were retired):
+        # (0x20). 2026-05-03 dual-DDC layout (full traffic-side parity
+        # with control side):
         #
         #   0x00  bank 0   control       (product_id / version / ctrl / interrupts)
         #   0x20  bank 1   sdr           (control DDC config)
-        #   0x60  bank 3   traffic       (traffic DDC config; C4FM fields dropped)
+        #   0x40  bank 2   traffic_sdr   (traffic DDC config)
+        #   0x60  bank 3   traffic_iq    (traffic post-DDC IQ DMA)
         #   0x80  bank 4   iq            (control post-DDC IQ DMA)
         #   0xA0  bank 5   lsm           (control LSM: dibit DMA + NID events)
         #   0xC0  bank 6   traffic_lsm   (traffic LSM: dibit DMA + NID events)
-        #   0xE0  bank 7   traffic_iq    (traffic post-DDC IQ DMA)
+        #   0xE0  bank 7   wideband_iq   (raw 8 MSPS IQ DMA)
         #   0x180 bank 12  spectrometer  (wideband FFT DMA)
-        #   0x1A0 bank 13  pre_diff_iq          (control pre-diff IQ DMA)  -- new
-        #   0x1C0 bank 14  traffic_pre_diff_iq  (traffic pre-diff IQ DMA)  -- new
+        #   0x1A0 bank 13  pre_diff_iq   (control pre-diff IQ DMA)
+        #   0x1C0 bank 14  traffic_pre_diff_iq (traffic pre-diff IQ DMA)
         #
-        # Banks 2, 8-11 are intentionally vacant (C4FM demod, post-LSM
-        # matched-filter IQ, post-PLL IQ -- all retired).
+        # Vacant: 8 (was traffic_pipe — polyphase retired 2026-05-03),
+        # 9-11, 15.
         # See doc/P25_ADDRESS_MAP.md for the canonical bank table.
         self.register_map = RegisterMap({
             0x00:  self.control_registers,
             0x20:  self.sdr_registers,
-            0x60:  self.traffic_registers,
-            0x80:  self.iq_registers,                     # Phase 6C
-            0xA0:  self.lsm_registers,                    # Phase 6E.9
-            0xC0:  self.traffic_lsm_registers,            # Phase 7A.2
-            0xE0:  self.traffic_iq_registers,             # 2026-04-16
-            0x180: self.wideband_spec_registers,          # Phase 10.7
-            0x1A0: self.pre_diff_iq_registers,            # Phase 10.8
-            0x1C0: self.traffic_pre_diff_iq_registers,    # Phase 10.8
+            0x40:  self.traffic_sdr_registers,
+            0x60:  self.traffic_iq_registers,
+            0x80:  self.iq_registers,
+            0xA0:  self.lsm_registers,
+            0xC0:  self.traffic_lsm_registers,
+            0xE0:  self.wideband_iq_registers,
+            0x180: self.wideband_spec_registers,
+            0x1A0: self.pre_diff_iq_registers,
+            0x1C0: self.traffic_pre_diff_iq_registers,
         }, metadata)
 
         # ── I/O signals ────────────────────────────────────────────────
@@ -644,13 +732,14 @@ class P25Core(Elaboratable):
     def ports(self):
         return (
             self.axi4lite.axi.ports()
-            + self.traffic_lsm_dibit_dma.axi.ports()  # Phase 7A.2
             + self.iq_dma.axi.ports()       # Phase 6C
             + self.lsm_dibit_dma.axi.ports()  # Phase 6E.9
-            + self.traffic_iq_dma.axi.ports()  # 2026-04-16
             + self.pre_diff_iq_dma.axi.ports()           # Phase 10.8
-            + self.traffic_pre_diff_iq_dma.axi.ports()   # Phase 10.8
             + self.wideband_spec.dma.axi.ports()    # Phase 10.7
+            + self.traffic_lsm_dibit_dma.axi.ports()     # M2B 2026-05-02
+            + self.traffic_iq_dma.axi.ports()            # 2026-05-03
+            + self.traffic_pre_diff_iq_dma.axi.ports()   # 2026-05-03
+            + self.wideband_iq_dma.axi.ports()           # 2026-05-03
             + [
                 self.re_in,
                 self.im_in,
@@ -692,9 +781,14 @@ class P25Core(Elaboratable):
         m.submodules.control_registers = s_axi_lite_renamer(
             self.control_registers)
         m.submodules.ddc = self.ddc
+        m.submodules.traffic_ddc = self.traffic_ddc
         m.submodules.sdr_registers = self.sdr_registers
         m.submodules.sdr_registers_cdc = sdr_registers_cdc = RegisterCDC(
             's_axi_lite', 'sync', self.sdr_registers.aw)
+        m.submodules.traffic_sdr_registers = self.traffic_sdr_registers
+        m.submodules.traffic_sdr_registers_cdc = (
+            traffic_sdr_registers_cdc) = RegisterCDC(
+                's_axi_lite', 'sync', self.traffic_sdr_registers.aw)
 
         m.submodules.common_edge_3x = common_edge_3x = ClkNxCommonEdge(
             'sync', 'clk3x', 3)
@@ -745,6 +839,44 @@ class P25Core(Elaboratable):
             self.ddc.im_in.eq(rxiq_cdc.im_out),
         ]
 
+        # ── Traffic DDC (mirror of control DDC, dual-DDC pivot 2026-05-03)
+        m.d.comb += [
+            self.traffic_ddc.common_edge.eq(common_edge_3x.common_edge),
+            self.traffic_ddc.enable_input.eq(
+                self.traffic_sdr_registers['traffic_ddc_control']['traffic_enable_input']),
+            self.traffic_ddc.frequency.eq(
+                self.traffic_sdr_registers['traffic_ddc_frequency']['traffic_frequency']),
+            self.traffic_ddc.coeff_waddr.eq(
+                self.traffic_sdr_registers['traffic_ddc_coeff_addr']['traffic_coeff_waddr']),
+            self.traffic_ddc.coeff_wren.eq(
+                self.traffic_sdr_registers['traffic_ddc_coeff']['traffic_coeff_wren']),
+            self.traffic_ddc.coeff_wdata.eq(
+                self.traffic_sdr_registers['traffic_ddc_coeff']['traffic_coeff_wdata']),
+            self.traffic_ddc.decimation1.eq(
+                self.traffic_sdr_registers['traffic_ddc_decimation']['traffic_decimation1']),
+            self.traffic_ddc.decimation2.eq(
+                self.traffic_sdr_registers['traffic_ddc_decimation']['traffic_decimation2']),
+            self.traffic_ddc.decimation3.eq(
+                self.traffic_sdr_registers['traffic_ddc_decimation']['traffic_decimation3']),
+            self.traffic_ddc.bypass2.eq(
+                self.traffic_sdr_registers['traffic_ddc_control']['traffic_bypass2']),
+            self.traffic_ddc.bypass3.eq(
+                self.traffic_sdr_registers['traffic_ddc_control']['traffic_bypass3']),
+            self.traffic_ddc.operations_minus_one1.eq(
+                self.traffic_sdr_registers['traffic_ddc_control']['traffic_operations_minus_one1']),
+            self.traffic_ddc.operations_minus_one2.eq(
+                self.traffic_sdr_registers['traffic_ddc_control']['traffic_operations_minus_one2']),
+            self.traffic_ddc.operations_minus_one3.eq(
+                self.traffic_sdr_registers['traffic_ddc_control']['traffic_operations_minus_one3']),
+            self.traffic_ddc.odd_operations1.eq(
+                self.traffic_sdr_registers['traffic_ddc_control']['traffic_odd_operations1']),
+            self.traffic_ddc.odd_operations3.eq(
+                self.traffic_sdr_registers['traffic_ddc_control']['traffic_odd_operations3']),
+            self.traffic_ddc.strobe_in.eq(rxiq_cdc.strobe_out),
+            self.traffic_ddc.re_in.eq(rxiq_cdc.re_out),
+            self.traffic_ddc.im_in.eq(rxiq_cdc.im_out),
+        ]
+
         # Phase 6C: control-channel post-DDC IQ ring DMA submodules.
         m.submodules.iq_packer = self.iq_packer
         m.submodules.iq_dma = self.iq_dma
@@ -761,6 +893,14 @@ class P25Core(Elaboratable):
             pre_diff_iq_registers_cdc) = RegisterCDC(
                 's_axi_lite', 'sync', self.pre_diff_iq_registers.aw)
 
+        # 2026-05-03: wideband raw IQ tap submodules.
+        m.submodules.wideband_iq_packer = self.wideband_iq_packer
+        m.submodules.wideband_iq_dma = self.wideband_iq_dma
+        m.submodules.wideband_iq_registers = self.wideband_iq_registers
+        m.submodules.wideband_iq_registers_cdc = (
+            wideband_iq_registers_cdc) = RegisterCDC(
+                's_axi_lite', 'sync', self.wideband_iq_registers.aw)
+
         # Phase 6E.9: control-channel LSM demod chain submodules.
         m.submodules.lsm_decimator = self.lsm_decimator
         m.submodules.lsm_lpf = self.lsm_lpf
@@ -771,6 +911,39 @@ class P25Core(Elaboratable):
         m.submodules.lsm_registers = self.lsm_registers
         m.submodules.lsm_registers_cdc = lsm_registers_cdc = RegisterCDC(
             's_axi_lite', 'sync', self.lsm_registers.aw)
+
+        # 2026-05-03 dual-DDC: traffic-channel LSM demod chain submodules.
+        m.submodules.traffic_lsm_decimator = self.traffic_lsm_decimator
+        m.submodules.traffic_lsm_lpf = self.traffic_lsm_lpf
+        m.submodules.traffic_lsm_rrc = self.traffic_lsm_rrc
+        m.submodules.traffic_lsm_demod = self.traffic_lsm_demod
+        m.submodules.traffic_lsm_dibit_packer = (
+            self.traffic_lsm_dibit_packer)
+        m.submodules.traffic_lsm_dibit_dma = self.traffic_lsm_dibit_dma
+        m.submodules.traffic_lsm_registers = self.traffic_lsm_registers
+        m.submodules.traffic_lsm_registers_cdc = (
+            traffic_lsm_registers_cdc) = RegisterCDC(
+                's_axi_lite', 'sync', self.traffic_lsm_registers.aw)
+
+        # 2026-05-03 dual-DDC: traffic-side post-DDC IQ ring DMA.
+        m.submodules.traffic_iq_packer = self.traffic_iq_packer
+        m.submodules.traffic_iq_dma = self.traffic_iq_dma
+        m.submodules.traffic_iq_registers = self.traffic_iq_registers
+        m.submodules.traffic_iq_registers_cdc = (
+            traffic_iq_registers_cdc) = RegisterCDC(
+                's_axi_lite', 'sync', self.traffic_iq_registers.aw)
+
+        # 2026-05-03 dual-DDC: traffic-side pre-diff IQ ring DMA.
+        m.submodules.traffic_pre_diff_iq_packer = (
+            self.traffic_pre_diff_iq_packer)
+        m.submodules.traffic_pre_diff_iq_dma = (
+            self.traffic_pre_diff_iq_dma)
+        m.submodules.traffic_pre_diff_iq_registers = (
+            self.traffic_pre_diff_iq_registers)
+        m.submodules.traffic_pre_diff_iq_registers_cdc = (
+            traffic_pre_diff_iq_registers_cdc) = RegisterCDC(
+                's_axi_lite', 'sync',
+                self.traffic_pre_diff_iq_registers.aw)
 
         # DMA sub-buffer completion -> interrupt (sticky bit, cleared
         # by read). All DMA interrupts originate in the sync domain
@@ -786,42 +959,59 @@ class P25Core(Elaboratable):
             PulseSynchronizer('sync', 's_axi_lite'))
         m.submodules.lsm_dibit_dma_irq_sync = lsm_dibit_dma_irq_sync = (
             PulseSynchronizer('sync', 's_axi_lite'))
-        m.submodules.traffic_lsm_dibit_dma_irq_sync = (
-            traffic_lsm_dibit_dma_irq_sync) = (
-                PulseSynchronizer('sync', 's_axi_lite'))
-        m.submodules.traffic_iq_dma_irq_sync = traffic_iq_dma_irq_sync = (
-            PulseSynchronizer('sync', 's_axi_lite'))
-        # Phase 10.8: pre-diff IQ DMA interrupts.
+        # Phase 10.8: control-side pre-diff IQ DMA interrupt.
         m.submodules.pre_diff_iq_dma_irq_sync = (
             pre_diff_iq_dma_irq_sync) = (
-                PulseSynchronizer('sync', 's_axi_lite'))
-        m.submodules.traffic_pre_diff_iq_dma_irq_sync = (
-            traffic_pre_diff_iq_dma_irq_sync) = (
                 PulseSynchronizer('sync', 's_axi_lite'))
         # Phase 10.7: wideband spectrometer.
         m.submodules.wideband_spec_dma_irq_sync = (
             wideband_spec_dma_irq_sync) = (
                 PulseSynchronizer('sync', 's_axi_lite'))
+        # M2B 2026-05-02: traffic LSM dibit DMA interrupt.
+        m.submodules.traffic_lsm_dibit_dma_irq_sync = (
+            traffic_lsm_dibit_dma_irq_sync) = (
+                PulseSynchronizer('sync', 's_axi_lite'))
+        # 2026-05-03 dual-DDC: traffic post-DDC IQ DMA interrupt.
+        m.submodules.traffic_iq_dma_irq_sync = (
+            traffic_iq_dma_irq_sync) = (
+                PulseSynchronizer('sync', 's_axi_lite'))
+        # 2026-05-03 dual-DDC: traffic pre-diff IQ DMA interrupt.
+        m.submodules.traffic_pre_diff_iq_dma_irq_sync = (
+            traffic_pre_diff_iq_dma_irq_sync) = (
+                PulseSynchronizer('sync', 's_axi_lite'))
+        # 2026-05-03: wideband raw IQ DMA interrupt.
+        m.submodules.wideband_iq_dma_irq_sync = (
+            wideband_iq_dma_irq_sync) = (
+                PulseSynchronizer('sync', 's_axi_lite'))
 
         m.d.comb += [
             iq_dma_irq_sync.i.eq(self.iq_dma.interrupt),
             lsm_dibit_dma_irq_sync.i.eq(self.lsm_dibit_dma.interrupt),
-            traffic_lsm_dibit_dma_irq_sync.i.eq(
-                self.traffic_lsm_dibit_dma.interrupt),
-            traffic_iq_dma_irq_sync.i.eq(self.traffic_iq_dma.interrupt),
             pre_diff_iq_dma_irq_sync.i.eq(
                 self.pre_diff_iq_dma.interrupt),
-            traffic_pre_diff_iq_dma_irq_sync.i.eq(
-                self.traffic_pre_diff_iq_dma.interrupt),
             wideband_spec_dma_irq_sync.i.eq(
                 self.wideband_spec.interrupt_out),
+            traffic_lsm_dibit_dma_irq_sync.i.eq(
+                self.traffic_lsm_dibit_dma.interrupt),
+            traffic_iq_dma_irq_sync.i.eq(
+                self.traffic_iq_dma.interrupt),
+            traffic_pre_diff_iq_dma_irq_sync.i.eq(
+                self.traffic_pre_diff_iq_dma.interrupt),
+            wideband_iq_dma_irq_sync.i.eq(
+                self.wideband_iq_dma.interrupt),
             # Feed the synchronized pulses into the Rsticky bits.
             interrupts_reg['pre_diff_iq_dma'].eq(
                 pre_diff_iq_dma_irq_sync.o),
-            interrupts_reg['traffic_pre_diff_iq_dma'].eq(
-                traffic_pre_diff_iq_dma_irq_sync.o),
             interrupts_reg['wideband_spec_dma'].eq(
                 wideband_spec_dma_irq_sync.o),
+            interrupts_reg['traffic_lsm_dibit_dma'].eq(
+                traffic_lsm_dibit_dma_irq_sync.o),
+            interrupts_reg['traffic_iq_dma'].eq(
+                traffic_iq_dma_irq_sync.o),
+            interrupts_reg['traffic_pre_diff_iq_dma'].eq(
+                traffic_pre_diff_iq_dma_irq_sync.o),
+            interrupts_reg['wideband_iq_dma'].eq(
+                wideband_iq_dma_irq_sync.o),
         ]
 
         # ── Control-channel IQ ring DMA (Phase 6C) ────────────────────
@@ -841,6 +1031,39 @@ class P25Core(Elaboratable):
             self.iq_dma.stream_data.eq(self.iq_packer.data_out),
             self.iq_dma.stream_valid.eq(self.iq_packer.data_valid),
             self.iq_packer.stream_ready.eq(self.iq_dma.stream_ready),
+        ]
+
+        # ── Wideband raw IQ ring DMA (2026-05-03) ─────────────────────
+        # Pre-DDC tap of the rxiq_cdc output. `rxiq_cdc.re_out/im_out`
+        # are 12-bit unsigned wrappers of 12-bit signed two's complement
+        # — `as_signed()` reinterprets the bits, then assignment to the
+        # packer's signed(16) inputs sign-extends correctly. Without
+        # the `as_signed()` we get unsigned 0..4095 → DC offset of
+        # +2048 and apparent rails at +4095 in the captured stream.
+        # (Bake #2 shipped without this; caught via tools/p25_iq_inspect.py.)
+        # Same fix is already applied to the wideband spectrometer tap.
+        m.d.comb += [
+            self.wideband_iq_packer.re_in.eq(rxiq_cdc.re_out.as_signed()),
+            self.wideband_iq_packer.im_in.eq(rxiq_cdc.im_out.as_signed()),
+            self.wideband_iq_packer.strobe_in.eq(rxiq_cdc.strobe_out),
+            self.wideband_iq_dma.stream_data.eq(
+                self.wideband_iq_packer.data_out),
+            self.wideband_iq_dma.stream_valid.eq(
+                self.wideband_iq_packer.data_valid),
+            self.wideband_iq_packer.stream_ready.eq(
+                self.wideband_iq_dma.stream_ready),
+            self.wideband_iq_dma.enable.eq(
+                self.wideband_iq_registers[
+                    'wideband_iq_dma_control']['wideband_iq_enable']),
+            self.wideband_iq_registers[
+                'wideband_iq_dma_status']['wideband_iq_overflow'].eq(
+                self.wideband_iq_packer.overflow),
+            self.wideband_iq_registers[
+                'wideband_iq_dma_status']['last_buffer'].eq(
+                self.wideband_iq_dma.last_buffer),
+            self.wideband_iq_registers[
+                'wideband_iq_next_address']['next_address'].eq(
+                self.wideband_iq_dma.axi.awaddr),
         ]
 
         # IQ DMA enable + interrupt + status registers
@@ -1010,113 +1233,76 @@ class P25Core(Elaboratable):
                 lsm_agc_config['mag_update_threshold']),
         ]
 
-        # ── Traffic channel DDC ───────────────────────────────────────
-        m.submodules.traffic_ddc = self.traffic_ddc
-        m.submodules.traffic_registers = self.traffic_registers
-        m.submodules.traffic_registers_cdc = traffic_registers_cdc = RegisterCDC(
-            's_axi_lite', 'sync', self.traffic_registers.aw)
+        # ── Traffic LSM demod chain (dual-DDC pivot, 2026-05-03) ──
+        # Mirror of control LSM chain elaboration order. Pipeline:
+        #   traffic_ddc out (50 kSPS post-2026-05-03)
+        #     -> LsmDecimator2 /2     (-> 25 kSPS)
+        #     -> LsmFir(LPF_TAPS_25K) (121-tap baseband LPF)
+        #     -> LsmFir(RRC_TAPS_25K) (42-tap SDRTrunk-exact RRC)
+        #     -> LsmDemod(sample_rate_hz=25_000)
+        #     -> { dibit_packer -> traffic_lsm_dibit_dma,
+        #          NID event registers }
+        #
+        # Master enable: traffic_lsm_control.traffic_lsm_enable gates
+        # the strobe at the front of the decimator, so when 0 every
+        # downstream block sees no strobes and goes quiescent (no PLL
+        # drift, no BCH sweeps, no spurious dibits).
+        traffic_lsm_ctrl = self.traffic_lsm_registers[
+            'traffic_lsm_control']
+        traffic_lsm_stat = self.traffic_lsm_registers[
+            'traffic_lsm_status']
+        traffic_lsm_nid_reg = self.traffic_lsm_registers[
+            'traffic_lsm_nid']
+        traffic_lsm_drop_reg = self.traffic_lsm_registers[
+            'traffic_lsm_drop_count']
+        traffic_lsm_dibit_next_reg = self.traffic_lsm_registers[
+            'traffic_lsm_dibit_next']
+        traffic_lsm_dbg_reg = self.traffic_lsm_registers[
+            'traffic_lsm_debug']
+        traffic_lsm_agc_dbg_reg = self.traffic_lsm_registers[
+            'traffic_lsm_agc_debug']
+        traffic_lsm_agc_cfg = self.traffic_lsm_registers[
+            'traffic_lsm_agc_config']
 
-        # Traffic DDC shares the same IQ input as control DDC but has
-        # its own NCO frequency for independent tuning.
-        m.d.comb += [
-            self.traffic_ddc.common_edge.eq(common_edge_3x.common_edge),
-            self.traffic_ddc.enable_input.eq(
-                self.traffic_registers['traffic_ddc_control']['enable_input']),
-            self.traffic_ddc.frequency.eq(
-                self.traffic_registers['traffic_ddc_frequency']['frequency']),
-            # Share coefficients with control DDC (same P25 filter shape)
-            self.traffic_ddc.coeff_waddr.eq(
-                self.sdr_registers['ddc_coeff_addr']['coeff_waddr']),
-            self.traffic_ddc.coeff_wren.eq(
-                self.sdr_registers['ddc_coeff']['coeff_wren']),
-            self.traffic_ddc.coeff_wdata.eq(
-                self.sdr_registers['ddc_coeff']['coeff_wdata']),
-            self.traffic_ddc.decimation1.eq(
-                self.traffic_registers['traffic_ddc_decimation']['decimation1']),
-            self.traffic_ddc.decimation2.eq(
-                self.traffic_registers['traffic_ddc_decimation']['decimation2']),
-            self.traffic_ddc.decimation3.eq(
-                self.traffic_registers['traffic_ddc_decimation']['decimation3']),
-            self.traffic_ddc.bypass2.eq(
-                self.traffic_registers['traffic_ddc_control']['bypass2']),
-            self.traffic_ddc.bypass3.eq(
-                self.traffic_registers['traffic_ddc_control']['bypass3']),
-            self.traffic_ddc.operations_minus_one1.eq(
-                self.traffic_registers['traffic_ddc_control']['operations_minus_one1']),
-            self.traffic_ddc.operations_minus_one2.eq(
-                self.traffic_registers['traffic_ddc_control']['operations_minus_one2']),
-            self.traffic_ddc.operations_minus_one3.eq(
-                self.traffic_registers['traffic_ddc_control']['operations_minus_one3']),
-            self.traffic_ddc.odd_operations1.eq(
-                self.traffic_registers['traffic_ddc_control']['odd_operations1']),
-            self.traffic_ddc.odd_operations3.eq(
-                self.traffic_registers['traffic_ddc_control']['odd_operations3']),
-            # Same IQ input as control DDC
-            self.traffic_ddc.strobe_in.eq(rxiq_cdc.strobe_out),
-            self.traffic_ddc.re_in.eq(rxiq_cdc.re_out),
-            self.traffic_ddc.im_in.eq(rxiq_cdc.im_out),
-        ]
+        traffic_lsm_enable_q = traffic_lsm_ctrl['traffic_lsm_enable']
 
-        # ── Traffic-channel LSM demod chain (Phase 7A.2) ──────────────
-        # Pipeline (mirror of the control-side LSM chain):
-        #   traffic_ddc (62.5 kSPS) -> /2 decimator -> LPF -> RRC ->
-        #     LsmDemod -> { dibit_packer -> traffic_lsm_dibit_dma,
-        #                   pre_diff taps -> traffic_pre_diff_iq_packer
-        #                                 -> traffic_pre_diff_iq_dma,
-        #                   nid event registers (traffic_lsm bank) }
-        m.submodules.traffic_lsm_decimator = self.traffic_lsm_decimator
-        m.submodules.traffic_lsm_lpf = self.traffic_lsm_lpf
-        m.submodules.traffic_lsm_rrc = self.traffic_lsm_rrc
-        m.submodules.traffic_lsm_demod = self.traffic_lsm_demod
-        m.submodules.traffic_lsm_dibit_packer = self.traffic_lsm_dibit_packer
-        m.submodules.traffic_lsm_dibit_dma = self.traffic_lsm_dibit_dma
-        m.submodules.traffic_lsm_registers = self.traffic_lsm_registers
-        m.submodules.traffic_lsm_registers_cdc = traffic_lsm_registers_cdc = \
-            RegisterCDC(
-                's_axi_lite', 'sync', self.traffic_lsm_registers.aw)
-
-        traffic_lsm_enable = self.traffic_lsm_registers[
-            'traffic_lsm_control']['traffic_lsm_enable']
-
-        # Stage 1: traffic DDC -> LSM /2 decimator
+        # Stage 1a: traffic DDC out (50 kSPS) -> LsmDecimator2 /2
         m.d.comb += [
             self.traffic_lsm_decimator.re_in.eq(self.traffic_ddc.re_out),
             self.traffic_lsm_decimator.im_in.eq(self.traffic_ddc.im_out),
             self.traffic_lsm_decimator.strobe_in.eq(
-                self.traffic_ddc.strobe_out & traffic_lsm_enable),
+                self.traffic_ddc.strobe_out & traffic_lsm_enable_q),
         ]
-        # Stage 2: decimator -> 83-tap LPF
+        # Stage 1b: decimator (25 kSPS) -> LPF
         m.d.comb += [
             self.traffic_lsm_lpf.re_in.eq(self.traffic_lsm_decimator.re_out),
             self.traffic_lsm_lpf.im_in.eq(self.traffic_lsm_decimator.im_out),
             self.traffic_lsm_lpf.strobe_in.eq(
                 self.traffic_lsm_decimator.strobe_out),
         ]
-        # Stage 3: LPF -> 105-tap RRC matched filter
+        # Stage 1c: LPF -> RRC
         m.d.comb += [
             self.traffic_lsm_rrc.re_in.eq(self.traffic_lsm_lpf.re_out),
             self.traffic_lsm_rrc.im_in.eq(self.traffic_lsm_lpf.im_out),
             self.traffic_lsm_rrc.strobe_in.eq(
                 self.traffic_lsm_lpf.strobe_out),
         ]
-        # Stage 4: RRC -> LsmDemod (identical to control side).
+        # Stage 2: RRC -> LsmDemod
         m.d.comb += [
             self.traffic_lsm_demod.re_in.eq(self.traffic_lsm_rrc.re_out),
             self.traffic_lsm_demod.im_in.eq(self.traffic_lsm_rrc.im_out),
             self.traffic_lsm_demod.strobe_in.eq(
                 self.traffic_lsm_rrc.strobe_out),
             self.traffic_lsm_demod.dc_block_enable.eq(
-                self.traffic_lsm_registers[
-                    'traffic_lsm_control']['traffic_lsm_dc_block_enable']),
+                traffic_lsm_ctrl['traffic_lsm_dc_block_enable']),
             self.traffic_lsm_demod.agc_enable.eq(
-                self.traffic_lsm_registers[
-                    'traffic_lsm_control']['traffic_lsm_agc_enable']),
+                traffic_lsm_ctrl['traffic_lsm_agc_enable']),
             self.traffic_lsm_demod.reset_in.eq(
-                self.traffic_lsm_registers[
-                    'traffic_lsm_control']['traffic_lsm_reset']),
+                traffic_lsm_ctrl['traffic_lsm_reset']),
+            self.traffic_lsm_demod.agc_mag_update_threshold_in.eq(
+                traffic_lsm_agc_cfg['mag_update_threshold']),
         ]
-
-        # Stage 5: LsmDemod dibits -> packer -> ring DMA stream.
+        # Stage 3: LsmDemod dibits -> packer -> ring DMA stream
         m.d.comb += [
             self.traffic_lsm_dibit_packer.dibit_in.eq(
                 self.traffic_lsm_demod.dibit_out),
@@ -1129,13 +1315,10 @@ class P25Core(Elaboratable):
             self.traffic_lsm_dibit_packer.stream_ready.eq(
                 self.traffic_lsm_dibit_dma.stream_ready),
             self.traffic_lsm_dibit_dma.enable.eq(
-                self.traffic_lsm_registers[
-                    'traffic_lsm_control']['traffic_lsm_dibit_dma_enable']),
-            interrupts_reg['traffic_lsm_dibit_dma'].eq(
-                traffic_lsm_dibit_dma_irq_sync.o),
+                traffic_lsm_ctrl['traffic_lsm_dibit_dma_enable']),
         ]
 
-        # Stage 6: NID event latching (mirror of control side).
+        # Stage 4: NID event latching — mirror of the control chain.
         traffic_latched_nac = Signal(12, reset_less=True)
         traffic_latched_duid = Signal(4, reset_less=True)
         traffic_latched_n_errors = Signal(7, reset_less=True)
@@ -1147,138 +1330,79 @@ class P25Core(Elaboratable):
                 traffic_latched_duid.eq(self.traffic_lsm_demod.duid_out),
                 traffic_latched_n_errors.eq(
                     self.traffic_lsm_demod.n_errors_out),
-                traffic_latched_valid.eq(self.traffic_lsm_demod.valid_out),
+                traffic_latched_valid.eq(
+                    self.traffic_lsm_demod.valid_out),
                 traffic_latched_sync_distance.eq(
                     self.traffic_lsm_demod.sync_distance_out),
             ]
 
-        traffic_lsm_status = self.traffic_lsm_registers['traffic_lsm_status']
-        traffic_lsm_nid = self.traffic_lsm_registers['traffic_lsm_nid']
-        traffic_lsm_drop = self.traffic_lsm_registers['traffic_lsm_drop_count']
-        traffic_lsm_debug = self.traffic_lsm_registers['traffic_lsm_debug']
+        # Status / NID event surfacing into the register bank.
         m.d.comb += [
-            traffic_lsm_status['bch_busy'].eq(
+            traffic_lsm_stat['bch_busy'].eq(
                 self.traffic_lsm_demod.bch_busy),
-            traffic_lsm_status['in_nid_window'].eq(
+            traffic_lsm_stat['in_nid_window'].eq(
                 self.traffic_lsm_demod.in_nid_window),
-            traffic_lsm_status['nid_event'].eq(
+            traffic_lsm_stat['nid_event'].eq(
                 self.traffic_lsm_demod.nid_event_strobe),
-            traffic_lsm_status['nid_valid'].eq(traffic_latched_valid),
-            traffic_lsm_status['n_errors'].eq(traffic_latched_n_errors),
-            traffic_lsm_status['sync_distance'].eq(
+            traffic_lsm_stat['nid_valid'].eq(traffic_latched_valid),
+            traffic_lsm_stat['n_errors'].eq(traffic_latched_n_errors),
+            traffic_lsm_stat['sync_distance'].eq(
                 traffic_latched_sync_distance),
-            traffic_lsm_status['traffic_lsm_dibit_overflow'].eq(
+            traffic_lsm_stat['traffic_lsm_dibit_overflow'].eq(
                 self.traffic_lsm_dibit_packer.overflow),
-            traffic_lsm_nid['nac'].eq(traffic_latched_nac),
-            traffic_lsm_nid['duid'].eq(traffic_latched_duid),
-            traffic_lsm_drop['drop_count'].eq(
+            traffic_lsm_nid_reg['nac'].eq(traffic_latched_nac),
+            traffic_lsm_nid_reg['duid'].eq(traffic_latched_duid),
+            traffic_lsm_drop_reg['drop_count'].eq(
                 self.traffic_lsm_demod.nid_drop_count),
-            traffic_lsm_drop['traffic_lsm_dibit_last_buffer'].eq(
+            traffic_lsm_drop_reg[
+                'traffic_lsm_dibit_last_buffer'].eq(
                 self.traffic_lsm_dibit_dma.last_buffer),
-            self.traffic_lsm_registers[
-                'traffic_lsm_dibit_next']['next_address'].eq(
+            traffic_lsm_dibit_next_reg['next_address'].eq(
                 self.traffic_lsm_dibit_dma.axi.awaddr),
-            traffic_lsm_debug['pll_dbg'].eq(self.traffic_lsm_demod.pll_dbg),
-            traffic_lsm_debug['sample_point_dbg'].eq(
+            traffic_lsm_dbg_reg['pll_dbg'].eq(
+                self.traffic_lsm_demod.pll_dbg),
+            traffic_lsm_dbg_reg['sample_point_dbg'].eq(
                 self.traffic_lsm_demod.sample_point_dbg[2:]),
-        ]
-
-        # Phase 10-prep: traffic-side per-symbol AGC debug taps.
-        traffic_lsm_agc_debug = self.traffic_lsm_registers[
-            'traffic_lsm_agc_debug']
-        m.d.comb += [
-            traffic_lsm_agc_debug['agc_gain_dbg'].eq(
+            traffic_lsm_agc_dbg_reg['agc_gain_dbg'].eq(
                 self.traffic_lsm_demod.agc_gain_dbg),
-            traffic_lsm_agc_debug['agc_mag_dbg'].eq(
+            traffic_lsm_agc_dbg_reg['agc_mag_dbg'].eq(
                 self.traffic_lsm_demod.agc_mag_dbg),
         ]
-        # 2026-04-23: runtime AGC idle-gate threshold (traffic chain).
-        traffic_lsm_agc_config = self.traffic_lsm_registers[
-            'traffic_lsm_agc_config']
-        m.d.comb += [
-            self.traffic_lsm_demod.agc_mag_update_threshold_in.eq(
-                traffic_lsm_agc_config['mag_update_threshold']),
-        ]
-        # 2026-04-26: PLL + AGC warm-start seeds (traffic chain only).
-        # The control chain stays cold-start so its PLL still tracks
-        # whatever's actually on the control frequency. The traffic
-        # chain copies the converged control-side values via these
-        # seed registers on every retune; the FPGA latches them on
-        # the next traffic_lsm_reset pulse.
-        #
-        # AGC seed is Q9.7; the 4-bit left-shift below recovers the
-        # 20-bit Q9.11 the gain register expects (bottom 4 fractional
-        # bits = 0). The PS reads the matching Q9.7 field on the
-        # control side (`lsm_agc_debug.agc_gain_dbg`) and writes the
-        # raw 16-bit value here, so the round-trip is lossless vs
-        # what the operator sees on /api/decoder_compare.
-        m.d.comb += [
-            self.traffic_lsm_demod.pll_seed_in.eq(
-                self.traffic_lsm_registers[
-                    'traffic_lsm_control']['traffic_pll_seed']),
-            self.traffic_lsm_demod.agc_seed_in.eq(
-                Cat(Const(0, 4),
-                    traffic_lsm_agc_config['traffic_agc_seed'])),
-        ]
 
-        # ── Traffic-channel post-DDC IQ ring DMA (2026-04-16) ─────────
-        # Mirrors the control-side `iq_dma` wiring (Phase 6C) for the
-        # traffic chain. Taps the same `traffic_ddc.re_out/im_out/
-        # strobe_out` that also feed the traffic LSM chain, packs two
-        # consecutive IQ pairs into a 64-bit DMA word, and streams to
-        # DDR at 0x1C00_0000.
-        m.submodules.traffic_iq_packer = self.traffic_iq_packer
-        m.submodules.traffic_iq_dma = self.traffic_iq_dma
-        m.submodules.traffic_iq_registers = self.traffic_iq_registers
-        m.submodules.traffic_iq_registers_cdc = traffic_iq_registers_cdc = \
-            RegisterCDC(
-                's_axi_lite', 'sync', self.traffic_iq_registers.aw)
-
+        # ── Traffic-side post-DDC IQ ring DMA (2026-05-03) ────────────
+        # Mirror of the control `iq_packer` + `iq_dma`. Tap is
+        # `traffic_ddc.re_out / im_out / strobe_out` at the DDC output
+        # rate (50 kSPS post-2026-05-03 retune).
         m.d.comb += [
             self.traffic_iq_packer.re_in.eq(self.traffic_ddc.re_out),
             self.traffic_iq_packer.im_in.eq(self.traffic_ddc.im_out),
-            self.traffic_iq_packer.strobe_in.eq(self.traffic_ddc.strobe_out),
-        ]
-
-        # Packer -> ring DMA stream (handshake backpressure)
-        m.d.comb += [
-            self.traffic_iq_dma.stream_data.eq(self.traffic_iq_packer.data_out),
-            self.traffic_iq_dma.stream_valid.eq(self.traffic_iq_packer.data_valid),
+            self.traffic_iq_packer.strobe_in.eq(
+                self.traffic_ddc.strobe_out),
+            self.traffic_iq_dma.stream_data.eq(
+                self.traffic_iq_packer.data_out),
+            self.traffic_iq_dma.stream_valid.eq(
+                self.traffic_iq_packer.data_valid),
             self.traffic_iq_packer.stream_ready.eq(
                 self.traffic_iq_dma.stream_ready),
-        ]
-
-        # DMA enable + interrupt + status registers
-        m.d.comb += [
             self.traffic_iq_dma.enable.eq(
                 self.traffic_iq_registers[
                     'traffic_iq_dma_control']['traffic_iq_enable']),
-            interrupts_reg['traffic_iq_dma'].eq(traffic_iq_dma_irq_sync.o),
             self.traffic_iq_registers[
                 'traffic_iq_dma_status']['traffic_iq_overflow'].eq(
                 self.traffic_iq_packer.overflow),
             self.traffic_iq_registers[
-                'traffic_iq_dma_status']['last_buffer'].eq(
+                'traffic_iq_dma_status']['traffic_iq_last_buffer'].eq(
                 self.traffic_iq_dma.last_buffer),
             self.traffic_iq_registers[
                 'traffic_iq_next_address']['next_address'].eq(
                 self.traffic_iq_dma.axi.awaddr),
         ]
 
-        # ── Traffic-channel pre-diff IQ ring DMA (Phase 10.8) ─────────
-        # Traffic-side twin of `pre_diff_iq_dma`. Tap is
-        # `traffic_lsm_demod.i_pre_diff_out / q_pre_diff_out /
-        # pre_diff_strobe_out`.
-        m.submodules.traffic_pre_diff_iq_packer = (
-            self.traffic_pre_diff_iq_packer)
-        m.submodules.traffic_pre_diff_iq_dma = self.traffic_pre_diff_iq_dma
-        m.submodules.traffic_pre_diff_iq_registers = (
-            self.traffic_pre_diff_iq_registers)
-        m.submodules.traffic_pre_diff_iq_registers_cdc = (
-            traffic_pre_diff_iq_registers_cdc) = RegisterCDC(
-                's_axi_lite', 'sync',
-                self.traffic_pre_diff_iq_registers.aw)
-
+        # ── Traffic-side pre-diff IQ ring DMA (2026-05-03) ────────────
+        # Mirror of the control `pre_diff_iq_packer` + `pre_diff_iq_dma`.
+        # Tap is `traffic_lsm_demod.{i,q}_pre_diff_out / pre_diff_strobe_out`
+        # — AGC-scaled, carrier-derotated, mid/sym interleaved on
+        # adjacent `pre_diff_strobe_out` cycles.
         m.d.comb += [
             self.traffic_pre_diff_iq_packer.re_in.eq(
                 self.traffic_lsm_demod.i_pre_diff_out),
@@ -1295,16 +1419,18 @@ class P25Core(Elaboratable):
             self.traffic_pre_diff_iq_dma.enable.eq(
                 self.traffic_pre_diff_iq_registers[
                     'traffic_pre_diff_iq_dma_control'][
-                        'traffic_pre_diff_iq_enable']),
+                    'traffic_pre_diff_iq_enable']),
             self.traffic_pre_diff_iq_registers[
                 'traffic_pre_diff_iq_dma_status'][
-                    'traffic_pre_diff_iq_overflow'].eq(
+                'traffic_pre_diff_iq_overflow'].eq(
                 self.traffic_pre_diff_iq_packer.overflow),
             self.traffic_pre_diff_iq_registers[
-                'traffic_pre_diff_iq_dma_status']['last_buffer'].eq(
+                'traffic_pre_diff_iq_dma_status'][
+                'traffic_pre_diff_iq_last_buffer'].eq(
                 self.traffic_pre_diff_iq_dma.last_buffer),
             self.traffic_pre_diff_iq_registers[
-                'traffic_pre_diff_iq_next_address']['next_address'].eq(
+                'traffic_pre_diff_iq_next_address'][
+                'next_address'].eq(
                 self.traffic_pre_diff_iq_dma.axi.awaddr),
         ]
 
@@ -1355,28 +1481,30 @@ class P25Core(Elaboratable):
         # Bank field is bits [6:3] of the word address (4 bits = 16
         # banks max). See doc/P25_ADDRESS_MAP.md for the canonical table.
         #
-        # Phase 10.8 layout:
-        #   word 0x00-0x07: control          (bank 0)
-        #   word 0x08-0x0F: SDR/DDC          (bank 1)
-        #   word 0x18-0x1F: traffic          (bank 3)
-        #   word 0x20-0x27: IQ DMA           (bank 4)
-        #   word 0x28-0x2F: LSM              (bank 5)
-        #   word 0x30-0x37: traffic_lsm      (bank 6)
-        #   word 0x38-0x3F: traffic_iq       (bank 7)
-        #   word 0x60-0x67: spectrometer     (bank 12)
-        #   word 0x68-0x6F: pre_diff_iq      (bank 13)
-        #   word 0x70-0x77: traffic_pre_diff_iq (bank 14)
-        # Banks 2, 8-11 and 15 are intentionally vacant.
+        # 2026-05-03 dual-DDC layout:
+        #   word 0x00-0x07: control                 (bank 0)
+        #   word 0x08-0x0F: sdr (control DDC)       (bank 1)
+        #   word 0x10-0x17: traffic_sdr             (bank 2)
+        #   word 0x18-0x1F: traffic_iq              (bank 3)
+        #   word 0x20-0x27: iq (control)            (bank 4)
+        #   word 0x28-0x2F: lsm (control)           (bank 5)
+        #   word 0x30-0x37: traffic_lsm             (bank 6)
+        #   word 0x38-0x3F: wideband_iq             (bank 7)
+        #   word 0x60-0x67: spectrometer            (bank 12)
+        #   word 0x68-0x6F: pre_diff_iq (control)   (bank 13)
+        #   word 0x70-0x77: traffic_pre_diff_iq     (bank 14)
+        # Banks 8 (was traffic_pipe), 9-11, 15 are vacant.
         address = Signal(self.axi4_awidth, reset_less=True)
         wdata = Signal(32, reset_less=True)
         addr_bank = self.axi4lite.address[3:7]  # bits [6:3]
         control_regs_select = (addr_bank == 0b0000)
         sdr_regs_select = (addr_bank == 0b0001)
-        traffic_regs_select = (addr_bank == 0b0011)
+        traffic_sdr_regs_select = (addr_bank == 0b0010)
+        traffic_iq_regs_select = (addr_bank == 0b0011)
         iq_regs_select = (addr_bank == 0b0100)
         lsm_regs_select = (addr_bank == 0b0101)
         traffic_lsm_regs_select = (addr_bank == 0b0110)
-        traffic_iq_regs_select = (addr_bank == 0b0111)
+        wideband_iq_regs_select = (addr_bank == 0b0111)
         spec_regs_select = (addr_bank == 0b1100)
         pre_diff_iq_regs_select = (addr_bank == 0b1101)
         traffic_pre_diff_iq_regs_select = (addr_bank == 0b1110)
@@ -1384,31 +1512,34 @@ class P25Core(Elaboratable):
         m.d.s_axi_lite += [
             self.axi4lite.rdata.eq(self.control_registers.rdata
                                    | sdr_registers_cdc.i_rdata
-                                   | traffic_registers_cdc.i_rdata
+                                   | traffic_sdr_registers_cdc.i_rdata
+                                   | traffic_iq_registers_cdc.i_rdata
                                    | iq_registers_cdc.i_rdata
                                    | lsm_registers_cdc.i_rdata
                                    | traffic_lsm_registers_cdc.i_rdata
-                                   | traffic_iq_registers_cdc.i_rdata
+                                   | wideband_iq_registers_cdc.i_rdata
                                    | pre_diff_iq_registers_cdc.i_rdata
                                    | traffic_pre_diff_iq_registers_cdc.i_rdata
                                    | wideband_spec_registers_cdc.i_rdata),
             self.axi4lite.rdone.eq(self.control_registers.rdone
                                    | sdr_registers_cdc.i_rdone
-                                   | traffic_registers_cdc.i_rdone
+                                   | traffic_sdr_registers_cdc.i_rdone
+                                   | traffic_iq_registers_cdc.i_rdone
                                    | iq_registers_cdc.i_rdone
                                    | lsm_registers_cdc.i_rdone
                                    | traffic_lsm_registers_cdc.i_rdone
-                                   | traffic_iq_registers_cdc.i_rdone
+                                   | wideband_iq_registers_cdc.i_rdone
                                    | pre_diff_iq_registers_cdc.i_rdone
                                    | traffic_pre_diff_iq_registers_cdc.i_rdone
                                    | wideband_spec_registers_cdc.i_rdone),
             self.axi4lite.wdone.eq(self.control_registers.wdone
                                    | sdr_registers_cdc.i_wdone
-                                   | traffic_registers_cdc.i_wdone
+                                   | traffic_sdr_registers_cdc.i_wdone
+                                   | traffic_iq_registers_cdc.i_wdone
                                    | iq_registers_cdc.i_wdone
                                    | lsm_registers_cdc.i_wdone
                                    | traffic_lsm_registers_cdc.i_wdone
-                                   | traffic_iq_registers_cdc.i_wdone
+                                   | wideband_iq_registers_cdc.i_wdone
                                    | pre_diff_iq_registers_cdc.i_wdone
                                    | traffic_pre_diff_iq_registers_cdc.i_wdone
                                    | wideband_spec_registers_cdc.i_wdone),
@@ -1420,10 +1551,14 @@ class P25Core(Elaboratable):
                 self.axi4lite.ren & sdr_regs_select),
             sdr_registers_cdc.i_wstrobe.eq(
                 Mux(sdr_regs_select, self.axi4lite.wstrobe, 0)),
-            traffic_registers_cdc.i_ren.eq(
-                self.axi4lite.ren & traffic_regs_select),
-            traffic_registers_cdc.i_wstrobe.eq(
-                Mux(traffic_regs_select, self.axi4lite.wstrobe, 0)),
+            traffic_sdr_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & traffic_sdr_regs_select),
+            traffic_sdr_registers_cdc.i_wstrobe.eq(
+                Mux(traffic_sdr_regs_select, self.axi4lite.wstrobe, 0)),
+            traffic_iq_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & traffic_iq_regs_select),
+            traffic_iq_registers_cdc.i_wstrobe.eq(
+                Mux(traffic_iq_regs_select, self.axi4lite.wstrobe, 0)),
             iq_registers_cdc.i_ren.eq(
                 self.axi4lite.ren & iq_regs_select),
             iq_registers_cdc.i_wstrobe.eq(
@@ -1436,15 +1571,14 @@ class P25Core(Elaboratable):
                 self.axi4lite.ren & traffic_lsm_regs_select),
             traffic_lsm_registers_cdc.i_wstrobe.eq(
                 Mux(traffic_lsm_regs_select, self.axi4lite.wstrobe, 0)),
-            traffic_iq_registers_cdc.i_ren.eq(
-                self.axi4lite.ren & traffic_iq_regs_select),
-            traffic_iq_registers_cdc.i_wstrobe.eq(
-                Mux(traffic_iq_regs_select, self.axi4lite.wstrobe, 0)),
+            wideband_iq_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & wideband_iq_regs_select),
+            wideband_iq_registers_cdc.i_wstrobe.eq(
+                Mux(wideband_iq_regs_select, self.axi4lite.wstrobe, 0)),
             wideband_spec_registers_cdc.i_ren.eq(
                 self.axi4lite.ren & spec_regs_select),
             wideband_spec_registers_cdc.i_wstrobe.eq(
                 Mux(spec_regs_select, self.axi4lite.wstrobe, 0)),
-            # Phase 10.8 bank selects
             pre_diff_iq_registers_cdc.i_ren.eq(
                 self.axi4lite.ren & pre_diff_iq_regs_select),
             pre_diff_iq_registers_cdc.i_wstrobe.eq(
@@ -1462,16 +1596,18 @@ class P25Core(Elaboratable):
             self.control_registers.wdata.eq(wdata),
             sdr_registers_cdc.i_address.eq(address),
             sdr_registers_cdc.i_wdata.eq(wdata),
-            traffic_registers_cdc.i_address.eq(address),
-            traffic_registers_cdc.i_wdata.eq(wdata),
+            traffic_sdr_registers_cdc.i_address.eq(address),
+            traffic_sdr_registers_cdc.i_wdata.eq(wdata),
+            traffic_iq_registers_cdc.i_address.eq(address),
+            traffic_iq_registers_cdc.i_wdata.eq(wdata),
             iq_registers_cdc.i_address.eq(address),
             iq_registers_cdc.i_wdata.eq(wdata),
             lsm_registers_cdc.i_address.eq(address),
             lsm_registers_cdc.i_wdata.eq(wdata),
             traffic_lsm_registers_cdc.i_address.eq(address),
             traffic_lsm_registers_cdc.i_wdata.eq(wdata),
-            traffic_iq_registers_cdc.i_address.eq(address),
-            traffic_iq_registers_cdc.i_wdata.eq(wdata),
+            wideband_iq_registers_cdc.i_address.eq(address),
+            wideband_iq_registers_cdc.i_wdata.eq(wdata),
             pre_diff_iq_registers_cdc.i_address.eq(address),
             pre_diff_iq_registers_cdc.i_wdata.eq(wdata),
             traffic_pre_diff_iq_registers_cdc.i_address.eq(address),
@@ -1490,16 +1626,6 @@ class P25Core(Elaboratable):
             sdr_registers_cdc.o_rdone.eq(self.sdr_registers.rdone),
             sdr_registers_cdc.o_wdone.eq(self.sdr_registers.wdone),
             sdr_registers_cdc.o_rdata.eq(self.sdr_registers.rdata),
-        ]
-        # traffic_registers CDC
-        m.d.comb += [
-            self.traffic_registers.ren.eq(traffic_registers_cdc.o_ren),
-            self.traffic_registers.wstrobe.eq(traffic_registers_cdc.o_wstrobe),
-            self.traffic_registers.address.eq(traffic_registers_cdc.o_address),
-            self.traffic_registers.wdata.eq(traffic_registers_cdc.o_wdata),
-            traffic_registers_cdc.o_rdone.eq(self.traffic_registers.rdone),
-            traffic_registers_cdc.o_wdone.eq(self.traffic_registers.wdone),
-            traffic_registers_cdc.o_rdata.eq(self.traffic_registers.rdata),
         ]
         # iq_registers CDC (Phase 6C)
         m.d.comb += [
@@ -1521,7 +1647,7 @@ class P25Core(Elaboratable):
             lsm_registers_cdc.o_wdone.eq(self.lsm_registers.wdone),
             lsm_registers_cdc.o_rdata.eq(self.lsm_registers.rdata),
         ]
-        # traffic_lsm_registers CDC (Phase 7A.2)
+        # traffic_lsm_registers CDC (M2B 2026-05-02)
         m.d.comb += [
             self.traffic_lsm_registers.ren.eq(
                 traffic_lsm_registers_cdc.o_ren),
@@ -1538,24 +1664,7 @@ class P25Core(Elaboratable):
             traffic_lsm_registers_cdc.o_rdata.eq(
                 self.traffic_lsm_registers.rdata),
         ]
-        # traffic_iq_registers CDC (2026-04-16 chain-symmetry fix)
-        m.d.comb += [
-            self.traffic_iq_registers.ren.eq(
-                traffic_iq_registers_cdc.o_ren),
-            self.traffic_iq_registers.wstrobe.eq(
-                traffic_iq_registers_cdc.o_wstrobe),
-            self.traffic_iq_registers.address.eq(
-                traffic_iq_registers_cdc.o_address),
-            self.traffic_iq_registers.wdata.eq(
-                traffic_iq_registers_cdc.o_wdata),
-            traffic_iq_registers_cdc.o_rdone.eq(
-                self.traffic_iq_registers.rdone),
-            traffic_iq_registers_cdc.o_wdone.eq(
-                self.traffic_iq_registers.wdone),
-            traffic_iq_registers_cdc.o_rdata.eq(
-                self.traffic_iq_registers.rdata),
-        ]
-        # Phase 10.8: pre_diff_iq + traffic_pre_diff_iq register CDCs.
+        # Phase 10.8: pre_diff_iq register CDC.
         m.d.comb += [
             self.pre_diff_iq_registers.ren.eq(
                 pre_diff_iq_registers_cdc.o_ren),
@@ -1572,21 +1681,22 @@ class P25Core(Elaboratable):
             pre_diff_iq_registers_cdc.o_rdata.eq(
                 self.pre_diff_iq_registers.rdata),
         ]
+        # 2026-05-03: wideband_iq register CDC.
         m.d.comb += [
-            self.traffic_pre_diff_iq_registers.ren.eq(
-                traffic_pre_diff_iq_registers_cdc.o_ren),
-            self.traffic_pre_diff_iq_registers.wstrobe.eq(
-                traffic_pre_diff_iq_registers_cdc.o_wstrobe),
-            self.traffic_pre_diff_iq_registers.address.eq(
-                traffic_pre_diff_iq_registers_cdc.o_address),
-            self.traffic_pre_diff_iq_registers.wdata.eq(
-                traffic_pre_diff_iq_registers_cdc.o_wdata),
-            traffic_pre_diff_iq_registers_cdc.o_rdone.eq(
-                self.traffic_pre_diff_iq_registers.rdone),
-            traffic_pre_diff_iq_registers_cdc.o_wdone.eq(
-                self.traffic_pre_diff_iq_registers.wdone),
-            traffic_pre_diff_iq_registers_cdc.o_rdata.eq(
-                self.traffic_pre_diff_iq_registers.rdata),
+            self.wideband_iq_registers.ren.eq(
+                wideband_iq_registers_cdc.o_ren),
+            self.wideband_iq_registers.wstrobe.eq(
+                wideband_iq_registers_cdc.o_wstrobe),
+            self.wideband_iq_registers.address.eq(
+                wideband_iq_registers_cdc.o_address),
+            self.wideband_iq_registers.wdata.eq(
+                wideband_iq_registers_cdc.o_wdata),
+            wideband_iq_registers_cdc.o_rdone.eq(
+                self.wideband_iq_registers.rdone),
+            wideband_iq_registers_cdc.o_wdone.eq(
+                self.wideband_iq_registers.wdone),
+            wideband_iq_registers_cdc.o_rdata.eq(
+                self.wideband_iq_registers.rdata),
         ]
         m.d.comb += [
             self.wideband_spec_registers.ren.eq(
@@ -1603,6 +1713,58 @@ class P25Core(Elaboratable):
                 self.wideband_spec_registers.wdone),
             wideband_spec_registers_cdc.o_rdata.eq(
                 self.wideband_spec_registers.rdata),
+        ]
+        # 2026-05-03 dual-DDC pivot: traffic_sdr register CDC
+        # (replaces the retired traffic_pipe register CDC block).
+        m.d.comb += [
+            self.traffic_sdr_registers.ren.eq(
+                traffic_sdr_registers_cdc.o_ren),
+            self.traffic_sdr_registers.wstrobe.eq(
+                traffic_sdr_registers_cdc.o_wstrobe),
+            self.traffic_sdr_registers.address.eq(
+                traffic_sdr_registers_cdc.o_address),
+            self.traffic_sdr_registers.wdata.eq(
+                traffic_sdr_registers_cdc.o_wdata),
+            traffic_sdr_registers_cdc.o_rdone.eq(
+                self.traffic_sdr_registers.rdone),
+            traffic_sdr_registers_cdc.o_wdone.eq(
+                self.traffic_sdr_registers.wdone),
+            traffic_sdr_registers_cdc.o_rdata.eq(
+                self.traffic_sdr_registers.rdata),
+        ]
+        # 2026-05-03 dual-DDC: traffic_iq register CDC.
+        m.d.comb += [
+            self.traffic_iq_registers.ren.eq(
+                traffic_iq_registers_cdc.o_ren),
+            self.traffic_iq_registers.wstrobe.eq(
+                traffic_iq_registers_cdc.o_wstrobe),
+            self.traffic_iq_registers.address.eq(
+                traffic_iq_registers_cdc.o_address),
+            self.traffic_iq_registers.wdata.eq(
+                traffic_iq_registers_cdc.o_wdata),
+            traffic_iq_registers_cdc.o_rdone.eq(
+                self.traffic_iq_registers.rdone),
+            traffic_iq_registers_cdc.o_wdone.eq(
+                self.traffic_iq_registers.wdone),
+            traffic_iq_registers_cdc.o_rdata.eq(
+                self.traffic_iq_registers.rdata),
+        ]
+        # 2026-05-03 dual-DDC: traffic_pre_diff_iq register CDC.
+        m.d.comb += [
+            self.traffic_pre_diff_iq_registers.ren.eq(
+                traffic_pre_diff_iq_registers_cdc.o_ren),
+            self.traffic_pre_diff_iq_registers.wstrobe.eq(
+                traffic_pre_diff_iq_registers_cdc.o_wstrobe),
+            self.traffic_pre_diff_iq_registers.address.eq(
+                traffic_pre_diff_iq_registers_cdc.o_address),
+            self.traffic_pre_diff_iq_registers.wdata.eq(
+                traffic_pre_diff_iq_registers_cdc.o_wdata),
+            traffic_pre_diff_iq_registers_cdc.o_rdone.eq(
+                self.traffic_pre_diff_iq_registers.rdone),
+            traffic_pre_diff_iq_registers_cdc.o_wdone.eq(
+                self.traffic_pre_diff_iq_registers.wdone),
+            traffic_pre_diff_iq_registers_cdc.o_rdata.eq(
+                self.traffic_pre_diff_iq_registers.rdata),
         ]
 
         # ── Internal resets ───────────────────────────────────────────

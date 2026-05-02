@@ -64,13 +64,10 @@ pub struct IpCore {
     registers: Registers,
     iq_dma: RxBuffer,
     lsm_dibit_dma: RxBuffer,
-    /// Phase 7A.2: traffic-side LSM dibit DMA ring. Mirrors
-    /// `lsm_dibit_dma` on the control side. UIO device
-    /// `p25-traffic-lsm-dibit`.
+    /// M2B 2026-05-02: traffic-side LSM dibit ring fed off the
+    /// polyphase-channelizer + per_target_ddc + mux output. Same
+    /// 64-bit packing as `lsm_dibit_dma`. UIO `p25-traffic-lsm-dibit`.
     traffic_lsm_dibit_dma: RxBuffer,
-    /// Traffic-side post-DDC IQ ring, mirror of `iq_dma` on the
-    /// control side. UIO device `p25-traffic-iq`.
-    traffic_iq_dma: RxBuffer,
     /// Phase 10.8 (2026-04-23): control-chain pre-differential IQ ring.
     /// Tapped inside `LsmDemod` after `LsmPllRotate` + AGC but BEFORE
     /// the diff-demod / slicer. Samples sit on the LSM ideal
@@ -78,21 +75,23 @@ pub struct IpCore {
     /// interleaved). UIO `p25-pre-diff-iq`. Feeds the Plots tab
     /// constellation + eye + `/api/deviation` + `/api/distribution`.
     pre_diff_iq_dma: RxBuffer,
-    /// Phase 10.8 traffic-side twin of `pre_diff_iq_dma`. UIO
-    /// `p25-traffic-pre-diff-iq`.
-    traffic_pre_diff_iq_dma: RxBuffer,
     /// Wideband spectrometer output ring (4096-bin FFT, HW-integrated,
     /// pre-DDC tap on `rxiq_cdc`). UIO `p25-wideband-spec`. Feeds
     /// `/api/spectrum_wide`; no PS FFT.
     wideband_spec_dma: RxBuffer,
+    /// 2026-05-03: pre-DDC raw 8 MSPS / 8 MHz BW IQ ring fed straight
+    /// from `rxiq_cdc`. 12-bit signed I/Q sign-extended to 16-bit, two
+    /// samples per 64-bit DMA word — same packing as `iq_dma`. Backs
+    /// the PS-side software P25 stack (polyphase channelizer ->
+    /// per-target DDC -> LSM demod). UIO `p25-wideband-iq`.
+    wideband_iq_dma: RxBuffer,
 
     iq_last_addr: Option<u32>,
     lsm_dibit_last_addr: Option<u32>,
     traffic_lsm_dibit_last_addr: Option<u32>,
-    traffic_iq_last_addr: Option<u32>,
     pre_diff_iq_last_addr: Option<u32>,
-    traffic_pre_diff_iq_last_addr: Option<u32>,
     wideband_spec_last_buffer: Option<u8>,
+    wideband_iq_last_addr: Option<u32>,
 }
 
 impl IpCore {
@@ -149,35 +148,30 @@ impl IpCore {
         let traffic_lsm_dibit_dma = RxBuffer::new("p25-traffic-lsm-dibit")
             .await
             .context("failed to open p25-traffic-lsm-dibit DMA buffer")?;
-        let traffic_iq_dma = RxBuffer::new("p25-traffic-iq")
-            .await
-            .context("failed to open p25-traffic-iq DMA buffer")?;
         let pre_diff_iq_dma = RxBuffer::new("p25-pre-diff-iq")
             .await
             .context("failed to open p25-pre-diff-iq DMA buffer")?;
-        let traffic_pre_diff_iq_dma = RxBuffer::new("p25-traffic-pre-diff-iq")
-            .await
-            .context("failed to open p25-traffic-pre-diff-iq DMA buffer")?;
         let wideband_spec_dma = RxBuffer::new("p25-wideband-spec")
             .await
             .context("failed to open p25-wideband-spec DMA buffer")?;
+        let wideband_iq_dma = RxBuffer::new("p25-wideband-iq")
+            .await
+            .context("failed to open p25-wideband-iq DMA buffer")?;
 
         let ip_core = IpCore {
             registers,
             iq_dma,
             lsm_dibit_dma,
             traffic_lsm_dibit_dma,
-            traffic_iq_dma,
             pre_diff_iq_dma,
-            traffic_pre_diff_iq_dma,
             wideband_spec_dma,
+            wideband_iq_dma,
             iq_last_addr: None,
             lsm_dibit_last_addr: None,
             traffic_lsm_dibit_last_addr: None,
-            traffic_iq_last_addr: None,
             pre_diff_iq_last_addr: None,
-            traffic_pre_diff_iq_last_addr: None,
             wideband_spec_last_buffer: None,
+            wideband_iq_last_addr: None,
         };
 
         let interrupt_handler = InterruptHandler::new(uio, interrupt_registers);
@@ -374,114 +368,12 @@ impl IpCore {
         Ok(())
     }
 
-    // ── Traffic channel DDC ──────────────────────────────────────
-
-    /// Configures the traffic channel DDC: decimation, operations, NCO.
-    ///
-    /// Mirrors `configure_ddc()` but writes the `traffic_*` register
-    /// bank instead of the control bank. FIR coefficients are shared
-    /// with the control DDC at the HDL level (see
-    /// `maia-hdl/p25_hdl/p25_top.py`), so `configure_ddc()` must be
-    /// called first.
-    pub fn configure_traffic_ddc(
-        &self,
-        frequency_hz: f64,
-        preset: &DdcPreset,
-    ) -> Result<()> {
-        let dec1 = u8::try_from(preset.decim1).unwrap();
-        let dec2 = u8::try_from(preset.decim2).unwrap();
-        let dec3 = u8::try_from(preset.decim3).unwrap();
-
-        // FIR1 (FIR4DSP, folded): same math as load_fir1.
-        let fir1_branch_len = preset.fir1_coeffs.len().div_ceil(preset.decim1);
-        let fir1_operations = fir1_branch_len.div_ceil(2);
-        let fir1_odd = fir1_branch_len % 2 == 1;
-        let opm1_1 = u8::try_from(fir1_operations - 1).unwrap();
-
-        // FIR2 (FIR2DSP, no folding): same math as load_fir2.
-        let fir2_operations = preset.fir2_coeffs.len().div_ceil(preset.decim2);
-        let opm1_2 = u8::try_from(fir2_operations - 1).unwrap();
-
-        // FIR3 (FIR4DSP, folded): same math as load_fir3.
-        let fir3_branch_len = preset.fir3_coeffs.len().div_ceil(preset.decim3);
-        let fir3_operations = fir3_branch_len.div_ceil(2);
-        let fir3_odd = fir3_branch_len % 2 == 1;
-        let opm1_3 = u8::try_from(fir3_operations - 1).unwrap();
-
-        self.registers
-            .traffic_ddc_decimation()
-            .modify(|_, w| unsafe {
-                w.decimation1()
-                    .bits(dec1)
-                    .decimation2()
-                    .bits(dec2)
-                    .decimation3()
-                    .bits(dec3)
-            });
-
-        self.registers.traffic_ddc_control().modify(|_, w| unsafe {
-            w.operations_minus_one1()
-                .bits(opm1_1)
-                .operations_minus_one2()
-                .bits(opm1_2)
-                .operations_minus_one3()
-                .bits(opm1_3)
-                .odd_operations1()
-                .bit(fir1_odd)
-                .odd_operations3()
-                .bit(fir3_odd)
-                .bypass2()
-                .clear_bit()
-                .bypass3()
-                .clear_bit()
-        });
-
-        self.set_traffic_ddc_frequency(
-            frequency_hz, preset.sample_rate_hz as f64)?;
-
-        tracing::info!(
-            "Traffic DDC configured: preset={} NCO={} Hz, \
-             {}x{}x{}={}x decimation (FIR coeffs shared with control DDC), \
-             output={} Hz",
-            preset.name,
-            frequency_hz as i64,
-            preset.decim1, preset.decim2, preset.decim3,
-            preset.total_decim(),
-            preset.sample_rate_hz as u64 / preset.total_decim() as u64,
-        );
-        Ok(())
-    }
-
-    /// Sets the traffic channel DDC NCO frequency word directly.
-    pub fn set_traffic_ddc_frequency_word(&self, nco_word: u32) {
-        self.registers
-            .traffic_ddc_frequency()
-            .modify(|_, w| unsafe { w.frequency().bits(nco_word) });
-    }
-
-    /// Sets the traffic channel DDC NCO frequency in Hz.
-    pub fn set_traffic_ddc_frequency(
-        &self,
-        frequency_hz: f64,
-        sample_rate_hz: f64,
-    ) -> Result<()> {
-        let half = 0.5 * sample_rate_hz;
-        if !(-half..=half).contains(&frequency_hz) {
-            anyhow::bail!(
-                "traffic DDC frequency {frequency_hz} Hz out of range"
-            );
-        }
-        let nco_word = freq_to_nco(frequency_hz, sample_rate_hz);
-        self.set_traffic_ddc_frequency_word(nco_word);
-        Ok(())
-    }
-
-    /// Enables or disables the traffic channel DDC input.
-    pub fn set_traffic_ddc_enable(&self, enable: bool) {
-        self.registers
-            .traffic_ddc_control()
-            .modify(|_, w| w.enable_input().bit(enable));
-    }
+    // 2026-05-02: traffic-side DDC config (configure_traffic_ddc /
+    // set_traffic_ddc_* / set_traffic_ddc_enable) removed with the
+    // old single-LSM-chain traffic path. Replaced by the polyphase
+    // channelizer + per_target_ddc pool. New API for setting target
+    // bin + NCO is the `traffic_pipe` register bank (M2A) — wiring
+    // pending in p25-httpd.
 
     // ── IQ ring (control, post-DDC) ──────────────────────────────
     //
@@ -527,19 +419,9 @@ impl IpCore {
         self.read_dma_buffers(DmaChannel::Iq)
     }
 
-    // ── Traffic-channel post-DDC IQ ring DMA ─────────────────────
-
-    /// Enables or disables the traffic-side post-DDC IQ ring DMA.
-    pub fn set_traffic_iq_dma_enable(&self, enable: bool) {
-        self.registers
-            .traffic_iq_dma_control()
-            .modify(|_, w| w.traffic_iq_enable().bit(enable));
-    }
-
-    /// Reads new traffic IQ ring sub-buffers since the last call.
-    pub fn read_traffic_iq_buffers(&mut self) -> Vec<&[u8]> {
-        self.read_dma_buffers(DmaChannel::TrafficIq)
-    }
+    // 2026-05-02: traffic-side post-DDC IQ DMA retired with the
+    // old chain. New per-target IQ taps to be added in M2B (one
+    // per per_target_ddc output, gated by the `target_enable` mask).
 
     // ── Pre-differential IQ rings (Phase 10.8 2026-04-23) ─────────
     //
@@ -557,21 +439,58 @@ impl IpCore {
             .modify(|_, w| w.pre_diff_iq_enable().bit(enable));
     }
 
-    /// Enables or disables the traffic-chain pre-diff IQ ring DMA.
-    pub fn set_traffic_pre_diff_iq_dma_enable(&self, enable: bool) {
-        self.registers
-            .traffic_pre_diff_iq_dma_control()
-            .modify(|_, w| w.traffic_pre_diff_iq_enable().bit(enable));
-    }
+    // 2026-05-02: traffic_pre_diff_iq_dma retired with the old chain.
 
     /// Reads new control-chain pre-diff IQ sub-buffers since the last call.
     pub fn read_pre_diff_iq_buffers(&mut self) -> Vec<&[u8]> {
         self.read_dma_buffers(DmaChannel::PreDiffIq)
     }
 
-    /// Reads new traffic-chain pre-diff IQ sub-buffers since the last call.
-    pub fn read_traffic_pre_diff_iq_buffers(&mut self) -> Vec<&[u8]> {
-        self.read_dma_buffers(DmaChannel::TrafficPreDiffIq)
+    // ── Wideband raw IQ ring (2026-05-03) ────────────────────────
+    //
+    // Pre-DDC tap of `rxiq_cdc` at 8 MSPS / 8 MHz BW. Same per-word
+    // packing as `iq_dma` ({ im[1] s16, re[1] s16, im[0] s16, re[0] s16 }
+    // — natural little-endian interleaved-IQ). 16 sub-buffers of 1 MB
+    // each = 16 MB ring (~0.5 s in flight at 32 MB/s). Backs the
+    // PS-side software P25 stack.
+
+    /// Enables or disables the wideband raw-IQ ring DMA. Level-triggered.
+    pub fn set_wideband_iq_dma_enable(&self, enable: bool) {
+        self.registers
+            .wideband_iq_dma_control()
+            .modify(|_, w| w.wideband_iq_enable().bit(enable));
+    }
+
+    /// Returns the index of the most recently completed wideband-IQ sub-buffer.
+    pub fn wideband_iq_last_buffer(&self) -> u8 {
+        self.registers
+            .wideband_iq_dma_status()
+            .read()
+            .last_buffer()
+            .bits()
+    }
+
+    /// Reads and clears the wideband-IQ ring overflow latch (Rsticky bit).
+    pub fn wideband_iq_overflow(&self) -> bool {
+        self.registers
+            .wideband_iq_dma_status()
+            .read()
+            .wideband_iq_overflow()
+            .bit()
+    }
+
+    /// Returns the current wideband-IQ DMA AW write address (debug).
+    pub fn wideband_iq_next_address(&self) -> u32 {
+        self.registers
+            .wideband_iq_next_address()
+            .read()
+            .next_address()
+            .bits()
+    }
+
+    /// Reads new wideband-IQ ring sub-buffers since the last call.
+    pub fn read_wideband_iq_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::WidebandIq)
     }
 
     // ── Wideband spectrometer ───────────────────────────────────
@@ -743,9 +662,15 @@ impl IpCore {
         self.read_dma_buffers(DmaChannel::LsmDibit)
     }
 
-    // ── Traffic-side LSM chain ──────────────────────────────────
+    // ── LSM chain (traffic, M2B 2026-05-02) ─────────────────────
+    // Mirror of the control LSM bank, fed off the polyphase
+    // channelizer + per_target_ddc + mux output (`traffic_pipeline`
+    // in HDL). Same register shape as `lsm_*`, prefixed
+    // `traffic_lsm_*`. Selected target slot drives a single LSM
+    // chain — for multi-target follow we'd need multiple LSM chains
+    // hanging off the mux, deferred.
 
-    /// Master enable for the traffic-side LSM chain.
+    /// Master enable for the traffic LSM chain.
     pub fn set_traffic_lsm_enable(&self, enable: bool) {
         self.registers
             .traffic_lsm_control()
@@ -759,149 +684,31 @@ impl IpCore {
             .modify(|_, w| w.traffic_lsm_dibit_dma_enable().bit(enable));
     }
 
-    /// Enables or disables the traffic LSM front-end DC blocker.
+    /// Enables or disables the traffic-chain front-end DC blocker.
     pub fn set_traffic_lsm_dc_block_enable(&self, enable: bool) {
         self.registers
             .traffic_lsm_control()
             .modify(|_, w| w.traffic_lsm_dc_block_enable().bit(enable));
     }
 
-    /// Enables or disables the per-symbol LSM AGC on the traffic chain.
+    /// Enables or disables the per-symbol traffic LSM AGC.
     pub fn set_traffic_lsm_agc_enable(&self, enable: bool) {
         self.registers
             .traffic_lsm_control()
             .modify(|_, w| w.traffic_lsm_agc_enable().bit(enable));
     }
 
-    /// Pulse the traffic-side LSM chain runtime reset (W1P,
-    /// self-clearing). Used between the DDC retune and the LSM
-    /// re-enable to start the PLL acquisition from cold-boot
-    /// semantics after a retune.
+    /// Pulses the traffic LSM reset (Wpulse). Drives a 1-cycle
+    /// `reset_in` into LsmDemod, clearing PLL accumulator + AGC +
+    /// timing-recovery state.
     pub fn pulse_traffic_lsm_reset(&self) {
         self.registers
             .traffic_lsm_control()
             .modify(|_, w| w.traffic_lsm_reset().bit(true));
     }
 
-    /// Write the traffic LSM warm-start seeds. The PLL seed (Q2.13
-    /// signed) is latched into the traffic Costas accumulator and
-    /// the AGC seed (Q9.7 unsigned, FPGA pads to Q9.11 internally)
-    /// is latched into the traffic AGC gain register on the next
-    /// `pulse_traffic_lsm_reset()`. Zero values fall back to the
-    /// legacy cold-start (pll=0, gain=GAIN_INIT). See
-    /// `retune_traffic_chain` for the standard call site.
-    pub fn set_traffic_lsm_seeds(&self, pll_q213: i16, agc_q97: u16) {
-        self.registers
-            .traffic_lsm_control()
-            .modify(|_, w| unsafe {
-                w.traffic_pll_seed().bits(pll_q213 as u16)
-            });
-        self.registers
-            .traffic_lsm_agc_config()
-            .modify(|_, w| unsafe { w.traffic_agc_seed().bits(agc_q97) });
-    }
-
-    /// Freeze-reset-thaw the traffic LSM chain across a DDC retune.
-    ///
-    /// Sequence:
-    ///   1. `traffic_lsm_enable = 0`  — synchronous reset of the
-    ///      `lsm_traffic_dom` clock domain inside LsmDemod.
-    ///   2. Write the new DDC NCO frequency.
-    ///   3. Wait 2 ms for the DDC FIR pipeline to flush so the LSM
-    ///      PLL doesn't chase an old-NCO convolution transient.
-    ///   4. `traffic_lsm_enable = 1`  — domain reset deasserts.
-    ///   5. Pulse `traffic_lsm_reset` — explicit `reset_in` clears
-    ///      the `reset_less=True` accumulators (PLL, timing, diff
-    ///      slicer, sync, BCH sweep) inside one sync cycle.
-    ///
-    /// Without steps 1+3+5 the carryover of PLL state from the
-    /// previous carrier produces corrupted dibits for hundreds of
-    /// milliseconds — the Phase 7 "1 in 20 calls intelligible"
-    /// symptom documented in doc/changes/037.
-    pub fn retune_traffic_chain(
-        &self,
-        frequency_hz: f64,
-        sample_rate_hz: f64,
-        agc_seed_q97: u16,
-    ) -> Result<SeedLoadDiag> {
-        // Order matters here. Pre-2026-04-26 we did seed+reset AFTER
-        // re-enabling the chain, which left a microsecond window
-        // where the demod ran with stale pll_reg/gain values from
-        // the previous freq before the reset pulse latched the new
-        // seeds. On-target observation showed retune-path calls
-        // still hit the cold-acquire fingerprint (~3.5 s to first
-        // IMBE) while nco_skip-path calls converged in <100 ms —
-        // the difference was that brief stale-state window. Now we
-        // write seeds + pulse reset WHILE THE CHAIN IS DISABLED,
-        // then flip enable. The chain comes alive already at the
-        // seeded lock value with no transient pipeline state.
-        self.set_traffic_lsm_enable(false);
-        self.set_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
-        // Let the DDC FIR cascade flush before un-freezing the LSM
-        // chain. 2 ms is ~3× the worst-case pipeline depth (600 us at
-        // 8 MSPS with /4 /4 /8 = 176+128+256 taps). See
-        // doc/changes/037 for the measurement that motivated this.
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        // Read control-chain converged PLL + AGC. Both chains share
-        // the same crystal trim, so this is the correct lock value
-        // for any P25 carrier on this board (per the SDRTrunk PPM-
-        // sweep evidence in CHANNELIZER_REDESIGN.md).
-        //
-        // 2026-04-26: AGC seeding disabled. Field observation: when
-        // control chain converged to a high gain (e.g., 33×) on a
-        // weak control-freq signal, seeding that into the traffic
-        // chain on a different freq with a stronger signal saturated
-        // the slicer — every dibit biased to 0b11, BCH "corrected"
-        // every NID to DUID=0xF (TDU_LC), producing 16 false
-        // TDU_LC dispatches per second and zero real LDU frames.
-        // PLL seeding is fine (shared crystal trim makes it portable
-        // across freqs); AGC seeding isn't (per-freq signal level
-        // varies). Pass 0 → HDL Mux loads GAIN_INIT (= 1.0); the
-        // AGC re-converges from unity in ~100 ms.
-        let (pll_seed, _) = self.lsm_debug();
-        let (traffic_pll_pre, _) = self.traffic_lsm_debug();
-        let (traffic_agc_pre, _) = self.traffic_lsm_agc_debug();
-        // 2026-04-26 per-freq AGC seed. Caller passes a Q9.7 cache
-        // hit (or 0 for cold-start fallback to GAIN_INIT). PLL seed
-        // is always the control chain's converged value.
-        self.set_traffic_lsm_seeds(pll_seed, agc_seed_q97);
-        // Pulse reset while still disabled. The reset_in pulse
-        // propagates to the LSM submodules even with strobes gated
-        // (gating is at LsmDecimator2's strobe input; reset_in is a
-        // separate sync-domain signal that still drives the FSM/reg
-        // assignments). After this the demod state is at the seeded
-        // values, ready to run on the first strobe post-enable.
-        self.pulse_traffic_lsm_reset();
-        // 2026-04-26 seed-load diagnostic. PLL diff > 2 = HDL/CDC
-        // bug. AGC diff is informational — when seed=0, HDL loads
-        // GAIN_INIT (=128 Q9.7 = 1.0×), so post != 0 in that case
-        // is expected. When seed!=0, post should match seed within
-        // CDC jitter.
-        let (traffic_pll_post, _) = self.traffic_lsm_debug();
-        let (traffic_agc_post, _) = self.traffic_lsm_agc_debug();
-        self.set_traffic_lsm_enable(true);
-        Ok(SeedLoadDiag {
-            pll_seed_written: pll_seed,
-            traffic_pll_pre_reset: traffic_pll_pre,
-            traffic_pll_post_reset: traffic_pll_post,
-            agc_seed_written: agc_seed_q97,
-            traffic_agc_pre_reset: traffic_agc_pre,
-            traffic_agc_post_reset: traffic_agc_post,
-        })
-    }
-
-    /// Quiesce the traffic LSM chain between calls. Counterpart to
-    /// `retune_traffic_chain` — used by the follower task on
-    /// Idle→timeout and on encryption tear-down so the LSM chain
-    /// stops producing phantom NID events during the gap between
-    /// calls.
-    pub fn pause_traffic_chain(&self) {
-        self.set_traffic_lsm_enable(false);
-    }
-
     /// Reads back the `traffic_lsm_control` register as
-    /// `(traffic_lsm_enable, traffic_lsm_dibit_dma_enable,
-    /// traffic_lsm_dc_block_enable, traffic_lsm_agc_enable)`.
+    /// `(enable, dibit_dma_enable, dc_block_enable, agc_enable)`.
     pub fn traffic_lsm_control_readback(&self) -> (bool, bool, bool, bool) {
         let c = self.registers.traffic_lsm_control().read();
         (
@@ -912,7 +719,7 @@ impl IpCore {
         )
     }
 
-    /// Reads the `traffic_lsm_status` register as a coherent snapshot.
+    /// Reads `traffic_lsm_status` as a coherent snapshot.
     pub fn traffic_lsm_status(&self) -> LsmStatusSnapshot {
         let s = self.registers.traffic_lsm_status().read();
         LsmStatusSnapshot {
@@ -926,19 +733,15 @@ impl IpCore {
         }
     }
 
-    /// Reads the latched NAC/DUID of the most recent traffic LSM NID event.
+    /// Reads the latched NAC/DUID of the most recent traffic NID event.
     pub fn traffic_lsm_nid(&self) -> (u16, u8) {
         let n = self.registers.traffic_lsm_nid().read();
         (n.nac().bits(), n.duid().bits())
     }
 
-    /// Reads the saturating traffic LSM NID drop counter.
+    /// Reads the saturating traffic NID drop counter.
     pub fn traffic_lsm_drop_count(&self) -> u16 {
-        self.registers
-            .traffic_lsm_drop_count()
-            .read()
-            .drop_count()
-            .bits()
+        self.registers.traffic_lsm_drop_count().read().drop_count().bits()
     }
 
     /// Returns the index of the most recently completed traffic LSM
@@ -951,7 +754,8 @@ impl IpCore {
             .bits()
     }
 
-    /// Returns the current AW write address for the traffic LSM dibit channel.
+    /// Returns the current AW write address for the traffic LSM
+    /// dibit channel.
     pub fn traffic_lsm_dibit_next_address(&self) -> u32 {
         self.registers
             .traffic_lsm_dibit_next()
@@ -960,12 +764,343 @@ impl IpCore {
             .bits()
     }
 
-    /// Reads the traffic LSM debug taps: `pll_dbg` (signed Q2.13) and
+    /// Reads the traffic LSM debug taps: `pll_dbg` (signed Q2.13),
     /// `sample_point_dbg` (signed Q4.10).
     pub fn traffic_lsm_debug(&self) -> (i16, i16) {
         let d = self.registers.traffic_lsm_debug().read();
-        (d.pll_dbg().bits() as i16, d.sample_point_dbg().bits() as i16)
+        (
+            d.pll_dbg().bits() as i16,
+            d.sample_point_dbg().bits() as i16,
+        )
     }
+
+    /// Reads the traffic LSM AGC debug taps. Same layout as
+    /// `lsm_agc_debug` (gain Q9.7, mag Q1.15).
+    pub fn traffic_lsm_agc_debug(&self) -> (u16, u16) {
+        let d = self.registers.traffic_lsm_agc_debug().read();
+        (d.agc_gain_dbg().bits(), d.agc_mag_dbg().bits())
+    }
+
+    /// Reads the traffic LSM AGC idle-gate threshold.
+    pub fn traffic_lsm_agc_threshold(&self) -> u16 {
+        self.registers
+            .traffic_lsm_agc_config()
+            .read()
+            .mag_update_threshold()
+            .bits()
+    }
+
+    /// Writes the traffic LSM AGC idle-gate threshold.
+    pub fn set_traffic_lsm_agc_threshold(&self, v: u16) {
+        self.registers
+            .traffic_lsm_agc_config()
+            .modify(|_, w| unsafe { w.mag_update_threshold().bits(v) });
+    }
+
+    /// Reads new traffic LSM dibit DMA buffers since the last call.
+    pub fn read_traffic_lsm_dibit_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::TrafficLsmDibit)
+    }
+
+    // ── Traffic DDC config (2026-05-03 dual-DDC pivot) ──────────
+    //
+    // Mirror of `configure_ddc` / `set_ddc_frequency` / `set_ddc_enable`
+    // for the traffic DDC instance. Polyphase channelizer + per_target
+    // _ddc API has been retired; the traffic chain is now a dedicated
+    // P25DDC mirroring the control side.
+
+    /// Loads the traffic DDC FIR coefficient tables + per-stage
+    /// decimation + sets the NCO frequency. `preset` picks the AD9361
+    /// sample rate match; `frequency_hz` is the NCO offset from the
+    /// traffic RX LO at `preset.sample_rate_hz`.
+    pub fn configure_traffic_ddc(
+        &self,
+        frequency_hz: f64,
+        preset: &DdcPreset,
+    ) -> Result<()> {
+        self.load_traffic_fir1(preset.fir1_coeffs, preset.decim1)?;
+        self.load_traffic_fir2(preset.fir2_coeffs, preset.decim2)?;
+        self.load_traffic_fir3(preset.fir3_coeffs, preset.decim3)?;
+
+        // Enable all 3 stages (no bypass)
+        self.registers.traffic_ddc_control().modify(|_, w| {
+            w.traffic_bypass2().clear_bit().traffic_bypass3().clear_bit()
+        });
+
+        self.set_traffic_ddc_frequency(
+            frequency_hz, preset.sample_rate_hz as f64)?;
+
+        tracing::info!(
+            "Traffic DDC configured: preset={} NCO={} Hz, \
+             3-stage FIR ({}/{}/{} taps), \
+             {}x{}x{}={}x decimation, output={} Hz \
+             (25 kHz rejection {:+.1} dB)",
+            preset.name,
+            frequency_hz as i64,
+            preset.fir1_coeffs.len(),
+            preset.fir2_coeffs.len(),
+            preset.fir3_coeffs.len(),
+            preset.decim1, preset.decim2, preset.decim3,
+            preset.total_decim(),
+            preset.sample_rate_hz as u64 / preset.total_decim() as u64,
+            preset.rejection_25k_db,
+        );
+        Ok(())
+    }
+
+    /// Sets the traffic DDC NCO frequency. Mirror of
+    /// `set_ddc_frequency`. Range check uses the same ±sample_rate/2
+    /// bound — caller is responsible for keeping the offset inside
+    /// the IF window.
+    pub fn set_traffic_ddc_frequency(
+        &self,
+        frequency_hz: f64,
+        sample_rate_hz: f64,
+    ) -> Result<()> {
+        let half = 0.5 * sample_rate_hz;
+        if !(-half..=half).contains(&frequency_hz) {
+            anyhow::bail!(
+                "Traffic DDC frequency {frequency_hz} Hz out of range \
+                 ±{half} Hz"
+            );
+        }
+        let nco_word = freq_to_nco(frequency_hz, sample_rate_hz);
+        self.registers
+            .traffic_ddc_frequency()
+            .modify(|_, w| unsafe { w.traffic_frequency().bits(nco_word) });
+        Ok(())
+    }
+
+    /// Enables or disables the traffic DDC input.
+    pub fn set_traffic_ddc_enable(&self, enable: bool) {
+        self.registers
+            .traffic_ddc_control()
+            .modify(|_, w| w.traffic_enable_input().bit(enable));
+    }
+
+    // ── Traffic FIR coefficient loading (private) ───────────────
+    //
+    // Mirrors `load_fir1` / `load_fir2` / `load_fir3` /
+    // `load_fir_4dsp` / `load_fir_2dsp` for the traffic_ddc bank.
+    // Same polyphase reordering / RAM addressing — only the target
+    // register pair changes.
+
+    fn load_traffic_fir1(
+        &self, coefficients: &[i32], decimation: usize,
+    ) -> Result<()> {
+        self.load_traffic_fir_4dsp(coefficients, decimation, 0)?;
+        let branch_len = coefficients.len().div_ceil(decimation);
+        let operations = branch_len.div_ceil(2);
+        let odd = branch_len % 2 == 1;
+        let dec = u8::try_from(decimation).unwrap();
+        let opm1 = u8::try_from(operations - 1).unwrap();
+        self.registers.traffic_ddc_decimation().modify(|_, w| unsafe {
+            w.traffic_decimation1().bits(dec)
+        });
+        self.registers.traffic_ddc_control().modify(|_, w| unsafe {
+            w.traffic_operations_minus_one1().bits(opm1)
+                .traffic_odd_operations1().bit(odd)
+        });
+        Ok(())
+    }
+
+    fn load_traffic_fir2(
+        &self, coefficients: &[i32], decimation: usize,
+    ) -> Result<()> {
+        self.load_traffic_fir_2dsp(coefficients, decimation, 256)?;
+        let operations = coefficients.len().div_ceil(decimation);
+        let dec = u8::try_from(decimation).unwrap();
+        let opm1 = u8::try_from(operations - 1).unwrap();
+        self.registers.traffic_ddc_decimation().modify(|_, w| unsafe {
+            w.traffic_decimation2().bits(dec)
+        });
+        self.registers.traffic_ddc_control().modify(|_, w| unsafe {
+            w.traffic_operations_minus_one2().bits(opm1)
+        });
+        Ok(())
+    }
+
+    fn load_traffic_fir3(
+        &self, coefficients: &[i32], decimation: usize,
+    ) -> Result<()> {
+        self.load_traffic_fir_4dsp(coefficients, decimation, 512)?;
+        let branch_len = coefficients.len().div_ceil(decimation);
+        let operations = branch_len.div_ceil(2);
+        let odd = branch_len % 2 == 1;
+        let dec = u8::try_from(decimation).unwrap();
+        let opm1 = u8::try_from(operations - 1).unwrap();
+        self.registers.traffic_ddc_decimation().modify(|_, w| unsafe {
+            w.traffic_decimation3().bits(dec)
+        });
+        self.registers.traffic_ddc_control().modify(|_, w| unsafe {
+            w.traffic_operations_minus_one3().bits(opm1)
+                .traffic_odd_operations3().bit(odd)
+        });
+        Ok(())
+    }
+
+    fn load_traffic_fir_4dsp(
+        &self,
+        coefficients: &[i32],
+        decimation: usize,
+        addr_offset: usize,
+    ) -> Result<()> {
+        const NUM_ADDR: usize = 256;
+        let branch_len = coefficients.len().div_ceil(decimation);
+        let operations = branch_len.div_ceil(2);
+        if operations * decimation > NUM_ADDR / 2 {
+            anyhow::bail!("Traffic FIR4DSP coefficients too long for RAM");
+        }
+        for addr in 0..NUM_ADDR {
+            let (off, fold) = if addr >= NUM_ADDR / 2 {
+                (1, NUM_ADDR / 2)
+            } else {
+                (0, 0)
+            };
+            let k = (addr - fold) / operations;
+            let coeff = if k >= decimation {
+                0
+            } else {
+                let j = (addr - fold) % operations;
+                let n = (2 * j + off) * decimation + (decimation - 1 - k);
+                *coefficients.get(n).unwrap_or(&0)
+            };
+            let waddr = u16::try_from(addr + addr_offset).unwrap();
+            self.registers
+                .traffic_ddc_coeff_addr()
+                .modify(|_, w| unsafe {
+                    w.traffic_coeff_waddr().bits(waddr)
+                });
+            self.registers.traffic_ddc_coeff().modify(|_, w| unsafe {
+                w.traffic_coeff_wren().bit(true)
+                    .traffic_coeff_wdata().bits(coeff as u32)
+            });
+        }
+        Ok(())
+    }
+
+    fn load_traffic_fir_2dsp(
+        &self,
+        coefficients: &[i32],
+        decimation: usize,
+        addr_offset: usize,
+    ) -> Result<()> {
+        const NUM_ADDR: usize = 128;
+        let operations = coefficients.len().div_ceil(decimation);
+        if operations * decimation > NUM_ADDR {
+            anyhow::bail!("Traffic FIR2DSP coefficients too long for RAM");
+        }
+        for addr in 0..NUM_ADDR {
+            let k = addr / operations;
+            let coeff = if k >= decimation {
+                0
+            } else {
+                let j = addr % operations;
+                let n = j * decimation + (decimation - 1 - k);
+                *coefficients.get(n).unwrap_or(&0)
+            };
+            let waddr = u16::try_from(addr + addr_offset).unwrap();
+            self.registers
+                .traffic_ddc_coeff_addr()
+                .modify(|_, w| unsafe {
+                    w.traffic_coeff_waddr().bits(waddr)
+                });
+            self.registers.traffic_ddc_coeff().modify(|_, w| unsafe {
+                w.traffic_coeff_wren().bit(true)
+                    .traffic_coeff_wdata().bits(coeff as u32)
+            });
+        }
+        Ok(())
+    }
+
+    // ── Traffic chain retune (2026-05-03 dual-DDC) ──────────────
+    //
+    // Now identical in shape to the control-side retune: write the
+    // NCO frequency (offset from the traffic RX LO at the active
+    // preset's sample rate), pulse the LSM reset, ensure the chain
+    // master enable is on. The DDC FIR coefficients stay programmed
+    // across retunes — the AD9361 / preset / IF window is shared
+    // with the control chain.
+
+    /// Programs the traffic DDC NCO + pulses the traffic LSM reset
+    /// + enables the chain.
+    pub fn retune_traffic_chain(
+        &self,
+        frequency_hz: f64,
+        sample_rate_hz: f64,
+    ) -> Result<()> {
+        self.set_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
+        self.pulse_traffic_lsm_reset();
+        self.set_traffic_lsm_enable(true);
+        Ok(())
+    }
+
+    /// Quiesces the traffic LSM chain — flips `traffic_lsm_enable`
+    /// off so the RRC + LsmDemod stop receiving sample strobes.
+    /// Useful when the grant follower lets the chain idle between
+    /// calls. Traffic DDC NCO + FIRs stay programmed.
+    pub fn pause_traffic_chain(&self) {
+        self.set_traffic_lsm_enable(false);
+    }
+
+    // ── Traffic IQ ring (2026-05-03 dual-DDC parity) ────────────
+
+    /// Enables or disables the traffic post-DDC IQ ring DMA.
+    /// Level-triggered. Mirror of `set_iq_dma_enable`.
+    pub fn set_traffic_iq_dma_enable(&self, enable: bool) {
+        self.registers
+            .traffic_iq_dma_control()
+            .modify(|_, w| w.traffic_iq_enable().bit(enable));
+    }
+
+    /// Returns the index of the most recently completed traffic IQ
+    /// sub-buffer.
+    pub fn traffic_iq_last_buffer(&self) -> u8 {
+        self.registers
+            .traffic_iq_dma_status()
+            .read()
+            .traffic_iq_last_buffer()
+            .bits()
+    }
+
+    /// Reads and clears the traffic IQ ring overflow latch.
+    pub fn traffic_iq_overflow(&self) -> bool {
+        self.registers
+            .traffic_iq_dma_status()
+            .read()
+            .traffic_iq_overflow()
+            .bit()
+    }
+
+    // ── Traffic pre-diff IQ ring (2026-05-03 dual-DDC parity) ───
+
+    /// Enables or disables the traffic pre-diff IQ ring DMA.
+    pub fn set_traffic_pre_diff_iq_dma_enable(&self, enable: bool) {
+        self.registers
+            .traffic_pre_diff_iq_dma_control()
+            .modify(|_, w| w.traffic_pre_diff_iq_enable().bit(enable));
+    }
+
+    /// Returns the index of the most recently completed traffic
+    /// pre-diff IQ sub-buffer.
+    pub fn traffic_pre_diff_iq_last_buffer(&self) -> u8 {
+        self.registers
+            .traffic_pre_diff_iq_dma_status()
+            .read()
+            .traffic_pre_diff_iq_last_buffer()
+            .bits()
+    }
+
+    /// Reads and clears the traffic pre-diff IQ ring overflow latch.
+    pub fn traffic_pre_diff_iq_overflow(&self) -> bool {
+        self.registers
+            .traffic_pre_diff_iq_dma_status()
+            .read()
+            .traffic_pre_diff_iq_overflow()
+            .bit()
+    }
+
+    // Control LSM AGC debug + threshold (kept — control side intact).
 
     /// Reads the control LSM AGC debug taps: `gain_dbg` (unsigned
     /// Q9.7 truncation of the Q9.11 gain register, range 0..500) and
@@ -977,12 +1112,6 @@ impl IpCore {
     /// over-shooting / saturation.
     pub fn lsm_agc_debug(&self) -> (u16, u16) {
         let d = self.registers.lsm_agc_debug().read();
-        (d.agc_gain_dbg().bits(), d.agc_mag_dbg().bits())
-    }
-
-    /// Reads the traffic LSM AGC debug taps; see `lsm_agc_debug`.
-    pub fn traffic_lsm_agc_debug(&self) -> (u16, u16) {
-        let d = self.registers.traffic_lsm_agc_debug().read();
         (d.agc_gain_dbg().bits(), d.agc_mag_dbg().bits())
     }
 
@@ -1000,24 +1129,6 @@ impl IpCore {
     pub fn set_lsm_agc_threshold(&self, v: u16) {
         self.registers.lsm_agc_config()
             .modify(|_, w| unsafe { w.mag_update_threshold().bits(v) });
-    }
-
-    /// Reads the traffic LSM AGC idle-gate threshold; see
-    /// `lsm_agc_threshold`.
-    pub fn traffic_lsm_agc_threshold(&self) -> u16 {
-        self.registers.traffic_lsm_agc_config().read()
-            .mag_update_threshold().bits()
-    }
-
-    /// Writes the traffic LSM AGC idle-gate threshold.
-    pub fn set_traffic_lsm_agc_threshold(&self, v: u16) {
-        self.registers.traffic_lsm_agc_config()
-            .modify(|_, w| unsafe { w.mag_update_threshold().bits(v) });
-    }
-
-    /// Reads new traffic LSM dibit DMA buffers since the last call.
-    pub fn read_traffic_lsm_dibit_buffers(&mut self) -> Vec<&[u8]> {
-        self.read_dma_buffers(DmaChannel::TrafficLsmDibit)
     }
 
     // ── DMA buffer helpers ───────────────────────────────────────
@@ -1052,15 +1163,6 @@ impl IpCore {
                     .traffic_lsm_dibit_last_buffer()
                     .bits() as u32,
             ),
-            DmaChannel::TrafficIq => (
-                &self.traffic_iq_dma,
-                &mut self.traffic_iq_last_addr,
-                self.registers
-                    .traffic_iq_dma_status()
-                    .read()
-                    .last_buffer()
-                    .bits() as u32,
-            ),
             DmaChannel::PreDiffIq => (
                 &self.pre_diff_iq_dma,
                 &mut self.pre_diff_iq_last_addr,
@@ -1070,11 +1172,11 @@ impl IpCore {
                     .last_buffer()
                     .bits() as u32,
             ),
-            DmaChannel::TrafficPreDiffIq => (
-                &self.traffic_pre_diff_iq_dma,
-                &mut self.traffic_pre_diff_iq_last_addr,
+            DmaChannel::WidebandIq => (
+                &self.wideband_iq_dma,
+                &mut self.wideband_iq_last_addr,
                 self.registers
-                    .traffic_pre_diff_iq_dma_status()
+                    .wideband_iq_dma_status()
                     .read()
                     .last_buffer()
                     .bits() as u32,
@@ -1126,9 +1228,8 @@ enum DmaChannel {
     Iq,
     LsmDibit,
     TrafficLsmDibit,
-    TrafficIq,
     PreDiffIq,
-    TrafficPreDiffIq,
+    WidebandIq,
 }
 
 /// 2026-04-26 PLL seed-load diagnostic returned from
@@ -1219,10 +1320,11 @@ pub struct InterruptHandler {
     registers: Registers,
     notify_iq_dma: Arc<Notify>,
     notify_lsm_dibit_dma: Arc<Notify>,
+    /// M2B 2026-05-02: traffic LSM dibit DMA notifier.
     notify_traffic_lsm_dibit_dma: Arc<Notify>,
-    notify_traffic_iq_dma: Arc<Notify>,
     notify_pre_diff_iq_dma: Arc<Notify>,
-    notify_traffic_pre_diff_iq_dma: Arc<Notify>,
+    /// 2026-05-03: wideband raw IQ DMA notifier (PS-side software stack).
+    notify_wideband_iq_dma: Arc<Notify>,
 }
 
 impl InterruptHandler {
@@ -1233,9 +1335,8 @@ impl InterruptHandler {
             notify_iq_dma: Arc::new(Notify::new()),
             notify_lsm_dibit_dma: Arc::new(Notify::new()),
             notify_traffic_lsm_dibit_dma: Arc::new(Notify::new()),
-            notify_traffic_iq_dma: Arc::new(Notify::new()),
             notify_pre_diff_iq_dma: Arc::new(Notify::new()),
-            notify_traffic_pre_diff_iq_dma: Arc::new(Notify::new()),
+            notify_wideband_iq_dma: Arc::new(Notify::new()),
         }
     }
 
@@ -1255,17 +1356,12 @@ impl InterruptHandler {
         }
     }
 
-    /// Returns a waiter for traffic-side LSM dibit DMA completion interrupts.
+    /// Returns a waiter for traffic LSM dibit DMA completion
+    /// interrupts (M2B 2026-05-02). Mirrors `waiter_lsm_dibit_dma`
+    /// for the new mux-fed chain.
     pub fn waiter_traffic_lsm_dibit_dma(&self) -> InterruptWaiter {
         InterruptWaiter {
             notify: self.notify_traffic_lsm_dibit_dma.clone(),
-        }
-    }
-
-    /// Returns a waiter for traffic-side post-DDC IQ DMA completion interrupts.
-    pub fn waiter_traffic_iq_dma(&self) -> InterruptWaiter {
-        InterruptWaiter {
-            notify: self.notify_traffic_iq_dma.clone(),
         }
     }
 
@@ -1276,10 +1372,12 @@ impl InterruptHandler {
         }
     }
 
-    /// Returns a waiter for traffic-side pre-diff IQ DMA completion interrupts.
-    pub fn waiter_traffic_pre_diff_iq_dma(&self) -> InterruptWaiter {
+    /// Returns a waiter for wideband raw-IQ DMA completion interrupts
+    /// (2026-05-03). Each notification means one or more 1 MB sub-buffers
+    /// are ready for the PS-side software P25 stack.
+    pub fn waiter_wideband_iq_dma(&self) -> InterruptWaiter {
         InterruptWaiter {
-            notify: self.notify_traffic_pre_diff_iq_dma.clone(),
+            notify: self.notify_wideband_iq_dma.clone(),
         }
     }
 
@@ -1296,9 +1394,8 @@ impl InterruptHandler {
         let mut iq_irqs: u64 = 0;
         let mut lsm_dibit_irqs: u64 = 0;
         let mut traffic_lsm_dibit_irqs: u64 = 0;
-        let mut traffic_iq_irqs: u64 = 0;
         let mut pre_diff_iq_irqs: u64 = 0;
-        let mut traffic_pre_diff_iq_irqs: u64 = 0;
+        let mut wideband_iq_irqs: u64 = 0;
         loop {
             self.uio.irq_enable().await?;
             self.uio.irq_wait().await?;
@@ -1307,9 +1404,8 @@ impl InterruptHandler {
             let iq = interrupts.iq_dma().bit();
             let lsm_dibit = interrupts.lsm_dibit_dma().bit();
             let traffic_lsm_dibit = interrupts.traffic_lsm_dibit_dma().bit();
-            let traffic_iq = interrupts.traffic_iq_dma().bit();
             let pre_diff_iq = interrupts.pre_diff_iq_dma().bit();
-            let traffic_pre_diff_iq = interrupts.traffic_pre_diff_iq_dma().bit();
+            let wideband_iq = interrupts.wideband_iq_dma().bit();
             total_irqs += 1;
             if iq {
                 iq_irqs += 1;
@@ -1323,17 +1419,13 @@ impl InterruptHandler {
                 traffic_lsm_dibit_irqs += 1;
                 self.notify_traffic_lsm_dibit_dma.notify_waiters();
             }
-            if traffic_iq {
-                traffic_iq_irqs += 1;
-                self.notify_traffic_iq_dma.notify_waiters();
-            }
             if pre_diff_iq {
                 pre_diff_iq_irqs += 1;
                 self.notify_pre_diff_iq_dma.notify_waiters();
             }
-            if traffic_pre_diff_iq {
-                traffic_pre_diff_iq_irqs += 1;
-                self.notify_traffic_pre_diff_iq_dma.notify_waiters();
+            if wideband_iq {
+                wideband_iq_irqs += 1;
+                self.notify_wideband_iq_dma.notify_waiters();
             }
             // Update shared stats. Cheap async lock, no contention
             // because nothing else writes this struct.
@@ -1347,9 +1439,8 @@ impl InterruptHandler {
                 s.iq = iq_irqs;
                 s.lsm_dibit = lsm_dibit_irqs;
                 s.traffic_lsm_dibit = traffic_lsm_dibit_irqs;
-                s.traffic_iq = traffic_iq_irqs;
                 s.pre_diff_iq = pre_diff_iq_irqs;
-                s.traffic_pre_diff_iq = traffic_pre_diff_iq_irqs;
+                s.wideband_iq = wideband_iq_irqs;
                 s.last_at = Some(now);
             }
             // Log first 10 then every 64th to avoid flooding
@@ -1358,13 +1449,11 @@ impl InterruptHandler {
                     target: "p25_irq",
                     "IRQ #{total_irqs}: iq={iq} lsm_dibit={lsm_dibit} \
                      traffic_lsm_dibit={traffic_lsm_dibit} \
-                     traffic_iq={traffic_iq} pre_diff_iq={pre_diff_iq} \
-                     traffic_pre_diff_iq={traffic_pre_diff_iq} \
+                     pre_diff_iq={pre_diff_iq} wideband_iq={wideband_iq} \
                      (totals iq={iq_irqs} lsm_dibit={lsm_dibit_irqs} \
                      traffic_lsm_dibit={traffic_lsm_dibit_irqs} \
-                     traffic_iq={traffic_iq_irqs} \
                      pre_diff_iq={pre_diff_iq_irqs} \
-                     traffic_pre_diff_iq={traffic_pre_diff_iq_irqs})"
+                     wideband_iq={wideband_iq_irqs})"
                 );
             }
         }

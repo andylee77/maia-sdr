@@ -308,7 +308,8 @@ async fn handle_ws_iq(
                     let mut core = state.ip_core.lock().await;
                     let raw: Vec<&[u8]> = match (chain.as_str(), source.as_str()) {
                         ("control", "pre_diff") => core.read_pre_diff_iq_buffers(),
-                        ("traffic", "pre_diff") => core.read_traffic_pre_diff_iq_buffers(),
+                        // M2A 2026-05-02: traffic pre-diff ring deleted with the old chain.
+                        ("traffic", "pre_diff") => Vec::new(),
                         _ => Vec::new(),
                     };
                     raw.into_iter().map(|b| b.to_vec()).collect()

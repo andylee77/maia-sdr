@@ -26,6 +26,17 @@ pub struct ImbeForwarder {
     pub ldu2_count: std::sync::atomic::AtomicU64,
     pub tdu_count: std::sync::atomic::AtomicU64,
     pub tdu_lc_count: std::sync::atomic::AtomicU64,
+    // 2026-04-30 framer-divergence diagnostic. Incremented by
+    // VoiceHandler::on_dispatch_arm_<duid> hooks, fired by the
+    // decoder AFTER reaching the per-DUID arm but BEFORE body
+    // extraction. Counterpart to {hdu,ldu1,ldu2,tdu,tdu_lc}_count
+    // which fire AFTER body extraction. Per-call delta of the diff
+    // = body-extraction failure count for that DUID.
+    pub framer_arm_hdu:    std::sync::atomic::AtomicU64,
+    pub framer_arm_ldu1:   std::sync::atomic::AtomicU64,
+    pub framer_arm_ldu2:   std::sync::atomic::AtomicU64,
+    pub framer_arm_tdu:    std::sync::atomic::AtomicU64,
+    pub framer_arm_tdu_lc: std::sync::atomic::AtomicU64,
     pub imbe_frames_extracted: std::sync::atomic::AtomicU64,
     /// Incremented in `forward_frames` when the vocoder input queue is
     /// full. Arc-wrapped so the recorder task can hold a cloneable
@@ -424,6 +435,11 @@ impl ImbeForwarder {
             ldu2_count: 0.into(),
             tdu_count: 0.into(),
             tdu_lc_count: 0.into(),
+            framer_arm_hdu: 0.into(),
+            framer_arm_ldu1: 0.into(),
+            framer_arm_ldu2: 0.into(),
+            framer_arm_tdu: 0.into(),
+            framer_arm_tdu_lc: 0.into(),
             imbe_frames_extracted: 0.into(),
             imbe_frames_dropped: std::sync::Arc::new(0.into()),
             imbe_frames_dropped_idle: 0.into(),
@@ -682,6 +698,43 @@ impl ImbeForwarder {
 }
 
 impl p25::control_channel::VoiceHandler for ImbeForwarder {
+    // 2026-04-30 framer-divergence diagnostic. Decoder fires these
+    // AFTER reaching the per-DUID arm but BEFORE body extraction.
+    // Per-call delta of (framer_arm_X - X_count) = body-extraction
+    // failures for that DUID (extract_imbe_frames returned None,
+    // or the X arm reached but body never dispatched).
+    fn on_dispatch_arm_hdu(&self) {
+        use std::sync::atomic::Ordering;
+        self.framer_arm_hdu.fetch_add(1, Ordering::Relaxed);
+    }
+    fn on_dispatch_arm_ldu1(&self) {
+        use std::sync::atomic::Ordering;
+        self.framer_arm_ldu1.fetch_add(1, Ordering::Relaxed);
+    }
+    fn on_dispatch_arm_ldu2(&self) {
+        use std::sync::atomic::Ordering;
+        self.framer_arm_ldu2.fetch_add(1, Ordering::Relaxed);
+    }
+    fn on_dispatch_arm_tdu(&self) {
+        use std::sync::atomic::Ordering;
+        self.framer_arm_tdu.fetch_add(1, Ordering::Relaxed);
+    }
+    fn on_dispatch_arm_tdu_lc(&self) {
+        use std::sync::atomic::Ordering;
+        self.framer_arm_tdu_lc.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Surface the HDL-validated NAC (latched on every t=4 BCH-passing
+    /// NID event from the LSM hardware in the traffic_lsm heartbeat,
+    /// see main.rs:1406) to the PS framer so it can reject any of its
+    /// own BCH-passing NIDs whose NAC disagrees. Returns 0 before the
+    /// chain has produced a confirmed NAC, which the framer treats as
+    /// "guard disabled" and accepts the decode.
+    fn expected_nac(&self) -> u16 {
+        use std::sync::atomic::Ordering;
+        self.last_observed_nac.load(Ordering::Relaxed)
+    }
+
     fn on_ldu1(
         &self,
         frames: &[p25::voice_frame::ImbeFrameRaw; 9],
@@ -1024,57 +1077,15 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
     fn on_tdu(&self) {
         use std::sync::atomic::Ordering;
         self.tdu_count.fetch_add(1, Ordering::Relaxed);
-        // Bare TDU is a real end-of-call signal (just without the Link
-        // Control payload TDU_LC carries). Route through SpeakerEnd so
-        // end-of-call splits happen on the protocol signal rather than
-        // the 1.5 s grace timeout (on the test target this pulled
-        // grace-finalise rate from ~37 % back into the noise).
-        // `source: None` — bare TDU carries no speaker ID.
-        let nac = self.last_observed_nac.load(Ordering::Relaxed);
-        let tg = self.current_talkgroup.load(Ordering::Relaxed);
-        // Bare TDU: precondition is current_talkgroup != 0 AND we
-        // saw IMBE voice frames recently (≤ RECENT_IMBE_MS). Bare
-        // TDU has no LCW payload, so we can't do the per-field
-        // cross-check we do on Motorola TALK_COMPLETE. What we CAN
-        // do is require evidence that a call was genuinely flowing —
-        // a TDU arriving after a long idle is almost certainly a
-        // false BCH-decoded DUID nibble. IMBE within the last 2 s
-        // is a tight gate: a real end-of-call TDU follows the last
-        // LDU by ~180 ms at most.
-        let imbe_recent = {
-            let last_imbe_ms = self.last_imbe_at_millis
-                .load(Ordering::Relaxed);
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64).unwrap_or(0);
-            last_imbe_ms != 0
-                && now_ms.saturating_sub(last_imbe_ms) < 2_000
-        };
-        if self.speaker_end_precondition_ok() && imbe_recent {
-            if let Some(tx) = self.call_boundary_tx.get() {
-                // Same treatment as CallTermination: carry the
-                // follower's current_source on the boundary so a
-                // bare TDU that wins the cooldown race doesn't erase
-                // a legitimate source we already know.
-                let current_src = self.current_source
-                    .load(Ordering::Relaxed);
-                let src_for_boundary = if current_src != 0
-                    { Some(current_src) } else { None };
-                self.try_emit_speaker_end(tx, audio::CallBoundary {
-                    kind: audio::CallBoundaryKind::SpeakerEnd {
-                        source: src_for_boundary,
-                        kind: audio::TerminatorKind::BareTdu,
-                    },
-                    nac,
-                    talkgroup: if tg == 0 { None } else { Some(tg) },
-                    expected_submit_count: self
-                        .frames_submitted
-                        .load(Ordering::Relaxed),
-                });
-            }
-        } else if !imbe_recent {
-            self.speaker_end_invalid.fetch_add(1, Ordering::Relaxed);
-        }
+        // Bare TDU (DUID=0x3, no LCW) does NOT close calls. Per
+        // operator: end-of-call must come from LCW-FEC-decoded
+        // TDULC (CallTermination or Motorola TalkComplete) only —
+        // both carry an inner Golay24+RS(24,12,13) payload that
+        // gates against over-correction at the framer's wider BCH
+        // sphere. A bare TDU has no inner FEC to verify, so
+        // anything BCH-passing into the 0x3 nibble that came from
+        // biased noise would otherwise emit a phantom call-end.
+        // Counter still bumps for diagnostic visibility.
     }
 
     fn on_tdu_lc(&self, body_raw: &[u8]) {

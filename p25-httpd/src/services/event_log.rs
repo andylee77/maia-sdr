@@ -103,10 +103,19 @@ pub struct LogEntry {
 }
 
 /// Bounded ring buffer. Append-only; oldest entries drop when full.
+///
+/// `verbose` gates the high-volume "everything we saw on the wire"
+/// categories (`Voice` TDULC chatter, `Duid` per-frame framer dispatch).
+/// Default off — the ring fills with operator-actionable events
+/// (Vocoder, Traffic, Recorder, System, Grant). When on, the ring
+/// captures everything but rolls in a few seconds during active CC
+/// traffic. Either way, `tracing::info!` mirrors every push to
+/// `journalctl`, so offline log export keeps full fidelity.
 pub struct EventLog {
     entries: Mutex<VecDeque<LogEntry>>,
     capacity: usize,
     next_seq: AtomicU64,
+    verbose: std::sync::atomic::AtomicBool,
 }
 
 impl EventLog {
@@ -115,27 +124,42 @@ impl EventLog {
             entries: Mutex::new(VecDeque::with_capacity(capacity)),
             capacity,
             next_seq: AtomicU64::new(1),
+            verbose: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Toggle verbose mode at runtime. When false (default),
+    /// `Voice` and `Duid` events are dropped at push time so the
+    /// ring stays useful as a tail of operator-actionable events.
+    pub fn set_verbose(&self, on: bool) {
+        self.verbose.store(on, Ordering::Relaxed);
+    }
+
+    /// Current verbose flag.
+    pub fn verbose(&self) -> bool {
+        self.verbose.load(Ordering::Relaxed)
     }
 
     /// Push a new entry. Infallible -- lock poisoning is ignored so
     /// logging can never panic a task. Also emits a `tracing::info!`
     /// line targeted at `p25_event_log` so the systemd journal on the
     /// board has the same events even without the dashboard.
+    ///
+    /// `Voice` / `Duid` are dropped from the ring (but not from
+    /// `tracing::info!`) when `verbose` is false; see struct doc.
     pub fn push(
         &self,
         category: LogCategory,
         message: impl Into<String>,
         fields: Value,
     ) {
-        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
         let msg = message.into();
 
-        // Mirror to stdout for `journalctl -u p25-httpd -f`.
+        // Mirror to stdout for `journalctl -u p25-httpd -f`. Always
+        // emitted regardless of verbose flag — offline log export
+        // and SDRTrunk-format conversion read the journal, not the
+        // ring, so verbose-off here doesn't lose anything that
+        // wasn't already easy to recover.
         tracing::info!(
             target: "p25_event_log",
             category = category.as_str(),
@@ -143,6 +167,21 @@ impl EventLog {
             "{}",
             msg,
         );
+
+        // Verbose-only categories: drop at push time when off so the
+        // ring stays a useful tail. Done after the tracing mirror so
+        // journalctl still has them.
+        if matches!(category, LogCategory::Voice | LogCategory::Duid)
+            && !self.verbose.load(Ordering::Relaxed)
+        {
+            return;
+        }
+
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
 
         let entry = LogEntry {
             seq,

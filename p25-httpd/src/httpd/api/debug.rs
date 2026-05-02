@@ -94,7 +94,8 @@ pub async fn get_spectrum(
                 let mut core = state.ip_core.lock().await;
                 let bufs: Vec<&[u8]> = match chain {
                     "control" => core.read_iq_buffers(),
-                    "traffic" => core.read_traffic_iq_buffers(),
+                    // M2A 2026-05-02: traffic IQ ring deleted with the old chain.
+                    "traffic" => Vec::new(),
                     other => {
                         return Json(serde_json::json!({
                             "ok": false,
@@ -257,7 +258,8 @@ async fn drain_pre_diff(
             let mut core = state.ip_core.lock().await;
             let bufs: Vec<&[u8]> = match chain {
                 "control" => core.read_pre_diff_iq_buffers(),
-                "traffic" => core.read_traffic_pre_diff_iq_buffers(),
+                // M2A 2026-05-02: traffic pre-diff ring deleted with the old chain.
+                "traffic" => Vec::new(),
                 other => {
                     return Err(format!(
                         "unknown chain '{other}'; expected control|traffic"
@@ -584,5 +586,197 @@ pub async fn get_distribution(
     Json(serde_json::json!({
         "ok": false,
         "error": "distribution only available on the target (linux/arm)",
+    }))
+}
+
+// ── Wideband raw IQ capture (2026-05-03) ─────────────────────────────
+//
+// `GET /api/wideband_iq_capture` returns the snapshot (active capture
+// progress + last completed path).
+// `POST /api/wideband_iq_capture?seconds=N` (or no body) opens a fresh
+// .cs16 capture file in /tmp/p25_iq_captures/ and the wideband IQ
+// reader task tees the next N seconds of 8 MSPS samples into it.
+//
+// File format: raw interleaved i16 little-endian I/Q (8000000 sample
+// pairs per second). GNU Radio: `iio_readdev`-equivalent — read with
+// `dtype=int16` then reshape to (-1, 2).
+
+#[cfg(target_os = "linux")]
+pub async fn get_wideband_iq_capture(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let snap = state.wideband_iq_capture.snapshot().await;
+    Json(serde_json::json!({
+        "ok": true,
+        "capture": snap,
+    }))
+}
+
+#[cfg(target_os = "linux")]
+pub async fn post_wideband_iq_capture(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    let seconds: f64 = params
+        .get("seconds")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2.0);
+
+    match state.wideband_iq_capture.start(seconds).await {
+        Ok(path) => {
+            // 2026-05-03 dual-DDC pivot: the wideband_iq DMA is off
+            // by default. Capture is a primary consumer — flip the
+            // DMA on so the next IRQ wakes the reader. The operator
+            // is responsible for turning it back off afterward via
+            // `POST /api/sw_demod?enabled=0` (or another capture
+            // start), since auto-off would race with the drain
+            // tail of the previous capture.
+            {
+                let core = state.ip_core.lock().await;
+                core.set_wideband_iq_dma_enable(true);
+            }
+            Json(serde_json::json!({
+                "ok": true,
+                "path": path,
+                "seconds": seconds,
+                "approx_bytes": (seconds * 8_000_000.0 * 4.0) as u64,
+                "wideband_iq_dma": true,
+                "note": "wideband_iq DMA was enabled for the capture; \
+                         disable via POST /api/sw_demod?enabled=0 once \
+                         the capture file finishes writing.",
+            })).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": format!("{e}"),
+            })),
+        ).into_response(),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn get_wideband_iq_capture(
+    State(_state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "error": "wideband IQ capture only available on target (linux/arm)",
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn post_wideband_iq_capture(
+    State(_state): State<Arc<AppState>>,
+    Query(_params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "error": "wideband IQ capture only available on target (linux/arm)",
+    }))
+}
+
+// ── Live software demod (Stage 2B 2026-05-03) ────────────────────────
+//
+// `GET  /api/sw_demod`             — runtime stats + current enable
+// `POST /api/sw_demod?enabled=0|1` — flip live software demod on/off
+
+#[cfg(target_os = "linux")]
+pub async fn get_sw_demod(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    use std::sync::atomic::Ordering;
+    let s = &state.sw_demod_stats;
+    let elapsed = s.started_at.lock().ok()
+        .and_then(|g| *g)
+        .map(|t| t.elapsed().as_secs_f64())
+        .unwrap_or(0.0);
+    let last_chunk_secs_ago = s.last_chunk_at.lock().ok()
+        .and_then(|g| *g)
+        .map(|t| t.elapsed().as_secs_f64());
+    Json(serde_json::json!({
+        "ok": true,
+        "enabled": state.sw_demod_enabled.load(Ordering::Relaxed),
+        "uptime_secs": elapsed,
+        "chunks_in": s.chunks_in.load(Ordering::Relaxed),
+        "samples_in": s.samples_in.load(Ordering::Relaxed),
+        "samples_out_62k5": s.samples_out_62k5.load(Ordering::Relaxed),
+        "dibits_emitted": s.dibits_emitted.load(Ordering::Relaxed),
+        "framer_dispatches": s.framer_dispatches.load(Ordering::Relaxed),
+        "retunes": s.retunes.load(Ordering::Relaxed),
+        "nco_offset_hz": s.nco_offset_hz.load(Ordering::Relaxed),
+        "last_chunk_secs_ago": last_chunk_secs_ago,
+    }))
+}
+
+#[cfg(target_os = "linux")]
+pub async fn post_sw_demod(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use std::sync::atomic::Ordering;
+
+    let want = match params
+        .get("enabled")
+        .map(|v| v.as_str())
+    {
+        Some("1") | Some("true") | Some("on") | Some("yes") => true,
+        Some("0") | Some("false") | Some("off") | Some("no") => false,
+        Some(other) => return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": format!("bad enabled value: {other:?} (expected 0/1/true/false)"),
+            })),
+        ).into_response(),
+        None => return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "missing enabled=0|1 query param",
+            })),
+        ).into_response(),
+    };
+    state.sw_demod_enabled.store(want, Ordering::Relaxed);
+    // 2026-05-03 dual-DDC pivot: the wideband_iq DMA is the only
+    // upstream data source for the sw_demod task, and it's the
+    // dominant CPU cost (32 MB/s drain + i16→f32 + LsmPipeline).
+    // Drive the DMA enable from the same toggle so flipping
+    // sw_demod off actually frees the cores.
+    {
+        let core = state.ip_core.lock().await;
+        core.set_wideband_iq_dma_enable(want);
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "enabled": want,
+        "wideband_iq_dma": want,
+    })).into_response()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn get_sw_demod(
+    State(_state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "error": "sw_demod only available on target (linux/arm)",
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn post_sw_demod(
+    State(_state): State<Arc<AppState>>,
+    Query(_params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "error": "sw_demod only available on target (linux/arm)",
     }))
 }

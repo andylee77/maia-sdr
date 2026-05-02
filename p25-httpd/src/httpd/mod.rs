@@ -271,6 +271,42 @@ pub struct AppState {
     /// centre for the tracker. 0 until the first recal this session.
     pub last_recal_shift_hz:
         std::sync::Arc<std::sync::atomic::AtomicI64>,
+
+    /// 2026-04-30 post-pacer sync diagnostic ring. The traffic LSM
+    /// heartbeat pushes a `SyncTraceSample` on every NID event during
+    /// an active call; `/api/recordings/{id}/sync_trace` filters by
+    /// `call_id`. Used to localise mid-call sync loss (PLL drift, AGC
+    /// overshoot, sync-correlator threshold, symbol-timing slip) per
+    /// `project_post_pacer_next_steps.md`.
+    pub sync_trace_ring: crate::services::sync_trace::SyncTraceRing,
+
+    /// 2026-05-03: wideband raw-IQ capture handle for the PS-side
+    /// software P25 stack. `/api/wideband_iq_capture` POSTs a duration
+    /// here to dump N seconds of 8 MSPS IQ to /tmp for offline analysis.
+    /// GET returns the current/last capture status.
+    #[cfg(target_os = "linux")]
+    pub wideband_iq_capture: Arc<crate::app::wideband_iq_task::WidebandIqCaptureState>,
+
+    /// 2026-05-03 Stage 2B: live software-demod runtime gate. When true
+    /// the `sw_demod_task` feeds dibits into `traffic_lsm_decoder` and
+    /// the HDL traffic LSM chain is idled (`set_traffic_lsm_enable=0`).
+    /// When false the HDL chain is the active source. Default true.
+    #[cfg(target_os = "linux")]
+    pub sw_demod_enabled: Arc<std::sync::atomic::AtomicBool>,
+
+    /// 2026-05-03 Stage 2B: cumulative stats for the live software demod.
+    /// Read by `/api/sw_demod`.
+    #[cfg(target_os = "linux")]
+    pub sw_demod_stats: Arc<crate::app::sw_demod_task::SwDemodStats>,
+
+    /// 2026-05-03 dual-DDC pivot: per-site baseline (NAC/WACN/IDEN
+    /// bands/CC/cc_position). Hydrated at boot from the overlay file
+    /// in `/mnt/data/p25/<active_site>.json` ∪ the repo seed at
+    /// `p25-httpd/sites/<active_site>.json`. Mutated by the grant
+    /// follower as IDEN_UPDATE TSBKs land + saved to the overlay
+    /// path. Read by `/api/site*` handlers + the LO-snap policy in
+    /// `httpd::api::tuning`.
+    pub active_site: Arc<RwLock<Option<crate::services::sites::Site>>>,
 }
 
 impl AppState {
@@ -319,6 +355,9 @@ pub fn router(
     }
     r
         .route("/", get(index_html))
+        .route("/api/sites", get(api::sites::get_sites))
+        .route("/api/sites/{name}", get(api::sites::get_site))
+        .route("/api/site", post(api::sites::post_site))
         .route("/api/system", get(api::system::get_system))
         .route("/api/sys_health", get(api::system::get_sys_health))
         .route("/api/ps_cores", get(api::system::get_ps_cores))
@@ -353,6 +392,10 @@ pub fn router(
         .route("/api/traffic_dibit_capture_aligned", get(api::chain::get_traffic_dibit_capture_aligned))
         .route("/api/traffic_iq_dump", get(api::chain::get_traffic_iq_dump))
         .route("/api/traffic_lsm_control", get(api::chain::get_traffic_lsm_control))
+        // M2B 2026-05-02: bin-energy dump for the polyphase channelizer.
+        // Lets us empirically diagnose the bin↔freq permutation when
+        // the framer can't sync against PS-computed `freq_to_bin`.
+        .route("/api/traffic_bins",        get(api::chain::get_traffic_bins))
         // Phase 10-prep: live AD9361 RX gain knob. Previously only
         // reachable via /api/reinit (which rewrites everything);
         // having a dedicated read/write lets us A/B gain during
@@ -423,6 +466,7 @@ pub fn router(
         .route("/api/grant_decode_stats", get(api::history::get_grant_decode_stats))
         .route("/api/recordings/{id}", get(api::history::get_recording_file))
         .route("/api/recordings/{id}/events", get(api::history::get_recording_events))
+        .route("/api/recordings/{id}/sync_trace", get(api::history::get_recording_sync_trace))
         // Modulation selector (C4FM / LSM / Auto). SDRTrunk-style.
         .route("/api/modulation", get(api::tuning::get_modulation).put(api::tuning::put_modulation))
         // Browser-pushed wall-clock sync. Zero-infra alternative to
@@ -446,6 +490,20 @@ pub fn router(
         // (±600 Hz inner, ±1800 Hz outer). Feeds the Plots tab
         // "distribution" panel.
         .route("/api/distribution", get(api::debug::get_distribution))
+        // 2026-05-03: wideband raw IQ capture (PS-side software P25
+        // stack stage 1). GET = status snapshot; POST?seconds=N
+        // dumps N seconds of 8 MSPS samples to /tmp/p25_iq_captures/.
+        .route(
+            "/api/wideband_iq_capture",
+            get(api::debug::get_wideband_iq_capture)
+                .post(api::debug::post_wideband_iq_capture),
+        )
+        // Stage 2B 2026-05-03: live software demod runtime control.
+        .route(
+            "/api/sw_demod",
+            get(api::debug::get_sw_demod)
+                .post(api::debug::post_sw_demod),
+        )
         // Self-describing API catalogue for the dashboard's API tab.
         .route("/api/endpoints", get(api::system::get_endpoints))
         .route("/ws/events", get(api::ws::ws_events))

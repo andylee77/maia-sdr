@@ -4,9 +4,11 @@ p25_ddc_filter_design.py -- P25DDC filter design, multi-preset sweep.
 
 Designs the coefficients for the 3-stage DDC used by the Fishball P25
 control + traffic chains, across a fixed table of sample-rate presets.
-Every preset produces the same 62.5 kSPS DDC output (so the downstream
-LsmDecimator2 /2 + LsmFir chain is untouched); only the AD9361 ADC
-rate and the per-stage decimation factors change.
+Every preset produces the same 50 kSPS DDC output (post-2026-05-03
+retune; see FS_OUT below). The downstream LsmDecimator2 /2 takes the
+50 kSPS to 25 kSPS, matching SDRTrunk's effective LSM front-end rate.
+Only the AD9361 ADC rate and the per-stage decimation factors change
+across presets.
 
 The 8M preset is the original P25DDC v2 design (doc/changes/041) and
 is bit-identical to what landed in 2026-04-15. All other presets are
@@ -63,7 +65,13 @@ from scipy.signal import remez, freqz, kaiserord
 
 # ── Global constants ──────────────────────────────────────────────
 
-FS_OUT = 62_500            # = 13 samples/symbol @ 4800 baud (fixed)
+# 2026-05-03: dropped DDC output rate from 62.5 kSPS to 50 kSPS so
+# the downstream LsmDecimator2 /2 lands at exactly 25 kSPS — matching
+# SDRTrunk's LSM decoder front-end rate (sps = 25000/4800 ≈ 5.21).
+# Per-preset (d1, d2, d3) factorizations are recomputed accordingly;
+# stage 3 always carries the new /5 factor (smallest filter cost,
+# cleanest transition band).
+FS_OUT = 50_000            # = 10.42 samples/symbol pre-/2; 5.21 post-/2
 
 # Fixed-point coefficient format (matches maia_hdl DDC):
 #   18-bit signed, Q1.17. Max positive = 2^17 - 1 = 131071.
@@ -101,26 +109,28 @@ def max_taps_fir2dsp(decim: int) -> int:
 # ── Preset table ──────────────────────────────────────────────────
 #
 # (name, sample_rate_hz, d1, d2, d3). Every entry must satisfy
-# d1*d2*d3 = sample_rate_hz / FS_OUT.
+# d1*d2*d3 = sample_rate_hz / FS_OUT  with FS_OUT = 50 kSPS.
 #
-# 8M stays as [4, 4, 8] to preserve the validated 2026-04-15
-# coefficients bit-identically. All other presets use
-# [sr/MHz, 4, 4] which puts the odd/prime factor in stage 1 where
-# the anti-alias transition is the widest and the tap budget is
-# easy to meet.
+# 2026-05-03 retune: every preset now ends in d3=5. Stage 3's input
+# rate (and therefore its filter sharpness budget) is unchanged
+# vs the prior 62.5 kSPS table — only the decim factor moves from
+# 4 (or 8 for 8M) to 5, and stage 3's stopband moves from 31.25 kHz
+# to 25 kHz (the new fs_out/2). The previous bit-identical-to-2026
+# -04-15 8M preset is intentionally retired; the new design is
+# validated by the same `rejection_25k_db` build-time threshold.
 
 PRESETS = [
-    ("2M",   2_000_000,  2, 4, 4),
-    ("3M",   3_000_000,  3, 4, 4),
-    ("4M",   4_000_000,  4, 4, 4),
-    ("5M",   5_000_000,  5, 4, 4),
-    ("6M",   6_000_000,  6, 4, 4),
-    ("7M",   7_000_000,  7, 4, 4),
-    ("8M",   8_000_000,  4, 4, 8),   # original P25DDC v2 design
-    ("9M",   9_000_000,  9, 4, 4),
-    ("10M", 10_000_000, 10, 4, 4),
-    ("12M", 12_000_000, 12, 4, 4),
-    ("16M", 16_000_000, 16, 4, 4),
+    ("2M",   2_000_000,  2, 4, 5),
+    ("3M",   3_000_000,  3, 4, 5),
+    ("4M",   4_000_000,  4, 4, 5),
+    ("5M",   5_000_000,  5, 4, 5),
+    ("6M",   6_000_000,  6, 4, 5),
+    ("7M",   7_000_000,  7, 4, 5),
+    ("8M",   8_000_000,  8, 4, 5),
+    ("9M",   9_000_000,  9, 4, 5),
+    ("10M", 10_000_000, 10, 4, 5),
+    ("12M", 12_000_000, 12, 4, 5),
+    ("16M", 16_000_000, 16, 4, 5),
 ]
 
 
@@ -169,13 +179,16 @@ def stages_for_preset(fs: int, d1: int, d2: int, d3: int):
     # Stage 3 is the critical anti-alias for LsmDecimator2's fold-back.
     # Passband + stopband are ABSOLUTE frequencies (same across all
     # presets); only the input rate changes.
+    # 2026-05-03: stopband moved from 31_250 (old fs_out/2 @ 62.5 kSPS)
+    # to 25_000 (new fs_out/2 @ 50 kSPS) so the LsmDecimator2 /2 lands
+    # at 25 kSPS without fold-back.
     stage3_fs = stage2_fs // d2
     stage3 = StageSpec(
         name='stage3',
         fs=stage3_fs,
         decim=d3,
         passband_hz=7_250,
-        stopband_hz=31_250,
+        stopband_hz=25_000,
         stopband_db=220.0,
     )
     return stage1, stage2, stage3
@@ -393,17 +406,19 @@ def emit_rust_module(presets_data: list[dict]) -> str:
     out.append("// DO NOT EDIT BY HAND. Rerun the script to regenerate.")
     out.append("//")
     out.append("// P25DDC v2 multi-preset coefficient tables. Every preset")
-    out.append("// produces 62.5 kSPS at the DDC output so the downstream")
-    out.append("// LsmDecimator2 + LsmFir chain is identical across presets.")
-    out.append("// The 8M preset reproduces the validated 2026-04-15")
-    out.append("// coefficients bit-identically.")
+    out.append("// produces 50 kSPS at the DDC output so the downstream")
+    out.append("// LsmDecimator2 /2 + LsmFir(LPF_TAPS_25K, RRC_TAPS_25K) chain")
+    out.append("// is identical across presets and lands at 25 kSPS at the")
+    out.append("// LSM front end (matching SDRTrunk's effective LSM rate).")
+    out.append("// 2026-05-03 retune; the prior 62.5 kSPS bit-identical-2026")
+    out.append("// -04-15 8M preset is intentionally retired.")
     out.append("")
     out.append("#![allow(dead_code)]")
     out.append("")
     out.append("/// One DDC preset: AD9361 sample-rate choice + matching")
     out.append("/// 3-stage FIR coefficient tables + decimation factors.")
     out.append("/// `sample_rate_hz / (decim1 * decim2 * decim3)` is always")
-    out.append("/// 62 500 Hz by construction.")
+    out.append("/// 50 000 Hz by construction (post-2026-05-03 retune).")
     out.append("pub struct DdcPreset {")
     out.append("    pub name: &'static str,")
     out.append("    pub sample_rate_hz: u32,")
@@ -435,7 +450,7 @@ def emit_rust_module(presets_data: list[dict]) -> str:
         n = p["name"]
         out.append(f"// ── {n} preset ─────────────────────────────────")
         out.append(
-            f"// {p['fs']/1e6:.3f} MSPS → 62.5 kSPS "
+            f"// {p['fs']/1e6:.3f} MSPS → 50 kSPS "
             f"(/{p['d1']}/{p['d2']}/{p['d3']} = /{p['d1']*p['d2']*p['d3']})"
         )
         out.append(
@@ -603,7 +618,7 @@ def main():
         )
         axs[3].plot(w / 1e6, 20 * np.log10(np.abs(h) + 1e-30))
         axs[3].set_title(
-            f"{p['name']} cascaded ({p['fs']/1e6:.1f} MSPS → 62.5 kSPS)")
+            f"{p['name']} cascaded ({p['fs']/1e6:.1f} MSPS → 50 kSPS)")
         axs[3].set_xlabel("MHz")
         axs[3].set_ylabel("dB")
         axs[3].grid(True)

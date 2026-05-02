@@ -43,6 +43,9 @@ const RING_CAP: usize = 200;
 /// Shared ring of completed grant summaries.
 pub type GrantStatsRing = Arc<Mutex<VecDeque<GrantDecodeSummary>>>;
 
+#[allow(dead_code)]
+fn is_zero_u64(v: &u64) -> bool { *v == 0 }
+
 /// Per-grant decode summary. Same shape as the pre-2026-04-25
 /// version; only the lifecycle source has changed.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -73,6 +76,24 @@ pub struct GrantDecodeSummary {
     pub ldu2_count: u64,
     pub tdu_count: u64,
     pub tdu_lc_count: u64,
+    /// 2026-04-30 framer-divergence diagnostic. Per-call delta of
+    /// "decoder reached the per-DUID dispatch arm" — fires AFTER
+    /// the decoder's NID hunt accepts a sync candidate, BCH'd, and
+    /// classified the DUID, but BEFORE body extraction. Diff vs the
+    /// matching `*_count` field = body-extraction failure count.
+    /// HDL register samples (sync_trace) report what HDL saw; these
+    /// fields report what the PS framer saw. Divergence localises
+    /// dibit-stream alignment / sync-correlator differences.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub framer_arm_hdu: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub framer_arm_ldu1: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub framer_arm_ldu2: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub framer_arm_tdu: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub framer_arm_tdu_lc: u64,
     pub imbe_extracted: u64,
     pub imbe_dropped: u64,
     pub vocoder_pcm_samples: u64,
@@ -101,6 +122,16 @@ pub struct GrantDecodeSummary {
     /// either encrypted, sticky-rejected, or chain settle failed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agc_gain_q97_at_close: Option<u16>,
+    /// 2026-04-30 air-time from CC `GRP_VCH_GRNT_UPD` beacons.
+    /// last_upd_unix_ms - started_unix_ms = the speaker's actual
+    /// on-air duration, independent of whether audio was
+    /// extracted. delta vs `duration_ms` (lifecycle) and
+    /// `(ldu1+ldu2)*180` (audio extracted) localises which stage
+    /// missed time — recording-window vs body-extraction failure
+    /// vs early-close. `None` when no UPDs landed (very short
+    /// call or chain missed all UPD beacons).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub air_duration_ms: Option<u64>,
 }
 
 struct ActiveSummary {
@@ -124,6 +155,11 @@ struct Counters {
     ldu2: u64,
     tdu: u64,
     tdu_lc: u64,
+    framer_arm_hdu: u64,
+    framer_arm_ldu1: u64,
+    framer_arm_ldu2: u64,
+    framer_arm_tdu: u64,
+    framer_arm_tdu_lc: u64,
     imbe_extracted: u64,
     imbe_dropped: u64,
     pcm: u64,
@@ -135,17 +171,22 @@ struct Counters {
 impl Counters {
     fn snapshot(f: &ImbeForwarder) -> Self {
         Self {
-            hdu:              f.hdu_count.load(Ordering::Relaxed),
-            ldu1:             f.ldu1_count.load(Ordering::Relaxed),
-            ldu2:             f.ldu2_count.load(Ordering::Relaxed),
-            tdu:              f.tdu_count.load(Ordering::Relaxed),
-            tdu_lc:           f.tdu_lc_count.load(Ordering::Relaxed),
-            imbe_extracted:   f.imbe_frames_extracted.load(Ordering::Relaxed),
-            imbe_dropped:     f.imbe_frames_dropped.load(Ordering::Relaxed),
-            pcm:              f.vocoder_pcm_produced.load(Ordering::Relaxed),
-            errors:           f.vocoder_errors.load(Ordering::Relaxed),
-            silent:           f.vocoder_frames_silent_observed.load(Ordering::Relaxed),
-            encrypted_frames: f.vocoder_frames_encrypted.load(Ordering::Relaxed),
+            hdu:               f.hdu_count.load(Ordering::Relaxed),
+            ldu1:              f.ldu1_count.load(Ordering::Relaxed),
+            ldu2:              f.ldu2_count.load(Ordering::Relaxed),
+            tdu:               f.tdu_count.load(Ordering::Relaxed),
+            tdu_lc:            f.tdu_lc_count.load(Ordering::Relaxed),
+            framer_arm_hdu:    f.framer_arm_hdu.load(Ordering::Relaxed),
+            framer_arm_ldu1:   f.framer_arm_ldu1.load(Ordering::Relaxed),
+            framer_arm_ldu2:   f.framer_arm_ldu2.load(Ordering::Relaxed),
+            framer_arm_tdu:    f.framer_arm_tdu.load(Ordering::Relaxed),
+            framer_arm_tdu_lc: f.framer_arm_tdu_lc.load(Ordering::Relaxed),
+            imbe_extracted:    f.imbe_frames_extracted.load(Ordering::Relaxed),
+            imbe_dropped:      f.imbe_frames_dropped.load(Ordering::Relaxed),
+            pcm:               f.vocoder_pcm_produced.load(Ordering::Relaxed),
+            errors:            f.vocoder_errors.load(Ordering::Relaxed),
+            silent:            f.vocoder_frames_silent_observed.load(Ordering::Relaxed),
+            encrypted_frames:  f.vocoder_frames_encrypted.load(Ordering::Relaxed),
         }
     }
 }
@@ -186,6 +227,27 @@ async fn handle_event(
             tg, nac, source, freq_hz, channel,
             encrypted, not_followed, ..
         } => {
+            // 2026-04-30 fix: synthetic not_followed CallOpen+CallClose
+            // pairs (cross-freq encrypted/sticky/monitor-rejected
+            // grants emitted for Recent-Calls visibility) must NOT
+            // displace a real active call. Without this gate, the
+            // pre-existing stale-active path below would force-finalise
+            // the real active as Timeout — losing its real CallClose
+            // counters when the eventual TgChange close arrives. Push
+            // the synthetic summary inline (zero-decode, instant close)
+            // and ignore the matching CallClose (active.take() will be
+            // None for it). Same-freq not_followed grants close the
+            // active explicitly upstream in handle_boundary, so by the
+            // time we get here `active` is already None for that path.
+            if not_followed.is_some() && active.is_some() {
+                let summary = synthetic_not_followed_summary(
+                    event.call_id, tg, nac, source, freq_hz,
+                    channel, encrypted, not_followed,
+                    event.timestamp_unix_ms,
+                );
+                route_push(clear_ring, enc_ring, summary);
+                return;
+            }
             // Defensive: if there's somehow an active summary still
             // here (call_tracker should have closed it first),
             // synthesise a Timeout close so we don't leak.
@@ -238,18 +300,18 @@ async fn handle_event(
         CallTrackerEventKind::CallClose {
             reason, final_source, final_actual_speaker,
             expected_submit_count, first_audio_at_unix_ms,
-            sources_observed, ..
+            sources_observed, last_upd_at_unix_ms, ..
         } => {
-            let Some(prev) = active.take() else { return; };
-            if prev.call_id != event.call_id {
-                tracing::warn!(
-                    target: "p25_grant_stats",
-                    "CallClose call_id={} doesn't match active \
-                     call_id={} — discarding",
-                    event.call_id, prev.call_id,
-                );
-                return;
+            // 2026-04-30: peek before take. The CallClose half of a
+            // synthetic not_followed pair (handled inline at CallOpen)
+            // arrives here; if `active` holds the real call, taking it
+            // unconditionally would lose the real call's eventual
+            // finalise. Only consume `active` when call_ids match.
+            match active.as_ref().map(|a| a.call_id) {
+                Some(id) if id == event.call_id => {} // matches — proceed
+                _ => return,
             }
+            let prev = active.take().unwrap();
 
             // Wait for the vocoder to drain in-flight batches before
             // snapshotting close-time counters. Up to 2 s; a stuck
@@ -270,6 +332,14 @@ async fn handle_event(
                 first_audio_at_unix_ms, forwarder,
             );
             summary.sources_observed = sources_observed;
+            // 2026-04-30 air-time: last_upd - started = on-air ms,
+            // independent of audio extraction success. None when
+            // no UPD landed (very short call or chain missed all).
+            summary.air_duration_ms = if last_upd_at_unix_ms > prev.started_unix_ms {
+                Some(last_upd_at_unix_ms.saturating_sub(prev.started_unix_ms))
+            } else {
+                None
+            };
             // 2026-04-26 per-freq AGC EMA cache. Update on every
             // clear call that produced audio; the next retune to
             // this freq will seed AGC from the cache.
@@ -340,6 +410,16 @@ fn finalise_summary(
             now_counters.tdu.saturating_sub(a.base.tdu),
         tdu_lc_count:
             now_counters.tdu_lc.saturating_sub(a.base.tdu_lc),
+        framer_arm_hdu:
+            now_counters.framer_arm_hdu.saturating_sub(a.base.framer_arm_hdu),
+        framer_arm_ldu1:
+            now_counters.framer_arm_ldu1.saturating_sub(a.base.framer_arm_ldu1),
+        framer_arm_ldu2:
+            now_counters.framer_arm_ldu2.saturating_sub(a.base.framer_arm_ldu2),
+        framer_arm_tdu:
+            now_counters.framer_arm_tdu.saturating_sub(a.base.framer_arm_tdu),
+        framer_arm_tdu_lc:
+            now_counters.framer_arm_tdu_lc.saturating_sub(a.base.framer_arm_tdu_lc),
         imbe_extracted:
             now_counters.imbe_extracted.saturating_sub(a.base.imbe_extracted),
         imbe_dropped:
@@ -372,6 +452,49 @@ fn finalise_summary(
                 None
             }
         },
+        // Set by the CallClose handler from the event payload —
+        // ActiveSummary doesn't carry the UPD timestamp itself.
+        air_duration_ms: None,
+    }
+}
+
+/// 2026-04-30: zero-decode summary for a synthetic not_followed
+/// CallOpen that arrived while a real call was already active. Pushed
+/// inline at CallOpen time so the synthetic emit doesn't displace the
+/// real active. duration_ms=0 because the synthetic pair fires
+/// back-to-back with no chain time.
+fn synthetic_not_followed_summary(
+    call_id: u64,
+    tg: u16,
+    nac: u16,
+    source: Option<u32>,
+    freq_hz: Option<u64>,
+    channel: Option<String>,
+    encrypted: bool,
+    not_followed: Option<&'static str>,
+    started_unix_ms: u64,
+) -> GrantDecodeSummary {
+    GrantDecodeSummary {
+        call_id, tg, nac, source,
+        actual_speaker: None,
+        started_unix_ms,
+        ended_unix_ms: started_unix_ms,
+        duration_ms: 0,
+        first_imbe_ms: None,
+        first_audio_at_unix_ms: None,
+        hdu_count: 0, ldu1_count: 0, ldu2_count: 0,
+        tdu_count: 0, tdu_lc_count: 0,
+        framer_arm_hdu: 0, framer_arm_ldu1: 0, framer_arm_ldu2: 0,
+        framer_arm_tdu: 0, framer_arm_tdu_lc: 0,
+        imbe_extracted: 0, imbe_dropped: 0,
+        vocoder_pcm_samples: 0, vocoder_errors: 0,
+        vocoder_silent: 0, vocoder_encrypted: 0,
+        encrypted, not_followed,
+        freq_hz, channel,
+        close_reason: CloseReason::Timeout,
+        sources_observed: source.map(|s| vec![s]).unwrap_or_default(),
+        agc_gain_q97_at_close: None,
+        air_duration_ms: None,
     }
 }
 

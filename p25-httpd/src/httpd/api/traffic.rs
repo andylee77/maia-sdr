@@ -168,46 +168,35 @@ pub async fn get_traffic(
                             .write().await;
                         dec.reset_framer_state();
                     }
-                    let core = state.ip_core.lock().await;
-                    let sample_rate_hz = 8_000_000.0_f64;
-                    // Manual retune via /api/traffic?retune_hz=...
-                    // is for diagnostics — pass agc_seed=0 (cold
-                    // start) since we have no freq context here.
-                    match core.retune_traffic_chain(
-                        offset_hz as f64,
-                        sample_rate_hz,
-                        0,
-                    ) {
-                        Ok(diag) => {
-                            applied.push(format!(
-                                "retune_hz={offset_hz} (full chain) \
-                                 seed={} pre={} post={} drift={}",
-                                diag.pll_seed_written,
-                                diag.traffic_pll_pre_reset,
-                                diag.traffic_pll_post_reset,
-                                diag.drift(),
-                            ));
-                            // Mirror manager-side bookkeeping so
-                            // /api/traffic shows the new offset
-                            // immediately even though the follower
-                            // didn't drive it.
-                            let mut mgr =
-                                state.traffic_chain.lock().await;
-                            mgr.last_offset_hz = offset_hz;
-                            let nco_frac =
-                                offset_hz as f64 / sample_rate_hz;
-                            mgr.nco_word = (nco_frac
-                                * (1u64 << 28) as f64)
-                                as i32
-                                as u32
-                                & 0x0FFF_FFFF;
-                        }
-                        Err(e) => {
-                            errors.push(format!(
-                                "retune_hz={offset_hz} rejected: {e}"
-                            ));
-                        }
+                    // 2026-05-03 dual-DDC: manual retune writes the
+                    // traffic DDC NCO directly (mirror of the control
+                    // chain). Used for diagnostics — sweep ?retune_hz=
+                    // to find the channel offset; production grant
+                    // follower uses the same retune_traffic_chain path.
+                    let sample_rate_hz =
+                        state.current_sample_rate_hz
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                    let retune_result = {
+                        let core = state.ip_core.lock().await;
+                        core.retune_traffic_chain(
+                            offset_hz as f64,
+                            sample_rate_hz as f64)
+                    };
+                    if let Err(ref e) = retune_result {
+                        errors.push(format!(
+                            "retune_traffic_chain: {e}"));
                     }
+                    {
+                        let mut mgr = state.traffic_chain.lock().await;
+                        mgr.last_offset_hz = offset_hz;
+                        let nco_frac = offset_hz as f64
+                            / sample_rate_hz as f64;
+                        mgr.nco_word = (nco_frac * (1u64 << 28) as f64)
+                            as i32 as u32 & 0x0FFF_FFFF;
+                    }
+                    applied.push(format!(
+                        "retune_hz={offset_hz} (dual-DDC)"
+                    ));
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
@@ -243,7 +232,8 @@ pub async fn get_traffic(
                 {
                     let core = state.ip_core.lock().await;
                     core.set_traffic_lsm_enable(bit);
-                    applied.push(format!("demod_enable={bit} (→ traffic_lsm_enable)"));
+                    applied.push(format!(
+                        "demod_enable={bit} (→ traffic_lsm_enable)"));
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
@@ -311,9 +301,9 @@ pub async fn get_traffic(
          parked)
     };
 
-    // Phase 7A.2: read the live traffic_lsm chain health from the
-    // FPGA registers. Mirrors the control-side `/api/hdl_lsm` snapshot
-    // but on the new traffic_lsm bank.
+    // M2B 2026-05-02: traffic_lsm_* registers restored. Mirrors the
+    // control-side `/api/hdl_lsm` snapshot but on the M2B
+    // traffic_lsm bank (mux-fed chain).
     #[cfg(target_os = "linux")]
     let traffic_lsm_chain_json = {
         let core = state.ip_core.lock().await;
@@ -325,14 +315,8 @@ pub async fn get_traffic(
         let (agc_gain_q9_7, agc_mag_q1_15) = core.traffic_lsm_agc_debug();
         let traffic_threshold = core.traffic_lsm_agc_threshold();
         let (en, dma_en, dc_block, agc) = core.traffic_lsm_control_readback();
-        // Convert AGC debug fields to float representations for
-        // easier operator reading. gain_dbg is Q9.7 truncation of
-        // the Q9.11 gain register, range 0..500. mag_dbg is Q1.15
-        // unsigned. At AGC steady state the PRODUCT gain*mag ≈
-        // TARGET (= 1.0 in Q1.15); we report it so a glance tells
-        // you if the AGC is tracking or stuck.
-        let agc_gain = (agc_gain_q9_7 as f64) / 128.0;   // Q9.7 -> f
-        let agc_mag  = (agc_mag_q1_15 as f64) / 32768.0; // Q1.15 -> f
+        let agc_gain = (agc_gain_q9_7 as f64) / 128.0;
+        let agc_mag  = (agc_mag_q1_15 as f64) / 32768.0;
         let agc_product = agc_gain * agc_mag;
         serde_json::json!({
             "enabled":            en,
@@ -356,8 +340,8 @@ pub async fn get_traffic(
             "agc_product":        agc_product,
             "agc_gain_raw_q9_7":  agc_gain_q9_7,
             "agc_mag_raw_q1_15":  agc_mag_q1_15,
-            "mag_update_threshold":     traffic_threshold,
-            "mag_update_threshold_f":   (traffic_threshold as f64) / 32768.0,
+            "mag_update_threshold":   traffic_threshold,
+            "mag_update_threshold_f": (traffic_threshold as f64) / 32768.0,
         })
     };
     #[cfg(not(target_os = "linux"))]
@@ -583,6 +567,17 @@ pub async fn get_traffic(
             "recorder_chunks_dropped_no_active":
                 state.recorder_diag
                     .chunks_dropped_no_active
+                    .load(Ordering::Relaxed),
+            // 2026-04-30: chunks dropped by the recorder's TG-match
+            // gate (chunk.tg != 0 && != active.tg). Catches cross-TG
+            // bleed during same-freq channel-reuse where the vocoder
+            // queue holds in-flight OLD-TG batches past the retune.
+            // Each = 20 ms of correctly-rejected old-TG audio. Non-
+            // zero is healthy; the alternative is the same audio
+            // bleeding into the new recording.
+            "recorder_chunks_dropped_tg_mismatch":
+                state.recorder_diag
+                    .chunks_dropped_tg_mismatch
                     .load(Ordering::Relaxed),
         })
     };

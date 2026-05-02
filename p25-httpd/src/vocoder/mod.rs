@@ -12,6 +12,8 @@
 /// Samples per 20 ms IMBE frame at 8 kHz (160 mono samples).
 pub const SAMPLES_PER_FRAME: usize = 160;
 
+pub use crate::jmbe::DecodeStageTimes;
+
 use crate::protocol::p25::voice_frame::ImbeFrameRaw;
 
 /// JMBE-based IMBE decoder. Pure Rust, no FFI. Better audio quality
@@ -35,6 +37,7 @@ impl JmbeDecoder {
     /// Returns 160 signed 16-bit PCM samples at 8 kHz.
     pub fn decode_frame(&mut self, frame: &ImbeFrameRaw) -> [i16; SAMPLES_PER_FRAME] {
         let floats = self.inner.decode_frame(&frame.bits);
+        let t = std::time::Instant::now();
         let mut pcm = [0i16; SAMPLES_PER_FRAME];
         for (i, &f) in floats.iter().enumerate() {
             // JMBE outputs float in roughly [-1.0, 1.0] range scaled
@@ -42,7 +45,15 @@ impl JmbeDecoder {
             let scaled = (f * 32767.0).round();
             pcm[i] = scaled.clamp(-32768.0, 32767.0) as i16;
         }
+        self.inner.set_pcm_convert_us(t.elapsed().as_micros() as u32);
         pcm
+    }
+
+    /// Per-frame stage timing breakdown for the most recent
+    /// `decode_frame` call. Useful for profiling without an external
+    /// profiler — see `app::vocoder_task` for per-call accumulation.
+    pub fn last_decode_times(&self) -> DecodeStageTimes {
+        self.inner.last_decode_times()
     }
 }
 #[cfg(test)]

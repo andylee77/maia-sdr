@@ -53,7 +53,12 @@
 from amaranth import *
 
 
-# Symbol rate constants -- copied from lsm_timing_interp for clarity.
+# Default symbol rate constants -- copied from lsm_timing_interp for
+# clarity.  The sample-rate is now a constructor parameter (see
+# ``LsmGardnerTed.__init__``); these module-level values define the
+# defaults (matching the legacy 31.25 kSPS control chain) and are
+# kept so external callers / tests that imported these names keep
+# working.
 P25_LSM_SAMPLE_RATE_HZ = 31_250
 P25_SYMBOL_RATE_HZ = 4_800
 SPS_FLOAT = P25_LSM_SAMPLE_RATE_HZ / P25_SYMBOL_RATE_HZ  # 6.5104...
@@ -112,9 +117,32 @@ class LsmGardnerTed(Elaboratable):
     assert 100000 < TED_GAIN_Q16 < 110000     # 1.628 * 65536 ~= 106721
     assert 22000 < PREV_SYM_INIT_Q15 < 24000  # 0.7 * 32768 ~= 22938
 
-    def __init__(self, *, demod_width=18, out_width=16):
+    def __init__(self, *, demod_width=18, out_width=16,
+                 sample_rate_hz=P25_LSM_SAMPLE_RATE_HZ,
+                 symbol_rate_hz=P25_SYMBOL_RATE_HZ):
         self.dw = demod_width
         self.ow = out_width
+        self.sample_rate_hz = sample_rate_hz
+        self.symbol_rate_hz = symbol_rate_hz
+
+        # Per-instance Q-format constants. Default values match the
+        # class-level attributes (computed from the 31.25 kSPS
+        # defaults), so the legacy control-chain instantiation is
+        # bit-identical to before this refactor. Non-default rates
+        # (e.g. 25 kSPS for the post-2026-05-03 traffic chain) get
+        # their own instance-level shadows that override the class
+        # attributes inside ``elaborate``.
+        sps_float = sample_rate_hz / symbol_rate_hz
+        max_timing_adj_float = sps_float / 25.0
+        ted_gain_float = sps_float / 4.0
+        self.MAX_TIMING_ADJ_Q15 = _q_round(
+            max_timing_adj_float, self.INPUT_FRAC_BITS)
+        self.TED_GAIN_Q16 = _q_round(
+            ted_gain_float, self.GAIN_FRAC_BITS)
+        # PREV_SYM_INIT does not depend on sample rate; preserved
+        # as-is, but shadowed onto the instance for symmetry.
+        self.PREV_SYM_INIT_Q15 = _q_round(
+            PREV_SYM_INIT_FLOAT, self.INPUT_FRAC_BITS)
 
         # ── Inputs ──────────────────────────────────────────────
         self.i_sym_in = Signal(signed(demod_width))

@@ -121,112 +121,100 @@ pub fn spawn_hdl_lsm_control_reader(
         });
 }
 
+/// 2026-05-03 dual-DDC: traffic-side LSM dibit reader hanging off
+/// `m_axi_traffic_lsm_dibit`. Mirror of the control-chain reader:
+/// dedicated `traffic_ddc` → LsmDecimator2 → LPF → RRC → LsmDemod →
+/// DibitPacker → DMA. PS-side parsing identical to control side; gate
+/// framer dispatch on `current_talkgroup != 0` so noise dibits don't
+/// drive false NID events between calls.
 pub fn spawn_hdl_lsm_traffic_reader(
     traffic_lsm_dibit_waiter: fpga::InterruptWaiter,
     traffic_lsm_core: Arc<Mutex<fpga::IpCore>>,
     traffic_lsm_decoder_task: Arc<RwLock<ControlChannelDecoder>>,
     traffic_reader_imbe: Arc<ImbeForwarder>,
 ) {
-        // Phase 7C: traffic-side LSM dibit reader + voice frame
-        // decoder task. Mirrors the control-side LSM dibit reader
-        // feeding the dibit stream into the `traffic_lsm_decoder`
-        // instance (which has the IMBE counter voice handler
-        // installed).
-        //
-        // Data flow:
-        //   traffic_lsm_dibit_dma (DMA ring)
-        //     -> read_traffic_lsm_dibit_buffers (Vec<&[u8]>)
-        //     -> bytemuck_cast (&[u64] of packed dibits)
-        //     -> traffic_lsm_decoder.process_dma_word (Hunting ->
-        //        ReadingNid -> ReadingDataUnit state machine)
-        //     -> on_ldu1 / on_ldu2 / on_hdu / on_tdu / on_tdu_lc
-        //        callbacks on the ImbeForwarder voice handler
-        //     -> ImbeForwarder atomic counters incremented
-        //     -> /api/traffic snapshot reads the atomics
-        tokio::spawn(async move {
-            use std::sync::atomic::Ordering;
-            tracing::info!(
-                "Traffic LSM dibit reader + voice frame decoder task \
-                 started (Phase 7C)"
-            );
-            let mut wakeups: u64 = 0;
-            let mut total_buffers: u64 = 0;
-            let mut total_bytes: u64 = 0;
-            let mut hist = [0u64; 4];
-            loop {
-                traffic_lsm_dibit_waiter.wait().await;
-                wakeups += 1;
-                let buffers = {
-                    let mut core = traffic_lsm_core.lock().await;
-                    core.read_traffic_lsm_dibit_buffers()
-                        .iter()
-                        .map(|b| b.to_vec())
-                        .collect::<Vec<_>>()
-                };
+    tokio::spawn(async move {
+        use std::sync::atomic::Ordering;
+        tracing::info!(
+            "Traffic LSM dibit reader + voice frame decoder task \
+             started (M2B)"
+        );
+        let mut wakeups: u64 = 0;
+        let mut total_buffers: u64 = 0;
+        let mut total_bytes: u64 = 0;
+        let mut hist = [0u64; 4];
+        loop {
+            traffic_lsm_dibit_waiter.wait().await;
+            wakeups += 1;
+            let buffers = {
+                let mut core = traffic_lsm_core.lock().await;
+                core.read_traffic_lsm_dibit_buffers()
+                    .iter()
+                    .map(|b| b.to_vec())
+                    .collect::<Vec<_>>()
+            };
 
-                // Phase 7F.5 root-cause gate: if the follower is Idle
-                // (current_talkgroup == 0), the traffic channel isn't
-                // "open" but the HDL LSM chain is still producing
-                // dibits. Drain the DMA ring so the hardware doesn't
-                // overflow, but DO NOT feed the dibits to the framer.
-                // Counters + hist still update so /api/traffic.stats
-                // shows raw dibit rate even during Idle.
-                let locked = traffic_reader_imbe
-                    .current_talkgroup
-                    .load(Ordering::Relaxed) != 0;
+            // Idle gate: chain emits dibits even when no TG locked
+            // (RRC + LsmDemod can't tell the difference between live
+            // signal and traffic_ddc residual when no carrier is
+            // tuned). Counters update either way so
+            // `/api/traffic.stats` shows the raw rate.
+            let locked = traffic_reader_imbe
+                .current_talkgroup
+                .load(Ordering::Relaxed) != 0;
 
-                let mut wake_bytes = 0usize;
-                let mut wake_dibits = 0usize;
-                for buffer in &buffers {
-                    wake_bytes += buffer.len();
-                    let words: &[u64] = bytemuck_cast(buffer);
-                    for &word in words {
-                        for i in 0..32 {
-                            let d = ((word >> (i * 2)) & 0x03) as usize;
-                            hist[d] += 1;
-                            wake_dibits += 1;
-                        }
-                    }
-                    if locked {
-                        let mut dec = traffic_lsm_decoder_task.write().await;
-                        for &word in words {
-                            dec.process_dma_word(word);
-                        }
+            let mut wake_bytes = 0usize;
+            let mut wake_dibits = 0usize;
+            for buffer in &buffers {
+                wake_bytes += buffer.len();
+                let words: &[u64] = bytemuck_cast(buffer);
+                for &word in words {
+                    for i in 0..32 {
+                        let d = ((word >> (i * 2)) & 0x03) as usize;
+                        hist[d] += 1;
+                        wake_dibits += 1;
                     }
                 }
-                total_buffers += buffers.len() as u64;
-                total_bytes += wake_bytes as u64;
-
-                if wakeups <= 5 || wakeups % 16 == 0 {
-                    let total_dibits: u64 = hist.iter().sum();
-                    let pct = |v: u64| -> f64 {
-                        if total_dibits == 0 { 0.0 }
-                        else { 100.0 * v as f64 / total_dibits as f64 }
-                    };
-                    let (sync_hits, msg_count, ldu1, ldu2, hdu, tdu, tdu_lc) = {
-                        let d = traffic_lsm_decoder_task.read().await;
-                        (
-                            d.sync_hits(),
-                            d.recent_messages.len(),
-                            d.ldu1_count,
-                            d.ldu2_count,
-                            d.hdu_count,
-                            d.tdu_count,
-                            d.tdu_lc_count,
-                        )
-                    };
-                    tracing::info!(
-                        target: "p25_traffic_lsm",
-                        "wake #{wakeups}: bufs={} bytes={} dibits={} \
-                         (cum bufs={total_buffers} bytes={total_bytes}) \
-                         hist 0={:.1}% 1={:.1}% 2={:.1}% 3={:.1}% \
-                         | traffic_lsm decoder: sync_hits={sync_hits} \
-                         hdu={hdu} ldu1={ldu1} ldu2={ldu2} tdu={tdu} \
-                         tdu_lc={tdu_lc} recent_msgs={msg_count}",
-                        buffers.len(), wake_bytes, wake_dibits,
-                        pct(hist[0]), pct(hist[1]), pct(hist[2]), pct(hist[3]),
-                    );
+                if locked {
+                    let mut dec = traffic_lsm_decoder_task.write().await;
+                    for &word in words {
+                        dec.process_dma_word(word);
+                    }
                 }
             }
-        });
+            total_buffers += buffers.len() as u64;
+            total_bytes += wake_bytes as u64;
+
+            if wakeups <= 5 || wakeups % 16 == 0 {
+                let total_dibits: u64 = hist.iter().sum();
+                let pct = |v: u64| -> f64 {
+                    if total_dibits == 0 { 0.0 }
+                    else { 100.0 * v as f64 / total_dibits as f64 }
+                };
+                let (sync_hits, msg_count, ldu1, ldu2, hdu, tdu, tdu_lc) = {
+                    let d = traffic_lsm_decoder_task.read().await;
+                    (
+                        d.sync_hits(),
+                        d.recent_messages.len(),
+                        d.ldu1_count,
+                        d.ldu2_count,
+                        d.hdu_count,
+                        d.tdu_count,
+                        d.tdu_lc_count,
+                    )
+                };
+                tracing::info!(
+                    target: "p25_traffic_lsm",
+                    "wake #{wakeups}: bufs={} bytes={} dibits={} \
+                     (cum bufs={total_buffers} bytes={total_bytes}) \
+                     hist 0={:.1}% 1={:.1}% 2={:.1}% 3={:.1}% \
+                     | traffic_lsm decoder: sync_hits={sync_hits} \
+                     hdu={hdu} ldu1={ldu1} ldu2={ldu2} tdu={tdu} \
+                     tdu_lc={tdu_lc} recent_msgs={msg_count}",
+                    buffers.len(), wake_bytes, wake_dibits,
+                    pct(hist[0]), pct(hist[1]), pct(hist[2]), pct(hist[3]),
+                );
+            }
+        }
+    });
 }

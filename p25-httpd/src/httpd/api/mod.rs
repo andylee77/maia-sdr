@@ -44,6 +44,7 @@ pub mod chain;
 pub mod debug;
 pub mod history;
 pub mod radio;
+pub mod sites;
 pub mod system;
 pub mod talkgroups;
 pub mod traffic;

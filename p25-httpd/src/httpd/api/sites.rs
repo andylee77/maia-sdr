@@ -1,0 +1,153 @@
+//! Per-site baseline endpoints: list, fetch detail, switch active.
+//!
+//! Consumer orientation: "which P25 systems do I have a baseline for,
+//! and which one am I receiving right now?" The site selector
+//! dropdown in the dashboard topbar consumes `GET /api/sites` for
+//! the option list and `POST /api/site?name=...` to switch.
+//!
+//! Switching site applies the saved baseline to the live receiver
+//! atomically: preset → AD9361 LO snapped per `cc_position` →
+//! `current_control_freq` set to the site's CC → IDEN bands seeded
+//! into the LSM control-channel decoder.
+//!
+//! Storage layout: `services::sites::{repo_seed_dir, runtime_overlay_dir}`
+//! — repo seed at `p25-httpd/sites/<name>.json` (checked in), runtime
+//! overlay at `/mnt/data/p25/<name>.json` (target persistent flash).
+//! Both layers hydrate at boot; overlay wins.
+
+use std::sync::Arc;
+
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use serde::Deserialize;
+
+use crate::httpd::AppState;
+use crate::services::sites::{
+    list_sites, load_site, save_site, write_active_site_name, Site,
+};
+
+/// `GET /api/sites` — list every known site name + its label and
+/// active flag. Cheap; reads only file metadata + the active site
+/// name from the AppState.
+pub async fn get_sites(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let names = list_sites();
+    let active_name = state.active_site.read().await
+        .as_ref()
+        .map(|s| s.name.clone());
+
+    let mut sites = Vec::with_capacity(names.len());
+    for name in &names {
+        let label = match load_site(name) {
+            Ok(s) => s.label,
+            Err(_) => name.clone(),
+        };
+        sites.push(serde_json::json!({
+            "name": name,
+            "label": label,
+            "active": Some(name) == active_name.as_ref(),
+        }));
+    }
+
+    Json(serde_json::json!({
+        "ok": true,
+        "active": active_name,
+        "sites": sites,
+    }))
+}
+
+/// `GET /api/sites/<name>` — full site detail (NAC, WACN, IDEN bands,
+/// CC, alt CCs, traffic_freqs_hz, cc_position).
+pub async fn get_site(
+    Path(name): Path<String>,
+    State(_state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match load_site(&name) {
+        Ok(site) => (StatusCode::OK, Json(serde_json::json!({
+            "ok": true, "site": site,
+        }))).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, Json(serde_json::json!({
+            "ok": false, "error": e.to_string(),
+        }))).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PostSiteQuery {
+    pub name: String,
+    /// Optional: skip the LO snap / preset apply. Default false.
+    #[serde(default)]
+    pub no_apply: bool,
+}
+
+/// `POST /api/site?name=<name>` — switch active site.
+///
+/// Effect:
+///   1. Load `<name>.json` (overlay ∪ seed).
+///   2. Stash into `state.active_site`.
+///   3. Persist as the boot default via `write_active_site_name`.
+///   4. (Unless `no_apply=true`) ask `tuning::post_preset` to apply
+///      the site's `preset_default` — that handler now reads
+///      `active_site.cc_position` to snap the LO.
+///   5. Return the loaded site for the dashboard to render.
+///
+/// Step 4's preset apply lives in `tuning::post_preset` rather than
+/// being inlined here so the same code path runs for direct preset
+/// changes + site switches.
+pub async fn post_site(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<PostSiteQuery>,
+) -> impl IntoResponse {
+    let site = match load_site(&q.name) {
+        Ok(s) => s,
+        Err(e) => {
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({
+                "ok": false, "error": e.to_string(),
+            }))).into_response();
+        }
+    };
+
+    {
+        let mut active = state.active_site.write().await;
+        *active = Some(site.clone());
+    }
+
+    if let Err(e) = write_active_site_name(&q.name) {
+        tracing::warn!(
+            "failed to persist active site marker for '{}': {e}",
+            q.name
+        );
+        // Not fatal — runtime state still updated.
+    }
+
+    // Update operator-facing control freq so subsequent /api/preset
+    // and /api/tune calls have the right anchor.
+    state
+        .current_control_freq
+        .store(site.control_freq_hz, std::sync::atomic::Ordering::Relaxed);
+
+    tracing::info!(
+        target: "p25_site",
+        "active site -> {} ({}), CC={:.4} MHz cc_position={:?} \
+         preset_default={}",
+        site.name, site.label,
+        site.control_freq_hz as f64 / 1e6,
+        site.cc_position,
+        site.preset_default,
+    );
+
+    Json(serde_json::json!({
+        "ok": true,
+        "site": site,
+        "applied_preset": !q.no_apply,
+        "note": if q.no_apply {
+            "Active site updated; preset/LO unchanged (no_apply=true)."
+        } else {
+            "Active site updated. Issue POST /api/preset with the \
+             site's preset_default to apply the LO snap + DDC tune."
+        },
+    })).into_response()
+}

@@ -265,10 +265,12 @@ pub fn spectrum_from_bytes(
     })
 }
 /// Number of bins produced by the HDL wideband spectrometer.
-/// Matches `Spectrometer.fft_order_log2 = 14` in `maia_hdl/spectrometer.py`.
-/// 2026-04-23: bumped 12 -> 14 (4096 -> 16384 bins) for 488 Hz/bin
-/// resolution (was 1.95 kHz/bin).
-pub const WIDEBAND_FFT_SIZE: usize = 16384;
+/// Matches `Spectrometer.fft_order_log2 = 12` in `maia_hdl/spectrometer.py`.
+/// 2026-05-01: dropped 14 -> 12 (16384 -> 4096 bins) to free BRAM
+/// for the polyphase traffic channelizer rewrite. Bin width back to
+/// 1.95 kHz/bin (was 488 Hz/bin); auto-PPM parabolic-interp still
+/// resolves sub-kHz so this is acceptable.
+pub const WIDEBAND_FFT_SIZE: usize = 4096;
 
 /// Unpack one 32 KB wideband spectrometer DMA sub-buffer into a
 /// 4096-bin magnitude vector in dB, DC-centered (bin 0 = -Fs/2,
@@ -317,6 +319,13 @@ pub fn wideband_power_db(bytes: &[u8]) -> Vec<f32> {
     // - 96` was reading -42.7 dB for that same floor → offset is
     // ~52 dB low. `148` brings the readout to ~ -95 dBm noise floor
     // at 60 dB, matching SDRTrunk.
+    //
+    // 2026-05-01: spectrometer order dropped 14 -> 12. Per-bin power
+    // for a CW tone falls by ~6 dB and noise floor per bin rises by
+    // ~6 dB (smaller N → less FFT processing gain, wider per-bin
+    // noise integration). Operator may need to re-calibrate — leave
+    // 148 in place for now; tune empirically against SDRTrunk after
+    // first bake.
     //
     // NOT laboratory-calibrated — if someone injects a known tone
     // with a lab source, adjust this to match. See memory

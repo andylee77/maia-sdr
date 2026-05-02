@@ -12,6 +12,10 @@ use core::f32::consts::PI;
 const TWO_PI: f32 = 2.0 * PI;
 use crate::vocoder::SAMPLES_PER_FRAME;
 
+use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
+use rustfft::num_complex::Complex;
+use std::sync::Arc;
+
 // ============================================================================
 // Deinterleave table (144 entries)
 // ============================================================================
@@ -1213,64 +1217,21 @@ impl WhiteNoiseGenerator {
 
 /// 256-point real forward DFT. Input: 256 real samples. Output: packed format
 /// compatible with JTransforms realForward: [Re(0), Re(128), Re(1), Im(1), Re(2), Im(2), ... Re(127), Im(127)]
-fn real_dft_forward_256(input: &[f32; 256]) -> [f32; 256] {
-    let n = 256;
-    let mut output = [0.0f32; 256];
-
-    // DC component (bin 0)
-    let mut re0: f32 = 0.0;
-    for k in 0..n {
-        re0 += input[k];
-    }
-    output[0] = re0;
-
-    // Nyquist component (bin 128)
-    let mut re128: f32 = 0.0;
-    for k in 0..n {
-        re128 += input[k] * if k % 2 == 0 { 1.0 } else { -1.0 };
-    }
-    output[1] = re128;
-
-    // Bins 1..127
-    for bin in 1..128 {
-        let mut re: f32 = 0.0;
-        let mut im: f32 = 0.0;
-        for k in 0..n {
-            let angle = TWO_PI * bin as f32 * k as f32 / n as f32;
-            re += input[k] * angle.cos();
-            im -= input[k] * angle.sin();
-        }
-        output[2 * bin] = re;
-        output[2 * bin + 1] = im;
-    }
-
-    output
-}
-
-/// 256-point real inverse DFT (with scaling). Input/output in JTransforms packed format.
-fn real_dft_inverse_256(freq: &[f32; 256]) -> [f32; 256] {
-    let n = 256;
-    let mut output = [0.0f32; 256];
-
-    let re0 = freq[0];
-    let re128 = freq[1];
-
-    for k in 0..n {
-        let mut sum = re0;
-        sum += re128 * if k % 2 == 0 { 1.0 } else { -1.0 };
-
-        for bin in 1..128 {
-            let re = freq[2 * bin];
-            let im = freq[2 * bin + 1];
-            let angle = TWO_PI * bin as f32 * k as f32 / n as f32;
-            sum += 2.0 * (re * angle.cos() - im * angle.sin());
-        }
-
-        output[k] = sum / n as f32;
-    }
-
-    output
-}
+// 256-pt real FFT — replaces the original hand-rolled O(N²) DFT pair.
+//
+// Pre-2026-04-29 this module shipped two textbook DFT-by-definition
+// loops (~65k cos/sin per call, twice per frame). On Cortex-A9 those
+// dominated decode_frame at ~14.4 ms median (98% of the 14.7 ms total)
+// per the 2026-04-29-jmbe-stage-timing+neon on-target measurement.
+//
+// `realfft` (built on rustfft) gives us O(N log N) — ~50–500 µs per
+// transform on the same chip. The crate's NEON kernels are aarch64-
+// only as of v6.x, but auto-vec on the inner butterflies under
+// `-C target-feature=+neon,+vfp3` (Tezuka build flag) catches the
+// vectorisable f32 multiply-adds. Algorithmic class change is the
+// dominant win regardless.
+//
+// See doc/VOCODER_PIPELINE.md for the full optimisation roadmap.
 
 // ============================================================================
 // Synthesizer
@@ -1282,6 +1243,23 @@ const MAX_AUDIO_AMPLITUDE: f32 = 0.95;
 const WHITE_NOISE_SCALAR: f32 = TWO_PI / 53125.0;
 const UNVOICED_SCALING_COEFFICIENT: f32 = 146.17696;
 
+/// Per-frame elapsed-time breakdown captured by `decode_frame`.
+///
+/// All fields are microseconds. Populated on every successful or muted
+/// frame; readers grab the latest snapshot via `last_decode_times()`
+/// after each call to `decode_frame`. `pcm_convert_us` is left at 0 in
+/// `jmbe::ImbeDecoder` — it's filled by the outer wrapper that does the
+/// f32→i16 conversion (see `vocoder::JmbeDecoder`).
+#[derive(Default, Clone, Copy, Debug)]
+pub struct DecodeStageTimes {
+    pub fec_us: u32,
+    pub voiced_us: u32,
+    pub unvoiced_us: u32,
+    pub mix_us: u32,
+    pub pcm_convert_us: u32,
+    pub total_us: u32,
+}
+
 /// The public IMBE decoder. Maintains inter-frame state.
 pub struct ImbeDecoder {
     previous_params: ModelParameters,
@@ -1290,10 +1268,26 @@ pub struct ImbeDecoder {
     previous_uw: [f32; 256],
     noise_gen: MbeNoiseGenerator,
     white_noise_gen: WhiteNoiseGenerator,
+    last_times: DecodeStageTimes,
+
+    // realfft 256-pt forward (real → 129 complex bins) and inverse
+    // (129 complex → real). Plans hold twiddle factors so per-frame
+    // FFT calls are amortised. Reusable scratch + I/O buffers avoid
+    // per-frame heap traffic.
+    fft_r2c: Arc<dyn RealToComplex<f32>>,
+    fft_c2r: Arc<dyn ComplexToReal<f32>>,
+    fft_input: Vec<f32>,            // length 256, windowed white-noise input to forward FFT
+    fft_spectrum: Vec<Complex<f32>>, // length 129, forward output / inverse input
+    fft_output: Vec<f32>,           // length 256, inverse FFT output (pre-normalise)
+    fft_scratch: Vec<Complex<f32>>, // scratch sized to max(r2c, c2r) requirements
 }
 
 impl ImbeDecoder {
     pub fn new() -> Self {
+        let mut planner = RealFftPlanner::<f32>::new();
+        let r2c = planner.plan_fft_forward(256);
+        let c2r = planner.plan_fft_inverse(256);
+        let scratch_len = r2c.get_scratch_len().max(c2r.get_scratch_len());
         Self {
             previous_params: ModelParameters::new_default(),
             previous_phase_o: [0.0; 57],
@@ -1301,13 +1295,24 @@ impl ImbeDecoder {
             previous_uw: [0.0; 256],
             noise_gen: MbeNoiseGenerator::new(),
             white_noise_gen: WhiteNoiseGenerator::new(),
+            last_times: DecodeStageTimes::default(),
+            fft_r2c: r2c,
+            fft_c2r: c2r,
+            fft_input: vec![0.0; 256],
+            fft_spectrum: vec![Complex::new(0.0, 0.0); 129],
+            fft_output: vec![0.0; 256],
+            fft_scratch: vec![Complex::new(0.0, 0.0); scratch_len],
         }
     }
 
     /// Decode one IMBE frame (18 bytes / 144 bits) into 160 f32 audio samples.
     /// Samples are in range approximately -1.0 to 1.0.
     pub fn decode_frame(&mut self, frame_bytes: &[u8; 18]) -> [f32; 160] {
+        let t0 = std::time::Instant::now();
+        self.last_times = DecodeStageTimes::default();
+
         let params = decode_frame(frame_bytes, &self.previous_params);
+        self.last_times.fec_us = t0.elapsed().as_micros() as u32;
 
         let audio = if params.is_max_frame_repeat() || params.requires_muting() {
             let samples = self.white_noise_gen.get_samples(160, 0.003);
@@ -1318,30 +1323,62 @@ impl ImbeDecoder {
             self.synthesize_voice(&params)
         };
 
+        self.last_times.total_us = t0.elapsed().as_micros() as u32;
         self.previous_params = params;
         audio
+    }
+
+    /// Latest per-stage timing snapshot. Valid after the first call to
+    /// `decode_frame`. `pcm_convert_us` is unset here; populate via
+    /// `set_pcm_convert_us` from a wrapper that owns the f32→i16 step.
+    pub fn last_decode_times(&self) -> DecodeStageTimes {
+        self.last_times
+    }
+
+    /// Wrapper hook: outer-layer PCM conversion timing belongs in the
+    /// same per-frame snapshot consumers read, so the wrapper writes it
+    /// here after `decode_frame` returns.
+    pub fn set_pcm_convert_us(&mut self, us: u32) {
+        self.last_times.pcm_convert_us = us;
     }
 
     fn synthesize_voice(&mut self, params: &ModelParameters) -> [f32; 160] {
         // Alg #117 - noise sequence
         let u = self.noise_gen.next_buffer();
 
+        let t = std::time::Instant::now();
         let unvoiced = self.get_unvoiced(params, &u);
-        let voiced = self.get_voiced(params, &u);
+        self.last_times.unvoiced_us = t.elapsed().as_micros() as u32;
 
+        let t = std::time::Instant::now();
+        let voiced = self.get_voiced(params, &u);
+        self.last_times.voiced_us = t.elapsed().as_micros() as u32;
+
+        let t = std::time::Instant::now();
         let mut audio = [0.0f32; 160];
         for x in 0..160 {
             audio[x] = clip((voiced[x] + unvoiced[x]) * AUDIO_SCALAR);
         }
+        self.last_times.mix_us = t.elapsed().as_micros() as u32;
         audio
     }
 
     fn get_unvoiced(&mut self, params: &ModelParameters, white_noise: &[f32; 256]) -> [f32; 160] {
-        // Apply synthesis window
-        let mut uw = [0.0f32; 256];
+        // Apply synthesis window into the reusable forward-FFT input buffer
         for x in 0..256 {
-            uw[x] = white_noise[x] * synthesis_window(x as i32 - 128);
+            self.fft_input[x] = white_noise[x] * synthesis_window(x as i32 - 128);
         }
+
+        // Forward FFT: 256 real samples → 129 complex bins (Hermitian
+        // half-spectrum). bins[0] is DC (re only), bins[128] is Nyquist
+        // (re only).
+        self.fft_r2c
+            .process_with_scratch(
+                &mut self.fft_input,
+                &mut self.fft_spectrum,
+                &mut self.fft_scratch,
+            )
+            .expect("realfft forward");
 
         // Frequency band edges
         let l = params.l;
@@ -1354,12 +1391,8 @@ impl ImbeDecoder {
             b_max[li] = ((li as f32 + 0.5) * multiplier).ceil() as i32;
         }
 
-        // Forward DFT
-        let mut uw_arr = [0.0f32; 256];
-        uw_arr.copy_from_slice(&uw);
-        let mut uw_freq = real_dft_forward_256(&uw_arr);
-
-        // Alg 120 - band-level scaling
+        // Alg 120 - band-level scaling. Operates on bins 0..128 of
+        // the spectrum (the half retained by realfft).
         let mut dft_bin_scalar = [0.0f32; 128];
         let voicing = &params.voicing;
         let m_enhanced = &params.enhanced_spectral;
@@ -1372,9 +1405,8 @@ impl ImbeDecoder {
 
                 for n in amin..bmax {
                     if n < 128 {
-                        let dft_idx = 2 * n;
-                        numerator += uw_freq[dft_idx] * uw_freq[dft_idx];
-                        numerator += uw_freq[dft_idx + 1] * uw_freq[dft_idx + 1];
+                        let s = self.fft_spectrum[n];
+                        numerator += s.re * s.re + s.im * s.im;
                     }
                 }
 
@@ -1390,15 +1422,44 @@ impl ImbeDecoder {
             }
         }
 
-        // Apply scaling
-        for bin in 0..128 {
-            let idx = 2 * bin;
-            uw_freq[idx] *= dft_bin_scalar[bin];
-            uw_freq[idx + 1] *= dft_bin_scalar[bin];
+        // Apply scaling. The original packed-format quirk meant DC and
+        // Nyquist were both multiplied by `dft_bin_scalar[0]`, which
+        // always stays at its `0.0` default (no unvoiced band reaches
+        // bin 0 because `a_min[li=1] >= 1`). We replicate that here so
+        // the inverse FFT input still matches the original semantics:
+        // DC + Nyquist zeroed, plus each in-band scalar applied to its
+        // own bin.
+        let s0 = dft_bin_scalar[0];
+        self.fft_spectrum[0].re *= s0;
+        // bin 0 imag is 0 from real-input FFT; preserve it explicitly
+        // so realfft's c2r-real-input contract holds.
+        self.fft_spectrum[0].im = 0.0;
+        for bin in 1..128 {
+            let s = dft_bin_scalar[bin];
+            self.fft_spectrum[bin].re *= s;
+            self.fft_spectrum[bin].im *= s;
         }
+        // Nyquist (bin 128) — original code scaled it by `dft_bin_scalar[0]`
+        // (== 0 in practice), so it ends up zero.
+        self.fft_spectrum[128].re *= s0;
+        self.fft_spectrum[128].im = 0.0;
 
-        // Inverse DFT
-        let uw_time = real_dft_inverse_256(&uw_freq);
+        // Inverse FFT: 129 complex bins → 256 real samples. realfft
+        // does NOT normalise; the original DFT divided by N at the end,
+        // so we apply 1/N here.
+        self.fft_c2r
+            .process_with_scratch(
+                &mut self.fft_spectrum,
+                &mut self.fft_output,
+                &mut self.fft_scratch,
+            )
+            .expect("realfft inverse");
+
+        let inv_n = 1.0 / 256.0;
+        let mut uw_time = [0.0f32; 256];
+        for k in 0..256 {
+            uw_time[k] = self.fft_output[k] * inv_n;
+        }
 
         // Alg #126 - weighted overlap add
         let mut unvoiced = [0.0f32; 160];

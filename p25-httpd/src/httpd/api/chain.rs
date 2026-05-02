@@ -461,7 +461,8 @@ async fn accumulate_iq(
             let mut core = state.ip_core.lock().await;
             let bufs: Vec<&[u8]> = match chain {
                 "control" => core.read_iq_buffers(),
-                "traffic" => core.read_traffic_iq_buffers(),
+                // M2A 2026-05-02: traffic IQ ring deleted with the old chain.
+                "traffic" => Vec::new(),
                 other => {
                     return Err(format!(
                         "unknown chain '{other}'; expected control|traffic"
@@ -577,17 +578,19 @@ pub async fn get_control_lsm_control(
 }
 
 
-/// Phase 10-prep: traffic-side counterpart of
-/// `/api/control_lsm_control`. Reads/writes the `traffic_lsm_control`
-/// HDL register:
+/// M2B 2026-05-02: traffic-side counterpart of
+/// `/api/control_lsm_control`, restored against the new mux-fed LSM
+/// chain. Reads/writes the `traffic_lsm_control` HDL register at
+/// 0x7C4600C0:
 ///   bit 0: traffic_lsm_enable
 ///   bit 1: traffic_lsm_dibit_dma_enable
-///   bit 2: traffic_lsm_dc_block_enable
-///   bit 3: traffic_lsm_agc_enable  (Phase 10-prep)
+///   bit 2: traffic_lsm_reset (Wpulse, never read)
+///   bit 3: traffic_lsm_dc_block_enable
+///   bit 4: traffic_lsm_agc_enable
 ///
-/// Currently only `dc_block` and `agc` are writable from this
-/// endpoint; the enable + dma_enable bits are managed by
-/// `retune_traffic_chain` and shouldn't be flipped out-of-band.
+/// `?dc_block=0|1` toggles the DC blocker; `?agc=0|1` toggles the
+/// per-symbol AGC. Master enable + dibit DMA enable stay managed by
+/// the grant follower's retune path.
 pub async fn get_traffic_lsm_control(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -632,11 +635,12 @@ pub async fn get_traffic_lsm_control(
             "traffic_lsm_agc_enable":       agc,
             "updated_dc_block_from":        updated_dc,
             "updated_agc_from":             updated_agc,
+            "register_address":             "0x7C4600C0",
             "note": "GET /api/traffic_lsm_control?dc_block=0|1 toggles \
                      the traffic-chain DC blocker; ?agc=0|1 toggles the \
                      per-symbol AGC. The enable + dibit_dma_enable bits \
-                     are managed by retune_traffic_chain and are \
-                     read-only here.",
+                     are managed by the grant follower's retune path \
+                     and are read-only here.",
         }))
     }
 
@@ -646,6 +650,45 @@ pub async fn get_traffic_lsm_control(
         Json(serde_json::json!({
             "ok": false,
             "error": "traffic_lsm_control requires hardware (target_os=linux)",
+        }))
+    }
+}
+
+
+/// 2026-05-03 dual-DDC pivot: this endpoint dumped channelizer bin
+/// energies + per-target slot energies for the retired polyphase
+/// path. The dual-DDC chain has no `bin energy` concept — it's a
+/// dedicated heterodyne DDC. Endpoint retained as a 410 Gone so
+/// historical Android-tool callers see a clean "retired" payload
+/// instead of a 404. Equivalent diagnostic for the dual-DDC path
+/// is the traffic LSM AGC / NID readback at /api/traffic.
+pub async fn get_traffic_bins(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    #[cfg(target_os = "linux")]
+    {
+        let (lsm_en, dma_en, dc_block, agc) = {
+            let core = state.ip_core.lock().await;
+            core.traffic_lsm_control_readback()
+        };
+        Json(serde_json::json!({
+            "ok": false,
+            "retired": true,
+            "reason": "polyphase channelizer retired in 2026-05-03 \
+                       dual-DDC pivot; see /api/traffic for dual-DDC \
+                       chain state",
+            "traffic_lsm_enable":    lsm_en,
+            "traffic_lsm_dibit_dma": dma_en,
+            "traffic_lsm_dc_block":  dc_block,
+            "traffic_lsm_agc":       agc,
+        }))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = state;
+        Json(serde_json::json!({
+            "ok": false,
+            "error": "traffic_bins requires hardware (target_os=linux)",
         }))
     }
 }

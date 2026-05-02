@@ -101,6 +101,14 @@ pub struct ControlChannelDecoder {
     /// most false matches in idle windows now land here instead
     /// of creating phantom TSBKs / TDU_LCs downstream.
     pub nid_entropy_rejected: u64,
+    /// NID candidates that BCH-decoded successfully but whose NAC did
+    /// not match the voice handler's `expected_nac()`. Tracks how often
+    /// the wider PS BCH sphere (t up to 11) over-corrects noise into a
+    /// valid-but-wrong codeword that the HDL's t=4 reference would
+    /// have rejected. High here = signal-of-interest is fine but
+    /// noise gaps are bleeding through; tighten sync threshold or
+    /// BCH t override.
+    pub nid_nac_mismatch: u64,
 
     /// Number of TSDU data units that finished `process_tsdu` (the de-
     /// interleave + extract). This is the count of "we tried to decode
@@ -255,6 +263,80 @@ pub struct ControlChannelDecoder {
     pub hdu_count: u64,
     pub tdu_count: u64,
     pub tdu_lc_count: u64,
+
+    /// Frame-level NAC tracker — port of SDRTrunk's `NACTracker`.
+    /// Counts observations of each decoded NAC; once any NAC reaches
+    /// `NAC_LOCK_OBSERVATIONS` it becomes the dominant NAC and the
+    /// framer rejects subsequent BCH-corrected NIDs whose decoded NAC
+    /// disagrees. Closes a leakage path on the data-channel test where
+    /// 162 spurious IMBE-pair frames slipped through because the BCH
+    /// over-corrects random noise into valid-looking codewords with
+    /// random NACs. The earlier `voice_handler.expected_nac()` hook
+    /// existed but the live SW-demod path never wrote a NAC into it
+    /// (only the HDL polling IRQ did), so the guard was effectively
+    /// off.
+    pub nac_tracker: NacTracker,
+}
+
+/// Frame-level NAC tracker — port of SDRTrunk's `NACTracker`. Counts
+/// observations of each decoded NAC; the most-observed NAC with at
+/// least `MIN_OBSERVATIONS` hits is the "dominant" NAC. Caller uses
+/// `dominant()` to get the locked NAC (or 0 if none yet) and rejects
+/// any subsequent NID that decodes to a different NAC.
+///
+/// Eviction: when the table grows past `MAX_TRACKED`, the
+/// least-recently-updated entry is removed. Matches SDRTrunk's
+/// behaviour exactly.
+#[derive(Debug, Default)]
+pub struct NacTracker {
+    /// Per-NAC `(observation_count, last_update_seq)`. We use a
+    /// monotonically-increasing sequence number rather than wall time
+    /// because the framer is fed dibits with no timestamps in offline
+    /// runs; SDRTrunk uses `System.currentTimeMillis()`.
+    entries: HashMap<u16, (u32, u64)>,
+    seq: u64,
+}
+
+impl NacTracker {
+    const MAX_TRACKED: usize = 3;
+    const MIN_OBSERVATIONS: u32 = 3;
+
+    pub fn track(&mut self, nac: u16) {
+        self.seq = self.seq.wrapping_add(1);
+        if let Some(entry) = self.entries.get_mut(&nac) {
+            entry.0 = entry.0.saturating_add(1);
+            entry.1 = self.seq;
+            return;
+        }
+        self.entries.insert(nac, (1, self.seq));
+        if self.entries.len() > Self::MAX_TRACKED {
+            // Evict the oldest by seq. (Up to 3+1=4 entries at this
+            // point — linear scan is fine.)
+            if let Some(oldest_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, t))| *t)
+                .map(|(k, _)| *k)
+            {
+                self.entries.remove(&oldest_key);
+            }
+        }
+    }
+
+    /// Most-observed NAC with `>= MIN_OBSERVATIONS` hits, else 0.
+    pub fn dominant(&self) -> u16 {
+        self.entries
+            .iter()
+            .filter(|(_, (count, _))| *count >= Self::MIN_OBSERVATIONS)
+            .max_by_key(|(_, (count, _))| *count)
+            .map(|(nac, _)| *nac)
+            .unwrap_or(0)
+    }
+
+    pub fn reset(&mut self) {
+        self.entries.clear();
+        self.seq = 0;
+    }
 }
 
 /// Voice frame handler trait. Implementations consume the 9 raw IMBE
@@ -310,6 +392,30 @@ pub trait VoiceHandler {
     /// the Link Control Word with `voice_frame::parse_tdulc_lcw` and
     /// pick up the Motorola `TALK_COMPLETE` BY: source.
     fn on_tdu_lc(&self, _body_raw: &[u8]) {}
+
+    // 2026-04-30 framer-divergence diagnostic. Fired AFTER the
+    // decoder reaches the per-DUID dispatch arm but BEFORE the
+    // body extractor (which can fail and skip the on_<duid> call).
+    // Pairs with the existing on_hdu / on_ldu1 / on_ldu2 / on_tdu /
+    // on_tdu_lc (= "body extracted") so the diff = body-extraction
+    // failure count per call. Decouples the "sync correlator + BCH
+    // accepted this NID" measurement from the "body extracted
+    // cleanly" measurement — diagnoses calls where HDL register
+    // reports LDU1/LDU2 NIDs that the framer never dispatched.
+    fn on_dispatch_arm_hdu(&self) {}
+    fn on_dispatch_arm_ldu1(&self) {}
+    fn on_dispatch_arm_ldu2(&self) {}
+    fn on_dispatch_arm_tdu(&self) {}
+    fn on_dispatch_arm_tdu_lc(&self) {}
+
+    /// Expected system NAC for the current chain. The framer rejects
+    /// any BCH-passing NID whose decoded NAC does not match this value.
+    /// Return 0 to disable the guard (e.g. before the chain has a
+    /// confirmed NAC). Implementations that have access to a
+    /// HDL-validated NAC (LSM hardware decoder, t=4 sphere) should
+    /// surface it here to suppress over-corrected NIDs from the
+    /// PS framer's wider sphere.
+    fn expected_nac(&self) -> u16 { 0 }
 }
 
 mod types;
@@ -417,6 +523,7 @@ impl ControlChannelDecoder {
             nid_decoded_ok: 0,
             nid_decoded_tsdu: 0,
             nid_entropy_rejected: 0,
+            nid_nac_mismatch: 0,
             tsdu_attempts: 0,
             tsbk_block_attempts: 0,
             tsbk_trellis_failures: 0,
@@ -460,6 +567,7 @@ impl ControlChannelDecoder {
             hdu_count: 0,
             tdu_count: 0,
             tdu_lc_count: 0,
+            nac_tracker: NacTracker::default(),
         }
     }
 
@@ -564,6 +672,12 @@ impl ControlChannelDecoder {
         self.du_buffer.clear();
         self.du_expected_len = 0;
         self.tsdu_blocks_decoded = 0;
+        // 2026-05-03: NAC tracker is per-chain state and must reset
+        // on retune (sw_demod_task / grant_follower call this on
+        // freq change). A new freq might be a different system → the
+        // dominant-NAC lock from the previous freq must not gate the
+        // new chain.
+        self.nac_tracker.reset();
     }
 
     /// Clear ALL diagnostic counters and histograms (the
@@ -579,6 +693,8 @@ impl ControlChannelDecoder {
         self.nid_invalid_duid = 0;
         self.nid_decoded_ok = 0;
         self.nid_decoded_tsdu = 0;
+        self.nid_entropy_rejected = 0;
+        self.nid_nac_mismatch = 0;
         self.tsdu_attempts = 0;
         self.tsbk_block_attempts = 0;
         self.tsbk_trellis_failures = 0;
@@ -951,9 +1067,49 @@ impl ControlChannelDecoder {
                     self.raw_duid_hist[(on_air_duid & 0x0F) as usize] += 1;
 
                     let nac = Nac::new(nac_raw);
+                    // System-NAC guard: SDRTrunk-style NAC tracker. The
+                    // PS BCH sphere (t up to 11) over-corrects biased
+                    // noise into valid-but-wrong codewords. Source
+                    // priority for the "expected NAC" we compare against:
+                    //   1. `nac_tracker.dominant()` — frame-level tracker
+                    //      that locks to a NAC after 3+ observations.
+                    //      Active in offline tests AND in live SW demod.
+                    //   2. `voice_handler.expected_nac()` — legacy hook
+                    //      kept for the HDL polling path that publishes
+                    //      `last_observed_nac` directly. Returns 0 in SW
+                    //      demod / offline (no writer), so we fall back.
+                    // If both are 0 the guard is off (cold start, no
+                    // confirmed NAC yet).
+                    let dominant = self.nac_tracker.dominant();
+                    let expected = if dominant != 0 {
+                        dominant
+                    } else {
+                        self.voice_handler
+                            .as_ref()
+                            .map(|h| h.expected_nac())
+                            .unwrap_or(0)
+                    };
+                    if expected != 0 && nac_raw != expected {
+                        self.nid_nac_mismatch += 1;
+                        tracing::debug!(
+                            target: "p25_decoder",
+                            "NID NAC mismatch: decoded=0x{:03X} expected=0x{:03X} \
+                             duid_raw=0x{:X} -> Hunting",
+                            nac_raw, expected, duid_raw,
+                        );
+                        self.state = DecoderState::Hunting;
+                        self.dibit_count = 0;
+                        return;
+                    }
                     if let Some(duid) = DataUnit::from_duid(duid_raw) {
                         // Update NAC if we see a valid one
                         self.system.nac = Some(nac);
+                        // Frame-level NAC tracker: counts toward the
+                        // dominant-NAC threshold for the mismatch guard
+                        // above. Tracked AFTER the duid validity check
+                        // so structurally-invalid frames don't pollute
+                        // the tracker.
+                        self.nac_tracker.track(nac_raw);
                         self.nid_decoded_ok += 1;
 
                         // Structured DUID log. 2026-04-26 session-
@@ -1105,6 +1261,7 @@ impl ControlChannelDecoder {
                         DataUnit::Ldu1 => {
                             self.ldu1_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
+                                handler.on_dispatch_arm_ldu1();
                                 if let Some(frames) = crate::protocol::p25::voice_frame::extract_imbe_frames(&self.du_buffer) {
                                     handler.on_ldu1(&frames, &self.du_buffer);
                                 }
@@ -1114,6 +1271,7 @@ impl ControlChannelDecoder {
                         DataUnit::Ldu2 => {
                             self.ldu2_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
+                                handler.on_dispatch_arm_ldu2();
                                 if let Some(frames) = crate::protocol::p25::voice_frame::extract_imbe_frames(&self.du_buffer) {
                                     handler.on_ldu2(&frames, &self.du_buffer);
                                 }
@@ -1123,6 +1281,7 @@ impl ControlChannelDecoder {
                         DataUnit::Hdu => {
                             self.hdu_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
+                                handler.on_dispatch_arm_hdu();
                                 handler.on_hdu(&self.du_buffer);
                             }
                             true
@@ -1133,6 +1292,7 @@ impl ControlChannelDecoder {
                             // we get here -- just dispatch and return.
                             self.tdu_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
+                                handler.on_dispatch_arm_tdu();
                                 handler.on_tdu();
                             }
                             true
@@ -1140,6 +1300,7 @@ impl ControlChannelDecoder {
                         DataUnit::TduLc => {
                             self.tdu_lc_count += 1;
                             if let Some(handler) = self.voice_handler.clone() {
+                                handler.on_dispatch_arm_tdu_lc();
                                 handler.on_tdu_lc(&self.du_buffer);
                             }
                             true

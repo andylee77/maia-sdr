@@ -186,6 +186,15 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
     <h1>&#x1f4e1; Fishball P25</h1>
     <span class="status"><span class="dot" id="dot"></span><span id="status">Offline</span></span>
     <span style="font-size:0.75em;color:var(--text-dim);font-family:var(--mono)" id="build_tag">--</span>
+    <!-- 2026-05-03 dual-DDC pivot: site selector. Lists every
+         baseline at /api/sites; switching POSTs to /api/site and
+         then POSTs the selected site's preset_default to /api/preset
+         (LO snap reads the new cc_position). -->
+    <span style="margin-left:1em;font-size:0.85em;color:var(--text-dim)">Site:</span>
+    <select id="site_sel" onchange="switchSite(this.value)"
+            style="padding:2px 6px;font-family:inherit;font-size:0.85em">
+      <option value="">--</option>
+    </select>
   </div>
   <div>
     <span class="alias-btn" onclick="showAliases()">&#x2699; Aliases</span>
@@ -679,10 +688,11 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       <tr>
         <th style="text-align:left">Thread</th>
         <th style="text-align:right;width:8%">TID</th>
-        <th style="text-align:right;width:10%">CPU %</th>
-        <th style="text-align:center;width:8%">St</th>
-        <th style="text-align:right;width:14%">vol Δ</th>
-        <th style="text-align:right;width:14%">invol Δ</th>
+        <th style="text-align:right;width:10%" title="0.25 s window">CPU %</th>
+        <th style="text-align:right;width:10%" title="~10 s rolling average">CPU 10s</th>
+        <th style="text-align:center;width:6%">St</th>
+        <th style="text-align:right;width:12%">vol Δ</th>
+        <th style="text-align:right;width:12%">invol Δ</th>
       </tr>
     </thead>
     <tbody id="ps_threads_tbody"></tbody>
@@ -1074,6 +1084,59 @@ function renderPresetSpec() {
 
 function setCenterMode(mode) {
   TUNE_CENTER_MODE = mode;
+}
+
+// 2026-05-03 dual-DDC pivot: per-site baseline selector. Populates
+// the topbar dropdown from /api/sites and switches the active site
+// via POST /api/site. After switching, POSTs the site's preset_default
+// to /api/preset so the LO snap fires under the new cc_position.
+let SITES_BY_NAME = {};
+async function loadSites() {
+  const res = await fetchJson('/api/sites');
+  if (!res || !res.sites) return;
+  const sel = $('site_sel');
+  sel.innerHTML = '';
+  SITES_BY_NAME = {};
+  for (const s of res.sites) {
+    SITES_BY_NAME[s.name] = s;
+    const opt = document.createElement('option');
+    opt.value = s.name;
+    opt.textContent = s.label;
+    sel.appendChild(opt);
+  }
+  if (res.active) {
+    sel.value = res.active;
+  }
+}
+
+async function switchSite(name) {
+  if (!name) return;
+  const post = await fetch(`/api/site?name=${encodeURIComponent(name)}`, {
+    method: 'POST',
+  }).catch(e => null);
+  if (!post || !post.ok) {
+    console.warn('switchSite POST /api/site failed', post);
+    return;
+  }
+  const data = await post.json().catch(() => null);
+  if (!data || !data.ok) {
+    console.warn('switchSite payload', data);
+    return;
+  }
+  // Apply the site's preset_default — this is what makes the LO snap
+  // re-run under the new cc_position. /api/preset reads the active
+  // site from AppState.
+  const preset = data.site && data.site.preset_default;
+  if (preset) {
+    await fetch('/api/preset', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({preset}),
+    }).catch(e => null);
+  }
+  // Refresh dependent panels.
+  if (typeof loadPresets === 'function') await loadPresets();
+  if (typeof refresh === 'function') refresh();
 }
 
 async function applyPreset() {
@@ -2254,6 +2317,108 @@ async function saveAliases() {
 // The worklet module itself is defined as a string constant and loaded
 // via a `Blob` URL so there's no separate /audio_worklet.js route.
 
+// 2026-04-30: Dedicated WebSocket Worker for /ws/audio.
+//
+// Background: the prior implementation handled WS frames on the main
+// thread (`ws.onmessage`), then `postMessage`'d to the AudioWorklet.
+// When the dashboard's polls / renders blocked the main thread for
+// 1-2 sec, WS frames queued in the browser's net buffer and dumped
+// in a single burst when main freed up — observed live as the ring
+// jumping from 1 → 16384 samples in one stats interval, then draining
+// over 2 sec with no new arrivals. Audio sounded chopped because
+// playback was being fed 2 sec of audio every 4 sec instead of
+// continuously.
+//
+// This Worker takes WS reception entirely off the main thread:
+//
+//   net thread → WS Worker (own thread) → MessagePort → AudioWorklet
+//
+// The MessagePort is created on the main thread (port1 → Worker,
+// port2 → AudioWorklet via the worklet's default port `transferable`
+// argument). Once attached, no main-thread step is in the audio path.
+// Main thread can stall for any duration without affecting playback.
+//
+// Worker also handles reconnect with exponential backoff (1s → 15s),
+// matching the prior connectWs() pattern.
+const AUDIO_WS_WORKER_CODE = `
+let workletPort = null;
+let ws = null;
+let wsUrl = null;
+let reconnectMs = 1000;
+let reconnectTimer = null;
+let chunks = 0;
+let lastReportAt = 0;
+let lagSkipped = 0;
+
+function reportStatus(force) {
+  const now = (typeof performance !== 'undefined' && performance.now)
+    ? performance.now() : Date.now();
+  if (force || now - lastReportAt > 250) {
+    self.postMessage({type:'status', chunks, lagSkipped, t: now});
+    lastReportAt = now;
+  }
+}
+
+function connect() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => {
+    reconnectMs = 1000;
+    self.postMessage({type:'open'});
+  };
+  ws.onmessage = (evt) => {
+    if (typeof evt.data === 'string') {
+      // Server-side text frames: {"type":"lag","skipped":N} when the
+      // broadcast lagged this consumer. Forward to main for status.
+      try {
+        const ctrl = JSON.parse(evt.data);
+        if (ctrl && ctrl.type === 'lag') {
+          lagSkipped += (ctrl.skipped || 0);
+          reportStatus(true);
+        }
+        self.postMessage({type:'ctrl', payload: ctrl});
+      } catch (_) {}
+      return;
+    }
+    // Binary PCM: 320 bytes (160 i16 LE samples = 20 ms @ 8 kHz).
+    const buf = evt.data;
+    const i16 = new Int16Array(buf);
+    const f32 = new Float32Array(i16.length);
+    for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+    if (workletPort) {
+      // Transfer the underlying ArrayBuffer for zero-copy delivery.
+      workletPort.postMessage({type:'pcm', data: f32}, [f32.buffer]);
+    }
+    chunks++;
+    reportStatus(false);
+  };
+  ws.onclose = () => {
+    self.postMessage({type:'close'});
+    if (wsUrl) {
+      reconnectTimer = setTimeout(connect, reconnectMs);
+      reconnectMs = Math.min(reconnectMs * 2, 15000);
+    }
+  };
+  ws.onerror = () => {
+    self.postMessage({type:'error'});
+  };
+}
+
+self.onmessage = (e) => {
+  const m = e.data;
+  if (m.type === 'init') {
+    workletPort = m.port;
+    wsUrl = m.wsUrl;
+    connect();
+  } else if (m.type === 'shutdown') {
+    wsUrl = null;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (ws) { try { ws.close(); } catch (_) {} ws = null; }
+  }
+};
+`;
+
 const AUDIO_WORKLET_CODE = `
 class P25AudioProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -2269,22 +2434,52 @@ class P25AudioProcessor extends AudioWorkletProcessor {
     this.totalOut = 0;
     this.totalIn = 0;
     this.SRC_RATE = 8000;
-    this.ratio = this.SRC_RATE / sampleRate;
+    this.baseRatio = this.SRC_RATE / sampleRate;
+    this.ratio = this.baseRatio;
     this.readFrac = 0;
-    // Prefill before starting playback. Source paces at real-time
-    // (9 chunks per 180 ms LDU), so the ring reaches steady state
-    // around ~200 ms during a call. 150 ms prefill gets us listening
-    // one LDU into the call with minimal added latency. Was 540 ms
-    // (3 LDUs of headroom) which turned routine single-LDU losses
-    // into audible "drops out" events after re-prime.
+    // Sample-clock PLL: a slow proportional loop on ring fill.
+    // The vocoder's IMBE wire-clock and the browser's AudioContext
+    // crystal drift independently (50-200 ppm typical). Without
+    // discipline that drift accumulates and either fills or empties
+    // the ring over a long call. The PLL holds ring depth near
+    // PLL_TARGET, eliminating the accumulated-drift component of
+    // PREFILL sizing.
+    //
+    // *** PLL_TARGET sizing for bursty delivery ***
+    // Post-Tier-A vocoder is 30× faster than realtime, so a full
+    // 9-chunk LDU batch (1 440 samples = 180 ms) lands on the
+    // ring in < 5 ms then nothing arrives for ~175 ms. The ring
+    // therefore oscillates ±720 samples around whatever PLL_TARGET
+    // we hold. PLL_TARGET MUST be ≥ half-burst + jitter margin or
+    // the floor drops below zero and the worklet underruns at
+    // every LDU boundary (the "click at every 180 ms" pattern).
+    // 1200 samples = 150 ms gives 60 ms of floor headroom — tested
+    // floor across LAN jitter on 2026-04-30. Going below 150 ms
+    // requires server-side WS pacing OR worklet-side burst-
+    // spreading (deferred — see VOCODER_PIPELINE.md "Recommended
+    // path" item #6).
+    //
+    // Math: d(available)/dt = SRC_RATE * (1 - ratio/baseRatio).
+    // Set ratio = baseRatio * (1 + kp*(available - TARGET)) so the
+    // ring forms a first-order loop with time constant
+    // 1/(SRC_RATE*kp). PLL_KP = 4e-5 gives tau ~3 s. Steady-state
+    // residual at 100 ppm offset is ~2-3 samples (~0.3 ms).
+    // PLL_MAX_DEV clamps correction at ±0.5% (~5000 ppm, far above
+    // any real crystal drift) so a runaway can't pitch-shift voice.
+    this.PLL_TARGET = 1200;     // 150 ms — matches half-burst + jitter
+    this.PLL_KP = 4e-5;
+    this.PLL_MAX_DEV = 0.005;
+    // Prefill: start near where the PLL will pull us anyway, so the
+    // first inter-LDU boundary doesn't underrun before the loop has
+    // a chance to converge.
     this.PREFILL = 1200;
     this.priming = true;
     // Re-prime only on catastrophic stall — 2 s of continuous empty
     // ring. Routine single-LDU losses (180 ms gaps from sync-loss
     // or drop_count events) are played as the honest silence they
-    // represent, NOT overlaid with an additional 540 ms prefill
-    // pause. End-of-call naturally drains the ring and re-primes
-    // before the next call.
+    // represent, NOT overlaid with an additional prefill pause.
+    // End-of-call naturally drains the ring and re-primes before
+    // the next call.
     this.UNDERRUN_REPRIME = Math.max(4800, Math.round(sampleRate * 2));
     this.consecUnderruns = 0;
     // True when we're currently inside a continuous underrun
@@ -2292,30 +2487,27 @@ class P25AudioProcessor extends AudioWorkletProcessor {
     // its length. Much more useful health signal than a per-sample
     // counter that constantly ticks up during inter-LDU silence.
     this.inUnderrunRun = false;
+    this.skipped = 0;   // samples discarded by the realtime catch-up
     this.port.onmessage = (ev) => {
       const m = ev.data;
+      if (m && m.type === 'attach-port') {
+        // Secondary MessagePort from the WS Worker. Bypasses main
+        // thread for all PCM delivery — main can stall without
+        // glitching audio. ev.ports[0] is the transferred port2.
+        const sec = ev.ports[0];
+        if (sec) {
+          sec.onmessage = (ev2) => this.handlePcmMessage(ev2.data);
+        }
+        return;
+      }
       if (m.type === 'pcm') {
-        const d = m.data;
-        for (let i = 0; i < d.length; i++) {
-          this.ring[this.write] = d[i];
-          this.write = (this.write + 1) % this.RING;
-          if (this.available < this.RING) {
-            this.available++;
-          } else {
-            // Ring full — drop oldest (this should never happen on a
-            // healthy LAN; it means the vocoder produced faster than
-            // sampleRate for >2 s, which would be a real bug).
-            this.read = (this.read + 1) % this.RING;
-          }
-        }
-        this.totalIn += d.length;
-        if (this.priming && this.available >= this.PREFILL) {
-          this.priming = false;
-        }
+        // Legacy path / SPN main-thread fallback.
+        this.handlePcmMessage(m);
       } else if (m.type === 'reset') {
         this.write = 0; this.read = 0; this.available = 0;
         this.readFrac = 0; this.priming = true;
         this.consecUnderruns = 0;
+        this.ratio = this.baseRatio;
       } else if (m.type === 'stats') {
         this.port.postMessage({
           type: 'stats',
@@ -2326,9 +2518,36 @@ class P25AudioProcessor extends AudioWorkletProcessor {
           priming: this.priming,
           ringRate: this.SRC_RATE,
           ctxRate: sampleRate,
+          pllDev: (this.ratio / this.baseRatio) - 1,
+          pllTarget: this.PLL_TARGET,
+          skipped: this.skipped,
         });
       }
     };
+  }
+  handlePcmMessage(m) {
+    if (!m || m.type !== 'pcm') return;
+    const d = m.data;
+    for (let i = 0; i < d.length; i++) {
+      this.ring[this.write] = d[i];
+      this.write = (this.write + 1) % this.RING;
+      if (this.available < this.RING) {
+        this.available++;
+      } else {
+        // Ring full — drop oldest (defensive; shouldn't happen now
+        // that WS reception is off-main-thread).
+        this.read = (this.read + 1) % this.RING;
+      }
+    }
+    this.totalIn += d.length;
+    // Catch-up policy removed 2026-04-30: bursty post-Tier-A delivery
+    // (1440-sample LDU bursts) plus any audio-thread hiccup pushed the
+    // ring over 2× PLL_TARGET, and the catch-up dumped real audio
+    // instead of stale backlog. PLL alone is enough; ring is 2 s deep,
+    // so even a full-ring overflow is bounded latency, not lost audio.
+    if (this.priming && this.available >= this.PREFILL) {
+      this.priming = false;
+    }
   }
   process(inputs, outputs) {
     const out = outputs[0][0];
@@ -2339,6 +2558,11 @@ class P25AudioProcessor extends AudioWorkletProcessor {
       for (let i = 0; i < n; i++) out[i] = 0;
       return true;
     }
+    // Update PLL correction once per quantum (cheap, n=128 typical).
+    let dev = this.PLL_KP * (this.available - this.PLL_TARGET);
+    if (dev >  this.PLL_MAX_DEV) dev =  this.PLL_MAX_DEV;
+    if (dev < -this.PLL_MAX_DEV) dev = -this.PLL_MAX_DEV;
+    this.ratio = this.baseRatio * (1 + dev);
     for (let i = 0; i < n; i++) {
       if (this.available <= 1) {
         // Absorb the empty slot as silence and keep going. Routine
@@ -2386,11 +2610,14 @@ const AUDIO = {
   ctx: null,
   node: null,         // AudioWorkletNode OR ScriptProcessorNode
   gain: null,
-  ws: null,
+  ws: null,           // SPN-fallback main-thread WebSocket (null on worklet path)
+  wsWorker: null,     // Worker holding the WS for the worklet path
   playing: false,
   mode: null,         // 'worklet' | 'spn'
   chunks: 0,          // WS frames received this session
   underruns: 0,       // mirrored from worklet or read from AUDIO_SPN
+  skipped: 0,         // samples dropped by the realtime catch-up
+  lagSkipped: 0,      // server-side broadcast lag count (from Worker)
   bufMs: 0,           // available samples converted to ms at 8 kHz
   lastChunkAt: 0,     // wall-clock ms of last arriving WS frame
   statsTimer: null,   // periodic port.postMessage({type:'stats'})
@@ -2409,19 +2636,25 @@ const AUDIO = {
 // to the context rate, same silence-on-underrun policy.
 const AUDIO_SPN = {
   RING_SIZE: 16384,     // 2 s @ 8 kHz
-  // 150 ms warm-up — same reasoning as the worklet PREFILL above.
-  // Source paces at real-time so a large prefill adds only latency.
+  // 150 ms warm-up — sized to half the LDU burst + jitter margin
+  // so the first inter-LDU boundary doesn't underrun before the
+  // PLL converges. See worklet derivation for why bursty post-
+  // Tier-A delivery puts a hard floor of ~150 ms on PREFILL.
   PREFILL: 1200,
   // Re-prime only on a 2 s stall. Set at startAudio once we know
-  // the AudioContext sample rate. Routine LDU losses (~180 ms)
-  // play as honest silence without a 540 ms prefill pause on top.
+  // the AudioContext sample rate.
   UNDERRUN_REPRIME: 96000,   // default; overwritten in startAudio
   ring: null,
   write: 0,
   read: 0,
   available: 0,
   readFrac: 0,
-  ratio: 1.0,           // 8000 / ctxRate, set at startAudio
+  baseRatio: 1.0,       // 8000 / ctxRate, set at startAudio
+  ratio: 1.0,           // baseRatio * (1 + PLL deviation)
+  // Sample-clock PLL — same constants and target as worklet.
+  PLL_TARGET: 1200,
+  PLL_KP: 4e-5,
+  PLL_MAX_DEV: 0.005,
   underruns: 0,         // events, not samples
   consecUnderruns: 0,
   inUnderrunRun: false,
@@ -2437,6 +2670,7 @@ function audioSpnReset() {
   AUDIO_SPN.consecUnderruns = 0;
   AUDIO_SPN.inUnderrunRun = false;
   AUDIO_SPN.priming = true;
+  AUDIO_SPN.ratio = AUDIO_SPN.baseRatio;
 }
 function audioSpnWrite(f32) {
   const s = AUDIO_SPN;
@@ -2460,6 +2694,12 @@ function audioSpnProcess(e) {
     for (let i = 0; i < n; i++) out[i] = 0;
     return;
   }
+  // PLL on ring fill — keeps source/output clock drift bounded so
+  // PREFILL can stay at 40 ms. See worklet derivation; same gain.
+  let dev = s.PLL_KP * (s.available - s.PLL_TARGET);
+  if (dev >  s.PLL_MAX_DEV) dev =  s.PLL_MAX_DEV;
+  if (dev < -s.PLL_MAX_DEV) dev = -s.PLL_MAX_DEV;
+  s.ratio = s.baseRatio * (1 + dev);
   for (let i = 0; i < n; i++) {
     if (s.available <= 1) {
       // Absorb as silence. Only re-prime after UNDERRUN_REPRIME
@@ -2527,6 +2767,8 @@ function audioUpdateStatus() {
     + '  &middot;  ' + modeTxt
     + '  &middot;  chunks ' + AUDIO.chunks.toLocaleString()
     + (AUDIO.underruns ? '  &middot;  <span class="warn">underruns ' + AUDIO.underruns + '</span>' : '')
+    + (AUDIO.skipped ? '  &middot;  <span class="warn">skipped ' + AUDIO.skipped + '</span>' : '')
+    + (AUDIO.lagSkipped ? '  &middot;  <span class="warn">srv-lag ' + AUDIO.lagSkipped + '</span>' : '')
   );
 }
 
@@ -2588,12 +2830,13 @@ async function startAudio() {
         if (m && m.type === 'stats') {
           AUDIO.bufMs = (m.available / 8) | 0;
           AUDIO.underruns = m.underruns;
+          AUDIO.skipped = m.skipped || 0;
         }
       };
     } else if (AUDIO.ctx.createScriptProcessor) {
       AUDIO.mode = 'spn';
+      AUDIO_SPN.baseRatio = 8000 / AUDIO.ctxRate;
       audioSpnReset();
-      AUDIO_SPN.ratio = 8000 / AUDIO.ctxRate;
       // Re-prime only after 2 s of continuous empty ring. Computed
       // in ctx samples so the threshold is 2 s of real time on any
       // ctx rate the browser picks (typically 48 kHz).
@@ -2617,9 +2860,9 @@ async function startAudio() {
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = proto + '//' + location.host + '/ws/audio';
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = 'arraybuffer';
-    ws.onopen = () => {
+
+    // Stats poll + button transition is shared between worklet and SPN.
+    const onConnected = () => {
       AUDIO.playing = true;
       const btn = $('audioBtn');
       btn.classList.remove('play-off');
@@ -2635,32 +2878,70 @@ async function startAudio() {
       }
       audioUpdateStatus();
     };
-    ws.onmessage = (ev) => {
-      if (!(ev.data instanceof ArrayBuffer)) return;
-      // 320 bytes = 160 × i16 LE = 20 ms of 8 kHz mono.
-      const i16 = new Int16Array(ev.data);
-      if (i16.length === 0 || !AUDIO.node) return;
-      const f32 = new Float32Array(i16.length);
-      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
-      if (AUDIO.mode === 'worklet') {
-        // Transfer the buffer so there's no copy on the worklet side.
-        AUDIO.node.port.postMessage({type:'pcm', data:f32}, [f32.buffer]);
-      } else {
+
+    if (AUDIO.mode === 'worklet') {
+      // Worker-based WS reception (off main thread). MessagePort
+      // carries binary PCM straight from the Worker to the
+      // AudioWorklet, bypassing main thread entirely. Main thread
+      // can stall for any duration without affecting audio.
+      const wblob = new Blob([AUDIO_WS_WORKER_CODE], {type:'application/javascript'});
+      const wurl = URL.createObjectURL(wblob);
+      AUDIO.wsWorker = new Worker(wurl);
+      URL.revokeObjectURL(wurl);
+      // MessageChannel: Worker holds port1, AudioWorklet holds port2.
+      // Both ports are transferred (zero-copy ownership move).
+      const mc = new MessageChannel();
+      AUDIO.node.port.postMessage({type:'attach-port'}, [mc.port2]);
+      AUDIO.wsWorker.onmessage = (ev) => {
+        const m = ev.data;
+        if (!m) return;
+        if (m.type === 'open') {
+          onConnected();
+        } else if (m.type === 'status') {
+          // Worker reports cumulative chunk count + lag-skip count.
+          // No PCM traverses main thread — these are just for the
+          // status line.
+          AUDIO.chunks = m.chunks;
+          AUDIO.lastChunkAt = Date.now();
+          AUDIO.lagSkipped = m.lagSkipped || 0;
+        } else if (m.type === 'ctrl') {
+          // Server-side {"type":"lag","skipped":N} — already tallied
+          // by the Worker into status.lagSkipped. Surface as a warn
+          // marker on the status line via audioSetStatus on next tick.
+        } else if (m.type === 'close' || m.type === 'error') {
+          // Worker reconnects internally with backoff; just reflect
+          // disconnected state on the UI until it reopens.
+          audioSetStatus('<span class="warn">reconnecting…</span>');
+        }
+      };
+      AUDIO.wsWorker.postMessage({type:'init', wsUrl, port: mc.port1}, [mc.port1]);
+    } else {
+      // SPN fallback runs on main thread anyway, so a Worker buys us
+      // nothing. Keep the existing direct WS handler for this path.
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = onConnected;
+      ws.onmessage = (ev) => {
+        if (!(ev.data instanceof ArrayBuffer)) return;
+        const i16 = new Int16Array(ev.data);
+        if (i16.length === 0 || !AUDIO.node) return;
+        const f32 = new Float32Array(i16.length);
+        for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
         audioSpnWrite(f32);
-      }
-      AUDIO.chunks++;
-      AUDIO.lastChunkAt = Date.now();
-    };
-    ws.onclose = () => {
-      if (AUDIO.playing) {
-        audioSetStatus('<span class="warn">disconnected</span>');
-        stopAudio();
-      }
-    };
-    ws.onerror = () => {
-      audioSetStatus('<span class="err">WS error</span>');
-    };
-    AUDIO.ws = ws;
+        AUDIO.chunks++;
+        AUDIO.lastChunkAt = Date.now();
+      };
+      ws.onclose = () => {
+        if (AUDIO.playing) {
+          audioSetStatus('<span class="warn">disconnected</span>');
+          stopAudio();
+        }
+      };
+      ws.onerror = () => {
+        audioSetStatus('<span class="err">WS error</span>');
+      };
+      AUDIO.ws = ws;
+    }
   } catch (e) {
     audioSetStatus('<span class="err">' + e.message + '</span>');
     stopAudio();
@@ -2671,6 +2952,14 @@ function stopAudio() {
   AUDIO.playing = false;
   try { if (AUDIO.ws) AUDIO.ws.close(); } catch {}
   AUDIO.ws = null;
+  // Tear down the WS Worker (worklet path). The Worker also handles
+  // reconnect internally; sending 'shutdown' first stops the
+  // reconnect timer cleanly before terminate() drops the thread.
+  if (AUDIO.wsWorker) {
+    try { AUDIO.wsWorker.postMessage({type:'shutdown'}); } catch {}
+    try { AUDIO.wsWorker.terminate(); } catch {}
+    AUDIO.wsWorker = null;
+  }
   try { if (AUDIO.node) AUDIO.node.disconnect(); } catch {}
   // ScriptProcessorNode keeps its onaudioprocess closure alive until
   // the node is GC'd, which can prevent AudioContext shutdown. Null
@@ -3834,7 +4123,11 @@ async function refreshPsCores() {
   const tbody = $('ps_threads_tbody');
   const summary = $('ps_cores_summary');
   if (!grid || !tbody) return;
-  const data = await fetchJson('/api/ps_cores?top_n=12');
+  // top_n=20 so the full 14-thread set (main + p25-vocoder + 12
+  // tokio workers) is visible. At top_n=12 the vocoder thread —
+  // which sits at ~2.4 % cpu — falls off the bottom of a desc sort,
+  // hiding the thread that operators most often want to see.
+  const data = await fetchJson('/api/ps_cores?top_n=20');
   if (!data || !data.cpus) return;
   // Per-core block. Simple bar+label per CPU.
   const blocks = data.cpus.map(c => {
@@ -3858,6 +4151,7 @@ async function refreshPsCores() {
       <td>${escapeHtml(t.name)}</td>
       <td style="text-align:right;color:var(--text-dim)">${t.tid}</td>
       <td style="text-align:right"><b>${(t.cpu_pct||0).toFixed(1)}</b></td>
+      <td style="text-align:right"><b>${((t.cpu_pct_10s != null ? t.cpu_pct_10s : t.cpu_pct)||0).toFixed(1)}</b></td>
       <td style="text-align:center;color:var(--text-dim)">${t.state}</td>
       <td style="text-align:right;color:var(--text-dim)">${t.vol_ctxsw_delta}</td>
       <td style="text-align:right;color:var(--text-dim)">${t.invol_ctxsw_delta}</td>
@@ -4786,6 +5080,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // center_locked flag. One-shot — preset names don't change at
   // runtime.
   if (typeof loadPresets === 'function') loadPresets();
+  // 2026-05-03: populate the topbar site selector. Updates active
+  // option from `/api/sites.active`.
+  if (typeof loadSites === 'function') loadSites();
 });
 // Lazy-load on first tab activation so we don't pull 25 lines of
 // JSON on every page load.

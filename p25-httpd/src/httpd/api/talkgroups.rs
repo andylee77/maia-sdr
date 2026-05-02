@@ -269,9 +269,6 @@ pub async fn put_encrypted_tgs(
                 .store(0, Ordering::Relaxed);
             #[cfg(target_os = "linux")]
             {
-                // Phase 10.8: traffic-demod disable folded into the
-                // LSM chain quiesce path — `traffic_demod_control`
-                // is gone with the HDL C4FM chain.
                 let core = state.ip_core.lock().await;
                 core.pause_traffic_chain();
             }

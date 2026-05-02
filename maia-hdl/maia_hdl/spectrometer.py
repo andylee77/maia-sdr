@@ -67,13 +67,17 @@ class Spectrometer(Elaboratable):
                  domain_2x='clk2x', domain_3x='clk3x'):
         self._domain_2x = domain_2x
         self._domain_3x = domain_3x
-        # 2026-04-23: bumped 12 -> 14 (4096 -> 16384 bins) for better
-        # autoppm parabolic-interp precision (488 Hz/bin vs 1.95 kHz)
-        # and cleaner wideband visual resolution. R22 FFT requires
-        # even order, so 12 -> 14 is the natural step; 13 would need
-        # a structural change. BRAM cost estimate: ~60-90 BRAM18 vs
-        # ~16-24 at order 12 (Z7020 has 280 BRAM18 budget).
-        self.fft_order_log2 = 14
+        # FFT geometry: 4096 bins (fft_order_log2=12).
+        # History: 14 (16384 bins) was tried in 2026-04-23 for finer
+        # ~488 Hz/bin resolution; field testing 2026-05 showed the
+        # render path was significantly slower with no operationally
+        # useful extra information vs 4096-bin / 1.95 kHz/bin. Settled
+        # on 12 as the steady-state geometry. (Briefly bumped 14 -> 12
+        # in 2026-05-01 to free BRAM for the polyphase channelizer;
+        # that pivot was abandoned 2026-05-03 in favour of dual-DDC,
+        # and 12 is kept here on the operationally-better grounds.)
+        # R22 FFT requires even order.
+        self.fft_order_log2 = 12
         self.width_in = 16
 
         self.nint_width = 10
