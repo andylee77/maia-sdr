@@ -303,6 +303,31 @@ pub async fn post_preset(
             }
             Err(e) => errors.push(format!("configure_ddc: {e}")),
         }
+        // 2026-05-03 dual-DDC pivot bug fix: the traffic DDC's FIR
+        // coefficients + decimation factors are baked at boot
+        // (`main.rs::configure_traffic_ddc(boot_preset)`) and are NOT
+        // refreshed on `/api/preset`. Without this call, switching
+        // 8M→4M leaves the traffic DDC at decim 8/4/5 against a
+        // 4 MSPS input → output 25 kSPS → LsmDecimator2 /2 → 12.5
+        // kSPS at the LSM front end (vs the 25 kSPS every LSM
+        // submodule is parameterized for). Symptom: control PLL
+        // locks fine but traffic PLL never converges, all calls
+        // log 0/0/0/0 with no IMBE.
+        //
+        // Reconfigure with NCO=0 — the next grant's
+        // `retune_traffic_chain` writes the real offset; calls
+        // mid-flight during a preset change are intentionally
+        // dropped (the chain pauses between grants anyway).
+        match core.configure_traffic_ddc(0.0, preset) {
+            Ok(_) => {
+                applied.push(format!(
+                    "configure_traffic_ddc preset={}",
+                    preset.name));
+            }
+            Err(e) => errors.push(format!(
+                "configure_traffic_ddc: {e}")),
+        }
+        core.set_traffic_ddc_enable(true);
     }
 
     let readback_gain = state.ad9361.get_rx_gain().await.ok();
