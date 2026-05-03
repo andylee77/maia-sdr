@@ -35,6 +35,7 @@ it from change records and session logs rather than re-explaining.
 
 | File | Topic |
 |---|---|
+| [PROJECT_TIMELINE.md](PROJECT_TIMELINE.md) | **READ FIRST when picking up** — arc timeline, workflow, tool decision tree, refuted hypotheses, gotchas |
 | [ADI_HDL_INTEGRATION.md](ADI_HDL_INTEGRATION.md) | adi-hdl submodule integration |
 | [HDL_LAYOUT_AND_ROADMAP.md](HDL_LAYOUT_AND_ROADMAP.md) | HDL module layout |
 | [P25_API.md](P25_API.md) | P25 HTTP API reference |

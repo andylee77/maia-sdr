@@ -11,6 +11,16 @@ control channel decoder.
 - **Branches:** `fishball-dev` (Maia SDR), `fishball-p25` (P25 radio)
 - **Target hardware:** Fishball Z7020 (Zynq-7020 + AD9361)
 
+## Session pickup — READ FIRST
+
+If you are picking up this project mid-arc:
+
+1. Read [`doc/PROJECT_TIMELINE.md`](doc/PROJECT_TIMELINE.md) — chronological arc, workflow, tool decision tree, refuted hypotheses, gotchas. The single doc designed to bring a fresh session up to speed.
+2. Read the top entry in your auto-memory `MEMORY.md` — points to the current "READ FIRST" memory for the active arc.
+3. Use [`doc/PROJECT_INVENTORY.md`](doc/PROJECT_INVENTORY.md) when you need to find a specific file in the repo.
+
+Don't re-derive what's been tried. The timeline doc has refuted hypotheses listed; check there before retrying a hypothesis.
+
 ## Components
 
 | Component | Language | Purpose |
