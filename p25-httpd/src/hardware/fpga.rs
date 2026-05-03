@@ -85,6 +85,12 @@ pub struct IpCore {
     /// the PS-side software P25 stack (polyphase channelizer ->
     /// per-target DDC -> LSM demod). UIO `p25-wideband-iq`.
     wideband_iq_dma: RxBuffer,
+    /// 2026-05-03 dual-DDC pivot: traffic-chain post-DDC narrowband IQ
+    /// ring. Tap is `traffic_ddc.re_out / im_out` at 50 kSPS post the
+    /// dual-DDC retune (Nyquist ±25 kHz). Same 64-bit packing as
+    /// `iq_dma`. UIO `p25-traffic-iq`. Feeds
+    /// `/api/spectrum?chain=traffic`.
+    traffic_iq_dma: RxBuffer,
 
     iq_last_addr: Option<u32>,
     lsm_dibit_last_addr: Option<u32>,
@@ -92,6 +98,7 @@ pub struct IpCore {
     pre_diff_iq_last_addr: Option<u32>,
     wideband_spec_last_buffer: Option<u8>,
     wideband_iq_last_addr: Option<u32>,
+    traffic_iq_last_addr: Option<u32>,
 }
 
 impl IpCore {
@@ -157,6 +164,12 @@ impl IpCore {
         let wideband_iq_dma = RxBuffer::new("p25-wideband-iq")
             .await
             .context("failed to open p25-wideband-iq DMA buffer")?;
+        // 2026-05-03 dual-DDC: traffic-chain post-DDC narrowband IQ.
+        // DT entry `p25-traffic-iq` carved out at 0x1c000000 (32 KB
+        // buffers) — see Tezuka `fishball-p25.dtsi`.
+        let traffic_iq_dma = RxBuffer::new("p25-traffic-iq")
+            .await
+            .context("failed to open p25-traffic-iq DMA buffer")?;
 
         let ip_core = IpCore {
             registers,
@@ -166,12 +179,14 @@ impl IpCore {
             pre_diff_iq_dma,
             wideband_spec_dma,
             wideband_iq_dma,
+            traffic_iq_dma,
             iq_last_addr: None,
             lsm_dibit_last_addr: None,
             traffic_lsm_dibit_last_addr: None,
             pre_diff_iq_last_addr: None,
             wideband_spec_last_buffer: None,
             wideband_iq_last_addr: None,
+            traffic_iq_last_addr: None,
         };
 
         let interrupt_handler = InterruptHandler::new(uio, interrupt_registers);
@@ -419,9 +434,13 @@ impl IpCore {
         self.read_dma_buffers(DmaChannel::Iq)
     }
 
-    // 2026-05-02: traffic-side post-DDC IQ DMA retired with the
-    // old chain. New per-target IQ taps to be added in M2B (one
-    // per per_target_ddc output, gated by the `target_enable` mask).
+    /// Reads new traffic-chain post-DDC IQ ring sub-buffers since the
+    /// last call. 2026-05-03 dual-DDC pivot: tap is `traffic_ddc.re_out
+    /// / im_out` at 50 kSPS (Nyquist ±25 kHz). Same 64-bit packing as
+    /// `read_iq_buffers`. Feeds `/api/spectrum?chain=traffic`.
+    pub fn read_traffic_iq_buffers(&mut self) -> Vec<&[u8]> {
+        self.read_dma_buffers(DmaChannel::TrafficIq)
+    }
 
     // ── Pre-differential IQ rings (Phase 10.8 2026-04-23) ─────────
     //
@@ -705,6 +724,121 @@ impl IpCore {
         self.registers
             .traffic_lsm_control()
             .modify(|_, w| w.traffic_lsm_reset().bit(true));
+    }
+
+    /// 2026-05-03 seeding bake: writes warm-start seeds for the traffic
+    /// LSM chain. Caller MUST follow with `pulse_traffic_lsm_reset()`
+    /// to actually load them into the AGC / Costas PLL / Gardner
+    /// timing accumulators.
+    ///
+    /// Q-formats (raw register bits):
+    /// - `agc_seed`    : 20-bit unsigned Q9.11. Snapshot from
+    ///   control-chain `agc_gain_dbg` (Q9.7) shifted left by 4.
+    /// - `pll_seed`    : 16-bit signed Q2.13. Snapshot from
+    ///   `pll_dbg`. Empirical sweep: -13 ± 4 Hz uniform across
+    ///   active P25 voice channels (memory: 2026-05-03 session).
+    /// - `timing_seed` : 18-bit signed Q5.12. Snapshot from
+    ///   `sample_point_dbg`. Pass 0 to fall back to cold-start init
+    ///   (Gardner sweep deferred — see doc/changes/050).
+    ///
+    /// CDC fence: bank 8 (seeds) and bank 6 (`traffic_lsm_reset`) cross
+    /// independent RegisterCDC instances. Without a fence between
+    /// "seed writes committed in s_axi_lite" and "reset pulse fires
+    /// in sync", the reset can latch the previous seed value. We
+    /// round-trip a read on `traffic_lsm_pll_seed` after the writes;
+    /// the read can't return until it has crossed the CDC, which
+    /// proves the writes have crossed too. Cost: ~100 ns per retune.
+    pub fn write_traffic_seeds(
+        &self,
+        agc_seed: u32,
+        pll_seed: i16,
+        timing_seed: i32,
+    ) {
+        // svd2rust generates `Writable` but not `Resettable` for
+        // these single-field RW registers, so `.write()` fails its
+        // trait bound at cross-compile (host check passes only
+        // because hardware/fpga.rs is cfg(target_os = "linux")).
+        // `.modify()` requires only `Readable + Writable` and
+        // semantically does the right thing — these registers have
+        // a single field each, so the read-modify-write reduces to
+        // a plain register update.
+        self.registers
+            .traffic_lsm_agc_seed()
+            .modify(|_, w| unsafe {
+                w.agc_seed().bits(agc_seed & 0x000F_FFFF)
+            });
+        self.registers
+            .traffic_lsm_pll_seed()
+            .modify(|_, w| unsafe {
+                w.pll_seed().bits(pll_seed as u16)
+            });
+        self.registers
+            .traffic_lsm_timing_seed()
+            .modify(|_, w| unsafe {
+                w.timing_seed().bits((timing_seed as u32) & 0x0003_FFFF)
+            });
+        // CDC fence: round-trip read forces all writes above to have
+        // crossed s_axi_lite -> sync before the caller pulses reset.
+        let _ = self.registers
+            .traffic_lsm_pll_seed()
+            .read()
+            .pll_seed()
+            .bits();
+    }
+
+    /// Mirror of `write_traffic_seeds` for the control LSM chain.
+    /// Rarely needed in operation (control chain stays locked once
+    /// acquired) but exposed for symmetry + manual diagnostic use.
+    pub fn write_control_seeds(
+        &self,
+        agc_seed: u32,
+        pll_seed: i16,
+        timing_seed: i32,
+    ) {
+        self.registers
+            .lsm_agc_seed()
+            .modify(|_, w| unsafe {
+                w.agc_seed().bits(agc_seed & 0x000F_FFFF)
+            });
+        self.registers
+            .lsm_pll_seed()
+            .modify(|_, w| unsafe {
+                w.pll_seed().bits(pll_seed as u16)
+            });
+        self.registers
+            .lsm_timing_seed()
+            .modify(|_, w| unsafe {
+                w.timing_seed().bits((timing_seed as u32) & 0x0003_FFFF)
+            });
+        let _ = self.registers
+            .lsm_pll_seed()
+            .read()
+            .pll_seed()
+            .bits();
+    }
+
+    /// Reads back the currently-latched traffic seed register values.
+    /// Useful for `/api/system` surfacing and post-write verification.
+    pub fn read_traffic_seeds(&self) -> (u32, i16, i32) {
+        let agc = self.registers
+            .traffic_lsm_agc_seed()
+            .read()
+            .agc_seed()
+            .bits();
+        let pll = self.registers
+            .traffic_lsm_pll_seed()
+            .read()
+            .pll_seed()
+            .bits() as i16;
+        // Sign-extend the 18-bit timing seed (PAC returns u32) into
+        // an i32 so consumers see a signed value.
+        let timing_raw = self.registers
+            .traffic_lsm_timing_seed()
+            .read()
+            .timing_seed()
+            .bits();
+        let timing = sign_extend_18(timing_raw);
+        (agc, pll, timing)
     }
 
     /// Reads back the `traffic_lsm_control` register as
@@ -1043,10 +1177,34 @@ impl IpCore {
         &self,
         frequency_hz: f64,
         sample_rate_hz: f64,
-        freq_changed: bool,
+        // 2026-05-03 quality-gated coast (Option C):
+        //   `should_reset = false` → coast: NCO write only, no reset
+        //     pulse. Chain re-acquires through FIR flush. AGC + timing
+        //     + PLL preserved from prior call.
+        //   `should_reset = true`  → pulse `lsm_reset`. Clears all
+        //     accumulators to their HDL init values
+        //     (AGC = GAIN_INIT 1.0, PLL = 0, timing = warmup offset).
+        //     Required when the prior call left the chain in a
+        //     degenerate state (saturated AGC from idle-noise gain
+        //     pumping; PLL drifted to a bad attractor) — coasting
+        //     into the next call would inherit that state.
+        //
+        // The caller (`spawn_grant_follower`) computes `should_reset`
+        // via the `was_clean()` check on `LastCallQuality`. Pure
+        // coast (no reset) was tested under build
+        // `2026-05-03-coast-no-reset` and showed sub-100 ms First-IMBE
+        // when the chain was healthy but ~60 % of calls returned 0
+        // IMBE (the failure mode above).
+        should_reset: bool,
+        // Seeds parameter retained for API contract but currently
+        // unused. The bank-8 seed registers + heartbeat snapshot are
+        // dormant primitives kept in place for a future "soft PLL
+        // reset" mode (zero PLL accumulator only, preserve AGC +
+        // timing — closer mirror of SDRTrunk's resetPLL semantics).
+        _seeds: Option<(u32, i16, i32)>,
     ) -> Result<()> {
         self.set_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
-        if freq_changed {
+        if should_reset {
             self.pulse_traffic_lsm_reset();
         }
         self.set_traffic_lsm_enable(true);
@@ -1199,6 +1357,15 @@ impl IpCore {
                     .last_buffer()
                     .bits() as u32,
             ),
+            DmaChannel::TrafficIq => (
+                &self.traffic_iq_dma,
+                &mut self.traffic_iq_last_addr,
+                self.registers
+                    .traffic_iq_dma_status()
+                    .read()
+                    .traffic_iq_last_buffer()
+                    .bits() as u32,
+            ),
         };
 
         let num_bufs = dma.num_buffers();
@@ -1248,6 +1415,8 @@ enum DmaChannel {
     TrafficLsmDibit,
     PreDiffIq,
     WidebandIq,
+    /// 2026-05-03 dual-DDC pivot: traffic-chain post-DDC narrowband IQ.
+    TrafficIq,
 }
 
 /// 2026-04-26 PLL seed-load diagnostic returned from
@@ -1315,6 +1484,19 @@ fn freq_to_nco(frequency_hz: f64, sample_rate_hz: f64) -> u32 {
     let scale = (1u64 << NCO_WIDTH) as f64;
     let cycles_per_sample = frequency_hz / sample_rate_hz;
     (cycles_per_sample * scale).round() as i32 as u32
+}
+
+/// Sign-extends an 18-bit value (held in the low bits of a u32) into
+/// a signed i32. Used for the `timing_seed` field which the PAC
+/// surfaces as u32 even though the underlying register is 18-bit
+/// signed Q5.12.
+fn sign_extend_18(raw: u32) -> i32 {
+    let masked = raw & 0x0003_FFFF;
+    if masked & 0x0002_0000 != 0 {
+        (masked | 0xFFFC_0000) as i32
+    } else {
+        masked as i32
+    }
 }
 
 // ── Interrupt handler ────────────────────────────────────────────────

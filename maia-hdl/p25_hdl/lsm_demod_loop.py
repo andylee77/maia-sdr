@@ -178,6 +178,10 @@ class LsmDemodLoop(Elaboratable):
         # See doc/diagnostics/2026-04-25/CHANNELIZER_REDESIGN.md.
         self.pll_seed_in = Signal(signed(16))
         self.agc_seed_in = Signal(20)
+        # 2026-05-03 seeding bake: warm-start Gardner timing seed.
+        # Forwarded to LsmTimingInterp.timing_seed_in (Q5.12 signed).
+        # Zero -> cold-start init; non-zero -> override on reset.
+        self.timing_seed_in = Signal(signed(18))
 
         # ── Outputs ─────────────────────────────────────────────
         self.dibit_out = Signal(2, reset_less=True)
@@ -256,6 +260,8 @@ class LsmDemodLoop(Elaboratable):
             # 2026-04-26: warm-start seeds latched on reset_in pulse.
             pll_update.seed_in.eq(self.pll_seed_in),
             agc.seed_in.eq(self.agc_seed_in),
+            # 2026-05-03 seeding bake: Gardner timing seed.
+            timing.timing_seed_in.eq(self.timing_seed_in),
         ]
 
         # ── Stage 1: timing recovery + lerp ─────────────────────

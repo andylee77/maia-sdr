@@ -234,6 +234,14 @@ class LsmTimingInterp(Elaboratable):
         # init, so the timing recovery acts like cold-start on the
         # next input sample.
         self.reset_in = Signal()
+        # 2026-05-03 seeding bake: warm-start sample_point seed.
+        # Latched into `sample_point` on the same `reset_in` pulse
+        # that rewinds the rest of the timing-recovery state.
+        # Q5.12 signed (matches `sample_point` width). Zero -> use
+        # the legacy `sample_point_init` warmup offset (cold start);
+        # any non-zero value overrides the cold-start init so the
+        # PS can copy a converged value cached from a prior PTT.
+        self.timing_seed_in = Signal(signed(18))
 
         # ── Outputs ─────────────────────────────────────────────
         self.i_mid_out = Signal(signed(iq_width), reset_less=True)
@@ -553,8 +561,14 @@ class LsmTimingInterp(Elaboratable):
         # `m.d.sync` makes this an override of any update fired by
         # the strobe_in / timing_adj_strobe_in branches above.
         with m.If(self.reset_in):
+            # 2026-05-03 seeding bake: pick the timing seed if the
+            # PS provided one (non-zero), else fall back to the
+            # cold-start warmup offset. Same pattern as LsmAgc and
+            # LsmPllUpdate use for their own seeds.
             m.d.sync += [
-                sample_point.eq(sample_point_init),
+                sample_point.eq(Mux(self.timing_seed_in != 0,
+                                    self.timing_seed_in,
+                                    sample_point_init)),
                 self.decision_strobe.eq(0),
                 s1_active.eq(0),
                 s1_mu_mid.eq(0),

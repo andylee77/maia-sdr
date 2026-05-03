@@ -5,6 +5,169 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-05-03] Seeds live + LoS + recording_saved + traffic IQ relinked
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-05-03-seeds-live`
+**Bake required:** NO — pure PS change against the
+`2026-05-03-seeding-bake` HDL.
+
+Five PS-side changes that turn the bank-8 seed registers from 050 into
+a live warm-start path, plus operator-UX fixes that landed alongside.
+Full detail in `doc/changes/051_seeds_live.md`.
+
+**Seeds live:**
+
+- New `p25-httpd/src/app/seed_snapshot.rs` (192 lines + 3 unit tests):
+  rolling-window median snapshot of converged AGC / Costas PLL /
+  Gardner timing values, captured from the control chain only on
+  ticks where `nid_event && nid_valid && sync_distance == 0 &&
+  !bch_busy`. Commits after `MIN_CLEAN_SAMPLES = 6` clean snapshots
+  (~1 s of clean signal).
+- `IpCore::write_traffic_seeds(agc, pll, timing)` — writes all three
+  bank-8 seed registers with a CDC read-back fence (essential
+  because seeds and the reset Wpulse cross independent RegisterCDC
+  instances).
+- `retune_traffic_chain` extended with an `Option<(u32, i16, i32)>`
+  seeds parameter. Grant follower path passes `Some(...)` from the
+  shared snapshot; manual `/api/traffic` passes `None`.
+- New `/api/system.converged_seeds` field surfaces the current seed
+  status (armed/warmup, values, sample count, age).
+
+**Loss-of-sync detector:**
+
+- New `CallBoundaryKind::TrafficNidObserved` broadcast from the
+  traffic-LSM heartbeat on every `nid_event` strobe.
+- New `CloseReason::SyncLost` + `ActiveCall.last_nid_at_ms`. Tick
+  closes with `SyncLost` when `now - last_nid_at_ms > 1500 ms`
+  (~8 missed LDUs). Sits alongside the existing 10 s `Timeout`
+  backstop. `tracing::info!` log line on each LoS close.
+
+**recording_saved ws-event push:**
+
+- `recorder::finalize` now broadcasts a `recording_saved` event with
+  the full `RecordingEntry` payload after the WAV is written.
+  Dashboard intercepts the event and triggers an immediate
+  `refreshRecordings()` — eliminates the ~4 s gap between call close
+  and Recent Calls row update (operator-flagged 2026-04-30).
+
+**Plots page:**
+
+- Narrowband spectrum dropdown label is chain-aware: ±31.25 kHz
+  (control DDC at 62.5 kSPS) vs ±25 kHz (post-2026-05-03 dual-DDC
+  traffic chain at 50 kSPS).
+- `/api/spectrum?chain=traffic` was returning empty (stub from the
+  2026-05-02 M2A delete that was never updated when the 2026-05-03
+  dual-DDC pivot added the new traffic IQ ring). Wired up:
+  `IpCore::traffic_iq_dma` + `read_traffic_iq_buffers()` +
+  `DmaChannel::TrafficIq` + `/api/spectrum` chain=traffic dispatch.
+  Tezuka DT already had the `p25-traffic-iq` carve-out (32 KB
+  buffers @ 0x1c000000) so no kmod changes needed.
+
+**Verification:** `cargo check` clean (179 pre-existing warnings,
+zero new errors). `cargo test seed_snapshot::tests` passes 3/3.
+On-target verification pending Tezuka cross-build + flash.
+
+**Files touched:**
+
+- `p25-httpd/src/app/seed_snapshot.rs` (NEW)
+- `p25-httpd/src/app/mod.rs`
+- `p25-httpd/src/app/grant_follower.rs`
+- `p25-httpd/src/audio/mod.rs`
+- `p25-httpd/src/audio/recorder.rs`
+- `p25-httpd/src/main.rs`
+- `p25-httpd/src/hardware/fpga.rs`
+- `p25-httpd/src/httpd/mod.rs`
+- `p25-httpd/src/httpd/api/system.rs`
+- `p25-httpd/src/httpd/api/traffic.rs`
+- `p25-httpd/src/httpd/api/debug.rs`
+- `p25-httpd/src/httpd/dashboard.html`
+- `doc/changes/051_seeds_live.md`
+
+---
+
+## [2026-05-03] Seeding bake — AGC / PLL / Gardner timing seed register bank
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-05-03-seeding-bake`
+**Bake required:** YES — HDL `lsm_timing_interp.py` adds `timing_seed_in`;
+new register bank 8 at 0x100 in `p25_top.py`; bitstream + SVD + svd2rust
+regen all required.
+
+Cold-start First-IMBE on a traffic-chain retune is 3–5 s today; the
+2026-05-02 offline SW sweep showed the bit-exact decode reaches SDRTrunk's
+85–90 % rate while the on-target HDL chain delivers ~57 %, gap dominated
+by the per-retune acquisition transient. Dedicated seed register bank
+gives the PS a write-once / pulse-many path to warm-start AGC, Costas
+PLL, and Gardner timing on every retune.
+
+The 047 bake added AGC + PLL `seed_in` ports to the demod modules but
+the corresponding CSR fields were silently dropped during the
+2026-05-03 dual-DDC pivot. This bake restores them in a dedicated bank
+(cleaner than wedging seeds into bank 6's control / agc_config words)
+and adds the new Gardner timing seed.
+
+**HDL — seed input + register bank:**
+
+- `LsmTimingInterp` (`p25_hdl/lsm_timing_interp.py`):
+  - New `timing_seed_in` input (signed 18-bit Q5.12, matches
+    `sample_point`).
+  - Reset override now loads `Mux(seed != 0, seed, sample_point_init)`
+    into `sample_point`. Mirrors the AGC/PLL warm-start pattern.
+- `LsmDemodLoop` + `LsmDemod`: forward `timing_seed_in` through to the
+  `LsmTimingInterp` submodule.
+- `p25_top.py` — new register bank 8 at 0x100 (`lsm_seed_registers`):
+  - `lsm_agc_seed[19:0]`            @ 0x100  (Q9.11 unsigned)
+  - `lsm_pll_seed[15:0]`            @ 0x104  (Q2.13 signed)
+  - `lsm_timing_seed[17:0]`         @ 0x108  (Q5.12 signed)
+  - `traffic_lsm_agc_seed[19:0]`    @ 0x10C
+  - `traffic_lsm_pll_seed[15:0]`    @ 0x110
+  - `traffic_lsm_timing_seed[17:0]` @ 0x114
+  - `lsm_seed_registers_cdc` (s_axi_lite → sync) + bank decode at
+    `addr_bank == 0b1000`.
+  - Wire all six register fields into `lsm_demod` /
+    `traffic_lsm_demod` `agc_seed_in` / `pll_seed_in` /
+    `timing_seed_in` ports.
+- Address-map block comment updated; bank 8 is no longer "vacant".
+
+**PS — out of scope this bake (next change):**
+
+Seeds remain at zero (cold-start fallback) until the heartbeat snapshot
+is added. Per the 2026-05-03 session memo, empirical seed targets:
+
+- PLL bias: -13 ± 4 Hz uniform across active voice channels — single
+  global cached value works for first PS revision.
+- AGC: needs PTT-time sampling (whole-window medians corrupted by
+  between-PTT noise).
+- Gardner timing: separate sweep deferred; `timing_seed = 0` ships in
+  this bake (HDL falls back to cold-start init when seed is zero).
+
+**CDC ordering — read-back fence required on PS:**
+
+The seed registers and the `lsm_reset` / `traffic_lsm_reset` Wpulse
+cross **independent** RegisterCDC instances (bank 8 vs bank 5/6). PS
+retune sequence MUST round-trip a read after the seed writes to fence
+the CDC before pulsing reset, otherwise the reset can fire before the
+seed values cross and the demod will latch the previous value.
+
+**Tests:**
+
+`maia-hdl/test/test_lsm_timing_interp.py` — three new cases for the
+seed reset behaviour (zero → cold-start init, non-zero → override,
+negative-value sign round-trip). All 7 tests in the file pass.
+
+**Files touched:**
+
+- `maia-hdl/p25_hdl/lsm_timing_interp.py`
+- `maia-hdl/p25_hdl/lsm_demod_loop.py`
+- `maia-hdl/p25_hdl/lsm_demod.py`
+- `maia-hdl/p25_hdl/p25_top.py`
+- `maia-hdl/test/test_lsm_timing_interp.py`
+- `p25-httpd/src/main.rs` (BUILD_TAG bump only)
+- `doc/changes/050_seeding_bake.md`
+
+---
+
 ## [2026-04-29] PS perf + scanner pivot — `/api/ps_cores`, `/ws/audio` close-detect, JMBE recurrence, AGC dbg fix
 
 **Branch:** fishball-p25

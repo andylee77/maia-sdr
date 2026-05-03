@@ -776,6 +776,31 @@ pub async fn get_pipeline(
         })
     };
 
+    // 2026-05-03 seeding bake: surface the current ConvergedSeeds so
+    // the dashboard can show seed status without subscribing to a
+    // separate stream. `armed = false` means the heartbeat is still
+    // warming up; `armed = true` means subsequent retunes will write
+    // these seeds before pulsing reset.
+    let seeds_json = {
+        let slot = state.converged_seeds.read().await;
+        match slot.as_ref() {
+            Some(s) => serde_json::json!({
+                "armed":                true,
+                "agc_seed_q9_11":       s.agc_seed,
+                "pll_seed_q2_13":       s.pll_seed,
+                "timing_seed_q5_12":    s.timing_seed,
+                "samples_in_window":    s.samples_in_window,
+                "total_clean_samples":  s.total_clean_samples,
+                "age_ms":
+                    s.last_updated_at.elapsed().as_millis() as u64,
+            }),
+            None => serde_json::json!({
+                "armed":                false,
+                "reason":               "heartbeat warmup",
+            }),
+        }
+    };
+
     Json(serde_json::json!({
         "build_tag":         crate::BUILD_TAG,
         "uptime_secs":       state.boot_instant.elapsed().as_secs(),
@@ -789,6 +814,7 @@ pub async fn get_pipeline(
         "recorder":          recorder_json,
         "event_log":         event_log_json,
         "grant_stats":       grant_stats_json,
+        "converged_seeds":   seeds_json,
     }))
 }
 

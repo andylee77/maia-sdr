@@ -12,6 +12,7 @@ pub mod dibit_readers;
 pub mod grant_follower;
 pub mod grant_stats;
 pub mod imbe_forwarder;
+pub mod seed_snapshot;
 #[cfg(target_os = "linux")]
 pub mod sw_demod_task;
 pub mod vocoder_task;

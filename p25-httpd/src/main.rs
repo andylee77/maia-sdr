@@ -43,7 +43,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-05-03-same-freq-quality-gate";
+pub const BUILD_TAG: &str = "2026-05-03-quality-coast-loose-gate";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -651,6 +651,19 @@ async fn main() -> anyhow::Result<()> {
     let active_modulation =
         Arc::new(std::sync::atomic::AtomicU8::new(2));
 
+    // 2026-05-03 seeding bake: shared converged-seed snapshot.
+    // Published by the control-chain heartbeat (spawned inside the
+    // linux-only `let { ... }` block below) when it sees clean LDU
+    // flow; consumed by `retune_traffic_chain` to warm-start the
+    // traffic AGC / Costas PLL / Gardner timing accumulators on every
+    // retune. None until the heartbeat has accumulated
+    // MIN_CLEAN_SAMPLES clean snapshots. Declared at outer scope so
+    // both the grant-follower spawn (inside the block) and the
+    // `AppState` constructor (after the block) can see it.
+    #[cfg(target_os = "linux")]
+    let converged_seeds_shared =
+        crate::app::seed_snapshot::new_converged_seeds_shared();
+
     #[cfg(target_os = "linux")]
     let (ip_core, ad9361, wideband_iq_capture, sw_demod_enabled, sw_demod_stats) = {
         use tokio::sync::Mutex;
@@ -886,6 +899,12 @@ async fn main() -> anyhow::Result<()> {
         // Recovery from stall requires a power cycle.
         let lsm_nid_core = ip_core.clone();
         let lsm_nid_runtime = hdl_lsm.clone();
+        // 2026-05-03 seeding bake: control-chain heartbeat publishes
+        // converged-seed snapshots that the traffic chain warm-starts
+        // from on each retune. Capture only during clean LDU flow
+        // (sync_distance == 0 && nid_valid && !bch_busy) — anything
+        // else is between-PTT noise that corrupts the median.
+        let converged_seeds_pub = converged_seeds_shared.clone();
         tokio::spawn(async move {
             tracing::info!("HDL LSM heartbeat + NID poller task started");
             // Stamp the start time as soon as we run.
@@ -893,6 +912,9 @@ async fn main() -> anyhow::Result<()> {
                 let mut rt = lsm_nid_runtime.lock().await;
                 rt.started_at = Some(std::time::Instant::now());
             }
+            // 2026-05-03 seeding bake: rolling clean-sample window.
+            let mut seed_window =
+                crate::app::seed_snapshot::CleanSampleWindow::new();
             let mut tick = tokio::time::interval(
                 std::time::Duration::from_millis(LSM_HEARTBEAT_TICK_MS),
             );
@@ -969,6 +991,7 @@ async fn main() -> anyhow::Result<()> {
                     drop_count,
                     pll_dbg,
                     sp_dbg,
+                    agc_gain_dbg,
                     iq_overflow,
                     iq_last_buffer,
                     iq_next_addr,
@@ -978,11 +1001,16 @@ async fn main() -> anyhow::Result<()> {
                     let (nac, duid) = core.lsm_nid();
                     let drop_count = core.lsm_drop_count();
                     let (pll_dbg, sp_dbg) = core.lsm_debug();
+                    // 2026-05-03 seeding bake: also pull AGC dbg so the
+                    // clean-sample gate has all three loops at one
+                    // coherent instant.
+                    let (agc_gain_dbg, _agc_mag_dbg) = core.lsm_agc_debug();
                     let iq_overflow = core.iq_overflow();
                     let iq_last_buffer = core.iq_last_buffer();
                     let iq_next_addr = core.iq_next_address();
                     (
                         s, nac, duid, drop_count, pll_dbg, sp_dbg,
+                        agc_gain_dbg,
                         iq_overflow, iq_last_buffer, iq_next_addr,
                     )
                 };
@@ -1079,6 +1107,34 @@ async fn main() -> anyhow::Result<()> {
                     if status.nid_valid {
                         valid_count += 1;
                         hb_window_valid_count += 1;
+                    }
+
+                    // 2026-05-03 seeding bake: capture converged-seed
+                    // snapshot if this NID landed during clean LDU
+                    // flow. Sync_distance == 0 means the framer found
+                    // the 48-bit SYNC pattern with zero Hamming
+                    // distance — i.e. all three loops are converged
+                    // and the raw debug taps are trustworthy. Note
+                    // gain_dbg is Q9.7; shift left by 4 to recover
+                    // the Q9.11 representation expected by the AGC
+                    // accumulator's seed register.
+                    if status.nid_valid
+                        && status.sync_distance == 0
+                        && !status.bch_busy
+                    {
+                        let sample = crate::app::seed_snapshot::CleanSample {
+                            agc_q9_11: (agc_gain_dbg as u32) << 4,
+                            pll_q2_13: pll_dbg,
+                            timing_q5_12: sp_dbg as i32,
+                        };
+                        if let Some(seeds) = seed_window.observe(sample) {
+                            // Publish the new commit. Wait-free for
+                            // the retune path: the writer takes the
+                            // RwLock briefly (~once every clean NID,
+                            // ~6 Hz on a busy site).
+                            let mut slot = converged_seeds_pub.write().await;
+                            *slot = Some(seeds);
+                        }
                     }
 
                     // Always push into the ring regardless of log
@@ -1349,6 +1405,7 @@ async fn main() -> anyhow::Result<()> {
             traffic_lock_freq.clone(),
             call_boundary_tx.clone(),
             call_tracker_tx.clone(),
+            converged_seeds_shared.clone(),
         );
 
         // M2B 2026-05-02: traffic LSM heartbeat task restored. Polls
@@ -1390,6 +1447,20 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 }
                 nid_events += 1;
+
+                // 2026-05-03 loss-of-sync detector: every traffic-LSM
+                // NID event broadcasts a TrafficNidObserved boundary
+                // so the lifecycle layer can stamp the active call's
+                // `last_nid_at_ms`. Fired BEFORE the TG-gate below so
+                // pre-call NIDs (chain still acquiring) also count
+                // toward "framer alive". TG/NAC/DUID intentionally
+                // omitted — LoS is a pure framer-state signal.
+                let _ = traffic_boundary_tx.send(audio::CallBoundary {
+                    kind: audio::CallBoundaryKind::TrafficNidObserved,
+                    nac,
+                    talkgroup: None,
+                    expected_submit_count: 0,
+                });
 
                 use std::sync::atomic::Ordering;
                 let sync_trace_call_id = traffic_heartbeat_imbe
@@ -1601,10 +1672,15 @@ async fn main() -> anyhow::Result<()> {
         // queue-full events that caused audio loss on specific calls).
         let imbe_drops_handle = imbe_forwarder.imbe_frames_dropped.clone();
         let forwarder_for_recorder = Some(imbe_forwarder.clone());
+        // 2026-05-03: ws-event broadcast so the recorder can fire
+        // `recording_saved` immediately on call close. Eliminates the
+        // ~4 s gap between call end and Recent Calls row update.
+        let recorder_event_tx = Some(event_tx.clone());
         tokio::spawn(async move {
             recorder::recorder_task(
                 rx, tracker_rx, store, diag, log,
                 imbe_drops_handle, forwarder_for_recorder,
+                recorder_event_tx,
             ).await;
         });
     }
@@ -1776,6 +1852,12 @@ async fn main() -> anyhow::Result<()> {
             };
             Arc::new(tokio::sync::RwLock::new(site))
         },
+        // 2026-05-03 seeding bake: shared converged-seed snapshot
+        // populated by the control-chain heartbeat. Surfaced in
+        // `/api/system` so the dashboard can show the current
+        // warm-start values + heartbeat warmup state.
+        #[cfg(target_os = "linux")]
+        converged_seeds: converged_seeds_shared.clone(),
     });
 
     // Phase 2b unified call lifecycle: call_tracker is spawned up

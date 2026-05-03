@@ -526,6 +526,12 @@ async fn finalize(
     id: u64,
     event_log: Option<&Arc<crate::services::event_log::EventLog>>,
     forwarder: Option<&Arc<crate::app::imbe_forwarder::ImbeForwarder>>,
+    // 2026-05-03: ws-event broadcast so the dashboard's Recent Calls
+    // panel can splice the new row immediately rather than waiting
+    // for the next /api/recordings poll (~4 s lag observed
+    // 2026-04-30). Optional so unit tests / pre-2026-05-03 callers
+    // still work without plumbing the channel.
+    event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
 ) {
     let duration_ms = call.duration_ms();
     // 2026-04-25: discard only if the call produced ZERO PCM
@@ -687,10 +693,28 @@ async fn finalize(
         mean_chunk_lag_ms,
     };
     let mut ring = store.lock().await;
-    ring.push_back(entry);
+    ring.push_back(entry.clone());
     while ring.len() > MAX_RECORDINGS {
         if let Some(old) = ring.pop_front() {
             let _ = std::fs::remove_file(&old.path);
+        }
+    }
+    drop(ring);
+    // 2026-05-03 ws-event push: dashboard's Recent Calls panel
+    // splices the row immediately. Without this, the row only
+    // appeared on the next /api/recordings poll (~4 s lag observed
+    // 2026-04-30 — operator-flagged UX bug). Same `event_type`
+    // taxonomy as the Voice/TDULC events the dashboard already
+    // subscribes to via /ws/events.
+    if let Some(tx) = event_tx {
+        if let Ok(payload) = serde_json::to_value(&entry) {
+            let evt = serde_json::json!({
+                "event_type": "recording_saved",
+                "recording":  payload,
+            });
+            if let Ok(json) = serde_json::to_string(&evt) {
+                let _ = tx.send(json);
+            }
         }
     }
 }
@@ -729,6 +753,10 @@ pub async fn recorder_task(
     // at open + delta at finalize. Optional — pre-2026-04-24 spawn
     // paths could pass None.
     forwarder: Option<Arc<crate::app::imbe_forwarder::ImbeForwarder>>,
+    // 2026-05-03: ws-event broadcast so the dashboard's Recent Calls
+    // panel splices new rows immediately on call close instead of
+    // waiting for the next /api/recordings poll.
+    event_tx: Option<tokio::sync::broadcast::Sender<String>>,
 ) {
     // Structured-event helper. Every recorder decision (open, finalise,
     // source stamp, TG-guard skip, etc.) emits one of these so the
@@ -788,6 +816,8 @@ pub async fn recorder_task(
         event_log: Option<&Arc<crate::services::event_log::EventLog>>,
         forwarder: Option<&Arc<crate::app::imbe_forwarder::ImbeForwarder>>,
         imbe_drops: &Arc<std::sync::atomic::AtomicU64>,
+        // 2026-05-03: ws-event broadcast for `recording_saved`.
+        event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
     ) {
         use std::sync::atomic::Ordering;
         let id = old.call_id;
@@ -832,7 +862,7 @@ pub async fn recorder_task(
                 fields,
             );
         }
-        finalize(store, old, id, event_log, forwarder).await;
+        finalize(store, old, id, event_log, forwarder, event_tx).await;
     }
 
     loop {
@@ -933,6 +963,7 @@ pub async fn recorder_task(
                                 serde_json::json!({}),
                                 &store, event_log.as_ref(),
                                 forwarder.as_ref(), &imbe_drops,
+                                event_tx.as_ref(),
                             ).await;
                         }
                         if let Some(old) = active.take() {
@@ -941,6 +972,7 @@ pub async fn recorder_task(
                                 serde_json::json!({}),
                                 &store, event_log.as_ref(),
                                 forwarder.as_ref(), &imbe_drops,
+                                event_tx.as_ref(),
                             ).await;
                         }
                         return;
@@ -1009,6 +1041,7 @@ pub async fn recorder_task(
                                     }),
                                     &store, event_log.as_ref(),
                                     forwarder.as_ref(), &imbe_drops,
+                                    event_tx.as_ref(),
                                 ).await;
                             }
                             if let Some(mut old) = active.take() {
@@ -1146,6 +1179,7 @@ pub async fn recorder_task(
                                     CloseReason::Timeout => "timeout",
                                     CloseReason::TgChange => "tg_change",
                                     CloseReason::StreamLag => "stream_lag",
+                                    CloseReason::SyncLost => "sync_lost",
                                 };
                                 log_ev("call_closing", serde_json::json!({
                                     "recording_id":   c.call_id,
@@ -1213,6 +1247,7 @@ pub async fn recorder_task(
                             }),
                             &store, event_log.as_ref(),
                             forwarder.as_ref(), &imbe_drops,
+                            event_tx.as_ref(),
                         ).await;
                     }
                 }
@@ -1237,6 +1272,7 @@ pub async fn recorder_task(
                             }),
                             &store, event_log.as_ref(),
                             forwarder.as_ref(), &imbe_drops,
+                            event_tx.as_ref(),
                         ).await;
                     }
                 }

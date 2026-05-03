@@ -466,7 +466,7 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       </label>
       <select id="plot_picker" style="padding:4px 8px;font-family:inherit">
         <option value="spectrum_wide">Wideband spectrum (HDL FFT, full AD9361 band)</option>
-        <option value="spectrum">Narrowband spectrum (post-DDC, &plusmn;31.25 kHz)</option>
+        <option value="spectrum" data-control-label="Narrowband spectrum (post-DDC, &plusmn;31.25 kHz)" data-traffic-label="Narrowband spectrum (post-DDC, &plusmn;25 kHz)">Narrowband spectrum (post-DDC, &plusmn;31.25 kHz)</option>
         <option value="constellation">Constellation (pre-diff HDL tap)</option>
         <option value="eye">Eye (pre-diff HDL tap)</option>
         <option value="deviation">Deviation + metrics (pre-diff)</option>
@@ -841,21 +841,24 @@ td { padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,0.1); }
       <input type="checkbox" id="rec_show_enc" style="vertical-align:middle"> Show encrypted history
     </label>
   </h2>
-  <table style="width:100%">
+  <table style="width:100%;table-layout:fixed">
     <thead>
       <tr>
-        <th style="width:6em">Started</th>
-        <th style="width:5em">TG</th>
+        <th style="width:5.5em">Started</th>
+        <th style="width:4em">TG</th>
         <th style="width:7em">Source</th>
-        <th style="width:7em" title="Traffic-channel frequency from grant">Freq</th>
-        <th style="width:5em" title="HduStart → first IMBE frame latency. >800 ms flags start-of-call PLL/AGC drop.">First</th>
-        <th style="width:5em">Duration</th>
-        <th style="width:13em" title="LDUs (L1/L2) · IMBE ext/drop · voc err/silent">Decode (per call)</th>
+        <th style="width:11em;white-space:nowrap" title="Traffic-channel frequency from grant. Channel ID in monospace.">Freq</th>
+        <th style="width:4.5em" title="HduStart → first IMBE frame latency. >800 ms flags start-of-call PLL/AGC drop.">First</th>
+        <th style="width:4.5em">Duration</th>
+        <th style="width:5em" title="LDU1 / LDU2 frames extracted">LDU L1/L2</th>
+        <th style="width:5em" title="IMBE frames extracted / dropped (drop>0 in red = chain emitted IMBE faster than vocoder consumed)">IMBE ext/drop</th>
+        <th style="width:5em" title="Vocoder errors / silent frames (err>0 in orange = vocoder rejected an IMBE; silent = JMBE produced quiet frame)">Voc err/silent</th>
+        <th style="width:4em" title="AGC gain at close (Q9.7 raw / 128 → linear gain). 1.0× = uninitialised, 10-50× = converged on real signal.">AGC ×</th>
         <th>Recording</th>
       </tr>
     </thead>
     <tbody id="rec_tbody">
-      <tr><td colspan="8" style="color:var(--text-dim)">No calls yet.</td></tr>
+      <tr><td colspan="11" style="color:var(--text-dim)">No calls yet.</td></tr>
     </tbody>
   </table>
   <p style="color:var(--text-dim);font-size:0.75em;margin-top:6px">
@@ -2214,6 +2217,17 @@ function connectWs() {
       // Server-sent lag marker (broadcast channel overran). Not
       // a user-visible event — skip the activity-log render path.
       if (evt.event_type === 'ws_lag') return;
+      // 2026-05-03: recording_saved fires from the recorder right
+      // after a WAV is finalised. Trigger an immediate
+      // /api/recordings refresh so the Recent Calls panel splices
+      // the new row without waiting for the next periodic poll
+      // (~4 s lag observed 2026-04-30, operator-flagged).
+      if (evt.event_type === 'recording_saved') {
+        if (typeof refreshRecordings === 'function') {
+          refreshRecordings();
+        }
+        return;
+      }
       _evtQueue.push(evt);
       if (!_evtFlushScheduled) {
         _evtFlushScheduled = true;
@@ -4824,7 +4838,7 @@ async function refreshRecordings() {
   const tbody = $('rec_tbody');
   if (grantItems.length === 0 && recItems.length === 0) {
     if (window._REC_LAST_FP !== 'empty') {
-      tbody.innerHTML = '<tr><td colspan="8" style="color:var(--text-dim)">No calls yet.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" style="color:var(--text-dim)">No calls yet.</td></tr>';
       window._REC_LAST_FP = 'empty';
     }
     return;
@@ -4881,35 +4895,48 @@ async function refreshRecordings() {
                       : 'var(--green)';
     return `<span style="color:${c};font-family:monospace">${f}ms</span>`;
   };
-  // Decode stats: "L1/L2 · ext/drop · err/silent" from grant deltas.
-  const fmtStats = g => {
+  // 2026-05-03: Decode stats split into 4 columns (LDU L1/L2, IMBE
+  // ext/drop, Voc err/silent, AGC). Operator-requested:
+  // explicit per-column headers instead of pipe-separated jam.
+  const dimSpan = (v) =>
+    `<span style="color:var(--text-dim)">${v ?? '-'}</span>`;
+  const fmtLduCell = g =>
+    `<span style="font-family:monospace;font-size:0.85em">`
+    + `${g.ldu1_count ?? '-'}/${g.ldu2_count ?? '-'}`
+    + `</span>`;
+  const fmtImbeCell = g => {
     const drop = g.imbe_dropped || 0;
-    const err = g.vocoder_errors || 0;
     const dropColor = drop > 0 ? 'var(--red)' : 'var(--text-dim)';
-    const errColor = err > 0 ? 'var(--orange)' : 'var(--text-dim)';
-    // 2026-04-26 per-call AGC display. Q9.7 raw → float gain.
-    // Helps spot which calls converged (gain ~10-50) vs which
-    // didn't decode (gain stuck at GAIN_INIT=128 = 1.0× or
-    // hunting at 6400+ = 50×).
-    let agc = '';
-    if (g.agc_gain_q97_at_close != null) {
-      const gain = g.agc_gain_q97_at_close / 128.0;
-      agc = ` · <span style="color:var(--text-dim)" title="AGC gain at close (Q9.7 raw=${g.agc_gain_q97_at_close})">${gain.toFixed(1)}×</span>`;
-    }
     return `<span style="font-family:monospace;font-size:0.85em">`
-      + `${g.ldu1_count ?? '-'}/${g.ldu2_count ?? '-'} · `
-      + `${g.imbe_extracted ?? '-'}/<span style="color:${dropColor}">${drop}</span> · `
-      + `<span style="color:${errColor}">${err}</span>/${g.vocoder_silent ?? '-'}`
-      + agc
+      + `${g.imbe_extracted ?? '-'}/<span style="color:${dropColor}">${drop}</span>`
       + `</span>`;
   };
+  const fmtVocCell = g => {
+    const err = g.vocoder_errors || 0;
+    const errColor = err > 0 ? 'var(--orange)' : 'var(--text-dim)';
+    return `<span style="font-family:monospace;font-size:0.85em">`
+      + `<span style="color:${errColor}">${err}</span>/${g.vocoder_silent ?? '-'}`
+      + `</span>`;
+  };
+  // AGC at close, Q9.7 raw → linear gain. 1.0× = uninitialised,
+  // 10-50× = converged on real signal, >100× = hunting on noise.
+  const fmtAgcCell = g => {
+    if (g.agc_gain_q97_at_close == null) return dimSpan('-');
+    const gain = g.agc_gain_q97_at_close / 128.0;
+    return `<span style="font-family:monospace;font-size:0.85em" title="Q9.7 raw=${g.agc_gain_q97_at_close}">${gain.toFixed(1)}×</span>`;
+  };
+  // 2026-05-03: Freq cell on a single line — operator-flagged that
+  // the prior two-line format made every row visually 2× tall.
+  // Channel ID inlined in dim monospace after the MHz value.
   const fmtFreq = it => {
     const fh = it.freq_hz;
     const ch = it.channel;
     if (fh == null && !ch) return '<span style="color:var(--text-dim)">--</span>';
     const mhz = fh != null ? `${(fh/1e6).toFixed(4)} MHz` : '';
-    const chPart = ch ? `<div style="font-size:0.7em;color:var(--text-dim);font-family:monospace">${escHtml(ch)}</div>` : '';
-    return `<div>${mhz}</div>${chPart}`;
+    const chPart = ch
+      ? ` <span style="font-size:0.75em;color:var(--text-dim);font-family:monospace">${escHtml(ch)}</span>`
+      : '';
+    return `<span style="white-space:nowrap">${mhz}${chPart}</span>`;
   };
   // Recording cell: playback + download if a matching recording
   // exists; otherwise classify why no audio (encrypted / no_imbe /
@@ -4962,11 +4989,14 @@ async function refreshRecordings() {
       <td>${fmtFreq(g)}</td>
       <td>${fmtFirst(g)}</td>
       <td>${fmtDur(g.duration_ms)}</td>
-      <td>${fmtStats(g)}</td>
+      <td>${fmtLduCell(g)}</td>
+      <td>${fmtImbeCell(g)}</td>
+      <td>${fmtVocCell(g)}</td>
+      <td>${fmtAgcCell(g)}</td>
       <td style="white-space:nowrap">${fmtRecording(g, rec)}</td>
     </tr>
     <tr data-call-events-key="${key}" style="display:none">
-      <td colspan="8" style="background:rgba(128,128,128,0.06);padding:6px 10px">
+      <td colspan="11" style="background:rgba(128,128,128,0.06);padding:6px 10px">
         <div id="call_events_${key}" style="font-family:monospace;font-size:0.78em;max-height:320px;overflow:auto;white-space:pre-wrap">loading...</div>
       </td>
     </tr>`;
@@ -4977,7 +5007,7 @@ async function refreshRecordings() {
   // silently lost from the operator's view.
   const orphanRecs = recItems.filter(r => !matchedRecIds.has(r.id));
   if (orphanRecs.length > 0) {
-    rows.push(`<tr><td colspan="8" style="color:var(--text-dim);font-size:0.75em;padding-top:10px">Recordings without a matching grant (HDU missed or grant ring rolled):</td></tr>`);
+    rows.push(`<tr><td colspan="11" style="color:var(--text-dim);font-size:0.75em;padding-top:10px">Recordings without a matching grant (HDU missed or grant ring rolled):</td></tr>`);
     for (const r of orphanRecs) {
       const url = `/api/recordings/${r.id}.wav`;
       const src = fmtSources(r);
@@ -4991,7 +5021,10 @@ async function refreshRecordings() {
         <td>${fmtFreq(r)}</td>
         <td><span style="color:var(--text-dim)">--</span></td>
         <td>${fmtDur(r.duration_ms)}</td>
-        <td>${fmtStats(r)}</td>
+        <td>${fmtLduCell(r)}</td>
+        <td>${fmtImbeCell(r)}</td>
+        <td>${fmtVocCell(r)}</td>
+        <td>${fmtAgcCell(r)}</td>
         <td style="white-space:nowrap">
           <span style="color:var(--text-dim);font-family:monospace;font-size:0.8em;margin-right:4px" title="recording id">#${r.id}</span>
           <audio controls preload="none" style="height:28px;vertical-align:middle" src="${url}"></audio>
@@ -5000,7 +5033,7 @@ async function refreshRecordings() {
         </td>
       </tr>
       <tr data-call-events-key="${key}" style="display:none">
-        <td colspan="8" style="background:rgba(128,128,128,0.06);padding:6px 10px">
+        <td colspan="11" style="background:rgba(128,128,128,0.06);padding:6px 10px">
           <div id="call_events_${key}" style="font-family:monospace;font-size:0.78em;max-height:320px;overflow:auto;white-space:pre-wrap">loading...</div>
         </td>
       </tr>`);
@@ -5198,11 +5231,30 @@ function plotInit() {
   });
   document.getElementById('plot_chain').addEventListener('change', (e) => {
     PLOT.chain = e.target.value;
+    updatePlotPickerLabels();
     plotRestart();
   });
   PLOT.picker = document.getElementById('plot_picker').value;
   PLOT.chain  = document.getElementById('plot_chain').value;
+  updatePlotPickerLabels();
   configurePlotCanvas();
+}
+
+// 2026-05-03: keep the narrowband-spectrum option label in sync with
+// the chain selector. Control DDC outputs at 62.5 kSPS (Nyquist
+// ±31.25 kHz); the post-2026-05-03 dual-DDC traffic chain outputs at
+// 50 kSPS (Nyquist ±25 kHz). The actual span is always shown in the
+// status line from the API response — this just keeps the dropdown
+// honest before the user clicks.
+function updatePlotPickerLabels() {
+  const sel = document.getElementById('plot_picker');
+  if (!sel) return;
+  for (const opt of sel.options) {
+    const ctrlLabel = opt.getAttribute('data-control-label');
+    const trafLabel = opt.getAttribute('data-traffic-label');
+    if (!ctrlLabel || !trafLabel) continue;
+    opt.textContent = (PLOT.chain === 'traffic') ? trafLabel : ctrlLabel;
+  }
 }
 
 function plotStop() {

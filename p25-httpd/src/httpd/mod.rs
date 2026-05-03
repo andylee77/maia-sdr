@@ -307,6 +307,15 @@ pub struct AppState {
     /// path. Read by `/api/site*` handlers + the LO-snap policy in
     /// `httpd::api::tuning`.
     pub active_site: Arc<RwLock<Option<crate::services::sites::Site>>>,
+    /// 2026-05-03 seeding bake: shared converged-seed snapshot. None
+    /// while the control-chain heartbeat is still warming up
+    /// (< MIN_CLEAN_SAMPLES clean NIDs). Some after the first commit;
+    /// rolling-window median updated on each subsequent clean NID.
+    /// Read by `/api/system` for diagnostic surfacing and by
+    /// `app::grant_follower::spawn_grant_follower` to warm-start the
+    /// traffic chain on retunes.
+    #[cfg(target_os = "linux")]
+    pub converged_seeds: crate::app::seed_snapshot::ConvergedSeedsShared,
 }
 
 impl AppState {

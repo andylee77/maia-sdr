@@ -185,6 +185,20 @@ pub enum CallBoundaryKind {
         freq_hz: Option<u64>,
         channel: u16,
     },
+    /// 2026-05-03 loss-of-sync detector: traffic-LSM heartbeat saw an
+    /// `nid_event` strobe (any DUID, any nid_valid). The lifecycle
+    /// uses this purely as a framer-level liveness signal — it stamps
+    /// `ActiveCall.last_nid_at_ms` so the periodic tick can close
+    /// the call with `CloseReason::SyncLost` when no NIDs have fired
+    /// for `LOS_TIMEOUT_MS`. Mirrors SDRTrunk's per-channel
+    /// loss-of-sync flag without adding a new HDL counter.
+    ///
+    /// Carries no fields: the bare arrival of the event is the
+    /// signal, and the timestamp is the receipt time at the
+    /// lifecycle task. NAC/TG/DUID are intentionally omitted —
+    /// LoS is a pure framer-state metric, independent of which
+    /// TG / NAC the chain is decoding.
+    TrafficNidObserved,
 }
 
 pub type CallBoundaryTx = broadcast::Sender<CallBoundary>;

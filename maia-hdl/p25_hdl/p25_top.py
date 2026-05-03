@@ -576,6 +576,54 @@ class P25Core(Elaboratable):
             },
             3)
 
+        # ── LSM seed register bank (bank 8 @ 0x100, 2026-05-03 bake) ─
+        # Warm-start seeds for the AGC / PLL / Gardner timing loops on
+        # both LSM chains. Latched into the loop accumulators on the
+        # respective `lsm_reset` / `traffic_lsm_reset` pulse via the
+        # Mux(seed != 0, seed, init) pattern inside lsm_agc.py,
+        # lsm_pll_update.py, and lsm_timing_interp.py. Zero -> legacy
+        # cold start.
+        #
+        # PS workflow (p25-httpd):
+        #   1. During clean LDU flow on the control chain, the
+        #      heartbeat snapshots (pll_dbg, sample_point_dbg,
+        #      gain_dbg<<4) into a per-freq cache.
+        #   2. On `retune_traffic_chain`, the cached seeds are written
+        #      into this bank BEFORE pulsing `traffic_lsm_reset`.
+        #   3. Seeds remain latched in the registers between resets,
+        #      so a write-once / pulse-many flow is supported.
+        #
+        # Q-formats (raw register bits; sign interpretation happens in
+        # the PAC / PS code):
+        #   agc_seed     : 20-bit unsigned Q9.11 (matches LsmAgc.gain
+        #                  internal accumulator; gain_dbg is the Q9.7
+        #                  truncation, so PS shifts gain_dbg << 4 to
+        #                  recover the Q9.11 representation).
+        #   pll_seed     : 16-bit signed Q2.13 (matches pll_reg).
+        #   timing_seed  : 18-bit signed Q5.12 (matches sample_point).
+        self.lsm_seed_registers = Registers(
+            'lsm_seed', {
+                0b000: Register('lsm_agc_seed', [
+                    Field('agc_seed', Access.RW, 20, 0),
+                ]),
+                0b001: Register('lsm_pll_seed', [
+                    Field('pll_seed', Access.RW, 16, 0),
+                ]),
+                0b010: Register('lsm_timing_seed', [
+                    Field('timing_seed', Access.RW, 18, 0),
+                ]),
+                0b011: Register('traffic_lsm_agc_seed', [
+                    Field('agc_seed', Access.RW, 20, 0),
+                ]),
+                0b100: Register('traffic_lsm_pll_seed', [
+                    Field('pll_seed', Access.RW, 16, 0),
+                ]),
+                0b101: Register('traffic_lsm_timing_seed', [
+                    Field('timing_seed', Access.RW, 18, 0),
+                ]),
+            },
+            3)
+
         # ── Traffic-channel post-DDC IQ ring DMA (2026-05-03) ─────────
         # Mirror of the control `iq_dma`. Tapped off `traffic_ddc.re_out`
         # / `im_out` at the DDC output rate (50 kSPS post-2026-05-03).
@@ -702,12 +750,12 @@ class P25Core(Elaboratable):
         #   0xA0  bank 5   lsm           (control LSM: dibit DMA + NID events)
         #   0xC0  bank 6   traffic_lsm   (traffic LSM: dibit DMA + NID events)
         #   0xE0  bank 7   wideband_iq   (raw 8 MSPS IQ DMA)
+        #   0x100 bank 8   lsm_seed      (AGC/PLL/timing seeds, both chains)
         #   0x180 bank 12  spectrometer  (wideband FFT DMA)
         #   0x1A0 bank 13  pre_diff_iq   (control pre-diff IQ DMA)
         #   0x1C0 bank 14  traffic_pre_diff_iq (traffic pre-diff IQ DMA)
         #
-        # Vacant: 8 (was traffic_pipe — polyphase retired 2026-05-03),
-        # 9-11, 15.
+        # Vacant: 9-11, 15.
         # See doc/P25_ADDRESS_MAP.md for the canonical bank table.
         self.register_map = RegisterMap({
             0x00:  self.control_registers,
@@ -718,6 +766,7 @@ class P25Core(Elaboratable):
             0xA0:  self.lsm_registers,
             0xC0:  self.traffic_lsm_registers,
             0xE0:  self.wideband_iq_registers,
+            0x100: self.lsm_seed_registers,
             0x180: self.wideband_spec_registers,
             0x1A0: self.pre_diff_iq_registers,
             0x1C0: self.traffic_pre_diff_iq_registers,
@@ -925,6 +974,12 @@ class P25Core(Elaboratable):
             traffic_lsm_registers_cdc) = RegisterCDC(
                 's_axi_lite', 'sync', self.traffic_lsm_registers.aw)
 
+        # 2026-05-03 seeding bake: warm-start seed register bank.
+        m.submodules.lsm_seed_registers = self.lsm_seed_registers
+        m.submodules.lsm_seed_registers_cdc = (
+            lsm_seed_registers_cdc) = RegisterCDC(
+                's_axi_lite', 'sync', self.lsm_seed_registers.aw)
+
         # 2026-05-03 dual-DDC: traffic-side post-DDC IQ ring DMA.
         m.submodules.traffic_iq_packer = self.traffic_iq_packer
         m.submodules.traffic_iq_dma = self.traffic_iq_dma
@@ -1131,6 +1186,17 @@ class P25Core(Elaboratable):
             # Phase 8A: runtime reset strobe.
             self.lsm_demod.reset_in.eq(
                 self.lsm_registers['lsm_control']['lsm_reset']),
+            # 2026-05-03 seeding bake: warm-start seeds for the
+            # control chain. Latched into the AGC/PLL/timing
+            # accumulators on the same `lsm_reset` pulse. Zero ->
+            # cold-start init (legacy behaviour).
+            self.lsm_demod.agc_seed_in.eq(
+                self.lsm_seed_registers['lsm_agc_seed']['agc_seed']),
+            self.lsm_demod.pll_seed_in.eq(
+                self.lsm_seed_registers['lsm_pll_seed']['pll_seed']),
+            self.lsm_demod.timing_seed_in.eq(
+                self.lsm_seed_registers[
+                    'lsm_timing_seed']['timing_seed']),
         ]
 
         # Stage 5: LsmDemod dibits -> packer -> ring DMA stream.
@@ -1301,6 +1367,20 @@ class P25Core(Elaboratable):
                 traffic_lsm_ctrl['traffic_lsm_reset']),
             self.traffic_lsm_demod.agc_mag_update_threshold_in.eq(
                 traffic_lsm_agc_cfg['mag_update_threshold']),
+            # 2026-05-03 seeding bake: warm-start seeds for the
+            # traffic chain. PS copies converged values from the
+            # control chain (or per-freq cache) into these
+            # registers before pulsing `traffic_lsm_reset` on a
+            # retune. Zero -> cold start.
+            self.traffic_lsm_demod.agc_seed_in.eq(
+                self.lsm_seed_registers[
+                    'traffic_lsm_agc_seed']['agc_seed']),
+            self.traffic_lsm_demod.pll_seed_in.eq(
+                self.lsm_seed_registers[
+                    'traffic_lsm_pll_seed']['pll_seed']),
+            self.traffic_lsm_demod.timing_seed_in.eq(
+                self.lsm_seed_registers[
+                    'traffic_lsm_timing_seed']['timing_seed']),
         ]
         # Stage 3: LsmDemod dibits -> packer -> ring DMA stream
         m.d.comb += [
@@ -1505,6 +1585,7 @@ class P25Core(Elaboratable):
         lsm_regs_select = (addr_bank == 0b0101)
         traffic_lsm_regs_select = (addr_bank == 0b0110)
         wideband_iq_regs_select = (addr_bank == 0b0111)
+        lsm_seed_regs_select = (addr_bank == 0b1000)
         spec_regs_select = (addr_bank == 0b1100)
         pre_diff_iq_regs_select = (addr_bank == 0b1101)
         traffic_pre_diff_iq_regs_select = (addr_bank == 0b1110)
@@ -1518,6 +1599,7 @@ class P25Core(Elaboratable):
                                    | lsm_registers_cdc.i_rdata
                                    | traffic_lsm_registers_cdc.i_rdata
                                    | wideband_iq_registers_cdc.i_rdata
+                                   | lsm_seed_registers_cdc.i_rdata
                                    | pre_diff_iq_registers_cdc.i_rdata
                                    | traffic_pre_diff_iq_registers_cdc.i_rdata
                                    | wideband_spec_registers_cdc.i_rdata),
@@ -1529,6 +1611,7 @@ class P25Core(Elaboratable):
                                    | lsm_registers_cdc.i_rdone
                                    | traffic_lsm_registers_cdc.i_rdone
                                    | wideband_iq_registers_cdc.i_rdone
+                                   | lsm_seed_registers_cdc.i_rdone
                                    | pre_diff_iq_registers_cdc.i_rdone
                                    | traffic_pre_diff_iq_registers_cdc.i_rdone
                                    | wideband_spec_registers_cdc.i_rdone),
@@ -1540,6 +1623,7 @@ class P25Core(Elaboratable):
                                    | lsm_registers_cdc.i_wdone
                                    | traffic_lsm_registers_cdc.i_wdone
                                    | wideband_iq_registers_cdc.i_wdone
+                                   | lsm_seed_registers_cdc.i_wdone
                                    | pre_diff_iq_registers_cdc.i_wdone
                                    | traffic_pre_diff_iq_registers_cdc.i_wdone
                                    | wideband_spec_registers_cdc.i_wdone),
@@ -1575,6 +1659,10 @@ class P25Core(Elaboratable):
                 self.axi4lite.ren & wideband_iq_regs_select),
             wideband_iq_registers_cdc.i_wstrobe.eq(
                 Mux(wideband_iq_regs_select, self.axi4lite.wstrobe, 0)),
+            lsm_seed_registers_cdc.i_ren.eq(
+                self.axi4lite.ren & lsm_seed_regs_select),
+            lsm_seed_registers_cdc.i_wstrobe.eq(
+                Mux(lsm_seed_regs_select, self.axi4lite.wstrobe, 0)),
             wideband_spec_registers_cdc.i_ren.eq(
                 self.axi4lite.ren & spec_regs_select),
             wideband_spec_registers_cdc.i_wstrobe.eq(
@@ -1608,6 +1696,8 @@ class P25Core(Elaboratable):
             traffic_lsm_registers_cdc.i_wdata.eq(wdata),
             wideband_iq_registers_cdc.i_address.eq(address),
             wideband_iq_registers_cdc.i_wdata.eq(wdata),
+            lsm_seed_registers_cdc.i_address.eq(address),
+            lsm_seed_registers_cdc.i_wdata.eq(wdata),
             pre_diff_iq_registers_cdc.i_address.eq(address),
             pre_diff_iq_registers_cdc.i_wdata.eq(wdata),
             traffic_pre_diff_iq_registers_cdc.i_address.eq(address),
@@ -1663,6 +1753,23 @@ class P25Core(Elaboratable):
                 self.traffic_lsm_registers.wdone),
             traffic_lsm_registers_cdc.o_rdata.eq(
                 self.traffic_lsm_registers.rdata),
+        ]
+        # 2026-05-03: lsm_seed_registers CDC (seeding bake bank 8).
+        m.d.comb += [
+            self.lsm_seed_registers.ren.eq(
+                lsm_seed_registers_cdc.o_ren),
+            self.lsm_seed_registers.wstrobe.eq(
+                lsm_seed_registers_cdc.o_wstrobe),
+            self.lsm_seed_registers.address.eq(
+                lsm_seed_registers_cdc.o_address),
+            self.lsm_seed_registers.wdata.eq(
+                lsm_seed_registers_cdc.o_wdata),
+            lsm_seed_registers_cdc.o_rdone.eq(
+                self.lsm_seed_registers.rdone),
+            lsm_seed_registers_cdc.o_wdone.eq(
+                self.lsm_seed_registers.wdone),
+            lsm_seed_registers_cdc.o_rdata.eq(
+                self.lsm_seed_registers.rdata),
         ]
         # Phase 10.8: pre_diff_iq register CDC.
         m.d.comb += [

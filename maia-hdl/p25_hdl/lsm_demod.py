@@ -171,6 +171,10 @@ class LsmDemod(Elaboratable):
         # doc/diagnostics/2026-04-25/CHANNELIZER_REDESIGN.md.
         self.pll_seed_in = Signal(signed(16))
         self.agc_seed_in = Signal(20)
+        # 2026-05-03 seeding bake: Gardner timing seed (Q5.12 signed).
+        # Forwarded to LsmDemodLoop -> LsmTimingInterp; latched into
+        # `sample_point` on `reset_in` when non-zero.
+        self.timing_seed_in = Signal(signed(18))
 
         # ── Pass-through dibit stream ───────────────────────────
         self.dibit_out = Signal(2)
@@ -250,6 +254,8 @@ class LsmDemod(Elaboratable):
             # 2026-04-26: PLL + AGC warm-start seeds.
             demod_loop.pll_seed_in.eq(self.pll_seed_in),
             demod_loop.agc_seed_in.eq(self.agc_seed_in),
+            # 2026-05-03 seeding bake: Gardner timing seed.
+            demod_loop.timing_seed_in.eq(self.timing_seed_in),
         ]
 
         # ── Stage 0: per-channel DC blocking ───────────────────

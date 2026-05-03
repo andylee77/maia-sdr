@@ -181,10 +181,19 @@ pub async fn get_traffic(
                         // Manual debug retune always passes freq_changed=true
                         // — operator-initiated sweeps want the chain re-seeded
                         // regardless of the previous offset.
+                        // 2026-05-03 quality-gated coast: manual
+                        // /api/traffic retune always pulses reset —
+                        // operator sweeps want a clean cold-start to
+                        // expose the freq-vs-acquisition relation
+                        // without inheriting state from whatever the
+                        // chain was doing. Seeds parameter retained
+                        // for API symmetry but unused.
                         core.retune_traffic_chain(
                             offset_hz as f64,
                             sample_rate_hz as f64,
-                            true)
+                            true,
+                            None,
+                        )
                     };
                     if let Err(ref e) = retune_result {
                         errors.push(format!(

@@ -78,6 +78,25 @@ const TIMEOUT_TICK_MS: u64 = 100;
 /// for the diagnostic air-time metric.
 const IDLE_TIMEOUT_MS: u64 = 10_000;
 
+/// 2026-05-03 loss-of-sync close trigger. NID events fire every
+/// ~180 ms in healthy P25 voice (1 per LDU at 4800 sps, 9 IMBE/LDU).
+/// After this many ms with zero NID events on the traffic chain we
+/// declare loss-of-sync and close the active call with
+/// `CloseReason::SyncLost`. Mirrors SDRTrunk's per-channel LoS flag
+/// using our framer-native metric (NID strobe age) rather than
+/// dibit-error rate.
+///
+/// 1500 ms = ~8 missed LDUs. Below this, brief glitches in the BCH
+/// sweep are normal (a single NID can be dropped if BCH is busy).
+/// Above this, sync is unambiguously lost. The 10 s `IDLE_TIMEOUT_MS`
+/// remains as the slow safety net for cases where the chain is still
+/// syncing but neither audio nor CC UPDs are arriving.
+///
+/// Initialised on `CallOpen` to `now_unix_ms()` so a freshly opened
+/// call has a full window to acquire — at 0 ms post-retune even with
+/// seeds, the chain may take ~50-100 ms to finish settling.
+const LOS_TIMEOUT_MS: u64 = 1_500;
+
 // Closing-state drain lives on the recorder side: once we emit
 // CallClose, the recorder keeps the WAV open for ~2 s and routes
 // any straggling chunks whose `captured_at_ms` is `<=` close_at_ms
@@ -195,6 +214,11 @@ pub enum CloseReason {
     TgChange,
     /// Boundary stream lagged — drop active to avoid stale state.
     StreamLag,
+    /// 2026-05-03: traffic-LSM framer hasn't fired an `nid_event` for
+    /// `LOS_TIMEOUT_MS` (1.5 s, ~8 LDU periods). Close fast so the
+    /// next grant can retune cleanly rather than waiting for the
+    /// 10 s `Timeout` backstop. Mirrors SDRTrunk's loss-of-sync flag.
+    SyncLost,
 }
 
 pub type CallTrackerEventTx = broadcast::Sender<CallTrackerEvent>;
@@ -262,6 +286,14 @@ struct ActiveCall {
     /// Audio keep-alive bypasses the CC stall — when chain is decoding
     /// voice, audio chunks arrive every ~20 ms regardless of CC health.
     last_audio_at_ms: u64,
+    /// 2026-05-03 loss-of-sync detector. Wall time of the most recent
+    /// traffic-LSM `nid_event` strobe stamped via
+    /// `CallBoundaryKind::TrafficNidObserved`. Initialised to
+    /// `started_unix_ms` on `CallOpen`. The periodic tick closes with
+    /// `CloseReason::SyncLost` when `now - last_nid_at_ms` exceeds
+    /// `LOS_TIMEOUT_MS`. Independent of the audio / UPD timeout —
+    /// LoS fires fast (1.5 s), idle-timeout is the slow backstop.
+    last_nid_at_ms: u64,
     /// Every distinct SRC observed during the session — primary
     /// GRANT.SRC, LDU1 LC voted SRC, TDULC MOT BY: — in insertion
     /// order. Deduped on push.
@@ -520,6 +552,19 @@ pub fn spawn_call_lifecycle(
                     // close only when BOTH have been silent for the full
                     // IDLE_TIMEOUT_MS — audio bridges over the CC stall,
                     // UPDs bridge over no-audio (encrypted) calls.
+                    //
+                    // 2026-05-03 LoS detector REMOVED from the close
+                    // decision. Initial 1.5 s NID-age threshold killed
+                    // real calls — mid-call sync gaps from BCH busy
+                    // sweeps + brief noise tripped LoS while the
+                    // call was still actively decoding (operator
+                    // observation: call_closing reason="sync_lost"
+                    // with only 360 ms of PCM accumulated, build
+                    // 2026-05-03-coast-no-reset). The 10 s `Timeout`
+                    // backstop catches truly dead calls. The
+                    // `last_nid_at_ms` field stays in `ActiveCall` so
+                    // we can re-introduce a relaxed LoS later if
+                    // useful, but it's not consulted for closes.
                     let now = now_unix_ms();
                     let close_decision: Option<CloseReason> = active
                         .as_ref()
@@ -527,7 +572,8 @@ pub fn spawn_call_lifecycle(
                             let last = c.last_audio_at_ms
                                 .max(c.last_upd_at_ms)
                                 .max(c.started_unix_ms);
-                            if now.saturating_sub(last) > IDLE_TIMEOUT_MS {
+                            let idle_age_ms = now.saturating_sub(last);
+                            if idle_age_ms > IDLE_TIMEOUT_MS {
                                 Some(CloseReason::Timeout)
                             } else {
                                 None
@@ -657,6 +703,7 @@ fn handle_boundary(
                         baseline_frames_submitted: baseline,
                         last_upd_at_ms: 0,
                         last_audio_at_ms: 0,
+                        last_nid_at_ms: now,
                         sources_observed: synth_sources,
                     };
                     emit_close(
@@ -727,6 +774,7 @@ fn handle_boundary(
                         baseline_frames_submitted: baseline,
                         last_upd_at_ms: 0,
                         last_audio_at_ms: 0,
+                        last_nid_at_ms: now,
                         sources_observed: synth_sources,
                     };
                     emit_close(
@@ -818,6 +866,7 @@ fn handle_boundary(
                 // first GRP_VCH_GRNT_UPD lands.
                 last_upd_at_ms: now,
                 last_audio_at_ms: 0,
+                last_nid_at_ms: now,
                 sources_observed,
             });
             emit_open(
@@ -958,6 +1007,16 @@ fn handle_boundary(
                 }
             }
         }
+        // 2026-05-03 loss-of-sync detector: traffic-LSM heartbeat saw an
+        // `nid_event` strobe. Stamp the active call's `last_nid_at_ms`
+        // so the periodic tick can decide LoS based purely on
+        // framer-state age. No-op when there is no active call (the
+        // heartbeat broadcasts unconditionally).
+        CallBoundaryKind::TrafficNidObserved => {
+            if let Some(a) = active.as_mut() {
+                a.last_nid_at_ms = now_unix_ms();
+            }
+        }
     }
 }
 
@@ -1010,7 +1069,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64};
 use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::Receiver;
 
-use super::{Arc, CallTrackerEventKind, CallTrackerEventTx};
+use super::{Arc, CallTrackerEventKind, CallTrackerEventTx, CloseReason};
 use crate::app::imbe_forwarder::ImbeForwarder;
 use crate::audio;
 use crate::hardware::fpga;
@@ -1052,6 +1111,13 @@ pub fn spawn_grant_follower(
     follower_lock_freq: Arc<AtomicBool>,
     follower_boundary_tx: audio::CallBoundaryTx,
     follower_tracker_tx: CallTrackerEventTx,
+    // 2026-05-03 seeding bake: shared converged-seed snapshot
+    // published by the control-chain heartbeat. Read on each
+    // freq-change retune to warm-start the traffic AGC / Costas PLL
+    // / Gardner timing accumulators. None during heartbeat warmup
+    // (~MIN_CLEAN_SAMPLES clean NIDs) — the retune falls back to
+    // cold-start until the first commit.
+    follower_converged_seeds: crate::app::seed_snapshot::ConvergedSeedsShared,
 ) {
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
@@ -1236,12 +1302,25 @@ pub fn spawn_grant_follower(
             }
             impl LastCallQuality {
                 fn was_clean(&self) -> bool {
-                    // Healthy: ≥1.5 s of decoded audio, < 5% silent,
-                    // ended via clean TG-change preempt (not timeout
-                    // / stream-lag).
+                    // 2026-05-03 (build `quality-coast-no-los` follow-up):
+                    // dropped the `close_reason == TgChange` requirement.
+                    // On a trunked system calls almost always close with
+                    // `Timeout` (10 s no UPD/audio after the speaker
+                    // unkeys), not TgChange — TgChange only fires when a
+                    // new grant for a different TG arrives on the same
+                    // physical freq, which is rare. Field measurement
+                    // (build 2026-05-03-quality-coast-no-los, 7 retunes
+                    // observed): `prev_clean = false` on every retune,
+                    // gate always resets. The IMBE + silent ratio fully
+                    // characterise call quality on their own; close
+                    // reason only matters as a "did the chain crash"
+                    // signal which `StreamLag` already flags.
+                    //
+                    // Healthy: ≥1.5 s of decoded audio (≥30 IMBE @ 20 ms),
+                    // < 5 % silent, did NOT close due to broadcast lag.
                     self.imbe_extracted >= 30
                         && self.silent_frames * 20 < self.imbe_extracted
-                        && matches!(self.close_reason, CloseReason::TgChange)
+                        && !matches!(self.close_reason, CloseReason::StreamLag)
                 }
             }
             let mut last_call_quality: Option<LastCallQuality> = None;
@@ -1815,28 +1894,102 @@ pub fn spawn_grant_follower(
                                     let _ = follower_imbe
                                         .agc_seed_for_freq(freq_hz)
                                         .unwrap_or(0);
-                                    // Same-freq chain-reset gate, with a quality
-                                    // gate on top: the chain's state is only
-                                    // worth preserving if the previous same-freq
-                                    // call ended in a clean steady-state lock.
-                                    // If it ended in a degenerate state (timeout
-                                    // mid-fade, high silent ratio, near-zero
-                                    // IMBE), inheriting that state hurts more
-                                    // than a fresh reset. See LastCallQuality.
+                                    // 2026-05-03 quality-gated coast policy
+                                    // (Option C). Original same-freq gate
+                                    // required `q.freq_hz == freq_hz` to
+                                    // preserve state; SDRTrunk-source review
+                                    // showed cross-freq state preservation
+                                    // also works (their AGC + timing
+                                    // accumulators carry over across freq
+                                    // changes, only PLL is zeroed).
+                                    //
+                                    // New rule: COAST if the previous call
+                                    // was clean (regardless of freq), RESET
+                                    // if it was degenerate. The chain is
+                                    // re-acquired naturally through the FIR
+                                    // flush + Costas re-lock when coasting;
+                                    // a reset clears AGC/PLL/timing state
+                                    // that drifted into a bad attractor
+                                    // during a previous noisy call (the
+                                    // failure mode observed under pure
+                                    // coast-no-reset: chain decoded noise
+                                    // during inter-call gaps, accumulated
+                                    // bad AGC saturation + random PLL phase,
+                                    // ~60% of subsequent calls returned 0
+                                    // IMBE).
                                     let same_freq =
                                         last_traffic_freq_hz == Some(freq_hz);
                                     let prev_clean = last_call_quality
                                         .as_ref()
-                                        .map(|q| q.freq_hz == freq_hz && q.was_clean())
+                                        .map(|q| q.was_clean())
                                         .unwrap_or(false);
-                                    let freq_changed = !(same_freq && prev_clean);
+                                    let freq_changed = !prev_clean;
+                                    // 2026-05-03 seeding bake: lift the
+                                    // current converged seeds (if any)
+                                    // before taking the IpCore mutex.
+                                    // None during warmup; once the
+                                    // control-chain heartbeat has seen
+                                    // MIN_CLEAN_SAMPLES clean NIDs the
+                                    // tuple becomes Some and every
+                                    // freq-change retune writes them
+                                    // before pulsing reset.
+                                    //
+                                    // 2026-05-03 PLL-only gate: the
+                                    // initial bake wrote all 3 seeds
+                                    // but on-target measurement showed
+                                    // First-IMBE stayed at 3-3.5 s on
+                                    // cold-start retunes. Hypothesis:
+                                    // (a) AGC seed cross-applies a
+                                    // gain converged for the CC's
+                                    // signal level, which differs from
+                                    // each traffic channel's level →
+                                    // forces a slow IIR migration that
+                                    // is worse than starting from
+                                    // GAIN_INIT=1.0; (b) timing seed
+                                    // bypasses the FIFO-warmup delay
+                                    // (cold-start init is sps_q12 +
+                                    // 7*ONE_Q12 specifically to wait
+                                    // for the lookahead FIFO to fill).
+                                    // Zero AGC + timing → HDL falls
+                                    // back to its init values.
+                                    let seed_tuple: Option<(u32, i16, i32)> = {
+                                        let slot = follower_converged_seeds
+                                            .read().await;
+                                        slot.as_ref().map(|s| (
+                                            0,            // AGC: cold-start
+                                            s.pll_seed,   // empirically uniform
+                                            0,            // timing: FIFO warmup
+                                        ))
+                                    };
                                     let retune_result = {
                                         let core = follower_core.lock().await;
                                         core.retune_traffic_chain(
                                             offset_hz as f64,
                                             sample_rate_now,
-                                            freq_changed)
+                                            freq_changed,
+                                            seed_tuple,
+                                        )
                                     };
+                                    // 2026-05-03 seeding bake: log the
+                                    // seed values applied so the
+                                    // diagnostic trail correlates
+                                    // First-IMBE timing with seeds.
+                                    if freq_changed {
+                                        match seed_tuple {
+                                            Some((a, p, t)) => tracing::info!(
+                                                target: "p25_traffic",
+                                                "retune seeded: agc=0x{:05x} \
+                                                 pll={} timing={}",
+                                                a, p, t,
+                                            ),
+                                            None => tracing::info!(
+                                                target: "p25_traffic",
+                                                "retune cold-start: \
+                                                 ConvergedSeeds not yet \
+                                                 published (heartbeat warmup)"
+                                            ),
+                                        }
+                                    }
                                     if let Err(ref e) = retune_result {
                                         tracing::warn!(
                                             target: "p25_traffic",
@@ -1854,21 +2007,34 @@ pub fn spawn_grant_follower(
                                         freq_hz, offset_hz,
                                         same_freq, prev_clean, freq_changed,
                                     );
+                                    // 2026-05-03 quality-gated coast log:
+                                    // `freq_changed` is the actual gate
+                                    // result (true → reset, false → coast).
+                                    // `policy` reflects the decision; the
+                                    // `prev_clean_q` / `same_freq_q` fields
+                                    // expose the inputs so we can correlate
+                                    // per-call First-IMBE outcomes with the
+                                    // gate state.
+                                    let policy = if freq_changed { "reset" } else { "coast" };
                                     follower_event_log.push(
                                         LogCategory::Traffic,
                                         format!(
                                             "retune TG={} -> {:.4} MHz \
-                                             (offset {:+} Hz)",
+                                             (offset {:+} Hz) {}",
                                             g.talkgroup.0,
                                             freq_hz as f64 / 1e6,
                                             offset_hz,
+                                            policy,
                                         ),
                                         serde_json::json!({
-                                            "tg":          g.talkgroup.0,
-                                            "channel":     g.channel.0,
-                                            "frequency":   freq_hz,
-                                            "offset_hz":   offset_hz,
-                                            "framer_reset": true,
+                                            "tg":             g.talkgroup.0,
+                                            "channel":        g.channel.0,
+                                            "frequency":      freq_hz,
+                                            "offset_hz":      offset_hz,
+                                            "framer_reset":   freq_changed,
+                                            "policy":         policy,
+                                            "prev_clean_q":   prev_clean,
+                                            "same_freq_q":    same_freq,
                                         }),
                                     );
                                 } else if pre_state == "Idle" && post_state != "Idle" {

@@ -299,5 +299,85 @@ class TestLsmTimingInterp(unittest.TestCase):
                     f"decision {i} field {j}: HDL {got} vs ref {want:.4f}")
 
 
+    def test_timing_seed_zero_uses_cold_start_init(self):
+        """seed=0 + reset_in pulse → sample_point falls back to the
+        cold-start warmup init (legacy behaviour preserved).
+        """
+        dut = LsmTimingInterp()
+        # Cold-start init = sps_q12 + (BP_INDEX + 2) * ONE_Q12.
+        # For default 31250/4800: 26667 + 7*4096 = 55339.
+        expected_init = dut.sps_q12 + (dut.BP_INDEX + 2) * ONE_Q12
+
+        observed = []
+
+        async def bench(ctx):
+            # Pulse reset_in for one cycle with seed=0.
+            ctx.set(dut.timing_seed_in, 0)
+            ctx.set(dut.reset_in, 1)
+            await ctx.tick()
+            ctx.set(dut.reset_in, 0)
+            await ctx.tick()
+            observed.append(ctx.get(dut.sample_point_dbg))
+
+        self._simulate(dut, bench)
+        self.assertEqual(observed[0], expected_init,
+                         f"seed=0 reset must restore cold-start init "
+                         f"{expected_init}, got {observed[0]}")
+
+    def test_timing_seed_nonzero_overrides_init(self):
+        """seed=N (non-zero) + reset_in pulse → sample_point latched
+        to N. Mirrors the AGC/PLL warm-start pattern.
+
+        Verifies the Mux(seed != 0, seed, init) selection so the PS
+        can copy a converged sample_point from a prior PTT.
+        """
+        dut = LsmTimingInterp()
+
+        # Seed Q5.12 = sps + 3.0 (a plausible mid-acquisition value
+        # the heartbeat would observe and cache). Keeping it positive
+        # and small to stay inside Q5.12 range and well clear of zero.
+        seed_value = dut.sps_q12 + 3 * ONE_Q12
+
+        observed = []
+
+        async def bench(ctx):
+            ctx.set(dut.timing_seed_in, seed_value)
+            ctx.set(dut.reset_in, 1)
+            await ctx.tick()
+            ctx.set(dut.reset_in, 0)
+            await ctx.tick()
+            observed.append(ctx.get(dut.sample_point_dbg))
+
+        self._simulate(dut, bench)
+        self.assertEqual(observed[0], seed_value,
+                         f"non-zero seed must override init, "
+                         f"expected {seed_value}, got {observed[0]}")
+
+    def test_timing_seed_negative_value(self):
+        """Negative Q5.12 seed survives the signed 18-bit input.
+
+        Catches a regression where the seed is mis-typed as unsigned
+        and a negative cached value would be reinterpreted as a huge
+        positive — silently corrupting the timing recovery.
+        """
+        dut = LsmTimingInterp()
+        seed_value = -1234  # Q5.12 ≈ -0.301 sample, plausible
+
+        observed = []
+
+        async def bench(ctx):
+            ctx.set(dut.timing_seed_in, seed_value)
+            ctx.set(dut.reset_in, 1)
+            await ctx.tick()
+            ctx.set(dut.reset_in, 0)
+            await ctx.tick()
+            observed.append(ctx.get(dut.sample_point_dbg))
+
+        self._simulate(dut, bench)
+        self.assertEqual(observed[0], seed_value,
+                         f"negative seed must round-trip; "
+                         f"expected {seed_value}, got {observed[0]}")
+
+
 if __name__ == '__main__':
     unittest.main()

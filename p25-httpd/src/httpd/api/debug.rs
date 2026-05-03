@@ -94,8 +94,11 @@ pub async fn get_spectrum(
                 let mut core = state.ip_core.lock().await;
                 let bufs: Vec<&[u8]> = match chain {
                     "control" => core.read_iq_buffers(),
-                    // M2A 2026-05-02: traffic IQ ring deleted with the old chain.
-                    "traffic" => Vec::new(),
+                    // 2026-05-03 dual-DDC pivot: traffic IQ ring restored
+                    // (`traffic_ddc.re_out / im_out` at 50 kSPS, Nyquist
+                    // ±25 kHz). Was a `Vec::new()` stub between the
+                    // 2026-05-02 M2A chain delete and this fix.
+                    "traffic" => core.read_traffic_iq_buffers(),
                     other => {
                         return Json(serde_json::json!({
                             "ok": false,
