@@ -5,6 +5,34 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-06-09] Live-glitch validation plan + bench TX replay tool
+
+**Branch:** fishball-p25
+**Bake required:** NO — docs + host tool only.
+
+Fresh-eyes review session. Field facts reframed the decoding
+roadblock: the PS software demod run live produced the SAME glitches
+as the HDL chain, while clean offline decoding has only ever come from
+libiio-path captures — the custom wideband DMA ring has never saved
+stable traffic. Demod math (both sides) exonerated; prime suspect is
+the DMA-ring transport (`DmaStreamRingWrite` → maia-kmod → PS
+readers), which carries both the wideband IQ and the HDL dibits.
+
+- New `doc/LIVE_GLITCH_VALIDATION_PLAN.md`: staged bisect with
+  pass/fail gates. Stage A = decisive libiio-vs-DMA-ring A/B on the
+  same air (no new build needed); Stage B = ring-layer bisect;
+  Stages C/D/F (lifecycle, loops, audio) only if transport is
+  exonerated. Production target: HDL control + traffic.
+- New `tools/p25_bench_tx_replay.py`: replay wideband site captures
+  through a second PlutoSDR (cabled + attenuated) so the full chain
+  sees identical, ground-truth-known RF every run — deterministic
+  glitch reproduction + per-build regression scoring.
+- Also corrected the evidence record: the 2026-05-03 "30.9 %
+  HDL-vs-SW divergence" compare was a chance-level artifact (78 %
+  non-contiguous dibit loss fed to a contiguity-assuming aligner).
+
+---
+
 ## [2026-05-03] On-device forensics + SDRTrunk halfband DDC port
 
 **Branch:** fishball-p25

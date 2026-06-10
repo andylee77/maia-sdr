@@ -47,6 +47,7 @@ python tools/sdrtrunk_timeline_analyze.py \
 | [`voice_capture.py`](voice_capture.py) | One-shot voice-grant catcher — waits for an unencrypted voice grant, captures pre/during/post traffic-side metrics + IMBE ring + WAV, writes timestamped dir. |
 | [`p25_iq_inspect.py`](p25_iq_inspect.py) | Sanity-check a `.cs16` capture from `/api/wideband_iq_capture` (8 MSPS pre-DDC IQ). Reports DC offset, I/Q balance, per-second power, top-N FFT peaks. Run after capturing to verify the wideband DMA tap delivers clean baseband. |
 | [`p25_grant_iq_capture.py`](p25_grant_iq_capture.py) | Watch `/api/grants`, snap a fixed-duration wideband IQ capture the instant the next non-encrypted grant fires. Logs the LCN/TG and prints a ready-to-paste `cargo test software_decode` recipe so the offline decoder targets the right frequency. |
+| [`p25_bench_tx_replay.py`](p25_bench_tx_replay.py) | Bench rig TX: replay a wideband `.wav`/`.cs16` capture through a second PlutoSDR (cabled + attenuated, NEVER an antenna) so the Fishball sees identical, ground-truth-known site RF every run. Parses SDRTrunk-style filenames for freq/rate; `--cyclic` for gap-free device-side looping. See `doc/LIVE_GLITCH_VALIDATION_PLAN.md` "Bench rig". Requires pyadi-iio. |
 
 ## Live monitoring (long-running pollers)
 
