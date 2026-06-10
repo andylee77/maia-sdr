@@ -4,7 +4,7 @@ Navigation index for the repo. Maintained as a living doc — when you
 add a new top-level reference doc, change-record, or scripts directory,
 add a one-liner here.
 
-Snapshot date: **2026-05-03**, commit `38442a7` (`fishball-p25`).
+Snapshot date: **2026-05-03 (close of forensics session)**, branch `fishball-p25`. BUILD_TAG: `2026-05-03-on-device-forensics` (pending flash).
 
 ---
 
@@ -18,6 +18,9 @@ Snapshot date: **2026-05-03**, commit `38442a7` (`fishball-p25`).
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Upstream |
 | [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) | Upstream |
 | [BUILD_FPGA.md](../BUILD_FPGA.md) | P25 FPGA bake guide |
+| `build_fpga_p25_pretty.sh` | **Andy's HDL bake wrapper** (around `build_fpga.bat --p25`). Logs to `bake.log`. |
+| `build_tezuka_p25_pretty.sh` | **Andy's PS rebuild wrapper** (around Tezuka `build.bat --p25`). Logs to `tezuka_build.log`. |
+| `build_hdl.sh` | Lower-level HDL regen (Verilog + SVD only). Wrappers above invoke this; don't call directly. |
 | [DEVPLAN.md](../DEVPLAN.md) | P25 dev roadmap |
 | [DEVLOG.md](../DEVLOG.md) | Merged dev log (Maia + P25) |
 | [CLAUDE.md](../CLAUDE.md) | Project instructions for Claude |
@@ -70,7 +73,8 @@ each significant change ships with a record here. Don't modify upstream
 | 037–039 | Phase 8 HDL LSM review + runtime reset + Phase 6D retire |
 | 040–045 | Phase 10 prep, P25DDC fork (v1+v2), 1R1T, dashboard batch, AGC gate |
 | 046–049 | Tuning redesign, traffic PLL/AGC seeding, lifecycle refactor, scanner pivot |
-| **050–051** | **2026-05-03 seeding bake + seeds live (current)** |
+| 050–051 | 2026-05-03 seeding bake + seeds live |
+| **052** | **2026-05-03 on-device forensics + SDRTrunk halfband DDC port (current)** |
 
 ---
 
@@ -93,6 +97,7 @@ truth. Rotate / archive periodically.
 | 2026-04-30 | Audit FINDINGS + same-freq-skip refuted | `2026-04-30/SESSION_LOG.md` |
 | 2026-05-02 | M2A delete → SW demod → dual-DDC pivot | `2026-05-02/SESSION_LOG_DUAL_DDC.md` |
 | 2026-05-03 | 3-track plan after seeding-bake dead-end | `2026-05-03/SESSION_PICKUP.md` |
+| 2026-05-03 | On-device forensics + halfband DDC port (Track 2 infrastructure) | `2026-05-03/SESSION_LOG_FORENSICS.md` |
 
 **Key plans / closeouts that survive their dated folder:**
 
@@ -140,13 +145,25 @@ Run via `cargo test` from `p25-httpd/`. For type-check only against
 the target, use `cargo check --target armv7-unknown-linux-gnueabihf`
 (see memory `feedback_cfg_linux_host_check_blindspot.md`).
 
-### Tools / diagnostic scripts — `tools/` (47 Python + 1 PowerShell)
+### Tools / diagnostic scripts — `tools/` (49 Python + 1 PowerShell)
 
 [tools/README.md](../tools/README.md) is the canonical catalog with
 all scripts grouped by purpose (SDRTrunk reference, dibit/NID/symbol,
 IQ/decode/capture, live monitoring, WebSocket capture, constellation,
-channelizer/FFT, DDC design, retune/settle, other). Read it before
-writing a new script — most diagnostic patterns already exist.
+channelizer/FFT, DDC design, retune/settle, **chain forensics**,
+other). Read it before writing a new script — most diagnostic
+patterns already exist.
+
+**Track-2 forensics chain (2026-05-03):**
+[`p25_forensics_pull.py`](../tools/p25_forensics_pull.py) (host
+companion to on-device forensics ring) →
+[`p25_chain_compare.py`](../tools/p25_chain_compare.py) (SW oracle vs
+HDL diff) →
+[`p25_dibit_diff.py`](../tools/p25_dibit_diff.py) (slide-align two
+`.bits` streams). The older
+[`p25_chain_forensics_capture.py`](../tools/p25_chain_forensics_capture.py)
+host-poll tool is kept as fallback for builds without on-device
+forensics.
 
 ---
 

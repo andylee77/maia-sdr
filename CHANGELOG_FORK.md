@@ -5,6 +5,46 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-05-03] On-device forensics + SDRTrunk halfband DDC port
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-05-03-on-device-forensics`
+**Bake required:** NO — pure PS change.
+
+Track-2 HDL-vs-SW forensics infrastructure. Two parallel deliverables:
+
+**On-device forensics ring** (PS):
+
+- New `app/forensics.rs`: lock-free dibit ring + auto-trigger on
+  CallOpen / finalise on CallClose. Wideband IQ capture fires in
+  parallel. Output dir per call under `/tmp/p25_forensics/run_<...>/`.
+- Eliminates host-side polling losses (prior tool dropped ~78 % of
+  dibits to HTTP latency spikes in the 426 ms ring window).
+- API: `POST /api/forensics_arm` (with `auto_rearm`,
+  `follow_encrypted` flags), `POST /api/forensics_disarm`,
+  `GET /api/forensics_status`.
+- `follow_encrypted=1` flag bypasses the grant_follower's encrypted
+  rejection so encrypted calls are also captured for diff testing
+  (audio garbled, dibits intact).
+- Host companion: `tools/p25_forensics_pull.py` arms the device,
+  watches status, scp's each new run dir + matching wideband.cs16.
+
+**SDRTrunk halfband DDC port** (offline SW oracle):
+
+- New `sw_demod/halfband_ddc.rs`: faithful Rust port of SDRTrunk's
+  `HalfBandTunerChannelSource` filter chain (heterodyne mixer +
+  power-of-2 halfband cascade, SDRTrunk's exact 11/15/23/63-tap
+  Hamming/Blackman halfband filters).
+- Wired as `SOFTDEC_HALFBAND=1` in `software_decode_tests.rs` (both
+  single-freq and full-chain tests).
+- Validated bit-exact with SDRTrunk's `.bits` reference on the
+  2026-05-03 my_captures wideband: 98.7 % / 98.9 % alignment probe,
+  100 % per-window agreement after the AGC/PLL settling transient.
+
+Full detail in `doc/changes/052_on_device_forensics.md`.
+
+---
+
 ## [2026-05-03] Seeds live + LoS + recording_saved + traffic IQ relinked
 
 **Branch:** fishball-p25

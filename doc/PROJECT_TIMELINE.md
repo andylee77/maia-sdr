@@ -100,17 +100,25 @@ build `2026-04-30-revert-keep-chain`.
 - **Bake `2026-05-03-seeding-bake`** flashed, infrastructure works (CDC fence, latch on reset) but **does not improve First-IMBE.**
 - **PS iterated through 3 bandaids, all dead-end:** PLL-only seed; coast-no-reset; quality-coast-loose-gate.
 - **`grants_history.jsonl` in `_validation/` is the captured corpus** for the next session's track-1 work (UPD-derived `air_duration_ms`).
-- Currently committed but not flashed: `38442a7` (seeds-live + LoS + recording_saved + traffic spectrum re-wire).
 
-### 2.12. Current state (2026-05-03)
+### 2.12. On-device forensics + SDRTrunk halfband DDC port (May 3, change 052)
 
-- Branch: `fishball-p25`, 126 commits ahead of `origin/fishball-p25`.
-- Last commit: `36e80ef` (PROJECT_INVENTORY.md).
-- Pending bake-flash cycle: BUILD_TAG `2026-05-03-seeds-live`.
+PS-only change. Two halves:
+
+- **SDRTrunk halfband DDC port** ([`sw_demod/halfband_ddc.rs`](../../p25-httpd/src/sw_demod/halfband_ddc.rs)): faithful Rust port of SDRTrunk's `HalfBandTunerChannelSource` filter chain. Heterodyne mixer + 7-stage halfband cascade with SDRTrunk's exact 11/15/23/63-tap Hamming/Blackman coefficients. Wired as `SOFTDEC_HALFBAND=1`. **Bit-exact w/ SDRTrunk's `.bits`** (98.7 % / 98.9 % alignment probe, 100 % per-window agreement after settling) on the 2026-05-03 my_captures wideband.
+- **On-device forensics ring** ([`app/forensics.rs`](../../p25-httpd/src/app/forensics.rs)): lock-free dibit ring auto-armed on every CallOpen, finalised on CallClose, wideband IQ capture fires in parallel. Output to `/tmp/p25_forensics/run_<...>/`. API: `/api/forensics_arm`, `/api/forensics_disarm`, `/api/forensics_status`. `follow_encrypted=1` flag bypasses encrypted rejection so encrypted calls are also captured for diff. Replaces the host-poll model that lost ~78 % of dibits to HTTP latency spikes.
+- **Host companion:** [`tools/p25_forensics_pull.py`](../../tools/p25_forensics_pull.py) arms the device, polls status, scp's each completed run dir + matching `wideband.cs16`. Live progress display.
+- **DDC asymmetry refuted.** Earlier in session the multistage Kaiser DDC produced a per-call PPM asymmetry (PPM=-0.547 worked for one call, -1.0 for another in the same wideband). Halfband port shows this was a Kaiser-cascade adjacent-channel-leakage artifact, NOT a real RF/PPM phenomenon. SW oracle now decodes both calls bit-exact at PPM=-0.547.
+
+### 2.13. Current state (2026-05-03 close)
+
+- Branch: `fishball-p25`. Pending Tezuka rebuild + flash for `2026-05-03-on-device-forensics`.
+- Tezuka build kicked off via `./build_tezuka_p25_pretty.sh`; logs to `tezuka_build.log` in maia-sdr repo.
 - Active 3-track plan in [`project_2026_05_03_session_pickup_three_tracks.md`](../../../.claude/projects/c--Users-Andy-Projects-MAIA-SDR-maia-sdr/memory/project_2026_05_03_session_pickup_three_tracks.md):
-  1. Lifecycle UPD-air-duration fix (corpus: `_validation/grants_history.jsonl`).
-  2. HDL dibit forensics co-capture + offline compare vs SW (98.96 % bit-exact SW vs 57 % HDL).
-  3. WAV-into-HDL via AD9361 BIST loopback.
+  1. Lifecycle UPD-air-duration fix (corpus: `_validation/grants_history.jsonl`). DEFERRED.
+  2. HDL dibit forensics co-capture + offline compare vs SW. **INFRASTRUCTURE COMPLETE** (this session). Pickup at next session = flash + run `tools/p25_forensics_pull.py` + diff via `tools/p25_chain_compare.py`.
+  3. WAV-into-HDL via AD9361 BIST loopback. DEFERRED.
+- Session log: [`doc/diagnostics/2026-05-03/SESSION_LOG_FORENSICS.md`](../diagnostics/2026-05-03/SESSION_LOG_FORENSICS.md).
 
 ---
 
@@ -120,8 +128,15 @@ build `2026-04-30-revert-keep-chain`.
 
 | Actor | Responsibilities |
 |---|---|
-| **Andy (operator)** | Runs bakes (`build_fpga.bat --p25`); runs Tezuka firmware build; flashes Fishball; has hands on hardware; observes live audio quality |
+| **Andy (operator)** | Runs bakes (`./build_fpga_p25_pretty.sh`); runs Tezuka firmware build (`./build_tezuka_p25_pretty.sh`); flashes Fishball; has hands on hardware; observes live audio quality |
 | **Claude** | Edits HDL + PS code; runs host unit tests; drafts change docs; drives PS-side debugging from live logs and captures; never bakes; never flashes |
+
+**Andy's wrapper scripts** (live at maia-sdr repo root):
+
+- `./build_fpga_p25_pretty.sh` — wraps `build_fpga.bat --p25` for HDL bakes. Logs to `bake.log`. ~15-20 min.
+- `./build_tezuka_p25_pretty.sh` — wraps the Tezuka repo's `build.bat --p25` for PS-only firmware rebuild. Logs to `tezuka_build.log`. ~20-40 min cached.
+
+Both pipe through `tools/build_progress.py` for phase markers. Don't tell Andy to run the underlying `.bat` files directly.
 
 **Standard cycle:**
 
@@ -131,8 +146,8 @@ build `2026-04-30-revert-keep-chain`.
 4. **Bump BUILD_TAG** in `p25-httpd/src/main.rs`.
 5. **Write change record**: `doc/changes/NNN_<topic>.md` and append entry to `CHANGELOG_FORK.md`.
 6. **Commit** (Andy's instruction; don't auto-commit).
-7. **Andy bakes** with `build_fpga.bat --p25`. Wrapper handles Verilog regen, SVD, `svd2rust` PAC, Vivado synth/impl/bitgen, XSA export. **Don't run `build_hdl.bat` or `svd2rust` standalone** unless PS-side cross-build needs PAC before the bake closes.
-8. **Andy runs Tezuka build** (Buildroot in Docker; mounts this repo at `/mnt/maia-sdr`).
+7. **Andy bakes** with `./build_fpga_p25_pretty.sh` if HDL changed. Wrapper handles Verilog regen, SVD, `svd2rust` PAC, Vivado synth/impl/bitgen, XSA export. **Don't run `build_hdl.bat` or `svd2rust` standalone** unless PS-side cross-build needs PAC before the bake closes.
+8. **Andy runs Tezuka build** with `./build_tezuka_p25_pretty.sh` (Buildroot in Docker; mounts this repo at `/mnt/maia-sdr`).
 9. **Andy flashes** Fishball.
 10. **Validate**: `tools/p25_check.py` first to confirm `BUILD_TAG` on `/api/system` matches what we shipped. Then dashboard at `192.168.2.1:8080`. A/B against SDRTrunk if claiming a quality improvement.
 
@@ -147,7 +162,7 @@ build `2026-04-30-revert-keep-chain`.
 
 ## 4. Tool decision tree
 
-`tools/README.md` is the catalog. This is the "if I want to ___, run ___" guide. All scripts default to `192.168.2.1:8080`.
+`tools/README.md` is the catalog. This is the "if I want to do X, run Y" guide. All scripts default to `192.168.2.1:8080`.
 
 ### "I'm picking up a session — is the board alive?"
 
@@ -192,6 +207,18 @@ SDRTrunk recordings live at `C:\Users\Andy\SDRTrunk\` — **NOT** the source rep
 | Replay an SDRTrunk-style timeseries log offline | `tools/replay_tdulc_validity.py` |
 | Offline call-pipeline simulator | `tools/simulate_call_pipeline.py` |
 | Export Fishball event-log ring as SDRTrunk-style log | `tools/p25_log_export.py` |
+
+### "HDL-vs-SW dibit forensics" (Track 2, 2026-05-03+)
+
+Requires the `2026-05-03-on-device-forensics+` build flashed.
+
+| Want | Tool |
+|---|---|
+| Auto-capture every call (HDL dibits + wideband IQ) and pull to host | `tools/p25_forensics_pull.py` |
+| Run SW oracle against captured wideband + diff vs HDL dibits | `tools/p25_chain_compare.py` (use `--multistage` or `SOFTDEC_HALFBAND=1`) |
+| Slide-align two `.bits` streams (e.g. SW vs SDRTrunk reference) | `tools/p25_dibit_diff.py` |
+
+The on-device forensics ring is armed via `POST /api/forensics_arm`; pull script handles arming + scp. SW oracle's bit-exactness with SDRTrunk depends on `SOFTDEC_HALFBAND=1` (the SDRTrunk-faithful halfband cascade port); the older `SOFTDEC_MULTISTAGE=1` Kaiser cascade has documented adjacent-channel-leakage failures.
 
 ### "Diagnose retune / settle / lock"
 

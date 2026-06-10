@@ -126,6 +126,19 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 |---|---|---|---|
 | `/api/spectrum` | GET | JSON | FFT bins from the IQ ring. `?chain=control\|traffic&fft=<1024\|2048\|4096\|8192\|16384>&averages=<N>`. Power-averages N non-overlapping segments — noise floor drops by ~10·log₁₀(N) dB, carriers stay put. Response includes `fft_size` + `averages_used`. |
 | `/api/constellation` | GET | JSON | IQ scatter from the LSM slicer input. `?chain=control\|traffic` |
+| `/api/wideband_iq_capture` | GET, POST | JSON | Raw 4 MSPS pre-DDC IQ tap. POST `?seconds=N` (1..30) opens `/tmp/p25_iq_captures/wb_iq_<ts>_<N>s.cs16` (interleaved i16 LE I/Q). GET returns active-capture progress + `last_path`. Auto-enables wideband_iq DMA on POST; disable via `/api/sw_demod?enabled=0`. (2026-05-03 dual-DDC pivot.) |
+| `/api/sw_demod` | GET, POST | JSON | Live SW demod runtime gate over wideband_iq_dma. POST `?enabled=0\|1`. GET returns runtime stats. (2026-05-03.) |
+
+### `api/forensics` — Track-2 HDL-vs-SW dibit forensics (2026-05-03+)
+
+On-device dibit ring + auto-triggered wideband IQ for HDL-vs-SW
+divergence diff. Companion host tool: [`tools/p25_forensics_pull.py`](../tools/p25_forensics_pull.py). Output dir per call: `/tmp/p25_forensics/run_<unix>_tg<TG>_<freq>/{meta.json, hdl_dibits.bits, FINDINGS.md}`. The matching wideband cs16 path is recorded in `meta.wideband_remote`.
+
+| Path | Method | Returns | Purpose |
+|---|---|---|---|
+| `/api/forensics_arm` | POST | JSON | Arm the on-device dibit ring + wideband auto-trigger. Query params: `dibit_max_mb` (1..64, default 8 — RAM cap for the dibit buffer), `wideband_seconds` (1..30, default 30 — wideband IQ duration), `auto_rearm` (default `true`), `follow_encrypted` (default `false` — if true, bypasses grant_follower's encrypted rejection so the chain follows encrypted calls; audio is still garbled but dibits are usable for diff). |
+| `/api/forensics_disarm` | POST | JSON | Clear `armed`. In-flight capture (if any) still finalises. |
+| `/api/forensics_status` | GET | JSON | `armed`, `auto_rearm`, `follow_encrypted`, `active`, `dibit_max_bytes`, `wideband_seconds`, lifetime counters (`total_runs_completed`, `total_dibits_captured`), `last_run_dir`, and `active_call` (if a call is being captured) with live dibit count + truncation flag. |
 
 ### `api/ws` — WebSocket streams
 
