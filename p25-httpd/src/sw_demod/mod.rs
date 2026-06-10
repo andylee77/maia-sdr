@@ -14,7 +14,9 @@
 //! See `app/sw_demod_task.rs` for the tokio task wiring + lifetime.
 
 pub mod ddc;
+pub mod halfband_ddc;
 pub mod multistage_ddc;
 
 pub use ddc::StreamingSoftwareDdc;
+pub use halfband_ddc::halfband_ddc_to_25k;
 pub use multistage_ddc::MultistageDdc;

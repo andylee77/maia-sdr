@@ -229,8 +229,11 @@ pub struct ControlChannelDecoder {
     /// the parent TSDU, matching SDRTrunk's `decoded_messages.log`
     /// format ("TSBK1 NET_STS_BCAST...").
     pub recent_messages: Vec<(Instant, u8, TsbkMessage)>,
-    /// Max recent messages to keep
-    max_recent: usize,
+    /// Max recent messages to keep. Default 1000 holds ~70s of live
+    /// activity. Offline harnesses (`software_decode_full_chain`) lift
+    /// this so a multi-minute capture doesn't evict grants before the
+    /// caller can inspect `recent_messages`.
+    pub max_recent: usize,
     /// Talkgroup aliases (ID -> name)
     pub aliases: HashMap<u16, String>,
     /// Broadcast channel for WebSocket events

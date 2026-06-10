@@ -500,6 +500,7 @@ fn software_decode() {
 
         eprintln!("input: wideband_iq .cs16");
         let (iq, sr) = read_cs16_iq(&in_path, input_rate as u32);
+        let iq = maybe_slice_iq(iq, sr as f64);
         eprintln!("  IQ samples: {}  rate: {:.0} Hz", iq.len(), sr);
 
         let ppm_corr_hz = -ppm * 1e-6 * center_hz;
@@ -509,7 +510,13 @@ fn software_decode() {
             target_hz, center_hz, ppm_corr_hz, nco_offset
         );
 
-        let iq_lsm_in = if std::env::var("SOFTDEC_MULTISTAGE").ok().as_deref() == Some("1") {
+        let iq_lsm_in = if std::env::var("SOFTDEC_HALFBAND").ok().as_deref() == Some("1") {
+            // SDRTrunk-faithful halfband cascade DDC. Uses the same
+            // filter math as `HalfBandTunerChannelSource`. f64 NCO,
+            // power-of-2 halfband cascade, then 5:4 linear interp.
+            eprintln!("  HALFBAND DDC mode (SDRTrunk-faithful)");
+            crate::sw_demod::halfband_ddc_to_25k(&iq, sr as f64, nco_offset)
+        } else if std::env::var("SOFTDEC_MULTISTAGE").ok().as_deref() == Some("1") {
             let chunk_samples = ((sr as f64) * 0.032) as usize;
             eprintln!("  MULTISTAGE DDC mode (chunk={chunk_samples} samples = 32 ms)");
             ddc_to_62k5_multistage(&iq, sr as f64, nco_offset, 25_000.0, chunk_samples)
@@ -577,6 +584,7 @@ fn software_decode() {
         eprintln!("input: SDRTrunk baseband WAV");
         let (iq, sr) = read_baseband_wav(&in_path);
         let sr = if input_rate > 0.0 { input_rate } else { sr as f64 };
+        let iq = maybe_slice_iq(iq, sr);
         eprintln!("  IQ samples: {}  rate: {:.0} Hz", iq.len(), sr);
 
         // PPM correction: a positive ppm moves the local oscillator high,
@@ -589,7 +597,10 @@ fn software_decode() {
             target_hz, center_hz, ppm_corr_hz, nco_offset
         );
 
-        let iq_lsm_in = if std::env::var("SOFTDEC_MULTISTAGE").ok().as_deref() == Some("1") {
+        let iq_lsm_in = if std::env::var("SOFTDEC_HALFBAND").ok().as_deref() == Some("1") {
+            eprintln!("  HALFBAND DDC mode (SDRTrunk-faithful)");
+            crate::sw_demod::halfband_ddc_to_25k(&iq, sr, nco_offset)
+        } else if std::env::var("SOFTDEC_MULTISTAGE").ok().as_deref() == Some("1") {
             let chunk_samples = (sr * 0.032) as usize;
             eprintln!("  MULTISTAGE DDC mode (chunk={chunk_samples} samples = 32 ms)");
             ddc_to_62k5_multistage(&iq, sr, nco_offset, 25_000.0, chunk_samples)
@@ -841,6 +852,352 @@ fn write_metrics_json(
     }
     writeln!(f, "}}")?;
     Ok(())
+}
+
+// ----------------------------------------------------------------------------
+// 2026-05-03 Track-2 forensics: full-chain control->grant->traffic decode in
+// one process. Mirrors the live HDL flow (single AD9361 stream feeds two DDCs:
+// one fixed on the control freq, one retuned per grant). Used to validate the
+// SW pipeline against SDRTrunk's reference at 4 MSPS without hardcoding the
+// traffic freq.
+// ----------------------------------------------------------------------------
+
+fn pack_dibits_msb(dibits: &[u8]) -> Vec<u8> {
+    let mut packed = Vec::with_capacity(dibits.len() / 4 + 1);
+    let mut acc: u8 = 0;
+    let mut count: u8 = 0;
+    for &d in dibits {
+        acc = (acc << 2) | (d & 0x3);
+        count += 1;
+        if count == 4 {
+            packed.push(acc);
+            acc = 0;
+            count = 0;
+        }
+    }
+    if count != 0 {
+        acc <<= (4 - count) * 2;
+        packed.push(acc);
+    }
+    packed
+}
+
+/// DDC mode selector for the full-chain test.
+#[derive(Clone, Copy)]
+enum FullChainDdcMode {
+    /// Single-stage Kaiser LPF (default).
+    SingleStage,
+    /// 3-stage Kaiser cascade with sharper LPF.
+    Multistage,
+    /// SDRTrunk-faithful halfband cascade port.
+    Halfband,
+}
+
+/// Run DDC + LSM + framer for one center freq. Optional `voice_handler`
+/// lets the traffic phase capture IMBE; control phase passes None.
+fn decode_one_freq(
+    iq: &[Complex32],
+    sample_rate_hz: f64,
+    nco_offset_hz: f64,
+    voice_handler: Option<Arc<CapturingVoiceHandler>>,
+    mode: FullChainDdcMode,
+) -> (ControlChannelDecoder, Vec<u8>, DemodMetrics) {
+    let iq_25k = match mode {
+        FullChainDdcMode::Halfband => {
+            crate::sw_demod::halfband_ddc_to_25k(iq, sample_rate_hz, nco_offset_hz)
+        }
+        FullChainDdcMode::Multistage => {
+            let chunk = (sample_rate_hz * 0.032) as usize;
+            ddc_to_62k5_multistage(iq, sample_rate_hz, nco_offset_hz, 25_000.0, chunk)
+        }
+        FullChainDdcMode::SingleStage => {
+            ddc_to_62k5(iq, sample_rate_hz, nco_offset_hz, 25_000.0)
+        }
+    };
+    let mut pipeline = LsmPipeline::new();
+    let batch = pipeline.process_iq(&iq_25k);
+    let dibits = batch.demod.hard_dibits.clone();
+    let metrics = DemodMetrics {
+        n_symbols: batch.demod.n_symbols(),
+        hard_events: batch.hard_events,
+        soft_events: batch.soft_events,
+        pll_trace: batch.demod.pll_trace,
+        timing_trace: batch.demod.timing_trace,
+        soft_symbols: batch.demod.soft_symbols,
+    };
+    let mut framer = ControlChannelDecoder::new();
+    // Hold every TSBK we decode -- offline windows are long and the
+    // 1000-entry default would evict grants before the caller can
+    // inspect them.
+    framer.max_recent = 1_000_000;
+    if let Some(h) = voice_handler {
+        framer.set_voice_handler(h);
+    }
+    for &d in &dibits {
+        framer.process_dibit(d);
+    }
+    (framer, dibits, metrics)
+}
+
+/// Optional slice based on `SOFTDEC_INPUT_OFFSET_S` /
+/// `SOFTDEC_INPUT_DURATION_S` env vars. Applied to all IQ reads
+/// (single-freq + full-chain) so any test can isolate "DDC works on
+/// short windows but fails on long ones" from "fails at this NCO
+/// offset regardless".
+fn maybe_slice_iq(iq: Vec<Complex32>, sr: f64) -> Vec<Complex32> {
+    let off_s: f64 = std::env::var("SOFTDEC_INPUT_OFFSET_S")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let dur_s: f64 = std::env::var("SOFTDEC_INPUT_DURATION_S")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    if off_s <= 0.0 && dur_s <= 0.0 {
+        return iq;
+    }
+    let start = ((off_s * sr) as usize).min(iq.len());
+    let end = if dur_s > 0.0 {
+        (start + (dur_s * sr) as usize).min(iq.len())
+    } else { iq.len() };
+    eprintln!("  slicing IQ to [{start}, {end}) = {:.3}s..{:.3}s ({} samples)",
+              start as f64 / sr, end as f64 / sr, end - start);
+    iq[start..end].to_vec()
+}
+
+/// Read a wideband IQ window from .wav (SDRTrunk my_captures) or .cs16
+/// (our /api/wideband_iq_capture). Honours SOFTDEC_INPUT_RATE for .cs16
+/// (no header) and the WAV-header rate for .wav (overridable by env).
+fn read_wideband_iq(in_path: &str) -> (Vec<Complex32>, f64) {
+    let lower = in_path.to_lowercase();
+    let (iq, sr) = if lower.ends_with(".wav") {
+        let (iq, sr) = read_baseband_wav(in_path);
+        (iq, sr as f64)
+    } else if lower.ends_with(".cs16") {
+        let rate: f64 = std::env::var("SOFTDEC_INPUT_RATE")
+            .map(|s| s.parse().expect("SOFTDEC_INPUT_RATE int"))
+            .expect("SOFTDEC_INPUT_RATE required for .cs16");
+        let (iq, sr) = read_cs16_iq(in_path, rate as u32);
+        (iq, sr as f64)
+    } else {
+        panic!("SOFTDEC_INPUT must end in .wav or .cs16 (got {in_path})");
+    };
+    let env_rate: f64 = std::env::var("SOFTDEC_INPUT_RATE")
+        .map(|s| s.parse().unwrap_or(0.0))
+        .unwrap_or(0.0);
+    let sr = if env_rate > 0.0 { env_rate } else { sr };
+    (maybe_slice_iq(iq, sr), sr)
+}
+
+/// Extract unique grant frequencies from a control framer's TSBK ring.
+/// Returns Vec<(freq_hz, talkgroup, encrypted)> deduped by (freq, tg).
+fn collect_grant_targets(
+    framer: &ControlChannelDecoder,
+) -> Vec<(u64, u16, bool)> {
+    use crate::protocol::p25::tsbk::TsbkMessage;
+    use crate::protocol::p25::tsbk::service_options::is_encrypted;
+    let mut seen: std::collections::BTreeSet<(u64, u16)> = std::collections::BTreeSet::new();
+    let mut out: Vec<(u64, u16, bool)> = Vec::new();
+    for (_inst, _block, msg) in framer.recent_messages.iter() {
+        match msg {
+            TsbkMessage::GroupVoiceChannelGrant {
+                channel, talkgroup, service_options, ..
+            } => {
+                if let Some(freq) = framer.channel_to_frequency(*channel) {
+                    let tg = talkgroup.0;
+                    if seen.insert((freq, tg)) {
+                        out.push((freq, tg, is_encrypted(*service_options)));
+                    }
+                }
+            }
+            TsbkMessage::GroupVoiceChannelGrantUpdateExplicit {
+                transmit_channel, talkgroup, service_options, ..
+            } => {
+                if let Some(freq) = framer.channel_to_frequency(*transmit_channel) {
+                    let tg = talkgroup.0;
+                    if seen.insert((freq, tg)) {
+                        out.push((freq, tg, is_encrypted(*service_options)));
+                    }
+                }
+            }
+            TsbkMessage::GroupVoiceChannelGrantUpdate {
+                channel_a, talkgroup_a, channel_b, talkgroup_b,
+            } => {
+                if let Some(freq) = framer.channel_to_frequency(*channel_a) {
+                    let tg = talkgroup_a.0;
+                    if seen.insert((freq, tg)) {
+                        out.push((freq, tg, false));
+                    }
+                }
+                if talkgroup_b.0 != 0 {
+                    if let Some(freq) = framer.channel_to_frequency(*channel_b) {
+                        let tg = talkgroup_b.0;
+                        if seen.insert((freq, tg)) {
+                            out.push((freq, tg, false));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Full-chain SW decode: wideband IQ -> control DDC -> framer -> grants ->
+/// per-grant traffic DDC -> framer -> JMBE. All in one process.
+///
+/// Required env vars:
+///   SOFTDEC_INPUT       wideband .wav (my_captures/) or .cs16
+///   SOFTDEC_CENTER_HZ   AD9361 RX LO that the wideband was captured at
+///   SOFTDEC_CONTROL_HZ  control channel frequency (e.g. 860962500)
+///   SOFTDEC_OUT_DIR     output directory for control_*.{bits,json} +
+///                       traffic_<freq>_tg<tg>_*.{bits,json,wav}
+/// Optional:
+///   SOFTDEC_INPUT_RATE  Hz; required for .cs16, overrides WAV header
+///   SOFTDEC_PPM         crystal ppm correction (default 0)
+///   SOFTDEC_SKIP_ENCRYPTED  if "1", skip encrypted grants (no audio anyway)
+#[test]
+#[ignore]
+fn software_decode_full_chain() {
+    let in_path = std::env::var("SOFTDEC_INPUT").expect("SOFTDEC_INPUT required");
+    let center_hz: f64 = std::env::var("SOFTDEC_CENTER_HZ")
+        .expect("SOFTDEC_CENTER_HZ required")
+        .parse().expect("SOFTDEC_CENTER_HZ");
+    let control_hz: f64 = std::env::var("SOFTDEC_CONTROL_HZ")
+        .expect("SOFTDEC_CONTROL_HZ required")
+        .parse().expect("SOFTDEC_CONTROL_HZ");
+    let ppm: f64 = std::env::var("SOFTDEC_PPM")
+        .map(|s| s.parse().expect("SOFTDEC_PPM"))
+        .unwrap_or(0.0);
+    let out_dir = std::env::var("SOFTDEC_OUT_DIR").expect("SOFTDEC_OUT_DIR required");
+    std::fs::create_dir_all(&out_dir).expect("create out dir");
+    let skip_encrypted = std::env::var("SOFTDEC_SKIP_ENCRYPTED").ok().as_deref() == Some("1");
+    let mode = if std::env::var("SOFTDEC_HALFBAND").ok().as_deref() == Some("1") {
+        FullChainDdcMode::Halfband
+    } else if std::env::var("SOFTDEC_MULTISTAGE").ok().as_deref() == Some("1") {
+        FullChainDdcMode::Multistage
+    } else {
+        FullChainDdcMode::SingleStage
+    };
+
+    eprintln!("=== full chain: wideband -> control -> grants -> traffic ===");
+    match mode {
+        FullChainDdcMode::Halfband =>
+            eprintln!("DDC mode: SDRTrunk-faithful halfband cascade (port of HalfBandTunerChannelSource)"),
+        FullChainDdcMode::Multistage =>
+            eprintln!("DDC mode: multistage Kaiser cascade"),
+        FullChainDdcMode::SingleStage =>
+            eprintln!("DDC mode: single-stage 65-tap Kaiser"),
+    }
+    eprintln!("input:        {in_path}");
+    eprintln!("center_hz:    {center_hz}");
+    eprintln!("control_hz:   {control_hz}");
+    eprintln!("ppm:          {ppm}");
+    eprintln!("out_dir:      {out_dir}");
+
+    let (iq, sr) = read_wideband_iq(&in_path);
+    eprintln!("IQ samples:   {} @ {:.0} Hz ({:.2}s)",
+        iq.len(), sr, iq.len() as f64 / sr);
+
+    let ppm_corr_hz = -ppm * 1e-6 * center_hz;
+
+    // ---- Phase 1: control ----
+    let nco_ctrl = (control_hz - center_hz) + ppm_corr_hz;
+    eprintln!("\n--- phase 1: control @ {} Hz (NCO {:.1} Hz) ---",
+        control_hz, nco_ctrl);
+    let (ctrl_framer, ctrl_dibits, ctrl_metrics) =
+        decode_one_freq(&iq, sr, nco_ctrl, None, mode);
+    eprintln!("control: {} dibits, {} hard_sync, {} soft_sync, framer hdu={} ldu1={} ldu2={} tdu={} tdu_lc={}",
+        ctrl_dibits.len(),
+        ctrl_metrics.hard_events.len(),
+        ctrl_metrics.soft_events.len(),
+        ctrl_framer.hdu_count, ctrl_framer.ldu1_count,
+        ctrl_framer.ldu2_count, ctrl_framer.tdu_count,
+        ctrl_framer.tdu_lc_count);
+    eprintln!("control: {} TSBKs in recent_messages, {} bands learned",
+        ctrl_framer.recent_messages.len(), ctrl_framer.bands.len());
+    // TSBK variant histogram so "0 grants" is debuggable.
+    {
+        let mut hist: std::collections::BTreeMap<&'static str, usize> =
+            std::collections::BTreeMap::new();
+        for (_inst, _block, msg) in ctrl_framer.recent_messages.iter() {
+            let label: &'static str = match msg {
+                crate::protocol::p25::tsbk::TsbkMessage::GroupVoiceChannelGrant {..} => "GVCG",
+                crate::protocol::p25::tsbk::TsbkMessage::GroupVoiceChannelGrantUpdate {..} => "GVCG_UPD",
+                crate::protocol::p25::tsbk::TsbkMessage::GroupVoiceChannelGrantUpdateExplicit {..} => "GVCG_UPD_EXP",
+                crate::protocol::p25::tsbk::TsbkMessage::IdentifierUpdate {..} => "IDEN_UP",
+                crate::protocol::p25::tsbk::TsbkMessage::NetworkStatus {..} => "NET_STS",
+                crate::protocol::p25::tsbk::TsbkMessage::RfssStatus {..} => "RFSS_STS",
+                crate::protocol::p25::tsbk::TsbkMessage::SecondaryControlChannelBroadcast {..} => "SCCB",
+                crate::protocol::p25::tsbk::TsbkMessage::TdmaSyncBroadcast {..} => "TDMA_SYNC",
+                _ => "OTHER",
+            };
+            *hist.entry(label).or_insert(0) += 1;
+        }
+        eprintln!("TSBK variants: {hist:?}");
+    }
+
+    let ctrl_dibits_path = format!("{out_dir}/control_dibits.bits");
+    let _ = std::fs::write(&ctrl_dibits_path, pack_dibits_msb(&ctrl_dibits));
+    eprintln!("wrote {ctrl_dibits_path}");
+
+    // Dump grant TSBKs for the run record.
+    let grants = collect_grant_targets(&ctrl_framer);
+    eprintln!("grants found: {}", grants.len());
+    for (freq, tg, enc) in &grants {
+        eprintln!("  TG {tg} freq {freq} Hz encrypted={enc}");
+    }
+    let grants_path = format!("{out_dir}/grants.json");
+    let mut g_json = String::from("[\n");
+    for (i, (freq, tg, enc)) in grants.iter().enumerate() {
+        let comma = if i + 1 == grants.len() { "" } else { "," };
+        g_json.push_str(&format!(
+            "  {{\"freq_hz\":{freq},\"talkgroup\":{tg},\"encrypted\":{enc}}}{comma}\n"
+        ));
+    }
+    g_json.push_str("]\n");
+    let _ = std::fs::write(&grants_path, g_json);
+
+    // ---- Phase 2: per-grant traffic ----
+    if grants.is_empty() {
+        eprintln!("\n!!! no grants decoded from control; phase 2 skipped !!!");
+        eprintln!("    likely causes: wrong SOFTDEC_CONTROL_HZ, wrong PPM, ");
+        eprintln!("    bad WAV format, or control chain failed at this rate.");
+        return;
+    }
+    for (freq, tg, encrypted) in &grants {
+        if *encrypted && skip_encrypted {
+            eprintln!("\n--- skipping encrypted TG {tg} @ {freq} Hz ---");
+            continue;
+        }
+        eprintln!("\n--- phase 2: traffic TG {tg} @ {freq} Hz ---");
+        let nco_t = (*freq as f64 - center_hz) + ppm_corr_hz;
+        let handler = Arc::new(CapturingVoiceHandler {
+            decoder: Mutex::new(ImbeDecoder::new()),
+            pcm: Mutex::new(Vec::new()),
+            counters: Mutex::new(Counters::default()),
+        });
+        let (framer, dibits, metrics) =
+            decode_one_freq(&iq, sr, nco_t, Some(handler.clone()), mode);
+        let counters = handler.counters.lock().unwrap();
+        let pcm = handler.pcm.lock().unwrap();
+        eprintln!("  dibits={}  hard_sync={}  soft_sync={}",
+            dibits.len(),
+            metrics.hard_events.len(),
+            metrics.soft_events.len());
+        eprintln!("  framer: hdu={} ldu1={} ldu2={} tdu={} tdu_lc={}",
+            framer.hdu_count, framer.ldu1_count, framer.ldu2_count,
+            framer.tdu_count, framer.tdu_lc_count);
+        eprintln!("  IMBE: total={} silent={}",
+            counters.imbe_total, counters.silent_frames);
+        eprintln!("  PCM: {} samples ({:.2}s)",
+            pcm.len(), pcm.len() as f32 / 8000.0);
+
+        let tag = format!("traffic_{}_tg{}", freq, tg);
+        let dibits_path = format!("{out_dir}/{tag}_dibits.bits");
+        let _ = std::fs::write(&dibits_path, pack_dibits_msb(&dibits));
+        let wav_path = format!("{out_dir}/{tag}.wav");
+        write_mono_wav_8khz(&wav_path, &pcm);
+        eprintln!("  wrote {dibits_path} + {tag}.wav");
+    }
+    eprintln!("\n=== full_chain done ===");
 }
 
 /// Compact JSON-formatted summary stats for an f32 vector. Stable
