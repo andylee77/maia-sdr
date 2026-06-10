@@ -43,7 +43,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-05-03-quality-coast-loose-gate";
+pub const BUILD_TAG: &str = "2026-05-03-forensics-sd-redirect";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -665,7 +665,7 @@ async fn main() -> anyhow::Result<()> {
         crate::app::seed_snapshot::new_converged_seeds_shared();
 
     #[cfg(target_os = "linux")]
-    let (ip_core, ad9361, wideband_iq_capture, sw_demod_enabled, sw_demod_stats) = {
+    let (ip_core, ad9361, wideband_iq_capture, sw_demod_enabled, sw_demod_stats, forensics) = {
         use tokio::sync::Mutex;
 
         // 1. Initialize FPGA IP core via UIO
@@ -831,6 +831,13 @@ async fn main() -> anyhow::Result<()> {
             lsm_decoder.clone(),
         );
 
+        // 2026-05-03 Track-2 forensics: on-device dibit ring + wideband
+        // auto-trigger. Created before the traffic reader so the reader
+        // can hold a clone for the dibit tee. Armed via
+        // /api/forensics_arm; idle (no overhead) until armed.
+        let forensics = std::sync::Arc::new(
+            app::forensics::ForensicsRing::new());
+
         // M2B 2026-05-02: spawn_hdl_lsm_traffic_reader restored,
         // fed off the new mux-based dibit DMA ring.
         app::dibit_readers::spawn_hdl_lsm_traffic_reader(
@@ -838,6 +845,7 @@ async fn main() -> anyhow::Result<()> {
             ip_core.clone(),
             traffic_lsm_decoder.clone(),
             imbe_forwarder.clone(),
+            forensics.clone(),
         );
 
         // 2026-05-03: wideband raw IQ reader (PS-side software P25
@@ -882,6 +890,18 @@ async fn main() -> anyhow::Result<()> {
             current_rx_lo.clone(),
             current_lo_shift_hz.clone(),
             sw_demod_stats.clone(),
+        );
+
+        // 2026-05-03 Track-2 forensics task. Subscribes to
+        // CallTrackerEvent broadcast and arms/finalises the dibit ring
+        // + wideband IQ capture on each CallOpen/CallClose while the
+        // ring is armed. See app/forensics.rs.
+        app::forensics::spawn_forensics_task(
+            forensics.clone(),
+            call_tracker_tx.clone(),
+            wideband_iq_capture.clone(),
+            ip_core.clone(),
+            BUILD_TAG,
         );
 
         // HDL LSM heartbeat + NID event poller. Reads lsm_status +
@@ -1630,7 +1650,7 @@ async fn main() -> anyhow::Result<()> {
         // call_tracker) which drops to None within seconds of TDU /
         // timeout — no zombie 30 s entries to reap.
 
-        (ip_core, ad9361, wideband_iq_capture, sw_demod_enabled, sw_demod_stats)
+        (ip_core, ad9361, wideband_iq_capture, sw_demod_enabled, sw_demod_stats, forensics)
     };
 
     // Audio broadcast channel (vocoder -> HTTP/WebSocket).
@@ -1830,6 +1850,8 @@ async fn main() -> anyhow::Result<()> {
         sync_trace_ring: sync_trace_ring.clone(),
         #[cfg(target_os = "linux")]
         wideband_iq_capture: wideband_iq_capture.clone(),
+        #[cfg(target_os = "linux")]
+        forensics: forensics.clone(),
         #[cfg(target_os = "linux")]
         sw_demod_enabled: sw_demod_enabled.clone(),
         #[cfg(target_os = "linux")]

@@ -18,13 +18,20 @@ use tokio::sync::{mpsc, Mutex};
 use crate::hardware::fpga;
 use crate::lsm::Complex32;
 
-/// Wideband IQ DMA produces 8 MSPS complex samples (i16 I + i16 Q).
-const WIDEBAND_IQ_RATE_HZ: u64 = 8_000_000;
+/// Wideband IQ DMA sample rate. The FPGA's wideband IQ pipeline is
+/// configurable in HDL and current `fishball7020_p25` builds run at
+/// 4 MSPS (was 8 MSPS in the M2A bitstream). Bump back to 8_000_000
+/// if a future bitstream restores the higher rate; the byte-budget
+/// math at `start()` and the throughput log line both depend on it.
+const WIDEBAND_IQ_RATE_HZ: u64 = 4_000_000;
 /// 4 bytes per complex sample (i16 + i16).
 const SAMPLE_BYTES: u64 = 4;
-/// Captures land here. Tmpfs so the SD card isn't beaten on; user
-/// scp-pulls the file out for offline GNU Radio / numpy analysis.
-const CAPTURE_DIR: &str = "/tmp/p25_iq_captures";
+/// Captures land on the SD card (57 GB free typical) — the previous
+/// `/tmp` tmpfs (492 MB) silently filled and aborted multi-call
+/// auto-rearm captures with ENOSPC. SD writes are slower but
+/// reliable, and the wideband DMA throughput at 4 MSPS (16 MB/s) is
+/// well within the SD card's sustained write rate.
+const CAPTURE_DIR: &str = "/mnt/sd/p25_iq_captures";
 
 /// Shared capture-mode state. Held by the spawn task; the API side
 /// modifies it to start/inspect captures.
@@ -56,10 +63,14 @@ impl WidebandIqCaptureState {
     /// in-flight capture. Returns the path so the caller can echo it
     /// back to the operator.
     pub async fn start(&self, seconds: f64) -> anyhow::Result<PathBuf> {
-        if !(0.0..=30.0).contains(&seconds) {
+        // Cap lifted from 30 s once captures moved off tmpfs onto SD
+        // (2026-05-03). At 4 MSPS / 16 MB/s, 600 s = 9.6 GB — fits
+        // comfortably in the 57 GB SD partition and lets multi-call
+        // diagnostics record continuously without auto-rearm churn.
+        if !(0.0..=600.0).contains(&seconds) {
             anyhow::bail!(
                 "wideband IQ capture duration {seconds:.2} s outside \
-                 [0, 30] (32 MB/s would chew through tmpfs fast)"
+                 [0, 600]"
             );
         }
         std::fs::create_dir_all(CAPTURE_DIR).with_context(

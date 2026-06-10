@@ -571,6 +571,14 @@ pub async fn get_sys_health(
     let (mem_total_kib, mem_available_kib) = read_meminfo();
     let uptime_secs = state.boot_instant.elapsed().as_secs();
 
+    // Disk usage for the two writable filesystems wideband / forensics
+    // captures land on. /tmp is tmpfs (~492 MB on this Buildroot); SD
+    // is the wideband + forensics destination after the 2026-05-03
+    // redirect. Captures abort with ENOSPC if either fills, so the
+    // dashboard / Android monitor needs visibility before that point.
+    let tmp = fs_usage("/tmp");
+    let sd  = fs_usage("/mnt/sd");
+
     Json(serde_json::json!({
         "uptime_secs":        uptime_secs,
         "loadavg_1":          load.0,
@@ -585,12 +593,36 @@ pub async fn get_sys_health(
                 .map(|a| (a as f64 / t as f64) * 100.0)
                 .unwrap_or(0.0)
         }),
+        "disk_tmp_total_bytes":  tmp.map(|(t, _)| t),
+        "disk_tmp_avail_bytes":  tmp.map(|(_, a)| a),
+        "disk_tmp_avail_pct":    tmp.map(|(t, a)| {
+            if t == 0 { 0.0 } else { (a as f64 / t as f64) * 100.0 }
+        }),
+        "disk_sd_total_bytes":   sd.map(|(t, _)| t),
+        "disk_sd_avail_bytes":   sd.map(|(_, a)| a),
+        "disk_sd_avail_pct":     sd.map(|(t, a)| {
+            if t == 0 { 0.0 } else { (a as f64 / t as f64) * 100.0 }
+        }),
         "note": "Sampled from /proc/loadavg + /proc/self/status + \
-                 /proc/meminfo. Cheap enough to poll at 1 Hz from a \
-                 mobile client; any value of null means the /proc \
-                 read failed (most likely the kernel dropped the \
-                 format we parse).",
+                 /proc/meminfo + statvfs(/tmp, /mnt/sd). Cheap enough \
+                 to poll at 1 Hz from a mobile client; any value of \
+                 null means the /proc read or statvfs call failed.",
     }))
+}
+
+/// statvfs(2) wrapper. Returns (total_bytes, available_bytes) for the
+/// filesystem that contains `path`, or None on error (path missing,
+/// permission denied, etc.). Bypasses /proc/mounts to avoid parsing
+/// edge cases (cgroups, autofs); a single syscall per call is cheap.
+#[cfg(target_os = "linux")]
+fn fs_usage(path: &str) -> Option<(u64, u64)> {
+    let cpath = std::ffi::CString::new(path).ok()?;
+    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(cpath.as_ptr(), &mut s) } != 0 {
+        return None;
+    }
+    let frsize = s.f_frsize as u64;
+    Some((s.f_blocks as u64 * frsize, s.f_bavail as u64 * frsize))
 }
 
 #[cfg(not(target_os = "linux"))]

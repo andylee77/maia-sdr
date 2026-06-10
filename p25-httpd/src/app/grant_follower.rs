@@ -1600,7 +1600,18 @@ pub fn spawn_grant_follower(
                                     .lock()
                                     .map(|h| h.contains(&g.talkgroup.0))
                                     .unwrap_or(false);
-                                if g.encrypted || tg_known_enc {
+                                // Forensics override (2026-05-03 Track 2):
+                                // if the operator armed forensics with
+                                // `follow_encrypted=1`, follow encrypted
+                                // grants too. Audio is still garbled but
+                                // dibits + wideband are usable for HDL
+                                // diff. See app/forensics.rs.
+                                #[cfg(target_os = "linux")]
+                                let forensics_override =
+                                    crate::app::forensics::follow_encrypted_enabled();
+                                #[cfg(not(target_os = "linux"))]
+                                let forensics_override = false;
+                                if (g.encrypted || tg_known_enc) && !forensics_override {
                                     if g.encrypted {
                                         if let Ok(mut hist) =
                                             follower_imbe

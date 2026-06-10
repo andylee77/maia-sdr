@@ -287,6 +287,13 @@ pub struct AppState {
     #[cfg(target_os = "linux")]
     pub wideband_iq_capture: Arc<crate::app::wideband_iq_task::WidebandIqCaptureState>,
 
+    /// 2026-05-03 Track-2 forensics: on-device dibit ring + wideband
+    /// auto-trigger so HDL chain output can be diffed against the SW
+    /// oracle without host-side polling losing data. Armed via
+    /// `/api/forensics_arm`; auto-captures on every CallOpen/CallClose.
+    #[cfg(target_os = "linux")]
+    pub forensics: Arc<crate::app::forensics::ForensicsRing>,
+
     /// 2026-05-03 Stage 2B: live software-demod runtime gate. When true
     /// the `sw_demod_task` feeds dibits into `traffic_lsm_decoder` and
     /// the HDL traffic LSM chain is idled (`set_traffic_lsm_enable=0`).
@@ -513,6 +520,15 @@ pub fn router(
             get(api::debug::get_sw_demod)
                 .post(api::debug::post_sw_demod),
         )
+        // 2026-05-03 Track-2 forensics: on-device dibit + wideband
+        // capture, auto-triggered on every CallOpen/CallClose while
+        // armed. See app/forensics.rs.
+        .route("/api/forensics_status",
+               get(api::forensics::get_forensics_status))
+        .route("/api/forensics_arm",
+               axum::routing::post(api::forensics::post_forensics_arm))
+        .route("/api/forensics_disarm",
+               axum::routing::post(api::forensics::post_forensics_disarm))
         // Self-describing API catalogue for the dashboard's API tab.
         .route("/api/endpoints", get(api::system::get_endpoints))
         .route("/ws/events", get(api::ws::ws_events))

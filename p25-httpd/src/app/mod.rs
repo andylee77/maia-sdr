@@ -9,6 +9,8 @@ pub mod autoppm;
 pub mod audio_pacer;
 #[cfg(target_os = "linux")]
 pub mod dibit_readers;
+#[cfg(target_os = "linux")]
+pub mod forensics;
 pub mod grant_follower;
 pub mod grant_stats;
 pub mod imbe_forwarder;

@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, RwLock};
 
+use crate::app::forensics::ForensicsRing;
 use crate::app::imbe_forwarder::ImbeForwarder;
 use crate::hardware::fpga;
 use crate::protocol::p25::control_channel::ControlChannelDecoder;
@@ -132,6 +133,7 @@ pub fn spawn_hdl_lsm_traffic_reader(
     traffic_lsm_core: Arc<Mutex<fpga::IpCore>>,
     traffic_lsm_decoder_task: Arc<RwLock<ControlChannelDecoder>>,
     traffic_reader_imbe: Arc<ImbeForwarder>,
+    forensics: Arc<ForensicsRing>,
 ) {
     tokio::spawn(async move {
         use std::sync::atomic::Ordering;
@@ -175,6 +177,10 @@ pub fn spawn_hdl_lsm_traffic_reader(
                         wake_dibits += 1;
                     }
                 }
+                // Forensics tee: record dibits to RAM ring while a
+                // call is active. Lock-free fast path returns
+                // immediately when not capturing.
+                forensics.record_dma_words(words);
                 if locked {
                     let mut dec = traffic_lsm_decoder_task.write().await;
                     for &word in words {

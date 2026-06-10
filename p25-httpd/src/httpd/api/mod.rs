@@ -42,6 +42,7 @@
 
 pub mod chain;
 pub mod debug;
+pub mod forensics;
 pub mod history;
 pub mod radio;
 pub mod sites;
