@@ -1,6 +1,6 @@
 # tools/ — script catalog
 
-43 Python scripts for live monitoring, offline replay, log analysis,
+46 Python scripts for live monitoring, offline replay, log analysis,
 HDL/PS reference decoding, and design work. Most target the on-target
 Fishball P25 daemon at `192.168.2.1:8080` by default; offline tools
 take file paths.
@@ -100,6 +100,21 @@ python tools/sdrtrunk_timeline_analyze.py \
 | [`p25_retune_probe.py`](p25_retune_probe.py) | Trigger N retunes to a known voice frequency and sample constellation/dibit/traffic state at fixed offsets post-retune. Diagnoses the grant-to-lock gap + never-lock rate. |
 | [`p25_settle_measure.py`](p25_settle_measure.py) | Channelizer-redesign Stage 0: how fast does the chain produce real audio after a retune (with PLL+AGC seeding)? Anchors on `/api/log` retune/nco_skip events, times to next TRF_HDU/TRF_LDU1. |
 | [`p25_sticky_lock_test.py`](p25_sticky_lock_test.py) | Phase 7A.1 sticky-lock verification — checks that `retunes` stays flat while locked on the same TG (pre-fix thrashed >15/sec). |
+
+## Chain forensics (HDL vs SW)
+
+Track 2 of the 2026-05-03 three-track plan. The HDL traffic chain
+decodes ~57 % of LDUs on the same wideband IQ where the SW reference
+hits 98.96 % bit-exact agreement with SDRTrunk. These two scripts
+co-capture HDL chain state alongside the wideband input, then run the
+SW reference offline against the same input and slide-align the two
+dibit streams to pinpoint where the chains diverge.
+
+| Script | Purpose |
+|---|---|
+| [`p25_forensics_pull.py`](p25_forensics_pull.py) | **(preferred)** Companion to the on-device forensics ring (build `2026-05-03-on-device-forensics+`). Arms `/api/forensics_arm`, polls `/api/forensics_status`, scp's each new run dir + matching wideband.cs16 down. No host-side polling = no dibit loss. Supports `--follow-encrypted` to capture encrypted calls for diff testing (audio garbled but dibits intact). |
+| [`p25_chain_forensics_capture.py`](p25_chain_forensics_capture.py) | Pre-on-device-forensics fallback: host-side polling of `/api/traffic_dibit_capture`. Lossy under HTTP latency spikes. Use only if running an older build without on-device forensics. |
+| [`p25_chain_compare.py`](p25_chain_compare.py) | Pair tool. Given a forensics run dir, runs `cargo test --release software_decode` against the captured wideband IQ, then slide-aligns the SW dibit stream against the HDL dibit stream and emits a per-window agreement report + CSV. Locates the symbol position where HDL diverges from SW. Use `--multistage` (Kaiser cascade) or pair with `SOFTDEC_HALFBAND=1` (SDRTrunk-faithful halfband cascade port — bit-exact w/ SDRTrunk on validated 2026-05-03 wideband). Optional `--ref-bits` to also diff against an SDRTrunk reference. |
 
 ## Other diagnostics
 
