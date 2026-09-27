@@ -385,6 +385,9 @@ pub struct Ldu1FmHistory {
     /// Talkgroup the ring applies to. Ring clears on TG change
     /// (new call = fresh voting).
     pub tg: u16,
+    /// Change 060: call the ring applies to. Since 057 every grant is a
+    /// call, so back-to-back calls of one TG must not share votes.
+    pub call_id: u64,
     /// Recent plausibility-passed FM: values. Newest on the right.
     pub recent: std::collections::VecDeque<u32>,
     /// Most recently emitted consensus FM: value. `0` = never
@@ -397,6 +400,7 @@ impl Ldu1FmHistory {
     pub fn new() -> Self {
         Self {
             tg: 0,
+            call_id: 0,
             recent: std::collections::VecDeque::with_capacity(
                 LDU1_FM_VOTE_M,
             ),
@@ -1193,10 +1197,12 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
             let Ok(mut hist) = self.ldu1_fm_history.lock() else {
                 return;
             };
-            // Reset ring on TG change so a new call starts fresh
+            // Reset ring on TG or call change so a new call starts fresh
             // (previous speaker's FM: can't pollute the new vote).
-            if hist.tg != tg_locked {
+            let call_id = self.eff_call_id();
+            if hist.tg != tg_locked || hist.call_id != call_id {
                 hist.tg = tg_locked;
+                hist.call_id = call_id;
                 hist.recent.clear();
                 hist.last_emitted = 0;
             }

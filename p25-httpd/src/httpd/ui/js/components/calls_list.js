@@ -7,7 +7,7 @@
 // the time after the last voice until the close.
 
 import { h, setText, keyedList, card } from '../dom.js';
-import { mhz, dur, ago, clock, bytes, otherUnitsText, NOT_FOLLOWED, AUDIO_STATUS, CLOSE_REASON } from '../format.js';
+import { mhz, dur, ago, clock, bytes, linkControlUnits, NOT_FOLLOWED, AUDIO_STATUS, CLOSE_REASON } from '../format.js';
 import { store, boardNow, setPref } from '../store.js';
 
 function when(call) {
@@ -25,6 +25,8 @@ function detailRows(c) {
     ['IMBE / LDU', c.imbe + ' / ' + c.ldu],
     ['Vocoder errors / silent', c.vocoder_errors + ' / ' + c.vocoder_silent],
   ];
+  const lc = linkControlUnits(c);
+  if (lc.length) rows.push(['Link control ID', lc.join(', ') + ' (differs from the grant)']);
   if (c.recording) {
     const where = c.recording.storage === 'sd' ? 'SD card' : 'RAM';
     rows.push(['File', c.recording.filename + ' (' + bytes(c.recording.size_bytes) + ', ' + where + ')']);
@@ -91,8 +93,7 @@ function updateRow(el, call) {
   else if (call.not_followed) tgBits.push(NOT_FOLLOWED[call.not_followed] || call.not_followed);
   setText(c.tgSub, tgBits.join(' · '));
   setText(c.src, call.source_alias || (call.source ? String(call.source) : 'unknown'));
-  setText(c.srcSub, [call.source_alias ? String(call.source) : '', otherUnitsText(call)]
-    .filter(Boolean).join(' · '));
+  setText(c.srcSub, call.source_alias ? String(call.source) : '');
   setText(c.freq, mhz(call.freq_hz));
   setText(c.freqSub, call.channel ? 'ch ' + call.channel : '');
   setText(c.dur, call.voice_ms ? dur(call.voice_ms) : '—');

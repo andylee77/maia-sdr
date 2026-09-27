@@ -91,22 +91,12 @@ export function unitLabel(id, alias) {
   return alias ? alias + ' (' + id + ')' : String(id);
 }
 
-// `sources` lists every unit seen on the call in order, the grant's unit
-// first. `source` is the talker the voice's link control names. On this
-// site a dispatch console (1011-1014) often talks on a grant issued to
-// another unit: that is one talker, so the grant's unit is labelled as
-// such, and only further talkers read "also".
-export function otherUnits(call) {
-  const src = call.sources || [];
-  const grant = src.length && src[0] !== call.source ? src[0] : null;
-  const also = src.slice(1).filter(s => s !== call.source && s !== grant);
-  return { grant, also };
-}
-
-export function otherUnitsText(call) {
-  const { grant, also } = otherUnits(call);
-  return [grant ? 'grant ' + grant : '', also.length ? 'also ' + also.join(', ') : '']
-    .filter(Boolean).join(' · ');
+// `source` is the unit the grant was issued to (change 060). Other units
+// in `sources` come from the voice link control, whose IDs were wrong
+// each time they differed on the site (one grant = one transmission), so
+// they are only listed in the call details, never as another talker.
+export function linkControlUnits(call) {
+  return (call.sources || []).filter(s => s !== call.source);
 }
 
 // Q2.13 PLL register -> Hz at 4800 sym/s.

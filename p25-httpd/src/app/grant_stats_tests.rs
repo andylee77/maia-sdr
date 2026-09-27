@@ -153,3 +153,33 @@ fn a_call_without_frames_reports_zero() {
     assert_eq!((s.imbe_extracted, s.ldu1_count, s.hdu_count), (0, 0, 0));
     assert!(s.agc_gain_q97_at_close.is_none());
 }
+
+// Change 060: the call's source is the grant's unit. A unit the voice link
+// control names later (site 2026-09-27: dispatch 1013 heard, LC 3402072)
+// does not replace it; a source-less call (re-follow) takes the first one.
+#[test]
+fn source_update_fills_but_never_replaces_the_grant_unit() {
+    let upd = |call_id, s| CallTrackerEvent {
+        call_id,
+        timestamp_unix_ms: 1,
+        kind: CallTrackerEventKind::SourceUpdate {
+            new_source: s,
+            via: crate::app::grant_follower::SourceUpdateVia::Ldu1LcVote,
+        },
+    };
+    let mut r = Rig::new();
+    let t = 5_600_000;
+    r.ev(open(1, 1013, t));
+    r.ev(upd(1, 3402072));
+    r.ev(close(1, CloseReason::CallEnd, t + 4_000, 4_000));
+    assert_eq!(r.summary(1).source, Some(1013));
+
+    let mut sourceless = open(2, 0, t + 5_000);
+    if let CallTrackerEventKind::CallOpen { source, .. } = &mut sourceless.kind {
+        *source = None;
+    }
+    r.ev(sourceless);
+    r.ev(upd(2, 3400043));
+    r.ev(close(2, CloseReason::CallEnd, t + 8_000, 3_000));
+    assert_eq!(r.summary(2).source, Some(3400043));
+}

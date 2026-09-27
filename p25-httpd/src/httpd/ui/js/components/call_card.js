@@ -10,7 +10,7 @@
 // updates do not extend it) or "timeout" (no keep-alive for hang_ms).
 
 import { h, setText, card } from '../dom.js';
-import { mhz, dur, ago, tgLabel, unitLabel, otherUnitsText } from '../format.js';
+import { mhz, dur, ago, tgLabel, unitLabel } from '../format.js';
 import { boardNow } from '../store.js';
 import { metric } from './kv_table.js';
 
@@ -70,8 +70,7 @@ export function callCard() {
 
     setText(tg, call.tg_alias ? call.tg_alias : 'TG ' + call.tg);
     setText(alias, call.tg_alias ? 'TG ' + call.tg : '');
-    const others = otherUnitsText(call);
-    setText(src, 'From ' + unitLabel(call.source, call.source_alias) + (others ? ' · ' + others : ''));
+    setText(src, 'From ' + unitLabel(call.source, call.source_alias));
     m.freq.set(mhz(call.freq_hz) + (call.channel ? ' · ch ' + call.channel : ''));
     m.elapsed.set(dur(call.elapsed_ms + dt));
     m.voice.set(call.voice_ms ? dur(call.voice_ms) : 'none yet');

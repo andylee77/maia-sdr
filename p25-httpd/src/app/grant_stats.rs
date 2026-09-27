@@ -10,7 +10,8 @@
 //! Lifecycle:
 //!
 //!   - `CallOpen` → remember the call.
-//!   - `SourceUpdate` → update the in-flight summary's source field.
+//!   - `SourceUpdate` → fill the in-flight summary's source field when
+//!     the grant carried none (change 060: never overwrites it).
 //!   - `CallClose` → push `GrantDecodeSummary` into the ring at once,
 //!     with the call's own counters (change 057, below).
 //!
@@ -369,9 +370,16 @@ fn handle_event(
             });
         }
 
+        // Change 060: fill-only, like the lifecycle's own `source`. The
+        // call's source is the unit the grant was issued to; units the
+        // voice link control names later stay in `sources_observed` /
+        // `actual_speaker`. On the site those were wrong each time they
+        // differed from the grant (2026-09-27: grant 3400043 heard, LC
+        // 1014; dispatch 1013 heard, LC 3402072), and overwriting made
+        // them the call's source.
         CallTrackerEventKind::SourceUpdate { new_source, .. } => {
             if let Some(a) = active.as_mut() {
-                if a.call_id == event.call_id {
+                if a.call_id == event.call_id && a.source.is_none() {
                     a.source = Some(new_source);
                 }
             }

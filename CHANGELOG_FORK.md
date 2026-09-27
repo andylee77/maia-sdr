@@ -5,6 +5,29 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-27] A call's source is the unit the grant was issued to (061)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-27-grant-source-061`
+**Bake required:** NO (p25-httpd only).
+
+- **The source is the grant's unit.** `grant_stats` no longer lets a later link-control ID
+  replace a call's source; it only fills a source-less call. The lifecycle and the recorder
+  already worked this way.
+  - On the site, the link-control ID was wrong both times it differed from the grant:
+    - responder 3400043 was heard, and the LC said 1014;
+    - dispatch 1013 was heard, and the LC said 3402072.
+  - It became the call's source, so the UI showed the wrong unit.
+- **UI:** the call list and "Now on air" show only the grant's unit. A different
+  link-control ID appears only in the call details ("Link control ID … differs from the
+  grant"). This replaces 060's "grant N" label.
+- **The LDU1 link-control vote ring resets per call, not only per talkgroup.** Since 057 every
+  grant is a call, so back-to-back calls of one TG no longer share votes.
+
+Tests: p25-httpd 241 passed.
+
+---
+
 ## [2026-09-27] RX gain survives a restart; talker vs grant unit in the call list; no countdown bar (060)
 
 **Branch:** fishball-p25
@@ -13,19 +36,12 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 - **RX gain is persisted.** A successful `/api/rx_gain` change (the Radio view's AGC switch
   and gain selector) is saved in the UI settings (`radio.gain_mode`, `radio.manual_gain_db`)
-  and applied at startup after `--hardwaregain`.
-  - On the site antenna, the boot default (manual 60 dB) put the control channel at about 65
-    at the LSM input, below core 0.2.0's no-signal gate (256): 71 % TSBK decode with the
-    PLL frozen.
-  - `slow_attack` (73 dB) gave 83 %.
-  - Before this change, the operator's AGC choice was lost at every restart.
-- **Call list and "Now on air":** a unit that differs from the talker is now labelled
-  "grant N" instead of "also N".
-  - The talker is the unit the voice's link control names; the grant's unit is the first
-    one seen.
-  - On this site a dispatch console (1011–1014) often talks on a grant issued to another
-    unit. That is one talker, which "also" presented as two.
-  - "also" now lists only further talkers.
+  and applied at startup after `--hardwaregain`. Before, the operator's AGC choice was lost
+  at every restart. On the site antenna the boot default (manual 60 dB) left the control
+  channel under core 0.2.0's no-signal gate: 71 % TSBK decode with the PLL frozen, against
+  83 % with `slow_attack` (73 dB).
+- **Call list:** a second unit on a call was labelled "grant N" instead of "also N" (replaced
+  by 061).
 - **The hang-time countdown bar under "Now on air" is removed.** The "Closes in" figure
   stays.
 
