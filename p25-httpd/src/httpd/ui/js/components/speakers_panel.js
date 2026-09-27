@@ -56,18 +56,23 @@ export function speakersPanel() {
       const g = groups[rank(name)];
       const move = () => apply({ [side]: sp[side].filter(n => n !== name), [otherSide]: [...sp[otherSide], name] });
       const remove = () => apply({ [side]: sp[side].filter(n => n !== name) });
-      return h('div', { class: 'grp-chip', title: 'TG ' + formatTgList(g ? g.tgs : []) },
+      return h('div', { class: 'grp-chip', title: 'Priority ' + (rank(name) + 1) + ' · TG ' + formatTgList(g ? g.tgs : []) },
         h('span', { class: 'grp-rank', text: String(rank(name) + 1) }),
-        h('span', { class: 'grp-name', text: name }),
-        h('span', { class: 'grp-tgs dim', text: g ? formatTgList(g.tgs) : '' }),
+        h('div', { class: 'grp-text' },
+          h('div', { class: 'grp-name', text: name }),
+          h('div', { class: 'grp-tgs dim', text: g ? formatTgList(g.tgs) : '' })),
         h('button', { class: 'btn small icon', type: 'button', title: 'Move to the ' + otherSide + ' speaker', text: side === 'left' ? '→' : '←', onclick: move }),
         h('button', { class: 'btn small icon', type: 'button', title: 'Off this speaker (not followed)', text: '✕', onclick: remove }));
     });
+    // Only offered while a group is on neither speaker.
     const free = groups.filter(g => !(sp.left || []).includes(g.name) && !(sp.right || []).includes(g.name));
-    const add = h('select', { class: 'input', 'aria-label': 'Add a group to the ' + side + ' speaker', disabled: !free.length },
-      h('option', { value: '', text: free.length ? '+ add group' : 'all groups placed' }),
-      ...free.map(g => h('option', { value: g.name, text: g.name })));
-    add.addEventListener('change', () => { if (add.value) apply({ [side]: [...(sp[side] || []), add.value] }); });
+    let add = null;
+    if (free.length) {
+      add = h('select', { class: 'input', 'aria-label': 'Add a group to the ' + side + ' speaker' },
+        h('option', { value: '', text: '+ add group' }),
+        ...free.map(g => h('option', { value: g.name, text: g.name })));
+      add.addEventListener('change', () => { if (add.value) apply({ [side]: [...(sp[side] || []), add.value] }); });
+    }
     return h('div', { class: 'spk-col' },
       h('div', { class: 'spk-head', text: side === 'left' ? 'Left' : 'Right' }),
       chips.length ? chips : h('div', { class: 'dim', text: 'nothing' }),
