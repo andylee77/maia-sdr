@@ -1,10 +1,10 @@
 //! Per-talkgroup metadata: aliases, monitor list, encryption, grant map.
 //!
 //! Consumer orientation: "which talkgroups do I know about, and what
-//! do I want to do with each?" State held here is process-lifetime
-//! only — alias map, monitor list, and encryption blocklist are all
-//! cleared on daemon restart (per the `API_CONSUMERS.md` contract).
-//! A future persistent-store add would live behind this same API.
+//! do I want to do with each?" Change 056: the alias map and the
+//! monitor list are persisted through `services::ui_settings` (the
+//! same document `/api/ui/settings` edits) and restored at boot; the
+//! encryption blocklist is still process-lifetime only.
 //!
 //! `/api/grant_map` is read-only — it tallies every grant observed
 //! on the control channel into a `(tg, frequency) → count` table.
@@ -90,19 +90,37 @@ pub async fn get_grant_map(
 }
 
 
+/// `GET /api/aliases` — the talkgroup alias map. Change 056: served
+/// from the persisted UI settings (`/api/ui/settings` `tg_aliases`).
 pub async fn get_aliases(State(state): State<Arc<AppState>>) -> Json<AliasMap> {
-    let decoder = state.decoder.read().await;
-    Json(decoder.aliases.clone())
+    Json(
+        state
+            .ui_settings
+            .snapshot()
+            .tg_aliases
+            .into_iter()
+            .collect(),
+    )
 }
 
 
+/// `PUT /api/aliases` — replace the talkgroup alias map. Change 056:
+/// persisted (`/mnt/jffs2/p25-ui-settings.json`) and applied to BOTH
+/// control-channel decoders; it used to write only the C4FM decoder,
+/// so on LSM sites (the active decoder) aliases never showed and were
+/// lost on restart.
 pub async fn put_aliases(
     State(state): State<Arc<AppState>>,
     Json(aliases): Json<AliasMap>,
 ) -> impl IntoResponse {
-    let mut decoder = state.decoder.write().await;
-    decoder.aliases = aliases;
-    axum::http::StatusCode::OK
+    let patch = crate::services::ui_settings::SettingsPatch {
+        tg_aliases: Some(aliases.into_iter().collect()),
+        ..Default::default()
+    };
+    match crate::httpd::api::ui::apply_settings_patch(&state, patch, "api_aliases").await {
+        Ok(_) => axum::http::StatusCode::OK,
+        Err(_) => axum::http::StatusCode::BAD_REQUEST,
+    }
 }
 
 // ── WebSocket ──────────────────────────────────────────────────────────
@@ -111,23 +129,38 @@ pub async fn put_aliases(
 /// GET /api/monitor -- return the current monitor list.
 /// PUT /api/monitor -- replace the list. Body: {"talkgroups": [300, 402]}
 /// GET /api/monitor?add=300 / ?remove=300 -- quick add/remove.
+/// Change 056: persist a monitor-list edit (and apply it) through the
+/// UI settings store. The list is also the boot default from now on.
+async fn store_monitor(state: &AppState, tgs: Vec<u16>, origin: &str) {
+    let patch = crate::services::ui_settings::SettingsPatch {
+        monitor_tgs: Some(tgs.into_iter().filter(|t| *t != 0).collect()),
+        ..Default::default()
+    };
+    if let Err(e) = crate::httpd::api::ui::apply_settings_patch(state, patch, origin).await {
+        tracing::warn!("monitor list not stored: {e}");
+    }
+}
+
 pub async fn get_monitor(
     State(state): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
-    let mut list = state.monitor_list.write().await;
-
-    if let Some(tg_str) = params.get("add") {
-        if let Ok(tg) = tg_str.parse::<u16>() {
-            list.add(tg);
+    let edit = params.contains_key("add") || params.contains_key("remove");
+    if edit {
+        let mut list = state.monitor_list.read().await.clone();
+        if let Some(tg_str) = params.get("add") {
+            if let Ok(tg) = tg_str.parse::<u16>() {
+                list.add(tg);
+            }
         }
-    }
-    if let Some(tg_str) = params.get("remove") {
-        if let Ok(tg) = tg_str.parse::<u16>() {
-            list.remove(tg);
+        if let Some(tg_str) = params.get("remove") {
+            if let Ok(tg) = tg_str.parse::<u16>() {
+                list.remove(tg);
+            }
         }
+        store_monitor(&state, list.list().to_vec(), "api_monitor").await;
     }
-
+    let list = state.monitor_list.read().await;
     Json(serde_json::json!({
         "talkgroups": list.list(),
     }))
@@ -138,14 +171,14 @@ pub async fn put_monitor(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let mut list = state.monitor_list.write().await;
     if let Some(arr) = body.get("talkgroups").and_then(|v| v.as_array()) {
         let tgs: Vec<u16> = arr
             .iter()
             .filter_map(|v| v.as_u64().map(|n| n as u16))
             .collect();
-        list.set(tgs);
+        store_monitor(&state, tgs, "api_monitor").await;
     }
+    let list = state.monitor_list.read().await;
     Json(serde_json::json!({
         "talkgroups": list.list(),
     }))

@@ -128,7 +128,7 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
         method: "PUT",
         path: "/api/aliases",
         params: "body=JSON {tg: name, ...}",
-        description: "Replace the alias map. Body is a JSON object keyed by TG number.",
+        description: "Replace the alias map. Body is a JSON object keyed by TG number. Change 056: persisted (UI settings) and applied to both control decoders.",
     },
     EndpointDoc {
         method: "GET",
@@ -259,8 +259,8 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     EndpointDoc {
         method: "GET",
         path: "/api/log",
-        params: "?since=<seq>&limit=<n>&category=<name>",
-        description: "Event log ring. Monotonic seq for incremental tail reads.",
+        params: "?since=<seq>&limit=<n>&category=<name>&tail=1&from_ms=<t>&to_ms=<t>&tsbk=0",
+        description: "Event log ring. Monotonic seq for incremental tail reads. tail=1: newest N (default: oldest N after since). from_ms/to_ms: wall-clock window. tsbk=0: drop control-channel TSBK mirror lines.",
     },
     EndpointDoc {
         method: "GET",
@@ -362,7 +362,7 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
         method: "PUT",
         path: "/api/monitor",
         params: "?add=<tg>&remove=<tg>",
-        description: "Add/remove a TG from the monitor list. Empty list = newest-grant-wins.",
+        description: "Add/remove a TG from the monitor list. Empty list = newest-grant-wins. Change 056: persisted (UI settings).",
     },
     EndpointDoc {
         method: "GET",
@@ -483,6 +483,30 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
         path: "/api/tsbk_opcodes",
         params: "",
         description: "Histogram of TSBK opcodes observed. Labels match SDRTrunk OSP opcode names.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/ui/calls",
+        params: "?limit=<1..250, default 40>&nf=0|1",
+        description: "Change 056: recent calls, newest first, joined with recordings by call_id; voice_ms, audio_status (recorded/saving/not_recorded/evicted/no_voice/encrypted/not_followed). nf=0 hides not-followed grants.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/ui/settings",
+        params: "",
+        description: "Change 056: persisted UI settings (recording on/off + retention, TG / unit aliases, monitor list) + storage info.",
+    },
+    EndpointDoc {
+        method: "PUT",
+        path: "/api/ui/settings",
+        params: "body=JSON {recording:{enabled,max_count}, tg_aliases:{}, unit_aliases:{}, monitor_tgs:[]} (any subset)",
+        description: "Change 056: validate, apply live and persist to /mnt/jffs2/p25-ui-settings.json. 400 on invalid/unknown fields.",
+    },
+    EndpointDoc {
+        method: "GET",
+        path: "/api/ui/state",
+        params: "",
+        description: "Change 056: consolidated web-UI state (site/CC health, current call with phase voice|hang|acquiring, chain, recording, audio listeners, calls_rev). ~1-2 KB, for a 1 Hz poll.",
     },
     EndpointDoc {
         method: "GET",
@@ -626,8 +650,9 @@ pub async fn get_sys_health(
 /// filesystem that contains `path`, or None on error (path missing,
 /// permission denied, etc.). Bypasses /proc/mounts to avoid parsing
 /// edge cases (cgroups, autofs); a single syscall per call is cheap.
+/// Change 056: `pub(crate)` for `/api/ui/settings` (recording storage).
 #[cfg(target_os = "linux")]
-fn fs_usage(path: &str) -> Option<(u64, u64)> {
+pub(crate) fn fs_usage(path: &str) -> Option<(u64, u64)> {
     let cpath = std::ffi::CString::new(path).ok()?;
     let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statvfs(cpath.as_ptr(), &mut s) } != 0 {
@@ -814,9 +839,10 @@ pub async fn get_pipeline(
     let grant_stats_json = {
         let r = state.grant_decode_stats.lock()
             .map(|r| r.len()).unwrap_or(0);
+        // Change 056: was a hard-coded 20 (the ring holds 200).
         serde_json::json!({
             "completed_grants_buffered": r,
-            "capacity":                  20,
+            "capacity":                  crate::app::grant_stats::RING_CAP,
         })
     };
 

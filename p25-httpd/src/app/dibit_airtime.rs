@@ -442,6 +442,8 @@ pub struct RingCounters {
     pub cuts_applied: u64,
     pub epoch_splits: u64,
     pub cuts_clamped: u64,
+    /// Cuts raised to the previous cut's index to keep record order.
+    pub cuts_reordered: u64,
     pub cuts_dropped_mode: u64,
     pub framer_resets: u64,
     pub dibits_fed: u64,
@@ -480,6 +482,8 @@ struct RingInner {
     claimed_end: u64,
     pending: Vec<EpochCut>,
     next_seq: u64,
+    /// Index of the last recorded cut: later cuts never go below it.
+    last_cut_index: u64,
     counters: RingCounters,
     ages: AgeHistogram,
     /// Delivered-chunk backlog: production index estimate − delivered end
@@ -514,6 +518,7 @@ impl DibitRingShared {
                 claimed_end: 0,
                 pending: Vec::new(),
                 next_seq: 1,
+                last_cut_index: 0,
                 counters: RingCounters::default(),
                 ages: AgeHistogram::new(),
                 last_backlog_dibits: None,
@@ -552,6 +557,7 @@ impl DibitRingShared {
         let mut g = self.lock();
         g.pending.clear();
         g.claimed_end = claim_from;
+        g.last_cut_index = 0;
         g.counters.mode_switches += 1;
         self.active_mode.store(m.to_u8(), Ordering::Relaxed);
     }
@@ -594,6 +600,20 @@ impl DibitRingShared {
             cut.clamped = true;
             g.counters.cuts_clamped += 1;
         }
+        // Cuts are recorded in program order (all callers stamp "now"),
+        // so a later cut cannot have happened earlier on air. Estimate
+        // jitter can still invert them: a hardware cut sits at the low
+        // edge, a software cut at the midpoint, and an LSM reset widens
+        // the estimate. Bench 2026-09-26: a grant hold (TG 0) recorded
+        // before the retune / TG change / CallOpen of the new call got
+        // an index 2 dibits later than theirs, so the gate closed after
+        // the new call opened and its whole first transmission was
+        // gated (1 call in ~150).
+        if cut.index < g.last_cut_index {
+            cut.index = g.last_cut_index;
+            g.counters.cuts_reordered += 1;
+        }
+        g.last_cut_index = cut.index;
         if let Some(du) = discard_until {
             cut.discard_dibits = du.saturating_sub(cut.index);
         }
@@ -742,6 +762,7 @@ impl DibitRingShared {
         let mut g = self.lock();
         g.counters.resyncs += 1;
         g.counters.resync_skipped_bytes += skipped_bytes;
+        g.last_cut_index = 0;
         g.last_resync = Some(info);
     }
 

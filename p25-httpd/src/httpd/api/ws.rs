@@ -118,6 +118,17 @@ pub async fn handle_ws_audio(
 ) {
     use std::sync::atomic::Ordering;
     use futures::{SinkExt, StreamExt};
+    // Change 056: count real listeners (the broadcast's receiver_count
+    // also includes the recorder and the call lifecycle). The guard
+    // decrements on every exit path.
+    struct Listener(Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for Listener {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    state.audio_ws_listeners.fetch_add(1, Ordering::Relaxed);
+    let _listener = Listener(state.audio_ws_listeners.clone());
     let mut rx = state.audio_tx.subscribe();
     // Split so we can concurrently drive a recv (to observe Close
     // frames + remote drops) and a send (audio chunks). Without this

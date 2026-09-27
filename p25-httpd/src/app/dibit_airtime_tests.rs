@@ -256,6 +256,36 @@ fn recording_is_a_noop_until_airtime_is_active() {
 }
 
 #[test]
+fn estimate_jitter_never_reorders_cuts_against_record_order() {
+    // Bench 2026-09-26 soak, call 234: the follower's grant hold (TG 0,
+    // old call) was recorded first but its index estimate came out after
+    // the retune / TG change / CallOpen that followed it, so the new
+    // call's first transmission was gated. Replay that order with the
+    // hold stamped later than the cuts recorded after it.
+    let sh = shared();
+    sh.activate_mode(DeliveryMode::Airtime, 0);
+    {
+        let mut g = sh.lock();
+        g.clock.observe_interval(1_000_000, 10_000.0, 10_050.0, true);
+    }
+    sh.record_sw_at(EpochKind::GrantHold, ctx(0, 233), true, 1_000_500);
+    sh.record_sw_at(EpochKind::TgChange, ctx(300, 233), false, 1_000_000);
+    sh.record_call_id_at(234, 1_000_000);
+    let c = sh.claim(u64::MAX);
+    let kinds: Vec<EpochKind> = c.iter().map(|x| x.kind).collect();
+    assert_eq!(kinds, vec![EpochKind::GrantHold, EpochKind::TgChange, EpochKind::CallOpen]);
+    assert!(c[1].index == c[0].index && c[2].index == c[0].index);
+    assert_eq!(sh.counters().cuts_reordered, 2);
+    // The last applied context is the new call's, not the hold's TG 0.
+    let last_tg = c.iter().rev().find_map(|x| x.ctx.filter(|_| !x.call_id_only).map(|k| k.tg));
+    assert_eq!(last_tg, Some(300));
+    // A mode hand-over drops the floor.
+    sh.activate_mode(DeliveryMode::Airtime, 0);
+    sh.record_sw_at(EpochKind::CtxUpdate, ctx(300, 234), false, 1_000_000);
+    assert_eq!(sh.claim(u64::MAX)[0].index, c[1].index - 2);
+}
+
+#[test]
 fn cuts_are_clamped_to_claimed_end_and_claimed_in_order() {
     let sh = shared();
     sh.activate_mode(DeliveryMode::Airtime, 0);

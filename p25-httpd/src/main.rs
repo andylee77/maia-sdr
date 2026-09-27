@@ -43,7 +43,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-26-dibit-lowlatency-airtime";
+pub const BUILD_TAG: &str = "2026-09-26-web-ui-056";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -477,11 +477,38 @@ async fn main() -> anyhow::Result<()> {
     #[allow(unused_variables, unused_mut)]
     let (grant_event_tx, mut grant_event_rx) =
         tokio::sync::mpsc::channel::<p25::events::P25Event>(128);
-    let monitor_list = Arc::new(RwLock::new(monitor::MonitorList::default()));
+
+    // Change 056: persisted operator settings (recording policy, TG /
+    // unit aliases, monitor list). Loaded before the decoders and the
+    // monitor list so both start from the stored values.
+    let ui_settings = Arc::new(services::ui_settings::SettingsStore::load(
+        services::ui_settings::SettingsStore::default_path(),
+    ));
+    let boot_settings = ui_settings.snapshot();
+    let boot_aliases: std::collections::HashMap<u16, String> = boot_settings
+        .tg_aliases
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+    decoder.write().await.aliases = boot_aliases.clone();
+    let monitor_list = {
+        let mut m = monitor::MonitorList::default();
+        m.set(boot_settings.monitor_tgs.clone());
+        Arc::new(RwLock::new(m))
+    };
+    tracing::info!(
+        "ui settings: {} (recording={}, keep={}, tg_aliases={}, monitor={:?})",
+        ui_settings.load_note(),
+        boot_settings.recording.enabled,
+        boot_settings.recording.max_count,
+        boot_settings.tg_aliases.len(),
+        boot_settings.monitor_tgs,
+    );
 
     let mut lsm_decoder = ControlChannelDecoder::new();
     lsm_decoder.set_event_tx(event_tx.clone());
     lsm_decoder.set_grant_event_tx(grant_event_tx.clone());
+    lsm_decoder.aliases = boot_aliases;
     let lsm_decoder = Arc::new(RwLock::new(lsm_decoder));
 
     // Also install the grant event sender on the C4FM decoder so
@@ -602,6 +629,8 @@ async fn main() -> anyhow::Result<()> {
         "p25-httpd startup",
         serde_json::json!({
             "build_tag": crate::BUILD_TAG,
+            // Change 056: where the UI settings came from.
+            "ui_settings": ui_settings.load_note(),
         }),
     );
     // Now the event-log ring exists — plumb it into the IMBE
@@ -1736,11 +1765,13 @@ async fn main() -> anyhow::Result<()> {
         // `recording_saved` immediately on call close. Eliminates the
         // ~4 s gap between call end and Recent Calls row update.
         let recorder_event_tx = Some(event_tx.clone());
+        // Change 056: recording on/off + retention (persisted setting).
+        let recording_policy = Some(ui_settings.recording.clone());
         tokio::spawn(async move {
             recorder::recorder_task(
                 rx, tracker_rx, store, diag, log,
                 imbe_drops_handle, forwarder_for_recorder,
-                recorder_event_tx,
+                recorder_event_tx, recording_policy,
             ).await;
         });
     }
@@ -1921,6 +1952,9 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(target_os = "linux")]
         converged_seeds: converged_seeds_shared.clone(),
         dibit_delivery: dibit_delivery.clone(),
+        ui_settings: ui_settings.clone(),
+        audio_ws_listeners: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        ui_cc_rate: std::sync::Mutex::new(app::ui_state::RateWindow::new()),
     });
 
     // Phase 2b unified call lifecycle: call_tracker is spawned up

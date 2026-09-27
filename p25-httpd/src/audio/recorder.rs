@@ -67,7 +67,32 @@ use crate::app::grant_follower::{
 /// Max number of recordings kept in the ring. Oldest evicted when
 /// the ring fills. 40 entries at ~30 s each ≈ 20 minutes of recent
 /// audio history in tmpfs.
+///
+/// Change 056: the default only. The live retention is
+/// `RecordingPolicy::max_count` (`services::ui_settings`, persisted,
+/// editable from the web UI).
 pub const MAX_RECORDINGS: usize = 40;
+
+/// Change 056: per-recording decode counters are global-counter deltas.
+/// They are now snapshotted when the call closes (once the vocoder has
+/// consumed every frame submitted before the close), not at finalise:
+/// finalise runs `CLOSING_DRAIN_MS` later, by which time the NEXT call's
+/// frames were counted too (bench 2026-09-26: 72-frame PTTs reported
+/// `imbe_extracted` 144–153). Upper bound on the wait for the vocoder.
+const CLOSE_STATS_WAIT_MS: u64 = 1_000;
+
+/// Change 056: take the close-time counter snapshot now? True once the
+/// vocoder consumed everything submitted before the close, or after
+/// `CLOSE_STATS_WAIT_MS` regardless.
+pub fn close_stats_due(
+    close_at_ms: u64,
+    expected_consumed: u64,
+    consumed: u64,
+    now_ms: u64,
+) -> bool {
+    consumed >= expected_consumed
+        || now_ms.saturating_sub(close_at_ms) >= CLOSE_STATS_WAIT_MS
+}
 
 /// Storage directory. Created if missing.
 pub const STORAGE_DIR: &str = "/tmp/p25_recordings";
@@ -273,6 +298,11 @@ pub struct RecorderDiag {
     /// the gate caught.
     pub chunks_dropped_tg_mismatch:
         std::sync::atomic::AtomicU64,
+    /// Change 056: followed calls not recorded because recording is
+    /// switched off (`RecordingPolicy::enabled`), and the audio chunks
+    /// that therefore had no recording to go to.
+    pub calls_skipped_disabled: std::sync::atomic::AtomicU64,
+    pub chunks_not_recorded: std::sync::atomic::AtomicU64,
 }
 
 pub type RecorderDiagArc = Arc<RecorderDiag>;
@@ -364,6 +394,11 @@ struct ActiveCall {
     max_chunk_lag_ms: u64,
     total_chunk_lag_ms: u64,
     lag_count: u64,
+    /// Change 056: `frames_submitted` at the close; the close-time
+    /// counter snapshot waits for the vocoder to consume up to here.
+    close_expected_consumed: u64,
+    /// Change 056: counters at the close (see `CLOSE_STATS_WAIT_MS`).
+    stats_at_close: Option<StatsSnapshot>,
 }
 
 #[derive(Clone, Copy)]
@@ -428,6 +463,26 @@ impl ActiveCall {
             max_chunk_lag_ms: 0,
             total_chunk_lag_ms: 0,
             lag_count: 0,
+            close_expected_consumed: 0,
+            stats_at_close: None,
+        }
+    }
+
+    /// Change 056: take the close-time counter snapshot once it is due.
+    fn maybe_snapshot_close_stats(
+        &mut self,
+        forwarder: Option<&Arc<crate::app::imbe_forwarder::ImbeForwarder>>,
+        now_ms: u64,
+    ) {
+        use std::sync::atomic::Ordering;
+        let (Some(close_at), None, Some(f)) =
+            (self.close_at_ms, self.stats_at_close, forwarder)
+        else {
+            return;
+        };
+        let consumed = f.frames_consumed.load(Ordering::Relaxed);
+        if close_stats_due(close_at, self.close_expected_consumed, consumed, now_ms) {
+            self.stats_at_close = Some(StatsSnapshot::from_forwarder(f));
         }
     }
 
@@ -532,6 +587,9 @@ async fn finalize(
     // 2026-04-30). Optional so unit tests / pre-2026-05-03 callers
     // still work without plumbing the channel.
     event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
+    // Change 056: ring size to enforce after the push (the live
+    // `RecordingPolicy::max_count`).
+    max_count: usize,
 ) {
     let duration_ms = call.duration_ms();
     // 2026-04-25: discard only if the call produced ZERO PCM
@@ -625,7 +683,10 @@ async fn finalize(
          tdu_count, tdu_lc_count, vocoder_pcm, vocoder_errors, vocoder_silent) =
         match (call.stats_at_open, forwarder) {
             (Some(base), Some(f)) => {
-                let now = StatsSnapshot::from_forwarder(f);
+                // Change 056: close-time snapshot when taken (it
+                // excludes the next call's frames), else now.
+                let now = call.stats_at_close
+                    .unwrap_or_else(|| StatsSnapshot::from_forwarder(f));
                 (
                     Some(now.imbe_extracted.saturating_sub(base.imbe_extracted)),
                     Some(now.imbe_dropped.saturating_sub(base.imbe_dropped)),
@@ -694,11 +755,7 @@ async fn finalize(
     };
     let mut ring = store.lock().await;
     ring.push_back(entry.clone());
-    while ring.len() > MAX_RECORDINGS {
-        if let Some(old) = ring.pop_front() {
-            let _ = std::fs::remove_file(&old.path);
-        }
-    }
+    evict_beyond(&mut ring, max_count);
     drop(ring);
     // 2026-05-03 ws-event push: dashboard's Recent Calls panel
     // splices the row immediately. Without this, the row only
@@ -717,6 +774,30 @@ async fn finalize(
             }
         }
     }
+}
+
+/// Change 056: drop the oldest entries (and their WAVs) until at most
+/// `max_count` remain. Returns the evicted entries.
+fn evict_beyond(
+    ring: &mut VecDeque<RecordingEntry>,
+    max_count: usize,
+) -> Vec<RecordingEntry> {
+    let mut evicted = Vec::new();
+    while ring.len() > max_count.max(1) {
+        if let Some(old) = ring.pop_front() {
+            let _ = std::fs::remove_file(&old.path);
+            evicted.push(old);
+        }
+    }
+    evicted
+}
+
+/// Change 056: apply a lowered retention immediately (settings change)
+/// instead of waiting for the next finalise. Returns how many
+/// recordings were deleted.
+pub async fn enforce_retention(store: &RecordingStore, max_count: usize) -> usize {
+    let mut ring = store.lock().await;
+    evict_beyond(&mut ring, max_count).len()
 }
 
 /// Recorder background task. Runs for the lifetime of the process.
@@ -757,7 +838,12 @@ pub async fn recorder_task(
     // panel splices new rows immediately on call close instead of
     // waiting for the next /api/recordings poll.
     event_tx: Option<tokio::sync::broadcast::Sender<String>>,
+    // Change 056: recording on/off + retention from the persisted UI
+    // settings. `None` = always record, `MAX_RECORDINGS` retention.
+    policy: Option<Arc<crate::services::ui_settings::RecordingPolicy>>,
 ) {
+    let max_count = || policy.as_ref().map(|p| p.max_count()).unwrap_or(MAX_RECORDINGS);
+    let recording_enabled = || policy.as_ref().map(|p| p.enabled()).unwrap_or(true);
     // Structured-event helper. Every recorder decision (open, finalise,
     // source stamp, TG-guard skip, etc.) emits one of these so the
     // per-recording timeline can be reconstructed after the fact.
@@ -802,6 +888,9 @@ pub async fn recorder_task(
     // single-deep — if a third call arrives while draining is set,
     // the existing draining recording is force-finalised.
     let mut draining: Option<ActiveCall> = None;
+    // Change 056: the newest followed call that was not recorded
+    // because recording is off; its chunks count as `chunks_not_recorded`.
+    let mut skipped_call_id: Option<u64> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(RECORDER_TICK_MS));
 
     // Helper: finalise + push the WAV through `finalize()`, logging
@@ -818,6 +907,8 @@ pub async fn recorder_task(
         imbe_drops: &Arc<std::sync::atomic::AtomicU64>,
         // 2026-05-03: ws-event broadcast for `recording_saved`.
         event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
+        // Change 056: live retention.
+        max_count: usize,
     ) {
         use std::sync::atomic::Ordering;
         let id = old.call_id;
@@ -862,7 +953,7 @@ pub async fn recorder_task(
                 fields,
             );
         }
-        finalize(store, old, id, event_log, forwarder, event_tx).await;
+        finalize(store, old, id, event_log, forwarder, event_tx, max_count).await;
     }
 
     loop {
@@ -924,7 +1015,14 @@ pub async fn recorder_task(
                             Slot::Active => active.as_mut().unwrap(),
                             Slot::Draining => draining.as_mut().unwrap(),
                             Slot::None => {
-                                if active.is_none() && draining.is_none() {
+                                if !recording_enabled()
+                                    || skipped_call_id.is_some_and(|id| id == chunk.call_id)
+                                {
+                                    // Change 056: audio of a call that is
+                                    // deliberately not recorded.
+                                    diag.chunks_not_recorded
+                                        .fetch_add(1, Ordering::Relaxed);
+                                } else if active.is_none() && draining.is_none() {
                                     diag.chunks_dropped_no_active
                                         .fetch_add(1, Ordering::Relaxed);
                                 } else {
@@ -977,7 +1075,7 @@ pub async fn recorder_task(
                                 serde_json::json!({}),
                                 &store, event_log.as_ref(),
                                 forwarder.as_ref(), &imbe_drops,
-                                event_tx.as_ref(),
+                                event_tx.as_ref(), max_count(),
                             ).await;
                         }
                         if let Some(old) = active.take() {
@@ -986,7 +1084,7 @@ pub async fn recorder_task(
                                 serde_json::json!({}),
                                 &store, event_log.as_ref(),
                                 forwarder.as_ref(), &imbe_drops,
-                                event_tx.as_ref(),
+                                event_tx.as_ref(), max_count(),
                             ).await;
                         }
                         return;
@@ -1055,10 +1153,15 @@ pub async fn recorder_task(
                                     }),
                                     &store, event_log.as_ref(),
                                     forwarder.as_ref(), &imbe_drops,
-                                    event_tx.as_ref(),
+                                    event_tx.as_ref(), max_count(),
                                 ).await;
                             }
                             if let Some(mut old) = active.take() {
+                                if old.close_at_ms.is_none() {
+                                    old.close_expected_consumed = forwarder.as_ref()
+                                        .map(|f| f.frames_submitted.load(Ordering::Relaxed))
+                                        .unwrap_or(0);
+                                }
                                 old.close_at_ms = Some(ev.timestamp_unix_ms);
                                 log_ev("call_draining", serde_json::json!({
                                     "recording_id":  old.call_id,
@@ -1070,6 +1173,26 @@ pub async fn recorder_task(
                                     "reason":        "call_open_without_close",
                                 }));
                                 draining = Some(old);
+                            }
+                            // Change 056: recording switched off. The
+                            // previous recording (moved to draining
+                            // above) still completes; this call gets
+                            // none.
+                            if !recording_enabled() {
+                                if let Some(p) = policy.as_ref() {
+                                    p.note_skipped(ev.call_id);
+                                }
+                                skipped_call_id = Some(ev.call_id);
+                                diag.calls_skipped_disabled
+                                    .fetch_add(1, Ordering::Relaxed);
+                                log_ev("call_open_skipped", serde_json::json!({
+                                    "event_call_id": ev.call_id,
+                                    "tg":            tg,
+                                    "source":        source,
+                                    "freq_hz":       freq_hz,
+                                    "reason":        "recording_disabled",
+                                }));
+                                continue;
                             }
                             let mut c = ActiveCall::new(
                                 ev.call_id, tg,
@@ -1152,8 +1275,14 @@ pub async fn recorder_task(
                             // CallTrackerEvent subscription.
                         }
                         CallTrackerEventKind::CallClose {
-                            reason, final_source, ended_unix_ms, ..
+                            reason, final_source, ended_unix_ms,
+                            expected_submit_count, ..
                         } => {
+                            // Change 056: close of a call skipped
+                            // because recording is off — nothing open.
+                            if skipped_call_id == Some(ev.call_id) {
+                                continue;
+                            }
                             // 2026-04-26 session-lifecycle refactor:
                             // CallClose just stamps `close_at_ms` on
                             // the active recording. Audio chunks
@@ -1189,6 +1318,7 @@ pub async fn recorder_task(
                                     }
                                 }
                                 c.close_at_ms = Some(ended_unix_ms);
+                                c.close_expected_consumed = expected_submit_count;
                                 let reason_str = match reason {
                                     CloseReason::Timeout => "timeout",
                                     CloseReason::TgChange => "tg_change",
@@ -1239,6 +1369,11 @@ pub async fn recorder_task(
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
+                // Change 056: per-recording counters are taken at the
+                // close, not at finalise (see CLOSE_STATS_WAIT_MS).
+                for c in active.iter_mut().chain(draining.iter_mut()) {
+                    c.maybe_snapshot_close_stats(forwarder.as_ref(), now_ms);
+                }
                 let close_decision = active.as_ref().and_then(|c| {
                     if let Some(close_at) = c.close_at_ms {
                         if now_ms.saturating_sub(close_at) >= CLOSING_DRAIN_MS {
@@ -1261,7 +1396,7 @@ pub async fn recorder_task(
                             }),
                             &store, event_log.as_ref(),
                             forwarder.as_ref(), &imbe_drops,
-                            event_tx.as_ref(),
+                            event_tx.as_ref(), max_count(),
                         ).await;
                     }
                 }
@@ -1286,7 +1421,7 @@ pub async fn recorder_task(
                             }),
                             &store, event_log.as_ref(),
                             forwarder.as_ref(), &imbe_drops,
-                            event_tx.as_ref(),
+                            event_tx.as_ref(), max_count(),
                         ).await;
                     }
                 }
@@ -1294,3 +1429,7 @@ pub async fn recorder_task(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "recorder_tests.rs"]
+mod tests;

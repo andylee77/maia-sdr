@@ -141,7 +141,11 @@ pub async fn get_spectrum(
         .unwrap_or(state.current_rx_lo.load(
             std::sync::atomic::Ordering::Relaxed) as u64) as f64;
     let center_hz: f64 = match chain {
-        "control" => state.boot_control_freq as f64,
+        // Change 056: the live tuned frequency (was the boot value, so
+        // the axis went stale after POST /api/tune).
+        "control" => state
+            .current_control_freq
+            .load(std::sync::atomic::Ordering::Relaxed) as f64,
         "traffic" => {
             let mgr = state.traffic_chain.lock().await;
             rx_lo + mgr.last_offset_hz as f64

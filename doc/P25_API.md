@@ -45,7 +45,9 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 
 | Path | Method | Returns | Purpose |
 |---|---|---|---|
-| `/` | GET | HTML | Embedded dashboard (`index_html`) |
+| `/` | GET | HTML | Web UI (change 056): shell page, `Cache-Control: no-cache`; asset URLs are `ui/<BUILD_TAG>.<hash>/...` |
+| `/ui/{version}/{*path}` | GET | CSS / JS | Change 056 embedded UI assets (`httpd/ui/`). JS as `text/javascript`. Current version `immutable` + ETag, any other version `no-cache`, unknown path 404 |
+| `/legacy` | GET | HTML | Pre-056 single-file dashboard (`dashboard.html`), kept as a fallback |
 | `/api/system` | GET | `SystemInfo` | System identity: NAC, WACN, RFSS, site, control channel, secondary CCH, SNDCP channels, system clock, build tag |
 | `/api/sys_health` | GET | JSON | **Stage 2** — process + kernel health: loadavg, daemon RSS, thread count, free memory. Cheap to poll from a mobile client |
 | `/api/endpoints` | GET | JSON | Self-describing endpoint list (authoritative — the live `ENDPOINT_CATALOGUE`) |
@@ -75,8 +77,8 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 
 | Path | Method | Returns | Purpose |
 |---|---|---|---|
-| `/api/aliases` | GET, PUT | `AliasMap` | Talkgroup-id → display-name map |
-| `/api/monitor` | GET, PUT | JSON | Monitor list. `?add=N` / `?remove=N` / PUT body `{"talkgroups":[...]}`. When non-empty, grant follower ignores TGs not in the list |
+| `/api/aliases` | GET, PUT | `AliasMap` | Talkgroup-id → display-name map. Change 056: persisted (`/mnt/jffs2/p25-ui-settings.json` `tg_aliases`) and applied to both control decoders (it used to reach only the C4FM decoder, so aliases never showed on LSM sites) |
+| `/api/monitor` | GET, PUT | JSON | Monitor list. `?add=N` / `?remove=N` / PUT body `{"talkgroups":[...]}`. When non-empty, grant follower ignores TGs not in the list. Change 056: persisted (`monitor_tgs`) and restored at boot |
 | `/api/encrypted_tgs` | GET, PUT | JSON | Persistent encryption blocklist. `?add=N` / `?remove=N` / `?clear=1`. Any TG ever seen encrypted is eagerly added |
 | `/api/grant_map` | GET | JSON | Accumulated per-`(tg, freq)` grant map with first/last-seen and encrypted counters; frequency roll-up for LO-centering decisions |
 
@@ -84,11 +86,29 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 
 | Path | Method | Returns | Purpose |
 |---|---|---|---|
-| `/api/log` | GET | JSON | Event-log ring tail. `?since=<seq>` — incremental read |
-| `/api/recordings` | GET | JSON | Recording list (one row per call) |
+| `/api/log` | GET | JSON | Event-log ring. `?since=<seq>` — entries after seq, OLDEST first (`&limit=N`, default 200, max 16384); `?category=grant\|traffic\|voice\|vocoder\|system\|recorder\|duid`. Change 056: `?tail=1` — the NEWEST `limit` matches (a plain first read returns boot-time entries); `?from_ms=&to_ms=` — wall-clock window on `timestamp_ms`; `?tsbk=0` — drop the control-channel TSBK mirror lines (`grant` entries with `fields.event_type`). Filters apply before `limit`. Response `{last_seq, count, entries[]}` |
+| `/api/recordings` | GET | JSON | Recording list (one row per call; `id` = lifecycle call_id). Change 056: per-recording counters (`imbe_extracted`, `ldu*_count`, `vocoder_*`) are taken at the call's close (they used to include the next call's frames) |
 | `/api/recordings/{id}` | GET | WAV | Download a recorded call by id |
 | `/api/recent_tsbks` | GET | JSON | Newest 50 TSBKs as `{age_secs, block, summary}` |
 | `/api/tsbk_opcodes` | GET | JSON | Per-opcode + per-block-position histogram with parsed/unparsed flag + MFID breakdown |
+
+### `api/ui` — web UI documents (change 056)
+
+One document per question, built on the board from the call lifecycle (the single
+call-identity authority), the grant-stats rings, the recordings ring and the persisted UI
+settings. Types: [`p25-json/src/ui.rs`](../p25-httpd/p25-json/src/ui.rs). Design and field
+semantics: [`changes/056`](changes/056_web_ui_review_and_redesign.md).
+
+| Path | Method | Returns | Purpose |
+|---|---|---|---|
+| `/api/ui/state` | GET | `UiState` | ~1 KB, for a 1 Hz poll. `now_unix_ms` + `clock_valid` (board clock; compute ages against it), `site` (identity, `cc_freq_hz`, `modulation`, `acquired`, `last_tsbk_age_ms`, `tsbk_per_s` and `tsbk_ok_pct` over ~10 s, `health` ok\|stale\|searching), `call` (null when idle; `call_id`, `tg` / `tg_alias`, `source` / `source_alias`, `sources`, `freq_hz`, `channel`, `encrypted`, `started_unix_ms`, `elapsed_ms`, `phase` acquiring\|voice\|hang, `voice_ms`, `first_voice_unix_ms`, `last_voice_unix_ms`, `close_in_ms`, `recording`), `chain` (`state`, `parked_freq_hz`, `follower_enabled`, `lock_freq`, `delivery_mode`), `recording` (`enabled`, `max_count`, `count`), `audio` (`listeners` = browsers on `/ws/audio`, `lag_total`), `calls_rev`, `settings_rev`, `log_last_seq` |
+| `/api/ui/calls` | GET | `UiCalls` | Recent calls newest first, grant summaries joined with recordings by call_id. `?limit=N` (default 40, max 250), `?nf=0` hides encrypted / not-followed grants. Per item: `voice_ms` (WAV length, else IMBE × 20 ms), `open_ms` (lifecycle open time incl. up to 10 s hang), `air_ms`, `first_voice_ms`, `imbe`, `ldu`, `vocoder_errors` / `_silent`, `not_followed`, `close_reason`, `recording` {`id`, `url`, `duration_ms`, `size_bytes`, `filename`} and `audio_status` recorded\|saving\|not_recorded\|evicted\|no_voice\|encrypted\|not_followed\|missing. Refetch when `/api/ui/state` `calls_rev` changes |
+| `/api/ui/settings` | GET | JSON | `{settings: {recording: {enabled, max_count}, tg_aliases, unit_aliases, monitor_tgs}, rev, file, load_note, last_save_error, recording_storage {dir, tmpfs, count, free_bytes}, limits, encrypted_tgs}` |
+| `/api/ui/settings` | PUT | JSON | Partial patch, any subset of `settings`; maps / lists replace. Validated (`max_count` 1..500, names ≤ 48 chars, TG ≠ 0, radio id 1..2^24−1, unknown fields rejected → 400, nothing changes). Applied live (recorder policy, retention enforced at once, aliases to both decoders, monitor list) and persisted atomically to `/mnt/jffs2/p25-ui-settings.json` (`P25_UI_SETTINGS_FILE` overrides). Response `{ok, persisted, save_error, evicted, ...GET body}` |
+
+Recording off: the recorder opens no WAV for new followed calls (a recording in progress
+completes); the call list shows them as `not_recorded`; the recorder log says
+`call_open_skipped` `reason=recording_disabled`.
 
 ### `api/tuning` — runtime knobs
 
@@ -735,13 +755,18 @@ don't get wiped on every periodic update.
 
 ### `GET /api/aliases` / `PUT /api/aliases` → `AliasMap`
 
-Talkgroup-id → display-name map persisted in `~/.config/p25-httpd/aliases.json`.
+Talkgroup-id → display-name map. Change 056: stored in the UI settings document
+(`/mnt/jffs2/p25-ui-settings.json`, `tg_aliases`), restored at boot, and applied to both
+control-channel decoders so `/ws/events` TSBK events carry `talkgroup_alias`. (Before 056
+the map lived only in the C4FM decoder's memory: not persisted, and invisible on LSM
+sites.) Radio-unit names (`unit_aliases`) are edited through `/api/ui/settings`.
 
 ```json
 {"202": "FIRE OPS", "402": "PD CH 4", "300": "EMS"}
 ```
 
-PUT replaces the entire map.
+PUT replaces the entire map (blank names remove an entry; names are trimmed to 48
+characters; TG 0 → 400).
 
 ### `GET /ws/events` (WebSocket)
 
@@ -749,9 +774,9 @@ Real-time TSBK event stream. Each frame is a `TsbkEvent`:
 
 ```json
 {
-  "timestamp": "2026-04-11T18:52:30Z",
-  "event_type": "GRP_GRANT",
-  "summary": "GRP_V_CH_GRANT_UPDT CH:0-1117 TG:00202",
+  "timestamp": "01:31:30.344",
+  "event_type": "GRP_VCH_GRANT",
+  "summary": "TSBK2 GRP_VCH_GRANT TG:00202 SRC:3406028 -> 0-1117 (857.9875 MHz)",
   "talkgroup": 202,
   "talkgroup_alias": "FIRE OPS",
   "channel": "0-1117",
@@ -760,10 +785,12 @@ Real-time TSBK event stream. Each frame is a `TsbkEvent`:
 }
 ```
 
-One frame per parsed TSBK. The dashboard uses this **only** for the
-"Live Activity" feed at the bottom of the page; everything else on
-the dashboard is polled from REST every 2 seconds via
-`setInterval(refresh, 2000)`.
+One frame per parsed TSBK (housekeeping opcodes — NET/RFSS/ADJ status,
+IDEN, TDMA sync, SCCB, SNDCP, vendor — are suppressed), plus traffic
+`TRF_*` voice-frame events and `recording_saved`. The legacy dashboard
+(`/legacy`) renders it in "Live Activity"; the change-056 UI uses it
+only as a trigger for an early `/api/ui/state` poll (`GRP_VCH_GRANT`,
+`TRF_HDU`, `TRF_TDULC_CALL_TERM`, `recording_saved`).
 
 **Important:** the WebSocket is the **only** structured per-event
 source. `/api/recent_tsbks` returns just `{age_secs, block, summary}`
@@ -788,11 +815,31 @@ ws.onmessage = (e) => { /* prepend to activity feed */ };
 
 ---
 
-## Dashboard panels and their backing endpoints
+## Web UI views and their backing endpoints (change 056)
 
-For reference, this is what the embedded `index_html` page renders
-and where each panel's data comes from. All 9 polled endpoints are
-fetched on a 2-second interval; the WebSocket runs in parallel.
+The page at `/` (ES modules under `p25-httpd/src/httpd/ui/`) renders
+from two documents; other endpoints are polled only while the view that
+needs them is open.
+
+| View | Endpoint(s) | Cadence |
+|---|---|---|
+| Header, Now (current call, site, recording) | `/api/ui/state` | 1 s (5 s when the tab is hidden) + `/ws/events` kick |
+| Now · Recent calls | `/api/ui/calls` | when `calls_rev` changes, else every 30 s |
+| Radio | `/api/stats`, `/api/ppm`, `/api/modulation` (2 s); `/api/presets`, `/api/sites` (once); `/api/spectrum_wide` or `/api/spectrum` (1 s); writes: `/api/tune`, `/api/preset`, `/api/site`, `/api/rx_gain`, `/api/modulation`, `/api/ppm/auto`, `/api/ppm_calibrate` | while open |
+| Diagnostics | `/api/pipeline`, `/api/dibit_delivery`, `/api/traffic`, `/api/sys_health` (2 s); `/api/log?tail=1` then `?since=` (2 s); `/api/endpoints` (once) | while open |
+| Settings | `/api/ui/settings` (on open and when `settings_rev` changes), `/api/grant_map`, `/api/encrypted_tgs`; writes: PUT `/api/ui/settings`, PUT `/api/encrypted_tgs`, POST `/api/set_time` | on demand |
+| Listen button | `/ws/audio` | while playing |
+
+The page POSTs `/api/set_time` once per load only when the board clock
+is invalid (< 2020) or more than 2 minutes off, and the "set automatically"
+preference is on (default).
+
+## Legacy dashboard panels (`/legacy`)
+
+For reference, this is what the pre-056 page (`dashboard.html`, served at
+`/legacy`) renders and where each panel's data comes from. Its polled
+endpoints are fetched on a 2-second interval; the WebSocket runs in
+parallel. Known issues are catalogued in changes/056 §1.
 
 | Dashboard panel | Endpoint(s) | Notes |
 |---|---|---|
@@ -808,7 +855,7 @@ fetched on a 2-second interval; the WebSocket runs in parallel.
 | Active Grants | `/api/grants` | TG-deduped, source-preserved across updates |
 | Frequency Bands | `/api/bands` | unioned across both decoders |
 | Live Activity | **`/ws/events`** | the only WebSocket consumer; richer than `recent_tsbks` |
-| Aliases dialog | `/api/aliases` (GET, PUT) | TG-id → name map persisted on the board |
+| Aliases dialog | `/api/aliases` (GET, PUT) | TG-id → name map (persisted since change 056) |
 
 Endpoints **not** consumed by the dashboard (snapshot / debugging
 tools only): `/api/recent_tsbks` (used by `tools/p25_check_phase6f4.py`
@@ -845,6 +892,6 @@ above.
 - [`DEVPLAN.md`](../DEVPLAN.md) — the original (somewhat-outdated)
   P25 trunking dev plan
 - [`changes/`](changes/) — phase-by-phase change docs (latest is
-  doc 031, Phase 6G.1)
+  [056](changes/056_web_ui_review_and_redesign.md), web UI review and redesign)
 - [`tools/p25_status_and_next_step.py`](../tools/p25_status_and_next_step.py)
   — comprehensive status snapshot + next-step recommendation script

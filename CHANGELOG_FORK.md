@@ -5,6 +5,56 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-26] Web UI review and redesign; persisted recording / alias / monitor settings (056)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-26-web-ui-056`
+**Bake required:** NO — p25-httpd only.
+
+Review of the old dashboard against the live 054 bench replay, plus a new UI
+(doc/changes/056). After 054 the call data is right: every WAV holds exactly its PTT's
+frames. What still looked wrong was mostly presentation:
+
+- The page mixed three "current calls" (lifecycle, follower, per-HDU vocoder baselines).
+- It showed the lifecycle's 10 s hang as an active call.
+- It never cleared the CURRENT CALL box, and rendered call duration as the open time.
+
+Changes:
+
+- New web UI at `/`: native ES modules under `p25-httpd/src/httpd/ui/` (22 files, each
+  ≤ 231 lines), embedded at compile time, versioned URLs (BUILD_TAG + content hash), no CDN.
+  - Views: Now (current call with acquiring / voice / hang phase and close countdown, site
+    health, recording switch, recent calls with on-demand playback and a reason when there
+    is no audio), Radio, Diagnostics, Settings.
+  - Works on phones (bottom tab bar, single column).
+  - The old dashboard stays at `/legacy`.
+- `GET /api/ui/state` (~1 KB, 1 Hz) and `GET /api/ui/calls` (joined by call_id, refetched
+  on `calls_rev`), built from the call lifecycle only. `/ws/events` is used as a push kick.
+- Recording on/off and retention (`PUT /api/ui/settings`), persisted to
+  `/mnt/jffs2/p25-ui-settings.json` and honoured by the recorder; lowering retention
+  deletes the oldest WAVs at once.
+- TG and radio-unit aliases and the monitor list are persisted and restored at boot.
+  `PUT /api/aliases` now reaches both control decoders; it only reached the C4FM decoder,
+  so aliases never showed on LSM sites.
+- Fixes:
+  - `/api/recordings` per-call counters are snapshotted at the close; they used to include
+    the next call's frames (72-frame PTTs reported 144–153).
+  - `/api/log` gains `tail=1` (a first read returned boot-time entries), `from_ms` /
+    `to_ms` and `tsbk=0`.
+  - `/api/pipeline` grant ring capacity (said 20, is 200).
+  - The control spectrum is centred on the live tuned frequency.
+  - Air-time cut ordering (a 054 bug found by the bench soak). A cut is never placed
+    before the previously recorded one (`cuts_reordered` counts the raises). A grant
+    hold's estimate could land 2 dibits after the TG change / CallOpen recorded after it,
+    which gated a new call's first transmission, about 1 call in 150.
+  - `/ws/audio` listener count (the old `audio_ws_clients` counts 2 internal receivers).
+- 44 new host tests (192 total), including asset tests: every `index.html` reference and
+  JS import resolves, no orphan files, no network loads, module size cap.
+- Existing endpoints and fields are unchanged; the `bench/fbench` endpoints are
+  untouched.
+
+---
+
 ## [2026-09-26] Low-latency dibit delivery + air-time traffic gating (F4); autoppm sign fix (055)
 
 **Branch:** fishball-p25

@@ -10,9 +10,11 @@
 //!   - [`router`] — the single `Router` construction. Every route is
 //!     registered here as `get(api::<module>::<handler>)`; handler
 //!     bodies live in the submodules under [`api`].
-//!   - [`index_html`] + `DASHBOARD_HTML` — the `/` route serves the
-//!     dashboard. The HTML itself lives in `dashboard.html` (alongside
-//!     this file) and is included via `include_str!`.
+//!   - Change 056: `/` serves the web UI — native ES modules under
+//!     `ui/` (alongside this file), embedded at compile time by
+//!     [`ui_assets`] and served under `/ui/<BUILD_TAG>/...` (see
+//!     `api::ui`). [`index_html`] + `DASHBOARD_HTML` keep the pre-056
+//!     single-file dashboard (`dashboard.html`) at `/legacy`.
 //!   - [`ts_to_ymd_hms`] — shared wall-clock formatter used by
 //!     `api::radio` and a few others. Promoted to `pub(crate)` so
 //!     submodules can reach it.
@@ -328,6 +330,18 @@ pub struct AppState {
     /// interval, per-ring age / epoch / resync statistics). Backs
     /// `/api/dibit_delivery`.
     pub dibit_delivery: Arc<crate::app::dibit_airtime::DibitDelivery>,
+
+    /// Change 056: persisted operator settings (recording on/off +
+    /// retention, TG / unit aliases, monitor list) behind
+    /// `/api/ui/settings`. Its `recording` policy is shared with the
+    /// recorder task.
+    pub ui_settings: Arc<crate::services::ui_settings::SettingsStore>,
+    /// Change 056: browsers connected to `/ws/audio` (counted by the
+    /// handler; `audio_tx.receiver_count()` also counts the recorder
+    /// and the call lifecycle).
+    pub audio_ws_listeners: Arc<std::sync::atomic::AtomicUsize>,
+    /// Change 056: TSBK rate window for `/api/ui/state` site health.
+    pub ui_cc_rate: std::sync::Mutex<crate::app::ui_state::RateWindow>,
 }
 
 impl AppState {
@@ -375,7 +389,19 @@ pub fn router(
         r = r.route_service("/ca.crt", tower_http::services::ServeFile::new(ca));
     }
     r
-        .route("/", get(index_html))
+        // Change 056: the web UI (ES modules under `ui/`, embedded by
+        // `ui_assets`) is served at `/`; the pre-056 single-file
+        // dashboard stays reachable at `/legacy` for this iteration.
+        .route("/", get(api::ui::get_ui_index))
+        .route("/index.html", get(api::ui::get_ui_index))
+        .route("/legacy", get(index_html))
+        .route("/ui/{tag}/{*path}", get(api::ui::get_ui_asset))
+        .route("/api/ui/state", get(api::ui::get_ui_state))
+        .route("/api/ui/calls", get(api::ui::get_ui_calls))
+        .route(
+            "/api/ui/settings",
+            get(api::ui::get_ui_settings).put(api::ui::put_ui_settings),
+        )
         .route("/api/sites", get(api::sites::get_sites))
         .route("/api/sites/{name}", get(api::sites::get_site))
         .route("/api/site", post(api::sites::post_site))
@@ -570,8 +596,11 @@ fn ts_to_ymd_hms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
     (year, mo, d, h, m, s)
 }
 
+/// Pre-056 single-file dashboard, now at `/legacy`.
 async fn index_html() -> impl IntoResponse {
     axum::response::Html(DASHBOARD_HTML)
 }
 
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
+
+pub mod ui_assets;

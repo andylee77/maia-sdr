@@ -38,7 +38,8 @@ use crate::app::imbe_forwarder::ImbeForwarder;
 /// older than ~10 minutes of activity, orphaning them. 200 covers
 /// a busy hour comfortably and keeps recordings paired with their
 /// grant metadata. Per-entry size ~250 B → 50 KB total worst case.
-const RING_CAP: usize = 200;
+/// Change 056: public for `/api/pipeline` (which hard-coded 20).
+pub const RING_CAP: usize = 200;
 
 /// Shared ring of completed grant summaries.
 pub type GrantStatsRing = Arc<Mutex<VecDeque<GrantDecodeSummary>>>;
@@ -530,7 +531,7 @@ fn route_push(
 /// (operator visibility into ENC activity); recordings never
 /// pair against it. 50 covers a few minutes of ENC chatter on
 /// a busy site.
-const ENC_RING_CAP: usize = 50;
+pub const ENC_RING_CAP: usize = 50;
 
 pub fn new_ring() -> GrantStatsRing {
     Arc::new(Mutex::new(VecDeque::with_capacity(RING_CAP)))

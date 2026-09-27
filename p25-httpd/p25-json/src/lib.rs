@@ -6,6 +6,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Change 056: consolidated web-UI documents (`/api/ui/*`).
+pub mod ui;
+
 /// P25 system identity information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemInfo {
@@ -158,8 +161,10 @@ pub struct DecoderStats {
     /// and the listener heard a gap.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_ws_lag_total: Option<u64>,
-    /// Current number of connected /ws/audio subscribers (broadcast
-    /// channel receiver_count). 0 = nobody listening.
+    /// Receiver count of the audio broadcast channel. Change 056: this
+    /// includes the recorder and the call lifecycle (2 internal
+    /// subscribers), so it reads 2 with nobody listening. The number
+    /// of browsers on `/ws/audio` is `/api/ui/state` `audio.listeners`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_ws_clients: Option<usize>,
 }

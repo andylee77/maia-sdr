@@ -1,0 +1,128 @@
+// Boot: theme, header, view router (#now #radio #diag #settings),
+// clock sync, live-audio button. Views are modules exporting
+// { mount(el) -> { update(kind, store), unmount() } }.
+
+import { store, subscribe, start, kick } from './store.js';
+import { api } from './api.js';
+import { setText, setClass, toast } from './dom.js';
+import { mhz } from './format.js';
+import { player } from './audio/player.js';
+import * as nowView from './views/now.js';
+import * as radioView from './views/radio.js';
+import * as diagView from './views/diagnostics.js';
+import * as settingsView from './views/settings.js';
+
+const VIEWS = { now: nowView, radio: radioView, diag: diagView, settings: settingsView };
+const $ = id => document.getElementById(id);
+
+let current = null; // { name, inst }
+
+function route() {
+  const name = (location.hash || '#now').slice(1);
+  const key = VIEWS[name] ? name : 'now';
+  if (current && current.name === key) return;
+  if (current && current.inst.unmount) current.inst.unmount();
+  const host = $('view');
+  host.replaceChildren();
+  current = { name: key, inst: VIEWS[key].mount(host) };
+  for (const a of document.querySelectorAll('#tabs a')) {
+    setClass(a, 'active', a.dataset.view === key);
+    if (a.dataset.view === key) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  }
+  if (store.state) current.inst.update('state', store);
+  if (store.calls) current.inst.update('calls', store);
+  window.scrollTo(0, 0);
+}
+
+function applyTheme() {
+  const t = store.prefs.theme;
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+}
+
+function renderHeader() {
+  const s = store.state;
+  const dot = $('top-site-dot');
+  if (s) {
+    const site = s.site;
+    const name = site.label || site.name || 'site';
+    const nac = site.nac ? ' · NAC ' + site.nac : '';
+    setText($('top-site-text'), name + nac + ' · CC ' + mhz(site.cc_freq_hz));
+    setClass(dot, 'ok', site.health === 'ok');
+    setClass(dot, 'warn', site.health === 'stale');
+    setClass(dot, 'bad', site.health === 'searching');
+    $('top-site').title = 'Control channel ' + site.health + (site.tsbk_per_s != null ? ' · ' + site.tsbk_per_s + ' TSBK/s' : '');
+  }
+  const conn = $('conn');
+  if (store.conn.ok) {
+    setText(conn, s ? s.build : '');
+    setClass(conn, 'bad', false);
+  } else {
+    setText(conn, store.conn.lastOkAt ? 'radio unreachable' : 'connecting…');
+    setClass(conn, 'bad', !!store.conn.lastOkAt);
+  }
+}
+
+// The board clock is often never set (air-gapped). Offer — or, with
+// the "auto" preference, do — a one-shot sync from this browser.
+let clockSyncTried = false;
+async function syncClock(manual) {
+  try {
+    await api.setTime(Date.now());
+    toast('Radio clock set from this browser');
+    kick(100);
+  } catch (e) {
+    if (manual) toast('Clock sync failed: ' + e.message, true);
+  }
+}
+
+function renderBanner() {
+  const s = store.state;
+  const b = $('banner');
+  const skew = s ? Math.abs(store.boardOffsetMs) : 0;
+  const bad = s && (!s.clock_valid || skew > 120000);
+  if (bad && store.prefs.autoClock && !clockSyncTried) {
+    clockSyncTried = true;
+    syncClock(false);
+  }
+  if (!bad) { b.hidden = true; return; }
+  if (b.hidden) {
+    b.replaceChildren(
+      document.createTextNode(s.clock_valid
+        ? 'The radio clock is off by ' + Math.round(skew / 1000) + ' s. Call times are shown relative to the radio.'
+        : 'The radio clock is not set, so call times are shown as ages only.'),
+    );
+    const btn = document.createElement('button');
+    btn.className = 'btn small';
+    btn.textContent = 'Set from this browser';
+    btn.onclick = () => syncClock(true);
+    b.appendChild(btn);
+    b.hidden = false;
+  }
+}
+
+function bindListen() {
+  const btn = $('listen-btn');
+  btn.addEventListener('click', () => player.toggle());
+  player.onChange(st => {
+    btn.setAttribute('aria-pressed', st.playing ? 'true' : 'false');
+    btn.textContent = st.playing ? (st.label || 'Listening') : 'Listen';
+    btn.title = st.detail || 'Play the live traffic audio';
+  });
+}
+
+function boot() {
+  applyTheme();
+  bindListen();
+  window.addEventListener('hashchange', route);
+  subscribe((kind, s) => {
+    if (kind === 'prefs') applyTheme();
+    if (kind === 'state' || kind === 'conn') { renderHeader(); renderBanner(); }
+    if (current && current.inst.update) current.inst.update(kind, s);
+  });
+  route();
+  start();
+}
+
+boot();

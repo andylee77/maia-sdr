@@ -18,6 +18,7 @@ pub mod imbe_forwarder;
 pub mod seed_snapshot;
 #[cfg(target_os = "linux")]
 pub mod sw_demod_task;
+pub mod ui_state;
 pub mod vocoder_task;
 #[cfg(target_os = "linux")]
 pub mod wideband_iq_task;

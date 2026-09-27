@@ -638,10 +638,19 @@ pub async fn get_recent_tsbks(
 
 /// GET /api/log -- tail the structured event log.
 ///   ?since=N   -- return entries with seq > N (default 0 = all)
-///   ?limit=N   -- return at most N entries (default 200, cap 1000)
-///   ?category=grant|traffic|imbe|vocoder|system
+///   ?limit=N   -- return at most N entries (default 200, cap 16384)
+///   ?category=grant|traffic|voice|vocoder|system|recorder|duid
 ///              -- server-side filter (optional; dashboard also
 ///              filters client-side so the ring is one source of truth)
+///   ?tail=1    -- change 056: the NEWEST `limit` matches (still
+///              oldest-first in the response). Without it the OLDEST
+///              `limit` entries after `since` are returned, which on a
+///              first read are boot-time entries.
+///   ?from_ms=T&to_ms=T -- change 056: wall-clock window on
+///              `timestamp_ms` (inclusive), e.g. one call's events.
+///   ?tsbk=0    -- change 056: drop the control-channel TSBK mirror
+///              lines (`grant` entries with `fields.event_type`, one
+///              per decoded TSBK; most of the ring on a busy site).
 ///
 /// Response shape:
 /// ```json
@@ -673,20 +682,25 @@ pub async fn get_event_log(
         .unwrap_or(200)
         .min(16384);
     let category_filter = params.get("category").map(|s| s.to_string());
-
-    // When a category filter is set, pull the whole ring first and
-    // filter before applying `limit` — otherwise a sparse category
-    // like `recorder` or `grant` can return empty because the 1k
-    // newest entries are all `duid` (the most common category).
-    let mut entries = if category_filter.is_some() {
-        state.event_log.recent_since(since, usize::MAX)
-    } else {
-        state.event_log.recent_since(since, limit)
+    let flag = |k: &str| {
+        params.get(k).map(|v| v == "1" || v == "true")
     };
-    if let Some(cat) = &category_filter {
-        entries.retain(|e| e.category == cat);
-        entries.truncate(limit);
-    }
+    let num = |k: &str| params.get(k).and_then(|v| v.parse::<u64>().ok());
+
+    // Filters (category, time window, TSBK lines) apply before
+    // `limit` — otherwise a sparse category like `recorder` or `grant`
+    // can return empty because the newest entries are all another
+    // category. Change 056 moved this into `EventLog::query`.
+    let q = crate::services::event_log::LogQuery {
+        since,
+        limit,
+        tail: flag("tail").unwrap_or(false),
+        category: category_filter,
+        from_ms: num("from_ms"),
+        to_ms: num("to_ms"),
+        include_tsbk: flag("tsbk").unwrap_or(true),
+    };
+    let entries = state.event_log.query(&q);
     let last_seq = state.event_log.last_seq();
     Json(serde_json::json!({
         "last_seq": last_seq,

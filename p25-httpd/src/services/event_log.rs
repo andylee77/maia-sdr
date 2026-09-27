@@ -102,6 +102,54 @@ pub struct LogEntry {
     pub fields: Value,
 }
 
+/// Change 056: selection for [`EventLog::query`].
+#[derive(Debug, Clone)]
+pub struct LogQuery {
+    /// Only entries with `seq > since`.
+    pub since: u64,
+    pub limit: usize,
+    /// Newest `limit` matches instead of the oldest.
+    pub tail: bool,
+    pub category: Option<String>,
+    /// Inclusive wall-clock window on `timestamp_ms`.
+    pub from_ms: Option<u64>,
+    pub to_ms: Option<u64>,
+    /// Keep the control-channel TSBK mirror lines (`grant` entries
+    /// carrying `fields.event_type`, one per decoded TSBK). They are
+    /// most of the ring on a busy site; the follower's own grant
+    /// decisions stay in `grant` either way.
+    pub include_tsbk: bool,
+}
+
+impl Default for LogQuery {
+    fn default() -> Self {
+        LogQuery {
+            since: 0,
+            limit: 200,
+            tail: false,
+            category: None,
+            from_ms: None,
+            to_ms: None,
+            include_tsbk: true,
+        }
+    }
+}
+
+impl LogQuery {
+    /// True for a TSBK mirror line (see `include_tsbk`).
+    pub fn is_tsbk(e: &LogEntry) -> bool {
+        e.category == "grant" && e.fields.get("event_type").is_some()
+    }
+
+    pub fn matches(&self, e: &LogEntry) -> bool {
+        e.seq > self.since
+            && self.category.as_deref().map_or(true, |c| e.category == c)
+            && self.from_ms.map_or(true, |t| e.timestamp_ms >= t)
+            && self.to_ms.map_or(true, |t| e.timestamp_ms <= t)
+            && (self.include_tsbk || !Self::is_tsbk(e))
+    }
+}
+
 /// Bounded ring buffer. Append-only; oldest entries drop when full.
 ///
 /// `verbose` gates the high-volume "everything we saw on the wire"
@@ -215,6 +263,32 @@ impl EventLog {
             .collect()
     }
 
+    /// Change 056: filtered read behind `/api/log`. Filters apply before
+    /// `limit`, so a sparse category is never starved by busy ones.
+    /// `tail` returns the NEWEST `limit` matches (oldest first) — the
+    /// pre-056 reads always returned the OLDEST `limit` entries after
+    /// `since`, so a first `/api/log?limit=200` showed boot-time events.
+    pub fn query(&self, q: &LogQuery) -> Vec<LogEntry> {
+        let guard = match self.entries.lock() {
+            Ok(g) => g,
+            Err(_) => return Vec::new(),
+        };
+        let keep = |e: &&LogEntry| q.matches(e);
+        if q.tail {
+            let mut v: Vec<LogEntry> = guard
+                .iter()
+                .rev()
+                .filter(keep)
+                .take(q.limit)
+                .cloned()
+                .collect();
+            v.reverse();
+            v
+        } else {
+            guard.iter().filter(keep).take(q.limit).cloned().collect()
+        }
+    }
+
     /// Monotonic sequence of the last pushed entry, or 0 if empty.
     pub fn last_seq(&self) -> u64 {
         self.next_seq.load(Ordering::Relaxed).saturating_sub(1)
@@ -231,3 +305,7 @@ impl EventLog {
         self.entries.lock().map(|g| g.len()).unwrap_or(0)
     }
 }
+
+#[cfg(test)]
+#[path = "event_log_tests.rs"]
+mod tests;

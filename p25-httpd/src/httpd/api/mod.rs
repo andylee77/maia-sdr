@@ -13,6 +13,7 @@
 //!   - [`talkgroups`] — Per-talkgroup metadata: aliases, monitor list, encryption, grant map.
 //!   - [`traffic`] — Current-call view: traffic chain, IMBE, vocoded audio.
 //!   - [`tuning`] — Runtime knobs: retune, gain, modulation, BCH/sync thresholds, decoder reset.
+//!   - [`ui`] — Change 056 web UI: consolidated state / calls / settings + embedded assets.
 //!   - [`ws`] — WebSocket streams: /ws/events and /ws/audio.
 //!
 //! ## Adding a handler
@@ -50,4 +51,5 @@ pub mod system;
 pub mod talkgroups;
 pub mod traffic;
 pub mod tuning;
+pub mod ui;
 pub mod ws;

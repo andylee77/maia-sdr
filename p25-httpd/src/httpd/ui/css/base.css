@@ -1,0 +1,231 @@
+/* Fishball P25 web UI (change 056): design tokens, themes, page shell.
+   Components live in components.css. No external fonts or assets. */
+
+:root {
+  --bg: #0e1116;
+  --bg-raised: #151a21;
+  --bg-sunken: #0a0d11;
+  --line: #262d37;
+  --line-strong: #364050;
+  --text: #dde3ea;
+  --text-dim: #8b96a5;
+  --text-faint: #5f6a79;
+  --accent: #2cc2c2;
+  --accent-ink: #062224;
+  --voice: #3fcf6e;
+  --hang: #e5a13a;
+  --acquire: #5aa2ff;
+  --idle: #6b7686;
+  --danger: #ef5f5f;
+  --warn: #e5a13a;
+  --ok: #3fcf6e;
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 8px 24px rgba(0, 0, 0, 0.25);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --gap: 14px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  --tabbar-h: 0px;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f4f6f8;
+    --bg-raised: #ffffff;
+    --bg-sunken: #eaeef2;
+    --line: #dde3e9;
+    --line-strong: #c7d0d9;
+    --text: #1b2430;
+    --text-dim: #5b6776;
+    --text-faint: #8a95a3;
+    --accent: #0e8f93;
+    --accent-ink: #ffffff;
+    --voice: #1f9d4c;
+    --hang: #b86e00;
+    --acquire: #2f6fd6;
+    --idle: #7a8595;
+    --danger: #c93636;
+    --warn: #b86e00;
+    --ok: #1f9d4c;
+    --shadow: 0 1px 2px rgba(20, 30, 40, 0.06), 0 6px 18px rgba(20, 30, 40, 0.06);
+    color-scheme: light;
+  }
+}
+
+:root[data-theme="light"] {
+  --bg: #f4f6f8;
+  --bg-raised: #ffffff;
+  --bg-sunken: #eaeef2;
+  --line: #dde3e9;
+  --line-strong: #c7d0d9;
+  --text: #1b2430;
+  --text-dim: #5b6776;
+  --text-faint: #8a95a3;
+  --accent: #0e8f93;
+  --accent-ink: #ffffff;
+  --voice: #1f9d4c;
+  --hang: #b86e00;
+  --acquire: #2f6fd6;
+  --idle: #7a8595;
+  --danger: #c93636;
+  --warn: #b86e00;
+  --ok: #1f9d4c;
+  --shadow: 0 1px 2px rgba(20, 30, 40, 0.06), 0 6px 18px rgba(20, 30, 40, 0.06);
+  color-scheme: light;
+}
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 var(--font);
+  min-height: 100vh;
+}
+
+a { color: var(--accent); }
+code, .mono { font-family: var(--mono); font-size: 0.92em; }
+button, input, select, textarea { font: inherit; color: inherit; }
+h1, h2, h3 { margin: 0; font-weight: 600; }
+h2 { font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
+.dim { color: var(--text-dim); }
+.faint { color: var(--text-faint); }
+.num { font-variant-numeric: tabular-nums; }
+[hidden] { display: none !important; }
+
+/* ── Top bar ─────────────────────────────────────────────── */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  padding-top: max(10px, env(safe-area-inset-top));
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 650; letter-spacing: 0.01em; white-space: nowrap; }
+.brand-mark {
+  width: 18px; height: 18px; border-radius: 5px;
+  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 50%, var(--voice)));
+}
+.topbar-site {
+  display: flex; align-items: center; gap: 7px; min-width: 0;
+  color: var(--text-dim); font-size: 0.9em;
+}
+.topbar-site span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.conn { font-size: 0.8em; color: var(--text-faint); white-space: nowrap; }
+.conn.bad { color: var(--danger); }
+
+/* ── Tabs: top on wide screens, bottom bar on phones ─────── */
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.tabs a {
+  display: flex; align-items: center; gap: 7px;
+  padding: 11px 14px 10px;
+  color: var(--text-dim);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  font-weight: 550;
+}
+.tabs a:hover { color: var(--text); }
+.tabs a.active { color: var(--text); border-bottom-color: var(--accent); }
+.tab-ico { font-size: 0.85em; opacity: 0.7; }
+
+/* ── Page ─────────────────────────────────────────────────── */
+.view {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: var(--gap) 16px calc(var(--gap) * 2 + var(--tabbar-h));
+  display: grid;
+  gap: var(--gap);
+}
+.grid-2 { display: grid; gap: var(--gap); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid-3 { display: grid; gap: var(--gap); grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* Now view: main column (call, recent calls) + side column (site,
+   recording). Phones stack call, side, calls. */
+.now-layout {
+  display: grid; gap: var(--gap); align-items: start;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  grid-template-areas: "call side" "calls side";
+}
+.now-call { grid-area: call; }
+.now-side { grid-area: side; }
+.now-calls { grid-area: calls; }
+.stack { display: grid; gap: var(--gap); align-content: start; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row.end { justify-content: flex-end; }
+.spacer { flex: 1; }
+
+.banner {
+  max-width: 1280px;
+  margin: 10px auto 0;
+  padding: 9px 14px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 16%, var(--bg-raised));
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  font-size: 0.92em;
+}
+.banner .btn { margin-left: 10px; }
+
+.toast {
+  position: fixed; left: 50%; bottom: calc(18px + var(--tabbar-h));
+  transform: translateX(-50%);
+  z-index: 50;
+  max-width: min(92vw, 520px);
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--text); color: var(--bg);
+  box-shadow: var(--shadow);
+  font-size: 0.92em;
+}
+.toast.error { background: var(--danger); color: #fff; }
+.noscript { padding: 20px; }
+
+@media (max-width: 1100px) {
+  .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 860px) {
+  .grid-2, .grid-3 { grid-template-columns: minmax(0, 1fr); }
+  .now-layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "call" "side" "calls"; }
+}
+
+@media (max-width: 640px) {
+  :root { --gap: 12px; --tabbar-h: 60px; }
+  body { font-size: 15px; }
+  .topbar { padding: 8px 16px; gap: 10px; }
+  .brand { font-size: 0; gap: 0; }
+  .conn { display: none; }
+  .tabs {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
+    padding: 0 0 env(safe-area-inset-bottom);
+    border-top: 1px solid var(--line); border-bottom: 0;
+    background: color-mix(in srgb, var(--bg-raised) 94%, transparent);
+    backdrop-filter: blur(8px);
+  }
+  .tabs a {
+    flex: 1; flex-direction: column; justify-content: center; gap: 2px;
+    padding: 6px 2px; font-size: 0.72em; border-bottom: 0; border-top: 2px solid transparent;
+  }
+  .tabs a.active { border-top-color: var(--accent); }
+  .tab-ico { font-size: 1.25em; opacity: 1; }
+  .view { padding-left: 16px; padding-right: 16px; }
+  .banner { margin: 10px 16px 0; }
+}

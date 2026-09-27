@@ -76,7 +76,10 @@ const TIMEOUT_TICK_MS: u64 = 100;
 /// Going hybrid restores the pre-2026-05-02 robust behaviour (audio
 /// keep-alive) while still letting UPDs extend encrypted/no-audio calls
 /// for the diagnostic air-time metric.
-const IDLE_TIMEOUT_MS: u64 = 10_000;
+///
+/// Change 056: public so `/api/ui/state` can report when a silent
+/// ("hang") call will close.
+pub const IDLE_TIMEOUT_MS: u64 = 10_000;
 
 /// 2026-05-03 loss-of-sync close trigger. NID events fire every
 /// ~180 ms in healthy P25 voice (1 per LDU at 4800 sps, 9 IMBE/LDU).
@@ -227,7 +230,7 @@ pub fn new_event_tx() -> CallTrackerEventTx {
     broadcast::channel(64).0
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ActiveCallSnapshot {
     pub call_id: u64,
     pub tg: u16,
@@ -237,6 +240,18 @@ pub struct ActiveCallSnapshot {
     pub channel: Option<String>,
     pub encrypted: bool,
     pub started_unix_ms: u64,
+    /// Change 056: every source seen in this call, in order.
+    pub sources_observed: Vec<u32>,
+    /// Change 056: audio chunks (20 ms each) attributed to this call.
+    pub voice_frames: u64,
+    /// Change 056: first / last audio chunk of this call (lifecycle
+    /// receipt time, unix ms). `None` before the first chunk.
+    pub first_voice_unix_ms: Option<u64>,
+    pub last_voice_unix_ms: Option<u64>,
+    /// Change 056: newest keep-alive (audio, HDU or CC grant / update)
+    /// the idle close measures from: the call closes
+    /// `IDLE_TIMEOUT_MS` after this.
+    pub last_activity_unix_ms: u64,
 }
 
 pub type ActiveCallShared =
@@ -298,9 +313,59 @@ struct ActiveCall {
     /// GRANT.SRC, LDU1 LC voted SRC, TDULC MOT BY: — in insertion
     /// order. Deduped on push.
     sources_observed: Vec<u32>,
+    /// Change 056: audio chunks of this call and the receipt time of
+    /// the first / newest one (0 = none yet). Unlike
+    /// `last_audio_at_ms` these are not refreshed by an HDU, so they
+    /// tell voice from mere keep-alive for the UI.
+    voice_frames: u64,
+    first_voice_at_ms: u64,
+    last_voice_at_ms: u64,
 }
 
 impl ActiveCall {
+    /// Change 056: a fresh session record; everything not given starts
+    /// empty. `last_upd_at_ms` is the CC heartbeat bootstrap (the
+    /// opening grant counts as one); synthetic not-followed records
+    /// pass 0.
+    #[allow(clippy::too_many_arguments)]
+    fn open(
+        call_id: u64,
+        tg: u16,
+        nac: u16,
+        source: Option<u32>,
+        freq_hz: Option<u64>,
+        channel: Option<String>,
+        encrypted: bool,
+        not_followed: Option<&'static str>,
+        now: u64,
+        baseline_frames_submitted: u64,
+        last_upd_at_ms: u64,
+    ) -> Self {
+        ActiveCall {
+            call_id,
+            tg,
+            nac,
+            source,
+            actual_speaker: None,
+            freq_hz,
+            channel,
+            encrypted,
+            not_followed,
+            started_unix_ms: now,
+            started_instant: Instant::now(),
+            first_audio_at_unix_ms: None,
+            first_hdu_at_unix_ms: None,
+            baseline_frames_submitted,
+            last_upd_at_ms,
+            last_audio_at_ms: 0,
+            last_nid_at_ms: now,
+            sources_observed: source.into_iter().collect(),
+            voice_frames: 0,
+            first_voice_at_ms: 0,
+            last_voice_at_ms: 0,
+        }
+    }
+
     fn observe_source(&mut self, src: u32) -> bool {
         if src == 0 {
             return false;
@@ -335,6 +400,13 @@ fn mirror_active(
             channel: c.channel.clone(),
             encrypted: c.encrypted,
             started_unix_ms: c.started_unix_ms,
+            sources_observed: c.sources_observed.clone(),
+            voice_frames: c.voice_frames,
+            first_voice_unix_ms: (c.first_voice_at_ms != 0).then_some(c.first_voice_at_ms),
+            last_voice_unix_ms: (c.last_voice_at_ms != 0).then_some(c.last_voice_at_ms),
+            last_activity_unix_ms: c.last_audio_at_ms
+                .max(c.last_upd_at_ms)
+                .max(c.started_unix_ms),
         });
     }
     // Phase 2h (2026-04-25): broadcast the active call_id to the
@@ -587,8 +659,13 @@ pub fn spawn_call_lifecycle(
                             emit_close(&tracker_tx, &call,
                                 reason, call.source, expected);
                         }
-                        mirror_active(&active, &active_call, &forwarder);
                     }
+                    // Change 056: mirror every tick, not only on
+                    // boundaries, so the snapshot's voice counters /
+                    // timestamps (updated by the audio arm) stay within
+                    // 100 ms of live. `set_live_call_id` inside is a
+                    // no-op while the call_id is unchanged.
+                    mirror_active(&active, &active_call, &forwarder);
                 }
             }
         }
@@ -689,24 +766,11 @@ fn handle_boundary(
                         encrypted, not_followed,
                         OpenReason::CcGrant, baseline, now,
                     );
-                    let mut synth_sources = Vec::new();
-                    if let Some(s) = source { synth_sources.push(s); }
-                    let synth_call = ActiveCall {
-                        call_id: synthetic_call_id,
-                        tg, nac: boundary.nac,
-                        source, actual_speaker: None,
-                        freq_hz, channel: channel_str.clone(),
-                        encrypted, not_followed,
-                        started_unix_ms: now,
-                        started_instant: Instant::now(),
-                        first_audio_at_unix_ms: None,
-                        first_hdu_at_unix_ms: None,
-                        baseline_frames_submitted: baseline,
-                        last_upd_at_ms: 0,
-                        last_audio_at_ms: 0,
-                        last_nid_at_ms: now,
-                        sources_observed: synth_sources,
-                    };
+                    let synth_call = ActiveCall::open(
+                        synthetic_call_id, tg, boundary.nac, source,
+                        freq_hz, channel_str.clone(), encrypted,
+                        not_followed, now, baseline, 0,
+                    );
                     emit_close(
                         tx, &synth_call, CloseReason::Timeout,
                         source, baseline,
@@ -760,24 +824,11 @@ fn handle_boundary(
                         encrypted, not_followed,
                         OpenReason::CcGrant, baseline, now,
                     );
-                    let mut synth_sources = Vec::new();
-                    if let Some(s) = source { synth_sources.push(s); }
-                    let synth_call = ActiveCall {
-                        call_id: synthetic_call_id,
-                        tg, nac: boundary.nac,
-                        source, actual_speaker: None,
-                        freq_hz, channel: channel_str.clone(),
-                        encrypted, not_followed,
-                        started_unix_ms: now,
-                        started_instant: Instant::now(),
-                        first_audio_at_unix_ms: None,
-                        first_hdu_at_unix_ms: None,
-                        baseline_frames_submitted: baseline,
-                        last_upd_at_ms: 0,
-                        last_audio_at_ms: 0,
-                        last_nid_at_ms: now,
-                        sources_observed: synth_sources,
-                    };
+                    let synth_call = ActiveCall::open(
+                        synthetic_call_id, tg, boundary.nac, source,
+                        freq_hz, channel_str.clone(), encrypted,
+                        not_followed, now, baseline, 0,
+                    );
                     emit_close(
                         tx, &synth_call, CloseReason::Timeout,
                         source, baseline,
@@ -850,34 +901,15 @@ fn handle_boundary(
             *next_call_id += 1;
             let baseline = forwarder
                 .frames_submitted.load(Ordering::Relaxed);
-            let mut sources_observed = Vec::new();
-            if let Some(s) = source {
-                sources_observed.push(s);
-            }
-            *active = Some(ActiveCall {
-                call_id,
-                tg,
-                nac: boundary.nac,
-                source,
-                actual_speaker: None,
-                freq_hz,
-                channel: channel_str.clone(),
-                encrypted,
-                not_followed,
-                started_unix_ms: now,
-                started_instant: Instant::now(),
-                first_audio_at_unix_ms: None,
-                first_hdu_at_unix_ms: None,
-                baseline_frames_submitted: baseline,
-                // The primary GRP_VCH_GRANT that opened this session
-                // is itself the first CC heartbeat — bootstrap the UPD
-                // timer so the close trigger doesn't fire before the
-                // first GRP_VCH_GRNT_UPD lands.
-                last_upd_at_ms: now,
-                last_audio_at_ms: 0,
-                last_nid_at_ms: now,
-                sources_observed,
-            });
+            // The primary GRP_VCH_GRANT that opened this session is
+            // itself the first CC heartbeat — bootstrap the UPD timer
+            // (last argument) so the close trigger doesn't fire before
+            // the first GRP_VCH_GRNT_UPD lands.
+            *active = Some(ActiveCall::open(
+                call_id, tg, boundary.nac, source, freq_hz,
+                channel_str.clone(), encrypted, not_followed, now,
+                baseline, now,
+            ));
             emit_open(
                 tx, call_id, tg, boundary.nac, source, freq_hz,
                 channel_str, encrypted, not_followed, opened_via,
@@ -1065,6 +1097,12 @@ fn handle_audio(chunk: AudioChunk, active: &mut Option<ActiveCall>) {
         if a.first_audio_at_unix_ms.is_none() {
             a.first_audio_at_unix_ms = Some(now);
         }
+        // Change 056: voice accounting for `/api/ui/state`.
+        a.voice_frames += 1;
+        if a.first_voice_at_ms == 0 {
+            a.first_voice_at_ms = now;
+        }
+        a.last_voice_at_ms = now;
         if chunk.talkgroup != a.tg && chunk.talkgroup != 0 {
             tracing::trace!(
                 target: "p25_call_lifecycle",
@@ -2355,3 +2393,7 @@ pub fn spawn_grant_follower(
 
 #[cfg(target_os = "linux")]
 pub use routing::spawn_grant_follower;
+
+#[cfg(test)]
+#[path = "grant_follower_tests.rs"]
+mod tests;
