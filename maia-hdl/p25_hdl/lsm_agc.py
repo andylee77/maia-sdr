@@ -313,6 +313,17 @@ class LsmAgc(Elaboratable):
             (bit 4 .. bit 19 of the Q9.11 raw gain). Range 0..500.
         mag_dbg   : unsigned 16  most recent L2 magnitude in Q1.15
             (top 16 of the 17-bit sqrt output)
+
+    Signal-present flag:
+        gated_out : Signal()  registered; valid while
+            ``decision_strobe_out`` is high and held until the next
+            symbol's magnitude is known. 1 = this symbol's magnitude
+            was below ``mag_update_threshold_in`` (the idle gate
+            skipped the gain update), i.e. "no signal". Always 0 in
+            BYPASS (AGC disabled: no magnitude is computed) and after
+            ``reset_in``, and never 1 with a threshold of 0.
+            `LsmDemodLoop` uses it to hold the PLL and the Gardner
+            timing loop across carrier gaps.
     """
 
     def __init__(self, *, mag_update_threshold=MAG_UPDATE_THRESHOLD_DEFAULT):
@@ -372,6 +383,9 @@ class LsmAgc(Elaboratable):
         # and how often — a stuck-zero reading on a live chain would
         # indicate the threshold is too low for the observed noise.
         self.gate_dbg = Signal(16, reset_less=True)
+        # 2026-09-27: per-symbol "no signal" flag (see class
+        # docstring). Same condition as the gate_dbg increment.
+        self.gated_out = Signal()
 
     def elaborate(self, platform):
         m = Module()
@@ -453,12 +467,16 @@ class LsmAgc(Elaboratable):
 
             with m.State("BYPASS"):
                 # AGC disabled: emit inputs verbatim and strobe.
+                # No magnitude is computed here, so never flag the
+                # symbol as "no signal" (the PLL/timing hold in
+                # LsmDemodLoop is off while the AGC is bypassed).
                 m.d.sync += [
                     self.i_mid_out.eq(i_mid_q),
                     self.q_mid_out.eq(q_mid_q),
                     self.i_cur_out.eq(i_cur_q),
                     self.q_cur_out.eq(q_cur_q),
                     self.decision_strobe_out.eq(1),
+                    self.gated_out.eq(0),
                 ]
                 m.next = "IDLE"
                 with m.If(self.reset_in):
@@ -549,11 +567,19 @@ class LsmAgc(Elaboratable):
                 # When gated, still go to APPLY so the current gain
                 # is applied to the four stored samples and the
                 # output strobe fires; just skip the gain update.
+                # `gated_out` publishes the same decision to
+                # LsmDemodLoop (PLL + Gardner hold). It is latched
+                # here and read at `decision_strobe_out` (APPLY),
+                # which always follows this state.
                 with m.If(mag_val < self.mag_update_threshold_in):
-                    m.d.sync += self.gate_dbg.eq(self.gate_dbg + 1)
+                    m.d.sync += [
+                        self.gate_dbg.eq(self.gate_dbg + 1),
+                        self.gated_out.eq(1),
+                    ]
                     m.next = "APPLY"
                 with m.Else():
                     m.d.sync += [
+                        self.gated_out.eq(0),
                         div_num.eq(
                             Const(TARGET_NUMERATOR, DIV_NUM_WIDTH)),
                         div_rem.eq(0),
@@ -732,6 +758,7 @@ class LsmAgc(Elaboratable):
                                      GAIN_INIT >> (GAIN_FRAC - 7))),
                 self.mag_dbg.eq(0),
                 self.gate_dbg.eq(0),
+                self.gated_out.eq(0),
             ]
 
         return m

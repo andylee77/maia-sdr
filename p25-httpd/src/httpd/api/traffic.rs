@@ -331,10 +331,14 @@ pub async fn get_traffic(
         let (agc_gain_q9_7, agc_mag_q1_15) = core.traffic_lsm_agc_debug();
         let traffic_threshold = core.traffic_lsm_agc_threshold();
         let (en, dma_en, dc_block, agc) = core.traffic_lsm_control_readback();
+        let ver = core.core_version();
         let agc_gain = (agc_gain_q9_7 as f64) / 128.0;
         let agc_mag  = (agc_mag_q1_15 as f64) / 32768.0;
         let agc_product = agc_gain * agc_mag;
         serde_json::json!({
+            "core_version":       ver.to_string(),
+            "signal_hold":        ver.has_lsm_signal_hold(),
+            "pll_clamp_q13":      ver.pll_clamp_q213(),
             "enabled":            en,
             "dibit_dma_enabled":  dma_en,
             "dc_block_enabled":   dc_block,
@@ -682,6 +686,11 @@ pub async fn get_traffic(
         "grants_seen_update":        grants_seen_update,
         "retunes":                   retunes,
         "nco_skips":                 nco_skips,
+        "pll_watchdog": {
+            "enabled":       state.imbe_forwarder.pll_wd_enabled.load(Ordering::Relaxed),
+            "resets_onset":  state.imbe_forwarder.pll_wd_resets_onset.load(Ordering::Relaxed),
+            "resets_pinned": state.imbe_forwarder.pll_wd_resets_pinned.load(Ordering::Relaxed),
+        },
         "grants_rejected_encrypted": grants_rejected_encrypted,
         "last_retune_secs_ago":      last_retune_at_secs_ago,
         // Phase 7A.2: NID event counters and post-TDU hold

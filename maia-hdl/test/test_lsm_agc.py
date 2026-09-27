@@ -591,6 +591,73 @@ class TestLsmAgc(unittest.TestCase):
         # Boundary: 2^17-1 is the largest legal value.
         LsmAgc(mag_update_threshold=(1 << 17) - 1)  # no raise
 
+    # ──────────────────────────────────────────────────────────────
+    # 12. gated_out: the per-symbol "no signal" flag (2026-09-27)
+    # ──────────────────────────────────────────────────────────────
+    def test_gated_out_flags_sub_threshold_symbols(self):
+        """`gated_out` is valid with `decision_strobe_out` and is 1
+        exactly for the symbols whose gain update the gate skipped
+        (mag < threshold; mag == threshold is not gated)."""
+        dut = LsmAgc()  # threshold 256
+        cases = [  # (i_cur, q_cur, expected gated_out)
+            (100, 100, 1),     # mag 141
+            (2000, 0, 0),
+            (200, 0, 1),
+            (256, 0, 0),       # boundary: mag == threshold
+            (255, 0, 1),
+            (0, 0, 1),
+            (-3000, 4000, 0),
+        ]
+        seen = []
+
+        async def bench(ctx):
+            ctx.set(dut.enable_in, 1)
+            g0 = ctx.get(dut.gate_dbg)
+            for (i, q, _) in cases:
+                await self._drive_symbol(ctx, dut, i, q, i, q)
+                seen.append(ctx.get(dut.gated_out))
+            seen.append(('gate', ctx.get(dut.gate_dbg) - g0))
+
+        self._simulate(dut, bench)
+        self.assertEqual(seen[:-1], [c[2] for c in cases])
+        self.assertEqual(seen[-1], ('gate', sum(c[2] for c in cases)))
+
+    def test_gated_out_zero_when_disabled_or_threshold_zero(self):
+        """Threshold 0 never gates; BYPASS (enable_in=0) computes no
+        magnitude and never flags a symbol."""
+        for enable, threshold in ((1, 0), (0, 256)):
+            dut = LsmAgc()
+            seen = []
+
+            async def bench(ctx, dut=dut, enable=enable,
+                            threshold=threshold, seen=seen):
+                ctx.set(dut.enable_in, enable)
+                ctx.set(dut.mag_update_threshold_in, threshold)
+                for (i, q) in ((1, 0), (0, 0), (100, 100)):
+                    await self._drive_symbol(ctx, dut, i, q, i, q)
+                    seen.append(ctx.get(dut.gated_out))
+
+            self._simulate(dut, bench)
+            self.assertEqual(seen, [0, 0, 0],
+                             f"enable={enable} threshold={threshold}")
+
+    def test_gated_out_cleared_by_reset(self):
+        dut = LsmAgc()
+        seen = []
+
+        async def bench(ctx):
+            ctx.set(dut.enable_in, 1)
+            await self._drive_symbol(ctx, dut, 10, 10, 10, 10)
+            seen.append(ctx.get(dut.gated_out))
+            ctx.set(dut.reset_in, 1)
+            await ctx.tick()
+            ctx.set(dut.reset_in, 0)
+            await ctx.tick()
+            seen.append(ctx.get(dut.gated_out))
+
+        self._simulate(dut, bench)
+        self.assertEqual(seen, [1, 0])
+
 
 if __name__ == '__main__':
     unittest.main()

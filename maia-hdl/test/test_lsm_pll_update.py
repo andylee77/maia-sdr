@@ -11,7 +11,7 @@
 # Tests exercise:
 #   - the 4-way dibit mux (one test per dibit, both forms)
 #   - per-step clamps (large input -> clamped step)
-#   - the integrator clamp (drive pll past +/- pi/3)
+#   - the integrator clamp (drive pll past +/- MAX_PLL_ABS)
 #   - convergence behaviour against a Python reference (linearised
 #     form: bit-exact; CORDIC form: a few ULPs of CORDIC residual)
 #   - cross-form smoke: both classes converge in the same direction
@@ -252,9 +252,10 @@ class TestLsmPllUpdateLinearised(unittest.TestCase):
             self.assertLess(v, 0,
                             f"10: expected negative pll, got {v}")
 
-    def test_pll_clamps_at_pi_over_3(self):
+    def test_pll_clamps_at_max_pll_abs(self):
         """Saturate the input to the max +/- raw value and let the
-        loop integrate. The pll output must clamp at +/- pi/3."""
+        loop integrate. The pll output must clamp at +/- MAX_PLL_ABS
+        (0.65 rad; pi/3 before 2026-09-27)."""
         # Use dibit 10 with (1, 1) input -> raw = 2, clamped to
         # RAW_CLAMP -> step = max negative -> pll grows in the
         # negative direction.
@@ -262,10 +263,10 @@ class TestLsmPllUpdateLinearised(unittest.TestCase):
         q_q15 = _q(1.0, INPUT_FRAC_BITS, 18)
 
         dut = LsmPllUpdateLinearised()
-        # Run enough symbols to drive pll past pi/3.
+        # Run enough symbols to drive pll past the clamp.
         # Each step is approximately RAW_CLAMP * COMBINED_GAIN
         # ~= 0.4243 * 0.0707 ~= 0.030 rad / step.
-        # pi/3 ~= 1.047, so ~35 steps to saturate. Run 100.
+        # 0.65 rad needs ~22 steps to saturate. Run 100.
         out = _drive_pll(dut, [(i_q15, q_q15, 0b10)] * 100)
         # The final value should equal -MAX_PLL_ABS_Q13 (negative
         # because we drove pll downward).
@@ -385,13 +386,13 @@ class TestLsmPllUpdateCordic(unittest.TestCase):
                 out[-1], -800,
                 f"dibit {dibit:02b}: expected pll >-800, got {out[-1]}")
 
-    def test_pll_clamps_at_pi_over_3(self):
+    def test_pll_clamps_at_max_pll_abs(self):
         """Drive a constant phase error large enough to saturate
-        the integrator, verify it clamps at +/- pi/3."""
+        the integrator, verify it clamps at +/- MAX_PLL_ABS."""
         # Symbol at +pi/4 + 0.5 rad, dibit 00 (ideal +pi/4).
         # CORDIC computes phase_error = +0.5, clamps to +0.3,
-        # step = -0.03 rad / symbol. After ~35 symbols pll hits
-        # -pi/3. Run 60 to be safe.
+        # step = -0.03 rad / symbol. After ~22 symbols pll hits
+        # -0.65 rad. Run 60 to be safe.
         ang = math.pi / 4.0 + 0.5
         mag = 0.5
         i = _q(mag * math.cos(ang), INPUT_FRAC_BITS, 18)
@@ -792,6 +793,127 @@ class TestLsmPllUpdateSeed(unittest.TestCase):
         runtime reset behavior."""
         self._assert_seed_loads_on_reset(
             LsmPllUpdate, drain=16, seed_q13=0)
+
+
+def _drive_pll_hold(dut, samples, *, drain):
+    """Like `_drive_pll`, with samples = [(i, q, dibit, hold), ...].
+    `hold_in` is presented with the symbol and inverted for the
+    drain cycles, so the test also proves it is sampled on
+    symbol_strobe (not while the update is in flight)."""
+    out = []
+
+    async def bench(ctx):
+        for (i, q, d, h) in samples:
+            ctx.set(dut.i_sym_in, i)
+            ctx.set(dut.q_sym_in, q)
+            ctx.set(dut.dibit_in, d)
+            ctx.set(dut.hold_in, h)
+            ctx.set(dut.symbol_strobe, 1)
+            await ctx.tick()
+            ctx.set(dut.symbol_strobe, 0)
+            ctx.set(dut.hold_in, 1 - h)
+            captured = False
+            for _ in range(drain):
+                await ctx.tick()
+                if ctx.get(dut.pll_strobe) and not captured:
+                    v = ctx.get(dut.pll_out)
+                    if v >= (1 << 15):
+                        v -= (1 << 16)
+                    out.append(v)
+                    captured = True
+
+    sim = Simulator(dut)
+    sim.add_clock(16e-9)
+    sim.add_testbench(bench)
+    sim.run()
+    return out
+
+
+class TestLsmPllUpdateHold(unittest.TestCase):
+    """2026-09-27: `hold_in` (no-signal hold from LsmDemodLoop) and
+    the per-instance `max_pll_abs_q13` clamp."""
+
+    def _symbol(self, offset_rad):
+        ang = math.pi / 4.0 + offset_rad
+        return (_q(0.5 * math.cos(ang), INPUT_FRAC_BITS, 18),
+                _q(0.5 * math.sin(ang), INPUT_FRAC_BITS, 18))
+
+    def _assert_hold(self, cls, drain):
+        i, q = self._symbol(0.2)
+        # 5 tracking, 10 held, 5 tracking.
+        holds = [0] * 5 + [1] * 10 + [0] * 5
+        out = _drive_pll_hold(
+            cls(), [(i, q, 0b00, h) for h in holds], drain=drain)
+        self.assertEqual(len(out), 20)  # pll_strobe fires when held
+        self.assertLess(out[4], out[0])
+        self.assertLess(out[0], 0)
+        self.assertEqual(out[5:15], [out[4]] * 10)
+        self.assertLess(out[15], out[14])
+        self.assertLess(out[19], out[15])
+
+    def test_cordic_hold_freezes_accumulator(self):
+        self._assert_hold(LsmPllUpdate, CORDIC_DRAIN)
+
+    def test_linearised_hold_freezes_accumulator(self):
+        self._assert_hold(LsmPllUpdateLinearised, 4)
+
+    def test_hold_and_zero_skip_combine(self):
+        """Held and (0, 0) symbols both leave the register alone;
+        the remaining symbols update it exactly as without them."""
+        i, q = self._symbol(0.2)
+        plain = _drive_pll_hold(
+            LsmPllUpdate(), [(i, q, 0b00, 0)] * 6, drain=CORDIC_DRAIN)
+        mixed = _drive_pll_hold(
+            LsmPllUpdate(),
+            [(i, q, 0b00, 0), (0, 0, 0b00, 0), (i, q, 0b00, 1),
+             (i, q, 0b00, 0), (0, 0, 0b00, 1), (i, q, 0b00, 0),
+             (i, q, 0b00, 0), (i, q, 0b00, 0), (i, q, 0b00, 0)],
+            drain=CORDIC_DRAIN)
+        self.assertEqual(
+            [mixed[k] for k in (0, 3, 5, 6, 7, 8)], plain)
+
+    def test_seed_reset_while_held(self):
+        """reset_in still loads the seed while hold_in is high."""
+        dut = LsmPllUpdate()
+        i, q = self._symbol(0.2)
+        seen = []
+
+        async def bench(ctx):
+            ctx.set(dut.seed_in, 777)
+            ctx.set(dut.hold_in, 1)
+            ctx.set(dut.reset_in, 1)
+            await ctx.tick()
+            ctx.set(dut.reset_in, 0)
+            ctx.set(dut.i_sym_in, i)
+            ctx.set(dut.q_sym_in, q)
+            ctx.set(dut.symbol_strobe, 1)
+            await ctx.tick()
+            ctx.set(dut.symbol_strobe, 0)
+            for _ in range(CORDIC_DRAIN):
+                await ctx.tick()
+            seen.append(ctx.get(dut.pll_out))
+
+        sim = Simulator(dut)
+        sim.add_clock(16e-9)
+        sim.add_testbench(bench)
+        sim.run()
+        self.assertEqual(seen, [777])
+
+    def test_clamp_parameter(self):
+        """`max_pll_abs_q13` overrides the module clamp per instance
+        (both forms), e.g. the 0.65 rad evaluation value."""
+        i, q = self._symbol(0.5)
+        for cls, drain in ((LsmPllUpdate, CORDIC_DRAIN),
+                           (LsmPllUpdateLinearised, 4)):
+            out = _drive_pll_hold(
+                cls(max_pll_abs_q13=5325), [(i, q, 0b00, 0)] * 60,
+                drain=drain)
+            self.assertEqual(out[-1], -5325, cls.__name__)
+
+    def test_clamp_parameter_rejects_out_of_range(self):
+        for bad in (0, -5, 1 << 15):
+            with self.assertRaises(ValueError):
+                Simulator(LsmPllUpdate(max_pll_abs_q13=bad))
 
 
 if __name__ == '__main__':

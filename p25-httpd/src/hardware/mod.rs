@@ -7,6 +7,8 @@
 //! compiled on every platform — AppState carries a preset handle
 //! even on host builds where `fpga.rs` is stubbed out.
 
+/// Change 059: P25 core version register decoding (host-tested).
+pub mod core_version;
 pub mod ddc_presets;
 /// Post-DDC sample rates (single source for every rate label).
 pub mod ddc_rate;

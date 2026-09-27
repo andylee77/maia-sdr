@@ -30,7 +30,7 @@ if "%BUILD_P25%"=="1" (
     set "P25_CONFIG=default"
     set "FPGA_PROJECT=fishball7020_p25"
     set "FPGA_PROJECT_NAME=fishball_p25"
-    set "IP_CORE_VERSION=0.1.0"
+    set "IP_CORE_VERSION=0.2.0"
 ) else (
     set "FPGA_PROJECT=fishball7020_iio"
     set "FPGA_PROJECT_NAME=fishball"

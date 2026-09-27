@@ -9,6 +9,7 @@
 
 use super::*;
 use crate::audio::{CallBoundary, CallBoundaryKind};
+use crate::hardware::core_version::{PLL_CLAMP_Q213_HOLD, PLL_CLAMP_Q213_LEGACY};
 
 fn forwarder() -> Arc<ImbeForwarder> {
     let (tx, _rx) = tokio::sync::mpsc::channel(4);
@@ -458,17 +459,18 @@ fn grants_before_any_voice_still_preempt_at_once() {
 fn grant_update_refollows_only_a_call_closed_by_timeout() {
     let t = 1_000_000;
     let last = Some((300u16, 857_987_500u64, t));
+    let w = REFOLLOW_WINDOW_MS;
     // Same TG and channel, chain idle, within the window: follow again.
-    assert!(refollow_on_update(last, 300, Some(857_987_500), true, t + 5_000));
-    assert!(refollow_on_update(last, 300, Some(857_987_500), true, t + REFOLLOW_WINDOW_MS));
+    assert!(refollow_on_update(last, 300, Some(857_987_500), true, t + 5_000, w));
+    assert!(refollow_on_update(last, 300, Some(857_987_500), true, t + w, w));
     // Anything else stays a keep-alive only (updates carry no
     // encryption flag, so they never acquire a TG on their own).
-    assert!(!refollow_on_update(None, 300, Some(857_987_500), true, t));
-    assert!(!refollow_on_update(last, 402, Some(857_987_500), true, t + 1));
-    assert!(!refollow_on_update(last, 300, Some(858_437_500), true, t + 1));
-    assert!(!refollow_on_update(last, 300, None, true, t + 1));
-    assert!(!refollow_on_update(last, 300, Some(857_987_500), false, t + 1), "chain busy");
-    assert!(!refollow_on_update(last, 300, Some(857_987_500), true, t + REFOLLOW_WINDOW_MS + 1));
+    assert!(!refollow_on_update(None, 300, Some(857_987_500), true, t, w));
+    assert!(!refollow_on_update(last, 402, Some(857_987_500), true, t + 1, w));
+    assert!(!refollow_on_update(last, 300, Some(858_437_500), true, t + 1, w));
+    assert!(!refollow_on_update(last, 300, None, true, t + 1, w));
+    assert!(!refollow_on_update(last, 300, Some(857_987_500), false, t + 1, w), "chain busy");
+    assert!(!refollow_on_update(last, 300, Some(857_987_500), true, t + w + 1, w));
 }
 
 #[test]
@@ -501,14 +503,56 @@ fn close_event_carries_open_time_and_marker() {
 // been gone for seconds, and lost two whole transmissions.
 #[test]
 fn same_freq_resume_resets_a_stale_or_runaway_chain() {
-    // Voice a moment ago, PLL near centre: coast (carrier still up).
-    assert!(!resume_needs_reset(300, Some(400)));
-    assert!(!resume_needs_reset(-4000, Some(COAST_MAX_IDLE_MS)));
-    // PLL at or past half the clamp: reset, however fresh.
-    assert!(resume_needs_reset(TRAFFIC_PLL_CLAMP_Q213 as i16, Some(100)));
-    assert!(resume_needs_reset(-(TRAFFIC_PLL_CLAMP_Q213 / 2) as i16, Some(100)));
-    // Carrier gone longer than the coast window, or never any voice: reset.
-    assert!(resume_needs_reset(0, Some(COAST_MAX_IDLE_MS + 1)));
-    assert!(resume_needs_reset(0, Some(6_000)));
-    assert!(resume_needs_reset(0, None));
+    for clamp in [PLL_CLAMP_Q213_LEGACY, PLL_CLAMP_Q213_HOLD] {
+        // Voice a moment ago, PLL near centre: coast (carrier still up).
+        assert!(!resume_needs_reset(300, Some(400), clamp));
+        assert!(!resume_needs_reset(-2000, Some(COAST_MAX_IDLE_MS), clamp));
+        // PLL at or past half the clamp: reset, however fresh.
+        assert!(resume_needs_reset(clamp as i16, Some(100), clamp));
+        assert!(resume_needs_reset(-(clamp / 2) as i16, Some(100), clamp));
+        // Carrier gone longer than the coast window, or never any voice: reset.
+        assert!(resume_needs_reset(0, Some(COAST_MAX_IDLE_MS + 1), clamp));
+        assert!(resume_needs_reset(0, Some(6_000), clamp));
+        assert!(resume_needs_reset(0, None, clamp));
+    }
+    // Change 059: 3000 is inside the π/3 clamp's coast band but past half
+    // the 0.65 rad clamp.
+    assert!(!resume_needs_reset(3000, Some(100), PLL_CLAMP_Q213_LEGACY));
+    assert!(resume_needs_reset(3000, Some(100), PLL_CLAMP_Q213_HOLD));
+}
+
+// Mode B corpus 2026-09-27: three transmissions lost because another TG's
+// grant arrived inside the locked call's 2 s end grace, after SDRTrunk had
+// already freed its channel.
+#[test]
+fn end_marker_frees_the_chain_for_another_tg() {
+    let at = 1_790_000_000_000;
+    let m = unpack_end_marker(pack_end_marker(300, at));
+    assert_eq!(m, Some((300, at)));
+    assert_eq!(unpack_end_marker(0), None);
+    // No marker, or the marker belongs to another call: keep the lock.
+    assert!(!end_marker_frees_chain(300, None, at + 5_000));
+    assert!(!end_marker_frees_chain(201, m, at + 5_000));
+    // Too fresh for the resumed-voice check, then free.
+    assert!(!end_marker_frees_chain(300, m, at + END_PREEMPT_AFTER_MS - 1));
+    assert!(end_marker_frees_chain(300, m, at + END_PREEMPT_AFTER_MS));
+    assert!(END_PREEMPT_AFTER_MS < 1_130, "must free before SDRTrunk's p5 teardown");
+}
+
+// A clear grant the sticky gate rejected is re-followed from its updates
+// once the chain is free, for its own (TG, frequency), and only while its
+// transmission is likely still on the air (bench 2026-09-27: a re-follow
+// 4.9 s after the reject parked the chain on the system's hang and cost
+// the next real grant).
+#[test]
+fn sticky_rejected_grant_refollows_from_updates() {
+    let rej = Some((300u16, 858_437_500u64, 1_000u64));
+    let w = REFOLLOW_STICKY_MS;
+    assert!(!refollow_on_update(rej, 300, Some(858_437_500), false, 1_900, w));
+    assert!(refollow_on_update(rej, 300, Some(858_437_500), true, 1_900, w));
+    assert!(!refollow_on_update(rej, 301, Some(858_437_500), true, 1_900, w));
+    assert!(!refollow_on_update(rej, 300, Some(857_987_500), true, 1_900, w));
+    assert!(refollow_on_update(rej, 300, Some(858_437_500), true, 1_000 + w, w));
+    assert!(!refollow_on_update(rej, 300, Some(858_437_500), true, 5_900, w));
+    assert!(REFOLLOW_STICKY_MS < REFOLLOW_WINDOW_MS);
 }

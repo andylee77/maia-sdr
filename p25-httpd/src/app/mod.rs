@@ -15,6 +15,7 @@ pub mod dibit_readers;
 pub mod forensics;
 pub mod grant_follower;
 pub mod grant_stats;
+pub mod traffic_pll_watchdog;
 pub mod imbe_forwarder;
 pub mod seed_snapshot;
 #[cfg(target_os = "linux")]

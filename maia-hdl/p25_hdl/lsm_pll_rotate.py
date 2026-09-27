@@ -21,7 +21,8 @@
 # is 3.9 mrad (~0.22 deg) -- the worst-case sin/cos quantisation
 # error is ~0.004, or about 130 Q15 ULPs. Not exact, but well
 # inside the LSM loop's tolerance budget: the PLL is clamped to
-# +/- pi/3, the loop gain is 0.1, and any small bias from sin/cos
+# +/- 0.65 rad (pi/3 before 2026-09-27), the loop gain is 0.1, and
+# any small bias from sin/cos
 # rounding is absorbed by the integrator over a few symbols.
 #
 # Why not linear interpolation: it would push the precision down to
@@ -41,8 +42,9 @@
 #   centre-of-range offset (pll==0 -> index 512), 32 is the per-
 #   entry step in Q2.13 units. The 1024-entry LUT covers pll values
 #   in [-16384, 16384) Q2.13 = [-2, 2) rad. The PLL update block
-#   clamps pll to +/- pi/3 ~= +/-1.047 rad, so the actual indices
-#   used are roughly 244..780 -- about half the LUT is dead, but
+#   clamps pll to +/- MAX_PLL_ABS (0.65 rad; pi/3 before 2026-09-27),
+#   so the actual indices used are roughly 345..678 (244..780 at
+#   pi/3) -- well over half the LUT is dead, but
 #   the wider-than-needed range gives us room for any future
 #   pll-clamp changes without needing to reload the LUT.
 #
@@ -163,7 +165,7 @@ class LsmPllRotate(Elaboratable):
         # addr = ((pll + 16384) >> 5) & 0x3FF
         # Equivalently: take bits [14:5] of (pll + 16384). The +&
         # masking handles values past the LUT range by wrapping --
-        # the PLL clamp at +/- pi/3 keeps us inside the LUT
+        # the PLL clamp (+/- 0.65 rad) keeps us inside the LUT
         # comfortably, but the wrap is the safe behaviour for any
         # out-of-range stray.
         addr_offset = (1 << (LUT_INPUT_FRAC_BITS + 1))  # 16384

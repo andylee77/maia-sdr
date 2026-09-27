@@ -119,6 +119,8 @@ from .lsm_demod_loop import (
     LsmDemodLoop,
     DEFAULT_LSM_SAMPLE_RATE_HZ,
     DEFAULT_LSM_SYMBOL_RATE_HZ,
+    HOLD_ENTER_SYMBOLS_DEFAULT,
+    HOLD_EXIT_SYMBOLS_DEFAULT,
 )
 from .lsm_nid_pipeline import LsmNidPipeline
 
@@ -132,7 +134,10 @@ class LsmDemod(Elaboratable):
 
     def __init__(self, *,
                  sample_rate_hz=DEFAULT_LSM_SAMPLE_RATE_HZ,
-                 symbol_rate_hz=DEFAULT_LSM_SYMBOL_RATE_HZ):
+                 symbol_rate_hz=DEFAULT_LSM_SYMBOL_RATE_HZ,
+                 hold_enter_symbols=HOLD_ENTER_SYMBOLS_DEFAULT,
+                 hold_exit_symbols=HOLD_EXIT_SYMBOLS_DEFAULT,
+                 max_pll_abs_q13=None):
         # 2026-05-03: forwarded to ``LsmDemodLoop`` (-> ``LsmTimingInterp``
         # + ``LsmGardnerTed``).  Default 31_250 / 4_800 keeps the
         # control-chain instantiation bit-identical to the pre-2026-05-03
@@ -140,6 +145,12 @@ class LsmDemod(Elaboratable):
         # SDRTrunk-bit-exact PS pipeline.
         self.sample_rate_hz = sample_rate_hz
         self.symbol_rate_hz = symbol_rate_hz
+        # 2026-09-27: PLL/timing no-signal hold + PLL clamp, forwarded
+        # to ``LsmDemodLoop`` (see its module comment). Defaults are
+        # what both p25_top chains build with.
+        self.hold_enter_symbols = hold_enter_symbols
+        self.hold_exit_symbols = hold_exit_symbols
+        self.max_pll_abs_q13 = max_pll_abs_q13
 
         # ── Inputs ──────────────────────────────────────────────
         self.re_in = Signal(signed(16))
@@ -218,6 +229,8 @@ class LsmDemod(Elaboratable):
         # magnitude fell below `mag_update_threshold`. See the
         # MAG_UPDATE_THRESHOLD_DEFAULT docstring in `lsm_agc.py`.
         self.agc_gate_dbg = Signal(16)
+        # 2026-09-27: PLL/timing hold state (sim/debug only).
+        self.hold_dbg = Signal()
 
     def elaborate(self, platform):
         m = Module()
@@ -231,7 +244,10 @@ class LsmDemod(Elaboratable):
         m.submodules.dc_block_im = dc_block_im = LsmDcBlocker()
         m.submodules.demod_loop = demod_loop = LsmDemodLoop(
             sample_rate_hz=self.sample_rate_hz,
-            symbol_rate_hz=self.symbol_rate_hz)
+            symbol_rate_hz=self.symbol_rate_hz,
+            hold_enter_symbols=self.hold_enter_symbols,
+            hold_exit_symbols=self.hold_exit_symbols,
+            max_pll_abs_q13=self.max_pll_abs_q13)
         m.submodules.nid_pipeline = nid_pipeline = LsmNidPipeline()
 
         # Phase 8A runtime reset fan-out: into the closed-loop
@@ -251,6 +267,7 @@ class LsmDemod(Elaboratable):
             self.agc_gain_dbg.eq(demod_loop.agc_gain_dbg),
             self.agc_mag_dbg.eq(demod_loop.agc_mag_dbg),
             self.agc_gate_dbg.eq(demod_loop.agc_gate_dbg),
+            self.hold_dbg.eq(demod_loop.hold_dbg),
             # 2026-04-26: PLL + AGC warm-start seeds.
             demod_loop.pll_seed_in.eq(self.pll_seed_in),
             demod_loop.agc_seed_in.eq(self.agc_seed_in),

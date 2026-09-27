@@ -348,6 +348,16 @@ pub struct ImbeForwarder {
     /// grant after such a teardown left the chain dead until the next
     /// cross-frequency retune. The resume path now re-enables it.
     pub traffic_paused_by_teardown: std::sync::atomic::AtomicBool,
+    /// Traffic PLL watchdog resets (`app::traffic_pll_watchdog`): at a
+    /// signal's return after a gap, and with the PLL pinned at the clamp.
+    pub pll_wd_resets_onset: std::sync::atomic::AtomicU64,
+    pub pll_wd_resets_pinned: std::sync::atomic::AtomicU64,
+    /// The watchdog runs (gateware without the LSM signal hold, < 0.2.0).
+    pub pll_wd_enabled: std::sync::atomic::AtomicBool,
+    /// Change 059: the active call's pending end-of-transmission marker
+    /// (`grant_follower::pack_end_marker`, 0 = none), written by the
+    /// call lifecycle, read by the follower's sticky gate.
+    pub active_end_marker: std::sync::atomic::AtomicU64,
 }
 
 /// Forensic snapshot of a single LDU1-LC-vs-CC-SRC disagreement.
@@ -560,6 +570,10 @@ impl ImbeForwarder {
             ldu1_last_mismatch: std::sync::Mutex::new(None),
             call_counts: crate::app::call_counters::CallCounterBook::default(),
             traffic_paused_by_teardown: false.into(),
+            pll_wd_resets_onset: 0.into(),
+            pll_wd_resets_pinned: 0.into(),
+            pll_wd_enabled: false.into(),
+            active_end_marker: 0.into(),
         }
     }
 

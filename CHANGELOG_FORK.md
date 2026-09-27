@@ -5,6 +5,72 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-27] LSM PLL/timing hold on "no signal", core 0.2.0; sticky lock freed at end of transmission (059)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-27-signal-hold-preempt-059`
+**Bake required:** YES (P25 core 0.2.0; the register map is unchanged). p25-httpd adapts to
+0.1.0 or 0.2.0 at runtime.
+
+Changes:
+
+- **Gateware: the PLL no longer traps in carrier gaps.**
+  - The decision-directed PLL kept updating on noise between transmissions and reached the
+    π/3 clamp. That end is absorbing, so every later dibit came out a quadrant off: 0 IMBE
+    on the traffic channel, and no grants on the control channel after a silence.
+  - Both LSM chains now hold the PLL and the Gardner timing while the AGC idle gate
+    reports no signal (new `LsmSignalHold`; hold after 4 gated symbols, release after 8
+    ungated symbols).
+  - The clamp drops to 0.65 rad, below π/4, so it is no longer absorbing near the
+    operating point.
+- **p25-httpd:**
+  - reads the core version (`hardware/core_version.rs`);
+  - runs the traffic PLL watchdog (new, `traffic_pll_watchdog.rs`) only on gateware
+    without the hold;
+  - checks `resume_needs_reset` against the running clamp;
+  - reports `core_version`, `signal_hold` and `pll_clamp_q13` in `/api/traffic`.
+- **Sticky lock:**
+  - Another TG's grant may take the chain once the locked call's end marker has been
+    pending 600 ms, instead of 2 s later. That is still before SDRTrunk frees its channel.
+  - A clear grant rejected while the chain was busy is re-followed from its grant updates
+    once the chain frees, within 2 s of the reject.
+- **Board, Mode B corpus (42 scenes, 219 followable clear transmissions):** 92.4 % of
+  SDRTrunk's IMBE frames with 21 missed (0.1.0 + watchdog) → 97.8 % with 4 missed (0.2.0)
+  → 99.3 % with 0 missed (0.2.0 + sticky-lock changes). Scenes losing their first calls:
+  10 → 0. The tone scene decodes 100 % with the watchdog off.
+- Deployed to A's SD card by swapping the bitstream partition of BOOT.bin (same-length
+  padding, no data checksum). Tezuka still needs `build.bat --p25` with the new XSA.
+
+Tests: p25-httpd 239 passed. maia-hdl LSM suites passed except the test that already
+failed at HEAD (`test_reset_in_restores_gain_to_init`).
+
+---
+
+## [2026-09-27] P25 replay validation corpus: `rf.p25_corpus`, SD relay, modes A/B/C (058)
+
+**Branch:** fishball-p25
+**Bake required:** NO (fbench and fbench-agent only).
+
+- **`rf.p25_corpus`:** replays many different SDRTrunk recordings once each and scores
+  every transmission against SDRTrunk's own `.mbe`, using p25-httpd's per-call `imbe`.
+  - Mode A: A's wideband captures.
+  - Mode B: 42 synthetic scenes (a CC recording plus the traffic recordings, aligned to the
+    log clocks), 320 transmissions.
+  - Mode C: traffic only.
+- **fbench-agent `replay stream|check|verify`:** a 192 MiB SD-to-`iio_writedev` relay.
+  It has streamed 24.6 GB passes with 0 underruns.
+- **Scorer:**
+  - survives an unset DUT clock and clock steps;
+  - matches calls by TG, frequency and time (not by source);
+  - classes a transmission as not followable only when the chain was genuinely busy.
+- `tools/p25_corpus_index.py` builds the inventory and manifest.
+- `tools/p25_lsm_hdl_replay.py` feeds recordings through a bit-true front end and the
+  Amaranth `LsmDemod`, including carrier-gap scenarios.
+
+Tests: bench host 272 passed.
+
+---
+
 ## [2026-09-27] Call close at the end of transmission, per-call counters, SD-card recordings (057)
 
 **Branch:** fishball-p25

@@ -8,7 +8,9 @@
 #     let phase_error = soft_symbol - dibit_phase(h)
 #     clamp phase_error to +/- PLL_MAX_ERROR     (0.3 rad)
 #     state.pll -= phase_error * PLL_GAIN        (0.1)
-#     clamp state.pll to +/- MAX_PLL_ABS         (PI/3)
+#     clamp state.pll to +/- MAX_PLL_ABS         (PI/3 in Rust and
+#                                                 SDRTrunk; 0.65 rad
+#                                                 here, see below)
 #
 # This file provides TWO implementations of the same interface:
 #
@@ -85,8 +87,9 @@
 # Loop gain:    0.1 in Q1.16 = 6554, fits in signed 15-bit.
 # Step:         angle * gain = Q5.32, shifted right by 19 to align
 #               with the pll register's Q2.13.
-# PLL register: signed 16-bit Q2.13, clamped to +/- pi/3 ~= +/-
-#               8580 in Q2.13.
+# PLL register: signed 16-bit Q2.13, clamped to +/- MAX_PLL_ABS
+#               (0.65 rad = 5325 in Q2.13; pi/3 = 8579 before
+#               2026-09-27).
 #
 # Pipeline
 # --------
@@ -95,7 +98,7 @@
 #   12 cycles: CORDIC vectoring (10 iters + IDLE/DONE bookkeeping)
 #   1 cycle: clamp angle to +/- 0.3 rad
 #   1 cycle: multiply clamped angle by 0.1 gain
-#   1 cycle: subtract step from pll, clamp to +/- pi/3, latch out
+#   1 cycle: subtract step from pll, clamp to +/- MAX_PLL_ABS, latch out
 # Total: 16 cycles. The symbol period at the Fishball clock
 # (~62.5 MHz core / 4800 sym/s) is ~13000 cycles, so the latency
 # is invisible in the symbol budget.
@@ -125,7 +128,24 @@ from .lsm_cordic_atan2 import (
 # Loop constants from `lsm::demod`.
 PLL_GAIN_FLOAT = 0.1
 PLL_MAX_ERROR_FLOAT = 0.3      # rad
-MAX_PLL_ABS_FLOAT = math.pi / 3.0   # ~1.047 rad
+# Accumulator clamp. 2026-09-27: 0.65 rad (+/-497 Hz at 4800 sym/s),
+# below pi/4, instead of the pi/3 (+/-800 Hz) of the Rust loop and
+# SDRTrunk. The decision-directed loop's stable points are
+# bias + k*pi/2; with a clamp C the +C end is an absorbing
+# wrong-quadrant state for a true offset b in (C - pi/2, C - pi/4)
+# and the -C end for b in (pi/4 - C, pi/2 - C). At pi/3 both ends
+# trap for |b| < 200 Hz, i.e. at the normal operating point: once
+# noise walked the PLL past pi/4 (carrier gaps on a traffic channel)
+# every later dibit came out rotated until a reset. At 0.65 rad
+# neither end traps for |b| < 103 Hz (the auto-PPM-corrected
+# operating range), so the loop always pulls back to lock when the
+# signal returns. Offsets between 497 and 575 Hz still decode with
+# the accumulator at the clamp (residual 0.10 rad at 575 Hz); a cold
+# start fails at 600 Hz (= pi/4 per symbol) with either clamp. The
+# primary fix for the carrier-gap trap is the no-signal hold in
+# LsmDemodLoop; this clamp covers noise above the AGC gate, where
+# the hold cannot engage. See doc/changes/059_lsm_pll_timing_hold.md.
+MAX_PLL_ABS_FLOAT = 0.65            # rad; pi/3 before 2026-09-27
 
 # Linearization constants (sqrt(2)/2 absorbed into the gain).
 # Used by `LsmPllUpdateLinearised` and the legacy Python reference
@@ -160,9 +180,20 @@ PLL_MAX_ERROR_Q16 = _q_round(PLL_MAX_ERROR_FLOAT, CORDIC_FRAC_BITS)  # 19661
 # Sanity-check the constants.
 assert 4500 < COMBINED_GAIN_Q16 < 4800        # 0.0707 * 65536 ~= 4634
 assert 13000 < RAW_CLAMP_Q15 < 14500          # 0.4243 * 32768 ~= 13903
-assert 8000 < MAX_PLL_ABS_Q13 < 9000          # 1.047 * 8192 ~= 8580
+assert 5300 < MAX_PLL_ABS_Q13 < 5350          # 0.65 * 8192 ~= 5325
+assert MAX_PLL_ABS_FLOAT < math.pi / 4        # no absorbing clamp ends
 assert 6500 < PLL_GAIN_Q16 < 6600             # 0.1 * 65536 = 6554
 assert 19500 < PLL_MAX_ERROR_Q16 < 19800      # 0.3 * 65536 ~= 19661
+
+
+def _resolve_max_pll_abs(max_pll_abs_q13, pll_width):
+    """Clamp used by an instance: its own value, else the module
+    constant (looked up at elaboration so a caller can override the
+    module attribute for what-if simulations)."""
+    v = MAX_PLL_ABS_Q13 if max_pll_abs_q13 is None else int(max_pll_abs_q13)
+    if not 0 < v < (1 << (pll_width - 1)):
+        raise ValueError(f"max_pll_abs_q13 out of range: {v!r}")
+    return v
 
 
 class LsmPllUpdateLinearised(Elaboratable):
@@ -185,10 +216,16 @@ class LsmPllUpdateLinearised(Elaboratable):
         Width of the pll register / output. Default 16 (Q2.13,
         range +/- 2 with ULP 1.2e-4).
 
+    max_pll_abs_q13 : int or None
+        Accumulator clamp (Q2.13). ``None`` (default) uses the
+        module-level ``MAX_PLL_ABS_Q13``, read at elaboration.
+
     Inputs (sync domain):
         i_sym_in, q_sym_in : signed demod_width
         dibit_in           : Signal(2)
         symbol_strobe      : Signal()
+        hold_in            : Signal()  sampled with symbol_strobe;
+            1 = leave the accumulator unchanged for this symbol
 
     Outputs (sync domain):
         pll_out     : signed pll_width  Q2.13 -- updated pll value
@@ -196,9 +233,13 @@ class LsmPllUpdateLinearised(Elaboratable):
             input symbol_strobe pulse, when pll_out is valid
     """
 
-    def __init__(self, *, demod_width=18, pll_width=16):
+    def __init__(self, *, demod_width=18, pll_width=16,
+                 max_pll_abs_q13=None):
         self.dw = demod_width
         self.pw = pll_width
+        self.max_pll_abs_q13 = max_pll_abs_q13
+        if max_pll_abs_q13 is not None:
+            _resolve_max_pll_abs(max_pll_abs_q13, pll_width)  # validate
 
         # ── Inputs ──────────────────────────────────────────────
         self.i_sym_in = Signal(signed(demod_width))
@@ -214,6 +255,8 @@ class LsmPllUpdateLinearised(Elaboratable):
         # CORDIC form's seed_in so LsmDemodLoop can wire the same
         # signal regardless of pll_mode.
         self.seed_in = Signal(signed(pll_width))
+        # 2026-09-27: no-signal hold. Mirrors the CORDIC form.
+        self.hold_in = Signal()
 
         # ── Outputs ─────────────────────────────────────────────
         self.pll_out = Signal(signed(pll_width), reset_less=True)
@@ -266,10 +309,14 @@ class LsmPllUpdateLinearised(Elaboratable):
         # Latch the clamped value into a stage-1 register.
         raw_clamped_q = Signal(signed(raw_width), reset_less=True)
         stage1_strobe = Signal()
+        # Hold flag sampled with the symbol (one update in flight at a
+        # time, same argument as the CORDIC form's `pending_skip`).
+        pending_hold = Signal()
         with m.If(self.symbol_strobe):
             m.d.sync += [
                 raw_clamped_q.eq(raw_clamped),
                 stage1_strobe.eq(1),
+                pending_hold.eq(self.hold_in),
             ]
         with m.Else():
             m.d.sync += stage1_strobe.eq(0)
@@ -317,13 +364,16 @@ class LsmPllUpdateLinearised(Elaboratable):
         m.d.comb += delta.eq(step)
         m.d.comb += self.step_dbg.eq(delta)
 
-        # new_pll = pll - delta
+        # new_pll = pll - delta (delta forced to 0 while held)
+        effective_delta = Signal(signed(delta_width))
+        m.d.comb += effective_delta.eq(Mux(pending_hold, 0, delta))
         new_pll = Signal(signed(delta_width + 1))
-        m.d.comb += new_pll.eq(pll_reg - delta)
+        m.d.comb += new_pll.eq(pll_reg - effective_delta)
 
-        # Clamp new_pll to +/- MAX_PLL_ABS_Q13.
-        pll_max = Const(MAX_PLL_ABS_Q13, signed(self.pw))
-        pll_min = Const(-MAX_PLL_ABS_Q13, signed(self.pw))
+        # Clamp new_pll to +/- max_pll_abs.
+        max_abs = _resolve_max_pll_abs(self.max_pll_abs_q13, self.pw)
+        pll_max = Const(max_abs, signed(self.pw))
+        pll_min = Const(-max_abs, signed(self.pw))
         new_pll_clamped = Signal(signed(self.pw))
         with m.If(new_pll > pll_max):
             m.d.comb += new_pll_clamped.eq(pll_max)
@@ -355,6 +405,7 @@ class LsmPllUpdateLinearised(Elaboratable):
                 self.pll_strobe.eq(0),
                 raw_clamped_q.eq(0),
                 stage1_strobe.eq(0),
+                pending_hold.eq(0),
                 product.eq(0),
                 stage2_strobe.eq(0),
             ]
@@ -387,10 +438,18 @@ class LsmPllUpdate(Elaboratable):
         Width of the pll register / output. Default 16 (Q2.13,
         range +/- 2 with ULP 1.2e-4).
 
+    max_pll_abs_q13 : int or None
+        Accumulator clamp (Q2.13). ``None`` (default) uses the
+        module-level ``MAX_PLL_ABS_Q13``, read at elaboration.
+
     Inputs (sync domain):
         i_sym_in, q_sym_in : signed demod_width
         dibit_in           : Signal(2)
         symbol_strobe      : Signal()
+        hold_in            : Signal()  sampled with symbol_strobe;
+            1 = leave the accumulator unchanged for this symbol
+            (no-signal hold from LsmDemodLoop). pll_strobe still
+            fires, with the unchanged value.
 
     Outputs (sync domain):
         pll_out     : signed pll_width  Q2.13 -- updated pll value
@@ -404,15 +463,24 @@ class LsmPllUpdate(Elaboratable):
             per-step delta added to the pll register
     """
 
-    def __init__(self, *, demod_width=18, pll_width=16):
+    def __init__(self, *, demod_width=18, pll_width=16,
+                 max_pll_abs_q13=None):
         self.dw = demod_width
         self.pw = pll_width
+        self.max_pll_abs_q13 = max_pll_abs_q13
+        if max_pll_abs_q13 is not None:
+            _resolve_max_pll_abs(max_pll_abs_q13, pll_width)  # validate
 
         # ── Inputs ──────────────────────────────────────────────
         self.i_sym_in = Signal(signed(demod_width))
         self.q_sym_in = Signal(signed(demod_width))
         self.dibit_in = Signal(2)
         self.symbol_strobe = Signal()
+        # 2026-09-27: no-signal hold. Sampled on symbol_strobe and
+        # folded into the zero-input skip below, so a held symbol
+        # leaves pll_reg untouched. Driven by LsmDemodLoop from the
+        # AGC idle gate (see lsm_demod_loop.py, "PLL/timing hold").
+        self.hold_in = Signal()
         # Phase 8A: runtime reset. See LsmPllUpdateLinearised above.
         self.reset_in = Signal()
         # 2026-04-26: warm-start seed loaded into pll_reg on reset_in.
@@ -499,10 +567,15 @@ class LsmPllUpdate(Elaboratable):
         # ~13000 sync cycles apart (4800 sym/s on a ~62.5 MHz
         # core) and the CORDIC + post-stages finish in ~16 cycles
         # -- only one update is ever in flight.
+        #
+        # 2026-09-27: the same flag carries the no-signal hold
+        # (`hold_in`), which needs exactly the same "leave pll_reg
+        # alone for this symbol" behaviour.
         pending_skip = Signal()
         with m.If(self.symbol_strobe):
             m.d.sync += pending_skip.eq(
-                (self.i_sym_in == 0) & (self.q_sym_in == 0))
+                ((self.i_sym_in == 0) & (self.q_sym_in == 0))
+                | self.hold_in)
 
         # ── Stage 1: clamp CORDIC angle to +/- 0.3 rad (Q4.16) ──
         clamp_pos = Const(
@@ -578,9 +651,10 @@ class LsmPllUpdate(Elaboratable):
         new_pll = Signal(signed(delta_width + 1))
         m.d.comb += new_pll.eq(pll_reg - effective_delta)
 
-        # Clamp new_pll to +/- MAX_PLL_ABS_Q13.
-        pll_max = Const(MAX_PLL_ABS_Q13, signed(self.pw))
-        pll_min = Const(-MAX_PLL_ABS_Q13, signed(self.pw))
+        # Clamp new_pll to +/- max_pll_abs.
+        max_abs = _resolve_max_pll_abs(self.max_pll_abs_q13, self.pw)
+        pll_max = Const(max_abs, signed(self.pw))
+        pll_min = Const(-max_abs, signed(self.pw))
         new_pll_clamped = Signal(signed(self.pw))
         with m.If(new_pll > pll_max):
             m.d.comb += new_pll_clamped.eq(pll_max)

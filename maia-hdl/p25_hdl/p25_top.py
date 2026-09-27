@@ -114,7 +114,7 @@ from .config import P25Config
 from . import configs
 
 # IP core version
-_version = '0.1.0'
+_version = '0.2.0'
 
 
 class P25Core(Elaboratable):

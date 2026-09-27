@@ -43,7 +43,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-27-call-close-sd-057";
+pub const BUILD_TAG: &str = "2026-09-27-signal-hold-preempt-059";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -2091,6 +2091,9 @@ async fn main() -> anyhow::Result<()> {
     // drift over temperature without re-running stage A.
     #[cfg(target_os = "linux")]
     app::autoppm::spawn_periodic_fine_tune(state.clone());
+    // Traffic LSM PLL watchdog (resets a pinned / stale chain).
+    #[cfg(target_os = "linux")]
+    app::traffic_pll_watchdog::spawn(state.clone());
 
     // Start HTTP (and optionally HTTPS). HTTPS unlocks AudioWorklet
     // on the dashboard — browsers only expose it in secure contexts,

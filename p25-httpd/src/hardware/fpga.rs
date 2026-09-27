@@ -33,6 +33,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+use crate::hardware::core_version::CoreVersion;
 use crate::hardware::ddc_presets::DdcPreset;
 use crate::hardware::dibit_ring::{
     copy_plan, mono_us, ChainEpochSink, HwAction, RingGeometry, RingSnapshot,
@@ -107,6 +108,9 @@ pub struct IpCore {
     /// NCO write, LSM reset, enable/pause) for air-time epoch cuts and
     /// the traffic production clock. `None` until main wires it.
     traffic_epoch_sink: Option<Arc<dyn ChainEpochSink>>,
+
+    /// Change 059: `version` register, read once at `take`.
+    core_version: CoreVersion,
 }
 
 /// Change 054: the two P25 dibit rings.
@@ -145,12 +149,16 @@ impl IpCore {
 
         // Read version
         let ver = registers.version().read();
-        tracing::info!(
-            "P25 FPGA core v{}.{}.{} (platform {})",
+        let core_version = CoreVersion::new(
             ver.major().bits(),
             ver.minor().bits(),
             ver.bugfix().bits(),
+        );
+        tracing::info!(
+            "P25 FPGA core v{} (platform {}), LSM signal hold: {}",
+            core_version,
             ver.platform().bits(),
+            core_version.has_lsm_signal_hold(),
         );
 
         // De-assert SDR reset
@@ -205,10 +213,16 @@ impl IpCore {
             wideband_iq_last_addr: None,
             traffic_iq_last_addr: None,
             traffic_epoch_sink: None,
+            core_version,
         };
 
         let interrupt_handler = InterruptHandler::new(uio, interrupt_registers);
         Ok((ip_core, interrupt_handler))
+    }
+
+    /// Change 059: the core's `version` register (read at `take`).
+    pub fn core_version(&self) -> CoreVersion {
+        self.core_version
     }
 
     // ── Control channel DDC ──────────────────────────────────────

@@ -37,6 +37,8 @@
 #   rotate_sym   : LsmPllRotate        6E.6c -- current-symbol rotation
 #   gardner      : LsmGardnerTed       6E.6a -- timing error
 #   pll_update   : LsmPllUpdate        6E.6b -- PLL accumulator
+#   signal_hold  : LsmSignalHold       2026-09-27 -- PLL/timing hold
+#                                              on the AGC idle gate
 #
 # Why two `LsmPllRotate` instances rather than time-multiplexed
 # -----------------------------------------------------------
@@ -59,6 +61,50 @@
 # interpolated samples before the diff demod. See `lsm_agc.py` for
 # the full algorithm and Q-format derivation. The original Phase
 # 6E.6d "no AGC" note below is obsolete.
+#
+# PLL/timing hold on "no signal" (2026-09-27)
+# -------------------------------------------
+# The decision-directed PLL has stable points at bias + k*pi/2 and,
+# with the accumulator clamp above pi/4 (it was pi/3), absorbing
+# points at the clamp itself (once |pll| > pi/4 the slicer rotates
+# every dibit a quadrant and the phase error keeps pushing outward).
+# On a traffic channel the loop kept updating on the noise in the
+# carrier gaps between transmissions and walked into the clamp
+# within ~0.5 s (board, 2026-09-26: pll 288 -> 7051 -> 8333), so
+# the next transmission on the same channel decoded nothing until a
+# PS reset. The clamp is now 0.65 rad (lsm_pll_update.MAX_PLL_ABS),
+# which removes the absorbing ends for offsets under ~100 Hz: the
+# secondary guard for noise above the AGC gate, where the hold below
+# cannot engage.
+#
+# Fix: the AGC already decides per symbol whether there is signal
+# (its idle gate, `mag < mag_update_threshold`, which skips the gain
+# update). `LsmAgc.gated_out` publishes that decision and a small
+# hysteresis state machine (`LsmSignalHold`) turns it into `hold`:
+#
+#   - enter hold after `hold_enter_symbols` consecutive gated
+#     symbols (default HOLD_ENTER_SYMBOLS_DEFAULT);
+#   - leave hold after `hold_exit_symbols` consecutive non-gated
+#     symbols (default HOLD_EXIT_SYMBOLS_DEFAULT);
+#   - `reset_in` enters hold (a freshly tuned channel is treated
+#     as "no signal" until the exit run is seen).
+#
+# While held, the PLL accumulator is not updated (last locked value
+# kept, via `LsmPllUpdate.hold_in`) and the Gardner correction is
+# not applied to the interpolator (`timing_adj_strobe` masked; the
+# TED itself keeps running so its previous-symbol history is fresh
+# when the hold ends). The AGC gain is already frozen by the gate.
+# Everything else (interpolation, diff demod, rotation, slicing,
+# NID) runs unchanged, so the dibit stream is unaffected.
+#
+# Both loops track slowly varying quantities (a frequency offset
+# expressed as phase per symbol, and the symbol clock phase), so
+# freezing them across a fade or gap loses nothing: the value that
+# was right at the end of the last transmission on this channel is
+# right for the next one. `hold_exit_symbols = 0` removes the hold
+# logic at elaboration (legacy behaviour, bit-identical). The hold
+# only acts while the AGC is enabled and the gate threshold is
+# non-zero, because that is the only time `gated_out` can be 1.
 #
 # What 6E.6d did NOT do (historical — now addressed above)
 # --------------------------------------------------------
@@ -85,6 +131,18 @@ from .lsm_diff_demod_slicer import LsmDiffDemodSlicer
 from .lsm_pll_rotate import LsmPllRotate
 from .lsm_gardner_ted import LsmGardnerTed
 from .lsm_pll_update import LsmPllUpdate, LsmPllUpdateLinearised
+from .lsm_signal_hold import LsmSignalHold
+
+
+# PLL/timing hold hysteresis, in symbols (see the module comment).
+# Enter: a carrier gap is seen within 4 symbols (0.8 ms), so at most
+# 3 noise symbols reach the PLL (each moves it by <= 0.03 rad), while
+# isolated sub-threshold symbols inside a weak transmission do not
+# freeze tracking. Exit: 8 consecutive symbols above the gate
+# (1.7 ms); noise that crosses the gate a few percent of the time
+# essentially never produces such a run.
+HOLD_ENTER_SYMBOLS_DEFAULT = 4
+HOLD_EXIT_SYMBOLS_DEFAULT = 8
 
 
 class LsmDemodLoop(Elaboratable):
@@ -100,6 +158,12 @@ class LsmDemodLoop(Elaboratable):
         legacy small-angle linearised form (Phase 6E.6b) can be
         selected with ``'linearised'`` for the slip-resistance
         regression test in ``test_lsm_demod_loop.py``.
+    hold_enter_symbols, hold_exit_symbols : int
+        No-signal hold hysteresis (see the module comment).
+        ``hold_exit_symbols = 0`` disables the hold entirely.
+    max_pll_abs_q13 : int or None
+        PLL accumulator clamp override (Q2.13); ``None`` uses
+        ``lsm_pll_update.MAX_PLL_ABS_Q13``.
 
     Inputs (sync domain):
         re_in, im_in : signed 16  Q1.15 IQ at 31.25 kSPS (post-decimator,
@@ -125,6 +189,7 @@ class LsmDemodLoop(Elaboratable):
     Debug taps (sync domain):
         pll_dbg          : signed 16  Q2.13 (current PLL value)
         sample_point_dbg : signed 16  Q4.12 (current sample_point)
+        hold_dbg         : 1 while the PLL/timing hold is active
         i_sym_rot_dbg, q_sym_rot_dbg : signed 18  Q3.15 rotated current
             symbol diff demod -- the value the slicer + PLL update
             actually see.
@@ -133,12 +198,24 @@ class LsmDemodLoop(Elaboratable):
     def __init__(self, *, pll_mode='cordic',
                  agc_mag_update_threshold=MAG_UPDATE_THRESHOLD_DEFAULT,
                  sample_rate_hz=DEFAULT_LSM_SAMPLE_RATE_HZ,
-                 symbol_rate_hz=DEFAULT_LSM_SYMBOL_RATE_HZ):
+                 symbol_rate_hz=DEFAULT_LSM_SYMBOL_RATE_HZ,
+                 hold_enter_symbols=HOLD_ENTER_SYMBOLS_DEFAULT,
+                 hold_exit_symbols=HOLD_EXIT_SYMBOLS_DEFAULT,
+                 max_pll_abs_q13=None):
         if pll_mode not in ('cordic', 'linearised'):
             raise ValueError(
                 f"pll_mode must be 'cordic' or 'linearised', "
                 f"got {pll_mode!r}")
+        if hold_exit_symbols < 0 or (
+                hold_exit_symbols > 0 and hold_enter_symbols < 1):
+            raise ValueError(
+                f"hold_enter_symbols must be >= 1 and hold_exit_symbols"
+                f" >= 0, got {hold_enter_symbols!r}, "
+                f"{hold_exit_symbols!r}")
         self.pll_mode = pll_mode
+        self.hold_enter_symbols = hold_enter_symbols
+        self.hold_exit_symbols = hold_exit_symbols
+        self.max_pll_abs_q13 = max_pll_abs_q13
         # Forwarded to LsmAgc to set the idle-noise gate threshold.
         # See lsm_agc.MAG_UPDATE_THRESHOLD_DEFAULT docstring.
         self.agc_mag_update_threshold = agc_mag_update_threshold
@@ -210,6 +287,9 @@ class LsmDemodLoop(Elaboratable):
         # ── Debug taps ──────────────────────────────────────────
         self.pll_dbg = Signal(signed(16), reset_less=True)
         self.sample_point_dbg = Signal(signed(18), reset_less=True)
+        # 2026-09-27: PLL/timing hold state (sim/debug only; not in
+        # the register map).
+        self.hold_dbg = Signal()
         self.i_sym_rot_dbg = Signal(signed(18), reset_less=True)
         self.q_sym_rot_dbg = Signal(signed(18), reset_less=True)
         # Phase 10-prep: AGC debug taps exposed upstream for the
@@ -246,7 +326,8 @@ class LsmDemodLoop(Elaboratable):
             pll_update_cls = LsmPllUpdate
         else:
             pll_update_cls = LsmPllUpdateLinearised
-        m.submodules.pll_update = pll_update = pll_update_cls()
+        m.submodules.pll_update = pll_update = pll_update_cls(
+            max_pll_abs_q13=self.max_pll_abs_q13)
 
         # ── Phase 8A runtime reset fan-out ──────────────────────
         m.d.comb += [
@@ -354,10 +435,36 @@ class LsmDemodLoop(Elaboratable):
             gardner.symbol_strobe.eq(rotate_sym.strobe_out),
         ]
 
-        # Sample-point feedback to LsmTimingInterp.
+        # ── Stage 5c: PLL/timing hold on "no signal" ────────────
+        # See the module comment. `hold` is registered and changes
+        # only on `agc.decision_strobe_out`; the symbol it describes
+        # reaches `rotate_sym.strobe_out` (PLL update sample point)
+        # and the Gardner output a few cycles later, and the next
+        # AGC output is a full symbol period away, so both consumers
+        # see the decision for their own symbol.
+        if self.hold_exit_symbols > 0:
+            m.submodules.signal_hold = signal_hold = LsmSignalHold(
+                enter_symbols=self.hold_enter_symbols,
+                exit_symbols=self.hold_exit_symbols)
+            m.d.comb += [
+                signal_hold.strobe_in.eq(agc.decision_strobe_out),
+                signal_hold.gated_in.eq(agc.gated_out),
+                signal_hold.reset_in.eq(self.reset_in),
+            ]
+            hold = signal_hold.hold_out
+        else:
+            hold = Const(0, 1)
+        m.d.comb += [
+            pll_update.hold_in.eq(hold),
+            self.hold_dbg.eq(hold),
+        ]
+
+        # Sample-point feedback to LsmTimingInterp (not applied while
+        # held: on noise the TED output is a random walk).
         m.d.comb += [
             timing.timing_adj_in.eq(gardner.timing_adj_out),
-            timing.timing_adj_strobe_in.eq(gardner.timing_adj_strobe),
+            timing.timing_adj_strobe_in.eq(
+                gardner.timing_adj_strobe & ~hold),
         ]
 
         # ── Stage 5b: PLL update from rotated symbol + dibit ────

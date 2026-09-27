@@ -140,9 +140,6 @@ const QUEUED_GRANT_MAX_MS: u64 = 10_000;
 /// long (see `refollow_on_update`).
 pub const REFOLLOW_WINDOW_MS: u64 = 30_000;
 
-/// Traffic LSM PLL clamp in Q2.13 (π/3 rad/symbol, the HDL `MAX_PLL_ABS`).
-pub const TRAFFIC_PLL_CLAMP_Q213: i32 = 8579;
-
 /// Longest gap since the chain's last voice frame for which a
 /// same-frequency resume may coast on the chain's state.
 pub const COAST_MAX_IDLE_MS: u64 = 1_000;
@@ -157,9 +154,10 @@ pub const COAST_MAX_IDLE_MS: u64 = 1_000;
 /// clamp, then two calls with 0 IMBE). With 057's prompt close every
 /// same-channel call after a pause takes this path, so coast only while
 /// the chain carried voice within `COAST_MAX_IDLE_MS` and its PLL sits
-/// well inside the clamp.
-pub fn resume_needs_reset(pll_q213: i16, ms_since_voice: Option<u64>) -> bool {
-    let pll_hot = (pll_q213 as i32).abs() >= TRAFFIC_PLL_CLAMP_Q213 / 2;
+/// well inside the clamp (`clamp_q213`: the running gateware's,
+/// `CoreVersion::pll_clamp_q213`; change 059 lowered it to 0.65 rad).
+pub fn resume_needs_reset(pll_q213: i16, ms_since_voice: Option<u64>, clamp_q213: i32) -> bool {
+    let pll_hot = (pll_q213 as i32).abs() >= clamp_q213 / 2;
     let stale = ms_since_voice.map_or(true, |ms| ms > COAST_MAX_IDLE_MS);
     pll_hot || stale
 }
@@ -180,6 +178,7 @@ pub fn refollow_on_update(
     freq_hz: Option<u64>,
     chain_idle: bool,
     now_ms: u64,
+    window_ms: u64,
 ) -> bool {
     let Some((ltg, lfreq, at)) = last_timeout else {
         return false;
@@ -187,7 +186,49 @@ pub fn refollow_on_update(
     chain_idle
         && ltg == tg
         && freq_hz == Some(lfreq)
-        && now_ms.saturating_sub(at) <= REFOLLOW_WINDOW_MS
+        && now_ms.saturating_sub(at) <= window_ms
+}
+
+/// Change 059: `refollow_on_update` window for a grant the sticky gate
+/// rejected, from the reject. Voice starts ~0.5 s after the grant and a
+/// clear transmission lasts 1.8 s (median; p25 1.44 s, p75 3.06 s over the
+/// 241 of the Mode B corpus), so later updates mostly come from the
+/// system's hang after it: a re-follow then parks the one chain on a dead
+/// channel and the next real grant is rejected (bench 2026-09-27: TG 318
+/// re-followed 4.9 s after its reject, TG 319's grant 0.5 s later lost 99
+/// frames).
+pub const REFOLLOW_STICKY_MS: u64 = 2_000;
+
+/// Change 059: another TG's grant may pre-empt the locked call once the
+/// call's end-of-transmission marker has been pending this long. Long
+/// enough for the resumed-voice check (two voice NIDs within 400 ms)
+/// to cancel a contradicted marker, and still before SDRTrunk frees its
+/// channel (1.13-1.65 s after the last voice, p5-p90 over the 213
+/// traffic recordings of the Mode B corpus; the marker arrives ~0.2-0.5 s
+/// after the last voice).
+pub const END_PREEMPT_AFTER_MS: u64 = 600;
+
+/// Change 059: the active call's pending end-of-transmission marker as
+/// published by the lifecycle for the follower (`ImbeForwarder::
+/// active_end_marker`): `(tg << 48) | receipt unix ms`, 0 = none.
+pub fn pack_end_marker(tg: u16, at_ms: u64) -> u64 {
+    ((tg as u64) << 48) | (at_ms & ((1 << 48) - 1))
+}
+
+pub fn unpack_end_marker(v: u64) -> Option<(u16, u64)> {
+    (v != 0).then(|| ((v >> 48) as u16, v & ((1 << 48) - 1)))
+}
+
+/// Change 059: may a grant for another TG pre-empt the call locked on
+/// `locked_tg`? Only once that call's transmission has ended (its end
+/// marker pending for `END_PREEMPT_AFTER_MS`): the lifecycle would keep
+/// the chain `end_grace_ms` (2 s) longer for a same-TG continuation, and
+/// the sticky gate rejected the other TG's grant meanwhile (Mode B
+/// corpus 2026-09-27: 3 transmissions lost, granted 0.1-0.6 s after
+/// SDRTrunk had freed its channel).
+pub fn end_marker_frees_chain(locked_tg: u16, marker: Option<(u16, u64)>, now_ms: u64) -> bool {
+    matches!(marker, Some((tg, at))
+        if tg == locked_tg && now_ms.saturating_sub(at) >= END_PREEMPT_AFTER_MS)
 }
 
 /// 2026-04-27 dedup window for primary GRP_VCH_GRANT arrivals.
@@ -583,6 +624,12 @@ fn mirror_active(
     forwarder: &Arc<ImbeForwarder>,
     policy: &CallPolicy,
 ) {
+    // Change 059: the pending end marker, for the follower's sticky gate
+    // (`end_marker_frees_chain`).
+    let marker = active.as_ref()
+        .filter(|c| c.end_at_ms != 0)
+        .map_or(0, |c| pack_end_marker(c.tg, c.end_at_ms));
+    forwarder.active_end_marker.store(marker, Ordering::Relaxed);
     if let Ok(mut s) = shared.lock() {
         *s = active.as_ref().map(|c| {
             let (close_at, via, window) = c.close_plan(policy.hang_ms(), policy.end_grace_ms());
@@ -1759,6 +1806,9 @@ pub fn spawn_grant_follower(
             // lifecycle last closed by `Timeout`, for
             // `refollow_on_update`.
             let mut last_timeout_close: Option<(u16, u64, u64)> = None;
+            // Change 059: (TG, frequency, unix ms) of the newest clear
+            // grant the sticky gate rejected, for the same re-follow.
+            let mut last_sticky_reject: Option<(u16, u64, u64)> = None;
 
             loop {
                 tokio::select! {
@@ -1882,26 +1932,56 @@ pub fn spawn_grant_follower(
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_millis() as u64)
                                         .unwrap_or(0);
-                                    if super::refollow_on_update(
+                                    let refollow_timeout = super::refollow_on_update(
                                         last_timeout_close,
                                         g.talkgroup.0,
                                         g.frequency_hz,
                                         chain_tg.is_none(),
                                         now_ms,
-                                    ) {
-                                        last_timeout_close = None;
+                                        super::REFOLLOW_WINDOW_MS,
+                                    );
+                                    // Change 059: likewise a clear grant the
+                                    // sticky gate rejected, once the chain is
+                                    // idle or its call has ended (the rest of
+                                    // that transmission is still on the air).
+                                    let chain_free = chain_tg.map_or(true, |t| {
+                                        super::end_marker_frees_chain(
+                                            t.0,
+                                            super::unpack_end_marker(
+                                                follower_imbe.active_end_marker
+                                                    .load(Ordering::Relaxed)),
+                                            now_ms,
+                                        )
+                                    });
+                                    let refollow_sticky = !refollow_timeout
+                                        && super::refollow_on_update(
+                                            last_sticky_reject,
+                                            g.talkgroup.0,
+                                            g.frequency_hz,
+                                            chain_free,
+                                            now_ms,
+                                            super::REFOLLOW_STICKY_MS,
+                                        );
+                                    if refollow_timeout || refollow_sticky {
+                                        let (why, reason) = if refollow_timeout {
+                                            last_timeout_close = None;
+                                            ("call closed by timeout", "refollow_on_update")
+                                        } else {
+                                            last_sticky_reject = None;
+                                            ("rejected while the chain was busy", "refollow_after_sticky")
+                                        };
                                         follower_event_log.push(
                                             LogCategory::Traffic,
                                             format!(
                                                 "re-follow TG={} on grant update {:.4} MHz \
-                                                 (call closed by timeout, still announced)",
-                                                g.talkgroup.0, freq_mhz,
+                                                 ({}, still announced)",
+                                                g.talkgroup.0, freq_mhz, why,
                                             ),
                                             serde_json::json!({
                                                 "tg":        g.talkgroup.0,
                                                 "channel":   g.channel.0,
                                                 "frequency": g.frequency_hz,
-                                                "reason":    "refollow_on_update",
+                                                "reason":    reason,
                                             }),
                                         );
                                         let mut regrant = g.clone();
@@ -2206,8 +2286,53 @@ pub fn spawn_grant_follower(
                                 // detection should have caught it —
                                 // missing log = missing-data bug).
                                 let locked_tg_final = mgr.current_talkgroup();
+                                // Change 059: the locked call's transmission
+                                // has ended (end marker pending for
+                                // `END_PREEMPT_AFTER_MS`): the other TG's
+                                // grant takes the chain now instead of
+                                // after the lifecycle's `end_grace_ms`.
+                                let end_marker = super::unpack_end_marker(
+                                    follower_imbe.active_end_marker.load(Ordering::Relaxed));
+                                if let Some(tg) = locked_tg_final.filter(|t| {
+                                    t.0 != g.talkgroup.0
+                                        && super::end_marker_frees_chain(
+                                            t.0, end_marker, now_unix_ms())
+                                }) {
+                                    let ended_ms = end_marker
+                                        .map_or(0, |(_, at)| now_unix_ms().saturating_sub(at));
+                                    follower_event_log.push(
+                                        LogCategory::Traffic,
+                                        format!(
+                                            "pre-empt: TG={} ended {} ms ago (end marker), \
+                                             follow TG={}",
+                                            tg.0, ended_ms, g.talkgroup.0,
+                                        ),
+                                        serde_json::json!({
+                                            "prev_tg":  tg.0,
+                                            "new_tg":   g.talkgroup.0,
+                                            "ended_ms": ended_ms,
+                                            "reason":   "end_marker_preempt",
+                                        }),
+                                    );
+                                    mgr.force_idle();
+                                    follower_imbe.current_talkgroup
+                                        .store(0, Ordering::Relaxed);
+                                    // Change 054: the old TG's lock ends
+                                    // here on the air-time axis.
+                                    follower_imbe.mark_epoch(
+                                        EpochKind::TgChange, false);
+                                }
+                                let locked_tg_final = mgr.current_talkgroup();
                                 if let Some(tg) = locked_tg_final {
                                     if tg.0 != g.talkgroup.0 {
+                                        // Change 059: remember a clear grant
+                                        // (the encrypted gate is above) for
+                                        // `refollow_on_update` once the chain
+                                        // frees up.
+                                        if let Some(f) = g.frequency_hz {
+                                            last_sticky_reject =
+                                                Some((g.talkgroup.0, f, now_unix_ms()));
+                                        }
                                         let parked_freq = follower_imbe
                                             .current_frequency_hz
                                             .load(Ordering::Relaxed);
@@ -2615,12 +2740,12 @@ pub fn spawn_grant_follower(
                                     let now_ms = now_unix_ms();
                                     let ms_since_voice = (last_imbe != 0)
                                         .then(|| now_ms.saturating_sub(last_imbe));
-                                    let pll_pre = {
+                                    let (pll_pre, clamp) = {
                                         let core = follower_core.lock().await;
                                         let (pre, _) = core.traffic_lsm_debug();
-                                        pre
+                                        (pre, core.core_version().pll_clamp_q213())
                                     };
-                                    let reset = resume_needs_reset(pll_pre, ms_since_voice);
+                                    let reset = resume_needs_reset(pll_pre, ms_since_voice, clamp);
                                     // Change 057: an encrypted teardown
                                     // paused the chain (lsm_enable = 0)
                                     // and the coast path writes no NCO,
