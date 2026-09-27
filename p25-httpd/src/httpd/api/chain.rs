@@ -273,14 +273,15 @@ pub async fn get_traffic_dibit_capture_aligned(
 // determine whether the X-pattern is upstream of our demod loop.
 // Also used for eye-plot offline analysis.
 //
-// Sample rate is fixed at post-DDC 62.5 kSPS on both chains; the
-// same value is exported by spectrum::SAMPLE_RATE_HZ.
+// Sample rate is the post-DDC rate of both chains (50 kSPS since the
+// 2026-05-03 retune; it was labelled 62.5 kSPS until 2026-09-27, so
+// older dumps play 25 % fast and hold 1.25× the requested seconds).
 
-/// Post-DDC sample rate on both chains. Matches spectrum::SAMPLE_RATE_HZ.
-const IQ_DUMP_SAMPLE_RATE_HZ: u32 = 62_500;
+/// Post-DDC sample rate on both chains.
+const IQ_DUMP_SAMPLE_RATE_HZ: u32 = crate::hardware::ddc_rate::DDC_OUTPUT_RATE_HZ;
 
-/// Maximum seconds per /api/*_iq_dump request. 60 s × 62.5 kSPS ×
-/// 4 bytes = 14.6 MB; higher values blow HTTP client timeouts and
+/// Maximum seconds per /api/*_iq_dump request. 60 s × 50 kSPS ×
+/// 4 bytes = 12 MB; higher values blow HTTP client timeouts and
 /// are better served by multiple back-to-back calls.
 const IQ_DUMP_MAX_SECONDS: u32 = 60;
 
@@ -367,7 +368,7 @@ fn wav_response(wav: Vec<u8>, chain: &str, seconds: u32) -> Response {
 /// `GET /api/control_iq_dump?seconds=N`
 ///
 /// Captures N seconds of post-DDC complex IQ from the control chain's
-/// `iq_dma` ring (62.5 kSPS) and returns it as a PCM WAV file with
+/// `iq_dma` ring (50 kSPS) and returns it as a PCM WAV file with
 /// I=left, Q=right. `seconds` defaults to 5, clamps to 1..60.
 ///
 /// The ring emits 32 KB sub-buffers (8192 complex samples ≈ 131 ms)

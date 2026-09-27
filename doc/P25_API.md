@@ -134,7 +134,7 @@ completes); the call list shows them as `not_recorded`; the recorder log says
 | `/api/traffic_dibit_capture` | GET | JSON | Same shape, traffic-chain LSM decoder |
 | `/api/control_dibit_capture_aligned` | GET | JSON | Next-sync-aligned capture with sync + NID + TSDU body + BCH result |
 | `/api/traffic_dibit_capture_aligned` | GET | JSON | Same alignment scheme, traffic side |
-| `/api/control_iq_dump` | GET | WAV (audio/wav) | Post-DDC complex IQ samples as a WAV file (stereo i16 @ 62.5 kSPS, I=L/Q=R). `?seconds=N` (1..60, default 5). SDRTrunk-ingestible |
+| `/api/control_iq_dump` | GET | WAV (audio/wav) | Post-DDC complex IQ samples as a WAV file (stereo i16 @ 50 kSPS, I=L/Q=R; labelled 62.5 kSPS before 2026-09-27, so older dumps play 25 % fast). `?seconds=N` (1..60, default 5). SDRTrunk-ingestible |
 | `/api/traffic_iq_dump` | GET | WAV (audio/wav) | Same as control side, centered on the follower's current NCO offset |
 | `/api/control_lsm_control` | GET | JSON | Read all 4 control-chain `lsm_control` bits (enable / dma_enable / dc_block / agc). `?dc_block=0\|1` toggles DC blocker |
 | `/api/traffic_lsm_control` | GET | JSON | Same, traffic chain. `?dc_block=0\|1` and `?agc=0\|1` writable |
@@ -168,7 +168,7 @@ divergence diff. Companion host tool: [`tools/p25_forensics_pull.py`](../tools/p
 |---|---|---|---|
 | `/ws/events` | WS upgrade | JSON text | Real-time event stream (`TsbkEvent` + system events). **Stage 2**: synthetic `{"event_type":"ws_lag"}` frame sent when the broadcast channel overruns a slow consumer, so the connection stays up instead of closing |
 | `/ws/audio` | WS upgrade | binary + text control | Vocoded PCM at 8 kHz 16-bit mono, 320-byte binary frames (160 samples = 20 ms per frame). **Stage 2**: on Lagged, server sends a text control frame `{"type":"lag","skipped":N}` so the client can flush its jitter buffer |
-| `/ws/iq` | WS upgrade | binary + text hello | Complex IQ from the selected chain + source. Query params: `?chain=control\|traffic&source=post_ddc\|post_lsm`. `post_ddc` (default, 62.5 kSPS) streams unfiltered DDC output; `post_lsm` (31.25 kSPS) streams the RRC matched-filter output for matched-filter eye plots (Phase 10.6, 2026-04-18). First message is a JSON hello: `{"type":"hello","sample_rate_hz":<sr>,"format":"i16le-iq-stereo","chain":"...","source":"...","buf_bytes":32768}`. Subsequent messages are binary, one 32 KB sub-buffer each (8192 complex i16 samples). **Single-consumer today** — multiple subscribers race for ring sub-buffers; multi-consumer broadcast is a follow-up if the race becomes measurable |
+| `/ws/iq` | WS upgrade | binary + text hello | Complex IQ from the selected chain + source. Query params: `?chain=control\|traffic&source=pre_diff`. `pre_diff` (the only live source since Phase 10.8) streams the LSM demod after rotate + AGC and before the diff demod, at 9.6 kSPS (2 samples/symbol), for eye plots. The `post_ddc` / `post_lsm` rings are gone from the bitstream. First message is a JSON hello: `{"type":"hello","sample_rate_hz":<sr>,"format":"i16le-iq-stereo","chain":"...","source":"...","buf_bytes":32768}`. Subsequent messages are binary, one 32 KB sub-buffer each (8192 complex i16 samples). **Single-consumer today** — multiple subscribers race for ring sub-buffers; multi-consumer broadcast is a follow-up if the race becomes measurable |
 
 ### Client reconnect guidance
 

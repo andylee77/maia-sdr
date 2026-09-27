@@ -20,10 +20,9 @@
 
 use super::Complex32;
 
-/// Sample rate of the post-DDC IQ stream coming out of the iq_dma ring.
-/// Defined by the FPGA DDC chain (`fpga.rs::P25_DEC1*P25_DEC2*P25_DEC3 =
-/// 128x` from 8 MSPS).
-pub const IQ_DMA_SAMPLE_RATE_HZ: f32 = 62_500.0;
+/// Sample rate of the post-DDC IQ stream coming out of the iq_dma ring:
+/// every DDC preset decimates to it (see `hardware::ddc_rate`).
+pub const IQ_DMA_SAMPLE_RATE_HZ: f32 = crate::hardware::ddc_rate::DDC_OUTPUT_RATE_HZ as f32;
 
 /// Convert a single iq_dma sub-buffer (`&[u8]`) to a `Vec<Complex32>`.
 ///

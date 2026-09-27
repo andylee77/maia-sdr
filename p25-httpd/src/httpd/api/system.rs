@@ -278,7 +278,7 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
         method: "GET",
         path: "/api/control_iq_dump",
         params: "?seconds=N (1..60, default 5)",
-        description: "Post-DDC complex IQ from the control chain as a WAV file (stereo i16 @ 62.5 kSPS, I=L / Q=R). SDRTrunk-ingestible.",
+        description: "Post-DDC complex IQ from the control chain as a WAV file (stereo i16 @ 50 kSPS, I=L / Q=R). SDRTrunk-ingestible.",
     },
     EndpointDoc {
         method: "GET",
@@ -523,8 +523,8 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     EndpointDoc {
         method: "GET",
         path: "/ws/iq",
-        params: "?chain=control|traffic&source=post_ddc|post_lsm",
-        description: "WebSocket binary stream of IQ sub-buffers (32 KB each, i16 LE interleaved). source=post_ddc (default, 62.5 kSPS unfiltered) or post_lsm (31.25 kSPS, matched-filter output — the eye-plot source). Hello text frame on connect.",
+        params: "?chain=control|traffic&source=pre_diff",
+        description: "WebSocket binary stream of IQ sub-buffers (32 KB each, i16 LE interleaved). source=pre_diff (the only live source since Phase 10.8): LSM demod after rotate + AGC, before the diff demod, 9.6 kSPS (2 samples/symbol) — the eye-plot source. Hello text frame on connect.",
     },
 ];
 

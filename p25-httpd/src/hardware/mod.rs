@@ -8,6 +8,8 @@
 //! even on host builds where `fpga.rs` is stubbed out.
 
 pub mod ddc_presets;
+/// Post-DDC sample rates (single source for every rate label).
+pub mod ddc_rate;
 /// Change 054: portable dibit ring position math + production clock
 /// (host-tested; used by the Linux readers and `fpga::IpCore`).
 pub mod dibit_ring;

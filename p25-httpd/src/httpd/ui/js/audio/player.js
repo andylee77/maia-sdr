@@ -98,8 +98,7 @@ class Player {
     this.mode = 'spn';
     const s = this.spn = {
       ring: new Float32Array(RING), w: 0, r: 0, avail: 0, frac: 0,
-      base: 8000 / this.ctx.sampleRate, priming: true, underruns: 0, inRun: false,
-      empty: 0, reprime: Math.max(4800, Math.round(this.ctx.sampleRate * 2)),
+      base: 8000 / this.ctx.sampleRate, priming: true, underruns: 0, dryAt: 0,
     };
     this.node = this.ctx.createScriptProcessor(1024, 0, 1);
     this.node.onaudioprocess = e => spnProcess(s, e.outputBuffer.getChannelData(0));
@@ -146,6 +145,9 @@ class Player {
 
 function spnWrite(s, i16) {
   if (!s) return;
+  // Underrun = dry ring refilled within 300 ms (see sources.js).
+  if (s.dryAt && performance.now() - s.dryAt < 300) s.underruns++;
+  s.dryAt = 0;
   for (let i = 0; i < i16.length; i++) {
     s.ring[s.w] = i16[i] / 32768;
     s.w = (s.w + 1) % RING;
@@ -160,13 +162,9 @@ function spnProcess(s, out) {
   dev = Math.max(-MAXDEV, Math.min(MAXDEV, dev));
   const ratio = s.base * (1 + dev);
   for (let i = 0; i < out.length; i++) {
-    if (s.avail <= 1) {
-      out[i] = 0;
-      if (!s.inRun) { s.underruns++; s.inRun = true; }
-      if (++s.empty >= s.reprime) { s.priming = true; s.empty = 0; s.inRun = false; out.fill(0, i); return; }
-      continue;
-    }
-    s.empty = 0; s.inRun = false;
+    // Dry: re-prime at once (see sources.js) so the next transmission
+    // starts with the full 150 ms buffer.
+    if (s.avail <= 1) { s.dryAt = performance.now(); s.priming = true; out.fill(0, i); return; }
     const a = s.ring[s.r], b = s.ring[(s.r + 1) % RING];
     out[i] = a + (b - a) * s.frac;
     s.frac += ratio;

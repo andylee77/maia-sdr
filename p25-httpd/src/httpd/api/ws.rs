@@ -186,8 +186,9 @@ pub async fn handle_ws_audio(
 
 // ── /ws/iq : post-DDC IQ streaming (2026-04-18) ─────────────────────────
 //
-// Pushes raw post-DDC IQ sub-buffers (32 KB each, 8192 complex samples
-// at 62.5 kSPS ≈ 131 ms) as binary WebSocket frames. Layout is the
+// Pushes IQ sub-buffers (32 KB each, 8192 complex samples) as binary
+// WebSocket frames; since Phase 10.8 the only source is `pre_diff` at
+// 9.6 kSPS (≈ 853 ms per frame). Layout is the
 // iq_dma ring's native format — little-endian i16 interleaved
 // (re, im), same as /api/control_iq_dump minus the WAV header.
 //

@@ -216,7 +216,7 @@ impl IpCore {
     /// Configures the complete DDC: FIR coefficients, decimation, NCO.
     ///
     /// `preset` selects the AD9361 sample rate and the matching FIR
-    /// coefficient / decimation tables. Every preset produces 62.5 kSPS
+    /// coefficient / decimation tables. Every preset produces 50 kSPS
     /// at the DDC output by construction, so the downstream LSM chain
     /// stays valid across preset changes. `frequency_hz` is the NCO
     /// offset from the RX LO at `preset.sample_rate_hz`.

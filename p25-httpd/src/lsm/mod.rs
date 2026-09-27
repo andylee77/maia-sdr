@@ -42,11 +42,11 @@
 //! ```text
 //!   iq_dma ring   →  ring::IqRingReader   (i16[] → Complex32[])
 //!                       ↓
-//!                    filters::decimate_by_2   62.5 → 31.25 kSPS
+//!                    filters::decimate_by_2   50 → 25 kSPS
 //!                       ↓
-//!                    filters::apply_real_fir_complex(LPF_TAPS_31250)
+//!                    filters::apply_real_fir_complex(LPF_TAPS_25K)
 //!                       ↓
-//!                    filters::apply_real_fir_complex(RRC_TAPS_31250)
+//!                    filters::apply_real_fir_complex(RRC_TAPS_25K)
 //!                       ↓
 //!                    demod::demod_lsm   (AGC + PLL + Gardner + slicer)
 //!                       ↓
@@ -221,7 +221,7 @@ pub struct LsmStats {
 
     /// Total LSM task wakes (== iq_dma interrupts serviced).
     pub wakeups: u64,
-    /// Cumulative IQ samples drained from the iq_dma ring at 62.5 kSPS.
+    /// Cumulative IQ samples drained from the iq_dma ring at 50 kSPS.
     pub iq_samples: u64,
     /// Cumulative post-RRC demodulated dibits at 4800 sym/s.
     pub dibits: u64,

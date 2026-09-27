@@ -16,7 +16,7 @@ parameterised extensions of the same design philosophy:
 
   * Stage 3 is always the critical anti-alias for LsmDecimator2's
     naive /2 fold-back. Passband 7.25 kHz (SDRTrunk baseband LPF
-    edge), stopband 31.25 kHz (= output Nyquist), driven hard by a
+    edge), stopband 25 kHz (= output Nyquist at 50 kSPS), driven hard by a
     220 dB weight target so remez spends the full 256-tap budget on
     the steepest equiripple transition.
 

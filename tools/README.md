@@ -91,7 +91,7 @@ python tools/sdrtrunk_timeline_analyze.py \
 
 | Script | Purpose |
 |---|---|
-| [`p25_ddc_filter_design.py`](p25_ddc_filter_design.py) | P25DDC filter design, multi-preset sweep across AD9361 ADC rates. Designs the 3-stage DDC for control + traffic chains, every preset producing 62.5 kSPS DDC output. |
+| [`p25_ddc_filter_design.py`](p25_ddc_filter_design.py) | P25DDC filter design, multi-preset sweep across AD9361 ADC rates. Designs the 3-stage DDC for control + traffic chains, every preset producing 50 kSPS DDC output (62.5 kSPS before the 2026-05-03 retune). |
 
 ## Retune / settle / lock diagnostics
 

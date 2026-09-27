@@ -250,7 +250,7 @@ struct Args {
 
     /// DDC preset name at boot. Controls AD9361 sample rate, RF
     /// bandwidth, and per-stage FIR coefficients. Every preset
-    /// produces 62.5 kSPS at the DDC output; the choice is between
+    /// produces 50 kSPS at the DDC output; the choice is between
     /// NCO window width (= sample_rate/2) and FPGA / AD9361 load.
     /// Runtime retune via `POST /api/preset`. Known names are listed
     /// by `GET /api/presets`; see `hardware/ddc_presets.rs`.
@@ -1105,8 +1105,8 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 // iq_dma health: AW address advance + last_buffer
-                // rollover rate. Healthy = ~5 KB/tick
-                // (62.5kSPS*4B / 60Hz). Stuck or <50% = write side
+                // rollover rate. Healthy = ~3.3 KB/tick
+                // (50kSPS*4B / 60Hz). Stuck or <50% = write side
                 // stalled. Ring wraps every 32 KB so a single tick
                 // shouldn't advance by more than 8 KB; the 0x10000
                 // guard filters spurious backward jumps from CDC races.

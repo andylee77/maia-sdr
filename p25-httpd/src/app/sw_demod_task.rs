@@ -79,7 +79,7 @@ pub fn spawn_sw_demod(
     tokio::spawn(async move {
         tracing::info!(
             target: "p25_sw_demod",
-            "live software demod task started (8 MSPS → 62.5 kSPS DDC + LsmPipeline)"
+            "live software demod task started (8 MSPS → 25 kSPS DDC + LsmPipeline)"
         );
 
         // DDC starts with NCO=0 (no target). LsmPipeline starts in

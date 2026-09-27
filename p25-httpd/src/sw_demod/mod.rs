@@ -5,7 +5,7 @@
 //! runs:
 //!
 //! ```text
-//!   StreamingSoftwareDdc  (NCO + Kaiser LPF + integer decimation, 8 MSPS → 62.5 kSPS)
+//!   MultistageDdc         (NCO + multistage FIR decimation, 8 MSPS → 25 kSPS)
 //!     → LsmPipeline        (lsm/ — decim/2 → LPF → RRC → Costas+AGC+Gardner+slicer+diff)
 //!     → ControlChannelDecoder (framer)
 //!     → ImbeForwarder      (existing — feeds vocoder + audio_tx)

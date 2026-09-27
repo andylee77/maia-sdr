@@ -4,8 +4,8 @@
 //! `iq_dma` ring (0x1900_0000) or the traffic-chain `traffic_iq_dma`
 //! ring (0x1C00_0000, added 2026-04-16), runs a 4096-point Cooley-
 //! Tukey radix-2 FFT with a Hann window, and returns the magnitude
-//! spectrum in dB. Span is ±31.25 kHz around the respective channel
-//! center (post-DDC sample rate is 62.5 kSPS on both chains).
+//! spectrum in dB. Span is ±25 kHz around the respective channel
+//! center (post-DDC sample rate is 50 kSPS on both chains).
 //!
 //! This is the SDRTrunk-style "debug-decoder" narrow spectrum view:
 //! lets the user see the P25 channel shape, adjacent-channel
@@ -23,26 +23,26 @@
 use std::f32::consts::PI;
 
 /// Default FFT size when the client omits `?fft=`. 4096 complex
-/// samples → ~15 Hz bin width at 62.5 kSPS.
+/// samples → ~12 Hz bin width at 50 kSPS.
 pub const DEFAULT_FFT_SIZE: usize = 4096;
 
 /// Legal FFT sizes for `?fft=`. Must be power-of-two (radix-2
 /// Cooley-Tukey) and bounded above by a value that keeps the per-
 /// request work on the Zynq-7020 Cortex-A9 cheap enough for live
-/// polling. 16384 is ~3.8 Hz bin width at 62.5 kSPS — plenty for
+/// polling. 16384 is ~3.1 Hz bin width at 50 kSPS — plenty for
 /// P25 channel-shape analysis.
 pub const LEGAL_FFT_SIZES: &[usize] = &[1024, 2048, 4096, 8192, 16384];
 
 /// Sample rate of the post-DDC IQ stream. Both chains run at this
-/// rate (control DDC / traffic DDC both terminate at 62.5 kSPS).
-pub const SAMPLE_RATE_HZ: f32 = 62_500.0;
+/// rate (control DDC / traffic DDC both terminate at 50 kSPS).
+pub const SAMPLE_RATE_HZ: f32 = crate::hardware::ddc_rate::DDC_OUTPUT_RATE_HZ as f32;
 
 /// Default non-overlapping-segment averages per `/api/spectrum` call.
 /// 1 = raw single-FFT snapshot (original behaviour).
 pub const DEFAULT_AVERAGES: usize = 1;
 
 /// Upper bound on averages × fft_size. Keeps total IQ-sample demand
-/// ≤ ~1 second at 62.5 kSPS so the handler doesn't block waiting for
+/// ≤ ~1.3 seconds at 50 kSPS so the handler doesn't block waiting for
 /// the iq_dma ring to fill. Clients requesting more get clamped and
 /// the actual `averages` used is echoed in the response.
 pub const MAX_TOTAL_SAMPLES: usize = 65_536;
@@ -142,7 +142,7 @@ pub struct Snapshot {
     /// Magnitudes in dBFS, fftshifted so bin 0 is the most-negative
     /// frequency and bin n-1 is the most-positive. Length = `fft_size`.
     pub mag_db: Vec<f32>,
-    /// Sample rate in Hz (constant 62.5 kHz for both chains today).
+    /// Sample rate in Hz (the post-DDC rate of both chains, 50 kSPS).
     pub sample_rate_hz: f32,
     /// FFT length actually used.
     pub fft_size: usize,

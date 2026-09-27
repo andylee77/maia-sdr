@@ -94,7 +94,7 @@ pub async fn get_presets(
         "current":        cur.name,
         "default":        ddc_presets::DEFAULT_PRESET.name,
         "center_locked":  state.center_locked.load(Ordering::Relaxed),
-        "note":           "Every preset produces 62.5 kSPS at the DDC \
+        "note":           "Every preset produces 50 kSPS at the DDC \
                            output by construction. Preset choice controls \
                            AD9361 sample rate + RF bandwidth + the NCO \
                            window width (= sample_rate/2).",

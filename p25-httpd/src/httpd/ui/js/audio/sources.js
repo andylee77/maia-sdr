@@ -5,9 +5,10 @@
 //   net -> Worker (own thread, WebSocket) -> MessagePort -> AudioWorklet
 //
 // The worklet keeps an 8 kHz ring and resamples continuously to the
-// context rate with a slow PLL on ring fill (target 150 ms: the audio
-// pacer delivers 20 ms chunks, but LDU bursts are 180 ms). An empty
-// ring plays silence; only a 2 s stall re-primes.
+// context rate with a slow PLL on ring fill (target 150 ms). An empty
+// ring re-primes at once: the next transmission (often < 1 s after the
+// last) waits for 150 ms of audio instead of playing each 20 ms frame
+// as it lands, which the old 2 s rule made choppy (bench 2026-09-27).
 
 export const WORKLET_SRC = `
 class P25Audio extends AudioWorkletProcessor {
@@ -17,8 +18,7 @@ class P25Audio extends AudioWorkletProcessor {
     this.w = 0; this.r = 0; this.avail = 0; this.frac = 0;
     this.base = 8000 / sampleRate; this.ratio = this.base;
     this.TARGET = 1200; this.KP = 4e-5; this.MAXDEV = 0.005;
-    this.priming = true; this.underruns = 0; this.inRun = false;
-    this.empty = 0; this.REPRIME = Math.max(4800, Math.round(sampleRate * 2));
+    this.priming = true; this.underruns = 0; this.dryAt = -1;
     this.port.onmessage = ev => {
       const m = ev.data;
       if (m && m.type === 'attach') {
@@ -33,6 +33,10 @@ class P25Audio extends AudioWorkletProcessor {
   push(m) {
     if (!m || m.type !== 'pcm') return;
     const d = m.data;
+    // An underrun is a dry ring that audio refills within 300 ms (a gap
+    // inside a transmission), not the silence after one ends.
+    if (this.dryAt >= 0 && currentTime - this.dryAt < 0.3) this.underruns++;
+    this.dryAt = -1;
     for (let i = 0; i < d.length; i++) {
       this.ring[this.w] = d[i];
       this.w = (this.w + 1) % this.RING;
@@ -49,12 +53,8 @@ class P25Audio extends AudioWorkletProcessor {
     this.ratio = this.base * (1 + dev);
     for (let i = 0; i < out.length; i++) {
       if (this.avail <= 1) {
-        out[i] = 0;
-        if (!this.inRun) { this.underruns++; this.inRun = true; }
-        if (++this.empty >= this.REPRIME) { this.priming = true; this.empty = 0; this.inRun = false; out.fill(0, i); return true; }
-        continue;
+        this.dryAt = currentTime; this.priming = true; out.fill(0, i); return true;
       }
-      this.empty = 0; this.inRun = false;
       const a = this.ring[this.r], b = this.ring[(this.r + 1) % this.RING];
       out[i] = a + (b - a) * this.frac;
       this.frac += this.ratio;

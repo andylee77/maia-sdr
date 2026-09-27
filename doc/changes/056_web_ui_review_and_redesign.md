@@ -561,6 +561,49 @@ Every production caller stamps a cut with "now", so record order is program orde
 `cuts_reordered` counter. The floor resets on mode hand-over and resync. A regression
 test replays the exact sequence: `estimate_jitter_never_reorders_cuts_against_record_order`.
 
+### 3.6 Follow-up fixes (2026-09-27)
+
+**Post-DDC rate labels: 62.5 → 50 kSPS.** The 2026-05-03 retune moved every DDC preset
+to 50 kSPS (then /2 to 25 kSPS at the LSM front end, matching SDRTrunk), but several
+constants kept the old 62.5 kSPS.
+
+- *Measured on the bench:* the control chain's post-DDC IQ carries the 4800 sym/s line
+  at 0.09600 cycles/sample, 53 dB clear, which is exactly 50 000 samples/s. A "4 s" dump
+  also held 250 000 samples and took 5.3 s to arrive.
+- *What was wrong:*
+  - `/api/control_iq_dump` / `traffic_iq_dump` wrote 62.5 kHz WAV headers and sized
+    captures at 62.5k per second. Dumps played 25 % fast in SDRTrunk and tools
+    (symbol rate read as 6000) and held 1.25× the requested time.
+  - `/api/spectrum` reported `sample_rate_hz` 62500, so the span was drawn ±31.25 kHz
+    instead of ±25 kHz.
+  - The `/api/presets` note and the endpoint catalogue said 62.5k. The `/ws/iq`
+    catalogue entry still described the retired `post_ddc` / `post_lsm` sources.
+  - `tools/p25_baseline_analyze.py` turned a PLL *phase* into "Hz" with the old
+    31.25 kSPS rate.
+- *Fix:* `hardware/ddc_rate.rs` is now the single source (`DDC_OUTPUT_RATE_HZ` 50 000,
+  `LSM_INPUT_RATE_HZ` 25 000), with a test that every generated preset decimates to
+  it. The dump, spectrum and iq_dma constants derive from it, and the labels and docs
+  are updated.
+- *Verified live:* spectrum 50000; a 4 s dump is 200 000 samples with a 50 kHz header,
+  delivered in 4.02 s.
+- *Left as is:* the legacy 31.25 kSPS golden fixtures (`lsm/golden_dump.rs`, the
+  `*_31250` taps) and the software-DDC unit tests that use 62.5k as an arbitrary rate.
+
+**Live audio was choppy for the second talker.**
+
+- *Server side is fine:* `/ws/audio` streams every transmission complete and paced
+  (320 B every 20.0 ms, p90 20.8 ms).
+- *The problem was the page's jitter buffer* (ported from the legacy dashboard). It
+  re-primed only after 2 s of silence, and the reply in an exchange starts ≈ 0.8 s
+  after the first talker stops. That transmission therefore played each 20 ms frame
+  as it landed, with no buffer. Headless Chrome, whose audio clock runs in real time,
+  measured 102 underruns per minute on the http path.
+- *Fix:* both paths (ScriptProcessor over http, AudioWorklet over https) re-prime to
+  150 ms as soon as the ring runs dry. An underrun now means a dry ring that refills
+  within 300 ms, not the silence after a transmission.
+- *After the fix:* 0 underruns over http and https across 3 loops, with the buffer at
+  90–150 ms while playing.
+
 ## Follow-ups (not done here)
 
 1. **Shorter close.** Now that dibits arrive in ~0.2 s, the "CC decoder stalls during

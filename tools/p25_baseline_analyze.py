@@ -386,9 +386,11 @@ def render_report(args, capture_path, lo_hz, sample_rate, duration_s,
             notes.append("syncs decoded but framer extracted no LDU — bit errors past BCH limit, or no voice in window")
         # PLL drift
         pll = decode.get("pll_trace", {})
-        pll_mean_hz = pll.get("mean", 0) * 31250.0 / (2 * 3.14159)  # rad/sym × syms/sec / 2π
+        # pll_trace is the demod's phase correction in radians (a rotation, not a
+        # rate), so report it as a phase; a frequency error shows as a trace slope.
+        pll_mean_deg = pll.get("mean", 0) * 180.0 / 3.14159
         if abs(pll.get("mean", 0)) > 0.1:
-            notes.append(f"residual PLL ~ {pll_mean_hz:+.0f} Hz — consider PPM trim")
+            notes.append(f"mean PLL phase {pll_mean_deg:+.0f} deg — check PPM trim if it keeps drifting")
         if notes:
             out.append(f"- **{ch['label']} {ch['target_hz']/1e6:.4f}**: "
                        + "; ".join(notes))
