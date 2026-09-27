@@ -9,8 +9,11 @@
 //!     call start/end, retune, error) lands here.
 //!   - `/ws/audio` — binary frames, 320 bytes per message (160 i16
 //!     little-endian = 20 ms of 8 kHz mono). Fed from `audio_tx`
-//!     broadcast. Optional text control frames (`{"type":"lag"}`)
-//!     when the channel overruns.
+//!     broadcast. Text control frames: `{"type":"lag"}` when the
+//!     channel overruns, and (change 062) `{"type":"meta","tg","src",
+//!     "call_id"}` before the first audio frame of each talkgroup /
+//!     call, so a player can route talkgroups to speakers. Clients
+//!     ignore text types they do not know.
 //!
 //! Both handlers survive `Lagged` (a slow consumer falling behind
 //! the broadcast ring). The old behaviour was to close on Lagged,
@@ -137,12 +140,34 @@ pub async fn handle_ws_audio(
     // broadcast send fails — which is what produced the "3 audio WS
     // clients" reading on the dashboard with only one real listener.
     let (mut tx_sock, mut rx_sock) = socket.split();
+    // Change 062: (talkgroup, call_id) last announced to this client.
+    let mut last_meta: Option<(u16, u64)> = None;
     loop {
         tokio::select! {
             // Audio broadcast → push to client.
             broadcast = rx.recv() => {
                 match broadcast {
                     Ok(chunk) => {
+                        // Change 062: a text frame names the talkgroup
+                        // (and call) before its first audio frame, for
+                        // per-talkgroup speaker routing in the player.
+                        // Frames stay in order on the socket; the binary
+                        // frames are unchanged.
+                        let key = (chunk.talkgroup, chunk.call_id);
+                        if last_meta != Some(key) {
+                            last_meta = Some(key);
+                            let meta = format!(
+                                r#"{{"type":"meta","tg":{},"src":{},"call_id":{}}}"#,
+                                chunk.talkgroup, chunk.source, chunk.call_id,
+                            );
+                            if tx_sock
+                                .send(axum::extract::ws::Message::Text(meta.into()))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
                         let mut buf = [0u8; 320];
                         for (i, &sample) in chunk.pcm.iter().enumerate() {
                             let le = sample.to_le_bytes();

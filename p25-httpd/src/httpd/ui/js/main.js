@@ -2,11 +2,11 @@
 // clock sync, live-audio button. Views are modules exporting
 // { mount(el) -> { update(kind, store), unmount() } }.
 
-import { store, subscribe, start, kick } from './store.js';
+import { store, subscribe, start, kick, setPref } from './store.js';
 import { api } from './api.js';
 import { setText, setClass, toast } from './dom.js';
 import { mhz } from './format.js';
-import { player } from './audio/player.js';
+import { player, routeFromPrefs } from './audio/player.js';
 import * as nowView from './views/now.js';
 import * as radioView from './views/radio.js';
 import * as diagView from './views/diagnostics.js';
@@ -102,8 +102,25 @@ function renderBanner() {
   }
 }
 
+// Change 062: volume (per browser, 0-200 %) and speaker routing.
+function applyAudioPrefs() {
+  const vol = store.prefs.volume ?? 1;
+  player.setVolume(vol);
+  player.setRoute(routeFromPrefs(store.prefs));
+  const slider = $('vol');
+  if (slider && document.activeElement !== slider) slider.value = Math.round(vol * 100);
+  if (slider) slider.title = 'Volume ' + Math.round(vol * 100) + '%';
+}
+
 function bindListen() {
   const btn = $('listen-btn');
+  const slider = $('vol');
+  slider.addEventListener('input', () => {
+    player.setVolume(slider.value / 100);
+    slider.title = 'Volume ' + slider.value + '%';
+  });
+  slider.addEventListener('change', () => setPref('volume', slider.value / 100));
+  applyAudioPrefs();
   btn.addEventListener('click', () => player.toggle());
   player.onChange(st => {
     btn.setAttribute('aria-pressed', st.playing ? 'true' : 'false');
@@ -117,7 +134,7 @@ function boot() {
   bindListen();
   window.addEventListener('hashchange', route);
   subscribe((kind, s) => {
-    if (kind === 'prefs') applyTheme();
+    if (kind === 'prefs') { applyTheme(); applyAudioPrefs(); }
     if (kind === 'state' || kind === 'conn') { renderHeader(); renderBanner(); }
     if (current && current.inst.update) current.inst.update(kind, s);
   });

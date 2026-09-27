@@ -344,6 +344,7 @@ day's calls. The offset vote's histogram then spanned 56 years.
 
 A second, offline pass over the saved run found more scorer errors, 24 of the 42
 missed or partial rows:
+
 - 18 were DUT-call matching errors:
   - p25-httpd stamps the grant's source, SDRTrunk the talker, and the two differ on
     console grants and talker changes;
@@ -353,6 +354,7 @@ missed or partial rows:
 - 1 came from the old conflict rule.
 
 Fixes in `p25_score.py` and `corpus_tests.py`:
+
 - **Offset vote:** a densest-window vote around the DUT-clock prior. Calls from a clock step
   mid-item are moved back onto the item's clock (`dut_clock_end`).
 - **Call matching:** a transmission takes frames from every same-TG call on its frequency
@@ -366,6 +368,7 @@ Fixes in `p25_score.py` and `corpus_tests.py`:
 
 Result for that pass: 219 followable clear transmissions, 31455/34029 IMBE (92.4 %), 21
 missed. Of the misses:
+
 - 17 were scenes whose control channel decoded no grant for 4 s to over 30 s after the
   inter-scene silence;
 - 3 were sticky-lock rejects during the 2 s end grace;

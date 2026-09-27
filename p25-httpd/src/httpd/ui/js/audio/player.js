@@ -14,6 +14,19 @@ const TARGET = 1200; // 150 ms @ 8 kHz
 const KP = 4e-5;
 const MAXDEV = 0.005;
 
+const PAN = { left: -1, both: 0, right: 1 };
+
+// Change 062: per-browser speaker routing (prefs.speakers =
+// {left: [tg..], right: [tg..], other: 'both'|'left'|'right'}) as
+// {map: {tg: pan}, def: pan}, pan -1 left / 0 both / +1 right.
+export function routeFromPrefs(prefs) {
+  const sp = (prefs && prefs.speakers) || {};
+  const map = {};
+  for (const tg of sp.right || []) map[tg] = PAN.right;
+  for (const tg of sp.left || []) map[tg] = PAN.left;
+  return { map, def: PAN[sp.other] ?? PAN.both };
+}
+
 class Player {
   constructor() {
     this.ctx = null; this.node = null; this.gain = null;
@@ -23,6 +36,25 @@ class Player {
     this.lastChunkAt = 0; this.timer = null; this.connected = false;
     this.listeners = new Set();
     this.spn = null;
+    // Change 062: volume (linear gain, 0..2) and speaker routing.
+    this.volume = 1;
+    this.route = { map: {}, def: 0 };
+    this.tg = 0;
+  }
+
+  setVolume(v) {
+    this.volume = Math.max(0, Math.min(2, Number(v) || 0));
+    if (this.gain) this.gain.gain.value = this.volume;
+  }
+
+  setRoute(route) {
+    this.route = route;
+    if (this.worker) this.worker.postMessage({ type: 'route', route });
+  }
+
+  panFor(tg) {
+    const p = this.route.map[tg];
+    return p === undefined ? this.route.def : p;
   }
 
   onChange(fn) { this.listeners.add(fn); fn(this.status()); }
@@ -52,6 +84,7 @@ class Player {
     if (this.ctx.state === 'suspended') { try { await this.ctx.resume(); } catch { /* user gesture pending */ } }
     this.chunks = 0; this.underruns = 0; this.lagSkipped = 0; this.lastChunkAt = 0;
     this.gain = this.ctx.createGain();
+    this.gain.gain.value = this.volume;
     this.gain.connect(this.ctx.destination);
     this.playing = true;
     try {
@@ -74,7 +107,7 @@ class Player {
     this.mode = 'worklet';
     const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'text/javascript' }));
     try { await this.ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
-    this.node = new AudioWorkletNode(this.ctx, 'p25-audio');
+    this.node = new AudioWorkletNode(this.ctx, 'p25-audio', { outputChannelCount: [2] });
     this.node.port.onmessage = ev => {
       const m = ev.data;
       if (m && m.type === 'stats') { this.bufMs = (m.avail / 8) | 0; this.underruns = m.underruns; }
@@ -91,17 +124,17 @@ class Player {
       else if (m.type === 'close') { this.connected = false; this.emit(); }
       else if (m.type === 'status') { this.chunks = m.chunks; this.lagSkipped = m.lag; this.lastChunkAt = Date.now(); }
     };
-    this.worker.postMessage({ type: 'init', url: wsUrl('/ws/audio'), port: mc.port1 }, [mc.port1]);
+    this.worker.postMessage({ type: 'init', url: wsUrl('/ws/audio'), port: mc.port1, route: this.route }, [mc.port1]);
   }
 
   startSpn() {
     this.mode = 'spn';
     const s = this.spn = {
-      ring: new Float32Array(RING), w: 0, r: 0, avail: 0, frac: 0,
+      ring: new Float32Array(RING), pan: new Int8Array(RING), w: 0, r: 0, avail: 0, frac: 0,
       base: 8000 / this.ctx.sampleRate, priming: true, underruns: 0, dryAt: 0,
     };
-    this.node = this.ctx.createScriptProcessor(1024, 0, 1);
-    this.node.onaudioprocess = e => spnProcess(s, e.outputBuffer.getChannelData(0));
+    this.node = this.ctx.createScriptProcessor(1024, 0, 2);
+    this.node.onaudioprocess = e => spnProcess(s, e.outputBuffer.getChannelData(0), e.outputBuffer.getChannelData(1));
     this.node.connect(this.gain);
     this.openSpnSocket();
   }
@@ -112,11 +145,15 @@ class Player {
     ws.onopen = () => { this.connected = true; this.emit(); };
     ws.onmessage = ev => {
       if (!(ev.data instanceof ArrayBuffer)) {
-        try { const c = JSON.parse(ev.data); if (c.type === 'lag') this.lagSkipped += c.skipped || 0; } catch { /* ignore */ }
+        try {
+          const c = JSON.parse(ev.data);
+          if (c.type === 'lag') this.lagSkipped += c.skipped || 0;
+          else if (c.type === 'meta') this.tg = c.tg;
+        } catch { /* ignore */ }
         return;
       }
       const i16 = new Int16Array(ev.data);
-      spnWrite(this.spn, i16);
+      spnWrite(this.spn, i16, this.panFor(this.tg));
       this.chunks++;
       this.lastChunkAt = Date.now();
     };
@@ -143,30 +180,33 @@ class Player {
   }
 }
 
-function spnWrite(s, i16) {
+function spnWrite(s, i16, pan) {
   if (!s) return;
   // Underrun = dry ring refilled within 300 ms (see sources.js).
   if (s.dryAt && performance.now() - s.dryAt < 300) s.underruns++;
   s.dryAt = 0;
   for (let i = 0; i < i16.length; i++) {
     s.ring[s.w] = i16[i] / 32768;
+    s.pan[s.w] = pan;
     s.w = (s.w + 1) % RING;
     if (s.avail < RING) s.avail++; else s.r = (s.r + 1) % RING;
   }
   if (s.priming && s.avail >= TARGET) s.priming = false;
 }
 
-function spnProcess(s, out) {
-  if (s.priming) { out.fill(0); return; }
+function spnProcess(s, out, outR) {
+  if (s.priming) { out.fill(0); outR.fill(0); return; }
   let dev = KP * (s.avail - TARGET);
   dev = Math.max(-MAXDEV, Math.min(MAXDEV, dev));
   const ratio = s.base * (1 + dev);
   for (let i = 0; i < out.length; i++) {
     // Dry: re-prime at once (see sources.js) so the next transmission
     // starts with the full 150 ms buffer.
-    if (s.avail <= 1) { s.dryAt = performance.now(); s.priming = true; out.fill(0, i); return; }
+    if (s.avail <= 1) { s.dryAt = performance.now(); s.priming = true; out.fill(0, i); outR.fill(0, i); return; }
     const a = s.ring[s.r], b = s.ring[(s.r + 1) % RING];
-    out[i] = a + (b - a) * s.frac;
+    const v = a + (b - a) * s.frac, p = s.pan[s.r];
+    out[i] = p > 0 ? 0 : v;
+    outR[i] = p < 0 ? 0 : v;
     s.frac += ratio;
     while (s.frac >= 1) {
       s.frac -= 1; s.r = (s.r + 1) % RING; s.avail--;

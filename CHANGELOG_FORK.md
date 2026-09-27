@@ -5,6 +5,29 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-27] Live audio: volume control and per-talkgroup left/right speaker (062)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-27-volume-speakers-062`
+**Bake required:** NO (p25-httpd and web UI only).
+
+- **Volume:** a slider next to Listen, 0–200 %, saved in this browser.
+- **Speaker routing:** Settings → "Live audio (this browser)".
+  - Set the talkgroups for the left speaker, the talkgroups for the right speaker, and where
+    all other talkgroups play (both, left or right). For example: TG 300 left, everything
+    else right.
+  - The player outputs stereo and switches speaker per sample, so a talkgroup change inside
+    the 150 ms buffer lands on the right side.
+  - Both the AudioWorklet (https) and ScriptProcessor (http) paths do this.
+- **`/ws/audio`:** a `{"type":"meta","tg","src","call_id"}` text frame now comes before the
+  first audio frame of each talkgroup / call. Binary frames are unchanged, and clients ignore
+  text types they do not know.
+
+Tests: p25-httpd 241 passed; all 19 UI modules pass `node --check`; the worklet routes
+left- then right-tagged audio to the matching channel.
+
+---
+
 ## [2026-09-27] A call's source is the unit the grant was issued to (061)
 
 **Branch:** fishball-p25
@@ -55,6 +78,7 @@ Tests: p25-httpd 240 passed. On A: the AGC setting survived a p25-httpd restart.
 **Bake required:** NO (p25-httpd only).
 
 The web UI at `/` (056) replaced it. The following are removed:
+
 - the `/legacy` route and the 259 KB embedded `dashboard.html`;
 - the links to it in the UI;
 - its panel map in `doc/P25_API.md` (still in git history).

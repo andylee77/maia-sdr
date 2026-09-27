@@ -226,6 +226,7 @@ re-follow window, core 0.2.0):
 **Bake:** timing met, WNS +0.255 ns, WHS +0.006 ns.
 
 **Deploying without a Tezuka rebuild.**
+
 - The bitstream is compressed, so its size varies per build. The new one is 13,120 bytes
   shorter than the partition in A's May BOOT.bin.
 - `bootgen -read` shows that partition has no data checksum (`checksum_offset` 0) and no
@@ -238,6 +239,7 @@ the watchdog off.
 
 **Tone / PLL-trap scene `B_20260503_084247_1695`, watchdog off:** 639/639 IMBE (100 %). The
 traffic `pll_dbg`, polled every 200 ms:
+
 - tracked −1046…+114 with signal;
 - stayed at exactly −1827 for 25 s of gap noise;
 - never exceeded |1827|.
@@ -253,12 +255,14 @@ corrected scorer (`fbench analyze`):
 | 0.2.0, watchdog off | 219 | 33291/34029 (97.8 %) | 4 | 0 |
 
 **The hold also fixed control-channel acquisition.**
+
 - On 0.1.0, 17 transmissions were lost at scene starts. After the ~20 s silence between
   scenes, the control chain decoded no grant for 4 s to over 30 s. The PS watchdog only
   guards the traffic chain, and nothing ever reset the control chain.
 - With the hold on both chains, every scene decodes its first grant.
 
 **The 4 remaining misses:**
+
 - 3 are sticky-lock rejects inside the 2 s end grace, fixed below.
 - 1 is a grant to 856.4375 MHz, which the replay does not carry.
 

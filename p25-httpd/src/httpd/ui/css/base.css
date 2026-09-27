@@ -125,6 +125,7 @@ h2 { font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; color
 .topbar-site span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 .conn { font-size: 0.8em; color: var(--text-faint); white-space: nowrap; }
+.vol { width: 96px; accent-color: var(--voice); cursor: pointer; }
 .conn.bad { color: var(--danger); }
 
 /* ── Tabs: top on wide screens, bottom bar on phones ─────── */
@@ -212,6 +213,7 @@ h2 { font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; color
   .topbar { padding: 8px 16px; gap: 10px; }
   .brand { font-size: 0; gap: 0; }
   .conn { display: none; }
+  .vol { width: 72px; }
   .tabs {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
     height: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
