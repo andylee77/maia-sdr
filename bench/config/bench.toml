@@ -1,0 +1,129 @@
+# fbench bench configuration. Annotated reference: bench.example.toml.
+#
+# Unit identity: A = the ORIGINAL board (AD9361), B = the NEWER board (AD9363).
+# The IIO hw_serial depends on the SD card inserted, so it is only a hint
+# (known_serials); fpga_dna is authoritative once the hwval image exposes it.
+
+[bench]
+default_unit = "A"
+
+[paths]
+diagnostics_dir = "doc/diagnostics"
+state_dir = "bench/.state"
+share_dir = "bench/share"
+
+[ssh]
+user = "root"
+identity = "~/.ssh/id_ed25519"
+connect_timeout_s = 20
+
+[agent]
+remote_root = "/mnt/sd/bench"
+binary = "bin/fbench-agent"
+local_binary = "bench/agent/target/armv7-unknown-linux-musleabihf/release/fbench-agent"
+extra_args = []
+default_timeout_s = 30.0
+
+[iio]
+backend = "auto"
+
+[network]
+host_ip = "192.168.2.10"
+bench_subnet = "10.25.0.0"
+bench_mask = "255.255.255.0"
+gateway = "192.168.2.1"
+
+[safety]
+tx_max_dbm = 20.0
+rx_abs_max_dbm = -10.0
+rx_linear_max_dbm = -30.0
+tx_atten_max_db = 89.75
+# Only a single 20 dB pad per link is on hand (2026-09-26). With the PGA-102+
+# TX (+20 dBm worst case) that leaves ~0 dBm at the RX if TX attenuation were
+# ever 0 dB -- under the AD9361 absolute maximum (~+2.5 dBm) but with little
+# margin. The interlock below refuses any setting over rx_abs_max_dbm, i.e.
+# TX attenuation < 10 dB with a 20 dB pad. Chain two pads (40 dB) when possible.
+min_pad_db = 20.0
+
+[units.A]
+label = "original"
+description = "Original Fishball (AD9361). Tezuka P25 card (uEnv initrd_high fix applied 2026-09-26); factory card kept as backup."
+known_serials = [
+    "OVHNVI2FJEBXAB4M",                     # Tezuka (serial from on-board jffs2, stable per board)
+    "104473023196000bf5ff1a00aae12c3ca8",   # factory SD card (plutosdr-fw v0.38)
+]
+fpga_dna = ""
+hw_model = "Analog Devices PlutoSDR Rev.C (Z7020-AD9361)"
+host = "192.168.2.1"
+usb_ip = "192.168.2.1"
+eth_ip = "10.25.0.1"
+forwarder = true
+# The factory card needs `fbench setup keys --unit A --password-prompt` for SSH.
+image = "p25"
+transceiver = "AD9361"
+dram_part = "MT41K256M16TW-107 (Micron D9SHD), DDR3L 1.35 V"
+has_jp5 = true
+# FT2232 DEBUG UART; "" = auto-detect FTDI ports.
+console_port = ""
+# 2026-09-26: p25-httpd off-air lo_shift 470 Hz (the site CC sits +472 Hz in A's own
+# uncorrected captures); rf.cw_ppm puts B 0.662 ppm above A.
+ref_ppm = -0.548
+
+[units.A.uboot_env]
+ipaddr_eth = "10.25.0.1"
+netmask_eth = "255.255.255.0"
+
+[units.B]
+label = "newer"
+description = "Newer Fishball (AD9363). Tezuka P25 card cloned from unit A (2026-09-26)."
+known_serials = [
+    "2IROGKMXCZTSTL3O",                     # Tezuka (on-board jffs2 serial)
+]
+fpga_dna = ""
+host = "10.25.0.2"
+usb_ip = "192.168.12.1"
+eth_ip = "10.25.0.2"
+via = "A"
+image = "p25"
+transceiver = "AD9363"
+dram_part = "MT41K256M16TW-107 (Micron D9SHD), DDR3L 1.35 V"
+has_jp5 = true
+console_port = ""
+ref_ppm = 0.114   # A + 0.662 (rf.cw_ppm both directions, 2026-09-26)
+
+[units.B.uboot_env]
+ipaddr = "192.168.12.1"
+ipaddr_host = "192.168.12.10"
+ipaddr_eth = "10.25.0.2"
+netmask_eth = "255.255.255.0"
+gateway_eth = "10.25.0.1"
+
+[rf]
+# Must be set to true by the operator (pads fitted, no antennas, ports terminated).
+cabled_confirmed = true   # Andy 2026-09-26: A.TX1 -> 20 dB -> B.RX1 and B.TX1 -> 20 dB -> A.RX1, 10 cm patch
+test_freq_hz = 858_100_000
+p25_cc_freq_hz = 860_962_500
+p25_rx_lo_hz = 858_100_000
+default_tx = "A"
+default_rx = "B"
+tx_port = "TX1A"
+tx_atten_default_db = 40.0
+# Default replay: 28 s of the 2026-05-03 capture (CC + 4 TG 300 transmissions, 297 IMBE).
+p25_clip = "C:/Users/Andy/SDRTrunk/my_captures/1777801424_859212970_4000000_baseband.wav"
+p25_clip_start_s = 13.0
+p25_clip_seconds = 28.0
+# The my_captures clips were recorded by unit A with no frequency correction applied.
+p25_clip_recorder = "A"
+p25_truth_dir = "C:/Users/Andy/SDRTrunk/recordings"
+
+[[rf.links]]
+tx = "A.TX1A"
+rx = "B.RX1A"
+pad_db = 20.0      # set to the pad actually fitted (40.0 if two 20 dB pads are chained)
+note = "primary A->B link"
+
+[[rf.links]]
+tx = "B.TX1A"
+rx = "A.RX1A"
+pad_db = 20.0
+note = "reverse link"

@@ -12,6 +12,10 @@ REM   build_hdl.bat --svd-only       SVD only (skip Verilog)
 REM   build_hdl.bat --clean          Clean cached venv, rebuild from scratch
 REM   build_hdl.bat --interactive    Open Docker shell for debugging
 REM   build_hdl.bat --config NAME    Use specific Amaranth config (default: maia_iio)
+REM   build_hdl.bat --hwval          Also generate hwval_core.v + hwval.svd +
+REM                                  hwval_regs.json + hwval_register_map.md
+REM                                  into maia-hdl/ip/hwval-core/<config>/
+REM   build_hdl.bat --hwval-config NAME  hwval config (default: default)
 REM
 REM Prerequisites:
 REM   - Docker Desktop running
@@ -101,6 +105,18 @@ if "%~1"=="--p25" (
 )
 if "%~1"=="--p25-config" (
     set "EXTRA_ARGS=!EXTRA_ARGS! --p25-config %~2"
+    shift
+    shift
+    goto :parse_args
+)
+if "%~1"=="--hwval" (
+    set "EXTRA_ARGS=!EXTRA_ARGS! --hwval"
+    set "MODE_DESC=!MODE_DESC! + hwval"
+    shift
+    goto :parse_args
+)
+if "%~1"=="--hwval-config" (
+    set "EXTRA_ARGS=!EXTRA_ARGS! --hwval-config %~2"
     shift
     shift
     goto :parse_args

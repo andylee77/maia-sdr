@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "write_mbs": 14.2,
+  "read_mbs": 21.5,
+  "write_lat_us": {
+    "p50": 900,
+    "p99": 45000,
+    "max": 180000
+  },
+  "fsync_ms": 35.0
+}

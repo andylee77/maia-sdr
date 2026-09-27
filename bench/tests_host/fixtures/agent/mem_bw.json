@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "results": {
+    "memcpy_cached": 650.0,
+    "read_uncached": 180.0,
+    "write_uncached": 420.0,
+    "reserved_read": 175.0
+  }
+}

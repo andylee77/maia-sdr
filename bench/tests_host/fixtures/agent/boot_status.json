@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "active": "p25",
+  "images": {
+    "p25": {
+      "present": true,
+      "sha256_ok": true
+    },
+    "hwval": {
+      "present": true,
+      "sha256_ok": true
+    }
+  }
+}

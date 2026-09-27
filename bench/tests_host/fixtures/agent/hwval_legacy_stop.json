@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "regs": {
+    "LEGACY_WORDS_IN": 64000000,
+    "LEGACY_WORDS_ACCEPTED": 64000000,
+    "LEGACY_PACKER_OVF": 3,
+    "LEGACY_LAT_MAX": 310,
+    "LEGACY_MAX_OUTSTANDING": 4,
+    "LEGACY_RATE_INC": 549755814
+  },
+  "loss_words": 0,
+  "loss_note": "WORDS_IN - WORDS_ACCEPTED",
+  "lat_max_us": 4.96,
+  "lat_cliff_us": 16.6,
+  "stop": {
+    "aw_eq_b": true,
+    "src_off": true
+  }
+}

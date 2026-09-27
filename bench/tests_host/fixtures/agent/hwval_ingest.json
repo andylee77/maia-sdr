@@ -1,0 +1,32 @@
+{
+  "ok": true,
+  "samples": 80000000,
+  "valid_gap_cycles": 0,
+  "valid_gap_runs": 0,
+  "cdc_wrerr": 0,
+  "cdc_full_cycles": 0,
+  "window": {
+    "samples": 80000000,
+    "i_min": -1800,
+    "i_max": 1790,
+    "q_min": -1795,
+    "q_max": 1802,
+    "i_mean": 0.3,
+    "q_mean": -0.2,
+    "i_rms": 600.0,
+    "q_rms": 598.0,
+    "clip_count": 0,
+    "i_stuck0": 0,
+    "i_stuck1": 0,
+    "q_stuck0": 0,
+    "q_stuck1": 0
+  },
+  "prbs": {
+    "mode": "ad9361",
+    "checked": 480000000,
+    "errors": 0,
+    "oos_events": 0,
+    "in_sync": true,
+    "ber": 0.0
+  }
+}

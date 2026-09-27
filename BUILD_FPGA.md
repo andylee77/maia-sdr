@@ -362,3 +362,96 @@ The P25 build uses `fishball-p25.dtsi` (separate from Maia's `fishball.dtsi`):
 
 Both DMA devices use `compatible = "maia-sdr,rxbuffer"` (reuses the maia-kmod
 kernel module for ARMv7 cache coherency on non-coherent AXI HP writes).
+
+## hwval bitstream (hardware validation)
+
+The `hwval` image is the Tier 1 validation bitstream for the `fbench` bench
+(contract: `doc/HW_VALIDATION_SUITE.md` sections 6 and 11). It reuses the P25
+kernel and rootfs; only `BOOT.bin` (bitstream) and `devicetree.dtb` differ.
+
+### Build command
+
+```bash
+./build_fpga_hwval_pretty.sh     # Git Bash; raw log in bake_hwval.log
+```
+
+or, from `cmd`, `build_fpga.bat --hwval`. `--p25` and `--hwval` are mutually
+exclusive.
+
+### Pipeline
+
+```
+maia-hdl/hwval_hdl/*.py  (+ p25_hdl, maia_hdl)   [Amaranth HDL source]
+         |
+         | Staleness gate (hwval_hdl + p25_hdl + maia_hdl vs hwval_core.v;
+         |   a missing hwval_regs.json / hwval_register_map.md also regenerates)
+         | build_hdl.bat --verilog-only --hwval  (Docker, Step 5d):
+         |   python -m hwval_hdl.hwval_top --config default hwval_core.v
+         |       --svd hwval.svd --json hwval_regs.json --md hwval_register_map.md
+         |   + port-contract check of module `top` against the Vivado project
+         v
+maia-hdl/ip/hwval-core/default/{hwval_core.v, hwval.svd, hwval_regs.json, hwval_register_map.md}
+         |
+         | Vivado IP packaging (ip/hwval-core/package_ip.tcl -> package_ip.ok)
+         v
+fishball-hwval:hwval_core_default:hwval_core:0.1.0
+         |
+         | maia-hdl/projects/fishball7020_hwval (system_project.tcl)
+         v
+fishball_hwval.sdk/system_top.xsa   (only if timing is met)
+         |
+         +--> tezuka_fw/board/tezuka/fishball7020/bitstream/hwval/system_top.xsa
+         +--> bench/share/hwval_regs.json, doc/hwval_register_map.md
+```
+
+### Differences from the P25 build
+
+- Timing failure is a **hard error**. `system_top_bad_timing.xsa` is never
+  promoted; stale XSAs are deleted before the Vivado run.
+- The project enables the `axi_ad9361` DDS, `S_AXI_HP0` and `S_AXI_HP3`
+  (64-bit, memory testers at 125 MHz), puts ring v2 and the production-replica
+  ring on HP1, and adds pins `y1_clk` (N18) and `ad_clkout` (R16). `rx_clk` is
+  constrained at 8.138 ns and the TX path is timing-checked. Full list:
+  `maia-hdl/projects/fishball7020_hwval/README.md`.
+- The register map is published only after the XSA exists, so
+  `bench/share/hwval_regs.json` always describes a bitstream that was built.
+
+### Quick checks after Verilog generation
+
+```bash
+# Ports of module `top` (the build already checks these; this prints them)
+awk '/^module top\(/{f=1} f&&/^endmodule/{exit} f&&/^ *(input|output|inout) /{print $0}' \
+    maia-hdl/ip/hwval-core/default/hwval_core.v | grep -v 'm_axi_\|s_axi_lite_[awrb]'
+# The four AXI managers
+grep -oE 'm_axi_(ringv2|legacy|mt0|mt1)_(aw|ar)valid' maia-hdl/ip/hwval-core/default/hwval_core.v | sort -u
+# CDC names the XDC waivers rely on (all counts must be > 0)
+V=maia-hdl/ip/hwval-core/default/hwval_core.v
+grep -cE '^\s*reg .*_snapshadow' $V         # snapshot shadows + census counters
+grep -cE '^\s*reg .*_cdchold' $V            # DomainCrossing/ConfigSync holds
+grep -c 'amaranth.vivado.false_path' $V     # FFSynchronizer first stages, census snapstage
+grep -c 'fifo18e1 (' $V                     # ingest_cdc + evt FIFO18E1
+```
+
+### Tezuka side
+
+The P25 Tezuka build (`build.bat --p25`) also builds `fishball-hwval.dtb`
+(listed in `fishball_p25_7020_defconfig`) and, when
+`board/tezuka/fishball7020/bitstream/hwval/system_top.xsa` exists, its
+`post-image.sh` writes:
+
+| SD path | Content |
+|---|---|
+| `bench/images/hwval/` | `BOOT.bin` (FSBL + hwval bitstream + U-Boot), `devicetree.dtb` (= `fishball-hwval.dtb`), `SHA256SUMS` |
+| `bench/images/p25/` | the production `BOOT.bin` + `devicetree.dtb` of the same build, `SHA256SUMS` |
+
+`fbench boot <unit> hwval|p25` swaps those pairs on the card. The first build
+after `fishball-hwval.dts` was added needs a kernel rebuild
+(`make linux-rebuild`) so the new DTB exists; see Tezuka
+`doc/changes/005_fishball_hwval_dual_image.md`.
+
+| DTS node (hwval) | Userspace | Purpose |
+|---|---|---|
+| `hwval-core@7c460000` | `/sys/class/uio/uioN/name` = `hwval-core` | register UIO, IRQ SPI 55 |
+| `hwval-ringv2` | `/dev/hwval-ringv2` | ring v2 window 0x2000_0000, 16 x 1 MiB |
+| `hwval-legacy` | `/dev/hwval-legacy` | legacy replica ring 0x2200_0000, 16 x 1 MiB |
+| reserved `hwval-memtest@24000000` | -- | 64 MiB memtester window (no device) |

@@ -1,0 +1,7 @@
+{
+  "ok": true,
+  "mode": "fpga-loopback",
+  "errors": 0,
+  "samples_checked": 16777216,
+  "pn": "pn9"
+}

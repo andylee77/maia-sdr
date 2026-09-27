@@ -1,0 +1,30 @@
+[package]
+name = "fbench-agent"
+version = "0.1.0"
+edition = "2021"
+description = "On-board test agent for the Fishball Z7020 hardware validation suite (doc/HW_VALIDATION_SUITE.md)"
+license = "MIT"
+publish = false
+build = "build.rs"
+
+# Standalone crate (not part of any parent workspace).
+[workspace]
+
+[dependencies]
+# preserve_order keeps "ok" first and the documented key order in replies.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+# Unwinding is kept on purpose: the TX / RX-restore guards run from Drop,
+# so a panic still restores max TX attenuation and the BIST state.
+panic = "unwind"

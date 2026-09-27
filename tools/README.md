@@ -127,6 +127,13 @@ dibit streams to pinpoint where the chains diverge.
 
 ---
 
+## Bench suite
+
+Hardware validation (two cabled Fishballs, on-board agent, JSON CLI): see
+[bench/README.md](../bench/README.md) and `python bench/fbench.py list`.
+
+---
+
 ## Common host config
 
 - Default target: `192.168.2.1:8080` (Fishball Z7020). Most scripts

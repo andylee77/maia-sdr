@@ -1,0 +1,31 @@
+{
+  "schema": "fbench.regmap/1",
+  "core": "hwval",
+  "base": "0x7C460000",
+  "size": 4096,
+  "id_reg": "ID",
+  "id_value": "0x68777631",
+  "version": "0.1.0",
+  "snapshot_domains": {"sync": 1, "mem": 2, "sampling": 4},
+  "blocks": [
+    {
+      "name": "id",
+      "offset": "0x000",
+      "regs": [
+        {"name": "ID", "offset": "0x000", "access": "ro", "width": 32, "reset": "0x68777631", "snapshot": null, "desc": "Core identification", "fields": []},
+        {"name": "SNAP_REQ", "offset": "0x020", "access": "wo", "width": 3, "reset": "0x0", "snapshot": null, "desc": "Snapshot request", "fields": [{"name": "sync", "lsb": 0, "width": 1, "desc": ""}, {"name": "mem", "lsb": 1, "width": 1, "desc": ""}, {"name": "sampling", "lsb": 2, "width": 1, "desc": ""}]},
+        {"name": "SNAP_ACK", "offset": "0x024", "access": "ro", "width": 3, "reset": "0x0", "snapshot": null, "desc": "Snapshot acknowledge", "fields": []},
+        {"name": "TS_LO", "offset": "0x02C", "access": "ro", "width": 32, "reset": "0x0", "snapshot": "sync", "desc": "Timestamp low", "fields": []},
+        {"name": "TS_HI", "offset": "0x030", "access": "ro", "width": 32, "reset": "0x0", "snapshot": "sync", "desc": "Timestamp high", "fields": []}
+      ]
+    },
+    {
+      "name": "mt0",
+      "offset": "0x600",
+      "regs": [
+        {"name": "MT0_CTRL", "offset": "0x600", "access": "rw", "width": 17, "reset": "0x0", "snapshot": null, "desc": "Memory tester control", "fields": [{"name": "mode", "lsb": 0, "width": 3, "desc": ""}]},
+        {"name": "MT0_ERR_COUNT", "offset": "0x6A0", "access": "ro", "width": 32, "reset": "0x0", "snapshot": "mem", "desc": "Data errors", "fields": []}
+      ]
+    }
+  ]
+}

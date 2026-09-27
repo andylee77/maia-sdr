@@ -1,0 +1,2182 @@
+{
+  "schema": "fbench.regmap/1",
+  "cores": [
+    {
+      "schema": "fbench.regmap/1",
+      "core": "adi_adc",
+      "base": "0x79020000",
+      "size": 16384,
+      "blocks": [
+        {
+          "name": "common",
+          "offset": "0x0",
+          "regs": [
+            {
+              "name": "VERSION",
+              "offset": "0x0",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "core version (expect 0x000A0300) | Core version",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "ID",
+              "offset": "0x4",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ID",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "SCRATCH",
+              "offset": "0x8",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "SCRATCH | Scratch (bus test)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CONFIG",
+              "offset": "0xC",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "config (expect 0x10) | Synthesis configuration",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "RSTN",
+              "offset": "0x40",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "core reset (writing can stop the RX path) | Core reset (writing 0 resets the ADC interface)",
+              "fields": [
+                {
+                  "name": "rstn",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "rstn"
+                },
+                {
+                  "name": "mmcm_rstn",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "mmcm_rstn"
+                },
+                {
+                  "name": "clk_enb",
+                  "lsb": 2,
+                  "width": 1,
+                  "desc": "clk_enb"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CNTRL",
+              "offset": "0x44",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CNTRL | Interface control",
+              "fields": [
+                {
+                  "name": "pin_mode",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "pin_mode"
+                },
+                {
+                  "name": "ddr_edgesel",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "ddr_edgesel"
+                },
+                {
+                  "name": "r1_mode",
+                  "lsb": 2,
+                  "width": 1,
+                  "desc": "r1_mode"
+                },
+                {
+                  "name": "sync",
+                  "lsb": 3,
+                  "width": 1,
+                  "desc": "sync"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CNTRL_2",
+              "offset": "0x48",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CNTRL_2",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CNTRL_3",
+              "offset": "0x4C",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CNTRL_3",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CLK_FREQ",
+              "offset": "0x54",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DATA_CLK = N * 100e6 / 65536 Hz | Interface clock frequency: f = value * 100 MHz / 2^16 (1.526 kHz per count)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CLK_RATIO",
+              "offset": "0x58",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CLK_RATIO | Interface clock ratio",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "STATUS",
+              "offset": "0x5C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "STATUS | Interface status",
+              "fields": [
+                {
+                  "name": "status",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "interface status"
+                },
+                {
+                  "name": "or",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "or"
+                },
+                {
+                  "name": "pn_oos",
+                  "lsb": 2,
+                  "width": 1,
+                  "desc": "pn_oos"
+                },
+                {
+                  "name": "pn_err",
+                  "lsb": 3,
+                  "width": 1,
+                  "desc": "pn_err"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "SYNC_STATUS",
+              "offset": "0x68",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "SYNC_STATUS",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "UP_STATUS",
+              "offset": "0x88",
+              "access": "w1c",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "bit2 ADC overflow (w1c) | DMA status (write 1 to clear)",
+              "fields": [
+                {
+                  "name": "ovf",
+                  "lsb": 2,
+                  "width": 1,
+                  "desc": "ovf"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "UI_STATUS"
+              ]
+            },
+            {
+              "name": "TIMER",
+              "offset": "0x100",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "TIMER",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            }
+          ]
+        },
+        {
+          "name": "channels",
+          "offset": "0x400",
+          "regs": [
+            {
+              "name": "CHAN0_CNTRL",
+              "offset": "0x400",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CHAN0_CNTRL | ADC channel control",
+              "fields": [
+                {
+                  "name": "enable",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "ADC channel enable"
+                },
+                {
+                  "name": "pn_type",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "pn_type"
+                },
+                {
+                  "name": "dfmt_enable",
+                  "lsb": 4,
+                  "width": 1,
+                  "desc": "dfmt_enable"
+                },
+                {
+                  "name": "dfmt_type",
+                  "lsb": 5,
+                  "width": 1,
+                  "desc": "dfmt_type"
+                },
+                {
+                  "name": "dfmt_se",
+                  "lsb": 6,
+                  "width": 1,
+                  "desc": "dfmt_se"
+                },
+                {
+                  "name": "dcfilt_enb",
+                  "lsb": 8,
+                  "width": 1,
+                  "desc": "dcfilt_enb"
+                },
+                {
+                  "name": "iqcor_enb",
+                  "lsb": 9,
+                  "width": 1,
+                  "desc": "iqcor_enb"
+                },
+                {
+                  "name": "pn_sel",
+                  "lsb": 10,
+                  "width": 1,
+                  "desc": "pn_sel"
+                },
+                {
+                  "name": "lb_enb",
+                  "lsb": 11,
+                  "width": 1,
+                  "desc": "lb_enb"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHAN0_STATUS",
+              "offset": "0x404",
+              "access": "w1c",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "sticky PN/OR status, write 1 to clear; dwell >= 1 ms after clear | PN monitor status (write 1 to clear)",
+              "fields": [
+                {
+                  "name": "or",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "over-range (sticky, w1c)"
+                },
+                {
+                  "name": "pn_oos",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "PN out of sync (sticky, w1c)"
+                },
+                {
+                  "name": "pn_err",
+                  "lsb": 2,
+                  "width": 1,
+                  "desc": "PN error (sticky, w1c)"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHAN0_RAW_DATA",
+              "offset": "0x408",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CHAN0_RAW_DATA",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHAN0_CNTRL_1",
+              "offset": "0x410",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DC filter offset/coeff | DC filter offset/coefficient",
+              "fields": [
+                {
+                  "name": "DCFILT_OFFSET",
+                  "lsb": 16,
+                  "width": 16,
+                  "access": "rw",
+                  "desc": ""
+                },
+                {
+                  "name": "DCFILT_COEFF",
+                  "lsb": 0,
+                  "width": 16,
+                  "access": "rw",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHAN0_CNTRL_2",
+              "offset": "0x414",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IQ correction coefficients",
+              "fields": [
+                {
+                  "name": "IQCOR_COEFF_1",
+                  "lsb": 16,
+                  "width": 16,
+                  "access": "rw",
+                  "desc": ""
+                },
+                {
+                  "name": "IQCOR_COEFF_2",
+                  "lsb": 0,
+                  "width": 16,
+                  "access": "rw",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHAN0_CNTRL_3",
+              "offset": "0x418",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CHAN0_CNTRL_3 | PN select / data select",
+              "fields": [
+                {
+                  "name": "data_sel",
+                  "lsb": 0,
+                  "width": 4,
+                  "desc": "0 = ADC, else DAC loopback data"
+                },
+                {
+                  "name": "pn_sel",
+                  "lsb": 16,
+                  "width": 4,
+                  "desc": "0 = AD9361 BIST PRBS (pn0fn), 9 = PN9/PN11"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHAN1_CNTRL",
+              "offset": "0x440",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CHAN1_CNTRL | ADC channel control",
+              "fields": [
+                {
+                  "name": "enable",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "ADC channel enable"
+                },
+                {
+                  "name": "pn_type",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "pn_type"
+                },
+                {
+                  "name": "dfmt_enable",
+                  "lsb": 4,
+                  "width": 1,
+                  "desc": "dfmt_enable"
+                },
+                {
+                  "name": "dfmt_type",
+                  "lsb": 5,
+                  "width": 1,
+                  "desc": "dfmt_type"
+                },
+                {
+                  "name": "dfmt_se",
+                  "lsb": 6,
+                  "width": 1,
+                  "desc": "dfmt_se"
+                },
+                {
+                  "name": "dcfilt_enb",
+                  "lsb": 8,
+                  "width": 1,
+                  "desc": "dcfilt_enb"
+                },
+                {
+                  "name": "iqcor_enb",
+                  "lsb": 9,
+                  "width": 1,
+                  "desc": "iqcor_enb"
+                },
+                {
+                  "name": "pn_sel",
+                  "lsb": 10,
+                  "width": 1,
+                  "desc": "pn_sel"
+                },
+                {
+                  "name": "lb_enb",
+                  "lsb": 11,
+                  "width": 1,
+                  "desc": "lb_enb"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHAN1_STATUS",
+              "offset": "0x444",
+              "access": "w1c",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "sticky PN/OR status, write 1 to clear; dwell >= 1 ms after clear | PN monitor status (write 1 to clear)",
+              "fields": [
+                {
+                  "name": "or",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "over-range (sticky, w1c)"
+                },
+                {
+                  "name": "pn_oos",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "PN out of sync (sticky, w1c)"
+                },
+                {
+                  "name": "pn_err",
+                  "lsb": 2,
+                  "width": 1,
+                  "desc": "PN error (sticky, w1c)"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHAN1_RAW_DATA",
+              "offset": "0x448",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CHAN1_RAW_DATA",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHAN1_CNTRL_1",
+              "offset": "0x450",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DC filter offset/coeff | DC filter offset/coefficient",
+              "fields": [
+                {
+                  "name": "DCFILT_OFFSET",
+                  "lsb": 16,
+                  "width": 16,
+                  "access": "rw",
+                  "desc": ""
+                },
+                {
+                  "name": "DCFILT_COEFF",
+                  "lsb": 0,
+                  "width": 16,
+                  "access": "rw",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHAN1_CNTRL_2",
+              "offset": "0x454",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IQ correction coefficients",
+              "fields": [
+                {
+                  "name": "IQCOR_COEFF_1",
+                  "lsb": 16,
+                  "width": 16,
+                  "access": "rw",
+                  "desc": ""
+                },
+                {
+                  "name": "IQCOR_COEFF_2",
+                  "lsb": 0,
+                  "width": 16,
+                  "access": "rw",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHAN1_CNTRL_3",
+              "offset": "0x458",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CHAN1_CNTRL_3 | PN select / data select",
+              "fields": [
+                {
+                  "name": "data_sel",
+                  "lsb": 0,
+                  "width": 4,
+                  "desc": "0 = ADC, else DAC loopback data"
+                },
+                {
+                  "name": "pn_sel",
+                  "lsb": 16,
+                  "width": 4,
+                  "desc": "0 = AD9361 BIST PRBS (pn0fn), 9 = PN9/PN11"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            }
+          ]
+        },
+        {
+          "name": "delay",
+          "offset": "0x800",
+          "regs": [
+            {
+              "name": "IDELAY_0",
+              "offset": "0x800",
+              "access": "rw",
+              "width": 5,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IDELAY tap, data lane 0 | FPGA IDELAY tap, lane 0",
+              "fields": [
+                {
+                  "name": "tap",
+                  "lsb": 0,
+                  "width": 5,
+                  "desc": "tap"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "IDELAY_LANE0"
+              ]
+            },
+            {
+              "name": "IDELAY_1",
+              "offset": "0x804",
+              "access": "rw",
+              "width": 5,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IDELAY tap, data lane 1 | FPGA IDELAY tap, lane 1",
+              "fields": [
+                {
+                  "name": "tap",
+                  "lsb": 0,
+                  "width": 5,
+                  "desc": "tap"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "IDELAY_LANE1"
+              ]
+            },
+            {
+              "name": "IDELAY_2",
+              "offset": "0x808",
+              "access": "rw",
+              "width": 5,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IDELAY tap, data lane 2 | FPGA IDELAY tap, lane 2",
+              "fields": [
+                {
+                  "name": "tap",
+                  "lsb": 0,
+                  "width": 5,
+                  "desc": "tap"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "IDELAY_LANE2"
+              ]
+            },
+            {
+              "name": "IDELAY_3",
+              "offset": "0x80C",
+              "access": "rw",
+              "width": 5,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IDELAY tap, data lane 3 | FPGA IDELAY tap, lane 3",
+              "fields": [
+                {
+                  "name": "tap",
+                  "lsb": 0,
+                  "width": 5,
+                  "desc": "tap"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "IDELAY_LANE3"
+              ]
+            },
+            {
+              "name": "IDELAY_4",
+              "offset": "0x810",
+              "access": "rw",
+              "width": 5,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IDELAY tap, data lane 4 | FPGA IDELAY tap, lane 4",
+              "fields": [
+                {
+                  "name": "tap",
+                  "lsb": 0,
+                  "width": 5,
+                  "desc": "tap"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "IDELAY_LANE4"
+              ]
+            },
+            {
+              "name": "IDELAY_5",
+              "offset": "0x814",
+              "access": "rw",
+              "width": 5,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IDELAY tap, data lane 5 | FPGA IDELAY tap, lane 5",
+              "fields": [
+                {
+                  "name": "tap",
+                  "lsb": 0,
+                  "width": 5,
+                  "desc": "tap"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "IDELAY_LANE5"
+              ]
+            },
+            {
+              "name": "IDELAY_6",
+              "offset": "0x818",
+              "access": "rw",
+              "width": 5,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IDELAY tap, frame lane | FPGA IDELAY tap, lane 6",
+              "fields": [
+                {
+                  "name": "tap",
+                  "lsb": 0,
+                  "width": 5,
+                  "desc": "tap"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "IDELAY_LANE6"
+              ]
+            }
+          ]
+        }
+      ],
+      "id_reg": "VERSION",
+      "id_value": "0x000A0300",
+      "snapshot_domains": {},
+      "requires": {
+        "iio": "cf-ad9361-lpc"
+      },
+      "source": "bench/share via `fbench regmaps build`: agent built-in map + host annotations (expected, read_side_effect, aliases, extra registers)"
+    },
+    {
+      "schema": "fbench.regmap/1",
+      "core": "adi_dac",
+      "base": "0x79020000",
+      "size": 32768,
+      "blocks": [
+        {
+          "name": "dac_common",
+          "offset": "0x4000",
+          "regs": [
+            {
+              "name": "DAC_VERSION",
+              "offset": "0x4000",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC version (expect 0x00090262) | Core version",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_ID",
+              "offset": "0x4004",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_ID",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_SCRATCH",
+              "offset": "0x4008",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_SCRATCH | Scratch (bus test)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CONFIG",
+              "offset": "0x400C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "expect 0x70 | Synthesis configuration",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_RSTN",
+              "offset": "0x4040",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_RSTN",
+              "fields": [
+                {
+                  "name": "rstn",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "rstn"
+                },
+                {
+                  "name": "mmcm_rstn",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "mmcm_rstn"
+                },
+                {
+                  "name": "clk_enb",
+                  "lsb": 2,
+                  "width": 1,
+                  "desc": "clk_enb"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CNTRL_1",
+              "offset": "0x4044",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_CNTRL_1 | Control 1",
+              "fields": [
+                {
+                  "name": "sync",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "sync"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CNTRL_2",
+              "offset": "0x4048",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_CNTRL_2 | Control 2",
+              "fields": [
+                {
+                  "name": "datafmt",
+                  "lsb": 4,
+                  "width": 1,
+                  "desc": "datafmt"
+                },
+                {
+                  "name": "r1_mode",
+                  "lsb": 5,
+                  "width": 1,
+                  "desc": "r1_mode"
+                },
+                {
+                  "name": "par_enb",
+                  "lsb": 6,
+                  "width": 1,
+                  "desc": "par_enb"
+                },
+                {
+                  "name": "par_type",
+                  "lsb": 7,
+                  "width": 1,
+                  "desc": "par_type"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_RATECNTRL",
+              "offset": "0x404C",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_RATECNTRL | Rate control",
+              "fields": [
+                {
+                  "name": "RATE",
+                  "lsb": 0,
+                  "width": 8,
+                  "access": "rw",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_FRAME",
+              "offset": "0x4050",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_FRAME",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CLK_FREQ",
+              "offset": "0x4054",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_CLK_FREQ | Interface clock frequency (x 100 MHz / 2^16)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CLK_RATIO",
+              "offset": "0x4058",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_CLK_RATIO",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_STATUS",
+              "offset": "0x405C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_STATUS",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CLKSEL",
+              "offset": "0x4060",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "bit0 TX clock invert | Clock select",
+              "fields": [
+                {
+                  "name": "clksel",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "clksel"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_SYNC_STATUS",
+              "offset": "0x4068",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_SYNC_STATUS",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_UP_STATUS",
+              "offset": "0x4088",
+              "access": "w1c",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_UP_STATUS | DMA underflow (write 1 to clear)",
+              "fields": [
+                {
+                  "name": "unf",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "underflow (w1c)"
+                },
+                {
+                  "name": "if_busy",
+                  "lsb": 4,
+                  "width": 1,
+                  "desc": "if_busy"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "DAC_DMA_STATUS"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "dac_channels",
+          "offset": "0x4400",
+          "regs": [
+            {
+              "name": "DAC_CHAN0_CNTRL_1",
+              "offset": "0x4400",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDS scale 1",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN0_CNTRL_2",
+              "offset": "0x4404",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDS init/incr 1",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN0_CNTRL_3",
+              "offset": "0x4408",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDS scale 2",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN0_CNTRL_4",
+              "offset": "0x440C",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDS init/incr 2",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN0_PAT_DATA",
+              "offset": "0x4410",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_CHAN0_PAT_DATA | Pattern data; PAT_DATA_1 == PAT_DATA_2 with DATA_SEL=1 gives CW at the TX LO",
+              "fields": [
+                {
+                  "name": "pat1",
+                  "lsb": 0,
+                  "width": 16,
+                  "desc": "pat1"
+                },
+                {
+                  "name": "pat2",
+                  "lsb": 16,
+                  "width": 16,
+                  "desc": "pat2"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN0_CNTRL_6",
+              "offset": "0x4414",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_CHAN0_CNTRL_6 | IQ correction",
+              "fields": [
+                {
+                  "name": "pn_enb",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "pn_enb"
+                },
+                {
+                  "name": "lb_enb",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "lb_enb"
+                },
+                {
+                  "name": "iqcor_enb",
+                  "lsb": 2,
+                  "width": 1,
+                  "desc": "iqcor_enb"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN0_CNTRL_7",
+              "offset": "0x4418",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DATA_SEL: 0 DDS, 1 pattern, 2 DMA, 3 zero, 8 ADC loopback, 9 PN | Data select",
+              "fields": [
+                {
+                  "name": "data_sel",
+                  "lsb": 0,
+                  "width": 4,
+                  "desc": "data_sel"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN0_CNTRL_8",
+              "offset": "0x441C",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IQ correction coefficients",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN1_CNTRL_1",
+              "offset": "0x4440",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDS scale 1",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN1_CNTRL_2",
+              "offset": "0x4444",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDS init/incr 1",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN1_CNTRL_3",
+              "offset": "0x4448",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDS scale 2",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN1_CNTRL_4",
+              "offset": "0x444C",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDS init/incr 2",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN1_PAT_DATA",
+              "offset": "0x4450",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_CHAN1_PAT_DATA | Pattern data; PAT_DATA_1 == PAT_DATA_2 with DATA_SEL=1 gives CW at the TX LO",
+              "fields": [
+                {
+                  "name": "pat1",
+                  "lsb": 0,
+                  "width": 16,
+                  "desc": "pat1"
+                },
+                {
+                  "name": "pat2",
+                  "lsb": 16,
+                  "width": 16,
+                  "desc": "pat2"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN1_CNTRL_6",
+              "offset": "0x4454",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DAC_CHAN1_CNTRL_6 | IQ correction",
+              "fields": [
+                {
+                  "name": "pn_enb",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "pn_enb"
+                },
+                {
+                  "name": "lb_enb",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "lb_enb"
+                },
+                {
+                  "name": "iqcor_enb",
+                  "lsb": 2,
+                  "width": 1,
+                  "desc": "iqcor_enb"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN1_CNTRL_7",
+              "offset": "0x4458",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DATA_SEL: 0 DDS, 1 pattern, 2 DMA, 3 zero, 8 ADC loopback, 9 PN | Data select",
+              "fields": [
+                {
+                  "name": "data_sel",
+                  "lsb": 0,
+                  "width": 4,
+                  "desc": "data_sel"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DAC_CHAN1_CNTRL_8",
+              "offset": "0x445C",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IQ correction coefficients",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            }
+          ]
+        }
+      ],
+      "id_reg": "DAC_VERSION",
+      "id_value": "0x00090262",
+      "snapshot_domains": {},
+      "requires": {
+        "iio": "cf-ad9361-dds-core-lpc"
+      },
+      "source": "bench/share via `fbench regmaps build`: agent built-in map + host annotations (expected, read_side_effect, aliases, extra registers)"
+    },
+    {
+      "schema": "fbench.regmap/1",
+      "core": "rx_dmac",
+      "base": "0x7C400000",
+      "size": 4096,
+      "blocks": [
+        {
+          "name": "dmac",
+          "offset": "0x0",
+          "regs": [
+            {
+              "name": "VERSION",
+              "offset": "0x0",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "expect 0x00040564 | Core version",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "ID",
+              "offset": "0x4",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ID | Peripheral ID",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "PERIPHERAL_ID"
+              ]
+            },
+            {
+              "name": "SCRATCH",
+              "offset": "0x8",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "SCRATCH | Scratch (bus test)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "IDENTIFICATION",
+              "offset": "0xC",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "'DMAC' = 0x444D4143 | 'DMAC'",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": "0x444D4143"
+            },
+            {
+              "name": "INTERFACE_DESCRIPTION",
+              "offset": "0x10",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "INTERFACE_DESCRIPTION | Bus widths/types",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "INTERFACE_DESCRIPTION_2",
+              "offset": "0x14",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "INTERFACE_DESCRIPTION_2",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "IRQ_MASK",
+              "offset": "0x80",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IRQ_MASK | IRQ mask (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "IRQ_PENDING",
+              "offset": "0x84",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IRQ_PENDING | IRQ pending (write 1 to clear) (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "IRQ_SOURCE",
+              "offset": "0x88",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IRQ_SOURCE | IRQ source",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CONTROL",
+              "offset": "0x400",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CONTROL | Enable/pause (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [
+                {
+                  "name": "ENABLE",
+                  "lsb": 0,
+                  "width": 1,
+                  "access": "rw",
+                  "desc": ""
+                },
+                {
+                  "name": "PAUSE",
+                  "lsb": 1,
+                  "width": 1,
+                  "access": "rw",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "TRANSFER_ID",
+              "offset": "0x404",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "TRANSFER_ID | Next transfer ID",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "TRANSFER_SUBMIT",
+              "offset": "0x408",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "TRANSFER_SUBMIT | Submit (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "FLAGS",
+              "offset": "0x40C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "FLAGS | Cyclic/last flags (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DEST_ADDRESS",
+              "offset": "0x410",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DEST_ADDRESS | Destination address (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "SRC_ADDRESS",
+              "offset": "0x414",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "SRC_ADDRESS | Source address (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "X_LENGTH",
+              "offset": "0x418",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "X_LENGTH | Transfer length - 1 (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "Y_LENGTH",
+              "offset": "0x41C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "Y_LENGTH | 2-D length - 1 (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DEST_STRIDE",
+              "offset": "0x420",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DEST_STRIDE",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "SRC_STRIDE",
+              "offset": "0x424",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "SRC_STRIDE",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "TRANSFER_DONE",
+              "offset": "0x428",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "TRANSFER_DONE | Done bitmap",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "ACTIVE_TRANSFER_ID",
+              "offset": "0x42C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ACTIVE_TRANSFER_ID | Active transfer ID",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "STATUS",
+              "offset": "0x430",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "STATUS | Status",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CURRENT_DEST_ADDRESS",
+              "offset": "0x434",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CURRENT_DEST_ADDRESS | Current destination address",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CURRENT_SRC_ADDRESS",
+              "offset": "0x438",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CURRENT_SRC_ADDRESS | Current source address",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DBG_STATUS",
+              "offset": "0x43C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DBG_STATUS",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DBG_IDS0",
+              "offset": "0x440",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DBG_IDS0",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DBG_IDS1",
+              "offset": "0x444",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DBG_IDS1",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "MEASURED_TRANSFER_LENGTH",
+              "offset": "0x448",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "MEASURED_TRANSFER_LENGTH",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "PARTIAL_TRANSFER_LENGTH",
+              "offset": "0x44C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "PARTIAL_TRANSFER_LENGTH",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "PARTIAL_TRANSFER_ID",
+              "offset": "0x450",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "reading pops the partial-transfer FIFO",
+              "fields": [],
+              "read_side_effect": true,
+              "expected": null
+            }
+          ]
+        }
+      ],
+      "id_reg": "IDENTIFICATION",
+      "id_value": "0x444D4143",
+      "snapshot_domains": {},
+      "requires": {
+        "iio": "cf-ad9361-lpc"
+      },
+      "note": "owned by the IIO driver: the agent allows reads, and writes only to SCRATCH",
+      "writable": [
+        "SCRATCH"
+      ],
+      "source": "bench/share via `fbench regmaps build`: agent built-in map + host annotations (expected, read_side_effect, aliases, extra registers)"
+    },
+    {
+      "schema": "fbench.regmap/1",
+      "core": "tx_dmac",
+      "base": "0x7C420000",
+      "size": 4096,
+      "blocks": [
+        {
+          "name": "dmac",
+          "offset": "0x0",
+          "regs": [
+            {
+              "name": "VERSION",
+              "offset": "0x0",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "expect 0x00040564 | Core version",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "ID",
+              "offset": "0x4",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ID | Peripheral ID",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "PERIPHERAL_ID"
+              ]
+            },
+            {
+              "name": "SCRATCH",
+              "offset": "0x8",
+              "access": "rw",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "SCRATCH | Scratch (bus test)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "IDENTIFICATION",
+              "offset": "0xC",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "'DMAC' = 0x444D4143 | 'DMAC'",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": "0x444D4143"
+            },
+            {
+              "name": "INTERFACE_DESCRIPTION",
+              "offset": "0x10",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "INTERFACE_DESCRIPTION | Bus widths/types",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "INTERFACE_DESCRIPTION_2",
+              "offset": "0x14",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "INTERFACE_DESCRIPTION_2",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "IRQ_MASK",
+              "offset": "0x80",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IRQ_MASK | IRQ mask (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "IRQ_PENDING",
+              "offset": "0x84",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IRQ_PENDING | IRQ pending (write 1 to clear) (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "IRQ_SOURCE",
+              "offset": "0x88",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IRQ_SOURCE | IRQ source",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CONTROL",
+              "offset": "0x400",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CONTROL | Enable/pause (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [
+                {
+                  "name": "ENABLE",
+                  "lsb": 0,
+                  "width": 1,
+                  "access": "rw",
+                  "desc": ""
+                },
+                {
+                  "name": "PAUSE",
+                  "lsb": 1,
+                  "width": 1,
+                  "access": "rw",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "TRANSFER_ID",
+              "offset": "0x404",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "TRANSFER_ID | Next transfer ID",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "TRANSFER_SUBMIT",
+              "offset": "0x408",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "TRANSFER_SUBMIT | Submit (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "FLAGS",
+              "offset": "0x40C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "FLAGS | Cyclic/last flags (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DEST_ADDRESS",
+              "offset": "0x410",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DEST_ADDRESS | Destination address (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "SRC_ADDRESS",
+              "offset": "0x414",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "SRC_ADDRESS | Source address (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "X_LENGTH",
+              "offset": "0x418",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "X_LENGTH | Transfer length - 1 (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "Y_LENGTH",
+              "offset": "0x41C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "Y_LENGTH | 2-D length - 1 (owned by the Linux axi-dmac driver; do not write)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DEST_STRIDE",
+              "offset": "0x420",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DEST_STRIDE",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "SRC_STRIDE",
+              "offset": "0x424",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "SRC_STRIDE",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "TRANSFER_DONE",
+              "offset": "0x428",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "TRANSFER_DONE | Done bitmap",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "ACTIVE_TRANSFER_ID",
+              "offset": "0x42C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ACTIVE_TRANSFER_ID | Active transfer ID",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "STATUS",
+              "offset": "0x430",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "STATUS | Status",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CURRENT_DEST_ADDRESS",
+              "offset": "0x434",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CURRENT_DEST_ADDRESS | Current destination address",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CURRENT_SRC_ADDRESS",
+              "offset": "0x438",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CURRENT_SRC_ADDRESS | Current source address",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DBG_STATUS",
+              "offset": "0x43C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DBG_STATUS",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DBG_IDS0",
+              "offset": "0x440",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DBG_IDS0",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DBG_IDS1",
+              "offset": "0x444",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DBG_IDS1",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "MEASURED_TRANSFER_LENGTH",
+              "offset": "0x448",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "MEASURED_TRANSFER_LENGTH",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "PARTIAL_TRANSFER_LENGTH",
+              "offset": "0x44C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "PARTIAL_TRANSFER_LENGTH",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "PARTIAL_TRANSFER_ID",
+              "offset": "0x450",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "reading pops the partial-transfer FIFO",
+              "fields": [],
+              "read_side_effect": true,
+              "expected": null
+            }
+          ]
+        }
+      ],
+      "id_reg": "IDENTIFICATION",
+      "id_value": "0x444D4143",
+      "snapshot_domains": {},
+      "requires": {
+        "iio": "cf-ad9361-dds-core-lpc"
+      },
+      "note": "owned by the IIO driver: the agent allows reads, and writes only to SCRATCH",
+      "writable": [
+        "SCRATCH"
+      ],
+      "source": "bench/share via `fbench regmaps build`: agent built-in map + host annotations (expected, read_side_effect, aliases, extra registers)"
+    }
+  ]
+}

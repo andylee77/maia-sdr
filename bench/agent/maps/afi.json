@@ -1,0 +1,419 @@
+{
+ "schema": "fbench.regmap/1",
+ "core": "afi",
+ "base": "0xF8008000",
+ "size": 16384,
+ "id_reg": null,
+ "id_value": null,
+ "snapshot_domains": {},
+ "blocks": [
+  {
+   "name": "afi",
+   "offset": "0x0000",
+   "regs": [
+    {
+     "name": "AFI0_RDCHAN_CTRL",
+     "offset": "0x0000",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI0_RDCHAN_CTRL",
+     "fields": []
+    },
+    {
+     "name": "AFI0_RDCHAN_ISSUINGCAP",
+     "offset": "0x0004",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI0_RDCHAN_ISSUINGCAP",
+     "fields": []
+    },
+    {
+     "name": "AFI0_RDQOS",
+     "offset": "0x0008",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI0_RDQOS",
+     "fields": []
+    },
+    {
+     "name": "AFI0_RDDATAFIFO_LEVEL",
+     "offset": "0x000C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI0_RDDATAFIFO_LEVEL",
+     "fields": []
+    },
+    {
+     "name": "AFI0_RDDEBUG",
+     "offset": "0x0010",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI0_RDDEBUG",
+     "fields": []
+    },
+    {
+     "name": "AFI0_WRCHAN_CTRL",
+     "offset": "0x0014",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI0_WRCHAN_CTRL",
+     "fields": []
+    },
+    {
+     "name": "AFI0_WRCHAN_ISSUINGCAP",
+     "offset": "0x0018",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI0_WRCHAN_ISSUINGCAP",
+     "fields": []
+    },
+    {
+     "name": "AFI0_WRQOS",
+     "offset": "0x001C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI0_WRQOS",
+     "fields": []
+    },
+    {
+     "name": "AFI0_WRDATAFIFO_LEVEL",
+     "offset": "0x0020",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI0_WRDATAFIFO_LEVEL",
+     "fields": []
+    },
+    {
+     "name": "AFI0_WRDEBUG",
+     "offset": "0x0024",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI0_WRDEBUG",
+     "fields": []
+    },
+    {
+     "name": "AFI1_RDCHAN_CTRL",
+     "offset": "0x1000",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI1_RDCHAN_CTRL",
+     "fields": []
+    },
+    {
+     "name": "AFI1_RDCHAN_ISSUINGCAP",
+     "offset": "0x1004",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI1_RDCHAN_ISSUINGCAP",
+     "fields": []
+    },
+    {
+     "name": "AFI1_RDQOS",
+     "offset": "0x1008",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI1_RDQOS",
+     "fields": []
+    },
+    {
+     "name": "AFI1_RDDATAFIFO_LEVEL",
+     "offset": "0x100C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI1_RDDATAFIFO_LEVEL",
+     "fields": []
+    },
+    {
+     "name": "AFI1_RDDEBUG",
+     "offset": "0x1010",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI1_RDDEBUG",
+     "fields": []
+    },
+    {
+     "name": "AFI1_WRCHAN_CTRL",
+     "offset": "0x1014",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI1_WRCHAN_CTRL",
+     "fields": []
+    },
+    {
+     "name": "AFI1_WRCHAN_ISSUINGCAP",
+     "offset": "0x1018",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI1_WRCHAN_ISSUINGCAP",
+     "fields": []
+    },
+    {
+     "name": "AFI1_WRQOS",
+     "offset": "0x101C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI1_WRQOS",
+     "fields": []
+    },
+    {
+     "name": "AFI1_WRDATAFIFO_LEVEL",
+     "offset": "0x1020",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI1_WRDATAFIFO_LEVEL",
+     "fields": []
+    },
+    {
+     "name": "AFI1_WRDEBUG",
+     "offset": "0x1024",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI1_WRDEBUG",
+     "fields": []
+    },
+    {
+     "name": "AFI2_RDCHAN_CTRL",
+     "offset": "0x2000",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI2_RDCHAN_CTRL",
+     "fields": []
+    },
+    {
+     "name": "AFI2_RDCHAN_ISSUINGCAP",
+     "offset": "0x2004",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI2_RDCHAN_ISSUINGCAP",
+     "fields": []
+    },
+    {
+     "name": "AFI2_RDQOS",
+     "offset": "0x2008",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI2_RDQOS",
+     "fields": []
+    },
+    {
+     "name": "AFI2_RDDATAFIFO_LEVEL",
+     "offset": "0x200C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI2_RDDATAFIFO_LEVEL",
+     "fields": []
+    },
+    {
+     "name": "AFI2_RDDEBUG",
+     "offset": "0x2010",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI2_RDDEBUG",
+     "fields": []
+    },
+    {
+     "name": "AFI2_WRCHAN_CTRL",
+     "offset": "0x2014",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI2_WRCHAN_CTRL",
+     "fields": []
+    },
+    {
+     "name": "AFI2_WRCHAN_ISSUINGCAP",
+     "offset": "0x2018",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI2_WRCHAN_ISSUINGCAP",
+     "fields": []
+    },
+    {
+     "name": "AFI2_WRQOS",
+     "offset": "0x201C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI2_WRQOS",
+     "fields": []
+    },
+    {
+     "name": "AFI2_WRDATAFIFO_LEVEL",
+     "offset": "0x2020",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI2_WRDATAFIFO_LEVEL",
+     "fields": []
+    },
+    {
+     "name": "AFI2_WRDEBUG",
+     "offset": "0x2024",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI2_WRDEBUG",
+     "fields": []
+    },
+    {
+     "name": "AFI3_RDCHAN_CTRL",
+     "offset": "0x3000",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI3_RDCHAN_CTRL",
+     "fields": []
+    },
+    {
+     "name": "AFI3_RDCHAN_ISSUINGCAP",
+     "offset": "0x3004",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI3_RDCHAN_ISSUINGCAP",
+     "fields": []
+    },
+    {
+     "name": "AFI3_RDQOS",
+     "offset": "0x3008",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI3_RDQOS",
+     "fields": []
+    },
+    {
+     "name": "AFI3_RDDATAFIFO_LEVEL",
+     "offset": "0x300C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI3_RDDATAFIFO_LEVEL",
+     "fields": []
+    },
+    {
+     "name": "AFI3_RDDEBUG",
+     "offset": "0x3010",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI3_RDDEBUG",
+     "fields": []
+    },
+    {
+     "name": "AFI3_WRCHAN_CTRL",
+     "offset": "0x3014",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI3_WRCHAN_CTRL",
+     "fields": []
+    },
+    {
+     "name": "AFI3_WRCHAN_ISSUINGCAP",
+     "offset": "0x3018",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI3_WRCHAN_ISSUINGCAP",
+     "fields": []
+    },
+    {
+     "name": "AFI3_WRQOS",
+     "offset": "0x301C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI3_WRQOS",
+     "fields": []
+    },
+    {
+     "name": "AFI3_WRDATAFIFO_LEVEL",
+     "offset": "0x3020",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI3_WRDATAFIFO_LEVEL",
+     "fields": []
+    },
+    {
+     "name": "AFI3_WRDEBUG",
+     "offset": "0x3024",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AFI3_WRDEBUG",
+     "fields": []
+    }
+   ]
+  }
+ ],
+ "source": "bench/agent/maps (built-in default; share/*.json overrides)",
+ "readonly": true
+}

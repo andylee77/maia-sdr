@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fbench"
+version = "0.1.0"
+description = "Host CLI for the Fishball hardware validation bench (doc/HW_VALIDATION_SUITE.md)"
+requires-python = ">=3.11"
+dependencies = ["numpy", "scipy"]
+
+[project.optional-dependencies]
+plots = ["matplotlib"]
+setup = ["paramiko"]
+iio = ["pylibiio", "pyadi-iio"]
+console = ["pyserial"]
+test = ["pytest", "matplotlib"]
+
+[project.scripts]
+fbench = "fbench.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fbench*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests_host"]

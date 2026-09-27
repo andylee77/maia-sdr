@@ -1,0 +1,1667 @@
+{
+  "base": "0x7C460000",
+  "blocks": [
+    {
+      "domain": "axi_lite",
+      "name": "control",
+      "offset": "0x000",
+      "regs": [
+        {
+          "access": "ro",
+          "desc": "product_id",
+          "domain": "axi_lite",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "product_id",
+              "lsb": 0,
+              "name": "product_id",
+              "width": 32
+            }
+          ],
+          "name": "product_id",
+          "offset": "0x000",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "version",
+          "domain": "axi_lite",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "bugfix",
+              "lsb": 0,
+              "name": "bugfix",
+              "width": 8
+            },
+            {
+              "access": "ro",
+              "desc": "minor",
+              "lsb": 8,
+              "name": "minor",
+              "width": 8
+            },
+            {
+              "access": "ro",
+              "desc": "major",
+              "lsb": 16,
+              "name": "major",
+              "width": 8
+            },
+            {
+              "access": "ro",
+              "desc": "platform",
+              "lsb": 24,
+              "name": "platform",
+              "width": 8
+            }
+          ],
+          "name": "version",
+          "offset": "0x004",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "control",
+          "domain": "axi_lite",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "sdr_reset",
+              "lsb": 0,
+              "name": "sdr_reset",
+              "width": 1
+            }
+          ],
+          "name": "control",
+          "offset": "0x008",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "interrupts",
+          "domain": "axi_lite",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "iq_dma",
+              "lsb": 0,
+              "name": "iq_dma",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "lsm_dibit_dma",
+              "lsb": 1,
+              "name": "lsm_dibit_dma",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "pre_diff_iq_dma",
+              "lsb": 2,
+              "name": "pre_diff_iq_dma",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "wideband_spec_dma",
+              "lsb": 3,
+              "name": "wideband_spec_dma",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "traffic_lsm_dibit_dma",
+              "lsb": 4,
+              "name": "traffic_lsm_dibit_dma",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "traffic_iq_dma",
+              "lsb": 5,
+              "name": "traffic_iq_dma",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "traffic_pre_diff_iq_dma",
+              "lsb": 6,
+              "name": "traffic_pre_diff_iq_dma",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "wideband_iq_dma",
+              "lsb": 7,
+              "name": "wideband_iq_dma",
+              "width": 1
+            }
+          ],
+          "name": "interrupts",
+          "offset": "0x00C",
+          "read_side_effect": true,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "domain": "sync",
+      "name": "sdr",
+      "offset": "0x020",
+      "regs": [
+        {
+          "access": "rw",
+          "desc": "ddc_coeff_addr",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "coeff_waddr",
+              "lsb": 0,
+              "name": "coeff_waddr",
+              "width": 10
+            }
+          ],
+          "name": "ddc_coeff_addr",
+          "offset": "0x020",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "ddc_coeff",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "wo",
+              "desc": "coeff_wren",
+              "lsb": 0,
+              "name": "coeff_wren",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "coeff_wdata",
+              "lsb": 1,
+              "name": "coeff_wdata",
+              "width": 18
+            }
+          ],
+          "name": "ddc_coeff",
+          "offset": "0x028",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "ddc_decimation",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "decimation1",
+              "lsb": 0,
+              "name": "decimation1",
+              "width": 7
+            },
+            {
+              "access": "rw",
+              "desc": "decimation2",
+              "lsb": 7,
+              "name": "decimation2",
+              "width": 6
+            },
+            {
+              "access": "rw",
+              "desc": "decimation3",
+              "lsb": 13,
+              "name": "decimation3",
+              "width": 7
+            }
+          ],
+          "name": "ddc_decimation",
+          "offset": "0x02C",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "ddc_frequency",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "frequency",
+              "lsb": 0,
+              "name": "frequency",
+              "width": 28
+            }
+          ],
+          "name": "ddc_frequency",
+          "offset": "0x030",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "ddc_control",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "operations_minus_one1",
+              "lsb": 0,
+              "name": "operations_minus_one1",
+              "width": 7
+            },
+            {
+              "access": "rw",
+              "desc": "operations_minus_one2",
+              "lsb": 7,
+              "name": "operations_minus_one2",
+              "width": 6
+            },
+            {
+              "access": "rw",
+              "desc": "operations_minus_one3",
+              "lsb": 13,
+              "name": "operations_minus_one3",
+              "width": 7
+            },
+            {
+              "access": "rw",
+              "desc": "odd_operations1",
+              "lsb": 20,
+              "name": "odd_operations1",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "odd_operations3",
+              "lsb": 21,
+              "name": "odd_operations3",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "bypass2",
+              "lsb": 22,
+              "name": "bypass2",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "bypass3",
+              "lsb": 23,
+              "name": "bypass3",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "enable_input",
+              "lsb": 24,
+              "name": "enable_input",
+              "width": 1
+            }
+          ],
+          "name": "ddc_control",
+          "offset": "0x034",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "domain": "sync",
+      "name": "traffic_sdr",
+      "offset": "0x040",
+      "regs": [
+        {
+          "access": "rw",
+          "desc": "traffic_ddc_coeff_addr",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "traffic_coeff_waddr",
+              "lsb": 0,
+              "name": "traffic_coeff_waddr",
+              "width": 10
+            }
+          ],
+          "name": "traffic_ddc_coeff_addr",
+          "offset": "0x040",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "traffic_ddc_coeff",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "wo",
+              "desc": "traffic_coeff_wren",
+              "lsb": 0,
+              "name": "traffic_coeff_wren",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_coeff_wdata",
+              "lsb": 1,
+              "name": "traffic_coeff_wdata",
+              "width": 18
+            }
+          ],
+          "name": "traffic_ddc_coeff",
+          "offset": "0x048",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "traffic_ddc_decimation",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "traffic_decimation1",
+              "lsb": 0,
+              "name": "traffic_decimation1",
+              "width": 7
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_decimation2",
+              "lsb": 7,
+              "name": "traffic_decimation2",
+              "width": 6
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_decimation3",
+              "lsb": 13,
+              "name": "traffic_decimation3",
+              "width": 7
+            }
+          ],
+          "name": "traffic_ddc_decimation",
+          "offset": "0x04C",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "traffic_ddc_frequency",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "traffic_frequency",
+              "lsb": 0,
+              "name": "traffic_frequency",
+              "width": 28
+            }
+          ],
+          "name": "traffic_ddc_frequency",
+          "offset": "0x050",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "traffic_ddc_control",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "traffic_operations_minus_one1",
+              "lsb": 0,
+              "name": "traffic_operations_minus_one1",
+              "width": 7
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_operations_minus_one2",
+              "lsb": 7,
+              "name": "traffic_operations_minus_one2",
+              "width": 6
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_operations_minus_one3",
+              "lsb": 13,
+              "name": "traffic_operations_minus_one3",
+              "width": 7
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_odd_operations1",
+              "lsb": 20,
+              "name": "traffic_odd_operations1",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_odd_operations3",
+              "lsb": 21,
+              "name": "traffic_odd_operations3",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_bypass2",
+              "lsb": 22,
+              "name": "traffic_bypass2",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_bypass3",
+              "lsb": 23,
+              "name": "traffic_bypass3",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_enable_input",
+              "lsb": 24,
+              "name": "traffic_enable_input",
+              "width": 1
+            }
+          ],
+          "name": "traffic_ddc_control",
+          "offset": "0x054",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "domain": "sync",
+      "name": "traffic_iq",
+      "offset": "0x060",
+      "regs": [
+        {
+          "access": "ro",
+          "desc": "traffic_iq_dma_status",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "traffic_iq_overflow",
+              "lsb": 0,
+              "name": "traffic_iq_overflow",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "traffic_iq_last_buffer",
+              "lsb": 1,
+              "name": "traffic_iq_last_buffer",
+              "width": 3
+            }
+          ],
+          "name": "traffic_iq_dma_status",
+          "offset": "0x060",
+          "read_side_effect": true,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "traffic_iq_dma_control",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "traffic_iq_enable",
+              "lsb": 0,
+              "name": "traffic_iq_enable",
+              "width": 1
+            }
+          ],
+          "name": "traffic_iq_dma_control",
+          "offset": "0x064",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "traffic_iq_next_address",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "next_address",
+              "lsb": 0,
+              "name": "next_address",
+              "width": 32
+            }
+          ],
+          "name": "traffic_iq_next_address",
+          "offset": "0x068",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "domain": "sync",
+      "name": "iq",
+      "offset": "0x080",
+      "regs": [
+        {
+          "access": "ro",
+          "desc": "iq_dma_status",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "iq_overflow",
+              "lsb": 0,
+              "name": "iq_overflow",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "last_buffer",
+              "lsb": 1,
+              "name": "last_buffer",
+              "width": 3
+            }
+          ],
+          "name": "iq_dma_status",
+          "offset": "0x080",
+          "read_side_effect": true,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "iq_dma_control",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "iq_enable",
+              "lsb": 0,
+              "name": "iq_enable",
+              "width": 1
+            }
+          ],
+          "name": "iq_dma_control",
+          "offset": "0x084",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "iq_next_address",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "next_address",
+              "lsb": 0,
+              "name": "next_address",
+              "width": 32
+            }
+          ],
+          "name": "iq_next_address",
+          "offset": "0x088",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "domain": "sync",
+      "name": "lsm",
+      "offset": "0x0A0",
+      "regs": [
+        {
+          "access": "rw",
+          "desc": "lsm_control",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "lsm_enable",
+              "lsb": 0,
+              "name": "lsm_enable",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "lsm_dibit_dma_enable",
+              "lsb": 1,
+              "name": "lsm_dibit_dma_enable",
+              "width": 1
+            },
+            {
+              "access": "wo",
+              "desc": "lsm_reset",
+              "lsb": 2,
+              "name": "lsm_reset",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "lsm_dc_block_enable",
+              "lsb": 3,
+              "name": "lsm_dc_block_enable",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "lsm_agc_enable",
+              "lsb": 4,
+              "name": "lsm_agc_enable",
+              "width": 1
+            }
+          ],
+          "name": "lsm_control",
+          "offset": "0x0A0",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "lsm_status",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "bch_busy",
+              "lsb": 0,
+              "name": "bch_busy",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "in_nid_window",
+              "lsb": 1,
+              "name": "in_nid_window",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "nid_event",
+              "lsb": 2,
+              "name": "nid_event",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "nid_valid",
+              "lsb": 3,
+              "name": "nid_valid",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "n_errors",
+              "lsb": 4,
+              "name": "n_errors",
+              "width": 7
+            },
+            {
+              "access": "ro",
+              "desc": "sync_distance",
+              "lsb": 11,
+              "name": "sync_distance",
+              "width": 7
+            },
+            {
+              "access": "ro",
+              "desc": "lsm_dibit_overflow",
+              "lsb": 18,
+              "name": "lsm_dibit_overflow",
+              "width": 1
+            }
+          ],
+          "name": "lsm_status",
+          "offset": "0x0A4",
+          "read_side_effect": true,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "lsm_nid",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "nac",
+              "lsb": 0,
+              "name": "nac",
+              "width": 12
+            },
+            {
+              "access": "ro",
+              "desc": "duid",
+              "lsb": 12,
+              "name": "duid",
+              "width": 4
+            }
+          ],
+          "name": "lsm_nid",
+          "offset": "0x0A8",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "lsm_drop_count",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "drop_count",
+              "lsb": 0,
+              "name": "drop_count",
+              "width": 16
+            },
+            {
+              "access": "ro",
+              "desc": "lsm_dibit_last_buffer",
+              "lsb": 16,
+              "name": "lsm_dibit_last_buffer",
+              "width": 3
+            }
+          ],
+          "name": "lsm_drop_count",
+          "offset": "0x0AC",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "lsm_dibit_next",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "next_address",
+              "lsb": 0,
+              "name": "next_address",
+              "width": 32
+            }
+          ],
+          "name": "lsm_dibit_next",
+          "offset": "0x0B0",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "lsm_debug",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "pll_dbg",
+              "lsb": 0,
+              "name": "pll_dbg",
+              "width": 16
+            },
+            {
+              "access": "ro",
+              "desc": "sample_point_dbg",
+              "lsb": 16,
+              "name": "sample_point_dbg",
+              "width": 16
+            }
+          ],
+          "name": "lsm_debug",
+          "offset": "0x0B4",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "lsm_agc_debug",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "agc_gain_dbg",
+              "lsb": 0,
+              "name": "agc_gain_dbg",
+              "width": 16
+            },
+            {
+              "access": "ro",
+              "desc": "agc_mag_dbg",
+              "lsb": 16,
+              "name": "agc_mag_dbg",
+              "width": 16
+            }
+          ],
+          "name": "lsm_agc_debug",
+          "offset": "0x0B8",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "lsm_agc_config",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "mag_update_threshold",
+              "lsb": 0,
+              "name": "mag_update_threshold",
+              "width": 16
+            }
+          ],
+          "name": "lsm_agc_config",
+          "offset": "0x0BC",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "domain": "sync",
+      "name": "traffic_lsm",
+      "offset": "0x0C0",
+      "regs": [
+        {
+          "access": "rw",
+          "desc": "traffic_lsm_control",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "traffic_lsm_enable",
+              "lsb": 0,
+              "name": "traffic_lsm_enable",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_lsm_dibit_dma_enable",
+              "lsb": 1,
+              "name": "traffic_lsm_dibit_dma_enable",
+              "width": 1
+            },
+            {
+              "access": "wo",
+              "desc": "traffic_lsm_reset",
+              "lsb": 2,
+              "name": "traffic_lsm_reset",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_lsm_dc_block_enable",
+              "lsb": 3,
+              "name": "traffic_lsm_dc_block_enable",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "traffic_lsm_agc_enable",
+              "lsb": 4,
+              "name": "traffic_lsm_agc_enable",
+              "width": 1
+            }
+          ],
+          "name": "traffic_lsm_control",
+          "offset": "0x0C0",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "traffic_lsm_status",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "bch_busy",
+              "lsb": 0,
+              "name": "bch_busy",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "in_nid_window",
+              "lsb": 1,
+              "name": "in_nid_window",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "nid_event",
+              "lsb": 2,
+              "name": "nid_event",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "nid_valid",
+              "lsb": 3,
+              "name": "nid_valid",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "n_errors",
+              "lsb": 4,
+              "name": "n_errors",
+              "width": 7
+            },
+            {
+              "access": "ro",
+              "desc": "sync_distance",
+              "lsb": 11,
+              "name": "sync_distance",
+              "width": 7
+            },
+            {
+              "access": "ro",
+              "desc": "traffic_lsm_dibit_overflow",
+              "lsb": 18,
+              "name": "traffic_lsm_dibit_overflow",
+              "width": 1
+            }
+          ],
+          "name": "traffic_lsm_status",
+          "offset": "0x0C4",
+          "read_side_effect": true,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "traffic_lsm_nid",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "nac",
+              "lsb": 0,
+              "name": "nac",
+              "width": 12
+            },
+            {
+              "access": "ro",
+              "desc": "duid",
+              "lsb": 12,
+              "name": "duid",
+              "width": 4
+            }
+          ],
+          "name": "traffic_lsm_nid",
+          "offset": "0x0C8",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "traffic_lsm_drop_count",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "drop_count",
+              "lsb": 0,
+              "name": "drop_count",
+              "width": 16
+            },
+            {
+              "access": "ro",
+              "desc": "traffic_lsm_dibit_last_buffer",
+              "lsb": 16,
+              "name": "traffic_lsm_dibit_last_buffer",
+              "width": 3
+            }
+          ],
+          "name": "traffic_lsm_drop_count",
+          "offset": "0x0CC",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "traffic_lsm_dibit_next",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "next_address",
+              "lsb": 0,
+              "name": "next_address",
+              "width": 32
+            }
+          ],
+          "name": "traffic_lsm_dibit_next",
+          "offset": "0x0D0",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "traffic_lsm_debug",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "pll_dbg",
+              "lsb": 0,
+              "name": "pll_dbg",
+              "width": 16
+            },
+            {
+              "access": "ro",
+              "desc": "sample_point_dbg",
+              "lsb": 16,
+              "name": "sample_point_dbg",
+              "width": 16
+            }
+          ],
+          "name": "traffic_lsm_debug",
+          "offset": "0x0D4",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "traffic_lsm_agc_debug",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "agc_gain_dbg",
+              "lsb": 0,
+              "name": "agc_gain_dbg",
+              "width": 16
+            },
+            {
+              "access": "ro",
+              "desc": "agc_mag_dbg",
+              "lsb": 16,
+              "name": "agc_mag_dbg",
+              "width": 16
+            }
+          ],
+          "name": "traffic_lsm_agc_debug",
+          "offset": "0x0D8",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "traffic_lsm_agc_config",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "mag_update_threshold",
+              "lsb": 0,
+              "name": "mag_update_threshold",
+              "width": 16
+            }
+          ],
+          "name": "traffic_lsm_agc_config",
+          "offset": "0x0DC",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "domain": "sync",
+      "name": "wideband_iq",
+      "offset": "0x0E0",
+      "regs": [
+        {
+          "access": "ro",
+          "desc": "wideband_iq_dma_status",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "wideband_iq_overflow",
+              "lsb": 0,
+              "name": "wideband_iq_overflow",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "last_buffer",
+              "lsb": 1,
+              "name": "last_buffer",
+              "width": 4
+            }
+          ],
+          "name": "wideband_iq_dma_status",
+          "offset": "0x0E0",
+          "read_side_effect": true,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "wideband_iq_dma_control",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "wideband_iq_enable",
+              "lsb": 0,
+              "name": "wideband_iq_enable",
+              "width": 1
+            }
+          ],
+          "name": "wideband_iq_dma_control",
+          "offset": "0x0E4",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "wideband_iq_next_address",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "next_address",
+              "lsb": 0,
+              "name": "next_address",
+              "width": 32
+            }
+          ],
+          "name": "wideband_iq_next_address",
+          "offset": "0x0E8",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "domain": "sync",
+      "name": "lsm_seed",
+      "offset": "0x100",
+      "regs": [
+        {
+          "access": "rw",
+          "desc": "lsm_agc_seed",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "agc_seed",
+              "lsb": 0,
+              "name": "agc_seed",
+              "width": 20
+            }
+          ],
+          "name": "lsm_agc_seed",
+          "offset": "0x100",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "lsm_pll_seed",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "pll_seed",
+              "lsb": 0,
+              "name": "pll_seed",
+              "width": 16
+            }
+          ],
+          "name": "lsm_pll_seed",
+          "offset": "0x104",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "lsm_timing_seed",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "timing_seed",
+              "lsb": 0,
+              "name": "timing_seed",
+              "width": 18
+            }
+          ],
+          "name": "lsm_timing_seed",
+          "offset": "0x108",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "traffic_lsm_agc_seed",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "agc_seed",
+              "lsb": 0,
+              "name": "agc_seed",
+              "width": 20
+            }
+          ],
+          "name": "traffic_lsm_agc_seed",
+          "offset": "0x10C",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "traffic_lsm_pll_seed",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "pll_seed",
+              "lsb": 0,
+              "name": "pll_seed",
+              "width": 16
+            }
+          ],
+          "name": "traffic_lsm_pll_seed",
+          "offset": "0x110",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "traffic_lsm_timing_seed",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "timing_seed",
+              "lsb": 0,
+              "name": "timing_seed",
+              "width": 18
+            }
+          ],
+          "name": "traffic_lsm_timing_seed",
+          "offset": "0x114",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "domain": "sync",
+      "name": "spectrometer",
+      "offset": "0x180",
+      "regs": [
+        {
+          "access": "rw",
+          "desc": "spec_control",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "spec_enable",
+              "lsb": 0,
+              "name": "spec_enable",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "spec_peak_detect",
+              "lsb": 1,
+              "name": "spec_peak_detect",
+              "width": 1
+            },
+            {
+              "access": "wo",
+              "desc": "spec_abort",
+              "lsb": 2,
+              "name": "spec_abort",
+              "width": 1
+            },
+            {
+              "access": "rw",
+              "desc": "spec_num_integrations",
+              "lsb": 3,
+              "name": "spec_num_integrations",
+              "width": 10
+            }
+          ],
+          "name": "spec_control",
+          "offset": "0x180",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "spec_status",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "spec_overflow",
+              "lsb": 0,
+              "name": "spec_overflow",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "spec_last_buffer",
+              "lsb": 1,
+              "name": "spec_last_buffer",
+              "width": 1
+            }
+          ],
+          "name": "spec_status",
+          "offset": "0x184",
+          "read_side_effect": true,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "spec_next_address",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "next_address",
+              "lsb": 0,
+              "name": "next_address",
+              "width": 32
+            }
+          ],
+          "name": "spec_next_address",
+          "offset": "0x188",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "domain": "sync",
+      "name": "pre_diff_iq",
+      "offset": "0x1A0",
+      "regs": [
+        {
+          "access": "ro",
+          "desc": "pre_diff_iq_dma_status",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "pre_diff_iq_overflow",
+              "lsb": 0,
+              "name": "pre_diff_iq_overflow",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "last_buffer",
+              "lsb": 1,
+              "name": "last_buffer",
+              "width": 3
+            }
+          ],
+          "name": "pre_diff_iq_dma_status",
+          "offset": "0x1A0",
+          "read_side_effect": true,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "pre_diff_iq_dma_control",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "pre_diff_iq_enable",
+              "lsb": 0,
+              "name": "pre_diff_iq_enable",
+              "width": 1
+            }
+          ],
+          "name": "pre_diff_iq_dma_control",
+          "offset": "0x1A4",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "pre_diff_iq_next_address",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "next_address",
+              "lsb": 0,
+              "name": "next_address",
+              "width": 32
+            }
+          ],
+          "name": "pre_diff_iq_next_address",
+          "offset": "0x1A8",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        }
+      ]
+    },
+    {
+      "domain": "sync",
+      "name": "traffic_pre_diff_iq",
+      "offset": "0x1C0",
+      "regs": [
+        {
+          "access": "ro",
+          "desc": "traffic_pre_diff_iq_dma_status",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "traffic_pre_diff_iq_overflow",
+              "lsb": 0,
+              "name": "traffic_pre_diff_iq_overflow",
+              "width": 1
+            },
+            {
+              "access": "ro",
+              "desc": "traffic_pre_diff_iq_last_buffer",
+              "lsb": 1,
+              "name": "traffic_pre_diff_iq_last_buffer",
+              "width": 3
+            }
+          ],
+          "name": "traffic_pre_diff_iq_dma_status",
+          "offset": "0x1C0",
+          "read_side_effect": true,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "rw",
+          "desc": "traffic_pre_diff_iq_dma_control",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "rw",
+              "desc": "traffic_pre_diff_iq_enable",
+              "lsb": 0,
+              "name": "traffic_pre_diff_iq_enable",
+              "width": 1
+            }
+          ],
+          "name": "traffic_pre_diff_iq_dma_control",
+          "offset": "0x1C4",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        },
+        {
+          "access": "ro",
+          "desc": "traffic_pre_diff_iq_next_address",
+          "domain": "sync",
+          "fields": [
+            {
+              "access": "ro",
+              "desc": "next_address",
+              "lsb": 0,
+              "name": "next_address",
+              "width": 32
+            }
+          ],
+          "name": "traffic_pre_diff_iq_next_address",
+          "offset": "0x1C8",
+          "read_side_effect": false,
+          "reset": null,
+          "snapshot": null,
+          "width": 32
+        }
+      ]
+    }
+  ],
+  "core": "p25",
+  "decode_limit": "0x200",
+  "id_reg": "product_id",
+  "id_value": "0x70323566",
+  "requires": {
+    "uio": "p25-core"
+  },
+  "reset_gate": {
+    "bit": 0,
+    "desc": "control.sdr_reset (powers up 1) holds the sync domain in reset; any access to a sync-domain bank hangs the AXI-Lite bus while it is set",
+    "domains": [
+      "sync"
+    ],
+    "reg": "control"
+  },
+  "schema": "fbench.regmap/1",
+  "size": 4096,
+  "snapshot_domains": {},
+  "source": "generated from p25-httpd/p25-pac/p25.svd by bench/agent/build.rs",
+  "vacant": [
+    [
+      "0x120",
+      "0x180"
+    ],
+    [
+      "0x1E0",
+      "0x200"
+    ]
+  ]
+}

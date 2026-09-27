@@ -1,0 +1,8 @@
+{
+  "ok": true,
+  "seconds": 60,
+  "polls": 600,
+  "error_intervals": 0,
+  "oos_events": 0,
+  "first_error_s": null
+}

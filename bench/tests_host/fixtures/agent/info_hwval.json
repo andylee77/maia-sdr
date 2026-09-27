@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "model": "Analog Devices PlutoSDR Rev.C (Z7020-AD9361)",
+  "serial": "OVHNVI2FJEBXAB4M",
+  "cmdline": "console=ttyPS0,115200 uio_pdrv_genirq.of_id=uio_pdrv_genirq UBOOT_MODEBOOT=sdboot",
+  "uptime_s": 99.0,
+  "kernel": "6.1.0-tezuka",
+  "image": "hwval",
+  "bitstream": {
+    "core": "hwval",
+    "product_id": "0x68777631",
+    "name": "hwval",
+    "version": "0.1.0",
+    "features": "0x1FF",
+    "fpga_dna": "0x1a2b3c4d5e6f701"
+  },
+  "boot_medium": "sd",
+  "sd": {
+    "mounted": true,
+    "total_mb": 60950,
+    "free_mb": 60000
+  },
+  "modules": [],
+  "services": [
+    "iiod"
+  ],
+  "build": "2026-09-26-hwval",
+  "cmd": "info",
+  "hw_model": "Analog Devices PlutoSDR Rev.C (Z7020-AD9361)",
+  "maintenance": false,
+  "fw_version": "tezuka-v0.3",
+  "fpga_dna": "0x1a2b3c4d5e6f701"
+}

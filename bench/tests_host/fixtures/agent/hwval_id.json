@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "id": "0x68777631",
+  "id_ok": true,
+  "version": "0.1.0",
+  "features": "0x1FF",
+  "feature_names": [
+    "ringv2",
+    "legacy",
+    "mt0",
+    "mt1",
+    "census",
+    "ingest",
+    "prbs",
+    "evt",
+    "y1_clk"
+  ],
+  "fpga_dna": "0x1a2b3c4d5e6f701",
+  "snapshot": {
+    "mask": 7,
+    "ack": 7,
+    "ok": true,
+    "dead_domains": [],
+    "elapsed_us": 12
+  },
+  "all_clocks_alive": true
+}

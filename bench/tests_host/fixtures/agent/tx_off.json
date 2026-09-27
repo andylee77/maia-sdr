@@ -1,0 +1,8 @@
+{
+  "ok": true,
+  "actions": [
+    "hardwaregain -89.75",
+    "dac data_sel zero",
+    "dds scale 0"
+  ]
+}

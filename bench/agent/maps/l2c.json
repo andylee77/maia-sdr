@@ -1,0 +1,349 @@
+{
+ "schema": "fbench.regmap/1",
+ "core": "l2c",
+ "base": "0xF8F02000",
+ "size": 4096,
+ "id_reg": null,
+ "id_value": null,
+ "snapshot_domains": {},
+ "blocks": [
+  {
+   "name": "l2c",
+   "offset": "0x0000",
+   "regs": [
+    {
+     "name": "CACHE_ID",
+     "offset": "0x0000",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CACHE_ID",
+     "fields": []
+    },
+    {
+     "name": "CACHE_TYPE",
+     "offset": "0x0004",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CACHE_TYPE",
+     "fields": []
+    },
+    {
+     "name": "CONTROL",
+     "offset": "0x0100",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CONTROL",
+     "fields": [
+      {
+       "name": "enable",
+       "lsb": 0,
+       "width": 1,
+       "desc": "enable"
+      }
+     ]
+    },
+    {
+     "name": "AUX_CONTROL",
+     "offset": "0x0104",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "AUX_CONTROL",
+     "fields": [
+      {
+       "name": "full_line_zero",
+       "lsb": 0,
+       "width": 1,
+       "desc": "full_line_zero"
+      },
+      {
+       "name": "high_prio_so_dev_reads",
+       "lsb": 10,
+       "width": 1,
+       "desc": "high_prio_so_dev_reads"
+      },
+      {
+       "name": "store_buf_dev_limit",
+       "lsb": 11,
+       "width": 1,
+       "desc": "store_buf_dev_limit"
+      },
+      {
+       "name": "excl_cache_cfg",
+       "lsb": 12,
+       "width": 1,
+       "desc": "excl_cache_cfg"
+      },
+      {
+       "name": "shared_attr_inv",
+       "lsb": 13,
+       "width": 1,
+       "desc": "shared_attr_inv"
+      },
+      {
+       "name": "associativity",
+       "lsb": 16,
+       "width": 1,
+       "desc": "associativity"
+      },
+      {
+       "name": "way_size",
+       "lsb": 17,
+       "width": 3,
+       "desc": "way_size"
+      },
+      {
+       "name": "event_monitor_bus",
+       "lsb": 20,
+       "width": 1,
+       "desc": "event_monitor_bus"
+      },
+      {
+       "name": "parity",
+       "lsb": 21,
+       "width": 1,
+       "desc": "parity"
+      },
+      {
+       "name": "shared_attr_override",
+       "lsb": 22,
+       "width": 1,
+       "desc": "shared_attr_override"
+      },
+      {
+       "name": "force_write_alloc",
+       "lsb": 23,
+       "width": 2,
+       "desc": "force_write_alloc"
+      },
+      {
+       "name": "ns_lockdown",
+       "lsb": 26,
+       "width": 1,
+       "desc": "ns_lockdown"
+      },
+      {
+       "name": "ns_int_access",
+       "lsb": 27,
+       "width": 1,
+       "desc": "ns_int_access"
+      },
+      {
+       "name": "data_prefetch",
+       "lsb": 28,
+       "width": 1,
+       "desc": "data_prefetch"
+      },
+      {
+       "name": "instr_prefetch",
+       "lsb": 29,
+       "width": 1,
+       "desc": "instr_prefetch"
+      },
+      {
+       "name": "early_bresp",
+       "lsb": 30,
+       "width": 1,
+       "desc": "early_bresp"
+      }
+     ]
+    },
+    {
+     "name": "TAG_RAM_CONTROL",
+     "offset": "0x0108",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "TAG_RAM_CONTROL",
+     "fields": []
+    },
+    {
+     "name": "DATA_RAM_CONTROL",
+     "offset": "0x010C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DATA_RAM_CONTROL",
+     "fields": []
+    },
+    {
+     "name": "EV_COUNTER_CTRL",
+     "offset": "0x0200",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "EV_COUNTER_CTRL",
+     "fields": []
+    },
+    {
+     "name": "EV_COUNTER1_CFG",
+     "offset": "0x0204",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "EV_COUNTER1_CFG",
+     "fields": []
+    },
+    {
+     "name": "EV_COUNTER0_CFG",
+     "offset": "0x0208",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "EV_COUNTER0_CFG",
+     "fields": []
+    },
+    {
+     "name": "EV_COUNTER1",
+     "offset": "0x020C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "EV_COUNTER1",
+     "fields": []
+    },
+    {
+     "name": "EV_COUNTER0",
+     "offset": "0x0210",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "EV_COUNTER0",
+     "fields": []
+    },
+    {
+     "name": "INT_MASK",
+     "offset": "0x0214",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "INT_MASK",
+     "fields": []
+    },
+    {
+     "name": "INT_MASK_STATUS",
+     "offset": "0x0218",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "INT_MASK_STATUS",
+     "fields": []
+    },
+    {
+     "name": "INT_RAW_STATUS",
+     "offset": "0x021C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "INT_RAW_STATUS",
+     "fields": []
+    },
+    {
+     "name": "DEBUG_CTRL",
+     "offset": "0x0F40",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DEBUG_CTRL",
+     "fields": []
+    },
+    {
+     "name": "PREFETCH_CTRL",
+     "offset": "0x0F60",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "PREFETCH_CTRL",
+     "fields": [
+      {
+       "name": "prefetch_offset",
+       "lsb": 0,
+       "width": 5,
+       "desc": "prefetch_offset"
+      },
+      {
+       "name": "not_same_id_excl_seq",
+       "lsb": 21,
+       "width": 1,
+       "desc": "not_same_id_excl_seq"
+      },
+      {
+       "name": "incr_double_linefill",
+       "lsb": 23,
+       "width": 1,
+       "desc": "incr_double_linefill"
+      },
+      {
+       "name": "prefetch_drop",
+       "lsb": 24,
+       "width": 1,
+       "desc": "prefetch_drop"
+      },
+      {
+       "name": "data_prefetch",
+       "lsb": 28,
+       "width": 1,
+       "desc": "data_prefetch"
+      },
+      {
+       "name": "instr_prefetch",
+       "lsb": 29,
+       "width": 1,
+       "desc": "instr_prefetch"
+      },
+      {
+       "name": "double_linefill",
+       "lsb": 30,
+       "width": 1,
+       "desc": "double_linefill"
+      }
+     ]
+    },
+    {
+     "name": "POWER_CTRL",
+     "offset": "0x0F80",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "POWER_CTRL",
+     "fields": [
+      {
+       "name": "standby_mode",
+       "lsb": 0,
+       "width": 1,
+       "desc": "standby_mode"
+      },
+      {
+       "name": "dynamic_clk_gating",
+       "lsb": 1,
+       "width": 1,
+       "desc": "dynamic_clk_gating"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "source": "bench/agent/maps (built-in default; share/*.json overrides)",
+ "readonly": true
+}

@@ -1,0 +1,503 @@
+{
+ "schema": "fbench.regmap/1",
+ "core": "adi_dac",
+ "base": "0x79020000",
+ "size": 20480,
+ "id_reg": "DAC_VERSION",
+ "id_value": "0x00090262",
+ "snapshot_domains": {},
+ "blocks": [
+  {
+   "name": "dac_common",
+   "offset": "0x4000",
+   "regs": [
+    {
+     "name": "DAC_VERSION",
+     "offset": "0x4000",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC version (expect 0x00090262)",
+     "fields": []
+    },
+    {
+     "name": "DAC_ID",
+     "offset": "0x4004",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_ID",
+     "fields": []
+    },
+    {
+     "name": "DAC_SCRATCH",
+     "offset": "0x4008",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_SCRATCH",
+     "fields": []
+    },
+    {
+     "name": "DAC_CONFIG",
+     "offset": "0x400C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "expect 0x70",
+     "fields": []
+    },
+    {
+     "name": "DAC_RSTN",
+     "offset": "0x4040",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_RSTN",
+     "fields": [
+      {
+       "name": "rstn",
+       "lsb": 0,
+       "width": 1,
+       "desc": "rstn"
+      },
+      {
+       "name": "mmcm_rstn",
+       "lsb": 1,
+       "width": 1,
+       "desc": "mmcm_rstn"
+      },
+      {
+       "name": "clk_enb",
+       "lsb": 2,
+       "width": 1,
+       "desc": "clk_enb"
+      }
+     ],
+     "dangerous": true
+    },
+    {
+     "name": "DAC_CNTRL_1",
+     "offset": "0x4044",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_CNTRL_1",
+     "fields": [
+      {
+       "name": "sync",
+       "lsb": 0,
+       "width": 1,
+       "desc": "sync"
+      }
+     ]
+    },
+    {
+     "name": "DAC_CNTRL_2",
+     "offset": "0x4048",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_CNTRL_2",
+     "fields": [
+      {
+       "name": "datafmt",
+       "lsb": 4,
+       "width": 1,
+       "desc": "datafmt"
+      },
+      {
+       "name": "r1_mode",
+       "lsb": 5,
+       "width": 1,
+       "desc": "r1_mode"
+      },
+      {
+       "name": "par_enb",
+       "lsb": 6,
+       "width": 1,
+       "desc": "par_enb"
+      },
+      {
+       "name": "par_type",
+       "lsb": 7,
+       "width": 1,
+       "desc": "par_type"
+      }
+     ]
+    },
+    {
+     "name": "DAC_RATECNTRL",
+     "offset": "0x404C",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_RATECNTRL",
+     "fields": []
+    },
+    {
+     "name": "DAC_FRAME",
+     "offset": "0x4050",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_FRAME",
+     "fields": []
+    },
+    {
+     "name": "DAC_CLK_FREQ",
+     "offset": "0x4054",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_CLK_FREQ",
+     "fields": []
+    },
+    {
+     "name": "DAC_CLK_RATIO",
+     "offset": "0x4058",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_CLK_RATIO",
+     "fields": []
+    },
+    {
+     "name": "DAC_STATUS",
+     "offset": "0x405C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_STATUS",
+     "fields": []
+    },
+    {
+     "name": "DAC_CLKSEL",
+     "offset": "0x4060",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "bit0 TX clock invert",
+     "fields": [
+      {
+       "name": "clksel",
+       "lsb": 0,
+       "width": 1,
+       "desc": "clksel"
+      }
+     ]
+    },
+    {
+     "name": "DAC_SYNC_STATUS",
+     "offset": "0x4068",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_SYNC_STATUS",
+     "fields": []
+    },
+    {
+     "name": "DAC_UP_STATUS",
+     "offset": "0x4088",
+     "access": "w1c",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_UP_STATUS",
+     "fields": [
+      {
+       "name": "unf",
+       "lsb": 0,
+       "width": 1,
+       "desc": "underflow (w1c)"
+      },
+      {
+       "name": "if_busy",
+       "lsb": 4,
+       "width": 1,
+       "desc": "if_busy"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "dac_channels",
+   "offset": "0x4400",
+   "regs": [
+    {
+     "name": "DAC_CHAN0_CNTRL_1",
+     "offset": "0x4400",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDS scale 1",
+     "fields": [],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN0_CNTRL_2",
+     "offset": "0x4404",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDS init/incr 1",
+     "fields": [],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN0_CNTRL_3",
+     "offset": "0x4408",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDS scale 2",
+     "fields": [],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN0_CNTRL_4",
+     "offset": "0x440C",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDS init/incr 2",
+     "fields": [],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN0_PAT_DATA",
+     "offset": "0x4410",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_CHAN0_PAT_DATA",
+     "fields": [
+      {
+       "name": "pat1",
+       "lsb": 0,
+       "width": 16,
+       "desc": "pat1"
+      },
+      {
+       "name": "pat2",
+       "lsb": 16,
+       "width": 16,
+       "desc": "pat2"
+      }
+     ],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN0_CNTRL_6",
+     "offset": "0x4414",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_CHAN0_CNTRL_6",
+     "fields": [
+      {
+       "name": "pn_enb",
+       "lsb": 0,
+       "width": 1,
+       "desc": "pn_enb"
+      },
+      {
+       "name": "lb_enb",
+       "lsb": 1,
+       "width": 1,
+       "desc": "lb_enb"
+      },
+      {
+       "name": "iqcor_enb",
+       "lsb": 2,
+       "width": 1,
+       "desc": "iqcor_enb"
+      }
+     ],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN0_CNTRL_7",
+     "offset": "0x4418",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DATA_SEL: 0 DDS, 1 pattern, 2 DMA, 3 zero, 8 ADC loopback, 9 PN",
+     "fields": [
+      {
+       "name": "data_sel",
+       "lsb": 0,
+       "width": 4,
+       "desc": "data_sel"
+      }
+     ],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN0_CNTRL_8",
+     "offset": "0x441C",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IQ correction coefficients",
+     "fields": [],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN1_CNTRL_1",
+     "offset": "0x4440",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDS scale 1",
+     "fields": [],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN1_CNTRL_2",
+     "offset": "0x4444",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDS init/incr 1",
+     "fields": [],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN1_CNTRL_3",
+     "offset": "0x4448",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDS scale 2",
+     "fields": [],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN1_CNTRL_4",
+     "offset": "0x444C",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDS init/incr 2",
+     "fields": [],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN1_PAT_DATA",
+     "offset": "0x4450",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_CHAN1_PAT_DATA",
+     "fields": [
+      {
+       "name": "pat1",
+       "lsb": 0,
+       "width": 16,
+       "desc": "pat1"
+      },
+      {
+       "name": "pat2",
+       "lsb": 16,
+       "width": 16,
+       "desc": "pat2"
+      }
+     ],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN1_CNTRL_6",
+     "offset": "0x4454",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DAC_CHAN1_CNTRL_6",
+     "fields": [
+      {
+       "name": "pn_enb",
+       "lsb": 0,
+       "width": 1,
+       "desc": "pn_enb"
+      },
+      {
+       "name": "lb_enb",
+       "lsb": 1,
+       "width": 1,
+       "desc": "lb_enb"
+      },
+      {
+       "name": "iqcor_enb",
+       "lsb": 2,
+       "width": 1,
+       "desc": "iqcor_enb"
+      }
+     ],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN1_CNTRL_7",
+     "offset": "0x4458",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DATA_SEL: 0 DDS, 1 pattern, 2 DMA, 3 zero, 8 ADC loopback, 9 PN",
+     "fields": [
+      {
+       "name": "data_sel",
+       "lsb": 0,
+       "width": 4,
+       "desc": "data_sel"
+      }
+     ],
+     "tx_affecting": true
+    },
+    {
+     "name": "DAC_CHAN1_CNTRL_8",
+     "offset": "0x445C",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IQ correction coefficients",
+     "fields": [],
+     "tx_affecting": true
+    }
+   ]
+  }
+ ],
+ "source": "bench/agent/maps (built-in default; share/*.json overrides)",
+ "requires": {
+  "iio": "cf-ad9361-dds-core-lpc"
+ }
+}

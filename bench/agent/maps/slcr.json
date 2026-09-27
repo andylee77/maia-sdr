@@ -1,0 +1,647 @@
+{
+ "schema": "fbench.regmap/1",
+ "core": "slcr",
+ "base": "0xF8000000",
+ "size": 4096,
+ "id_reg": null,
+ "id_value": null,
+ "snapshot_domains": {},
+ "blocks": [
+  {
+   "name": "slcr",
+   "offset": "0x0000",
+   "regs": [
+    {
+     "name": "ARM_PLL_CTRL",
+     "offset": "0x0100",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ARM_PLL_CTRL",
+     "fields": [
+      {
+       "name": "reset",
+       "lsb": 0,
+       "width": 1,
+       "desc": "reset"
+      },
+      {
+       "name": "pwrdwn",
+       "lsb": 1,
+       "width": 1,
+       "desc": "pwrdwn"
+      },
+      {
+       "name": "bypass_qual",
+       "lsb": 3,
+       "width": 1,
+       "desc": "bypass_qual"
+      },
+      {
+       "name": "bypass_force",
+       "lsb": 4,
+       "width": 1,
+       "desc": "bypass_force"
+      },
+      {
+       "name": "fdiv",
+       "lsb": 12,
+       "width": 7,
+       "desc": "feedback divider"
+      }
+     ]
+    },
+    {
+     "name": "DDR_PLL_CTRL",
+     "offset": "0x0104",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR PLL; FDIV 0x20 = 533 MHz DDR (expected), 0x24 = 600 MHz overclock",
+     "fields": [
+      {
+       "name": "reset",
+       "lsb": 0,
+       "width": 1,
+       "desc": "reset"
+      },
+      {
+       "name": "pwrdwn",
+       "lsb": 1,
+       "width": 1,
+       "desc": "pwrdwn"
+      },
+      {
+       "name": "bypass_qual",
+       "lsb": 3,
+       "width": 1,
+       "desc": "bypass_qual"
+      },
+      {
+       "name": "bypass_force",
+       "lsb": 4,
+       "width": 1,
+       "desc": "bypass_force"
+      },
+      {
+       "name": "fdiv",
+       "lsb": 12,
+       "width": 7,
+       "desc": "feedback divider"
+      }
+     ]
+    },
+    {
+     "name": "IO_PLL_CTRL",
+     "offset": "0x0108",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IO_PLL_CTRL",
+     "fields": [
+      {
+       "name": "reset",
+       "lsb": 0,
+       "width": 1,
+       "desc": "reset"
+      },
+      {
+       "name": "pwrdwn",
+       "lsb": 1,
+       "width": 1,
+       "desc": "pwrdwn"
+      },
+      {
+       "name": "bypass_qual",
+       "lsb": 3,
+       "width": 1,
+       "desc": "bypass_qual"
+      },
+      {
+       "name": "bypass_force",
+       "lsb": 4,
+       "width": 1,
+       "desc": "bypass_force"
+      },
+      {
+       "name": "fdiv",
+       "lsb": 12,
+       "width": 7,
+       "desc": "feedback divider"
+      }
+     ]
+    },
+    {
+     "name": "PLL_STATUS",
+     "offset": "0x010C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "PLL_STATUS",
+     "fields": []
+    },
+    {
+     "name": "ARM_PLL_CFG",
+     "offset": "0x0110",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ARM_PLL_CFG",
+     "fields": []
+    },
+    {
+     "name": "DDR_PLL_CFG",
+     "offset": "0x0114",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR_PLL_CFG",
+     "fields": []
+    },
+    {
+     "name": "IO_PLL_CFG",
+     "offset": "0x0118",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IO_PLL_CFG",
+     "fields": []
+    },
+    {
+     "name": "ARM_CLK_CTRL",
+     "offset": "0x0120",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ARM_CLK_CTRL",
+     "fields": [
+      {
+       "name": "srcsel",
+       "lsb": 4,
+       "width": 2,
+       "desc": "srcsel"
+      },
+      {
+       "name": "divisor",
+       "lsb": 8,
+       "width": 6,
+       "desc": "divisor"
+      }
+     ]
+    },
+    {
+     "name": "DDR_CLK_CTRL",
+     "offset": "0x0124",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR_CLK_CTRL",
+     "fields": [
+      {
+       "name": "ddr_3xclkact",
+       "lsb": 0,
+       "width": 1,
+       "desc": "ddr_3xclkact"
+      },
+      {
+       "name": "ddr_2xclkact",
+       "lsb": 1,
+       "width": 1,
+       "desc": "ddr_2xclkact"
+      },
+      {
+       "name": "ddr_3xclk_divisor",
+       "lsb": 20,
+       "width": 6,
+       "desc": "ddr_3xclk_divisor"
+      },
+      {
+       "name": "ddr_2xclk_divisor",
+       "lsb": 26,
+       "width": 6,
+       "desc": "ddr_2xclk_divisor"
+      }
+     ]
+    },
+    {
+     "name": "DCI_CLK_CTRL",
+     "offset": "0x0128",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DCI_CLK_CTRL",
+     "fields": []
+    },
+    {
+     "name": "APER_CLK_CTRL",
+     "offset": "0x012C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "APER_CLK_CTRL",
+     "fields": []
+    },
+    {
+     "name": "FPGA0_CLK_CTRL",
+     "offset": "0x0170",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "FPGA0_CLK_CTRL",
+     "fields": [
+      {
+       "name": "srcsel",
+       "lsb": 4,
+       "width": 2,
+       "desc": "srcsel"
+      },
+      {
+       "name": "divisor0",
+       "lsb": 8,
+       "width": 6,
+       "desc": "divisor0"
+      },
+      {
+       "name": "divisor1",
+       "lsb": 20,
+       "width": 6,
+       "desc": "divisor1"
+      }
+     ]
+    },
+    {
+     "name": "FPGA1_CLK_CTRL",
+     "offset": "0x0180",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "FPGA1_CLK_CTRL",
+     "fields": [
+      {
+       "name": "srcsel",
+       "lsb": 4,
+       "width": 2,
+       "desc": "srcsel"
+      },
+      {
+       "name": "divisor0",
+       "lsb": 8,
+       "width": 6,
+       "desc": "divisor0"
+      },
+      {
+       "name": "divisor1",
+       "lsb": 20,
+       "width": 6,
+       "desc": "divisor1"
+      }
+     ]
+    },
+    {
+     "name": "FPGA2_CLK_CTRL",
+     "offset": "0x0190",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "FPGA2_CLK_CTRL",
+     "fields": [
+      {
+       "name": "srcsel",
+       "lsb": 4,
+       "width": 2,
+       "desc": "srcsel"
+      },
+      {
+       "name": "divisor0",
+       "lsb": 8,
+       "width": 6,
+       "desc": "divisor0"
+      },
+      {
+       "name": "divisor1",
+       "lsb": 20,
+       "width": 6,
+       "desc": "divisor1"
+      }
+     ]
+    },
+    {
+     "name": "FPGA3_CLK_CTRL",
+     "offset": "0x01A0",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "FPGA3_CLK_CTRL",
+     "fields": [
+      {
+       "name": "srcsel",
+       "lsb": 4,
+       "width": 2,
+       "desc": "srcsel"
+      },
+      {
+       "name": "divisor0",
+       "lsb": 8,
+       "width": 6,
+       "desc": "divisor0"
+      },
+      {
+       "name": "divisor1",
+       "lsb": 20,
+       "width": 6,
+       "desc": "divisor1"
+      }
+     ]
+    },
+    {
+     "name": "CLK_621_TRUE",
+     "offset": "0x01C4",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CLK_621_TRUE",
+     "fields": []
+    },
+    {
+     "name": "FPGA_RST_CTRL",
+     "offset": "0x0240",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "FPGA_RST_CTRL",
+     "fields": []
+    },
+    {
+     "name": "REBOOT_STATUS",
+     "offset": "0x0258",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "REBOOT_STATUS",
+     "fields": []
+    },
+    {
+     "name": "BOOT_MODE",
+     "offset": "0x025C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "BOOT_MODE",
+     "fields": []
+    },
+    {
+     "name": "PSS_IDCODE",
+     "offset": "0x0530",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "PSS_IDCODE",
+     "fields": []
+    },
+    {
+     "name": "DDR_URGENT",
+     "offset": "0x0600",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR_URGENT",
+     "fields": []
+    },
+    {
+     "name": "DDR_CAL_START",
+     "offset": "0x060C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR_CAL_START",
+     "fields": []
+    },
+    {
+     "name": "DDR_REF_START",
+     "offset": "0x0614",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR_REF_START",
+     "fields": []
+    },
+    {
+     "name": "DDR_CMD_STA",
+     "offset": "0x0618",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR_CMD_STA",
+     "fields": []
+    },
+    {
+     "name": "DDR_URGENT_SEL",
+     "offset": "0x061C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR_URGENT_SEL",
+     "fields": []
+    },
+    {
+     "name": "DDR_DFI_STATUS",
+     "offset": "0x0620",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR_DFI_STATUS",
+     "fields": []
+    },
+    {
+     "name": "LVL_SHFTR_EN",
+     "offset": "0x0900",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "LVL_SHFTR_EN",
+     "fields": []
+    },
+    {
+     "name": "OCM_CFG",
+     "offset": "0x0910",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "OCM_CFG",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_ADDR0",
+     "offset": "0x0B40",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_ADDR1",
+     "offset": "0x0B44",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_DATA0",
+     "offset": "0x0B48",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_DATA1",
+     "offset": "0x0B4C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_DIFF0",
+     "offset": "0x0B50",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_DIFF1",
+     "offset": "0x0B54",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_CLOCK",
+     "offset": "0x0B58",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_DRIVE_SLEW_ADDR",
+     "offset": "0x0B5C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_DRIVE_SLEW_DATA",
+     "offset": "0x0B60",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_DRIVE_SLEW_DIFF",
+     "offset": "0x0B64",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_DRIVE_SLEW_CLOCK",
+     "offset": "0x0B68",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_DDR_CTRL",
+     "offset": "0x0B6C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_DCI_CTRL",
+     "offset": "0x0B70",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    },
+    {
+     "name": "DDRIOB_DCI_STATUS",
+     "offset": "0x0B74",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DDR IOB configuration (raw)",
+     "fields": []
+    }
+   ]
+  }
+ ],
+ "source": "bench/agent/maps (built-in default; share/*.json overrides)",
+ "readonly": true,
+ "note": "PS system-level control registers; the agent never writes them"
+}

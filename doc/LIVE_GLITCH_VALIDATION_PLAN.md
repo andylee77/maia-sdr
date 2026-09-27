@@ -23,33 +23,59 @@ transport**: HDL `DmaStreamRingWrite` → `maia-kmod` → PS readers. It carries
 
 - the **wideband IQ** that feeds the live SW demod (glitchy) and the DMA-ring captures
   (never stable), and
-- the **HDL dibits** that feed the PS framer (forensics runs already showed
-  `gap_dibits=14336, overflows=1` on a 0.85 s window).
+- the **HDL dibits** that feed the PS framer.
 
 One transport-layer fault explains every symptom at once: both demods glitch live,
 DMA-ring captures are unstable, libiio captures are clean, and the HDL chain "looks"
 like it decodes badly when in fact its dibits may be arriving gapped/corrupted.
 
+**2026-09-26 audit update** (details: `doc/changes/053_hw_validation_bench.md`,
+measurement plan: `doc/HW_VALIDATION_SUITE.md`): ring loss has never actually been
+measured — the forensics dibit "gap" figure was a host-poll artifact of the 16384-dibit
+sub-buffer delivery unit against a 2048-dibit API window. The audit confirmed structural
+ring defects (overflow bit cleared by the `last_buffer` read, no lap detection, 3.41 s
+whole-sub-buffer dibit delivery with delivery-time TG gating, ≈16 µs wideband
+write-latency tolerance, unsafe enable/reset). The bench suite measures each of these
+directly; the delivery-time gating is also a candidate glitch source on its own.
+
+**2026-09-26 hardware result (Stage A/B answered for the ring hardware):** AD9361 BIST
+PRBS through the production wideband ring came back bit-exact (1.92 GB, 60 s at 8 MSPS,
+0 anomalies) with a dedicated reader, so the HDL writer, DDR and maia-kmod path are not
+the fault. The same runs showed the real transport failure modes: the reader is lap-blind
+(stalls ≥ 0.5 s silently drop a full 16 MiB lap) and the SD card sustains only 19 MB/s
+with multi-second write stalls, so SD-backed captures lap the ring. Remaining suspects
+move to the PS side: reader stalls (IpCore mutex, blocking SD writes), the 3.41 s dibit
+delivery with delivery-time TG gating, and state handling (Stage C).
+
 Secondary suspects (tested only if transport is exonerated): grant/call **state
 handling** (mid-call resets, NCO writes, spurious closes — PLL/AGC handling of
 traffic) and the shared **audio path** (vocoder → pacer → WS).
 
-## Bench rig — deterministic TX→RX (2nd Pluto + attenuators)
+## Bench rig — deterministic TX→RX (2nd Fishball + attenuators)
 
-Hardware available 2026-06: a second PlutoSDR (TX) and SMA attenuators. This makes
-every stage below repeatable and gives each build a quantitative regression score.
+Hardware: a second Fishball Z7020 and 30–40 dB of SMA pads. This makes every stage
+below repeatable and gives each build a quantitative regression score. The full bench
+(topology, safety interlocks, the `fbench` CLI and test catalog) is specified in
+`doc/HW_VALIDATION_SUITE.md`; this section keeps only what the stages below need.
 
 **Setup:**
 
-- Pluto TX → attenuator chain → Fishball RX, **cabled, antenna disconnected** (no
+- Stimulus Fishball TX → pads → DUT Fishball RX, **cabled, antenna disconnected** (no
   over-the-air transmission on public-safety frequencies; also kills multipath and
-  interference, making runs bit-repeatable).
-- Start with heavy attenuation (~60 dB total incl. TX gain backoff) and trim until
-  the Fishball front end sees off-air-like levels — match the AGC gain /
-  constellation amplitude observed on the real site, since RX gain is fixed manual.
-- Measure the Pluto-vs-Fishball clock offset once on the bench (CC PLL bias, same
-  method as the lo_shift=470 calibration) and set `lo_shift_hz` accordingly; it is a
-  deterministic constant on the bench.
+  interference, making runs bit-repeatable). The OpenSDRLab TX has a PGA-102+ gain
+  block (up to about +20 dBm), so the TX attenuation interlock in `fbench` is mandatory.
+- Trim TX attenuation until the DUT front end sees off-air-like levels — match the AGC
+  gain / constellation amplitude observed on the real site, since RX gain is fixed
+  manual.
+- Measure the board-to-board clock offset once on the bench (`fbench run rf.cw_ppm`,
+  or the CC PLL bias method used for the lo_shift=470 calibration) and set
+  `lo_shift_hz` accordingly; it is a deterministic constant on the bench.
+  Measured 2026-09-26: A's reference is 0.662 ppm below B's. The drift is under
+  0.006 ppm per 10 min, and both directions mirror, so the offset belongs to the
+  boards, not the transceivers. When B transmits into A, A needs about
+  +0.662 ppm × f_c of NCO shift relative to B's setting: +570 Hz at 860.96 MHz if B is
+  at 0, against A's stored +470. `rf.cw_ppm` reports the residual against the stored
+  corrections on every run.
 
 **Stimulus options, ranked:**
 
@@ -73,8 +99,8 @@ Stage C — scripted grant/PTT scenarios on demand instead of waiting for live t
 Stage D — level sweeps via attenuation for AGC/PLL robustness curves. Cross-cutting —
 a fixed replay clip + LDU/IMBE/glitch-count score is the per-build regression gate.
 
-**Bench caveats:** Pluto TX adds its own impairments (TX LO leakage at band center,
-IQ imbalance, 12-bit DAC). Keep channels of interest off the replay center frequency
+**Bench caveats:** the stimulus board's TX adds its own impairments (TX LO leakage at
+band center, IQ imbalance, 12-bit DAC). Keep channels of interest off the replay center frequency
 (the captures' center 859.21297 MHz already sits between channels), and confirm any
 bench-found fix against one live off-air session before declaring victory.
 
@@ -116,9 +142,12 @@ The path has four segments: HDL `DmaStreamRingWrite` → DDR ring buffer → `ma
 - **B.1 Corruption fingerprint from A.3** classifies the fault: stale/repeated blocks
   ⇒ cache-coherency or read-pointer race in `maia-kmod`/reader; missing spans with
   clean joins ⇒ overflow/wrap handling; bit-level garbage ⇒ AXI/HDL write side.
-- **B.2 Overflow accounting.** Cross-check the HDL overflow flag
-  (`wideband_iq_overflow()`) against measured sample shortfall — if data is lost while
-  overflow never asserts, the loss is downstream of the HDL (kmod/reader).
+- **B.2 Overflow accounting.** The production overflow flag cannot support this check:
+  it shares a read-to-clear register with `last_buffer`, which the reader polls first,
+  so it mostly reports false negatives. Loss accounting comes from the bench instead:
+  `xport.p25_ring_prbs` (AD9361 BIST PRBS through the production ring, checked sample by
+  sample by `fbench-agent`) on the current image, and the non-clearing counters of the
+  `hwval` legacy-ring replica (`hw.legacy_ring`).
 - **B.3 Reader-side audit (code, desk):** wakeup handling, ring index arithmetic at
   wrap, cache invalidation in `maia-kmod` for the non-coherent ARM port, lock hold
   times around `Arc<Mutex<IpCore>>` (one mutex serving wideband reader, dibit reader,
@@ -126,11 +155,15 @@ The path has four segments: HDL `DmaStreamRingWrite` → DDR ring buffer → `ma
 - **B.4 Contention experiment.** Throttle all API/dashboard polling to zero during a
   capture; if gaps vanish, the conviction is lock/scheduling, not the ring itself.
 - **B.5 Dibit-ring replication.** Whatever fault A/B finds on the wideband ring,
-  verify on the dibit ring with fixed forensics (Stage 0.2 below): per-call
-  gap_dibits/overflows across ≥20 calls, correlated with audible glitch timestamps.
-- **B.6 Test-pattern mode (only if needed, one bake):** a counter-ramp source muxed
-  into the ring write makes every dropped/stale/corrupt word trivially detectable and
-  separates HDL-write faults from readout faults conclusively.
+  verify on the dibit ring with fixed forensics (Stage 0.2 below), per call across ≥20
+  calls, correlated with audible glitch timestamps. Measure delivery against air time:
+  the dibit ring publishes only whole 4 KiB sub-buffers (3.41 s), and the traffic reader
+  applies the TG/`locked` gate per batch at delivery time.
+- **B.6 Test-pattern mode:** now built as the `hwval` bitstream (ramp/tagged/PRBS
+  sources into both an instrumented replica of the production ring and ring v2;
+  `doc/HW_VALIDATION_SUITE.md` §6–7). On the current image, the AD9361 BIST PRBS
+  injected at RX gives the same bit-exact check through the production wideband ring
+  without a bake (`xport.p25_ring_prbs`).
 
 **Gate:** fix the convicted segment (likely PS/kmod-side, no bake), then re-run Stage
 A until DMA-ring captures decode equal to libiio. Only then do live-decode quality
@@ -148,8 +181,10 @@ claims mean anything.
 - **0.3 Transition instrumentation via EventLog** (info-level tracing is filtered):
   timestamped entries for NCO writes, `lsm_reset` pulses, seed writes, chain
   open/close with reason, forensics lifecycle. Feeds Stage C timelines.
-- **0.4 Delivery counters in the API:** wideband overflow flag + dibit-reader
-  gap/overflow counters per call in `/api/forensics_status` / `/api/sys_health`.
+- **0.4 Delivery counters in the API:** dibit-reader delivery latency and ring lag per
+  call in `/api/forensics_status` / `/api/sys_health`. Read `last_buffer` and the
+  overflow bit from one read of each `*_dma_status` word (a second read clears the
+  overflow bit).
 
 ## Stage C — State-transition audit (if transport is exonerated or fixed)
 

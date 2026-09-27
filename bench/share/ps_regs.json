@@ -1,0 +1,2243 @@
+{
+  "schema": "fbench.regmap/1",
+  "cores": [
+    {
+      "schema": "fbench.regmap/1",
+      "core": "slcr",
+      "base": "0xF8000000",
+      "size": 4096,
+      "blocks": [
+        {
+          "name": "slcr",
+          "offset": "0x0",
+          "regs": [
+            {
+              "name": "ARM_PLL_CTRL",
+              "offset": "0x100",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ARM_PLL_CTRL | ARM PLL (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "reset",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "reset"
+                },
+                {
+                  "name": "pwrdwn",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "pwrdwn"
+                },
+                {
+                  "name": "bypass_qual",
+                  "lsb": 3,
+                  "width": 1,
+                  "desc": "bypass_qual"
+                },
+                {
+                  "name": "bypass_force",
+                  "lsb": 4,
+                  "width": 1,
+                  "desc": "bypass_force"
+                },
+                {
+                  "name": "fdiv",
+                  "lsb": 12,
+                  "width": 7,
+                  "desc": "feedback divider"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDR_PLL_CTRL",
+              "offset": "0x104",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR PLL; FDIV 0x20 = 533 MHz DDR (expected), 0x24 = 600 MHz overclock | DDR PLL (hardware RW; audit-only, the bench never writes it); FDIV 0x20 = 1066.7 MHz (DDR3-1066). FDIV 0x24 = overclock FSBL (600 MHz DDR): FAIL for measurement runs (CL7 -> tAA 11.7 ns < 13.125 ns)",
+              "fields": [
+                {
+                  "name": "reset",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "reset"
+                },
+                {
+                  "name": "pwrdwn",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "pwrdwn"
+                },
+                {
+                  "name": "bypass_qual",
+                  "lsb": 3,
+                  "width": 1,
+                  "desc": "bypass_qual"
+                },
+                {
+                  "name": "bypass_force",
+                  "lsb": 4,
+                  "width": 1,
+                  "desc": "bypass_force"
+                },
+                {
+                  "name": "fdiv",
+                  "lsb": 12,
+                  "width": 7,
+                  "desc": "feedback divider"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": {
+                "mask": "0x0007F000",
+                "value": "0x00020000"
+              }
+            },
+            {
+              "name": "IO_PLL_CTRL",
+              "offset": "0x108",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IO_PLL_CTRL | IO PLL (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "reset",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "reset"
+                },
+                {
+                  "name": "pwrdwn",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "pwrdwn"
+                },
+                {
+                  "name": "bypass_qual",
+                  "lsb": 3,
+                  "width": 1,
+                  "desc": "bypass_qual"
+                },
+                {
+                  "name": "bypass_force",
+                  "lsb": 4,
+                  "width": 1,
+                  "desc": "bypass_force"
+                },
+                {
+                  "name": "fdiv",
+                  "lsb": 12,
+                  "width": 7,
+                  "desc": "feedback divider"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "PLL_STATUS",
+              "offset": "0x10C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "PLL_STATUS",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "ARM_PLL_CFG",
+              "offset": "0x110",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ARM_PLL_CFG",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDR_PLL_CFG",
+              "offset": "0x114",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR_PLL_CFG",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "IO_PLL_CFG",
+              "offset": "0x118",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "IO_PLL_CFG",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "ARM_CLK_CTRL",
+              "offset": "0x120",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ARM_CLK_CTRL | CPU clock control (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "srcsel",
+                  "lsb": 4,
+                  "width": 2,
+                  "desc": "srcsel"
+                },
+                {
+                  "name": "divisor",
+                  "lsb": 8,
+                  "width": 6,
+                  "desc": "divisor"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDR_CLK_CTRL",
+              "offset": "0x124",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR_CLK_CTRL | DDR clock control (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "ddr_3xclkact",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "ddr_3xclkact"
+                },
+                {
+                  "name": "ddr_2xclkact",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "ddr_2xclkact"
+                },
+                {
+                  "name": "ddr_3xclk_divisor",
+                  "lsb": 20,
+                  "width": 6,
+                  "desc": "ddr_3xclk_divisor"
+                },
+                {
+                  "name": "ddr_2xclk_divisor",
+                  "lsb": 26,
+                  "width": 6,
+                  "desc": "ddr_2xclk_divisor"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": "0x0C200003"
+            },
+            {
+              "name": "DCI_CLK_CTRL",
+              "offset": "0x128",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DCI_CLK_CTRL",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "APER_CLK_CTRL",
+              "offset": "0x12C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "APER_CLK_CTRL",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "FPGA0_CLK_CTRL",
+              "offset": "0x170",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "FPGA0_CLK_CTRL | FCLK0 control (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "srcsel",
+                  "lsb": 4,
+                  "width": 2,
+                  "desc": "srcsel"
+                },
+                {
+                  "name": "divisor0",
+                  "lsb": 8,
+                  "width": 6,
+                  "desc": "divisor0"
+                },
+                {
+                  "name": "divisor1",
+                  "lsb": 20,
+                  "width": 6,
+                  "desc": "divisor1"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "FPGA1_CLK_CTRL",
+              "offset": "0x180",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "FPGA1_CLK_CTRL | FCLK1 control (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "srcsel",
+                  "lsb": 4,
+                  "width": 2,
+                  "desc": "srcsel"
+                },
+                {
+                  "name": "divisor0",
+                  "lsb": 8,
+                  "width": 6,
+                  "desc": "divisor0"
+                },
+                {
+                  "name": "divisor1",
+                  "lsb": 20,
+                  "width": 6,
+                  "desc": "divisor1"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "FPGA2_CLK_CTRL",
+              "offset": "0x190",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "FPGA2_CLK_CTRL",
+              "fields": [
+                {
+                  "name": "srcsel",
+                  "lsb": 4,
+                  "width": 2,
+                  "desc": "srcsel"
+                },
+                {
+                  "name": "divisor0",
+                  "lsb": 8,
+                  "width": 6,
+                  "desc": "divisor0"
+                },
+                {
+                  "name": "divisor1",
+                  "lsb": 20,
+                  "width": 6,
+                  "desc": "divisor1"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "FPGA3_CLK_CTRL",
+              "offset": "0x1A0",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "FPGA3_CLK_CTRL",
+              "fields": [
+                {
+                  "name": "srcsel",
+                  "lsb": 4,
+                  "width": 2,
+                  "desc": "srcsel"
+                },
+                {
+                  "name": "divisor0",
+                  "lsb": 8,
+                  "width": 6,
+                  "desc": "divisor0"
+                },
+                {
+                  "name": "divisor1",
+                  "lsb": 20,
+                  "width": 6,
+                  "desc": "divisor1"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CLK_621_TRUE",
+              "offset": "0x1C4",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CLK_621_TRUE",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "FPGA_RST_CTRL",
+              "offset": "0x240",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "FPGA_RST_CTRL",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "REBOOT_STATUS",
+              "offset": "0x258",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "REBOOT_STATUS | Reboot reason (preserved across soft reset)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "BOOT_MODE",
+              "offset": "0x25C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "BOOT_MODE",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "PSS_IDCODE",
+              "offset": "0x530",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "PSS_IDCODE | Device IDCODE (XC7Z020: 0x?3727093)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": {
+                "mask": "0x0FFFFFFF",
+                "value": "0x03727093"
+              }
+            },
+            {
+              "name": "DDR_URGENT",
+              "offset": "0x600",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR_URGENT",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDR_CAL_START",
+              "offset": "0x60C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR_CAL_START",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDR_REF_START",
+              "offset": "0x614",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR_REF_START",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDR_CMD_STA",
+              "offset": "0x618",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR_CMD_STA",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDR_URGENT_SEL",
+              "offset": "0x61C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR_URGENT_SEL",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDR_DFI_STATUS",
+              "offset": "0x620",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR_DFI_STATUS",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "LVL_SHFTR_EN",
+              "offset": "0x900",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "LVL_SHFTR_EN",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "OCM_CFG",
+              "offset": "0x910",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "OCM_CFG",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_ADDR0",
+              "offset": "0xB40",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | DDR IOB configuration (report only) (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "INP_TYPE",
+                  "lsb": 1,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 VREF diff (SSTL), 2 differential, 3 LVCMOS"
+                },
+                {
+                  "name": "DCI_UPDATE_B",
+                  "lsb": 3,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_EN",
+                  "lsb": 4,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "DCI_TYPE",
+                  "lsb": 5,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 drive, 2 reserved, 3 termination"
+                },
+                {
+                  "name": "IBUF_DISABLE_MODE",
+                  "lsb": 7,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_DISABLE_MODE",
+                  "lsb": 8,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "OUTPUT_EN",
+                  "lsb": 9,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "PULLUP_EN",
+                  "lsb": 11,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_ADDR1",
+              "offset": "0xB44",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | DDR IOB configuration (report only) (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "INP_TYPE",
+                  "lsb": 1,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 VREF diff (SSTL), 2 differential, 3 LVCMOS"
+                },
+                {
+                  "name": "DCI_UPDATE_B",
+                  "lsb": 3,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_EN",
+                  "lsb": 4,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "DCI_TYPE",
+                  "lsb": 5,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 drive, 2 reserved, 3 termination"
+                },
+                {
+                  "name": "IBUF_DISABLE_MODE",
+                  "lsb": 7,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_DISABLE_MODE",
+                  "lsb": 8,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "OUTPUT_EN",
+                  "lsb": 9,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "PULLUP_EN",
+                  "lsb": 11,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_DATA0",
+              "offset": "0xB48",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | DDR IOB configuration (report only) (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "INP_TYPE",
+                  "lsb": 1,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 VREF diff (SSTL), 2 differential, 3 LVCMOS"
+                },
+                {
+                  "name": "DCI_UPDATE_B",
+                  "lsb": 3,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_EN",
+                  "lsb": 4,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "DCI_TYPE",
+                  "lsb": 5,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 drive, 2 reserved, 3 termination"
+                },
+                {
+                  "name": "IBUF_DISABLE_MODE",
+                  "lsb": 7,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_DISABLE_MODE",
+                  "lsb": 8,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "OUTPUT_EN",
+                  "lsb": 9,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "PULLUP_EN",
+                  "lsb": 11,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_DATA1",
+              "offset": "0xB4C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | DDR IOB configuration (report only) (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "INP_TYPE",
+                  "lsb": 1,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 VREF diff (SSTL), 2 differential, 3 LVCMOS"
+                },
+                {
+                  "name": "DCI_UPDATE_B",
+                  "lsb": 3,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_EN",
+                  "lsb": 4,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "DCI_TYPE",
+                  "lsb": 5,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 drive, 2 reserved, 3 termination"
+                },
+                {
+                  "name": "IBUF_DISABLE_MODE",
+                  "lsb": 7,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_DISABLE_MODE",
+                  "lsb": 8,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "OUTPUT_EN",
+                  "lsb": 9,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "PULLUP_EN",
+                  "lsb": 11,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_DIFF0",
+              "offset": "0xB50",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | DDR IOB configuration (report only) (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "INP_TYPE",
+                  "lsb": 1,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 VREF diff (SSTL), 2 differential, 3 LVCMOS"
+                },
+                {
+                  "name": "DCI_UPDATE_B",
+                  "lsb": 3,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_EN",
+                  "lsb": 4,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "DCI_TYPE",
+                  "lsb": 5,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 drive, 2 reserved, 3 termination"
+                },
+                {
+                  "name": "IBUF_DISABLE_MODE",
+                  "lsb": 7,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_DISABLE_MODE",
+                  "lsb": 8,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "OUTPUT_EN",
+                  "lsb": 9,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "PULLUP_EN",
+                  "lsb": 11,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_DIFF1",
+              "offset": "0xB54",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | DDR IOB configuration (report only) (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "INP_TYPE",
+                  "lsb": 1,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 VREF diff (SSTL), 2 differential, 3 LVCMOS"
+                },
+                {
+                  "name": "DCI_UPDATE_B",
+                  "lsb": 3,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_EN",
+                  "lsb": 4,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "DCI_TYPE",
+                  "lsb": 5,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 drive, 2 reserved, 3 termination"
+                },
+                {
+                  "name": "IBUF_DISABLE_MODE",
+                  "lsb": 7,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_DISABLE_MODE",
+                  "lsb": 8,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "OUTPUT_EN",
+                  "lsb": 9,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "PULLUP_EN",
+                  "lsb": 11,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_CLOCK",
+              "offset": "0xB58",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | DDR IOB configuration (report only) (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "INP_TYPE",
+                  "lsb": 1,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 VREF diff (SSTL), 2 differential, 3 LVCMOS"
+                },
+                {
+                  "name": "DCI_UPDATE_B",
+                  "lsb": 3,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_EN",
+                  "lsb": 4,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "DCI_TYPE",
+                  "lsb": 5,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": "0 off, 1 drive, 2 reserved, 3 termination"
+                },
+                {
+                  "name": "IBUF_DISABLE_MODE",
+                  "lsb": 7,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "TERM_DISABLE_MODE",
+                  "lsb": 8,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "OUTPUT_EN",
+                  "lsb": 9,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "PULLUP_EN",
+                  "lsb": 11,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_DRIVE_SLEW_ADDR",
+              "offset": "0xB5C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | Drive/slew (report only)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_DRIVE_SLEW_DATA",
+              "offset": "0xB60",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | Drive/slew (report only)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_DRIVE_SLEW_DIFF",
+              "offset": "0xB64",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | Drive/slew (report only)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_DRIVE_SLEW_CLOCK",
+              "offset": "0xB68",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | Drive/slew (report only)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_DDR_CTRL",
+              "offset": "0xB6C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | DDR IOB control (report only): VREF_SEL 0x2 = 0.675 V (SSTL135/DDR3L), 0x4 = 0.75 V (SSTL15/DDR3)",
+              "fields": [
+                {
+                  "name": "VREF_INT_EN",
+                  "lsb": 0,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "VREF_SEL",
+                  "lsb": 1,
+                  "width": 4,
+                  "access": "ro",
+                  "desc": "1 0.6 V LPDDR2, 2 0.675 V DDR3L, 4 0.75 V DDR3, 8 0.9 V DDR2"
+                },
+                {
+                  "name": "VREF_EXT_EN",
+                  "lsb": 5,
+                  "width": 2,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "REFIO_EN",
+                  "lsb": 9,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_DCI_CTRL",
+              "offset": "0xB70",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | DCI control (report only)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DDRIOB_DCI_STATUS",
+              "offset": "0xB74",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DDR IOB configuration (raw) | DCI status (report only)",
+              "fields": [
+                {
+                  "name": "DONE",
+                  "lsb": 0,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                },
+                {
+                  "name": "LOCK",
+                  "lsb": 13,
+                  "width": 1,
+                  "access": "ro",
+                  "desc": ""
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            }
+          ]
+        }
+      ],
+      "id_reg": null,
+      "id_value": null,
+      "snapshot_domains": {},
+      "readonly": true,
+      "note": "PS system-level control registers; the agent never writes them",
+      "source": "bench/share via `fbench regmaps build`: agent built-in map + host annotations (expected, read_side_effect, aliases, extra registers)"
+    },
+    {
+      "schema": "fbench.regmap/1",
+      "core": "ddrc",
+      "base": "0xF8006000",
+      "size": 4096,
+      "blocks": [
+        {
+          "name": "ddrc",
+          "offset": "0x0",
+          "regs": [
+            {
+              "name": "DDRC_CTRL",
+              "offset": "0x0",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ddrc_ctrl",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "TWO_RANK_CFG",
+              "offset": "0x4",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "two_rank_cfg",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "HPR_REG",
+              "offset": "0x8",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "hpr_reg",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "LPR_REG",
+              "offset": "0xC",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "lpr_reg",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "WR_REG",
+              "offset": "0x10",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "wr_reg",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DRAM_PARAM_REG0",
+              "offset": "0x14",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_param_reg0",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DRAM_PARAM_REG1",
+              "offset": "0x18",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_param_reg1",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DRAM_PARAM_REG2",
+              "offset": "0x1C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_param_reg2",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DRAM_PARAM_REG3",
+              "offset": "0x20",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_param_reg3",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DRAM_PARAM_REG4",
+              "offset": "0x24",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_param_reg4",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DRAM_INIT_PARAM",
+              "offset": "0x28",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_init_param",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DRAM_EMR_REG",
+              "offset": "0x2C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_emr_reg | EMR2 (bits 15:0) / EMR3 (31:16) (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "emr2",
+                  "lsb": 0,
+                  "width": 16,
+                  "desc": "DDR3 MR2"
+                },
+                {
+                  "name": "emr3",
+                  "lsb": 16,
+                  "width": 16,
+                  "desc": "DDR3 MR3"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": {
+                "mask": "0x0000FFFF",
+                "value": "0x00000008"
+              }
+            },
+            {
+              "name": "DRAM_EMR_MR_REG",
+              "offset": "0x30",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_emr_mr_reg | MR0 (bits 15:0) / EMR1 (31:16); MR0 0x0B30 = CL7 (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "mr",
+                  "lsb": 0,
+                  "width": 16,
+                  "desc": "DDR3 MR0"
+                },
+                {
+                  "name": "emr",
+                  "lsb": 16,
+                  "width": 16,
+                  "desc": "DDR3 MR1"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": "0x00040B30",
+              "aliases": [
+                "DRAM_EMR_MR"
+              ]
+            },
+            {
+              "name": "DRAM_BURST8_RDWR",
+              "offset": "0x34",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_burst8_rdwr",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DRAM_DISABLE_DQ",
+              "offset": "0x38",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_disable_dq",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DRAM_ADDR_MAP_BANK",
+              "offset": "0x3C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_addr_map_bank",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DRAM_ADDR_MAP_COL",
+              "offset": "0x40",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_addr_map_col",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DRAM_ADDR_MAP_ROW",
+              "offset": "0x44",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_addr_map_row",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DRAM_ODT_REG",
+              "offset": "0x48",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dram_odt_reg",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "PHY_DBG_REG",
+              "offset": "0x4C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "phy_dbg_reg",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "PHY_CMD_TIMEOUT_RDDATA_CPT",
+              "offset": "0x50",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "phy_cmd_timeout_rddata_cpt",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "MODE_STS_REG",
+              "offset": "0x54",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "mode_sts_reg",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DLL_CALIB",
+              "offset": "0x58",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dll_calib",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "ODT_DELAY_HOLD",
+              "offset": "0x5C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "odt_delay_hold",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CTRL_REG1",
+              "offset": "0x60",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ctrl_reg1",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CTRL_REG2",
+              "offset": "0x64",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ctrl_reg2",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CTRL_REG3",
+              "offset": "0x68",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ctrl_reg3",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CTRL_REG4",
+              "offset": "0x6C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ctrl_reg4",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CTRL_REG5",
+              "offset": "0x78",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ctrl_reg5",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CTRL_REG6",
+              "offset": "0x7C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "ctrl_reg6",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHE_REFRESH_TIMER01",
+              "offset": "0xA0",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "che_refresh_timer01",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHE_T_ZQ",
+              "offset": "0xA4",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "che_t_zq",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHE_T_ZQ_SHORT_INTERVAL_REG",
+              "offset": "0xA8",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "che_t_zq_short_interval_reg",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DEEP_PWRDWN_REG",
+              "offset": "0xAC",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "deep_pwrdwn_reg",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "REG_2C",
+              "offset": "0xB0",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "reg_2c",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "REG_2D",
+              "offset": "0xB4",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "reg_2d",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DFI_TIMING",
+              "offset": "0xB8",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "dfi_timing",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CHE_ECC_CONTROL_REG_OFFSET",
+              "offset": "0xC4",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "che_ecc_control_reg_offset",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "PAGE_MASK",
+              "offset": "0x204",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "page_mask",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "AXI_PRIORITY_WR_PORT0",
+              "offset": "0x208",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "axi_priority_wr_port0 | Write port 0 priority (hardware RW; audit-only, the bench never writes it)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "AXI_PRIORITY_WR_PORT1",
+              "offset": "0x20C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "axi_priority_wr_port1 | Write port 1 priority (hardware RW; audit-only, the bench never writes it)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "AXI_PRIORITY_WR_PORT2",
+              "offset": "0x210",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "axi_priority_wr_port2 | Write port 2 priority (hardware RW; audit-only, the bench never writes it)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "AXI_PRIORITY_WR_PORT3",
+              "offset": "0x214",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "axi_priority_wr_port3 | Write port 3 priority (hardware RW; audit-only, the bench never writes it)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "AXI_PRIORITY_RD_PORT0",
+              "offset": "0x218",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "axi_priority_rd_port0 | Read port 0 priority (hardware RW; audit-only, the bench never writes it)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "AXI_PRIORITY_RD_PORT1",
+              "offset": "0x21C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "axi_priority_rd_port1 | Read port 1 priority (hardware RW; audit-only, the bench never writes it)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "AXI_PRIORITY_RD_PORT2",
+              "offset": "0x220",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "axi_priority_rd_port2 | Read port 2 priority (hardware RW; audit-only, the bench never writes it)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "AXI_PRIORITY_RD_PORT3",
+              "offset": "0x224",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "axi_priority_rd_port3 | Read port 3 priority (hardware RW; audit-only, the bench never writes it)",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "LPDDR_CTRL0",
+              "offset": "0x2A8",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "lpddr_ctrl0",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "LPDDR_CTRL1",
+              "offset": "0x2AC",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "lpddr_ctrl1",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "LPDDR_CTRL2",
+              "offset": "0x2B0",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "lpddr_ctrl2",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "LPDDR_CTRL3",
+              "offset": "0x2B4",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "lpddr_ctrl3",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            }
+          ]
+        }
+      ],
+      "id_reg": null,
+      "id_value": null,
+      "snapshot_domains": {},
+      "readonly": true,
+      "source": "bench/share via `fbench regmaps build`: agent built-in map + host annotations (expected, read_side_effect, aliases, extra registers)"
+    },
+    {
+      "schema": "fbench.regmap/1",
+      "core": "l2c",
+      "base": "0xF8F02000",
+      "size": 4096,
+      "blocks": [
+        {
+          "name": "l2c",
+          "offset": "0x0",
+          "regs": [
+            {
+              "name": "CACHE_ID",
+              "offset": "0x0",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CACHE_ID",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CACHE_TYPE",
+              "offset": "0x4",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CACHE_TYPE",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "CONTROL",
+              "offset": "0x100",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "CONTROL | L2 enable (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "enable",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "enable"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": {
+                "mask": "0x00000001",
+                "value": "0x00000001"
+              },
+              "aliases": [
+                "REG1_CONTROL"
+              ]
+            },
+            {
+              "name": "AUX_CONTROL",
+              "offset": "0x104",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "AUX_CONTROL | Auxiliary control (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "full_line_zero",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "full_line_zero"
+                },
+                {
+                  "name": "high_prio_so_dev_reads",
+                  "lsb": 10,
+                  "width": 1,
+                  "desc": "high_prio_so_dev_reads"
+                },
+                {
+                  "name": "store_buf_dev_limit",
+                  "lsb": 11,
+                  "width": 1,
+                  "desc": "store_buf_dev_limit"
+                },
+                {
+                  "name": "excl_cache_cfg",
+                  "lsb": 12,
+                  "width": 1,
+                  "desc": "excl_cache_cfg"
+                },
+                {
+                  "name": "shared_attr_inv",
+                  "lsb": 13,
+                  "width": 1,
+                  "desc": "shared_attr_inv"
+                },
+                {
+                  "name": "associativity",
+                  "lsb": 16,
+                  "width": 1,
+                  "desc": "associativity"
+                },
+                {
+                  "name": "way_size",
+                  "lsb": 17,
+                  "width": 3,
+                  "desc": "way_size"
+                },
+                {
+                  "name": "event_monitor_bus",
+                  "lsb": 20,
+                  "width": 1,
+                  "desc": "event_monitor_bus"
+                },
+                {
+                  "name": "parity",
+                  "lsb": 21,
+                  "width": 1,
+                  "desc": "parity"
+                },
+                {
+                  "name": "shared_attr_override",
+                  "lsb": 22,
+                  "width": 1,
+                  "desc": "shared_attr_override"
+                },
+                {
+                  "name": "force_write_alloc",
+                  "lsb": 23,
+                  "width": 2,
+                  "desc": "force_write_alloc"
+                },
+                {
+                  "name": "ns_lockdown",
+                  "lsb": 26,
+                  "width": 1,
+                  "desc": "ns_lockdown"
+                },
+                {
+                  "name": "ns_int_access",
+                  "lsb": 27,
+                  "width": 1,
+                  "desc": "ns_int_access"
+                },
+                {
+                  "name": "data_prefetch",
+                  "lsb": 28,
+                  "width": 1,
+                  "desc": "data_prefetch"
+                },
+                {
+                  "name": "instr_prefetch",
+                  "lsb": 29,
+                  "width": 1,
+                  "desc": "instr_prefetch"
+                },
+                {
+                  "name": "early_bresp",
+                  "lsb": 30,
+                  "width": 1,
+                  "desc": "early_bresp"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "REG1_AUX_CONTROL"
+              ]
+            },
+            {
+              "name": "TAG_RAM_CONTROL",
+              "offset": "0x108",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "TAG_RAM_CONTROL",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DATA_RAM_CONTROL",
+              "offset": "0x10C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DATA_RAM_CONTROL",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "EV_COUNTER_CTRL",
+              "offset": "0x200",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "EV_COUNTER_CTRL",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "EV_COUNTER1_CFG",
+              "offset": "0x204",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "EV_COUNTER1_CFG",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "EV_COUNTER0_CFG",
+              "offset": "0x208",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "EV_COUNTER0_CFG",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "EV_COUNTER1",
+              "offset": "0x20C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "EV_COUNTER1",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "EV_COUNTER0",
+              "offset": "0x210",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "EV_COUNTER0",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "INT_MASK",
+              "offset": "0x214",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "INT_MASK",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "INT_MASK_STATUS",
+              "offset": "0x218",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "INT_MASK_STATUS",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "INT_RAW_STATUS",
+              "offset": "0x21C",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "INT_RAW_STATUS",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "DEBUG_CTRL",
+              "offset": "0xF40",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "DEBUG_CTRL",
+              "fields": [],
+              "read_side_effect": false,
+              "expected": null
+            },
+            {
+              "name": "PREFETCH_CTRL",
+              "offset": "0xF60",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "PREFETCH_CTRL | Prefetch control (hardware RW; audit-only, the bench never writes it)",
+              "fields": [
+                {
+                  "name": "prefetch_offset",
+                  "lsb": 0,
+                  "width": 5,
+                  "desc": "prefetch_offset"
+                },
+                {
+                  "name": "not_same_id_excl_seq",
+                  "lsb": 21,
+                  "width": 1,
+                  "desc": "not_same_id_excl_seq"
+                },
+                {
+                  "name": "incr_double_linefill",
+                  "lsb": 23,
+                  "width": 1,
+                  "desc": "incr_double_linefill"
+                },
+                {
+                  "name": "prefetch_drop",
+                  "lsb": 24,
+                  "width": 1,
+                  "desc": "prefetch_drop"
+                },
+                {
+                  "name": "data_prefetch",
+                  "lsb": 28,
+                  "width": 1,
+                  "desc": "data_prefetch"
+                },
+                {
+                  "name": "instr_prefetch",
+                  "lsb": 29,
+                  "width": 1,
+                  "desc": "instr_prefetch"
+                },
+                {
+                  "name": "double_linefill",
+                  "lsb": 30,
+                  "width": 1,
+                  "desc": "double_linefill"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null,
+              "aliases": [
+                "REG15_PREFETCH_CTRL"
+              ]
+            },
+            {
+              "name": "POWER_CTRL",
+              "offset": "0xF80",
+              "access": "ro",
+              "width": 32,
+              "reset": null,
+              "snapshot": null,
+              "desc": "POWER_CTRL",
+              "fields": [
+                {
+                  "name": "standby_mode",
+                  "lsb": 0,
+                  "width": 1,
+                  "desc": "standby_mode"
+                },
+                {
+                  "name": "dynamic_clk_gating",
+                  "lsb": 1,
+                  "width": 1,
+                  "desc": "dynamic_clk_gating"
+                }
+              ],
+              "read_side_effect": false,
+              "expected": null
+            }
+          ]
+        }
+      ],
+      "id_reg": null,
+      "id_value": null,
+      "snapshot_domains": {},
+      "readonly": true,
+      "source": "bench/share via `fbench regmaps build`: agent built-in map + host annotations (expected, read_side_effect, aliases, extra registers)"
+    }
+  ]
+}

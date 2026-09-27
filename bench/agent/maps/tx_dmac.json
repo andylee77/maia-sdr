@@ -1,0 +1,326 @@
+{
+ "schema": "fbench.regmap/1",
+ "core": "tx_dmac",
+ "base": "0x7C420000",
+ "size": 4096,
+ "id_reg": "IDENTIFICATION",
+ "id_value": "0x444D4143",
+ "snapshot_domains": {},
+ "blocks": [
+  {
+   "name": "dmac",
+   "offset": "0x0000",
+   "regs": [
+    {
+     "name": "VERSION",
+     "offset": "0x0000",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "expect 0x00040564",
+     "fields": []
+    },
+    {
+     "name": "ID",
+     "offset": "0x0004",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ID",
+     "fields": []
+    },
+    {
+     "name": "SCRATCH",
+     "offset": "0x0008",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "SCRATCH",
+     "fields": []
+    },
+    {
+     "name": "IDENTIFICATION",
+     "offset": "0x000C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "'DMAC' = 0x444D4143",
+     "fields": []
+    },
+    {
+     "name": "INTERFACE_DESCRIPTION",
+     "offset": "0x0010",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "INTERFACE_DESCRIPTION",
+     "fields": []
+    },
+    {
+     "name": "INTERFACE_DESCRIPTION_2",
+     "offset": "0x0014",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "INTERFACE_DESCRIPTION_2",
+     "fields": []
+    },
+    {
+     "name": "IRQ_MASK",
+     "offset": "0x0080",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IRQ_MASK",
+     "fields": []
+    },
+    {
+     "name": "IRQ_PENDING",
+     "offset": "0x0084",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IRQ_PENDING",
+     "fields": []
+    },
+    {
+     "name": "IRQ_SOURCE",
+     "offset": "0x0088",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IRQ_SOURCE",
+     "fields": []
+    },
+    {
+     "name": "CONTROL",
+     "offset": "0x0400",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CONTROL",
+     "fields": []
+    },
+    {
+     "name": "TRANSFER_ID",
+     "offset": "0x0404",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "TRANSFER_ID",
+     "fields": []
+    },
+    {
+     "name": "TRANSFER_SUBMIT",
+     "offset": "0x0408",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "TRANSFER_SUBMIT",
+     "fields": []
+    },
+    {
+     "name": "FLAGS",
+     "offset": "0x040C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "FLAGS",
+     "fields": []
+    },
+    {
+     "name": "DEST_ADDRESS",
+     "offset": "0x0410",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DEST_ADDRESS",
+     "fields": []
+    },
+    {
+     "name": "SRC_ADDRESS",
+     "offset": "0x0414",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "SRC_ADDRESS",
+     "fields": []
+    },
+    {
+     "name": "X_LENGTH",
+     "offset": "0x0418",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "X_LENGTH",
+     "fields": []
+    },
+    {
+     "name": "Y_LENGTH",
+     "offset": "0x041C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "Y_LENGTH",
+     "fields": []
+    },
+    {
+     "name": "DEST_STRIDE",
+     "offset": "0x0420",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DEST_STRIDE",
+     "fields": []
+    },
+    {
+     "name": "SRC_STRIDE",
+     "offset": "0x0424",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "SRC_STRIDE",
+     "fields": []
+    },
+    {
+     "name": "TRANSFER_DONE",
+     "offset": "0x0428",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "TRANSFER_DONE",
+     "fields": []
+    },
+    {
+     "name": "ACTIVE_TRANSFER_ID",
+     "offset": "0x042C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ACTIVE_TRANSFER_ID",
+     "fields": []
+    },
+    {
+     "name": "STATUS",
+     "offset": "0x0430",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "STATUS",
+     "fields": []
+    },
+    {
+     "name": "CURRENT_DEST_ADDRESS",
+     "offset": "0x0434",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CURRENT_DEST_ADDRESS",
+     "fields": []
+    },
+    {
+     "name": "CURRENT_SRC_ADDRESS",
+     "offset": "0x0438",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CURRENT_SRC_ADDRESS",
+     "fields": []
+    },
+    {
+     "name": "DBG_STATUS",
+     "offset": "0x043C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DBG_STATUS",
+     "fields": []
+    },
+    {
+     "name": "DBG_IDS0",
+     "offset": "0x0440",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DBG_IDS0",
+     "fields": []
+    },
+    {
+     "name": "DBG_IDS1",
+     "offset": "0x0444",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DBG_IDS1",
+     "fields": []
+    },
+    {
+     "name": "MEASURED_TRANSFER_LENGTH",
+     "offset": "0x0448",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "MEASURED_TRANSFER_LENGTH",
+     "fields": []
+    },
+    {
+     "name": "PARTIAL_TRANSFER_LENGTH",
+     "offset": "0x044C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "PARTIAL_TRANSFER_LENGTH",
+     "fields": []
+    },
+    {
+     "name": "PARTIAL_TRANSFER_ID",
+     "offset": "0x0450",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "reading pops the partial-transfer FIFO",
+     "fields": [],
+     "read_side_effect": true
+    }
+   ]
+  }
+ ],
+ "source": "bench/agent/maps (built-in default; share/*.json overrides)",
+ "requires": {
+  "iio": "cf-ad9361-dds-core-lpc"
+ },
+ "note": "owned by the IIO driver: the agent allows reads, and writes only to SCRATCH",
+ "writable": [
+  "SCRATCH"
+ ]
+}

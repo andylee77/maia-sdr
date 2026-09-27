@@ -1,0 +1,555 @@
+{
+ "schema": "fbench.regmap/1",
+ "core": "ddrc",
+ "base": "0xF8006000",
+ "size": 4096,
+ "id_reg": null,
+ "id_value": null,
+ "snapshot_domains": {},
+ "blocks": [
+  {
+   "name": "ddrc",
+   "offset": "0x0000",
+   "regs": [
+    {
+     "name": "DDRC_CTRL",
+     "offset": "0x0000",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ddrc_ctrl",
+     "fields": []
+    },
+    {
+     "name": "TWO_RANK_CFG",
+     "offset": "0x0004",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "two_rank_cfg",
+     "fields": []
+    },
+    {
+     "name": "HPR_REG",
+     "offset": "0x0008",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "hpr_reg",
+     "fields": []
+    },
+    {
+     "name": "LPR_REG",
+     "offset": "0x000C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "lpr_reg",
+     "fields": []
+    },
+    {
+     "name": "WR_REG",
+     "offset": "0x0010",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "wr_reg",
+     "fields": []
+    },
+    {
+     "name": "DRAM_PARAM_REG0",
+     "offset": "0x0014",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_param_reg0",
+     "fields": []
+    },
+    {
+     "name": "DRAM_PARAM_REG1",
+     "offset": "0x0018",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_param_reg1",
+     "fields": []
+    },
+    {
+     "name": "DRAM_PARAM_REG2",
+     "offset": "0x001C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_param_reg2",
+     "fields": []
+    },
+    {
+     "name": "DRAM_PARAM_REG3",
+     "offset": "0x0020",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_param_reg3",
+     "fields": []
+    },
+    {
+     "name": "DRAM_PARAM_REG4",
+     "offset": "0x0024",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_param_reg4",
+     "fields": []
+    },
+    {
+     "name": "DRAM_INIT_PARAM",
+     "offset": "0x0028",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_init_param",
+     "fields": []
+    },
+    {
+     "name": "DRAM_EMR_REG",
+     "offset": "0x002C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_emr_reg",
+     "fields": [
+      {
+       "name": "emr2",
+       "lsb": 0,
+       "width": 16,
+       "desc": "DDR3 MR2"
+      },
+      {
+       "name": "emr3",
+       "lsb": 16,
+       "width": 16,
+       "desc": "DDR3 MR3"
+      }
+     ]
+    },
+    {
+     "name": "DRAM_EMR_MR_REG",
+     "offset": "0x0030",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_emr_mr_reg",
+     "fields": [
+      {
+       "name": "mr",
+       "lsb": 0,
+       "width": 16,
+       "desc": "DDR3 MR0"
+      },
+      {
+       "name": "emr",
+       "lsb": 16,
+       "width": 16,
+       "desc": "DDR3 MR1"
+      }
+     ]
+    },
+    {
+     "name": "DRAM_BURST8_RDWR",
+     "offset": "0x0034",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_burst8_rdwr",
+     "fields": []
+    },
+    {
+     "name": "DRAM_DISABLE_DQ",
+     "offset": "0x0038",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_disable_dq",
+     "fields": []
+    },
+    {
+     "name": "DRAM_ADDR_MAP_BANK",
+     "offset": "0x003C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_addr_map_bank",
+     "fields": []
+    },
+    {
+     "name": "DRAM_ADDR_MAP_COL",
+     "offset": "0x0040",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_addr_map_col",
+     "fields": []
+    },
+    {
+     "name": "DRAM_ADDR_MAP_ROW",
+     "offset": "0x0044",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_addr_map_row",
+     "fields": []
+    },
+    {
+     "name": "DRAM_ODT_REG",
+     "offset": "0x0048",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dram_odt_reg",
+     "fields": []
+    },
+    {
+     "name": "PHY_DBG_REG",
+     "offset": "0x004C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "phy_dbg_reg",
+     "fields": []
+    },
+    {
+     "name": "PHY_CMD_TIMEOUT_RDDATA_CPT",
+     "offset": "0x0050",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "phy_cmd_timeout_rddata_cpt",
+     "fields": []
+    },
+    {
+     "name": "MODE_STS_REG",
+     "offset": "0x0054",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "mode_sts_reg",
+     "fields": []
+    },
+    {
+     "name": "DLL_CALIB",
+     "offset": "0x0058",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dll_calib",
+     "fields": []
+    },
+    {
+     "name": "ODT_DELAY_HOLD",
+     "offset": "0x005C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "odt_delay_hold",
+     "fields": []
+    },
+    {
+     "name": "CTRL_REG1",
+     "offset": "0x0060",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ctrl_reg1",
+     "fields": []
+    },
+    {
+     "name": "CTRL_REG2",
+     "offset": "0x0064",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ctrl_reg2",
+     "fields": []
+    },
+    {
+     "name": "CTRL_REG3",
+     "offset": "0x0068",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ctrl_reg3",
+     "fields": []
+    },
+    {
+     "name": "CTRL_REG4",
+     "offset": "0x006C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ctrl_reg4",
+     "fields": []
+    },
+    {
+     "name": "CTRL_REG5",
+     "offset": "0x0078",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ctrl_reg5",
+     "fields": []
+    },
+    {
+     "name": "CTRL_REG6",
+     "offset": "0x007C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ctrl_reg6",
+     "fields": []
+    },
+    {
+     "name": "CHE_REFRESH_TIMER01",
+     "offset": "0x00A0",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "che_refresh_timer01",
+     "fields": []
+    },
+    {
+     "name": "CHE_T_ZQ",
+     "offset": "0x00A4",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "che_t_zq",
+     "fields": []
+    },
+    {
+     "name": "CHE_T_ZQ_SHORT_INTERVAL_REG",
+     "offset": "0x00A8",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "che_t_zq_short_interval_reg",
+     "fields": []
+    },
+    {
+     "name": "DEEP_PWRDWN_REG",
+     "offset": "0x00AC",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "deep_pwrdwn_reg",
+     "fields": []
+    },
+    {
+     "name": "REG_2C",
+     "offset": "0x00B0",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "reg_2c",
+     "fields": []
+    },
+    {
+     "name": "REG_2D",
+     "offset": "0x00B4",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "reg_2d",
+     "fields": []
+    },
+    {
+     "name": "DFI_TIMING",
+     "offset": "0x00B8",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "dfi_timing",
+     "fields": []
+    },
+    {
+     "name": "CHE_ECC_CONTROL_REG_OFFSET",
+     "offset": "0x00C4",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "che_ecc_control_reg_offset",
+     "fields": []
+    },
+    {
+     "name": "PAGE_MASK",
+     "offset": "0x0204",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "page_mask",
+     "fields": []
+    },
+    {
+     "name": "AXI_PRIORITY_WR_PORT0",
+     "offset": "0x0208",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "axi_priority_wr_port0",
+     "fields": []
+    },
+    {
+     "name": "AXI_PRIORITY_WR_PORT1",
+     "offset": "0x020C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "axi_priority_wr_port1",
+     "fields": []
+    },
+    {
+     "name": "AXI_PRIORITY_WR_PORT2",
+     "offset": "0x0210",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "axi_priority_wr_port2",
+     "fields": []
+    },
+    {
+     "name": "AXI_PRIORITY_WR_PORT3",
+     "offset": "0x0214",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "axi_priority_wr_port3",
+     "fields": []
+    },
+    {
+     "name": "AXI_PRIORITY_RD_PORT0",
+     "offset": "0x0218",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "axi_priority_rd_port0",
+     "fields": []
+    },
+    {
+     "name": "AXI_PRIORITY_RD_PORT1",
+     "offset": "0x021C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "axi_priority_rd_port1",
+     "fields": []
+    },
+    {
+     "name": "AXI_PRIORITY_RD_PORT2",
+     "offset": "0x0220",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "axi_priority_rd_port2",
+     "fields": []
+    },
+    {
+     "name": "AXI_PRIORITY_RD_PORT3",
+     "offset": "0x0224",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "axi_priority_rd_port3",
+     "fields": []
+    },
+    {
+     "name": "LPDDR_CTRL0",
+     "offset": "0x02A8",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "lpddr_ctrl0",
+     "fields": []
+    },
+    {
+     "name": "LPDDR_CTRL1",
+     "offset": "0x02AC",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "lpddr_ctrl1",
+     "fields": []
+    },
+    {
+     "name": "LPDDR_CTRL2",
+     "offset": "0x02B0",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "lpddr_ctrl2",
+     "fields": []
+    },
+    {
+     "name": "LPDDR_CTRL3",
+     "offset": "0x02B4",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "lpddr_ctrl3",
+     "fields": []
+    }
+   ]
+  }
+ ],
+ "source": "bench/agent/maps (built-in default; share/*.json overrides)",
+ "readonly": true
+}

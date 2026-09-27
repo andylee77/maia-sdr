@@ -1,0 +1,57 @@
+{
+  "ok": true,
+  "gate_cycles": 100000000,
+  "gate_actual": 100000000,
+  "gate_s": 1.0,
+  "resolution_ppm": 0.01,
+  "ad9361_fs_hz": 8000000,
+  "clocks": {
+    "sync": {
+      "count": 62500000,
+      "hz": 62500000.0,
+      "alive": true,
+      "nominal_hz": 62500000.0
+    },
+    "mem": {
+      "count": 125000000,
+      "hz": 125000000.0,
+      "alive": true,
+      "nominal_hz": 125000000.0
+    },
+    "clk3x": {
+      "count": 187500000,
+      "hz": 187500000.0,
+      "alive": true,
+      "nominal_hz": 187500000.0
+    },
+    "fclk1": {
+      "count": 200000000,
+      "hz": 200000000.0,
+      "alive": true,
+      "nominal_hz": 200000000.0
+    },
+    "y1": {
+      "count": 50000599,
+      "hz": 50000599.99999999,
+      "alive": true,
+      "nominal_hz": 50000000.0
+    },
+    "sampling": {
+      "count": 8000024,
+      "hz": 8000024.0,
+      "alive": true,
+      "ratio_to_fs": 1.000003
+    },
+    "lclk": {
+      "count": 16000048,
+      "hz": 16000048.0,
+      "alive": true
+    },
+    "clkout": {
+      "count": 40000120,
+      "hz": 40000120.0,
+      "alive": true,
+      "nominal_hz": 40000000.0
+    }
+  }
+}

@@ -3,8 +3,14 @@ setlocal enabledelayedexpansion
 
 :: ===== Parse arguments =====
 set "BUILD_P25=0"
+set "BUILD_HWVAL=0"
 for %%a in (%*) do (
     if "%%a"=="--p25" set "BUILD_P25=1"
+    if "%%a"=="--hwval" set "BUILD_HWVAL=1"
+)
+if "%BUILD_P25%%BUILD_HWVAL%"=="11" (
+    echo [FAIL] --p25 and --hwval are mutually exclusive.
+    exit /b 1
 )
 
 :: ===== Configuration =====
@@ -29,9 +35,24 @@ if "%BUILD_P25%"=="1" (
     set "FPGA_PROJECT=fishball7020_iio"
     set "FPGA_PROJECT_NAME=fishball"
 )
+:: hwval validation bitstream (doc/HW_VALIDATION_SUITE.md sections 6 + 11).
+:: Overrides the Maia-IIO project defaults set just above.
+if "%BUILD_HWVAL%"=="1" (
+    set "HWVAL_IP_DIR=%MAIA_HDL%\ip\hwval-core"
+    set "HWVAL_CONFIG=default"
+    set "FPGA_PROJECT=fishball7020_hwval"
+    set "FPGA_PROJECT_NAME=fishball_hwval"
+    set "IP_CORE_VERSION=0.1.0"
+)
 set "FPGA_PROJECT_DIR=%MAIA_HDL%\projects\%FPGA_PROJECT%"
 
-if "%BUILD_P25%"=="1" (
+if "%BUILD_HWVAL%"=="1" (
+    echo ============================================================
+    echo  Fishball 7020 -- hwval validation FPGA Bitstream Build ^(Vivado^)
+    echo  Target: xc7z020clg400-1 ^(Zynq Z7020 SoC^)
+    echo  Project: fishball7020_hwval ^(timing failure = hard error^)
+    echo ============================================================
+) else if "%BUILD_P25%"=="1" (
     echo ============================================================
     echo  Fishball 7020 -- P25 FPGA Bitstream Build ^(Vivado^)
     echo  Target: xc7z020clg400-1 ^(Zynq Z7020 SoC^)
@@ -235,6 +256,53 @@ if "%BUILD_P25%"=="1" (
         echo [OK] p25_core.v regenerated.
     )
 )
+
+:: ----- hwval Verilog (only for --hwval build) -----
+:: hwval_top.py imports p25_hdl (IQPacker, production-replica ring) and
+:: maia_hdl (DMA, CDC), so all three source trees gate staleness. One
+:: Docker run emits hwval_core.v + hwval.svd + hwval_regs.json +
+:: hwval_register_map.md; a missing JSON/MD also forces regeneration.
+if "%BUILD_HWVAL%"=="1" (
+    set "HWVAL_VERILOG=%HWVAL_IP_DIR%\%HWVAL_CONFIG%\hwval_core.v"
+    set "HWVAL_STATE="
+    for /f "delims=" %%R in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%STALE_CHECK%" -VerilogFile "!HWVAL_VERILOG!" -SourceDirs "%MAIA_HDL%\hwval_hdl;%MAIA_HDL%\p25_hdl;%MAIA_HDL%\maia_hdl"') do set "HWVAL_STATE=%%R"
+
+    set "HWVAL_REGEN=0"
+    if "!HWVAL_STATE!"=="FRESH" echo [OK] hwval_core.v is current ^(newer than hwval_hdl + p25_hdl + maia_hdl source^).
+    if "!HWVAL_STATE!"=="MISSING" (
+        echo [INFO] hwval_core.v not found. Generating hwval Verilog via Docker...
+        set "HWVAL_REGEN=1"
+    )
+    if "!HWVAL_STATE!"=="STALE" (
+        echo [WARN] hwval_core.v is STALE -- hwval_hdl, p25_hdl or maia_hdl has newer changes.
+        echo        Regenerating via Docker to avoid baking stale logic into bitstream.
+        set "HWVAL_REGEN=1"
+    )
+    if not defined HWVAL_STATE (
+        echo [FAIL] Staleness helper returned empty state for hwval_core.v
+        goto :error
+    )
+    if not "!HWVAL_STATE!"=="FRESH" if not "!HWVAL_STATE!"=="MISSING" if not "!HWVAL_STATE!"=="STALE" (
+        echo [FAIL] Staleness helper returned unexpected state: '!HWVAL_STATE!'
+        goto :error
+    )
+    if not exist "%HWVAL_IP_DIR%\%HWVAL_CONFIG%\hwval_regs.json" set "HWVAL_REGEN=1"
+    if not exist "%HWVAL_IP_DIR%\%HWVAL_CONFIG%\hwval_register_map.md" set "HWVAL_REGEN=1"
+    if "!HWVAL_REGEN!"=="1" (
+        call "%PROJECT_DIR%\build_hdl.bat" --verilog-only --hwval --hwval-config %HWVAL_CONFIG%
+        if !errorlevel! neq 0 (
+            echo [FAIL] hwval Verilog generation failed. Run build_hdl.bat --hwval manually.
+            goto :error
+        )
+        for %%F in (hwval_core.v hwval.svd hwval_regs.json hwval_register_map.md) do (
+            if not exist "%HWVAL_IP_DIR%\%HWVAL_CONFIG%\%%F" (
+                echo [FAIL] %%F still not found after generation.
+                goto :error
+            )
+        )
+        echo [OK] hwval_core.v, hwval.svd, hwval_regs.json, hwval_register_map.md regenerated.
+    )
+)
 echo.
 
 :: ===== Step 3: Package IP Cores =====
@@ -265,6 +333,27 @@ if "%BUILD_P25%"=="1" (
         goto :error
     )
     echo [OK] P25 IP core packaged ^(component.xml created^).
+)
+
+:: hwval IP (only for --hwval build). package_ip.tcl writes package_ip.ok
+:: as its last action; ipx::package_project writes component.xml early,
+:: so component.xml alone cannot prove the packaging run completed.
+if "%BUILD_HWVAL%"=="1" (
+    echo [Step 3c] Packaging hwval IP core ^(config: %HWVAL_CONFIG%^)...
+    cd /d "%HWVAL_IP_DIR%\%HWVAL_CONFIG%"
+    if exist "%HWVAL_IP_DIR%\%HWVAL_CONFIG%\package_ip.ok" del /q "%HWVAL_IP_DIR%\%HWVAL_CONFIG%\package_ip.ok"
+    set "IP_CORE_VERSION=%IP_CORE_VERSION%"
+    set "HWVAL_CONFIG=%HWVAL_CONFIG%"
+    call "%VIVADO%" -mode batch -source "%HWVAL_IP_DIR%\package_ip.tcl" -notrace
+    if not exist "%HWVAL_IP_DIR%\%HWVAL_CONFIG%\component.xml" (
+        echo [FAIL] hwval IP packaging failed -- no component.xml created.
+        goto :error
+    )
+    if not exist "%HWVAL_IP_DIR%\%HWVAL_CONFIG%\package_ip.ok" (
+        echo [FAIL] hwval IP packaging did not complete -- see vivado.log in %HWVAL_IP_DIR%\%HWVAL_CONFIG%
+        goto :error
+    )
+    echo [OK] hwval IP core packaged ^(component.xml + package_ip.ok^).
 )
 echo.
 
@@ -409,7 +498,20 @@ echo          Synthesis -^> Implementation -^> Bitstream -^> XSA
 echo ============================================================
 
 cd /d "%FPGA_PROJECT_DIR%"
+:: hwval: remove XSAs left by a previous run so only this run's output can
+:: be picked up in Step 6 (a bad-timing XSA is never promoted for hwval).
+if "%BUILD_HWVAL%"=="1" (
+    if exist "%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top.xsa" del /q "%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top.xsa"
+    if exist "%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top_bad_timing.xsa" del /q "%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top_bad_timing.xsa"
+)
 call "%VIVADO%" -mode batch -source system_project.tcl -notrace
+if "%BUILD_HWVAL%"=="1" if !errorlevel! neq 0 (
+    echo [FAIL] hwval FPGA build failed. For hwval a timing failure is a HARD error:
+    echo        system_top_bad_timing.xsa is never promoted. Check
+    echo        %FPGA_PROJECT_DIR%\timing_impl.log and
+    echo        %FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.runs\
+    goto :error
+)
 if !errorlevel! neq 0 (
     :: Check if timing-only failure (bitstream exists but timing violated)
     if exist "%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top_bad_timing.xsa" (
@@ -438,6 +540,16 @@ echo.
 :: ===== Step 6: Locate XSA and copy to Tezuka =====
 echo [Step 6] Locating XSA output...
 set "XSA_SOURCE=%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top.xsa"
+if "%BUILD_HWVAL%"=="1" (
+    if exist "%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top_bad_timing.xsa" (
+        echo [FAIL] hwval: system_top_bad_timing.xsa present -- timing not met, not promoting.
+        goto :error
+    )
+    if not exist "!XSA_SOURCE!" (
+        echo [FAIL] hwval: !XSA_SOURCE! was not produced by this run.
+        goto :error
+    )
+)
 if not exist "!XSA_SOURCE!" (
     echo [WARN] XSA not at expected location. Searching...
     for /r "%FPGA_PROJECT_DIR%" %%f in (system_top.xsa) do (
@@ -453,6 +565,24 @@ if not exist "!XSA_SOURCE!" (
 echo [OK] XSA: !XSA_SOURCE!
 echo.
 
+:: hwval: publish the register map generated with the Verilog that is now
+:: in this bitstream (consumed by the fbench agent/CLI and the docs).
+if "%BUILD_HWVAL%"=="1" (
+    if not exist "%PROJECT_DIR%\bench\share" mkdir "%PROJECT_DIR%\bench\share"
+    copy /Y "%HWVAL_IP_DIR%\%HWVAL_CONFIG%\hwval_regs.json" "%PROJECT_DIR%\bench\share\hwval_regs.json" >nul
+    if !errorlevel! neq 0 (
+        echo [FAIL] Could not copy hwval_regs.json to bench\share\
+        goto :error
+    )
+    copy /Y "%HWVAL_IP_DIR%\%HWVAL_CONFIG%\hwval_register_map.md" "%PROJECT_DIR%\doc\hwval_register_map.md" >nul
+    if !errorlevel! neq 0 (
+        echo [FAIL] Could not copy hwval_register_map.md to doc\
+        goto :error
+    )
+    echo [OK] Published bench\share\hwval_regs.json and doc\hwval_register_map.md
+    echo.
+)
+
 :: Try to copy to Tezuka if it exists
 pushd "%TEZUKA_FW%" 2>nul
 if !errorlevel! equ 0 (
@@ -465,6 +595,7 @@ if !errorlevel! equ 0 (
     ) else (
         set "BITSTREAM_SUBDIR=maia-iio"
     )
+    if "%BUILD_HWVAL%"=="1" set "BITSTREAM_SUBDIR=hwval"
     set "TEZUKA_BITSTREAM=!TEZUKA_RESOLVED!\board\tezuka\fishball7020\bitstream\!BITSTREAM_SUBDIR!"
     if exist "!TEZUKA_BITSTREAM!" (
         echo [INFO] Copying XSA to Tezuka firmware...
@@ -498,7 +629,10 @@ echo.
 echo  NEXT STEPS:
 echo  1. Build Tezuka firmware:
 echo     cd %TEZUKA_FW%
-if "%BUILD_P25%"=="1" (
+if "%BUILD_HWVAL%"=="1" (
+    echo     build.bat --p25
+    echo     ^(the P25 build's post-image.sh adds sdimg\bench\images\hwval\ and \p25\^)
+) else if "%BUILD_P25%"=="1" (
     echo     build.bat --p25
 ) else (
     echo     build.bat

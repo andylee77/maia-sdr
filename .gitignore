@@ -140,3 +140,9 @@ Cargo.lock.bak
 # Runtime event-log dumps + WS audio capture output dirs (tools/p25_ws_audio_capture.py)
 /p25_log.json
 /ws_audio_capture/
+
+# Hardware validation suite (doc/HW_VALIDATION_SUITE.md)
+.venv-hdl/
+bench/agent/target/
+bench/.state/
+maia-hdl/ip/hwval-core/default/

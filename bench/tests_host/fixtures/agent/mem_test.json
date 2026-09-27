@@ -1,0 +1,36 @@
+{
+  "ok": true,
+  "errors": 0,
+  "bytes_tested": 268435456,
+  "seconds": 42.0,
+  "patterns": [
+    {
+      "name": "walk1",
+      "errors": 0
+    },
+    {
+      "name": "walk0",
+      "errors": 0
+    },
+    {
+      "name": "address",
+      "errors": 0
+    },
+    {
+      "name": "inverse",
+      "errors": 0
+    },
+    {
+      "name": "marchc-",
+      "errors": 0
+    },
+    {
+      "name": "prbs",
+      "errors": 0
+    },
+    {
+      "name": "checker",
+      "errors": 0
+    }
+  ]
+}

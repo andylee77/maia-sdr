@@ -17,6 +17,9 @@
 #   --svd-only         Skip Verilog generation
 #   --clean            Remove cached venv and rebuild from scratch
 #   --interactive      (handled by .bat — ignored here)
+#   --hwval            Also generate the hwval validation core (Verilog +
+#                      SVD + register-map JSON/MD in one elaboration)
+#   --hwval-config <n> hwval config (default: default)
 #
 # Environment:
 #   SRC_MOUNT    Path to maia-sdr repo root (Docker mount)
@@ -25,6 +28,8 @@
 # Outputs (copied back to SRC_MOUNT):
 #   maia-hdl/ip/maia-sdr/<config>/maia_sdr.v
 #   maia-hdl/maia-sdr.svd
+#   maia-hdl/ip/hwval-core/<hwval-config>/{hwval_core.v,hwval.svd,
+#       hwval_regs.json,hwval_register_map.md}            (--hwval)
 ###############################################################################
 
 set -euo pipefail
@@ -55,6 +60,8 @@ DO_VERILOG=true
 DO_SVD=true
 DO_P25=false
 P25_CONFIG="default"
+DO_HWVAL=false
+HWVAL_CONFIG="default"
 
 # Build dir layout (all on ext4)
 SRC_DIR="$BUILD_HOME/src"
@@ -69,6 +76,8 @@ while [[ $# -gt 0 ]]; do
         --svd-only)      DO_VERILOG=false; shift ;;
         --p25)           DO_P25=true; shift ;;
         --p25-config)    P25_CONFIG="$2"; shift 2 ;;
+        --hwval)         DO_HWVAL=true; shift ;;
+        --hwval-config)  HWVAL_CONFIG="$2"; shift 2 ;;
         --interactive)   shift ;;  # handled by .bat
         --help|-h)
             grep '^#' "$0" | grep -v '^#!/' | sed 's/^# \{0,1\}//' | head -40
@@ -87,6 +96,7 @@ info "Build (ext4): $BUILD_HOME"
 info "Verilog:      $($DO_VERILOG && echo 'yes' || echo 'skip')"
 info "SVD:          $($DO_SVD && echo 'yes' || echo 'skip')"
 info "P25:          $($DO_P25 && echo "yes (config: $P25_CONFIG)" || echo 'skip')"
+info "hwval:        $($DO_HWVAL && echo "yes (config: $HWVAL_CONFIG)" || echo 'skip')"
 echo ""
 
 # ── Validate source ──────────────────────────────────────────────────────────
@@ -113,6 +123,15 @@ if $DO_P25; then
         fi
     done
     log "P25 source files verified."
+fi
+
+# Validate hwval source if building hwval
+if $DO_HWVAL; then
+    if [ ! -f "$SRC_MOUNT/maia-hdl/hwval_hdl/hwval_top.py" ]; then
+        err "Required hwval source file missing: maia-hdl/hwval_hdl/hwval_top.py"
+        exit 1
+    fi
+    log "hwval source files verified."
 fi
 
 # ── Optional clean ────────────────────────────────────────────────────────────
@@ -279,6 +298,44 @@ PYEOF
     log "P25 SVD generated: p25.svd ($(wc -c < p25.svd) bytes)"
 fi
 
+# ── Step 5d: Generate hwval Verilog + SVD + register map ──────────────────────
+# One elaboration emits all four artefacts so they can never disagree.
+# Always runs with --hwval (like 5c for P25), regardless of --verilog-only.
+if $DO_HWVAL; then
+    step "Step 5d: Generate hwval → hwval_core.v, hwval.svd, hwval_regs.json, hwval_register_map.md"
+    cd "$SRC_DIR"
+    info "Command: PYTHONPATH=. python -m hwval_hdl.hwval_top --config $HWVAL_CONFIG hwval_core.v --svd hwval.svd --json hwval_regs.json --md hwval_register_map.md"
+
+    rm -f hwval_core.v hwval.svd hwval_regs.json hwval_register_map.md
+    PYTHONPATH="." python -m hwval_hdl.hwval_top --config "$HWVAL_CONFIG" hwval_core.v \
+        --svd hwval.svd --json hwval_regs.json --md hwval_register_map.md
+
+    for f in hwval_core.v hwval.svd hwval_regs.json hwval_register_map.md; do
+        if [ ! -s "$f" ]; then
+            err "$f was not created — hwval Amaranth elaboration/generation failed."
+            exit 1
+        fi
+    done
+
+    # Port contract with maia-hdl/projects/fishball7020_hwval/system_bd.tcl and
+    # maia-hdl/ip/hwval-core/package_ip.tcl: fail here (seconds) rather than
+    # in the Vivado block design (minutes). Ports of module `top` only.
+    HWVAL_PORTS=$(awk '/^module top\(/{f=1} f&&/^endmodule/{exit} f&&/^ *(input|output|inout) /{gsub(/;/,"",$NF); print $NF}' hwval_core.v)
+    HWVAL_MISSING=""
+    for p in s_axi_lite_clk s_axi_lite_rst clk clk2x_clk clk3x_clk sampling_clk \
+             lclk_clk fclk1_clk y1_clk re_in im_in valid_in ctrl_out ad_clkout \
+             interrupt_out s_axi_lite_awvalid s_axi_lite_arvalid \
+             m_axi_ringv2_awvalid m_axi_legacy_awvalid \
+             m_axi_mt0_awvalid m_axi_mt0_arvalid m_axi_mt1_awvalid m_axi_mt1_arvalid; do
+        grep -qx "$p" <<<"$HWVAL_PORTS" || HWVAL_MISSING="$HWVAL_MISSING $p"
+    done
+    if [ -n "$HWVAL_MISSING" ]; then
+        err "hwval_core.v module 'top' lacks ports the Vivado project expects:$HWVAL_MISSING"
+        exit 1
+    fi
+    log "hwval generated: hwval_core.v ($(wc -l < hwval_core.v) lines), hwval.svd, hwval_regs.json, hwval_register_map.md; port contract OK"
+fi
+
 # ── Step 6: Generate SVD ──────────────────────────────────────────────────────
 if $DO_SVD; then
     step "Step 6: Generate SVD → maia-sdr.svd"
@@ -358,6 +415,19 @@ if $DO_P25; then
     fi
 fi
 
+if $DO_HWVAL; then
+    # Into the IP config dir only. build_fpga.bat --hwval publishes
+    # hwval_regs.json -> bench/share/ and hwval_register_map.md -> doc/
+    # after the bitstream built, so the published map always matches a
+    # bitstream that exists.
+    HWVAL_IP_DIR="$SRC_MOUNT/maia-hdl/ip/hwval-core/$HWVAL_CONFIG"
+    mkdir -p "$HWVAL_IP_DIR"
+    for f in hwval_core.v hwval.svd hwval_regs.json hwval_register_map.md; do
+        cp "$SRC_DIR/$f" "$HWVAL_IP_DIR/$f"
+        log "  ✓ $f → maia-hdl/ip/hwval-core/$HWVAL_CONFIG/ ($(wc -c < "$SRC_DIR/$f") bytes)"
+    done
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 log "=== BUILD COMPLETE ==="
@@ -366,10 +436,13 @@ info "Output files:"
 $DO_VERILOG && info "  maia-hdl/ip/maia-sdr/$CONFIG/maia_sdr.v"
 $DO_SVD     && info "  maia-hdl/maia-sdr.svd"
 $DO_P25     && info "  maia-hdl/ip/p25-core/$P25_CONFIG/p25_core.v"
+$DO_HWVAL   && info "  maia-hdl/ip/hwval-core/$HWVAL_CONFIG/{hwval_core.v,hwval.svd,hwval_regs.json,hwval_register_map.md}"
 echo ""
 info "Next steps:"
 if $DO_P25; then
     info "  1. Run build_fpga.bat --p25 to synthesize P25 FPGA bitstream"
+elif $DO_HWVAL; then
+    info "  1. Run build_fpga.bat --hwval to synthesize the hwval validation bitstream"
 else
     info "  1. Run build_fpga.bat to synthesize FPGA bitstream"
 fi

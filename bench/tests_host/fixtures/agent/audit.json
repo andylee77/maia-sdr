@@ -1,0 +1,92 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "ddr_pll_fdiv",
+      "addr": "0xF8000104",
+      "value": "0x20",
+      "expected": "0x20",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "name": "dram_emr_mr",
+      "addr": "0xF8006030",
+      "value": "0x00040B30",
+      "expected": "0x00040B30",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "name": "l2c_prefetch",
+      "addr": "0xF8F02F60",
+      "value": "0x30000007",
+      "expected": null,
+      "ok": false,
+      "severity": "info",
+      "detail": "report only"
+    }
+  ],
+  "regs": {
+    "ARM_PLL_CTRL": "0x00028008",
+    "DDR_PLL_CTRL": "0x00020008",
+    "IO_PLL_CTRL": "0x0001E008",
+    "ARM_CLK_CTRL": "0x1F000200",
+    "DDR_CLK_CTRL": "0x0C200003",
+    "FPGA0_CLK_CTRL": "0x00100A00",
+    "FPGA1_CLK_CTRL": "0x00100500",
+    "REBOOT_STATUS": "0x00400000",
+    "PSS_IDCODE": "0x13727093",
+    "DRAM_EMR_REG": "0x00000008",
+    "DDRIOB_DDR_CTRL": "0x00000005",
+    "DRAM_EMR_MR_REG": "0x00040B30",
+    "L2C_CONTROL": "0x00000001",
+    "L2C_AUX_CONTROL": "0x72360000",
+    "L2C_PREFETCH_CTRL": "0x30000007"
+  },
+  "kmod": {
+    "maia_sdr": {
+      "loaded": true,
+      "provenance": "stale leftover (F8)"
+    }
+  },
+  "services": [
+    "p25-httpd",
+    "iiod"
+  ],
+  "reserved_memory": [
+    {
+      "node": "wideband@22000000",
+      "base": "0x22000000",
+      "size": "0x1000000",
+      "no_map": true,
+      "label": "wideband",
+      "compatible": "maia-sdr,rxbuffer",
+      "overlaps_system_ram": false
+    },
+    {
+      "node": "hwval-memtest@24000000",
+      "base": "0x24000000",
+      "size": "0x4000000",
+      "no_map": true,
+      "label": null,
+      "compatible": null,
+      "overlaps_system_ram": false
+    }
+  ],
+  "pass": true,
+  "failures": 0,
+  "derived": {
+    "ddr_mhz": 533.333,
+    "cas_latency": 7,
+    "cas_write_latency": 6,
+    "taa_ns": 13.125,
+    "fclk0_mhz": 100.0
+  },
+  "xadc": {
+    "temp_c": 47.5,
+    "vccint": 1.0,
+    "vccaux": 1.79,
+    "vccoddr": 1.351
+  }
+}

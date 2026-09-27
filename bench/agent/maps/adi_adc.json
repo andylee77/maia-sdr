@@ -1,0 +1,663 @@
+{
+ "schema": "fbench.regmap/1",
+ "core": "adi_adc",
+ "base": "0x79020000",
+ "size": 4096,
+ "id_reg": "VERSION",
+ "id_value": "0x000A0300",
+ "snapshot_domains": {},
+ "blocks": [
+  {
+   "name": "common",
+   "offset": "0x0000",
+   "regs": [
+    {
+     "name": "VERSION",
+     "offset": "0x0000",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "core version (expect 0x000A0300)",
+     "fields": []
+    },
+    {
+     "name": "ID",
+     "offset": "0x0004",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "ID",
+     "fields": []
+    },
+    {
+     "name": "SCRATCH",
+     "offset": "0x0008",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "SCRATCH",
+     "fields": []
+    },
+    {
+     "name": "CONFIG",
+     "offset": "0x000C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "config (expect 0x10)",
+     "fields": []
+    },
+    {
+     "name": "RSTN",
+     "offset": "0x0040",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "core reset (writing can stop the RX path)",
+     "fields": [
+      {
+       "name": "rstn",
+       "lsb": 0,
+       "width": 1,
+       "desc": "rstn"
+      },
+      {
+       "name": "mmcm_rstn",
+       "lsb": 1,
+       "width": 1,
+       "desc": "mmcm_rstn"
+      },
+      {
+       "name": "clk_enb",
+       "lsb": 2,
+       "width": 1,
+       "desc": "clk_enb"
+      }
+     ],
+     "dangerous": true
+    },
+    {
+     "name": "CNTRL",
+     "offset": "0x0044",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CNTRL",
+     "fields": [
+      {
+       "name": "pin_mode",
+       "lsb": 0,
+       "width": 1,
+       "desc": "pin_mode"
+      },
+      {
+       "name": "ddr_edgesel",
+       "lsb": 1,
+       "width": 1,
+       "desc": "ddr_edgesel"
+      },
+      {
+       "name": "r1_mode",
+       "lsb": 2,
+       "width": 1,
+       "desc": "r1_mode"
+      },
+      {
+       "name": "sync",
+       "lsb": 3,
+       "width": 1,
+       "desc": "sync"
+      }
+     ]
+    },
+    {
+     "name": "CNTRL_2",
+     "offset": "0x0048",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CNTRL_2",
+     "fields": []
+    },
+    {
+     "name": "CNTRL_3",
+     "offset": "0x004C",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CNTRL_3",
+     "fields": []
+    },
+    {
+     "name": "CLK_FREQ",
+     "offset": "0x0054",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DATA_CLK = N * 100e6 / 65536 Hz",
+     "fields": []
+    },
+    {
+     "name": "CLK_RATIO",
+     "offset": "0x0058",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CLK_RATIO",
+     "fields": []
+    },
+    {
+     "name": "STATUS",
+     "offset": "0x005C",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "STATUS",
+     "fields": [
+      {
+       "name": "status",
+       "lsb": 0,
+       "width": 1,
+       "desc": "interface status"
+      },
+      {
+       "name": "or",
+       "lsb": 1,
+       "width": 1,
+       "desc": "or"
+      },
+      {
+       "name": "pn_oos",
+       "lsb": 2,
+       "width": 1,
+       "desc": "pn_oos"
+      },
+      {
+       "name": "pn_err",
+       "lsb": 3,
+       "width": 1,
+       "desc": "pn_err"
+      }
+     ]
+    },
+    {
+     "name": "SYNC_STATUS",
+     "offset": "0x0068",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "SYNC_STATUS",
+     "fields": []
+    },
+    {
+     "name": "UP_STATUS",
+     "offset": "0x0088",
+     "access": "w1c",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "bit2 ADC overflow (w1c)",
+     "fields": [
+      {
+       "name": "ovf",
+       "lsb": 2,
+       "width": 1,
+       "desc": "ovf"
+      }
+     ]
+    },
+    {
+     "name": "TIMER",
+     "offset": "0x0100",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "TIMER",
+     "fields": []
+    }
+   ]
+  },
+  {
+   "name": "channels",
+   "offset": "0x0400",
+   "regs": [
+    {
+     "name": "CHAN0_CNTRL",
+     "offset": "0x0400",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CHAN0_CNTRL",
+     "fields": [
+      {
+       "name": "enable",
+       "lsb": 0,
+       "width": 1,
+       "desc": "ADC channel enable"
+      },
+      {
+       "name": "pn_type",
+       "lsb": 1,
+       "width": 1,
+       "desc": "pn_type"
+      },
+      {
+       "name": "dfmt_enable",
+       "lsb": 4,
+       "width": 1,
+       "desc": "dfmt_enable"
+      },
+      {
+       "name": "dfmt_type",
+       "lsb": 5,
+       "width": 1,
+       "desc": "dfmt_type"
+      },
+      {
+       "name": "dfmt_se",
+       "lsb": 6,
+       "width": 1,
+       "desc": "dfmt_se"
+      },
+      {
+       "name": "dcfilt_enb",
+       "lsb": 8,
+       "width": 1,
+       "desc": "dcfilt_enb"
+      },
+      {
+       "name": "iqcor_enb",
+       "lsb": 9,
+       "width": 1,
+       "desc": "iqcor_enb"
+      },
+      {
+       "name": "pn_sel",
+       "lsb": 10,
+       "width": 1,
+       "desc": "pn_sel"
+      },
+      {
+       "name": "lb_enb",
+       "lsb": 11,
+       "width": 1,
+       "desc": "lb_enb"
+      }
+     ]
+    },
+    {
+     "name": "CHAN0_STATUS",
+     "offset": "0x0404",
+     "access": "w1c",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "sticky PN/OR status, write 1 to clear; dwell >= 1 ms after clear",
+     "fields": [
+      {
+       "name": "or",
+       "lsb": 0,
+       "width": 1,
+       "desc": "over-range (sticky, w1c)"
+      },
+      {
+       "name": "pn_oos",
+       "lsb": 1,
+       "width": 1,
+       "desc": "PN out of sync (sticky, w1c)"
+      },
+      {
+       "name": "pn_err",
+       "lsb": 2,
+       "width": 1,
+       "desc": "PN error (sticky, w1c)"
+      }
+     ]
+    },
+    {
+     "name": "CHAN0_RAW_DATA",
+     "offset": "0x0408",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CHAN0_RAW_DATA",
+     "fields": []
+    },
+    {
+     "name": "CHAN0_CNTRL_1",
+     "offset": "0x0410",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DC filter offset/coeff",
+     "fields": []
+    },
+    {
+     "name": "CHAN0_CNTRL_2",
+     "offset": "0x0414",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IQ correction coefficients",
+     "fields": []
+    },
+    {
+     "name": "CHAN0_CNTRL_3",
+     "offset": "0x0418",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CHAN0_CNTRL_3",
+     "fields": [
+      {
+       "name": "data_sel",
+       "lsb": 0,
+       "width": 4,
+       "desc": "0 = ADC, else DAC loopback data"
+      },
+      {
+       "name": "pn_sel",
+       "lsb": 16,
+       "width": 4,
+       "desc": "0 = AD9361 BIST PRBS (pn0fn), 9 = PN9/PN11"
+      }
+     ]
+    },
+    {
+     "name": "CHAN1_CNTRL",
+     "offset": "0x0440",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CHAN1_CNTRL",
+     "fields": [
+      {
+       "name": "enable",
+       "lsb": 0,
+       "width": 1,
+       "desc": "ADC channel enable"
+      },
+      {
+       "name": "pn_type",
+       "lsb": 1,
+       "width": 1,
+       "desc": "pn_type"
+      },
+      {
+       "name": "dfmt_enable",
+       "lsb": 4,
+       "width": 1,
+       "desc": "dfmt_enable"
+      },
+      {
+       "name": "dfmt_type",
+       "lsb": 5,
+       "width": 1,
+       "desc": "dfmt_type"
+      },
+      {
+       "name": "dfmt_se",
+       "lsb": 6,
+       "width": 1,
+       "desc": "dfmt_se"
+      },
+      {
+       "name": "dcfilt_enb",
+       "lsb": 8,
+       "width": 1,
+       "desc": "dcfilt_enb"
+      },
+      {
+       "name": "iqcor_enb",
+       "lsb": 9,
+       "width": 1,
+       "desc": "iqcor_enb"
+      },
+      {
+       "name": "pn_sel",
+       "lsb": 10,
+       "width": 1,
+       "desc": "pn_sel"
+      },
+      {
+       "name": "lb_enb",
+       "lsb": 11,
+       "width": 1,
+       "desc": "lb_enb"
+      }
+     ]
+    },
+    {
+     "name": "CHAN1_STATUS",
+     "offset": "0x0444",
+     "access": "w1c",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "sticky PN/OR status, write 1 to clear; dwell >= 1 ms after clear",
+     "fields": [
+      {
+       "name": "or",
+       "lsb": 0,
+       "width": 1,
+       "desc": "over-range (sticky, w1c)"
+      },
+      {
+       "name": "pn_oos",
+       "lsb": 1,
+       "width": 1,
+       "desc": "PN out of sync (sticky, w1c)"
+      },
+      {
+       "name": "pn_err",
+       "lsb": 2,
+       "width": 1,
+       "desc": "PN error (sticky, w1c)"
+      }
+     ]
+    },
+    {
+     "name": "CHAN1_RAW_DATA",
+     "offset": "0x0448",
+     "access": "ro",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CHAN1_RAW_DATA",
+     "fields": []
+    },
+    {
+     "name": "CHAN1_CNTRL_1",
+     "offset": "0x0450",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "DC filter offset/coeff",
+     "fields": []
+    },
+    {
+     "name": "CHAN1_CNTRL_2",
+     "offset": "0x0454",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IQ correction coefficients",
+     "fields": []
+    },
+    {
+     "name": "CHAN1_CNTRL_3",
+     "offset": "0x0458",
+     "access": "rw",
+     "width": 32,
+     "reset": null,
+     "snapshot": null,
+     "desc": "CHAN1_CNTRL_3",
+     "fields": [
+      {
+       "name": "data_sel",
+       "lsb": 0,
+       "width": 4,
+       "desc": "0 = ADC, else DAC loopback data"
+      },
+      {
+       "name": "pn_sel",
+       "lsb": 16,
+       "width": 4,
+       "desc": "0 = AD9361 BIST PRBS (pn0fn), 9 = PN9/PN11"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "delay",
+   "offset": "0x0800",
+   "regs": [
+    {
+     "name": "IDELAY_0",
+     "offset": "0x0800",
+     "access": "rw",
+     "width": 5,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IDELAY tap, data lane 0",
+     "fields": [
+      {
+       "name": "tap",
+       "lsb": 0,
+       "width": 5,
+       "desc": "tap"
+      }
+     ]
+    },
+    {
+     "name": "IDELAY_1",
+     "offset": "0x0804",
+     "access": "rw",
+     "width": 5,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IDELAY tap, data lane 1",
+     "fields": [
+      {
+       "name": "tap",
+       "lsb": 0,
+       "width": 5,
+       "desc": "tap"
+      }
+     ]
+    },
+    {
+     "name": "IDELAY_2",
+     "offset": "0x0808",
+     "access": "rw",
+     "width": 5,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IDELAY tap, data lane 2",
+     "fields": [
+      {
+       "name": "tap",
+       "lsb": 0,
+       "width": 5,
+       "desc": "tap"
+      }
+     ]
+    },
+    {
+     "name": "IDELAY_3",
+     "offset": "0x080C",
+     "access": "rw",
+     "width": 5,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IDELAY tap, data lane 3",
+     "fields": [
+      {
+       "name": "tap",
+       "lsb": 0,
+       "width": 5,
+       "desc": "tap"
+      }
+     ]
+    },
+    {
+     "name": "IDELAY_4",
+     "offset": "0x0810",
+     "access": "rw",
+     "width": 5,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IDELAY tap, data lane 4",
+     "fields": [
+      {
+       "name": "tap",
+       "lsb": 0,
+       "width": 5,
+       "desc": "tap"
+      }
+     ]
+    },
+    {
+     "name": "IDELAY_5",
+     "offset": "0x0814",
+     "access": "rw",
+     "width": 5,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IDELAY tap, data lane 5",
+     "fields": [
+      {
+       "name": "tap",
+       "lsb": 0,
+       "width": 5,
+       "desc": "tap"
+      }
+     ]
+    },
+    {
+     "name": "IDELAY_6",
+     "offset": "0x0818",
+     "access": "rw",
+     "width": 5,
+     "reset": null,
+     "snapshot": null,
+     "desc": "IDELAY tap, frame lane",
+     "fields": [
+      {
+       "name": "tap",
+       "lsb": 0,
+       "width": 5,
+       "desc": "tap"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "source": "bench/agent/maps (built-in default; share/*.json overrides)",
+ "requires": {
+  "iio": "cf-ad9361-lpc"
+ }
+}

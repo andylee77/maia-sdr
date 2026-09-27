@@ -1,0 +1,22 @@
+{
+ "schema": "fbench.regmap/1",
+ "core": "hwval",
+ "base": "0x7C460000",
+ "size": 4096,
+ "id_reg": "ID",
+ "id_value": "0x68777631",
+ "snapshot_domains": {},
+ "requires": {"uio": "hwval-core"},
+ "source": "bench/agent/maps/hwval_min.json (identification only; the full map is share/hwval_regs.json from maia-hdl/hwval_hdl/regmap.py)",
+ "blocks": [
+  {
+   "name": "id",
+   "offset": "0x000",
+   "regs": [
+    {"name": "ID", "offset": "0x000", "access": "ro", "width": 32, "reset": "0x68777631", "snapshot": null, "desc": "Core identification (\"hwv1\")", "fields": []},
+    {"name": "VERSION", "offset": "0x004", "access": "ro", "width": 24, "reset": null, "snapshot": null, "desc": "major<<16 | minor<<8 | patch", "fields": [{"name": "patch", "lsb": 0, "width": 8}, {"name": "minor", "lsb": 8, "width": 8}, {"name": "major", "lsb": 16, "width": 8}]},
+    {"name": "FEATURES", "offset": "0x008", "access": "ro", "width": 16, "reset": null, "snapshot": null, "desc": "Implemented features bitmask", "fields": []}
+   ]
+  }
+ ]
+}

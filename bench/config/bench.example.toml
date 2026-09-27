@@ -1,0 +1,202 @@
+# fbench bench configuration — annotated example.
+#
+# Copy to bench/config/bench.toml (the default --config) and edit.
+# Contract: doc/HW_VALIDATION_SUITE.md (section 2 topology, section 3 safety).
+# Relative paths are relative to the repository root.
+
+[bench]
+# Unit used by tests whose "units" is "any" when --unit is not given.
+default_unit = "A"
+
+[paths]
+# Run dirs land in <diagnostics_dir>/<YYYY-MM-DD>/bench/run_<ts>_<test>/.
+diagnostics_dir = "doc/diagnostics"
+# Session state (maintenance/TX flags, known_hosts, last seen DNA). Gitignored.
+state_dir = "bench/.state"
+# Register maps (fbench.regmap/1). Deployed to /mnt/sd/bench/share/.
+share_dir = "bench/share"
+
+[ssh]
+user = "root"
+# Host key the Tezuka P25 image already authorizes (andy@NucBox_K6).
+identity = "~/.ssh/id_ed25519"
+connect_timeout_s = 20
+# known_hosts = "bench/.state/known_hosts"   # default
+
+[agent]
+remote_root = "/mnt/sd/bench"
+binary = "bin/fbench-agent"
+# Output of bench/scripts/build_agent.sh (cargo zigbuild, musl).
+local_binary = "bench/agent/target/armv7-unknown-linux-musleabihf/release/fbench-agent"
+# Extra arguments appended to every agent call (e.g. ["--json"] if the agent
+# ever requires it). Adjust here, not in code.
+extra_args = []
+default_timeout_s = 30.0
+
+[iio]
+# auto = pylibiio when importable, else the iio_attr/iio_readdev/iio_writedev CLIs.
+backend = "auto"
+rx_device = "cf-ad9361-lpc"
+tx_device = "cf-ad9361-dds-core-lpc"
+phy_device = "ad9361-phy"
+
+[network]
+# PC side of unit A's USB RNDIS link.
+host_ip = "192.168.2.10"
+# The PC holds one route: 10.25.0.0/24 via 192.168.2.1 (no NAT).
+bench_subnet = "10.25.0.0"
+bench_mask = "255.255.255.0"
+gateway = "192.168.2.1"
+
+[safety]
+# Worst-case TX output: AD9361 +7 dBm plus the PGA-102+ gain block (F11).
+tx_max_dbm = 20.0
+# Refuse any TX test whose worst-case received power exceeds this (strictly
+# greater: exactly -10.0 dBm is allowed). The AD9361 absolute maximum is
+# higher; the margin is deliberate.
+rx_abs_max_dbm = -10.0
+# Warn (but allow) above this level: the receiver leaves its linear range.
+rx_linear_max_dbm = -30.0
+# Maximum AD9361 TX attenuation (out_voltage0_hardwaregain = -89.75 dB).
+tx_atten_max_db = 89.75
+# Warn when a configured pad is smaller than this.
+min_pad_db = 30.0
+
+# ---------------------------------------------------------------------------
+# Units = physical boards, named A and B with a human label.
+#
+# Identity. The IIO context hw_serial depends on which SD card / firmware is
+# inserted: the original board reports one serial from its Tezuka P25 card and
+# another from its factory card. So the serial is only a hint (known_serials)
+# and never the identity, and the IP is never the identity either (F14).
+# fpga_dna (57-bit Zynq PL device DNA, exposed as DNA_LO/DNA_HI by the hwval
+# bitstream) is authoritative once known; `fbench units --probe` reads it via
+# the agent and warns if a unit's DNA changes.
+#
+# image: expected image — p25 | hwval | factory | unknown.
+# transceiver: AD9361 | AD9363. Software cannot tell them apart (same die and
+#   product ID), so it must come from here. Limits enforced by RF tests:
+#   AD9361 LO 70 MHz..6 GHz, RF bandwidth <= 56 MHz;
+#   AD9363 LO 325 MHz..3.8 GHz (warn outside; the Tezuka kernel patch widens
+#   the driver range but performance is unspecified), RF bandwidth <= 20 MHz.
+# Boards: OpenSDRLab variant, 20-pin JP5 header, PGA-102+ TX gain blocks
+#   ("PGA1"), FT2232HQ debug USB, EX_CLK/TX_LO/RX_LO u.FL. EX_CLK is NOT an
+#   AD9361 reference path (R109 option to FPGA K17 only).
+# DRAM on both boards: two Micron FBGA-code D9SHD = MT41K256M16TW-107
+#   (4 Gb x16 DDR3L, 1.35 V, DDR3-1866 bin) -> 1 GB x32. tAA min 13.125 ns.
+# ---------------------------------------------------------------------------
+
+[units.A]
+label = "original"
+description = "Original Fishball (AD9361). Currently on its factory SD card; the Tezuka P25 card needs diagnosis."
+known_serials = [
+    "OVHNVI2FJEBXAB4M",                     # Tezuka (serial from on-board jffs2, stable per board)
+    "104473023196000bf5ff1a00aae12c3ca8",   # factory SD card (plutosdr-fw v0.38)
+]
+# 57-bit PL device DNA, e.g. "0x1a2b3c4d5e6f701"; fill in from `units --probe` on hwval.
+fpga_dna = ""
+hw_model = "Analog Devices PlutoSDR Rev.C (Z7020-AD9361)"
+# SSH / HTTP / iiod address. USB RNDIS side.
+host = "192.168.2.1"
+usb_ip = "192.168.2.1"
+eth_ip = "10.25.0.1"
+# Unit A forwards 10.25.0.0/24 (fbench setup net sets ip_forward each boot).
+forwarder = true
+# Factory card inserted now: SSH may need `fbench setup keys --unit A --password-prompt`.
+image = "factory"
+transceiver = "AD9361"
+dram_part = "MT41K256M16TW-107 (Micron D9SHD), DDR3L 1.35 V"
+has_jp5 = true
+http_port = 8080
+iiod_port = 30431
+# Per-unit overrides of [safety]:
+tx_max_dbm = 20.0
+rx_abs_max_dbm = -10.0
+rx_linear_max_dbm = -30.0
+# PS_CLK and DRAM timing used by the sys.audit tAA check.
+ps_clk_hz = 33333333.0
+dram_taa_min_ns = 13.125
+# FT2232 DEBUG-port UART (Zynq UART1, MIO 8/9, 115200 8N1) for `fbench console`
+# and sys.boot_log. Empty = auto-detect FTDI ports (VID 0x0403).
+console_port = ""
+console_baud = 115200
+
+[units.A.uboot_env]
+ipaddr_eth = "10.25.0.1"
+netmask_eth = "255.255.255.0"
+
+[units.B]
+label = "newer"
+description = "Newer Fishball (AD9363). Not connected yet; serial unknown."
+known_serials = [
+    "2IROGKMXCZTSTL3O",                     # Tezuka (on-board jffs2 serial)
+]
+fpga_dna = ""
+# Reached through unit A over GbE (route 10.25.0.0/24 via 192.168.2.1).
+host = "10.25.0.2"
+usb_ip = "192.168.12.1"
+eth_ip = "10.25.0.2"
+via = "A"
+image = "unknown"
+transceiver = "AD9363"
+dram_part = "MT41K256M16TW-107 (Micron D9SHD), DDR3L 1.35 V"
+has_jp5 = true
+http_port = 8080
+iiod_port = 30431
+tx_max_dbm = 20.0
+rx_abs_max_dbm = -10.0
+rx_linear_max_dbm = -30.0
+ps_clk_hz = 33333333.0
+dram_taa_min_ns = 13.125
+console_port = ""
+console_baud = 115200
+
+# Persistent network settings applied by `fbench setup net --unit B --apply-env`
+# (u-boot environment, consumed by Tezuka S40network). Moves B's dead usb0 off
+# 192.168.2.x so it cannot capture replies to the PC.
+[units.B.uboot_env]
+ipaddr = "192.168.12.1"
+ipaddr_host = "192.168.12.10"
+ipaddr_eth = "10.25.0.2"
+netmask_eth = "255.255.255.0"
+gateway_eth = "10.25.0.1"
+
+# ---------------------------------------------------------------------------
+# RF. TX tests refuse (exit 4) unless cabled_confirmed = true AND a link entry
+# exists for the TX port. P_rx = tx_max_dbm - tx_atten - pad_db.
+# ---------------------------------------------------------------------------
+
+[rf]
+# Set to true only when every TX->RX path has a pad, no antenna is connected
+# and unused ports are terminated.
+cabled_confirmed = false
+# Default RF test frequency: the P25 RX LO, so an RX unit running p25-httpd
+# does not need retuning.
+test_freq_hz = 858_100_000
+p25_cc_freq_hz = 860_962_500
+p25_rx_lo_hz = 858_100_000
+# Roles used by `fbench run rf.*` when --tx/--rx are not given. Run both
+# directions (A->B and B->A) to separate transceiver from board effects.
+default_tx = "A"
+default_rx = "B"
+tx_port = "TX1A"
+# Default TX attenuation for RF tests (dB, positive = quieter).
+tx_atten_default_db = 40.0
+# P25 site clip for rf.p25_replay (.sigmf-meta, .wav or .cs16). Empty = none.
+p25_clip = ""
+# Unit whose uncorrected reference is baked into the clips (trims the replay TX LO
+# with units.*.ref_ppm), and an SDRTrunk recordings dir (per-call .mbe) for ground truth.
+p25_clip_recorder = ""
+p25_truth_dir = ""
+
+[[rf.links]]
+tx = "A.TX1A"
+rx = "B.RX1A"
+pad_db = 30.0
+note = "primary A->B link"
+
+[[rf.links]]
+tx = "B.TX1A"
+rx = "A.RX1A"
+pad_db = 30.0
+note = "reverse link"

@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "regs": {
+    "RINGV2_SIZE_BURSTS": 131072,
+    "RINGV2_LAT_MAX": 300
+  },
+  "accounting": {
+    "idle": true,
+    "words_in": 1000000,
+    "data_words_written": 1000000,
+    "drop_full": 0,
+    "drop_protect": 0,
+    "ok": true
+  },
+  "drained_idle": true
+}

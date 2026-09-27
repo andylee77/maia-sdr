@@ -1,0 +1,3645 @@
+{
+  "schema": "fbench.regmap/1",
+  "core": "hwval",
+  "base": "0x7C460000",
+  "size": 4096,
+  "id_reg": "ID",
+  "id_value": "0x68777631",
+  "version": "0.1.0",
+  "snapshot_domains": {
+    "sync": 1,
+    "mem": 2,
+    "sampling": 4
+  },
+  "blocks": [
+    {
+      "name": "id",
+      "offset": "0x000",
+      "regs": [
+        {
+          "name": "ID",
+          "offset": "0x000",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x68777631",
+          "snapshot": null,
+          "desc": "Core identification, 0x68777631 (\"hwv1\")",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Core identification, 0x68777631 (\"hwv1\")"
+            }
+          ]
+        },
+        {
+          "name": "VERSION",
+          "offset": "0x004",
+          "access": "ro",
+          "width": 24,
+          "reset": "0x100",
+          "snapshot": null,
+          "desc": "Core version, major<<16 | minor<<8 | patch",
+          "fields": [
+            {
+              "name": "patch",
+              "lsb": 0,
+              "width": 8,
+              "desc": "Patch version"
+            },
+            {
+              "name": "minor",
+              "lsb": 8,
+              "width": 8,
+              "desc": "Minor version"
+            },
+            {
+              "name": "major",
+              "lsb": 16,
+              "width": 8,
+              "desc": "Major version"
+            }
+          ]
+        },
+        {
+          "name": "FEATURES",
+          "offset": "0x008",
+          "access": "ro",
+          "width": 10,
+          "reset": "0x3FF",
+          "snapshot": null,
+          "desc": "Implemented features bitmask",
+          "fields": [
+            {
+              "name": "ringv2",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Ring buffer v2 (m_axi_ringv2)"
+            },
+            {
+              "name": "legacy",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Production-replica legacy ring (m_axi_legacy)"
+            },
+            {
+              "name": "mt0",
+              "lsb": 2,
+              "width": 1,
+              "desc": "AXI memory tester mt0 (m_axi_mt0, HP0)"
+            },
+            {
+              "name": "mt1",
+              "lsb": 3,
+              "width": 1,
+              "desc": "AXI memory tester mt1 (m_axi_mt1, HP3)"
+            },
+            {
+              "name": "census",
+              "lsb": 4,
+              "width": 1,
+              "desc": "Clock census"
+            },
+            {
+              "name": "ingest",
+              "lsb": 5,
+              "width": 1,
+              "desc": "ADC ingest monitor"
+            },
+            {
+              "name": "prbs",
+              "lsb": 6,
+              "width": 1,
+              "desc": "Per-sample PRBS checker in the ingest monitor"
+            },
+            {
+              "name": "evt",
+              "lsb": 7,
+              "width": 1,
+              "desc": "CTRL_OUT event recorder"
+            },
+            {
+              "name": "y1_clk",
+              "lsb": 8,
+              "width": 1,
+              "desc": "y1_clk (50 MHz oscillator) counted by the census"
+            },
+            {
+              "name": "dna",
+              "lsb": 9,
+              "width": 1,
+              "desc": "PL device DNA (DNA_LO / DNA_HI / DNA_STATUS)"
+            }
+          ]
+        },
+        {
+          "name": "SCRATCH",
+          "offset": "0x00C",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Scratch register (no side effects)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Scratch register (no side effects)"
+            }
+          ]
+        },
+        {
+          "name": "DNA_LO",
+          "offset": "0x010",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "PL device DNA bits 31:0 (DNA_PORT, read once after reset; valid when DNA_STATUS.valid)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "PL device DNA bits 31:0 (DNA_PORT, read once after reset; valid when DNA_STATUS.valid)"
+            }
+          ]
+        },
+        {
+          "name": "DNA_HI",
+          "offset": "0x014",
+          "access": "ro",
+          "width": 25,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "PL device DNA bits 56:32 (in bits 24:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 25,
+              "desc": "PL device DNA bits 56:32 (in bits 24:0)"
+            }
+          ]
+        },
+        {
+          "name": "DNA_STATUS",
+          "offset": "0x018",
+          "access": "ro",
+          "width": 1,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Device DNA status",
+          "fields": [
+            {
+              "name": "valid",
+              "lsb": 0,
+              "width": 1,
+              "desc": "DNA_LO / DNA_HI hold the 57-bit device DNA"
+            }
+          ]
+        },
+        {
+          "name": "CORE_RESET",
+          "offset": "0x01C",
+          "access": "rw",
+          "width": 1,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "While 1, holds all non-AXI-Lite domains (sync, clk2x, clk3x, sampling, lclk, fclk1, y1) in reset; also clears GUARD_LOCK",
+          "fields": [
+            {
+              "name": "reset",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Core reset (active high)"
+            }
+          ]
+        },
+        {
+          "name": "SNAP_REQ",
+          "offset": "0x020",
+          "access": "wo",
+          "width": 3,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Write a domain mask to request a snapshot of the status registers of those domains",
+          "fields": [
+            {
+              "name": "sync",
+              "lsb": 0,
+              "width": 1,
+              "desc": "sync domain (clk, 62.5 MHz)"
+            },
+            {
+              "name": "mem",
+              "lsb": 1,
+              "width": 1,
+              "desc": "mem domain (clk2x_clk, 125 MHz)"
+            },
+            {
+              "name": "sampling",
+              "lsb": 2,
+              "width": 1,
+              "desc": "sampling domain (sampling_clk)"
+            }
+          ]
+        },
+        {
+          "name": "SNAP_ACK",
+          "offset": "0x024",
+          "access": "ro",
+          "width": 3,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Domain mask of the snapshots completed for the last SNAP_REQ write (poll until equal to the mask; 10 ms timeout = that domain clock is dead)",
+          "fields": [
+            {
+              "name": "sync",
+              "lsb": 0,
+              "width": 1,
+              "desc": "sync domain (clk, 62.5 MHz)"
+            },
+            {
+              "name": "mem",
+              "lsb": 1,
+              "width": 1,
+              "desc": "mem domain (clk2x_clk, 125 MHz)"
+            },
+            {
+              "name": "sampling",
+              "lsb": 2,
+              "width": 1,
+              "desc": "sampling domain (sampling_clk)"
+            }
+          ]
+        },
+        {
+          "name": "SNAP_SEQ",
+          "offset": "0x028",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Number of SNAP_REQ writes since reset (wraps)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Number of SNAP_REQ writes since reset (wraps)"
+            }
+          ]
+        },
+        {
+          "name": "TS_LO",
+          "offset": "0x02C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "sync-domain free-running 64-bit timestamp, 62.5 MHz cycles (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "sync-domain free-running 64-bit timestamp, 62.5 MHz cycles (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "TS_HI",
+          "offset": "0x030",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "sync-domain free-running 64-bit timestamp (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "sync-domain free-running 64-bit timestamp (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "IRQ_PENDING",
+          "offset": "0x034",
+          "access": "ro",
+          "width": 6,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Pending interrupt sources",
+          "fields": [
+            {
+              "name": "ringv2",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Ring v2 interrupt (IRQ_EVERY / IRQ_TIMEOUT coalesced)"
+            },
+            {
+              "name": "legacy",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Legacy ring sub-buffer completed"
+            },
+            {
+              "name": "mt0",
+              "lsb": 2,
+              "width": 1,
+              "desc": "Memory tester mt0 done"
+            },
+            {
+              "name": "mt1",
+              "lsb": 3,
+              "width": 1,
+              "desc": "Memory tester mt1 done"
+            },
+            {
+              "name": "census",
+              "lsb": 4,
+              "width": 1,
+              "desc": "Clock census done"
+            },
+            {
+              "name": "evt",
+              "lsb": 5,
+              "width": 1,
+              "desc": "Event FIFO non-empty (level: follows EVT_LEVEL != 0, IRQ_CLEAR has no effect on it)"
+            }
+          ]
+        },
+        {
+          "name": "IRQ_ENABLE",
+          "offset": "0x038",
+          "access": "rw",
+          "width": 6,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Interrupt enables; interrupt_out = OR(IRQ_PENDING & IRQ_ENABLE)",
+          "fields": [
+            {
+              "name": "ringv2",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Ring v2 interrupt (IRQ_EVERY / IRQ_TIMEOUT coalesced)"
+            },
+            {
+              "name": "legacy",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Legacy ring sub-buffer completed"
+            },
+            {
+              "name": "mt0",
+              "lsb": 2,
+              "width": 1,
+              "desc": "Memory tester mt0 done"
+            },
+            {
+              "name": "mt1",
+              "lsb": 3,
+              "width": 1,
+              "desc": "Memory tester mt1 done"
+            },
+            {
+              "name": "census",
+              "lsb": 4,
+              "width": 1,
+              "desc": "Clock census done"
+            },
+            {
+              "name": "evt",
+              "lsb": 5,
+              "width": 1,
+              "desc": "Event FIFO non-empty (level: follows EVT_LEVEL != 0, IRQ_CLEAR has no effect on it)"
+            }
+          ]
+        },
+        {
+          "name": "IRQ_CLEAR",
+          "offset": "0x03C",
+          "access": "w1c",
+          "width": 6,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Write 1 to clear the corresponding IRQ_PENDING bit (reads 0)",
+          "fields": [
+            {
+              "name": "ringv2",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Ring v2 interrupt (IRQ_EVERY / IRQ_TIMEOUT coalesced)"
+            },
+            {
+              "name": "legacy",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Legacy ring sub-buffer completed"
+            },
+            {
+              "name": "mt0",
+              "lsb": 2,
+              "width": 1,
+              "desc": "Memory tester mt0 done"
+            },
+            {
+              "name": "mt1",
+              "lsb": 3,
+              "width": 1,
+              "desc": "Memory tester mt1 done"
+            },
+            {
+              "name": "census",
+              "lsb": 4,
+              "width": 1,
+              "desc": "Clock census done"
+            },
+            {
+              "name": "evt",
+              "lsb": 5,
+              "width": 1,
+              "desc": "Event FIFO non-empty (level: follows EVT_LEVEL != 0, IRQ_CLEAR has no effect on it)"
+            }
+          ]
+        },
+        {
+          "name": "IRQ_COUNT",
+          "offset": "0x040",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Number of rising edges of interrupt_out (saturates)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Number of rising edges of interrupt_out (saturates)"
+            }
+          ]
+        },
+        {
+          "name": "GUARD_LO",
+          "offset": "0x044",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x20000000",
+          "snapshot": null,
+          "desc": "Address guard low bound (inclusive) for ringv2, mt0, mt1. Writes ignored while GUARD_LOCK = 1",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Address guard low bound (inclusive) for ringv2, mt0, mt1. Writes ignored while GUARD_LOCK = 1"
+            }
+          ]
+        },
+        {
+          "name": "GUARD_HI",
+          "offset": "0x048",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x28000000",
+          "snapshot": null,
+          "desc": "Address guard high bound (exclusive) for ringv2, mt0, mt1. Writes ignored while GUARD_LOCK = 1",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Address guard high bound (exclusive) for ringv2, mt0, mt1. Writes ignored while GUARD_LOCK = 1"
+            }
+          ]
+        },
+        {
+          "name": "GUARD_LOCK",
+          "offset": "0x04C",
+          "access": "rw",
+          "width": 1,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Set once: after writing 1 the guard registers and this bit are read-only until CORE_RESET",
+          "fields": [
+            {
+              "name": "lock",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Guard lock"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "census",
+      "offset": "0x100",
+      "regs": [
+        {
+          "name": "CENSUS_CTRL",
+          "offset": "0x100",
+          "access": "wo",
+          "width": 1,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Census command",
+          "fields": [
+            {
+              "name": "start",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Start a measurement gate"
+            }
+          ]
+        },
+        {
+          "name": "CENSUS_GATE",
+          "offset": "0x104",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x5F5E100",
+          "snapshot": null,
+          "desc": "Gate length in s_axi_lite (100 MHz) cycles",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Gate length in s_axi_lite (100 MHz) cycles"
+            }
+          ]
+        },
+        {
+          "name": "CENSUS_STATUS",
+          "offset": "0x108",
+          "access": "ro",
+          "width": 2,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Census status",
+          "fields": [
+            {
+              "name": "busy",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Measurement in progress"
+            },
+            {
+              "name": "done",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Counts valid"
+            }
+          ]
+        },
+        {
+          "name": "CENSUS_GATE_ACTUAL",
+          "offset": "0x10C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Actual gate length in s_axi_lite cycles; f = count / GATE_ACTUAL x 100 MHz",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Actual gate length in s_axi_lite cycles; f = count / GATE_ACTUAL x 100 MHz"
+            }
+          ]
+        },
+        {
+          "name": "CENSUS_SYNC",
+          "offset": "0x110",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Rising edges of clk (clk_out1, nominal 62.5 MHz) during the gate",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Rising edges of clk (clk_out1, nominal 62.5 MHz) during the gate"
+            }
+          ]
+        },
+        {
+          "name": "CENSUS_MEM",
+          "offset": "0x114",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Rising edges of clk2x_clk (clk_out2, nominal 125 MHz) during the gate",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Rising edges of clk2x_clk (clk_out2, nominal 125 MHz) during the gate"
+            }
+          ]
+        },
+        {
+          "name": "CENSUS_CLK3X",
+          "offset": "0x118",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Rising edges of clk3x_clk (clk_out3, nominal 187.5 MHz) during the gate",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Rising edges of clk3x_clk (clk_out3, nominal 187.5 MHz) during the gate"
+            }
+          ]
+        },
+        {
+          "name": "CENSUS_SAMPLING",
+          "offset": "0x11C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Rising edges of sampling_clk (util_ad9361_divclk/clk_out) during the gate",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Rising edges of sampling_clk (util_ad9361_divclk/clk_out) during the gate"
+            }
+          ]
+        },
+        {
+          "name": "CENSUS_LCLK",
+          "offset": "0x120",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Rising edges of lclk_clk (axi_ad9361 l_clk) during the gate",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Rising edges of lclk_clk (axi_ad9361 l_clk) during the gate"
+            }
+          ]
+        },
+        {
+          "name": "CENSUS_FCLK1",
+          "offset": "0x124",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Rising edges of fclk1_clk (FCLK1, nominal 200 MHz) during the gate",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Rising edges of fclk1_clk (FCLK1, nominal 200 MHz) during the gate"
+            }
+          ]
+        },
+        {
+          "name": "CENSUS_Y1",
+          "offset": "0x128",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Rising edges of y1_clk (50 MHz oscillator, pin N18) during the gate",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Rising edges of y1_clk (50 MHz oscillator, pin N18) during the gate"
+            }
+          ]
+        },
+        {
+          "name": "CENSUS_CLKOUT",
+          "offset": "0x12C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Rising edges of the AD9361 CLK_OUT (ad_clkout, pin R16) sampled in clk3x during the gate",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Rising edges of the AD9361 CLK_OUT (ad_clkout, pin R16) sampled in clk3x during the gate"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ingest",
+      "offset": "0x200",
+      "regs": [
+        {
+          "name": "INGEST_CTRL",
+          "offset": "0x200",
+          "access": "rw",
+          "width": 5,
+          "reset": "0x1",
+          "snapshot": null,
+          "desc": "Ingest monitor control (quasi-static, sampling domain)",
+          "fields": [
+            {
+              "name": "stats_enable",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Enable statistics"
+            },
+            {
+              "name": "prbs_enable",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Enable the PRBS checker"
+            },
+            {
+              "name": "prbs_mode",
+              "lsb": 2,
+              "width": 1,
+              "desc": "0 = AD9361 BIST PRBS (pn0fn), 1 = PN9/PN11"
+            },
+            {
+              "name": "honor_valid",
+              "lsb": 3,
+              "width": 1,
+              "desc": "Honour valid_in (1) or take every sampling clock (0, production behaviour) in the monitor and the sampling->sync CDC"
+            },
+            {
+              "name": "clear_on_snap",
+              "lsb": 4,
+              "width": 1,
+              "desc": "Clear the window statistics on every sampling snapshot"
+            }
+          ]
+        },
+        {
+          "name": "INGEST_CMD",
+          "offset": "0x204",
+          "access": "wo",
+          "width": 1,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Ingest monitor command",
+          "fields": [
+            {
+              "name": "clear",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Clear all ingest counters"
+            }
+          ]
+        },
+        {
+          "name": "SAMPLES_LO",
+          "offset": "0x208",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Samples seen (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Samples seen (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "SAMPLES_HI",
+          "offset": "0x20C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Samples seen (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Samples seen (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "VALID_GAP_CYCLES",
+          "offset": "0x210",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "sampling cycles with valid_in = 0",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "sampling cycles with valid_in = 0"
+            }
+          ]
+        },
+        {
+          "name": "VALID_GAP_RUNS",
+          "offset": "0x214",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Runs of consecutive valid_in = 0 cycles",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Runs of consecutive valid_in = 0 cycles"
+            }
+          ]
+        },
+        {
+          "name": "CDC_WRERR",
+          "offset": "0x218",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "sampling->sync CDC FIFO write errors (overflows)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "sampling->sync CDC FIFO write errors (overflows)"
+            }
+          ]
+        },
+        {
+          "name": "CDC_FULL_CYCLES",
+          "offset": "0x21C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "sampling cycles with the sampling->sync CDC FIFO full (extension)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "sampling cycles with the sampling->sync CDC FIFO full (extension)"
+            }
+          ]
+        },
+        {
+          "name": "I_MIN",
+          "offset": "0x220",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Minimum I in the window (sign-extended 12-bit)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Minimum I in the window (sign-extended 12-bit)"
+            }
+          ]
+        },
+        {
+          "name": "I_MAX",
+          "offset": "0x224",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Maximum I in the window (sign-extended 12-bit)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Maximum I in the window (sign-extended 12-bit)"
+            }
+          ]
+        },
+        {
+          "name": "Q_MIN",
+          "offset": "0x228",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Minimum Q in the window (sign-extended 12-bit)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Minimum Q in the window (sign-extended 12-bit)"
+            }
+          ]
+        },
+        {
+          "name": "Q_MAX",
+          "offset": "0x22C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Maximum Q in the window (sign-extended 12-bit)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Maximum Q in the window (sign-extended 12-bit)"
+            }
+          ]
+        },
+        {
+          "name": "I_SUM_LO",
+          "offset": "0x230",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Sum of I in the window (sign-extended 48-bit) (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Sum of I in the window (sign-extended 48-bit) (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "I_SUM_HI",
+          "offset": "0x234",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Sum of I in the window (sign-extended 48-bit) (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Sum of I in the window (sign-extended 48-bit) (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "Q_SUM_LO",
+          "offset": "0x238",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Sum of Q in the window (sign-extended 48-bit) (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Sum of Q in the window (sign-extended 48-bit) (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "Q_SUM_HI",
+          "offset": "0x23C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Sum of Q in the window (sign-extended 48-bit) (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Sum of Q in the window (sign-extended 48-bit) (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "I_SUMSQ_LO",
+          "offset": "0x240",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Sum of I^2 in the window (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Sum of I^2 in the window (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "I_SUMSQ_HI",
+          "offset": "0x244",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Sum of I^2 in the window (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Sum of I^2 in the window (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "Q_SUMSQ_LO",
+          "offset": "0x248",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Sum of Q^2 in the window (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Sum of Q^2 in the window (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "Q_SUMSQ_HI",
+          "offset": "0x24C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Sum of Q^2 in the window (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Sum of Q^2 in the window (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "CLIP_COUNT",
+          "offset": "0x250",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Samples at full scale (-2048 or 2047) on I or Q",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Samples at full scale (-2048 or 2047) on I or Q"
+            }
+          ]
+        },
+        {
+          "name": "I_OR_MASK",
+          "offset": "0x254",
+          "access": "ro",
+          "width": 12,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "OR of all I samples in the window (stuck-at-0 bits)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 12,
+              "desc": "OR of all I samples in the window (stuck-at-0 bits)"
+            }
+          ]
+        },
+        {
+          "name": "I_AND_MASK",
+          "offset": "0x258",
+          "access": "ro",
+          "width": 12,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "AND of all I samples in the window (stuck-at-1 bits)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 12,
+              "desc": "AND of all I samples in the window (stuck-at-1 bits)"
+            }
+          ]
+        },
+        {
+          "name": "Q_OR_MASK",
+          "offset": "0x25C",
+          "access": "ro",
+          "width": 12,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "OR of all Q samples in the window (stuck-at-0 bits)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 12,
+              "desc": "OR of all Q samples in the window (stuck-at-0 bits)"
+            }
+          ]
+        },
+        {
+          "name": "Q_AND_MASK",
+          "offset": "0x260",
+          "access": "ro",
+          "width": 12,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "AND of all Q samples in the window (stuck-at-1 bits)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 12,
+              "desc": "AND of all Q samples in the window (stuck-at-1 bits)"
+            }
+          ]
+        },
+        {
+          "name": "WIN_SAMPLES_LO",
+          "offset": "0x264",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Samples in the statistics window (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Samples in the statistics window (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "WIN_SAMPLES_HI",
+          "offset": "0x268",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Samples in the statistics window (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Samples in the statistics window (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "PRBS_CHECKED_LO",
+          "offset": "0x26C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Samples checked by the PRBS checker (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Samples checked by the PRBS checker (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "PRBS_CHECKED_HI",
+          "offset": "0x270",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "Samples checked by the PRBS checker (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Samples checked by the PRBS checker (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "PRBS_ERRORS",
+          "offset": "0x274",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "PRBS sample errors",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "PRBS sample errors"
+            }
+          ]
+        },
+        {
+          "name": "PRBS_OOS_EVENTS",
+          "offset": "0x278",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "PRBS loss-of-sync events",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "PRBS loss-of-sync events"
+            }
+          ]
+        },
+        {
+          "name": "PRBS_STATUS",
+          "offset": "0x27C",
+          "access": "ro",
+          "width": 1,
+          "reset": "0x0",
+          "snapshot": "sampling",
+          "desc": "PRBS status",
+          "fields": [
+            {
+              "name": "in_sync",
+              "lsb": 0,
+              "width": 1,
+              "desc": "PRBS checker in sync"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "legacy",
+      "offset": "0x400",
+      "regs": [
+        {
+          "name": "LEGACY_CTRL",
+          "offset": "0x400",
+          "access": "rw",
+          "width": 3,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Legacy ring control (quasi-static, sync domain)",
+          "fields": [
+            {
+              "name": "dma_enable",
+              "lsb": 0,
+              "width": 1,
+              "desc": "DmaStreamRingWrite enable"
+            },
+            {
+              "name": "src",
+              "lsb": 1,
+              "width": 2,
+              "desc": "Source: 0 off, 1 sample ramp, 2 live rxiq"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_CMD",
+          "offset": "0x404",
+          "access": "wo",
+          "width": 1,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Legacy ring command",
+          "fields": [
+            {
+              "name": "clear",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Clear counters and generator"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_RATE_INC",
+          "offset": "0x408",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x20C49BA6",
+          "snapshot": null,
+          "desc": "Sample strobe rate = inc / 2^32 x 62.5 MHz (default 8 MSPS)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Sample strobe rate = inc / 2^32 x 62.5 MHz (default 8 MSPS)"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_BASE",
+          "offset": "0x40C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x22000000",
+          "snapshot": null,
+          "desc": "Ring base address (fixed)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Ring base address (fixed)"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_SIZE",
+          "offset": "0x410",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x1000000",
+          "snapshot": null,
+          "desc": "Ring size in bytes (NUM_BUFFERS x sub-buffer size)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Ring size in bytes (NUM_BUFFERS x sub-buffer size)"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_NUM_BUFFERS",
+          "offset": "0x414",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x10",
+          "snapshot": null,
+          "desc": "Number of sub-buffers",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Number of sub-buffers"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_LAST_BUFFER",
+          "offset": "0x418",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Last completed sub-buffer index",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Last completed sub-buffer index"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_NEXT_ADDRESS",
+          "offset": "0x41C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Next write address of the ring DMA",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Next write address of the ring DMA"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_PACKER_OVF",
+          "offset": "0x420",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "IQPacker overflow pulses while the DMA is enabled",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "IQPacker overflow pulses while the DMA is enabled"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_PACKER_OVF_DISABLED",
+          "offset": "0x424",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "IQPacker overflow pulses while the DMA is disabled",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "IQPacker overflow pulses while the DMA is disabled"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_WORDS_IN",
+          "offset": "0x428",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "64-bit words produced by the packer",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "64-bit words produced by the packer"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_WORDS_ACCEPTED",
+          "offset": "0x42C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "64-bit words accepted by the ring DMA",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "64-bit words accepted by the ring DMA"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_AW",
+          "offset": "0x430",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "AW handshakes",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "AW handshakes"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_B",
+          "offset": "0x434",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "B handshakes",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "B handshakes"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_BRESP_ERR",
+          "offset": "0x438",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "BRESP != OKAY count",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "BRESP != OKAY count"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_SUBBUF_DONE",
+          "offset": "0x43C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Completed sub-buffers",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Completed sub-buffers"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_STALL_CYCLES",
+          "offset": "0x440",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Cycles with packer data waiting on the DMA",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Cycles with packer data waiting on the DMA"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_MAX_STALL",
+          "offset": "0x444",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Longest stall in sync cycles",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Longest stall in sync cycles"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_MAX_OUTSTANDING",
+          "offset": "0x448",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Maximum un-acknowledged bursts seen",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Maximum un-acknowledged bursts seen"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_LAT_MAX",
+          "offset": "0x44C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Maximum AW-to-B write latency in sync cycles",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Maximum AW-to-B write latency in sync cycles"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_HIST_SEL",
+          "offset": "0x450",
+          "access": "rw",
+          "width": 4,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Write-latency histogram bin selected for LEGACY_HIST_VAL (log2 bins)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 4,
+              "desc": "Write-latency histogram bin selected for LEGACY_HIST_VAL (log2 bins)"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_HIST_VAL",
+          "offset": "0x454",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Count of the histogram bin selected by LEGACY_HIST_SEL (set HIST_SEL, then SNAP_REQ)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Count of the histogram bin selected by LEGACY_HIST_SEL (set HIST_SEL, then SNAP_REQ)"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_GEN_LO",
+          "offset": "0x458",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Samples produced by the source generator (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Samples produced by the source generator (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "LEGACY_GEN_HI",
+          "offset": "0x45C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Samples produced by the source generator (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Samples produced by the source generator (bits 63:32)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ringv2",
+      "offset": "0x500",
+      "regs": [
+        {
+          "name": "RINGV2_CTRL",
+          "offset": "0x500",
+          "access": "rw",
+          "width": 16,
+          "reset": "0x300",
+          "snapshot": null,
+          "desc": "Ring v2 control (sync domain)",
+          "fields": [
+            {
+              "name": "enable",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Enable (takes effect at burst boundaries; disabling drains)"
+            },
+            {
+              "name": "protect",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Protect mode (never overwrite past CONSUMER_BURSTS)"
+            },
+            {
+              "name": "header",
+              "lsb": 2,
+              "width": 1,
+              "desc": "Sub-buffer header words"
+            },
+            {
+              "name": "src",
+              "lsb": 3,
+              "width": 3,
+              "desc": "Source: 0 off, 1 ramp64, 2 tagged, 3 prbs31, 4 live rxiq"
+            },
+            {
+              "name": "irq_threshold",
+              "lsb": 8,
+              "width": 1,
+              "desc": "IRQ every RINGV2_IRQ_EVERY committed bursts"
+            },
+            {
+              "name": "irq_timer",
+              "lsb": 9,
+              "width": 1,
+              "desc": "IRQ RINGV2_IRQ_TIMEOUT cycles after the last IRQ if bursts were committed"
+            },
+            {
+              "name": "tag",
+              "lsb": 12,
+              "width": 4,
+              "desc": "Tag nibble of the tagged pattern (extension)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_CMD",
+          "offset": "0x504",
+          "access": "wo",
+          "width": 3,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Ring v2 commands",
+          "fields": [
+            {
+              "name": "soft_reset",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Soft reset (accepted when idle; bumps EPOCH)"
+            },
+            {
+              "name": "flush",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Flush the partial burst"
+            },
+            {
+              "name": "clear",
+              "lsb": 2,
+              "width": 1,
+              "desc": "Clear counters and generator"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_BASE",
+          "offset": "0x508",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x20000000",
+          "snapshot": null,
+          "desc": "Ring base address (4 KiB aligned)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Ring base address (4 KiB aligned)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_SIZE_BURSTS",
+          "offset": "0x50C",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x20000",
+          "snapshot": null,
+          "desc": "Ring size in 128-byte bursts (>= 2)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Ring size in 128-byte bursts (>= 2)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_SUBBUF_BURSTS",
+          "offset": "0x510",
+          "access": "rw",
+          "width": 16,
+          "reset": "0x2000",
+          "snapshot": null,
+          "desc": "Sub-buffer size in bursts (header period)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 16,
+              "desc": "Sub-buffer size in bursts (header period)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_IRQ_EVERY",
+          "offset": "0x514",
+          "access": "rw",
+          "width": 16,
+          "reset": "0x400",
+          "snapshot": null,
+          "desc": "IRQ every N committed bursts (with CTRL.irq_threshold)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 16,
+              "desc": "IRQ every N committed bursts (with CTRL.irq_threshold)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_IRQ_TIMEOUT",
+          "offset": "0x518",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x98968",
+          "snapshot": null,
+          "desc": "IRQ timeout in sync cycles (with CTRL.irq_timer)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "IRQ timeout in sync cycles (with CTRL.irq_timer)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_FLUSH_TIMEOUT",
+          "offset": "0x51C",
+          "access": "rw",
+          "width": 32,
+          "reset": "0xF424",
+          "snapshot": null,
+          "desc": "Idle sync cycles before a partial burst is padded and written",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Idle sync cycles before a partial burst is padded and written"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_MAX_OUTSTANDING",
+          "offset": "0x520",
+          "access": "rw",
+          "width": 4,
+          "reset": "0x8",
+          "snapshot": null,
+          "desc": "Maximum outstanding bursts (1-8)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 4,
+              "desc": "Maximum outstanding bursts (1-8)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_RATE_INC",
+          "offset": "0x524",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x10624DD3",
+          "snapshot": null,
+          "desc": "Generator word rate = inc / 2^32 x 62.5 MHz (default 4 Mword/s = 32 MB/s)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Generator word rate = inc / 2^32 x 62.5 MHz (default 4 Mword/s = 32 MB/s)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_CONSUMER_BURSTS",
+          "offset": "0x528",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Bursts consumed by the PS (protect mode); crossed coherently at any time",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bursts consumed by the PS (protect mode); crossed coherently at any time"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_COMMITTED_BURSTS",
+          "offset": "0x52C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Bursts committed (write responses received; burst k is at ring slot k mod SIZE_BURSTS, non-OKAY responses also count in RINGV2_BRESP_ERR). Monotonic, gray-code synchronized, read any time without a snapshot",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bursts committed (write responses received; burst k is at ring slot k mod SIZE_BURSTS, non-OKAY responses also count in RINGV2_BRESP_ERR). Monotonic, gray-code synchronized, read any time without a snapshot"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_STATUS",
+          "offset": "0x530",
+          "access": "ro",
+          "width": 3,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Live status",
+          "fields": [
+            {
+              "name": "idle",
+              "lsb": 0,
+              "width": 1,
+              "desc": "No burst in flight"
+            },
+            {
+              "name": "enabled",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Producer enabled"
+            },
+            {
+              "name": "fifo_empty",
+              "lsb": 2,
+              "width": 1,
+              "desc": "FIFO empty"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_ISSUED_BURSTS",
+          "offset": "0x534",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Bursts issued (AW)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bursts issued (AW)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_WORDS_IN_LO",
+          "offset": "0x538",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Words offered by the source (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Words offered by the source (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_WORDS_IN_HI",
+          "offset": "0x53C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Words offered by the source (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Words offered by the source (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_DROP_FULL",
+          "offset": "0x540",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Words dropped because the FIFO was full",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Words dropped because the FIFO was full"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_DROP_PROTECT",
+          "offset": "0x544",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Words dropped by protect mode",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Words dropped by protect mode"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_PAD_WORDS",
+          "offset": "0x548",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Pad words written by flushes",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Pad words written by flushes"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_FLUSHES",
+          "offset": "0x54C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Flushes",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Flushes"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_BRESP_ERR",
+          "offset": "0x550",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "BRESP != OKAY count",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "BRESP != OKAY count"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_FIFO_HWM",
+          "offset": "0x554",
+          "access": "ro",
+          "width": 16,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "FIFO high-water mark (words)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 16,
+              "desc": "FIFO high-water mark (words)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_MAX_OUTSTANDING_SEEN",
+          "offset": "0x558",
+          "access": "ro",
+          "width": 4,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Maximum outstanding bursts seen",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 4,
+              "desc": "Maximum outstanding bursts seen"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_LAT_MAX",
+          "offset": "0x55C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Maximum AW-to-B latency in sync cycles",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Maximum AW-to-B latency in sync cycles"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_HIST_SEL",
+          "offset": "0x560",
+          "access": "rw",
+          "width": 4,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Latency histogram bin selected for RINGV2_HIST_VAL",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 4,
+              "desc": "Latency histogram bin selected for RINGV2_HIST_VAL"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_HIST_VAL",
+          "offset": "0x564",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Count of the selected latency histogram bin",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Count of the selected latency histogram bin"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_EPOCH",
+          "offset": "0x568",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Soft-reset epoch counter",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Soft-reset epoch counter"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_HEADERS",
+          "offset": "0x56C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Sub-buffer headers written",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Sub-buffer headers written"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_GEN_LO",
+          "offset": "0x570",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Words produced by the source generator (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Words produced by the source generator (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_GEN_HI",
+          "offset": "0x574",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Words produced by the source generator (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Words produced by the source generator (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "RINGV2_GUARD_BLOCKED",
+          "offset": "0x578",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Bursts not issued because they fell outside [GUARD_LO, GUARD_HI)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bursts not issued because they fell outside [GUARD_LO, GUARD_HI)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mt0",
+      "offset": "0x600",
+      "regs": [
+        {
+          "name": "MT0_CTRL",
+          "offset": "0x600",
+          "access": "rw",
+          "width": 17,
+          "reset": "0x8802",
+          "snapshot": null,
+          "desc": "Memory tester configuration (quasi-static, mem domain)",
+          "fields": [
+            {
+              "name": "mode",
+              "lsb": 0,
+              "width": 3,
+              "desc": "0 write-only, 1 read-verify, 2 write-then-verify, 3 read-only, 4 byte-lane"
+            },
+            {
+              "name": "pattern",
+              "lsb": 3,
+              "width": 4,
+              "desc": "0 address, 1 walking-1, 2 walking-0, 3 checkerboard, 4 PRBS, 5 all-0, 6 all-1, 7 toggle"
+            },
+            {
+              "name": "burst_len",
+              "lsb": 7,
+              "width": 5,
+              "desc": "Beats per burst: 1, 2, 4, 8 or 16"
+            },
+            {
+              "name": "max_outstanding",
+              "lsb": 12,
+              "width": 4,
+              "desc": "Outstanding bursts (1-8)"
+            },
+            {
+              "name": "stop_on_error",
+              "lsb": 16,
+              "width": 1,
+              "desc": "Stop at the first error"
+            }
+          ]
+        },
+        {
+          "name": "MT0_CMD",
+          "offset": "0x604",
+          "access": "wo",
+          "width": 3,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Memory tester commands",
+          "fields": [
+            {
+              "name": "start",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Start"
+            },
+            {
+              "name": "abort",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Abort"
+            },
+            {
+              "name": "clear",
+              "lsb": 2,
+              "width": 1,
+              "desc": "Clear counters"
+            }
+          ]
+        },
+        {
+          "name": "MT0_BASE",
+          "offset": "0x608",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x24000000",
+          "snapshot": null,
+          "desc": "Test region base address",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Test region base address"
+            }
+          ]
+        },
+        {
+          "name": "MT0_SIZE",
+          "offset": "0x60C",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x2000000",
+          "snapshot": null,
+          "desc": "Test region size in bytes",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Test region size in bytes"
+            }
+          ]
+        },
+        {
+          "name": "MT0_PASSES",
+          "offset": "0x610",
+          "access": "rw",
+          "width": 16,
+          "reset": "0x1",
+          "snapshot": null,
+          "desc": "Number of passes (0 = until abort)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 16,
+              "desc": "Number of passes (0 = until abort)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_IDLE_CYCLES",
+          "offset": "0x614",
+          "access": "rw",
+          "width": 16,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Idle cycles between bursts (aggressor duty cycle)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 16,
+              "desc": "Idle cycles between bursts (aggressor duty cycle)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_SEED",
+          "offset": "0x618",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x1",
+          "snapshot": null,
+          "desc": "PRBS pattern seed",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "PRBS pattern seed"
+            }
+          ]
+        },
+        {
+          "name": "MT0_STATUS",
+          "offset": "0x61C",
+          "access": "ro",
+          "width": 3,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Live status",
+          "fields": [
+            {
+              "name": "busy",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Running"
+            },
+            {
+              "name": "done",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Finished"
+            },
+            {
+              "name": "error",
+              "lsb": 2,
+              "width": 1,
+              "desc": "Data or response error seen"
+            }
+          ]
+        },
+        {
+          "name": "MT0_PASS_COUNT",
+          "offset": "0x620",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Completed passes",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Completed passes"
+            }
+          ]
+        },
+        {
+          "name": "MT0_BYTES_WR_LO",
+          "offset": "0x624",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Bytes written (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bytes written (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_BYTES_WR_HI",
+          "offset": "0x628",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Bytes written (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bytes written (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_BYTES_RD_LO",
+          "offset": "0x62C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Bytes read (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bytes read (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_BYTES_RD_HI",
+          "offset": "0x630",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Bytes read (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bytes read (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_CYCLES_LO",
+          "offset": "0x634",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Active clk2x cycles (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Active clk2x cycles (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_CYCLES_HI",
+          "offset": "0x638",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Active clk2x cycles (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Active clk2x cycles (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_ERR_COUNT",
+          "offset": "0x63C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Data errors",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Data errors"
+            }
+          ]
+        },
+        {
+          "name": "MT0_FIRST_ERR_ADDR",
+          "offset": "0x640",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Address of the first data error",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Address of the first data error"
+            }
+          ]
+        },
+        {
+          "name": "MT0_FIRST_ERR_EXP_LO",
+          "offset": "0x644",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Expected data of the first error (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Expected data of the first error (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_FIRST_ERR_EXP_HI",
+          "offset": "0x648",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Expected data of the first error (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Expected data of the first error (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_FIRST_ERR_ACT_LO",
+          "offset": "0x64C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Actual data of the first error (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Actual data of the first error (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_FIRST_ERR_ACT_HI",
+          "offset": "0x650",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Actual data of the first error (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Actual data of the first error (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_ERR_LANES_LO",
+          "offset": "0x654",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "OR of the error bits (DQ lanes) (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "OR of the error bits (DQ lanes) (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_ERR_LANES_HI",
+          "offset": "0x658",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "OR of the error bits (DQ lanes) (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "OR of the error bits (DQ lanes) (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "MT0_BRESP_ERR",
+          "offset": "0x65C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "BRESP != OKAY count",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "BRESP != OKAY count"
+            }
+          ]
+        },
+        {
+          "name": "MT0_RRESP_ERR",
+          "offset": "0x660",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "RRESP != OKAY count",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "RRESP != OKAY count"
+            }
+          ]
+        },
+        {
+          "name": "MT0_WLAT_MAX",
+          "offset": "0x664",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Maximum write latency (AW to B) in clk2x cycles",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Maximum write latency (AW to B) in clk2x cycles"
+            }
+          ]
+        },
+        {
+          "name": "MT0_RLAT_MAX",
+          "offset": "0x668",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Maximum read latency (AR to RLAST) in clk2x cycles",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Maximum read latency (AR to RLAST) in clk2x cycles"
+            }
+          ]
+        },
+        {
+          "name": "MT0_HIST_SEL",
+          "offset": "0x66C",
+          "access": "rw",
+          "width": 5,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Latency histogram selection",
+          "fields": [
+            {
+              "name": "bin",
+              "lsb": 0,
+              "width": 4,
+              "desc": "log2 latency bin"
+            },
+            {
+              "name": "read",
+              "lsb": 4,
+              "width": 1,
+              "desc": "0 = write latency, 1 = read latency"
+            }
+          ]
+        },
+        {
+          "name": "MT0_HIST_VAL",
+          "offset": "0x670",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Count of the selected histogram bin",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Count of the selected histogram bin"
+            }
+          ]
+        },
+        {
+          "name": "MT0_GUARD_BLOCKED",
+          "offset": "0x674",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Bursts not issued because they fell outside [GUARD_LO, GUARD_HI)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bursts not issued because they fell outside [GUARD_LO, GUARD_HI)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mt1",
+      "offset": "0x700",
+      "regs": [
+        {
+          "name": "MT1_CTRL",
+          "offset": "0x700",
+          "access": "rw",
+          "width": 17,
+          "reset": "0x8802",
+          "snapshot": null,
+          "desc": "Memory tester configuration (quasi-static, mem domain)",
+          "fields": [
+            {
+              "name": "mode",
+              "lsb": 0,
+              "width": 3,
+              "desc": "0 write-only, 1 read-verify, 2 write-then-verify, 3 read-only, 4 byte-lane"
+            },
+            {
+              "name": "pattern",
+              "lsb": 3,
+              "width": 4,
+              "desc": "0 address, 1 walking-1, 2 walking-0, 3 checkerboard, 4 PRBS, 5 all-0, 6 all-1, 7 toggle"
+            },
+            {
+              "name": "burst_len",
+              "lsb": 7,
+              "width": 5,
+              "desc": "Beats per burst: 1, 2, 4, 8 or 16"
+            },
+            {
+              "name": "max_outstanding",
+              "lsb": 12,
+              "width": 4,
+              "desc": "Outstanding bursts (1-8)"
+            },
+            {
+              "name": "stop_on_error",
+              "lsb": 16,
+              "width": 1,
+              "desc": "Stop at the first error"
+            }
+          ]
+        },
+        {
+          "name": "MT1_CMD",
+          "offset": "0x704",
+          "access": "wo",
+          "width": 3,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Memory tester commands",
+          "fields": [
+            {
+              "name": "start",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Start"
+            },
+            {
+              "name": "abort",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Abort"
+            },
+            {
+              "name": "clear",
+              "lsb": 2,
+              "width": 1,
+              "desc": "Clear counters"
+            }
+          ]
+        },
+        {
+          "name": "MT1_BASE",
+          "offset": "0x708",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x26000000",
+          "snapshot": null,
+          "desc": "Test region base address",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Test region base address"
+            }
+          ]
+        },
+        {
+          "name": "MT1_SIZE",
+          "offset": "0x70C",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x2000000",
+          "snapshot": null,
+          "desc": "Test region size in bytes",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Test region size in bytes"
+            }
+          ]
+        },
+        {
+          "name": "MT1_PASSES",
+          "offset": "0x710",
+          "access": "rw",
+          "width": 16,
+          "reset": "0x1",
+          "snapshot": null,
+          "desc": "Number of passes (0 = until abort)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 16,
+              "desc": "Number of passes (0 = until abort)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_IDLE_CYCLES",
+          "offset": "0x714",
+          "access": "rw",
+          "width": 16,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Idle cycles between bursts (aggressor duty cycle)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 16,
+              "desc": "Idle cycles between bursts (aggressor duty cycle)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_SEED",
+          "offset": "0x718",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x1",
+          "snapshot": null,
+          "desc": "PRBS pattern seed",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "PRBS pattern seed"
+            }
+          ]
+        },
+        {
+          "name": "MT1_STATUS",
+          "offset": "0x71C",
+          "access": "ro",
+          "width": 3,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Live status",
+          "fields": [
+            {
+              "name": "busy",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Running"
+            },
+            {
+              "name": "done",
+              "lsb": 1,
+              "width": 1,
+              "desc": "Finished"
+            },
+            {
+              "name": "error",
+              "lsb": 2,
+              "width": 1,
+              "desc": "Data or response error seen"
+            }
+          ]
+        },
+        {
+          "name": "MT1_PASS_COUNT",
+          "offset": "0x720",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Completed passes",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Completed passes"
+            }
+          ]
+        },
+        {
+          "name": "MT1_BYTES_WR_LO",
+          "offset": "0x724",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Bytes written (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bytes written (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_BYTES_WR_HI",
+          "offset": "0x728",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Bytes written (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bytes written (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_BYTES_RD_LO",
+          "offset": "0x72C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Bytes read (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bytes read (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_BYTES_RD_HI",
+          "offset": "0x730",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Bytes read (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bytes read (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_CYCLES_LO",
+          "offset": "0x734",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Active clk2x cycles (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Active clk2x cycles (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_CYCLES_HI",
+          "offset": "0x738",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Active clk2x cycles (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Active clk2x cycles (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_ERR_COUNT",
+          "offset": "0x73C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Data errors",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Data errors"
+            }
+          ]
+        },
+        {
+          "name": "MT1_FIRST_ERR_ADDR",
+          "offset": "0x740",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Address of the first data error",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Address of the first data error"
+            }
+          ]
+        },
+        {
+          "name": "MT1_FIRST_ERR_EXP_LO",
+          "offset": "0x744",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Expected data of the first error (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Expected data of the first error (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_FIRST_ERR_EXP_HI",
+          "offset": "0x748",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Expected data of the first error (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Expected data of the first error (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_FIRST_ERR_ACT_LO",
+          "offset": "0x74C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Actual data of the first error (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Actual data of the first error (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_FIRST_ERR_ACT_HI",
+          "offset": "0x750",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Actual data of the first error (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Actual data of the first error (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_ERR_LANES_LO",
+          "offset": "0x754",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "OR of the error bits (DQ lanes) (bits 31:0)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "OR of the error bits (DQ lanes) (bits 31:0)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_ERR_LANES_HI",
+          "offset": "0x758",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "OR of the error bits (DQ lanes) (bits 63:32)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "OR of the error bits (DQ lanes) (bits 63:32)"
+            }
+          ]
+        },
+        {
+          "name": "MT1_BRESP_ERR",
+          "offset": "0x75C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "BRESP != OKAY count",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "BRESP != OKAY count"
+            }
+          ]
+        },
+        {
+          "name": "MT1_RRESP_ERR",
+          "offset": "0x760",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "RRESP != OKAY count",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "RRESP != OKAY count"
+            }
+          ]
+        },
+        {
+          "name": "MT1_WLAT_MAX",
+          "offset": "0x764",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Maximum write latency (AW to B) in clk2x cycles",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Maximum write latency (AW to B) in clk2x cycles"
+            }
+          ]
+        },
+        {
+          "name": "MT1_RLAT_MAX",
+          "offset": "0x768",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Maximum read latency (AR to RLAST) in clk2x cycles",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Maximum read latency (AR to RLAST) in clk2x cycles"
+            }
+          ]
+        },
+        {
+          "name": "MT1_HIST_SEL",
+          "offset": "0x76C",
+          "access": "rw",
+          "width": 5,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Latency histogram selection",
+          "fields": [
+            {
+              "name": "bin",
+              "lsb": 0,
+              "width": 4,
+              "desc": "log2 latency bin"
+            },
+            {
+              "name": "read",
+              "lsb": 4,
+              "width": 1,
+              "desc": "0 = write latency, 1 = read latency"
+            }
+          ]
+        },
+        {
+          "name": "MT1_HIST_VAL",
+          "offset": "0x770",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Count of the selected histogram bin",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Count of the selected histogram bin"
+            }
+          ]
+        },
+        {
+          "name": "MT1_GUARD_BLOCKED",
+          "offset": "0x774",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "mem",
+          "desc": "Bursts not issued because they fell outside [GUARD_LO, GUARD_HI)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Bursts not issued because they fell outside [GUARD_LO, GUARD_HI)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "evt",
+      "offset": "0x800",
+      "regs": [
+        {
+          "name": "EVT_CTRL",
+          "offset": "0x800",
+          "access": "rw",
+          "width": 16,
+          "reset": "0xFF00",
+          "snapshot": null,
+          "desc": "Event recorder control (quasi-static, sync domain)",
+          "fields": [
+            {
+              "name": "enable",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Record CTRL_OUT transitions"
+            },
+            {
+              "name": "mask",
+              "lsb": 8,
+              "width": 8,
+              "desc": "CTRL_OUT bits that generate events"
+            }
+          ]
+        },
+        {
+          "name": "EVT_LEVEL",
+          "offset": "0x804",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Event FIFO level",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Event FIFO level"
+            }
+          ]
+        },
+        {
+          "name": "EVT_DATA_LO",
+          "offset": "0x808",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "FIFO head, bits 31:0 of the 36-bit record (read before EVT_POP)",
+          "fields": [
+            {
+              "name": "timestamp",
+              "lsb": 0,
+              "width": 27,
+              "desc": "Timestamp in 62.5 MHz cycles (low 27 bits)"
+            },
+            {
+              "name": "value_lo",
+              "lsb": 27,
+              "width": 5,
+              "desc": "CTRL_OUT value bits 4:0"
+            }
+          ]
+        },
+        {
+          "name": "EVT_DATA_HI",
+          "offset": "0x80C",
+          "access": "ro",
+          "width": 4,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "FIFO head, bits 35:32 of the 36-bit record",
+          "fields": [
+            {
+              "name": "value_hi",
+              "lsb": 0,
+              "width": 3,
+              "desc": "CTRL_OUT value bits 7:5"
+            },
+            {
+              "name": "heartbeat",
+              "lsb": 3,
+              "width": 1,
+              "desc": "Heartbeat record (every 2^26 cycles)"
+            }
+          ]
+        },
+        {
+          "name": "EVT_POP",
+          "offset": "0x810",
+          "access": "wo",
+          "width": 1,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Pop the FIFO head",
+          "fields": [
+            {
+              "name": "pop",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Pop"
+            }
+          ]
+        },
+        {
+          "name": "EVT_OVERFLOWS",
+          "offset": "0x814",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": "sync",
+          "desc": "Events lost because the FIFO was full",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 32,
+              "desc": "Events lost because the FIFO was full"
+            }
+          ]
+        },
+        {
+          "name": "EVT_CURRENT",
+          "offset": "0x818",
+          "access": "ro",
+          "width": 8,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Live CTRL_OUT value (synchronized)",
+          "fields": [
+            {
+              "name": "value",
+              "lsb": 0,
+              "width": 8,
+              "desc": "Live CTRL_OUT value (synchronized)"
+            }
+          ]
+        },
+        {
+          "name": "EVT_CMD",
+          "offset": "0x81C",
+          "access": "wo",
+          "width": 1,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "Event recorder command (extension)",
+          "fields": [
+            {
+              "name": "clear",
+              "lsb": 0,
+              "width": 1,
+              "desc": "Clear EVT_OVERFLOWS"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
