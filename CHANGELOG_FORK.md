@@ -5,6 +5,34 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-27] RX gain survives a restart; talker vs grant unit in the call list; no countdown bar (060)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-27-gain-persist-060`
+**Bake required:** NO (p25-httpd only).
+
+- **RX gain is persisted.** A successful `/api/rx_gain` change (the Radio view's AGC switch
+  and gain selector) is saved in the UI settings (`radio.gain_mode`, `radio.manual_gain_db`)
+  and applied at startup after `--hardwaregain`.
+  - On the site antenna, the boot default (manual 60 dB) put the control channel at about 65
+    at the LSM input, below core 0.2.0's no-signal gate (256): 71 % TSBK decode with the
+    PLL frozen.
+  - `slow_attack` (73 dB) gave 83 %.
+  - Before this change, the operator's AGC choice was lost at every restart.
+- **Call list and "Now on air":** a unit that differs from the talker is now labelled
+  "grant N" instead of "also N".
+  - The talker is the unit the voice's link control names; the grant's unit is the first
+    one seen.
+  - On this site a dispatch console (1011–1014) often talks on a grant issued to another
+    unit. That is one talker, which "also" presented as two.
+  - "also" now lists only further talkers.
+- **The hang-time countdown bar under "Now on air" is removed.** The "Closes in" figure
+  stays.
+
+Tests: p25-httpd 240 passed. On A: the AGC setting survived a p25-httpd restart.
+
+---
+
 ## [2026-09-27] Retire the pre-056 dashboard (`/legacy`)
 
 **Branch:** fishball-p25

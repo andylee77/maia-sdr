@@ -43,7 +43,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-27-signal-hold-preempt-059";
+pub const BUILD_TAG: &str = "2026-09-27-gain-persist-060";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -782,6 +782,25 @@ async fn main() -> anyhow::Result<()> {
             boot_preset.rf_bandwidth_hz,
             args.hardwaregain,
         );
+        // The gain last set through /api/rx_gain (Radio view), persisted
+        // in the UI settings, replaces the CLI default: manual dB first,
+        // then the mode (the AD9361 ignores gain writes in AGC modes).
+        let radio = &boot_settings.radio;
+        if let Some(db) = radio.manual_gain_db {
+            ad9361.set_rx_gain(db as f64).await?;
+        }
+        if let Some(mode) = radio.gain_mode.as_deref()
+            .and_then(|m| m.parse::<iio::GainMode>().ok())
+        {
+            ad9361.set_rx_gain_mode(mode).await?;
+        }
+        if radio.gain_mode.is_some() || radio.manual_gain_db.is_some() {
+            tracing::info!(
+                "AD9361 gain from saved settings: mode={} manual={} dB",
+                radio.gain_mode.as_deref().unwrap_or("manual"),
+                radio.manual_gain_db.map_or(args.hardwaregain, f64::from),
+            );
+        }
 
         // Configure control DDC (FIR + decimation + NCO). lo_ppm
         // crystal calibration folds into the NCO — see Args::lo_ppm.

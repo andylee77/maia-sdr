@@ -8,10 +8,9 @@
 // Change 057: `close_via` says which close is pending — "end" (the end
 // of the transmission was decoded; closes after the end grace, CC
 // updates do not extend it) or "timeout" (no keep-alive for hang_ms).
-// `close_window_ms` is that rule's length, for the countdown bar.
 
 import { h, setText, card } from '../dom.js';
-import { mhz, dur, ago, tgLabel, unitLabel } from '../format.js';
+import { mhz, dur, ago, tgLabel, unitLabel, otherUnitsText } from '../format.js';
 import { boardNow } from '../store.js';
 import { metric } from './kv_table.js';
 
@@ -38,9 +37,7 @@ export function callCard() {
   const alias = h('div', { class: 'call-alias' });
   const src = h('div', { class: 'call-src' });
   const m = { freq: metric('Frequency'), elapsed: metric('Elapsed'), voice: metric('Voice'), close: metric('Closes in') };
-  const bar = h('i');
-  const meter = h('div', { class: 'meter', title: 'Hang time left before the call closes' }, bar);
-  const active = h('div', null, tg, alias, src, h('div', { class: 'call-facts' }, Object.values(m).map(x => x.el)), meter);
+  const active = h('div', null, tg, alias, src, h('div', { class: 'call-facts' }, Object.values(m).map(x => x.el)));
   const idleTitle = h('div', { class: 'big', text: 'No active call' });
   const idleText = h('div');
   const idle = h('div', { class: 'call-idle' }, idleTitle, idleText);
@@ -73,18 +70,13 @@ export function callCard() {
 
     setText(tg, call.tg_alias ? call.tg_alias : 'TG ' + call.tg);
     setText(alias, call.tg_alias ? 'TG ' + call.tg : '');
-    const others = (call.sources || []).filter(s => s !== call.source);
-    setText(src, 'From ' + unitLabel(call.source, call.source_alias) + (others.length ? ' · also ' + others.join(', ') : ''));
+    const others = otherUnitsText(call);
+    setText(src, 'From ' + unitLabel(call.source, call.source_alias) + (others ? ' · ' + others : ''));
     m.freq.set(mhz(call.freq_hz) + (call.channel ? ' · ch ' + call.channel : ''));
     m.elapsed.set(dur(call.elapsed_ms + dt));
     m.voice.set(call.voice_ms ? dur(call.voice_ms) : 'none yet');
     const closeIn = Math.max(0, call.close_in_ms - dt);
-    const windowMs = call.close_window_ms || closeIn || 1;
     m.close.set(ph === 'hang' ? dur(closeIn) : '—');
-    meter.hidden = ph !== 'hang';
-    meter.title = ended ? 'Transmission ended; the call closes when this runs out unless voice resumes'
-      : 'Time left before the call closes for lack of activity';
-    bar.style.width = Math.min(100, 100 * closeIn / windowMs).toFixed(1) + '%';
   }
 
   function renderIdle() {

@@ -91,6 +91,24 @@ export function unitLabel(id, alias) {
   return alias ? alias + ' (' + id + ')' : String(id);
 }
 
+// `sources` lists every unit seen on the call in order, the grant's unit
+// first. `source` is the talker the voice's link control names. On this
+// site a dispatch console (1011-1014) often talks on a grant issued to
+// another unit: that is one talker, so the grant's unit is labelled as
+// such, and only further talkers read "also".
+export function otherUnits(call) {
+  const src = call.sources || [];
+  const grant = src.length && src[0] !== call.source ? src[0] : null;
+  const also = src.slice(1).filter(s => s !== call.source && s !== grant);
+  return { grant, also };
+}
+
+export function otherUnitsText(call) {
+  const { grant, also } = otherUnits(call);
+  return [grant ? 'grant ' + grant : '', also.length ? 'also ' + also.join(', ') : '']
+    .filter(Boolean).join(' · ');
+}
+
 // Q2.13 PLL register -> Hz at 4800 sym/s.
 export function pllHz(q213) {
   if (q213 === null || q213 === undefined) return DASH;

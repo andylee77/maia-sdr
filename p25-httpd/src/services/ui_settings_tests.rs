@@ -224,3 +224,32 @@ fn skipped_ids_are_bounded() {
     assert!(!p.was_skipped(0), "oldest evicted");
     assert!(p.was_skipped(SKIPPED_IDS_KEEP as u64 + 9));
 }
+
+// RX gain set from the Radio view survives a restart (bench 2026-09-27:
+// the boot default, manual 60 dB, starved core 0.2.0 on the site antenna).
+#[test]
+fn radio_gain_is_validated_persisted_and_reloaded() {
+    assert_eq!(UiSettings::default().radio, RadioSettings::default());
+    let base = UiSettings::default();
+    assert!(apply_patch(&base, patch(r#"{"radio":{"gain_mode":"auto"}}"#)).is_err());
+    assert!(apply_patch(&base, patch(r#"{"radio":{"manual_gain_db":77}}"#)).is_err());
+    assert!(apply_patch(&base, patch(r#"{"radio":{"manual_gain_db":-4}}"#)).is_err());
+    let (s, ch) = apply_patch(&base, patch(r#"{"radio":{"gain_mode":"slow_attack"}}"#)).unwrap();
+    assert!(ch.radio && ch.any());
+    assert_eq!(s.radio.gain_mode.as_deref(), Some("slow_attack"));
+    assert_eq!(s.radio.manual_gain_db, None);
+
+    let path = tmp_file("radio");
+    let store = SettingsStore::load(Some(path.clone()));
+    let out = store
+        .update(patch(r#"{"radio":{"gain_mode":"manual","manual_gain_db":66}}"#))
+        .unwrap();
+    assert!(out.persisted && out.changed.radio);
+    let again = SettingsStore::load(Some(path)).snapshot();
+    assert_eq!(again.radio.gain_mode.as_deref(), Some("manual"));
+    assert_eq!(again.radio.manual_gain_db, Some(66));
+
+    // A hand-edited bad value is dropped, not fatal.
+    let s = parse_settings(br#"{"radio":{"gain_mode":"turbo","manual_gain_db":200}}"#).unwrap();
+    assert_eq!(s.radio, RadioSettings::default());
+}

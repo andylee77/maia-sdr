@@ -743,6 +743,9 @@ pub async fn get_rx_gain(
         let mut updated_from: Option<i64> = None;
         let mut mode_from: Option<String> = None;
         let mut error: Option<String> = None;
+        // What was applied, for the persisted `radio` settings.
+        let mut mode_set: Option<String> = None;
+        let mut db_set: Option<i32> = None;
 
         // Mode first so a combined "switch to manual + set gain" call
         // works in one request. Writes to hardwaregain in an AGC mode
@@ -755,6 +758,7 @@ pub async fn get_rx_gain(
                     match state.ad9361.set_rx_gain_mode(new_mode).await {
                         Ok(()) => {
                             mode_from = prev.clone();
+                            mode_set = Some(new_mode.to_string());
                             state.event_log.push(
                                 crate::services::event_log::LogCategory::System,
                                 format!("gain_control_mode set to {new_mode}"),
@@ -782,6 +786,7 @@ pub async fn get_rx_gain(
                         match state.ad9361.set_rx_gain(db as f64).await {
                             Ok(()) => {
                                 updated_from = prev;
+                                db_set = Some(db as i32);
                                 state.event_log.push(
                                     crate::services::event_log::LogCategory::System,
                                     format!("rx_gain set to {db} dB"),
@@ -805,12 +810,31 @@ pub async fn get_rx_gain(
             .map(|m| m.to_string());
         let rssi: Option<f64> = state.ad9361.get_rx_rssi().await.ok();
 
+        // Remember a successful change for the next start (UI settings
+        // `radio`, applied after `--hardwaregain` at boot).
+        let mut persisted = None;
+        if mode_set.is_some() || db_set.is_some() {
+            let patch = crate::services::ui_settings::SettingsPatch {
+                radio: Some(crate::services::ui_settings::RadioPatch {
+                    gain_mode: mode_set,
+                    manual_gain_db: db_set,
+                }),
+                ..Default::default()
+            };
+            persisted = Some(
+                crate::httpd::api::ui::apply_settings_patch(&state, patch, "api_rx_gain")
+                    .await
+                    .is_ok(),
+            );
+        }
+
         Json(serde_json::json!({
             "gain_db":       gain,
             "mode":          mode,
             "rssi_db":       rssi,
             "updated_from":  updated_from,
             "mode_from":     mode_from,
+            "persisted":     persisted,
             "error":         error,
             "range_db":      [-3, 76],
             "valid_modes":   ["manual", "slow_attack", "fast_attack", "hybrid"],

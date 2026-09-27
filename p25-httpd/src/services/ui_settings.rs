@@ -151,6 +151,26 @@ impl Default for CallSettings {
     }
 }
 
+/// AD9361 gain control modes accepted by `/api/rx_gain`.
+pub const GAIN_MODES: [&str; 4] = ["manual", "slow_attack", "fast_attack", "hybrid"];
+/// AD9361 manual RX gain range in dB (`/api/rx_gain?db=`).
+pub const GAIN_DB_MIN: i32 = -3;
+pub const GAIN_DB_MAX: i32 = 76;
+
+/// RX gain as last set through `/api/rx_gain` (the Radio view's AGC
+/// switch and gain selector), applied at startup after the
+/// `--hardwaregain` default. `None` = never set: the CLI default stands.
+/// Bench 2026-09-27 on the site antenna: the boot default, manual 60 dB,
+/// left the control channel at about 65 at the LSM input, below core
+/// 0.2.0's no-signal gate (256), while `slow_attack` (73 dB) gave 83 %
+/// TSBK decode. The operator's choice now survives a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RadioSettings {
+    pub gain_mode: Option<String>,
+    pub manual_gain_db: Option<i32>,
+}
+
 /// The persisted document.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -158,6 +178,8 @@ pub struct UiSettings {
     pub recording: RecordingSettings,
     /// Change 057.
     pub call: CallSettings,
+    /// RX gain (see [`RadioSettings`]).
+    pub radio: RadioSettings,
     /// Talkgroup id -> display name.
     pub tg_aliases: BTreeMap<u16, String>,
     /// Radio unit id (source) -> display name.
@@ -174,6 +196,7 @@ pub struct UiSettings {
 pub struct SettingsPatch {
     pub recording: Option<RecordingPatch>,
     pub call: Option<CallPatch>,
+    pub radio: Option<RadioPatch>,
     pub tg_aliases: Option<BTreeMap<u16, String>>,
     pub unit_aliases: Option<BTreeMap<u32, String>>,
     pub monitor_tgs: Option<Vec<u16>>,
@@ -196,12 +219,20 @@ pub struct CallPatch {
     pub end_grace_ms: Option<u64>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RadioPatch {
+    pub gain_mode: Option<String>,
+    pub manual_gain_db: Option<i32>,
+}
+
 /// What a patch touched, so the caller only re-applies the live state
 /// that changed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Changed {
     pub recording: bool,
     pub call: bool,
+    pub radio: bool,
     pub tg_aliases: bool,
     pub unit_aliases: bool,
     pub monitor_tgs: bool,
@@ -209,7 +240,8 @@ pub struct Changed {
 
 impl Changed {
     pub fn any(&self) -> bool {
-        self.recording || self.call || self.tg_aliases || self.unit_aliases || self.monitor_tgs
+        self.recording || self.call || self.radio || self.tg_aliases || self.unit_aliases
+            || self.monitor_tgs
     }
 }
 
@@ -278,6 +310,19 @@ pub fn apply_patch(
         }
         changed.call = out.call != base.call;
     }
+    if let Some(r) = patch.radio {
+        if let Some(m) = r.gain_mode {
+            if !GAIN_MODES.contains(&m.as_str()) {
+                return Err(format!("radio.gain_mode {m:?}: expected {}", GAIN_MODES.join("|")));
+            }
+            out.radio.gain_mode = Some(m);
+        }
+        if let Some(db) = r.manual_gain_db {
+            out.radio.manual_gain_db =
+                Some(check_range("radio.manual_gain_db", db, GAIN_DB_MIN, GAIN_DB_MAX)?);
+        }
+        changed.radio = out.radio != base.radio;
+    }
     if let Some(m) = patch.tg_aliases {
         if m.len() > MAX_ENTRIES {
             return Err(format!("tg_aliases: {} entries (max {MAX_ENTRIES})", m.len()));
@@ -323,6 +368,12 @@ pub fn parse_settings(body: &[u8]) -> Result<UiSettings, String> {
     s.recording.sd_max_mb = s.recording.sd_max_mb.clamp(SD_MAX_MB_MIN, SD_MAX_MB_LIMIT);
     s.call.hang_ms = s.call.hang_ms.clamp(HANG_MS_MIN, HANG_MS_MAX);
     s.call.end_grace_ms = s.call.end_grace_ms.min(END_GRACE_MS_MAX);
+    if s.radio.gain_mode.as_deref().is_some_and(|m| !GAIN_MODES.contains(&m)) {
+        s.radio.gain_mode = None;
+    }
+    if s.radio.manual_gain_db.is_some_and(|db| !(GAIN_DB_MIN..=GAIN_DB_MAX).contains(&db)) {
+        s.radio.manual_gain_db = None;
+    }
     s.tg_aliases = clean_aliases(&s.tg_aliases);
     s.tg_aliases.remove(&0);
     s.unit_aliases = clean_aliases(&s.unit_aliases);

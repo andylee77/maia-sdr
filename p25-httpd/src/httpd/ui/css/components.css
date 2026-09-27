@@ -107,8 +107,6 @@ label.field { display: grid; gap: 4px; font-size: 0.84em; color: var(--text-dim)
 .call-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 14px; }
 .call-idle { color: var(--text-dim); padding: 6px 0 2px; }
 .call-idle .big { font-size: 1.35em; color: var(--text); font-weight: 600; margin-bottom: 4px; }
-.meter { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin-top: 12px; }
-.meter > i { display: block; height: 100%; width: 0; background: var(--hang); transition: width 0.4s linear; }
 
 /* ── Recent calls ─────────────────────────────────────────── */
 .calls { display: grid; }
