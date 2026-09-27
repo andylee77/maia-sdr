@@ -1583,6 +1583,8 @@ pub fn spawn_grant_follower(
     follower_enabled: Arc<AtomicBool>,
     follower_imbe: Arc<ImbeForwarder>,
     follower_monitor: Arc<RwLock<MonitorList>>,
+    // Change 063: talkgroup groups -> speakers, priority pre-emption.
+    follower_routing: Arc<crate::services::ui_settings::RoutingPolicy>,
     follower_event_log: Arc<EventLog>,
     follower_traffic_decoder: Arc<RwLock<ControlChannelDecoder>>,
     mut grant_event_rx: Receiver<p25::events::P25Event>,
@@ -2046,6 +2048,26 @@ pub fn spawn_grant_follower(
                                     continue;
                                 }
 
+                                // Change 063: speaker groups. A talkgroup
+                                // whose group is on neither speaker, or an
+                                // ungrouped one with "other talkgroups"
+                                // off, is not followed.
+                                if follower_routing.route(g.talkgroup.0).is_none() {
+                                    follower_event_log.push(
+                                        LogCategory::Traffic,
+                                        format!(
+                                            "reject: TG={} not on a speaker",
+                                            g.talkgroup.0,
+                                        ),
+                                        serde_json::json!({
+                                            "tg":     g.talkgroup.0,
+                                            "reason": "speaker_off",
+                                        }),
+                                    );
+                                    send_cc_boundary(&g, Some("speaker_off"));
+                                    continue;
+                                }
+
                                 let mut mgr = follower_mgr.lock().await;
                                 let locked_tg = mgr.current_talkgroup();
                                 let locked_ch = mgr.current_channel();
@@ -2291,27 +2313,43 @@ pub fn spawn_grant_follower(
                                 // `END_PREEMPT_AFTER_MS`): the other TG's
                                 // grant takes the chain now instead of
                                 // after the lifecycle's `end_grace_ms`.
+                                // Change 063: or the grant's group ranks
+                                // above the locked call's (speaker groups,
+                                // pre-emption on): it takes the chain now.
                                 let end_marker = super::unpack_end_marker(
                                     follower_imbe.active_end_marker.load(Ordering::Relaxed));
-                                if let Some(tg) = locked_tg_final.filter(|t| {
-                                    t.0 != g.talkgroup.0
-                                        && super::end_marker_frees_chain(
+                                let preempt = locked_tg_final
+                                    .filter(|t| t.0 != g.talkgroup.0)
+                                    .and_then(|t| {
+                                        if super::end_marker_frees_chain(
                                             t.0, end_marker, now_unix_ms())
-                                }) {
+                                        {
+                                            Some((t, "end_marker_preempt"))
+                                        } else if follower_routing.preempts(g.talkgroup.0, t.0) {
+                                            Some((t, "priority_preempt"))
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                if let Some((tg, reason)) = preempt {
                                     let ended_ms = end_marker
                                         .map_or(0, |(_, at)| now_unix_ms().saturating_sub(at));
+                                    let why = if reason == "priority_preempt" {
+                                        "higher-priority group".to_string()
+                                    } else {
+                                        format!("ended {ended_ms} ms ago (end marker)")
+                                    };
                                     follower_event_log.push(
                                         LogCategory::Traffic,
                                         format!(
-                                            "pre-empt: TG={} ended {} ms ago (end marker), \
-                                             follow TG={}",
-                                            tg.0, ended_ms, g.talkgroup.0,
+                                            "pre-empt: TG={} {}, follow TG={}",
+                                            tg.0, why, g.talkgroup.0,
                                         ),
                                         serde_json::json!({
                                             "prev_tg":  tg.0,
                                             "new_tg":   g.talkgroup.0,
                                             "ended_ms": ended_ms,
-                                            "reason":   "end_marker_preempt",
+                                            "reason":   reason,
                                         }),
                                     );
                                     mgr.force_idle();

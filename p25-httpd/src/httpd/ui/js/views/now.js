@@ -3,10 +3,11 @@
 
 import { h, setText, card, switchInput, toast } from '../dom.js';
 import { api } from '../api.js';
-import { kick, refreshCalls } from '../store.js';
+import { kick, refreshCalls, store as store_ } from '../store.js';
 import { siteCard } from '../components/site_card.js';
 import { callCard } from '../components/call_card.js';
 import { callsList } from '../components/calls_list.js';
+import { speakersPanel } from '../components/speakers_panel.js';
 
 function recorderCard() {
   const c = card('Recording');
@@ -54,19 +55,22 @@ export function mount(host) {
   const site = siteCard();
   const rec = recorderCard();
   const calls = callsList();
+  const speakers = speakersPanel();
   call.el.classList.add('now-call');
   calls.el.classList.add('now-calls');
   host.append(
     h('div', { class: 'now-layout' },
       call.el,
-      h('div', { class: 'stack now-side' }, site.el, rec.el),
+      h('div', { class: 'stack now-side' }, speakers.el, site.el, rec.el),
       calls.el),
   );
   refreshCalls();
+  if (store_.settings) speakers.update('settings', store_);
   return {
     update(kind, store) {
       call.update(kind, store);
       calls.update(kind, store);
+      speakers.update(kind, store);
       if (kind === 'state' && store.state) {
         site.update(store.state);
         rec.update(store.state);

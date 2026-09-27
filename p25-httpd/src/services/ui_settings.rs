@@ -171,6 +171,49 @@ pub struct RadioSettings {
     pub manual_gain_db: Option<i32>,
 }
 
+/// Change 063: talkgroup groups (e.g. "Primary" = 300, "TAC" = 301-310).
+/// The order of the list is the priority order (first = highest).
+pub const MAX_GROUPS: usize = 32;
+pub const GROUP_NAME_CHARS: usize = 32;
+pub const MAX_GROUP_TGS: usize = 2000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TgGroup {
+    pub name: String,
+    pub tgs: Vec<u16>,
+}
+
+/// Change 063: speaker side of a group, or of the ungrouped talkgroups.
+/// `Off` = not followed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    #[default]
+    Both,
+    Left,
+    Right,
+    Off,
+}
+
+/// Change 063: which groups play on which speaker (by name). A group on
+/// neither side is not followed; `other` covers talkgroups in no group.
+/// `preempt`: a grant of a higher-priority group takes the traffic
+/// chain from a call of a lower one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Speakers {
+    pub left: Vec<String>,
+    pub right: Vec<String>,
+    pub other: Side,
+    pub preempt: bool,
+}
+
+impl Default for Speakers {
+    fn default() -> Self {
+        Speakers { left: Vec::new(), right: Vec::new(), other: Side::Both, preempt: true }
+    }
+}
+
 /// The persisted document.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -180,6 +223,10 @@ pub struct UiSettings {
     pub call: CallSettings,
     /// RX gain (see [`RadioSettings`]).
     pub radio: RadioSettings,
+    /// Change 063: talkgroup groups, in priority order.
+    pub tg_groups: Vec<TgGroup>,
+    /// Change 063: group -> speaker routing and priority pre-emption.
+    pub speakers: Speakers,
     /// Talkgroup id -> display name.
     pub tg_aliases: BTreeMap<u16, String>,
     /// Radio unit id (source) -> display name.
@@ -197,6 +244,9 @@ pub struct SettingsPatch {
     pub recording: Option<RecordingPatch>,
     pub call: Option<CallPatch>,
     pub radio: Option<RadioPatch>,
+    /// Change 063: replace the group list / the speaker routing.
+    pub tg_groups: Option<Vec<TgGroup>>,
+    pub speakers: Option<Speakers>,
     pub tg_aliases: Option<BTreeMap<u16, String>>,
     pub unit_aliases: Option<BTreeMap<u32, String>>,
     pub monitor_tgs: Option<Vec<u16>>,
@@ -236,13 +286,69 @@ pub struct Changed {
     pub tg_aliases: bool,
     pub unit_aliases: bool,
     pub monitor_tgs: bool,
+    pub tg_groups: bool,
+    pub speakers: bool,
 }
 
 impl Changed {
     pub fn any(&self) -> bool {
         self.recording || self.call || self.radio || self.tg_aliases || self.unit_aliases
-            || self.monitor_tgs
+            || self.monitor_tgs || self.tg_groups || self.speakers
     }
+}
+
+/// Change 063: validated group list (names trimmed, unique ignoring
+/// case; talkgroups 1..=65535, deduplicated in order).
+fn clean_groups(groups: Vec<TgGroup>) -> Result<Vec<TgGroup>, String> {
+    if groups.len() > MAX_GROUPS {
+        return Err(format!("tg_groups: {} groups (max {MAX_GROUPS})", groups.len()));
+    }
+    let mut out: Vec<TgGroup> = Vec::with_capacity(groups.len());
+    for g in groups {
+        let name: String = g.name.trim().chars().take(GROUP_NAME_CHARS).collect();
+        if name.is_empty() {
+            return Err("tg_groups: a group has no name".into());
+        }
+        if out.iter().any(|o| o.name.eq_ignore_ascii_case(&name)) {
+            return Err(format!("tg_groups: two groups are named {name:?}"));
+        }
+        if g.tgs.len() > MAX_GROUP_TGS {
+            return Err(format!("tg_groups: {name}: {} talkgroups (max {MAX_GROUP_TGS})", g.tgs.len()));
+        }
+        if g.tgs.contains(&0) {
+            return Err(format!("tg_groups: {name}: talkgroup 0 is not a talkgroup"));
+        }
+        let mut seen = std::collections::HashSet::new();
+        let tgs = g.tgs.into_iter().filter(|t| seen.insert(*t)).collect();
+        out.push(TgGroup { name, tgs });
+    }
+    Ok(out)
+}
+
+/// Change 063: speaker routing against `groups`: names resolved to the
+/// groups' spelling, unknown names dropped (a deleted group), each group
+/// on one side at most (`strict`: an error; else left wins).
+fn clean_speakers(sp: Speakers, groups: &[TgGroup], strict: bool) -> Result<Speakers, String> {
+    let resolve = |names: &[String]| -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for n in names {
+            if let Some(g) = groups.iter().find(|g| g.name.eq_ignore_ascii_case(n.trim())) {
+                if !out.contains(&g.name) {
+                    out.push(g.name.clone());
+                }
+            }
+        }
+        out
+    };
+    let left = resolve(&sp.left);
+    let mut right = resolve(&sp.right);
+    if let Some(both) = right.iter().find(|n| left.contains(n)) {
+        if strict {
+            return Err(format!("speakers: group {both:?} is on both sides"));
+        }
+    }
+    right.retain(|n| !left.contains(n));
+    Ok(Speakers { left, right, other: sp.other, preempt: sp.preempt })
 }
 
 fn check_range<T: PartialOrd + std::fmt::Display + Copy>(
@@ -323,6 +429,17 @@ pub fn apply_patch(
         }
         changed.radio = out.radio != base.radio;
     }
+    if let Some(groups) = patch.tg_groups {
+        out.tg_groups = clean_groups(groups)?;
+        // The routing refers to groups by name: a renamed or deleted
+        // group drops out of it.
+        out.speakers = clean_speakers(out.speakers.clone(), &out.tg_groups, false)?;
+        changed.tg_groups = out.tg_groups != base.tg_groups;
+    }
+    if let Some(sp) = patch.speakers {
+        out.speakers = clean_speakers(sp, &out.tg_groups, true)?;
+    }
+    changed.speakers = out.speakers != base.speakers;
     if let Some(m) = patch.tg_aliases {
         if m.len() > MAX_ENTRIES {
             return Err(format!("tg_aliases: {} entries (max {MAX_ENTRIES})", m.len()));
@@ -374,6 +491,19 @@ pub fn parse_settings(body: &[u8]) -> Result<UiSettings, String> {
     if s.radio.manual_gain_db.is_some_and(|db| !(GAIN_DB_MIN..=GAIN_DB_MAX).contains(&db)) {
         s.radio.manual_gain_db = None;
     }
+    // Change 063: a hand-edited group list keeps its valid groups.
+    let mut groups: Vec<TgGroup> = Vec::new();
+    for g in std::mem::take(&mut s.tg_groups).into_iter().take(MAX_GROUPS) {
+        let g = TgGroup { tgs: g.tgs.into_iter().filter(|t| *t != 0).take(MAX_GROUP_TGS).collect(), ..g };
+        let mut next = groups.clone();
+        next.push(g);
+        if let Ok(ok) = clean_groups(next) {
+            groups = ok;
+        }
+    }
+    s.tg_groups = groups;
+    s.speakers = clean_speakers(s.speakers.clone(), &s.tg_groups, false)
+        .unwrap_or_default();
     s.tg_aliases = clean_aliases(&s.tg_aliases);
     s.tg_aliases.remove(&0);
     s.unit_aliases = clean_aliases(&s.unit_aliases);
@@ -535,6 +665,97 @@ impl CallPolicy {
     }
 }
 
+/// Change 063: priority rank of talkgroups in no group (lowest).
+pub const OTHER_RANK: u16 = u16::MAX;
+
+/// Change 063: how the follower treats one talkgroup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Route {
+    pub side: Side,
+    /// Position of its group in the group list (0 = highest priority);
+    /// `OTHER_RANK` for a talkgroup in no group.
+    pub rank: u16,
+}
+
+/// Change 063: the group routing as the follower reads it (pure, host-
+/// tested). With no groups everything is followed at one rank, as
+/// before 063.
+#[derive(Debug, Clone, Default)]
+pub struct Routing {
+    by_tg: std::collections::HashMap<u16, Route>,
+    other: Side,
+    preempt: bool,
+}
+
+impl Routing {
+    pub fn new(groups: &[TgGroup], sp: &Speakers) -> Self {
+        let mut by_tg = std::collections::HashMap::new();
+        for (i, g) in groups.iter().enumerate() {
+            let side = if sp.left.contains(&g.name) {
+                Side::Left
+            } else if sp.right.contains(&g.name) {
+                Side::Right
+            } else {
+                Side::Off
+            };
+            for &tg in &g.tgs {
+                // A talkgroup in several groups takes the first (highest).
+                by_tg.entry(tg).or_insert(Route { side, rank: i as u16 });
+            }
+        }
+        Routing { by_tg, other: sp.other, preempt: sp.preempt }
+    }
+
+    /// `None`: not followed (its group is on neither speaker, or it is in
+    /// no group and "other talkgroups" is off).
+    pub fn route(&self, tg: u16) -> Option<Route> {
+        let r = self.by_tg.get(&tg).copied()
+            .unwrap_or(Route { side: self.other, rank: OTHER_RANK });
+        (r.side != Side::Off).then_some(r)
+    }
+
+    /// Should a grant for `new_tg` take the chain from the call on
+    /// `active_tg`? Only a strictly higher-priority group pre-empts, and
+    /// only with pre-emption on. A call the routing no longer follows
+    /// (settings changed mid-call) yields to any followed grant.
+    pub fn preempts(&self, new_tg: u16, active_tg: u16) -> bool {
+        if !self.preempt || new_tg == active_tg {
+            return false;
+        }
+        match (self.route(new_tg), self.route(active_tg)) {
+            (Some(n), Some(a)) => n.rank < a.rank,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
+    }
+}
+
+/// Change 063: live [`Routing`] for the grant follower.
+#[derive(Debug, Default)]
+pub struct RoutingPolicy {
+    current: RwLock<Routing>,
+}
+
+impl RoutingPolicy {
+    pub fn new(s: &UiSettings) -> Self {
+        RoutingPolicy { current: RwLock::new(Routing::new(&s.tg_groups, &s.speakers)) }
+    }
+
+    fn set(&self, s: &UiSettings) {
+        if let Ok(mut g) = self.current.write() {
+            *g = Routing::new(&s.tg_groups, &s.speakers);
+        }
+    }
+
+    pub fn route(&self, tg: u16) -> Option<Route> {
+        self.current.read().ok().and_then(|g| g.route(tg))
+    }
+
+    pub fn preempts(&self, new_tg: u16, active_tg: u16) -> bool {
+        self.current.read().map(|g| g.preempts(new_tg, active_tg)).unwrap_or(false)
+    }
+}
+
 /// Result of a successful `SettingsStore::update`.
 #[derive(Debug, Clone)]
 pub struct UpdateOutcome {
@@ -558,6 +779,8 @@ pub struct SettingsStore {
     pub recording: Arc<RecordingPolicy>,
     /// Change 057.
     pub call: Arc<CallPolicy>,
+    /// Change 063.
+    pub routing: Arc<RoutingPolicy>,
 }
 
 impl SettingsStore {
@@ -590,6 +813,7 @@ impl SettingsStore {
             path,
             recording: Arc::new(RecordingPolicy::new(&settings.recording)),
             call: Arc::new(CallPolicy::new(&settings.call)),
+            routing: Arc::new(RoutingPolicy::new(&settings)),
             current: RwLock::new(settings),
             rev: AtomicU64::new(1),
             load_note,
@@ -634,6 +858,7 @@ impl SettingsStore {
         *guard = next.clone();
         self.recording.set(&next.recording);
         self.call.set(&next.call);
+        self.routing.set(&next);
         self.rev.fetch_add(1, Ordering::Relaxed);
         let save_error = match self.path.as_deref() {
             Some(p) => write_atomic(p, &next).err(),

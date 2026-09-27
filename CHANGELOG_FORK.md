@@ -5,6 +5,34 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-27] Talkgroup groups, speakers on the Now page, priority pre-emption (063)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-27-tg-groups-063`
+**Bake required:** NO (p25-httpd and web UI only).
+
+- **Talkgroup groups** (Settings → Talkgroup groups), saved on the radio.
+  - A group is a name and a list such as `300` or `301-310, 315`.
+  - The list order is the priority (1 = highest).
+- **Speakers panel** on the Now page. Each group goes on the left or the right speaker,
+  or on neither (then it is not followed). Talkgroups in no group play on both speakers,
+  either one, or are off. This replaces 062's per-browser speaker card; the volume slider
+  stays per browser.
+- **Priority:** with "A higher-priority group interrupts a lower one" on (the default),
+  a grant of a higher group takes the traffic channel from a lower group's call. The log
+  reason is `priority_preempt`.
+  - A follow filter rejects talkgroups whose group is off, or ungrouped talkgroups with
+    "other" off (`not_followed` = `speaker_off`).
+  - With no groups defined, behaviour is unchanged.
+- **Settings API:** new fields `tg_groups` and `speakers {left, right, other, preempt}`.
+- **Store:** the web UI now keeps `/api/ui/settings` current and refetches it on
+  `settings_rev`.
+
+Tests: p25-httpd 244 passed; 21 UI modules pass `node --check`; list parsing and routing
+helpers checked.
+
+---
+
 ## [2026-09-27] Live audio: volume control and per-talkgroup left/right speaker (062)
 
 **Branch:** fishball-p25

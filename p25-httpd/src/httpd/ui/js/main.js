@@ -6,7 +6,7 @@ import { store, subscribe, start, kick, setPref } from './store.js';
 import { api } from './api.js';
 import { setText, setClass, toast } from './dom.js';
 import { mhz } from './format.js';
-import { player, routeFromPrefs } from './audio/player.js';
+import { player, routeFromSettings } from './audio/player.js';
 import * as nowView from './views/now.js';
 import * as radioView from './views/radio.js';
 import * as diagView from './views/diagnostics.js';
@@ -102,11 +102,11 @@ function renderBanner() {
   }
 }
 
-// Change 062: volume (per browser, 0-200 %) and speaker routing.
+// Change 062: volume (per browser, 0-200 %). Change 063: the speaker
+// routing comes from the radio's talkgroup groups (store.settings).
 function applyAudioPrefs() {
   const vol = store.prefs.volume ?? 1;
   player.setVolume(vol);
-  player.setRoute(routeFromPrefs(store.prefs));
   const slider = $('vol');
   if (slider && document.activeElement !== slider) slider.value = Math.round(vol * 100);
   if (slider) slider.title = 'Volume ' + Math.round(vol * 100) + '%';
@@ -135,6 +135,7 @@ function boot() {
   window.addEventListener('hashchange', route);
   subscribe((kind, s) => {
     if (kind === 'prefs') { applyTheme(); applyAudioPrefs(); }
+    if (kind === 'settings') player.setRoute(routeFromSettings(s.settings));
     if (kind === 'state' || kind === 'conn') { renderHeader(); renderBanner(); }
     if (current && current.inst.update) current.inst.update(kind, s);
   });

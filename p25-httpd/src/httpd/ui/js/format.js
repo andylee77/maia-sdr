@@ -99,6 +99,37 @@ export function linkControlUnits(call) {
   return (call.sources || []).filter(s => s !== call.source);
 }
 
+// Change 063: talkgroup lists as typed ("301-310, 315") <-> ids.
+// Returns {tgs, bad}: `bad` lists the parts that are not a talkgroup
+// (1..65535) or a range of them (at most 2000 wide).
+export function parseTgList(text) {
+  const tgs = [];
+  const bad = [];
+  const seen = new Set();
+  const add = t => { if (!seen.has(t)) { seen.add(t); tgs.push(t); } };
+  const ok = n => Number.isInteger(n) && n >= 1 && n <= 65535;
+  for (const part of String(text).split(/[\s,;]+/).filter(Boolean)) {
+    const m = part.match(/^(\d+)(?:-(\d+))?$/);
+    const a = m ? Number(m[1]) : NaN;
+    const b = m && m[2] ? Number(m[2]) : a;
+    if (!m || !ok(a) || !ok(b) || b < a || b - a >= 2000) { bad.push(part); continue; }
+    for (let t = a; t <= b; t++) add(t);
+  }
+  return { tgs, bad };
+}
+
+export function formatTgList(tgs) {
+  const s = [...new Set(tgs || [])].sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i < s.length; i++) {
+    let j = i;
+    while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++;
+    out.push(j - i >= 2 ? s[i] + '-' + s[j] : j > i ? s[i] + ', ' + s[j] : String(s[i]));
+    i = j;
+  }
+  return out.join(', ');
+}
+
 // Q2.13 PLL register -> Hz at 4800 sym/s.
 export function pllHz(q213) {
   if (q213 === null || q213 === undefined) return DASH;
@@ -109,6 +140,7 @@ export const NOT_FOLLOWED = {
   encrypted: 'encrypted',
   sticky_lock: 'busy on another call',
   monitor_list: 'not on monitor list',
+  speaker_off: 'not on a speaker',
   traffic_lock: 'chain locked (diagnostic)',
   update_no_lock: 'update without grant',
 };

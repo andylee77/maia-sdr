@@ -253,3 +253,67 @@ fn radio_gain_is_validated_persisted_and_reloaded() {
     let s = parse_settings(br#"{"radio":{"gain_mode":"turbo","manual_gain_db":200}}"#).unwrap();
     assert_eq!(s.radio, RadioSettings::default());
 }
+
+// Change 063: talkgroup groups and speaker routing. The operator's setup:
+// Primary (300) left; TAC (301-310) and Hospital right, TAC above Hospital.
+fn site_groups() -> &'static str {
+    r#"{"tg_groups":[{"name":"Primary","tgs":[300]},
+                     {"name":"TAC","tgs":[301,302,303,304,305,306,307,308,309,310]},
+                     {"name":"Hospital","tgs":[318,319]}],
+        "speakers":{"left":["Primary"],"right":["tac","Hospital"],"other":"off","preempt":true}}"#
+}
+
+#[test]
+fn groups_and_speakers_validate() {
+    let base = UiSettings::default();
+    let (s, ch) = apply_patch(&base, patch(site_groups())).unwrap();
+    assert!(ch.tg_groups && ch.speakers);
+    // Names resolve to the group's spelling.
+    assert_eq!(s.speakers.right, vec!["TAC".to_string(), "Hospital".to_string()]);
+    // Duplicate names, TG 0, a group on both sides, and a nameless group fail.
+    assert!(apply_patch(&base, patch(r#"{"tg_groups":[{"name":"A","tgs":[1]},{"name":"a","tgs":[2]}]}"#)).is_err());
+    assert!(apply_patch(&base, patch(r#"{"tg_groups":[{"name":"A","tgs":[0]}]}"#)).is_err());
+    assert!(apply_patch(&base, patch(r#"{"tg_groups":[{"name":"  ","tgs":[5]}]}"#)).is_err());
+    assert!(apply_patch(&s, patch(r#"{"speakers":{"left":["TAC"],"right":["TAC"]}}"#)).is_err());
+    // Deleting a group drops it from the routing.
+    let (s2, _) = apply_patch(&s, patch(r#"{"tg_groups":[{"name":"Primary","tgs":[300]}]}"#)).unwrap();
+    assert_eq!(s2.speakers.left, vec!["Primary".to_string()]);
+    assert!(s2.speakers.right.is_empty());
+    // A hand-edited file keeps its valid groups and routing.
+    let p = parse_settings(br#"{"tg_groups":[{"name":"X","tgs":[7,7,0]},{"name":"x","tgs":[8]}],
+        "speakers":{"left":["X","Nope"],"right":["X"]}}"#).unwrap();
+    assert_eq!(p.tg_groups.len(), 1);
+    assert_eq!(p.tg_groups[0].tgs, vec![7]);
+    assert_eq!((p.speakers.left.len(), p.speakers.right.len()), (1, 0));
+}
+
+#[test]
+fn routing_follows_sides_and_priority() {
+    let (s, _) = apply_patch(&UiSettings::default(), patch(site_groups())).unwrap();
+    let r = Routing::new(&s.tg_groups, &s.speakers);
+    assert_eq!(r.route(300).map(|x| (x.side, x.rank)), Some((Side::Left, 0)));
+    assert_eq!(r.route(305).map(|x| (x.side, x.rank)), Some((Side::Right, 1)));
+    assert_eq!(r.route(318).map(|x| (x.side, x.rank)), Some((Side::Right, 2)));
+    assert_eq!(r.route(402), None, "other talkgroups are off");
+    // TAC takes the chain from Hospital, Primary from both, never upward.
+    assert!(r.preempts(305, 318));
+    assert!(r.preempts(300, 305));
+    assert!(!r.preempts(318, 305));
+    assert!(!r.preempts(318, 319), "same group: first come");
+    assert!(!r.preempts(402, 318), "not followed never pre-empts");
+    // Pre-emption off: first come for everything.
+    let mut sp = s.speakers.clone();
+    sp.preempt = false;
+    assert!(!Routing::new(&s.tg_groups, &sp).preempts(300, 318));
+    // A group on neither side is not followed.
+    sp.right.retain(|n| n != "Hospital");
+    assert_eq!(Routing::new(&s.tg_groups, &sp).route(318), None);
+}
+
+#[test]
+fn no_groups_follows_everything_without_preemption() {
+    let d = UiSettings::default();
+    let r = Routing::new(&d.tg_groups, &d.speakers);
+    assert_eq!(r.route(300).map(|x| (x.side, x.rank)), Some((Side::Both, OTHER_RANK)));
+    assert!(!r.preempts(300, 402));
+}

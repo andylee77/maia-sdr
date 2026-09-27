@@ -11,6 +11,7 @@ import { bytes, dur, DASH } from '../format.js';
 import { kvTable } from '../components/kv_table.js';
 import { aliasEditor } from '../components/alias_editor.js';
 import { monitorPicker } from '../components/monitor_picker.js';
+import { tgGroupsEditor } from '../components/tg_groups_editor.js';
 
 async function save(patch) {
   const r = await api.putSettings(patch);
@@ -162,42 +163,6 @@ function displayCard() {
   return { el: c.el };
 }
 
-// Change 062: live-audio speaker routing, per browser (the speakers
-// are where this browser plays). Volume is the slider next to Listen.
-function parseTgs(text) {
-  return [...new Set(String(text).split(/[\s,;]+/).map(Number)
-    .filter(n => Number.isInteger(n) && n > 0 && n < 65536))];
-}
-
-function liveAudioCard() {
-  const c = card('Live audio (this browser)');
-  const sp = store.prefs.speakers || {};
-  const tgInput = (label, list) => h('input', {
-    class: 'input', type: 'text', placeholder: 'e.g. 300, 318', 'aria-label': label,
-    value: (list || []).join(', '), style: { width: '11em' },
-  });
-  const left = tgInput('Talkgroups on the left speaker', sp.left);
-  const right = tgInput('Talkgroups on the right speaker', sp.right);
-  const other = h('select', { class: 'input', 'aria-label': 'Speaker for all other talkgroups' },
-    h('option', { value: 'both', text: 'both speakers' }),
-    h('option', { value: 'left', text: 'the left speaker' }),
-    h('option', { value: 'right', text: 'the right speaker' }));
-  other.value = sp.other || 'both';
-  const store_ = () => {
-    const next = { left: parseTgs(left.value), right: parseTgs(right.value), other: other.value };
-    setPref('speakers', next);
-    left.value = next.left.join(', ');
-    right.value = next.right.join(', ');
-  };
-  for (const el of [left, right, other]) el.addEventListener('change', store_);
-  c.body.append(
-    h('div', { class: 'row' }, h('span', { text: 'Left speaker:' }), left),
-    h('div', { class: 'row', style: { marginTop: '8px' } }, h('span', { text: 'Right speaker:' }), right),
-    h('div', { class: 'row', style: { marginTop: '8px' } }, h('span', { text: 'All other talkgroups on' }), other),
-    h('p', { class: 'card-note', text: 'Applies to live audio in this browser; saved here, not on the radio. A talkgroup listed on both sides plays on the left. Volume is the slider next to Listen.' }));
-  return { el: c.el };
-}
-
 function aboutCard() {
   const c = card('About');
   const kv = kvTable();
@@ -223,6 +188,7 @@ export function mount(host) {
       tgAliases.set(data.settings.tg_aliases);
       unitAliases.set(data.settings.unit_aliases);
       monitor.set(data.settings.monitor_tgs, data.settings.tg_aliases);
+      groups.set(data);
       enc.set(data.encrypted_tgs);
       about.set(data, store.state);
     } catch (e) {
@@ -244,12 +210,12 @@ export function mount(host) {
   const enc = encryptedCard();
   const clock = clockCard();
   const display = displayCard();
-  const liveAudio = liveAudioCard();
+  const groups = tgGroupsEditor({ onSave: async patch => { await save(patch); load(); } });
   const about = aboutCard();
   host.append(
     h('div', { class: 'grid-2' },
       h('div', { class: 'stack' }, rec.el, callClose.el, tgAliases.el, unitAliases.el),
-      h('div', { class: 'stack' }, monitor.el, liveAudio.el, enc.el, clock.el, display.el, about.el)),
+      h('div', { class: 'stack' }, groups.el, monitor.el, enc.el, clock.el, display.el, about.el)),
   );
   load();
   let lastRev = null;

@@ -55,6 +55,8 @@ pub const UI_ASSETS: &[UiAsset] = ui_assets![
     "js/components/kv_table.js",
     "js/components/alias_editor.js",
     "js/components/monitor_picker.js",
+    "js/components/speakers_panel.js",
+    "js/components/tg_groups_editor.js",
 ];
 
 pub const INDEX_PATH: &str = "index.html";

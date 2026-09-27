@@ -43,7 +43,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-27-volume-speakers-062";
+pub const BUILD_TAG: &str = "2026-09-27-tg-groups-063";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -1533,6 +1533,7 @@ async fn main() -> anyhow::Result<()> {
             traffic_follower_enabled.clone(),
             imbe_forwarder.clone(),
             monitor_list.clone(),
+            ui_settings.routing.clone(),
             event_log.clone(),
             traffic_lsm_decoder.clone(),
             grant_event_rx,

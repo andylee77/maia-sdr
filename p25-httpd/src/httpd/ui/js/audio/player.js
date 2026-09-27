@@ -16,14 +16,23 @@ const MAXDEV = 0.005;
 
 const PAN = { left: -1, both: 0, right: 1 };
 
-// Change 062: per-browser speaker routing (prefs.speakers =
-// {left: [tg..], right: [tg..], other: 'both'|'left'|'right'}) as
-// {map: {tg: pan}, def: pan}, pan -1 left / 0 both / +1 right.
-export function routeFromPrefs(prefs) {
-  const sp = (prefs && prefs.speakers) || {};
+// Change 063: speaker routing from the radio's talkgroup groups
+// (/api/ui/settings: tg_groups in priority order, speakers.left /
+// .right group names, speakers.other for ungrouped talkgroups) as
+// {map: {tg: pan}, def: pan}, pan -1 left / 0 both / +1 right. A
+// talkgroup in several groups takes the first, as the follower does;
+// groups on neither side are not followed, so their pan is moot.
+export function routeFromSettings(doc) {
+  const s = doc && doc.settings;
   const map = {};
-  for (const tg of sp.right || []) map[tg] = PAN.right;
-  for (const tg of sp.left || []) map[tg] = PAN.left;
+  if (!s) return { map, def: PAN.both };
+  const sp = s.speakers || {};
+  const side = name => ((sp.left || []).includes(name) ? PAN.left
+    : (sp.right || []).includes(name) ? PAN.right : PAN.both);
+  for (const g of s.tg_groups || []) {
+    const p = side(g.name);
+    for (const tg of g.tgs || []) if (!(tg in map)) map[tg] = p;
+  }
   return { map, def: PAN[sp.other] ?? PAN.both };
 }
 

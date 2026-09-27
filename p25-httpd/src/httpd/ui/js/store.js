@@ -3,6 +3,8 @@
 //
 //   store.state    last GET /api/ui/state   (polled 1 Hz, 5 s when hidden)
 //   store.calls    last GET /api/ui/calls   (refetched when calls_rev moves)
+//   store.settings last GET /api/ui/settings (refetched when settings_rev
+//                  moves; change 063: the speaker groups live there)
 //   store.conn     link health to the radio
 //
 // A /ws/events connection (when enabled) only "kicks" an early state
@@ -22,6 +24,7 @@ const KICK_TYPES = new Set(['GRP_VCH_GRANT', 'recording_saved', 'TRF_HDU', 'TRF_
 export const store = {
   state: null,
   calls: null,
+  settings: null,
   conn: { ok: false, lastOkAt: 0, error: null, rttMs: 0, events: false },
   // Board clock minus browser clock, from the last state poll.
   boardOffsetMs: 0,
@@ -31,7 +34,7 @@ export const store = {
 
 const listeners = new Set();
 
-// fn(kind, store) with kind in 'state' | 'calls' | 'conn' | 'prefs'.
+// fn(kind, store) with kind in 'state' | 'calls' | 'settings' | 'conn' | 'prefs'.
 export function subscribe(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);
@@ -66,6 +69,16 @@ let inFlight = false;
 let lastCallsRev = null;
 let lastCallsAt = 0;
 let callsInFlight = false;
+let lastSettingsRev = null;
+
+export async function refreshSettings() {
+  try {
+    store.settings = await api.settings();
+    emit('settings');
+  } catch (e) {
+    console.warn('settings refresh failed', e);
+  }
+}
 
 export async function refreshState() {
   if (inFlight) return;
@@ -81,6 +94,10 @@ export async function refreshState() {
     emit('state');
     if (s.calls_rev !== lastCallsRev || Date.now() - lastCallsAt > CALLS_REFRESH_MS) {
       refreshCalls();
+    }
+    if (s.settings_rev !== lastSettingsRev) {
+      lastSettingsRev = s.settings_rev;
+      refreshSettings();
     }
   } catch (e) {
     store.conn = Object.assign(store.conn, { ok: false, error: e.message || String(e) });
