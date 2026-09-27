@@ -887,3 +887,102 @@ pub async fn get_nid_capture(
 }
 
 
+
+// ── Change 054: dibit ring delivery ────────────────────────────────
+
+/// `GET /api/dibit_delivery`
+///
+/// Per-ring delivery statistics of the dibit readers: mode (requested /
+/// active), dibit age at delivery (poll time − estimated production
+/// time: mean / p50 / p90 / p99 / max + histogram), production-clock
+/// state and uncertainty, resyncs, and — traffic ring — air-time epoch
+/// statistics (cuts recorded / applied / clamped, splits inside a
+/// delivered chunk, framer resets, fed / gated / pre-settle discarded
+/// dibits) plus the last 64 applied cuts.
+pub async fn get_dibit_delivery(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    Json(state.dibit_delivery.status_json())
+}
+
+/// `POST /api/dibit_delivery?mode=airtime|poll|legacy[&ring=control|traffic]&poll_ms=N&settle_dibits=N&reset=1`
+///
+/// Runtime switch for bench A/B runs (no reflash). `mode` applies to
+/// both rings unless `ring` names one; the reader performs the
+/// hand-over on its next iteration (legacy to poll resumes at the first
+/// undelivered sub-buffer; poll to legacy skips the rest of the current
+/// sub-buffer). `reset=1` clears the statistics of both rings.
+pub async fn post_dibit_delivery(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    use crate::app::dibit_airtime::DeliveryMode;
+    use std::sync::atomic::Ordering;
+    let d = &state.dibit_delivery;
+    let mut applied: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    let rings: Vec<&Arc<crate::app::dibit_airtime::DibitRingShared>> =
+        match params.get("ring").map(|s| s.as_str()) {
+            None | Some("both") | Some("all") => vec![&d.control, &d.traffic],
+            Some("control") => vec![&d.control],
+            Some("traffic") => vec![&d.traffic],
+            Some(other) => {
+                errors.push(format!("ring={other}: expected control|traffic|both"));
+                Vec::new()
+            }
+        };
+
+    if let Some(m) = params.get("mode") {
+        match DeliveryMode::parse(m) {
+            Some(mode) => {
+                for r in &rings {
+                    r.set_requested_mode(mode);
+                    applied.push(format!("{}.mode={}", r.label, mode.as_str()));
+                }
+            }
+            None => errors.push(format!("mode={m}: expected airtime|poll|legacy")),
+        }
+    }
+    if let Some(v) = params.get("poll_ms") {
+        match v.parse::<u32>() {
+            Ok(ms) => {
+                d.set_poll_ms(ms);
+                applied.push(format!("poll_ms={}", d.poll_ms()));
+            }
+            Err(_) => errors.push(format!("poll_ms={v}: expected integer ms")),
+        }
+    }
+    if let Some(v) = params.get("settle_dibits") {
+        match v.parse::<u32>() {
+            Ok(n) => {
+                let n = n.min(4800);
+                d.traffic.settle_dibits.store(n, Ordering::Relaxed);
+                applied.push(format!("settle_dibits={n}"));
+            }
+            Err(_) => errors.push(format!("settle_dibits={v}: expected integer")),
+        }
+    }
+    if params
+        .get("reset")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false)
+    {
+        d.control.reset_stats();
+        d.traffic.reset_stats();
+        applied.push("reset".into());
+    }
+    if !applied.is_empty() {
+        state.event_log.push(
+            crate::services::event_log::LogCategory::System,
+            format!("dibit_delivery: {}", applied.join(", ")),
+            serde_json::json!({ "applied": applied.clone(), "errors": errors.clone() }),
+        );
+    }
+    Json(serde_json::json!({
+        "ok": errors.is_empty(),
+        "applied": applied,
+        "errors": errors,
+        "status": d.status_json(),
+    }))
+}

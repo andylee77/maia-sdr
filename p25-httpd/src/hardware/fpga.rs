@@ -34,6 +34,9 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 use crate::hardware::ddc_presets::DdcPreset;
+use crate::hardware::dibit_ring::{
+    copy_plan, mono_us, ChainEpochSink, HwAction, RingGeometry, RingSnapshot,
+};
 use crate::hardware::rxbuffer::RxBuffer;
 use crate::hardware::uio::{Mapping, Uio};
 
@@ -99,6 +102,20 @@ pub struct IpCore {
     wideband_spec_last_buffer: Option<u8>,
     wideband_iq_last_addr: Option<u32>,
     traffic_iq_last_addr: Option<u32>,
+
+    /// Change 054: receiver of traffic-chain hardware actions (retune,
+    /// NCO write, LSM reset, enable/pause) for air-time epoch cuts and
+    /// the traffic production clock. `None` until main wires it.
+    traffic_epoch_sink: Option<Arc<dyn ChainEpochSink>>,
+}
+
+/// Change 054: the two P25 dibit rings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DibitRing {
+    /// `lsm_dibit_dma` (control channel, 0x1A00_0000).
+    Control,
+    /// `traffic_lsm_dibit_dma` (traffic channel, 0x1B00_0000).
+    Traffic,
 }
 
 impl IpCore {
@@ -187,6 +204,7 @@ impl IpCore {
             wideband_spec_last_buffer: None,
             wideband_iq_last_addr: None,
             traffic_iq_last_addr: None,
+            traffic_epoch_sink: None,
         };
 
         let interrupt_handler = InterruptHandler::new(uio, interrupt_registers);
@@ -689,11 +707,44 @@ impl IpCore {
     // chain — for multi-target follow we'd need multiple LSM chains
     // hanging off the mux, deferred.
 
-    /// Master enable for the traffic LSM chain.
+    /// Master enable for the traffic LSM chain. Change 054: a change of
+    /// state is reported to the epoch sink (Pause / Resume cut).
     pub fn set_traffic_lsm_enable(&self, enable: bool) {
+        let before = self.traffic_lsm_enabled();
+        self.write_traffic_lsm_enable(enable);
+        if before != enable {
+            self.traffic_hw_epoch(HwAction::Enable(enable), before);
+        }
+    }
+
+    fn write_traffic_lsm_enable(&self, enable: bool) {
         self.registers
             .traffic_lsm_control()
             .modify(|_, w| w.traffic_lsm_enable().bit(enable));
+    }
+
+    /// Current `traffic_lsm_enable` (register readback, no side effect).
+    pub fn traffic_lsm_enabled(&self) -> bool {
+        self.registers
+            .traffic_lsm_control()
+            .read()
+            .traffic_lsm_enable()
+            .bit()
+    }
+
+    /// Change 054: install the traffic-chain epoch sink.
+    pub fn set_traffic_epoch_sink(&mut self, sink: Arc<dyn ChainEpochSink>) {
+        self.traffic_epoch_sink = Some(sink);
+    }
+
+    /// Report a traffic-chain hardware action with the next-address
+    /// register read right after it. We hold `&self`, i.e. the IpCore
+    /// lock, so this is ordered with the dibit reader's snapshots.
+    fn traffic_hw_epoch(&self, action: HwAction, enabled_before: bool) {
+        if let Some(sink) = self.traffic_epoch_sink.as_ref() {
+            let next = self.traffic_lsm_dibit_next_address();
+            sink.record_hw(action, mono_us(), next, enabled_before);
+        }
     }
 
     /// Enables or disables the traffic LSM dibit ring DMA.
@@ -721,6 +772,12 @@ impl IpCore {
     /// `reset_in` into LsmDemod, clearing PLL accumulator + AGC +
     /// timing-recovery state.
     pub fn pulse_traffic_lsm_reset(&self) {
+        let before = self.traffic_lsm_enabled();
+        self.write_traffic_lsm_reset_pulse();
+        self.traffic_hw_epoch(HwAction::LsmReset, before);
+    }
+
+    fn write_traffic_lsm_reset_pulse(&self) {
         self.registers
             .traffic_lsm_control()
             .modify(|_, w| w.traffic_lsm_reset().bit(true));
@@ -991,6 +1048,17 @@ impl IpCore {
         frequency_hz: f64,
         sample_rate_hz: f64,
     ) -> Result<()> {
+        let before = self.traffic_lsm_enabled();
+        self.write_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
+        self.traffic_hw_epoch(HwAction::NcoWrite, before);
+        Ok(())
+    }
+
+    fn write_traffic_ddc_frequency(
+        &self,
+        frequency_hz: f64,
+        sample_rate_hz: f64,
+    ) -> Result<()> {
         let half = 0.5 * sample_rate_hz;
         if !(-half..=half).contains(&frequency_hz) {
             anyhow::bail!(
@@ -1203,11 +1271,15 @@ impl IpCore {
         // timing — closer mirror of SDRTrunk's resetPLL semantics).
         _seeds: Option<(u32, i16, i32)>,
     ) -> Result<()> {
-        self.set_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
+        // Change 054: raw register writes + ONE epoch report for the
+        // whole sequence (the public setters would report three).
+        let before = self.traffic_lsm_enabled();
+        self.write_traffic_ddc_frequency(frequency_hz, sample_rate_hz)?;
         if should_reset {
-            self.pulse_traffic_lsm_reset();
+            self.write_traffic_lsm_reset_pulse();
         }
-        self.set_traffic_lsm_enable(true);
+        self.write_traffic_lsm_enable(true);
+        self.traffic_hw_epoch(HwAction::Retune { lsm_reset: should_reset }, before);
         Ok(())
     }
 
@@ -1305,6 +1377,122 @@ impl IpCore {
     pub fn set_lsm_agc_threshold(&self, v: u16) {
         self.registers.lsm_agc_config()
             .modify(|_, w| unsafe { w.mag_update_threshold().bits(v) });
+    }
+
+    // ── Change 054: position-based dibit ring access ─────────────
+
+    fn dibit_dma(&self, ring: DibitRing) -> &RxBuffer {
+        match ring {
+            DibitRing::Control => &self.lsm_dibit_dma,
+            DibitRing::Traffic => &self.traffic_lsm_dibit_dma,
+        }
+    }
+
+    /// Geometry of a dibit ring as mapped by maia-kmod.
+    pub fn dibit_ring_geometry(&self, ring: DibitRing) -> RingGeometry {
+        let dma = self.dibit_dma(ring);
+        RingGeometry {
+            sub_buffer_bytes: dma.buffer_size() as u64,
+            num_sub_buffers: dma.num_buffers() as u64,
+        }
+    }
+
+    /// One register reading for the low-latency reader: next burst
+    /// address (0xB0 / 0xD0), `last_buffer` (0xAC / 0xCC bits [18:16])
+    /// and the chain enable bit (0xA0 / 0xC0). All plain-R reads: never
+    /// touches the read-to-clear status words (0xA4 / 0xC4 / 0x0C).
+    pub fn dibit_ring_snapshot(&self, ring: DibitRing) -> RingSnapshot {
+        match ring {
+            DibitRing::Control => {
+                let next_address = self.lsm_dibit_next_address();
+                let t_us = mono_us();
+                RingSnapshot {
+                    next_address,
+                    last_buffer: self.lsm_dibit_last_buffer(),
+                    chain_enabled: self.registers.lsm_control().read().lsm_enable().bit(),
+                    t_us,
+                }
+            }
+            DibitRing::Traffic => {
+                let next_address = self.traffic_lsm_dibit_next_address();
+                let t_us = mono_us();
+                RingSnapshot {
+                    next_address,
+                    last_buffer: self.traffic_lsm_dibit_last_buffer(),
+                    chain_enabled: self.traffic_lsm_enabled(),
+                    t_us,
+                }
+            }
+        }
+    }
+
+    /// Copy the absolute byte range `[start, end)` of a dibit ring into
+    /// `out`, invalidating every covering sub-buffer first (maia-kmod
+    /// maps the ring cacheable; invalidating a sub-buffer that is still
+    /// being written is safe, and must precede every read of newly
+    /// available bytes). The caller guarantees the range has landed.
+    pub fn copy_dibit_ring(
+        &self,
+        ring: DibitRing,
+        start: u64,
+        end: u64,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        let dma = self.dibit_dma(ring);
+        let geom = self.dibit_ring_geometry(ring);
+        let plan = copy_plan(&geom, start, end);
+        let mut invalidated: Vec<usize> = Vec::with_capacity(2);
+        for piece in &plan {
+            if !invalidated.contains(&piece.sub_buffer) {
+                dma.cache_invalidate(piece.sub_buffer)
+                    .with_context(|| format!(
+                        "cache invalidate {ring:?} sub-buffer {}", piece.sub_buffer))?;
+                invalidated.push(piece.sub_buffer);
+            }
+        }
+        for piece in &plan {
+            let slice = dma.buffer_as_slice(piece.sub_buffer);
+            out.extend_from_slice(&slice[piece.offset..piece.offset + piece.len]);
+        }
+        Ok(())
+    }
+
+    /// Legacy whole-sub-buffer read that also reports the index of the
+    /// first returned sub-buffer (for age accounting).
+    pub fn read_dibit_buffers_indexed(
+        &mut self,
+        ring: DibitRing,
+    ) -> (Option<usize>, Vec<Vec<u8>>) {
+        let n = self.dibit_dma(ring).num_buffers();
+        let cursor = self.legacy_dibit_cursor(ring);
+        let bufs: Vec<Vec<u8>> = match ring {
+            DibitRing::Control => self.read_dma_buffers(DmaChannel::LsmDibit),
+            DibitRing::Traffic => self.read_dma_buffers(DmaChannel::TrafficLsmDibit),
+        }
+        .iter()
+        .map(|b| b.to_vec())
+        .collect();
+        let first = match cursor {
+            Some(c) if n > 0 && !bufs.is_empty() => Some((c as usize % n + 1) % n),
+            _ => None,
+        };
+        (first, bufs)
+    }
+
+    /// Legacy path cursor: index of the last sub-buffer it delivered.
+    pub fn legacy_dibit_cursor(&self, ring: DibitRing) -> Option<u32> {
+        match ring {
+            DibitRing::Control => self.lsm_dibit_last_addr,
+            DibitRing::Traffic => self.traffic_lsm_dibit_last_addr,
+        }
+    }
+
+    /// Set the legacy path cursor (poll to legacy hand-over).
+    pub fn set_legacy_dibit_cursor(&mut self, ring: DibitRing, cursor: Option<u32>) {
+        match ring {
+            DibitRing::Control => self.lsm_dibit_last_addr = cursor,
+            DibitRing::Traffic => self.traffic_lsm_dibit_last_addr = cursor,
+        }
     }
 
     // ── DMA buffer helpers ───────────────────────────────────────

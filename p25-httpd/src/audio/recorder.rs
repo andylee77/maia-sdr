@@ -901,10 +901,24 @@ pub async fn recorder_task(
                                 None => true,
                             }
                         };
-                        let route = match (active.as_ref(), draining.as_ref()) {
-                            (Some(a), _) if in_window(a) => Slot::Active,
-                            (_, Some(d)) if in_window(d) => Slot::Draining,
-                            _ => Slot::None,
+                        // Change 054: chunks decoded by the airtime
+                        // traffic reader carry the call_id of the
+                        // air-time epoch their dibits belong to, which
+                        // is exact — route by it. The capture-time
+                        // window stays the fallback for legacy / poll
+                        // mode chunks and for call_id 0.
+                        let route = if chunk.airtime && chunk.call_id != 0 {
+                            match (active.as_ref(), draining.as_ref()) {
+                                (Some(a), _) if a.call_id == chunk.call_id => Slot::Active,
+                                (_, Some(d)) if d.call_id == chunk.call_id => Slot::Draining,
+                                _ => Slot::None,
+                            }
+                        } else {
+                            match (active.as_ref(), draining.as_ref()) {
+                                (Some(a), _) if in_window(a) => Slot::Active,
+                                (_, Some(d)) if in_window(d) => Slot::Draining,
+                                _ => Slot::None,
+                            }
                         };
                         let c = match route {
                             Slot::Active => active.as_mut().unwrap(),

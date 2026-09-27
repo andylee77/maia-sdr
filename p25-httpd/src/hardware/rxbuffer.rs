@@ -74,6 +74,11 @@ impl RxBuffer {
         self.num_buffers
     }
 
+    /// Bytes per buffer (sub-buffer) in the ring.
+    pub fn buffer_size(&self) -> usize {
+        self.buffer_size
+    }
+
     /// Returns a slice for one buffer in the ring.
     ///
     /// # Panics

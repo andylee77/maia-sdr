@@ -1130,6 +1130,8 @@ pub async fn get_ppm(
 ///
 /// Response includes the new shift + current `pll_dbg` + agc_product
 /// so a sweep caller can build a `shift vs pll_dbg` table in one go.
+/// `pll_residual_hz` reads NCO minus signal: the correct shift is
+/// `new_shift_hz - pll_residual_hz` (`autoppm::true_shift_estimate_hz`).
 ///
 /// Linux-only — no AD9361 on host builds.
 #[cfg(target_os = "linux")]

@@ -4,9 +4,10 @@
 //! vocoder OS thread, grant follower, dibit readers, ...) live here
 //! so `main.rs` stays focused on boot orchestration.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 pub mod autoppm;
 pub mod audio_pacer;
+pub mod dibit_airtime;
 #[cfg(target_os = "linux")]
 pub mod dibit_readers;
 #[cfg(target_os = "linux")]

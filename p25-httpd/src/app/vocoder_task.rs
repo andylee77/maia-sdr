@@ -9,12 +9,11 @@
 
 use std::sync::Arc;
 
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::Sender;
 
 use crate::audio::{self, AudioChunk};
 use crate::services::event_log::EventLog;
-use crate::app::imbe_forwarder::ImbeForwarder;
-use crate::protocol::p25::voice_frame::ImbeFrameRaw;
+use crate::app::imbe_forwarder::{ImbeBatchRx, ImbeForwarder};
 use crate::vocoder;
 
 /// Spawn the dedicated vocoder OS thread. Consumes `imbe_rx`, pushes
@@ -36,7 +35,7 @@ use crate::vocoder;
 /// capacity (5 s @ 50 fps) backpressure the vocoder thread instead of
 /// silently dropping audio.
 pub fn spawn_vocoder_thread(
-    imbe_rx: Receiver<(u16, u32, u64, u64, [ImbeFrameRaw; 9])>,
+    imbe_rx: ImbeBatchRx,
     voc_forwarder: Arc<ImbeForwarder>,
     voc_audio_tx: Sender<AudioChunk>,
     voc_event_log: Arc<EventLog>,
@@ -178,7 +177,13 @@ pub fn spawn_vocoder_thread(
             };
 
             tracing::info!(target: "p25_vocoder", "vocoder thread started (dedicated OS thread)");
-            while let Some((batch_tg, batch_source, batch_call_id, batch_captured_at_ms, frames)) = rx.blocking_recv() {
+            while let Some(batch) = rx.blocking_recv() {
+                let batch_tg = batch.talkgroup;
+                let batch_source = batch.source;
+                let batch_call_id = batch.call_id;
+                let batch_captured_at_ms = batch.captured_at_ms;
+                let batch_airtime = batch.airtime;
+                let frames = batch.frames;
                 // Surface the TG of the batch we're ABOUT to decode
                 // on /api/traffic. Distinct from current_talkgroup
                 // (follower's intent) — this is what the audio path
@@ -281,7 +286,13 @@ pub fn spawn_vocoder_thread(
                 if batch_source != 0 {
                     call_source = batch_source;
                 }
-                let encrypted = voc_forwarder.call_encrypted.load(Ordering::Relaxed);
+                // Change 054: the encryption decision travels with the
+                // batch (captured when the LDU was decoded, from the
+                // air-time epoch in airtime mode). Reading the live
+                // `call_encrypted` here let a retune to a clear call
+                // decode an encrypted call's in-flight tail, or skip a
+                // clear call's tail after a retune to an encrypted one.
+                let encrypted = batch.encrypted;
                 if encrypted {
                     voc_forwarder
                         .vocoder_frames_encrypted
@@ -387,6 +398,7 @@ pub fn spawn_vocoder_thread(
                         source,
                         call_id: batch_call_id,
                         captured_at_ms: batch_captured_at_ms,
+                        airtime: batch_airtime,
                     });
                 }
             }

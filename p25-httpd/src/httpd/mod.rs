@@ -323,6 +323,11 @@ pub struct AppState {
     /// traffic chain on retunes.
     #[cfg(target_os = "linux")]
     pub converged_seeds: crate::app::seed_snapshot::ConvergedSeedsShared,
+
+    /// Change 054: dibit ring delivery state (mode switch, poll
+    /// interval, per-ring age / epoch / resync statistics). Backs
+    /// `/api/dibit_delivery`.
+    pub dibit_delivery: Arc<crate::app::dibit_airtime::DibitDelivery>,
 }
 
 impl AppState {
@@ -529,6 +534,11 @@ pub fn router(
                axum::routing::post(api::forensics::post_forensics_arm))
         .route("/api/forensics_disarm",
                axum::routing::post(api::forensics::post_forensics_disarm))
+        // Change 054: dibit ring delivery latency / air-time epoch
+        // statistics + runtime mode switch (legacy | poll | airtime).
+        .route("/api/dibit_delivery",
+               get(api::chain::get_dibit_delivery)
+                   .post(api::chain::post_dibit_delivery))
         // Self-describing API catalogue for the dashboard's API tab.
         .route("/api/endpoints", get(api::system::get_endpoints))
         .route("/ws/events", get(api::ws::ws_events))

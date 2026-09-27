@@ -63,8 +63,30 @@ pub struct PersistedPpm {
 /// P25 control-channel symbol rate. The PLL in `LsmPllUpdate` runs
 /// on `symbol_strobe`, so its Q2.13 output scales by this rate when
 /// converting to Hz.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 const SYM_RATE_HZ: f64 = 4800.0;
+
+/// `pll_dbg` (Q2.13 rad/symbol) as a frequency in Hz.
+#[cfg(any(target_os = "linux", test))]
+pub fn pll_q213_to_hz(pll_q213: f64) -> f64 {
+    pll_q213 * SYM_RATE_HZ / (2.0 * std::f64::consts::PI * 8192.0)
+}
+
+/// Best estimate of the correct `lo_shift_hz` from one `pll_dbg`
+/// reading taken while `shift_hz` was applied.
+///
+/// The residual reads NCO minus signal: positive when the NCO sits
+/// above the carrier. Bench-measured 2026-09-26 on a cabled replay
+/// (doc/changes/055_autoppm_sign_fix.md): stepping `lo_shift_hz`
+/// 370/470/570 gave median residuals −87/+4/+106 Hz, and moving the
+/// transmitter +105 Hz moved it −106 Hz. So the shift must move by
+/// MINUS the residual. The previous `shift + residual` made the fixed
+/// point repelling: each apply doubled the error (the 2026-04-24
+/// "positive feedback" walk from −0.535 to +1.11 ppm).
+#[cfg(any(target_os = "linux", test))]
+pub fn true_shift_estimate_hz(shift_hz: f64, pll_q213: f64) -> f64 {
+    shift_hz - pll_q213_to_hz(pll_q213)
+}
 
 /// Search window around the expected control offset, in Hz. Wide
 /// enough to handle the ±5 ppm worst-case AD9361 crystal trim at
@@ -196,16 +218,11 @@ pub async fn run_calibration(
         pll_sum as f64 / pll_n as f64
     } else { 0.0 };
 
-    // pll_dbg is Q2.13 radians per symbol. freq_residual_hz =
-    // pll_mean * (sym_rate / (2π * 2^13)). Sign: positive pll_out
-    // means the PLL is rotating samples by +phase per symbol, which
-    // implies the RF signal has a NEGATIVE residual. To null it we
-    // adjust the NCO by `+pll_residual_hz` (move the downconverter
-    // in the same direction the PLL was correcting).
-    let hz_per_q213 = SYM_RATE_HZ / (2.0 * std::f64::consts::PI
-                                     * 8192.0);
-    let pll_residual_hz = pll_mean * hz_per_q213;
-    let final_lo_shift = stage_a_delta + pll_residual_hz;
+    // pll_dbg is Q2.13 radians per symbol and reads NCO minus
+    // signal: positive means the NCO sits above the carrier, so the
+    // shift moves by MINUS the residual (see true_shift_estimate_hz).
+    let pll_residual_hz = pll_q213_to_hz(pll_mean);
+    let final_lo_shift = true_shift_estimate_hz(stage_a_delta, pll_mean);
     let final_nco = expected_offset + final_lo_shift;
     apply_ddc_frequency(state, final_nco, sample_rate).await?;
 
@@ -565,7 +582,9 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
     // doc/diagnostics/2026-04-24/AUDIO_DROPS_ANALYSIS.md §Issue 1.
     //
     // Each sample estimates where the true shift is RIGHT NOW:
-    //     estimate_i = shift_at_sample_i + residual_in_hz_at_sample_i
+    //     estimate_i = shift_at_sample_i - residual_in_hz_at_sample_i
+    // (2026-09-26: this was `+`, which made the fixed point repelling;
+    // see true_shift_estimate_hz.)
     // Trimmed mean of those estimates is the running best guess of
     // the steady-state truth. Updater ASSIGNS (not adds) the mean to
     // shift, clamped to ±1 ppm.
@@ -586,8 +605,6 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
         let ring = ring.clone();
         let last_shift_change = last_shift_change.clone();
         tokio::spawn(async move {
-            let hz_per_q213 = SYM_RATE_HZ
-                / (2.0 * std::f64::consts::PI * 8192.0);
             loop {
                 tokio::time::sleep(Duration::from_millis(
                     PPM_TRACKER_SAMPLE_INTERVAL_MS)).await;
@@ -628,8 +645,7 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
                 // trimmed mean drowns out single-sample races.
                 let shift_now = state.current_lo_shift_hz
                     .load(Ordering::Relaxed) as f64;
-                let residual_hz = pll as f64 * hz_per_q213;
-                let estimate_hz = shift_now + residual_hz;
+                let estimate_hz = true_shift_estimate_hz(shift_now, pll as f64);
                 let mut r = ring.lock().unwrap();
                 if r.len() == PPM_TRACKER_WINDOW_SAMPLES {
                     r.pop_front();
@@ -861,3 +877,42 @@ async fn reset_shift_to_zero(state: &Arc<AppState>) {
 #[cfg(not(target_os = "linux"))]
 #[allow(dead_code)]
 pub struct CalibrationResult;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Bench 2026-09-26 (cabled replay, unit A): shift 370 → median
+    // pll_dbg ≈ −87 Hz, 470 → ≈ 0, 570 → ≈ +106 Hz. Every reading
+    // must point at the same true shift, 470.
+    #[test]
+    fn estimates_converge_on_bench_measured_truth() {
+        let q = |hz: f64| hz / pll_q213_to_hz(1.0);
+        for (shift, resid_hz) in [(370.0, -100.0), (470.0, 0.0), (570.0, 100.0)] {
+            let est = true_shift_estimate_hz(shift, q(resid_hz));
+            assert!((est - 470.0).abs() < 1e-9, "{shift} -> {est}");
+        }
+    }
+
+    // Assigning the estimate must shrink the error, never grow it.
+    #[test]
+    fn tracker_fixed_point_is_attracting() {
+        let truth = 470.0;
+        let q_per_hz = 1.0 / pll_q213_to_hz(1.0);
+        let mut shift = 300.0;
+        for _ in 0..3 {
+            let pll = (shift - truth) * q_per_hz; // NCO minus signal
+            let next = true_shift_estimate_hz(shift, pll);
+            assert!((next - truth).abs() <= (shift - truth).abs());
+            shift = next;
+        }
+        assert!((shift - truth).abs() < 1e-9);
+    }
+
+    #[test]
+    fn residual_scale_is_q213_rad_per_symbol() {
+        // 2π·2^13 Q2.13 units per symbol at 4800 sym/s = 4800 Hz
+        let full = 2.0 * std::f64::consts::PI * 8192.0;
+        assert!((pll_q213_to_hz(full) - 4800.0).abs() < 1e-9);
+    }
+}

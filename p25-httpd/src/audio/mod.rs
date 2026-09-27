@@ -43,7 +43,17 @@ pub struct AudioChunk {
     /// just-closed session still land in the right WAV regardless
     /// of vocoder/queue lag. All 9 IMBE frames in one batch share
     /// the same captured_at_ms (they came from one LDU dispatch).
+    ///
+    /// Change 054: in airtime mode this is the estimated production
+    /// (air) time of the dibit that completed the LDU, not the dispatch
+    /// time.
     pub captured_at_ms: u64,
+    /// Change 054: `call_id` / `talkgroup` / `captured_at_ms` come from
+    /// the air-time epoch of the dibits (traffic reader in airtime
+    /// mode). The recorder then routes by `call_id` instead of the
+    /// capture-time window, and the lifecycle only counts the chunk as
+    /// activity of the call it belongs to.
+    pub airtime: bool,
 }
 
 pub type AudioTx = broadcast::Sender<AudioChunk>;

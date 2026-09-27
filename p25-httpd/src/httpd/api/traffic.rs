@@ -163,7 +163,10 @@ pub async fn get_traffic(
                     // Also reset the traffic framer so stale dibits
                     // from the previous NCO don't feed a half-
                     // processed state on the new frequency.
-                    {
+                    // Change 054: in airtime mode the retune's epoch
+                    // cut (recorded by the IpCore hook) resets the
+                    // framer at the right dibit instead.
+                    if !state.imbe_forwarder.epochs_active() {
                         let mut dec = state.traffic_lsm_decoder
                             .write().await;
                         dec.reset_framer_state();

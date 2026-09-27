@@ -5,8 +5,32 @@
 //! mpsc sender to the vocoder task and the call-boundary broadcast tx that
 //! feeds the recorder.
 
+use crate::app::dibit_airtime::{DibitRingShared, EpochKind, SegmentContext};
 use crate::audio;
 use crate::protocol::p25;
+
+/// One LDU's worth of IMBE frames on its way to the vocoder, labelled
+/// with the call context it was decoded under. Change 054: `encrypted`
+/// travels with the batch (the vocoder used to read the live flag at
+/// vocode time, which a retune could flip under in-flight frames), and
+/// in airtime mode all labels come from the dibits' air-time epoch.
+#[derive(Debug, Clone)]
+pub struct ImbeBatch {
+    pub talkgroup: u16,
+    pub source: u32,
+    pub call_id: u64,
+    /// Unix ms. Airtime mode: estimated production (air) time of the
+    /// dibit that completed the LDU. Other modes: dispatch wall time.
+    pub captured_at_ms: u64,
+    pub encrypted: bool,
+    /// True when the labels are air-time epoch attributed (recorder
+    /// routes by `call_id` instead of the capture-time window).
+    pub airtime: bool,
+    pub frames: [p25::voice_frame::ImbeFrameRaw; 9],
+}
+
+pub type ImbeBatchTx = tokio::sync::mpsc::Sender<ImbeBatch>;
+pub type ImbeBatchRx = tokio::sync::mpsc::Receiver<ImbeBatch>;
 
 /// Voice frame handler that counts IMBE events and forwards raw frames
 /// to the vocoder task via an mpsc channel.
@@ -110,7 +134,24 @@ pub struct ImbeForwarder {
     /// of call N keep OLD TG even after follower retunes to call N+1 —
     /// prevents OLD tail being decoded with NEW JMBE state and routed
     /// into NEW call's recording. 2026-04-24 field-observed bug.
-    imbe_tx: tokio::sync::mpsc::Sender<(u16, u32, u64, u64, [p25::voice_frame::ImbeFrameRaw; 9])>,
+    imbe_tx: ImbeBatchTx,
+    /// Change 054: traffic dibit ring shared state (epoch recorder).
+    /// Unset on host builds / before `set_airtime`.
+    airtime: std::sync::OnceLock<std::sync::Arc<DibitRingShared>>,
+    /// Change 054: decode-side context of the traffic segment currently
+    /// being fed by the airtime reader. While `seg_active` is true the
+    /// voice handlers read TG / source / call_id / encrypted from here
+    /// instead of the live follower atomics, so every frame carries the
+    /// context that was in effect when its dibits were on the air.
+    /// Only toggled while the reader holds the traffic decoder's write
+    /// lock, so other feeders (sw_demod) always see `false`.
+    seg_active: std::sync::atomic::AtomicBool,
+    seg_tg: std::sync::atomic::AtomicU16,
+    seg_source: std::sync::atomic::AtomicU32,
+    seg_call_id: std::sync::atomic::AtomicU64,
+    seg_encrypted: std::sync::atomic::AtomicBool,
+    /// Air time (unix ms) of the dibit word being fed.
+    seg_air_ms: std::sync::atomic::AtomicU64,
     /// Optional broadcast channel for call-boundary events emitted
     /// from the voice handler. `None` on decoder instances that don't
     /// split calls (e.g. control-channel decoders).
@@ -427,7 +468,7 @@ impl ImbeForwarder {
 
 impl ImbeForwarder {
     pub fn new(
-        imbe_tx: tokio::sync::mpsc::Sender<(u16, u32, u64, u64, [p25::voice_frame::ImbeFrameRaw; 9])>,
+        imbe_tx: ImbeBatchTx,
     ) -> Self {
         Self {
             hdu_count: 0.into(),
@@ -458,6 +499,13 @@ impl ImbeForwarder {
             vocoder_reset_pending: false.into(),
             imbe_ring: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(128)),
             imbe_tx,
+            airtime: std::sync::OnceLock::new(),
+            seg_active: false.into(),
+            seg_tg: 0.into(),
+            seg_source: 0.into(),
+            seg_call_id: 0.into(),
+            seg_encrypted: false.into(),
+            seg_air_ms: 0.into(),
             call_boundary_tx: std::sync::OnceLock::new(),
             last_observed_nac: 0.into(),
             tdulc_parse_attempts: 0.into(),
@@ -507,7 +555,7 @@ impl ImbeForwarder {
     /// end, so reject.
     fn speaker_end_precondition_ok(&self) -> bool {
         use std::sync::atomic::Ordering;
-        let tg = self.current_talkgroup.load(Ordering::Relaxed);
+        let tg = self.eff_tg();
         if tg == 0 {
             self.speaker_end_invalid.fetch_add(1, Ordering::Relaxed);
             return false;
@@ -579,6 +627,163 @@ impl ImbeForwarder {
         let _ = self.call_boundary_tx.set(tx);
     }
 
+    // ── Change 054: air-time epoch plumbing ─────────────────────────
+
+    /// Wire the traffic dibit ring shared state (epoch recorder).
+    pub fn set_airtime(&self, shared: std::sync::Arc<DibitRingShared>) {
+        let _ = self.airtime.set(shared);
+    }
+
+    /// True when the traffic reader runs in airtime mode: chain-meaning
+    /// changes must be recorded as epoch cuts (`mark_epoch`) and framer
+    /// resets are applied by the reader at the cut, not in real time.
+    pub fn epochs_active(&self) -> bool {
+        self.airtime.get().map(|s| s.epochs_active()).unwrap_or(false)
+    }
+
+    /// Snapshot of the live (follower / lifecycle) call context.
+    pub fn live_context(&self) -> SegmentContext {
+        use std::sync::atomic::Ordering;
+        SegmentContext {
+            tg: self.current_talkgroup.load(Ordering::Relaxed),
+            source: self.current_source.load(Ordering::Relaxed),
+            call_id: self.current_call_id.load(Ordering::Relaxed),
+            encrypted: self.call_encrypted.load(Ordering::Relaxed),
+            freq_hz: self.current_frequency_hz.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Record a chain epoch cut carrying the current live context. Call
+    /// right AFTER the live atomics were changed. No-op unless the
+    /// traffic reader runs in airtime mode.
+    pub fn mark_epoch(&self, kind: EpochKind, framer_reset: bool) {
+        if let Some(s) = self.airtime.get() {
+            s.record_sw(kind, self.live_context(), framer_reset);
+        }
+    }
+
+    /// Record a cut carrying an explicit context (e.g. the follower's
+    /// grant hold: gate closed until a retune lands).
+    pub fn mark_epoch_ctx(&self, kind: EpochKind, ctx: SegmentContext, framer_reset: bool) {
+        if let Some(s) = self.airtime.get() {
+            s.record_sw(kind, ctx, framer_reset);
+        }
+    }
+
+    /// Store a new live call_id; records a call_id-only `CallOpen`
+    /// epoch when it changed. Used by the call lifecycle (the only
+    /// call_id writer). Only the id is applied at the cut: the
+    /// follower's TG / retune actions carry the rest of the context.
+    pub fn set_live_call_id(&self, call_id: u64) {
+        use std::sync::atomic::Ordering;
+        let prev = self.current_call_id.swap(call_id, Ordering::Relaxed);
+        if prev != call_id {
+            if let Some(s) = self.airtime.get() {
+                s.record_call_id_at(call_id, crate::app::dibit_airtime::mono_us());
+            }
+        }
+    }
+
+    /// Reader: start feeding a segment decoded under `ctx`. Must be
+    /// called with the traffic decoder's write lock held.
+    pub fn begin_segment(&self, ctx: &SegmentContext) {
+        use std::sync::atomic::Ordering;
+        self.seg_tg.store(ctx.tg, Ordering::Relaxed);
+        self.seg_source.store(ctx.source, Ordering::Relaxed);
+        self.seg_call_id.store(ctx.call_id, Ordering::Relaxed);
+        self.seg_encrypted.store(ctx.encrypted, Ordering::Relaxed);
+        self.seg_active.store(true, Ordering::Relaxed);
+    }
+
+    /// Reader: air time (unix ms) of the dibit word about to be fed.
+    pub fn set_segment_air_ms(&self, ms: u64) {
+        self.seg_air_ms
+            .store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Reader: segment done. Returns the (possibly in-band latched)
+    /// encrypted flag so the reader can carry it within the call.
+    pub fn end_segment(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.seg_active.store(false, Ordering::Relaxed);
+        self.seg_encrypted.load(Ordering::Relaxed)
+    }
+
+    fn seg(&self) -> bool {
+        self.seg_active.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Effective TG for the frame being decoded.
+    fn eff_tg(&self) -> u16 {
+        use std::sync::atomic::Ordering;
+        if self.seg() {
+            self.seg_tg.load(Ordering::Relaxed)
+        } else {
+            self.current_talkgroup.load(Ordering::Relaxed)
+        }
+    }
+
+    fn eff_source(&self) -> u32 {
+        use std::sync::atomic::Ordering;
+        if self.seg() {
+            self.seg_source.load(Ordering::Relaxed)
+        } else {
+            self.current_source.load(Ordering::Relaxed)
+        }
+    }
+
+    fn eff_call_id(&self) -> u64 {
+        use std::sync::atomic::Ordering;
+        if self.seg() {
+            self.seg_call_id.load(Ordering::Relaxed)
+        } else {
+            self.current_call_id.load(Ordering::Relaxed)
+        }
+    }
+
+    fn eff_encrypted(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        if self.seg() {
+            self.seg_encrypted.load(Ordering::Relaxed)
+        } else {
+            self.call_encrypted.load(Ordering::Relaxed)
+        }
+    }
+
+    /// In-band (HDU / LDU2) encryption latch. In a segment it latches the
+    /// segment context, and mirrors into the live flag only while the
+    /// live call is still the segment's call — a late-decoded tail of a
+    /// previous call must not mark the next call encrypted.
+    fn latch_encrypted(&self) {
+        use std::sync::atomic::Ordering;
+        if self.seg() {
+            self.seg_encrypted.store(true, Ordering::Relaxed);
+            if self.current_call_id.load(Ordering::Relaxed)
+                == self.seg_call_id.load(Ordering::Relaxed)
+            {
+                self.call_encrypted.store(true, Ordering::Relaxed);
+            }
+        } else {
+            self.call_encrypted.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Capture time stamped on an IMBE batch: air time in a segment,
+    /// dispatch wall time otherwise.
+    fn eff_captured_at_ms(&self) -> u64 {
+        use std::sync::atomic::Ordering;
+        if self.seg() {
+            let t = self.seg_air_ms.load(Ordering::Relaxed);
+            if t != 0 {
+                return t;
+            }
+        }
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
     fn touch_imbe(&self, n_frames: u64) {
         use std::sync::atomic::Ordering;
         self.imbe_frames_extracted.fetch_add(n_frames, Ordering::Relaxed);
@@ -591,8 +796,8 @@ impl ImbeForwarder {
 
     fn forward_frames(&self, frames: &[p25::voice_frame::ImbeFrameRaw; 9]) {
         use std::sync::atomic::Ordering;
-        let tg = self.current_talkgroup.load(Ordering::Relaxed);
-        let enc = self.call_encrypted.load(Ordering::Relaxed);
+        let tg = self.eff_tg();
+        let enc = self.eff_encrypted();
 
         // No TG-0 drop gate: `current_talkgroup` briefly flickering to
         // 0 (grant refresh races, Idle bounce on retune) was dropping
@@ -616,17 +821,26 @@ impl ImbeForwarder {
         // recorder. Phase 2h (2026-04-25) added call_id so the
         // recorder routes by GrantFollower call_id directly instead
         // of the prior tg+source heuristic.
-        let src = self.current_source.load(Ordering::Relaxed);
-        let call_id = self.current_call_id.load(Ordering::Relaxed);
-        // Wall-clock capture time stamped at LDU dispatch so the
-        // recorder can route chunks to the right session by capture
-        // time vs (open_at_ms, close_at_ms) — late chunks crossing
-        // a CallClose still land in the closing recording's WAV.
-        let captured_at_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        match self.imbe_tx.try_send((tg, src, call_id, captured_at_ms, *frames)) {
+        let src = self.eff_source();
+        let call_id = self.eff_call_id();
+        // Capture time for the recorder. Change 054: in airtime mode
+        // this is the estimated production (air) time of the dibit that
+        // completed the LDU, and the batch's call_id comes from the
+        // air-time epoch, so the recorder routes by call_id. Otherwise
+        // wall-clock dispatch time (pre-054 behaviour: routing by
+        // capture time vs the session's [open_at_ms, close_at_ms]).
+        let airtime = self.seg();
+        let captured_at_ms = self.eff_captured_at_ms();
+        let batch = ImbeBatch {
+            talkgroup: tg,
+            source: src,
+            call_id,
+            captured_at_ms,
+            encrypted: enc,
+            airtime,
+            frames: *frames,
+        };
+        match self.imbe_tx.try_send(batch) {
             Ok(()) => {
                 // Only advance when frames actually entered the queue —
                 // a dropped send never produces PCM, so advancing would
@@ -680,8 +894,8 @@ impl ImbeForwarder {
         use std::sync::atomic::Ordering;
         if let Some(log) = self.event_log.get() {
             let nac = self.last_observed_nac.load(Ordering::Relaxed);
-            let tg = self.current_talkgroup.load(Ordering::Relaxed);
-            let src = self.current_source.load(Ordering::Relaxed);
+            let tg = self.eff_tg();
+            let src = self.eff_source();
             log.push(
                 crate::services::event_log::LogCategory::Duid,
                 format!("traffic {} TG={} NAC=0x{:03X}", duid, tg, nac),
@@ -748,7 +962,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         // Parse the embedded LDU1 Link Control Word to mirror
         // SDRTrunk's `LDU1 VOICE ... GROUP VOICE CHANNEL USER FM:<src>
         // TO:<TG>` line into the activity feed.
-        let tg_locked = self.current_talkgroup.load(Ordering::Relaxed);
+        let tg_locked = self.eff_tg();
         if tg_locked == 0 {
             return;
         }
@@ -779,7 +993,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         // check fields so the dashboard can filter LDU1 LC entries
         // for cc_match=false. Operator philosophy: log every
         // disagreement, don't act on any of them.
-        let cc_source_now = self.current_source.load(Ordering::Relaxed);
+        let cc_source_now = self.eff_source();
         let cc_known = cc_source_now != 0;
         let cc_match = !cc_known || cc_source_now == source;
         self.emit_activity(&summary, serde_json::json!({
@@ -955,12 +1169,12 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
             if !ess.is_spec_algorithm() {
                 return;
             }
-            if !self.call_encrypted.load(Ordering::Relaxed) {
+            if !self.eff_encrypted() {
                 // HDU said clear — silently drop (don't trip the gate).
                 return;
             }
             // Refresh sticky-true from ESS in case of mid-call rekey.
-            self.call_encrypted.store(true, Ordering::Relaxed);
+            self.latch_encrypted();
             let mi_hex: String = ess
                 .message_indicator
                 .iter()
@@ -1048,7 +1262,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         // is symmetric with the LDU2 path so a bit-corrupt HDU decode
         // can't trip the gate on a nonsense algorithm byte.
         if hdr.is_encrypted() && hdr.is_spec_algorithm() {
-            self.call_encrypted.store(true, Ordering::Relaxed);
+            self.latch_encrypted();
         }
         let summary = if hdr.is_encrypted() {
             let mi_hex: String = hdr
@@ -1095,7 +1309,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         // Motorola TALK_COMPLETE LCW -> boundary event with BY: source.
         // Non-Motorola sites always land on Other / GroupVoiceChannelUser.
         let Some(tx) = self.call_boundary_tx.get() else { return; };
-        let tg = self.current_talkgroup.load(Ordering::Relaxed);
+        let tg = self.eff_tg();
         if tg == 0 {
             return;
         }
@@ -1135,8 +1349,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                 //   pre-LDU1 timing, or follower not yet populated),
                 //   fall back to (1)+(2) only — can't cross-check
                 //   against a blank.
-                let current_src = self.current_source
-                    .load(Ordering::Relaxed);
+                let current_src = self.eff_source();
                 let src_ok = current_src == 0
                     || current_src == by_radio_id;
                 if self.speaker_end_precondition_ok()
@@ -1257,8 +1470,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                     // loses the speaker RID on grants that didn't
                     // carry SRC. Passing current_source keeps the
                     // stamp intact.
-                    let current_src = self.current_source
-                        .load(Ordering::Relaxed);
+                    let current_src = self.eff_source();
                     let src_for_boundary = if current_src != 0
                         { Some(current_src) } else { None };
                     self.try_emit_speaker_end(tx, audio::CallBoundary {

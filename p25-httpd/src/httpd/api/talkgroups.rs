@@ -267,12 +267,16 @@ pub async fn put_encrypted_tgs(
                 .imbe_forwarder
                 .current_talkgroup
                 .store(0, Ordering::Relaxed);
+            // Change 054: gate closes (framer reset) at this air-time
+            // cut; the pause adds its own hardware cut.
+            state.imbe_forwarder.mark_epoch(
+                crate::app::dibit_airtime::EpochKind::TgChange, true);
             #[cfg(target_os = "linux")]
             {
                 let core = state.ip_core.lock().await;
                 core.pause_traffic_chain();
             }
-            {
+            if !state.imbe_forwarder.epochs_active() {
                 let mut dec = state.traffic_lsm_decoder.write().await;
                 dec.reset_framer_state();
             }

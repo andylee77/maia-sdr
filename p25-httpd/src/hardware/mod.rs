@@ -8,6 +8,9 @@
 //! even on host builds where `fpga.rs` is stubbed out.
 
 pub mod ddc_presets;
+/// Change 054: portable dibit ring position math + production clock
+/// (host-tested; used by the Linux readers and `fpga::IpCore`).
+pub mod dibit_ring;
 
 #[cfg(target_os = "linux")]
 pub mod fpga;

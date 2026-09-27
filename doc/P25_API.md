@@ -119,6 +119,8 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 | `/api/control_lsm_control` | GET | JSON | Read all 4 control-chain `lsm_control` bits (enable / dma_enable / dc_block / agc). `?dc_block=0\|1` toggles DC blocker |
 | `/api/traffic_lsm_control` | GET | JSON | Same, traffic chain. `?dc_block=0\|1` and `?agc=0\|1` writable |
 | `/api/nid_capture` | GET | JSON | Per-DUID NID ring with BCH distance + sync distance |
+| `/api/dibit_delivery` | GET | JSON | Change 054. Per ring (`control`, `traffic`): `requested_mode` / `active_mode`, `age` (dibit age at delivery = poll time − estimated production time: `mean_ms`, `p50_ms`, `p90_ms`, `p99_ms`, `max_ms`, histogram), `clock` (production-clock `uncertainty_dibits` / `uncertainty_ms`, reseeds), `counters` (polls, bytes / dibits delivered, resyncs + skipped bytes, phase mismatches, copy errors, cuts recorded / applied / clamped, `epoch_splits`, framer resets, dibits fed / gated / `dibits_discarded_presettle`), `last_resync`; traffic also `recent_cuts` (last 64 applied epoch cuts). |
+| `/api/dibit_delivery` | POST | JSON | Change 054 runtime switch for bench A/B: `?mode=airtime\|poll\|legacy` (both rings, or `&ring=control\|traffic`), `&poll_ms=N` (5..1000), `&settle_dibits=N`, `&reset=1` (clear stats). |
 
 ### `api/debug` — visual diagnostics
 

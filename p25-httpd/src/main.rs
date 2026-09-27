@@ -43,7 +43,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-05-03-forensics-sd-redirect";
+pub const BUILD_TAG: &str = "2026-09-26-dibit-lowlatency-airtime";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -298,6 +298,20 @@ struct Args {
     /// doc/changes/040_api_reinit_and_manual_gain.md.
     #[arg(long, default_value_t = 60.0)]
     hardwaregain: f64,
+
+    /// Dibit ring delivery mode at boot (change 054). `airtime`
+    /// (default): position polling every `--dibit-poll-ms` plus air-time
+    /// epoch attribution of traffic dibits. `poll`: position polling
+    /// with the pre-054 live TG gating. `legacy`: pre-054 whole 4 KiB
+    /// sub-buffers on IRQ (3.41 s blocks). Runtime switch:
+    /// `POST /api/dibit_delivery?mode=...`.
+    #[arg(long, default_value = "airtime")]
+    dibit_delivery: String,
+
+    /// Poll interval (ms) of the low-latency dibit readers (poll /
+    /// airtime modes). Runtime: `POST /api/dibit_delivery?poll_ms=N`.
+    #[arg(long, default_value_t = app::dibit_airtime::DEFAULT_POLL_MS)]
+    dibit_poll_ms: u32,
 }
 
 #[tokio::main]
@@ -507,8 +521,24 @@ async fn main() -> anyhow::Result<()> {
     // start of next call was not saved under actual call" (2026-04-24
     // field observation).
     let (imbe_tx, imbe_rx) =
-        tokio::sync::mpsc::channel::<(u16, u32, u64, u64, [p25::voice_frame::ImbeFrameRaw; 9])>(32);
+        tokio::sync::mpsc::channel::<app::imbe_forwarder::ImbeBatch>(32);
     let imbe_forwarder = Arc::new(ImbeForwarder::new(imbe_tx));
+
+    // Change 054: shared dibit-delivery state (both rings). The traffic
+    // ring's epoch recorder is wired into the forwarder (software cuts:
+    // TG change / CallOpen / CallClose / framer reset) and, in the
+    // cfg(linux) block, into IpCore (hardware cuts: retune / NCO / LSM
+    // reset / pause-resume).
+    let dibit_delivery_mode = app::dibit_airtime::DeliveryMode::parse(&args.dibit_delivery)
+        .ok_or_else(|| anyhow::anyhow!(
+            "unknown --dibit-delivery '{}'; expected airtime | poll | legacy",
+            args.dibit_delivery,
+        ))?;
+    let dibit_delivery = Arc::new(app::dibit_airtime::DibitDelivery::new(
+        dibit_delivery_mode,
+        args.dibit_poll_ms,
+    ));
+    imbe_forwarder.set_airtime(dibit_delivery.traffic.clone());
 
     // Call-boundary broadcast (traffic-LSM heartbeat -> recorder;
     // ImbeForwarder::on_tdu_lc -> recorder). Declared here because
@@ -669,7 +699,7 @@ async fn main() -> anyhow::Result<()> {
         use tokio::sync::Mutex;
 
         // 1. Initialize FPGA IP core via UIO
-        let (ip_core, interrupt_handler) = fpga::IpCore::take().await?;
+        let (mut ip_core, interrupt_handler) = fpga::IpCore::take().await?;
         tracing::info!("FPGA IP core initialized");
 
         // Configure AD9361 via IIO. Sample rate and RF bandwidth come
@@ -796,6 +826,12 @@ async fn main() -> anyhow::Result<()> {
         ip_core.set_wideband_spec_enable(true);
         let _ = boot_preset;
 
+        // Change 054: traffic-chain hardware actions (retune, NCO write,
+        // LSM reset, pause/resume) become air-time epoch cuts + keep the
+        // traffic production clock in step. Installed after the boot
+        // configuration above so boot writes are not reported.
+        ip_core.set_traffic_epoch_sink(dibit_delivery.traffic.clone());
+
         let ip_core = Arc::new(Mutex::new(ip_core));
         let ad9361 = Arc::new(ad9361);
 
@@ -829,6 +865,8 @@ async fn main() -> anyhow::Result<()> {
             lsm_dibit_waiter,
             ip_core.clone(),
             lsm_decoder.clone(),
+            dibit_delivery.clone(),
+            event_log.clone(),
         );
 
         // 2026-05-03 Track-2 forensics: on-device dibit ring + wideband
@@ -846,6 +884,8 @@ async fn main() -> anyhow::Result<()> {
             traffic_lsm_decoder.clone(),
             imbe_forwarder.clone(),
             forensics.clone(),
+            dibit_delivery.clone(),
+            event_log.clone(),
         );
 
         // 2026-05-03: wideband raw IQ reader (PS-side software P25
@@ -1880,6 +1920,7 @@ async fn main() -> anyhow::Result<()> {
         // warm-start values + heartbeat warmup state.
         #[cfg(target_os = "linux")]
         converged_seeds: converged_seeds_shared.clone(),
+        dibit_delivery: dibit_delivery.clone(),
     });
 
     // Phase 2b unified call lifecycle: call_tracker is spawned up

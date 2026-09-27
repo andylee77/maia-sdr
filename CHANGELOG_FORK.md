@@ -5,6 +5,72 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-26] Low-latency dibit delivery + air-time traffic gating (F4); autoppm sign fix (055)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-26-dibit-lowlatency-airtime`
+**Bake required:** NO — p25-httpd only.
+
+Fixes finding F4 (doc/changes/054): dibits reached the PS in 3.41 s sub-buffer blocks and
+the traffic gate was applied at delivery time.
+
+- Position-based reader for both dibit rings: absolute byte position, safe end = previous
+  poll's next-address − 256 B, sub-buffer invalidate + copy every ~40 ms (IRQ as wake
+  hint), lap guard with EventLog resyncs (jump / stall / base change / `last_buffer`
+  phase mismatch / overrun). Dibit age at delivery drops from 0–3.41 s to ≈ 0.05–0.2 s (host DMA
+  model: mean 114 ms, max 195 ms); the control channel's grants arrive correspondingly
+  earlier.
+- Production clock from next-address readings (± a few ms once converged) and air-time
+  epochs on the traffic ring: retune / NCO / LSM reset / pause-resume (IpCore hooks), TG
+  changes, CallOpen (call_id only), CallClose and grant holds are cut at their production
+  index; each chunk is split and decoded under the context in effect on the air (framer
+  reset at discontinuities and gate flips, pre-settle dibits discarded and counted). IMBE
+  batches carry the epoch's TG / call_id / encryption and an air-time `captured_at`;
+  the recorder routes such chunks by call_id. CallClose no longer drops the closing
+  call's in-flight tail; a new call never receives the previous call's dibits.
+- Gating fix: the follower no longer releases the chain on the CallClose of a
+  not-followed grant's synthetic call or of a preempted predecessor (it zeroed the TG of
+  the call being followed on every rejected grant).
+- `GET/POST /api/dibit_delivery` (age percentiles + histogram, clock uncertainty,
+  resyncs, epoch splits, discards, recent cuts; runtime mode switch) and
+  `--dibit-delivery airtime|poll|legacy`, `--dibit-poll-ms` for bench A/B without
+  reflashing. 42 new host tests.
+- Same build also carries the autoppm sign fix (doc/changes/055): `pll_dbg` reads NCO
+  minus signal, so the corrected shift is `shift − residual`. `POST /api/ppm_calibrate`
+  now lands within 5 Hz of the hand trim; the old sign put it 165 Hz off.
+- Bench result: a cabled two-board replay of site capture 1777801424, scored against
+  SDRTrunk's live decode of the same air. Traffic IMBE frames recovered: 57.6 % on the
+  deployed build, **99.9 %** on this one (33/33 LDUs, 4/4 HDUs per loop). Traffic dibit
+  age p99 is 189 ms. Full table in doc/changes/054.
+
+---
+
+## [2026-09-26] Hardware validation bench: `fbench` CLI, on-board agent, `hwval` bitstream
+
+**Branch:** fishball-p25
+**Bake required:** Tier 0 tests NO (run on the current P25 image); Tier 1 needs the new
+`hwval` bitstream (`./build_fpga_hwval_pretty.sh`) plus the Tezuka SD dual-image layout.
+
+A two-Fishball, cabled, attenuated bench suite that a Claude session drives from the CLI
+(JSON output, exit codes, run dirs with `result.json` + `FINDINGS.md`). Design contract:
+`doc/HW_VALIDATION_SUITE.md`; evidence and audit results: `doc/changes/053`.
+
+- Audit results that change the evidence record: the forensics
+  `gap_dibits=14336, overflows=1` was a host-poll artifact (ring loss was never
+  measured); the production overflow flag is cleared by the `last_buffer` read; no ring
+  has lap detection; dibits reach the PS in 3.41 s blocks and the traffic TG gate is
+  applied at delivery time (cross-call bleed / tail truncation candidate); the P25
+  image's `maia-sdr.ko` is a stale leftover not built by the P25 defconfig.
+- `hwval` gateware (`maia-hdl/hwval_hdl/`): ring v2 (FIFO, store-and-forward, committed
+  counter, flush-bounded latency, protect mode, lap-safe reader protocol), an
+  instrumented replica of the production ring, AXI memory testers on HP0/HP3, clock
+  census, ingest monitor with per-sample PRBS BER, CTRL_OUT event recorder, an
+  always-responding register bridge with snapshot CDC.
+- `bench/agent/` (`fbench-agent`, static ARM musl binary) and `bench/fbench/` (host CLI,
+  Tier 0 + Tier 1 tests, analysis, safety interlocks for the PGA-102+ TX outputs).
+
+---
+
 ## [2026-06-09] Live-glitch validation plan + bench TX replay tool
 
 **Branch:** fishball-p25

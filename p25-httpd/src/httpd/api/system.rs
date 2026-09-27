@@ -180,6 +180,18 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     },
     EndpointDoc {
         method: "GET",
+        path: "/api/dibit_delivery",
+        params: "",
+        description: "Dibit ring delivery (054): mode, dibit age at delivery (p50/p90/p99/max + histogram), production-clock uncertainty, resyncs, traffic air-time epoch cuts/splits/discards + recent cuts.",
+    },
+    EndpointDoc {
+        method: "POST",
+        path: "/api/dibit_delivery",
+        params: "?mode=airtime|poll|legacy&ring=control|traffic&poll_ms=N&settle_dibits=N&reset=1",
+        description: "Runtime switch of the dibit readers (054) for bench A/B: airtime (default), poll (low latency, live gating), legacy (pre-054 3.41 s sub-buffers on IRQ).",
+    },
+    EndpointDoc {
+        method: "GET",
         path: "/api/dibit_dump",
         params: "",
         description: "Sample the C4FM dibit ring and return histogram + raw DUID hits for inspection.",

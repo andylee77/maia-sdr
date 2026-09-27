@@ -355,10 +355,11 @@ fn mirror_active(
     // The next CallOpen WILL update current_call_id to the new id
     // (the `Some(c)` branch below), so this only affects the
     // inter-call gap.
+    // Change 054: `set_live_call_id` also records a CallOpen epoch cut
+    // when the id changes (airtime mode), so frames completing after it
+    // carry the new call_id even though they are decoded later.
     if let Some(c) = active.as_ref() {
-        forwarder
-            .current_call_id
-            .store(c.call_id, Ordering::Relaxed);
+        forwarder.set_live_call_id(c.call_id);
     }
     // else: leave current_call_id alone — it stays at the last
     // known call_id until the next CallOpen overwrites it.
@@ -821,6 +822,14 @@ fn handle_boundary(
                     return;
                 }
                 OpenAction::Preempt(close_reason, _) => {
+                    // Change 054: publish the successor's call_id BEFORE
+                    // the predecessor's CallClose goes out. The grant
+                    // follower releases the traffic chain only for a
+                    // CallClose of the live call (`current_call_id`);
+                    // with the old order it could see CallClose(prev)
+                    // while `current_call_id` still named prev and zero
+                    // the TG it had just set for the new grant.
+                    forwarder.set_live_call_id(*next_call_id);
                     if let Some(prev) = active.take() {
                         let expected = forwarder
                             .frames_submitted.load(Ordering::Relaxed);
@@ -1039,6 +1048,13 @@ enum OpenAction {
 
 fn handle_audio(chunk: AudioChunk, active: &mut Option<ActiveCall>) {
     if let Some(a) = active.as_mut() {
+        // Change 054: an air-time attributed chunk of another call (the
+        // previous call's in-flight tail) is not activity of this one —
+        // it must neither keep this call alive nor stamp its first-audio
+        // time.
+        if chunk.airtime && chunk.call_id != 0 && chunk.call_id != a.call_id {
+            return;
+        }
         // The recorder routes by chunk.captured_at_ms vs the session
         // window. We refresh `last_audio_at_ms` here so the hybrid
         // close trigger sees audio activity as a keep-alive — needed
@@ -1070,6 +1086,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::Receiver;
 
 use super::{Arc, CallTrackerEventKind, CallTrackerEventTx, CloseReason};
+use crate::app::dibit_airtime::EpochKind;
 use crate::app::imbe_forwarder::ImbeForwarder;
 use crate::audio;
 use crate::hardware::fpga;
@@ -1574,6 +1591,10 @@ pub fn spawn_grant_follower(
                                     mgr.force_idle();
                                     follower_imbe.current_talkgroup
                                         .store(0, Ordering::Relaxed);
+                                    // Change 054: the old TG's lock ends
+                                    // here on the air-time axis.
+                                    follower_imbe.mark_epoch(
+                                        EpochKind::TgChange, false);
                                     // Fall through — re-evaluate the
                                     // grant as if Idle. Encrypted +
                                     // sticky-lock checks below now see
@@ -1641,6 +1662,12 @@ pub fn spawn_grant_follower(
                                         // the call summary.
                                         follower_imbe.current_talkgroup
                                             .store(0, Ordering::Relaxed);
+                                        // Change 054: gate closes at this
+                                        // air-time cut (framer reset
+                                        // there); the pause below adds
+                                        // its own hardware cut.
+                                        follower_imbe.mark_epoch(
+                                            EpochKind::TgChange, true);
                                         // DO NOT clear call_encrypted
                                         // here. Buffered LDU dibits
                                         // from the previous channel
@@ -1670,7 +1697,12 @@ pub fn spawn_grant_follower(
                                         // it's mid-frame on encrypted
                                         // data and would carry bogus
                                         // state into the next lock.
-                                        {
+                                        // Change 054: in airtime mode the
+                                        // reader resets it at the cut
+                                        // recorded above instead (a reset
+                                        // now would cut whatever older
+                                        // dibits it is still decoding).
+                                        if !follower_imbe.epochs_active() {
                                             let mut dec = follower_traffic_decoder
                                                 .write().await;
                                             dec.reset_framer_state();
@@ -1817,13 +1849,37 @@ pub fn spawn_grant_follower(
                                 // so grant_stats can open / refresh the OpenGrant. Kept
                                 // here instead of pre-gates so we only fire for grants
                                 // that actually proceed to state-machine evaluation.
-                                send_cc_boundary(&g, None);
+                                //
+                                // Change 054: the boundary now goes out
+                                // AFTER handle_grant_event (sync, µs),
+                                // so that when a retune follows, the
+                                // grant-hold cut below is recorded
+                                // before the lifecycle can publish the
+                                // new call_id: dibits still arriving from
+                                // the old frequency are gated instead of
+                                // being labelled with the new call.
                                 let pre_state = mgr.state_label();
+                                // Live context before the grant touches
+                                // the forwarder atomics, to decide which
+                                // epoch cut to record.
+                                let ctx_before = follower_imbe.live_context();
                                 let retune = handle_grant_event(
                                     &g, &mut mgr, &follower_imbe
                                 );
                                 let post_state = mgr.state_label();
                                 drop(mgr);
+                                let epochs = follower_imbe.epochs_active();
+                                if retune && epochs {
+                                    follower_imbe.mark_epoch_ctx(
+                                        EpochKind::GrantHold,
+                                        crate::app::dibit_airtime::SegmentContext {
+                                            tg: 0,
+                                            ..ctx_before
+                                        },
+                                        true,
+                                    );
+                                }
+                                send_cc_boundary(&g, None);
 
                                 if pre_state != post_state {
                                     follower_event_log.push(
@@ -1887,7 +1943,12 @@ pub fn spawn_grant_follower(
                                     // consumed while the framer is
                                     // mid-state on stale data.
                                     // Preserves cumulative counters.
-                                    {
+                                    // Change 054: airtime mode resets
+                                    // at the retune's epoch cut (the
+                                    // IpCore hook records it), so the
+                                    // old call's in-flight dibits are
+                                    // still decoded to their end.
+                                    if !epochs {
                                         let mut dec = follower_traffic_decoder
                                             .write().await;
                                         dec.reset_framer_state();
@@ -2009,6 +2070,22 @@ pub fn spawn_grant_follower(
                                     } else {
                                         last_traffic_freq_hz = Some(freq_hz);
                                     }
+                                    // Change 054: the new call's context
+                                    // starts right after the retune's
+                                    // hardware cut (whose settle discard
+                                    // covers the gap between the two).
+                                    // A failed retune never left the old
+                                    // frequency: the grant hold keeps the
+                                    // gate closed there.
+                                    if retune_result.is_ok() {
+                                        let ctx_after = follower_imbe.live_context();
+                                        let kind = if ctx_after.tg != ctx_before.tg {
+                                            EpochKind::TgChange
+                                        } else {
+                                            EpochKind::CtxUpdate
+                                        };
+                                        follower_imbe.mark_epoch(kind, false);
+                                    }
                                     tracing::info!(
                                         target: "p25_traffic",
                                         "retune (dual-DDC): TG={} channel={:?} \
@@ -2064,7 +2141,13 @@ pub fn spawn_grant_follower(
                                     // re-write. No retune. Subsequent
                                     // dedup'd grants for this same
                                     // call are no-ops at this layer.
-                                    {
+                                    // Change 054: airtime mode applies
+                                    // the reset + new context at this
+                                    // air-time cut instead.
+                                    if epochs {
+                                        follower_imbe.mark_epoch(
+                                            EpochKind::TgChange, true);
+                                    } else {
                                         let mut dec = follower_traffic_decoder
                                             .write().await;
                                         dec.reset_framer_state();
@@ -2093,6 +2176,14 @@ pub fn spawn_grant_follower(
                                             "pll_pre_resume": pll_pre,
                                         }),
                                     );
+                                } else if follower_imbe.live_context() != ctx_before {
+                                    // Change 054: grant refresh for the
+                                    // active call changed its source /
+                                    // encryption: frames completing
+                                    // after this point carry the update,
+                                    // in-flight ones keep the old values.
+                                    follower_imbe.mark_epoch(
+                                        EpochKind::CtxUpdate, false);
                                 }
                             }
                         }
@@ -2123,6 +2214,34 @@ pub fn spawn_grant_follower(
                             _ => None,
                         };
                         let Some(reason) = close_reason else { continue; };
+
+                        // Change 054 gating fix: only a CallClose of the
+                        // LIVE call releases the chain. The lifecycle
+                        // also emits CallClose for (a) the synthetic
+                        // open/close pair of every not-followed grant
+                        // (sticky-lock / encrypted / monitor-list
+                        // rejects on other channels) and (b) the
+                        // predecessor of a preempting grant — after this
+                        // follower already moved the chain to the new
+                        // grant. Acting on those zeroed the TG of the
+                        // call actually being followed, so its dibits
+                        // were gated off until another primary grant
+                        // re-acquired it. `current_call_id` is the live
+                        // call (lifecycle publishes a successor before
+                        // closing its predecessor; between calls it
+                        // holds the last call's id, so a Timeout close
+                        // still matches).
+                        let live_call_id = follower_imbe
+                            .current_call_id.load(Ordering::Relaxed);
+                        if event.call_id != live_call_id {
+                            tracing::debug!(
+                                target: "p25_traffic",
+                                "CallClose {:?} for call_id={} ignored \
+                                 (live call_id={})",
+                                reason, event.call_id, live_call_id,
+                            );
+                            continue;
+                        }
 
                         // Snapshot the just-closed call's quality stats
                         // for the next retune's chain-reset gate. Read
@@ -2218,6 +2337,13 @@ pub fn spawn_grant_follower(
                         if let Ok(mut s) = follower_imbe.current_channel.lock() {
                             s.clear();
                         }
+                        // Change 054: the gate closes at this air-time
+                        // cut. Dibits produced before it (the closing
+                        // call's tail, still in flight in the ring) are
+                        // decoded under the closing call; the pre-054
+                        // reader dropped every batch delivered after
+                        // this point.
+                        follower_imbe.mark_epoch(EpochKind::CallClose, false);
                     }
                 }
             }
