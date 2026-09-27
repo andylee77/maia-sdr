@@ -13,6 +13,7 @@ pub mod mem;
 pub mod net;
 pub mod prbs;
 pub mod reg;
+pub mod replay;
 pub mod ring;
 pub mod sd;
 pub mod telemetry;
@@ -114,7 +115,7 @@ impl Ctx {
 
 pub fn command_name(args: &Args) -> String {
     let n = match args.word(0) {
-        Some("reg") | Some("ring") | Some("mem") | Some("sd") | Some("net") | Some("prbs")
+        Some("reg") | Some("replay") | Some("ring") | Some("mem") | Some("sd") | Some("net") | Some("prbs")
         | Some("tx") | Some("maint") | Some("boot") | Some("hwval") => 2,
         Some("iio") | Some("ad9361") => 3,
         _ => 1,
@@ -143,6 +144,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("sd bench --mb N --bs K [--fsync] [--dir D]", "SD throughput and write latency"),
     ("net serve|send --port P --mb N [--host H]", "TCP throughput"),
     ("hwval init|id|census|ingest|ringv2|legacy|mt|evt|guard|contention ...", "Tier 1 hwval core operations"),
+    ("replay stream --playlist P [--ring-mb M] [--status F] [--report F] [--on-underrun wait|zero]", "SD/RAM IQ files -> RAM ring -> int16 on stdout (for iio_writedev)"),
+    ("replay check --playlist P | verify --file F [--sha256 H]", "validate a replay playlist / hash a staged file"),
     ("tx off", "max TX attenuation, DAC zero, DDS scale 0, loopback/BIST off"),
     ("maint enter|exit|status", "maintenance mode (stop/start p25-httpd)"),
     ("boot status|install|select [NAME|--image NAME] [--reboot]", "dual boot-image swap helper"),
@@ -155,6 +158,7 @@ pub fn dispatch(ctx: &Ctx, args: &Args) -> AResult<Value> {
         "info" => info::run(ctx, args),
         "audit" => audit::run(ctx, args),
         "reg" => reg::run(ctx, args),
+        "replay" => replay::run(ctx, args),
         "telemetry" => telemetry::run(ctx, args),
         "iio" => iio_cmd::run(ctx, args),
         "ad9361" => ad9361::run(ctx, args),

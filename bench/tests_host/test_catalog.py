@@ -73,6 +73,7 @@ SCENARIOS: dict[str, dict[str, Any]] = {
     "rf.isolation": {"tx": "A", "rx": "B", "params": {"nsamples": 65536},
                      "verdict": "inconclusive"},
     "rf.p25_replay": {"tx": "B", "rx": "A", "clip": True, "params": {"seconds": 10}},
+    "rf.p25_corpus": {"tx": "B", "rx": "A", "corpus": "A", "params": {"tail_s": 2.0}},
     "rf.refclk_eth": {"tx": "A", "rx": "B",
                       "params": {"capture_s": 0.05, "bounce_s": 0.1, "bounce_pad_s": 0.1,
                                  "rx_rate_hz": 1000000.0, "nfft": 8192}},
@@ -92,6 +93,12 @@ def run_scenario(tid: str, cfg: Any, tmp_path: Path, scen: dict[str, Any] | None
     overrides = dict(scen.get("params", {}))
     if scen.get("clip"):
         overrides["clip"] = str(_clip(tmp_path))
+    if scen.get("corpus"):
+        from conftest import install_corpus, make_corpus
+
+        corp = make_corpus(tmp_path / "corpus")
+        install_corpus(services, corp["man"], scen["corpus"])
+        overrides.update(manifest=str(corp["manifest"]), mode=scen["corpus"])
     params = build_params(spec, overrides)
     roles = resolve_roles(spec, cfg, scen.get("unit"), scen.get("tx"), scen.get("rx"))[0]
     return run_test(spec, cfg, services, roles, params), services

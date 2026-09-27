@@ -1,6 +1,6 @@
 # tools/ — script catalog
 
-46 Python scripts for live monitoring, offline replay, log analysis,
+54 Python scripts for live monitoring, offline replay, log analysis,
 HDL/PS reference decoding, and design work. Most target the on-target
 Fishball P25 daemon at `192.168.2.1:8080` by default; offline tools
 take file paths.
@@ -14,6 +14,8 @@ take file paths.
 | [`simulate_call_pipeline.py`](simulate_call_pipeline.py) | Offline call-pipeline simulator. Replay an SDRTrunk-style timeseries log through a Python port of the call-tracker / grant-follower lifecycle. |
 | [`p25_log_export.py`](p25_log_export.py) | Export the Fishball event-log ring to local files for SDRTrunk-style offline analysis. |
 | [`sdrtrunk_teardown_stats.py`](sdrtrunk_teardown_stats.py) | Traffic-channel teardown / call-close timing distributions (n, min, p10..p99, max, bucket fractions) from SDRTrunk `event_logs` (change 057). Rebuilds a 9600 bit/s clock from the 1 s-stamped `decoded_messages.log` (bit-exact within a log, about ±30 ms between CC and traffic), then reports: terminators after the last LDU, system channel hang, same-channel turnaround (by TG and CC grant presence), grant→voice latency, same-TG re-grant, SDRTrunk call-event end and channel stop (`--app-logs`), CC GRP_VCH_GRNT_UPD cadence, mid-transmission dropouts, and a `.mbe` cross-check (`--recordings`). Also summarises p25-httpd `/api/ui/calls` and `/api/log` dumps (`--p25-calls`, `--p25-log`). Markdown report plus optional `--json` raw distributions. |
+| [`p25_corpus_index.py`](p25_corpus_index.py) | Inventory of the SDRTrunk captures, channel recordings, `.mbe` truth and logs, plus the replay manifest for `fbench run rf.p25_corpus` (modes A/B/C; change 058). |
+| [`p25_lsm_hdl_replay.py`](p25_lsm_hdl_replay.py) | Feeds a recording through a bit-true model of the DDC / LSM front end and the Amaranth `LsmDemod` in the simulator. Reports frame syncs per rotation, NIDs and the PLL, AGC gate and hold. Can build carrier-gap scenarios (`--gap`, `--append-wav`, `--gap-at`) and gateware variants (`--legacy`, `--pll-clamp-q13`, `--hold-enter/--hold-exit`, `--hdl-root`) (changes 058 / 059). |
 
 Usage example (the SDRTrunk timeline):
 

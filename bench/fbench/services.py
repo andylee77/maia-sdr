@@ -51,6 +51,13 @@ class Services:
         u = self.cfg.unit(unit)
         return Http(u.host, u.http_port, timeout)
 
+    def ws_audio(self, unit: str) -> Any:
+        """A started ``/ws/audio`` recorder on the unit's p25-httpd."""
+        from .wsaudio import WsAudioRecorder
+
+        u = self.cfg.unit(unit)
+        return WsAudioRecorder(u.host, u.http_port).start()
+
     def iio(self, unit: str) -> Any:
         if unit not in self._iio:
             u = self.cfg.unit(unit)

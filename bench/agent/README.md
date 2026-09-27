@@ -717,6 +717,58 @@ operations return `{"ctrl", "level", "overflows", "current"}`.
 orchestrated by the host):
 `{"seconds_per_cell", "mt_mode", "burst_len", "cells": [{"idle_cycles", "offered_load", "mt0_mbs", "mt1_mbs", "ringv2": {"drop_full_delta", "committed_bursts_delta", "fifo_hwm", "lat_max_cycles", "max_outstanding_seen"}}], "note"}`.
 
+### replay stream / check / verify
+
+```bash
+fbench-agent replay stream --playlist P.json [--ring-mb 192] [--prefill-mb M] [--chunk-kb 1024] \
+    [--status F] [--status-ms 1000] [--report F] [--on-underrun wait|zero] [--zero-after-ms 250] \
+    [--stall-ms 500] [--out F] | iio_writedev -u local: -b 262144 cf-ad9361-dds-core-lpc voltage0 voltage1
+fbench-agent replay check --playlist P.json
+fbench-agent replay verify --file F [--offset B --length B] [--sha256 H]
+```
+
+The SD relay behind `rf.p25_corpus`: a reader thread copies the playlist's byte
+ranges into a RAM ring (pages faulted in at start, consumed file pages dropped
+with `POSIX_FADV_DONTNEED`); after the prefill (default: the whole ring) the
+main thread converts to interleaved int16 with each item's gain and writes
+stdout, which `iio_writedev` drains at the DAC rate. **stdout carries samples**
+(written through fd 1 unbuffered, pipe raised to 1 MiB), so the reply JSON goes
+to stderr and to `--report`; `--status` (under `/tmp/fbench*` or
+`/mnt/sd/bench/**`) is rewritten every `--status-ms`.
+
+Playlist: `{"format": "cs16"|"cs12"|"cs8", "rate_hz", "gain", "loops"?, "items":
+[{"path", "offset"?, "length"? (bytes, 0 = to EOF), "gain"?} | {"zeros": samples}]}`.
+`cs12` packs I and Q as 12-bit two's complement in one little-endian 24-bit
+word (I in bits 0..11), lossless for AD9361 captures; `cs8` is 2 x int8.
+
+Underruns (ring empty after the first output sample) are counted with their
+stream position and length. `wait` keeps every sample (the timeline slips by
+whatever the ~0.4 s of pipe + iio blocks could not cover); `zero` writes zeros
+after `--zero-after-ms` and then skips as many source samples, so each sample
+airs at its nominal time. Read calls slower than `--stall-ms` are listed in
+`read_stalls`. Test hooks: `--pace-hz R` (DAC-like pacing when writing a file),
+`--inject-stall BYTE:MS,...` (an SD stall inside the read at that input byte).
+
+Reply shape (illustrative values, not a measurement):
+
+```json
+{"ok": true, "cmd": "replay stream", "state": "done", "complete": true, "prefill_s": 8.4,
+ "t_first_out_unix": 1790502399.504, "samples_out": 1676800000, "seconds_out": 419.2,
+ "bytes_in": 5030400000, "ring_bytes": 201326592, "ring_fill_s": 0.0, "ring_min_fill_s": 11.3,
+ "read_mbs": 23.1, "read_calls": 4797, "read_max_ms": 2310.4, "read_slow_200ms": 7,
+ "read_hist_log2_ms": [4700, 60, "..."], "read_stalls": [{"input_byte": 1811939328, "ms": 2310,
+ "ring_fill_bytes": 190000000, "t_unix": 1790502600.1}], "reader_wait_full_s": 190.2,
+ "underruns": 0, "underrun_ms": 0.0, "underrun_events": [], "zero_samples": 0, "skipped_samples": 0,
+ "playlist": {"format": "cs12", "items": 6, "bytes": 5030400000, "samples": 1676800000, "seconds": 419.2},
+ "on_underrun": "wait", "skip_debt_left": 0}
+```
+
+`state`: `done` | `stopped` (SIGTERM) | `downstream_closed` (EPIPE) | `error`
+(reader failure, e.g. a file shorter than its range). `check` resolves the
+playlist (sizes, missing files: `not_found`, short files: `precondition`) and
+reports `MemAvailable`; `verify` hashes a staged file (about 45 s per GiB on the
+SD card).
+
 ### tx off
 
 ```bash

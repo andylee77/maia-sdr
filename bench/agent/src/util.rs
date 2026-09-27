@@ -94,6 +94,18 @@ pub fn since_start() -> Duration {
     origin().elapsed()
 }
 
+static STDOUT_IS_DATA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Marks stdout as a data stream (`replay stream`): the reply JSON then goes
+/// to stderr so it cannot land inside the samples.
+pub fn set_stdout_is_data(on: bool) {
+    STDOUT_IS_DATA.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn stdout_is_data() -> bool {
+    STDOUT_IS_DATA.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 pub fn unix_now() -> (u64, u32) {
     let d = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -19,7 +19,9 @@ bench/
   config/bench.example.toml  annotated copy of every key
   share/*.json             register maps (fbench.regmap/1) for the agent allow-lists
   fbench/                  CLI, config, transports, agent adapter, runner, safety
-  fbench/analysis/         eye, tone, ring, periodicity, sigmf, bootlog, memtest
+  fbench/analysis/         eye, tone, ring, periodicity, sigmf, bootlog, memtest,
+                           sdrtrunk/p25_corpus/p25_score/p25_dsp (replay corpus)
+  fbench/corpus.py         corpus items, rendering, SD/RAM staging, relay, taps
   fbench/tests/            one module per test family (sys/iface/xport/mem/store/net/rf/hw)
   tests_host/              pytest suite (simulated bench, no hardware)
   agent/                   fbench-agent (separate crate)
@@ -211,6 +213,86 @@ power-cycle the unit.
 
 Raise `PreconditionError` (exit 3) for missing capabilities, `Inconclusive` (exit 5)
 when data cannot support a verdict; the runner maps everything else to `error`.
+
+## Replay corpus (`rf.p25_corpus`)
+
+Many recordings replayed from the TX board (B) into the DUT (A, p25-httpd), each
+scored per transmission against SDRTrunk's decode of the same air. Design and
+inventory: [doc/changes/058_replay_corpus.md](../doc/changes/058_replay_corpus.md).
+
+1. Inventory + manifest (read-only on the SDRTrunk dirs, ~15 s; ffmpeg decodes the
+   focus call's MP3 once for the reference tone):
+
+   ```bash
+   $PY tools/p25_corpus_index.py            # -> bench/.state/corpus/manifest.json + report
+   ```
+
+2. Deploy the agent with `replay stream` on B: `bench/scripts/build_agent.sh`, then
+   `$PY bench/fbench.py setup agent --unit B --json`.
+3. Stage a mode on B's SD card once (rendered while uploading, ~9 MB/s, no local
+   copies; cached by name/size, checked with `ls -ln`, sha256 in
+   `bench/.state/corpus/staged_B.json` and next to each file on the card):
+
+   ```bash
+   $PY bench/fbench.py run rf.p25_corpus --tx B --rx A -p mode=C -p stage_only=true --json
+   ```
+
+4. Run it (the DUT is A, so always `--tx B --rx A`):
+
+   ```bash
+   $PY bench/fbench.py run rf.p25_corpus --tx B --rx A -p mode=C --json
+   $PY bench/fbench.py run rf.p25_corpus --tx B --rx A -p mode=B -p items=focus --json
+   $PY bench/fbench.py run rf.p25_corpus --tx B --rx A -p mode=A --json
+   $PY bench/fbench.py run rf.p25_corpus --tx B --rx A -p mode=A -p a_unit=window -p source=ram --json
+   ```
+
+| Mode | Item | Content | Notes |
+|---|---|---|---|
+| `A` | one wideband capture (`a_unit=whole`, default) or window (`a_unit=window`) | the real air, `cs12` (lossless 12-bit), 4 MSPS | TX LO trimmed by `units.A.ref_ppm - units.B.ref_ppm` (captures carry A's uncorrected reference) |
+| `B` | one scene: a CC recording + the traffic recordings overlapping it | 50 kSPS channel recordings up-converted to their RF offsets and mixed (`cs8`, 3.5/4/5 MSPS, AWGN `noise_db` below each channel; TX centre keeps IQ images and LO leakage >= 100 kHz off every channel) | placed on their SDRTrunk log clocks (+-30 ms) with each recording's SDRTrunk session frequency offset removed (`correct_hz`); TX LO trimmed by `-units.B.ref_ppm` |
+| `C` | one batch (~300 s): CC primer, then traffic recordings back to back on one channel (`gap_s` apart), CC throughout | `cs8`, 3.5 MSPS, offsets removed as in B | p25-httpd feeds traffic dibits only under a talkgroup context, so the follower is left on until the primer grant parks it on the channel, then `/api/traffic?lock=on&follower=off`; follower/lock are restored at the end |
+
+Selection: `items=all|focus|<id>,<id>`, `limit=N`, `max_minutes=M`. Stop
+gracefully with `touch bench/.state/corpus/STOP` (checked every tap poll; the
+current relay is stopped, TX off, maintenance exited, completed items analysed);
+continue later with `-p resume=<run dir>` or `-p resume=auto` (the latest run of
+that mode). `-p purge=true` with `stage_only` deletes corpus files the current
+selection does not use (B's card cannot hold all three modes at once). Mode C restores
+A's follower/lock in its cleanup; after a hard crash restore it by hand with
+`curl 'http://192.168.2.1:8080/api/traffic?follower=on&lock=off'`.
+
+On the TX board each item runs `fbench-agent replay stream --playlist … |
+iio_writedev -u local: -b 262144 cf-ad9361-dds-core-lpc voltage0 voltage1` in
+its own session (`setsid`, pid file, `pkill` stop). The relay's RAM ring
+(`ring_mb`, default 192 MiB, prefilled before the first sample airs) holds 16 s
+of `cs12` at 4 MSPS (29 s of `cs8` at 3.5 MSPS): the card's ~23.6 MB/s refills it
+at ~11.6 MB/s net, so multi-second SD stalls cost nothing. Any underrun is
+counted (`relay_underruns`, fail above `max_underruns`), with the stream
+position, in `items/<id>.json` `relay`.
+
+On the DUT the test polls `/api/imbe_dump` (every `tap_period_s` = 0.5 s; the ring
+holds the last 128 frames, 2.56 s of voice, after a baseline dump taken before the
+stream starts) and `/api/ui/calls` (15 s), reads `/ws/audio`, and reads
+`/api/traffic` only at item boundaries: that endpoint clears the traffic
+`nid_event` sticky bit p25-httpd's heartbeat uses.
+
+Scores (`scores.json`, metrics in `result.json`):
+
+- **Recovery (the verdict):** p25-httpd's own per-call counts. Each `.mbe`
+  transmission is matched to the `/api/ui/calls` call with the same TG and source
+  whose open interval covers it (DUT clock offset voted from the call starts), and
+  the call's `imbe` (exact per call_id since 057) is credited to its transmissions
+  in time order, each up to its truth frame count (`excess` keeps the rest).
+  Clear-voice recovery is taken over *followable* transmissions: not encrypted,
+  and not the loser of two overlapping calls, since one traffic chain follows one call.
+- **Bit accuracy (report only, never changes the recovery):** the tapped raw
+  144-bit codewords aligned in order with SDRTrunk's (`hex_aligned_*`,
+  `hex_exact_pct_of_aligned`, `hex_mean_bit_diff`; two receivers differ in the
+  bits the IMBE FEC corrects, about 2 bits per frame on the 05:44 scene) and the
+  tap's coverage of `imbe_frames_extracted` (`tap_coverage_pct`).
+- Missed transmissions, worst items, close reasons, relay health, and for focus
+  items the tone check (per-tone mean / std / max deviation, dropouts, `/ws/audio`
+  arrival gaps and lag events).
 
 ## Host tests
 

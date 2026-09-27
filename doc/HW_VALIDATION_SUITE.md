@@ -265,6 +265,7 @@ to files under `/mnt/sd/bench/runs/<run_id>/` and return the paths.
 | `sd bench --mb N --bs K [--fsync]` | SD write/read throughput and per-write latency histogram. |
 | `net serve\|send --port P --mb N` | TCP throughput between agents (A↔B) or to the host. |
 | `hwval id\|census\|ingest\|ringv2\|legacy\|mt\|evt …` | Tier 1 operations driven by `share/hwval_regs.json`. |
+| `replay stream\|check\|verify --playlist P …` | SD/RAM relay for `rf.p25_corpus`: staged IQ files (`cs16`/`cs12`/`cs8`) through a RAM ring (default 192 MiB) into int16 on stdout for `iio_writedev`; prefill, underrun and read-stall counters in `--status`/`--report`. |
 | `tx off` | Max attenuation, DAC sources off, DDS scale 0, loopbacks off. |
 
 ## 6. `hwval` validation bitstream
@@ -517,6 +518,7 @@ long bursts on an idle system.
 | `rf.isolation` | 0 | tx,rx | | leakage with the cable removed | ≥ 60 dB below cabled level |
 | `rf.refclk_eth` | 0 | tx,rx | | RX-side CW phase continuity, frequency and spurs (25/125 MHz products) with the RX unit's Ethernet link up, down, bounced, and under `net` load (F19) | no phase steps, no Ethernet-correlated spurs or frequency shift |
 | `rf.p25_replay` | 0 | tx,rx | | P25 site clip replay into a DUT running p25-httpd. A Tezuka TX board streams the clip gap-free from its own RAM (p25-httpd stopped there); other boards take one cyclic buffer. The TX LO is trimmed by `units.<recorder>.ref_ppm − units.<tx>.ref_ppm`, and traffic is scored against SDRTrunk's per-call `.mbe` decode of the same air (`rf.p25_truth_dir`). | TSBK CRC-ok ≥ 1/s; IMBE recovery ≥ 90 % of SDRTrunk; per-build regression score |
+| `rf.p25_corpus` | 0 | tx,rx | | Many-recording replay corpus (manifest from `tools/p25_corpus_index.py`): `mode=A` the real wideband captures with `.mbe` truth (9 of 18), whole and single pass from the TX board's SD card through `fbench-agent replay stream` (RAM ring, underrun counters; `a_unit=window` for RAM windows); `mode=B` synthetic full system (CC + concurrent traffic recordings up-converted from 50 kSPS and mixed, aligned to their SDRTrunk log clocks ±30 ms); `mode=C` traffic only (every traffic recording with `.mbe` truth back to back on one channel after a CC primer, follower locked with `/api/traffic?lock=on&follower=off`, restored afterwards). Per-transmission scoring: raw IMBE frames from `/api/imbe_dump` matched to SDRTrunk's `.mbe` frames; p25-httpd calls matched by TG and time; `/ws/audio` tone continuity for focus calls (the 2026-05-03 two-tone alert). Resumable, stoppable | clear-voice frame recovery ≥ 90 % of SDRTrunk over followable transmissions; 0 relay underruns; 0 focus-tone dropouts |
 | `hw.id` | 1 | any | | hwval ID/version/features, snapshot of all domains | all clocks alive |
 | `hw.census` | 1 | any | | frequency of every clock vs FCLK0; implied reference ppm; drift | within expected ppm windows |
 | `hw.ingest` | 1 | any | | valid gaps, CDC overflows, ADC stats, stuck bits | 0 gaps, 0 overflows, no stuck bits |

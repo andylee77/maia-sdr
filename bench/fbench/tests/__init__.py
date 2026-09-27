@@ -9,4 +9,5 @@ from . import (  # noqa: F401
     net_tests,
     rf_tests,
     hw_tests,
+    corpus_tests,
 )

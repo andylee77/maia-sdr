@@ -38,6 +38,12 @@ fn emit(v: &Value, pretty: bool) {
     } else {
         v.to_string()
     };
+    if util::stdout_is_data() {
+        // `replay stream`: stdout carries samples; the reply goes to stderr.
+        let mut err = std::io::stderr().lock();
+        let _ = writeln!(err, "{s}");
+        return;
+    }
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{s}");
     let _ = out.flush();

@@ -164,3 +164,136 @@ fn check_file_with_explicit_pattern_and_no_meta() {
     assert_eq!(r["lost_units"], 4 * 4096);
     let _ = std::fs::remove_dir_all(root);
 }
+
+// ── replay stream (SD relay) ────────────────────────────────────────────
+
+fn cs12(samples: &[(i32, i32)]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for &(i, q) in samples {
+        let w = (i as u32 & 0xFFF) | ((q as u32 & 0xFFF) << 12);
+        b.extend_from_slice(&[w as u8, (w >> 8) as u8, (w >> 16) as u8]);
+    }
+    b
+}
+
+fn i16s(b: &[u8]) -> Vec<i16> {
+    b.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect()
+}
+
+fn write_playlist(root: &Path, name: &str, v: Value) -> String {
+    let p = root.join(name);
+    std::fs::write(&p, v.to_string()).unwrap();
+    p.to_str().unwrap().to_string()
+}
+
+#[test]
+fn replay_stream_converts_items_in_order() {
+    let root = tmpdir("replay");
+    let a: Vec<(i32, i32)> = (0..5000).map(|k| ((k % 4096) - 2048, 2047 - (k % 4096))).collect();
+    std::fs::write(root.join("a.cs12"), cs12(&a)).unwrap();
+    let b: Vec<(i32, i32)> = (0..300).map(|k| (k, -k)).collect();
+    std::fs::write(root.join("b.cs12"), cs12(&b)).unwrap();
+    let pl = write_playlist(&root, "p.json", serde_json::json!({
+        "format": "cs12", "rate_hz": 1e6, "gain": 2.0,
+        "items": [{"path": root.join("a.cs12").to_str().unwrap(), "offset": 300, "length": 3000},
+                  {"zeros": 7},
+                  {"path": root.join("b.cs12").to_str().unwrap(), "gain": 3.0}]}));
+    let out = root.join("out.cs16");
+    let status = root.join("status.json");
+    let report = root.join("report.json");
+    let (r, c) = agent(&["replay", "stream", "--playlist", &pl, "--out", out.to_str().unwrap(),
+                         "--status", status.to_str().unwrap(), "--report", report.to_str().unwrap(),
+                         "--ring-mb", "1", "--chunk-kb", "4"], Some(&root));
+    assert_eq!(c, 0, "{r}");
+    assert_eq!(r["state"], "done");
+    assert_eq!(r["complete"], true);
+    assert_eq!(r["underruns"], 0);
+    let got = i16s(&std::fs::read(&out).unwrap());
+    let mut want = Vec::new();
+    for &(i, q) in &a[100..1100] {
+        want.push((i * 2) as i16);
+        want.push((q * 2) as i16);
+    }
+    want.extend(std::iter::repeat(0i16).take(14));
+    for &(i, q) in &b {
+        want.push((i * 3) as i16);
+        want.push((q * 3) as i16);
+    }
+    assert_eq!(got.len(), want.len());
+    assert_eq!(got, want);
+    assert_eq!(r["samples_out"], 1000 + 7 + 300);
+    let rep: Value = serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
+    assert_eq!(rep["samples_out"], r["samples_out"]);
+    assert!(status.exists());
+    // check: sizes and a truncated range
+    let (v, c) = agent(&["replay", "check", "--playlist", &pl], Some(&root));
+    assert_eq!(c, 0, "{v}");
+    assert_eq!(v["samples"], 1307);
+    let bad = write_playlist(&root, "bad.json", serde_json::json!({
+        "format": "cs12", "items": [{"path": root.join("b.cs12").to_str().unwrap(), "length": 3000}]}));
+    let (v, c) = agent(&["replay", "check", "--playlist", &bad], Some(&root));
+    assert_eq!((v["code"].as_str(), c), (Some("precondition"), 3), "{v}");
+    let (v, c) = agent(&["replay", "verify", "--file", root.join("b.cs12").to_str().unwrap()], Some(&root));
+    assert_eq!(c, 0, "{v}");
+    assert_eq!(v["bytes"], 900);
+    assert_eq!(v["sha256"].as_str().unwrap().len(), 64);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn replay_stream_counts_underruns_and_keeps_timeline_in_zero_mode() {
+    let root = tmpdir("replay_stall");
+    let n = 2_000_000usize; // 6 MB of cs12, 1 s at the paced 2 MSPS
+    let a: Vec<(i32, i32)> = (0..n).map(|k| ((k % 2000) as i32 - 1000, 5)).collect();
+    std::fs::write(root.join("a.cs12"), cs12(&a)).unwrap();
+    let pl = write_playlist(&root, "p.json", serde_json::json!({
+        "format": "cs12", "rate_hz": 2e6,
+        "items": [{"path": root.join("a.cs12").to_str().unwrap()}]}));
+    for mode in ["wait", "zero"] {
+        let out = root.join(format!("out_{mode}.cs16"));
+        // 256 KiB ring = 87k samples = 44 ms at the paced 2 MSPS; a 300 ms read stall
+        // half way drains it.
+        let (r, c) = agent(&["replay", "stream", "--playlist", &pl, "--out", out.to_str().unwrap(),
+                             "--ring-mb", "1", "--prefill-mb", "0", "--chunk-kb", "64",
+                             "--pace-hz", "2e6", "--inject-stall", "1500000:300",
+                             "--on-underrun", mode, "--zero-after-ms", "50", "--stall-ms", "100"],
+                           Some(&root));
+        assert_eq!(c, 0, "{r}");
+        assert!(r["underruns"].as_u64().unwrap() >= 1, "{mode}: {r}");
+        assert!(r["underrun_ms"].as_f64().unwrap() > 100.0, "{mode}: {r}");
+        assert_eq!(r["read_stalls"].as_array().unwrap().len(), 1, "{mode}: {r}");
+        let got = i16s(&std::fs::read(&out).unwrap());
+        assert_eq!(got.len(), 2 * n, "{mode}: one output sample per source sample: {r}");
+        if mode == "wait" {
+            assert_eq!(r["zero_samples"], 0);
+            assert_eq!(got[2 * (n - 1)], a[n - 1].0 as i16, "every sample kept");
+        } else {
+            let z = r["zero_samples"].as_u64().unwrap();
+            assert!(z > 0, "{r}");
+            assert_eq!(r["skipped_samples"], z, "skip what was zero-filled: timeline kept");
+            assert_eq!(got[2 * (n - 1)], a[n - 1].0 as i16, "last sample still at its slot");
+        }
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn replay_stream_to_stdout_keeps_json_off_the_data() {
+    let root = tmpdir("replay_stdout");
+    let a: Vec<(i32, i32)> = (0..10_000).map(|k| (k % 100, 10)).collect();
+    std::fs::write(root.join("a.cs12"), cs12(&a)).unwrap();
+    let pl = write_playlist(&root, "p.json", serde_json::json!({
+        "format": "cs12", "rate_hz": 1e6, "items": [{"path": root.join("a.cs12").to_str().unwrap()}]}));
+    let out = Command::new(env!("CARGO_BIN_EXE_fbench-agent"))
+        .args(["replay", "stream", "--playlist", &pl, "--ring-mb", "1"])
+        .env("FBENCH_EXTRA_WRITE_ROOT", &root)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(out.stdout.len(), 10_000 * 4, "stdout is exactly the samples");
+    let err = String::from_utf8(out.stderr).unwrap();
+    let v: Value = serde_json::from_str(err.lines().last().unwrap()).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["state"], "done");
+    let _ = std::fs::remove_dir_all(root);
+}
