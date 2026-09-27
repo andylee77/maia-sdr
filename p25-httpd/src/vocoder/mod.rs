@@ -55,7 +55,18 @@ impl JmbeDecoder {
     pub fn last_decode_times(&self) -> DecodeStageTimes {
         self.inner.last_decode_times()
     }
+
+    /// Change 057: IMBE FEC bit errors corrected in the most recent
+    /// frame (see `vocoder_task`'s error count).
+    pub fn last_error_count(&self) -> u32 {
+        self.inner.last_error_count()
+    }
 }
+
+/// Change 057: a frame counts as a vocoder error when the IMBE FEC had
+/// to correct more than this many bits (the "errors_over_4bit" figure
+/// of `/api/pipeline`, which was never incremented before 057).
+pub const ERROR_FRAME_BITS: u32 = 4;
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;

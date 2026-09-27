@@ -379,8 +379,8 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     EndpointDoc {
         method: "GET",
         path: "/api/recordings",
-        params: "",
-        description: "Ring of recent call recordings: id, TG, started_unix_ms, duration_ms, size_bytes.",
+        params: "?limit=<N>",
+        description: "Recent call recordings, newest first: id (= call_id), TG, started_unix_ms, duration_ms, size_bytes, per-call counters by call_id, storage ram|sd (change 057), sd_pending while queued for the SD card.",
     },
     EndpointDoc {
         method: "GET",
@@ -488,25 +488,25 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
         method: "GET",
         path: "/api/ui/calls",
         params: "?limit=<1..250, default 40>&nf=0|1",
-        description: "Change 056: recent calls, newest first, joined with recordings by call_id; voice_ms, audio_status (recorded/saving/not_recorded/evicted/no_voice/encrypted/not_followed). nf=0 hides not-followed grants.",
+        description: "Change 056: recent calls, newest first, joined with recordings by call_id; voice_ms, audio_status (recorded/saving/not_recorded/evicted/no_voice/encrypted/not_followed). nf=0 hides not-followed grants. Change 057: counters per call_id, close_reason call_end|tg_change|timeout.",
     },
     EndpointDoc {
         method: "GET",
         path: "/api/ui/settings",
         params: "",
-        description: "Change 056: persisted UI settings (recording on/off + retention, TG / unit aliases, monitor list) + storage info.",
+        description: "Change 056: persisted UI settings (recording on/off + retention, TG / unit aliases, monitor list) + storage info. Change 057: recording store ram|sd + SD retention, call close timing, SD card status (recording_storage.sd).",
     },
     EndpointDoc {
         method: "PUT",
         path: "/api/ui/settings",
-        params: "body=JSON {recording:{enabled,max_count}, tg_aliases:{}, unit_aliases:{}, monitor_tgs:[]} (any subset)",
+        params: "body=JSON {recording:{enabled,max_count,storage,sd_max_count,sd_max_mb}, call:{hang_ms,end_grace_ms}, tg_aliases:{}, unit_aliases:{}, monitor_tgs:[]} (any subset)",
         description: "Change 056: validate, apply live and persist to /mnt/jffs2/p25-ui-settings.json. 400 on invalid/unknown fields.",
     },
     EndpointDoc {
         method: "GET",
         path: "/api/ui/state",
         params: "",
-        description: "Change 056: consolidated web-UI state (site/CC health, current call with phase voice|hang|acquiring, chain, recording, audio listeners, calls_rev). ~1-2 KB, for a 1 Hz poll.",
+        description: "Change 056: consolidated web-UI state (site/CC health, current call with phase voice|hang|acquiring, chain, recording, audio listeners, calls_rev). ~1-2 KB, for a 1 Hz poll. Change 057: call.close_via end|timeout, close_window_ms, end_lc; recording.storage / sd_state.",
     },
     EndpointDoc {
         method: "GET",

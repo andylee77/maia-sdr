@@ -330,6 +330,15 @@ pub enum TdulcLcw {
 /// Returns `None` if the length is wrong; returns `TdulcLcw::Other`
 /// for unrecognized opcodes or bit-corrupt frames.
 pub fn parse_tdulc_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
+    parse_tdulc_lcw_checked(body_raw).map(|(lcw, _)| lcw)
+}
+
+/// Change 057: `parse_tdulc_lcw` plus whether the RS(24,12,13) decode
+/// succeeded (`true` = the LC is FEC-valid; `false` = uncorrectable,
+/// the LCW is the best-effort uncorrected payload). SDRTrunk acts on a
+/// TDULC only when its LCW is valid; the lifecycle's end-of-transmission
+/// close does the same.
+pub fn parse_tdulc_lcw_checked(body_raw: &[u8]) -> Option<(TdulcLcw, bool)> {
     if body_raw.len() != DataUnit::TduLc.length_dibits() {
         return None;
     }
@@ -399,9 +408,9 @@ pub fn parse_tdulc_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
     for i in 0..12 {
         rs_input[12 + i] = hex_at(LC_HEX_POSITIONS[11 - i]);
     }
-    let rs_output = match super::fec::rs_24_12_13::decode(&rs_input) {
-        Ok(v) => v,
-        Err(v) => v,
+    let (rs_output, rs_ok) = match super::fec::rs_24_12_13::decode(&rs_input) {
+        Ok(v) => (v, true),
+        Err(v) => (v, false),
     };
     // The 12 corrected LC hexbits are at output[23..=12] (SDRTrunk
     // `for x in (23..=12) pack into binaryMessage`), so output[23] is
@@ -415,7 +424,7 @@ pub fn parse_tdulc_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
         }
     }
 
-    Some(classify_lcw(&lc_bits))
+    Some((classify_lcw(&lc_bits), rs_ok))
 }
 
 /// Classify a decoded 72-bit Link Control Word into a [`TdulcLcw`]

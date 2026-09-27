@@ -5,6 +5,7 @@
 //! so multiple consumers (HTTP streaming, WebSocket, future WAV
 //! recorder) can independently read the audio stream.
 
+pub mod rec_storage;
 pub mod recorder;
 
 use tokio::sync::broadcast;
@@ -203,12 +204,34 @@ pub enum CallBoundaryKind {
     /// for `LOS_TIMEOUT_MS`. Mirrors SDRTrunk's per-channel
     /// loss-of-sync flag without adding a new HDL counter.
     ///
-    /// Carries no fields: the bare arrival of the event is the
-    /// signal, and the timestamp is the receipt time at the
-    /// lifecycle task. NAC/TG/DUID are intentionally omitted —
-    /// LoS is a pure framer-state metric, independent of which
-    /// TG / NAC the chain is decoding.
-    TrafficNidObserved,
+    /// The timestamp is the receipt time at the lifecycle task.
+    /// NAC/TG are intentionally omitted — LoS is a pure framer-state
+    /// metric, independent of which TG / NAC the chain is decoding.
+    ///
+    /// Change 057: `voice` = a valid LDU1 / LDU2 NID. The heartbeat
+    /// reads the HDL in real time (16 ms poll), ahead of the PS
+    /// decode, so a voice NID seen after an end-of-transmission marker
+    /// means the channel is carrying voice again; the lifecycle then
+    /// cancels the pending end close.
+    TrafficNidObserved { voice: bool },
+    /// Change 057: end of a voice transmission of `call_id` — the first
+    /// LC-FEC-valid TDULC decoded after voice of that call (Motorola
+    /// TALK COMPLETE, CALL TERMINATION, or the GROUP VOICE CHANNEL USER
+    /// the system repeats through its channel hang). Emitted by the
+    /// forwarder once per transmission (`CallCounts::note_end_marker`),
+    /// never for a TDULC before the call's first LDU. `call_id` and
+    /// `air_ms` come from the air-time segment in airtime mode, so a
+    /// previous call's late terminator never ends the current call.
+    /// SDRTrunk ends its call event at the same frame.
+    VoiceEnd {
+        call_id: u64,
+        /// Air time (unix ms) of the terminator (airtime mode), else
+        /// its decode time.
+        air_ms: u64,
+        /// "talk_complete" | "call_termination" | "network_teardown" |
+        /// "channel_user" | "link_control".
+        lc: &'static str,
+    },
 }
 
 pub type CallBoundaryTx = broadcast::Sender<CallBoundary>;

@@ -28,7 +28,8 @@
 //! 5. **Safety-net grace timer (`FINALIZE_GRACE` = 15 s)** — runs in
 //!    the background. Closes any active recording whose `last_chunk_at`
 //!    is older than this. Should never fire in practice; `call_tracker`
-//!    emits `CallClose(Timeout)` after 10 s of inactivity. If the
+//!    emits `CallClose` at the end of transmission or after `hang_ms`
+//!    (≤ 30 s setting, default 3 s) without keep-alive. If the
 //!    safety net fires, `boundary_lag_events` likely incremented and
 //!    the broadcast topology needs review.
 //!
@@ -47,22 +48,30 @@
 //! design rationale.
 //!
 //! WAV format: 8 kHz 16-bit mono (matches vocoder output directly,
-//! no resampling). Storage in `tmpfs` (`/tmp`) so the SD card isn't
-//! wear-cycled. The ring is capped at `MAX_RECORDINGS`; evicting an
-//! entry also deletes its WAV.
+//! no resampling). Storage: `tmpfs` (`/tmp/p25_recordings`) by default;
+//! change 057 adds the SD card as an option (`audio::rec_storage`: the
+//! write happens on a separate thread, never here). Retention is per
+//! store (`RecordingPolicy::retention`); evicting an entry also deletes
+//! its WAV.
+//!
+//! Change 057: per-recording decode counters come from
+//! `ImbeForwarder::call_counts` (this call's own frames, by call_id),
+//! read at finalise, 2 s after the close, when the air-time tail has
+//! been decoded. They were global-counter deltas before (056 R1).
 
 use std::collections::VecDeque;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::Mutex;
 
 use crate::audio::AudioChunk;
+use crate::audio::rec_storage::{self, RecordingStorage, STORE_RAM, STORE_SD};
 use crate::app::grant_follower::{
     CallTrackerEvent, CallTrackerEventKind, CloseReason,
 };
+use crate::services::ui_settings::{Retention, StorageKind};
 
 /// Max number of recordings kept in the ring. Oldest evicted when
 /// the ring fills. 40 entries at ~30 s each ≈ 20 minutes of recent
@@ -73,40 +82,23 @@ use crate::app::grant_follower::{
 /// editable from the web UI).
 pub const MAX_RECORDINGS: usize = 40;
 
-/// Change 056: per-recording decode counters are global-counter deltas.
-/// They are now snapshotted when the call closes (once the vocoder has
-/// consumed every frame submitted before the close), not at finalise:
-/// finalise runs `CLOSING_DRAIN_MS` later, by which time the NEXT call's
-/// frames were counted too (bench 2026-09-26: 72-frame PTTs reported
-/// `imbe_extracted` 144–153). Upper bound on the wait for the vocoder.
-const CLOSE_STATS_WAIT_MS: u64 = 1_000;
-
-/// Change 056: take the close-time counter snapshot now? True once the
-/// vocoder consumed everything submitted before the close, or after
-/// `CLOSE_STATS_WAIT_MS` regardless.
-pub fn close_stats_due(
-    close_at_ms: u64,
-    expected_consumed: u64,
-    consumed: u64,
-    now_ms: u64,
-) -> bool {
-    consumed >= expected_consumed
-        || now_ms.saturating_sub(close_at_ms) >= CLOSE_STATS_WAIT_MS
-}
-
-/// Storage directory. Created if missing.
-pub const STORAGE_DIR: &str = "/tmp/p25_recordings";
+/// RAM storage directory (tmpfs). Created if missing. Change 057: the
+/// SD directory is `rec_storage::SD_DIR`.
+pub const STORAGE_DIR: &str = rec_storage::RAM_DIR;
 
 /// Safety-net grace window. Phase 2b (2026-04-25): the primary close
-/// trigger is `CallTrackerEvent::CallClose` from `app::grant_follower`,
-/// which emits at the end of `CALL_TIMEOUT_MS = 10 s` of inactivity.
-/// This grace runs longer (15 s) so it only fires if the tracker
+/// trigger is `CallTrackerEvent::CallClose` from `app::grant_follower`
+/// (change 057: end of transmission + grace, or `hang_ms` without
+/// keep-alive, 30 s at most). This grace only fires if the tracker
 /// broadcast lagged, the spawn wiring broke, or call_tracker missed
 /// the close. If you see `reason=grace_window_safety` in the recorder
 /// event log, investigate `boundary_lag_events` first — it's a
 /// recorder-vs-tracker desynchronisation indicator, not a normal
-/// close.
-const FINALIZE_GRACE: Duration = Duration::from_millis(15_000);
+/// close. It measures silence of the recording (no chunk), so it does
+/// not cut a long call short. Change 057: 15 s → 45 s, above the
+/// longest configurable close (`hang_ms` ≤ 30 s, `end_grace_ms` ≤ 10 s)
+/// so it can never finalise a call the lifecycle still holds open.
+const FINALIZE_GRACE: Duration = Duration::from_millis(45_000);
 
 /// 2026-04-26 session-lifecycle refactor: closing-state drain.
 /// When CallClose arrives, the recorder sets `active.close_at_ms`
@@ -136,8 +128,24 @@ const MIN_KEEPABLE_MS: u64 = 0;
 /// grace fires within ~50 ms of the deadline.
 const RECORDER_TICK_MS: u64 = 50;
 
+/// Change 057: WAV bytes held in RAM until the SD writer has stored
+/// them (`audio::rec_storage`). `/api/recordings/{id}.wav` serves these
+/// while present, so a recording is playable the moment it is listed.
+#[derive(Clone)]
+pub struct PendingWav(pub Arc<Vec<u8>>);
+
+impl std::fmt::Debug for PendingWav {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PendingWav({} bytes)", self.0.len())
+    }
+}
+
+fn ser_pending<S: serde::Serializer>(v: &Option<PendingWav>, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_bool(v.is_some())
+}
+
 /// Metadata for a completed recording, returned by /api/recordings.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct RecordingEntry {
     /// Opaque identifier — monotonic per-process counter. Used in
     /// the URL path for /api/recordings/{id}.wav.
@@ -239,6 +247,16 @@ pub struct RecordingEntry {
     /// Mean lag across all chunks of this recording.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mean_chunk_lag_ms: Option<u64>,
+    /// Change 057: "ram" (tmpfs, lost on reboot) or "sd" (SD card).
+    pub storage: &'static str,
+    /// Change 057: bytes not yet on the SD card (serialised as
+    /// `"sd_pending": true` while present).
+    #[serde(
+        rename = "sd_pending",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_pending"
+    )]
+    pub pending: Option<PendingWav>,
 }
 
 /// Shared ring buffer of completed recordings. Newest at the back.
@@ -332,13 +350,6 @@ struct ActiveCall {
     started_unix_ms: u64,
     pcm: Vec<i16>,
     last_chunk_at: Instant,
-    /// IMBE drop snapshot at `call_open`; the delta at finalise
-    /// identifies calls that took audio loss from IMBE queue full.
-    imbe_drops_at_open: u64,
-    /// 2026-04-24: full counter baselines at call open so each
-    /// RecordingEntry carries per-call deltas. Populated from the
-    /// ImbeForwarder handed into the recorder task.
-    stats_at_open: Option<StatsSnapshot>,
     /// 2026-04-24: traffic-channel freq + channel string. Phase 2b:
     /// now populated from `CallTrackerEvent::CallOpen` (which got it
     /// from the CC grant), removing the recorder's dependency on
@@ -394,49 +405,10 @@ struct ActiveCall {
     max_chunk_lag_ms: u64,
     total_chunk_lag_ms: u64,
     lag_count: u64,
-    /// Change 056: `frames_submitted` at the close; the close-time
-    /// counter snapshot waits for the vocoder to consume up to here.
-    close_expected_consumed: u64,
-    /// Change 056: counters at the close (see `CLOSE_STATS_WAIT_MS`).
-    stats_at_close: Option<StatsSnapshot>,
-}
-
-#[derive(Clone, Copy)]
-struct StatsSnapshot {
-    imbe_extracted: u64,
-    imbe_dropped: u64,
-    hdu: u64,
-    ldu1: u64,
-    ldu2: u64,
-    tdu: u64,
-    tdu_lc: u64,
-    pcm: u64,
-    errors: u64,
-    silent: u64,
-}
-
-impl StatsSnapshot {
-    fn from_forwarder(
-        f: &crate::app::imbe_forwarder::ImbeForwarder,
-    ) -> Self {
-        use std::sync::atomic::Ordering;
-        Self {
-            imbe_extracted: f.imbe_frames_extracted.load(Ordering::Relaxed),
-            imbe_dropped:   f.imbe_frames_dropped.load(Ordering::Relaxed),
-            hdu:            f.hdu_count.load(Ordering::Relaxed),
-            ldu1:           f.ldu1_count.load(Ordering::Relaxed),
-            ldu2:           f.ldu2_count.load(Ordering::Relaxed),
-            tdu:            f.tdu_count.load(Ordering::Relaxed),
-            tdu_lc:         f.tdu_lc_count.load(Ordering::Relaxed),
-            pcm:            f.vocoder_pcm_produced.load(Ordering::Relaxed),
-            errors:         f.vocoder_errors.load(Ordering::Relaxed),
-            silent:         f.vocoder_frames_silent_observed.load(Ordering::Relaxed),
-        }
-    }
 }
 
 impl ActiveCall {
-    fn new(call_id: u64, talkgroup: u16, imbe_drops_at_open: u64) -> Self {
+    fn new(call_id: u64, talkgroup: u16) -> Self {
         let started_unix_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -449,8 +421,6 @@ impl ActiveCall {
             started_unix_ms,
             pcm: Vec::with_capacity(8_000 * 10), // pre-size for 10 s
             last_chunk_at: Instant::now(),
-            imbe_drops_at_open,
-            stats_at_open: None,
             freq_hz_at_open: None,
             channel_at_open: None,
             chunks_match: 0,
@@ -463,26 +433,6 @@ impl ActiveCall {
             max_chunk_lag_ms: 0,
             total_chunk_lag_ms: 0,
             lag_count: 0,
-            close_expected_consumed: 0,
-            stats_at_close: None,
-        }
-    }
-
-    /// Change 056: take the close-time counter snapshot once it is due.
-    fn maybe_snapshot_close_stats(
-        &mut self,
-        forwarder: Option<&Arc<crate::app::imbe_forwarder::ImbeForwarder>>,
-        now_ms: u64,
-    ) {
-        use std::sync::atomic::Ordering;
-        let (Some(close_at), None, Some(f)) =
-            (self.close_at_ms, self.stats_at_close, forwarder)
-        else {
-            return;
-        };
-        let consumed = f.frames_consumed.load(Ordering::Relaxed);
-        if close_stats_due(close_at, self.close_expected_consumed, consumed, now_ms) {
-            self.stats_at_close = Some(StatsSnapshot::from_forwarder(f));
         }
     }
 
@@ -535,10 +485,11 @@ impl ActiveCall {
     }
 }
 
-/// Write a PCM-16 mono 8 kHz WAV with proper headers (not the
-/// streaming 0xFFFFFFFF placeholder used by the live /api/audio
-/// endpoint — finalised recordings know their size).
-fn write_wav(path: &Path, pcm: &[i16]) -> std::io::Result<u64> {
+//// Change 057: a finalised recording as WAV bytes (PCM-16 mono 8 kHz
+/// with proper sizes, not the streaming 0xFFFFFFFF placeholder used by
+/// the live /api/audio endpoint). Built in memory so the SD write can
+/// happen on the writer thread while the bytes serve playback.
+pub fn wav_bytes(pcm: &[i16]) -> Vec<u8> {
     let sample_rate: u32 = 8_000;
     let channels: u16 = 1;
     let bits_per_sample: u16 = 16;
@@ -548,28 +499,33 @@ fn write_wav(path: &Path, pcm: &[i16]) -> std::io::Result<u64> {
     let data_bytes: u32 = (pcm.len() * 2) as u32;
     let riff_size: u32 = data_bytes + 36;
 
-    let mut f = std::fs::File::create(path)?;
-    f.write_all(b"RIFF")?;
-    f.write_all(&riff_size.to_le_bytes())?;
-    f.write_all(b"WAVE")?;
-    f.write_all(b"fmt ")?;
-    f.write_all(&16u32.to_le_bytes())?;
-    f.write_all(&1u16.to_le_bytes())?; // PCM
-    f.write_all(&channels.to_le_bytes())?;
-    f.write_all(&sample_rate.to_le_bytes())?;
-    f.write_all(&byte_rate.to_le_bytes())?;
-    f.write_all(&block_align.to_le_bytes())?;
-    f.write_all(&bits_per_sample.to_le_bytes())?;
-    f.write_all(b"data")?;
-    f.write_all(&data_bytes.to_le_bytes())?;
-
+    let mut b = Vec::with_capacity(44 + pcm.len() * 2);
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&riff_size.to_le_bytes());
+    b.extend_from_slice(b"WAVE");
+    b.extend_from_slice(b"fmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    b.extend_from_slice(&channels.to_le_bytes());
+    b.extend_from_slice(&sample_rate.to_le_bytes());
+    b.extend_from_slice(&byte_rate.to_le_bytes());
+    b.extend_from_slice(&block_align.to_le_bytes());
+    b.extend_from_slice(&bits_per_sample.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&data_bytes.to_le_bytes());
     // Little-endian i16 payload.
-    let mut bytes = Vec::with_capacity(pcm.len() * 2);
     for s in pcm {
-        bytes.extend_from_slice(&s.to_le_bytes());
+        b.extend_from_slice(&s.to_le_bytes());
     }
-    f.write_all(&bytes)?;
-    Ok(44 + data_bytes as u64)
+    b
+}
+
+/// Change 057: where a recording is saved, as decided at finalise.
+pub struct SaveTarget<'a> {
+    pub storage: &'a RecordingStorage,
+    /// Store selected in the settings for new recordings.
+    pub kind: StorageKind,
+    pub retention: Retention,
 }
 
 /// Finalise an ActiveCall into a RecordingEntry (writes WAV, adds
@@ -587,9 +543,8 @@ async fn finalize(
     // 2026-04-30). Optional so unit tests / pre-2026-05-03 callers
     // still work without plumbing the channel.
     event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
-    // Change 056: ring size to enforce after the push (the live
-    // `RecordingPolicy::max_count`).
-    max_count: usize,
+    // Change 057: store + retention (replaces the RAM-only max_count).
+    target: &SaveTarget<'_>,
 ) {
     let duration_ms = call.duration_ms();
     // 2026-04-25: discard only if the call produced ZERO PCM
@@ -628,7 +583,8 @@ async fn finalize(
     // matching SDRTrunk's `TO_<TG>_FROM_<source>.mp3` layout. When
     // TDULC LC parser couldn't recover source (or the site isn't
     // Motorola), omit `_from<n>` and fall back to
-    // `rec_<ms>_<id>_tg<n>.wav`.
+    // `rec_<ms>_<id>_tg<n>.wav`. Change 057: `rec_storage::parse_filename`
+    // reads this layout back when indexing the SD card at boot.
     let filename = match call.source {
         Some(s) => format!(
             "rec_{}_{}_tg{}_from{}.wav",
@@ -639,10 +595,42 @@ async fn finalize(
             call.started_unix_ms, id, call.talkgroup,
         ),
     };
-    let path = Path::new(STORAGE_DIR).join(&filename);
-    let size = match write_wav(&path, &call.pcm) {
-        Ok(s) => s,
-        Err(e) => {
+    let bytes = wav_bytes(&call.pcm);
+    let size = bytes.len() as u64;
+    // Change 057: SD when selected and usable (the write happens on the
+    // writer thread; the entry keeps the bytes until it lands), else the
+    // RAM store, written here (tmpfs, never stalls).
+    let sd = match target.kind {
+        StorageKind::Sd => match target.storage.sd_ready() {
+            Ok(()) => true,
+            Err(why) => {
+                target.storage.note_fallback(&why);
+                if let Some(l) = event_log {
+                    l.push(
+                        crate::services::event_log::LogCategory::Recorder,
+                        "sd_unavailable".to_string(),
+                        serde_json::json!({
+                            "recording_id": id,
+                            "reason":       why,
+                            "saved_to":     STORE_RAM,
+                        }),
+                    );
+                }
+                false
+            }
+        },
+        StorageKind::Ram => false,
+    };
+    let (path, storage, pending) = if sd {
+        let path = target.storage.sd_dir().join(&filename);
+        let bytes = Arc::new(bytes);
+        target.storage.submit_sd_write(id, path.clone(), bytes.clone());
+        (path, STORE_SD, Some(PendingWav(bytes)))
+    } else {
+        let path = target.storage.ram_dir().join(&filename);
+        let written = std::fs::create_dir_all(target.storage.ram_dir())
+            .and_then(|_| std::fs::write(&path, &bytes));
+        if let Err(e) = written {
             tracing::warn!("recorder: WAV write failed: {e}");
             if let Some(l) = event_log {
                 l.push(
@@ -659,6 +647,7 @@ async fn finalize(
             }
             return;
         }
+        (path, STORE_RAM, None)
     };
     if let Some(l) = event_log {
         l.push(
@@ -672,45 +661,20 @@ async fn finalize(
                 "duration_ms":  duration_ms,
                 "size_bytes":   size,
                 "pcm_samples":  call.pcm.len(),
+                "storage":      storage,
             }),
         );
     }
-    // Per-call decode-stat deltas. `stats_at_open` is the snapshot
-    // of the forwarder's cumulative counters taken when the call was
-    // opened; subtracting from `now` gives the per-call numbers that
-    // /api/recordings exposes for the dashboard's per-row IMBE column.
-    let (imbe_extracted, imbe_dropped, hdu_count, ldu1_count, ldu2_count,
-         tdu_count, tdu_lc_count, vocoder_pcm, vocoder_errors, vocoder_silent) =
-        match (call.stats_at_open, forwarder) {
-            (Some(base), Some(f)) => {
-                // Change 056: close-time snapshot when taken (it
-                // excludes the next call's frames), else now.
-                let now = call.stats_at_close
-                    .unwrap_or_else(|| StatsSnapshot::from_forwarder(f));
-                (
-                    Some(now.imbe_extracted.saturating_sub(base.imbe_extracted)),
-                    Some(now.imbe_dropped.saturating_sub(base.imbe_dropped)),
-                    Some(now.hdu.saturating_sub(base.hdu)),
-                    Some(now.ldu1.saturating_sub(base.ldu1)),
-                    Some(now.ldu2.saturating_sub(base.ldu2)),
-                    Some(now.tdu.saturating_sub(base.tdu)),
-                    Some(now.tdu_lc.saturating_sub(base.tdu_lc)),
-                    Some(now.pcm.saturating_sub(base.pcm)),
-                    Some(now.errors.saturating_sub(base.errors)),
-                    Some(now.silent.saturating_sub(base.silent)),
-                )
-            }
-            _ => (None, None, None, None, None, None, None, None, None, None),
-        };
+    // Change 057: per-call decode counters by call_id. Finalise runs
+    // `CLOSING_DRAIN_MS` after the close, so the air-time tail is in.
+    let counts = forwarder.map(|f| f.call_counts.get(id).unwrap_or_default());
+    let pick = |g: fn(&crate::app::call_counters::CallCounts) -> u64| counts.as_ref().map(g);
     // 2026-04-26: routing-loss attribution per recording.
     // chunks_match + chunks_zero + chunks_drain = chunks actually
     // appended to this WAV. Each = 20 ms = 160 PCM samples.
-    // imbe_extracted (above) is the GLOBAL counter delta during this
-    // call's wall-time window — includes frames that were stamped
-    // with a different call_id and routed elsewhere. If
-    // imbe_extracted >> chunks_total, frames are escaping this
-    // recording (likely to the next via call_id mismatch, or to
-    // /dev/null via the no-active path).
+    // Compare against imbe_extracted (this call's decoded frames):
+    // frames that were decoded but not appended escaped the recording
+    // (vocoder queue full, or routing).
     let chunks_match = Some(call.chunks_match);
     let chunks_zero_callid = Some(call.chunks_zero);
     let chunks_drain = Some(call.chunks_drain);
@@ -733,16 +697,16 @@ async fn finalize(
         path,
         size_bytes: size,
         filename,
-        imbe_extracted,
-        imbe_dropped,
-        hdu_count,
-        ldu1_count,
-        ldu2_count,
-        tdu_count,
-        tdu_lc_count,
-        vocoder_pcm,
-        vocoder_errors,
-        vocoder_silent,
+        imbe_extracted: pick(|c| c.imbe_extracted),
+        imbe_dropped: pick(|c| c.imbe_dropped),
+        hdu_count: pick(|c| c.hdu),
+        ldu1_count: pick(|c| c.ldu1),
+        ldu2_count: pick(|c| c.ldu2),
+        tdu_count: pick(|c| c.tdu),
+        tdu_lc_count: pick(|c| c.tdu_lc),
+        vocoder_pcm: pick(|c| c.vocoder_pcm_samples),
+        vocoder_errors: pick(|c| c.vocoder_errors),
+        vocoder_silent: pick(|c| c.vocoder_silent),
         freq_hz: call.freq_hz_at_open,
         channel: call.channel_at_open.clone(),
         chunks_match,
@@ -752,10 +716,12 @@ async fn finalize(
         sources_observed: call.sources_observed.clone(),
         max_chunk_lag_ms,
         mean_chunk_lag_ms,
+        storage,
+        pending,
     };
     let mut ring = store.lock().await;
     ring.push_back(entry.clone());
-    evict_beyond(&mut ring, max_count);
+    apply_retention(&mut ring, &target.retention, target.storage);
     drop(ring);
     // 2026-05-03 ws-event push: dashboard's Recent Calls panel
     // splices the row immediately. Without this, the row only
@@ -776,28 +742,37 @@ async fn finalize(
     }
 }
 
-/// Change 056: drop the oldest entries (and their WAVs) until at most
-/// `max_count` remain. Returns the evicted entries.
-fn evict_beyond(
+/// Change 057 (was `evict_beyond`): drop the recordings beyond each
+/// store's retention (`rec_storage::evictions`) and delete their files
+/// (RAM at once, SD through the writer queue). Returns the evicted
+/// entries, oldest first.
+pub fn apply_retention(
     ring: &mut VecDeque<RecordingEntry>,
-    max_count: usize,
+    retention: &Retention,
+    storage: &RecordingStorage,
 ) -> Vec<RecordingEntry> {
-    let mut evicted = Vec::new();
-    while ring.len() > max_count.max(1) {
-        if let Some(old) = ring.pop_front() {
-            let _ = std::fs::remove_file(&old.path);
+    let idx = rec_storage::evictions(ring, retention);
+    let mut evicted = Vec::with_capacity(idx.len());
+    for &i in idx.iter().rev() {
+        if let Some(old) = ring.remove(i) {
+            storage.remove(&old);
             evicted.push(old);
         }
     }
+    evicted.reverse();
     evicted
 }
 
 /// Change 056: apply a lowered retention immediately (settings change)
 /// instead of waiting for the next finalise. Returns how many
 /// recordings were deleted.
-pub async fn enforce_retention(store: &RecordingStore, max_count: usize) -> usize {
+pub async fn enforce_retention(
+    store: &RecordingStore,
+    storage: &RecordingStorage,
+    retention: Retention,
+) -> usize {
     let mut ring = store.lock().await;
-    evict_beyond(&mut ring, max_count).len()
+    apply_retention(&mut ring, &retention, storage).len()
 }
 
 /// Recorder background task. Runs for the lifetime of the process.
@@ -820,19 +795,17 @@ pub async fn enforce_retention(store: &RecordingStore, max_count: usize) -> usiz
 /// dropped — they belong to a different speaker (typically the
 /// previous one whose WAV has just closed).
 ///
-/// `imbe_drops` (atomic surfaced via /api/traffic) is used here to
-/// record the drop-delta during each recording's lifetime so per-call
-/// drop counts surface in the log entry and JSON.
+/// Per-call IMBE drops (vocoder queue full) surface in the log entry
+/// and JSON from the forwarder's per-call counters (change 057).
+#[allow(clippy::too_many_arguments)]
 pub async fn recorder_task(
     mut audio_rx: tokio::sync::broadcast::Receiver<AudioChunk>,
     mut tracker_rx: tokio::sync::broadcast::Receiver<CallTrackerEvent>,
     store: RecordingStore,
     diag: RecorderDiagArc,
     event_log: Option<Arc<crate::services::event_log::EventLog>>,
-    imbe_drops: Arc<std::sync::atomic::AtomicU64>,
-    // 2026-04-24: full forwarder handle for per-call counter snapshots
-    // at open + delta at finalize. Optional — pre-2026-04-24 spawn
-    // paths could pass None.
+    // 2026-04-24: full forwarder handle for the per-call counters.
+    // Optional — pre-2026-04-24 spawn paths could pass None.
     forwarder: Option<Arc<crate::app::imbe_forwarder::ImbeForwarder>>,
     // 2026-05-03: ws-event broadcast so the dashboard's Recent Calls
     // panel splices new rows immediately on call close instead of
@@ -841,8 +814,14 @@ pub async fn recorder_task(
     // Change 056: recording on/off + retention from the persisted UI
     // settings. `None` = always record, `MAX_RECORDINGS` retention.
     policy: Option<Arc<crate::services::ui_settings::RecordingPolicy>>,
+    // Change 057: RAM / SD stores (and the SD writer thread).
+    storage: Arc<RecordingStorage>,
 ) {
-    let max_count = || policy.as_ref().map(|p| p.max_count()).unwrap_or(MAX_RECORDINGS);
+    let save_target = || SaveTarget {
+        storage: &storage,
+        kind: policy.as_ref().map(|p| p.storage()).unwrap_or_default(),
+        retention: policy.as_ref().map(|p| p.retention()).unwrap_or_default(),
+    };
     let recording_enabled = || policy.as_ref().map(|p| p.enabled()).unwrap_or(true);
     // Structured-event helper. Every recorder decision (open, finalise,
     // source stamp, TG-guard skip, etc.) emits one of these so the
@@ -858,16 +837,19 @@ pub async fn recorder_task(
         }
     };
     use std::sync::atomic::Ordering;
-    // Ensure storage dir exists. If this fails, keep running but
-    // log; finalize() will also fail and the recording is lost.
-    if let Err(e) = std::fs::create_dir_all(STORAGE_DIR) {
-        tracing::warn!("recorder: cannot create {STORAGE_DIR}: {e}");
+    // Ensure the RAM storage dir exists. If this fails, keep running
+    // but log; finalize() will also fail and the recording is lost.
+    let ram_dir = storage.ram_dir().to_path_buf();
+    if let Err(e) = std::fs::create_dir_all(&ram_dir) {
+        tracing::warn!("recorder: cannot create {}: {e}", ram_dir.display());
     } else {
-        // On boot, clear stale recordings from a previous p25-httpd
+        // On boot, clear stale RAM recordings from a previous p25-httpd
         // process — they have ids we don't know about, which makes
         // the /api/recordings ring inconsistent. tmpfs already
         // clears on reboot; this only matters if p25-httpd restarts.
-        if let Ok(entries) = std::fs::read_dir(STORAGE_DIR) {
+        // Change 057: SD recordings are kept and indexed at boot
+        // (`rec_storage::index_sd`, in main).
+        if let Ok(entries) = std::fs::read_dir(&ram_dir) {
             for e in entries.flatten() {
                 if e.path().extension().and_then(|s| s.to_str())
                     == Some("wav")
@@ -896,7 +878,8 @@ pub async fn recorder_task(
     // Helper: finalise + push the WAV through `finalize()`, logging
     // a structured `call_finalise` event with the per-call deltas.
     // Captured by closure context: store, event_log, forwarder,
-    // imbe_drops, log_ev — all set up above.
+    // log_ev — all set up above.
+    #[allow(clippy::too_many_arguments)]
     async fn finalise_call(
         old: ActiveCall,
         reason: &str,
@@ -904,20 +887,20 @@ pub async fn recorder_task(
         store: &RecordingStore,
         event_log: Option<&Arc<crate::services::event_log::EventLog>>,
         forwarder: Option<&Arc<crate::app::imbe_forwarder::ImbeForwarder>>,
-        imbe_drops: &Arc<std::sync::atomic::AtomicU64>,
         // 2026-05-03: ws-event broadcast for `recording_saved`.
         event_tx: Option<&tokio::sync::broadcast::Sender<String>>,
-        // Change 056: live retention.
-        max_count: usize,
+        // Change 057: store + live retention.
+        target: &SaveTarget<'_>,
     ) {
-        use std::sync::atomic::Ordering;
         let id = old.call_id;
         let wall_ms = old.wall_duration_ms();
         let pcm_ms = old.duration_ms();
         let fill_pct = if wall_ms > 0 { 100 * pcm_ms / wall_ms } else { 0 };
-        let drops_in_call = imbe_drops
-            .load(Ordering::Relaxed)
-            .saturating_sub(old.imbe_drops_at_open);
+        // Change 057: this call's own drops (vocoder queue full).
+        let drops_in_call = forwarder
+            .and_then(|f| f.call_counts.get(id))
+            .map(|c| c.imbe_dropped)
+            .unwrap_or(0);
         if let Some(l) = event_log {
             // 2026-04-26: routing-breakdown fields. `chunks_*` are in
             // IMBE-frame units (1 chunk = 20 ms). `first_chunk_after_open_ms`
@@ -953,7 +936,7 @@ pub async fn recorder_task(
                 fields,
             );
         }
-        finalize(store, old, id, event_log, forwarder, event_tx, max_count).await;
+        finalize(store, old, id, event_log, forwarder, event_tx, target).await;
     }
 
     loop {
@@ -1074,8 +1057,8 @@ pub async fn recorder_task(
                                 old, "audio_channel_closed",
                                 serde_json::json!({}),
                                 &store, event_log.as_ref(),
-                                forwarder.as_ref(), &imbe_drops,
-                                event_tx.as_ref(), max_count(),
+                                forwarder.as_ref(),
+                                event_tx.as_ref(), &save_target(),
                             ).await;
                         }
                         if let Some(old) = active.take() {
@@ -1083,8 +1066,8 @@ pub async fn recorder_task(
                                 old, "audio_channel_closed",
                                 serde_json::json!({}),
                                 &store, event_log.as_ref(),
-                                forwarder.as_ref(), &imbe_drops,
-                                event_tx.as_ref(), max_count(),
+                                forwarder.as_ref(),
+                                event_tx.as_ref(), &save_target(),
                             ).await;
                         }
                         return;
@@ -1152,16 +1135,11 @@ pub async fn recorder_task(
                                         "new_call_id": ev.call_id,
                                     }),
                                     &store, event_log.as_ref(),
-                                    forwarder.as_ref(), &imbe_drops,
-                                    event_tx.as_ref(), max_count(),
+                                    forwarder.as_ref(),
+                                    event_tx.as_ref(), &save_target(),
                                 ).await;
                             }
                             if let Some(mut old) = active.take() {
-                                if old.close_at_ms.is_none() {
-                                    old.close_expected_consumed = forwarder.as_ref()
-                                        .map(|f| f.frames_submitted.load(Ordering::Relaxed))
-                                        .unwrap_or(0);
-                                }
                                 old.close_at_ms = Some(ev.timestamp_unix_ms);
                                 log_ev("call_draining", serde_json::json!({
                                     "recording_id":  old.call_id,
@@ -1194,10 +1172,7 @@ pub async fn recorder_task(
                                 }));
                                 continue;
                             }
-                            let mut c = ActiveCall::new(
-                                ev.call_id, tg,
-                                imbe_drops.load(Ordering::Relaxed),
-                            );
+                            let mut c = ActiveCall::new(ev.call_id, tg);
                             c.source = source;
                             // 2026-04-26 session-lifecycle refactor: open_at_ms
                             // sourced from the event timestamp (= when the
@@ -1210,8 +1185,6 @@ pub async fn recorder_task(
                             }
                             c.freq_hz_at_open = freq_hz;
                             c.channel_at_open = channel.clone();
-                            c.stats_at_open = forwarder.as_ref()
-                                .map(|f| StatsSnapshot::from_forwarder(f));
                             log_ev("call_open", serde_json::json!({
                                 "recording_id": ev.call_id,
                                 "tg":           tg,
@@ -1276,7 +1249,7 @@ pub async fn recorder_task(
                         }
                         CallTrackerEventKind::CallClose {
                             reason, final_source, ended_unix_ms,
-                            expected_submit_count, ..
+                            open_ms, end_lc, ..
                         } => {
                             // Change 056: close of a call skipped
                             // because recording is off — nothing open.
@@ -1318,9 +1291,9 @@ pub async fn recorder_task(
                                     }
                                 }
                                 c.close_at_ms = Some(ended_unix_ms);
-                                c.close_expected_consumed = expected_submit_count;
                                 let reason_str = match reason {
                                     CloseReason::Timeout => "timeout",
+                                    CloseReason::CallEnd => "call_end",
                                     CloseReason::TgChange => "tg_change",
                                     CloseReason::StreamLag => "stream_lag",
                                     CloseReason::SyncLost => "sync_lost",
@@ -1330,6 +1303,8 @@ pub async fn recorder_task(
                                     "tg":             c.talkgroup,
                                     "reason":         reason_str,
                                     "close_at_ms":    ended_unix_ms,
+                                    "open_ms":        open_ms,
+                                    "end_lc":         end_lc,
                                     "drain_ms":       CLOSING_DRAIN_MS,
                                     "pcm_so_far_samples": c.pcm.len(),
                                 }));
@@ -1369,11 +1344,6 @@ pub async fn recorder_task(
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
-                // Change 056: per-recording counters are taken at the
-                // close, not at finalise (see CLOSE_STATS_WAIT_MS).
-                for c in active.iter_mut().chain(draining.iter_mut()) {
-                    c.maybe_snapshot_close_stats(forwarder.as_ref(), now_ms);
-                }
                 let close_decision = active.as_ref().and_then(|c| {
                     if let Some(close_at) = c.close_at_ms {
                         if now_ms.saturating_sub(close_at) >= CLOSING_DRAIN_MS {
@@ -1395,8 +1365,8 @@ pub async fn recorder_task(
                                 "silence_ms": FINALIZE_GRACE.as_millis() as u64,
                             }),
                             &store, event_log.as_ref(),
-                            forwarder.as_ref(), &imbe_drops,
-                            event_tx.as_ref(), max_count(),
+                            forwarder.as_ref(),
+                            event_tx.as_ref(), &save_target(),
                         ).await;
                     }
                 }
@@ -1420,8 +1390,8 @@ pub async fn recorder_task(
                                 "drain_ms": CLOSING_DRAIN_MS,
                             }),
                             &store, event_log.as_ref(),
-                            forwarder.as_ref(), &imbe_drops,
-                            event_tx.as_ref(), max_count(),
+                            forwarder.as_ref(),
+                            event_tx.as_ref(), &save_target(),
                         ).await;
                     }
                 }

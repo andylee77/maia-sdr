@@ -15,7 +15,9 @@ import { api, openEvents } from './api.js';
 const POLL_VISIBLE_MS = 1000;
 const POLL_HIDDEN_MS = 5000;
 const CALLS_REFRESH_MS = 30000;
-const KICK_TYPES = new Set(['GRP_VCH_GRANT', 'recording_saved', 'TRF_HDU', 'TRF_TDULC_CALL_TERM']);
+// Change 057: TRF_VOICE_END = end of a transmission (the call card
+// switches to "Ended" at once).
+const KICK_TYPES = new Set(['GRP_VCH_GRANT', 'recording_saved', 'TRF_HDU', 'TRF_TDULC_CALL_TERM', 'TRF_VOICE_END']);
 
 export const store = {
   state: null,

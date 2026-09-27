@@ -1,6 +1,7 @@
 //! Change 056: operator settings the web UI edits and that must survive
 //! a reboot — call-recording policy, talkgroup and radio-unit aliases,
-//! and the talkgroup monitor list.
+//! and the talkgroup monitor list. Change 057 adds the call-close
+//! timing (`call`) and the recording store (RAM or SD card).
 //!
 //! One JSON document on the persistent JFFS2 partition, next to
 //! `app::autoppm`'s `p25-ppm-cal.json`, written atomically (tmp file +
@@ -12,13 +13,14 @@
 //! Live consumers read the settings without taking the document lock:
 //!
 //!   - the recorder: [`RecordingPolicy`] (atomics);
+//!   - the call lifecycle: [`CallPolicy`] (atomics);
 //!   - aliases and the monitor list: copied into the decoders /
 //!     `MonitorList` by the HTTP handlers whenever they change (see
 //!     `httpd::api::ui` and `httpd::api::talkgroups`).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -30,10 +32,46 @@ pub const SETTINGS_FILE: &str = "/mnt/jffs2/p25-ui-settings.json";
 /// (`audio::recorder::MAX_RECORDINGS`).
 pub const DEFAULT_MAX_RECORDINGS: usize = 40;
 
-/// Upper bound on the recording retention. Recordings live in tmpfs
+/// Upper bound on the RAM-store retention. Recordings live in tmpfs
 /// (`/tmp`, ~490 MB free on the board); a 30 s call is ~480 KB, so
 /// 500 worst-case long calls stay well inside it.
 pub const MAX_RECORDINGS_LIMIT: usize = 500;
+
+/// Change 057: SD-store retention by count. The index of every stored
+/// recording is kept in RAM (a few hundred bytes each) and listed by
+/// `/api/recordings`, so the count is capped even though the card is
+/// large (~58 GB free on the bench cards).
+pub const DEFAULT_SD_MAX_COUNT: usize = 2_000;
+pub const SD_MAX_COUNT_LIMIT: usize = 5_000;
+
+/// Change 057: SD-store size cap in MB (8 kHz 16-bit mono = 16 KB/s,
+/// so 2 GB ≈ 36 h of voice).
+pub const DEFAULT_SD_MAX_MB: u64 = 2_048;
+pub const SD_MAX_MB_MIN: u64 = 16;
+pub const SD_MAX_MB_LIMIT: u64 = 32_768;
+
+/// Change 057: call close timing (see `app::grant_follower` and
+/// doc/changes/057, which has the measurements).
+///
+/// `hang_ms`: a call with no keep-alive (voice of this call, HDU, CC
+/// grant / grant update for its TG on its channel) for this long closes
+/// ("timeout"). The fallback when no terminator is decoded (one
+/// transmission in 719 in the SDRTrunk logs). 3 s: three times the
+/// largest CC update gap of a live channel (0.96 s), SDRTrunk's (fork)
+/// traffic-channel timeout.
+///
+/// `end_grace_ms`: after an end-of-transmission marker (LC-valid TDULC
+/// after voice, at the last LDU in 97 % of transmissions) the call
+/// closes this long later unless voice resumes ("call_end"); a reply
+/// granted inside the window pre-empts it ("tg_change"). 2 s: the
+/// system holds the channel 1.26–1.67 s after the last LDU, and 99 %
+/// of same-TG replies start within 2 s of it, so the follower stays on
+/// the conversation without holding a dead channel.
+pub const DEFAULT_HANG_MS: u64 = 3_000;
+pub const HANG_MS_MIN: u64 = 1_000;
+pub const HANG_MS_MAX: u64 = 30_000;
+pub const DEFAULT_END_GRACE_MS: u64 = 2_000;
+pub const END_GRACE_MS_MAX: u64 = 10_000;
 
 /// Alias display names are trimmed and capped at this many characters.
 pub const MAX_ALIAS_CHARS: usize = 48;
@@ -45,13 +83,43 @@ pub const MAX_ENTRIES: usize = 4000;
 /// call list can say "not recorded" instead of "missing".
 const SKIPPED_IDS_KEEP: usize = 256;
 
+/// Change 057: where new recordings are written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageKind {
+    /// tmpfs (`/tmp/p25_recordings`), lost on reboot. The pre-057
+    /// behaviour.
+    #[default]
+    Ram,
+    /// The FAT32 SD partition (`/mnt/sd/p25_recordings`), kept across
+    /// reboots. Written off the hot path (`audio::rec_storage`).
+    Sd,
+}
+
+impl StorageKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StorageKind::Ram => "ram",
+            StorageKind::Sd => "sd",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RecordingSettings {
     /// Write a WAV for every followed call.
     pub enabled: bool,
-    /// Number of recordings kept; the oldest is deleted beyond this.
+    /// Number of recordings kept in RAM; the oldest RAM recording is
+    /// deleted beyond this.
     pub max_count: usize,
+    /// Change 057: store for NEW recordings. Existing recordings stay
+    /// where they are when this changes.
+    pub storage: StorageKind,
+    /// Change 057: SD-store retention (count and size); only ever
+    /// deletes SD recordings.
+    pub sd_max_count: usize,
+    pub sd_max_mb: u64,
 }
 
 impl Default for RecordingSettings {
@@ -59,6 +127,26 @@ impl Default for RecordingSettings {
         RecordingSettings {
             enabled: true,
             max_count: DEFAULT_MAX_RECORDINGS,
+            storage: StorageKind::Ram,
+            sd_max_count: DEFAULT_SD_MAX_COUNT,
+            sd_max_mb: DEFAULT_SD_MAX_MB,
+        }
+    }
+}
+
+/// Change 057: call close timing (see the `DEFAULT_HANG_MS` doc).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CallSettings {
+    pub hang_ms: u64,
+    pub end_grace_ms: u64,
+}
+
+impl Default for CallSettings {
+    fn default() -> Self {
+        CallSettings {
+            hang_ms: DEFAULT_HANG_MS,
+            end_grace_ms: DEFAULT_END_GRACE_MS,
         }
     }
 }
@@ -68,6 +156,8 @@ impl Default for RecordingSettings {
 #[serde(default)]
 pub struct UiSettings {
     pub recording: RecordingSettings,
+    /// Change 057.
+    pub call: CallSettings,
     /// Talkgroup id -> display name.
     pub tg_aliases: BTreeMap<u16, String>,
     /// Radio unit id (source) -> display name.
@@ -83,6 +173,7 @@ pub struct UiSettings {
 #[serde(deny_unknown_fields)]
 pub struct SettingsPatch {
     pub recording: Option<RecordingPatch>,
+    pub call: Option<CallPatch>,
     pub tg_aliases: Option<BTreeMap<u16, String>>,
     pub unit_aliases: Option<BTreeMap<u32, String>>,
     pub monitor_tgs: Option<Vec<u16>>,
@@ -93,6 +184,16 @@ pub struct SettingsPatch {
 pub struct RecordingPatch {
     pub enabled: Option<bool>,
     pub max_count: Option<usize>,
+    pub storage: Option<StorageKind>,
+    pub sd_max_count: Option<usize>,
+    pub sd_max_mb: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallPatch {
+    pub hang_ms: Option<u64>,
+    pub end_grace_ms: Option<u64>,
 }
 
 /// What a patch touched, so the caller only re-applies the live state
@@ -100,6 +201,7 @@ pub struct RecordingPatch {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Changed {
     pub recording: bool,
+    pub call: bool,
     pub tg_aliases: bool,
     pub unit_aliases: bool,
     pub monitor_tgs: bool,
@@ -107,8 +209,20 @@ pub struct Changed {
 
 impl Changed {
     pub fn any(&self) -> bool {
-        self.recording || self.tg_aliases || self.unit_aliases || self.monitor_tgs
+        self.recording || self.call || self.tg_aliases || self.unit_aliases || self.monitor_tgs
     }
+}
+
+fn check_range<T: PartialOrd + std::fmt::Display + Copy>(
+    name: &str,
+    v: T,
+    lo: T,
+    hi: T,
+) -> Result<T, String> {
+    if v < lo || v > hi {
+        return Err(format!("{name} {v} out of range {lo}..={hi}"));
+    }
+    Ok(v)
 }
 
 fn clean_alias(name: &str) -> Option<String> {
@@ -136,17 +250,33 @@ pub fn apply_patch(
 
     if let Some(r) = patch.recording {
         if let Some(n) = r.max_count {
-            if !(1..=MAX_RECORDINGS_LIMIT).contains(&n) {
-                return Err(format!(
-                    "recording.max_count {n} out of range 1..={MAX_RECORDINGS_LIMIT}"
-                ));
-            }
-            out.recording.max_count = n;
+            out.recording.max_count =
+                check_range("recording.max_count", n, 1, MAX_RECORDINGS_LIMIT)?;
+        }
+        if let Some(n) = r.sd_max_count {
+            out.recording.sd_max_count =
+                check_range("recording.sd_max_count", n, 1, SD_MAX_COUNT_LIMIT)?;
+        }
+        if let Some(n) = r.sd_max_mb {
+            out.recording.sd_max_mb =
+                check_range("recording.sd_max_mb", n, SD_MAX_MB_MIN, SD_MAX_MB_LIMIT)?;
+        }
+        if let Some(s) = r.storage {
+            out.recording.storage = s;
         }
         if let Some(e) = r.enabled {
             out.recording.enabled = e;
         }
         changed.recording = out.recording != base.recording;
+    }
+    if let Some(c) = patch.call {
+        if let Some(v) = c.hang_ms {
+            out.call.hang_ms = check_range("call.hang_ms", v, HANG_MS_MIN, HANG_MS_MAX)?;
+        }
+        if let Some(v) = c.end_grace_ms {
+            out.call.end_grace_ms = check_range("call.end_grace_ms", v, 0, END_GRACE_MS_MAX)?;
+        }
+        changed.call = out.call != base.call;
     }
     if let Some(m) = patch.tg_aliases {
         if m.len() > MAX_ENTRIES {
@@ -189,6 +319,10 @@ pub fn apply_patch(
 pub fn parse_settings(body: &[u8]) -> Result<UiSettings, String> {
     let mut s: UiSettings = serde_json::from_slice(body).map_err(|e| e.to_string())?;
     s.recording.max_count = s.recording.max_count.clamp(1, MAX_RECORDINGS_LIMIT);
+    s.recording.sd_max_count = s.recording.sd_max_count.clamp(1, SD_MAX_COUNT_LIMIT);
+    s.recording.sd_max_mb = s.recording.sd_max_mb.clamp(SD_MAX_MB_MIN, SD_MAX_MB_LIMIT);
+    s.call.hang_ms = s.call.hang_ms.clamp(HANG_MS_MIN, HANG_MS_MAX);
+    s.call.end_grace_ms = s.call.end_grace_ms.min(END_GRACE_MS_MAX);
     s.tg_aliases = clean_aliases(&s.tg_aliases);
     s.tg_aliases.remove(&0);
     s.unit_aliases = clean_aliases(&s.unit_aliases);
@@ -220,16 +354,44 @@ pub fn write_atomic(path: &Path, s: &UiSettings) -> Result<(), String> {
 pub struct RecordingPolicy {
     enabled: AtomicBool,
     max_count: AtomicUsize,
+    /// Change 057: 0 = RAM, 1 = SD.
+    storage: AtomicU8,
+    sd_max_count: AtomicUsize,
+    sd_max_mb: AtomicU64,
     skipped: Mutex<VecDeque<u64>>,
+}
+
+/// Change 057: retention limits of both stores at one instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention {
+    pub ram_max_count: usize,
+    pub sd_max_count: usize,
+    pub sd_max_bytes: u64,
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        let d = RecordingSettings::default();
+        Retention {
+            ram_max_count: d.max_count,
+            sd_max_count: d.sd_max_count,
+            sd_max_bytes: d.sd_max_mb * 1024 * 1024,
+        }
+    }
 }
 
 impl RecordingPolicy {
     pub fn new(s: &RecordingSettings) -> Self {
-        RecordingPolicy {
+        let p = RecordingPolicy {
             enabled: AtomicBool::new(s.enabled),
             max_count: AtomicUsize::new(s.max_count),
+            storage: AtomicU8::new(0),
+            sd_max_count: AtomicUsize::new(s.sd_max_count),
+            sd_max_mb: AtomicU64::new(s.sd_max_mb),
             skipped: Mutex::new(VecDeque::new()),
-        }
+        };
+        p.set(s);
+        p
     }
 
     pub fn enabled(&self) -> bool {
@@ -240,9 +402,30 @@ impl RecordingPolicy {
         self.max_count.load(Ordering::Relaxed).max(1)
     }
 
+    /// Change 057: the store selected for new recordings.
+    pub fn storage(&self) -> StorageKind {
+        if self.storage.load(Ordering::Relaxed) == 1 {
+            StorageKind::Sd
+        } else {
+            StorageKind::Ram
+        }
+    }
+
+    /// Change 057: both stores' retention limits.
+    pub fn retention(&self) -> Retention {
+        Retention {
+            ram_max_count: self.max_count(),
+            sd_max_count: self.sd_max_count.load(Ordering::Relaxed).max(1),
+            sd_max_bytes: self.sd_max_mb.load(Ordering::Relaxed).max(1) * 1024 * 1024,
+        }
+    }
+
     fn set(&self, s: &RecordingSettings) {
         self.enabled.store(s.enabled, Ordering::Relaxed);
         self.max_count.store(s.max_count, Ordering::Relaxed);
+        self.storage.store(u8::from(s.storage == StorageKind::Sd), Ordering::Relaxed);
+        self.sd_max_count.store(s.sd_max_count, Ordering::Relaxed);
+        self.sd_max_mb.store(s.sd_max_mb, Ordering::Relaxed);
     }
 
     /// Recorder: remember a call that was not recorded because
@@ -261,6 +444,43 @@ impl RecordingPolicy {
             .lock()
             .map(|q| q.contains(&call_id))
             .unwrap_or(false)
+    }
+}
+
+/// Change 057: call close timing the lifecycle reads on every tick.
+#[derive(Debug)]
+pub struct CallPolicy {
+    hang_ms: AtomicU64,
+    end_grace_ms: AtomicU64,
+}
+
+impl Default for CallPolicy {
+    fn default() -> Self {
+        CallPolicy::new(&CallSettings::default())
+    }
+}
+
+impl CallPolicy {
+    pub fn new(s: &CallSettings) -> Self {
+        CallPolicy {
+            hang_ms: AtomicU64::new(s.hang_ms),
+            end_grace_ms: AtomicU64::new(s.end_grace_ms),
+        }
+    }
+
+    /// Close a call with no keep-alive for this long.
+    pub fn hang_ms(&self) -> u64 {
+        self.hang_ms.load(Ordering::Relaxed)
+    }
+
+    /// Close a call this long after its end-of-transmission marker.
+    pub fn end_grace_ms(&self) -> u64 {
+        self.end_grace_ms.load(Ordering::Relaxed)
+    }
+
+    fn set(&self, s: &CallSettings) {
+        self.hang_ms.store(s.hang_ms, Ordering::Relaxed);
+        self.end_grace_ms.store(s.end_grace_ms, Ordering::Relaxed);
     }
 }
 
@@ -285,6 +505,8 @@ pub struct SettingsStore {
     load_note: String,
     last_save_error: Mutex<Option<String>>,
     pub recording: Arc<RecordingPolicy>,
+    /// Change 057.
+    pub call: Arc<CallPolicy>,
 }
 
 impl SettingsStore {
@@ -316,6 +538,7 @@ impl SettingsStore {
         SettingsStore {
             path,
             recording: Arc::new(RecordingPolicy::new(&settings.recording)),
+            call: Arc::new(CallPolicy::new(&settings.call)),
             current: RwLock::new(settings),
             rev: AtomicU64::new(1),
             load_note,
@@ -359,6 +582,7 @@ impl SettingsStore {
         }
         *guard = next.clone();
         self.recording.set(&next.recording);
+        self.call.set(&next.call);
         self.rev.fetch_add(1, Ordering::Relaxed);
         let save_error = match self.path.as_deref() {
             Some(p) => write_atomic(p, &next).err(),

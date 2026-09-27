@@ -7,6 +7,7 @@
 #[cfg(any(target_os = "linux", test))]
 pub mod autoppm;
 pub mod audio_pacer;
+pub mod call_counters;
 pub mod dibit_airtime;
 #[cfg(target_os = "linux")]
 pub mod dibit_readers;

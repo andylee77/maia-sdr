@@ -52,6 +52,7 @@ use tokio::sync::broadcast;
 
 use crate::app::imbe_forwarder::ImbeForwarder;
 use crate::audio::{AudioChunk, CallBoundary, CallBoundaryKind};
+use crate::services::ui_settings::CallPolicy;
 
 // ── 2026-04-26 session-lifecycle refactor: constants ─────────────
 
@@ -60,26 +61,42 @@ use crate::audio::{AudioChunk, CallBoundary, CallBoundaryKind};
 /// (terminator + drain → finalize within drain_ms + 100 ms).
 const TIMEOUT_TICK_MS: u64 = 100;
 
-/// Close trigger: `now() - max(last_upd_at_ms, last_audio_at_ms) > IDLE_TIMEOUT_MS`.
-/// Either the CC heartbeat OR audio activity keeps the call alive. Whichever
-/// is more recent wins. Closes only after BOTH have been silent for the
-/// timeout.
-///
-/// 2026-05-02 we tried UPD-only at 3 s — broke every call. Field evidence
-/// (2026-04-30 18:29:49 capture, 14 UPDs for the active TG): UPDs cluster
-/// at t=0 (call open burst) then go SILENT for ~3.3 s, then resume after
-/// the call ends. Our CC decoder stalls during traffic-chain activity (see
-/// `project_cc_decoder_stalls_during_traffic.md` — separate bug). With
-/// UPD-only the timeout fires at t=+3 s on every call, truncating recordings
-/// to ~3 s regardless of actual call length.
-///
-/// Going hybrid restores the pre-2026-05-02 robust behaviour (audio
-/// keep-alive) while still letting UPDs extend encrypted/no-audio calls
-/// for the diagnostic air-time metric.
-///
-/// Change 056: public so `/api/ui/state` can report when a silent
-/// ("hang") call will close.
-pub const IDLE_TIMEOUT_MS: u64 = 10_000;
+// Close triggers (change 057; the live values are the persisted
+// `call` settings, `services::ui_settings::CallPolicy`):
+//
+//   1. End of transmission ("call_end"): `end_grace_ms` (default 2 s)
+//      after the first LC-valid TDULC decoded after this call's voice
+//      (`CallBoundaryKind::VoiceEnd`, same frame at which SDRTrunk ends
+//      its call event), unless voice resumes first (two voice NIDs
+//      within `VOICE_NID_PAIR_MS`, or a voice chunk of this call aired
+//      after the marker). CC grant updates do not hold the call open
+//      after the marker: on this site they keep coming through the
+//      system's channel hang.
+//   2. Pre-empt ("tg_change"): the next primary grant (every grant is
+//      a new call), e.g. the reply granted ~0.8 s after a PTT. A repeat
+//      of the on-air call's own grant is a refresh
+//      (`classify_cc_arrival`).
+//   3. No keep-alive ("timeout"): `hang_ms` (default 3 s) without
+//      voice of this call, an HDU, or a CC grant / grant update for
+//      its TG on its channel. The fallback when no terminator is
+//      decoded.
+//
+// History of (3), the pre-057 `IDLE_TIMEOUT_MS = 10 s` (hybrid audio /
+// UPD keep-alive):
+//
+// 2026-05-02 we tried UPD-only at 3 s — broke every call. Field evidence
+// (2026-04-30 18:29:49 capture, 14 UPDs for the active TG): UPDs cluster
+// at t=0 (call open burst) then go SILENT for ~3.3 s, then resume after
+// the call ends. That "CC decoder stall during traffic" was the control
+// ring's 3.41 s block delivery (054 finding F4): TSBKs reached the PS in
+// 3.4 s bursts. Since 054 the control ring delivers within ~0.2 s (p99
+// 187 ms on the bench), and SDRTrunk's logs of this site (719
+// transmissions, `tools/sdrtrunk_teardown_stats.py`) show a
+// GRP_VCH_GRNT_UPD for the active channel every 0.315 s (p50; p99
+// 0.53 s, max 0.96 s over 4083 gaps), continuing through the system's
+// channel hang. 3 s is three times the largest gap; the audio
+// keep-alive stays for CC decode dropouts during voice.
+// doc/changes/057 has the measurements.
 
 /// 2026-05-03 loss-of-sync close trigger. NID events fire every
 /// ~180 ms in healthy P25 voice (1 per LDU at 4800 sps, 9 IMBE/LDU).
@@ -91,9 +108,9 @@ pub const IDLE_TIMEOUT_MS: u64 = 10_000;
 ///
 /// 1500 ms = ~8 missed LDUs. Below this, brief glitches in the BCH
 /// sweep are normal (a single NID can be dropped if BCH is busy).
-/// Above this, sync is unambiguously lost. The 10 s `IDLE_TIMEOUT_MS`
-/// remains as the slow safety net for cases where the chain is still
-/// syncing but neither audio nor CC UPDs are arriving.
+/// Above this, sync is unambiguously lost. The no-keep-alive timeout
+/// (`hang_ms`) remains as the safety net for cases where the chain is
+/// still syncing but neither audio nor CC UPDs are arriving.
 ///
 /// Initialised on `CallOpen` to `now_unix_ms()` so a freshly opened
 /// call has a full window to acquire — at 0 ms post-retune even with
@@ -107,6 +124,71 @@ const LOS_TIMEOUT_MS: u64 = 1_500;
 // terminator parse; close_at_ms == terminator_at_ms is carried in
 // the event's `ended_unix_ms` field for the recorder to compare
 // against.
+
+/// Change 057: two valid voice NIDs (HDU / LDU) this close together
+/// after an end-of-transmission marker mean the channel carries voice
+/// again (LDUs repeat every 180 ms); a single NID may be a false decode
+/// on noise.
+const VOICE_NID_PAIR_MS: u64 = 400;
+
+/// Change 057: a queued grant (see `ActiveCall::queued`) is applied at
+/// the latest this long after it arrived (SDRTrunk logs: up to 8 s).
+const QUEUED_GRANT_MAX_MS: u64 = 10_000;
+
+/// Change 057: after the lifecycle closed the live call by `Timeout`,
+/// a grant UPDATE for the same TG and channel re-follows it for this
+/// long (see `refollow_on_update`).
+pub const REFOLLOW_WINDOW_MS: u64 = 30_000;
+
+/// Traffic LSM PLL clamp in Q2.13 (π/3 rad/symbol, the HDL `MAX_PLL_ABS`).
+pub const TRAFFIC_PLL_CLAMP_Q213: i32 = 8579;
+
+/// Longest gap since the chain's last voice frame for which a
+/// same-frequency resume may coast on the chain's state.
+pub const COAST_MAX_IDLE_MS: u64 = 1_000;
+
+/// Should a same-frequency Idle -> Active resume reset the traffic LSM
+/// chain instead of coasting on its current AGC / PLL / timing state?
+///
+/// A parked chain stays enabled and keeps demodulating after the carrier
+/// drops (1.3-1.7 s after the last LDU on this site), so its PLL walks to
+/// the clamp and its AGC winds up on noise. Coasting from there lost the
+/// whole first transmission (bench 2026-09-27: `pll preserved=8579`, the
+/// clamp, then two calls with 0 IMBE). With 057's prompt close every
+/// same-channel call after a pause takes this path, so coast only while
+/// the chain carried voice within `COAST_MAX_IDLE_MS` and its PLL sits
+/// well inside the clamp.
+pub fn resume_needs_reset(pll_q213: i16, ms_since_voice: Option<u64>) -> bool {
+    let pll_hot = (pll_q213 as i32).abs() >= TRAFFIC_PLL_CLAMP_Q213 / 2;
+    let stale = ms_since_voice.map_or(true, |ms| ms > COAST_MAX_IDLE_MS);
+    pll_hot || stale
+}
+
+/// Change 057: should a grant UPDATE (which never acquires the chain on
+/// its own) re-follow a call? Only for the (TG, frequency) of the live
+/// call closed by `Timeout` — no keep-alive for `hang_ms`, e.g. the
+/// control and traffic signals faded together — within
+/// `REFOLLOW_WINDOW_MS`, while the chain is idle. The CC still
+/// announcing the call means it did not end. SDRTrunk (re)starts a
+/// traffic channel on a grant update whenever none is running for it;
+/// this keeps that property for calls we were following, without
+/// letting updates acquire talkgroups we never followed (updates carry
+/// no encryption flag: the 2026-04-30 TG 700 incident).
+pub fn refollow_on_update(
+    last_timeout: Option<(u16, u64, u64)>,
+    tg: u16,
+    freq_hz: Option<u64>,
+    chain_idle: bool,
+    now_ms: u64,
+) -> bool {
+    let Some((ltg, lfreq, at)) = last_timeout else {
+        return false;
+    };
+    chain_idle
+        && ltg == tg
+        && freq_hz == Some(lfreq)
+        && now_ms.saturating_sub(at) <= REFOLLOW_WINDOW_MS
+}
 
 /// 2026-04-27 dedup window for primary GRP_VCH_GRANT arrivals.
 /// P25 broadcasts each grant 2-3× within a single TSDU
@@ -178,6 +260,12 @@ pub enum CallTrackerEventKind {
         /// grant_stats to derive `air_duration_ms` — the speaker's
         /// on-air duration independent of audio extraction success.
         last_upd_at_unix_ms: u64,
+        /// Change 057: how long the lifecycle held the call open
+        /// (monotonic clock, immune to `/api/set_time`).
+        open_ms: u64,
+        /// Change 057: the end-of-transmission marker that was pending
+        /// at the close ("talk_complete", "channel_user", ...), if any.
+        end_lc: Option<&'static str>,
     },
 }
 
@@ -203,15 +291,17 @@ pub enum SourceUpdateVia {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CloseReason {
-    /// `IDLE_TIMEOUT_MS` (10 s) with NEITHER a CC GRP_VCH_GRNT_UPD
-    /// beacon for the active TG NOR an audio chunk arriving. The
-    /// hybrid keep-alive (`max(last_upd, last_audio)`) is robust
-    /// against the CC-decoder-stall-during-traffic bug where UPDs
-    /// disappear from the lifecycle for ~3 s mid-call. TDULC
-    /// terminators (Motorola TalkComplete, CallTermination) remain
-    /// source-stamp-only — closing on those would fragment multi-PTT
-    /// grants and break the grant=call 1:1.
+    /// `hang_ms` (change 057: persisted setting, default 3 s; was a
+    /// fixed 10 s) with no keep-alive: no CC GRP_VCH_GRNT_UPD / grant
+    /// for the active TG, no audio chunk or voice NID of the call, no
+    /// HDU. Also the reason on the synthetic close of a not-followed
+    /// grant.
     Timeout,
+    /// Change 057: `end_grace_ms` after the end-of-transmission marker
+    /// (first LC-valid TDULC after the call's voice) with no voice
+    /// since. Every PTT is its own call (grant = call), so ending the
+    /// call at its terminator no longer fragments anything.
+    CallEnd,
     /// Pre-empt: primary GRANT on same channel for a different TG.
     /// The only "real" close path during normal operation.
     TgChange,
@@ -249,9 +339,19 @@ pub struct ActiveCallSnapshot {
     pub first_voice_unix_ms: Option<u64>,
     pub last_voice_unix_ms: Option<u64>,
     /// Change 056: newest keep-alive (audio, HDU or CC grant / update)
-    /// the idle close measures from: the call closes
-    /// `IDLE_TIMEOUT_MS` after this.
+    /// the idle close measures from: the call closes `hang_ms` after
+    /// this (change 057: unless an end-of-transmission marker closes it
+    /// sooner, see `close_*`).
     pub last_activity_unix_ms: u64,
+    /// Change 057: when the lifecycle will close the call if nothing
+    /// changes (unix ms), which rule that is ("end" = end-of-transmission
+    /// grace, "timeout" = no keep-alive) and the full length of that
+    /// window (for the UI's countdown bar).
+    pub close_at_unix_ms: u64,
+    pub close_via: &'static str,
+    pub close_window_ms: u64,
+    /// Change 057: the pending end-of-transmission marker, if any.
+    pub end_lc: Option<&'static str>,
 }
 
 pub type ActiveCallShared =
@@ -277,7 +377,7 @@ struct ActiveCall {
     encrypted: bool,
     not_followed: Option<&'static str>,
     started_unix_ms: u64,
-    #[allow(dead_code)]
+    /// Monotonic open time; change 057: the CallClose `open_ms`.
     started_instant: Instant,
     first_audio_at_unix_ms: Option<u64>,
     first_hdu_at_unix_ms: Option<u64>,
@@ -320,6 +420,39 @@ struct ActiveCall {
     voice_frames: u64,
     first_voice_at_ms: u64,
     last_voice_at_ms: u64,
+    /// Change 057: receipt time of the newest valid voice NID (HDU /
+    /// LDU1 / LDU2) from the traffic-LSM heartbeat (real time, ahead of
+    /// the PS decode). Only used to see voice resume after an end
+    /// marker (two voice NIDs within `VOICE_NID_PAIR_MS`); not a
+    /// keep-alive, so a false NID on noise cannot hold a call open.
+    last_voice_nid_at_ms: u64,
+    /// Change 057: pending end of transmission (`VoiceEnd` of this
+    /// call): receipt time at the lifecycle (0 = none), air time of the
+    /// terminator, and its LC kind. Cleared when voice resumes.
+    end_at_ms: u64,
+    end_air_ms: u64,
+    end_lc: Option<&'static str>,
+    /// Change 057: end markers cancelled because voice resumed.
+    end_cancels: u32,
+    /// Change 057: grant for the next talker on this call's channel and
+    /// TG that arrived while this call was still on the air (queued /
+    /// console pre-empt: 12.8 % of same-channel grants in the SDRTrunk
+    /// logs, up to 8 s early). Applied when the channel hands over
+    /// (`queued_due`), not at once, so the rest of this transmission
+    /// stays in this call.
+    queued: Option<QueuedGrant>,
+}
+
+/// Change 057: a followed grant waiting for the channel hand-over.
+#[derive(Debug, Clone)]
+struct QueuedGrant {
+    tg: u16,
+    nac: u16,
+    source: Option<u32>,
+    freq_hz: Option<u64>,
+    channel: Option<String>,
+    encrypted: bool,
+    at_ms: u64,
 }
 
 impl ActiveCall {
@@ -363,7 +496,53 @@ impl ActiveCall {
             voice_frames: 0,
             first_voice_at_ms: 0,
             last_voice_at_ms: 0,
+            last_voice_nid_at_ms: 0,
+            end_at_ms: 0,
+            end_air_ms: 0,
+            end_lc: None,
+            end_cancels: 0,
+            queued: None,
         }
+    }
+
+    /// Change 057: the call has shown voice (HDU, LDU NID or decoded
+    /// audio) — so its transmission can still be on the air.
+    fn voice_seen(&self) -> bool {
+        self.first_hdu_at_unix_ms.is_some()
+            || self.voice_frames > 0
+            || self.last_voice_nid_at_ms != 0
+    }
+
+    /// Change 057: newest keep-alive for the no-activity close.
+    fn last_keepalive_ms(&self) -> u64 {
+        self.last_audio_at_ms
+            .max(self.last_upd_at_ms)
+            .max(self.started_unix_ms)
+    }
+
+    /// Change 057: voice resumed after an end-of-transmission marker
+    /// (a new transmission on the same grant, or a marker the air
+    /// contradicts): drop the pending end close.
+    fn cancel_end(&mut self) {
+        if self.end_at_ms != 0 {
+            self.end_at_ms = 0;
+            self.end_air_ms = 0;
+            self.end_lc = None;
+            self.end_cancels += 1;
+        }
+    }
+
+    /// Change 057: (close time, rule, window) if nothing changes. The
+    /// end-of-transmission grace wins when it is due first.
+    fn close_plan(&self, hang_ms: u64, end_grace_ms: u64) -> (u64, &'static str, u64) {
+        let idle_at = self.last_keepalive_ms() + hang_ms;
+        if self.end_at_ms != 0 {
+            let end_at = self.end_at_ms + end_grace_ms;
+            if end_at <= idle_at {
+                return (end_at, "end", end_grace_ms);
+            }
+        }
+        (idle_at, "timeout", hang_ms)
     }
 
     fn observe_source(&mut self, src: u32) -> bool {
@@ -385,28 +564,47 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Change 057: the close rule due at `now` for the open call, if any.
+/// The end-of-transmission grace uses `>=` (elapsed), the no-keep-alive
+/// timeout `>` (as pre-057).
+fn close_due(c: &ActiveCall, now: u64, hang_ms: u64, end_grace_ms: u64) -> Option<CloseReason> {
+    if c.end_at_ms != 0 && now.saturating_sub(c.end_at_ms) >= end_grace_ms {
+        return Some(CloseReason::CallEnd);
+    }
+    if now.saturating_sub(c.last_keepalive_ms()) > hang_ms {
+        return Some(CloseReason::Timeout);
+    }
+    None
+}
+
 fn mirror_active(
     active: &Option<ActiveCall>,
     shared: &ActiveCallShared,
     forwarder: &Arc<ImbeForwarder>,
+    policy: &CallPolicy,
 ) {
     if let Ok(mut s) = shared.lock() {
-        *s = active.as_ref().map(|c| ActiveCallSnapshot {
-            call_id: c.call_id,
-            tg: c.tg,
-            nac: c.nac,
-            source: c.source,
-            freq_hz: c.freq_hz,
-            channel: c.channel.clone(),
-            encrypted: c.encrypted,
-            started_unix_ms: c.started_unix_ms,
-            sources_observed: c.sources_observed.clone(),
-            voice_frames: c.voice_frames,
-            first_voice_unix_ms: (c.first_voice_at_ms != 0).then_some(c.first_voice_at_ms),
-            last_voice_unix_ms: (c.last_voice_at_ms != 0).then_some(c.last_voice_at_ms),
-            last_activity_unix_ms: c.last_audio_at_ms
-                .max(c.last_upd_at_ms)
-                .max(c.started_unix_ms),
+        *s = active.as_ref().map(|c| {
+            let (close_at, via, window) = c.close_plan(policy.hang_ms(), policy.end_grace_ms());
+            ActiveCallSnapshot {
+                call_id: c.call_id,
+                tg: c.tg,
+                nac: c.nac,
+                source: c.source,
+                freq_hz: c.freq_hz,
+                channel: c.channel.clone(),
+                encrypted: c.encrypted,
+                started_unix_ms: c.started_unix_ms,
+                sources_observed: c.sources_observed.clone(),
+                voice_frames: c.voice_frames,
+                first_voice_unix_ms: (c.first_voice_at_ms != 0).then_some(c.first_voice_at_ms),
+                last_voice_unix_ms: (c.last_voice_at_ms != 0).then_some(c.last_voice_at_ms),
+                last_activity_unix_ms: c.last_keepalive_ms(),
+                close_at_unix_ms: close_at,
+                close_via: via,
+                close_window_ms: window,
+                end_lc: c.end_lc,
+            }
         });
     }
     // Phase 2h (2026-04-25): broadcast the active call_id to the
@@ -485,6 +683,8 @@ fn emit_close(
             expected_submit_count,
             sources_observed: call.sources_observed.clone(),
             last_upd_at_unix_ms: call.last_upd_at_ms,
+            open_ms: call.started_instant.elapsed().as_millis() as u64,
+            end_lc: call.end_lc,
         },
     });
 }
@@ -509,8 +709,12 @@ fn emit_source_update(
 /// each TG has a fixed enc state.
 enum ArrivalDisposition {
     /// Same TG and freq as the open session — bundle (refresh +
-    /// add new SRC if any).
+    /// add new SRC if any). Change 057: a repeat of the on-air call's
+    /// own grant.
     Bundle,
+    /// Change 057: the next talker's grant while this call is on the
+    /// air: hold it until the hand-over.
+    Queue,
     /// Different freq from the open session — sticky-locked
     /// elsewhere; ignore.
     Ignore,
@@ -519,9 +723,10 @@ enum ArrivalDisposition {
 }
 
 fn classify_cc_arrival(
-    _active: &ActiveCall,
-    _new_tg: u16,
-    _new_freq_hz: Option<u64>,
+    active: &ActiveCall,
+    new_tg: u16,
+    new_source: Option<u32>,
+    new_freq_hz: Option<u64>,
 ) -> ArrivalDisposition {
     // 2026-04-30 design pivot per operator instruction: every
     // GRP_VCH_GRANT (after the entry-point `grant_dedup` filters the
@@ -532,12 +737,132 @@ fn classify_cc_arrival(
     // refresh are both gone — only GRP_VCH_GRNT_UPD events take the
     // refresh path (separate `CcRefresh` boundary, handled below).
     //
-    // The `Bundle` and `Ignore` arms previously here matched a
-    // 2026-04-26 design that's been superseded. Kept as a thin
-    // function (rather than inlining `Preempt` at the call site) so
-    // future LDU-driven splits or per-TG-filter rules can come back
-    // here cleanly without reshaping the action-dispatch match.
-    ArrivalDisposition::TgChange
+    // Change 057: except a repeat of the grant of the call that is
+    // still on the air. Same TG, same frequency, same source (or no
+    // source: a source-less repeat or explicit update), and the call's
+    // transmission has not ended (no end-of-transmission marker yet),
+    // is the CC re-announcing this call — SDRTrunk's same-call check
+    // (`isSameCallCheckingToOnly`) — not the next PTT. Pre-054 such
+    // repeats were swallowed by `GRANT_DEDUP_MS` by accident: the
+    // control ring delivered ~3.4 s of TSBKs in one burst, so every
+    // repeat fell within 200 ms of processing time. Since 054 the
+    // window really is 200 ms of air, and a repeat 0.3 s later would
+    // split one transmission into two calls. A new PTT by the same
+    // unit follows its predecessor's end marker, so it still opens a
+    // new call.
+    //
+    // Change 057: a grant for ANOTHER source on the same TG and channel
+    // while this call is still on the air (voice seen, no end marker)
+    // is the next talker queued behind this one (consoles pre-empt /
+    // queue: 12.8 % of same-channel grants in the SDRTrunk logs, up to
+    // 8 s before the current talker unkeys). Opening the next call at
+    // once would hand the rest of this transmission to it; it is held
+    // and applied at the hand-over (`queued_due`, HDU / voice NIDs).
+    let same_freq = active.freq_hz.is_some() && active.freq_hz == new_freq_hz;
+    if active.tg != new_tg || !same_freq || active.end_at_ms != 0 {
+        return ArrivalDisposition::TgChange;
+    }
+    let same_source = match (new_source, active.source) {
+        (None, _) => true,
+        (Some(n), Some(a)) => n == a,
+        // Source now known for a call granted without one (SRC 0):
+        // the same call, filled in by the Bundle path.
+        (Some(_), None) => true,
+    };
+    if same_source {
+        ArrivalDisposition::Bundle
+    } else if active.voice_seen() {
+        ArrivalDisposition::Queue
+    } else {
+        // Two talkers granted back to back before any voice: the later
+        // grant is the one on the air.
+        ArrivalDisposition::TgChange
+    }
+}
+
+/// Change 057: close the open call (if `close_reason`) and open the
+/// call of `g`. The successor's call_id is published before the
+/// predecessor's CallClose (054: the follower releases the chain only
+/// for a close of the live call).
+fn open_next(
+    active: &mut Option<ActiveCall>,
+    next_call_id: &mut u64,
+    tx: &CallTrackerEventTx,
+    forwarder: &Arc<ImbeForwarder>,
+    g: QueuedGrant,
+    close_reason: Option<CloseReason>,
+    opened_via: OpenReason,
+) {
+    if let Some(reason) = close_reason {
+        forwarder.set_live_call_id(*next_call_id);
+        if let Some(prev) = active.take() {
+            let expected = forwarder.frames_submitted.load(Ordering::Relaxed);
+            emit_close(tx, &prev, reason, prev.source, expected);
+        }
+    }
+    let now = now_unix_ms();
+    let call_id = *next_call_id;
+    *next_call_id += 1;
+    let baseline = forwarder.frames_submitted.load(Ordering::Relaxed);
+    // The primary GRP_VCH_GRANT that opened this session is itself the
+    // first CC heartbeat — bootstrap the UPD timer (last argument) so
+    // the close trigger doesn't fire before the first GRP_VCH_GRNT_UPD
+    // lands.
+    *active = Some(ActiveCall::open(
+        call_id, g.tg, g.nac, g.source, g.freq_hz,
+        g.channel.clone(), g.encrypted, None, now, baseline, now,
+    ));
+    emit_open(
+        tx, call_id, g.tg, g.nac, g.source, g.freq_hz, g.channel,
+        g.encrypted, None, opened_via, baseline, now,
+    );
+}
+
+/// Change 057: hand the channel to the queued grant (the predecessor
+/// closes as `TgChange`, like an immediate pre-empt).
+fn start_queued(
+    active: &mut Option<ActiveCall>,
+    next_call_id: &mut u64,
+    tx: &CallTrackerEventTx,
+    forwarder: &Arc<ImbeForwarder>,
+) {
+    let Some(q) = active.as_mut().and_then(|a| a.queued.take()) else {
+        return;
+    };
+    open_next(active, next_call_id, tx, forwarder, q,
+              Some(CloseReason::TgChange), OpenReason::TgChange);
+}
+
+/// Change 057: the periodic close sweep (every `TIMEOUT_TICK_MS`). A
+/// queued grant takes over when this call's end grace ran out, its
+/// no-keep-alive timeout is due, or the grant waited
+/// `QUEUED_GRANT_MAX_MS`; otherwise `close_due` decides.
+fn sweep(
+    active: &mut Option<ActiveCall>,
+    next_call_id: &mut u64,
+    tx: &CallTrackerEventTx,
+    forwarder: &Arc<ImbeForwarder>,
+    now: u64,
+    hang_ms: u64,
+    end_grace_ms: u64,
+) {
+    let Some(a) = active.as_ref() else {
+        return;
+    };
+    if let Some(q) = a.queued.as_ref() {
+        let due = now.saturating_sub(q.at_ms) >= QUEUED_GRANT_MAX_MS
+            || close_due(a, now, hang_ms, end_grace_ms).is_some();
+        if due {
+            start_queued(active, next_call_id, tx, forwarder);
+        }
+        return;
+    }
+    if let Some(reason) = close_due(a, now, hang_ms, end_grace_ms) {
+        if let Some(call) = active.take() {
+            let expected = forwarder.frames_submitted.load(Ordering::Relaxed);
+            emit_close(tx, &call, reason, call.source, expected);
+        }
+    }
 }
 
 /// Lifecycle authority task. Subscribes to the `CallBoundary`
@@ -550,13 +875,19 @@ pub fn spawn_call_lifecycle(
     tracker_tx: CallTrackerEventTx,
     forwarder: Arc<ImbeForwarder>,
     active_call: ActiveCallShared,
+    // Change 057: close timing (persisted `call` settings, live).
+    policy: Arc<CallPolicy>,
+    // Change 057: first call_id of this process. Recordings on the SD
+    // card outlive the process and are keyed by call_id, so ids continue
+    // after the highest one found there (`audio::rec_storage`).
+    first_call_id: u64,
 ) {
     let mut boundary_rx = boundary_tx.subscribe();
     let mut audio_rx = audio_tx.subscribe();
 
     tokio::spawn(async move {
         let mut active: Option<ActiveCall> = None;
-        let mut next_call_id: u64 = 1;
+        let mut next_call_id: u64 = first_call_id.max(1);
         // 2026-04-27 not_followed dedup. P25 broadcasts each
         // primary GRP_VCH_GRANT 2-3× within a TSDU and re-
         // broadcasts during the call, so one encrypted PTT
@@ -594,7 +925,7 @@ pub fn spawn_call_lifecycle(
                                     CloseReason::StreamLag,
                                     call.source, expected);
                             }
-                            mirror_active(&active, &active_call, &forwarder);
+                            mirror_active(&active, &active_call, &forwarder, &policy);
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
@@ -604,7 +935,7 @@ pub fn spawn_call_lifecycle(
                         &tracker_tx, &forwarder,
                         &mut not_followed_dedup,
                     );
-                    mirror_active(&active, &active_call, &forwarder);
+                    mirror_active(&active, &active_call, &forwarder, &policy);
                 }
                 recv = audio_rx.recv() => {
                     match recv {
@@ -616,15 +947,13 @@ pub fn spawn_call_lifecycle(
                     }
                 }
                 _ = tick.tick() => {
-                    // 2026-05-02 hybrid close trigger: keep alive on
-                    // EITHER CC UPD heartbeat OR audio activity. We
-                    // observed (18:29:49 capture) that CC UPDs disappear
-                    // for 3.3 s mid-call because the CC decoder stalls
-                    // during traffic-chain activity (separate bug). With
-                    // UPD-only, every call truncated at 3 s. Hybrid =
-                    // close only when BOTH have been silent for the full
-                    // IDLE_TIMEOUT_MS — audio bridges over the CC stall,
-                    // UPDs bridge over no-audio (encrypted) calls.
+                    // Change 057: end-of-transmission grace, else the
+                    // no-keep-alive timeout (`close_due`; timing from the
+                    // persisted `call` settings). Keep-alives: CC UPD /
+                    // grant for the TG, audio of this call, voice NIDs,
+                    // HDU — so a decode dropout inside a live
+                    // transmission (CC still announcing it, or the HDL
+                    // still seeing LDU NIDs) never closes the call.
                     //
                     // 2026-05-03 LoS detector REMOVED from the close
                     // decision. Initial 1.5 s NID-age threshold killed
@@ -633,39 +962,22 @@ pub fn spawn_call_lifecycle(
                     // call was still actively decoding (operator
                     // observation: call_closing reason="sync_lost"
                     // with only 360 ms of PCM accumulated, build
-                    // 2026-05-03-coast-no-reset). The 10 s `Timeout`
+                    // 2026-05-03-coast-no-reset). The `Timeout`
                     // backstop catches truly dead calls. The
                     // `last_nid_at_ms` field stays in `ActiveCall` so
                     // we can re-introduce a relaxed LoS later if
                     // useful, but it's not consulted for closes.
-                    let now = now_unix_ms();
-                    let close_decision: Option<CloseReason> = active
-                        .as_ref()
-                        .and_then(|c| {
-                            let last = c.last_audio_at_ms
-                                .max(c.last_upd_at_ms)
-                                .max(c.started_unix_ms);
-                            let idle_age_ms = now.saturating_sub(last);
-                            if idle_age_ms > IDLE_TIMEOUT_MS {
-                                Some(CloseReason::Timeout)
-                            } else {
-                                None
-                            }
-                        });
-                    if let Some(reason) = close_decision {
-                        if let Some(call) = active.take() {
-                            let expected = forwarder
-                                .frames_submitted.load(Ordering::Relaxed);
-                            emit_close(&tracker_tx, &call,
-                                reason, call.source, expected);
-                        }
-                    }
+                    sweep(
+                        &mut active, &mut next_call_id, &tracker_tx,
+                        &forwarder, now_unix_ms(),
+                        policy.hang_ms(), policy.end_grace_ms(),
+                    );
                     // Change 056: mirror every tick, not only on
                     // boundaries, so the snapshot's voice counters /
                     // timestamps (updated by the audio arm) stay within
                     // 100 ms of live. `set_live_call_id` inside is a
                     // no-op while the call_id is unchanged.
-                    mirror_active(&active, &active_call, &forwarder);
+                    mirror_active(&active, &active_call, &forwarder, &policy);
                 }
             }
         }
@@ -835,13 +1147,23 @@ fn handle_boundary(
                     );
                     return;
                 }
-                Some(a) => match classify_cc_arrival(a, tg, freq_hz) {
+                Some(a) => match classify_cc_arrival(a, tg, source, freq_hz) {
                     ArrivalDisposition::Bundle => OpenAction::Bundle,
+                    ArrivalDisposition::Queue => OpenAction::Queue,
                     ArrivalDisposition::Ignore => OpenAction::None,
                     ArrivalDisposition::TgChange => OpenAction::Preempt(
                         CloseReason::TgChange, OpenReason::TgChange,
                     ),
                 },
+            };
+            let grant_q = QueuedGrant {
+                tg,
+                nac: boundary.nac,
+                source,
+                freq_hz,
+                channel: channel_str,
+                encrypted,
+                at_ms: now,
             };
 
             match action {
@@ -872,49 +1194,32 @@ fn handle_boundary(
                     }
                     return;
                 }
-                OpenAction::Preempt(close_reason, _) => {
-                    // Change 054: publish the successor's call_id BEFORE
-                    // the predecessor's CallClose goes out. The grant
-                    // follower releases the traffic chain only for a
-                    // CallClose of the live call (`current_call_id`);
-                    // with the old order it could see CallClose(prev)
-                    // while `current_call_id` still named prev and zero
-                    // the TG it had just set for the new grant.
-                    forwarder.set_live_call_id(*next_call_id);
-                    if let Some(prev) = active.take() {
-                        let expected = forwarder
-                            .frames_submitted.load(Ordering::Relaxed);
-                        emit_close(tx, &prev, close_reason,
-                                   prev.source, expected);
+                // Change 057: the next talker's grant while this call is
+                // on the air: held until the hand-over (`sweep`, HDU,
+                // voice NIDs after the end marker). A newer queued grant
+                // replaces an older one.
+                OpenAction::Queue => {
+                    if let Some(a) = active.as_mut() {
+                        a.queued = Some(grant_q);
                     }
+                    return;
                 }
-                OpenAction::Open(_) => {}
+                // Change 054: `open_next` publishes the successor's
+                // call_id BEFORE the predecessor's CallClose goes out.
+                // The grant follower releases the traffic chain only for
+                // a CallClose of the live call (`current_call_id`); with
+                // the old order it could see CallClose(prev) while
+                // `current_call_id` still named prev and zero the TG it
+                // had just set for the new grant.
+                OpenAction::Preempt(close_reason, opened_via) => {
+                    open_next(active, next_call_id, tx, forwarder, grant_q,
+                              Some(close_reason), opened_via);
+                }
+                OpenAction::Open(opened_via) => {
+                    open_next(active, next_call_id, tx, forwarder, grant_q,
+                              None, opened_via);
+                }
             }
-
-            let opened_via = match action {
-                OpenAction::Open(r) => r,
-                OpenAction::Preempt(_, r) => r,
-                _ => OpenReason::CcGrant,
-            };
-
-            let call_id = *next_call_id;
-            *next_call_id += 1;
-            let baseline = forwarder
-                .frames_submitted.load(Ordering::Relaxed);
-            // The primary GRP_VCH_GRANT that opened this session is
-            // itself the first CC heartbeat — bootstrap the UPD timer
-            // (last argument) so the close trigger doesn't fire before
-            // the first GRP_VCH_GRNT_UPD lands.
-            *active = Some(ActiveCall::open(
-                call_id, tg, boundary.nac, source, freq_hz,
-                channel_str.clone(), encrypted, not_followed, now,
-                baseline, now,
-            ));
-            emit_open(
-                tx, call_id, tg, boundary.nac, source, freq_hz,
-                channel_str, encrypted, not_followed, opened_via,
-                baseline, now,
-            );
         }
 
         // GRP_VCH_GRNT_UPD: refresh-only. Does NOT carry SRC or
@@ -944,7 +1249,14 @@ fn handle_boundary(
             }
             grant_dedup.insert(dedup_key, now_unix_ms());
             if let Some(a) = active.as_mut() {
-                if a.tg == tg {
+                // Change 057: an update for this TG on ANOTHER channel
+                // (patch, other site in the TSBK's second slot) says
+                // nothing about this call's channel.
+                let same_channel = match (a.freq_hz, freq_hz) {
+                    (Some(x), Some(y)) => x == y,
+                    _ => true,
+                };
+                if a.tg == tg && same_channel {
                     // 2026-04-30 air-time tracking. UPD beacons are
                     // the only signal that the speaker is still
                     // keyed when the chain itself extracts no audio
@@ -965,6 +1277,13 @@ fn handle_boundary(
         // is the CC UPD heartbeat, which is independent of chain
         // decoder health.
         CallBoundaryKind::HduStart => {
+            // Change 057: a new transmission on the channel while the
+            // next talker's grant is queued: it is that talker (the HDU
+            // NID is seen in real time, so the call_id cut lands before
+            // the HDU completes and the HDU is the new call's).
+            if active.as_ref().is_some_and(|a| a.queued.is_some()) {
+                start_queued(active, next_call_id, tx, forwarder);
+            }
             let now = now_unix_ms();
             if let Some(a) = active.as_mut() {
                 if a.first_hdu_at_unix_ms.is_none() {
@@ -1030,9 +1349,13 @@ fn handle_boundary(
         // mid-grant.
         //
         // So all SpeakerEnd flavours are SOURCE-STAMP-ONLY here.
-        // The session closes only on TG-change-via-new-GRANT
-        // (handled in the CcGrantArrival arm) or the 5 s no-audio
-        // hard timeout (handled in the periodic tick).
+        //
+        // Change 057: since 2026-04-30 every grant is its own call, so
+        // the multi-PTT concern above no longer applies. The end of a
+        // transmission now arrives as `VoiceEnd` (below): call-attributed,
+        // LC-FEC-checked, once per transmission, and cancelled when voice
+        // resumes, which also covers phantom terminators. SpeakerEnd
+        // (cooldown-gated, source-checked) stays a source stamp.
         CallBoundaryKind::SpeakerEnd { source, kind: _ } => {
             if let Some(a) = active.as_mut() {
                 if let Some(s) = source {
@@ -1053,9 +1376,52 @@ fn handle_boundary(
         // so the periodic tick can decide LoS based purely on
         // framer-state age. No-op when there is no active call (the
         // heartbeat broadcasts unconditionally).
-        CallBoundaryKind::TrafficNidObserved => {
+        //
+        // Change 057: a pair of voice NIDs after an end marker cancels
+        // the pending end close (voice resumed on the channel: a re-key
+        // on the same grant, or a marker the air contradicts). The HDL
+        // is read in real time, ahead of the PS decode that produced the
+        // marker, so these NIDs are later on the air than the marker.
+        //
+        // With a queued grant (next talker), voice after the end marker
+        // is that talker: hand the channel over instead.
+        CallBoundaryKind::TrafficNidObserved { voice } => {
+            let mut hand_over = false;
             if let Some(a) = active.as_mut() {
-                a.last_nid_at_ms = now_unix_ms();
+                let now = now_unix_ms();
+                a.last_nid_at_ms = now;
+                if voice {
+                    let prev = a.last_voice_nid_at_ms;
+                    a.last_voice_nid_at_ms = now;
+                    if a.end_at_ms != 0
+                        && prev >= a.end_at_ms
+                        && now.saturating_sub(prev) <= VOICE_NID_PAIR_MS
+                    {
+                        if a.queued.is_some() {
+                            hand_over = true;
+                        } else {
+                            a.cancel_end();
+                        }
+                    }
+                }
+            }
+            if hand_over {
+                start_queued(active, next_call_id, tx, forwarder);
+            }
+        }
+
+        // Change 057: end of a transmission of `call_id` (first LC-valid
+        // TDULC after its voice). Arms the end-of-transmission close;
+        // ignored for any other call (a late terminator of a pre-empted
+        // call decoded after the next call opened) and while a marker is
+        // already pending.
+        CallBoundaryKind::VoiceEnd { call_id, air_ms, lc } => {
+            if let Some(a) = active.as_mut() {
+                if a.call_id == call_id && a.end_at_ms == 0 {
+                    a.end_at_ms = now_unix_ms().max(1);
+                    a.end_air_ms = air_ms;
+                    a.end_lc = Some(lc);
+                }
             }
         }
     }
@@ -1076,6 +1442,8 @@ enum OpenAction {
     /// Active session is sticky-locked elsewhere — drop the
     /// arrival.
     None,
+    /// Change 057: next talker queued behind the on-air call.
+    Queue,
 }
 
 fn handle_audio(chunk: AudioChunk, active: &mut Option<ActiveCall>) {
@@ -1086,6 +1454,14 @@ fn handle_audio(chunk: AudioChunk, active: &mut Option<ActiveCall>) {
         // time.
         if chunk.airtime && chunk.call_id != 0 && chunk.call_id != a.call_id {
             return;
+        }
+        // Change 057: voice of this call aired AFTER its end marker means
+        // the transmission did not end there. Chunks aired before it (the
+        // transmission's last LDUs, still in the vocoder / pacer when the
+        // terminator was decoded) do not cancel. With a queued grant such
+        // voice is the next talker's, handed over by the NID / HDU paths.
+        if a.end_at_ms != 0 && a.queued.is_none() && chunk.captured_at_ms > a.end_air_ms {
+            a.cancel_end();
         }
         // The recorder routes by chunk.captured_at_ms vs the session
         // window. We refresh `last_audio_at_ms` here so the hybrid
@@ -1123,7 +1499,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64};
 use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::Receiver;
 
-use super::{Arc, CallTrackerEventKind, CallTrackerEventTx, CloseReason};
+use super::{now_unix_ms, resume_needs_reset, Arc, CallTrackerEventKind, CallTrackerEventTx, CloseReason};
 use crate::app::dibit_airtime::EpochKind;
 use crate::app::imbe_forwarder::ImbeForwarder;
 use crate::audio;
@@ -1379,6 +1755,10 @@ pub fn spawn_grant_follower(
                 }
             }
             let mut last_call_quality: Option<LastCallQuality> = None;
+            // Change 057: (TG, frequency, unix ms) of the live call the
+            // lifecycle last closed by `Timeout`, for
+            // `refollow_on_update`.
+            let mut last_timeout_close: Option<(u16, u64, u64)> = None;
 
             loop {
                 tokio::select! {
@@ -1483,7 +1863,7 @@ pub fn spawn_grant_follower(
                                 // updates that disagree with the
                                 // current lock) still take the full
                                 // path below.
-                                if g.is_update {
+                                let g = if g.is_update {
                                     let mgr = follower_mgr.lock().await;
                                     let chain_tg = mgr.current_talkgroup();
                                     drop(mgr);
@@ -1493,24 +1873,62 @@ pub fn spawn_grant_follower(
                                         send_cc_boundary(&g, None);
                                         continue;
                                     }
-                                    // Updates are keep-alives. They must
-                                    // NEVER bring the chain out of Idle
-                                    // or pull it onto a different TG —
-                                    // initial GVCG / GVCG_EXP is the
-                                    // only acquisition trigger. Without
-                                    // this gate, a TG whose initial
-                                    // grant we missed (or one whose
-                                    // encryption flag we couldn't
-                                    // learn — UPD opcodes carry no
-                                    // service_options) would slip past
-                                    // the encrypted check and force a
-                                    // retune to a freq we shouldn't
-                                    // touch. Field hit 2026-04-30: TG
-                                    // 700 (encrypted) update pulled the
-                                    // chain off-Idle.
-                                    send_cc_boundary(&g, Some("update_no_lock"));
-                                    continue;
-                                }
+                                    // Change 057: the CC still announces
+                                    // the call we closed for lack of
+                                    // keep-alive: follow it again, as a
+                                    // (source-less) grant through every
+                                    // gate below.
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as u64)
+                                        .unwrap_or(0);
+                                    if super::refollow_on_update(
+                                        last_timeout_close,
+                                        g.talkgroup.0,
+                                        g.frequency_hz,
+                                        chain_tg.is_none(),
+                                        now_ms,
+                                    ) {
+                                        last_timeout_close = None;
+                                        follower_event_log.push(
+                                            LogCategory::Traffic,
+                                            format!(
+                                                "re-follow TG={} on grant update {:.4} MHz \
+                                                 (call closed by timeout, still announced)",
+                                                g.talkgroup.0, freq_mhz,
+                                            ),
+                                            serde_json::json!({
+                                                "tg":        g.talkgroup.0,
+                                                "channel":   g.channel.0,
+                                                "frequency": g.frequency_hz,
+                                                "reason":    "refollow_on_update",
+                                            }),
+                                        );
+                                        let mut regrant = g.clone();
+                                        regrant.is_update = false;
+                                        regrant
+                                    } else {
+                                        // Updates are keep-alives. They must
+                                        // NEVER bring the chain out of Idle
+                                        // or pull it onto a different TG —
+                                        // initial GVCG / GVCG_EXP is the
+                                        // only acquisition trigger. Without
+                                        // this gate, a TG whose initial
+                                        // grant we missed (or one whose
+                                        // encryption flag we couldn't
+                                        // learn — UPD opcodes carry no
+                                        // service_options) would slip past
+                                        // the encrypted check and force a
+                                        // retune to a freq we shouldn't
+                                        // touch. Field hit 2026-04-30: TG
+                                        // 700 (encrypted) update pulled the
+                                        // chain off-Idle.
+                                        send_cc_boundary(&g, Some("update_no_lock"));
+                                        continue;
+                                    }
+                                } else {
+                                    g
+                                };
 
                                 // Tally every observed grant into the
                                 // persistent frequency map regardless
@@ -1730,6 +2148,11 @@ pub fn spawn_grant_follower(
                                             // emitting NID events on the
                                             // encrypted teardown.
                                             core.pause_traffic_chain();
+                                            // Change 057: the same-freq
+                                            // resume re-enables it.
+                                            follower_imbe
+                                                .traffic_paused_by_teardown
+                                                .store(true, Ordering::Relaxed);
                                         }
                                         // Reset the traffic framer --
                                         // it's mid-frame on encrypted
@@ -2107,6 +2530,10 @@ pub fn spawn_grant_follower(
                                         );
                                     } else {
                                         last_traffic_freq_hz = Some(freq_hz);
+                                        // The retune enabled the chain.
+                                        follower_imbe
+                                            .traffic_paused_by_teardown
+                                            .store(false, Ordering::Relaxed);
                                     }
                                     // Change 054: the new call's context
                                     // starts right after the retune's
@@ -2175,14 +2602,83 @@ pub fn spawn_grant_follower(
                                     // state machine (it was mid-search
                                     // when the previous call ended).
                                     //
-                                    // No traffic_lsm_reset. No NCO
-                                    // re-write. No retune. Subsequent
-                                    // dedup'd grants for this same
-                                    // call are no-ops at this layer.
-                                    // Change 054: airtime mode applies
-                                    // the reset + new context at this
-                                    // air-time cut instead.
-                                    if epochs {
+                                    // No NCO re-write unless the chain
+                                    // state went stale while parked
+                                    // (`resume_needs_reset`), then the
+                                    // same reset retune as a frequency
+                                    // change. Subsequent dedup'd grants
+                                    // for this same call are no-ops at
+                                    // this layer.
+                                    let last_imbe = follower_imbe
+                                        .last_imbe_at_millis
+                                        .load(Ordering::Relaxed);
+                                    let now_ms = now_unix_ms();
+                                    let ms_since_voice = (last_imbe != 0)
+                                        .then(|| now_ms.saturating_sub(last_imbe));
+                                    let pll_pre = {
+                                        let core = follower_core.lock().await;
+                                        let (pre, _) = core.traffic_lsm_debug();
+                                        pre
+                                    };
+                                    let reset = resume_needs_reset(pll_pre, ms_since_voice);
+                                    // Change 057: an encrypted teardown
+                                    // paused the chain (lsm_enable = 0)
+                                    // and the coast path writes no NCO,
+                                    // so nothing else would re-enable
+                                    // it: the channel stayed dead until
+                                    // the next cross-frequency retune.
+                                    // A reset retune enables the chain.
+                                    let reenable = follower_imbe
+                                        .traffic_paused_by_teardown
+                                        .swap(false, Ordering::Relaxed);
+                                    let mut reset_ok = false;
+                                    if reset {
+                                        let freq_hz = g.frequency_hz.unwrap_or(0);
+                                        let rx_lo_now = follower_current_rx_lo
+                                            .load(Ordering::Relaxed);
+                                        let sample_rate_now =
+                                            follower_current_sample_rate_hz
+                                                .load(Ordering::Relaxed) as f64;
+                                        let nco_lo_shift_hz =
+                                            follower_current_lo_shift_hz
+                                                .load(Ordering::Relaxed) as f64;
+                                        let offset_hz = freq_hz as f64
+                                            - rx_lo_now as f64 + nco_lo_shift_hz;
+                                        let seed_tuple: Option<(u32, i16, i32)> = {
+                                            let slot = follower_converged_seeds
+                                                .read().await;
+                                            slot.as_ref().map(|s| (0, s.pll_seed, 0))
+                                        };
+                                        if !epochs {
+                                            let mut dec = follower_traffic_decoder
+                                                .write().await;
+                                            dec.reset_framer_state();
+                                        }
+                                        // Records the Retune epoch cut
+                                        // with its settle discard (054
+                                        // IpCore hook).
+                                        let res = {
+                                            let core = follower_core.lock().await;
+                                            core.retune_traffic_chain(
+                                                offset_hz, sample_rate_now,
+                                                true, seed_tuple,
+                                            )
+                                        };
+                                        match res {
+                                            Ok(_) => reset_ok = true,
+                                            Err(e) => tracing::warn!(
+                                                target: "p25_traffic",
+                                                "same-freq reset retune failed: {e}"
+                                            ),
+                                        }
+                                        if epochs {
+                                            follower_imbe.mark_epoch(
+                                                EpochKind::TgChange, !reset_ok);
+                                        }
+                                    } else if epochs {
+                                        // Change 054: airtime mode applies
+                                        // the framer reset + new context at
+                                        // this air-time cut.
                                         follower_imbe.mark_epoch(
                                             EpochKind::TgChange, true);
                                     } else {
@@ -2190,28 +2686,36 @@ pub fn spawn_grant_follower(
                                             .write().await;
                                         dec.reset_framer_state();
                                     }
-                                    let pll_pre = {
+                                    if reenable && !reset_ok {
+                                        // Records the Resume epoch cut
+                                        // (054 IpCore hook).
                                         let core = follower_core.lock().await;
-                                        let (pre, _) = core.traffic_lsm_debug();
-                                        pre
-                                    };
-                                    let _ = &follower_imbe;
+                                        core.set_traffic_lsm_enable(true);
+                                    }
+                                    let idle_s = ms_since_voice
+                                        .map(|ms| format!("{:.1} s", ms as f64 / 1000.0))
+                                        .unwrap_or_else(|| "never".into());
                                     follower_event_log.push(
                                         LogCategory::Traffic,
                                         format!(
-                                            "same-freq resume TG={} \
-                                             (no reset; pll preserved={})",
-                                            g.talkgroup.0, pll_pre,
+                                            "same-freq resume TG={} ({}; pll {} \
+                                             idle {}{})",
+                                            g.talkgroup.0,
+                                            if reset_ok { "reset" } else { "coast" },
+                                            pll_pre, idle_s,
+                                            if reenable { "; re-enabled after encrypted pause" } else { "" },
                                         ),
                                         serde_json::json!({
                                             "tg":             g.talkgroup.0,
                                             "channel":        g.channel.0,
                                             "frequency":      g.frequency_hz,
                                             "framer_reset":   true,
-                                            "lsm_reset":      false,
-                                            "nco_write":      false,
-                                            "lsm_enable":     "unchanged",
+                                            "lsm_reset":      reset_ok,
+                                            "nco_write":      reset_ok,
+                                            "policy":         if reset_ok { "reset" } else { "coast" },
+                                            "lsm_enable":     if reenable { "re-enabled" } else { "unchanged" },
                                             "pll_pre_resume": pll_pre,
+                                            "ms_since_voice": ms_since_voice,
                                         }),
                                     );
                                 } else if follower_imbe.live_context() != ctx_before {
@@ -2282,22 +2786,19 @@ pub fn spawn_grant_follower(
                         }
 
                         // Snapshot the just-closed call's quality stats
-                        // for the next retune's chain-reset gate. Read
-                        // (global - call_baseline) to get this call's
-                        // own IMBE / silent counts (same pattern as the
-                        // /api/traffic current_call_* exposure).
+                        // for the next retune's chain-reset gate.
+                        // Change 057: this call's own counts by call_id
+                        // (`call_counts`); pre-057 read global minus the
+                        // per-HDU baseline, which mixed calls. The tail
+                        // still in flight is not in yet: fine for a
+                        // quality gate (≥ 30 IMBE, < 5 % silent).
                         if let Some(freq_hz) = last_traffic_freq_hz {
-                            use std::sync::atomic::Ordering;
-                            let global_imbe = follower_imbe
-                                .imbe_frames_extracted.load(Ordering::Relaxed);
-                            let global_silent = follower_imbe
-                                .vocoder_frames_silent_observed.load(Ordering::Relaxed);
-                            let baseline_imbe = follower_imbe
-                                .call_baseline_imbe_extracted.load(Ordering::Relaxed);
-                            let baseline_silent = follower_imbe
-                                .call_baseline_silent.load(Ordering::Relaxed);
-                            let call_imbe = global_imbe.saturating_sub(baseline_imbe);
-                            let call_silent = global_silent.saturating_sub(baseline_silent);
+                            let counts = follower_imbe
+                                .call_counts
+                                .get(event.call_id)
+                                .unwrap_or_default();
+                            let call_imbe = counts.imbe_extracted;
+                            let call_silent = counts.vocoder_silent;
                             last_call_quality = Some(LastCallQuality {
                                 freq_hz,
                                 imbe_extracted: call_imbe,
@@ -2322,6 +2823,22 @@ pub fn spawn_grant_follower(
 
                         let mut mgr = follower_mgr.lock().await;
                         let pre_close_tg = mgr.current_talkgroup();
+                        // Change 057: remember a timeout close, so a grant
+                        // update that still announces this call re-follows
+                        // it (`refollow_on_update`).
+                        let parked_freq = follower_imbe
+                            .current_frequency_hz
+                            .load(Ordering::Relaxed);
+                        last_timeout_close = match (reason, pre_close_tg) {
+                            (CloseReason::Timeout, Some(tg)) if parked_freq != 0 => {
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0);
+                                Some((tg.0, parked_freq, now_ms))
+                            }
+                            _ => None,
+                        };
                         // Soft state release only — TrafficChain
                         // goes Idle so the next grant's NCO-skip
                         // detection sees Idle as the precondition.

@@ -35,20 +35,37 @@ use crate::protocol::p25::control_channel::{
     ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, CC_SYNC_THRESHOLD,
 };
 
-/// `GET /api/recordings`
+/// `GET /api/recordings[?limit=N]`
 ///
 /// Returns the ring of recent call recordings, newest first. Each
 /// entry has {id, talkgroup, started_unix_ms, duration_ms,
-/// size_bytes}. Download via `/api/recordings/{id}.wav` or
-/// `/api/recordings/{id}`.
+/// size_bytes, storage, ...}. Download via `/api/recordings/{id}.wav`
+/// or `/api/recordings/{id}`. Change 057: recordings of both stores
+/// (RAM and SD card), `storage` per entry; `max` is the live RAM
+/// retention (was the fixed default), `max_sd` / `max_sd_bytes` the SD
+/// store's; optional `limit` (the SD store can list thousands).
 pub async fn get_recordings(
     State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<
+        std::collections::HashMap<String, String>,
+    >,
 ) -> Json<serde_json::Value> {
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(usize::MAX);
     let ring = state.recordings.lock().await;
-    let items: Vec<_> = ring.iter().rev().cloned().collect();
+    let total = ring.len();
+    let items: Vec<_> = ring.iter().rev().take(limit).cloned().collect();
+    drop(ring);
+    let r = state.ui_settings.recording.retention();
     Json(serde_json::json!({
         "count": items.len(),
-        "max": crate::audio::recorder::MAX_RECORDINGS,
+        "total": total,
+        "max": r.ram_max_count,
+        "max_sd": r.sd_max_count,
+        "max_sd_bytes": r.sd_max_bytes,
+        "storage": state.ui_settings.recording.storage().as_str(),
         "items": items,
     }))
 }
@@ -198,25 +215,33 @@ pub async fn get_recording_file(
         }
     };
 
-    let path = {
+    let found = {
         let ring = state.recordings.lock().await;
-        ring.iter().find(|e| e.id == id).map(|e| e.path.clone())
+        ring.iter()
+            .find(|e| e.id == id)
+            .map(|e| (e.path.clone(), e.pending.as_ref().map(|p| p.0.clone())))
     };
-    let Some(path) = path else {
+    let Some((path, pending)) = found else {
         return (StatusCode::NOT_FOUND, "recording not found").into_response();
     };
 
-    // Simple blocking file read — WAVs are at most a few MB and
-    // tmpfs-backed. Avoid axum's Body::from_stream machinery.
-    let bytes = match tokio::fs::read(&path).await {
-        Ok(b) => b,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("file read failed: {e}"),
-            )
-                .into_response();
-        }
+    // Change 057: a recording still waiting for the SD writer is served
+    // from its RAM copy. Otherwise read the file (tokio::fs runs on the
+    // blocking pool, so a slow SD card delays only this request).
+    // WAVs are at most a few MB. Avoid axum's Body::from_stream
+    // machinery.
+    let bytes = match pending {
+        Some(b) => b.as_ref().clone(),
+        None => match tokio::fs::read(&path).await {
+            Ok(b) => b,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("file read failed: {e}"),
+                )
+                    .into_response();
+            }
+        },
     };
     let filename = path
         .file_name()

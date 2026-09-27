@@ -30,10 +30,19 @@ function recorderCard() {
   c.body.append(sw.el, h('div', { style: { marginTop: '8px' } }, info), listen);
 
   function update(s) {
-    if (!busy && document.activeElement !== sw.input) sw.input.checked = s.recording.enabled;
-    setText(info, s.recording.enabled
-      ? 'Every followed clear call is saved as a WAV; the newest ' + s.recording.max_count + ' are kept (' + s.recording.count + ' now, in RAM, lost on reboot).'
-      : 'Recording is off: calls are still listed, without audio. ' + s.recording.count + ' earlier recordings kept.');
+    const r = s.recording;
+    if (!busy && document.activeElement !== sw.input) sw.input.checked = r.enabled;
+    // Change 057: RAM (lost on reboot) or the SD card (kept).
+    const sd = r.storage === 'sd';
+    const sdBad = sd && r.sd_state && r.sd_state !== 'ok' && r.sd_state !== 'unknown';
+    const where = sd
+      ? (sdBad ? 'SD card selected but ' + r.sd_state.replace('_', ' ') + ': saving to RAM' : 'on the SD card')
+      : 'in RAM, lost on reboot';
+    const held = r.count + ' now' + (r.sd_count && r.ram_count ? ' (' + r.sd_count + ' on SD, ' + r.ram_count + ' in RAM)' : '');
+    setText(info, r.enabled
+      ? 'Every followed clear call is saved as a WAV ' + where + '. ' + held + '.'
+      : 'Recording is off: calls are still listed, without audio. ' + r.count + ' earlier recordings kept.');
+    info.style.color = sdBad ? 'var(--warn)' : '';
     const n = s.audio.listeners;
     setText(listen, n ? n + ' browser' + (n > 1 ? 's' : '') + ' listening live.' : 'Nobody listening live.');
   }

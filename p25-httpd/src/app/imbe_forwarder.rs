@@ -334,6 +334,20 @@ pub struct ImbeForwarder {
     /// on each new mismatch.
     pub ldu1_last_mismatch:
         std::sync::Mutex<Option<Ldu1LcMismatch>>,
+
+    /// Change 057: decode counters per call_id (`app::call_counters`),
+    /// attributed where each frame is decoded (voice handlers here, the
+    /// vocoder thread for PCM / silent / error / encrypted). The global
+    /// counters above are unchanged.
+    pub call_counts: crate::app::call_counters::CallCounterBook,
+
+    /// Change 057: the traffic LSM was paused (`traffic_lsm_enable = 0`)
+    /// by an encrypted teardown (follower or `/api/encrypted_tgs`). A
+    /// cross-frequency retune re-enables the chain, but the same-freq
+    /// resume path writes no register, so before 057 a same-channel
+    /// grant after such a teardown left the chain dead until the next
+    /// cross-frequency retune. The resume path now re-enables it.
+    pub traffic_paused_by_teardown: std::sync::atomic::AtomicBool,
 }
 
 /// Forensic snapshot of a single LDU1-LC-vs-CC-SRC disagreement.
@@ -544,7 +558,69 @@ impl ImbeForwarder {
             ldu1_lc_source_rejected_implausible: 0.into(),
             ldu1_lc_cc_mismatch_count: 0.into(),
             ldu1_last_mismatch: std::sync::Mutex::new(None),
+            call_counts: crate::app::call_counters::CallCounterBook::default(),
+            traffic_paused_by_teardown: false.into(),
         }
+    }
+
+    /// Change 057: add to the per-call counters of the call the frame
+    /// being decoded belongs to (air-time segment call in airtime mode,
+    /// else the live call).
+    fn count(&self, f: impl FnOnce(&mut crate::app::call_counters::CallCounts)) {
+        self.call_counts.update(self.eff_call_id(), f);
+    }
+
+    /// Change 057: send `CallBoundaryKind::VoiceEnd` for the first
+    /// LC-FEC-valid TDULC after voice of the segment's call (see
+    /// `CallCounts::note_end_marker`). The lifecycle closes the call a
+    /// short grace later unless voice resumes.
+    fn maybe_emit_voice_end(
+        &self,
+        tx: &audio::CallBoundaryTx,
+        tg: u16,
+        lcw: &p25::voice_frame::TdulcLcw,
+    ) {
+        use std::sync::atomic::Ordering;
+        use p25::voice_frame::TdulcLcw;
+        let call_id = self.eff_call_id();
+        let send = self
+            .call_counts
+            .update(call_id, |c| c.note_end_marker())
+            .unwrap_or(false);
+        if !send {
+            return;
+        }
+        let lc = match lcw {
+            TdulcLcw::MotorolaTalkComplete { .. } => "talk_complete",
+            // SDRTrunk `LCCallTermination.isNetworkCommandedTeardown`:
+            // system-controller addresses (0xFFFFFE is the TIA one).
+            TdulcLcw::CallTermination { by_radio_id }
+                if matches!(*by_radio_id, 0 | 0xFF_FFFD | 0xFF_FFFE | 0xFF_FFFF) =>
+            {
+                "network_teardown"
+            }
+            TdulcLcw::CallTermination { .. } => "call_termination",
+            TdulcLcw::GroupVoiceChannelUser { .. } => "channel_user",
+            _ => "link_control",
+        };
+        let air_ms = self.eff_captured_at_ms();
+        let nac = self.last_observed_nac.load(Ordering::Relaxed);
+        let _ = tx.send(audio::CallBoundary {
+            kind: audio::CallBoundaryKind::VoiceEnd { call_id, air_ms, lc },
+            nac,
+            talkgroup: Some(tg),
+            expected_submit_count: self.frames_submitted.load(Ordering::Relaxed),
+        });
+        let summary = format!("VOICE END call={} TG={} LC={}", call_id, tg, lc);
+        self.emit_activity(&summary, serde_json::json!({
+            "timestamp":  p25::control_channel::chrono_timestamp(),
+            "event_type": "TRF_VOICE_END",
+            "summary":    summary,
+            "call_id":    call_id,
+            "tg":         tg,
+            "lc":         lc,
+            "air_ms":     air_ms,
+        }));
     }
 
     /// Validity precondition for any SpeakerEnd candidate — the
@@ -787,6 +863,7 @@ impl ImbeForwarder {
     fn touch_imbe(&self, n_frames: u64) {
         use std::sync::atomic::Ordering;
         self.imbe_frames_extracted.fetch_add(n_frames, Ordering::Relaxed);
+        self.count(|c| c.imbe_extracted += n_frames);
         let now_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -857,9 +934,11 @@ impl ImbeForwarder {
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 self.imbe_frames_dropped.fetch_add(9, Ordering::Relaxed);
+                self.call_counts.update(call_id, |c| c.imbe_dropped += 9);
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 self.imbe_frames_dropped.fetch_add(9, Ordering::Relaxed);
+                self.call_counts.update(call_id, |c| c.imbe_dropped += 9);
             }
         }
     }
@@ -917,25 +996,31 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
     // Per-call delta of (framer_arm_X - X_count) = body-extraction
     // failures for that DUID (extract_imbe_frames returned None,
     // or the X arm reached but body never dispatched).
+    // Change 057: each also counts for the frame's call (`count`).
     fn on_dispatch_arm_hdu(&self) {
         use std::sync::atomic::Ordering;
         self.framer_arm_hdu.fetch_add(1, Ordering::Relaxed);
+        self.count(|c| c.framer_arm_hdu += 1);
     }
     fn on_dispatch_arm_ldu1(&self) {
         use std::sync::atomic::Ordering;
         self.framer_arm_ldu1.fetch_add(1, Ordering::Relaxed);
+        self.count(|c| c.framer_arm_ldu1 += 1);
     }
     fn on_dispatch_arm_ldu2(&self) {
         use std::sync::atomic::Ordering;
         self.framer_arm_ldu2.fetch_add(1, Ordering::Relaxed);
+        self.count(|c| c.framer_arm_ldu2 += 1);
     }
     fn on_dispatch_arm_tdu(&self) {
         use std::sync::atomic::Ordering;
         self.framer_arm_tdu.fetch_add(1, Ordering::Relaxed);
+        self.count(|c| c.framer_arm_tdu += 1);
     }
     fn on_dispatch_arm_tdu_lc(&self) {
         use std::sync::atomic::Ordering;
         self.framer_arm_tdu_lc.fetch_add(1, Ordering::Relaxed);
+        self.count(|c| c.framer_arm_tdu_lc += 1);
     }
 
     /// Surface the HDL-validated NAC (latched on every t=4 BCH-passing
@@ -956,6 +1041,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
     ) {
         use std::sync::atomic::Ordering;
         self.ldu1_count.fetch_add(1, Ordering::Relaxed);
+        self.count(|c| c.ldu1 += 1);
         self.touch_imbe(9);
         self.forward_frames(frames);
 
@@ -1141,6 +1227,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
     ) {
         use std::sync::atomic::Ordering;
         self.ldu2_count.fetch_add(1, Ordering::Relaxed);
+        self.count(|c| c.ldu2 += 1);
         self.touch_imbe(9);
         self.forward_frames(frames);
 
@@ -1210,6 +1297,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
     fn on_hdu(&self, body_raw: &[u8]) {
         use std::sync::atomic::Ordering;
         self.hdu_count.fetch_add(1, Ordering::Relaxed);
+        self.count(|c| c.hdu += 1);
 
         // Snapshot current cumulative counters as the baseline for
         // this call. /api/traffic exposes `current_call_* = global
@@ -1291,6 +1379,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
     fn on_tdu(&self) {
         use std::sync::atomic::Ordering;
         self.tdu_count.fetch_add(1, Ordering::Relaxed);
+        self.count(|c| c.tdu += 1);
         // Bare TDU (DUID=0x3, no LCW) does NOT close calls. Per
         // operator: end-of-call must come from LCW-FEC-decoded
         // TDULC (CallTermination or Motorola TalkComplete) only —
@@ -1305,6 +1394,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
     fn on_tdu_lc(&self, body_raw: &[u8]) {
         use std::sync::atomic::Ordering;
         self.tdu_lc_count.fetch_add(1, Ordering::Relaxed);
+        self.count(|c| c.tdu_lc += 1);
 
         // Motorola TALK_COMPLETE LCW -> boundary event with BY: source.
         // Non-Motorola sites always land on Other / GroupVoiceChannelUser.
@@ -1315,7 +1405,16 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
         }
 
         self.tdulc_parse_attempts.fetch_add(1, Ordering::Relaxed);
-        let parsed = p25::voice_frame::parse_tdulc_lcw(body_raw);
+        let checked = p25::voice_frame::parse_tdulc_lcw_checked(body_raw);
+        // Change 057: end of transmission. Any TDULC whose LC passes
+        // RS(24,12,13) after this call's voice ends the transmission,
+        // like SDRTrunk's `processTDULC` (valid LCW → call event end).
+        // Independent of the source-stamp path below (cooldown, BY:
+        // checks), which only feeds `SpeakerEnd`.
+        if let Some((lcw, true)) = checked.as_ref() {
+            self.maybe_emit_voice_end(tx, tg, lcw);
+        }
+        let parsed = checked.map(|(lcw, _)| lcw);
 
         // Snapshot first 9 bytes of the post-extraction LC so a live
         // `/api/traffic` poll shows what the parser is seeing when the

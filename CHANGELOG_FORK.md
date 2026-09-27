@@ -5,6 +5,55 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-27] Call close at the end of transmission, per-call counters, SD-card recordings (057)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-27-call-close-sd-057`
+**Bake required:** NO — p25-httpd only.
+
+Traffic-channel teardown audit and rebuild against SDRTrunk (source and 719 measured
+transmissions of the site, doc/changes/057), exact per-call counters, and recordings on the
+SD card as an option.
+
+Changes:
+
+- **Call close.** A call closes 2 s after its end of transmission (first LC-valid TDULC after
+  its voice; SDRTrunk ends its call event at the same frame) unless voice resumes, at once on
+  the next grant, or after 3 s with no keep-alive. It was 10 s after the last CC update,
+  sized for 054's 3.4 s dibit blocks: a 1.44 s PTT now closes after ~3.9 s instead of 12.8 s,
+  and the single traffic chain is free ~9 s sooner. Both times are persisted settings
+  (`call.end_grace_ms`, `call.hang_ms`, Settings view "Call close").
+- **Grants:** a repeat of the on-air call's grant refreshes it instead of splitting the
+  transmission; the next talker's grant that arrives while the current one still talks
+  (12.8 % of same-channel grants on this site) waits for the hand-over instead of taking the
+  rest of the transmission; a grant update re-follows a call closed by timeout.
+- **Same-frequency resume resets a stale chain.** A parked chain demodulates noise once the
+  carrier drops (its PLL reached the clamp), and with the prompt close every same-channel
+  call after a pause resumed from that state: 68.7 % recovered on a bench window built for
+  it, 100.0 % after the fix. The chain now coasts only if it carried voice within 1 s and its
+  PLL is under half the clamp; otherwise it takes the reset retune.
+- **Bench:** a 64-loop soak with the SD card stalling up to 6.1 s kept 100.0 % IMBE, 0 resyncs
+  and 0 failed SD writes; the SD store was checked for re-index at boot, read-only fallback and
+  retention.
+- **Fixes:** a same-frequency grant after an encrypted teardown left the traffic LSM disabled;
+  CC updates for the TG on another channel kept a call alive; grant_stats blocked 2 s at every
+  close and stopped for good on a broadcast lag.
+- **Per-call counters by call_id** (IMBE, LDU, HDU, TDU, drops, vocoder PCM / silent / errors /
+  encrypted), attributed where each frame is decoded; `/api/ui/calls`, `/api/grant_decode_stats`
+  and `/api/recordings` report exact numbers. Global counters unchanged. `vocoder_errors`
+  (never counted before) = frames whose IMBE FEC corrected more than 4 bits.
+- **Recordings on the SD card** (`recording.storage` "sd", `/mnt/sd/p25_recordings`), with count
+  and size retention per store. Writes happen on a separate thread (the card stalls for
+  seconds), recordings play from RAM until written, and an absent / read-only / full card
+  falls back to RAM with the reason in `/api/ui/settings`. Existing recordings do not move.
+  SD recordings are listed again after a restart, and call ids continue after them.
+- `tools/sdrtrunk_teardown_stats.py`: SDRTrunk teardown / turnaround distributions from its
+  event logs, and the same figures from p25-httpd `/api/ui/calls` / `/api/log` dumps.
+
+Tests: 229 passed (was 195). Not yet run on the board.
+
+---
+
 ## [2026-09-26] Web UI review and redesign; persisted recording / alias / monitor settings (056)
 
 **Branch:** fishball-p25

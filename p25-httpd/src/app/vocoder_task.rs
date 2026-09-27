@@ -298,15 +298,26 @@ pub fn spawn_vocoder_thread(
                         .vocoder_frames_encrypted
                         .fetch_add(9, Ordering::Relaxed);
                     call_frames_skipped_enc += 9;
+                    // Change 057: per-call count, by the batch's call.
+                    voc_forwarder
+                        .call_counts
+                        .update(batch_call_id, |c| c.vocoder_encrypted += 9);
                     continue;
                 }
                 let tg = effective_tg;
+                // Change 057: this batch's vocoder counts, added to its
+                // call in one update after the loop.
+                let (mut b_errors, mut b_silent) = (0u64, 0u64);
                 for frame in &frames {
                     let pcm = decoder.decode_frame(frame);
                     call_stage_times.push(decoder.last_decode_times());
                     voc_forwarder
                         .vocoder_pcm_produced
                         .fetch_add(vocoder::SAMPLES_PER_FRAME as u64, Ordering::Relaxed);
+                    if decoder.last_error_count() > vocoder::ERROR_FRAME_BITS {
+                        voc_forwarder.vocoder_errors.fetch_add(1, Ordering::Relaxed);
+                        b_errors += 1;
+                    }
                     call_frames_in += 1;
                     call_pcm_samples += vocoder::SAMPLES_PER_FRAME as u64;
                     // Latch frame wall clock for the first-frame to
@@ -328,6 +339,7 @@ pub fn spawn_vocoder_thread(
                         voc_forwarder
                             .vocoder_frames_silent_observed
                             .fetch_add(1, Ordering::Relaxed);
+                        b_silent += 1;
                     }
 
                     // Source radio ID bundled with the batch at submit
@@ -401,6 +413,11 @@ pub fn spawn_vocoder_thread(
                         airtime: batch_airtime,
                     });
                 }
+                voc_forwarder.call_counts.update(batch_call_id, |c| {
+                    c.vocoder_pcm_samples += (frames.len() * vocoder::SAMPLES_PER_FRAME) as u64;
+                    c.vocoder_errors += b_errors;
+                    c.vocoder_silent += b_silent;
+                });
             }
             tracing::warn!(target: "p25_vocoder", "vocoder thread exiting (channel closed)");
         })

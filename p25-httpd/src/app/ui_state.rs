@@ -8,8 +8,9 @@
 //! functions here, so the presentation rules are host-tested:
 //!
 //!   - call phase: `acquiring` → `voice` → `hang` (the lifecycle keeps
-//!     a call open for `IDLE_TIMEOUT_MS` after its last keep-alive; the
-//!     pre-056 dashboard showed that hang time as an active call);
+//!     a call open after its last voice until the end-of-transmission
+//!     grace or the no-keep-alive timeout, change 057; the pre-056
+//!     dashboard showed that hang time as an active call);
 //!   - the recent-call list: grant summaries joined with recordings by
 //!     call_id, with an explicit reason whenever there is no audio;
 //!   - control-channel health from a short TSBK rate window.
@@ -18,7 +19,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use p25_json::ui::{UiCall, UiCallSummary, UiRecordingRef};
 
-use crate::app::grant_follower::{ActiveCallSnapshot, IDLE_TIMEOUT_MS};
+use crate::app::grant_follower::ActiveCallSnapshot;
 use crate::app::grant_stats::GrantDecodeSummary;
 use crate::audio::recorder::RecordingEntry;
 
@@ -75,7 +76,14 @@ pub fn build_call(
     aliases: Aliases,
     recording: bool,
 ) -> UiCall {
-    let idle_for = now.saturating_sub(s.last_activity_unix_ms.max(s.started_unix_ms));
+    // Change 057: the lifecycle publishes when (and by which rule) the
+    // call will close; an end-of-transmission marker means the voice is
+    // over even if the last chunks are still being played out.
+    let phase = if s.close_via == "end" {
+        "hang"
+    } else {
+        call_phase(now, s.started_unix_ms, s.last_voice_unix_ms)
+    };
     UiCall {
         call_id: s.call_id,
         tg: s.tg,
@@ -88,11 +96,14 @@ pub fn build_call(
         encrypted: s.encrypted,
         started_unix_ms: s.started_unix_ms,
         elapsed_ms: now.saturating_sub(s.started_unix_ms),
-        phase: call_phase(now, s.started_unix_ms, s.last_voice_unix_ms).to_string(),
+        phase: phase.to_string(),
         voice_ms: s.voice_frames * 20,
         first_voice_unix_ms: s.first_voice_unix_ms,
         last_voice_unix_ms: s.last_voice_unix_ms,
-        close_in_ms: IDLE_TIMEOUT_MS.saturating_sub(idle_for),
+        close_in_ms: s.close_at_unix_ms.saturating_sub(now),
+        close_via: s.close_via.to_string(),
+        close_window_ms: s.close_window_ms,
+        end_lc: s.end_lc.map(str::to_string),
         recording: recording && !s.encrypted,
     }
 }
@@ -155,6 +166,10 @@ impl RateWindow {
 
 /// Changes whenever either grant-stats ring or the recordings ring
 /// changes. Inputs are newest-last slices of each ring's tail.
+/// Change 057: plus `stats_rev` (a closed call's counters updated by
+/// its late-decoded tail, `grant_stats::GrantStatsRev`) and
+/// `rec_pending` (recordings still waiting for the SD card).
+#[allow(clippy::too_many_arguments)]
 pub fn calls_rev(
     clear_newest: Option<u64>,
     clear_len: usize,
@@ -162,12 +177,15 @@ pub fn calls_rev(
     enc_len: usize,
     rec_newest: Option<u64>,
     rec_len: usize,
+    stats_rev: u64,
+    rec_pending: usize,
 ) -> String {
     format!(
-        "c{}.{}-e{}.{}-r{}.{}",
+        "c{}.{}-e{}.{}-r{}.{}-s{}.{}",
         clear_newest.unwrap_or(0), clear_len,
         enc_newest.unwrap_or(0), enc_len,
         rec_newest.unwrap_or(0), rec_len,
+        stats_rev, rec_pending,
     )
 }
 
@@ -186,6 +204,7 @@ fn rec_ref(r: &RecordingEntry) -> UiRecordingRef {
         duration_ms: r.duration_ms,
         size_bytes: r.size_bytes,
         filename: r.filename.clone(),
+        storage: r.storage.to_string(),
     }
 }
 

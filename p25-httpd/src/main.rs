@@ -43,7 +43,7 @@ use services::{monitor, ntp};
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-26-web-ui-056";
+pub const BUILD_TAG: &str = "2026-09-27-call-close-sd-057";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -497,13 +497,39 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(RwLock::new(m))
     };
     tracing::info!(
-        "ui settings: {} (recording={}, keep={}, tg_aliases={}, monitor={:?})",
+        "ui settings: {} (recording={}, keep={}, storage={}, hang_ms={}, \
+         end_grace_ms={}, tg_aliases={}, monitor={:?})",
         ui_settings.load_note(),
         boot_settings.recording.enabled,
         boot_settings.recording.max_count,
+        boot_settings.recording.storage.as_str(),
+        boot_settings.call.hang_ms,
+        boot_settings.call.end_grace_ms,
         boot_settings.tg_aliases.len(),
         boot_settings.monitor_tgs,
     );
+
+    // Change 057: recordings already on the SD card (they survive a
+    // restart; RAM ones do not). Listed now, before any task that could
+    // open a call, so call ids continue after the highest one there and
+    // stay unique across restarts. Bounded: a missing or stalled card
+    // costs at most `INDEX_TIMEOUT` at boot.
+    let rec_storage_cfg = audio::rec_storage::StorageConfig::board();
+    let (sd_index, sd_index_note) = {
+        let cfg = rec_storage_cfg.clone();
+        match tokio::time::timeout(
+            audio::rec_storage::INDEX_TIMEOUT,
+            tokio::task::spawn_blocking(move || audio::rec_storage::index_sd(&cfg)),
+        )
+        .await
+        {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => (Vec::new(), format!("index task failed: {e}")),
+            Err(_) => (Vec::new(), "index timed out (SD card slow or stalled)".to_string()),
+        }
+    };
+    let first_call_id = sd_index.iter().map(|e| e.id).max().unwrap_or(0) + 1;
+    tracing::info!("recordings on SD: {sd_index_note}; first call_id {first_call_id}");
 
     let mut lsm_decoder = ControlChannelDecoder::new();
     lsm_decoder.set_event_tx(event_tx.clone());
@@ -1544,8 +1570,13 @@ async fn main() -> anyhow::Result<()> {
                 // pre-call NIDs (chain still acquiring) also count
                 // toward "framer alive". TG/NAC/DUID intentionally
                 // omitted — LoS is a pure framer-state signal.
+                // Change 057: `voice` = valid HDU / LDU1 / LDU2 NID; the
+                // lifecycle uses a pair of them to see voice resume after
+                // an end-of-transmission marker.
                 let _ = traffic_boundary_tx.send(audio::CallBoundary {
-                    kind: audio::CallBoundaryKind::TrafficNidObserved,
+                    kind: audio::CallBoundaryKind::TrafficNidObserved {
+                        voice: status.nid_valid && matches!(duid, 0x0 | 0x5 | 0xA),
+                    },
                     nac,
                     talkgroup: None,
                     expected_submit_count: 0,
@@ -1742,13 +1773,36 @@ async fn main() -> anyhow::Result<()> {
         call_tracker_tx.clone(),
         imbe_forwarder.clone(),
         active_call_snapshot.clone(),
+        // Change 057: persisted close timing + ids after the SD index.
+        ui_settings.call.clone(),
+        first_call_id,
     );
 
     // Call recorder: subscribes to audio_tx (for PCM) AND
     // call_tracker_tx (for CallOpen / SourceUpdate / CallClose
-    // events). Writes per-call WAVs to /tmp/p25_recordings/. Ring-
-    // buffered in RecordingStore for the dashboard.
+    // events). Writes per-call WAVs to /tmp/p25_recordings/ (change
+    // 057: or the SD card, through the writer thread). Ring-buffered
+    // in RecordingStore for the dashboard.
     let recordings = recorder::new_store();
+    // Change 057: the SD store's writer thread, and the recordings
+    // found on the card at boot (listed again, retention applied).
+    let rec_storage = audio::rec_storage::RecordingStorage::start(
+        rec_storage_cfg,
+        recordings.clone(),
+    );
+    rec_storage.note_index(sd_index.len(), &sd_index_note);
+    {
+        let mut ring = recordings.lock().await;
+        ring.extend(sd_index);
+        let evicted = recorder::apply_retention(
+            &mut ring,
+            &ui_settings.recording.retention(),
+            &rec_storage,
+        );
+        if !evicted.is_empty() {
+            tracing::info!("recordings on SD: {} beyond retention deleted", evicted.len());
+        }
+    }
     let recorder_diag = recorder::new_diag();
     {
         let rx = audio_tx.subscribe();
@@ -1756,10 +1810,8 @@ async fn main() -> anyhow::Result<()> {
         let store = recordings.clone();
         let diag = recorder_diag.clone();
         let log = Some(event_log.clone());
-        // Share imbe_frames_dropped so each call_finalise event can
-        // log the drop-delta during the recording (surfaces IMBE-
-        // queue-full events that caused audio loss on specific calls).
-        let imbe_drops_handle = imbe_forwarder.imbe_frames_dropped.clone();
+        // Per-call counters (change 057: including IMBE drops, which
+        // the finalise log shows per recording).
         let forwarder_for_recorder = Some(imbe_forwarder.clone());
         // 2026-05-03: ws-event broadcast so the recorder can fire
         // `recording_saved` immediately on call close. Eliminates the
@@ -1767,11 +1819,12 @@ async fn main() -> anyhow::Result<()> {
         let recorder_event_tx = Some(event_tx.clone());
         // Change 056: recording on/off + retention (persisted setting).
         let recording_policy = Some(ui_settings.recording.clone());
+        let storage = rec_storage.clone();
         tokio::spawn(async move {
             recorder::recorder_task(
                 rx, tracker_rx, store, diag, log,
-                imbe_drops_handle, forwarder_for_recorder,
-                recorder_event_tx, recording_policy,
+                forwarder_for_recorder,
+                recorder_event_tx, recording_policy, storage,
             ).await;
         });
     }
@@ -1955,6 +2008,8 @@ async fn main() -> anyhow::Result<()> {
         ui_settings: ui_settings.clone(),
         audio_ws_listeners: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         ui_cc_rate: std::sync::Mutex::new(app::ui_state::RateWindow::new()),
+        rec_storage: rec_storage.clone(),
+        grant_stats_rev: crate::app::grant_stats::new_rev(),
     });
 
     // Phase 2b unified call lifecycle: call_tracker is spawned up
@@ -1968,6 +2023,7 @@ async fn main() -> anyhow::Result<()> {
         state.imbe_forwarder.clone(),
         state.grant_decode_stats.clone(),
         state.enc_grant_decode_stats.clone(),
+        state.grant_stats_rev.clone(),
     );
 
     // 2026-04-26 per-call AGC tracking. Tiny poller updates

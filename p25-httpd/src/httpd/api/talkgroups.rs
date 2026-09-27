@@ -308,6 +308,11 @@ pub async fn put_encrypted_tgs(
             {
                 let core = state.ip_core.lock().await;
                 core.pause_traffic_chain();
+                // Change 057: the next same-freq resume re-enables it.
+                state
+                    .imbe_forwarder
+                    .traffic_paused_by_teardown
+                    .store(true, Ordering::Relaxed);
             }
             if !state.imbe_forwarder.epochs_active() {
                 let mut dec = state.traffic_lsm_decoder.write().await;

@@ -105,6 +105,15 @@ export const NOT_FOLLOWED = {
   update_no_lock: 'update without grant',
 };
 
+// Change 057: why the lifecycle closed a call (`close_reason`).
+export const CLOSE_REASON = {
+  call_end: 'end of transmission',
+  tg_change: 'next grant',
+  timeout: 'no activity',
+  stream_lag: 'event lag',
+  sync_lost: 'sync lost',
+};
+
 export const AUDIO_STATUS = {
   recorded: '',
   saving: 'saving…',

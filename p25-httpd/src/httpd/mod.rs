@@ -342,6 +342,13 @@ pub struct AppState {
     pub audio_ws_listeners: Arc<std::sync::atomic::AtomicUsize>,
     /// Change 056: TSBK rate window for `/api/ui/state` site health.
     pub ui_cc_rate: std::sync::Mutex<crate::app::ui_state::RateWindow>,
+    /// Change 057: recording stores (RAM / SD) and the SD writer's
+    /// status, shared with the recorder.
+    pub rec_storage: Arc<crate::audio::rec_storage::RecordingStorage>,
+    /// Change 057: bumped when a closed call's grant summary changes
+    /// (its air-time tail was counted after the close); part of
+    /// `calls_rev`.
+    pub grant_stats_rev: crate::app::grant_stats::GrantStatsRev,
 }
 
 impl AppState {

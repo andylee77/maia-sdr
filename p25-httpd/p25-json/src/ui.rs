@@ -85,12 +85,27 @@ pub struct UiCall {
     /// "acquiring" (granted, no voice yet), "voice" (voice within the
     /// last 1.5 s) or "hang" (no voice; the lifecycle closes the call
     /// `close_in_ms` from now unless voice or a CC update arrives).
+    /// Change 057: always "hang" once the end of the transmission was
+    /// decoded (`close_via` "end").
     pub phase: String,
     /// Decoded voice of this call received so far (20 ms per frame).
     pub voice_ms: u64,
     pub first_voice_unix_ms: Option<u64>,
     pub last_voice_unix_ms: Option<u64>,
     pub close_in_ms: u64,
+    /// Change 057: which close is pending: "end" (end-of-transmission
+    /// marker decoded; closes `close_in_ms` from now unless voice
+    /// resumes, CC updates do not extend it) or "timeout" (no
+    /// keep-alive). `close_window_ms` is that rule's full length (the
+    /// persisted `call.end_grace_ms` / `call.hang_ms`), for a countdown.
+    #[serde(default)]
+    pub close_via: String,
+    #[serde(default)]
+    pub close_window_ms: u64,
+    /// Change 057: LC of the end-of-transmission marker, e.g.
+    /// "talk_complete", "channel_user", "call_termination".
+    #[serde(default)]
+    pub end_lc: Option<String>,
     /// A WAV is being written for this call.
     pub recording: bool,
 }
@@ -113,8 +128,23 @@ pub struct UiChain {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UiRecordingStatus {
     pub enabled: bool,
+    /// RAM-store retention (`recording.max_count`).
     pub max_count: usize,
+    /// Recordings listed, both stores.
     pub count: usize,
+    /// Change 057: store selected for new recordings ("ram" / "sd").
+    #[serde(default)]
+    pub storage: String,
+    /// Change 057: SD card state when it is selected or holds
+    /// recordings ("ok", "absent", "read_only", "full", "error",
+    /// "unknown"); `None` otherwise.
+    #[serde(default)]
+    pub sd_state: Option<String>,
+    /// Change 057: recordings on the SD card / in RAM.
+    #[serde(default)]
+    pub sd_count: usize,
+    #[serde(default)]
+    pub ram_count: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -147,8 +177,9 @@ pub struct UiCallSummary {
     pub channel: Option<String>,
     pub started_unix_ms: u64,
     pub ended_unix_ms: u64,
-    /// How long the lifecycle held the call open. Includes the hang
-    /// time after the last voice (up to 10 s), so it is NOT the talk
+    /// How long the lifecycle held the call open. Includes the time
+    /// after the last voice until the close (change 057: the end grace,
+    /// or the reply's grant; pre-057 up to 10 s), so it is NOT the talk
     /// time; use `voice_ms`.
     pub open_ms: u64,
     /// Decoded voice: the recording's length when there is one, else
@@ -183,4 +214,7 @@ pub struct UiRecordingRef {
     pub duration_ms: u64,
     pub size_bytes: u64,
     pub filename: String,
+    /// Change 057: "ram" or "sd".
+    #[serde(default)]
+    pub storage: String,
 }

@@ -9,10 +9,12 @@
 //              call {call_id, tg, tg_alias, source, source_alias, sources,
 //                    freq_hz, channel, encrypted, started_unix_ms,
 //                    elapsed_ms, phase, voice_ms, first_voice_unix_ms,
-//                    last_voice_unix_ms, close_in_ms, recording} | null,
+//                    last_voice_unix_ms, close_in_ms, close_via,
+//                    close_window_ms, end_lc, recording} | null,
 //              chain {state, parked_freq_hz, follower_enabled, lock_freq,
 //                     delivery_mode},
-//              recording {enabled, max_count, count},
+//              recording {enabled, max_count, count, storage, sd_state,
+//                         sd_count, ram_count},
 //              audio {listeners, lag_total},
 //              calls_rev, settings_rev, log_last_seq }
 //   UiCalls  { now_unix_ms, calls_rev, recording_enabled, items: [
@@ -21,7 +23,7 @@
 //               voice_ms, air_ms, first_voice_ms, imbe, ldu,
 //               vocoder_errors, vocoder_silent, encrypted, not_followed,
 //               close_reason, recording {id, url, duration_ms, size_bytes,
-//               filename} | null, audio_status}] }
+//               filename, storage} | null, audio_status}] }
 
 const TIMEOUT_MS = 5000;
 

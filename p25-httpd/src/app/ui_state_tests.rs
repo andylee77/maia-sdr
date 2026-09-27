@@ -2,7 +2,7 @@
 //! `#[cfg(test)] #[path = "ui_state_tests.rs"] mod tests;`.
 //!
 //! Numbers follow the 2026-09-26 bench replay (Clay County, TG 300,
-//! 72- and 81-frame PTTs, 10 s hang on the last call of each burst).
+//! 72- and 81-frame PTTs).
 
 use super::*;
 use crate::app::grant_follower::CloseReason;
@@ -77,6 +77,8 @@ fn recording(id: u64, start: u64, dur: u64) -> RecordingEntry {
         sources_observed: vec![1014],
         max_chunk_lag_ms: None,
         mean_chunk_lag_ms: None,
+        storage: "ram",
+        pending: None,
     }
 }
 
@@ -121,19 +123,38 @@ fn build_call_reports_hang_countdown_and_aliases() {
         first_voice_unix_ms: Some(T0 + 111),
         last_voice_unix_ms: Some(T0 + 1_700),
         last_activity_unix_ms: T0 + 2_800, // trailing CC updates
+        // Change 057: the lifecycle's plan, 3 s after the last update.
+        close_at_unix_ms: T0 + 5_800,
+        close_via: "timeout",
+        close_window_ms: 3_000,
         ..Default::default()
     };
-    let c = build_call(&snap, T0 + 6_000, aliases, true);
+    let c = build_call(&snap, T0 + 4_000, aliases, true);
     assert_eq!(c.phase, "hang");
     assert_eq!(c.voice_ms, 1_440);
-    assert_eq!(c.elapsed_ms, 6_000);
-    assert_eq!(c.close_in_ms, IDLE_TIMEOUT_MS - 3_200);
+    assert_eq!(c.elapsed_ms, 4_000);
+    assert_eq!(c.close_in_ms, 1_800);
+    assert_eq!((c.close_via.as_str(), c.close_window_ms), ("timeout", 3_000));
     assert_eq!(c.tg_alias.as_deref(), Some("EMS Dispatch"));
     assert_eq!(c.source_alias.as_deref(), Some("Console 14"));
     assert!(c.recording);
 
     let c = build_call(&snap, T0 + 20_000, aliases, true);
     assert_eq!(c.close_in_ms, 0, "saturates once overdue");
+
+    // End of transmission decoded while the last chunks still play out:
+    // the phase is already "hang", closing on the end grace.
+    let ending = ActiveCallSnapshot {
+        last_voice_unix_ms: Some(T0 + 1_900),
+        close_at_unix_ms: T0 + 3_900,
+        close_via: "end",
+        close_window_ms: 2_000,
+        end_lc: Some("talk_complete"),
+        ..snap.clone()
+    };
+    let c = build_call(&ending, T0 + 2_000, aliases, true);
+    assert_eq!((c.phase.as_str(), c.close_in_ms), ("hang", 1_900));
+    assert_eq!(c.end_lc.as_deref(), Some("talk_complete"));
 
     let enc = ActiveCallSnapshot { encrypted: true, ..snap.clone() };
     assert!(!build_call(&enc, T0, aliases, true).recording);
@@ -243,9 +264,12 @@ fn not_followed_rows_are_optional_and_orphans_are_kept() {
 
 #[test]
 fn calls_rev_changes_with_any_ring() {
-    let a = calls_rev(Some(256), 200, None, 0, Some(255), 40);
-    assert_eq!(a, calls_rev(Some(256), 200, None, 0, Some(255), 40));
-    assert_ne!(a, calls_rev(Some(257), 200, None, 0, Some(255), 40));
-    assert_ne!(a, calls_rev(Some(256), 200, Some(3), 1, Some(255), 40));
-    assert_ne!(a, calls_rev(Some(256), 200, None, 0, Some(256), 40));
+    let a = calls_rev(Some(256), 200, None, 0, Some(255), 40, 0, 0);
+    assert_eq!(a, calls_rev(Some(256), 200, None, 0, Some(255), 40, 0, 0));
+    assert_ne!(a, calls_rev(Some(257), 200, None, 0, Some(255), 40, 0, 0));
+    assert_ne!(a, calls_rev(Some(256), 200, Some(3), 1, Some(255), 40, 0, 0));
+    assert_ne!(a, calls_rev(Some(256), 200, None, 0, Some(256), 40, 0, 0));
+    // Change 057: a closed call's late tail counted, an SD write landed.
+    assert_ne!(a, calls_rev(Some(256), 200, None, 0, Some(255), 40, 1, 0));
+    assert_ne!(a, calls_rev(Some(256), 200, None, 0, Some(255), 40, 0, 1));
 }

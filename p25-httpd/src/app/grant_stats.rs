@@ -9,26 +9,53 @@
 //!
 //! Lifecycle:
 //!
-//!   - `CallOpen` → snapshot `ImbeForwarder` counters, store baseline.
+//!   - `CallOpen` → remember the call.
 //!   - `SourceUpdate` → update the in-flight summary's source field.
-//!   - `CallClose` → snapshot counters again, compute deltas against
-//!     baseline, push `GrantDecodeSummary` into the ring.
+//!   - `CallClose` → push `GrantDecodeSummary` into the ring at once,
+//!     with the call's own counters (change 057, below).
 //!
 //! The shape of `GrantDecodeSummary` is preserved for API
 //! compatibility — the dashboard's `/api/grant_decode_stats` parsing
-//! is unchanged. Implementation detail: drop / silent / extracted
-//! deltas use the global atomic counters with per-call baselining.
+//! is unchanged.
+//!
+//! Change 057: the decode counters come from
+//! `ImbeForwarder::call_counts`, attributed by call_id where each frame
+//! is decoded, instead of global-counter deltas between open and close
+//! (which also counted the neighbouring calls' frames). Frames of the
+//! call decoded after the close (the air-time tail, still in the ring or
+//! the vocoder queue) are picked up by a refresh every
+//! `REFRESH_TICK_MS` for `REFRESH_WINDOW_MS` after the close; each
+//! change bumps `GrantStatsRev` so `/api/ui/calls` is refetched. The
+//! pre-057 2 s blocking wait for the vocoder at every close is gone
+//! (it also delayed the next CallOpen, shortening that call's
+//! `duration_ms`); `duration_ms` is now the lifecycle's own open time.
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::VecDeque;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use crate::app::call_counters::CallCounts;
 use crate::app::grant_follower::{
     CallTrackerEvent, CallTrackerEventKind, CallTrackerEventTx, CloseReason,
 };
 use crate::app::imbe_forwarder::ImbeForwarder;
+
+/// Change 057: re-read the counters of recently closed calls this often,
+/// for `REFRESH_WINDOW_MS` after the close (covers the air-time tail:
+/// dibit delivery ≤ 0.2 s, vocoder queue, recorder drain 2 s).
+const REFRESH_TICK_MS: u64 = 250;
+const REFRESH_WINDOW_MS: u64 = 10_000;
+
+/// Change 057: bumped whenever a summary already in a ring changes (late
+/// tail frames counted after the close). Part of `/api/ui/state`
+/// `calls_rev`.
+pub type GrantStatsRev = Arc<AtomicU64>;
+
+pub fn new_rev() -> GrantStatsRev {
+    Arc::new(AtomicU64::new(0))
+}
 
 /// Ring cap. Most-recent completed grants. 2026-04-26 raised from
 /// 50 to 200 because grants are heavily dominated by encrypted
@@ -145,50 +172,82 @@ struct ActiveSummary {
     not_followed: Option<&'static str>,
     started_unix_ms: u64,
     started_instant: Instant,
-    base: Counters,
     freq_hz: Option<u64>,
     channel: Option<String>,
 }
 
-struct Counters {
-    hdu: u64,
-    ldu1: u64,
-    ldu2: u64,
-    tdu: u64,
-    tdu_lc: u64,
-    framer_arm_hdu: u64,
-    framer_arm_ldu1: u64,
-    framer_arm_ldu2: u64,
-    framer_arm_tdu: u64,
-    framer_arm_tdu_lc: u64,
-    imbe_extracted: u64,
-    imbe_dropped: u64,
-    pcm: u64,
-    errors: u64,
-    silent: u64,
-    encrypted_frames: u64,
+/// Change 057: copy a call's counters into its summary. Returns true
+/// when anything changed.
+fn apply_counts(s: &mut GrantDecodeSummary, c: &CallCounts) -> bool {
+    let before = (
+        s.hdu_count, s.ldu1_count, s.ldu2_count, s.tdu_count, s.tdu_lc_count,
+        s.imbe_extracted, s.imbe_dropped, s.vocoder_pcm_samples,
+        s.vocoder_errors, s.vocoder_silent, s.vocoder_encrypted,
+        s.framer_arm_hdu + s.framer_arm_ldu1 + s.framer_arm_ldu2
+            + s.framer_arm_tdu + s.framer_arm_tdu_lc,
+    );
+    s.hdu_count = c.hdu;
+    s.ldu1_count = c.ldu1;
+    s.ldu2_count = c.ldu2;
+    s.tdu_count = c.tdu;
+    s.tdu_lc_count = c.tdu_lc;
+    s.framer_arm_hdu = c.framer_arm_hdu;
+    s.framer_arm_ldu1 = c.framer_arm_ldu1;
+    s.framer_arm_ldu2 = c.framer_arm_ldu2;
+    s.framer_arm_tdu = c.framer_arm_tdu;
+    s.framer_arm_tdu_lc = c.framer_arm_tdu_lc;
+    s.imbe_extracted = c.imbe_extracted;
+    s.imbe_dropped = c.imbe_dropped;
+    s.vocoder_pcm_samples = c.vocoder_pcm_samples;
+    s.vocoder_errors = c.vocoder_errors;
+    s.vocoder_silent = c.vocoder_silent;
+    s.vocoder_encrypted = c.vocoder_encrypted;
+    let after = (
+        s.hdu_count, s.ldu1_count, s.ldu2_count, s.tdu_count, s.tdu_lc_count,
+        s.imbe_extracted, s.imbe_dropped, s.vocoder_pcm_samples,
+        s.vocoder_errors, s.vocoder_silent, s.vocoder_encrypted,
+        s.framer_arm_hdu + s.framer_arm_ldu1 + s.framer_arm_ldu2
+            + s.framer_arm_tdu + s.framer_arm_tdu_lc,
+    );
+    before != after
 }
 
-impl Counters {
-    fn snapshot(f: &ImbeForwarder) -> Self {
-        Self {
-            hdu:               f.hdu_count.load(Ordering::Relaxed),
-            ldu1:              f.ldu1_count.load(Ordering::Relaxed),
-            ldu2:              f.ldu2_count.load(Ordering::Relaxed),
-            tdu:               f.tdu_count.load(Ordering::Relaxed),
-            tdu_lc:            f.tdu_lc_count.load(Ordering::Relaxed),
-            framer_arm_hdu:    f.framer_arm_hdu.load(Ordering::Relaxed),
-            framer_arm_ldu1:   f.framer_arm_ldu1.load(Ordering::Relaxed),
-            framer_arm_ldu2:   f.framer_arm_ldu2.load(Ordering::Relaxed),
-            framer_arm_tdu:    f.framer_arm_tdu.load(Ordering::Relaxed),
-            framer_arm_tdu_lc: f.framer_arm_tdu_lc.load(Ordering::Relaxed),
-            imbe_extracted:    f.imbe_frames_extracted.load(Ordering::Relaxed),
-            imbe_dropped:      f.imbe_frames_dropped.load(Ordering::Relaxed),
-            pcm:               f.vocoder_pcm_produced.load(Ordering::Relaxed),
-            errors:            f.vocoder_errors.load(Ordering::Relaxed),
-            silent:            f.vocoder_frames_silent_observed.load(Ordering::Relaxed),
-            encrypted_frames:  f.vocoder_frames_encrypted.load(Ordering::Relaxed),
+/// Change 057: calls closed less than `REFRESH_WINDOW_MS` ago whose
+/// summaries still pick up late-counted frames.
+#[derive(Default)]
+struct Pending {
+    calls: VecDeque<(u64, Instant)>,
+}
+
+/// Change 057: refresh the summaries of recently closed calls from the
+/// per-call counters; drop calls past the window. Bumps `rev` when a
+/// summary changed.
+fn refresh_pending(
+    pending: &mut Pending,
+    forwarder: &ImbeForwarder,
+    clear_ring: &GrantStatsRing,
+    enc_ring: &GrantStatsRing,
+    rev: &AtomicU64,
+    now: Instant,
+) {
+    let mut changed = false;
+    for &(call_id, _) in pending.calls.iter() {
+        let Some(counts) = forwarder.call_counts.get(call_id) else {
+            continue;
+        };
+        for ring in [clear_ring, enc_ring] {
+            if let Ok(mut r) = ring.lock() {
+                if let Some(s) = r.iter_mut().rev().find(|s| s.call_id == call_id) {
+                    changed |= apply_counts(s, &counts);
+                    break;
+                }
+            }
         }
+    }
+    let window = Duration::from_millis(REFRESH_WINDOW_MS);
+    pending.calls.retain(|(_, closed)| now.saturating_duration_since(*closed) < window);
+    if changed {
+        rev.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -206,19 +265,46 @@ pub fn spawn_grant_stats_task(
     forwarder: Arc<ImbeForwarder>,
     clear_ring: GrantStatsRing,
     enc_ring: GrantStatsRing,
+    // Change 057: bumped when a closed call's summary changes.
+    rev: GrantStatsRev,
 ) {
     let mut rx = tracker_tx.subscribe();
     tokio::spawn(async move {
         let mut active: Option<ActiveSummary> = None;
-        while let Ok(event) = rx.recv().await {
-            handle_event(event, &mut active, &forwarder, &clear_ring, &enc_ring).await;
+        let mut pending = Pending::default();
+        let mut tick = tokio::time::interval(Duration::from_millis(REFRESH_TICK_MS));
+        loop {
+            tokio::select! {
+                ev = rx.recv() => match ev {
+                    Ok(event) => handle_event(
+                        event, &mut active, &mut pending,
+                        &forwarder, &clear_ring, &enc_ring,
+                    ),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(
+                            target: "p25_grant_stats",
+                            "tracker events lagged by {n}; summaries may be missing",
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+                _ = tick.tick() => {
+                    if !pending.calls.is_empty() {
+                        refresh_pending(
+                            &mut pending, &forwarder, &clear_ring,
+                            &enc_ring, &rev, Instant::now(),
+                        );
+                    }
+                }
+            }
         }
     });
 }
 
-async fn handle_event(
+fn handle_event(
     event: CallTrackerEvent,
     active: &mut Option<ActiveSummary>,
+    pending: &mut Pending,
     forwarder: &Arc<ImbeForwarder>,
     clear_ring: &GrantStatsRing,
     enc_ring: &GrantStatsRing,
@@ -259,13 +345,15 @@ async fn handle_event(
                      CallOpen call_id={} — pushing as Timeout",
                     prev.call_id, event.call_id,
                 );
+                let open_ms = prev.started_instant.elapsed().as_millis() as u64;
                 let summary = finalise_summary(
                     &prev, prev.source, prev.actual_speaker,
                     CloseReason::Timeout, None, forwarder,
+                    event.timestamp_unix_ms, open_ms,
                 );
+                pending.calls.push_back((prev.call_id, Instant::now()));
                 route_push(clear_ring, enc_ring, summary);
             }
-            let base = Counters::snapshot(forwarder);
             *active = Some(ActiveSummary {
                 call_id: event.call_id,
                 tg,
@@ -276,7 +364,6 @@ async fn handle_event(
                 not_followed,
                 started_unix_ms: event.timestamp_unix_ms,
                 started_instant: Instant::now(),
-                base,
                 freq_hz,
                 channel,
             });
@@ -300,8 +387,8 @@ async fn handle_event(
 
         CallTrackerEventKind::CallClose {
             reason, final_source, final_actual_speaker,
-            expected_submit_count, first_audio_at_unix_ms,
-            sources_observed, last_upd_at_unix_ms, ..
+            first_audio_at_unix_ms, sources_observed,
+            last_upd_at_unix_ms, ended_unix_ms, open_ms, ..
         } => {
             // 2026-04-30: peek before take. The CallClose half of a
             // synthetic not_followed pair (handled inline at CallOpen)
@@ -314,24 +401,14 @@ async fn handle_event(
             }
             let prev = active.take().unwrap();
 
-            // Wait for the vocoder to drain in-flight batches before
-            // snapshotting close-time counters. Up to 2 s; a stuck
-            // vocoder doesn't block summary emission indefinitely.
-            let drain_deadline = Instant::now()
-                + std::time::Duration::from_millis(2000);
-            loop {
-                let consumed = forwarder
-                    .frames_consumed.load(Ordering::Relaxed);
-                if consumed >= expected_submit_count { break; }
-                if Instant::now() >= drain_deadline { break; }
-                tokio::time::sleep(
-                    std::time::Duration::from_millis(50)).await;
-            }
-
+            // Change 057: no wait for the vocoder here. The counters
+            // are this call's own (by call_id); frames still in flight
+            // are added by `refresh_pending` as they are counted.
             let mut summary = finalise_summary(
                 &prev, final_source, final_actual_speaker, reason,
-                first_audio_at_unix_ms, forwarder,
+                first_audio_at_unix_ms, forwarder, ended_unix_ms, open_ms,
             );
+            pending.calls.push_back((prev.call_id, Instant::now()));
             summary.sources_observed = sources_observed;
             // 2026-04-30 air-time: last_upd - started = on-air ms,
             // independent of audio extraction success. None when
@@ -356,6 +433,7 @@ async fn handle_event(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finalise_summary(
     a: &ActiveSummary,
     final_source: Option<u32>,
@@ -363,13 +441,12 @@ fn finalise_summary(
     close_reason: CloseReason,
     first_audio_at_unix_ms: Option<u64>,
     forwarder: &ImbeForwarder,
+    // Change 057: the lifecycle's close time and open duration.
+    ended_unix_ms: u64,
+    open_ms: u64,
 ) -> GrantDecodeSummary {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let now_counters = Counters::snapshot(forwarder);
-    let dur_ms = a.started_instant.elapsed().as_millis() as u64;
+    // Change 057: this call's counters so far (by call_id).
+    let counts = forwarder.call_counts.get(a.call_id).unwrap_or_default();
 
     // 2026-04-26: replace the old `last_imbe_at_millis - started`
     // computation (which was misnamed and reported `last - start`,
@@ -383,7 +460,7 @@ fn finalise_summary(
         .filter(|&t| a.started_unix_ms > 0 && t >= a.started_unix_ms)
         .map(|t| t.saturating_sub(a.started_unix_ms));
 
-    GrantDecodeSummary {
+    let mut summary = GrantDecodeSummary {
         call_id: a.call_id,
         tg: a.tg,
         nac: a.nac,
@@ -397,42 +474,26 @@ fn finalise_summary(
         // somehow lagged.
         actual_speaker: a.actual_speaker.or(final_actual_speaker),
         started_unix_ms: a.started_unix_ms,
-        ended_unix_ms: now_ms,
-        duration_ms: dur_ms,
+        ended_unix_ms,
+        duration_ms: open_ms,
         first_imbe_ms,
         first_audio_at_unix_ms,
-        hdu_count:
-            now_counters.hdu.saturating_sub(a.base.hdu),
-        ldu1_count:
-            now_counters.ldu1.saturating_sub(a.base.ldu1),
-        ldu2_count:
-            now_counters.ldu2.saturating_sub(a.base.ldu2),
-        tdu_count:
-            now_counters.tdu.saturating_sub(a.base.tdu),
-        tdu_lc_count:
-            now_counters.tdu_lc.saturating_sub(a.base.tdu_lc),
-        framer_arm_hdu:
-            now_counters.framer_arm_hdu.saturating_sub(a.base.framer_arm_hdu),
-        framer_arm_ldu1:
-            now_counters.framer_arm_ldu1.saturating_sub(a.base.framer_arm_ldu1),
-        framer_arm_ldu2:
-            now_counters.framer_arm_ldu2.saturating_sub(a.base.framer_arm_ldu2),
-        framer_arm_tdu:
-            now_counters.framer_arm_tdu.saturating_sub(a.base.framer_arm_tdu),
-        framer_arm_tdu_lc:
-            now_counters.framer_arm_tdu_lc.saturating_sub(a.base.framer_arm_tdu_lc),
-        imbe_extracted:
-            now_counters.imbe_extracted.saturating_sub(a.base.imbe_extracted),
-        imbe_dropped:
-            now_counters.imbe_dropped.saturating_sub(a.base.imbe_dropped),
-        vocoder_pcm_samples:
-            now_counters.pcm.saturating_sub(a.base.pcm),
-        vocoder_errors:
-            now_counters.errors.saturating_sub(a.base.errors),
-        vocoder_silent:
-            now_counters.silent.saturating_sub(a.base.silent),
-        vocoder_encrypted:
-            now_counters.encrypted_frames.saturating_sub(a.base.encrypted_frames),
+        hdu_count: 0,
+        ldu1_count: 0,
+        ldu2_count: 0,
+        tdu_count: 0,
+        tdu_lc_count: 0,
+        framer_arm_hdu: 0,
+        framer_arm_ldu1: 0,
+        framer_arm_ldu2: 0,
+        framer_arm_tdu: 0,
+        framer_arm_tdu_lc: 0,
+        imbe_extracted: 0,
+        imbe_dropped: 0,
+        vocoder_pcm_samples: 0,
+        vocoder_errors: 0,
+        vocoder_silent: 0,
+        vocoder_encrypted: 0,
         encrypted: a.encrypted,
         not_followed: a.not_followed,
         freq_hz: a.freq_hz,
@@ -443,20 +504,17 @@ fn finalise_summary(
         // last sample. None when no audio landed in this call
         // (chain produced nothing → no meaningful "converged"
         // value).
-        agc_gain_q97_at_close: {
-            let imbe_extracted_delta = now_counters
-                .imbe_extracted.saturating_sub(a.base.imbe_extracted);
-            if imbe_extracted_delta > 0 {
-                Some(forwarder.last_traffic_agc_gain_q97
-                    .load(Ordering::Relaxed))
-            } else {
-                None
-            }
+        agc_gain_q97_at_close: if counts.imbe_extracted > 0 {
+            Some(forwarder.last_traffic_agc_gain_q97.load(Ordering::Relaxed))
+        } else {
+            None
         },
         // Set by the CallClose handler from the event payload —
         // ActiveSummary doesn't carry the UPD timestamp itself.
         air_duration_ms: None,
-    }
+    };
+    apply_counts(&mut summary, &counts);
+    summary
 }
 
 /// 2026-04-30: zero-decode summary for a synthetic not_followed
@@ -536,3 +594,7 @@ pub const ENC_RING_CAP: usize = 50;
 pub fn new_ring() -> GrantStatsRing {
     Arc::new(Mutex::new(VecDeque::with_capacity(RING_CAP)))
 }
+
+#[cfg(test)]
+#[path = "grant_stats_tests.rs"]
+mod tests;

@@ -13,6 +13,7 @@ take file paths.
 | [`replay_tdulc_validity.py`](replay_tdulc_validity.py) | Replay an SDRTrunk-style timeseries log and evaluate several TDULC validity policies offline (no flash cycle needed). |
 | [`simulate_call_pipeline.py`](simulate_call_pipeline.py) | Offline call-pipeline simulator. Replay an SDRTrunk-style timeseries log through a Python port of the call-tracker / grant-follower lifecycle. |
 | [`p25_log_export.py`](p25_log_export.py) | Export the Fishball event-log ring to local files for SDRTrunk-style offline analysis. |
+| [`sdrtrunk_teardown_stats.py`](sdrtrunk_teardown_stats.py) | Traffic-channel teardown / call-close timing distributions (n, min, p10..p99, max, bucket fractions) from SDRTrunk `event_logs` (change 057). Rebuilds a 9600 bit/s clock from the 1 s-stamped `decoded_messages.log` (bit-exact within a log, about ±30 ms between CC and traffic), then reports: terminators after the last LDU, system channel hang, same-channel turnaround (by TG and CC grant presence), grant→voice latency, same-TG re-grant, SDRTrunk call-event end and channel stop (`--app-logs`), CC GRP_VCH_GRNT_UPD cadence, mid-transmission dropouts, and a `.mbe` cross-check (`--recordings`). Also summarises p25-httpd `/api/ui/calls` and `/api/log` dumps (`--p25-calls`, `--p25-log`). Markdown report plus optional `--json` raw distributions. |
 
 Usage example (the SDRTrunk timeline):
 

@@ -4,6 +4,11 @@
 // voice = voice within the last 1.5 s; hang = silent, the call closes
 // `close_in_ms` from now unless voice or a CC update arrives. The
 // pre-056 dashboard showed hang time as an active call.
+//
+// Change 057: `close_via` says which close is pending — "end" (the end
+// of the transmission was decoded; closes after the end grace, CC
+// updates do not extend it) or "timeout" (no keep-alive for hang_ms).
+// `close_window_ms` is that rule's length, for the countdown bar.
 
 import { h, setText, card } from '../dom.js';
 import { mhz, dur, ago, tgLabel, unitLabel } from '../format.js';
@@ -12,11 +17,11 @@ import { metric } from './kv_table.js';
 
 const VOICE_HOLD_MS = 1500;
 const ACQUIRE_WINDOW_MS = 3000;
-const IDLE_TIMEOUT_MS = 10000;
 const PHASE_TEXT = { voice: 'Voice', hang: 'Hang', acquiring: 'Acquiring' };
 
 function localPhase(call, dt) {
   const now = call.started_unix_ms + call.elapsed_ms + dt;
+  if (call.close_via === 'end') return 'hang';
   if (call.last_voice_unix_ms && now - call.last_voice_unix_ms <= VOICE_HOLD_MS) return 'voice';
   if (!call.last_voice_unix_ms && call.elapsed_ms + dt <= ACQUIRE_WINDOW_MS) return 'acquiring';
   return 'hang';
@@ -60,7 +65,9 @@ export function callCard() {
     c.el.classList.add(ph);
     phase.hidden = false;
     phase.className = 'badge ' + ph;
-    setText(phase, PHASE_TEXT[ph]);
+    const ended = call.close_via === 'end';
+    setText(phase, ended ? 'Ended' : PHASE_TEXT[ph]);
+    phase.title = ended ? 'End of transmission decoded' + (call.end_lc ? ' (' + call.end_lc.replace(/_/g, ' ') + ')' : '') : '';
     enc.hidden = !call.encrypted;
     rec.hidden = !call.recording;
 
@@ -72,9 +79,12 @@ export function callCard() {
     m.elapsed.set(dur(call.elapsed_ms + dt));
     m.voice.set(call.voice_ms ? dur(call.voice_ms) : 'none yet');
     const closeIn = Math.max(0, call.close_in_ms - dt);
+    const windowMs = call.close_window_ms || closeIn || 1;
     m.close.set(ph === 'hang' ? dur(closeIn) : '—');
     meter.hidden = ph !== 'hang';
-    bar.style.width = (100 * closeIn / IDLE_TIMEOUT_MS).toFixed(1) + '%';
+    meter.title = ended ? 'Transmission ended; the call closes when this runs out unless voice resumes'
+      : 'Time left before the call closes for lack of activity';
+    bar.style.width = Math.min(100, 100 * closeIn / windowMs).toFixed(1) + '%';
   }
 
   function renderIdle() {

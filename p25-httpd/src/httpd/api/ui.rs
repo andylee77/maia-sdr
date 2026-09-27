@@ -27,7 +27,7 @@ use p25_json::ui::{UiAudio, UiCalls, UiChain, UiRecordingStatus, UiSite, UiState
 
 use crate::app::ui_state::{self, Aliases, CallsQuery};
 use crate::httpd::{ui_assets, AppState};
-use crate::services::ui_settings::SettingsPatch;
+use crate::services::ui_settings::{SettingsPatch, StorageKind};
 
 type Params = std::collections::HashMap<String, String>;
 
@@ -102,11 +102,33 @@ async fn calls_rev(state: &AppState) -> String {
         .lock()
         .map(|r| (r.back().map(|g| g.call_id), r.len()))
         .unwrap_or((None, 0));
-    let (r_new, r_len) = {
+    let (r_new, r_len, r_pending) = {
         let r = state.recordings.lock().await;
-        (r.back().map(|e| e.id), r.len())
+        (r.back().map(|e| e.id), r.len(), r.iter().filter(|e| e.pending.is_some()).count())
     };
-    ui_state::calls_rev(c_new, c_len, e_new, e_len, r_new, r_len)
+    let stats_rev = state.grant_stats_rev.load(Ordering::Relaxed);
+    ui_state::calls_rev(c_new, c_len, e_new, e_len, r_new, r_len, stats_rev, r_pending)
+}
+
+/// Change 057: recording status for `/api/ui/state`.
+async fn recording_status(state: &AppState) -> UiRecordingStatus {
+    let policy = &state.ui_settings.recording;
+    let ((ram_count, _), (sd_count, _)) = {
+        let r = state.recordings.lock().await;
+        crate::audio::rec_storage::usage(&r)
+    };
+    let storage = policy.storage();
+    let sd_state = (storage == StorageKind::Sd || sd_count > 0)
+        .then(|| state.rec_storage.sd_state().to_string());
+    UiRecordingStatus {
+        enabled: policy.enabled(),
+        max_count: policy.max_count(),
+        count: ram_count + sd_count,
+        storage: storage.as_str().to_string(),
+        sd_state,
+        sd_count,
+        ram_count,
+    }
 }
 
 async fn site(state: &AppState, mono_ms: u64) -> UiSite {
@@ -183,11 +205,7 @@ pub async fn get_ui_state(State(state): State<Arc<AppState>>) -> Json<UiState> {
             delivery_mode: state.dibit_delivery.traffic.active_mode().as_str().to_string(),
         }
     };
-    let recording = UiRecordingStatus {
-        enabled: recording_enabled,
-        max_count: state.ui_settings.recording.max_count(),
-        count: state.recordings.lock().await.len(),
-    };
+    let recording = recording_status(&state).await;
     let audio = UiAudio {
         listeners: state.audio_ws_listeners.load(Ordering::Relaxed),
         lag_total: state.audio_ws_lag_total.load(Ordering::Relaxed),
@@ -272,6 +290,7 @@ fn tmp_free_bytes() -> Option<u64> {
 }
 
 async fn settings_json(state: &AppState) -> serde_json::Value {
+    use crate::services::ui_settings as us;
     let store = &state.ui_settings;
     let mut enc: Vec<u16> = state
         .imbe_forwarder
@@ -280,6 +299,22 @@ async fn settings_json(state: &AppState) -> serde_json::Value {
         .map(|h| h.iter().copied().collect())
         .unwrap_or_default();
     enc.sort_unstable();
+    let ((ram_n, ram_bytes), (sd_n, sd_bytes)) = {
+        let r = state.recordings.lock().await;
+        crate::audio::rec_storage::usage(&r)
+    };
+    let selected = store.recording.storage();
+    let rs = &state.rec_storage;
+    // Change 057: where the NEXT recording goes. SD selected but not
+    // usable (absent, read-only, full, stalled) saves to RAM.
+    let active_sd = selected == StorageKind::Sd && rs.sd_ready().is_ok();
+    let ram_free = tmp_free_bytes();
+    let mut sd = rs.sd_status();
+    if let Some(o) = sd.as_object_mut() {
+        o.insert("count".into(), sd_n.into());
+        o.insert("bytes".into(), sd_bytes.into());
+        o.insert("ready".into(), rs.sd_ready().err().map_or("ok".to_string(), |e| e).into());
+    }
     serde_json::json!({
         "settings":        store.snapshot(),
         "rev":             store.rev(),
@@ -287,14 +322,34 @@ async fn settings_json(state: &AppState) -> serde_json::Value {
         "load_note":       store.load_note(),
         "last_save_error": store.last_save_error(),
         "recording_storage": {
-            "dir":        crate::audio::recorder::STORAGE_DIR,
-            "tmpfs":      true,
-            "count":      state.recordings.lock().await.len(),
-            "free_bytes": tmp_free_bytes(),
+            // Pre-057 keys, now describing where the next recording goes.
+            "dir":        if active_sd { rs.sd_dir().display().to_string() }
+                          else { rs.ram_dir().display().to_string() },
+            "tmpfs":      !active_sd,
+            "count":      ram_n + sd_n,
+            "free_bytes": if active_sd { sd.get("free_bytes").and_then(|v| v.as_u64()) }
+                          else { ram_free },
+            // Change 057.
+            "selected":   selected.as_str(),
+            "active":     if active_sd { "sd" } else { "ram" },
+            "ram": {
+                "dir":        rs.ram_dir().display().to_string(),
+                "count":      ram_n,
+                "bytes":      ram_bytes,
+                "free_bytes": ram_free,
+            },
+            "sd": sd,
+            "moves_on_change": false,
         },
         "limits": {
-            "max_count_max":   crate::services::ui_settings::MAX_RECORDINGS_LIMIT,
-            "alias_chars_max": crate::services::ui_settings::MAX_ALIAS_CHARS,
+            "max_count_max":    us::MAX_RECORDINGS_LIMIT,
+            "sd_max_count_max": us::SD_MAX_COUNT_LIMIT,
+            "sd_max_mb_min":    us::SD_MAX_MB_MIN,
+            "sd_max_mb_max":    us::SD_MAX_MB_LIMIT,
+            "hang_ms_min":      us::HANG_MS_MIN,
+            "hang_ms_max":      us::HANG_MS_MAX,
+            "end_grace_ms_max": us::END_GRACE_MS_MAX,
+            "alias_chars_max":  us::MAX_ALIAS_CHARS,
         },
         // Read-only here; edit via PUT /api/encrypted_tgs (learned
         // automatically, process lifetime only).
@@ -328,14 +383,20 @@ pub async fn apply_settings_patch(
     patch: SettingsPatch,
     origin: &str,
 ) -> Result<serde_json::Value, String> {
+    let before = state.ui_settings.snapshot();
     let out = state.ui_settings.update(patch)?;
     let mut evicted = 0;
     if out.changed.recording {
         evicted = crate::audio::recorder::enforce_retention(
             &state.recordings,
-            out.settings.recording.max_count,
+            &state.rec_storage,
+            state.ui_settings.recording.retention(),
         )
         .await;
+        // Change 057: switching to the SD card re-checks it at once.
+        if out.settings.recording.storage != before.recording.storage {
+            state.rec_storage.request_probe();
+        }
     }
     if out.changed.tg_aliases {
         apply_tg_aliases(state, &out.settings.tg_aliases).await;
@@ -347,10 +408,16 @@ pub async fn apply_settings_patch(
         state.event_log.push(
             crate::services::event_log::LogCategory::System,
             format!(
-                "settings updated via {origin}: recording={} keep={} tg_aliases={} \
+                "settings updated via {origin}: recording={} keep={} storage={} \
+                 sd_keep={} sd_max_mb={} hang_ms={} end_grace_ms={} tg_aliases={} \
                  unit_aliases={} monitor={:?}{}",
                 if out.settings.recording.enabled { "on" } else { "off" },
                 out.settings.recording.max_count,
+                out.settings.recording.storage.as_str(),
+                out.settings.recording.sd_max_count,
+                out.settings.recording.sd_max_mb,
+                out.settings.call.hang_ms,
+                out.settings.call.end_grace_ms,
                 out.settings.tg_aliases.len(),
                 out.settings.unit_aliases.len(),
                 out.settings.monitor_tgs,
@@ -360,6 +427,7 @@ pub async fn apply_settings_patch(
                 "origin":     origin,
                 "changed":    {
                     "recording":    out.changed.recording,
+                    "call":         out.changed.call,
                     "tg_aliases":   out.changed.tg_aliases,
                     "unit_aliases": out.changed.unit_aliases,
                     "monitor_tgs":  out.changed.monitor_tgs,
@@ -379,9 +447,11 @@ pub async fn apply_settings_patch(
 }
 
 /// `PUT /api/ui/settings` — body: any subset of
-/// `{"recording":{"enabled":bool,"max_count":N},"tg_aliases":{..},
-/// "unit_aliases":{..},"monitor_tgs":[..]}`. Maps / lists replace the
-/// stored value. 400 on an invalid or unknown field (nothing changes).
+/// `{"recording":{"enabled":bool,"max_count":N,"storage":"ram"|"sd",
+/// "sd_max_count":N,"sd_max_mb":N},"call":{"hang_ms":N,"end_grace_ms":N},
+/// "tg_aliases":{..},"unit_aliases":{..},"monitor_tgs":[..]}`. Maps /
+/// lists replace the stored value. 400 on an invalid or unknown field
+/// (nothing changes).
 pub async fn put_ui_settings(
     State(state): State<Arc<AppState>>,
     body: axum::body::Bytes,

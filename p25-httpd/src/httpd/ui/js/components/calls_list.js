@@ -4,10 +4,10 @@
 // with its recording by call_id. Rows are keyed by call_id so a playing
 // <audio> survives every refresh. Voice length is the WAV length (or
 // IMBE frames x 20 ms), never the lifecycle's open time, which includes
-// up to 10 s of hang.
+// the time after the last voice until the close.
 
 import { h, setText, keyedList, card } from '../dom.js';
-import { mhz, dur, ago, clock, bytes, NOT_FOLLOWED, AUDIO_STATUS } from '../format.js';
+import { mhz, dur, ago, clock, bytes, NOT_FOLLOWED, AUDIO_STATUS, CLOSE_REASON } from '../format.js';
 import { store, boardNow, setPref } from '../store.js';
 
 function when(call) {
@@ -19,13 +19,16 @@ function when(call) {
 function detailRows(c) {
   const rows = [
     ['Call id', String(c.call_id)],
-    ['Held open', dur(c.open_ms) + ' (' + c.close_reason.replace('_', ' ') + ')'],
+    ['Held open', dur(c.open_ms) + ' (' + (CLOSE_REASON[c.close_reason] || c.close_reason.replace(/_/g, ' ')) + ')'],
     ['On air (CC)', c.air_ms != null ? dur(c.air_ms) : '—'],
     ['First voice', c.first_voice_ms != null ? c.first_voice_ms + ' ms after grant' : '—'],
     ['IMBE / LDU', c.imbe + ' / ' + c.ldu],
     ['Vocoder errors / silent', c.vocoder_errors + ' / ' + c.vocoder_silent],
   ];
-  if (c.recording) rows.push(['File', c.recording.filename + ' (' + bytes(c.recording.size_bytes) + ')']);
+  if (c.recording) {
+    const where = c.recording.storage === 'sd' ? 'SD card' : 'RAM';
+    rows.push(['File', c.recording.filename + ' (' + bytes(c.recording.size_bytes) + ', ' + where + ')']);
+  }
   return rows;
 }
 

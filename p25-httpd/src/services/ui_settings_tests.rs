@@ -157,6 +157,65 @@ fn in_memory_store_applies_but_does_not_persist() {
 }
 
 #[test]
+fn call_close_and_storage_defaults() {
+    let s = UiSettings::default();
+    assert_eq!((s.call.hang_ms, s.call.end_grace_ms), (3_000, 2_000));
+    assert_eq!(s.recording.storage, StorageKind::Ram);
+    assert_eq!((s.recording.sd_max_count, s.recording.sd_max_mb), (2_000, 2_048));
+    // A 056 file (no `call`, no storage fields) loads with these.
+    let old = parse_settings(br#"{"recording":{"enabled":true,"max_count":40}}"#).unwrap();
+    assert_eq!(old.call, CallSettings::default());
+    assert_eq!(old.recording.storage, StorageKind::Ram);
+}
+
+#[test]
+fn call_and_storage_patches_validate_ranges() {
+    let base = UiSettings::default();
+    let ok = |j: &str| apply_patch(&base, patch(j)).unwrap();
+    let bad = |j: &str| assert!(apply_patch(&base, patch(j)).is_err(), "{j} should fail");
+    let (s, ch) = ok(r#"{"call":{"hang_ms":1000,"end_grace_ms":0}}"#);
+    assert_eq!((s.call.hang_ms, s.call.end_grace_ms), (1_000, 0));
+    assert!(ch.call && !ch.recording);
+    bad(r#"{"call":{"hang_ms":999}}"#);
+    bad(r#"{"call":{"hang_ms":30001}}"#);
+    bad(r#"{"call":{"end_grace_ms":10001}}"#);
+    let (s, ch) = ok(r#"{"recording":{"storage":"sd","sd_max_count":5000,"sd_max_mb":16}}"#);
+    assert_eq!(s.recording.storage, StorageKind::Sd);
+    assert_eq!((s.recording.sd_max_count, s.recording.sd_max_mb), (5_000, 16));
+    assert!(ch.recording && !ch.call);
+    bad(r#"{"recording":{"sd_max_count":0}}"#);
+    bad(r#"{"recording":{"sd_max_count":5001}}"#);
+    bad(r#"{"recording":{"sd_max_mb":15}}"#);
+    bad(r#"{"recording":{"sd_max_mb":32769}}"#);
+    // Unknown store name / unknown call field: the patch does not parse.
+    assert!(serde_json::from_str::<SettingsPatch>(r#"{"recording":{"storage":"usb"}}"#).is_err());
+    assert!(serde_json::from_str::<SettingsPatch>(r#"{"call":{"idle_ms":1}}"#).is_err());
+    // Hand-edited out-of-range values are clamped on load.
+    let s = parse_settings(br#"{"call":{"hang_ms":5,"end_grace_ms":99999},
+                               "recording":{"sd_max_mb":1,"sd_max_count":0}}"#)
+        .unwrap();
+    assert_eq!((s.call.hang_ms, s.call.end_grace_ms), (HANG_MS_MIN, END_GRACE_MS_MAX));
+    assert_eq!((s.recording.sd_max_mb, s.recording.sd_max_count), (SD_MAX_MB_MIN, 1));
+}
+
+#[test]
+fn live_policies_follow_updates() {
+    let store = SettingsStore::load(None);
+    assert_eq!(store.call.hang_ms(), DEFAULT_HANG_MS);
+    assert_eq!(store.recording.storage(), StorageKind::Ram);
+    store
+        .update(patch(r#"{"call":{"hang_ms":2500,"end_grace_ms":1500},
+                          "recording":{"storage":"sd","max_count":10,"sd_max_count":300,"sd_max_mb":64}}"#))
+        .unwrap();
+    assert_eq!((store.call.hang_ms(), store.call.end_grace_ms()), (2_500, 1_500));
+    assert_eq!(store.recording.storage(), StorageKind::Sd);
+    assert_eq!(
+        store.recording.retention(),
+        Retention { ram_max_count: 10, sd_max_count: 300, sd_max_bytes: 64 * 1024 * 1024 }
+    );
+}
+
+#[test]
 fn skipped_ids_are_bounded() {
     let p = RecordingPolicy::new(&RecordingSettings::default());
     for id in 0..(SKIPPED_IDS_KEEP as u64 + 10) {

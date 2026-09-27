@@ -1335,6 +1335,12 @@ impl ImbeDecoder {
         self.last_times
     }
 
+    /// Change 057: bit errors the IMBE FEC (Golay(23,12) × 4 +
+    /// Hamming(15,11) × 3) corrected in the most recent frame.
+    pub fn last_error_count(&self) -> u32 {
+        self.previous_params.error_count_total
+    }
+
     /// Wrapper hook: outer-layer PCM conversion timing belongs in the
     /// same per-frame snapshot consumers read, so the wrapper writes it
     /// here after `decode_frame` returns.
