@@ -623,6 +623,12 @@ def analyze_p25(a: AnalysisContext) -> Outcome:
                      (f" ({a.metrics['score_vs_baseline_pct']:+.1f} % vs baseline)" if base else ""))
 
 
+def _size_cmd(path: str) -> str:
+    """File size in bytes on a BusyBox board: no `stat`, and `wc -c` reads the whole
+    file (18.8 s for a 448 MB clip), so take it from `ls -ln`."""
+    return f"ls -ln {path} 2>/dev/null | awk '{{print $5}}'"
+
+
 class BoardReplay:
     """A clip streamed gap-free from the TX board's own RAM.
 
@@ -643,7 +649,7 @@ class BoardReplay:
     def stage(self, local: Path, sha: str, size: int) -> bool:
         """Upload unless this clip is already on the board. Returns True if uploaded."""
         self.remote = f"{REPLAY_DIR}/clip_{sha[:16]}.cs16"
-        _, out, _ = self.ssh.run(f"mkdir -p {REPLAY_DIR}; stat -c %s {self.remote} 2>/dev/null",
+        _, out, _ = self.ssh.run(f"mkdir -p {REPLAY_DIR}; {_size_cmd(self.remote)}",
                                  15.0)
         if out.strip() == str(size):
             return False
@@ -657,7 +663,7 @@ class BoardReplay:
                 "free): shorten clip_seconds", unit=self.unit)
         self.ctx.log.info("uploading %d MiB clip to %s:%s", size >> 20, self.unit, self.remote)
         self.ssh.put(local, self.remote, max(120.0, size / 2e6))
-        _, out, _ = self.ssh.run(f"stat -c %s {self.remote} 2>/dev/null", 15.0)
+        _, out, _ = self.ssh.run(_size_cmd(self.remote), 15.0)
         if out.strip() and out.strip() != str(size):
             raise FbenchError(f"clip upload to {self.unit} truncated ({out.strip()} of {size} B)")
         return True
