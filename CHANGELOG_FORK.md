@@ -5,6 +5,31 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-27] Channel time for calls not followed; delete stored recordings; clearer call times (065)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-27-channel-time-065`
+**Bake required:** NO (p25-httpd and web UI only).
+
+- **Channel time for calls not followed** (encrypted, busy on another call, monitor list or
+  speaker groups), as SDRTrunk lists encrypted calls.
+  - The record stays open while the control channel announces the call (repeat grants,
+    GRP_VCH_GRNT_UPD).
+  - It closes at the last announcement once none came for `hang_ms`, or when its channel is
+    granted to another call.
+  - Recent calls shows that time ("channel time"); before, these calls had no duration.
+- **Delete stored recordings:** Settings → Recording, "Delete SD recordings" / "Delete RAM
+  recordings" (with a confirmation). Backed by `DELETE /api/recordings?store=sd|ram|all`,
+  which removes the files and the list entries.
+- **Call details list three times, labelled:**
+  - Voice: the decoded audio, the same as the playback bar.
+  - On air (control channel): grant to the last update.
+  - Held open, or Channel time for a call not followed.
+
+Tests: p25-httpd 247 passed; 21 UI modules pass `node --check`.
+
+---
+
 ## [2026-09-27] Talkgroup groups, speakers on the Now page, priority pre-emption (063)
 
 **Branch:** fishball-p25

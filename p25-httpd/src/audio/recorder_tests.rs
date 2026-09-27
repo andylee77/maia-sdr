@@ -173,3 +173,21 @@ fn sd_selected_but_unusable_saves_to_ram() {
     assert!(e.pending.is_none() && e.path.exists());
     assert_eq!(st.sd_status()["fallbacks_to_ram"], 1);
 }
+
+// Change 065: clear one store (Settings → Recording, "Delete ... recordings").
+#[test]
+fn clear_recordings_removes_one_store_or_all() {
+    let dir = tmp("clear");
+    let st = RecordingStorage::new(storage(&dir));
+    let (mut ring, paths) = ring_with_files(&dir, 5);
+    for e in ring.iter_mut().take(2) {
+        e.storage = rec_storage::STORE_SD;
+    }
+    assert_eq!(clear_recordings(&mut ring, Some(rec_storage::STORE_SD), &st), 2);
+    assert_eq!(ring.iter().map(|e| e.id).collect::<Vec<_>>(), vec![3, 4, 5]);
+    assert!(paths[2].exists(), "RAM recordings untouched by an SD clear");
+    assert_eq!(clear_recordings(&mut ring, Some(STORE_RAM), &st), 3);
+    assert!(ring.is_empty() && !paths[2].exists() && !paths[4].exists());
+    let (mut ring, _) = ring_with_files(&dir, 2);
+    assert_eq!(clear_recordings(&mut ring, None, &st), 2);
+}

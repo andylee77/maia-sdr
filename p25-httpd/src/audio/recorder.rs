@@ -763,6 +763,26 @@ pub fn apply_retention(
     evicted
 }
 
+/// Change 065: delete every recording of one store (`Some("sd")` /
+/// `Some("ram")`) or of both (`None`), files included (RAM at once, SD
+/// through the writer queue, after any pending write). Returns how many
+/// were deleted.
+pub fn clear_recordings(
+    ring: &mut VecDeque<RecordingEntry>,
+    store: Option<&str>,
+    storage: &RecordingStorage,
+) -> usize {
+    let before = ring.len();
+    ring.retain(|e| {
+        let hit = store.map_or(true, |s| e.storage == s);
+        if hit {
+            storage.remove(e);
+        }
+        !hit
+    });
+    before - ring.len()
+}
+
 /// Change 056: apply a lowered retention immediately (settings change)
 /// instead of waiting for the next finalise. Returns how many
 /// recordings were deleted.

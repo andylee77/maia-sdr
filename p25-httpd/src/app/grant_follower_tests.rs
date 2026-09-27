@@ -45,6 +45,7 @@ fn chunk(tg: u16, call_id: u64, airtime: bool) -> AudioChunk {
 
 struct Rig {
     active: Option<ActiveCall>,
+    nf: NfCalls,
     next_id: u64,
     tx: CallTrackerEventTx,
     fwd: Arc<ImbeForwarder>,
@@ -57,6 +58,7 @@ impl Rig {
     fn new() -> Self {
         Rig {
             active: None,
+            nf: NfCalls::default(),
             next_id: 1,
             tx: new_event_tx(),
             fwd: forwarder(),
@@ -66,7 +68,9 @@ impl Rig {
         }
     }
     fn boundary(&mut self, b: CallBoundary) {
-        handle_boundary(b, &mut self.active, &mut self.next_id, &self.tx, &self.fwd, &mut self.dedup);
+        let h = self.policy.hang_ms();
+        handle_boundary(b, &mut self.active, &mut self.nf, &mut self.next_id, &self.tx, &self.fwd,
+                        &mut self.dedup, h);
         mirror_active(&self.active, &self.shared, &self.fwd, &self.policy);
     }
     fn audio(&mut self, c: AudioChunk) {
@@ -85,7 +89,7 @@ impl Rig {
     fn tick(&mut self, dt_ms: u64) {
         let now = now_unix_ms() + dt_ms;
         let (h, g) = (self.policy.hang_ms(), self.policy.end_grace_ms());
-        sweep(&mut self.active, &mut self.next_id, &self.tx, &self.fwd, now, h, g);
+        sweep(&mut self.active, &mut self.nf, &mut self.next_id, &self.tx, &self.fwd, now, h, g);
         mirror_active(&self.active, &self.shared, &self.fwd, &self.policy);
     }
     fn snap(&self) -> Option<ActiveCallSnapshot> {
@@ -155,12 +159,64 @@ fn not_followed_grant_never_becomes_the_current_call() {
     let mut rx = r.tx.subscribe();
     r.boundary(grant(402, 3400015, 858_437_500, Some("encrypted")));
     assert!(r.snap().is_none());
-    // Synthetic open + close pair for the call list.
+    // Listed at once; change 065: closed when the control channel stops
+    // announcing it (channel time), not at once.
     let a = rx.try_recv().unwrap();
-    let b = rx.try_recv().unwrap();
     assert!(matches!(a.kind, CallTrackerEventKind::CallOpen { .. }));
+    assert!(rx.try_recv().is_err());
+    let hang = r.policy.hang_ms();
+    r.tick(hang + 200);
+    let b = rx.try_recv().unwrap();
     assert!(matches!(b.kind, CallTrackerEventKind::CallClose { .. }));
     assert_eq!(a.call_id, b.call_id);
+    assert!(r.snap().is_none());
+}
+
+// Change 065: a not-followed call's channel time runs from its grant to
+// its last announcement (repeat grants, grant updates), as SDRTrunk
+// lists encrypted calls.
+#[test]
+fn not_followed_call_time_runs_to_its_last_announcement() {
+    let tx = new_event_tx();
+    let mut rx = tx.subscribe();
+    let mut nf = NfCalls::default();
+    let mut id = 1;
+    let f = Some(858_437_500u64);
+    let t0 = 1_790_000_000_000u64;
+    let grant = |nf: &mut NfCalls, id: &mut u64, src: u32, t: u64| {
+        nf.grant(&tx, id, 402, 0, Some(src), f, Some("1189".into()), true,
+                 Some("encrypted"), t, 0, 3_000)
+    };
+    grant(&mut nf, &mut id, 3400015, t0);
+    nf.update(402, f, t0 + 1_000);
+    grant(&mut nf, &mut id, 3400015, t0 + 2_000); // re-announced: same call
+    nf.update(402, f, t0 + 4_500);
+    nf.sweep(&tx, t0 + 7_000, 3_000); // 2.5 s quiet: still open
+    nf.sweep(&tx, t0 + 7_600, 3_000); // 3.1 s quiet: ends at its last update
+    let open = rx.try_recv().unwrap();
+    assert!(matches!(open.kind, CallTrackerEventKind::CallOpen { .. }));
+    match rx.try_recv().unwrap().kind {
+        CallTrackerEventKind::CallClose { ended_unix_ms, open_ms, last_upd_at_unix_ms, .. } => {
+            assert_eq!((ended_unix_ms, open_ms, last_upd_at_unix_ms), (t0 + 4_500, 4_500, t0 + 4_500));
+        }
+        _ => unreachable!(),
+    }
+    assert!(rx.try_recv().is_err(), "one call, one record");
+
+    // A new talker on the channel ends the record; so does the channel
+    // going to a followed call.
+    grant(&mut nf, &mut id, 3400015, t0 + 10_000);
+    grant(&mut nf, &mut id, 1003, t0 + 11_000);
+    nf.close_channel(&tx, f);
+    let kinds: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+        .map(|e| match e.kind {
+            CallTrackerEventKind::CallOpen { .. } => "open",
+            CallTrackerEventKind::CallClose { .. } => "close",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, vec!["open", "close", "open", "close"]);
+    assert!(nf.0.is_empty());
 }
 
 // ── Change 057: call close ──────────────────────────────────────────

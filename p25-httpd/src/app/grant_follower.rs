@@ -715,25 +715,137 @@ fn emit_close(
     final_source: Option<u32>,
     expected_submit_count: u64,
 ) {
-    let now = now_unix_ms();
+    let open_ms = call.started_instant.elapsed().as_millis() as u64;
+    emit_close_with(tx, call, reason, final_source, expected_submit_count, now_unix_ms(), open_ms);
+}
+
+/// Change 065: close with an explicit end time and open duration (a
+/// not-followed call ends at its last announcement, not when the sweep
+/// notices).
+fn emit_close_with(
+    tx: &CallTrackerEventTx,
+    call: &ActiveCall,
+    reason: CloseReason,
+    final_source: Option<u32>,
+    expected_submit_count: u64,
+    ended_unix_ms: u64,
+    open_ms: u64,
+) {
     let _ = tx.send(CallTrackerEvent {
         call_id: call.call_id,
-        timestamp_unix_ms: now,
+        timestamp_unix_ms: now_unix_ms(),
         kind: CallTrackerEventKind::CallClose {
             reason,
             final_source,
             final_actual_speaker: call.actual_speaker,
             started_unix_ms: call.started_unix_ms,
-            ended_unix_ms: now,
+            ended_unix_ms,
             first_audio_at_unix_ms: call.first_audio_at_unix_ms,
             first_hdu_at_unix_ms: call.first_hdu_at_unix_ms,
             expected_submit_count,
             sources_observed: call.sources_observed.clone(),
             last_upd_at_unix_ms: call.last_upd_at_ms,
-            open_ms: call.started_instant.elapsed().as_millis() as u64,
+            open_ms,
             end_lc: call.end_lc,
         },
     });
+}
+
+/// Change 065: a call the follower did not take (encrypted, busy on
+/// another call, monitor list or speaker groups). SDRTrunk lists such
+/// calls with their channel time, grant to the last control-channel
+/// update; here the record stays open while the control channel keeps
+/// announcing the call (repeat grants, GRP_VCH_GRNT_UPD) and closes at
+/// its last announcement once none came for `hang_ms`, or when its
+/// channel is granted to another call.
+struct NfCall {
+    call: ActiveCall,
+    last_seen_ms: u64,
+}
+
+#[derive(Default)]
+struct NfCalls(Vec<NfCall>);
+
+impl NfCalls {
+    /// A not-followed grant: the same call re-announced (same TG and
+    /// channel, same or unknown source, seen within `hang_ms`) extends
+    /// its record; otherwise a new record opens, ending any other
+    /// not-followed record on that channel.
+    #[allow(clippy::too_many_arguments)]
+    fn grant(
+        &mut self,
+        tx: &CallTrackerEventTx,
+        next_call_id: &mut u64,
+        tg: u16,
+        nac: u16,
+        source: Option<u32>,
+        freq_hz: Option<u64>,
+        channel: Option<String>,
+        encrypted: bool,
+        not_followed: Option<&'static str>,
+        now: u64,
+        baseline: u64,
+        hang_ms: u64,
+    ) {
+        if let Some(c) = self.0.iter_mut().find(|c| c.call.tg == tg && c.call.freq_hz == freq_hz) {
+            let same_source = match (source, c.call.source) {
+                (Some(a), Some(b)) => a == b,
+                _ => true,
+            };
+            if same_source && now.saturating_sub(c.last_seen_ms) <= hang_ms {
+                c.last_seen_ms = now;
+                c.call.last_upd_at_ms = now;
+                if c.call.source.is_none() {
+                    c.call.source = source;
+                }
+                return;
+            }
+        }
+        self.close_channel(tx, freq_hz);
+        let id = *next_call_id;
+        *next_call_id += 1;
+        emit_open(tx, id, tg, nac, source, freq_hz, channel.clone(), encrypted,
+                  not_followed, OpenReason::CcGrant, baseline, now);
+        let call = ActiveCall::open(id, tg, nac, source, freq_hz, channel, encrypted,
+                                    not_followed, now, baseline, now);
+        self.0.push(NfCall { call, last_seen_ms: now });
+    }
+
+    /// A grant update for `tg` (on `freq_hz` when known).
+    fn update(&mut self, tg: u16, freq_hz: Option<u64>, now: u64) {
+        for c in self.0.iter_mut()
+            .filter(|c| c.call.tg == tg && (freq_hz.is_none() || c.call.freq_hz == freq_hz))
+        {
+            c.last_seen_ms = now;
+            c.call.last_upd_at_ms = now;
+        }
+    }
+
+    /// Another call now holds `freq_hz`: its not-followed records end.
+    fn close_channel(&mut self, tx: &CallTrackerEventTx, freq_hz: Option<u64>) {
+        if freq_hz.is_some() {
+            self.close_where(tx, |c| c.call.freq_hz == freq_hz);
+        }
+    }
+
+    /// Records not announced for `hang_ms` end at their last announcement.
+    fn sweep(&mut self, tx: &CallTrackerEventTx, now: u64, hang_ms: u64) {
+        self.close_where(tx, |c| now.saturating_sub(c.last_seen_ms) > hang_ms);
+    }
+
+    fn close_where(&mut self, tx: &CallTrackerEventTx, pred: impl Fn(&NfCall) -> bool) {
+        let mut i = 0;
+        while i < self.0.len() {
+            if pred(&self.0[i]) {
+                let c = self.0.remove(i);
+                let open_ms = c.last_seen_ms.saturating_sub(c.call.started_unix_ms);
+                emit_close_with(tx, &c.call, CloseReason::Timeout, c.call.source,
+                                c.call.baseline_frames_submitted, c.last_seen_ms, open_ms);
+            } else {
+                i += 1;
+            }
+        }
+    }
 }
 
 fn emit_source_update(
@@ -884,8 +996,10 @@ fn start_queued(
 /// queued grant takes over when this call's end grace ran out, its
 /// no-keep-alive timeout is due, or the grant waited
 /// `QUEUED_GRANT_MAX_MS`; otherwise `close_due` decides.
+#[allow(clippy::too_many_arguments)]
 fn sweep(
     active: &mut Option<ActiveCall>,
+    nf: &mut NfCalls,
     next_call_id: &mut u64,
     tx: &CallTrackerEventTx,
     forwarder: &Arc<ImbeForwarder>,
@@ -893,6 +1007,9 @@ fn sweep(
     hang_ms: u64,
     end_grace_ms: u64,
 ) {
+    // Change 065: not-followed calls the control channel stopped
+    // announcing.
+    nf.sweep(tx, now, hang_ms);
     let Some(a) = active.as_ref() else {
         return;
     };
@@ -948,6 +1065,8 @@ pub fn spawn_call_lifecycle(
         let mut not_followed_dedup:
             std::collections::HashMap<(u16, u32, Option<u64>, bool), u64>
             = std::collections::HashMap::new();
+        // Change 065: open not-followed calls (channel time).
+        let mut nf = NfCalls::default();
         let mut tick = tokio::time::interval(
             Duration::from_millis(TIMEOUT_TICK_MS),
         );
@@ -978,9 +1097,9 @@ pub fn spawn_call_lifecycle(
                         Err(broadcast::error::RecvError::Closed) => break,
                     };
                     handle_boundary(
-                        boundary, &mut active, &mut next_call_id,
+                        boundary, &mut active, &mut nf, &mut next_call_id,
                         &tracker_tx, &forwarder,
-                        &mut not_followed_dedup,
+                        &mut not_followed_dedup, policy.hang_ms(),
                     );
                     mirror_active(&active, &active_call, &forwarder, &policy);
                 }
@@ -1015,7 +1134,7 @@ pub fn spawn_call_lifecycle(
                     // we can re-introduce a relaxed LoS later if
                     // useful, but it's not consulted for closes.
                     sweep(
-                        &mut active, &mut next_call_id, &tracker_tx,
+                        &mut active, &mut nf, &mut next_call_id, &tracker_tx,
                         &forwarder, now_unix_ms(),
                         policy.hang_ms(), policy.end_grace_ms(),
                     );
@@ -1035,13 +1154,16 @@ pub fn spawn_call_lifecycle(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_boundary(
     boundary: CallBoundary,
     active: &mut Option<ActiveCall>,
+    nf: &mut NfCalls,
     next_call_id: &mut u64,
     tx: &CallTrackerEventTx,
     forwarder: &Arc<ImbeForwarder>,
     grant_dedup: &mut std::collections::HashMap<(u16, u32, Option<u64>, bool), u64>,
+    hang_ms: u64,
 ) {
     match boundary.kind {
         // 2026-04-26 session-lifecycle refactor: primary
@@ -1085,6 +1207,12 @@ fn handle_boundary(
                 Some(format!("{}", channel))
             };
 
+            // Change 065: a followed call granted a channel ends the
+            // not-followed records on it (the channel is reused).
+            if not_followed.is_none() {
+                nf.close_channel(tx, freq_hz);
+            }
+
             // Disposition decides whether this GRANT bundles into
             // the active session, ignores (sticky-locked elsewhere),
             // or pre-empts (TG change).
@@ -1113,26 +1241,15 @@ fn handle_boundary(
                 // the synthetic-emit-only pattern: emit CallOpen
                 // + CallClose for grant_stats visibility, leave
                 // active=None.
+                // Change 065: kept open while the control channel
+                // announces it, for its channel time (`NfCalls`).
                 None => {
-                    let now = now_unix_ms();
-                    let synthetic_call_id = *next_call_id;
-                    *next_call_id += 1;
                     let baseline = forwarder
                         .frames_submitted.load(Ordering::Relaxed);
-                    emit_open(
-                        tx, synthetic_call_id, tg, boundary.nac,
-                        source, freq_hz, channel_str.clone(),
-                        encrypted, not_followed,
-                        OpenReason::CcGrant, baseline, now,
-                    );
-                    let synth_call = ActiveCall::open(
-                        synthetic_call_id, tg, boundary.nac, source,
+                    nf.grant(
+                        tx, next_call_id, tg, boundary.nac, source,
                         freq_hz, channel_str.clone(), encrypted,
-                        not_followed, now, baseline, 0,
-                    );
-                    emit_close(
-                        tx, &synth_call, CloseReason::Timeout,
-                        source, baseline,
+                        not_followed, now_unix_ms(), baseline, hang_ms,
                     );
                     return;
                 }
@@ -1172,25 +1289,12 @@ fn handle_boundary(
                             );
                         }
                     }
-                    let now = now_unix_ms();
-                    let synthetic_call_id = *next_call_id;
-                    *next_call_id += 1;
                     let baseline = forwarder
                         .frames_submitted.load(Ordering::Relaxed);
-                    emit_open(
-                        tx, synthetic_call_id, tg, boundary.nac,
-                        source, freq_hz, channel_str.clone(),
-                        encrypted, not_followed,
-                        OpenReason::CcGrant, baseline, now,
-                    );
-                    let synth_call = ActiveCall::open(
-                        synthetic_call_id, tg, boundary.nac, source,
+                    nf.grant(
+                        tx, next_call_id, tg, boundary.nac, source,
                         freq_hz, channel_str.clone(), encrypted,
-                        not_followed, now, baseline, 0,
-                    );
-                    emit_close(
-                        tx, &synth_call, CloseReason::Timeout,
-                        source, baseline,
+                        not_followed, now_unix_ms(), baseline, hang_ms,
                     );
                     return;
                 }
@@ -1295,6 +1399,8 @@ fn handle_boundary(
                 }
             }
             grant_dedup.insert(dedup_key, now_unix_ms());
+            // Change 065: extends a not-followed call's channel time.
+            nf.update(tg, freq_hz, now_unix_ms());
             if let Some(a) = active.as_mut() {
                 // Change 057: an update for this TG on ANOTHER channel
                 // (patch, other site in the TSBK's second slot) says

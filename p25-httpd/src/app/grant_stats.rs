@@ -279,7 +279,7 @@ pub fn spawn_grant_stats_task(
                 ev = rx.recv() => match ev {
                     Ok(event) => handle_event(
                         event, &mut active, &mut pending,
-                        &forwarder, &clear_ring, &enc_ring,
+                        &forwarder, &clear_ring, &enc_ring, &rev,
                     ),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(
@@ -302,6 +302,33 @@ pub fn spawn_grant_stats_task(
     });
 }
 
+/// Change 065: fill a not-followed summary's channel time from its
+/// (late) CallClose. True when a summary changed.
+fn note_not_followed_end(
+    call_id: u64,
+    ended_unix_ms: u64,
+    open_ms: u64,
+    last_upd_at_unix_ms: u64,
+    clear_ring: &GrantStatsRing,
+    enc_ring: &GrantStatsRing,
+) -> bool {
+    for ring in [enc_ring, clear_ring] {
+        if let Ok(mut r) = ring.lock() {
+            if let Some(s) = r.iter_mut().rev()
+                .find(|s| s.call_id == call_id && s.not_followed.is_some())
+            {
+                s.ended_unix_ms = ended_unix_ms;
+                s.duration_ms = open_ms;
+                s.air_duration_ms = (last_upd_at_unix_ms > s.started_unix_ms)
+                    .then(|| last_upd_at_unix_ms - s.started_unix_ms);
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
 fn handle_event(
     event: CallTrackerEvent,
     active: &mut Option<ActiveSummary>,
@@ -309,6 +336,7 @@ fn handle_event(
     forwarder: &Arc<ImbeForwarder>,
     clear_ring: &GrantStatsRing,
     enc_ring: &GrantStatsRing,
+    rev: &GrantStatsRev,
 ) {
     match event.kind {
         CallTrackerEventKind::CallOpen {
@@ -327,7 +355,11 @@ fn handle_event(
             // None for it). Same-freq not_followed grants close the
             // active explicitly upstream in handle_boundary, so by the
             // time we get here `active` is already None for that path.
-            if not_followed.is_some() && active.is_some() {
+            // Change 065: always inline for a not-followed call — its
+            // CallClose now comes seconds later (channel time, see
+            // `grant_follower::NfCalls`) and updates this summary, so it
+            // must never occupy `active`.
+            if not_followed.is_some() {
                 let summary = synthetic_not_followed_summary(
                     event.call_id, tg, nac, source, freq_hz,
                     channel, encrypted, not_followed,
@@ -405,7 +437,17 @@ fn handle_event(
             // finalise. Only consume `active` when call_ids match.
             match active.as_ref().map(|a| a.call_id) {
                 Some(id) if id == event.call_id => {} // matches — proceed
-                _ => return,
+                _ => {
+                    // Change 065: the close of a not-followed call
+                    // carries its channel time.
+                    if note_not_followed_end(
+                        event.call_id, ended_unix_ms, open_ms,
+                        last_upd_at_unix_ms, clear_ring, enc_ring,
+                    ) {
+                        rev.fetch_add(1, Ordering::Relaxed);
+                    }
+                    return;
+                }
             }
             let prev = active.take().unwrap();
 

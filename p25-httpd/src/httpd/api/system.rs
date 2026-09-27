@@ -383,6 +383,12 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
         description: "Recent call recordings, newest first: id (= call_id), TG, started_unix_ms, duration_ms, size_bytes, per-call counters by call_id, storage ram|sd (change 057), sd_pending while queued for the SD card.",
     },
     EndpointDoc {
+        method: "DELETE",
+        path: "/api/recordings",
+        params: "?store=sd|ram|all",
+        description: "Change 065: delete every recording of that store (files and list entries). Returns {ok, deleted}.",
+    },
+    EndpointDoc {
         method: "GET",
         path: "/api/recordings/{id}",
         params: "path id, trailing .wav optional",

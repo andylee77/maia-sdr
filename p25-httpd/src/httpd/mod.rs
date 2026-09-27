@@ -514,7 +514,8 @@ pub fn router(
                get(api::tuning::get_agc_threshold)
                .put(api::tuning::put_agc_threshold))
         // Call recording + playback.
-        .route("/api/recordings", get(api::history::get_recordings))
+        .route("/api/recordings", get(api::history::get_recordings)
+                                    .delete(api::history::delete_recordings))
         .route("/api/grant_decode_stats", get(api::history::get_grant_decode_stats))
         .route("/api/recordings/{id}", get(api::history::get_recording_file))
         .route("/api/recordings/{id}/events", get(api::history::get_recording_events))

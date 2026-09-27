@@ -44,6 +44,43 @@ use crate::protocol::p25::control_channel::{
 /// (RAM and SD card), `storage` per entry; `max` is the live RAM
 /// retention (was the fixed default), `max_sd` / `max_sd_bytes` the SD
 /// store's; optional `limit` (the SD store can list thousands).
+/// Change 065: `DELETE /api/recordings?store=sd|ram|all` — delete every
+/// recording of that store (files and list entries). The recording of a
+/// call still being written is not in the list yet and is kept.
+pub async fn delete_recordings(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<
+        std::collections::HashMap<String, String>,
+    >,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let store = match params.get("store").map(String::as_str) {
+        Some("sd") => Some(crate::audio::rec_storage::STORE_SD),
+        Some("ram") => Some(crate::audio::rec_storage::STORE_RAM),
+        Some("all") => None,
+        other => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("store {other:?}: expected sd, ram or all"),
+                })),
+            )
+                .into_response();
+        }
+    };
+    let deleted = {
+        let mut ring = state.recordings.lock().await;
+        crate::audio::recorder::clear_recordings(&mut ring, store, &state.rec_storage)
+    };
+    state.event_log.push(
+        crate::services::event_log::LogCategory::Recorder,
+        format!("deleted {deleted} recording(s) ({})", store.unwrap_or("all")),
+        serde_json::json!({ "store": store.unwrap_or("all"), "deleted": deleted }),
+    );
+    Json(serde_json::json!({ "ok": true, "deleted": deleted })).into_response()
+}
+
 pub async fn get_recordings(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<

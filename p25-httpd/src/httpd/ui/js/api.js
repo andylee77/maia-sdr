@@ -58,6 +58,7 @@ async function request(method, path, body, timeoutMs = TIMEOUT_MS) {
 export const get = (path, timeoutMs) => request('GET', path, undefined, timeoutMs);
 export const put = (path, body) => request('PUT', path, body);
 export const post = (path, body) => request('POST', path, body, 20000);
+export const del = path => request('DELETE', path);
 
 function qs(params) {
   const p = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '');
@@ -70,6 +71,8 @@ export const api = {
   calls: (limit, nf) => get('/api/ui/calls' + qs({ limit, nf: nf ? 1 : 0 })),
   settings: () => get('/api/ui/settings'),
   putSettings: patch => put('/api/ui/settings', patch),
+  // Change 065: store = 'sd' | 'ram' | 'all'.
+  clearRecordings: store => del('/api/recordings' + qs({ store })),
 
   // Radio / RF.
   stats: () => get('/api/stats'),

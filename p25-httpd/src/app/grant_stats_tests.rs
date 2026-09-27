@@ -83,7 +83,7 @@ impl Rig {
         }
     }
     fn ev(&mut self, e: CallTrackerEvent) {
-        handle_event(e, &mut self.active, &mut self.pending, &self.f, &self.clear, &self.enc);
+        handle_event(e, &mut self.active, &mut self.pending, &self.f, &self.clear, &self.enc, &self.rev);
     }
     fn refresh(&mut self, now: Instant) {
         refresh_pending(&mut self.pending, &self.f, &self.clear, &self.enc, &self.rev, now);
@@ -182,4 +182,30 @@ fn source_update_fills_but_never_replaces_the_grant_unit() {
     r.ev(upd(2, 3400043));
     r.ev(close(2, CloseReason::CallEnd, t + 8_000, 3_000));
     assert_eq!(r.summary(2).source, Some(3400043));
+}
+
+// Change 065: an encrypted (not-followed) call is listed at once and its
+// late CallClose fills in the channel time.
+#[test]
+fn not_followed_close_fills_the_channel_time() {
+    let mut r = Rig::new();
+    let t = 5_600_000;
+    let mut nf_open = open(9, 3400015, t);
+    if let CallTrackerEventKind::CallOpen { not_followed, encrypted, tg, .. } = &mut nf_open.kind {
+        *not_followed = Some("encrypted");
+        *encrypted = true;
+        *tg = 402;
+    }
+    r.ev(nf_open);
+    let listed = |r: &Rig| r.enc.lock().unwrap().iter().find(|s| s.call_id == 9).cloned().unwrap();
+    assert_eq!(listed(&r).duration_ms, 0);
+    let rev0 = r.rev.load(std::sync::atomic::Ordering::Relaxed);
+    let mut c = close(9, CloseReason::Timeout, t + 4_500, 4_500);
+    if let CallTrackerEventKind::CallClose { last_upd_at_unix_ms, .. } = &mut c.kind {
+        *last_upd_at_unix_ms = t + 4_500;
+    }
+    r.ev(c);
+    let s = listed(&r);
+    assert_eq!((s.duration_ms, s.ended_unix_ms, s.air_duration_ms), (4_500, t + 4_500, Some(4_500)));
+    assert!(r.rev.load(std::sync::atomic::Ordering::Relaxed) > rev0);
 }

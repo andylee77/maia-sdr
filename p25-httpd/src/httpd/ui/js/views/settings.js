@@ -48,11 +48,28 @@ function recordingCard(onSaved) {
       onSaved();
     } catch (e) { toast(e.message, true); }
   });
+  // Change 065: delete a store's recordings (files and list entries).
+  const clearBtn = (label, store, what) => {
+    const b = h('button', { class: 'btn small', type: 'button', text: label });
+    b.addEventListener('click', async () => {
+      if (!window.confirm('Delete ' + what + '? This cannot be undone.')) return;
+      try {
+        const r = await api.clearRecordings(store);
+        toast(r.deleted + ' recording' + (r.deleted === 1 ? '' : 's') + ' deleted');
+        onSaved();
+        kick(50);
+      } catch (e) { toast('Not deleted: ' + e.message, true); }
+    });
+    return b;
+  };
+  const clearSd = clearBtn('Delete SD recordings', 'sd', 'every recording on the SD card');
+  const clearRam = clearBtn('Delete RAM recordings', 'ram', 'every recording in RAM');
   c.body.append(sw.el,
     h('div', { class: 'row', style: { marginTop: '10px' } }, h('span', { text: 'Save new recordings to' }), where),
     h('div', { class: 'row', style: { marginTop: '8px' } }, h('span', { text: 'Keep in RAM the newest' }), keep),
     h('div', { class: 'row', style: { marginTop: '8px' } }, h('span', { text: 'Keep on the SD card' }), sdKeep, h('span', { text: 'recordings, at most' }), sdMb, h('span', { text: 'MB' }), apply),
     h('div', { style: { marginTop: '12px' } }, kv.el),
+    h('div', { class: 'row', style: { marginTop: '10px' } }, clearSd, clearRam),
     h('p', { class: 'card-note', text: 'RAM recordings (tmpfs) are lost on reboot; SD recordings are kept and listed again after a restart. Changing where recordings go does not move existing ones, and each store’s limits only delete its own files (lowering a limit deletes the oldest at once). SD writes happen in the background, so a slow card never holds up decoding; a recording plays as soon as it is listed. If the card is missing, read-only or full, recordings are saved to RAM and the reason shows below. Turning recording off keeps listing calls, without audio.' }));
 
   function set(d) {
@@ -83,6 +100,10 @@ function recordingCard(onSaved) {
     if (sd.queue_jobs) rows.push(['SD queue', sd.queue_jobs + ' waiting · ' + bytes(sd.queue_bytes) + (sd.writing_for_ms ? ' · current write ' + dur(sd.writing_for_ms) : ''), sd.writing_for_ms > 2000 ? 'warn' : '']);
     if (sd.indexed_at_boot) rows.push(['Found at start-up', sd.indexed_at_boot + ' SD recordings']);
     kv.set(rows);
+    clearSd.disabled = !sd.count;
+    clearRam.disabled = !ram.count;
+    clearSd.textContent = 'Delete SD recordings' + (sd.count ? ' (' + sd.count + ')' : '');
+    clearRam.textContent = 'Delete RAM recordings' + (ram.count ? ' (' + ram.count + ')' : '');
   }
   return { el: c.el, set };
 }

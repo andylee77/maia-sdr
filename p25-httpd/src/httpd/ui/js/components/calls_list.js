@@ -16,11 +16,18 @@ function when(call) {
   return wall || ago(Math.max(0, boardNow() - call.started_unix_ms));
 }
 
+// Change 065: three different times, labelled for what they measure.
+// Voice = the decoded audio (the recording / playback bar); on air = the
+// control channel announcing the call (grant to its last update, the
+// channel time SDRTrunk shows, also for encrypted calls); held = how long
+// the follower kept the call open (it waits after the end).
 function detailRows(c) {
+  const reason = CLOSE_REASON[c.close_reason] || c.close_reason.replace(/_/g, ' ');
   const rows = [
     ['Call id', String(c.call_id)],
-    ['Held open', dur(c.open_ms) + ' (' + (CLOSE_REASON[c.close_reason] || c.close_reason.replace(/_/g, ' ')) + ')'],
-    ['On air (CC)', c.air_ms != null ? dur(c.air_ms) : '—'],
+    ['Voice', c.voice_ms ? dur(c.voice_ms) + (c.recording ? ' (the recording)' : '') : '—'],
+    ['On air (control channel)', c.air_ms != null ? dur(c.air_ms) : '—'],
+    [c.not_followed ? 'Channel time' : 'Held open', dur(c.open_ms) + (c.not_followed ? '' : ' (' + reason + ')')],
     ['First voice', c.first_voice_ms != null ? c.first_voice_ms + ' ms after grant' : '—'],
     ['IMBE / LDU', c.imbe + ' / ' + c.ldu],
     ['Vocoder errors / silent', c.vocoder_errors + ' / ' + c.vocoder_silent],
@@ -96,8 +103,10 @@ function updateRow(el, call) {
   setText(c.srcSub, call.source_alias ? String(call.source) : '');
   setText(c.freq, mhz(call.freq_hz));
   setText(c.freqSub, call.channel ? 'ch ' + call.channel : '');
-  setText(c.dur, call.voice_ms ? dur(call.voice_ms) : '—');
-  setText(c.durSub, call.first_voice_ms != null ? 'first ' + call.first_voice_ms + ' ms' : '');
+  // Change 065: a call that was not followed shows its channel time.
+  const chan = call.not_followed && call.open_ms ? call.open_ms : 0;
+  setText(c.dur, call.voice_ms ? dur(call.voice_ms) : chan ? dur(chan) : '—');
+  setText(c.durSub, call.first_voice_ms != null ? 'first ' + call.first_voice_ms + ' ms' : chan ? 'channel time' : '');
   renderPlay(el, call);
   if (!c.details.hidden || !c.details.firstChild) {
     c.details.replaceChildren(...detailRows(call).flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })]));
