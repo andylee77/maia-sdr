@@ -17,8 +17,8 @@ In practice that means:
 - No private sidecar protocols, no devmem shortcuts, no SSH-only
   control paths that the API doesn't mirror. If a feature needs a
   non-HTTP path, add the HTTP endpoint first.
-- The dashboard JavaScript under [`p25-httpd/src/httpd/dashboard.html`](../p25-httpd/src/httpd/dashboard.html)
-  only uses `fetch()` against `/api/*` and WebSocket against `/ws/*`.
+- The web UI modules under [`p25-httpd/src/httpd/ui/`](../p25-httpd/src/httpd/ui/)
+  only use `fetch()` against `/api/*` and WebSocket against `/ws/*`.
   It has no special visibility into daemon internals.
 - Diagnostic tools under `tools/` do the same: they hit the same
   endpoints any external client would. This is deliberate — it keeps

@@ -5,6 +5,20 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-27] Retire the pre-056 dashboard (`/legacy`)
+
+**Branch:** fishball-p25
+**Bake required:** NO (p25-httpd only).
+
+The web UI at `/` (056) replaced it. The following are removed:
+- the `/legacy` route and the 259 KB embedded `dashboard.html`;
+- the links to it in the UI;
+- its panel map in `doc/P25_API.md` (still in git history).
+
+No API endpoint changes.
+
+---
+
 ## [2026-09-27] LSM PLL/timing hold on "no signal", core 0.2.0; sticky lock freed at end of transmission (059)
 
 **Branch:** fishball-p25

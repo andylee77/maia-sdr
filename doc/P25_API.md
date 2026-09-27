@@ -47,7 +47,6 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 |---|---|---|---|
 | `/` | GET | HTML | Web UI (change 056): shell page, `Cache-Control: no-cache`; asset URLs are `ui/<BUILD_TAG>.<hash>/...` |
 | `/ui/{version}/{*path}` | GET | CSS / JS | Change 056 embedded UI assets (`httpd/ui/`). JS as `text/javascript`. Current version `immutable` + ETag, any other version `no-cache`, unknown path 404 |
-| `/legacy` | GET | HTML | Pre-056 single-file dashboard (`dashboard.html`), kept as a fallback |
 | `/api/system` | GET | `SystemInfo` | System identity: NAC, WACN, RFSS, site, control channel, secondary CCH, SNDCP channels, system clock, build tag |
 | `/api/sys_health` | GET | JSON | **Stage 2** — process + kernel health: loadavg, daemon RSS, thread count, free memory. Cheap to poll from a mobile client |
 | `/api/endpoints` | GET | JSON | Self-describing endpoint list (authoritative — the live `ENDPOINT_CATALOGUE`) |
@@ -787,8 +786,7 @@ Real-time TSBK event stream. Each frame is a `TsbkEvent`:
 
 One frame per parsed TSBK (housekeeping opcodes — NET/RFSS/ADJ status,
 IDEN, TDMA sync, SCCB, SNDCP, vendor — are suppressed), plus traffic
-`TRF_*` voice-frame events and `recording_saved`. The legacy dashboard
-(`/legacy`) renders it in "Live Activity"; the change-056 UI uses it
+`TRF_*` voice-frame events and `recording_saved`. The web UI uses it
 only as a trigger for an early `/api/ui/state` poll (`GRP_VCH_GRANT`,
 `TRF_HDU`, `TRF_TDULC_CALL_TERM`, `TRF_VOICE_END`, `recording_saved`).
 
@@ -840,36 +838,11 @@ The page POSTs `/api/set_time` once per load only when the board clock
 is invalid (< 2020) or more than 2 minutes off, and the "set automatically"
 preference is on (default).
 
-## Legacy dashboard panels (`/legacy`)
+## Legacy dashboard (retired)
 
-For reference, this is what the pre-056 page (`dashboard.html`, served at
-`/legacy`) renders and where each panel's data comes from. Its polled
-endpoints are fetched on a 2-second interval; the WebSocket runs in
-parallel. Known issues are catalogued in changes/056 §1.
-
-| Dashboard panel | Endpoint(s) | Notes |
-|---|---|---|
-| Header build tag | `/api/system.build` | the "is the right binary on the box?" check |
-| Decoder Comparison Matrix | `/api/decoder_compare` | 3-column side-by-side `ps_c4fm` / `ps_lsm` / `pl_hdl` counters (Phase 9 dropped `ps_iq_lsm` + `ps_phase6d`) |
-| System Identity | `/api/system` | NAC, WACN, RFSS/Site, control channel |
-| Decode Stats | `/api/stats` | dibit count, overflow, AGC gain, RSSI |
-| HDL LSM Chain (PL) | `/api/hdl_lsm` | cumulative + live + 1 s window stats; nested `last_window`, `nid_ring`, `top_nacs` keys |
-| HDL LSM NID Ring (last 32) | `/api/hdl_lsm.nid_ring` | per-NID `{t_ms, nac, duid, valid, n_err, sync_d, drop, pll, sp}` |
-| IRQ Source Counters | `/api/irq_stats` | per-source IRQ count + rate (dibit/traffic/lsm_dibit/traffic_lsm_dibit) |
-| PS C4FM Dibit Stream | `/api/dibit_dump` | per-bucket dibit histogram, inner/outer ratio, raw_duid histogram (dormant on LSM sites) |
-| PS LSM Dibit Stream | `/api/control_lsm_dibit_dump` | same shape as `/api/dibit_dump` but reading from `lsm_decoder`, i.e. the PL HDL LSM dibit output |
-| Active Grants | `/api/grants` | TG-deduped, source-preserved across updates |
-| Frequency Bands | `/api/bands` | unioned across both decoders |
-| Live Activity | **`/ws/events`** | the only WebSocket consumer; richer than `recent_tsbks` |
-| Aliases dialog | `/api/aliases` (GET, PUT) | TG-id → name map (persisted since change 056) |
-
-Endpoints **not** consumed by the dashboard (snapshot / debugging
-tools only): `/api/recent_tsbks` (used by `tools/p25_check_phase6f4.py`
-and `tools/p25_status_and_next_step.py`), `/api/tsbk_opcodes`
-(opcode coverage report), `/api/control_dibit_capture` and
-`/api/control_dibit_capture_aligned` (raw dibit pulls for offline cross-validation),
-`/api/control_iq_dump` and `/api/traffic_iq_dump` (post-DDC IQ WAV for SDRTrunk replay),
-`/api/sync_tune` and `/api/decoder_reset` (operator knobs).
+The pre-056 single-file dashboard (`dashboard.html` at `/legacy`) was removed after
+change 059; the web UI at `/` replaced it in change 056. Its panel-to-endpoint map is in
+git history (this file before the retirement commit).
 
 ---
 

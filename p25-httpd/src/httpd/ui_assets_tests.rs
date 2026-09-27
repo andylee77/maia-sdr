@@ -99,7 +99,7 @@ fn index_references_resolve() {
     let refs = html_refs(index);
     assert!(refs.iter().any(|r| r.ends_with("js/main.js")), "{refs:?}");
     for r in refs {
-        if r.starts_with('#') || r.starts_with("data:") || r == "/legacy" {
+        if r.starts_with('#') || r.starts_with("data:") {
             continue;
         }
         let path = r.strip_prefix(PREFIX)

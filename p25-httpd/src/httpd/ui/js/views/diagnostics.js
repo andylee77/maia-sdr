@@ -90,7 +90,7 @@ function healthRows(s) {
 function endpointsCard() {
   const c = card('Raw JSON');
   const list = h('div', { class: 'row' });
-  c.body.append(list, h('p', { class: 'card-note' }, 'Read-only endpoints (open in a new tab). Full reference: doc/P25_API.md. The previous dashboard is at ', h('a', { href: '/legacy' }, '/legacy'), '.'));
+  c.body.append(list, h('p', { class: 'card-note' }, 'Read-only endpoints (open in a new tab). Full reference: doc/P25_API.md.'));
   api.endpoints().then(r => {
     const items = (r.items || []).filter(e => e.method === 'GET' && !e.params && !e.path.includes('{') && e.path.startsWith('/api/'));
     list.replaceChildren(...items.map(e => h('a', { class: 'chip', href: e.path, target: '_blank', rel: 'noopener', title: e.description, text: e.path.replace('/api/', '') })));

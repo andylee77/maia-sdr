@@ -165,7 +165,7 @@ function displayCard() {
 function aboutCard() {
   const c = card('About');
   const kv = kvTable();
-  c.body.append(kv.el, h('p', { class: 'card-note' }, 'Previous dashboard: ', h('a', { href: '/legacy' }, '/legacy'), '.'));
+  c.body.append(kv.el);
   function set(d, s) {
     kv.set([
       ['Build', s ? s.build : DASH],

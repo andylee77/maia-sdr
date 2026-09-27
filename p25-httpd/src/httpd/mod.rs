@@ -13,8 +13,8 @@
 //!   - Change 056: `/` serves the web UI — native ES modules under
 //!     `ui/` (alongside this file), embedded at compile time by
 //!     [`ui_assets`] and served under `/ui/<BUILD_TAG>/...` (see
-//!     `api::ui`). [`index_html`] + `DASHBOARD_HTML` keep the pre-056
-//!     single-file dashboard (`dashboard.html`) at `/legacy`.
+//!     `api::ui`). The pre-056 single-file dashboard (`/legacy`) was
+//!     retired after change 059.
 //!   - [`ts_to_ymd_hms`] — shared wall-clock formatter used by
 //!     `api::radio` and a few others. Promoted to `pub(crate)` so
 //!     submodules can reach it.
@@ -37,7 +37,6 @@
 use std::sync::Arc;
 
 use axum::{
-    response::IntoResponse,
     routing::{get, post}, Router,
 };
 use tokio::sync::{broadcast, RwLock};
@@ -397,11 +396,10 @@ pub fn router(
     }
     r
         // Change 056: the web UI (ES modules under `ui/`, embedded by
-        // `ui_assets`) is served at `/`; the pre-056 single-file
-        // dashboard stays reachable at `/legacy` for this iteration.
+        // `ui_assets`) is served at `/`. The pre-056 single-file
+        // dashboard (`/legacy`) was retired after 059.
         .route("/", get(api::ui::get_ui_index))
         .route("/index.html", get(api::ui::get_ui_index))
-        .route("/legacy", get(index_html))
         .route("/ui/{tag}/{*path}", get(api::ui::get_ui_asset))
         .route("/api/ui/state", get(api::ui::get_ui_state))
         .route("/api/ui/calls", get(api::ui::get_ui_calls))
@@ -602,12 +600,5 @@ fn ts_to_ymd_hms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
     let year = (y + if mo <= 2 { 1 } else { 0 }) as i32;
     (year, mo, d, h, m, s)
 }
-
-/// Pre-056 single-file dashboard, now at `/legacy`.
-async fn index_html() -> impl IntoResponse {
-    axum::response::Html(DASHBOARD_HTML)
-}
-
-const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 
 pub mod ui_assets;
