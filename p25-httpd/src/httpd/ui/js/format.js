@@ -158,6 +158,7 @@ export const NOT_FOLLOWED = {
   encrypted: 'encrypted',
   sticky_lock: 'busy on another call',
   monitor_list: 'not on monitor list',
+  ignored: 'ignored',
   speaker_off: 'not on a speaker',
   traffic_lock: 'chain locked (diagnostic)',
   update_no_lock: 'update without grant',

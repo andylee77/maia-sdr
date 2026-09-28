@@ -436,13 +436,25 @@ pub async fn apply_settings_patch(
     if out.changed.monitor_tgs {
         state.monitor_list.write().await.set(out.settings.monitor_tgs.clone());
     }
+    // Change 068: a talkgroup ignored while on air is dropped now, not at
+    // its next grant.
+    if out.changed.ignore_tgs {
+        let ignore = &out.settings.ignore_tgs;
+        for (lane, tg) in super::talkgroups::release_chains_on(state, |t| ignore.binary_search(&t).is_ok()).await {
+            state.event_log.push(
+                crate::services::event_log::LogCategory::Traffic,
+                format!("{lane}: TG={tg} ignored while on air, call dropped"),
+                serde_json::json!({ "tg": tg, "chain": lane.label(), "reason": "ignored" }),
+            );
+        }
+    }
     if out.changed.any() {
         state.event_log.push(
             crate::services::event_log::LogCategory::System,
             format!(
                 "settings updated via {origin}: recording={} keep={} storage={} \
                  sd_keep={} sd_max_mb={} hang_ms={} end_grace_ms={} tg_aliases={} \
-                 unit_aliases={} monitor={:?}{}",
+                 unit_aliases={} monitor={:?} ignore={:?}{}",
                 if out.settings.recording.enabled { "on" } else { "off" },
                 out.settings.recording.max_count,
                 out.settings.recording.storage.as_str(),
@@ -453,6 +465,7 @@ pub async fn apply_settings_patch(
                 out.settings.tg_aliases.len(),
                 out.settings.unit_aliases.len(),
                 out.settings.monitor_tgs,
+                out.settings.ignore_tgs,
                 if out.persisted { "" } else { " (NOT persisted)" },
             ),
             serde_json::json!({
@@ -463,6 +476,7 @@ pub async fn apply_settings_patch(
                     "tg_aliases":   out.changed.tg_aliases,
                     "unit_aliases": out.changed.unit_aliases,
                     "monitor_tgs":  out.changed.monitor_tgs,
+                    "ignore_tgs":   out.changed.ignore_tgs,
                 },
                 "persisted":  out.persisted,
                 "save_error": out.save_error,

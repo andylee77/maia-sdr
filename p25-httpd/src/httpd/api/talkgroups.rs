@@ -141,6 +141,42 @@ async fn store_monitor(state: &AppState, tgs: Vec<u16>, origin: &str) {
     }
 }
 
+/// Drop the call of every traffic chain locked on a talkgroup `drop`
+/// selects: the chain goes idle and pauses (its LSM gate closes), so
+/// nothing more of that call is decoded; the lifecycle then closes it.
+/// Used when the encrypted list (`/api/encrypted_tgs`) or the ignore list
+/// (change 068) gains the talkgroup on air. Returns (chain, talkgroup).
+pub async fn release_chains_on(
+    state: &AppState,
+    drop: impl Fn(u16) -> bool,
+) -> Vec<(crate::hardware::traffic_lane::Lane, u16)> {
+    use std::sync::atomic::Ordering;
+    let mut out = Vec::new();
+    for lane in &state.traffic_lanes {
+        let locked = lane.chain.lock().await.current_talkgroup().map(|t| t.0);
+        let Some(tg) = locked.filter(|t| drop(*t)) else { continue };
+        lane.chain.lock().await.force_idle();
+        lane.forwarder.current_talkgroup.store(0, Ordering::Relaxed);
+        // Change 054: gate closes (framer reset) at this air-time cut;
+        // the pause adds its own hardware cut.
+        lane.forwarder.mark_epoch(crate::app::dibit_airtime::EpochKind::TgChange, true);
+        #[cfg(target_os = "linux")]
+        {
+            let core = state.ip_core.lock().await;
+            if let Some(l) = core.lane(lane.lane) {
+                l.pause();
+            }
+            // Change 057: the next same-freq resume re-enables it.
+            lane.forwarder.traffic_paused_by_teardown.store(true, Ordering::Relaxed);
+        }
+        if !lane.forwarder.epochs_active() {
+            lane.decoder.write().await.reset_framer_state();
+        }
+        out.push((lane.lane, tg));
+    }
+    out
+}
+
 pub async fn get_monitor(
     State(state): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
@@ -278,41 +314,13 @@ pub async fn put_encrypted_tgs(
     // If anything changed, also force-idle a chain locked on a newly-
     // blocked TG. Otherwise the manual add takes effect only for the
     // NEXT grant for that TG. Change 066: on every traffic chain.
-    for lane in &state.traffic_lanes {
-        let currently_locked = lane.chain.lock().await.current_talkgroup().map(|t| t.0);
-        let Some(locked_tg) = currently_locked else { continue };
-        let blocked_now = lane
-            .forwarder
-            .encrypted_tg_history
-            .lock()
-            .map(|h| h.contains(&locked_tg))
-            .unwrap_or(false);
-        if !blocked_now {
-            continue;
-        }
-        lane.chain.lock().await.force_idle();
-        use std::sync::atomic::Ordering;
-        lane.forwarder.current_talkgroup.store(0, Ordering::Relaxed);
-        // Change 054: gate closes (framer reset) at this air-time
-        // cut; the pause adds its own hardware cut.
-        lane.forwarder.mark_epoch(
-            crate::app::dibit_airtime::EpochKind::TgChange, true);
-        #[cfg(target_os = "linux")]
-        {
-            let core = state.ip_core.lock().await;
-            if let Some(l) = core.lane(lane.lane) {
-                l.pause();
-            }
-            // Change 057: the next same-freq resume re-enables it.
-            lane.forwarder.traffic_paused_by_teardown.store(true, Ordering::Relaxed);
-        }
-        if !lane.forwarder.epochs_active() {
-            lane.decoder.write().await.reset_framer_state();
-        }
-        applied.push(format!(
-            "force-idle {}: was locked on TG={} which is now blocked",
-            lane.lane, locked_tg,
-        ));
+    let blocked = |tg: u16| {
+        state.imbe_forwarder.encrypted_tg_history.lock()
+            .map(|h| h.contains(&tg))
+            .unwrap_or(false)
+    };
+    for (lane, tg) in release_chains_on(&state, blocked).await {
+        applied.push(format!("force-idle {lane}: was locked on TG={tg} which is now blocked"));
     }
 
     state.event_log.push(

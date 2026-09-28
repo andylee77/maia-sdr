@@ -6,9 +6,10 @@
 // IMBE frames x 20 ms), never the lifecycle's open time, which includes
 // the time after the last voice until the close.
 
-import { h, setText, keyedList, card } from '../dom.js';
+import { h, setText, keyedList, card, toast } from '../dom.js';
+import { api } from '../api.js';
 import { mhz, dur, ago, clock, bytes, linkControlUnits, NOT_FOLLOWED, AUDIO_STATUS, CLOSE_REASON } from '../format.js';
-import { store, boardNow, setPref } from '../store.js';
+import { store, boardNow, setPref, refreshSettings } from '../store.js';
 
 function when(call) {
   const s = store.state;
@@ -41,6 +42,28 @@ function detailRows(c) {
     rows.push(['File', c.recording.filename + ' (' + bytes(c.recording.size_bytes) + ', ' + where + ')']);
   }
   return rows;
+}
+
+// Change 068: ignore (or follow again) the call's talkgroup from its
+// details.
+function ignoreButton(tg) {
+  const cur = (store.settings && store.settings.settings && store.settings.settings.ignore_tgs) || [];
+  const on = cur.includes(tg);
+  return h('button', {
+    class: 'btn small', type: 'button',
+    text: on ? 'Follow TG ' + tg + ' again' : 'Ignore TG ' + tg,
+    title: on ? 'Take TG ' + tg + ' off the ignore list' : 'Never follow TG ' + tg + ' (Settings → Ignored talkgroups)',
+    onclick: async () => {
+      const next = on ? cur.filter(t => t !== tg) : [...cur, tg].sort((a, b) => a - b);
+      try {
+        await api.putSettings({ ignore_tgs: next });
+        await refreshSettings();
+        toast(on ? 'TG ' + tg + ' is followed again' : 'TG ' + tg + ' is ignored');
+      } catch (e) {
+        toast('Not changed: ' + e.message, true);
+      }
+    },
+  });
 }
 
 function createRow() {
@@ -113,7 +136,8 @@ function updateRow(el, call) {
   setText(c.durSub, call.first_voice_ms != null ? 'first ' + call.first_voice_ms + ' ms' : chan ? 'channel time' : '');
   renderPlay(el, call);
   if (!c.details.hidden || !c.details.firstChild) {
-    c.details.replaceChildren(...detailRows(call).flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })]));
+    c.details.replaceChildren(...detailRows(call).flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })]),
+      h('dt'), h('dd', null, ignoreButton(call.tg)));
   }
 }
 
@@ -150,7 +174,7 @@ export function callsList() {
   }
 
   function update(kind) {
-    if (kind === 'calls' || kind === 'prefs') render();
+    if (kind === 'calls' || kind === 'prefs' || kind === 'settings') render();
   }
 
   // Ages ("12 s ago") move without new data.

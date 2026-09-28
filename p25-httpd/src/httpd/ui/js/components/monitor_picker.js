@@ -18,7 +18,7 @@ export function monitorPicker({ onSave }) {
   c.body.append(
     grid,
     h('div', { class: 'row', style: { marginTop: '10px' } }, manual, addBtn, h('div', { class: 'spacer' }), clearBtn, refresh),
-    h('p', { class: 'card-note', text: 'With an empty list the follower takes every clear grant. With TGs checked it follows only those (first listed wins when two are granted at once). Encrypted TGs are skipped either way. Saved on the radio and restored at boot.' }),
+    h('p', { class: 'card-note', text: 'With an empty list the follower takes every clear grant. With TGs checked it follows only those (first listed wins when two are granted at once). Encrypted and ignored TGs are skipped either way. Saved on the radio and restored at boot.' }),
   );
 
   let roster = [];      // [{tg, count, enc, alias}]

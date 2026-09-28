@@ -317,3 +317,25 @@ fn no_groups_follows_everything_without_preemption() {
     assert_eq!(r.route(300).map(|x| (x.side, x.rank)), Some((Side::Both, OTHER_RANK)));
     assert!(!r.preempts(300, 402));
 }
+
+// Change 068: the ignore list — never followed, whatever the monitor list
+// and the speaker groups say; sorted, validated, live in the routing.
+#[test]
+fn ignore_list_validates_and_beats_the_groups() {
+    let (s, c) = apply_patch(&UiSettings::default(), patch(r#"{"ignore_tgs":[402,300,402,700]}"#)).unwrap();
+    assert!(c.ignore_tgs);
+    assert_eq!(s.ignore_tgs, vec![300, 402, 700]);
+    assert!(apply_patch(&s, patch(r#"{"ignore_tgs":[0]}"#)).is_err());
+    let (s, _) = apply_patch(&s, patch(site_groups())).unwrap();
+    let r = Routing::new(&s.tg_groups, &s.speakers).with_ignored(&s.ignore_tgs);
+    assert!(r.ignored(300) && !r.ignored(305));
+    assert_eq!(r.route(300), None, "ignored although Primary is on the left");
+    assert!(r.route(305).is_some());
+    assert!(r.preempts(305, 300), "an ignored call yields to any followed grant");
+    // Live policy follows updates; a hand-edited file is cleaned.
+    let store = SettingsStore::load(None);
+    store.update(patch(r#"{"ignore_tgs":[318]}"#)).unwrap();
+    assert!(store.routing.snapshot().ignored(318));
+    let p = parse_settings(br#"{"ignore_tgs":[9,0,9,3]}"#).unwrap();
+    assert_eq!(p.ignore_tgs, vec![3, 9]);
+}

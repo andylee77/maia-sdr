@@ -12,6 +12,7 @@ import { kvTable } from '../components/kv_table.js';
 import { aliasEditor } from '../components/alias_editor.js';
 import { monitorPicker } from '../components/monitor_picker.js';
 import { tgGroupsEditor } from '../components/tg_groups_editor.js';
+import { ignoreList } from '../components/ignore_list.js';
 
 async function save(patch) {
   const r = await api.putSettings(patch);
@@ -246,6 +247,7 @@ export function mount(host) {
       tgAliases.set(data.settings.tg_aliases);
       unitAliases.set(data.settings.unit_aliases);
       monitor.set(data.settings.monitor_tgs, data.settings.tg_aliases);
+      ignore.set(data.settings.ignore_tgs, data.settings.tg_aliases);
       groups.set(data);
       enc.set(data.encrypted_tgs);
       about.set(data, store.state);
@@ -265,6 +267,7 @@ export function mount(host) {
     onSave: async map => { await save({ unit_aliases: map }); load(); },
   });
   const monitor = monitorPicker({ onSave: async list => { await save({ monitor_tgs: list }); load(); } });
+  const ignore = ignoreList({ onSave: async list => { await save({ ignore_tgs: list }); load(); } });
   const enc = encryptedCard();
   const clock = clockCard();
   const display = displayCard();
@@ -273,7 +276,7 @@ export function mount(host) {
   host.append(
     h('div', { class: 'grid-2' },
       h('div', { class: 'stack' }, rec.el, callClose.el, tgAliases.el, unitAliases.el),
-      h('div', { class: 'stack' }, groups.el, monitor.el, enc.el, clock.el, display.el, about.el)),
+      h('div', { class: 'stack' }, groups.el, monitor.el, ignore.el, enc.el, clock.el, display.el, about.el)),
   );
   load();
   let lastRev = null;

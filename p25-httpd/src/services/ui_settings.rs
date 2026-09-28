@@ -267,6 +267,9 @@ pub struct UiSettings {
     pub monitor_tgs: Vec<u16>,
     /// Change 067: board clock source.
     pub clock: ClockSettings,
+    /// Change 068: talkgroups never followed (the opposite of the monitor
+    /// list; wins over it and over the speaker groups). Sorted.
+    pub ignore_tgs: Vec<u16>,
 }
 
 /// Partial update accepted by `PUT /api/ui/settings`. Maps and lists
@@ -285,6 +288,8 @@ pub struct SettingsPatch {
     pub monitor_tgs: Option<Vec<u16>>,
     /// Change 067.
     pub clock: Option<ClockSettings>,
+    /// Change 068.
+    pub ignore_tgs: Option<Vec<u16>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -324,12 +329,14 @@ pub struct Changed {
     pub tg_groups: bool,
     pub speakers: bool,
     pub clock: bool,
+    pub ignore_tgs: bool,
 }
 
 impl Changed {
     pub fn any(&self) -> bool {
         self.recording || self.call || self.radio || self.tg_aliases || self.unit_aliases
             || self.monitor_tgs || self.tg_groups || self.speakers || self.clock
+            || self.ignore_tgs
     }
 }
 
@@ -411,6 +418,13 @@ fn clean_aliases<K: Ord + Copy>(m: &BTreeMap<K, String>) -> BTreeMap<K, String> 
     m.iter()
         .filter_map(|(k, v)| clean_alias(v).map(|v| (*k, v)))
         .collect()
+}
+
+/// Change 068: a talkgroup set, sorted and deduplicated.
+fn clean_tg_set(mut list: Vec<u16>) -> Vec<u16> {
+    list.sort_unstable();
+    list.dedup();
+    list
 }
 
 /// Validate `patch` against `base` and return the resulting document.
@@ -512,6 +526,16 @@ pub fn apply_patch(
         out.clock = c;
         changed.clock = out.clock != base.clock;
     }
+    if let Some(list) = patch.ignore_tgs {
+        if list.len() > MAX_ENTRIES {
+            return Err(format!("ignore_tgs: {} entries (max {MAX_ENTRIES})", list.len()));
+        }
+        if list.contains(&0) {
+            return Err("ignore_tgs: talkgroup 0 is not a talkgroup".into());
+        }
+        out.ignore_tgs = clean_tg_set(list);
+        changed.ignore_tgs = out.ignore_tgs != base.ignore_tgs;
+    }
     Ok((out, changed))
 }
 
@@ -550,6 +574,7 @@ pub fn parse_settings(body: &[u8]) -> Result<UiSettings, String> {
     s.unit_aliases.retain(|k, _| *k != 0 && *k <= 0x00FF_FFFF);
     let mut seen = std::collections::HashSet::new();
     s.monitor_tgs.retain(|t| *t != 0 && seen.insert(*t));
+    s.ignore_tgs = clean_tg_set(std::mem::take(&mut s.ignore_tgs).into_iter().filter(|t| *t != 0).take(MAX_ENTRIES).collect());
     Ok(s)
 }
 
@@ -725,6 +750,8 @@ pub struct Routing {
     by_tg: std::collections::HashMap<u16, Route>,
     other: Side,
     preempt: bool,
+    /// Change 068: never followed.
+    ignored: std::collections::HashSet<u16>,
 }
 
 impl Routing {
@@ -743,12 +770,26 @@ impl Routing {
                 by_tg.entry(tg).or_insert(Route { side, rank: i as u16 });
             }
         }
-        Routing { by_tg, other: sp.other, preempt: sp.preempt }
+        Routing { by_tg, other: sp.other, preempt: sp.preempt, ignored: Default::default() }
+    }
+
+    /// Change 068: with the ignore list.
+    pub fn with_ignored(mut self, tgs: &[u16]) -> Self {
+        self.ignored = tgs.iter().copied().collect();
+        self
+    }
+
+    /// Change 068: the talkgroup is on the ignore list.
+    pub fn ignored(&self, tg: u16) -> bool {
+        self.ignored.contains(&tg)
     }
 
     /// `None`: not followed (its group is on neither speaker, or it is in
-    /// no group and "other talkgroups" is off).
+    /// no group and "other talkgroups" is off; change 068: or ignored).
     pub fn route(&self, tg: u16) -> Option<Route> {
+        if self.ignored(tg) {
+            return None;
+        }
         let r = self.by_tg.get(&tg).copied()
             .unwrap_or(Route { side: self.other, rank: OTHER_RANK });
         (r.side != Side::Off).then_some(r)
@@ -783,12 +824,12 @@ pub struct RoutingPolicy {
 
 impl RoutingPolicy {
     pub fn new(s: &UiSettings) -> Self {
-        RoutingPolicy { current: RwLock::new(Routing::new(&s.tg_groups, &s.speakers)) }
+        RoutingPolicy { current: RwLock::new(Routing::new(&s.tg_groups, &s.speakers).with_ignored(&s.ignore_tgs)) }
     }
 
     fn set(&self, s: &UiSettings) {
         if let Ok(mut g) = self.current.write() {
-            *g = Routing::new(&s.tg_groups, &s.speakers);
+            *g = Routing::new(&s.tg_groups, &s.speakers).with_ignored(&s.ignore_tgs);
         }
     }
 

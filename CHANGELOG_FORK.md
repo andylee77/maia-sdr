@@ -5,6 +5,27 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-28] Ignored talkgroups (068)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-28-ignore-list-068`
+**Bake required:** NO (p25-httpd and web UI).
+
+- **Settings → Ignored talkgroups:** talkgroups that are never followed — the opposite of
+  the monitor list. Enter single talkgroups or ranges (`402, 700-710`); ✕ on a chip takes one
+  off. Saved on the radio (`ignore_tgs` in `/api/ui/settings`).
+  - The ignore list wins over the monitor list and the speaker groups.
+  - A talkgroup on the air when it is added is dropped at once (its chain goes idle), not at
+    its next grant.
+  - Ignored grants still appear in Recent calls, not followed ("ignored").
+- **Recent calls:** a call's details have "Ignore TG n" (or "Follow TG n again").
+- `release_chains_on` (`/api/encrypted_tgs` and the ignore list share the chain release).
+
+Tests: p25-httpd 279 (ignore list validation, routing precedence, live policy); 23 UI modules
+pass `node --check`.
+
+---
+
 ## [2026-09-27] Board clock from the site's time; site time on the Now page; live-audio normalization (067)
 
 **Branch:** fishball-p25

@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-27-site-clock-067";
+pub const BUILD_TAG: &str = "2026-09-28-ignore-list-068";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //

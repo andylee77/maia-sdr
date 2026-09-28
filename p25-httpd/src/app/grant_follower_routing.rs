@@ -392,6 +392,22 @@ pub fn spawn_grant_follower(
                         site.mgr.lock().await.tally_grant(g.talkgroup.0, freq, g.encrypted);
                     }
 
+                    // Change 068: the ignore list wins over the monitor
+                    // list and the speaker groups.
+                    let routing = follower_routing.snapshot();
+                    if routing.ignored(g.talkgroup.0) {
+                        follower_event_log.push(
+                            LogCategory::Traffic,
+                            format!("reject: TG={} on the ignore list", g.talkgroup.0),
+                            serde_json::json!({
+                                "tg":     g.talkgroup.0,
+                                "reason": "ignored",
+                            }),
+                        );
+                        send_cc_boundary(&g, Some("ignored"), None);
+                        continue;
+                    }
+
                     // Monitor list gate.
                     let monitored = {
                         let monitor = follower_monitor.read().await;
@@ -413,7 +429,6 @@ pub fn spawn_grant_follower(
                     // Change 063: speaker groups. A talkgroup whose group
                     // is on neither speaker, or an ungrouped one with
                     // "other talkgroups" off, is not followed.
-                    let routing = follower_routing.snapshot();
                     let Some(route) = routing.route(g.talkgroup.0) else {
                         follower_event_log.push(
                             LogCategory::Traffic,

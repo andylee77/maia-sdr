@@ -57,6 +57,7 @@ pub const UI_ASSETS: &[UiAsset] = ui_assets![
     "js/components/alias_editor.js",
     "js/components/monitor_picker.js",
     "js/components/speakers_panel.js",
+    "js/components/ignore_list.js",
     "js/components/tg_groups_editor.js",
 ];
 
