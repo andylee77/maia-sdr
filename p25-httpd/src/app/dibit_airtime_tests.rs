@@ -199,6 +199,54 @@ fn encryption_latch_is_sticky_within_a_call_only() {
     assert!(!st.ctx.encrypted);
 }
 
+/// The field sequence of 2026-09-28 (unit A, chain 2): one call latched
+/// encrypted in-band; its CallClose cut carries its own call id, the
+/// next call's id arrives as a call-id-only cut, then the follower's
+/// context. Before the fix every later call on the chain stayed
+/// encrypted (34 clear calls skipped by the vocoder, not recorded).
+#[test]
+fn in_band_latch_does_not_outlive_its_call() {
+    let mut st = AirtimeState::new(ctx(301, 236));
+    // The reader's in-band latch for call 236 (dibit_readers).
+    st.ctx.encrypted = true;
+    let closed = SegmentContext { tg: 0, source: 0, call_id: 236, encrypted: false, freq_hz: 0 };
+    let mut open = cut(1300, EpochKind::CallOpen, Some(SegmentContext { call_id: 237, ..SegmentContext::default() }), false, 0);
+    open.call_id_only = true;
+    let cuts = [
+        cut(1100, EpochKind::CallClose, Some(closed), false, 0),
+        open,
+        cut(1400, EpochKind::TgChange, Some(ctx(301, 237)), true, 0),
+    ];
+    let s = plan_chunk(&mut st, 1000, 1512, &cuts);
+    assert_eq!(
+        ops(&s),
+        vec![
+            Step::Feed { start: 1000, end: 1100, ctx: SegmentContext { encrypted: true, ..ctx(301, 236) } },
+            Step::ResetFramer { at: 1100 },
+            Step::Gate { start: 1100, end: 1300 },
+            Step::Gate { start: 1300, end: 1400 },
+            Step::ResetFramer { at: 1400 },
+            Step::Feed { start: 1400, end: 1512, ctx: ctx(301, 237) },
+        ]
+    );
+    assert!(!st.ctx.encrypted);
+    // Same with the follower's context first (it still holds the old id),
+    // then the id: the new call is clear too.
+    let mut st = AirtimeState::new(ctx(301, 236));
+    st.ctx.encrypted = true;
+    let mut open = cut(1300, EpochKind::CallOpen, Some(SegmentContext { call_id: 237, ..SegmentContext::default() }), false, 0);
+    open.call_id_only = true;
+    let cuts = [cut(1200, EpochKind::TgChange, Some(ctx(301, 236)), false, 0), open];
+    plan_chunk(&mut st, 1000, 1512, &cuts);
+    assert_eq!((st.ctx.call_id, st.ctx.encrypted), (237, false));
+    // A call the follower marked encrypted keeps it across the id cut.
+    let mut st = AirtimeState::new(SegmentContext { encrypted: true, ..ctx(301, 236) });
+    let mut open = cut(1300, EpochKind::CallOpen, Some(SegmentContext { call_id: 237, ..SegmentContext::default() }), false, 0);
+    open.call_id_only = true;
+    plan_chunk(&mut st, 1000, 1512, &[open]);
+    assert_eq!((st.ctx.call_id, st.ctx.encrypted), (237, true));
+}
+
 #[test]
 fn every_dibit_accounted_exactly_once() {
     let mut st = AirtimeState::new(ctx(300, 7));

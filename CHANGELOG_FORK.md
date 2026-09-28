@@ -5,6 +5,40 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-28] Fix: one encrypted header silenced a traffic chain for good (072a)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-28-enc-latch-072a`
+**Bake required:** NO (p25-httpd).
+
+- **Symptom** (unit A, TG 301): most calls on chain 2 had no recording.
+  - They were followed and their voice frames were extracted (call 312: 558 frames).
+  - The vocoder skipped every frame as encrypted, so there was no audio and nothing to record.
+  - From 16:51 local (20:51 UTC) on, every call chain 2 followed was skipped (TG 301 and
+    TG 850 alike, 34 calls). Chain 1 and unit B were unaffected.
+- **Cause.** An in-band encrypted HDU (a real one, or a corrupt one with a valid algorithm ID)
+  marks its call encrypted. The air-time reader keeps that mark "within the call" by comparing
+  call ids, but:
+  - the call's own CallClose cut carries the closing call's id, so it never cleared the mark;
+  - the next call's id arrives as a call-id-only cut, which kept the old mark;
+  - so every later call on the chain inherited it.
+  - The forwarder also copied the mark into the chain's live flag. That flag survives
+    back-to-back calls on one chain, so the follower's next context carried it forward too.
+- **Fix.**
+  - `plan_chunk`: a new call id starts from the follower's own flag (the last full context,
+    without in-band latches).
+  - `latch_encrypted`: in air-time mode it latches only the segment. The reader keeps the mark
+    for that call.
+  - One bad header now costs at most one call.
+- **Also.** Both units record to RAM (`storage: ram`), which keeps the newest 40 recordings and
+  loses them on every restart. The SD store (2000 recordings / 2 GB) is ready on both but not
+  selected.
+
+Tests: p25-httpd 315 (the field sequence: latch, CallClose, call-id cut, follower context; it
+fails on the old code).
+
+---
+
 ## [2026-09-28] Activity history per site: radios, talkgroups, encryption, graphs (072)
 
 **Branch:** fishball-p25

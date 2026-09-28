@@ -874,18 +874,16 @@ impl ImbeForwarder {
     }
 
     /// In-band (HDU / LDU2) encryption latch. In a segment it latches the
-    /// segment context, and mirrors into the live flag only while the
-    /// live call is still the segment's call — a late-decoded tail of a
-    /// previous call must not mark the next call encrypted.
+    /// segment context only (the reader keeps it for that call); without
+    /// segments (legacy delivery) it sets the live flag.
     fn latch_encrypted(&self) {
         use std::sync::atomic::Ordering;
         if self.seg() {
+            // The reader carries it for this call only (`plan_chunk`).
+            // Not mirrored into the live flag: back-to-back calls on one
+            // chain keep that flag, and the follower's next context cut
+            // carried it into the next call.
             self.seg_encrypted.store(true, Ordering::Relaxed);
-            if self.current_call_id.load(Ordering::Relaxed)
-                == self.seg_call_id.load(Ordering::Relaxed)
-            {
-                self.call_encrypted.store(true, Ordering::Relaxed);
-            }
         } else {
             self.call_encrypted.store(true, Ordering::Relaxed);
         }

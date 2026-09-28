@@ -240,11 +240,14 @@ pub struct AirtimeState {
     pub ctx: SegmentContext,
     /// Absolute dibit index below which dibits are pre-settle garbage.
     pub discard_until: u64,
+    /// Encryption as the follower last set it (the last full context,
+    /// without in-band latches): what a new call starts from.
+    pub follower_encrypted: bool,
 }
 
 impl AirtimeState {
     pub fn new(ctx: SegmentContext) -> Self {
-        AirtimeState { ctx, discard_until: 0 }
+        AirtimeState { ctx, discard_until: 0, follower_encrypted: ctx.encrypted }
     }
 }
 
@@ -276,8 +279,17 @@ pub fn plan_chunk(state: &mut AirtimeState, start: u64, end: u64, cuts: &[EpochC
         let was_gated = state.ctx.gated();
         if let Some(mut new) = cut.ctx {
             if cut.call_id_only {
+                // A new call starts from the follower's flag: an in-band
+                // latch was the previous call's. (Keeping it let one
+                // encrypted HDU mark every later call on the chain
+                // encrypted: the CallClose cut carries the closing call's
+                // id, so it never cleared.)
+                if new.call_id != state.ctx.call_id {
+                    state.ctx.encrypted = state.follower_encrypted;
+                }
                 state.ctx.call_id = new.call_id;
             } else {
+                state.follower_encrypted = new.encrypted;
                 // Encryption is sticky within one call: an in-band HDU /
                 // LDU2 latch must survive a same-call refresh cut.
                 if new.call_id != 0 && new.call_id == state.ctx.call_id {
