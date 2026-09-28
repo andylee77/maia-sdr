@@ -32,11 +32,12 @@ scanner needs:
 | — | Remote libiio control: detect it and share the radio | idea |
 | — | Agent control: MCP server and prompt structure | idea |
 | — | Clay Electric DMR | idea (needs a DMR chain) |
+| — | Real-time diagnostics: spectrum, waterfall, constellation and eye at 20+ Hz over WebSockets | idea |
 | — | Handheld page: the radio's face in the browser | idea |
 | — | Transcription (Whisper) and LLM summaries | idea (off-board) |
 
-The review could run before 071 so new modules land in the right place. The refactor itself
-should come after 072, once the site and history models exist. Andy decides the order.
+The review runs before 071 (started 2026-09-28), so new modules land in the right place. The
+refactor itself should come after 072, once the site and history models exist.
 
 ## 071 — Find local systems
 
@@ -222,6 +223,38 @@ From the SDRTrunk playlist (system "Clay Electric Cooperative", alias list `CEC-
   decoder is the reference, as it was for P25.
 - The protocol-agnostic call and site model from the refactor makes this far easier; do the
   refactor first.
+
+## Real-time diagnostics plots (20+ Hz)
+
+Goal: the Diagnostics view's spectrum, waterfall, constellation and eye plots update live over
+WebSockets at 20 Hz or more, instead of today's slow polling.
+
+Today:
+
+- **Wideband spectrum:** Maia's HDL spectrometer is still in the bitstream (a 4096-bin FFT of
+  the full AD9361 rate, averaged in hardware, read by DMA). `/api/spectrum_wide` reads one
+  integration, and the page polls it once a second. What did not carry over from Maia is its
+  real-time waterfall streaming (maia-httpd's WebSocket).
+- **IQ:** `/ws/iq` streams the `pre_diff` tap (after rotate and AGC, before the slicer) by
+  polling every 80 ms (~12 Hz). Constellation and eye are drawn from it
+  (`doc/DASHBOARD_PLOTS.md`).
+- **Narrowband spectrum:** `/api/spectrum` is computed on the PS.
+
+Plan:
+
+- **`/ws/spectrum`:** push every completed spectrometer integration as a binary frame. One
+  byte per bin in dB is 4 KB per frame, so 25 Hz is ~100 KB/s.
+  - Set `spec_num_integrations` for the rate: each FFT is 4096 / sample rate (0.34 ms at
+    12 MSPS), so about 117 averaged FFTs give 25 Hz.
+  - Draw spectrum and waterfall on a canvas, with the window, channels and live calls marked
+    (from the 070 plan).
+- **Constellation and eye at 20+ Hz:** push IQ when the DMA buffer is ready (or poll at 40 ms)
+  as binary frames, per chain (control, traffic 1, traffic 2).
+  - Draw with persistence ("phosphor") so the eye opens the way reference analyzers show it.
+  - `doc/DASHBOARD_PLOTS.md` §7 lists better tap points (post-PLL).
+- **Cost:** stream only while a page subscribes; binary frames and drawing in the browser keep
+  the PS load low. The A9 ran at ~8 % / 19 % with both traffic chains (change 066). Measure it
+  with the streams on.
 
 ## Handheld page
 
