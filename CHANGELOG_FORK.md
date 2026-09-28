@@ -5,6 +5,32 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-28] Narrowest window per site; PPM calibration follows the site (070b)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-28-coverage-070b`
+**Bake required:** NO (p25-httpd and web UI).
+
+- **Narrowest window per site** (Radio → Coverage, `PUT /api/site/plan {"min_preset": "12M" | null}`):
+  the planner never picks a narrower preset there, and the recentre task widens a window that
+  is narrower. Unit A: Clay is set to 12M. Without it, once Clay's plan is learned (1000 grants)
+  its never-granted 852.4385 MHz entry stops counting and the window would move back to 8M.
+- **What 852.4385 MHz is:** a steady carrier about 30 dB above the noise, present in every
+  wideband frame, with no P25 on it. The control decoder tuned there for 12 s saw 2 NIDs and no
+  TSBKs; the LSM chain also decodes C4FM phase steps, so a P25 control channel of either kind
+  would have shown up. It is not a Clay P25 channel (Clay's LCN 6 is 858.4375).
+- **12M vs 8M on Clay:** no measurable decode difference (control CRC 98.9–99.1 % vs 98.8 %,
+  similar vocoder error rates). The AGC runs ~2 dB lower at 12M because more strong carriers
+  sit in the wider passband; the PS load is the same (the DDCs are in the FPGA).
+- **Retune dropouts measured on unit A:** re-applying the preset, moving the LO 200 kHz, and
+  12M → 8M → 12M kept TSBKs flowing (longest gap between TSBKs ≤ 170 ms, normal ~25 ms). A
+  control-channel move to another frequency and back resumed decode 0.27 s after the request.
+- **PPM calibration** now searches around the control channel tuned now, not the boot one
+  (after a site switch it looked around the old site's control channel). Found by the
+  2026-09-28 code review.
+
+---
+
 ## [2026-09-28] Receive window planned per site, auto recentre, Jacksonville (070)
 
 **Branch:** fishball-p25

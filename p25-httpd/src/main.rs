@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-28-coverage-070";
+pub const BUILD_TAG: &str = "2026-09-28-coverage-070b";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -369,7 +369,7 @@ async fn main() -> anyhow::Result<()> {
     let mut boot_plan_lo: Option<i64> = None;
     if let Ok(site) = services::sites::load_site(&lo_plans.site()) {
         let chans = services::lo_plan::channels(&site.traffic_freqs_hz, &lo_plans.get().grants);
-        let presets = app::recentre_task::plan_presets();
+        let presets = app::recentre_task::plan_presets(lo_plans.get().min_preset.as_deref());
         if let Some(p) = services::lo_plan::plan(site.control_freq_hz, &chans, &presets) {
             tracing::info!(
                 "boot tuning from site {}: CC {} Hz, preset {} LO {} Hz (channel weight {:.0}/{:.0}); CLI had CC {} preset {} LO {}",

@@ -113,6 +113,18 @@ fn control_channel_always_inside() {
 }
 
 #[test]
+fn a_minimum_preset_keeps_the_window_wide() {
+    // Duval fits 8M; with "12M" as the narrowest it gets 12M, centred.
+    let ch = channels(&duval(), &BTreeMap::new());
+    let p = plan(DUVAL_CC, &ch, &at_least(&presets(), Some("12M"))).unwrap();
+    assert_eq!(p.preset, "12M");
+    assert!(covers(p.lo_hz, DUVAL_LOW, 12_000_000) && covers(p.lo_hz, DUVAL_HIGH, 12_000_000));
+    assert_eq!(at_least(&presets(), None).len(), 3);
+    assert_eq!(at_least(&presets(), Some("nope")).len(), 3);
+    assert_eq!(at_least(&presets(), Some("16m")), vec![("16M", 16_000_000)]);
+}
+
+#[test]
 fn moving_needs_a_real_gain() {
     assert!(!worth_moving(27.0, 27.0, 28.0));
     assert!(worth_moving(27.0, 28.0, 28.0), "everything covered");

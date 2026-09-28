@@ -32,12 +32,14 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// The presets the planner may choose, as (name, sample rate).
-pub fn plan_presets() -> Vec<(&'static str, u32)> {
-    lo_plan::PLAN_PRESETS
+/// The presets the planner may choose, as (name, sample rate), none
+/// narrower than the site's `min_preset`.
+pub fn plan_presets(min_preset: Option<&str>) -> Vec<(&'static str, u32)> {
+    let all: Vec<(&'static str, u32)> = lo_plan::PLAN_PRESETS
         .iter()
         .filter_map(|n| ddc_presets::find_preset(n).map(|p| (p.name, p.sample_rate_hz)))
-        .collect()
+        .collect();
+    lo_plan::at_least(&all, min_preset)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,6 +61,8 @@ pub struct WindowView {
     pub site: String,
     pub auto: bool,
     pub locked: bool,
+    /// Narrowest preset the planner may pick here (None = any).
+    pub min_preset: Option<String>,
     pub preset: String,
     pub sample_rate_hz: u32,
     /// LO as the DDC sees it (crystal trim removed).
@@ -88,13 +92,17 @@ pub async fn window_view(state: &AppState) -> Option<WindowView> {
     let chans = lo_plan::channels(&site.traffic_freqs_hz, &plan.grants);
     let covered_weight: f64 = chans.iter().filter(|c| lo_plan::covers(lo, c.freq_hz, sr)).map(|c| c.weight).sum();
     let total_weight: f64 = chans.iter().map(|c| c.weight).sum();
-    let best = lo_plan::plan(cc, &chans, &plan_presets());
-    let better = best.as_ref().is_some_and(|b| lo_plan::worth_moving(covered_weight, b.covered_weight, total_weight));
+    let best = lo_plan::plan(cc, &chans, &plan_presets(plan.min_preset.as_deref()));
+    // A window narrower than the site's minimum is worth widening too.
+    let too_narrow = best.as_ref().is_some_and(|b| sr < b.sample_rate_hz && plan.min_preset.is_some());
+    let better = too_narrow
+        || best.as_ref().is_some_and(|b| lo_plan::worth_moving(covered_weight, b.covered_weight, total_weight));
     let half = lo_plan::usable_half_hz(sr);
     Some(WindowView {
         site: site.name.clone(),
         auto: plan.auto,
         locked: state.center_locked.load(Ordering::Relaxed),
+        min_preset: plan.min_preset.clone(),
         preset: preset.to_string(),
         sample_rate_hz: sr,
         lo_hz: lo,

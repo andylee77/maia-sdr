@@ -153,7 +153,8 @@ pub async fn apply_preset(state: &AppState, mut body: PresetBody) -> (StatusCode
     let plan_shift = state.current_lo_shift_hz.load(Ordering::Relaxed);
     if body.preset == "auto" {
         let best = site_channels.as_ref().and_then(|ch| {
-            lo_plan::plan(plan_cc, ch, &crate::app::recentre_task::plan_presets())
+            let min = state.lo_plans.get().min_preset;
+            lo_plan::plan(plan_cc, ch, &crate::app::recentre_task::plan_presets(min.as_deref()))
         });
         let Some(best) = best else {
             return (StatusCode::CONFLICT, serde_json::json!({

@@ -153,7 +153,8 @@ pub async fn run_calibration(
     let rx_lo = state.current_rx_lo.load(Ordering::Relaxed) as f64;
     let sample_rate = state.current_sample_rate_hz.load(
         Ordering::Relaxed) as f64;
-    let control_freq = state.boot_control_freq as f64;
+    // Change 070: the control channel tuned now (a site switch moves it).
+    let control_freq = state.current_control_freq.load(Ordering::Relaxed) as f64;
     if rx_lo <= 0.0 || sample_rate <= 0.0 {
         return Err(anyhow!(
             "radio not tuned yet (rx_lo={rx_lo} sample_rate={sample_rate})"));
@@ -293,7 +294,7 @@ pub async fn run_calibration(
             lo_shift_hz:      hz_int,
             lo_ppm:           final_lo_ppm,
             rx_lo_hz:         rx_lo as i64,
-            control_freq_hz:  state.boot_control_freq,
+            control_freq_hz:  state.current_control_freq.load(Ordering::Relaxed),
             unix_secs,
             method:           "auto_stage_a_b".to_string(),
         };
@@ -828,7 +829,7 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
                     lo_shift_hz:     new_shift.round() as i64,
                     lo_ppm:          new_ppm,
                     rx_lo_hz:        rx_lo as i64,
-                    control_freq_hz: state.boot_control_freq,
+                    control_freq_hz: state.current_control_freq.load(Ordering::Relaxed),
                     unix_secs,
                     method:          "tracker".to_string(),
                 };
@@ -866,7 +867,7 @@ async fn reset_shift_to_zero(state: &Arc<AppState>) {
             lo_shift_hz:     0,
             lo_ppm:          0.0,
             rx_lo_hz:        rx_lo as i64,
-            control_freq_hz: state.boot_control_freq,
+            control_freq_hz: state.current_control_freq.load(Ordering::Relaxed),
             unix_secs,
             method:          "sync_lost_reset".to_string(),
         };

@@ -29,17 +29,22 @@ export function coverageCard() {
   const missed = h('p', { class: 'card-note' });
   const best = h('p', { class: 'card-note' });
   const recentre = h('button', { class: 'btn', type: 'button', text: 'Recentre' });
-  const auto = switchInput('Automatically when idle', true, on => setAuto(on));
+  const auto = switchInput('Automatically when idle', true, on => setPlan({ auto: on }));
+  // Narrowest window the planner may pick for this site.
+  const minSel = h('select', { class: 'input', 'aria-label': 'Narrowest window' },
+    h('option', { value: '', text: 'Narrowest window: fit' }),
+    ...['8M', '12M', '16M'].map(p => h('option', { value: p, text: 'Narrowest window: ' + p })));
+  minSel.addEventListener('change', () => setPlan({ min_preset: minSel.value || null }));
   c.body.append(kv.el, chart, missed, best,
-    h('div', { class: 'row', style: { marginTop: '10px' } }, recentre, h('div', { class: 'spacer' }), auto.el));
+    h('div', { class: 'row', style: { marginTop: '10px', flexWrap: 'wrap', gap: '8px' } }, recentre, minSel, h('div', { class: 'spacer' }), auto.el));
 
   let plan = null;
   let busy = false;
 
-  async function setAuto(on) {
+  async function setPlan(patch) {
     busy = true;
     try {
-      const r = await api.putSitePlan({ auto: on });
+      const r = await api.putSitePlan(patch);
       if (r.save_error) toast('Applied, but NOT saved: ' + r.save_error, true);
     } catch (e) {
       toast('Not changed: ' + e.message, true);
@@ -114,6 +119,7 @@ export function coverageCard() {
     }
     recentre.disabled = !(p.best && p.better) || p.locked;
     if (!busy && document.activeElement !== auto.input) auto.input.checked = !!p.auto;
+    if (!busy && document.activeElement !== minSel) minSel.value = p.min_preset || '';
     c.el.hidden = false;
   }
 

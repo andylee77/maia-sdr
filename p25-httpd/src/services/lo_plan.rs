@@ -162,6 +162,15 @@ pub fn plan(cc_hz: u64, chans: &[Channel], presets: &[(&str, u32)]) -> Option<Lo
     best
 }
 
+/// `presets` (name, sample rate) without those narrower than `min`
+/// (a name among them; unknown or None = all).
+pub fn at_least<'a>(presets: &[(&'a str, u32)], min: Option<&str>) -> Vec<(&'a str, u32)> {
+    let floor = min
+        .and_then(|m| presets.iter().find(|(n, _)| n.eq_ignore_ascii_case(m)))
+        .map_or(0, |(_, sr)| *sr);
+    presets.iter().copied().filter(|(_, sr)| *sr >= floor).collect()
+}
+
 /// Is moving from a window covering `current` weight to one covering
 /// `planned` worth a retune? Needs a real gain: all channels where some
 /// were missed, or 5 % more of the weight.
@@ -182,11 +191,14 @@ pub struct SitePlan {
     /// Recentre automatically when idle.
     pub auto: bool,
     pub last_recentre_unix_ms: u64,
+    /// Narrowest preset the planner may pick here (e.g. "12M" keeps
+    /// room around the channels in use); None = narrowest that fits.
+    pub min_preset: Option<String>,
 }
 
 impl Default for SitePlan {
     fn default() -> Self {
-        SitePlan { grants: BTreeMap::new(), auto: true, last_recentre_unix_ms: 0 }
+        SitePlan { grants: BTreeMap::new(), auto: true, last_recentre_unix_ms: 0, min_preset: None }
     }
 }
 
