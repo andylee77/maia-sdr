@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-28-profiles-069";
+pub const BUILD_TAG: &str = "2026-09-28-coverage-070";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -345,7 +345,7 @@ async fn main() -> anyhow::Result<()> {
         .with_level(true)
         .init();
 
-    let args = Args::parse();
+    let mut args = Args::parse();
 
     // Require --control_freq explicitly. No built-in default — the
     // right value is site-specific and a wrong default would
@@ -356,6 +356,31 @@ async fn main() -> anyhow::Result<()> {
              for the target site; e.g. --control_freq 851012500)"
         )
     })?;
+
+    // Change 070: start on the active site's control channel and the
+    // planner's window for its channels (`services::lo_plan`); the CLI
+    // values are the fallback when no site loads. The LO gets the
+    // crystal trim once it is known (below).
+    let lo_plans = Arc::new(services::lo_plan::PlanStore::new(
+        services::lo_plan::PlanStore::default_dir(),
+        &services::sites::read_active_site_name(),
+    ));
+    let mut control_freq = control_freq;
+    let mut boot_plan_lo: Option<i64> = None;
+    if let Ok(site) = services::sites::load_site(&lo_plans.site()) {
+        let chans = services::lo_plan::channels(&site.traffic_freqs_hz, &lo_plans.get().grants);
+        let presets = app::recentre_task::plan_presets();
+        if let Some(p) = services::lo_plan::plan(site.control_freq_hz, &chans, &presets) {
+            tracing::info!(
+                "boot tuning from site {}: CC {} Hz, preset {} LO {} Hz (channel weight {:.0}/{:.0}); CLI had CC {} preset {} LO {}",
+                site.name, site.control_freq_hz, p.preset, p.lo_hz, p.covered_weight, p.total_weight,
+                control_freq, args.preset, args.rx_lo,
+            );
+            control_freq = site.control_freq_hz;
+            args.preset = p.preset.clone();
+            boot_plan_lo = Some(p.lo_hz);
+        }
+    }
 
     let chains_arg: hardware::traffic_lane::ChainsArg = args.traffic_chains.parse()
         .map_err(|e: String| anyhow::anyhow!("--traffic-chains: {e}"))?;
@@ -432,6 +457,10 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if let Some(lo) = boot_plan_lo {
+        args.rx_lo = (lo + nco_lo_shift_hz.round() as i64) as u64;
+    }
+
     tracing::info!(
         "Fishball P25 starting: RX LO={} Hz, control_freq={} Hz, \
          lo_ppm={:+} ({:+.1} Hz NCO shift, src={})",
@@ -483,6 +512,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("ui settings: site profiles not adopted: {e}");
     }
     let boot_settings = ui_settings.snapshot();
+
     let boot_aliases: std::collections::HashMap<u16, String> = boot_settings
         .tg_aliases
         .iter()
@@ -1585,6 +1615,7 @@ async fn main() -> anyhow::Result<()> {
             traffic_follower_enabled.clone(),
             monitor_list.clone(),
             ui_settings.routing.clone(),
+            lo_plans.clone(),
             event_log.clone(),
             grant_event_rx,
             traffic_lock_freq.clone(),
@@ -1885,6 +1916,7 @@ async fn main() -> anyhow::Result<()> {
         converged_seeds: converged_seeds_shared.clone(),
         dibit_delivery: dibit_delivery.clone(),
         ui_settings: ui_settings.clone(),
+        lo_plans: lo_plans.clone(),
         audio_ws_listeners: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         ui_cc_rate: std::sync::Mutex::new(app::ui_state::RateWindow::new()),
         rec_storage: rec_storage.clone(),
@@ -1976,6 +2008,9 @@ async fn main() -> anyhow::Result<()> {
     // Traffic LSM PLL watchdog (resets a pinned / stale chain).
     #[cfg(target_os = "linux")]
     app::traffic_pll_watchdog::spawn(state.clone());
+
+    // Change 070: move the receive window onto the site's channels.
+    app::recentre_task::spawn_recentre_task(state.clone());
 
     // Start HTTP (and optionally HTTPS). HTTPS unlocks AudioWorklet
     // on the dashboard — browsers only expose it in secure contexts,

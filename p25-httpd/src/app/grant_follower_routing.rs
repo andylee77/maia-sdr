@@ -115,6 +115,8 @@ pub fn spawn_grant_follower(
     follower_monitor: Arc<RwLock<MonitorList>>,
     // Change 063: talkgroup groups -> speakers, priority pre-emption.
     follower_routing: Arc<crate::services::ui_settings::RoutingPolicy>,
+    // Change 070: grants per frequency for the window planner.
+    follower_plans: Arc<crate::services::lo_plan::PlanStore>,
     follower_event_log: Arc<EventLog>,
     mut grant_event_rx: Receiver<p25::events::P25Event>,
     follower_lock_freq: Arc<AtomicBool>,
@@ -390,6 +392,7 @@ pub fn spawn_grant_follower(
                     // frequency map (/api/grant_map), followed or not.
                     if let Some(freq) = g.frequency_hz {
                         site.mgr.lock().await.tally_grant(g.talkgroup.0, freq, g.encrypted);
+                        follower_plans.note_grant(freq);
                     }
 
                     // Change 068: the ignore list wins over the monitor
@@ -441,6 +444,32 @@ pub fn spawn_grant_follower(
                         send_cc_boundary(&g, Some("speaker_off"), None);
                         continue;
                     };
+
+                    // Change 070: a channel outside the usable receive
+                    // window cannot be decoded (it would alias). Not
+                    // followed; the planner counts it (above) and the
+                    // recentre task moves the window when that pays.
+                    if let Some(freq) = g.frequency_hz {
+                        let (offset_hz, sample_rate_now) = nco_offset(freq);
+                        let half = crate::services::lo_plan::usable_half_hz(sample_rate_now as u32) as f64;
+                        if offset_hz.abs() > half {
+                            follower_event_log.push(
+                                LogCategory::Traffic,
+                                format!(
+                                    "reject: TG={} on {:.5} MHz, outside the receive window ({:+.0} kHz of +-{:.0})",
+                                    g.talkgroup.0, freq as f64 / 1e6, offset_hz / 1e3, half / 1e3,
+                                ),
+                                serde_json::json!({
+                                    "tg":        g.talkgroup.0,
+                                    "freq_hz":   freq,
+                                    "offset_hz": offset_hz,
+                                    "reason":    "out_of_band",
+                                }),
+                            );
+                            send_cc_boundary(&g, Some("out_of_band"), None);
+                            continue;
+                        }
+                    }
 
                     // Channel-reuse detection, on every chain: the grant's
                     // channel (or frequency: 2026-04-25 Fix B, different

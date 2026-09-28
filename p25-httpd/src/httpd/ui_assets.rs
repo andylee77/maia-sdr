@@ -59,6 +59,7 @@ pub const UI_ASSETS: &[UiAsset] = ui_assets![
     "js/components/speakers_panel.js",
     "js/components/ignore_list.js",
     "js/components/profile_picker.js",
+    "js/components/coverage_card.js",
     "js/components/tg_groups_editor.js",
 ];
 

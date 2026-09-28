@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Where the operator-loaded CC sits inside the IF window. Drives
-/// the LO-snap policy in `httpd::api::tuning::post_preset`.
+/// the LO-snap policy in `httpd::api::tuning::post_preset`. Change
+/// 070: only for a site with no known channels; otherwise the window
+/// planner (`services::lo_plan`) places the LO.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CcPosition {
     /// CC sits near the top of the IF window. Use when traffic

@@ -31,10 +31,16 @@ p25-httpd/sites/
 `alt_control_freqs_hz` are secondary CCs the system has historically
 used (per SDRTrunk's `order=1` channels for that site). The follower
 can rotate to one if the primary goes silent.
-`traffic_freqs_hz` is the *known* downlink channel set, used by the LO
-snap to pick the optimal LO position for the active preset (e.g. for
-Clay all traffic is below the CC, so `cc_position: "Top"` puts the CC
-near the top of the IF window).
+`traffic_freqs_hz` is the *known* downlink channel set. Change 070: the
+window planner (`services::lo_plan`) places the LO, and with preset
+`auto` picks the preset, so the window holds the CC and as many of these
+channels as possible, weighted by the grants seen per frequency (saved in
+`/mnt/jffs2/p25-plans/<name>.json`). Clay (8.5 MHz span) gets 12M,
+Duval (6.0 MHz span) 8M centred on its traffic. `cc_position` is only used
+for a site with no known channels (e.g. `"Top"` puts the CC near the top
+of the IF window). At start-up the radio tunes to the active site's CC
+and planned window; the init script's `--control-freq` / `--rx-lo` /
+`--preset` are the fallback when no site loads.
 `iden_bands` is empty in seed files — populated at runtime from
 IDEN_UPDATE TSBKs. Same shape as `protocol::p25::tsbk::FrequencyBand`.
 

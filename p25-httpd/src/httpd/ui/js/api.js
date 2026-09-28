@@ -86,6 +86,10 @@ export const api = {
   tune: body => post('/api/tune', body),
   applyPreset: body => post('/api/preset', body),
   setSite: name => post('/api/site' + qs({ name })),
+  // Change 070: the receive window against the site's channels.
+  sitePlan: () => get('/api/site/plan'),
+  putSitePlan: body => put('/api/site/plan', body),
+  recentre: () => post('/api/site/recentre'),
   ppmCalibrate: () => post('/api/ppm_calibrate'),
   ppmAuto: (enabled, anchor) => post('/api/ppm/auto' + qs({ enabled: enabled ? 1 : 0, anchor })),
   spectrumWide: () => get('/api/spectrum_wide', 8000),

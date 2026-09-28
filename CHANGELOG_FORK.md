@@ -5,6 +5,64 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-28] Receive window planned per site, auto recentre, Jacksonville (070)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-28-coverage-070`
+**Bake required:** NO (p25-httpd and web UI).
+
+- **Window planner** (`services::lo_plan`): places the LO, and with preset `auto` picks the
+  preset, so the window holds the control channel and as many of the site's channels as
+  possible.
+  - Channels are the site file's list plus every frequency granted on this site, weighted by
+    grants.
+  - After 1000 grants the plan counts as learned: a listed channel never granted weighs nothing.
+    Clay's 852.4385 MHz entry (SDRTrunk "LCN 6", off the 6.25 kHz raster, no grants in 228 so
+    far) is the only reason Clay needs 12M today.
+  - Usable window ±0.45 × sample rate; no channel within 15 kHz of the LO (DC notch).
+  - Grant counts and the auto switch persist per site in `/mnt/jffs2/p25-plans/<site>.json`.
+- **Auto recentre** (`app::recentre_task`): when a better window exists (all channels, or 5 %
+  more of the traffic), the site's auto switch is on, the LO is not locked, both chains are
+  idle, 2 min after start and 10 min after the last move. Unit A moved itself from 8M
+  LO 858.10 to 12M LO 856.70 two minutes after start (event log "recentre (auto)").
+- **Not followed "outside the window"** (`out_of_band`): a grant beyond the usable window is not
+  followed (it would alias) and is counted for the planner.
+- **Radio → Coverage card:** the window, every channel drawn by use (red outside, grey never
+  granted), what lies outside, the better window (dashed), Recentre, and Automatically when idle.
+- **Site switch** plans the preset and LO (`preset: auto`), and the control decoder forgets
+  the old system (`new_system`: NAC lock, identity, IDEN bands; also on `/api/tune` to another
+  frequency). Before, the NAC tracker stayed locked to Clay's 0x8A1 and dropped every
+  Jacksonville frame as a NAC mismatch.
+- **Boot** tunes to the active site's control channel and planned window. The init script's
+  `--control-freq` / `--rx-lo` / `--preset` are only the fallback; a radio left on Jacksonville
+  used to boot on Clay's control channel.
+- API: `GET/PUT /api/site/plan`, `POST /api/site/recentre`, `/api/preset` `auto`.
+- Duval site file: identity observed on air (system 0x3BD, RFSS 1, site 2).
+
+Live on unit A (external antenna, 2026-09-28):
+
+| Window | CC offset | TSBK/s | CRC | Calls followed | IMBE | Vocoder errors |
+|--------|-----------|--------|-----|----------------|------|----------------|
+| Clay 8M, LO 858.10 | +2.86 MHz | 39.4 | 98.8 % | 20 | 2016 | 79 |
+| Clay 12M, LO 858.10 | +2.86 MHz | 39.4 | 98.9 % | 15 | 1440 | 64 |
+| Clay 16M, LO 858.10 | +2.86 MHz | 39.5 | 99.1 % | 32 | 4491 | 132 |
+| Clay 8M, LO 857.46 | +3.50 MHz | 39.5 | 99.1 % | 22 | 3789 | 0 |
+| Clay 16M, LO 855.96 | +5.00 MHz | 39.6 | 99.3 % | 34 | 4635 | 39 |
+| Clay 16M, LO 854.46 | +6.50 MHz | 39.5 | 99.0 % | 30 | 4662 | 50 |
+| Clay 16M, LO 853.46 | +7.50 MHz | 39.4 | 99.0 % | 30 | 4104 | 0 |
+| Clay 12M planned, LO 856.70 (5 min) | +4.26 MHz | 39.5 | 99.1 % | 32 | 4572 | 71 |
+| Duval 8M planned, LO 857.98 (8 min) | −2.49 MHz | 35.3 | 91.3 % | 134 | 23544 | 1486 |
+
+Each Clay row is 3 min. Jacksonville is far from the shop (its control channel is ~23 dB
+below Clay's). All 28 Duval channels sit inside the 8M window, and voice decoded on every
+frequency granted, from 856.21 to 860.94 MHz (window edge +2.96 MHz). The two frequencies
+without a followed call had only encrypted or chain-busy grants.
+
+Tests: p25-httpd 292 (planner: Duval fits 8M, Clay needs 12M, busy channels win, the CC stays
+inside, learned plan, persistence; `new_system`).
+
+---
+
 ## [2026-09-28] Profiles per site: groups, speakers, monitor and ignore lists (069)
 
 **Branch:** fishball-p25

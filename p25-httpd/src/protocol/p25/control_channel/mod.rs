@@ -683,6 +683,17 @@ impl ControlChannelDecoder {
         self.nac_tracker.reset();
     }
 
+    /// Change 070: the control channel moved (site switch, retune):
+    /// forget the old system. The NAC lock would otherwise drop every
+    /// frame of a different system as a NAC mismatch; identity, site
+    /// time and the IDEN band table are learned again from the new
+    /// channel's broadcasts within seconds.
+    pub fn new_system(&mut self) {
+        self.reset_framer_state();
+        self.system = SystemIdentity::default();
+        self.bands.clear();
+    }
+
     /// Clear ALL diagnostic counters and histograms (the
     /// `/api/decoder_reset` backend). Preserves long-lived radio
     /// state (system identity, frequency band table, active grants,

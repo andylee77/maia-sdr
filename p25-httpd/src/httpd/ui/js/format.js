@@ -160,6 +160,7 @@ export const NOT_FOLLOWED = {
   monitor_list: 'not on monitor list',
   ignored: 'ignored',
   speaker_off: 'not on a speaker',
+  out_of_band: 'outside the window',
   traffic_lock: 'chain locked (diagnostic)',
   update_no_lock: 'update without grant',
 };

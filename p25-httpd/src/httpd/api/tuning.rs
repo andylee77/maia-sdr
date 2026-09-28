@@ -106,7 +106,9 @@ pub async fn get_presets(
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PresetBody {
-    /// Preset name (e.g. "8M"). Must exist in `PRESETS`.
+    /// Preset name (e.g. "8M"). Must exist in `PRESETS`. Change 070:
+    /// "auto" = the preset and LO the window planner picks for the
+    /// active site (`services::lo_plan`).
     pub preset: String,
     /// Optional center (RX LO) override in Hz. If omitted, the live
     /// RX LO is preserved across the preset change.
@@ -132,18 +134,48 @@ pub async fn post_preset(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PresetBody>,
 ) -> impl IntoResponse {
+    let (status, reply) = apply_preset(&state, body).await;
+    (status, Json(reply))
+}
+
+/// Change 070: the body of `POST /api/preset`, shared with the site
+/// switch and the recentre task (`app::recentre_task`).
+#[cfg(target_os = "linux")]
+pub async fn apply_preset(state: &AppState, mut body: PresetBody) -> (StatusCode, serde_json::Value) {
     use std::sync::atomic::Ordering;
+    use crate::services::lo_plan;
+
+    // Change 070: the site's channels (listed + granted) for the planner.
+    let site_channels = state.active_site.read().await.as_ref().map(|s| {
+        lo_plan::channels(&s.traffic_freqs_hz, &state.lo_plans.get().grants)
+    });
+    let plan_cc = state.current_control_freq.load(Ordering::Relaxed);
+    let plan_shift = state.current_lo_shift_hz.load(Ordering::Relaxed);
+    if body.preset == "auto" {
+        let best = site_channels.as_ref().and_then(|ch| {
+            lo_plan::plan(plan_cc, ch, &crate::app::recentre_task::plan_presets())
+        });
+        let Some(best) = best else {
+            return (StatusCode::CONFLICT, serde_json::json!({
+                "ok": false, "error": "preset auto: no active site to plan for",
+            }));
+        };
+        body.preset = best.preset.clone();
+        if body.center_freq_hz.is_none() {
+            body.center_freq_hz = Some((best.lo_hz + plan_shift) as u64);
+        }
+    }
 
     let Some(preset) = ddc_presets::find_preset(&body.preset) else {
         let names: Vec<&str> = ddc_presets::PRESETS
             .iter().map(|p| p.name).collect();
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+        return (StatusCode::BAD_REQUEST, serde_json::json!({
             "ok":    false,
             "error": format!(
-                "unknown preset '{}'; known: {}",
+                "unknown preset '{}'; known: {}, auto",
                 body.preset, names.join(", "),
             ),
-        })));
+        }));
     };
     let preset_idx = ddc_presets::PRESETS
         .iter().position(|p| p.name == preset.name).unwrap();
@@ -171,8 +203,20 @@ pub async fn post_preset(
     // Margin between CC and IF window edge (Top / Bottom only).
     // 250 kHz keeps the CC clear of the AD9361 transition band.
     const LO_SNAP_MARGIN_HZ: f64 = 250_000.0;
+    // Change 070: a site with known channels gets the planner's window
+    // for this preset (control channel inside, most channels covered).
+    let planned = site_channels
+        .filter(|ch| !ch.is_empty())
+        .map(|ch| lo_plan::place(plan_cc, &ch, preset.sample_rate_hz));
     let new_rx_lo = if let Some(req_lo) = body.center_freq_hz {
         req_lo
+    } else if let Some(p) = planned {
+        tracing::info!(
+            target: "p25_preset",
+            "LO planned for {} preset: {} (channel weight {:.0})",
+            preset.name, p.lo_hz + plan_shift, p.covered_weight,
+        );
+        (p.lo_hz + plan_shift) as u64
     } else {
         // Compute the snap target for this site's cc_position. NCO
         // sees `(cc - lo)`; we want it to land at +offset where:
@@ -227,13 +271,13 @@ pub async fn post_preset(
             crate::hardware::iio::GainMode::FastAttack),
         Some("hybrid") => Some(crate::hardware::iio::GainMode::Hybrid),
         Some(other) => {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            return (StatusCode::BAD_REQUEST, serde_json::json!({
                 "ok":    false,
                 "error": format!(
                     "unknown gain_mode '{other}'; expected \
                      manual|slow_attack|fast_attack|hybrid"
                 ),
-            })));
+            }));
         }
     };
 
@@ -347,7 +391,7 @@ pub async fn post_preset(
     } else {
         StatusCode::INTERNAL_SERVER_ERROR
     };
-    (status, Json(serde_json::json!({
+    (status, serde_json::json!({
         "ok":       errors.is_empty(),
         "applied":  applied,
         "errors":   errors,
@@ -360,7 +404,7 @@ pub async fn post_preset(
             "hardwaregain_db": readback_gain,
             "rssi_db":         readback_rssi,
         },
-    })))
+    }))
 }
 
 
@@ -540,8 +584,12 @@ pub async fn post_tune(
     // dashboard can show what we're actually tuned to. Only commit
     // on DDC success.
     if errors.is_empty() {
-        state.current_control_freq.store(
-            radio as u64, Ordering::Relaxed);
+        let prev = state.current_control_freq.swap(radio as u64, Ordering::Relaxed);
+        // Change 070: another control channel may be another system.
+        if prev != radio as u64 {
+            state.decoder.write().await.new_system();
+            state.lsm_decoder.write().await.new_system();
+        }
     }
 
     let status = if errors.is_empty() {

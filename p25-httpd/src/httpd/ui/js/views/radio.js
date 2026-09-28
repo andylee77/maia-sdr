@@ -8,6 +8,7 @@ import { kick } from '../store.js';
 import { mhz, khz, ago, DASH } from '../format.js';
 import { kvTable } from '../components/kv_table.js';
 import { spectrumCard } from '../components/spectrum.js';
+import { coverageCard } from '../components/coverage_card.js';
 
 const POLL_MS = 2000;
 const GAINS = [0, 10, 20, 30, 40, 50, 60, 70, 76];
@@ -61,7 +62,13 @@ function tuningCard() {
     try {
       const r = await api.setSite(site.value);
       if (!r.ok) throw new Error(r.error || 'rejected');
-      if (r.site && r.site.preset_default) await api.applyPreset({ preset: r.site.preset_default });
+      // Change 070: the planner picks the preset and LO for the site's
+      // channels (the site file's preset if it cannot).
+      try {
+        await api.applyPreset({ preset: 'auto' });
+      } catch {
+        if (r.site && r.site.preset_default) await api.applyPreset({ preset: r.site.preset_default });
+      }
       toast('Site switched'); kick(500);
     } catch (e) { toast('Site switch failed: ' + e.message, true); }
   });
@@ -198,8 +205,9 @@ export function mount(host) {
   const ppm = ppmCard();
   const mod = modulationCard();
   const spec = spectrumCard();
+  const coverage = coverageCard();
   host.append(
-    h('div', { class: 'grid-2' }, tuning.el, h('div', { class: 'stack' }, gain.el, ppm.el, mod.el)),
+    h('div', { class: 'grid-2' }, h('div', { class: 'stack' }, tuning.el, coverage.el), h('div', { class: 'stack' }, gain.el, ppm.el, mod.el)),
     spec.el,
   );
   let clockValid = false;
@@ -213,8 +221,10 @@ export function mount(host) {
   }
   poll();
   timer = setInterval(poll, POLL_MS);
+  // Change 070: grant counts change slowly.
+  const covTimer = setInterval(() => { if (!document.hidden) coverage.load(); }, 10000);
   return {
     update(kind, store) { if (kind === 'state' && store.state) clockValid = store.state.clock_valid; },
-    unmount() { clearInterval(timer); spec.unmount(); },
+    unmount() { clearInterval(timer); clearInterval(covTimer); spec.unmount(); },
   };
 }

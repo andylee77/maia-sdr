@@ -26,6 +26,8 @@ pub mod traffic_pll_watchdog;
 pub mod imbe_forwarder;
 /// Change 066: which traffic chain follows a grant.
 pub mod lane_policy;
+/// Change 070: keeps the receive window on the site's channels.
+pub mod recentre_task;
 pub mod seed_snapshot;
 #[cfg(target_os = "linux")]
 pub mod sw_demod_task;

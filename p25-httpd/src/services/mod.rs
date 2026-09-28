@@ -3,6 +3,7 @@
 //! FFT spectrum snapshot, per-site baselines, persisted web-UI settings.
 
 pub mod event_log;
+pub mod lo_plan;
 pub mod monitor;
 pub mod ntp;
 /// Change 067: site time from the control channel.

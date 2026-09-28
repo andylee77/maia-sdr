@@ -116,7 +116,12 @@ completes); the call list shows them as `not_recorded`; the recorder log says
 | Path | Method | Returns | Purpose |
 |---|---|---|---|
 | `/api/presets` | GET | JSON | List DDC presets: `presets[]` with `name`, `sample_rate_hz`, `rf_bandwidth_hz`, `decim[3]`, `nco_half_window_hz`, `rejection_25k_db`; plus `current`, `default`, `center_locked` |
-| `/api/preset` | POST | JSON | Apply a preset. Body `{preset, center_freq_hz?, gain_mode?, gain_db?}`. Slow path: AD9361 resettle + DDC coefficient reload |
+| `/api/preset` | POST | JSON | Apply a preset. Body `{preset, center_freq_hz?, gain_mode?, gain_db?}`. Slow path: AD9361 resettle + DDC coefficient reload. Change 070: without `center_freq_hz` the LO goes where the window planner puts it for this preset (control channel inside, most channel weight covered, the covered set centred, no channel within 15 kHz of the LO); `preset: "auto"` also lets the planner pick the preset (narrowest of 8M / 12M / 16M covering every channel). 409 for "auto" without an active site |
+| `/api/sites` | GET | JSON | `{ok, active, sites: [{name, label, active}]}` |
+| `/api/site` | POST | JSON | `?name=<site>[&no_apply=true]`: make the site active (persisted), set its control channel, change 069: load its names and profile, change 070: count grants for it. The Radio page then posts `/api/preset` `{"preset": "auto"}` |
+| `/api/site/plan` | GET | JSON | Change 070: `{ok, plan: {site, auto, locked, preset, sample_rate_hz, lo_hz (as the DDC sees it: crystal trim removed), low_hz, high_hz (usable window: ±0.45 × sample rate), control_hz, channels: [{freq_hz, grants, listed (in the site file), covered}], covered_weight, total_weight, best: {preset, sample_rate_hz, lo_hz, usable_half_hz, covered_weight, total_weight}, better (the best window is worth a move), last_recentre_unix_ms}}`. Channel weight: grants seen, at least 1 for a listed channel. 409 without an active site |
+| `/api/site/plan` | PUT | JSON | Change 070: `{"auto": bool}`: recentre automatically (saved per site in `/mnt/jffs2/p25-plans/<site>.json` with the grant counts; `P25_PLANS_DIR` overrides) |
+| `/api/site/recentre` | POST | JSON | Change 070: move to `plan.best` now (a preset apply; a call on the air is cut). The recentre task does the same by itself when `auto`, not locked, `better`, both chains idle, 2 min after start and 10 min after the last move |
 | `/api/tune` | POST | JSON | Scanner retune. Body `{radio_freq_hz, center_mode?}`. Auto recenters LO only when window exceeded; Lock returns 409 if outside window |
 | `/api/rx_gain` | GET, PUT | JSON | AD9361 RX gain + AGC mode. `?db=<-3..76>` sets manual hardwaregain; `?mode=manual\|slow_attack\|fast_attack\|hybrid` sets `gain_control_mode`. Both params can be combined; mode applied first. A successful change is saved in the UI settings (`radio.gain_mode` / `radio.manual_gain_db`, response `persisted`) and applied at the next start after `--hardwaregain` (change 060) |
 | `/api/modulation` | GET, PUT | JSON | Active modulation: `auto` / `c4fm` / `lsm`. Changes which control-chain decoder feeds the dashboard |
@@ -831,7 +836,7 @@ needs them is open.
 |---|---|---|
 | Header, Now (current call, site, recording) | `/api/ui/state` | 1 s (5 s when the tab is hidden) + `/ws/events` kick |
 | Now · Recent calls | `/api/ui/calls` | when `calls_rev` changes, else every 30 s |
-| Radio | `/api/stats`, `/api/ppm`, `/api/modulation` (2 s); `/api/presets`, `/api/sites` (once); `/api/spectrum_wide` or `/api/spectrum` (1 s); writes: `/api/tune`, `/api/preset`, `/api/site`, `/api/rx_gain`, `/api/modulation`, `/api/ppm/auto`, `/api/ppm_calibrate` | while open |
+| Radio | `/api/stats`, `/api/ppm`, `/api/modulation` (2 s); `/api/site/plan` (10 s, change 070); `/api/presets`, `/api/sites` (once); `/api/spectrum_wide` or `/api/spectrum` (1 s); writes: `/api/tune`, `/api/preset`, `/api/site`, `/api/site/plan`, `/api/site/recentre`, `/api/rx_gain`, `/api/modulation`, `/api/ppm/auto`, `/api/ppm_calibrate` | while open |
 | Diagnostics | `/api/pipeline`, `/api/dibit_delivery`, `/api/traffic`, `/api/sys_health` (2 s); `/api/log?tail=1` then `?since=` (2 s); `/api/endpoints` (once) | while open |
 | Settings | `/api/ui/settings` (on open and when `settings_rev` changes), `/api/grant_map`, `/api/encrypted_tgs`; writes: PUT `/api/ui/settings`, PUT `/api/encrypted_tgs`, POST `/api/set_time` | on demand |
 | Listen button | `/ws/audio` | while playing |

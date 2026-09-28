@@ -339,6 +339,9 @@ pub struct AppState {
     /// `/api/ui/settings`. Its `recording` policy is shared with the
     /// recorder task.
     pub ui_settings: Arc<crate::services::ui_settings::SettingsStore>,
+    /// Change 070: grants per frequency and the auto-recentre switch, per
+    /// site (`services::lo_plan`).
+    pub lo_plans: Arc<crate::services::lo_plan::PlanStore>,
     /// Change 056: browsers connected to `/ws/audio` (counted by the
     /// handler; `audio_tx.receiver_count()` also counts the recorder
     /// and the call lifecycle).
@@ -414,6 +417,9 @@ pub fn router(
         .route("/api/sites", get(api::sites::get_sites))
         .route("/api/sites/{name}", get(api::sites::get_site))
         .route("/api/site", post(api::sites::post_site))
+        // Change 070: the receive window against the site's channels.
+        .route("/api/site/plan", get(api::site_plan::get_site_plan).put(api::site_plan::put_site_plan))
+        .route("/api/site/recentre", post(api::site_plan::post_recentre))
         .route("/api/system", get(api::system::get_system))
         .route("/api/sys_health", get(api::system::get_sys_health))
         .route("/api/ps_cores", get(api::system::get_ps_cores))

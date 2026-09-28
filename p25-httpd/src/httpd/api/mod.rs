@@ -47,6 +47,8 @@ pub mod forensics;
 pub mod history;
 pub mod radio;
 pub mod sites;
+/// Change 070: receive-window coverage and recentring.
+pub mod site_plan;
 pub mod system;
 pub mod talkgroups;
 pub mod traffic;

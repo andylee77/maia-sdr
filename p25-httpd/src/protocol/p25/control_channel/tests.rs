@@ -351,3 +351,21 @@ fn test_single_block_tsbk_terminates_on_lb1() {
     // After TSBK1 with LB=1, we should be back in Hunting.
     assert!(matches!(decoder.state, DecoderState::Hunting));
 }
+
+/// Change 070: a site switch or retune forgets the old system, so the
+/// NAC lock no longer rejects the new channel's frames.
+#[test]
+fn new_system_drops_the_nac_lock_and_identity() {
+    let mut decoder = ControlChannelDecoder::new();
+    for _ in 0..5 {
+        decoder.nac_tracker.track(0x8A1);
+    }
+    decoder.system.nac = Some(Nac::new(0x8A1));
+    decoder.system.wacn = Some(FLORIDA_WACN);
+    assert_eq!(decoder.nac_tracker.dominant(), 0x8A1);
+    decoder.new_system();
+    assert_eq!(decoder.nac_tracker.dominant(), 0);
+    assert!(decoder.system.nac.is_none() && decoder.system.wacn.is_none());
+    assert!(decoder.bands.is_empty());
+    assert!(matches!(decoder.state, DecoderState::Hunting));
+}

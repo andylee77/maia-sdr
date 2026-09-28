@@ -124,6 +124,8 @@ pub async fn post_site(
     if let Err(e) = crate::httpd::api::ui::apply_settings_patch(&state, switch, "site_switch").await {
         tracing::warn!("site switch to '{}': settings not switched: {e}", site.name);
     }
+    // Change 070: grants are counted for the new site from now on.
+    state.lo_plans.set_site(&site.name);
 
     if let Err(e) = write_active_site_name(&q.name) {
         tracing::warn!(
@@ -135,9 +137,15 @@ pub async fn post_site(
 
     // Update operator-facing control freq so subsequent /api/preset
     // and /api/tune calls have the right anchor.
-    state
+    let prev_cc = state
         .current_control_freq
-        .store(site.control_freq_hz, std::sync::atomic::Ordering::Relaxed);
+        .swap(site.control_freq_hz, std::sync::atomic::Ordering::Relaxed);
+    // Change 070: a different control channel is (likely) a different
+    // system: drop the old NAC lock, identity and band table.
+    if prev_cc != site.control_freq_hz {
+        state.decoder.write().await.new_system();
+        state.lsm_decoder.write().await.new_system();
+    }
 
     tracing::info!(
         target: "p25_site",
