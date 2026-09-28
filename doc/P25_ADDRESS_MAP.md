@@ -32,6 +32,7 @@ must be aligned to its **total ring size** (this is asserted by
 | `iq_dma`                   | `0x1900_0000` | 8 | 32 KB | 256 KB | ~250 KB/s | **Phase 6C:** control-channel post-DDC IQ. 62.5 kSPS, two samples per 64-bit word. Feeds `/api/spectrum?chain=control` (narrowband). |
 | `lsm_dibit_dma`            | `0x1A00_0000` | 8 | 4 KB  | 32 KB  | ~1.28 KB/s | **Phase 6E.9:** control-channel LSM dibits. Primary decoder input. |
 | `traffic_lsm_dibit_dma`    | `0x1B00_0000` | 8 | 4 KB  | 32 KB  | ~1.28 KB/s | **Phase 7A.2:** traffic-channel LSM dibits. Primary voice-chain decoder input. |
+| `traffic2_lsm_dibit_dma`   | `0x1D00_0000` | 8 | 4 KB  | 32 KB  | ~1.28 KB/s | **Core 0.3.0 (doc/changes/064):** second traffic chain's LSM dibits (second simultaneous voice call). DT node `p25-traffic2-lsm-dibit`. |
 | `traffic_iq_dma`           | `0x1C00_0000` | 8 | 32 KB | 256 KB | ~250 KB/s | **2026-04-16:** traffic-chain post-DDC IQ. Feeds `/api/spectrum?chain=traffic` (narrowband). |
 | `pre_diff_iq_dma`          | `0x1F00_0000` | 8 | 32 KB | 256 KB | ~38 KB/s  | **Phase 10.8 2026-04-23:** control-chain **pre-diff post-PLL** IQ. Tapped from two new `LsmPllRotate` instances inside `LsmDemodLoop` that rotate the AGC-interpolated samples directly (no diff-demod). Interleaved mid + cur at 9.6 kSPS, Q1.15 signed 16. Feeds `/ws/iq?source=pre_diff`, `/api/deviation`, `/api/distribution`, and the Plots-tab constellation + eye. Phase noise is ~sqrt(2)× smaller than a post-diff tap so LSM decision points sit tightly on the ±3 / ±1 rails of the OP25 Datascope-style deviation eye. |
 | `traffic_pre_diff_iq_dma`  | `0x2000_0000` | 8 | 32 KB | 256 KB | ~38 KB/s  | **Phase 10.8 2026-04-23:** traffic-chain pre-diff post-PLL IQ. Traffic-side twin of `pre_diff_iq_dma`. |
@@ -43,7 +44,7 @@ must be aligned to its **total ring size** (this is asserted by
 |---|---|---|
 | `dibit_dma` | `0x1700_0000` | PS C4FM chain retired; LSM decodes both CQPSK and C4FM. |
 | `traffic_dma` | `0x1800_0000` | Same. |
-| `lsm_iq_dma` | `0x1D00_0000` | Phase 10.6 pre-rotate matched-filter eye — superseded by the pre-diff post-PLL tap. |
+| `lsm_iq_dma` | `0x1D00_0000` | Phase 10.6 pre-rotate matched-filter eye — superseded by the pre-diff post-PLL tap. Address reused by `traffic2_lsm_dibit_dma` in core 0.3.0. |
 | `traffic_lsm_iq_dma` | `0x1E00_0000` | Traffic twin of the above. |
 | `post_pll_iq_dma` | `0x1F00_0000` | Phase 10.7 post-diff tap — wrong point in the chain for clean plots (2× phase noise). Address repurposed for `pre_diff_iq_dma`. |
 | `traffic_post_pll_iq_dma` | `0x2000_0000` | Same. Address repurposed for `traffic_pre_diff_iq_dma`. |
@@ -121,10 +122,9 @@ window (set by `ad_cpu_interconnect 0x7C460000 p25_core` in `system_bd.tcl`).
 | 5  | `0x28` | `0x7C46_00A0` | `lsm` (Phase 6E.9) | 3 | 7 / 8 | lsm_control, lsm_status, lsm_nid, lsm_drop_count, lsm_dibit_next, lsm_debug, lsm_agc_debug |
 | 6  | `0x30` | `0x7C46_00C0` | `traffic_lsm` (Phase 7A.2) | 3 | 7 / 8 | traffic_lsm_control, traffic_lsm_status, traffic_lsm_nid, traffic_lsm_drop_count, traffic_lsm_dibit_next, traffic_lsm_debug, traffic_lsm_agc_debug |
 | 7  | `0x38` | `0x7C46_00E0` | `traffic_iq` (2026-04-16) | 2 | 3 / 4 | traffic_iq_dma_status, traffic_iq_dma_control, traffic_iq_next_address |
-| 8  | `0x40` | `0x7C46_0100` | `lsm_iq` (Phase 10.6 2026-04-18) | 2 | 3 / 4 | lsm_iq_dma_status, lsm_iq_dma_control, lsm_iq_next_address |
-| 9  | `0x48` | `0x7C46_0120` | `traffic_lsm_iq` (Phase 10.6 2026-04-18) | 2 | 3 / 4 | traffic_lsm_iq_dma_status, traffic_lsm_iq_dma_control, traffic_lsm_iq_next_address |
-| 10 | `0x50` | `0x7C46_0140` | `post_pll_iq` (Phase 10.7 2026-04-22) | 2 | 3 / 4 | post_pll_iq_dma_status, post_pll_iq_dma_control, post_pll_iq_next_address |
-| 11 | `0x58` | `0x7C46_0160` | `traffic_post_pll_iq` (Phase 10.7 2026-04-22) | 2 | 3 / 4 | traffic_post_pll_iq_dma_status, traffic_post_pll_iq_dma_control, traffic_post_pll_iq_next_address |
+| 8  | `0x40` | `0x7C46_0100` | `lsm_seed` (2026-05-03) | 3 | 6 / 8 | lsm_{agc,pll,timing}_seed, traffic_lsm_{agc,pll,timing}_seed |
+| 9  | `0x48` | `0x7C46_0120` | `traffic2_sdr` (core 0.3.0, change 064) | 3 | 5 / 8 | traffic chain 2 DDC: traffic2_ddc_coeff_addr, traffic2_ddc_coeff, traffic2_ddc_decimation, traffic2_ddc_frequency, traffic2_ddc_control (same word offsets as `sdr`) |
+| 10-11 | `0x50` | `0x7C46_0140` | `traffic2_lsm` (core 0.3.0, change 064) | 4 | 11 / 16 | one 16-word bank (decode on word-address bits [6:4]). Words 0-7 mirror `traffic_lsm` (traffic2_lsm_control … traffic2_lsm_agc_config); words 8-10 are chain 2's seeds traffic2_lsm_{agc,pll,timing}_seed (0x160/0x164/0x168) |
 | 12 | `0x60` | `0x7C46_0180` | `spectrometer` (Phase 10.7 2026-04-22) | 3 | 5 / 8 | spec_control (num_integrations + peak_detect + abort_pulse + enable), spec_status (last_buffer + overflow), spec_next_address |
 | 13-15 | — | `0x7C46_01A0` – `0x7C46_01E0` | *(free, 3 slots)* | — | — | reserved for Phase 10.6-follow-up signal-quality + runtime-params banks (DC offset + RMS window, runtime-writable TED/PLL/AGC) |
 
@@ -313,36 +313,36 @@ sticky interrupt bits in `control.interrupts`. It is connected to
 
 | Bit | Name (in `control.interrupts`) | Source signal | Purpose |
 |-----|-------------------------------|---------------|---------|
-| 0 | `dibit_dma`   | `dibit_dma.interrupt`   | sub-buffer of control-channel C4FM dibit ring filled |
-| 1 | `traffic_dma` | `traffic_dma.interrupt` | sub-buffer of traffic-channel C4FM dibit ring filled |
-| 2 | `iq_dma` (Phase 6C) | `iq_dma.interrupt` | sub-buffer of control-channel IQ ring filled |
-| 3 | `lsm_dibit_dma` (Phase 6E.9) | `lsm_dibit_dma.interrupt` | sub-buffer of control-channel LSM dibit ring filled. **NID events themselves are PS-polled via `lsm_status.nid_event` rather than IRQ-driven**, because at one NID per ~14 ms a 60 Hz dashboard poll already catches every event. |
-| 4 | `traffic_lsm_dibit_dma` (Phase 7A.2) | `traffic_lsm_dibit_dma.interrupt` | sub-buffer of traffic-channel LSM dibit ring filled. Same poll convention as `lsm_dibit_dma`: NID events are PS-polled via `traffic_lsm_status.nid_event` from a dedicated 16 ms heartbeat task in `main.rs`. |
-| 5 | `post_pll_iq_dma` (Phase 10.7) | `post_pll_iq_dma.interrupt` | sub-buffer of control-channel post-PLL IQ ring filled |
-| 6 | `traffic_post_pll_iq_dma` (Phase 10.7) | `traffic_post_pll_iq_dma.interrupt` | sub-buffer of traffic-channel post-PLL IQ ring filled |
-| 7 | `wideband_spec_dma` (Phase 10.7) | `spectrometer.interrupt_out` | completed integration flushed to wideband spectrometer ring |
+| 0 | `iq_dma` (Phase 6C) | `iq_dma.interrupt` | sub-buffer of control-channel IQ ring filled |
+| 1 | `lsm_dibit_dma` (Phase 6E.9) | `lsm_dibit_dma.interrupt` | sub-buffer of control-channel LSM dibit ring filled. **NID events themselves are PS-polled via `lsm_status.nid_event` rather than IRQ-driven**, because at one NID per ~14 ms a 60 Hz dashboard poll already catches every event. |
+| 2 | `pre_diff_iq_dma` (Phase 10.8) | `pre_diff_iq_dma.interrupt` | sub-buffer of control-chain pre-diff IQ ring filled |
+| 3 | `wideband_spec_dma` (Phase 10.7) | `wideband_spec.interrupt_out` | completed integration flushed to wideband spectrometer ring |
+| 4 | `traffic_lsm_dibit_dma` (Phase 7A.2) | `traffic_lsm_dibit_dma.interrupt` | sub-buffer of traffic-channel LSM dibit ring filled. Same poll convention as `lsm_dibit_dma`: NID events are PS-polled via `traffic_lsm_status.nid_event`. |
+| 5 | `traffic_iq_dma` (2026-05-03) | `traffic_iq_dma.interrupt` | sub-buffer of traffic post-DDC IQ ring filled (master not wired in the block design) |
+| 6 | `traffic_pre_diff_iq_dma` (2026-05-03) | `traffic_pre_diff_iq_dma.interrupt` | sub-buffer of traffic pre-diff IQ ring filled (master not wired in the block design) |
+| 7 | `wideband_iq_dma` (2026-05-03) | `wideband_iq_dma.interrupt` | sub-buffer of the raw 8 MSPS IQ ring filled |
+| 8 | `traffic2_lsm_dibit_dma` (core 0.3.0) | `traffic2_lsm_dibit_dma.interrupt` | sub-buffer of traffic chain 2's LSM dibit ring filled |
 
 All bits are `Rsticky` — they latch on the source pulse and clear on read.
 
 ## HP-port wiring
 
-The Zynq HP1 slave port hosts all three DMA masters via Vivado SmartConnect
-(extended idempotently by repeated `ad_mem_hp1_interconnect` calls):
+The Zynq HP1 slave port hosts the DMA masters via Vivado SmartConnect
+(extended idempotently by repeated `ad_mem_hp1_interconnect` calls in
+`system_bd.tcl`). As of core 0.3.0:
 
 | AXI master | HP slave | Sustained byte rate | HP1 budget @ 1.7 GB/s |
 |------------|----------|---------------------|-----------------------|
-| `m_axi_dibit`             | HP1 | ~1.28 KB/s | <0.001% |
-| `m_axi_traffic`           | HP1 | ~1.28 KB/s | <0.001% |
-| `m_axi_iq`                | HP1 | ~250 KB/s  | ~0.015% |
-| `m_axi_lsm_dibit`         | HP1 | ~1.28 KB/s | <0.001% |
-| `m_axi_traffic_lsm_dibit` | HP1 | ~1.28 KB/s | <0.001% |
-| `m_axi_post_pll_iq` (Phase 10.7)         | HP1 | ~38 KB/s   | ~0.002% |
-| `m_axi_traffic_post_pll_iq` (Phase 10.7) | HP1 | ~38 KB/s   | ~0.002% |
-| `m_axi_wideband_spec` (Phase 10.7)       | HP2 | ~32 KB/s   | ~0.002% (fresh HP port) |
+| `m_axi_iq`                  | HP1 | ~250 KB/s  | ~0.015% |
+| `m_axi_lsm_dibit`           | HP1 | ~1.28 KB/s | <0.001% |
+| `m_axi_pre_diff_iq`         | HP1 | ~38 KB/s   | ~0.002% |
+| `m_axi_wideband_spec`       | HP1 | ~32 KB/s   | ~0.002% |
+| `m_axi_traffic_lsm_dibit`   | HP1 | ~1.28 KB/s | <0.001% |
+| `m_axi_wideband_iq`         | HP1 | ~32 MB/s   | ~2% |
+| `m_axi_traffic2_lsm_dibit` (core 0.3.0) | HP1 | ~1.28 KB/s | <0.001% |
 
-HP1 is wildly overprovisioned for these consumers; Phase 10.7 brings HP2
-online for the wideband spectrometer to keep its burst-heavy integration
-flushes isolated from the narrowband P25 rings. HP3 remains unused.
+`m_axi_traffic_iq` and `m_axi_traffic_pre_diff_iq` exist on the IP but are
+not connected in the block design. HP2 and HP3 are unused by the P25 core.
 
 ## Future-self checklist when adding a new register bank or DMA
 

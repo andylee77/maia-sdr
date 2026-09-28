@@ -113,6 +113,7 @@ ad_cpu_interconnect 0x7C460000 p25_core
 #                                       Clean eye + constellation + deviation.)
 #   - traffic_pre_diff_iq ~38 KB/s    (Phase 10.8: mirror on traffic chain.)
 #   - wideband_spec      ~32   KB/s   (Phase 10.7: 4096-bin spectrometer, 5-10 Hz)
+#   - traffic2_lsm_dibit ~1.28 KB/s   (core 0.3.0: traffic chain 2 dibits)
 # Total ~611 KB/s, still well under 1.7 GB/s.
 #
 # Phase 10.8 retirements (freed DMA channels):
@@ -139,6 +140,10 @@ ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_lsm_dibit
 # stack. 32 MB/s sustained — well within HP1's headroom alongside the
 # narrowband rings.
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_wideband_iq
+# Core 0.3.0 (doc/changes/064): traffic chain 2 LSM dibit ring
+# (~1.28 KB/s, ring at 0x1D00_0000). One more HP1 SmartConnect slave
+# port; the traffic_iq / traffic_pre_diff_iq masters stay unconnected.
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic2_lsm_dibit
 
 # ── Interrupt ─────────────────────────────────────────────────────────
 # With maia_iio, pluto base wired:

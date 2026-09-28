@@ -93,6 +93,8 @@ ipx::associate_bus_interfaces -busif m_axi_traffic_pre_diff_iq -clock clk [ipx::
 ipx::associate_bus_interfaces -busif m_axi_wideband_spec -clock clk [ipx::current_core]
 # 2026-05-03: pre-DDC raw 8 MSPS IQ tap for the PS-side software P25 stack.
 ipx::associate_bus_interfaces -busif m_axi_wideband_iq -clock clk [ipx::current_core]
+# Core 0.3.0 (doc/changes/064): traffic chain 2 LSM dibit ring DMA.
+ipx::associate_bus_interfaces -busif m_axi_traffic2_lsm_dibit -clock clk [ipx::current_core]
 
 # interrupt
 ipx::add_bus_interface interrupt [ipx::current_core]

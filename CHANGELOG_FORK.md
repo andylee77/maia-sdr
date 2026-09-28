@@ -5,6 +5,25 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-27] Second traffic decode chain in the gateware, core 0.3.0 (064)
+
+**Branch:** fishball-p25
+**Bake required:** YES (core 0.3.0). **Tezuka rebuild required:** yes (device tree node
+`p25-traffic2-lsm-dibit`, ring at 0x1D00_0000).
+
+- **Chain 2** (`traffic2_*`): its own DDC, LSM chain (with the 059 hold), dibit packer and DMA
+  master (`m_axi_traffic2_lsm_dibit` on HP1), interrupt bit 8, banks 9–11 at 0x120–0x168. A
+  block-for-block copy of chain 1 without its diagnostic taps; everything resets idle.
+- **Register map** is a strict superset of 0.2.0: the deployed p25-httpd runs unchanged.
+  A PS must not read 0x120–0x168 on an older core (the bus stalls); change 066 gates it.
+- **Timing met**, WNS +0.021 ns, WHS +0.018 ns. LUT 54 %, DSP 78 %, slices 90 %.
+- **Bench:** Mode B replay corpus identical to 0.2.0 (99.3 % of SDRTrunk's IMBE frames,
+  0 missed).
+
+Doc: `doc/changes/064_second_traffic_chain.md`.
+
+---
+
 ## [2026-09-27] Channel time for calls not followed; delete stored recordings; clearer call times (065)
 
 **Branch:** fishball-p25

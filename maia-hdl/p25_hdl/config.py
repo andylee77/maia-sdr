@@ -51,6 +51,18 @@ class P25Config:
         self.traffic_lsm_dibit_dma_num_buffers_log2 = 3   # 8 sub-buffers
         self.traffic_lsm_dibit_dma_buffer_size = 0x1000   # 4 KB per sub-buffer
 
+        # ── Traffic chain 2 LSM dibit ring DMA (core 0.3.0) ───────
+        # Second traffic decode chain (doc/changes/064). Same geometry
+        # as `traffic_lsm_dibit_dma`. 0x1D00_0000 was freed when the
+        # Phase 10.6 `lsm_iq_dma` ring was retired (2026-04-23).
+        # Must match the Tezuka DT carve-out `p25_traffic2_lsm_dibit_dma`
+        # (rxbuffer node `p25-traffic2-lsm-dibit`, fishball-p25.dtsi).
+        #
+        # Ring base must be aligned to total ring size (32 KB).
+        self.traffic2_lsm_dibit_dma_address = 0x1D00_0000
+        self.traffic2_lsm_dibit_dma_num_buffers_log2 = 3   # 8 sub-buffers
+        self.traffic2_lsm_dibit_dma_buffer_size = 0x1000   # 4 KB per sub-buffer
+
         # ── Traffic channel post-DDC IQ ring DMA (2026-04-16) ─────
         # Mirrors the control-side `iq_dma` for the traffic chain.
         # Same 62.5 kSPS, same 256 KB geometry, address 0x1C00_0000.
@@ -148,6 +160,34 @@ class P25Config:
                 * self.traffic_lsm_dibit_dma_buffer_size)
 
     @property
+    def traffic2_lsm_dibit_dma_num_buffers(self):
+        return 1 << self.traffic2_lsm_dibit_dma_num_buffers_log2
+
+    @property
+    def traffic2_lsm_dibit_dma_total_size(self):
+        return (self.traffic2_lsm_dibit_dma_num_buffers
+                * self.traffic2_lsm_dibit_dma_buffer_size)
+
+    # Every ring DMA, as (name, base address, total size). Used by
+    # `validate()` for the alignment and no-overlap checks.
+    RING_NAMES = (
+        'iq_dma',
+        'lsm_dibit_dma',
+        'traffic_lsm_dibit_dma',
+        'traffic2_lsm_dibit_dma',
+        'traffic_iq_dma',
+        'pre_diff_iq_dma',
+        'traffic_pre_diff_iq_dma',
+        'wideband_spec_dma',
+        'wideband_iq_dma',
+    )
+
+    def rings(self):
+        return [(name, getattr(self, f'{name}_address'),
+                 getattr(self, f'{name}_total_size'))
+                for name in self.RING_NAMES]
+
+    @property
     def traffic_iq_dma_num_buffers(self):
         return 1 << self.traffic_iq_dma_num_buffers_log2
 
@@ -231,3 +271,15 @@ class P25Config:
             f'wideband_iq_dma_address ' \
             f'{self.wideband_iq_dma_address:#x} not aligned to ' \
             f'ring size {self.wideband_iq_dma_total_size:#x}'
+        assert self.traffic2_lsm_dibit_dma_address & \
+            (self.traffic2_lsm_dibit_dma_total_size - 1) == 0, \
+            f'traffic2_lsm_dibit_dma_address ' \
+            f'{self.traffic2_lsm_dibit_dma_address:#x} not aligned to ' \
+            f'ring size {self.traffic2_lsm_dibit_dma_total_size:#x}'
+        # No two rings may overlap (each has its own DT carve-out).
+        rings = sorted(self.rings(), key=lambda r: r[1])
+        for (name_a, base_a, size_a), (name_b, base_b, _) in zip(
+                rings, rings[1:]):
+            assert base_a + size_a <= base_b, \
+                f'{name_a} [{base_a:#x}, {base_a + size_a:#x}) overlaps ' \
+                f'{name_b} at {base_b:#x}'
