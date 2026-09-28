@@ -132,6 +132,9 @@ pub struct SystemIdentity {
     /// (opcode 0x30). Format: `(year, month, day, hours, minutes,
     /// time_locked)`. Updated on every sync broadcast (~5/sec).
     pub last_sync_clock: Option<(u16, u8, u8, u8, u8, bool)>,
+    /// Change 067: the site time from every SYNC_BCST (micro-slots,
+    /// minute rollovers), for the board clock and the UI.
+    pub site_clock: crate::services::site_clock::SiteClock,
     /// 2026-04-16: true if the site has advertised a Phase 2 TDMA
     /// frequency band via Identifier Update TDMA (TSBK opcode 0x33).
     /// Phase-1-only sites only emit 0x34 (VHF/UHF) and 0x3D (FDMA)

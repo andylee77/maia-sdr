@@ -172,3 +172,53 @@ fn test_frequency_band_calculation() {
     let freq = band.channel_frequency(1593);
     assert_eq!(freq, CLAY_CONTROL_FREQ_HZ);
 }
+
+// Change 067: SYNC_BCST micro-slots, rollover lock and local offset
+// (SDRTrunk `SynchronizationBroadcast` bit numbering).
+#[test]
+fn test_sync_bcst_decode_time_fields() {
+    fn set(d: &mut [u8; 12], start: usize, n: usize, v: u64) {
+        for i in 0..n {
+            let bit = (v >> (n - 1 - i)) & 1;
+            let pos = start + i;
+            if bit == 1 {
+                d[pos / 8] |= 0x80 >> (pos % 8);
+            }
+        }
+    }
+    let mut d = [0u8; 12];
+    d[0] = 0x80 | 0x30;
+    set(&mut d, 29, 1, 1); // not locked to an external reference
+    set(&mut d, 30, 1, 0); // micro-slots locked to the minute
+    set(&mut d, 33, 1, 0); // local offset valid
+    set(&mut d, 34, 1, 1); // west of UTC
+    set(&mut d, 35, 4, 4); // 4 h
+    set(&mut d, 40, 7, 26);
+    set(&mut d, 47, 4, 5);
+    set(&mut d, 51, 5, 3);
+    set(&mut d, 56, 5, 12);
+    set(&mut d, 61, 6, 42);
+    set(&mut d, 67, 13, 2000);
+    match TsbkBlock::parse(&d).decode() {
+        Some(TsbkMessage::TdmaSyncBroadcast {
+            time_locked, year, month, day, hours, minutes,
+            microslots, microslot_locked, local_offset_min,
+        }) => {
+            assert!(!time_locked);
+            assert_eq!((year, month, day, hours, minutes), (2026, 5, 3, 12, 42));
+            assert_eq!((microslots, microslot_locked), (2000, true));
+            assert_eq!(local_offset_min, Some(-240));
+        }
+        other => panic!("{other:?}"),
+    }
+    // Offset marked invalid, micro-slots free-running.
+    set(&mut d, 30, 1, 1);
+    set(&mut d, 33, 1, 1);
+    match TsbkBlock::parse(&d).decode() {
+        Some(TsbkMessage::TdmaSyncBroadcast { microslot_locked, local_offset_min, .. }) => {
+            assert!(!microslot_locked);
+            assert_eq!(local_offset_min, None);
+        }
+        other => panic!("{other:?}"),
+    }
+}

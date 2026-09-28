@@ -75,6 +75,8 @@ pub fn build_call(
     now: u64,
     aliases: Aliases,
     recording: bool,
+    // Change 066: traffic chain number (1 or 2).
+    chain: u8,
 ) -> UiCall {
     // Change 057: the lifecycle publishes when (and by which rule) the
     // call will close; an end-of-transmission marker means the voice is
@@ -105,6 +107,7 @@ pub fn build_call(
         close_window_ms: s.close_window_ms,
         end_lc: s.end_lc.map(str::to_string),
         recording: recording && !s.encrypted,
+        chain,
     }
 }
 
@@ -279,6 +282,7 @@ fn from_summary(
         close_reason: close_reason_str(g),
         recording: rec.map(rec_ref),
         audio_status: status.to_string(),
+        chain: g.chain,
     }
 }
 
@@ -313,6 +317,7 @@ fn from_orphan(r: &RecordingEntry, aliases: Aliases) -> UiCallSummary {
         close_reason: "unknown".into(),
         recording: Some(rec_ref(r)),
         audio_status: "recorded".into(),
+        chain: 0,
     }
 }
 

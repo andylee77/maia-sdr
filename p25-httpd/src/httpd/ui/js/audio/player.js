@@ -1,18 +1,18 @@
-// Live traffic audio from /ws/audio (8 kHz 16-bit mono, 20 ms frames).
+// Live traffic audio from /ws/audio?v=2 (8 kHz 16-bit mono, 20 ms
+// frames, change 066: one stream per traffic chain, mixed).
 //
 // Secure context (https / localhost): AudioWorklet fed by a Worker
 // that owns the WebSocket, so page work can never starve playback.
 // Plain http to the radio's IP (the usual case): browsers hide
-// AudioWorklet there, so a ScriptProcessorNode runs the same ring +
-// PLL on the main thread.
+// AudioWorklet there, so a ScriptProcessorNode runs the same rings
+// (ring.js) on the main thread.
 
 import { WORKLET_SRC, WORKER_SRC } from './sources.js';
+import { Ring, clip } from './ring.js';
 import { wsUrl } from '../api.js';
 
-const RING = 16384;
-const TARGET = 1200; // 150 ms @ 8 kHz
-const KP = 4e-5;
-const MAXDEV = 0.005;
+// Change 066: every traffic chain, lane-tagged frames.
+const AUDIO_PATH = '/ws/audio?v=2';
 
 const PAN = { left: -1, both: 0, right: 1 };
 
@@ -48,12 +48,19 @@ class Player {
     // Change 062: volume (linear gain, 0..2) and speaker routing.
     this.volume = 1;
     this.route = { map: {}, def: 0 };
-    this.tg = 0;
+    this.tgs = [0, 0];
   }
 
   setVolume(v) {
     this.volume = Math.max(0, Math.min(2, Number(v) || 0));
     if (this.gain) this.gain.gain.value = this.volume;
+  }
+
+  // Change 067: volume normalization (ring.js) on every chain.
+  setNormalize(on) {
+    this.normalize = !!on;
+    if (this.mode === 'worklet' && this.node) this.node.port.postMessage({ type: 'norm', on: this.normalize });
+    if (this.spn) for (const r of this.spn) r.norm = this.normalize;
   }
 
   setRoute(route) {
@@ -106,7 +113,10 @@ class Player {
     }
     this.timer = setInterval(() => {
       if (this.mode === 'worklet' && this.node) this.node.port.postMessage({ type: 'stats' });
-      if (this.mode === 'spn' && this.spn) { this.bufMs = (this.spn.avail / 8) | 0; this.underruns = this.spn.underruns; }
+      if (this.mode === 'spn' && this.spn) {
+        this.bufMs = (Math.max(...this.spn.map(r => r.avail)) / 8) | 0;
+        this.underruns = this.spn.reduce((n, r) => n + r.underruns, 0);
+      }
       this.emit();
     }, 500);
     this.emit();
@@ -122,6 +132,7 @@ class Player {
       if (m && m.type === 'stats') { this.bufMs = (m.avail / 8) | 0; this.underruns = m.underruns; }
     };
     this.node.connect(this.gain);
+    this.node.port.postMessage({ type: 'norm', on: !!this.normalize });
     const wurl = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
     this.worker = new Worker(wurl);
     URL.revokeObjectURL(wurl);
@@ -133,23 +144,28 @@ class Player {
       else if (m.type === 'close') { this.connected = false; this.emit(); }
       else if (m.type === 'status') { this.chunks = m.chunks; this.lagSkipped = m.lag; this.lastChunkAt = Date.now(); }
     };
-    this.worker.postMessage({ type: 'init', url: wsUrl('/ws/audio'), port: mc.port1, route: this.route }, [mc.port1]);
+    this.worker.postMessage({ type: 'init', url: wsUrl(AUDIO_PATH), port: mc.port1, route: this.route }, [mc.port1]);
   }
 
   startSpn() {
     this.mode = 'spn';
-    const s = this.spn = {
-      ring: new Float32Array(RING), pan: new Int8Array(RING), w: 0, r: 0, avail: 0, frac: 0,
-      base: 8000 / this.ctx.sampleRate, priming: true, underruns: 0, dryAt: 0,
-    };
+    const base = 8000 / this.ctx.sampleRate;
+    const rings = this.spn = [new Ring(base), new Ring(base)];
+    for (const r of rings) r.norm = !!this.normalize;
     this.node = this.ctx.createScriptProcessor(1024, 0, 2);
-    this.node.onaudioprocess = e => spnProcess(s, e.outputBuffer.getChannelData(0), e.outputBuffer.getChannelData(1));
+    this.node.onaudioprocess = e => {
+      const L = e.outputBuffer.getChannelData(0), R = e.outputBuffer.getChannelData(1);
+      L.fill(0); R.fill(0);
+      const now = performance.now() / 1000;
+      for (const ring of rings) ring.mix(L, R, now);
+      clip(L); clip(R);
+    };
     this.node.connect(this.gain);
     this.openSpnSocket();
   }
 
   openSpnSocket() {
-    const ws = this.ws = new WebSocket(wsUrl('/ws/audio'));
+    const ws = this.ws = new WebSocket(wsUrl(AUDIO_PATH));
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => { this.connected = true; this.emit(); };
     ws.onmessage = ev => {
@@ -157,12 +173,13 @@ class Player {
         try {
           const c = JSON.parse(ev.data);
           if (c.type === 'lag') this.lagSkipped += c.skipped || 0;
-          else if (c.type === 'meta') this.tg = c.tg;
+          else if (c.type === 'meta') this.tgs[c.lane === 1 ? 1 : 0] = c.tg;
         } catch { /* ignore */ }
         return;
       }
-      const i16 = new Int16Array(ev.data);
-      spnWrite(this.spn, i16, this.panFor(this.tg));
+      const lane = new Uint8Array(ev.data, 0, 1)[0] === 1 ? 1 : 0;
+      const i16 = new Int16Array(ev.data, 4);
+      if (this.spn) this.spn[lane].write(i16, this.panFor(this.tgs[lane]), performance.now() / 1000, 1 / 32768);
       this.chunks++;
       this.lastChunkAt = Date.now();
     };
@@ -186,41 +203,6 @@ class Player {
     if (this.ctx) { try { this.ctx.close(); } catch { /* gone */ } }
     this.worker = null; this.ws = null; this.node = null; this.ctx = null; this.gain = null; this.spn = null; this.mode = null;
     this.emit();
-  }
-}
-
-function spnWrite(s, i16, pan) {
-  if (!s) return;
-  // Underrun = dry ring refilled within 300 ms (see sources.js).
-  if (s.dryAt && performance.now() - s.dryAt < 300) s.underruns++;
-  s.dryAt = 0;
-  for (let i = 0; i < i16.length; i++) {
-    s.ring[s.w] = i16[i] / 32768;
-    s.pan[s.w] = pan;
-    s.w = (s.w + 1) % RING;
-    if (s.avail < RING) s.avail++; else s.r = (s.r + 1) % RING;
-  }
-  if (s.priming && s.avail >= TARGET) s.priming = false;
-}
-
-function spnProcess(s, out, outR) {
-  if (s.priming) { out.fill(0); outR.fill(0); return; }
-  let dev = KP * (s.avail - TARGET);
-  dev = Math.max(-MAXDEV, Math.min(MAXDEV, dev));
-  const ratio = s.base * (1 + dev);
-  for (let i = 0; i < out.length; i++) {
-    // Dry: re-prime at once (see sources.js) so the next transmission
-    // starts with the full 150 ms buffer.
-    if (s.avail <= 1) { s.dryAt = performance.now(); s.priming = true; out.fill(0, i); outR.fill(0, i); return; }
-    const a = s.ring[s.r], b = s.ring[(s.r + 1) % RING];
-    const v = a + (b - a) * s.frac, p = s.pan[s.r];
-    out[i] = p > 0 ? 0 : v;
-    outR[i] = p < 0 ? 0 : v;
-    s.frac += ratio;
-    while (s.frac >= 1) {
-      s.frac -= 1; s.r = (s.r + 1) % RING; s.avail--;
-      if (s.avail <= 0) break;
-    }
   }
 }
 

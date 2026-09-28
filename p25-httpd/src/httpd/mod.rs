@@ -238,6 +238,10 @@ pub struct AppState {
     /// short-lived (microseconds) so HTTP handlers don't need async.
     pub active_call_snapshot:
         crate::app::grant_follower::ActiveCallShared,
+    /// Change 066: the traffic chains that run, lane One first (its
+    /// objects are also `traffic_chain` / `traffic_lsm_decoder` /
+    /// `imbe_forwarder` / `active_call_snapshot`).
+    pub traffic_lanes: Vec<crate::app::traffic_lane::TrafficLane>,
 
     /// 2026-04-24: shared auto-PPM tracker ring. The sampler task
     /// pushes estimates, the updater reads + clamps + applies. Shared
@@ -481,6 +485,7 @@ pub fn router(
         // voice channel scaffold; will gain monitor-list write
         // operations in Phase 7B.
         .route("/api/traffic", get(api::traffic::get_traffic))
+        .route("/api/traffic2", get(api::traffic::get_traffic2))
         .route("/api/monitor", get(api::talkgroups::get_monitor).put(api::talkgroups::put_monitor))
         .route("/api/audio", get(api::traffic::get_audio))
         .route("/api/imbe_dump", get(api::traffic::get_imbe_dump))

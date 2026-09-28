@@ -28,6 +28,7 @@ fn open(call_id: u64, source: u32, t: u64) -> CallTrackerEvent {
             opened_via: OpenReason::CcGrant,
             baseline_frames_submitted: 0,
         },
+        lane: Some(Lane::One),
     }
 }
 
@@ -49,6 +50,7 @@ fn close(call_id: u64, reason: CloseReason, t: u64, open_ms: u64) -> CallTracker
             open_ms,
             end_lc: None,
         },
+        lane: Some(Lane::One),
     }
 }
 
@@ -63,7 +65,7 @@ fn frames(f: &ImbeForwarder, call_id: u64, n: u64) {
 }
 
 struct Rig {
-    active: Option<ActiveSummary>,
+    active: Vec<ActiveSummary>,
     pending: Pending,
     f: Arc<ImbeForwarder>,
     clear: GrantStatsRing,
@@ -74,7 +76,7 @@ struct Rig {
 impl Rig {
     fn new() -> Self {
         Rig {
-            active: None,
+            active: Vec::new(),
             pending: Pending::default(),
             f: forwarder(),
             clear: new_ring(),
@@ -83,7 +85,8 @@ impl Rig {
         }
     }
     fn ev(&mut self, e: CallTrackerEvent) {
-        handle_event(e, &mut self.active, &mut self.pending, &self.f, &self.clear, &self.enc, &self.rev);
+        let f = [self.f.clone()];
+        handle_event(e, &mut self.active, &mut self.pending, &f, &self.clear, &self.enc, &self.rev);
     }
     fn refresh(&mut self, now: Instant) {
         refresh_pending(&mut self.pending, &self.f, &self.clear, &self.enc, &self.rev, now);
@@ -166,6 +169,7 @@ fn source_update_fills_but_never_replaces_the_grant_unit() {
             new_source: s,
             via: crate::app::grant_follower::SourceUpdateVia::Ldu1LcVote,
         },
+        lane: Some(Lane::One),
     };
     let mut r = Rig::new();
     let t = 5_600_000;
@@ -208,4 +212,33 @@ fn not_followed_close_fills_the_channel_time() {
     let s = listed(&r);
     assert_eq!((s.duration_ms, s.ended_unix_ms, s.air_duration_ms), (4_500, t + 4_500, Some(4_500)));
     assert!(r.rev.load(std::sync::atomic::Ordering::Relaxed) > rev0);
+}
+
+// Change 066: a call on each traffic chain at once; neither displaces the
+// other (pre-066 a second CallOpen forced the first to Timeout).
+#[test]
+fn calls_on_two_chains_are_summarised_separately() {
+    let mut r = Rig::new();
+    let t = 5_600_000;
+    let on = |mut e: CallTrackerEvent, lane| {
+        e.lane = Some(lane);
+        e
+    };
+    r.ev(on(open(1, 1013, t), Lane::One));
+    r.ev(on(open(2, 3400043, t + 500), Lane::Two));
+    frames(&r.f, 1, 81);
+    frames(&r.f, 2, 72);
+    r.ev(on(close(2, CloseReason::CallEnd, t + 3_000, 2_500), Lane::Two));
+    r.ev(on(close(1, CloseReason::CallEnd, t + 4_000, 4_000), Lane::One));
+    let (a, b) = (r.summary(1), r.summary(2));
+    assert_eq!((a.close_reason, b.close_reason), (CloseReason::CallEnd, CloseReason::CallEnd));
+    assert_eq!((a.imbe_extracted, b.imbe_extracted), (81, 72));
+    assert_eq!((a.source, b.source), (Some(1013), Some(3400043)));
+    // A new call on chain 2 with chain 2's summary still open replaces
+    // only that one (defensive Timeout), never chain 1's.
+    r.ev(on(open(3, 1013, t + 5_000), Lane::One));
+    r.ev(on(open(4, 1, t + 5_100), Lane::Two));
+    r.ev(on(open(5, 2, t + 5_200), Lane::Two));
+    assert_eq!(r.summary(4).close_reason, CloseReason::Timeout);
+    assert_eq!(r.active.iter().map(|a| a.call_id).collect::<Vec<_>>(), vec![3, 5]);
 }

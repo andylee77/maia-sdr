@@ -45,6 +45,7 @@ fn summary(call_id: u64, start: u64, imbe: u64) -> GrantDecodeSummary {
         sources_observed: vec![1014],
         agc_gain_q97_at_close: None,
         air_duration_ms: Some(2_400),
+        chain: 1,
     }
 }
 
@@ -129,7 +130,7 @@ fn build_call_reports_hang_countdown_and_aliases() {
         close_window_ms: 3_000,
         ..Default::default()
     };
-    let c = build_call(&snap, T0 + 4_000, aliases, true);
+    let c = build_call(&snap, T0 + 4_000, aliases, true, 1);
     assert_eq!(c.phase, "hang");
     assert_eq!(c.voice_ms, 1_440);
     assert_eq!(c.elapsed_ms, 4_000);
@@ -139,7 +140,7 @@ fn build_call_reports_hang_countdown_and_aliases() {
     assert_eq!(c.source_alias.as_deref(), Some("Console 14"));
     assert!(c.recording);
 
-    let c = build_call(&snap, T0 + 20_000, aliases, true);
+    let c = build_call(&snap, T0 + 20_000, aliases, true, 1);
     assert_eq!(c.close_in_ms, 0, "saturates once overdue");
 
     // End of transmission decoded while the last chunks still play out:
@@ -152,13 +153,13 @@ fn build_call_reports_hang_countdown_and_aliases() {
         end_lc: Some("talk_complete"),
         ..snap.clone()
     };
-    let c = build_call(&ending, T0 + 2_000, aliases, true);
+    let c = build_call(&ending, T0 + 2_000, aliases, true, 1);
     assert_eq!((c.phase.as_str(), c.close_in_ms), ("hang", 1_900));
     assert_eq!(c.end_lc.as_deref(), Some("talk_complete"));
 
     let enc = ActiveCallSnapshot { encrypted: true, ..snap.clone() };
-    assert!(!build_call(&enc, T0, aliases, true).recording);
-    assert!(!build_call(&snap, T0, aliases, false).recording);
+    assert!(!build_call(&enc, T0, aliases, true, 1).recording);
+    assert!(!build_call(&snap, T0, aliases, false, 1).recording);
 }
 
 #[test]

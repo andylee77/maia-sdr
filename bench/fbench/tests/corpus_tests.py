@@ -419,6 +419,19 @@ def rf_p25_corpus(ctx: TestContext) -> Outcome:
                      ring_mb=int(p["ring_mb"]) if p["source"] == "sd" else min(int(p["ring_mb"]), 32),
                      prefill_mb=prefill, on_underrun=str(p["on_underrun"]))
     orig_traffic = None
+    # p25-httpd 067: with the clock source "site" the DUT sets its clock
+    # from the replayed control channel (a different day per item). The
+    # scoring needs a steady DUT clock, so pin it to "manual" for the run.
+    orig_clock = None
+    try:
+        doc = http.get_json("/api/ui/settings", None, 5.0) or {}
+        src = ((doc.get("settings") or {}).get("clock") or {}).get("source")
+        if src and src != "manual":
+            http.put_json("/api/ui/settings", {"clock": {"source": "manual"}}, 5.0)
+            orig_clock = src
+            run["clock_source_before"] = src
+    except FbenchError as exc:
+        ctx.warn(f"could not pin the DUT clock source: {exc.message}")
     with ExitStack() as stack:
         if tx_image == "p25":
             stack.enter_context(maintenance(ctx, tx))  # rule 4: TX rate changes corrupt its RX
@@ -476,6 +489,12 @@ def rf_p25_corpus(ctx: TestContext) -> Outcome:
                     run["traffic_after"] = _traffic_state(http)
                 except FbenchError as exc:
                     ctx.errors.append(f"could not restore /api/traffic follower/lock: "
+                                      f"{exc.message}")
+            if orig_clock is not None:
+                try:
+                    http.put_json("/api/ui/settings", {"clock": {"source": orig_clock}}, 5.0)
+                except FbenchError as exc:
+                    ctx.errors.append(f"could not restore the DUT clock source {orig_clock}: "
                                       f"{exc.message}")
             if _stop_requested(ctx):
                 (corpus_dir(ctx.cfg) / STOP_NAME).unlink(missing_ok=True)

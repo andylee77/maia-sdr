@@ -328,6 +328,15 @@ pub async fn post_preset(
                 "configure_traffic_ddc: {e}")),
         }
         core.set_traffic_ddc_enable(true);
+        // Change 066: the second traffic chain's DDC follows the same
+        // preset (present only on core 0.3.0).
+        if let Some(l2) = core.lane(crate::hardware::traffic_lane::Lane::Two) {
+            match l2.configure_ddc(0.0, preset) {
+                Ok(_) => applied.push(format!("configure_traffic2_ddc preset={}", preset.name)),
+                Err(e) => errors.push(format!("configure_traffic2_ddc: {e}")),
+            }
+            l2.set_ddc_enable(true);
+        }
     }
 
     let readback_gain = state.ad9361.get_rx_gain().await.ok();
@@ -1480,8 +1489,9 @@ pub async fn put_ppm(
 
 /// `GET /api/agc_threshold[?chain=control|traffic]`
 ///
-/// Returns the current threshold for both chains (`control_hz` /
-/// `traffic_hz`) plus Q1.15 float equivalents. `?chain=` param is
+/// Returns the current threshold for every chain (`control` /
+/// `traffic`, plus `traffic2` on core 0.3.0, else null) and Q1.15
+/// float equivalents. `?chain=` param is
 /// accepted for symmetry with `/api/traffic` but doesn't filter the
 /// response — both chains are always reported in one call so you
 /// can diff them.
@@ -1492,22 +1502,26 @@ pub async fn get_agc_threshold(
     let core = state.ip_core.lock().await;
     let ctrl = core.lsm_agc_threshold();
     let trf  = core.traffic_lsm_agc_threshold();
+    let trf2 = core.lane(crate::hardware::traffic_lane::Lane::Two).map(|l| l.agc_threshold());
     Json(serde_json::json!({
         "ok":              true,
         "control":         ctrl,
         "control_f":       (ctrl as f64) / 32768.0,
         "traffic":         trf,
         "traffic_f":       (trf as f64) / 32768.0,
+        "traffic2":        trf2,
         "valid_range":     [0, 65535],
         "default":         256,
         "note":            "Q1.15 raw; 256 = -42 dBFS; 0 disables gate",
     }))
 }
 
-/// `PUT /api/agc_threshold?chain=control|traffic&value=<u16>`
+/// `PUT /api/agc_threshold?chain=control|traffic|traffic1|traffic2|both&value=<u16>`
 ///
-/// Writes the threshold for the selected chain. `?chain=both`
-/// sets both at once.
+/// Writes the threshold for the selected chain. `traffic` sets every
+/// traffic chain (change 066: both on core 0.3.0), `traffic1` /
+/// `traffic2` one of them, and `both` the control chain and every
+/// traffic chain.
 #[cfg(target_os = "linux")]
 pub async fn put_agc_threshold(
     State(state): State<Arc<AppState>>,
@@ -1533,30 +1547,47 @@ pub async fn put_agc_threshold(
         }))).into_response();
     }
     let v = value as u16;
+    use crate::hardware::traffic_lane::Lane;
     let core = state.ip_core.lock().await;
-    let (applied_ctrl, applied_trf) = match chain {
-        "control" => { core.set_lsm_agc_threshold(v); (true, false) }
-        "traffic" => { core.set_traffic_lsm_agc_threshold(v); (false, true) }
-        "both" => {
-            core.set_lsm_agc_threshold(v);
-            core.set_traffic_lsm_agc_threshold(v);
-            (true, true)
-        }
+    let (ctrl, lanes): (bool, &[Lane]) = match chain {
+        "control" => (true, &[]),
+        "traffic" => (false, &Lane::ALL),
+        "traffic1" => (false, &[Lane::One]),
+        "traffic2" => (false, &[Lane::Two]),
+        "both" => (true, &Lane::ALL),
         other => {
             return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
                 "ok": false,
-                "error": format!("unknown chain '{other}'; expected control|traffic|both"),
+                "error": format!(
+                    "unknown chain '{other}'; expected control|traffic|traffic1|traffic2|both"),
             }))).into_response();
         }
     };
+    if lanes == [Lane::Two] && !core.has_traffic2() {
+        return (StatusCode::CONFLICT, Json(serde_json::json!({
+            "ok": false,
+            "error": format!("core {} has no second traffic chain", core.core_version()),
+        }))).into_response();
+    }
+    if ctrl {
+        core.set_lsm_agc_threshold(v);
+    }
+    let mut applied_trf = [false; 2];
+    for l in lanes.iter().filter_map(|&l| core.lane(l)) {
+        l.set_agc_threshold(v);
+        applied_trf[l.lane().index()] = true;
+    }
     let ctrl_now = core.lsm_agc_threshold();
     let trf_now  = core.traffic_lsm_agc_threshold();
+    let trf2_now = core.lane(Lane::Two).map(|l| l.agc_threshold());
     (StatusCode::OK, Json(serde_json::json!({
         "ok":               true,
-        "applied_control":  applied_ctrl,
-        "applied_traffic":  applied_trf,
+        "applied_control":  ctrl,
+        "applied_traffic":  applied_trf[0],
+        "applied_traffic2": applied_trf[1],
         "control":          ctrl_now,
         "traffic":          trf_now,
+        "traffic2":         trf2_now,
     }))).into_response()
 }
 

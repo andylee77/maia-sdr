@@ -52,6 +52,7 @@ use tokio::sync::broadcast;
 
 use crate::app::imbe_forwarder::ImbeForwarder;
 use crate::audio::{AudioChunk, CallBoundary, CallBoundaryKind};
+use crate::hardware::traffic_lane::Lane;
 use crate::services::ui_settings::CallPolicy;
 
 // ── 2026-04-26 session-lifecycle refactor: constants ─────────────
@@ -247,6 +248,14 @@ pub fn end_marker_frees_chain(locked_tg: u16, marker: Option<(u16, u64)>, now_ms
 /// paths share the dedup behaviour.
 const GRANT_DEDUP_MS: u64 = 200;
 
+/// Was `t` (wall ms) within `window_ms` before `now`? Change 067: a time
+/// after `now` is not recent — the board clock was stepped back (set from
+/// the site or a browser), and a stale entry must not block grants until
+/// the clock catches up with it.
+fn within(now: u64, t: u64, window_ms: u64) -> bool {
+    t <= now && now - t < window_ms
+}
+
 // ── Public types (cross-platform; consumed by AppState +
 //    grant_stats + recorder + dashboard API) ────────────────────
 
@@ -255,6 +264,9 @@ pub struct CallTrackerEvent {
     pub call_id: u64,
     pub timestamp_unix_ms: u64,
     pub kind: CallTrackerEventKind,
+    /// Change 066: traffic chain of a followed call; `None` for a call
+    /// that was not followed.
+    pub lane: Option<Lane>,
 }
 
 #[derive(Debug, Clone)]
@@ -482,6 +494,8 @@ struct ActiveCall {
     /// (`queued_due`), not at once, so the rest of this transmission
     /// stays in this call.
     queued: Option<QueuedGrant>,
+    /// Change 066: traffic chain of a followed call (`None`: not followed).
+    lane: Option<Lane>,
 }
 
 /// Change 057: a followed grant waiting for the channel hand-over.
@@ -543,6 +557,7 @@ impl ActiveCall {
             end_lc: None,
             end_cancels: 0,
             queued: None,
+            lane: None,
         }
     }
 
@@ -696,6 +711,7 @@ fn emit_open(
     opened_via: OpenReason,
     baseline_frames_submitted: u64,
     started_unix_ms: u64,
+    lane: Option<Lane>,
 ) {
     let _ = tx.send(CallTrackerEvent {
         call_id,
@@ -705,6 +721,7 @@ fn emit_open(
             encrypted, not_followed, opened_via,
             baseline_frames_submitted,
         },
+        lane,
     });
 }
 
@@ -748,6 +765,7 @@ fn emit_close_with(
             open_ms,
             end_lc: call.end_lc,
         },
+        lane: call.lane,
     });
 }
 
@@ -805,7 +823,7 @@ impl NfCalls {
         let id = *next_call_id;
         *next_call_id += 1;
         emit_open(tx, id, tg, nac, source, freq_hz, channel.clone(), encrypted,
-                  not_followed, OpenReason::CcGrant, baseline, now);
+                  not_followed, OpenReason::CcGrant, baseline, now, None);
         let call = ActiveCall::open(id, tg, nac, source, freq_hz, channel, encrypted,
                                     not_followed, now, baseline, now);
         self.0.push(NfCall { call, last_seen_ms: now });
@@ -850,14 +868,15 @@ impl NfCalls {
 
 fn emit_source_update(
     tx: &CallTrackerEventTx,
-    call_id: u64,
+    call: &ActiveCall,
     new_source: u32,
     via: SourceUpdateVia,
 ) {
     let _ = tx.send(CallTrackerEvent {
-        call_id,
+        call_id: call.call_id,
         timestamp_unix_ms: now_unix_ms(),
         kind: CallTrackerEventKind::SourceUpdate { new_source, via },
+        lane: call.lane,
     });
 }
 
@@ -967,13 +986,15 @@ fn open_next(
     // first CC heartbeat — bootstrap the UPD timer (last argument) so
     // the close trigger doesn't fire before the first GRP_VCH_GRNT_UPD
     // lands.
-    *active = Some(ActiveCall::open(
+    let mut call = ActiveCall::open(
         call_id, g.tg, g.nac, g.source, g.freq_hz,
         g.channel.clone(), g.encrypted, None, now, baseline, now,
-    ));
+    );
+    call.lane = Some(forwarder.lane);
+    *active = Some(call);
     emit_open(
         tx, call_id, g.tg, g.nac, g.source, g.freq_hz, g.channel,
-        g.encrypted, None, opened_via, baseline, now,
+        g.encrypted, None, opened_via, baseline, now, Some(forwarder.lane),
     );
 }
 
@@ -992,17 +1013,51 @@ fn start_queued(
               Some(CloseReason::TgChange), OpenReason::TgChange);
 }
 
-/// Change 057: the periodic close sweep (every `TIMEOUT_TICK_MS`). A
-/// queued grant takes over when this call's end grace ran out, its
-/// no-keep-alive timeout is due, or the grant waited
-/// `QUEUED_GRANT_MAX_MS`; otherwise `close_due` decides.
+/// Change 066: the lifecycle's view of one traffic chain: its open call,
+/// the forwarder that decodes it, and the snapshot the HTTP side reads.
+pub(crate) struct Slot {
+    active: Option<ActiveCall>,
+    forwarder: Arc<ImbeForwarder>,
+    shared: ActiveCallShared,
+}
+
+impl Slot {
+    pub(crate) fn new(forwarder: Arc<ImbeForwarder>, shared: ActiveCallShared) -> Self {
+        Slot { active: None, forwarder, shared }
+    }
+
+    fn lane(&self) -> Lane {
+        self.forwarder.lane
+    }
+
+    /// Close the open call, if any, for `reason`.
+    fn close(&mut self, tx: &CallTrackerEventTx, reason: CloseReason) {
+        if let Some(call) = self.active.take() {
+            let expected = self.forwarder.frames_submitted.load(Ordering::Relaxed);
+            emit_close(tx, &call, reason, call.source, expected);
+        }
+    }
+
+    /// The open call is on `freq_hz` (known).
+    fn holds(&self, freq_hz: Option<u64>) -> bool {
+        freq_hz.is_some() && self.active.as_ref().is_some_and(|a| a.freq_hz == freq_hz)
+    }
+}
+
+/// Change 066: the slot of `lane` (the first slot for `None` or a lane
+/// without a slot).
+fn slot_index(slots: &[Slot], lane: Option<Lane>) -> usize {
+    lane.and_then(|l| slots.iter().position(|s| s.lane() == l)).unwrap_or(0)
+}
+
+/// Change 057: the periodic close sweep (every `TIMEOUT_TICK_MS`), every
+/// chain's call and the not-followed calls.
 #[allow(clippy::too_many_arguments)]
 fn sweep(
-    active: &mut Option<ActiveCall>,
+    slots: &mut [Slot],
     nf: &mut NfCalls,
     next_call_id: &mut u64,
     tx: &CallTrackerEventTx,
-    forwarder: &Arc<ImbeForwarder>,
     now: u64,
     hang_ms: u64,
     end_grace_ms: u64,
@@ -1010,6 +1065,23 @@ fn sweep(
     // Change 065: not-followed calls the control channel stopped
     // announcing.
     nf.sweep(tx, now, hang_ms);
+    for slot in slots.iter_mut() {
+        sweep_slot(&mut slot.active, next_call_id, tx, &slot.forwarder, now, hang_ms, end_grace_ms);
+    }
+}
+
+/// Change 057: one chain's sweep. A queued grant takes over when this
+/// call's end grace ran out, its no-keep-alive timeout is due, or the
+/// grant waited `QUEUED_GRANT_MAX_MS`; otherwise `close_due` decides.
+fn sweep_slot(
+    active: &mut Option<ActiveCall>,
+    next_call_id: &mut u64,
+    tx: &CallTrackerEventTx,
+    forwarder: &Arc<ImbeForwarder>,
+    now: u64,
+    hang_ms: u64,
+    end_grace_ms: u64,
+) {
     let Some(a) = active.as_ref() else {
         return;
     };
@@ -1037,8 +1109,11 @@ pub fn spawn_call_lifecycle(
     boundary_tx: crate::audio::CallBoundaryTx,
     audio_tx: broadcast::Sender<AudioChunk>,
     tracker_tx: CallTrackerEventTx,
-    forwarder: Arc<ImbeForwarder>,
-    active_call: ActiveCallShared,
+    // Change 066: per traffic chain, its forwarder and the snapshot of
+    // its open call. One lifecycle serves every chain: one call-id
+    // space, one not-followed list, and the cross-chain rules (a
+    // channel is held by one call).
+    lanes: Vec<(Arc<ImbeForwarder>, ActiveCallShared)>,
     // Change 057: close timing (persisted `call` settings, live).
     policy: Arc<CallPolicy>,
     // Change 057: first call_id of this process. Recordings on the SD
@@ -1050,7 +1125,14 @@ pub fn spawn_call_lifecycle(
     let mut audio_rx = audio_tx.subscribe();
 
     tokio::spawn(async move {
-        let mut active: Option<ActiveCall> = None;
+        let mut slots: Vec<Slot> = lanes.into_iter()
+            .map(|(forwarder, shared)| Slot::new(forwarder, shared))
+            .collect();
+        let mirror = |slots: &[Slot], policy: &CallPolicy| {
+            for s in slots {
+                mirror_active(&s.active, &s.shared, &s.forwarder, policy);
+            }
+        };
         let mut next_call_id: u64 = first_call_id.max(1);
         // 2026-04-27 not_followed dedup. P25 broadcasts each
         // primary GRP_VCH_GRANT 2-3× within a TSDU and re-
@@ -1084,29 +1166,25 @@ pub fn spawn_call_lifecycle(
                                  dropping in-flight call to avoid \
                                  stale state",
                             );
-                            if let Some(call) = active.take() {
-                                let expected = forwarder
-                                    .frames_submitted.load(Ordering::Relaxed);
-                                emit_close(&tracker_tx, &call,
-                                    CloseReason::StreamLag,
-                                    call.source, expected);
+                            for slot in slots.iter_mut() {
+                                slot.close(&tracker_tx, CloseReason::StreamLag);
                             }
-                            mirror_active(&active, &active_call, &forwarder, &policy);
+                            mirror(&slots, &policy);
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
                     };
                     handle_boundary(
-                        boundary, &mut active, &mut nf, &mut next_call_id,
-                        &tracker_tx, &forwarder,
+                        boundary, &mut slots, &mut nf, &mut next_call_id,
+                        &tracker_tx,
                         &mut not_followed_dedup, policy.hang_ms(),
                     );
-                    mirror_active(&active, &active_call, &forwarder, &policy);
+                    mirror(&slots, &policy);
                 }
                 recv = audio_rx.recv() => {
                     match recv {
                         Ok(chunk) => {
-                            handle_audio(chunk, &mut active);
+                            handle_audio(chunk, &mut slots);
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {}
                         Err(broadcast::error::RecvError::Closed) => break,
@@ -1134,8 +1212,8 @@ pub fn spawn_call_lifecycle(
                     // we can re-introduce a relaxed LoS later if
                     // useful, but it's not consulted for closes.
                     sweep(
-                        &mut active, &mut nf, &mut next_call_id, &tracker_tx,
-                        &forwarder, now_unix_ms(),
+                        &mut slots, &mut nf, &mut next_call_id, &tracker_tx,
+                        now_unix_ms(),
                         policy.hang_ms(), policy.end_grace_ms(),
                     );
                     // Change 056: mirror every tick, not only on
@@ -1143,7 +1221,7 @@ pub fn spawn_call_lifecycle(
                     // timestamps (updated by the audio arm) stay within
                     // 100 ms of live. `set_live_call_id` inside is a
                     // no-op while the call_id is unchanged.
-                    mirror_active(&active, &active_call, &forwarder, &policy);
+                    mirror(&slots, &policy);
                 }
             }
         }
@@ -1157,14 +1235,16 @@ pub fn spawn_call_lifecycle(
 #[allow(clippy::too_many_arguments)]
 fn handle_boundary(
     boundary: CallBoundary,
-    active: &mut Option<ActiveCall>,
+    slots: &mut [Slot],
     nf: &mut NfCalls,
     next_call_id: &mut u64,
     tx: &CallTrackerEventTx,
-    forwarder: &Arc<ImbeForwarder>,
     grant_dedup: &mut std::collections::HashMap<(u16, u32, Option<u64>, bool), u64>,
     hang_ms: u64,
 ) {
+    // Change 066: the chain the event belongs to (voice events, followed
+    // grants); grant updates and not-followed grants look at every chain.
+    let si = slot_index(slots, boundary.lane);
     match boundary.kind {
         // 2026-04-26 session-lifecycle refactor: primary
         // GRP_VCH_GRANT (`is_update=false`). Open-or-bundle-or-
@@ -1190,7 +1270,7 @@ fn handle_boundary(
             let dedup_source = source.unwrap_or(0);
             let dedup_key = (tg, dedup_source, freq_hz, encrypted);
             if let Some(&last) = grant_dedup.get(&dedup_key) {
-                if now.saturating_sub(last) < GRANT_DEDUP_MS {
+                if within(now, last, GRANT_DEDUP_MS) {
                     return;
                 }
             }
@@ -1199,7 +1279,7 @@ fn handle_boundary(
             // tuples on a single P25 site are ~10. Prune entries
             // older than 60 s on every insert to keep the map
             // small without a separate GC tick.
-            grant_dedup.retain(|_, &mut t| now.saturating_sub(t) < 60_000);
+            grant_dedup.retain(|_, &mut t| within(now, t, 60_000));
 
             let channel_str = if channel == 0 {
                 None
@@ -1228,76 +1308,48 @@ fn handle_boundary(
             // channel produced 459 IMBE attributed to TG 402 with
             // `not_followed=encrypted` (bug). Treat not_followed
             // grants as Ignore — leave the active session alone.
+            // A grant that is NOT followed (encrypted / sticky /
+            // monitor-rejected) never becomes a chain's call: that would
+            // put TG-402 ENC in /api/grants for the timeout window even
+            // though we never followed it. It gets its own record for
+            // grant_stats visibility (operator confirmed: every CC GRANT
+            // must be visible); the recorder skips not_followed
+            // CallOpens. The 2026-04-26 misattribution bug — TG 300 →
+            // TG 402 (ENC, same freq) preempt producing 459 IMBE
+            // attributed to TG 402 — is what motivated this.
+            // Change 065: kept open while the control channel announces
+            // it, for its channel time (`NfCalls`).
+            if not_followed.is_some() {
+                // 2026-04-30: a not_followed grant for the SAME freq as
+                // a followed call means that call physically ended (one
+                // voice channel per freq): close it first. Cross-freq
+                // not_followed grants leave the calls alone. Change 066:
+                // on whichever chain holds the frequency.
+                for slot in slots.iter_mut().filter(|s| s.holds(freq_hz)) {
+                    slot.close(tx, CloseReason::TgChange);
+                }
+                let baseline = slots[0].forwarder
+                    .frames_submitted.load(Ordering::Relaxed);
+                nf.grant(
+                    tx, next_call_id, tg, boundary.nac, source,
+                    freq_hz, channel_str.clone(), encrypted,
+                    not_followed, now_unix_ms(), baseline, hang_ms,
+                );
+                return;
+            }
+
+            // Change 066: the channel now belongs to this chain's call;
+            // a call another chain held on it ended.
+            for (_, slot) in slots.iter_mut().enumerate()
+                .filter(|(i, s)| *i != si && s.holds(freq_hz))
+            {
+                slot.close(tx, CloseReason::TgChange);
+            }
+            let Slot { active, forwarder, .. } = &mut slots[si];
             let action = match active.as_ref() {
-                // No active session, grant IS followable: open as
-                // the new active. Recorder will create a recording.
-                None if not_followed.is_none() =>
-                    OpenAction::Open(OpenReason::CcGrant),
-                // No active session, grant is NOT followed
-                // (encrypted/sticky/monitor-rejected). Don't keep
-                // it as the active session — that would put TG-402
-                // ENC in /api/grants for 10 s of timeout window
-                // even though we never actually followed it. Use
-                // the synthetic-emit-only pattern: emit CallOpen
-                // + CallClose for grant_stats visibility, leave
-                // active=None.
-                // Change 065: kept open while the control channel
-                // announces it, for its channel time (`NfCalls`).
-                None => {
-                    let baseline = forwarder
-                        .frames_submitted.load(Ordering::Relaxed);
-                    nf.grant(
-                        tx, next_call_id, tg, boundary.nac, source,
-                        freq_hz, channel_str.clone(), encrypted,
-                        not_followed, now_unix_ms(), baseline, hang_ms,
-                    );
-                    return;
-                }
-                // Active session, new GRANT is not_followed: emit a
-                // synthetic CallOpen+CallClose pair so grant_stats
-                // surfaces the not-followed grant in Recent Calls
-                // (operator confirmed: every CC GRANT must be
-                // visible). Recorder filters not_followed CallOpens
-                // so no recording is opened. The 2026-04-26
-                // misattribution bug — TG 300 → TG 402 (ENC, same
-                // freq) preempt producing 459 IMBE attributed to
-                // TG 402 — is what motivated the synthetic-emit
-                // pattern.
-                //
-                // 2026-04-30 add: if the not_followed grant is for
-                // the SAME freq as the active session, the air on
-                // that freq is now hosting the encrypted/sticky/
-                // monitor-rejected call. The previous clear call
-                // physically ended (one voice channel per freq).
-                // Close active first; then emit the synthetic
-                // pair. Cross-freq not_followed grants still leave
-                // active alone because they don't affect what the
-                // chain is decoding.
-                Some(_) if not_followed.is_some() => {
-                    if let Some(a) = active.as_ref() {
-                        if a.freq_hz.is_some()
-                            && a.freq_hz == freq_hz
-                        {
-                            let prev = active.take().unwrap();
-                            let expected = forwarder
-                                .frames_submitted
-                                .load(Ordering::Relaxed);
-                            emit_close(
-                                tx, &prev,
-                                CloseReason::TgChange,
-                                prev.source, expected,
-                            );
-                        }
-                    }
-                    let baseline = forwarder
-                        .frames_submitted.load(Ordering::Relaxed);
-                    nf.grant(
-                        tx, next_call_id, tg, boundary.nac, source,
-                        freq_hz, channel_str.clone(), encrypted,
-                        not_followed, now_unix_ms(), baseline, hang_ms,
-                    );
-                    return;
-                }
+                // No active session: open as the new active. Recorder
+                // will create a recording.
+                None => OpenAction::Open(OpenReason::CcGrant),
                 Some(a) => match classify_cc_arrival(a, tg, source, freq_hz) {
                     ArrivalDisposition::Bundle => OpenAction::Bundle,
                     ArrivalDisposition::Queue => OpenAction::Queue,
@@ -1330,7 +1382,7 @@ fn handle_boundary(
                     if let Some(s) = source {
                         if a_mut.observe_source(s) {
                             emit_source_update(
-                                tx, a_mut.call_id, s,
+                                tx, a_mut, s,
                                 SourceUpdateVia::CcRefresh,
                             );
                         }
@@ -1394,14 +1446,15 @@ fn handle_boundary(
             // source=0 + the channel-or-freq tuple.
             let dedup_key = (tg, 0u32, freq_hz.or(Some(channel as u64)), false);
             if let Some(&last) = grant_dedup.get(&dedup_key) {
-                if now_unix_ms().saturating_sub(last) < GRANT_DEDUP_MS {
+                if within(now_unix_ms(), last, GRANT_DEDUP_MS) {
                     return;
                 }
             }
             grant_dedup.insert(dedup_key, now_unix_ms());
             // Change 065: extends a not-followed call's channel time.
             nf.update(tg, freq_hz, now_unix_ms());
-            if let Some(a) = active.as_mut() {
+            // Change 066: the call of this TG on whichever chain.
+            for a in slots.iter_mut().filter_map(|s| s.active.as_mut()) {
                 // Change 057: an update for this TG on ANOTHER channel
                 // (patch, other site in the TSBK's second slot) says
                 // nothing about this call's channel.
@@ -1434,6 +1487,7 @@ fn handle_boundary(
             // next talker's grant is queued: it is that talker (the HDU
             // NID is seen in real time, so the call_id cut lands before
             // the HDU completes and the HDU is the new call's).
+            let Slot { active, forwarder, .. } = &mut slots[si];
             if active.as_ref().is_some_and(|a| a.queued.is_some()) {
                 start_queued(active, next_call_id, tx, forwarder);
             }
@@ -1461,7 +1515,7 @@ fn handle_boundary(
         // grant → field-radio-FM mismatch is a known Clay County
         // pattern, not a bug).
         CallBoundaryKind::TdulcComplete { source } => {
-            if let Some(a) = active.as_mut() {
+            if let Some(a) = slots[si].active.as_mut() {
                 if let Some(s) = source {
                     let agrees_with_cc = match a.source {
                         Some(cc) => cc == s,
@@ -1469,7 +1523,7 @@ fn handle_boundary(
                     };
                     if a.observe_source(s) {
                         emit_source_update(
-                            tx, a.call_id, s,
+                            tx, a, s,
                             SourceUpdateVia::Ldu1LcVote,
                         );
                     }
@@ -1485,6 +1539,7 @@ fn handle_boundary(
                                 speaker: s,
                                 agrees_with_cc,
                             },
+                            lane: a.lane,
                         });
                     }
                 }
@@ -1510,11 +1565,11 @@ fn handle_boundary(
         // resumes, which also covers phantom terminators. SpeakerEnd
         // (cooldown-gated, source-checked) stays a source stamp.
         CallBoundaryKind::SpeakerEnd { source, kind: _ } => {
-            if let Some(a) = active.as_mut() {
+            if let Some(a) = slots[si].active.as_mut() {
                 if let Some(s) = source {
                     if a.observe_source(s) {
                         emit_source_update(
-                            tx, a.call_id, s,
+                            tx, a, s,
                             SourceUpdateVia::TdulcMotTc,
                         );
                     }
@@ -1539,6 +1594,7 @@ fn handle_boundary(
         // With a queued grant (next talker), voice after the end marker
         // is that talker: hand the channel over instead.
         CallBoundaryKind::TrafficNidObserved { voice } => {
+            let Slot { active, forwarder, .. } = &mut slots[si];
             let mut hand_over = false;
             if let Some(a) = active.as_mut() {
                 let now = now_unix_ms();
@@ -1569,7 +1625,7 @@ fn handle_boundary(
         // call decoded after the next call opened) and while a marker is
         // already pending.
         CallBoundaryKind::VoiceEnd { call_id, air_ms, lc } => {
-            if let Some(a) = active.as_mut() {
+            if let Some(a) = slots[si].active.as_mut() {
                 if a.call_id == call_id && a.end_at_ms == 0 {
                     a.end_at_ms = now_unix_ms().max(1);
                     a.end_air_ms = air_ms;
@@ -1599,8 +1655,12 @@ enum OpenAction {
     Queue,
 }
 
-fn handle_audio(chunk: AudioChunk, active: &mut Option<ActiveCall>) {
-    if let Some(a) = active.as_mut() {
+/// Change 066: audio counts for the call of the chain that decoded it.
+fn handle_audio(chunk: AudioChunk, slots: &mut [Slot]) {
+    let Some(slot) = slots.iter_mut().find(|s| s.lane() == chunk.lane) else {
+        return;
+    };
+    if let Some(a) = slot.active.as_mut() {
         // Change 054: an air-time attributed chunk of another call (the
         // previous call's in-flight tail) is not activity of this one —
         // it must neither keep this call alive nor stamp its first-audio
@@ -1644,1541 +1704,13 @@ fn handle_audio(chunk: AudioChunk, active: &mut Option<ActiveCall>) {
 
 // ── Routing + chain control (Linux-only) ─────────────────────────
 
+// Change 066: in its own file, driving every traffic chain.
 #[cfg(target_os = "linux")]
-mod routing {
-
-use std::sync::atomic::{AtomicBool, AtomicI64};
-
-use tokio::sync::{Mutex, RwLock};
-use tokio::sync::mpsc::Receiver;
-
-use super::{now_unix_ms, resume_needs_reset, Arc, CallTrackerEventKind, CallTrackerEventTx, CloseReason};
-use crate::app::dibit_airtime::EpochKind;
-use crate::app::imbe_forwarder::ImbeForwarder;
-use crate::audio;
-use crate::hardware::fpga;
-use crate::protocol::p25::{self, control_channel::ControlChannelDecoder,
-    traffic_chain::TrafficChain};
-use crate::services::event_log::EventLog;
-use crate::services::monitor::MonitorList;
-
-// 2026-05-03 dual-DDC pivot: the polyphase-channelizer-specific
-// helpers (`CHANNELIZER_M`, `CHANNELIZER_FFT_LAG`, `bit_reverse_6`,
-// `offset_to_bin_and_nco`, plus their unit tests) have been retired.
-// Retunes now write a frequency offset directly to the dedicated
-// `traffic_ddc` NCO via `IpCore::retune_traffic_chain`, mirroring the
-// control-side DDC. See `doc/changes/` for the dual-DDC pivot.
-
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_grant_follower(
-    follower_mgr: Arc<Mutex<TrafficChain>>,
-    follower_core: Arc<Mutex<fpga::IpCore>>,
-    follower_current_sample_rate_hz: Arc<std::sync::atomic::AtomicU32>,
-    follower_current_rx_lo: Arc<AtomicI64>,
-    // 2026-04-30: live DDC NCO crystal-trim shift, mirroring the
-    // control chain's NCO programming. Read on every retune so the
-    // traffic chain's offset_hz includes the same PPM correction the
-    // control chain bakes in via `tuning.rs`. Previously this slot
-    // was a static `f64 lo_ppm` captured at spawn from `args.lo_ppm`,
-    // which left the traffic Costas loop absorbing the full residual
-    // any time auto-PPM (or a manual `PUT /api/ppm`) had moved
-    // `current_lo_shift_hz` away from the boot value — diagnosed via
-    // `pll_dbg ≈ -5200` (≈ -480 Hz) on traffic vs `-2658` on control
-    // in `2026-04-30-sync-trace`.
-    follower_current_lo_shift_hz: Arc<AtomicI64>,
-    follower_enabled: Arc<AtomicBool>,
-    follower_imbe: Arc<ImbeForwarder>,
-    follower_monitor: Arc<RwLock<MonitorList>>,
-    // Change 063: talkgroup groups -> speakers, priority pre-emption.
-    follower_routing: Arc<crate::services::ui_settings::RoutingPolicy>,
-    follower_event_log: Arc<EventLog>,
-    follower_traffic_decoder: Arc<RwLock<ControlChannelDecoder>>,
-    mut grant_event_rx: Receiver<p25::events::P25Event>,
-    follower_lock_freq: Arc<AtomicBool>,
-    follower_boundary_tx: audio::CallBoundaryTx,
-    follower_tracker_tx: CallTrackerEventTx,
-    // 2026-05-03 seeding bake: shared converged-seed snapshot
-    // published by the control-chain heartbeat. Read on each
-    // freq-change retune to warm-start the traffic AGC / Costas PLL
-    // / Gardner timing accumulators. None during heartbeat warmup
-    // (~MIN_CLEAN_SAMPLES clean NIDs) — the retune falls back to
-    // cold-start until the first commit.
-    follower_converged_seeds: crate::app::seed_snapshot::ConvergedSeedsShared,
-) {
-        tokio::spawn(async move {
-            use std::sync::atomic::Ordering;
-            tracing::info!(
-                "traffic grant follower task started \
-                 (grant events + CallTrackerEvent::CallClose)"
-            );
-            // Phase 2c (2026-04-25): replaced the 200 ms timeout-tick
-            // poller (which called `mgr.check_timeouts()`) with a
-            // CallTrackerEvent subscription. CallClose drives release;
-            // CallTracker's timeout sweep is the upstream timer.
-            let mut tracker_rx = follower_tracker_tx.subscribe();
-
-            // Process a grant event; returns true if a retune was performed.
-            //
-            // Sticky-lock policy (from SDRTrunk PR #2010):
-            // - If locked on a TG, only accept grants for that TG.
-            // - If Idle, accept according to monitor list priority
-            //   (or newest if monitor list is empty).
-            let handle_grant_event =
-                |g: &p25::events::GrantEvent,
-                 mgr: &mut p25::traffic_chain::TrafficChain,
-                 imbe: &ImbeForwarder| -> bool
-            {
-                let freq_hz = match g.frequency_hz {
-                    Some(f) => f,
-                    None => return false,
-                };
-                let retune = mgr.handle_grant(g.channel, g.talkgroup, freq_hz);
-
-                // Only update the ImbeForwarder's active-call atomics
-                // (current_talkgroup, current_source, call_encrypted)
-                // when this grant is for the call we're following.
-                // Otherwise a grant for TG 700 [ENC] arriving while
-                // sticky-locked on unencrypted TG 300 would set
-                // call_encrypted=true on the TG 300 path and IMBE
-                // frames would be encryption-skipped. Gate on:
-                //   - retune=true: we just switched to this TG.
-                //   - mgr.current_talkgroup() == Some(g.tg): grant is
-                //     a refresh for the already-active call.
-                let grant_is_for_active = retune
-                    || mgr.current_talkgroup() == Some(g.talkgroup);
-
-                // Determine encryption: check the grant flag, then
-                // fall back to TG history. History is updated on every
-                // grant regardless of whether we follow it, so the
-                // encrypted_tgs blocklist learns about TG 700 being
-                // encrypted even while we stay locked on TG 300.
-                let is_enc = if g.encrypted {
-                    if let Ok(mut hist) = imbe.encrypted_tg_history.lock() {
-                        hist.insert(g.talkgroup.0);
-                    }
-                    true
-                } else {
-                    imbe.encrypted_tg_history.lock()
-                        .map(|h| h.contains(&g.talkgroup.0))
-                        .unwrap_or(false)
-                };
-
-                if grant_is_for_active {
-                    imbe.current_talkgroup
-                        .store(g.talkgroup.0, Ordering::Relaxed);
-                    // Stash the grant's FM:<source> so the recorder
-                    // can stamp filenames from the CONTROL channel.
-                    // Only overwrite on a genuine active-call grant.
-                    if let Some(src) = g.source {
-                        if src.0 != 0 {
-                            imbe.current_source
-                                .store(src.0, Ordering::Relaxed);
-                        }
-                    }
-                    // 2026-04-24: tag traffic-channel freq/channel
-                    // so RecordingEntry + GrantDecodeSummary can
-                    // attribute calls per-channel for cross-channel
-                    // quality diffs.
-                    if let Some(f) = g.frequency_hz {
-                        imbe.current_frequency_hz
-                            .store(f, Ordering::Relaxed);
-                    }
-                    if let Ok(mut s) = imbe.current_channel.lock() {
-                        *s = format!("{}", g.channel);
-                    }
-                    if retune {
-                        // New call: set encryption and reset vocoder
-                        imbe.call_encrypted.store(is_enc, Ordering::Relaxed);
-                        imbe.vocoder_reset_pending
-                            .store(true, Ordering::Relaxed);
-                    } else if is_enc {
-                        // Sticky-true within an active call
-                        imbe.call_encrypted.store(true, Ordering::Relaxed);
-                    }
-                    // Note: we deliberately do NOT set call_encrypted
-                    // = false on a grant refresh where g.encrypted ==
-                    // false. The flag is cleared only on Idle.
-                }
-                retune
-            };
-
-            // Activity log is DELIBERATELY NOT deduped: every
-            // `P25Event::Grant` arrival gets its own line, even
-            // back-to-back grants on the same (TG, channel, freq)
-            // packed into one 3-TSBK TSDU. The correct-handling
-            // invariant lives in `TrafficChain::handle_grant`:
-            // the `same_tg_same_freq` branch at
-            // traffic_chain.rs:258 short-circuits with
-            // `return false` (no retune, no second transition)
-            // whenever the grant matches the current lock, and
-            // Acquiring->Active auto-promotes on that same branch.
-
-            // 2026-04-24 CC-grant-centric refactor: fire one
-            // `CallBoundaryKind::CcGrantArrival` (or `CcGrantUpdate`)
-            // per incoming grant event. Full grants carry the
-            // `not_followed` rejection reason (None = accepted);
-            // Updates are keep-alives that only refresh ttl on an
-            // existing OpenGrant and ignore not_followed. grant_stats
-            // owns the OpenGrant lifecycle — follower just reports
-            // facts. `nac` is stubbed to 0 (CC-side NAC isn't
-            // plumbed into GrantEvent; traffic heartbeat's HduStart
-            // enriches OpenGrant with the real NAC once the chain
-            // locks).
-            let send_cc_boundary =
-                |g: &p25::events::GrantEvent,
-                 not_followed: Option<&'static str>| {
-                let kind = if g.is_update {
-                    audio::CallBoundaryKind::CcGrantUpdate {
-                        tg: g.talkgroup.0,
-                        freq_hz: g.frequency_hz,
-                        channel: g.channel.0,
-                    }
-                } else {
-                    audio::CallBoundaryKind::CcGrantArrival {
-                        tg: g.talkgroup.0,
-                        // 2026-04-25: map RadioId(0) → None. Some sites
-                        // emit `GRP_VCH_GRANT TG:NNN SRC:00000` on the
-                        // wire (observed for TG 302 on Clay County
-                        // 8A1) — these are "CC announced the call but
-                        // didn't tell us who", semantically equivalent
-                        // to a GRP_VCH_GRNT_UPD that doesn't carry a
-                        // source. Treat as None so downstream LDU1 LC
-                        // FM: enrichment can fill in (when we follow
-                        // the call) and the dashboard renders a clean
-                        // "--" instead of misleading "0".
-                        source: g.source.and_then(|r| {
-                            if r.0 != 0 { Some(r.0) } else { None }
-                        }),
-                        freq_hz: g.frequency_hz,
-                        channel: g.channel.0,
-                        encrypted: g.encrypted,
-                        not_followed,
-                    }
-                };
-                let _ = follower_boundary_tx.send(audio::CallBoundary {
-                    kind,
-                    nac: 0,
-                    talkgroup: Some(g.talkgroup.0),
-                    expected_submit_count: 0,
-                });
-            };
-
-            // 2026-05-02 same-freq chain-reset gate. Tracks the last
-            // frequency we programmed into the traffic DDC so we can
-            // skip the LSM reset pulse on PTT bursts that stay on the
-            // same channel. See `IpCore::retune_traffic_chain` for the
-            // full operational rationale.
-            let mut last_traffic_freq_hz: Option<u64> = None;
-
-            // 2026-05-02 quality gate on state preservation. Skipping
-            // the LSM reset pulse on a same-freq grant inherits the
-            // chain's end-of-call register state. If the prior call
-            // ended cleanly (TG change, healthy IMBE rate, low silent
-            // ratio), that state was a good steady-state lock and is
-            // worth keeping. If the prior call ended with the chain
-            // mid-fade (timeout, high silent ratio, near-zero IMBE),
-            // its state is degenerate and should be cleared. Captured
-            // at CallClose; consumed at the next retune.
-            #[derive(Clone, Copy)]
-            struct LastCallQuality {
-                freq_hz: u64,
-                imbe_extracted: u64,
-                silent_frames: u64,
-                close_reason: CloseReason,
-            }
-            impl LastCallQuality {
-                fn was_clean(&self) -> bool {
-                    // 2026-05-03 (build `quality-coast-no-los` follow-up):
-                    // dropped the `close_reason == TgChange` requirement.
-                    // On a trunked system calls almost always close with
-                    // `Timeout` (10 s no UPD/audio after the speaker
-                    // unkeys), not TgChange — TgChange only fires when a
-                    // new grant for a different TG arrives on the same
-                    // physical freq, which is rare. Field measurement
-                    // (build 2026-05-03-quality-coast-no-los, 7 retunes
-                    // observed): `prev_clean = false` on every retune,
-                    // gate always resets. The IMBE + silent ratio fully
-                    // characterise call quality on their own; close
-                    // reason only matters as a "did the chain crash"
-                    // signal which `StreamLag` already flags.
-                    //
-                    // Healthy: ≥1.5 s of decoded audio (≥30 IMBE @ 20 ms),
-                    // < 5 % silent, did NOT close due to broadcast lag.
-                    self.imbe_extracted >= 30
-                        && self.silent_frames * 20 < self.imbe_extracted
-                        && !matches!(self.close_reason, CloseReason::StreamLag)
-                }
-            }
-            let mut last_call_quality: Option<LastCallQuality> = None;
-            // Change 057: (TG, frequency, unix ms) of the live call the
-            // lifecycle last closed by `Timeout`, for
-            // `refollow_on_update`.
-            let mut last_timeout_close: Option<(u16, u64, u64)> = None;
-            // Change 059: (TG, frequency, unix ms) of the newest clear
-            // grant the sticky gate rejected, for the same re-follow.
-            let mut last_sticky_reject: Option<(u16, u64, u64)> = None;
-
-            loop {
-                tokio::select! {
-                    event = grant_event_rx.recv() => {
-                        let event = match event {
-                            Some(e) => e,
-                            None => break, // channel closed
-                        };
-
-                        if !follower_enabled.load(Ordering::Relaxed) {
-                            continue;
-                        }
-
-                        match event {
-                            p25::events::P25Event::Grant(g) => {
-                                use crate::services::event_log::LogCategory;
-                                let freq_mhz = g.frequency_hz
-                                    .map(|f| f as f64 / 1e6)
-                                    .unwrap_or(0.0);
-
-                                // Eager history populate: any
-                                // encrypted=true grant adds the TG to
-                                // the persistent history before any
-                                // gate check runs. Otherwise a site
-                                // that sometimes-sets / sometimes-
-                                // doesn't set service_options would
-                                // let us retune to the same encrypted
-                                // TG multiple times before history
-                                // caught up. First encrypted=true
-                                // observation for a TG permanently
-                                // blocks all subsequent grants for it.
-                                if g.encrypted {
-                                    if let Ok(mut hist) =
-                                        follower_imbe
-                                            .encrypted_tg_history
-                                            .lock()
-                                    {
-                                        hist.insert(g.talkgroup.0);
-                                    }
-                                }
-
-                                // 2026-04-25: only log NEW grants, not
-                                // GVCG_UPDATE keep-alives. The
-                                // pre-2026-04-25 unconditional log
-                                // produced ~30 entries/sec from CC
-                                // refreshes for a single stuck call,
-                                // which pushed real call activity out
-                                // of the 1000-entry log ring within
-                                // seconds (TG 600 had 68 entries vs
-                                // TG 300 having zero in a 80-entry
-                                // sample). is_update=true comes from
-                                // GVCG_UPDATE / GVCG_UPDATE_EXP
-                                // refresh TSBKs; is_update=false is
-                                // only the initial GVCG / GVCG_EXP
-                                // for a new call. One log entry per
-                                // call instead of one per refresh.
-                                if !g.is_update {
-                                    follower_event_log.push(
-                                        LogCategory::Grant,
-                                        format!(
-                                            "grant TG={} ch={} {:.4} MHz src={}{}",
-                                            g.talkgroup.0,
-                                            g.channel.0,
-                                            freq_mhz,
-                                            g.source.map(|r| r.0).unwrap_or(0),
-                                            if g.encrypted { " [ENC]" } else { "" },
-                                        ),
-                                        serde_json::json!({
-                                            "tg":        g.talkgroup.0,
-                                            "channel":   g.channel.0,
-                                            "frequency": g.frequency_hz,
-                                            "src":       g.source.map(|r| r.0),
-                                            "encrypted": g.encrypted,
-                                            "emergency": g.emergency,
-                                            "is_update": false,
-                                        }),
-                                    );
-                                }
-
-                                // 2026-04-26 GVCG_UPD fast-path. CC
-                                // pumps GRP_VCH_GRNT_UPD at ~10-30/sec
-                                // per active call as a keep-alive; the
-                                // pre-2026-04-26 path ran every update
-                                // through the full lock chain
-                                // (mgr.lock().await, decoder.write().
-                                // await, core.lock().await, ±2 ms FIR
-                                // sleep on retune) which serialised
-                                // every grant. Field observation: a
-                                // single GRP_VCH_GRANT for TG 300
-                                // landed 76 log events (≈ 1.4 s) after
-                                // the parser had already extracted it
-                                // from the CC dibits — the follower
-                                // task was draining queued updates.
-                                //
-                                // This branch fires CcGrantUpdate
-                                // without acquiring any of the heavy
-                                // locks when the chain is already on
-                                // the TG. Lifecycle's
-                                // CallBoundaryKind::CcGrantUpdate
-                                // handler refreshes last_activity_ms
-                                // and returns. Initial GRANTs (and
-                                // updates that disagree with the
-                                // current lock) still take the full
-                                // path below.
-                                let g = if g.is_update {
-                                    let mgr = follower_mgr.lock().await;
-                                    let chain_tg = mgr.current_talkgroup();
-                                    drop(mgr);
-                                    if chain_tg.map(|t| t.0 == g.talkgroup.0)
-                                        .unwrap_or(false)
-                                    {
-                                        send_cc_boundary(&g, None);
-                                        continue;
-                                    }
-                                    // Change 057: the CC still announces
-                                    // the call we closed for lack of
-                                    // keep-alive: follow it again, as a
-                                    // (source-less) grant through every
-                                    // gate below.
-                                    let now_ms = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_millis() as u64)
-                                        .unwrap_or(0);
-                                    let refollow_timeout = super::refollow_on_update(
-                                        last_timeout_close,
-                                        g.talkgroup.0,
-                                        g.frequency_hz,
-                                        chain_tg.is_none(),
-                                        now_ms,
-                                        super::REFOLLOW_WINDOW_MS,
-                                    );
-                                    // Change 059: likewise a clear grant the
-                                    // sticky gate rejected, once the chain is
-                                    // idle or its call has ended (the rest of
-                                    // that transmission is still on the air).
-                                    let chain_free = chain_tg.map_or(true, |t| {
-                                        super::end_marker_frees_chain(
-                                            t.0,
-                                            super::unpack_end_marker(
-                                                follower_imbe.active_end_marker
-                                                    .load(Ordering::Relaxed)),
-                                            now_ms,
-                                        )
-                                    });
-                                    let refollow_sticky = !refollow_timeout
-                                        && super::refollow_on_update(
-                                            last_sticky_reject,
-                                            g.talkgroup.0,
-                                            g.frequency_hz,
-                                            chain_free,
-                                            now_ms,
-                                            super::REFOLLOW_STICKY_MS,
-                                        );
-                                    if refollow_timeout || refollow_sticky {
-                                        let (why, reason) = if refollow_timeout {
-                                            last_timeout_close = None;
-                                            ("call closed by timeout", "refollow_on_update")
-                                        } else {
-                                            last_sticky_reject = None;
-                                            ("rejected while the chain was busy", "refollow_after_sticky")
-                                        };
-                                        follower_event_log.push(
-                                            LogCategory::Traffic,
-                                            format!(
-                                                "re-follow TG={} on grant update {:.4} MHz \
-                                                 ({}, still announced)",
-                                                g.talkgroup.0, freq_mhz, why,
-                                            ),
-                                            serde_json::json!({
-                                                "tg":        g.talkgroup.0,
-                                                "channel":   g.channel.0,
-                                                "frequency": g.frequency_hz,
-                                                "reason":    reason,
-                                            }),
-                                        );
-                                        let mut regrant = g.clone();
-                                        regrant.is_update = false;
-                                        regrant
-                                    } else {
-                                        // Updates are keep-alives. They must
-                                        // NEVER bring the chain out of Idle
-                                        // or pull it onto a different TG —
-                                        // initial GVCG / GVCG_EXP is the
-                                        // only acquisition trigger. Without
-                                        // this gate, a TG whose initial
-                                        // grant we missed (or one whose
-                                        // encryption flag we couldn't
-                                        // learn — UPD opcodes carry no
-                                        // service_options) would slip past
-                                        // the encrypted check and force a
-                                        // retune to a freq we shouldn't
-                                        // touch. Field hit 2026-04-30: TG
-                                        // 700 (encrypted) update pulled the
-                                        // chain off-Idle.
-                                        send_cc_boundary(&g, Some("update_no_lock"));
-                                        continue;
-                                    }
-                                } else {
-                                    g
-                                };
-
-                                // Tally every observed grant into the
-                                // persistent frequency map regardless
-                                // of follow decision; populates
-                                // /api/grant_map for scanner-mode UI
-                                // and future LO auto-center.
-                                if let Some(freq) = g.frequency_hz {
-                                    let mut mgr = follower_mgr.lock().await;
-                                    mgr.tally_grant(
-                                        g.talkgroup.0, freq, g.encrypted);
-                                }
-
-                                // Monitor list gate
-                                let dominated = {
-                                    let monitor = follower_monitor.read().await;
-                                    if monitor.is_empty() {
-                                        true // accept all
-                                    } else {
-                                        monitor.contains(g.talkgroup.0)
-                                    }
-                                };
-                                if !dominated {
-                                    follower_event_log.push(
-                                        LogCategory::Traffic,
-                                        format!(
-                                            "reject: TG={} not in monitor list",
-                                            g.talkgroup.0,
-                                        ),
-                                        serde_json::json!({
-                                            "tg":     g.talkgroup.0,
-                                            "reason": "monitor_list",
-                                        }),
-                                    );
-                                    send_cc_boundary(&g, Some("monitor_list"));
-                                    continue;
-                                }
-
-                                // Change 063: speaker groups. A talkgroup
-                                // whose group is on neither speaker, or an
-                                // ungrouped one with "other talkgroups"
-                                // off, is not followed.
-                                if follower_routing.route(g.talkgroup.0).is_none() {
-                                    follower_event_log.push(
-                                        LogCategory::Traffic,
-                                        format!(
-                                            "reject: TG={} not on a speaker",
-                                            g.talkgroup.0,
-                                        ),
-                                        serde_json::json!({
-                                            "tg":     g.talkgroup.0,
-                                            "reason": "speaker_off",
-                                        }),
-                                    );
-                                    send_cc_boundary(&g, Some("speaker_off"));
-                                    continue;
-                                }
-
-                                let mut mgr = follower_mgr.lock().await;
-                                let locked_tg = mgr.current_talkgroup();
-                                let locked_ch = mgr.current_channel();
-
-                                // Channel-reuse detection: if the
-                                // grant's channel matches our current
-                                // lock but the TG differs, the trunking
-                                // system has reassigned our voice
-                                // channel to a different TG and the old
-                                // call is done. Tear down so we can
-                                // follow the new TG (subject to the
-                                // gates below). Without this the
-                                // sticky-lock reject would keep us on
-                                // a dead channel for up to
-                                // call_timeout_ms (2 s).
-                                // 2026-04-25 Fix B: extend channel-reuse
-                                // detection to also fire on same-FREQ-
-                                // different-channel-id. Different TGs
-                                // can be assigned to the same physical
-                                // freq via different channel-id values
-                                // depending on which IDEN_UPDATE band
-                                // record the trunking system was using
-                                // — observed on Clay County NAC 8A1
-                                // where TG 302 and TG 1210 both transmit
-                                // on 857.9875 MHz but the chain might
-                                // be sticky-locked on TG 302's channel-
-                                // id (e.g., 0-1189 from a prior call on
-                                // 858.4375 MHz) when a TG 1210 grant
-                                // for 0-1117 on 857.9875 arrives.
-                                //
-                                // Original channel-id-only check would
-                                // miss this case → sticky_lock rejects
-                                // the new grant → chain doesn't follow
-                                // TG 1210 → no recordings, but the chain
-                                // continues to decode whatever audio is
-                                // on its current freq.
-                                //
-                                // Adding the same-freq fallback closes
-                                // the gap. When the chain's actual freq
-                                // (current_frequency_hz) matches the new
-                                // grant's freq_hz, treat it as channel-
-                                // reuse: tear down old, accept new. No
-                                // retune happens because freq is already
-                                // correct; just TG/source attribution
-                                // updates.
-                                let chan_id_match = locked_ch
-                                    .map(|c| c == g.channel)
-                                    .unwrap_or(false);
-                                let parked_freq = follower_imbe
-                                    .current_frequency_hz
-                                    .load(Ordering::Relaxed);
-                                let same_freq_diff_chan = parked_freq != 0
-                                    && g.frequency_hz == Some(parked_freq);
-                                let is_channel_reuse =
-                                    (chan_id_match || same_freq_diff_chan)
-                                    && locked_tg.map(|t| t.0 != g.talkgroup.0).unwrap_or(false);
-                                if is_channel_reuse {
-                                    let prev_tg = locked_tg.map(|t| t.0).unwrap_or(0);
-                                    let reuse_reason = if chan_id_match {
-                                        "channel_reuse"
-                                    } else {
-                                        "same_freq_reuse"
-                                    };
-                                    follower_event_log.push(
-                                        LogCategory::Traffic,
-                                        format!(
-                                            "channel reuse: ch={} was TG={}, now TG={} ({}) — teardown",
-                                            g.channel, prev_tg, g.talkgroup.0, reuse_reason,
-                                        ),
-                                        serde_json::json!({
-                                            "channel":     format!("{}", g.channel),
-                                            "prev_tg":     prev_tg,
-                                            "new_tg":      g.talkgroup.0,
-                                            "parked_freq": parked_freq,
-                                            "grant_freq":  g.frequency_hz,
-                                            "reason":      reuse_reason,
-                                        }),
-                                    );
-                                    mgr.force_idle();
-                                    follower_imbe.current_talkgroup
-                                        .store(0, Ordering::Relaxed);
-                                    // Change 054: the old TG's lock ends
-                                    // here on the air-time axis.
-                                    follower_imbe.mark_epoch(
-                                        EpochKind::TgChange, false);
-                                    // Fall through — re-evaluate the
-                                    // grant as if Idle. Encrypted +
-                                    // sticky-lock checks below now see
-                                    // locked_tg = None and proceed.
-                                }
-                                // Re-read after the possible force_idle.
-                                let locked_tg = mgr.current_talkgroup();
-
-                                // Encrypted check runs BEFORE the
-                                // sticky-lock check. Order matters: a
-                                // TG 406 [ENC] grant arriving while
-                                // locked on TG 301 must reach the
-                                // encrypted gate so encrypted_tg_history
-                                // learns TG 406; otherwise if we later
-                                // went Idle and TG 406 re-emitted with
-                                // a flipped service-options byte
-                                // (FEC-marginal), we'd accept it. This
-                                // ordering also keeps the
-                                // grants_rejected_encrypted stat
-                                // accurate and names the correct reason
-                                // in the log line.
-                                let tg_known_enc = follower_imbe
-                                    .encrypted_tg_history
-                                    .lock()
-                                    .map(|h| h.contains(&g.talkgroup.0))
-                                    .unwrap_or(false);
-                                // Forensics override (2026-05-03 Track 2):
-                                // if the operator armed forensics with
-                                // `follow_encrypted=1`, follow encrypted
-                                // grants too. Audio is still garbled but
-                                // dibits + wideband are usable for HDL
-                                // diff. See app/forensics.rs.
-                                #[cfg(target_os = "linux")]
-                                let forensics_override =
-                                    crate::app::forensics::follow_encrypted_enabled();
-                                #[cfg(not(target_os = "linux"))]
-                                let forensics_override = false;
-                                if (g.encrypted || tg_known_enc) && !forensics_override {
-                                    if g.encrypted {
-                                        if let Ok(mut hist) =
-                                            follower_imbe
-                                                .encrypted_tg_history
-                                                .lock()
-                                        {
-                                            hist.insert(g.talkgroup.0);
-                                        }
-                                    }
-                                    mgr.grants_rejected_encrypted += 1;
-
-                                    // If the encrypted TG is our
-                                    // current lock, tear down
-                                    // synchronously — otherwise the
-                                    // sticky 2 s timeout holds the
-                                    // slot until the call ends
-                                    // naturally.
-                                    let was_locked = locked_tg
-                                        .map(|t| t.0 == g.talkgroup.0)
-                                        .unwrap_or(false);
-                                    if was_locked {
-                                        mgr.force_idle();
-                                        drop(mgr);
-                                        // Zero current_talkgroup so
-                                        // the vocoder task's TG-change
-                                        // auto-flush fires and closes
-                                        // the call summary.
-                                        follower_imbe.current_talkgroup
-                                            .store(0, Ordering::Relaxed);
-                                        // Change 054: gate closes at this
-                                        // air-time cut (framer reset
-                                        // there); the pause below adds
-                                        // its own hardware cut.
-                                        follower_imbe.mark_epoch(
-                                            EpochKind::TgChange, true);
-                                        // DO NOT clear call_encrypted
-                                        // here. Buffered LDU dibits
-                                        // from the previous channel
-                                        // are still in flight in the
-                                        // DMA ring + mpsc channel;
-                                        // clearing the flag would let
-                                        // the vocoder DECODE those
-                                        // encrypted LDUs as clear and
-                                        // produce garbled output.
-                                        // Leaving it `true` keeps the
-                                        // skip path active until the
-                                        // next retune (which
-                                        // unconditionally writes
-                                        // call_encrypted =
-                                        // new_grant.is_enc).
-                                        #[cfg(target_os = "linux")]
-                                        {
-                                            let core = follower_core.lock().await;
-                                            // M2B 2026-05-02: pause via
-                                            // traffic_lsm_enable=0 so the
-                                            // new mux-fed chain stops
-                                            // emitting NID events on the
-                                            // encrypted teardown.
-                                            core.pause_traffic_chain();
-                                            // Change 057: the same-freq
-                                            // resume re-enables it.
-                                            follower_imbe
-                                                .traffic_paused_by_teardown
-                                                .store(true, Ordering::Relaxed);
-                                        }
-                                        // Reset the traffic framer --
-                                        // it's mid-frame on encrypted
-                                        // data and would carry bogus
-                                        // state into the next lock.
-                                        // Change 054: in airtime mode the
-                                        // reader resets it at the cut
-                                        // recorded above instead (a reset
-                                        // now would cut whatever older
-                                        // dibits it is still decoding).
-                                        if !follower_imbe.epochs_active() {
-                                            let mut dec = follower_traffic_decoder
-                                                .write().await;
-                                            dec.reset_framer_state();
-                                        }
-                                    }
-
-                                    follower_event_log.push(
-                                        LogCategory::Traffic,
-                                        format!(
-                                            "reject TG={} encrypted{}",
-                                            g.talkgroup.0,
-                                            if was_locked {
-                                                " (tore down active lock)"
-                                            } else { "" },
-                                        ),
-                                        serde_json::json!({
-                                            "tg":         g.talkgroup.0,
-                                            "enc_flag":   g.encrypted,
-                                            "in_history": tg_known_enc,
-                                            "was_locked": was_locked,
-                                            "reason":     "encrypted",
-                                        }),
-                                    );
-                                    send_cc_boundary(&g, Some("encrypted"));
-                                    continue;
-                                }
-
-                                // Sticky-lock check runs AFTER the
-                                // channel-reuse + encrypted gates. A
-                                // grant for a different TG on a
-                                // different channel is an unrelated
-                                // call; stay on the current lock.
-                                //
-                                // 2026-04-26: log the rejected grant's
-                                // freq + source + parked_freq so the
-                                // operator can audit which TG was lost
-                                // and whether it was on a different
-                                // physical channel (real preempt cost)
-                                // or the same channel (channel-reuse
-                                // detection should have caught it —
-                                // missing log = missing-data bug).
-                                let locked_tg_final = mgr.current_talkgroup();
-                                // Change 059: the locked call's transmission
-                                // has ended (end marker pending for
-                                // `END_PREEMPT_AFTER_MS`): the other TG's
-                                // grant takes the chain now instead of
-                                // after the lifecycle's `end_grace_ms`.
-                                // Change 063: or the grant's group ranks
-                                // above the locked call's (speaker groups,
-                                // pre-emption on): it takes the chain now.
-                                let end_marker = super::unpack_end_marker(
-                                    follower_imbe.active_end_marker.load(Ordering::Relaxed));
-                                let preempt = locked_tg_final
-                                    .filter(|t| t.0 != g.talkgroup.0)
-                                    .and_then(|t| {
-                                        if super::end_marker_frees_chain(
-                                            t.0, end_marker, now_unix_ms())
-                                        {
-                                            Some((t, "end_marker_preempt"))
-                                        } else if follower_routing.preempts(g.talkgroup.0, t.0) {
-                                            Some((t, "priority_preempt"))
-                                        } else {
-                                            None
-                                        }
-                                    });
-                                if let Some((tg, reason)) = preempt {
-                                    let ended_ms = end_marker
-                                        .map_or(0, |(_, at)| now_unix_ms().saturating_sub(at));
-                                    let why = if reason == "priority_preempt" {
-                                        "higher-priority group".to_string()
-                                    } else {
-                                        format!("ended {ended_ms} ms ago (end marker)")
-                                    };
-                                    follower_event_log.push(
-                                        LogCategory::Traffic,
-                                        format!(
-                                            "pre-empt: TG={} {}, follow TG={}",
-                                            tg.0, why, g.talkgroup.0,
-                                        ),
-                                        serde_json::json!({
-                                            "prev_tg":  tg.0,
-                                            "new_tg":   g.talkgroup.0,
-                                            "ended_ms": ended_ms,
-                                            "reason":   reason,
-                                        }),
-                                    );
-                                    mgr.force_idle();
-                                    follower_imbe.current_talkgroup
-                                        .store(0, Ordering::Relaxed);
-                                    // Change 054: the old TG's lock ends
-                                    // here on the air-time axis.
-                                    follower_imbe.mark_epoch(
-                                        EpochKind::TgChange, false);
-                                }
-                                let locked_tg_final = mgr.current_talkgroup();
-                                if let Some(tg) = locked_tg_final {
-                                    if tg.0 != g.talkgroup.0 {
-                                        // Change 059: remember a clear grant
-                                        // (the encrypted gate is above) for
-                                        // `refollow_on_update` once the chain
-                                        // frees up.
-                                        if let Some(f) = g.frequency_hz {
-                                            last_sticky_reject =
-                                                Some((g.talkgroup.0, f, now_unix_ms()));
-                                        }
-                                        let parked_freq = follower_imbe
-                                            .current_frequency_hz
-                                            .load(Ordering::Relaxed);
-                                        let same_freq = parked_freq != 0
-                                            && g.frequency_hz == Some(parked_freq);
-                                        follower_event_log.push(
-                                            LogCategory::Traffic,
-                                            format!(
-                                                "reject: TG={} src={} freq={} \
-                                                 (sticky-locked on TG={} \
-                                                 parked_freq={}{})",
-                                                g.talkgroup.0,
-                                                g.source.map(|r| r.0).unwrap_or(0),
-                                                g.frequency_hz.unwrap_or(0),
-                                                tg.0, parked_freq,
-                                                if same_freq {
-                                                    " — SAME FREQ, channel-reuse miss?"
-                                                } else { "" },
-                                            ),
-                                            serde_json::json!({
-                                                "tg":          g.talkgroup.0,
-                                                "src":         g.source.map(|r| r.0),
-                                                "grant_freq":  g.frequency_hz,
-                                                "locked_tg":   tg.0,
-                                                "parked_freq": parked_freq,
-                                                "same_freq":   same_freq,
-                                                "reason":      "sticky_lock",
-                                            }),
-                                        );
-                                        send_cc_boundary(&g, Some("sticky_lock"));
-                                        continue;
-                                    }
-                                }
-
-                                // Diagnostic lock: when on, suppress
-                                // retunes so the chain stays parked
-                                // on a known-active channel, but
-                                // STILL process grants whose freq
-                                // matches the parked freq so the
-                                // call state machine fires (TG/source
-                                // get stamped, IMBE flows into the
-                                // recorder, audio gets decoded).
-                                //
-                                // 2026-04-25 fix: previously this
-                                // gate skipped EVERY grant
-                                // unconditionally — meaning lock=on
-                                // also stopped following the very
-                                // calls the operator wanted to
-                                // measure on the parked freq. Now we
-                                // only skip grants that would require
-                                // a retune (different freq from
-                                // current_frequency_hz). Same-freq
-                                // grants fall through and process
-                                // normally; handle_grant_event sees
-                                // the matching freq and returns
-                                // retune=false so no actual retune
-                                // dispatch happens.
-                                if follower_lock_freq.load(Ordering::Relaxed) {
-                                    let parked_freq = follower_imbe
-                                        .current_frequency_hz
-                                        .load(Ordering::Relaxed);
-                                    let grant_freq = g.frequency_hz
-                                        .unwrap_or(0);
-                                    let same_freq = parked_freq != 0
-                                        && grant_freq != 0
-                                        && grant_freq == parked_freq;
-                                    if !same_freq {
-                                        follower_event_log.push(
-                                            LogCategory::Traffic,
-                                            format!(
-                                                "lock: skip grant TG={} SRC={} \
-                                                 ch={} freq={} (parked at {})",
-                                                g.talkgroup.0,
-                                                g.source.map(|s| s.0).unwrap_or(0),
-                                                g.channel,
-                                                grant_freq,
-                                                parked_freq,
-                                            ),
-                                            serde_json::json!({
-                                                "tg":          g.talkgroup.0,
-                                                "channel":     format!("{}", g.channel),
-                                                "grant_freq":  grant_freq,
-                                                "parked_freq": parked_freq,
-                                                "reason":      "traffic_lock",
-                                            }),
-                                        );
-                                        send_cc_boundary(&g, Some("traffic_lock"));
-                                        continue;
-                                    }
-                                    // Same freq as parked — fall through.
-                                    // handle_grant_event will return
-                                    // retune=false (TrafficChain sees
-                                    // matching channel/freq), the imbe
-                                    // atomics get updated, the call state
-                                    // advances, and the recorder /
-                                    // grant_stats see proper events.
-                                }
-                                // Accepted — about to evaluate handle_grant_event.
-                                // Emit CcGrantArrival (or Update) with not_followed=None
-                                // so grant_stats can open / refresh the OpenGrant. Kept
-                                // here instead of pre-gates so we only fire for grants
-                                // that actually proceed to state-machine evaluation.
-                                //
-                                // Change 054: the boundary now goes out
-                                // AFTER handle_grant_event (sync, µs),
-                                // so that when a retune follows, the
-                                // grant-hold cut below is recorded
-                                // before the lifecycle can publish the
-                                // new call_id: dibits still arriving from
-                                // the old frequency are gated instead of
-                                // being labelled with the new call.
-                                let pre_state = mgr.state_label();
-                                // Live context before the grant touches
-                                // the forwarder atomics, to decide which
-                                // epoch cut to record.
-                                let ctx_before = follower_imbe.live_context();
-                                let retune = handle_grant_event(
-                                    &g, &mut mgr, &follower_imbe
-                                );
-                                let post_state = mgr.state_label();
-                                drop(mgr);
-                                let epochs = follower_imbe.epochs_active();
-                                if retune && epochs {
-                                    follower_imbe.mark_epoch_ctx(
-                                        EpochKind::GrantHold,
-                                        crate::app::dibit_airtime::SegmentContext {
-                                            tg: 0,
-                                            ..ctx_before
-                                        },
-                                        true,
-                                    );
-                                }
-                                send_cc_boundary(&g, None);
-
-                                if pre_state != post_state {
-                                    follower_event_log.push(
-                                        LogCategory::Traffic,
-                                        format!(
-                                            "state {} -> {} TG={}",
-                                            pre_state, post_state, g.talkgroup.0,
-                                        ),
-                                        serde_json::json!({
-                                            "from": pre_state,
-                                            "to":   post_state,
-                                            "tg":   g.talkgroup.0,
-                                        }),
-                                    );
-                                }
-
-                                if retune {
-                                    let freq_hz = g.frequency_hz.unwrap();
-                                    // PPM correction matching the control
-                                    // DDC path in get_reinit(). Cancels
-                                    // the Pluto crystal trim error (a
-                                    // few hundred Hz depending on lo_ppm
-                                    // and rx_lo) so the traffic PLL
-                                    // doesn't sit at a residual steady-
-                                    // state phase error on every call.
-                                    //
-                                    // rx_lo + sample rate read fresh
-                                    // (not captured at spawn) so offset
-                                    // math follows live LO or preset
-                                    // changes (POST /api/preset moves
-                                    // sample rate; POST /api/tune moves
-                                    // rx_lo in Auto mode).
-                                    let rx_lo_now = follower_current_rx_lo
-                                        .load(std::sync::atomic::Ordering::Relaxed);
-                                    let sample_rate_now =
-                                        follower_current_sample_rate_hz
-                                            .load(std::sync::atomic::Ordering::Relaxed)
-                                            as f64;
-                                    // 2026-04-30: read the LIVE DDC
-                                    // NCO crystal-trim shift, the same
-                                    // value `tuning.rs` uses when
-                                    // programming the control chain's
-                                    // NCO. Static `lo_ppm` was wrong
-                                    // here — it never tracked
-                                    // auto-PPM apply, manual
-                                    // `PUT /api/ppm`, or boot-loaded
-                                    // persisted shifts, leaving traffic
-                                    // Costas with the full residual.
-                                    let nco_lo_shift_hz =
-                                        follower_current_lo_shift_hz
-                                            .load(std::sync::atomic::Ordering::Relaxed)
-                                            as f64;
-                                    let offset_hz = (freq_hz as f64
-                                        - rx_lo_now as f64
-                                        + nco_lo_shift_hz)
-                                        as i64;
-
-                                    // Reset the traffic-side framer
-                                    // BEFORE the DDC retune so dibits
-                                    // from the new frequency aren't
-                                    // consumed while the framer is
-                                    // mid-state on stale data.
-                                    // Preserves cumulative counters.
-                                    // Change 054: airtime mode resets
-                                    // at the retune's epoch cut (the
-                                    // IpCore hook records it), so the
-                                    // old call's in-flight dibits are
-                                    // still decoded to their end.
-                                    if !epochs {
-                                        let mut dec = follower_traffic_decoder
-                                            .write().await;
-                                        dec.reset_framer_state();
-                                    }
-
-                                    // 2026-05-03 dual-DDC: retune writes
-                                    // the traffic DDC NCO to `offset_hz`,
-                                    // pulses traffic LSM reset, enables
-                                    // the chain. AGC seed is implicit in
-                                    // the AGC tracker — legacy
-                                    // `agc_seed_for_freq` cache is
-                                    // currently a no-op since the new HDL
-                                    // doesn't accept a seed register
-                                    // (revisit if convergence is slow).
-                                    let _ = follower_imbe
-                                        .agc_seed_for_freq(freq_hz)
-                                        .unwrap_or(0);
-                                    // 2026-05-03 quality-gated coast policy
-                                    // (Option C). Original same-freq gate
-                                    // required `q.freq_hz == freq_hz` to
-                                    // preserve state; SDRTrunk-source review
-                                    // showed cross-freq state preservation
-                                    // also works (their AGC + timing
-                                    // accumulators carry over across freq
-                                    // changes, only PLL is zeroed).
-                                    //
-                                    // New rule: COAST if the previous call
-                                    // was clean (regardless of freq), RESET
-                                    // if it was degenerate. The chain is
-                                    // re-acquired naturally through the FIR
-                                    // flush + Costas re-lock when coasting;
-                                    // a reset clears AGC/PLL/timing state
-                                    // that drifted into a bad attractor
-                                    // during a previous noisy call (the
-                                    // failure mode observed under pure
-                                    // coast-no-reset: chain decoded noise
-                                    // during inter-call gaps, accumulated
-                                    // bad AGC saturation + random PLL phase,
-                                    // ~60% of subsequent calls returned 0
-                                    // IMBE).
-                                    let same_freq =
-                                        last_traffic_freq_hz == Some(freq_hz);
-                                    let prev_clean = last_call_quality
-                                        .as_ref()
-                                        .map(|q| q.was_clean())
-                                        .unwrap_or(false);
-                                    let freq_changed = !prev_clean;
-                                    // 2026-05-03 seeding bake: lift the
-                                    // current converged seeds (if any)
-                                    // before taking the IpCore mutex.
-                                    // None during warmup; once the
-                                    // control-chain heartbeat has seen
-                                    // MIN_CLEAN_SAMPLES clean NIDs the
-                                    // tuple becomes Some and every
-                                    // freq-change retune writes them
-                                    // before pulsing reset.
-                                    //
-                                    // 2026-05-03 PLL-only gate: the
-                                    // initial bake wrote all 3 seeds
-                                    // but on-target measurement showed
-                                    // First-IMBE stayed at 3-3.5 s on
-                                    // cold-start retunes. Hypothesis:
-                                    // (a) AGC seed cross-applies a
-                                    // gain converged for the CC's
-                                    // signal level, which differs from
-                                    // each traffic channel's level →
-                                    // forces a slow IIR migration that
-                                    // is worse than starting from
-                                    // GAIN_INIT=1.0; (b) timing seed
-                                    // bypasses the FIFO-warmup delay
-                                    // (cold-start init is sps_q12 +
-                                    // 7*ONE_Q12 specifically to wait
-                                    // for the lookahead FIFO to fill).
-                                    // Zero AGC + timing → HDL falls
-                                    // back to its init values.
-                                    let seed_tuple: Option<(u32, i16, i32)> = {
-                                        let slot = follower_converged_seeds
-                                            .read().await;
-                                        slot.as_ref().map(|s| (
-                                            0,            // AGC: cold-start
-                                            s.pll_seed,   // empirically uniform
-                                            0,            // timing: FIFO warmup
-                                        ))
-                                    };
-                                    let retune_result = {
-                                        let core = follower_core.lock().await;
-                                        core.retune_traffic_chain(
-                                            offset_hz as f64,
-                                            sample_rate_now,
-                                            freq_changed,
-                                            seed_tuple,
-                                        )
-                                    };
-                                    // 2026-05-03 seeding bake: log the
-                                    // seed values applied so the
-                                    // diagnostic trail correlates
-                                    // First-IMBE timing with seeds.
-                                    if freq_changed {
-                                        match seed_tuple {
-                                            Some((a, p, t)) => tracing::info!(
-                                                target: "p25_traffic",
-                                                "retune seeded: agc=0x{:05x} \
-                                                 pll={} timing={}",
-                                                a, p, t,
-                                            ),
-                                            None => tracing::info!(
-                                                target: "p25_traffic",
-                                                "retune cold-start: \
-                                                 ConvergedSeeds not yet \
-                                                 published (heartbeat warmup)"
-                                            ),
-                                        }
-                                    }
-                                    if let Err(ref e) = retune_result {
-                                        tracing::warn!(
-                                            target: "p25_traffic",
-                                            "retune_traffic_chain failed: {e}"
-                                        );
-                                    } else {
-                                        last_traffic_freq_hz = Some(freq_hz);
-                                        // The retune enabled the chain.
-                                        follower_imbe
-                                            .traffic_paused_by_teardown
-                                            .store(false, Ordering::Relaxed);
-                                    }
-                                    // Change 054: the new call's context
-                                    // starts right after the retune's
-                                    // hardware cut (whose settle discard
-                                    // covers the gap between the two).
-                                    // A failed retune never left the old
-                                    // frequency: the grant hold keeps the
-                                    // gate closed there.
-                                    if retune_result.is_ok() {
-                                        let ctx_after = follower_imbe.live_context();
-                                        let kind = if ctx_after.tg != ctx_before.tg {
-                                            EpochKind::TgChange
-                                        } else {
-                                            EpochKind::CtxUpdate
-                                        };
-                                        follower_imbe.mark_epoch(kind, false);
-                                    }
-                                    tracing::info!(
-                                        target: "p25_traffic",
-                                        "retune (dual-DDC): TG={} channel={:?} \
-                                         freq={} Hz offset={:+} Hz \
-                                         same_freq={} prev_clean={} freq_changed={}",
-                                        g.talkgroup.0, g.channel,
-                                        freq_hz, offset_hz,
-                                        same_freq, prev_clean, freq_changed,
-                                    );
-                                    // 2026-05-03 quality-gated coast log:
-                                    // `freq_changed` is the actual gate
-                                    // result (true → reset, false → coast).
-                                    // `policy` reflects the decision; the
-                                    // `prev_clean_q` / `same_freq_q` fields
-                                    // expose the inputs so we can correlate
-                                    // per-call First-IMBE outcomes with the
-                                    // gate state.
-                                    let policy = if freq_changed { "reset" } else { "coast" };
-                                    follower_event_log.push(
-                                        LogCategory::Traffic,
-                                        format!(
-                                            "retune TG={} -> {:.4} MHz \
-                                             (offset {:+} Hz) {}",
-                                            g.talkgroup.0,
-                                            freq_hz as f64 / 1e6,
-                                            offset_hz,
-                                            policy,
-                                        ),
-                                        serde_json::json!({
-                                            "tg":             g.talkgroup.0,
-                                            "channel":        g.channel.0,
-                                            "frequency":      freq_hz,
-                                            "offset_hz":      offset_hz,
-                                            "framer_reset":   freq_changed,
-                                            "policy":         policy,
-                                            "prev_clean_q":   prev_clean,
-                                            "same_freq_q":    same_freq,
-                                        }),
-                                    );
-                                } else if pre_state == "Idle" && post_state != "Idle" {
-                                    // M2B 2026-05-02: same-freq new call
-                                    // (Idle -> Active on the bin we
-                                    // last followed). Per design, the
-                                    // chain stays parked + enabled on
-                                    // the last freq through CallClose,
-                                    // so the PLL/AGC carry across the
-                                    // inter-call gap. Only thing that
-                                    // needs reset is the PS framer
-                                    // state machine (it was mid-search
-                                    // when the previous call ended).
-                                    //
-                                    // No NCO re-write unless the chain
-                                    // state went stale while parked
-                                    // (`resume_needs_reset`), then the
-                                    // same reset retune as a frequency
-                                    // change. Subsequent dedup'd grants
-                                    // for this same call are no-ops at
-                                    // this layer.
-                                    let last_imbe = follower_imbe
-                                        .last_imbe_at_millis
-                                        .load(Ordering::Relaxed);
-                                    let now_ms = now_unix_ms();
-                                    let ms_since_voice = (last_imbe != 0)
-                                        .then(|| now_ms.saturating_sub(last_imbe));
-                                    let (pll_pre, clamp) = {
-                                        let core = follower_core.lock().await;
-                                        let (pre, _) = core.traffic_lsm_debug();
-                                        (pre, core.core_version().pll_clamp_q213())
-                                    };
-                                    let reset = resume_needs_reset(pll_pre, ms_since_voice, clamp);
-                                    // Change 057: an encrypted teardown
-                                    // paused the chain (lsm_enable = 0)
-                                    // and the coast path writes no NCO,
-                                    // so nothing else would re-enable
-                                    // it: the channel stayed dead until
-                                    // the next cross-frequency retune.
-                                    // A reset retune enables the chain.
-                                    let reenable = follower_imbe
-                                        .traffic_paused_by_teardown
-                                        .swap(false, Ordering::Relaxed);
-                                    let mut reset_ok = false;
-                                    if reset {
-                                        let freq_hz = g.frequency_hz.unwrap_or(0);
-                                        let rx_lo_now = follower_current_rx_lo
-                                            .load(Ordering::Relaxed);
-                                        let sample_rate_now =
-                                            follower_current_sample_rate_hz
-                                                .load(Ordering::Relaxed) as f64;
-                                        let nco_lo_shift_hz =
-                                            follower_current_lo_shift_hz
-                                                .load(Ordering::Relaxed) as f64;
-                                        let offset_hz = freq_hz as f64
-                                            - rx_lo_now as f64 + nco_lo_shift_hz;
-                                        let seed_tuple: Option<(u32, i16, i32)> = {
-                                            let slot = follower_converged_seeds
-                                                .read().await;
-                                            slot.as_ref().map(|s| (0, s.pll_seed, 0))
-                                        };
-                                        if !epochs {
-                                            let mut dec = follower_traffic_decoder
-                                                .write().await;
-                                            dec.reset_framer_state();
-                                        }
-                                        // Records the Retune epoch cut
-                                        // with its settle discard (054
-                                        // IpCore hook).
-                                        let res = {
-                                            let core = follower_core.lock().await;
-                                            core.retune_traffic_chain(
-                                                offset_hz, sample_rate_now,
-                                                true, seed_tuple,
-                                            )
-                                        };
-                                        match res {
-                                            Ok(_) => reset_ok = true,
-                                            Err(e) => tracing::warn!(
-                                                target: "p25_traffic",
-                                                "same-freq reset retune failed: {e}"
-                                            ),
-                                        }
-                                        if epochs {
-                                            follower_imbe.mark_epoch(
-                                                EpochKind::TgChange, !reset_ok);
-                                        }
-                                    } else if epochs {
-                                        // Change 054: airtime mode applies
-                                        // the framer reset + new context at
-                                        // this air-time cut.
-                                        follower_imbe.mark_epoch(
-                                            EpochKind::TgChange, true);
-                                    } else {
-                                        let mut dec = follower_traffic_decoder
-                                            .write().await;
-                                        dec.reset_framer_state();
-                                    }
-                                    if reenable && !reset_ok {
-                                        // Records the Resume epoch cut
-                                        // (054 IpCore hook).
-                                        let core = follower_core.lock().await;
-                                        core.set_traffic_lsm_enable(true);
-                                    }
-                                    let idle_s = ms_since_voice
-                                        .map(|ms| format!("{:.1} s", ms as f64 / 1000.0))
-                                        .unwrap_or_else(|| "never".into());
-                                    follower_event_log.push(
-                                        LogCategory::Traffic,
-                                        format!(
-                                            "same-freq resume TG={} ({}; pll {} \
-                                             idle {}{})",
-                                            g.talkgroup.0,
-                                            if reset_ok { "reset" } else { "coast" },
-                                            pll_pre, idle_s,
-                                            if reenable { "; re-enabled after encrypted pause" } else { "" },
-                                        ),
-                                        serde_json::json!({
-                                            "tg":             g.talkgroup.0,
-                                            "channel":        g.channel.0,
-                                            "frequency":      g.frequency_hz,
-                                            "framer_reset":   true,
-                                            "lsm_reset":      reset_ok,
-                                            "nco_write":      reset_ok,
-                                            "policy":         if reset_ok { "reset" } else { "coast" },
-                                            "lsm_enable":     if reenable { "re-enabled" } else { "unchanged" },
-                                            "pll_pre_resume": pll_pre,
-                                            "ms_since_voice": ms_since_voice,
-                                        }),
-                                    );
-                                } else if follower_imbe.live_context() != ctx_before {
-                                    // Change 054: grant refresh for the
-                                    // active call changed its source /
-                                    // encryption: frames completing
-                                    // after this point carry the update,
-                                    // in-flight ones keep the old values.
-                                    follower_imbe.mark_epoch(
-                                        EpochKind::CtxUpdate, false);
-                                }
-                            }
-                        }
-                    }
-                    tracker_event = tracker_rx.recv() => {
-                        let event = match tracker_event {
-                            Ok(e) => e,
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!(
-                                    target: "p25_traffic",
-                                    "follower tracker_rx lagged by {n} events; \
-                                     skipping",
-                                );
-                                continue;
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        };
-                        // Phase 2c (2026-04-25): release the chain on
-                        // CallTracker CallClose. CallTracker is the
-                        // upstream lifecycle authority — TDU /
-                        // SpeakerEnd / TgChange / SpeakerChange /
-                        // Timeout all converge here. Other event
-                        // kinds (CallOpen / SourceUpdate /
-                        // ActualSpeakerObserved) are no-ops at this
-                        // layer.
-                        let close_reason = match &event.kind {
-                            CallTrackerEventKind::CallClose { reason, .. } => Some(*reason),
-                            _ => None,
-                        };
-                        let Some(reason) = close_reason else { continue; };
-
-                        // Change 054 gating fix: only a CallClose of the
-                        // LIVE call releases the chain. The lifecycle
-                        // also emits CallClose for (a) the synthetic
-                        // open/close pair of every not-followed grant
-                        // (sticky-lock / encrypted / monitor-list
-                        // rejects on other channels) and (b) the
-                        // predecessor of a preempting grant — after this
-                        // follower already moved the chain to the new
-                        // grant. Acting on those zeroed the TG of the
-                        // call actually being followed, so its dibits
-                        // were gated off until another primary grant
-                        // re-acquired it. `current_call_id` is the live
-                        // call (lifecycle publishes a successor before
-                        // closing its predecessor; between calls it
-                        // holds the last call's id, so a Timeout close
-                        // still matches).
-                        let live_call_id = follower_imbe
-                            .current_call_id.load(Ordering::Relaxed);
-                        if event.call_id != live_call_id {
-                            tracing::debug!(
-                                target: "p25_traffic",
-                                "CallClose {:?} for call_id={} ignored \
-                                 (live call_id={})",
-                                reason, event.call_id, live_call_id,
-                            );
-                            continue;
-                        }
-
-                        // Snapshot the just-closed call's quality stats
-                        // for the next retune's chain-reset gate.
-                        // Change 057: this call's own counts by call_id
-                        // (`call_counts`); pre-057 read global minus the
-                        // per-HDU baseline, which mixed calls. The tail
-                        // still in flight is not in yet: fine for a
-                        // quality gate (≥ 30 IMBE, < 5 % silent).
-                        if let Some(freq_hz) = last_traffic_freq_hz {
-                            let counts = follower_imbe
-                                .call_counts
-                                .get(event.call_id)
-                                .unwrap_or_default();
-                            let call_imbe = counts.imbe_extracted;
-                            let call_silent = counts.vocoder_silent;
-                            last_call_quality = Some(LastCallQuality {
-                                freq_hz,
-                                imbe_extracted: call_imbe,
-                                silent_frames: call_silent,
-                                close_reason: reason,
-                            });
-                            tracing::info!(
-                                target: "p25_traffic",
-                                "call quality captured for next retune: \
-                                 freq={} Hz imbe={} silent={} reason={:?} clean={}",
-                                freq_hz, call_imbe, call_silent, reason,
-                                last_call_quality.as_ref().unwrap().was_clean(),
-                            );
-                        }
-
-                        // Diagnostic lock keeps the chain on the
-                        // parked freq even at call end so the demod
-                        // stays running for measurement.
-                        if follower_lock_freq.load(Ordering::Relaxed) {
-                            continue;
-                        }
-
-                        let mut mgr = follower_mgr.lock().await;
-                        let pre_close_tg = mgr.current_talkgroup();
-                        // Change 057: remember a timeout close, so a grant
-                        // update that still announces this call re-follows
-                        // it (`refollow_on_update`).
-                        let parked_freq = follower_imbe
-                            .current_frequency_hz
-                            .load(Ordering::Relaxed);
-                        last_timeout_close = match (reason, pre_close_tg) {
-                            (CloseReason::Timeout, Some(tg)) if parked_freq != 0 => {
-                                let now_ms = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_millis() as u64)
-                                    .unwrap_or(0);
-                                Some((tg.0, parked_freq, now_ms))
-                            }
-                            _ => None,
-                        };
-                        // Soft state release only — TrafficChain
-                        // goes Idle so the next grant's NCO-skip
-                        // detection sees Idle as the precondition.
-                        // The FPGA LSM chain stays ENABLED on the
-                        // last freq so the PLL keeps its lock for
-                        // the next same-freq call (the dominant
-                        // case on a busy site). Phantom NID events
-                        // from running on noise are filtered out
-                        // upstream by BCH t=4 and downstream by the
-                        // grant follower (only acts on TSBK grants
-                        // from the CC, not on heartbeat NIDs).
-                        mgr.force_idle();
-                        drop(mgr);
-
-                        if let Some(tg) = pre_close_tg {
-                            tracing::info!(
-                                target: "p25_traffic",
-                                "traffic Idle (CallClose {:?}) TG {} -- \
-                                 chain stays parked on last freq",
-                                reason, tg.0,
-                            );
-                            follower_event_log.push(
-                                crate::services::event_log::LogCategory::Traffic,
-                                format!(
-                                    "state -> Idle ({:?}) TG={} (chain parked)",
-                                    reason, tg.0,
-                                ),
-                                serde_json::json!({
-                                    "tg":             tg.0,
-                                    "to":             "Idle",
-                                    "reason":         format!("{:?}", reason),
-                                    "chain_parked":   true,
-                                }),
-                            );
-                        }
-                        follower_imbe.call_encrypted.store(
-                            false, Ordering::Relaxed,
-                        );
-                        follower_imbe.current_talkgroup.store(
-                            0, Ordering::Relaxed,
-                        );
-                        // Clear stashed source on Idle so a
-                        // subsequent call with no FM: in its grant
-                        // doesn't inherit the previous speaker's ID.
-                        follower_imbe.current_source.store(
-                            0, Ordering::Relaxed,
-                        );
-                        follower_imbe.current_frequency_hz.store(
-                            0, Ordering::Relaxed,
-                        );
-                        if let Ok(mut s) = follower_imbe.current_channel.lock() {
-                            s.clear();
-                        }
-                        // Change 054: the gate closes at this air-time
-                        // cut. Dibits produced before it (the closing
-                        // call's tail, still in flight in the ring) are
-                        // decoded under the closing call; the pre-054
-                        // reader dropped every batch delivered after
-                        // this point.
-                        follower_imbe.mark_epoch(EpochKind::CallClose, false);
-                    }
-                }
-            }
-            tracing::warn!("grant follower task exiting (channel closed)");
-        });
-}
-
-} // mod routing
+#[path = "grant_follower_routing.rs"]
+mod routing;
 
 #[cfg(target_os = "linux")]
-pub use routing::spawn_grant_follower;
+pub use routing::{spawn_grant_follower, FollowerLane};
 
 #[cfg(test)]
 #[path = "grant_follower_tests.rs"]

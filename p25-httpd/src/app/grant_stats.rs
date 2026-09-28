@@ -42,6 +42,7 @@ use crate::app::grant_follower::{
     CallTrackerEvent, CallTrackerEventKind, CallTrackerEventTx, CloseReason,
 };
 use crate::app::imbe_forwarder::ImbeForwarder;
+use crate::hardware::traffic_lane::Lane;
 
 /// Change 057: re-read the counters of recently closed calls this often,
 /// for `REFRESH_WINDOW_MS` after the close (covers the air-time tail:
@@ -161,7 +162,13 @@ pub struct GrantDecodeSummary {
     /// call or chain missed all UPD beacons).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub air_duration_ms: Option<u64>,
+    /// Change 066: traffic chain that followed the call (1 or 2; 0 = not
+    /// followed).
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub chain: u8,
 }
+
+fn is_zero_u8(v: &u8) -> bool { *v == 0 }
 
 struct ActiveSummary {
     call_id: u64,
@@ -175,6 +182,14 @@ struct ActiveSummary {
     started_instant: Instant,
     freq_hz: Option<u64>,
     channel: Option<String>,
+    /// Change 066: traffic chain of the call.
+    lane: Option<Lane>,
+}
+
+/// Change 066: the forwarder of `lane` (its AGC reading); the counter
+/// book is shared, so any forwarder serves for counts.
+fn forwarder_for(forwarders: &[Arc<ImbeForwarder>], lane: Option<Lane>) -> &Arc<ImbeForwarder> {
+    forwarders.iter().find(|f| Some(f.lane) == lane).unwrap_or(&forwarders[0])
 }
 
 /// Change 057: copy a call's counters into its summary. Returns true
@@ -263,7 +278,8 @@ fn refresh_pending(
 /// heavy ENC activity can't crowd out clear entries.
 pub fn spawn_grant_stats_task(
     tracker_tx: CallTrackerEventTx,
-    forwarder: Arc<ImbeForwarder>,
+    // Change 066: one per traffic chain, lane One first.
+    forwarders: Vec<Arc<ImbeForwarder>>,
     clear_ring: GrantStatsRing,
     enc_ring: GrantStatsRing,
     // Change 057: bumped when a closed call's summary changes.
@@ -271,7 +287,8 @@ pub fn spawn_grant_stats_task(
 ) {
     let mut rx = tracker_tx.subscribe();
     tokio::spawn(async move {
-        let mut active: Option<ActiveSummary> = None;
+        // Change 066: the open call of each traffic chain.
+        let mut active: Vec<ActiveSummary> = Vec::new();
         let mut pending = Pending::default();
         let mut tick = tokio::time::interval(Duration::from_millis(REFRESH_TICK_MS));
         loop {
@@ -279,7 +296,7 @@ pub fn spawn_grant_stats_task(
                 ev = rx.recv() => match ev {
                     Ok(event) => handle_event(
                         event, &mut active, &mut pending,
-                        &forwarder, &clear_ring, &enc_ring, &rev,
+                        &forwarders, &clear_ring, &enc_ring, &rev,
                     ),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(
@@ -292,7 +309,7 @@ pub fn spawn_grant_stats_task(
                 _ = tick.tick() => {
                     if !pending.calls.is_empty() {
                         refresh_pending(
-                            &mut pending, &forwarder, &clear_ring,
+                            &mut pending, &forwarders[0], &clear_ring,
                             &enc_ring, &rev, Instant::now(),
                         );
                     }
@@ -331,9 +348,9 @@ fn note_not_followed_end(
 #[allow(clippy::too_many_arguments)]
 fn handle_event(
     event: CallTrackerEvent,
-    active: &mut Option<ActiveSummary>,
+    active: &mut Vec<ActiveSummary>,
     pending: &mut Pending,
-    forwarder: &Arc<ImbeForwarder>,
+    forwarders: &[Arc<ImbeForwarder>],
     clear_ring: &GrantStatsRing,
     enc_ring: &GrantStatsRing,
     rev: &GrantStatsRev,
@@ -369,9 +386,11 @@ fn handle_event(
                 return;
             }
             // Defensive: if there's somehow an active summary still
-            // here (call_tracker should have closed it first),
-            // synthesise a Timeout close so we don't leak.
-            if let Some(prev) = active.take() {
+            // open on this chain (call_tracker should have closed it
+            // first), synthesise a Timeout close so we don't leak.
+            // Change 066: per chain; the other chain's call stays open.
+            if let Some(i) = active.iter().position(|a| a.lane == event.lane) {
+                let prev = active.remove(i);
                 tracing::warn!(
                     target: "p25_grant_stats",
                     "stale active summary for call_id={} on new \
@@ -381,13 +400,13 @@ fn handle_event(
                 let open_ms = prev.started_instant.elapsed().as_millis() as u64;
                 let summary = finalise_summary(
                     &prev, prev.source, prev.actual_speaker,
-                    CloseReason::Timeout, None, forwarder,
+                    CloseReason::Timeout, None, forwarder_for(forwarders, prev.lane),
                     event.timestamp_unix_ms, open_ms,
                 );
                 pending.calls.push_back((prev.call_id, Instant::now()));
                 route_push(clear_ring, enc_ring, summary);
             }
-            *active = Some(ActiveSummary {
+            active.push(ActiveSummary {
                 call_id: event.call_id,
                 tg,
                 nac,
@@ -399,6 +418,7 @@ fn handle_event(
                 started_instant: Instant::now(),
                 freq_hz,
                 channel,
+                lane: event.lane,
             });
         }
 
@@ -410,18 +430,16 @@ fn handle_event(
         // 1014; dispatch 1013 heard, LC 3402072), and overwriting made
         // them the call's source.
         CallTrackerEventKind::SourceUpdate { new_source, .. } => {
-            if let Some(a) = active.as_mut() {
-                if a.call_id == event.call_id && a.source.is_none() {
+            if let Some(a) = active.iter_mut().find(|a| a.call_id == event.call_id) {
+                if a.source.is_none() {
                     a.source = Some(new_source);
                 }
             }
         }
 
         CallTrackerEventKind::ActualSpeakerObserved { speaker, .. } => {
-            if let Some(a) = active.as_mut() {
-                if a.call_id == event.call_id {
-                    a.actual_speaker = Some(speaker);
-                }
+            if let Some(a) = active.iter_mut().find(|a| a.call_id == event.call_id) {
+                a.actual_speaker = Some(speaker);
             }
         }
 
@@ -434,22 +452,20 @@ fn handle_event(
             // synthetic not_followed pair (handled inline at CallOpen)
             // arrives here; if `active` holds the real call, taking it
             // unconditionally would lose the real call's eventual
-            // finalise. Only consume `active` when call_ids match.
-            match active.as_ref().map(|a| a.call_id) {
-                Some(id) if id == event.call_id => {} // matches — proceed
-                _ => {
-                    // Change 065: the close of a not-followed call
-                    // carries its channel time.
-                    if note_not_followed_end(
-                        event.call_id, ended_unix_ms, open_ms,
-                        last_upd_at_unix_ms, clear_ring, enc_ring,
-                    ) {
-                        rev.fetch_add(1, Ordering::Relaxed);
-                    }
-                    return;
+            // finalise. Only consume an open call when call_ids match.
+            let Some(i) = active.iter().position(|a| a.call_id == event.call_id) else {
+                // Change 065: the close of a not-followed call carries
+                // its channel time.
+                if note_not_followed_end(
+                    event.call_id, ended_unix_ms, open_ms,
+                    last_upd_at_unix_ms, clear_ring, enc_ring,
+                ) {
+                    rev.fetch_add(1, Ordering::Relaxed);
                 }
-            }
-            let prev = active.take().unwrap();
+                return;
+            };
+            let prev = active.remove(i);
+            let forwarder = forwarder_for(forwarders, prev.lane);
 
             // Change 057: no wait for the vocoder here. The counters
             // are this call's own (by call_id); frames still in flight
@@ -562,6 +578,7 @@ fn finalise_summary(
         // Set by the CallClose handler from the event payload —
         // ActiveSummary doesn't carry the UPD timestamp itself.
         air_duration_ms: None,
+        chain: a.lane.map_or(0, |l| l.number()),
     };
     apply_counts(&mut summary, &counts);
     summary
@@ -604,6 +621,7 @@ fn synthetic_not_followed_summary(
         sources_observed: source.map(|s| vec![s]).unwrap_or_default(),
         agc_gain_q97_at_close: None,
         air_duration_ms: None,
+        chain: 0,
     }
 }
 

@@ -4,6 +4,9 @@
 // defined in Settings → Talkgroup groups; their order is the priority
 // (the number on each chip). Saved on the radio: every browser and the
 // grant follower use the same routing.
+//
+// Change 066: with two traffic chains the left and right speakers play
+// at the same time (chain 1 left, chain 2 right); the note says which.
 
 import { h, card, switchInput, toast } from '../dom.js';
 import { api } from '../api.js';
@@ -20,7 +23,9 @@ export function speakersPanel() {
   const pre = switchInput('A higher-priority group interrupts a lower one', true, on => apply({ preempt: on }));
   const empty = h('p', { class: 'card-note' }, 'No talkgroup groups yet: create them in ',
     h('a', { href: '#settings', text: 'Settings → Talkgroup groups' }), ' (e.g. Primary = 300, TAC = 301-310, Hospital), then pick a speaker for each here.');
+  const chainsNote = h('p', { class: 'card-note', style: { marginTop: '0' } });
   const controls = h('div', null,
+    chainsNote,
     cols,
     h('div', { class: 'row', style: { marginTop: '10px' } }, h('span', { text: 'Other talkgroups on' }), other),
     h('div', { style: { marginTop: '8px' } }, pre.el));
@@ -92,8 +97,20 @@ export function speakersPanel() {
     pre.input.checked = !!sp.preempt;
   }
 
+  let chains = 0;
+  function renderChains(n) {
+    if (n === chains) return;
+    chains = n;
+    chainsNote.textContent = n >= 2
+      ? 'Two traffic chains: a left and a right call play at the same time.'
+      : 'One traffic chain: one call at a time; priority decides who gets it.';
+  }
+
   return {
     el: c.el,
-    update(kind, store) { if (kind === 'settings' || (!doc && store.settings)) render(store.settings); },
+    update(kind, store) {
+      if (kind === 'settings' || (!doc && store.settings)) render(store.settings);
+      if (kind === 'state' && store.state) renderChains((store.state.chains || []).length || 1);
+    },
   };
 }

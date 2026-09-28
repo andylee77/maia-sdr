@@ -275,54 +275,44 @@ pub async fn put_encrypted_tgs(
         }
     }
 
-    // If anything changed, also force-idle the follower if it's
-    // currently locked on a newly-blocked TG. Otherwise the manual
-    // add takes effect only for the NEXT grant for that TG.
-    let currently_locked = state
-        .traffic_chain
-        .lock()
-        .await
-        .current_talkgroup()
-        .map(|t| t.0);
-    if let Some(locked_tg) = currently_locked {
-        let blocked_now = state
-            .imbe_forwarder
+    // If anything changed, also force-idle a chain locked on a newly-
+    // blocked TG. Otherwise the manual add takes effect only for the
+    // NEXT grant for that TG. Change 066: on every traffic chain.
+    for lane in &state.traffic_lanes {
+        let currently_locked = lane.chain.lock().await.current_talkgroup().map(|t| t.0);
+        let Some(locked_tg) = currently_locked else { continue };
+        let blocked_now = lane
+            .forwarder
             .encrypted_tg_history
             .lock()
             .map(|h| h.contains(&locked_tg))
             .unwrap_or(false);
-        if blocked_now {
-            let mut mgr = state.traffic_chain.lock().await;
-            mgr.force_idle();
-            drop(mgr);
-            use std::sync::atomic::Ordering;
-            state
-                .imbe_forwarder
-                .current_talkgroup
-                .store(0, Ordering::Relaxed);
-            // Change 054: gate closes (framer reset) at this air-time
-            // cut; the pause adds its own hardware cut.
-            state.imbe_forwarder.mark_epoch(
-                crate::app::dibit_airtime::EpochKind::TgChange, true);
-            #[cfg(target_os = "linux")]
-            {
-                let core = state.ip_core.lock().await;
-                core.pause_traffic_chain();
-                // Change 057: the next same-freq resume re-enables it.
-                state
-                    .imbe_forwarder
-                    .traffic_paused_by_teardown
-                    .store(true, Ordering::Relaxed);
-            }
-            if !state.imbe_forwarder.epochs_active() {
-                let mut dec = state.traffic_lsm_decoder.write().await;
-                dec.reset_framer_state();
-            }
-            applied.push(format!(
-                "force-idle: was locked on TG={} which is now blocked",
-                locked_tg,
-            ));
+        if !blocked_now {
+            continue;
         }
+        lane.chain.lock().await.force_idle();
+        use std::sync::atomic::Ordering;
+        lane.forwarder.current_talkgroup.store(0, Ordering::Relaxed);
+        // Change 054: gate closes (framer reset) at this air-time
+        // cut; the pause adds its own hardware cut.
+        lane.forwarder.mark_epoch(
+            crate::app::dibit_airtime::EpochKind::TgChange, true);
+        #[cfg(target_os = "linux")]
+        {
+            let core = state.ip_core.lock().await;
+            if let Some(l) = core.lane(lane.lane) {
+                l.pause();
+            }
+            // Change 057: the next same-freq resume re-enables it.
+            lane.forwarder.traffic_paused_by_teardown.store(true, Ordering::Relaxed);
+        }
+        if !lane.forwarder.epochs_active() {
+            lane.decoder.write().await.reset_framer_state();
+        }
+        applied.push(format!(
+            "force-idle {}: was locked on TG={} which is now blocked",
+            lane.lane, locked_tg,
+        ));
     }
 
     state.event_log.push(

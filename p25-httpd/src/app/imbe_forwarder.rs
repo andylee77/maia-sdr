@@ -7,7 +7,18 @@
 
 use crate::app::dibit_airtime::{DibitRingShared, EpochKind, SegmentContext};
 use crate::audio;
+use crate::hardware::traffic_lane::Lane;
 use crate::protocol::p25;
+
+/// Change 066: forwarder state shared by the traffic chains: site-wide
+/// facts (encrypted talkgroups, per-frequency AGC) and the per-call
+/// counter book, keyed by the one call-id space of the call lifecycle.
+#[derive(Clone, Default)]
+pub struct ForwarderShared {
+    pub encrypted_tg_history: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u16>>>,
+    pub agc_freq_cache: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, u16>>>,
+    pub call_counts: std::sync::Arc<crate::app::call_counters::CallCounterBook>,
+}
 
 /// One LDU's worth of IMBE frames on its way to the vocoder, labelled
 /// with the call context it was decoded under. Change 054: `encrypted`
@@ -45,6 +56,9 @@ pub type ImbeBatchRx = tokio::sync::mpsc::Receiver<ImbeBatch>;
 /// incremented — the vocoder task is expected to keep up at ~50 frames/sec
 /// (one LDU every ~180 ms).
 pub struct ImbeForwarder {
+    /// Change 066: traffic chain this forwarder serves; stamped on every
+    /// boundary event and audio chunk it produces.
+    pub lane: Lane,
     pub hdu_count: std::sync::atomic::AtomicU64,
     pub ldu1_count: std::sync::atomic::AtomicU64,
     pub ldu2_count: std::sync::atomic::AtomicU64,
@@ -118,7 +132,8 @@ pub struct ImbeForwarder {
     /// TGs that have ever been observed encrypted. Once a TG is in
     /// this set, the follower defaults to encrypted even if the
     /// current grant doesn't carry service options.
-    pub encrypted_tg_history: std::sync::Mutex<std::collections::HashSet<u16>>,
+    /// Change 066: shared by the traffic chains (`ForwarderShared`).
+    pub encrypted_tg_history: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u16>>>,
     /// Set by the grant follower on call boundary (new TG lock or
     /// Idle→Active). The vocoder task checks this and resets mbelib
     /// state to avoid cross-call artifacts.
@@ -279,8 +294,9 @@ pub struct ImbeForwarder {
     /// `update_agc_cache` adds samples; `agc_seed_for_freq` reads
     /// for retune. In-memory only — first call after boot on a
     /// new freq still cold-starts.
+    /// Change 066: shared by the traffic chains (`ForwarderShared`).
     pub traffic_agc_freq_cache:
-        std::sync::Mutex<std::collections::HashMap<u64, u16>>,
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, u16>>>,
 
     /// 2026-04-24 CC-centric refactor: rolling window of recent
     /// LDU1 LC FM: decodes used to gate the emission of
@@ -339,7 +355,8 @@ pub struct ImbeForwarder {
     /// attributed where each frame is decoded (voice handlers here, the
     /// vocoder thread for PCM / silent / error / encrypted). The global
     /// counters above are unchanged.
-    pub call_counts: crate::app::call_counters::CallCounterBook,
+    /// Change 066: shared by the traffic chains (`ForwarderShared`).
+    pub call_counts: std::sync::Arc<crate::app::call_counters::CallCounterBook>,
 
     /// Change 057: the traffic LSM was paused (`traffic_lsm_enable = 0`)
     /// by an encrypted teardown (follower or `/api/encrypted_tgs`). A
@@ -495,10 +512,22 @@ impl ImbeForwarder {
 }
 
 impl ImbeForwarder {
+    /// Lane One with its own shared state (tests, single-chain callers).
     pub fn new(
         imbe_tx: ImbeBatchTx,
     ) -> Self {
+        Self::with_lane(imbe_tx, Lane::One, &ForwarderShared::default())
+    }
+
+    /// Change 066: the forwarder of `lane`, sharing `shared` with the
+    /// other chains' forwarders.
+    pub fn with_lane(
+        imbe_tx: ImbeBatchTx,
+        lane: Lane,
+        shared: &ForwarderShared,
+    ) -> Self {
         Self {
+            lane,
             hdu_count: 0.into(),
             ldu1_count: 0.into(),
             ldu2_count: 0.into(),
@@ -523,7 +552,7 @@ impl ImbeForwarder {
             current_frequency_hz: 0.into(),
             current_call_id: 0.into(),
             current_channel: std::sync::Mutex::new(String::new()),
-            encrypted_tg_history: std::sync::Mutex::new(std::collections::HashSet::new()),
+            encrypted_tg_history: shared.encrypted_tg_history.clone(),
             vocoder_reset_pending: false.into(),
             imbe_ring: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(128)),
             imbe_tx,
@@ -565,14 +594,13 @@ impl ImbeForwarder {
             speaker_end_deduplicated: 0.into(),
             speaker_end_invalid: 0.into(),
             last_traffic_agc_gain_q97: 0.into(),
-            traffic_agc_freq_cache: std::sync::Mutex::new(
-                std::collections::HashMap::new()),
+            traffic_agc_freq_cache: shared.agc_freq_cache.clone(),
             ldu1_fm_history: std::sync::Mutex::new(Ldu1FmHistory::new()),
             ldu1_lc_source_emitted: 0.into(),
             ldu1_lc_source_rejected_implausible: 0.into(),
             ldu1_lc_cc_mismatch_count: 0.into(),
             ldu1_last_mismatch: std::sync::Mutex::new(None),
-            call_counts: crate::app::call_counters::CallCounterBook::default(),
+            call_counts: shared.call_counts.clone(),
             traffic_paused_by_teardown: false.into(),
             pll_wd_resets_onset: 0.into(),
             pll_wd_resets_pinned: 0.into(),
@@ -628,6 +656,7 @@ impl ImbeForwarder {
             nac,
             talkgroup: Some(tg),
             expected_submit_count: self.frames_submitted.load(Ordering::Relaxed),
+            lane: Some(self.lane),
         });
         let summary = format!("VOICE END call={} TG={} LC={}", call_id, tg, lc);
         self.emit_activity(&summary, serde_json::json!({
@@ -1235,6 +1264,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                     expected_submit_count: self
                         .frames_submitted
                         .load(Ordering::Relaxed),
+                    lane: Some(self.lane),
                 });
             }
         }
@@ -1485,6 +1515,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                             .frames_submitted
                             .load(Ordering::Relaxed),
                         talkgroup: Some(tg),
+                        lane: Some(self.lane),
                     });
                 } else {
                     self.speaker_end_invalid
@@ -1602,6 +1633,7 @@ impl p25::control_channel::VoiceHandler for ImbeForwarder {
                         expected_submit_count: self
                             .frames_submitted
                             .load(Ordering::Relaxed),
+                        lane: Some(self.lane),
                     });
                 } else {
                     self.speaker_end_invalid

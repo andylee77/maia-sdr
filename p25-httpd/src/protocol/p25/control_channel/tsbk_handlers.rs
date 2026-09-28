@@ -99,10 +99,24 @@ impl ControlChannelDecoder {
                 day,
                 hours,
                 minutes,
-                ..
+                microslots,
+                microslot_locked,
+                local_offset_min,
             } => {
                 self.system.last_sync_clock =
                     Some((*year, *month, *day, *hours, *minutes, *time_locked));
+                // Change 067: the site time (board clock, Site card).
+                self.system.site_clock.observe(crate::services::site_clock::SiteSync {
+                    year: *year,
+                    month: *month,
+                    day: *day,
+                    hours: *hours,
+                    minutes: *minutes,
+                    microslots: *microslots,
+                    microslot_locked: *microslot_locked,
+                    ext_locked: *time_locked,
+                    local_offset_min: *local_offset_min,
+                });
             }
             // Unit-to-phone grant (no talkgroup). Event-feed only;
             // `grants` is talkgroup-keyed.

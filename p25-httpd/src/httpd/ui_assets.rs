@@ -42,6 +42,7 @@ pub const UI_ASSETS: &[UiAsset] = ui_assets![
     "js/format.js",
     "js/dom.js",
     "js/audio/player.js",
+    "js/audio/ring.js",
     "js/audio/sources.js",
     "js/views/now.js",
     "js/views/radio.js",

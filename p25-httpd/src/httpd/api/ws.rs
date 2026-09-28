@@ -15,6 +15,11 @@
 //!     call, so a player can route talkgroups to speakers. Clients
 //!     ignore text types they do not know.
 //!
+//!     Change 066: `/ws/audio` carries traffic chain 1 only. With
+//!     `?v=2` it carries every chain: each binary frame is a 4-byte
+//!     header `[lane, 0, 0, 0]` (lane 0 = chain 1, 1 = chain 2) then the
+//!     320 PCM bytes, and each meta frame names its `lane`.
+//!
 //! Both handlers survive `Lagged` (a slow consumer falling behind
 //! the broadcast ring). The old behaviour was to close on Lagged,
 //! triggering a reconnect cycle per gap; Stage 2 changed this to
@@ -110,14 +115,30 @@ pub async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
 pub async fn ws_audio(
     ws: axum::extract::WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl axum::response::IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws_audio(socket, state))
+    // Change 066: `?v=2` = every traffic chain, lane-tagged frames.
+    let v2 = params.get("v").map(|v| v == "2").unwrap_or(false);
+    ws.on_upgrade(move |socket| handle_ws_audio(socket, state, v2))
+}
+
+/// Change 066: one binary audio frame; `v2` prefixes the lane header.
+pub fn audio_frame(chunk: &crate::audio::AudioChunk, v2: bool) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(324);
+    if v2 {
+        buf.extend_from_slice(&[chunk.lane.index() as u8, 0, 0, 0]);
+    }
+    for &sample in chunk.pcm.iter() {
+        buf.extend_from_slice(&sample.to_le_bytes());
+    }
+    buf
 }
 
 
 pub async fn handle_ws_audio(
     socket: axum::extract::ws::WebSocket,
     state: Arc<AppState>,
+    v2: bool,
 ) {
     use std::sync::atomic::Ordering;
     use futures::{SinkExt, StreamExt};
@@ -140,13 +161,16 @@ pub async fn handle_ws_audio(
     // broadcast send fails — which is what produced the "3 audio WS
     // clients" reading on the dashboard with only one real listener.
     let (mut tx_sock, mut rx_sock) = socket.split();
-    // Change 062: (talkgroup, call_id) last announced to this client.
-    let mut last_meta: Option<(u16, u64)> = None;
+    // Change 062: (talkgroup, call_id) last announced to this client,
+    // per traffic chain (change 066).
+    let mut last_meta: [Option<(u16, u64)>; 2] = [None; 2];
     loop {
         tokio::select! {
             // Audio broadcast → push to client.
             broadcast = rx.recv() => {
                 match broadcast {
+                    // Change 066: the v1 stream is chain 1's.
+                    Ok(chunk) if !v2 && chunk.lane != crate::hardware::traffic_lane::Lane::One => {}
                     Ok(chunk) => {
                         // Change 062: a text frame names the talkgroup
                         // (and call) before its first audio frame, for
@@ -154,12 +178,20 @@ pub async fn handle_ws_audio(
                         // Frames stay in order on the socket; the binary
                         // frames are unchanged.
                         let key = (chunk.talkgroup, chunk.call_id);
-                        if last_meta != Some(key) {
-                            last_meta = Some(key);
-                            let meta = format!(
-                                r#"{{"type":"meta","tg":{},"src":{},"call_id":{}}}"#,
-                                chunk.talkgroup, chunk.source, chunk.call_id,
-                            );
+                        let li = chunk.lane.index().min(1);
+                        if last_meta[li] != Some(key) {
+                            last_meta[li] = Some(key);
+                            let meta = if v2 {
+                                format!(
+                                    r#"{{"type":"meta","lane":{},"tg":{},"src":{},"call_id":{}}}"#,
+                                    li, chunk.talkgroup, chunk.source, chunk.call_id,
+                                )
+                            } else {
+                                format!(
+                                    r#"{{"type":"meta","tg":{},"src":{},"call_id":{}}}"#,
+                                    chunk.talkgroup, chunk.source, chunk.call_id,
+                                )
+                            };
                             if tx_sock
                                 .send(axum::extract::ws::Message::Text(meta.into()))
                                 .await
@@ -168,14 +200,9 @@ pub async fn handle_ws_audio(
                                 break;
                             }
                         }
-                        let mut buf = [0u8; 320];
-                        for (i, &sample) in chunk.pcm.iter().enumerate() {
-                            let le = sample.to_le_bytes();
-                            buf[i * 2] = le[0];
-                            buf[i * 2 + 1] = le[1];
-                        }
+                        let buf = audio_frame(&chunk, v2);
                         if tx_sock
-                            .send(axum::extract::ws::Message::Binary(buf.to_vec().into()))
+                            .send(axum::extract::ws::Message::Binary(buf.into()))
                             .await
                             .is_err()
                         {

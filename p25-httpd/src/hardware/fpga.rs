@@ -34,11 +34,15 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 use crate::hardware::core_version::CoreVersion;
+use crate::hardware::ddc_fir_ram::{
+    fir2dsp_fields, fir2dsp_ram, fir4dsp_fields, fir4dsp_ram, FIR_BASE,
+};
 use crate::hardware::ddc_presets::DdcPreset;
 use crate::hardware::dibit_ring::{
     copy_plan, mono_us, ChainEpochSink, HwAction, RingGeometry, RingSnapshot,
 };
 use crate::hardware::rxbuffer::RxBuffer;
+use crate::hardware::traffic_lane::Lane;
 use crate::hardware::uio::{Mapping, Uio};
 
 /// Expected product ID in the FPGA register (ASCII "p25f" = 0x70323566).
@@ -111,15 +115,42 @@ pub struct IpCore {
 
     /// Change 059: `version` register, read once at `take`.
     core_version: CoreVersion,
+
+    /// Change 066: the second traffic chain (core 0.3.0). `Some` only
+    /// when the core has it and its DMA node opened; every chain-2
+    /// register access goes through [`IpCore::lane`], which checks this.
+    traffic2: Option<Traffic2Hw>,
 }
 
-/// Change 054: the two P25 dibit rings.
+/// Change 066: host-side state of the second traffic chain.
+struct Traffic2Hw {
+    /// `traffic2_lsm_dibit_dma` (0x1D00_0000, 8 x 4 KB). UIO
+    /// `p25-traffic2-lsm-dibit`.
+    dibit_dma: RxBuffer,
+    last_addr: Option<u32>,
+    epoch_sink: Option<Arc<dyn ChainEpochSink>>,
+}
+
+/// Change 054: the P25 dibit rings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DibitRing {
     /// `lsm_dibit_dma` (control channel, 0x1A00_0000).
     Control,
     /// `traffic_lsm_dibit_dma` (traffic channel, 0x1B00_0000).
     Traffic,
+    /// Change 066: `traffic2_lsm_dibit_dma` (second traffic chain,
+    /// 0x1D00_0000). Inert (no register reads) on a core without it.
+    Traffic2,
+}
+
+impl DibitRing {
+    /// The dibit ring of a traffic lane.
+    pub fn of_lane(lane: Lane) -> DibitRing {
+        match lane {
+            Lane::One => DibitRing::Traffic,
+            Lane::Two => DibitRing::Traffic2,
+        }
+    }
 }
 
 impl IpCore {
@@ -196,6 +227,27 @@ impl IpCore {
             .await
             .context("failed to open p25-traffic-iq DMA buffer")?;
 
+        // Change 066: the second traffic chain. Optional: an older core
+        // or device tree simply runs one chain.
+        let traffic2 = if core_version.has_traffic2_chain() {
+            match RxBuffer::new("p25-traffic2-lsm-dibit").await {
+                Ok(dibit_dma) => {
+                    tracing::info!("second traffic chain present (core {core_version})");
+                    Some(Traffic2Hw { dibit_dma, last_addr: None, epoch_sink: None })
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "core {core_version} has a second traffic chain but its DMA \
+                         node p25-traffic2-lsm-dibit did not open ({e:#}); one chain"
+                    );
+                    None
+                }
+            }
+        } else {
+            tracing::info!("core {core_version} has one traffic chain");
+            None
+        };
+
         let ip_core = IpCore {
             registers,
             iq_dma,
@@ -214,6 +266,7 @@ impl IpCore {
             traffic_iq_last_addr: None,
             traffic_epoch_sink: None,
             core_version,
+            traffic2,
         };
 
         let interrupt_handler = InterruptHandler::new(uio, interrupt_registers);
@@ -223,6 +276,44 @@ impl IpCore {
     /// Change 059: the core's `version` register (read at `take`).
     pub fn core_version(&self) -> CoreVersion {
         self.core_version
+    }
+
+    /// Change 066: the second traffic chain is present and usable.
+    pub fn has_traffic2(&self) -> bool {
+        self.traffic2.is_some()
+    }
+
+    /// Change 066: register view of one traffic chain. Always `Some` for
+    /// lane One; `Some` for lane Two only when the chain is present, so
+    /// no chain-2 address is ever touched on an older core.
+    pub fn lane(&self, lane: Lane) -> Option<LaneRegs<'_>> {
+        match lane {
+            Lane::One => Some(LaneRegs { core: self, lane }),
+            Lane::Two => self.traffic2.as_ref().map(|_| LaneRegs { core: self, lane }),
+        }
+    }
+
+    /// Change 066: every present traffic chain, lane One first.
+    pub fn lanes(&self) -> impl Iterator<Item = LaneRegs<'_>> + '_ {
+        Lane::ALL.into_iter().filter_map(move |l| self.lane(l))
+    }
+
+    /// Change 066: install a lane's epoch sink. Returns false when the
+    /// lane is absent.
+    pub fn set_lane_epoch_sink(&mut self, lane: Lane, sink: Arc<dyn ChainEpochSink>) -> bool {
+        match lane {
+            Lane::One => {
+                self.set_traffic_epoch_sink(sink);
+                true
+            }
+            Lane::Two => match self.traffic2.as_mut() {
+                Some(t2) => {
+                    t2.epoch_sink = Some(sink);
+                    true
+                }
+                None => false,
+            },
+        }
     }
 
     // ── Control channel DDC ──────────────────────────────────────
@@ -1305,6 +1396,230 @@ impl IpCore {
         self.set_traffic_lsm_enable(false);
     }
 
+    /// Change 066: traffic DDC NCO word (readback).
+    pub fn traffic_ddc_frequency_word(&self) -> u32 {
+        self.registers.traffic_ddc_frequency().read().traffic_frequency().bits()
+    }
+
+    // ── Second traffic chain (change 066, core 0.3.0) ────────────
+    //
+    // Mirror of the `traffic_*` methods on the `traffic2_*` banks
+    // (0x120-0x168). Private: reached only through `LaneRegs`, which
+    // exists for lane Two only when `self.traffic2` is `Some`. Seeds are
+    // not mirrored (retune ignores them, see `retune_traffic_chain`).
+
+    fn t2_hw_epoch(&self, action: HwAction, enabled_before: bool) {
+        if let Some(sink) = self.traffic2.as_ref().and_then(|t| t.epoch_sink.as_ref()) {
+            let next = self.t2_dibit_next_address();
+            sink.record_hw(action, mono_us(), next, enabled_before);
+        }
+    }
+
+    fn t2_lsm_enabled(&self) -> bool {
+        self.registers.traffic2_lsm_control().read().traffic2_lsm_enable().bit()
+    }
+
+    fn t2_write_lsm_enable(&self, enable: bool) {
+        self.registers
+            .traffic2_lsm_control()
+            .modify(|_, w| w.traffic2_lsm_enable().bit(enable));
+    }
+
+    fn t2_set_lsm_enable(&self, enable: bool) {
+        let before = self.t2_lsm_enabled();
+        self.t2_write_lsm_enable(enable);
+        if before != enable {
+            self.t2_hw_epoch(HwAction::Enable(enable), before);
+        }
+    }
+
+    fn t2_write_lsm_reset_pulse(&self) {
+        self.registers
+            .traffic2_lsm_control()
+            .modify(|_, w| w.traffic2_lsm_reset().bit(true));
+    }
+
+    fn t2_pulse_lsm_reset(&self) {
+        let before = self.t2_lsm_enabled();
+        self.t2_write_lsm_reset_pulse();
+        self.t2_hw_epoch(HwAction::LsmReset, before);
+    }
+
+    fn t2_set_dibit_dma_enable(&self, enable: bool) {
+        self.registers
+            .traffic2_lsm_control()
+            .modify(|_, w| w.traffic2_lsm_dibit_dma_enable().bit(enable));
+    }
+
+    fn t2_set_dc_block_enable(&self, enable: bool) {
+        self.registers
+            .traffic2_lsm_control()
+            .modify(|_, w| w.traffic2_lsm_dc_block_enable().bit(enable));
+    }
+
+    fn t2_set_agc_enable(&self, enable: bool) {
+        self.registers
+            .traffic2_lsm_control()
+            .modify(|_, w| w.traffic2_lsm_agc_enable().bit(enable));
+    }
+
+    fn t2_control_readback(&self) -> (bool, bool, bool, bool) {
+        let c = self.registers.traffic2_lsm_control().read();
+        (
+            c.traffic2_lsm_enable().bit(),
+            c.traffic2_lsm_dibit_dma_enable().bit(),
+            c.traffic2_lsm_dc_block_enable().bit(),
+            c.traffic2_lsm_agc_enable().bit(),
+        )
+    }
+
+    fn t2_status(&self) -> LsmStatusSnapshot {
+        let s = self.registers.traffic2_lsm_status().read();
+        LsmStatusSnapshot {
+            bch_busy: s.bch_busy().bit(),
+            in_nid_window: s.in_nid_window().bit(),
+            nid_event: s.nid_event().bit(),
+            nid_valid: s.nid_valid().bit(),
+            n_errors: s.n_errors().bits(),
+            sync_distance: s.sync_distance().bits(),
+            dibit_overflow: s.traffic2_lsm_dibit_overflow().bit(),
+        }
+    }
+
+    fn t2_nid(&self) -> (u16, u8) {
+        let n = self.registers.traffic2_lsm_nid().read();
+        (n.nac().bits(), n.duid().bits())
+    }
+
+    fn t2_drop_count(&self) -> u16 {
+        self.registers.traffic2_lsm_drop_count().read().drop_count().bits()
+    }
+
+    fn t2_dibit_last_buffer(&self) -> u8 {
+        self.registers
+            .traffic2_lsm_drop_count()
+            .read()
+            .traffic2_lsm_dibit_last_buffer()
+            .bits()
+    }
+
+    fn t2_dibit_next_address(&self) -> u32 {
+        self.registers.traffic2_lsm_dibit_next().read().next_address().bits()
+    }
+
+    fn t2_debug(&self) -> (i16, i16) {
+        let d = self.registers.traffic2_lsm_debug().read();
+        (d.pll_dbg().bits() as i16, d.sample_point_dbg().bits() as i16)
+    }
+
+    fn t2_agc_debug(&self) -> (u16, u16) {
+        let d = self.registers.traffic2_lsm_agc_debug().read();
+        (d.agc_gain_dbg().bits(), d.agc_mag_dbg().bits())
+    }
+
+    fn t2_agc_threshold(&self) -> u16 {
+        self.registers
+            .traffic2_lsm_agc_config()
+            .read()
+            .mag_update_threshold()
+            .bits()
+    }
+
+    fn t2_set_agc_threshold(&self, v: u16) {
+        self.registers
+            .traffic2_lsm_agc_config()
+            .modify(|_, w| unsafe { w.mag_update_threshold().bits(v) });
+    }
+
+    fn t2_write_fir_ram(&self, base: usize, ram: &[i32]) {
+        for (i, &coeff) in ram.iter().enumerate() {
+            let waddr = u16::try_from(base + i).unwrap();
+            self.registers
+                .traffic2_ddc_coeff_addr()
+                .modify(|_, w| unsafe { w.traffic2_coeff_waddr().bits(waddr) });
+            self.registers.traffic2_ddc_coeff().modify(|_, w| unsafe {
+                w.traffic2_coeff_wren().bit(true)
+                    .traffic2_coeff_wdata().bits(coeff as u32)
+            });
+        }
+    }
+
+    fn t2_configure_ddc(&self, frequency_hz: f64, preset: &DdcPreset) -> Result<()> {
+        let ram1 = fir4dsp_ram(preset.fir1_coeffs, preset.decim1)?;
+        let ram2 = fir2dsp_ram(preset.fir2_coeffs, preset.decim2)?;
+        let ram3 = fir4dsp_ram(preset.fir3_coeffs, preset.decim3)?;
+        let f1 = fir4dsp_fields(preset.fir1_coeffs, preset.decim1)?;
+        let f2 = fir2dsp_fields(preset.fir2_coeffs, preset.decim2)?;
+        let f3 = fir4dsp_fields(preset.fir3_coeffs, preset.decim3)?;
+        self.t2_write_fir_ram(FIR_BASE[0], &ram1);
+        self.t2_write_fir_ram(FIR_BASE[1], &ram2);
+        self.t2_write_fir_ram(FIR_BASE[2], &ram3);
+        self.registers.traffic2_ddc_decimation().modify(|_, w| unsafe {
+            w.traffic2_decimation1().bits(f1.decimation)
+                .traffic2_decimation2().bits(f2.decimation)
+                .traffic2_decimation3().bits(f3.decimation)
+        });
+        self.registers.traffic2_ddc_control().modify(|_, w| unsafe {
+            w.traffic2_operations_minus_one1().bits(f1.operations_minus_one)
+                .traffic2_odd_operations1().bit(f1.odd_operations)
+                .traffic2_operations_minus_one2().bits(f2.operations_minus_one)
+                .traffic2_operations_minus_one3().bits(f3.operations_minus_one)
+                .traffic2_odd_operations3().bit(f3.odd_operations)
+                .traffic2_bypass2().clear_bit()
+                .traffic2_bypass3().clear_bit()
+        });
+        self.t2_set_ddc_frequency(frequency_hz, preset.sample_rate_hz as f64)?;
+        tracing::info!(
+            "Traffic2 DDC configured: preset={} NCO={} Hz, {}x decimation",
+            preset.name,
+            frequency_hz as i64,
+            preset.total_decim(),
+        );
+        Ok(())
+    }
+
+    fn t2_write_ddc_frequency(&self, frequency_hz: f64, sample_rate_hz: f64) -> Result<()> {
+        let half = 0.5 * sample_rate_hz;
+        if !(-half..=half).contains(&frequency_hz) {
+            anyhow::bail!(
+                "Traffic2 DDC frequency {frequency_hz} Hz out of range ±{half} Hz"
+            );
+        }
+        let nco_word = freq_to_nco(frequency_hz, sample_rate_hz);
+        self.registers
+            .traffic2_ddc_frequency()
+            .modify(|_, w| unsafe { w.traffic2_frequency().bits(nco_word) });
+        Ok(())
+    }
+
+    fn t2_set_ddc_frequency(&self, frequency_hz: f64, sample_rate_hz: f64) -> Result<()> {
+        let before = self.t2_lsm_enabled();
+        self.t2_write_ddc_frequency(frequency_hz, sample_rate_hz)?;
+        self.t2_hw_epoch(HwAction::NcoWrite, before);
+        Ok(())
+    }
+
+    fn t2_ddc_frequency_word(&self) -> u32 {
+        self.registers.traffic2_ddc_frequency().read().traffic2_frequency().bits()
+    }
+
+    fn t2_set_ddc_enable(&self, enable: bool) {
+        self.registers
+            .traffic2_ddc_control()
+            .modify(|_, w| w.traffic2_enable_input().bit(enable));
+    }
+
+    fn t2_retune(&self, frequency_hz: f64, sample_rate_hz: f64, should_reset: bool) -> Result<()> {
+        let before = self.t2_lsm_enabled();
+        self.t2_write_ddc_frequency(frequency_hz, sample_rate_hz)?;
+        if should_reset {
+            self.t2_write_lsm_reset_pulse();
+        }
+        self.t2_write_lsm_enable(true);
+        self.t2_hw_epoch(HwAction::Retune { lsm_reset: should_reset }, before);
+        Ok(())
+    }
+
     // ── Traffic IQ ring (2026-05-03 dual-DDC parity) ────────────
 
     /// Enables or disables the traffic post-DDC IQ ring DMA.
@@ -1395,19 +1710,23 @@ impl IpCore {
 
     // ── Change 054: position-based dibit ring access ─────────────
 
-    fn dibit_dma(&self, ring: DibitRing) -> &RxBuffer {
+    fn dibit_dma(&self, ring: DibitRing) -> Option<&RxBuffer> {
         match ring {
-            DibitRing::Control => &self.lsm_dibit_dma,
-            DibitRing::Traffic => &self.traffic_lsm_dibit_dma,
+            DibitRing::Control => Some(&self.lsm_dibit_dma),
+            DibitRing::Traffic => Some(&self.traffic_lsm_dibit_dma),
+            DibitRing::Traffic2 => self.traffic2.as_ref().map(|t| &t.dibit_dma),
         }
     }
 
-    /// Geometry of a dibit ring as mapped by maia-kmod.
+    /// Geometry of a dibit ring as mapped by maia-kmod ({0, 0}, which is
+    /// invalid, for an absent ring).
     pub fn dibit_ring_geometry(&self, ring: DibitRing) -> RingGeometry {
-        let dma = self.dibit_dma(ring);
-        RingGeometry {
-            sub_buffer_bytes: dma.buffer_size() as u64,
-            num_sub_buffers: dma.num_buffers() as u64,
+        match self.dibit_dma(ring) {
+            Some(dma) => RingGeometry {
+                sub_buffer_bytes: dma.buffer_size() as u64,
+                num_sub_buffers: dma.num_buffers() as u64,
+            },
+            None => RingGeometry { sub_buffer_bytes: 0, num_sub_buffers: 0 },
         }
     }
 
@@ -1437,6 +1756,23 @@ impl IpCore {
                     t_us,
                 }
             }
+            // 0x150 / 0x14C [18:16] / 0x140; never the read-to-clear 0x144.
+            DibitRing::Traffic2 if self.traffic2.is_some() => {
+                let next_address = self.t2_dibit_next_address();
+                let t_us = mono_us();
+                RingSnapshot {
+                    next_address,
+                    last_buffer: self.t2_dibit_last_buffer(),
+                    chain_enabled: self.t2_lsm_enabled(),
+                    t_us,
+                }
+            }
+            DibitRing::Traffic2 => RingSnapshot {
+                next_address: 0,
+                last_buffer: 0,
+                chain_enabled: false,
+                t_us: mono_us(),
+            },
         }
     }
 
@@ -1452,7 +1788,9 @@ impl IpCore {
         end: u64,
         out: &mut Vec<u8>,
     ) -> Result<()> {
-        let dma = self.dibit_dma(ring);
+        let dma = self
+            .dibit_dma(ring)
+            .with_context(|| format!("dibit ring {ring:?} is not present"))?;
         let geom = self.dibit_ring_geometry(ring);
         let plan = copy_plan(&geom, start, end);
         let mut invalidated: Vec<usize> = Vec::with_capacity(2);
@@ -1477,11 +1815,12 @@ impl IpCore {
         &mut self,
         ring: DibitRing,
     ) -> (Option<usize>, Vec<Vec<u8>>) {
-        let n = self.dibit_dma(ring).num_buffers();
+        let n = self.dibit_dma(ring).map_or(0, |d| d.num_buffers());
         let cursor = self.legacy_dibit_cursor(ring);
         let bufs: Vec<Vec<u8>> = match ring {
             DibitRing::Control => self.read_dma_buffers(DmaChannel::LsmDibit),
             DibitRing::Traffic => self.read_dma_buffers(DmaChannel::TrafficLsmDibit),
+            DibitRing::Traffic2 => self.read_dma_buffers(DmaChannel::Traffic2LsmDibit),
         }
         .iter()
         .map(|b| b.to_vec())
@@ -1498,6 +1837,7 @@ impl IpCore {
         match ring {
             DibitRing::Control => self.lsm_dibit_last_addr,
             DibitRing::Traffic => self.traffic_lsm_dibit_last_addr,
+            DibitRing::Traffic2 => self.traffic2.as_ref().and_then(|t| t.last_addr),
         }
     }
 
@@ -1506,6 +1846,11 @@ impl IpCore {
         match ring {
             DibitRing::Control => self.lsm_dibit_last_addr = cursor,
             DibitRing::Traffic => self.traffic_lsm_dibit_last_addr = cursor,
+            DibitRing::Traffic2 => {
+                if let Some(t) = self.traffic2.as_mut() {
+                    t.last_addr = cursor;
+                }
+            }
         }
     }
 
@@ -1541,6 +1886,19 @@ impl IpCore {
                     .traffic_lsm_dibit_last_buffer()
                     .bits() as u32,
             ),
+            DmaChannel::Traffic2LsmDibit => {
+                // Absent chain: nothing to read, and no register access.
+                let Some(t2) = self.traffic2.as_mut() else {
+                    return Vec::new();
+                };
+                let last = self
+                    .registers
+                    .traffic2_lsm_drop_count()
+                    .read()
+                    .traffic2_lsm_dibit_last_buffer()
+                    .bits() as u32;
+                (&t2.dibit_dma, &mut t2.last_addr, last)
+            }
             DmaChannel::PreDiffIq => (
                 &self.pre_diff_iq_dma,
                 &mut self.pre_diff_iq_last_addr,
@@ -1611,10 +1969,203 @@ impl IpCore {
     }
 }
 
+/// Change 066: register view of one traffic chain. Obtained only from
+/// [`IpCore::lane`], so a lane-Two view proves the chain is present.
+/// Lane One delegates to the existing `traffic_*` methods unchanged.
+#[derive(Clone, Copy)]
+pub struct LaneRegs<'a> {
+    core: &'a IpCore,
+    lane: Lane,
+}
+
+impl LaneRegs<'_> {
+    pub fn lane(&self) -> Lane {
+        self.lane
+    }
+
+    /// LSM master enable (register readback).
+    pub fn enabled(&self) -> bool {
+        match self.lane {
+            Lane::One => self.core.traffic_lsm_enabled(),
+            Lane::Two => self.core.t2_lsm_enabled(),
+        }
+    }
+
+    /// LSM master enable; a change is an epoch cut.
+    pub fn set_enable(&self, enable: bool) {
+        match self.lane {
+            Lane::One => self.core.set_traffic_lsm_enable(enable),
+            Lane::Two => self.core.t2_set_lsm_enable(enable),
+        }
+    }
+
+    pub fn pulse_reset(&self) {
+        match self.lane {
+            Lane::One => self.core.pulse_traffic_lsm_reset(),
+            Lane::Two => self.core.t2_pulse_lsm_reset(),
+        }
+    }
+
+    pub fn set_dibit_dma_enable(&self, enable: bool) {
+        match self.lane {
+            Lane::One => self.core.set_traffic_lsm_dibit_dma_enable(enable),
+            Lane::Two => self.core.t2_set_dibit_dma_enable(enable),
+        }
+    }
+
+    pub fn set_dc_block_enable(&self, enable: bool) {
+        match self.lane {
+            Lane::One => self.core.set_traffic_lsm_dc_block_enable(enable),
+            Lane::Two => self.core.t2_set_dc_block_enable(enable),
+        }
+    }
+
+    pub fn set_agc_enable(&self, enable: bool) {
+        match self.lane {
+            Lane::One => self.core.set_traffic_lsm_agc_enable(enable),
+            Lane::Two => self.core.t2_set_agc_enable(enable),
+        }
+    }
+
+    /// `(enable, dibit_dma_enable, dc_block_enable, agc_enable)`.
+    pub fn control_readback(&self) -> (bool, bool, bool, bool) {
+        match self.lane {
+            Lane::One => self.core.traffic_lsm_control_readback(),
+            Lane::Two => self.core.t2_control_readback(),
+        }
+    }
+
+    pub fn status(&self) -> LsmStatusSnapshot {
+        match self.lane {
+            Lane::One => self.core.traffic_lsm_status(),
+            Lane::Two => self.core.t2_status(),
+        }
+    }
+
+    /// Latched `(nac, duid)` of the most recent NID.
+    pub fn nid(&self) -> (u16, u8) {
+        match self.lane {
+            Lane::One => self.core.traffic_lsm_nid(),
+            Lane::Two => self.core.t2_nid(),
+        }
+    }
+
+    pub fn drop_count(&self) -> u16 {
+        match self.lane {
+            Lane::One => self.core.traffic_lsm_drop_count(),
+            Lane::Two => self.core.t2_drop_count(),
+        }
+    }
+
+    pub fn dibit_last_buffer(&self) -> u8 {
+        match self.lane {
+            Lane::One => self.core.traffic_lsm_dibit_last_buffer(),
+            Lane::Two => self.core.t2_dibit_last_buffer(),
+        }
+    }
+
+    pub fn dibit_next_address(&self) -> u32 {
+        match self.lane {
+            Lane::One => self.core.traffic_lsm_dibit_next_address(),
+            Lane::Two => self.core.t2_dibit_next_address(),
+        }
+    }
+
+    /// `(pll_dbg Q2.13, sample_point_dbg Q4.10)`.
+    pub fn debug(&self) -> (i16, i16) {
+        match self.lane {
+            Lane::One => self.core.traffic_lsm_debug(),
+            Lane::Two => self.core.t2_debug(),
+        }
+    }
+
+    /// `(gain Q9.7, mag Q1.15)`.
+    pub fn agc_debug(&self) -> (u16, u16) {
+        match self.lane {
+            Lane::One => self.core.traffic_lsm_agc_debug(),
+            Lane::Two => self.core.t2_agc_debug(),
+        }
+    }
+
+    pub fn agc_threshold(&self) -> u16 {
+        match self.lane {
+            Lane::One => self.core.traffic_lsm_agc_threshold(),
+            Lane::Two => self.core.t2_agc_threshold(),
+        }
+    }
+
+    pub fn set_agc_threshold(&self, v: u16) {
+        match self.lane {
+            Lane::One => self.core.set_traffic_lsm_agc_threshold(v),
+            Lane::Two => self.core.t2_set_agc_threshold(v),
+        }
+    }
+
+    /// Load the DDC FIRs and decimation for `preset` and set the NCO.
+    pub fn configure_ddc(&self, frequency_hz: f64, preset: &DdcPreset) -> Result<()> {
+        match self.lane {
+            Lane::One => self.core.configure_traffic_ddc(frequency_hz, preset),
+            Lane::Two => self.core.t2_configure_ddc(frequency_hz, preset),
+        }
+    }
+
+    pub fn set_ddc_enable(&self, enable: bool) {
+        match self.lane {
+            Lane::One => self.core.set_traffic_ddc_enable(enable),
+            Lane::Two => self.core.t2_set_ddc_enable(enable),
+        }
+    }
+
+    /// NCO write; an epoch cut.
+    pub fn set_ddc_frequency(&self, frequency_hz: f64, sample_rate_hz: f64) -> Result<()> {
+        match self.lane {
+            Lane::One => self.core.set_traffic_ddc_frequency(frequency_hz, sample_rate_hz),
+            Lane::Two => self.core.t2_set_ddc_frequency(frequency_hz, sample_rate_hz),
+        }
+    }
+
+    /// NCO word (readback).
+    pub fn ddc_frequency_word(&self) -> u32 {
+        match self.lane {
+            Lane::One => self.core.traffic_ddc_frequency_word(),
+            Lane::Two => self.core.t2_ddc_frequency_word(),
+        }
+    }
+
+    /// See [`IpCore::retune_traffic_chain`]; seeds are ignored on both.
+    pub fn retune(
+        &self,
+        frequency_hz: f64,
+        sample_rate_hz: f64,
+        should_reset: bool,
+        seeds: Option<(u32, i16, i32)>,
+    ) -> Result<()> {
+        match self.lane {
+            Lane::One => {
+                self.core.retune_traffic_chain(frequency_hz, sample_rate_hz, should_reset, seeds)
+            }
+            Lane::Two => self.core.t2_retune(frequency_hz, sample_rate_hz, should_reset),
+        }
+    }
+
+    pub fn pause(&self) {
+        self.set_enable(false);
+    }
+}
+
+/// Offset in Hz that an NCO word stands for (inverse of `freq_to_nco`).
+pub fn nco_to_freq(word: u32, sample_rate_hz: f64) -> f64 {
+    // 28-bit two's complement.
+    let signed = ((word << 4) as i32) >> 4;
+    signed as f64 * sample_rate_hz / (1u64 << 28) as f64
+}
+
 enum DmaChannel {
     Iq,
     LsmDibit,
     TrafficLsmDibit,
+    /// Change 066: second traffic chain (0x14C [18:16]).
+    Traffic2LsmDibit,
     PreDiffIq,
     WidebandIq,
     /// 2026-05-03 dual-DDC pivot: traffic-chain post-DDC narrowband IQ.
@@ -1724,6 +2275,9 @@ pub struct InterruptHandler {
     notify_lsm_dibit_dma: Arc<Notify>,
     /// M2B 2026-05-02: traffic LSM dibit DMA notifier.
     notify_traffic_lsm_dibit_dma: Arc<Notify>,
+    /// Change 066: second traffic chain dibit DMA (interrupt bit 8,
+    /// which reads 0 on cores without the chain).
+    notify_traffic2_lsm_dibit_dma: Arc<Notify>,
     notify_pre_diff_iq_dma: Arc<Notify>,
     /// 2026-05-03: wideband raw IQ DMA notifier (PS-side software stack).
     notify_wideband_iq_dma: Arc<Notify>,
@@ -1737,6 +2291,7 @@ impl InterruptHandler {
             notify_iq_dma: Arc::new(Notify::new()),
             notify_lsm_dibit_dma: Arc::new(Notify::new()),
             notify_traffic_lsm_dibit_dma: Arc::new(Notify::new()),
+            notify_traffic2_lsm_dibit_dma: Arc::new(Notify::new()),
             notify_pre_diff_iq_dma: Arc::new(Notify::new()),
             notify_wideband_iq_dma: Arc::new(Notify::new()),
         }
@@ -1764,6 +2319,13 @@ impl InterruptHandler {
     pub fn waiter_traffic_lsm_dibit_dma(&self) -> InterruptWaiter {
         InterruptWaiter {
             notify: self.notify_traffic_lsm_dibit_dma.clone(),
+        }
+    }
+
+    /// Change 066: waiter for the second traffic chain's dibit DMA.
+    pub fn waiter_traffic2_lsm_dibit_dma(&self) -> InterruptWaiter {
+        InterruptWaiter {
+            notify: self.notify_traffic2_lsm_dibit_dma.clone(),
         }
     }
 
@@ -1796,6 +2358,7 @@ impl InterruptHandler {
         let mut iq_irqs: u64 = 0;
         let mut lsm_dibit_irqs: u64 = 0;
         let mut traffic_lsm_dibit_irqs: u64 = 0;
+        let mut traffic2_lsm_dibit_irqs: u64 = 0;
         let mut pre_diff_iq_irqs: u64 = 0;
         let mut wideband_iq_irqs: u64 = 0;
         loop {
@@ -1806,6 +2369,7 @@ impl InterruptHandler {
             let iq = interrupts.iq_dma().bit();
             let lsm_dibit = interrupts.lsm_dibit_dma().bit();
             let traffic_lsm_dibit = interrupts.traffic_lsm_dibit_dma().bit();
+            let traffic2_lsm_dibit = interrupts.traffic2_lsm_dibit_dma().bit();
             let pre_diff_iq = interrupts.pre_diff_iq_dma().bit();
             let wideband_iq = interrupts.wideband_iq_dma().bit();
             total_irqs += 1;
@@ -1820,6 +2384,10 @@ impl InterruptHandler {
             if traffic_lsm_dibit {
                 traffic_lsm_dibit_irqs += 1;
                 self.notify_traffic_lsm_dibit_dma.notify_waiters();
+            }
+            if traffic2_lsm_dibit {
+                traffic2_lsm_dibit_irqs += 1;
+                self.notify_traffic2_lsm_dibit_dma.notify_waiters();
             }
             if pre_diff_iq {
                 pre_diff_iq_irqs += 1;
@@ -1841,6 +2409,7 @@ impl InterruptHandler {
                 s.iq = iq_irqs;
                 s.lsm_dibit = lsm_dibit_irqs;
                 s.traffic_lsm_dibit = traffic_lsm_dibit_irqs;
+                s.traffic2_lsm_dibit = traffic2_lsm_dibit_irqs;
                 s.pre_diff_iq = pre_diff_iq_irqs;
                 s.wideband_iq = wideband_iq_irqs;
                 s.last_at = Some(now);
@@ -1851,9 +2420,11 @@ impl InterruptHandler {
                     target: "p25_irq",
                     "IRQ #{total_irqs}: iq={iq} lsm_dibit={lsm_dibit} \
                      traffic_lsm_dibit={traffic_lsm_dibit} \
+                     traffic2_lsm_dibit={traffic2_lsm_dibit} \
                      pre_diff_iq={pre_diff_iq} wideband_iq={wideband_iq} \
                      (totals iq={iq_irqs} lsm_dibit={lsm_dibit_irqs} \
                      traffic_lsm_dibit={traffic_lsm_dibit_irqs} \
+                     traffic2_lsm_dibit={traffic2_lsm_dibit_irqs} \
                      pre_diff_iq={pre_diff_iq_irqs} \
                      wideband_iq={wideband_iq_irqs})"
                 );

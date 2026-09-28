@@ -8,6 +8,10 @@
 // Change 057: `close_via` says which close is pending — "end" (the end
 // of the transmission was decoded; closes after the end grace, CC
 // updates do not extend it) or "timeout" (no keep-alive for hang_ms).
+//
+// Change 066: one card per traffic chain. With two chains the cards are
+// titled by speaker (chain 1 follows the left groups, chain 2 the
+// right); chain 2's card hides while only one chain runs.
 
 import { h, setText, card } from '../dom.js';
 import { mhz, dur, ago, tgLabel, unitLabel } from '../format.js';
@@ -26,8 +30,24 @@ function localPhase(call, dt) {
   return 'hang';
 }
 
-export function callCard() {
+const TITLES = { 1: 'Left speaker · chain 1', 2: 'Right speaker · chain 2' };
+
+// The open call of `chain` (1 or 2) and that chain's state.
+function callOf(state, chain) {
+  if (!state) return null;
+  if (state.calls) return state.calls.find(x => x.chain === chain) || null;
+  return chain === 1 ? state.call : null;
+}
+
+function chainOf(state, chain) {
+  if (!state) return null;
+  if (state.chains) return state.chains.find(x => x.number === chain) || null;
+  return chain === 1 ? state.chain : null;
+}
+
+export function callCard(chain = 1) {
   const c = card('Now on air', { class: 'call-card' });
+  const title = c.head.querySelector('h2');
   const phase = h('span', { class: 'badge' });
   const enc = h('span', { class: 'badge enc', text: 'Encrypted', hidden: true });
   const rec = h('span', { class: 'badge rec', text: '● Rec', hidden: true, title: 'A recording is being written' });
@@ -48,7 +68,10 @@ export function callCard() {
   let timer = null;
 
   function render() {
-    const call = state && state.call;
+    const chains = state && state.chains ? state.chains.length : 1;
+    c.el.hidden = chain > chains;
+    setText(title, chains > 1 ? TITLES[chain] : 'Now on air');
+    const call = callOf(state, chain);
     active.hidden = !call;
     idle.hidden = !!call;
     c.el.classList.remove('voice', 'hang', 'acquiring');
@@ -79,7 +102,7 @@ export function callCard() {
   }
 
   function renderIdle() {
-    const ch = state ? state.chain : null;
+    const ch = chainOf(state, chain);
     const parts = [];
     if (ch && ch.parked_freq_hz) parts.push('Traffic chain parked on ' + mhz(ch.parked_freq_hz) + '.');
     if (ch && !ch.follower_enabled) parts.push('Grant follower is OFF.');
@@ -94,7 +117,10 @@ export function callCard() {
   function update(kind, store) {
     if (kind === 'state') state = store.state;
     if (kind === 'calls' && store.calls) {
-      lastCall = (store.calls.items || []).find(x => !x.not_followed) || null;
+      // Change 066: this chain's last call (older summaries carry no
+      // chain: chain 1's).
+      lastCall = (store.calls.items || [])
+        .find(x => !x.not_followed && (x.chain || 1) === chain) || null;
     }
     render();
   }

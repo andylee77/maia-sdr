@@ -133,8 +133,8 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     EndpointDoc {
         method: "GET",
         path: "/api/audio",
-        params: "?format=wav",
-        description: "Stream live vocoder PCM as an open-ended WAV (8 kHz 16-bit mono).",
+        params: "?format=wav&chain=1|2",
+        description: "Stream live vocoder PCM as an open-ended WAV (8 kHz 16-bit mono). Change 066: one traffic chain (default 1).",
     },
     EndpointDoc {
         method: "GET",
@@ -486,6 +486,12 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     },
     EndpointDoc {
         method: "GET",
+        path: "/api/traffic2",
+        params: "?freq_hz=<Hz>&retune_hz=<i64>&enable=0|1&probe_ms=<ms>",
+        description: "Second traffic chain (core 0.3.0): registers, bring-up retune and a ring probe that decodes its dibits. 409 without the chain.",
+    },
+    EndpointDoc {
+        method: "GET",
         path: "/api/tsbk_opcodes",
         params: "",
         description: "Histogram of TSBK opcodes observed. Labels match SDRTrunk OSP opcode names.",
@@ -512,13 +518,13 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
         method: "GET",
         path: "/api/ui/state",
         params: "",
-        description: "Change 056: consolidated web-UI state (site/CC health, current call with phase voice|hang|acquiring, chain, recording, audio listeners, calls_rev). ~1-2 KB, for a 1 Hz poll. Change 057: call.close_via end|timeout, close_window_ms, end_lc; recording.storage / sd_state.",
+        description: "Change 056: consolidated web-UI state (site/CC health, current call with phase voice|hang|acquiring, chain, recording, audio listeners, calls_rev). ~1-2 KB, for a 1 Hz poll. Change 057: call.close_via end|timeout, close_window_ms, end_lc; recording.storage / sd_state. Change 066: calls[] / chains[] per traffic chain (call / chain = chain 1).",
     },
     EndpointDoc {
         method: "GET",
         path: "/ws/audio",
-        params: "",
-        description: "WebSocket binary stream of AudioChunk payloads (used by dashboard player).",
+        params: "?v=2",
+        description: "WebSocket binary stream of AudioChunk payloads (used by dashboard player). Change 066: traffic chain 1 only; v=2 carries every chain, each frame prefixed [lane,0,0,0] and each meta frame naming its lane.",
     },
     EndpointDoc {
         method: "GET",

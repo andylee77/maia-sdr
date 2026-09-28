@@ -22,6 +22,9 @@ impl CoreVersion {
     /// First core with the LSM PLL/timing no-signal hold on the AGC idle
     /// gate and the 0.65 rad PLL clamp (doc/changes/059).
     pub const SIGNAL_HOLD: CoreVersion = CoreVersion { major: 0, minor: 2, bugfix: 0 };
+    /// First core with the second traffic chain (`traffic2_*` banks 9-11
+    /// at 0x120-0x168, interrupt bit 8; doc/changes/064).
+    pub const TRAFFIC2: CoreVersion = CoreVersion { major: 0, minor: 3, bugfix: 0 };
 
     pub const fn new(major: u8, minor: u8, bugfix: u8) -> Self {
         CoreVersion { major, minor, bugfix }
@@ -31,6 +34,13 @@ impl CoreVersion {
     /// idle gate reports no signal (no carrier-gap PLL trap).
     pub fn has_lsm_signal_hold(self) -> bool {
         self >= Self::SIGNAL_HOLD
+    }
+
+    /// The core has the second traffic chain. On older cores the
+    /// `traffic2_*` addresses are vacant and an AXI read of them stalls
+    /// the CPU, so every chain-2 access is gated on this.
+    pub fn has_traffic2_chain(self) -> bool {
+        self >= Self::TRAFFIC2
     }
 
     /// LSM PLL accumulator clamp in Q2.13 (`lsm_pll_update.MAX_PLL_ABS`).
@@ -59,6 +69,14 @@ mod tests {
         assert!(!CoreVersion::new(0, 1, 255).has_lsm_signal_hold());
         assert!(CoreVersion::new(0, 2, 0).has_lsm_signal_hold());
         assert!(CoreVersion::new(1, 0, 0).has_lsm_signal_hold());
+    }
+
+    #[test]
+    fn traffic2_chain_starts_at_0_3_0() {
+        assert!(!CoreVersion::new(0, 2, 0).has_traffic2_chain());
+        assert!(!CoreVersion::new(0, 2, 255).has_traffic2_chain());
+        assert!(CoreVersion::new(0, 3, 0).has_traffic2_chain());
+        assert!(CoreVersion::new(1, 0, 0).has_traffic2_chain());
     }
 
     #[test]

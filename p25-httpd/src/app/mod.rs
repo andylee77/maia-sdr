@@ -8,6 +8,8 @@
 pub mod autoppm;
 pub mod audio_pacer;
 pub mod call_counters;
+/// Change 067: board clock from the site / NTP / by hand.
+pub mod clock_task;
 pub mod dibit_airtime;
 #[cfg(target_os = "linux")]
 pub mod dibit_readers;
@@ -15,8 +17,15 @@ pub mod dibit_readers;
 pub mod forensics;
 pub mod grant_follower;
 pub mod grant_stats;
+/// Change 066: per-chain objects of a traffic chain.
+pub mod traffic_lane;
+/// Change 066: traffic LSM heartbeat, one task per chain.
+#[cfg(target_os = "linux")]
+pub mod traffic_heartbeat;
 pub mod traffic_pll_watchdog;
 pub mod imbe_forwarder;
+/// Change 066: which traffic chain follows a grant.
+pub mod lane_policy;
 pub mod seed_snapshot;
 #[cfg(target_os = "linux")]
 pub mod sw_demod_task;

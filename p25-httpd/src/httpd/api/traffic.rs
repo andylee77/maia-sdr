@@ -29,6 +29,214 @@ use crate::protocol::p25::control_channel::{
     ControlChannelDecoder, RUNTIME_SYNC_THRESHOLD, CC_SYNC_THRESHOLD,
 };
 
+/// Change 066: `GET /api/traffic2` -- second traffic chain (core 0.3.0)
+/// registers, plus bring-up controls. The follower does not use chain 2
+/// yet; this endpoint is the only writer.
+///
+/// - `?freq_hz=<Hz>`: tune chain 2 to an RF frequency (same NCO math as
+///   the grant follower, LO shift included) with an LSM reset, and
+///   enable it.
+/// - `?retune_hz=<Hz>`: same with a raw NCO offset from the RX LO.
+/// - `?enable=0|1`: LSM master enable.
+/// - `?probe_ms=<ms>`: read the chain-2 dibit ring for that long (whole
+///   4 KB sub-buffers, 3.4 s each; 1000-20000, default off) and decode
+///   it with a scratch decoder: dibit histogram, frame syncs and TSBKs
+///   (tune it to the control channel to see TSBKs).
+///
+/// Answers 409 on a core without the chain. While the follower uses
+/// chain 2 (`--traffic-chains`), the bring-up controls need `force=1`.
+#[cfg(target_os = "linux")]
+pub async fn get_traffic2(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse};
+    use std::sync::atomic::Ordering;
+    use crate::hardware::fpga::{nco_to_freq, DibitRing};
+    use crate::hardware::traffic_lane::Lane;
+
+    let mut applied: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    let sample_rate_hz = state.current_sample_rate_hz.load(Ordering::Relaxed) as f64;
+    let in_use = state.dibit_delivery.traffic2_active.load(Ordering::Relaxed);
+    let writes = ["freq_hz", "retune_hz", "enable", "probe_ms"]
+        .iter().any(|k| params.contains_key(*k));
+    if in_use && writes && params.get("force").map(String::as_str) != Some("1") {
+        return (StatusCode::CONFLICT, Json(serde_json::json!({
+            "ok": false,
+            "in_use": true,
+            "error": "chain 2 follows calls (--traffic-chains); add force=1 to override",
+        }))).into_response();
+    }
+    {
+        let core = state.ip_core.lock().await;
+        let Some(l2) = core.lane(Lane::Two) else {
+            return (StatusCode::CONFLICT, Json(serde_json::json!({
+                "ok": false,
+                "present": false,
+                "core_version": core.core_version().to_string(),
+                "error": "no second traffic chain (needs core 0.3.0 and the \
+                          p25-traffic2-lsm-dibit device tree node)",
+            }))).into_response();
+        };
+        let offset = if let Some(v) = params.get("freq_hz") {
+            match v.parse::<u64>() {
+                Ok(f) => {
+                    let rx_lo = state.current_rx_lo.load(Ordering::Relaxed);
+                    let shift = state.current_lo_shift_hz.load(Ordering::Relaxed);
+                    Some((f as f64 - rx_lo as f64 + shift as f64) as i64)
+                }
+                Err(_) => {
+                    errors.push(format!("freq_hz={v}: expected Hz"));
+                    None
+                }
+            }
+        } else if let Some(v) = params.get("retune_hz") {
+            v.parse::<i64>()
+                .map_err(|_| errors.push(format!("retune_hz={v}: expected signed Hz")))
+                .ok()
+        } else {
+            None
+        };
+        if let Some(off) = offset {
+            match l2.retune(off as f64, sample_rate_hz, true, None) {
+                Ok(()) => applied.push(format!("retune offset_hz={off}")),
+                Err(e) => errors.push(format!("retune: {e}")),
+            }
+        }
+        if let Some(v) = params.get("enable") {
+            match v.as_str() {
+                "1" | "on" | "true" => {
+                    l2.set_enable(true);
+                    applied.push("enable=1".into());
+                }
+                "0" | "off" | "false" => {
+                    l2.set_enable(false);
+                    applied.push("enable=0".into());
+                }
+                other => errors.push(format!("enable={other}: expected 0|1")),
+            }
+        }
+    }
+
+    let probe_json = match params.get("probe_ms").map(|v| v.parse::<u64>()) {
+        None => serde_json::Value::Null,
+        Some(Err(_)) => {
+            errors.push("probe_ms: expected milliseconds".into());
+            serde_json::Value::Null
+        }
+        Some(Ok(ms)) => {
+            let ms = ms.clamp(1000, 20_000);
+            // First read primes the legacy cursor (returns nothing).
+            let _ = state.ip_core.lock().await.read_dibit_buffers_indexed(DibitRing::Traffic2);
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            let (_, bufs) = state.ip_core.lock().await.read_dibit_buffers_indexed(DibitRing::Traffic2);
+            let mut dec = ControlChannelDecoder::new();
+            let mut hist = [0u64; 4];
+            let mut bytes = 0usize;
+            for b in &bufs {
+                bytes += b.len();
+                for w in b.chunks_exact(8) {
+                    let word = u64::from_le_bytes(w.try_into().unwrap());
+                    for i in 0..32 {
+                        hist[((word >> (i * 2)) & 3) as usize] += 1;
+                    }
+                    dec.process_dma_word(word);
+                }
+            }
+            let mut opcodes: std::collections::BTreeMap<String, u32> = Default::default();
+            for (_, op, _) in &dec.recent_messages {
+                *opcodes.entry(format!("0x{op:02X}")).or_default() += 1;
+            }
+            serde_json::json!({
+                "ms": ms,
+                "sub_buffers": bufs.len(),
+                "bytes": bytes,
+                "dibit_hist": hist,
+                "sync_hits": dec.sync_hits(),
+                "tsbks": dec.recent_messages.len(),
+                "tsbk_opcodes": opcodes,
+            })
+        }
+    };
+
+    // Register reads in their own scope: `LaneRegs` borrows the core
+    // and must not live across an await.
+    let regs = {
+        let core = state.ip_core.lock().await;
+        core.lane(Lane::Two).map(|l2| {
+            let s = l2.status();
+            let (nac, duid) = l2.nid();
+            let (pll_dbg, sample_point_dbg) = l2.debug();
+            let (agc_gain_q9_7, agc_mag_q1_15) = l2.agc_debug();
+            let (en, dma_en, dc_block, agc) = l2.control_readback();
+            let nco_word = l2.ddc_frequency_word();
+            serde_json::json!({
+                "core_version": core.core_version().to_string(),
+                "enabled": en,
+                "dibit_dma_enabled": dma_en,
+                "dc_block_enabled": dc_block,
+                "agc_enabled": agc,
+                "nco_word": format!("0x{nco_word:07X}"),
+                "nco_offset_hz": nco_to_freq(nco_word, sample_rate_hz).round() as i64,
+                "nid_nac": format!("0x{nac:03X}"),
+                "nid_duid": duid,
+                "nid_valid": s.nid_valid,
+                "n_errors": s.n_errors,
+                "sync_distance": s.sync_distance,
+                "dibit_overflow": s.dibit_overflow,
+                "drop_count": l2.drop_count(),
+                "dibit_last_buffer": l2.dibit_last_buffer(),
+                "dibit_next_addr": format!("0x{:08X}", l2.dibit_next_address()),
+                "pll_dbg": pll_dbg,
+                "sample_point_dbg": sample_point_dbg,
+                "agc_gain": agc_gain_q9_7 as f64 / 128.0,
+                "agc_mag": agc_mag_q1_15 as f64 / 32768.0,
+                "mag_update_threshold": l2.agc_threshold(),
+            })
+        })
+    };
+    let Some(serde_json::Value::Object(mut body)) = regs else {
+        return (StatusCode::CONFLICT, Json(serde_json::json!({"ok": false}))).into_response();
+    };
+    let irqs = state.irq_stats.lock().await.traffic2_lsm_dibit;
+    let status = if errors.is_empty() { StatusCode::OK } else { StatusCode::BAD_REQUEST };
+    body.insert("ok".into(), errors.is_empty().into());
+    body.insert("present".into(), true.into());
+    body.insert("applied".into(), applied.into());
+    body.insert("errors".into(), errors.into());
+    body.insert("irq_total".into(), irqs.into());
+    body.insert("probe".into(), probe_json);
+    body.insert("in_use".into(), in_use.into());
+    // Change 066: chain 2's call, when the follower runs it.
+    if let Some(l) = state.traffic_lanes.iter().find(|l| l.lane == Lane::Two) {
+        let mgr = l.chain.lock().await;
+        let call = l.active_call.lock().ok().and_then(|c| c.clone());
+        body.insert("follower".into(), serde_json::json!({
+            "state": mgr.state_label(),
+            "talkgroup": mgr.current_talkgroup().map(|t| t.0),
+            "frequency_hz": mgr.current_frequency(),
+            "call_id": call.as_ref().map(|c| c.call_id),
+            "call_tg": call.as_ref().map(|c| c.tg),
+            "voice_frames": call.as_ref().map(|c| c.voice_frames),
+            "imbe_extracted": l.forwarder.imbe_frames_extracted.load(Ordering::Relaxed),
+            "vocoder_pcm_produced": l.forwarder.vocoder_pcm_produced.load(Ordering::Relaxed),
+        }));
+    }
+    (status, Json(serde_json::Value::Object(body))).into_response()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn get_traffic2(
+    State(_state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "present": false,
+        "error": "traffic2 requires hardware (target_os=linux)",
+    }))
+}
+
 /// Phase 7A.1: GET /api/traffic -- traffic-channel grant follower
 /// state + dibit DMA counters, with optional manual control via
 /// query parameters.
@@ -850,6 +1058,11 @@ pub async fn get_audio(
         .map(String::as_str)
         .unwrap_or("raw");
     let want_wav = format == "wav";
+    // Change 066: one traffic chain per stream (`?chain=2`; default 1).
+    let lane = match params.get("chain").map(String::as_str) {
+        Some("2") => crate::hardware::traffic_lane::Lane::Two,
+        _ => crate::hardware::traffic_lane::Lane::One,
+    };
     let mut rx = state.audio_tx.subscribe();
 
     let stream = async_stream::stream! {
@@ -860,6 +1073,7 @@ pub async fn get_audio(
         }
         loop {
             match rx.recv().await {
+                Ok(chunk) if chunk.lane != lane => {}
                 Ok(chunk) => {
                     let mut buf = [0u8; 320];
                     for (i, &sample) in chunk.pcm.iter().enumerate() {

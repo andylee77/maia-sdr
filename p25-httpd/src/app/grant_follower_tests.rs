@@ -29,6 +29,7 @@ fn grant(tg: u16, source: u32, freq_hz: u64, not_followed: Option<&'static str>)
         nac: 0,
         talkgroup: Some(tg),
         expected_submit_count: 0,
+        lane: not_followed.is_none().then_some(Lane::One),
     }
 }
 
@@ -40,60 +41,76 @@ fn chunk(tg: u16, call_id: u64, airtime: bool) -> AudioChunk {
         call_id,
         captured_at_ms: now_unix_ms(),
         airtime,
+        lane: Lane::One,
     }
 }
 
+/// Change 066: the lifecycle with one slot per lane (lane One first).
 struct Rig {
-    active: Option<ActiveCall>,
+    slots: Vec<Slot>,
     nf: NfCalls,
     next_id: u64,
     tx: CallTrackerEventTx,
-    fwd: Arc<ImbeForwarder>,
     dedup: std::collections::HashMap<(u16, u32, Option<u64>, bool), u64>,
-    shared: ActiveCallShared,
     policy: CallPolicy,
 }
 
 impl Rig {
     fn new() -> Self {
+        Rig::lanes(&[Lane::One])
+    }
+    fn lanes(lanes: &[Lane]) -> Self {
+        let shared = crate::app::imbe_forwarder::ForwarderShared::default();
+        let slots = lanes.iter().map(|&l| {
+            let (tx, _rx) = tokio::sync::mpsc::channel(4);
+            let fwd = Arc::new(ImbeForwarder::with_lane(tx, l, &shared));
+            Slot::new(fwd, new_active_call_shared())
+        }).collect();
         Rig {
-            active: None,
+            slots,
             nf: NfCalls::default(),
             next_id: 1,
             tx: new_event_tx(),
-            fwd: forwarder(),
             dedup: Default::default(),
-            shared: new_active_call_shared(),
             policy: CallPolicy::default(),
+        }
+    }
+    fn mirror(&self) {
+        for s in &self.slots {
+            mirror_active(&s.active, &s.shared, &s.forwarder, &self.policy);
         }
     }
     fn boundary(&mut self, b: CallBoundary) {
         let h = self.policy.hang_ms();
-        handle_boundary(b, &mut self.active, &mut self.nf, &mut self.next_id, &self.tx, &self.fwd,
+        handle_boundary(b, &mut self.slots, &mut self.nf, &mut self.next_id, &self.tx,
                         &mut self.dedup, h);
-        mirror_active(&self.active, &self.shared, &self.fwd, &self.policy);
+        self.mirror();
     }
     fn audio(&mut self, c: AudioChunk) {
-        handle_audio(c, &mut self.active);
-        mirror_active(&self.active, &self.shared, &self.fwd, &self.policy);
+        handle_audio(c, &mut self.slots);
+        self.mirror();
+    }
+    /// Lane One's open call.
+    fn active(&mut self) -> &mut Option<ActiveCall> {
+        &mut self.slots[0].active
     }
     /// The tick's close rule `dt_ms` after now (the policy defaults).
     fn due_in(&self, dt_ms: u64) -> Option<CloseReason> {
-        let c = self.active.as_ref()?;
+        let c = self.slots[0].active.as_ref()?;
         close_due(c, now_unix_ms() + dt_ms, self.policy.hang_ms(), self.policy.end_grace_ms())
     }
     fn call_id(&self) -> u64 {
-        self.active.as_ref().unwrap().call_id
+        self.slots[0].active.as_ref().unwrap().call_id
     }
     /// The lifecycle tick `dt_ms` after now.
     fn tick(&mut self, dt_ms: u64) {
         let now = now_unix_ms() + dt_ms;
         let (h, g) = (self.policy.hang_ms(), self.policy.end_grace_ms());
-        sweep(&mut self.active, &mut self.nf, &mut self.next_id, &self.tx, &self.fwd, now, h, g);
-        mirror_active(&self.active, &self.shared, &self.fwd, &self.policy);
+        sweep(&mut self.slots, &mut self.nf, &mut self.next_id, &self.tx, now, h, g);
+        self.mirror();
     }
     fn snap(&self) -> Option<ActiveCallSnapshot> {
-        self.shared.lock().unwrap().clone()
+        self.slots[0].shared.lock().unwrap().clone()
     }
 }
 
@@ -146,6 +163,7 @@ fn hdu_refreshes_keepalive_but_is_not_voice() {
         nac: 0x8A1,
         talkgroup: Some(300),
         expected_submit_count: 0,
+        lane: Some(Lane::One),
     });
     let s = r.snap().unwrap();
     assert_eq!(s.voice_frames, 0);
@@ -222,7 +240,7 @@ fn not_followed_call_time_runs_to_its_last_announcement() {
 // ── Change 057: call close ──────────────────────────────────────────
 
 fn boundary(kind: CallBoundaryKind) -> CallBoundary {
-    CallBoundary { kind, nac: 0x8A1, talkgroup: Some(300), expected_submit_count: 0 }
+    CallBoundary { kind, nac: 0x8A1, talkgroup: Some(300), expected_submit_count: 0, lane: Some(Lane::One) }
 }
 
 fn voice_end(call_id: u64, air_ms: u64) -> CallBoundary {
@@ -384,6 +402,7 @@ fn repeat_of_the_same_grant_is_a_refresh_until_the_transmission_ends() {
         nac: 0,
         talkgroup: Some(300),
         expected_submit_count: 0,
+        lane: Some(Lane::One),
     });
     assert_eq!(r.call_id(), id);
     assert!(closes(&mut rx).is_empty());
@@ -406,13 +425,13 @@ fn updates_keep_a_silent_call_alive_only_on_its_channel() {
     std::thread::sleep(Duration::from_millis(5));
     // Encrypted / undecodable call still announced by the CC.
     r.boundary(upd(857_987_500));
-    let before = r.active.as_ref().unwrap().last_upd_at_ms;
-    assert!(before > r.active.as_ref().unwrap().started_unix_ms);
+    let before = r.active().as_ref().unwrap().last_upd_at_ms;
+    assert!(before > r.active().as_ref().unwrap().started_unix_ms);
     std::thread::sleep(Duration::from_millis(5));
     // Same TG on another channel: not this call's keep-alive.
     r.dedup.clear();
     r.boundary(upd(858_437_500));
-    assert_eq!(r.active.as_ref().unwrap().last_upd_at_ms, before);
+    assert_eq!(r.active().as_ref().unwrap().last_upd_at_ms, before);
     // Voice NIDs alone are not keep-alives (noise can fake one).
     r.boundary(nid(true));
     r.boundary(nid(true));
@@ -459,7 +478,7 @@ fn next_talker_granted_while_this_one_talks_waits_for_the_hand_over() {
     // The new call starts clean: HDU counted, no end pending.
     let s = r.snap().unwrap();
     assert_eq!(s.close_via, "timeout");
-    assert!(r.active.as_ref().unwrap().first_hdu_at_unix_ms.is_some());
+    assert!(r.active().as_ref().unwrap().first_hdu_at_unix_ms.is_some());
 }
 
 #[test]
@@ -493,7 +512,7 @@ fn queued_grant_is_applied_at_the_end_grace_or_after_its_maximum_wait() {
     let (mut r, _rx, a) = queued_rig();
     r.tick(0);
     assert_eq!(r.call_id(), a);
-    r.active.as_mut().unwrap().queued.as_mut().unwrap().at_ms -= QUEUED_GRANT_MAX_MS;
+    r.active().as_mut().unwrap().queued.as_mut().unwrap().at_ms -= QUEUED_GRANT_MAX_MS;
     r.tick(0);
     assert_ne!(r.call_id(), a);
 }
@@ -536,7 +555,7 @@ fn close_event_carries_open_time_and_marker() {
     r.boundary(grant(300, 1014, 857_987_500, None));
     let id = r.call_id();
     r.boundary(voice_end(id, now_unix_ms()));
-    let call = r.active.take().unwrap();
+    let call = r.active().take().unwrap();
     emit_close(&r.tx, &call, CloseReason::CallEnd, call.source, 0);
     let e = loop {
         let e = rx.try_recv().unwrap();
@@ -611,4 +630,129 @@ fn sticky_rejected_grant_refollows_from_updates() {
     assert!(refollow_on_update(rej, 300, Some(858_437_500), true, 1_000 + w, w));
     assert!(!refollow_on_update(rej, 300, Some(858_437_500), true, 5_900, w));
     assert!(REFOLLOW_STICKY_MS < REFOLLOW_WINDOW_MS);
+}
+
+// ── Change 066: two traffic chains ──────────────────────────────────
+
+fn grant_on(lane: Lane, tg: u16, source: u32, freq_hz: u64) -> CallBoundary {
+    CallBoundary { lane: Some(lane), ..grant(tg, source, freq_hz, None) }
+}
+
+fn on(lane: Lane, kind: CallBoundaryKind) -> CallBoundary {
+    CallBoundary { lane: Some(lane), ..boundary(kind) }
+}
+
+impl Rig {
+    fn snap_of(&self, i: usize) -> Option<ActiveCallSnapshot> {
+        self.slots[i].shared.lock().unwrap().clone()
+    }
+}
+
+#[test]
+fn two_chains_carry_two_calls_at_once() {
+    let mut r = Rig::lanes(&[Lane::One, Lane::Two]);
+    let mut rx = r.tx.subscribe();
+    r.boundary(grant_on(Lane::One, 300, 1013, 857_987_500));
+    r.boundary(grant_on(Lane::Two, 305, 3400043, 859_425_000));
+    let (a, b) = (r.snap_of(0).unwrap(), r.snap_of(1).unwrap());
+    assert_eq!((a.tg, b.tg), (300, 305));
+    assert_ne!(a.call_id, b.call_id, "one call-id space");
+    // Opens carry their chain.
+    let lanes: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).map(|e| e.lane).collect();
+    assert_eq!(lanes, vec![Some(Lane::One), Some(Lane::Two)]);
+    // Audio counts for the chain that decoded it.
+    r.audio(AudioChunk { lane: Lane::Two, ..chunk(305, b.call_id, true) });
+    assert_eq!((r.snap_of(0).unwrap().voice_frames, r.snap_of(1).unwrap().voice_frames), (0, 1));
+    // Chain 1's call ends on its own; chain 2's stays.
+    r.boundary(on(Lane::One, CallBoundaryKind::VoiceEnd { call_id: a.call_id, air_ms: now_unix_ms(), lc: "talk_complete" }));
+    r.tick(r.policy.end_grace_ms() + 50);
+    assert!(r.snap_of(0).is_none());
+    assert_eq!(r.snap_of(1).unwrap().call_id, b.call_id);
+    let c = closes(&mut rx);
+    assert_eq!(c.len(), 1);
+    assert_eq!((c[0].0, c[0].1), (a.call_id, CloseReason::CallEnd));
+}
+
+#[test]
+fn voice_on_one_chain_does_not_touch_the_other() {
+    let mut r = Rig::lanes(&[Lane::One, Lane::Two]);
+    r.boundary(grant_on(Lane::One, 300, 1013, 857_987_500));
+    r.boundary(grant_on(Lane::Two, 305, 3400043, 859_425_000));
+    let a = r.snap_of(0).unwrap().call_id;
+    r.boundary(on(Lane::One, CallBoundaryKind::VoiceEnd { call_id: a, air_ms: now_unix_ms(), lc: "talk_complete" }));
+    assert!(r.snap_of(0).unwrap().end_lc.is_some());
+    // Chain 2's voice NIDs are not chain 1's voice resuming.
+    for _ in 0..3 {
+        r.boundary(on(Lane::Two, CallBoundaryKind::TrafficNidObserved { voice: true }));
+    }
+    assert!(r.snap_of(0).unwrap().end_lc.is_some(), "end marker kept");
+    // An HDU on chain 2 stamps chain 2's call only.
+    r.boundary(on(Lane::Two, CallBoundaryKind::HduStart));
+    assert!(r.slots[0].active.as_ref().unwrap().first_hdu_at_unix_ms.is_none());
+    assert!(r.slots[1].active.as_ref().unwrap().first_hdu_at_unix_ms.is_some());
+}
+
+#[test]
+fn a_channel_moving_to_the_other_chain_ends_its_call_there() {
+    let mut r = Rig::lanes(&[Lane::One, Lane::Two]);
+    let mut rx = r.tx.subscribe();
+    r.boundary(grant_on(Lane::One, 300, 1013, 857_987_500));
+    let a = r.snap_of(0).unwrap().call_id;
+    // The system reuses 857.9875 for TG 305, which chain 2 follows.
+    r.boundary(grant_on(Lane::Two, 305, 3400043, 857_987_500));
+    assert!(r.snap_of(0).is_none());
+    assert_eq!(r.snap_of(1).unwrap().tg, 305);
+    assert_eq!(closes(&mut rx), vec![(a, CloseReason::TgChange, None)]);
+}
+
+#[test]
+fn a_not_followed_grant_ends_only_the_call_on_its_channel() {
+    let mut r = Rig::lanes(&[Lane::One, Lane::Two]);
+    let mut rx = r.tx.subscribe();
+    r.boundary(grant_on(Lane::One, 300, 1013, 857_987_500));
+    r.boundary(grant_on(Lane::Two, 305, 3400043, 859_425_000));
+    let b = r.snap_of(1).unwrap().call_id;
+    let a = r.snap_of(0).unwrap().call_id;
+    r.boundary(grant(402, 3400015, 859_425_000, Some("encrypted")));
+    assert!(r.snap_of(0).is_some());
+    assert!(r.snap_of(1).is_none());
+    let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    let closed: Vec<_> = events.iter()
+        .filter(|e| matches!(e.kind, CallTrackerEventKind::CallClose { .. }))
+        .map(|e| (e.call_id, e.lane))
+        .collect();
+    assert_eq!(closed, vec![(b, Some(Lane::Two))]);
+    // The not-followed call has no chain.
+    let nf = events.iter()
+        .find(|e| e.call_id != a && e.call_id != b)
+        .expect("the not-followed call is listed");
+    assert_eq!(nf.lane, None);
+}
+
+#[test]
+fn a_grant_update_refreshes_the_call_on_whichever_chain() {
+    let mut r = Rig::lanes(&[Lane::One, Lane::Two]);
+    r.boundary(grant_on(Lane::Two, 300, 1013, 857_987_500));
+    let before = r.slots[1].active.as_ref().unwrap().last_upd_at_ms;
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    r.boundary(upd(857_987_500));
+    assert!(r.slots[1].active.as_ref().unwrap().last_upd_at_ms > before);
+}
+
+// Change 067: the board clock stepped back (set from the site time) must
+// not leave a grant deduplicated until the clock catches up.
+#[test]
+fn grant_dedup_survives_a_clock_stepped_back() {
+    let mut r = Rig::new();
+    r.boundary(grant(300, 1013, 857_987_500, None));
+    // The entry now lies an hour in the future.
+    for t in r.dedup.values_mut() {
+        *t += 3_600_000;
+    }
+    r.active().as_mut().unwrap().last_upd_at_ms = 0;
+    // The repeat reaches the call (a refresh of the same call), not
+    // swallowed as a duplicate.
+    r.boundary(grant(300, 1013, 857_987_500, None));
+    assert!(r.active().as_ref().unwrap().last_upd_at_ms > 0);
+    assert!(within(10_000, 9_900, 200) && !within(10_000, 10_100, 200) && !within(10_000, 9_700, 200));
 }

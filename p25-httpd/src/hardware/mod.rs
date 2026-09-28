@@ -9,12 +9,16 @@
 
 /// Change 059: P25 core version register decoding (host-tested).
 pub mod core_version;
+/// Change 066: DDC FIR coefficient RAM images (host-tested).
+pub mod ddc_fir_ram;
 pub mod ddc_presets;
 /// Post-DDC sample rates (single source for every rate label).
 pub mod ddc_rate;
 /// Change 054: portable dibit ring position math + production clock
 /// (host-tested; used by the Linux readers and `fpga::IpCore`).
 pub mod dibit_ring;
+/// Change 066: traffic chains ("lanes") and how many a core offers.
+pub mod traffic_lane;
 
 #[cfg(target_os = "linux")]
 pub mod fpga;

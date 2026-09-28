@@ -10,6 +10,8 @@ pub mod recorder;
 
 use tokio::sync::broadcast;
 
+use crate::hardware::traffic_lane::Lane;
+
 /// One chunk of decoded PCM audio (20 ms, one IMBE frame).
 #[derive(Debug, Clone)]
 pub struct AudioChunk {
@@ -55,6 +57,8 @@ pub struct AudioChunk {
     /// capture-time window, and the lifecycle only counts the chunk as
     /// activity of the call it belongs to.
     pub airtime: bool,
+    /// Change 066: traffic chain that decoded the audio.
+    pub lane: Lane,
 }
 
 pub type AudioTx = broadcast::Sender<AudioChunk>;
@@ -62,7 +66,12 @@ pub type AudioTx = broadcast::Sender<AudioChunk>;
 /// Create the audio broadcast channel.
 /// Capacity 256 = ~5.1 seconds of audio, ~84 KB RAM.
 pub fn audio_channel() -> AudioTx {
-    let (tx, _rx) = broadcast::channel(256);
+    audio_channel_for(1)
+}
+
+/// Change 066: 256 chunks per traffic chain (~5.1 s of each).
+pub fn audio_channel_for(chains: usize) -> AudioTx {
+    let (tx, _rx) = broadcast::channel(256 * chains.max(1));
     tx
 }
 
@@ -96,6 +105,11 @@ pub struct CallBoundary {
     /// discarded fragment. A 200 ms timer still guards the case
     /// where consumption stalls (e.g. encrypted skip streak).
     pub expected_submit_count: u64,
+    /// Change 066: traffic chain the event belongs to. Voice events
+    /// (HDU, NIDs, link control, end markers) carry their chain; a
+    /// followed grant carries the chain chosen for it; not-followed
+    /// grants and grant updates carry none.
+    pub lane: Option<Lane>,
 }
 
 /// 2026-04-26 session-lifecycle refactor: the three terminator

@@ -135,6 +135,44 @@ fn set_system_clock(_epoch_secs: u64) -> io::Result<()> {
     ))
 }
 
+/// Change 067: step the system clock to `unix_ms`.
+#[cfg(target_os = "linux")]
+pub fn step_clock_ms(unix_ms: u64) -> io::Result<()> {
+    let tv = libc::timeval {
+        tv_sec: (unix_ms / 1_000) as libc::time_t,
+        tv_usec: ((unix_ms % 1_000) * 1_000) as libc::suseconds_t,
+    };
+    if unsafe { libc::settimeofday(&tv, std::ptr::null()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Change 067: slew the system clock by `delta_ms` (the kernel speeds it
+/// up or slows it down by 500 ppm until the offset is used up; the clock
+/// never jumps). Replaces any slew still pending.
+#[cfg(target_os = "linux")]
+pub fn slew_clock_ms(delta_ms: i64) -> io::Result<()> {
+    let tv = libc::timeval {
+        tv_sec: (delta_ms / 1_000) as libc::time_t,
+        tv_usec: ((delta_ms % 1_000) * 1_000) as libc::suseconds_t,
+    };
+    if unsafe { libc::adjtime(&tv, std::ptr::null_mut()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn step_clock_ms(_unix_ms: u64) -> io::Result<()> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "clock control only on Linux"))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn slew_clock_ms(_delta_ms: i64) -> io::Result<()> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "clock control only on Linux"))
+}
+
 /// Try each server in order. First successful query wins: we set
 /// the clock and return. On total failure, return the last error.
 ///

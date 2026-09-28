@@ -169,6 +169,24 @@ async fn site(state: &AppState, mono_ms: u64) -> UiSite {
     }
     site.cc_freq_hz = state.current_control_freq.load(Ordering::Relaxed);
     site.modulation = state.active_modulation_label().to_string();
+    // Change 067: the site time and the board clock source.
+    site.clock_source = state.ui_settings.clock.source().as_str().to_string();
+    site.site_time = {
+        let dec = state.active_control_decoder().read().await;
+        let c = &dec.system.site_clock;
+        let mono = crate::hardware::dibit_ring::mono_us() / 1_000;
+        match (c.site_ms_at(mono), c.precision(), c.last()) {
+            (Some(ms), Some(p), Some((s, at))) => Some(p25_json::ui::UiSiteTime {
+                unix_ms: ms,
+                precision: p.as_str().to_string(),
+                ext_locked: s.ext_locked,
+                local_offset_min: s.local_offset_min,
+                board_offset_ms: ms as i64 - now_unix_ms() as i64,
+                age_ms: mono.saturating_sub(at),
+            }),
+            _ => None,
+        }
+    };
     site
 }
 
@@ -184,27 +202,39 @@ pub async fn get_ui_state(State(state): State<Arc<AppState>>) -> Json<UiState> {
     let recording_enabled = state.ui_settings.recording.enabled();
 
     let site = site(&state, mono_ms).await;
-    let call = state
-        .active_call_snapshot
-        .lock()
-        .ok()
-        .and_then(|g| g.clone())
-        .map(|s| {
+    // Change 066: every traffic chain's call and state, chain 1 first.
+    let mut calls = Vec::new();
+    let mut chains = Vec::new();
+    for lane in &state.traffic_lanes {
+        let n = lane.lane.number();
+        let snap = lane.active_call.lock().ok().and_then(|g| g.clone());
+        if let Some(s) = snap {
             // A call opened while recording was off stays unrecorded
             // even if recording is switched back on mid-call.
             let rec = recording_enabled && !state.ui_settings.recording.was_skipped(s.call_id);
-            ui_state::build_call(&s, now, aliases, rec)
-        });
-    let chain = {
-        let mgr = state.traffic_chain.lock().await;
-        UiChain {
+            calls.push(ui_state::build_call(&s, now, aliases, rec, n));
+        }
+        let mgr = lane.chain.lock().await;
+        chains.push(UiChain {
             state: mgr.state_label().to_string(),
             parked_freq_hz: mgr.parked_freq_hz,
             follower_enabled: state.traffic_follower_enabled.load(Ordering::Relaxed),
             lock_freq: state.traffic_lock_freq.load(Ordering::Relaxed),
-            delivery_mode: state.dibit_delivery.traffic.active_mode().as_str().to_string(),
-        }
-    };
+            delivery_mode: state.dibit_delivery.traffic_ring(lane.lane).active_mode().as_str().to_string(),
+            number: n,
+            tg: mgr.current_talkgroup().map(|t| t.0),
+        });
+    }
+    let call = calls.iter().find(|c| c.chain == 1).cloned();
+    let chain = chains.first().cloned().unwrap_or(UiChain {
+        state: "Idle".into(),
+        parked_freq_hz: None,
+        follower_enabled: false,
+        lock_freq: false,
+        delivery_mode: String::new(),
+        number: 1,
+        tg: None,
+    });
     let recording = recording_status(&state).await;
     let audio = UiAudio {
         listeners: state.audio_ws_listeners.load(Ordering::Relaxed),
@@ -219,6 +249,8 @@ pub async fn get_ui_state(State(state): State<Arc<AppState>>) -> Json<UiState> {
         site,
         call,
         chain,
+        calls,
+        chains,
         recording,
         audio,
         calls_rev: calls_rev(&state).await,

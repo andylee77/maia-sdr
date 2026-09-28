@@ -5,6 +5,8 @@
 pub mod event_log;
 pub mod monitor;
 pub mod ntp;
+/// Change 067: site time from the control channel.
+pub mod site_clock;
 pub mod sites;
 pub mod spectrum;
 pub mod sync_trace;

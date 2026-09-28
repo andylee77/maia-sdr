@@ -923,13 +923,20 @@ pub async fn post_dibit_delivery(
     let mut applied: Vec<String> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
+    // Change 066: `traffic` covers every traffic chain in use, `traffic2`
+    // the second one only.
     let rings: Vec<&Arc<crate::app::dibit_airtime::DibitRingShared>> =
         match params.get("ring").map(|s| s.as_str()) {
-            None | Some("both") | Some("all") => vec![&d.control, &d.traffic],
+            None | Some("both") | Some("all") => {
+                let mut v = vec![&d.control];
+                v.extend(d.traffic_rings());
+                v
+            }
             Some("control") => vec![&d.control],
-            Some("traffic") => vec![&d.traffic],
+            Some("traffic") => d.traffic_rings(),
+            Some("traffic2") => vec![&d.traffic2],
             Some(other) => {
-                errors.push(format!("ring={other}: expected control|traffic|both"));
+                errors.push(format!("ring={other}: expected control|traffic|traffic2|both"));
                 Vec::new()
             }
         };
@@ -958,7 +965,9 @@ pub async fn post_dibit_delivery(
         match v.parse::<u32>() {
             Ok(n) => {
                 let n = n.min(4800);
-                d.traffic.settle_dibits.store(n, Ordering::Relaxed);
+                for r in d.traffic_rings() {
+                    r.settle_dibits.store(n, Ordering::Relaxed);
+                }
                 applied.push(format!("settle_dibits={n}"));
             }
             Err(_) => errors.push(format!("settle_dibits={v}: expected integer")),
@@ -970,7 +979,9 @@ pub async fn post_dibit_delivery(
         .unwrap_or(false)
     {
         d.control.reset_stats();
-        d.traffic.reset_stats();
+        for r in d.traffic_rings() {
+            r.reset_stats();
+        }
         applied.push("reset".into());
     }
     if !applied.is_empty() {

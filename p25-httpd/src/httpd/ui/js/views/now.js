@@ -51,16 +51,17 @@ function recorderCard() {
 }
 
 export function mount(host) {
-  const call = callCard();
+  // Change 066: a card per traffic chain (chain 2's hides with one).
+  const call = callCard(1);
+  const call2 = callCard(2);
   const site = siteCard();
   const rec = recorderCard();
   const calls = callsList();
   const speakers = speakersPanel();
-  call.el.classList.add('now-call');
   calls.el.classList.add('now-calls');
   host.append(
     h('div', { class: 'now-layout' },
-      call.el,
+      h('div', { class: 'stack now-call' }, call.el, call2.el),
       h('div', { class: 'stack now-side' }, speakers.el, site.el, rec.el),
       calls.el),
   );
@@ -69,6 +70,7 @@ export function mount(host) {
   return {
     update(kind, store) {
       call.update(kind, store);
+      call2.update(kind, store);
       calls.update(kind, store);
       speakers.update(kind, store);
       if (kind === 'state' && store.state) {
@@ -78,6 +80,8 @@ export function mount(host) {
     },
     unmount() {
       call.unmount();
+      call2.unmount();
+      site.unmount();
       calls.unmount();
     },
   };

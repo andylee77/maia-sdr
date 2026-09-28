@@ -24,8 +24,16 @@ pub struct UiState {
     pub uptime_s: u64,
     pub site: UiSite,
     /// The call the lifecycle currently holds open, `None` when idle.
+    /// Change 066: traffic chain 1's (see `calls`).
     pub call: Option<UiCall>,
+    /// Change 066: traffic chain 1 (see `chains`).
     pub chain: UiChain,
+    /// Change 066: the open call of every traffic chain, chain 1 first.
+    #[serde(default)]
+    pub calls: Vec<UiCall>,
+    /// Change 066: every traffic chain that runs, chain 1 first.
+    #[serde(default)]
+    pub chains: Vec<UiChain>,
     pub recording: UiRecordingStatus,
     pub audio: UiAudio,
     /// Changes whenever the recent-calls list or the recordings ring
@@ -64,6 +72,32 @@ pub struct UiSite {
     /// Summary: "ok" (TSBKs flowing), "stale" (acquired but no TSBK for
     /// > 5 s), "searching" (not acquired).
     pub health: String,
+    /// Change 067: the site's time from its control channel (SYNC_BCST),
+    /// `None` until one is decoded.
+    #[serde(default)]
+    pub site_time: Option<UiSiteTime>,
+    /// Change 067: where the board clock comes from: "site", "ntp" or
+    /// "manual".
+    #[serde(default)]
+    pub clock_source: String,
+}
+
+/// Change 067: the site time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UiSiteTime {
+    /// Site time (UTC unix ms) at the snapshot.
+    pub unix_ms: u64,
+    /// "precise" (locked micro-slots), "second" (from a minute
+    /// rollover) or "minute" (±30 s).
+    pub precision: String,
+    /// The site clock is locked to an external reference (GPS).
+    pub ext_locked: bool,
+    /// Local time offset from UTC the site announces, minutes.
+    pub local_offset_min: Option<i16>,
+    /// Site time minus board clock, ms.
+    pub board_offset_ms: i64,
+    /// Age of the newest time broadcast, ms.
+    pub age_ms: u64,
 }
 
 /// The call held open by the lifecycle (`app::grant_follower`).
@@ -108,6 +142,9 @@ pub struct UiCall {
     pub end_lc: Option<String>,
     /// A WAV is being written for this call.
     pub recording: bool,
+    /// Change 066: traffic chain (1 or 2; 0 = unknown).
+    #[serde(default)]
+    pub chain: u8,
 }
 
 /// Traffic chain as the follower sees it.
@@ -123,6 +160,12 @@ pub struct UiChain {
     pub lock_freq: bool,
     /// Traffic dibit reader mode ("airtime" / "poll" / "legacy").
     pub delivery_mode: String,
+    /// Change 066: chain number (1 or 2; 0 = unknown).
+    #[serde(default)]
+    pub number: u8,
+    /// Change 066: talkgroup the chain follows.
+    #[serde(default)]
+    pub tg: Option<u16>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -205,6 +248,10 @@ pub struct UiCallSummary {
     /// (recording was off), "evicted" (rolled out of retention),
     /// "no_voice", "encrypted", "not_followed", "missing".
     pub audio_status: String,
+    /// Change 066: traffic chain that followed the call (1 or 2; 0 =
+    /// not followed or unknown).
+    #[serde(default)]
+    pub chain: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

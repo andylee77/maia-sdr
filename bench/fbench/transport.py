@@ -265,6 +265,13 @@ class Http:
         )
         return self._request(req, timeout)
 
+    def put_json(self, path: str, body: Any, timeout: float | None = None) -> Any:
+        req = urllib.request.Request(
+            self._url(path, None), data=json.dumps(body).encode(), method="PUT",
+            headers={"Content-Type": "application/json"},
+        )
+        return self._request(req, timeout)
+
 
 # ---------------------------------------------------------------------------
 # libiio

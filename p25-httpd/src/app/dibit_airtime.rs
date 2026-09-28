@@ -937,6 +937,10 @@ const MAX_PENDING_CUTS: usize = 1024;
 pub struct DibitDelivery {
     pub control: std::sync::Arc<DibitRingShared>,
     pub traffic: std::sync::Arc<DibitRingShared>,
+    /// Change 066: the second traffic chain's ring (core 0.3.0); in use
+    /// only while `traffic2_active`.
+    pub traffic2: std::sync::Arc<DibitRingShared>,
+    pub traffic2_active: std::sync::atomic::AtomicBool,
     pub poll_ms: AtomicU32,
 }
 
@@ -953,8 +957,31 @@ impl DibitDelivery {
                 RingGeometry::P25_DIBIT,
                 mode,
             )),
+            traffic2: std::sync::Arc::new(DibitRingShared::new(
+                "traffic2",
+                RingGeometry::P25_DIBIT,
+                mode,
+            )),
+            traffic2_active: false.into(),
             poll_ms: AtomicU32::new(poll_ms.clamp(MIN_POLL_MS, MAX_POLL_MS)),
         }
+    }
+
+    /// Change 066: the ring of a traffic lane.
+    pub fn traffic_ring(&self, lane: crate::hardware::traffic_lane::Lane) -> &std::sync::Arc<DibitRingShared> {
+        match lane {
+            crate::hardware::traffic_lane::Lane::One => &self.traffic,
+            crate::hardware::traffic_lane::Lane::Two => &self.traffic2,
+        }
+    }
+
+    /// Change 066: the traffic rings in use (chain 2's only when active).
+    pub fn traffic_rings(&self) -> Vec<&std::sync::Arc<DibitRingShared>> {
+        let mut v = vec![&self.traffic];
+        if self.traffic2_active.load(Ordering::Relaxed) {
+            v.push(&self.traffic2);
+        }
+        v
     }
 
     pub fn poll_ms(&self) -> u32 {
@@ -966,11 +993,15 @@ impl DibitDelivery {
     }
 
     pub fn status_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut v = serde_json::json!({
             "poll_ms": self.poll_ms(),
             "control": self.control.status_json(false),
             "traffic": self.traffic.status_json(true),
-        })
+        });
+        if self.traffic2_active.load(Ordering::Relaxed) {
+            v["traffic2"] = self.traffic2.status_json(true);
+        }
+        v
     }
 }
 

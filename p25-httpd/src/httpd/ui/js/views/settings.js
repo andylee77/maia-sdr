@@ -7,7 +7,7 @@
 import { h, card, toast, switchInput } from '../dom.js';
 import { api } from '../api.js';
 import { store, setPref, kick } from '../store.js';
-import { bytes, dur, DASH } from '../format.js';
+import { bytes, dur, DASH, siteClock, utcOffset } from '../format.js';
 import { kvTable } from '../components/kv_table.js';
 import { aliasEditor } from '../components/alias_editor.js';
 import { monitorPicker } from '../components/monitor_picker.js';
@@ -153,21 +153,58 @@ function encryptedCard() {
   return { el: c.el, set };
 }
 
+// Change 067: the radio clock's source. The radio has no battery-backed
+// clock; "site" follows the control channel's time broadcast (works in
+// the field without internet), "ntp" internet time, "manual" only the
+// button below.
+const CLOCK_SOURCES = [
+  ['site', 'Control channel (site time)'],
+  ['ntp', 'Internet time (NTP)'],
+  ['manual', 'Manual (set from a browser)'],
+];
+const PRECISION = { precise: 'precise', second: 'to the second', minute: 'to the minute (waiting for a minute to roll over)' };
+
 function clockCard() {
   const c = card('Clock');
+  const src = h('select', { class: 'input', 'aria-label': 'Radio clock source' },
+    ...CLOCK_SOURCES.map(([v, t]) => h('option', { value: v, text: t })));
+  src.addEventListener('change', async () => {
+    try { await save({ clock: { source: src.value } }); toast('Clock source: ' + src.selectedOptions[0].text); } catch (e) { toast(e.message, true); }
+  });
+  const note = h('p', { class: 'card-note' });
   const kv = kvTable();
   const sync = h('button', { class: 'btn small', type: 'button', text: 'Set radio clock from this browser' });
   sync.addEventListener('click', async () => {
     try { await api.setTime(Date.now()); toast('Radio clock set'); kick(50); } catch (e) { toast('Failed: ' + e.message, true); }
   });
   const auto = switchInput('Set it automatically when the radio clock is wrong', store.prefs.autoClock, on => setPref('autoClock', on));
-  c.body.append(kv.el, h('div', { class: 'row', style: { marginTop: '10px' } }, sync), h('div', { style: { marginTop: '8px' } }, auto.el));
+  const manual = h('div', null, h('div', { class: 'row', style: { marginTop: '10px' } }, sync), h('div', { style: { marginTop: '8px' } }, auto.el));
+  c.body.append(h('div', { class: 'row' }, h('span', { text: 'Radio clock from' }), src), note, kv.el, manual);
   function update(s) {
+    const source = (s.site && s.site.clock_source) || 'manual';
+    if (document.activeElement !== src) src.value = source;
+    const t = s.site && s.site.site_time;
+    note.textContent = source === 'site'
+      ? "The radio sets its clock from the time the control channel broadcasts, like the site's radios. Call times are then the site's."
+      : source === 'ntp'
+        ? 'The radio asks internet time servers at start and every hour (needs internet on the radio).'
+        : 'The radio clock changes only when set from a browser.';
+    manual.hidden = source === 'site';
     const skew = Math.round(store.boardOffsetMs / 1000);
-    kv.set([
+    const rows = [
       ['Radio clock', s.clock_valid ? new Date(s.now_unix_ms).toLocaleString() : 'not set (' + new Date(s.now_unix_ms).toISOString().slice(0, 19) + ')', s.clock_valid ? '' : 'warn'],
-      ['Offset to this browser', s.clock_valid ? skew + ' s' : DASH, Math.abs(skew) > 120 ? 'warn' : ''],
-    ]);
+    ];
+    if (t) {
+      rows.push(['Site time', new Date(t.unix_ms).toLocaleDateString() + ' ' + siteClock(t.unix_ms)]);
+      if (t.local_offset_min != null) rows.push(['Site time zone (announced)', utcOffset(t.local_offset_min)]);
+      rows.push(['Site time quality', (PRECISION[t.precision] || t.precision) + (t.ext_locked ? ', GPS-locked site' : ', site clock not GPS-locked')]);
+      rows.push(['Radio vs site', dur(Math.abs(t.board_offset_ms)) + (t.board_offset_ms > 0 ? ' behind' : t.board_offset_ms < 0 ? ' ahead' : ''),
+        Math.abs(t.board_offset_ms) > 2000 && source === 'site' ? 'warn' : '']);
+    } else {
+      rows.push(['Site time', 'no time broadcast decoded yet']);
+    }
+    rows.push(['Offset to this browser', s.clock_valid ? skew + ' s' : DASH, Math.abs(skew) > 120 && source !== 'site' ? 'warn' : '']);
+    kv.set(rows);
   }
   return { el: c.el, update };
 }

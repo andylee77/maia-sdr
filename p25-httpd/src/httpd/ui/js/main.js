@@ -81,8 +81,14 @@ function renderBanner() {
   const s = store.state;
   const b = $('banner');
   const skew = s ? Math.abs(store.boardOffsetMs) : 0;
-  const bad = s && (!s.clock_valid || skew > 120000);
-  if (bad && store.prefs.autoClock && !clockSyncTried) {
+  // Change 067: with the clock source "site" the radio follows the
+  // control channel's time on purpose (a replay may be months off this
+  // browser); only an unset clock is flagged, and the browser never
+  // overrides it. Browser sync is for "manual" / an NTP radio offline.
+  const src = s && s.site ? s.site.clock_source : 'manual';
+  const followsSite = src === 'site' && !!(s && s.site.site_time);
+  const bad = s && (!s.clock_valid || (skew > 120000 && src !== 'site'));
+  if (bad && !followsSite && store.prefs.autoClock && !clockSyncTried) {
     clockSyncTried = true;
     syncClock(false);
   }
@@ -107,6 +113,11 @@ function renderBanner() {
 function applyAudioPrefs() {
   const vol = store.prefs.volume ?? 1;
   player.setVolume(vol);
+  // Change 067: volume normalization, on unless switched off.
+  const norm = store.prefs.normalize !== false;
+  player.setNormalize(norm);
+  const nb = $('norm-btn');
+  if (nb) { nb.classList.toggle('on', norm); nb.setAttribute('aria-pressed', norm ? 'true' : 'false'); }
   const slider = $('vol');
   if (slider && document.activeElement !== slider) slider.value = Math.round(vol * 100);
   if (slider) slider.title = 'Volume ' + Math.round(vol * 100) + '%';
@@ -120,6 +131,7 @@ function bindListen() {
     slider.title = 'Volume ' + slider.value + '%';
   });
   slider.addEventListener('change', () => setPref('volume', slider.value / 100));
+  $('norm-btn').addEventListener('click', () => setPref('normalize', store.prefs.normalize === false));
   applyAudioPrefs();
   btn.addEventListener('click', () => player.toggle());
   player.onChange(st => {

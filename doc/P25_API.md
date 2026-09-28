@@ -50,7 +50,7 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 | `/api/system` | GET | `SystemInfo` | System identity: NAC, WACN, RFSS, site, control channel, secondary CCH, SNDCP channels, system clock, build tag |
 | `/api/sys_health` | GET | JSON | **Stage 2** — process + kernel health: loadavg, daemon RSS, thread count, free memory. Cheap to poll from a mobile client |
 | `/api/endpoints` | GET | JSON | Self-describing endpoint list (authoritative — the live `ENDPOINT_CATALOGUE`) |
-| `/api/set_time` | POST | JSON | `?unix_ms=<i64>` — push browser/client wall-clock to the board. For RNDIS-USB or air-gapped setups where NTP is unreachable |
+| `/api/set_time` | POST | JSON | `?unix_ms=<i64>` — push browser/client wall-clock to the board. For RNDIS-USB or air-gapped setups where NTP is unreachable. Change 067: with the clock source `site` the control channel's time wins again within seconds |
 
 ### `api/radio` — live radio state (primary-view endpoints)
 
@@ -68,8 +68,9 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 | Path | Method | Returns | Purpose |
 |---|---|---|---|
 | `/api/traffic` | GET | JSON | Traffic-follower state + manual knobs: `?follower=on/off`, `?reset_stats=1`, `?retune_hz=<i64>` (routes through full chain), `?demod_enable=0/1` |
+| `/api/traffic2` | GET | JSON | Change 066: second traffic chain (core 0.3.0) registers (`nid_nac`, `pll_dbg`, AGC, NCO, ring position, `irq_total`), `in_use`, and `follower` (chain 2's call) when the follower runs it. Bring-up: `?freq_hz=<Hz>` or `?retune_hz=<i64>` (retune with reset, enable), `?enable=0\|1`, `?probe_ms=<ms>` (reads the chain-2 ring and decodes it: dibit histogram, frame syncs, TSBK opcodes). 409 without the chain; the controls need `force=1` while the follower uses chain 2. |
 | `/api/imbe_dump` | GET | JSON | Raw IMBE frame ring (diagnostic; vocoder input) |
-| `/api/audio` | GET | WAV | Streaming vocoder PCM as an open-ended WAV file (8 kHz 16-bit mono) |
+| `/api/audio` | GET | WAV | Streaming vocoder PCM as an open-ended WAV file (8 kHz 16-bit mono). Change 066: one traffic chain, `?chain=1\|2` (default 1) |
 | `/api/audio_test` | GET | JSON | One-shot vocoder test-tone ring dump |
 
 ### `api/talkgroups` — per-TG metadata
@@ -101,9 +102,9 @@ semantics: [`changes/056`](changes/056_web_ui_review_and_redesign.md).
 
 | Path | Method | Returns | Purpose |
 |---|---|---|---|
-| `/api/ui/state` | GET | `UiState` | ~1 KB, for a 1 Hz poll. `now_unix_ms` + `clock_valid` (board clock; compute ages against it), `site` (identity, `cc_freq_hz`, `modulation`, `acquired`, `last_tsbk_age_ms`, `tsbk_per_s` and `tsbk_ok_pct` over ~10 s, `health` ok\|stale\|searching), `call` (null when idle; `call_id`, `tg` / `tg_alias`, `source` / `source_alias`, `sources`, `freq_hz`, `channel`, `encrypted`, `started_unix_ms`, `elapsed_ms`, `phase` acquiring\|voice\|hang, `voice_ms`, `first_voice_unix_ms`, `last_voice_unix_ms`, `close_in_ms`, change 057: `close_via` end\|timeout (which close is pending: end-of-transmission grace, not extended by CC updates, or no keep-alive), `close_window_ms` (that rule's full length, for a countdown), `end_lc` (terminator LC, e.g. `talk_complete`, `channel_user`); `phase` is `hang` once `close_via` is `end`; `recording`), `chain` (`state`, `parked_freq_hz`, `follower_enabled`, `lock_freq`, `delivery_mode`), `recording` (`enabled`, `max_count`, `count`, change 057: `storage` ram\|sd selected for new recordings, `sd_state` when the SD store is selected or holds recordings, `sd_count`, `ram_count`), `audio` (`listeners` = browsers on `/ws/audio`, `lag_total`), `calls_rev`, `settings_rev`, `log_last_seq` |
+| `/api/ui/state` | GET | `UiState` | ~1 KB, for a 1 Hz poll. `now_unix_ms` + `clock_valid` (board clock; compute ages against it), `site` (identity, `cc_freq_hz`, `modulation`, `acquired`, `last_tsbk_age_ms`, `tsbk_per_s` and `tsbk_ok_pct` over ~10 s, `health` ok\|stale\|searching), `call` (null when idle; `call_id`, `tg` / `tg_alias`, `source` / `source_alias`, `sources`, `freq_hz`, `channel`, `encrypted`, `started_unix_ms`, `elapsed_ms`, `phase` acquiring\|voice\|hang, `voice_ms`, `first_voice_unix_ms`, `last_voice_unix_ms`, `close_in_ms`, change 057: `close_via` end\|timeout (which close is pending: end-of-transmission grace, not extended by CC updates, or no keep-alive), `close_window_ms` (that rule's full length, for a countdown), `end_lc` (terminator LC, e.g. `talk_complete`, `channel_user`); `phase` is `hang` once `close_via` is `end`; `recording`), `chain` (`state`, `parked_freq_hz`, `follower_enabled`, `lock_freq`, `delivery_mode`), `recording` (`enabled`, `max_count`, `count`, change 057: `storage` ram\|sd selected for new recordings, `sd_state` when the SD store is selected or holds recordings, `sd_count`, `ram_count`), `audio` (`listeners` = browsers on `/ws/audio`, `lag_total`), `calls_rev`, `settings_rev`, `log_last_seq`. Change 066: `calls` (the open call of every traffic chain, same shape as `call` plus `chain` 1\|2) and `chains` (every running chain: `chain`'s fields plus `number` and `tg`); `call` / `chain` stay chain 1's |
 | `/api/ui/calls` | GET | `UiCalls` | Recent calls newest first, grant summaries joined with recordings by call_id. `?limit=N` (default 40, max 250), `?nf=0` hides encrypted / not-followed grants. Per item: `voice_ms` (WAV length, else IMBE × 20 ms), `open_ms` (lifecycle open time: voice plus the time until the close — change 057: end grace or the reply's grant, typically 2–4 s for a 1.4 s PTT; pre-057 up to 10 s more), `air_ms`, `first_voice_ms`, `imbe`, `ldu`, `vocoder_errors` (change 057: frames whose IMBE FEC corrected more than 4 bits; was never counted) / `_silent`, `not_followed`, `close_reason` call_end\|tg_change\|timeout\|stream_lag, `recording` {`id`, `url`, `duration_ms`, `size_bytes`, `filename`, `storage`} and `audio_status` recorded\|saving\|not_recorded\|evicted\|no_voice\|encrypted\|not_followed\|missing. Change 057: `imbe` / `ldu` / `vocoder_*` are the call's own counts by call_id; frames of the call decoded after its close (air-time tail) are added within ~0.25 s and bump `calls_rev`. Refetch when `/api/ui/state` `calls_rev` changes |
-| `/api/ui/settings` | GET | JSON | `{settings: {recording: {enabled, max_count, storage, sd_max_count, sd_max_mb}, call: {hang_ms, end_grace_ms}, radio: {gain_mode, manual_gain_db}, tg_aliases, unit_aliases, monitor_tgs, tg_groups: [{name, tgs}] (change 063; list order = priority), speakers: {left, right (group names), other both\|left\|right\|off, preempt}}, rev, file, load_note, last_save_error, recording_storage, limits, encrypted_tgs}`. Change 057 `recording_storage`: `dir` / `tmpfs` / `count` / `free_bytes` (pre-057 keys, now describing where the NEXT recording goes), `selected` ram\|sd, `active` ram\|sd (SD selected but unusable → ram), `ram` {`dir`, `count`, `bytes`, `free_bytes`}, `sd` {`dir`, `state` unknown\|ok\|absent\|read_only\|full\|error, `detail`, `ready` ("ok" or why new recordings go to RAM), `count`, `bytes`, `total_bytes`, `free_bytes`, `writes_ok`, `writes_failed`, `fallbacks_to_ram`, `deletes`, `last_write_ms`, `max_write_ms`, `queue_jobs`, `queue_bytes`, `writing_for_ms` (age of the write in progress: a stall shows here), `writer_running`, `last_error`, `last_probe_unix_ms`, `indexed_at_boot`, `index_note`}, `moves_on_change` false. `limits` adds `sd_max_count_max`, `sd_max_mb_min` / `_max`, `hang_ms_min` / `_max`, `end_grace_ms_max` |
+| `/api/ui/settings` | GET | JSON | `{settings: {recording: {enabled, max_count, storage, sd_max_count, sd_max_mb}, call: {hang_ms, end_grace_ms}, radio: {gain_mode, manual_gain_db}, tg_aliases, unit_aliases, monitor_tgs, tg_groups: [{name, tgs}] (change 063; list order = priority), speakers: {left, right (group names), other both\|left\|right\|off, preempt}, clock: {source site\|ntp\|manual} (change 067)}, rev, file, load_note, last_save_error, recording_storage, limits, encrypted_tgs}`. Change 057 `recording_storage`: `dir` / `tmpfs` / `count` / `free_bytes` (pre-057 keys, now describing where the NEXT recording goes), `selected` ram\|sd, `active` ram\|sd (SD selected but unusable → ram), `ram` {`dir`, `count`, `bytes`, `free_bytes`}, `sd` {`dir`, `state` unknown\|ok\|absent\|read_only\|full\|error, `detail`, `ready` ("ok" or why new recordings go to RAM), `count`, `bytes`, `total_bytes`, `free_bytes`, `writes_ok`, `writes_failed`, `fallbacks_to_ram`, `deletes`, `last_write_ms`, `max_write_ms`, `queue_jobs`, `queue_bytes`, `writing_for_ms` (age of the write in progress: a stall shows here), `writer_running`, `last_error`, `last_probe_unix_ms`, `indexed_at_boot`, `index_note`}, `moves_on_change` false. `limits` adds `sd_max_count_max`, `sd_max_mb_min` / `_max`, `hang_ms_min` / `_max`, `end_grace_ms_max` |
 | `/api/ui/settings` | PUT | JSON | Partial patch, any subset of `settings`; maps / lists replace. Validated (`recording.max_count` 1..500, change 057: `recording.storage` "ram"\|"sd", `recording.sd_max_count` 1..5000, `recording.sd_max_mb` 16..32768, `call.hang_ms` 1000..30000, `call.end_grace_ms` 0..10000; names ≤ 48 chars, TG ≠ 0, radio id 1..2^24−1, unknown fields rejected → 400, nothing changes). Applied live (recorder policy, retention enforced at once, call-close timing on the next lifecycle tick, SD re-probed when the store changes to SD, aliases to both decoders, monitor list) and persisted atomically to `/mnt/jffs2/p25-ui-settings.json` (`P25_UI_SETTINGS_FILE` overrides). Changing `storage` moves nothing: new recordings go to the new store, existing ones stay listed and playable where they are, each store's retention deletes only its own files. Response `{ok, persisted, save_error, evicted, ...GET body}` |
 
 Recording off: the recorder opens no WAV for new followed calls (a recording in progress
@@ -140,7 +141,7 @@ completes); the call list shows them as `not_recorded`; the recorder log says
 | `/api/traffic_lsm_control` | GET | JSON | Same, traffic chain. `?dc_block=0\|1` and `?agc=0\|1` writable |
 | `/api/nid_capture` | GET | JSON | Per-DUID NID ring with BCH distance + sync distance |
 | `/api/dibit_delivery` | GET | JSON | Change 054. Per ring (`control`, `traffic`): `requested_mode` / `active_mode`, `age` (dibit age at delivery = poll time − estimated production time: `mean_ms`, `p50_ms`, `p90_ms`, `p99_ms`, `max_ms`, histogram), `clock` (production-clock `uncertainty_dibits` / `uncertainty_ms`, reseeds), `counters` (polls, bytes / dibits delivered, resyncs + skipped bytes, phase mismatches, copy errors, cuts recorded / applied / clamped, `epoch_splits`, framer resets, dibits fed / gated / `dibits_discarded_presettle`), `last_resync`; traffic also `recent_cuts` (last 64 applied epoch cuts). |
-| `/api/dibit_delivery` | POST | JSON | Change 054 runtime switch for bench A/B: `?mode=airtime\|poll\|legacy` (both rings, or `&ring=control\|traffic`), `&poll_ms=N` (5..1000), `&settle_dibits=N`, `&reset=1` (clear stats). |
+| `/api/dibit_delivery` | POST | JSON | Change 054 runtime switch for bench A/B: `?mode=airtime\|poll\|legacy` (every ring, or `&ring=control\|traffic\|traffic2`; change 066: `traffic` = every traffic chain in use), `&poll_ms=N` (5..1000), `&settle_dibits=N`, `&reset=1` (clear stats). |
 
 ### `api/debug` — visual diagnostics
 
@@ -167,7 +168,7 @@ divergence diff. Companion host tool: [`tools/p25_forensics_pull.py`](../tools/p
 | Path | Method | Framing | Purpose |
 |---|---|---|---|
 | `/ws/events` | WS upgrade | JSON text | Real-time event stream (`TsbkEvent` + system events). **Stage 2**: synthetic `{"event_type":"ws_lag"}` frame sent when the broadcast channel overruns a slow consumer, so the connection stays up instead of closing |
-| `/ws/audio` | WS upgrade | binary + text control | Vocoded PCM at 8 kHz 16-bit mono, 320-byte binary frames (160 samples = 20 ms per frame). **Stage 2**: on Lagged, server sends a text control frame `{"type":"lag","skipped":N}` so the client can flush its jitter buffer. Change 062: a text frame `{"type":"meta","tg":N,"src":N,"call_id":N}` precedes the first audio frame of each talkgroup / call (the web UI routes talkgroups to the left / right speaker); clients ignore text types they do not know |
+| `/ws/audio` | WS upgrade | binary + text control | Vocoded PCM at 8 kHz 16-bit mono, 320-byte binary frames (160 samples = 20 ms per frame). **Stage 2**: on Lagged, server sends a text control frame `{"type":"lag","skipped":N}` so the client can flush its jitter buffer. Change 062: a text frame `{"type":"meta","tg":N,"src":N,"call_id":N}` precedes the first audio frame of each talkgroup / call (the web UI routes talkgroups to the left / right speaker); clients ignore text types they do not know. Change 066: carries traffic chain 1 only; `/ws/audio?v=2` carries every chain, each binary frame prefixed with 4 bytes `[lane, 0, 0, 0]` (0 = chain 1, 1 = chain 2) and each meta frame carrying `"lane"` |
 | `/ws/iq` | WS upgrade | binary + text hello | Complex IQ from the selected chain + source. Query params: `?chain=control\|traffic&source=pre_diff`. `pre_diff` (the only live source since Phase 10.8) streams the LSM demod after rotate + AGC and before the diff demod, at 9.6 kSPS (2 samples/symbol), for eye plots. The `post_ddc` / `post_lsm` rings are gone from the bitstream. First message is a JSON hello: `{"type":"hello","sample_rate_hz":<sr>,"format":"i16le-iq-stereo","chain":"...","source":"...","buf_bytes":32768}`. Subsequent messages are binary, one 32 KB sub-buffer each (8192 complex i16 samples). **Single-consumer today** — multiple subscribers race for ring sub-buffers; multi-consumer broadcast is a follow-up if the race becomes measurable |
 
 ### Client reconnect guidance
@@ -837,7 +838,27 @@ needs them is open.
 
 The page POSTs `/api/set_time` once per load only when the board clock
 is invalid (< 2020) or more than 2 minutes off, and the "set automatically"
-preference is on (default).
+preference is on (default). Change 067: never while the clock source is
+`site` and the control channel's time is decoded (the radio follows the
+site on purpose; a replayed site may be months off the browser).
+
+## Board clock (change 067)
+
+The radio has no battery-backed clock. `settings.clock.source` picks what sets it:
+
+- `site` (default): the control channel's SYNC_BCST (TSBK 0x30). Date, hour and minute,
+  plus 7.5 ms micro-slots when the site locks them to the minute; otherwise the second is
+  found from the minute rollover. An unset clock and the first correction since start
+  step the clock; later differences over 0.5 s are slewed (`adjtime`, no jumps back) and
+  only more than 30 s off steps again. One NTP attempt at start covers the time before
+  the control channel is decoded.
+- `ntp`: internet time at start and hourly (every 5 min until one works).
+- `manual`: only `POST /api/set_time`.
+
+`/api/ui/state` `site.site_time` (`unix_ms`, `precision` precise\|second\|minute,
+`ext_locked`, `local_offset_min`, `board_offset_ms`, `age_ms`) and `site.clock_source`
+report it. The bench's `rf.p25_corpus` pins the source to `manual` for a run (the replay's
+site time is a different day per item) and restores it.
 
 ## Legacy dashboard (retired)
 

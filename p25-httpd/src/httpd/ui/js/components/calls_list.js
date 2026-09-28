@@ -34,6 +34,8 @@ function detailRows(c) {
   ];
   const lc = linkControlUnits(c);
   if (lc.length) rows.push(['Link control ID', lc.join(', ') + ' (differs from the grant)']);
+  // Change 066: which traffic chain followed it.
+  if (c.chain) rows.push(['Traffic chain', String(c.chain)]);
   if (c.recording) {
     const where = c.recording.storage === 'sd' ? 'SD card' : 'RAM';
     rows.push(['File', c.recording.filename + ' (' + bytes(c.recording.size_bytes) + ', ' + where + ')']);
@@ -102,7 +104,9 @@ function updateRow(el, call) {
   setText(c.src, call.source_alias || (call.source ? String(call.source) : 'unknown'));
   setText(c.srcSub, call.source_alias ? String(call.source) : '');
   setText(c.freq, mhz(call.freq_hz));
-  setText(c.freqSub, call.channel ? 'ch ' + call.channel : '');
+  // Change 066: calls on the second chain say so.
+  setText(c.freqSub, [call.channel ? 'ch ' + call.channel : '', call.chain === 2 ? 'chain 2' : '']
+    .filter(Boolean).join(' · '));
   // Change 065: a call that was not followed shows its channel time.
   const chan = call.not_followed && call.open_ms ? call.open_ms : 0;
   setText(c.dur, call.voice_ms ? dur(call.voice_ms) : chan ? dur(chan) : '—');

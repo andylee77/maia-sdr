@@ -333,6 +333,15 @@ pub enum TsbkMessage {
         day: u8,
         hours: u8,
         minutes: u8,
+        /// Change 067: 7.5 ms micro-slots since the minute rollover
+        /// (0..7999) when `microslot_locked`, else a free-running count.
+        microslots: u16,
+        /// Change 067: micro-slots are locked to the minute rollover (ICD
+        /// bit 30 clear), so `minutes` + `microslots` is the time.
+        microslot_locked: bool,
+        /// Change 067: local time offset from UTC in minutes, when the
+        /// site marks it valid (ICD bit 33 clear).
+        local_offset_min: Option<i16>,
     },
 
     /// Telephone Interconnect Voice Channel Grant Update (opcode
@@ -1096,6 +1105,16 @@ impl TsbkBlock {
         let day = self.bits(&full, 51, 5) as u8;
         let hours = self.bits(&full, 56, 5) as u8;
         let minutes = self.bits(&full, 61, 6) as u8;
+        // Change 067 (SDRTrunk `SynchronizationBroadcast`): bit 30 set =
+        // micro-slots NOT locked to the minute rollover; bit 33 set =
+        // local offset NOT valid; 34 sign (set = west of UTC), 35-38
+        // hours, 39 half hour; 67-79 micro-slots.
+        let microslot_locked = self.bits(&full, 30, 1) == 0;
+        let local_offset_min = (self.bits(&full, 33, 1) == 0).then(|| {
+            let m = self.bits(&full, 35, 4) as i16 * 60 + self.bits(&full, 39, 1) as i16 * 30;
+            if self.bits(&full, 34, 1) == 1 { -m } else { m }
+        });
+        let microslots = self.bits(&full, 67, 13) as u16;
         TsbkMessage::TdmaSyncBroadcast {
             time_locked,
             year,
@@ -1103,6 +1122,9 @@ impl TsbkBlock {
             day,
             hours,
             minutes,
+            microslots,
+            microslot_locked,
+            local_offset_min,
         }
     }
 

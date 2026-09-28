@@ -511,25 +511,31 @@ pub fn spawn_hdl_lsm_control_reader(
 /// framer dispatch on the call context so noise dibits don't drive
 /// false NID events between calls (legacy / poll: live
 /// `current_talkgroup != 0` per chunk; airtime: per air-time epoch).
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_hdl_lsm_traffic_reader(
     traffic_lsm_dibit_waiter: fpga::InterruptWaiter,
     traffic_lsm_core: Arc<Mutex<fpga::IpCore>>,
     traffic_lsm_decoder_task: Arc<RwLock<ControlChannelDecoder>>,
     traffic_reader_imbe: Arc<ImbeForwarder>,
-    forensics: Arc<ForensicsRing>,
+    // Change 066: chain 1 only (the forensics capture is single-chain).
+    forensics: Option<Arc<ForensicsRing>>,
     delivery: Arc<DibitDelivery>,
+    // Change 066: this chain's ring state (`DibitDelivery::traffic` /
+    // `traffic2`); the ring is the forwarder's lane's.
+    shared: Arc<DibitRingShared>,
     event_log: Arc<EventLog>,
 ) {
+    let lane = traffic_reader_imbe.lane;
     tokio::spawn(async move {
         use std::sync::atomic::Ordering;
         tracing::info!(
-            "Traffic LSM dibit reader + voice frame decoder task started \
+            "{lane} LSM dibit reader + voice frame decoder task started \
              (054: {} mode)",
-            delivery.traffic.requested_mode().as_str(),
+            shared.requested_mode().as_str(),
         );
         let mut rd = RingReader::new(
-            DibitRing::Traffic,
-            delivery.traffic.clone(),
+            DibitRing::of_lane(lane),
+            shared,
             &traffic_lsm_core,
             event_log,
         )
@@ -588,7 +594,9 @@ pub fn spawn_hdl_lsm_traffic_reader(
                     for (start_idx, bytes) in &chunks {
                         let words: &[u64] = bytemuck_cast(bytes);
                         dibit_hist(words, &mut hist);
-                        forensics.record_dma_words(words);
+                        if let Some(f) = forensics.as_ref() {
+                            f.record_dma_words(words);
+                        }
                         let n = bytes.len() as u64 * DIBITS_PER_BYTE;
                         if locked {
                             for &word in words {
@@ -620,7 +628,9 @@ pub fn spawn_hdl_lsm_traffic_reader(
                     let i1 = i0 + bytes.len() as u64 * DIBITS_PER_BYTE;
                     let words: &[u64] = bytemuck_cast(&bytes);
                     dibit_hist(words, &mut hist);
-                    forensics.record_dma_words(words);
+                    if let Some(f) = forensics.as_ref() {
+                        f.record_dma_words(words);
+                    }
                     rd.shared.record_delivery(now_us, i0, i1, false);
                     total_bytes += bytes.len() as u64;
 

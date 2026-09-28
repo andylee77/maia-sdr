@@ -40,8 +40,14 @@ pub fn spawn_vocoder_thread(
     voc_audio_tx: Sender<AudioChunk>,
     voc_event_log: Arc<EventLog>,
 ) {
+    // Change 066: one thread per traffic chain.
+    let lane = voc_forwarder.lane;
+    let name = match lane {
+        crate::hardware::traffic_lane::Lane::One => "p25-vocoder".to_string(),
+        l => format!("p25-vocoder{}", l.number()),
+    };
     std::thread::Builder::new()
-        .name("p25-vocoder".into())
+        .name(name)
         .spawn(move || {
             use std::sync::atomic::Ordering;
             let mut decoder = vocoder::JmbeDecoder::new();
@@ -411,6 +417,7 @@ pub fn spawn_vocoder_thread(
                         call_id: batch_call_id,
                         captured_at_ms: batch_captured_at_ms,
                         airtime: batch_airtime,
+                        lane,
                     });
                 }
                 voc_forwarder.call_counts.update(batch_call_id, |c| {

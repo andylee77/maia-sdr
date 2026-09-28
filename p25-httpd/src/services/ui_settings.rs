@@ -171,6 +171,37 @@ pub struct RadioSettings {
     pub manual_gain_db: Option<i32>,
 }
 
+/// Change 067: where the board clock comes from (the radio has no
+/// battery-backed clock and starts at 1970).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClockSource {
+    /// The control channel's time broadcast (SYNC_BCST), as the site's
+    /// radios use: works in the field without internet.
+    #[default]
+    Site,
+    /// Internet time servers (NTP) at start and hourly.
+    Ntp,
+    /// Only when set by hand (a browser's "set from this device").
+    Manual,
+}
+
+impl ClockSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClockSource::Site => "site",
+            ClockSource::Ntp => "ntp",
+            ClockSource::Manual => "manual",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClockSettings {
+    pub source: ClockSource,
+}
+
 /// Change 063: talkgroup groups (e.g. "Primary" = 300, "TAC" = 301-310).
 /// The order of the list is the priority order (first = highest).
 pub const MAX_GROUPS: usize = 32;
@@ -234,6 +265,8 @@ pub struct UiSettings {
     /// Talkgroup monitor list (empty = follow every clear grant).
     /// Order is priority order, as in `services::monitor::MonitorList`.
     pub monitor_tgs: Vec<u16>,
+    /// Change 067: board clock source.
+    pub clock: ClockSettings,
 }
 
 /// Partial update accepted by `PUT /api/ui/settings`. Maps and lists
@@ -250,6 +283,8 @@ pub struct SettingsPatch {
     pub tg_aliases: Option<BTreeMap<u16, String>>,
     pub unit_aliases: Option<BTreeMap<u32, String>>,
     pub monitor_tgs: Option<Vec<u16>>,
+    /// Change 067.
+    pub clock: Option<ClockSettings>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -288,12 +323,13 @@ pub struct Changed {
     pub monitor_tgs: bool,
     pub tg_groups: bool,
     pub speakers: bool,
+    pub clock: bool,
 }
 
 impl Changed {
     pub fn any(&self) -> bool {
         self.recording || self.call || self.radio || self.tg_aliases || self.unit_aliases
-            || self.monitor_tgs || self.tg_groups || self.speakers
+            || self.monitor_tgs || self.tg_groups || self.speakers || self.clock
     }
 }
 
@@ -471,6 +507,10 @@ pub fn apply_patch(
         let mut seen = std::collections::HashSet::new();
         out.monitor_tgs = list.into_iter().filter(|t| seen.insert(*t)).collect();
         changed.monitor_tgs = out.monitor_tgs != base.monitor_tgs;
+    }
+    if let Some(c) = patch.clock {
+        out.clock = c;
+        changed.clock = out.clock != base.clock;
     }
     Ok((out, changed))
 }
@@ -728,6 +768,11 @@ impl Routing {
             (None, _) => false,
         }
     }
+
+    /// Change 066: a group with talkgroups plays on `side`.
+    pub fn side_has_groups(&self, side: Side) -> bool {
+        self.by_tg.values().any(|r| r.side == side)
+    }
 }
 
 /// Change 063: live [`Routing`] for the grant follower.
@@ -753,6 +798,43 @@ impl RoutingPolicy {
 
     pub fn preempts(&self, new_tg: u16, active_tg: u16) -> bool {
         self.current.read().map(|g| g.preempts(new_tg, active_tg)).unwrap_or(false)
+    }
+
+    /// Change 066: the routing as of now (the chain choice reads several
+    /// rules consistently).
+    pub fn snapshot(&self) -> Routing {
+        self.current.read().map(|g| g.clone()).unwrap_or_default()
+    }
+}
+
+/// Change 067: live clock source for the clock task and the UI.
+#[derive(Debug, Default)]
+pub struct ClockPolicy {
+    source: std::sync::atomic::AtomicU8,
+}
+
+impl ClockPolicy {
+    pub fn new(s: &ClockSettings) -> Self {
+        let p = ClockPolicy::default();
+        p.set(s);
+        p
+    }
+
+    pub fn source(&self) -> ClockSource {
+        match self.source.load(Ordering::Relaxed) {
+            1 => ClockSource::Ntp,
+            2 => ClockSource::Manual,
+            _ => ClockSource::Site,
+        }
+    }
+
+    fn set(&self, s: &ClockSettings) {
+        let v = match s.source {
+            ClockSource::Site => 0,
+            ClockSource::Ntp => 1,
+            ClockSource::Manual => 2,
+        };
+        self.source.store(v, Ordering::Relaxed);
     }
 }
 
@@ -781,6 +863,8 @@ pub struct SettingsStore {
     pub call: Arc<CallPolicy>,
     /// Change 063.
     pub routing: Arc<RoutingPolicy>,
+    /// Change 067.
+    pub clock: Arc<ClockPolicy>,
 }
 
 impl SettingsStore {
@@ -814,6 +898,7 @@ impl SettingsStore {
             recording: Arc::new(RecordingPolicy::new(&settings.recording)),
             call: Arc::new(CallPolicy::new(&settings.call)),
             routing: Arc::new(RoutingPolicy::new(&settings)),
+            clock: Arc::new(ClockPolicy::new(&settings.clock)),
             current: RwLock::new(settings),
             rev: AtomicU64::new(1),
             load_note,
@@ -859,6 +944,7 @@ impl SettingsStore {
         self.recording.set(&next.recording);
         self.call.set(&next.call);
         self.routing.set(&next);
+        self.clock.set(&next.clock);
         self.rev.fetch_add(1, Ordering::Relaxed);
         let save_error = match self.path.as_deref() {
             Some(p) => write_atomic(p, &next).err(),

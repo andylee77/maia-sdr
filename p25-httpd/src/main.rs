@@ -36,14 +36,14 @@ use audio::recorder;
 use hardware::{fpga, iio};
 use protocol::p25;
 use protocol::p25::control_channel::ControlChannelDecoder;
-use services::{monitor, ntp};
+use services::monitor;
 
 /// Build tag, logged at startup and exposed via `/api/system`.
 ///
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-27-channel-time-065";
+pub const BUILD_TAG: &str = "2026-09-27-site-clock-067";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -167,6 +167,8 @@ pub struct IrqStats {
     pub lsm_dibit: u64,
     /// Traffic-side LSM dibit DMA wakeups.
     pub traffic_lsm_dibit: u64,
+    /// Change 066: second traffic chain dibit DMA wakeups (core 0.3.0).
+    pub traffic2_lsm_dibit: u64,
     /// Traffic-side post-DDC IQ DMA wakeups (mirror of `iq`).
     pub traffic_iq: u64,
     /// Phase 10.8: control-side pre-differential IQ DMA wakeups.
@@ -312,6 +314,13 @@ struct Args {
     /// airtime modes). Runtime: `POST /api/dibit_delivery?poll_ms=N`.
     #[arg(long, default_value_t = app::dibit_airtime::DEFAULT_POLL_MS)]
     dibit_poll_ms: u32,
+
+    /// Traffic chains the grant follower uses (change 066): `auto` (every
+    /// chain the P25 core and device tree offer: two on core 0.3.0), `1`,
+    /// or `2`. With two, chain 1 follows the left speaker's groups and
+    /// chain 2 the right's.
+    #[arg(long, default_value = "auto")]
+    traffic_chains: String,
 }
 
 #[tokio::main]
@@ -348,6 +357,9 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
 
+    let chains_arg: hardware::traffic_lane::ChainsArg = args.traffic_chains.parse()
+        .map_err(|e: String| anyhow::anyhow!("--traffic-chains: {e}"))?;
+
     // Resolve --preset to a static preset handle. Bails at startup
     // rather than silently falling back to the default so a typo is
     // surfaced immediately.
@@ -371,29 +383,10 @@ async fn main() -> anyhow::Result<()> {
         BUILD_TAG
     );
 
-    // NTP sync early so event_log + grant timestamps + /api/stats
-    // wall-clock read as real time rather than the 1970 epoch.
-    // Fishball has no battery-backed RTC. Non-blocking: the board
-    // must work offline, and event_log ordering is already correct
-    // via the monotonic `seq` field when wall_clock_ms is garbage.
-    // Cost bound: servers.len() * per_server_timeout = 15 s.
-    // Blocking pool so we don't park the tokio runtime.
-    match tokio::task::spawn_blocking(|| {
-        ntp::sync_system_clock(
-            &["pool.ntp.org", "time.cloudflare.com", "time.google.com"],
-            std::time::Duration::from_secs(5),
-        )
-    })
-    .await
-    {
-        Ok(Ok(epoch)) => tracing::info!(
-            "NTP sync OK — system clock set to Unix epoch {epoch}"
-        ),
-        Ok(Err(e)) => tracing::warn!(
-            "NTP sync failed ({e}); timestamps will use kernel boot clock"
-        ),
-        Err(e) => tracing::warn!("NTP task panicked: {e}"),
-    }
+    // Change 067: the board clock (no battery-backed RTC) is set by
+    // `app::clock_task` from the persisted clock source: the control
+    // channel's time, NTP, or by hand. NTP no longer blocks start-up
+    // (it cost up to 15 s offline).
 
     // Pluto crystal calibration — shift DDC NCO by
     // -ppm * 1e-6 * rx_lo Hz. Boot order of precedence:
@@ -573,9 +566,8 @@ async fn main() -> anyhow::Result<()> {
     // `current_talkgroup` to call N+1. Fixes "end of call audio at
     // start of next call was not saved under actual call" (2026-04-24
     // field observation).
-    let (imbe_tx, imbe_rx) =
-        tokio::sync::mpsc::channel::<app::imbe_forwarder::ImbeBatch>(32);
-    let imbe_forwarder = Arc::new(ImbeForwarder::new(imbe_tx));
+    // Change 066: the channel lives in `app::traffic_lane::build_lane`
+    // (one per traffic chain, `IMBE_QUEUE`).
 
     // Change 054: shared dibit-delivery state (both rings). The traffic
     // ring's epoch recorder is wired into the forwarder (software cuts:
@@ -591,7 +583,6 @@ async fn main() -> anyhow::Result<()> {
         dibit_delivery_mode,
         args.dibit_poll_ms,
     ));
-    imbe_forwarder.set_airtime(dibit_delivery.traffic.clone());
 
     // Call-boundary broadcast (traffic-LSM heartbeat -> recorder;
     // ImbeForwarder::on_tdu_lc -> recorder). Declared here because
@@ -608,17 +599,8 @@ async fn main() -> anyhow::Result<()> {
     // CallTracker authority task itself is spawned further down where
     // its dependencies (audio_tx + active_call_snapshot) are ready.
     let call_tracker_tx = crate::app::grant_follower::new_event_tx();
-    // Lets on_tdu_lc publish Motorola TALK_COMPLETE source stamps.
-    imbe_forwarder.set_boundary_tx(call_boundary_tx.clone());
-    // `event_log` wiring is deferred until that ring is constructed
-    // further down (search "set_event_log(event_log").
-    imbe_forwarder.set_ws_event_tx(event_tx.clone());
 
-    let mut traffic_lsm_decoder = ControlChannelDecoder::new();
-    traffic_lsm_decoder.set_event_tx(event_tx.clone());
-    // IMBE forwarder as voice handler — counts events AND pushes
-    // frame batches to the vocoder task via try_send.
-    traffic_lsm_decoder.set_voice_handler(imbe_forwarder.clone());
+    // Traffic decoder (per chain, built below by `build_lane`):
     // 2026-04-30: REVERTED the strict bake-in (sync ≤ 4, BCH ≤ 4).
     // Field-tested on Clay County and broke every call: 5/6 grants
     // produced 0 IMBEs, the 1 that extracted 117 IMBEs synthesised
@@ -630,7 +612,6 @@ async fn main() -> anyhow::Result<()> {
     // sphere to recall real LDU NIDs. Defenders: NAC mismatch guard
     // (added in this build) catches the over-correction false
     // positives without throwing away the recall.
-    let traffic_lsm_decoder = Arc::new(RwLock::new(traffic_lsm_decoder));
 
     // Shared structured event log. 16384 entries; with verbose=off
     // (default) only operator-actionable categories land (Vocoder,
@@ -659,11 +640,25 @@ async fn main() -> anyhow::Result<()> {
             "ui_settings": ui_settings.load_note(),
         }),
     );
-    // Now the event-log ring exists — plumb it into the IMBE
-    // forwarder so TDULC LCW parses (Motorola `TALK_COMPLETE` +
-    // Standard GVCU) emit Activity-feed entries alongside
-    // HDU/LDU/TDU heartbeat lines.
-    imbe_forwarder.set_event_log(event_log.clone());
+    // Change 066: the traffic chains. Both are built (cheap); chain 2's
+    // tasks run only when the core has it and `--traffic-chains` allows
+    // it (decided once the IP core is open, `traffic_chains` below).
+    // Lane One's objects keep their pre-066 names.
+    let forwarder_shared = app::imbe_forwarder::ForwarderShared::default();
+    let lane_deps = app::traffic_lane::LaneDeps {
+        shared: &forwarder_shared,
+        delivery: &dibit_delivery,
+        boundary_tx: &call_boundary_tx,
+        event_tx: &event_tx,
+        event_log: &event_log,
+        rx_lo: args.rx_lo,
+        sample_rate_hz: boot_preset.sample_rate_hz as u64,
+    };
+    let (lane1, imbe_rx) = app::traffic_lane::build_lane(hardware::traffic_lane::Lane::One, &lane_deps);
+    let (lane2, imbe2_rx) = app::traffic_lane::build_lane(hardware::traffic_lane::Lane::Two, &lane_deps);
+    let imbe_forwarder = lane1.forwarder.clone();
+    let traffic_lsm_decoder = lane1.decoder.clone();
+    let traffic_chain = lane1.chain.clone();
 
     // Pipe event_log + chain label into each ControlChannelDecoder so
     // every successful NID decode emits one `Duid` category entry.
@@ -680,11 +675,6 @@ async fn main() -> anyhow::Result<()> {
         d.event_log = Some(event_log.clone());
         d.chain_label = "control";
     }
-    {
-        let mut d = traffic_lsm_decoder.write().await;
-        d.event_log = Some(event_log.clone());
-        d.chain_label = "traffic";
-    }
 
     // Shared PL HDL LSM runtime + IRQ stats. Populated by their
     // respective tasks, read by /api/hdl_lsm and /api/irq_stats.
@@ -695,10 +685,6 @@ async fn main() -> anyhow::Result<()> {
     // Traffic-channel grant follower + dibit-reader stats. Created out
     // of cfg(linux) so AppState sees them on every target. The tasks
     // that touch ip_core live INSIDE cfg(linux).
-    let traffic_chain = Arc::new(tokio::sync::Mutex::new(
-        p25::traffic_chain::TrafficChain::new(
-            args.rx_lo, boot_preset.sample_rate_hz as u64),
-    ));
     let traffic_stats = Arc::new(tokio::sync::Mutex::new(TrafficStats::default()));
     // When `false`, the grant follower skips its entire loop iteration
     // (no retune, no timeout sweep). User flips via
@@ -750,7 +736,7 @@ async fn main() -> anyhow::Result<()> {
         crate::app::seed_snapshot::new_converged_seeds_shared();
 
     #[cfg(target_os = "linux")]
-    let (ip_core, ad9361, wideband_iq_capture, sw_demod_enabled, sw_demod_stats, forensics) = {
+    let (ip_core, ad9361, wideband_iq_capture, sw_demod_enabled, sw_demod_stats, forensics, traffic_chains) = {
         use tokio::sync::Mutex;
 
         // 1. Initialize FPGA IP core via UIO
@@ -892,6 +878,29 @@ async fn main() -> anyhow::Result<()> {
                  ({tlsm_en_rb},{tlsm_dma_en_rb})"
             );
         }
+        // Change 066: arm the second traffic chain (core 0.3.0) the same
+        // way. Only `/api/traffic2` retunes it until the follower uses it.
+        if let Some(l2) = ip_core.lane(hardware::traffic_lane::Lane::Two) {
+            if let Err(e) = l2.configure_ddc(0.0, boot_preset) {
+                tracing::error!("traffic2 DDC configure failed: {e:#}");
+            }
+            l2.set_ddc_enable(true);
+            l2.set_enable(false);
+            l2.set_dibit_dma_enable(true);
+            l2.set_dc_block_enable(true);
+            l2.set_agc_enable(true);
+            let (en, dma, dc, agc) = l2.control_readback();
+            tracing::info!(
+                "Traffic chain 2 armed: enable={en} (off until first retune), \
+                 dibit_dma_enable={dma}, dc_block_enable={dc}, agc_enable={agc}"
+            );
+            if en || !dma {
+                tracing::error!(
+                    "traffic2_lsm_control readback mismatch -- expected \
+                     enable=false and dibit_dma_enable=true, got ({en},{dma})"
+                );
+            }
+        }
         // Wideband spectrometer runs pre-DDC on `rxiq_cdc`,
         // independent of every demod. Default 256 integrations at
         // 8 MSPS = ~8 Hz update cadence.
@@ -906,6 +915,20 @@ async fn main() -> anyhow::Result<()> {
         // configuration above so boot writes are not reported.
         ip_core.set_traffic_epoch_sink(dibit_delivery.traffic.clone());
 
+        // Change 066: how many traffic chains run.
+        let traffic_chains = hardware::traffic_lane::lanes_available(
+            ip_core.core_version(), ip_core.has_traffic2(), chains_arg);
+        tracing::info!(
+            "traffic chains: {traffic_chains} (core {}, chain 2 {}, --traffic-chains {:?})",
+            ip_core.core_version(),
+            if ip_core.has_traffic2() { "present" } else { "absent" },
+            chains_arg,
+        );
+        if traffic_chains == 2 {
+            ip_core.set_lane_epoch_sink(hardware::traffic_lane::Lane::Two, dibit_delivery.traffic2.clone());
+            dibit_delivery.traffic2_active.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
         let ip_core = Arc::new(Mutex::new(ip_core));
         let ad9361 = Arc::new(ad9361);
 
@@ -919,6 +942,8 @@ async fn main() -> anyhow::Result<()> {
         let lsm_dibit_waiter = interrupt_handler.waiter_lsm_dibit_dma();
         let traffic_lsm_dibit_waiter =
             interrupt_handler.waiter_traffic_lsm_dibit_dma();
+        let traffic2_lsm_dibit_waiter =
+            interrupt_handler.waiter_traffic2_lsm_dibit_dma();
         let wideband_iq_waiter =
             interrupt_handler.waiter_wideband_iq_dma();
         let _ = &decoder; // keep the binding live for the Auto-mod probe task
@@ -957,10 +982,24 @@ async fn main() -> anyhow::Result<()> {
             ip_core.clone(),
             traffic_lsm_decoder.clone(),
             imbe_forwarder.clone(),
-            forensics.clone(),
+            Some(forensics.clone()),
             dibit_delivery.clone(),
+            dibit_delivery.traffic.clone(),
             event_log.clone(),
         );
+        // Change 066: chain 2's reader (no forensics tee).
+        if traffic_chains == 2 {
+            app::dibit_readers::spawn_hdl_lsm_traffic_reader(
+                traffic2_lsm_dibit_waiter,
+                ip_core.clone(),
+                lane2.decoder.clone(),
+                lane2.forwarder.clone(),
+                None,
+                dibit_delivery.clone(),
+                dibit_delivery.traffic2.clone(),
+                event_log.clone(),
+            );
+        }
 
         // 2026-05-03: wideband raw IQ reader (PS-side software P25
         // stack stage 1). Drains the new 8 MSPS / 8 MHz BW IQ DMA
@@ -1524,18 +1563,24 @@ async fn main() -> anyhow::Result<()> {
         // policy rationale. Phase 2c (2026-04-25) wires the
         // CallTrackerEvent broadcast into the follower so it can
         // release the chain on CallClose.
+        let follower_lanes = [&lane1, &lane2][..traffic_chains]
+            .iter()
+            .map(|l| app::grant_follower::FollowerLane {
+                mgr: l.chain.clone(),
+                imbe: l.forwarder.clone(),
+                decoder: l.decoder.clone(),
+            })
+            .collect();
         app::grant_follower::spawn_grant_follower(
-            traffic_chain.clone(),
+            follower_lanes,
             ip_core.clone(),
             current_sample_rate_hz.clone(),
             current_rx_lo.clone(),
             current_lo_shift_hz.clone(),
             traffic_follower_enabled.clone(),
-            imbe_forwarder.clone(),
             monitor_list.clone(),
             ui_settings.routing.clone(),
             event_log.clone(),
-            traffic_lsm_decoder.clone(),
             grant_event_rx,
             traffic_lock_freq.clone(),
             call_boundary_tx.clone(),
@@ -1543,225 +1588,19 @@ async fn main() -> anyhow::Result<()> {
             converged_seeds_shared.clone(),
         );
 
-        // M2B 2026-05-02: traffic LSM heartbeat task restored. Polls
-        // traffic_lsm_status @ 16 ms — fine enough we don't miss
-        // back-to-back NIDs (~14 ms apart). On nid_event, dispatches
-        // NAC+DUID into TrafficChain (HDU/LDU lifecycle) and
-        // broadcasts to sync_trace + call_boundary + activity feed.
-        let traffic_lsm_core = ip_core.clone();
-        let traffic_lsm_mgr = traffic_chain.clone();
-        let traffic_lsm_stats = traffic_stats.clone();
-        let traffic_event_tx = event_tx.clone();
-        let traffic_event_log = event_log.clone();
-        let traffic_heartbeat_imbe = imbe_forwarder.clone();
-        let traffic_boundary_tx = call_boundary_tx.clone();
-        let traffic_sync_trace_ring = sync_trace_ring.clone();
-        tokio::spawn(async move {
-            tracing::info!(
-                "traffic LSM heartbeat task started (polling \
-                 traffic_lsm_status @ 16 ms)"
+        // M2B 2026-05-02: traffic LSM heartbeat (change 066: one task per
+        // chain, body in `app::traffic_heartbeat`).
+        for l in &[&lane1, &lane2][..traffic_chains] {
+            app::traffic_heartbeat::spawn_traffic_heartbeat(
+                ip_core.clone(),
+                l.chain.clone(),
+                l.forwarder.clone(),
+                event_tx.clone(),
+                event_log.clone(),
+                call_boundary_tx.clone(),
+                sync_trace_ring.clone(),
             );
-            let mut tick = tokio::time::interval(
-                std::time::Duration::from_millis(LSM_HEARTBEAT_TICK_MS));
-            tick.tick().await;
-            let mut total_polls: u64 = 0;
-            let mut nid_events: u64 = 0;
-            loop {
-                tick.tick().await;
-                total_polls += 1;
-                let (status, nac, duid, pll_dbg, sample_point_dbg, agc_gain, agc_mag) = {
-                    let core = traffic_lsm_core.lock().await;
-                    let s = core.traffic_lsm_status();
-                    let (n, d) = core.traffic_lsm_nid();
-                    let (pll, sp) = core.traffic_lsm_debug();
-                    let (g, m) = core.traffic_lsm_agc_debug();
-                    (s, n, d, pll, sp, g, m)
-                };
-
-                if !status.nid_event {
-                    continue;
-                }
-                nid_events += 1;
-
-                // 2026-05-03 loss-of-sync detector: every traffic-LSM
-                // NID event broadcasts a TrafficNidObserved boundary
-                // so the lifecycle layer can stamp the active call's
-                // `last_nid_at_ms`. Fired BEFORE the TG-gate below so
-                // pre-call NIDs (chain still acquiring) also count
-                // toward "framer alive". TG/NAC/DUID intentionally
-                // omitted — LoS is a pure framer-state signal.
-                // Change 057: `voice` = valid HDU / LDU1 / LDU2 NID; the
-                // lifecycle uses a pair of them to see voice resume after
-                // an end-of-transmission marker.
-                let _ = traffic_boundary_tx.send(audio::CallBoundary {
-                    kind: audio::CallBoundaryKind::TrafficNidObserved {
-                        voice: status.nid_valid && matches!(duid, 0x0 | 0x5 | 0xA),
-                    },
-                    nac,
-                    talkgroup: None,
-                    expected_submit_count: 0,
-                });
-
-                use std::sync::atomic::Ordering;
-                let sync_trace_call_id = traffic_heartbeat_imbe
-                    .current_call_id
-                    .load(Ordering::Relaxed);
-                if sync_trace_call_id != 0 {
-                    let unix_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0);
-                    crate::services::sync_trace::push(
-                        &traffic_sync_trace_ring,
-                        crate::services::sync_trace::SyncTraceSample {
-                            call_id: sync_trace_call_id,
-                            unix_ms,
-                            duid,
-                            nac,
-                            nid_valid: status.nid_valid,
-                            bch_busy: status.bch_busy,
-                            n_errors: status.n_errors,
-                            sync_distance: status.sync_distance,
-                            pll_dbg,
-                            sample_point_dbg,
-                            agc_gain,
-                            agc_mag,
-                        },
-                    );
-                }
-
-                if traffic_heartbeat_imbe
-                    .current_talkgroup
-                    .load(Ordering::Relaxed) == 0
-                {
-                    continue;
-                }
-
-                if !status.nid_valid {
-                    if total_polls % 64 == 0 || total_polls < 16 {
-                        tracing::debug!(
-                            target: "p25_traffic_lsm",
-                            "NID event with nid_valid=false n_errors={} sync_dist={}",
-                            status.n_errors, status.sync_distance,
-                        );
-                    }
-                    continue;
-                }
-
-                let now = std::time::Instant::now();
-                let locked_tg_snapshot = {
-                    let mut mgr = traffic_lsm_mgr.lock().await;
-                    match duid {
-                        0x0 => mgr.hdu_received(now, nac),
-                        0x5 => mgr.ldu_received(now, nac, false),
-                        0xA => mgr.ldu_received(now, nac, true),
-                        0x3 | 0xF => {
-                            mgr.tdus_seen += 1;
-                            mgr.last_duid = Some(duid);
-                            mgr.last_nac = Some(nac);
-                        }
-                        _ => {
-                            mgr.last_duid = Some(duid);
-                            mgr.last_nac = Some(nac);
-                        }
-                    }
-                    mgr.current_talkgroup().map(|t| t.0).unwrap_or(0)
-                };
-
-                traffic_heartbeat_imbe
-                    .last_observed_nac
-                    .store(nac, Ordering::Relaxed);
-                if locked_tg_snapshot != 0 && duid == 0x0 {
-                    let _ = traffic_boundary_tx.send(audio::CallBoundary {
-                        kind: audio::CallBoundaryKind::HduStart,
-                        nac,
-                        talkgroup: Some(locked_tg_snapshot),
-                        expected_submit_count: traffic_heartbeat_imbe
-                            .frames_submitted
-                            .load(Ordering::Relaxed),
-                    });
-                }
-
-                if locked_tg_snapshot != 0 {
-                    let duid_label = match duid {
-                        0x0 => "HDU",
-                        0x3 => "TDU",
-                        0x5 => "LDU1",
-                        0xA => "LDU2",
-                        0xF => "TDU_LC",
-                        _ => "DUID?",
-                    };
-                    if duid_label != "DUID?" {
-                        traffic_event_log.push(
-                            crate::services::event_log::LogCategory::Voice,
-                            format!(
-                                "{} TG={} NAC=0x{:03X}",
-                                duid_label, locked_tg_snapshot, nac,
-                            ),
-                            serde_json::json!({
-                                "duid": duid_label,
-                                "tg":   locked_tg_snapshot,
-                                "nac":  nac,
-                            }),
-                        );
-                    }
-                }
-
-                {
-                    let mgr = traffic_lsm_mgr.lock().await;
-                    let duid_label = match duid {
-                        0x0 => "HDU",
-                        0x3 => "TDU",
-                        0x5 => "LDU1",
-                        0xA => "LDU2",
-                        0xF => "TDU_LC",
-                        d => { let _ = d; "DUID?" }
-                    };
-                    let tg = mgr.current_talkgroup()
-                        .map(|t| format!("TG:{:05}", t.0))
-                        .unwrap_or_else(|| "--".into());
-                    let ch = mgr.current_channel()
-                        .map(|c| format!("{}", c))
-                        .unwrap_or_else(|| "--".into());
-                    let now_str = {
-                        let d = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default();
-                        let total_secs = d.as_secs();
-                        let millis = d.subsec_millis();
-                        let h = (total_secs / 3600) % 24;
-                        let m = (total_secs / 60) % 60;
-                        let s = total_secs % 60;
-                        format!("{:02}:{:02}:{:02}.{:03}", h, m, s, millis)
-                    };
-                    let evt = serde_json::json!({
-                        "timestamp": now_str,
-                        "event_type": format!("TRF_{}", duid_label),
-                        "summary": format!("{} NAC:0x{:03X} {} CH:{}",
-                            duid_label, nac, tg, ch),
-                        "talkgroup": mgr.current_talkgroup().map(|t| t.0),
-                        "channel": ch,
-                    });
-                    if let Ok(json) = serde_json::to_string(&evt) {
-                        let _ = traffic_event_tx.send(json);
-                    }
-                }
-
-                if nid_events <= 10 || nid_events % 50 == 0 {
-                    let mgr = traffic_lsm_mgr.lock().await;
-                    tracing::info!(
-                        target: "p25_traffic_lsm",
-                        "NID #{nid_events}: NAC=0x{:03X} DUID=0x{:X} \
-                         (hdus={} ldus={} tdus={} state={})",
-                        nac, duid,
-                        mgr.hdus_seen, mgr.ldus_seen, mgr.tdus_seen,
-                        mgr.state_label(),
-                    );
-                }
-
-                let _ = traffic_lsm_stats.lock().await;
-            }
-        });
+        }
 
         // Phase 2e (2026-04-25): the periodic grant-expiry sweeps
         // (one per control decoder) were removed alongside the
@@ -1770,13 +1609,21 @@ async fn main() -> anyhow::Result<()> {
         // call_tracker) which drops to None within seconds of TDU /
         // timeout — no zombie 30 s entries to reap.
 
-        (ip_core, ad9361, wideband_iq_capture, sw_demod_enabled, sw_demod_stats, forensics)
+        (ip_core, ad9361, wideband_iq_capture, sw_demod_enabled, sw_demod_stats, forensics, traffic_chains)
     };
+    #[cfg(not(target_os = "linux"))]
+    let traffic_chains: usize = {
+        let _ = chains_arg;
+        1
+    };
+    // Change 066: the chains that run, lane One first.
+    let lanes: Vec<app::traffic_lane::TrafficLane> =
+        [&lane1, &lane2][..traffic_chains].iter().map(|l| (*l).clone()).collect();
 
     // Audio broadcast channel (vocoder -> HTTP/WebSocket).
     // `call_boundary_tx` is created up with `imbe_forwarder` so the
     // traffic-LSM heartbeat task (spawned above) can clone it.
-    let audio_tx = audio::audio_channel();
+    let audio_tx = audio::audio_channel_for(traffic_chains);
 
     // Phase 2b (2026-04-25): the recorder subscribes to
     // `CallTrackerEvent` for lifecycle, not raw `CallBoundary`
@@ -1785,14 +1632,12 @@ async fn main() -> anyhow::Result<()> {
     // channel (spawn below). The tx itself was constructed earlier
     // alongside `call_boundary_tx` so the cfg(linux) grant follower
     // can subscribe too.
-    let active_call_snapshot =
-        crate::app::grant_follower::new_active_call_shared();
+    let active_call_snapshot = lane1.active_call.clone();
     crate::app::grant_follower::spawn_call_lifecycle(
         call_boundary_tx.clone(),
         audio_tx.clone(),
         call_tracker_tx.clone(),
-        imbe_forwarder.clone(),
-        active_call_snapshot.clone(),
+        lanes.iter().map(|l| (l.forwarder.clone(), l.active_call.clone())).collect(),
         // Change 057: persisted close timing + ids after the SD index.
         ui_settings.call.clone(),
         first_call_id,
@@ -1824,7 +1669,9 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let recorder_diag = recorder::new_diag();
-    {
+    // Change 066: one recorder per traffic chain, sharing the store.
+    for l in &lanes {
+        let lane = l.lane;
         let rx = audio_tx.subscribe();
         let tracker_rx = call_tracker_tx.subscribe();
         let store = recordings.clone();
@@ -1832,7 +1679,7 @@ async fn main() -> anyhow::Result<()> {
         let log = Some(event_log.clone());
         // Per-call counters (change 057: including IMBE drops, which
         // the finalise log shows per recording).
-        let forwarder_for_recorder = Some(imbe_forwarder.clone());
+        let forwarder_for_recorder = Some(l.forwarder.clone());
         // 2026-05-03: ws-event broadcast so the recorder can fire
         // `recording_saved` immediately on call close. Eliminates the
         // ~4 s gap between call end and Recent Calls row update.
@@ -1845,6 +1692,7 @@ async fn main() -> anyhow::Result<()> {
                 rx, tracker_rx, store, diag, log,
                 forwarder_for_recorder,
                 recorder_event_tx, recording_policy, storage,
+                lane,
             ).await;
         });
     }
@@ -1915,18 +1763,23 @@ async fn main() -> anyhow::Result<()> {
     // nothing for 175 ms — the AudioWorklet PLL can't lock on that
     // shape and clients hear ring oscillation. See app::audio_pacer
     // for the full rationale.
-    let (pacer_input_tx, pacer_input_rx) = app::audio_pacer::pacer_input_channel();
-    app::audio_pacer::spawn_audio_pacer(pacer_input_rx, audio_tx.clone());
-
+    //
     // Vocoder task — reads IMBE batches, decodes via JMBE, pushes
     // AudioChunks to the pacer's mpsc, updates stats atomics.
     // Dedicated OS thread; body in vocoder_task.rs.
-    vocoder_task::spawn_vocoder_thread(
-        imbe_rx,
-        imbe_forwarder.clone(),
-        pacer_input_tx,
-        event_log.clone(),
-    );
+    // Change 066: one pacer and one vocoder thread per traffic chain
+    // (each pacer emits its chain's chunks at 20 ms).
+    let mut imbe_rxs = vec![imbe_rx, imbe2_rx].into_iter();
+    for l in &lanes {
+        let (pacer_input_tx, pacer_input_rx) = app::audio_pacer::pacer_input_channel();
+        app::audio_pacer::spawn_audio_pacer(pacer_input_rx, audio_tx.clone());
+        vocoder_task::spawn_vocoder_thread(
+            imbe_rxs.next().expect("one vocoder queue per chain"),
+            l.forwarder.clone(),
+            pacer_input_tx,
+            event_log.clone(),
+        );
+    }
 
     // App state.
     let state = Arc::new(httpd::AppState {
@@ -1974,6 +1827,7 @@ async fn main() -> anyhow::Result<()> {
         grant_decode_stats: crate::app::grant_stats::new_ring(),
         enc_grant_decode_stats: crate::app::grant_stats::new_ring(),
         active_call_snapshot: active_call_snapshot.clone(),
+        traffic_lanes: lanes.clone(),
         ppm_tracker_ring: std::sync::Arc::new(
             std::sync::Mutex::new(
                 std::collections::VecDeque::with_capacity(300))),
@@ -2040,7 +1894,7 @@ async fn main() -> anyhow::Result<()> {
     // See `doc/diagnostics/2026-04-25/UNIFIED_CALL_LIFECYCLE.md`.
     crate::app::grant_stats::spawn_grant_stats_task(
         call_tracker_tx.clone(),
-        state.imbe_forwarder.clone(),
+        lanes.iter().map(|l| l.forwarder.clone()).collect(),
         state.grant_decode_stats.clone(),
         state.enc_grant_decode_stats.clone(),
         state.grant_stats_rev.clone(),
@@ -2073,7 +1927,8 @@ async fn main() -> anyhow::Result<()> {
     // the cache update path in grant_stats skips the sample.
     #[cfg(target_os = "linux")]
     {
-        let agc_forwarder = state.imbe_forwarder.clone();
+        // Change 066: every traffic chain's gain.
+        let agc_forwarders: Vec<_> = lanes.iter().map(|l| l.forwarder.clone()).collect();
         let agc_core = state.ip_core.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(
@@ -2082,18 +1937,17 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 tick.tick().await;
                 let core = agc_core.lock().await;
-                let (_en, _dma, _dc, agc_enabled) =
-                    core.traffic_lsm_control_readback();
-                let value = if agc_enabled {
-                    let (gain_q97, _mag) = core.traffic_lsm_agc_debug();
-                    gain_q97
-                } else {
-                    0
-                };
+                let values: Vec<u16> = agc_forwarders.iter().map(|f| {
+                    core.lane(f.lane).map_or(0, |l| {
+                        let (_en, _dma, _dc, agc_enabled) = l.control_readback();
+                        if agc_enabled { l.agc_debug().0 } else { 0 }
+                    })
+                }).collect();
                 drop(core);
-                agc_forwarder.last_traffic_agc_gain_q97
-                    .store(value,
-                           std::sync::atomic::Ordering::Relaxed);
+                for (f, value) in agc_forwarders.iter().zip(values) {
+                    f.last_traffic_agc_gain_q97
+                        .store(value, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         });
     }
@@ -2111,6 +1965,9 @@ async fn main() -> anyhow::Result<()> {
     // drift over temperature without re-running stage A.
     #[cfg(target_os = "linux")]
     app::autoppm::spawn_periodic_fine_tune(state.clone());
+    // Change 067: board clock from the persisted clock source.
+    #[cfg(target_os = "linux")]
+    app::clock_task::spawn_clock_task(state.clone());
     // Traffic LSM PLL watchdog (resets a pinned / stale chain).
     #[cfg(target_os = "linux")]
     app::traffic_pll_watchdog::spawn(state.clone());

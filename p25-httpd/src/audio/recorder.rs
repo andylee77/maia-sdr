@@ -836,7 +836,15 @@ pub async fn recorder_task(
     policy: Option<Arc<crate::services::ui_settings::RecordingPolicy>>,
     // Change 057: RAM / SD stores (and the SD writer thread).
     storage: Arc<RecordingStorage>,
+    // Change 066: the traffic chain this recorder serves (one task per
+    // chain, sharing the store). Lane One also sees the events of calls
+    // that were not followed (no chain).
+    lane: crate::hardware::traffic_lane::Lane,
 ) {
+    let mine = |ev_lane: Option<crate::hardware::traffic_lane::Lane>| match ev_lane {
+        Some(l) => l == lane,
+        None => lane == crate::hardware::traffic_lane::Lane::One,
+    };
     let save_target = || SaveTarget {
         storage: &storage,
         kind: policy.as_ref().map(|p| p.storage()).unwrap_or_default(),
@@ -963,6 +971,7 @@ pub async fn recorder_task(
         tokio::select! {
             recv = audio_rx.recv() => {
                 match recv {
+                    Ok(chunk) if chunk.lane != lane => {}
                     Ok(chunk) => {
                         // 2026-04-30 v2 routing model. Two slots: `active`
                         // (current call) and `draining` (previous call
@@ -1096,6 +1105,7 @@ pub async fn recorder_task(
             }
             recv = tracker_rx.recv() => {
                 match recv {
+                    Ok(ev) if !mine(ev.lane) => {}
                     Ok(ev) => match ev.kind {
                         CallTrackerEventKind::CallOpen {
                             tg, source, freq_hz, channel, encrypted,

@@ -53,7 +53,7 @@ export function boardNow() {
 
 // ── Preferences (per browser) ───────────────────────────────────
 function loadPrefs() {
-  const d = { showNotFollowed: false, liveEvents: true, autoClock: true, theme: 'auto', callLimit: 40 };
+  const d = { showNotFollowed: false, normalize: true, liveEvents: true, autoClock: true, theme: 'auto', callLimit: 40 };
   try { return Object.assign(d, JSON.parse(localStorage.getItem('p25ui.prefs') || '{}')); } catch { return d; }
 }
 

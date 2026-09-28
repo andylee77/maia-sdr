@@ -5,6 +5,77 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-27] Board clock from the site's time; site time on the Now page; live-audio normalization (067)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-27-site-clock-067`
+**Bake required:** NO (p25-httpd, web UI, bench).
+
+- **The radio clock can follow the control channel** (Settings → Clock, "Radio clock from").
+  - **Control channel (site time), the default:** SYNC_BCST (TSBK 0x30) is now fully
+    decoded: 7.5 ms micro-slots, the rollover lock and the local time offset. With locked
+    micro-slots the time is exact to the decode delay. Otherwise the second comes from
+    watching the minute roll over.
+  - An unset clock and the first correction step the clock. After that, small differences
+    are slewed (`adjtime`), so call times never jump backwards; only a clock more than 30 s
+    off steps again.
+  - **Internet time (NTP)** at start and hourly. NTP no longer blocks start-up (up to 15 s
+    offline before).
+  - **Manual:** set from a browser only.
+- **Site card:** a ticking site time in the site's own time zone (when it announces one) and
+  the radio clock's source, with how far it is from the site.
+- **Clock card:** site time, quality (precise / to the second / to the minute), GPS lock,
+  radio-vs-site offset. The browser's automatic "set from this browser" and the clock
+  banner stay out of the way while the radio follows the site.
+- **Volume normalization** for live audio (header "Level" toggle, per browser, on by
+  default).
+  - Each chain's stream is levelled from the first 20 ms of every transmission, instead of
+    waiting for the vocoder's AGC to settle for a second.
+  - Loud peaks are followed fast and quiet passages slowly. The gain holds through silence,
+    and a soft limiter above −2 dBFS keeps boosted peaks clean. Recordings are unchanged.
+- **Grant dedup survives a clock stepped back:** an entry "in the future" no longer
+  suppresses the same grant until the clock catches up.
+- **Bench:** `rf.p25_corpus` pins the DUT clock source to manual for a run (a replayed site's
+  time is a different day per item) and restores it; `Http.put_json`.
+
+Tests: p25-httpd 278 (site clock 6, SYNC_BCST fields, clock step/slew rule, dedup with a
+clock stepped back); UI modules pass `node --check`; the leveler and the two-lane mixer run
+under node 20.
+
+---
+
+## [2026-09-27] Two calls at once: the second traffic chain in p25-httpd (066)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-27-dual-chain-066` (shipped with 067)
+**Bake required:** NO (uses core 0.3.0, change 064; one chain on older cores).
+
+- **Chain 1 follows the left speaker's groups, chain 2 the right's**, so a TG 300 call no
+  longer stops a TAC or hospital call. "Other" talkgroups on both speakers use either chain.
+  Within a chain the pre-066 rules apply: sticky lock, end-marker pre-emption (059), group
+  priority (063). A busy side does not borrow the other side's chain.
+- **Hardware layer** gated on core ≥ 0.3.0 (older cores stall the CPU on chain-2
+  addresses): `IpCore::lane`, `LaneRegs`, the chain-2 DMA ring, interrupt bit 8, and chain 2
+  armed at boot. `/api/traffic2` shows chain 2's registers and call; bring-up retune and a
+  ring probe that decodes its dibits.
+- **Per chain:** decoder, IMBE forwarder, dibit reader, heartbeat, vocoder thread, pacer,
+  recorder, grant-stats slot. One call lifecycle (one call-id space) with a slot per chain
+  and cross-chain channel rules.
+- **Live audio:** `/ws/audio?v=2` carries both chains (lane-tagged frames); the player mixes a
+  ring per chain into the speakers. `/ws/audio` (chain 1) and `/api/audio?chain=` for the
+  bench and external players.
+- **UI:** a call card per chain on the Now page, "chain 2" in Recent calls, the chain count
+  in the Speakers panel. `/api/ui/state` adds `calls[]` and `chains[]`.
+- `--traffic-chains auto|1|2` (default auto).
+- **Bench** (Mode B replay corpus, full): recovery of all clear transmissions 95.2 % →
+  99.1 %; 11 of the 12 transmissions a single chain lost to an overlapping call are decoded
+  in full; followable 99.3 % → 99.6 %, 0 missed. Chain 2 brought up on the control channel:
+  NAC 0x8A1, 268 TSBKs decoded from its ring.
+
+Doc: `doc/changes/066_dual_traffic_chain_ps.md`.
+
+---
+
 ## [2026-09-27] Second traffic decode chain in the gateware, core 0.3.0 (064)
 
 **Branch:** fishball-p25

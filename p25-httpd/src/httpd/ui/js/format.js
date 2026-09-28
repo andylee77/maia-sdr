@@ -4,6 +4,24 @@
 
 export const DASH = '—';
 
+// Change 067: the site time (UTC ms) as HH:MM:SS in this browser's time
+// zone. The offset a site announces is often standard time without
+// daylight saving (Clay County: UTC-5 in May), so it is shown only as
+// information (`utcOffset`), never used to display.
+export function siteClock(ms) {
+  return new Date(ms).toLocaleTimeString([], { hour12: false });
+}
+
+// "UTC-4", "UTC+5:30".
+export function utcOffset(min) {
+  if (min == null) return '';
+  const sign = min < 0 ? '−' : '+';
+  const a = Math.abs(min);
+  return 'UTC' + sign + Math.floor(a / 60) + (a % 60 ? ':' + String(a % 60).padStart(2, '0') : '');
+}
+
+export const CLOCK_SOURCE = { site: 'site time', ntp: 'internet (NTP)', manual: 'set by hand' };
+
 export function mhz(hz, digits = 4) {
   if (hz === null || hz === undefined || hz === 0) return DASH;
   return (hz / 1e6).toFixed(digits) + ' MHz';
