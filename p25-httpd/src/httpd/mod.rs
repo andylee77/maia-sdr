@@ -222,6 +222,10 @@ pub struct AppState {
     pub traffic_iq: Arc<crate::app::iq_hub::IqHub>,
     /// Change 071b: the software C4FM path's runtime figures.
     pub c4fm_rt: Arc<crate::app::c4fm_task::C4fmRuntime>,
+    /// Change 071: who may move the radio (a sweep takes it).
+    pub radio_lease: Arc<crate::app::discovery::RadioLease>,
+    /// Change 071: the system finder's progress and results.
+    pub discovery: crate::app::discovery::SharedDiscovery,
     /// 2026-04-24: per-grant decode summary ring for **clear /
     /// followed** calls. 2026-04-29: split from the encrypted ring
     /// (below) so heavy ENC GRANT activity (which produces 0-IMBE
@@ -381,6 +385,20 @@ impl AppState {
         }
     }
 
+    /// Change 071: a 409 for handlers that move the radio while the
+    /// system finder has it.
+    pub fn radio_busy(&self) -> Option<(axum::http::StatusCode, axum::Json<serde_json::Value>)> {
+        (!self.radio_lease.is_normal()).then(|| {
+            (
+                axum::http::StatusCode::CONFLICT,
+                axum::Json(serde_json::json!({
+                    "ok": false,
+                    "error": "the system finder has the radio; try again when the sweep ends",
+                })),
+            )
+        })
+    }
+
     /// Human-readable label for the active modulation.
     pub fn active_modulation_label(&self) -> &'static str {
         match self
@@ -427,6 +445,11 @@ pub fn router(
         // Change 070: the receive window against the site's channels.
         .route("/api/site/plan", get(api::site_plan::get_site_plan).put(api::site_plan::put_site_plan))
         .route("/api/site/recentre", post(api::site_plan::post_recentre))
+        // Change 071: find local systems.
+        .route("/api/discovery", get(api::discovery::get_discovery))
+        .route("/api/discovery/scan", post(api::discovery::post_scan))
+        .route("/api/discovery/cancel", post(api::discovery::post_cancel))
+        .route("/api/discovery/add", post(api::discovery::post_add))
         .route("/api/system", get(api::system::get_system))
         .route("/api/sys_health", get(api::system::get_sys_health))
         .route("/api/ps_cores", get(api::system::get_ps_cores))

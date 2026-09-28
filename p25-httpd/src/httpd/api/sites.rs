@@ -101,6 +101,9 @@ pub async fn post_site(
     State(state): State<Arc<AppState>>,
     Query(q): Query<PostSiteQuery>,
 ) -> impl IntoResponse {
+    if let Some(busy) = state.radio_busy() {
+        return busy.into_response();
+    }
     let site = match load_site(&q.name) {
         Ok(s) => s,
         Err(e) => {

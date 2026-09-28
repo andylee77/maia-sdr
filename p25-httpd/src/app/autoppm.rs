@@ -613,7 +613,9 @@ pub fn spawn_periodic_fine_tune(state: Arc<AppState>) {
                     let dec = state.lsm_decoder.read().await;
                     dec.system.wacn.is_some()
                 };
-                if !acquired { continue; }
+                // Change 071: not while a sweep probes other systems'
+                // transmitters (their offsets are not this crystal's).
+                if !acquired || !state.radio_lease.is_normal() { continue; }
                 // PLL settle gate — skip samples within N ms of the
                 // most recent shift change (forced recal or tracker
                 // apply). During that window pll_dbg reflects the

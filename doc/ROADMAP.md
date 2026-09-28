@@ -26,8 +26,8 @@ scanner needs:
 
 | # | Item | Status |
 |---|------|--------|
-| 071 | Find local systems: sweep the band, build sites automatically | next |
-| 072 | Per-site activity history: radios, talkgroups, grants, encryption, airtime; graphs | planned |
+| 071 | Find local systems: sweep the band, build sites automatically | done (071a fixes, 071b C4FM, 071 finder) |
+| 072 | Per-site activity history: radios, talkgroups, grants, encryption, airtime; graphs | next |
 | — | Code review and analysis of p25-httpd, then refactor into clean modules | review done: `doc/CODE_REVIEW_2026_09_28.md` (stages 0–3) |
 | — | Remote libiio control: detect it and share the radio | idea |
 | — | Agent control: MCP server and prompt structure | idea |

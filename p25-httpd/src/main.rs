@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-28-c4fm-071b";
+pub const BUILD_TAG: &str = "2026-09-28-find-systems-071";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -771,9 +771,12 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(std::sync::atomic::AtomicU8::new(2));
     // Change 071b: the setting (auto by default) and the IQ hubs.
     let modulation_mode = Arc::new(std::sync::atomic::AtomicU8::new(app::c4fm_task::AUTO));
-    let control_iq = app::iq_hub::IqHub::new(2.0, 50_000.0);
-    let traffic_iq = app::iq_hub::IqHub::new(2.0, 50_000.0);
+    let control_iq = app::iq_hub::IqHub::new(2.0, protocol::p25::c4fm::INPUT_RATE_HZ);
+    let traffic_iq = app::iq_hub::IqHub::new(2.0, protocol::p25::c4fm::INPUT_RATE_HZ);
     let c4fm_rt = Arc::new(app::c4fm_task::C4fmRuntime::default());
+    // Change 071: the radio lease and the system finder's state.
+    let radio_lease = Arc::new(app::discovery::RadioLease::default());
+    let discovery: app::discovery::SharedDiscovery = Default::default();
     // The control channel tuned now (the C4FM thread resets its
     // equaliser when it moves).
     let current_control_freq_for_c4fm = Arc::new(std::sync::atomic::AtomicU64::new(control_freq));
@@ -1638,6 +1641,7 @@ async fn main() -> anyhow::Result<()> {
             monitor_list.clone(),
             ui_settings.routing.clone(),
             lo_plans.clone(),
+            radio_lease.clone(),
             event_log.clone(),
             grant_event_rx,
             traffic_lock_freq.clone(),
@@ -1764,6 +1768,7 @@ async fn main() -> anyhow::Result<()> {
         decoder.clone(),
         lsm_decoder.clone(),
         event_log.clone(),
+        current_control_freq_for_c4fm.clone(),
     );
     #[cfg(target_os = "linux")]
     {
@@ -1850,6 +1855,8 @@ async fn main() -> anyhow::Result<()> {
         control_iq: control_iq.clone(),
         traffic_iq: traffic_iq.clone(),
         c4fm_rt: c4fm_rt.clone(),
+        radio_lease: radio_lease.clone(),
+        discovery: discovery.clone(),
         grant_decode_stats: crate::app::grant_stats::new_ring(),
         enc_grant_decode_stats: crate::app::grant_stats::new_ring(),
         active_call_snapshot: active_call_snapshot.clone(),

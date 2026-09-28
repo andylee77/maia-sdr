@@ -24,10 +24,15 @@ pub const C4FM: u8 = 1;
 pub const LSM: u8 = 2;
 
 /// Auto mode: the other decoder must pass this many TSBKs in the window
-/// and beat the active one by `SWITCH_RATIO`.
-const WINDOW_S: usize = 5;
-const MIN_TSBKS: u64 = 10;
-const SWITCH_RATIO: f64 = 1.2;
+/// and beat the active one by `SWITCH_RATIO`. A 5 s window flapped ~60
+/// times an hour on a weak LSM site (unit B indoors), where the two are
+/// close; hence 20 s, and a minimum dwell after a switch.
+const WINDOW_S: usize = 20;
+const MIN_TSBKS: u64 = 30;
+const SWITCH_RATIO: f64 = 1.25;
+/// After a switch, stay at least this long. A new control channel
+/// (site switch, retune) clears the window and the dwell.
+const MIN_DWELL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Runtime figures of the software C4FM path.
 #[derive(Default)]
@@ -72,29 +77,42 @@ pub fn spawn_modulation_task(
     c4fm: Arc<RwLock<ControlChannelDecoder>>,
     lsm: Arc<RwLock<ControlChannelDecoder>>,
     event_log: Arc<crate::services::event_log::EventLog>,
+    control_freq: Arc<AtomicU64>,
 ) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
         let mut last = (0u64, 0u64);
         let mut window: VecDeque<(u64, u64)> = VecDeque::new();
+        let mut channel = control_freq.load(Ordering::Relaxed);
+        let mut last_switch: Option<std::time::Instant> = None;
         loop {
             tick.tick().await;
             let now = (c4fm.read().await.tsbk_crc_ok, lsm.read().await.tsbk_crc_ok);
+            // Another control channel: judge it afresh.
+            let ch = control_freq.load(Ordering::Relaxed);
+            if ch != channel {
+                channel = ch;
+                window.clear();
+                last_switch = None;
+            }
             window.push_back((now.0.saturating_sub(last.0), now.1.saturating_sub(last.1)));
             last = now;
             while window.len() > WINDOW_S {
                 window.pop_front();
             }
             let active = active_modulation.load(Ordering::Relaxed);
+            let dwelling = last_switch.is_some_and(|t| t.elapsed() < MIN_DWELL);
             let want = match mode.load(Ordering::Relaxed) {
                 C4FM => C4FM,
                 LSM => LSM,
+                _ if dwelling => active,
                 _ => choose(if active == C4FM { C4FM } else { LSM }, &window),
             };
             let flags_ok = c4fm.read().await.active == (want == C4FM) && lsm.read().await.active == (want == LSM);
             if want != active || !flags_ok {
                 set_active(want, &active_modulation, &c4fm, &lsm).await;
                 if want != active {
+                    last_switch = Some(std::time::Instant::now());
                     let (c, l) = window.iter().fold((0, 0), |a, w| (a.0 + w.0, a.1 + w.1));
                     let label = if want == C4FM { "C4FM" } else { "LSM" };
                     tracing::info!("control channel modulation -> {label} (TSBKs in {WINDOW_S} s: C4FM {c}, LSM {l})");

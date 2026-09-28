@@ -143,6 +143,9 @@ pub fn spawn_grant_follower(
     follower_routing: Arc<crate::services::ui_settings::RoutingPolicy>,
     // Change 070: grants per frequency for the window planner.
     follower_plans: Arc<crate::services::lo_plan::PlanStore>,
+    // Change 071: grants are ignored while a sweep has the radio (they
+    // belong to whatever system is being probed).
+    follower_lease: Arc<crate::app::discovery::RadioLease>,
     follower_event_log: Arc<EventLog>,
     mut grant_event_rx: Receiver<p25::events::P25Event>,
     follower_lock_freq: Arc<AtomicBool>,
@@ -317,7 +320,7 @@ pub fn spawn_grant_follower(
                         Some(e) => e,
                         None => break, // channel closed
                     };
-                    if !follower_enabled.load(Ordering::Relaxed) {
+                    if !follower_enabled.load(Ordering::Relaxed) || !follower_lease.is_normal() {
                         continue;
                     }
                     let p25::events::P25Event::Grant(g) = event;

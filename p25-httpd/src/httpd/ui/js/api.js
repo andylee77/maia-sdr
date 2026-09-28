@@ -90,6 +90,11 @@ export const api = {
   sitePlan: () => get('/api/site/plan'),
   putSitePlan: body => put('/api/site/plan', body),
   recentre: () => post('/api/site/recentre'),
+  // Change 071: the system finder.
+  discovery: () => get('/api/discovery'),
+  discoveryScan: body => post('/api/discovery/scan', body),
+  discoveryCancel: () => post('/api/discovery/cancel'),
+  discoveryAdd: body => post('/api/discovery/add', body),
   ppmCalibrate: () => post('/api/ppm_calibrate'),
   ppmAuto: (enabled, anchor) => post('/api/ppm/auto' + qs({ enabled: enabled ? 1 : 0, anchor })),
   spectrumWide: () => get('/api/spectrum_wide', 8000),

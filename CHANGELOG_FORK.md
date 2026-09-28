@@ -5,6 +5,59 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-28] Find local systems: band sweep, control-channel probe, sites from results (071)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-28-find-systems-071`
+**Bake required:** NO (p25-httpd and web UI).
+
+- **Systems page** (new tab) and `POST /api/discovery/scan`: a sweep of the P25 700 / 800 /
+  900 MHz bands (VHF and UHF optional).
+  - The LO steps at 16 MSPS, four windows for the default bands.
+  - The hardware spectrometer finds carriers present in nearly every frame. A control channel
+    is continuous; a traffic channel is on only during calls.
+  - Each carrier is probed with both control decoders (LSM and C4FM).
+  - TSBKs plus a full identity make a site. The probe keeps its WACN, system, RFSS, site, NAC,
+    IDEN bands, neighbours and secondary control channels, and which demodulator passes more
+    CRCs.
+  - Neighbours' control channels in the bands are probed too.
+  - NIDs without a control-channel identity are listed as a busy P25 voice channel.
+  - A silent steady carrier is "other", but only if it is still there afterwards; one that went
+    away was a call that ended.
+  - The radio then returns to the active site.
+- **"Add"** (`POST /api/discovery/add`) writes a site file from a found site: exact control
+  channel (the site's own announcement), secondary control channels, identity, IDEN bands,
+  modulation. The window planner (070) learns its traffic channels from grants. "Listen"
+  switches to a site that already has a file.
+- **Radio lease** (`app::discovery::RadioLease`), the first piece of the review's tuning
+  ownership (H2). While a sweep has the radio:
+  - the follower ignores grants, and recentre, the PPM tracker and the site clock pause;
+  - `/api/tune`, `/api/preset`, `/api/site`, `/api/site/recentre` and `/api/ppm_calibrate`
+    answer 409.
+- **Control modulation choice (071b follow-up).** An hour on unit B (weak Clay) switched 59
+  times with the 5 s window. The auto choice now uses a 20 s window, a 25 % margin and 30 TSBKs
+  minimum, and holds 60 s after a switch; a new control channel starts afresh.
+- Live on unit A, three sweeps, ~2.3 min each, the same 12–14 sites every time:
+  - Clay (8A0 1-1, LSM) and Duval (3BD 1-2), matched to their site files.
+  - A second Jacksonville site: 3BD 1-3 on 852.7625, weak.
+  - SLERS 141 19-19 on 770.20625 (C4FM).
+  - PSIC St. Johns 292 1-15 on 774.65625 (C4FM), added as `psic_st_johns` and listened to.
+  - An unknown system 4D6 1-2 on 853.3875 (LSM, weak).
+  - FPL 00A sites 21, 111, 51, 87, 77, 39, 89 and 109 (C4FM; 89 and 109 found through
+    neighbour lists).
+  - Steady non-P25 carriers: 852.4376 and 857.139 MHz.
+- An hour on each unit before this change (071b): A on FPL (C4FM active, 97.8 % CRC, no FPL
+  voice) and B on Clay indoors (70.5 % CRC, 118 calls followed). Health 120/120 on both; the
+  C4FM demodulator used 12.6 % / 16.4 % of a core.
+  - B's memory grew 8.8 → 25 MB as its 16k-entry event log filled; A's log was a third full.
+- Not yet: a sweep does not decode DMR / NXDN (listed as "other"). Traffic C4FM and the Harris
+  vendor grants are still open (roadmap).
+
+Tests: p25-httpd 305 (step plan covers the bands, continuous vs bursty carriers, DC and edge
+exclusion, found site → site file, lease exclusivity; modulation hysteresis).
+
+---
+
 ## [2026-09-28] C4FM control channels: SDRTrunk's C4FM demodulator in software (071b)
 
 **Branch:** fishball-p25

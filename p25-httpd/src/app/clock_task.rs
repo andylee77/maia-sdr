@@ -104,7 +104,8 @@ pub fn spawn_clock_task(state: Arc<AppState>) {
                 ntp_due = (source == ClockSource::Ntp)
                     .then(|| Instant::now() + if ok { NTP_OK_PERIOD } else { NTP_RETRY });
             }
-            if source != ClockSource::Site {
+            // Change 071: a sweep probes other systems; keep to ours.
+            if source != ClockSource::Site || !state.radio_lease.is_normal() {
                 continue;
             }
             let (site_ms, precision) = {

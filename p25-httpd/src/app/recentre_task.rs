@@ -183,7 +183,7 @@ pub fn spawn_recentre_task(state: Arc<AppState>) {
                 continue;
             }
             let Some(v) = window_view(&state).await else { continue };
-            if !v.auto || v.locked || !v.better {
+            if !v.auto || v.locked || !v.better || !state.radio_lease.is_normal() {
                 continue;
             }
             if now_unix_ms().saturating_sub(v.last_recentre_unix_ms) < MIN_INTERVAL_MS {

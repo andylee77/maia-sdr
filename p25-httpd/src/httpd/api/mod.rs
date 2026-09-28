@@ -43,6 +43,8 @@
 
 pub mod chain;
 pub mod debug;
+/// Change 071: the system finder.
+pub mod discovery;
 pub mod forensics;
 pub mod history;
 pub mod radio;

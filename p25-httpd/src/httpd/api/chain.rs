@@ -55,11 +55,6 @@ const CONTROL_CAPTURE_TIMEOUT_MS: u64 = 10_000;
 /// covers arming just before a grant arrives.
 const TRAFFIC_CAPTURE_TIMEOUT_MS: u64 = 15_000;
 
-/// Retry delay for `/api/iq_dump` when not enough sub-buffers have
-/// arrived yet. Sub-buffers are ~131 ms wide post-DDC, so 60 ms is
-/// faster than the arrival rate — tight enough to not miss one, but
-/// not so tight it spins on the lock.
-const IQ_DRAIN_RETRY_MS: u64 = 60;
 
 /// Returns recent dibits as a hex string + diagnostic counters.
 ///

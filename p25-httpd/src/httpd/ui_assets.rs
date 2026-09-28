@@ -48,6 +48,7 @@ pub const UI_ASSETS: &[UiAsset] = ui_assets![
     "js/views/radio.js",
     "js/views/diagnostics.js",
     "js/views/settings.js",
+    "js/views/systems.js",
     "js/components/site_card.js",
     "js/components/call_card.js",
     "js/components/calls_list.js",

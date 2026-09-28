@@ -134,6 +134,9 @@ pub async fn post_preset(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PresetBody>,
 ) -> impl IntoResponse {
+    if let Some(busy) = state.radio_busy() {
+        return busy;
+    }
     let (status, reply) = apply_preset(&state, body).await;
     (status, Json(reply))
 }
@@ -453,6 +456,9 @@ pub async fn post_tune(
     Json(body): Json<TuneBody>,
 ) -> impl IntoResponse {
     use std::sync::atomic::Ordering;
+    if let Some(busy) = state.radio_busy() {
+        return busy;
+    }
 
     let lock_req = match body.center_mode.as_deref() {
         None => state.center_locked.load(Ordering::Relaxed),
@@ -1385,6 +1391,9 @@ pub async fn post_ppm_auto(
 pub async fn post_ppm_calibrate(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    if let Some(busy) = state.radio_busy() {
+        return busy.into_response();
+    }
     match crate::app::autoppm::run_calibration(&state).await {
         Ok(result) => {
             let body = serde_json::json!({

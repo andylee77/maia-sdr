@@ -80,6 +80,9 @@ pub async fn put_site_plan(
 
 #[cfg(target_os = "linux")]
 pub async fn post_recentre(State(state): State<Arc<AppState>>) -> (StatusCode, Json<serde_json::Value>) {
+    if let Some(busy) = state.radio_busy() {
+        return busy;
+    }
     let Some(best) = window_view(&state).await.and_then(|v| v.best) else {
         return (
             StatusCode::CONFLICT,

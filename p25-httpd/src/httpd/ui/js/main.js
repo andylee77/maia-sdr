@@ -11,8 +11,9 @@ import * as nowView from './views/now.js';
 import * as radioView from './views/radio.js';
 import * as diagView from './views/diagnostics.js';
 import * as settingsView from './views/settings.js';
+import * as systemsView from './views/systems.js';
 
-const VIEWS = { now: nowView, radio: radioView, diag: diagView, settings: settingsView };
+const VIEWS = { now: nowView, radio: radioView, systems: systemsView, diag: diagView, settings: settingsView };
 const $ = id => document.getElementById(id);
 
 let current = null; // { name, inst }
