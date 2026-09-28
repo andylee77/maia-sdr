@@ -40,6 +40,36 @@ impl ControlChannelDecoder {
                     self.bands.insert(band.identifier, band);
                 }
             }
+            // Change 071a: remember neighbour sites.
+            TsbkMessage::AdjacentStatus {
+                lra,
+                rfss_id,
+                site_id,
+                channel,
+                system_id,
+                conventional,
+                failure,
+                valid,
+                active,
+                service_class,
+            } => {
+                let key = (*system_id, *rfss_id, *site_id);
+                let count = self.system.neighbours.get(&key).map_or(0, |n| n.count);
+                self.system.neighbours.insert(
+                    key,
+                    super::types::Neighbour {
+                        lra: *lra,
+                        channel: *channel,
+                        conventional: *conventional,
+                        failure: *failure,
+                        valid: *valid,
+                        active: *active,
+                        service_class: *service_class,
+                        last_seen: std::time::Instant::now(),
+                        count: count.saturating_add(1),
+                    },
+                );
+            }
             TsbkMessage::GroupVoiceChannelGrant {
                 channel,
                 talkgroup,
@@ -420,18 +450,19 @@ impl ControlChannelDecoder {
                 system_id,
                 rfss_id,
                 site_id,
+                channel,
                 ..
             } => p25_json::TsbkEvent {
                 timestamp: now,
                 event_type: "ADJ_STS_BCAST".into(),
                 summary: format!(
-                    "{}SYS:{:03X} RFSS:{:02} SITE:{:02}",
-                    block_prefix, system_id, rfss_id, site_id
+                    "{}SYS:{:03X} RFSS:{} SITE:{} CH:{}",
+                    block_prefix, system_id, rfss_id, site_id, channel
                 ),
                 talkgroup: None,
                 talkgroup_alias: None,
-                channel: None,
-                frequency_mhz: None,
+                channel: Some(format!("{channel}")),
+                frequency_mhz: self.channel_to_frequency(*channel).map(|f| f as f64 / 1e6),
                 source: None,
             },
             TsbkMessage::SecondaryControlChannelBroadcast {

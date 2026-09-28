@@ -166,15 +166,6 @@ pub async fn apply(state: &AppState, plan: &LoPlan, origin: &str) -> Result<serd
     }
 }
 
-async fn chains_idle(state: &AppState) -> bool {
-    for lane in &state.traffic_lanes {
-        if lane.chain.lock().await.current_talkgroup().is_some() {
-            return false;
-        }
-    }
-    true
-}
-
 pub fn spawn_recentre_task(state: Arc<AppState>) {
     tokio::spawn(async move {
         let started = Instant::now();
@@ -198,7 +189,7 @@ pub fn spawn_recentre_task(state: Arc<AppState>) {
             if now_unix_ms().saturating_sub(v.last_recentre_unix_ms) < MIN_INTERVAL_MS {
                 continue;
             }
-            if !chains_idle(&state).await {
+            if !crate::app::traffic_lane::all_idle(&state.traffic_lanes).await {
                 continue;
             }
             let Some(best) = v.best else { continue };

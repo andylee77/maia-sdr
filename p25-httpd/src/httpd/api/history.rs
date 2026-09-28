@@ -533,9 +533,9 @@ pub async fn get_recent_tsbks(
                 "RFSS_STATUS_BCST LRA:{} RFSS:{} SITE:{} CH:{}",
                 lra, rfss_id, site_id, channel
             ),
-            AdjacentStatus { lra, rfss_id, site_id, channel, system_id } => format!(
-                "ADJ_STS_BCAST LRA:{} SYS:{:03X} RFSS:{} SITE:{} CH:{}",
-                lra, system_id, rfss_id, site_id, channel
+            AdjacentStatus { lra, rfss_id, site_id, channel, system_id, service_class, .. } => format!(
+                "ADJ_STS_BCAST LRA:{} SYS:{:03X} RFSS:{} SITE:{} CH:{} SVC:{:02X}",
+                lra, system_id, rfss_id, site_id, channel, service_class
             ),
             IdentifierUpdate {
                 identifier,
@@ -543,9 +543,10 @@ pub async fn get_recent_tsbks(
                 transmit_offset,
                 channel_spacing,
                 base_frequency,
+                slots,
             } => format!(
-                "IDEN_UPDATE ID:{} OFFSET:{} SPACING:{} BASE:{} BW:{}",
-                identifier, transmit_offset, channel_spacing, base_frequency, bw
+                "IDEN_UPDATE ID:{} OFFSET:{} SPACING:{} BASE:{} BW:{} SLOTS:{}",
+                identifier, transmit_offset, channel_spacing, base_frequency, bw, slots
             ),
             GroupVoiceChannelGrant { channel, talkgroup, source, service_options } => format!(
                 "GRP_V_CH_GRANT CH:{} TG:{} SRC:{}{}",

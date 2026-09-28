@@ -111,3 +111,13 @@ mod tests {
         assert_eq!(two.forwarder.current_talkgroup.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 }
+
+/// Change 071a: no traffic chain is locked to a call.
+pub async fn all_idle(lanes: &[TrafficLane]) -> bool {
+    for lane in lanes {
+        if lane.chain.lock().await.current_talkgroup().is_some() {
+            return false;
+        }
+    }
+    true
+}

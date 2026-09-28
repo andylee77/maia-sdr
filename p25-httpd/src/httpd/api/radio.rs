@@ -100,6 +100,7 @@ pub async fn get_bands(State(state): State<Arc<AppState>>) -> Json<Vec<BandInfo>
             channel_spacing_khz: b.channel_spacing_hz as f64 / 1_000.0,
             transmit_offset_mhz: b.transmit_offset_hz as f64 / 1_000_000.0,
             bandwidth_khz: b.bandwidth_hz as f64 / 1_000.0,
+            slots: b.slots,
         })
         .collect();
     bands.sort_by_key(|b| b.identifier);

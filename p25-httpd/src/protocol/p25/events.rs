@@ -33,4 +33,7 @@ pub struct GrantEvent {
     /// follower uses this to dispatch `CallBoundaryKind::CcGrantUpdate`
     /// (refresh only) vs `CcGrantArrival` (can open a new OpenGrant).
     pub is_update: bool,
+    /// Change 071a: the channel is on a TDMA (Phase 2) band; this
+    /// receiver decodes Phase 1 only.
+    pub tdma: bool,
 }

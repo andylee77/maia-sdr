@@ -250,12 +250,13 @@ pub enum CallBoundaryKind {
 
 pub type CallBoundaryTx = broadcast::Sender<CallBoundary>;
 
-/// Create the call-boundary broadcast channel. Capacity 64 — boundary
-/// events fire at most ~1/call, not per-frame, so a small ring is
-/// plenty and lag just means the recorder missed a PTT split (we'd
-/// fall back to the audio grace-window finaliser anyway).
+/// Create the call-boundary broadcast channel. Change 071a: every grant
+/// TSBK and every traffic voice NID goes through it (a few hundred per
+/// second at most), so it holds several seconds of them.
+pub const CALL_BOUNDARY_CAPACITY: usize = 4096;
+
 pub fn call_boundary_channel() -> CallBoundaryTx {
-    let (tx, _rx) = broadcast::channel(64);
+    let (tx, _rx) = broadcast::channel(CALL_BOUNDARY_CAPACITY);
     tx
 }
 

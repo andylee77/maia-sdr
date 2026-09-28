@@ -119,6 +119,12 @@ pub fn spawn_vocoder_thread(
             // Flushed (sorted, summarised) by flush_call_summary on
             // call boundary. One entry per IMBE frame decoded.
             let mut call_stage_times: Vec<vocoder::DecodeStageTimes> = Vec::new();
+            // Change 071a: at most this many per-frame timings per call
+            // (60 s of voice); a long call keeps its first minute.
+            const STAGE_TIMES_CAP: usize = 3_000;
+            // Change 071a: the lifecycle call id of the batches being
+            // decoded; a new id is a call boundary even on the same TG.
+            let mut call_id_cur: u64 = 0;
 
             let flush_call_summary = |
                 tg: u16,
@@ -228,9 +234,16 @@ pub fn spawn_vocoder_thread(
                     .swap(false, Ordering::Relaxed);
 
                 // Call boundary = the batch's TG differs from the
-                // prior call's TG. Flush summary, reset JMBE, reseed.
-                let tg_changed = effective_tg != call_tg
+                // prior call's TG, or (change 071a) it belongs to another
+                // lifecycle call: a lane that only hears one talkgroup
+                // never flushed, and its per-frame timings grew forever.
+                // Flush summary, reset JMBE, reseed.
+                let new_call = batch_call_id != 0 && call_id_cur != 0 && batch_call_id != call_id_cur;
+                let tg_changed = (effective_tg != call_tg || new_call)
                     && (call_frames_in > 0 || call_started.is_some());
+                if batch_call_id != 0 {
+                    call_id_cur = batch_call_id;
+                }
                 if tg_changed {
                     flush_call_summary(
                         call_tg, call_frames_in, call_frames_skipped_enc,
@@ -316,7 +329,9 @@ pub fn spawn_vocoder_thread(
                 let (mut b_errors, mut b_silent) = (0u64, 0u64);
                 for frame in &frames {
                     let pcm = decoder.decode_frame(frame);
-                    call_stage_times.push(decoder.last_decode_times());
+                    if call_stage_times.len() < STAGE_TIMES_CAP {
+                        call_stage_times.push(decoder.last_decode_times());
+                    }
                     voc_forwarder
                         .vocoder_pcm_produced
                         .fetch_add(vocoder::SAMPLES_PER_FRAME as u64, Ordering::Relaxed);

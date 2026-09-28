@@ -19,8 +19,9 @@ pub struct Uio {
 /// UIO device mapping.
 ///
 /// Corresponds to a memory-mapped IO region of a UIO device.
-/// Dropping this struct unmaps the region.
-#[derive(Debug, Clone)]
+/// Dropping this struct unmaps the region, so it is not `Clone`
+/// (change 071a: two clones unmapped it twice); share it in an `Arc`.
+#[derive(Debug)]
 pub struct Mapping {
     base: *mut libc::c_void,
     effective: *mut libc::c_void,

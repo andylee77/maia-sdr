@@ -589,6 +589,35 @@ pub async fn get_system(State(state): State<Arc<AppState>>) -> Json<SystemInfo> 
         lra: s.lra,
         control_channel: s.control_channel.map(|c| format!("{}", c)),
         secondary_cch_a: s.secondary_cch_a.map(|c| format!("{}", c)),
+        control_channel_hz: s.control_channel.and_then(|c| dec.channel_to_frequency(c)),
+        secondary_cch_a_hz: s.secondary_cch_a.and_then(|c| dec.channel_to_frequency(c)),
+        secondary_cch_b_hz: s.secondary_cch_b.and_then(|c| dec.channel_to_frequency(c)),
+        neighbours: s
+            .neighbours
+            .iter()
+            .map(|((sys, rfss, site), n)| {
+                let flags = [(n.conventional, "conventional"), (n.failure, "failure"), (n.valid, "valid"), (n.active, "active")]
+                    .iter()
+                    .filter(|(on, _)| *on)
+                    .map(|(_, f)| f.to_string())
+                    .collect();
+                p25_json::NeighbourInfo {
+                    system_id: format!("{sys:03X}"),
+                    rfss_id: *rfss,
+                    site_id: *site,
+                    lra: n.lra,
+                    channel: format!("{}", n.channel),
+                    freq_hz: dec.channel_to_frequency(n.channel),
+                    flags,
+                    services: crate::protocol::p25::control_channel::service_class_names(n.service_class)
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
+                    age_ms: n.last_seen.elapsed().as_millis() as u64,
+                    count: n.count,
+                }
+            })
+            .collect(),
         secondary_cch_b: s.secondary_cch_b.map(|c| format!("{}", c)),
         sndcp_downlink_channel: s.sndcp_downlink_channel.map(|c| format!("{}", c)),
         sndcp_uplink_channel: s.sndcp_uplink_channel.map(|c| format!("{}", c)),

@@ -1160,16 +1160,15 @@ pub fn spawn_call_lifecycle(
                     let boundary = match recv {
                         Ok(b) => b,
                         Err(broadcast::error::RecvError::Lagged(n)) => {
+                            // Change 071a: keep the open calls. The next
+                            // grant update or voice NID refreshes them,
+                            // and the silence timeout closes one that
+                            // really ended; closing every call on a
+                            // short stall cut live audio.
                             tracing::warn!(
                                 target: "p25_call_lifecycle",
-                                "boundary lagged by {n} events; \
-                                 dropping in-flight call to avoid \
-                                 stale state",
+                                "boundary lagged by {n} events; open calls kept",
                             );
-                            for slot in slots.iter_mut() {
-                                slot.close(&tracker_tx, CloseReason::StreamLag);
-                            }
-                            mirror(&slots, &policy);
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => break,

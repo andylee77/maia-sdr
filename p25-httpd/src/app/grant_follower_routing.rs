@@ -42,7 +42,30 @@ pub struct FollowerLane {
     pub mgr: Arc<Mutex<TrafficChain>>,
     pub imbe: Arc<ImbeForwarder>,
     pub decoder: Arc<RwLock<ControlChannelDecoder>>,
+    /// Change 071a: the lifecycle's open call on this chain (None =
+    /// none), to release a chain whose CallClose was missed.
+    pub active: crate::app::grant_follower::ActiveCallShared,
 }
+
+/// A chain's call context after its call ended (CallClose, or a stuck
+/// chain released by the idle check).
+fn clear_lane_context(fl: &FollowerLane) {
+    fl.imbe.call_encrypted.store(false, Ordering::Relaxed);
+    fl.imbe.current_talkgroup.store(0, Ordering::Relaxed);
+    // A later call with no FM: must not inherit this source.
+    fl.imbe.current_source.store(0, Ordering::Relaxed);
+    fl.imbe.current_frequency_hz.store(0, Ordering::Relaxed);
+    if let Ok(mut s) = fl.imbe.current_channel.lock() {
+        s.clear();
+    }
+    // Change 054: the gate closes at this air-time cut.
+    fl.imbe.mark_epoch(EpochKind::CallClose, false);
+}
+
+/// Change 071a: how often the follower looks for a chain locked to a
+/// talkgroup with no open call, and how many looks in a row release it.
+const STUCK_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
+const STUCK_LOOKS: u8 = 2;
 
 impl FollowerLane {
     fn lane(&self) -> Lane {
@@ -94,6 +117,9 @@ struct LaneMem {
     /// Change 059: (TG, frequency, unix ms) of the newest clear grant the
     /// sticky gate rejected while this chain was a candidate.
     last_sticky_reject: Option<(u16, u64, u64)>,
+    /// Change 071a: consecutive idle checks that found the chain locked
+    /// with no open call.
+    stuck_looks: u8,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -253,8 +279,39 @@ pub fn spawn_grant_follower(
             (freq_hz as f64 - rx_lo_now as f64 + shift, sample_rate_now)
         };
 
+        let mut stuck_tick = tokio::time::interval(STUCK_CHECK);
         loop {
             tokio::select! {
+                // Change 071a: a chain still locked to a talkgroup while the
+                // lifecycle has no call open on it (its CallClose was lost)
+                // would reject every other talkgroup as sticky; release it.
+                _ = stuck_tick.tick() => {
+                    if follower_lock_freq.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    for (li, fl) in lanes.iter().enumerate() {
+                        let no_call = fl.active.lock().map(|a| a.is_none()).unwrap_or(false);
+                        let mut mgr = fl.mgr.lock().await;
+                        let Some(tg) = mgr.current_talkgroup().filter(|_| no_call) else {
+                            mem[li].stuck_looks = 0;
+                            continue;
+                        };
+                        mem[li].stuck_looks += 1;
+                        if mem[li].stuck_looks < STUCK_LOOKS {
+                            continue;
+                        }
+                        mem[li].stuck_looks = 0;
+                        mgr.force_idle();
+                        drop(mgr);
+                        clear_lane_context(fl);
+                        tracing::warn!(target: "p25_traffic", "{} released: locked to TG {} with no open call", fl.lane(), tg.0);
+                        follower_event_log.push(
+                            LogCategory::Traffic,
+                            format!("{}: released, locked to TG={} with no open call", fl.lane(), tg.0),
+                            serde_json::json!({ "tg": tg.0, "chain": fl.lane().label(), "reason": "no_open_call" }),
+                        );
+                    }
+                }
                 event = grant_event_rx.recv() => {
                     let event = match event {
                         Some(e) => e,
@@ -408,6 +465,22 @@ pub fn spawn_grant_follower(
                             }),
                         );
                         send_cc_boundary(&g, Some("ignored"), None);
+                        continue;
+                    }
+
+                    // Change 071a: a grant on a TDMA band is a Phase 2
+                    // call; this receiver decodes Phase 1 only.
+                    if g.tdma {
+                        follower_event_log.push(
+                            LogCategory::Traffic,
+                            format!("reject: TG={} granted a Phase 2 (TDMA) channel {}", g.talkgroup.0, g.channel),
+                            serde_json::json!({
+                                "tg":      g.talkgroup.0,
+                                "channel": format!("{}", g.channel),
+                                "reason":  "phase2",
+                            }),
+                        );
+                        send_cc_boundary(&g, Some("phase2"), None);
                         continue;
                     }
 
@@ -1009,16 +1082,7 @@ pub fn spawn_grant_follower(
                             }),
                         );
                     }
-                    fl.imbe.call_encrypted.store(false, Ordering::Relaxed);
-                    fl.imbe.current_talkgroup.store(0, Ordering::Relaxed);
-                    // A later call with no FM: must not inherit this source.
-                    fl.imbe.current_source.store(0, Ordering::Relaxed);
-                    fl.imbe.current_frequency_hz.store(0, Ordering::Relaxed);
-                    if let Ok(mut s) = fl.imbe.current_channel.lock() {
-                        s.clear();
-                    }
-                    // Change 054: the gate closes at this air-time cut.
-                    fl.imbe.mark_epoch(EpochKind::CallClose, false);
+                    clear_lane_context(fl);
                 }
             }
         }

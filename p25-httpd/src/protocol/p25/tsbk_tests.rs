@@ -166,6 +166,7 @@ fn test_frequency_band_calculation() {
         transmit_offset_hz: -45_000_000,
         channel_spacing_hz: 6_250,
         base_frequency_hz: 851_006_250,
+        slots: 1,
     };
 
     // Channel 1593 should be 860.9625 MHz (control channel)
@@ -218,6 +219,67 @@ fn test_sync_bcst_decode_time_fields() {
         Some(TsbkMessage::TdmaSyncBroadcast { microslot_locked, local_offset_min, .. }) => {
             assert!(!microslot_locked);
             assert_eq!(local_offset_min, None);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+// Change 071a: Adjacent Status Broadcast at SDRTrunk's offsets
+// (`AdjacentStatusBroadcast.java`): LRA 16-23, flags 24-27, system
+// 28-39, RFSS 40-47, site 48-55, band+channel 56-71, service 72-79.
+// The pre-071a decoder read the system from bits 24-35 (flags
+// included) and shifted every later field by 4 bits.
+#[test]
+fn test_adjacent_status_offsets() {
+    let mut d = [0u8; 12];
+    d[0] = 0x80 | 0x3C;
+    d[2] = 0x81; // LRA
+    d[3] = 0xA3; // flags 1010 (conventional, valid) | system bits 11-8
+    d[4] = 0xBD; // system bits 7-0 -> 0x3BD
+    d[5] = 0x01; // RFSS 1
+    d[6] = 0x02; // site 2
+    d[7] = 0x10; // band 1, channel bits 11-8 = 0
+    d[8] = 0x7F; // channel 0x07F
+    d[9] = 0x71; // services: registration, voice, data, composite
+    match TsbkBlock::parse(&d).decode() {
+        Some(TsbkMessage::AdjacentStatus {
+            lra, rfss_id, site_id, channel, system_id,
+            conventional, failure, valid, active, service_class,
+        }) => {
+            assert_eq!((lra, system_id, rfss_id, site_id), (0x81, 0x3BD, 1, 2));
+            assert_eq!((channel.identifier(), channel.number()), (1, 0x07F));
+            assert_eq!((conventional, failure, valid, active), (true, false, true, false));
+            assert_eq!(service_class, 0x71);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+// Change 071a: a TDMA band's channel numbers count timeslots
+// (SDRTrunk `FrequencyBandUpdateTDMA`: base + spacing * floor(ch / slots)).
+#[test]
+fn test_tdma_band_frequency() {
+    let band = FrequencyBand {
+        identifier: 2,
+        bandwidth_hz: 12_500,
+        transmit_offset_hz: -45_000_000,
+        channel_spacing_hz: 12_500,
+        base_frequency_hz: 851_012_500,
+        slots: 2,
+    };
+    assert!(band.is_tdma());
+    // Channels 228 and 229 are the two slots of carrier 114.
+    assert_eq!(band.channel_frequency(228), 852_437_500);
+    assert_eq!(band.channel_frequency(229), 852_437_500);
+    assert_eq!(band.channel_frequency(230), 852_450_000);
+    // IDEN_UPDATE_TDMA with channel type 3 (TDMA, 2 slots, 12.5 kHz).
+    let mut d = [0u8; 12];
+    d[0] = 0x80 | 0x33;
+    // identifier 2 (bits 16-19), channel type 3 (20-23)
+    d[2] = 0x23;
+    match TsbkBlock::parse(&d).decode() {
+        Some(TsbkMessage::IdentifierUpdate { identifier, bw, slots, .. }) => {
+            assert_eq!((identifier, bw as u32 * 125, slots), (2, 12_500, 2));
         }
         other => panic!("{other:?}"),
     }

@@ -5,6 +5,59 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-28] Review fixes before 071: neighbour sites, TDMA bands, NAC relock, call handling, restarts (071a)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-28-review-fixes-071a`
+**Bake required:** YES for the respawn loop (tezuka_fw `overlay_p25/etc/init.d/S60p25-httpd`);
+the rest is p25-httpd.
+
+Stage 0 of `doc/CODE_REVIEW_2026_09_28.md`.
+
+- **Neighbour sites (Adjacent Status Broadcast, 0x3C)** decoded at SDRTrunk's offsets (they
+  were 4 bits off: system, RFSS, site and channel all wrong), with the status flags and the
+  service class. Kept per (system, RFSS, site) and shown in `/api/system` `neighbours` with
+  their control-channel frequency.
+  - Validated live on unit A. FPL (C4FM, 936.25 MHz, system 00A) lists 8 neighbours, all of
+    them system 00A; 5 of their control channels are FPL frequencies in the SDRTrunk playlist:
+    Bradford 937.650 and 935.500, Putnam 936.225, St. Johns 937.700 and 935.475.
+  - SLERS (770.20625 MHz, system 141) lists 3 neighbours of system 141 at 769–770 MHz.
+  - Clay does not broadcast 0x3C (single site). SDRTrunk's own logs only have CRC-failed ones,
+    which is why they looked like nonsense.
+- **TDMA bands:** IDEN_UPDATE_TDMA carries the timeslots per carrier (SDRTrunk `ChannelType`).
+  - A TDMA channel number counts timeslots (base + spacing × floor(ch / slots)).
+  - A grant on a TDMA band is not followed ("Phase 2 (TDMA)"; reason `phase2`), instead of
+    tuning a wrong carrier. Clay defines a TDMA band but granted none in 720 grants.
+- **NAC relock:** after a retune, dibits still buffered from the old channel could re-lock the
+  NAC tracker to the old system. Every frame of the new one was then dropped as a NAC mismatch
+  (seen live: back on Clay but locked to SLERS 0x0C5).
+  - Eight consecutive valid NIDs of one other NAC now move the lock; scattered false decodes
+    do not.
+- **Call handling:**
+  - The call-boundary channel holds 4096 events (was 64), and only voice NIDs go through it.
+  - A lag keeps the open calls (it used to close every call).
+  - A chain still locked to a talkgroup with no open call (lost CallClose) is released after
+    two 5 s checks.
+  - Clock steps (site time, NTP) wait up to 2 min for both chains to be idle.
+  - The vocoder flushes per lifecycle call id, and its per-frame timings are capped at 3000;
+    a one-talkgroup lane grew ~100 MB/day.
+- **Robustness:**
+  - The register mapping is shared in an `Arc`; it was cloned, and a dropped clone unmapped
+    it under the other.
+  - Interrupts use `notify_one` (a wakeup can no longer be lost).
+  - A panic anywhere exits the daemon.
+  - The init script now runs p25-httpd in a respawn loop (restart after 3 s; tested on A with
+    `kill -9`: back in 3 s; stop and start clean).
+- Live check on unit A (Clay, 12M, 10 min): health 59/60, TSBK 39.5/s at 98.9 % CRC, 160 calls,
+  110 followed, 20826 IMBE, vocoder errors 3.3 % (0–4.4 % across today's runs). No stuck-lane
+  release, lag or Phase 2 events.
+- The replay bench could not run: unit B is not connected.
+
+Tests: p25-httpd 297 (0x3C offsets, TDMA frequency and IDEN_UPDATE_TDMA, neighbours and TDMA
+grant flag, NAC relock).
+
+---
+
 ## [2026-09-28] Narrowest window per site; PPM calibration follows the site (070b)
 
 **Branch:** fishball-p25

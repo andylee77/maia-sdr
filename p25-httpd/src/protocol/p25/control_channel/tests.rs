@@ -34,6 +34,7 @@ fn test_frequency_band_table() {
         transmit_offset: -45_000_000,
         channel_spacing: 6_250,
         base_frequency: 851_006_250,
+        slots: 1,
     });
 
     // Resolve control channel
@@ -368,4 +369,80 @@ fn new_system_drops_the_nac_lock_and_identity() {
     assert!(decoder.system.nac.is_none() && decoder.system.wacn.is_none());
     assert!(decoder.bands.is_empty());
     assert!(matches!(decoder.state, DecoderState::Hunting));
+}
+
+/// Change 071a: neighbours are remembered per (system, RFSS, site); a
+/// grant on a TDMA band is flagged for the follower.
+#[test]
+fn neighbours_and_tdma_grants() {
+    let mut decoder = ControlChannelDecoder::new();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    decoder.set_grant_event_tx(tx);
+    decoder.handle_tsbk(0, TsbkMessage::IdentifierUpdate {
+        identifier: 0, bw: 100, transmit_offset: -45_000_000,
+        channel_spacing: 6_250, base_frequency: 851_006_250, slots: 1,
+    });
+    decoder.handle_tsbk(0, TsbkMessage::IdentifierUpdate {
+        identifier: 2, bw: 100, transmit_offset: -45_000_000,
+        channel_spacing: 12_500, base_frequency: 851_012_500, slots: 2,
+    });
+    let adj = |site: u8| TsbkMessage::AdjacentStatus {
+        lra: 1, rfss_id: 1, site_id: site, channel: Channel(0x0639), system_id: 0x3BD,
+        conventional: false, failure: false, valid: true, active: true, service_class: 0x70,
+    };
+    decoder.handle_tsbk(0, adj(2));
+    decoder.handle_tsbk(0, adj(2));
+    decoder.handle_tsbk(0, adj(3));
+    assert_eq!(decoder.system.neighbours.len(), 2);
+    let n = &decoder.system.neighbours[&(0x3BD, 1, 2)];
+    assert_eq!(n.count, 2);
+    assert_eq!(decoder.channel_to_frequency(n.channel), Some(CLAY_CONTROL_FREQ_HZ));
+    assert_eq!(service_class_names(0x70), vec!["data", "voice", "registration"]);
+    decoder.new_system();
+    assert!(decoder.system.neighbours.is_empty());
+
+    // Grants: band 0 is Phase 1, band 2 is TDMA.
+    decoder.handle_tsbk(0, TsbkMessage::IdentifierUpdate {
+        identifier: 2, bw: 100, transmit_offset: -45_000_000,
+        channel_spacing: 12_500, base_frequency: 851_012_500, slots: 2,
+    });
+    for (chan, tdma) in [(Channel(0x2000 | 228), true)] {
+        decoder.handle_tsbk(0, TsbkMessage::GroupVoiceChannelGrant {
+            channel: chan, talkgroup: Talkgroup(300), source: RadioId(1), service_options: 0,
+        });
+        match rx.try_recv() {
+            Ok(crate::protocol::p25::events::P25Event::Grant(g)) => {
+                assert_eq!(g.tdma, tdma);
+                assert_eq!(g.frequency_hz, Some(852_437_500));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+/// Change 071a: a run of another NAC moves the lock; scattered false
+/// NACs do not.
+#[test]
+fn nac_lock_moves_after_a_run_of_another_nac() {
+    let mut t = NacTracker::default();
+    for _ in 0..5 {
+        t.track(0x0C5);
+    }
+    assert_eq!(t.dominant(), 0x0C5);
+    // Scattered wrong NACs, interleaved with the locked one: no move.
+    for _ in 0..20 {
+        assert!(!t.other_nac(0x123));
+        assert!(!t.other_nac(0x456));
+        t.track(0x0C5);
+    }
+    assert_eq!(t.dominant(), 0x0C5);
+    // Eight in a row of 0x8A1: the lock moves.
+    for i in 1..=NacTracker::RELOCK_AFTER {
+        assert_eq!(t.other_nac(0x8A1), i == NacTracker::RELOCK_AFTER);
+    }
+    assert_eq!(t.dominant(), 0);
+    for _ in 0..3 {
+        t.track(0x8A1);
+    }
+    assert_eq!(t.dominant(), 0x8A1);
 }

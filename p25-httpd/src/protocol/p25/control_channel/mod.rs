@@ -298,13 +298,39 @@ pub struct NacTracker {
     /// runs; SDRTrunk uses `System.currentTimeMillis()`.
     entries: HashMap<u16, (u32, u64)>,
     seq: u64,
+    /// Change 071a: (NAC, run length) of consecutive valid NIDs that
+    /// disagree with the locked NAC.
+    other_run: (u16, u32),
 }
 
 impl NacTracker {
     const MAX_TRACKED: usize = 3;
     const MIN_OBSERVATIONS: u32 = 3;
+    /// Change 071a: consecutive valid NIDs of one other NAC that move
+    /// the lock to it. A BCH false decode does not repeat the same
+    /// wrong NAC this many times in a row; a channel that now carries
+    /// another system (a retune whose old dibits were still buffered
+    /// when the lock was cleared) does.
+    pub const RELOCK_AFTER: u32 = 8;
+
+    /// Change 071a: a structurally valid NID whose NAC is not the
+    /// locked one. True when the lock should move to `nac` (the
+    /// tracker is then cleared and counts `nac` from scratch).
+    pub fn other_nac(&mut self, nac: u16) -> bool {
+        self.other_run = if self.other_run.0 == nac {
+            (nac, self.other_run.1 + 1)
+        } else {
+            (nac, 1)
+        };
+        if self.other_run.1 >= Self::RELOCK_AFTER {
+            self.reset();
+            return true;
+        }
+        false
+    }
 
     pub fn track(&mut self, nac: u16) {
+        self.other_run = (0, 0);
         self.seq = self.seq.wrapping_add(1);
         if let Some(entry) = self.entries.get_mut(&nac) {
             entry.0 = entry.0.saturating_add(1);
@@ -339,6 +365,7 @@ impl NacTracker {
     pub fn reset(&mut self) {
         self.entries.clear();
         self.seq = 0;
+        self.other_run = (0, 0);
     }
 }
 
@@ -423,7 +450,7 @@ pub trait VoiceHandler {
 
 mod types;
 pub use types::{
-    AlignedCapture, SystemIdentity, GrantInfo,
+    AlignedCapture, SystemIdentity, GrantInfo, service_class_names,
 };
 use types::{CaptureBuilder, DecoderState};
 
@@ -604,6 +631,7 @@ impl ControlChannelDecoder {
                     encrypted: info.encrypted,
                     emergency: info.emergency,
                     is_update,
+                    tdma: self.bands.get(&info.channel.identifier()).is_some_and(|b| b.is_tdma()),
                 },
             ));
         }
@@ -1103,7 +1131,20 @@ impl ControlChannelDecoder {
                             .map(|h| h.expected_nac())
                             .unwrap_or(0)
                     };
-                    if expected != 0 && nac_raw != expected {
+                    // Change 071a: a steady run of another NAC moves the
+                    // lock (the channel now carries another system).
+                    let relock = expected != 0
+                        && nac_raw != expected
+                        && DataUnit::from_duid(duid_raw).is_some()
+                        && self.nac_tracker.other_nac(nac_raw);
+                    if relock {
+                        tracing::info!(
+                            target: "p25_decoder",
+                            "NAC lock moved 0x{:03X} -> 0x{:03X} after {} consecutive NIDs",
+                            expected, nac_raw, NacTracker::RELOCK_AFTER,
+                        );
+                    }
+                    if expected != 0 && nac_raw != expected && !relock {
                         self.nid_nac_mismatch += 1;
                         tracing::debug!(
                             target: "p25_decoder",

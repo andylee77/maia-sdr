@@ -143,6 +143,38 @@ pub struct SystemIdentity {
     /// uses this to label the System Type as "P25 P1" vs "P25 P1+P2".
     /// SDRTrunk does the same inference from the TSBK stream.
     pub has_tdma_band: bool,
+    /// Change 071a: neighbour sites from Adjacent Status Broadcasts,
+    /// keyed by (system, RFSS, site).
+    pub neighbours: std::collections::BTreeMap<(u16, u8, u8), Neighbour>,
+}
+
+/// Change 071a: one neighbour site as last announced (0x3C).
+#[derive(Debug, Clone)]
+pub struct Neighbour {
+    pub lra: u8,
+    /// The neighbour's control channel.
+    pub channel: Channel,
+    pub conventional: bool,
+    pub failure: bool,
+    pub valid: bool,
+    pub active: bool,
+    pub service_class: u8,
+    pub last_seen: Instant,
+    pub count: u32,
+}
+
+/// SDRTrunk `SystemServiceClass` flag names.
+pub fn service_class_names(sc: u8) -> Vec<&'static str> {
+    const FLAGS: [(u8, &str); 7] = [
+        (0x10, "data"),
+        (0x20, "voice"),
+        (0x40, "registration"),
+        (0x80, "authentication"),
+        (0x01, "composite control channel"),
+        (0x02, "no service requests"),
+        (0x04, "backup control channel"),
+    ];
+    FLAGS.iter().filter(|(b, _)| sc & b != 0).map(|(_, n)| *n).collect()
 }
 
 /// Active voice channel grant

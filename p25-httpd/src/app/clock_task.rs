@@ -19,6 +19,9 @@ use crate::services::site_clock::{site_clock_action, ClockAction};
 use crate::services::ui_settings::ClockSource;
 
 const NTP_SERVERS: [&str; 3] = ["pool.ntp.org", "time.cloudflare.com", "time.google.com"];
+/// Change 071a: a clock step waits this long for both traffic chains to
+/// be idle (open calls are timed on the board clock), then goes ahead.
+const STEP_WAIT_MAX: Duration = Duration::from_secs(120);
 const NTP_OK_PERIOD: Duration = Duration::from_secs(3_600);
 const NTP_RETRY: Duration = Duration::from_secs(300);
 
@@ -57,8 +60,15 @@ pub fn spawn_clock_task(state: Arc<AppState>) {
             _ => Some(Instant::now()),
         };
         let mut tick = tokio::time::interval(Duration::from_secs(1));
+        // Change 071a: since when a step has been waiting for idle chains.
+        let mut step_waiting: Option<Instant> = None;
         loop {
             tick.tick().await;
+            // May the clock jump now? Not while a call is open (its hang
+            // and end timers would fire at once or stall), unless a step
+            // has already waited STEP_WAIT_MAX.
+            let may_step = crate::app::traffic_lane::all_idle(&state.traffic_lanes).await
+                || step_waiting.is_some_and(|t| t.elapsed() >= STEP_WAIT_MAX);
             let now_src = policy.source();
             if now_src != source {
                 source = now_src;
@@ -70,7 +80,10 @@ pub fn spawn_clock_task(state: Arc<AppState>) {
                     serde_json::json!({ "source": source.as_str() }),
                 );
             }
-            if ntp_due.is_some_and(|t| Instant::now() >= t) {
+            if ntp_due.is_some_and(|t| Instant::now() >= t) && !may_step {
+                step_waiting.get_or_insert_with(Instant::now);
+            } else if ntp_due.is_some_and(|t| Instant::now() >= t) {
+                step_waiting = None;
                 let r = tokio::task::spawn_blocking(|| {
                     ntp::sync_system_clock(&NTP_SERVERS, Duration::from_secs(5))
                 }).await;
@@ -104,9 +117,13 @@ pub fn spawn_clock_task(state: Arc<AppState>) {
             let board = now_unix_ms();
             match site_clock_action(board, site_ms, precision, stepped) {
                 ClockAction::None => {}
+                ClockAction::Step(_) if !may_step => {
+                    step_waiting.get_or_insert_with(Instant::now);
+                }
                 ClockAction::Step(ms) => match ntp::step_clock_ms(ms) {
                     Ok(()) => {
                         stepped = true;
+                        step_waiting = None;
                         state.event_log.push(
                             LogCategory::System,
                             format!(

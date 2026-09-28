@@ -72,15 +72,18 @@ pub fn spawn_traffic_heartbeat(
             // Change 057: `voice` = valid HDU / LDU1 / LDU2 NID; the
             // lifecycle uses a pair of them to see voice resume after an
             // end-of-transmission marker.
-            let _ = boundary_tx.send(audio::CallBoundary {
-                kind: audio::CallBoundaryKind::TrafficNidObserved {
-                    voice: status.nid_valid && matches!(duid, 0x0 | 0x5 | 0xA),
-                },
-                nac,
-                talkgroup: None,
-                expected_submit_count: 0,
-                lane: Some(lane),
-            });
+            // Change 071a: only voice NIDs matter to the lifecycle (the
+            // other ones only stamped a field nothing reads); sending
+            // every NID of both lanes crowded the boundary channel.
+            if status.nid_valid && matches!(duid, 0x0 | 0x5 | 0xA) {
+                let _ = boundary_tx.send(audio::CallBoundary {
+                    kind: audio::CallBoundaryKind::TrafficNidObserved { voice: true },
+                    nac,
+                    talkgroup: None,
+                    expected_submit_count: 0,
+                    lane: Some(lane),
+                });
+            }
 
             let sync_trace_call_id = imbe.current_call_id.load(Ordering::Relaxed);
             if sync_trace_call_id != 0 {

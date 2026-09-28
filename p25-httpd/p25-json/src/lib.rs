@@ -23,6 +23,17 @@ pub struct SystemInfo {
     /// Control Channel Broadcast (TSBK opcode 0x39).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secondary_cch_a: Option<String>,
+    /// Change 071a: control / secondary channels resolved to Hz.
+    #[serde(default)]
+    pub control_channel_hz: Option<u64>,
+    #[serde(default)]
+    pub secondary_cch_a_hz: Option<u64>,
+    #[serde(default)]
+    pub secondary_cch_b_hz: Option<u64>,
+    /// Change 071a: neighbour sites (Adjacent Status Broadcast).
+    #[serde(default)]
+    pub neighbours: Vec<NeighbourInfo>,
+
     /// Phase 6F.11: backup primary control channel B.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secondary_cch_b: Option<String>,
@@ -91,6 +102,9 @@ pub struct BandInfo {
     pub channel_spacing_khz: f64,
     pub transmit_offset_mhz: f64,
     pub bandwidth_khz: f64,
+    /// Change 071a: timeslots per carrier (1 = FDMA, 2/4 = TDMA).
+    #[serde(default)]
+    pub slots: u8,
 }
 
 /// Decoder and FPGA statistics
@@ -199,4 +213,23 @@ pub struct DdcConfig {
     pub frequency_offset: f64,
     pub sample_rate: f64,
     pub decimation: [u32; 3],
+}
+
+/// Change 071a: a neighbour site from Adjacent Status Broadcast (0x3C).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NeighbourInfo {
+    /// System ID, 3 hex digits.
+    pub system_id: String,
+    pub rfss_id: u8,
+    pub site_id: u8,
+    pub lra: u8,
+    /// Its control channel ("band-number").
+    pub channel: String,
+    /// The control channel in Hz, when the band is known.
+    pub freq_hz: Option<u64>,
+    /// "conventional", "failure", "valid", "active".
+    pub flags: Vec<String>,
+    pub services: Vec<String>,
+    pub age_ms: u64,
+    pub count: u32,
 }

@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-28-coverage-070b";
+pub const BUILD_TAG: &str = "2026-09-28-review-fixes-071a";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -346,6 +346,16 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let mut args = Args::parse();
+
+    // Change 071a: after a panic in any task the shared state is suspect
+    // (poisoned locks, a dead follower or lifecycle behind a live web
+    // UI). Log it and exit; the init script's loop restarts the daemon.
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_panic(info);
+        eprintln!("p25-httpd: panic, exiting so the init script restarts it");
+        std::process::exit(70);
+    }));
 
     // Require --control_freq explicitly. No built-in default — the
     // right value is site-specific and a wrong default would
@@ -1604,6 +1614,7 @@ async fn main() -> anyhow::Result<()> {
                 mgr: l.chain.clone(),
                 imbe: l.forwarder.clone(),
                 decoder: l.decoder.clone(),
+                active: l.active_call.clone(),
             })
             .collect();
         app::grant_follower::spawn_grant_follower(

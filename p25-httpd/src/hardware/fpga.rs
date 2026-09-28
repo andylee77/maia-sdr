@@ -52,7 +52,9 @@ const PRODUCT_ID: u32 = 0x7032_3566;
 
 /// Wrapper over a UIO mapping that derefs to the p25-pac RegisterBlock.
 #[derive(Debug, Clone)]
-struct Registers(Mapping);
+// Change 071a: the register block and the interrupt handler share one
+// mapping; it is unmapped once, when the last holder drops.
+struct Registers(std::sync::Arc<Mapping>);
 
 impl Deref for Registers {
     type Target = p25_pac::fishball_p25::RegisterBlock;
@@ -167,6 +169,7 @@ impl IpCore {
             .await
             .context("failed to mmap p25-core registers")?;
 
+        let mapping = std::sync::Arc::new(mapping);
         let registers = Registers(mapping.clone());
         let interrupt_registers = Registers(mapping);
 
@@ -2375,27 +2378,27 @@ impl InterruptHandler {
             total_irqs += 1;
             if iq {
                 iq_irqs += 1;
-                self.notify_iq_dma.notify_waiters();
+                self.notify_iq_dma.notify_one();
             }
             if lsm_dibit {
                 lsm_dibit_irqs += 1;
-                self.notify_lsm_dibit_dma.notify_waiters();
+                self.notify_lsm_dibit_dma.notify_one();
             }
             if traffic_lsm_dibit {
                 traffic_lsm_dibit_irqs += 1;
-                self.notify_traffic_lsm_dibit_dma.notify_waiters();
+                self.notify_traffic_lsm_dibit_dma.notify_one();
             }
             if traffic2_lsm_dibit {
                 traffic2_lsm_dibit_irqs += 1;
-                self.notify_traffic2_lsm_dibit_dma.notify_waiters();
+                self.notify_traffic2_lsm_dibit_dma.notify_one();
             }
             if pre_diff_iq {
                 pre_diff_iq_irqs += 1;
-                self.notify_pre_diff_iq_dma.notify_waiters();
+                self.notify_pre_diff_iq_dma.notify_one();
             }
             if wideband_iq {
                 wideband_iq_irqs += 1;
-                self.notify_wideband_iq_dma.notify_waiters();
+                self.notify_wideband_iq_dma.notify_one();
             }
             // Update shared stats. Cheap async lock, no contention
             // because nothing else writes this struct.

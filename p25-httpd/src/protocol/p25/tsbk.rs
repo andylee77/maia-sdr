@@ -273,6 +273,8 @@ pub enum TsbkMessage {
         transmit_offset: i32,
         channel_spacing: u32,
         base_frequency: u64,
+        /// Change 071a: timeslots per carrier (1 = FDMA; 2/4 = TDMA).
+        slots: u8,
     },
 
     /// Network Status Broadcast (opcode 0x3B)
@@ -292,13 +294,22 @@ pub enum TsbkMessage {
         channel: Channel,
     },
 
-    /// Adjacent Status Broadcast (opcode 0x3C)
+    /// Adjacent Status Broadcast (opcode 0x3C): a neighbour site.
+    /// Change 071a: decoded at SDRTrunk's offsets
+    /// (`AdjacentStatusBroadcast.java`).
     AdjacentStatus {
         lra: u8,
         rfss_id: u8,
         site_id: u8,
+        /// The neighbour's control channel.
         channel: Channel,
         system_id: u16,
+        conventional: bool,
+        failure: bool,
+        valid: bool,
+        /// Active network connection to the RFSS controller.
+        active: bool,
+        service_class: u8,
     },
 
     /// Secondary Control Channel Broadcast (opcode 0x39) -- backup
@@ -843,6 +854,7 @@ impl TsbkBlock {
             transmit_offset: xmit_offset,
             channel_spacing: spacing,
             base_frequency,
+            slots: 1,
         }
     }
 
@@ -878,6 +890,7 @@ impl TsbkBlock {
             transmit_offset: xmit_offset,
             channel_spacing: spacing,
             base_frequency,
+            slots: 1,
         }
     }
 
@@ -930,12 +943,22 @@ impl TsbkBlock {
         }
         let base_frequency = self.bits(&full, 48, 32) * 5;
 
+        // Change 071a: SDRTrunk `ChannelType`: bandwidth and timeslots per
+        // carrier. Types 0-2 are FDMA even when announced here.
+        let (bw_hz, slots) = match channel_type {
+            0 | 1 => (12_500, 1),
+            2 => (6_250, 1),
+            3 | 5 => (12_500, 2),
+            4 => (25_000, 4),
+            _ => (0, 1),
+        };
         TsbkMessage::IdentifierUpdate {
             identifier,
-            bw: channel_type, // see doc above
+            bw: (bw_hz / 125) as u16,
             transmit_offset: xmit_offset,
             channel_spacing: spacing,
             base_frequency,
+            slots,
         }
     }
 
@@ -995,24 +1018,24 @@ impl TsbkBlock {
         }
     }
 
-    /// ADJ_STS_BCST (0x3C)
-    /// Payload: [lra(8)][sys_id(12)][rfss_id(8)][site_id(8)][channel(16)][services(8)]
+    /// ADJ_STS_BCST (0x3C), SDRTrunk `AdjacentStatusBroadcast.java`
+    /// absolute bits: LRA 16-23, flags 24-27 (conventional, failure,
+    /// valid, active RFSS connection), system 28-39, RFSS 40-47, site
+    /// 48-55, band 56-59 + channel 60-71, service class 72-79.
     fn decode_adj_sts_bcst(&self) -> TsbkMessage {
-        let lra = self.payload[0];
-        let system_id = (((self.payload[1]) as u16) << 4) | ((self.payload[2] >> 4) as u16);
-        let rfss_id = ((self.payload[2] & 0x0F) << 4) | (self.payload[3] >> 4);
-        let site_id = ((self.payload[3] & 0x0F) << 4) | (self.payload[4] >> 4);
-        let channel = Channel(
-            (((self.payload[4] & 0x0F) as u16) << 12)
-                | ((self.payload[5] as u16) << 4)
-                | ((self.payload[6] >> 4) as u16),
-        );
+        let mut full = [0u8; 12];
+        full[2..10].copy_from_slice(&self.payload);
         TsbkMessage::AdjacentStatus {
-            lra,
-            rfss_id,
-            site_id,
-            channel,
-            system_id,
+            lra: self.bits(&full, 16, 8) as u8,
+            conventional: self.bits(&full, 24, 1) == 1,
+            failure: self.bits(&full, 25, 1) == 1,
+            valid: self.bits(&full, 26, 1) == 1,
+            active: self.bits(&full, 27, 1) == 1,
+            system_id: self.bits(&full, 28, 12) as u16,
+            rfss_id: self.bits(&full, 40, 8) as u8,
+            site_id: self.bits(&full, 48, 8) as u8,
+            channel: Channel(self.bits(&full, 56, 16) as u16),
+            service_class: self.bits(&full, 72, 8) as u8,
         }
     }
 
@@ -1370,6 +1393,8 @@ pub struct FrequencyBand {
     pub transmit_offset_hz: i32,
     pub channel_spacing_hz: u32,
     pub base_frequency_hz: u64,
+    /// Change 071a: timeslots per carrier (1 = FDMA, 2/4 = TDMA).
+    pub slots: u8,
 }
 
 impl FrequencyBand {
@@ -1382,20 +1407,30 @@ impl FrequencyBand {
                 transmit_offset,
                 channel_spacing,
                 base_frequency,
+                slots,
             } => Some(FrequencyBand {
                 identifier: *identifier,
                 bandwidth_hz: (*bw as u32) * 125,
                 transmit_offset_hz: *transmit_offset,
                 channel_spacing_hz: *channel_spacing,
                 base_frequency_hz: *base_frequency,
+                slots: (*slots).max(1),
             }),
             _ => None,
         }
     }
 
-    /// Calculate downlink frequency for a channel number
+    /// Downlink frequency of a channel number. On a TDMA band the
+    /// channel number counts timeslots (SDRTrunk
+    /// `FrequencyBandUpdateTDMA`: base + spacing * floor(ch / slots)).
     pub fn channel_frequency(&self, channel_number: u16) -> u64 {
-        self.base_frequency_hz + (channel_number as u64) * (self.channel_spacing_hz as u64)
+        let carrier = channel_number as u64 / self.slots.max(1) as u64;
+        self.base_frequency_hz + carrier * (self.channel_spacing_hz as u64)
+    }
+
+    /// Change 071a: a Phase 2 (TDMA) band.
+    pub fn is_tdma(&self) -> bool {
+        self.slots > 1
     }
 
 }

@@ -47,7 +47,7 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 |---|---|---|---|
 | `/` | GET | HTML | Web UI (change 056): shell page, `Cache-Control: no-cache`; asset URLs are `ui/<BUILD_TAG>.<hash>/...` |
 | `/ui/{version}/{*path}` | GET | CSS / JS | Change 056 embedded UI assets (`httpd/ui/`). JS as `text/javascript`. Current version `immutable` + ETag, any other version `no-cache`, unknown path 404 |
-| `/api/system` | GET | `SystemInfo` | System identity: NAC, WACN, RFSS, site, control channel, secondary CCH, SNDCP channels, system clock, build tag |
+| `/api/system` | GET | `SystemInfo` | System identity: NAC, WACN, RFSS, site, control channel, secondary CCH, SNDCP channels, system clock, build tag. Change 071a: `control_channel_hz`, `secondary_cch_a_hz` / `_b_hz`, and `neighbours: [{system_id (hex), rfss_id, site_id, lra, channel, freq_hz (its control channel), flags (conventional / failure / valid / active), services, age_ms, count}]` from Adjacent Status Broadcasts (cleared on a site switch or retune) |
 | `/api/sys_health` | GET | JSON | **Stage 2** — process + kernel health: loadavg, daemon RSS, thread count, free memory. Cheap to poll from a mobile client |
 | `/api/endpoints` | GET | JSON | Self-describing endpoint list (authoritative — the live `ENDPOINT_CATALOGUE`) |
 | `/api/set_time` | POST | JSON | `?unix_ms=<i64>` — push browser/client wall-clock to the board. For RNDIS-USB or air-gapped setups where NTP is unreachable. Change 067: with the clock source `site` the control channel's time wins again within seconds |
@@ -58,7 +58,7 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 |---|---|---|---|
 | `/api/stats` | GET | `DecoderStats` | Decoder + AD9361 + FPGA counters: dibit count, overflow flag, AGC gain, RSSI, RX LO, RF bandwidth, sampling freq, gain mode, DDC geometry, wall clock |
 | `/api/grants` | GET | `Vec<ChannelGrant>` | Active voice grants (talkgroup-deduped; `encrypted` + `in_encrypted_history` badges) |
-| `/api/bands` | GET | `Vec<BandInfo>` | Frequency band table from `IDEN_UPDATE*` opcodes |
+| `/api/bands` | GET | `Vec<BandInfo>` | Frequency band table from `IDEN_UPDATE*` opcodes. Change 071a: `slots` (1 = FDMA, 2/4 = TDMA; a TDMA band's channel numbers count timeslots) |
 | `/api/hdl_lsm` | GET | JSON | HDL LSM chain runtime: cumulative, live, last NID, 32-entry NID ring |
 | `/api/irq_stats` | GET | JSON | Per-IRQ wait counts and average wait (all 6 DMAs) |
 | `/api/decoder_compare` | GET | JSON | 3-column matrix: `ps_c4fm`, `ps_lsm`, `pl_hdl` |
