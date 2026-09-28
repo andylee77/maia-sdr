@@ -511,7 +511,7 @@ pub const ENDPOINT_CATALOGUE: &[EndpointDoc] = &[
     EndpointDoc {
         method: "PUT",
         path: "/api/ui/settings",
-        params: "body=JSON {recording:{enabled,max_count,storage,sd_max_count,sd_max_mb}, call:{hang_ms,end_grace_ms}, tg_aliases:{}, unit_aliases:{}, monitor_tgs:[], ignore_tgs:[] (change 068)} (any subset)",
+        params: "body=JSON {recording:{enabled,max_count,storage,sd_max_count,sd_max_mb}, call:{hang_ms,end_grace_ms}, tg_aliases:{}, unit_aliases:{}, monitor_tgs:[], ignore_tgs:[] (change 068)} (any subset); or alone {profile:{select|create:{name,copy}|rename:{from,to}|delete}} (change 069)",
         description: "Change 056: validate, apply live and persist to /mnt/jffs2/p25-ui-settings.json. 400 on invalid/unknown fields.",
     },
     EndpointDoc {

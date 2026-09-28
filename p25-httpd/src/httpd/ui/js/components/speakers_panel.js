@@ -7,11 +7,15 @@
 //
 // Change 066: with two traffic chains the left and right speakers play
 // at the same time (chain 1 left, chain 2 right); the note says which.
+//
+// Change 069: the profile picker on top switches the whole setup (groups,
+// speakers, monitor and ignore lists) of the current site.
 
 import { h, card, switchInput, toast } from '../dom.js';
 import { api } from '../api.js';
 import { refreshSettings } from '../store.js';
 import { formatTgList } from '../format.js';
+import { profilePicker } from './profile_picker.js';
 
 const OTHER = [['both', 'both speakers'], ['left', 'the left speaker'], ['right', 'the right speaker'], ['off', 'off (not followed)']];
 
@@ -29,7 +33,9 @@ export function speakersPanel() {
     cols,
     h('div', { class: 'row', style: { marginTop: '10px' } }, h('span', { text: 'Other talkgroups on' }), other),
     h('div', { style: { marginTop: '8px' } }, pre.el));
-  c.body.append(empty, controls);
+  const profile = profilePicker({ onChange: refreshSettings });
+  profile.el.style.marginBottom = '10px';
+  c.body.append(profile.el, empty, controls);
   other.addEventListener('change', () => apply({ other: other.value }));
 
   let doc = null;
@@ -86,6 +92,7 @@ export function speakersPanel() {
 
   function render(d) {
     doc = d;
+    profile.set(d);
     const ok = d && d.settings;
     const groups = ok ? d.settings.tg_groups || [] : [];
     empty.hidden = !!(ok && groups.length);

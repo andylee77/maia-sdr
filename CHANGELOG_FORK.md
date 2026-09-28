@@ -5,6 +5,36 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-28] Profiles per site: groups, speakers, monitor and ignore lists (069)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-28-profiles-069`
+**Bake required:** NO (p25-httpd and web UI).
+
+- **Profiles:** a profile is a named setup of the talkgroup groups, the speakers, the monitor
+  list and the ignored talkgroups. Each site has its own profiles, and its own talkgroup and
+  radio names (talkgroup numbers mean different things on different systems).
+  - Now → Speakers has a profile picker; Settings → Profiles adds New (empty: follows
+    everything), Copy (starts from the live one), Rename and Delete (a site keeps one).
+  - Settings cards that belong to the profile or the site show which one in their title.
+  - Picking a profile swaps the whole setup at once; a call the new setup does not follow is
+    dropped (event log reason `profile`).
+- **Site switch** (Radio page, `POST /api/site`) loads that site's names and the profile last
+  used there; a site seen for the first time starts with an empty "Default" (follow
+  everything, no names).
+- **Migration:** the settings file from before 069 becomes the active site's "Default" profile
+  at start-up (unit A: Clay County › Default with Primary / TAC / Hospital).
+- API: `PUT /api/ui/settings` `{"profile": {"select": name}}`, `{"create": {name, copy}}`,
+  `{"rename": {from, to}}`, `{"delete": name}`, alone in its patch. `GET` adds
+  `profiles: {site, site_label, names, active}` and `settings.site` / `settings.sites`.
+
+Tests: p25-httpd 287 (migration, profile actions and validation, site switch swaps names and
+profiles, persistence and a hand-edited file). On unit A: the stored setup adopted as Clay
+County › Default; create / select / rename / delete and a Clay → Duval → Clay switch
+(`no_apply`) behave as above; Settings and Now render (headless Edge).
+
+---
+
 ## [2026-09-28] Ignored talkgroups (068)
 
 **Branch:** fishball-p25

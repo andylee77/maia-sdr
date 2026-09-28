@@ -13,6 +13,7 @@ import { aliasEditor } from '../components/alias_editor.js';
 import { monitorPicker } from '../components/monitor_picker.js';
 import { tgGroupsEditor } from '../components/tg_groups_editor.js';
 import { ignoreList } from '../components/ignore_list.js';
+import { profilePicker } from '../components/profile_picker.js';
 
 async function save(patch) {
   const r = await api.putSettings(patch);
@@ -210,6 +211,16 @@ function clockCard() {
   return { el: c.el, update };
 }
 
+// Change 069: the site's profiles. The cards below it that belong to
+// the profile or the site say so in their titles.
+function profilesCard(onChange) {
+  const c = card('Profiles');
+  const picker = profilePicker({ manage: true, onChange });
+  c.body.append(picker.el,
+    h('p', { class: 'card-note', text: 'A profile holds the talkgroup groups, the speakers, the monitor list and the ignored talkgroups. Each site has its own profiles and its own talkgroup and radio names; switching site on the Radio page loads the profile last used there. Everything else here is for the whole radio.' }));
+  return { el: c.el, set: picker.set };
+}
+
 function displayCard() {
   const c = card('This browser');
   const theme = h('select', { class: 'input', 'aria-label': 'Theme' },
@@ -249,6 +260,8 @@ export function mount(host) {
       monitor.set(data.settings.monitor_tgs, data.settings.tg_aliases);
       ignore.set(data.settings.ignore_tgs, data.settings.tg_aliases);
       groups.set(data);
+      profiles.set(data);
+      markScope(data);
       enc.set(data.encrypted_tgs);
       about.set(data, store.state);
     } catch (e) {
@@ -273,10 +286,25 @@ export function mount(host) {
   const display = displayCard();
   const groups = tgGroupsEditor({ onSave: async patch => { await save(patch); load(); } });
   const about = aboutCard();
+  const profiles = profilesCard(load);
+  // Change 069: which cards follow the profile / the site.
+  const scoped = [[groups.el, 'profile'], [monitor.el, 'profile'], [ignore.el, 'profile'],
+    [tgAliases.el, 'site'], [unitAliases.el, 'site']].map(([el, kind]) => {
+    const tag = h('span', { class: 'dim', style: { fontSize: '0.84em', marginLeft: '8px', fontWeight: 'normal' } });
+    const title = el.querySelector('.card-head h2');
+    if (title) title.append(tag);
+    return [tag, kind];
+  });
+  function markScope(d) {
+    const p = d.profiles || {};
+    for (const [tag, kind] of scoped) {
+      tag.textContent = kind === 'profile' ? (p.active ? '· ' + p.active : '') : (p.site_label || p.site ? '· ' + (p.site_label || p.site) : '');
+    }
+  }
   host.append(
     h('div', { class: 'grid-2' },
       h('div', { class: 'stack' }, rec.el, callClose.el, tgAliases.el, unitAliases.el),
-      h('div', { class: 'stack' }, groups.el, monitor.el, ignore.el, enc.el, clock.el, display.el, about.el)),
+      h('div', { class: 'stack' }, profiles.el, groups.el, monitor.el, ignore.el, enc.el, clock.el, display.el, about.el)),
   );
   load();
   let lastRev = null;

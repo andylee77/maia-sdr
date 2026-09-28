@@ -339,3 +339,115 @@ fn ignore_list_validates_and_beats_the_groups() {
     let p = parse_settings(br#"{"ignore_tgs":[9,0,9,3]}"#).unwrap();
     assert_eq!(p.ignore_tgs, vec![3, 9]);
 }
+
+// Change 069: per-site profiles. A pre-069 file files its setup under the
+// active site as "Default"; profiles switch the groups, speakers, monitor
+// and ignore lists; a site switch swaps in that site's names and profile.
+#[test]
+fn old_file_becomes_the_sites_default_profile() {
+    let (s, _) = apply_patch(&UiSettings::default(), patch(site_groups())).unwrap();
+    let (s, _) = apply_patch(&s, patch(r#"{"monitor_tgs":[300],"tg_aliases":{"300":"Fire Dispatch"}}"#)).unwrap();
+    assert!(s.sites.is_empty(), "no site yet: nothing is filed");
+    let (s, ch) = apply_patch(&s, patch(r#"{"switch_site":"clay"}"#)).unwrap();
+    assert!(ch.profiles && !ch.tg_groups && !ch.monitor_tgs);
+    assert_eq!(s.site, "clay");
+    let clay = &s.sites["clay"];
+    assert_eq!(clay.active_profile, DEFAULT_PROFILE);
+    assert_eq!(clay.profiles.len(), 1);
+    assert_eq!(clay.profiles[0].tg_groups, s.tg_groups);
+    assert_eq!(clay.profiles[0].monitor_tgs, vec![300]);
+    assert_eq!(clay.tg_aliases[&300], "Fire Dispatch");
+    // Adopting the same site again changes nothing.
+    let (_, ch) = apply_patch(&s, patch(r#"{"switch_site":"clay"}"#)).unwrap();
+    assert!(!ch.any());
+}
+
+#[test]
+fn profiles_create_select_rename_delete() {
+    let (s, _) = apply_patch(&UiSettings::default(), patch(site_groups())).unwrap();
+    let (s, _) = apply_patch(&s, patch(r#"{"switch_site":"clay"}"#)).unwrap();
+    // An empty profile follows everything; the old one keeps its setup.
+    let (s, ch) = apply_patch(&s, patch(r#"{"profile":{"create":{"name":" Everything "}}}"#)).unwrap();
+    assert!(ch.profiles && ch.tg_groups && ch.speakers);
+    assert!(s.tg_groups.is_empty());
+    assert_eq!(s.profiles(), (vec!["Default".into(), "Everything".into()], "Everything".into()));
+    // Edits go to the live profile only.
+    let (s, _) = apply_patch(&s, patch(r#"{"ignore_tgs":[402]}"#)).unwrap();
+    assert_eq!(s.sites["clay"].profiles[1].ignore_tgs, vec![402]);
+    assert!(s.sites["clay"].profiles[0].ignore_tgs.is_empty());
+    let (s, _) = apply_patch(&s, patch(r#"{"profile":{"select":"default"}}"#)).unwrap();
+    assert_eq!(s.tg_groups.len(), 3);
+    assert!(s.ignore_tgs.is_empty());
+    // A copy starts from the live setup.
+    let (s, _) = apply_patch(&s, patch(r#"{"profile":{"create":{"name":"Fire","copy":true}}}"#)).unwrap();
+    assert_eq!(s.tg_groups.len(), 3);
+    assert_eq!(s.profiles().1, "Fire");
+    // Names are unique and non-empty; missing profiles are errors.
+    assert!(apply_patch(&s, patch(r#"{"profile":{"create":{"name":"fire"}}}"#)).is_err());
+    assert!(apply_patch(&s, patch(r#"{"profile":{"create":{"name":"  "}}}"#)).is_err());
+    assert!(apply_patch(&s, patch(r#"{"profile":{"select":"Nope"}}"#)).is_err());
+    assert!(apply_patch(&s, patch(r#"{"profile":{"rename":{"from":"Fire","to":"Everything"}}}"#)).is_err());
+    // Profile actions stand alone.
+    assert!(apply_patch(&s, patch(r#"{"profile":{"select":"Default"},"ignore_tgs":[1]}"#)).is_err());
+    // Renaming the live profile keeps it live.
+    let (s, _) = apply_patch(&s, patch(r#"{"profile":{"rename":{"from":"fire","to":"Fire Ops"}}}"#)).unwrap();
+    assert_eq!(s.profiles().1, "Fire Ops");
+    // Deleting the live one makes the first live; the last one stays.
+    let (s, _) = apply_patch(&s, patch(r#"{"profile":{"delete":"Fire Ops"}}"#)).unwrap();
+    assert_eq!(s.profiles(), (vec!["Default".into(), "Everything".into()], "Default".into()));
+    let (s, _) = apply_patch(&s, patch(r#"{"profile":{"delete":"Everything"}}"#)).unwrap();
+    assert!(apply_patch(&s, patch(r#"{"profile":{"delete":"Default"}}"#)).is_err());
+}
+
+#[test]
+fn site_switch_swaps_names_and_profiles() {
+    let (s, _) = apply_patch(&UiSettings::default(), patch(site_groups())).unwrap();
+    let (s, _) = apply_patch(&s, patch(r#"{"switch_site":"clay"}"#)).unwrap();
+    let (s, _) = apply_patch(&s, patch(r#"{"tg_aliases":{"300":"Clay Fire"},"monitor_tgs":[300]}"#)).unwrap();
+    // A new site starts empty: follow everything, no names.
+    let (s, ch) = apply_patch(&s, patch(r#"{"switch_site":"duval"}"#)).unwrap();
+    assert!(ch.tg_groups && ch.tg_aliases && ch.monitor_tgs && ch.profiles);
+    assert_eq!(s.site, "duval");
+    assert!(s.tg_groups.is_empty() && s.tg_aliases.is_empty() && s.monitor_tgs.is_empty());
+    let (s, _) = apply_patch(&s, patch(r#"{"tg_aliases":{"300":"JSO Zone 1"},"ignore_tgs":[5]}"#)).unwrap();
+    // Back to Clay: its names and setup return; Duval's are kept.
+    let (s, _) = apply_patch(&s, patch(r#"{"switch_site":"clay"}"#)).unwrap();
+    assert_eq!(s.tg_aliases[&300], "Clay Fire");
+    assert_eq!(s.monitor_tgs, vec![300]);
+    assert!(s.ignore_tgs.is_empty());
+    assert_eq!(s.tg_groups.len(), 3);
+    assert_eq!(s.sites["duval"].tg_aliases[&300], "JSO Zone 1");
+    assert_eq!(s.sites["duval"].profiles[0].ignore_tgs, vec![5]);
+    // Global settings are not per site.
+    assert!(apply_patch(&s, patch(r#"{"switch_site":"  "}"#)).is_err());
+}
+
+#[test]
+fn profiles_persist_and_reload_through_the_store() {
+    let path = tmp_file("profiles");
+    let store = SettingsStore::load(Some(path.clone()));
+    store.update(patch(site_groups())).unwrap();
+    store.adopt_site("clay").unwrap();
+    store.update(patch(r#"{"profile":{"create":{"name":"Quiet"}}}"#)).unwrap();
+    store.update(patch(r#"{"ignore_tgs":[300]}"#)).unwrap();
+    assert!(store.routing.snapshot().ignored(300), "the live routing follows the profile");
+    store.update(patch(r#"{"profile":{"select":"Default"}}"#)).unwrap();
+    assert!(!store.routing.snapshot().ignored(300));
+    let again = SettingsStore::load(Some(path.clone()));
+    let s = again.snapshot();
+    assert_eq!(s.site, "clay");
+    assert_eq!(s.profiles(), (vec!["Default".into(), "Quiet".into()], "Default".into()));
+    assert_eq!(s.sites["clay"].profiles[1].ignore_tgs, vec![300]);
+    // Booting on another site switches to it.
+    let o = again.adopt_site("duval").unwrap();
+    assert!(o.changed.tg_groups);
+    assert!(again.snapshot().tg_groups.is_empty());
+    // A hand-edited file: duplicate names and a bad active profile.
+    let p = parse_settings(br#"{"site":"clay","sites":{"clay":{"active_profile":"Gone",
+        "profiles":[{"name":"A","ignore_tgs":[0,4,4]},{"name":"a"},{"name":" "}]}}}"#).unwrap();
+    let clay = &p.sites["clay"];
+    assert_eq!(clay.profiles.len(), 1);
+    assert_eq!(clay.active_profile, "A");
+    assert_eq!(clay.profiles[0].ignore_tgs, vec![4]);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}

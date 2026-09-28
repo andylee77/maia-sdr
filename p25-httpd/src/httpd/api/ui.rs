@@ -347,8 +347,13 @@ async fn settings_json(state: &AppState) -> serde_json::Value {
         o.insert("bytes".into(), sd_bytes.into());
         o.insert("ready".into(), rs.sd_ready().err().map_or("ok".to_string(), |e| e).into());
     }
+    let settings = store.snapshot();
+    // Change 069: the live site's profiles, ready for the pickers.
+    let (names, active) = settings.profiles();
+    let site_label = crate::services::sites::load_site(&settings.site).map(|s| s.label).ok();
     serde_json::json!({
-        "settings":        store.snapshot(),
+        "profiles":        { "site": settings.site, "site_label": site_label, "names": names, "active": active },
+        "settings":        settings,
         "rev":             store.rev(),
         "file":            store.path().map(|p| p.display().to_string()),
         "load_note":       store.load_note(),
@@ -416,6 +421,8 @@ pub async fn apply_settings_patch(
     origin: &str,
 ) -> Result<serde_json::Value, String> {
     let before = state.ui_settings.snapshot();
+    // Change 069: a profile or site switch replaces the whole setup.
+    let switching = patch.profile.is_some() || patch.switch_site.is_some();
     let out = state.ui_settings.update(patch)?;
     let mut evicted = 0;
     if out.changed.recording {
@@ -438,7 +445,21 @@ pub async fn apply_settings_patch(
     }
     // Change 068: a talkgroup ignored while on air is dropped now, not at
     // its next grant.
-    if out.changed.ignore_tgs {
+    // Change 069: after a profile or site switch, a call the new setup
+    // does not follow (ignored, off, or outside the monitor list) is
+    // dropped now as well.
+    if switching && (out.changed.tg_groups || out.changed.speakers || out.changed.monitor_tgs || out.changed.ignore_tgs) {
+        let routing = state.ui_settings.routing.snapshot();
+        let monitor = &out.settings.monitor_tgs;
+        let off = |t: u16| routing.route(t).is_none() || (!monitor.is_empty() && !monitor.contains(&t));
+        for (lane, tg) in super::talkgroups::release_chains_on(state, off).await {
+            state.event_log.push(
+                crate::services::event_log::LogCategory::Traffic,
+                format!("{lane}: TG={tg} not in profile {:?}, call dropped", out.settings.profiles().1),
+                serde_json::json!({ "tg": tg, "chain": lane.label(), "reason": "profile" }),
+            );
+        }
+    } else if out.changed.ignore_tgs {
         let ignore = &out.settings.ignore_tgs;
         for (lane, tg) in super::talkgroups::release_chains_on(state, |t| ignore.binary_search(&t).is_ok()).await {
             state.event_log.push(
@@ -454,7 +475,7 @@ pub async fn apply_settings_patch(
             format!(
                 "settings updated via {origin}: recording={} keep={} storage={} \
                  sd_keep={} sd_max_mb={} hang_ms={} end_grace_ms={} tg_aliases={} \
-                 unit_aliases={} monitor={:?} ignore={:?}{}",
+                 unit_aliases={} monitor={:?} ignore={:?} site={} profile={}{}",
                 if out.settings.recording.enabled { "on" } else { "off" },
                 out.settings.recording.max_count,
                 out.settings.recording.storage.as_str(),
@@ -466,6 +487,8 @@ pub async fn apply_settings_patch(
                 out.settings.unit_aliases.len(),
                 out.settings.monitor_tgs,
                 out.settings.ignore_tgs,
+                out.settings.site,
+                out.settings.profiles().1,
                 if out.persisted { "" } else { " (NOT persisted)" },
             ),
             serde_json::json!({
@@ -477,6 +500,9 @@ pub async fn apply_settings_patch(
                     "unit_aliases": out.changed.unit_aliases,
                     "monitor_tgs":  out.changed.monitor_tgs,
                     "ignore_tgs":   out.changed.ignore_tgs,
+                    "tg_groups":    out.changed.tg_groups,
+                    "speakers":     out.changed.speakers,
+                    "profiles":     out.changed.profiles,
                 },
                 "persisted":  out.persisted,
                 "save_error": out.save_error,
@@ -497,7 +523,9 @@ pub async fn apply_settings_patch(
 /// "sd_max_count":N,"sd_max_mb":N},"call":{"hang_ms":N,"end_grace_ms":N},
 /// "tg_aliases":{..},"unit_aliases":{..},"monitor_tgs":[..]}`. Maps /
 /// lists replace the stored value. 400 on an invalid or unknown field
-/// (nothing changes).
+/// (nothing changes). Change 069: `{"profile":{"select"|"create"|
+/// "rename"|"delete":..}}` acts on the live site's profiles (alone in
+/// its patch).
 pub async fn put_ui_settings(
     State(state): State<Arc<AppState>>,
     body: axum::body::Bytes,

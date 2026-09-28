@@ -270,6 +270,208 @@ pub struct UiSettings {
     /// Change 068: talkgroups never followed (the opposite of the monitor
     /// list; wins over it and over the speaker groups). Sorted.
     pub ignore_tgs: Vec<u16>,
+    /// Change 069: the site whose settings are live in the fields above
+    /// (`services::sites` name, e.g. "clay").
+    pub site: String,
+    /// Change 069: every site's names and profiles. The live site's entry
+    /// is kept in step with the fields above on every change.
+    pub sites: BTreeMap<String, SiteSettings>,
+}
+
+/// Change 069: one named setup of which talkgroups are followed and
+/// where they play (e.g. "Fire", "Everything" for one site).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Profile {
+    pub name: String,
+    pub tg_groups: Vec<TgGroup>,
+    pub speakers: Speakers,
+    pub monitor_tgs: Vec<u16>,
+    pub ignore_tgs: Vec<u16>,
+}
+
+/// Change 069: what belongs to one site: its talkgroup and radio names
+/// (numbers mean different things on different systems) and its
+/// profiles.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SiteSettings {
+    pub tg_aliases: BTreeMap<u16, String>,
+    pub unit_aliases: BTreeMap<u32, String>,
+    pub profiles: Vec<Profile>,
+    pub active_profile: String,
+}
+
+/// Change 069: name of the profile a site starts with.
+pub const DEFAULT_PROFILE: &str = "Default";
+pub const MAX_PROFILES: usize = 32;
+pub const PROFILE_NAME_CHARS: usize = 32;
+
+/// Change 069: a profile action on the live site (`PUT
+/// /api/ui/settings` `{"profile": {...}}`, alone in its patch).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProfileAction {
+    /// Make this profile live.
+    Select(String),
+    /// Add a profile and make it live: a copy of the live one, or empty.
+    Create { name: String, #[serde(default)] copy: bool },
+    Rename { from: String, to: String },
+    /// Remove a profile (not the last); the first one left goes live if
+    /// it was the live one.
+    Delete(String),
+}
+
+impl UiSettings {
+    /// Change 069: the live fields as a profile named `name`.
+    fn live_profile(&self, name: &str) -> Profile {
+        Profile {
+            name: name.to_string(),
+            tg_groups: self.tg_groups.clone(),
+            speakers: self.speakers.clone(),
+            monitor_tgs: self.monitor_tgs.clone(),
+            ignore_tgs: self.ignore_tgs.clone(),
+        }
+    }
+
+    /// Change 069: write the live fields into the live site's entry
+    /// (its names and its active profile).
+    pub fn store_live(&mut self) {
+        let live = self.live_profile("");
+        let (tg, unit) = (self.tg_aliases.clone(), self.unit_aliases.clone());
+        let entry = self.sites.entry(self.site.clone()).or_default();
+        if entry.active_profile.is_empty() {
+            entry.active_profile = DEFAULT_PROFILE.to_string();
+        }
+        let name = entry.active_profile.clone();
+        let p = Profile { name: name.clone(), ..live };
+        match entry.profiles.iter_mut().find(|x| x.name == name) {
+            Some(slot) => *slot = p,
+            None => entry.profiles.push(p),
+        }
+        entry.tg_aliases = tg;
+        entry.unit_aliases = unit;
+    }
+
+    /// Change 069: make `site`'s profile `profile` (else its active one,
+    /// else its first, else a new empty "Default") live.
+    fn load_live(&mut self, site: &str, profile: Option<&str>) {
+        let entry = self.sites.entry(site.to_string()).or_default();
+        if entry.profiles.is_empty() {
+            entry.profiles.push(Profile { name: DEFAULT_PROFILE.to_string(), ..Default::default() });
+        }
+        let want = profile.unwrap_or(&entry.active_profile).to_string();
+        let p = entry.profiles.iter().find(|x| x.name == want)
+            .unwrap_or(&entry.profiles[0]).clone();
+        entry.active_profile = p.name.clone();
+        let (tg, unit) = (entry.tg_aliases.clone(), entry.unit_aliases.clone());
+        self.site = site.to_string();
+        self.tg_groups = p.tg_groups;
+        self.speakers = p.speakers;
+        self.monitor_tgs = p.monitor_tgs;
+        self.ignore_tgs = p.ignore_tgs;
+        self.tg_aliases = tg;
+        self.unit_aliases = unit;
+    }
+
+    /// Change 069: adopt `site` as the live site. A document without
+    /// one (pre-069) files its live settings under `site` as the
+    /// "Default" profile; a different stored site is switched away from.
+    pub fn switch_site(&mut self, site: &str) {
+        if self.site.is_empty() {
+            self.site = site.to_string();
+            self.store_live();
+            return;
+        }
+        if self.site == site {
+            self.store_live();
+            return;
+        }
+        self.store_live();
+        self.load_live(site, None);
+    }
+
+    /// Change 069: the live site's profile names and the active one.
+    pub fn profiles(&self) -> (Vec<String>, String) {
+        match self.sites.get(&self.site) {
+            Some(e) => (e.profiles.iter().map(|p| p.name.clone()).collect(), e.active_profile.clone()),
+            None => (vec![DEFAULT_PROFILE.to_string()], DEFAULT_PROFILE.to_string()),
+        }
+    }
+}
+
+fn clean_profile_name(name: &str) -> Result<String, String> {
+    let n: String = name.trim().chars().take(PROFILE_NAME_CHARS).collect();
+    if n.is_empty() {
+        return Err("profile: a profile needs a name".into());
+    }
+    Ok(n)
+}
+
+/// Change 069: apply a profile action to `out` (live site).
+fn apply_profile_action(out: &mut UiSettings, action: ProfileAction) -> Result<(), String> {
+    out.store_live();
+    let site = out.site.clone();
+    let entry = out.sites.entry(site.clone()).or_default();
+    let exists = |e: &SiteSettings, n: &str| e.profiles.iter().any(|p| p.name.eq_ignore_ascii_case(n));
+    match action {
+        ProfileAction::Select(name) => {
+            let Some(p) = entry.profiles.iter().find(|p| p.name.eq_ignore_ascii_case(name.trim())) else {
+                return Err(format!("profile: no profile {name:?}"));
+            };
+            let name = p.name.clone();
+            out.load_live(&site, Some(&name));
+        }
+        ProfileAction::Create { name, copy } => {
+            let name = clean_profile_name(&name)?;
+            if exists(entry, &name) {
+                return Err(format!("profile: {name:?} already exists"));
+            }
+            if entry.profiles.len() >= MAX_PROFILES {
+                return Err(format!("profile: at most {MAX_PROFILES} per site"));
+            }
+            let p = if copy {
+                Profile { name: name.clone(), ..out_live_copy(entry) }
+            } else {
+                Profile { name: name.clone(), ..Default::default() }
+            };
+            entry.profiles.push(p);
+            out.load_live(&site, Some(&name));
+        }
+        ProfileAction::Rename { from, to } => {
+            let to = clean_profile_name(&to)?;
+            if !to.eq_ignore_ascii_case(&from) && exists(entry, &to) {
+                return Err(format!("profile: {to:?} already exists"));
+            }
+            let Some(p) = entry.profiles.iter_mut().find(|p| p.name.eq_ignore_ascii_case(from.trim())) else {
+                return Err(format!("profile: no profile {from:?}"));
+            };
+            let was_active = p.name == entry.active_profile;
+            p.name = to.clone();
+            if was_active {
+                entry.active_profile = to;
+            }
+        }
+        ProfileAction::Delete(name) => {
+            if entry.profiles.len() <= 1 {
+                return Err("profile: a site keeps at least one profile".into());
+            }
+            let Some(i) = entry.profiles.iter().position(|p| p.name.eq_ignore_ascii_case(name.trim())) else {
+                return Err(format!("profile: no profile {name:?}"));
+            };
+            let removed = entry.profiles.remove(i);
+            if removed.name == entry.active_profile {
+                let first = entry.profiles[0].name.clone();
+                out.load_live(&site, Some(&first));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The live profile of a site entry (after `store_live`).
+fn out_live_copy(entry: &SiteSettings) -> Profile {
+    entry.profiles.iter().find(|p| p.name == entry.active_profile).cloned().unwrap_or_default()
 }
 
 /// Partial update accepted by `PUT /api/ui/settings`. Maps and lists
@@ -290,6 +492,11 @@ pub struct SettingsPatch {
     pub clock: Option<ClockSettings>,
     /// Change 068.
     pub ignore_tgs: Option<Vec<u16>>,
+    /// Change 069: a profile action; must be alone in its patch.
+    pub profile: Option<ProfileAction>,
+    /// Change 069: make this site's settings live (the site switch in
+    /// `POST /api/site`); must be alone in its patch.
+    pub switch_site: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -330,13 +537,15 @@ pub struct Changed {
     pub speakers: bool,
     pub clock: bool,
     pub ignore_tgs: bool,
+    /// Change 069: the profile list or the live site changed.
+    pub profiles: bool,
 }
 
 impl Changed {
     pub fn any(&self) -> bool {
         self.recording || self.call || self.radio || self.tg_aliases || self.unit_aliases
             || self.monitor_tgs || self.tg_groups || self.speakers || self.clock
-            || self.ignore_tgs
+            || self.ignore_tgs || self.profiles
     }
 }
 
@@ -435,6 +644,35 @@ pub fn apply_patch(
 ) -> Result<(UiSettings, Changed), String> {
     let mut out = base.clone();
     let mut changed = Changed::default();
+
+    // Change 069: profile and site actions stand alone.
+    if patch.profile.is_some() || patch.switch_site.is_some() {
+        let others = patch.recording.is_some() || patch.call.is_some() || patch.radio.is_some()
+            || patch.tg_groups.is_some() || patch.speakers.is_some() || patch.tg_aliases.is_some()
+            || patch.unit_aliases.is_some() || patch.monitor_tgs.is_some() || patch.clock.is_some()
+            || patch.ignore_tgs.is_some() || (patch.profile.is_some() && patch.switch_site.is_some());
+        if others {
+            return Err("profile / switch_site must be alone in a patch".into());
+        }
+        if let Some(a) = patch.profile {
+            apply_profile_action(&mut out, a)?;
+        }
+        if let Some(site) = patch.switch_site {
+            let site = site.trim();
+            if site.is_empty() || site.len() > 64 {
+                return Err("switch_site: a site name".into());
+            }
+            out.switch_site(site);
+        }
+        changed.tg_groups = out.tg_groups != base.tg_groups;
+        changed.speakers = out.speakers != base.speakers;
+        changed.monitor_tgs = out.monitor_tgs != base.monitor_tgs;
+        changed.ignore_tgs = out.ignore_tgs != base.ignore_tgs;
+        changed.tg_aliases = out.tg_aliases != base.tg_aliases;
+        changed.unit_aliases = out.unit_aliases != base.unit_aliases;
+        changed.profiles = out.sites != base.sites || out.site != base.site;
+        return Ok((out, changed));
+    }
 
     if let Some(r) = patch.recording {
         if let Some(n) = r.max_count {
@@ -536,6 +774,12 @@ pub fn apply_patch(
         out.ignore_tgs = clean_tg_set(list);
         changed.ignore_tgs = out.ignore_tgs != base.ignore_tgs;
     }
+    // Change 069: edits of the live fields go to the active profile and
+    // the site's names.
+    if !out.site.is_empty() {
+        out.store_live();
+        changed.profiles = out.sites != base.sites;
+    }
     Ok((out, changed))
 }
 
@@ -575,6 +819,30 @@ pub fn parse_settings(body: &[u8]) -> Result<UiSettings, String> {
     let mut seen = std::collections::HashSet::new();
     s.monitor_tgs.retain(|t| *t != 0 && seen.insert(*t));
     s.ignore_tgs = clean_tg_set(std::mem::take(&mut s.ignore_tgs).into_iter().filter(|t| *t != 0).take(MAX_ENTRIES).collect());
+    // Change 069: stored profiles get the same cleaning; names unique.
+    for entry in s.sites.values_mut() {
+        let mut names: Vec<String> = Vec::new();
+        entry.profiles.retain_mut(|p| {
+            let Ok(n) = clean_profile_name(&p.name) else { return false };
+            if names.iter().any(|x| x.eq_ignore_ascii_case(&n)) {
+                return false;
+            }
+            names.push(n.clone());
+            p.name = n;
+            p.tg_groups = clean_groups(std::mem::take(&mut p.tg_groups)).unwrap_or_default();
+            p.speakers = clean_speakers(p.speakers.clone(), &p.tg_groups, false).unwrap_or_default();
+            let mut seen = std::collections::HashSet::new();
+            p.monitor_tgs.retain(|t| *t != 0 && seen.insert(*t));
+            p.ignore_tgs = clean_tg_set(std::mem::take(&mut p.ignore_tgs).into_iter().filter(|t| *t != 0).collect());
+            true
+        });
+        entry.profiles.truncate(MAX_PROFILES);
+        if !entry.profiles.iter().any(|p| p.name == entry.active_profile) {
+            entry.active_profile = entry.profiles.first().map(|p| p.name.clone()).unwrap_or_default();
+        }
+        entry.tg_aliases = clean_aliases(&entry.tg_aliases);
+        entry.unit_aliases = clean_aliases(&entry.unit_aliases);
+    }
     Ok(s)
 }
 
@@ -965,6 +1233,13 @@ impl SettingsStore {
 
     pub fn last_save_error(&self) -> Option<String> {
         self.last_save_error.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Change 069: make `site` the live site at start-up (a pre-069 file
+    /// files its settings under it; a file saved for another site
+    /// switches to this one's). Persists when anything changed.
+    pub fn adopt_site(&self, site: &str) -> Result<UpdateOutcome, String> {
+        self.update(SettingsPatch { switch_site: Some(site.to_string()), ..Default::default() })
     }
 
     /// Validate and apply `patch`, update the live recording policy and

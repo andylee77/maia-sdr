@@ -115,6 +115,16 @@ pub async fn post_site(
         *active = Some(site.clone());
     }
 
+    // Change 069: the site's talkgroup names and active profile go
+    // live with it.
+    let switch = crate::services::ui_settings::SettingsPatch {
+        switch_site: Some(site.name.clone()),
+        ..Default::default()
+    };
+    if let Err(e) = crate::httpd::api::ui::apply_settings_patch(&state, switch, "site_switch").await {
+        tracing::warn!("site switch to '{}': settings not switched: {e}", site.name);
+    }
+
     if let Err(e) = write_active_site_name(&q.name) {
         tracing::warn!(
             "failed to persist active site marker for '{}': {e}",

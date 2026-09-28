@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-28-ignore-list-068";
+pub const BUILD_TAG: &str = "2026-09-28-profiles-069";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -477,6 +477,11 @@ async fn main() -> anyhow::Result<()> {
     let ui_settings = Arc::new(services::ui_settings::SettingsStore::load(
         services::ui_settings::SettingsStore::default_path(),
     ));
+    // Change 069: talkgroup names and profiles are per site; start on
+    // the active site's (a pre-069 file becomes its "Default" profile).
+    if let Err(e) = ui_settings.adopt_site(&services::sites::read_active_site_name()) {
+        tracing::warn!("ui settings: site profiles not adopted: {e}");
+    }
     let boot_settings = ui_settings.snapshot();
     let boot_aliases: std::collections::HashMap<u16, String> = boot_settings
         .tg_aliases
