@@ -28,7 +28,7 @@ scanner needs:
 |---|------|--------|
 | 071 | Find local systems: sweep the band, build sites automatically | next |
 | 072 | Per-site activity history: radios, talkgroups, grants, encryption, airtime; graphs | planned |
-| — | Code review and analysis of p25-httpd, then refactor into clean modules | planned (see below) |
+| — | Code review and analysis of p25-httpd, then refactor into clean modules | review done: `doc/CODE_REVIEW_2026_09_28.md` (stages 0–3) |
 | — | Remote libiio control: detect it and share the radio | idea |
 | — | Agent control: MCP server and prompt structure | idea |
 | — | Clay Electric DMR | idea (needs a DMR chain) |
@@ -111,8 +111,8 @@ Known smells to check:
 
 Method:
 
-1. **Analysis** (read-only): module map and dependencies, findings by severity, and a proposed
-   module layout written to `doc/CODE_REVIEW_<date>.md`.
+1. **Analysis** (read-only): done 2026-09-28, `doc/CODE_REVIEW_2026_09_28.md`. It covers the module
+   map, the findings by severity, a target layout and a staged plan.
 2. **Target layout** for a multi-protocol scanner, for example:
    - hardware (AD9361/IIO, FPGA registers, DMA rings);
    - DSP;
