@@ -5,6 +5,51 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-28] Activity history per site: radios, talkgroups, encryption, graphs (072)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-28-history-072`
+**Bake required:** NO for the binary. The image build needs the tezuka_fw `p25-httpd.mk`
+change (CC/AR for the bundled SQLite).
+
+- **Activity page** (new tab) and `/api/activity/*`:
+  - per site: 24 h, 7 days or 30 days;
+  - totals and a stacked chart per hour or per day (local time);
+  - talkgroups and radios by time;
+  - drill-down: a radio's talkgroups and affiliations, a talkgroup's radios and its encryption
+    history (first / last encrypted, last clear);
+  - recent calls, and CSV export.
+- **Voice and grant time are kept apart.** Voice is decoded on the voice channel (followed
+  calls) and is measured. An encrypted or not-followed call has only its grant time: from the
+  grant to its last update on the control channel.
+  - Grant time includes hang time and any other radio that keyed up on the grant. It is
+    credited to the radio granted.
+  - `voice_per_grant` (decoded voice per grant second of the calls with voice) gives an
+    estimate: on Clay it is about 0.72.
+  - Follow-up idea 072b in the roadmap: follow encrypted calls for their details, with no
+    audio.
+- **Storage.** SQLite (rusqlite, bundled) on the SD card, or `/tmp` without one.
+  - Every finished call is stored with its radios, 15 s after it ends, under the active site.
+  - Hourly totals per talkgroup and per radio are kept in the same transaction.
+  - Radio events are stored: accepted group affiliations, registrations and deregistrations,
+    from the active control decoder only. Nothing is gathered during a sweep.
+  - One transaction every 30 s: the WAL grows about 80 KB a minute on Clay (290 KB with a
+    transaction per event).
+  - Limits: 365 days, and 2 GB on the card (16 MB in RAM), oldest calls first. Clay uses about
+    4 MB a day at 10k calls.
+- **Speed.** A month of a busy site (300k calls, 900 radios, synthetic) on the host:
+  talkgroups 0.27 s and radios 0.45 s with the hourly tables, against 73 s and 3 s from the
+  calls. The 7-day and 30-day views reload every 2 and 5 minutes.
+- Live on both units (Clay): the first 15 minutes on A stored 107 calls, 40 of them encrypted.
+  Totals were 3m 18s of voice and 2m 28s of encrypted grant time (≈ 1m 46s of voice at 0.72),
+  from 38 radios on 7 talkgroups.
+
+Tests: p25-httpd 314 (store: idempotent inserts, voice vs grant totals, radios and their
+talkgroups, affiliations merged, encryption history, local-day series, size trim; decoder:
+radio events only when accepted and active).
+
+---
+
 ## [2026-09-28] Find local systems: band sweep, control-channel probe, sites from results (071)
 
 **Branch:** fishball-p25

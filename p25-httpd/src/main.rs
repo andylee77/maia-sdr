@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-28-find-systems-071";
+pub const BUILD_TAG: &str = "2026-09-28-history-072";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -572,9 +572,14 @@ async fn main() -> anyhow::Result<()> {
     let first_call_id = sd_index.iter().map(|e| e.id).max().unwrap_or(0) + 1;
     tracing::info!("recordings on SD: {sd_index_note}; first call_id {first_call_id}");
 
+    // Change 072: radio events for the activity history, from both
+    // control decoders (only the active one sends).
+    let (unit_event_tx, unit_event_rx) = tokio::sync::mpsc::channel(1024);
+
     let mut lsm_decoder = ControlChannelDecoder::new();
     lsm_decoder.set_event_tx(event_tx.clone());
     lsm_decoder.set_grant_event_tx(grant_event_tx.clone());
+    lsm_decoder.unit_event_tx = Some(unit_event_tx.clone());
     lsm_decoder.aliases = boot_aliases;
     let lsm_decoder = Arc::new(RwLock::new(lsm_decoder));
 
@@ -586,6 +591,7 @@ async fn main() -> anyhow::Result<()> {
     {
         let mut d = decoder.write().await;
         d.set_grant_event_tx(grant_event_tx);
+        d.unit_event_tx = Some(unit_event_tx);
     }
 
     // The pure-software Phase 6D LSM pipeline was retired after the
@@ -777,6 +783,8 @@ async fn main() -> anyhow::Result<()> {
     // Change 071: the radio lease and the system finder's state.
     let radio_lease = Arc::new(app::discovery::RadioLease::default());
     let discovery: app::discovery::SharedDiscovery = Default::default();
+    // Change 072: the activity history.
+    let history = app::history_task::open_store();
     // The control channel tuned now (the C4FM thread resets its
     // equaliser when it moves).
     let current_control_freq_for_c4fm = Arc::new(std::sync::atomic::AtomicU64::new(control_freq));
@@ -1857,6 +1865,7 @@ async fn main() -> anyhow::Result<()> {
         c4fm_rt: c4fm_rt.clone(),
         radio_lease: radio_lease.clone(),
         discovery: discovery.clone(),
+        history: history.clone(),
         grant_decode_stats: crate::app::grant_stats::new_ring(),
         enc_grant_decode_stats: crate::app::grant_stats::new_ring(),
         active_call_snapshot: active_call_snapshot.clone(),
@@ -2008,6 +2017,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Change 070: move the receive window onto the site's channels.
     app::recentre_task::spawn_recentre_task(state.clone());
+
+    // Change 072: store finished calls and radio events.
+    if let Some(store) = history.clone() {
+        app::history_task::spawn_history_task(state.clone(), store, unit_event_rx);
+    }
 
     // Start HTTP (and optionally HTTPS). HTTPS unlocks AudioWorklet
     // on the dashboard — browsers only expose it in secure contexts,

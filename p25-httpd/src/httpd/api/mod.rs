@@ -41,6 +41,8 @@
 //! intentional — the prelude is a template, and `#[allow(unused_imports)]`
 //! keeps per-module churn low.
 
+/// Change 072: the activity history.
+pub mod activity;
 pub mod chain;
 pub mod debug;
 /// Change 071: the system finder.

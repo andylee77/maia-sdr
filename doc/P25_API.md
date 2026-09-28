@@ -93,6 +93,33 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 | `/api/recent_tsbks` | GET | JSON | Newest 50 TSBKs as `{age_secs, block, summary}` |
 | `/api/tsbk_opcodes` | GET | JSON | Per-opcode + per-block-position histogram with parsed/unparsed flag + MFID breakdown |
 
+### `api/activity` — per-site history (change 072)
+
+SQLite on the SD card (`/mnt/sd/p25-history.sqlite`; `/tmp` when there is no card): every
+finished call and its radios, hourly totals per talkgroup and per radio, and radio events
+(accepted group affiliations, registrations, deregistrations). Written every 30 s; kept 365
+days and at most 2 GB (16 MB in RAM), the oldest calls first.
+
+Every endpoint takes `site` (default: the active site) and a window: `from` / `to` (unix ms)
+or `hours` back from now (default 24). Totals and series start at the hour `from` is in
+(`window.first_hour_ms`); call listings start at `from`. Two kinds of time:
+
+- `voice`: decoded on the voice channel (followed calls);
+- `grant`: grant to the last grant update on the control channel, for calls with no decoded
+  voice (encrypted, or not followed). It includes hang time and any other radio keying up on
+  the grant, and is credited to the radio granted.
+
+| Path | Method | Returns | Purpose |
+|---|---|---|---|
+| `/api/activity/sites` | GET | JSON | `{active, sites: [{site, label, calls, first_ms, last_ms}], database, on_sd, size_bytes, used_bytes, max_bytes, retention_days}` |
+| `/api/activity/summary` | GET | JSON | `{window, summary: {calls, followed, encrypted, voice_s, clear_grant_s, encrypted_grant_s, voice_per_grant (decoded voice per grant second of the calls with voice), talkgroups, radios, first_ms, last_ms}}` |
+| `/api/activity/talkgroups` | GET | JSON | `?limit=` (50): `{window, items: [{tg, alias, calls, encrypted, voice_s, grant_s, radios, last_ms}]}`, most time first |
+| `/api/activity/radios` | GET | JSON | `?limit=` (50): `{window, items: [{unit, alias, calls, encrypted, voice_s, grant_s, talkgroups, last_ms}]}`. Calls it took part in; time as the primary radio |
+| `/api/activity/radio/{unit}` | GET | JSON | `{window, radio: {unit, alias, talkgroups: [{tg, alias, calls, encrypted, voice_s, grant_s, last_ms}], events: [{tg, alias, kind (group_affiliation / registration / deregistration), first_ms, last_ms, count}]}}` (events: all time) |
+| `/api/activity/talkgroup/{tg}` | GET | JSON | `{window, talkgroup: {tg, alias, calls, encrypted, first_encrypted_ms, last_encrypted_ms, last_clear_ms, affiliated_radios (all time), radios: [{unit, alias, calls, encrypted, voice_s, grant_s, last_ms}]}}` |
+| `/api/activity/series` | GET | JSON | `?bucket=hour\|day&tz=<minutes east of UTC>&tg=&unit=`: `{window, bucket_ms, tz, buckets: [{t, calls, encrypted, voice_s, clear_grant_s, encrypted_grant_s}]}`, empty buckets included, days at local midnight. With `unit`: its calls and credited time |
+| `/api/activity/calls` | GET | JSON / CSV | `?tg=&unit=&limit=` (200; CSV 100000), newest first: `{window, items: [{site, call_id, started_ms, ended_ms, tg, source, sources, freq_hz, chain, encrypted, followed, not_followed, voice_ms, grant_ms, imbe, vocoder_errors, close_reason}]}`. `&format=csv` downloads the same columns (plus `started_utc`) |
+
 ### `api/ui` — web UI documents (change 056)
 
 One document per question, built on the board from the call lifecycle (the single

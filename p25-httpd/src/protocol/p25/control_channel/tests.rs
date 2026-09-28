@@ -446,3 +446,26 @@ fn nac_lock_moves_after_a_run_of_another_nac() {
     }
     assert_eq!(t.dominant(), 0x8A1);
 }
+
+/// Change 072: accepted affiliations and registrations reach the history
+/// channel; denied ones and an inactive decoder's do not.
+#[test]
+fn unit_events_for_history() {
+    use crate::services::history::UnitEventKind;
+    let mut decoder = ControlChannelDecoder::new();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    decoder.unit_event_tx = Some(tx);
+    decoder.handle_tsbk(0, TsbkMessage::GroupAffiliationResponse {
+        response: 0, announcement_group: Talkgroup(0), group: Talkgroup(300), target: RadioId(1234),
+    });
+    decoder.handle_tsbk(0, TsbkMessage::GroupAffiliationResponse {
+        response: 2, announcement_group: Talkgroup(0), group: Talkgroup(301), target: RadioId(1234),
+    });
+    decoder.handle_tsbk(0, TsbkMessage::UnitDeRegistrationAcknowledge { wacn: 0, system_id: 0, target: RadioId(55) });
+    assert_eq!(rx.try_recv().unwrap(), UnitObservation { unit: 1234, tg: 300, kind: UnitEventKind::GroupAffiliation });
+    assert_eq!(rx.try_recv().unwrap(), UnitObservation { unit: 55, tg: 0, kind: UnitEventKind::Deregistration });
+    assert!(rx.try_recv().is_err());
+    decoder.active = false;
+    decoder.handle_tsbk(0, TsbkMessage::UnitDeRegistrationAcknowledge { wacn: 0, system_id: 0, target: RadioId(56) });
+    assert!(rx.try_recv().is_err());
+}

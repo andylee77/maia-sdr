@@ -240,6 +240,9 @@ pub struct ControlChannelDecoder {
     event_tx: Option<broadcast::Sender<String>>,
     /// Typed grant event channel for the grant follower task.
     grant_event_tx: Option<tokio::sync::mpsc::Sender<super::events::P25Event>>,
+    /// Change 072: accepted affiliations / registrations for the
+    /// activity history (from the active decoder only).
+    pub unit_event_tx: Option<tokio::sync::mpsc::Sender<UnitObservation>>,
     /// Optional voice frame handler. When set, the decoder dispatches
     /// HDU/LDU1/LDU2/TDU/TDU_LC bodies to the handler in addition to
     /// the normal TSDU dispatch. Set on the `traffic_lsm_decoder`
@@ -452,6 +455,15 @@ pub trait VoiceHandler {
     fn expected_nac(&self) -> u16 { 0 }
 }
 
+/// Change 072: a radio tied to a talkgroup (group affiliation) or to the
+/// system (registration, deregistration; `tg` 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitObservation {
+    pub unit: u32,
+    pub tg: u16,
+    pub kind: crate::services::history::UnitEventKind,
+}
+
 mod types;
 pub use types::{
     AlignedCapture, SystemIdentity, GrantInfo, service_class_names,
@@ -590,6 +602,7 @@ impl ControlChannelDecoder {
             aliases: HashMap::new(),
             event_tx: None,
             grant_event_tx: None,
+            unit_event_tx: None,
             // Voice handler is opt-in. Control-channel decoders
             // leave it None; the traffic_lsm_decoder sets it to
             // forward IMBE frames downstream.
@@ -609,6 +622,16 @@ impl ControlChannelDecoder {
     /// Set the broadcast channel for WebSocket events
     pub fn set_event_tx(&mut self, tx: broadcast::Sender<String>) {
         self.event_tx = Some(tx);
+    }
+
+    /// Change 072: a radio event for the activity history.
+    pub(super) fn emit_unit(&self, unit: u32, tg: u16, kind: crate::services::history::UnitEventKind) {
+        if !self.active || unit == 0 {
+            return;
+        }
+        if let Some(tx) = &self.unit_event_tx {
+            let _ = tx.try_send(UnitObservation { unit, tg, kind });
+        }
     }
 
     /// Set the typed grant event channel.

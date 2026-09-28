@@ -226,6 +226,8 @@ pub struct AppState {
     pub radio_lease: Arc<crate::app::discovery::RadioLease>,
     /// Change 071: the system finder's progress and results.
     pub discovery: crate::app::discovery::SharedDiscovery,
+    /// Change 072: the activity history (None: the database did not open).
+    pub history: Option<Arc<crate::services::history::HistoryStore>>,
     /// 2026-04-24: per-grant decode summary ring for **clear /
     /// followed** calls. 2026-04-29: split from the encrypted ring
     /// (below) so heavy ENC GRANT activity (which produces 0-IMBE
@@ -450,6 +452,15 @@ pub fn router(
         .route("/api/discovery/scan", post(api::discovery::post_scan))
         .route("/api/discovery/cancel", post(api::discovery::post_cancel))
         .route("/api/discovery/add", post(api::discovery::post_add))
+        // Change 072: activity history.
+        .route("/api/activity/sites", get(api::activity::get_sites))
+        .route("/api/activity/summary", get(api::activity::get_summary))
+        .route("/api/activity/talkgroups", get(api::activity::get_talkgroups))
+        .route("/api/activity/radios", get(api::activity::get_radios))
+        .route("/api/activity/radio/{unit}", get(api::activity::get_radio))
+        .route("/api/activity/talkgroup/{tg}", get(api::activity::get_talkgroup))
+        .route("/api/activity/series", get(api::activity::get_series))
+        .route("/api/activity/calls", get(api::activity::get_calls))
         .route("/api/system", get(api::system::get_system))
         .route("/api/sys_health", get(api::system::get_sys_health))
         .route("/api/ps_cores", get(api::system::get_ps_cores))

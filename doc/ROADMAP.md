@@ -27,7 +27,8 @@ scanner needs:
 | # | Item | Status |
 |---|------|--------|
 | 071 | Find local systems: sweep the band, build sites automatically | done (071a fixes, 071b C4FM, 071 finder) |
-| 072 | Per-site activity history: radios, talkgroups, grants, encryption, airtime; graphs | next |
+| 072 | Per-site activity history: radios, talkgroups, grants, encryption, airtime; graphs | done |
+| 072b | Encrypted calls: follow them for their details (no audio) on a free chain | idea |
 | — | Code review and analysis of p25-httpd, then refactor into clean modules | review done: `doc/CODE_REVIEW_2026_09_28.md` (stages 0–3) |
 | — | Remote libiio control: detect it and share the radio | idea |
 | — | Agent control: MCP server and prompt structure | idea |
@@ -71,6 +72,14 @@ Goal: a radio with no site files populates itself, and more systems can be added
 
 Goal: know who talks, on what, and how much, per site.
 
+Done (2026-09-28): the Activity page and `/api/activity/*` (not `/api/history/*`, which
+already serves the event log and recordings). The limits are 365 days and 2 GB, oldest calls
+first. Still open from the list below:
+
+- the grant map and the planner counts still keep their own tallies;
+- a call's time goes to its primary radio. Other speakers in the same call are counted as
+  taking part, with no time.
+
 - A small database per site on the SD card (SQLite): grants, calls, encryption flags, and the
   radio → talkgroup affiliations and grants seen.
 - Totals and airtime in seconds per radio ID, per talkgroup, per site; which talkgroups each
@@ -82,6 +91,40 @@ Goal: know who talks, on what, and how much, per site.
   from the same records once this exists.
 - Prior design worth reusing: SDRTrunk `doc/design/006a_call_log_database.md` (call sessions
   and events).
+
+## 072b — Encrypted calls: details without audio
+
+Today an encrypted call is never followed, so all that is known of it comes from the control
+channel:
+
+- the radio granted;
+- the grant time: from the grant to its last update.
+
+The grant time includes hang time and any other radio that keyed up on the same grant. On
+Clay's followed clear calls, decoded voice is about 0.7 of grant time (the Activity page shows
+this ratio), so grant time overstates airtime by about 40 %.
+
+Idea (from the operator): an option to follow encrypted calls for their details only, with no
+audio and no recording. The voice channel gives:
+
+- every radio that keys up (LDU1 link control), not only the one granted;
+- each transmission's real length (LDUs);
+- the algorithm and key ID (ESS in the HDU and LDU2), per call;
+- the end (TDU / TDULC) rather than the grant-update timeout.
+
+Cost: the chain is busy while it follows an encrypted call, and a clear call that starts
+meanwhile could be missed. That is what the option must not do. The design:
+
+- only a free chain follows an encrypted call; with two chains, only when the other is free
+  too (or only chain 2);
+- any clear grant pre-empts it at once (the follower already pre-empts, change 066), so a
+  clear call loses only the retune (a few ms), not the call;
+- the IMBE path stays off (no vocoder CPU, no recording);
+- the history then stores measured voice time and every speaker for encrypted calls, marked
+  as such.
+
+Measure first: how often both chains are busy on Clay at peak, and how many clear calls would
+have started during an encrypted follow.
 
 ## Code review and refactor
 

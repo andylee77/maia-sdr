@@ -95,6 +95,9 @@ export const api = {
   discoveryScan: body => post('/api/discovery/scan', body),
   discoveryCancel: () => post('/api/discovery/cancel'),
   discoveryAdd: body => post('/api/discovery/add', body),
+  // Change 072: the activity history. `path`: sites, summary, talkgroups,
+  // radios, radio/{unit}, talkgroup/{tg}, series, calls; `q` a query string.
+  activity: (path, q) => get('/api/activity/' + path + (q ? '?' + q : ''), 15000),
   ppmCalibrate: () => post('/api/ppm_calibrate'),
   ppmAuto: (enabled, anchor) => post('/api/ppm/auto' + qs({ enabled: enabled ? 1 : 0, anchor })),
   spectrumWide: () => get('/api/spectrum_wide', 8000),

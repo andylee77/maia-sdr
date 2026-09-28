@@ -21,6 +21,8 @@ pub mod dibit_readers;
 pub mod forensics;
 pub mod grant_follower;
 pub mod grant_stats;
+/// Change 072: fills the activity history.
+pub mod history_task;
 /// Change 066: per-chain objects of a traffic chain.
 pub mod traffic_lane;
 /// Change 066: traffic LSM heartbeat, one task per chain.

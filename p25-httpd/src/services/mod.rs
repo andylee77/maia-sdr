@@ -3,6 +3,8 @@
 //! FFT spectrum snapshot, per-site baselines, persisted web-UI settings.
 
 pub mod event_log;
+/// Change 072: per-site activity history (SQLite).
+pub mod history;
 pub mod lo_plan;
 pub mod monitor;
 pub mod ntp;

@@ -227,6 +227,17 @@ impl ControlChannelDecoder {
                     self.emit_grant_event(&grant_b, true);
                 }
             }
+            // Change 072: radios tied to talkgroups / the system (accepted
+            // only: response 0), for the activity history.
+            TsbkMessage::GroupAffiliationResponse { response: 0, group, target, .. } => {
+                self.emit_unit(target.0, group.0, crate::services::history::UnitEventKind::GroupAffiliation);
+            }
+            TsbkMessage::UnitRegistrationResponse { response: 0, source_address, .. } => {
+                self.emit_unit(source_address.0, 0, crate::services::history::UnitEventKind::Registration);
+            }
+            TsbkMessage::UnitDeRegistrationAcknowledge { target, .. } => {
+                self.emit_unit(target.0, 0, crate::services::history::UnitEventKind::Deregistration);
+            }
             _ => {}
         }
 

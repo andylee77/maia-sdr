@@ -25,6 +25,8 @@ p25-json = { path = "p25-json", version = "0.1.0" }
 p25-pac = { path = "p25-pac", version = "0.1.0" }
 pm-remez = { version = "0.1.5", features = ["openblas-static"], optional = true }
 realfft = "3"
+# Change 072: per-site activity history (SQLite, bundled C source).
+rusqlite = { version = "0.32", features = ["bundled"] }
 rustfft = "6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
