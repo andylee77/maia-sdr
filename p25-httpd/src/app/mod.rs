@@ -8,6 +8,8 @@
 pub mod autoppm;
 pub mod audio_pacer;
 pub mod call_counters;
+/// Change 071b: software C4FM on the control channel; LSM / C4FM choice.
+pub mod c4fm_task;
 /// Change 067: board clock from the site / NTP / by hand.
 pub mod clock_task;
 pub mod dibit_airtime;
@@ -24,6 +26,8 @@ pub mod traffic_lane;
 pub mod traffic_heartbeat;
 pub mod traffic_pll_watchdog;
 pub mod imbe_forwarder;
+/// Change 071b: one reader per DDC IQ ring, fanned out.
+pub mod iq_hub;
 /// Change 066: which traffic chain follows a grant.
 pub mod lane_policy;
 /// Change 070: keeps the receive window on the site's channels.

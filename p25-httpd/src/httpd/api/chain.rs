@@ -452,35 +452,14 @@ async fn accumulate_iq(
 ) -> Result<Vec<u8>, String> {
     let target_samples: usize = (seconds as usize) * (IQ_DUMP_SAMPLE_RATE_HZ as usize);
     let target_bytes: usize = target_samples * 4;
-    let mut acc: Vec<u8> = Vec::with_capacity(target_bytes);
-
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_millis((seconds as u64) * 1000 + 2000);
-
-    while acc.len() < target_bytes && std::time::Instant::now() < deadline {
-        {
-            let mut core = state.ip_core.lock().await;
-            let bufs: Vec<&[u8]> = match chain {
-                "control" => core.read_iq_buffers(),
-                // M2A 2026-05-02: traffic IQ ring deleted with the old chain.
-                "traffic" => Vec::new(),
-                other => {
-                    return Err(format!(
-                        "unknown chain '{other}'; expected control|traffic"
-                    ));
-                }
-            };
-            for b in bufs {
-                acc.extend_from_slice(b);
-                if acc.len() >= target_bytes {
-                    break;
-                }
-            }
-        }
-        if acc.len() < target_bytes {
-            tokio::time::sleep(std::time::Duration::from_millis(IQ_DRAIN_RETRY_MS)).await;
-        }
-    }
+    // Change 071b: from the IQ hub (traffic = chain 1's IQ).
+    let hub = match chain {
+        "control" => &state.control_iq,
+        "traffic" => &state.traffic_iq,
+        other => return Err(format!("unknown chain '{other}'; expected control|traffic")),
+    };
+    let deadline = std::time::Duration::from_millis((seconds as u64) * 1000 + 2000);
+    let mut acc = crate::app::iq_hub::to_bytes(&hub.collect(target_samples, deadline).await);
 
     if acc.len() < 4 {
         return Err(format!(

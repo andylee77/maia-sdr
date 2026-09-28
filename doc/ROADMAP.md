@@ -256,6 +256,17 @@ Plan:
   the PS load low. The A9 ran at ~8 % / 19 % with both traffic chains (change 066). Measure it
   with the streams on.
 
+## C4FM voice and vendor grants (after 071b)
+
+- C4FM on traffic channels: run the software C4FM demodulator on chain 1's IQ (already in the
+  IQ hub) when the site is C4FM, feeding the traffic decoder with the same air-time stamping as
+  the HDL dibits. Chain 2 needs an IQ tap in the gateware (packer + DMA + DT node), or an HDL
+  C4FM mode.
+- Harris (MFID 0xA4) and Motorola (0x90) vendor TSBKs: SLERS and FPL send many Harris ones.
+  Decode the voice-grant and patch ones so those systems can be followed.
+- The software C4FM demodulator uses 12–17 % of one A9 core. NEON or fixed-point FIRs would cut
+  that before a second instance runs for traffic.
+
 ## Handheld page
 
 A browser view that looks like the future handheld in its 3D-printed case:

@@ -633,9 +633,23 @@ pub async fn get_modulation(
 ) -> Json<serde_json::Value> {
     let c4fm = state.decoder.read().await;
     let lsm  = state.lsm_decoder.read().await;
+    let rt = &state.c4fm_rt;
     Json(serde_json::json!({
-        "mode": state.active_modulation.load(std::sync::atomic::Ordering::Relaxed),
+        // Change 071b: `mode` is the setting (0 auto, 1 C4FM, 2 LSM);
+        // `active` / `label` the decoder publishing now.
+        "mode": state.modulation_mode.load(std::sync::atomic::Ordering::Relaxed),
+        "active": state.active_modulation.load(std::sync::atomic::Ordering::Relaxed),
         "label": state.active_modulation_label(),
+        "tsbk_ok": { "c4fm": c4fm.tsbk_crc_ok, "lsm": lsm.tsbk_crc_ok },
+        "tsbk_fail": { "c4fm": c4fm.tsbk_crc_failures, "lsm": lsm.tsbk_crc_failures },
+        "c4fm_software": {
+            "cpu_pct": rt.cpu_centi_pct.load(std::sync::atomic::Ordering::Relaxed) as f64 / 100.0,
+            "chunks": rt.chunks.load(std::sync::atomic::Ordering::Relaxed),
+            "lagged": rt.lagged.load(std::sync::atomic::Ordering::Relaxed),
+            "resets": rt.resets.load(std::sync::atomic::Ordering::Relaxed),
+            "pll_rad_per_symbol": rt.pll_mrad.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1000.0,
+            "iq_samples": state.control_iq.samples.load(std::sync::atomic::Ordering::Relaxed),
+        },
         "nid_decoded_ok": {
             "c4fm": c4fm.nid_decoded_ok,
             "lsm":  lsm.nid_decoded_ok,
@@ -673,8 +687,10 @@ pub async fn put_modulation(
             }));
         }
     };
+    // Change 071b: the setting; the modulation task applies it within a
+    // second (auto keeps choosing by TSBK CRCs).
     state
-        .active_modulation
+        .modulation_mode
         .store(code, std::sync::atomic::Ordering::Relaxed);
     Json(serde_json::json!({
         "ok": true,

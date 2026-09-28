@@ -263,7 +263,7 @@ impl ControlChannelDecoder {
             // opcode set we don't decode beyond the bucket)
             | "MFR_SPECIFIC"
         );
-        if !suppressed {
+        if !suppressed && self.active {
             if let Some(ref tx) = self.event_tx {
                 if let Ok(json) = serde_json::to_string(&tsbk_event) {
                     let _ = tx.send(json);

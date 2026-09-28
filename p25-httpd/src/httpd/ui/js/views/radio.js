@@ -190,11 +190,24 @@ function modulationCard() {
     try { await api.setModulation(sel.value); toast('Modulation: ' + sel.value); } catch (e) { toast('Failed: ' + e.message, true); }
   });
   c.body.append(sel, info);
+  // Change 071b: both decoders run; the counts show why auto picked one.
+  let prev = null;
   function update(m) {
     const v = ({ 0: 'auto', 1: 'c4fm', 2: 'lsm' })[m.mode] || 'auto';
     if (document.activeElement !== sel) sel.value = v;
-    const r = m.nid_decoded_ok || {};
-    setText(info, 'Decoding ' + m.label + ' · NIDs ok: LSM ' + (r.lsm || 0).toLocaleString() + ', C4FM ' + (r.c4fm || 0).toLocaleString());
+    const ok = m.tsbk_ok || {};
+    const fail = m.tsbk_fail || {};
+    const rate = k => {
+      if (!prev) return DASH;
+      const o = (ok[k] || 0) - (prev.ok[k] || 0);
+      const f = (fail[k] || 0) - (prev.fail[k] || 0);
+      return o + f > 0 ? Math.round((100 * o) / (o + f)) + '%' : DASH;
+    };
+    const sw = m.c4fm_software || {};
+    setText(info, 'Decoding ' + m.label + (m.mode === 0 ? ' (auto)' : '') +
+      ' · control messages passing CRC: LSM ' + rate('lsm') + ', C4FM ' + rate('c4fm') +
+      (sw.cpu_pct != null ? ' · C4FM demodulator ' + sw.cpu_pct.toFixed(1) + '% CPU' : ''));
+    prev = { ok, fail };
   }
   return { el: c.el, update };
 }

@@ -214,6 +214,14 @@ pub struct AppState {
     ///   1 = C4FM (force C4FM control chain)
     ///   2 = LSM  (force LSM simulcast control chain)
     pub active_modulation: Arc<std::sync::atomic::AtomicU8>,
+    /// Change 071b: the modulation setting (0 = auto, 1 = C4FM, 2 = LSM);
+    /// `active_modulation` is the decoder chosen (1 or 2).
+    pub modulation_mode: Arc<std::sync::atomic::AtomicU8>,
+    /// Change 071b: control / traffic-chain-1 DDC IQ, one reader each.
+    pub control_iq: Arc<crate::app::iq_hub::IqHub>,
+    pub traffic_iq: Arc<crate::app::iq_hub::IqHub>,
+    /// Change 071b: the software C4FM path's runtime figures.
+    pub c4fm_rt: Arc<crate::app::c4fm_task::C4fmRuntime>,
     /// 2026-04-24: per-grant decode summary ring for **clear /
     /// followed** calls. 2026-04-29: split from the encrypted ring
     /// (below) so heavy ENC GRANT activity (which produces 0-IMBE
@@ -380,8 +388,7 @@ impl AppState {
             .load(std::sync::atomic::Ordering::Relaxed)
         {
             1 => "C4FM",
-            2 => "LSM",
-            _ => "Auto",
+            _ => "LSM",
         }
     }
 }

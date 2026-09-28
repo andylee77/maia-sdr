@@ -2,6 +2,10 @@
 //!
 //! Decodes the P25 control channel from a dibit stream produced by the FPGA.
 
+/// Change 071b: software C4FM demodulation (SDRTrunk port).
+pub mod c4fm;
+mod c4fm_filters;
+mod c4fm_interp_taps;
 pub mod control_channel;
 pub mod events;
 pub mod fec;

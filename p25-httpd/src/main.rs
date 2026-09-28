@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-28-review-fixes-071a";
+pub const BUILD_TAG: &str = "2026-09-28-c4fm-071b";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -495,6 +495,9 @@ async fn main() -> anyhow::Result<()> {
     let (event_tx, _) = broadcast::channel::<String>(256);
     let mut decoder = ControlChannelDecoder::new();
     decoder.set_event_tx(event_tx.clone());
+    // Change 071b: fed by the software C4FM demodulator; publishes only
+    // when the modulation task picks it.
+    decoder.active = false;
     let decoder = Arc::new(RwLock::new(decoder));
 
     // A second independent `ControlChannelDecoder` fed by the HDL LSM
@@ -766,6 +769,14 @@ async fn main() -> anyhow::Result<()> {
     // spawned later.
     let active_modulation =
         Arc::new(std::sync::atomic::AtomicU8::new(2));
+    // Change 071b: the setting (auto by default) and the IQ hubs.
+    let modulation_mode = Arc::new(std::sync::atomic::AtomicU8::new(app::c4fm_task::AUTO));
+    let control_iq = app::iq_hub::IqHub::new(2.0, 50_000.0);
+    let traffic_iq = app::iq_hub::IqHub::new(2.0, 50_000.0);
+    let c4fm_rt = Arc::new(app::c4fm_task::C4fmRuntime::default());
+    // The control channel tuned now (the C4FM thread resets its
+    // equaliser when it moves).
+    let current_control_freq_for_c4fm = Arc::new(std::sync::atomic::AtomicU64::new(control_freq));
 
     // 2026-05-03 seeding bake: shared converged-seed snapshot.
     // Published by the control-chain heartbeat (spawned inside the
@@ -1744,62 +1755,27 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Modulation auto-detect (SDRTrunk-style). Compares nid_decoded_ok
-    // delta between C4FM and LSM decoders once per second, flips
-    // `active_modulation` to the winner. Only runs in Auto mode (0);
-    // manual overrides via /api/modulation?set=c4fm|lsm freeze it.
+    // Change 071b: both control decoders run; the modulation task picks
+    // the one that publishes (auto: more TSBK CRCs, with hysteresis). The
+    // software C4FM path reads the control IQ hub on its own thread.
+    app::c4fm_task::spawn_modulation_task(
+        modulation_mode.clone(),
+        active_modulation.clone(),
+        decoder.clone(),
+        lsm_decoder.clone(),
+        event_log.clone(),
+    );
+    #[cfg(target_os = "linux")]
     {
-        let active_mod = active_modulation.clone();
-        let c4fm_decoder = decoder.clone();
-        let lsm_decoder_probe = lsm_decoder.clone();
-        tokio::spawn(async move {
-            let mut last_c4fm: u64 = 0;
-            let mut last_lsm: u64 = 0;
-            let mut interval = tokio::time::interval(
-                std::time::Duration::from_secs(1),
-            );
-            loop {
-                interval.tick().await;
-                // Only run when the user has selected Auto (code 0).
-                // Manual overrides (1 = C4FM, 2 = LSM) stay put.
-                if active_mod.load(std::sync::atomic::Ordering::Relaxed) != 0 {
-                    // Reset the deltas so a later switch back to
-                    // auto re-probes from a clean baseline.
-                    last_c4fm = c4fm_decoder.read().await.nid_decoded_ok;
-                    last_lsm = lsm_decoder_probe.read().await.nid_decoded_ok;
-                    continue;
-                }
-                let now_c4fm = c4fm_decoder.read().await.nid_decoded_ok;
-                let now_lsm = lsm_decoder_probe.read().await.nid_decoded_ok;
-                let d_c4fm = now_c4fm.saturating_sub(last_c4fm);
-                let d_lsm = now_lsm.saturating_sub(last_lsm);
-                last_c4fm = now_c4fm;
-                last_lsm = now_lsm;
-                // Need at least one valid NID on the winning side to
-                // make a call. Both zero -> no signal -> keep whatever
-                // is currently set (or LSM at boot).
-                if d_c4fm == 0 && d_lsm == 0 {
-                    continue;
-                }
-                let winner = if d_c4fm > d_lsm { 1u8 } else { 2u8 };
-                let current = active_mod.load(
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                if current != winner && current != 0 {
-                    // User is manually set — leave them alone.
-                    continue;
-                }
-                // Store the winner so active_control_decoder() returns
-                // the right one. "auto-chose LSM" vs "manually forced
-                // LSM" is distinguishable via /api/modulation (raw rates).
-                active_mod.store(winner, std::sync::atomic::Ordering::Relaxed);
-                tracing::info!(
-                    "modulation auto-detect: d_c4fm={d_c4fm} d_lsm={d_lsm} \
-                     → {}",
-                    if winner == 1 { "C4FM" } else { "LSM" }
-                );
-            }
-        });
+        app::iq_hub::spawn_iq_reader(ip_core.clone(), app::iq_hub::IqRing::Control, control_iq.clone());
+        app::iq_hub::spawn_iq_reader(ip_core.clone(), app::iq_hub::IqRing::Traffic, traffic_iq.clone());
+        app::c4fm_task::spawn_c4fm_control(
+            control_iq.clone(),
+            decoder.clone(),
+            current_control_freq_for_c4fm.clone(),
+            current_rx_lo.clone(),
+            c4fm_rt.clone(),
+        );
     }
 
     // Audio pacer — gates vocoder→broadcast at exactly 20 ms
@@ -1847,8 +1823,7 @@ async fn main() -> anyhow::Result<()> {
                 nco_lo_shift_hz.round() as i64)),
         last_ppm_cal_unix_secs: std::sync::Arc::new(
             std::sync::atomic::AtomicI64::new(0)),
-        current_control_freq: std::sync::Arc::new(
-            std::sync::atomic::AtomicU64::new(control_freq)),
+        current_control_freq: current_control_freq_for_c4fm.clone(),
         current_rx_lo:           current_rx_lo.clone(),
         current_sample_rate_hz:  current_sample_rate_hz.clone(),
         current_preset_idx:      current_preset_idx.clone(),
@@ -1871,6 +1846,10 @@ async fn main() -> anyhow::Result<()> {
         recordings: recordings.clone(),
         recorder_diag: recorder_diag.clone(),
         active_modulation: active_modulation.clone(),
+        modulation_mode: modulation_mode.clone(),
+        control_iq: control_iq.clone(),
+        traffic_iq: traffic_iq.clone(),
+        c4fm_rt: c4fm_rt.clone(),
         grant_decode_stats: crate::app::grant_stats::new_ring(),
         enc_grant_decode_stats: crate::app::grant_stats::new_ring(),
         active_call_snapshot: active_call_snapshot.clone(),

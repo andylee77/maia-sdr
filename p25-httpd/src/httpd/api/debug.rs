@@ -85,43 +85,22 @@ pub async fn get_spectrum(
     let min_samples = fft_size * averages;
     let min_bytes = min_samples * 4;
 
-    let bytes: Vec<u8> = {
-        let mut acc: Vec<u8> = Vec::with_capacity(min_bytes);
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_millis(IQ_DRAIN_DEADLINE_MS);
-        loop {
-            {
-                let mut core = state.ip_core.lock().await;
-                let bufs: Vec<&[u8]> = match chain {
-                    "control" => core.read_iq_buffers(),
-                    // 2026-05-03 dual-DDC pivot: traffic IQ ring restored
-                    // (`traffic_ddc.re_out / im_out` at 50 kSPS, Nyquist
-                    // ±25 kHz). Was a `Vec::new()` stub between the
-                    // 2026-05-02 M2A chain delete and this fix.
-                    "traffic" => core.read_traffic_iq_buffers(),
-                    other => {
-                        return Json(serde_json::json!({
-                            "ok": false,
-                            "error": format!(
-                                "unknown chain '{other}'; expected control|traffic"
-                            ),
-                        }));
-                    }
-                };
-                for b in bufs {
-                    acc.extend_from_slice(b);
-                }
-            }
-            if acc.len() >= min_bytes {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(IQ_DRAIN_RETRY_MS)).await;
+    // Change 071b: from the IQ hub (the ring has one reader now).
+    let hub = match chain {
+        "control" => &state.control_iq,
+        "traffic" => &state.traffic_iq,
+        other => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": format!("unknown chain '{other}'; expected control|traffic"),
+            }));
         }
-        acc
     };
+    let _ = min_bytes;
+    let iq = hub
+        .collect(min_samples, std::time::Duration::from_millis(IQ_DRAIN_DEADLINE_MS))
+        .await;
+    let bytes = crate::app::iq_hub::to_bytes(&iq);
 
     let Some(snap) = crate::services::spectrum::spectrum_from_bytes(&bytes, fft_size, averages) else {
         return Json(serde_json::json!({

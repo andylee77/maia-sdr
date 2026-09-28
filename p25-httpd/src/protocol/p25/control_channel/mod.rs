@@ -254,6 +254,10 @@ pub struct ControlChannelDecoder {
     /// Paired with the `chain_label` field — "control" / "traffic" /
     /// "ps_c4fm" — so log consumers can filter by chain.
     pub event_log: Option<Arc<crate::services::event_log::EventLog>>,
+    /// Change 071b: this decoder publishes grants and TSBK events. Two
+    /// control decoders run side by side (HDL LSM, software C4FM); only
+    /// the one chosen by `app::c4fm_task` publishes.
+    pub active: bool,
     /// Label inserted into every `Duid` log entry emitted by this
     /// decoder. Defaults to "control"; main.rs overrides for the
     /// traffic and C4FM decoder instances.
@@ -591,6 +595,7 @@ impl ControlChannelDecoder {
             // forward IMBE frames downstream.
             voice_handler: None,
             event_log: None,
+            active: true,
             chain_label: "control",
             ldu1_count: 0,
             ldu2_count: 0,
@@ -621,6 +626,9 @@ impl ControlChannelDecoder {
     /// `GroupVoiceChannelGrantUpdateExplicit` (0x03). Drives
     /// CC-grant-centric boundary dispatch in the follower.
     fn emit_grant_event(&self, info: &GrantInfo, is_update: bool) {
+        if !self.active {
+            return;
+        }
         if let Some(ref tx) = self.grant_event_tx {
             let _ = tx.try_send(super::events::P25Event::Grant(
                 super::events::GrantEvent {
@@ -806,6 +814,24 @@ impl ControlChannelDecoder {
     }
 
     /// Process a single dibit
+    /// Change 071b: a demodulator that finds frame sync itself (the C4FM
+    /// demodulator's soft sync, SDRTrunk `P25P1MessageFramer.syncDetected`)
+    /// reports it here, right after the last sync dibit; the framer then
+    /// reads the NID. Ignored while a data unit is being assembled.
+    pub fn sync_detected(&mut self) {
+        if matches!(self.state, DecoderState::Hunting) {
+            self.sync_hits += 1;
+            self.nid_attempts += 1;
+            self.state = DecoderState::ReadingNid { dibits_read: 0, nid_bits: 0 };
+        }
+    }
+
+    /// Change 071b: a NID or data unit is being read (SDRTrunk
+    /// `isAssembling`); the C4FM demodulator keeps fine sync meanwhile.
+    pub fn is_assembling(&self) -> bool {
+        !matches!(self.state, DecoderState::Hunting)
+    }
+
     pub fn process_dibit(&mut self, dibit: u8) {
         // ── Diagnostics: histogram + periodic dump ───────────────
         let d = dibit & 0x03;

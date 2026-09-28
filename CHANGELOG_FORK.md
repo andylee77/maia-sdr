@@ -5,6 +5,61 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-28] C4FM control channels: SDRTrunk's C4FM demodulator in software (071b)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-28-c4fm-071b`
+**Bake required:** NO (p25-httpd).
+
+The HDL chain is an LSM (CQPSK) demodulator. It locks on C4FM too, but on unit A it passed only
+42 % of FPL's TSBKs and 60–69 % of SLERS's. Those sites, like the other nearby C4FM systems
+(Putnam, St. Johns, PSIC), need a real C4FM demodulator.
+
+- **`protocol::p25::c4fm`:** a port of SDRTrunk's `P25P1DecoderC4FM` and
+  `P25P1DemodulatorC4FM`.
+  - Front end: half-band 50 → 25 kSPS, baseband low-pass (5.2 / 6.5 kHz), RRC, then the
+    differential demodulator with the 8-tap MMSE interpolator.
+  - Demodulator: soft sync detection (primary and half-symbol lagging), the timing optimiser,
+    the equaliser (phase balance and gain from each sync), and NID validation through BCH
+    before a correction is taken.
+  - It feeds our framer the way SDRTrunk feeds its own: dibits, plus `sync_detected()`.
+- **IQ hub** (`app::iq_hub`): one reader per DDC IQ ring (control and traffic chain 1, 50 kSPS)
+  fans the samples out.
+  - The narrowband spectrum and the IQ dumps read from it. Before, readers took each other's
+    DMA sub-buffers.
+  - `/api/traffic_iq_dump` works again.
+- **Both control decoders run all the time;** only the active one publishes grants and TSBK
+  events (`ControlChannelDecoder::active`).
+  - Auto (the default) picks the decoder with more TSBK CRC passes over 5 s, and switches only
+    for 20 % more.
+  - `/api/modulation` separates the setting (`mode`) from the choice (`active`); the old auto
+    mode latched on its first decision.
+  - Radio → Modulation shows both CRC rates and the demodulator's CPU.
+- Offline, on 20 s recordings from unit A:
+
+  | Recording | TSBK CRC, HDL LSM | TSBK CRC, software C4FM |
+  |-----------|-------------------|-------------------------|
+  | FPL 936.25 MHz | 42 % | 99.4 % |
+  | SLERS 770.20625 MHz | ~64 % | 95.6 % |
+  | Clay 860.9625 MHz (LSM) | 99.5 % | 100 % |
+
+- Live on unit A:
+  - FPL: auto switched to C4FM within 5 s, 1079 / 1081 TSBKs (LSM 43 %).
+  - SLERS: 99 % (LSM 69 %).
+  - Clay: both decoders ~98 %, so auto keeps whichever is active.
+  - The demodulator uses 12–17 % of one A9 core.
+- **Not yet:**
+  - C4FM on traffic channels. Voice still uses the HDL LSM chains. Chain 1's IQ is in the hub
+    for it; chain 2 has no IQ tap.
+  - Harris (MFID 0xA4) and Motorola (0x90) vendor TSBKs are counted but not decoded (SLERS and
+    FPL send many Harris ones).
+  - No FPL or SLERS voice was granted during the tests.
+
+Tests: p25-httpd 301 (C4FM slicer and sync pattern, synthetic C4FM decode, IQ hub, auto choice
+hysteresis); `c4fm_wav` (ignored) decodes an IQ recording given in `P25_C4FM_WAV`.
+
+---
+
 ## [2026-09-28] Review fixes before 071: neighbour sites, TDMA bands, NAC relock, call handling, restarts (071a)
 
 **Branch:** fishball-p25
