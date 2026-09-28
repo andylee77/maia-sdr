@@ -63,7 +63,7 @@ pub async fn delete_recordings(
                 axum::http::StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
                     "ok": false,
-                    "error": format!("store {other:?}: expected sd, ram or all"),
+                    "error": format!("store {:?}: expected sd, ram or all", other.unwrap_or("")),
                 })),
             )
                 .into_response();
