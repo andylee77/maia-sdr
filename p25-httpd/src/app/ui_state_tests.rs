@@ -46,6 +46,7 @@ fn summary(call_id: u64, start: u64, imbe: u64) -> GrantDecodeSummary {
         agc_gain_q97_at_close: None,
         air_duration_ms: Some(2_400),
         chain: 1,
+        site: "clay".into(),
     }
 }
 
@@ -53,6 +54,7 @@ fn recording(id: u64, start: u64, dur: u64) -> RecordingEntry {
     RecordingEntry {
         id,
         talkgroup: 300,
+        site: "clay".into(),
         source: Some(1014),
         started_unix_ms: start,
         duration_ms: dur,
@@ -199,7 +201,7 @@ fn rate_window_rates_and_reset() {
 fn calls_join_by_call_id_newest_first() {
     let clear = vec![summary(254, T0, 72), summary(255, T0 + 2_500, 72), summary(256, T0 + 10_000, 81)];
     let recs = vec![recording(254, T0, 1_440), recording(255, T0 + 2_500, 1_440)];
-    let q = CallsQuery { limit: 10, include_not_followed: false };
+    let q = CallsQuery { limit: 10, include_not_followed: false, site: None };
     let out = build_calls(&clear, &[], &recs, Aliases::default(), q, T0 + 12_600, &never);
     let ids: Vec<u64> = out.iter().map(|c| c.call_id).collect();
     assert_eq!(ids, vec![256, 255, 254]);
@@ -245,22 +247,55 @@ fn not_followed_rows_are_optional_and_orphans_are_kept() {
     }];
     // Recording 9's grant summary rolled out of the ring.
     let recs = vec![recording(9, T0 - 5_000, 1_000), recording(10, T0, 1_440)];
-    let hide = CallsQuery { limit: 10, include_not_followed: false };
+    let hide = CallsQuery { limit: 10, include_not_followed: false, site: None };
     let out = build_calls(&clear, &enc, &recs, Aliases::default(), hide, T0 + 60_000, &never);
     let ids: Vec<u64> = out.iter().map(|c| c.call_id).collect();
     assert_eq!(ids, vec![10, 9]);
     assert_eq!(out[1].audio_status, "recorded");
     assert_eq!(out[1].voice_ms, 1_000);
 
-    let show = CallsQuery { limit: 10, include_not_followed: true };
+    let show = CallsQuery { limit: 10, include_not_followed: true, site: None };
     let out = build_calls(&clear, &enc, &recs, Aliases::default(), show, T0 + 60_000, &never);
     let ids: Vec<u64> = out.iter().map(|c| c.call_id).collect();
     assert_eq!(ids, vec![11, 10, 9]);
     assert_eq!(out[0].audio_status, "encrypted");
     assert_eq!(out[0].not_followed.as_deref(), Some("encrypted"));
 
-    let one = CallsQuery { limit: 1, include_not_followed: true };
+    let one = CallsQuery { limit: 1, include_not_followed: true, site: None };
     assert_eq!(build_calls(&clear, &enc, &recs, Aliases::default(), one, T0, &never).len(), 1);
+}
+
+/// Change 073: one site's calls and recordings; recordings made before
+/// sites were kept ("") only in the all-sites list.
+#[test]
+fn calls_listed_per_site() {
+    let clear = vec![
+        summary(20, T0, 72),
+        GrantDecodeSummary { site: "duval".into(), tg: 1153, ..summary(21, T0 + 1_000, 50) },
+    ];
+    let enc = vec![GrantDecodeSummary {
+        encrypted: true,
+        not_followed: Some("encrypted"),
+        site: "duval".into(),
+        ..summary(22, T0 + 2_000, 0)
+    }];
+    let recs = vec![
+        RecordingEntry { site: String::new(), ..recording(5, T0 - 9_000, 1_000) },
+        recording(20, T0, 1_440),
+        RecordingEntry { site: "duval".into(), ..recording(21, T0 + 1_000, 1_000) },
+    ];
+    let q = |site: Option<&str>| CallsQuery { limit: 10, include_not_followed: true, site: site.map(str::to_string) };
+    let ids = |q: CallsQuery| -> Vec<u64> {
+        build_calls(&clear, &enc, &recs, Aliases::default(), q, T0 + 60_000, &never).iter().map(|c| c.call_id).collect()
+    };
+    assert_eq!(ids(q(Some("clay"))), vec![20]);
+    assert_eq!(ids(q(Some("duval"))), vec![22, 21]);
+    assert_eq!(ids(q(None)), vec![22, 21, 20, 5]);
+    let out = build_calls(&clear, &enc, &recs, Aliases::default(), q(Some("duval")), T0 + 60_000, &never);
+    assert_eq!((out[1].site.as_str(), out[1].audio_status.as_str()), ("duval", "recorded"));
+    let counts = site_counts(&clear, &enc, &recs);
+    assert_eq!(counts[0], ("duval".to_string(), 2, 1));
+    assert!(counts.contains(&("clay".to_string(), 1, 1)) && counts.contains(&(String::new(), 0, 1)));
 }
 
 #[test]

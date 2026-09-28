@@ -27,6 +27,7 @@ fn open(call_id: u64, source: u32, t: u64) -> CallTrackerEvent {
             not_followed: None,
             opened_via: OpenReason::CcGrant,
             baseline_frames_submitted: 0,
+            site: "clay".into(),
         },
         lane: Some(Lane::One),
     }
@@ -212,6 +213,26 @@ fn not_followed_close_fills_the_channel_time() {
     let s = listed(&r);
     assert_eq!((s.duration_ms, s.ended_unix_ms, s.air_duration_ms), (4_500, t + 4_500, Some(4_500)));
     assert!(r.rev.load(std::sync::atomic::Ordering::Relaxed) > rev0);
+    // Change 073: the site of its CallOpen.
+    assert_eq!(s.site, "clay");
+}
+
+/// Change 073: a call keeps the site of its CallOpen, even when it closes
+/// after a switch to another site.
+#[test]
+fn a_call_keeps_its_site() {
+    let mut r = Rig::new();
+    let t = 5_600_000;
+    r.ev(open(1, 1013, t));
+    let mut next = open(2, 3400043, t + 9_000);
+    if let CallTrackerEventKind::CallOpen { site, tg, .. } = &mut next.kind {
+        *site = "duval".into();
+        *tg = 1153;
+    }
+    r.ev(close(1, CloseReason::Timeout, t + 8_000, 8_000));
+    r.ev(next);
+    r.ev(close(2, CloseReason::CallEnd, t + 12_000, 3_000));
+    assert_eq!((r.summary(1).site.as_str(), r.summary(2).site.as_str()), ("clay", "duval"));
 }
 
 // Change 066: a call on each traffic chain at once; neither displaces the

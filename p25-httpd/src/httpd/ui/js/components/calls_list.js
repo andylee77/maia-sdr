@@ -5,6 +5,10 @@
 // <audio> survives every refresh. Voice length is the WAV length (or
 // IMBE frames x 20 ms), never the lifecycle's open time, which includes
 // the time after the last voice until the close.
+//
+// Change 073: calls and recordings are per site. The list shows the
+// active site's by default; the site picker shows another site's (kept
+// in the rings and on the SD card) or all of them.
 
 import { h, setText, keyedList, card, toast } from '../dom.js';
 import { api } from '../api.js';
@@ -114,6 +118,15 @@ function renderPlay(el, call) {
   }
 }
 
+function activeSite() {
+  return store.state && store.state.site ? store.state.site.name : '';
+}
+
+function siteLabel(site) {
+  const s = store.calls && (store.calls.sites || []).find(x => x.site === site);
+  return s ? s.label : site || 'no site';
+}
+
 function updateRow(el, call) {
   const c = el._c;
   el.classList.toggle('nf', !!call.not_followed);
@@ -128,7 +141,9 @@ function updateRow(el, call) {
   setText(c.srcSub, call.source_alias ? String(call.source) : '');
   setText(c.freq, mhz(call.freq_hz));
   // Change 066: calls on the second chain say so.
-  setText(c.freqSub, [call.channel ? 'ch ' + call.channel : '', call.chain === 2 ? 'chain 2' : '']
+  // Change 073: with every site listed, each row names its site.
+  const allSites = store.calls && store.calls.site === null;
+  setText(c.freqSub, [call.channel ? 'ch ' + call.channel : '', call.chain === 2 ? 'chain 2' : '', allSites ? siteLabel(call.site) : '']
     .filter(Boolean).join(' · '));
   // Change 065: a call that was not followed shows its channel time.
   const chan = call.not_followed && call.open_ms ? call.open_ms : 0;
@@ -136,8 +151,13 @@ function updateRow(el, call) {
   setText(c.durSub, call.first_voice_ms != null ? 'first ' + call.first_voice_ms + ' ms' : chan ? 'channel time' : '');
   renderPlay(el, call);
   if (!c.details.hidden || !c.details.firstChild) {
-    c.details.replaceChildren(...detailRows(call).flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })]),
-      h('dt'), h('dd', null, ignoreButton(call.tg)));
+    // Change 073: the ignore list is the active site's: only its calls
+    // offer the button.
+    const own = call.site === activeSite();
+    const rows = detailRows(call);
+    if (!own) rows.push(['Site', siteLabel(call.site)]);
+    c.details.replaceChildren(...rows.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })]),
+      ...(own ? [h('dt'), h('dd', null, ignoreButton(call.tg))] : []));
   }
 }
 
@@ -148,16 +168,38 @@ export function callsList() {
   nf.addEventListener('click', () => setPref('showNotFollowed', !store.prefs.showNotFollowed));
   const search = h('input', { class: 'input', type: 'search', placeholder: 'Filter TG / source', 'aria-label': 'Filter calls' });
   search.addEventListener('input', () => render());
+  // Change 073: whose calls: the active site (default), another, or all.
+  const siteSel = h('select', { class: 'input', 'aria-label': 'Site', title: 'Calls and recordings of this site' });
+  siteSel.addEventListener('change', () => setPref('callsSite', siteSel.value));
   c.right.append(count);
-  const tools = h('div', { class: 'calls-tools' }, search, nf);
+  const tools = h('div', { class: 'calls-tools' }, search, siteSel, nf);
   const list = h('div', { class: 'calls' });
   const empty = h('div', { class: 'calls-empty', text: 'No calls yet.' });
   c.el.append(tools, list, empty);
 
   let timer = null;
 
+  function renderSites(data) {
+    const sites = (data && data.sites) || [];
+    const key = JSON.stringify(sites.map(s => [s.site, s.label, s.calls, s.recordings, s.active]));
+    if (siteSel.dataset.key !== key) {
+      siteSel.dataset.key = key;
+      const count = s => ' — ' + s.calls + ' calls, ' + s.recordings + ' rec.';
+      const opts = [];
+      for (const s of sites) {
+        if (s.active) opts.push(h('option', { value: '', text: s.label + ' (active)' + count(s) }));
+        else opts.push(h('option', { value: s.site === '' ? '-' : s.site, text: s.label + count(s) }));
+      }
+      opts.push(h('option', { value: 'all', text: 'All sites' }));
+      siteSel.replaceChildren(...opts);
+    }
+    const want = store.prefs.callsSite || '';
+    siteSel.value = [...siteSel.options].some(o => o.value === want) ? want : '';
+  }
+
   function render() {
     const data = store.calls;
+    renderSites(data);
     nf.classList.toggle('on', !!store.prefs.showNotFollowed);
     let items = data ? data.items : [];
     const q = search.value.trim().toLowerCase();

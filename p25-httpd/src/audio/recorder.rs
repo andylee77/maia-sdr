@@ -169,7 +169,10 @@ pub struct RecordingEntry {
     pub path: PathBuf,
     /// WAV file size in bytes.
     pub size_bytes: u64,
-    /// Basename of `path` — `rec_<ms>_<id>_tg<tg>[_from<src>].wav`.
+    /// Change 073: the site the call was on ("" for recordings made
+    /// before 073, whose file names do not say).
+    pub site: String,
+    /// Basename of `path` — `rec_<ms>_<id>_tg<tg>[_from<src>][.<site>].wav`.
     /// Exposed in the JSON so the dashboard can render the on-disk
     /// name next to each row; debugging "why isn't the source
     /// stamped?" used to require SSHing into /tmp to check.
@@ -356,6 +359,8 @@ struct ActiveCall {
     /// `forwarder.current_frequency_hz` for per-call attribution.
     freq_hz_at_open: Option<u64>,
     channel_at_open: Option<String>,
+    /// Change 073: the site the call is on (from its CallOpen).
+    site: String,
     /// 2026-04-26 routing-loss instrumentation. One chunk = one IMBE
     /// frame = 160 PCM samples = 20 ms of audio. Surfaced on the
     /// recording entry + close-event log so we can see the routing
@@ -423,6 +428,7 @@ impl ActiveCall {
             last_chunk_at: Instant::now(),
             freq_hz_at_open: None,
             channel_at_open: None,
+            site: String::new(),
             chunks_match: 0,
             chunks_zero: 0,
             chunks_drain: 0,
@@ -584,17 +590,11 @@ async fn finalize(
     // TDULC LC parser couldn't recover source (or the site isn't
     // Motorola), omit `_from<n>` and fall back to
     // `rec_<ms>_<id>_tg<n>.wav`. Change 057: `rec_storage::parse_filename`
-    // reads this layout back when indexing the SD card at boot.
-    let filename = match call.source {
-        Some(s) => format!(
-            "rec_{}_{}_tg{}_from{}.wav",
-            call.started_unix_ms, id, call.talkgroup, s,
-        ),
-        None => format!(
-            "rec_{}_{}_tg{}.wav",
-            call.started_unix_ms, id, call.talkgroup,
-        ),
-    };
+    // reads this layout back when indexing the SD card at boot. Change
+    // 073: `.<site>` before `.wav` (site names have no dots).
+    let from = call.source.map(|s| format!("_from{s}")).unwrap_or_default();
+    let site = crate::audio::rec_storage::site_suffix(&call.site);
+    let filename = format!("rec_{}_{}_tg{}{from}{site}.wav", call.started_unix_ms, id, call.talkgroup);
     let bytes = wav_bytes(&call.pcm);
     let size = bytes.len() as u64;
     // Change 057: SD when selected and usable (the write happens on the
@@ -691,6 +691,7 @@ async fn finalize(
     let entry = RecordingEntry {
         id,
         talkgroup: call.talkgroup,
+        site: call.site.clone(),
         source: call.source,
         started_unix_ms: call.started_unix_ms,
         duration_ms,
@@ -1109,7 +1110,7 @@ pub async fn recorder_task(
                     Ok(ev) => match ev.kind {
                         CallTrackerEventKind::CallOpen {
                             tg, source, freq_hz, channel, encrypted,
-                            not_followed, ..
+                            not_followed, site, ..
                         } => {
                             // 2026-04-25 Phase 2b followup: skip
                             // not_followed grants entirely. The
@@ -1204,6 +1205,7 @@ pub async fn recorder_task(
                             }
                             let mut c = ActiveCall::new(ev.call_id, tg);
                             c.source = source;
+                            c.site = site;
                             // 2026-04-26 session-lifecycle refactor: open_at_ms
                             // sourced from the event timestamp (= when the
                             // primary GRP_VCH_GRANT was processed). Capture-

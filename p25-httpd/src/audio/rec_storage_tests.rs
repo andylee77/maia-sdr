@@ -55,10 +55,23 @@ fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
 fn filenames_parse_back() {
     assert_eq!(
         parse_filename("rec_5614677_257_tg300_from1014.wav"),
-        Some((5_614_677, 257, 300, Some(1014)))
+        Some((5_614_677, 257, 300, Some(1014), String::new()))
     );
-    assert_eq!(parse_filename("rec_1790470523000_12_tg402.wav"), Some((1_790_470_523_000, 12, 402, None)));
-    for bad in ["rec_1_2_tg3_from4.mp3", "x_1_2_tg3.wav", "rec_1_2_300.wav", "rec_1_2_tg3_from4_x.wav", ".rec_1_2_tg3.wav.part"] {
+    assert_eq!(parse_filename("rec_1790470523000_12_tg402.wav"), Some((1_790_470_523_000, 12, 402, None, String::new())));
+    // Change 073: the site before `.wav` (site names have underscores,
+    // never dots).
+    assert_eq!(
+        parse_filename("rec_1790634553548_581_tg300_from3402099.fpl_clay.wav"),
+        Some((1_790_634_553_548, 581, 300, Some(3_402_099), "fpl_clay".to_string()))
+    );
+    assert_eq!(parse_filename("rec_1_2_tg3.clay.wav"), Some((1, 2, 3, None, "clay".to_string())));
+    assert_eq!(site_suffix("psic_st_johns"), ".psic_st_johns");
+    assert_eq!(site_suffix(""), "");
+    assert_eq!(site_suffix("a/b"), "");
+    for bad in [
+        "rec_1_2_tg3_from4.mp3", "x_1_2_tg3.wav", "rec_1_2_300.wav", "rec_1_2_tg3_from4_x.wav", ".rec_1_2_tg3.wav.part",
+        "rec_1_2_tg3.a.b.wav", "rec_1_2_tg3..wav",
+    ] {
         assert!(parse_filename(bad).is_none(), "{bad}");
     }
 }

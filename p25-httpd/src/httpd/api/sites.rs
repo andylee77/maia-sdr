@@ -97,6 +97,25 @@ pub struct PostSiteQuery {
 /// Step 4's preset apply lives in `tuning::post_preset` rather than
 /// being inlined here so the same code path runs for direct preset
 /// changes + site switches.
+/// Change 073: keep what the radio learned on the site being left (the
+/// grant map behind the monitor roster, the talkgroups seen encrypted)
+/// and bring back the new site's. A talkgroup encrypted on one system
+/// says nothing about the same number on another.
+async fn swap_site_memory(state: &AppState, from: &str, to: &str) {
+    if from == to {
+        return;
+    }
+    let enc = std::mem::take(&mut *state.imbe_forwarder.encrypted_tg_history.lock().unwrap_or_else(|p| p.into_inner()));
+    let grants = std::mem::take(&mut state.traffic_chain.lock().await.grant_map);
+    let next = {
+        let mut mem = state.site_memory.lock().unwrap_or_else(|p| p.into_inner());
+        mem.insert(from.to_string(), crate::httpd::SiteMemory { encrypted_tgs: enc, grant_map: grants });
+        mem.remove(to).unwrap_or_default()
+    };
+    *state.imbe_forwarder.encrypted_tg_history.lock().unwrap_or_else(|p| p.into_inner()) = next.encrypted_tgs;
+    state.traffic_chain.lock().await.grant_map = next.grant_map;
+}
+
 pub async fn post_site(
     State(state): State<Arc<AppState>>,
     Query(q): Query<PostSiteQuery>,
@@ -113,6 +132,10 @@ pub async fn post_site(
         }
     };
 
+    // Change 073: from here until the new control channel is tuned, the
+    // old one's grants are dropped (they would carry the new site).
+    crate::services::lo_plan::hold_grants(crate::app::now_unix_ms());
+    let prev_site = state.lo_plans.site();
     {
         let mut active = state.active_site.write().await;
         *active = Some(site.clone());
@@ -129,6 +152,13 @@ pub async fn post_site(
     }
     // Change 070: grants are counted for the new site from now on.
     state.lo_plans.set_site(&site.name);
+    // Change 073: the grant map and encrypted talkgroups are per site.
+    swap_site_memory(&state, &prev_site, &site.name).await;
+    state.event_log.push(
+        crate::services::event_log::LogCategory::System,
+        format!("site switched: {} -> {} ({})", prev_site, site.name, site.label),
+        serde_json::json!({ "from": prev_site, "to": site.name, "control_freq_hz": site.control_freq_hz }),
+    );
 
     if let Err(e) = write_active_site_name(&q.name) {
         tracing::warn!(

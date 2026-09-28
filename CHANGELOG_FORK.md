@@ -5,6 +5,52 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-28] Calls, recordings and history kept per site (073)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-28-site-scoped-073`
+**Bake required:** NO (p25-httpd and web UI).
+
+- **Symptom** (unit A, switching between Clay, Duval and FPL): the Activity page showed Clay's
+  calls under Duval and FPL, and Jacksonville's under FPL.
+- **Causes** (the history only):
+  - Calls were filed under the site active when they were written, up to 45 s after they
+    ended, not the site they were on.
+  - The history task forgot a stored call after 30 min, but calls stay in the rings about
+    1.5 h. After a switch, older Clay calls were stored again under the new site (151
+    duplicates on A).
+- **Every call carries its site.** The lifecycle stamps it on `CallOpen`
+  (`lo_plan::active_site()`). Call summaries, recordings and the history keep it, so a call
+  that ends after a switch stays with its site.
+  - The history task remembers a stored call while it is in the rings.
+- **Recordings.** The site is in the file name (`rec_…_from<src>.<site>.wav`) and read back
+  when the SD card is indexed. Older files take their site from the history.
+- **Recent calls** (Now page) lists the active site's calls and recordings by default.
+  - A site picker shows another site's (still in the rings or on the SD card) or all of them.
+    With all, each row names its site.
+  - Names come from each call's own site. "Ignore TG" is offered only on the active site's
+    calls; the call cards' "last call" is the active site's.
+  - `/api/ui/calls?site=`, `/api/recordings?site=`.
+- **Site switch.**
+  - Until the new control channel is tuned (then 1 s, at most 8 s), grants are dropped: the old
+    channel's would carry the new site's name.
+  - The grant map (monitor roster) and the encrypted talkgroups are kept per site and swapped.
+    A talkgroup encrypted on one system was blocked on every other.
+  - The event log gets a "site switched" entry.
+- **Checked and left as they are** (the whole radio by design, or live): radio gain, frequency
+  correction, spectrum, Systems (a sweep covers every system), Diagnostics counters (since
+  boot), clock and recording settings.
+- **Still open** (from the page survey):
+  - the IDEN bands of a site file are not loaded on a switch (grants wait for the new control
+    channel's band broadcast);
+  - the site file's modulation is not applied (auto picks it);
+  - event-log entries carry no site.
+
+Tests: p25-httpd 319 (a call keeps its site across a switch; calls listed per site; site in
+recording file names; the switch hold; a call's site from the history).
+
+---
+
 ## [2026-09-28] Fix: one encrypted header silenced a traffic chain for good (072a)
 
 **Branch:** fishball-p25

@@ -50,14 +50,9 @@ fn range(state: &AppState, p: &Params) -> Range {
     Range { site, from_ms: from, to_ms: to }
 }
 
-/// The site's talkgroup / radio names (the live site's, or the stored
-/// ones of another site).
+/// The site's talkgroup / radio names.
 fn names(state: &AppState, site: &str) -> (BTreeMap<u16, String>, BTreeMap<u32, String>) {
-    let s = state.ui_settings.snapshot();
-    if s.site == site {
-        return (s.tg_aliases, s.unit_aliases);
-    }
-    s.sites.get(site).map(|e| (e.tg_aliases.clone(), e.unit_aliases.clone())).unwrap_or_default()
+    state.ui_settings.snapshot().aliases_for(site)
 }
 
 fn no_store() -> Response {

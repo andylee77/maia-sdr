@@ -53,7 +53,9 @@ export function boardNow() {
 
 // ── Preferences (per browser) ───────────────────────────────────
 function loadPrefs() {
-  const d = { showNotFollowed: false, normalize: true, liveEvents: true, autoClock: true, theme: 'auto', callLimit: 40 };
+  // callsSite (change 073): whose calls Recent calls lists: '' = the
+  // active site, a site name, 'all', or '-' (kept before sites were).
+  const d = { showNotFollowed: false, normalize: true, liveEvents: true, autoClock: true, theme: 'auto', callLimit: 40, callsSite: '' };
   try { return Object.assign(d, JSON.parse(localStorage.getItem('p25ui.prefs') || '{}')); } catch { return d; }
 }
 
@@ -111,7 +113,7 @@ export async function refreshCalls() {
   if (callsInFlight) return;
   callsInFlight = true;
   try {
-    const c = await api.calls(store.prefs.callLimit, store.prefs.showNotFollowed);
+    const c = await api.calls(store.prefs.callLimit, store.prefs.showNotFollowed, store.prefs.callsSite);
     store.calls = c;
     lastCallsRev = c.calls_rev;
     lastCallsAt = Date.now();

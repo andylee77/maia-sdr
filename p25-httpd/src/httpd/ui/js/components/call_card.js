@@ -119,8 +119,10 @@ export function callCard(chain = 1) {
     if (kind === 'calls' && store.calls) {
       // Change 066: this chain's last call (older summaries carry no
       // chain: chain 1's).
+      // Change 073: only the active site's (the list may show another).
+      const site = store.state && store.state.site ? store.state.site.name : null;
       lastCall = (store.calls.items || [])
-        .find(x => !x.not_followed && (x.chain || 1) === chain) || null;
+        .find(x => !x.not_followed && (x.chain || 1) === chain && (!site || !x.site || x.site === site)) || null;
     }
     render();
   }

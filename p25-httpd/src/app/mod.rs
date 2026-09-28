@@ -43,3 +43,11 @@ pub mod ui_state;
 pub mod vocoder_task;
 #[cfg(target_os = "linux")]
 pub mod wideband_iq_task;
+
+/// Wall-clock unix milliseconds (0 if the clock is before 1970).
+pub fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}

@@ -107,7 +107,9 @@ async fn calls_rev(state: &AppState) -> String {
         (r.back().map(|e| e.id), r.len(), r.iter().filter(|e| e.pending.is_some()).count())
     };
     let stats_rev = state.grant_stats_rev.load(Ordering::Relaxed);
-    ui_state::calls_rev(c_new, c_len, e_new, e_len, r_new, r_len, stats_rev, r_pending)
+    // Change 073: a site switch changes the (default) list.
+    let rev = ui_state::calls_rev(c_new, c_len, e_new, e_len, r_new, r_len, stats_rev, r_pending);
+    format!("{rev}:{}", state.lo_plans.site())
 }
 
 /// Change 057: recording status for `/api/ui/state`.
@@ -273,10 +275,20 @@ pub async fn get_ui_calls(
         .unwrap_or(40)
         .clamp(1, 250);
     let include_not_followed = params.get("nf").map(|v| v != "0").unwrap_or(true);
+    // Change 073: one site's calls: `?site=<name>`, the active site by
+    // default, `all` for every site. Names from that site's profile.
+    let active = state.lo_plans.site();
+    let site = match params.get("site").map(String::as_str) {
+        Some("all") => None,
+        Some("-") => Some(String::new()),
+        Some(s) => Some(s.to_string()),
+        None => Some(active.clone()),
+    };
     let settings = state.ui_settings.snapshot();
+    let (tg_names, unit_names) = settings.aliases_for(site.as_deref().unwrap_or(&active));
     let aliases = Aliases {
-        tg: Some(&settings.tg_aliases),
-        unit: Some(&settings.unit_aliases),
+        tg: Some(&tg_names),
+        unit: Some(&unit_names),
     };
     let clear: Vec<_> = state
         .grant_decode_stats
@@ -296,16 +308,41 @@ pub async fn get_ui_calls(
         &enc,
         &recs,
         aliases,
-        CallsQuery { limit, include_not_followed },
+        CallsQuery { limit, include_not_followed, site: site.clone() },
         now,
         &skipped,
     );
+    let mut sites: Vec<p25_json::ui::UiSiteCount> = ui_state::site_counts(&clear, &enc, &recs)
+        .into_iter()
+        .map(|(s, calls, recordings)| p25_json::ui::UiSiteCount {
+            label: site_label(&s),
+            active: s == active,
+            site: s,
+            calls,
+            recordings,
+        })
+        .collect();
+    if !sites.iter().any(|s| s.active) {
+        sites.insert(0, p25_json::ui::UiSiteCount { label: site_label(&active), site: active.clone(), active: true, ..Default::default() });
+    }
+    sites.sort_by_key(|s| !s.active);
     Json(UiCalls {
         now_unix_ms: now,
         calls_rev: calls_rev(&state).await,
         recording_enabled: state.ui_settings.recording.enabled(),
         items,
+        site,
+        sites,
     })
+}
+
+/// Change 073: a site's label from its site file ("Earlier" for calls
+/// kept before sites were).
+pub(crate) fn site_label(site: &str) -> String {
+    if site.is_empty() {
+        return "Earlier (no site)".into();
+    }
+    crate::services::sites::load_site(site).map(|s| s.label).unwrap_or_else(|_| site.to_string())
 }
 
 // ── Settings ──────────────────────────────────────────────────────

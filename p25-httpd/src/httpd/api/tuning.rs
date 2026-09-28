@@ -138,6 +138,10 @@ pub async fn post_preset(
         return busy;
     }
     let (status, reply) = apply_preset(&state, body).await;
+    // Change 073: the site switch's tune is done (a hold is released).
+    if status.is_success() {
+        crate::services::lo_plan::release_grants_soon(crate::app::now_unix_ms());
+    }
     (status, Json(reply))
 }
 

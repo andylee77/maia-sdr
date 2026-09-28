@@ -91,9 +91,18 @@ pub async fn get_recordings(
         .get("limit")
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(usize::MAX);
+    // Change 073: `?site=<name>` lists one site's recordings ("" for the
+    // ones made before sites were kept); all by default.
+    let site = params.get("site").filter(|s| s.as_str() != "all").cloned();
     let ring = state.recordings.lock().await;
     let total = ring.len();
-    let items: Vec<_> = ring.iter().rev().take(limit).cloned().collect();
+    let items: Vec<_> = ring
+        .iter()
+        .rev()
+        .filter(|r| site.as_deref().is_none_or(|s| r.site == s))
+        .take(limit)
+        .cloned()
+        .collect();
     drop(ring);
     let r = state.ui_settings.recording.retention();
     Json(serde_json::json!({

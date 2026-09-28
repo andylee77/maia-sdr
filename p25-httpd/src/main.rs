@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-28-enc-latch-072a";
+pub const BUILD_TAG: &str = "2026-09-28-site-scoped-073";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -1726,6 +1726,24 @@ async fn main() -> anyhow::Result<()> {
         recordings.clone(),
     );
     rec_storage.note_index(sd_index.len(), &sd_index_note);
+    // Change 073: recordings made before their file names carried the
+    // site get it from the activity history (by call id).
+    let mut sd_index = sd_index;
+    if let Some(h) = history.clone() {
+        let unnamed: Vec<(usize, u64, u64)> = sd_index.iter().enumerate()
+            .filter(|(_, e)| e.site.is_empty())
+            .map(|(i, e)| (i, e.id, e.started_unix_ms))
+            .collect();
+        let found = tokio::task::spawn_blocking(move || {
+            unnamed.into_iter()
+                .filter_map(|(i, id, t)| h.site_of_call(id, t).ok().flatten().map(|s| (i, s)))
+                .collect::<Vec<_>>()
+        }).await.unwrap_or_default();
+        tracing::info!("recordings on SD: {} given their site from the history", found.len());
+        for (i, s) in found {
+            sd_index[i].site = s;
+        }
+    }
     {
         let mut ring = recordings.lock().await;
         ring.extend(sd_index);
@@ -1866,6 +1884,7 @@ async fn main() -> anyhow::Result<()> {
         radio_lease: radio_lease.clone(),
         discovery: discovery.clone(),
         history: history.clone(),
+        site_memory: Default::default(),
         grant_decode_stats: crate::app::grant_stats::new_ring(),
         enc_grant_decode_stats: crate::app::grant_stats::new_ring(),
         active_call_snapshot: active_call_snapshot.clone(),

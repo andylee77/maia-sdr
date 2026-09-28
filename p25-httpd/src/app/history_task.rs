@@ -2,13 +2,13 @@
 //!
 //! Every 30 s the finished calls in the grant-summary rings (followed,
 //! and encrypted / not followed) that ended 15+ s ago (their late
-//! counts are in by then) are stored under the active site, with the
-//! radio events (accepted affiliations, registrations) gathered
-//! meanwhile. Batching keeps SD writes down (one transaction a flush).
+//! counts are in by then) are stored under the site each call was on
+//! (change 073), with the radio events (accepted affiliations,
+//! registrations) gathered meanwhile under the active site. Batching keeps SD writes down (one transaction a flush).
 //! Nothing is gathered during a sweep: the decoders hear other systems.
 //! Pruned daily to `RETENTION_DAYS` and the size limit (`MAX_BYTES_*`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,8 +22,6 @@ use crate::services::history::{CallRow, HistoryStore, UnitEventKind, UnitNote, M
 const FLUSH: Duration = Duration::from_secs(30);
 /// A call is stored this long after it ended.
 const SETTLE_MS: u64 = 15_000;
-/// Calls remembered as stored (by id and start) for this long.
-const SEEN_MS: u64 = 30 * 60_000;
 /// Distinct radio events kept between flushes (the rest are dropped).
 const MAX_NOTES: usize = 20_000;
 
@@ -34,7 +32,8 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// A finished call as a history row.
+/// A finished call as a history row: on its own site (change 073), or
+/// `site` for a call without one.
 pub fn to_row(g: &GrantDecodeSummary, site: &str) -> CallRow {
     let close_reason = serde_json::to_value(g.close_reason)
         .ok()
@@ -42,7 +41,7 @@ pub fn to_row(g: &GrantDecodeSummary, site: &str) -> CallRow {
         .unwrap_or_else(|| "unknown".into());
     let source = g.source.or(g.actual_speaker).filter(|s| *s != 0);
     CallRow {
-        site: site.to_string(),
+        site: if g.site.is_empty() { site.to_string() } else { g.site.clone() },
         call_id: g.call_id,
         started_ms: g.started_unix_ms,
         ended_ms: g.ended_unix_ms,
@@ -81,7 +80,10 @@ fn gather(notes: &mut HashMap<NoteKey, UnitNote>, site: String, u: UnitObservati
 pub fn spawn_history_task(state: Arc<AppState>, store: Arc<HistoryStore>, mut units: mpsc::Receiver<UnitObservation>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(FLUSH);
-        let mut seen: HashMap<(u64, u64), u64> = HashMap::new();
+        // Calls stored (by id and start), remembered while they are in
+        // the rings. (Change 073: a fixed 30 min let a call still in the
+        // rings be stored again, under the site active by then.)
+        let mut seen: HashSet<(u64, u64)> = HashSet::new();
         let mut notes: HashMap<NoteKey, UnitNote> = HashMap::new();
         let mut last_prune = 0u64;
         loop {
@@ -96,22 +98,24 @@ pub fn spawn_history_task(state: Arc<AppState>, store: Arc<HistoryStore>, mut un
             }
             let now = now_unix_ms();
             let mut rows = Vec::new();
-            if state.radio_lease.is_normal() {
-                // (During a sweep the rings hold nothing of this site's.)
-                let site = state.lo_plans.site();
-                for ring in [&state.grant_decode_stats, &state.enc_grant_decode_stats] {
-                    let Ok(r) = ring.lock() else { continue };
-                    for g in r.iter() {
-                        let key = (g.call_id, g.started_unix_ms);
-                        if g.ended_unix_ms == 0 || g.ended_unix_ms + SETTLE_MS > now || seen.contains_key(&key) {
-                            continue;
-                        }
-                        seen.insert(key, now);
-                        rows.push(to_row(g, &site));
+            // Each call carries its site (change 073): one that ends after
+            // a site switch still goes to the site it was on. (No calls
+            // open during a sweep: the follower drops grants then.)
+            let site = state.lo_plans.site();
+            let mut in_rings = HashSet::new();
+            for ring in [&state.grant_decode_stats, &state.enc_grant_decode_stats] {
+                let Ok(r) = ring.lock() else { continue };
+                for g in r.iter() {
+                    let key = (g.call_id, g.started_unix_ms);
+                    in_rings.insert(key);
+                    if g.ended_unix_ms == 0 || g.ended_unix_ms + SETTLE_MS > now || seen.contains(&key) {
+                        continue;
                     }
+                    seen.insert(key);
+                    rows.push(to_row(g, &site));
                 }
             }
-            seen.retain(|_, t| now.saturating_sub(*t) < SEEN_MS);
+            seen.retain(|k| in_rings.contains(k));
             let prune = now.saturating_sub(last_prune) > 24 * 3_600_000;
             if rows.is_empty() && notes.is_empty() && !prune {
                 continue;

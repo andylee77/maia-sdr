@@ -166,6 +166,9 @@ pub struct GrantDecodeSummary {
     /// followed).
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub chain: u8,
+    /// Change 073: the site the call was on.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub site: String,
 }
 
 fn is_zero_u8(v: &u8) -> bool { *v == 0 }
@@ -184,6 +187,8 @@ struct ActiveSummary {
     channel: Option<String>,
     /// Change 066: traffic chain of the call.
     lane: Option<Lane>,
+    /// Change 073: the site the call is on.
+    site: String,
 }
 
 /// Change 066: the forwarder of `lane` (its AGC reading); the counter
@@ -358,7 +363,7 @@ fn handle_event(
     match event.kind {
         CallTrackerEventKind::CallOpen {
             tg, nac, source, freq_hz, channel,
-            encrypted, not_followed, ..
+            encrypted, not_followed, site, ..
         } => {
             // 2026-04-30 fix: synthetic not_followed CallOpen+CallClose
             // pairs (cross-freq encrypted/sticky/monitor-rejected
@@ -380,7 +385,7 @@ fn handle_event(
                 let summary = synthetic_not_followed_summary(
                     event.call_id, tg, nac, source, freq_hz,
                     channel, encrypted, not_followed,
-                    event.timestamp_unix_ms,
+                    event.timestamp_unix_ms, site,
                 );
                 route_push(clear_ring, enc_ring, summary);
                 return;
@@ -419,6 +424,7 @@ fn handle_event(
                 freq_hz,
                 channel,
                 lane: event.lane,
+                site,
             });
         }
 
@@ -579,6 +585,7 @@ fn finalise_summary(
         // ActiveSummary doesn't carry the UPD timestamp itself.
         air_duration_ms: None,
         chain: a.lane.map_or(0, |l| l.number()),
+        site: a.site.clone(),
     };
     apply_counts(&mut summary, &counts);
     summary
@@ -599,6 +606,7 @@ fn synthetic_not_followed_summary(
     encrypted: bool,
     not_followed: Option<&'static str>,
     started_unix_ms: u64,
+    site: String,
 ) -> GrantDecodeSummary {
     GrantDecodeSummary {
         call_id, tg, nac, source,
@@ -622,6 +630,7 @@ fn synthetic_not_followed_summary(
         agc_gain_q97_at_close: None,
         air_duration_ms: None,
         chain: 0,
+        site,
     }
 }
 

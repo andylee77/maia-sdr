@@ -323,6 +323,11 @@ pub fn spawn_grant_follower(
                     if !follower_enabled.load(Ordering::Relaxed) || !follower_lease.is_normal() {
                         continue;
                     }
+                    // Change 073: a site switch is settling (the old
+                    // control channel is still tuned).
+                    if crate::services::lo_plan::grants_held(now_unix_ms()) {
+                        continue;
+                    }
                     let p25::events::P25Event::Grant(g) = event;
                     let freq_mhz = g.frequency_hz.map(|f| f as f64 / 1e6).unwrap_or(0.0);
 

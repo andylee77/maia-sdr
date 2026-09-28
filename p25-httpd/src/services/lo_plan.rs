@@ -205,6 +205,42 @@ impl Default for SitePlan {
 /// Grant counts are capped so one busy day does not freeze the map.
 pub const MAX_COUNT: u32 = 1_000_000;
 
+/// Change 073: the active site, for code without the plan store at hand
+/// (the call lifecycle stamps every call with it). Written by `set_site`.
+static ACTIVE_SITE: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+
+/// The active site's name (empty before the first `PlanStore`).
+pub fn active_site() -> String {
+    ACTIVE_SITE.read().map(|s| s.clone()).unwrap_or_default()
+}
+
+/// Change 073: after a site switch the old control channel is decoded
+/// until the new one is tuned (the UI's preset apply follows the
+/// switch). Its grants must not open calls under the new site's name:
+/// the follower drops grants until the tune, plus `GRANT_HOLD_AFTER_TUNE_MS`
+/// for the old channel's last dibits, and at most `GRANT_HOLD_MAX_MS`.
+static GRANT_HOLD_UNTIL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub const GRANT_HOLD_MAX_MS: u64 = 8_000;
+pub const GRANT_HOLD_AFTER_TUNE_MS: u64 = 1_000;
+
+/// A site switch: hold grants.
+pub fn hold_grants(now_ms: u64) {
+    GRANT_HOLD_UNTIL_MS.store(now_ms + GRANT_HOLD_MAX_MS, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The new control channel is tuned: release the hold shortly.
+pub fn release_grants_soon(now_ms: u64) {
+    let until = &GRANT_HOLD_UNTIL_MS;
+    let _ = until.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |t| {
+        (t > now_ms).then(|| t.min(now_ms + GRANT_HOLD_AFTER_TUNE_MS))
+    });
+}
+
+/// Grants are dropped (a site switch is settling).
+pub fn grants_held(now_ms: u64) -> bool {
+    now_ms < GRANT_HOLD_UNTIL_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Live per-site plans and where they persist.
 pub struct PlanStore {
     dir: Option<PathBuf>,
@@ -255,6 +291,9 @@ impl PlanStore {
         };
         let mut g = self.inner.lock().unwrap();
         g.site = site.to_string();
+        if let Ok(mut a) = ACTIVE_SITE.write() {
+            *a = site.to_string();
+        }
         if !g.plans.contains_key(site) {
             g.plans.insert(site.to_string(), loaded.unwrap_or_default());
         }

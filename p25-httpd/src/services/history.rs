@@ -807,6 +807,18 @@ impl HistoryStore {
         rows.collect()
     }
 
+    /// Change 073: the site a call was stored under (by its id, started
+    /// within 10 s of `started_ms`; the first stored when several).
+    pub fn site_of_call(&self, call_id: u64, started_ms: u64) -> rusqlite::Result<Option<String>> {
+        self.conn()
+            .query_row(
+                "SELECT site FROM calls WHERE call_id = ?1 AND ABS(started_ms - ?2) < 10000 ORDER BY id LIMIT 1",
+                params![call_id as i64, started_ms as i64],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+
     /// Newest stored call start on `site`.
     pub fn last_started_ms(&self, site: &str) -> rusqlite::Result<Option<u64>> {
         Ok(self

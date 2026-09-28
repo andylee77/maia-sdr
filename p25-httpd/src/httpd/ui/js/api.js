@@ -17,13 +17,15 @@
 //                         sd_count, ram_count},
 //              audio {listeners, lag_total},
 //              calls_rev, settings_rev, log_last_seq }
-//   UiCalls  { now_unix_ms, calls_rev, recording_enabled, items: [
+//   UiCalls  { now_unix_ms, calls_rev, recording_enabled, site (change
+//              073: the site listed, null = all), sites: [{site, label,
+//              calls, recordings, active}], items: [
 //              {call_id, tg, tg_alias, source, source_alias, sources,
 //               freq_hz, channel, started_unix_ms, ended_unix_ms, open_ms,
 //               voice_ms, air_ms, first_voice_ms, imbe, ldu,
 //               vocoder_errors, vocoder_silent, encrypted, not_followed,
 //               close_reason, recording {id, url, duration_ms, size_bytes,
-//               filename, storage} | null, audio_status}] }
+//               filename, storage} | null, audio_status, chain, site}] }
 
 const TIMEOUT_MS = 5000;
 
@@ -68,7 +70,9 @@ function qs(params) {
 export const api = {
   // Consolidated UI documents.
   state: () => get('/api/ui/state'),
-  calls: (limit, nf) => get('/api/ui/calls' + qs({ limit, nf: nf ? 1 : 0 })),
+  // Change 073: `site` = a site name, 'all', '-' (kept before sites
+  // were); empty = the active site.
+  calls: (limit, nf, site) => get('/api/ui/calls' + qs({ limit, nf: nf ? 1 : 0, site })),
   settings: () => get('/api/ui/settings'),
   putSettings: patch => put('/api/ui/settings', patch),
   // Change 065: store = 'sd' | 'ram' | 'all'.

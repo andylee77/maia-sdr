@@ -206,6 +206,24 @@ pub struct UiCalls {
     pub calls_rev: String,
     pub recording_enabled: bool,
     pub items: Vec<UiCallSummary>,
+    /// Change 073: the site listed (`None`: every site).
+    #[serde(default)]
+    pub site: Option<String>,
+    /// Change 073: the sites with calls or recordings in the lists
+    /// (for a selector), active site first.
+    #[serde(default)]
+    pub sites: Vec<UiSiteCount>,
+}
+
+/// Change 073: calls and recordings kept for one site ("" = recorded
+/// before sites were kept).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UiSiteCount {
+    pub site: String,
+    pub label: String,
+    pub calls: u64,
+    pub recordings: u64,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +270,9 @@ pub struct UiCallSummary {
     /// not followed or unknown).
     #[serde(default)]
     pub chain: u8,
+    /// Change 073: the site the call was on ("" = unknown).
+    #[serde(default)]
+    pub site: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

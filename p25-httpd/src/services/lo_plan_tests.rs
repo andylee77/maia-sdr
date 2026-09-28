@@ -161,3 +161,24 @@ fn store_notes_grants_per_site_and_persists() {
     assert!(!odd.flush().unwrap());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Change 073: grants are held from a site switch until the tune (plus
+/// the drain), or the maximum when no tune follows.
+#[test]
+fn site_switch_holds_grants_until_the_tune() {
+    // (Small times: the follower's check with the real clock is never
+    // affected by this test.)
+    assert!(!grants_held(1_000));
+    release_grants_soon(1_000); // no hold: nothing to release
+    assert!(!grants_held(1_001));
+    hold_grants(1_000);
+    assert!(grants_held(1_500));
+    release_grants_soon(2_000);
+    assert!(grants_held(2_999) && !grants_held(3_000));
+    // No tune: the hold ends by itself.
+    hold_grants(10_000);
+    assert!(grants_held(10_000 + GRANT_HOLD_MAX_MS - 1) && !grants_held(10_000 + GRANT_HOLD_MAX_MS));
+    // A tune long after: nothing to release, nothing re-armed.
+    release_grants_soon(30_000);
+    assert!(!grants_held(30_001));
+}

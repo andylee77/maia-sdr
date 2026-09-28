@@ -119,6 +119,14 @@ fn trimmed_to_size_oldest_first() {
 }
 
 #[test]
+fn site_of_a_call_by_id() {
+    let s = store();
+    assert_eq!(s.site_of_call(3, T0 + 2 * H + 4_000).unwrap().as_deref(), Some("clay"));
+    assert_eq!(s.site_of_call(3, T0 + 3 * H).unwrap(), None, "too far from its start");
+    assert_eq!(s.site_of_call(99, T0).unwrap(), None);
+}
+
+#[test]
 fn batched_radio_events_merge() {
     let s = store();
     let note = |first_ms, last_ms, count| UnitNote { unit: 101, tg: 305, kind: UnitEventKind::GroupAffiliation, first_ms, last_ms, count };

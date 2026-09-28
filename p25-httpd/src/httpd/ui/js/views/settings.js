@@ -142,7 +142,7 @@ function encryptedCard() {
   const list = h('div', { class: 'row' });
   const clearAll = h('button', { class: 'btn small danger', type: 'button', text: 'Clear all' });
   c.right.append(clearAll);
-  c.body.append(list, h('p', { class: 'card-note', text: 'A talkgroup is added the first time a grant for it is flagged encrypted, and is never followed after that. The list is learned automatically and resets on restart; remove a TG here if it was flagged by mistake.' }));
+  c.body.append(list, h('p', { class: 'card-note', text: 'A talkgroup is added the first time a grant for it is flagged encrypted, and is never followed after that. The list is learned automatically, one per site (a talkgroup number means nothing on another system), and resets on restart; remove a TG here if it was flagged by mistake.' }));
   async function edit(params) {
     try { const r = await api.editEncryptedTgs(params); set(r.tgs); } catch (e) { toast(e.message, true); }
   }
@@ -289,7 +289,7 @@ export function mount(host) {
   const profiles = profilesCard(load);
   // Change 069: which cards follow the profile / the site.
   const scoped = [[groups.el, 'profile'], [monitor.el, 'profile'], [ignore.el, 'profile'],
-    [tgAliases.el, 'site'], [unitAliases.el, 'site']].map(([el, kind]) => {
+    [tgAliases.el, 'site'], [unitAliases.el, 'site'], [enc.el, 'site']].map(([el, kind]) => {
     const tag = h('span', { class: 'dim', style: { fontSize: '0.84em', marginLeft: '8px', fontWeight: 'normal' } });
     const title = el.querySelector('.card-head h2');
     if (title) title.append(tag);

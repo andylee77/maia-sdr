@@ -193,11 +193,37 @@ pub fn calls_rev(
 }
 
 /// Options of `GET /api/ui/calls`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct CallsQuery {
     pub limit: usize,
     /// Include encrypted and not-followed grants (zero-audio rows).
     pub include_not_followed: bool,
+    /// Change 073: only this site's calls and recordings (`None`: all).
+    pub site: Option<String>,
+}
+
+impl CallsQuery {
+    fn wants(&self, site: &str) -> bool {
+        self.site.as_deref().is_none_or(|w| w == site)
+    }
+}
+
+/// Change 073: calls and recordings per site in the lists, most first.
+pub fn site_counts(
+    clear: &[GrantDecodeSummary],
+    enc: &[GrantDecodeSummary],
+    recs: &[RecordingEntry],
+) -> Vec<(String, u64, u64)> {
+    let mut m: std::collections::BTreeMap<String, (u64, u64)> = Default::default();
+    for g in clear.iter().chain(enc) {
+        m.entry(g.site.clone()).or_default().0 += 1;
+    }
+    for r in recs {
+        m.entry(r.site.clone()).or_default().1 += 1;
+    }
+    let mut v: Vec<_> = m.into_iter().map(|(s, (c, r))| (s, c, r)).collect();
+    v.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)).then(a.0.cmp(&b.0)));
+    v
 }
 
 fn rec_ref(r: &RecordingEntry) -> UiRecordingRef {
@@ -283,6 +309,7 @@ fn from_summary(
         recording: rec.map(rec_ref),
         audio_status: status.to_string(),
         chain: g.chain,
+        site: g.site.clone(),
     }
 }
 
@@ -318,6 +345,7 @@ fn from_orphan(r: &RecordingEntry, aliases: Aliases) -> UiCallSummary {
         recording: Some(rec_ref(r)),
         audio_status: "recorded".into(),
         chain: 0,
+        site: r.site.clone(),
     }
 }
 
@@ -334,12 +362,13 @@ pub fn build_calls(
 ) -> Vec<UiCallSummary> {
     let by_id: std::collections::HashMap<u64, &RecordingEntry> =
         recs.iter().map(|r| (r.id, r)).collect();
+    // (Over every recording: "rolled out" is about the whole ring.)
     let oldest_rec_id = recs.iter().map(|r| r.id).min();
     let mut used = std::collections::HashSet::new();
     let mut items: Vec<UiCallSummary> = Vec::new();
 
     let enc_iter = enc.iter().filter(|_| q.include_not_followed);
-    for g in clear.iter().chain(enc_iter) {
+    for g in clear.iter().chain(enc_iter).filter(|g| q.wants(&g.site)) {
         let rec = by_id.get(&g.call_id).copied();
         if rec.is_some() {
             used.insert(g.call_id);
@@ -354,7 +383,7 @@ pub fn build_calls(
             used.insert(g.call_id);
         }
     }
-    for r in recs {
+    for r in recs.iter().filter(|r| q.wants(&r.site)) {
         if !used.contains(&r.id) {
             items.push(from_orphan(r, aliases));
         }

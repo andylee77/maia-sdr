@@ -302,6 +302,20 @@ pub struct SiteSettings {
     pub active_profile: String,
 }
 
+impl UiSettings {
+    /// Change 073: a site's talkgroup and radio names (the live ones for
+    /// the active site, else the ones stored for it).
+    pub fn aliases_for(&self, site: &str) -> (BTreeMap<u16, String>, BTreeMap<u32, String>) {
+        if self.site == site {
+            return (self.tg_aliases.clone(), self.unit_aliases.clone());
+        }
+        self.sites
+            .get(site)
+            .map(|e| (e.tg_aliases.clone(), e.unit_aliases.clone()))
+            .unwrap_or_default()
+    }
+}
+
 /// Change 069: name of the profile a site starts with.
 pub const DEFAULT_PROFILE: &str = "Default";
 pub const MAX_PROFILES: usize = 32;

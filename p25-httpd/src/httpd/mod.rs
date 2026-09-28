@@ -46,6 +46,14 @@ use crate::protocol::p25::control_channel::ControlChannelDecoder;
 pub mod api;
 
 /// Shared application state
+/// Change 073: what the radio learned about one site, kept while
+/// another is active.
+#[derive(Default)]
+pub struct SiteMemory {
+    pub encrypted_tgs: std::collections::HashSet<u16>,
+    pub grant_map: std::collections::HashMap<(u16, u64), crate::protocol::p25::traffic_chain::GrantMapEntry>,
+}
+
 pub struct AppState {
     /// Original Phase 2A C4FM `ControlChannelDecoder`, fed by the C4FM HDL
     /// chain via `dibit_dma`. Retained for diagnostics and as a fallback,
@@ -228,6 +236,9 @@ pub struct AppState {
     pub discovery: crate::app::discovery::SharedDiscovery,
     /// Change 072: the activity history (None: the database did not open).
     pub history: Option<Arc<crate::services::history::HistoryStore>>,
+    /// Change 073: what the radio learned about the sites not active
+    /// (grant map, encrypted talkgroups); swapped in on a switch.
+    pub site_memory: std::sync::Mutex<std::collections::HashMap<String, SiteMemory>>,
     /// 2026-04-24: per-grant decode summary ring for **clear /
     /// followed** calls. 2026-04-29: split from the encrypted ring
     /// (below) so heavy ENC GRANT activity (which produces 0-IMBE

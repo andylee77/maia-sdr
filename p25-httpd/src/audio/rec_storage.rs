@@ -516,10 +516,23 @@ fn remove_stale_parts(dir: &Path) {
     }
 }
 
-/// (started_unix_ms, id, talkgroup, source) from
-/// `rec_<ms>_<id>_tg<tg>[_from<src>].wav`.
-pub fn parse_filename(name: &str) -> Option<(u64, u64, u16, Option<u32>)> {
+/// Change 073: the `.<site>` part of a recording's file name ("" when
+/// the site is unknown or not a safe file-name part).
+pub fn site_suffix(site: &str) -> String {
+    let ok = !site.is_empty() && site.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if ok { format!(".{site}") } else { String::new() }
+}
+
+/// (started_unix_ms, id, talkgroup, source, site) from
+/// `rec_<ms>_<id>_tg<tg>[_from<src>][.<site>].wav` (site "" when absent:
+/// recordings made before change 073).
+pub fn parse_filename(name: &str) -> Option<(u64, u64, u16, Option<u32>, String)> {
     let body = name.strip_prefix("rec_")?.strip_suffix(".wav")?;
+    let (body, site) = match body.split_once('.') {
+        Some((b, s)) if !s.is_empty() && !s.contains('.') => (b, s.to_string()),
+        Some(_) => return None,
+        None => (body, String::new()),
+    };
     let mut it = body.split('_');
     let ms = it.next()?.parse().ok()?;
     let id = it.next()?.parse().ok()?;
@@ -531,7 +544,7 @@ pub fn parse_filename(name: &str) -> Option<(u64, u64, u16, Option<u32>)> {
     if it.next().is_some() {
         return None;
     }
-    Some((ms, id, tg, src))
+    Some((ms, id, tg, src, site))
 }
 
 /// List the recordings already on the card (boot). Returns the entries
@@ -553,7 +566,7 @@ pub fn index_sd(cfg: &StorageConfig) -> (Vec<RecordingEntry>, String) {
     let mut skipped = 0usize;
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
-        let Some((started, id, tg, source)) = parse_filename(&name) else {
+        let Some((started, id, tg, source, site)) = parse_filename(&name) else {
             skipped += usize::from(name.ends_with(".wav"));
             continue;
         };
@@ -561,6 +574,7 @@ pub fn index_sd(cfg: &StorageConfig) -> (Vec<RecordingEntry>, String) {
         out.push(RecordingEntry {
             id,
             talkgroup: tg,
+            site,
             source,
             started_unix_ms: started,
             // 8 kHz 16-bit mono: 16 bytes per ms after the 44-byte header.

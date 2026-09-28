@@ -281,6 +281,9 @@ pub enum CallTrackerEventKind {
         not_followed: Option<&'static str>,
         opened_via: OpenReason,
         baseline_frames_submitted: u64,
+        /// Change 073: the site the call is on (active when its grant
+        /// opened it). Summaries, recordings and the history keep it.
+        site: String,
     },
     SourceUpdate {
         new_source: u32,
@@ -720,6 +723,7 @@ fn emit_open(
             tg, nac, source, freq_hz, channel,
             encrypted, not_followed, opened_via,
             baseline_frames_submitted,
+            site: crate::services::lo_plan::active_site(),
         },
         lane,
     });
