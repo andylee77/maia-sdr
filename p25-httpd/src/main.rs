@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-28-site-scoped-073";
+pub const BUILD_TAG: &str = "2026-09-30-sd-boot-073a";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -556,6 +556,18 @@ async fn main() -> anyhow::Result<()> {
     // stay unique across restarts. Bounded: a missing or stalled card
     // costs at most `INDEX_TIMEOUT` at boot.
     let rec_storage_cfg = audio::rec_storage::StorageConfig::board();
+    // Change 073a: at boot the card may not be mounted yet (the
+    // history and the index would miss it): wait for it when it is there.
+    {
+        let cfg = rec_storage_cfg.clone();
+        let t0 = std::time::Instant::now();
+        let mounted = tokio::task::spawn_blocking(move || {
+            audio::rec_storage::wait_for_sd(&cfg, audio::rec_storage::SD_MOUNT_WAIT)
+        })
+        .await
+        .unwrap_or(false);
+        tracing::info!("SD card {} ({} ms)", if mounted { "mounted" } else { "not mounted" }, t0.elapsed().as_millis());
+    }
     let (sd_index, sd_index_note) = {
         let cfg = rec_storage_cfg.clone();
         match tokio::time::timeout(

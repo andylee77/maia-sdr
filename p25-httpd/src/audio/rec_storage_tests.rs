@@ -111,16 +111,17 @@ fn index_lists_sd_recordings_sorted_with_duration() {
     wav("rec_2000_12_tg300_from1014.wav", 1_440);
     wav("rec_1000_7_tg300_from3436046.wav", 1_620);
     wav("rec_3000_12_tg300.wav", 100); // same id, newer (restart without index)
+    wav("rec_5000_2_tg300.clay.wav", 100); // a low id, but the newest (073a)
     std::fs::write(sd.join(".rec_4000_13_tg300.wav.part"), b"half").unwrap();
     std::fs::write(sd.join("notes.txt"), b"x").unwrap();
     let (list, note) = index_sd(&cfg(&ram, &sd));
     let ids: Vec<u64> = list.iter().map(|e| e.id).collect();
-    assert_eq!(ids, vec![7, 12], "{note}");
+    assert_eq!(ids, vec![7, 12, 2], "oldest first by start time: {note}");
     assert_eq!(list[0].duration_ms, 1_620);
     assert_eq!((list[0].talkgroup, list[0].source), (300, Some(3436046)));
     assert_eq!(list[1].started_unix_ms, 3_000, "newer of the duplicate id kept");
     assert!(list.iter().all(|e| e.storage == STORE_SD && e.pending.is_none()));
-    assert!(note.contains("indexed 2"));
+    assert!(note.contains("indexed 3"));
 }
 
 #[test]

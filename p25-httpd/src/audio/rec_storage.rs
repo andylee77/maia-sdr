@@ -53,8 +53,15 @@ pub const SD_DIR: &str = "/mnt/sd/p25_recordings";
 pub const MAX_QUEUE_BYTES: u64 = 32 * 1024 * 1024;
 /// Below this much free space the card counts as full.
 pub const SD_MIN_FREE_BYTES: u64 = 64 * 1024 * 1024;
-/// Upper bound on the boot-time listing of the SD directory.
-pub const INDEX_TIMEOUT: Duration = Duration::from_secs(3);
+/// Upper bound on the boot-time listing of the SD directory. (Change
+/// 073a: 3 s was short for ~2000 files on a FAT card; a timeout lists
+/// nothing and restarts call ids at 1.)
+pub const INDEX_TIMEOUT: Duration = Duration::from_secs(15);
+/// Change 073a: the card's partition. When it exists but is not mounted
+/// yet (boot), start-up waits for the mount (`wait_for_sd`).
+pub const SD_DEVICE: &str = "/dev/mmcblk0p1";
+/// How long start-up waits for the card to be mounted.
+pub const SD_MOUNT_WAIT: Duration = Duration::from_secs(20);
 /// Card probe cadence (mount, read-only, free space).
 const PROBE_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -461,6 +468,24 @@ fn classify(e: &std::io::Error) -> &'static str {
 }
 
 /// (mounted, read-only) for `mount` from `/proc/mounts`.
+/// Change 073a: wait (blocking, up to `max`) for the SD card to be
+/// mounted when the card is there. At boot the card was mounted after
+/// p25-httpd started: the history opened in RAM, no recording was
+/// listed and call ids restarted at 1. True when mounted.
+pub fn wait_for_sd(cfg: &StorageConfig, max: Duration) -> bool {
+    let Some(m) = cfg.sd_mount.as_deref() else { return false };
+    let t0 = std::time::Instant::now();
+    loop {
+        if mount_state(m).is_some() {
+            return true;
+        }
+        if !Path::new(SD_DEVICE).exists() || t0.elapsed() >= max {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 fn mount_state(mount: &Path) -> Option<bool> {
     let text = std::fs::read_to_string("/proc/mounts").ok()?;
     let want = mount.to_str()?;
@@ -600,6 +625,10 @@ pub fn index_sd(cfg: &StorageConfig) -> (Vec<RecordingEntry>, String) {
             false
         }
     });
+    // Oldest first, by start time (the ring's order: retention removes
+    // from the front). Change 073a: ids are not time order after a boot
+    // whose index found nothing (ids restarted at 1).
+    out.sort_by_key(|e| (e.started_unix_ms, e.id));
     let note = format!(
         "indexed {} recording(s) in {}{}",
         out.len(),

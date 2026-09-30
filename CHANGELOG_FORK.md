@@ -5,6 +5,35 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-30] Fix: after a reboot, calls, recordings and Activity were empty (073a)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-30-sd-boot-073a`
+**Bake required:** YES for the boot-order part (tezuka_fw 93a0d75 and the fsck commit after
+it); the p25-httpd part works on its own.
+
+- **Symptom** (unit A after a reboot): Recent calls and Activity were empty; the card still
+  held the history database and 2,280 recordings.
+- **Cause.** `S91nfs-mount` mounts the SD card after `S60p25-httpd` has started. p25-httpd saw
+  no card:
+  - it opened the history in RAM (`/tmp`);
+  - it listed no SD recordings;
+  - it restarted call ids at 1, so new files repeated old ids.
+- **Fix.**
+  - `S60p25-httpd` mounts the card first (after `fsck.fat -a`); `S91nfs-mount` skips it when
+    mounted.
+  - p25-httpd waits up to 20 s for the card when one is present.
+  - The boot index of the card allows 15 s instead of 3 s, and lists recordings oldest first by
+    start time: after such a boot, ids are not in time order, and retention removes from the
+    front.
+- **Also found:** unit A's FAT was damaged by unclean power-offs ("deleting FAT entry beyond
+  EOF"); the kernel set the card read-only. The image now runs `fsck.fat -a` before mounting,
+  and `S60p25-httpd stop` unmounts the card.
+
+Tests: p25-httpd 319 (index order by start time with a restarted id).
+
+---
+
 ## [2026-09-28] Calls, recordings and history kept per site (073)
 
 **Branch:** fishball-p25
