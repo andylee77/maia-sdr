@@ -164,12 +164,13 @@ scanner/src/         the fresh crate (D13)
     streams/         iq_hub, dibit_readers, dibit_airtime, dibit_ring, spectrum producer, wideband capture
   dsp/               fir, halfband, taps, fsk4 (DifferentialDemod, ideal_phase, interpolator), Complex32
   protocol/
-    mod.rs           Protocol, ControlDecoder, TrafficDecoder, ControlEvent, TrafficEvent,
-                     LogicalChannel, SiteIdentity
-    fec/             golay23/24, hamming, bch, rs, crc (three Golay/Hamming copies become one)
+    events.rs        ControlEvent, TrafficEvent, LogicalChannel, SiteIdentity (the decoders'
+                     common output)
+    fec/             the codes both use: Golay(24,12) with Golay(18,6), the Hamming codes
     p25/             framer, tsbk, control decoder, traffic decoder (voice_frame + forwarder parsing),
-                     pdu, c4fm demod, LSM/C4FM choice
-    dmr/             demod, framer, fec (bptc, cach, emb, slot type), message, tier3 control, traffic
+                     pdu, c4fm demod, fec (BCH NID, Reed-Solomon, trellis)
+    dmr/             demod, framer, fec (bptc, cach, emb, slot type, crc, RS(12,9)), message,
+                     tier3 control, traffic
   trunking/          protocol-neutral, host-tested
     ids.rs           SystemId, SiteId, TalkgroupId(u32), UnitId(u32), CallId
     follow/          one follower: ordered gates, lane choice, pre-emption
@@ -208,7 +209,7 @@ rewritten there (glue); "delete" means not carried over.
 | `app/dmr_task.rs` (994) | `protocol::dmr` decoders + `trunking::receivers` + api DTO | Split; the lifecycle bridge goes |
 | `app/dmr_follower.rs` | `trunking::follow` | Merged into the one follower |
 | `app/dmr_voice.rs`, `vocoder_task.rs`, `audio_pacer.rs` | `audio::{pipeline, agc, pacer}` | Two AGCs and the second pacer go |
-| `app/c4fm_task.rs` | `trunking::receivers` (runner) + `protocol::p25` (LSM/C4FM choice) | Split |
+| `app/c4fm_task.rs` | `trunking::receivers` (the runner and the LSM/C4FM choice) | |
 | `app/autoppm.rs`, `recentre_task.rs` | `radio::ppm` | Call the Tuner, not `api::tuning` |
 | `app/discovery*.rs` | `radio::lease` + `services::discovery` | Split |
 | `app/iq_hub.rs`, `dibit_readers.rs`, `dibit_airtime.rs` | `radio::streams` | |
@@ -1049,4 +1050,9 @@ From the brief:
   - **Changed from p25-httpd:** the auto choice waits for 10 s of counts before its first
     decision. Without it, B switched to C4FM in the first second (the LSM path starts a few
     hundred ms later) and the 60 s dwell held it there on an LSM site.
-  - **Next:** the FEC merge (one Golay/Hamming), then the replay corpus with B wired into A.
+  - **FEC:** one Golay(24,12) and one set of Hamming codes in `protocol::fec`, shared by both
+    protocols. The P25 voice parsers keep SDRTrunk's Golay behaviour (a 3-bit correction stands
+    whatever the parity bit says), DMR keeps the parity check. Checked: the parsed link control,
+    HDU and encryption sync of all 331 recordings (20,491 voice units) match p25-httpd's, and
+    the DMR reference still matches 24,984 of 24,996 lines.
+  - **Next:** the replay corpus with B wired into A (the last phase 2 gate), then phase 3.

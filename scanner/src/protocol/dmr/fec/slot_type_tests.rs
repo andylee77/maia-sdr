@@ -1,7 +1,7 @@
 //! Unit tests for `slot_type.rs`.
 
 use super::*;
-use crate::protocol::dmr::fec::{golay24, set_int};
+use crate::protocol::fec::{golay24, set_int};
 
 /// 20 transmitted slot type bits for a colour code and data type.
 fn encode(cc: u8, dt: u8) -> [u8; 20] {

@@ -1,5 +1,6 @@
-//! Hamming codes for the DMR BPTCs: ports of SDRTrunk `edac/IHamming.java`,
-//! `Hamming13.java`, `Hamming15.java`, `Hamming16.java` and `Hamming17.java`.
+//! Hamming codes: the DMR BPTCs' (ports of SDRTrunk `edac/IHamming.java`,
+//! `Hamming13.java`, `Hamming15.java`, `Hamming16.java` and `Hamming17.java`) and
+//! P25's Hamming(10,6,3) (`Hamming10.java`).
 //!
 //! Each word is `k` data bits followed by the parity bits, MSB first. The
 //! `CHECKSUMS` tables hold each position's syndrome contribution (TS 102 361-1
@@ -176,6 +177,41 @@ impl IHamming for Hamming17 {
             Some(p) => ErrorIndex::At(offset + p),
             None => ErrorIndex::MultipleErrors,
         }
+    }
+}
+
+/// Hamming(10,6,3), protecting the hexbits of P25's LDU1 link control and LDU2
+/// encryption sync.
+pub struct Hamming10;
+
+impl Hamming10 {
+    pub const CHECKSUMS: [u32; 6] = [0x0E, 0x0D, 0x0B, 0x07, 0x03, 0x0C];
+
+    /// Syndrome of the word at `offset` (6 data bits, 4 parity bits).
+    pub fn get_syndrome(bits: &[u8], offset: usize) -> u32 {
+        calculate(bits, offset, 6, &Self::CHECKSUMS) ^ get_int(&bits[offset + 6..offset + 10])
+    }
+
+    /// Corrects a single bit error in the word at `offset` and returns the corrected
+    /// count; `None`, the word unchanged, for a syndrome no single error explains.
+    /// Ports `Hamming10.checkAndCorrect()`.
+    pub fn check_and_correct(bits: &mut [u8], offset: usize) -> Option<u32> {
+        let position = match Self::get_syndrome(bits, offset) {
+            0 => return Some(0),
+            1 => 9,
+            2 => 8,
+            3 => 4,
+            4 => 7,
+            7 => 3,
+            8 => 6,
+            11 => 2,
+            12 => 5,
+            13 => 1,
+            14 => 0,
+            _ => return None,
+        };
+        bits[offset + position] ^= 1;
+        Some(1)
     }
 }
 

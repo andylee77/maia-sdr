@@ -16,7 +16,7 @@
 //!   `MAX_CORRECTED_128_77` flips are rejected; no random block passes then.
 
 use super::bit_distance;
-use super::hamming::{ErrorIndex, Hamming16, Hamming17, IHamming};
+use crate::protocol::fec::hamming::{ErrorIndex, Hamming16, Hamming17, IHamming};
 
 /// BPTC with `row_count` Hamming-protected rows of `column_count` bits, the
 /// last row being even column parity. Ports `BPTCBase`.

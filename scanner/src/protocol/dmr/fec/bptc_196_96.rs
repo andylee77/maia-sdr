@@ -25,7 +25,7 @@
 //! errors still fails or (rarer) decodes wrong; the CRC catches the latter.
 
 use super::bit_distance;
-use super::hamming::{ErrorIndex, Hamming13, Hamming15};
+use crate::protocol::fec::hamming::{ErrorIndex, Hamming13, Hamming15};
 
 pub const BPTC_LENGTH: usize = 196;
 const MAX_ORIGINAL_INDEX: usize = 136;

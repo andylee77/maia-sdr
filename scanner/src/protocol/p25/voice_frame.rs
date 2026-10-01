@@ -28,176 +28,38 @@
 //! - `reference_p25_ldu_bit_layout.md` memory for full bit layout
 
 use super::types::{is_body_status_dibit, DataUnit};
+use crate::protocol::fec::golay24;
+use crate::protocol::fec::hamming::Hamming10;
 
-// ── Hamming(10,6,3) decoder for LDU1 LC hexbits ──────────────────────
-//
-// LDU1's Link Control Word hexbits use Hamming(10,6,3) (not Golay(24,12)
-// like TDULC). Each 10-bit codeword: 6 data bits + 4 parity bits,
-// corrects 1 bit error. Used in series with RS(24,12,13) across the 24
-// hexbits (12 LC payload + 12 RS parity) to recover the 72-bit LCW
-// mid-call.
-//
-// Checksum table verbatim from SDRTrunk `Hamming10.CHECKSUMS`. Syndrome
-// -> flip-position via `Hamming10.checkAndCorrect`: odd syndromes 1..=14
-// are single-bit correctable; even syndromes 5, 6, 9, 10, 15 indicate
-// 2+ bit errors and are not correctable.
+// The link control and encryption sync hexbits carry Hamming(10,6,3) (LDU1, LDU2) or
+// Golay(24,12) (TDULC) or Golay(18,6) (HDU) per hexbit, then Reed-Solomon across them.
+// The decoders work on 0/1 bytes; the parsers here on bools.
 
-const HAMMING10_CHECKSUMS: [u8; 6] = [0x0E, 0x0D, 0x0B, 0x07, 0x03, 0x0C];
-
-/// Compute Hamming(10,6,3) syndrome of a 10-bit codeword. Returns a
-/// 4-bit value (0..=15).
-fn hamming10_syndrome(cw: &[bool; 10]) -> u8 {
-    let mut calculated: u8 = 0;
-    for i in 0..6 {
-        if cw[i] {
-            calculated ^= HAMMING10_CHECKSUMS[i];
-        }
-    }
-    // Parity bits at positions 6..=9 are 4-bit checksum
-    // (MSB at pos 6, LSB at pos 9).
-    let mut parity: u8 = 0;
-    for i in 0..4 {
-        if cw[6 + i] {
-            parity |= 1 << (3 - i);
-        }
-    }
-    calculated ^ parity
-}
-
-/// Correct up to 1 bit error in a Hamming(10,6,3) codeword in place.
-/// Returns:
-///   * `Some(0)` — no errors
-///   * `Some(1)` — one bit corrected
-///   * `None` — 2+ bits in error; data left uncorrected so the
-///     downstream RS(24,12,13) can try to recover
-pub(crate) fn hamming10_correct(cw: &mut [bool; 10]) -> Option<u32> {
-    let syn = hamming10_syndrome(cw);
-    // Mapping from SDRTrunk `Hamming10.checkAndCorrect`.
-    match syn {
-        0 => Some(0),
-        1 => { cw[9] ^= true; Some(1) }  // Parity 1
-        2 => { cw[8] ^= true; Some(1) }  // Parity 2
-        3 => { cw[4] ^= true; Some(1) }  // Data 2
-        4 => { cw[7] ^= true; Some(1) }  // Parity 4
-        7 => { cw[3] ^= true; Some(1) }  // Data 3
-        8 => { cw[6] ^= true; Some(1) }  // Parity 8
-        11 => { cw[2] ^= true; Some(1) } // Data 4
-        12 => { cw[5] ^= true; Some(1) } // Data 1
-        13 => { cw[1] ^= true; Some(1) } // Data 5
-        14 => { cw[0] ^= true; Some(1) } // Data 6
-        // 5, 6, 9, 10, 15: multi-bit errors Hamming can't localise.
-        _ => None,
-    }
-}
-
-// ── Golay(24,12,7) decoder for TDULC LC ──────────────────────────────
-//
-// 288-bit TDULC FEC block = 12 x 24-bit Golay codewords. Each codeword:
-// 12 data bits (pos 0-11), 11 parity bits (pos 12-22), overall parity
-// bit (pos 23). Corrects <= 3 bit errors per codeword.
-//
-// Checksums table verbatim from SDRTrunk `Golay24.CHECKSUMS`
-// (`CRCUtil.generate(12, 11, 0xC75, 0x0, true)`). First 12 entries
-// encode the parity contribution of each data bit; entries 12..=22 are
-// powers of 2 so existing parity bits XOR in at their own positions.
-// Syndrome = single XOR loop over set bits in the 23-bit Golay message.
-
-const GOLAY24_CHECKSUMS: [u16; 23] = [
-    0x63A, 0x31D, 0x7B4, 0x3DA, 0x1ED, 0x6CC, 0x366, 0x1B3,
-    0x6E3, 0x54B, 0x49F, 0x475,
-    0x400, 0x200, 0x100, 0x080,
-    0x040, 0x020, 0x010, 0x008,
-    0x004, 0x002, 0x001,
-];
-
-/// Bit width of a full Golay(24,12,7) codeword: 12 data bits + 11 Golay
-/// parity bits + 1 overall parity bit. Used to slice and rebuild 24-bit
-/// codewords out of the TDULC 288-bit FEC block.
+/// Bit width of a Golay(24,12) codeword.
 const GOLAY24_CODEWORD_BITS: usize = 24;
 
-/// 11-bit Golay(23,12) syndrome of a 24-bit codeword. Bit 23 (the
-/// 24th bit) is the overall parity — not part of the syndrome math
-/// but flipped if `parity_error` is true so the caller can use it
-/// as an extra single-bit-error signal.
-fn golay24_syndrome(cw: &[bool; 24]) -> u16 {
-    let mut syn: u16 = 0;
-    for i in 0..23 {
-        if cw[i] {
-            syn ^= GOLAY24_CHECKSUMS[i];
-        }
-    }
-    syn & 0x7FF
+fn with_bits<const N: usize>(cw: &mut [bool; N], f: impl FnOnce(&mut [u8; N])) {
+    let mut bits = cw.map(u8::from);
+    f(&mut bits);
+    *cw = bits.map(|b| b != 0);
 }
 
-/// Correct up to 3 bit errors in a 24-bit Golay codeword in place.
-/// Returns the Hamming-distance between the original and corrected
-/// codewords (0..=3), or `None` if no error pattern of weight <= 3
-/// explains the syndrome.
-///
-/// Brute-force syndrome -> error-pattern search over the 23
-/// syndrome-contributing positions: 23 + 253 + 1771 = 2047 candidates,
-/// each a single 16-bit XOR + equality compare.
-pub(crate) fn golay24_correct(cw: &mut [bool; 24]) -> Option<u32> {
-    let syn = golay24_syndrome(cw);
-    if syn == 0 {
-        return Some(0);
-    }
-
-    // Weight-1 error.
-    for e1 in 0..23 {
-        if GOLAY24_CHECKSUMS[e1] == syn {
-            cw[e1] ^= true;
-            return Some(1);
-        }
-    }
-    // Weight-2 errors.
-    for e1 in 0..23 {
-        let s1 = GOLAY24_CHECKSUMS[e1];
-        for e2 in (e1 + 1)..23 {
-            if s1 ^ GOLAY24_CHECKSUMS[e2] == syn {
-                cw[e1] ^= true;
-                cw[e2] ^= true;
-                return Some(2);
-            }
-        }
-    }
-    // Weight-3 errors. ~1770 XOR/compare triples per codeword.
-    for e1 in 0..23 {
-        let s1 = GOLAY24_CHECKSUMS[e1];
-        for e2 in (e1 + 1)..23 {
-            let s12 = s1 ^ GOLAY24_CHECKSUMS[e2];
-            for e3 in (e2 + 1)..23 {
-                if s12 ^ GOLAY24_CHECKSUMS[e3] == syn {
-                    cw[e1] ^= true;
-                    cw[e2] ^= true;
-                    cw[e3] ^= true;
-                    return Some(3);
-                }
-            }
-        }
-    }
-    None
+fn golay24_correct(cw: &mut [bool; 24]) {
+    with_bits(cw, |b| {
+        golay24::correct23(b, 0);
+    });
 }
 
-/// Golay(18,6,8) decode — the truncated Golay variant SDRTrunk uses to
-/// protect each HDU hexbit (`HDUMessage` applies it at the 20 data
-/// hexbit positions + first stage of the RS cascade).
-///
-/// Implementation mirrors SDRTrunk `Golay18.checkAndCorrect`: pack the
-/// 18 input bits into positions [6..24] of a 24-bit Golay24 codeword,
-/// leave positions [0..6] zero-filled, run the full Golay24 decoder,
-/// and read back positions [6..24] as the corrected 18-bit value. The
-/// top 6 bits act as known-zero anchor points that reduce the Golay24
-/// decoder's search space to the 18-bit Golay18 subspace.
-///
-/// Returns the number of bits corrected (0..=3), or `None` when no
-/// error pattern of weight ≤ 3 explains the syndrome.
-pub(crate) fn golay18_correct(cw: &mut [bool; 18]) -> Option<u32> {
-    let mut cw24 = [false; 24];
-    cw24[6..24].copy_from_slice(cw);
-    let errs = golay24_correct(&mut cw24)?;
-    cw.copy_from_slice(&cw24[6..24]);
-    Some(errs)
+fn golay18_correct(cw: &mut [bool; 18]) {
+    with_bits(cw, |b| {
+        golay24::correct18(b, 0);
+    });
+}
+
+fn hamming10_correct(cw: &mut [bool; 10]) {
+    with_bits(cw, |b| {
+        let _ = Hamming10::check_and_correct(b, 0);
+    });
 }
 
 // ── TDULC Link Control Word parsing ──────────────────────────────────
@@ -369,7 +231,7 @@ pub fn parse_tdulc_lcw_checked(body_raw: &[u8]) -> Option<(TdulcLcw, bool)> {
         for b in 0..GOLAY24_CODEWORD_BITS {
             cw[b] = raw_bits[base + b];
         }
-        let _ = golay24_correct(&mut cw);
+        golay24_correct(&mut cw);
         for b in 0..GOLAY24_CODEWORD_BITS {
             corrected_bits[base + b] = cw[b];
         }
@@ -582,7 +444,7 @@ pub fn parse_ldu1_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
         for b in 0..10 {
             cw[b] = corrected[st + b];
         }
-        let _ = hamming10_correct(&mut cw);
+        hamming10_correct(&mut cw);
         for b in 0..10 {
             corrected[st + b] = cw[b];
         }
@@ -681,7 +543,7 @@ pub fn tdulc_lc_bytes(body_raw: &[u8]) -> Option<[u8; 9]> {
         for b in 0..GOLAY24_CODEWORD_BITS {
             cw[b] = raw_bits[base + b];
         }
-        let _ = golay24_correct(&mut cw);
+        golay24_correct(&mut cw);
         for b in 0..GOLAY24_CODEWORD_BITS {
             corrected_bits[base + b] = cw[b];
         }
@@ -937,7 +799,7 @@ pub fn parse_hdu_body(body_raw: &[u8]) -> Option<HduHeader> {
         for b in 0..18 {
             cw[b] = corrected[st + b];
         }
-        let _ = golay18_correct(&mut cw);
+        golay18_correct(&mut cw);
         for b in 0..18 {
             corrected[st + b] = cw[b];
         }
@@ -1090,7 +952,7 @@ pub fn parse_ldu2_ess(body_raw: &[u8]) -> Option<Ldu2Ess> {
         for b in 0..10 {
             cw[b] = corrected[st + b];
         }
-        let _ = hamming10_correct(&mut cw);
+        hamming10_correct(&mut cw);
         for b in 0..10 {
             corrected[st + b] = cw[b];
         }

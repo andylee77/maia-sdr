@@ -6,7 +6,8 @@
 //! passes), a correction that lands on a pad bit or a detected 4-bit error
 //! makes the slot type invalid.
 
-use super::{get_int, golay24};
+use super::get_int;
+use crate::protocol::fec::golay24;
 
 /// Burst positions of the 20 slot type bits (10 either side of the sync).
 pub const MESSAGE_INDEXES: [usize; 20] = [

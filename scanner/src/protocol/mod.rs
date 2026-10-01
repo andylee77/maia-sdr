@@ -3,4 +3,5 @@
 
 pub mod dmr;
 pub mod events;
+pub mod fec;
 pub mod p25;

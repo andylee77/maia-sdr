@@ -164,12 +164,13 @@ fn body_hash(body: &[u8]) -> u64 {
     body.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
 }
 
-/// Writes what the framer makes of every SDRTrunk `.bits` file in `P25_SDRTRUNK_DIR` to
-/// `P25_FRAMER_DUMP/<stem>.txt`, in the format of p25-httpd's `framer_dump`, so the two framers
-/// can be compared file by file.
+/// Writes what the framer (and the voice unit parsers) make of every SDRTrunk `.bits` file in
+/// `P25_SDRTRUNK_DIR` to `P25_FRAMER_DUMP/<stem>.txt`, in the format of p25-httpd's
+/// `framer_dump`, so the two crates can be compared file by file.
 #[test]
 #[ignore = "needs P25_SDRTRUNK_DIR and P25_FRAMER_DUMP"]
 fn framer_dump() {
+    use crate::protocol::p25::voice_frame as vf;
     use std::fmt::Write;
     let (Ok(dir), Ok(dump)) = (std::env::var("P25_SDRTRUNK_DIR"), std::env::var("P25_FRAMER_DUMP")) else {
         panic!("set P25_SDRTRUNK_DIR and P25_FRAMER_DUMP");
@@ -187,11 +188,13 @@ fn framer_dump() {
                 framer.push(byte >> shift, &mut |f| match f {
                     Framed::Nid(_) => {}
                     Framed::Tsbk { index, message, .. } => writeln!(tsbks, "tsbk{index} {message:?}").unwrap(),
-                    Framed::Hdu(b) => writeln!(voice, "hdu {:016x}", body_hash(b)).unwrap(),
-                    Framed::Ldu1(b) => writeln!(voice, "ldu1 {:016x}", body_hash(b)).unwrap(),
-                    Framed::Ldu2(b) => writeln!(voice, "ldu2 {:016x}", body_hash(b)).unwrap(),
+                    Framed::Hdu(b) => writeln!(voice, "hdu {:016x} {:?}", body_hash(b), vf::parse_hdu_body(b)).unwrap(),
+                    Framed::Ldu1(b) => writeln!(voice, "ldu1 {:016x} {:?}", body_hash(b), vf::parse_ldu1_lcw(b)).unwrap(),
+                    Framed::Ldu2(b) => writeln!(voice, "ldu2 {:016x} {:?}", body_hash(b), vf::parse_ldu2_ess(b)).unwrap(),
                     Framed::Tdu => writeln!(voice, "tdu").unwrap(),
-                    Framed::TduLc(b) => writeln!(voice, "tdulc {:016x}", body_hash(b)).unwrap(),
+                    Framed::TduLc(b) => {
+                        writeln!(voice, "tdulc {:016x} {:?}", body_hash(b), vf::parse_tdulc_lcw_checked(b)).unwrap()
+                    }
                     Framed::Pdu { header, blocks, expected } => {
                         writeln!(pdus, "pdu {header:?} {blocks:?} {expected}").unwrap()
                     }

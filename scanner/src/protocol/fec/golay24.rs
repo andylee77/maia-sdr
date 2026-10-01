@@ -1,13 +1,15 @@
-//! Extended Golay(24,12,8): port of SDRTrunk `edac/Golay24.java`.
+//! Extended Golay(24,12,8): port of SDRTrunk `edac/Golay24.java` and `Golay18.java`.
 //!
 //! Word layout: 12 data bits, 11 Golay(23,12) checksum bits, 1 even parity bit
 //! over all 24. DMR's slot type Golay(20,8) is this code with 4 leading zero
-//! data bits (see `slot_type`).
+//! data bits (see `dmr::fec::slot_type`); P25's HDU hexbits use Golay(18,6), the
+//! code with 6 leading zero data bits.
 //!
 //! SDRTrunk decodes by error trapping and returns 0/1/2 (2 = failed) rather
 //! than a bit count. This port decodes the perfect Golay(23,12) part with a
-//! syndrome table (all patterns of up to 3 errors), then uses the parity bit to
-//! fix bit 23 or to detect a 4th error, and reports the exact corrected count.
+//! syndrome table (all patterns of up to 3 errors). `check_and_correct` then
+//! uses the parity bit to fix bit 23 or to detect a 4th error; `correct23`
+//! keeps the Golay(23,12) correction whatever the parity bit says.
 
 use std::sync::OnceLock;
 
@@ -79,6 +81,28 @@ pub fn check_and_correct(bits: &mut [u8], start: usize) -> Option<u32> {
         corrected += 1;
     }
     Some(corrected)
+}
+
+/// Corrects the Golay(23,12) part of the 24-bit word at `start` and returns the
+/// corrected bit count; the parity bit (23) is left as it is. The code is perfect,
+/// so every word decodes.
+pub fn correct23(bits: &mut [u8], start: usize) -> u32 {
+    let pattern = syndrome_table()[get_syndrome(bits, start) as usize];
+    for i in 0..23 {
+        bits[start + i] ^= ((pattern >> i) & 1) as u8;
+    }
+    pattern.count_ones()
+}
+
+/// Golay(18,6,8): the 18 bits at `start` corrected as the last 18 of a Golay(23,12)
+/// word whose first 6 data bits are zero. Returns the corrected bit count.
+pub fn correct18(bits: &mut [u8], start: usize) -> u32 {
+    let mut word = [0u8; 24];
+    word[6..].copy_from_slice(&bits[start..start + 18]);
+    correct23(&mut word, 0);
+    let corrected = word[6..].iter().zip(&bits[start..start + 18]).filter(|(a, b)| a != b).count() as u32;
+    bits[start..start + 18].copy_from_slice(&word[6..]);
+    corrected
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use super::*;
 use crate::protocol::dmr::demod::DmrDemodulator;
 use crate::protocol::dmr::fec::cach::Cach;
 use crate::protocol::dmr::fec::emb::{EMB_INDEXES, VALID_WORDS};
-use crate::protocol::dmr::fec::hamming::{Hamming16, Hamming17};
+use crate::protocol::fec::hamming::{Hamming16, Hamming17};
 use crate::protocol::dmr::fec::set_int;
 use crate::protocol::dmr::fec::slot_type::DataType;
 use crate::protocol::dmr::framer::{DmrBurst, DmrMessageFramer};

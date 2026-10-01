@@ -4,7 +4,7 @@
 //! The 32 bits are two 16-bit rows: a Hamming(16,11,4) word and, for the
 //! non-reverse-channel single burst, an identical copy (even column parity).
 
-use super::hamming::{ErrorIndex, Hamming16, IHamming};
+use crate::protocol::fec::hamming::{ErrorIndex, Hamming16, IHamming};
 
 /// Transmitted bit `x` goes to deinterleaved bit `DEINTERLEAVE[x]`.
 pub const DEINTERLEAVE: [usize; 32] = [

@@ -204,7 +204,7 @@ fn sdrtrunk_reference_block_is_an_on_air_csbk() {
 #[test]
 fn full_burst_aloha_through_slot_type_bptc_and_crc() {
     use crate::protocol::dmr::fec::crc::correct_ccitt80;
-    use crate::protocol::dmr::fec::golay24;
+    use crate::protocol::fec::golay24;
     use crate::protocol::dmr::fec::slot_type::{DataType, SlotType, MESSAGE_INDEXES};
 
     // Clay Electric ALOHA, colour code 0, data type CSBK (3).

@@ -1,7 +1,7 @@
 //! Unit tests for `golay24.rs`.
 
 use super::*;
-use crate::protocol::dmr::fec::set_int;
+use crate::protocol::fec::set_int;
 
 /// Encodes 12 data bits into a 24-bit extended Golay word.
 fn encode(data: u32) -> [u8; 24] {
@@ -98,4 +98,79 @@ fn works_at_an_offset() {
     assert_eq!(check_and_correct(&mut m, 5), Some(2));
     assert_eq!(&m[5..29], &encode(0xABC));
     assert_eq!(&m[..5], &[1, 1, 1, 1, 1]);
+}
+
+/// The P25 voice parsers' earlier decoder: search the weight 1, 2 and 3 patterns in
+/// order for the syndrome; the parity bit is ignored.
+fn search23(word: &mut [u8; 24]) {
+    let syndrome = get_syndrome(word, 0);
+    if syndrome == 0 {
+        return;
+    }
+    for a in 0..23 {
+        if CHECKSUMS[a] == syndrome {
+            word[a] ^= 1;
+            return;
+        }
+    }
+    for a in 0..23 {
+        for b in a + 1..23 {
+            if CHECKSUMS[a] ^ CHECKSUMS[b] == syndrome {
+                word[a] ^= 1;
+                word[b] ^= 1;
+                return;
+            }
+        }
+    }
+    for a in 0..23 {
+        for b in a + 1..23 {
+            for c in b + 1..23 {
+                if CHECKSUMS[a] ^ CHECKSUMS[b] ^ CHECKSUMS[c] == syndrome {
+                    word[a] ^= 1;
+                    word[b] ^= 1;
+                    word[c] ^= 1;
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn correct23_matches_the_pattern_search_on_every_syndrome() {
+    // Every 23-bit word is a codeword plus one pattern; one word per syndrome, with
+    // both parity values and a few data values, covers every case.
+    let mut state = 0x2545_F491u32;
+    for _ in 0..20_000 {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        let mut w = [0u8; 24];
+        set_int(state & 0xFF_FFFF, &mut w);
+        let mut reference = w;
+        search23(&mut reference);
+        let mut ours = w;
+        let n = correct23(&mut ours, 0);
+        assert_eq!(ours, reference, "{:06x}", state & 0xFF_FFFF);
+        assert_eq!(n, w.iter().zip(&ours).filter(|(a, b)| a != b).count() as u32);
+    }
+}
+
+#[test]
+fn correct18_decodes_the_shortened_code() {
+    for data in 0..64u32 {
+        let mut w = [0u8; 24];
+        set_int(data, &mut w[6..12]);
+        let c = calculate_checksum(&w, 0);
+        set_int(c, &mut w[12..23]);
+        let clean: [u8; 18] = w[6..].try_into().unwrap();
+        for (a, b) in [(0, 5), (3, 16), (7, 7)] {
+            let mut rx = clean;
+            rx[a] ^= 1;
+            rx[b] ^= 1;
+            let expected = if a == b { 0 } else { 2 };
+            assert_eq!(correct18(&mut rx, 0), expected);
+            assert_eq!(rx, clean);
+        }
+    }
 }

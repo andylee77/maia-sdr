@@ -115,3 +115,63 @@ fn hamming17_single_errors() {
         }
     }
 }
+
+/// The P25 voice parsers' earlier Hamming(10,6,3) decoder, on bools.
+fn hamming10_bools(cw: &mut [bool; 10]) -> Option<u32> {
+    let mut syndrome = 0u8;
+    for i in 0..6 {
+        if cw[i] {
+            syndrome ^= Hamming10::CHECKSUMS[i] as u8;
+        }
+    }
+    for i in 0..4 {
+        if cw[6 + i] {
+            syndrome ^= 1 << (3 - i);
+        }
+    }
+    let flip = match syndrome {
+        0 => return Some(0),
+        1 => 9,
+        2 => 8,
+        3 => 4,
+        4 => 7,
+        7 => 3,
+        8 => 6,
+        11 => 2,
+        12 => 5,
+        13 => 1,
+        14 => 0,
+        _ => return None,
+    };
+    cw[flip] ^= true;
+    Some(1)
+}
+
+#[test]
+fn hamming10_matches_the_earlier_decoder_on_every_word() {
+    for v in 0..1024u32 {
+        let mut bits = [0u8; 10];
+        crate::protocol::fec::set_int(v, &mut bits);
+        let mut bools = bits.map(|b| b == 1);
+        let expected = hamming10_bools(&mut bools);
+        assert_eq!(Hamming10::check_and_correct(&mut bits, 0), expected, "{v:010b}");
+        assert_eq!(bits.map(|b| b == 1), bools, "{v:010b}");
+    }
+}
+
+#[test]
+fn hamming10_corrects_every_single_error() {
+    for data in 0..64u32 {
+        let mut w = [0u8; 10];
+        crate::protocol::fec::set_int(data, &mut w[..6]);
+        let parity = calculate(&w, 0, 6, &Hamming10::CHECKSUMS);
+        crate::protocol::fec::set_int(parity, &mut w[6..]);
+        assert_eq!(Hamming10::get_syndrome(&w, 0), 0);
+        for e in 0..10 {
+            let mut rx = w;
+            rx[e] ^= 1;
+            assert_eq!(Hamming10::check_and_correct(&mut rx, 0), Some(1), "{data} {e}");
+            assert_eq!(rx, w);
+        }
+    }
+}
