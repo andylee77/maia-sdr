@@ -49,9 +49,9 @@ it.
 | D9 | Names | Superseded by D13: the fresh crate needs a name of its own. `p25-json` and `p25-pac` keep theirs until the cutover. | — |
 | D10 | FPGA | Nothing moves into gateware in 076. 076 models what each chain can do. One later bake adds an IQ tap on traffic chain 2 (section 13). | — |
 | D11 | Packet data | The v2 schema has a `data_packets` table. Fill it only if Andy wants: 074b was parked. | Leave the table out. |
-| D12 | P25 regression gate | The replay corpus (`rf.p25_corpus`) needs B transmitting into A over the bench link, which is not wired. Either wire it for phases 2–4, or accept host replay plus live A as the P25 gate. | — |
+| D12 | P25 regression gate (Andy, 2026-10-01) | B is wired into A over the bench link whenever a test needs it. The replay corpus (`rf.p25_corpus`), with B transmitting into A, is the P25 gate from phase 2, next to host replay and live A. | Host replay plus live A only. |
 | D13 | Execution (Andy, 2026-10-01) | A **fresh crate** in this repo, a workspace sibling of `p25-httpd/`, built top-down in phases. The old binary stays in production, with fixes only, until the cutover. Proposed name: `scanner/` (binary `scanner`); at the cutover tezuka_fw's package and init script switch to it. | Refactor in place (the 14-stage plan this replaces). |
-| D14 | Old docs (Andy, 2026-10-01) | Remove dev notes and phase history from the branch after a `pre-076` tag; git keeps them. Keep what the work still needs: `P25_ADDRESS_MAP.md`, `HW_VALIDATION_SUITE.md`, `ROADMAP.md`, `BUILD_FPGA.md`, the 075 and 076 docs, and `CHANGELOG_FORK.md`. Andy confirms the list in phase 0. | Move them to an `archive/` folder. |
+| D14 | Docs (Andy, 2026-10-01) | The old docs stay where they are. Docs that the refactor needs live in the fresh crate (`scanner/doc/`), starting with this design when phase 1 creates the crate. | Remove the old docs after a `pre-076` tag. |
 
 ## 1. Where things stand
 
@@ -752,9 +752,9 @@ otherwise. Seven tools still call routes that no longer exist (`/api/constellati
 `/api/lsm`, `/api/lsm_control`, `/api/grants_active`, `/api/talkgroups`,
 `/api/voice_follow_targets`, `/api/debug`). Those calls are fixed, or the tool is retired.
 
-**Docs:** `doc/API.md` replaces `doc/P25_API.md` and covers both protocols; the catalogue is
-generated, so it cannot drift again. Today it is missing 34 paths and `P25_API.md` is missing 13.
-`API_CONSUMERS.md` is updated.
+**Docs:** the fresh crate's `scanner/doc/API.md` covers both protocols; the catalogue is
+generated, so it cannot drift. Today the hand-written `/api/endpoints` catalogue is missing 34
+paths and `doc/P25_API.md` is missing 13. `API_CONSUMERS.md` is updated.
 
 ## 12. UI
 
@@ -872,8 +872,8 @@ one from `/tmp`, check it, then start the old one again. The fresh crate writes 
 
 **Live:**
 
-- **P25 regression:** the replay corpus `rf.p25_corpus`, if the bench link is wired (D12). It
-  checks TSBK CRC %, follow rate and vocoder errors.
+- **P25 regression:** the replay corpus `rf.p25_corpus`, with B transmitting into A over the
+  bench link (D12). It checks TSBK CRC %, follow rate and vocoder errors.
 - **Unit A at the end of every phase from 1:** Clay County P25 (CC 860.9625) and Clay Electric DMR
   (`cec_gcs`, CC 454.36875), against the phase 0 baseline.
 - **Unit B** at the cutover image, once its SD card has been checked.
@@ -901,7 +901,7 @@ Rules for the build-up:
 
 | Phase | What | Live check on unit A | Size |
 |-------|------|----------------------|------|
-| 0 | Groundwork in the current tree: baseline, fixtures, replay / Activity / route tests, golden dumps `#[ignore]`, the `pre-076` tag, old docs removed (D14), a short current `CLAUDE.md` | Baseline numbers on both systems | M |
+| 0 | Groundwork in the current tree: baseline, fixtures, replay / Activity / route tests, golden dumps `#[ignore]`, the `pre-076` tag, a short current `CLAUDE.md`, the B→A bench link (D12) | Baseline numbers on both systems and on the replay corpus | M |
 | 1 | **Skeleton.** Crate and workspace. Boot (args, logging, supervision, shutdown flush) and util. Config layers, migration and learned state. Radio: drivers ported, `fpga.rs` split, Tuner, lease, lanes, planner, ppm. `LiveSite::activate`. API core: route table, `ApiError`, status, radio, systems, sites, profiles. UI shell: pages, store, protocol registry, Systems and Settings. | Boots, migrates A's files into `scanner/`, tunes the live site, switches sites in one action; the old binary's files untouched | L |
 | 2 | **Receivers.** dsp, `protocol::fec`, P25 control (HDL LSM and C4FM, with the choice), DMR control, the receivers runner (live protocol only), events into the event log and the Diagnostics events box, site cards with identity and health | Same TSBK CRC % and DMR valid % as the baseline; CC messages in the events box | L |
 | 3 | **Trunking.** One follower, the CallBook, lanes with capabilities, the P25 traffic decoder on the HDL lanes, DMR traffic on chain 1's IQ and the control slot. Now page with call cards and recent calls. | The replay scenarios reproduce; follow rate on both systems as in the baseline | XL |
@@ -909,7 +909,7 @@ Rules for the build-up:
 | 5 | **History v2.** Writer, reader, copy-migration, Activity page, packet data if D11 says so | Activity snapshots match after the migration; new calls stored | M |
 | 6 | **Scan.** P25 and DMR probes, UHF/VHF, grouping into systems, first-run flow, rescan merge | From an empty config, a scan finds Clay County and Clay Electric, and adding them works | M |
 | 7 | **Diagnostics and consumers.** The diagnostic endpoints the tools and bench use (writes as POST/PUT), tools and bench moved, stale tools retired, the rest of Settings | fbench and the key tools run against the fresh crate | M |
-| 8 | **Cutover.** tezuka_fw's package and init script switch to the fresh crate; SD image for A, then B after its card check. The old p25-httpd, `lsm/` and `sw_demod/` are removed (to `dsp-lab` if wanted). `doc/API.md`, README, inventory and CHANGELOG are written. | "Done means" on both units | M |
+| 8 | **Cutover.** tezuka_fw's package and init script switch to the fresh crate; SD image for A, then B after its card check. The old p25-httpd, `lsm/` and `sw_demod/` are removed (to `dsp-lab` if wanted). The crate's docs (API reference, README, inventory) and `CHANGELOG_FORK.md` are written. | "Done means" on both units | M |
 
 Notes:
 
@@ -932,8 +932,8 @@ Notes:
   - the old files are untouched, so rollback is the old image;
   - check free SD space before copying the history (up to 2 GB);
   - B's card needs `fsck` (073a) before its first image.
-- **P25 regression without the bench (D12).** Live A shows decode and follow quality, but not
-  per-frame IMBE parity with SDRTrunk the way the corpus does.
+- **Bench time (D12).** A corpus run takes both units, and A listens to B instead of the air
+  while it runs.
 - **Shared units:** other sessions may drive A and B.
 - **Not in 076:**
   - auth and the MCP server;
@@ -957,7 +957,7 @@ From the brief:
 - existing units keep their sites, names, profiles, history and recordings;
 - the tree matches the module map with no dead code;
 - every phase passed its checks;
-- the docs match the code: API reference, inventory, this design and the status log.
+- the crate's docs match the code: API reference, inventory, this design and the status log.
 
 ## Status log
 
@@ -971,5 +971,7 @@ From the brief:
 - 2026-10-01: Defects 1, 2, 3, 4, 7 and 9 checked by hand, along with `save_site`'s only caller,
   the "clay" fallback and the fabric numbers. Design written.
 - 2026-10-01: **Andy approved the design.** At his request it is built as a fresh crate,
-  top-down, in phases 0–8 (D13, section 15), and the dev notes and phase docs leave the branch
-  (D14). The 14-stage in-place plan is retired. Unit A is the unit in use. Phase 0 is next.
+  top-down, in phases 0–8 (D13, section 15). The 14-stage in-place plan is retired. Unit A is
+  the unit in use. Phase 0 is next.
+- 2026-10-01: Andy decided D12 (B is wired into A for testing as needed) and D14 (the old docs
+  stay; the refactor's docs live in the fresh crate).
