@@ -85,6 +85,7 @@ routes! {
     get "/api/v1/calls/{id}" => v1::calls::one, "one call: live while recent, else from the history";
     get "/ws/events" => ws::events, "a text frame when a call opens or closes or a recording is saved";
     get "/ws/audio" => ws::audio, "live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta and lag frames); without, lane one untagged";
+    get "/api/v1/data" => v1::data::get, "packet data of a site (`site`, default the live one; `all`): totals, radios and recent records (`limit`)";
     get "/api/v1/activity/sites" => v1::activity::sites, "sites with history; where it is kept, its size and limits";
     get "/api/v1/activity/summary" => v1::activity::summary, "calls, voice and grant time, talkgroups, radios (`site`, `from`/`to` or `hours`)";
     get "/api/v1/activity/talkgroups" => v1::activity::talkgroups, "talkgroups by time, with names (`limit`)";

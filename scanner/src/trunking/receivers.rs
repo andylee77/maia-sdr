@@ -23,6 +23,7 @@ use crate::protocol::p25::control::P25Control;
 use crate::radio::streams::{Input, StreamCounters, StreamSource, Wants};
 use crate::services::config::systems::{Modulation, Protocol};
 use crate::services::clock::Clock;
+use crate::services::packet_data::PacketData;
 use crate::services::events::EventLog;
 use crate::services::history::store::UnitEventKind;
 use crate::services::history::HistoryTx;
@@ -213,6 +214,8 @@ pub struct Receivers {
     log: Arc<EventLog>,
     /// Takes the site's time broadcasts.
     clock: Mutex<Option<Arc<Clock>>>,
+    /// Takes the PDUs the control channel carries.
+    data: Mutex<Option<Arc<PacketData>>>,
     view: Arc<Mutex<View>>,
     counters: Mutex<Arc<StreamCounters>>,
     running: tokio::sync::Mutex<Option<Running>>,
@@ -223,6 +226,7 @@ impl Receivers {
         Receivers {
             log,
             clock: Mutex::default(),
+            data: Mutex::default(),
             view: Arc::default(),
             counters: Mutex::default(),
             running: tokio::sync::Mutex::new(None),
@@ -232,6 +236,12 @@ impl Receivers {
     pub fn set_clock(&self, clock: Arc<Clock>) {
         if let Ok(mut c) = self.clock.lock() {
             *c = Some(clock);
+        }
+    }
+
+    pub fn set_packet_data(&self, data: Arc<PacketData>) {
+        if let Ok(mut d) = self.data.lock() {
+            *d = Some(data);
         }
     }
 
@@ -263,6 +273,7 @@ impl Receivers {
             history: context.history.clone(),
             site: context.site.clone(),
             clock: self.clock.lock().ok().and_then(|c| c.clone()),
+            data: self.data.lock().ok().and_then(|d| d.clone()),
         };
         let name = match context.protocol {
             Protocol::P25 => "p25-cc",
@@ -322,6 +333,7 @@ struct Decoder {
     history: HistoryTx,
     site: String,
     clock: Option<Arc<Clock>>,
+    data: Option<Arc<PacketData>>,
 }
 
 /// Busy time over the last few seconds, as a share of one core.
@@ -505,6 +517,11 @@ impl Decoder {
                         c.observe(*sync);
                     }
                 }
+                ControlEvent::Pdu(frame) => {
+                    if let Some(d) = &self.data {
+                        d.pdu(frame, &self.site);
+                    }
+                }
                 ControlEvent::Neighbour(n) => {
                     if let Some(l) = &self.learned {
                         l.neighbour(n, now.unix_ms);
@@ -540,7 +557,6 @@ impl Decoder {
                         }
                     }
                 }
-                _ => {}
             }
         }
     }

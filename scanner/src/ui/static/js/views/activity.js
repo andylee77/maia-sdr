@@ -8,6 +8,7 @@
 
 import { h, setText, card, toast, table } from '../dom.js';
 import { api } from '../api.js';
+import { packetDataCard } from './packet_data.js';
 import { dur, num, bytes, tgLabel, unitLabel, DASH, dayTime as when } from '../format.js';
 
 const TICK_MS = 30000;
@@ -183,8 +184,9 @@ export function mount(host) {
   const detailCard = card('Details');
   detailCard.el.hidden = true;
   const callsCard = card('Recent calls');
+  const packets = packetDataCard();
 
-  host.append(h('div', { class: 'stack' }, ctl.el, sum.el, h('div', { class: 'grid-2' }, tgCard.el, radioCard.el), detailCard.el, callsCard.el));
+  host.append(h('div', { class: 'stack' }, ctl.el, sum.el, h('div', { class: 'grid-2' }, tgCard.el, radioCard.el), detailCard.el, callsCard.el, packets.el));
 
   // `st.site` is a site id, or `system:<id>` for every site of a system.
   function query(extra = {}) {
@@ -326,13 +328,15 @@ export function mount(host) {
       const detail = st.detail
         ? api.activity((st.detail.kind === 'tg' ? 'talkgroup/' : 'radio/') + st.detail.id, query())
         : Promise.resolve(null);
-      const [s, series, tgs, radios, calls, det] = await Promise.all([
+      const site = st.site && !st.site.startsWith('system:') ? st.site : null;
+      const [s, series, tgs, radios, calls, det, data] = await Promise.all([
         api.activity('summary', query()),
         api.activity('series', query({ bucket: st.period.bucket, tz, ...f })),
         api.activity('talkgroups', query({ limit: 25 })),
         api.activity('radios', query({ limit: 25 })),
         api.activity('calls', query({ limit: 50, ...f })),
         detail,
+        api.data(site ? new URLSearchParams({ site }).toString() : ''),
       ]);
       if (my !== seq) return;
       renderSummary(s.summary);
@@ -341,6 +345,7 @@ export function mount(host) {
       renderRadios(radios.items);
       renderDetail(det);
       renderCalls(calls.items);
+      packets.update(data);
     } catch (e) {
       if (my === seq) toast('Activity: ' + e.message, true);
     }

@@ -9,6 +9,7 @@ use crate::services::crystal::Crystal;
 use crate::services::discovery::sweep::Discovery;
 use crate::services::history::History;
 use crate::services::notices::Notices;
+use crate::services::packet_data::PacketData;
 use crate::services::recordings::Recordings;
 
 use tokio::sync::Mutex;
@@ -37,6 +38,7 @@ pub struct AppState {
     pub notices: Notices,
     pub clock: Arc<Clock>,
     pub crystal: Arc<Crystal<Hardware>>,
+    pub packet_data: Arc<PacketData>,
     pub log: Arc<EventLog>,
     pub hardware: HardwareInfo,
     pub started: Instant,

@@ -25,6 +25,7 @@ export const api = {
   sites: () => request('GET', '/api/v1/sites'),
   activate: id => request('POST', `/api/v1/sites/${encodeURIComponent(id)}/activate`),
   siteLearned: id => request('GET', `/api/v1/sites/${encodeURIComponent(id)}/learned`),
+  data: q => request('GET', '/api/v1/data' + (q ? '?' + q : '')),
   sitePlan: id => request('GET', `/api/v1/sites/${encodeURIComponent(id)}/plan`),
   recentre: id => request('POST', `/api/v1/sites/${encodeURIComponent(id)}/recentre`),
   profiles: () => request('GET', '/api/v1/profiles'),

@@ -2,6 +2,7 @@
 
 pub mod activity;
 pub mod calls;
+pub mod data;
 pub mod events;
 pub mod profiles;
 pub mod radio;

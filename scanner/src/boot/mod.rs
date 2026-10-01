@@ -61,6 +61,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let receivers = Arc::new(Receivers::new(log.clone()));
     let clock = Arc::new(Clock::default());
     receivers.set_clock(clock.clone());
+    let packet_data = Arc::new(crate::services::packet_data::PacketData::new(log.clone()));
+    receivers.set_packet_data(packet_data.clone());
     clock.start(config.clone(), lease.clone(), log.clone());
     let lanes = crate::hardware::p25core::Lane::ALL[..hardware.lanes].to_vec();
     let audio = crate::audio::live::Audio::start(&lanes);
@@ -132,6 +134,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         notices,
         clock,
         crystal,
+        packet_data,
         log,
         hardware,
         started,
