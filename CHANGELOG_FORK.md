@@ -5,6 +5,22 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-01] Persisted crystal correction scaled to the boot LO (074d)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-10-01-boot-ppm-074d`
+**Bake required:** NO (p25-httpd).
+
+- 074c scaled the LO shift on `/api/tune` and presets, but at boot the persisted calibration
+  (`lo_shift_hz`, measured at its own `rx_lo_hz`) was applied unscaled. A boot site on
+  another band started off: Clay Electric DMR at LO 452.7 MHz got 598 Hz instead of 316 Hz
+  (-377 Hz carrier offset); FPL (936 MHz) or SLERS (770 MHz) would be ~60 Hz off.
+- Now scaled with `tuning::scale_lo_shift` to the boot plan's LO (or `--rx-lo`); the log
+  line gives both values. Found and checked on unit A by the DMR session (fishball-dmr
+  e9c8f1c): 316 Hz at boot, carrier offset -150 Hz as after a retune.
+
+---
+
 ## [2026-09-30] Traffic chain 1 post-DDC IQ ring wired (075b)
 
 **Branch:** fishball-p25

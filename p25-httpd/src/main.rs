@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-10-01-dmr-eventlog-075";
+pub const BUILD_TAG: &str = "2026-10-01-dmr-075";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -449,7 +449,7 @@ async fn main() -> anyhow::Result<()> {
             const MAX_PLAUSIBLE_HZ: f64 = 1000.0;
             let shift = p.lo_shift_hz as f64;
             if shift.abs() <= MAX_PLAUSIBLE_HZ {
-                // Change 075: the shift was measured at the calibration's
+                // Change 074d: the shift was measured at the calibration's
                 // LO; a site on another band boots at another LO (a crystal
                 // error is a ppm), as 074c's retunes scale it.
                 let boot_lo = boot_plan_lo.unwrap_or(args.rx_lo as i64);
