@@ -20,9 +20,11 @@ use super::follow::routing::Routing;
 use super::follow::{Command, Follower, Record};
 use crate::hardware::p25core::rings::mono_instant;
 use crate::hardware::p25core::Lane;
+use crate::protocol::dmr::traffic::{DmrCall, DmrTraffic};
 use crate::protocol::events::{Grant, TrafficEvent};
 use crate::protocol::p25::traffic::{CallContext, P25Traffic};
-use crate::radio::streams::{LaneInput, StreamSource};
+use crate::radio::streams::{LaneInput, LaneMode, StreamSource};
+use crate::services::config::systems::Protocol;
 use crate::radio::tuner::{RadioHw, Tuner};
 use crate::services::events::EventLog;
 use crate::util::time::Stamp;
@@ -35,6 +37,8 @@ const TICK: Duration = Duration::from_millis(100);
 const STUCK_CHECK: Duration = Duration::from_secs(5);
 /// A lane that carried voice this recently resumes on the same channel without a reset.
 const COAST_MAX_IDLE: Duration = Duration::from_secs(1);
+/// IQ received this soon after a lane's retune may be the old channel's (a sub-buffer is ~164 ms).
+const IQ_SETTLE: Duration = Duration::from_millis(200);
 
 /// What the trunking task receives.
 #[derive(Debug)]
@@ -49,6 +53,9 @@ pub type TrunkTx = mpsc::Sender<TrunkInput>;
 /// What the trunking task is started with.
 pub struct Setup {
     pub site: String,
+    pub protocol: Protocol,
+    /// DMR: logical channel numbers to downlink Hz.
+    pub lcn_hz: std::collections::HashMap<u16, u64>,
     pub lanes: Vec<Lane>,
     pub routing: Routing,
     pub encrypted: HashSet<u32>,
@@ -85,9 +92,39 @@ pub struct CallsView {
     pub recent: Vec<CallView>,
 }
 
+/// A lane's traffic decoder.
+enum Decoder {
+    P25(P25Traffic),
+    Dmr(Box<DmrTraffic>),
+}
+
+impl Decoder {
+    fn release(&mut self) {
+        match self {
+            Decoder::P25(t) => t.release(),
+            Decoder::Dmr(t) => t.release(),
+        }
+    }
+
+    fn retuned(&mut self) {
+        match self {
+            Decoder::P25(t) => t.retuned(),
+            Decoder::Dmr(t) => t.retuned(),
+        }
+    }
+
+    /// The call the decoder follows.
+    fn call(&self) -> Option<CallId> {
+        match self {
+            Decoder::P25(t) => t.call().map(|c| c.call),
+            Decoder::Dmr(t) => t.call().map(|c| c.call),
+        }
+    }
+}
+
 struct LaneSlot {
     lane: Lane,
-    traffic: P25Traffic,
+    traffic: Decoder,
     /// The lane's calls, newest last: (call, opened at).
     calls: VecDeque<(CallId, Instant)>,
     /// Dibits aired before this are the old channel's.
@@ -133,7 +170,11 @@ impl Trunking {
         let (tx, rx) = mpsc::channel(QUEUE);
         let stop = Arc::new(AtomicBool::new(false));
         let (lane_tx, mut lane_rx) = mpsc::channel(QUEUE);
-        let sources = tuner.hw().lane_streams(&setup.lanes, lane_tx, stop.clone());
+        let mode = match setup.protocol {
+            Protocol::P25 => LaneMode::Dibits,
+            Protocol::DmrTier3 => LaneMode::Iq,
+        };
+        let sources = tuner.hw().lane_streams(&setup.lanes, mode, lane_tx, stop.clone());
         let forward = tx.clone();
         let forwarder = tokio::spawn(async move {
             while let Some(input) = lane_rx.recv().await {
@@ -150,7 +191,17 @@ impl Trunking {
             lanes: setup
                 .lanes
                 .iter()
-                .map(|&lane| LaneSlot { lane, traffic: P25Traffic::new(), calls: VecDeque::new(), retuned_at: None, last_voice: None, tuned_hz: None })
+                .map(|&lane| LaneSlot {
+                    lane,
+                    traffic: match setup.protocol {
+                        Protocol::P25 => Decoder::P25(P25Traffic::new()),
+                        Protocol::DmrTier3 => Decoder::Dmr(Box::new(DmrTraffic::new(setup.lcn_hz.clone()))),
+                    },
+                    calls: VecDeque::new(),
+                    retuned_at: None,
+                    last_voice: None,
+                    tuned_hz: None,
+                })
                 .collect(),
             tuner,
             log,
@@ -196,6 +247,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                         self.dibits(lane, &bytes, first, reset, &clock);
                     }
                     Some(TrunkInput::Lane(LaneInput::Nid { lane, duid, nac, valid, at })) => self.nid(lane, duid, nac, valid, at),
+                    Some(TrunkInput::Lane(LaneInput::Iq { lane, iq, at })) => self.iq(lane, &iq, at),
                     None => break,
                 },
                 _ = tick.tick() => {
@@ -292,8 +344,9 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
     fn dibits(&mut self, lane: Lane, bytes: &[u8], first: u64, reset: bool, clock: &crate::radio::streams::dibit_ring::ClockView) {
         let now = Stamp::now();
         let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) else { return };
+        let Decoder::P25(traffic) = &mut slot.traffic else { return };
         if reset {
-            slot.traffic.retuned();
+            traffic.retuned();
         }
         let mut events = Vec::new();
         let mut index = first;
@@ -305,12 +358,27 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     continue;
                 }
                 let mut out = Vec::new();
-                slot.traffic.push((b >> shift) & 3, air, now.mono, &mut out);
+                traffic.push((b >> shift) & 3, air, now.mono, &mut out);
                 events.extend(out.into_iter().map(|e| (air, e)));
             }
         }
         for (_, e) in events {
             self.traffic_event(lane, e, now);
+        }
+    }
+
+    /// Lane one's IQ at a DMR site.
+    fn iq(&mut self, lane: Lane, iq: &[i16], at: Stamp) {
+        let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) else { return };
+        let Decoder::Dmr(traffic) = &mut slot.traffic else { return };
+        // A sub-buffer read just after a retune can still hold the old channel's samples.
+        if traffic.call().is_none() || slot.retuned_at.is_some_and(|t| at.mono < t + IQ_SETTLE) {
+            return;
+        }
+        let mut out = Vec::new();
+        traffic.push(iq, at.mono, &mut out);
+        for e in out {
+            self.traffic_event(lane, e, at);
         }
     }
 
@@ -334,11 +402,17 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             TrafficEvent::TalkComplete(None) => {}
             TrafficEvent::End { lc, air } => {
                 if let Some(call) = self.slot(lane).and_then(|s| s.traffic.call()) {
-                    self.book.voice_end(lane, call.call, air, lc, at);
+                    self.book.voice_end(lane, call, air, lc, at);
                 }
             }
             TrafficEvent::Header { .. } => {}
-            TrafficEvent::Message(line) => self.log.message("p25", at.unix_ms, &line),
+            TrafficEvent::Message(line) => {
+                let source = match self.slot(lane).map(|s| &s.traffic) {
+                    Some(Decoder::Dmr(_)) => "dmr",
+                    _ => "p25",
+                };
+                self.log.message(source, at.unix_ms, &line);
+            }
         }
         self.call_events(out);
     }
@@ -380,7 +454,10 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     if let Some(lane) = o.lane {
                         self.follower.opened(lane, o.call);
                         if let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) {
-                            slot.traffic.follow(CallContext { call: o.call, tg: o.tg, source: o.source, encrypted: o.encrypted });
+                            match &mut slot.traffic {
+                                Decoder::P25(t) => t.follow(CallContext { call: o.call, tg: o.tg, source: o.source, encrypted: o.encrypted }),
+                                Decoder::Dmr(t) => t.follow(DmrCall { call: o.call, tg: o.tg, slot: o.channel.slot.unwrap_or(1), encrypted: o.encrypted }),
+                            }
                             slot.calls.push_back((o.call, now));
                             while slot.calls.len() > 4 {
                                 slot.calls.pop_front();
@@ -393,7 +470,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 CallEvent::Closed(c) => {
                     if let Some(Command::Release { lane }) = self.follower.closed(&c, now) {
                         if let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) {
-                            if slot.traffic.call().is_some_and(|k| k.call == c.call) {
+                            if slot.traffic.call() == Some(c.call) {
                                 slot.traffic.release();
                             }
                         }
@@ -409,8 +486,10 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 }
                 CallEvent::Source { call, lane: Some(lane), source, via: SourceVia::CcRefresh } => {
                     if let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) {
-                        if slot.traffic.call().is_some_and(|k| k.call == call) {
-                            slot.traffic.set_source(source);
+                        if let Decoder::P25(t) = &mut slot.traffic {
+                            if t.call().is_some_and(|k| k.call == call) {
+                                t.set_source(source);
+                            }
                         }
                     }
                 }

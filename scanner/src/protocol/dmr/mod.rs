@@ -19,3 +19,5 @@ pub mod message;
 pub mod framer;
 /// Sync patterns and the soft sync detector.
 pub mod sync;
+/// The traffic channel: the followed call's timeslot as traffic events.
+pub mod traffic;

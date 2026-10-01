@@ -32,6 +32,17 @@ pub enum LaneInput {
     Dibits { lane: Lane, bytes: Vec<u8>, first: u64, reset: bool, clock: ClockView },
     /// The lane's gateware read a NID, in real time (`valid`: it passed BCH).
     Nid { lane: Lane, duid: u8, nac: u16, valid: bool, at: Stamp },
+    /// 50 kSPS interleaved I, Q from the lane's DDC (lane one's IQ tap), received at `at`.
+    Iq { lane: Lane, iq: Vec<i16>, at: Stamp },
+}
+
+/// What a lane's readers read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneMode {
+    /// The gateware demodulator's dibits and NID status (P25).
+    Dibits,
+    /// The DDC's IQ (DMR; lane one only).
+    Iq,
 }
 
 /// Which control-chain streams a receiver wants.
@@ -65,7 +76,7 @@ pub trait StreamSource {
     ) -> Vec<tokio::task::JoinHandle<()>>;
 
     /// Starts each lane's dibit reader and gateware status poller.
-    fn lane_streams(&self, _lanes: &[Lane], _tx: tokio::sync::mpsc::Sender<LaneInput>, _stop: Arc<AtomicBool>) -> Vec<tokio::task::JoinHandle<()>> {
+    fn lane_streams(&self, _lanes: &[Lane], _mode: LaneMode, _tx: tokio::sync::mpsc::Sender<LaneInput>, _stop: Arc<AtomicBool>) -> Vec<tokio::task::JoinHandle<()>> {
         Vec::new()
     }
 }

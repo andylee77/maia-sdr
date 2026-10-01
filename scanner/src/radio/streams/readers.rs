@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use super::dibit_ring::{DibitClock, RingTracker};
-use super::{Input, LaneInput, StreamCounters, StreamSource, Wants};
+use super::{Input, LaneInput, LaneMode, StreamCounters, StreamSource, Wants};
 use crate::hardware::p25core::rings::DIBITS_PER_BYTE;
 use crate::hardware::p25core::{DibitRing, IqRing, Lane, P25Core};
 use crate::radio::hw::Hardware;
@@ -37,11 +37,19 @@ impl StreamSource for Hardware {
         tasks
     }
 
-    fn lane_streams(&self, lanes: &[Lane], tx: tokio::sync::mpsc::Sender<LaneInput>, stop: Arc<AtomicBool>) -> Vec<tokio::task::JoinHandle<()>> {
+    fn lane_streams(&self, lanes: &[Lane], mode: LaneMode, tx: tokio::sync::mpsc::Sender<LaneInput>, stop: Arc<AtomicBool>) -> Vec<tokio::task::JoinHandle<()>> {
         let mut tasks = Vec::new();
         for &lane in lanes {
-            tasks.push(tokio::spawn(lane_dibits(self.core.clone(), lane, tx.clone(), stop.clone())));
-            tasks.push(tokio::spawn(lane_status(self.core.clone(), lane, tx.clone(), stop.clone())));
+            match mode {
+                LaneMode::Dibits => {
+                    tasks.push(tokio::spawn(lane_dibits(self.core.clone(), lane, tx.clone(), stop.clone())));
+                    tasks.push(tokio::spawn(lane_status(self.core.clone(), lane, tx.clone(), stop.clone())));
+                }
+                LaneMode::Iq if lane == Lane::One => {
+                    tasks.push(tokio::spawn(lane_iq(self.core.clone(), lane, tx.clone(), stop.clone())));
+                }
+                LaneMode::Iq => tracing::error!("{lane} has no IQ tap"),
+            }
         }
         tasks
     }
@@ -193,6 +201,24 @@ async fn lane_status(core: Arc<Mutex<P25Core>>, lane: Lane, tx: tokio::sync::mps
             tx.try_send(LaneInput::Nid { lane, duid, nac, valid, at: Stamp::now() })
         {
             return;
+        }
+    }
+}
+
+async fn lane_iq(core: Arc<Mutex<P25Core>>, lane: Lane, tx: tokio::sync::mpsc::Sender<LaneInput>, stop: Arc<AtomicBool>) {
+    let ring = IqRing::Traffic;
+    let _ = core.lock().await.read_iq(ring);
+    let mut tick = ticker();
+    while !stop.load(Ordering::Relaxed) {
+        tick.tick().await;
+        let chunks: Vec<Vec<i16>> = {
+            let mut c = core.lock().await;
+            c.read_iq(ring).iter().map(|b| b.chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]])).collect()).collect()
+        };
+        for iq in chunks {
+            if let Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) = tx.try_send(LaneInput::Iq { lane, iq, at: Stamp::now() }) {
+                return;
+            }
         }
     }
 }

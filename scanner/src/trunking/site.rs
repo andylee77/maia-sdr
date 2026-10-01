@@ -153,13 +153,16 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
                 }
             }
         }
+        let lcn_hz: std::collections::HashMap<u16, u64> =
+            site.channel_plan.as_ref().map(|p| p.lcn_hz.iter().map(|(k, v)| (*k, *v)).collect()).unwrap_or_default();
         let setup = Setup {
             site: site.id.clone(),
-            // Lane one carries both protocols; lane two only P25 (it has no IQ tap). DMR traffic
-            // is not decoded yet: its grants are listed, not followed.
+            protocol: system.protocol,
+            lcn_hz: lcn_hz.clone(),
+            // Lane one carries both protocols; lane two only P25 (it has no IQ tap).
             lanes: match system.protocol {
                 Protocol::P25 => self.lanes.clone(),
-                Protocol::DmrTier3 => Vec::new(),
+                Protocol::DmrTier3 => self.lanes.iter().copied().filter(|&l| l == Lane::One).collect(),
             },
             routing: profile.as_ref().map(Routing::new).unwrap_or_default(),
             encrypted: self.learned.lock().await.as_ref().map(|l| l.value.encrypted_talkgroups.iter().copied().collect()).unwrap_or_default(),
@@ -174,7 +177,7 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
             site: site.id.clone(),
             protocol: system.protocol,
             modulation: site.modulation,
-            lcn_hz: site.channel_plan.as_ref().map(|p| p.lcn_hz.iter().map(|(k, v)| (*k, *v)).collect()).unwrap_or_default(),
+            lcn_hz,
             trunk: Some(trunk),
         };
         self.receivers.start(context, self.tuner.hw()).await;
