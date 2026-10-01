@@ -83,13 +83,13 @@ impl DataUnit {
     /// | TDULC |  288   |    6    |   20    |   216   |   159    |    154    |      5      |
     ///
     /// **Body status dibit pattern is universal across all DUIDs:**
-    /// status dibits live at body raw positions {13, 49, 85, 121, ...}
-    /// (= 13 + 36*k for k >= 0). This is because SDRTrunk's
-    /// `mStatusSymbolDibitCounter` is set to 21 at NID-detect and
-    /// incremented by 1 each iteration, so the first body iteration
-    /// has counter 23 and the counter hits 36 at body pos 13 (then
-    /// resets to 0 and counts back up to 36 every 36 iterations).
-    /// Use `is_body_status_dibit(body_pos)` to check.
+    /// status dibits live at body raw positions {14, 50, 86, 122, ...}
+    /// (= 14 + 36*k): every 36th dibit of the frame (frame dibits 35,
+    /// 71, ...), the body starting at frame dibit 57. The last raw dibit
+    /// of every extent above is a status dibit. Use
+    /// `is_body_status_dibit(body_pos)` to check. (Change 074: this was
+    /// 13 + 36*k; the trellis on TSBKs and the IMBE FEC on voice were
+    /// correcting the misplaced dibits.)
     ///
     /// **Phase 7C correction (2026-04-11):** the previous values for
     /// HDU=324, TDU=0, LDU1=792, LDU2=792, TDULC=168 were never tested
@@ -104,7 +104,9 @@ impl DataUnit {
             Self::Ldu1 => 807,   // 1568 bits + 0 null + 23 body status (was 792)
             Self::Tsdu => 123,   // unchanged ✓ (was 123, validated in Phase 6F.2i)
             Self::Ldu2 => 807,   // 1568 bits + 0 null + 23 body status (was 792)
-            Self::Pdu => 288,    // not yet validated
+            // Change 074: the header block (98 data + 3 status dibits);
+            // the decoder reads the data blocks it announces after it.
+            Self::Pdu => 101,
             Self::TduLc => 159,  // 288 bits + 20 null + 5 body status (was 168)
         }
     }
@@ -119,7 +121,7 @@ impl DataUnit {
             Self::Ldu1 => 784,
             Self::Tsdu => 119,
             Self::Ldu2 => 784,
-            Self::Pdu => 288,    // not yet validated
+            Self::Pdu => 98,
             Self::TduLc => 154,
         }
     }
@@ -130,18 +132,17 @@ impl DataUnit {
 ///
 /// The body status pattern is universal across all P25 Phase 1 data
 /// unit types (HDU, TDU, LDU1, LDU2, TSDU, TDU_LC, PDU). Status dibits
-/// live at body raw positions {13, 49, 85, 121, ...} = 13 + 36*k for
-/// k = 0, 1, 2, ...
+/// are every 36th dibit of the frame: frame dibits 35, 71, 107, ...
+/// (frame dibit 35 is the one inside the NID). The body starts at frame
+/// dibit 57 (24 sync + 33 NID), so body raw positions 14 + 36*k.
 ///
-/// Derivation: SDRTrunk's `P25P1MessageFramer` sets
-/// `mStatusSymbolDibitCounter = 21` at NID-detect. The first body
-/// iteration sees counter 23 (after two pre-iterations). The counter
-/// increments by 1 each iteration and a status dibit is dropped when
-/// counter == 36, resetting to 0. So the first body status drop is at
-/// body pos (36 - 23) = 13, and subsequent drops are at 13 + 36*k.
+/// Change 074: this was 13 + 36*k, one dibit early. The 1/2-rate
+/// trellis hid it on TSBKs (CRC-good 97.1-97.7 % -> 99.7 % after the
+/// fix, unit A, 5 min each); the 3/4-rate packet-data blocks did not
+/// (0 of 95 blocks error-free before, 53 of 56 after).
 #[inline]
 pub fn is_body_status_dibit(body_raw_pos: usize) -> bool {
-    body_raw_pos >= 13 && (body_raw_pos - 13) % 36 == 0
+    body_raw_pos >= 14 && (body_raw_pos - 14) % 36 == 0
 }
 #[cfg(test)]
 #[path = "types_tests.rs"]

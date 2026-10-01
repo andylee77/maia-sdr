@@ -239,6 +239,10 @@ pub struct AppState {
     /// Change 073: what the radio learned about the sites not active
     /// (grant map, encrypted talkgroups); swapped in on a switch.
     pub site_memory: std::sync::Mutex<std::collections::HashMap<String, SiteMemory>>,
+    /// Change 074: packet data seen (records, totals per radio).
+    pub data: crate::app::data_task::SharedData,
+    /// Change 074: the data-only decoder of each traffic chain.
+    pub data_decoders: Vec<Arc<RwLock<ControlChannelDecoder>>>,
     /// 2026-04-24: per-grant decode summary ring for **clear /
     /// followed** calls. 2026-04-29: split from the encrypted ring
     /// (below) so heavy ENC GRANT activity (which produces 0-IMBE
@@ -472,6 +476,8 @@ pub fn router(
         .route("/api/activity/talkgroup/{tg}", get(api::activity::get_talkgroup))
         .route("/api/activity/series", get(api::activity::get_series))
         .route("/api/activity/calls", get(api::activity::get_calls))
+        // Change 074: packet data.
+        .route("/api/data", get(api::data::get_data))
         .route("/api/system", get(api::system::get_system))
         .route("/api/sys_health", get(api::system::get_sys_health))
         .route("/api/ps_cores", get(api::system::get_ps_cores))

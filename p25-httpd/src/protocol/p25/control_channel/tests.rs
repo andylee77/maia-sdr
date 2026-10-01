@@ -211,7 +211,7 @@ fn test_multi_block_tsbk_e2e() {
     }
     assert_eq!(data.len(), 224);
 
-    let status_positions = [13usize, 49, 85, 121, 157, 193, 229];
+    let status_positions = [14usize, 50, 86, 122, 158, 194, 230];
     let mut body: Vec<u8> = Vec::with_capacity(231);
     let mut data_iter = data.into_iter();
     for i in 0..231 {
@@ -312,7 +312,7 @@ fn test_single_block_tsbk_terminates_on_lb1() {
     for _ in 0..21 {
         data.push(0);
     }
-    let status_positions = [13usize, 49, 85, 121];
+    let status_positions = [14usize, 50, 86, 122];
     let mut body: Vec<u8> = Vec::with_capacity(123);
     let mut data_iter = data.into_iter();
     for i in 0..123 {

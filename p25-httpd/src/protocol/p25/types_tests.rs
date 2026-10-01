@@ -9,13 +9,13 @@ use super::*;
 
 #[test]
 fn body_status_pattern_matches_tsdu() {
-    // TSDU body has 4 status dibits at {13, 49, 85, 121} per the
-    // existing Phase 6F.2i validation. Verify the universal helper
-    // returns the same pattern.
+    // TSDU body has 4 status dibits at {14, 50, 86, 122}: every 36th
+    // dibit of the frame (frame dibits 35, 71, ...; the body starts at
+    // frame dibit 57). Change 074 (was 13-based).
     let tsdu_status: Vec<usize> = (0..123)
         .filter(|p| is_body_status_dibit(*p))
         .collect();
-    assert_eq!(tsdu_status, vec![13, 49, 85, 121]);
+    assert_eq!(tsdu_status, vec![14, 50, 86, 122]);
 }
 
 #[test]

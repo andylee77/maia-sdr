@@ -98,6 +98,16 @@ export function pct(v, digits = 1) {
   return Number(v).toFixed(digits) + ' %';
 }
 
+// "14:05" today, "9/28 14:05" another day (change 074, from activity.js).
+export function dayTime(ms) {
+  if (!ms) return DASH;
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  const time = p(d.getHours()) + ':' + p(d.getMinutes());
+  if (d.toDateString() === new Date().toDateString()) return time;
+  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + time;
+}
+
 // "TG 300" / "EMS Dispatch (300)"
 export function tgLabel(tg, alias) {
   if (!tg) return DASH;

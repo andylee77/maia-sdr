@@ -5,9 +5,9 @@
 //! and the vocoder.
 //!
 //! Pipeline:
-//!   1. Strip body status dibits at raw positions `{13, 49, 85, 121,
-//!      ..., 13 + 36*k}` -- they carry network-status info, not voice
-//!      payload.
+//!   1. Strip body status dibits at raw positions `{14, 50, 86, 122,
+//!      ..., 14 + 36*k}` -- they carry network-status info, not voice
+//!      payload (change 074: was 13-based).
 //!   2. Pack the resulting 784 data dibits into 1568 bits, MSB-first
 //!      big-endian within each dibit (dibit `0bAB` -> `[A, B]`).
 //!      Matches SDRTrunk's `BinaryMessage` ordering.
@@ -234,21 +234,12 @@ const LC_HEX_POSITIONS: [usize; 12] = [
     126, // LC_HEX_11 -> LC bits 66-71
 ];
 
-/// TDULC-specific body status dibit positions. SDRTrunk's framer
-/// increments `mStatusSymbolDibitCounter` starting at 21 immediately
-/// AFTER NID detection, inserting a status dibit whenever the counter
-/// hits 36 -- putting the FIRST body status at position 14, and
-/// subsequent ones at +36 intervals.
-///
-/// The shared `is_body_status_dibit` in `types.rs` uses the +13 pattern
-/// (correct for TSDUs / control-channel frames); TDULC specifically
-/// needs +14. Cross-checked against SDRTrunk `.bits` files: +14 decodes
-/// cleanly as `GROUP VOICE CHANNEL USER FM:0 TO:300`; +13 shifted bits
-/// and misread MFID as 0x02 instead of 0x00.
-const TDULC_BODY_STATUS_POSITIONS: [usize; 5] = [14, 50, 86, 122, 158];
-
+/// TDULC body status dibits: the shared 14 + 36k schedule. (TDULC was
+/// found to need +14 against SDRTrunk `.bits` files while the shared
+/// helper still said +13; change 074 found +14 is right for every data
+/// unit, and TDULC uses the shared helper again.)
 fn is_tdulc_body_status(pos: usize) -> bool {
-    TDULC_BODY_STATUS_POSITIONS.iter().any(|&p| p == pos)
+    is_body_status_dibit(pos)
 }
 
 /// Parsed TDULC / LDU1 Link Control Word. 72-bit LC layout is identical

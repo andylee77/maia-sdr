@@ -524,6 +524,9 @@ pub fn spawn_hdl_lsm_traffic_reader(
     // `traffic2`); the ring is the forwarder's lane's.
     shared: Arc<DibitRingShared>,
     event_log: Arc<EventLog>,
+    // Change 074: a data-only decoder fed what the call gate holds back
+    // (the chain between calls): packet data (PDUs) flows then.
+    data_decoder: Option<Arc<RwLock<ControlChannelDecoder>>>,
 ) {
     let lane = traffic_reader_imbe.lane;
     tokio::spawn(async move {
@@ -545,6 +548,9 @@ pub fn spawn_hdl_lsm_traffic_reader(
         let mut total_bytes: u64 = 0;
         let mut hist = [0u64; 4];
         let mut pending_reset = false;
+        // Change 074: end (absolute dibit index) of the last range fed to
+        // the data decoder; a gap resets its framer.
+        let mut data_end: u64 = 0;
         loop {
             if let Some(m) = rd.maybe_switch(&traffic_lsm_core).await {
                 pending_reset = true;
@@ -586,9 +592,16 @@ pub fn spawn_hdl_lsm_traffic_reader(
                         .load(Ordering::Relaxed) != 0;
                     let legacy = mode == DeliveryMode::Legacy;
                     let mut dec = traffic_lsm_decoder_task.write().await;
+                    let mut ddec = match &data_decoder {
+                        Some(d) => Some(d.write().await),
+                        None => None,
+                    };
                     if pending_reset {
                         dec.reset_framer_state();
                         rd.shared.note_framer_reset();
+                        if let Some(dd) = ddec.as_mut() {
+                            dd.reset_framer_state();
+                        }
                         pending_reset = false;
                     }
                     for (start_idx, bytes) in &chunks {
@@ -605,6 +618,16 @@ pub fn spawn_hdl_lsm_traffic_reader(
                             rd.shared.note_fed(n, 0);
                         } else {
                             rd.shared.note_fed(0, n);
+                            // Change 074: between calls, to the data decoder.
+                            if let Some(dd) = ddec.as_mut() {
+                                if *start_idx != data_end {
+                                    dd.reset_framer_state();
+                                }
+                                for &word in words {
+                                    dd.process_dma_word(word);
+                                }
+                                data_end = start_idx + n;
+                            }
                         }
                         total_bytes += bytes.len() as u64;
                         if !legacy || *start_idx != 0 {
@@ -613,6 +636,7 @@ pub fn spawn_hdl_lsm_traffic_reader(
                         }
                     }
                     drop(dec);
+                    drop(ddec);
                 }
                 DeliveryMode::Airtime => {
                     if d.bytes.is_empty() && d.cuts.is_empty() {
@@ -644,9 +668,29 @@ pub fn spawn_hdl_lsm_traffic_reader(
                     let mut latched: Option<u64> = None;
                     {
                         let mut dec = traffic_lsm_decoder_task.write().await;
+                        let mut ddec = match &data_decoder {
+                            Some(d) => Some(d.write().await),
+                            None => None,
+                        };
                         for step in &steps {
                             match step {
-                                Step::ResetFramer { .. } => dec.reset_framer_state(),
+                                Step::ResetFramer { .. } => {
+                                    dec.reset_framer_state();
+                                    if let Some(dd) = ddec.as_mut() {
+                                        dd.reset_framer_state();
+                                    }
+                                }
+                                // Change 074: what the call gate holds back
+                                // goes to the data decoder.
+                                Step::Gate { start, end } => {
+                                    if let Some(dd) = ddec.as_mut() {
+                                        if *start != data_end {
+                                            dd.reset_framer_state();
+                                        }
+                                        feed_range(dd, &bytes, i0, *start, *end, |_| {});
+                                        data_end = *end;
+                                    }
+                                }
                                 Step::Feed { start, end, ctx } => {
                                     let mut ctx = *ctx;
                                     if latched == Some(ctx.call_id) {
@@ -666,7 +710,7 @@ pub fn spawn_hdl_lsm_traffic_reader(
                                         latched = Some(ctx.call_id);
                                     }
                                 }
-                                Step::Gate { .. } | Step::Discard { .. } | Step::Applied { .. } => {}
+                                Step::Discard { .. } | Step::Applied { .. } => {}
                             }
                         }
                     }

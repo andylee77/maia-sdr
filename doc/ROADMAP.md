@@ -29,6 +29,9 @@ scanner needs:
 | 071 | Find local systems: sweep the band, build sites automatically | done (071a fixes, 071b C4FM, 071 finder) |
 | 072 | Per-site activity history: radios, talkgroups, grants, encryption, airtime; graphs | done |
 | 072b | Encrypted calls: follow them for their details (no audio) on a free chain | idea |
+| 074 | Packet data (SNDCP) on the data channel; status-dibit fix for every frame | done |
+| 074b | Packet data: keep it in the history; decode LRRP / ARS / TMS contents | next |
+| — | Phase 2 TDMA voice | later, if a nearby system uses it (Clay grants none) |
 | — | Code review and analysis of p25-httpd, then refactor into clean modules | review done: `doc/CODE_REVIEW_2026_09_28.md` (stages 0–3) |
 | — | Remote libiio control: detect it and share the radio | idea |
 | — | Agent control: MCP server and prompt structure | idea |
@@ -125,6 +128,17 @@ meanwhile could be missed. That is what the option must not do. The design:
 
 Measure first: how often both chains are busy on Clay at peak, and how many clear calls would
 have started during an encrypted follow.
+
+## 074b — Packet data, next steps
+
+074 decodes Clay's packet data (downlink only: radios transmit on the uplink). Next:
+
+- Keep data records in the activity history (per radio and site), so Activity can show data
+  per radio, hour and day, like calls.
+- Decode the contents: LRRP (location requests and the reports the server forwards), ARS
+  (registrations), TMS (text). SDRTrunk has decoders for each (`module/decode/ip/mototrbo`).
+- Follow data channel grants (SNDCP data channel grant) to other data channels when Clay uses
+  more than one (074 parks the idle chain on the announced channel only).
 
 ## Code review and refactor
 

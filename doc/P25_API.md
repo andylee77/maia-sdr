@@ -93,6 +93,12 @@ endpoint now. `/api/decoder_compare` dropped `ps_iq_lsm` and
 | `/api/recent_tsbks` | GET | JSON | Newest 50 TSBKs as `{age_secs, block, summary}` |
 | `/api/tsbk_opcodes` | GET | JSON | Per-opcode + per-block-position histogram with parsed/unparsed flag + MFID breakdown |
 
+### `api/data` — packet data (change 074)
+
+| Path | Method | Returns | Purpose |
+|---|---|---|---|
+| `/api/data` | GET | JSON | `?site=` (default the active site; `all`), `?limit=` (100, max 500). `{site, active_site, data_channel_hz (the announced SNDCP data channel; 0 = none yet), pdus, duplicates, totals: {kind: count} (kind = packet/<service or SAP>, response/<response>, ambtc, umbtc), decoders: [{chain (control, ps_c4fm, data1, data2), active, nids, pdu_frames, pdu_header_crc_fail, pdu_blocks}], radios: [{site, llid, alias, packets, inbound, outbound, bytes, first_ms, last_ms, kinds, ip}], recent: [{at_ms, site, chain, nac, outbound, format, sap, sap_id, llid, alias, mfid, confirmed, blocks, blocks_expected, bad_blocks, block_errors, crc_ok, sndcp, ip {src, dst, protocol, total_len, src_port, dst_port}, service (lrrp, ars, tms, xcmp, ...), bytes, opcode, response, hex}]}`. In memory since the last restart. Every PDU is also logged (`/api/log?category=data`) |
+
 ### `api/activity` — per-site history (change 072)
 
 SQLite on the SD card (`/mnt/sd/p25-history.sqlite`; `/tmp` when there is no card): every

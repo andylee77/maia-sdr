@@ -243,6 +243,16 @@ pub struct ControlChannelDecoder {
     /// Change 072: accepted affiliations / registrations for the
     /// activity history (from the active decoder only).
     pub unit_event_tx: Option<tokio::sync::mpsc::Sender<UnitObservation>>,
+    /// Change 074: decoded packet data units (from the active decoder).
+    pub pdu_tx: Option<tokio::sync::mpsc::Sender<crate::protocol::p25::pdu::PduFrame>>,
+    /// Change 074: the header of the PDU being read (its data blocks
+    /// follow).
+    pdu_header: Option<crate::protocol::p25::pdu::PduHeader>,
+    /// Change 074: PDUs seen (NIDs with DUID 0xC), headers failing the
+    /// CRC, data blocks decoded.
+    pub pdu_frames: u64,
+    pub pdu_header_crc_fail: u64,
+    pub pdu_blocks: u64,
     /// Optional voice frame handler. When set, the decoder dispatches
     /// HDU/LDU1/LDU2/TDU/TDU_LC bodies to the handler in addition to
     /// the normal TSDU dispatch. Set on the `traffic_lsm_decoder`
@@ -603,6 +613,11 @@ impl ControlChannelDecoder {
             event_tx: None,
             grant_event_tx: None,
             unit_event_tx: None,
+            pdu_tx: None,
+            pdu_header: None,
+            pdu_frames: 0,
+            pdu_header_crc_fail: 0,
+            pdu_blocks: 0,
             // Voice handler is opt-in. Control-channel decoders
             // leave it None; the traffic_lsm_decoder sets it to
             // forward IMBE frames downstream.
@@ -734,6 +749,7 @@ impl ControlChannelDecoder {
         self.du_buffer.clear();
         self.du_expected_len = 0;
         self.tsdu_blocks_decoded = 0;
+        self.pdu_header = None;
         // 2026-05-03: NAC tracker is per-chain state and must reset
         // on retune (sw_demod_task / grant_follower call this on
         // freq change). A new freq might be a different system → the
@@ -751,6 +767,8 @@ impl ControlChannelDecoder {
         self.reset_framer_state();
         self.system = SystemIdentity::default();
         self.bands.clear();
+        // Change 074: the new system announces its own data channel.
+        crate::app::data_task::set_data_channel_hz(0);
     }
 
     /// Clear ALL diagnostic counters and histograms (the
@@ -1314,6 +1332,7 @@ impl ControlChannelDecoder {
                             self.du_buffer.clear();
                             self.du_expected_len = expected_len;
                             self.tsdu_blocks_decoded = 0;
+                            self.pdu_header = None;
                             self.state = DecoderState::ReadingDataUnit { duid };
                         } else {
                             // TDU or empty — back to hunting
@@ -1409,8 +1428,9 @@ impl ControlChannelDecoder {
                             }
                             true
                         }
-                        // PDU is rare on voice channels; consume + return.
-                        _ => true,
+                        // Change 074: packet data (the header, then the
+                        // data blocks it announces).
+                        DataUnit::Pdu => self.process_pdu(),
                     };
                     if done {
                         self.state = DecoderState::Hunting;
@@ -1462,6 +1482,63 @@ impl ControlChannelDecoder {
     ///    - CRC OK + LB=1: legitimately done.
     ///    - Anything else (CRC OK + LB=0, CRC fail, trellis fail):
     ///      extend `du_expected_len` and continue.
+    /// Change 074: a PDU in two steps: the header block, then (reading
+    /// on) the data blocks it announces. True when the PDU is done.
+    fn process_pdu(&mut self) -> bool {
+        use crate::protocol::p25::pdu;
+        let data = pdu::strip_status(&self.du_buffer);
+        let Some(header) = self.pdu_header.take() else {
+            self.pdu_frames += 1;
+            let Some(h) = data.get(..pdu::BLOCK_DIBITS).and_then(pdu::PduHeader::decode) else {
+                self.pdu_header_crc_fail += 1;
+                return true;
+            };
+            if !h.crc_ok {
+                self.pdu_header_crc_fail += 1;
+                return true;
+            }
+            let n = (h.blocks_to_follow as usize).min(pdu::MAX_BLOCKS);
+            if n == 0 {
+                self.emit_pdu(h, Vec::new(), 0);
+                return true;
+            }
+            self.du_expected_len = pdu::raw_len_for_data(pdu::BLOCK_DIBITS * (1 + n));
+            self.pdu_header = Some(h);
+            return false;
+        };
+        let n = (header.blocks_to_follow as usize).min(pdu::MAX_BLOCKS);
+        let confirmed = header.confirmed_blocks();
+        let blocks: Vec<pdu::PduBlock> = (1..=n)
+            .filter_map(|k| {
+                let s = k * pdu::BLOCK_DIBITS;
+                data.get(s..s + pdu::BLOCK_DIBITS).and_then(|d| pdu::decode_block(d, confirmed))
+            })
+            .collect();
+        self.pdu_blocks += blocks.len() as u64;
+        self.emit_pdu(header, blocks, n);
+        true
+    }
+
+    fn emit_pdu(&mut self, header: crate::protocol::p25::pdu::PduHeader, blocks: Vec<crate::protocol::p25::pdu::PduBlock>, expected: usize) {
+        if !self.active {
+            return;
+        }
+        if let Some(tx) = &self.pdu_tx {
+            let at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let _ = tx.try_send(crate::protocol::p25::pdu::PduFrame {
+                chain: self.chain_label,
+                nac: self.system.nac.map(|n| n.0).unwrap_or(0),
+                at_ms,
+                header,
+                blocks,
+                blocks_expected: expected,
+            });
+        }
+    }
+
     fn process_tsdu_block(&mut self) -> bool {
         // The state machine resets tsdu_blocks_decoded=0 on entry into
         // ReadingDataUnit, so the first call into here is block 0 of a

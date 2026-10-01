@@ -5,6 +5,52 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-30] Packet data on the data channel; status dibits one dibit late everywhere (074)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-30-packet-data-074`
+**Bake required:** NO (p25-httpd and web UI).
+
+- **Status dibits were placed one dibit early in every frame.** The body status dibits are
+  every 36th dibit of the frame (frame dibits 35, 71, ...; body raw 14 + 36k); the decoder used
+  13 + 36k since the first TSBK work (April). Each status crossing put one wrong dibit into the
+  data, and the FEC hid it. Fixed in `types::is_body_status_dibit` (voice, TDU, PDU) and the
+  TSDU deinterleaver. Unit A, Clay, same hour:
+
+  | | before (13 + 36k) | after (14 + 36k) |
+  |---|---|---|
+  | TSBK CRC good (5 min each) | 97.07–97.74 % | 99.72 % (failures down tenfold) |
+  | Vocoder errors per IMBE frame | 3.41 % (112 calls, 13,149 frames) | 0.96 % (12 calls, 2,718 frames) |
+  | Packet data 3/4-rate blocks with 0 bit errors | 0 of 95 | 53 of 56, then 28 of 28 |
+  | Packets passing CRC-32 | 5 of 28 | 15 of 17, then 8 of 8 |
+
+  TDULC had already been found to need +14 (against SDRTrunk `.bits` files); it uses the shared
+  helper again. Andy: "voice is coming through perfect".
+- **Packet data (SNDCP), new.** Clay announces a data channel (SNDCP data channel
+  announcement, about 40 a minute) and grants data on it.
+  - A data-only decoder on each traffic chain reads what the call gate holds back (the chain
+    between calls).
+  - The idle last chain parks on the announced data channel (any voice grant still takes it).
+  - `protocol::p25::pdu`: header (CRC-16 with one-bit correction), unconfirmed (1/2-rate) and
+    confirmed (3/4-rate, CRC-9) blocks, the packet CRC-32, response packets, AMBTC / UMBTC by
+    opcode, SNDCP data header, IPv4 / UDP and the Motorola service by port (LRRP, ARS, TMS,
+    XCMP, ...). Ported from SDRTrunk plus the CRC-9 and CRC-32 checks it skips.
+  - `/api/data`, a Packet data card on the Activity page, event-log category `data`. The same
+    PDU read by both chains counts once.
+- **Live on Clay** (about 10 minutes): about 140 PDUs, all network to radio:
+  - location polls (LRRP, UDP 4001) from a server at 10.51.1.116 to radios at 10.71.x.x;
+  - delivery receipts acknowledging radios' own uploads (which go out on the uplink we do not
+    receive), retry requests and SNDCP context messages.
+- **Not yet** (roadmap 074b): data is kept in memory only; LRRP / ARS / TMS contents are not
+  decoded; other data channels than the announced one are not followed; Phase 2 TDMA (Clay
+  grants none).
+
+Tests: p25-httpd 327 (PDU end to end through the decoder, CRC reference values, 3/4-rate
+trellis round trip with errors, packet assembly, data records and duplicates; status layout
+tests on the frame schedule).
+
+---
+
 ## [2026-09-30] Fix: after a reboot, calls, recordings and Activity were empty (073a)
 
 **Branch:** fishball-p25

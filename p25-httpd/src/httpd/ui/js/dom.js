@@ -70,6 +70,14 @@ export function keyedList(container, items, keyFn, create, update) {
   for (const stale of existing.values()) stale.remove();
 }
 
+// A table with a header row (change 074, from activity.js).
+export function table(head, rows) {
+  return h('div', { class: 'table-wrap' },
+    h('table', { class: 'table' },
+      h('thead', null, h('tr', null, ...head.map(t => h('th', { text: t })))),
+      h('tbody', null, ...rows)));
+}
+
 // Card with a header (title + optional right-side nodes) and a body.
 export function card(title, opts = {}) {
   const right = h('div', { class: 'row' });

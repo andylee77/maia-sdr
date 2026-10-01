@@ -85,14 +85,16 @@ fn strip_807_dibits_yields_784() {
     let stripped = strip_body_status_dibits(&raw);
     assert_eq!(stripped.len(), 784);
     // Verify the first few removed positions are exactly the
-    // body status positions {13, 49, 85, ...}.
+    // body status positions {14, 50, 86, ...} (change 074).
     let removed: Vec<usize> = (0..807)
         .filter(|p| is_body_status_dibit(*p))
         .collect();
-    assert_eq!(removed[0], 13);
-    assert_eq!(removed[1], 49);
-    assert_eq!(removed[2], 85);
-    assert_eq!(removed[3], 121);
+    assert_eq!(removed[0], 14);
+    assert_eq!(removed[1], 50);
+    assert_eq!(removed[2], 86);
+    assert_eq!(removed[3], 122);
+    // The last body dibit is a status dibit (the frame's every 36th).
+    assert_eq!(*removed.last().unwrap(), 806);
     assert_eq!(removed.len(), 23);
 }
 
@@ -140,7 +142,7 @@ fn extract_first_bit_position() {
 
 /// Frame 1 starts at LDU data bit 144 (body data dibit 72).
 /// Body data 72 = body raw 74 after skipping status dibits at
-/// raw positions {13, 49}.
+/// raw positions {14, 50}.
 #[test]
 fn extract_frame_1_marker_bit() {
     let mut raw = vec![0b00_u8; LDU_RAW_DIBITS];

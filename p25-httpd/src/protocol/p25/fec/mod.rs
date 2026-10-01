@@ -233,11 +233,10 @@ impl TrellisDecoder {
 
 /// TSDU de-interleaver
 ///
-/// The TSDU body has its status dibits embedded at the period-36 schedule
-/// driven by SDRTrunk's `mStatusSymbolDibitCounter` (reset to 21 by
-/// `nidDetected()`, hits 36 → drop → reset to 0). The first status drop
-/// in the body lands at raw position **13**, and subsequent drops follow
-/// at +36 each (49, 85, 121, 157, 193, 229, 265, 301...). After stripping
+/// The TSDU body has its status dibits on the frame's period-36
+/// schedule: body raw positions **14**, 50, 86, 122, 158, 194, 230, 266,
+/// 302 (change 074; was 13-based, see `types::is_body_status_dibit`).
+/// The last raw dibit of each extent is a status dibit. After stripping
 /// status dibits and trailing null padding, the data is exactly
 /// `num_blocks * 98` trellis-coded dibits.
 ///
@@ -249,9 +248,9 @@ impl TrellisDecoder {
 ///
 /// | Blocks | Body raw dibits | Body status dibits          | Trail nulls |
 /// |--------|----------------:|-----------------------------|------------:|
-/// |   1    |             123 | 4 — {13,49,85,121}          |         21  |
-/// |   2    |             231 | 7 — {…,157,193,229}         |         28  |
-/// |   3    |             303 | 9 — {…,265,301}             |          0  |
+/// |   1    |             123 | 4 — {14,50,86,122}          |         21  |
+/// |   2    |             231 | 7 — {…,158,194,230}         |         28  |
+/// |   3    |             303 | 9 — {…,266,302}             |          0  |
 ///
 /// SDRTrunk constants: TSBK1 messageLength=196 bits + nullBits=42, TSBK2
 /// messageLength=392 + nullBits=56, TSBK3 messageLength=588 + nullBits=0,
@@ -282,7 +281,7 @@ impl TsduDeinterleaver {
     /// order. Period 36 starting at raw position 13. We pre-compute all
     /// 9 positions and slice to the relevant prefix per block count.
     const STATUS_POSITIONS_ALL: [usize; 9] =
-        [13, 49, 85, 121, 157, 193, 229, 265, 301];
+        [14, 50, 86, 122, 158, 194, 230, 266, 302];
 
     /// Number of body status dibits for each multi-block extent.
     const STATUS_COUNT_PER_BLOCKS: [usize; 3] = [4, 7, 9];

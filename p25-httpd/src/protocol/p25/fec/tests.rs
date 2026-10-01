@@ -176,12 +176,12 @@ fn test_tsdu_deinterleave_removes_status_and_nulls() {
         *d = 0x01;
     }
     // Status markers at the 4 body positions.
-    for p in [13usize, 49, 85, 121] {
+    for p in [14usize, 50, 86, 122] {
         tsdu[p] = 0xFE;
     }
     // Null padding: the LAST 21 non-status positions get 0xFD.
     let mut non_status_positions: Vec<usize> = (0..123)
-        .filter(|i| !matches!(*i, 13 | 49 | 85 | 121))
+        .filter(|i| !matches!(*i, 14 | 50 | 86 | 122))
         .collect();
     let null_positions = non_status_positions.split_off(non_status_positions.len() - 21);
     for p in &null_positions {
@@ -214,12 +214,12 @@ fn test_tsdu_deinterleave_two_blocks() {
     for d in tsdu.iter_mut() {
         *d = 0x01;
     }
-    for &p in &[13usize, 49, 85, 121, 157, 193, 229] {
+    for &p in &[14usize, 50, 86, 122, 158, 194, 230] {
         tsdu[p] = 0xFE;
     }
     // Mark the LAST 28 non-status positions as null.
     let mut non_status_positions: Vec<usize> = (0..231)
-        .filter(|i| !matches!(*i, 13 | 49 | 85 | 121 | 157 | 193 | 229))
+        .filter(|i| !matches!(*i, 14 | 50 | 86 | 122 | 158 | 194 | 230))
         .collect();
     let null_positions =
         non_status_positions.split_off(non_status_positions.len() - 28);
@@ -251,7 +251,7 @@ fn test_tsdu_deinterleave_three_blocks() {
     for d in tsdu.iter_mut() {
         *d = 0x01;
     }
-    for &p in &[13usize, 49, 85, 121, 157, 193, 229, 265, 301] {
+    for &p in &[14usize, 50, 86, 122, 158, 194, 230, 266, 302] {
         tsdu[p] = 0xFE;
     }
 

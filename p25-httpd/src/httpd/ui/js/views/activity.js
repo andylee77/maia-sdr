@@ -8,9 +8,10 @@
 // hang time and any other radio keying up on the grant, and is credited
 // to the radio granted.
 
-import { h, setText, card, toast } from '../dom.js';
+import { h, setText, card, toast, table } from '../dom.js';
 import { api } from '../api.js';
-import { dur, num, bytes, tgLabel, unitLabel, DASH } from '../format.js';
+import { dur, num, bytes, tgLabel, unitLabel, DASH, dayTime as when } from '../format.js';
+import { packetDataCard } from '../components/packet_data.js';
 
 const TICK_MS = 30000;
 // refresh: how often a period is reloaded (longer ones cost the radio more).
@@ -23,15 +24,6 @@ const GRANT_NOTE = 'Encrypted and not-followed calls show grant time: from the g
   + 'It includes hang time and any other radio that keyed up on the grant, and is credited to the radio granted. '
   + 'Voice is decoded on the voice channel.';
 
-function when(ms) {
-  if (!ms) return DASH;
-  const d = new Date(ms);
-  const p = n => String(n).padStart(2, '0');
-  const today = new Date();
-  const time = p(d.getHours()) + ':' + p(d.getMinutes());
-  if (d.toDateString() === today.toDateString()) return time;
-  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + time;
-}
 
 function secs(s) {
   return s ? dur(s * 1000) : DASH;
@@ -46,12 +38,6 @@ function metric(label, value, title) {
   return { el: h('div', { class: 'metric', title: title || '' }, h('span', { class: 'm-label', text: label }), v), v };
 }
 
-function table(head, rows) {
-  return h('div', { class: 'table-wrap' },
-    h('table', { class: 'table' },
-      h('thead', null, h('tr', null, ...head.map(t => h('th', { text: t })))),
-      h('tbody', null, ...rows)));
-}
 
 function clickRow(cells, onClick, title) {
   const tr = h('tr', { style: { cursor: 'pointer' }, title: title || '' }, ...cells.map(c => (c instanceof Node ? h('td', null, c) : h('td', { text: c }))));
@@ -200,8 +186,10 @@ export function mount(host) {
   const detailCard = card('Details');
   detailCard.el.hidden = true;
   const callsCard = card('Recent calls');
+  // Change 074: packet data (in memory since the last restart).
+  const dataCard = packetDataCard();
 
-  host.append(h('div', { class: 'stack' }, ctl.el, sum.el, h('div', { class: 'grid-2' }, tgCard.el, radioCard.el), detailCard.el, callsCard.el));
+  host.append(h('div', { class: 'stack' }, ctl.el, sum.el, h('div', { class: 'grid-2' }, tgCard.el, radioCard.el), detailCard.el, callsCard.el, dataCard.el));
 
   function query(extra = {}) {
     const q = new URLSearchParams({ hours: String(st.period.hours) });
@@ -337,13 +325,15 @@ export function mount(host) {
       const detail = st.detail
         ? api.activity((st.detail.kind === 'tg' ? 'talkgroup/' : 'radio/') + st.detail.id, query())
         : Promise.resolve(null);
-      const [s, series, tgs, radios, calls, det] = await Promise.all([
+      const dataQ = new URLSearchParams({ site: st.site || '', limit: '40' }).toString();
+      const [s, series, tgs, radios, calls, det, dat] = await Promise.all([
         api.activity('summary', query()),
         api.activity('series', query({ bucket: st.period.bucket, tz, ...f })),
         api.activity('talkgroups', query({ limit: 25 })),
         api.activity('radios', query({ limit: 25 })),
         api.activity('calls', query({ limit: 50, ...f })),
         detail,
+        api.data(dataQ).catch(() => null),
       ]);
       if (my !== seq) return;
       renderSummary(s.summary);
@@ -352,6 +342,7 @@ export function mount(host) {
       renderRadios(radios.items);
       renderDetail(det);
       renderCalls(calls.items);
+      if (dat) dataCard.update(dat);
     } catch (e) {
       if (my === seq) toast('Activity: ' + e.message, true);
     }

@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-30-sd-boot-073a";
+pub const BUILD_TAG: &str = "2026-09-30-packet-data-074";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -587,11 +587,25 @@ async fn main() -> anyhow::Result<()> {
     // Change 072: radio events for the activity history, from both
     // control decoders (only the active one sends).
     let (unit_event_tx, unit_event_rx) = tokio::sync::mpsc::channel(1024);
+    // Change 074: packet data. Decoded PDUs from the control decoders
+    // and from a data-only decoder per traffic chain (fed between calls).
+    let (pdu_tx, pdu_rx) = tokio::sync::mpsc::channel(512);
+    let data_decoders: Vec<Arc<RwLock<ControlChannelDecoder>>> = ["data1", "data2"]
+        .into_iter()
+        .map(|label| {
+            let mut d = ControlChannelDecoder::new();
+            d.chain_label = label;
+            d.pdu_tx = Some(pdu_tx.clone());
+            Arc::new(RwLock::new(d))
+        })
+        .collect();
+    let data_state: app::data_task::SharedData = Default::default();
 
     let mut lsm_decoder = ControlChannelDecoder::new();
     lsm_decoder.set_event_tx(event_tx.clone());
     lsm_decoder.set_grant_event_tx(grant_event_tx.clone());
     lsm_decoder.unit_event_tx = Some(unit_event_tx.clone());
+    lsm_decoder.pdu_tx = Some(pdu_tx.clone());
     lsm_decoder.aliases = boot_aliases;
     let lsm_decoder = Arc::new(RwLock::new(lsm_decoder));
 
@@ -604,6 +618,7 @@ async fn main() -> anyhow::Result<()> {
         let mut d = decoder.write().await;
         d.set_grant_event_tx(grant_event_tx);
         d.unit_event_tx = Some(unit_event_tx);
+        d.pdu_tx = Some(pdu_tx);
     }
 
     // The pure-software Phase 6D LSM pipeline was retired after the
@@ -1065,6 +1080,7 @@ async fn main() -> anyhow::Result<()> {
             dibit_delivery.clone(),
             dibit_delivery.traffic.clone(),
             event_log.clone(),
+            data_decoders.first().cloned(),
         );
         // Change 066: chain 2's reader (no forensics tee).
         if traffic_chains == 2 {
@@ -1077,6 +1093,7 @@ async fn main() -> anyhow::Result<()> {
                 dibit_delivery.clone(),
                 dibit_delivery.traffic2.clone(),
                 event_log.clone(),
+                data_decoders.get(1).cloned(),
             );
         }
 
@@ -1896,6 +1913,8 @@ async fn main() -> anyhow::Result<()> {
         radio_lease: radio_lease.clone(),
         discovery: discovery.clone(),
         history: history.clone(),
+        data: data_state.clone(),
+        data_decoders: data_decoders.clone(),
         site_memory: Default::default(),
         grant_decode_stats: crate::app::grant_stats::new_ring(),
         enc_grant_decode_stats: crate::app::grant_stats::new_ring(),
@@ -2052,6 +2071,10 @@ async fn main() -> anyhow::Result<()> {
     // Change 072: store finished calls and radio events.
     if let Some(store) = history.clone() {
         app::history_task::spawn_history_task(state.clone(), store, unit_event_rx);
+    }
+    // Change 074: collect packet data.
+    {
+        app::data_task::spawn_data_task(data_state.clone(), event_log.clone(), pdu_rx);
     }
 
     // Start HTTP (and optionally HTTPS). HTTPS unlocks AudioWorklet

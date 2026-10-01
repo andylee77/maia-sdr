@@ -43,6 +43,8 @@
 
 /// Change 072: the activity history.
 pub mod activity;
+/// Change 074: packet data.
+pub mod data;
 pub mod chain;
 pub mod debug;
 /// Change 071: the system finder.

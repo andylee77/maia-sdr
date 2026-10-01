@@ -120,6 +120,13 @@ impl ControlChannelDecoder {
             } => {
                 self.system.sndcp_downlink_channel = Some(*downlink_channel);
                 self.system.sndcp_uplink_channel = Some(*uplink_channel);
+                // Change 074: where packet data flows (an idle chain parks
+                // there).
+                if self.active {
+                    if let Some(hz) = self.channel_to_frequency(*downlink_channel) {
+                        crate::app::data_task::set_data_channel_hz(hz);
+                    }
+                }
             }
             // Snapshot system clock for the activity feed / debug.
             TsbkMessage::TdmaSyncBroadcast {

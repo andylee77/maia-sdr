@@ -67,6 +67,9 @@ pub enum LogCategory {
     /// to Grant / Voice / Recorder entries tells you what we *saw* vs
     /// what we *acted on*. SDRTrunk `decoded_messages.log` equivalent.
     Duid,
+    /// Change 074: packet data units (radio data: registrations,
+    /// locations, IP packets) and multi-block trunking messages.
+    Data,
 }
 
 impl LogCategory {
@@ -79,6 +82,7 @@ impl LogCategory {
             LogCategory::System => "system",
             LogCategory::Recorder => "recorder",
             LogCategory::Duid => "duid",
+            LogCategory::Data => "data",
         }
     }
 }

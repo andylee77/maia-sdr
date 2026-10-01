@@ -11,6 +11,8 @@ pub mod events;
 pub mod fec;
 pub mod traffic_chain;
 pub mod tsbk;
+/// Change 074: packet data units (PDUs).
+pub mod pdu;
 pub mod types;
 pub mod voice_frame;
 pub mod wire;

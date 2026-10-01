@@ -314,6 +314,48 @@ pub fn spawn_grant_follower(
                             serde_json::json!({ "tg": tg.0, "chain": fl.lane().label(), "reason": "no_open_call" }),
                         );
                     }
+                    // Change 074: the last chain waits for its next call on
+                    // the data channel, where packet data flows (the data
+                    // decoder reads what the call gate holds back). Any
+                    // voice grant still takes it.
+                    let data_hz = crate::app::data_task::data_channel_hz();
+                    let li = lanes.len() - 1;
+                    if lanes.len() > 1
+                        && data_hz != 0
+                        && follower_enabled.load(Ordering::Relaxed)
+                        && follower_lease.is_normal()
+                        && !crate::services::lo_plan::grants_held(now_unix_ms())
+                        && mem[li].last_traffic_freq_hz != Some(data_hz)
+                    {
+                        let fl = &lanes[li];
+                        let idle = fl.active.lock().map(|a| a.is_none()).unwrap_or(false)
+                            && fl.mgr.lock().await.current_talkgroup().is_none();
+                        let (offset_hz, sample_rate_now) = nco_offset(data_hz);
+                        let in_window = offset_hz.abs() < sample_rate_now * 0.45;
+                        if idle && in_window {
+                            let result = {
+                                let core = follower_core.lock().await;
+                                match core.lane(fl.lane()) {
+                                    Some(l) => l.retune(offset_hz, sample_rate_now, true, None),
+                                    None => Err(anyhow::anyhow!("{} chain is not present", fl.lane())),
+                                }
+                            };
+                            match result {
+                                Ok(()) => {
+                                    mem[li].last_traffic_freq_hz = Some(data_hz);
+                                    mem[li].last_call_quality = None;
+                                    fl.imbe.current_frequency_hz.store(data_hz, Ordering::Relaxed);
+                                    fl.imbe.traffic_paused_by_teardown.store(false, Ordering::Relaxed);
+                                    follower_event_log.push(
+                                        LogCategory::Traffic,
+                                        format!("{} parked on the data channel {:.4} MHz", fl.lane(), data_hz as f64 / 1e6),
+                                        serde_json::json!({ "chain": fl.lane().label(), "freq_hz": data_hz, "reason": "data_park" }),
+                                    );
+                                }
+                                Err(e) => tracing::warn!(target: "p25_traffic", "{} data park failed: {e}", fl.lane()),
+                            }
+                        }
+                    }
                 }
                 event = grant_event_rx.recv() => {
                     let event = match event {
