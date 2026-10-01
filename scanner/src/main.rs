@@ -2,11 +2,13 @@
 //!
 //! `boot` brings the radio up from the persisted configuration and runs until a shutdown signal.
 
+mod api;
 mod boot;
 mod hardware;
 mod radio;
 mod services;
 mod trunking;
+mod ui;
 mod util;
 
 fn main() -> anyhow::Result<()> {

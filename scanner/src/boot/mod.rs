@@ -1,22 +1,32 @@
-//! Start-up and shutdown: load (and on first start migrate) the configuration, bring up the
-//! radio and the services, serve until SIGTERM or Ctrl-C, then flush what must survive.
+//! Start-up and shutdown: load (and on a first start migrate) the configuration, bring up the
+//! radio, make the live site live, serve the API until SIGTERM or Ctrl-C.
 
 pub mod args;
 pub mod logging;
+pub mod radio;
+pub mod state;
+pub mod version;
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use tokio::sync::Mutex;
 
 use args::Args;
+use state::AppState;
 
+use crate::radio::lease::RadioLease;
 use crate::services::config::{self, Paths};
+use crate::trunking::site::LiveSite;
 
 pub fn run(args: Args) -> anyhow::Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     runtime.block_on(serve(args))
 }
 
 async fn serve(args: Args) -> anyhow::Result<()> {
+    tracing::warn!("scanner {} starting", version::BUILD_TAG);
+    let started = Instant::now();
     let paths = Paths::new(&args.flash_dir, &args.sd_dir);
     let loaded = config::load_or_migrate(&paths)?;
     if let Some(report) = &loaded.migration {
@@ -28,12 +38,29 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             paths.migration_log().display(),
         );
     }
-    tracing::info!(
-        "configuration: {} systems, live site {:?}",
-        loaded.config.systems.value.systems.len(),
-        loaded.config.state.value.live_site,
-    );
-    shutdown_signal().await;
+    let config = loaded.config;
+    let crystal_ppm = config.state.value.crystal.as_ref().map(|c| c.ppm).or(args.lo_ppm).unwrap_or(0.0);
+    let live_site = config.state.value.live_site.clone();
+    let (tuner, hardware) = radio::open(&config.radio.value, crystal_ppm).await?;
+
+    let config = Arc::new(Mutex::new(config));
+    let lease = RadioLease::default();
+    let live = Arc::new(LiveSite::new(paths.clone(), config.clone(), tuner.clone(), lease.clone()));
+    match &live_site {
+        Some(site) => {
+            if let Err(e) = live.activate(site).await {
+                tracing::error!("site {site} did not go live: {e:#}");
+            }
+        }
+        None => tracing::warn!("no site configured yet: waiting for a scan or a site to be added"),
+    }
+
+    let state = Arc::new(AppState { paths, config, tuner, live, lease, hardware, started });
+    let app = crate::api::router(state);
+    tokio::select! {
+        r = crate::api::serve(app, args.listen, args.listen_https, args.ssl_cert.as_deref(), args.ssl_key.as_deref()) => r?,
+        _ = shutdown_signal() => tracing::warn!("shutting down"),
+    }
     Ok(())
 }
 
