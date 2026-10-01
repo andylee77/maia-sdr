@@ -251,14 +251,25 @@ fn recorded(events: &[Value]) -> Vec<CallRecord> {
     book.records(&frames)
 }
 
-/// How a replay compares with the unit's own calls: (identical, same call with other
-/// fields, only in the replay, only on the unit).
+/// The tap and the lifecycle stamp the same event a few ms apart, and the replay's sweep runs on
+/// its own 100 ms phase.
+const TIMING_SLACK_MS: u64 = 150;
+
+/// The same call, its times within `TIMING_SLACK_MS`.
+fn same_call(a: &CallRecord, b: &CallRecord) -> bool {
+    a.start.abs_diff(b.start) <= TIMING_SLACK_MS
+        && a.end.abs_diff(b.end) <= TIMING_SLACK_MS
+        && CallRecord { start: 0, end: 0, ..a.clone() } == CallRecord { start: 0, end: 0, ..b.clone() }
+}
+
+/// How a replay compares with the unit's own calls: (same call, same id with other fields,
+/// only in the replay, only on the unit).
 fn compare(replayed: &[CallRecord], unit: &[CallRecord]) -> (usize, usize, usize, usize) {
     let by_id: HashMap<u64, &CallRecord> = unit.iter().map(|r| (r.call, r)).collect();
     let (mut same, mut differ, mut extra) = (0, 0, 0);
     for r in replayed {
         match by_id.get(&r.call) {
-            Some(u) if *u == r => same += 1,
+            Some(u) if same_call(u, r) => same += 1,
             Some(_) => differ += 1,
             None => extra += 1,
         }
@@ -309,10 +320,10 @@ fn trace_replay_against_the_unit() {
     let (same, differ, extra, missing) = compare(&replayed, &unit);
     println!("{}", json!({
         "trace": path, "events": events.len(), "unit_calls": unit.len(), "replayed_calls": replayed.len(),
-        "identical": same, "differ": differ, "only_replayed": extra, "only_unit": missing,
+        "same": same, "differ": differ, "only_replayed": extra, "only_unit": missing,
     }));
     let by_id: HashMap<u64, &CallRecord> = unit.iter().map(|r| (r.call, r)).collect();
-    for r in replayed.iter().filter(|r| by_id.get(&r.call).is_some_and(|u| *u != *r)).take(20) {
+    for r in replayed.iter().filter(|r| by_id.get(&r.call).is_some_and(|u| !same_call(u, r))).take(20) {
         println!("replay {r:?}\nunit   {:?}", by_id[&r.call]);
     }
 }
