@@ -1,4 +1,5 @@
-//! `/api/v1/systems`: the configured systems and their sites; a system's names; the site editor.
+//! `/api/v1/systems`: the configured systems and their sites; a system's names; the site editor;
+//! removing a system or a site.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use crate::boot::state::AppState;
 use crate::hardware::presets::find_preset;
 use crate::services::config;
 use crate::services::config::systems::{ChannelPlan, Control, Modulation, Site, System, Window};
+use crate::services::config::Removed;
 use crate::trunking::site::LiveState;
 
 pub async fn list(State(s): State<Arc<AppState>>) -> Json<Vec<System>> {
@@ -102,4 +104,51 @@ pub async fn put_site(State(s): State<Arc<AppState>>, Path((system, site)): Path
         s.live.activate(&site).await?;
     }
     Ok(Json(out))
+}
+
+/// Is `site` live, being switched to, or the site a scan goes back to?
+fn in_use(s: &AppState, site: &str) -> bool {
+    match s.live.state() {
+        LiveState::Live(l) => l.site.id == site,
+        LiveState::Switching { to } => to == site,
+        LiveState::Scanning { back_to } => back_to.as_deref() == Some(site),
+        LiveState::NoSite => false,
+    }
+}
+
+/// Remove a site (not the live one), its active-profile choice and what it learned. The history
+/// keeps its calls.
+pub async fn delete_site(State(s): State<Arc<AppState>>, Path((system, site)): Path<(String, String)>) -> ApiResult<Removed> {
+    let removed = {
+        let mut c = s.config.lock().await;
+        if in_use(&s, &site) {
+            return Err(ApiError::conflict(format!("site {site} is live: make another site live first")));
+        }
+        let r = c.remove_site(&system, &site).ok_or_else(|| ApiError::not_found(format!("site {site} of system {system}")))?;
+        config::save(&s.paths.systems(), &c.systems)?;
+        config::save(&s.paths.profiles(), &c.profiles)?;
+        r
+    };
+    config::forget_sites(&s.paths, &removed.sites);
+    s.log.system("config", format!("site {site} of system {system} removed"));
+    Ok(Json(removed))
+}
+
+/// Remove a system with its sites and profiles (none of its sites live). The history keeps their
+/// calls.
+pub async fn delete_system(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<Removed> {
+    let removed = {
+        let mut c = s.config.lock().await;
+        let sys = c.systems.value.system(&id).ok_or_else(|| ApiError::not_found(format!("system {id}")))?;
+        if let Some(site) = sys.sites.iter().find(|x| in_use(&s, &x.id)) {
+            return Err(ApiError::conflict(format!("site {} of system {id} is live: make another site live first", site.id)));
+        }
+        let r = c.remove_system(&id).ok_or_else(|| ApiError::not_found(format!("system {id}")))?;
+        config::save(&s.paths.systems(), &c.systems)?;
+        config::save(&s.paths.profiles(), &c.profiles)?;
+        r
+    };
+    config::forget_sites(&s.paths, &removed.sites);
+    s.log.system("config", format!("system {id} removed with {} sites and {} profiles", removed.sites.len(), removed.profiles.len()));
+    Ok(Json(removed))
 }

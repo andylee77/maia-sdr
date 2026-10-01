@@ -139,11 +139,13 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         log,
         hardware,
         started,
+        restart: Arc::default(),
     });
     let app = crate::api::router(state.clone());
     tokio::select! {
         r = crate::api::serve(app, args.listen, args.listen_https, args.ssl_cert.as_deref(), args.ssl_key.as_deref()) => r?,
         _ = shutdown_signal() => tracing::warn!("shutting down"),
+        _ = state.restart.notified() => tracing::warn!("restarting"),
     }
     state.receivers.stop().await;
     state.trunking.stop().await;

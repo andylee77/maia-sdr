@@ -44,4 +44,6 @@ pub struct AppState {
     pub log: Arc<EventLog>,
     pub hardware: HardwareInfo,
     pub started: Instant,
+    /// Shut down as on SIGTERM; the init script's loop starts the scanner again.
+    pub restart: Arc<tokio::sync::Notify>,
 }

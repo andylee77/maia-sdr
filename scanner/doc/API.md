@@ -23,6 +23,9 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/events` | the event log after `after` (newest `limit`; housekeeping too with `routine=true`) |
 | GET | `/api/v1/system` | the board's health: load, memory, CPU per core and per scanner thread, temperatures |
 | GET | `/api/v1/receivers` | the control channel and each lane: status, decoder counters, carrier loop |
+| GET | `/api/v1/config` | the whole configuration as one document: radio settings, systems with names and sites, profiles, the live site (`download=true`: as a file) |
+| PUT | `/api/v1/config` | replace the configuration with an exported document (checked whole first); the scanner restarts |
+| POST | `/api/v1/config/factory-reset` | back to a new unit: no systems, sites, profiles, recordings or history, default settings (the crystal calibration stays); the scanner restarts |
 | GET | `/api/v1/radio` | radio configuration, hardware and tuning |
 | PUT | `/api/v1/radio/gain` | receiver gain mode and manual gain |
 | PUT | `/api/v1/radio/settings` | presets the planner may use, traffic lanes, call timings, history limits |
@@ -40,6 +43,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/systems/{id}` | one system |
 | PUT | `/api/v1/systems/{id}/names` | a system's talkgroup and radio names |
 | PUT | `/api/v1/systems/{system}/sites/{site}` | edit a site (the live site goes live again with the change) |
+| DELETE | `/api/v1/systems/{system}/sites/{site}` | remove a site (not the live one), its profile choice and what it learned; the history keeps its calls |
+| DELETE | `/api/v1/systems/{id}` | remove a system with its sites and profiles (none of its sites live); the history keeps their calls |
 | GET | `/api/v1/sites` | every site, with the live one marked |
 | POST | `/api/v1/sites/{id}/activate` | make a site live (returns once it is) |
 | GET | `/api/v1/sites/{id}/learned` | what a site taught the radio: band plan, grants, encrypted talkgroups, neighbours, its other channels |

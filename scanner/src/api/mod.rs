@@ -98,6 +98,9 @@ routes! {
     get "/api/v1/events" => v1::events::list, "the event log after `after` (newest `limit`; housekeeping too with `routine=true`)";
     get "/api/v1/system" => v1::system::get, "the board's health: load, memory, CPU per core and per scanner thread, temperatures";
     get "/api/v1/receivers" => v1::receivers::get, "the control channel and each lane: status, decoder counters, carrier loop";
+    get "/api/v1/config" => v1::config::export, "the whole configuration as one document: radio settings, systems with names and sites, profiles, the live site (`download=true`: as a file)";
+    put "/api/v1/config" => v1::config::import, "replace the configuration with an exported document (checked whole first); the scanner restarts";
+    post "/api/v1/config/factory-reset" => v1::config::factory_reset, "back to a new unit: no systems, sites, profiles, recordings or history, default settings (the crystal calibration stays); the scanner restarts";
     get "/api/v1/radio" => v1::radio::get, "radio configuration, hardware and tuning";
     put "/api/v1/radio/gain" => v1::radio::put_gain, "receiver gain mode and manual gain";
     put "/api/v1/radio/settings" => v1::radio::put_settings, "presets the planner may use, traffic lanes, call timings, history limits";
@@ -115,6 +118,8 @@ routes! {
     get "/api/v1/systems/{id}" => v1::systems::get, "one system";
     put "/api/v1/systems/{id}/names" => v1::systems::put_names, "a system's talkgroup and radio names";
     put "/api/v1/systems/{system}/sites/{site}" => v1::systems::put_site, "edit a site (the live site goes live again with the change)";
+    delete "/api/v1/systems/{system}/sites/{site}" => v1::systems::delete_site, "remove a site (not the live one), its profile choice and what it learned; the history keeps its calls";
+    delete "/api/v1/systems/{id}" => v1::systems::delete_system, "remove a system with its sites and profiles (none of its sites live); the history keeps their calls";
     get "/api/v1/sites" => v1::sites::list, "every site, with the live one marked";
     post "/api/v1/sites/{id}/activate" => v1::sites::activate, "make a site live (returns once it is)";
     get "/api/v1/sites/{id}/learned" => v1::sites::learned, "what a site taught the radio: band plan, grants, encrypted talkgroups, neighbours, its other channels";

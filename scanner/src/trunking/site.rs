@@ -178,6 +178,15 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         let _ = tokio::task::spawn_blocking(move || l.save(&paths)).await;
     }
 
+    /// Stop the live site and drop what it learned since its last save (a factory reset or an
+    /// import replaces the configuration under it). The caller holds the radio lease.
+    pub async fn stop_discarding(&self) {
+        self.receivers.stop().await;
+        self.trunking.stop().await;
+        *self.learned.lock().await = None;
+        self.state.send_replace(LiveState::NoSite);
+    }
+
     /// A scan takes the radio: the live site's receivers and trunking stop. Returns the site to
     /// go back to.
     pub async fn pause_for_scan(&self) -> Option<String> {

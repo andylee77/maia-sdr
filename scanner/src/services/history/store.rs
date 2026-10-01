@@ -551,6 +551,19 @@ impl Store {
 
     /// Delete the hours that started before the hour `before_ms` is in, with their calls and
     /// totals, so the totals always match the calls. Returns how many calls.
+    /// Delete every call, radio, talkgroup, site and recording row (a factory reset); the schema
+    /// and the file's own notes stay. Returns the calls deleted.
+    pub fn clear(&self) -> rusqlite::Result<usize> {
+        let mut conn = lock(&self.write);
+        let tx = conn.transaction()?;
+        let calls = tx.execute("DELETE FROM calls", [])?;
+        for table in ["transmissions", "talkgroups", "radios", "radio_events", "tg_hour", "radio_hour", "recordings", "sites", "systems"] {
+            tx.execute(&format!("DELETE FROM {table}"), [])?;
+        }
+        tx.commit()?;
+        Ok(calls)
+    }
+
     pub fn prune(&self, before_ms: u64) -> rusqlite::Result<usize> {
         let mut conn = lock(&self.write);
         let tx = conn.transaction()?;

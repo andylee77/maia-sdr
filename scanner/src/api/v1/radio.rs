@@ -12,7 +12,9 @@ use crate::boot::radio::{gain_mode, HardwareInfo};
 use crate::boot::state::AppState;
 use crate::radio::tuner::{Readback, Tuning};
 use crate::hardware::presets::find_preset;
-use crate::services::config::radio::{Calls, Clock, CrystalTracking, Gain, GainMode, History, RadioConfig, Recording, GAIN_DB_RANGE};
+use crate::services::config::radio::{
+    Calls, Clock, CrystalTracking, Gain, GainMode, History, RadioConfig, Recording, GAIN_DB_RANGE, SD_MAX_MB, SD_MIN_MB,
+};
 use crate::services::crystal::{Calibration, CrystalStatus};
 use crate::services::recordings::Policy;
 use crate::services::config::{self, RadioState};
@@ -65,10 +67,6 @@ pub async fn put_gain(State(s): State<Arc<AppState>>, Json(req): Json<GainReques
     Ok(Json(gain))
 }
 
-/// Space on the card for recordings or the history: between these (1 TB, far beyond a card).
-const SD_MIN_MB: u64 = 16;
-const SD_MAX_MB: u64 = 1 << 20;
-
 #[derive(Serialize)]
 pub struct RecordingSet {
     pub recording: Recording,
@@ -104,8 +102,8 @@ pub struct Settings {
     pub history: History,
 }
 
-/// Keep the settings. The history's limits apply at once; the presets, lanes and call timings at
-/// the next site activation.
+/// Keep the settings. The history's limits apply at once; the presets and call timings at the
+/// next site activation; the lanes at the next start.
 pub async fn put_settings(State(s): State<Arc<AppState>>, Json(req): Json<Settings>) -> ApiResult<RadioConfig> {
     if req.presets_allowed.is_empty() {
         return Err(ApiError::bad_request("at least one preset"));

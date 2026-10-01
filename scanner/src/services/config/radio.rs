@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::VERSION;
+use crate::hardware::presets::find_preset;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -19,6 +20,39 @@ pub struct RadioConfig {
     pub history: History,
     pub clock: Clock,
     pub crystal: CrystalTracking,
+}
+
+/// Space on the card for recordings or the history: between these (1 TB, far beyond a card).
+pub const SD_MIN_MB: u64 = 16;
+pub const SD_MAX_MB: u64 = 1 << 20;
+
+impl RadioConfig {
+    /// Every value in its range (what the settings endpoints each check for their part).
+    pub fn check(&self) -> Result<(), String> {
+        if self.gain.mode == GainMode::Manual && !self.gain.manual_db.is_some_and(|db| GAIN_DB_RANGE.contains(&db)) {
+            return Err(format!("manual gain needs manual_db in {}..={}", GAIN_DB_RANGE.start(), GAIN_DB_RANGE.end()));
+        }
+        if self.presets_allowed.is_empty() {
+            return Err("at least one preset".into());
+        }
+        if let Some(p) = self.presets_allowed.iter().find(|p| find_preset(p).is_none()) {
+            return Err(format!("no preset {p}"));
+        }
+        if !(500..=30_000).contains(&self.calls.hang_ms) || self.calls.end_grace_ms > 10_000 {
+            return Err("hang_ms 500..=30000, end_grace_ms up to 10000".into());
+        }
+        let r = &self.recording;
+        if r.ram_max_count == 0 || r.sd_max_count == 0 || !(SD_MIN_MB..=SD_MAX_MB).contains(&r.sd_max_mb) {
+            return Err(format!("recording: each store keeps at least one, sd_max_mb {SD_MIN_MB}..={SD_MAX_MB}"));
+        }
+        if self.history.retention_days == 0 || !(SD_MIN_MB..=SD_MAX_MB).contains(&self.history.sd_max_mb) {
+            return Err(format!("history: at least a day, and {SD_MIN_MB}..={SD_MAX_MB} MB"));
+        }
+        if self.crystal.anchor_hz > 1_000 {
+            return Err("crystal anchor_hz up to 1000 (0: no limit)".into());
+        }
+        Ok(())
+    }
 }
 
 impl Default for RadioConfig {

@@ -2,6 +2,7 @@
 
 pub mod activity;
 pub mod calls;
+pub mod config;
 pub mod data;
 pub mod events;
 pub mod profiles;
