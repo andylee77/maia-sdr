@@ -131,6 +131,23 @@ fn large_carrier_offset_is_equalised() {
     assert!(rec.syncs.len() >= 95, "{} syncs, {stats:?}", rec.syncs.len());
 }
 
+// The crystal tracker reads the equaliser's offset as signal minus NCO: a carrier above the
+// tuning must come out positive. On this synthetic signal it reads about 0.78 of the offset; the
+// tracker still converges (each update closes most of what is left).
+#[test]
+fn the_learned_carrier_offset_is_signal_minus_tuning() {
+    for offset in [-400.0, 400.0] {
+        let mut demod = DmrDemodulator::new();
+        let mut rec = Recorder::default();
+        for chunk in modulate(&bursts(100, 3), offset).chunks(2 * 1250) {
+            demod.process_iq_i16(chunk, &mut rec);
+        }
+        let learned = -f64::from(demod.symbols.equalizer_balance()) * SYMBOL_RATE / std::f64::consts::TAU;
+        let share = learned / offset;
+        assert!((0.6..=1.1).contains(&share), "sent {offset} Hz, learned {learned:.0} Hz");
+    }
+}
+
 #[test]
 fn noise_finds_no_sync() {
     let mut rng = Lcg(3);
