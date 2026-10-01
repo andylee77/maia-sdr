@@ -4,6 +4,7 @@
 
 mod boot;
 mod hardware;
+mod radio;
 mod services;
 mod util;
 

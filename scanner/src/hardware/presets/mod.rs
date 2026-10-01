@@ -7,6 +7,12 @@ pub use table::{find_preset, DdcPreset, DEFAULT_PRESET, PRESETS};
 
 use anyhow::{bail, Result};
 
+impl std::fmt::Debug for DdcPreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DdcPreset({})", self.name)
+    }
+}
+
 /// Complex samples/s at the output of every DDC, for every preset.
 pub const DDC_OUTPUT_RATE_HZ: u32 = 50_000;
 
