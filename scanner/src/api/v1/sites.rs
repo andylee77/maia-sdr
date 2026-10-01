@@ -9,6 +9,7 @@ use serde::Serialize;
 use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
 use crate::services::config::systems::{Protocol, Site};
+use crate::services::config::SiteState;
 use crate::radio::plan::WindowPlan;
 use crate::trunking::site::{Live, LiveState, WindowView};
 
@@ -77,4 +78,13 @@ pub async fn recentre(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     }
     let moved_to = s.live.recentre(true, "by hand").await.map_err(|e| ApiError::conflict(format!("{e:#}")))?;
     Ok(Json(Recentred { moved_to }))
+}
+
+/// What a site taught the radio: band plan, grant counts, encrypted talkgroups, neighbours and
+/// the other channels it announces.
+pub async fn learned(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<SiteState> {
+    if s.config.lock().await.systems.value.site(&id).is_none() {
+        return Err(ApiError::not_found(format!("site {id}")));
+    }
+    Ok(Json(s.live.learned(&id).await?))
 }

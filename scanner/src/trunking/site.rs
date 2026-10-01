@@ -275,6 +275,16 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         }
     }
 
+    /// What `site_id` taught the radio: in memory while it is live, else as last saved.
+    pub async fn learned(&self, site_id: &str) -> Result<SiteState> {
+        if let (LiveState::Live(l), Some(learned)) = (self.state(), self.learned.lock().await.as_ref()) {
+            if l.site.id == site_id {
+                return Ok(learned.state());
+            }
+        }
+        Ok(Config::site_state(&self.paths, site_id)?.value)
+    }
+
     /// The live window against the site's channels and what was learned there.
     pub async fn window_view(&self) -> Option<WindowView> {
         let LiveState::Live(live) = self.state() else { return None };

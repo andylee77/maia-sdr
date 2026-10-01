@@ -114,6 +114,7 @@ routes! {
     put "/api/v1/systems/{system}/sites/{site}" => v1::systems::put_site, "edit a site (the live site goes live again with the change)";
     get "/api/v1/sites" => v1::sites::list, "every site, with the live one marked";
     post "/api/v1/sites/{id}/activate" => v1::sites::activate, "make a site live (returns once it is)";
+    get "/api/v1/sites/{id}/learned" => v1::sites::learned, "what a site taught the radio: band plan, grants, encrypted talkgroups, neighbours, its other channels";
     get "/api/v1/sites/{id}/plan" => v1::sites::plan, "the live site's receive window against its channels, and the planner's choice";
     post "/api/v1/sites/{id}/recentre" => v1::sites::recentre, "move the live site's window to the planner's choice now (both lanes idle)";
     get "/api/v1/scan" => v1::scan::get, "the scan's progress and what it found";

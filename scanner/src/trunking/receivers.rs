@@ -505,6 +505,21 @@ impl Decoder {
                         c.observe(*sync);
                     }
                 }
+                ControlEvent::Neighbour(n) => {
+                    if let Some(l) = &self.learned {
+                        l.neighbour(n, now.unix_ms);
+                    }
+                }
+                ControlEvent::SecondaryControl(channels) => {
+                    if let Some(l) = &self.learned {
+                        l.secondary_control(channels);
+                    }
+                }
+                ControlEvent::DataChannel(channel) => {
+                    if let Some(l) = &self.learned {
+                        l.data_channel(channel);
+                    }
+                }
                 ControlEvent::Unit { unit, group, kind } => {
                     let kind = match kind {
                         UnitKind::GroupAffiliation => UnitEventKind::GroupAffiliation,

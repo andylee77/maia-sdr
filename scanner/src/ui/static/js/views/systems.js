@@ -96,6 +96,19 @@ function kv(rows) {
     h('tr', null, h('th', { text: k }), h('td', { text: v === null || v === undefined ? DASH : v }))));
 }
 
+// What the site announces of its neighbours and other channels, appended to `into` once read.
+function announced(site, into) {
+  api.siteLearned(site.id).then(l => {
+    const rows = [];
+    if (l.neighbours.length) {
+      rows.push(['Neighbours', l.neighbours.map(n => `${n.system.toString(16).toUpperCase().padStart(3, '0')}-${n.rfss}-${n.site}${n.control_hz ? ` (${mhz(n.control_hz)})` : ''}`).join(', ')]);
+    }
+    if (l.secondary_control_hz.length) rows.push(['Other control channels', l.secondary_control_hz.map(f => mhz(f)).join(', ')]);
+    if (l.data_channel_hz) rows.push(['Data channel', mhz(l.data_channel_hz)]);
+    if (rows.length) into.append(kv(rows));
+  }).catch(() => {});
+}
+
 const share = (part, whole) => (whole > 0 ? `${Math.round((100 * part) / whole)} %` : DASH);
 
 // The live site's receive window against its channels, and the planner's choice.
@@ -166,7 +179,10 @@ export function mount(el) {
         const button = h('button', { class: 'btn', type: 'button', disabled: live, text: live ? 'Live' : 'Make live' });
         button.addEventListener('click', () => activate(site, button));
         const details = h('div');
-        const show = () => details.replaceChildren(kv([['Control channel', mhz(site.control.freq_hz)], ...p.siteIdentity(site.identity)]));
+        const show = () => {
+          details.replaceChildren(kv([['Control channel', mhz(site.control.freq_hz)], ...p.siteIdentity(site.identity)]));
+          announced(site, details);
+        };
         const edit = h('button', { class: 'btn small', type: 'button', text: 'Edit' });
         edit.addEventListener('click', () => details.replaceChildren(siteEditor(sys, site, saved => (saved ? load() : show()))));
         show();

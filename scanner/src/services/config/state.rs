@@ -1,6 +1,7 @@
 //! What the radio learns by itself, kept apart from the user's configuration:
 //! `state/radio.json` (live site, crystal calibration) and `state/sites/<id>.json` (per site:
-//! identity heard, channel plan, grant counts, encrypted talkgroups).
+//! channel plan, grant counts, encrypted talkgroups, and what the site announces of its
+//! neighbours and other channels).
 
 use std::collections::BTreeMap;
 
@@ -46,6 +47,23 @@ pub struct SiteState {
     /// Talkgroups seen encrypted.
     pub encrypted_talkgroups: Vec<u32>,
     pub last_recentre_unix_ms: u64,
+    /// Adjacent sites the control channel announces.
+    pub neighbours: Vec<NeighbourSite>,
+    /// The site's secondary control channels, as announced.
+    pub secondary_control_hz: Vec<u64>,
+    /// The site's packet data channel, as announced.
+    pub data_channel_hz: Option<u64>,
+}
+
+/// An adjacent site as the control channel last announced it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NeighbourSite {
+    pub system: u16,
+    pub rfss: u8,
+    pub site: u8,
+    /// Its control channel, once the band plan names the channel.
+    pub control_hz: Option<u64>,
+    pub last_heard_unix_ms: u64,
 }
 
 impl Default for SiteState {
@@ -56,6 +74,9 @@ impl Default for SiteState {
             grants: BTreeMap::new(),
             encrypted_talkgroups: Vec::new(),
             last_recentre_unix_ms: 0,
+            neighbours: Vec::new(),
+            secondary_control_hz: Vec::new(),
+            data_channel_hz: None,
         }
     }
 }

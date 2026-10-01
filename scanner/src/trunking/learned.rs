@@ -1,12 +1,13 @@
 //! What the live site taught the radio (`state/sites/<id>.json`): its IDEN bands, the grants per
-//! channel (the window planner's weights) and the talkgroups seen encrypted. The receivers and
-//! the trunking task add to it; it is saved every 10 minutes when it changed, on a site switch
-//! and at shutdown.
+//! channel (the window planner's weights), the talkgroups seen encrypted, and its neighbours,
+//! secondary control channels and data channel. The receivers and the trunking task add to it;
+//! it is saved every 10 minutes when it changed, on a site switch and at shutdown.
 
 use std::sync::Mutex;
 
+use crate::protocol::events::{LogicalChannel, Neighbour};
 use crate::protocol::p25::tsbk::FrequencyBand;
-use crate::services::config::state::{IdenBand, SiteState};
+use crate::services::config::state::{IdenBand, NeighbourSite, SiteState};
 use crate::services::config::{self, Paths, Stored};
 
 pub const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
@@ -84,6 +85,44 @@ impl Learned {
         });
     }
 
+    /// An adjacent site announced. Only a new site or a moved control channel counts as a
+    /// change; the time heard is saved with the next one.
+    pub fn neighbour(&self, n: &Neighbour, at_unix_ms: u64) {
+        let entry = NeighbourSite { system: n.system, rfss: n.rfss, site: n.site, control_hz: n.control.freq_hz, last_heard_unix_ms: at_unix_ms };
+        self.with(|s| match s.neighbours.iter_mut().find(|x| (x.system, x.rfss, x.site) == (n.system, n.rfss, n.site)) {
+            Some(x) => {
+                let moved = x.control_hz != entry.control_hz;
+                *x = entry;
+                ((), moved)
+            }
+            None => {
+                s.neighbours.push(entry);
+                s.neighbours.sort_by_key(|x| (x.system, x.rfss, x.site));
+                ((), true)
+            }
+        });
+    }
+
+    /// The secondary control channels announced (those the band plan names).
+    pub fn secondary_control(&self, channels: &[LogicalChannel]) {
+        let mut hz: Vec<u64> = channels.iter().filter_map(|c| c.freq_hz).collect();
+        hz.sort_unstable();
+        hz.dedup();
+        self.with(|s| {
+            let changed = s.secondary_control_hz != hz;
+            s.secondary_control_hz = hz;
+            ((), changed)
+        });
+    }
+
+    pub fn data_channel(&self, channel: &LogicalChannel) {
+        self.with(|s| {
+            let changed = s.data_channel_hz != channel.freq_hz;
+            s.data_channel_hz = channel.freq_hz;
+            ((), changed)
+        });
+    }
+
     /// The window moved to the planner's choice at `at_unix_ms`.
     pub fn recentred(&self, at_unix_ms: u64) {
         self.with(|s| {
@@ -155,5 +194,42 @@ mod tests {
         assert_eq!(back.encrypted_talkgroups, vec![402]);
         let again = Learned::new("clay", Config::site_state(&paths, "clay").unwrap());
         assert_eq!(again.bands(), vec![band]);
+    }
+
+    #[test]
+    fn announced_neighbours_and_channels_are_kept() {
+        use crate::protocol::events::{ChannelId, LogicalChannel, Neighbour};
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(&dir.path().join("flash"), &dir.path().join("sd"));
+        let learned = Learned::new("clay", Config::site_state(&paths, "clay").unwrap());
+        let channel = |hz: Option<u64>| LogicalChannel { id: ChannelId::P25 { iden: 1, number: 100 }, slot: None, freq_hz: hz, tdma: false };
+        let neighbour = |hz| Neighbour {
+            system: 0x1A2,
+            rfss: 1,
+            site: 3,
+            lra: 0,
+            control: channel(hz),
+            service_class: 0,
+            conventional: false,
+            failure: false,
+            valid: true,
+            active: true,
+        };
+        learned.neighbour(&neighbour(Some(853_312_500)), 1);
+        learned.secondary_control(&[channel(Some(860_437_500)), channel(None)]);
+        learned.data_channel(&channel(Some(859_212_500)));
+        learned.save(&paths);
+        // Heard again unchanged: not worth a flash write on its own.
+        learned.neighbour(&neighbour(Some(853_312_500)), 2);
+        learned.save(&paths);
+        let back = Config::site_state(&paths, "clay").unwrap().value;
+        assert_eq!((back.neighbours.len(), back.neighbours[0].last_heard_unix_ms), (1, 1));
+        assert_eq!(back.secondary_control_hz, vec![860_437_500]);
+        assert_eq!(back.data_channel_hz, Some(859_212_500));
+        // Its control channel moved: saved.
+        learned.neighbour(&neighbour(Some(853_337_500)), 3);
+        learned.save(&paths);
+        let back = Config::site_state(&paths, "clay").unwrap().value;
+        assert_eq!((back.neighbours[0].control_hz, back.neighbours[0].last_heard_unix_ms), (Some(853_337_500), 3));
     }
 }
