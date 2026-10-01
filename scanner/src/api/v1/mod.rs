@@ -7,6 +7,7 @@ pub mod profiles;
 pub mod radio;
 pub mod recordings;
 pub mod scan;
+pub mod spectrum;
 pub mod sites;
 pub mod status;
 pub mod systems;

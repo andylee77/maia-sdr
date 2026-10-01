@@ -44,6 +44,7 @@ const ASSETS: &[Asset] = assets![
     "js/views/activity.js",
     "js/views/scan.js",
     "js/views/profiles.js",
+    "js/views/spectrum.js",
     "js/audio/player.js",
     "js/audio/ring.js",
     "js/audio/sources.js",

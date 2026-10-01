@@ -1,8 +1,10 @@
-// Diagnostics: the event log, the tuning, the hardware and the API's routes.
+// Diagnostics: the event log, the spectrum of the window, the tuning, the hardware and the API's
+// routes.
 
 import { h, card, table, toast, switchInput } from '../dom.js';
 import { mhz, uptime, clockMs, DASH } from '../format.js';
 import { api } from '../api.js';
+import { spectrumCard } from './spectrum.js';
 
 // Lines kept in the events box.
 const KEEP = 500;
@@ -11,7 +13,8 @@ export function mount(el) {
   const events = card('Events');
   const tuning = card('Tuning');
   const routes = card('API routes');
-  el.append(h('div', { class: 'stack' }, events.el, tuning.el, routes.el));
+  const spectrum = spectrumCard();
+  el.append(h('div', { class: 'stack' }, events.el, spectrum.el, tuning.el, routes.el));
 
   const log = h('div', { class: 'log', role: 'log' });
   events.body.append(log);
@@ -83,6 +86,7 @@ export function mount(el) {
     },
     unmount() {
       clearInterval(timer);
+      spectrum.stop();
     },
   };
 }

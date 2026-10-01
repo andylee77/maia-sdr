@@ -33,6 +33,7 @@ export const api = {
   saveSite: (system, site, edit) => request('PUT', `/api/v1/systems/${encodeURIComponent(system)}/sites/${encodeURIComponent(site)}`, edit),
   saveRadioSettings: settings => request('PUT', '/api/v1/radio/settings', settings),
   routes: () => request('GET', '/api/v1/routes'),
+  spectrum: () => request('GET', '/api/v1/spectrum?bins=1024'),
   calls: () => request('GET', '/api/v1/calls'),
   scan: () => request('POST', '/api/v1/scan'),
   scanState: () => request('GET', '/api/v1/scan'),
