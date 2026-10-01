@@ -15,6 +15,7 @@ fn call(call_id: u64, at: u64, tg: u16, sources: &[u32], voice_ms: u64, enc: boo
         source: sources.first().copied(),
         sources: sources.to_vec(),
         freq_hz: Some(858_437_500),
+        channel: Some("1189".into()),
         chain: 1,
         encrypted: enc,
         followed: !enc,
@@ -119,11 +120,33 @@ fn trimmed_to_size_oldest_first() {
 }
 
 #[test]
-fn site_of_a_call_by_id() {
+fn recording_info_by_call_id() {
     let s = store();
-    assert_eq!(s.site_of_call(3, T0 + 2 * H + 4_000).unwrap().as_deref(), Some("clay"));
-    assert_eq!(s.site_of_call(3, T0 + 3 * H).unwrap(), None, "too far from its start");
-    assert_eq!(s.site_of_call(99, T0).unwrap(), None);
+    let i = s.recording_info(2, T0 + 60_000 + 4_000).unwrap().unwrap();
+    assert_eq!(
+        (i.site.as_str(), i.freq_hz, i.channel.as_deref(), i.chain, i.units),
+        ("clay", Some(858_437_500), Some("1189"), 1, vec![102, 101])
+    );
+    assert_eq!(s.recording_info(3, T0 + 3 * H).unwrap(), None, "too far from its start");
+    assert_eq!(s.recording_info(99, T0).unwrap(), None);
+}
+
+/// A database made before change 074a gets the channel column.
+#[test]
+fn old_database_gains_the_channel_column() {
+    let path = std::env::temp_dir().join(format!("p25-history-074a-{}.sqlite", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(&SCHEMA.replace("    channel TEXT,\n", "")).unwrap();
+        let cols: i64 = c.query_row("SELECT COUNT(*) FROM pragma_table_info('calls') WHERE name = 'channel'", [], |r| r.get(0)).unwrap();
+        assert_eq!(cols, 0, "the old schema has no channel column");
+    }
+    let s = HistoryStore::open(&path, false).unwrap();
+    s.insert_calls(&[call(1, T0, 300, &[101], 1_000, false)]).unwrap();
+    assert_eq!(s.recording_info(1, T0).unwrap().unwrap().channel.as_deref(), Some("1189"));
+    drop(s);
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

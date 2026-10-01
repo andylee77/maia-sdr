@@ -49,6 +49,7 @@ pub fn to_row(g: &GrantDecodeSummary, site: &str) -> CallRow {
         source,
         sources: g.sources_observed.clone(),
         freq_hz: g.freq_hz,
+        channel: g.channel.clone(),
         chain: g.chain,
         encrypted: g.encrypted,
         followed: g.not_followed.is_none(),

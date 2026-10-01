@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-30-packet-data-074";
+pub const BUILD_TAG: &str = "2026-09-30-rec-channel-074a";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -1755,22 +1755,30 @@ async fn main() -> anyhow::Result<()> {
         recordings.clone(),
     );
     rec_storage.note_index(sd_index.len(), &sd_index_note);
-    // Change 073: recordings made before their file names carried the
-    // site get it from the activity history (by call id).
+    // Change 073 / 074a: a recording's file name gives its time, id,
+    // talkgroup, radio and site; the activity history (by call id) adds
+    // its frequency, channel and radios, and the site of older files.
     let mut sd_index = sd_index;
     if let Some(h) = history.clone() {
-        let unnamed: Vec<(usize, u64, u64)> = sd_index.iter().enumerate()
-            .filter(|(_, e)| e.site.is_empty())
+        let keys: Vec<(usize, u64, u64)> = sd_index.iter().enumerate()
             .map(|(i, e)| (i, e.id, e.started_unix_ms))
             .collect();
         let found = tokio::task::spawn_blocking(move || {
-            unnamed.into_iter()
-                .filter_map(|(i, id, t)| h.site_of_call(id, t).ok().flatten().map(|s| (i, s)))
+            keys.into_iter()
+                .filter_map(|(i, id, t)| h.recording_info(id, t).ok().flatten().map(|s| (i, s)))
                 .collect::<Vec<_>>()
         }).await.unwrap_or_default();
-        tracing::info!("recordings on SD: {} given their site from the history", found.len());
-        for (i, s) in found {
-            sd_index[i].site = s;
+        tracing::info!("recordings on SD: {} completed from the history", found.len());
+        for (i, info) in found {
+            let e = &mut sd_index[i];
+            if e.site.is_empty() {
+                e.site = info.site;
+            }
+            e.freq_hz = e.freq_hz.or(info.freq_hz);
+            e.channel = e.channel.take().or(info.channel);
+            if e.sources_observed.len() < info.units.len() {
+                e.sources_observed = info.units;
+            }
         }
     }
     {

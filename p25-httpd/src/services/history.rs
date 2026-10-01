@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS calls (
     tg INTEGER NOT NULL,
     source INTEGER,
     freq_hz INTEGER,
+    channel TEXT,
     chain INTEGER NOT NULL DEFAULT 0,
     encrypted INTEGER NOT NULL,
     followed INTEGER NOT NULL,
@@ -145,6 +146,8 @@ pub struct CallRow {
     /// Every radio heard in the call, the primary first.
     pub sources: Vec<u32>,
     pub freq_hz: Option<u64>,
+    /// Channel id as announced ("1189"); change 074a.
+    pub channel: Option<String>,
     pub chain: u8,
     pub encrypted: bool,
     pub followed: bool,
@@ -325,6 +328,16 @@ pub struct SiteStat {
     pub last_ms: u64,
 }
 
+/// A stored call's details for a recording found on the SD card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingInfo {
+    pub site: String,
+    pub freq_hz: Option<u64>,
+    pub channel: Option<String>,
+    pub chain: u8,
+    pub units: Vec<u32>,
+}
+
 /// What a series or a listing is about.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SeriesFilter {
@@ -371,6 +384,13 @@ impl HistoryStore {
         let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA)?;
+        // Change 074a: the channel id (databases made before it lack it).
+        let has_channel = conn
+            .prepare("SELECT 1 FROM pragma_table_info('calls') WHERE name = 'channel'")?
+            .exists([])?;
+        if !has_channel {
+            conn.execute_batch("ALTER TABLE calls ADD COLUMN channel TEXT")?;
+        }
         Ok(HistoryStore { conn: Mutex::new(conn), path, on_sd })
     }
 
@@ -388,8 +408,8 @@ impl HistoryStore {
         {
             let mut ins = tx.prepare_cached(
                 "INSERT OR IGNORE INTO calls (site, call_id, started_ms, ended_ms, tg, source, freq_hz, chain,
-                 encrypted, followed, not_followed, voice_ms, grant_ms, imbe, vocoder_errors, close_reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                 encrypted, followed, not_followed, voice_ms, grant_ms, imbe, vocoder_errors, close_reason, channel)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             )?;
             let mut unit = tx.prepare_cached(
                 "INSERT INTO call_units (call, site, unit, started_ms, primary_src) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -422,6 +442,7 @@ impl HistoryStore {
                     r.site, r.call_id as i64, r.started_ms as i64, r.ended_ms as i64, r.tg, r.source,
                     r.freq_hz.map(|f| f as i64), r.chain, r.encrypted, r.followed, r.not_followed,
                     r.voice_ms as i64, r.grant_ms as i64, r.imbe as i64, r.vocoder_errors as i64, r.close_reason,
+                    r.channel,
                 ])?;
                 if n == 0 {
                     continue;
@@ -772,7 +793,7 @@ impl HistoryStore {
         let mut st = conn.prepare(
             "SELECT c.site, c.call_id, c.started_ms, c.ended_ms, c.tg, c.source, c.freq_hz, c.chain, c.encrypted,
              c.followed, c.not_followed, c.voice_ms, c.grant_ms, c.imbe, c.vocoder_errors, c.close_reason,
-             (SELECT GROUP_CONCAT(unit) FROM call_units u WHERE u.call = c.id)
+             (SELECT GROUP_CONCAT(unit) FROM call_units u WHERE u.call = c.id), c.channel
              FROM calls c WHERE c.site = ?1 AND c.started_ms >= ?2 AND c.started_ms < ?3
              AND (?5 IS NULL OR c.tg = ?5)
              AND (?6 IS NULL OR c.id IN (SELECT call FROM call_units WHERE site = ?1 AND unit = ?6 AND started_ms >= ?2 AND started_ms < ?3))
@@ -793,6 +814,7 @@ impl HistoryStore {
                     .filter_map(|s| s.parse().ok())
                     .collect(),
                 freq_hz: r.get::<_, Option<i64>>(6)?.map(to_u64),
+                channel: r.get(17)?,
                 chain: r.get(7)?,
                 encrypted: r.get(8)?,
                 followed: r.get(9)?,
@@ -807,14 +829,27 @@ impl HistoryStore {
         rows.collect()
     }
 
-    /// Change 073: the site a call was stored under (by its id, started
-    /// within 10 s of `started_ms`; the first stored when several).
-    pub fn site_of_call(&self, call_id: u64, started_ms: u64) -> rusqlite::Result<Option<String>> {
+    /// What a recording on the SD card does not carry in its file name:
+    /// its call's site (change 073), frequency, channel and radios
+    /// (change 074a). By call id, started within 10 s of `started_ms`;
+    /// the first stored when several.
+    pub fn recording_info(&self, call_id: u64, started_ms: u64) -> rusqlite::Result<Option<RecordingInfo>> {
         self.conn()
             .query_row(
-                "SELECT site FROM calls WHERE call_id = ?1 AND ABS(started_ms - ?2) < 10000 ORDER BY id LIMIT 1",
+                "SELECT c.site, c.freq_hz, c.channel, c.chain,
+                 (SELECT GROUP_CONCAT(unit) FROM call_units u WHERE u.call = c.id)
+                 FROM calls c WHERE c.call_id = ?1 AND ABS(c.started_ms - ?2) < 10000 ORDER BY c.id LIMIT 1",
                 params![call_id as i64, started_ms as i64],
-                |r| r.get(0),
+                |r| {
+                    let units: Option<String> = r.get(4)?;
+                    Ok(RecordingInfo {
+                        site: r.get(0)?,
+                        freq_hz: r.get::<_, Option<i64>>(1)?.map(to_u64),
+                        channel: r.get(2)?,
+                        chain: r.get(3)?,
+                        units: units.unwrap_or_default().split(',').filter_map(|s| s.parse().ok()).collect(),
+                    })
+                },
             )
             .optional()
     }

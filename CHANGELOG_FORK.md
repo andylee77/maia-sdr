@@ -5,6 +5,26 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-30] Recordings keep their frequency and channel across a reboot (074a)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-30-rec-channel-074a`
+**Bake required:** NO (p25-httpd).
+
+- After a reboot, the recordings listed from the SD card had no frequency or channel: their
+  file names carry time, id, talkgroup, radio and site only.
+- The activity history now keeps each call's channel id (a `channel` column, added to existing
+  databases at start). At boot each SD recording takes its frequency, channel and radios from
+  its call in the history (`HistoryStore::recording_info`, which replaces `site_of_call`).
+- Calls stored before this change have a frequency but no channel id.
+- Packet data (074), asked by Andy: Clay does not send positions back out. All location
+  packets seen were "triggered location start" requests to radios; the reports go radio to
+  server on the uplink.
+
+Tests: p25-httpd 328 (recording details by call id; an old database gains the column).
+
+---
+
 ## [2026-09-30] Packet data on the data channel; status dibits one dibit late everywhere (074)
 
 **Branch:** fishball-p25
