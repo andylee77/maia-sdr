@@ -1163,4 +1163,15 @@ From the brief:
     6.25 kHz above): it announces no frequency of its own, and the spectrum's estimate was
     625 Hz off.
   - **Not yet:** the DMR channel plan (LCNs) from the air: a DMR site added by a scan follows
-    no grant until its LCNs are entered (`unknown_lcn`); the site editor comes with phase 7.
+    no grant until its LCNs are entered in the site editor (`unknown_lcn` meanwhile).
+- 2026-10-01, phase 7 (in progress):
+  - **Editing:** profiles created, edited (groups, speakers, pre-emption, follow-only and
+    never-follow lists, checked) and deleted (not a site's active one); a change to the live
+    site's profile goes to the follower at once. A system's names. The site editor (control
+    channel and alternates, DMR LCN plan and control timeslot, P25 modulation, known channels,
+    window); the live site goes live again with the change. `PUT /api/v1/radio/settings`
+    (presets, lanes, call timings at the next activation; history limits at once). Settings
+    has the radio card, the profile editor and the names; Systems has the site editor.
+  - **Live, unit B** (on a copy of its configuration): each endpoint did what it says, and a
+    profile following TGs 300 and 319 only took effect from the next call (TGs 850, 600 and
+    403 then `speaker_off`).
