@@ -391,7 +391,7 @@ mod tests {
         let tuner = Arc::new(Tuner::new(Nothing, 0.0));
         let log = Arc::new(EventLog::default());
         let receivers = Arc::new(Receivers::new(log.clone()));
-        let trunking = Arc::new(Trunking::new(crate::audio::live::Audio::start(&[Lane::One]), Default::default(), Default::default(), 1));
+        let trunking = Arc::new(Trunking::new(crate::audio::live::Audio::start(&[Lane::One]), Default::default(), Default::default(), Default::default(), 1));
         let config = Arc::new(Mutex::new(config));
         let live = LiveSite::new(paths.clone(), config, tuner.clone(), RadioLease::default(), receivers.clone(), trunking.clone(), vec![Lane::One], log.clone(), Default::default());
         assert!(live.activate("duval").await.is_err());

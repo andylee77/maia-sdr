@@ -264,7 +264,7 @@ async fn a_followed_call_is_saved_to_the_card_and_ids_continue_past_the_card() {
     std::fs::write(sd.join("rec_1000_41_tg300.clay.wav"), vec![0u8; 44 + 1_600]).unwrap();
     let c = cfg(&ram, &sd);
     let audio = Audio::start(&[Lane::One]);
-    let rec = Recordings::start(c.clone(), policy(Store::Sd), index(&c), &audio, Default::default());
+    let rec = Recordings::start(c.clone(), policy(Store::Sd), index(&c), &audio, Default::default(), Default::default());
     assert_eq!(rec.next_call(), 42);
     let tx = rec.sender();
     tx.start(call(42));
@@ -298,7 +298,7 @@ async fn with_recording_off_calls_are_counted_not_saved() {
     let (ram, sd) = dirs("off");
     let c = cfg(&ram, &sd);
     let audio = Audio::start(&[Lane::One]);
-    let rec = Recordings::start(c, Policy { enabled: false, ..policy(Store::Ram) }, (Vec::new(), String::new()), &audio, Default::default());
+    let rec = Recordings::start(c, Policy { enabled: false, ..policy(Store::Ram) }, (Vec::new(), String::new()), &audio, Default::default(), Default::default());
     assert_eq!(rec.next_call(), 1);
     rec.sender().start(call(5));
     play(&audio, 5).await;

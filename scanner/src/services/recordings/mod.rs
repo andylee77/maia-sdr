@@ -26,6 +26,7 @@ use crate::hardware::p25core::Lane;
 use crate::services::config::radio::{self as radio_config, Storage as StorageKind};
 use crate::services::history::store::{RecordingRow, Store as HistoryStore, VoiceResult};
 use crate::services::history::HistoryTx;
+use crate::services::notices::{Notice, Notices};
 use storage::{Retention, SdStatus, Storage, StorageConfig};
 
 /// After a call closes, its audio still in the decoder and pacer comes in for this long.
@@ -208,6 +209,7 @@ struct Shared {
     ring: Ring,
     storage: Arc<Storage>,
     history: HistoryTx,
+    notices: Notices,
     policy: Mutex<Policy>,
     counters: Counters,
     recording_now: AtomicU64,
@@ -231,7 +233,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Recordings {
     /// Start the card writer and the recorder. `indexed` is the card's listing (`storage::index`).
-    pub fn start(cfg: StorageConfig, policy: Policy, indexed: (Vec<Recording>, String), audio: &Audio, history: HistoryTx) -> Arc<Recordings> {
+    pub fn start(cfg: StorageConfig, policy: Policy, indexed: (Vec<Recording>, String), audio: &Audio, history: HistoryTx, notices: Notices) -> Arc<Recordings> {
         clear_ram_store(&cfg.ram_dir);
         let (list, note) = indexed;
         tracing::info!("{note}");
@@ -244,6 +246,7 @@ impl Recordings {
             ring,
             storage,
             history,
+            notices,
             policy: Mutex::new(policy),
             counters: Counters::default(),
             recording_now: AtomicU64::new(0),
@@ -483,7 +486,10 @@ impl Recorder {
             return;
         }
         match save(&self.shared, o) {
-            Ok(()) => counters.saved.fetch_add(1, Ordering::Relaxed),
+            Ok(()) => {
+                self.shared.notices.send(Notice::RecordingSaved { call: id });
+                counters.saved.fetch_add(1, Ordering::Relaxed)
+            }
             Err(e) => {
                 tracing::warn!("recording {id} not saved: {e}");
                 counters.failed.fetch_add(1, Ordering::Relaxed)

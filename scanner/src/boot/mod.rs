@@ -19,6 +19,7 @@ use crate::audio::live::Audio;
 use crate::radio::lease::RadioLease;
 use crate::services::history::store::SiteInfo;
 use crate::services::history::History;
+use crate::services::notices::Notices;
 use crate::services::recordings::storage::{self, StorageConfig};
 use crate::services::recordings::{self, Policy, Recordings};
 use crate::services::config::{self, Paths};
@@ -58,9 +59,10 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let receivers = Arc::new(Receivers::new(log.clone()));
     let lanes = crate::hardware::p25core::Lane::ALL[..hardware.lanes].to_vec();
     let audio = crate::audio::live::Audio::start(&lanes);
-    let (history, recordings) = start_storage(&args, &paths, &config, &audio).await?;
+    let notices = Notices::default();
+    let (history, recordings) = start_storage(&args, &paths, &config, &audio, &notices).await?;
     let first_call = recordings.next_call().max(history.store().max_call_id().unwrap_or(0) + 1);
-    let trunking = Arc::new(Trunking::new(audio.clone(), recordings.sender(), history.sender(), first_call));
+    let trunking = Arc::new(Trunking::new(audio.clone(), recordings.sender(), history.sender(), notices.clone(), first_call));
     match history.query(|s| s.latest_calls(crate::trunking::trunk::RECENT)).await {
         Ok(rows) => trunking.seed_recent(rows),
         Err(e) => tracing::warn!("history: recent calls not read: {e:#}"),
@@ -97,7 +99,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         });
     }
     let discovery = Arc::default();
-    let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, trunking, audio, recordings, history, discovery, log, hardware, started });
+    let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, trunking, audio, recordings, history, discovery, notices, log, hardware, started });
     let app = crate::api::router(state.clone());
     tokio::select! {
         r = crate::api::serve(app, args.listen, args.listen_https, args.ssl_cert.as_deref(), args.ssl_key.as_deref()) => r?,
@@ -121,6 +123,7 @@ async fn start_storage(
     paths: &Paths,
     config: &Arc<Mutex<config::Config>>,
     audio: &Audio,
+    notices: &Notices,
 ) -> anyhow::Result<(Arc<History>, Arc<Recordings>)> {
     let cfg = StorageConfig::board(&args.sd_dir, args.recordings_dir.clone().unwrap_or_else(|| paths.recordings()));
     let (policy, history_cfg, sites) = {
@@ -159,7 +162,7 @@ async fn start_storage(
         list
     })
     .await?;
-    let recordings = Recordings::start(cfg, policy, (list, note), audio, history.sender());
+    let recordings = Recordings::start(cfg, policy, (list, note), audio, history.sender(), notices.clone());
     Ok((history, recordings))
 }
 

@@ -68,3 +68,32 @@ async fn stream(socket: WebSocket, s: Arc<AppState>) {
         }
     }
 }
+
+/// `/ws/events`: a text frame per notice (`{"type":"call_opened",...}`), for pages to refresh
+/// at once; `{"type":"lag"}` when some were missed.
+pub async fn events(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| notices(socket, s))
+}
+
+async fn notices(socket: WebSocket, s: Arc<AppState>) {
+    let mut rx = s.notices.subscribe();
+    let (mut out, mut inbound) = socket.split();
+    loop {
+        tokio::select! {
+            n = rx.recv() => {
+                let text = match n {
+                    Ok(n) => serde_json::to_string(&n).unwrap_or_default(),
+                    Err(RecvError::Lagged(_)) => r#"{"type":"lag"}"#.to_string(),
+                    Err(RecvError::Closed) => break,
+                };
+                if out.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            },
+            msg = inbound.next() => match msg {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                Some(Ok(_)) => {}
+            },
+        }
+    }
+}

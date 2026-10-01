@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::audio::live::Audio;
 use crate::services::discovery::sweep::Discovery;
 use crate::services::history::History;
+use crate::services::notices::Notices;
 use crate::services::recordings::Recordings;
 
 use tokio::sync::Mutex;
@@ -31,6 +32,7 @@ pub struct AppState {
     pub recordings: Arc<Recordings>,
     pub history: Arc<History>,
     pub discovery: Arc<Discovery>,
+    pub notices: Notices,
     pub log: Arc<EventLog>,
     pub hardware: HardwareInfo,
     pub started: Instant,

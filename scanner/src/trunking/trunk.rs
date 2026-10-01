@@ -21,6 +21,7 @@ use super::follow::{Command, Follower, Record};
 use crate::audio::live::{Audio, VoiceBatch};
 use crate::services::history::store::CallRow;
 use crate::services::history::HistoryTx;
+use crate::services::notices::{Notice, Notices};
 use crate::services::recordings::{CallEnd, CallStart, RecorderTx};
 use crate::hardware::p25core::rings::mono_instant;
 use crate::hardware::p25core::Lane;
@@ -155,6 +156,7 @@ struct Task<H> {
     audio: Arc<Audio>,
     recorder: RecorderTx,
     history: HistoryTx,
+    notices: Notices,
     /// The voice codec of the protocol, for the history.
     codec: &'static str,
     next_call: Arc<AtomicU64>,
@@ -165,6 +167,7 @@ pub struct Trunking {
     audio: Arc<Audio>,
     recorder: RecorderTx,
     history: HistoryTx,
+    notices: Notices,
     /// Call ids keep rising across site switches.
     next_call: Arc<AtomicU64>,
     running: tokio::sync::Mutex<Option<Running>>,
@@ -179,12 +182,13 @@ struct Running {
 
 impl Trunking {
     /// `first_call` continues past the ids already stored (recordings, history).
-    pub fn new(audio: Arc<Audio>, recorder: RecorderTx, history: HistoryTx, first_call: CallId) -> Self {
+    pub fn new(audio: Arc<Audio>, recorder: RecorderTx, history: HistoryTx, notices: Notices, first_call: CallId) -> Self {
         Trunking {
             view: Arc::default(),
             audio,
             recorder,
             history,
+            notices,
             next_call: Arc::new(AtomicU64::new(first_call.max(1))),
             running: tokio::sync::Mutex::new(None),
         }
@@ -240,6 +244,7 @@ impl Trunking {
             audio: self.audio.clone(),
             recorder: self.recorder.clone(),
             history: self.history.clone(),
+            notices: self.notices.clone(),
             codec: match setup.protocol {
                 Protocol::P25 => "imbe",
                 Protocol::DmrTier3 => "ambe2",
@@ -539,6 +544,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             match e {
                 CallEvent::Opened(o) => {
                     self.next_call.fetch_max(o.call + 1, Ordering::Relaxed);
+                    self.notices.send(Notice::CallOpened { call: o.call, tg: o.tg, followed: o.lane.is_some() });
                     if let Some(lane) = o.lane {
                         self.recorder.start(CallStart {
                             call: o.call,
@@ -585,6 +591,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                             self.log.system("call", closed_text(&o, &c));
                         }
                         self.history.call(call_row(&o, &c, self.codec));
+                        self.notices.send(Notice::CallClosed { call: o.call, tg: o.tg });
                         self.recent.push_front(view_of(&o, Some(&c)));
                         self.recent.truncate(RECENT);
                     }
