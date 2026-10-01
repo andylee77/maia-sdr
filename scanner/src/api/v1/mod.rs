@@ -1,5 +1,6 @@
 //! `/api/v1`: the typed API the UI uses.
 
+pub mod events;
 pub mod profiles;
 pub mod radio;
 pub mod sites;

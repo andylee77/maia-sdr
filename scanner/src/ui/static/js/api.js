@@ -22,4 +22,5 @@ export const api = {
   profiles: () => request('GET', '/api/v1/profiles'),
   selectProfile: (site, profile) => request('PUT', `/api/v1/sites/${encodeURIComponent(site)}/profile`, { profile }),
   routes: () => request('GET', '/api/v1/routes'),
+  events: (after, routine) => request('GET', `/api/v1/events?after=${after}&routine=${!!routine}`),
 };

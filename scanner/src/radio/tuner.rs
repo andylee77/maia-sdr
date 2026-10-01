@@ -134,6 +134,11 @@ impl<H: RadioHw> Tuner<H> {
         self.state.borrow().clone()
     }
 
+    /// The hardware, for the stream readers (they read, never tune).
+    pub fn hw(&self) -> &H {
+        &self.hw
+    }
+
     pub fn watch(&self) -> watch::Receiver<Tuning> {
         self.state.subscribe()
     }

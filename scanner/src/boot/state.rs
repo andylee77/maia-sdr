@@ -9,6 +9,8 @@ use super::radio::{HardwareInfo, RadioTuner};
 use crate::radio::hw::Hardware;
 use crate::radio::lease::RadioLease;
 use crate::services::config::{Config, Paths};
+use crate::services::events::EventLog;
+use crate::trunking::receivers::Receivers;
 use crate::trunking::site::LiveSite;
 
 pub struct AppState {
@@ -17,6 +19,8 @@ pub struct AppState {
     pub tuner: Arc<RadioTuner>,
     pub live: Arc<LiveSite<Hardware>>,
     pub lease: RadioLease,
+    pub receivers: Arc<Receivers>,
+    pub log: Arc<EventLog>,
     pub hardware: HardwareInfo,
     pub started: Instant,
 }

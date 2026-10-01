@@ -17,6 +17,8 @@ use state::AppState;
 
 use crate::radio::lease::RadioLease;
 use crate::services::config::{self, Paths};
+use crate::services::events::EventLog;
+use crate::trunking::receivers::Receivers;
 use crate::trunking::site::LiveSite;
 
 pub fn run(args: Args) -> anyhow::Result<()> {
@@ -45,7 +47,10 @@ async fn serve(args: Args) -> anyhow::Result<()> {
 
     let config = Arc::new(Mutex::new(config));
     let lease = RadioLease::default();
-    let live = Arc::new(LiveSite::new(paths.clone(), config.clone(), tuner.clone(), lease.clone()));
+    let log = Arc::new(EventLog::default());
+    log.system("start", format!("scanner {} started", version::BUILD_TAG));
+    let receivers = Arc::new(Receivers::new(log.clone()));
+    let live = Arc::new(LiveSite::new(paths.clone(), config.clone(), tuner.clone(), lease.clone(), receivers.clone(), log.clone()));
     match &live_site {
         Some(site) => {
             if let Err(e) = live.activate(site).await {
@@ -55,12 +60,13 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         None => tracing::warn!("no site configured yet: waiting for a scan or a site to be added"),
     }
 
-    let state = Arc::new(AppState { paths, config, tuner, live, lease, hardware, started });
-    let app = crate::api::router(state);
+    let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, log, hardware, started });
+    let app = crate::api::router(state.clone());
     tokio::select! {
         r = crate::api::serve(app, args.listen, args.listen_https, args.ssl_cert.as_deref(), args.ssl_key.as_deref()) => r?,
         _ = shutdown_signal() => tracing::warn!("shutting down"),
     }
+    state.receivers.stop().await;
     Ok(())
 }
 

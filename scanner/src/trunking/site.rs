@@ -1,9 +1,10 @@
 //! Which site is live: one state, one switch.
 //!
 //! `activate` is the only way to change site. It takes the radio lease (grants decoded during
-//! the switch are dropped), plans the receive window from the site's channels and what was
-//! learned there, tunes, loads the site's learned state and active profile, publishes `Live` and
-//! persists the choice. Receivers and the call book join this sequence in later phases.
+//! the switch are dropped), stops the old site's receivers, plans the receive window from the
+//! site's channels and what was learned there, tunes, loads the site's learned state and active
+//! profile, starts the new site's receivers, publishes `Live` and persists the choice. The call
+//! book joins this sequence in a later phase.
 
 use std::sync::Arc;
 
@@ -14,7 +15,10 @@ use tokio::sync::{watch, Mutex};
 use crate::hardware::presets::{find_preset, DdcPreset};
 use crate::radio::lease::{Lease, RadioLease};
 use crate::radio::plan::{self, WindowPlan};
+use crate::radio::streams::StreamSource;
 use crate::radio::tuner::{RadioHw, Tuner, Tuning, TuningPlan};
+use crate::services::events::EventLog;
+use crate::trunking::receivers::{self, Receivers};
 use crate::services::config::profiles::Profile;
 use crate::services::config::systems::{CcPosition, Protocol, Site, System};
 use crate::services::config::{self, Config, Paths, SiteState, Stored};
@@ -57,18 +61,29 @@ pub struct LiveSite<H> {
     config: Arc<Mutex<Config>>,
     tuner: Arc<Tuner<H>>,
     lease: RadioLease,
+    receivers: Arc<Receivers>,
+    log: Arc<EventLog>,
     state: watch::Sender<LiveState>,
     /// What was learned on the live site.
     learned: Mutex<Option<Stored<SiteState>>>,
 }
 
-impl<H: RadioHw> LiveSite<H> {
-    pub fn new(paths: Paths, config: Arc<Mutex<Config>>, tuner: Arc<Tuner<H>>, lease: RadioLease) -> Self {
+impl<H: RadioHw + StreamSource> LiveSite<H> {
+    pub fn new(
+        paths: Paths,
+        config: Arc<Mutex<Config>>,
+        tuner: Arc<Tuner<H>>,
+        lease: RadioLease,
+        receivers: Arc<Receivers>,
+        log: Arc<EventLog>,
+    ) -> Self {
         LiveSite {
             paths,
             config,
             tuner,
             lease,
+            receivers,
+            log,
             state: watch::channel(LiveState::NoSite).0,
             learned: Mutex::new(None),
         }
@@ -111,6 +126,7 @@ impl<H: RadioHw> LiveSite<H> {
         let learned = Config::site_state(&self.paths, site_id)?;
         let window = window_for(&site, &learned.value, &presets_allowed)?;
         let preset = find_preset(&window.preset).context("planned preset")?;
+        self.receivers.stop().await;
         let tuning = self
             .tuner
             .apply(TuningPlan { preset, lo_hz: window.lo_hz as u64, control_hz: site.control.freq_hz })
@@ -125,7 +141,15 @@ impl<H: RadioHw> LiveSite<H> {
                 }
             }
         }
+        let context = receivers::Context {
+            site: site.id.clone(),
+            protocol: system.protocol,
+            modulation: site.modulation,
+            lcn_hz: site.channel_plan.as_ref().map(|p| p.lcn_hz.iter().map(|(k, v)| (*k, *v)).collect()).unwrap_or_default(),
+        };
+        self.receivers.start(context, self.tuner.hw()).await;
         tracing::info!("site {} live: {} at LO {} Hz", site.id, window.preset, window.lo_hz);
+        self.log.system("site", format!("site {} ({}) live: {} window, LO {:.4} MHz", site.id, site.label, window.preset, window.lo_hz as f64 / 1e6));
         Ok(Live { site, system, profile, window, tuning })
     }
 }
@@ -204,6 +228,18 @@ mod tests {
         }
     }
 
+    impl StreamSource for Nothing {
+        fn control_streams(
+            &self,
+            _: crate::radio::streams::Wants,
+            _: std::sync::mpsc::SyncSender<crate::radio::streams::Input>,
+            _: Arc<std::sync::atomic::AtomicBool>,
+            _: Arc<crate::radio::streams::StreamCounters>,
+        ) -> Vec<tokio::task::JoinHandle<()>> {
+            Vec::new()
+        }
+    }
+
     fn site(cc: u64, channels: Vec<u64>, pos: CcPosition) -> Site {
         Site {
             id: "s".into(),
@@ -255,7 +291,10 @@ mod tests {
         });
         config::save(&paths.systems(), &config.systems).unwrap();
         let tuner = Arc::new(Tuner::new(Nothing, 0.0));
-        let live = LiveSite::new(paths.clone(), Arc::new(Mutex::new(config)), tuner.clone(), RadioLease::default());
+        let log = Arc::new(EventLog::default());
+        let receivers = Arc::new(Receivers::new(log.clone()));
+        let config = Arc::new(Mutex::new(config));
+        let live = LiveSite::new(paths.clone(), config, tuner.clone(), RadioLease::default(), receivers.clone(), log.clone());
         assert!(live.activate("duval").await.is_err());
         assert!(matches!(live.state(), LiveState::NoSite));
         let l = live.activate("clay").await.unwrap();
@@ -263,5 +302,8 @@ mod tests {
         assert_eq!(tuner.tuning().control_hz, 860_962_500);
         assert!(matches!(live.state(), LiveState::Live(_)));
         assert_eq!(Config::load(&paths).unwrap().state.value.live_site.as_deref(), Some("clay"));
+        assert!(receivers.status().running && receivers.status().site.as_deref() == Some("clay"));
+        assert!(log.since(0, 10, false)[0].text.starts_with("site clay"));
+        receivers.stop().await;
     }
 }

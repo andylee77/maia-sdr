@@ -40,7 +40,7 @@ pub struct Grant {
 }
 
 /// The site's identity as broadcast; fields not heard yet are `None`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct P25Identity {
     pub nac: Option<u16>,
     pub wacn: Option<u32>,
@@ -51,7 +51,7 @@ pub struct P25Identity {
 }
 
 /// A DMR Tier III site's identity (ALOHA): colour code and system identity code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct DmrIdentity {
     pub colour_code: u8,
     /// TINY, SMALL, LARGE or HUGE.
@@ -60,7 +60,8 @@ pub struct DmrIdentity {
     pub site: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "protocol", rename_all = "snake_case")]
 pub enum SiteIdentity {
     P25(P25Identity),
     Dmr(DmrIdentity),

@@ -78,7 +78,8 @@ macro_rules! routes {
 
 routes! {
     get "/api/v1/routes" => routes, "this list";
-    get "/api/v1/status" => v1::status::get, "build, uptime, the live site and the tuning";
+    get "/api/v1/status" => v1::status::get, "build, uptime, the live site, its control channel and the tuning";
+    get "/api/v1/events" => v1::events::list, "the event log after `after` (newest `limit`; housekeeping too with `routine=true`)";
     get "/api/v1/radio" => v1::radio::get, "radio configuration, hardware and tuning";
     put "/api/v1/radio/gain" => v1::radio::put_gain, "receiver gain mode and manual gain";
     get "/api/v1/systems" => v1::systems::list, "systems with their sites";
