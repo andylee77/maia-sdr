@@ -93,6 +93,7 @@ doc/diagnostics/
 
 # Timeseries JSONL / CSV dumps
 *.jsonl
+!scanner/tests/fixtures/replay/*/trace.jsonl
 
 # Per-recording WAV fragments (real storage is /tmp/p25_recordings
 # on target; root-level .wav is always a stray test artefact).
