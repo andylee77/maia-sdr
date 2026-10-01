@@ -1317,9 +1317,8 @@ impl TsbkBlock {
     }
 }
 
-/// CRC-16-CCITT (polynomial 0x1021, init 0xFFFF)
 /// Frequency band entry from IDEN_UP messages
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrequencyBand {
     pub identifier: u8,
     pub bandwidth_hz: u32,

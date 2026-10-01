@@ -2,4 +2,5 @@
 //! they share).
 
 pub mod dmr;
+pub mod events;
 pub mod p25;
