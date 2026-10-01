@@ -8,7 +8,7 @@
 //! channel's).
 
 use std::collections::{HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,7 @@ use super::calls::{CallBook, CallEvent, CallId, CallPolicy, Closed, Opened, Sour
 use super::follow::routing::Routing;
 use super::follow::{Command, Follower, Record};
 use crate::audio::live::{Audio, VoiceBatch};
+use crate::services::recordings::{CallEnd, CallStart, RecorderTx};
 use crate::hardware::p25core::rings::mono_instant;
 use crate::hardware::p25core::Lane;
 use crate::protocol::dmr::traffic::{DmrCall, DmrTraffic};
@@ -62,7 +63,6 @@ pub struct Setup {
     pub routing: Routing,
     pub encrypted: HashSet<u32>,
     pub policy: CallPolicy,
-    pub first_call: CallId,
     /// Grant counts and encrypted talkgroups go into the site's learned state.
     pub learned: Option<Arc<Learned>>,
 }
@@ -149,11 +149,16 @@ struct Task<H> {
     last_stuck_check: Instant,
     learned: Option<Arc<Learned>>,
     audio: Arc<Audio>,
+    recorder: RecorderTx,
+    next_call: Arc<AtomicU64>,
 }
 
 pub struct Trunking {
     view: Arc<Mutex<CallsView>>,
     audio: Arc<Audio>,
+    recorder: RecorderTx,
+    /// Call ids keep rising across site switches.
+    next_call: Arc<AtomicU64>,
     running: tokio::sync::Mutex<Option<Running>>,
 }
 
@@ -165,8 +170,15 @@ struct Running {
 }
 
 impl Trunking {
-    pub fn new(audio: Arc<Audio>) -> Self {
-        Trunking { view: Arc::default(), audio, running: tokio::sync::Mutex::new(None) }
+    /// `first_call` continues past the ids already stored (recordings, history).
+    pub fn new(audio: Arc<Audio>, recorder: RecorderTx, first_call: CallId) -> Self {
+        Trunking {
+            view: Arc::default(),
+            audio,
+            recorder,
+            next_call: Arc::new(AtomicU64::new(first_call.max(1))),
+            running: tokio::sync::Mutex::new(None),
+        }
     }
 
     /// Start following on the live site (stopping the previous site's trunking first).
@@ -191,7 +203,7 @@ impl Trunking {
         let mut sources = sources;
         sources.push(forwarder);
         let task = Task {
-            book: CallBook::new(&setup.site, &setup.lanes, setup.policy, setup.first_call),
+            book: CallBook::new(&setup.site, &setup.lanes, setup.policy, self.next_call.load(Ordering::Relaxed)),
             follower: Follower::new(&setup.lanes, setup.routing, setup.encrypted),
             lanes: setup
                 .lanes
@@ -216,6 +228,8 @@ impl Trunking {
             last_stuck_check: Instant::now(),
             learned: setup.learned.clone(),
             audio: self.audio.clone(),
+            recorder: self.recorder.clone(),
+            next_call: self.next_call.clone(),
         };
         let task = tokio::spawn(task.run(rx, stop.clone()));
         *self.running.lock().await = Some(Running { tx: tx.clone(), stop, task, sources });
@@ -469,7 +483,18 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         for e in events {
             match e {
                 CallEvent::Opened(o) => {
+                    self.next_call.fetch_max(o.call + 1, Ordering::Relaxed);
                     if let Some(lane) = o.lane {
+                        self.recorder.start(CallStart {
+                            call: o.call,
+                            site: o.site.clone(),
+                            tg: o.tg,
+                            source: o.source,
+                            lane,
+                            freq_hz: o.channel.freq_hz,
+                            channel: o.channel_label.clone(),
+                            started_unix_ms: o.at_unix_ms,
+                        });
                         self.follower.opened(lane, o.call);
                         if let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) {
                             match &mut slot.traffic {
@@ -489,6 +514,9 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     self.open.push(o);
                 }
                 CallEvent::Closed(c) => {
+                    if c.lane.is_some() {
+                        self.recorder.end(CallEnd { call: c.call, source: c.source, sources: c.sources.clone() });
+                    }
                     if let Some(Command::Release { lane }) = self.follower.closed(&c, now) {
                         if let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) {
                             if slot.traffic.call() == Some(c.call) {

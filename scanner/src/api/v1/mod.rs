@@ -4,6 +4,7 @@ pub mod calls;
 pub mod events;
 pub mod profiles;
 pub mod radio;
+pub mod recordings;
 pub mod sites;
 pub mod status;
 pub mod systems;

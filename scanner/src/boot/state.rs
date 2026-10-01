@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::audio::live::Audio;
+use crate::services::recordings::Recordings;
 
 use tokio::sync::Mutex;
 
@@ -25,6 +26,7 @@ pub struct AppState {
     pub receivers: Arc<Receivers>,
     pub trunking: Arc<Trunking>,
     pub audio: Arc<Audio>,
+    pub recordings: Arc<Recordings>,
     pub log: Arc<EventLog>,
     pub hardware: HardwareInfo,
     pub started: Instant,

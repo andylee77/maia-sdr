@@ -1,9 +1,9 @@
-// Shared page state: the status, polled every 2 s, and the connection. Pages subscribe and get
-// the whole store on every change.
+// Shared page state: the status, the calls and the newest recordings, polled every 2 s, and the
+// connection. Pages subscribe and get the whole store on every change.
 
 import { api } from './api.js';
 
-export const store = { status: null, calls: null, connected: false };
+export const store = { status: null, calls: null, recordings: null, connected: false };
 
 const subscribers = new Set();
 
@@ -16,11 +16,14 @@ function notify() {
   for (const fn of subscribers) fn(store);
 }
 
+// Enough to cover the recent calls the Now page lists.
+const RECORDINGS = 40;
+
 let timer = null;
 
 export async function refresh() {
   try {
-    [store.status, store.calls] = await Promise.all([api.status(), api.calls()]);
+    [store.status, store.calls, store.recordings] = await Promise.all([api.status(), api.calls(), api.recordings(RECORDINGS)]);
     store.connected = true;
   } catch (e) {
     store.connected = false;

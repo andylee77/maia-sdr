@@ -1,7 +1,7 @@
 // Now: the live site at a glance, or the way to add one.
 
 import { h, card } from '../dom.js';
-import { mhz, ago, pct, num, dur, dayTime, DASH, NOT_FOLLOWED, CLOSE_REASON } from '../format.js';
+import { mhz, ago, pct, num, dur, bytes, dayTime, DASH, NOT_FOLLOWED, CLOSE_REASON } from '../format.js';
 import { protocol } from '../protocols.js';
 
 // A control channel with no message for this long is shown as silent.
@@ -18,6 +18,9 @@ export function mount(el) {
   const dot = h('span', { class: 'dot' });
   control.right.append(dot);
   const calls = card('Calls');
+  // One player for the recordings, outside the body the polls rebuild, so playback survives them.
+  const clip = h('audio', { controls: true, preload: 'none', hidden: true, style: { width: '100%', marginTop: '10px' } });
+  calls.el.append(clip);
   el.append(h('div', { class: 'stack' }, site.el, calls.el, control.el));
 
   return {
@@ -64,14 +67,29 @@ export function mount(el) {
       if (c.carrier_offset_hz !== null && c.carrier_offset_hz !== undefined) rows.push(['Carrier offset', `${num(c.carrier_offset_hz)} Hz`]);
       rows.push([p.planLabel, num(c.channel_plan_entries)], ['Grants', num(c.grants)], ['CPU', pct(c.cpu_pct)]);
       control.body.replaceChildren(kv(rows));
-      showCalls(calls, s);
+      showCalls(calls, s, clip);
     },
     unmount() {},
   };
 }
 
-// The open calls (lane first, then those not followed) and the newest closed ones.
-function showCalls(c, s) {
+function play(clip, r) {
+  clip.hidden = false;
+  clip.src = `/api/v1/recordings/${r.id}.wav`;
+  clip.play().catch(() => {});
+}
+
+function recordingNote(st) {
+  if (!st) return '';
+  if (!st.enabled) return 'Recording is off (Settings).';
+  const where = st.store === 'sd' ? 'SD card' : 'RAM';
+  const sd = st.sd_status.state === 'ok' || st.store !== 'sd' ? '' : ` (SD card ${st.sd_status.state.replace('_', ' ')}: saving to RAM)`;
+  return `Recording to ${where}${sd}: ${num(st.sd.count + st.ram.count)} kept, ${bytes(st.sd.bytes + st.ram.bytes)}.`;
+}
+
+// The open calls (lane first, then those not followed) and the newest closed ones, with their
+// recordings.
+function showCalls(c, s, clip) {
   const v = s.calls || { open: [], recent: [] };
   const now = s.status.now_unix_ms;
   const who = x => (x.source ? ` from ${x.source}` : '');
@@ -94,12 +112,22 @@ function showCalls(c, s) {
       h('td', { text: NOT_FOLLOWED[x.not_followed] || x.not_followed || 'not followed' })));
   }
   const open = rows.length ? h('table', { class: 'table' }, h('tbody', null, ...rows)) : h('p', { class: 'dim', text: 'No calls on the air.' });
-  const recent = v.recent.slice(0, 15).map(x => h('tr', x.lane ? null : { class: 'dim' },
-    h('td', { text: dayTime(x.started_unix_ms) }),
-    h('td', { text: `TG ${x.tg}${who(x)}` }),
-    h('td', { text: x.ended_unix_ms ? dur(x.ended_unix_ms - x.started_unix_ms) : DASH }),
-    h('td', { text: x.lane ? `${num(x.voice_frames)} frames, ${CLOSE_REASON[x.close] || x.close || DASH}` : (NOT_FOLLOWED[x.not_followed] || x.not_followed || DASH) })));
+  const recs = new Map(((s.recordings && s.recordings.items) || []).map(r => [r.id, r]));
+  const recent = v.recent.slice(0, 15).map(x => {
+    const r = recs.get(x.call);
+    return h('tr', x.lane ? null : { class: 'dim' },
+      h('td', { text: dayTime(x.started_unix_ms) }),
+      h('td', { text: `TG ${x.tg}${who(x)}` }),
+      h('td', { text: x.ended_unix_ms ? dur(x.ended_unix_ms - x.started_unix_ms) : DASH }),
+      h('td', { text: x.lane ? `${num(x.voice_frames)} frames, ${CLOSE_REASON[x.close] || x.close || DASH}` : (NOT_FOLLOWED[x.not_followed] || x.not_followed || DASH) }),
+      h('td', null, r ? h('button', {
+        class: 'btn small', type: 'button', text: 'Play',
+        title: `${dur(r.duration_ms)} recorded, ${r.store === 'sd' ? 'SD card' : 'RAM'}`,
+        onclick: () => play(clip, r),
+      }) : null));
+  });
   c.body.replaceChildren(open,
     h('h3', { text: 'Recent' }),
-    recent.length ? h('table', { class: 'table' }, h('tbody', null, ...recent)) : h('p', { class: 'dim', text: 'None yet.' }));
+    recent.length ? h('table', { class: 'table' }, h('tbody', null, ...recent)) : h('p', { class: 'dim', text: 'None yet.' }),
+    h('p', { class: 'card-note', text: recordingNote(s.recordings && s.recordings.storage) }));
 }

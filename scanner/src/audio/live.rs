@@ -1,6 +1,6 @@
 //! Live audio: per lane, a decode thread (codec, then the AGC) and a pacer that releases one
-//! 20 ms chunk per 20 ms of wall clock, into one broadcast for the listeners (`/ws/audio`) and,
-//! later, the recorder.
+//! 20 ms chunk per 20 ms of wall clock, into one broadcast for the listeners (`/ws/audio`) and
+//! the recorder.
 //!
 //! The vocoders run ~30 times faster than real time, so a decoded LDU would otherwise leave as a
 //! burst. After a silence the pacer restarts from the first chunk's arrival rather than
@@ -44,6 +44,9 @@ pub struct AudioChunk {
     pub tg: u32,
     pub source: Option<u32>,
     pub pcm: [i16; SAMPLES_PER_FRAME],
+    /// The vocoder found the frame damaged (it repeated or muted).
+    pub error: bool,
+    pub silent: bool,
 }
 
 #[derive(Debug, Default)]
@@ -129,10 +132,12 @@ fn decode(rx: Receiver<VoiceBatch>, tx: mpsc::Sender<AudioChunk>, counters: Arc<
             if q.error {
                 counters.errors.fetch_add(1, Ordering::Relaxed);
             }
-            if agc.apply(&mut pcm) {
+            let silent = agc.apply(&mut pcm);
+            if silent {
                 counters.silent.fetch_add(1, Ordering::Relaxed);
             }
-            tx.blocking_send(AudioChunk { lane: b.lane, call: b.call, tg: b.tg, source: b.source, pcm }).is_ok()
+            let chunk = AudioChunk { lane: b.lane, call: b.call, tg: b.tg, source: b.source, pcm, error: q.error, silent };
+            tx.blocking_send(chunk).is_ok()
         };
         let ok = match &b.frames {
             VoiceFrames::Imbe(frames) => frames.iter().all(|f| emit(&mut imbe, &f.bits)),

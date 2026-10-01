@@ -32,6 +32,10 @@ pub struct Args {
     #[arg(long, default_value = "/mnt/sd")]
     pub sd_dir: PathBuf,
 
+    /// Directory of the recordings on the SD card (default: `p25_recordings` on the card).
+    #[arg(long)]
+    pub recordings_dir: Option<PathBuf>,
+
     /// Receiver LO with no live site (Hz).
     #[arg(long)]
     pub rx_lo: Option<u64>,

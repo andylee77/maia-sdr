@@ -50,6 +50,7 @@ function header(s) {
 $('listen').addEventListener('click', () => player.toggle());
 player.onChange(st => {
   setText($('listen'), st.playing ? 'Stop' : 'Listen');
+  $('listen').setAttribute('aria-pressed', String(st.playing));
   setText($('listen-state'), st.label);
   $('listen-state').title = st.detail;
 });

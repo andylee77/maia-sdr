@@ -179,7 +179,6 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
                 hang: std::time::Duration::from_millis(calls.hang_ms),
                 end_grace: std::time::Duration::from_millis(calls.end_grace_ms),
             },
-            first_call: 1,
             learned: Some(learned.clone()),
         };
         let trunk = self.trunking.start(setup, self.tuner.clone(), self.log.clone()).await;
@@ -337,7 +336,7 @@ mod tests {
         let tuner = Arc::new(Tuner::new(Nothing, 0.0));
         let log = Arc::new(EventLog::default());
         let receivers = Arc::new(Receivers::new(log.clone()));
-        let trunking = Arc::new(Trunking::new(crate::audio::live::Audio::start(&[Lane::One])));
+        let trunking = Arc::new(Trunking::new(crate::audio::live::Audio::start(&[Lane::One]), Default::default(), 1));
         let config = Arc::new(Mutex::new(config));
         let live = LiveSite::new(paths.clone(), config, tuner.clone(), RadioLease::default(), receivers.clone(), trunking.clone(), vec![Lane::One], log.clone());
         assert!(live.activate("duval").await.is_err());

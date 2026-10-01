@@ -15,7 +15,7 @@ use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::Serialize;
 
@@ -85,6 +85,11 @@ routes! {
     get "/api/v1/events" => v1::events::list, "the event log after `after` (newest `limit`; housekeeping too with `routine=true`)";
     get "/api/v1/radio" => v1::radio::get, "radio configuration, hardware and tuning";
     put "/api/v1/radio/gain" => v1::radio::put_gain, "receiver gain mode and manual gain";
+    put "/api/v1/radio/recording" => v1::radio::put_recording, "recording on/off, where new recordings go, how many each store keeps";
+    get "/api/v1/recordings" => v1::recordings::list, "recordings newest first (`limit`, `site`), with the stores' state";
+    delete "/api/v1/recordings" => v1::recordings::clear, "delete every recording of `store` (sd, ram or all)";
+    get "/api/v1/recordings/{id}" => v1::recordings::file, "one recording's WAV (`{id}` or `{id}.wav`; byte ranges)";
+    delete "/api/v1/recordings/{id}" => v1::recordings::delete, "delete one recording";
     get "/api/v1/systems" => v1::systems::list, "systems with their sites";
     get "/api/v1/systems/{id}" => v1::systems::get, "one system";
     get "/api/v1/sites" => v1::sites::list, "every site, with the live one marked";
@@ -154,4 +159,18 @@ pub async fn serve(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_route_table_builds_and_lists_each_route_once() {
+        let _ = api_router();
+        let mut seen = std::collections::HashSet::new();
+        for r in CATALOGUE {
+            assert!(seen.insert((r.method, r.path)), "{} {} twice", r.method, r.path);
+        }
+    }
 }

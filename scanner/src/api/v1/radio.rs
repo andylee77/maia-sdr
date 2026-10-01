@@ -11,7 +11,8 @@ use crate::api::{ApiError, ApiResult};
 use crate::boot::radio::{gain_mode, HardwareInfo};
 use crate::boot::state::AppState;
 use crate::radio::tuner::{Readback, Tuning};
-use crate::services::config::radio::{Gain, GainMode, RadioConfig, GAIN_DB_RANGE};
+use crate::services::config::radio::{Gain, GainMode, RadioConfig, Recording, GAIN_DB_RANGE};
+use crate::services::recordings::Policy;
 use crate::services::config::{self, RadioState};
 
 #[derive(Serialize)]
@@ -57,4 +58,30 @@ pub async fn put_gain(State(s): State<Arc<AppState>>, Json(req): Json<GainReques
     c.radio.value.gain = gain.clone();
     config::save(&s.paths.radio(), &c.radio)?;
     Ok(Json(gain))
+}
+
+/// Space for recordings on the card: at least this much.
+const SD_MIN_MB: u64 = 16;
+
+#[derive(Serialize)]
+pub struct RecordingSet {
+    pub recording: Recording,
+    /// Recordings a lowered retention deleted.
+    pub deleted: usize,
+}
+
+/// Apply and keep the recording settings; a lowered retention deletes the oldest at once.
+pub async fn put_recording(State(s): State<Arc<AppState>>, Json(req): Json<Recording>) -> ApiResult<RecordingSet> {
+    if req.ram_max_count == 0 || req.sd_max_count == 0 {
+        return Err(ApiError::bad_request("each store keeps at least one recording"));
+    }
+    if req.sd_max_mb < SD_MIN_MB {
+        return Err(ApiError::bad_request(format!("sd_max_mb is at least {SD_MIN_MB}")));
+    }
+    let mut c = s.config.lock().await;
+    c.radio.value.recording = req.clone();
+    config::save(&s.paths.radio(), &c.radio)?;
+    drop(c);
+    let deleted = s.recordings.set_policy(Policy::from(&req));
+    Ok(Json(RecordingSet { recording: req, deleted }))
 }

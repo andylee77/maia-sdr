@@ -46,6 +46,11 @@ impl Paths {
         Paths { root: flash.join("scanner"), flash: flash.to_path_buf(), sd: sd.to_path_buf() }
     }
 
+    /// The recordings on the SD card (p25-httpd's directory: its files are listed as they are).
+    pub fn recordings(&self) -> PathBuf {
+        self.sd.join("p25_recordings")
+    }
+
     pub fn radio(&self) -> PathBuf {
         self.root.join("radio.json")
     }
