@@ -119,6 +119,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         })
     };
     crystal.start();
+    let system = Arc::new(crate::services::system::SystemHealth::default());
+    system.start();
     let discovery = Arc::default();
     let state = Arc::new(AppState {
         paths,
@@ -136,6 +138,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         clock,
         crystal,
         packet_data,
+        system,
         log,
         hardware,
         started,

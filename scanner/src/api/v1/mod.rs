@@ -11,4 +11,5 @@ pub mod scan;
 pub mod spectrum;
 pub mod sites;
 pub mod status;
+pub mod system;
 pub mod systems;

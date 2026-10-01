@@ -11,6 +11,7 @@ use crate::services::history::History;
 use crate::services::notices::Notices;
 use crate::services::packet_data::PacketData;
 use crate::services::recordings::Recordings;
+use crate::services::system::SystemHealth;
 
 use tokio::sync::Mutex;
 
@@ -39,6 +40,7 @@ pub struct AppState {
     pub clock: Arc<Clock>,
     pub crystal: Arc<Crystal<Hardware>>,
     pub packet_data: Arc<PacketData>,
+    pub system: Arc<SystemHealth>,
     pub log: Arc<EventLog>,
     pub hardware: HardwareInfo,
     pub started: Instant,
