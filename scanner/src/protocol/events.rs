@@ -1,8 +1,11 @@
 //! What a control channel decoder reports, the same for every protocol. Decoders are pure: they
 //! return these and never call into trunking or the services.
 
+use std::time::Instant;
+
 use super::p25::pdu::PduFrame;
 use super::p25::tsbk::FrequencyBand;
+use super::p25::voice_frame::ImbeFrameRaw;
 
 /// A logical channel as the control channel names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -142,3 +145,39 @@ pub enum ControlEvent {
     Pdu(PduFrame),
     Message(LogLine),
 }
+
+/// Voice frames as decoded, before the vocoder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VoiceFrames {
+    /// P25 Phase 1: the nine IMBE frames of an LDU.
+    Imbe([ImbeFrameRaw; 9]),
+    /// DMR: the three AMBE+2 frames of a voice burst.
+    Ambe2([[u8; 9]; 3]),
+}
+
+impl VoiceFrames {
+    /// 20 ms frames.
+    pub fn len(&self) -> usize {
+        match self {
+            VoiceFrames::Imbe(_) => 9,
+            VoiceFrames::Ambe2(_) => 3,
+        }
+    }
+}
+
+/// What a traffic channel decoder reports about the call it follows.
+#[derive(Debug, Clone)]
+pub enum TrafficEvent {
+    /// A voice header (P25 HDU): the in-band encryption and talkgroup.
+    Header { tg: Option<u32>, encrypted: bool },
+    /// Voice, aired at `air` (the dibit that completed it).
+    Voice { frames: VoiceFrames, encrypted: bool, air: Instant },
+    /// The talking radio, from the voice link control (agreed over several frames).
+    Source(u32),
+    /// A terminator naming the radio that talked.
+    TalkComplete(Option<u32>),
+    /// The end of a transmission: the first valid terminator after the call's voice.
+    End { lc: &'static str, air: Instant },
+    Message(LogLine),
+}
+

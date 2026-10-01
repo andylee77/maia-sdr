@@ -6,6 +6,7 @@ pub mod control;
 pub mod fec;
 pub mod framer;
 pub mod pdu;
+pub mod traffic;
 pub mod tsbk;
 pub mod types;
 pub mod voice_frame;

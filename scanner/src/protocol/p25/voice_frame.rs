@@ -591,7 +591,7 @@ pub fn tdulc_lc_bytes(body_raw: &[u8]) -> Option<[u8; 9]> {
 /// first IMBE bit on-air, byte 0 bit 0 is the 8th, byte 1 bit 7 is
 /// the 9th, etc. 144 bits / 8 = 18 bytes exactly. Both mbelib and
 /// JMBE accept this format directly.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImbeFrameRaw {
     pub bits: [u8; 18],
 }
