@@ -51,8 +51,9 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let log = Arc::new(EventLog::default());
     log.system("start", format!("scanner {} started", version::BUILD_TAG));
     let receivers = Arc::new(Receivers::new(log.clone()));
-    let trunking = Arc::new(Trunking::default());
     let lanes = crate::hardware::p25core::Lane::ALL[..hardware.lanes].to_vec();
+    let audio = crate::audio::live::Audio::start(&lanes);
+    let trunking = Arc::new(Trunking::new(audio.clone()));
     let live = Arc::new(LiveSite::new(
         paths.clone(),
         config.clone(),
@@ -83,7 +84,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             }
         });
     }
-    let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, trunking, log, hardware, started });
+    let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, trunking, audio, log, hardware, started });
     let app = crate::api::router(state.clone());
     tokio::select! {
         r = crate::api::serve(app, args.listen, args.listen_https, args.ssl_cert.as_deref(), args.ssl_key.as_deref()) => r?,

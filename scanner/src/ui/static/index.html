@@ -15,7 +15,11 @@
 <header class="topbar">
   <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Fishball scanner</div>
   <div class="topbar-site" id="top-site"><span class="dot" id="top-site-dot"></span><span id="top-site-text">connecting&hellip;</span></div>
-  <div class="topbar-right"><span class="conn" id="conn" title="Connection to the radio"></span></div>
+  <div class="topbar-right">
+    <span class="dim" id="listen-state"></span>
+    <button class="btn" id="listen" type="button" title="Live audio of the followed calls">Listen</button>
+    <span class="conn" id="conn" title="Connection to the radio"></span>
+  </div>
 </header>
 <nav class="tabs" id="tabs" aria-label="Pages">
   <a href="#now" data-view="now"><span class="tab-ico" aria-hidden="true">&#9679;</span>Now</a>

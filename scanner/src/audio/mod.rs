@@ -1,3 +1,5 @@
-//! Audio: the voice codecs (later: the pipeline, AGC, pacers and the live stream).
+//! Audio: the voice codecs, the AGC, and live audio (each lane's decoder and pacer).
 
+pub mod agc;
 pub mod codec;
+pub mod live;

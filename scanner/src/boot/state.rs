@@ -3,6 +3,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::audio::live::Audio;
+
 use tokio::sync::Mutex;
 
 use super::radio::{HardwareInfo, RadioTuner};
@@ -22,6 +24,7 @@ pub struct AppState {
     pub lease: RadioLease,
     pub receivers: Arc<Receivers>,
     pub trunking: Arc<Trunking>,
+    pub audio: Arc<Audio>,
     pub log: Arc<EventLog>,
     pub hardware: HardwareInfo,
     pub started: Instant,

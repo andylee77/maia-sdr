@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use super::calls::{CallBook, CallEvent, CallId, CallPolicy, Closed, Opened, SourceVia};
 use super::follow::routing::Routing;
 use super::follow::{Command, Follower, Record};
+use crate::audio::live::{Audio, VoiceBatch};
 use crate::hardware::p25core::rings::mono_instant;
 use crate::hardware::p25core::Lane;
 use crate::protocol::dmr::traffic::{DmrCall, DmrTraffic};
@@ -147,10 +148,12 @@ struct Task<H> {
     recent: VecDeque<CallView>,
     last_stuck_check: Instant,
     learned: Option<Arc<Learned>>,
+    audio: Arc<Audio>,
 }
 
 pub struct Trunking {
     view: Arc<Mutex<CallsView>>,
+    audio: Arc<Audio>,
     running: tokio::sync::Mutex<Option<Running>>,
 }
 
@@ -161,13 +164,11 @@ struct Running {
     sources: Vec<tokio::task::JoinHandle<()>>,
 }
 
-impl Default for Trunking {
-    fn default() -> Self {
-        Trunking { view: Arc::default(), running: tokio::sync::Mutex::new(None) }
-    }
-}
-
 impl Trunking {
+    pub fn new(audio: Arc<Audio>) -> Self {
+        Trunking { view: Arc::default(), audio, running: tokio::sync::Mutex::new(None) }
+    }
+
     /// Start following on the live site (stopping the previous site's trunking first).
     pub async fn start<H: RadioHw + StreamSource + Send + Sync + 'static>(&self, setup: Setup, tuner: Arc<Tuner<H>>, log: Arc<EventLog>) -> TrunkTx {
         self.stop().await;
@@ -214,6 +215,7 @@ impl Trunking {
             recent: VecDeque::new(),
             last_stuck_check: Instant::now(),
             learned: setup.learned.clone(),
+            audio: self.audio.clone(),
         };
         let task = tokio::spawn(task.run(rx, stop.clone()));
         *self.running.lock().await = Some(Running { tx: tx.clone(), stop, task, sources });
@@ -406,6 +408,11 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 let call = slot.calls.iter().rev().find(|(_, opened)| *opened <= air).or(slot.calls.front()).map(|(id, _)| *id);
                 for _ in 0..frames.len() {
                     self.book.voice(lane, call, air, at);
+                }
+                // Voice of the lane's current call goes to the speakers.
+                let current = self.book.on_lane(lane).filter(|c| Some(c.id) == call);
+                if let Some(c) = current {
+                    self.audio.voice(VoiceBatch { lane, call: c.id, tg: c.tg, source: c.speaker.or(c.source), frames });
                 }
             }
             TrafficEvent::Source(s) => self.book.link_control_source(lane, s, &mut out),

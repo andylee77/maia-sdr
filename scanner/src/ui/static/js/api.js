@@ -1,5 +1,10 @@
 // The /api/v1 calls the pages use. Errors carry the server's message.
 
+// A WebSocket URL on this server.
+export function wsUrl(path) {
+  return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path;
+}
+
 async function request(method, path, body) {
   const opts = { method, headers: {} };
   if (body !== undefined) {

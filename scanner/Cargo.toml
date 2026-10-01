@@ -10,9 +10,10 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.7.1", features = ["tls-rustls"] }
 clap = { version = "4.0", features = ["derive"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 p25-pac = { path = "../p25-httpd/p25-pac" }
 paste = "1.0"
 realfft = "3"
