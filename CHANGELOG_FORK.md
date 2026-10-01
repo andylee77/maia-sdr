@@ -8,7 +8,7 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 ## [2026-10-01] 076: the fresh `scanner` crate, phases 0-7 (not deployed)
 
 **Branch:** fishball-p25
-**BUILD_TAG:** `2026-10-01-scanner-p4` (scanner; run by hand from `/tmp`, p25-httpd stays in production)
+**BUILD_TAG:** `2026-10-01-scanner-image1` (scanner; the first SD image with it in place of p25-httpd)
 **Bake required:** NO.
 
 - **Phase 0:** the trunking trace tap (`P25_TRUNK_TRACE`) and host replay in p25-httpd; unit
