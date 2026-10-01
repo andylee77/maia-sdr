@@ -1,7 +1,7 @@
 // Systems: find the systems on the air; every configured system and its sites; make a site live.
 
 import { h, card, toast } from '../dom.js';
-import { mhz, DASH } from '../format.js';
+import { ago, mhz, DASH } from '../format.js';
 import { api } from '../api.js';
 import { refresh } from '../store.js';
 import { protocol } from '../protocols.js';
@@ -96,6 +96,40 @@ function kv(rows) {
     h('tr', null, h('th', { text: k }), h('td', { text: v === null || v === undefined ? DASH : v }))));
 }
 
+const share = (part, whole) => (whole > 0 ? `${Math.round((100 * part) / whole)} %` : DASH);
+
+// The live site's receive window against its channels, and the planner's choice.
+function windowBox(site) {
+  const box = h('div');
+  const move = h('button', { class: 'btn small', type: 'button', text: "Move to the planner's window" });
+  const load = () => api.sitePlan(site.id).then(show).catch(() => box.replaceChildren());
+  move.addEventListener('click', async () => {
+    move.disabled = true;
+    try {
+      const r = await api.recentre(site.id);
+      toast(r.moved_to ? `Window moved: ${r.moved_to.preset} at ${mhz(r.moved_to.lo_hz)}` : "The window is the planner's already");
+      load();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      move.disabled = false;
+    }
+  });
+  function show(v) {
+    const inside = v.channels.filter(c => c.covered).length;
+    const outside = v.channels.filter(c => !c.covered && c.weight > 0).map(c => mhz(c.freq_hz));
+    const rows = [
+      ['Window', `${v.preset || DASH} at ${mhz(v.lo_hz)}: ${inside} of ${v.channels.length} channels, ${share(v.covered_weight, v.total_weight)} of the grants`],
+      ['Planner', v.best ? `${v.best.preset} at ${mhz(v.best.lo_hz)}: ${share(v.best.covered_weight, v.best.total_weight)}${v.better ? ', worth a move' : ''}` : DASH],
+      ['Moves', `${v.auto ? 'automatic' : 'by hand only'}${v.last_recentre_unix_ms ? `, last ${ago(Date.now() - v.last_recentre_unix_ms)}` : ''}`],
+    ];
+    if (outside.length) rows.push(['Outside it', outside.join(', ')]);
+    box.replaceChildren(kv(rows), h('div', { class: 'row end' }, move));
+  }
+  load();
+  return box;
+}
+
 export function mount(el) {
   const list = h('div', { class: 'stack' });
   const scan = scanCard(load);
@@ -140,7 +174,8 @@ export function mount(el) {
           h('div', { class: 'row' },
             h('strong', { text: site.label }), h('span', { class: 'dim', text: ` ${site.id}` }),
             h('div', { class: 'spacer' }), edit, button),
-          details));
+          details,
+          ...(live ? [windowBox(site)] : [])));
       }
       list.append(c.el);
     }
