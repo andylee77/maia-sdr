@@ -34,7 +34,7 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 - **Phase 6:** the scan: P25 and DMR control channels found across 700/800/900 MHz, UHF and
   VHF, grouped into systems and added from the Systems page; the first-run flow.
 
-Tests: scanner 365, p25-httpd 475.
+Tests: scanner 358, p25-httpd 475.
 
 ---
 
