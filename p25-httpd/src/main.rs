@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-30-restart-safe-074b";
+pub const BUILD_TAG: &str = "2026-09-30-lo-scale-074c";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -1113,7 +1113,7 @@ async fn main() -> anyhow::Result<()> {
         // captures to tmpfs for offline analysis, AND tees Complex32
         // chunks to the live software demod task (Stage 2B).
         let wideband_iq_capture =
-            std::sync::Arc::new(app::wideband_iq_task::WidebandIqCaptureState::default());
+            std::sync::Arc::new(app::wideband_iq_task::WidebandIqCaptureState::with_rate(current_sample_rate_hz.clone()));
 
         // mpsc to the live software demod. Bounded — drop on full
         // (the wideband_iq_task tracks dropped count). 64 chunks @

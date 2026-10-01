@@ -191,7 +191,7 @@ completes); the call list shows them as `not_recorded`; the recorder log says
 |---|---|---|---|
 | `/api/spectrum` | GET | JSON | FFT bins from the IQ ring. `?chain=control\|traffic&fft=<1024\|2048\|4096\|8192\|16384>&averages=<N>`. Power-averages N non-overlapping segments — noise floor drops by ~10·log₁₀(N) dB, carriers stay put. Response includes `fft_size` + `averages_used`. |
 | `/api/constellation` | GET | JSON | IQ scatter from the LSM slicer input. `?chain=control\|traffic` |
-| `/api/wideband_iq_capture` | GET, POST | JSON | Raw 4 MSPS pre-DDC IQ tap. POST `?seconds=N` (1..30) opens `/tmp/p25_iq_captures/wb_iq_<ts>_<N>s.cs16` (interleaved i16 LE I/Q). GET returns active-capture progress + `last_path`. Auto-enables wideband_iq DMA on POST; disable via `/api/sw_demod?enabled=0`. (2026-05-03 dual-DDC pivot.) |
+| `/api/wideband_iq_capture` | GET, POST | JSON | Raw pre-DDC IQ tap at the AD9361 rate (12 MSPS on the 12M window). POST `?seconds=N` (0..600) opens `/mnt/sd/p25_iq_captures/wb_iq_<ts>_<N>s.cs16` (interleaved i16 LE I/Q) and replies with `rate_hz` and `approx_bytes` (074c). GET returns active-capture progress + `last_path`. Auto-enables wideband_iq DMA on POST; disable via `/api/sw_demod?enabled=0`. (2026-05-03 dual-DDC pivot.) |
 | `/api/sw_demod` | GET, POST | JSON | Live SW demod runtime gate over wideband_iq_dma. POST `?enabled=0\|1`. GET returns runtime stats. (2026-05-03.) |
 
 ### `api/forensics` — Track-2 HDL-vs-SW dibit forensics (2026-05-03+)
