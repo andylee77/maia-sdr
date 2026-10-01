@@ -101,11 +101,6 @@ pub fn place(cc_hz: u64, chans: &[Channel], sample_rate_hz: u32) -> Placement {
     Placement { lo_hz: lo, covered_weight: w }
 }
 
-/// Covered and missed channel frequencies of a window.
-pub fn coverage(lo_hz: i64, sample_rate_hz: u32, chans: &[Channel]) -> (Vec<u64>, Vec<u64>) {
-    chans.iter().map(|c| c.freq_hz).partition(|f| covers(lo_hz, *f, sample_rate_hz))
-}
-
 /// A recommended window.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WindowPlan {
@@ -227,9 +222,8 @@ mod tests {
         assert_eq!(ch.len(), CLAY.len() + 1);
         assert_eq!(ch.iter().find(|c| c.freq_hz == 858_437_500).unwrap().weight, 7.0);
         assert_eq!(ch.iter().find(|c| c.freq_hz == 855_237_500).unwrap().weight, SEED_WEIGHT);
-        let (cov, miss) = coverage(858_100_000, 8_000_000, &ch);
-        assert!(miss.contains(&851_000_000) && miss.contains(&852_438_500));
-        assert_eq!(cov.len() + miss.len(), ch.len());
+        assert!(!covers(858_100_000, 851_000_000, 8_000_000) && !covers(858_100_000, 852_438_500, 8_000_000));
+        assert!(covers(858_100_000, 858_437_500, 8_000_000));
     }
 
     #[test]
