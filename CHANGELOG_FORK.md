@@ -5,7 +5,7 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
-## [2026-10-01] 076: the fresh `scanner` crate, phases 0-6 (not deployed)
+## [2026-10-01] 076: the fresh `scanner` crate, phases 0-7 (not deployed)
 
 **Branch:** fishball-p25
 **BUILD_TAG:** `2026-10-01-scanner-p4` (scanner; run by hand from `/tmp`, p25-httpd stays in production)
@@ -33,8 +33,12 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   the Activity page.
 - **Phase 6:** the scan: P25 and DMR control channels found across 700/800/900 MHz, UHF and
   VHF, grouped into systems and added from the Systems page; the first-run flow.
+- **Phase 7 (in progress):** profiles, names, sites and radio settings edited from the UI and
+  applied live; `/ws/events`; the spectrum and board cards; the board clock (site, internet or
+  by hand); `doc/API.md` generated from the route table; the bench's `/api/system`,
+  `/api/ui/state` and `/api/imbe_dump`.
 
-Tests: scanner 358, p25-httpd 475.
+Tests: scanner 370, p25-httpd 475.
 
 ---
 
