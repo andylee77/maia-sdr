@@ -1091,3 +1091,88 @@ fn our_label(msg: &crate::protocol::p25::tsbk::TsbkMessage) -> &'static str {
         },
     }
 }
+
+/// FNV-1a of a data unit body, so the dump stays small.
+fn body_hash(body: &[u8]) -> u64 {
+    body.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
+}
+
+#[derive(Default)]
+struct DumpVoice {
+    lines: std::sync::Mutex<Vec<String>>,
+}
+
+impl DumpVoice {
+    fn push(&self, line: String) {
+        self.lines.lock().unwrap().push(line);
+    }
+}
+
+impl VoiceHandler for DumpVoice {
+    fn on_ldu1(&self, _: &[crate::protocol::p25::voice_frame::ImbeFrameRaw; 9], body: &[u8]) {
+        self.push(format!("ldu1 {:016x}", body_hash(body)));
+    }
+    fn on_ldu2(&self, _: &[crate::protocol::p25::voice_frame::ImbeFrameRaw; 9], body: &[u8]) {
+        self.push(format!("ldu2 {:016x}", body_hash(body)));
+    }
+    fn on_hdu(&self, body: &[u8]) {
+        self.push(format!("hdu {:016x}", body_hash(body)));
+    }
+    fn on_tdu(&self) {
+        self.push("tdu".into());
+    }
+    fn on_tdu_lc(&self, body: &[u8]) {
+        self.push(format!("tdulc {:016x}", body_hash(body)));
+    }
+}
+
+/// Writes what this framer makes of every `.bits` file in `P25_SDRTRUNK_DIR` to
+/// `P25_FRAMER_DUMP/<stem>.txt`; the scanner crate's `framer_dump` writes the same format.
+#[test]
+#[ignore = "needs P25_SDRTRUNK_DIR and P25_FRAMER_DUMP"]
+fn framer_dump() {
+    use std::fmt::Write;
+    let (Ok(dir), Ok(dump)) = (std::env::var("P25_SDRTRUNK_DIR"), std::env::var("P25_FRAMER_DUMP")) else {
+        panic!("set P25_SDRTRUNK_DIR and P25_FRAMER_DUMP");
+    };
+    std::fs::create_dir_all(&dump).unwrap();
+    for e in std::fs::read_dir(&dir).unwrap().flatten() {
+        let path = e.path();
+        if path.extension().is_none_or(|x| x != "bits") {
+            continue;
+        }
+        let mut dec = ControlChannelDecoder::new();
+        dec.max_recent = usize::MAX;
+        let voice = std::sync::Arc::new(DumpVoice::default());
+        dec.set_voice_handler(voice.clone());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1 << 20);
+        dec.pdu_tx = Some(tx);
+        for d in bits_file_to_dibits(&std::fs::read(&path).unwrap()) {
+            dec.process_dibit(d);
+        }
+        let mut out = String::new();
+        for (_, index, msg) in &dec.recent_messages {
+            writeln!(out, "tsbk{index} {msg:?}").unwrap();
+        }
+        for line in voice.lines.lock().unwrap().iter() {
+            writeln!(out, "{line}").unwrap();
+        }
+        while let Ok(p) = rx.try_recv() {
+            writeln!(out, "pdu {:?} {:?} {}", p.header, p.blocks, p.blocks_expected).unwrap();
+        }
+        writeln!(
+            out,
+            "stats nid_ok={} tsdus={} tsbk_attempts={} tsbk_ok={} crc_fail={} trellis_fail={} unknown={}",
+            dec.nid_decoded_ok,
+            dec.tsdu_attempts,
+            dec.tsbk_block_attempts,
+            dec.tsbk_crc_ok,
+            dec.tsbk_crc_failures,
+            dec.tsbk_trellis_failures,
+            dec.tsbk_unknown_opcode,
+        )
+        .unwrap();
+        let stem = path.file_stem().unwrap().to_string_lossy();
+        std::fs::write(std::path::Path::new(&dump).join(format!("{stem}.txt")), out).unwrap();
+    }
+}

@@ -158,3 +158,58 @@ fn soft_sync_starts_a_nid() {
     let nid = sync_and_nid(CLAY_NAC, 0x7, 0);
     assert_eq!(run(&mut framer, &nid[24..]), ["nid 8A1 Tsdu"]);
 }
+
+/// FNV-1a of a data unit body, so the dump stays small.
+fn body_hash(body: &[u8]) -> u64 {
+    body.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
+}
+
+/// Writes what the framer makes of every SDRTrunk `.bits` file in `P25_SDRTRUNK_DIR` to
+/// `P25_FRAMER_DUMP/<stem>.txt`, in the format of p25-httpd's `framer_dump`, so the two framers
+/// can be compared file by file.
+#[test]
+#[ignore = "needs P25_SDRTRUNK_DIR and P25_FRAMER_DUMP"]
+fn framer_dump() {
+    use std::fmt::Write;
+    let (Ok(dir), Ok(dump)) = (std::env::var("P25_SDRTRUNK_DIR"), std::env::var("P25_FRAMER_DUMP")) else {
+        panic!("set P25_SDRTRUNK_DIR and P25_FRAMER_DUMP");
+    };
+    std::fs::create_dir_all(&dump).unwrap();
+    for e in std::fs::read_dir(&dir).unwrap().flatten() {
+        let path = e.path();
+        if path.extension().is_none_or(|x| x != "bits") {
+            continue;
+        }
+        let mut framer = Framer::default();
+        let (mut tsbks, mut voice, mut pdus) = (String::new(), String::new(), String::new());
+        for byte in std::fs::read(&path).unwrap() {
+            for shift in [6, 4, 2, 0] {
+                framer.push(byte >> shift, &mut |f| match f {
+                    Framed::Nid(_) => {}
+                    Framed::Tsbk { index, message, .. } => writeln!(tsbks, "tsbk{index} {message:?}").unwrap(),
+                    Framed::Hdu(b) => writeln!(voice, "hdu {:016x}", body_hash(b)).unwrap(),
+                    Framed::Ldu1(b) => writeln!(voice, "ldu1 {:016x}", body_hash(b)).unwrap(),
+                    Framed::Ldu2(b) => writeln!(voice, "ldu2 {:016x}", body_hash(b)).unwrap(),
+                    Framed::Tdu => writeln!(voice, "tdu").unwrap(),
+                    Framed::TduLc(b) => writeln!(voice, "tdulc {:016x}", body_hash(b)).unwrap(),
+                    Framed::Pdu { header, blocks, expected } => {
+                        writeln!(pdus, "pdu {header:?} {blocks:?} {expected}").unwrap()
+                    }
+                });
+            }
+        }
+        let s = &framer.stats;
+        let stats = format!(
+            "stats nid_ok={} tsdus={} tsbk_attempts={} tsbk_ok={} crc_fail={} trellis_fail={} unknown={}\n",
+            s.nid_ok,
+            s.tsdus,
+            s.tsbk_attempts(),
+            s.tsbk_ok(),
+            s.tsbk_crc_failures,
+            s.tsbk_trellis_failures,
+            s.tsbk_unknown_opcode,
+        );
+        let stem = path.file_stem().unwrap().to_string_lossy();
+        std::fs::write(std::path::Path::new(&dump).join(format!("{stem}.txt")), tsbks + &voice + &pdus + &stats).unwrap();
+    }
+}

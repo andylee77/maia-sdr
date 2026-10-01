@@ -5,6 +5,8 @@
 //! Bits are `u8` values 0 or 1 in transmission order (first bit sent first)
 //! throughout this module.
 
+/// The control channel: the receiver's messages as control events.
+pub mod control;
 /// 4FSK demodulation: 50 kSPS IQ to dibits, sync-driven timing.
 pub mod demod;
 /// Error correction and checksums: CACH Hamming(7,4), Golay(20,8) slot type,

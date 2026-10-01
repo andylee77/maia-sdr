@@ -79,7 +79,40 @@
    "object": {}
   },
   "/api/bands": {
-   "array": null
+   "array": {
+    "object": {
+     "bandwidth_khz": {
+      "scalar": [
+       "number"
+      ]
+     },
+     "base_frequency_mhz": {
+      "scalar": [
+       "number"
+      ]
+     },
+     "channel_spacing_khz": {
+      "scalar": [
+       "number"
+      ]
+     },
+     "identifier": {
+      "scalar": [
+       "integer"
+      ]
+     },
+     "slots": {
+      "scalar": [
+       "integer"
+      ]
+     },
+     "transmit_offset_mhz": {
+      "scalar": [
+       "number"
+      ]
+     }
+    }
+   }
   },
   "/api/bch_t": {
    "object": {
@@ -293,7 +326,8 @@
       },
       "system_nac": {
        "scalar": [
-        "null"
+        "null",
+        "string"
        ]
       },
       "total_dibits": {
@@ -407,7 +441,8 @@
       },
       "system_nac": {
        "scalar": [
-        "null"
+        "null",
+        "string"
        ]
       },
       "total_dibits": {
@@ -741,32 +776,38 @@
         },
         "max_ms": {
          "scalar": [
-          "null"
+          "null",
+          "number"
          ]
         },
         "mean_ms": {
          "scalar": [
-          "null"
+          "null",
+          "number"
          ]
         },
         "min_ms": {
          "scalar": [
-          "null"
+          "null",
+          "number"
          ]
         },
         "p50_ms": {
          "scalar": [
-          "null"
+          "null",
+          "number"
          ]
         },
         "p90_ms": {
          "scalar": [
-          "null"
+          "null",
+          "number"
          ]
         },
         "p99_ms": {
          "scalar": [
-          "null"
+          "null",
+          "number"
          ]
         },
         "samples_dibits": {
@@ -778,7 +819,8 @@
       },
       "backlog_dibits_at_last_delivery": {
        "scalar": [
-        "null"
+        "null",
+        "number"
        ]
       },
       "claimed_end": {
@@ -945,7 +987,88 @@
        ]
       },
       "recent_cuts": {
-       "array": null
+       "array": {
+        "object": {
+         "apply_delay_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "call_id": {
+          "scalar": [
+           "integer",
+           "null"
+          ]
+         },
+         "clamped": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "cut_air_unix_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "discard_dibits": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "encrypted": {
+          "scalar": [
+           "boolean",
+           "null"
+          ]
+         },
+         "est_width_dibits": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "framer_reset": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "hw_reading": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "index": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "inside_chunk": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "kind": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "recorded_unix_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "seq": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "tg": {
+          "scalar": [
+           "integer",
+           "null"
+          ]
+         }
+        }
+       }
       },
       "requested_mode": {
        "scalar": [
@@ -994,32 +1117,38 @@
         },
         "max_ms": {
          "scalar": [
-          "null"
+          "null",
+          "number"
          ]
         },
         "mean_ms": {
          "scalar": [
-          "null"
+          "null",
+          "number"
          ]
         },
         "min_ms": {
          "scalar": [
-          "null"
+          "null",
+          "number"
          ]
         },
         "p50_ms": {
          "scalar": [
-          "null"
+          "null",
+          "number"
          ]
         },
         "p90_ms": {
          "scalar": [
-          "null"
+          "null",
+          "number"
          ]
         },
         "p99_ms": {
          "scalar": [
-          "null"
+          "null",
+          "number"
          ]
         },
         "samples_dibits": {
@@ -1031,7 +1160,8 @@
       },
       "backlog_dibits_at_last_delivery": {
        "scalar": [
-        "null"
+        "null",
+        "number"
        ]
       },
       "claimed_end": {
@@ -1198,7 +1328,85 @@
        ]
       },
       "recent_cuts": {
-       "array": null
+       "array": {
+        "object": {
+         "apply_delay_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "call_id": {
+          "scalar": [
+           "null"
+          ]
+         },
+         "clamped": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "cut_air_unix_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "discard_dibits": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "encrypted": {
+          "scalar": [
+           "null"
+          ]
+         },
+         "est_width_dibits": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "framer_reset": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "hw_reading": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "index": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "inside_chunk": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "kind": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "recorded_unix_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "seq": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "tg": {
+          "scalar": [
+           "null"
+          ]
+         }
+        }
+       }
       },
       "requested_mode": {
        "scalar": [
@@ -1439,7 +1647,8 @@
       },
       "tuned_hz": {
        "scalar": [
-        "integer"
+        "integer",
+        "null"
        ]
       },
       "tunes": {
@@ -1556,6 +1765,7 @@
       "object": {
        "actual_speaker": {
         "scalar": [
+         "integer",
          "null"
         ]
        },
@@ -1615,6 +1825,26 @@
         "scalar": [
          "integer",
          "null"
+        ]
+       },
+       "framer_arm_hdu": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "framer_arm_ldu1": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "framer_arm_ldu2": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "framer_arm_tdu_lc": {
+        "scalar": [
+         "integer"
         ]
        },
        "freq_hz": {
@@ -1722,10 +1952,61 @@
   "/api/grant_map": {
    "object": {
     "entries": {
-     "array": null
+     "array": {
+      "object": {
+       "count": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "encrypted_count": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "first_seen_unix_ms": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "frequency_hz": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "last_seen_unix_ms": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "tg": {
+        "scalar": [
+         "integer"
+        ]
+       }
+      }
+     }
     },
     "frequencies": {
-     "array": null
+     "array": {
+      "object": {
+       "count": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "distinct_tgs": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "frequency_hz": {
+        "scalar": [
+         "integer"
+        ]
+       }
+      }
+     }
     },
     "note": {
      "scalar": [
@@ -1780,6 +2061,7 @@
     },
     "last_nid_ms_ago": {
      "scalar": [
+      "integer",
       "null"
      ]
     },
@@ -1927,7 +2209,60 @@
      }
     },
     "nid_ring": {
-     "array": null
+     "array": {
+      "object": {
+       "drop_count": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "duid": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "n_errors": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "nac": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "pll_dbg": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "seq": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "sp_dbg": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "sync_distance": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "t_ms_since_boot": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "valid": {
+        "scalar": [
+         "boolean"
+        ]
+       }
+      }
+     }
     },
     "running": {
      "scalar": [
@@ -1935,7 +2270,25 @@
      ]
     },
     "top_nacs": {
-     "array": null
+     "array": {
+      "object": {
+       "count": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "nac": {
+        "scalar": [
+         "string"
+        ]
+       },
+       "pct": {
+        "scalar": [
+         "number"
+        ]
+       }
+      }
+     }
     },
     "uptime_secs": {
      "scalar": [
@@ -2084,6 +2437,11 @@
        },
        "fields": {
         "object": {
+         "active_call_id": {
+          "scalar": [
+           "null"
+          ]
+         },
          "age": {
           "object": {
            "bin_counts": {
@@ -2137,9 +2495,88 @@
            }
           }
          },
+         "at_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "bad_blocks": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "block_errors": {
+          "array": {
+           "scalar": [
+            "integer"
+           ]
+          }
+         },
+         "blocks": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "blocks_expected": {
+          "scalar": [
+           "integer"
+          ]
+         },
          "build_tag": {
           "scalar": [
            "string"
+          ]
+         },
+         "bytes": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "chain": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "chain_parked": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "channel": {
+          "scalar": [
+           "integer",
+           "null",
+           "string"
+          ]
+         },
+         "chunks_drain": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "chunks_match": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "chunks_total": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "chunks_zero_callid": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "close_at_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "confirmed": {
+          "scalar": [
+           "boolean"
           ]
          },
          "counters": {
@@ -2251,17 +2688,230 @@
            }
           }
          },
+         "crc_ok": {
+          "scalar": [
+           "boolean",
+           "null"
+          ]
+         },
+         "drain_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "duration_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "emergency": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "enc_flag": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "encrypted": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "end_lc": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "event_call_id": {
+          "scalar": [
+           "integer"
+          ]
+         },
          "event_type": {
           "scalar": [
            "string"
           ]
          },
+         "filename": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "first_chunk_after_open_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "format": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "framer_reset": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "frames_in": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "frames_skipped_enc": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "freq_hz": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "frequency": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "frequency_mhz": {
+          "scalar": [
+           "null",
+           "number"
+          ]
+         },
          "from": {
+          "scalar": [
+           "null",
+           "string"
+          ]
+         },
+         "hex": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "imbe_drops_in_call": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "in_history": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "ip": {
+          "nullable": true,
+          "object": {
+           "dst": {
+            "scalar": [
+             "string"
+            ]
+           },
+           "dst_port": {
+            "scalar": [
+             "integer"
+            ]
+           },
+           "protocol": {
+            "scalar": [
+             "integer"
+            ]
+           },
+           "src": {
+            "scalar": [
+             "string"
+            ]
+           },
+           "src_port": {
+            "scalar": [
+             "integer"
+            ]
+           },
+           "total_len": {
+            "scalar": [
+             "integer"
+            ]
+           }
+          }
+         },
+         "is_update": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "llid": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "mfid": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "mode": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "nac": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "new_call_id": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "new_tg": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "not_followed": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "offset_hz": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "opcode": {
           "scalar": [
            "null"
           ]
          },
-         "mode": {
+         "open_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "outbound": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "pcm_fill_pct": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "pcm_samples": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "pcm_so_far_samples": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "policy": {
           "scalar": [
            "string"
           ]
@@ -2271,9 +2921,35 @@
            "integer"
           ]
          },
+         "precision": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "prev_clean_q": {
+          "scalar": [
+           "boolean"
+          ]
+         },
          "protocol": {
           "scalar": [
            "string"
+          ]
+         },
+         "reason": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "recording_id": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "response": {
+          "scalar": [
+           "integer",
+           "null"
           ]
          },
          "ring": {
@@ -2281,14 +2957,244 @@
            "string"
           ]
          },
-         "source": {
+         "same_freq_q": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "sap": {
           "scalar": [
            "string"
+          ]
+         },
+         "sap_id": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "service": {
+          "scalar": [
+           "null",
+           "string"
+          ]
+         },
+         "site": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "size_bytes": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "sndcp": {
+          "array": {
+           "scalar": [
+            "integer"
+           ]
+          },
+          "nullable": true
+         },
+         "source": {
+          "scalar": [
+           "integer",
+           "null",
+           "string"
+          ]
+         },
+         "src": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "stage_us": {
+          "object": {
+           "fec": {
+            "object": {
+             "max": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "mean": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "median": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "p99": {
+              "scalar": [
+               "integer"
+              ]
+             }
+            }
+           },
+           "frames": {
+            "scalar": [
+             "integer"
+            ]
+           },
+           "mix": {
+            "object": {
+             "max": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "mean": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "median": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "p99": {
+              "scalar": [
+               "integer"
+              ]
+             }
+            }
+           },
+           "pcm_convert": {
+            "object": {
+             "max": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "mean": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "median": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "p99": {
+              "scalar": [
+               "integer"
+              ]
+             }
+            }
+           },
+           "total": {
+            "object": {
+             "max": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "mean": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "median": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "p99": {
+              "scalar": [
+               "integer"
+              ]
+             }
+            }
+           },
+           "unvoiced": {
+            "object": {
+             "max": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "mean": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "median": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "p99": {
+              "scalar": [
+               "integer"
+              ]
+             }
+            }
+           },
+           "voiced": {
+            "object": {
+             "max": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "mean": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "median": {
+              "scalar": [
+               "integer"
+              ]
+             },
+             "p99": {
+              "scalar": [
+               "integer"
+              ]
+             }
+            }
+           }
+          }
+         },
+         "storage": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "summary": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "talkgroup": {
+          "scalar": [
+           "integer",
+           "null"
+          ]
+         },
+         "talkgroup_alias": {
+          "scalar": [
+           "null"
+          ]
+         },
+         "tg": {
+          "scalar": [
+           "integer"
           ]
          },
          "timeslot": {
           "scalar": [
            "integer"
+          ]
+         },
+         "timestamp": {
+          "scalar": [
+           "string"
           ]
          },
          "to": {
@@ -2301,6 +3207,11 @@
            "string"
           ]
          },
+         "unix_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
          "unix_s": {
           "scalar": [
            "integer"
@@ -2309,6 +3220,26 @@
          "valid": {
           "scalar": [
            "boolean"
+          ]
+         },
+         "via": {
+          "scalar": [
+           "string"
+          ]
+         },
+         "wall_duration_ms": {
+          "scalar": [
+           "integer"
+          ]
+         },
+         "was_locked": {
+          "scalar": [
+           "boolean"
+          ]
+         },
+         "was_unix_ms": {
+          "scalar": [
+           "integer"
           ]
          }
         }
@@ -2671,7 +3602,25 @@
      ]
     },
     "messages": {
-     "array": null
+     "array": {
+      "object": {
+       "age_secs": {
+        "scalar": [
+         "number"
+        ]
+       },
+       "block": {
+        "scalar": [
+         "string"
+        ]
+       },
+       "summary": {
+        "scalar": [
+         "string"
+        ]
+       }
+      }
+     }
     }
    }
   },
@@ -3095,22 +4044,26 @@
     },
     "control_channel": {
      "scalar": [
-      "null"
+      "null",
+      "string"
      ]
     },
     "control_channel_hz": {
      "scalar": [
+      "integer",
       "null"
      ]
     },
     "lra": {
      "scalar": [
+      "integer",
       "null"
      ]
     },
     "nac": {
      "scalar": [
-      "null"
+      "null",
+      "string"
      ]
     },
     "neighbours": {
@@ -3123,32 +4076,63 @@
     },
     "rfss_id": {
      "scalar": [
+      "integer",
       "null"
+     ]
+    },
+    "secondary_cch_a": {
+     "scalar": [
+      "string"
      ]
     },
     "secondary_cch_a_hz": {
      "scalar": [
+      "integer",
       "null"
+     ]
+    },
+    "secondary_cch_b": {
+     "scalar": [
+      "string"
      ]
     },
     "secondary_cch_b_hz": {
      "scalar": [
+      "integer",
       "null"
      ]
     },
     "site_id": {
      "scalar": [
+      "integer",
       "null"
+     ]
+    },
+    "sndcp_downlink_channel": {
+     "scalar": [
+      "string"
+     ]
+    },
+    "sndcp_uplink_channel": {
+     "scalar": [
+      "string"
+     ]
+    },
+    "system_clock": {
+     "scalar": [
+      "string"
      ]
     },
     "system_id": {
      "scalar": [
-      "null"
+      "null",
+      "string"
      ]
     },
     "wacn": {
      "scalar": [
-      "null"
+      "null",
+      "string"
      ]
     }
    }
@@ -3156,7 +4140,25 @@
   "/api/traffic": {
    "object": {
     "agc_freq_cache": {
-     "array": null
+     "array": {
+      "object": {
+       "freq_hz": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "gain": {
+        "scalar": [
+         "number"
+        ]
+       },
+       "gain_q97": {
+        "scalar": [
+         "integer"
+        ]
+       }
+      }
+     }
     },
     "applied": {
      "array": null
@@ -3328,6 +4330,7 @@
         },
         "started_unix_ms": {
          "scalar": [
+          "integer",
           "null"
          ]
         },
@@ -3390,7 +4393,8 @@
       },
       "last_imbe_secs_ago": {
        "scalar": [
-        "null"
+        "null",
+        "number"
        ]
       },
       "ldu1_count": {
@@ -3561,27 +4565,32 @@
     },
     "last_duid": {
      "scalar": [
+      "integer",
       "null"
      ]
     },
     "last_duid_hex": {
      "scalar": [
-      "null"
+      "null",
+      "string"
      ]
     },
     "last_duid_label": {
      "scalar": [
-      "null"
+      "null",
+      "string"
      ]
     },
     "last_nac": {
      "scalar": [
+      "integer",
       "null"
      ]
     },
     "last_nac_hex": {
      "scalar": [
-      "null"
+      "null",
+      "string"
      ]
     },
     "last_offset_hz": {
@@ -3591,7 +4600,8 @@
     },
     "last_retune_secs_ago": {
      "scalar": [
-      "null"
+      "null",
+      "number"
      ]
     },
     "ldus_seen": {
@@ -3631,6 +4641,7 @@
     },
     "parked_freq_hz": {
      "scalar": [
+      "integer",
       "null"
      ]
     },
@@ -4053,7 +5064,35 @@
      }
     },
     "opcodes": {
-     "array": null
+     "array": {
+      "object": {
+       "fail": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "label": {
+        "scalar": [
+         "string"
+        ]
+       },
+       "ok": {
+        "scalar": [
+         "integer"
+        ]
+       },
+       "opcode": {
+        "scalar": [
+         "string"
+        ]
+       },
+       "parsed": {
+        "scalar": [
+         "boolean"
+        ]
+       }
+      }
+     }
     },
     "tsbk_block_attempts_total": {
      "scalar": [
@@ -4079,7 +5118,8 @@
       "object": {
        "air_ms": {
         "scalar": [
-         "integer"
+         "integer",
+         "null"
         ]
        },
        "audio_status": {
@@ -4119,7 +5159,8 @@
        },
        "first_voice_ms": {
         "scalar": [
-         "integer"
+         "integer",
+         "null"
         ]
        },
        "freq_hz": {
@@ -4139,7 +5180,8 @@
        },
        "not_followed": {
         "scalar": [
-         "null"
+         "null",
+         "string"
         ]
        },
        "open_ms": {
@@ -4148,6 +5190,7 @@
         ]
        },
        "recording": {
+        "nullable": true,
         "object": {
          "duration_ms": {
           "scalar": [
@@ -4287,7 +5330,11 @@
   "/api/ui/settings": {
    "object": {
     "encrypted_tgs": {
-     "array": null
+     "array": {
+      "scalar": [
+       "integer"
+      ]
+     }
     },
     "file": {
      "scalar": [
@@ -4783,6 +5830,7 @@
       },
       "parked_freq_hz": {
        "scalar": [
+        "integer",
         "null"
        ]
       },
@@ -4823,6 +5871,7 @@
        },
        "parked_freq_hz": {
         "scalar": [
+         "integer",
          "null"
         ]
        },
@@ -4916,6 +5965,7 @@
        ]
       },
       "dmr": {
+       "nullable": true,
        "object": {
         "cach_ok_pct": {
          "scalar": [
@@ -5001,6 +6051,7 @@
       },
       "last_tsbk_age_ms": {
        "scalar": [
+        "integer",
         "null"
        ]
       },
@@ -5011,7 +6062,8 @@
       },
       "nac": {
        "scalar": [
-        "null"
+        "null",
+        "string"
        ]
       },
       "name": {
@@ -5026,6 +6078,7 @@
       },
       "rfss_id": {
        "scalar": [
+        "integer",
         "null"
        ]
       },
@@ -5035,28 +6088,62 @@
        ]
       },
       "site_time": {
-       "scalar": [
-        "null"
-       ]
+       "nullable": true,
+       "object": {
+        "age_ms": {
+         "scalar": [
+          "integer"
+         ]
+        },
+        "board_offset_ms": {
+         "scalar": [
+          "integer"
+         ]
+        },
+        "ext_locked": {
+         "scalar": [
+          "boolean"
+         ]
+        },
+        "local_offset_min": {
+         "scalar": [
+          "integer"
+         ]
+        },
+        "precision": {
+         "scalar": [
+          "string"
+         ]
+        },
+        "unix_ms": {
+         "scalar": [
+          "integer"
+         ]
+        }
+       }
       },
       "system_id": {
        "scalar": [
-        "null"
+        "null",
+        "string"
        ]
       },
       "tsbk_ok_pct": {
        "scalar": [
-        "null"
+        "null",
+        "number"
        ]
       },
       "tsbk_per_s": {
        "scalar": [
-        "null"
+        "null",
+        "number"
        ]
       },
       "wacn": {
        "scalar": [
-        "null"
+        "null",
+        "string"
        ]
       }
      }

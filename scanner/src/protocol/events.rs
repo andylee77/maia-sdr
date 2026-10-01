@@ -10,23 +10,29 @@ use super::p25::tsbk::FrequencyBand;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChannelId {
     P25 { iden: u8, number: u16 },
+    /// A DMR Tier III logical channel number.
+    DmrLcn(u16),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogicalChannel {
     pub id: ChannelId,
-    /// The timeslot on a TDMA carrier.
+    /// The timeslot: DMR 1 or 2; P25 on a TDMA carrier.
     pub slot: Option<u8>,
-    /// Known once the channel plan names the channel's band.
+    /// Known once the channel plan names the channel.
     pub freq_hz: Option<u64>,
+    /// A P25 Phase 2 (TDMA) channel.
     pub tdma: bool,
 }
 
-/// A group voice grant, or its refresh while the call goes on (`update`).
+/// A voice grant, or its refresh while the call goes on (`update`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Grant {
+    /// The talkgroup; for a private call, the called radio.
     pub tg: u32,
     pub source: Option<u32>,
+    /// Unit to unit.
+    pub private: bool,
     pub channel: LogicalChannel,
     pub encrypted: bool,
     pub emergency: bool,
@@ -44,9 +50,20 @@ pub struct P25Identity {
     pub lra: Option<u8>,
 }
 
+/// A DMR Tier III site's identity (ALOHA): colour code and system identity code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmrIdentity {
+    pub colour_code: u8,
+    /// TINY, SMALL, LARGE or HUGE.
+    pub model: &'static str,
+    pub network: u32,
+    pub site: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SiteIdentity {
     P25(P25Identity),
+    Dmr(DmrIdentity),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +116,10 @@ pub struct LogLine {
     pub text: String,
     /// Housekeeping broadcast many times a second (identity, channel plan, site time).
     pub routine: bool,
+    /// Passed its checks (P25 hands on only messages that did).
+    pub valid: bool,
+    /// The DMR timeslot.
+    pub slot: Option<u8>,
     pub tg: Option<u32>,
     pub unit: Option<u32>,
 }

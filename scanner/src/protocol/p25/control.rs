@@ -173,6 +173,7 @@ impl Announced {
         ControlEvent::Grant(Grant {
             tg: u32::from(tg),
             source,
+            private: false,
             channel: self.logical(channel),
             encrypted: options.is_some_and(service_options::is_encrypted),
             emergency: options.is_some_and(service_options::is_emergency),
@@ -396,6 +397,8 @@ impl Announced {
             class,
             text: format!("TSBK{} {class} {fields}", index + 1),
             routine: ROUTINE.contains(&class),
+            valid: true,
+            slot: None,
             tg,
             unit,
         }
