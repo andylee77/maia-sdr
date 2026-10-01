@@ -127,6 +127,10 @@ section 15 whose new code no longer has the defect.
 | 14 | `trim_to` deletes calls but keeps their hour totals | Activity totals include calls that are gone | 5 |
 | 15 | `lo_plan` clears `dirty` before the write | A failed write is never retried | 1 |
 | 16 | An unaligned `&[i16]` cast in `wideband_iq_task.rs:230` | Undefined behaviour | 1 (the capture is ported without it) |
+| 17 ✓ | The recorders and grant_stats subscribe to the call events after awaits at boot | Calls that open or close in the first seconds after boot get no recording or history row | 3 |
+| 18 ✓ | `apply_preset` reloads both traffic DDCs with NCO 0 but `TrafficChain` skips the NCO write for a grant on its parked frequency (a word computed from the boot LO) | After a recentre, site switch or sweep, the first call on a lane's parked channel was silent | Fixed in p25-httpd (3e7983b); the Tuner tracks what each lane's NCO holds |
+| 19 ✓ | The autoppm updater, the ppm endpoints, `/api/rx_gain`, the debug retunes, the DMR executor, `release_chains_on` and the PLL watchdog move hardware without the lease | A sweep's measurements and a site switch can be disturbed | 1 (only the Tuner moves hardware) |
+| 20 ✓ | AD9361 writes take no lock; the follower and DMR read the LO and shift atomics lock-free | A traffic NCO can be computed against an LO that is changing | 1 (the Tuner serialises every hardware sequence) |
 
 ## 2. Module map
 
@@ -184,7 +188,7 @@ scanner/src/         the fresh crate (D13)
     discovery/       scan jobs (P25 + DMR), grouping into systems, merge
     clock/           site clock, NTP, clock task
     events/          event log, the typed /ws/events feed
-  api/               one route table builds the router and the catalogue; ApiError; DTOs (p25-json)
+  api/               one route table builds the router and the catalogue; ApiError; typed DTOs
     v1/              status, radio, systems, sites, profiles, calls, recordings, activity, scan, events
     diag/            protocol and hardware diagnostics (today's chain.rs, debug.rs, ...)
     legacy.rs        old user-facing paths as adapters until their consumers move
@@ -913,7 +917,10 @@ Rules for the build-up:
   timings, follower gates, air-time gating) come across with their tests.
 - **The old p25-httpd is frozen** apart from fixes until the cutover. A fix that lands meanwhile
   also goes into the fresh crate if the module already exists there.
-- **One workspace.** Both crates share `p25-pac` and `p25-json` until the cutover.
+- **Shared crates.** `scanner` uses `p25-pac` by path from `p25-httpd/` until the cutover. They
+  are two packages, not a cargo workspace: the image build syncs only `p25-httpd/` and builds it
+  on its own. The fresh crate's API types live in the crate (`api::v1`), so `p25-json` stays
+  with the old crate.
 - **Each commit builds and passes the checks**, and each phase ends with the live check on A.
 
 | Phase | What | Live check on unit A | Size |
@@ -991,3 +998,25 @@ From the brief:
   the unit in use. Phase 0 is next.
 - 2026-10-01: Andy decided D12 (B is wired into A for testing as needed) and D14 (the old docs
   stay; the refactor's docs live in the fresh crate).
+- 2026-10-01, phase 0:
+  - **Done:** `CLAUDE.md` rewritten; golden emitters ignored; the trunking trace tap and the
+    host replay; unit fixtures for A and B; Activity snapshots; route shapes; `pre-076` tagged.
+    B's SD card passed `fsck.fat -n`.
+  - **Replay check on B:** a 37-minute Clay trace replays to the unit's own calls, 317 of 319
+    identical. The other two are one race: an end-grace close and the next grant 2 ms apart,
+    ordered differently by the sweep's 100 ms phase.
+  - **Baseline, DMR** (unit A, `cec_gcs`, 60 min, build `2026-10-01-dmr-075`):
+    - control messages 100 % valid (41.7/s), CACH 100 %;
+    - 58 calls, all followed, 57 with voice (198.5 s);
+    - 57 recordings, 58 history rows;
+    - CPU: system 14.6 % busy, daemon 28.7 % of a core.
+  - **DMR reference:** 24,984 of 24,996 lines match SDRTrunk.
+  - **Fix found on the way:** defect 18, committed to p25-httpd (`2026-10-01-nco-fix-076`).
+- 2026-10-01, phase 1 (in progress):
+  - **Built:** `scanner/` with boot, util, the configuration layers and their migration, the
+    hardware layer (one implementation for the three chains), the radio (planner, lease, Tuner),
+    `LiveSite::activate`, the `/api/v1` core and the UI shell.
+  - **Unit B** (scanner run from `/tmp`, p25-httpd restored after): it migrated B's files,
+    brought Clay up at 8M on LO 858.7 MHz (the old binary's LO), and the control chain decoded
+    NAC 0x8A1 with valid NIDs.
+  - **Next:** the live check on unit A (both sites, the switch, the old files untouched).
