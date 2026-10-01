@@ -481,8 +481,16 @@ pub fn spawn_dmr_traffic(
                 Err(RecvError::Lagged(_)) => continue,
                 Err(RecvError::Closed) => break,
             };
-            if !rt.enabled.load(Ordering::Relaxed) || !rt.follow.load(Ordering::Relaxed) {
+            // Only while a call off the control repeater is followed: an
+            // idle chain carries no burst worth the CPU.
+            let following_elsewhere = rt.enabled.load(Ordering::Relaxed)
+                && rt.follow.load(Ordering::Relaxed)
+                && rt.follower.lock().ok().and_then(|f| f.following()).map_or(false, |g| {
+                    g.freq_hz.is_some() && g.freq_hz != Some(control_freq.load(Ordering::Relaxed))
+                });
+            if !following_elsewhere {
                 chain = None;
+                epoch = (u64::MAX, u64::MAX);
                 continue;
             }
             let now_epoch = (rt.traffic_epoch.load(Ordering::Relaxed), rt.config_epoch.load(Ordering::Relaxed));
