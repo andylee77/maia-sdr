@@ -355,8 +355,8 @@ never modifies or deletes a legacy file (D4).
 | `/mnt/sd/p25-history.sqlite` | `/mnt/sd/scanner-history.sqlite` (v2) | Section 8. |
 | SD recordings | unchanged files, indexed into history v2 | Section 9. |
 
-Testing: on copies of unit A's (and B's) real files first (phase 0 fixtures), then on A, then on
-B after its SD card check.
+Testing: on copies of units A's and B's real files first (phase 0 fixtures), then on A, then on
+B.
 
 ### 3.4 First run
 
@@ -867,7 +867,9 @@ Committed fixtures live in the fresh crate's folder, `scanner/tests/fixtures/`.
      recording names, pulled read-only into the gitignored `runs/076/units/A/`.
    - **Committed copy:** `tools/unit_fixtures.py` writes `unit_a/`, with radio IDs replaced by
      stand-ins of the same digit count. The migration tests run on it.
-   - **Unit B:** its fixtures come with its card check.
+   - **Unit B:** `unit_b/` has the history schema from before 074a (no `channel` column), with
+     379 call ids repeated by restarts before ids continued past the history. It has no site
+     files: it runs on the "clay" seed compiled into the binary (D6).
 3. **Activity snapshots.** `history_snapshot_tests` runs the Activity queries on the fixture
    database and compares the answers with `unit_a/activity.json`. History v2 must give the same
    answers after the migration.
@@ -924,7 +926,7 @@ Rules for the build-up:
 | 5 | **History v2.** Writer, reader, copy-migration, Activity page, packet data if D11 says so | Activity snapshots match after the migration; new calls stored | M |
 | 6 | **Scan.** P25 and DMR probes, UHF/VHF, grouping into systems, first-run flow, rescan merge | From an empty config, a scan finds Clay County and Clay Electric, and adding them works | M |
 | 7 | **Diagnostics and consumers.** The diagnostic endpoints the tools and bench use (writes as POST/PUT), tools and bench moved, stale tools retired, the rest of Settings | fbench and the key tools run against the fresh crate | M |
-| 8 | **Cutover.** tezuka_fw's package and init script switch to the fresh crate; SD image for A, then B after its card check. The old p25-httpd, `lsm/` and `sw_demod/` are removed (to `dsp-lab` if wanted). The crate's docs (API reference, README, inventory) and `CHANGELOG_FORK.md` are written. | "Done means" on both units | M |
+| 8 | **Cutover.** tezuka_fw's package and init script switch to the fresh crate; SD image for A, then B. The old p25-httpd, `lsm/` and `sw_demod/` are removed (to `dsp-lab` if wanted). The crate's docs (API reference, README, inventory) and `CHANGELOG_FORK.md` are written. | "Done means" on both units | M |
 
 Notes:
 
@@ -945,8 +947,7 @@ Notes:
 - **Migrations (phases 1 and 5):**
   - on host copies first;
   - the old files are untouched, so rollback is the old image;
-  - check free SD space before copying the history (up to 2 GB);
-  - B's card needs `fsck` (073a) before its first image.
+  - check free SD space before copying the history (up to 2 GB).
 - **Bench time (D12).** A corpus run takes both units, and A listens to B instead of the air
   while it runs.
 - **Shared units:** other sessions may drive A and B.

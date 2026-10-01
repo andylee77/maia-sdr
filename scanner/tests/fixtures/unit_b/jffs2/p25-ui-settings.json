@@ -1,0 +1,53 @@
+{
+  "recording": {
+    "enabled": true,
+    "max_count": 40,
+    "storage": "sd",
+    "sd_max_count": 2000,
+    "sd_max_mb": 2048
+  },
+  "call": {
+    "hang_ms": 3000,
+    "end_grace_ms": 2000
+  },
+  "radio": {
+    "gain_mode": null,
+    "manual_gain_db": null
+  },
+  "tg_groups": [],
+  "speakers": {
+    "left": [],
+    "right": [],
+    "other": "both",
+    "preempt": true
+  },
+  "tg_aliases": {},
+  "unit_aliases": {},
+  "monitor_tgs": [],
+  "clock": {
+    "source": "site"
+  },
+  "ignore_tgs": [],
+  "site": "clay",
+  "sites": {
+    "clay": {
+      "tg_aliases": {},
+      "unit_aliases": {},
+      "profiles": [
+        {
+          "name": "Default",
+          "tg_groups": [],
+          "speakers": {
+            "left": [],
+            "right": [],
+            "other": "both",
+            "preempt": true
+          },
+          "monitor_tgs": [],
+          "ignore_tgs": []
+        }
+      ],
+      "active_profile": "Default"
+    }
+  }
+}

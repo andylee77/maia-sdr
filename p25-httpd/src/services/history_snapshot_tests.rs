@@ -1,9 +1,9 @@
-//! Activity snapshots of a unit's history (076 phase 0).
+//! Activity snapshots of the units' histories (076 phase 0).
 //!
-//! Runs the Activity queries on the committed fixture database
-//! (`scanner/tests/fixtures/unit_a/history.sql`) and compares the results with
-//! `activity.json` beside it. The fresh crate's history v2 must give the same answers after it
-//! migrates this database (076 phase 5). `ACTIVITY_SNAPSHOT_BLESS=1` rewrites the snapshot.
+//! Runs the Activity queries on each committed fixture database
+//! (`scanner/tests/fixtures/unit_*/history.sql`) and compares the results with `activity.json`
+//! beside it. The fresh crate's history v2 must give the same answers after it migrates these
+//! databases (076 phase 5). `ACTIVITY_SNAPSHOT_BLESS=1` rewrites the snapshots.
 
 use std::path::{Path, PathBuf};
 
@@ -11,21 +11,30 @@ use serde_json::{json, Map, Value};
 
 use super::*;
 
-fn fixture_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../scanner/tests/fixtures/unit_a")
+fn unit_dirs() -> Vec<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scanner/tests/fixtures");
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = entries.flatten().map(|e| e.path())
+        .filter(|p| p.join("history.sql").exists())
+        .collect();
+    dirs.sort();
+    dirs
 }
 
-/// The fixture database loaded into a scratch file.
-fn fixture_store() -> Option<(HistoryStore, PathBuf)> {
-    let sql = std::fs::read_to_string(fixture_dir().join("history.sql")).ok()?;
-    let path = std::env::temp_dir().join(format!("activity-snapshot-{}.sqlite", std::process::id()));
+/// A fixture database loaded into a scratch file.
+fn fixture_store(dir: &Path) -> (HistoryStore, PathBuf) {
+    let sql = std::fs::read_to_string(dir.join("history.sql")).unwrap();
+    let name = dir.file_name().unwrap().to_string_lossy();
+    let path = std::env::temp_dir().join(format!("activity-snapshot-{}-{name}.sqlite", std::process::id()));
     remove_db(&path);
     // The dump creates tables in name order, `call_units` before `calls`.
     let conn = Connection::open(&path).unwrap();
     conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
     conn.execute_batch(&sql).unwrap();
     drop(conn);
-    Some((HistoryStore::open(&path, true).unwrap(), path))
+    (HistoryStore::open(&path, true).unwrap(), path)
 }
 
 fn remove_db(path: &Path) {
@@ -87,19 +96,20 @@ fn snapshot(store: &HistoryStore) -> Value {
 }
 
 #[test]
-fn activity_queries_on_unit_a_match_the_snapshot() {
-    let Some((store, path)) = fixture_store() else {
-        return;
-    };
-    let got = lines(&snapshot(&store));
-    drop(store);
-    remove_db(&path);
-    let file = fixture_dir().join("activity.json");
-    if std::env::var("ACTIVITY_SNAPSHOT_BLESS").is_ok_and(|v| v == "1") {
-        std::fs::write(&file, got).unwrap();
-        return;
+fn activity_queries_on_the_unit_fixtures_match_their_snapshots() {
+    let bless = std::env::var("ACTIVITY_SNAPSHOT_BLESS").is_ok_and(|v| v == "1");
+    for dir in unit_dirs() {
+        let (store, path) = fixture_store(&dir);
+        let got = lines(&snapshot(&store));
+        drop(store);
+        remove_db(&path);
+        let file = dir.join("activity.json");
+        if bless {
+            std::fs::write(&file, got).unwrap();
+            continue;
+        }
+        let want = std::fs::read_to_string(&file)
+            .unwrap_or_else(|e| panic!("{}: {e} (bless with ACTIVITY_SNAPSHOT_BLESS=1)", file.display()));
+        assert!(want.replace("\r\n", "\n") == got, "Activity answers differ from {}", file.display());
     }
-    let want = std::fs::read_to_string(&file)
-        .unwrap_or_else(|e| panic!("{}: {e} (bless with ACTIVITY_SNAPSHOT_BLESS=1)", file.display()));
-    assert!(want.replace("\r\n", "\n") == got, "Activity answers differ from {}", file.display());
 }

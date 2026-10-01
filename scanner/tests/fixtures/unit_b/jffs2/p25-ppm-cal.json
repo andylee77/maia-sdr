@@ -1,0 +1,8 @@
+{
+  "lo_shift_hz": -38,
+  "lo_ppm": 0.04417732137308207,
+  "rx_lo_hz": 856700500,
+  "control_freq_hz": 860962500,
+  "unix_secs": 1790602208,
+  "method": "auto_stage_a_b"
+}

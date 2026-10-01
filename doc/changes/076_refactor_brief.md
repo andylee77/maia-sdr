@@ -217,8 +217,7 @@ to "clay" when no site is active.
   - FPGA bakes (`build_fpga_p25_pretty.sh`) are not expected for this change.
 - **Units:**
   - **Unit A:** 192.168.120.50 over Ethernet, external antenna.
-  - **Unit B:** 192.168.12.1 over USB. It has not had 073a's SD fsck; check before
-    installing.
+  - **Unit B:** 192.168.12.1 over USB. Its SD card was checked clean on 2026-10-01.
   - **SSH:** write the full literal command:
     `ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@<ip> '...'`.
   - **Deploying a binary:** `cat > /tmp/p25-httpd.new`; then S60 stop; then `cp` +

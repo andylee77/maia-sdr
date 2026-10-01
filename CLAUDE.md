@@ -64,7 +64,7 @@ Every commit builds and passes these, run from `p25-httpd/` (later also `scanner
 | Unit | Address | Board | Notes |
 |------|---------|-------|-------|
 | A | `192.168.120.50` (Ethernet) | AD9361, external antenna | The unit in use |
-| B | `192.168.12.1` (USB) | AD9363 | Run `fsck.fat` on its SD card before its first new image |
+| B | `192.168.12.1` (USB) | AD9363, internal antenna | |
 
 - **SSH:** write the full command literally, never through a variable:
   `ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@192.168.120.50 '...'`.
