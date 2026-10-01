@@ -1195,8 +1195,9 @@ From the brief:
   - **For the bench (with the D12 session):** the corpus test parks a lane through the
     follower, then holds it on the channel with the follower off (`/api/traffic`
     `lock=on&follower=off`) and reads `/api/imbe_dump`, `/api/ui/calls`, `/api/ui/state` and
-    `/api/system`. The scanner has no lane hold yet; it, the frame dump and the bench's move to
-    `/api/v1` are built and checked with the bench running.
+    `/api/system`. `/api/system` and `/api/ui/state` are there as legacy adapters; the lane
+    hold, the frame dump and the bench's move to `/api/v1` are built and checked with the bench
+    running.
 - 2026-10-01, phase 8 (prepared, waiting for Andy's go):
   - **Done ahead:** `doc/API.md` generated from the route table (a test keeps it current) and the
     crate's `README.md`.
