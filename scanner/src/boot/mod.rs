@@ -72,6 +72,17 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         None => tracing::warn!("no site configured yet: waiting for a scan or a site to be added"),
     }
 
+    {
+        let live = live.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(crate::trunking::learned::SAVE_EVERY);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                live.save_learned().await;
+            }
+        });
+    }
     let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, trunking, log, hardware, started });
     let app = crate::api::router(state.clone());
     tokio::select! {
@@ -80,6 +91,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     }
     state.receivers.stop().await;
     state.trunking.stop().await;
+    state.live.save_learned().await;
     Ok(())
 }
 

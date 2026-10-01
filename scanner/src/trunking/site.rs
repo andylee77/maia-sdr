@@ -21,11 +21,12 @@ use crate::services::events::EventLog;
 use crate::hardware::p25core::Lane;
 use crate::trunking::calls::CallPolicy;
 use crate::trunking::follow::routing::Routing;
+use crate::trunking::learned::Learned;
 use crate::trunking::receivers::{self, Receivers};
 use crate::trunking::trunk::{Setup, Trunking};
 use crate::services::config::profiles::Profile;
 use crate::services::config::systems::{CcPosition, Protocol, Site, System};
-use crate::services::config::{self, Config, Paths, SiteState, Stored};
+use crate::services::config::{self, Config, Paths, SiteState};
 
 /// Distance of the control channel from the window edge when a site has no known channels.
 const EDGE_MARGIN_HZ: f64 = 250_000.0;
@@ -70,8 +71,8 @@ pub struct LiveSite<H> {
     lanes: Vec<Lane>,
     log: Arc<EventLog>,
     state: watch::Sender<LiveState>,
-    /// What was learned on the live site.
-    learned: Mutex<Option<Stored<SiteState>>>,
+    /// What the live site taught the radio.
+    learned: Mutex<Option<Arc<Learned>>>,
 }
 
 impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
@@ -108,6 +109,13 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         self.state.subscribe()
     }
 
+    /// Save what the live site taught, when it changed.
+    pub async fn save_learned(&self) {
+        if let Some(l) = self.learned.lock().await.as_ref() {
+            l.save(&self.paths);
+        }
+    }
+
     /// Make `site` live. Returns once it is.
     pub async fn activate(&self, site_id: &str) -> Result<Live> {
         let _lease = self.lease.take(Lease::Switching).context("the radio is busy (a scan or another switch)")?;
@@ -134,8 +142,9 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
             let profile = c.profiles.value.active_for(site_id).cloned();
             (site.clone(), SystemSummary::from(system), profile, c.radio.value.presets_allowed.clone(), c.radio.value.calls.clone())
         };
-        let learned = Config::site_state(&self.paths, site_id)?;
-        let window = window_for(&site, &learned.value, &presets_allowed)?;
+        self.save_learned().await;
+        let learned = Arc::new(Learned::new(site_id, Config::site_state(&self.paths, site_id)?));
+        let window = window_for(&site, &learned.state(), &presets_allowed)?;
         let preset = find_preset(&window.preset).context("planned preset")?;
         self.receivers.stop().await;
         self.trunking.stop().await;
@@ -143,7 +152,7 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
             .tuner
             .apply(TuningPlan { preset, lo_hz: window.lo_hz as u64, control_hz: site.control.freq_hz })
             .await?;
-        *self.learned.lock().await = Some(learned);
+        *self.learned.lock().await = Some(learned.clone());
         {
             let mut c = self.config.lock().await;
             if c.state.value.live_site.as_deref() != Some(site_id) {
@@ -165,12 +174,13 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
                 Protocol::DmrTier3 => self.lanes.iter().copied().filter(|&l| l == Lane::One).collect(),
             },
             routing: profile.as_ref().map(Routing::new).unwrap_or_default(),
-            encrypted: self.learned.lock().await.as_ref().map(|l| l.value.encrypted_talkgroups.iter().copied().collect()).unwrap_or_default(),
+            encrypted: learned.state().encrypted_talkgroups.into_iter().collect(),
             policy: CallPolicy {
                 hang: std::time::Duration::from_millis(calls.hang_ms),
                 end_grace: std::time::Duration::from_millis(calls.end_grace_ms),
             },
             first_call: 1,
+            learned: Some(learned.clone()),
         };
         let trunk = self.trunking.start(setup, self.tuner.clone(), self.log.clone()).await;
         let context = receivers::Context {
@@ -179,6 +189,7 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
             modulation: site.modulation,
             lcn_hz,
             trunk: Some(trunk),
+            learned: Some(learned),
         };
         self.receivers.start(context, self.tuner.hw()).await;
         tracing::info!("site {} live: {} at LO {} Hz", site.id, window.preset, window.lo_hz);

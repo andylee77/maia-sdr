@@ -444,6 +444,7 @@ fn build_system(
                     channel_spacing_hz: b.channel_spacing_hz,
                     bandwidth_hz: b.bandwidth_hz,
                     transmit_offset_hz: b.transmit_offset_hz,
+                    slots: 1,
                 })
                 .collect(),
             grants: plan.grants.clone(),

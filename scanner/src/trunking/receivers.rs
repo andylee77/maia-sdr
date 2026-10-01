@@ -23,6 +23,7 @@ use crate::protocol::p25::control::P25Control;
 use crate::radio::streams::{Input, StreamCounters, StreamSource, Wants};
 use crate::services::config::systems::{Modulation, Protocol};
 use crate::services::events::EventLog;
+use crate::trunking::learned::Learned;
 use crate::trunking::trunk::{TrunkInput, TrunkTx};
 
 /// Deliveries queued for the decode thread (about 6 s of IQ).
@@ -40,6 +41,8 @@ pub struct Context {
     pub lcn_hz: HashMap<u16, u64>,
     /// Where grants go.
     pub trunk: Option<TrunkTx>,
+    /// What the site taught before; the channel plan heard goes back into it.
+    pub learned: Option<Arc<Learned>>,
 }
 
 /// The control channel as the site card shows it.
@@ -237,7 +240,13 @@ impl Receivers {
         };
         let (tx, rx) = sync_channel(QUEUE);
         let stop = Arc::new(AtomicBool::new(false));
-        let decoder = Decoder { log: self.log.clone(), view: self.view.clone(), stop: stop.clone(), trunk: context.trunk.clone() };
+        let decoder = Decoder {
+            log: self.log.clone(),
+            view: self.view.clone(),
+            stop: stop.clone(),
+            trunk: context.trunk.clone(),
+            learned: context.learned.clone(),
+        };
         let name = match context.protocol {
             Protocol::P25 => "p25-cc",
             Protocol::DmrTier3 => "dmr-cc",
@@ -292,6 +301,7 @@ struct Decoder {
     view: Arc<Mutex<View>>,
     stop: Arc<AtomicBool>,
     trunk: Option<TrunkTx>,
+    learned: Option<Arc<Learned>>,
 }
 
 /// Busy time over the last few seconds, as a share of one core.
@@ -346,6 +356,11 @@ impl Decoder {
     fn run_p25(&self, context: &Context, rx: Receiver<Input>) {
         let mut lsm = P25Control::new("control");
         let mut c4fm = P25Control::new("control");
+        if let Some(l) = &self.learned {
+            let bands = l.bands();
+            lsm.seed_bands(&bands);
+            c4fm.seed_bands(&bands);
+        }
         let mut demod = C4fmDecoder::new();
         let mut choice = ModulationChoice::new(context.modulation);
         let mut rates = RateWindow::default();
@@ -460,6 +475,11 @@ impl Decoder {
                     self.log.message(source, now.unix_ms, line);
                 }
                 ControlEvent::Identity(identity) => v.status.identity = Some(*identity),
+                ControlEvent::ChannelPlan(crate::protocol::events::PlanEntry::P25Band(band)) => {
+                    if let Some(l) = &self.learned {
+                        l.band(band);
+                    }
+                }
                 ControlEvent::Grant(grant) => {
                     v.status.grants += 1;
                     if let Some(trunk) = &self.trunk {

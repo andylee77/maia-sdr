@@ -111,6 +111,13 @@ impl P25Control {
         &self.announced
     }
 
+    /// The bands the site announced before, so grants resolve before its IDEN broadcasts.
+    pub fn seed_bands(&mut self, bands: &[FrequencyBand]) {
+        for b in bands {
+            self.announced.bands.insert(b.identifier, b.clone());
+        }
+    }
+
     pub fn stats(&self) -> &FramerStats {
         &self.framer.stats
     }

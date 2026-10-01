@@ -27,6 +27,7 @@ use crate::radio::streams::{LaneInput, LaneMode, StreamSource};
 use crate::services::config::systems::Protocol;
 use crate::radio::tuner::{RadioHw, Tuner};
 use crate::services::events::EventLog;
+use crate::trunking::learned::Learned;
 use crate::util::time::Stamp;
 
 /// Inputs queued for the task.
@@ -61,6 +62,8 @@ pub struct Setup {
     pub encrypted: HashSet<u32>,
     pub policy: CallPolicy,
     pub first_call: CallId,
+    /// Grant counts and encrypted talkgroups go into the site's learned state.
+    pub learned: Option<Arc<Learned>>,
 }
 
 /// A call as the API shows it.
@@ -143,6 +146,7 @@ struct Task<H> {
     open: Vec<Opened>,
     recent: VecDeque<CallView>,
     last_stuck_check: Instant,
+    learned: Option<Arc<Learned>>,
 }
 
 pub struct Trunking {
@@ -209,6 +213,7 @@ impl Trunking {
             open: Vec::new(),
             recent: VecDeque::new(),
             last_stuck_check: Instant::now(),
+            learned: setup.learned.clone(),
         };
         let task = tokio::spawn(task.run(rx, stop.clone()));
         *self.running.lock().await = Some(Running { tx: tx.clone(), stop, task, sources });
@@ -270,6 +275,11 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
     }
 
     async fn grant(&mut self, grant: Grant, nac: u16, at: Stamp) {
+        if grant.encrypted {
+            if let Some(l) = &self.learned {
+                l.encrypted(grant.tg);
+            }
+        }
         let markers: Vec<(Lane, Option<(u32, Instant)>)> = self
             .lanes
             .iter()
@@ -465,6 +475,9 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                         }
                     }
                     self.log.system("call", opened_text(&o));
+                    if let (Some(l), Some(f)) = (&self.learned, o.channel.freq_hz) {
+                        l.grant(f);
+                    }
                     self.open.push(o);
                 }
                 CallEvent::Closed(c) => {

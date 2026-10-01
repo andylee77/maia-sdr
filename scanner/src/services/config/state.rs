@@ -67,4 +67,7 @@ pub struct IdenBand {
     pub channel_spacing_hz: u32,
     pub bandwidth_hz: u32,
     pub transmit_offset_hz: i64,
+    /// Timeslots per carrier (1: FDMA; 2 or more: a TDMA band). Absent in older files.
+    #[serde(default)]
+    pub slots: u8,
 }
