@@ -733,7 +733,7 @@ its `dmr` attachment, which is what forces `site_card.js` to branch.
 | `GET /api/v1/radio`; `PUT /api/v1/radio/{gain, settings, clock, recording, crystal}`; `GET /api/v1/radio/crystal`; `POST /api/v1/radio/crystal/calibrate` | `/api/presets`, `/api/preset`, `/api/tune`, `/api/rx_gain`, `/api/ppm*`, radio parts of `ui/settings` | UI; `runs/dmr/log_dmr.py`, `record_chunks.sh` |
 | `/api/v1/systems[/{id}]` (names inside) | `/api/sites`, `/api/sites/{name}`, `/api/aliases` | UI; tool `status` |
 | `/api/v1/systems/{id}/sites/{site}`; `POST /api/v1/sites/{id}/activate`; `/sites/{id}/plan`, `/recentre`, `/learned` | `/api/site`, `/api/site/plan`, `/api/site/recentre` | UI |
-| `/api/v1/profiles...`; `PUT /api/v1/sites/{id}/profile` | profile actions in `ui/settings`, `/api/monitor`, `/api/encrypted_tgs` | UI; bench `corpus_tests` (monitor) |
+| `/api/v1/profiles...`; `PUT /api/v1/sites/{id}/profile` | profile actions in `ui/settings`, `/api/monitor`, `/api/encrypted_tgs` | UI (not `/api/monitor`); bench `corpus_tests` (`/api/monitor`, mode C) |
 | `/api/v1/recordings...` | `/api/recordings...` | UI; tools `poll_recordings_persist`, `compare_sim_vs_board`, `audit`, `capture_session` |
 | `/api/v1/activity/*`, `/api/v1/data` | `/api/activity/*`, `/api/data` | UI |
 | `/api/v1/scan` (GET, POST), `/scan/cancel`, `/scan/results/{key}/add` | `/api/discovery*` | UI |
@@ -753,10 +753,10 @@ The tools and bench that use the GET forms change in the same commit.
 
 **Not carried over** to the fresh crate, after the consumer check:
 
-- 13 routes with no consumer: `sites/{name}`, `ps_cores`, `freq_health`, `control_dibit_capture`,
+- 12 routes with no consumer: `sites/{name}`, `freq_health`, `control_dibit_capture`,
   `traffic_dibit_capture_aligned`, `traffic_iq_dump`, `ppm/nudge`, `agc_threshold`,
   `recordings/{id}/events`, `recordings/{id}/sync_trace`, `traffic2`, `deviation` and
-  `distribution`;
+  `distribution` (`ps_cores` has one: `tools/live_baseline.py`);
 - the `traffic_bins` 410 stub and the forensics routes;
 - 7 unused verbs on used paths.
 
@@ -1292,7 +1292,18 @@ From the brief:
   - **Then the data channel:** as in p25-httpd, the last lane of a P25 site waits on the announced
     data channel between calls (a voice grant still takes it) and its PDUs go to packet data.
   - **The module map** (section 2) now describes the tree as built.
-  - **Still open:** `api::diag` (D7): of p25-httpd's diagnostic routes the scanner serves only
-    `/api/imbe_dump`. The bench reads `/api/traffic` for the decoders' counters (it carries on
-    without them) and mode C holds a lane through it; the tools' other diagnostic routes are to
-    be listed with their consumers and ported or retired before the cutover.
+  - **Still open:** `api::diag` (D7). Of p25-httpd's 100 routes, those the scanner lacks, by who
+    reads them (the inventory of 2026-10-01):
+    - **the bench:** `/api/traffic` (decoder counters, read and carried on without; mode C's
+      `lock`/`follower` hold, which aborts without it), `/api/monitor` (mode C's precondition),
+      `/api/decoder_compare` and `/api/stats` (`rf.p25_replay` aborts without them),
+      `/api/decoder_reset` (optional), `/api/dibit_delivery` (optional);
+    - **tools only** (22 diagnostics, e.g. `hdl_lsm`, `irq_stats`, the dibit and IQ dumps,
+      `control_iq_dump` for the DMR captures, `sys_health`, `ps_cores`, `/ws/iq`), and 14
+      user-facing routes whose v1 replacements exist (`grants`, `log`, `recordings`, `ppm`,
+      `dmr`, `tune`, ...); `tools/route_shapes.py` checks the old shapes and will flag them;
+    - **p25-httpd's UI only:** replaced by the scanner's UI, except the per-chain narrowband
+      spectrum and the pipeline card;
+    - **no consumer:** 12 routes (below).
+    The bench's routes come first (the corpus in mode C and `rf.p25_replay` on the scanner);
+    the tools' are ported or the tools moved to v1 before the cutover.
