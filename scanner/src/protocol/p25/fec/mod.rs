@@ -56,15 +56,8 @@ const HAMMING_4BIT: [u8; 16] = [
 /// 196-element bit permutation applied to the trellis-coded message
 /// BEFORE feeding it to the Viterbi decoder. The encoder applies the
 /// inverse permutation; the receiver runs `out[DEINTERLEAVE[i]] = in[i]`
-/// to undo it.
-///
-/// This table was missing from our pipeline through 6F.2i. Without it
-/// the trellis input bits are scrambled relative to the encoder's
-/// output and the Viterbi finds garbage paths with high error metrics.
-/// Adding this step is the difference between "metric=24, garbage
-/// bytes" and "metric=0, valid TSBK bytes" -- this fix lands every
-/// known control-channel TSBK on the test target. See
-/// doc/changes/025 follow-up notes for the full diagnosis.
+/// to undo it. Without it the Viterbi sees scrambled input and finds no
+/// valid path.
 pub const DATA_DEINTERLEAVE: [usize; 196] = [
     0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 49, 50, 51,
     64, 65, 66, 67, 80, 81, 82, 83, 96, 97, 98, 99, 112, 113, 114, 115,

@@ -32,20 +32,11 @@ use super::types::*;
 /// PRIORITY        = 0x07   (bits 0-2)
 /// ```
 ///
-/// Phase 7C: the `ENCRYPTION_FLAG` is what gates the Phase 7D
-/// vocoder. We read it from the `GroupVoiceChannelGrant` TSBK so
-/// the encrypted-call decision happens at the control channel
-/// (before we retune the traffic DDC) instead of waiting for the
-/// HDU on the voice channel. See
-/// `reference_p25_encryption_flag_from_control_channel.md` memory.
+/// The `ENCRYPTION_FLAG` of a grant decides at the control channel, before
+/// any retune, that a call is encrypted (not followed, not vocoded).
 pub mod service_options {
     pub const EMERGENCY_FLAG: u8 = 0x80;
     pub const ENCRYPTION_FLAG: u8 = 0x40;
-    // DUPLEX_FLAG (0x20), SESSION_MODE_FLAG (0x10), and PRIORITY_MASK
-    // (0x07) were defined alongside the two used flags for
-    // documentation of the full service-options byte layout, but no
-    // code path ever reads them. Deleted 2026-04-17. Reintroduce
-    // alongside their first caller if ever needed.
 
     /// Returns true if the service options byte has the encryption
     /// bit set.
@@ -98,12 +89,10 @@ pub enum TsbkOpcode {
     /// Unit to Unit Voice Channel Grant (0x04)
     UnitToUnitVoiceChannelGrant,
     /// Unit to Unit Answer Request (0x05) -- private call paging.
-    /// Phase 6F.11.
     UnitToUnitAnswerRequest,
     /// Telephone Interconnect Voice Channel Grant (0x08)
     TelephoneInterconnectVoiceChannelGrant,
     /// Telephone Interconnect Voice Channel Grant Update (0x09).
-    /// Phase 6F.11.
     TelephoneInterconnectVoiceChannelGrantUpdate,
     /// Radio Unit Monitor Command (0x0B) -- site commands a specific
     /// radio to transmit so dispatch can audit it. Low volume on
@@ -120,7 +109,6 @@ pub enum TsbkOpcode {
     SndcpDataPageRequest,
     /// SNDCP Data Channel Announcement Explicit (0x16) -- which
     /// downlink/uplink channel carries SNDCP packet data services.
-    /// Phase 6F.11.
     SndcpDataChannelAnnouncementExplicit,
     /// Acknowledge Response — Network Entity (0x20). The FNE
     /// (network) acks a unit-originated action (registration,
@@ -143,7 +131,7 @@ pub enum TsbkOpcode {
     /// leaving the system.
     UnitDeRegistrationAcknowledge,
     /// TDMA Synchronization Broadcast (0x30) -- system date/time +
-    /// microslot rollover info. Phase 6F.11.
+    /// microslot rollover info.
     TdmaSyncBroadcast,
     /// Identifier Update TDMA (0x33) -- TDMA frequency band, 4-bit
     /// channel-type field instead of bandwidth, 13-bit transmit offset
@@ -155,7 +143,7 @@ pub enum TsbkOpcode {
     /// System Service Broadcast (0x38)
     SystemServiceBroadcast,
     /// Secondary Control Channel Broadcast (0x39) -- backup CCH A/B
-    /// channels for trunking failover. Phase 6F.11.
+    /// channels for trunking failover.
     SecondaryControlChannelBroadcast,
     /// Identifier Update standard FDMA (0x3D) -- the common one on
     /// most P25 sites. 9-bit bandwidth, 8-bit transmit offset at
@@ -215,9 +203,8 @@ pub enum TsbkMessage {
     /// `service_options` is the raw 8-bit service options byte
     /// (SDRTrunk `GroupVoiceChannelGrant.java` SERVICE_OPTIONS at
     /// bit positions 16-23). Decode bits via `ServiceOptions::*`
-    /// helpers in this module. Phase 7C uses the encryption bit
-    /// (mask `0x40`) to gate the Phase 7D vocoder so we don't try
-    /// to vocode encrypted IMBE frames.
+    /// helpers in this module; the encryption bit (mask `0x40`) keeps
+    /// encrypted calls away from the vocoder.
     GroupVoiceChannelGrant {
         channel: Channel,
         talkgroup: Talkgroup,
@@ -273,7 +260,7 @@ pub enum TsbkMessage {
         transmit_offset: i32,
         channel_spacing: u32,
         base_frequency: u64,
-        /// Change 071a: timeslots per carrier (1 = FDMA; 2/4 = TDMA).
+        /// Timeslots per carrier (1 = FDMA; 2/4 = TDMA).
         slots: u8,
     },
 
@@ -294,9 +281,8 @@ pub enum TsbkMessage {
         channel: Channel,
     },
 
-    /// Adjacent Status Broadcast (opcode 0x3C): a neighbour site.
-    /// Change 071a: decoded at SDRTrunk's offsets
-    /// (`AdjacentStatusBroadcast.java`).
+    /// Adjacent Status Broadcast (opcode 0x3C): a neighbour site, at
+    /// SDRTrunk's offsets (`AdjacentStatusBroadcast.java`).
     AdjacentStatus {
         lra: u8,
         rfss_id: u8,
@@ -315,7 +301,6 @@ pub enum TsbkMessage {
     /// Secondary Control Channel Broadcast (opcode 0x39) -- backup
     /// CCH channels A and B for the same RFSS/site. P25 trunking
     /// failover; SDRTrunk's `SecondaryControlChannelBroadcast.java`.
-    /// Phase 6F.11.
     SecondaryControlChannelBroadcast {
         rfss_id: u8,
         site_id: u8,
@@ -325,7 +310,7 @@ pub enum TsbkMessage {
 
     /// SNDCP Data Channel Announcement Explicit (opcode 0x16) --
     /// downlink + uplink channels carrying SNDCP packet-data services
-    /// on this site. Phase 6F.11.
+    /// on this site.
     SndcpDataChannelAnnouncementExplicit {
         autonomous_access: bool,
         requested_access: bool,
@@ -334,9 +319,7 @@ pub enum TsbkMessage {
     },
 
     /// TDMA Synchronization Broadcast (opcode 0x30) -- system
-    /// date/time + microslot rollover. Phase 6F.11. We expose just
-    /// enough fields to display "system clock" status; full ISO 8601
-    /// formatting is left to the dashboard if/when it cares.
+    /// date/time + microslot rollover.
     TdmaSyncBroadcast {
         time_locked: bool,
         year: u16,
@@ -344,20 +327,20 @@ pub enum TsbkMessage {
         day: u8,
         hours: u8,
         minutes: u8,
-        /// Change 067: 7.5 ms micro-slots since the minute rollover
+        /// 7.5 ms micro-slots since the minute rollover
         /// (0..7999) when `microslot_locked`, else a free-running count.
         microslots: u16,
-        /// Change 067: micro-slots are locked to the minute rollover (ICD
+        /// Micro-slots are locked to the minute rollover (ICD
         /// bit 30 clear), so `minutes` + `microslots` is the time.
         microslot_locked: bool,
-        /// Change 067: local time offset from UTC in minutes, when the
+        /// Local time offset from UTC in minutes, when the
         /// site marks it valid (ICD bit 33 clear).
         local_offset_min: Option<i16>,
     },
 
     /// Telephone Interconnect Voice Channel Grant Update (opcode
     /// 0x09). A non-talkgroup grant -- "any address" is the unit ID
-    /// being patched to a phone number. Phase 6F.11.
+    /// being patched to a phone number.
     TelephoneInterconnectVoiceChannelGrantUpdate {
         channel: Channel,
         call_timer_secs: u16,
@@ -367,7 +350,6 @@ pub enum TsbkMessage {
     /// Unit-to-Unit Answer Request (opcode 0x05) -- private call
     /// paging from `source` to `target`. No channel grant; the
     /// dispatcher just routes paging info onto the activity feed.
-    /// Phase 6F.11.
     UnitToUnitAnswerRequest {
         target: RadioId,
         source: RadioId,
@@ -498,9 +480,7 @@ pub struct TsbkBlock {
     pub payload: [u8; 8],
 }
 
-/// Which CRC convention validated a TSBK block. Phase 6F.2d
-/// diagnostic so the dashboard can report whether real on-air TSBKs
-/// use a single convention or a mix.
+/// Which CRC convention validated a TSBK block (sites use both).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrcConvention {
     /// `crc16_ccitt(data) == msg_crc` -- our implementation's plain
@@ -519,13 +499,6 @@ pub enum CrcConvention {
 /// 0x11021, 0xFFFF, true)` and copied verbatim. The first 80 entries
 /// are the residue of `x^k` for each data-bit position; the last 16
 /// entries (powers of 2) are CRC-self-correction look-ups.
-///
-/// Phase 6F.2j: replaces our previous standard byte-wise
-/// `crc16_ccitt` implementation, which had the wrong bit reflection
-/// convention for SDRTrunk's reference encoder. Cross-checked
-/// against captured on-air bytes that decoded with `metric=0` after
-/// the trellis deinterleave fix -- this table-based CRC validates
-/// while the byte-wise CRC didn't.
 const CCITT_80_CHECKSUMS: [u16; 96] = [
     0x1BCB, 0x8DE5, 0xC6F2, 0x6B69, 0xB5B4, 0x52CA, 0x2175, 0x90BA, 0x404D,
     0xA026, 0x5803, 0xAC01, 0xD600, 0x6310, 0x3998, 0x14DC, 0x027E, 0x092F,
@@ -581,35 +554,16 @@ impl TsbkBlock {
 
     /// Verify CRC-16 (CCITT) over the 12-byte block.
     ///
-    /// **Phase 6F.2d fix (2026-04-11):** P25 TSBK CRC encoders in the
-    /// wild use BOTH conventions for the final XOR step -- some output
-    /// `crc16_ccitt(data)` directly, others output
-    /// `crc16_ccitt(data) ^ 0xFFFF`. SDRTrunk's `CRCP25.correctCCITT80`
-    /// handles this by accepting `residual == 0 || residual == 0xFFFF`
-    /// from its lookup-table CRC. Our `crc16_ccitt` implementation
-    /// already does the final XOR (matches CCITT-FALSE inverted), so
-    /// to match SDRTrunk's coverage we need to accept the value either
-    /// AS-IS or XOR'd with 0xFFFF.
-    ///
-    /// On-target evidence (Phase 6F.2c run): with the single-convention
-    /// check, the PS LSM software decoder hit 100 % CRC failures while
-    /// trellis decode succeeded on every block (446/446 attempts on a
-    /// healthy LSM control channel signal). Trellis succeeding while
-    /// CRC fails on every block is the canonical "bytes are right but
-    /// the CRC formula is wrong by a constant" signature -- in this
-    /// case the constant is the 0xFFFF final XOR. See doc/changes/025
-    /// for the diagnosis log.
+    /// P25 TSBK CRC encoders in the wild use both conventions for the
+    /// final XOR, so, as SDRTrunk's `CRCP25.correctCCITT80` does, a
+    /// residual of 0 or 0xFFFF is accepted.
     ///
     /// Returns:
     /// - `Some(CrcConvention::Plain)` if `crc16_ccitt(data) == msg_crc`
     /// - `Some(CrcConvention::Xored)` if `crc16_ccitt(data) ^ 0xFFFF == msg_crc`
     /// - `None` if neither matches (CRC is invalid)
     pub fn crc_valid(&self, data: &[u8; 12]) -> Option<CrcConvention> {
-        // Phase 6F.2j: switched from byte-wise crc16_ccitt to SDRTrunk's
-        // table-based CCITT_80. The byte-wise CRC had the wrong bit
-        // reflection convention and consistently produced different
-        // values from the encoder for any non-trivial input. The
-        // table-based approach mirrors `CRCP25.correctCCITT80` exactly:
+        // SDRTrunk's table-based CCITT_80, as in `CRCP25.correctCCITT80`:
         // residual = calc XOR msg_crc; valid if residual is 0 or 0xFFFF.
         let calc = ccitt80_crc(data);
         let msg = u16::from_be_bytes([data[10], data[11]]);
@@ -718,14 +672,10 @@ impl TsbkBlock {
     /// GRP_V_CH_GRANT (0x00)
     /// Payload: [options(8)][channel(16)][talkgroup(16)][source(24)]
     ///
-    /// Phase 7C (2026-04-11): now extracts the service options byte
-    /// at `payload[0]`. SDRTrunk `GroupVoiceChannelGrant.java` SERVICE_OPTIONS
-    /// = {16, 17, 18, 19, 20, 21, 22, 23} (bits 16-23 of the TSBK,
-    /// which is `payload[0]` because the maia-sdr `payload` array
-    /// skips the 16-bit TSBK header). The encryption flag is bit 6
-    /// (mask `0x40`); the Phase 7D vocoder reads this from the
-    /// grant store to skip vocoding encrypted calls without
-    /// having to parse the HDU on the voice channel.
+    /// The service options byte is `payload[0]`: SDRTrunk
+    /// `GroupVoiceChannelGrant.java` SERVICE_OPTIONS at bits 16-23 of the
+    /// TSBK (`payload` skips the 16-bit header). Its encryption flag
+    /// (mask `0x40`) marks an encrypted call before any voice is heard.
     fn decode_grp_v_ch_grant(&self) -> TsbkMessage {
         let service_options = self.payload[0];
         let channel = Channel(u16::from_be_bytes([self.payload[1], self.payload[2]]));
@@ -820,12 +770,9 @@ impl TsbkBlock {
     /// variant since the downstream `FrequencyBand` consumer cares
     /// about the same fields.
     ///
-    /// Phase 6F.4 fix: this is the opcode most sites actually broadcast.
-    /// Until Phase 6F.4 we mapped 0x34 to `IdentifierUpdate` and never
-    /// decoded 0x3D, which is why `bands_known` stayed at 0 even after
-    /// the multi-block 6F.3 work landed. Verified against the SDRTrunk
-    /// reference recordings: every `TSBK1/2/3 IDEN_UPDATE` line uses
-    /// FDMA layout, never VUHF.
+    /// This is the opcode most sites broadcast: in the SDRTrunk
+    /// reference recordings every `TSBK1/2/3 IDEN_UPDATE` uses the FDMA
+    /// layout, never VUHF.
     fn decode_iden_update_fdma(&self) -> TsbkMessage {
         // We need the full 12-byte TSBK to bit-extract from absolute
         // positions, but we only stored payload[0..8] (= bits 16-79).
@@ -913,7 +860,7 @@ impl TsbkBlock {
     /// for TDMA -- not a problem for control-channel tracking which
     /// only uses base_frequency + spacing.
     ///
-    /// **Phase 6F.5 fix:** TDMA offset is `mag * channel_spacing`, NOT
+    /// The TDMA offset is `mag * channel_spacing`, not
     /// `mag * 250000` like FDMA/VUHF. SDRTrunk's
     /// `FrequencyBandUpdateTDMA.getTransmitOffset()`:
     ///
@@ -921,11 +868,8 @@ impl TsbkBlock {
     /// long offset = getMessage().getLong(TRANSMIT_OFFSET) * getChannelSpacing();
     /// ```
     ///
-    /// Until 6F.5 we used `* 250_000` and the resulting offset was
-    /// wrong by a factor of `250000 / channel_spacing` -- on 12.5 kHz
-    /// TDMA bands that's `250000 / 12500 = 20`, so a -39 MHz band
-    /// offset was reported as -780 MHz. Verified against the
-    /// SDRTrunk reference recording.
+    /// With `* 250_000` a −39 MHz offset on a 12.5 kHz TDMA band reads as
+    /// −780 MHz (checked against the SDRTrunk reference recording).
     fn decode_iden_update_tdma(&self) -> TsbkMessage {
         let mut full = [0u8; 12];
         full[2..10].copy_from_slice(&self.payload);
@@ -943,7 +887,7 @@ impl TsbkBlock {
         }
         let base_frequency = self.bits(&full, 48, 32) * 5;
 
-        // Change 071a: SDRTrunk `ChannelType`: bandwidth and timeslots per
+        // SDRTrunk `ChannelType`: bandwidth and timeslots per
         // carrier. Types 0-2 are FDMA even when announced here.
         let (bw_hz, slots) = match channel_type {
             0 | 1 => (12_500, 1),
@@ -996,10 +940,7 @@ impl TsbkBlock {
     /// | channel number   | 60-71 | 12    |
     /// | system service   | 72-79 | 8     |
     ///
-    /// Phase 6F.4 fix: until 6F.4 we read RFSS from `payload[2]`
-    /// (= bits 32-39, which is actually the LOW byte of the SYSTEM
-    /// field), so RFSS was reported as the low byte of system_id.
-    /// Same off-by-one shift on site/channel.
+    /// RFSS is at bits 40-47; bits 32-39 are the low byte of the system.
     fn decode_rfss_sts_bcst(&self) -> TsbkMessage {
         let mut full = [0u8; 12];
         full[2..10].copy_from_slice(&self.payload);
@@ -1053,8 +994,6 @@ impl TsbkBlock {
     /// | freq_band_b| 56-59 | 4     |
     /// | channel_b  | 60-71 | 12    |
     /// | service_b  | 72-79 | 8     |
-    ///
-    /// Phase 6F.11.
     fn decode_secondary_cch_bcst(&self) -> TsbkMessage {
         let mut full = [0u8; 12];
         full[2..10].copy_from_slice(&self.payload);
@@ -1083,8 +1022,6 @@ impl TsbkBlock {
     /// | UL freq band   | 48-51 | 4     |
     /// | UL channel num | 52-63 | 12    |
     /// | data acc ctrl  | 64-79 | 16    |
-    ///
-    /// Phase 6F.11.
     fn decode_sndcp_dch_ann_ex(&self) -> TsbkMessage {
         let mut full = [0u8; 12];
         full[2..10].copy_from_slice(&self.payload);
@@ -1114,8 +1051,6 @@ impl TsbkBlock {
     /// | minutes         | 61-66  | 6     |
     /// | micro_slots     | 67-79  | 13    |
     ///
-    /// Phase 6F.11. We expose just enough fields to display "system
-    /// clock" status; full ISO 8601 formatting is left to the dashboard.
     /// Year is the offset from 2000 per the SDRTrunk decoder.
     fn decode_tdma_sync_bcst(&self) -> TsbkMessage {
         let mut full = [0u8; 12];
@@ -1128,7 +1063,7 @@ impl TsbkBlock {
         let day = self.bits(&full, 51, 5) as u8;
         let hours = self.bits(&full, 56, 5) as u8;
         let minutes = self.bits(&full, 61, 6) as u8;
-        // Change 067 (SDRTrunk `SynchronizationBroadcast`): bit 30 set =
+        // SDRTrunk `SynchronizationBroadcast`: bit 30 set =
         // micro-slots NOT locked to the minute rollover; bit 33 set =
         // local offset NOT valid; 34 sign (set = west of UTC), 35-38
         // hours, 39 half hour; 67-79 micro-slots.
@@ -1162,7 +1097,7 @@ impl TsbkBlock {
     /// | call timer     | 40-55 | 16    |
     /// | any address    | 56-79 | 24    |
     ///
-    /// Phase 6F.11. Call timer is in 100 ms units per SDRTrunk's
+    /// Call timer is in 100 ms units per SDRTrunk's
     /// `getCallTimer()` (`* 100` ms → seconds via `/ 10`).
     fn decode_tele_int_v_ch_grant_update(&self) -> TsbkMessage {
         let mut full = [0u8; 12];
@@ -1188,8 +1123,6 @@ impl TsbkBlock {
     /// | reserved       | 24-31 | 8     |
     /// | target address | 32-55 | 24    |
     /// | source address | 56-79 | 24    |
-    ///
-    /// Phase 6F.11.
     fn decode_uu_ans_req(&self) -> TsbkMessage {
         let mut full = [0u8; 12];
         full[2..10].copy_from_slice(&self.payload);
@@ -1393,7 +1326,7 @@ pub struct FrequencyBand {
     pub transmit_offset_hz: i32,
     pub channel_spacing_hz: u32,
     pub base_frequency_hz: u64,
-    /// Change 071a: timeslots per carrier (1 = FDMA, 2/4 = TDMA).
+    /// Timeslots per carrier (1 = FDMA, 2/4 = TDMA).
     pub slots: u8,
 }
 
@@ -1428,7 +1361,7 @@ impl FrequencyBand {
         self.base_frequency_hz + carrier * (self.channel_spacing_hz as u64)
     }
 
-    /// Change 071a: a Phase 2 (TDMA) band.
+    /// A Phase 2 (TDMA) band.
     pub fn is_tdma(&self) -> bool {
         self.slots > 1
     }

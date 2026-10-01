@@ -10,8 +10,7 @@ use crate::protocol::p25::test_fixtures::*;
 
 #[test]
 fn test_ccitt80_crc_known_tsbk() {
-    // Phase 6F.2j: known-good TSBK1 SEC_CCH_BROADCST captured from
-    // SDRTrunk's .bits file via the Python replay script. Decoded
+    // A known-good TSBK1 SEC_CCH_BROADCST from an SDRTrunk .bits file. Decoded
     // bytes after deinterleave + Viterbi (clean, metric=0).
     // Expected residual = 0xFFFF (Xored convention) per
     // CRCP25.correctCCITT80.
@@ -31,10 +30,8 @@ fn test_ccitt80_crc_known_tsbk() {
 #[test]
 fn test_opcode_parsing() {
     assert_eq!(TsbkOpcode::from(0x00), TsbkOpcode::GroupVoiceChannelGrant);
-    // Phase 6F.4: 0x33 = IDEN_UPDATE_TDMA, 0x34 = IDEN_UPDATE_VUHF,
-    // 0x3D = IDEN_UPDATE (standard FDMA, the one Clay County actually
-    // broadcasts). Until 6F.4 we mapped 0x34 to IdentifierUpdate
-    // which never matched real on-air TSBKs.
+    // 0x33 = IDEN_UPDATE_TDMA, 0x34 = IDEN_UPDATE_VUHF, 0x3D = IDEN_UPDATE
+    // (standard FDMA, the one Clay County broadcasts).
     assert_eq!(TsbkOpcode::from(0x33), TsbkOpcode::IdentifierUpdateTdma);
     assert_eq!(TsbkOpcode::from(0x34), TsbkOpcode::IdentifierUpdateVuhf);
     assert_eq!(TsbkOpcode::from(0x3D), TsbkOpcode::IdentifierUpdate);
@@ -79,7 +76,7 @@ fn test_grp_v_ch_grant_decode() {
             assert_eq!(channel.number(), 0x639); // 1593
             assert_eq!(talkgroup.0, 0x012C); // 300
             assert_eq!(source.0, 1);
-            // Phase 7C: synthetic test data has options=0
+            // Synthetic test data has options=0
             // (clear voice, no emergency, no encryption).
             assert_eq!(service_options, 0x00);
             assert!(!service_options::is_encrypted(service_options));
@@ -89,7 +86,7 @@ fn test_grp_v_ch_grant_decode() {
     }
 }
 
-/// Phase 7C: synthetic GRP_V_CH_GRANT with the encryption bit
+/// A synthetic GRP_V_CH_GRANT with the encryption bit
 /// set in the service options byte. Verifies that the decoder
 /// reads payload[0] correctly and that the helpers in
 /// `service_options` mod return true for the right bit.
@@ -174,7 +171,7 @@ fn test_frequency_band_calculation() {
     assert_eq!(freq, CLAY_CONTROL_FREQ_HZ);
 }
 
-// Change 067: SYNC_BCST micro-slots, rollover lock and local offset
+// SYNC_BCST micro-slots, rollover lock and local offset
 // (SDRTrunk `SynchronizationBroadcast` bit numbering).
 #[test]
 fn test_sync_bcst_decode_time_fields() {
@@ -224,7 +221,7 @@ fn test_sync_bcst_decode_time_fields() {
     }
 }
 
-// Change 071a: Adjacent Status Broadcast at SDRTrunk's offsets
+// Adjacent Status Broadcast at SDRTrunk's offsets
 // (`AdjacentStatusBroadcast.java`): LRA 16-23, flags 24-27, system
 // 28-39, RFSS 40-47, site 48-55, band+channel 56-71, service 72-79.
 // The pre-071a decoder read the system from bits 24-35 (flags
@@ -255,7 +252,7 @@ fn test_adjacent_status_offsets() {
     }
 }
 
-// Change 071a: a TDMA band's channel numbers count timeslots
+// A TDMA band's channel numbers count timeslots
 // (SDRTrunk `FrequencyBandUpdateTDMA`: base + spacing * floor(ch / slots)).
 #[test]
 fn test_tdma_band_frequency() {
