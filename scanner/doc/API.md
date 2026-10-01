@@ -7,6 +7,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/routes` | this list |
 | GET | `/api/v1/status` | build, uptime, the live site, its control channel and the tuning |
 | GET | `/api/v1/calls` | the live site's open calls and its newest closed ones (from its history after a restart or switch) |
+| GET | `/api/v1/hold` | the talkgroup the live site is held on, if any |
+| PUT | `/api/v1/hold` | hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the profile says |
 | GET | `/api/v1/calls/{id}` | one call: live while recent, else from the history |
 | GET | `/ws/events` | a text frame when a call opens or closes or a recording is saved |
 | GET | `/ws/audio` | live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta and lag frames); without, lane one untagged |

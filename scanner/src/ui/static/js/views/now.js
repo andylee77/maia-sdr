@@ -1,11 +1,30 @@
-// Now: the live site at a glance, or the way to add one.
+// Now: the live site at a glance, or the way to add one; hold the site on a talkgroup.
 
-import { h, card } from '../dom.js';
+import { h, card, toast } from '../dom.js';
+import { api } from '../api.js';
+import { refresh } from '../store.js';
 import { mhz, ago, pct, num, dur, bytes, dayTime, DASH, NOT_FOLLOWED, CLOSE_REASON } from '../format.js';
 import { protocol } from '../protocols.js';
 
 // A control channel with no message for this long is shown as silent.
 const SILENT_MS = 5000;
+
+// Hold the live site on `tg`, or release the hold (null).
+async function setHold(tg) {
+  try {
+    await api.setHold(tg);
+    toast(tg === null ? 'Hold released' : `Holding TG ${tg}`);
+    await refresh();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+function holdButton(tg, held) {
+  return held === tg
+    ? h('button', { class: 'btn small', type: 'button', text: 'Release', onclick: () => setHold(null) })
+    : h('button', { class: 'btn small', type: 'button', text: 'Hold', title: `Follow only TG ${tg}`, onclick: () => setHold(tg) });
+}
 
 function kv(rows) {
   return h('table', { class: 'kv' }, ...rows.map(([k, v]) =>
@@ -52,8 +71,11 @@ export function mount(el) {
         ['Control channel', mhz(live.site.control.freq_hz)],
         ...p.siteIdentity(live.site.identity),
         ['Window', `${t.preset || DASH} at ${mhz(t.lo_hz)}`],
-      ]), h('p', { class: 'card-note' }, 'Following ', live.profile ? h('strong', { text: live.profile.name }) : 'every clear call',
-        ' (', h('a', { href: '#settings', text: 'profiles in Settings' }), ').'));
+      ]), s.status.hold
+        ? h('div', { class: 'row' }, h('strong', { text: `Holding TG ${s.status.hold}` }),
+          h('span', { class: 'dim', text: ': no other talkgroup is followed' }), h('div', { class: 'spacer' }), holdButton(s.status.hold, s.status.hold))
+        : h('p', { class: 'card-note' }, 'Following ', live.profile ? h('strong', { text: live.profile.name }) : 'every clear call',
+          ' (', h('a', { href: '#settings', text: 'profiles in Settings' }), ').'));
 
       const c = s.status.control || {};
       const age = c.last_message_age_ms;
@@ -94,6 +116,7 @@ function recordingNote(st) {
 function showCalls(c, s, clip) {
   const v = s.calls || { open: [], recent: [] };
   const now = s.status.now_unix_ms;
+  const held = s.status.hold || null;
   const who = x => (x.source ? ` from ${x.source}` : '');
   const where = x => `${x.channel || DASH} ${mhz(x.freq_hz)}`;
   const followed = v.open.filter(x => x.lane);
@@ -104,14 +127,16 @@ function showCalls(c, s, clip) {
       h('td', { text: `Lane ${x.lane}` }),
       h('td', { text: `TG ${x.tg}${who(x)}` }),
       h('td', { text: where(x) }),
-      h('td', { text: `${dur(now - x.started_unix_ms)}, ${num(x.voice_frames)} frames${x.end_lc ? ', ending' : ''}` })));
+      h('td', { text: `${dur(now - x.started_unix_ms)}, ${num(x.voice_frames)} frames${x.end_lc ? ', ending' : ''}` }),
+      h('td', null, holdButton(x.tg, held))));
   }
   for (const x of listed) {
     rows.push(h('tr', { class: 'dim' },
       h('td', { text: DASH }),
       h('td', { text: `TG ${x.tg}${who(x)}` }),
       h('td', { text: where(x) }),
-      h('td', { text: NOT_FOLLOWED[x.not_followed] || x.not_followed || 'not followed' })));
+      h('td', { text: NOT_FOLLOWED[x.not_followed] || x.not_followed || 'not followed' }),
+      h('td', null, holdButton(x.tg, held))));
   }
   const open = rows.length ? h('table', { class: 'table' }, h('tbody', null, ...rows)) : h('p', { class: 'dim', text: 'No calls on the air.' });
   const recs = new Map(((s.recordings && s.recordings.items) || []).map(r => [r.id, r]));
@@ -126,7 +151,8 @@ function showCalls(c, s, clip) {
         class: 'btn small', type: 'button', text: 'Play',
         title: `${dur(r.duration_ms)} recorded, ${r.store === 'sd' ? 'SD card' : 'RAM'}`,
         onclick: () => play(clip, r),
-      }) : null));
+      }) : null),
+      h('td', null, holdButton(x.tg, held)));
   });
   c.body.replaceChildren(open,
     h('h3', { text: 'Recent' }),

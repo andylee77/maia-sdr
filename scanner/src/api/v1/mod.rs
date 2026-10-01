@@ -5,6 +5,7 @@ pub mod calls;
 pub mod config;
 pub mod data;
 pub mod events;
+pub mod hold;
 pub mod profiles;
 pub mod radio;
 pub mod receivers;

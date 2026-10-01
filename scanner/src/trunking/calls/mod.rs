@@ -65,6 +65,8 @@ pub enum NotFollowed {
     Phase2,
     /// DMR: a logical channel the site's channel plan does not name.
     UnknownLcn,
+    /// Another talkgroup is held.
+    Held,
 }
 
 impl NotFollowed {
@@ -78,6 +80,7 @@ impl NotFollowed {
             NotFollowed::OutOfBand => "out_of_band",
             NotFollowed::Phase2 => "phase2",
             NotFollowed::UnknownLcn => "unknown_lcn",
+            NotFollowed::Held => "held",
         }
     }
 
@@ -93,6 +96,7 @@ impl NotFollowed {
             "out_of_band" => NotFollowed::OutOfBand,
             "phase2" => NotFollowed::Phase2,
             "unknown_lcn" => NotFollowed::UnknownLcn,
+            "held" => NotFollowed::Held,
             _ => return None,
         })
     }

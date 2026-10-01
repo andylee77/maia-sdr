@@ -23,7 +23,7 @@ use crate::hardware::p25core::Lane;
 use crate::protocol::events::{ChannelId, Grant};
 use crate::services::config::profiles::Side;
 use crate::trunking::calls::{CallId, ChannelKey, CloseReason, Closed, Decision, GrantIn, NotFollowed};
-use routing::Routing;
+use routing::{Route, Routing};
 
 /// After the call's end marker, another talkgroup may take its lane (long enough for the resumed
 /// voice check to cancel a contradicted marker, still before SDRTrunk frees its channel).
@@ -181,6 +181,8 @@ pub struct Follower {
     routing: Routing,
     /// Talkgroups seen encrypted at this site.
     encrypted: HashSet<u32>,
+    /// The one talkgroup followed, whatever the profile says.
+    hold: Option<u32>,
 }
 
 impl Follower {
@@ -193,7 +195,23 @@ impl Follower {
                 .collect(),
             routing,
             encrypted,
+            hold: None,
         }
+    }
+
+    /// Follow only `tg` (None: what the profile follows). Lanes on other talkgroups let go at
+    /// once; their calls close as their voice stops.
+    pub fn set_hold(&mut self, tg: Option<u32>) -> Vec<Command> {
+        self.hold = tg;
+        let Some(tg) = tg else { return Vec::new() };
+        let mut out = Vec::new();
+        for l in &mut self.lanes {
+            if l.locked.is_some_and(|k| k.tg != tg) {
+                l.locked = None;
+                out.push(Command::Release { lane: l.lane });
+            }
+        }
+        out
     }
 
     /// The speaker a followed talkgroup plays on.
@@ -304,17 +322,24 @@ impl Follower {
             tracing::debug!("{note}");
             out.record = record(Decision::NotFollowed(why));
         };
-        if self.routing.ignored(g.tg) {
+        // A held talkgroup is followed whatever the profile says; no other is.
+        let held = self.hold == Some(g.tg);
+        if let Some(h) = self.hold.filter(|_| !held) {
+            return refuse(out, NotFollowed::Held, format!("TG {} not followed: TG {h} is held", g.tg));
+        }
+        if !held && self.routing.ignored(g.tg) {
             return refuse(out, NotFollowed::Ignored, format!("TG {} not followed: on the ignore list", g.tg));
         }
         if g.channel.tdma {
             return refuse(out, NotFollowed::Phase2, format!("TG {} not followed: granted a Phase 2 (TDMA) channel {}", g.tg, label(g)));
         }
-        if !self.routing.monitored(g.tg) {
+        if !held && !self.routing.monitored(g.tg) {
             return refuse(out, NotFollowed::MonitorList, format!("TG {} not followed: not on the monitor list", g.tg));
         }
-        let Some(route) = self.routing.route(g.tg) else {
-            return refuse(out, NotFollowed::SpeakerOff, format!("TG {} not followed: not on a speaker", g.tg));
+        let route = match self.routing.route(g.tg) {
+            Some(r) => r,
+            None if held => Route { side: Side::Both, rank: 0 },
+            None => return refuse(out, NotFollowed::SpeakerOff, format!("TG {} not followed: not on a speaker", g.tg)),
         };
         let Some(freq) = g.channel.freq_hz else {
             return refuse(out, NotFollowed::UnknownLcn, format!("TG {} not followed: channel {} not in the channel plan", g.tg, label(g)));

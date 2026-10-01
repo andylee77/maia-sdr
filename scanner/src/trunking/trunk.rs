@@ -73,6 +73,8 @@ pub enum TrunkInput {
     Routing(Box<Routing>),
     /// The receive window moved: every lane was reloaded and holds no channel.
     WindowMoved,
+    /// Follow only this talkgroup (None: release the hold).
+    Hold(Option<u32>),
 }
 
 pub type TrunkTx = mpsc::Sender<TrunkInput>;
@@ -249,6 +251,8 @@ pub struct Trunking {
     packet_data: std::sync::Mutex<Option<Arc<PacketData>>>,
     /// Where a site's newest calls come from when it goes live.
     store: std::sync::Mutex<Option<Arc<Store>>>,
+    /// (site, talkgroup): the hold outlives a restart of its site, not a switch to another.
+    hold: std::sync::Mutex<Option<(String, u32)>>,
     lanes: Arc<Mutex<Vec<LaneStatus>>>,
     running: tokio::sync::Mutex<Option<Running>>,
 }
@@ -273,6 +277,7 @@ impl Trunking {
             next_call: Arc::new(AtomicU64::new(first_call.max(1))),
             packet_data: std::sync::Mutex::new(None),
             store: std::sync::Mutex::new(None),
+            hold: std::sync::Mutex::new(None),
             lanes: Arc::default(),
             running: tokio::sync::Mutex::new(None),
         }
@@ -292,6 +297,22 @@ impl Trunking {
     pub fn set_history_store(&self, store: Arc<Store>) {
         if let Ok(mut s) = self.store.lock() {
             *s = Some(store);
+        }
+    }
+
+    /// The talkgroup `site` is held on.
+    pub fn hold(&self, site: &str) -> Option<u32> {
+        self.hold.lock().ok().and_then(|h| h.as_ref().filter(|(s, _)| s == site).map(|(_, tg)| *tg))
+    }
+
+    /// Hold the live site `site` on `tg`, or release it (None).
+    pub async fn set_hold(&self, site: &str, tg: Option<u32>) {
+        if let Ok(mut h) = self.hold.lock() {
+            *h = tg.map(|tg| (site.to_string(), tg));
+        }
+        let tx = self.running.lock().await.as_ref().map(|r| r.tx.clone());
+        if let Some(tx) = tx {
+            let _ = tx.send(TrunkInput::Hold(tg)).await;
         }
     }
 
@@ -324,6 +345,12 @@ impl Trunking {
     /// Start following on the live site (stopping the previous site's trunking first).
     pub async fn start<H: RadioHw + StreamSource + Send + Sync + 'static>(&self, setup: Setup, tuner: Arc<Tuner<H>>, log: Arc<EventLog>) -> TrunkTx {
         self.stop().await;
+        let hold = self.hold(&setup.site);
+        if hold.is_none() {
+            if let Ok(mut h) = self.hold.lock() {
+                *h = None;
+            }
+        }
         let recent = self.recent_of(&setup.site).await;
         if let Ok(mut v) = self.view.lock() {
             *v = CallsView { open: Vec::new(), recent: recent.iter().cloned().collect() };
@@ -348,7 +375,11 @@ impl Trunking {
         sources.push(forwarder);
         let task = Task {
             book: CallBook::new(&setup.site, &setup.lanes, setup.policy, self.next_call.load(Ordering::Relaxed)),
-            follower: Follower::new(&setup.lanes, setup.routing, setup.encrypted),
+            follower: {
+                let mut f = Follower::new(&setup.lanes, setup.routing, setup.encrypted);
+                f.set_hold(hold);
+                f
+            },
             lanes: setup
                 .lanes
                 .iter()
@@ -485,6 +516,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     Some(TrunkInput::Lane(LaneInput::Iq { lane, iq, at })) => self.iq(lane, &iq, at),
                     Some(TrunkInput::Routing(r)) => self.follower.set_routing(*r),
                     Some(TrunkInput::WindowMoved) => self.window_moved(),
+                    Some(TrunkInput::Hold(tg)) => self.hold(tg).await,
                     None => break,
                 },
                 _ = tick.tick() => {
@@ -538,6 +570,14 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             None => {}
         }
         self.call_events(out);
+    }
+
+    async fn hold(&mut self, tg: Option<u32>) {
+        let at = Stamp::now();
+        for command in self.follower.set_hold(tg) {
+            self.command(command, at).await;
+        }
+        self.log.system("hold", tg.map_or("hold released".to_string(), |tg| format!("holding TG {tg}: no other talkgroup is followed")));
     }
 
     async fn command(&mut self, command: Command, at: Stamp) {

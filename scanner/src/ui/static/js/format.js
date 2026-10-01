@@ -173,6 +173,7 @@ export const NOT_FOLLOWED = {
   out_of_band: 'outside the window',
   phase2: 'Phase 2 (TDMA)',
   unknown_lcn: 'channel not in the plan',
+  held: 'another talkgroup held',
 };
 
 // Why a call closed (`close_reason`).

@@ -179,6 +179,30 @@ fn the_gates_name_why_a_grant_is_not_followed() {
 }
 
 #[test]
+fn a_hold_follows_only_its_talkgroup_whatever_the_profile_says() {
+    let mut p = profile(Side::Right, &["TAC"]);
+    p.ignore = vec![402];
+    p.monitor = vec![300];
+    let mut f = Follower::new(&[Lane::One, Lane::Two], Routing::new(&p), HashSet::new());
+    let t = Instant::now();
+    let run = |f: &mut Follower, g: Grant| f.grant(&g, 0, t, &|_| None, &|hz| hz < 860_000_000);
+    assert_eq!(decision(&run(&mut f, grant(300, 1, F1))), Some(Decision::Followed(Lane::One)));
+    // Holding 402 (ignored, off the monitor list, on no speaker) lets lane one go.
+    assert_eq!(f.set_hold(Some(402)), vec![Command::Release { lane: Lane::One }]);
+    assert_eq!(f.locked(), vec![(Lane::One, None), (Lane::Two, None)]);
+    assert_eq!(decision(&run(&mut f, grant(300, 1, F1))), Some(Decision::NotFollowed(NotFollowed::Held)));
+    assert!(matches!(decision(&run(&mut f, grant(402, 2, F2))), Some(Decision::Followed(_))));
+    assert_eq!(f.set_hold(Some(402)), Vec::new(), "a lane on the held talkgroup is kept");
+    assert_eq!(f.set_hold(None), Vec::new());
+    // Encrypted stays refused: there is nothing to hear.
+    let mut f2 = Follower::new(&[Lane::One], Routing::new(&p), HashSet::from([700]));
+    f2.set_hold(Some(700));
+    assert_eq!(decision(&run(&mut f2, grant(700, 3, F1))), Some(Decision::NotFollowed(NotFollowed::Encrypted)));
+    // Released: the profile again.
+    assert_eq!(decision(&run(&mut f, grant(402, 2, F2))), Some(Decision::NotFollowed(NotFollowed::Ignored)));
+}
+
+#[test]
 fn a_followed_grant_tunes_its_lane_once() {
     let mut r = Rig::new(&[Lane::One]);
     let o = r.grant(grant(300, 1014, F1), 0);

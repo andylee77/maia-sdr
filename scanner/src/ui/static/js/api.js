@@ -48,6 +48,7 @@ export const api = {
   routes: () => request('GET', '/api/v1/routes'),
   spectrum: () => request('GET', '/api/v1/spectrum?bins=1024'),
   calls: () => request('GET', '/api/v1/calls'),
+  setHold: tg => request('PUT', '/api/v1/hold', { tg }),
   scan: () => request('POST', '/api/v1/scan'),
   scanState: () => request('GET', '/api/v1/scan'),
   scanCancel: () => request('POST', '/api/v1/scan/cancel'),

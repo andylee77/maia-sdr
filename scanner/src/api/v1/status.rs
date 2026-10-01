@@ -25,14 +25,21 @@ pub struct Status {
     pub lease: &'static str,
     pub tuning: Tuning,
     pub clock: ClockStatus,
+    /// The talkgroup the live site is held on.
+    pub hold: Option<u32>,
 }
 
 pub async fn get(State(s): State<Arc<AppState>>) -> Json<Status> {
+    let live = s.live.state();
+    let hold = match &live {
+        LiveState::Live(l) => s.trunking.hold(&l.site.id),
+        _ => None,
+    };
     Json(Status {
         build: BUILD_TAG,
         uptime_s: s.started.elapsed().as_secs(),
         now_unix_ms: time::unix_ms(),
-        live: s.live.state(),
+        live,
         control: s.receivers.status(),
         lease: match s.lease.current() {
             Lease::Normal => "normal",
@@ -41,5 +48,6 @@ pub async fn get(State(s): State<Arc<AppState>>) -> Json<Status> {
         },
         tuning: s.tuner.tuning(),
         clock: s.clock.status(),
+        hold,
     })
 }
