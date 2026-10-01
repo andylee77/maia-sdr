@@ -218,21 +218,24 @@ def _primer_lock(ctx: TestContext, http: Any, item: cp.Item, taps: cp.Taps,
 
 def _save_audio(ctx: TestContext, name: str, rec: dict[str, Any], mono_minus_wall: float
                 ) -> dict[str, Any]:
-    chunks = rec.get("chunks") or []
-    pcm = b"".join(c[1] for c in chunks)
-    path = ctx.artifact_path(f"items/{name}_audio.wav")
-    with wave.open(str(path), "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(8000)
-        wf.writeframes(pcm)
     from ..wsaudio import lag_events
 
-    sizes = sorted({len(c[1]) for c in chunks})
-    return {"file": f"items/{name}_audio.wav", "chunks": len(chunks),
-            "t": [round(c[0] + mono_minus_wall, 4) for c in chunks],
-            "sizes": sizes,
-            "lens": [len(c[1]) for c in chunks] if sizes not in ([], [320]) else None,
+    chunks = rec.get("chunks") or []
+    lanes = []
+    # One WAV per lane; the first lane's keeps the old name and the top-level keys.
+    for lane in sorted({c[1] for c in chunks}) or [0]:
+        mine = [c for c in chunks if c[1] == lane]
+        file = f"items/{name}_audio.wav" if not lanes else f"items/{name}_audio_lane{lane}.wav"
+        with wave.open(str(ctx.artifact_path(file)), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(8000)
+            wf.writeframes(b"".join(c[2] for c in mine))
+        sizes = sorted({len(c[2]) for c in mine})
+        lanes.append({"lane": lane, "file": file, "chunks": len(mine),
+                      "t": [round(c[0] + mono_minus_wall, 4) for c in mine], "sizes": sizes,
+                      "lens": [len(c[2]) for c in mine] if sizes not in ([], [320]) else None})
+    return {**lanes[0], "lanes": lanes,
             "lags": [{"t": round(x["t"] + mono_minus_wall, 3), "skipped": x["skipped"]}
                      for x in lag_events(rec.get("texts") or [])],
             "error": rec.get("error")}
@@ -373,9 +376,8 @@ def rf_p25_corpus(ctx: TestContext) -> Outcome:
     for iid, f in done.items():
         if iid in ids:
             ctx.artifact_path(f"items/{iid}.json").write_bytes(f.read_bytes())
-            wav = f.with_name(f"{iid}_audio.wav")
-            if wav.exists():
-                ctx.artifact_path(f"items/{iid}_audio.wav").write_bytes(wav.read_bytes())
+            for wav in f.parent.glob(f"{iid}_audio*.wav"):
+                ctx.artifact_path(f"items/{wav.name}").write_bytes(wav.read_bytes())
     ctx.require_agent(tx)
     tx_image = ctx.caps(tx)["image"]
     if tx_image not in ("p25", "hwval"):
@@ -678,21 +680,30 @@ def _tone(a: AnalysisContext, doc: dict[str, Any], man_ref: dict[str, Any], rows
     if not txr:
         return None
     first = txr[0]
-    path = a.artifacts_dir / audio["file"]
-    if not path.exists():
-        return None
-    with wave.open(str(path), "rb") as wf:
-        pcm = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2")
-    times = audio["t"]
     lo = first["stream_s"] + offset - 2.0
     hi = first["stream_s"] + first["seconds"] + offset + 3.0
-    chunks, pos = [], 0
-    for t, sz in zip(times, audio.get("lens") or [320] * len(times)):
-        n = sz // 2
-        if lo <= t <= hi:
-            chunks.append({"t": t, "pcm": pcm[pos:pos + n]})
-        pos += n
-    res = sc.tone_continuity(chunks, ref["tones_hz"])
+    # The focus call plays on one lane: score each and keep the one with the tone.
+    res = None
+    for lane in audio.get("lanes") or [audio]:
+        path = a.artifacts_dir / lane["file"]
+        if not path.exists():
+            continue
+        with wave.open(str(path), "rb") as wf:
+            pcm = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2")
+        times = lane["t"]
+        chunks, pos = [], 0
+        for t, sz in zip(times, lane.get("lens") or [320] * len(times)):
+            n = sz // 2
+            if lo <= t <= hi:
+                chunks.append({"t": t, "pcm": pcm[pos:pos + n]})
+            pos += n
+        r = sc.tone_continuity(chunks, ref["tones_hz"])
+        r["lane"] = lane.get("lane", 0)
+        if res is None or (r.get("found"), r.get("tone_frames", 0)) > (res.get("found"),
+                                                                       res.get("tone_frames", 0)):
+            res = r
+    if res is None:
+        return None
     res.update(reference_tones_hz=ref["tones_hz"], reference_mp3=ref.get("mp3"),
                reference_tonal_frames=ref["tonal_frames"], transmission=first["id"],
                lags_in_window=sum(1 for x in audio.get("lags", []) if lo <= x["t"] <= hi))

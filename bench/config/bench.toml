@@ -100,12 +100,12 @@ gateway_eth = "10.25.0.1"
 
 [rf]
 # Must be set to true by the operator (pads fitted, no antennas, ports terminated).
-cabled_confirmed = true   # Andy 2026-09-26: A.TX1 -> 20 dB -> B.RX1 and B.TX1 -> 20 dB -> A.RX1, 10 cm patch
+cabled_confirmed = true   # Andy 2026-10-01: B.TX1 -> 20 dB -> 20 dB -> A.RX1 only; A's TX not cabled
 test_freq_hz = 858_100_000
 p25_cc_freq_hz = 860_962_500
 p25_rx_lo_hz = 858_100_000
-default_tx = "A"
-default_rx = "B"
+default_tx = "B"
+default_rx = "A"
 tx_port = "TX1A"
 tx_atten_default_db = 40.0
 # Default replay: 28 s of the 2026-05-03 capture (CC + 4 TG 300 transmissions, 297 IMBE).
@@ -116,14 +116,9 @@ p25_clip_seconds = 28.0
 p25_clip_recorder = "A"
 p25_truth_dir = "C:/Users/Andy/SDRTrunk/recordings"
 
-[[rf.links]]
-tx = "A.TX1A"
-rx = "B.RX1A"
-pad_db = 20.0      # set to the pad actually fitted (40.0 if two 20 dB pads are chained)
-note = "primary A->B link"
-
+# The only link cabled: no A->B entry, so the interlock refuses any transmission from A.
 [[rf.links]]
 tx = "B.TX1A"
 rx = "A.RX1A"
-pad_db = 20.0
-note = "reverse link"
+pad_db = 40.0      # two 20 dB pads chained
+note = "B into A (the replay corpus)"

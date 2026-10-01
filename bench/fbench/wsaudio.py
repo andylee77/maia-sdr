@@ -1,8 +1,9 @@
 """Minimal ``/ws/audio`` recorder (RFC 6455 client on the standard library).
 
-p25-httpd sends 320-byte binary frames (160 int16 samples = 20 ms at 8 kHz) and
-text control frames such as ``{"type":"lag","skipped":N}``. The recorder runs in
-a thread and keeps every frame with its host arrival time.
+It asks for every lane (``?v=2``, which the scanner always sends): binary frames
+are a ``[lane, 0, 0, 0]`` header and 320 bytes (160 int16 samples = 20 ms at
+8 kHz); text frames are ``{"type":"meta",...}`` and ``{"type":"lag","skipped":N}``.
+The recorder runs in a thread and keeps every frame with its host arrival time.
 """
 
 from __future__ import annotations
@@ -18,11 +19,12 @@ from typing import Any
 
 
 class WsAudioRecorder:
-    def __init__(self, host: str, port: int = 8080, path: str = "/ws/audio",
+    def __init__(self, host: str, port: int = 8080, path: str = "/ws/audio?v=2",
                  connect_timeout: float = 5.0) -> None:
         self.host, self.port, self.path = host, port, path
         self.connect_timeout = connect_timeout
-        self.chunks: list[tuple[float, bytes]] = []
+        # (arrival, lane index, PCM bytes)
+        self.chunks: list[tuple[float, int, bytes]] = []
         self.texts: list[tuple[float, str]] = []
         self.error: str | None = None
         self._stop = threading.Event()
@@ -113,9 +115,9 @@ class WsAudioRecorder:
                 if mask:
                     data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
                 t = time.time()
-                if op == 0x2:
+                if op == 0x2 and len(data) >= 4:
                     with self._lock:
-                        self.chunks.append((t, data))
+                        self.chunks.append((t, data[0], data[4:]))
                 elif op == 0x1:
                     with self._lock:
                         self.texts.append((t, data.decode("utf-8", "replace")))
