@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::protocol::dmr::control::DmrControl;
-use crate::protocol::events::{ControlEvent, Now, SiteIdentity};
+use crate::protocol::events::{ControlEvent, SiteIdentity};
+use crate::util::time::Stamp;
 use crate::protocol::p25::c4fm::C4fmDecoder;
 use crate::protocol::p25::control::P25Control;
 use crate::radio::streams::{Input, StreamCounters, StreamSource, Wants};
@@ -349,7 +350,7 @@ impl Decoder {
         self.set(|s| s.modulation = Some(if choice.c4fm() { "c4fm" } else { "lsm" }));
         while let Some(input) = self.next(&rx) {
             let t0 = Instant::now();
-            let now = Now::now();
+            let now = Stamp::now();
             match input {
                 Some(Input::Dibits { bytes, reset }) => {
                     if reset {
@@ -410,7 +411,7 @@ impl Decoder {
             let t0 = Instant::now();
             if let Some(Input::Iq(iq)) = input {
                 dmr.push(&iq, &mut events);
-                self.publish("dmr", Now::now(), &events);
+                self.publish("dmr", Stamp::now(), &events);
                 events.clear();
             }
             cpu.add(t0.elapsed());
@@ -439,7 +440,7 @@ impl Decoder {
     }
 
     /// The active decoder's events: messages to the event log, identity and counts to the view.
-    fn publish(&self, source: &'static str, now: Now, events: &[ControlEvent]) {
+    fn publish(&self, source: &'static str, now: Stamp, events: &[ControlEvent]) {
         if events.is_empty() {
             return;
         }

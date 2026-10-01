@@ -9,8 +9,9 @@ use super::framer::{Framed, Framer, FramerConfig, FramerStats};
 use super::pdu::PduFrame;
 use super::tsbk::{service_options, FrequencyBand, TsbkMessage};
 use super::types::Channel;
+use crate::util::time::Stamp;
 use crate::protocol::events::{
-    ChannelId, ControlEvent, Grant, LogLine, LogicalChannel, Neighbour, Now, P25Identity, PlanEntry,
+    ChannelId, ControlEvent, Grant, LogLine, LogicalChannel, Neighbour, P25Identity, PlanEntry,
     SiteIdentity, SiteSync, UnitKind,
 };
 
@@ -67,7 +68,7 @@ impl P25Control {
         P25Control { framer: Framer::new(FramerConfig::default()), announced: Announced::default(), chain }
     }
 
-    pub fn push(&mut self, dibits: &[u8], now: Now, out: &mut Vec<ControlEvent>) {
+    pub fn push(&mut self, dibits: &[u8], now: Stamp, out: &mut Vec<ControlEvent>) {
         let Self { framer, announced, chain } = self;
         for &d in dibits {
             framer.push(d, &mut |framed| match framed {
@@ -119,7 +120,7 @@ impl P25Control {
     }
 
     /// Decode 50 kSPS interleaved IQ through the software C4FM demodulator.
-    pub fn push_c4fm(&mut self, demod: &mut C4fmDecoder, iq: &[i16], now: Now, out: &mut Vec<ControlEvent>) {
+    pub fn push_c4fm(&mut self, demod: &mut C4fmDecoder, iq: &[i16], now: Stamp, out: &mut Vec<ControlEvent>) {
         demod.process_iq_i16(iq, &mut Fed { control: self, now, out });
     }
 }
@@ -127,7 +128,7 @@ impl P25Control {
 /// The control decoder as the C4FM demodulator's dibit sink.
 struct Fed<'a> {
     control: &'a mut P25Control,
-    now: Now,
+    now: Stamp,
     out: &'a mut Vec<ControlEvent>,
 }
 
@@ -181,7 +182,7 @@ impl Announced {
         })
     }
 
-    pub(crate) fn tsbk(&mut self, index: u8, opcode: u8, msg: TsbkMessage, now: Now, out: &mut Vec<ControlEvent>) {
+    pub(crate) fn tsbk(&mut self, index: u8, opcode: u8, msg: TsbkMessage, now: Stamp, out: &mut Vec<ControlEvent>) {
         use TsbkMessage as M;
         match &msg {
             M::NetworkStatus { wacn, system_id, channel } => {

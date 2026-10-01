@@ -18,7 +18,7 @@ fn iden(identifier: u8, spacing: u32, base: u64, slots: u8) -> TsbkMessage {
 fn feed(a: &mut Announced, msgs: Vec<TsbkMessage>) -> Vec<ControlEvent> {
     let mut out = Vec::new();
     for m in msgs {
-        a.tsbk(0, 0, m, Now::now(), &mut out);
+        a.tsbk(0, 0, m, Stamp::now(), &mut out);
     }
     out.retain(|e| !matches!(e, ControlEvent::Message(_)));
     out

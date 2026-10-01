@@ -1,8 +1,6 @@
 //! What a control channel decoder reports, the same for every protocol. Decoders are pure: they
 //! return these and never call into trunking or the services.
 
-use std::time::Instant;
-
 use super::p25::pdu::PduFrame;
 use super::p25::tsbk::FrequencyBand;
 
@@ -143,17 +141,4 @@ pub enum ControlEvent {
     Unit { unit: u32, group: Option<u32>, kind: UnitKind },
     Pdu(PduFrame),
     Message(LogLine),
-}
-
-/// Input time of a batch: monotonic for ages, wall clock for records.
-#[derive(Debug, Clone, Copy)]
-pub struct Now {
-    pub mono: Instant,
-    pub unix_ms: u64,
-}
-
-impl Now {
-    pub fn now() -> Self {
-        Now { mono: Instant::now(), unix_ms: crate::util::time::unix_ms() }
-    }
 }

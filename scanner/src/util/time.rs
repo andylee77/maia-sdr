@@ -4,7 +4,20 @@
 //! or a browser sets it. Durations and timeouts use `Instant`; wall time is only for display and
 //! storage.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+/// A moment on both clocks: monotonic for durations and timeouts, wall for records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    pub mono: Instant,
+    pub unix_ms: u64,
+}
+
+impl Stamp {
+    pub fn now() -> Self {
+        Stamp { mono: Instant::now(), unix_ms: unix_ms() }
+    }
+}
 
 /// Wall-clock unix milliseconds (0 before 1970).
 pub fn unix_ms() -> u64 {
