@@ -192,3 +192,22 @@ IQ hub (50 kSPS, control or traffic DDC)
   - Every message valid over the first 30 s; CPU unchanged.
   - `runs/dmr/log_dmr.py` logs unit A's DMR events and counters overnight (10 h from 22:43,
     unit A locked on 454.36875).
+- 2026-09-30: **front end decimates first.** CPU on unit A 19.3 % → 12.7 % (see the commit).
+- 2026-09-30: **call follower** (`app::dmr_follower`, pure, tested on the 20:57 call): it
+  tunes 451.0875 → 454.36875 (LCN 5 TS2) → 451.0875 as the talkgroup's transmissions move,
+  forwards all 36 voice bursts and ends on the CLEAR. Wired as `PUT /api/dmr?follow=1`:
+  - an executor task moves traffic chain 1's NCO;
+  - a second DMR receiver runs on chain 1's IQ, restarting at each retune.
+- 2026-09-30: **blocked on gateware: traffic chain 1's IQ never reaches memory.** On unit A
+  the traffic IQ hub gets no chunks: `irq_stats.traffic_iq` 0, `/api/traffic_iq_dump`
+  "no IQ data".
+  - Cause: `system_bd.tcl` never connects `p25_core/m_axi_traffic_iq` to HP1 ("retired
+    until their use-case re-emerges"). The P25 follower uses the HDL dibits, so nobody
+    noticed.
+  - Fix (075b, Bake required: YES): one `ad_mem_hp1_interconnect` line. The master,
+    registers, IRQ, carve-out and rxbuffer node already exist.
+  - Until then, DMR voice can only be decoded when the system grants the control
+    repeater's own TS2 (LCN 5), which the control chain already receives.
+- 2026-09-30: **talkgroups are u16 in the shared call pipeline**, and Clay Electric's are
+  87921–87926. 075a widens them to u32, made on its own branch off fishball-p25 so the P25
+  line gets it too.
