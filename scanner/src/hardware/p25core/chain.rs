@@ -106,6 +106,10 @@ impl Chain<'_> {
     pub fn debug(&self) -> (i16, i16) {
         self.bank.debug(self.regs)
     }
+
+    pub fn agc_debug(&self) -> (u16, u16) {
+        self.bank.agc_debug(self.regs)
+    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! The tuner's hardware: the AD9361 and the P25 core on the board; on a development host, a
 //! stand-in with no radio so the services and the API still run.
 
-use super::tuner::{LanePll, RadioHw, Readback};
+use super::tuner::{ControlLoop, LanePll, RadioHw, Readback};
 use crate::hardware::ad9361::GainMode;
 use crate::hardware::p25core::Lane;
 use crate::hardware::presets::DdcPreset;
@@ -76,6 +76,13 @@ mod board {
             let core = self.core.lock().await;
             let clamp_q213 = core.version().pll_clamp_q213();
             core.lane(lane).map(|c| LanePll { pll_q213: c.debug().0, clamp_q213 })
+        }
+
+        async fn control_loop(&self) -> Option<ControlLoop> {
+            let core = self.core.lock().await;
+            let c = core.control();
+            let (agc_gain, agc_mag) = c.agc_debug();
+            Some(ControlLoop { pll_q213: c.debug().0, agc_gain, agc_mag })
         }
 
         async fn pause_lane(&self, lane: Lane) -> Result<()> {

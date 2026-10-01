@@ -174,6 +174,12 @@ macro_rules! bank {
                 let d = r.[<$lp debug>]().read();
                 (d.pll_dbg().bits() as i16, d.sample_point_dbg().bits() as i16)
             }
+
+            /// AGC gain (Q9.7) and input magnitude (Q1.15).
+            pub fn agc_debug(r: &RegisterBlock) -> (u16, u16) {
+                let d = r.[<$lp agc_debug>]().read();
+                (d.agc_gain_dbg().bits(), d.agc_mag_dbg().bits())
+            }
         }
     }};
 }
@@ -248,6 +254,9 @@ impl Bank {
     }
     pub fn debug(self, r: &RegisterBlock) -> (i16, i16) {
         dispatch!(self, debug(r))
+    }
+    pub fn agc_debug(self, r: &RegisterBlock) -> (u16, u16) {
+        dispatch!(self, agc_debug(r))
     }
 }
 

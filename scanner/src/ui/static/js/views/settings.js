@@ -1,9 +1,10 @@
-// Settings: the receiver gain, the radio's other settings, recording, profiles and each system's
-// talkgroup and radio names.
+// Settings: the receiver gain, the radio's other settings, the crystal, recording, profiles and
+// each system's talkgroup and radio names.
 
-import { h, card, toast, switchInput } from '../dom.js';
+import { h, card, clear, toast, switchInput } from '../dom.js';
 import { api } from '../api.js';
-import { bytes, num } from '../format.js';
+import { ago, bytes, num } from '../format.js';
+import { crystalSource } from '../protocols.js';
 import { profilesCard } from './profiles.js';
 
 const MODES = [['slow_attack', 'AGC, slow'], ['fast_attack', 'AGC, fast'], ['hybrid', 'AGC, hybrid'], ['manual', 'Manual']];
@@ -135,6 +136,61 @@ function radioCard(radio) {
   return c.el;
 }
 
+const ppm = v => `${v >= 0 ? '+' : ''}${v.toFixed(4)} ppm`;
+const signedHz = v => `${v >= 0 ? '+' : ''}${Math.round(v)} Hz`;
+
+// The crystal correction, refreshed every few seconds while Settings is open.
+function crystalCard(initial) {
+  const c = card('Crystal');
+  const lines = h('div', { class: 'stack' });
+  const anchor = h('input', { class: 'input num', type: 'number', min: 0, max: 1000, step: 1, value: initial.anchor_hz, 'aria-label': 'Anchor, Hz' });
+  const save = async (on) => {
+    try {
+      show(await api.setCrystal({ tracking: on, anchor_hz: Number(anchor.value) }));
+      toast('Crystal tracking saved');
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+  const tracking = switchInput('Follow its drift', initial.tracking, on => save(on));
+  const saveAnchor = h('button', { class: 'btn small', type: 'button', text: 'Save' });
+  saveAnchor.addEventListener('click', () => save(tracking.input.checked));
+  const calibrate = h('button', { class: 'btn', type: 'button', text: 'Calibrate now' });
+  calibrate.addEventListener('click', async () => {
+    calibrate.disabled = true;
+    try {
+      const cal = await api.calibrateCrystal();
+      toast(`Calibrated: ${ppm(cal.ppm)}`);
+      show(await api.crystal());
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      calibrate.disabled = false;
+    }
+  });
+  function show(s) {
+    const row = (k, v) => h('div', { class: 'row' }, h('span', { class: 'dim', text: k }), h('span', { text: v }));
+    const cal = s.calibration;
+    clear(lines);
+    lines.append(
+      row('Correction', `${ppm(s.ppm)} (LO ${signedHz(s.lo_shift_hz)})`),
+      row('Measured from', s.source ? crystalSource(s.source) : 'nothing yet: the live site is not decoded'),
+      row('Calibrated', cal
+        ? `${ppm(cal.ppm)} ${ago(Date.now() - cal.at_unix_ms)} (spectrum ${signedHz(cal.spectrum_offset_hz)}, residual ${cal.residual_hz === null ? 'not measured' : signedHz(cal.residual_hz)})`
+        : (s.calibrating ? 'now' : 'not since start')),
+      row('Tracker', s.estimate_ppm === null ? `${num(s.samples)} samples of 60` : `${ppm(s.estimate_ppm)} from ${num(s.samples)} samples`),
+      ...(s.last_decision ? [row('Last', s.last_decision)] : []));
+  }
+  show(initial);
+  c.body.append(
+    lines,
+    h('div', { class: 'row' }, tracking.el, h('span', { class: 'dim', text: 'within' }), anchor, h('span', { class: 'dim', text: 'Hz of the calibration' }), saveAnchor),
+    h('div', { class: 'row end' }, calibrate),
+    h('p', { class: 'card-note', text: 'The crystal is measured on the live control channel: once the site is decoded after start, and then followed as it warms and cools.' }));
+  const timer = setInterval(() => api.crystal().then(show).catch(() => {}), 5000);
+  return { el: c.el, stop: () => clearInterval(timer) };
+}
+
 // "300 = Fire Dispatch" lines <-> {300: "Fire Dispatch"}.
 function namesText(map) {
   return Object.entries(map || {}).map(([k, v]) => `${k} = ${v}`).join('\n');
@@ -178,8 +234,12 @@ function namesCard(systems) {
 export function mount(el) {
   const host = h('div', { class: 'stack' });
   el.append(host);
-  Promise.all([api.radio(), api.systems(), api.recordings(0)])
-    .then(([radio, systems, recs]) => host.append(gainCard(radio), radioCard(radio), recordingCard(radio, recs), profilesCard(systems), namesCard(systems)))
+  let crystal = null;
+  Promise.all([api.radio(), api.crystal(), api.systems(), api.recordings(0)])
+    .then(([radio, crystalStatus, systems, recs]) => {
+      crystal = crystalCard(crystalStatus);
+      host.append(gainCard(radio), radioCard(radio), crystal.el, recordingCard(radio, recs), profilesCard(systems), namesCard(systems));
+    })
     .catch(e => toast(e.message, true));
-  return { update() {}, unmount() {} };
+  return { update() {}, unmount() { if (crystal) crystal.stop(); } };
 }

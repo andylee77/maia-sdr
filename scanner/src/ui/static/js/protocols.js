@@ -61,3 +61,14 @@ export function protocolNames() {
   const labels = Object.values(REGISTRY).map(p => p.label);
   return labels.length > 1 ? `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}` : labels.join('');
 }
+
+// What the crystal correction is measured from at the live site.
+const CRYSTAL_SOURCE = {
+  p25_loop: 'the P25 carrier loop',
+  dmr_equaliser: 'the DMR equaliser',
+  spectrum: 'the spectrum only (C4FM)',
+};
+
+export function crystalSource(source) {
+  return CRYSTAL_SOURCE[source] || source;
+}

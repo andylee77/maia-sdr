@@ -18,6 +18,7 @@ pub struct RadioConfig {
     pub recording: Recording,
     pub history: History,
     pub clock: Clock,
+    pub crystal: CrystalTracking,
 }
 
 impl Default for RadioConfig {
@@ -31,6 +32,7 @@ impl Default for RadioConfig {
             recording: Recording::default(),
             history: History::default(),
             clock: Clock::default(),
+            crystal: CrystalTracking::default(),
         }
     }
 }
@@ -123,4 +125,20 @@ pub enum ClockSource {
 #[serde(default)]
 pub struct Clock {
     pub source: ClockSource,
+}
+
+/// The crystal tracker (`services::crystal`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CrystalTracking {
+    /// Apply the tracker's estimates (off: shown only).
+    pub tracking: bool,
+    /// How far the tracker may move from this run's calibration (0: no limit).
+    pub anchor_hz: u32,
+}
+
+impl Default for CrystalTracking {
+    fn default() -> Self {
+        CrystalTracking { tracking: true, anchor_hz: 50 }
+    }
 }

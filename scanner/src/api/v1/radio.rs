@@ -12,7 +12,8 @@ use crate::boot::radio::{gain_mode, HardwareInfo};
 use crate::boot::state::AppState;
 use crate::radio::tuner::{Readback, Tuning};
 use crate::hardware::presets::find_preset;
-use crate::services::config::radio::{Calls, Clock, Gain, GainMode, History, RadioConfig, Recording, GAIN_DB_RANGE};
+use crate::services::config::radio::{Calls, Clock, CrystalTracking, Gain, GainMode, History, RadioConfig, Recording, GAIN_DB_RANGE};
+use crate::services::crystal::{Calibration, CrystalStatus};
 use crate::services::recordings::Policy;
 use crate::services::config::{self, RadioState};
 
@@ -134,6 +135,29 @@ pub async fn put_clock(State(s): State<Arc<AppState>>, Json(req): Json<Clock>) -
     c.radio.value.clock = req.clone();
     config::save(&s.paths.radio(), &c.radio)?;
     Ok(Json(req))
+}
+
+/// The crystal correction: applied, calibrated and tracked.
+pub async fn crystal(State(s): State<Arc<AppState>>) -> Json<CrystalStatus> {
+    Json(s.crystal.status().await)
+}
+
+/// Measure the correction on the live control channel now (about 7 s).
+pub async fn calibrate_crystal(State(s): State<Arc<AppState>>) -> ApiResult<Calibration> {
+    s.crystal.calibrate().await.map(Json).map_err(|e| ApiError::conflict(format!("{e:#}")))
+}
+
+/// Tracking on or off, and how far it may move from this run's calibration.
+pub async fn put_crystal(State(s): State<Arc<AppState>>, Json(req): Json<CrystalTracking>) -> ApiResult<CrystalStatus> {
+    if req.anchor_hz > 1_000 {
+        return Err(ApiError::bad_request("anchor_hz up to 1000 (0: no limit)"));
+    }
+    {
+        let mut c = s.config.lock().await;
+        c.radio.value.crystal = req;
+        config::save(&s.paths.radio(), &c.radio)?;
+    }
+    Ok(Json(s.crystal.status().await))
 }
 
 #[derive(Deserialize)]

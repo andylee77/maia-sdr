@@ -24,6 +24,9 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | PUT | `/api/v1/radio/gain` | receiver gain mode and manual gain |
 | PUT | `/api/v1/radio/settings` | presets the planner may use, traffic lanes, call timings, history limits |
 | PUT | `/api/v1/radio/clock` | where the board clock comes from: site, ntp or manual |
+| GET | `/api/v1/radio/crystal` | the crystal correction: applied, calibrated and tracked |
+| PUT | `/api/v1/radio/crystal` | crystal tracking on or off, and its anchor (Hz from this run's calibration; 0: no limit) |
+| POST | `/api/v1/radio/crystal/calibrate` | measure the crystal correction on the live control channel now (about 7 s) |
 | POST | `/api/v1/clock` | set the board clock (`unix_ms`, a browser's time) |
 | PUT | `/api/v1/radio/recording` | recording on/off, where new recordings go, how many each store keeps |
 | GET | `/api/v1/recordings` | recordings newest first (`limit`, `site`), with the stores' state |

@@ -103,6 +103,10 @@ pub trait RadioHw: Send + Sync {
     fn lane_pll(&self, _lane: Lane) -> impl Future<Output = Option<LanePll>> + Send {
         async { None }
     }
+    /// The control chain's carrier loop and AGC, when the hardware can tell.
+    fn control_loop(&self) -> impl Future<Output = Option<ControlLoop>> + Send {
+        async { None }
+    }
     /// The wideband spectrometer's newest frame (its raw words), once; `None` until another
     /// completes.
     fn spectrum(&self) -> impl Future<Output = Option<Vec<u8>>> + Send {
@@ -122,6 +126,24 @@ impl LanePll {
     /// the carrier drops).
     pub fn hot(&self) -> bool {
         i32::from(self.pll_q213).abs() >= self.clamp_q213 / 2
+    }
+}
+
+/// The control chain's LSM: its carrier loop's phase correction per symbol (Q2.13) and its AGC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlLoop {
+    pub pll_q213: i16,
+    /// Q9.7.
+    pub agc_gain: u16,
+    /// Q1.15.
+    pub agc_mag: u16,
+}
+
+impl ControlLoop {
+    /// Gain times input magnitude: about 1 to 3 while a burst is on the channel, 0.1 to 0.3
+    /// between bursts.
+    pub fn agc_product(&self) -> f64 {
+        f64::from(self.agc_gain) / 128.0 * f64::from(self.agc_mag) / 32768.0
     }
 }
 
@@ -252,6 +274,10 @@ impl<H: RadioHw> Tuner<H> {
 
     pub async fn lane_pll(&self, lane: Lane) -> Option<LanePll> {
         self.hw.lane_pll(lane).await
+    }
+
+    pub async fn control_loop(&self) -> Option<ControlLoop> {
+        self.hw.control_loop().await
     }
 
     /// Stop a lane's chain; its NCO stays where it is.

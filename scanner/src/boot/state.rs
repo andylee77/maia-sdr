@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use crate::audio::live::Audio;
 use crate::services::clock::Clock;
+use crate::services::crystal::Crystal;
 use crate::services::discovery::sweep::Discovery;
 use crate::services::history::History;
 use crate::services::notices::Notices;
@@ -35,6 +36,7 @@ pub struct AppState {
     pub discovery: Arc<Discovery>,
     pub notices: Notices,
     pub clock: Arc<Clock>,
+    pub crystal: Arc<Crystal<Hardware>>,
     pub log: Arc<EventLog>,
     pub hardware: HardwareInfo,
     pub started: Instant,

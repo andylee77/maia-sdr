@@ -20,6 +20,7 @@ use crate::radio::lease::RadioLease;
 use crate::services::history::store::SiteInfo;
 use crate::services::history::History;
 use crate::services::clock::Clock;
+use crate::services::crystal::{self, Crystal};
 use crate::services::notices::Notices;
 use crate::services::recordings::storage::{self, StorageConfig};
 use crate::services::recordings::{self, Policy, Recordings};
@@ -102,8 +103,38 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             }
         });
     }
+    let crystal = {
+        let receivers = receivers.clone();
+        Crystal::new(crystal::Deps {
+            tuner: tuner.clone(),
+            control: Arc::new(move || receivers.status()),
+            lease: lease.clone(),
+            config: config.clone(),
+            paths: paths.clone(),
+            log: log.clone(),
+        })
+    };
+    crystal.start();
     let discovery = Arc::default();
-    let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, trunking, audio, recordings, history, discovery, notices, clock, log, hardware, started });
+    let state = Arc::new(AppState {
+        paths,
+        config,
+        tuner,
+        live,
+        lease,
+        receivers,
+        trunking,
+        audio,
+        recordings,
+        history,
+        discovery,
+        notices,
+        clock,
+        crystal,
+        log,
+        hardware,
+        started,
+    });
     let app = crate::api::router(state.clone());
     tokio::select! {
         r = crate::api::serve(app, args.listen, args.listen_https, args.ssl_cert.as_deref(), args.ssl_key.as_deref()) => r?,
