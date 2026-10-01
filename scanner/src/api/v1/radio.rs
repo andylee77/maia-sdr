@@ -64,8 +64,9 @@ pub async fn put_gain(State(s): State<Arc<AppState>>, Json(req): Json<GainReques
     Ok(Json(gain))
 }
 
-/// Space for recordings on the card: at least this much.
+/// Space on the card for recordings or the history: between these (1 TB, far beyond a card).
 const SD_MIN_MB: u64 = 16;
+const SD_MAX_MB: u64 = 1 << 20;
 
 #[derive(Serialize)]
 pub struct RecordingSet {
@@ -79,8 +80,8 @@ pub async fn put_recording(State(s): State<Arc<AppState>>, Json(req): Json<Recor
     if req.ram_max_count == 0 || req.sd_max_count == 0 {
         return Err(ApiError::bad_request("each store keeps at least one recording"));
     }
-    if req.sd_max_mb < SD_MIN_MB {
-        return Err(ApiError::bad_request(format!("sd_max_mb is at least {SD_MIN_MB}")));
+    if !(SD_MIN_MB..=SD_MAX_MB).contains(&req.sd_max_mb) {
+        return Err(ApiError::bad_request(format!("sd_max_mb is {SD_MIN_MB}..={SD_MAX_MB}")));
     }
     let mut c = s.config.lock().await;
     c.radio.value.recording = req.clone();
@@ -114,8 +115,8 @@ pub async fn put_settings(State(s): State<Arc<AppState>>, Json(req): Json<Settin
     if !(500..=30_000).contains(&req.calls.hang_ms) || req.calls.end_grace_ms > 10_000 {
         return Err(ApiError::bad_request("hang_ms 500..=30000, end_grace_ms up to 10000"));
     }
-    if req.history.retention_days == 0 || req.history.sd_max_mb < 16 {
-        return Err(ApiError::bad_request("history: at least a day and 16 MB"));
+    if req.history.retention_days == 0 || !(SD_MIN_MB..=SD_MAX_MB).contains(&req.history.sd_max_mb) {
+        return Err(ApiError::bad_request(format!("history: at least a day, and {SD_MIN_MB}..={SD_MAX_MB} MB")));
     }
     let mut c = s.config.lock().await;
     c.radio.value.presets_allowed = req.presets_allowed;

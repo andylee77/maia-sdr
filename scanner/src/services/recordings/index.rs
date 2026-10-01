@@ -50,13 +50,11 @@ pub fn parse(name: &str) -> Option<Parsed> {
     Some(Parsed { started_unix_ms, call, tg, source, site })
 }
 
-/// The recordings in `dir`, oldest first, and a note for the status. Only the names and sizes
-/// are read: a call's other details are not kept across a restart.
-pub fn list(dir: &Path) -> (Vec<Recording>, String) {
-    let rd = match std::fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(e) => return (Vec::new(), format!("{}: {e}", dir.display())),
-    };
+/// The recordings in `dir`, oldest first, and a note for the status; an error when the
+/// directory cannot be read. Only the names and sizes are read: a call's other details are not
+/// kept across a restart.
+pub fn list(dir: &Path) -> Result<(Vec<Recording>, String), String> {
+    let rd = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut out = Vec::new();
     let mut skipped = 0usize;
     for e in rd.flatten() {
@@ -97,5 +95,5 @@ pub fn list(dir: &Path) -> (Vec<Recording>, String) {
     out.sort_by_key(|r| (r.started_unix_ms, r.id));
     let skipped = if skipped > 0 { format!(" ({skipped} unrecognised .wav names skipped)") } else { String::new() };
     let note = format!("indexed {} recording(s) in {}{skipped}", out.len(), dir.display());
-    (out, note)
+    Ok((out, note))
 }

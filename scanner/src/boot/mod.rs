@@ -150,22 +150,33 @@ async fn start_storage(
         let cfg = cfg.clone();
         tokio::task::spawn_blocking(move || storage::index(&cfg))
     };
-    let (mut list, note) = match tokio::time::timeout(storage::INDEX_TIMEOUT, listing).await {
+    let listed = match tokio::time::timeout(storage::INDEX_TIMEOUT, listing).await {
         Ok(Ok(found)) => found,
-        _ => (Vec::new(), format!("listing {} timed out", cfg.sd_dir.display())),
+        Ok(Err(e)) => Err(format!("listing failed: {e}")),
+        Err(_) => Err(format!("listing {} timed out", cfg.sd_dir.display())),
     };
-    let store = history.store().clone();
-    let list = tokio::task::spawn_blocking(move || {
-        match recordings::reconcile(&mut list, &store) {
-            Ok((added, removed)) if added + removed > 0 => {
-                tracing::info!("history: {added} recordings listed, {removed} gone")
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!("history: recordings not reconciled: {e}"),
+    // Only a complete listing says which files are gone.
+    let (list, note) = match listed {
+        Ok((mut list, note)) => {
+            let store = history.store().clone();
+            let list = tokio::task::spawn_blocking(move || {
+                match recordings::reconcile(&mut list, &store) {
+                    Ok((added, removed)) if added + removed > 0 => {
+                        tracing::info!("history: {added} recordings listed, {removed} gone")
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("history: recordings not reconciled: {e}"),
+                }
+                list
+            })
+            .await?;
+            (list, note)
         }
-        list
-    })
-    .await?;
+        Err(note) => {
+            tracing::warn!("recordings: {note}");
+            (Vec::new(), note)
+        }
+    };
     let recordings = Recordings::start(cfg, policy, (list, note), audio, history.sender(), notices.clone());
     Ok((history, recordings))
 }

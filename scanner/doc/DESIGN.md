@@ -1196,6 +1196,23 @@ From the brief:
     logged, 11 threads throughout, 110 recordings, no audio chunk missed, 28.7 % of a core for
     the process. RSS went from 9.6 to 12.2 MB, most of it in the first 12 minutes and 0.4 MB in
     the last 18; a longer soak is to show that it levels off.
+  - **Review of phases 4 to 7** (nine defects, each checked and fixed):
+    - a switch the radio refuses after the old site stopped (an AD9363 told to tune VHF) left
+      the old site shown live with nothing running; the old site now comes back (a test), or
+      none is live;
+    - the learned state was written to flash under the lock the trunking task takes on every
+      grant; it is now written from a copy, on the blocking pool;
+    - a profile change could act on a stale live site during a switch or scan; it now takes
+      the radio lease, and every activation ends by following the active profile;
+    - the CSV export built the whole file in memory; it now streams from a connection of its
+      own (JSON listings stop at 5,000 calls);
+    - a scan's timing parameters were unbounded and a cancel waited for the probe; both
+      checked now, and the probes start before the streams;
+    - a failed or timed-out card listing at boot removed every recording from the history;
+      only a complete listing is reconciled;
+    - a failed card write could leave a RAM copy of a recording deleted meanwhile;
+    - a huge history size wrapped to zero; sizes are bounded (16 MB to 1 TB) and saturate;
+    - the Activity size query waited behind the writer; it reads on the read connection.
   - **For the bench (with the D12 session):** the corpus test parks a lane through the
     follower, then holds it on the channel with the follower off (`/api/traffic`
     `lock=on&follower=off`) and reads `/api/imbe_dump`, `/api/ui/calls`, `/api/ui/state` and

@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
@@ -19,6 +20,9 @@ use crate::boot::state::AppState;
 use crate::services::history::store::{self, Bucket, CallRow, Range, SeriesFilter, SiteStat, Summary, HOUR_MS};
 use crate::trunking::site::LiveState;
 use crate::util::time::{iso_utc, unix_ms};
+
+/// Calls a JSON listing returns at most (the CSV export streams more).
+const JSON_CALLS_MAX: usize = 5_000;
 
 #[derive(Deserialize, Default)]
 pub struct Window {
@@ -268,23 +272,34 @@ pub async fn series(State(s): State<Arc<AppState>>, Query(w): Query<Window>) -> 
 }
 
 /// Calls in the window, newest first; `format=csv` as a file.
+/// Calls in the window, newest first; `format=csv` as a file, streamed (up to a million).
 pub async fn calls(State(s): State<Arc<AppState>>, Query(w): Query<Window>) -> Result<Response, ApiError> {
     let r = range(&s, &w).await?;
-    let csv = w.format.as_deref() == Some("csv");
-    let limit = w.limit.unwrap_or(if csv { 100_000 } else { 200 }).clamp(1, 1_000_000);
     let f = SeriesFilter { tg: w.tg, unit: w.unit };
-    let q = r.clone();
-    let rows: Vec<CallRow> = s.history.query(move |st| st.calls(&q, f, limit)).await?;
-    if csv {
+    if w.format.as_deref() == Some("csv") {
+        let limit = w.limit.unwrap_or(1_000_000).clamp(1, 1_000_000);
         let name = format!("activity_{}_{}.csv", r.site, iso_utc(r.from_ms).replace([' ', ':'], "-"));
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::io::Error>>(4);
+        let store = s.history.store().clone();
+        let q = r.clone();
+        tokio::task::spawn_blocking(move || {
+            let sent = store.export_csv(&q, f, limit, |chunk| tx.blocking_send(Ok(chunk)).is_ok());
+            if let Err(e) = sent {
+                let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
+            }
+        });
+        let body = Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|c| (c, rx)) }));
         return Ok((
             [
                 (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
                 (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"")),
             ],
-            store::to_csv(&rows),
+            body,
         )
             .into_response());
     }
+    let limit = w.limit.unwrap_or(200).clamp(1, JSON_CALLS_MAX);
+    let q = r.clone();
+    let rows: Vec<CallRow> = s.history.query(move |st| st.calls(&q, f, limit)).await?;
     Ok(Json(Items { window: window(&r), items: rows }).into_response())
 }

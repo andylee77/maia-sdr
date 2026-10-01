@@ -267,6 +267,16 @@ fn calls_listing_newest_first_with_their_radios() {
     assert_eq!(s.latest_calls(2).unwrap().iter().map(|r| r.call_id).collect::<Vec<_>>(), vec![4, 3]);
     assert_eq!(s.call(2).unwrap().map(|r| r.sources), Some(vec![102, 101]));
     assert_eq!(s.call(99).unwrap(), None);
+    let mut csv = String::new();
+    s.export_csv(&range(), SeriesFilter::default(), 10, |c| {
+        csv.push_str(&c);
+        true
+    })
+    .unwrap();
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(lines[0], CSV_HEADER.trim_end());
+    assert_eq!(lines.len(), 5, "the header and the four calls");
+    assert!(lines[1].starts_with("clay,4,") && lines[4].starts_with("clay,1,"), "newest first");
 }
 
 #[test]

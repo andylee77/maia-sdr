@@ -27,6 +27,13 @@ pub async fn start(State(s): State<Arc<AppState>>, body: Option<Json<ScanRequest
     if req.bands().iter().any(|&(a, b)| a >= b || a < 70_000_000 || b > 6_000_000_000) {
         return Err(ApiError::bad_request("bands: (low, high) in Hz within 70 MHz to 6 GHz"));
     }
+    if !(1..=64).contains(&req.frames)
+        || !(500..=30_000).contains(&req.probe_ms)
+        || req.identity_ms > 60_000
+        || !(1..=500).contains(&req.max_candidates)
+    {
+        return Err(ApiError::bad_request("frames 1..=64, probe_ms 500..=30000, identity_ms up to 60000, max_candidates 1..=500"));
+    }
     let systems = s.config.lock().await.systems.value.clone();
     let id = s
         .discovery

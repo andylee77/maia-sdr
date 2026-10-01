@@ -301,6 +301,12 @@ fn secs(ms: i64) -> f64 {
     ms as f64 / 1000.0
 }
 
+/// Bytes in use (pages not on the free list).
+fn used_bytes(conn: &Connection) -> rusqlite::Result<u64> {
+    let pragma = |p: &str| conn.query_row(&format!("PRAGMA {p}"), [], |r| r.get::<_, i64>(0));
+    Ok(to_u64((pragma("page_count")? - pragma("freelist_count")?) * pragma("page_size")?))
+}
+
 fn lock(m: &Mutex<Connection>) -> std::sync::MutexGuard<'_, Connection> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -514,9 +520,7 @@ impl Store {
 
     /// Bytes in use (pages not on the free list).
     pub fn used_bytes(&self) -> rusqlite::Result<u64> {
-        let conn = lock(&self.write);
-        let pragma = |p: &str| conn.query_row(&format!("PRAGMA {p}"), [], |r| r.get::<_, i64>(0));
-        Ok(to_u64((pragma("page_count")? - pragma("freelist_count")?) * pragma("page_size")?))
+        used_bytes(&lock(&self.read))
     }
 
     /// Delete the oldest hours (a tenth of the calls at a time) until at most `max_bytes` are in
@@ -524,7 +528,7 @@ impl Store {
     pub fn trim_to(&self, max_bytes: u64) -> rusqlite::Result<usize> {
         let mut gone = 0;
         for _ in 0..10 {
-            if self.used_bytes()? <= max_bytes {
+            if used_bytes(&lock(&self.write))? <= max_bytes {
                 break;
             }
             let cut: Option<i64> = lock(&self.write)
@@ -828,16 +832,30 @@ impl Store {
     /// Calls in the window, newest first (listings and CSV).
     pub fn calls(&self, q: &Range, f: SeriesFilter, limit: usize) -> rusqlite::Result<Vec<CallRow>> {
         let conn = lock(&self.read);
-        let mut st = conn.prepare(&format!(
-            "SELECT {CALL_COLUMNS} FROM calls c WHERE {} AND c.started_ms >= ?2 AND c.started_ms < ?3
-             AND (?5 IS NULL OR c.tg = ?5)
-             AND (?6 IS NULL OR c.id IN (SELECT call FROM transmissions WHERE {} AND unit = ?6 AND started_ms >= ?2 AND started_ms < ?3))
-             ORDER BY c.started_ms DESC LIMIT ?4",
-            q.scope("c.site"),
-            q.scope("site")
-        ))?;
+        let mut st = conn.prepare(&calls_sql(q))?;
         let rows = st.query_map(params![q.site, q.from_ms as i64, q.to_ms as i64, limit as i64, f.tg, f.unit], call_row)?;
         rows.collect()
+    }
+
+    /// The calls of `calls` as CSV, handed to `chunk` about 64 KB at a time, read on a connection
+    /// of the export's own (a long export never holds up the other queries). Stops early when
+    /// `chunk` returns false.
+    pub fn export_csv(&self, q: &Range, f: SeriesFilter, limit: usize, mut chunk: impl FnMut(String) -> bool) -> rusqlite::Result<()> {
+        let conn = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+        conn.busy_timeout(READ_BUSY)?;
+        let mut st = conn.prepare(&calls_sql(q))?;
+        let mut rows = st.query(params![q.site, q.from_ms as i64, q.to_ms as i64, limit as i64, f.tg, f.unit])?;
+        let mut buf = String::from(CSV_HEADER);
+        while let Some(r) = rows.next()? {
+            push_csv(&mut buf, &call_row(r)?);
+            if buf.len() >= CSV_CHUNK && !chunk(std::mem::take(&mut buf)) {
+                return Ok(());
+            }
+        }
+        if !buf.is_empty() {
+            chunk(buf);
+        }
+        Ok(())
     }
 
     /// The newest calls of every site, newest first.
@@ -950,38 +968,49 @@ pub fn insert_calls(tx: &rusqlite::Transaction, rows: &[CallRow]) -> rusqlite::R
     Ok(added)
 }
 
-/// Calls as CSV, with a header.
-pub fn to_csv(rows: &[CallRow]) -> String {
-    let mut s = String::from(
-        "site,call_id,started_utc,started_ms,ended_ms,tg,source,sources,freq_hz,channel,timeslot,lane,encrypted,followed,not_followed,voice_ms,grant_ms,codec,frames,frame_errors,close_reason,end_kind\n",
-    );
+/// The calls query (`?1` site or system, `?2`..`?3` the window, `?4` limit, `?5` talkgroup, `?6`
+/// radio), newest first.
+fn calls_sql(q: &Range) -> String {
+    format!(
+        "SELECT {CALL_COLUMNS} FROM calls c WHERE {} AND c.started_ms >= ?2 AND c.started_ms < ?3
+         AND (?5 IS NULL OR c.tg = ?5)
+         AND (?6 IS NULL OR c.id IN (SELECT call FROM transmissions WHERE {} AND unit = ?6 AND started_ms >= ?2 AND started_ms < ?3))
+         ORDER BY c.started_ms DESC LIMIT ?4",
+        q.scope("c.site"),
+        q.scope("site")
+    )
+}
+
+const CSV_CHUNK: usize = 64 * 1024;
+pub const CSV_HEADER: &str =
+    "site,call_id,started_utc,started_ms,ended_ms,tg,source,sources,freq_hz,channel,timeslot,lane,encrypted,followed,not_followed,voice_ms,grant_ms,codec,frames,frame_errors,close_reason,end_kind\n";
+
+/// One call as a CSV line.
+pub fn push_csv(out: &mut String, r: &CallRow) {
     let opt = |v: Option<String>| v.unwrap_or_default();
-    for r in rows {
-        s.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-            r.site,
-            r.call_id,
-            crate::util::time::iso_utc(r.started_ms),
-            r.started_ms,
-            r.ended_ms,
-            r.tg,
-            opt(r.source.map(|v| v.to_string())),
-            r.sources.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" "),
-            opt(r.freq_hz.map(|v| v.to_string())),
-            opt(r.channel.clone()),
-            opt(r.timeslot.map(|v| v.to_string())),
-            r.lane,
-            u8::from(r.encrypted),
-            u8::from(r.followed),
-            opt(r.not_followed.clone()),
-            r.voice_ms,
-            r.grant_ms,
-            opt(r.codec.clone()),
-            r.frames,
-            r.frame_errors,
-            r.close_reason,
-            opt(r.end_kind.clone()),
-        ));
-    }
-    s
+    out.push_str(&format!(
+        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+        r.site,
+        r.call_id,
+        crate::util::time::iso_utc(r.started_ms),
+        r.started_ms,
+        r.ended_ms,
+        r.tg,
+        opt(r.source.map(|v| v.to_string())),
+        r.sources.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" "),
+        opt(r.freq_hz.map(|v| v.to_string())),
+        opt(r.channel.clone()),
+        opt(r.timeslot.map(|v| v.to_string())),
+        r.lane,
+        u8::from(r.encrypted),
+        u8::from(r.followed),
+        opt(r.not_followed.clone()),
+        r.voice_ms,
+        r.grant_ms,
+        opt(r.codec.clone()),
+        r.frames,
+        r.frame_errors,
+        r.close_reason,
+        opt(r.end_kind.clone()),
+    ));
 }

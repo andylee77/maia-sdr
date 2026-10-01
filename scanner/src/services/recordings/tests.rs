@@ -120,7 +120,7 @@ fn the_index_lists_card_recordings_oldest_first_with_their_length() {
     std::fs::write(sd.join(".rec_4000_13_tg300.wav.part"), b"half").unwrap();
     std::fs::write(sd.join("notes.txt"), b"x").unwrap();
     std::fs::write(sd.join("rec_odd.wav"), b"x").unwrap();
-    let (list, note) = index(&cfg(&ram, &sd));
+    let (list, note) = index(&cfg(&ram, &sd)).unwrap();
     let ids: Vec<u64> = list.iter().map(|e| e.id).collect();
     assert_eq!(ids, vec![7, 12, 2, 9], "{note}");
     assert_eq!(list[0].duration_ms, 1_620);
@@ -264,7 +264,7 @@ async fn a_followed_call_is_saved_to_the_card_and_ids_continue_past_the_card() {
     std::fs::write(sd.join("rec_1000_41_tg300.clay.wav"), vec![0u8; 44 + 1_600]).unwrap();
     let c = cfg(&ram, &sd);
     let audio = Audio::start(&[Lane::One]);
-    let rec = Recordings::start(c.clone(), policy(Store::Sd), index(&c), &audio, Default::default(), Default::default());
+    let rec = Recordings::start(c.clone(), policy(Store::Sd), index(&c).unwrap(), &audio, Default::default(), Default::default());
     assert_eq!(rec.next_call(), 42);
     let tx = rec.sender();
     tx.start(call(42));

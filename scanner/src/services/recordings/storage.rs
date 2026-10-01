@@ -338,11 +338,19 @@ impl Storage {
                 }
                 let ram = self.cfg.ram_dir.join(path.file_name().unwrap_or_default());
                 let ram_ok = std::fs::create_dir_all(&self.cfg.ram_dir).and_then(|_| std::fs::write(&ram, bytes.as_slice())).is_ok();
-                // When RAM fails too, the copy in `pending` keeps the recording playable.
-                if let Some(r) = lock(ring).iter_mut().find(|r| r.id == id).filter(|_| ram_ok) {
-                    r.path = ram;
-                    r.store = Store::Ram;
-                    r.pending = None;
+                // When RAM fails too, the copy in `pending` keeps the recording playable. A
+                // recording deleted or evicted while its write waited leaves no RAM copy behind.
+                if ram_ok {
+                    match lock(ring).iter_mut().find(|r| r.id == id) {
+                        Some(r) => {
+                            r.path = ram;
+                            r.store = Store::Ram;
+                            r.pending = None;
+                        }
+                        None => {
+                            let _ = std::fs::remove_file(&ram);
+                        }
+                    }
                 }
                 // A transient error, or a card that came back, is ok again at once.
                 self.probe(false);
@@ -418,10 +426,10 @@ pub fn wait_for_sd(cfg: &StorageConfig, max: Duration) -> bool {
 }
 
 /// The recordings already on the card, oldest first, and a note for the status.
-pub fn index(cfg: &StorageConfig) -> (Vec<Recording>, String) {
+pub fn index(cfg: &StorageConfig) -> Result<(Vec<Recording>, String), String> {
     if let Some(m) = cfg.sd_mount.as_deref() {
         if mount_state(m).is_none() {
-            return (Vec::new(), format!("{} not mounted", m.display()));
+            return Err(format!("{} not mounted", m.display()));
         }
     }
     index::list(&cfg.sd_dir)

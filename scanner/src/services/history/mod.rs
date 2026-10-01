@@ -106,7 +106,7 @@ impl History {
     /// history into it the first time, or in RAM without a card; start the writer.
     pub fn open(sd: Option<&Path>, cfg: &HistoryConfig, sites: &[SiteInfo]) -> anyhow::Result<Arc<History>> {
         let (path, limits) = match sd {
-            Some(dir) => (dir.join(FILE), Limits { retention_days: cfg.retention_days, max_bytes: cfg.sd_max_mb << 20 }),
+            Some(dir) => (dir.join(FILE), Limits { retention_days: cfg.retention_days, max_bytes: cfg.sd_max_mb.saturating_mul(1 << 20) }),
             None => (PathBuf::from(RAM_PATH), Limits { retention_days: cfg.retention_days, max_bytes: MAX_BYTES_RAM }),
         };
         let v1 = sd.map(|d| d.join(V1_FILE)).filter(|p| !path.exists() && p.exists() && migrate_v1::is_v1(p));
@@ -152,7 +152,7 @@ impl History {
     pub fn set_limits(&self, cfg: &HistoryConfig) {
         let limits = Limits {
             retention_days: cfg.retention_days,
-            max_bytes: if self.on_sd { cfg.sd_max_mb << 20 } else { MAX_BYTES_RAM },
+            max_bytes: if self.on_sd { cfg.sd_max_mb.saturating_mul(1 << 20) } else { MAX_BYTES_RAM },
         };
         *self.limits.lock().unwrap_or_else(|e| e.into_inner()) = limits;
         self.tx.send(Input::Limits(limits));

@@ -88,15 +88,22 @@ impl Learned {
         });
     }
 
-    /// Save when anything changed.
+    /// Save when anything changed. The file is written from a copy, so the decoders updating
+    /// the state never wait for the flash.
     pub fn save(&self, paths: &Paths) {
-        let Ok(mut s) = self.state.lock() else { return };
-        if !s.1 {
-            return;
-        }
-        match config::save(&paths.site_state(&self.site), &s.0) {
-            Ok(()) => s.1 = false,
-            Err(e) => tracing::warn!("learned state of site {} not saved: {e:#}", self.site),
+        let snapshot = {
+            let Ok(mut s) = self.state.lock() else { return };
+            if !s.1 {
+                return;
+            }
+            s.1 = false;
+            s.0.clone()
+        };
+        if let Err(e) = config::save(&paths.site_state(&self.site), &snapshot) {
+            tracing::warn!("learned state of site {} not saved: {e:#}", self.site);
+            if let Ok(mut s) = self.state.lock() {
+                s.1 = true;
+            }
         }
     }
 }

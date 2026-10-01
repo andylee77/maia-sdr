@@ -32,6 +32,20 @@ use crate::services::config::{self, Config, Paths, SiteState};
 
 /// Distance of the control channel from the window edge when a site has no known channels.
 const EDGE_MARGIN_HZ: f64 = 250_000.0;
+/// A profile change waits this many times for a switch to hand the radio back.
+const PROFILE_TRIES: u32 = 30;
+const PROFILE_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// A switch, planned.
+struct Plan {
+    site: Site,
+    system: SystemSummary,
+    profile: Option<Profile>,
+    calls: crate::services::config::radio::Calls,
+    learned: Arc<Learned>,
+    window: WindowPlan,
+    preset: &'static DdcPreset,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -116,11 +130,12 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         self.state.subscribe()
     }
 
-    /// Save what the live site taught, when it changed.
+    /// Save what the live site taught, when it changed (on the blocking pool: a flash write can
+    /// take seconds).
     pub async fn save_learned(&self) {
-        if let Some(l) = self.learned.lock().await.as_ref() {
-            l.save(&self.paths);
-        }
+        let Some(l) = self.learned.lock().await.clone() else { return };
+        let paths = self.paths.clone();
+        let _ = tokio::task::spawn_blocking(move || l.save(&paths)).await;
     }
 
     /// A scan takes the radio: the live site's receivers and trunking stop. Returns the site to
@@ -139,17 +154,33 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         back_to
     }
 
-    /// The profiles changed: the live site follows its active profile from now on.
+    /// The profiles changed: the live site follows its active profile from now on. A switch in
+    /// progress picks the change up as it ends; a scan, when the site comes back.
     pub async fn profile_changed(&self) {
-        let LiveState::Live(mut live) = self.state() else { return };
+        for _ in 0..PROFILE_TRIES {
+            if let Some(_lease) = self.lease.take(Lease::Switching) {
+                self.apply_profile().await;
+                return;
+            }
+            tokio::time::sleep(PROFILE_RETRY).await;
+        }
+    }
+
+    /// Follow the live site's active profile, with the radio lease held (no switch or scan can
+    /// change the live site meanwhile).
+    async fn apply_profile(&self) {
+        let LiveState::Live(live) = self.state() else { return };
         let profile = self.config.lock().await.profiles.value.active_for(&live.site.id).cloned();
         if profile == live.profile {
             return;
         }
         self.trunking.set_routing(profile.as_ref().map(Routing::new).unwrap_or_default()).await;
         let name = profile.as_ref().map_or("none".to_string(), |p| p.name.clone());
-        live.profile = profile;
-        self.state.send_replace(LiveState::Live(live));
+        self.state.send_modify(|s| {
+            if let LiveState::Live(l) = s {
+                l.profile = profile;
+            }
+        });
         self.log.system("profile", format!("following profile {name}"));
     }
 
@@ -163,24 +194,48 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         }
     }
 
-    /// Make `site` live. Returns once it is.
+    /// Make `site` live. Returns once it is. When the radio fails to take the new site after
+    /// the old one stopped, the old one is brought back (or none is live).
     pub async fn activate(&self, site_id: &str) -> Result<Live> {
         let _lease = self.lease.take(Lease::Switching).context("the radio is busy (a scan or another switch)")?;
         let previous = self.state();
+        let plan = self.plan(site_id).await?;
         self.state.send_replace(LiveState::Switching { to: site_id.to_string() });
-        match self.switch(site_id).await {
+        match self.go(plan).await {
             Ok(live) => {
                 self.state.send_replace(LiveState::Live(Box::new(live.clone())));
+                self.apply_profile().await;
                 Ok(live)
             }
             Err(e) => {
-                self.state.send_replace(previous);
+                let back = match &previous {
+                    LiveState::Live(l) if l.site.id != site_id => Some(l.site.id.clone()),
+                    _ => None,
+                };
+                let restored = match back {
+                    Some(id) => match self.plan(&id).await {
+                        Ok(p) => self.go(p).await.ok(),
+                        Err(_) => None,
+                    },
+                    None => None,
+                };
+                match restored {
+                    Some(live) => {
+                        self.log.system("site", format!("site {site_id} did not go live ({e:#}); back on {}", live.site.id));
+                        self.state.send_replace(LiveState::Live(Box::new(live)));
+                    }
+                    None => {
+                        self.log.system("site", format!("site {site_id} did not go live ({e:#}); no site is live"));
+                        self.state.send_replace(LiveState::NoSite);
+                    }
+                }
                 Err(e)
             }
         }
     }
 
-    async fn switch(&self, site_id: &str) -> Result<Live> {
+    /// Everything a switch needs, read and planned without touching the radio.
+    async fn plan(&self, site_id: &str) -> Result<Plan> {
         let (site, system, profile, presets_allowed, calls) = {
             let c = self.config.lock().await;
             let Some((system, site)) = c.systems.value.site(site_id) else {
@@ -189,10 +244,17 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
             let profile = c.profiles.value.active_for(site_id).cloned();
             (site.clone(), SystemSummary::from(system), profile, c.radio.value.presets_allowed.clone(), c.radio.value.calls.clone())
         };
-        self.save_learned().await;
         let learned = Arc::new(Learned::new(site_id, Config::site_state(&self.paths, site_id)?));
         let window = window_for(&site, &learned.state(), &presets_allowed)?;
         let preset = find_preset(&window.preset).context("planned preset")?;
+        Ok(Plan { site, system, profile, calls, learned, window, preset })
+    }
+
+    /// Stop the old site, tune, and start the new one.
+    async fn go(&self, plan: Plan) -> Result<Live> {
+        let Plan { site, system, profile, calls, learned, window, preset } = plan;
+        let site_id = site.id.as_str();
+        self.save_learned().await;
         self.receivers.stop().await;
         self.trunking.stop().await;
         let tuning = self
@@ -294,10 +356,14 @@ mod tests {
     use crate::radio::tuner::RadioHw;
     use crate::services::config::systems::{Control, Window};
 
+    /// No radio, with the AD9363's lower LO limit.
     struct Nothing;
 
     impl RadioHw for Nothing {
-        async fn set_lo(&self, _: u64) -> Result<()> {
+        async fn set_lo(&self, hz: u64) -> Result<()> {
+            if hz < 325_000_000 {
+                bail!("LO {hz} Hz is below the AD9363's range");
+            }
             Ok(())
         }
         async fn set_rate(&self, _: u32, _: u32) -> Result<()> {
@@ -385,7 +451,10 @@ mod tests {
             identity: Default::default(),
             talkgroups: Default::default(),
             radios: Default::default(),
-            sites: vec![Site { id: "clay".into(), ..site(860_962_500, vec![857_987_500], CcPosition::Top) }],
+            sites: vec![
+                Site { id: "clay".into(), ..site(860_962_500, vec![857_987_500], CcPosition::Top) },
+                Site { id: "vhf".into(), ..site(155_000_000, vec![], CcPosition::Center) },
+            ],
         });
         config::save(&paths.systems(), &config.systems).unwrap();
         let tuner = Arc::new(Tuner::new(Nothing, 0.0));
@@ -403,6 +472,11 @@ mod tests {
         assert_eq!(Config::load(&paths).unwrap().state.value.live_site.as_deref(), Some("clay"));
         assert!(receivers.status().running && receivers.status().site.as_deref() == Some("clay"));
         assert!(log.since(0, 10, false)[0].text.starts_with("site clay"));
+        // The radio refuses the next site after the live one has stopped: the live one comes back.
+        assert!(live.activate("vhf").await.is_err());
+        assert!(matches!(live.state(), LiveState::Live(l) if l.site.id == "clay"));
+        assert!(receivers.status().running && receivers.status().site.as_deref() == Some("clay"));
+        assert_eq!(tuner.tuning().control_hz, 860_962_500);
         receivers.stop().await;
         trunking.stop().await;
     }

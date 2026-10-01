@@ -31,6 +31,8 @@ const MIN_MESSAGES: u64 = 3;
 const AFTER_IDENTITY: Duration = Duration::from_secs(3);
 /// Probed frequencies this close are one.
 const SAME_HZ: u64 = 3_000;
+/// How often a probe looks at what it heard (and at a cancel).
+const POLL: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
 pub struct Discovery {
@@ -134,8 +136,8 @@ impl Discovery {
         self.update(|d| d.steps = steps.len());
         let (tx, rx) = sync_channel(64);
         let stop = Arc::new(AtomicBool::new(false));
-        let sources = tuner.hw().control_streams(Wants { iq: true, dibits: true }, tx, stop.clone(), Arc::default());
         let mut probes = Probes::start(rx, vec![Box::new(P25Probe::default()), Box::new(DmrProbe::default())])?;
+        let sources = tuner.hw().control_streams(Wants { iq: true, dibits: true }, tx, stop.clone(), Arc::default());
         let result = async {
             let mut probed: Vec<u64> = Vec::new();
             let near = |list: &[u64], f: u64| list.iter().any(|&p| p.abs_diff(f) <= SAME_HZ);
@@ -215,7 +217,10 @@ impl Discovery {
         tuner.set_control(c.freq_hz).await?;
         probes.reset();
         let t0 = Instant::now();
-        tokio::time::sleep(Duration::from_millis(req.probe_ms)).await;
+        let probed_by = t0 + Duration::from_millis(req.probe_ms);
+        while Instant::now() < probed_by && !self.cancelled() {
+            tokio::time::sleep(POLL).await;
+        }
         if probes.messages(MIN_MESSAGES) {
             // A control channel: listen until its identity (and a little more), or give up.
             let deadline = t0 + Duration::from_millis(req.identity_ms.max(req.probe_ms));
@@ -225,10 +230,10 @@ impl Discovery {
                     identified_at = Some(Instant::now());
                 }
                 let now = Instant::now();
-                if now >= deadline || identified_at.is_some_and(|t| now.duration_since(t) >= AFTER_IDENTITY) {
+                if now >= deadline || identified_at.is_some_and(|t| now.duration_since(t) >= AFTER_IDENTITY) || self.cancelled() {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                tokio::time::sleep(POLL).await;
             }
         }
         let heard = probes.heard(c.freq_hz, c.level_db);
