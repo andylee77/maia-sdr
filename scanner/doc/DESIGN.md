@@ -1194,8 +1194,9 @@ From the brief:
     test keeps it so).
   - **Soak, unit B** (the full build, 30 min, Clay on the internal antenna): no panic or error
     logged, 11 threads throughout, 110 recordings, no audio chunk missed, 28.7 % of a core for
-    the process. RSS went from 9.6 to 12.2 MB, most of it in the first 12 minutes and 0.4 MB in
-    the last 18; a longer soak is to show that it levels off.
+    the process. RSS went from 9.6 to 12.2 MB, most of it in the first 12 minutes. A second
+    soak of the next build (32 min, stopped for the bench wiring) levelled off: 11.0 MB at 20
+    minutes, 11.04 MB at 32; no panic, 145 recordings, no audio chunk missed.
   - **Review of phases 4 to 7** (nine defects, each checked and fixed):
     - a switch the radio refuses after the old site stopped (an AD9363 told to tune VHF) left
       the old site shown live with nothing running; the old site now comes back (a test), or
