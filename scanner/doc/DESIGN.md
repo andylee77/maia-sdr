@@ -1087,4 +1087,57 @@ From the brief:
   - **Learned state** (`trunking::learned`): the stored IDEN bands seed the control decoders at
     activation; grant counts (one per opened call) and encrypted talkgroups are kept; saved
     every 10 minutes when changed, on a switch and at shutdown.
-  - **Next:** audio (phase 4).
+- 2026-10-01, phase 4 (in progress):
+  - **Codecs** (`audio::codec`): IMBE and AMBE+2 from p25-httpd's jmbe port, with their
+    reference tests, behind `VoiceCodec`.
+  - **Live audio** (`audio::live`): per lane, a decode thread (codec, then the one `PcmAgc`) and
+    a pacer releasing one 20 ms chunk per 20 ms, into one broadcast; `/ws/audio` sends
+    lane-tagged frames, a meta frame per call and lag frames. The meta frame carries the speaker
+    (left, right or both) from the follower's routing, so the browser no longer works routing
+    out from the profile (section 7). The browser player is p25-httpd's, with a Listen button.
+  - **Recordings** (`services::recordings`): driven by the call book (a followed call's open
+    starts one, its chunks are appended by call id, its close starts a 2 s drain); p25-httpd's
+    RAM and SD stores, card writer, retention and file names; the card's files listed at boot,
+    call ids continuing past them; each followed call's frames, vocoder errors and silent frames
+    counted; `/api/v1/recordings` (list, the WAV with byte ranges, deletes) and
+    `PUT /api/v1/radio/recording`; playback on Now and the Recording card in Settings. SIGTERM
+    saves the open recordings and waits for the card writes (defect 6).
+  - **Changed from p25-httpd:** a recording starts at its call's own open time (defect 13);
+    chunks go to recordings by call id only.
+  - **Live, unit B** (Clay, internal antenna; recordings in a test directory on the card,
+    `--recordings-dir /mnt/sd/scanner_recordings`, seeded with five of p25-httpd's files):
+    - `/ws/audio`, 15 min: 34 calls, 117 s of audio, RMS 2421 (AGC target 2500), no malformed
+      frames;
+    - 26 recordings on both lanes, none failed, the slowest card write 17 ms; SIGTERM exited in
+      1 s with every file written and no `.part` left; a restart listed all 21 then on the card
+      and continued the call ids;
+    - vocoder errors: 16.7 % of 2,655 frames; p25-httpd on the same antenna in the same hour,
+      25.7 % of 1,449 (same 4-bit threshold). A's baseline (1.62 %) is on its external antenna.
+  - **Not yet:** DMR audio and recordings live, and the phase gate, on A.
+- 2026-10-01, phase 5 (in progress):
+  - **History** (`services::history`): schema v2 (section 8; `data_packets` waits for D11). One
+    writer thread fed by a channel commits every 10 s or on a flush, and prunes once an hour by
+    whole hours, so the totals always match the calls (defect 14); the API reads through a
+    second, read-only connection.
+  - **The v1 copy** (`migrate_v1`): p25-httpd's history attached read-only and copied in one
+    transaction into `scanner-history.sqlite.part`, renamed once complete; the v1 file is left
+    as it is. Both units' fixture databases give exactly their phase 0 Activity snapshots after
+    the copy.
+  - **What is stored:** calls at their close, with the recorder's vocoder counts merged in
+    after; radio events from the control channel; sites and systems at activation; recordings,
+    linked to their call once (by call id, site and a start within 10 s, through the call id
+    index) and reconciled with the card at boot. Call ids continue past the history and the
+    recordings.
+  - **API and UI:** `/api/v1/activity/*` (sites, summary, talkgroups, radios, one radio, one
+    talkgroup, series, calls with CSV) and the Activity page; the recent calls are refilled
+    from the history at boot and kept across a site switch.
+  - **Live, unit B:** the copy took 1.2 s (5,274 calls, 5,338 radio rows, 1,662 hour rows,
+    2,761 radio events). Summary, talkgroups and radios for the 24 hours to 16:00 UTC are
+    identical to p25-httpd's answers before the switch. The scanner's calls continue from
+    p25-httpd's last id, with their vocoder counts; radio registrations are stored. After a
+    restart the recent calls come back from the history, and this run's recordings come back
+    with their calls' lane and channel.
+  - **The copy happens once** (when there is no v2 file). p25-httpd keeps writing the v1 file
+    while it runs, so before the cutover the test `scanner-history.sqlite` (and
+    `scanner_recordings`) are deleted on each unit, and the cutover copies the final v1.
+  - **Not yet:** the `system` filter on Activity; per-speaker times in `transmissions`.
