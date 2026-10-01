@@ -169,13 +169,13 @@ pub async fn get_radio(State(state): State<Arc<AppState>>, Path(unit): Path<u32>
     v["alias"] = unit_names.get(&unit).cloned().into();
     if let Some(list) = v["talkgroups"].as_array_mut() {
         for t in list {
-            let tg = t["tg"].as_u64().unwrap_or(0) as u32;
+            let tg = u32::try_from(t["tg"].as_u64().unwrap_or(0)).unwrap_or(0);
             t["alias"] = tg_names.get(&tg).cloned().into();
         }
     }
     if let Some(list) = v["events"].as_array_mut() {
         for t in list {
-            let tg = t["tg"].as_u64().unwrap_or(0) as u32;
+            let tg = u32::try_from(t["tg"].as_u64().unwrap_or(0)).unwrap_or(0);
             t["alias"] = tg_names.get(&tg).cloned().into();
         }
     }

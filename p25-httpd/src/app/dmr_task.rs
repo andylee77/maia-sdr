@@ -516,24 +516,141 @@ pub fn spawn_dmr_traffic(
     }
 }
 
+/// The call-pipeline side of the executor: which call the lifecycle opened
+/// for the followed DMR transmission, and when voice last refreshed it.
+#[derive(Default)]
+struct LifecycleLink {
+    /// The lifecycle's call on lane One for the followed grant (0 = none).
+    call_id: u64,
+    last_voice_refresh_ms: u64,
+}
+
+/// Voice refreshes the lifecycle (keep-alive, end-marker cancel) at most
+/// this often.
+const VOICE_REFRESH_MS: u64 = 500;
+
+/// Turns a follower action into call-boundary events for the shared call
+/// lifecycle (`app::grant_follower`), so DMR calls land in Recent calls,
+/// recordings and the history like P25 ones. Lane One: the DMR follower
+/// uses traffic chain 1.
+fn boundary_events(
+    action: &FollowerAction,
+    link: &mut LifecycleLink,
+    now_ms: u64,
+) -> Vec<crate::audio::CallBoundary> {
+    use crate::audio::{CallBoundary, CallBoundaryKind};
+    use crate::hardware::traffic_lane::Lane;
+    let event = |kind: CallBoundaryKind, talkgroup: Option<u32>, lane: Option<Lane>| CallBoundary {
+        kind,
+        nac: 0,
+        talkgroup,
+        expected_submit_count: 0,
+        lane,
+    };
+    match *action {
+        FollowerAction::Grant { grant, not_followed } => vec![event(
+            CallBoundaryKind::CcGrantArrival {
+                tg: grant.talkgroup,
+                source: grant.source,
+                freq_hz: grant.freq_hz,
+                channel: grant.lcn,
+                encrypted: false,
+                not_followed,
+            },
+            Some(grant.talkgroup),
+            if not_followed.is_none() { Some(Lane::One) } else { None },
+        )],
+        FollowerAction::KeepAlive { talkgroup, freq_hz, lcn } => vec![event(
+            CallBoundaryKind::CcGrantUpdate { tg: talkgroup, freq_hz, channel: lcn },
+            Some(talkgroup),
+            None,
+        )],
+        FollowerAction::Source { source } => vec![event(
+            CallBoundaryKind::TdulcComplete { source: Some(source) },
+            None,
+            Some(Lane::One),
+        )],
+        FollowerAction::Voice { talkgroup, .. } => {
+            if now_ms.saturating_sub(link.last_voice_refresh_ms) < VOICE_REFRESH_MS {
+                return Vec::new();
+            }
+            link.last_voice_refresh_ms = now_ms;
+            vec![
+                // Voice on the channel: a pending end close is cancelled.
+                event(CallBoundaryKind::TrafficNidObserved { voice: true }, None, Some(Lane::One)),
+                // ... and the call is live (the lifecycle's hang timer).
+                event(CallBoundaryKind::CcGrantUpdate { tg: talkgroup, freq_hz: None, channel: 0 }, Some(talkgroup), None),
+            ]
+        }
+        FollowerAction::End { reason } if link.call_id != 0 && reason != "timeout" => vec![event(
+            CallBoundaryKind::VoiceEnd {
+                call_id: link.call_id,
+                air_ms: now_ms,
+                lc: if reason == "clear" { "network_teardown" } else { "call_termination" },
+            },
+            None,
+            Some(Lane::One),
+        )],
+        _ => Vec::new(),
+    }
+}
+
 /// Carries out the follower's actions: retunes traffic chain 1 (NCO only:
-/// the P25 chain on it stays off).
+/// the P25 chain on it stays off) and tells the call lifecycle about the
+/// calls (`boundary_events`); voice frames count as the call's voice time.
 #[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_dmr_executor(
     rt: std::sync::Arc<DmrRuntime>,
     ip_core: std::sync::Arc<tokio::sync::Mutex<crate::hardware::fpga::IpCore>>,
     rx_lo: std::sync::Arc<AtomicI64>,
     sample_rate_hz: std::sync::Arc<std::sync::atomic::AtomicU32>,
     lo_shift_hz: std::sync::Arc<AtomicI64>,
+    call_boundary_tx: crate::audio::CallBoundaryTx,
+    call_tracker_tx: crate::app::grant_follower::CallTrackerEventTx,
+    call_counts: std::sync::Arc<crate::app::call_counters::CallCounterBook>,
 ) {
+    use crate::app::grant_follower::CallTrackerEventKind;
     use crate::hardware::traffic_lane::Lane;
+    use tokio::sync::broadcast::error::RecvError;
     let (tx, mut actions) = tokio::sync::mpsc::unbounded_channel();
     if rt.actions_tx.set(tx).is_err() {
         tracing::error!("dmr executor already running");
         return;
     }
+    let mut tracker = call_tracker_tx.subscribe();
     tokio::spawn(async move {
-        while let Some(action) = actions.recv().await {
+        let mut link = LifecycleLink::default();
+        loop {
+            let action = tokio::select! {
+                a = actions.recv() => match a {
+                    Some(a) => a,
+                    None => break,
+                },
+                e = tracker.recv() => {
+                    match e {
+                        // The lifecycle's call for our followed grant.
+                        Ok(ev) if ev.lane == Some(Lane::One) => match ev.kind {
+                            CallTrackerEventKind::CallOpen { not_followed: None, .. } => link.call_id = ev.call_id,
+                            CallTrackerEventKind::CallClose { .. } if ev.call_id == link.call_id => link.call_id = 0,
+                            _ => {}
+                        },
+                        Ok(_) | Err(RecvError::Lagged(_)) => {}
+                        Err(RecvError::Closed) => break,
+                    }
+                    continue;
+                }
+            };
+            if rt.follow.load(Ordering::Relaxed) {
+                let now = crate::app::now_unix_ms();
+                if let FollowerAction::Voice { .. } = action {
+                    // Three AMBE+2 frames: 60 ms of voice.
+                    call_counts.update(link.call_id, |c| c.imbe_extracted += 3);
+                }
+                for event in boundary_events(&action, &mut link, now) {
+                    let _ = call_boundary_tx.send(event);
+                }
+            }
             if let FollowerAction::Tune { freq_hz } = action {
                 let offset = freq_hz as f64 - rx_lo.load(Ordering::Relaxed) as f64
                     + lo_shift_hz.load(Ordering::Relaxed) as f64;
@@ -619,6 +736,41 @@ mod tests {
         assert!(rt.config_epoch.load(Ordering::Relaxed) > epoch);
         // Back to the built-in map.
         assert_eq!(rt.lcn_map().get(&6), Some(&451_087_500));
+    }
+
+    #[test]
+    fn follower_actions_become_call_boundaries() {
+        use crate::app::dmr_follower::DmrGrant;
+        use crate::audio::CallBoundaryKind;
+        use crate::hardware::traffic_lane::Lane;
+        let grant = DmrGrant {
+            talkgroup: 87_925,
+            source: Some(81_921),
+            private: false,
+            lcn: 5,
+            timeslot: 2,
+            freq_hz: Some(454_368_750),
+        };
+        let mut link = LifecycleLink::default();
+        let e = boundary_events(&FollowerAction::Grant { grant, not_followed: None }, &mut link, 0);
+        assert!(matches!(
+            e[0].kind,
+            CallBoundaryKind::CcGrantArrival { tg: 87_925, channel: 5, not_followed: None, .. }
+        ));
+        assert_eq!(e[0].lane, Some(Lane::One));
+        let e = boundary_events(&FollowerAction::Grant { grant, not_followed: Some("busy") }, &mut link, 0);
+        assert_eq!(e[0].lane, None);
+        // Voice refreshes at most every VOICE_REFRESH_MS.
+        let voice = FollowerAction::Voice { talkgroup: 87_925, source: None, frames: [[0; 9]; 3] };
+        assert_eq!(boundary_events(&voice, &mut link, 1000).len(), 2);
+        assert!(boundary_events(&voice, &mut link, 1060).is_empty());
+        // No call known yet: no end.
+        assert!(boundary_events(&FollowerAction::End { reason: "clear" }, &mut link, 2000).is_empty());
+        link.call_id = 42;
+        let e = boundary_events(&FollowerAction::End { reason: "clear" }, &mut link, 2000);
+        assert!(matches!(e[0].kind, CallBoundaryKind::VoiceEnd { call_id: 42, lc: "network_teardown", .. }));
+        // A timeout is the lifecycle's own (hang timer).
+        assert!(boundary_events(&FollowerAction::End { reason: "timeout" }, &mut link, 2000).is_empty());
     }
 
     #[test]

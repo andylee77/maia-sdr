@@ -1875,6 +1875,9 @@ async fn main() -> anyhow::Result<()> {
             current_rx_lo.clone(),
             current_sample_rate_hz.clone(),
             current_lo_shift_hz.clone(),
+            call_boundary_tx.clone(),
+            call_tracker_tx.clone(),
+            imbe_forwarder.call_counts.clone(),
         );
     }
 
