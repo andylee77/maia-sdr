@@ -99,6 +99,25 @@ pub trait RadioHw: Send + Sync {
     fn pause_lane(&self, lane: Lane) -> impl Future<Output = Result<()>> + Send;
     /// What the hardware holds now (`sample_rate_hz` converts NCO words).
     fn readback(&self, sample_rate_hz: u32) -> impl Future<Output = Readback> + Send;
+    /// A lane's carrier loop, when the hardware can tell.
+    fn lane_pll(&self, _lane: Lane) -> impl Future<Output = Option<LanePll>> + Send {
+        async { None }
+    }
+}
+
+/// A lane's carrier loop: its phase correction per symbol and the gateware's clamp (Q2.13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LanePll {
+    pub pll_q213: i16,
+    pub clamp_q213: i32,
+}
+
+impl LanePll {
+    /// Half the clamp or more: the loop ran off on noise (a parked lane keeps demodulating after
+    /// the carrier drops).
+    pub fn hot(&self) -> bool {
+        i32::from(self.pll_q213).abs() >= self.clamp_q213 / 2
+    }
 }
 
 pub struct Tuner<H> {
@@ -228,6 +247,10 @@ impl<H: RadioHw> Tuner<H> {
         let holds = t.lanes[lane.index()] == Some(freq_hz);
         self.hw.retune_lane(lane, t.nco_offset(freq_hz), t.sample_rate_hz, reset || !holds).await?;
         Ok(self.publish(|t| t.lanes[lane.index()] = Some(freq_hz)))
+    }
+
+    pub async fn lane_pll(&self, lane: Lane) -> Option<LanePll> {
+        self.hw.lane_pll(lane).await
     }
 
     /// Stop a lane's chain; its NCO stays where it is.

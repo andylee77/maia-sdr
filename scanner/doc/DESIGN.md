@@ -1076,7 +1076,7 @@ From the brief:
     task; lane dibit readers with the production clock (voice attributed to calls by air time,
     dibits from before a retune dropped), the lanes' NID status every 16 ms; `/api/v1/calls` and
     the calls card. A lane resumes on its channel without a reset only when it carried voice in
-    the last second (the PLL check of p25-httpd's `resume_needs_reset` is not ported yet).
+    the last second and its PLL is under half its clamp (p25-httpd's `resume_needs_reset`).
   - **Live, unit B** (Clay, 3 min): 38 calls, 14 followed on lane 1, all 14 with voice.
   - **Live, unit A:** Clay Electric DMR (10 min, a quiet hour): both calls followed on lane 1
     with voice and their talkers, one on LCN 6 TS2 and one on the control repeater's TS2. Clay
@@ -1084,5 +1084,7 @@ From the brief:
     encrypted listed; 18 % of a core.
   - **Changed from p25-httpd:** VoteNowAdvice, CallTimerParameters and Announcement count as
     DMR housekeeping in the events box.
-  - **Next:** learned state (IDEN bands loaded at activation, the encrypted list and grant counts
-    saved), the PLL check on a same-channel resume, then audio (phase 4).
+  - **Learned state** (`trunking::learned`): the stored IDEN bands seed the control decoders at
+    activation; grant counts (one per opened call) and encrypted talkgroups are kept; saved
+    every 10 minutes when changed, on a switch and at shutdown.
+  - **Next:** audio (phase 4).

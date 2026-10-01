@@ -313,8 +313,9 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             Command::Follow { lane, channel } => {
                 let Some(freq) = channel.freq_hz else { return };
                 let Some(slot) = self.slot(lane) else { return };
-                let coast = slot.tuned_hz == Some(freq) && slot.last_voice.is_some_and(|t| at.mono.saturating_duration_since(t) <= COAST_MAX_IDLE);
                 let moved = slot.tuned_hz != Some(freq);
+                let since_voice = slot.last_voice.map(|t| at.mono.saturating_duration_since(t));
+                let coast = !moved && !resume_needs_reset(self.tuner.lane_pll(lane).await, since_voice);
                 match self.tuner.retune_lane(lane, freq, !coast).await {
                     Ok(_) => {
                         let slot = self.slot(lane).expect("lane");
@@ -532,6 +533,14 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
     }
 }
 
+/// Should a lane resuming on the channel it is parked on be reset rather than coast on its
+/// loops? Yes when it carried no voice within `COAST_MAX_IDLE` (the carrier dropped; its AGC wound
+/// up on noise), or its PLL ran to half its clamp or more.
+pub fn resume_needs_reset(pll: Option<crate::radio::tuner::LanePll>, since_voice: Option<Duration>) -> bool {
+    let stale = since_voice.is_none_or(|d| d > COAST_MAX_IDLE);
+    stale || pll.is_some_and(|p| p.hot())
+}
+
 fn view_of(o: &Opened, c: Option<&Closed>) -> CallView {
     CallView {
         call: o.call,
@@ -572,4 +581,34 @@ fn opened_text(o: &Opened) -> String {
 fn closed_text(o: &Opened, c: &Closed) -> String {
     let secs = c.open_ms as f64 / 1e3;
     format!("call {} TG {} ended after {secs:.1} s ({:?}), {} voice frames", o.call, o.tg, c.reason, c.voice_frames)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::radio::tuner::LanePll;
+
+    // A parked lane resumed with its PLL at the clamp after the carrier had been gone for seconds
+    // and lost two whole transmissions (bench 2026-09-27).
+    #[test]
+    fn a_stale_or_runaway_lane_is_reset_on_resume() {
+        let ms = Duration::from_millis;
+        for clamp_q213 in [8579, 5325] {
+            let pll = |q| Some(LanePll { pll_q213: q, clamp_q213 });
+            // Voice a moment ago, PLL near centre: coast.
+            assert!(!resume_needs_reset(pll(300), Some(ms(400))));
+            assert!(!resume_needs_reset(pll(-2000), Some(COAST_MAX_IDLE)));
+            // PLL at or past half the clamp: reset, however fresh.
+            assert!(resume_needs_reset(pll(clamp_q213 as i16), Some(ms(100))));
+            assert!(resume_needs_reset(pll(-(clamp_q213 / 2) as i16), Some(ms(100))));
+            // Gone longer than the coast window, or never any voice: reset.
+            assert!(resume_needs_reset(pll(0), Some(COAST_MAX_IDLE + ms(1))));
+            assert!(resume_needs_reset(pll(0), None));
+        }
+        // 3000 is inside the pi/3 clamp's coast band but past half the 0.65 rad clamp.
+        assert!(!resume_needs_reset(Some(LanePll { pll_q213: 3000, clamp_q213: 8579 }), Some(ms(100))));
+        assert!(resume_needs_reset(Some(LanePll { pll_q213: 3000, clamp_q213: 5325 }), Some(ms(100))));
+        // No PLL reading (no hardware): the voice rule alone.
+        assert!(!resume_needs_reset(None, Some(ms(100))));
+    }
 }

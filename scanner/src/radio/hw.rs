@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 
-use super::tuner::{RadioHw, Readback};
+use super::tuner::{LanePll, RadioHw, Readback};
 use crate::hardware::ad9361::GainMode;
 use crate::hardware::p25core::Lane;
 use crate::hardware::presets::DdcPreset;
@@ -72,6 +72,12 @@ mod board {
         async fn retune_lane(&self, lane: Lane, nco_hz: f64, sample_rate_hz: u32, reset: bool) -> Result<()> {
             let core = self.core.lock().await;
             core.lane(lane).with_context(|| format!("{lane} is not present"))?.retune(nco_hz, sample_rate_hz as f64, reset)
+        }
+
+        async fn lane_pll(&self, lane: Lane) -> Option<LanePll> {
+            let core = self.core.lock().await;
+            let clamp_q213 = core.version().pll_clamp_q213();
+            core.lane(lane).map(|c| LanePll { pll_q213: c.debug().0, clamp_q213 })
         }
 
         async fn pause_lane(&self, lane: Lane) -> Result<()> {
