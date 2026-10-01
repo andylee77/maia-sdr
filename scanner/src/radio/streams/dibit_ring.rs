@@ -137,25 +137,30 @@ impl RingTracker {
         }
     }
 
+    #[cfg(test)]
     pub fn geometry(&self) -> RingGeometry {
         self.geom
     }
 
+    #[cfg(test)]
     /// Absolute byte position of the next byte to deliver.
     pub fn pos(&self) -> u64 {
         self.pos
     }
 
+    #[cfg(test)]
     /// Absolute next-address of the latest accepted reading.
     pub fn last_abs_next(&self) -> Option<u64> {
         self.last.map(|a| a.abs_next)
     }
 
+    #[cfg(test)]
     /// Current safe end (`abs_next − 256`) of the latest accepted reading.
     pub fn last_safe_end(&self) -> Option<u64> {
         self.last.map(|a| a.abs_next.saturating_sub(LEAD_BYTES))
     }
 
+    #[cfg(test)]
     pub fn started(&self) -> bool {
         self.last.is_some()
     }
@@ -327,34 +332,6 @@ impl RingTracker {
 
 }
 
-/// Lift a next-address value read outside the poll loop (e.g. by a
-/// chain-control hook at action time) onto the absolute
-/// coordinate, relative to the latest accepted reading `(abs_next,
-/// t_us)`. Returns `None` before start-up or when implausible.
-pub fn lift_next_address(
-    geom: &RingGeometry,
-    reference: Option<(u64, u64)>,
-    next_address: u32,
-    t_us: u64,
-) -> Option<u64> {
-    let (abs_ref, t_ref) = reference?;
-    let ring = geom.ring_bytes();
-    let off = geom.offset_of(next_address);
-    let delta = (off + ring - abs_ref % ring) % ring;
-    let elapsed = t_us.saturating_sub(t_ref) as f64 * 1e-6;
-    let limit = NOMINAL_BYTE_RATE_HZ * elapsed * 1.25 + (4 * BURST_BYTES) as f64;
-    if (delta as f64) <= limit {
-        Some(abs_ref + delta)
-    } else if ring - delta <= 2 * BURST_BYTES {
-        // Reading slightly older than the reference (both taken within
-        // the same burst period by different tasks): allow a small
-        // backwards step.
-        Some(abs_ref - (ring - delta))
-    } else {
-        None
-    }
-}
-
 /// Production-rate model mapping absolute dibit indices to monotonic time.
 #[derive(Debug, Clone)]
 pub struct DibitClock {
@@ -401,6 +378,7 @@ pub struct ClockView {
 }
 
 /// Interval returned by [`DibitClock::index_at`].
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IndexEstimate {
     pub lo: f64,
@@ -427,14 +405,6 @@ impl DibitClock {
             observations: 0,
             reseeds: 0,
         }
-    }
-
-    pub fn is_seeded(&self) -> bool {
-        self.state.is_some()
-    }
-
-    pub fn running(&self) -> Option<bool> {
-        self.state.map(|s| s.running)
     }
 
     /// Project the stored interval to time `t_us` (no mutation).
@@ -550,27 +520,16 @@ impl DibitClock {
         s.period_start = mid;
     }
 
-    /// Widen the interval by ±`dibits` (LSM reset may slip the symbol
-    /// phase / warm-up by a few dibits).
-    pub fn perturb(&mut self, t_us: u64, dibits: f64) {
-        if self.state.is_none() {
-            return;
-        }
-        self.move_to(t_us);
-        if let Some(s) = self.state.as_mut() {
-            s.lo -= dibits;
-            s.hi += dibits;
-        }
-    }
-
     /// Estimated number of dibits produced by `t_us` (= index of the next
     /// dibit the HDL will produce).
+    #[cfg(test)]
     pub fn index_at(&self, t_us: u64) -> Option<IndexEstimate> {
         let (lo, hi) = self.projected(t_us)?;
         Some(IndexEstimate { lo, mid: 0.5 * (lo + hi), hi })
     }
 
     /// Current interval width (dibits).
+    #[cfg(test)]
     pub fn uncertainty_dibits(&self) -> Option<f64> {
         self.state.map(|s| s.hi - s.lo)
     }

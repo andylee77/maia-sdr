@@ -160,10 +160,6 @@ macro_rules! bank {
                 (n.nac().bits(), n.duid().bits())
             }
 
-            pub fn drop_count(r: &RegisterBlock) -> u16 {
-                r.[<$lp drop_count>]().read().drop_count().bits()
-            }
-
             pub fn dibit_last_buffer(r: &RegisterBlock) -> u8 {
                 r.[<$lp drop_count>]().read().[<$lp dibit_last_buffer>]().bits()
             }
@@ -177,21 +173,6 @@ macro_rules! bank {
             pub fn debug(r: &RegisterBlock) -> (i16, i16) {
                 let d = r.[<$lp debug>]().read();
                 (d.pll_dbg().bits() as i16, d.sample_point_dbg().bits() as i16)
-            }
-
-            /// AGC gain (Q9.7) and input magnitude (Q1.15).
-            pub fn agc_debug(r: &RegisterBlock) -> (u16, u16) {
-                let d = r.[<$lp agc_debug>]().read();
-                (d.agc_gain_dbg().bits(), d.agc_mag_dbg().bits())
-            }
-
-            /// AGC idle gate (Q1.15): weaker samples do not update the gain.
-            pub fn agc_threshold(r: &RegisterBlock) -> u16 {
-                r.[<$lp agc_config>]().read().mag_update_threshold().bits()
-            }
-
-            pub fn set_agc_threshold(r: &RegisterBlock, v: u16) {
-                r.[<$lp agc_config>]().modify(|_, w| unsafe { w.mag_update_threshold().bits(v) });
             }
         }
     }};
@@ -259,9 +240,6 @@ impl Bank {
     pub fn nid(self, r: &RegisterBlock) -> (u16, u8) {
         dispatch!(self, nid(r))
     }
-    pub fn drop_count(self, r: &RegisterBlock) -> u16 {
-        dispatch!(self, drop_count(r))
-    }
     pub fn dibit_last_buffer(self, r: &RegisterBlock) -> u8 {
         dispatch!(self, dibit_last_buffer(r))
     }
@@ -270,15 +248,6 @@ impl Bank {
     }
     pub fn debug(self, r: &RegisterBlock) -> (i16, i16) {
         dispatch!(self, debug(r))
-    }
-    pub fn agc_debug(self, r: &RegisterBlock) -> (u16, u16) {
-        dispatch!(self, agc_debug(r))
-    }
-    pub fn agc_threshold(self, r: &RegisterBlock) -> u16 {
-        dispatch!(self, agc_threshold(r))
-    }
-    pub fn set_agc_threshold(self, r: &RegisterBlock, v: u16) {
-        dispatch!(self, set_agc_threshold(r, v))
     }
 }
 
@@ -320,9 +289,7 @@ mod tests {
         assert_eq!(Bank::Control.nco(&regs), 0);
         assert_eq!(Bank::Traffic2.nco(&regs), 0);
         Bank::Traffic2.set_lsm_enable(&regs, true);
-        Bank::Traffic2.set_agc_threshold(&regs, 256);
         assert!(Bank::Traffic2.lsm_control(&regs).enable);
         assert!(!Bank::Traffic.lsm_control(&regs).enable);
-        assert_eq!(Bank::Traffic2.agc_threshold(&regs), 256);
     }
 }

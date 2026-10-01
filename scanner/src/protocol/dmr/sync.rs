@@ -15,7 +15,6 @@ pub enum DmrSyncPattern {
     BsVoiceFrameF,
     MobileStationData,
     MobileStationVoice,
-    ReverseChannel,
     MsVoiceFrameB,
     MsVoiceFrameC,
     MsVoiceFrameD,
@@ -31,7 +30,6 @@ pub enum DmrSyncPattern {
     DirectVoiceFrameD,
     DirectVoiceFrameE,
     DirectVoiceFrameF,
-    Reserved,
     Unknown,
 }
 
@@ -45,12 +43,10 @@ impl DmrSyncPattern {
             BaseStationVoice => 0x755F_D7DF_75F7,
             MobileStationData => 0xD5D7_F77F_D757,
             MobileStationVoice => 0x7F7D_5DD5_7DFD,
-            ReverseChannel => 0x77D5_5F7D_FD77,
             DirectDataTimeslot1 => 0xF7FD_D5DD_FD55,
             DirectDataTimeslot2 => 0xD755_7F5F_F7F5,
             DirectVoiceTimeslot1 => 0x5D57_7F77_57FF,
             DirectVoiceTimeslot2 => 0x7DFF_D5F5_5D5F,
-            Reserved => 0xDD7F_F5D7_57DD,
             _ => return None,
         })
     }
@@ -66,7 +62,6 @@ impl DmrSyncPattern {
             BsVoiceFrameF => "BS VOICE F",
             MobileStationData => "MS DATA",
             MobileStationVoice => "MS VOICE A",
-            ReverseChannel => "MS REVERSE",
             MsVoiceFrameB => "MS VOICE B",
             MsVoiceFrameC => "MS VOICE C",
             MsVoiceFrameD => "MS VOICE D",
@@ -82,7 +77,6 @@ impl DmrSyncPattern {
             DirectVoiceFrameD => "DIRECT VOICE D",
             DirectVoiceFrameE => "DIRECT VOICE E",
             DirectVoiceFrameF => "DIRECT VOICE F",
-            Reserved => "RESERVED",
             Unknown => "UNKNOWN",
         }
     }
@@ -292,7 +286,7 @@ impl DmrSyncModeMonitor {
         }
         match pattern {
             BaseStationData | BaseStationVoice => self.base += 1,
-            MobileStationData | MobileStationVoice | ReverseChannel => self.mobile += 1,
+            MobileStationData | MobileStationVoice => self.mobile += 1,
             DirectDataTimeslot1 | DirectDataTimeslot2 | DirectVoiceTimeslot1 | DirectVoiceTimeslot2 => {
                 self.direct += 1
             }

@@ -33,10 +33,6 @@ impl Learned {
         Learned { site: site.to_string(), state: Mutex::new((stored, false)) }
     }
 
-    pub fn site(&self) -> &str {
-        &self.site
-    }
-
     fn with<T>(&self, f: impl FnOnce(&mut SiteState) -> (T, bool)) -> Option<T> {
         let mut s = self.state.lock().ok()?;
         let (out, changed) = f(&mut s.0.value);

@@ -5,6 +5,17 @@ use crate::protocol::dmr::fec::crc::{calculate_residual, CSBK_CRC_MASK};
 use crate::protocol::dmr::fec::set_int;
 use crate::protocol::dmr::fec::test_util::{hex_to_bits, str_to_bits, XorShift};
 
+/// The 96 info bits and the corrected bit count; `None` if uncorrectable.
+fn decode(interleaved: &[u8]) -> Option<([u8; 96], u32)> {
+    decode_with_budget(interleaved, MAX_SEARCH_STEPS).0
+}
+
+/// `decode()` with a search step budget per pass; also returns the steps used.
+fn decode_with_budget(interleaved: &[u8], steps: usize) -> (Option<([u8; 96], u32)>, usize) {
+    let (corrected, used, _) = correct_or_partial(&deinterleave(interleaved), steps);
+    (corrected.map(|(message, n)| (extract_info(&message), n)), used)
+}
+
 /// Deinterleaved block for 96 info bits (reserved bits zero).
 fn block(info: &[u8]) -> [u8; BPTC_LENGTH] {
     let mut m = [0u8; BPTC_LENGTH];

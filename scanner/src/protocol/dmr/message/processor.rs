@@ -130,7 +130,6 @@ impl DmrMessageProcessor {
             burst if burst.is_burst() => {
                 let (pattern, cach) = match burst {
                     DmrMessage::Voice(voice) => (voice.pattern, Some(voice.cach)),
-                    DmrMessage::UnknownBurst { pattern, .. } => (*pattern, None),
                     other => {
                         let data = other.data_burst().unwrap();
                         (data.pattern, Some(data.cach))

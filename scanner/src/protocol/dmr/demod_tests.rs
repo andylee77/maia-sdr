@@ -1,5 +1,8 @@
 use super::*;
 
+/// The demodulator's input: the DDC output.
+const INPUT_RATE_HZ: f64 = 50_000.0;
+
 /// Records what the demodulator hands the framer: every dibit, and the
 /// position in that stream of each sync detection.
 #[derive(Default)]
@@ -162,7 +165,7 @@ fn captured_control_channel() {
         let data = rec.syncs.iter().filter(|(_, p)| *p == DmrSyncPattern::BaseStationData).count();
         let voice = rec.syncs.iter().filter(|(_, p)| *p == DmrSyncPattern::BaseStationVoice).count();
         eprintln!(
-            "{}: syncs {} (BS data {data}, BS voice {voice}), coarse {}, fine {}, losses {}, balance {:.3} rad ({:.0} Hz), gain {:.3}",
+            "{}: syncs {} (BS data {data}, BS voice {voice}), coarse {}, fine {}, losses {}, balance {:.3} rad ({:.0} Hz)",
             path.file_name().unwrap().to_string_lossy(),
             rec.syncs.len(),
             s.coarse_syncs,
@@ -170,7 +173,6 @@ fn captured_control_channel() {
             s.fine_sync_losses,
             demod.symbols.equalizer_balance(),
             -demod.symbols.equalizer_balance() as f64 * SYMBOL_RATE / (2.0 * std::f64::consts::PI),
-            demod.symbols.equalizer_gain(),
         );
         assert!(data > 1900, "{data} BS data syncs");
     }

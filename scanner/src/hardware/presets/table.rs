@@ -1187,10 +1187,6 @@ pub const PRESETS: &[&DdcPreset] = &[
     &PRESET_16M,
 ];
 
-/// Default preset at boot / when CLI doesn't override.
-/// Matches the validated 2026-04-15 configuration.
-pub const DEFAULT_PRESET: &DdcPreset = &PRESET_8M;
-
 /// Look up a preset by its public name (`"2M"`, `"8M"`, …).
 pub fn find_preset(name: &str) -> Option<&'static DdcPreset> {
     PRESETS.iter().copied().find(|p| p.name == name)

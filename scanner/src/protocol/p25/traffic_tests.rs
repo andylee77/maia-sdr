@@ -19,7 +19,6 @@ fn kinds(out: &[TrafficEvent]) -> Vec<String> {
             TrafficEvent::Source(s) => Some(format!("source {s}")),
             TrafficEvent::TalkComplete(s) => Some(format!("talk_complete {s:?}")),
             TrafficEvent::End { lc, .. } => Some(format!("end {lc}")),
-            TrafficEvent::Header { encrypted, .. } => Some(format!("header enc={encrypted}")),
         })
         .collect()
 }
@@ -62,13 +61,13 @@ fn an_hdu_marks_the_call_encrypted_and_an_ldu2_cannot() {
     let hdu = |alg| HduHeader { talkgroup: 402, key_id: 1, algorithm_id: alg, message_indicator: [0; 9] };
     t.unit(Unit::Hdu(Some(hdu(0x84))), at, at, &mut out);
     ldu1(&mut t, 1, at, &mut out);
-    assert_eq!(kinds(&out), ["header enc=true", "voice enc=true"]);
+    assert_eq!(kinds(&out), ["voice enc=true"]);
     // An unknown algorithm byte (a corrupt decode) does not.
     let mut t = following(402, None);
     out.clear();
     t.unit(Unit::Hdu(Some(hdu(0x08))), at, at, &mut out);
     ldu1(&mut t, 1, at, &mut out);
-    assert_eq!(kinds(&out)[1], "voice enc=false");
+    assert_eq!(kinds(&out), ["voice enc=false"]);
 }
 
 #[test]
@@ -135,7 +134,7 @@ fn sdrtrunk_traffic_recordings() {
                 t.push(byte >> shift, at, at + Duration::from_secs(files), &mut out);
             }
         }
-        let s = t.stats();
+        let s = &t.framer.stats;
         let v = out.iter().filter(|e| matches!(e, TrafficEvent::Voice { .. })).count() as u64;
         assert_eq!(v, s.ldu1s + s.ldu2s, "{name}");
         voices += v;

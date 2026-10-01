@@ -2,6 +2,10 @@
 //!
 //! `boot` brings the radio up from the persisted configuration and runs until a shutdown signal.
 
+// Off the board the hardware layer and the stream readers compile for their tests only; the
+// board build is the one that reports unused code.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
+
 mod api;
 mod audio;
 mod boot;

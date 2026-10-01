@@ -2,27 +2,6 @@
 //!
 //! Reference: TIA-102.BAAA (P25 Common Air Interface)
 
-/// 2-bit dibit symbol (P25 4FSK)
-/// Mapping: +3 -> 01, +1 -> 00, -1 -> 10, -3 -> 11
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Dibit(pub u8);
-
-/// P25 Network Access Code (12 bits)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Nac(pub u16);
-
-impl Nac {
-    pub fn new(val: u16) -> Self {
-        Nac(val & 0xFFF)
-    }
-}
-
-impl std::fmt::Display for Nac {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:03X}", self.0)
-    }
-}
-
 /// P25 Data Unit ID (4 bits, from NID)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataUnit {

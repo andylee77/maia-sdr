@@ -33,6 +33,7 @@ impl RadioLease {
         self.current() == Lease::Normal
     }
 
+    #[cfg(test)]
     pub fn watch(&self) -> watch::Receiver<Lease> {
         self.state.subscribe()
     }

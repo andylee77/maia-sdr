@@ -104,7 +104,7 @@ fn is_tdulc_body_status(pos: usize) -> bool {
 
 /// Parsed TDULC / LDU1 Link Control Word. 72-bit LC layout is identical
 /// in both data units; only the FEC chain differs (Golay+RS on TDULC,
-/// Hamming+RS on LDU1). See `parse_tdulc_lcw` / `parse_ldu1_lcw`.
+/// Hamming+RS on LDU1). See `parse_tdulc_lcw_checked` / `parse_ldu1_lcw`.
 ///
 /// Variants mirror SDRTrunk's `LinkControlOpcode` enum plus the one
 /// Motorola vendor extension we act on (`MOTOROLA_TALK_COMPLETE`).
@@ -174,18 +174,11 @@ pub enum TdulcLcw {
     Other { opcode: u8, mfid: u8 },
 }
 
-/// Parse a TDULC Link Control Word from the raw body dibit slice.
-///
-/// Expects exactly `DataUnit::TduLc.length_dibits()` (159) dibits in
-/// the same format the software decoder's `du_buffer` holds.
-/// Returns `None` if the length is wrong; returns `TdulcLcw::Other`
-/// for unrecognized opcodes or bit-corrupt frames.
-pub fn parse_tdulc_lcw(body_raw: &[u8]) -> Option<TdulcLcw> {
-    parse_tdulc_lcw_checked(body_raw).map(|(lcw, _)| lcw)
-}
-
-/// `parse_tdulc_lcw` plus whether the RS(24,12,13) decode
-/// succeeded (`true` = the LC is FEC-valid; `false` = uncorrectable,
+/// Parse a TDULC Link Control Word from the raw body dibit slice:
+/// exactly `DataUnit::TduLc.length_dibits()` (159) dibits as the framer
+/// holds them. `None` if the length is wrong; `TdulcLcw::Other` for
+/// unrecognized opcodes or bit-corrupt frames. With it, whether the
+/// RS(24,12,13) decode succeeded (`true` = the LC is FEC-valid; `false` = uncorrectable,
 /// the LCW is the best-effort uncorrected payload). SDRTrunk acts on a
 /// TDULC only when its LCW is valid; the lifecycle's end-of-transmission
 /// close does the same.
@@ -283,7 +276,7 @@ pub fn parse_tdulc_lcw_checked(body_raw: &[u8]) -> Option<(TdulcLcw, bool)> {
 ///
 /// Both TDULC and LDU1 produce a 72-bit LCW after FEC; the layout of
 /// the LCW itself is identical between them. This helper centralises
-/// the opcode / MFID dispatch so `parse_tdulc_lcw` and
+/// the opcode / MFID dispatch so `parse_tdulc_lcw_checked` and
 /// `parse_ldu1_lcw` only differ in the FEC stack that precedes it.
 ///
 /// Dispatch follows SDRTrunk's `LinkControlWordFactory`:
@@ -405,7 +398,7 @@ const LDU1_RS_HEX_POSITIONS: [usize; 12] = [
 ];
 
 /// Parse the Link Control Word embedded in an LDU1 voice frame.
-/// Produces the same [`TdulcLcw`] variants as [`parse_tdulc_lcw`] --
+/// Produces the same [`TdulcLcw`] variants as [`parse_tdulc_lcw_checked`] --
 /// the 72-bit LCW structure is identical; only the FEC stack
 /// (Hamming+RS vs Golay+RS) and hexbit positions differ.
 ///
@@ -507,82 +500,6 @@ pub fn parse_ldu1_source(body_raw: &[u8]) -> Option<u32> {
         | TdulcLcw::NetStatusBroadcast { .. }
         | TdulcLcw::Other { .. } => None,
     }
-}
-
-/// Returns the 72-bit LC as 9 bytes (MSB-first) extracted from a
-/// TDULC body dibit slice. First two bytes are opcode / MFID;
-/// `bytes[6..9]` is the Motorola ADDRESS field. `None` if the body
-/// length is wrong.
-pub fn tdulc_lc_bytes(body_raw: &[u8]) -> Option<[u8; 9]> {
-    if body_raw.len() != DataUnit::TduLc.length_dibits() {
-        return None;
-    }
-    let data_dibits: Vec<u8> = body_raw
-        .iter()
-        .enumerate()
-        .filter_map(
-            |(pos, &d)| {
-                if is_tdulc_body_status(pos) {
-                    None
-                } else {
-                    Some(d)
-                }
-            },
-        )
-        .collect();
-    let raw_bits = dibits_to_bits(&data_dibits);
-    if raw_bits.len() < 288 {
-        return None;
-    }
-    // Same Golay(24,12) + RS(24,12,13) as parse_tdulc_lcw so dumped
-    // bytes match what the parser classified against.
-    let mut corrected_bits = [false; 288];
-    for cw_idx in 0..12 {
-        let base = cw_idx * GOLAY24_CODEWORD_BITS;
-        let mut cw = [false; GOLAY24_CODEWORD_BITS];
-        for b in 0..GOLAY24_CODEWORD_BITS {
-            cw[b] = raw_bits[base + b];
-        }
-        golay24_correct(&mut cw);
-        for b in 0..GOLAY24_CODEWORD_BITS {
-            corrected_bits[base + b] = cw[b];
-        }
-    }
-    let hex_at = |start: usize| -> u32 {
-        let mut v = 0u32;
-        for b in 0..6 {
-            v = (v << 1) | if corrected_bits[start + b] { 1 } else { 0 };
-        }
-        v
-    };
-    let mut rs_input = [0u32; 63];
-    for i in 0..12 {
-        rs_input[i] = hex_at(TDULC_RS_HEX_POSITIONS[11 - i]);
-    }
-    for i in 0..12 {
-        rs_input[12 + i] = hex_at(LC_HEX_POSITIONS[11 - i]);
-    }
-    let rs_output = match super::fec::rs_24_12_13::decode(&rs_input) {
-        Ok(v) => v,
-        Err(v) => v,
-    };
-    let mut lc_bits = [false; 72];
-    for i in 0..12 {
-        let hexbit_val = rs_output[23 - i];
-        for b in 0..6 {
-            lc_bits[i * 6 + b] =
-                ((hexbit_val >> (5 - b)) & 1) != 0;
-        }
-    }
-    let mut out = [0u8; 9];
-    for (byte_i, byte) in out.iter_mut().enumerate() {
-        let mut v = 0u8;
-        for b in 0..8 {
-            v = (v << 1) | if lc_bits[byte_i * 8 + b] { 1 } else { 0 };
-        }
-        *byte = v;
-    }
-    Some(out)
 }
 
 /// Raw 144-bit IMBE voice frame, ready for direct vocoder input.

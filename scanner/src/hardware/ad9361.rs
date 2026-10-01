@@ -1,10 +1,8 @@
 //! The AD9361 receiver through the Linux IIO sysfs interface (`ad9361-phy`).
 //!
-//! Receive only. Every write is remembered in a shadow, so the tuner and the API report what was
-//! commanded without a sysfs read. Only `radio::tuner` calls the setters.
+//! Receive only. Only `radio::tuner` calls the setters.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use tokio::fs;
@@ -34,20 +32,9 @@ impl GainMode {
     }
 }
 
-/// The values last written, `None` until the first write.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Commanded {
-    pub lo_hz: Option<u64>,
-    pub sample_rate_hz: Option<u32>,
-    pub rf_bandwidth_hz: Option<u32>,
-    pub gain_mode: Option<GainMode>,
-    pub gain_db: Option<f64>,
-}
-
 #[derive(Debug)]
 pub struct Ad9361 {
     dir: PathBuf,
-    shadow: Mutex<Commanded>,
 }
 
 const LO: &str = "out_altvoltage0_RX_LO_frequency";
@@ -72,15 +59,7 @@ impl Ad9361 {
 
     /// A device at `dir` (tests use a directory of plain files).
     pub fn at(dir: &Path) -> Ad9361 {
-        Ad9361 { dir: dir.to_path_buf(), shadow: Mutex::new(Commanded::default()) }
-    }
-
-    pub fn commanded(&self) -> Commanded {
-        self.shadow.lock().unwrap_or_else(|p| p.into_inner()).clone()
-    }
-
-    fn remember(&self, f: impl FnOnce(&mut Commanded)) {
-        f(&mut self.shadow.lock().unwrap_or_else(|p| p.into_inner()));
+        Ad9361 { dir: dir.to_path_buf() }
     }
 
     async fn write(&self, attr: &str, value: impl ToString) -> Result<()> {
@@ -94,34 +73,24 @@ impl Ad9361 {
     }
 
     pub async fn set_lo_hz(&self, hz: u64) -> Result<()> {
-        self.write(LO, hz).await?;
-        self.remember(|c| c.lo_hz = Some(hz));
-        Ok(())
+        self.write(LO, hz).await
     }
 
     pub async fn set_sample_rate_hz(&self, hz: u32) -> Result<()> {
-        self.write(SAMPLE_RATE, hz).await?;
-        self.remember(|c| c.sample_rate_hz = Some(hz));
-        Ok(())
+        self.write(SAMPLE_RATE, hz).await
     }
 
     pub async fn set_rf_bandwidth_hz(&self, hz: u32) -> Result<()> {
-        self.write(RF_BANDWIDTH, hz).await?;
-        self.remember(|c| c.rf_bandwidth_hz = Some(hz));
-        Ok(())
+        self.write(RF_BANDWIDTH, hz).await
     }
 
     /// Set the mode before a manual gain: changing the mode resets the gain.
     pub async fn set_gain_mode(&self, mode: GainMode) -> Result<()> {
-        self.write(GAIN_MODE, mode.as_str()).await?;
-        self.remember(|c| c.gain_mode = Some(mode));
-        Ok(())
+        self.write(GAIN_MODE, mode.as_str()).await
     }
 
     pub async fn set_gain_db(&self, db: f64) -> Result<()> {
-        self.write(GAIN, db).await?;
-        self.remember(|c| c.gain_db = Some(db));
-        Ok(())
+        self.write(GAIN, db).await
     }
 
     pub async fn lo_hz(&self) -> Result<u64> {
@@ -154,7 +123,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn writes_reach_sysfs_and_the_shadow() {
+    async fn writes_reach_sysfs() {
         let dir = tempfile::tempdir().unwrap();
         let dev = Ad9361::at(dir.path());
         dev.set_lo_hz(858_100_000).await.unwrap();
@@ -164,8 +133,6 @@ mod tests {
         assert_eq!(dev.lo_hz().await.unwrap(), 858_100_000);
         assert_eq!(dev.gain_mode().await.unwrap(), GainMode::SlowAttack);
         assert_eq!(dev.gain_db().await.unwrap(), 71.0);
-        let c = dev.commanded();
-        assert_eq!((c.lo_hz, c.gain_mode, c.sample_rate_hz), (Some(858_100_000), Some(GainMode::SlowAttack), None));
     }
 
     #[test]

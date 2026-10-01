@@ -1,9 +1,9 @@
 //! DDC presets: the AD9361 sample rate and the matching three-stage FIR decimator, plus the
-//! coefficient RAM image each stage needs. Every preset decimates to `DDC_OUTPUT_RATE_HZ`.
+//! coefficient RAM image each stage needs. Every preset decimates to 50 kSPS.
 
 mod table;
 
-pub use table::{find_preset, DdcPreset, DEFAULT_PRESET, PRESETS};
+pub use table::{find_preset, DdcPreset, PRESETS};
 
 use anyhow::{bail, Result};
 
@@ -12,12 +12,6 @@ impl std::fmt::Debug for DdcPreset {
         write!(f, "DdcPreset({})", self.name)
     }
 }
-
-/// Complex samples/s at the output of every DDC, for every preset.
-pub const DDC_OUTPUT_RATE_HZ: u32 = 50_000;
-
-/// The LSM front end, after the gateware's /2 decimator: SDRTrunk's rate.
-pub const LSM_INPUT_RATE_HZ: u32 = DDC_OUTPUT_RATE_HZ / 2;
 
 /// The three FIR stages share one coefficient RAM: FIR1 (FIR4DSP, folded) at 0-255, FIR2
 /// (FIR2DSP) at 256-383 and FIR3 (FIR4DSP) at 512-767.
@@ -197,8 +191,7 @@ mod tests {
     fn every_preset_decimates_to_the_ddc_output_rate() {
         for p in PRESETS {
             assert_eq!(p.sample_rate_hz as usize % p.total_decim(), 0, "{}", p.name);
-            assert_eq!(p.sample_rate_hz as usize / p.total_decim(), DDC_OUTPUT_RATE_HZ as usize, "{}", p.name);
+            assert_eq!(p.sample_rate_hz as usize / p.total_decim(), 50_000, "{}", p.name);
         }
-        assert_eq!(LSM_INPUT_RATE_HZ, 25_000);
     }
 }

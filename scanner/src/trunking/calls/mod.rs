@@ -82,6 +82,7 @@ impl NotFollowed {
     }
 
     /// The names p25-httpd stored ("sticky_lock" is today's `Busy`).
+    #[cfg(test)]
     pub fn parse(s: &str) -> Option<NotFollowed> {
         Some(match s {
             "encrypted" => NotFollowed::Encrypted,
@@ -321,6 +322,7 @@ impl Call {
     }
 
     /// When the call closes if nothing changes, by which rule, and that rule's window.
+    #[cfg(test)]
     pub fn close_plan(&self, policy: &CallPolicy) -> (Instant, &'static str, Duration) {
         let idle_at = self.last_keepalive() + policy.hang;
         if let Some(end) = self.end {
@@ -341,13 +343,6 @@ impl Call {
         self.end.map(|e| e.lc)
     }
 
-    pub fn first_voice(&self) -> Option<Stamp> {
-        self.first_voice
-    }
-
-    pub fn last_voice(&self) -> Option<Instant> {
-        self.last_voice
-    }
 
     fn due(&self, now: Instant, policy: &CallPolicy) -> Option<CloseReason> {
         if self.end.is_some_and(|e| now.saturating_duration_since(e.at) >= policy.end_grace) {
@@ -429,22 +424,9 @@ impl CallBook {
         }
     }
 
-    pub fn policy(&self) -> CallPolicy {
-        self.policy
-    }
-
-    pub fn set_policy(&mut self, policy: CallPolicy) {
-        self.policy = policy;
-    }
-
     /// The open call on `lane`.
     pub fn on_lane(&self, lane: Lane) -> Option<&Call> {
         self.slots.iter().find(|s| s.lane == lane).and_then(|s| s.call.as_ref())
-    }
-
-    /// Open calls the follower did not take.
-    pub fn not_followed(&self) -> &[Call] {
-        &self.not_followed
     }
 
     fn slot_index(&self, lane: Option<Lane>) -> usize {

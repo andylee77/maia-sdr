@@ -90,12 +90,6 @@ pub fn deinterleave(message: &[u8]) -> [u8; BPTC_LENGTH] {
     deinterleaved
 }
 
-/// Deinterleaves, corrects and extracts the 96 info bits plus the corrected bit
-/// count; `None` if uncorrectable. Ports `BPTC_196_96.extract()`.
-pub fn decode(interleaved: &[u8]) -> Option<([u8; 96], u32)> {
-    decode_with_budget(interleaved, MAX_SEARCH_STEPS).0
-}
-
 /// A BPTC(196,96) block as SDRTrunk's `extract()` hands it on: the info bits
 /// even when correction fails (then as its correction pass left them), and the
 /// reserved bits.
@@ -125,26 +119,10 @@ pub fn extract(interleaved: &[u8]) -> Extracted {
     }
 }
 
-/// `decode()` with a search step budget per pass; also returns the steps used.
-fn decode_with_budget(interleaved: &[u8], steps: usize) -> (Option<([u8; 96], u32)>, usize) {
-    let (corrected, used) = correct_with_budget(&deinterleave(interleaved), steps);
-    (
-        corrected.map(|(message, n)| (extract_info(&message), n)),
-        used,
-    )
-}
-
-/// The corrected deinterleaved block and its corrected bit count.
-fn correct_with_budget(
-    received: &[u8; BPTC_LENGTH],
-    steps: usize,
-) -> (Option<([u8; BPTC_LENGTH], u32)>, usize) {
-    let (corrected, used, _) = correct_or_partial(received, steps);
-    (corrected, used)
-}
-
-/// `correct_with_budget()`, plus what SDRTrunk's pass left of the block when
-/// nothing valid was found (its `extract()` returns that).
+/// The corrected deinterleaved block and its corrected bit count (`None` if
+/// uncorrectable within `steps` search steps per pass), the steps used, and
+/// what SDRTrunk's pass left of the block (its `extract()` returns that when
+/// nothing valid was found).
 fn correct_or_partial(
     received: &[u8; BPTC_LENGTH],
     steps: usize,

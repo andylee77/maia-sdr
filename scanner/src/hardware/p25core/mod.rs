@@ -2,8 +2,8 @@
 //! its interrupt.
 //!
 //! The core has a control chain and one or two traffic chains ("lanes"), each a DDC plus an LSM
-//! demodulator writing a dibit ring; IQ taps after the control and traffic DDCs, before the LSM
-//! slicer and before the DDCs; and a wideband spectrometer. The second lane exists from core
+//! demodulator writing a dibit ring; IQ taps after the control and traffic DDCs and before the
+//! LSM slicer; and a wideband spectrometer. The second lane exists from core
 //! 0.3.0 and is never touched on an older core.
 
 pub mod chain;
@@ -13,11 +13,10 @@ pub mod regs;
 pub mod rings;
 
 use std::fmt;
-use std::sync::Arc;
 
 pub use chain::Chain;
-pub use regs::{freq_to_nco, nco_to_freq, Bank, LsmControl, LsmStatus};
-pub use rings::{EpochSink, HwAction, RingGeometry, RingSnapshot};
+pub use regs::{nco_to_freq, Bank, LsmControl, LsmStatus};
+pub use rings::RingSnapshot;
 
 use crate::hardware::core_version::CoreVersion;
 use regs::Registers;
@@ -66,8 +65,6 @@ pub enum IqRing {
     Traffic,
     /// Inside the control LSM, before the slicer (2 samples per symbol).
     PreDiff,
-    /// Before the DDCs, at the AD9361 rate.
-    Wideband,
 }
 
 /// The dibit rings: the control chain's and each lane's.
@@ -81,7 +78,6 @@ pub struct P25Core {
     regs: Registers,
     version: CoreVersion,
     lane_two: bool,
-    sinks: [Option<Arc<dyn EpochSink>>; 2],
     #[cfg(target_os = "linux")]
     dma: dma::Dma,
 }
@@ -96,25 +92,12 @@ impl P25Core {
     }
 
     pub fn control(&self) -> Chain<'_> {
-        Chain { regs: &self.regs, bank: Bank::Control, sink: None }
+        Chain { regs: &self.regs, bank: Bank::Control }
     }
 
     /// A lane's chain; `None` for a lane the core does not have.
     pub fn lane(&self, lane: Lane) -> Option<Chain<'_>> {
-        (lane == Lane::One || self.lane_two).then(|| Chain {
-            regs: &self.regs,
-            bank: lane.bank(),
-            sink: self.sinks[lane.index()].as_deref(),
-        })
-    }
-
-    /// Where a lane reports its hardware actions. False for a lane the core does not have.
-    pub fn set_epoch_sink(&mut self, lane: Lane, sink: Arc<dyn EpochSink>) -> bool {
-        if lane == Lane::Two && !self.lane_two {
-            return false;
-        }
-        self.sinks[lane.index()] = Some(sink);
-        true
+        (lane == Lane::One || self.lane_two).then(|| Chain { regs: &self.regs, bank: lane.bank() })
     }
 
     pub fn set_iq_enable(&self, ring: IqRing, on: bool) {
@@ -123,7 +106,6 @@ impl P25Core {
             IqRing::Control => r.iq_dma_control().modify(|_, w| w.iq_enable().bit(on)),
             IqRing::Traffic => r.traffic_iq_dma_control().modify(|_, w| w.traffic_iq_enable().bit(on)),
             IqRing::PreDiff => r.pre_diff_iq_dma_control().modify(|_, w| w.pre_diff_iq_enable().bit(on)),
-            IqRing::Wideband => r.wideband_iq_dma_control().modify(|_, w| w.wideband_iq_enable().bit(on)),
         };
     }
 
@@ -134,19 +116,7 @@ impl P25Core {
             IqRing::Control => r.iq_dma_status().read().last_buffer().bits(),
             IqRing::Traffic => r.traffic_iq_dma_status().read().traffic_iq_last_buffer().bits(),
             IqRing::PreDiff => r.pre_diff_iq_dma_status().read().last_buffer().bits(),
-            IqRing::Wideband => r.wideband_iq_dma_status().read().last_buffer().bits(),
         }) as u32
-    }
-
-    /// Reads and clears the ring's overflow latch.
-    pub fn iq_overflow(&self, ring: IqRing) -> bool {
-        let r = &self.regs;
-        match ring {
-            IqRing::Control => r.iq_dma_status().read().iq_overflow().bit(),
-            IqRing::Traffic => r.traffic_iq_dma_status().read().traffic_iq_overflow().bit(),
-            IqRing::PreDiff => r.pre_diff_iq_dma_status().read().pre_diff_iq_overflow().bit(),
-            IqRing::Wideband => r.wideband_iq_dma_status().read().wideband_iq_overflow().bit(),
-        }
     }
 
     /// The chain behind a dibit ring, if present.
@@ -185,18 +155,12 @@ impl P25Core {
         self.regs.spec_control().modify(|_, w| w.spec_peak_detect().bit(on));
     }
 
-    /// End the integration in progress now.
-    pub fn spectrometer_abort(&self) {
-        self.regs.spec_control().modify(|_, w| w.spec_abort().bit(true));
-    }
-
     #[cfg(test)]
     pub fn in_memory(version: CoreVersion) -> P25Core {
         P25Core {
             regs: Registers::in_memory(),
             version,
             lane_two: version.has_traffic2_chain(),
-            sinks: [None, None],
         }
     }
 }
@@ -229,7 +193,7 @@ mod dma {
     }
 
     pub(super) struct Dma {
-        iq: [Ring; 4],
+        iq: [Ring; 3],
         dibit: [Option<Ring>; 3],
         spectrum: Ring,
         spectrum_last: Option<u8>,
@@ -242,7 +206,6 @@ mod dma {
                     Ring::open("p25-iq").await?,
                     Ring::open("p25-traffic-iq").await?,
                     Ring::open("p25-pre-diff-iq").await?,
-                    Ring::open("p25-wideband-iq").await?,
                 ],
                 dibit: [
                     Some(Ring::open("p25-lsm-dibit").await?),
@@ -269,7 +232,6 @@ mod dma {
             IqRing::Control => 0,
             IqRing::Traffic => 1,
             IqRing::PreDiff => 2,
-            IqRing::Wideband => 3,
         }
     }
 
@@ -335,7 +297,7 @@ impl P25Core {
         use anyhow::Context;
 
         let uio = crate::hardware::mmio::Uio::open("p25-core").await?;
-        let mapping = Arc::new(uio.map(0).await.context("p25-core registers")?);
+        let mapping = std::sync::Arc::new(uio.map(0).await.context("p25-core registers")?);
         let regs = Registers::mapped(mapping);
         let id = regs.product_id().read().product_id().bits();
         anyhow::ensure!(id == PRODUCT_ID, "FPGA product id 0x{id:08x}, expected 0x{PRODUCT_ID:08x}");
@@ -355,7 +317,7 @@ impl P25Core {
         };
         tracing::info!("P25 core {version}, {} traffic lane(s)", 1 + lane_two as usize);
         let interrupts = irq::Interrupts::new(uio, regs.clone());
-        Ok((P25Core { regs, version, lane_two, sinks: [None, None], dma }, interrupts))
+        Ok((P25Core { regs, version, lane_two, dma }, interrupts))
     }
 }
 
@@ -370,7 +332,7 @@ mod tests {
         assert_eq!(old.lanes().collect::<Vec<_>>(), vec![Lane::One]);
         assert!(old.dibit_snapshot(DibitRing::Lane(Lane::Two)).is_none());
         let new = P25Core::in_memory(CoreVersion::new(0, 3, 0));
-        assert_eq!(new.lane(Lane::Two).map(|c| c.bank()), Some(Bank::Traffic2));
+        assert!(new.lane(Lane::Two).is_some());
         assert_eq!(new.lanes().count(), 2);
     }
 }

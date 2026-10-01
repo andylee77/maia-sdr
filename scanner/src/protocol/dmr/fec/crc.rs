@@ -36,7 +36,9 @@ pub const CCITT_80_CHECKSUMS: [u16; 96] = [
     0x0800, 0x0400, 0x0200, 0x0100, 0x0080, 0x0040, 0x0020, 0x0010, 0x0008, 0x0004, 0x0002, 0x0001,
 ];
 
-/// CRC-CCITT remainder (zero preset, no complement) of `bits`.
+/// CRC-CCITT remainder (zero preset, no complement) of `bits`, bit by bit: the reference the
+/// tests build and check frames with.
+#[cfg(test)]
 pub fn crc_ccitt(bits: &[u8]) -> u16 {
     let mut reg: u16 = 0;
     for &b in bits {

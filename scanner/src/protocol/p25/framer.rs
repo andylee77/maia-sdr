@@ -220,9 +220,6 @@ pub struct Framer {
     tsbk_blocks: usize,
     pdu_header: Option<PduHeader>,
     nac: NacTracker,
-    /// The NAC to hold before the tracker locks (0: none), e.g. the system a traffic channel
-    /// was granted on.
-    pub expected_nac: u16,
     pub stats: FramerStats,
 }
 
@@ -244,7 +241,6 @@ impl Framer {
             tsbk_blocks: 0,
             pdu_header: None,
             nac: NacTracker::default(),
-            expected_nac: 0,
             stats: FramerStats::default(),
         }
     }
@@ -257,6 +253,7 @@ impl Framer {
     }
 
     /// The locked NAC, or 0.
+    #[cfg(test)]
     pub fn locked_nac(&self) -> u16 {
         self.nac.dominant()
     }
@@ -341,10 +338,7 @@ impl Framer {
         self.stats.raw_duid_hist[on_air_duid] += 1;
         let duid = DataUnit::from_duid(decoded.duid);
         let nac = decoded.nac;
-        let expected = match self.nac.dominant() {
-            0 => self.expected_nac,
-            locked => locked,
-        };
+        let expected = self.nac.dominant();
         if expected != 0 && nac != expected {
             if duid.is_some() && self.nac.other_nac(nac) {
                 self.stats.nac_relocks += 1;

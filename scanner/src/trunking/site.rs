@@ -126,10 +126,6 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         self.state.borrow().clone()
     }
 
-    pub fn watch(&self) -> watch::Receiver<LiveState> {
-        self.state.subscribe()
-    }
-
     /// Save what the live site taught, when it changed (on the blocking pool: a flash write can
     /// take seconds).
     pub async fn save_learned(&self) {

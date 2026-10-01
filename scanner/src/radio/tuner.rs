@@ -163,10 +163,6 @@ impl<H: RadioHw> Tuner<H> {
         &self.hw
     }
 
-    pub fn watch(&self) -> watch::Receiver<Tuning> {
-        self.state.subscribe()
-    }
-
     fn publish(&self, f: impl FnOnce(&mut Tuning)) -> Tuning {
         self.state.send_modify(|t| {
             f(t);

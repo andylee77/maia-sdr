@@ -16,7 +16,7 @@ pub const NOMINAL_BYTE_RATE_HZ: f64 = NOMINAL_DIBIT_RATE_HZ / DIBITS_PER_BYTE as
 
 static MONO_ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
-/// Process-wide monotonic microseconds: the time base of ring snapshots and epochs.
+/// Process-wide monotonic microseconds: the time base of ring snapshots.
 pub fn mono_us() -> u64 {
     MONO_ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_micros() as u64
 }
@@ -24,23 +24,6 @@ pub fn mono_us() -> u64 {
 /// The instant of a `mono_us` value.
 pub fn mono_instant(us: u64) -> std::time::Instant {
     *MONO_ORIGIN.get_or_init(std::time::Instant::now) + std::time::Duration::from_micros(us)
-}
-
-/// A traffic chain's hardware action, reported to its epoch sink as it happens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HwAction {
-    /// NCO, optional LSM reset, chain enabled.
-    Retune { lsm_reset: bool },
-    NcoWrite,
-    LsmReset,
-    /// The chain was switched on or off (only on a change).
-    Enable(bool),
-}
-
-/// Receives a chain's hardware actions with the ring's next address read right after the
-/// action and the enable state before it.
-pub trait EpochSink: Send + Sync {
-    fn record_hw(&self, action: HwAction, t_us: u64, next_address: u32, enabled_before: bool);
 }
 
 /// Shape of one ring, from maia-kmod's sysfs attributes.
@@ -52,6 +35,7 @@ pub struct RingGeometry {
 
 impl RingGeometry {
     /// Both P25 dibit rings: 8 × 4 KiB.
+    #[cfg(test)]
     pub const P25_DIBIT: RingGeometry = RingGeometry { sub_buffer_bytes: 4096, num_sub_buffers: 8 };
 
     pub fn ring_bytes(&self) -> u64 {
@@ -82,13 +66,6 @@ impl RingGeometry {
     /// Seconds for the writer to lap the ring at the nominal rate.
     pub fn lap_budget_secs(&self) -> f64 {
         self.ring_bytes() as f64 / NOMINAL_BYTE_RATE_HZ
-    }
-
-    /// The latest absolute position at or before `reference` with ring offset `offset`.
-    pub fn abs_at_or_before(&self, reference: u64, offset: u64) -> u64 {
-        let ring = self.ring_bytes();
-        let back = (reference % ring + ring - offset % ring) % ring;
-        reference.saturating_sub(back)
     }
 }
 
@@ -189,16 +166,6 @@ mod tests {
         assert!(!phase_consistent(&g, off, 5) && !phase_consistent(&g, off, 3));
         assert!(phase_consistent(&g, 128, 6) && phase_consistent(&g, 128, 7));
         assert!(!phase_consistent(&g, 128, 0));
-    }
-
-    #[test]
-    fn absolute_positions_behind_a_reference() {
-        let g = RingGeometry::P25_DIBIT;
-        assert_eq!(g.abs_at_or_before(100_000, 100_000 % RING), 100_000);
-        let r = 3 * RING + 1000;
-        assert_eq!(g.abs_at_or_before(r, 2000), 2 * RING + 2000);
-        assert_eq!(g.abs_at_or_before(r, 500), 3 * RING + 500);
-        assert_eq!(g.abs_at_or_before(100, 2000), 0);
     }
 
     #[test]

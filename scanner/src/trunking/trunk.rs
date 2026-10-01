@@ -527,7 +527,6 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     self.book.voice_end(lane, call, air, lc, at);
                 }
             }
-            TrafficEvent::Header { .. } => {}
             TrafficEvent::Message(line) => {
                 let source = match self.slot(lane).map(|s| &s.traffic) {
                     Some(Decoder::Dmr(_)) => "dmr",

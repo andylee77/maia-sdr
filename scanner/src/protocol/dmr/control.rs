@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::demod::{DmrDemodStats, DmrDemodulator};
+use super::demod::DmrDemodulator;
 use super::framer::{DmrMessageFramer, FramerEvent};
 use super::message::csbk::CsbkKind;
 use super::message::types::Address;
@@ -113,10 +113,6 @@ impl DmrControl {
 
     pub fn identity(&self) -> Option<DmrIdentity> {
         self.identity
-    }
-
-    pub fn demod_stats(&self) -> DmrDemodStats {
-        self.demod.symbols.stats
     }
 
     /// The carrier offset the equaliser has learned, once it has a fine sync. The balance

@@ -64,15 +64,6 @@ pub enum Preemption {
     Priority,
 }
 
-impl LaneChoice {
-    pub fn lane(self) -> Option<Lane> {
-        match self {
-            LaneChoice::Stay(l) | LaneChoice::Take(l) | LaneChoice::Preempt(l, _) => Some(l),
-            LaneChoice::Reject => None,
-        }
-    }
-}
-
 /// The lanes a grant on `side` may use, most preferred first.
 pub fn candidates(side: Side, grant_hz: Option<u64>, lanes: &[LaneView], routing: &Routing) -> Vec<Lane> {
     if lanes.len() <= 1 {
@@ -214,11 +205,8 @@ impl Follower {
         self.routing = routing;
     }
 
-    pub fn encrypted(&self) -> &HashSet<u32> {
-        &self.encrypted
-    }
-
     /// The talkgroup each lane follows.
+    #[cfg(test)]
     pub fn locked(&self) -> Vec<(Lane, Option<u32>)> {
         self.lanes.iter().map(|l| (l.lane, l.locked.map(|k| k.tg))).collect()
     }

@@ -12,8 +12,6 @@ use crate::dsp::fsk4::{ideal_phase, linear, to_symbol, DifferentialDemod, Fir};
 use crate::dsp::taps::{HALFBAND_63, LPF_C4FM_25K, RRC_TAPS_25K};
 
 pub const SYMBOL_RATE: f64 = 4800.0;
-/// Rate of the IQ this decoder takes (the P25 DDC output).
-pub const INPUT_RATE_HZ: f64 = 50_000.0;
 /// Rate after the half-band (SDRTrunk decimates to below 38.4 kSPS).
 pub const DEMOD_RATE_HZ: f64 = 25_000.0;
 
@@ -188,17 +186,6 @@ impl C4fmDemodulator {
             eq_gain: 1.219,
             stats: C4fmStats::default(),
         }
-    }
-
-    /// Frequency offset the equaliser has learned (radians per symbol).
-    pub fn pll(&self) -> f32 {
-        self.eq_pll
-    }
-
-    /// Forget the equaliser (retune).
-    pub fn reset_pll(&mut self) {
-        self.eq_initialized = false;
-        self.eq_pll = 0.0;
     }
 
     fn buf(&self, i: usize) -> f32 {
@@ -599,11 +586,6 @@ impl C4fmDecoder {
         let phases = std::mem::take(c);
         self.demod.process(&phases, sink);
         self.scratch[2] = phases;
-    }
-
-    /// A retune: the equaliser's frequency offset no longer applies.
-    pub fn reset(&mut self) {
-        self.demod.reset_pll();
     }
 }
 

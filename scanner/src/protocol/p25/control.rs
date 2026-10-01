@@ -2,7 +2,6 @@
 //! what the site has announced (identity, channel plan, neighbours) for the status pages.
 
 use std::collections::BTreeMap;
-use std::time::Instant;
 
 use super::c4fm::{C4fmDecoder, DibitSink};
 use super::framer::{Framed, Framer, FramerConfig, FramerStats};
@@ -19,7 +18,6 @@ use crate::protocol::events::{
 #[derive(Debug, Clone)]
 pub struct HeardNeighbour {
     pub neighbour: Neighbour,
-    pub last_seen: Instant,
     pub count: u32,
 }
 
@@ -73,7 +71,7 @@ impl P25Control {
         for &d in dibits {
             framer.push(d, &mut |framed| match framed {
                 Framed::Nid(nid) => announced.nac(nid.nac, out),
-                Framed::Tsbk { index, opcode, message } => announced.tsbk(index, opcode, message, now, out),
+                Framed::Tsbk { index, opcode, message } => announced.tsbk(index, opcode, message, out),
                 Framed::Pdu { header, blocks, expected } => out.push(ControlEvent::Pdu(PduFrame {
                     chain: *chain,
                     nac: announced.identity.nac.unwrap_or(0),
@@ -101,12 +99,6 @@ impl P25Control {
         self.framer.reset();
     }
 
-    /// The channel now carries another site: forget what the old one announced.
-    pub fn new_system(&mut self) {
-        self.framer.reset();
-        self.announced = Announced::default();
-    }
-
     pub fn announced(&self) -> &Announced {
         &self.announced
     }
@@ -120,10 +112,6 @@ impl P25Control {
 
     pub fn stats(&self) -> &FramerStats {
         &self.framer.stats
-    }
-
-    pub fn locked_nac(&self) -> u16 {
-        self.framer.locked_nac()
     }
 
     /// Decode 50 kSPS interleaved IQ through the software C4FM demodulator.
@@ -189,7 +177,7 @@ impl Announced {
         })
     }
 
-    pub(crate) fn tsbk(&mut self, index: u8, opcode: u8, msg: TsbkMessage, now: Stamp, out: &mut Vec<ControlEvent>) {
+    pub(crate) fn tsbk(&mut self, index: u8, opcode: u8, msg: TsbkMessage, out: &mut Vec<ControlEvent>) {
         use TsbkMessage as M;
         match &msg {
             M::NetworkStatus { wacn, system_id, channel } => {
@@ -231,7 +219,7 @@ impl Announced {
                     out.push(ControlEvent::Neighbour(neighbour));
                 }
                 let count = previous.map_or(0, |p| p.count).saturating_add(1);
-                self.neighbours.insert(key, HeardNeighbour { neighbour, last_seen: now.mono, count });
+                self.neighbours.insert(key, HeardNeighbour { neighbour, count });
             }
             M::GroupVoiceChannelGrant { channel, talkgroup, source, service_options } => {
                 out.push(self.grant(*channel, talkgroup.0, Some(source.0), Some(*service_options), false));
@@ -309,9 +297,14 @@ impl Announced {
                 Some(u32::from(talkgroup_a.0)),
                 None,
             ),
-            M::GroupVoiceChannelGrantUpdateExplicit { transmit_channel, talkgroup, service_options, .. } => (
+            M::GroupVoiceChannelGrantUpdateExplicit { transmit_channel, receive_channel, talkgroup, service_options } => (
                 "GRP_VCH_GRNT_UPD_EXP",
-                format!("TG:{:05} -> {transmit_channel} ({:.4} MHz){}", talkgroup.0, mhz(transmit_channel), enc(service_options)),
+                format!(
+                    "TG:{:05} -> {transmit_channel} ({:.4} MHz) UL:{receive_channel}{}",
+                    talkgroup.0,
+                    mhz(transmit_channel),
+                    enc(service_options)
+                ),
                 Some(u32::from(talkgroup.0)),
                 None,
             ),
@@ -331,8 +324,14 @@ impl Announced {
             M::SecondaryControlChannelBroadcast { channel_a, channel_b, .. } => {
                 ("SCCB_EXP", format!("A:{channel_a} B:{channel_b}"), None, None)
             }
-            M::SndcpDataChannelAnnouncementExplicit { downlink_channel, uplink_channel, .. } => {
-                ("SNDCP_DCH_ANN_EX", format!("DL:{downlink_channel} UL:{uplink_channel}"), None, None)
+            M::SndcpDataChannelAnnouncementExplicit { autonomous_access, requested_access, downlink_channel, uplink_channel } => {
+                let access = match (autonomous_access, requested_access) {
+                    (true, true) => " AUTONOMOUS+REQUESTED ACCESS",
+                    (true, false) => " AUTONOMOUS ACCESS",
+                    (false, true) => " REQUESTED ACCESS",
+                    (false, false) => "",
+                };
+                ("SNDCP_DCH_ANN_EX", format!("DL:{downlink_channel} UL:{uplink_channel}{access}"), None, None)
             }
             M::TdmaSyncBroadcast { year, month, day, hours, minutes, time_locked, .. } => (
                 "TDMA_SYNC_BCST",
@@ -355,21 +354,27 @@ impl Announced {
             M::RadioUnitMonitorCommand { source, target } => {
                 ("RAD_MON_CMD", format!("SRC:{source} TGT:{target}"), None, Some(source.0))
             }
-            M::SndcpDataChannelGrant { downlink_channel, uplink_channel, target, .. } => (
+            M::SndcpDataChannelGrant { service_options, downlink_channel, uplink_channel, target } => (
                 "SNDCP_DCH_GRANT",
-                format!("DL:{downlink_channel} UL:{uplink_channel} TGT:{target}"),
+                format!("DL:{downlink_channel} UL:{uplink_channel} TGT:{target} SO:0x{service_options:02X}"),
                 None,
                 Some(target.0),
             ),
-            M::SndcpDataPageRequest { target, source, .. } => {
-                ("SNDCP_DCH_PAG_RQ", format!("TGT:{target} SRC:{source}"), None, Some(source.0))
+            M::SndcpDataPageRequest { service_options, target, source } => {
+                ("SNDCP_DCH_PAG_RQ", format!("TGT:{target} SRC:{source} SO:0x{service_options:02X}"), None, Some(source.0))
             }
-            M::AcknowledgeResponseFne { service_type, source, target, .. } => {
-                ("ACK_RESP", format!("SVC:0x{service_type:02X} SRC:{source} TGT:{target}"), None, Some(source.0))
+            M::AcknowledgeResponseFne { service_type, additional_info, extended_info, source, target } => {
+                let info = match (additional_info, extended_info) {
+                    (true, true) => " ADDITIONAL+EXTENDED INFO",
+                    (true, false) => " ADDITIONAL INFO",
+                    (false, true) => " EXTENDED INFO",
+                    (false, false) => "",
+                };
+                ("ACK_RESP", format!("SVC:0x{service_type:02X} SRC:{source} TGT:{target}{info}"), None, Some(source.0))
             }
-            M::GroupAffiliationResponse { response, group, target, .. } => (
+            M::GroupAffiliationResponse { response, announcement_group, group, target } => (
                 "GRP_AFF_RSP",
-                format!("RSP:{response} TG:{group} TGT:{target}"),
+                format!("RSP:{response} TG:{group} ANN:{announcement_group} TGT:{target}"),
                 Some(u32::from(group.0)),
                 Some(target.0),
             ),

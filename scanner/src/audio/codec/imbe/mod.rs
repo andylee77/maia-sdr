@@ -1232,23 +1232,6 @@ const MAX_AUDIO_AMPLITUDE: f32 = 0.95;
 const WHITE_NOISE_SCALAR: f32 = TWO_PI / 53125.0;
 const UNVOICED_SCALING_COEFFICIENT: f32 = 146.17696;
 
-/// Per-frame elapsed-time breakdown captured by `decode_frame`.
-///
-/// All fields are microseconds. Populated on every successful or muted
-/// frame; readers grab the latest snapshot via `last_decode_times()`
-/// after each call to `decode_frame`. `pcm_convert_us` is left at 0 in
-/// `jmbe::ImbeDecoder` — it's filled by the outer wrapper that does the
-/// f32→i16 conversion (see `vocoder::JmbeDecoder`).
-#[derive(Default, Clone, Copy, Debug)]
-pub struct DecodeStageTimes {
-    pub fec_us: u32,
-    pub voiced_us: u32,
-    pub unvoiced_us: u32,
-    pub mix_us: u32,
-    pub pcm_convert_us: u32,
-    pub total_us: u32,
-}
-
 /// The public IMBE decoder. Maintains inter-frame state.
 pub struct ImbeDecoder {
     previous_params: ModelParameters,
@@ -1257,7 +1240,6 @@ pub struct ImbeDecoder {
     previous_uw: [f32; 256],
     noise_gen: MbeNoiseGenerator,
     white_noise_gen: WhiteNoiseGenerator,
-    last_times: DecodeStageTimes,
 
     // realfft 256-pt forward (real → 129 complex bins) and inverse
     // (129 complex → real). Plans hold twiddle factors so per-frame
@@ -1284,7 +1266,6 @@ impl ImbeDecoder {
             previous_uw: [0.0; 256],
             noise_gen: MbeNoiseGenerator::new(),
             white_noise_gen: WhiteNoiseGenerator::new(),
-            last_times: DecodeStageTimes::default(),
             fft_r2c: r2c,
             fft_c2r: c2r,
             fft_input: vec![0.0; 256],
@@ -1297,11 +1278,7 @@ impl ImbeDecoder {
     /// Decode one IMBE frame (18 bytes / 144 bits) into 160 f32 audio samples.
     /// Samples are in range approximately -1.0 to 1.0.
     pub fn decode_frame(&mut self, frame_bytes: &[u8; 18]) -> [f32; 160] {
-        let t0 = std::time::Instant::now();
-        self.last_times = DecodeStageTimes::default();
-
         let params = decode_frame(frame_bytes, &self.previous_params);
-        self.last_times.fec_us = t0.elapsed().as_micros() as u32;
 
         let audio = if params.is_max_frame_repeat() || params.requires_muting() {
             let samples = self.white_noise_gen.get_samples(160, 0.003);
@@ -1312,16 +1289,8 @@ impl ImbeDecoder {
             self.synthesize_voice(&params)
         };
 
-        self.last_times.total_us = t0.elapsed().as_micros() as u32;
         self.previous_params = params;
         audio
-    }
-
-    /// Latest per-stage timing snapshot. Valid after the first call to
-    /// `decode_frame`. `pcm_convert_us` is unset here; populate via
-    /// `set_pcm_convert_us` from a wrapper that owns the f32→i16 step.
-    pub fn last_decode_times(&self) -> DecodeStageTimes {
-        self.last_times
     }
 
     /// Bit errors the IMBE FEC (Golay(23,12) × 4 + Hamming(15,11) × 3)
@@ -1330,31 +1299,16 @@ impl ImbeDecoder {
         self.previous_params.error_count_total
     }
 
-    /// Wrapper hook: outer-layer PCM conversion timing belongs in the
-    /// same per-frame snapshot consumers read, so the wrapper writes it
-    /// here after `decode_frame` returns.
-    pub fn set_pcm_convert_us(&mut self, us: u32) {
-        self.last_times.pcm_convert_us = us;
-    }
-
     fn synthesize_voice(&mut self, params: &ModelParameters) -> [f32; 160] {
         // Alg #117 - noise sequence
         let u = self.noise_gen.next_buffer();
 
-        let t = std::time::Instant::now();
         let unvoiced = self.get_unvoiced(params, &u);
-        self.last_times.unvoiced_us = t.elapsed().as_micros() as u32;
-
-        let t = std::time::Instant::now();
         let voiced = self.get_voiced(params, &u);
-        self.last_times.voiced_us = t.elapsed().as_micros() as u32;
-
-        let t = std::time::Instant::now();
         let mut audio = [0.0f32; 160];
         for x in 0..160 {
             audio[x] = clip((voiced[x] + unvoiced[x]) * AUDIO_SCALAR);
         }
-        self.last_times.mix_us = t.elapsed().as_micros() as u32;
         audio
     }
 

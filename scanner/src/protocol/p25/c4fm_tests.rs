@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The decoder's input: the DDC output.
+const INPUT_RATE_HZ: f64 = 50_000.0;
+
 #[test]
 fn symbol_slicer_and_sync_pattern() {
     assert_eq!(to_symbol(3.0 * PI / 4.0), 1);
@@ -105,6 +108,6 @@ fn c4fm_wav() {
         "{path}: symbols {} sync candidates {} valid {} nid_fail {} | framer NIDs ok {} TSBK ok {} fail {} ({:.1} %) pll {:.3}",
         dec.demod.stats.symbols, dec.demod.stats.sync_candidates, dec.demod.stats.syncs_valid, dec.demod.stats.nid_fail,
         framer.stats.nid_ok, ok, fail,
-        100.0 * ok as f64 / (ok + fail).max(1) as f64, dec.demod.pll(),
+        100.0 * ok as f64 / (ok + fail).max(1) as f64, dec.demod.eq_pll,
     );
 }

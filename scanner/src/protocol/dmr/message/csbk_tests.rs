@@ -90,8 +90,6 @@ fn on_air_talkgroup_voice_channel_grants() {
         );
         assert_eq!(c.source(), Some(Address::Radio(81921)));
         assert_eq!(c.destination(), Some(Address::Talkgroup(87925)));
-        let destination = c.destination().unwrap();
-        assert!(destination.is_talkgroup() && destination.value() == 87925);
     }
     let c = from_hex("B1000058015775014001E621");
     assert_eq!(

@@ -104,12 +104,9 @@ fn embedded_group_voice_lc() {
         lc.to_string(),
         "FLC GROUP VOICE CHANNEL USER FM:81921 TO:87925 SERVICE OPTIONS [PRIORITY-2]"
     );
-    assert_eq!(
-        lc.opcode(),
-        LcOpcode::FULL_STANDARD_GROUP_VOICE_CHANNEL_USER
-    );
+    assert_eq!(full_opcode(&bits), LcOpcode::FULL_STANDARD_GROUP_VOICE_CHANNEL_USER);
     let options = lc.service_options().unwrap();
-    assert!(!options.is_emergency() && !options.is_encrypted() && !options.is_broadcast());
+    assert!(!options.is_encrypted());
     assert_eq!(options.priority(), 2);
     let broadcast = create_full(
         embedded(&lc72(0, 0x08, 87925, 82321)),

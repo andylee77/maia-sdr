@@ -168,8 +168,6 @@ impl VoiceFrames {
 /// What a traffic channel decoder reports about the call it follows.
 #[derive(Debug, Clone)]
 pub enum TrafficEvent {
-    /// A voice header (P25 HDU): the in-band encryption and talkgroup.
-    Header { tg: Option<u32>, encrypted: bool },
     /// Voice, aired at `air` (the dibit that completed it).
     Voice { frames: VoiceFrames, encrypted: bool, air: Instant },
     /// The talking radio, from the voice link control (agreed over several frames).

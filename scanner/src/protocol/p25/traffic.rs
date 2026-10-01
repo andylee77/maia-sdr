@@ -13,7 +13,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use super::framer::{Framed, Framer, FramerStats};
+use super::framer::{Framed, Framer};
 use super::tsbk::service_options;
 use super::voice_frame::{self, TdulcLcw};
 use crate::protocol::events::{LogLine, TrafficEvent, VoiceFrames};
@@ -105,17 +105,8 @@ impl P25Traffic {
         self.framer.reset();
     }
 
-    /// The system's NAC, held before the framer locks.
-    pub fn set_expected_nac(&mut self, nac: u16) {
-        self.framer.expected_nac = nac;
-    }
-
     pub fn call(&self) -> Option<CallContext> {
         self.call
-    }
-
-    pub fn stats(&self) -> &FramerStats {
-        &self.framer.stats
     }
 
     /// One dibit, aired at `air`.
@@ -149,7 +140,6 @@ impl P25Traffic {
                 if h.is_encrypted() && h.is_spec_algorithm() {
                     self.encrypted = true;
                 }
-                out.push(TrafficEvent::Header { tg: Some(u32::from(h.talkgroup)), encrypted: h.is_encrypted() });
                 let text = if h.is_encrypted() {
                     format!("HDU TALKGROUP:{} ENCRYPTION:0x{:02X} KEY:{} MI:{}", h.talkgroup, h.algorithm_id, h.key_id, hex(&h.message_indicator))
                 } else {

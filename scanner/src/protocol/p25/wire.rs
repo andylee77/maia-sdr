@@ -32,9 +32,6 @@ pub const FRAME_SYNC_PATTERN: u64 = 0x5575_F5FF_77FF;
 /// 48-bit mask for the sync window inside a sliding u64 register.
 pub const FRAME_SYNC_MASK: u64 = 0xFFFF_FFFF_FFFF;
 
-/// Number of dibits in the sync word.
-pub const FRAME_SYNC_DIBIT_COUNT: usize = 24;
-
 // ===================================================================
 // NID — Network Identifier, follows the frame sync.
 // ===================================================================

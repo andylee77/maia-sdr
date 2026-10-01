@@ -126,7 +126,6 @@ impl DmrTraffic {
             if let Some(c) = self.call.as_mut() {
                 c.encrypted = true;
             }
-            out.push(TrafficEvent::Header { tg: Some(call.tg), encrypted: true });
         }
         true
     }

@@ -785,10 +785,6 @@ impl Address {
             Address::Radio(v) | Address::Tier3Radio(v) | Address::Talkgroup(v) => v,
         }
     }
-
-    pub fn is_talkgroup(self) -> bool {
-        matches!(self, Address::Talkgroup(_))
-    }
 }
 
 impl fmt::Display for Address {
@@ -934,16 +930,8 @@ impl SystemIdentityCode {
 pub struct ServiceOptions(pub u32);
 
 impl ServiceOptions {
-    pub fn is_emergency(self) -> bool {
-        self.0 & 0x80 != 0
-    }
-
     pub fn is_encrypted(self) -> bool {
         self.0 & 0x40 != 0
-    }
-
-    pub fn is_broadcast(self) -> bool {
-        self.0 & 0x08 != 0
     }
 
     pub fn priority(self) -> u32 {

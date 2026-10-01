@@ -66,13 +66,6 @@ pub enum DmrMessage {
     FullLc(FullLc),
     /// Short LC assembled from CACH fragments.
     ShortLc(ShortLc),
-    /// A reverse channel or reserved burst (`UnknownDMRMessage`).
-    UnknownBurst {
-        pattern: DmrSyncPattern,
-        timeslot: u8,
-        timestamp_ms: u64,
-        bits: [u8; 288],
-    },
 }
 
 impl DmrMessage {
@@ -121,12 +114,6 @@ impl DmrMessage {
                 bits: 288,
             }),
             Unknown => None,
-            ReverseChannel | Reserved => Some(DmrMessage::UnknownBurst {
-                pattern,
-                timeslot: burst.timeslot,
-                timestamp_ms,
-                bits: burst.bits,
-            }),
         }
     }
 
@@ -150,7 +137,6 @@ impl DmrMessage {
             DmrMessage::Voice(voice) => voice.class_name(),
             DmrMessage::FullLc(lc) => lc.class_name(),
             DmrMessage::ShortLc(slc) => slc.class_name(),
-            DmrMessage::UnknownBurst { .. } => "UnknownDMRMessage",
         }
     }
 
@@ -174,9 +160,7 @@ impl DmrMessage {
     /// 1 or 2; 0 when unknown (and for short LC, which is timeslot-agnostic).
     pub fn timeslot(&self) -> u8 {
         match self {
-            DmrMessage::SyncLoss { timeslot, .. }
-            | DmrMessage::EmptyTimeslot { timeslot, .. }
-            | DmrMessage::UnknownBurst { timeslot, .. } => *timeslot,
+            DmrMessage::SyncLoss { timeslot, .. } | DmrMessage::EmptyTimeslot { timeslot, .. } => *timeslot,
             DmrMessage::Voice(voice) => voice.timeslot,
             DmrMessage::FullLc(lc) => lc.timeslot,
             DmrMessage::ShortLc(_) => 0,
@@ -187,9 +171,7 @@ impl DmrMessage {
     /// Milliseconds since the stream started, from the burst's dibit position.
     pub fn timestamp_ms(&self) -> u64 {
         match self {
-            DmrMessage::SyncLoss { timestamp_ms, .. }
-            | DmrMessage::EmptyTimeslot { timestamp_ms, .. }
-            | DmrMessage::UnknownBurst { timestamp_ms, .. } => *timestamp_ms,
+            DmrMessage::SyncLoss { timestamp_ms, .. } | DmrMessage::EmptyTimeslot { timestamp_ms, .. } => *timestamp_ms,
             DmrMessage::Voice(voice) => voice.timestamp_ms,
             DmrMessage::FullLc(lc) => lc.timestamp_ms,
             DmrMessage::ShortLc(slc) => slc.timestamp_ms,
@@ -202,7 +184,6 @@ impl DmrMessage {
         match self {
             DmrMessage::SyncLoss { .. }
             | DmrMessage::EmptyTimeslot { .. }
-            | DmrMessage::UnknownBurst { .. }
             | DmrMessage::Voice(_)
             | DmrMessage::MbcContinuation(_) => true,
             DmrMessage::FullLc(lc) => lc.valid,
@@ -245,19 +226,6 @@ impl fmt::Display for DmrMessage {
             DmrMessage::Voice(voice) => voice.fmt(f),
             DmrMessage::FullLc(lc) => lc.fmt(f),
             DmrMessage::ShortLc(slc) => slc.fmt(f),
-            DmrMessage::UnknownBurst {
-                pattern,
-                timeslot,
-                bits,
-                ..
-            } => {
-                write!(
-                    f,
-                    "TS{timeslot} {} UNKNOWN DMR BURST {}",
-                    pattern.label(),
-                    bits::hex(bits)
-                )
-            }
         }
     }
 }

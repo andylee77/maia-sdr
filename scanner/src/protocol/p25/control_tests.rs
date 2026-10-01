@@ -18,7 +18,7 @@ fn iden(identifier: u8, spacing: u32, base: u64, slots: u8) -> TsbkMessage {
 fn feed(a: &mut Announced, msgs: Vec<TsbkMessage>) -> Vec<ControlEvent> {
     let mut out = Vec::new();
     for m in msgs {
-        a.tsbk(0, 0, m, Stamp::now(), &mut out);
+        a.tsbk(0, 0, m, &mut out);
     }
     out.retain(|e| !matches!(e, ControlEvent::Message(_)));
     out
@@ -133,11 +133,3 @@ fn log_lines_use_sdrtrunk_names() {
     assert!(line.routine);
 }
 
-#[test]
-fn new_system_forgets_the_site() {
-    let mut c = P25Control::new("control");
-    feed(&mut c.announced, vec![iden(0, 6_250, 851_006_250, 1)]);
-    c.new_system();
-    assert!(c.announced().bands.is_empty());
-    assert_eq!(c.locked_nac(), 0);
-}

@@ -22,8 +22,6 @@ use crate::dsp::fsk4::{ideal_phase, linear, to_symbol, DifferentialDemod, Fir};
 use crate::dsp::taps::HALFBAND_63;
 
 pub const SYMBOL_RATE: f64 = 4800.0;
-/// Rate of the IQ this decoder takes (the DDC output).
-pub const INPUT_RATE_HZ: f64 = 50_000.0;
 /// Rate after the half-band (SDRTrunk decimates to below 38.4 kSPS).
 pub const DEMOD_RATE_HZ: f64 = 25_000.0;
 
@@ -171,14 +169,6 @@ impl DmrSoftSymbolProcessor {
     /// Equaliser balance: the carrier offset in radians per symbol.
     pub fn equalizer_balance(&self) -> f32 {
         self.equalizer_balance
-    }
-
-    pub fn equalizer_gain(&self) -> f32 {
-        self.equalizer_gain
-    }
-
-    pub fn has_fine_sync(&self) -> bool {
-        self.fine_sync
     }
 
     fn buf(&self, i: usize) -> f32 {

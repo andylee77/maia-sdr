@@ -1,8 +1,6 @@
 //! The tuner's hardware: the AD9361 and the P25 core on the board; on a development host, a
 //! stand-in with no radio so the services and the API still run.
 
-use anyhow::Result;
-
 use super::tuner::{LanePll, RadioHw, Readback};
 use crate::hardware::ad9361::GainMode;
 use crate::hardware::p25core::Lane;
@@ -118,6 +116,8 @@ mod board {
 
 #[cfg(not(target_os = "linux"))]
 mod host {
+    use anyhow::Result;
+
     use super::*;
 
     /// No radio on a development host: every operation succeeds and does nothing.

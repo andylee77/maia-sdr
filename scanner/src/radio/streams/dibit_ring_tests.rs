@@ -207,33 +207,6 @@ fn irq_wake_too_soon_keeps_previous_reading() {
 }
 
 #[test]
-fn lift_next_address_cases() {
-    let g = RingGeometry::P25_DIBIT;
-    let refr = Some((5 * RING + 1024, 1_000_000u64));
-    // Forward one burst 50 ms later.
-    assert_eq!(
-        lift_next_address(&g, refr, BASE + 1024 + 128, 1_050_000),
-        Some(5 * RING + 1152)
-    );
-    // Across the ring end.
-    let refr2 = Some((5 * RING + RING - 128, 1_000_000u64));
-    assert_eq!(
-        lift_next_address(&g, refr2, BASE + 0, 1_120_000),
-        Some(6 * RING)
-    );
-    // Slightly older than the reference (small backwards step).
-    assert_eq!(
-        lift_next_address(&g, refr, BASE + 1024 - 128, 1_000_000),
-        Some(5 * RING + 896)
-    );
-    // Implausible.
-    assert_eq!(lift_next_address(&g, refr, BASE + 1024 + 16384, 1_010_000), None);
-    assert_eq!(lift_next_address(&g, None, BASE, 0), None);
-}
-
-// ── Full simulation: delivery safety / latency / clock accuracy ─────
-
-#[test]
 fn simulated_delivery_is_gapless_safe_and_timely() {
     // Writer has been running for a while (arbitrary phase), reader
     // polls every 40 ms with ±5 ms jitter and occasional IRQ wakes.

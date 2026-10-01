@@ -148,7 +148,7 @@ fn a_followed_grant_opens_a_call_and_voice_counts_for_it() {
         r.voice(Some(id), 100 + i * 20, 200 + i * 20);
     }
     assert_eq!(r.call().voice_frames, 9);
-    assert!(r.call().first_voice().is_some());
+    assert!(r.call().first_voice.is_some());
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn an_hdu_is_a_keepalive_but_not_voice() {
     r.hdu(500);
     let c = r.call();
     assert_eq!((c.voice_frames, c.nac), (0, 0x8A1));
-    assert!(c.last_voice().is_none());
+    assert!(c.last_voice.is_none());
     assert_eq!(r.due(3_400), None, "the HDU at 0.5 s holds the call to 3.5 s");
     assert_eq!(r.due(3_600), Some(CloseReason::Timeout));
 }
@@ -215,7 +215,7 @@ fn a_not_followed_grant_is_listed_for_its_channel_time() {
         })
         .collect();
     assert_eq!(kinds, ["nf_open", "close", "nf_open", "close", "open"]);
-    assert!(r.book.not_followed().is_empty());
+    assert!(r.book.not_followed.is_empty());
 }
 
 #[test]

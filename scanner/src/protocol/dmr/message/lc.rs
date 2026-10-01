@@ -152,13 +152,6 @@ impl FullLc {
         }
     }
 
-    pub fn opcode(&self) -> LcOpcode {
-        if self.kind == FullLcKind::EncryptionParameters {
-            return LcOpcode::FULL_ENCRYPTION_PARAMETERS;
-        }
-        full_opcode(&self.bits)
-    }
-
     pub fn vendor(&self) -> Vendor {
         Vendor::from_value(field(&self.bits, 8, 16))
     }
