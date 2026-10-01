@@ -1,0 +1,47 @@
+{
+  "name": "clay",
+  "label": "Clay County",
+  "modulation": "LSM",
+  "preset_default": "8M",
+  "cc_position": "Top",
+
+  "control_freq_hz": 860962500,
+  "alt_control_freqs_hz": [
+    859437500,
+    858987500,
+    860437500
+  ],
+  "traffic_freqs_hz": [
+    852438500,
+    855237500,
+    856437500,
+    857212500,
+    857437500,
+    857987500,
+    858437500,
+    858462500,
+    858987500,
+    859437500,
+    860437500,
+    860962500
+  ],
+
+  "nac": 2209,
+  "wacn": 781824,
+  "system_id": 2208,
+  "rfss_id": 1,
+  "site_id": 1,
+  "lra": 0,
+
+  "iden_bands": [],
+
+  "_seed_source": "C:/Users/Andy/SDRTrunk/playlist/default.xml channels system='Clay County' site='Clay'",
+  "_runtime_overlay_path": "/mnt/data/p25/clay.json",
+  "_notes": [
+    "control_freq_hz is LCN 11 (the SDRTrunk enabled=true entry).",
+    "alt_control_freqs_hz are SDRTrunk order=1 entries that historically rotated as CC.",
+    "traffic_freqs_hz is the downlink set 852-861 MHz; uplinks (811-815 MHz) excluded.",
+    "nac/wacn/system_id/rfss_id/site_id/lra populated from /api/system 2026-05-02 live read.",
+    "iden_bands is empty in this seed; runtime fills from IDEN_UPDATE TSBKs."
+  ]
+}
