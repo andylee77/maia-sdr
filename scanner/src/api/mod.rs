@@ -5,6 +5,7 @@
 //! from another origin is refused (there is no authentication; the unit sits on a private
 //! network).
 
+pub mod legacy;
 pub mod v1;
 pub mod ws;
 
@@ -114,6 +115,8 @@ routes! {
     post "/api/v1/scan" => v1::scan::start, "find the systems on the air (the live site pauses meanwhile)";
     post "/api/v1/scan/cancel" => v1::scan::cancel, "stop the scan";
     post "/api/v1/scan/add" => v1::scan::add, "add the ticked sites of the last scan";
+    get "/api/system" => legacy::system, "legacy, for the bench: the build";
+    get "/api/ui/state" => legacy::ui_state, "legacy, for the bench: the unit's wall clock";
     get "/api/v1/profiles" => v1::profiles::list, "profiles and each site's active one";
     put "/api/v1/sites/{id}/profile" => v1::profiles::select, "choose a site's active profile";
     post "/api/v1/profiles" => v1::profiles::create, "a new profile of a system, empty or a copy";

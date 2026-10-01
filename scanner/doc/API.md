@@ -40,6 +40,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | POST | `/api/v1/scan` | find the systems on the air (the live site pauses meanwhile) |
 | POST | `/api/v1/scan/cancel` | stop the scan |
 | POST | `/api/v1/scan/add` | add the ticked sites of the last scan |
+| GET | `/api/system` | legacy, for the bench: the build |
+| GET | `/api/ui/state` | legacy, for the bench: the unit's wall clock |
 | GET | `/api/v1/profiles` | profiles and each site's active one |
 | PUT | `/api/v1/sites/{id}/profile` | choose a site's active profile |
 | POST | `/api/v1/profiles` | a new profile of a system, empty or a copy |
