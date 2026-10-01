@@ -1257,9 +1257,13 @@ From the brief:
       call span (`open_ms`), so the scorer matched calls only by source. Rescored with the span
       from each call's end: 35,289 (99.37 %), none missed. Every remaining difference is one
       LDU or a few at a change of talker on one channel, either way (p25-httpd also loses one
-      where the scanner does not). The adapter now sends the span; voice aired after a call's
-      end marker now goes to the next call (the scanner's misses were a new talker's first LDU,
-      aired before the grant naming the talker was decoded).
+      where the scanner does not). The adapter now sends the span.
+    - the scanner again (4b9052b, the span sent; voice aired after a call's end marker going to
+      the next call): 35,244 (99.24 %), none missed, the focus tone whole. The same transitions
+      still lose one LDU, and others moved by one LDU either way between the two runs: the
+      boundary depends on timing, and its cause is not found yet (a trace of the lane's voice
+      and the grants around a talker change is the next step). The scanner meets the gate;
+      p25-httpd keeps about 0.1 to 0.25 % more of the frames.
     - the scanner's crystal calibration on the replayed control channel (during the focus item,
       which still decoded 639 of 639): LO shift 509 Hz, where p25-httpd's tracker had estimated
       504 Hz on the same signal. The tracker then followed each recording's offset within the
