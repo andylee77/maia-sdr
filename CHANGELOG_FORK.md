@@ -5,6 +5,28 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-30] Crystal correction scales with the LO; wideband capture length (074c)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-30-lo-scale-074c`
+**Bake required:** NO (p25-httpd).
+
+Two findings from the DMR session's UHF captures on unit A:
+
+- **LO shift.** `/api/tune` and site presets applied `current_lo_shift_hz` (598 Hz, measured
+  at 856 MHz) unchanged at any frequency, so at 454 MHz the chain sat ~0.3 kHz off. The
+  crystal error is a ratio (ppm): the shift now scales with the LO on every LO change
+  (`tuning::scale_lo_shift`; 598 Hz at 856 MHz is 317 Hz at 454 MHz) and the scaled value is
+  stored.
+- **Wideband IQ capture.** The tap runs at the active AD9361 rate (12 MSPS on the 12M
+  window), but the capture sized its file for 4 MSPS and the reply said 8 MSPS, so a
+  "10 s" capture held 3.33 s. It now reads the current sample rate; the reply gives
+  `rate_hz`. Checked on unit A: 1 s = 48,000,000 bytes at 12 MSPS.
+
+Tests: p25-httpd 330 (the shift scales with the LO).
+
+---
+
 ## [2026-09-30] Recent calls and the history survive a restart (074b)
 
 **Branch:** fishball-p25

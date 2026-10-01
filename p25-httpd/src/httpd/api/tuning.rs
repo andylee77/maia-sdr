@@ -44,6 +44,17 @@ const TUNE_GUARD_HZ: i64 = 100_000;
 /// PLL doesn't re-settle on every kHz of operator scrolling.
 const TUNE_LO_STEP_HZ: i64 = 100_000;
 
+/// Change 074c: the crystal correction is a frequency ratio (ppm); the
+/// NCO shift that holds it is in Hz at the LO it was measured at. Moving
+/// the LO scales it (598 Hz at 856 MHz is 317 Hz at 454 MHz). Unscaled,
+/// a UHF retune sat ~0.3 kHz off (found by the DMR session).
+pub fn scale_lo_shift(shift_hz: i64, from_lo_hz: i64, to_lo_hz: i64) -> i64 {
+    if from_lo_hz <= 0 || to_lo_hz <= 0 {
+        return shift_hz;
+    }
+    (shift_hz as f64 * to_lo_hz as f64 / from_lo_hz as f64).round() as i64
+}
+
 // ── Tuning API (2026-04-22 redesign) ──────────────────────────────
 //
 // Three endpoints replace the old `/api/reinit`:
@@ -292,6 +303,13 @@ pub async fn apply_preset(state: &AppState, mut body: PresetBody) -> (StatusCode
     let mut applied: Vec<String> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
+    // Change 074c: the correction scales with the LO.
+    let shift_after = scale_lo_shift(
+        nco_lo_shift_hz as i64,
+        state.current_rx_lo.load(Ordering::Relaxed),
+        new_rx_lo as i64,
+    );
+
     // 1. AD9361 — LO, sample rate, RF bandwidth, optional gain mode +
     //    manual gain. Order matters: change gain_mode BEFORE writing
     //    gain_db so the mode change doesn't clobber the new value.
@@ -299,6 +317,7 @@ pub async fn apply_preset(state: &AppState, mut body: PresetBody) -> (StatusCode
         Ok(_) => {
             state.current_rx_lo.store(
                 new_rx_lo as i64, Ordering::Relaxed);
+            state.current_lo_shift_hz.store(shift_after, Ordering::Relaxed);
             applied.push(format!("rx_lo={new_rx_lo}"));
         }
         Err(e) => errors.push(format!("rx_lo: {e}")),
@@ -342,7 +361,7 @@ pub async fn apply_preset(state: &AppState, mut body: PresetBody) -> (StatusCode
     //    above for the LO-snap calculation. Re-uses the snapped
     //    `new_rx_lo` so the post-snap NCO stays inside the window.
     let nco_offset_hz = current_radio
-        - new_rx_lo as f64 + nco_lo_shift_hz;
+        - new_rx_lo as f64 + state.current_lo_shift_hz.load(Ordering::Relaxed) as f64;
     {
         let core = state.ip_core.lock().await;
         match core.configure_ddc(nco_offset_hz, preset) {
@@ -565,9 +584,10 @@ pub async fn post_tune(
     // Use the live PPM-correction shift (auto-PPM results survive
     // retunes). On a fresh boot this equals the CLI-derived value;
     // after /api/ppm_calibrate it tracks the calibration.
-    let nco_lo_shift_hz = state.current_lo_shift_hz
-        .load(Ordering::Relaxed) as f64;
-    let nco_offset_hz = radio as f64 - new_rx_lo as f64 + nco_lo_shift_hz;
+    // Change 074c: scaled to the new LO (see `scale_lo_shift`).
+    let shift_after = scale_lo_shift(
+        state.current_lo_shift_hz.load(Ordering::Relaxed), rx_lo_now, new_rx_lo);
+    let nco_offset_hz = radio as f64 - new_rx_lo as f64 + shift_after as f64;
 
     let mut applied: Vec<String> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
@@ -576,6 +596,7 @@ pub async fn post_tune(
         match state.ad9361.set_rx_lo_frequency(new_rx_lo as u64).await {
             Ok(_) => {
                 state.current_rx_lo.store(new_rx_lo, Ordering::Relaxed);
+                state.current_lo_shift_hz.store(shift_after, Ordering::Relaxed);
                 applied.push(format!("rx_lo={new_rx_lo}"));
             }
             Err(e) => errors.push(format!("rx_lo: {e}")),
@@ -1692,3 +1713,18 @@ pub async fn put_agc_threshold(
     (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::scale_lo_shift;
+
+    /// Change 074c: the correction follows the LO (a ratio, not Hz).
+    #[test]
+    fn lo_shift_scales_with_the_lo() {
+        // 598 Hz at 856 MHz (Clay) is ~317 Hz at 454 MHz (UHF DMR).
+        assert_eq!(scale_lo_shift(598, 856_000_000, 454_000_000), 317);
+        assert_eq!(scale_lo_shift(-598, 856_000_000, 936_250_000), -654);
+        // No move, or no LO known yet: unchanged.
+        assert_eq!(scale_lo_shift(598, 856_000_000, 856_000_000), 598);
+        assert_eq!(scale_lo_shift(598, 0, 454_000_000), 598);
+    }
+}

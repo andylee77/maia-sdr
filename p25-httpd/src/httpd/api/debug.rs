@@ -580,10 +580,11 @@ pub async fn get_distribution(
 // `GET /api/wideband_iq_capture` returns the snapshot (active capture
 // progress + last completed path).
 // `POST /api/wideband_iq_capture?seconds=N` (or no body) opens a fresh
-// .cs16 capture file in /tmp/p25_iq_captures/ and the wideband IQ
-// reader task tees the next N seconds of 8 MSPS samples into it.
+// .cs16 capture file in /mnt/sd/p25_iq_captures/ and the wideband IQ
+// reader task tees the next N seconds of samples into it, at the
+// AD9361 rate (`rate_hz` in the reply; change 074c).
 //
-// File format: raw interleaved i16 little-endian I/Q (8000000 sample
+// File format: raw interleaved i16 little-endian I/Q (`rate_hz` sample
 // pairs per second). GNU Radio: `iio_readdev`-equivalent — read with
 // `dtype=int16` then reshape to (-1, 2).
 
@@ -611,6 +612,8 @@ pub async fn post_wideband_iq_capture(
         .and_then(|v| v.parse().ok())
         .unwrap_or(2.0);
 
+    // Change 074c: the tap runs at the preset's AD9361 rate.
+    let rate_hz = state.wideband_iq_capture.rate_hz();
     match state.wideband_iq_capture.start(seconds).await {
         Ok(path) => {
             // 2026-05-03 dual-DDC pivot: the wideband_iq DMA is off
@@ -628,7 +631,8 @@ pub async fn post_wideband_iq_capture(
                 "ok": true,
                 "path": path,
                 "seconds": seconds,
-                "approx_bytes": (seconds * 8_000_000.0 * 4.0) as u64,
+                "rate_hz": rate_hz,
+                "approx_bytes": (seconds * rate_hz as f64 * 4.0) as u64,
                 "wideband_iq_dma": true,
                 "note": "wideband_iq DMA was enabled for the capture; \
                          disable via POST /api/sw_demod?enabled=0 once \

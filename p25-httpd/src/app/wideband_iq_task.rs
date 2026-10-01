@@ -18,12 +18,6 @@ use tokio::sync::{mpsc, Mutex};
 use crate::hardware::fpga;
 use crate::lsm::Complex32;
 
-/// Wideband IQ DMA sample rate. The FPGA's wideband IQ pipeline is
-/// configurable in HDL and current `fishball7020_p25` builds run at
-/// 4 MSPS (was 8 MSPS in the M2A bitstream). Bump back to 8_000_000
-/// if a future bitstream restores the higher rate; the byte-budget
-/// math at `start()` and the throughput log line both depend on it.
-const WIDEBAND_IQ_RATE_HZ: u64 = 4_000_000;
 /// 4 bytes per complex sample (i16 + i16).
 const SAMPLE_BYTES: u64 = 4;
 /// Captures land on the SD card (57 GB free typical) — the previous
@@ -38,6 +32,9 @@ const CAPTURE_DIR: &str = "/mnt/sd/p25_iq_captures";
 #[derive(Default)]
 pub struct WidebandIqCaptureState {
     inner: Mutex<CaptureInner>,
+    /// Change 074c: the tap's sample rate, the AD9361 rate of the live
+    /// preset (`AppState::current_sample_rate_hz`).
+    rate_hz: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 #[derive(Default)]
@@ -58,13 +55,26 @@ struct ActiveCapture {
 }
 
 impl WidebandIqCaptureState {
+    pub fn with_rate(rate_hz: std::sync::Arc<std::sync::atomic::AtomicU32>) -> Self {
+        WidebandIqCaptureState { inner: Mutex::new(CaptureInner::default()), rate_hz }
+    }
+
+    /// The tap's sample rate now (Hz).
+    pub fn rate_hz(&self) -> u64 {
+        self.rate_hz.load(std::sync::atomic::Ordering::Relaxed) as u64
+    }
+
     /// Begins a capture of the next `seconds` seconds of wideband IQ
-    /// to a fresh file in /tmp/p25_iq_captures/. Cancels any
+    /// to a fresh file in /mnt/sd/p25_iq_captures/. Cancels any
     /// in-flight capture. Returns the path so the caller can echo it
     /// back to the operator.
+    /// Change 074c: sized at the live AD9361 rate (a fixed 4 MSPS made a
+    /// "10 s" capture on the 12M preset hold 3.3 s; found by the DMR
+    /// session).
     pub async fn start(&self, seconds: f64) -> anyhow::Result<PathBuf> {
+        let rate_hz = self.rate_hz();
         // Cap lifted from 30 s once captures moved off tmpfs onto SD
-        // (2026-05-03). At 4 MSPS / 16 MB/s, 600 s = 9.6 GB — fits
+        // (2026-05-03). At 12 MSPS / 48 MB/s, 600 s = 28.8 GB — fits
         // comfortably in the 57 GB SD partition and lets multi-call
         // diagnostics record continuously without auto-rearm churn.
         if !(0.0..=600.0).contains(&seconds) {
@@ -89,7 +99,7 @@ impl WidebandIqCaptureState {
             .with_context(|| format!("failed to create {path:?}"))?;
 
         let bytes = (seconds.max(0.0)
-            * WIDEBAND_IQ_RATE_HZ as f64
+            * rate_hz as f64
             * SAMPLE_BYTES as f64) as u64;
 
         let mut inner = self.inner.lock().await;
