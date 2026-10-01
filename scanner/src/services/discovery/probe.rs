@@ -1,0 +1,292 @@
+//! What a carrier carries. Every protocol's control decoder listens to it at once, each behind
+//! `Probe`: P25 on the HDL slicer's dibits and on the IQ through the software C4FM demodulator,
+//! DMR on the IQ. A later survey can add classifiers without changing the sweep.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use crate::protocol::dmr::control::DmrControl;
+use crate::protocol::events::{ControlEvent, SiteIdentity};
+use crate::protocol::p25::c4fm::C4fmDecoder;
+use crate::protocol::p25::control::P25Control;
+use crate::radio::streams::Input;
+use crate::services::config::systems::Protocol;
+use crate::trunking::learned::iden_band;
+use crate::util::time::Stamp;
+
+use super::{FoundNeighbour, FoundSite};
+
+/// What one protocol's decoder heard since the last reset.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Heard {
+    Nothing,
+    /// Its frames but no control messages: a traffic channel in a long call.
+    Traffic,
+    /// Its control channel; the identity once heard.
+    Control(Box<FoundSite>),
+}
+
+pub trait Probe: Send {
+    /// The carrier changed: forget what was heard.
+    fn reset(&mut self);
+    fn iq(&mut self, iq: &[i16], now: Stamp);
+    fn dibits(&mut self, _dibits: &[u8], _now: Stamp) {}
+    /// Its control channel with the site identity complete: no need to listen longer.
+    fn identified(&self) -> bool;
+    /// Control messages so far (a few are enough to say it is this protocol).
+    fn messages(&self) -> u64;
+    fn heard(&self, freq_hz: u64, level_db: f32, secs: f64) -> Heard;
+}
+
+/// P25: TSBKs from either demodulator; the one with the better CRC pass rate describes the site.
+pub struct P25Probe {
+    lsm: P25Control,
+    c4fm: P25Control,
+    demod: C4fmDecoder,
+    events: Vec<ControlEvent>,
+}
+
+impl Default for P25Probe {
+    fn default() -> Self {
+        P25Probe { lsm: P25Control::new("probe"), c4fm: P25Control::new("probe"), demod: C4fmDecoder::new(), events: Vec::new() }
+    }
+}
+
+impl P25Probe {
+    /// The C4FM path starts a moment later after a retune, so raw counts would favour LSM.
+    fn c4fm_better(&self) -> bool {
+        let (c, l) = (self.c4fm.stats(), self.lsm.stats());
+        let rate = |ok: u64, tries: u64| ok as f64 / tries.max(1) as f64;
+        if c.tsbk_attempts() >= 10 && l.tsbk_attempts() >= 10 {
+            rate(c.tsbk_ok(), c.tsbk_attempts()) > rate(l.tsbk_ok(), l.tsbk_attempts())
+        } else {
+            c.tsbk_ok() > l.tsbk_ok()
+        }
+    }
+}
+
+impl Probe for P25Probe {
+    fn reset(&mut self) {
+        self.lsm = P25Control::new("probe");
+        self.c4fm = P25Control::new("probe");
+        self.demod = C4fmDecoder::new();
+    }
+
+    fn iq(&mut self, iq: &[i16], now: Stamp) {
+        self.c4fm.push_c4fm(&mut self.demod, iq, now, &mut self.events);
+        self.events.clear();
+    }
+
+    fn dibits(&mut self, dibits: &[u8], now: Stamp) {
+        self.lsm.push(dibits, now, &mut self.events);
+        self.events.clear();
+    }
+
+    fn identified(&self) -> bool {
+        let done = |d: &P25Control| {
+            let i = &d.announced().identity;
+            i.wacn.is_some() && i.system.is_some() && i.site.is_some() && i.nac.is_some()
+        };
+        done(&self.lsm) || done(&self.c4fm)
+    }
+
+    fn messages(&self) -> u64 {
+        self.lsm.stats().tsbk_ok() + self.c4fm.stats().tsbk_ok()
+    }
+
+    fn heard(&self, freq_hz: u64, level_db: f32, secs: f64) -> Heard {
+        if self.messages() < 3 {
+            let nids = self.lsm.stats().nid_ok.max(self.c4fm.stats().nid_ok);
+            return if nids >= 3 { Heard::Traffic } else { Heard::Nothing };
+        }
+        let c4fm = self.c4fm_better();
+        let dec = if c4fm { &self.c4fm } else { &self.lsm };
+        let a = dec.announced();
+        let id = a.identity;
+        // A few TSBKs but no identity (a strong neighbour's control channel leaking in): not a
+        // site of its own.
+        if id.wacn.is_none() || id.system.is_none() || id.site.is_none() {
+            return Heard::Traffic;
+        }
+        let s = dec.stats();
+        let mut secondary: Vec<u64> = a.control_channel.iter().chain(&a.secondary).filter_map(|c| a.frequency(*c)).collect();
+        secondary.sort_unstable();
+        secondary.dedup();
+        // The site's own announced control channel when the spectrum estimate is that channel.
+        let announced = a.control_channel.and_then(|c| a.frequency(c)).filter(|f| f.abs_diff(freq_hz) <= 5_000);
+        Heard::Control(Box::new(FoundSite {
+            id: String::new(),
+            freq_hz: announced.unwrap_or(freq_hz),
+            level_db,
+            protocol: Protocol::P25,
+            modulation: Some(if c4fm { "c4fm" } else { "lsm" }),
+            msgs_per_s: s.tsbk_ok() as f64 / secs.max(0.1),
+            ok_pct: 100.0 * s.tsbk_ok() as f64 / s.tsbk_attempts().max(1) as f64,
+            identity: SiteIdentity::P25(id),
+            bands: a.bands.values().map(iden_band).collect(),
+            neighbours: a
+                .neighbours
+                .values()
+                .map(|n| FoundNeighbour {
+                    system: n.neighbour.system,
+                    rfss: n.neighbour.rfss,
+                    site: n.neighbour.site,
+                    freq_hz: n.neighbour.control.freq_hz,
+                })
+                .collect(),
+            secondary_hz: secondary,
+            timeslot: None,
+            existing_site: None,
+            via_neighbour: false,
+        }))
+    }
+}
+
+/// DMR Tier III: valid control messages (CSBKs) and the site's ALOHA identity.
+pub struct DmrProbe {
+    dmr: DmrControl,
+    events: Vec<ControlEvent>,
+    /// Valid messages by timeslot (1, 2).
+    slots: [u64; 2],
+}
+
+impl Default for DmrProbe {
+    fn default() -> Self {
+        DmrProbe { dmr: DmrControl::new(Default::default()), events: Vec::new(), slots: [0; 2] }
+    }
+}
+
+impl Probe for DmrProbe {
+    fn reset(&mut self) {
+        self.dmr.new_system();
+        self.dmr.stats = Default::default();
+        self.slots = [0; 2];
+    }
+
+    fn iq(&mut self, iq: &[i16], _now: Stamp) {
+        self.dmr.push(iq, &mut self.events);
+        for e in self.events.drain(..) {
+            if let ControlEvent::Message(line) = e {
+                if let (true, Some(slot @ 1..=2)) = (line.valid, line.slot) {
+                    self.slots[usize::from(slot) - 1] += 1;
+                }
+            }
+        }
+    }
+
+    fn identified(&self) -> bool {
+        self.dmr.identity().is_some()
+    }
+
+    fn messages(&self) -> u64 {
+        self.dmr.stats.msgs_valid
+    }
+
+    fn heard(&self, freq_hz: u64, level_db: f32, secs: f64) -> Heard {
+        let s = &self.dmr.stats;
+        let Some(identity) = self.dmr.identity().filter(|_| s.msgs_valid >= 3) else {
+            return if s.voice_bursts >= 6 { Heard::Traffic } else { Heard::Nothing };
+        };
+        let timeslot = if self.slots[1] > self.slots[0] { 2 } else { 1 };
+        Heard::Control(Box::new(FoundSite {
+            id: String::new(),
+            freq_hz,
+            level_db,
+            protocol: Protocol::DmrTier3,
+            modulation: None,
+            msgs_per_s: s.msgs_valid as f64 / secs.max(0.1),
+            ok_pct: 100.0 * s.msgs_valid as f64 / (s.msgs_valid + s.msgs_invalid).max(1) as f64,
+            identity: SiteIdentity::Dmr(identity),
+            bands: Vec::new(),
+            neighbours: Vec::new(),
+            secondary_hz: Vec::new(),
+            timeslot: Some(timeslot),
+            existing_site: None,
+            via_neighbour: false,
+        }))
+    }
+}
+
+/// The probes fed from the control streams on a thread of their own, while the sweep moves the
+/// control channel from carrier to carrier.
+pub struct Probes {
+    probes: Arc<Mutex<Vec<Box<dyn Probe>>>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    since: Instant,
+}
+
+impl Probes {
+    pub fn start(rx: Receiver<Input>, probes: Vec<Box<dyn Probe>>) -> std::io::Result<Probes> {
+        let probes = Arc::new(Mutex::new(probes));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (p, s) = (probes.clone(), stop.clone());
+        let thread = std::thread::Builder::new().name("probe".into()).spawn(move || feed(&p, &s, rx))?;
+        Ok(Probes { probes, stop, thread: Some(thread), since: Instant::now() })
+    }
+
+    /// The control channel moved to another carrier.
+    pub fn reset(&mut self) {
+        for p in lock(&self.probes).iter_mut() {
+            p.reset();
+        }
+        self.since = Instant::now();
+    }
+
+    /// Some protocol heard its control messages (`min` of them).
+    pub fn messages(&self, min: u64) -> bool {
+        lock(&self.probes).iter().any(|p| p.messages() >= min)
+    }
+
+    pub fn identified(&self) -> bool {
+        lock(&self.probes).iter().any(|p| p.identified())
+    }
+
+    /// The best verdict: a control channel over a traffic channel over nothing.
+    pub fn heard(&self, freq_hz: u64, level_db: f32) -> Heard {
+        let secs = self.since.elapsed().as_secs_f64();
+        let mut best = Heard::Nothing;
+        for p in lock(&self.probes).iter() {
+            match p.heard(freq_hz, level_db, secs) {
+                h @ Heard::Control(_) => return h,
+                Heard::Traffic => best = Heard::Traffic,
+                Heard::Nothing => {}
+            }
+        }
+        best
+    }
+
+    pub fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn feed(probes: &Mutex<Vec<Box<dyn Probe>>>, stop: &AtomicBool, rx: Receiver<Input>) {
+    let mut dibits = Vec::new();
+    while !stop.load(Ordering::Relaxed) {
+        let input = match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(i) => i,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
+        let now = Stamp::now();
+        let mut ps = lock(probes);
+        match input {
+            Input::Iq(iq) => ps.iter_mut().for_each(|p| p.iq(&iq, now)),
+            Input::Dibits { bytes, .. } => {
+                dibits.clear();
+                dibits.extend(bytes.iter().flat_map(|b| [b & 3, (b >> 2) & 3, (b >> 4) & 3, (b >> 6) & 3]));
+                ps.iter_mut().for_each(|p| p.dibits(&dibits, now));
+            }
+        }
+    }
+}

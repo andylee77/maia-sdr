@@ -86,6 +86,10 @@ mod board {
             Ok(())
         }
 
+        async fn spectrum(&self) -> Option<Vec<u8>> {
+            self.core.lock().await.read_spectrum().map(<[u8]>::to_vec)
+        }
+
         async fn readback(&self, sample_rate_hz: u32) -> Readback {
             let sr = sample_rate_hz as f64;
             let nco = |word: u32| (sr > 0.0).then(|| nco_to_freq(word & 0x0FFF_FFFF, sr));

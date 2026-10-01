@@ -96,7 +96,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             }
         });
     }
-    let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, trunking, audio, recordings, history, log, hardware, started });
+    let discovery = Arc::default();
+    let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, trunking, audio, recordings, history, discovery, log, hardware, started });
     let app = crate::api::router(state.clone());
     tokio::select! {
         r = crate::api::serve(app, args.listen, args.listen_https, args.ssl_cert.as_deref(), args.ssl_key.as_deref()) => r?,

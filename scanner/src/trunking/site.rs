@@ -38,6 +38,8 @@ const EDGE_MARGIN_HZ: f64 = 250_000.0;
 pub enum LiveState {
     NoSite,
     Switching { to: String },
+    /// A scan has the radio; the site it goes back to.
+    Scanning { back_to: Option<String> },
     Live(Box<Live>),
 }
 
@@ -118,6 +120,32 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
     pub async fn save_learned(&self) {
         if let Some(l) = self.learned.lock().await.as_ref() {
             l.save(&self.paths);
+        }
+    }
+
+    /// A scan takes the radio: the live site's receivers and trunking stop. Returns the site to
+    /// go back to.
+    pub async fn pause_for_scan(&self) -> Option<String> {
+        let back_to = match self.state() {
+            LiveState::Live(l) => Some(l.site.id.clone()),
+            LiveState::Scanning { back_to } => back_to,
+            _ => None,
+        };
+        self.save_learned().await;
+        self.receivers.stop().await;
+        self.trunking.stop().await;
+        self.state.send_replace(LiveState::Scanning { back_to: back_to.clone() });
+        self.log.system("site", "scanning: the live site is paused".to_string());
+        back_to
+    }
+
+    /// After a scan: the site it paused, live again.
+    pub async fn resume_after_scan(&self, back_to: Option<String>) {
+        self.state.send_replace(LiveState::NoSite);
+        if let Some(site) = back_to {
+            if let Err(e) = self.activate(&site).await {
+                tracing::error!("site {site} did not go live after the scan: {e:#}");
+            }
         }
     }
 

@@ -39,6 +39,10 @@ export function mount(el) {
         site.body.append(h('p', { text: `Switching to ${live.to}…` }));
         return;
       }
+      if (live.state === 'scanning') {
+        site.body.append(h('p', null, 'Scanning for systems (', h('a', { href: '#systems', text: 'Systems' }), '); the live site is paused.'));
+        return;
+      }
       const p = protocol(live.system.protocol);
       const t = live.tuning;
       site.body.append(kv([

@@ -1,10 +1,11 @@
-// Systems: every configured system and its sites; make a site live. (The setup scan joins here.)
+// Systems: find the systems on the air; every configured system and its sites; make a site live.
 
 import { h, card, toast } from '../dom.js';
 import { mhz, DASH } from '../format.js';
 import { api } from '../api.js';
 import { refresh } from '../store.js';
 import { protocol } from '../protocols.js';
+import { scanCard } from './scan.js';
 
 function kv(rows) {
   return h('table', { class: 'kv' }, ...rows.map(([k, v]) =>
@@ -13,7 +14,8 @@ function kv(rows) {
 
 export function mount(el) {
   const list = h('div', { class: 'stack' });
-  el.append(list);
+  const scan = scanCard(load);
+  el.append(h('div', { class: 'stack' }, scan.el, list));
   let liveId = null;
   let systems = [];
 
@@ -55,7 +57,10 @@ export function mount(el) {
     }
   }
 
-  api.systems().then(s => { systems = s; render(); }).catch(e => toast(e.message, true));
+  function load() {
+    api.systems().then(s => { systems = s; render(); }).catch(e => toast(e.message, true));
+  }
+  load();
 
   return {
     update(s) {
@@ -66,6 +71,6 @@ export function mount(el) {
         render();
       }
     },
-    unmount() {},
+    unmount() { scan.stop(); },
   };
 }

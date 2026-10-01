@@ -41,6 +41,8 @@ function header(s) {
     setText($('top-site-text'), 'no site');
   } else if (live.state === 'switching') {
     setText($('top-site-text'), `switching to ${live.to}…`);
+  } else if (live.state === 'scanning') {
+    setText($('top-site-text'), 'scanning…');
   } else {
     setText($('top-site-text'), `${live.site.label} · ${mhz(live.site.control.freq_hz)}`);
   }

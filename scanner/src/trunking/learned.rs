@@ -54,14 +54,7 @@ impl Learned {
     }
 
     pub fn band(&self, b: &FrequencyBand) {
-        let entry = IdenBand {
-            identifier: b.identifier,
-            base_frequency_hz: b.base_frequency_hz,
-            channel_spacing_hz: b.channel_spacing_hz,
-            bandwidth_hz: b.bandwidth_hz,
-            transmit_offset_hz: i64::from(b.transmit_offset_hz),
-            slots: b.slots,
-        };
+        let entry = iden_band(b);
         self.with(|s| match s.iden_bands.iter_mut().find(|x| x.identifier == b.identifier) {
             Some(x) if *x == entry => ((), false),
             Some(x) => {
@@ -105,6 +98,19 @@ impl Learned {
             Ok(()) => s.1 = false,
             Err(e) => tracing::warn!("learned state of site {} not saved: {e:#}", self.site),
         }
+    }
+}
+
+
+/// An announced band as the site state keeps it.
+pub fn iden_band(b: &FrequencyBand) -> IdenBand {
+    IdenBand {
+        identifier: b.identifier,
+        base_frequency_hz: b.base_frequency_hz,
+        channel_spacing_hz: b.channel_spacing_hz,
+        bandwidth_hz: b.bandwidth_hz,
+        transmit_offset_hz: i64::from(b.transmit_offset_hz),
+        slots: b.slots,
     }
 }
 

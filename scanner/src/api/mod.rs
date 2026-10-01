@@ -102,6 +102,10 @@ routes! {
     get "/api/v1/systems/{id}" => v1::systems::get, "one system";
     get "/api/v1/sites" => v1::sites::list, "every site, with the live one marked";
     post "/api/v1/sites/{id}/activate" => v1::sites::activate, "make a site live (returns once it is)";
+    get "/api/v1/scan" => v1::scan::get, "the scan's progress and what it found";
+    post "/api/v1/scan" => v1::scan::start, "find the systems on the air (the live site pauses meanwhile)";
+    post "/api/v1/scan/cancel" => v1::scan::cancel, "stop the scan";
+    post "/api/v1/scan/add" => v1::scan::add, "add the ticked sites of the last scan";
     get "/api/v1/profiles" => v1::profiles::list, "profiles and each site's active one";
     put "/api/v1/sites/{id}/profile" => v1::profiles::select, "choose a site's active profile";
 }

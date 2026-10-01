@@ -103,6 +103,11 @@ pub trait RadioHw: Send + Sync {
     fn lane_pll(&self, _lane: Lane) -> impl Future<Output = Option<LanePll>> + Send {
         async { None }
     }
+    /// The wideband spectrometer's newest frame (its raw words), once; `None` until another
+    /// completes.
+    fn spectrum(&self) -> impl Future<Output = Option<Vec<u8>>> + Send {
+        async { None }
+    }
 }
 
 /// A lane's carrier loop: its phase correction per symbol and the gateware's clamp (Q2.13).
