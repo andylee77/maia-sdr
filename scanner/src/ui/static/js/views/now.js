@@ -1,7 +1,7 @@
 // Now: the live site at a glance, or the way to add one.
 
 import { h, card } from '../dom.js';
-import { mhz, ago, pct, num, DASH } from '../format.js';
+import { mhz, ago, pct, num, dur, dayTime, DASH, NOT_FOLLOWED, CLOSE_REASON } from '../format.js';
 import { protocol } from '../protocols.js';
 
 // A control channel with no message for this long is shown as silent.
@@ -17,13 +17,15 @@ export function mount(el) {
   const control = card('Control channel');
   const dot = h('span', { class: 'dot' });
   control.right.append(dot);
-  el.append(h('div', { class: 'stack' }, site.el, control.el));
+  const calls = card('Calls');
+  el.append(h('div', { class: 'stack' }, site.el, calls.el, control.el));
 
   return {
     update(s) {
       const live = s.status && s.status.live;
       site.body.replaceChildren();
       control.el.hidden = !live || live.state !== 'live';
+      calls.el.hidden = control.el.hidden;
       if (!live || live.state === 'no_site') {
         site.body.append(
           h('p', { text: 'No sites yet.' }),
@@ -62,7 +64,42 @@ export function mount(el) {
       if (c.carrier_offset_hz !== null && c.carrier_offset_hz !== undefined) rows.push(['Carrier offset', `${num(c.carrier_offset_hz)} Hz`]);
       rows.push([p.planLabel, num(c.channel_plan_entries)], ['Grants', num(c.grants)], ['CPU', pct(c.cpu_pct)]);
       control.body.replaceChildren(kv(rows));
+      showCalls(calls, s);
     },
     unmount() {},
   };
+}
+
+// The open calls (lane first, then those not followed) and the newest closed ones.
+function showCalls(c, s) {
+  const v = s.calls || { open: [], recent: [] };
+  const now = s.status.now_unix_ms;
+  const who = x => (x.source ? ` from ${x.source}` : '');
+  const where = x => `${x.channel || DASH} ${mhz(x.freq_hz)}`;
+  const followed = v.open.filter(x => x.lane);
+  const listed = v.open.filter(x => !x.lane);
+  const rows = [];
+  for (const x of followed) {
+    rows.push(h('tr', null,
+      h('td', { text: `Lane ${x.lane}` }),
+      h('td', { text: `TG ${x.tg}${who(x)}` }),
+      h('td', { text: where(x) }),
+      h('td', { text: `${dur(now - x.started_unix_ms)}, ${num(x.voice_frames)} frames${x.end_lc ? ', ending' : ''}` })));
+  }
+  for (const x of listed) {
+    rows.push(h('tr', { class: 'dim' },
+      h('td', { text: DASH }),
+      h('td', { text: `TG ${x.tg}${who(x)}` }),
+      h('td', { text: where(x) }),
+      h('td', { text: NOT_FOLLOWED[x.not_followed] || x.not_followed || 'not followed' })));
+  }
+  const open = rows.length ? h('table', { class: 'table' }, h('tbody', null, ...rows)) : h('p', { class: 'dim', text: 'No calls on the air.' });
+  const recent = v.recent.slice(0, 15).map(x => h('tr', x.lane ? null : { class: 'dim' },
+    h('td', { text: dayTime(x.started_unix_ms) }),
+    h('td', { text: `TG ${x.tg}${who(x)}` }),
+    h('td', { text: x.ended_unix_ms ? dur(x.ended_unix_ms - x.started_unix_ms) : DASH }),
+    h('td', { text: x.lane ? `${num(x.voice_frames)} frames, ${CLOSE_REASON[x.close] || x.close || DASH}` : (NOT_FOLLOWED[x.not_followed] || x.not_followed || DASH) })));
+  c.body.replaceChildren(open,
+    h('h3', { text: 'Recent' }),
+    recent.length ? h('table', { class: 'table' }, h('tbody', null, ...recent)) : h('p', { class: 'dim', text: 'None yet.' }));
 }

@@ -166,14 +166,13 @@ export function pllHz(q213) {
 
 export const NOT_FOLLOWED = {
   encrypted: 'encrypted',
-  sticky_lock: 'busy on another call',
+  busy: 'busy on another call',
   monitor_list: 'not on monitor list',
   ignored: 'ignored',
   speaker_off: 'not on a speaker',
   out_of_band: 'outside the window',
   phase2: 'Phase 2 (TDMA)',
-  traffic_lock: 'chain locked (diagnostic)',
-  update_no_lock: 'update without grant',
+  unknown_lcn: 'channel not in the plan',
 };
 
 // Why a call closed (`close_reason`).
@@ -181,8 +180,7 @@ export const CLOSE_REASON = {
   call_end: 'end of transmission',
   tg_change: 'next grant',
   timeout: 'no activity',
-  stream_lag: 'event lag',
-  sync_lost: 'sync lost',
+  site_switch: 'site switched',
 };
 
 export const AUDIO_STATUS = {

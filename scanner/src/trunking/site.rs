@@ -18,7 +18,11 @@ use crate::radio::plan::{self, WindowPlan};
 use crate::radio::streams::StreamSource;
 use crate::radio::tuner::{RadioHw, Tuner, Tuning, TuningPlan};
 use crate::services::events::EventLog;
+use crate::hardware::p25core::Lane;
+use crate::trunking::calls::CallPolicy;
+use crate::trunking::follow::routing::Routing;
 use crate::trunking::receivers::{self, Receivers};
+use crate::trunking::trunk::{Setup, Trunking};
 use crate::services::config::profiles::Profile;
 use crate::services::config::systems::{CcPosition, Protocol, Site, System};
 use crate::services::config::{self, Config, Paths, SiteState, Stored};
@@ -62,19 +66,24 @@ pub struct LiveSite<H> {
     tuner: Arc<Tuner<H>>,
     lease: RadioLease,
     receivers: Arc<Receivers>,
+    trunking: Arc<Trunking>,
+    lanes: Vec<Lane>,
     log: Arc<EventLog>,
     state: watch::Sender<LiveState>,
     /// What was learned on the live site.
     learned: Mutex<Option<Stored<SiteState>>>,
 }
 
-impl<H: RadioHw + StreamSource> LiveSite<H> {
+impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         paths: Paths,
         config: Arc<Mutex<Config>>,
         tuner: Arc<Tuner<H>>,
         lease: RadioLease,
         receivers: Arc<Receivers>,
+        trunking: Arc<Trunking>,
+        lanes: Vec<Lane>,
         log: Arc<EventLog>,
     ) -> Self {
         LiveSite {
@@ -83,6 +92,8 @@ impl<H: RadioHw + StreamSource> LiveSite<H> {
             tuner,
             lease,
             receivers,
+            trunking,
+            lanes,
             log,
             state: watch::channel(LiveState::NoSite).0,
             learned: Mutex::new(None),
@@ -115,18 +126,19 @@ impl<H: RadioHw + StreamSource> LiveSite<H> {
     }
 
     async fn switch(&self, site_id: &str) -> Result<Live> {
-        let (site, system, profile, presets_allowed) = {
+        let (site, system, profile, presets_allowed, calls) = {
             let c = self.config.lock().await;
             let Some((system, site)) = c.systems.value.site(site_id) else {
                 bail!("no site {site_id:?}");
             };
             let profile = c.profiles.value.active_for(site_id).cloned();
-            (site.clone(), SystemSummary::from(system), profile, c.radio.value.presets_allowed.clone())
+            (site.clone(), SystemSummary::from(system), profile, c.radio.value.presets_allowed.clone(), c.radio.value.calls.clone())
         };
         let learned = Config::site_state(&self.paths, site_id)?;
         let window = window_for(&site, &learned.value, &presets_allowed)?;
         let preset = find_preset(&window.preset).context("planned preset")?;
         self.receivers.stop().await;
+        self.trunking.stop().await;
         let tuning = self
             .tuner
             .apply(TuningPlan { preset, lo_hz: window.lo_hz as u64, control_hz: site.control.freq_hz })
@@ -141,11 +153,29 @@ impl<H: RadioHw + StreamSource> LiveSite<H> {
                 }
             }
         }
+        let setup = Setup {
+            site: site.id.clone(),
+            // Lane one carries both protocols; lane two only P25 (it has no IQ tap). DMR traffic
+            // is not decoded yet: its grants are listed, not followed.
+            lanes: match system.protocol {
+                Protocol::P25 => self.lanes.clone(),
+                Protocol::DmrTier3 => Vec::new(),
+            },
+            routing: profile.as_ref().map(Routing::new).unwrap_or_default(),
+            encrypted: self.learned.lock().await.as_ref().map(|l| l.value.encrypted_talkgroups.iter().copied().collect()).unwrap_or_default(),
+            policy: CallPolicy {
+                hang: std::time::Duration::from_millis(calls.hang_ms),
+                end_grace: std::time::Duration::from_millis(calls.end_grace_ms),
+            },
+            first_call: 1,
+        };
+        let trunk = self.trunking.start(setup, self.tuner.clone(), self.log.clone()).await;
         let context = receivers::Context {
             site: site.id.clone(),
             protocol: system.protocol,
             modulation: site.modulation,
             lcn_hz: site.channel_plan.as_ref().map(|p| p.lcn_hz.iter().map(|(k, v)| (*k, *v)).collect()).unwrap_or_default(),
+            trunk: Some(trunk),
         };
         self.receivers.start(context, self.tuner.hw()).await;
         tracing::info!("site {} live: {} at LO {} Hz", site.id, window.preset, window.lo_hz);
@@ -293,8 +323,9 @@ mod tests {
         let tuner = Arc::new(Tuner::new(Nothing, 0.0));
         let log = Arc::new(EventLog::default());
         let receivers = Arc::new(Receivers::new(log.clone()));
+        let trunking = Arc::new(Trunking::default());
         let config = Arc::new(Mutex::new(config));
-        let live = LiveSite::new(paths.clone(), config, tuner.clone(), RadioLease::default(), receivers.clone(), log.clone());
+        let live = LiveSite::new(paths.clone(), config, tuner.clone(), RadioLease::default(), receivers.clone(), trunking.clone(), vec![Lane::One], log.clone());
         assert!(live.activate("duval").await.is_err());
         assert!(matches!(live.state(), LiveState::NoSite));
         let l = live.activate("clay").await.unwrap();
@@ -305,5 +336,6 @@ mod tests {
         assert!(receivers.status().running && receivers.status().site.as_deref() == Some("clay"));
         assert!(log.since(0, 10, false)[0].text.starts_with("site clay"));
         receivers.stop().await;
+        trunking.stop().await;
     }
 }

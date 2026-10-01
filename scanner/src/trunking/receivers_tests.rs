@@ -138,6 +138,7 @@ async fn p25_receivers_publish_the_lsm_decoder_messages() {
         protocol: Protocol::P25,
         modulation: Modulation::Auto,
         lcn_hz: HashMap::new(),
+        trunk: None,
     };
     receivers.start(context, &Prepared(vec![pack(&dibits)])).await;
     let deadline = Instant::now() + Duration::from_secs(5);

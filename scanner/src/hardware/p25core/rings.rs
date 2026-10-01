@@ -21,6 +21,11 @@ pub fn mono_us() -> u64 {
     MONO_ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_micros() as u64
 }
 
+/// The instant of a `mono_us` value.
+pub fn mono_instant(us: u64) -> std::time::Instant {
+    *MONO_ORIGIN.get_or_init(std::time::Instant::now) + std::time::Duration::from_micros(us)
+}
+
 /// A traffic chain's hardware action, reported to its epoch sink as it happens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HwAction {

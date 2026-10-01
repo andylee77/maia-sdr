@@ -23,6 +23,7 @@ use crate::protocol::p25::control::P25Control;
 use crate::radio::streams::{Input, StreamCounters, StreamSource, Wants};
 use crate::services::config::systems::{Modulation, Protocol};
 use crate::services::events::EventLog;
+use crate::trunking::trunk::{TrunkInput, TrunkTx};
 
 /// Deliveries queued for the decode thread (about 6 s of IQ).
 const QUEUE: usize = 64;
@@ -37,6 +38,8 @@ pub struct Context {
     pub modulation: Modulation,
     /// DMR: logical channel numbers to downlink Hz.
     pub lcn_hz: HashMap<u16, u64>,
+    /// Where grants go.
+    pub trunk: Option<TrunkTx>,
 }
 
 /// The control channel as the site card shows it.
@@ -64,6 +67,8 @@ pub struct ControlStatus {
     pub channel_plan_entries: usize,
     pub neighbours: usize,
     pub grants: u64,
+    /// Grants the trunking task could not take (its queue was full).
+    pub grants_dropped: u64,
     pub input: InputStatus,
 }
 
@@ -232,7 +237,7 @@ impl Receivers {
         };
         let (tx, rx) = sync_channel(QUEUE);
         let stop = Arc::new(AtomicBool::new(false));
-        let decoder = Decoder { log: self.log.clone(), view: self.view.clone(), stop: stop.clone() };
+        let decoder = Decoder { log: self.log.clone(), view: self.view.clone(), stop: stop.clone(), trunk: context.trunk.clone() };
         let name = match context.protocol {
             Protocol::P25 => "p25-cc",
             Protocol::DmrTier3 => "dmr-cc",
@@ -286,6 +291,7 @@ struct Decoder {
     log: Arc<EventLog>,
     view: Arc<Mutex<View>>,
     stop: Arc<AtomicBool>,
+    trunk: Option<TrunkTx>,
 }
 
 /// Busy time over the last few seconds, as a share of one core.
@@ -454,7 +460,18 @@ impl Decoder {
                     self.log.message(source, now.unix_ms, line);
                 }
                 ControlEvent::Identity(identity) => v.status.identity = Some(*identity),
-                ControlEvent::Grant(_) => v.status.grants += 1,
+                ControlEvent::Grant(grant) => {
+                    v.status.grants += 1;
+                    if let Some(trunk) = &self.trunk {
+                        let nac = match v.status.identity {
+                            Some(SiteIdentity::P25(id)) => id.nac.unwrap_or(0),
+                            _ => 0,
+                        };
+                        if trunk.try_send(TrunkInput::Grant { grant: *grant, nac, at: now }).is_err() {
+                            v.status.grants_dropped += 1;
+                        }
+                    }
+                }
                 _ => {}
             }
         }

@@ -9,6 +9,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 
+use crate::hardware::p25core::Lane;
+use crate::util::time::Stamp;
+use dibit_ring::ClockView;
+
 /// One delivery to a receiver.
 #[derive(Debug)]
 pub enum Input {
@@ -17,6 +21,17 @@ pub enum Input {
     /// Dibits from the control chain's HDL demodulator, four a byte (the first in the low bits).
     /// `reset`: the stream skipped (a resync or a lost delivery), so a frame in progress is lost.
     Dibits { bytes: Vec<u8>, reset: bool },
+}
+
+/// What a traffic lane's readers deliver.
+#[derive(Debug)]
+pub enum LaneInput {
+    /// Dibits from the lane's ring, four a byte (the first in the low bits). `first` is the
+    /// absolute index of the first dibit; `clock` maps indices to production time; `reset`: the
+    /// stream skipped.
+    Dibits { lane: Lane, bytes: Vec<u8>, first: u64, reset: bool, clock: ClockView },
+    /// The lane's gateware read a NID, in real time (`valid`: it passed BCH).
+    Nid { lane: Lane, duid: u8, nac: u16, valid: bool, at: Stamp },
 }
 
 /// Which control-chain streams a receiver wants.
@@ -48,6 +63,11 @@ pub trait StreamSource {
         stop: Arc<AtomicBool>,
         counters: Arc<StreamCounters>,
     ) -> Vec<tokio::task::JoinHandle<()>>;
+
+    /// Starts each lane's dibit reader and gateware status poller.
+    fn lane_streams(&self, _lanes: &[Lane], _tx: tokio::sync::mpsc::Sender<LaneInput>, _stop: Arc<AtomicBool>) -> Vec<tokio::task::JoinHandle<()>> {
+        Vec::new()
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

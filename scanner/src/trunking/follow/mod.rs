@@ -161,7 +161,7 @@ pub enum Command {
 pub struct Outcome {
     pub record: Option<Record>,
     pub commands: Vec<Command>,
-    /// Lines for the event log.
+    /// Lines for the event log: re-follows, pre-emptions, channel reuse.
     pub notes: Vec<String>,
 }
 
@@ -307,8 +307,9 @@ impl Follower {
                 decision,
             }))
         };
+        // The call book lists a refused grant once; the reason goes to the debug log only.
         let refuse = |out: &mut Outcome, why: NotFollowed, note: String| {
-            out.notes.push(note);
+            tracing::debug!("{note}");
             out.record = record(Decision::NotFollowed(why));
         };
         if self.routing.ignored(g.tg) {

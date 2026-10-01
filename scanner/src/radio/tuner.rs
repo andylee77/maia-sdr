@@ -9,6 +9,7 @@
 //! The tuner remembers what each lane's NCO holds. Any change under the lanes (a new preset, an
 //! LO move) clears that, so the next retune always writes the NCO.
 
+use std::future::Future;
 use std::sync::Mutex;
 
 use anyhow::{bail, Result};
@@ -85,20 +86,19 @@ pub fn lo_shift_hz(ppm: f64, lo_hz: u64) -> i64 {
 }
 
 /// The hardware operations the tuner needs.
-#[allow(async_fn_in_trait)]
 pub trait RadioHw: Send + Sync {
-    async fn set_lo(&self, hz: u64) -> Result<()>;
-    async fn set_rate(&self, sample_rate_hz: u32, rf_bandwidth_hz: u32) -> Result<()>;
-    async fn set_gain(&self, mode: GainMode, db: Option<f64>) -> Result<()>;
+    fn set_lo(&self, hz: u64) -> impl Future<Output = Result<()>> + Send;
+    fn set_rate(&self, sample_rate_hz: u32, rf_bandwidth_hz: u32) -> impl Future<Output = Result<()>> + Send;
+    fn set_gain(&self, mode: GainMode, db: Option<f64>) -> impl Future<Output = Result<()>> + Send;
     /// Load `preset` into the control DDC with its NCO at `nco_hz`.
-    async fn configure_control(&self, preset: &'static DdcPreset, nco_hz: f64) -> Result<()>;
-    async fn set_control_nco(&self, nco_hz: f64, sample_rate_hz: u32) -> Result<()>;
+    fn configure_control(&self, preset: &'static DdcPreset, nco_hz: f64) -> impl Future<Output = Result<()>> + Send;
+    fn set_control_nco(&self, nco_hz: f64, sample_rate_hz: u32) -> impl Future<Output = Result<()>> + Send;
     /// Load `preset` into every lane's DDC, NCO 0, input on.
-    async fn configure_lanes(&self, preset: &'static DdcPreset) -> Result<()>;
-    async fn retune_lane(&self, lane: Lane, nco_hz: f64, sample_rate_hz: u32, reset: bool) -> Result<()>;
-    async fn pause_lane(&self, lane: Lane) -> Result<()>;
+    fn configure_lanes(&self, preset: &'static DdcPreset) -> impl Future<Output = Result<()>> + Send;
+    fn retune_lane(&self, lane: Lane, nco_hz: f64, sample_rate_hz: u32, reset: bool) -> impl Future<Output = Result<()>> + Send;
+    fn pause_lane(&self, lane: Lane) -> impl Future<Output = Result<()>> + Send;
     /// What the hardware holds now (`sample_rate_hz` converts NCO words).
-    async fn readback(&self, sample_rate_hz: u32) -> Readback;
+    fn readback(&self, sample_rate_hz: u32) -> impl Future<Output = Readback> + Send;
 }
 
 pub struct Tuner<H> {

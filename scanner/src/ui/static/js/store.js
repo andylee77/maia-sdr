@@ -3,7 +3,7 @@
 
 import { api } from './api.js';
 
-export const store = { status: null, connected: false };
+export const store = { status: null, calls: null, connected: false };
 
 const subscribers = new Set();
 
@@ -20,7 +20,7 @@ let timer = null;
 
 export async function refresh() {
   try {
-    store.status = await api.status();
+    [store.status, store.calls] = await Promise.all([api.status(), api.calls()]);
     store.connected = true;
   } catch (e) {
     store.connected = false;

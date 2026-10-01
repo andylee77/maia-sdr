@@ -12,6 +12,7 @@ use crate::services::config::{Config, Paths};
 use crate::services::events::EventLog;
 use crate::trunking::receivers::Receivers;
 use crate::trunking::site::LiveSite;
+use crate::trunking::trunk::Trunking;
 
 pub struct AppState {
     pub paths: Paths,
@@ -20,6 +21,7 @@ pub struct AppState {
     pub live: Arc<LiveSite<Hardware>>,
     pub lease: RadioLease,
     pub receivers: Arc<Receivers>,
+    pub trunking: Arc<Trunking>,
     pub log: Arc<EventLog>,
     pub hardware: HardwareInfo,
     pub started: Instant,
