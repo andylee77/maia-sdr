@@ -192,7 +192,7 @@ impl Probe for DmrProbe {
         let timeslot = if self.slots[1] > self.slots[0] { 2 } else { 1 };
         Heard::Control(Box::new(FoundSite {
             id: String::new(),
-            freq_hz,
+            freq_hz: on_raster(freq_hz),
             level_db,
             protocol: Protocol::DmrTier3,
             modulation: None,
@@ -207,6 +207,13 @@ impl Probe for DmrProbe {
             via_neighbour: false,
         }))
     }
+}
+
+/// A spectral estimate on the channel raster: 2.5 kHz in VHF, 6.25 kHz above (a DMR site
+/// announces no frequency of its own to correct it by).
+pub fn on_raster(freq_hz: u64) -> u64 {
+    let step = if freq_hz < 300_000_000 { 2_500 } else { 6_250 };
+    (freq_hz + step / 2) / step * step
 }
 
 /// The probes fed from the control streams on a thread of their own, while the sweep moves the

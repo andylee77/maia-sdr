@@ -123,6 +123,14 @@ fn a_scan_adds_systems_and_sites_and_merges_into_known_ones() {
 }
 
 #[test]
+fn dmr_finds_land_on_the_channel_raster() {
+    use super::probe::on_raster;
+    assert_eq!(on_raster(454_369_375), 454_368_750);
+    assert_eq!(on_raster(451_086_000), 451_087_500);
+    assert_eq!(on_raster(151_001_900), 151_002_500);
+}
+
+#[test]
 fn slugs() {
     assert_eq!(slug("Florida Power & Light (Clay)"), "florida_power_light_clay");
     assert_eq!(slug("  "), "site");

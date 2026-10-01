@@ -1129,8 +1129,9 @@ From the brief:
     index) and reconciled with the card at boot. Call ids continue past the history and the
     recordings.
   - **API and UI:** `/api/v1/activity/*` (sites, summary, talkgroups, radios, one radio, one
-    talkgroup, series, calls with CSV) and the Activity page; the recent calls are refilled
-    from the history at boot and kept across a site switch.
+    talkgroup, series, calls with CSV), each for a site or a whole system (`system`), and the
+    Activity page; the recent calls are refilled from the history at boot and kept across a
+    site switch.
   - **Live, unit B:** the copy took 1.2 s (5,274 calls, 5,338 radio rows, 1,662 hour rows,
     2,761 radio events). Summary, talkgroups and radios for the 24 hours to 16:00 UTC are
     identical to p25-httpd's answers before the switch. The scanner's calls continue from
@@ -1140,4 +1141,26 @@ From the brief:
   - **The copy happens once** (when there is no v2 file). p25-httpd keeps writing the v1 file
     while it runs, so before the cutover the test `scanner-history.sqlite` (and
     `scanner_recordings`) are deleted on each unit, and the cutover copies the final v1.
-  - **Not yet:** the `system` filter on Activity; per-speaker times in `transmissions`.
+  - **Not yet:** per-speaker times in `transmissions`.
+- 2026-10-01, phase 6 (in progress):
+  - **Scan** (`services::discovery`): p25-httpd's finder (step plan, continuous carriers in the
+    wideband spectrometer, neighbour pass) over the design's bands (P25 700/800/900, UHF, VHF:
+    eight windows). Each carrier is probed by the P25 (LSM and C4FM) and DMR control decoders at
+    once, each behind `Probe`. The live site pauses for the scan (`scanning`) and comes back
+    after.
+  - **Adding:** found sites are keyed by identity and grouped into systems; a site already
+    configured (same identity, or a control channel within 3 kHz) only gains the alternate
+    control channels it announced; a new site joins its system or a new one named by the user;
+    a P25 site's band plan seeds its state; with no live site, the first one added goes live.
+    `/api/v1/scan` and the scan card on Systems.
+  - **Live, unit B** (internal antenna), from an empty configuration (`--flash-dir` on an empty
+    directory): the scan took 24 s and found Clay County (860.9625 MHz, LSM, 93 %, six bands,
+    two secondaries) and Clay Electric (454.36875 MHz, timeslot 1, colour code 0, SMALL network
+    0 site 2), plus two P25 traffic channels in calls. Adding both made Clay live at 97 %. A
+    rescan matched Clay to its site and put it back live; that pass missed the DMR carrier
+    (marginal on the internal antenna).
+  - **Changed from p25-httpd:** a DMR find is put on the channel raster (2.5 kHz in VHF,
+    6.25 kHz above): it announces no frequency of its own, and the spectrum's estimate was
+    625 Hz off.
+  - **Not yet:** the DMR channel plan (LCNs) from the air: a DMR site added by a scan follows
+    no grant until its LCNs are entered (`unknown_lcn`); the site editor comes with phase 7.

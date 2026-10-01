@@ -5,7 +5,7 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
-## [2026-10-01] 076: the fresh `scanner` crate, phases 0-4 (not deployed)
+## [2026-10-01] 076: the fresh `scanner` crate, phases 0-6 (not deployed)
 
 **Branch:** fishball-p25
 **BUILD_TAG:** `2026-10-01-scanner-p4` (scanner; run by hand from `/tmp`, p25-httpd stays in production)
@@ -28,8 +28,13 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   and the Listen button; call recordings driven by the call book (RAM or SD, p25-httpd's file
   names and card writer), the card's recordings listed at boot, playback on Now and the
   recording settings.
+- **Phase 5:** history v2 (`scanner-history.sqlite`): one writer thread, p25-httpd's history
+  copied once (the units' Activity answers unchanged), `/api/v1/activity/*` by site or system,
+  the Activity page.
+- **Phase 6:** the scan: P25 and DMR control channels found across 700/800/900 MHz, UHF and
+  VHF, grouped into systems and added from the Systems page; the first-run flow.
 
-Tests: scanner 337, p25-httpd 475.
+Tests: scanner 365, p25-httpd 475.
 
 ---
 
