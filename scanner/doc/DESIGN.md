@@ -1055,4 +1055,19 @@ From the brief:
     whatever the parity bit says), DMR keeps the parity check. Checked: the parsed link control,
     HDU and encryption sync of all 331 recordings (20,491 voice units) match p25-httpd's, and
     the DMR reference still matches 24,984 of 24,996 lines.
-  - **Next:** the replay corpus with B wired into A (the last phase 2 gate), then phase 3.
+  - **Next:** the replay corpus with B wired into A (the last phase 2 gate).
+- 2026-10-01, phase 3 (in progress):
+  - **Call book** (`trunking::calls`): p25-httpd's lifecycle rules on the monotonic clock, with
+    channels compared by frequency and timeslot. Its 24 tests ported, and the three replay
+    fixtures (Clay on A and B, Clay Electric on A: 199 calls) replay to exactly the calls
+    p25-httpd's lifecycle makes of them. A third fixture, `a_clay_p25` (10 minutes of A's
+    Clay trace, 98 calls, two on lane 2), was added; the fixture traces are now tracked (the
+    tree ignores `*.jsonl`).
+  - **Follower** (`trunking::follow`): the gates in p25-httpd's order as small steps, the lane
+    choice, re-follow from grant updates; pure, it returns the call book's record and the lane
+    commands. The lane-policy tests are ported.
+  - **Changed from p25-httpd:** a P25 grant whose channel the IDEN table does not name yet is
+    not followed (`unknown_lcn`, as for DMR) instead of opening a call with no frequency;
+    "busy" replaces "sticky_lock"; a site switch closes the open calls (`site_switch`).
+  - **Next:** the traffic side (lane dibit readers, the P25 traffic decoder, voice events), the
+    lane controller (coast or reset), and the runner joining them to the receivers.
