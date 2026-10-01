@@ -211,3 +211,30 @@ IQ hub (50 kSPS, control or traffic DDC)
 - 2026-09-30: **talkgroups are u16 in the shared call pipeline**, and Clay Electric's are
   87921–87926. 075a widens them to u32, made on its own branch off fishball-p25 so the P25
   line gets it too.
+  - The peer session fast-forwarded fishball-p25 to 075a (47214a4), and it is merged here.
+  - 075b (the traffic IQ wiring) was baked by the peer session; the image went onto unit A
+    around 00:30.
+- 2026-09-30: **DMR calls in the shared call lifecycle.** The follower's actions become
+  call-boundary events on lane One:
+  - grant → `CcGrantArrival`;
+  - repeat → `CcGrantUpdate`;
+  - link-control radio → `TdulcComplete`;
+  - voice → `TrafficNidObserved{voice}` plus a keep-alive at most every 500 ms;
+  - terminator / CLEAR → `VoiceEnd`.
+  So DMR calls reach Recent calls, recordings and the history.
+- 2026-09-30: **AMBE+2 vocoder** (`jmbe::ambe`, ported from jmbe v1.0.9):
+  - matches jmbe itself on the Clay frames: max abs error 1.2e-7, 146 dB SNR, 4 of 17,280
+    PCM16 samples off by one LSB (the unvoiced FFT is realfft, not JTransforms);
+  - 26 µs per frame on the host;
+  - listening copies: `runs/dmr/ambe_clay_ts2_{rust,jmbe}.wav`.
+  - jmbe quirks are kept for parity and listed in the module docs: an unprimed noise
+    buffer, the prediction neighbour, the silence fundamental, tone repeat.
+  - SDRTrunk's `getAMBEFrames()` corrupts frame 2's bits 32–35 when bit 180 is set; ours
+    doesn't.
+- 2026-09-30: **DMR voice to the audio path** (`app::dmr_voice`):
+  - the followed call's frames go to a vocoder thread (a fresh decoder per call);
+  - the P25 vocoder's AGC and limiter (`PcmAgc`) apply;
+  - 20 ms chunks on lane One go to a pacer of their own on the shared audio broadcast
+    (live audio, recordings).
+  - Calls granted to the control repeater's other timeslot (LCN 5 TS2) come from the
+    control receiver itself, so they need no traffic IQ.
