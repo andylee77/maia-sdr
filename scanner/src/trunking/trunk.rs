@@ -66,6 +66,8 @@ pub enum TrunkInput {
     Lane(LaneInput),
     /// The live site's profile changed.
     Routing(Box<Routing>),
+    /// The receive window moved: every lane was reloaded and holds no channel.
+    WindowMoved,
 }
 
 pub type TrunkTx = mpsc::Sender<TrunkInput>;
@@ -291,6 +293,14 @@ impl Trunking {
         }
     }
 
+    /// The receive window moved under idle lanes (a recentre).
+    pub async fn window_moved(&self) {
+        let tx = self.running.lock().await.as_ref().map(|r| r.tx.clone());
+        if let Some(tx) = tx {
+            let _ = tx.send(TrunkInput::WindowMoved).await;
+        }
+    }
+
     /// List the newest calls of the history (boot), newest first.
     pub fn seed_recent(&self, rows: Vec<CallRow>) {
         let recent = rows
@@ -349,6 +359,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     Some(TrunkInput::Lane(LaneInput::Nid { lane, duid, nac, valid, at })) => self.nid(lane, duid, nac, valid, at),
                     Some(TrunkInput::Lane(LaneInput::Iq { lane, iq, at })) => self.iq(lane, &iq, at),
                     Some(TrunkInput::Routing(r)) => self.follower.set_routing(*r),
+                    Some(TrunkInput::WindowMoved) => self.window_moved(),
                     None => break,
                 },
                 _ = tick.tick() => {
@@ -445,6 +456,15 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 }
                 self.follower.retuned(lane, None);
             }
+        }
+    }
+
+    fn window_moved(&mut self) {
+        for slot in &mut self.lanes {
+            slot.traffic.retuned();
+            slot.tuned_hz = None;
+            slot.retuned_at = Some(Instant::now());
+            self.follower.retuned(slot.lane, None);
         }
     }
 

@@ -91,6 +91,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         }
         None => tracing::warn!("no site configured yet: waiting for a scan or a site to be added"),
     }
+    live.start_recentre();
 
     {
         let live = live.clone();

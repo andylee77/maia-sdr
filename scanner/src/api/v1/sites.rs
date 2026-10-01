@@ -1,4 +1,4 @@
-//! `/api/v1/sites`: every site, and the switch.
+//! `/api/v1/sites`: every site, the switch, and the live site's receive window.
 
 use std::sync::Arc;
 
@@ -9,7 +9,8 @@ use serde::Serialize;
 use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
 use crate::services::config::systems::{Protocol, Site};
-use crate::trunking::site::{Live, LiveState};
+use crate::radio::plan::WindowPlan;
+use crate::trunking::site::{Live, LiveState, WindowView};
 
 #[derive(Serialize)]
 pub struct SiteEntry {
@@ -53,4 +54,27 @@ pub async fn activate(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
         return Err(ApiError::conflict("the radio is busy (a scan or another switch)"));
     }
     Ok(Json(s.live.activate(&id).await?))
+}
+
+/// The live site's window against its channels, and the planner's choice.
+pub async fn plan(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<WindowView> {
+    match s.live.window_view().await {
+        Some(v) if v.site == id => Ok(Json(v)),
+        _ => Err(ApiError::conflict(format!("site {id} is not live"))),
+    }
+}
+
+#[derive(Serialize)]
+pub struct Recentred {
+    /// The window moved to; `None` when it already was the planner's choice.
+    pub moved_to: Option<WindowPlan>,
+}
+
+/// Move the live site's window to the planner's choice now (both lanes idle).
+pub async fn recentre(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<Recentred> {
+    if !matches!(s.live.state(), LiveState::Live(l) if l.site.id == id) {
+        return Err(ApiError::conflict(format!("site {id} is not live")));
+    }
+    let moved_to = s.live.recentre(true, "by hand").await.map_err(|e| ApiError::conflict(format!("{e:#}")))?;
+    Ok(Json(Recentred { moved_to }))
 }

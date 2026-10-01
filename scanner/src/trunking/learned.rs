@@ -84,6 +84,14 @@ impl Learned {
         });
     }
 
+    /// The window moved to the planner's choice at `at_unix_ms`.
+    pub fn recentred(&self, at_unix_ms: u64) {
+        self.with(|s| {
+            s.last_recentre_unix_ms = at_unix_ms;
+            ((), true)
+        });
+    }
+
     /// Save when anything changed. The file is written from a copy, so the decoders updating
     /// the state never wait for the flash.
     pub fn save(&self, paths: &Paths) {
@@ -103,7 +111,6 @@ impl Learned {
         }
     }
 }
-
 
 /// An announced band as the site state keeps it.
 pub fn iden_band(b: &FrequencyBand) -> IdenBand {

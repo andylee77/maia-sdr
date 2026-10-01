@@ -3,10 +3,14 @@
 //! `activate` is the only way to change site. It takes the radio lease (grants decoded during
 //! the switch are dropped), stops the old site's receivers, plans the receive window from the
 //! site's channels and what was learned there, tunes, loads the site's learned state and active
-//! profile, starts the new site's receivers, publishes `Live` and persists the choice. The call
-//! book joins this sequence in a later phase.
+//! profile, starts the new site's receivers, publishes `Live` and persists the choice.
+//!
+//! As grants are counted the planner may find a better window. `recentre` moves there while both
+//! lanes are idle, without stopping the site: automatically (at most every 10 minutes, at sites
+//! whose window is automatic) or by hand.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -34,7 +38,12 @@ use crate::services::config::{self, Config, Paths, SiteState};
 const EDGE_MARGIN_HZ: f64 = 250_000.0;
 /// A profile change waits this many times for a switch to hand the radio back.
 const PROFILE_TRIES: u32 = 30;
-const PROFILE_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
+const PROFILE_RETRY: Duration = Duration::from_millis(100);
+/// How often the automatic recentre looks, how long after a site goes live it starts, and the
+/// least time between two moves.
+const RECENTRE_EVERY: Duration = Duration::from_secs(30);
+const RECENTRE_AFTER_START: Duration = Duration::from_secs(120);
+const RECENTRE_MIN_INTERVAL_MS: u64 = 10 * 60 * 1_000;
 
 /// A switch, planned.
 struct Plan {
@@ -79,6 +88,38 @@ impl From<&System> for SystemSummary {
     }
 }
 
+/// One of the site's channels against the live window.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChannelView {
+    pub freq_hz: u64,
+    /// Grants seen here.
+    pub grants: u32,
+    /// In the site's channel list.
+    pub listed: bool,
+    /// The planner's weight.
+    pub weight: f64,
+    pub covered: bool,
+}
+
+/// The live window against the site's channels, and the window the planner would choose now.
+#[derive(Debug, Clone, Serialize)]
+pub struct WindowView {
+    pub site: String,
+    pub auto: bool,
+    pub min_preset: Option<String>,
+    pub preset: Option<&'static str>,
+    pub sample_rate_hz: u32,
+    pub lo_hz: u64,
+    pub control_hz: u64,
+    pub channels: Vec<ChannelView>,
+    pub covered_weight: f64,
+    pub total_weight: f64,
+    pub best: Option<WindowPlan>,
+    /// The planner's window is worth a move.
+    pub better: bool,
+    pub last_recentre_unix_ms: u64,
+}
+
 pub struct LiveSite<H> {
     paths: Paths,
     config: Arc<Mutex<Config>>,
@@ -92,6 +133,8 @@ pub struct LiveSite<H> {
     state: watch::Sender<LiveState>,
     /// What the live site taught the radio.
     learned: Mutex<Option<Arc<Learned>>>,
+    /// When the live site went live.
+    live_since: std::sync::Mutex<Option<Instant>>,
 }
 
 impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
@@ -119,6 +162,7 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
             history,
             state: watch::channel(LiveState::NoSite).0,
             learned: Mutex::new(None),
+            live_since: std::sync::Mutex::new(None),
         }
     }
 
@@ -200,6 +244,7 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         match self.go(plan).await {
             Ok(live) => {
                 self.state.send_replace(LiveState::Live(Box::new(live.clone())));
+                *self.live_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
                 self.apply_profile().await;
                 Ok(live)
             }
@@ -228,6 +273,113 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
                 Err(e)
             }
         }
+    }
+
+    /// The live window against the site's channels and what was learned there.
+    pub async fn window_view(&self) -> Option<WindowView> {
+        let LiveState::Live(live) = self.state() else { return None };
+        let learned = self.learned.lock().await.as_ref()?.state();
+        let presets_allowed = self.config.lock().await.radio.value.presets_allowed.clone();
+        let t = self.tuner.tuning();
+        let chans = plan::channels(&live.site.channels_hz, &learned.grants);
+        let covered = |f: u64| plan::covers(t.lo_hz as i64, f, t.sample_rate_hz);
+        let covered_weight: f64 = chans.iter().filter(|c| covered(c.freq_hz)).map(|c| c.weight).sum();
+        let total_weight: f64 = chans.iter().map(|c| c.weight).sum();
+        let best = window_for(&live.site, &learned, &presets_allowed).ok();
+        // A window narrower than the site's minimum is worth widening too.
+        let too_narrow = best.as_ref().is_some_and(|b| t.sample_rate_hz < b.sample_rate_hz && live.site.window.min_preset.is_some());
+        let better = too_narrow || best.as_ref().is_some_and(|b| plan::worth_moving(covered_weight, b.covered_weight, total_weight));
+        Some(WindowView {
+            site: live.site.id.clone(),
+            auto: live.site.window.auto,
+            min_preset: live.site.window.min_preset.clone(),
+            preset: t.preset,
+            sample_rate_hz: t.sample_rate_hz,
+            lo_hz: t.lo_hz,
+            control_hz: t.control_hz,
+            channels: chans
+                .iter()
+                .map(|c| ChannelView {
+                    freq_hz: c.freq_hz,
+                    grants: learned.grants.get(&c.freq_hz).copied().unwrap_or(0),
+                    listed: live.site.channels_hz.contains(&c.freq_hz),
+                    weight: c.weight,
+                    covered: covered(c.freq_hz),
+                })
+                .collect(),
+            covered_weight,
+            total_weight,
+            best,
+            better,
+            last_recentre_unix_ms: learned.last_recentre_unix_ms,
+        })
+    }
+
+    /// Move the window to the planner's choice while both lanes are idle, the site staying live.
+    /// `force` moves even when the gain is small. `None` when there was nothing to move.
+    pub async fn recentre(&self, force: bool, origin: &str) -> Result<Option<WindowPlan>> {
+        let _lease = self.lease.take(Lease::Switching).context("the radio is busy (a switch or a scan)")?;
+        let view = self.window_view().await.context("no site is live")?;
+        let best = view.best.clone().context("no window plan")?;
+        let same = view.preset == Some(best.preset.as_str()) && view.lo_hz as i64 == best.lo_hz;
+        if same || !(view.better || force) {
+            return Ok(None);
+        }
+        if self.trunking.calls().open.iter().any(|c| c.lane.is_some()) {
+            bail!("a call is on a lane");
+        }
+        let preset = find_preset(&best.preset).context("planned preset")?;
+        let tuning = self.tuner.apply(TuningPlan { preset, lo_hz: best.lo_hz as u64, control_hz: view.control_hz }).await?;
+        self.trunking.window_moved().await;
+        let now = crate::util::time::unix_ms();
+        if let Some(l) = self.learned.lock().await.as_ref() {
+            l.recentred(now);
+        }
+        self.state.send_modify(|s| {
+            if let LiveState::Live(l) = s {
+                l.window = best.clone();
+                l.tuning = tuning;
+            }
+        });
+        self.log.system(
+            "site",
+            format!(
+                "recentre ({origin}): {} LO {:.4} MHz -> {} LO {:.4} MHz, channel weight {:.0}/{:.0} -> {:.0}/{:.0}",
+                view.preset.unwrap_or("?"),
+                view.lo_hz as f64 / 1e6,
+                best.preset,
+                best.lo_hz as f64 / 1e6,
+                view.covered_weight,
+                view.total_weight,
+                best.covered_weight,
+                best.total_weight
+            ),
+        );
+        Ok(Some(best))
+    }
+
+    /// Recentre automatically: a site with an automatic window, live for two minutes, the last
+    /// move ten minutes ago or more.
+    pub fn start_recentre(self: &Arc<Self>) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(RECENTRE_EVERY);
+            loop {
+                tick.tick().await;
+                let settled = me.live_since.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t.elapsed() >= RECENTRE_AFTER_START);
+                if !settled || !me.lease.is_normal() {
+                    continue;
+                }
+                let Some(view) = me.window_view().await else { continue };
+                let rested = crate::util::time::unix_ms().saturating_sub(view.last_recentre_unix_ms) >= RECENTRE_MIN_INTERVAL_MS;
+                if !view.auto || !view.better || !rested {
+                    continue;
+                }
+                if let Err(e) = me.recentre(false, "auto").await {
+                    tracing::debug!("recentre: {e:#}");
+                }
+            }
+        });
     }
 
     /// Everything a switch needs, read and planned without touching the radio.
@@ -473,6 +625,52 @@ mod tests {
         assert!(matches!(live.state(), LiveState::Live(l) if l.site.id == "clay"));
         assert!(receivers.status().running && receivers.status().site.as_deref() == Some("clay"));
         assert_eq!(tuner.tuning().control_hz, 860_962_500);
+        receivers.stop().await;
+        trunking.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_window_follows_the_grants_while_the_site_stays_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(&dir.path().join("flash"), &dir.path().join("sd"));
+        let mut config = Config::load(&paths).unwrap();
+        config.systems.value.systems.push(System {
+            id: "clay-county".into(),
+            label: "Clay County".into(),
+            protocol: Protocol::P25,
+            identity: Default::default(),
+            talkgroups: Default::default(),
+            radios: Default::default(),
+            sites: vec![Site { id: "clay".into(), ..site(860_962_500, vec![857_987_500], CcPosition::Top) }],
+        });
+        config::save(&paths.systems(), &config.systems).unwrap();
+        let tuner = Arc::new(Tuner::new(Nothing, 0.0));
+        let log = Arc::new(EventLog::default());
+        let receivers = Arc::new(Receivers::new(log.clone()));
+        let trunking = Arc::new(Trunking::new(crate::audio::live::Audio::start(&[Lane::One]), Default::default(), Default::default(), Default::default(), 1));
+        let live = LiveSite::new(paths, Arc::new(Mutex::new(config)), tuner.clone(), RadioLease::default(), receivers.clone(), trunking.clone(), vec![Lane::One], log, Default::default());
+        live.activate("clay").await.unwrap();
+        assert_eq!(tuner.tuning().preset, Some("8M"));
+        assert!(!live.window_view().await.unwrap().better);
+        assert_eq!(live.recentre(false, "auto").await.unwrap(), None, "nothing better yet");
+        // The site turns out busiest on a channel 8.5 MHz below its control channel.
+        {
+            let learned = live.learned.lock().await.clone().unwrap();
+            for _ in 0..1_500 {
+                learned.grant(852_438_500);
+            }
+            for _ in 0..100 {
+                learned.grant(857_987_500);
+            }
+        }
+        let view = live.window_view().await.unwrap();
+        assert!(view.better && !view.channels.iter().find(|c| c.freq_hz == 852_438_500).unwrap().covered);
+        let moved = live.recentre(false, "auto").await.unwrap().unwrap();
+        assert_eq!((tuner.tuning().preset, tuner.tuning().lo_hz as i64), (Some(moved.preset.as_str()), moved.lo_hz));
+        let view = live.window_view().await.unwrap();
+        assert!(!view.better && view.channels.iter().all(|c| c.covered) && view.last_recentre_unix_ms > 0);
+        assert!(matches!(live.state(), LiveState::Live(l) if l.window == moved));
+        assert_eq!(live.recentre(true, "by hand").await.unwrap(), None, "already there");
         receivers.stop().await;
         trunking.stop().await;
     }

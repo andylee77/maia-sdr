@@ -39,6 +39,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | PUT | `/api/v1/systems/{system}/sites/{site}` | edit a site (the live site goes live again with the change) |
 | GET | `/api/v1/sites` | every site, with the live one marked |
 | POST | `/api/v1/sites/{id}/activate` | make a site live (returns once it is) |
+| GET | `/api/v1/sites/{id}/plan` | the live site's receive window against its channels, and the planner's choice |
+| POST | `/api/v1/sites/{id}/recentre` | move the live site's window to the planner's choice now (both lanes idle) |
 | GET | `/api/v1/scan` | the scan's progress and what it found |
 | POST | `/api/v1/scan` | find the systems on the air (the live site pauses meanwhile) |
 | POST | `/api/v1/scan/cancel` | stop the scan |
