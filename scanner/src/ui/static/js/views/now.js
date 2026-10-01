@@ -52,8 +52,8 @@ export function mount(el) {
         ['Control channel', mhz(live.site.control.freq_hz)],
         ...p.siteIdentity(live.site.identity),
         ['Window', `${t.preset || DASH} at ${mhz(t.lo_hz)}`],
-        ['Profile', live.profile ? live.profile.name : DASH],
-      ]));
+      ]), h('p', { class: 'card-note' }, 'Following ', live.profile ? h('strong', { text: live.profile.name }) : 'every clear call',
+        ' (', h('a', { href: '#settings', text: 'profiles in Settings' }), ').'));
 
       const c = s.status.control || {};
       const age = c.last_message_age_ms;
