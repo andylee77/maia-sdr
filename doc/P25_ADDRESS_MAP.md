@@ -318,7 +318,7 @@ sticky interrupt bits in `control.interrupts`. It is connected to
 | 2 | `pre_diff_iq_dma` (Phase 10.8) | `pre_diff_iq_dma.interrupt` | sub-buffer of control-chain pre-diff IQ ring filled |
 | 3 | `wideband_spec_dma` (Phase 10.7) | `wideband_spec.interrupt_out` | completed integration flushed to wideband spectrometer ring |
 | 4 | `traffic_lsm_dibit_dma` (Phase 7A.2) | `traffic_lsm_dibit_dma.interrupt` | sub-buffer of traffic-channel LSM dibit ring filled. Same poll convention as `lsm_dibit_dma`: NID events are PS-polled via `traffic_lsm_status.nid_event`. |
-| 5 | `traffic_iq_dma` (2026-05-03) | `traffic_iq_dma.interrupt` | sub-buffer of traffic post-DDC IQ ring filled (master not wired in the block design) |
+| 5 | `traffic_iq_dma` (2026-05-03) | `traffic_iq_dma.interrupt` | sub-buffer of traffic post-DDC IQ ring filled (master wired in the block design since 075b) |
 | 6 | `traffic_pre_diff_iq_dma` (2026-05-03) | `traffic_pre_diff_iq_dma.interrupt` | sub-buffer of traffic pre-diff IQ ring filled (master not wired in the block design) |
 | 7 | `wideband_iq_dma` (2026-05-03) | `wideband_iq_dma.interrupt` | sub-buffer of the raw 8 MSPS IQ ring filled |
 | 8 | `traffic2_lsm_dibit_dma` (core 0.3.0) | `traffic2_lsm_dibit_dma.interrupt` | sub-buffer of traffic chain 2's LSM dibit ring filled |
@@ -340,9 +340,11 @@ The Zynq HP1 slave port hosts the DMA masters via Vivado SmartConnect
 | `m_axi_traffic_lsm_dibit`   | HP1 | ~1.28 KB/s | <0.001% |
 | `m_axi_wideband_iq`         | HP1 | ~32 MB/s   | ~2% |
 | `m_axi_traffic2_lsm_dibit` (core 0.3.0) | HP1 | ~1.28 KB/s | <0.001% |
+| `m_axi_traffic_iq` (075b) | HP1 | ~200 KB/s | ~0.012% |
 
-`m_axi_traffic_iq` and `m_axi_traffic_pre_diff_iq` exist on the IP but are
-not connected in the block design. HP2 and HP3 are unused by the P25 core.
+`m_axi_traffic_pre_diff_iq` exists on the IP but is not connected in the
+block design (`m_axi_traffic_iq` was wired in change 075b for software
+DMR on traffic chain 1). HP2 and HP3 are unused by the P25 core.
 
 ## Future-self checklist when adding a new register bank or DMA
 
