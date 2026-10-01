@@ -17,6 +17,8 @@ pub mod dibit_airtime;
 pub mod dmr_follower;
 /// Change 075: DMR on the control IQ: monitor, messages, grants.
 pub mod dmr_task;
+/// Change 075: DMR voice: AMBE+2 -> PCM -> the shared audio path.
+pub mod dmr_voice;
 /// Change 071: find local systems (band sweep, control-channel probe).
 pub mod discovery;
 #[cfg(target_os = "linux")]

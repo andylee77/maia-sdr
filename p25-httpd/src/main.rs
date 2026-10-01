@@ -1869,6 +1869,12 @@ async fn main() -> anyhow::Result<()> {
             dmr_rt.clone(),
         );
         app::dmr_task::spawn_dmr_traffic(traffic_iq.clone(), dmr_rt.clone());
+        // DMR voice: its own vocoder thread and pacer onto the shared
+        // audio broadcast (lane One; the P25 vocoder is idle on a DMR site).
+        let (dmr_voice_tx, dmr_voice_rx) = app::dmr_voice::voice_channel();
+        let (dmr_pacer_tx, dmr_pacer_rx) = app::audio_pacer::pacer_input_channel();
+        app::audio_pacer::spawn_audio_pacer(dmr_pacer_rx, audio_tx.clone());
+        app::dmr_voice::spawn_dmr_vocoder(dmr_voice_rx, dmr_pacer_tx, dmr_rt.clone());
         app::dmr_task::spawn_dmr_executor(
             dmr_rt.clone(),
             ip_core.clone(),
@@ -1878,6 +1884,7 @@ async fn main() -> anyhow::Result<()> {
             call_boundary_tx.clone(),
             call_tracker_tx.clone(),
             imbe_forwarder.call_counts.clone(),
+            dmr_voice_tx,
         );
     }
 

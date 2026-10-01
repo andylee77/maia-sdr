@@ -106,6 +106,11 @@ pub struct DmrRuntime {
     pub lcn_map: Mutex<Option<HashMap<u16, u64>>>,
     /// Bumped when the LCN map changes: the threads rebuild their receivers.
     pub config_epoch: AtomicU64,
+    /// AMBE+2 frames decoded, and those with bit errors.
+    pub vocoder_frames: AtomicU64,
+    pub vocoder_frame_errors: AtomicU64,
+    /// Voice bursts dropped because the vocoder queue was full.
+    pub voice_dropped: AtomicU64,
 }
 
 impl DmrRuntime {
@@ -350,6 +355,11 @@ impl DmrRuntime {
                 "voice_bursts": l(&self.traffic_voice_bursts),
                 "fine_syncs": l(&self.traffic_fine_syncs),
                 "cpu_pct": l(&self.traffic_cpu_centi_pct) as f64 / 100.0,
+            },
+            "vocoder": {
+                "frames": l(&self.vocoder_frames),
+                "frames_with_errors": l(&self.vocoder_frame_errors),
+                "dropped_bursts": l(&self.voice_dropped),
             },
             "follower_log": self.follower_log.lock().map(|g| g.iter().rev().take(30).cloned().collect::<Vec<_>>())
                 .unwrap_or_default(),
@@ -609,6 +619,7 @@ pub fn spawn_dmr_executor(
     call_boundary_tx: crate::audio::CallBoundaryTx,
     call_tracker_tx: crate::app::grant_follower::CallTrackerEventTx,
     call_counts: std::sync::Arc<crate::app::call_counters::CallCounterBook>,
+    voice_tx: std::sync::mpsc::SyncSender<crate::app::dmr_voice::DmrVoiceBatch>,
 ) {
     use crate::app::grant_follower::CallTrackerEventKind;
     use crate::hardware::traffic_lane::Lane;
@@ -643,9 +654,22 @@ pub fn spawn_dmr_executor(
             };
             if rt.follow.load(Ordering::Relaxed) {
                 let now = crate::app::now_unix_ms();
-                if let FollowerAction::Voice { .. } = action {
+                if let FollowerAction::Voice { talkgroup, source, frames } = action {
                     // Three AMBE+2 frames: 60 ms of voice.
-                    call_counts.update(link.call_id, |c| c.imbe_extracted += 3);
+                    call_counts.update(link.call_id, |c| {
+                        c.imbe_extracted += 3;
+                        c.vocoder_pcm_samples += 480;
+                    });
+                    let batch = crate::app::dmr_voice::DmrVoiceBatch {
+                        frames,
+                        talkgroup,
+                        source,
+                        call_id: link.call_id,
+                        captured_at_ms: now,
+                    };
+                    if voice_tx.try_send(batch).is_err() {
+                        rt.voice_dropped.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
                 for event in boundary_events(&action, &mut link, now) {
                     let _ = call_boundary_tx.send(event);
