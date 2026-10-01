@@ -15,8 +15,12 @@ use std::sync::Mutex;
 use crate::protocol::dmr::framer::FramerEvent;
 use crate::protocol::dmr::message::DmrMessage;
 
-/// Messages kept for `/api/dmr/messages`.
+/// Messages kept for `/api/dmr/messages?all=1` (~12 s of a control channel).
 const MESSAGE_RING: usize = 500;
+/// Messages other than the control channel's filler, for `/api/dmr/messages`.
+const EVENT_RING: usize = 2000;
+/// A control channel's steady filler: counted, kept only in the short ring.
+const FILLER_CLASSES: [&str; 4] = ["Aloha", "IDLEMessage", "ControlChannelSystemParameters", "NullMessage"];
 /// Grants kept for `/api/dmr`.
 const GRANT_RING: usize = 50;
 
@@ -72,6 +76,8 @@ pub struct DmrRuntime {
     /// (valid, invalid) messages by SDRTrunk class name.
     pub classes: Mutex<BTreeMap<&'static str, (u64, u64)>>,
     pub messages: Mutex<VecDeque<MessageRecord>>,
+    /// Everything but the filler (grants, PROTECT, CLEAR, voice, LC, ...).
+    pub events: Mutex<VecDeque<MessageRecord>>,
     pub grants: Mutex<VecDeque<GrantRecord>>,
 }
 
@@ -104,6 +110,9 @@ impl DmrRuntime {
         }
         if let Ok(mut m) = self.messages.lock() {
             m.clear();
+        }
+        if let Ok(mut e) = self.events.lock() {
+            e.clear();
         }
         if let Ok(mut g) = self.grants.lock() {
             g.clear();
@@ -141,18 +150,29 @@ impl DmrRuntime {
                 }
             }
         }
+        let record = MessageRecord { unix_ms: now, timeslot: message.timeslot(), valid, class, text };
+        if !FILLER_CLASSES.contains(&class) {
+            if let Ok(mut e) = self.events.lock() {
+                e.push_back(record.clone());
+                while e.len() > EVENT_RING {
+                    e.pop_front();
+                }
+            }
+        }
         if let Ok(mut m) = self.messages.lock() {
-            m.push_back(MessageRecord { unix_ms: now, timeslot: message.timeslot(), valid, class, text });
+            m.push_back(record);
             while m.len() > MESSAGE_RING {
                 m.pop_front();
             }
         }
     }
 
-    /// The last `n` messages (oldest first), optionally only class names
-    /// containing `class`.
-    pub fn recent_messages(&self, n: usize, class: Option<&str>) -> Vec<MessageRecord> {
-        let Ok(m) = self.messages.lock() else { return Vec::new() };
+    /// The last `n` messages (oldest first): every message when `all`, else
+    /// those other than the filler; optionally only class names containing
+    /// `class`.
+    pub fn recent_messages(&self, n: usize, class: Option<&str>, all: bool) -> Vec<MessageRecord> {
+        let ring = if all { &self.messages } else { &self.events };
+        let Ok(m) = ring.lock() else { return Vec::new() };
         let mut out: Vec<MessageRecord> =
             m.iter().rev().filter(|r| class.map_or(true, |c| r.class.contains(c))).take(n).cloned().collect();
         out.reverse();

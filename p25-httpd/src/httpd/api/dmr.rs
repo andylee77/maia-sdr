@@ -41,13 +41,16 @@ pub async fn put_dmr(
     (StatusCode::OK, Json(body))
 }
 
-/// `GET /api/dmr/messages?n=100[&class=Grant]`: the last decoded messages
-/// (oldest first) in SDRTrunk's text; `class` keeps class names containing it.
+/// `GET /api/dmr/messages?n=100[&class=Grant][&all=1]`: the last decoded
+/// messages (oldest first) in SDRTrunk's text. Without `all` the control
+/// channel's filler (ALOHA, IDLE, SLC) is left out and up to 2000 are kept;
+/// `class` keeps class names containing it.
 pub async fn get_dmr_messages(
     State(state): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
-    let n = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(100usize).min(500);
+    let n = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(100usize).min(2000);
     let class = params.get("class").map(|s| s.as_str());
-    Json(serde_json::json!({ "messages": state.dmr_rt.recent_messages(n, class) }))
+    let all = matches!(params.get("all").map(|s| s.as_str()), Some("1") | Some("true"));
+    Json(serde_json::json!({ "messages": state.dmr_rt.recent_messages(n, class, all) }))
 }
