@@ -28,7 +28,7 @@ fn dmr_rrc_shape() {
 
 #[test]
 fn lowpass_is_symmetric() {
-    for i in 0..36 {
-        assert_eq!(LPF_DMR_50K[i], LPF_DMR_50K[71 - i]);
+    for i in 0..18 {
+        assert_eq!(LPF_DMR_25K[i], LPF_DMR_25K[36 - i]);
     }
 }

@@ -175,3 +175,43 @@ fn captured_control_channel() {
         assert!(data > 1900, "{data} BS data syncs");
     }
 }
+
+/// Host time of each front-end stage over one capture (`DMR_CAPTURE_DIR`);
+/// run with `--release --nocapture`.
+#[test]
+fn profile_stages() {
+    let Ok(dir) = std::env::var("DMR_CAPTURE_DIR") else {
+        return;
+    };
+    let path = std::path::Path::new(&dir).join("cc_454368750_20260930_204706_60s.wav");
+    let bytes = std::fs::read(path).unwrap();
+    let iq: Vec<i16> = bytes[44..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+    let i: Vec<f32> = iq.iter().step_by(2).map(|v| *v as f32).collect();
+    let q: Vec<f32> = iq.iter().skip(1).step_by(2).map(|v| *v as f32).collect();
+    let mut d = DmrDemodulator::new();
+    let mut lap = std::time::Instant::now();
+    let mut next = || {
+        let t = lap.elapsed();
+        lap = std::time::Instant::now();
+        t
+    };
+    let (mut a, mut b, mut c, mut e) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    d.dec_i.process(&i, &mut a);
+    d.dec_q.process(&q, &mut b);
+    let t_dec = next();
+    d.lpf_i.process(&a, &mut c);
+    d.lpf_q.process(&b, &mut e);
+    let t_lpf = next();
+    a.clear();
+    b.clear();
+    d.rrc_i.process(&c, &mut a);
+    d.rrc_q.process(&e, &mut b);
+    let t_rrc = next();
+    let mut phases = Vec::new();
+    d.diff.demodulate(&a, &b, &mut phases);
+    let t_diff = next();
+    let mut sink = Recorder::default();
+    d.symbols.receive(&phases, &mut sink);
+    let t_sym = next();
+    eprintln!("60 s of IQ: halfband {t_dec:?} lpf {t_lpf:?} rrc {t_rrc:?} diff {t_diff:?} symbols {t_sym:?}");
+}

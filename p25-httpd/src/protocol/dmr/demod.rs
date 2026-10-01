@@ -1,20 +1,22 @@
 //! DMR 4FSK demodulation in software, from a 50 kSPS DDC's IQ.
 //!
 //! A port of SDRTrunk's DMR receive chain:
-//! - `DMRDecoder.receive`: baseband low-pass at the input rate, decimate to
-//!   25 kSPS, RRC on I and Q, then the differential demodulator shared with
-//!   the P25 C4FM receiver (`protocol::p25::c4fm`).
+//! - `DMRDecoder.receive`: decimate to 25 kSPS, baseband low-pass, RRC on I
+//!   and Q, then the differential demodulator shared with the P25 C4FM
+//!   receiver (`protocol::p25::c4fm`). SDRTrunk low-passes before decimating;
+//!   the other order costs a quarter as much (see `filters::LPF_DMR_25K`).
 //! - `DMRSoftSymbolProcessor`: symbol timing from the sync patterns only (a
 //!   primary detector and one lagging by half a symbol until the first sync,
 //!   then a check at every burst's sync position), an equaliser (balance +
 //!   gain) learned from each sync, and a 90-dibit delay line re-sampled at a
 //!   sync so the CACH and first payload half get the corrected timing.
 //!
-//! One deviation: SDRTrunk's `receive` re-applies the equaliser to the last
-//! few samples of every buffer load (its loop starts at the read pointer, not
-//! the end of the previous load). Here each sample is equalised once.
+//! A deviation in the symbol processor: SDRTrunk's `receive` re-applies the
+//! equaliser to the last few samples of every buffer load (its loop starts at
+//! the read pointer, not the end of the previous load). Here each sample is
+//! equalised once.
 
-use super::filters::{root_raised_cosine, LPF_DMR_50K};
+use super::filters::{root_raised_cosine, LPF_DMR_25K};
 use super::sync::{DmrSoftSyncDetector, DmrSyncModeMonitor, DmrSyncPattern};
 use crate::protocol::p25::c4fm::{ideal_phase, linear, to_symbol, DifferentialDemod, Fir};
 use crate::protocol::p25::c4fm_filters::HALFBAND_63;
@@ -479,10 +481,10 @@ impl DmrSoftSymbolProcessor {
 
 /// The whole DMR receive chain: 50 kSPS IQ in, dibits out.
 pub struct DmrDemodulator {
-    lpf_i: Fir,
-    lpf_q: Fir,
     dec_i: Fir,
     dec_q: Fir,
+    lpf_i: Fir,
+    lpf_q: Fir,
     rrc_i: Fir,
     rrc_q: Fir,
     diff: DifferentialDemod,
@@ -506,10 +508,10 @@ impl DmrDemodulator {
         symbols += symbols % 2;
         let rrc = root_raised_cosine(sps, symbols, alpha);
         DmrDemodulator {
-            lpf_i: Fir::new(&LPF_DMR_50K, false),
-            lpf_q: Fir::new(&LPF_DMR_50K, false),
             dec_i: Fir::new(&HALFBAND_63, true),
             dec_q: Fir::new(&HALFBAND_63, true),
+            lpf_i: Fir::new(&LPF_DMR_25K, false),
+            lpf_q: Fir::new(&LPF_DMR_25K, false),
             rrc_i: Fir::new(&rrc, false),
             rrc_q: Fir::new(&rrc, false),
             diff: DifferentialDemod::new(sps),
@@ -530,12 +532,12 @@ impl DmrDemodulator {
         let [a, b, c, d] = &mut self.scratch;
         a.clear();
         b.clear();
-        self.lpf_i.process(i, a);
-        self.lpf_q.process(q, b);
+        self.dec_i.process(i, a);
+        self.dec_q.process(q, b);
         c.clear();
         d.clear();
-        self.dec_i.process(a, c);
-        self.dec_q.process(b, d);
+        self.lpf_i.process(a, c);
+        self.lpf_q.process(b, d);
         a.clear();
         b.clear();
         self.rrc_i.process(c, a);

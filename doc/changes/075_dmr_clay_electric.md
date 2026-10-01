@@ -128,20 +128,16 @@ IQ hub (50 kSPS, control or traffic DDC)
 | 4 | AMBE+2 vocoder: port jmbe's AMBE codec (GPL-3.0 source, like the IMBE port) | known-good frames decoded by SDRTrunk's jmbe 1.0.9 on the PC as reference; Andy listens |
 | 5 | Discovery: UHF bands in the system finder; recognise DMR carriers (BS sync) instead of "other" | sweep 450–455 MHz lists GCS as a DMR site |
 
-## Decisions for Andy
+## Decisions (Andy, 2026-09-30)
 
-1. **Refactor first or not.** ROADMAP says to do the multi-protocol refactor before DMR.
-   Phase 1 is a pure library and does not depend on it. Phases 2–3 need sites, calls and
-   history to accept a protocol other than P25.
-   - Proposal: do phase 1 now. Then make the smallest protocol-agnostic changes phase 2 needs
-     (a `protocol` field on sites; the history keyed as it is, by site/talkgroup/radio),
-     instead of the full refactor first.
-2. **AMBE+2 source.** The jmbe source on GitHub (DSheirer/jmbe, GPL-3.0) has the AMBE codec;
-   the IMBE port came from the same place.
-   - Note: AMBE+2 is a DVSI codec covered by patents, as IMBE is. The same considerations
-     that applied to the IMBE port apply here.
-3. **The radio is either/or.** While unit A follows Clay Electric it hears no Clay County P25.
-   Unit B could take one of the two once it is back.
+1. **Refactor after DMR is complete.** DMR goes in with the smallest changes the app needs: a
+   protocol on sites, a DMR follower beside the P25 one, the history keyed as it is (site,
+   talkgroup, radio). The multi-protocol refactor comes afterwards, with both protocols there
+   to shape it.
+2. **Port AMBE+2** from jmbe's GPL-3.0 source (DSheirer/jmbe), as the IMBE port was. Patent
+   status is known and not an issue for Andy.
+3. **One band at a time is fine.** While unit A follows Clay Electric it hears no Clay County
+   P25.
 
 ## Status log
 
