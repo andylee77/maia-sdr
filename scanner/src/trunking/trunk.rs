@@ -4,8 +4,8 @@
 //! tuner, and the call book's events go to the event log and the calls view.
 //!
 //! Voice is attributed by air time: a frame aired before the lane's current call opened belongs
-//! to the call before it. Dibits aired before the lane's last retune are dropped (they are the old
-//! channel's).
+//! to the call before it, unless that call's transmission had already ended. Dibits aired before
+//! the lane's last retune are dropped (they are the old channel's).
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -148,11 +148,32 @@ impl Decoder {
     }
 }
 
+/// A call a lane followed, for attributing voice by air time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LaneCall {
+    id: CallId,
+    opened: Instant,
+    /// When its end-of-transmission marker aired.
+    ended_air: Option<Instant>,
+}
+
+/// The call a voice frame aired at `air` belongs to: the newest one opened before it, unless
+/// that call's transmission had ended by then (a new talker's first frames can air before the
+/// grant that names them is decoded), when it is the next one.
+fn owner(calls: &VecDeque<LaneCall>, air: Instant) -> Option<CallId> {
+    let i = calls.iter().rposition(|c| c.opened <= air).unwrap_or(0);
+    let c = calls.get(i)?;
+    match calls.get(i + 1) {
+        Some(next) if c.ended_air.is_some_and(|e| e <= air) => Some(next.id),
+        _ => Some(c.id),
+    }
+}
+
 struct LaneSlot {
     lane: Lane,
     traffic: Decoder,
-    /// The lane's calls, newest last: (call, opened at).
-    calls: VecDeque<(CallId, Instant)>,
+    /// The lane's calls, newest last.
+    calls: VecDeque<LaneCall>,
     /// Dibits aired before this are the old channel's.
     retuned_at: Option<Instant>,
     last_voice: Option<Instant>,
@@ -546,8 +567,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 if encrypted {
                     return;
                 }
-                // The call on the air when the frame was: the newest one opened before it.
-                let call = slot.calls.iter().rev().find(|(_, opened)| *opened <= air).or(slot.calls.front()).map(|(id, _)| *id);
+                let call = owner(&slot.calls, air);
                 for _ in 0..frames.len() {
                     self.book.voice(lane, call, air, at);
                 }
@@ -562,7 +582,11 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             TrafficEvent::TalkComplete(Some(s)) => self.book.talk_complete_source(lane, s, &mut out),
             TrafficEvent::TalkComplete(None) => {}
             TrafficEvent::End { lc, air } => {
-                if let Some(call) = self.slot(lane).and_then(|s| s.traffic.call()) {
+                let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) else { return };
+                if let Some(call) = slot.traffic.call() {
+                    if let Some(c) = slot.calls.iter_mut().find(|c| c.id == call) {
+                        c.ended_air = Some(air);
+                    }
                     self.book.voice_end(lane, call, air, lc, at);
                 }
             }
@@ -666,7 +690,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                                 Decoder::P25(t) => t.follow(CallContext { call: o.call, tg: o.tg, source: o.source, encrypted: o.encrypted }),
                                 Decoder::Dmr(t) => t.follow(DmrCall { call: o.call, tg: o.tg, slot: o.channel.slot.unwrap_or(1), encrypted: o.encrypted }),
                             }
-                            slot.calls.push_back((o.call, now));
+                            slot.calls.push_back(LaneCall { id: o.call, opened: now, ended_air: None });
                             while slot.calls.len() > 4 {
                                 slot.calls.pop_front();
                             }
@@ -888,6 +912,27 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(400)).await;
         trunking.stop().await;
         tuner.tuning().lanes
+    }
+
+    #[test]
+    fn voice_after_an_end_marker_is_the_next_calls() {
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let calls: VecDeque<LaneCall> = [
+            LaneCall { id: 1, opened: t0, ended_air: Some(t0 + s(3)) },
+            LaneCall { id: 2, opened: t0 + s(5), ended_air: None },
+        ]
+        .into();
+        assert_eq!(owner(&calls, t0 + s(2)), Some(1));
+        // After call 1's transmission ended, before call 2's grant was decoded: call 2's talker.
+        assert_eq!(owner(&calls, t0 + s(4)), Some(2));
+        assert_eq!(owner(&calls, t0 + s(6)), Some(2));
+        // Without an end marker, a frame before the new grant is the old call's tail.
+        let open: VecDeque<LaneCall> = calls.iter().map(|c| LaneCall { ended_air: None, ..*c }).collect();
+        assert_eq!(owner(&open, t0 + s(4)), Some(1));
+        // Before every call kept: the oldest.
+        assert_eq!(owner(&calls, t0 - s(1)), Some(1));
+        assert_eq!(owner(&VecDeque::new(), t0), None);
     }
 
     #[tokio::test]
