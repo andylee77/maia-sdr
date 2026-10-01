@@ -34,3 +34,27 @@ pub struct UiState {
 pub async fn ui_state(State(s): State<Arc<AppState>>) -> Json<UiState> {
     Json(UiState { v: 1, build: BUILD_TAG, now_unix_ms: unix_ms(), clock_valid: s.clock.status().valid })
 }
+
+#[derive(Serialize)]
+pub struct Frame {
+    pub talkgroup: u32,
+    pub encrypted: bool,
+    pub hex: String,
+}
+
+#[derive(Serialize)]
+pub struct ImbeDump {
+    pub count: usize,
+    pub frames: Vec<Frame>,
+}
+
+/// The newest raw IMBE frames (the bench compares them with what it transmitted).
+pub async fn imbe_dump(State(s): State<Arc<AppState>>) -> Json<ImbeDump> {
+    let frames: Vec<Frame> = s
+        .trunking
+        .frames()
+        .into_iter()
+        .map(|f| Frame { talkgroup: f.tg, encrypted: f.encrypted, hex: f.bits.iter().map(|b| format!("{b:02x}")).collect() })
+        .collect();
+    Json(ImbeDump { count: frames.len(), frames })
+}

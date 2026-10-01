@@ -26,7 +26,7 @@ use crate::services::recordings::{CallEnd, CallStart, RecorderTx};
 use crate::hardware::p25core::rings::mono_instant;
 use crate::hardware::p25core::Lane;
 use crate::protocol::dmr::traffic::{DmrCall, DmrTraffic};
-use crate::protocol::events::{Grant, TrafficEvent};
+use crate::protocol::events::{Grant, TrafficEvent, VoiceFrames};
 use crate::protocol::p25::traffic::{CallContext, P25Traffic};
 use crate::radio::streams::{LaneInput, LaneMode, StreamSource};
 use crate::services::config::systems::Protocol;
@@ -39,6 +39,18 @@ use crate::util::time::Stamp;
 const QUEUE: usize = 1024;
 /// Closed calls kept for the calls view.
 pub const RECENT: usize = 100;
+/// Raw IMBE frames kept for `/api/imbe_dump` (the bench compares them with the transmitted ones).
+const FRAME_RING: usize = 128;
+
+/// A raw IMBE frame as the lane decoded it, with the talkgroup of its lane's call.
+#[derive(Debug, Clone)]
+pub struct RawFrame {
+    pub tg: u32,
+    pub encrypted: bool,
+    pub bits: [u8; 18],
+}
+
+pub type FrameRing = Arc<Mutex<VecDeque<RawFrame>>>;
 const TICK: Duration = Duration::from_millis(100);
 const STUCK_CHECK: Duration = Duration::from_secs(5);
 /// A lane that carried voice this recently resumes on the same channel without a reset.
@@ -157,6 +169,7 @@ struct Task<H> {
     recorder: RecorderTx,
     history: HistoryTx,
     notices: Notices,
+    frames: FrameRing,
     /// The voice codec of the protocol, for the history.
     codec: &'static str,
     next_call: Arc<AtomicU64>,
@@ -168,6 +181,7 @@ pub struct Trunking {
     recorder: RecorderTx,
     history: HistoryTx,
     notices: Notices,
+    frames: FrameRing,
     /// Call ids keep rising across site switches.
     next_call: Arc<AtomicU64>,
     running: tokio::sync::Mutex<Option<Running>>,
@@ -189,6 +203,7 @@ impl Trunking {
             recorder,
             history,
             notices,
+            frames: Arc::default(),
             next_call: Arc::new(AtomicU64::new(first_call.max(1))),
             running: tokio::sync::Mutex::new(None),
         }
@@ -245,6 +260,7 @@ impl Trunking {
             recorder: self.recorder.clone(),
             history: self.history.clone(),
             notices: self.notices.clone(),
+            frames: self.frames.clone(),
             codec: match setup.protocol {
                 Protocol::P25 => "imbe",
                 Protocol::DmrTier3 => "ambe2",
@@ -303,6 +319,11 @@ impl Trunking {
         if let Ok(mut v) = self.view.lock() {
             v.recent = recent;
         }
+    }
+
+    /// The newest raw IMBE frames, oldest first.
+    pub fn frames(&self) -> Vec<RawFrame> {
+        self.frames.lock().map(|f| f.iter().cloned().collect()).unwrap_or_default()
     }
 
     pub fn calls(&self) -> CallsView {
@@ -472,6 +493,15 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         let mut out = Vec::new();
         match e {
             TrafficEvent::Voice { frames, encrypted, air } => {
+                if let (VoiceFrames::Imbe(f), Ok(mut ring)) = (&frames, self.frames.lock()) {
+                    let tg = self.book.on_lane(lane).map_or(0, |c| c.tg);
+                    for x in f {
+                        ring.push_back(RawFrame { tg, encrypted, bits: x.bits });
+                    }
+                    while ring.len() > FRAME_RING {
+                        ring.pop_front();
+                    }
+                }
                 let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) else { return };
                 slot.last_voice = Some(at.mono);
                 if encrypted {

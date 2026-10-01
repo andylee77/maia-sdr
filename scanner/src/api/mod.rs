@@ -117,6 +117,7 @@ routes! {
     post "/api/v1/scan/add" => v1::scan::add, "add the ticked sites of the last scan";
     get "/api/system" => legacy::system, "legacy, for the bench: the build";
     get "/api/ui/state" => legacy::ui_state, "legacy, for the bench: the unit's wall clock";
+    get "/api/imbe_dump" => legacy::imbe_dump, "legacy, for the bench: the newest raw IMBE frames";
     get "/api/v1/profiles" => v1::profiles::list, "profiles and each site's active one";
     put "/api/v1/sites/{id}/profile" => v1::profiles::select, "choose a site's active profile";
     post "/api/v1/profiles" => v1::profiles::create, "a new profile of a system, empty or a copy";
