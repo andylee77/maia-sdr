@@ -15,6 +15,8 @@ const P25 = {
   ],
   okLabel: 'TSBKs passing CRC',
   planLabel: 'Bands (IDEN_UP)',
+  // What the site editor offers: the control channel's modulation; channel numbers by hand.
+  edits: { modulation: true, lcnPlan: false, controlSlot: false },
 };
 
 const DMR = {
@@ -24,6 +26,7 @@ const DMR = {
   heardIdentity: id => [['Colour code', id.colour_code], ['Model', id.model], ['Network', id.network], ['Site', id.site]],
   okLabel: 'Messages passing checks',
   planLabel: 'Channels (LCN)',
+  edits: { modulation: false, lcnPlan: true, controlSlot: true },
 };
 
 const REGISTRY = { p25: P25, dmr_tier3: DMR };
@@ -31,6 +34,7 @@ const REGISTRY = { p25: P25, dmr_tier3: DMR };
 const UNKNOWN = {
   label: '?', systemIdentity: () => [], siteIdentity: () => [], heardIdentity: () => [],
   okLabel: 'Messages passing', planLabel: 'Channel plan',
+  edits: { modulation: false, lcnPlan: false, controlSlot: false },
 };
 
 export function protocol(name) {

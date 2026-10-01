@@ -7,6 +7,90 @@ import { refresh } from '../store.js';
 import { protocol } from '../protocols.js';
 import { scanCard } from './scan.js';
 
+const MHZ = hz => (hz / 1e6).toFixed(5).replace(/0+$/, '').replace(/\.$/, '');
+
+// "454.36875, 451.0875" <-> Hz.
+function hzList(text, what) {
+  return text.split(/[\s,;]+/).filter(Boolean).map(t => {
+    const v = Math.round(Number(t) * 1e6);
+    if (!Number.isFinite(v) || v < 70e6 || v > 6e9) throw new Error(`${what}: ${t} is not a frequency in MHz`);
+    return v;
+  });
+}
+
+// "5 = 454.36875" lines <-> {5: Hz}.
+function lcnPlan(text) {
+  const out = {};
+  for (const line of text.split('\n').map(l => l.trim()).filter(Boolean)) {
+    const m = line.match(/^(\d+)\s*[=:,]\s*([\d.]+)$/);
+    if (!m) throw new Error(`"${line}" is not "LCN = MHz"`);
+    out[m[1]] = hzList(m[2], `LCN ${m[1]}`)[0];
+  }
+  return out;
+}
+
+// The site editor: everything but the site's id, identity and origin.
+function siteEditor(sys, site, done) {
+  const p = protocol(sys.protocol);
+  const input = (value, label, cls = 'input wide') => h('input', { class: cls, type: 'text', value, 'aria-label': label });
+  const label = input(site.label, 'Name');
+  const control = input(MHZ(site.control.freq_hz), 'Control channel, MHz', 'input');
+  const alternates = input((site.control.alternates_hz || []).map(MHZ).join(', '), 'Alternate control channels, MHz');
+  const channels = input((site.channels_hz || []).map(MHZ).join(', '), 'Known channels, MHz');
+  const modulation = h('select', { class: 'input', 'aria-label': 'Modulation' },
+    ...[['auto', 'Automatic'], ['lsm', 'LSM'], ['c4fm', 'C4FM']].map(([v, t]) => h('option', { value: v, text: t })));
+  modulation.value = site.modulation || 'auto';
+  const lcn = input(site.control.lcn ?? '', 'Control LCN', 'input num');
+  const slot = h('select', { class: 'input', 'aria-label': 'Control timeslot' }, h('option', { value: '', text: '?' }),
+    h('option', { value: '1', text: 'TS1' }), h('option', { value: '2', text: 'TS2' }));
+  slot.value = site.control.timeslot ? String(site.control.timeslot) : '';
+  const plan = h('textarea', { class: 'input', rows: 4, 'aria-label': 'LCN plan' });
+  plan.value = Object.entries((site.channel_plan && site.channel_plan.lcn_hz) || {}).map(([k, v]) => `${k} = ${MHZ(v)}`).join('\n');
+  const auto = h('input', { type: 'checkbox' });
+  auto.checked = site.window ? site.window.auto : true;
+  const position = h('select', { class: 'input', 'aria-label': 'Control channel in the window' },
+    ...[['center', 'Centre'], ['top', 'Top (traffic below)'], ['bottom', 'Bottom (traffic above)']].map(([v, t]) => h('option', { value: v, text: t })));
+  position.value = (site.window && site.window.cc_position) || 'center';
+  const save = h('button', { class: 'btn primary', type: 'button', text: 'Save site' });
+  const cancel = h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => done(false) });
+  save.addEventListener('click', async () => {
+    try {
+      const body = {
+        label: label.value,
+        control: {
+          freq_hz: hzList(control.value, 'control channel')[0],
+          alternates_hz: hzList(alternates.value, 'alternates'),
+          lcn: p.edits.controlSlot && lcn.value !== '' ? Number(lcn.value) : null,
+          timeslot: p.edits.controlSlot && slot.value ? Number(slot.value) : null,
+        },
+        modulation: p.edits.modulation ? modulation.value : site.modulation,
+        channels_hz: hzList(channels.value, 'channels'),
+        channel_plan: p.edits.lcnPlan ? { lcn_hz: lcnPlan(plan.value) } : site.channel_plan,
+        window: { ...(site.window || {}), auto: auto.checked, cc_position: position.value },
+        notes: site.notes || [],
+      };
+      save.disabled = true;
+      await api.saveSite(sys.id, site.id, body);
+      toast(`${body.label} saved`);
+      done(true);
+    } catch (e) {
+      toast(e.message, true);
+      save.disabled = false;
+    }
+  });
+  const row = (text, ...nodes) => h('div', { class: 'row' }, h('span', { text }), ...nodes);
+  return h('div', { class: 'stack' },
+    row('Name', label),
+    row('Control channel (MHz)', control, ...(p.edits.controlSlot ? [h('span', { class: 'dim', text: 'LCN' }), lcn, slot] : [])),
+    row('Alternates (MHz)', alternates),
+    ...(p.edits.modulation ? [row('Modulation', modulation)] : []),
+    ...(p.edits.lcnPlan ? [h('label', { class: 'stack' }, h('span', { text: 'Channels: one "LCN = MHz" a line' }), plan)] : []),
+    row('Known channels (MHz)', channels),
+    h('label', { class: 'row' }, auto, h('span', { text: 'Move the window to the busiest channels' })),
+    row('Control channel in the window', position),
+    h('div', { class: 'row end' }, cancel, save));
+}
+
 function kv(rows) {
   return h('table', { class: 'kv' }, ...rows.map(([k, v]) =>
     h('tr', null, h('th', { text: k }), h('td', { text: v === null || v === undefined ? DASH : v }))));
@@ -47,11 +131,16 @@ export function mount(el) {
         const live = site.id === liveId;
         const button = h('button', { class: 'btn', type: 'button', disabled: live, text: live ? 'Live' : 'Make live' });
         button.addEventListener('click', () => activate(site, button));
+        const details = h('div');
+        const show = () => details.replaceChildren(kv([['Control channel', mhz(site.control.freq_hz)], ...p.siteIdentity(site.identity)]));
+        const edit = h('button', { class: 'btn small', type: 'button', text: 'Edit' });
+        edit.addEventListener('click', () => details.replaceChildren(siteEditor(sys, site, saved => (saved ? load() : show()))));
+        show();
         c.body.append(h('div', { class: 'card-note' },
           h('div', { class: 'row' },
             h('strong', { text: site.label }), h('span', { class: 'dim', text: ` ${site.id}` }),
-            h('div', { class: 'spacer' }), button),
-          kv([['Control channel', mhz(site.control.freq_hz)], ...p.siteIdentity(site.identity)])));
+            h('div', { class: 'spacer' }), edit, button),
+          details));
       }
       list.append(c.el);
     }

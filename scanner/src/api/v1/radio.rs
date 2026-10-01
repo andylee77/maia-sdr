@@ -18,6 +18,8 @@ use crate::services::config::{self, RadioState};
 
 #[derive(Serialize)]
 pub struct Radio {
+    /// Every DDC preset the gateware has, narrowest first.
+    pub presets: Vec<&'static str>,
     pub config: RadioConfig,
     pub state: RadioState,
     pub hardware: HardwareInfo,
@@ -29,6 +31,7 @@ pub async fn get(State(s): State<Arc<AppState>>) -> Json<Radio> {
     let readback = s.tuner.readback().await;
     let c = s.config.lock().await;
     Json(Radio {
+        presets: crate::hardware::presets::PRESETS.iter().map(|p| p.name).collect(),
         config: c.radio.value.clone(),
         state: c.state.value.clone(),
         hardware: s.hardware.clone(),
