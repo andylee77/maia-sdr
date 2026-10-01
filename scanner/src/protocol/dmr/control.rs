@@ -22,7 +22,7 @@ const ROUTINE: [&str; 7] = [
 ];
 
 /// Counters for the diagnostics pages.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct DmrStats {
     /// Bursts by timeslot: unknown, 1, 2.
     pub bursts: [u64; 3],
@@ -113,6 +113,10 @@ impl DmrControl {
 
     pub fn identity(&self) -> Option<DmrIdentity> {
         self.identity
+    }
+
+    pub fn demod_stats(&self) -> super::demod::DmrDemodStats {
+        self.demod.symbols.stats
     }
 
     /// The carrier offset the equaliser has learned, once it has a fine sync. The balance

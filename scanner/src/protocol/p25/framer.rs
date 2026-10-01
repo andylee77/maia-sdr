@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 
+use serde::Serialize;
+
 use super::fec::bch;
 use super::fec::{TrellisDecoder, TsduDeinterleaver};
 use super::pdu::{self, PduBlock, PduHeader};
@@ -64,7 +66,7 @@ enum State {
 }
 
 /// Counters for the diagnostics pages.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FramerStats {
     pub dibits: u64,
     pub dibit_hist: [u64; 4],
@@ -87,7 +89,9 @@ pub struct FramerStats {
     pub tsbk_crc_plain: u64,
     pub tsbk_crc_xored: u64,
     pub tsbk_unknown_opcode: u64,
+    #[serde(serialize_with = "crate::util::ser::array")]
     pub tsbk_opcodes_ok: [u64; 64],
+    #[serde(serialize_with = "crate::util::ser::array")]
     pub tsbk_opcodes_failed: [u64; 64],
     /// Standard, Motorola (0x90), Harris (0xA4), other.
     pub tsbk_mfid_ok: [u64; 4],

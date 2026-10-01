@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::protocol::dmr::control::DmrControl;
+use crate::protocol::dmr::control::{DmrControl, DmrStats};
+use crate::protocol::dmr::demod::DmrDemodStats;
+use crate::protocol::p25::framer::FramerStats;
 use crate::protocol::events::{ControlEvent, SiteIdentity, UnitKind};
 use crate::util::time::Stamp;
 use crate::protocol::p25::c4fm::C4fmDecoder;
@@ -96,11 +98,21 @@ pub struct InputStatus {
     pub dibit_lost: u64,
 }
 
+/// The control decoders' counters, for the diagnostics.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "protocol", rename_all = "snake_case")]
+pub enum Counters {
+    /// Both demodulators run; `status.modulation` says whose messages are used.
+    P25 { lsm: Box<FramerStats>, c4fm: Box<FramerStats> },
+    Dmr { messages: DmrStats, demod: DmrDemodStats },
+}
+
 /// Shared between the decode thread and the API.
 #[derive(Debug, Default)]
 struct View {
     status: ControlStatus,
     last_message: Option<Instant>,
+    counters: Option<Counters>,
 }
 
 /// Messages per second and the share passing, over the last `RATE_WINDOW` seconds.
@@ -256,6 +268,7 @@ impl Receivers {
             *v = View {
                 status: ControlStatus { running: true, site: Some(context.site.clone()), ..Default::default() },
                 last_message: None,
+                counters: None,
             };
         }
         let wants = match context.protocol {
@@ -301,6 +314,11 @@ impl Receivers {
         if let Ok(mut v) = self.view.lock() {
             v.status.running = false;
         }
+    }
+
+    /// The counters of the running decoders, updated each second.
+    pub fn counters(&self) -> Option<Counters> {
+        self.view.lock().ok().and_then(|v| v.counters.clone())
     }
 
     pub fn status(&self) -> ControlStatus {
@@ -449,6 +467,7 @@ impl Decoder {
                     v.channel_plan_entries = a.bands.len();
                     v.neighbours = a.neighbours.len();
                 });
+                self.set_counters(Counters::P25 { lsm: Box::new(lsm.stats().clone()), c4fm: Box::new(c4fm.stats().clone()) });
             }
         }
         tracing::info!("P25 receivers on site {} stopped", context.site);
@@ -481,6 +500,7 @@ impl Decoder {
                     v.carrier_offset_hz = offset;
                     v.channel_plan_entries = context.lcn_hz.len();
                 });
+                self.set_counters(Counters::Dmr { messages: dmr.stats.clone(), demod: dmr.demod_stats() });
             }
         }
         tracing::info!("DMR receivers on site {} stopped", context.site);
@@ -489,6 +509,12 @@ impl Decoder {
     fn set(&self, f: impl FnOnce(&mut ControlStatus)) {
         if let Ok(mut v) = self.view.lock() {
             f(&mut v.status);
+        }
+    }
+
+    fn set_counters(&self, c: Counters) {
+        if let Ok(mut v) = self.view.lock() {
+            v.counters = Some(c);
         }
     }
 

@@ -88,7 +88,7 @@ impl DibitDelayLine {
 }
 
 /// Demodulation statistics (diagnostics / tests).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct DmrDemodStats {
     pub symbols: u64,
     /// Syncs found from scratch (coarse timing search).

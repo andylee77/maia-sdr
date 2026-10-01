@@ -97,6 +97,7 @@ routes! {
     get "/api/v1/spectrum" => v1::spectrum::get, "the receive window from the wideband spectrometer (`bins`), with the control channel and lanes";
     get "/api/v1/events" => v1::events::list, "the event log after `after` (newest `limit`; housekeeping too with `routine=true`)";
     get "/api/v1/system" => v1::system::get, "the board's health: load, memory, CPU per core and per scanner thread, temperatures";
+    get "/api/v1/receivers" => v1::receivers::get, "the control channel and each lane: status, decoder counters, carrier loop";
     get "/api/v1/radio" => v1::radio::get, "radio configuration, hardware and tuning";
     put "/api/v1/radio/gain" => v1::radio::put_gain, "receiver gain mode and manual gain";
     put "/api/v1/radio/settings" => v1::radio::put_settings, "presets the planner may use, traffic lanes, call timings, history limits";

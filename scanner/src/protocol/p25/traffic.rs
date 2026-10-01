@@ -113,6 +113,10 @@ impl P25Traffic {
         self.call
     }
 
+    pub fn stats(&self) -> &super::framer::FramerStats {
+        &self.framer.stats
+    }
+
     /// One dibit, aired at `air`.
     pub fn push(&mut self, dibit: u8, air: Instant, now: Instant, out: &mut Vec<TrafficEvent>) {
         let mut units = Vec::new();

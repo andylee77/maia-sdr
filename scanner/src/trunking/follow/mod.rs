@@ -206,7 +206,6 @@ impl Follower {
     }
 
     /// The talkgroup each lane follows.
-    #[cfg(test)]
     pub fn locked(&self) -> Vec<(Lane, Option<u32>)> {
         self.lanes.iter().map(|l| (l.lane, l.locked.map(|k| k.tg))).collect()
     }

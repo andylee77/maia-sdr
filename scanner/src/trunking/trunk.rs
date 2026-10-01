@@ -26,7 +26,9 @@ use crate::services::packet_data::PacketData;
 use crate::services::recordings::{CallEnd, CallStart, RecorderTx};
 use crate::hardware::p25core::rings::mono_instant;
 use crate::hardware::p25core::Lane;
+use crate::protocol::dmr::demod::DmrDemodStats;
 use crate::protocol::dmr::traffic::{DmrCall, DmrTraffic};
+use crate::protocol::p25::framer::FramerStats;
 use crate::protocol::events::{Grant, TrafficEvent, VoiceFrames};
 use crate::protocol::p25::traffic::{CallContext, P25Traffic};
 use crate::radio::streams::{LaneInput, LaneMode, StreamSource};
@@ -111,6 +113,32 @@ pub struct CallView {
     pub voice_frames: u64,
 }
 
+/// A lane as the trunking task sees it.
+#[derive(Debug, Clone, Serialize)]
+pub struct LaneStatus {
+    pub lane: u8,
+    /// The channel the lane is tuned to.
+    pub tuned_hz: Option<u64>,
+    /// The call it carries.
+    pub call: Option<CallId>,
+    /// The talkgroup the follower keeps it for.
+    pub following_tg: Option<u32>,
+    /// Waiting on the site's data channel between calls.
+    pub on_data_channel: bool,
+    /// Voice frames decoded on it since the site went live.
+    pub voice_frames: u64,
+    pub last_voice_ms_ago: Option<u64>,
+    pub counters: LaneCounters,
+}
+
+/// A lane's traffic decoder's counters.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "protocol", rename_all = "snake_case")]
+pub enum LaneCounters {
+    P25(Box<FramerStats>),
+    Dmr { bursts: u64, demod: DmrDemodStats },
+}
+
 /// Open calls and the newest closed ones.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct CallsView {
@@ -178,6 +206,7 @@ struct LaneSlot {
     retuned_at: Option<Instant>,
     last_voice: Option<Instant>,
     tuned_hz: Option<u64>,
+    voice_frames: u64,
 }
 
 struct Task<H> {
@@ -203,6 +232,8 @@ struct Task<H> {
     packet_data: Option<Arc<PacketData>>,
     /// The last time the last lane tried for the data channel.
     data_park_tried: Option<Instant>,
+    lanes_view: Arc<Mutex<Vec<LaneStatus>>>,
+    lanes_published: Instant,
 }
 
 pub struct Trunking {
@@ -216,6 +247,7 @@ pub struct Trunking {
     next_call: Arc<AtomicU64>,
     /// Takes the PDUs a lane reads.
     packet_data: std::sync::Mutex<Option<Arc<PacketData>>>,
+    lanes: Arc<Mutex<Vec<LaneStatus>>>,
     running: tokio::sync::Mutex<Option<Running>>,
 }
 
@@ -238,8 +270,14 @@ impl Trunking {
             frames: Arc::default(),
             next_call: Arc::new(AtomicU64::new(first_call.max(1))),
             packet_data: std::sync::Mutex::new(None),
+            lanes: Arc::default(),
             running: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// Each lane of the live site, updated each second.
+    pub fn lanes(&self) -> Vec<LaneStatus> {
+        self.lanes.lock().map(|l| l.clone()).unwrap_or_default()
     }
 
     pub fn set_packet_data(&self, data: Arc<PacketData>) {
@@ -285,6 +323,7 @@ impl Trunking {
                     retuned_at: None,
                     last_voice: None,
                     tuned_hz: None,
+                    voice_frames: 0,
                 })
                 .collect(),
             tuner,
@@ -294,6 +333,8 @@ impl Trunking {
             // The newest calls stay listed across a switch.
             recent: self.view.lock().map(|v| v.recent.iter().cloned().collect()).unwrap_or_default(),
             last_stuck_check: Instant::now(),
+            lanes_view: self.lanes.clone(),
+            lanes_published: Instant::now(),
             learned: setup.learned.clone(),
             audio: self.audio.clone(),
             recorder: self.recorder.clone(),
@@ -323,6 +364,9 @@ impl Trunking {
         }
         drop(r.tx);
         let _ = r.task.await;
+        if let Ok(mut l) = self.lanes.lock() {
+            l.clear();
+        }
     }
 
     /// A new profile for the calls to come (the open ones keep their lanes).
@@ -564,6 +608,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 }
                 let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) else { return };
                 slot.last_voice = Some(at.mono);
+                slot.voice_frames += frames.len() as u64;
                 if encrypted {
                     return;
                 }
@@ -632,6 +677,35 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             }
         }
         self.park_on_data(at).await;
+        if at.mono.saturating_duration_since(self.lanes_published) >= Duration::from_secs(1) {
+            self.lanes_published = at.mono;
+            self.publish_lanes(at.mono);
+        }
+    }
+
+    fn publish_lanes(&self, now: Instant) {
+        let following = self.follower.locked();
+        let data_hz = self.learned.as_ref().and_then(|l| l.data_channel_hz());
+        let lanes = self
+            .lanes
+            .iter()
+            .map(|s| LaneStatus {
+                lane: s.lane.number(),
+                tuned_hz: s.tuned_hz,
+                call: self.book.on_lane(s.lane).map(|c| c.id),
+                following_tg: following.iter().find(|(l, _)| *l == s.lane).and_then(|(_, tg)| *tg),
+                on_data_channel: data_hz.is_some() && s.tuned_hz == data_hz,
+                voice_frames: s.voice_frames,
+                last_voice_ms_ago: s.last_voice.map(|t| now.saturating_duration_since(t).as_millis() as u64),
+                counters: match &s.traffic {
+                    Decoder::P25(t) => LaneCounters::P25(Box::new(t.stats().clone())),
+                    Decoder::Dmr(t) => LaneCounters::Dmr { bursts: t.bursts, demod: t.demod_stats() },
+                },
+            })
+            .collect();
+        if let Ok(mut v) = self.lanes_view.lock() {
+            *v = lanes;
+        }
     }
 
     /// At a P25 site with two lanes, the last one waits for its next call on the data channel the

@@ -6,6 +6,7 @@ pub mod data;
 pub mod events;
 pub mod profiles;
 pub mod radio;
+pub mod receivers;
 pub mod recordings;
 pub mod scan;
 pub mod spectrum;

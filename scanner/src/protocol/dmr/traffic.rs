@@ -37,6 +37,10 @@ pub struct DmrTraffic {
 }
 
 impl DmrTraffic {
+    pub fn demod_stats(&self) -> super::demod::DmrDemodStats {
+        self.demod.symbols.stats
+    }
+
     pub fn new(lcn_hz: HashMap<u16, u64>) -> Self {
         let mut demod = DmrDemodulator::new();
         demod.symbols.set_base_station_mode();
