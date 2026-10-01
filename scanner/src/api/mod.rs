@@ -81,7 +81,7 @@ macro_rules! routes {
 routes! {
     get "/api/v1/routes" => routes, "this list";
     get "/api/v1/status" => v1::status::get, "build, uptime, the live site, its control channel and the tuning";
-    get "/api/v1/calls" => v1::calls::get, "the open calls and the newest closed ones";
+    get "/api/v1/calls" => v1::calls::get, "the live site's open calls and its newest closed ones (from its history after a restart or switch)";
     get "/api/v1/calls/{id}" => v1::calls::one, "one call: live while recent, else from the history";
     get "/ws/events" => ws::events, "a text frame when a call opens or closes or a recording is saved";
     get "/ws/audio" => ws::audio, "live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta and lag frames); without, lane one untagged";

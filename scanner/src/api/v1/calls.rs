@@ -1,4 +1,4 @@
-//! `GET /api/v1/calls`: the open calls and the newest closed ones; one call.
+//! `GET /api/v1/calls`: the live site's open calls and its newest closed ones; one call.
 
 use std::sync::Arc;
 

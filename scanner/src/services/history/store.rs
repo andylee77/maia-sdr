@@ -858,11 +858,13 @@ impl Store {
         Ok(())
     }
 
-    /// The newest calls of every site, newest first.
-    pub fn latest_calls(&self, limit: usize) -> rusqlite::Result<Vec<CallRow>> {
+    /// The newest calls of a site, newest first.
+    pub fn latest_calls(&self, site: &str, limit: usize) -> rusqlite::Result<Vec<CallRow>> {
         let conn = lock(&self.read);
-        let mut st = conn.prepare(&format!("SELECT {CALL_COLUMNS} FROM calls c ORDER BY c.started_ms DESC LIMIT ?1"))?;
-        let rows = st.query_map(params![limit as i64], call_row)?;
+        let mut st = conn.prepare(&format!(
+            "SELECT {CALL_COLUMNS} FROM calls c WHERE c.site = ?1 ORDER BY c.started_ms DESC LIMIT ?2"
+        ))?;
+        let rows = st.query_map(params![site, limit as i64], call_row)?;
         rows.collect()
     }
 

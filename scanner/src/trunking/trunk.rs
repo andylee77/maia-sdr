@@ -19,7 +19,7 @@ use super::calls::{CallBook, CallEvent, CallId, CallPolicy, Closed, Opened, Sour
 use super::follow::routing::Routing;
 use super::follow::{Command, Follower, Record};
 use crate::audio::live::{Audio, VoiceBatch};
-use crate::services::history::store::CallRow;
+use crate::services::history::store::{CallRow, Store};
 use crate::services::history::HistoryTx;
 use crate::services::notices::{Notice, Notices};
 use crate::services::packet_data::PacketData;
@@ -247,6 +247,8 @@ pub struct Trunking {
     next_call: Arc<AtomicU64>,
     /// Takes the PDUs a lane reads.
     packet_data: std::sync::Mutex<Option<Arc<PacketData>>>,
+    /// Where a site's newest calls come from when it goes live.
+    store: std::sync::Mutex<Option<Arc<Store>>>,
     lanes: Arc<Mutex<Vec<LaneStatus>>>,
     running: tokio::sync::Mutex<Option<Running>>,
 }
@@ -270,6 +272,7 @@ impl Trunking {
             frames: Arc::default(),
             next_call: Arc::new(AtomicU64::new(first_call.max(1))),
             packet_data: std::sync::Mutex::new(None),
+            store: std::sync::Mutex::new(None),
             lanes: Arc::default(),
             running: tokio::sync::Mutex::new(None),
         }
@@ -286,9 +289,45 @@ impl Trunking {
         }
     }
 
+    pub fn set_history_store(&self, store: Arc<Store>) {
+        if let Ok(mut s) = self.store.lock() {
+            *s = Some(store);
+        }
+    }
+
+    /// The site's newest calls: those still listed, and the stored ones (a call that closed just
+    /// before a switch may not be stored yet).
+    async fn recent_of(&self, site: &str) -> VecDeque<CallView> {
+        let listed: Vec<CallView> =
+            self.view.lock().map(|v| v.recent.iter().filter(|c| c.site == site).cloned().collect()).unwrap_or_default();
+        let store = self.store.lock().ok().and_then(|s| s.clone());
+        let stored = match store {
+            Some(store) => {
+                let site = site.to_string();
+                match tokio::task::spawn_blocking(move || store.latest_calls(&site, RECENT)).await {
+                    Ok(Ok(rows)) => rows,
+                    Ok(Err(e)) => {
+                        tracing::warn!("history: recent calls not read: {e:#}");
+                        Vec::new()
+                    }
+                    Err(e) => {
+                        tracing::warn!("history: recent calls not read: {e}");
+                        Vec::new()
+                    }
+                }
+            }
+            None => Vec::new(),
+        };
+        merge_recent(listed, stored)
+    }
+
     /// Start following on the live site (stopping the previous site's trunking first).
     pub async fn start<H: RadioHw + StreamSource + Send + Sync + 'static>(&self, setup: Setup, tuner: Arc<Tuner<H>>, log: Arc<EventLog>) -> TrunkTx {
         self.stop().await;
+        let recent = self.recent_of(&setup.site).await;
+        if let Ok(mut v) = self.view.lock() {
+            *v = CallsView { open: Vec::new(), recent: recent.iter().cloned().collect() };
+        }
         let (tx, rx) = mpsc::channel(QUEUE);
         let stop = Arc::new(AtomicBool::new(false));
         let (lane_tx, mut lane_rx) = mpsc::channel(QUEUE);
@@ -330,8 +369,7 @@ impl Trunking {
             log,
             view: self.view.clone(),
             open: Vec::new(),
-            // The newest calls stay listed across a switch.
-            recent: self.view.lock().map(|v| v.recent.iter().cloned().collect()).unwrap_or_default(),
+            recent,
             last_stuck_check: Instant::now(),
             lanes_view: self.lanes.clone(),
             lanes_published: Instant::now(),
@@ -385,36 +423,6 @@ impl Trunking {
         }
     }
 
-    /// List the newest calls of the history (boot), newest first.
-    pub fn seed_recent(&self, rows: Vec<CallRow>) {
-        let recent = rows
-            .into_iter()
-            .take(RECENT)
-            .map(|r| CallView {
-                call: r.call_id,
-                site: r.site,
-                tg: r.tg,
-                source: r.source,
-                speaker: None,
-                freq_hz: r.freq_hz,
-                slot: r.timeslot,
-                channel: r.channel,
-                encrypted: r.encrypted,
-                not_followed: r.not_followed,
-                lane: (r.lane > 0).then_some(r.lane),
-                started_unix_ms: r.started_ms,
-                ended_unix_ms: Some(r.ended_ms),
-                close: Some(r.close_reason),
-                end_lc: r.end_kind,
-                sources: r.sources,
-                voice_frames: r.voice_ms / 20,
-            })
-            .collect();
-        if let Ok(mut v) = self.view.lock() {
-            v.recent = recent;
-        }
-    }
-
     /// The newest raw IMBE frames, oldest first.
     pub fn frames(&self) -> Vec<RawFrame> {
         self.frames.lock().map(|f| f.iter().cloned().collect()).unwrap_or_default()
@@ -422,6 +430,39 @@ impl Trunking {
 
     pub fn calls(&self) -> CallsView {
         self.view.lock().map(|v| v.clone()).unwrap_or_default()
+    }
+}
+
+/// The listed calls and the stored ones as one list, newest first, each call once (the listed
+/// one wins: it is the fresher).
+fn merge_recent(listed: Vec<CallView>, stored: Vec<CallRow>) -> VecDeque<CallView> {
+    let mut seen: HashSet<CallId> = listed.iter().map(|c| c.call).collect();
+    let mut all = listed;
+    all.extend(stored.into_iter().filter(|r| seen.insert(r.call_id)).map(view_of_row));
+    all.sort_by(|a, b| b.started_unix_ms.cmp(&a.started_unix_ms));
+    all.truncate(RECENT);
+    all.into()
+}
+
+fn view_of_row(r: CallRow) -> CallView {
+    CallView {
+        call: r.call_id,
+        site: r.site,
+        tg: r.tg,
+        source: r.source,
+        speaker: None,
+        freq_hz: r.freq_hz,
+        slot: r.timeslot,
+        channel: r.channel,
+        encrypted: r.encrypted,
+        not_followed: r.not_followed,
+        lane: (r.lane > 0).then_some(r.lane),
+        started_unix_ms: r.started_ms,
+        ended_unix_ms: Some(r.ended_ms),
+        close: Some(r.close_reason),
+        end_lc: r.end_kind,
+        sources: r.sources,
+        voice_frames: r.voice_ms / 20,
     }
 }
 
@@ -1038,5 +1079,38 @@ mod tests {
         assert!(resume_needs_reset(Some(LanePll { pll_q213: 3000, clamp_q213: 5325 }), Some(ms(100))));
         // No PLL reading (no hardware): the voice rule alone.
         assert!(!resume_needs_reset(None, Some(ms(100))));
+    }
+
+    #[test]
+    fn the_recent_calls_merge_listed_and_stored_newest_first() {
+        let row = |call_id: u64, started_ms: u64| CallRow {
+            site: "cec_gcs".into(),
+            call_id,
+            started_ms,
+            ended_ms: started_ms + 1_000,
+            tg: 1,
+            source: None,
+            sources: Vec::new(),
+            freq_hz: None,
+            channel: None,
+            timeslot: None,
+            lane: 0,
+            encrypted: false,
+            followed: true,
+            not_followed: None,
+            voice_ms: 200,
+            grant_ms: 1_000,
+            codec: None,
+            frames: 10,
+            frame_errors: 0,
+            close_reason: "end".into(),
+            end_kind: None,
+        };
+        let listed = |call_id: u64, started_ms: u64| CallView { voice_frames: 99, ..view_of_row(row(call_id, started_ms)) };
+        let merged = merge_recent(vec![listed(5, 500), listed(3, 300)], vec![row(5, 500), row(4, 400), row(2, 200)]);
+        assert_eq!(merged.iter().map(|c| c.call).collect::<Vec<_>>(), vec![5, 4, 3, 2]);
+        assert_eq!(merged[0].voice_frames, 99, "the listed call wins over its stored row");
+        let many: Vec<CallRow> = (0..RECENT as u64 + 10).map(|i| row(i + 10, i)).collect();
+        assert_eq!(merge_recent(Vec::new(), many).len(), RECENT);
     }
 }
