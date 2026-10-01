@@ -1868,7 +1868,7 @@ async fn main() -> anyhow::Result<()> {
             current_rx_lo.clone(),
             dmr_rt.clone(),
         );
-        app::dmr_task::spawn_dmr_traffic(traffic_iq.clone(), dmr_rt.clone());
+        app::dmr_task::spawn_dmr_traffic(traffic_iq.clone(), current_control_freq_for_c4fm.clone(), dmr_rt.clone());
         // DMR voice: its own vocoder thread and pacer onto the shared
         // audio broadcast (lane One; the P25 vocoder is idle on a DMR site).
         let (dmr_voice_tx, dmr_voice_rx) = app::dmr_voice::voice_channel();

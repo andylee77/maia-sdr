@@ -260,7 +260,10 @@ impl DmrRuntime {
     }
 
     /// The control channel's message, to the follower (when following).
-    pub fn follow_control(&self, message: &DmrMessage) {
+    /// A call granted on the control repeater itself (its other timeslot)
+    /// is in the control receiver's bursts too: they go to the follower as
+    /// the call's traffic, and the traffic thread leaves that call alone.
+    pub fn follow_control(&self, message: &DmrMessage, control_hz: u64) {
         if !self.follow.load(Ordering::Relaxed) {
             return;
         }
@@ -268,6 +271,9 @@ impl DmrRuntime {
         let actions = match self.follower.lock() {
             Ok(mut f) => {
                 let mut a = f.on_control(message, now);
+                if f.following().and_then(|g| g.freq_hz) == Some(control_hz) {
+                    a.extend(f.on_traffic(message, now));
+                }
                 a.extend(f.tick(now));
                 a
             }
@@ -422,9 +428,10 @@ pub fn spawn_dmr_control(
             let events: Vec<FramerEvent> = framer.drain().collect();
             for event in events {
                 rt.count(&event);
+                let control_hz = control_freq.load(Ordering::Relaxed);
                 for message in processor.process(event) {
                     rt.record(&message);
-                    rt.follow_control(&message);
+                    rt.follow_control(&message, control_hz);
                 }
             }
             busy += t0.elapsed();
@@ -455,6 +462,7 @@ pub fn spawn_dmr_control(
 #[cfg(target_os = "linux")]
 pub fn spawn_dmr_traffic(
     hub: std::sync::Arc<crate::app::iq_hub::IqHub>,
+    control_freq: std::sync::Arc<AtomicU64>,
     rt: std::sync::Arc<DmrRuntime>,
 ) {
     use crate::protocol::dmr::demod::DmrDemodulator;
@@ -501,7 +509,13 @@ pub fn spawn_dmr_traffic(
                 }
                 for message in processor.process(event) {
                     if let Ok(mut f) = rt.follower.lock() {
-                        actions.extend(f.on_traffic(&message, now));
+                        // A call on the control repeater comes from the
+                        // control receiver (`follow_control`), not twice.
+                        let on_control_repeater =
+                            f.following().and_then(|g| g.freq_hz) == Some(control_freq.load(Ordering::Relaxed));
+                        if !on_control_repeater {
+                            actions.extend(f.on_traffic(&message, now));
+                        }
                     }
                 }
             }
