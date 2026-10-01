@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 
-use super::tuner::RadioHw;
+use super::tuner::{RadioHw, Readback};
 use crate::hardware::ad9361::GainMode;
 use crate::hardware::p25core::Lane;
 use crate::hardware::presets::DdcPreset;
@@ -22,7 +22,7 @@ mod board {
 
     use super::*;
     use crate::hardware::ad9361::Ad9361;
-    use crate::hardware::p25core::P25Core;
+    use crate::hardware::p25core::{nco_to_freq, P25Core};
 
     pub struct Board {
         pub ad9361: Ad9361,
@@ -79,6 +79,30 @@ mod board {
             core.lane(lane).with_context(|| format!("{lane} is not present"))?.set_lsm_enable(false);
             Ok(())
         }
+
+        async fn readback(&self, sample_rate_hz: u32) -> Readback {
+            let sr = sample_rate_hz as f64;
+            let nco = |word: u32| (sr > 0.0).then(|| nco_to_freq(word & 0x0FFF_FFFF, sr));
+            let mut r = Readback {
+                lo_hz: self.ad9361.lo_hz().await.ok(),
+                gain_db: self.ad9361.gain_db().await.ok(),
+                rssi_db: self.ad9361.rssi_db().await.ok(),
+                gain_mode: self.ad9361.gain_mode().await.ok().map(GainMode::as_str),
+                ..Default::default()
+            };
+            let core = self.core.lock().await;
+            r.control_nco_hz = nco(core.control().nco_word());
+            r.control_lsm = Some(core.control().lsm_control());
+            r.control_nid = Some(core.control().nid());
+            r.control_status = Some(core.control().status());
+            for lane in core.lanes().collect::<Vec<_>>() {
+                if let Some(c) = core.lane(lane) {
+                    r.lane_nco_hz[lane.index()] = nco(c.nco_word());
+                    r.lane_lsm[lane.index()] = Some(c.lsm_control());
+                }
+            }
+            r
+        }
     }
 }
 
@@ -113,6 +137,9 @@ mod host {
         }
         async fn pause_lane(&self, _: Lane) -> Result<()> {
             Ok(())
+        }
+        async fn readback(&self, _: u32) -> Readback {
+            Readback::default()
         }
     }
 }

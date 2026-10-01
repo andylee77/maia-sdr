@@ -63,6 +63,22 @@ impl Tuning {
     }
 }
 
+/// What the hardware reports, to check the tuning against.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Readback {
+    pub lo_hz: Option<u64>,
+    pub gain_db: Option<f64>,
+    pub rssi_db: Option<f64>,
+    pub gain_mode: Option<&'static str>,
+    pub control_nco_hz: Option<f64>,
+    pub control_lsm: Option<crate::hardware::p25core::LsmControl>,
+    /// NAC and DUID of the latest frame the control chain's gateware LSM decoded.
+    pub control_nid: Option<(u16, u8)>,
+    pub control_status: Option<crate::hardware::p25core::LsmStatus>,
+    pub lane_nco_hz: [Option<f64>; 2],
+    pub lane_lsm: [Option<crate::hardware::p25core::LsmControl>; 2],
+}
+
 /// The crystal correction at an LO: commanding `LO + shift` puts the real LO on `LO`.
 pub fn lo_shift_hz(ppm: f64, lo_hz: u64) -> i64 {
     (-ppm * 1e-6 * lo_hz as f64).round() as i64
@@ -81,6 +97,8 @@ pub trait RadioHw: Send + Sync {
     async fn configure_lanes(&self, preset: &'static DdcPreset) -> Result<()>;
     async fn retune_lane(&self, lane: Lane, nco_hz: f64, sample_rate_hz: u32, reset: bool) -> Result<()>;
     async fn pause_lane(&self, lane: Lane) -> Result<()>;
+    /// What the hardware holds now (`sample_rate_hz` converts NCO words).
+    async fn readback(&self, sample_rate_hz: u32) -> Readback;
 }
 
 pub struct Tuner<H> {
@@ -212,6 +230,10 @@ impl<H: RadioHw> Tuner<H> {
         let _seq = self.sequence.lock().await;
         self.hw.pause_lane(lane).await
     }
+
+    pub async fn readback(&self) -> Readback {
+        self.hw.readback(self.tuning().sample_rate_hz).await
+    }
 }
 
 #[cfg(test)]
@@ -258,6 +280,9 @@ mod tests {
         }
         async fn pause_lane(&self, lane: Lane) -> Result<()> {
             self.log(format!("{lane} pause"))
+        }
+        async fn readback(&self, _: u32) -> Readback {
+            Readback::default()
         }
     }
 

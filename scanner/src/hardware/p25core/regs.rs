@@ -48,7 +48,7 @@ impl Deref for Registers {
 }
 
 /// `lsm_status`: one coherent read.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct LsmStatus {
     pub bch_busy: bool,
     pub in_nid_window: bool,
@@ -60,7 +60,7 @@ pub struct LsmStatus {
 }
 
 /// `lsm_control` read back.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct LsmControl {
     pub enable: bool,
     pub dibit_dma: bool,

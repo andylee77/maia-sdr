@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::api::{ApiError, ApiResult};
 use crate::boot::radio::{gain_mode, HardwareInfo};
 use crate::boot::state::AppState;
-use crate::radio::tuner::Tuning;
+use crate::radio::tuner::{Readback, Tuning};
 use crate::services::config::radio::{Gain, GainMode, RadioConfig, GAIN_DB_RANGE};
 use crate::services::config::{self, RadioState};
 
@@ -20,15 +20,18 @@ pub struct Radio {
     pub state: RadioState,
     pub hardware: HardwareInfo,
     pub tuning: Tuning,
+    pub readback: Readback,
 }
 
 pub async fn get(State(s): State<Arc<AppState>>) -> Json<Radio> {
+    let readback = s.tuner.readback().await;
     let c = s.config.lock().await;
     Json(Radio {
         config: c.radio.value.clone(),
         state: c.state.value.clone(),
         hardware: s.hardware.clone(),
         tuning: s.tuner.tuning(),
+        readback,
     })
 }
 

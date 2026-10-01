@@ -199,6 +199,9 @@ mod tests {
         async fn pause_lane(&self, _: crate::hardware::p25core::Lane) -> Result<()> {
             Ok(())
         }
+        async fn readback(&self, _: u32) -> crate::radio::tuner::Readback {
+            Default::default()
+        }
     }
 
     fn site(cc: u64, channels: Vec<u64>, pos: CcPosition) -> Site {
