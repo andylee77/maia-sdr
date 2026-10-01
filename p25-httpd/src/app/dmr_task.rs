@@ -6,7 +6,11 @@
 //! keeps what `/api/dmr` serves: syncs, bursts per timeslot, CACH, voice, the
 //! carrier offset the equaliser learned, the CPU it costs, message counts by
 //! class, recent grants; and `/api/dmr/messages` the last messages in
-//! SDRTrunk's text.
+//! SDRTrunk's text. Like P25's TSBKs, the decoded messages also go to the
+//! shared event log (the Diagnostics events box): control messages as
+//! `grant` lines with an `event_type` ("CC messages"), followed grants and
+//! chain retunes as call lines, the voice channel's link control as voice
+//! lines.
 //!
 //! With `follow` on (`PUT /api/dmr?follow=1`), the call follower
 //! (`app::dmr_follower`) takes the control channel's grants: an executor task
@@ -120,6 +124,8 @@ pub struct DmrRuntime {
     pub grants_seen: AtomicU64,
     /// Message rate over ~10 s for the UI.
     pub ui_rate: Mutex<crate::app::ui_state::RateWindow>,
+    /// The shared event log (set once at start).
+    pub event_log: std::sync::OnceLock<std::sync::Arc<crate::services::event_log::EventLog>>,
 }
 
 impl DmrRuntime {
@@ -213,6 +219,9 @@ impl DmrRuntime {
                 }
             }
         }
+        if !FILLER_CLASSES.contains(&class) {
+            self.log_message(crate::services::event_log::LogCategory::Grant, message, &text);
+        }
         let record = MessageRecord { unix_ms: now, timeslot: message.timeslot(), valid, class, text };
         if !FILLER_CLASSES.contains(&class) {
             if let Ok(mut e) = self.events.lock() {
@@ -227,6 +236,70 @@ impl DmrRuntime {
             while m.len() > MESSAGE_RING {
                 m.pop_front();
             }
+        }
+    }
+
+    /// A decoded message as an event-log line (P25's TSBK mirror lines carry
+    /// `event_type` the same way, so the events box groups both alike).
+    pub fn log_message(&self, category: crate::services::event_log::LogCategory, message: &DmrMessage, text: &str) {
+        if let Some(log) = self.event_log.get() {
+            log.push(
+                category,
+                format!("DMR {text}"),
+                serde_json::json!({
+                    "protocol": "dmr",
+                    "event_type": message.class_name(),
+                    "timeslot": message.timeslot(),
+                    "valid": message.is_valid(),
+                }),
+            );
+        }
+    }
+
+    /// A follower action worth a line in the event log (grants it takes or
+    /// declines, retunes, call ends; not voice or keep-alives).
+    pub fn log_action(&self, action: &FollowerAction) {
+        use crate::services::event_log::LogCategory;
+        let Some(log) = self.event_log.get() else { return };
+        match action {
+            FollowerAction::Grant { grant: g, not_followed } => log.push(
+                LogCategory::Grant,
+                format!(
+                    "grant {}={} LCN {} TS{} {} src={}{}",
+                    if g.private { "radio" } else { "TG" },
+                    g.talkgroup,
+                    g.lcn,
+                    g.timeslot,
+                    g.freq_hz.map_or("? MHz".to_string(), |f| format!("{:.5} MHz", f as f64 / 1e6)),
+                    g.source.unwrap_or(0),
+                    not_followed.map_or(String::new(), |r| format!(" (not followed: {r})")),
+                ),
+                serde_json::json!({
+                    "protocol": "dmr", "tg": g.talkgroup, "source": g.source, "lcn": g.lcn,
+                    "timeslot": g.timeslot, "freq_hz": g.freq_hz, "not_followed": not_followed,
+                }),
+            ),
+            FollowerAction::Tune { freq_hz } => log.push(
+                LogCategory::Traffic,
+                format!("DMR traffic chain 1 -> {:.5} MHz", *freq_hz as f64 / 1e6),
+                serde_json::json!({ "protocol": "dmr", "freq_hz": freq_hz }),
+            ),
+            FollowerAction::Source { source } => log.push(
+                LogCategory::Traffic,
+                format!("DMR call: talking radio {source}"),
+                serde_json::json!({ "protocol": "dmr", "source": source }),
+            ),
+            FollowerAction::Encrypted => log.push(
+                LogCategory::Traffic,
+                "DMR call: encrypted voice (not decoded)",
+                serde_json::json!({ "protocol": "dmr" }),
+            ),
+            FollowerAction::End { reason } => log.push(
+                LogCategory::Traffic,
+                format!("DMR call end ({reason})"),
+                serde_json::json!({ "protocol": "dmr", "reason": reason }),
+            ),
+            FollowerAction::KeepAlive { .. } | FollowerAction::Voice { .. } => {}
         }
     }
 
@@ -317,6 +390,9 @@ impl DmrRuntime {
             return;
         }
         let now = crate::app::now_unix_ms();
+        for a in &actions {
+            self.log_action(a);
+        }
         if let Ok(mut log) = self.follower_log.lock() {
             for a in &actions {
                 if !matches!(a, FollowerAction::Voice { .. } | FollowerAction::KeepAlive { .. }) {
@@ -594,9 +670,13 @@ pub fn spawn_dmr_traffic(
                     if let Ok(mut f) = rt.follower.lock() {
                         // A call on the control repeater comes from the
                         // control receiver (`follow_control`), not twice.
+                        let followed = f.following();
                         let on_control_repeater =
-                            f.following().and_then(|g| g.freq_hz) == Some(control_freq.load(Ordering::Relaxed));
+                            followed.and_then(|g| g.freq_hz) == Some(control_freq.load(Ordering::Relaxed));
                         if !on_control_repeater {
+                            if followed.is_some_and(|g| g.timeslot == message.timeslot()) && is_voice_signalling(&message) {
+                                rt.log_message(crate::services::event_log::LogCategory::Voice, &message, &message.to_string());
+                            }
                             actions.extend(f.on_traffic(&message, now));
                         }
                     }
@@ -699,6 +779,16 @@ fn boundary_events(
             Some(Lane::One),
         )],
         _ => Vec::new(),
+    }
+}
+
+/// Voice-channel signalling worth a voice line: link control (header,
+/// embedded, terminator), PI header, CLEAR. Not the voice bursts themselves.
+fn is_voice_signalling(message: &DmrMessage) -> bool {
+    match message {
+        DmrMessage::VoiceHeader(..) | DmrMessage::Terminator(..) | DmrMessage::PiHeader(..) | DmrMessage::FullLc(_) => true,
+        DmrMessage::Csbk(c) => c.kind == crate::protocol::dmr::message::csbk::CsbkKind::Clear,
+        _ => false,
     }
 }
 

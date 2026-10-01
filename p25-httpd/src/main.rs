@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-10-01-dmr-ui-ppm-075b";
+pub const BUILD_TAG: &str = "2026-10-01-dmr-eventlog-075";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -815,6 +815,8 @@ async fn main() -> anyhow::Result<()> {
     // Change 075: DMR on the control IQ: on when the active site is DMR,
     // else off until enabled by hand.
     let dmr_rt = Arc::new(app::dmr_task::DmrRuntime::default());
+    // Its messages and calls go to the shared event log, like P25's.
+    let _ = dmr_rt.event_log.set(event_log.clone());
     if let Ok(site) = services::sites::load_site(&lo_plans.site()) {
         if site.is_dmr() {
             dmr_rt.apply_site(&site);

@@ -14,7 +14,6 @@ import { monitorPicker } from '../components/monitor_picker.js';
 import { tgGroupsEditor } from '../components/tg_groups_editor.js';
 import { ignoreList } from '../components/ignore_list.js';
 import { profilePicker } from '../components/profile_picker.js';
-import { dmrFeed } from '../components/dmr_feed.js';
 
 async function save(patch) {
   const r = await api.putSettings(patch);
@@ -288,8 +287,6 @@ export function mount(host) {
   const groups = tgGroupsEditor({ onSave: async patch => { await save(patch); load(); } });
   const about = aboutCard();
   const profiles = profilesCard(load);
-  // Change 075: a DMR site's control channel messages (hidden on P25 sites).
-  const feed = dmrFeed();
   // Change 069: which cards follow the profile / the site.
   const scoped = [[groups.el, 'profile'], [monitor.el, 'profile'], [ignore.el, 'profile'],
     [tgAliases.el, 'site'], [unitAliases.el, 'site'], [enc.el, 'site']].map(([el, kind]) => {
@@ -308,20 +305,17 @@ export function mount(host) {
     h('div', { class: 'grid-2' },
       h('div', { class: 'stack' }, rec.el, callClose.el, tgAliases.el, unitAliases.el),
       h('div', { class: 'stack' }, profiles.el, groups.el, monitor.el, ignore.el, enc.el, clock.el, display.el, about.el)),
-    feed.el,
   );
-  if (store.state) feed.update(store.state);
   load();
   let lastRev = null;
   return {
     update(kind, st) {
       if (kind !== 'state' || !st.state) return;
       clock.update(st.state);
-      feed.update(st.state);
       if (lastRev !== null && st.state.settings_rev !== lastRev) load();
       lastRev = st.state.settings_rev;
       if (data) about.set(data, st.state);
     },
-    unmount() { feed.unmount(); },
+    unmount() {},
   };
 }
