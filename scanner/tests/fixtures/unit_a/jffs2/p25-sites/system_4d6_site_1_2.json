@@ -1,0 +1,58 @@
+{
+  "name": "system_4d6_site_1_2",
+  "label": "System 4D6 site 1-2",
+  "modulation": "LSM",
+  "preset_default": "8M",
+  "cc_position": "Center",
+  "control_freq_hz": 853387500,
+  "alt_control_freqs_hz": [
+    853637500,
+    853887500
+  ],
+  "traffic_freqs_hz": [],
+  "nac": 1234,
+  "wacn": 781824,
+  "system_id": 1238,
+  "rfss_id": 1,
+  "site_id": 2,
+  "lra": 0,
+  "iden_bands": [
+    {
+      "identifier": 0,
+      "base_frequency_hz": 851006250,
+      "channel_spacing_hz": 6250,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": -45000000
+    },
+    {
+      "identifier": 1,
+      "base_frequency_hz": 762006250,
+      "channel_spacing_hz": 6250,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": 30000000
+    },
+    {
+      "identifier": 2,
+      "base_frequency_hz": 851012500,
+      "channel_spacing_hz": 12500,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": -45000000
+    },
+    {
+      "identifier": 3,
+      "base_frequency_hz": 762006250,
+      "channel_spacing_hz": 12500,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": 30000000
+    },
+    {
+      "identifier": 4,
+      "base_frequency_hz": 935012500,
+      "channel_spacing_hz": 12500,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": -39000000
+    }
+  ],
+  "last_updated_unix_ms": 1790765125027,
+  "_seed_source": "found by the system finder (change 071)"
+}

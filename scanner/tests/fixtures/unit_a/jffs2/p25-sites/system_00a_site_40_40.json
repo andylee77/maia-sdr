@@ -1,0 +1,37 @@
+{
+  "name": "system_00a_site_40_40",
+  "label": "System 00A site 40-40",
+  "modulation": "LSM",
+  "preset_default": "8M",
+  "cc_position": "Center",
+  "control_freq_hz": 856987500,
+  "alt_control_freqs_hz": [
+    859262500,
+    859762500
+  ],
+  "traffic_freqs_hz": [],
+  "nac": 40,
+  "wacn": 597890,
+  "system_id": 10,
+  "rfss_id": 40,
+  "site_id": 40,
+  "lra": 40,
+  "iden_bands": [
+    {
+      "identifier": 0,
+      "base_frequency_hz": 854000000,
+      "channel_spacing_hz": 12500,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": -45000000
+    },
+    {
+      "identifier": 8,
+      "base_frequency_hz": 854000000,
+      "channel_spacing_hz": 12500,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": -45000000
+    }
+  ],
+  "last_updated_unix_ms": 1790765145816,
+  "_seed_source": "found by the system finder (change 071)"
+}

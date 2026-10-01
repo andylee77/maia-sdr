@@ -1,0 +1,37 @@
+{
+  "name": "system_00a_site_109_109",
+  "label": "System 00A site 109-109",
+  "modulation": "C4FM",
+  "preset_default": "8M",
+  "cc_position": "Center",
+  "control_freq_hz": 937412500,
+  "alt_control_freqs_hz": [
+    936500000,
+    937387500
+  ],
+  "traffic_freqs_hz": [],
+  "nac": 109,
+  "wacn": 599139,
+  "system_id": 10,
+  "rfss_id": 109,
+  "site_id": 109,
+  "lra": 109,
+  "iden_bands": [
+    {
+      "identifier": 0,
+      "base_frequency_hz": 935012500,
+      "channel_spacing_hz": 12500,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": -39000000
+    },
+    {
+      "identifier": 8,
+      "base_frequency_hz": 935012500,
+      "channel_spacing_hz": 12500,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": -39000000
+    }
+  ],
+  "last_updated_unix_ms": 1790765130875,
+  "_seed_source": "found by the system finder (change 071)"
+}

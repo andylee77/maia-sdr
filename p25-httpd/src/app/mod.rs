@@ -37,6 +37,8 @@ pub mod traffic_lane;
 #[cfg(target_os = "linux")]
 pub mod traffic_heartbeat;
 pub mod traffic_pll_watchdog;
+/// The call lifecycle's inputs and outputs as a JSON-lines trace (opt-in).
+pub mod trunk_trace;
 pub mod imbe_forwarder;
 /// Change 071b: one reader per DDC IQ ring, fanned out.
 pub mod iq_hub;

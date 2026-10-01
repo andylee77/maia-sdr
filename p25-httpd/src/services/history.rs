@@ -929,3 +929,7 @@ pub fn iso_utc(ms: u64) -> String {
 #[cfg(test)]
 #[path = "history_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "history_snapshot_tests.rs"]
+mod snapshot_tests;

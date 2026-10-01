@@ -1,0 +1,51 @@
+{
+  "name": "system_141_site_19_19",
+  "label": "System 141 site 19-19",
+  "modulation": "C4FM",
+  "preset_default": "8M",
+  "cc_position": "Center",
+  "control_freq_hz": 770206250,
+  "alt_control_freqs_hz": [
+    770456250,
+    770706250
+  ],
+  "traffic_freqs_hz": [],
+  "nac": 197,
+  "wacn": 599370,
+  "system_id": 321,
+  "rfss_id": 19,
+  "site_id": 19,
+  "lra": 19,
+  "iden_bands": [
+    {
+      "identifier": 0,
+      "base_frequency_hz": 851000000,
+      "channel_spacing_hz": 6250,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": -45000000
+    },
+    {
+      "identifier": 1,
+      "base_frequency_hz": 769000000,
+      "channel_spacing_hz": 6250,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": 30000000
+    },
+    {
+      "identifier": 8,
+      "base_frequency_hz": 851000000,
+      "channel_spacing_hz": 6250,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": -45000000
+    },
+    {
+      "identifier": 9,
+      "base_frequency_hz": 769000000,
+      "channel_spacing_hz": 6250,
+      "bandwidth_hz": 12500,
+      "transmit_offset_hz": 30000000
+    }
+  ],
+  "last_updated_unix_ms": 1790765128492,
+  "_seed_source": "found by the system finder (change 071)"
+}

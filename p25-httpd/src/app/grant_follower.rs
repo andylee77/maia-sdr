@@ -607,11 +607,33 @@ impl ActiveCall {
     }
 }
 
+#[cfg(not(test))]
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Host tests may pin the lifecycle's clock to replay a recorded trace.
+#[cfg(test)]
+fn now_unix_ms() -> u64 {
+    test_clock::get().unwrap_or_else(crate::app::now_unix_ms)
+}
+
+#[cfg(test)]
+pub(crate) mod test_clock {
+    use std::cell::Cell;
+
+    thread_local!(static NOW: Cell<Option<u64>> = const { Cell::new(None) });
+
+    pub fn set(now_ms: Option<u64>) {
+        NOW.with(|n| n.set(now_ms));
+    }
+
+    pub fn get() -> Option<u64> {
+        NOW.with(|n| n.get())
+    }
 }
 
 /// Change 057: the close rule due at `now` for the open call, if any.
@@ -1709,3 +1731,7 @@ pub use routing::{spawn_grant_follower, FollowerLane};
 #[cfg(test)]
 #[path = "grant_follower_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "trunk_replay_tests.rs"]
+mod trunk_replay_tests;

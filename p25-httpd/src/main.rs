@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-10-01-dmr-075";
+pub const BUILD_TAG: &str = "2026-10-01-trunk-trace-076";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -1757,6 +1757,15 @@ async fn main() -> anyhow::Result<()> {
     // alongside `call_boundary_tx` so the cfg(linux) grant follower
     // can subscribe too.
     let active_call_snapshot = lane1.active_call.clone();
+    app::trunk_trace::spawn_if_enabled(
+        &call_boundary_tx,
+        &audio_tx,
+        &call_tracker_tx,
+        ui_settings.call.clone(),
+        first_call_id,
+        lanes.len(),
+        crate::services::lo_plan::active_site(),
+    );
     crate::app::grant_follower::spawn_call_lifecycle(
         call_boundary_tx.clone(),
         audio_tx.clone(),
