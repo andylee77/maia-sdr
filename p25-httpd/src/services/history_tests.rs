@@ -5,7 +5,7 @@ use super::*;
 const H: u64 = 3_600_000;
 const T0: u64 = 1_789_999_200_000; // on an hour boundary (UTC)
 
-fn call(call_id: u64, at: u64, tg: u16, sources: &[u32], voice_ms: u64, enc: bool) -> CallRow {
+fn call(call_id: u64, at: u64, tg: u32, sources: &[u32], voice_ms: u64, enc: bool) -> CallRow {
     CallRow {
         site: "clay".into(),
         call_id,
@@ -104,7 +104,7 @@ fn radios_and_what_they_use() {
 fn trimmed_to_size_oldest_first() {
     let s = HistoryStore::open_memory().unwrap();
     // A call a minute for 33 hours (the hourly totals go by whole hours).
-    let rows: Vec<CallRow> = (0..2000).map(|i| call(i, T0 + i * 60_000, 300 + (i % 7) as u16, &[100 + (i % 50) as u32], 1_000, false)).collect();
+    let rows: Vec<CallRow> = (0..2000).map(|i| call(i, T0 + i * 60_000, 300 + (i % 7) as u32, &[100 + (i % 50) as u32], 1_000, false)).collect();
     s.insert_calls(&rows).unwrap();
     let used = s.used_bytes().unwrap();
     assert!(used > 100_000, "{used}");
@@ -145,6 +145,47 @@ fn old_database_gains_the_channel_column() {
     let s = HistoryStore::open(&path, false).unwrap();
     s.insert_calls(&[call(1, T0, 300, &[101], 1_000, false)]).unwrap();
     assert_eq!(s.recording_info(1, T0).unwrap().unwrap().channel.as_deref(), Some("1189"));
+    drop(s);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Change 075a: talkgroups are u32. Rows an older build stored (the TG
+/// bound from a u16: a plain INTEGER) read back the same, and a 24-bit
+/// (DMR Tier III) talkgroup goes in and out of every table.
+#[test]
+fn talkgroups_wider_than_16_bits() {
+    let path = std::env::temp_dir().join(format!("p25-history-075a-{}.sqlite", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(SCHEMA).unwrap();
+        c.execute(
+            "INSERT INTO calls (site, call_id, started_ms, ended_ms, tg, encrypted, followed, voice_ms, grant_ms)
+             VALUES ('clay', 1, ?1, ?2, ?3, 0, 1, 1000, 2000)",
+            rusqlite::params![T0 as i64, (T0 + 5_000) as i64, 65_535u16],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO hour_tg (site, t, tg, calls, followed, encrypted, voice_ms, clear_grant_ms, enc_grant_ms,
+             voiced_grant_ms, first_ms, last_ms) VALUES ('clay', ?1, ?2, 1, 1, 0, 1000, 2000, 0, 2000, ?1, ?1)",
+            rusqlite::params![T0 as i64, 65_535u16],
+        )
+        .unwrap();
+    }
+    let s = HistoryStore::open(&path, false).unwrap();
+    s.insert_calls(&[call(2, T0 + 60_000, 87_921, &[101], 1_000, false)]).unwrap();
+    s.note_unit("clay", 101, 87_926, UnitEventKind::GroupAffiliation, T0 + 1).unwrap();
+    let rows = s.calls(&range(), SeriesFilter::default(), 10).unwrap();
+    assert_eq!(rows.iter().map(|r| r.tg).collect::<Vec<u32>>(), vec![87_921, 65_535]);
+    let mut tgs: Vec<u32> = s.talkgroups(&range(), 10).unwrap().iter().map(|t| t.tg).collect();
+    tgs.sort();
+    assert_eq!(tgs, vec![65_535, 87_921]);
+    let only = s.calls(&range(), SeriesFilter { tg: Some(87_921), unit: None }, 10).unwrap();
+    assert_eq!(only.len(), 1);
+    assert_eq!(s.talkgroup(&range(), 87_921).unwrap().calls, 1);
+    let r = s.radio(&range(), 101).unwrap();
+    assert_eq!(r.talkgroups[0].tg, 87_921);
+    assert_eq!(r.events[0].tg, 87_926);
     drop(s);
     let _ = std::fs::remove_file(&path);
 }
@@ -219,7 +260,7 @@ fn history_month_bench() {
         let rows: Vec<CallRow> = (0..10_000u64)
             .map(|i| {
                 let n = day * 10_000 + i;
-                call(n, T0 + day * 24 * H + i * 8_000, 300 + (n % 40) as u16, &[3_400_000 + (n * 7 % 900) as u32, 3_400_000 + (n % 900) as u32], if n % 3 == 0 { 0 } else { 4_000 }, n % 3 == 0)
+                call(n, T0 + day * 24 * H + i * 8_000, 300 + (n % 40) as u32, &[3_400_000 + (n * 7 % 900) as u32, 3_400_000 + (n % 900) as u32], if n % 3 == 0 { 0 } else { 4_000 }, n % 3 == 0)
             })
             .collect();
         for chunk in rows.chunks(20) {

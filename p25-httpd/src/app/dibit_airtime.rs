@@ -155,7 +155,7 @@ impl DeliveryMode {
 /// live atomics at the action that opened the epoch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub struct SegmentContext {
-    pub tg: u16,
+    pub tg: u32,
     pub source: u32,
     pub call_id: u64,
     pub encrypted: bool,
@@ -476,7 +476,7 @@ pub struct AppliedCutInfo {
     pub inside_chunk: bool,
     pub clamped: bool,
     pub hw_reading: bool,
-    pub tg: Option<u16>,
+    pub tg: Option<u32>,
     pub call_id: Option<u64>,
     pub encrypted: Option<bool>,
     pub recorded_unix_ms: u64,

@@ -142,7 +142,7 @@ pub fn spawn_traffic_heartbeat(
                         mgr.last_nac = Some(nac);
                     }
                 }
-                mgr.current_talkgroup().map(|t| t.0).unwrap_or(0)
+                mgr.current_talkgroup().map(|t| u32::from(t.0)).unwrap_or(0)
             };
 
             imbe.last_observed_nac.store(nac, Ordering::Relaxed);

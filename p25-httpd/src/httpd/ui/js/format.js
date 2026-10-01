@@ -129,13 +129,13 @@ export function linkControlUnits(call) {
 
 // Change 063: talkgroup lists as typed ("301-310, 315") <-> ids.
 // Returns {tgs, bad}: `bad` lists the parts that are not a talkgroup
-// (1..65535) or a range of them (at most 2000 wide).
+// (1..16777215: 24-bit, change 075a) or a range of them (at most 2000 wide).
 export function parseTgList(text) {
   const tgs = [];
   const bad = [];
   const seen = new Set();
   const add = t => { if (!seen.has(t)) { seen.add(t); tgs.push(t); } };
-  const ok = n => Number.isInteger(n) && n >= 1 && n <= 65535;
+  const ok = n => Number.isInteger(n) && n >= 1 && n <= 16777215;
   for (const part of String(text).split(/[\s,;]+/).filter(Boolean)) {
     const m = part.match(/^(\d+)(?:-(\d+))?$/);
     const a = m ? Number(m[1]) : NaN;

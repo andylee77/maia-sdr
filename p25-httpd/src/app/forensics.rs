@@ -128,7 +128,7 @@ struct ActiveCapture {
     run_dir: PathBuf,
     call_id: u64,
     started_unix_ms: u64,
-    tg: u16,
+    tg: u32,
     freq_hz: Option<u64>,
     encrypted: bool,
     /// Packed dibits, 4 per byte, MSB-first (SDRTrunk format).
@@ -313,7 +313,7 @@ pub struct ForensicsStatus {
 #[derive(Serialize)]
 pub struct ActiveCallMeta {
     pub call_id: u64,
-    pub tg: u16,
+    pub tg: u32,
     pub freq_hz: Option<u64>,
     pub encrypted: bool,
     pub started_unix_ms: u64,

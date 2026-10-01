@@ -451,3 +451,96 @@ fn profiles_persist_and_reload_through_the_store() {
     assert_eq!(clay.profiles[0].ignore_tgs, vec![4]);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
+
+// Change 075a: talkgroups are u32. A settings file saved by a 16-bit build
+// (talkgroups as numbers, talkgroup-name keys as strings) loads into the
+// same data and saves back in the same form.
+#[test]
+fn sixteen_bit_settings_file_loads_unchanged() {
+    let old = br#"{
+      "tg_groups": [{"name": "Primary", "tgs": [300]}, {"name": "TAC", "tgs": [301, 65535]}],
+      "speakers": {"left": ["Primary"], "right": ["TAC"], "other": "off", "preempt": true},
+      "tg_aliases": {"300": "EMS Dispatch", "65535": "All"},
+      "unit_aliases": {"1014": "Console 14"},
+      "monitor_tgs": [301, 300],
+      "ignore_tgs": [402, 700],
+      "site": "clay",
+      "sites": {"clay": {
+        "tg_aliases": {"300": "EMS Dispatch", "65535": "All"},
+        "unit_aliases": {"1014": "Console 14"},
+        "profiles": [{"name": "Default",
+                      "tg_groups": [{"name": "Primary", "tgs": [300]}, {"name": "TAC", "tgs": [301, 65535]}],
+                      "speakers": {"left": ["Primary"], "right": ["TAC"], "other": "off", "preempt": true},
+                      "monitor_tgs": [301, 300], "ignore_tgs": [402, 700]}],
+        "active_profile": "Default"}}
+    }"#;
+    let s = parse_settings(old).unwrap();
+    assert_eq!(s.tg_groups[1].tgs, vec![301u32, 65_535]);
+    assert_eq!(s.tg_aliases.get(&300).map(String::as_str), Some("EMS Dispatch"));
+    assert_eq!(s.tg_aliases.get(&65_535).map(String::as_str), Some("All"));
+    assert_eq!(s.unit_aliases.get(&1014).map(String::as_str), Some("Console 14"));
+    assert_eq!(s.monitor_tgs, vec![301, 300]);
+    assert_eq!(s.ignore_tgs, vec![402, 700]);
+    let clay = &s.sites["clay"];
+    assert_eq!(clay.tg_aliases, s.tg_aliases);
+    assert_eq!(clay.profiles[0].tg_groups, s.tg_groups);
+    assert_eq!(clay.profiles[0].monitor_tgs, vec![301, 300]);
+    assert_eq!(clay.profiles[0].ignore_tgs, vec![402, 700]);
+    let r = Routing::new(&s.tg_groups, &s.speakers).with_ignored(&s.ignore_tgs);
+    assert_eq!(r.route(65_535).map(|x| x.side), Some(Side::Right));
+    assert!(r.ignored(700));
+    // Saved back in the same form.
+    let v = serde_json::to_value(&s).unwrap();
+    let o: serde_json::Value = serde_json::from_slice(old).unwrap();
+    for k in ["tg_groups", "tg_aliases", "monitor_tgs", "ignore_tgs"] {
+        assert_eq!(v[k], o[k], "{k}");
+    }
+    assert_eq!(v["sites"]["clay"]["tg_aliases"], o["sites"]["clay"]["tg_aliases"]);
+    assert_eq!(v["sites"]["clay"]["profiles"][0]["tg_groups"], o["sites"]["clay"]["profiles"][0]["tg_groups"]);
+    // The store reads such a file from disk.
+    let path = tmp_file("tg16");
+    std::fs::write(&path, old).unwrap();
+    let store = SettingsStore::load(Some(path.clone()));
+    assert!(store.load_note().starts_with("loaded"), "{}", store.load_note());
+    assert_eq!(store.snapshot().tg_aliases, s.tg_aliases);
+    assert_eq!(store.snapshot().monitor_tgs, vec![301, 300]);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+// Change 075a: 24-bit (DMR Tier III) talkgroups are accepted wherever a
+// talkgroup is; 0 and anything wider than 24 bits are not.
+#[test]
+fn talkgroups_are_24_bit() {
+    let base = UiSettings::default();
+    let (s, _) = apply_patch(&base, patch(r#"{"tg_groups":[{"name":"Clay Electric","tgs":[87921,87926]}],
+        "speakers":{"left":["Clay Electric"]},
+        "tg_aliases":{"87921":"CEC Ops","16777215":"Top"},
+        "monitor_tgs":[87926,87921],"ignore_tgs":[87925]}"#)).unwrap();
+    assert_eq!(s.tg_groups[0].tgs, vec![87_921, 87_926]);
+    assert_eq!(s.tg_aliases[&87_921], "CEC Ops");
+    assert_eq!(s.tg_aliases[&MAX_TG], "Top");
+    assert_eq!(s.monitor_tgs, vec![87_926, 87_921]);
+    assert_eq!(s.ignore_tgs, vec![87_925]);
+    let r = Routing::new(&s.tg_groups, &s.speakers).with_ignored(&s.ignore_tgs);
+    assert_eq!(r.route(87_921).map(|x| x.side), Some(Side::Left));
+    // 87925 and 22389 share the low 16 bits.
+    assert!(r.ignored(87_925) && !r.ignored(22_389));
+    for bad in [
+        r#"{"tg_groups":[{"name":"A","tgs":[16777216]}]}"#,
+        r#"{"tg_aliases":{"16777216":"x"}}"#,
+        r#"{"monitor_tgs":[16777216]}"#,
+        r#"{"ignore_tgs":[16777216]}"#,
+        r#"{"monitor_tgs":[0]}"#,
+        r#"{"tg_aliases":{"0":"x"}}"#,
+    ] {
+        assert!(apply_patch(&base, patch(bad)).is_err(), "{bad}");
+    }
+    // A hand-edited file drops them.
+    let p = parse_settings(br#"{"tg_groups":[{"name":"A","tgs":[87921,16777216]}],
+        "tg_aliases":{"16777216":"x","87921":"y"},"monitor_tgs":[16777216,87921],
+        "ignore_tgs":[16777216,5]}"#).unwrap();
+    assert_eq!(p.tg_groups[0].tgs, vec![87_921]);
+    assert_eq!(p.tg_aliases.keys().copied().collect::<Vec<u32>>(), vec![87_921]);
+    assert_eq!(p.monitor_tgs, vec![87_921]);
+    assert_eq!(p.ignore_tgs, vec![5]);
+}

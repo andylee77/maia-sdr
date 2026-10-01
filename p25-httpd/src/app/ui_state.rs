@@ -48,12 +48,12 @@ pub fn clock_valid(now_unix_ms: u64) -> bool {
 /// Talkgroup and radio-unit aliases (from `services::ui_settings`).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Aliases<'a> {
-    pub tg: Option<&'a BTreeMap<u16, String>>,
+    pub tg: Option<&'a BTreeMap<u32, String>>,
     pub unit: Option<&'a BTreeMap<u32, String>>,
 }
 
 impl Aliases<'_> {
-    pub fn tg(&self, tg: u16) -> Option<String> {
+    pub fn tg(&self, tg: u32) -> Option<String> {
         self.tg.and_then(|m| m.get(&tg).cloned())
     }
     pub fn unit(&self, id: Option<u32>) -> Option<String> {

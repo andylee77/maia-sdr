@@ -15,7 +15,7 @@ use crate::protocol::p25;
 /// counter book, keyed by the one call-id space of the call lifecycle.
 #[derive(Clone, Default)]
 pub struct ForwarderShared {
-    pub encrypted_tg_history: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u16>>>,
+    pub encrypted_tg_history: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u32>>>,
     pub agc_freq_cache: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, u16>>>,
     pub call_counts: std::sync::Arc<crate::app::call_counters::CallCounterBook>,
 }
@@ -27,7 +27,7 @@ pub struct ForwarderShared {
 /// in airtime mode all labels come from the dibits' air-time epoch.
 #[derive(Debug, Clone)]
 pub struct ImbeBatch {
-    pub talkgroup: u16,
+    pub talkgroup: u32,
     pub source: u32,
     pub call_id: u64,
     /// Unix ms. Airtime mode: estimated production (air) time of the
@@ -102,7 +102,7 @@ pub struct ImbeForwarder {
     pub call_encrypted: std::sync::atomic::AtomicBool,
     /// Current talkgroup (set by grant follower, read by vocoder
     /// to tag AudioChunks). 0 = idle / unknown.
-    pub current_talkgroup: std::sync::atomic::AtomicU16,
+    pub current_talkgroup: std::sync::atomic::AtomicU32,
     /// Current source radio ID, set by the grant follower from
     /// `GRP_VCH_GRANT.FM`. 0 = unknown (grant carried no source, or
     /// only a `GRP_VCH_GRNT_UPD` which doesn't carry source). Read by
@@ -133,7 +133,7 @@ pub struct ImbeForwarder {
     /// this set, the follower defaults to encrypted even if the
     /// current grant doesn't carry service options.
     /// Change 066: shared by the traffic chains (`ForwarderShared`).
-    pub encrypted_tg_history: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u16>>>,
+    pub encrypted_tg_history: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<u32>>>,
     /// Set by the grant follower on call boundary (new TG lock or
     /// Idle→Active). The vocoder task checks this and resets mbelib
     /// state to avoid cross-call artifacts.
@@ -143,7 +143,7 @@ pub struct ImbeForwarder {
     /// `VecDeque` so the 128-cap eviction on `push_back` is `O(1)` rather
     /// than `O(n)` — `/api/imbe_dump` is a hot path when 10 traffic chains
     /// are active.
-    pub imbe_ring: std::sync::Mutex<std::collections::VecDeque<(u16, bool, [u8; 18])>>,
+    pub imbe_ring: std::sync::Mutex<std::collections::VecDeque<(u32, bool, [u8; 18])>>,
     /// Channel to the vocoder task. Each send is `(talkgroup_at_send_time,
     /// batch_of_9_frames)`. TG is captured at send time so tail frames
     /// of call N keep OLD TG even after follower retunes to call N+1 —
@@ -161,7 +161,7 @@ pub struct ImbeForwarder {
     /// Only toggled while the reader holds the traffic decoder's write
     /// lock, so other feeders (sw_demod) always see `false`.
     seg_active: std::sync::atomic::AtomicBool,
-    seg_tg: std::sync::atomic::AtomicU16,
+    seg_tg: std::sync::atomic::AtomicU32,
     seg_source: std::sync::atomic::AtomicU32,
     seg_call_id: std::sync::atomic::AtomicU64,
     seg_encrypted: std::sync::atomic::AtomicBool,
@@ -230,7 +230,7 @@ pub struct ImbeForwarder {
     /// follower's intent) — this is what the AUDIO PATH is decoding
     /// right now. Disagreement between the two means tail frames are
     /// in flight.
-    pub last_batch_tg: std::sync::atomic::AtomicU16,
+    pub last_batch_tg: std::sync::atomic::AtomicU32,
 
     /// 2026-04-24: baseline counters snapshotted on each `on_hdu`.
     /// /api/traffic exposes `current_call_* = <global> - <baseline>`
@@ -372,9 +372,11 @@ pub struct ImbeForwarder {
     /// The watchdog runs (gateware without the LSM signal hold, < 0.2.0).
     pub pll_wd_enabled: std::sync::atomic::AtomicBool,
     /// Change 059: the active call's pending end-of-transmission marker
-    /// (`grant_follower::pack_end_marker`, 0 = none), written by the
-    /// call lifecycle, read by the follower's sticky gate.
-    pub active_end_marker: std::sync::atomic::AtomicU64,
+    /// `(tg, receipt unix ms)`, written by the call lifecycle, read by the
+    /// follower's sticky gate (`end_marker` / `set_end_marker`). Change
+    /// 075a: a mutex, no longer a packed `AtomicU64` (a 32-bit talkgroup
+    /// and a unix ms do not fit in 64 bits).
+    pub active_end_marker: std::sync::Mutex<Option<(u32, u64)>>,
 }
 
 /// Forensic snapshot of a single LDU1-LC-vs-CC-SRC disagreement.
@@ -383,7 +385,7 @@ pub struct Ldu1LcMismatch {
     /// Wall-clock unix_ms at the moment of disagreement.
     pub timestamp_ms: u64,
     /// Active TG when the LDU1 LC was decoded.
-    pub tg: u16,
+    pub tg: u32,
     /// What the CC's `GRP_VCH_GRANT.SRC` had stamped (authoritative).
     pub cc_source: u32,
     /// What our LDU1 LC parser produced from the body bytes.
@@ -401,7 +403,7 @@ pub struct Ldu1LcMismatch {
 pub struct Ldu1FmHistory {
     /// Talkgroup the ring applies to. Ring clears on TG change
     /// (new call = fresh voting).
-    pub tg: u16,
+    pub tg: u32,
     /// Change 060: call the ring applies to. Since 057 every grant is a
     /// call, so back-to-back calls of one TG must not share votes.
     pub call_id: u64,
@@ -605,8 +607,18 @@ impl ImbeForwarder {
             pll_wd_resets_onset: 0.into(),
             pll_wd_resets_pinned: 0.into(),
             pll_wd_enabled: false.into(),
-            active_end_marker: 0.into(),
+            active_end_marker: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Change 059: the active call's pending end marker (`None` = none).
+    pub fn end_marker(&self) -> Option<(u32, u64)> {
+        *self.active_end_marker.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Change 059: publish the active call's pending end marker.
+    pub fn set_end_marker(&self, marker: Option<(u32, u64)>) {
+        *self.active_end_marker.lock().unwrap_or_else(|e| e.into_inner()) = marker;
     }
 
     /// Change 057: add to the per-call counters of the call the frame
@@ -623,7 +635,7 @@ impl ImbeForwarder {
     fn maybe_emit_voice_end(
         &self,
         tx: &audio::CallBoundaryTx,
-        tg: u16,
+        tg: u32,
         lcw: &p25::voice_frame::TdulcLcw,
     ) {
         use std::sync::atomic::Ordering;
@@ -837,7 +849,7 @@ impl ImbeForwarder {
     }
 
     /// Effective TG for the frame being decoded.
-    fn eff_tg(&self) -> u16 {
+    fn eff_tg(&self) -> u32 {
         use std::sync::atomic::Ordering;
         if self.seg() {
             self.seg_tg.load(Ordering::Relaxed)

@@ -10,9 +10,9 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Default)]
 pub struct MonitorList {
     /// Ordered list of monitored TGs (first = highest priority).
-    priority: Vec<u16>,
+    priority: Vec<u32>,
     /// Fast membership lookup.
-    set: HashSet<u16>,
+    set: HashSet<u32>,
 }
 
 impl MonitorList {
@@ -20,12 +20,12 @@ impl MonitorList {
         self.set.is_empty()
     }
 
-    pub fn contains(&self, tg: u16) -> bool {
+    pub fn contains(&self, tg: u32) -> bool {
         self.set.contains(&tg)
     }
 
     /// Replace the entire list. Deduplicates, preserving first occurrence.
-    pub fn set(&mut self, tgs: Vec<u16>) {
+    pub fn set(&mut self, tgs: Vec<u32>) {
         self.set.clear();
         self.priority.clear();
         for tg in tgs {
@@ -35,20 +35,20 @@ impl MonitorList {
         }
     }
 
-    pub fn add(&mut self, tg: u16) {
+    pub fn add(&mut self, tg: u32) {
         if self.set.insert(tg) {
             self.priority.push(tg);
         }
     }
 
-    pub fn remove(&mut self, tg: u16) {
+    pub fn remove(&mut self, tg: u32) {
         if self.set.remove(&tg) {
             self.priority.retain(|&t| t != tg);
         }
     }
 
     /// Return the priority-ordered list.
-    pub fn list(&self) -> &[u16] {
+    pub fn list(&self) -> &[u32] {
         &self.priority
     }
 

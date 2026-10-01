@@ -16,7 +16,7 @@ fn forwarder() -> Arc<ImbeForwarder> {
     Arc::new(ImbeForwarder::new(tx))
 }
 
-fn grant(tg: u16, source: u32, freq_hz: u64, not_followed: Option<&'static str>) -> CallBoundary {
+fn grant(tg: u32, source: u32, freq_hz: u64, not_followed: Option<&'static str>) -> CallBoundary {
     CallBoundary {
         kind: CallBoundaryKind::CcGrantArrival {
             tg,
@@ -33,7 +33,7 @@ fn grant(tg: u16, source: u32, freq_hz: u64, not_followed: Option<&'static str>)
     }
 }
 
-fn chunk(tg: u16, call_id: u64, airtime: bool) -> AudioChunk {
+fn chunk(tg: u32, call_id: u64, airtime: bool) -> AudioChunk {
     AudioChunk {
         pcm: [0; 160],
         talkgroup: tg,
@@ -51,7 +51,7 @@ struct Rig {
     nf: NfCalls,
     next_id: u64,
     tx: CallTrackerEventTx,
-    dedup: std::collections::HashMap<(u16, u32, Option<u64>, bool), u64>,
+    dedup: std::collections::HashMap<(u32, u32, Option<u64>, bool), u64>,
     policy: CallPolicy,
 }
 
@@ -385,7 +385,7 @@ fn repeat_of_the_same_grant_is_a_refresh_until_the_transmission_ends() {
     r.boundary(grant(300, 3436046, 857_987_500, None));
     let id = r.call_id();
     // The CC repeats the grant 0.3 s later (past the 200 ms dedup).
-    let key = (300u16, 3436046u32, Some(857_987_500u64), false);
+    let key = (300u32, 3436046u32, Some(857_987_500u64), false);
     *r.dedup.get_mut(&key).unwrap() -= 300;
     r.boundary(grant(300, 3436046, 857_987_500, None));
     assert_eq!(r.call_id(), id, "same transmission, same call");
@@ -533,7 +533,7 @@ fn grants_before_any_voice_still_preempt_at_once() {
 #[test]
 fn grant_update_refollows_only_a_call_closed_by_timeout() {
     let t = 1_000_000;
-    let last = Some((300u16, 857_987_500u64, t));
+    let last = Some((300u32, 857_987_500u64, t));
     let w = REFOLLOW_WINDOW_MS;
     // Same TG and channel, chain idle, within the window: follow again.
     assert!(refollow_on_update(last, 300, Some(857_987_500), true, t + 5_000, w));
@@ -602,9 +602,7 @@ fn same_freq_resume_resets_a_stale_or_runaway_chain() {
 #[test]
 fn end_marker_frees_the_chain_for_another_tg() {
     let at = 1_790_000_000_000;
-    let m = unpack_end_marker(pack_end_marker(300, at));
-    assert_eq!(m, Some((300, at)));
-    assert_eq!(unpack_end_marker(0), None);
+    let m = Some((300, at));
     // No marker, or the marker belongs to another call: keep the lock.
     assert!(!end_marker_frees_chain(300, None, at + 5_000));
     assert!(!end_marker_frees_chain(201, m, at + 5_000));
@@ -614,6 +612,23 @@ fn end_marker_frees_the_chain_for_another_tg() {
     assert!(END_PREEMPT_AFTER_MS < 1_130, "must free before SDRTrunk's p5 teardown");
 }
 
+// Change 075a: the end marker the lifecycle publishes keeps a 24-bit
+// (DMR Tier III) talkgroup and the full unix ms.
+#[test]
+fn end_marker_keeps_a_24_bit_talkgroup() {
+    let fwd = forwarder();
+    assert_eq!(fwd.end_marker(), None);
+    let at = 1_790_000_000_000;
+    fwd.set_end_marker(Some((87_921, at)));
+    let m = fwd.end_marker();
+    assert_eq!(m, Some((87_921, at)));
+    // 87921 and 22385 share the low 16 bits.
+    assert!(!end_marker_frees_chain(22_385, m, at + 5_000));
+    assert!(end_marker_frees_chain(87_921, m, at + END_PREEMPT_AFTER_MS));
+    fwd.set_end_marker(None);
+    assert_eq!(fwd.end_marker(), None);
+}
+
 // A clear grant the sticky gate rejected is re-followed from its updates
 // once the chain is free, for its own (TG, frequency), and only while its
 // transmission is likely still on the air (bench 2026-09-27: a re-follow
@@ -621,7 +636,7 @@ fn end_marker_frees_the_chain_for_another_tg() {
 // the next real grant).
 #[test]
 fn sticky_rejected_grant_refollows_from_updates() {
-    let rej = Some((300u16, 858_437_500u64, 1_000u64));
+    let rej = Some((300u32, 858_437_500u64, 1_000u64));
     let w = REFOLLOW_STICKY_MS;
     assert!(!refollow_on_update(rej, 300, Some(858_437_500), false, 1_900, w));
     assert!(refollow_on_update(rej, 300, Some(858_437_500), true, 1_900, w));
@@ -634,7 +649,7 @@ fn sticky_rejected_grant_refollows_from_updates() {
 
 // ── Change 066: two traffic chains ──────────────────────────────────
 
-fn grant_on(lane: Lane, tg: u16, source: u32, freq_hz: u64) -> CallBoundary {
+fn grant_on(lane: Lane, tg: u32, source: u32, freq_hz: u64) -> CallBoundary {
     CallBoundary { lane: Some(lane), ..grant(tg, source, freq_hz, None) }
 }
 

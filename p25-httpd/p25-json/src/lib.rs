@@ -69,7 +69,7 @@ pub struct SystemInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelGrant {
     pub channel: String,
-    pub talkgroup: u16,
+    pub talkgroup: u32,
     pub talkgroup_alias: Option<String>,
     pub source: Option<u32>,
     pub frequency_mhz: Option<f64>,
@@ -193,7 +193,7 @@ pub struct TsbkEvent {
     /// Human-readable summary
     pub summary: String,
     /// Talkgroup ID (if applicable)
-    pub talkgroup: Option<u16>,
+    pub talkgroup: Option<u32>,
     /// Talkgroup alias (if known)
     pub talkgroup_alias: Option<String>,
     /// Channel string (if applicable)
@@ -205,7 +205,7 @@ pub struct TsbkEvent {
 }
 
 /// Talkgroup alias map: talkgroup_id -> display name
-pub type AliasMap = HashMap<u16, String>;
+pub type AliasMap = HashMap<u32, String>;
 
 /// DDC configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -174,8 +174,8 @@ pub fn resume_needs_reset(pll_q213: i16, ms_since_voice: Option<u64>, clamp_q213
 /// letting updates acquire talkgroups we never followed (updates carry
 /// no encryption flag: the 2026-04-30 TG 700 incident).
 pub fn refollow_on_update(
-    last_timeout: Option<(u16, u64, u64)>,
-    tg: u16,
+    last_timeout: Option<(u32, u64, u64)>,
+    tg: u32,
     freq_hz: Option<u64>,
     chain_idle: bool,
     now_ms: u64,
@@ -209,25 +209,16 @@ pub const REFOLLOW_STICKY_MS: u64 = 2_000;
 /// after the last voice).
 pub const END_PREEMPT_AFTER_MS: u64 = 600;
 
-/// Change 059: the active call's pending end-of-transmission marker as
-/// published by the lifecycle for the follower (`ImbeForwarder::
-/// active_end_marker`): `(tg << 48) | receipt unix ms`, 0 = none.
-pub fn pack_end_marker(tg: u16, at_ms: u64) -> u64 {
-    ((tg as u64) << 48) | (at_ms & ((1 << 48) - 1))
-}
-
-pub fn unpack_end_marker(v: u64) -> Option<(u16, u64)> {
-    (v != 0).then(|| ((v >> 48) as u16, v & ((1 << 48) - 1)))
-}
-
 /// Change 059: may a grant for another TG pre-empt the call locked on
 /// `locked_tg`? Only once that call's transmission has ended (its end
 /// marker pending for `END_PREEMPT_AFTER_MS`): the lifecycle would keep
 /// the chain `end_grace_ms` (2 s) longer for a same-TG continuation, and
 /// the sticky gate rejected the other TG's grant meanwhile (Mode B
 /// corpus 2026-09-27: 3 transmissions lost, granted 0.1-0.6 s after
-/// SDRTrunk had freed its channel).
-pub fn end_marker_frees_chain(locked_tg: u16, marker: Option<(u16, u64)>, now_ms: u64) -> bool {
+/// SDRTrunk had freed its channel). `marker` is the active call's pending
+/// end-of-transmission marker, `(tg, receipt unix ms)`, as published by
+/// the lifecycle for the follower (`ImbeForwarder::end_marker`).
+pub fn end_marker_frees_chain(locked_tg: u32, marker: Option<(u32, u64)>, now_ms: u64) -> bool {
     matches!(marker, Some((tg, at))
         if tg == locked_tg && now_ms.saturating_sub(at) >= END_PREEMPT_AFTER_MS)
 }
@@ -272,7 +263,7 @@ pub struct CallTrackerEvent {
 #[derive(Debug, Clone)]
 pub enum CallTrackerEventKind {
     CallOpen {
-        tg: u16,
+        tg: u32,
         nac: u16,
         source: Option<u32>,
         freq_hz: Option<u64>,
@@ -379,7 +370,7 @@ pub fn new_event_tx() -> CallTrackerEventTx {
 #[derive(Debug, Clone, Default)]
 pub struct ActiveCallSnapshot {
     pub call_id: u64,
-    pub tg: u16,
+    pub tg: u32,
     pub nac: u16,
     pub source: Option<u32>,
     pub freq_hz: Option<u64>,
@@ -421,7 +412,7 @@ pub fn new_active_call_shared() -> ActiveCallShared {
 
 struct ActiveCall {
     call_id: u64,
-    tg: u16,
+    tg: u32,
     nac: u16,
     /// "Primary" source — the most-recently observed SRC. Backwards
     /// compat with downstream consumers that take a single ID.
@@ -504,7 +495,7 @@ struct ActiveCall {
 /// Change 057: a followed grant waiting for the channel hand-over.
 #[derive(Debug, Clone)]
 struct QueuedGrant {
-    tg: u16,
+    tg: u32,
     nac: u16,
     source: Option<u32>,
     freq_hz: Option<u64>,
@@ -521,7 +512,7 @@ impl ActiveCall {
     #[allow(clippy::too_many_arguments)]
     fn open(
         call_id: u64,
-        tg: u16,
+        tg: u32,
         nac: u16,
         source: Option<u32>,
         freq_hz: Option<u64>,
@@ -646,8 +637,8 @@ fn mirror_active(
     // (`end_marker_frees_chain`).
     let marker = active.as_ref()
         .filter(|c| c.end_at_ms != 0)
-        .map_or(0, |c| pack_end_marker(c.tg, c.end_at_ms));
-    forwarder.active_end_marker.store(marker, Ordering::Relaxed);
+        .map(|c| (c.tg, c.end_at_ms));
+    forwarder.set_end_marker(marker);
     if let Ok(mut s) = shared.lock() {
         *s = active.as_ref().map(|c| {
             let (close_at, via, window) = c.close_plan(policy.hang_ms(), policy.end_grace_ms());
@@ -704,7 +695,7 @@ fn mirror_active(
 fn emit_open(
     tx: &CallTrackerEventTx,
     call_id: u64,
-    tg: u16,
+    tg: u32,
     nac: u16,
     source: Option<u32>,
     freq_hz: Option<u64>,
@@ -798,7 +789,7 @@ impl NfCalls {
         &mut self,
         tx: &CallTrackerEventTx,
         next_call_id: &mut u64,
-        tg: u16,
+        tg: u32,
         nac: u16,
         source: Option<u32>,
         freq_hz: Option<u64>,
@@ -834,7 +825,7 @@ impl NfCalls {
     }
 
     /// A grant update for `tg` (on `freq_hz` when known).
-    fn update(&mut self, tg: u16, freq_hz: Option<u64>, now: u64) {
+    fn update(&mut self, tg: u32, freq_hz: Option<u64>, now: u64) {
         for c in self.0.iter_mut()
             .filter(|c| c.call.tg == tg && (freq_hz.is_none() || c.call.freq_hz == freq_hz))
         {
@@ -906,7 +897,7 @@ enum ArrivalDisposition {
 
 fn classify_cc_arrival(
     active: &ActiveCall,
-    new_tg: u16,
+    new_tg: u32,
     new_source: Option<u32>,
     new_freq_hz: Option<u64>,
 ) -> ArrivalDisposition {
@@ -1149,7 +1140,7 @@ pub fn spawn_call_lifecycle(
         // encrypted); skip if a duplicate arrives within
         // NOT_FOLLOWED_DEDUP_MS.
         let mut not_followed_dedup:
-            std::collections::HashMap<(u16, u32, Option<u64>, bool), u64>
+            std::collections::HashMap<(u32, u32, Option<u64>, bool), u64>
             = std::collections::HashMap::new();
         // Change 065: open not-followed calls (channel time).
         let mut nf = NfCalls::default();
@@ -1242,7 +1233,7 @@ fn handle_boundary(
     nf: &mut NfCalls,
     next_call_id: &mut u64,
     tx: &CallTrackerEventTx,
-    grant_dedup: &mut std::collections::HashMap<(u16, u32, Option<u64>, bool), u64>,
+    grant_dedup: &mut std::collections::HashMap<(u32, u32, Option<u64>, bool), u64>,
     hang_ms: u64,
 ) {
     // Change 066: the chain the event belongs to (voice events, followed

@@ -224,7 +224,7 @@ pub async fn get_ui_state(State(state): State<Arc<AppState>>) -> Json<UiState> {
             lock_freq: state.traffic_lock_freq.load(Ordering::Relaxed),
             delivery_mode: state.dibit_delivery.traffic_ring(lane.lane).active_mode().as_str().to_string(),
             number: n,
-            tg: mgr.current_talkgroup().map(|t| t.0),
+            tg: mgr.current_talkgroup().map(|t| u32::from(t.0)),
         });
     }
     let call = calls.iter().find(|c| c.chain == 1).cloned();
@@ -361,7 +361,7 @@ fn tmp_free_bytes() -> Option<u64> {
 async fn settings_json(state: &AppState) -> serde_json::Value {
     use crate::services::ui_settings as us;
     let store = &state.ui_settings;
-    let mut enc: Vec<u16> = state
+    let mut enc: Vec<u32> = state
         .imbe_forwarder
         .encrypted_tg_history
         .lock()
@@ -442,9 +442,9 @@ pub async fn get_ui_settings(State(state): State<Arc<AppState>>) -> Json<serde_j
 /// one on LSM sites, so aliases never appeared.
 pub async fn apply_tg_aliases(
     state: &AppState,
-    aliases: &std::collections::BTreeMap<u16, String>,
+    aliases: &std::collections::BTreeMap<u32, String>,
 ) {
-    let map: std::collections::HashMap<u16, String> =
+    let map: std::collections::HashMap<u32, String> =
         aliases.iter().map(|(k, v)| (*k, v.clone())).collect();
     state.decoder.write().await.aliases = map.clone();
     state.lsm_decoder.write().await.aliases = map;
@@ -488,7 +488,7 @@ pub async fn apply_settings_patch(
     if switching && (out.changed.tg_groups || out.changed.speakers || out.changed.monitor_tgs || out.changed.ignore_tgs) {
         let routing = state.ui_settings.routing.snapshot();
         let monitor = &out.settings.monitor_tgs;
-        let off = |t: u16| routing.route(t).is_none() || (!monitor.is_empty() && !monitor.contains(&t));
+        let off = |t: u32| routing.route(t).is_none() || (!monitor.is_empty() && !monitor.contains(&t));
         for (lane, tg) in super::talkgroups::release_chains_on(state, off).await {
             state.event_log.push(
                 crate::services::event_log::LogCategory::Traffic,

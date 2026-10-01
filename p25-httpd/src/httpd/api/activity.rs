@@ -51,7 +51,7 @@ fn range(state: &AppState, p: &Params) -> Range {
 }
 
 /// The site's talkgroup / radio names.
-fn names(state: &AppState, site: &str) -> (BTreeMap<u16, String>, BTreeMap<u32, String>) {
+fn names(state: &AppState, site: &str) -> (BTreeMap<u32, String>, BTreeMap<u32, String>) {
     state.ui_settings.snapshot().aliases_for(site)
 }
 
@@ -169,20 +169,20 @@ pub async fn get_radio(State(state): State<Arc<AppState>>, Path(unit): Path<u32>
     v["alias"] = unit_names.get(&unit).cloned().into();
     if let Some(list) = v["talkgroups"].as_array_mut() {
         for t in list {
-            let tg = t["tg"].as_u64().unwrap_or(0) as u16;
+            let tg = t["tg"].as_u64().unwrap_or(0) as u32;
             t["alias"] = tg_names.get(&tg).cloned().into();
         }
     }
     if let Some(list) = v["events"].as_array_mut() {
         for t in list {
-            let tg = t["tg"].as_u64().unwrap_or(0) as u16;
+            let tg = t["tg"].as_u64().unwrap_or(0) as u32;
             t["alias"] = tg_names.get(&tg).cloned().into();
         }
     }
     Json(serde_json::json!({ "ok": true, "window": window(&r), "radio": v })).into_response()
 }
 
-pub async fn get_talkgroup(State(state): State<Arc<AppState>>, Path(tg): Path<u16>, Query(p): Query<Params>) -> Response {
+pub async fn get_talkgroup(State(state): State<Arc<AppState>>, Path(tg): Path<u32>, Query(p): Query<Params>) -> Response {
     let r = range(&state, &p);
     let q = r.clone();
     let d = match query(&state, move |s| s.talkgroup(&q, tg)).await {

@@ -31,13 +31,13 @@ fn idle(lane: Lane) -> LaneView {
     LaneView { lane, locked_tg: None, parked_freq: None, end_marker: None }
 }
 
-fn busy(lane: Lane, tg: u16) -> LaneView {
+fn busy(lane: Lane, tg: u32) -> LaneView {
     LaneView { locked_tg: Some(tg), ..idle(lane) }
 }
 
-const NEVER: fn(u16, Option<(u16, u64)>) -> bool = |_, _| false;
+const NEVER: fn(u32, Option<(u32, u64)>) -> bool = |_, _| false;
 
-fn choose(tg: u16, lanes: &[LaneView], r: &Routing) -> LaneChoice {
+fn choose(tg: u32, lanes: &[LaneView], r: &Routing) -> LaneChoice {
     let side = r.route(tg).map(|x| x.side).unwrap_or(Side::Off);
     choose_lane(tg, side, Some(859_425_000), lanes, r, NEVER)
 }
@@ -57,7 +57,7 @@ fn one_chain_behaves_as_before() {
     assert_eq!(choose(300, &one(busy(Lane::One, 305)), &r),
                LaneChoice::Preempt(Lane::One, "priority_preempt"));
     // End marker of the locked call: any talkgroup takes the chain.
-    let ended = |_: u16, m: Option<(u16, u64)>| m.is_some();
+    let ended = |_: u32, m: Option<(u32, u64)>| m.is_some();
     let v = LaneView { end_marker: Some((305, 1)), ..busy(Lane::One, 305) };
     assert_eq!(choose_lane(600, Side::Right, None, &[v], &r, ended),
                LaneChoice::Preempt(Lane::One, "end_marker_preempt"));

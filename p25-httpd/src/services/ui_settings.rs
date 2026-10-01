@@ -208,10 +208,19 @@ pub const MAX_GROUPS: usize = 32;
 pub const GROUP_NAME_CHARS: usize = 32;
 pub const MAX_GROUP_TGS: usize = 2000;
 
+/// Change 075a: the largest talkgroup id: 24 bits (DMR Tier III; P25
+/// talkgroups are 16-bit). 0 is not a talkgroup.
+pub const MAX_TG: u32 = 0x00FF_FFFF;
+
+/// Change 075a: `tg` is a talkgroup id (1..=`MAX_TG`).
+pub fn is_tg(tg: u32) -> bool {
+    tg != 0 && tg <= MAX_TG
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TgGroup {
     pub name: String,
-    pub tgs: Vec<u16>,
+    pub tgs: Vec<u32>,
 }
 
 /// Change 063: speaker side of a group, or of the ungrouped talkgroups.
@@ -259,17 +268,17 @@ pub struct UiSettings {
     /// Change 063: group -> speaker routing and priority pre-emption.
     pub speakers: Speakers,
     /// Talkgroup id -> display name.
-    pub tg_aliases: BTreeMap<u16, String>,
+    pub tg_aliases: BTreeMap<u32, String>,
     /// Radio unit id (source) -> display name.
     pub unit_aliases: BTreeMap<u32, String>,
     /// Talkgroup monitor list (empty = follow every clear grant).
     /// Order is priority order, as in `services::monitor::MonitorList`.
-    pub monitor_tgs: Vec<u16>,
+    pub monitor_tgs: Vec<u32>,
     /// Change 067: board clock source.
     pub clock: ClockSettings,
     /// Change 068: talkgroups never followed (the opposite of the monitor
     /// list; wins over it and over the speaker groups). Sorted.
-    pub ignore_tgs: Vec<u16>,
+    pub ignore_tgs: Vec<u32>,
     /// Change 069: the site whose settings are live in the fields above
     /// (`services::sites` name, e.g. "clay").
     pub site: String,
@@ -286,8 +295,8 @@ pub struct Profile {
     pub name: String,
     pub tg_groups: Vec<TgGroup>,
     pub speakers: Speakers,
-    pub monitor_tgs: Vec<u16>,
-    pub ignore_tgs: Vec<u16>,
+    pub monitor_tgs: Vec<u32>,
+    pub ignore_tgs: Vec<u32>,
 }
 
 /// Change 069: what belongs to one site: its talkgroup and radio names
@@ -296,7 +305,7 @@ pub struct Profile {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SiteSettings {
-    pub tg_aliases: BTreeMap<u16, String>,
+    pub tg_aliases: BTreeMap<u32, String>,
     pub unit_aliases: BTreeMap<u32, String>,
     pub profiles: Vec<Profile>,
     pub active_profile: String,
@@ -305,7 +314,7 @@ pub struct SiteSettings {
 impl UiSettings {
     /// Change 073: a site's talkgroup and radio names (the live ones for
     /// the active site, else the ones stored for it).
-    pub fn aliases_for(&self, site: &str) -> (BTreeMap<u16, String>, BTreeMap<u32, String>) {
+    pub fn aliases_for(&self, site: &str) -> (BTreeMap<u32, String>, BTreeMap<u32, String>) {
         if self.site == site {
             return (self.tg_aliases.clone(), self.unit_aliases.clone());
         }
@@ -499,13 +508,13 @@ pub struct SettingsPatch {
     /// Change 063: replace the group list / the speaker routing.
     pub tg_groups: Option<Vec<TgGroup>>,
     pub speakers: Option<Speakers>,
-    pub tg_aliases: Option<BTreeMap<u16, String>>,
+    pub tg_aliases: Option<BTreeMap<u32, String>>,
     pub unit_aliases: Option<BTreeMap<u32, String>>,
-    pub monitor_tgs: Option<Vec<u16>>,
+    pub monitor_tgs: Option<Vec<u32>>,
     /// Change 067.
     pub clock: Option<ClockSettings>,
     /// Change 068.
-    pub ignore_tgs: Option<Vec<u16>>,
+    pub ignore_tgs: Option<Vec<u32>>,
     /// Change 069: a profile action; must be alone in its patch.
     pub profile: Option<ProfileAction>,
     /// Change 069: make this site's settings live (the site switch in
@@ -564,7 +573,7 @@ impl Changed {
 }
 
 /// Change 063: validated group list (names trimmed, unique ignoring
-/// case; talkgroups 1..=65535, deduplicated in order).
+/// case; talkgroups 1..=`MAX_TG`, deduplicated in order).
 fn clean_groups(groups: Vec<TgGroup>) -> Result<Vec<TgGroup>, String> {
     if groups.len() > MAX_GROUPS {
         return Err(format!("tg_groups: {} groups (max {MAX_GROUPS})", groups.len()));
@@ -583,6 +592,9 @@ fn clean_groups(groups: Vec<TgGroup>) -> Result<Vec<TgGroup>, String> {
         }
         if g.tgs.contains(&0) {
             return Err(format!("tg_groups: {name}: talkgroup 0 is not a talkgroup"));
+        }
+        if let Some(bad) = g.tgs.iter().find(|&&t| t > MAX_TG) {
+            return Err(format!("tg_groups: {name}: {bad} is not a 24-bit talkgroup"));
         }
         let mut seen = std::collections::HashSet::new();
         let tgs = g.tgs.into_iter().filter(|t| seen.insert(*t)).collect();
@@ -644,7 +656,7 @@ fn clean_aliases<K: Ord + Copy>(m: &BTreeMap<K, String>) -> BTreeMap<K, String> 
 }
 
 /// Change 068: a talkgroup set, sorted and deduplicated.
-fn clean_tg_set(mut list: Vec<u16>) -> Vec<u16> {
+fn clean_tg_set(mut list: Vec<u32>) -> Vec<u32> {
     list.sort_unstable();
     list.dedup();
     list
@@ -749,6 +761,9 @@ pub fn apply_patch(
         if m.contains_key(&0) {
             return Err("tg_aliases: talkgroup 0 is not a talkgroup".into());
         }
+        if let Some(bad) = m.keys().find(|&&k| k > MAX_TG) {
+            return Err(format!("tg_aliases: {bad} is not a 24-bit talkgroup"));
+        }
         out.tg_aliases = clean_aliases(&m);
         changed.tg_aliases = out.tg_aliases != base.tg_aliases;
     }
@@ -769,6 +784,9 @@ pub fn apply_patch(
         if list.contains(&0) {
             return Err("monitor_tgs: talkgroup 0 is not a talkgroup".into());
         }
+        if let Some(bad) = list.iter().find(|&&t| t > MAX_TG) {
+            return Err(format!("monitor_tgs: {bad} is not a 24-bit talkgroup"));
+        }
         // Dedup, keeping the first occurrence (priority order).
         let mut seen = std::collections::HashSet::new();
         out.monitor_tgs = list.into_iter().filter(|t| seen.insert(*t)).collect();
@@ -784,6 +802,9 @@ pub fn apply_patch(
         }
         if list.contains(&0) {
             return Err("ignore_tgs: talkgroup 0 is not a talkgroup".into());
+        }
+        if let Some(bad) = list.iter().find(|&&t| t > MAX_TG) {
+            return Err(format!("ignore_tgs: {bad} is not a 24-bit talkgroup"));
         }
         out.ignore_tgs = clean_tg_set(list);
         changed.ignore_tgs = out.ignore_tgs != base.ignore_tgs;
@@ -816,7 +837,7 @@ pub fn parse_settings(body: &[u8]) -> Result<UiSettings, String> {
     // Change 063: a hand-edited group list keeps its valid groups.
     let mut groups: Vec<TgGroup> = Vec::new();
     for g in std::mem::take(&mut s.tg_groups).into_iter().take(MAX_GROUPS) {
-        let g = TgGroup { tgs: g.tgs.into_iter().filter(|t| *t != 0).take(MAX_GROUP_TGS).collect(), ..g };
+        let g = TgGroup { tgs: g.tgs.into_iter().filter(|t| is_tg(*t)).take(MAX_GROUP_TGS).collect(), ..g };
         let mut next = groups.clone();
         next.push(g);
         if let Ok(ok) = clean_groups(next) {
@@ -827,12 +848,12 @@ pub fn parse_settings(body: &[u8]) -> Result<UiSettings, String> {
     s.speakers = clean_speakers(s.speakers.clone(), &s.tg_groups, false)
         .unwrap_or_default();
     s.tg_aliases = clean_aliases(&s.tg_aliases);
-    s.tg_aliases.remove(&0);
+    s.tg_aliases.retain(|k, _| is_tg(*k));
     s.unit_aliases = clean_aliases(&s.unit_aliases);
     s.unit_aliases.retain(|k, _| *k != 0 && *k <= 0x00FF_FFFF);
     let mut seen = std::collections::HashSet::new();
-    s.monitor_tgs.retain(|t| *t != 0 && seen.insert(*t));
-    s.ignore_tgs = clean_tg_set(std::mem::take(&mut s.ignore_tgs).into_iter().filter(|t| *t != 0).take(MAX_ENTRIES).collect());
+    s.monitor_tgs.retain(|t| is_tg(*t) && seen.insert(*t));
+    s.ignore_tgs = clean_tg_set(std::mem::take(&mut s.ignore_tgs).into_iter().filter(|t| is_tg(*t)).take(MAX_ENTRIES).collect());
     // Change 069: stored profiles get the same cleaning; names unique.
     for entry in s.sites.values_mut() {
         let mut names: Vec<String> = Vec::new();
@@ -846,8 +867,8 @@ pub fn parse_settings(body: &[u8]) -> Result<UiSettings, String> {
             p.tg_groups = clean_groups(std::mem::take(&mut p.tg_groups)).unwrap_or_default();
             p.speakers = clean_speakers(p.speakers.clone(), &p.tg_groups, false).unwrap_or_default();
             let mut seen = std::collections::HashSet::new();
-            p.monitor_tgs.retain(|t| *t != 0 && seen.insert(*t));
-            p.ignore_tgs = clean_tg_set(std::mem::take(&mut p.ignore_tgs).into_iter().filter(|t| *t != 0).collect());
+            p.monitor_tgs.retain(|t| is_tg(*t) && seen.insert(*t));
+            p.ignore_tgs = clean_tg_set(std::mem::take(&mut p.ignore_tgs).into_iter().filter(|t| is_tg(*t)).collect());
             true
         });
         entry.profiles.truncate(MAX_PROFILES);
@@ -1029,11 +1050,11 @@ pub struct Route {
 /// before 063.
 #[derive(Debug, Clone, Default)]
 pub struct Routing {
-    by_tg: std::collections::HashMap<u16, Route>,
+    by_tg: std::collections::HashMap<u32, Route>,
     other: Side,
     preempt: bool,
     /// Change 068: never followed.
-    ignored: std::collections::HashSet<u16>,
+    ignored: std::collections::HashSet<u32>,
 }
 
 impl Routing {
@@ -1056,19 +1077,19 @@ impl Routing {
     }
 
     /// Change 068: with the ignore list.
-    pub fn with_ignored(mut self, tgs: &[u16]) -> Self {
+    pub fn with_ignored(mut self, tgs: &[u32]) -> Self {
         self.ignored = tgs.iter().copied().collect();
         self
     }
 
     /// Change 068: the talkgroup is on the ignore list.
-    pub fn ignored(&self, tg: u16) -> bool {
+    pub fn ignored(&self, tg: u32) -> bool {
         self.ignored.contains(&tg)
     }
 
     /// `None`: not followed (its group is on neither speaker, or it is in
     /// no group and "other talkgroups" is off; change 068: or ignored).
-    pub fn route(&self, tg: u16) -> Option<Route> {
+    pub fn route(&self, tg: u32) -> Option<Route> {
         if self.ignored(tg) {
             return None;
         }
@@ -1081,7 +1102,7 @@ impl Routing {
     /// `active_tg`? Only a strictly higher-priority group pre-empts, and
     /// only with pre-emption on. A call the routing no longer follows
     /// (settings changed mid-call) yields to any followed grant.
-    pub fn preempts(&self, new_tg: u16, active_tg: u16) -> bool {
+    pub fn preempts(&self, new_tg: u32, active_tg: u32) -> bool {
         if !self.preempt || new_tg == active_tg {
             return false;
         }
@@ -1115,11 +1136,11 @@ impl RoutingPolicy {
         }
     }
 
-    pub fn route(&self, tg: u16) -> Option<Route> {
+    pub fn route(&self, tg: u32) -> Option<Route> {
         self.current.read().ok().and_then(|g| g.route(tg))
     }
 
-    pub fn preempts(&self, new_tg: u16, active_tg: u16) -> bool {
+    pub fn preempts(&self, new_tg: u32, active_tg: u32) -> bool {
         self.current.read().map(|g| g.preempts(new_tg, active_tg)).unwrap_or(false)
     }
 

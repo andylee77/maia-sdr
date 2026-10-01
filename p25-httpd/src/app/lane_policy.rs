@@ -19,12 +19,12 @@ use crate::services::ui_settings::{Routing, Side};
 pub struct LaneView {
     pub lane: Lane,
     /// Talkgroup the chain follows (`None`: idle).
-    pub locked_tg: Option<u16>,
+    pub locked_tg: Option<u32>,
     /// Frequency the chain is tuned to, idle or not (`None`: never tuned
     /// or released).
     pub parked_freq: Option<u64>,
     /// The locked call's pending end-of-transmission marker (tg, unix ms).
-    pub end_marker: Option<(u16, u64)>,
+    pub end_marker: Option<(u32, u64)>,
 }
 
 /// Where a grant goes.
@@ -82,12 +82,12 @@ pub fn candidates(side: Side, grant_freq: Option<u64>, lanes: &[LaneView], routi
 /// end marker lets another talkgroup take its chain
 /// (`grant_follower::end_marker_frees_chain` at the current time).
 pub fn choose_lane(
-    tg: u16,
+    tg: u32,
     side: Side,
     grant_freq: Option<u64>,
     lanes: &[LaneView],
     routing: &Routing,
-    end_frees: impl Fn(u16, Option<(u16, u64)>) -> bool,
+    end_frees: impl Fn(u32, Option<(u32, u64)>) -> bool,
 ) -> LaneChoice {
     if let Some(v) = lanes.iter().find(|v| v.locked_tg == Some(tg)) {
         return LaneChoice::Stay(v.lane);
@@ -103,7 +103,7 @@ pub fn choose_lane(
     }
     // The candidate whose call ranks lowest yields first (the more
     // preferred candidate on a tie). A call no longer followed ranks last.
-    let rank = |t: u16| routing.route(t).map_or(u32::MAX, |r| r.rank as u32);
+    let rank = |t: u32| routing.route(t).map_or(u32::MAX, |r| r.rank as u32);
     let mut best: Option<(u32, Lane)> = None;
     for v in &views {
         let Some(t) = v.locked_tg else { continue };

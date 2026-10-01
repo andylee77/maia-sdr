@@ -18,7 +18,7 @@ pub struct AudioChunk {
     /// 160 samples @ 8 kHz, 16-bit signed = 320 bytes = 20 ms.
     pub pcm: [i16; 160],
     /// Talkgroup that produced this audio.
-    pub talkgroup: u16,
+    pub talkgroup: u32,
     /// 2026-04-19: source radio ID (FM:<n>) known at the time the
     /// vocoder produced this chunk, resolved from the PRIMARY control-
     /// channel `GRP_VCH_GRANT.FM` → fallback traffic-channel LDU1 LC
@@ -94,7 +94,7 @@ pub struct CallBoundary {
     /// Talkgroup the traffic manager was locked on when the boundary
     /// event fired. Useful so the recorder doesn't have to rejoin the
     /// manager lock to resolve context.
-    pub talkgroup: Option<u16>,
+    pub talkgroup: Option<u32>,
     /// 2026-04-19 count-based close. Snapshot of
     /// `ImbeForwarder::frames_submitted` at the moment this boundary
     /// was dispatched. The recorder waits until the vocoder has
@@ -191,7 +191,7 @@ pub enum CallBoundaryKind {
     /// frequency if `freq_hz` is absent. Copy-able: downstream
     /// formatters render `{band}-{ch}` if needed.
     CcGrantArrival {
-        tg: u16,
+        tg: u32,
         source: Option<u32>,
         freq_hz: Option<u64>,
         channel: u16,
@@ -206,7 +206,7 @@ pub enum CallBoundaryKind {
     /// — the design doc accepts that we'd miss a call started before
     /// we booted).
     CcGrantUpdate {
-        tg: u16,
+        tg: u32,
         freq_hz: Option<u64>,
         channel: u16,
     },

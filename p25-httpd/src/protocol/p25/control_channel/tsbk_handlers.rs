@@ -364,8 +364,8 @@ impl ControlChannelDecoder {
                         freq.unwrap_or(0) as f64 / 1e6,
                         enc_marker
                     ),
-                    talkgroup: Some(talkgroup.0),
-                    talkgroup_alias: self.aliases.get(&talkgroup.0).cloned(),
+                    talkgroup: Some(u32::from(talkgroup.0)),
+                    talkgroup_alias: self.aliases.get(&u32::from(talkgroup.0)).cloned(),
                     channel: Some(format!("{}", channel)),
                     frequency_mhz: freq.map(|f| f as f64 / 1e6),
                     source: Some(source.0),
@@ -379,8 +379,8 @@ impl ControlChannelDecoder {
                 timestamp: now,
                 event_type: "GRP_VCH_GRNT_UPD".into(),
                 summary: format!("{}TG:{:05} -> {}", block_prefix, talkgroup_a.0, channel_a),
-                talkgroup: Some(talkgroup_a.0),
-                talkgroup_alias: self.aliases.get(&talkgroup_a.0).cloned(),
+                talkgroup: Some(u32::from(talkgroup_a.0)),
+                talkgroup_alias: self.aliases.get(&u32::from(talkgroup_a.0)).cloned(),
                 channel: Some(format!("{}", channel_a)),
                 frequency_mhz: self
                     .channel_to_frequency(*channel_a)
@@ -410,8 +410,8 @@ impl ControlChannelDecoder {
                         freq.unwrap_or(0) as f64 / 1e6,
                         enc_marker
                     ),
-                    talkgroup: Some(talkgroup.0),
-                    talkgroup_alias: self.aliases.get(&talkgroup.0).cloned(),
+                    talkgroup: Some(u32::from(talkgroup.0)),
+                    talkgroup_alias: self.aliases.get(&u32::from(talkgroup.0)).cloned(),
                     channel: Some(format!("{}", transmit_channel)),
                     frequency_mhz: freq.map(|f| f as f64 / 1e6),
                     source: None,
@@ -645,8 +645,8 @@ impl ControlChannelDecoder {
                         "{}RSP:{} TG:{} TGT:{}",
                         block_prefix, response, group, target
                     ),
-                    talkgroup: Some(group.0),
-                    talkgroup_alias: self.aliases.get(&group.0).cloned(),
+                    talkgroup: Some(u32::from(group.0)),
+                    talkgroup_alias: self.aliases.get(&u32::from(group.0)).cloned(),
                     channel: None,
                     frequency_mhz: None,
                     source: Some(target.0),
@@ -676,8 +676,8 @@ impl ControlChannelDecoder {
                         "{}RSP:{} TG:{} RFSS:{:02} SITE:{:02} TGT:{}",
                         block_prefix, response, group, rfss_id, site_id, target
                     ),
-                    talkgroup: Some(group.0),
-                    talkgroup_alias: self.aliases.get(&group.0).cloned(),
+                    talkgroup: Some(u32::from(group.0)),
+                    talkgroup_alias: self.aliases.get(&u32::from(group.0)).cloned(),
                     channel: None,
                     frequency_mhz: None,
                     source: Some(target.0),

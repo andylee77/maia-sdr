@@ -76,6 +76,28 @@ fn filenames_parse_back() {
     }
 }
 
+// Change 075a: talkgroups are 32-bit. Names written with a 16-bit TG still
+// parse the same, and a DMR Tier III TG (24-bit) parses too.
+#[test]
+fn filenames_parse_talkgroups_above_16_bits() {
+    assert_eq!(
+        parse_filename("rec_1790634553548_581_tg65535_from3402099.clay.wav"),
+        Some((1_790_634_553_548, 581, 65_535, Some(3_402_099), "clay".to_string()))
+    );
+    assert_eq!(
+        parse_filename("rec_1790634553548_582_tg87921_from1234567.clay_electric.wav"),
+        Some((1_790_634_553_548, 582, 87_921, Some(1_234_567), "clay_electric".to_string()))
+    );
+    assert_eq!(parse_filename("rec_1_2_tg16777215.wav"), Some((1, 2, 16_777_215, None, String::new())));
+    // The index lists them from the card.
+    let (ram, sd) = dirs("tg24");
+    std::fs::write(sd.join("rec_1000_7_tg300_from1014.wav"), vec![0u8; 44 + 1_600]).unwrap();
+    std::fs::write(sd.join("rec_2000_8_tg87926.clay_electric.wav"), vec![0u8; 44 + 1_600]).unwrap();
+    let (list, note) = index_sd(&cfg(&ram, &sd));
+    let tgs: Vec<(u64, u32)> = list.iter().map(|e| (e.id, e.talkgroup)).collect();
+    assert_eq!(tgs, vec![(7, 300), (8, 87_926)], "{note}");
+}
+
 #[test]
 fn retention_is_per_store_and_sd_has_a_size_cap() {
     let r = Retention { ram_max_count: 2, sd_max_count: 3, sd_max_bytes: 250 };
