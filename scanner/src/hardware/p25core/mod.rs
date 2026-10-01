@@ -42,6 +42,13 @@ impl Lane {
         self as u8 + 1
     }
 
+    pub fn name(self) -> &'static str {
+        match self {
+            Lane::One => "lane 1",
+            Lane::Two => "lane 2",
+        }
+    }
+
     fn bank(self) -> Bank {
         match self {
             Lane::One => Bank::Traffic,

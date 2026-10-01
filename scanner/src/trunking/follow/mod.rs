@@ -419,6 +419,11 @@ impl Follower {
         out
     }
 
+    /// The lane follows no talkgroup.
+    pub fn idle(&self, lane: Lane) -> bool {
+        self.lanes.iter().any(|l| l.lane == lane && l.locked.is_none())
+    }
+
     /// The lane was tuned elsewhere (a preset change, a recentre): where it is now.
     pub fn retuned(&mut self, lane: Lane, tuned_hz: Option<u64>) {
         if let Some(l) = self.lanes.iter_mut().find(|l| l.lane == lane) {

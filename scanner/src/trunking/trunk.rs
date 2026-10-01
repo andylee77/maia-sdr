@@ -22,6 +22,7 @@ use crate::audio::live::{Audio, VoiceBatch};
 use crate::services::history::store::CallRow;
 use crate::services::history::HistoryTx;
 use crate::services::notices::{Notice, Notices};
+use crate::services::packet_data::PacketData;
 use crate::services::recordings::{CallEnd, CallStart, RecorderTx};
 use crate::hardware::p25core::rings::mono_instant;
 use crate::hardware::p25core::Lane;
@@ -39,6 +40,8 @@ use crate::util::time::Stamp;
 const QUEUE: usize = 1024;
 /// Closed calls kept for the calls view.
 pub const RECENT: usize = 100;
+/// After a failed try for the data channel, before the next.
+const DATA_PARK_RETRY: Duration = Duration::from_secs(10);
 /// Raw IMBE frames kept for `/api/imbe_dump` (the bench compares them with the transmitted ones).
 const FRAME_RING: usize = 128;
 
@@ -175,6 +178,10 @@ struct Task<H> {
     /// The voice codec of the protocol, for the history.
     codec: &'static str,
     next_call: Arc<AtomicU64>,
+    site: String,
+    packet_data: Option<Arc<PacketData>>,
+    /// The last time the last lane tried for the data channel.
+    data_park_tried: Option<Instant>,
 }
 
 pub struct Trunking {
@@ -186,6 +193,8 @@ pub struct Trunking {
     frames: FrameRing,
     /// Call ids keep rising across site switches.
     next_call: Arc<AtomicU64>,
+    /// Takes the PDUs a lane reads.
+    packet_data: std::sync::Mutex<Option<Arc<PacketData>>>,
     running: tokio::sync::Mutex<Option<Running>>,
 }
 
@@ -207,7 +216,14 @@ impl Trunking {
             notices,
             frames: Arc::default(),
             next_call: Arc::new(AtomicU64::new(first_call.max(1))),
+            packet_data: std::sync::Mutex::new(None),
             running: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    pub fn set_packet_data(&self, data: Arc<PacketData>) {
+        if let Ok(mut d) = self.packet_data.lock() {
+            *d = Some(data);
         }
     }
 
@@ -241,7 +257,7 @@ impl Trunking {
                 .map(|&lane| LaneSlot {
                     lane,
                     traffic: match setup.protocol {
-                        Protocol::P25 => Decoder::P25(P25Traffic::new()),
+                        Protocol::P25 => Decoder::P25(P25Traffic::new(lane.name())),
                         Protocol::DmrTier3 => Decoder::Dmr(Box::new(DmrTraffic::new(setup.lcn_hz.clone()))),
                     },
                     calls: VecDeque::new(),
@@ -268,6 +284,9 @@ impl Trunking {
                 Protocol::DmrTier3 => "ambe2",
             },
             next_call: self.next_call.clone(),
+            site: setup.site.clone(),
+            packet_data: self.packet_data.lock().ok().and_then(|d| d.clone()),
+            data_park_tried: None,
         };
         let task = tokio::spawn(task.run(rx, stop.clone()));
         *self.running.lock().await = Some(Running { tx: tx.clone(), stop, task, sources });
@@ -547,6 +566,11 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     self.book.voice_end(lane, call, air, lc, at);
                 }
             }
+            TrafficEvent::Pdu(frame) => {
+                if let Some(d) = &self.packet_data {
+                    d.pdu(&frame, &self.site);
+                }
+            }
             TrafficEvent::Message(line) => {
                 let source = match self.slot(lane).map(|s| &s.traffic) {
                     Some(Decoder::Dmr(_)) => "dmr",
@@ -582,6 +606,37 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             for command in self.follower.stuck_check(&|l| has.contains(&l)) {
                 self.command(command, at).await;
             }
+        }
+        self.park_on_data(at).await;
+    }
+
+    /// At a P25 site with two lanes, the last one waits for its next call on the data channel the
+    /// site announces, where packet data flows. A voice grant still takes it.
+    async fn park_on_data(&mut self, at: Stamp) {
+        if self.lanes.len() < 2 || self.data_park_tried.is_some_and(|t| at.mono.saturating_duration_since(t) < DATA_PARK_RETRY) {
+            return;
+        }
+        let Some(data_hz) = self.learned.as_ref().and_then(|l| l.data_channel_hz()) else { return };
+        let Some(slot) = self.lanes.last() else { return };
+        let lane = slot.lane;
+        let idle = matches!(slot.traffic, Decoder::P25(_))
+            && slot.tuned_hz != Some(data_hz)
+            && self.book.on_lane(lane).is_none()
+            && self.follower.idle(lane);
+        if !idle || !self.tuner.tuning().in_window(data_hz) {
+            return;
+        }
+        self.data_park_tried = Some(at.mono);
+        match self.tuner.retune_lane(lane, data_hz, true).await {
+            Ok(_) => {
+                let slot = self.slot(lane).expect("lane");
+                slot.traffic.retuned();
+                slot.tuned_hz = Some(data_hz);
+                slot.retuned_at = Some(Instant::now());
+                self.follower.retuned(lane, Some(data_hz));
+                self.log.system("lane", format!("{lane} waits on the data channel, {:.4} MHz", data_hz as f64 / 1e6));
+            }
+            Err(e) => self.log.system("lane", format!("{lane} could not wait on the data channel: {e:#}")),
         }
     }
 
@@ -760,7 +815,87 @@ fn closed_text(o: &Opened, c: &Closed) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::radio::tuner::LanePll;
+    use crate::hardware::presets::{find_preset, DdcPreset};
+    use crate::protocol::events::{ChannelId, LogicalChannel};
+    use crate::radio::tuner::{LanePll, Readback, TuningPlan};
+    use crate::services::config::{Config, Paths};
+
+    /// A radio with nothing behind it.
+    struct Quiet;
+
+    impl RadioHw for Quiet {
+        async fn set_lo(&self, _: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn set_rate(&self, _: u32, _: u32) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn set_gain(&self, _: crate::hardware::ad9361::GainMode, _: Option<f64>) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn configure_control(&self, _: &'static DdcPreset, _: f64) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn set_control_nco(&self, _: f64, _: u32) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn configure_lanes(&self, _: &'static DdcPreset) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn retune_lane(&self, _: Lane, _: f64, _: u32, _: bool) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn pause_lane(&self, _: Lane) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn readback(&self, _: u32) -> Readback {
+            Readback::default()
+        }
+    }
+
+    impl StreamSource for Quiet {
+        fn control_streams(
+            &self,
+            _: crate::radio::streams::Wants,
+            _: std::sync::mpsc::SyncSender<crate::radio::streams::Input>,
+            _: Arc<AtomicBool>,
+            _: Arc<crate::radio::streams::StreamCounters>,
+        ) -> Vec<tokio::task::JoinHandle<()>> {
+            Vec::new()
+        }
+    }
+
+    /// Clay with the data channel learned, its trunking started on `lanes`: where the lanes sit.
+    async fn lanes_after_start(lanes: &[Lane]) -> [Option<u64>; 2] {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(&dir.path().join("flash"), &dir.path().join("sd"));
+        let learned = Arc::new(Learned::new("clay", Config::site_state(&paths, "clay").unwrap()));
+        learned.data_channel(&LogicalChannel { id: ChannelId::P25 { iden: 1, number: 1 }, slot: None, freq_hz: Some(859_212_500), tdma: false });
+        let tuner = Arc::new(Tuner::new(Quiet, 0.0));
+        tuner.apply(TuningPlan { preset: find_preset("12M").unwrap(), lo_hz: 855_996_875, control_hz: 860_962_500 }).await.unwrap();
+        let trunking = Trunking::new(Audio::start(lanes), Default::default(), Default::default(), Default::default(), 1);
+        let setup = Setup {
+            site: "clay".into(),
+            protocol: Protocol::P25,
+            lcn_hz: Default::default(),
+            lanes: lanes.to_vec(),
+            routing: Default::default(),
+            encrypted: Default::default(),
+            policy: CallPolicy::default(),
+            learned: Some(learned),
+        };
+        trunking.start(setup, tuner.clone(), Arc::new(EventLog::default())).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        trunking.stop().await;
+        tuner.tuning().lanes
+    }
+
+    #[tokio::test]
+    async fn the_last_lane_waits_on_the_data_channel() {
+        assert_eq!(lanes_after_start(&[Lane::One, Lane::Two]).await, [None, Some(859_212_500)]);
+        // With one lane it stays free for voice.
+        assert_eq!(lanes_after_start(&[Lane::One]).await, [None, None]);
+    }
 
     // A parked lane resumed with its PLL at the clamp after the carrier had been gone for seconds
     // and lost two whole transmissions (bench 2026-09-27).

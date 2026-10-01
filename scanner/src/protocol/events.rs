@@ -176,6 +176,8 @@ pub enum TrafficEvent {
     TalkComplete(Option<u32>),
     /// The end of a transmission: the first valid terminator after the call's voice.
     End { lc: &'static str, air: Instant },
+    /// Packet data (a lane waiting on the data channel).
+    Pdu(PduFrame),
     Message(LogLine),
 }
 

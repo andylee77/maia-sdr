@@ -9,6 +9,8 @@
 //! - A Motorola talk complete names the radio that talked when it is plausible and agrees with
 //!   the grant; a call termination from a system controller carries the grant's radio. One per
 //!   1.5 s.
+//! - Packet data goes out as it is read, call or not (a lane waits on the data channel between
+//!   calls).
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -16,7 +18,9 @@ use std::time::{Duration, Instant};
 use super::framer::{Framed, Framer};
 use super::tsbk::service_options;
 use super::voice_frame::{self, TdulcLcw};
+use super::pdu::PduFrame;
 use crate::protocol::events::{LogLine, TrafficEvent, VoiceFrames};
+use crate::util::time::unix_ms;
 
 const VOTE_OF: usize = 4;
 const VOTE_NEEDED: usize = 3;
@@ -34,7 +38,11 @@ pub struct CallContext {
 }
 
 pub struct P25Traffic {
+    /// The decoder's name in packet data records.
+    chain: &'static str,
     framer: Framer,
+    /// The channel's NAC, from its last NID.
+    nac: u16,
     call: Option<CallContext>,
     encrypted: bool,
     votes: VecDeque<u32>,
@@ -43,12 +51,6 @@ pub struct P25Traffic {
     ldus: u64,
     ldus_at_end: u64,
     last_talk_complete: Option<Instant>,
-}
-
-impl Default for P25Traffic {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 /// Not zero and not a system controller address.
@@ -65,9 +67,11 @@ fn line(class: &'static str, text: String, routine: bool, tg: Option<u32>, unit:
 }
 
 impl P25Traffic {
-    pub fn new() -> Self {
+    pub fn new(chain: &'static str) -> Self {
         P25Traffic {
+            chain,
             framer: Framer::default(),
+            nac: 0,
             call: None,
             encrypted: false,
             votes: VecDeque::with_capacity(VOTE_OF),
@@ -112,7 +116,11 @@ impl P25Traffic {
     /// One dibit, aired at `air`.
     pub fn push(&mut self, dibit: u8, air: Instant, now: Instant, out: &mut Vec<TrafficEvent>) {
         let mut units = Vec::new();
+        let mut pdus = Vec::new();
+        let mut nac = None;
         self.framer.push(dibit, &mut |f| match f {
+            Framed::Nid(n) => nac = Some(n.nac),
+            Framed::Pdu { header, blocks, expected } => pdus.push((header, blocks, expected)),
             Framed::Hdu(b) => units.push(Unit::Hdu(voice_frame::parse_hdu_body(b))),
             Framed::Ldu1(b) => {
                 if let Some(frames) = voice_frame::extract_imbe_frames(b) {
@@ -127,6 +135,12 @@ impl P25Traffic {
             Framed::TduLc(b) => units.push(Unit::TduLc(voice_frame::parse_tdulc_lcw_checked(b))),
             _ => {}
         });
+        if let Some(n) = nac {
+            self.nac = n;
+        }
+        for (header, blocks, blocks_expected) in pdus {
+            out.push(TrafficEvent::Pdu(PduFrame { chain: self.chain, nac: self.nac, at_ms: unix_ms(), header, blocks, blocks_expected }));
+        }
         for u in units {
             self.unit(u, air, now, out);
         }

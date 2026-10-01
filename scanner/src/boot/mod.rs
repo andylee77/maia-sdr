@@ -70,6 +70,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let (history, recordings) = start_storage(&args, &paths, &config, &audio, &notices).await?;
     let first_call = recordings.next_call().max(history.store().max_call_id().unwrap_or(0) + 1);
     let trunking = Arc::new(Trunking::new(audio.clone(), recordings.sender(), history.sender(), notices.clone(), first_call));
+    trunking.set_packet_data(packet_data.clone());
     match history.query(|s| s.latest_calls(crate::trunking::trunk::RECENT)).await {
         Ok(rows) => trunking.seed_recent(rows),
         Err(e) => tracing::warn!("history: recent calls not read: {e:#}"),

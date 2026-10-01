@@ -45,6 +45,11 @@ impl Learned {
         self.state.lock().map(|s| s.0.value.clone()).unwrap_or_default()
     }
 
+    /// The packet data channel the site announces.
+    pub fn data_channel_hz(&self) -> Option<u64> {
+        self.state.lock().ok().and_then(|s| s.0.value.data_channel_hz)
+    }
+
     /// The stored IDEN bands, for the control decoder to start with.
     pub fn bands(&self) -> Vec<FrequencyBand> {
         self.state().iden_bands.iter().map(band_of).collect()

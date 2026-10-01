@@ -6,7 +6,7 @@ use crate::protocol::p25::voice_frame::{HduHeader, ImbeFrameRaw};
 const FRAMES: [ImbeFrameRaw; 9] = [ImbeFrameRaw { bits: [0; 18] }; 9];
 
 fn following(tg: u32, source: Option<u32>) -> P25Traffic {
-    let mut t = P25Traffic::new();
+    let mut t = P25Traffic::new("lane 1");
     t.follow(CallContext { call: 7, tg, source, encrypted: false });
     t
 }
@@ -19,6 +19,7 @@ fn kinds(out: &[TrafficEvent]) -> Vec<String> {
             TrafficEvent::Source(s) => Some(format!("source {s}")),
             TrafficEvent::TalkComplete(s) => Some(format!("talk_complete {s:?}")),
             TrafficEvent::End { lc, .. } => Some(format!("end {lc}")),
+            TrafficEvent::Pdu(f) => Some(format!("pdu {}", f.chain)),
         })
         .collect()
 }
@@ -107,7 +108,7 @@ fn a_talk_complete_naming_another_radio_is_not_believed() {
     tdulc(&mut t, TdulcLcw::MotorolaTalkComplete { by_radio_id: 3406021 }, true, at, &mut out);
     assert_eq!(kinds(&out).last().unwrap(), "talk_complete Some(3406021)");
     // No call followed: terminators are ignored.
-    let mut t = P25Traffic::new();
+    let mut t = P25Traffic::new("lane 1");
     out.clear();
     tdulc(&mut t, TdulcLcw::MotorolaTalkComplete { by_radio_id: 3406021 }, true, at, &mut out);
     assert!(out.is_empty());
