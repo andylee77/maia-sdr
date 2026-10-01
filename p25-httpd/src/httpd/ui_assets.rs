@@ -51,6 +51,8 @@ pub const UI_ASSETS: &[UiAsset] = ui_assets![
     "js/views/systems.js",
     "js/views/activity.js",
     "js/components/site_card.js",
+    // Change 075: the DMR control channel feed.
+    "js/components/dmr_feed.js",
     "js/components/packet_data.js",
     "js/components/call_card.js",
     "js/components/calls_list.js",

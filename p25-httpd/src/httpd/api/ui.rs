@@ -171,6 +171,29 @@ async fn site(state: &AppState, mono_ms: u64) -> UiSite {
     }
     site.cc_freq_hz = state.current_control_freq.load(Ordering::Relaxed);
     site.modulation = state.active_modulation_label().to_string();
+    // Change 075: a DMR site's health comes from the DMR receiver.
+    let dmr_site = state.active_site.read().await.as_ref().is_some_and(|s| s.is_dmr());
+    site.protocol = if dmr_site { "dmr" } else { "p25" }.to_string();
+    if dmr_site {
+        let d = state.dmr_rt.ui_site(mono_ms);
+        site.nac = None;
+        site.wacn = None;
+        site.system_id = None;
+        site.rfss_id = None;
+        site.site_id = d.site.map(|s| s as u8);
+        site.acquired = d.color_code.is_some();
+        site.last_tsbk_age_ms = None;
+        site.tsbk_per_s = None;
+        site.tsbk_ok_pct = None;
+        site.modulation = "DMR 4FSK".to_string();
+        site.health = match d.last_msg_age_ms {
+            Some(age) if age <= 5_000 => "ok",
+            Some(_) => "stale",
+            None => "searching",
+        }
+        .to_string();
+        site.dmr = Some(d);
+    }
     // Change 067: the site time and the board clock source.
     site.clock_source = state.ui_settings.clock.source().as_str().to_string();
     site.site_time = {

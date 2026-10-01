@@ -11,6 +11,12 @@ const HEALTH_TEXT = {
   searching: 'Searching for the control channel',
 };
 
+// Metric labels per protocol (change 075: DMR sites).
+const LABELS = {
+  p25: { rate: 'TSBK / s', crc: 'CRC ok', last: 'Last TSBK', mod: 'Modulation' },
+  dmr: { rate: 'Messages / s', crc: 'Valid', last: 'Last message', mod: 'DMR Tier III' },
+};
+
 export function siteCard() {
   const c = card('Site');
   const dot = h('span', { class: 'dot' });
@@ -49,10 +55,16 @@ export function siteCard() {
   }
   const timer = setInterval(tick, 1000);
 
+  let proto = 'p25';
   function update(s) {
     const site = s.site;
     last = s;
     tick();
+    const p = site.protocol === 'dmr' ? 'dmr' : 'p25';
+    if (p !== proto) {
+      proto = p;
+      for (const [k, t] of Object.entries(LABELS[p])) m[k].label(t);
+    }
     const src = site.clock_source || 'manual';
     const t = site.site_time;
     const off = t ? t.board_offset_ms : 0;
@@ -64,12 +76,29 @@ export function siteCard() {
     if (site.wacn) bits.push('WACN ' + site.wacn);
     if (site.system_id) bits.push('SYS ' + site.system_id);
     if (site.rfss_id != null) bits.push('RFSS ' + site.rfss_id + ' / site ' + site.site_id);
+    const d = site.dmr;
+    if (d) {
+      if (d.color_code != null) bits.push('CC ' + d.color_code);
+      if (d.network != null) bits.push((d.model || '').toLowerCase() + ' network ' + d.network + ' / site ' + d.site);
+    }
     setText(ident, bits.join(' · '));
     setClass(dot, 'ok', site.health === 'ok');
     setClass(dot, 'warn', site.health === 'stale');
     setClass(dot, 'bad', site.health === 'searching');
     setText(health, HEALTH_TEXT[site.health] || site.health);
     m.cc.set(mhz(site.cc_freq_hz));
+    if (d) {
+      m.rate.set(d.msgs_per_s != null ? d.msgs_per_s.toFixed(1) : '—');
+      m.crc.set(d.msgs_ok_pct != null ? d.msgs_ok_pct.toFixed(1) + ' %' : '—');
+      m.crc.el.title = d.cach_ok_pct != null ? 'CACH (timeslot channel) ' + d.cach_ok_pct.toFixed(1) + ' % since start' : '';
+      m.last.set(d.last_msg_age_ms != null ? ago(d.last_msg_age_ms) : 'never');
+      m.mod.set('4FSK' + (d.carrier_offset_hz != null ? ' · ' + (d.carrier_offset_hz > 0 ? '+' : '') + d.carrier_offset_hz + ' Hz' : '') + ' · ' + d.cpu_pct.toFixed(0) + '% CPU');
+      const f = d.following;
+      m.traffic.set(!d.follow ? 'follower off'
+        : f ? (f.private ? 'radio ' : 'TG ') + f.talkgroup + ' · LCN ' + f.lcn + ' TS' + f.timeslot + (f.freq_hz ? ' · ' + mhz(f.freq_hz) : '')
+        : 'idle · ' + d.grants_seen + ' grants seen');
+      return;
+    }
     m.rate.set(site.tsbk_per_s != null ? site.tsbk_per_s.toFixed(1) : '—');
     m.crc.set(site.tsbk_ok_pct != null ? site.tsbk_ok_pct.toFixed(1) + ' %' : '—');
     m.last.set(site.last_tsbk_age_ms != null ? ago(site.last_tsbk_age_ms) : 'never');

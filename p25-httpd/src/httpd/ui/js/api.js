@@ -84,6 +84,9 @@ export const api = {
   ppm: () => get('/api/ppm'),
   presets: () => get('/api/presets'),
   modulation: () => get('/api/modulation'),
+  // Change 075: DMR receive (counters) and its latest messages.
+  dmr: () => get('/api/dmr'),
+  dmrMessages: n => get('/api/dmr/messages' + qs({ n })),
   sites: () => get('/api/sites'),
   setModulation: m => put('/api/modulation' + qs({ set: m })),
   rxGain: (mode, db) => put('/api/rx_gain' + qs({ mode, db })),

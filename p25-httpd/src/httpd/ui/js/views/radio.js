@@ -190,8 +190,29 @@ function modulationCard() {
     try { await api.setModulation(sel.value); toast('Modulation: ' + sel.value); } catch (e) { toast('Failed: ' + e.message, true); }
   });
   c.body.append(sel, info);
+  // Change 075: on a DMR site the DMR receiver decodes; P25's choice is moot.
+  const dmrKv = kvTable();
+  dmrKv.el.hidden = true;
+  c.body.append(dmrKv.el);
   // Change 071b: both decoders run; the counts show why auto picked one.
   let prev = null;
+  function updateDmr(d) {
+    const on = !!(d && d.enabled);
+    sel.hidden = on;
+    info.hidden = on;
+    dmrKv.el.hidden = !on;
+    if (!on) return;
+    const t = d.traffic || {};
+    const v = d.vocoder || {};
+    dmrKv.set([
+      ['Decoder', 'DMR Tier III, software 4FSK (SDRTrunk port)'],
+      ['Control receiver', (d.cpu_pct || 0).toFixed(1) + '% CPU · ' + (d.demod.fine_syncs || 0) + ' bursts in sync, ' + (d.demod.fine_sync_losses || 0) + ' lost'],
+      ['Carrier offset', d.demod.carrier_offset_hz + ' Hz (equaliser gain ' + d.demod.gain.toFixed(2) + ')'],
+      ['CACH ok', d.cach.ok_pct.toFixed(1) + ' %'],
+      ['Traffic chain 1', t.tuned_hz ? mhz(t.tuned_hz) + ' · ' + t.tunes + ' retunes · ' + (t.cpu_pct || 0).toFixed(1) + '% CPU' : 'idle'],
+      ['AMBE+2 frames', (v.frames || 0) + ' (' + (v.frames_with_errors || 0) + ' with bit errors)'],
+    ]);
+  }
   function update(m) {
     const v = ({ 0: 'auto', 1: 'c4fm', 2: 'lsm' })[m.mode] || 'auto';
     if (document.activeElement !== sel) sel.value = v;
@@ -209,7 +230,7 @@ function modulationCard() {
       (sw.cpu_pct != null ? ' · C4FM demodulator ' + sw.cpu_pct.toFixed(1) + '% CPU' : ''));
     prev = { ok, fail };
   }
-  return { el: c.el, update };
+  return { el: c.el, update, updateDmr };
 }
 
 export function mount(host) {
@@ -227,10 +248,11 @@ export function mount(host) {
   let timer = null;
   async function poll() {
     if (document.hidden) return;
-    const [st, p, m] = await Promise.allSettled([api.stats(), api.ppm(), api.modulation()]);
+    const [st, p, m, d] = await Promise.allSettled([api.stats(), api.ppm(), api.modulation(), api.dmr()]);
     if (st.status === 'fulfilled') { tuning.update(st.value); gain.update(st.value); }
     if (p.status === 'fulfilled' && p.value.ok) ppm.update(p.value, clockValid);
     if (m.status === 'fulfilled') mod.update(m.value);
+    mod.updateDmr(d.status === 'fulfilled' ? d.value : null);
   }
   poll();
   timer = setInterval(poll, POLL_MS);

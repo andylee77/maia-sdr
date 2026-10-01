@@ -111,6 +111,15 @@ pub struct DmrRuntime {
     pub vocoder_frame_errors: AtomicU64,
     /// Voice bursts dropped because the vocoder queue was full.
     pub voice_dropped: AtomicU64,
+    /// Valid and invalid messages since the receiver started (rates).
+    pub msgs_valid: AtomicU64,
+    pub msgs_invalid: AtomicU64,
+    pub last_valid_unix_ms: AtomicU64,
+    /// Colour code and system identity of the newest valid ALOHA.
+    pub identity: Mutex<Option<(u8, crate::protocol::dmr::message::types::SystemIdentityCode)>>,
+    pub grants_seen: AtomicU64,
+    /// Message rate over ~10 s for the UI.
+    pub ui_rate: Mutex<crate::app::ui_state::RateWindow>,
 }
 
 impl DmrRuntime {
@@ -149,6 +158,12 @@ impl DmrRuntime {
         if let Ok(mut g) = self.grants.lock() {
             g.clear();
         }
+        for c in [&self.msgs_valid, &self.msgs_invalid, &self.last_valid_unix_ms, &self.grants_seen] {
+            c.store(0, Ordering::Relaxed);
+        }
+        if let Ok(mut id) = self.identity.lock() {
+            *id = None;
+        }
     }
 
     /// Keeps a decoded message: class counts, the message ring, grants.
@@ -156,6 +171,22 @@ impl DmrRuntime {
         let class = message.class_name();
         let valid = message.is_valid();
         let now = crate::app::now_unix_ms();
+        if valid {
+            self.msgs_valid.fetch_add(1, Ordering::Relaxed);
+            self.last_valid_unix_ms.store(now, Ordering::Relaxed);
+        } else {
+            self.msgs_invalid.fetch_add(1, Ordering::Relaxed);
+        }
+        if let DmrMessage::Csbk(c) = message {
+            if valid && c.kind == crate::protocol::dmr::message::csbk::CsbkKind::Aloha {
+                if let Ok(mut id) = self.identity.lock() {
+                    *id = Some((c.burst.color_code, c.system_identity_code()));
+                }
+            }
+            if valid && crate::app::dmr_follower::voice_grant(message).is_some() {
+                self.grants_seen.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         if let Ok(mut c) = self.classes.lock() {
             let e = c.entry(class).or_default();
             if valid {
@@ -196,6 +227,50 @@ impl DmrRuntime {
             while m.len() > MESSAGE_RING {
                 m.pop_front();
             }
+        }
+    }
+
+    /// The UI's view of the DMR control channel (`/api/ui/state` `site.dmr`).
+    pub fn ui_site(&self, mono_ms: u64) -> p25_json::ui::UiDmrSite {
+        let l = |a: &AtomicU64| a.load(Ordering::Relaxed);
+        let (msgs_per_s, msgs_ok_pct) = match self.ui_rate.lock() {
+            Ok(mut w) => {
+                w.observe(mono_ms, l(&self.msgs_valid), l(&self.msgs_invalid));
+                match w.rates() {
+                    Some((per_s, pct)) => {
+                        (Some((per_s * 10.0).round() / 10.0), pct.map(|p| (p * 10.0).round() / 10.0))
+                    }
+                    None => (None, None),
+                }
+            }
+            Err(_) => (None, None),
+        };
+        let identity = self.identity.lock().ok().and_then(|g| *g);
+        let (ok, bad) = (l(&self.cach_ok), l(&self.cach_bad));
+        let last = l(&self.last_valid_unix_ms);
+        let balance = self.balance_mrad.load(Ordering::Relaxed) as f64 / 1000.0;
+        p25_json::ui::UiDmrSite {
+            color_code: identity.map(|i| i.0),
+            model: identity.map(|i| i.1.model_label().to_string()),
+            network: identity.map(|i| i.1.network),
+            site: identity.map(|i| i.1.site),
+            msgs_per_s,
+            msgs_ok_pct,
+            cach_ok_pct: (ok + bad > 0).then(|| ((ok as f64 * 1000.0 / (ok + bad) as f64).round()) / 10.0),
+            last_msg_age_ms: (last > 0).then(|| crate::app::now_unix_ms().saturating_sub(last)),
+            carrier_offset_hz: (l(&self.fine_syncs) > 0).then(|| (-balance * 4800.0 / std::f64::consts::TAU).round()),
+            cpu_pct: l(&self.cpu_centi_pct) as f64 / 100.0,
+            traffic_cpu_pct: l(&self.traffic_cpu_centi_pct) as f64 / 100.0,
+            follow: self.follow.load(Ordering::Relaxed),
+            following: self.follower.lock().ok().and_then(|f| f.following()).map(|g| p25_json::ui::UiDmrCall {
+                talkgroup: g.talkgroup,
+                source: g.source,
+                private: g.private,
+                lcn: g.lcn,
+                timeslot: g.timeslot,
+                freq_hz: g.freq_hz,
+            }),
+            grants_seen: l(&self.grants_seen),
         }
     }
 

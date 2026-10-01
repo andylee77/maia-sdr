@@ -80,6 +80,50 @@ pub struct UiSite {
     /// "manual".
     #[serde(default)]
     pub clock_source: String,
+    /// Change 075: "p25" or "dmr". For a DMR site the TSBK fields stay
+    /// empty and `dmr` carries the control channel's figures.
+    #[serde(default)]
+    pub protocol: String,
+    #[serde(default)]
+    pub dmr: Option<UiDmrSite>,
+}
+
+/// Change 075: a DMR Tier III control channel's health and the followed call.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UiDmrSite {
+    /// Colour code and system identity from the ALOHA (e.g. "SMALL", 0, 2).
+    pub color_code: Option<u8>,
+    pub model: Option<String>,
+    pub network: Option<u32>,
+    pub site: Option<u32>,
+    /// Messages decoded per second (valid) and the valid share, ~10 s.
+    pub msgs_per_s: Option<f64>,
+    pub msgs_ok_pct: Option<f64>,
+    /// CACH (timeslot channel) decoded share since the receiver started.
+    pub cach_ok_pct: Option<f64>,
+    /// Age of the newest valid message.
+    pub last_msg_age_ms: Option<u64>,
+    /// Carrier offset the demodulator's equaliser measured.
+    pub carrier_offset_hz: Option<f64>,
+    /// Share of one core: control receiver, traffic receiver.
+    pub cpu_pct: f64,
+    pub traffic_cpu_pct: f64,
+    /// The follower moves traffic chain 1 to granted calls.
+    pub follow: bool,
+    pub following: Option<UiDmrCall>,
+    /// Voice grants seen since the receiver started.
+    pub grants_seen: u64,
+}
+
+/// Change 075: the DMR call being followed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UiDmrCall {
+    pub talkgroup: u32,
+    pub source: Option<u32>,
+    pub private: bool,
+    pub lcn: u16,
+    pub timeslot: u8,
+    pub freq_hz: Option<u64>,
 }
 
 /// Change 067: the site time.

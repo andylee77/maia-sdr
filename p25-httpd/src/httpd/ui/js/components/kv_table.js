@@ -46,6 +46,7 @@ export function kvTable() {
 // Small "label over value" metric used in strips.
 export function metric(label) {
   const value = h('span', { class: 'm-value', text: '—' });
-  const el = h('div', { class: 'metric' }, h('span', { class: 'm-label', text: label }), value);
-  return { el, set: v => setText(value, v) };
+  const name = h('span', { class: 'm-label', text: label });
+  const el = h('div', { class: 'metric' }, name, value);
+  return { el, set: v => setText(value, v), label: t => setText(name, t) };
 }
