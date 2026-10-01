@@ -166,10 +166,13 @@ async fn pace(mut rx: mpsc::Receiver<AudioChunk>, tx: broadcast::Sender<AudioChu
     }
 }
 
-/// One binary `/ws/audio` frame: `[lane index, 0, 0, 0]` then 160 little-endian samples.
-pub fn audio_frame(chunk: &AudioChunk) -> Vec<u8> {
+/// One binary `/ws/audio` frame: 160 little-endian samples, after `[lane index, 0, 0, 0]` when
+/// `tagged`.
+pub fn audio_frame(chunk: &AudioChunk, tagged: bool) -> Vec<u8> {
     let mut buf = Vec::with_capacity(4 + 2 * SAMPLES_PER_FRAME);
-    buf.extend_from_slice(&[chunk.lane.index() as u8, 0, 0, 0]);
+    if tagged {
+        buf.extend_from_slice(&[chunk.lane.index() as u8, 0, 0, 0]);
+    }
     for s in chunk.pcm {
         buf.extend_from_slice(&s.to_le_bytes());
     }
@@ -195,8 +198,9 @@ mod tests {
         assert!(start.elapsed() >= FRAME_PACE * 8, "paced: {:?}", start.elapsed());
         assert!(got.iter().all(|c| c.lane == Lane::Two && c.call == 7 && c.tg == 300 && c.speaker == Side::Right));
         assert_eq!(audio.counters.frames.load(Ordering::Relaxed), 9);
-        let frame = audio_frame(&got[0]);
+        let frame = audio_frame(&got[0], true);
         assert_eq!((frame.len(), frame[0]), (324, 1));
+        assert_eq!(audio_frame(&got[0], false).len(), 320);
     }
 
     #[tokio::test]

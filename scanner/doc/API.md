@@ -9,7 +9,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/calls` | the open calls and the newest closed ones |
 | GET | `/api/v1/calls/{id}` | one call: live while recent, else from the history |
 | GET | `/ws/events` | a text frame when a call opens or closes or a recording is saved |
-| GET | `/ws/audio` | live audio of every lane (binary 20 ms frames, text meta and lag frames) |
+| GET | `/ws/audio` | live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta and lag frames); without, lane one untagged |
 | GET | `/api/v1/activity/sites` | sites with history; where it is kept, its size and limits |
 | GET | `/api/v1/activity/summary` | calls, voice and grant time, talkgroups, radios (`site`, `from`/`to` or `hours`) |
 | GET | `/api/v1/activity/talkgroups` | talkgroups by time, with names (`limit`) |

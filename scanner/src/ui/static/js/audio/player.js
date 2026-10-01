@@ -10,7 +10,7 @@ import { WORKLET_SRC, WORKER_SRC } from './sources.js';
 import { Ring, clip } from './ring.js';
 import { wsUrl } from '../api.js';
 
-const AUDIO_PATH = '/ws/audio';
+const AUDIO_PATH = '/ws/audio?v=2';
 
 // The speaker of a lane's call, from its meta frame, as a pan: -1 left, 0 both, +1 right.
 const PAN = { left: -1, both: 0, right: 1 };
