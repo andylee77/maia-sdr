@@ -13,7 +13,9 @@ pub mod c4fm_task;
 /// Change 067: board clock from the site / NTP / by hand.
 pub mod clock_task;
 pub mod dibit_airtime;
-/// Change 075: DMR on the control IQ (a monitor until the message layer lands).
+/// Change 075: the DMR Tier III call follower's decisions.
+pub mod dmr_follower;
+/// Change 075: DMR on the control IQ: monitor, messages, grants.
 pub mod dmr_task;
 /// Change 071: find local systems (band sweep, control-channel probe).
 pub mod discovery;
