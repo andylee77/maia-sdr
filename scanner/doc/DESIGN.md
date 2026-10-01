@@ -1192,6 +1192,10 @@ From the brief:
   - **Also:** `GET /api/v1/calls/{id}`; the Board card on Diagnostics (the hardware readback);
     Now names the profile followed; only the UI's protocol registry names protocols (a host
     test keeps it so).
+  - **Soak, unit B** (the full build, 30 min, Clay on the internal antenna): no panic or error
+    logged, 11 threads throughout, 110 recordings, no audio chunk missed, 28.7 % of a core for
+    the process. RSS went from 9.6 to 12.2 MB, most of it in the first 12 minutes and 0.4 MB in
+    the last 18; a longer soak is to show that it levels off.
   - **For the bench (with the D12 session):** the corpus test parks a lane through the
     follower, then holds it on the channel with the follower off (`/api/traffic`
     `lock=on&follower=off`) and reads `/api/imbe_dump`, `/api/ui/calls`, `/api/ui/state` and
