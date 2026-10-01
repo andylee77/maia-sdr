@@ -3,6 +3,7 @@
 //! `boot` brings the radio up from the persisted configuration and runs until a shutdown signal.
 
 mod api;
+mod audio;
 mod boot;
 mod dsp;
 mod hardware;
