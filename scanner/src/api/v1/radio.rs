@@ -11,7 +11,8 @@ use crate::api::{ApiError, ApiResult};
 use crate::boot::radio::{gain_mode, HardwareInfo};
 use crate::boot::state::AppState;
 use crate::radio::tuner::{Readback, Tuning};
-use crate::services::config::radio::{Gain, GainMode, RadioConfig, Recording, GAIN_DB_RANGE};
+use crate::hardware::presets::find_preset;
+use crate::services::config::radio::{Calls, Gain, GainMode, History, RadioConfig, Recording, GAIN_DB_RANGE};
 use crate::services::recordings::Policy;
 use crate::services::config::{self, RadioState};
 
@@ -84,4 +85,41 @@ pub async fn put_recording(State(s): State<Arc<AppState>>, Json(req): Json<Recor
     drop(c);
     let deleted = s.recordings.set_policy(Policy::from(&req));
     Ok(Json(RecordingSet { recording: req, deleted }))
+}
+
+/// The radio settings the gain and recording endpoints do not cover.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Settings {
+    /// DDC presets the window planner may choose, narrowest first.
+    pub presets_allowed: Vec<String>,
+    /// Traffic lanes to run; `None` = every lane the gateware has.
+    pub traffic_chains: Option<u8>,
+    pub calls: Calls,
+    pub history: History,
+}
+
+/// Keep the settings. The history's limits apply at once; the presets, lanes and call timings at
+/// the next site activation.
+pub async fn put_settings(State(s): State<Arc<AppState>>, Json(req): Json<Settings>) -> ApiResult<RadioConfig> {
+    if req.presets_allowed.is_empty() {
+        return Err(ApiError::bad_request("at least one preset"));
+    }
+    for p in &req.presets_allowed {
+        find_preset(p).ok_or_else(|| ApiError::bad_request(format!("no preset {p}")))?;
+    }
+    if !(500..=30_000).contains(&req.calls.hang_ms) || req.calls.end_grace_ms > 10_000 {
+        return Err(ApiError::bad_request("hang_ms 500..=30000, end_grace_ms up to 10000"));
+    }
+    if req.history.retention_days == 0 || req.history.sd_max_mb < 16 {
+        return Err(ApiError::bad_request("history: at least a day and 16 MB"));
+    }
+    let mut c = s.config.lock().await;
+    c.radio.value.presets_allowed = req.presets_allowed;
+    c.radio.value.traffic_chains = req.traffic_chains;
+    c.radio.value.calls = req.calls;
+    c.radio.value.history = req.history.clone();
+    config::save(&s.paths.radio(), &c.radio)?;
+    s.history.set_limits(&req.history);
+    Ok(Json(c.radio.value.clone()))
 }

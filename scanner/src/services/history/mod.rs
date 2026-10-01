@@ -44,6 +44,7 @@ enum Input {
     Site(SiteInfo),
     Recordings(Vec<RecordingRow>),
     RecordingsGone(Vec<String>),
+    Limits(Limits),
     Flush(Sender<()>),
 }
 
@@ -95,7 +96,7 @@ pub struct History {
     store: Arc<Store>,
     tx: HistoryTx,
     pub on_sd: bool,
-    pub limits: Limits,
+    limits: std::sync::Mutex<Limits>,
     /// What opening found or did (the v1 copy), for the API.
     pub note: String,
 }
@@ -136,11 +137,25 @@ impl History {
         let (tx, rx) = std::sync::mpsc::channel();
         let writer = store.clone();
         std::thread::Builder::new().name("history".into()).spawn(move || write_loop(&writer, rx, limits))?;
-        Ok(Arc::new(History { store, tx: HistoryTx(Some(tx)), on_sd: sd.is_some(), limits, note }))
+        Ok(Arc::new(History { store, tx: HistoryTx(Some(tx)), on_sd: sd.is_some(), limits: std::sync::Mutex::new(limits), note }))
     }
 
     pub fn sender(&self) -> HistoryTx {
         self.tx.clone()
+    }
+
+    pub fn limits(&self) -> Limits {
+        *self.limits.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// New limits from the radio settings: the retention applies at once (RAM keeps its cap).
+    pub fn set_limits(&self, cfg: &HistoryConfig) {
+        let limits = Limits {
+            retention_days: cfg.retention_days,
+            max_bytes: if self.on_sd { cfg.sd_max_mb << 20 } else { MAX_BYTES_RAM },
+        };
+        *self.limits.lock().unwrap_or_else(|e| e.into_inner()) = limits;
+        self.tx.send(Input::Limits(limits));
     }
 
     pub fn store(&self) -> &Arc<Store> {
@@ -221,7 +236,7 @@ impl Pending {
     }
 }
 
-fn write_loop(store: &Store, rx: Receiver<Input>, limits: Limits) {
+fn write_loop(store: &Store, rx: Receiver<Input>, mut limits: Limits) {
     let mut p = Pending { calls: Vec::new(), voice: Vec::new(), notes: HashMap::new() };
     let mut last_commit = Instant::now();
     let mut last_prune: Option<Instant> = None;
@@ -269,6 +284,10 @@ fn write_loop(store: &Store, rx: Receiver<Input>, limits: Limits) {
                 p.commit(store);
                 last_commit = Instant::now();
                 let _ = done.send(());
+            }
+            Ok(Input::Limits(l)) => {
+                limits = l;
+                last_prune = None;
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {

@@ -93,6 +93,7 @@ routes! {
     get "/api/v1/events" => v1::events::list, "the event log after `after` (newest `limit`; housekeeping too with `routine=true`)";
     get "/api/v1/radio" => v1::radio::get, "radio configuration, hardware and tuning";
     put "/api/v1/radio/gain" => v1::radio::put_gain, "receiver gain mode and manual gain";
+    put "/api/v1/radio/settings" => v1::radio::put_settings, "presets the planner may use, traffic lanes, call timings, history limits";
     put "/api/v1/radio/recording" => v1::radio::put_recording, "recording on/off, where new recordings go, how many each store keeps";
     get "/api/v1/recordings" => v1::recordings::list, "recordings newest first (`limit`, `site`), with the stores' state";
     delete "/api/v1/recordings" => v1::recordings::clear, "delete every recording of `store` (sd, ram or all)";
@@ -100,6 +101,8 @@ routes! {
     delete "/api/v1/recordings/{id}" => v1::recordings::delete, "delete one recording";
     get "/api/v1/systems" => v1::systems::list, "systems with their sites";
     get "/api/v1/systems/{id}" => v1::systems::get, "one system";
+    put "/api/v1/systems/{id}/names" => v1::systems::put_names, "a system's talkgroup and radio names";
+    put "/api/v1/systems/{system}/sites/{site}" => v1::systems::put_site, "edit a site (the live site goes live again with the change)";
     get "/api/v1/sites" => v1::sites::list, "every site, with the live one marked";
     post "/api/v1/sites/{id}/activate" => v1::sites::activate, "make a site live (returns once it is)";
     get "/api/v1/scan" => v1::scan::get, "the scan's progress and what it found";
@@ -108,6 +111,9 @@ routes! {
     post "/api/v1/scan/add" => v1::scan::add, "add the ticked sites of the last scan";
     get "/api/v1/profiles" => v1::profiles::list, "profiles and each site's active one";
     put "/api/v1/sites/{id}/profile" => v1::profiles::select, "choose a site's active profile";
+    post "/api/v1/profiles" => v1::profiles::create, "a new profile of a system, empty or a copy";
+    put "/api/v1/profiles/{*id}" => v1::profiles::update, "edit a profile (the live site follows it at once)";
+    delete "/api/v1/profiles/{*id}" => v1::profiles::delete, "delete a profile no site uses";
 }
 
 async fn routes() -> Json<&'static [RouteDoc]> {

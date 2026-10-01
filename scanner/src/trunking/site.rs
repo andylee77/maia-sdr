@@ -139,6 +139,20 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         back_to
     }
 
+    /// The profiles changed: the live site follows its active profile from now on.
+    pub async fn profile_changed(&self) {
+        let LiveState::Live(mut live) = self.state() else { return };
+        let profile = self.config.lock().await.profiles.value.active_for(&live.site.id).cloned();
+        if profile == live.profile {
+            return;
+        }
+        self.trunking.set_routing(profile.as_ref().map(Routing::new).unwrap_or_default()).await;
+        let name = profile.as_ref().map_or("none".to_string(), |p| p.name.clone());
+        live.profile = profile;
+        self.state.send_replace(LiveState::Live(live));
+        self.log.system("profile", format!("following profile {name}"));
+    }
+
     /// After a scan: the site it paused, live again.
     pub async fn resume_after_scan(&self, back_to: Option<String>) {
         self.state.send_replace(LiveState::NoSite);

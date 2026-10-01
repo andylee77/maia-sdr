@@ -51,6 +51,8 @@ pub enum TrunkInput {
     /// A grant or grant update, with the control channel's NAC.
     Grant { grant: Grant, nac: u16, at: Stamp },
     Lane(LaneInput),
+    /// The live site's profile changed.
+    Routing(Box<Routing>),
 }
 
 pub type TrunkTx = mpsc::Sender<TrunkInput>;
@@ -260,6 +262,14 @@ impl Trunking {
         let _ = r.task.await;
     }
 
+    /// A new profile for the calls to come (the open ones keep their lanes).
+    pub async fn set_routing(&self, routing: Routing) {
+        let tx = self.running.lock().await.as_ref().map(|r| r.tx.clone());
+        if let Some(tx) = tx {
+            let _ = tx.send(TrunkInput::Routing(Box::new(routing))).await;
+        }
+    }
+
     /// List the newest calls of the history (boot), newest first.
     pub fn seed_recent(&self, rows: Vec<CallRow>) {
         let recent = rows
@@ -312,6 +322,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     }
                     Some(TrunkInput::Lane(LaneInput::Nid { lane, duid, nac, valid, at })) => self.nid(lane, duid, nac, valid, at),
                     Some(TrunkInput::Lane(LaneInput::Iq { lane, iq, at })) => self.iq(lane, &iq, at),
+                    Some(TrunkInput::Routing(r)) => self.follower.set_routing(*r),
                     None => break,
                 },
                 _ = tick.tick() => {

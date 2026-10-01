@@ -134,8 +134,8 @@ pub async fn sites(State(s): State<Arc<AppState>>) -> ApiResult<Sites> {
         on_sd: h.on_sd,
         size_bytes: h.store().size_bytes(),
         used_bytes: used,
-        max_bytes: h.limits.max_bytes,
-        retention_days: h.limits.retention_days,
+        max_bytes: h.limits().max_bytes,
+        retention_days: h.limits().retention_days,
         note: h.note.clone(),
     }))
 }
