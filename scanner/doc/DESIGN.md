@@ -1175,3 +1175,12 @@ From the brief:
   - **Live, unit B** (on a copy of its configuration): each endpoint did what it says, and a
     profile following TGs 300 and 319 only took effect from the next call (TGs 850, 600 and
     403 then `speaker_off`).
+  - **`/ws/events`:** a notice when a call opens or closes or a recording is saved; the UI
+    refreshes on them at once (32 in a minute on B).
+  - **Spectrum:** `/api/v1/spectrum` from the wideband spectrometer and its card on
+    Diagnostics (B: Clay's control channel 30 dB over a -99 dB floor).
+  - **For the bench (with the D12 session):** the corpus test parks a lane through the
+    follower, then holds it on the channel with the follower off (`/api/traffic`
+    `lock=on&follower=off`) and reads `/api/imbe_dump`, `/api/ui/calls`, `/api/ui/state` and
+    `/api/system`. The scanner has no lane hold yet; it, the frame dump and the bench's move to
+    `/api/v1` are built and checked with the bench running.

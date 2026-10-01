@@ -198,4 +198,17 @@ mod tests {
         let frame = audio_frame(&got[0]);
         assert_eq!((frame.len(), frame[0]), (324, 1));
     }
+
+    #[tokio::test]
+    async fn a_dmr_burst_gives_three_chunks() {
+        let audio = Audio::start(&[Lane::One]);
+        let mut rx = audio.subscribe();
+        let frames = VoiceFrames::Ambe2([[0u8; 9]; 3]);
+        assert!(audio.voice(VoiceBatch { lane: Lane::One, call: 9, tg: 87_922, source: None, speaker: Side::Both, frames }));
+        for _ in 0..3 {
+            let c = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+            assert_eq!((c.call, c.tg), (9, 87_922));
+        }
+        assert_eq!(audio.counters.frames.load(Ordering::Relaxed), 3);
+    }
 }
