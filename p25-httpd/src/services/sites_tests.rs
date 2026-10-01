@@ -7,7 +7,7 @@ fn snap_lo_top_clay_8m() {
     // LO = 860.9625 - 3.75 = 857.2125 MHz.
     let site = Site {
         name: "clay".into(),
-        label: "Clay County".into(),
+        label: "Clay County".into(), protocol: "p25".into(), lcn_map: Default::default(),
         modulation: "LSM".into(),
         preset_default: "8M".into(),
         cc_position: CcPosition::Top,
@@ -29,7 +29,7 @@ fn snap_lo_top_clay_8m() {
 fn snap_lo_center_duval_8m() {
     let site = Site {
         name: "duval".into(),
-        label: "Duval".into(),
+        label: "Duval".into(), protocol: "p25".into(), lcn_map: Default::default(),
         modulation: "LSM".into(),
         preset_default: "8M".into(),
         cc_position: CcPosition::Center,
@@ -49,7 +49,7 @@ fn snap_lo_center_duval_8m() {
 fn snap_lo_bottom_arbitrary() {
     let site = Site {
         name: "test".into(),
-        label: "Test".into(),
+        label: "Test".into(), protocol: "p25".into(), lcn_map: Default::default(),
         modulation: "LSM".into(),
         preset_default: "4M".into(),
         cc_position: CcPosition::Bottom,
@@ -71,7 +71,7 @@ fn snap_lo_bottom_arbitrary() {
 fn snap_lo_includes_lo_shift() {
     // Crystal ppm trim adds directly to the LO command.
     let site = Site {
-        name: "x".into(), label: "x".into(), modulation: "LSM".into(),
+        name: "x".into(), label: "x".into(), protocol: "p25".into(), lcn_map: Default::default(), modulation: "LSM".into(),
         preset_default: "8M".into(),
         cc_position: CcPosition::Center,
         control_freq_hz: 860_000_000,
@@ -99,4 +99,21 @@ fn parse_clay_seed() {
     assert_eq!(site.control_freq_hz, 860_962_500);
     assert_eq!(site.cc_position, CcPosition::Top);
     assert_eq!(site.nac, Some(2209));
+}
+
+#[test]
+fn clay_electric_seed_is_dmr_with_its_lcn_map() {
+    // Change 075.
+    let site: Site = serde_json::from_str(embedded_seed_for("cec_gcs").unwrap()).unwrap();
+    assert!(site.is_dmr());
+    assert_eq!(site.control_freq_hz, 454_368_750);
+    assert_eq!(site.lcn_map.get(&5), Some(&454_368_750));
+    assert_eq!(site.lcn_map.get(&6), Some(&451_087_500));
+    // P25 seeds default to P25 and carry no LCN map.
+    let clay: Site = serde_json::from_str(embedded_seed_for("clay").unwrap()).unwrap();
+    assert!(!clay.is_dmr());
+    assert!(clay.lcn_map.is_empty());
+    // An LCN map survives a save round trip (JSON object keys are strings).
+    let back: Site = serde_json::from_str(&serde_json::to_string(&site).unwrap()).unwrap();
+    assert_eq!(back.lcn_map, site.lcn_map);
 }

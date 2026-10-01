@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-30-dmr-lpf25k-075";
+pub const BUILD_TAG: &str = "2026-09-30-dmr-follow-075";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -807,8 +807,14 @@ async fn main() -> anyhow::Result<()> {
     let control_iq = app::iq_hub::IqHub::new(2.0, protocol::p25::c4fm::INPUT_RATE_HZ);
     let traffic_iq = app::iq_hub::IqHub::new(2.0, protocol::p25::c4fm::INPUT_RATE_HZ);
     let c4fm_rt = Arc::new(app::c4fm_task::C4fmRuntime::default());
-    // Change 075: DMR on the control IQ, off until enabled.
+    // Change 075: DMR on the control IQ: on when the active site is DMR,
+    // else off until enabled by hand.
     let dmr_rt = Arc::new(app::dmr_task::DmrRuntime::default());
+    if let Ok(site) = services::sites::load_site(&lo_plans.site()) {
+        if site.is_dmr() {
+            dmr_rt.apply_site(&site);
+        }
+    }
     // Change 071: the radio lease and the system finder's state.
     let radio_lease = Arc::new(app::discovery::RadioLease::default());
     let discovery: app::discovery::SharedDiscovery = Default::default();

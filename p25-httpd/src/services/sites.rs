@@ -67,6 +67,9 @@ pub struct IdenBand {
 pub struct Site {
     pub name: String,
     pub label: String,
+    /// Change 075: "p25" (the default) or "dmr" (Tier III).
+    #[serde(default = "default_protocol")]
+    pub protocol: String,
     #[serde(default = "default_modulation")]
     pub modulation: String,
     pub preset_default: String,
@@ -88,6 +91,11 @@ pub struct Site {
 
     #[serde(default)]
     pub iden_bands: Vec<IdenBand>,
+
+    /// Change 075: DMR Tier III logical channel number -> downlink Hz
+    /// (grants name an LCN, not a frequency).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub lcn_map: std::collections::BTreeMap<u16, u64>,
 
     /// Optional last-saved Unix timestamp (ms). Filled in by
     /// `save_site`; the seed file leaves it `None`.
@@ -112,6 +120,17 @@ pub struct Site {
 
 fn default_modulation() -> String {
     "LSM".to_string()
+}
+
+fn default_protocol() -> String {
+    "p25".to_string()
+}
+
+impl Site {
+    /// Change 075: a DMR site (the DMR receiver and follower run, not P25).
+    pub fn is_dmr(&self) -> bool {
+        self.protocol.eq_ignore_ascii_case("dmr")
+    }
 }
 
 impl Site {
@@ -164,6 +183,8 @@ impl Site {
 const EMBEDDED_SEEDS: &[(&str, &str)] = &[
     ("clay",  include_str!("../../sites/clay.json")),
     ("duval", include_str!("../../sites/duval.json")),
+    // Change 075: Clay Electric Cooperative, DMR Tier III.
+    ("cec_gcs", include_str!("../../sites/cec_gcs.json")),
 ];
 
 fn embedded_seed_for(name: &str) -> Option<&'static str> {

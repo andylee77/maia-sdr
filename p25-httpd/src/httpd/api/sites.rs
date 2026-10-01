@@ -152,6 +152,9 @@ pub async fn post_site(
     }
     // Change 070: grants are counted for the new site from now on.
     state.lo_plans.set_site(&site.name);
+    // Change 075: a DMR site runs the DMR receiver and follower; a P25
+    // site stops them.
+    state.dmr_rt.apply_site(&site);
     // Change 073: the grant map and encrypted talkgroups are per site.
     swap_site_memory(&state, &prev_site, &site.name).await;
     state.event_log.push(

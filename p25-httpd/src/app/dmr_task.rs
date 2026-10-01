@@ -30,8 +30,9 @@ const FILLER_CLASSES: [&str; 4] = ["Aloha", "IDLEMessage", "ControlChannelSystem
 /// Grants kept for `/api/dmr`.
 const GRANT_RING: usize = 50;
 
-/// LCN -> downlink frequency until DMR sites exist: Clay Electric
-/// Cooperative, Green Cove Springs (control channel LCN 5, voice LCN 6).
+/// LCN -> downlink frequency when the active site gives none (DMR switched
+/// on by hand on a P25 site): Clay Electric Cooperative, Green Cove Springs
+/// (control channel LCN 5, voice LCN 6). A DMR site's `lcn_map` replaces it.
 pub const DEFAULT_LCN_MAP: [(u16, u64); 2] = [(5, 454_368_750), (6, 451_087_500)];
 
 /// A decoded message as `/api/dmr/messages` lists it.
@@ -101,6 +102,10 @@ pub struct DmrRuntime {
     pub tune_errors: AtomicU64,
     /// The follower's actions, as text, newest last.
     pub follower_log: Mutex<VecDeque<(u64, String)>>,
+    /// The active DMR site's LCN map (`DEFAULT_LCN_MAP` until one is set).
+    pub lcn_map: Mutex<Option<HashMap<u16, u64>>>,
+    /// Bumped when the LCN map changes: the threads rebuild their receivers.
+    pub config_epoch: AtomicU64,
 }
 
 impl DmrRuntime {
@@ -186,6 +191,43 @@ impl DmrRuntime {
             while m.len() > MESSAGE_RING {
                 m.pop_front();
             }
+        }
+    }
+
+    /// The LCN map the receivers use now.
+    pub fn lcn_map(&self) -> HashMap<u16, u64> {
+        self.lcn_map
+            .lock()
+            .ok()
+            .and_then(|m| m.clone())
+            .unwrap_or_else(|| DEFAULT_LCN_MAP.iter().copied().collect())
+    }
+
+    /// Change 075: a site became active. A DMR site switches the receiver
+    /// and the follower on with its LCN map; a P25 site switches them off.
+    pub fn apply_site(&self, site: &crate::services::sites::Site) {
+        if site.is_dmr() {
+            let map: HashMap<u16, u64> = site.lcn_map.iter().map(|(k, v)| (*k, *v)).collect();
+            if let Ok(mut m) = self.lcn_map.lock() {
+                *m = Some(map);
+            }
+            self.config_epoch.fetch_add(1, Ordering::Relaxed);
+            if !self.enabled.load(Ordering::Relaxed) {
+                self.clear();
+            }
+            self.enabled.store(true, Ordering::Relaxed);
+            self.follow.store(true, Ordering::Relaxed);
+            tracing::info!("dmr: site {} is DMR: receiver and follower on, LCN map {:?}", site.name, site.lcn_map);
+        } else {
+            self.enabled.store(false, Ordering::Relaxed);
+            self.follow.store(false, Ordering::Relaxed);
+            if let Ok(mut m) = self.lcn_map.lock() {
+                *m = None;
+            }
+            self.config_epoch.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Ok(mut f) = self.follower.lock() {
+            *f = DmrFollower::new();
         }
     }
 
@@ -330,8 +372,7 @@ pub fn spawn_dmr_control(
     let spawned = std::thread::Builder::new().name("dmr-cc".into()).spawn(move || {
         let mut rx = hub.subscribe();
         let mut chain: Option<(DmrDemodulator, DmrMessageFramer, DmrMessageProcessor)> = None;
-        let lcn_map: HashMap<u16, u64> = DEFAULT_LCN_MAP.iter().copied().collect();
-        let mut tuned = (0u64, 0i64);
+        let mut tuned = (0u64, 0i64, 0u64);
         let mut busy = std::time::Duration::ZERO;
         let mut since = std::time::Instant::now();
         loop {
@@ -351,13 +392,17 @@ pub fn spawn_dmr_control(
             }
             // Enabled, or retuned: start from scratch (timing and equaliser
             // belong to the old channel).
-            let now_tuned = (control_freq.load(Ordering::Relaxed), rx_lo.load(Ordering::Relaxed));
+            let now_tuned = (
+                control_freq.load(Ordering::Relaxed),
+                rx_lo.load(Ordering::Relaxed),
+                rt.config_epoch.load(Ordering::Relaxed),
+            );
             if chain.is_none() || now_tuned != tuned {
                 if chain.is_some() {
                     rt.resets.fetch_add(1, Ordering::Relaxed);
                 }
                 tuned = now_tuned;
-                chain = Some((DmrDemodulator::new(), DmrMessageFramer::default(), DmrMessageProcessor::new(lcn_map.clone())));
+                chain = Some((DmrDemodulator::new(), DmrMessageFramer::default(), DmrMessageProcessor::new(rt.lcn_map())));
                 busy = std::time::Duration::ZERO;
                 since = std::time::Instant::now();
             }
@@ -409,8 +454,7 @@ pub fn spawn_dmr_traffic(
     let spawned = std::thread::Builder::new().name("dmr-traffic".into()).spawn(move || {
         let mut rx = hub.subscribe();
         let mut chain: Option<(DmrDemodulator, DmrMessageFramer, DmrMessageProcessor)> = None;
-        let mut epoch = u64::MAX;
-        let lcn_map: HashMap<u16, u64> = DEFAULT_LCN_MAP.iter().copied().collect();
+        let mut epoch = (u64::MAX, u64::MAX);
         let mut busy = std::time::Duration::ZERO;
         let mut since = std::time::Instant::now();
         loop {
@@ -423,13 +467,13 @@ pub fn spawn_dmr_traffic(
                 chain = None;
                 continue;
             }
-            let now_epoch = rt.traffic_epoch.load(Ordering::Relaxed);
+            let now_epoch = (rt.traffic_epoch.load(Ordering::Relaxed), rt.config_epoch.load(Ordering::Relaxed));
             if now_epoch != epoch {
                 // Retuned: this chunk may hold the old channel's samples.
                 epoch = now_epoch;
                 let mut demod = DmrDemodulator::new();
                 demod.symbols.set_base_station_mode();
-                chain = Some((demod, DmrMessageFramer::default(), DmrMessageProcessor::new(lcn_map.clone())));
+                chain = Some((demod, DmrMessageFramer::default(), DmrMessageProcessor::new(rt.lcn_map())));
                 continue;
             }
             let Some((demod, framer, processor)) = chain.as_mut() else { continue };
@@ -552,6 +596,29 @@ mod tests {
         assert_eq!(s["sync_loss_bits"], 288);
         rt.clear();
         assert_eq!(rt.snapshot()["bursts"]["ts2"], 0);
+    }
+
+    #[test]
+    fn a_dmr_site_switches_the_receiver_and_follower_on() {
+        let rt = DmrRuntime::default();
+        let site: crate::services::sites::Site =
+            serde_json::from_str(r#"{"name":"d","label":"d","protocol":"dmr","preset_default":"8M",
+                "control_freq_hz":454368750,"lcn_map":{"5":454368750,"9":452000000},
+                "nac":null,"wacn":null,"system_id":null,"rfss_id":null,"site_id":null,"lra":null}"#)
+                .unwrap();
+        rt.apply_site(&site);
+        assert!(rt.enabled.load(Ordering::Relaxed) && rt.follow.load(Ordering::Relaxed));
+        assert_eq!(rt.lcn_map().get(&9), Some(&452_000_000));
+        let epoch = rt.config_epoch.load(Ordering::Relaxed);
+        let p25: crate::services::sites::Site =
+            serde_json::from_str(r#"{"name":"p","label":"p","preset_default":"8M","control_freq_hz":860962500,
+                "nac":null,"wacn":null,"system_id":null,"rfss_id":null,"site_id":null,"lra":null}"#)
+                .unwrap();
+        rt.apply_site(&p25);
+        assert!(!rt.enabled.load(Ordering::Relaxed) && !rt.follow.load(Ordering::Relaxed));
+        assert!(rt.config_epoch.load(Ordering::Relaxed) > epoch);
+        // Back to the built-in map.
+        assert_eq!(rt.lcn_map().get(&6), Some(&451_087_500));
     }
 
     #[test]
