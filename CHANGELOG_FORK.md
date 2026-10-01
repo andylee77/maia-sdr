@@ -5,6 +5,27 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-01] Fix: the first call on a parked channel after a recentre was silent (076)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-10-01-nco-fix-076`
+**Bake required:** NO (p25-httpd).
+
+- **Cause** (found by the 076 radio inventory): `apply_preset` reloads both traffic DDCs with
+  NCO 0. Recentres, site switches and the sweep's restore all go through it, but it did not
+  tell the traffic chains.
+  - `TrafficChain::handle_grant` skips the NCO write when an idle chain is granted the
+    frequency it is parked on. The word it compares is computed from the boot LO.
+  - So the next grant on a chain's parked frequency left the hardware NCO at 0, and the chain
+    decoded the LO centre: that call had no voice.
+  - `/api/tune` moving the LO did the same.
+- **Fix:** both paths mark each chain's loaded NCO as unknown
+  (`TrafficChain::hardware_nco_changed`), so the next grant writes it.
+
+Tests: p25-httpd 475 (a same-frequency grant after a hardware NCO change retunes).
+
+---
+
 ## [2026-10-01] Persisted crystal correction scaled to the boot LO (074d)
 
 **Branch:** fishball-p25

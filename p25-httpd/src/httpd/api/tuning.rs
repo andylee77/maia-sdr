@@ -409,6 +409,10 @@ pub async fn apply_preset(state: &AppState, mut body: PresetBody) -> (StatusCode
             l2.set_ddc_enable(true);
         }
     }
+    // The traffic NCOs are 0 now: a grant on a chain's parked frequency must write it again.
+    for l in &state.traffic_lanes {
+        l.chain.lock().await.hardware_nco_changed();
+    }
 
     let readback_gain = state.ad9361.get_rx_gain().await.ok();
     let readback_rssi = state.ad9361.get_rx_rssi().await.ok();
@@ -600,6 +604,10 @@ pub async fn post_tune(
                 applied.push(format!("rx_lo={new_rx_lo}"));
             }
             Err(e) => errors.push(format!("rx_lo: {e}")),
+        }
+        // The traffic NCOs now point at other frequencies.
+        for l in &state.traffic_lanes {
+            l.chain.lock().await.hardware_nco_changed();
         }
     }
     {

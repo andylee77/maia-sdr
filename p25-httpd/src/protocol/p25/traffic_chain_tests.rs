@@ -65,3 +65,16 @@ fn test_grant_lifecycle() {
     let retune = mgr.handle_grant(Channel(0x045D), Talkgroup(300), 857_987_500);
     assert!(!retune); // no retune needed
 }
+
+#[test]
+fn a_same_frequency_grant_after_a_hardware_nco_change_retunes() {
+    let mut mgr = TrafficChain::new(858_100_000, 8_000_000);
+    assert!(mgr.handle_grant(Channel(0x045D), Talkgroup(300), 857_987_500));
+    mgr.force_idle();
+    // The next call on the parked frequency reuses the loaded NCO.
+    assert!(!mgr.handle_grant(Channel(0x045D), Talkgroup(301), 857_987_500));
+    mgr.force_idle();
+    // A preset change or LO move rewrote the hardware NCO: the same frequency needs a write.
+    mgr.hardware_nco_changed();
+    assert!(mgr.handle_grant(Channel(0x045D), Talkgroup(300), 857_987_500));
+}

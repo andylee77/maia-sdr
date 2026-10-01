@@ -438,6 +438,13 @@ impl TrafficChain {
         self.state = TrafficState::Idle;
     }
 
+    /// The hardware NCO no longer holds `nco_word`: a preset change reloaded it with 0, or the
+    /// LO moved under it. The next grant must write the NCO even on the same frequency.
+    pub fn hardware_nco_changed(&mut self) {
+        // Outside the 28-bit NCO range, so no grant's word matches it.
+        self.nco_word = u32::MAX;
+    }
+
     /// Called when we detect frame sync on the traffic channel.
     /// Test-only today; the production path moves Acquiring->Active
     /// via `handle_grant` + the LDU/HDU dispatch.
