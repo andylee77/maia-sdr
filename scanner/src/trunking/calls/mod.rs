@@ -139,6 +139,17 @@ pub enum CloseReason {
     SiteSwitch,
 }
 
+impl CloseReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CloseReason::Timeout => "timeout",
+            CloseReason::CallEnd => "call_end",
+            CloseReason::TgChange => "tg_change",
+            CloseReason::SiteSwitch => "site_switch",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceVia {

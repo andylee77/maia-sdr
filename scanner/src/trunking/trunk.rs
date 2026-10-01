@@ -19,6 +19,8 @@ use super::calls::{CallBook, CallEvent, CallId, CallPolicy, Closed, Opened, Sour
 use super::follow::routing::Routing;
 use super::follow::{Command, Follower, Record};
 use crate::audio::live::{Audio, VoiceBatch};
+use crate::services::history::store::CallRow;
+use crate::services::history::HistoryTx;
 use crate::services::recordings::{CallEnd, CallStart, RecorderTx};
 use crate::hardware::p25core::rings::mono_instant;
 use crate::hardware::p25core::Lane;
@@ -35,7 +37,7 @@ use crate::util::time::Stamp;
 /// Inputs queued for the task.
 const QUEUE: usize = 1024;
 /// Closed calls kept for the calls view.
-const RECENT: usize = 100;
+pub const RECENT: usize = 100;
 const TICK: Duration = Duration::from_millis(100);
 const STUCK_CHECK: Duration = Duration::from_secs(5);
 /// A lane that carried voice this recently resumes on the same channel without a reset.
@@ -79,12 +81,12 @@ pub struct CallView {
     pub slot: Option<u8>,
     pub channel: Option<String>,
     pub encrypted: bool,
-    pub not_followed: Option<&'static str>,
+    pub not_followed: Option<String>,
     pub lane: Option<u8>,
     pub started_unix_ms: u64,
     pub ended_unix_ms: Option<u64>,
-    pub close: Option<&'static str>,
-    pub end_lc: Option<&'static str>,
+    pub close: Option<String>,
+    pub end_lc: Option<String>,
     pub sources: Vec<u32>,
     pub voice_frames: u64,
 }
@@ -150,6 +152,9 @@ struct Task<H> {
     learned: Option<Arc<Learned>>,
     audio: Arc<Audio>,
     recorder: RecorderTx,
+    history: HistoryTx,
+    /// The voice codec of the protocol, for the history.
+    codec: &'static str,
     next_call: Arc<AtomicU64>,
 }
 
@@ -157,6 +162,7 @@ pub struct Trunking {
     view: Arc<Mutex<CallsView>>,
     audio: Arc<Audio>,
     recorder: RecorderTx,
+    history: HistoryTx,
     /// Call ids keep rising across site switches.
     next_call: Arc<AtomicU64>,
     running: tokio::sync::Mutex<Option<Running>>,
@@ -171,11 +177,12 @@ struct Running {
 
 impl Trunking {
     /// `first_call` continues past the ids already stored (recordings, history).
-    pub fn new(audio: Arc<Audio>, recorder: RecorderTx, first_call: CallId) -> Self {
+    pub fn new(audio: Arc<Audio>, recorder: RecorderTx, history: HistoryTx, first_call: CallId) -> Self {
         Trunking {
             view: Arc::default(),
             audio,
             recorder,
+            history,
             next_call: Arc::new(AtomicU64::new(first_call.max(1))),
             running: tokio::sync::Mutex::new(None),
         }
@@ -224,11 +231,17 @@ impl Trunking {
             log,
             view: self.view.clone(),
             open: Vec::new(),
-            recent: VecDeque::new(),
+            // The newest calls stay listed across a switch.
+            recent: self.view.lock().map(|v| v.recent.iter().cloned().collect()).unwrap_or_default(),
             last_stuck_check: Instant::now(),
             learned: setup.learned.clone(),
             audio: self.audio.clone(),
             recorder: self.recorder.clone(),
+            history: self.history.clone(),
+            codec: match setup.protocol {
+                Protocol::P25 => "imbe",
+                Protocol::DmrTier3 => "ambe2",
+            },
             next_call: self.next_call.clone(),
         };
         let task = tokio::spawn(task.run(rx, stop.clone()));
@@ -245,6 +258,36 @@ impl Trunking {
         }
         drop(r.tx);
         let _ = r.task.await;
+    }
+
+    /// List the newest calls of the history (boot), newest first.
+    pub fn seed_recent(&self, rows: Vec<CallRow>) {
+        let recent = rows
+            .into_iter()
+            .take(RECENT)
+            .map(|r| CallView {
+                call: r.call_id,
+                site: r.site,
+                tg: r.tg,
+                source: r.source,
+                speaker: None,
+                freq_hz: r.freq_hz,
+                slot: r.timeslot,
+                channel: r.channel,
+                encrypted: r.encrypted,
+                not_followed: r.not_followed,
+                lane: (r.lane > 0).then_some(r.lane),
+                started_unix_ms: r.started_ms,
+                ended_unix_ms: Some(r.ended_ms),
+                close: Some(r.close_reason),
+                end_lc: r.end_kind,
+                sources: r.sources,
+                voice_frames: r.voice_ms / 20,
+            })
+            .collect();
+        if let Ok(mut v) = self.view.lock() {
+            v.recent = recent;
+        }
     }
 
     pub fn calls(&self) -> CallsView {
@@ -530,6 +573,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                         if o.lane.is_some() {
                             self.log.system("call", closed_text(&o, &c));
                         }
+                        self.history.call(call_row(&o, &c, self.codec));
                         self.recent.push_front(view_of(&o, Some(&c)));
                         self.recent.truncate(RECENT);
                     }
@@ -558,7 +602,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 v.speaker = c.speaker;
                 v.sources = c.sources.clone();
                 v.voice_frames = c.voice_frames;
-                v.end_lc = c.end_lc();
+                v.end_lc = c.end_lc().map(str::to_string);
             }
             open.push(v);
         }
@@ -588,19 +632,46 @@ fn view_of(o: &Opened, c: Option<&Closed>) -> CallView {
         slot: o.channel.slot,
         channel: o.channel_label.clone(),
         encrypted: o.encrypted,
-        not_followed: o.not_followed.map(|n| n.as_str()),
+        not_followed: o.not_followed.map(|n| n.as_str().to_string()),
         lane: lane_number(o.lane),
         started_unix_ms: o.at_unix_ms,
         ended_unix_ms: c.map(|c| c.ended_unix_ms),
-        close: c.map(|c| match c.reason {
-            super::calls::CloseReason::Timeout => "timeout",
-            super::calls::CloseReason::CallEnd => "call_end",
-            super::calls::CloseReason::TgChange => "tg_change",
-            super::calls::CloseReason::SiteSwitch => "site_switch",
-        }),
-        end_lc: c.and_then(|c| c.end_lc),
+        close: c.map(|c| c.reason.as_str().to_string()),
+        end_lc: c.and_then(|c| c.end_lc).map(str::to_string),
         sources: c.map(|c| c.sources.clone()).unwrap_or_default(),
         voice_frames: c.map_or(0, |c| c.voice_frames),
+    }
+}
+
+/// A closed call as the history stores it. Its vocoder counts follow from the recorder.
+fn call_row(o: &Opened, c: &Closed, codec: &'static str) -> CallRow {
+    let followed = o.lane.is_some();
+    CallRow {
+        site: o.site.clone(),
+        call_id: o.call,
+        started_ms: c.started_unix_ms,
+        ended_ms: c.ended_unix_ms,
+        tg: o.tg,
+        source: c.source.or(c.speaker).filter(|&s| s != 0),
+        sources: c.sources.clone(),
+        freq_hz: o.channel.freq_hz,
+        channel: o.channel_label.clone(),
+        timeslot: o.channel.slot,
+        lane: lane_number(o.lane).unwrap_or(0),
+        encrypted: o.encrypted,
+        followed,
+        not_followed: o.not_followed.map(|n| n.as_str().to_string()),
+        voice_ms: c.voice_frames * 20,
+        // The grant to its last update; a call with no update was shorter than their period.
+        grant_ms: match c.last_update_unix_ms.saturating_sub(c.started_unix_ms) {
+            0 => c.ended_unix_ms.saturating_sub(c.started_unix_ms),
+            ms => ms,
+        },
+        codec: (followed && c.voice_frames > 0).then(|| codec.to_string()),
+        frames: c.voice_frames,
+        frame_errors: 0,
+        close_reason: c.reason.as_str().to_string(),
+        end_kind: c.end_lc.map(str::to_string),
     }
 }
 

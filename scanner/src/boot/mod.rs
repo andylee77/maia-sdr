@@ -17,8 +17,10 @@ use state::AppState;
 
 use crate::audio::live::Audio;
 use crate::radio::lease::RadioLease;
+use crate::services::history::store::SiteInfo;
+use crate::services::history::History;
 use crate::services::recordings::storage::{self, StorageConfig};
-use crate::services::recordings::{Policy, Recordings};
+use crate::services::recordings::{self, Policy, Recordings};
 use crate::services::config::{self, Paths};
 use crate::services::events::EventLog;
 use crate::trunking::receivers::Receivers;
@@ -56,8 +58,13 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let receivers = Arc::new(Receivers::new(log.clone()));
     let lanes = crate::hardware::p25core::Lane::ALL[..hardware.lanes].to_vec();
     let audio = crate::audio::live::Audio::start(&lanes);
-    let recordings = start_recordings(&args, &paths, &config, &audio).await;
-    let trunking = Arc::new(Trunking::new(audio.clone(), recordings.sender(), recordings.next_call()));
+    let (history, recordings) = start_storage(&args, &paths, &config, &audio).await?;
+    let first_call = recordings.next_call().max(history.store().max_call_id().unwrap_or(0) + 1);
+    let trunking = Arc::new(Trunking::new(audio.clone(), recordings.sender(), history.sender(), first_call));
+    match history.query(|s| s.latest_calls(crate::trunking::trunk::RECENT)).await {
+        Ok(rows) => trunking.seed_recent(rows),
+        Err(e) => tracing::warn!("history: recent calls not read: {e:#}"),
+    }
     let live = Arc::new(LiveSite::new(
         paths.clone(),
         config.clone(),
@@ -67,6 +74,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         trunking.clone(),
         lanes,
         log.clone(),
+        history.sender(),
     ));
     match &live_site {
         Some(site) => {
@@ -88,7 +96,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             }
         });
     }
-    let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, trunking, audio, recordings, log, hardware, started });
+    let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, trunking, audio, recordings, history, log, hardware, started });
     let app = crate::api::router(state.clone());
     tokio::select! {
         r = crate::api::serve(app, args.listen, args.listen_https, args.ssl_cert.as_deref(), args.ssl_key.as_deref()) => r?,
@@ -97,30 +105,78 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     state.receivers.stop().await;
     state.trunking.stop().await;
     state.recordings.flush(SHUTDOWN_FLUSH).await;
+    state.history.flush(SHUTDOWN_FLUSH).await;
     state.live.save_learned().await;
     Ok(())
 }
 
-/// How long shutdown waits for the open recordings and the card writes.
+/// How long shutdown waits for the open recordings, the card writes and the history.
 const SHUTDOWN_FLUSH: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// List the card's recordings (waiting for the card to be mounted if it is there) and start the
-/// recorder.
-async fn start_recordings(args: &Args, paths: &Paths, config: &Arc<Mutex<config::Config>>, audio: &Audio) -> Arc<Recordings> {
+/// The card (waiting for its mount when it is there), the history on it (or in RAM) and the
+/// recordings, listed from the card and reconciled with the history.
+async fn start_storage(
+    args: &Args,
+    paths: &Paths,
+    config: &Arc<Mutex<config::Config>>,
+    audio: &Audio,
+) -> anyhow::Result<(Arc<History>, Arc<Recordings>)> {
     let cfg = StorageConfig::board(&args.sd_dir, args.recordings_dir.clone().unwrap_or_else(|| paths.recordings()));
-    let policy = Policy::from(&config.lock().await.radio.value.recording);
-    let listing = {
+    let (policy, history_cfg, sites) = {
+        let c = config.lock().await;
+        (Policy::from(&c.radio.value.recording), c.radio.value.history.clone(), site_infos(&c.systems.value))
+    };
+    let sd = args.sd_dir.clone();
+    let opened = {
         let cfg = cfg.clone();
         tokio::task::spawn_blocking(move || {
-            storage::wait_for_sd(&cfg, storage::SD_MOUNT_WAIT);
-            storage::index(&cfg)
+            let mounted = storage::wait_for_sd(&cfg, storage::SD_MOUNT_WAIT);
+            History::open(mounted.then_some(sd.as_path()), &history_cfg, &sites).or_else(|e| {
+                tracing::error!("history on the card: {e:#}; keeping it in RAM");
+                History::open(None, &history_cfg, &sites)
+            })
         })
     };
-    let indexed = match tokio::time::timeout(storage::SD_MOUNT_WAIT + storage::INDEX_TIMEOUT, listing).await {
+    let history = opened.await??;
+    let listing = {
+        let cfg = cfg.clone();
+        tokio::task::spawn_blocking(move || storage::index(&cfg))
+    };
+    let (mut list, note) = match tokio::time::timeout(storage::INDEX_TIMEOUT, listing).await {
         Ok(Ok(found)) => found,
         _ => (Vec::new(), format!("listing {} timed out", cfg.sd_dir.display())),
     };
-    Recordings::start(cfg, policy, indexed, audio)
+    let store = history.store().clone();
+    let list = tokio::task::spawn_blocking(move || {
+        match recordings::reconcile(&mut list, &store) {
+            Ok((added, removed)) if added + removed > 0 => {
+                tracing::info!("history: {added} recordings listed, {removed} gone")
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("history: recordings not reconciled: {e}"),
+        }
+        list
+    })
+    .await?;
+    let recordings = Recordings::start(cfg, policy, (list, note), audio, history.sender());
+    Ok((history, recordings))
+}
+
+/// The configured sites, as the history keeps them.
+fn site_infos(systems: &config::systems::SystemsConfig) -> Vec<SiteInfo> {
+    systems
+        .systems
+        .iter()
+        .flat_map(|sys| {
+            sys.sites.iter().map(move |site| SiteInfo {
+                id: site.id.clone(),
+                system: sys.id.clone(),
+                protocol: sys.protocol.as_str().into(),
+                label: site.label.clone(),
+                system_label: sys.label.clone(),
+            })
+        })
+        .collect()
 }
 
 async fn shutdown_signal() {

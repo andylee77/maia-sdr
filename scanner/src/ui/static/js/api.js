@@ -31,5 +31,6 @@ export const api = {
   recordings: limit => request('GET', `/api/v1/recordings?limit=${limit}`),
   setRecording: recording => request('PUT', '/api/v1/radio/recording', recording),
   clearRecordings: store => request('DELETE', `/api/v1/recordings?store=${store}`),
+  activity: (path, q) => request('GET', `/api/v1/activity/${path}${q ? `?${q}` : ''}`),
   events: (after, routine) => request('GET', `/api/v1/events?after=${after}&routine=${!!routine}`),
 };

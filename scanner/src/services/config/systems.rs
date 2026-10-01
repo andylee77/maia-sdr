@@ -38,6 +38,16 @@ pub enum Protocol {
     DmrTier3,
 }
 
+impl Protocol {
+    /// As the files spell it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Protocol::P25 => "p25",
+            Protocol::DmrTier3 => "dmr_tier3",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct System {
     pub id: String,

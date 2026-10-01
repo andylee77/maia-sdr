@@ -1,6 +1,7 @@
-//! Services around the radio: configuration, the event log and the call recordings (later:
-//! history, discovery, clock).
+//! Services around the radio: configuration, the event log, the call history and recordings
+//! (later: discovery, clock).
 
 pub mod config;
 pub mod events;
+pub mod history;
 pub mod recordings;

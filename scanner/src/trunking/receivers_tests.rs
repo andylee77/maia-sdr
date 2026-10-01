@@ -140,6 +140,7 @@ async fn p25_receivers_publish_the_lsm_decoder_messages() {
         lcn_hz: HashMap::new(),
         trunk: None,
         learned: None,
+        history: Default::default(),
     };
     receivers.start(context, &Prepared(vec![pack(&dibits)])).await;
     let deadline = Instant::now() + Duration::from_secs(5);

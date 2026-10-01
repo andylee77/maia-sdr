@@ -1,16 +1,17 @@
-// Page shell: the header, the page router (#now, #systems, #diag, #settings) and the store.
+// Page shell: the header, the page router (#now, #activity, #systems, #diag, #settings) and the store.
 // Pages are modules exporting mount(el) -> { update(store), unmount() }.
 
 import { store, subscribe, start } from './store.js';
 import { setText, setClass } from './dom.js';
 import { mhz } from './format.js';
 import * as now from './views/now.js';
+import * as activity from './views/activity.js';
 import * as systems from './views/systems.js';
 import * as diag from './views/diagnostics.js';
 import * as settings from './views/settings.js';
 import { player } from './audio/player.js';
 
-const PAGES = { now, systems, diag, settings };
+const PAGES = { now, activity, systems, diag, settings };
 const $ = id => document.getElementById(id);
 
 let current = null;

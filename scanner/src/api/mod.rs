@@ -82,6 +82,14 @@ routes! {
     get "/api/v1/status" => v1::status::get, "build, uptime, the live site, its control channel and the tuning";
     get "/api/v1/calls" => v1::calls::get, "the open calls and the newest closed ones";
     get "/ws/audio" => ws::audio, "live audio of every lane (binary 20 ms frames, text meta and lag frames)";
+    get "/api/v1/activity/sites" => v1::activity::sites, "sites with history; where it is kept, its size and limits";
+    get "/api/v1/activity/summary" => v1::activity::summary, "calls, voice and grant time, talkgroups, radios (`site`, `from`/`to` or `hours`)";
+    get "/api/v1/activity/talkgroups" => v1::activity::talkgroups, "talkgroups by time, with names (`limit`)";
+    get "/api/v1/activity/radios" => v1::activity::radios, "radios by time, with names (`limit`)";
+    get "/api/v1/activity/radio/{unit}" => v1::activity::radio, "the talkgroups a radio used, its affiliations and registrations";
+    get "/api/v1/activity/talkgroup/{tg}" => v1::activity::talkgroup, "a talkgroup's radios and encryption history";
+    get "/api/v1/activity/series" => v1::activity::series, "calls and time per hour or day (`bucket`, `tz`, `tg`, `unit`)";
+    get "/api/v1/activity/calls" => v1::activity::calls, "calls newest first (`tg`, `unit`, `limit`; `format=csv` as a file)";
     get "/api/v1/events" => v1::events::list, "the event log after `after` (newest `limit`; housekeeping too with `routine=true`)";
     get "/api/v1/radio" => v1::radio::get, "radio configuration, hardware and tuning";
     put "/api/v1/radio/gain" => v1::radio::put_gain, "receiver gain mode and manual gain";

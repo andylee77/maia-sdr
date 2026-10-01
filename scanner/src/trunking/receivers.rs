@@ -16,13 +16,15 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::protocol::dmr::control::DmrControl;
-use crate::protocol::events::{ControlEvent, SiteIdentity};
+use crate::protocol::events::{ControlEvent, SiteIdentity, UnitKind};
 use crate::util::time::Stamp;
 use crate::protocol::p25::c4fm::C4fmDecoder;
 use crate::protocol::p25::control::P25Control;
 use crate::radio::streams::{Input, StreamCounters, StreamSource, Wants};
 use crate::services::config::systems::{Modulation, Protocol};
 use crate::services::events::EventLog;
+use crate::services::history::store::UnitEventKind;
+use crate::services::history::HistoryTx;
 use crate::trunking::learned::Learned;
 use crate::trunking::trunk::{TrunkInput, TrunkTx};
 
@@ -43,6 +45,8 @@ pub struct Context {
     pub trunk: Option<TrunkTx>,
     /// What the site taught before; the channel plan heard goes back into it.
     pub learned: Option<Arc<Learned>>,
+    /// Radio events (affiliations, registrations) go into the history.
+    pub history: HistoryTx,
 }
 
 /// The control channel as the site card shows it.
@@ -246,6 +250,8 @@ impl Receivers {
             stop: stop.clone(),
             trunk: context.trunk.clone(),
             learned: context.learned.clone(),
+            history: context.history.clone(),
+            site: context.site.clone(),
         };
         let name = match context.protocol {
             Protocol::P25 => "p25-cc",
@@ -302,6 +308,8 @@ struct Decoder {
     stop: Arc<AtomicBool>,
     trunk: Option<TrunkTx>,
     learned: Option<Arc<Learned>>,
+    history: HistoryTx,
+    site: String,
 }
 
 /// Busy time over the last few seconds, as a share of one core.
@@ -479,6 +487,14 @@ impl Decoder {
                     if let Some(l) = &self.learned {
                         l.band(band);
                     }
+                }
+                ControlEvent::Unit { unit, group, kind } => {
+                    let kind = match kind {
+                        UnitKind::GroupAffiliation => UnitEventKind::GroupAffiliation,
+                        UnitKind::Registration => UnitEventKind::Registration,
+                        UnitKind::Deregistration => UnitEventKind::Deregistration,
+                    };
+                    self.history.unit(&self.site, *unit, group.unwrap_or(0), kind, now.unix_ms);
                 }
                 ControlEvent::Grant(grant) => {
                     v.status.grants += 1;

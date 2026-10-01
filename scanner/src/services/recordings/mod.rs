@@ -4,7 +4,8 @@
 //! appended by call id; its close starts a 2 s drain for the audio still in the pacer, then the
 //! WAV is saved (`storage`) and listed. A call with no clear audio leaves no file. The list is the
 //! card's recordings found at boot plus this run's, oldest first. Every followed call's voice
-//! frames, vocoder errors and silent frames are counted, recorded or not.
+//! frames, vocoder errors and silent frames are counted, recorded or not, and go to the history
+//! with the recordings (`reconcile` links the card's files to their calls at boot).
 
 pub mod index;
 pub mod storage;
@@ -23,6 +24,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::audio::live::{Audio, AudioChunk};
 use crate::hardware::p25core::Lane;
 use crate::services::config::radio::{self as radio_config, Storage as StorageKind};
+use crate::services::history::store::{RecordingRow, Store as HistoryStore, VoiceResult};
+use crate::services::history::HistoryTx;
 use storage::{Retention, SdStatus, Storage, StorageConfig};
 
 /// After a call closes, its audio still in the decoder and pacer comes in for this long.
@@ -204,6 +207,7 @@ pub struct Summary {
 struct Shared {
     ring: Ring,
     storage: Arc<Storage>,
+    history: HistoryTx,
     policy: Mutex<Policy>,
     counters: Counters,
     recording_now: AtomicU64,
@@ -227,7 +231,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Recordings {
     /// Start the card writer and the recorder. `indexed` is the card's listing (`storage::index`).
-    pub fn start(cfg: StorageConfig, policy: Policy, indexed: (Vec<Recording>, String), audio: &Audio) -> Arc<Recordings> {
+    pub fn start(cfg: StorageConfig, policy: Policy, indexed: (Vec<Recording>, String), audio: &Audio, history: HistoryTx) -> Arc<Recordings> {
         clear_ram_store(&cfg.ram_dir);
         let (list, note) = indexed;
         tracing::info!("{note}");
@@ -239,6 +243,7 @@ impl Recordings {
         let shared = Arc::new(Shared {
             ring,
             storage,
+            history,
             policy: Mutex::new(policy),
             counters: Counters::default(),
             recording_now: AtomicU64::new(0),
@@ -275,6 +280,7 @@ impl Recordings {
         let Some(i) = ring.iter().position(|r| r.id == id) else { return false };
         if let Some(r) = ring.remove(i) {
             self.shared.storage.remove(&r);
+            self.shared.history.recordings_gone(vec![r.file]);
         }
         true
     }
@@ -282,15 +288,18 @@ impl Recordings {
     /// Delete every recording of one store, or of both. Returns how many.
     pub fn clear(&self, store: Option<Store>) -> usize {
         let mut ring = lock(&self.shared.ring);
-        let before = ring.len();
+        let mut gone = Vec::new();
         ring.retain(|r| {
             let hit = store.is_none_or(|s| r.store == s);
             if hit {
                 self.shared.storage.remove(r);
+                gone.push(r.file.clone());
             }
             !hit
         });
-        before - ring.len()
+        let n = gone.len();
+        self.shared.history.recordings_gone(gone);
+        n
     }
 
     pub fn policy(&self) -> Policy {
@@ -303,7 +312,10 @@ impl Recordings {
         if p.store == Store::Sd {
             self.shared.storage.request_probe();
         }
-        storage::apply_retention(&mut lock(&self.shared.ring), &p.retention, &self.shared.storage)
+        let gone = storage::apply_retention(&mut lock(&self.shared.ring), &p.retention, &self.shared.storage);
+        let n = gone.len();
+        self.shared.history.recordings_gone(gone);
+        n
     }
 
     pub fn summary(&self) -> Summary {
@@ -452,6 +464,15 @@ impl Recorder {
 
     fn finish(&mut self, id: u64) {
         let Some(o) = self.open.remove(&id) else { return };
+        if o.voice.frames > 0 {
+            self.shared.history.voice(VoiceResult {
+                site: o.start.site.clone(),
+                call_id: id,
+                started_ms: o.start.started_unix_ms,
+                frames: o.voice.frames,
+                frame_errors: o.voice.errors,
+            });
+        }
         let counters = &self.shared.counters;
         if !o.record {
             counters.off.fetch_add(1, Ordering::Relaxed);
@@ -520,16 +541,61 @@ fn save(shared: &Shared, o: Open) -> std::io::Result<()> {
         None
     };
     let path = r.path.clone();
-    {
+    let row = row_of(&r);
+    let gone = {
         // Listed before the write is queued, so the writer finds the entry it updates.
         let mut ring = lock(&shared.ring);
         ring.push_back(r);
-        storage::apply_retention(&mut ring, &policy.retention, storage);
-    }
+        storage::apply_retention(&mut ring, &policy.retention, storage)
+    };
+    shared.history.recordings(vec![row]);
+    shared.history.recordings_gone(gone);
     if let Some(bytes) = queued {
         storage.submit_sd_write(s.call, path, bytes);
     }
     Ok(())
+}
+
+fn row_of(r: &Recording) -> RecordingRow {
+    RecordingRow {
+        file: r.file.clone(),
+        store: match r.store {
+            Store::Ram => "ram".into(),
+            Store::Sd => "sd".into(),
+        },
+        site: r.site.clone(),
+        call_id: r.id,
+        started_ms: r.started_unix_ms,
+        tg: r.tg,
+        source: r.source,
+        bytes: r.bytes,
+        duration_ms: r.duration_ms,
+    }
+}
+
+/// Bring the history's list of recordings in line with the card's (boot): files new to it are
+/// added and linked to their calls once, rows of files gone are removed. The card's recordings
+/// get their calls' frequency, channel, lane and radios. Returns (added, removed).
+pub fn reconcile(list: &mut [Recording], history: &HistoryStore) -> rusqlite::Result<(usize, usize)> {
+    let known: std::collections::HashSet<String> = history.recording_files()?.into_iter().collect();
+    let on_card: std::collections::HashSet<&str> = list.iter().map(|r| r.file.as_str()).collect();
+    let new: Vec<RecordingRow> = list.iter().filter(|r| !known.contains(&r.file)).map(row_of).collect();
+    let gone: Vec<String> = known.iter().filter(|f| !on_card.contains(f.as_str())).cloned().collect();
+    let added = history.add_recordings(&new)?;
+    let removed = history.remove_recordings(&gone)?;
+    let files: Vec<String> = list.iter().map(|r| r.file.clone()).collect();
+    let info = history.recording_info(&files)?;
+    for r in list.iter_mut() {
+        if let Some(i) = info.get(&r.file) {
+            r.freq_hz = i.freq_hz;
+            r.channel = i.channel.clone();
+            r.lane = (i.lane > 0).then_some(i.lane);
+            if !i.units.is_empty() {
+                r.sources = i.units.clone();
+            }
+        }
+    }
+    Ok((added, removed))
 }
 
 #[cfg(test)]

@@ -18,6 +18,8 @@ use crate::radio::plan::{self, WindowPlan};
 use crate::radio::streams::StreamSource;
 use crate::radio::tuner::{RadioHw, Tuner, Tuning, TuningPlan};
 use crate::services::events::EventLog;
+use crate::services::history::store::SiteInfo;
+use crate::services::history::HistoryTx;
 use crate::hardware::p25core::Lane;
 use crate::trunking::calls::CallPolicy;
 use crate::trunking::follow::routing::Routing;
@@ -70,6 +72,7 @@ pub struct LiveSite<H> {
     trunking: Arc<Trunking>,
     lanes: Vec<Lane>,
     log: Arc<EventLog>,
+    history: HistoryTx,
     state: watch::Sender<LiveState>,
     /// What the live site taught the radio.
     learned: Mutex<Option<Arc<Learned>>>,
@@ -86,6 +89,7 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         trunking: Arc<Trunking>,
         lanes: Vec<Lane>,
         log: Arc<EventLog>,
+        history: HistoryTx,
     ) -> Self {
         LiveSite {
             paths,
@@ -96,6 +100,7 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
             trunking,
             lanes,
             log,
+            history,
             state: watch::channel(LiveState::NoSite).0,
             learned: Mutex::new(None),
         }
@@ -189,7 +194,15 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
             lcn_hz,
             trunk: Some(trunk),
             learned: Some(learned),
+            history: self.history.clone(),
         };
+        self.history.site(SiteInfo {
+            id: site.id.clone(),
+            system: system.id.clone(),
+            protocol: system.protocol.as_str().into(),
+            label: site.label.clone(),
+            system_label: system.label.clone(),
+        });
         self.receivers.start(context, self.tuner.hw()).await;
         tracing::info!("site {} live: {} at LO {} Hz", site.id, window.preset, window.lo_hz);
         self.log.system("site", format!("site {} ({}) live: {} window, LO {:.4} MHz", site.id, site.label, window.preset, window.lo_hz as f64 / 1e6));
@@ -336,9 +349,9 @@ mod tests {
         let tuner = Arc::new(Tuner::new(Nothing, 0.0));
         let log = Arc::new(EventLog::default());
         let receivers = Arc::new(Receivers::new(log.clone()));
-        let trunking = Arc::new(Trunking::new(crate::audio::live::Audio::start(&[Lane::One]), Default::default(), 1));
+        let trunking = Arc::new(Trunking::new(crate::audio::live::Audio::start(&[Lane::One]), Default::default(), Default::default(), 1));
         let config = Arc::new(Mutex::new(config));
-        let live = LiveSite::new(paths.clone(), config, tuner.clone(), RadioLease::default(), receivers.clone(), trunking.clone(), vec![Lane::One], log.clone());
+        let live = LiveSite::new(paths.clone(), config, tuner.clone(), RadioLease::default(), receivers.clone(), trunking.clone(), vec![Lane::One], log.clone(), Default::default());
         assert!(live.activate("duval").await.is_err());
         assert!(matches!(live.state(), LiveState::NoSite));
         let l = live.activate("clay").await.unwrap();

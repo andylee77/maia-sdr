@@ -516,13 +516,15 @@ pub fn usage(ring: &VecDeque<Recording>) -> ((usize, u64), (usize, u64)) {
     })
 }
 
-/// Drop the recordings beyond the retention and delete their files. Returns how many.
-pub fn apply_retention(ring: &mut VecDeque<Recording>, retention: &Retention, storage: &Storage) -> usize {
+/// Drop the recordings beyond the retention and delete their files. Returns their names.
+pub fn apply_retention(ring: &mut VecDeque<Recording>, retention: &Retention, storage: &Storage) -> Vec<String> {
     let idx = evictions(ring, retention);
+    let mut gone = Vec::with_capacity(idx.len());
     for &i in idx.iter().rev() {
         if let Some(old) = ring.remove(i) {
             storage.remove(&old);
+            gone.push(old.file);
         }
     }
-    idx.len()
+    gone
 }
