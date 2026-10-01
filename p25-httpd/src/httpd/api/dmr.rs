@@ -40,3 +40,14 @@ pub async fn put_dmr(
     body["ok"] = serde_json::Value::Bool(true);
     (StatusCode::OK, Json(body))
 }
+
+/// `GET /api/dmr/messages?n=100[&class=Grant]`: the last decoded messages
+/// (oldest first) in SDRTrunk's text; `class` keeps class names containing it.
+pub async fn get_dmr_messages(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let n = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(100usize).min(500);
+    let class = params.get("class").map(|s| s.as_str());
+    Json(serde_json::json!({ "messages": state.dmr_rt.recent_messages(n, class) }))
+}

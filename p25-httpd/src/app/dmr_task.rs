@@ -1,14 +1,49 @@
 //! Change 075: DMR receive on the control IQ hub, first as a monitor.
 //!
 //! Off by default (`PUT /api/dmr?enabled=1`). When on, a thread runs the
-//! software DMR demodulator and framer (`protocol::dmr`, SDRTrunk's) on the
-//! control DDC's IQ, beside the P25 decoders, and keeps the counters
-//! `/api/dmr` serves: syncs, bursts per timeslot, CACH, voice, the carrier
-//! offset the equaliser learned and the CPU it costs.
+//! software DMR receiver (`protocol::dmr`, SDRTrunk's: demodulator, framer,
+//! message processor) on the control DDC's IQ, beside the P25 decoders. It
+//! keeps what `/api/dmr` serves: syncs, bursts per timeslot, CACH, voice, the
+//! carrier offset the equaliser learned, the CPU it costs, message counts by
+//! class, recent grants; and `/api/dmr/messages` the last messages in
+//! SDRTrunk's text.
 
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use crate::protocol::dmr::framer::FramerEvent;
+use crate::protocol::dmr::message::DmrMessage;
+
+/// Messages kept for `/api/dmr/messages`.
+const MESSAGE_RING: usize = 500;
+/// Grants kept for `/api/dmr`.
+const GRANT_RING: usize = 50;
+
+/// LCN -> downlink frequency until DMR sites exist: Clay Electric
+/// Cooperative, Green Cove Springs (control channel LCN 5, voice LCN 6).
+pub const DEFAULT_LCN_MAP: [(u16, u64); 2] = [(5, 454_368_750), (6, 451_087_500)];
+
+/// A decoded message as `/api/dmr/messages` lists it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MessageRecord {
+    pub unix_ms: u64,
+    pub timeslot: u8,
+    pub valid: bool,
+    pub class: &'static str,
+    pub text: String,
+}
+
+/// A channel grant seen on the control channel.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GrantRecord {
+    pub unix_ms: u64,
+    pub class: &'static str,
+    pub lcn: u16,
+    pub timeslot: u8,
+    pub downlink_hz: Option<u64>,
+    pub text: String,
+}
 
 /// Counters of the DMR path. Demodulator figures count from the last reset
 /// (enable or retune); burst figures from the last enable.
@@ -34,6 +69,10 @@ pub struct DmrRuntime {
     pub cach_bad: AtomicU64,
     pub sync_loss_bits: AtomicU64,
     pub last_burst_unix_ms: AtomicU64,
+    /// (valid, invalid) messages by SDRTrunk class name.
+    pub classes: Mutex<BTreeMap<&'static str, (u64, u64)>>,
+    pub messages: Mutex<VecDeque<MessageRecord>>,
+    pub grants: Mutex<VecDeque<GrantRecord>>,
 }
 
 impl DmrRuntime {
@@ -60,6 +99,64 @@ impl DmrRuntime {
             b.store(0, Ordering::Relaxed);
         }
         self.balance_mrad.store(0, Ordering::Relaxed);
+        if let Ok(mut c) = self.classes.lock() {
+            c.clear();
+        }
+        if let Ok(mut m) = self.messages.lock() {
+            m.clear();
+        }
+        if let Ok(mut g) = self.grants.lock() {
+            g.clear();
+        }
+    }
+
+    /// Keeps a decoded message: class counts, the message ring, grants.
+    pub fn record(&self, message: &DmrMessage) {
+        let class = message.class_name();
+        let valid = message.is_valid();
+        let now = crate::app::now_unix_ms();
+        if let Ok(mut c) = self.classes.lock() {
+            let e = c.entry(class).or_default();
+            if valid {
+                e.0 += 1;
+            } else {
+                e.1 += 1;
+            }
+        }
+        let text = message.to_string();
+        if let DmrMessage::Csbk(csbk) = message {
+            if let (true, true, Some(ch)) = (valid, class.contains("Grant"), csbk.channel) {
+                if let Ok(mut g) = self.grants.lock() {
+                    g.push_back(GrantRecord {
+                        unix_ms: now,
+                        class,
+                        lcn: ch.lcn,
+                        timeslot: ch.timeslot,
+                        downlink_hz: ch.downlink_hz,
+                        text: text.clone(),
+                    });
+                    while g.len() > GRANT_RING {
+                        g.pop_front();
+                    }
+                }
+            }
+        }
+        if let Ok(mut m) = self.messages.lock() {
+            m.push_back(MessageRecord { unix_ms: now, timeslot: message.timeslot(), valid, class, text });
+            while m.len() > MESSAGE_RING {
+                m.pop_front();
+            }
+        }
+    }
+
+    /// The last `n` messages (oldest first), optionally only class names
+    /// containing `class`.
+    pub fn recent_messages(&self, n: usize, class: Option<&str>) -> Vec<MessageRecord> {
+        let Ok(m) = self.messages.lock() else { return Vec::new() };
+        let mut out: Vec<MessageRecord> =
+            m.iter().rev().filter(|r| class.map_or(true, |c| r.class.contains(c))).take(n).cloned().collect();
+        out.reverse();
+        out
     }
 
     /// Counts what the framer produced.
@@ -107,6 +204,13 @@ impl DmrRuntime {
             "cach": { "ok": ok, "bad": bad, "ok_pct": if ok + bad > 0 { ok as f64 * 100.0 / (ok + bad) as f64 } else { 0.0 } },
             "sync_loss_bits": l(&self.sync_loss_bits),
             "last_burst_unix_ms": l(&self.last_burst_unix_ms),
+            "classes": self.classes.lock().map(|c| {
+                c.iter()
+                    .map(|(k, (ok, bad))| (k.to_string(), serde_json::json!({ "valid": ok, "invalid": bad })))
+                    .collect::<serde_json::Map<_, _>>()
+            }).unwrap_or_default(),
+            "recent_grants": self.grants.lock().map(|g| g.iter().rev().take(20).cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
         })
     }
 }
@@ -121,10 +225,12 @@ pub fn spawn_dmr_control(
 ) {
     use crate::protocol::dmr::demod::DmrDemodulator;
     use crate::protocol::dmr::framer::DmrMessageFramer;
+    use crate::protocol::dmr::message::processor::DmrMessageProcessor;
     use tokio::sync::broadcast::error::RecvError;
     let spawned = std::thread::Builder::new().name("dmr-cc".into()).spawn(move || {
         let mut rx = hub.subscribe();
-        let mut chain: Option<(DmrDemodulator, DmrMessageFramer)> = None;
+        let mut chain: Option<(DmrDemodulator, DmrMessageFramer, DmrMessageProcessor)> = None;
+        let lcn_map: HashMap<u16, u64> = DEFAULT_LCN_MAP.iter().copied().collect();
         let mut tuned = (0u64, 0i64);
         let mut busy = std::time::Duration::ZERO;
         let mut since = std::time::Instant::now();
@@ -151,15 +257,19 @@ pub fn spawn_dmr_control(
                     rt.resets.fetch_add(1, Ordering::Relaxed);
                 }
                 tuned = now_tuned;
-                chain = Some((DmrDemodulator::new(), DmrMessageFramer::default()));
+                chain = Some((DmrDemodulator::new(), DmrMessageFramer::default(), DmrMessageProcessor::new(lcn_map.clone())));
                 busy = std::time::Duration::ZERO;
                 since = std::time::Instant::now();
             }
-            let Some((demod, framer)) = chain.as_mut() else { continue };
+            let Some((demod, framer, processor)) = chain.as_mut() else { continue };
             let t0 = std::time::Instant::now();
             demod.process_iq_i16(&chunk, framer);
-            for event in framer.drain() {
+            let events: Vec<FramerEvent> = framer.drain().collect();
+            for event in events {
                 rt.count(&event);
+                for message in processor.process(event) {
+                    rt.record(&message);
+                }
             }
             busy += t0.elapsed();
             rt.chunks.fetch_add(1, Ordering::Relaxed);

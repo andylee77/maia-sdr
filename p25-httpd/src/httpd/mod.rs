@@ -595,6 +595,7 @@ pub fn router(
         .route("/api/modulation", get(api::tuning::get_modulation).put(api::tuning::put_modulation))
         // Change 075: DMR receive on the control channel.
         .route("/api/dmr", get(api::dmr::get_dmr).put(api::dmr::put_dmr))
+        .route("/api/dmr/messages", get(api::dmr::get_dmr_messages))
         // Browser-pushed wall-clock sync. Zero-infra alternative to
         // NTP for boards on isolated networks (RNDIS-over-USB, air-
         // gapped labs). Dashboard auto-posts Date.now() on load.
