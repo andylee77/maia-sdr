@@ -834,9 +834,9 @@ worth doing afterwards.
 
 **Every commit, in whichever crate it touches:**
 
-- **Host tests:** `cargo test`. The old crate has 475 today; the fresh crate brings each ported
-  module's tests with it. The golden-dump tests become `#[ignore]` in phase 0, so a run no
-  longer rewrites `maia-hdl/test/golden_vectors/`.
+- **Host tests:** `cargo test`. The old crate has 474 after phase 0; the fresh crate brings each
+  ported module's tests with it. The golden-dump tests are `#[ignore]` since phase 0, so a run
+  no longer rewrites `maia-hdl/test/golden_vectors/`.
 - **ARM check:** `cargo-zigbuild check --target armv7-unknown-linux-gnueabihf.2.31`. The
   Windows host check skips the `cfg(linux)` code. Rules for the Tezuka toolchain: no `///` on fn
   params, no recently stabilised features.
@@ -846,24 +846,39 @@ worth doing afterwards.
 
 **Phase 0, before the fresh crate starts:**
 
-1. **Pipeline replay (characterization)**, written against the old crate. Recorded event
-   sequences go through the follower and lifecycle to a list of call records:
-   - P25 from the existing follower and lifecycle test scenarios and the SDRTrunk `.bits` files;
-   - DMR from `runs/dmr/cc_*.wav`.
+Committed fixtures live in the fresh crate's folder, `scanner/tests/fixtures/`.
 
-   Each record holds: talkgroup, radios, start and end, frames, close reason, followed or not.
-   The list is stored as the expected result. In phase 3 the fresh crate's follower and CallBook
-   must reproduce it, apart from listed, intended differences (the defects above).
-2. **Unit fixtures.** Copies of unit A's (and later B's) `/mnt/jffs2/p25-*` files, a history
-   database snapshot and the SD recording names, pulled read-only. They go to the gitignored
-   `runs/076/units/`, with a small redacted copy as committed fixtures. The migration tests run on
-   them.
-3. **Activity snapshots.** The JSON of each `/api/activity/*` query on a fixture database, to
-   compare after the history v2 migration.
-4. **Route contract.** The JSON shapes of the routes the tools and bench use that are carried
-   over.
-5. **Baseline.** 30 minutes on each system on unit A with today's build: TSBK CRC %, DMR valid %,
-   calls, follow rate, vocoder errors, CPU.
+1. **Pipeline replay (characterization)**, against the old crate.
+   - **Recording:** with `P25_TRUNK_TRACE=<file>` set, the old binary logs the call lifecycle's
+     inputs and its call events (`app::trunk_trace`). The inputs are grants with the follower's
+     decision, grant updates, traffic NIDs, link control, end markers and voice chunks.
+   - **Replay:** a 30-minute trace from each system on unit A runs through the lifecycle on the
+     host, with its clock pinned to the trace (`trunk_replay_tests`). The result is a list of call
+     records: talkgroup, lane, frequency, encryption, follow decision, radios, start and end,
+     close reason, end marker and frames. Scenarios are in
+     `replay/<name>/{trace.jsonl, expected.json}`.
+   - **Phase 3:** the fresh crate's follower and CallBook must reproduce these lists, apart from
+     listed, intended differences (the defects above). The trace also holds the old follower's
+     decisions, so the fresh follower's gates are checked on the same grants.
+   - **DMR captures:** `runs/dmr/cc_*.wav` stay with the DMR reference and the 20:57 follower
+     test.
+2. **Unit fixtures.**
+   - **Raw copies:** unit A's `/mnt/jffs2/p25-*` files, its history database and its SD
+     recording names, pulled read-only into the gitignored `runs/076/units/A/`.
+   - **Committed copy:** `tools/unit_fixtures.py` writes `unit_a/`, with radio IDs replaced by
+     stand-ins of the same digit count. The migration tests run on it.
+   - **Unit B:** its fixtures come with its card check.
+3. **Activity snapshots.** `history_snapshot_tests` runs the Activity queries on the fixture
+   database and compares the answers with `unit_a/activity.json`. History v2 must give the same
+   answers after the migration.
+4. **Route contract.** `tools/route_shapes.py` keeps the JSON shapes of the 31 GET routes the
+   tools and bench read, in `routes/shapes.json`, captured on a P25 site and on a DMR site.
+   `check` lists the keys that went missing or changed type.
+5. **Baseline.** `tools/live_baseline.py` runs read-only on unit A for 30–60 minutes per system,
+   with today's build. It records control-channel decode % (TSBK CRC or DMR valid), calls,
+   follow rate, vocoder errors, recordings, history rows and CPU. The numbers are in the status
+   log.
+6. **Replay corpus baseline** (`rf.p25_corpus`), once B is wired into A (D12).
 
 **Running the fresh crate on unit A before the cutover:** stop the old binary (S60), run the new
 one from `/tmp`, check it, then start the old one again. The fresh crate writes only
