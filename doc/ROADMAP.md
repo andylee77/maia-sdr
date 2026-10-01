@@ -32,10 +32,11 @@ scanner needs:
 | 074 | Packet data (SNDCP) on the data channel; status-dibit fix for every frame | done |
 | 074b | Packet data: keep it in the history; decode LRRP / ARS / TMS contents | next |
 | — | Phase 2 TDMA voice | later, if a nearby system uses it (Clay grants none) |
-| — | Code review and analysis of p25-httpd, then refactor into clean modules | review done: `doc/CODE_REVIEW_2026_09_28.md` (stages 0–3) |
+| 076 | Restructure into a clean multi-band, multi-protocol scanner | design approved 2026-10-01; built as a fresh crate (`doc/changes/076_refactor.md`) |
 | — | Remote libiio control: detect it and share the radio | idea |
 | — | Agent control: MCP server and prompt structure | idea |
-| 075 | Clay Electric DMR (Tier III): software DMR receive, control channel, then voice | in progress (`fishball-dmr`) |
+| 075 | Clay Electric DMR (Tier III): software DMR receive, control channel, then voice | done (on fishball-p25) |
+| — | Spectrum survey: identify everything on air | idea (Andy, 2026-10-01; unit A) |
 | — | Real-time diagnostics: spectrum, waterfall, constellation and eye at 20+ Hz over WebSockets | idea |
 | — | Handheld page: the radio's face in the browser | idea |
 | — | Transcription (Whisper) and LLM summaries | idea (off-board) |
@@ -261,7 +262,7 @@ The Zynq's Cortex-A9 cannot run Whisper usefully, so this lives off the board:
 
 ## Clay Electric DMR
 
-Change 075, in progress on branch `fishball-dmr`: design, measurements and phases in
+Change 075, done and merged into fishball-p25: design, measurements and status in
 `doc/changes/075_dmr_clay_electric.md`.
 
 - The system is **DMR Tier III Standard** (Radio Reference sid 11943), not Capacity Plus. It
@@ -275,6 +276,46 @@ Change 075, in progress on branch `fishball-dmr`: design, measurements and phase
 - Software receive on the PS (SDRTrunk's DMR decoder ported to `protocol::dmr`); no gateware
   change. UHF and Clay County P25 (851–861 MHz) cannot share one AD9361 window, so a DMR site
   is chosen like any other site.
+
+## Spectrum survey: identify everything on air
+
+Andy, 2026-10-01: sweep everything the radio can tune and identify what is there, as a study.
+Targets:
+
+- other DMR systems and other digital voice systems;
+- ATSC TV, ADS-B and NOAA weather radio;
+- ISM sensors: weather stations and TPMS;
+- strong nearby signal activity.
+
+What exists:
+
+- **Sweeping:** the HDL spectrometer sweeps 16 MHz windows: 70 MHz–6 GHz on unit A (AD9361), and
+  325 MHz–3.8 GHz specified on unit B (AD9363).
+- **Decoders on board:** P25 and DMR Tier III.
+- **Captures:** wideband IQ goes to the SD card at up to 16 MSPS, for decoding on the PC:
+
+  | Signal | Decoded or recognised by |
+  |--------|--------------------------|
+  | ADS-B | dump1090 |
+  | Weather stations and TPMS | rtl_433 |
+  | Pagers | multimon-ng |
+  | DMR Tier II, Capacity Plus, NXDN | SDRTrunk |
+  | ATSC | its pilot tone |
+
+Plan:
+
+1. A tool drives the API (tune + `spectrum_wide`) for a 24-hour occupancy map: frequency ×
+   time, steady vs bursty, bandwidth. No firmware change.
+2. Targeted captures of the interesting carriers, decoded on the PC, give an inventory of what is
+   on air.
+3. The classifiers worth having move on board as probes in the scan. 076's discovery has one
+   probe per protocol for this.
+
+Limits:
+
+- Unit A's antenna is not flat across the range.
+- One 16 MHz window at a time, so bursty signals (TPMS, ISM sensors) need long dwells.
+- A survey takes the radio away from following calls. Run it on unit A when it is free.
 
 ## Real-time diagnostics plots (20+ Hz)
 
