@@ -96,6 +96,8 @@ routes! {
     get "/api/v1/radio" => v1::radio::get, "radio configuration, hardware and tuning";
     put "/api/v1/radio/gain" => v1::radio::put_gain, "receiver gain mode and manual gain";
     put "/api/v1/radio/settings" => v1::radio::put_settings, "presets the planner may use, traffic lanes, call timings, history limits";
+    put "/api/v1/radio/clock" => v1::radio::put_clock, "where the board clock comes from: site, ntp or manual";
+    post "/api/v1/clock" => v1::radio::set_time, "set the board clock (`unix_ms`, a browser's time)";
     put "/api/v1/radio/recording" => v1::radio::put_recording, "recording on/off, where new recordings go, how many each store keeps";
     get "/api/v1/recordings" => v1::recordings::list, "recordings newest first (`limit`, `site`), with the stores' state";
     delete "/api/v1/recordings" => v1::recordings::clear, "delete every recording of `store` (sd, ram or all)";

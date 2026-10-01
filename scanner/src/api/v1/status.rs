@@ -10,6 +10,7 @@ use crate::boot::state::AppState;
 use crate::boot::version::BUILD_TAG;
 use crate::radio::lease::Lease;
 use crate::radio::tuner::Tuning;
+use crate::services::clock::ClockStatus;
 use crate::trunking::receivers::ControlStatus;
 use crate::trunking::site::LiveState;
 use crate::util::time;
@@ -23,6 +24,7 @@ pub struct Status {
     pub control: ControlStatus,
     pub lease: &'static str,
     pub tuning: Tuning,
+    pub clock: ClockStatus,
 }
 
 pub async fn get(State(s): State<Arc<AppState>>) -> Json<Status> {
@@ -38,5 +40,6 @@ pub async fn get(State(s): State<Arc<AppState>>) -> Json<Status> {
             Lease::Scan => "scan",
         },
         tuning: s.tuner.tuning(),
+        clock: s.clock.status(),
     })
 }

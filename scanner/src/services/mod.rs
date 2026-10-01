@@ -1,6 +1,7 @@
-//! Services around the radio: configuration, the event log, the call history and recordings, and
-//! the scan that finds systems (later: the clock).
+//! Services around the radio: configuration, the event log, the call history and recordings, the
+//! scan that finds systems, and the board clock.
 
+pub mod clock;
 pub mod config;
 pub mod discovery;
 pub mod events;

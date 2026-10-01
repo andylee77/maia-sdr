@@ -19,6 +19,7 @@ use crate::audio::live::Audio;
 use crate::radio::lease::RadioLease;
 use crate::services::history::store::SiteInfo;
 use crate::services::history::History;
+use crate::services::clock::Clock;
 use crate::services::notices::Notices;
 use crate::services::recordings::storage::{self, StorageConfig};
 use crate::services::recordings::{self, Policy, Recordings};
@@ -57,6 +58,9 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let log = Arc::new(EventLog::default());
     log.system("start", format!("scanner {} started", version::BUILD_TAG));
     let receivers = Arc::new(Receivers::new(log.clone()));
+    let clock = Arc::new(Clock::default());
+    receivers.set_clock(clock.clone());
+    clock.start(config.clone(), lease.clone(), log.clone());
     let lanes = crate::hardware::p25core::Lane::ALL[..hardware.lanes].to_vec();
     let audio = crate::audio::live::Audio::start(&lanes);
     let notices = Notices::default();
@@ -99,7 +103,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         });
     }
     let discovery = Arc::default();
-    let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, trunking, audio, recordings, history, discovery, notices, log, hardware, started });
+    let state = Arc::new(AppState { paths, config, tuner, live, lease, receivers, trunking, audio, recordings, history, discovery, notices, clock, log, hardware, started });
     let app = crate::api::router(state.clone());
     tokio::select! {
         r = crate::api::serve(app, args.listen, args.listen_https, args.ssl_cert.as_deref(), args.ssl_key.as_deref()) => r?,

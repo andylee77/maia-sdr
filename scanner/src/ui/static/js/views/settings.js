@@ -105,7 +105,28 @@ function radioCard(radio) {
       toast(e.message, true);
     }
   });
+  const clockSource = h('select', { class: 'input', 'aria-label': 'Clock' },
+    ...[['site', 'The control channel'], ['ntp', 'The internet'], ['manual', 'By hand']].map(([v, t]) => h('option', { value: v, text: t })));
+  clockSource.value = r.clock.source;
+  clockSource.addEventListener('change', async () => {
+    try {
+      await api.setClockSource(clockSource.value);
+      toast('Clock source saved');
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
+  const setNow = h('button', { class: 'btn small', type: 'button', text: 'Set it to this browser\'s time' });
+  setNow.addEventListener('click', async () => {
+    try {
+      await api.setTime(Date.now());
+      toast('Clock set');
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
   c.body.append(
+    h('div', { class: 'row' }, h('span', { text: 'The clock comes from' }), clockSource, setNow),
     h('div', { class: 'row' }, h('span', { text: 'Window presets the planner may use' }), ...presets.map(p => p.el)),
     h('div', { class: 'row' }, h('span', { text: 'A call closes after' }), hang, h('span', { class: 'dim', text: 'ms with no sign of life, or' }), grace,
       h('span', { class: 'dim', text: 'ms after its end' })),

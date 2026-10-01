@@ -12,7 +12,7 @@ use crate::boot::radio::{gain_mode, HardwareInfo};
 use crate::boot::state::AppState;
 use crate::radio::tuner::{Readback, Tuning};
 use crate::hardware::presets::find_preset;
-use crate::services::config::radio::{Calls, Gain, GainMode, History, RadioConfig, Recording, GAIN_DB_RANGE};
+use crate::services::config::radio::{Calls, Clock, Gain, GainMode, History, RadioConfig, Recording, GAIN_DB_RANGE};
 use crate::services::recordings::Policy;
 use crate::services::config::{self, RadioState};
 
@@ -125,4 +125,27 @@ pub async fn put_settings(State(s): State<Arc<AppState>>, Json(req): Json<Settin
     config::save(&s.paths.radio(), &c.radio)?;
     s.history.set_limits(&req.history);
     Ok(Json(c.radio.value.clone()))
+}
+
+/// Where the board clock comes from: the control channel, the internet, or by hand.
+pub async fn put_clock(State(s): State<Arc<AppState>>, Json(req): Json<Clock>) -> ApiResult<Clock> {
+    let mut c = s.config.lock().await;
+    c.radio.value.clock = req.clone();
+    config::save(&s.paths.radio(), &c.radio)?;
+    Ok(Json(req))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetTime {
+    pub unix_ms: u64,
+}
+
+/// Set the board clock (from a browser's time).
+pub async fn set_time(State(s): State<Arc<AppState>>, Json(req): Json<SetTime>) -> ApiResult<crate::services::clock::ClockStatus> {
+    if req.unix_ms < crate::services::clock::site::MIN_VALID_MS {
+        return Err(ApiError::bad_request("a time before 2020"));
+    }
+    s.clock.set(req.unix_ms, &s.log).map_err(|e| ApiError::bad_request(format!("the clock was not set: {e}")))?;
+    Ok(Json(s.clock.status()))
 }

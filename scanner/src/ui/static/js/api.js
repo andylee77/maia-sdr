@@ -32,6 +32,8 @@ export const api = {
   saveNames: (system, names) => request('PUT', `/api/v1/systems/${encodeURIComponent(system)}/names`, names),
   saveSite: (system, site, edit) => request('PUT', `/api/v1/systems/${encodeURIComponent(system)}/sites/${encodeURIComponent(site)}`, edit),
   saveRadioSettings: settings => request('PUT', '/api/v1/radio/settings', settings),
+  setClockSource: source => request('PUT', '/api/v1/radio/clock', { source }),
+  setTime: unix_ms => request('POST', '/api/v1/clock', { unix_ms }),
   routes: () => request('GET', '/api/v1/routes'),
   spectrum: () => request('GET', '/api/v1/spectrum?bins=1024'),
   calls: () => request('GET', '/api/v1/calls'),

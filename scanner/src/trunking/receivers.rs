@@ -22,6 +22,7 @@ use crate::protocol::p25::c4fm::C4fmDecoder;
 use crate::protocol::p25::control::P25Control;
 use crate::radio::streams::{Input, StreamCounters, StreamSource, Wants};
 use crate::services::config::systems::{Modulation, Protocol};
+use crate::services::clock::Clock;
 use crate::services::events::EventLog;
 use crate::services::history::store::UnitEventKind;
 use crate::services::history::HistoryTx;
@@ -210,6 +211,8 @@ struct Running {
 
 pub struct Receivers {
     log: Arc<EventLog>,
+    /// Takes the site's time broadcasts.
+    clock: Mutex<Option<Arc<Clock>>>,
     view: Arc<Mutex<View>>,
     counters: Mutex<Arc<StreamCounters>>,
     running: tokio::sync::Mutex<Option<Running>>,
@@ -219,9 +222,16 @@ impl Receivers {
     pub fn new(log: Arc<EventLog>) -> Self {
         Receivers {
             log,
+            clock: Mutex::default(),
             view: Arc::default(),
             counters: Mutex::default(),
             running: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    pub fn set_clock(&self, clock: Arc<Clock>) {
+        if let Ok(mut c) = self.clock.lock() {
+            *c = Some(clock);
         }
     }
 
@@ -252,6 +262,7 @@ impl Receivers {
             learned: context.learned.clone(),
             history: context.history.clone(),
             site: context.site.clone(),
+            clock: self.clock.lock().ok().and_then(|c| c.clone()),
         };
         let name = match context.protocol {
             Protocol::P25 => "p25-cc",
@@ -310,6 +321,7 @@ struct Decoder {
     learned: Option<Arc<Learned>>,
     history: HistoryTx,
     site: String,
+    clock: Option<Arc<Clock>>,
 }
 
 /// Busy time over the last few seconds, as a share of one core.
@@ -486,6 +498,11 @@ impl Decoder {
                 ControlEvent::ChannelPlan(crate::protocol::events::PlanEntry::P25Band(band)) => {
                     if let Some(l) = &self.learned {
                         l.band(band);
+                    }
+                }
+                ControlEvent::SiteTime(sync) => {
+                    if let Some(c) = &self.clock {
+                        c.observe(*sync);
                     }
                 }
                 ControlEvent::Unit { unit, group, kind } => {
