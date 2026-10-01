@@ -3,6 +3,7 @@
 //! `boot` brings the radio up from the persisted configuration and runs until a shutdown signal.
 
 mod boot;
+mod hardware;
 mod services;
 mod util;
 
