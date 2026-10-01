@@ -162,3 +162,15 @@ IQ hub (50 kSPS, control or traffic DDC)
   - The 20:57 voice superframes are followed through bursts B–F with no sync losses.
   - Synthetic 4FSK tests: no dibit errors in 190 bursts, −700 Hz offset handled, no false
     syncs on noise.
+- 2026-09-30: **phase 2 step 1, a live DMR monitor** (`app::dmr_task`, `GET/PUT /api/dmr`).
+  - Off by default. When enabled, a thread runs the demodulator and framer on the control
+    IQ hub, beside the P25 decoders, and counts syncs, bursts per timeslot, CACH, voice,
+    the equaliser's carrier offset and CPU.
+  - Built with cargo-zigbuild (maia-sdr's `.venv-hdl`) as `2026-09-30-dmr-monitor-075`,
+    deployed to unit A (RAM rootfs; a reboot returns to the SD image).
+  - On 454.36875: 33.4 bursts/s (TS1/TS2 502/500 in 30 s), CACH 100 %, one acquisition then
+    no fine-sync losses, carrier offset −149 Hz (074c's LO-shift scaling took it from −375).
+  - CPU 19 % of one core. SDRTrunk's order (72-tap low-pass at 50 kSPS before the half-band)
+    costs more than C4FM's 12 %; decimating first is an easy saving.
+  - Captures of 451.0875 voice: none between 21:20 and 22:00 (a quiet evening). Retry in
+    the day, or follow grants once the message layer is in.

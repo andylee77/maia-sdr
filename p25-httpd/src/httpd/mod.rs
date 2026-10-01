@@ -230,6 +230,8 @@ pub struct AppState {
     pub traffic_iq: Arc<crate::app::iq_hub::IqHub>,
     /// Change 071b: the software C4FM path's runtime figures.
     pub c4fm_rt: Arc<crate::app::c4fm_task::C4fmRuntime>,
+    /// Change 075: the DMR path's switch and counters.
+    pub dmr_rt: Arc<crate::app::dmr_task::DmrRuntime>,
     /// Change 071: who may move the radio (a sweep takes it).
     pub radio_lease: Arc<crate::app::discovery::RadioLease>,
     /// Change 071: the system finder's progress and results.
@@ -591,6 +593,8 @@ pub fn router(
         .route("/api/recordings/{id}/sync_trace", get(api::history::get_recording_sync_trace))
         // Modulation selector (C4FM / LSM / Auto). SDRTrunk-style.
         .route("/api/modulation", get(api::tuning::get_modulation).put(api::tuning::put_modulation))
+        // Change 075: DMR receive on the control channel.
+        .route("/api/dmr", get(api::dmr::get_dmr).put(api::dmr::put_dmr))
         // Browser-pushed wall-clock sync. Zero-infra alternative to
         // NTP for boards on isolated networks (RNDIS-over-USB, air-
         // gapped labs). Dashboard auto-posts Date.now() on load.

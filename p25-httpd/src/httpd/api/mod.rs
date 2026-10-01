@@ -49,6 +49,8 @@ pub mod chain;
 pub mod debug;
 /// Change 071: the system finder.
 pub mod discovery;
+/// Change 075: DMR receive.
+pub mod dmr;
 pub mod forensics;
 pub mod history;
 pub mod radio;

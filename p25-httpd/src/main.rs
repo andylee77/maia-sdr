@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-30-lo-scale-074c";
+pub const BUILD_TAG: &str = "2026-09-30-dmr-monitor-075";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -807,6 +807,8 @@ async fn main() -> anyhow::Result<()> {
     let control_iq = app::iq_hub::IqHub::new(2.0, protocol::p25::c4fm::INPUT_RATE_HZ);
     let traffic_iq = app::iq_hub::IqHub::new(2.0, protocol::p25::c4fm::INPUT_RATE_HZ);
     let c4fm_rt = Arc::new(app::c4fm_task::C4fmRuntime::default());
+    // Change 075: DMR on the control IQ, off until enabled.
+    let dmr_rt = Arc::new(app::dmr_task::DmrRuntime::default());
     // Change 071: the radio lease and the system finder's state.
     let radio_lease = Arc::new(app::discovery::RadioLease::default());
     let discovery: app::discovery::SharedDiscovery = Default::default();
@@ -1854,6 +1856,12 @@ async fn main() -> anyhow::Result<()> {
             current_rx_lo.clone(),
             c4fm_rt.clone(),
         );
+        app::dmr_task::spawn_dmr_control(
+            control_iq.clone(),
+            current_control_freq_for_c4fm.clone(),
+            current_rx_lo.clone(),
+            dmr_rt.clone(),
+        );
     }
 
     // Audio pacer — gates vocoder→broadcast at exactly 20 ms
@@ -1928,6 +1936,7 @@ async fn main() -> anyhow::Result<()> {
         control_iq: control_iq.clone(),
         traffic_iq: traffic_iq.clone(),
         c4fm_rt: c4fm_rt.clone(),
+        dmr_rt: dmr_rt.clone(),
         radio_lease: radio_lease.clone(),
         discovery: discovery.clone(),
         history: history.clone(),

@@ -13,6 +13,8 @@ pub mod c4fm_task;
 /// Change 067: board clock from the site / NTP / by hand.
 pub mod clock_task;
 pub mod dibit_airtime;
+/// Change 075: DMR on the control IQ (a monitor until the message layer lands).
+pub mod dmr_task;
 /// Change 071: find local systems (band sweep, control-channel probe).
 pub mod discovery;
 #[cfg(target_os = "linux")]
