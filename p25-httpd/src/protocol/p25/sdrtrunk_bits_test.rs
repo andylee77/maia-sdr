@@ -1110,19 +1110,22 @@ impl DumpVoice {
 
 impl VoiceHandler for DumpVoice {
     fn on_ldu1(&self, _: &[crate::protocol::p25::voice_frame::ImbeFrameRaw; 9], body: &[u8]) {
-        self.push(format!("ldu1 {:016x}", body_hash(body)));
+        let lc = crate::protocol::p25::voice_frame::parse_ldu1_lcw(body);
+        self.push(format!("ldu1 {:016x} {lc:?}", body_hash(body)));
     }
     fn on_ldu2(&self, _: &[crate::protocol::p25::voice_frame::ImbeFrameRaw; 9], body: &[u8]) {
-        self.push(format!("ldu2 {:016x}", body_hash(body)));
+        let ess = parse_ldu2_ess(body);
+        self.push(format!("ldu2 {:016x} {ess:?}", body_hash(body)));
     }
     fn on_hdu(&self, body: &[u8]) {
-        self.push(format!("hdu {:016x}", body_hash(body)));
+        self.push(format!("hdu {:016x} {:?}", body_hash(body), parse_hdu_body(body)));
     }
     fn on_tdu(&self) {
         self.push("tdu".into());
     }
     fn on_tdu_lc(&self, body: &[u8]) {
-        self.push(format!("tdulc {:016x}", body_hash(body)));
+        let lc = crate::protocol::p25::voice_frame::parse_tdulc_lcw_checked(body);
+        self.push(format!("tdulc {:016x} {lc:?}", body_hash(body)));
     }
 }
 
