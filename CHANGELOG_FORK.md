@@ -36,9 +36,20 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 - **Phase 7 (in progress):** profiles, names, sites and radio settings edited from the UI and
   applied live; `/ws/events`; the spectrum and board cards; the board clock (site, internet or
   by hand); `doc/API.md` generated from the route table; the bench's `/api/system`,
-  `/api/ui/state` and `/api/imbe_dump`.
+  `/api/ui/state` and `/api/imbe_dump`, `/api/ui/calls` and `/api/ui/settings` (the clock
+  source).
+- **Bench session (D12):** B wired into A (40 dB). The replay corpus, mode B, on p25-httpd: 42
+  items, 99.47 % of SDRTrunk's IMBE frames on 231 followable clear transmissions, none missed.
+  The bench records `/ws/audio` per lane (`?v=2`). A site time not heard for two minutes no
+  longer sets the scanner's clock.
+- **Dead code out** (the board build has no warnings of its own), and five features it showed
+  missing built: crystal calibration and tracking (`services::crystal`, the Crystal card),
+  recentre (`/api/v1/sites/{id}/plan`, `/recentre`, the window on Systems), neighbours and the
+  site's other channels in its learned state (`/learned`, on Systems), packet data
+  (`services::packet_data`, `/api/v1/data`, the Activity card; the last lane waits on the data
+  channel between calls), and `/ws/audio`'s first framing for p25-httpd's tools.
 
-Tests: scanner 370, p25-httpd 475.
+Tests: scanner 381, p25-httpd 475.
 
 ---
 
