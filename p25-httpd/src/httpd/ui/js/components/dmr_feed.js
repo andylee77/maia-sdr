@@ -1,4 +1,4 @@
-// Change 075: the DMR control channel's latest messages (Now view, DMR
+// Change 075: the DMR control channel's latest messages (Settings view, DMR
 // sites only), from /api/dmr/messages: grants, announcements, registrations,
 // voice and link control, in SDRTrunk's text. The steady filler (ALOHA, IDLE,
 // the SLC) is left out server-side; identical consecutive lines collapse into

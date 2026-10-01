@@ -8,7 +8,6 @@ import { siteCard } from '../components/site_card.js';
 import { callCard } from '../components/call_card.js';
 import { callsList } from '../components/calls_list.js';
 import { speakersPanel } from '../components/speakers_panel.js';
-import { dmrFeed } from '../components/dmr_feed.js';
 
 function recorderCard() {
   const c = card('Recording');
@@ -56,7 +55,6 @@ export function mount(host) {
   const call = callCard(1);
   const call2 = callCard(2);
   const site = siteCard();
-  const feed = dmrFeed();
   const rec = recorderCard();
   const calls = callsList();
   const speakers = speakersPanel();
@@ -64,7 +62,7 @@ export function mount(host) {
   host.append(
     h('div', { class: 'now-layout' },
       h('div', { class: 'stack now-call' }, call.el, call2.el),
-      h('div', { class: 'stack now-side' }, speakers.el, site.el, feed.el, rec.el),
+      h('div', { class: 'stack now-side' }, speakers.el, site.el, rec.el),
       calls.el),
   );
   refreshCalls();
@@ -77,7 +75,6 @@ export function mount(host) {
       speakers.update(kind, store);
       if (kind === 'state' && store.state) {
         site.update(store.state);
-        feed.update(store.state);
         rec.update(store.state);
       }
     },
@@ -85,7 +82,6 @@ export function mount(host) {
       call.unmount();
       call2.unmount();
       site.unmount();
-      feed.unmount();
       calls.unmount();
     },
   };

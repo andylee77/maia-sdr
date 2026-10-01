@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-10-01-dmr-ui-075";
+pub const BUILD_TAG: &str = "2026-10-01-dmr-ui-ppm-075b";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -449,12 +449,17 @@ async fn main() -> anyhow::Result<()> {
             const MAX_PLAUSIBLE_HZ: f64 = 1000.0;
             let shift = p.lo_shift_hz as f64;
             if shift.abs() <= MAX_PLAUSIBLE_HZ {
-                nco_lo_shift_hz = shift;
+                // Change 075: the shift was measured at the calibration's
+                // LO; a site on another band boots at another LO (a crystal
+                // error is a ppm), as 074c's retunes scale it.
+                let boot_lo = boot_plan_lo.unwrap_or(args.rx_lo as i64);
+                nco_lo_shift_hz = httpd::api::tuning::scale_lo_shift(
+                    p.lo_shift_hz, p.rx_lo_hz as i64, boot_lo) as f64;
                 ppm_source = "persisted";
                 tracing::info!(
                     "auto-PPM: loaded persisted calibration \
-                     lo_ppm={:+.4} shift={:+.0} Hz (from {} @ unix {})",
-                    p.lo_ppm, p.lo_shift_hz,
+                     lo_ppm={:+.4} shift={:+.0} Hz at LO {} -> {:+.0} Hz at boot LO {} (from {} @ unix {})",
+                    p.lo_ppm, p.lo_shift_hz, p.rx_lo_hz, nco_lo_shift_hz, boot_lo,
                     app::autoppm::PPM_CAL_FILE, p.unix_secs);
             } else {
                 tracing::warn!(
