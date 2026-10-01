@@ -61,7 +61,7 @@ fn store_at(tag: &str) -> Store {
 }
 
 fn range() -> Range {
-    Range { site: "clay".into(), from_ms: T0, to_ms: T0 + 3 * H }
+    Range::site("clay", T0, T0 + 3 * H)
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn trimmed_to_size_oldest_hours_first() {
     let site = s.sites().unwrap()[0].clone();
     assert_eq!(site.calls, 2000 - gone as u64);
     assert_eq!(site.first_ms % H, 0, "the oldest call left starts an hour");
-    let all = Range { site: "clay".into(), from_ms: T0, to_ms: T0 + 40 * H };
+    let all = Range::site("clay", T0, T0 + 40 * H);
     assert_eq!(s.summary(&all).unwrap().calls, site.calls);
     assert_eq!(site.last_ms, T0 + 1999 * 60_000, "the newest call stays");
     assert_eq!(s.trim_to(u64::MAX).unwrap(), 0);
@@ -206,6 +206,23 @@ fn talkgroups_wider_than_16_bits() {
     assert_eq!(only.iter().map(|r| r.tg).collect::<Vec<u32>>(), vec![87_921]);
     assert_eq!(s.talkgroup(&range(), 87_921).unwrap().calls, 1);
     assert_eq!(s.radio(&range(), 101).unwrap().events[0].tg, 87_926);
+}
+
+#[test]
+fn a_system_range_covers_its_sites() {
+    let s = store_at("system");
+    s.note_site(&SiteInfo { id: "clay_2".into(), ..clay() }).unwrap();
+    s.note_site(&SiteInfo { id: "duval".into(), system: "duval".into(), ..clay() }).unwrap();
+    let elsewhere = |id, site: &str| CallRow { site: site.into(), ..call(id, T0 + 30_000, 300, &[101], 1_000, false) };
+    s.insert_calls(&[elsewhere(10, "clay_2"), elsewhere(11, "duval")]).unwrap();
+    let system = Range { site: "clay_county".into(), by_system: true, ..range() };
+    assert_eq!(s.summary(&system).unwrap().calls, 5);
+    assert_eq!(s.summary(&range()).unwrap().calls, 4);
+    assert_eq!(s.talkgroups(&system, 10).unwrap()[0].calls, 3);
+    assert_eq!(s.calls(&system, SeriesFilter { tg: None, unit: Some(101) }, 10).unwrap().len(), 4);
+    assert_eq!(s.radio(&system, 101).unwrap().talkgroups[0].calls, 3);
+    assert_eq!(s.talkgroup(&system, 300).unwrap().calls, 3);
+    assert_eq!(s.series(&system, H, 0, SeriesFilter::default()).unwrap()[0].calls, 3);
 }
 
 #[test]
@@ -323,7 +340,7 @@ fn snapshot(store: &Store) -> Value {
     let mut out = Map::new();
     out.insert("sites".into(), json!(sites));
     for s in &sites {
-        let r = Range { site: s.site.clone(), from_ms: s.first_ms / H * H, to_ms: s.last_ms + H };
+        let r = Range::site(&s.site, s.first_ms / H * H, s.last_ms + H);
         let all = SeriesFilter::default();
         let tgs = store.talkgroups(&r, 50).unwrap();
         let radios = store.radios(&r, 50).unwrap();

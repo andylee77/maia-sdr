@@ -1,9 +1,9 @@
 //! `/api/v1/activity/...`: the call history (`services::history`), with the site's system's
 //! talkgroup and radio names.
 //!
-//! Every query takes `site` (default: the live site) and a window: `from` / `to` (unix ms) or
-//! `hours` back from now (default 24). Totals and series start at the hour `from` is in; call
-//! listings at `from`.
+//! Every query takes `site` (default: the live site) or `system` (all its sites) and a window:
+//! `from` / `to` (unix ms) or `hours` back from now (default 24). Totals and series start at the
+//! hour `from` is in; call listings at `from`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -23,6 +23,7 @@ use crate::util::time::{iso_utc, unix_ms};
 #[derive(Deserialize, Default)]
 pub struct Window {
     pub site: Option<String>,
+    pub system: Option<String>,
     pub from: Option<u64>,
     pub to: Option<u64>,
     pub hours: Option<u64>,
@@ -40,7 +41,9 @@ pub struct Window {
 /// The window asked for; totals (from the hourly tables) start at `first_hour_ms`.
 #[derive(Serialize)]
 pub struct WindowView {
+    /// The site, or with `system` the system.
     pub site: String,
+    pub system: bool,
     pub from_ms: u64,
     pub to_ms: u64,
     pub first_hour_ms: u64,
@@ -50,11 +53,14 @@ async fn range(s: &AppState, w: &Window) -> Result<Range, ApiError> {
     let to = w.to.unwrap_or_else(unix_ms);
     let hours = w.hours.unwrap_or(24).clamp(1, 24 * 400);
     let from = w.from.unwrap_or(to.saturating_sub(hours * HOUR_MS));
+    if let Some(system) = &w.system {
+        return Ok(Range { site: system.clone(), by_system: true, from_ms: from, to_ms: to });
+    }
     let site = match &w.site {
         Some(site) => site.clone(),
         None => live_site(s).await.ok_or_else(|| ApiError::bad_request("no live site: name one with `site`"))?,
     };
-    Ok(Range { site, from_ms: from, to_ms: to })
+    Ok(Range::site(&site, from, to))
 }
 
 async fn live_site(s: &AppState) -> Option<String> {
@@ -65,13 +71,14 @@ async fn live_site(s: &AppState) -> Option<String> {
 }
 
 fn window(r: &Range) -> WindowView {
-    WindowView { site: r.site.clone(), from_ms: r.from_ms, to_ms: r.to_ms, first_hour_ms: r.first_hour() }
+    WindowView { site: r.site.clone(), system: r.by_system, from_ms: r.from_ms, to_ms: r.to_ms, first_hour_ms: r.first_hour() }
 }
 
-/// The talkgroup and radio names of the site's system.
-async fn names(s: &AppState, site: &str) -> (BTreeMap<u32, String>, BTreeMap<u32, String>) {
+/// The talkgroup and radio names of the range's system.
+async fn names(s: &AppState, r: &Range) -> (BTreeMap<u32, String>, BTreeMap<u32, String>) {
     let c = s.config.lock().await;
-    c.systems.value.site(site).map(|(sys, _)| (sys.talkgroups.clone(), sys.radios.clone())).unwrap_or_default()
+    let sys = if r.by_system { c.systems.value.system(&r.site) } else { c.systems.value.site(&r.site).map(|(sys, _)| sys) };
+    sys.map(|sys| (sys.talkgroups.clone(), sys.radios.clone())).unwrap_or_default()
 }
 
 /// A row with its name.
@@ -157,7 +164,7 @@ pub async fn talkgroups(State(s): State<Arc<AppState>>, Query(w): Query<Window>)
     let limit = w.limit.unwrap_or(50).clamp(1, 1000);
     let q = r.clone();
     let rows = s.history.query(move |st| st.talkgroups(&q, limit)).await?;
-    let (tg_names, _) = names(&s, &r.site).await;
+    let (tg_names, _) = names(&s, &r).await;
     let items = rows.into_iter().map(|t| Named { alias: tg_names.get(&t.tg).cloned(), row: t }).collect();
     Ok(Json(Items { window: window(&r), items }))
 }
@@ -167,7 +174,7 @@ pub async fn radios(State(s): State<Arc<AppState>>, Query(w): Query<Window>) -> 
     let limit = w.limit.unwrap_or(50).clamp(1, 1000);
     let q = r.clone();
     let rows = s.history.query(move |st| st.radios(&q, limit)).await?;
-    let (_, unit_names) = names(&s, &r.site).await;
+    let (_, unit_names) = names(&s, &r).await;
     let items = rows.into_iter().map(|u| Named { alias: unit_names.get(&u.unit).cloned(), row: u }).collect();
     Ok(Json(Items { window: window(&r), items }))
 }
@@ -190,7 +197,7 @@ pub async fn radio(State(s): State<Arc<AppState>>, Path(unit): Path<u32>, Query(
     let r = range(&s, &w).await?;
     let q = r.clone();
     let d = s.history.query(move |st| st.radio(&q, unit)).await?;
-    let (tg_names, unit_names) = names(&s, &r.site).await;
+    let (tg_names, unit_names) = names(&s, &r).await;
     let radio = RadioView {
         unit,
         alias: unit_names.get(&unit).cloned(),
@@ -223,7 +230,7 @@ pub async fn talkgroup(State(s): State<Arc<AppState>>, Path(tg): Path<u32>, Quer
     let r = range(&s, &w).await?;
     let q = r.clone();
     let d = s.history.query(move |st| st.talkgroup(&q, tg)).await?;
-    let (tg_names, unit_names) = names(&s, &r.site).await;
+    let (tg_names, unit_names) = names(&s, &r).await;
     let talkgroup = TalkgroupView {
         tg: d.tg,
         alias: tg_names.get(&tg).cloned(),

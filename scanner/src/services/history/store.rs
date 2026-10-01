@@ -130,18 +130,37 @@ pub struct RecordingInfo {
     pub frame_errors: u64,
 }
 
-/// A query window on one site.
+/// A query window on one site, or on every site of a system (`by_system`: `site` is the system).
 #[derive(Debug, Clone)]
 pub struct Range {
     pub site: String,
+    pub by_system: bool,
     pub from_ms: u64,
     pub to_ms: u64,
 }
 
 impl Range {
+    pub fn site(site: &str, from_ms: u64, to_ms: u64) -> Range {
+        Range { site: site.to_string(), by_system: false, from_ms, to_ms }
+    }
+
     /// Where totals start: the hour `from_ms` is in.
     pub fn first_hour(&self) -> u64 {
         self.from_ms / HOUR_MS * HOUR_MS
+    }
+
+    /// `column` in the range's sites (`?1` is the site or the system).
+    fn scope(&self, column: &str) -> String {
+        if self.by_system {
+            format!("{column} IN (SELECT id FROM sites WHERE system = ?1)")
+        } else {
+            format!("{column} = ?1")
+        }
+    }
+
+    /// The range's sites and hours in the per-hour tables: ?1 site or system, ?2 first hour, ?3 end.
+    fn hours(&self) -> String {
+        format!("{} AND t >= ?2 AND t < ?3", self.scope("site"))
     }
 }
 
@@ -321,9 +340,6 @@ fn call_row(r: &rusqlite::Row) -> rusqlite::Result<CallRow> {
         sources: units_of(r.get(20)?),
     })
 }
-
-/// Site and hour window of the per-hour tables: ?1 site, ?2 first hour, ?3 end.
-const HOURS: &str = "site = ?1 AND t >= ?2 AND t < ?3";
 
 fn hours(q: &Range) -> (String, i64, i64) {
     (q.site.clone(), q.first_hour() as i64, q.to_ms as i64)
@@ -577,7 +593,8 @@ impl Store {
                 "SELECT COALESCE(SUM(calls), 0), COALESCE(SUM(followed), 0), COALESCE(SUM(encrypted), 0),
                  COALESCE(SUM(voice_ms), 0), COALESCE(SUM(clear_grant_ms), 0), COALESCE(SUM(enc_grant_ms), 0),
                  COALESCE(SUM(voiced_grant_ms), 0), COUNT(DISTINCT tg), MIN(first_ms), MAX(last_ms)
-                 FROM tg_hour WHERE {HOURS}"
+                 FROM tg_hour WHERE {}",
+                q.hours()
             ),
             params![w.0, w.1, w.2],
             |r| {
@@ -603,7 +620,7 @@ impl Store {
             s.voice_per_grant = Some(s.voice_s * 1000.0 / voiced_grant as f64);
         }
         s.radios = to_u64(conn.query_row(
-            &format!("SELECT COUNT(DISTINCT unit) FROM radio_hour WHERE {HOURS}"),
+            &format!("SELECT COUNT(DISTINCT unit) FROM radio_hour WHERE {}", q.hours()),
             params![w.0, w.1, w.2],
             |r| r.get(0),
         )?);
@@ -614,14 +631,15 @@ impl Store {
     pub fn talkgroups(&self, q: &Range, limit: usize) -> rusqlite::Result<Vec<TgStat>> {
         let conn = lock(&self.read);
         let w = hours(q);
-        let mut st = conn.prepare(&format!("SELECT tg, COUNT(DISTINCT unit) FROM radio_hour WHERE {HOURS} GROUP BY tg"))?;
+        let mut st = conn.prepare(&format!("SELECT tg, COUNT(DISTINCT unit) FROM radio_hour WHERE {} GROUP BY tg", q.hours()))?;
         let radios: HashMap<u32, u64> = st
             .query_map(params![w.0, w.1, w.2], |r| Ok((r.get(0)?, to_u64(r.get(1)?))))?
             .collect::<rusqlite::Result<_>>()?;
         let mut st = conn.prepare(&format!(
             "SELECT tg, SUM(calls), SUM(encrypted), SUM(voice_ms), SUM(clear_grant_ms + enc_grant_ms), MAX(last_ms)
-             FROM tg_hour WHERE {HOURS} GROUP BY tg
-             ORDER BY SUM(voice_ms + clear_grant_ms + enc_grant_ms) DESC, SUM(calls) DESC LIMIT ?4"
+             FROM tg_hour WHERE {} GROUP BY tg
+             ORDER BY SUM(voice_ms + clear_grant_ms + enc_grant_ms) DESC, SUM(calls) DESC LIMIT ?4",
+            q.hours()
         ))?;
         let rows = st.query_map(params![w.0, w.1, w.2, limit as i64], |r| {
             let tg: u32 = r.get(0)?;
@@ -645,8 +663,9 @@ impl Store {
         let mut st = conn.prepare(&format!(
             "SELECT unit, SUM(calls), SUM(encrypted), SUM(voice_ms), SUM(clear_grant_ms + enc_grant_ms),
              COUNT(DISTINCT tg), MAX(last_ms)
-             FROM radio_hour WHERE {HOURS} GROUP BY unit
-             ORDER BY SUM(voice_ms + clear_grant_ms + enc_grant_ms) DESC, SUM(calls) DESC LIMIT ?4"
+             FROM radio_hour WHERE {} GROUP BY unit
+             ORDER BY SUM(voice_ms + clear_grant_ms + enc_grant_ms) DESC, SUM(calls) DESC LIMIT ?4",
+            q.hours()
         ))?;
         let rows = st.query_map(params![w.0, w.1, w.2, limit as i64], |r| {
             Ok(RadioStat {
@@ -666,11 +685,12 @@ impl Store {
     pub fn radio(&self, q: &Range, unit: u32) -> rusqlite::Result<RadioDetail> {
         let conn = lock(&self.read);
         let w = hours(q);
-        let mut st = conn.prepare(
+        let mut st = conn.prepare(&format!(
             "SELECT tg, SUM(calls), SUM(encrypted), SUM(voice_ms), SUM(clear_grant_ms + enc_grant_ms), MAX(last_ms)
-             FROM radio_hour WHERE site = ?1 AND unit = ?4 AND t >= ?2 AND t < ?3 GROUP BY tg
+             FROM radio_hour WHERE {} AND unit = ?4 GROUP BY tg
              ORDER BY SUM(voice_ms + clear_grant_ms + enc_grant_ms) DESC, SUM(calls) DESC",
-        )?;
+            q.hours()
+        ))?;
         let talkgroups = st
             .query_map(params![w.0, w.1, w.2, unit], |r| {
                 Ok(RadioTg {
@@ -683,9 +703,11 @@ impl Store {
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut st = conn.prepare(
-            "SELECT tg, kind, first_ms, last_ms, count FROM radio_events WHERE site = ?1 AND unit = ?2 ORDER BY last_ms DESC",
-        )?;
+        let mut st = conn.prepare(&format!(
+            "SELECT tg, kind, MIN(first_ms), MAX(last_ms), SUM(count) FROM radio_events WHERE {} AND unit = ?2
+             GROUP BY tg, kind ORDER BY MAX(last_ms) DESC",
+            q.scope("site")
+        ))?;
         let events = st
             .query_map(params![q.site, unit], |r| {
                 Ok(UnitEvent {
@@ -706,8 +728,9 @@ impl Store {
         let w = hours(q);
         let mut st = conn.prepare(&format!(
             "SELECT unit, SUM(calls), SUM(encrypted), SUM(voice_ms), SUM(clear_grant_ms + enc_grant_ms), MAX(last_ms)
-             FROM radio_hour WHERE {HOURS} AND tg = ?4 GROUP BY unit
-             ORDER BY SUM(voice_ms + clear_grant_ms + enc_grant_ms) DESC, SUM(calls) DESC"
+             FROM radio_hour WHERE {} AND tg = ?4 GROUP BY unit
+             ORDER BY SUM(voice_ms + clear_grant_ms + enc_grant_ms) DESC, SUM(calls) DESC",
+            q.hours()
         ))?;
         let radios = st
             .query_map(params![w.0, w.1, w.2, tg], |r| {
@@ -723,15 +746,21 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         // One talkgroup's calls: few enough to read directly.
         let (calls, encrypted, first_enc, last_enc, last_clear): (i64, i64, Option<i64>, Option<i64>, Option<i64>) = conn.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(encrypted), 0),
-             MIN(CASE WHEN encrypted THEN started_ms END), MAX(CASE WHEN encrypted THEN started_ms END),
-             MAX(CASE WHEN NOT encrypted THEN started_ms END)
-             FROM calls WHERE site = ?1 AND tg = ?4 AND started_ms >= ?2 AND started_ms < ?3",
+            &format!(
+                "SELECT COUNT(*), COALESCE(SUM(encrypted), 0),
+                 MIN(CASE WHEN encrypted THEN started_ms END), MAX(CASE WHEN encrypted THEN started_ms END),
+                 MAX(CASE WHEN NOT encrypted THEN started_ms END)
+                 FROM calls WHERE {} AND tg = ?4 AND started_ms >= ?2 AND started_ms < ?3",
+                q.scope("site")
+            ),
             params![w.0, w.1, w.2, tg],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )?;
         let affiliated: i64 = conn.query_row(
-            "SELECT COUNT(DISTINCT unit) FROM radio_events WHERE site = ?1 AND tg = ?2 AND kind = 'group_affiliation'",
+            &format!(
+                "SELECT COUNT(DISTINCT unit) FROM radio_events WHERE {} AND tg = ?2 AND kind = 'group_affiliation'",
+                q.scope("site")
+            ),
             params![q.site, tg],
             |r| r.get(0),
         )?;
@@ -761,8 +790,9 @@ impl Store {
         };
         let sql = format!(
             "SELECT ((t + ?4) / ?5) * ?5 - ?4 AS b, SUM(calls), SUM(encrypted), SUM(voice_ms), SUM(clear_grant_ms),
-             SUM(enc_grant_ms) FROM {table} WHERE {HOURS} AND (?6 IS NULL OR tg = ?6){unit}
-             GROUP BY b ORDER BY b"
+             SUM(enc_grant_ms) FROM {table} WHERE {} AND (?6 IS NULL OR tg = ?6){unit}
+             GROUP BY b ORDER BY b",
+            q.hours()
         );
         let mut st = conn.prepare(&sql)?;
         let got: Vec<Bucket> = st
@@ -799,10 +829,12 @@ impl Store {
     pub fn calls(&self, q: &Range, f: SeriesFilter, limit: usize) -> rusqlite::Result<Vec<CallRow>> {
         let conn = lock(&self.read);
         let mut st = conn.prepare(&format!(
-            "SELECT {CALL_COLUMNS} FROM calls c WHERE c.site = ?1 AND c.started_ms >= ?2 AND c.started_ms < ?3
+            "SELECT {CALL_COLUMNS} FROM calls c WHERE {} AND c.started_ms >= ?2 AND c.started_ms < ?3
              AND (?5 IS NULL OR c.tg = ?5)
-             AND (?6 IS NULL OR c.id IN (SELECT call FROM transmissions WHERE site = ?1 AND unit = ?6 AND started_ms >= ?2 AND started_ms < ?3))
-             ORDER BY c.started_ms DESC LIMIT ?4"
+             AND (?6 IS NULL OR c.id IN (SELECT call FROM transmissions WHERE {} AND unit = ?6 AND started_ms >= ?2 AND started_ms < ?3))
+             ORDER BY c.started_ms DESC LIMIT ?4",
+            q.scope("c.site"),
+            q.scope("site")
         ))?;
         let rows = st.query_map(params![q.site, q.from_ms as i64, q.to_ms as i64, limit as i64, f.tg, f.unit], call_row)?;
         rows.collect()

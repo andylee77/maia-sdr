@@ -186,9 +186,11 @@ export function mount(host) {
 
   host.append(h('div', { class: 'stack' }, ctl.el, sum.el, h('div', { class: 'grid-2' }, tgCard.el, radioCard.el), detailCard.el, callsCard.el));
 
+  // `st.site` is a site id, or `system:<id>` for every site of a system.
   function query(extra = {}) {
     const q = new URLSearchParams({ hours: String(st.period.hours) });
-    if (st.site) q.set('site', st.site);
+    if (st.site && st.site.startsWith('system:')) q.set('system', st.site.slice(7));
+    else if (st.site) q.set('site', st.site);
     for (const [k, v] of Object.entries(extra)) if (v !== undefined && v !== null) q.set(k, String(v));
     return q.toString();
   }
@@ -206,7 +208,12 @@ export function mount(host) {
     const sites = d.sites.slice();
     if (d.active && !sites.some(s => s.site === d.active)) sites.unshift({ site: d.active, label: d.active, calls: 0 });
     if (!st.site) st.site = d.active || (sites[0] && sites[0].site) || null;
-    siteSel.replaceChildren(...sites.map(s => h('option', { value: s.site, text: (s.label || s.site) + (s.site === d.active ? ' (active)' : '') + ' — ' + num(s.calls) + ' calls' })));
+    // A system with several sites with history can be shown as a whole.
+    const systems = new Map();
+    for (const s of sites) if (s.system) systems.set(s.system, (systems.get(s.system) || 0) + 1);
+    const whole = [...systems].filter(([, n]) => n > 1).map(([id]) =>
+      h('option', { value: 'system:' + id, text: 'All sites of ' + id }));
+    siteSel.replaceChildren(...sites.map(s => h('option', { value: s.site, text: (s.label || s.site) + (s.site === d.active ? ' (active)' : '') + ' — ' + num(s.calls) + ' calls' })), ...whole);
     siteSel.value = st.site;
     setText(store, 'Kept ' + d.retention_days + ' days, up to ' + bytes(d.max_bytes) + ' (' + bytes(d.used_bytes) + ' used), in ' + d.database
       + (d.on_sd ? ' (SD card).' : ' (RAM: lost on reboot; insert an SD card to keep it).')
