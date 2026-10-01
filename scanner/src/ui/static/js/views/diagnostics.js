@@ -5,6 +5,7 @@ import { h, card, table, toast, switchInput } from '../dom.js';
 import { mhz, uptime, clockMs, DASH } from '../format.js';
 import { api } from '../api.js';
 import { spectrumCard } from './spectrum.js';
+import { boardCard } from './board.js';
 
 // Lines kept in the events box.
 const KEEP = 500;
@@ -14,7 +15,8 @@ export function mount(el) {
   const tuning = card('Tuning');
   const routes = card('API routes');
   const spectrum = spectrumCard();
-  el.append(h('div', { class: 'stack' }, events.el, spectrum.el, tuning.el, routes.el));
+  const board = boardCard();
+  el.append(h('div', { class: 'stack' }, events.el, spectrum.el, tuning.el, board.el, routes.el));
 
   const log = h('div', { class: 'log', role: 'log' });
   events.body.append(log);
@@ -87,6 +89,7 @@ export function mount(el) {
     unmount() {
       clearInterval(timer);
       spectrum.stop();
+      board.stop();
     },
   };
 }
