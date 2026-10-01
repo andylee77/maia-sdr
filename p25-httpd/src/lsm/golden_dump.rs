@@ -16,12 +16,12 @@
 //! Run with:
 //! ```text
 //!   cd p25-httpd
-//!   cargo test lsm::golden_dump:: -- --nocapture
+//!   cargo test lsm::golden_dump:: -- --ignored --nocapture
 //! ```
 //!
-//! Each test always (re)writes its golden file. The files are checked
-//! into git so the amaranth-side HDL tests can run standalone without
-//! a Rust toolchain.
+//! Each test always (re)writes its golden file, so they are ignored by
+//! default. The files are checked into git so the amaranth-side HDL tests
+//! can run standalone without a Rust toolchain.
 //!
 //! Output format (one file per stage), e.g. `lpf_31250.json`:
 //!
@@ -194,6 +194,7 @@ fn synth_lsm_iq(dibits: &[u8], output_rate_hz: f32) -> Vec<Complex32> {
 
 /// /2 streaming decimator: 4096 samples in @ 62.5 kSPS → 2048 out @ 31.25 kSPS.
 #[test]
+#[ignore = "rewrites maia-hdl/test/golden_vectors"]
 fn emit_decimator_62k5_to_31k25() {
     let n = 4096;
     let input = frequency_sweep(n, 62_500.0);
@@ -223,6 +224,7 @@ fn emit_decimator_62k5_to_31k25() {
 /// POST_DECIMATION_RATE_HZ (which now equals 25 000.0) so the swept input
 /// matches the legacy LPF design rate.
 #[test]
+#[ignore = "rewrites maia-hdl/test/golden_vectors"]
 fn emit_lpf_31250() {
     let n = 2048;
     let legacy_rate = 31_250.0_f32;
@@ -246,6 +248,7 @@ fn emit_lpf_31250() {
 /// 105-tap RRC matched filter: same fixture shape as LPF but on the
 /// RRC tap array. Pinned to LEGACY 31.25-kSPS rate (see lpf_31250 note).
 #[test]
+#[ignore = "rewrites maia-hdl/test/golden_vectors"]
 fn emit_rrc_31250() {
     let n = 2048;
     let legacy_rate = 31_250.0_f32;
@@ -275,6 +278,7 @@ fn emit_rrc_31250() {
 ///   "n_symbols", "soft_re", "soft_im", "soft_phase", "hard_dibit",
 ///   "pll", "sample_point", "truth_dibit"
 #[test]
+#[ignore = "rewrites maia-hdl/test/golden_vectors"]
 fn emit_demod_loop_synthetic() {
     // 256 dibits = enough to settle AGC + PLL + Gardner. Cycle through
     // all four constellation points so every quadrant is exercised.

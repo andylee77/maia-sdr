@@ -1,120 +1,99 @@
-# Maia SDR + Fishball P25 — Project Rules
+# Fishball scanner — project rules
 
-## Project Overview
+A P25 and DMR trunking scanner on the Fishball Z7020 board (Zynq-7020 with an AD9361 or
+AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, branch `fishball-p25`.
 
-This is the **Maia SDR** project with the **Fishball P25** trunking radio added on the
-`fishball-p25` branch. Maia SDR provides the base FPGA platform (AD9361, IIO DMA, DDC,
-register infrastructure). P25 adds C4FM demod, symbol timing, dibit DMA, and a Rust
-control channel decoder.
+## Current work
 
-- **Fork:** `andylee77/maia-sdr` (forked from `F5OEO/maia-sdr`, originally `maia-sdr/maia-sdr`)
-- **Branches:** `fishball-dev` (Maia SDR), `fishball-p25` (P25 radio)
-- **Target hardware:** Fishball Z7020 (Zynq-7020 + AD9361)
+Change 076 builds a fresh crate, `scanner/`, that replaces `p25-httpd/`. The design and its
+status log are in `doc/changes/076_refactor.md`; work phase by phase as its section 15 says.
 
-## Session pickup — READ FIRST
+- `p25-httpd` stays the production binary, with fixes only, until the cutover.
+- Docs the refactor needs go in the crate (`scanner/doc/`). The old docs stay where they are.
 
-If you are picking up this project mid-arc:
+## Layout
 
-1. Read [`doc/PROJECT_TIMELINE.md`](doc/PROJECT_TIMELINE.md) — chronological arc, workflow, tool decision tree, refuted hypotheses, gotchas. The single doc designed to bring a fresh session up to speed.
-2. Read the top entry in your auto-memory `MEMORY.md` — points to the current "READ FIRST" memory for the active arc.
-3. Use [`doc/PROJECT_INVENTORY.md`](doc/PROJECT_INVENTORY.md) when you need to find a specific file in the repo.
+| Path | What |
+|------|------|
+| `p25-httpd/` | Production daemon on the Zynq PS (Rust): decoders, trunking, audio, history, API, web UI (`src/httpd/ui/`, plain ES modules embedded at compile time) |
+| `p25-httpd/p25-json/`, `p25-httpd/p25-pac/` | API types; register PAC generated from the gateware's SVD |
+| `scanner/` | The 076 crate (from phase 1) |
+| `maia-hdl/p25_hdl/` | P25 gateware (Amaranth); Vivado project `maia-hdl/projects/fishball7020_p25/` |
+| `maia-hdl/maia_hdl/`, `maia-hdl/hwval_hdl/` | Maia gateware; hardware-validation gateware |
+| `bench/` | `fbench` CLI and board agent (`doc/HW_VALIDATION_SUITE.md`) |
+| `tools/` | Host scripts: captures, analysis, SDRTrunk reference harness |
+| `runs/` | Gitignored run output and captures (`runs/dmr/` holds the DMR reference captures) |
+| `doc/` | `P25_ADDRESS_MAP.md` (registers, DMA rings), `API_CONSUMERS.md`, `ROADMAP.md`; `doc/changes/NNN_*.md`, one per change |
+| `maia-httpd/`, `maia-wasm/`, `maia-kmod/` | Upstream Maia; the unit uses `maia-kmod`'s rxbuffer driver for DMA |
 
-Don't re-derive what's been tried. The timeline doc has refuted hypotheses listed; check there before retrying a hypothesis.
+## Checks
 
-## Components
+Every commit builds and passes these, run from `p25-httpd/` (later also `scanner/`):
 
-| Component | Language | Purpose |
-|-----------|----------|---------|
-| `maia-hdl/maia_hdl/` | Python (Amaranth) + Vivado | Maia FPGA gateware (DDC, DMA, registers) |
-| `maia-hdl/p25_hdl/` | Python (Amaranth) | P25 FPGA gateware (C4FM demod, symbol timing, dibit packer) |
-| `maia-httpd/` | Rust | Maia HTTP daemon on Zynq ARM |
-| `p25-httpd/` | Rust | P25 HTTP daemon (control channel decoder, web UI) |
-| `maia-wasm/` | Rust → WASM | Web UI (waterfall, WebGL2) |
-| `maia-kmod/` | C | Linux kernel module for DMA |
+- **Host tests:** `cargo test`. The golden-vector emitters are `#[ignore]`; run them with
+  `cargo test lsm::golden_dump:: -- --ignored` only when the HDL test vectors must change.
+- **ARM check** (the host check skips the `cfg(target_os = "linux")` code):
 
-## Key Directories
+  ```sh
+  V=/c/Users/Andy/Projects/MAIA_SDR/maia-sdr/.venv-hdl
+  PATH="$V/Scripts:$V/Lib/site-packages/ziglang:$PATH" cargo-zigbuild check --target armv7-unknown-linux-gnueabihf.2.31
+  ```
 
-- `maia-hdl/maia_hdl/` — Maia HDL source modules
-- `maia-hdl/p25_hdl/` — P25 HDL source modules
-- `maia-hdl/p25_hdl/p25_top.py` — P25 top-level IP core
-- `maia-hdl/ip/p25-core/` — P25 Vivado IP packaging
-- `maia-hdl/projects/fishball7020_iio/` — Maia FPGA project
-- `maia-hdl/projects/fishball7020_p25/` — P25 FPGA project
-- `maia-hdl/projects/` — Vivado project definitions per board
-- `maia-httpd/src/` — Maia httpd source
-- `p25-httpd/src/` — P25 httpd source
-- `p25-httpd/p25-pac/` — P25 FPGA register PAC (from SVD)
-- `p25-httpd/p25-json/` — P25 JSON API types
-- `DEVPLAN.md` — P25 development roadmap (repo root)
-- `BUILD_FPGA.md` — P25 FPGA bitstream build guide (repo root)
-- `doc/changes/` — Detailed change documentation (Maia + P25)
-- `maia-wasm/src/` — WASM source (waterfall, UI, WebSocket)
+  The Tezuka toolchain rejects `///` on fn params and recently stabilised features.
+- **DMR reference:** `DMR_CAPTURE_DIR=C:/Users/Andy/Projects/MAIA_SDR/maia-sdr/runs/dmr cargo test --release dmr::`
+  keeps 24,984+ of 24,996 lines matching SDRTrunk, and the follower test keeps the 20:57 call.
+- **P25 replay corpus:** `python bench/fbench.py run rf.p25_corpus`, with unit B transmitting
+  into unit A. Andy wires the bench link when a test needs it; ask first.
+- **Live:** on unit A, Clay County P25 (CC 860.9625 MHz) and Clay Electric DMR (site `cec_gcs`,
+  CC 454.36875 MHz).
 
-## Build Environment
+## Builds
 
-### FPGA (maia-hdl)
+- **ARM binary:** `$V/Scripts/cargo-zigbuild.exe zigbuild --release --target armv7-unknown-linux-gnueabihf`,
+  with `CARGO_ZIGBUILD_ZIG_PATH` set to `$V/Lib/site-packages/ziglang/zig.exe`.
+- **SD image:** `./build_tezuka_p25_pretty.sh` (about 30 minutes cached). It builds tezuka_fw
+  `fishball-dev` with `fishball_p25_7020_defconfig`, and its p25-httpd package rsyncs this
+  checkout, so don't run cargo while it runs. It exits 0 on failure: grep `tezuka_build.log`
+  for `[ERROR]`. Images land in `tezuka_fw/output_images/sdimg/`.
+- **Gateware:** `./build_fpga_p25_pretty.sh` (Vivado 2023.2, only inside this tree; it
+  regenerates the Verilog, SVD and PAC). Not needed for 076.
+- Never run `cargo fix`.
 
-- **Vivado:** 2023.2 (Xilinx)
-- **Amaranth:** Python virtual environment
-- **Maia build:** `build_fpga.bat` (builds fishball7020_iio)
-- **P25 build:** `build_fpga.bat --p25` (builds fishball7020_p25)
-- **P25 build guide:** `BUILD_FPGA.md` (repo root)
+## Units
 
-### Firmware
+| Unit | Address | Board | Notes |
+|------|---------|-------|-------|
+| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | The unit in use |
+| B | `192.168.12.1` (USB) | AD9363 | Run `fsck.fat` on its SD card before its first new image |
 
-- Built by **Tezuka firmware** Buildroot
-- Tezuka's build mounts this repo at `/mnt/maia-sdr` in Docker
-- **Maia:** `fishball-dev` branch, `fishball_maiasdr_7020_defconfig`
-- **P25:** `fishball-dev` branch (P25 defconfig TBD -- Phase 5)
-- Cross-compiled for ARM (Zynq-7000) inside the Tezuka Docker build
+- **SSH:** write the full command literally, never through a variable:
+  `ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@192.168.120.50 '...'`.
+  Copy with `scp -O` (dropbear has no sftp-server).
+- **Deploy a test binary:** stream it to `/tmp/p25-httpd.new`, `/etc/init.d/S60p25-httpd stop`,
+  copy it over `/usr/bin/p25-httpd` and `chmod +x`, then start. The rootfs is in RAM, so a reboot
+  returns to the SD image. Log: `/var/log/p25-httpd.log`. Web UI on port 8080 (HTTPS 8443).
+- **State on a unit:** `/mnt/jffs2/p25-*` (settings, sites, plans, crystal calibration) and
+  `/mnt/sd` (`p25-history.sqlite`, recordings).
+- **Shared units:** before a restart, deploy, retune or site switch, run `ListAgents` and message
+  any other session that may be using the unit.
+- **Bench link:** A eth0 `10.25.0.1` ↔ B eth0 `10.25.0.2`, B transmitting into A through pads.
 
-### Submodules
+## Rules
 
-- `maia-hdl/adi-hdl` → `analogdevicesinc/hdl` (Analog Devices HDL library)
-- `maia-hdl/XilinxUnisimLibrary` → Xilinx simulation primitives
+- Commit locally on `fishball-p25`; ask before any push. No `Co-Authored-By` lines.
+- Each change gets `doc/changes/NNN_*.md` and an entry in `CHANGELOG_FORK.md`. Leave the
+  upstream `CHANGELOG.md` alone.
+- Code: a short module header saying what the module owns, and comments that state intent. No
+  dates, phase history or dev notes in code; git and `CHANGELOG_FORK.md` hold the history.
+- SDRTrunk (`C:\Users\Andy\Projects\SDRTrunk\sdrtrunk`) is the reference for the P25 and DMR
+  DSP and protocol constants. Don't change one without evidence;
+  `tools/sdrtrunk_dmr_reference.py` decodes our captures with SDRTrunk itself.
+- Gateware does not change in 076.
+- Windows and Git Bash: `sed -i` strips CRLF, and a heredoc loses backslashes. Edit files with
+  the editor tools.
 
-## Git Workflow
+## Related
 
-- **`main`** branch tracks upstream — keep clean for syncing
-- **`fishball-dev`** is the Maia SDR development branch
-- **`fishball-p25`** is the P25 radio branch (forked from fishball-dev)
-- Maia changes go on `fishball-dev`, committed with descriptive messages
-- P25 changes go on `fishball-p25`
-- Each significant change gets a doc in `doc/changes/NNN_description.md`
-- Do NOT modify the upstream `CHANGELOG.md`
-
-## Conventions
-
-- FPGA projects per board live in `maia-hdl/projects/<board>/`
-- Maia target project: `maia-hdl/projects/fishball7020_iio/`
-- P25 target project: `maia-hdl/projects/fishball7020_p25/`
-- Maia Rust workspace: `maia-httpd/` with sub-crates `maia-json` and `maia-pac`
-- P25 Rust workspace: `p25-httpd/` with sub-crates `p25-json` and `p25-pac`
-- WASM build: `maia-wasm/` uses wasm-pack
-- Build outputs go to build-specific directories (gitignored by component)
-- Use `doc/changes/` for detailed technical docs (Maia + P25 changes)
-- P25 dev plan: `DEVPLAN.md` (repo root)
-- P25 dev log: merged into root `DEVLOG.md`
-- Update `CHANGELOG_FORK.md` with each change (Maia and P25)
-
-## Related Repositories
-
-| Repo | Location | Purpose |
-|------|----------|---------|
-| `andylee77/tezuka_fw` | `C:\Users\Andy\Projects\Tezuka\tezuka_fw` | Firmware (Buildroot) |
-| `andylee77/sdrtrunk` | `C:\Users\Andy\Projects\SDRTrunk\sdrtrunk` | SDRTrunk (P25 reference) |
-| `andylee77/fishball-p25` | archived | Original standalone P25 repo (migrated here) |
-| Upstream `F5OEO/maia-sdr` | remote `upstream` | F5OEO's fork |
-| Original `maia-sdr/maia-sdr` | — | Daniel Estévez's original |
-
-## Shared Documentation
-
-- `C:\Users\Andy\Projects\_shared\` — Cross-project docs (build systems, environment, hardware refs)
-- `C:\Users\Andy\Projects\_shared\Hardware\` — Board schematics, pinouts, block diagrams
-  - `schematic/` — Fishball 7020 schematic analysis (FPGA banks, AD9361 interface, peripherals)
-  - `BOARD_BLOCK_DIAGRAMS.md` — Block diagrams for all supported boards
-  - `PIN_COMPATIBILITY_E200_VS_FISHBALL.md` — Pin compatibility analysis
-- `C:\Users\Andy\Projects\_shared\BUILD_SYSTEMS.md` — Full firmware build pipeline overview
-- `C:\Users\Andy\Projects\_shared\VIVADO_2023_INSTALL_GUIDE.md` — Vivado installation guide
-- `C:\Users\Andy\Projects\MAIA_SDR\work_docs\` — Work documentation (Vivado build guide, dev plans)
-- `C:\Users\Andy\Projects\MAIA_SDR\build_scripts\` — Original build scripts (reference)
+- Firmware: `C:\Users\Andy\Projects\Tezuka\tezuka_fw`, branch `fishball-dev`. Init script:
+  `board/tezuka/common/overlay_p25/etc/init.d/S60p25-httpd`.
+- Shared docs (board schematics, build systems, Vivado install): `C:\Users\Andy\Projects\_shared\`.
