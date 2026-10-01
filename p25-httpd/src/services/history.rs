@@ -355,6 +355,35 @@ fn to_u64(v: i64) -> u64 {
     v.max(0) as u64
 }
 
+/// The columns `call_row` reads (table alias `c`).
+const CALL_COLUMNS: &str = "c.site, c.call_id, c.started_ms, c.ended_ms, c.tg, c.source, c.freq_hz, c.chain, c.encrypted,
+     c.followed, c.not_followed, c.voice_ms, c.grant_ms, c.imbe, c.vocoder_errors, c.close_reason,
+     (SELECT GROUP_CONCAT(unit) FROM call_units u WHERE u.call = c.id), c.channel";
+
+fn call_row(r: &rusqlite::Row) -> rusqlite::Result<CallRow> {
+    let units: Option<String> = r.get(16)?;
+    Ok(CallRow {
+        site: r.get(0)?,
+        call_id: to_u64(r.get(1)?),
+        started_ms: to_u64(r.get(2)?),
+        ended_ms: to_u64(r.get(3)?),
+        tg: r.get(4)?,
+        source: r.get(5)?,
+        sources: units.unwrap_or_default().split(',').filter_map(|s| s.parse().ok()).collect(),
+        freq_hz: r.get::<_, Option<i64>>(6)?.map(to_u64),
+        channel: r.get(17)?,
+        chain: r.get(7)?,
+        encrypted: r.get(8)?,
+        followed: r.get(9)?,
+        not_followed: r.get(10)?,
+        voice_ms: to_u64(r.get(11)?),
+        grant_ms: to_u64(r.get(12)?),
+        imbe: to_u64(r.get(13)?),
+        vocoder_errors: to_u64(r.get(14)?),
+        close_reason: r.get::<_, Option<String>>(15)?.unwrap_or_default(),
+    })
+}
+
 fn secs(ms: i64) -> f64 {
     ms as f64 / 1000.0
 }
@@ -790,43 +819,34 @@ impl HistoryStore {
     /// Calls in the window, newest first (for listings and CSV).
     pub fn calls(&self, q: &Range, f: SeriesFilter, limit: usize) -> rusqlite::Result<Vec<CallRow>> {
         let conn = self.conn();
-        let mut st = conn.prepare(
-            "SELECT c.site, c.call_id, c.started_ms, c.ended_ms, c.tg, c.source, c.freq_hz, c.chain, c.encrypted,
-             c.followed, c.not_followed, c.voice_ms, c.grant_ms, c.imbe, c.vocoder_errors, c.close_reason,
-             (SELECT GROUP_CONCAT(unit) FROM call_units u WHERE u.call = c.id), c.channel
-             FROM calls c WHERE c.site = ?1 AND c.started_ms >= ?2 AND c.started_ms < ?3
+        let mut st = conn.prepare(&format!(
+            "SELECT {CALL_COLUMNS} FROM calls c WHERE c.site = ?1 AND c.started_ms >= ?2 AND c.started_ms < ?3
              AND (?5 IS NULL OR c.tg = ?5)
              AND (?6 IS NULL OR c.id IN (SELECT call FROM call_units WHERE site = ?1 AND unit = ?6 AND started_ms >= ?2 AND started_ms < ?3))
-             ORDER BY c.started_ms DESC LIMIT ?4",
-        )?;
-        let rows = st.query_map(params![q.site, q.from_ms as i64, q.to_ms as i64, limit as i64, f.tg, f.unit], |r| {
-            let units: Option<String> = r.get(16)?;
-            Ok(CallRow {
-                site: r.get(0)?,
-                call_id: to_u64(r.get(1)?),
-                started_ms: to_u64(r.get(2)?),
-                ended_ms: to_u64(r.get(3)?),
-                tg: r.get(4)?,
-                source: r.get(5)?,
-                sources: units
-                    .unwrap_or_default()
-                    .split(',')
-                    .filter_map(|s| s.parse().ok())
-                    .collect(),
-                freq_hz: r.get::<_, Option<i64>>(6)?.map(to_u64),
-                channel: r.get(17)?,
-                chain: r.get(7)?,
-                encrypted: r.get(8)?,
-                followed: r.get(9)?,
-                not_followed: r.get(10)?,
-                voice_ms: to_u64(r.get(11)?),
-                grant_ms: to_u64(r.get(12)?),
-                imbe: to_u64(r.get(13)?),
-                vocoder_errors: to_u64(r.get(14)?),
-                close_reason: r.get::<_, Option<String>>(15)?.unwrap_or_default(),
-            })
-        })?;
+             ORDER BY c.started_ms DESC LIMIT ?4"
+        ))?;
+        let rows = st.query_map(params![q.site, q.from_ms as i64, q.to_ms as i64, limit as i64, f.tg, f.unit], call_row)?;
         rows.collect()
+    }
+
+    /// Change 074b: the newest calls of every site, newest first: the
+    /// clear followed ones, or (`not_followed`) the encrypted and
+    /// not-followed ones. Refill Recent calls after a restart.
+    pub fn latest_calls(&self, not_followed: bool, limit: usize) -> rusqlite::Result<Vec<CallRow>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
+            "SELECT {CALL_COLUMNS} FROM calls c
+             WHERE (c.encrypted OR c.not_followed IS NOT NULL) = ?1
+             ORDER BY c.started_ms DESC LIMIT ?2"
+        ))?;
+        let rows = st.query_map(params![not_followed, limit as i64], call_row)?;
+        rows.collect()
+    }
+
+    /// Change 074b: the highest call id stored (call ids continue after
+    /// it across a restart).
+    pub fn max_call_id(&self) -> rusqlite::Result<u64> {
+        Ok(to_u64(self.conn().query_row("SELECT COALESCE(MAX(call_id), 0) FROM calls", [], |r| r.get(0))?))
     }
 
     /// What a recording on the SD card does not carry in its file name:

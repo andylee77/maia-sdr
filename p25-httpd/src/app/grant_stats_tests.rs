@@ -263,3 +263,40 @@ fn calls_on_two_chains_are_summarised_separately() {
     assert_eq!(r.summary(4).close_reason, CloseReason::Timeout);
     assert_eq!(r.active.iter().map(|a| a.call_id).collect::<Vec<_>>(), vec![3, 5]);
 }
+
+/// Change 074b: stored calls refill the rings after a restart (followed
+/// ones to the clear ring, encrypted / not-followed to the other).
+#[test]
+fn stored_calls_refill_the_rings() {
+    use crate::services::history::CallRow;
+    let row = |call_id: u64, at: u64, enc: bool| CallRow {
+        site: "clay".into(),
+        call_id,
+        started_ms: at,
+        ended_ms: at + 4_000,
+        tg: 300,
+        source: Some(1014),
+        sources: vec![1014, 3599044],
+        freq_hz: Some(858_462_500),
+        channel: Some("1193".into()),
+        chain: 2,
+        encrypted: enc,
+        followed: !enc,
+        not_followed: enc.then(|| "encrypted".to_string()),
+        voice_ms: if enc { 0 } else { 1_800 },
+        grant_ms: 3_100,
+        imbe: if enc { 0 } else { 90 },
+        vocoder_errors: 1,
+        close_reason: "call_end".into(),
+    };
+    let (clear, enc) = (new_ring(), new_ring());
+    backfill(&clear, &enc, vec![row(12, 2_000, false), row(11, 1_000, false), row(13, 3_000, true)]);
+    let c = clear.lock().unwrap();
+    assert_eq!(c.iter().map(|s| s.call_id).collect::<Vec<_>>(), vec![11, 12], "oldest first");
+    let s = &c[1];
+    assert_eq!((s.duration_ms, s.air_duration_ms, s.imbe_extracted, s.ldu1_count + s.ldu2_count), (4_000, Some(3_100), 90, 10));
+    assert_eq!((s.close_reason, s.chain, s.channel.as_deref(), s.site.as_str()), (CloseReason::CallEnd, 2, Some("1193"), "clay"));
+    assert_eq!(s.sources_observed, vec![1014, 3599044]);
+    let e = enc.lock().unwrap();
+    assert_eq!((e.len(), e[0].not_followed, e[0].encrypted), (1, Some("encrypted"), true));
+}

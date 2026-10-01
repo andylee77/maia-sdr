@@ -344,7 +344,7 @@ pub enum SourceUpdateVia {
     TdulcMotTc,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CloseReason {
     /// `hang_ms` (change 057: persisted setting, default 3 s; was a

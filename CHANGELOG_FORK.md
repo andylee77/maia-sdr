@@ -5,6 +5,35 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-30] Recent calls and the history survive a restart (074b)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-30-restart-safe-074b`
+**Bake required:** NO (p25-httpd).
+
+- **Symptom** (Andy, unit A): call details showed their stats, then lost them; Recent calls
+  showed "0 calls" next to the recordings; the SD card had more calls than the history.
+- **Causes.**
+  - The call summaries behind Recent calls lived only in memory: every restart dropped them,
+    leaving the recordings with no stats.
+  - The history stores a call 15 s after it ends, every 30 s. A restart (SIGTERM, which
+    p25-httpd did not handle) lost the calls of the last ~45 s, while their recordings were
+    already on the card. Many deploys today, plus the 073a boot race, made the gap visible.
+- **Fix.**
+  - At start, the rings are refilled from the history (the newest 200 followed and 50
+    encrypted / not-followed calls): stats, on-air and held-open times, close reason, chain,
+    channel and radios come back (`grant_stats::backfill`).
+  - On SIGTERM the history stores every finished call at once, then p25-httpd exits (at most
+    3 s). Checked on unit A: a call that ended 8 s before a restart was in the history after
+    it.
+  - Call ids continue after the highest id in the history too, not only the SD recordings
+    (encrypted calls are not recorded; a reused id would pair a recording with another call).
+- Calls lost before this change stay missing from the history; their recordings remain.
+
+Tests: p25-httpd 329 (stored calls refill the rings).
+
+---
+
 ## [2026-09-30] Recordings keep their frequency and channel across a reboot (074a)
 
 **Branch:** fishball-p25

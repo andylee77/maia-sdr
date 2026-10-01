@@ -668,6 +668,72 @@ fn route_push(
 /// a busy site.
 pub const ENC_RING_CAP: usize = 50;
 
+/// Change 074b: a stored call as a summary, to refill the rings after a
+/// restart (Recent calls). The history keeps the voice, on-air and
+/// held-open times, close reason, chain, channel and radios; per-frame
+/// details it does not keep stay empty (LDUs are 9 IMBE frames each).
+pub fn summary_from_history(r: &crate::services::history::CallRow) -> GrantDecodeSummary {
+    let reason: &'static str = match r.not_followed.as_deref() {
+        None => "",
+        Some("encrypted") => "encrypted",
+        Some("ignored") => "ignored",
+        Some("monitor_list") => "monitor_list",
+        Some("phase2") => "phase2",
+        Some("speaker_off") => "speaker_off",
+        Some("sticky_lock") => "sticky_lock",
+        Some("traffic_lock") => "traffic_lock",
+        Some(_) => "not_followed",
+    };
+    let ldu = r.imbe / 9;
+    GrantDecodeSummary {
+        call_id: r.call_id,
+        tg: r.tg,
+        nac: 0,
+        source: r.source,
+        actual_speaker: None,
+        started_unix_ms: r.started_ms,
+        ended_unix_ms: r.ended_ms,
+        duration_ms: r.ended_ms.saturating_sub(r.started_ms),
+        first_imbe_ms: None,
+        first_audio_at_unix_ms: None,
+        hdu_count: 0,
+        ldu1_count: ldu.div_ceil(2),
+        ldu2_count: ldu / 2,
+        tdu_count: 0,
+        tdu_lc_count: 0,
+        framer_arm_hdu: 0,
+        framer_arm_ldu1: 0,
+        framer_arm_ldu2: 0,
+        framer_arm_tdu: 0,
+        framer_arm_tdu_lc: 0,
+        imbe_extracted: r.imbe,
+        imbe_dropped: 0,
+        vocoder_pcm_samples: if r.encrypted { 0 } else { r.imbe * 160 },
+        vocoder_errors: r.vocoder_errors,
+        vocoder_silent: 0,
+        vocoder_encrypted: if r.encrypted { r.imbe } else { 0 },
+        encrypted: r.encrypted,
+        not_followed: (!reason.is_empty()).then_some(reason),
+        freq_hz: r.freq_hz,
+        channel: r.channel.clone(),
+        close_reason: serde_json::from_value(serde_json::Value::String(r.close_reason.clone())).unwrap_or(CloseReason::Timeout),
+        sources_observed: r.sources.clone(),
+        agc_gain_q97_at_close: None,
+        air_duration_ms: (r.grant_ms > 0).then_some(r.grant_ms),
+        chain: r.chain,
+        site: r.site.clone(),
+    }
+}
+
+/// Change 074b: refill the rings with stored calls (any order; pushed
+/// oldest first).
+pub fn backfill(clear_ring: &GrantStatsRing, enc_ring: &GrantStatsRing, mut rows: Vec<crate::services::history::CallRow>) {
+    rows.sort_by_key(|r| r.started_ms);
+    for r in &rows {
+        route_push(clear_ring, enc_ring, summary_from_history(r));
+    }
+}
+
 pub fn new_ring() -> GrantStatsRing {
     Arc::new(Mutex::new(VecDeque::with_capacity(RING_CAP)))
 }

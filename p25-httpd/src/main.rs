@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-30-rec-channel-074a";
+pub const BUILD_TAG: &str = "2026-09-30-restart-safe-074b";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -812,6 +812,16 @@ async fn main() -> anyhow::Result<()> {
     let discovery: app::discovery::SharedDiscovery = Default::default();
     // Change 072: the activity history.
     let history = app::history_task::open_store();
+    // Change 074b: call ids continue after the highest stored one too
+    // (calls without a recording, e.g. encrypted ones, are only in the
+    // history): a reused id would pair a recording with another call.
+    let first_call_id = match history.clone() {
+        Some(h) => {
+            let max = tokio::task::spawn_blocking(move || h.max_call_id().unwrap_or(0)).await.unwrap_or(0);
+            first_call_id.max(max + 1)
+        }
+        None => first_call_id,
+    };
     // The control channel tuned now (the C4FM thread resets its
     // equaliser when it moves).
     let current_control_freq_for_c4fm = Arc::new(std::sync::atomic::AtomicU64::new(control_freq));
@@ -1987,6 +1997,20 @@ async fn main() -> anyhow::Result<()> {
         grant_stats_rev: crate::app::grant_stats::new_rev(),
     });
 
+    // Change 074b: Recent calls survive a restart: the rings start with
+    // the newest stored calls (before the stats task adds new ones).
+    if let Some(h) = history.clone() {
+        let rows = tokio::task::spawn_blocking(move || {
+            let mut v = h.latest_calls(false, crate::app::grant_stats::RING_CAP).unwrap_or_default();
+            v.extend(h.latest_calls(true, crate::app::grant_stats::ENC_RING_CAP).unwrap_or_default());
+            v
+        })
+        .await
+        .unwrap_or_default();
+        tracing::info!("Recent calls: {} restored from the history", rows.len());
+        crate::app::grant_stats::backfill(&state.grant_decode_stats, &state.enc_grant_decode_stats, rows);
+    }
+
     // Phase 2b unified call lifecycle: call_tracker is spawned up
     // alongside the recorder (so the recorder can subscribe to its
     // CallTrackerEvent broadcast at construction time). grant_stats
@@ -2077,9 +2101,27 @@ async fn main() -> anyhow::Result<()> {
     app::recentre_task::spawn_recentre_task(state.clone());
 
     // Change 072: store finished calls and radio events.
+    let (history_flush_tx, history_flush_rx) = tokio::sync::mpsc::channel(1);
     if let Some(store) = history.clone() {
-        app::history_task::spawn_history_task(state.clone(), store, unit_event_rx);
+        app::history_task::spawn_history_task(state.clone(), store, unit_event_rx, history_flush_rx);
     }
+    // Change 074b: on SIGTERM (init stop, reboot) the history stores every
+    // finished call first: a restart no longer loses the calls of the
+    // last ~45 s (their recordings were on the card, the calls not).
+    #[cfg(unix)]
+    tokio::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+        let Ok(mut term) = signal(SignalKind::terminate()) else { return };
+        term.recv().await;
+        tracing::info!("SIGTERM: storing finished calls, then exiting");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if history_flush_tx.send(tx).await.is_ok() {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), rx).await;
+        }
+        std::process::exit(0);
+    });
+    #[cfg(not(unix))]
+    drop(history_flush_tx);
     // Change 074: collect packet data.
     {
         app::data_task::spawn_data_task(data_state.clone(), event_log.clone(), pdu_rx);

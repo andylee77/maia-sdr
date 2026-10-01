@@ -78,7 +78,16 @@ fn gather(notes: &mut HashMap<NoteKey, UnitNote>, site: String, u: UnitObservati
     }
 }
 
-pub fn spawn_history_task(state: Arc<AppState>, store: Arc<HistoryStore>, mut units: mpsc::Receiver<UnitObservation>) {
+/// Change 074b: a request to store every finished call now (shutdown);
+/// answered when done.
+pub type FlushRequest = tokio::sync::oneshot::Sender<()>;
+
+pub fn spawn_history_task(
+    state: Arc<AppState>,
+    store: Arc<HistoryStore>,
+    mut units: mpsc::Receiver<UnitObservation>,
+    mut flush: mpsc::Receiver<FlushRequest>,
+) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(FLUSH);
         // Calls stored (by id and start), remembered while they are in
@@ -87,9 +96,12 @@ pub fn spawn_history_task(state: Arc<AppState>, store: Arc<HistoryStore>, mut un
         let mut seen: HashSet<(u64, u64)> = HashSet::new();
         let mut notes: HashMap<NoteKey, UnitNote> = HashMap::new();
         let mut last_prune = 0u64;
+        let mut final_flush: Option<FlushRequest> = None;
         loop {
             tokio::select! {
                 _ = tick.tick() => {}
+                // Shutdown: store what has ended, without the settle wait.
+                Some(done) = flush.recv() => final_flush = Some(done),
                 Some(u) = units.recv() => {
                     if state.radio_lease.is_normal() {
                         gather(&mut notes, state.lo_plans.site(), u, now_unix_ms());
@@ -98,6 +110,7 @@ pub fn spawn_history_task(state: Arc<AppState>, store: Arc<HistoryStore>, mut un
                 }
             }
             let now = now_unix_ms();
+            let settle = if final_flush.is_some() { 0 } else { SETTLE_MS };
             let mut rows = Vec::new();
             // Each call carries its site (change 073): one that ends after
             // a site switch still goes to the site it was on. (No calls
@@ -109,7 +122,7 @@ pub fn spawn_history_task(state: Arc<AppState>, store: Arc<HistoryStore>, mut un
                 for g in r.iter() {
                     let key = (g.call_id, g.started_unix_ms);
                     in_rings.insert(key);
-                    if g.ended_unix_ms == 0 || g.ended_unix_ms + SETTLE_MS > now || seen.contains(&key) {
+                    if g.ended_unix_ms == 0 || g.ended_unix_ms + settle > now || seen.contains(&key) {
                         continue;
                     }
                     seen.insert(key);
@@ -119,6 +132,10 @@ pub fn spawn_history_task(state: Arc<AppState>, store: Arc<HistoryStore>, mut un
             seen.retain(|k| in_rings.contains(k));
             let prune = now.saturating_sub(last_prune) > 24 * 3_600_000;
             if rows.is_empty() && notes.is_empty() && !prune {
+                if let Some(done) = final_flush.take() {
+                    let _ = done.send(());
+                    return;
+                }
                 continue;
             }
             let mut by_site: HashMap<String, Vec<UnitNote>> = HashMap::new();
@@ -153,6 +170,10 @@ pub fn spawn_history_task(state: Arc<AppState>, store: Arc<HistoryStore>, mut un
                 }
                 Ok(Err(e)) => tracing::warn!("history: not stored: {e}"),
                 Err(e) => tracing::warn!("history: store task failed: {e}"),
+            }
+            if let Some(done) = final_flush.take() {
+                let _ = done.send(());
+                return;
             }
         }
     });
