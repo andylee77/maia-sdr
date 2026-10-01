@@ -848,6 +848,17 @@ impl Store {
         rows.collect()
     }
 
+    /// The newest stored call with this id.
+    pub fn call(&self, call_id: u64) -> rusqlite::Result<Option<CallRow>> {
+        let conn = lock(&self.read);
+        conn.query_row(
+            &format!("SELECT {CALL_COLUMNS} FROM calls c WHERE c.call_id = ?1 ORDER BY c.started_ms DESC LIMIT 1"),
+            params![call_id as i64],
+            call_row,
+        )
+        .optional()
+    }
+
     /// The highest call id stored (call ids continue after it).
     pub fn max_call_id(&self) -> rusqlite::Result<u64> {
         Ok(to_u64(lock(&self.read).query_row("SELECT COALESCE(MAX(call_id), 0) FROM calls", [], |r| r.get(0))?))

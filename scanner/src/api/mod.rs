@@ -81,6 +81,7 @@ routes! {
     get "/api/v1/routes" => routes, "this list";
     get "/api/v1/status" => v1::status::get, "build, uptime, the live site, its control channel and the tuning";
     get "/api/v1/calls" => v1::calls::get, "the open calls and the newest closed ones";
+    get "/api/v1/calls/{id}" => v1::calls::one, "one call: live while recent, else from the history";
     get "/ws/events" => ws::events, "a text frame when a call opens or closes or a recording is saved";
     get "/ws/audio" => ws::audio, "live audio of every lane (binary 20 ms frames, text meta and lag frames)";
     get "/api/v1/activity/sites" => v1::activity::sites, "sites with history; where it is kept, its size and limits";

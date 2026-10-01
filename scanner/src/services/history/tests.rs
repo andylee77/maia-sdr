@@ -265,6 +265,8 @@ fn calls_listing_newest_first_with_their_radios() {
     let by101 = s.calls(&range(), SeriesFilter { tg: None, unit: Some(101) }, 10).unwrap();
     assert_eq!(by101.iter().map(|r| r.call_id).collect::<Vec<_>>(), vec![3, 2, 1]);
     assert_eq!(s.latest_calls(2).unwrap().iter().map(|r| r.call_id).collect::<Vec<_>>(), vec![4, 3]);
+    assert_eq!(s.call(2).unwrap().map(|r| r.sources), Some(vec![102, 101]));
+    assert_eq!(s.call(99).unwrap(), None);
 }
 
 #[test]
