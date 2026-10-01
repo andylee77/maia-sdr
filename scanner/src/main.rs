@@ -4,6 +4,7 @@
 
 mod api;
 mod boot;
+mod dsp;
 mod hardware;
 mod radio;
 mod services;
