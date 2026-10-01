@@ -11,6 +11,8 @@ pub mod demod;
 /// BPTC(196,96) / (68,36) / (128,77), CRC-CCITT / CRC-8 / RS(12,9) / checksum 5.
 pub mod fec;
 mod filters;
+/// Messages from bursts: CSBKs, link control, voice; SDRTrunk's text for each.
+pub mod message;
 /// Bursts and timeslots from the dibit stream.
 pub mod framer;
 /// Sync patterns and the soft sync detector.

@@ -10,6 +10,7 @@
 //! EMB 132..140 and 172..180.
 
 pub mod bptc;
+pub mod bptc_16_2;
 pub mod bptc_196_96;
 pub mod cach;
 pub mod crc;

@@ -37,6 +37,28 @@ pub enum DataType {
 }
 
 impl DataType {
+    /// SDRTrunk's label (`DataType.toString()`).
+    pub fn label(self) -> &'static str {
+        match self {
+            DataType::PiHeader => "ENCRYPTION HEADER",
+            DataType::VoiceHeader => "VOICE HEADER",
+            DataType::Tlc => "TERMINATOR",
+            DataType::Csbk => "CSBK",
+            DataType::MbcHeader => "MULTI-BLOCK CONTROL HEADER",
+            DataType::MbcBlock => "MULTI-BLOCK CONTROL BLOCK",
+            DataType::DataHeader => "DATA HEADER",
+            DataType::Rate1Of2Data => "RATE 1/2 PACKET",
+            DataType::Rate3Of4Data => "RATE 3/4 PACKET",
+            DataType::SlotIdle => "IDLE",
+            DataType::Rate1Data => "RATE 1/1 PACKET",
+            DataType::UsbData => "UNIFIED SINGLE BLOCK DATA",
+            DataType::MbcEncHeader => "MULTI-BLOCK CONTROL ENCRYPTED HEADER",
+            DataType::DataEncHeader => "DATA ENCRYPTED HEADER",
+            DataType::ChannelControlEncHeader => "CONTROL CHANNEL ENCRYPTED HEADER",
+            DataType::Reserved15 => "RESERVED 15",
+        }
+    }
+
     /// Data type for a 4-bit value. Ports `DataType.fromValue()`.
     pub fn from_value(value: u8) -> DataType {
         const TYPES: [DataType; 16] = [

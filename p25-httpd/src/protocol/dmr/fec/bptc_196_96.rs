@@ -3,8 +3,8 @@
 //!
 //! Deinterleaved, bit 0 is the unused R(3); bit `row * 15 + column + 1` is a
 //! 13 x 15 matrix. Rows 0..9 hold 11 bits plus Hamming(15,11) parity (row 0
-//! starts with reserved R(2..0), which are dropped here); rows 9..13 are the
-//! Hamming(13,9) parity of each column.
+//! starts with reserved R(2..0); `extract()` reports them the way SDRTrunk
+//! does); rows 9..13 are the Hamming(13,9) parity of each column.
 //!
 //! `correct()` is SDRTrunk's turbo search (row/column paths, shadow flipping).
 //! Changes:
@@ -36,9 +36,10 @@ const MESSAGE_COLUMN_COUNT: usize = 12;
 const CHECKSUM_COLUMN_COUNT: usize = 4;
 const MESSAGE_START_INDEX: usize = 4;
 const MAXIMUM_RECURSION_TURBO_DEPTH: usize = 20;
-/// Most bit flips a decode may make. SDRTrunk has no limit; legitimate decodes
-/// stay well under it.
-pub const MAX_CORRECTED: u32 = 12;
+/// Most bit flips a decode may make. SDRTrunk has no limit; without one ~2.5%
+/// of random blocks pass, all needing 18+ flips, while a real first burst after
+/// sync needed 17 (CSBKs also have their CRC).
+pub const MAX_CORRECTED: u32 = 17;
 /// Most `correct_column()` / `correct_row()` calls per correction pass.
 pub const MAX_SEARCH_STEPS: usize = 2000;
 
@@ -95,11 +96,62 @@ pub fn decode(interleaved: &[u8]) -> Option<([u8; 96], u32)> {
     decode_with_budget(interleaved, MAX_SEARCH_STEPS).0
 }
 
+/// A BPTC(196,96) block as SDRTrunk's `extract()` hands it on: the info bits
+/// even when correction fails (then as its correction pass left them), and the
+/// reserved bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Extracted {
+    pub bits: [u8; 96],
+    /// Deinterleaved bits 0..3 as a number: SDRTrunk's "RAS" value (its
+    /// `getBPTCReservedBits()`, which reads R(3) R(2) R(1)).
+    pub reserved: u8,
+    /// Bits corrected, `None` if uncorrectable (SDRTrunk's -2).
+    pub corrected: Option<u32>,
+}
+
+/// Decodes a block and always returns its contents. Ports `BPTC_196_96.extract()`
+/// including the reserved bits it appends at 96..99.
+pub fn extract(interleaved: &[u8]) -> Extracted {
+    let received = deinterleave(interleaved);
+    let (corrected, _, partial) = correct_or_partial(&received, MAX_SEARCH_STEPS);
+    let (message, corrected) = match corrected {
+        Some((message, n)) => (message, Some(n)),
+        None => (partial, None),
+    };
+    Extracted {
+        bits: extract_info(&message),
+        reserved: (message[0] << 2) | (message[1] << 1) | message[2],
+        corrected,
+    }
+}
+
 /// `decode()` with a search step budget per pass; also returns the steps used.
 fn decode_with_budget(interleaved: &[u8], steps: usize) -> (Option<([u8; 96], u32)>, usize) {
-    let received = deinterleave(interleaved);
+    let (corrected, used) = correct_with_budget(&deinterleave(interleaved), steps);
+    (
+        corrected.map(|(message, n)| (extract_info(&message), n)),
+        used,
+    )
+}
+
+/// The corrected deinterleaved block and its corrected bit count.
+fn correct_with_budget(
+    received: &[u8; BPTC_LENGTH],
+    steps: usize,
+) -> (Option<([u8; BPTC_LENGTH], u32)>, usize) {
+    let (corrected, used, _) = correct_or_partial(received, steps);
+    (corrected, used)
+}
+
+/// `correct_with_budget()`, plus what SDRTrunk's pass left of the block when
+/// nothing valid was found (its `extract()` returns that).
+fn correct_or_partial(
+    received: &[u8; BPTC_LENGTH],
+    steps: usize,
+) -> (Option<([u8; BPTC_LENGTH], u32)>, usize, [u8; BPTC_LENGTH]) {
     let mut used = 0;
     let mut best: Option<([u8; BPTC_LENGTH], u32)> = None;
+    let mut partial = *received;
 
     // SDRTrunk's pass, then one without the "easy bits" step unless the first
     // found a codeword within 4 bits (d = 9: then it is the nearest one).
@@ -107,23 +159,31 @@ fn decode_with_budget(interleaved: &[u8], steps: usize) -> (Option<([u8; 96], u3
         if matches!(best, Some((_, n)) if n <= 4) {
             break;
         }
-        let mut message = received;
+        let mut message = *received;
         let mut budget = Budget(steps);
         let valid = correct(&mut message, true, easy_bits, &mut budget) && is_correct(&message);
         used += steps - budget.0;
+        if easy_bits {
+            partial = message;
+        }
         if valid {
-            let corrected = bit_distance(&received, &message);
+            let corrected = bit_distance(received, &message);
             if best.map_or(true, |(_, n)| corrected < n) {
                 best = Some((message, corrected));
             }
         }
     }
 
-    let (message, corrected) = match best {
-        Some((message, corrected)) if corrected <= MAX_CORRECTED => (message, corrected),
-        _ => return (None, used),
-    };
+    match best {
+        Some((message, corrected)) if corrected <= MAX_CORRECTED => {
+            (Some((message, corrected)), used, partial)
+        }
+        _ => (None, used, partial),
+    }
+}
 
+/// The 96 info bits of a deinterleaved block (the extraction loop of `extract()`).
+fn extract_info(message: &[u8; BPTC_LENGTH]) -> [u8; 96] {
     let mut extracted = [0u8; 96];
     let mut pointer = 0;
     let mut index = MESSAGE_START_INDEX;
@@ -136,7 +196,7 @@ fn decode_with_budget(interleaved: &[u8], steps: usize) -> (Option<([u8; 96], u3
             index += CHECKSUM_COLUMN_COUNT;
         }
     }
-    (Some((extracted, corrected)), used)
+    extracted
 }
 
 /// Remaining search steps for one decode.

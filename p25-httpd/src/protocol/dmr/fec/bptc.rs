@@ -281,11 +281,17 @@ pub fn decode_68_36(interleaved: &[u8]) -> Option<([u8; 36], u32)> {
         return None;
     }
 
+    Some((extract_68_36(&deinterleaved), corrected))
+}
+
+/// The 36 info bits of a deinterleaved short LC block, corrected or not (the
+/// extraction loop of `BPTC_68_36.extract()`).
+pub fn extract_68_36(deinterleaved: &[u8; 68]) -> [u8; 36] {
     let mut extracted = [0u8; 36];
     for row in 0..3 {
         extracted[row * 12..row * 12 + 12].copy_from_slice(&deinterleaved[row * 17..row * 17 + 12]);
     }
-    Some((extracted, corrected))
+    extracted
 }
 
 /// Deinterleaves an embedded LC block (4 x 32-bit fragments). Ports `BPTC_128_77.deinterleave()`.
@@ -313,6 +319,12 @@ pub fn decode_128_77(interleaved: &[u8]) -> Option<([u8; 77], u32)> {
         return None;
     }
 
+    Some((extract_128_77(&deinterleaved), corrected))
+}
+
+/// The 77 info bits of a deinterleaved embedded LC block, corrected or not (the
+/// extraction loops of `BPTC_128_77.extract()`).
+pub fn extract_128_77(deinterleaved: &[u8; 128]) -> [u8; 77] {
     // Rows 0 and 1 carry 11 LC bits, rows 2..7 carry 10 LC bits and one checksum bit.
     let mut extracted = [0u8; 77];
     let mut pointer = 0;
@@ -325,7 +337,7 @@ pub fn decode_128_77(interleaved: &[u8]) -> Option<([u8; 77], u32)> {
         pointer += 10;
         extracted[70 + row] = deinterleaved[row * 16 + 10];
     }
-    Some((extracted, corrected))
+    extracted
 }
 
 #[cfg(test)]
