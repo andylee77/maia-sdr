@@ -6,6 +6,7 @@ mod api;
 mod boot;
 mod dsp;
 mod hardware;
+mod protocol;
 mod radio;
 mod services;
 mod trunking;
