@@ -99,7 +99,7 @@ ad_connect adc_q_slice/Dout p25_core/im_in
 # ── AXI-Lite ─────────────────────────────────────────────────────────
 ad_cpu_interconnect 0x7C460000 p25_core
 
-# ── DMA: seven P25 masters on HP1 ─────────────────────────────────────
+# ── DMA: eight P25 masters on HP1 (traffic_iq rewired in 075b) ────────
 # HP1 was used by maia_sdr/m_axi_spectrometer (now deleted).
 # Reuse HP1 for all P25 DMA masters. ad_mem_hp1_interconnect is
 # idempotent — repeated calls extend the same SmartConnect rather than
@@ -133,16 +133,19 @@ ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_pre_diff_iq
 # Phase 10.7 master.
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_wideband_spec
 # M2B 2026-05-02: traffic LSM dibit DMA on the new mux-fed chain.
-# m_axi_traffic_iq and m_axi_traffic_pre_diff_iq stay retired until
-# their use-case re-emerges.
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_lsm_dibit
+# Change 075b: traffic chain 1 post-DDC IQ (ring 0x1C00_0000, ~200 KB/s)
+# feeds the software DMR decoder on a traffic channel. The core always
+# had the master; it was left unwired since 2026-05-02.
+# m_axi_traffic_pre_diff_iq stays unconnected.
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_iq
 # 2026-05-03: pre-DDC raw 8 MSPS IQ tap for the PS-side software P25
 # stack. 32 MB/s sustained — well within HP1's headroom alongside the
 # narrowband rings.
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_wideband_iq
 # Core 0.3.0 (doc/changes/064): traffic chain 2 LSM dibit ring
 # (~1.28 KB/s, ring at 0x1D00_0000). One more HP1 SmartConnect slave
-# port; the traffic_iq / traffic_pre_diff_iq masters stay unconnected.
+# port; the traffic_pre_diff_iq master stays unconnected.
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic2_lsm_dibit
 
 # ── Interrupt ─────────────────────────────────────────────────────────

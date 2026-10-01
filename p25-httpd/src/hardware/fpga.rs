@@ -2364,6 +2364,9 @@ impl InterruptHandler {
         let mut traffic2_lsm_dibit_irqs: u64 = 0;
         let mut pre_diff_iq_irqs: u64 = 0;
         let mut wideband_iq_irqs: u64 = 0;
+        // Change 075b: the traffic IQ master is wired; count its IRQs
+        // (its reader polls the ring every 40 ms, so no notify).
+        let mut traffic_iq_irqs: u64 = 0;
         loop {
             self.uio.irq_enable().await?;
             self.uio.irq_wait().await?;
@@ -2375,6 +2378,9 @@ impl InterruptHandler {
             let traffic2_lsm_dibit = interrupts.traffic2_lsm_dibit_dma().bit();
             let pre_diff_iq = interrupts.pre_diff_iq_dma().bit();
             let wideband_iq = interrupts.wideband_iq_dma().bit();
+            if interrupts.traffic_iq_dma().bit() {
+                traffic_iq_irqs += 1;
+            }
             total_irqs += 1;
             if iq {
                 iq_irqs += 1;
@@ -2415,6 +2421,7 @@ impl InterruptHandler {
                 s.traffic2_lsm_dibit = traffic2_lsm_dibit_irqs;
                 s.pre_diff_iq = pre_diff_iq_irqs;
                 s.wideband_iq = wideband_iq_irqs;
+                s.traffic_iq = traffic_iq_irqs;
                 s.last_at = Some(now);
             }
             // Log first 10 then every 64th to avoid flooding

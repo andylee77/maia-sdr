@@ -5,6 +5,34 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-30] Traffic chain 1 post-DDC IQ ring wired (075b)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-30-traffic-iq-075b`
+**Bake required:** YES (block design only; P25 core unchanged).
+
+- **Finding** (DMR session): traffic chain 1's post-DDC IQ ring (`traffic_iq_dma`,
+  `0x1C00_0000`, `/dev/p25-traffic-iq`) never received data: `system_bd.tcl` left
+  `p25_core/m_axi_traffic_iq` unconnected since 2026-05-02, so `irq_stats.traffic_iq` stayed
+  0 and `/api/traffic_iq_dump` had no IQ. The P25 follower never noticed (it decodes the HDL
+  LSM dibits).
+- **Use:** software DMR on a traffic channel (e.g. DMR voice on 451.0875 MHz while the
+  control chain sits on 454.36875 MHz) reads this IQ.
+- **Change:** one more HP1 SmartConnect slave port,
+  `ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_iq` (~200 KB/s).
+  The core's master, registers (bank 7), IRQ bit 5, the carve-out and the rxbuffer node
+  already existed; p25-httpd already enabled the DMA and reads the ring (`iq_hub`).
+  `m_axi_traffic_pre_diff_iq` stays unconnected. `doc/P25_ADDRESS_MAP.md` updated.
+- **IRQ count:** the IRQ task never read the `traffic_iq_dma` bit (bit 5), so
+  `/api/irq_stats` showed 0 even with the ring filling; it is counted now (the reader still
+  polls every 40 ms).
+- **Bake:** timing met, WNS +0.208 ns (was +0.021 ns), WHS +0.010 ns.
+- **Checked on unit A:** `traffic_iq` 6.4 IRQ/s (control `iq` 6.4/s);
+  `/api/traffic_iq_dump?seconds=1` returns a 50 kSPS stereo WAV of live IQ; Clay P25 decoding
+  unchanged (39.7 TSBK/s).
+
+---
+
 ## [2026-09-30] Talkgroups are 32-bit in the call pipeline (075a)
 
 **Branch:** fishball-p25
