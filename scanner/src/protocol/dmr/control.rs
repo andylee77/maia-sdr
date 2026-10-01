@@ -10,8 +10,16 @@ use super::message::types::Address;
 use super::message::DmrMessage;
 use crate::protocol::events::{ChannelId, ControlEvent, DmrIdentity, Grant, LogLine, LogicalChannel, SiteIdentity};
 
-/// A control channel's steady filler.
-const ROUTINE: [&str; 4] = ["Aloha", "IDLEMessage", "ControlChannelSystemParameters", "NullMessage"];
+/// A control channel's steady broadcasts.
+const ROUTINE: [&str; 7] = [
+    "Aloha",
+    "IDLEMessage",
+    "ControlChannelSystemParameters",
+    "NullMessage",
+    "VoteNowAdvice",
+    "CallTimerParameters",
+    "Announcement",
+];
 
 /// Counters for the diagnostics pages.
 #[derive(Debug, Clone, Default)]

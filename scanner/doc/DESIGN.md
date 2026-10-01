@@ -1069,5 +1069,20 @@ From the brief:
   - **Changed from p25-httpd:** a P25 grant whose channel the IDEN table does not name yet is
     not followed (`unknown_lcn`, as for DMR) instead of opening a call with no frequency;
     "busy" replaces "sticky_lock"; a site switch closes the open calls (`site_switch`).
-  - **Next:** the traffic side (lane dibit readers, the P25 traffic decoder, voice events), the
-    lane controller (coast or reset), and the runner joining them to the receivers.
+  - **Traffic:** the P25 traffic decoder (p25-httpd's forwarder rules: voted link-control
+    source, HDU encryption latch, end of transmission, talk complete) checked on SDRTrunk's 287
+    traffic recordings; the DMR traffic decoder on lane one's IQ, checked on the 20:57 call.
+  - **Trunking task** (`trunking::trunk`): follower, call book and each lane's decoder in one
+    task; lane dibit readers with the production clock (voice attributed to calls by air time,
+    dibits from before a retune dropped), the lanes' NID status every 16 ms; `/api/v1/calls` and
+    the calls card. A lane resumes on its channel without a reset only when it carried voice in
+    the last second (the PLL check of p25-httpd's `resume_needs_reset` is not ported yet).
+  - **Live, unit B** (Clay, 3 min): 38 calls, 14 followed on lane 1, all 14 with voice.
+  - **Live, unit A:** Clay Electric DMR (10 min, a quiet hour): both calls followed on lane 1
+    with voice and their talkers, one on LCN 6 TS2 and one on the control repeater's TS2. Clay
+    P25 (4 min): 35 calls, 18 followed on both lanes (14 and 4), all 18 with voice; 17
+    encrypted listed; 18 % of a core.
+  - **Changed from p25-httpd:** VoteNowAdvice, CallTimerParameters and Announcement count as
+    DMR housekeeping in the events box.
+  - **Next:** learned state (IDEN bands loaded at activation, the encrypted list and grant counts
+    saved), the PLL check on a same-channel resume, then audio (phase 4).
