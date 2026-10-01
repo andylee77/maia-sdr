@@ -1,0 +1,1380 @@
+[
+  {
+    "call": 3425,
+    "tg": 850,
+    "lane": 1,
+    "freq": 858437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000020
+    ],
+    "start": 1790858075675,
+    "end": 1790858081699,
+    "close": "call_end",
+    "end_lc": "channel_user",
+    "frames": 90
+  },
+  {
+    "call": 3426,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000021
+    ],
+    "start": 1790858081881,
+    "end": 1790858087999,
+    "close": "call_end",
+    "end_lc": "talk_complete",
+    "frames": 180
+  },
+  {
+    "call": 3427,
+    "tg": 600,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1003
+    ],
+    "start": 1790858096880,
+    "end": 1790858101593,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3428,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000023
+    ],
+    "start": 1790858101161,
+    "end": 1790858105211,
+    "close": "tg_change",
+    "end_lc": "link_control",
+    "frames": 180
+  },
+  {
+    "call": 3429,
+    "tg": 600,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000016
+    ],
+    "start": 1790858102748,
+    "end": 1790858104480,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3430,
+    "tg": 600,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1003
+    ],
+    "start": 1790858104693,
+    "end": 1790858108620,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3431,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1004
+    ],
+    "start": 1790858105211,
+    "end": 1790858108699,
+    "close": "call_end",
+    "end_lc": "link_control",
+    "frames": 63
+  },
+  {
+    "call": 3432,
+    "tg": 600,
+    "lane": null,
+    "freq": 857987500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000016
+    ],
+    "start": 1790858109825,
+    "end": 1790858112796,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3433,
+    "tg": 320,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000025
+    ],
+    "start": 1790858203460,
+    "end": 1790858208399,
+    "close": "call_end",
+    "end_lc": "talk_complete",
+    "frames": 126
+  },
+  {
+    "call": 3434,
+    "tg": 320,
+    "lane": 1,
+    "freq": 858462500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000003
+    ],
+    "start": 1790858211894,
+    "end": 1790858215199,
+    "close": "call_end",
+    "end_lc": "talk_complete",
+    "frames": 45
+  },
+  {
+    "call": 3435,
+    "tg": 320,
+    "lane": 1,
+    "freq": 858462500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000025
+    ],
+    "start": 1790858215208,
+    "end": 1790858261574,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 2214
+  },
+  {
+    "call": 3436,
+    "tg": 300,
+    "lane": 2,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000002
+    ],
+    "start": 1790858240681,
+    "end": 1790858244399,
+    "close": "call_end",
+    "end_lc": "talk_complete",
+    "frames": 63
+  },
+  {
+    "call": 3437,
+    "tg": 300,
+    "lane": 2,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1002
+    ],
+    "start": 1790858245067,
+    "end": 1790858246965,
+    "close": "tg_change",
+    "end_lc": "link_control",
+    "frames": 63
+  },
+  {
+    "call": 3438,
+    "tg": 300,
+    "lane": 2,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1000002
+    ],
+    "start": 1790858246965,
+    "end": 1790858258723,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 459
+  },
+  {
+    "call": 3439,
+    "tg": 300,
+    "lane": 2,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1002
+    ],
+    "start": 1790858258723,
+    "end": 1790858263599,
+    "close": "call_end",
+    "end_lc": "channel_user",
+    "frames": 126
+  },
+  {
+    "call": 3440,
+    "tg": 320,
+    "lane": 1,
+    "freq": 858462500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1000003
+    ],
+    "start": 1790858261574,
+    "end": 1790858264999,
+    "close": "call_end",
+    "end_lc": "talk_complete",
+    "frames": 45
+  },
+  {
+    "call": 3441,
+    "tg": 300,
+    "lane": 2,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000002
+    ],
+    "start": 1790858264132,
+    "end": 1790858267012,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 108
+  },
+  {
+    "call": 3442,
+    "tg": 300,
+    "lane": 2,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1002
+    ],
+    "start": 1790858267012,
+    "end": 1790858270499,
+    "close": "call_end",
+    "end_lc": "channel_user",
+    "frames": 54
+  },
+  {
+    "call": 3443,
+    "tg": 300,
+    "lane": 2,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000002
+    ],
+    "start": 1790858274290,
+    "end": 1790858278985,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 198
+  },
+  {
+    "call": 3444,
+    "tg": 300,
+    "lane": 2,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1002
+    ],
+    "start": 1790858278985,
+    "end": 1790858282799,
+    "close": "call_end",
+    "end_lc": "channel_user",
+    "frames": 81
+  },
+  {
+    "call": 3445,
+    "tg": 402,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000012
+    ],
+    "start": 1790858330911,
+    "end": 1790858334972,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3446,
+    "tg": 402,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000008
+    ],
+    "start": 1790858335313,
+    "end": 1790858337739,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3447,
+    "tg": 850,
+    "lane": 1,
+    "freq": 856437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1004
+    ],
+    "start": 1790858337094,
+    "end": 1790858341278,
+    "close": "tg_change",
+    "end_lc": "channel_user",
+    "frames": 99
+  },
+  {
+    "call": 3448,
+    "tg": 402,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000012
+    ],
+    "start": 1790858338082,
+    "end": 1790858340719,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3449,
+    "tg": 402,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000008
+    ],
+    "start": 1790858340936,
+    "end": 1790858345731,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3450,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1000022
+    ],
+    "start": 1790858341278,
+    "end": 1790858343196,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 18
+  },
+  {
+    "call": 3451,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1004
+    ],
+    "start": 1790858343196,
+    "end": 1790858350099,
+    "close": "call_end",
+    "end_lc": "link_control",
+    "frames": 225
+  },
+  {
+    "call": 3452,
+    "tg": 402,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000012
+    ],
+    "start": 1790858345946,
+    "end": 1790858349589,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3453,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000022
+    ],
+    "start": 1790858350746,
+    "end": 1790858354932,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 162
+  },
+  {
+    "call": 3454,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1004
+    ],
+    "start": 1790858354932,
+    "end": 1790858358462,
+    "close": "tg_change",
+    "end_lc": "channel_user",
+    "frames": 81
+  },
+  {
+    "call": 3455,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1000022
+    ],
+    "start": 1790858358462,
+    "end": 1790858362199,
+    "close": "call_end",
+    "end_lc": "talk_complete",
+    "frames": 63
+  },
+  {
+    "call": 3456,
+    "tg": 300,
+    "lane": 1,
+    "freq": 858437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000025
+    ],
+    "start": 1790858369655,
+    "end": 1790858374537,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 153
+  },
+  {
+    "call": 3457,
+    "tg": 300,
+    "lane": 1,
+    "freq": 858437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1002
+    ],
+    "start": 1790858374537,
+    "end": 1790858378699,
+    "close": "call_end",
+    "end_lc": "channel_user",
+    "frames": 81
+  },
+  {
+    "call": 3458,
+    "tg": 850,
+    "lane": 2,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000019
+    ],
+    "start": 1790858378296,
+    "end": 1790858384199,
+    "close": "call_end",
+    "end_lc": "talk_complete",
+    "frames": 72
+  },
+  {
+    "call": 3459,
+    "tg": 300,
+    "lane": 1,
+    "freq": 858437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000004
+    ],
+    "start": 1790858380615,
+    "end": 1790858388306,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 306
+  },
+  {
+    "call": 3460,
+    "tg": 850,
+    "lane": 2,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1004
+    ],
+    "start": 1790858384369,
+    "end": 1790858386810,
+    "close": "tg_change",
+    "end_lc": "channel_user",
+    "frames": 54
+  },
+  {
+    "call": 3461,
+    "tg": 850,
+    "lane": 2,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1000019
+    ],
+    "start": 1790858386810,
+    "end": 1790858408252,
+    "close": "tg_change",
+    "end_lc": null,
+    "frames": 1053
+  },
+  {
+    "call": 3462,
+    "tg": 300,
+    "lane": 1,
+    "freq": 858437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1000005
+    ],
+    "start": 1790858388306,
+    "end": 1790858395299,
+    "close": "call_end",
+    "end_lc": "talk_complete",
+    "frames": 225
+  },
+  {
+    "call": 3463,
+    "tg": 300,
+    "lane": 1,
+    "freq": 858437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000004
+    ],
+    "start": 1790858399739,
+    "end": 1790858403436,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 135
+  },
+  {
+    "call": 3464,
+    "tg": 300,
+    "lane": 1,
+    "freq": 858437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1002
+    ],
+    "start": 1790858403436,
+    "end": 1790858407499,
+    "close": "call_end",
+    "end_lc": "link_control",
+    "frames": 63
+  },
+  {
+    "call": 3465,
+    "tg": 600,
+    "lane": null,
+    "freq": 857212500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000018
+    ],
+    "start": 1790858404939,
+    "end": 1790858408262,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3466,
+    "tg": 850,
+    "lane": 2,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1004
+    ],
+    "start": 1790858408252,
+    "end": 1790858411599,
+    "close": "call_end",
+    "end_lc": "channel_user",
+    "frames": 54
+  },
+  {
+    "call": 3467,
+    "tg": 600,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1003
+    ],
+    "start": 1790858409842,
+    "end": 1790858412526,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3468,
+    "tg": 600,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000018
+    ],
+    "start": 1790858413170,
+    "end": 1790858425538,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3469,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1004
+    ],
+    "start": 1790858414959,
+    "end": 1790858419199,
+    "close": "call_end",
+    "end_lc": "channel_user",
+    "frames": 90
+  },
+  {
+    "call": 3470,
+    "tg": 600,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1003
+    ],
+    "start": 1790858426392,
+    "end": 1790858428392,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3471,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1004
+    ],
+    "start": 1790858433221,
+    "end": 1790858438334,
+    "close": "tg_change",
+    "end_lc": "channel_user",
+    "frames": 234
+  },
+  {
+    "call": 3472,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1000019
+    ],
+    "start": 1790858438334,
+    "end": 1790858447852,
+    "close": "tg_change",
+    "end_lc": null,
+    "frames": 459
+  },
+  {
+    "call": 3473,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1004,
+      1000019
+    ],
+    "start": 1790858447852,
+    "end": 1790858455704,
+    "close": "tg_change",
+    "end_lc": "channel_user",
+    "frames": 360
+  },
+  {
+    "call": 3474,
+    "tg": 850,
+    "lane": 1,
+    "freq": 857987500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1004
+    ],
+    "start": 1790858455704,
+    "end": 1790858460799,
+    "close": "call_end",
+    "end_lc": "channel_user",
+    "frames": 135
+  },
+  {
+    "call": 3475,
+    "tg": 850,
+    "lane": 1,
+    "freq": 858437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000019
+    ],
+    "start": 1790858461392,
+    "end": 1790858466161,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 189
+  },
+  {
+    "call": 3476,
+    "tg": 850,
+    "lane": 1,
+    "freq": 858437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1004
+    ],
+    "start": 1790858466161,
+    "end": 1790858472799,
+    "close": "call_end",
+    "end_lc": "channel_user",
+    "frames": 207
+  },
+  {
+    "call": 3477,
+    "tg": 850,
+    "lane": 1,
+    "freq": 858437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000024
+    ],
+    "start": 1790858476519,
+    "end": 1790858485481,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 360
+  },
+  {
+    "call": 3478,
+    "tg": 600,
+    "lane": null,
+    "freq": 857437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000016
+    ],
+    "start": 1790858478752,
+    "end": 1790858481962,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3479,
+    "tg": 600,
+    "lane": null,
+    "freq": 857437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1003
+    ],
+    "start": 1790858482047,
+    "end": 1790858483994,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3480,
+    "tg": 300,
+    "lane": 2,
+    "freq": 856437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000015
+    ],
+    "start": 1790858482176,
+    "end": 1790858486699,
+    "close": "call_end",
+    "end_lc": "talk_complete",
+    "frames": 81
+  },
+  {
+    "call": 3481,
+    "tg": 600,
+    "lane": null,
+    "freq": 857437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000016
+    ],
+    "start": 1790858484206,
+    "end": 1790858495310,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3482,
+    "tg": 850,
+    "lane": 1,
+    "freq": 858437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1004
+    ],
+    "start": 1790858485481,
+    "end": 1790858500499,
+    "close": "call_end",
+    "end_lc": "channel_user",
+    "frames": 612
+  },
+  {
+    "call": 3483,
+    "tg": 300,
+    "lane": 2,
+    "freq": 858462500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1002
+    ],
+    "start": 1790858487187,
+    "end": 1790858490814,
+    "close": "tg_change",
+    "end_lc": "channel_user",
+    "frames": 117
+  },
+  {
+    "call": 3484,
+    "tg": 300,
+    "lane": 2,
+    "freq": 858462500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1000006
+    ],
+    "start": 1790858490814,
+    "end": 1790858494454,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 108
+  },
+  {
+    "call": 3485,
+    "tg": 300,
+    "lane": 2,
+    "freq": 858462500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1002
+    ],
+    "start": 1790858494454,
+    "end": 1790858498399,
+    "close": "call_end",
+    "end_lc": "link_control",
+    "frames": 81
+  },
+  {
+    "call": 3486,
+    "tg": 600,
+    "lane": null,
+    "freq": 857212500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1003
+    ],
+    "start": 1790858496575,
+    "end": 1790858498931,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3487,
+    "tg": 600,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000017
+    ],
+    "start": 1790858501037,
+    "end": 1790858505196,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3488,
+    "tg": 600,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1003
+    ],
+    "start": 1790858514591,
+    "end": 1790858516926,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3489,
+    "tg": 600,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000017
+    ],
+    "start": 1790858520986,
+    "end": 1790858524615,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3490,
+    "tg": 600,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1003
+    ],
+    "start": 1790858525042,
+    "end": 1790858527167,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3491,
+    "tg": 402,
+    "lane": null,
+    "freq": 858437500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000011
+    ],
+    "start": 1790858525046,
+    "end": 1790858530171,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3492,
+    "tg": 402,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000014
+    ],
+    "start": 1790858532292,
+    "end": 1790858535716,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3493,
+    "tg": 600,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000017
+    ],
+    "start": 1790858550529,
+    "end": 1790858553300,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3494,
+    "tg": 600,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1003
+    ],
+    "start": 1790858553430,
+    "end": 1790858555762,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3495,
+    "tg": 402,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1001
+    ],
+    "start": 1790858564501,
+    "end": 1790858567810,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3496,
+    "tg": 402,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000010
+    ],
+    "start": 1790858568042,
+    "end": 1790858570806,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3497,
+    "tg": 300,
+    "lane": 1,
+    "freq": 858462500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000002
+    ],
+    "start": 1790858577953,
+    "end": 1790858584696,
+    "close": "tg_change",
+    "end_lc": "talk_complete",
+    "frames": 288
+  },
+  {
+    "call": 3498,
+    "tg": 300,
+    "lane": 1,
+    "freq": 858462500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      1002
+    ],
+    "start": 1790858584696,
+    "end": 1790858588699,
+    "close": "call_end",
+    "end_lc": "channel_user",
+    "frames": 81
+  },
+  {
+    "call": 3499,
+    "tg": 437,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000013
+    ],
+    "start": 1790858597705,
+    "end": 1790858601976,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3500,
+    "tg": 437,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000009
+    ],
+    "start": 1790858602903,
+    "end": 1790858605591,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3501,
+    "tg": 437,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000013
+    ],
+    "start": 1790858605901,
+    "end": 1790858622865,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3502,
+    "tg": 437,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000009
+    ],
+    "start": 1790858624032,
+    "end": 1790858636180,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3503,
+    "tg": 437,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000013
+    ],
+    "start": 1790858636310,
+    "end": 1790858639811,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 3504,
+    "tg": 300,
+    "lane": 1,
+    "freq": 858437500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      1000001
+    ],
+    "start": 1790858636742,
+    "end": 1790858642299,
+    "close": "call_end",
+    "end_lc": "talk_complete",
+    "frames": 153
+  },
+  {
+    "call": 3505,
+    "tg": 437,
+    "lane": null,
+    "freq": 858462500,
+    "encrypted": true,
+    "not_followed": "encrypted",
+    "opened_via": "cc_grant",
+    "sources": [
+      1000007
+    ],
+    "start": 1790858639938,
+    "end": 1790858644940,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  }
+]

@@ -1,0 +1,342 @@
+[
+  {
+    "call": 567,
+    "tg": 87925,
+    "lane": 1,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10002
+    ],
+    "start": 1790860592817,
+    "end": 1790860594297,
+    "close": "tg_change",
+    "end_lc": null,
+    "frames": 48
+  },
+  {
+    "call": 568,
+    "tg": 87921,
+    "lane": null,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": "busy",
+    "opened_via": "cc_grant",
+    "sources": [
+      10004
+    ],
+    "start": 1790860594297,
+    "end": 1790860594297,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 569,
+    "tg": 87925,
+    "lane": 1,
+    "freq": 454368750,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10001
+    ],
+    "start": 1790860597417,
+    "end": 1790860600857,
+    "close": "tg_change",
+    "end_lc": "call_termination",
+    "frames": 126
+  },
+  {
+    "call": 570,
+    "tg": 87921,
+    "lane": 1,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      10001
+    ],
+    "start": 1790860600857,
+    "end": 1790860603304,
+    "close": "tg_change",
+    "end_lc": null,
+    "frames": 54
+  },
+  {
+    "call": 571,
+    "tg": 87925,
+    "lane": null,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": "busy",
+    "opened_via": "cc_grant",
+    "sources": [
+      10002
+    ],
+    "start": 1790860603304,
+    "end": 1790860603304,
+    "close": "timeout",
+    "end_lc": null,
+    "frames": 0
+  },
+  {
+    "call": 572,
+    "tg": 87925,
+    "lane": 1,
+    "freq": 454368750,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10001
+    ],
+    "start": 1790860608377,
+    "end": 1790860612841,
+    "close": "timeout",
+    "end_lc": "network_teardown",
+    "frames": 54
+  },
+  {
+    "call": 573,
+    "tg": 87924,
+    "lane": 1,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10005
+    ],
+    "start": 1790861520816,
+    "end": 1790861526341,
+    "close": "call_end",
+    "end_lc": "call_termination",
+    "frames": 144
+  },
+  {
+    "call": 574,
+    "tg": 87921,
+    "lane": 1,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10003
+    ],
+    "start": 1790862058497,
+    "end": 1790862062936,
+    "close": "tg_change",
+    "end_lc": "call_termination",
+    "frames": 144
+  },
+  {
+    "call": 575,
+    "tg": 87921,
+    "lane": 1,
+    "freq": 454368750,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      10001
+    ],
+    "start": 1790862062936,
+    "end": 1790862068541,
+    "close": "call_end",
+    "end_lc": "network_teardown",
+    "frames": 126
+  },
+  {
+    "call": 576,
+    "tg": 87921,
+    "lane": 1,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10003
+    ],
+    "start": 1790862069336,
+    "end": 1790862079496,
+    "close": "tg_change",
+    "end_lc": "call_termination",
+    "frames": 396
+  },
+  {
+    "call": 577,
+    "tg": 87921,
+    "lane": 1,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      10001
+    ],
+    "start": 1790862079496,
+    "end": 1790862088541,
+    "close": "call_end",
+    "end_lc": "network_teardown",
+    "frames": 288
+  },
+  {
+    "call": 578,
+    "tg": 87921,
+    "lane": 1,
+    "freq": 454368750,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10003
+    ],
+    "start": 1790862088977,
+    "end": 1790862093541,
+    "close": "call_end",
+    "end_lc": "call_termination",
+    "frames": 108
+  },
+  {
+    "call": 579,
+    "tg": 87924,
+    "lane": 1,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10006
+    ],
+    "start": 1790862337217,
+    "end": 1790862344641,
+    "close": "call_end",
+    "end_lc": "call_termination",
+    "frames": 252
+  },
+  {
+    "call": 580,
+    "tg": 87924,
+    "lane": 1,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10001
+    ],
+    "start": 1790862346856,
+    "end": 1790862352641,
+    "close": "call_end",
+    "end_lc": "network_teardown",
+    "frames": 126
+  },
+  {
+    "call": 581,
+    "tg": 87924,
+    "lane": 1,
+    "freq": 454368750,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10006
+    ],
+    "start": 1790862353737,
+    "end": 1790862366696,
+    "close": "tg_change",
+    "end_lc": "call_termination",
+    "frames": 609
+  },
+  {
+    "call": 582,
+    "tg": 87924,
+    "lane": 1,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      10001
+    ],
+    "start": 1790862366696,
+    "end": 1790862378741,
+    "close": "call_end",
+    "end_lc": "network_teardown",
+    "frames": 414
+  },
+  {
+    "call": 583,
+    "tg": 87924,
+    "lane": 1,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10006
+    ],
+    "start": 1790862379296,
+    "end": 1790862387441,
+    "close": "call_end",
+    "end_lc": "call_termination",
+    "frames": 288
+  },
+  {
+    "call": 584,
+    "tg": 87924,
+    "lane": 1,
+    "freq": 454368750,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10006
+    ],
+    "start": 1790862427136,
+    "end": 1790862433941,
+    "close": "call_end",
+    "end_lc": "call_termination",
+    "frames": 216
+  },
+  {
+    "call": 585,
+    "tg": 87924,
+    "lane": 1,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "cc_grant",
+    "sources": [
+      10001
+    ],
+    "start": 1790862444497,
+    "end": 1790862449417,
+    "close": "tg_change",
+    "end_lc": "network_teardown",
+    "frames": 72
+  },
+  {
+    "call": 586,
+    "tg": 87924,
+    "lane": 1,
+    "freq": 451087500,
+    "encrypted": false,
+    "not_followed": null,
+    "opened_via": "tg_change",
+    "sources": [
+      10006
+    ],
+    "start": 1790862449417,
+    "end": 1790862461441,
+    "close": "call_end",
+    "end_lc": "call_termination",
+    "frames": 486
+  }
+]
