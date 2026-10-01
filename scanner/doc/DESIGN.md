@@ -1019,4 +1019,34 @@ From the brief:
   - **Unit B** (scanner run from `/tmp`, p25-httpd restored after): it migrated B's files,
     brought Clay up at 8M on LO 858.7 MHz (the old binary's LO), and the control chain decoded
     NAC 0x8A1 with valid NIDs.
-  - **Next:** the live check on unit A (both sites, the switch, the old files untouched).
+  - **Unit A** (2026-10-01, with the phase 2 receivers): it migrated A's files (9 systems,
+    21 sites, 9 profiles), came up on `cec_gcs`, switched to Clay and back through
+    `POST /api/v1/sites/{id}/activate` (0.14 s), and A's old flash files and history were
+    byte-identical afterwards. Clay took the 12M window (A's plan sets a 12M minimum).
+- 2026-10-01, phase 0 (finished except the replay corpus, which needs B wired into A):
+  - **Baseline, P25** (unit A, Clay, 30 min, build `2026-10-01-nco-fix-076`):
+    - TSBKs 99.6 % OK, 39.6/s, LSM;
+    - 228 calls (132 encrypted), all 96 clear ones followed, 94 with voice (281.9 s);
+    - vocoder 1.62 % frames with errors; 94 recordings, 225 history rows;
+    - CPU: system 17.3 % busy, daemon 31.9 % of a core.
+  - **Traces:** A's 31-minute Clay trace replays to A's own calls, 232 of 232 identical; A's
+    38-minute Clay Electric trace 19 of 20 (one call end 32 ms from its timeout, the same race
+    as on B). Fixtures: `tests/fixtures/replay/b_clay_p25` (12 min of B's trace, 81 calls) and
+    `a_cec_gcs_dmr` (20 calls), radio IDs redacted; the route shapes now cover a P25 site too.
+- 2026-10-01, phase 2 (in progress):
+  - **Built:** the P25 framer, control decoder and C4FM demodulator; the DMR control decoder;
+    `ControlEvent`; the dibit ring tracker and production clock; the control-chain readers; the
+    receivers runner with the LSM/C4FM choice; the event log, `/api/v1/events`, the control
+    channel card and the events box.
+  - **Framer parity:** the new P25 framer and p25-httpd's give identical output on all 331
+    SDRTrunk `.bits` recordings (471,076 TSBKs, 7,037 LDUs, 13,011 TDULCs, 38 PDUs;
+    `framer_dump` in both crates).
+  - **DMR:** the control decoder on the 10 Clay Electric captures gives the SDRTrunk reference's
+    24,996 messages, identity SMALL/0/2 colour code 0, and 15 grants on LCNs 5 and 6.
+  - **Live, unit A:** Clay 41.8 TSBK/s, 100 % (LSM 836, C4FM 816 in 20 s; 20 % of a core for
+    both demodulators); Clay Electric 46.5 messages/s, 100 %, carrier offset -147 Hz
+    (p25-httpd: -144 Hz), 12.4 % of a core.
+  - **Changed from p25-httpd:** the auto choice waits for 10 s of counts before its first
+    decision. Without it, B switched to C4FM in the first second (the LSM path starts a few
+    hundred ms later) and the 60 s dwell held it there on an LSM site.
+  - **Next:** the FEC merge (one Golay/Hamming), then the replay corpus with B wired into A.

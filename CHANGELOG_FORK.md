@@ -5,6 +5,26 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-01] 076: the fresh `scanner` crate, phases 0-2 (not deployed)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-10-01-scanner-p2` (scanner; run by hand from `/tmp`, p25-httpd stays in production)
+**Bake required:** NO.
+
+- **Phase 0:** the trunking trace tap (`P25_TRUNK_TRACE`) and host replay in p25-httpd; unit
+  fixtures, Activity snapshots, route shapes, replay fixtures; live baselines on unit A for
+  Clay P25 and Clay Electric DMR. Design and status log: `scanner/doc/DESIGN.md`.
+- **Phase 1:** configuration in versioned files under `/mnt/jffs2/scanner/`, migrated from
+  p25-httpd's files without touching them; the hardware layer, the window planner, the tuner,
+  the live site and `/api/v1`; the UI shell.
+- **Phase 2:** the receivers: P25 (HDL LSM and software C4FM, with the auto choice) and DMR
+  control decoders behind one event type, the stream readers, the event log and the events
+  box. The new P25 framer matches p25-httpd's on all 331 SDRTrunk recordings.
+
+Tests: scanner 245, p25-httpd 475.
+
+---
+
 ## [2026-10-01] Fix: the first call on a parked channel after a recentre was silent (076)
 
 **Branch:** fishball-p25

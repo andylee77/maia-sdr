@@ -43,10 +43,9 @@ pub const FRAME_SYNC_DIBIT_COUNT: usize = 24;
 pub const NID_TRANSMITTED_DIBITS: usize = 33;
 
 /// Position within the 33-dibit NID window where the first in-NID
-/// P25 status dibit lands. Callers must ADVANCE the cursor past this
-/// index but MUST NOT fold the dibit value into the 64-bit BCH
-/// codeword. See doc/changes/022 for the status-dibit miscorrection
-/// incident that forced this constant.
+/// P25 status dibit lands. Callers must advance the cursor past this
+/// index but must not fold the dibit value into the 64-bit BCH
+/// codeword: folded in, clean NIDs miscorrect to another codeword.
 pub const NID_STATUS_DIBIT_INDEX: usize = 11;
 
 // ===================================================================
