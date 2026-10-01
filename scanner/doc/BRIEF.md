@@ -172,7 +172,7 @@ to "clay" when no site is active.
 ## How to work
 
 1. **Analysis first, no code changes.** Inventory the current state against the requirements
-   and write the design into this file's sibling, `doc/changes/076_refactor.md`:
+   and write the design into this file's sibling, `DESIGN.md`:
    - the module map;
    - the config schema and the migration of each persisted file;
    - the call model;
@@ -188,21 +188,23 @@ to "clay" when no site is active.
    units working.** Behaviour-preserving moves come before behaviour changes. Don't mix a
    move and a rewrite in one commit.
 3. **Checks for every stage:**
-   - **Host tests:** `cargo test` from `p25-httpd/` (475+ today). The full run rewrites
-   `maia-hdl/test/golden_vectors/*.json` with LF endings; restore them with
-   `git checkout -- maia-hdl/test/golden_vectors/`.
+   - **Host tests:** `cargo test` from `p25-httpd/` (475+ today). The golden-vector emitters
+     are `#[ignore]` since 076 phase 0, so a run no longer rewrites
+     `maia-hdl/test/golden_vectors/`.
    - **ARM check:** the Windows host check skips the `#[cfg(target_os = "linux")]` code:
+
      ```
      V=/c/Users/Andy/Projects/MAIA_SDR/maia-sdr/.venv-hdl
      PATH="$V/Scripts:$V/Lib/site-packages/ziglang:$PATH" cargo-zigbuild check --target armv7-unknown-linux-gnueabihf.2.31
      ```
+
    - **DMR reference:** `DMR_CAPTURE_DIR=C:/Users/Andy/Projects/MAIA_SDR/maia-sdr/runs/dmr cargo test --release dmr::` must keep 24,984+ of 24,996 lines matching SDRTrunk. The follower test checks the 20:57 call.
    - **P25 replay corpus bench:** `fbench run rf.p25_corpus` (see `bench/` and memory).
      There must be no regression in TSBK CRC %, follow rate or vocoder errors.
    - **Live, on a unit:** Clay County P25 (CC 860.9625) and Clay Electric DMR (site
      `cec_gcs`, CC 454.36875). Check calls, audio, recordings and history on both.
 4. **Record as you go:** a `CHANGELOG_FORK.md` entry per stage, the status log in
-   `076_refactor.md`, and memory notes for anything a later session must not re-learn.
+   `DESIGN.md`, and memory notes for anything a later session must not re-learn.
 
 ## Practical rules of this setup
 

@@ -32,7 +32,7 @@ scanner needs:
 | 074 | Packet data (SNDCP) on the data channel; status-dibit fix for every frame | done |
 | 074b | Packet data: keep it in the history; decode LRRP / ARS / TMS contents | next |
 | — | Phase 2 TDMA voice | later, if a nearby system uses it (Clay grants none) |
-| 076 | Restructure into a clean multi-band, multi-protocol scanner | design approved 2026-10-01; built as a fresh crate (`doc/changes/076_refactor.md`) |
+| 076 | Restructure into a clean multi-band, multi-protocol scanner | design approved 2026-10-01; built as a fresh crate (`scanner/doc/DESIGN.md`) |
 | — | Remote libiio control: detect it and share the radio | idea |
 | — | Agent control: MCP server and prompt structure | idea |
 | 075 | Clay Electric DMR (Tier III): software DMR receive, control channel, then voice | done (on fishball-p25) |

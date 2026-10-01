@@ -1,7 +1,7 @@
 # 076 — Refactor: a multi-band, multi-protocol scanner
 
 **Started:** 2026-10-01. **Branch:** fishball-p25. **Bake required:** no (a later, separate bake is
-proposed in section 13). **Brief:** `076_refactor_brief.md`.
+proposed in section 13). **Brief:** `BRIEF.md`.
 
 **Status:** design approved by Andy on 2026-10-01. It is built as a fresh crate, top-down, in
 phases (section 15). Phase 0 is next.

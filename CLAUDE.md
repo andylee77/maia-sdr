@@ -6,7 +6,7 @@ AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, branch `fishba
 ## Current work
 
 Change 076 builds a fresh crate, `scanner/`, that replaces `p25-httpd/`. The design and its
-status log are in `doc/changes/076_refactor.md`; work phase by phase as its section 15 says.
+status log are in `scanner/doc/DESIGN.md`; work phase by phase as its section 15 says.
 
 - `p25-httpd` stays the production binary, with fixes only, until the cutover.
 - Docs the refactor needs go in the crate (`scanner/doc/`). The old docs stay where they are.
