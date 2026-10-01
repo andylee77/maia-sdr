@@ -174,3 +174,25 @@ IQ hub (50 kSPS, control or traffic DDC)
     costs more than C4FM's 12 %; decimating first is an easy saving.
   - Captures of 451.0875 voice: none between 21:20 and 22:00 (a quiet evening). Retry in
     the day, or follow grants once the message layer is in.
+  - Soak: 35 min, 72,332 fine syncs, no losses, one acquisition, CACH 100 %, nothing lagged,
+    CPU 19 %, offset steady at −146 to −150 Hz.
+- 2026-09-30: **phase 1, message layer** (`protocol::dmr::message`, about 4.9k lines):
+  - SDRTrunk's message and data message factories, all standard CSBKs, full and short LC,
+    voice A/EMB with the AMBE frames, the CRC mask manager, and the message processor (SLC
+    and FLC assembly, MBC, LCN → frequency).
+  - `Display` is SDRTrunk's text. **24,985 of 24,996 lines match SDRTrunk's own decode** of
+    the ten captures, in order. The 11 differences:
+    - 5 are sync-loss bit counts at the stream start;
+    - 3 are link controls SDRTrunk marks `[CRC-ERROR]` through its inverted residual check;
+    - 2 are SLCs our BPTC(68,36) recovers;
+    - 1 is an invalid ALOHA's text.
+  - Side finding: the ~2,660 "FAILED FLC UNKNOWN" lines in the March SDRTrunk logs are good
+    Tait link control (checksum residual 0). The infrastructure is probably Tait.
+- 2026-09-30: **live messages on the board.** The DMR thread runs the message processor too,
+  with Clay Electric's LCN map as the default until DMR sites exist.
+  - `/api/dmr` adds message counts by class and the recent grants.
+  - `/api/dmr/messages` serves the last 2000 non-filler messages (`?all=1` gives everything,
+    last 500).
+  - Every message valid over the first 30 s; CPU unchanged.
+  - `runs/dmr/log_dmr.py` logs unit A's DMR events and counters overnight (10 h from 22:43,
+    unit A locked on 454.36875).
