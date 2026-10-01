@@ -426,7 +426,8 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 // Voice of the lane's current call goes to the speakers.
                 let current = self.book.on_lane(lane).filter(|c| Some(c.id) == call);
                 if let Some(c) = current {
-                    self.audio.voice(VoiceBatch { lane, call: c.id, tg: c.tg, source: c.speaker.or(c.source), frames });
+                    let speaker = self.follower.speaker(c.tg);
+                    self.audio.voice(VoiceBatch { lane, call: c.id, tg: c.tg, source: c.speaker.or(c.source), speaker, frames });
                 }
             }
             TrafficEvent::Source(s) => self.book.link_control_source(lane, s, &mut out),

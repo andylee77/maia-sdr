@@ -98,6 +98,12 @@ fn routing_ignores_monitors_and_ranks() {
     assert!(r.preempts(301, 600), "a call no longer followed yields");
 }
 
+#[test]
+fn the_speaker_of_a_talkgroup_is_its_groups() {
+    let f = Follower::new(&[Lane::One, Lane::Two], Routing::new(&profile(Side::Both, &["TAC"])), HashSet::new());
+    assert_eq!((f.speaker(300), f.speaker(305), f.speaker(999)), (Side::Left, Side::Right, Side::Both));
+}
+
 // ── The follower ─────────────────────────────────────────────────────
 
 const F1: u64 = 857_987_500;

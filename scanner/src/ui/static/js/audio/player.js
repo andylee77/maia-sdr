@@ -12,24 +12,8 @@ import { wsUrl } from '../api.js';
 
 const AUDIO_PATH = '/ws/audio';
 
+// The speaker of a lane's call, from its meta frame, as a pan: -1 left, 0 both, +1 right.
 const PAN = { left: -1, both: 0, right: 1 };
-
-// Speaker routing from the live site's profile (groups in priority order, speakers.left /
-// .right group names, speakers.other for talkgroups in no group) as {map: {tg: pan}, def: pan},
-// pan -1 left / 0 both / +1 right. A talkgroup in several groups takes the first, as the
-// follower does; groups on neither side are not followed, so their pan is moot.
-export function routeFromProfile(profile) {
-  const map = {};
-  if (!profile) return { map, def: PAN.both };
-  const sp = profile.speakers || {};
-  const side = name => ((sp.left || []).includes(name) ? PAN.left
-    : (sp.right || []).includes(name) ? PAN.right : PAN.both);
-  for (const g of profile.groups || []) {
-    const p = side(g.name);
-    for (const tg of g.talkgroups || []) if (!(tg in map)) map[tg] = p;
-  }
-  return { map, def: PAN[sp.other] ?? PAN.both };
-}
 
 class Player {
   constructor() {
@@ -40,10 +24,8 @@ class Player {
     this.lastChunkAt = 0; this.timer = null; this.connected = false;
     this.listeners = new Set();
     this.spn = null;
-    // Volume (linear gain, 0..2) and speaker routing.
-    this.volume = 1;
-    this.route = { map: {}, def: 0 };
-    this.tgs = [0, 0];
+    this.volume = 1; // linear gain, 0..2
+    this.pans = [0, 0];
   }
 
   setVolume(v) {
@@ -56,16 +38,6 @@ class Player {
     this.normalize = !!on;
     if (this.mode === 'worklet' && this.node) this.node.port.postMessage({ type: 'norm', on: this.normalize });
     if (this.spn) for (const r of this.spn) r.norm = this.normalize;
-  }
-
-  setRoute(route) {
-    this.route = route;
-    if (this.worker) this.worker.postMessage({ type: 'route', route });
-  }
-
-  panFor(tg) {
-    const p = this.route.map[tg];
-    return p === undefined ? this.route.def : p;
   }
 
   onChange(fn) { this.listeners.add(fn); fn(this.status()); }
@@ -139,7 +111,7 @@ class Player {
       else if (m.type === 'close') { this.connected = false; this.emit(); }
       else if (m.type === 'status') { this.chunks = m.chunks; this.lagSkipped = m.lag; this.lastChunkAt = Date.now(); }
     };
-    this.worker.postMessage({ type: 'init', url: wsUrl(AUDIO_PATH), port: mc.port1, route: this.route }, [mc.port1]);
+    this.worker.postMessage({ type: 'init', url: wsUrl(AUDIO_PATH), port: mc.port1 }, [mc.port1]);
   }
 
   startSpn() {
@@ -168,13 +140,13 @@ class Player {
         try {
           const c = JSON.parse(ev.data);
           if (c.type === 'lag') this.lagSkipped += c.skipped || 0;
-          else if (c.type === 'meta') this.tgs[c.lane === 1 ? 1 : 0] = c.tg;
+          else if (c.type === 'meta') this.pans[c.lane === 1 ? 1 : 0] = PAN[c.speaker] ?? PAN.both;
         } catch { /* ignore */ }
         return;
       }
       const lane = new Uint8Array(ev.data, 0, 1)[0] === 1 ? 1 : 0;
       const i16 = new Int16Array(ev.data, 4);
-      if (this.spn) this.spn[lane].write(i16, this.panFor(this.tgs[lane]), performance.now() / 1000, 1 / 32768);
+      if (this.spn) this.spn[lane].write(i16, this.pans[lane], performance.now() / 1000, 1 / 32768);
       this.chunks++;
       this.lastChunkAt = Date.now();
     };

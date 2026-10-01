@@ -4,10 +4,11 @@
 //   net -> Worker (own thread, WebSocket) -> MessagePort -> AudioWorklet
 //
 // The jitter buffer, resampling PLL and per-sample pan are `Ring` (ring.js), whose source text is
-// injected into the worklet. The server names each lane's talkgroup in a {"type":"meta"} text
-// frame before its audio; the Worker maps it to a pan (player.js `routeFromProfile`) and tags each
-// block. Binary frames start with a 4-byte header [lane, 0, 0, 0]; the worklet keeps one ring per
-// lane and mixes them, so a call on the left and another on the right play at the same time.
+// injected into the worklet. Before a lane's audio the server sends a {"type":"meta"} text frame
+// naming its talkgroup and speaker (left, right or both, from the profile); the Worker tags each
+// block with that pan. Binary frames start with a 4-byte header [lane, 0, 0, 0]; the worklet keeps
+// one ring per lane and mixes them, so a call on the left and another on the right play at the
+// same time.
 
 import { Ring, clip } from './ring.js';
 
@@ -52,8 +53,8 @@ registerProcessor('p25-audio', P25Audio);
 
 export const WORKER_SRC = `
 let port = null, ws = null, url = null, backoff = 1000, timer = null, chunks = 0, lag = 0, last = 0;
-let route = { map: {}, def: 0 }, tgs = [0, 0], pans = [0, 0];
-function panFor(t) { const p = route.map[t]; return p === undefined ? route.def : p; }
+let pans = [0, 0];
+function panOf(speaker) { return speaker === 'left' ? -1 : speaker === 'right' ? 1 : 0; }
 function report(force) {
   const now = Date.now();
   if (force || now - last > 250) { self.postMessage({ type: 'status', chunks, lag }); last = now; }
@@ -68,7 +69,7 @@ function connect() {
       try {
         const c = JSON.parse(ev.data);
         if (c && c.type === 'lag') { lag += c.skipped || 0; report(true); }
-        else if (c && c.type === 'meta') { const l = c.lane === 1 ? 1 : 0; tgs[l] = c.tg; pans[l] = panFor(c.tg); }
+        else if (c && c.type === 'meta') pans[c.lane === 1 ? 1 : 0] = panOf(c.speaker);
       } catch (e) {}
       return;
     }
@@ -88,8 +89,7 @@ function connect() {
 }
 self.onmessage = e => {
   const m = e.data;
-  if (m.type === 'init') { port = m.port; url = m.url; if (m.route) route = m.route; connect(); }
-  else if (m.type === 'route') { route = m.route; pans = tgs.map(panFor); }
+  if (m.type === 'init') { port = m.port; url = m.url; connect(); }
   else if (m.type === 'shutdown') { url = null; clearTimeout(timer); if (ws) try { ws.close(); } catch (e) {} }
 };
 `;

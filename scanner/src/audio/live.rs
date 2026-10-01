@@ -17,6 +17,7 @@ use super::agc::PcmAgc;
 use super::codec::{Ambe2, Imbe, VoiceCodec, SAMPLES_PER_FRAME};
 use crate::hardware::p25core::Lane;
 use crate::protocol::events::VoiceFrames;
+use crate::services::config::profiles::Side;
 
 /// Voice batches queued for a lane's decoder (~4 s of P25).
 const DECODE_QUEUE: usize = 24;
@@ -33,6 +34,8 @@ pub struct VoiceBatch {
     pub call: u64,
     pub tg: u32,
     pub source: Option<u32>,
+    /// From the profile, as the follower routes the talkgroup.
+    pub speaker: Side,
     pub frames: VoiceFrames,
 }
 
@@ -43,6 +46,7 @@ pub struct AudioChunk {
     pub call: u64,
     pub tg: u32,
     pub source: Option<u32>,
+    pub speaker: Side,
     pub pcm: [i16; SAMPLES_PER_FRAME],
     /// The vocoder found the frame damaged (it repeated or muted).
     pub error: bool,
@@ -136,7 +140,7 @@ fn decode(rx: Receiver<VoiceBatch>, tx: mpsc::Sender<AudioChunk>, counters: Arc<
             if silent {
                 counters.silent.fetch_add(1, Ordering::Relaxed);
             }
-            let chunk = AudioChunk { lane: b.lane, call: b.call, tg: b.tg, source: b.source, pcm, error: q.error, silent };
+            let chunk = AudioChunk { lane: b.lane, call: b.call, tg: b.tg, source: b.source, speaker: b.speaker, pcm, error: q.error, silent };
             tx.blocking_send(chunk).is_ok()
         };
         let ok = match &b.frames {
@@ -182,14 +186,14 @@ mod tests {
         let audio = Audio::start(&[Lane::One, Lane::Two]);
         let mut rx = audio.subscribe();
         let frames = VoiceFrames::Imbe([ImbeFrameRaw { bits: [0x55; 18] }; 9]);
-        assert!(audio.voice(VoiceBatch { lane: Lane::Two, call: 7, tg: 300, source: Some(1014), frames }));
+        assert!(audio.voice(VoiceBatch { lane: Lane::Two, call: 7, tg: 300, source: Some(1014), speaker: Side::Right, frames }));
         let start = tokio::time::Instant::now();
         let mut got = Vec::new();
         for _ in 0..9 {
             got.push(tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap());
         }
         assert!(start.elapsed() >= FRAME_PACE * 8, "paced: {:?}", start.elapsed());
-        assert!(got.iter().all(|c| c.lane == Lane::Two && c.call == 7 && c.tg == 300));
+        assert!(got.iter().all(|c| c.lane == Lane::Two && c.call == 7 && c.tg == 300 && c.speaker == Side::Right));
         assert_eq!(audio.counters.frames.load(Ordering::Relaxed), 9);
         let frame = audio_frame(&got[0]);
         assert_eq!((frame.len(), frame[0]), (324, 1));

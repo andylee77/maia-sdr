@@ -8,7 +8,7 @@ import * as now from './views/now.js';
 import * as systems from './views/systems.js';
 import * as diag from './views/diagnostics.js';
 import * as settings from './views/settings.js';
-import { player, routeFromProfile } from './audio/player.js';
+import { player } from './audio/player.js';
 
 const PAGES = { now, systems, diag, settings };
 const $ = id => document.getElementById(id);
@@ -46,7 +46,7 @@ function header(s) {
   setClass($('top-site-dot'), 'ok', !!live && live.state === 'live');
 }
 
-// Live audio: the button starts and stops it; the talkgroups pan by the live profile.
+// Live audio: the button starts and stops it (the server says which speaker each call is on).
 $('listen').addEventListener('click', () => player.toggle());
 player.onChange(st => {
   setText($('listen'), st.playing ? 'Stop' : 'Listen');
@@ -54,20 +54,8 @@ player.onChange(st => {
   setText($('listen-state'), st.label);
   $('listen-state').title = st.detail;
 });
-let routedProfile;
-function route_audio(s) {
-  const live = s.status && s.status.live;
-  const profile = live && live.state === 'live' ? live.profile : null;
-  const key = JSON.stringify(profile);
-  if (key !== routedProfile) {
-    routedProfile = key;
-    player.setRoute(routeFromProfile(profile));
-  }
-}
-
 subscribe(s => {
   header(s);
-  route_audio(s);
   if (current) current.page.update(s);
 });
 window.addEventListener('hashchange', route);

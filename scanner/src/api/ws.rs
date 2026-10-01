@@ -1,7 +1,8 @@
 //! `/ws/audio`: live audio of every lane. Binary frames are `[lane index, 0, 0, 0]` and 20 ms of
 //! 8 kHz 16-bit mono. Before a lane's first frame of a call, a text frame
-//! `{"type":"meta","lane","tg","src","call_id"}` names it (the player pans talkgroups to
-//! speakers). A listener that falls behind gets `{"type":"lag","skipped"}` and stays connected.
+//! `{"type":"meta","lane","tg","src","call_id","speaker"}` names it; `speaker` (left, right or
+//! both) is where the profile routes the talkgroup. A listener that falls behind gets
+//! `{"type":"lag","skipped"}` and stays connected.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::audio::live::audio_frame;
 use crate::boot::state::AppState;
+use crate::services::config::profiles::Side;
 
 pub async fn audio(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| stream(socket, s))
@@ -32,16 +34,17 @@ async fn stream(socket: WebSocket, s: Arc<AppState>) {
     let _listener = Listener(s.clone());
     let mut rx = s.audio.subscribe();
     let (mut out, mut inbound) = socket.split();
-    let mut announced: [Option<(u32, u64)>; 2] = [None; 2];
+    let mut announced: [Option<(u32, u64, Side)>; 2] = [None; 2];
     loop {
         tokio::select! {
             chunk = rx.recv() => match chunk {
                 Ok(c) => {
                     let li = c.lane.index().min(1);
-                    if announced[li] != Some((c.tg, c.call)) {
-                        announced[li] = Some((c.tg, c.call));
+                    if announced[li] != Some((c.tg, c.call, c.speaker)) {
+                        announced[li] = Some((c.tg, c.call, c.speaker));
                         let meta = serde_json::json!({
                             "type": "meta", "lane": li, "tg": c.tg, "src": c.source.unwrap_or(0), "call_id": c.call,
+                            "speaker": c.speaker,
                         });
                         if out.send(Message::Text(meta.to_string().into())).await.is_err() {
                             break;

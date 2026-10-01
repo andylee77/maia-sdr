@@ -205,6 +205,11 @@ impl Follower {
         }
     }
 
+    /// The speaker a followed talkgroup plays on.
+    pub fn speaker(&self, tg: u32) -> Side {
+        self.routing.route(tg).map_or(Side::Both, |r| r.side)
+    }
+
     pub fn set_routing(&mut self, routing: Routing) {
         self.routing = routing;
     }

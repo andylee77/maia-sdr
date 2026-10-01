@@ -11,6 +11,7 @@ use super::*;
 use crate::audio::live::VoiceBatch;
 use crate::protocol::events::VoiceFrames;
 use crate::protocol::p25::voice_frame::ImbeFrameRaw;
+use crate::services::config::profiles::Side;
 
 fn dirs(tag: &str) -> (PathBuf, PathBuf) {
     let root = std::env::temp_dir().join(format!("scanner_recordings_{}_{tag}", std::process::id()));
@@ -249,7 +250,7 @@ fn call(id: u64) -> CallStart {
 async fn play(audio: &Audio, id: u64) {
     let mut rx = audio.subscribe();
     let frames = VoiceFrames::Imbe([ImbeFrameRaw { bits: [0x55; 18] }; 9]);
-    assert!(audio.voice(VoiceBatch { lane: Lane::One, call: id, tg: 300, source: Some(1014), frames }));
+    assert!(audio.voice(VoiceBatch { lane: Lane::One, call: id, tg: 300, source: Some(1014), speaker: Side::Both, frames }));
     for _ in 0..9 {
         tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
     }

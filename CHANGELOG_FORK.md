@@ -5,10 +5,10 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
-## [2026-10-01] 076: the fresh `scanner` crate, phases 0-2 (not deployed)
+## [2026-10-01] 076: the fresh `scanner` crate, phases 0-4 (not deployed)
 
 **Branch:** fishball-p25
-**BUILD_TAG:** `2026-10-01-scanner-p2` (scanner; run by hand from `/tmp`, p25-httpd stays in production)
+**BUILD_TAG:** `2026-10-01-scanner-p4` (scanner; run by hand from `/tmp`, p25-httpd stays in production)
 **Bake required:** NO.
 
 - **Phase 0:** the trunking trace tap (`P25_TRUNK_TRACE`) and host replay in p25-httpd; unit
@@ -20,8 +20,16 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 - **Phase 2:** the receivers: P25 (HDL LSM and software C4FM, with the auto choice) and DMR
   control decoders behind one event type, the stream readers, the event log and the events
   box. The new P25 framer matches p25-httpd's on all 331 SDRTrunk recordings.
+- **Phase 3:** trunking: one follower and one call book for both protocols (p25-httpd's
+  lifecycle rules on the monotonic clock), the P25 and DMR traffic decoders, voice attributed
+  to calls by air time, the learned site state, `/api/v1/calls` and the calls card. The replay
+  fixtures reproduce p25-httpd's calls exactly.
+- **Phase 4:** audio: IMBE and AMBE+2 (the jmbe port), one AGC, a pacer per lane, `/ws/audio`
+  and the Listen button; call recordings driven by the call book (RAM or SD, p25-httpd's file
+  names and card writer), the card's recordings listed at boot, playback on Now and the
+  recording settings.
 
-Tests: scanner 245, p25-httpd 475.
+Tests: scanner 337, p25-httpd 475.
 
 ---
 
