@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use super::c4fm::{C4fmDecoder, DibitSink};
 use super::framer::{Framed, Framer, FramerConfig, FramerStats};
 use super::pdu::PduFrame;
 use super::tsbk::{service_options, FrequencyBand, TsbkMessage};
@@ -115,6 +116,30 @@ impl P25Control {
 
     pub fn locked_nac(&self) -> u16 {
         self.framer.locked_nac()
+    }
+
+    /// Decode 50 kSPS interleaved IQ through the software C4FM demodulator.
+    pub fn push_c4fm(&mut self, demod: &mut C4fmDecoder, iq: &[i16], now: Now, out: &mut Vec<ControlEvent>) {
+        demod.process_iq_i16(iq, &mut Fed { control: self, now, out });
+    }
+}
+
+/// The control decoder as the C4FM demodulator's dibit sink.
+struct Fed<'a> {
+    control: &'a mut P25Control,
+    now: Now,
+    out: &'a mut Vec<ControlEvent>,
+}
+
+impl DibitSink for Fed<'_> {
+    fn push_dibit(&mut self, dibit: u8) {
+        self.control.push(&[dibit], self.now, self.out);
+    }
+    fn sync_detected(&mut self) {
+        self.control.sync_detected();
+    }
+    fn is_assembling(&self) -> bool {
+        self.control.is_assembling()
     }
 }
 
