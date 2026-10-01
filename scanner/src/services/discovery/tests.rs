@@ -123,6 +123,15 @@ fn a_scan_adds_systems_and_sites_and_merges_into_known_ones() {
 }
 
 #[test]
+fn a_control_timeslot_is_kept_only_when_one_clearly_carries_the_messages() {
+    use super::probe::control_slot;
+    assert_eq!(control_slot([120, 3]), Some(1));
+    assert_eq!(control_slot([2, 90]), Some(2));
+    assert_eq!(control_slot([60, 55]), None);
+    assert_eq!(control_slot([0, 0]), None);
+}
+
+#[test]
 fn dmr_finds_land_on_the_channel_raster() {
     use super::probe::on_raster;
     assert_eq!(on_raster(454_369_375), 454_368_750);

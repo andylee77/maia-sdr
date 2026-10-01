@@ -189,7 +189,7 @@ impl Probe for DmrProbe {
         let Some(identity) = self.dmr.identity().filter(|_| s.msgs_valid >= 3) else {
             return if s.voice_bursts >= 6 { Heard::Traffic } else { Heard::Nothing };
         };
-        let timeslot = if self.slots[1] > self.slots[0] { 2 } else { 1 };
+        let timeslot = control_slot(self.slots);
         Heard::Control(Box::new(FoundSite {
             id: String::new(),
             freq_hz: on_raster(freq_hz),
@@ -202,10 +202,22 @@ impl Probe for DmrProbe {
             bands: Vec::new(),
             neighbours: Vec::new(),
             secondary_hz: Vec::new(),
-            timeslot: Some(timeslot),
+            timeslot,
             existing_site: None,
             via_neighbour: false,
         }))
+    }
+}
+
+/// The timeslot carrying the control messages, when one clearly does (a site may send them on
+/// both).
+pub fn control_slot([ts1, ts2]: [u64; 2]) -> Option<u8> {
+    if ts1 >= 3 * ts2.max(1) {
+        Some(1)
+    } else if ts2 >= 3 * ts1.max(1) {
+        Some(2)
+    } else {
+        None
     }
 }
 

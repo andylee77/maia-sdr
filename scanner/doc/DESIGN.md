@@ -1159,6 +1159,13 @@ From the brief:
     0 site 2), plus two P25 traffic channels in calls. Adding both made Clay live at 97 %. A
     rescan matched Clay to its site and put it back live; that pass missed the DMR carrier
     (marginal on the internal antenna).
+  - **Live, unit A** (external antenna, empty configuration): 14 control channels with their
+    identities in 208 s: Clay County; two more BEE00 systems on 800 MHz (3BD at 855.4875,
+    4D6 with two sites); a 700 MHz system (WACN 9254A at 770.20625); eight FPL 900 MHz sites,
+    two of them from neighbour lists; Clay Electric at 454.36875 MHz. Clay Electric carries
+    control messages on both timeslots (B counted more on one, A on the other), so a control
+    timeslot is kept only when one slot carries three times the other's (it is informational:
+    the receivers decode both).
   - **Changed from p25-httpd:** a DMR find is put on the channel raster (2.5 kHz in VHF,
     6.25 kHz above): it announces no frequency of its own, and the spectrum's estimate was
     625 Hz off.
@@ -1179,6 +1186,12 @@ From the brief:
     refreshes on them at once (32 in a minute on B).
   - **Spectrum:** `/api/v1/spectrum` from the wideband spectrometer and its card on
     Diagnostics (B: Clay's control channel 30 dB over a -99 dB floor).
+  - **Clock** (`services::clock`): p25-httpd's site clock (SYNC_BCST, with its tests), internet
+    time, or by hand, as `radio.json` says; `POST /api/v1/clock` sets it from a browser.
+    Calls are timed on the monotonic clock, so a step needs no idle lanes.
+  - **Also:** `GET /api/v1/calls/{id}`; the Board card on Diagnostics (the hardware readback);
+    Now names the profile followed; only the UI's protocol registry names protocols (a host
+    test keeps it so).
   - **For the bench (with the D12 session):** the corpus test parks a lane through the
     follower, then holds it on the channel with the follower off (`/api/traffic`
     `lock=on&follower=off`) and reads `/api/imbe_dump`, `/api/ui/calls`, `/api/ui/state` and
