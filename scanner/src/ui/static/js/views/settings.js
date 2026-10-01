@@ -1,5 +1,6 @@
-// Settings: the receiver gain, the radio's other settings, the crystal, recording, profiles and
-// each system's talkgroup and radio names.
+// Settings: the receiver gain, the radio's other settings, the crystal, recording, profiles, each
+// system's talkgroup and radio names, and the configuration as a whole (export, import, factory
+// reset).
 
 import { h, card, clear, toast, switchInput } from '../dom.js';
 import { api } from '../api.js';
@@ -231,6 +232,69 @@ function namesCard(systems) {
   return c.el;
 }
 
+// After an import or a reset the scanner restarts: reload once it answers again.
+function reloadAfterRestart() {
+  const started = Date.now();
+  const poll = async () => {
+    try {
+      const s = await api.status();
+      if (s.uptime_s < 60 && Date.now() - started > 2000) {
+        location.reload();
+        return;
+      }
+    } catch (e) {
+      // Restarting.
+    }
+    if (Date.now() - started < 60000) setTimeout(poll, 1000);
+  };
+  setTimeout(poll, 1500);
+}
+
+function configCard() {
+  const c = card('Configuration');
+  const exportLink = h('a', { class: 'btn', href: '/api/v1/config?download=true', download: 'scanner-config.json', text: 'Export' });
+  const file = h('input', { class: 'input', type: 'file', accept: '.json,application/json', 'aria-label': 'Configuration file' });
+  const importBtn = h('button', { class: 'btn', type: 'button', text: 'Import' });
+  importBtn.addEventListener('click', async () => {
+    const f = file.files && file.files[0];
+    if (!f) {
+      toast('Choose an exported configuration file first', true);
+      return;
+    }
+    let doc;
+    try {
+      doc = JSON.parse(await f.text());
+    } catch (e) {
+      toast(`${f.name} is not JSON`, true);
+      return;
+    }
+    if (!confirm(`Replace the radio settings, systems, sites and profiles with ${f.name}? The radio restarts.`)) return;
+    try {
+      const r = await api.importConfig(doc);
+      toast(`Imported ${r.systems} systems, ${r.sites} sites, ${r.profiles} profiles; restarting`);
+      reloadAfterRestart();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
+  const reset = h('button', { class: 'btn danger', type: 'button', text: 'Factory reset' });
+  reset.addEventListener('click', async () => {
+    if (!confirm('Factory reset: delete every system, site, profile, recording and the call history, and restore the default settings? The crystal calibration stays. This cannot be undone.')) return;
+    try {
+      const r = await api.factoryReset();
+      toast(`Reset: ${r.sites} sites, ${r.recordings} recordings, ${r.calls} calls removed; restarting`);
+      reloadAfterRestart();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
+  c.body.append(
+    h('p', { class: 'card-note', text: 'The radio settings, systems with their names and sites, and profiles, as one file. What the radio learned on the air and the crystal calibration stay with the board.' }),
+    h('div', { class: 'row' }, exportLink, file, importBtn),
+    h('div', { class: 'row end' }, reset));
+  return c.el;
+}
+
 export function mount(el) {
   const host = h('div', { class: 'stack' });
   el.append(host);
@@ -238,7 +302,7 @@ export function mount(el) {
   Promise.all([api.radio(), api.crystal(), api.systems(), api.recordings(0)])
     .then(([radio, crystalStatus, systems, recs]) => {
       crystal = crystalCard(crystalStatus);
-      host.append(gainCard(radio), radioCard(radio), crystal.el, recordingCard(radio, recs), profilesCard(systems), namesCard(systems));
+      host.append(gainCard(radio), radioCard(radio), crystal.el, recordingCard(radio, recs), profilesCard(systems), namesCard(systems), configCard());
     })
     .catch(e => toast(e.message, true));
   return { update() {}, unmount() { if (crystal) crystal.stop(); } };

@@ -1,4 +1,5 @@
-// Systems: find the systems on the air; every configured system and its sites; make a site live.
+// Systems: find the systems on the air; every configured system and its sites; make a site live;
+// remove a site or a system.
 
 import { h, card, toast } from '../dom.js';
 import { ago, mhz, DASH } from '../format.js';
@@ -163,6 +164,17 @@ export function mount(el) {
     }
   }
 
+  async function remove(what, call) {
+    if (!confirm(`Remove ${what}? What it learned goes too; the history keeps its calls.`)) return;
+    try {
+      await call();
+      toast(`${what} removed`);
+      load();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
   function render() {
     list.replaceChildren();
     if (!systems.length) {
@@ -172,7 +184,13 @@ export function mount(el) {
     for (const sys of systems) {
       const p = protocol(sys.protocol);
       const c = card(sys.label);
-      c.right.append(h('span', { class: 'badge', text: p.label }));
+      const hasLive = sys.sites.some(s => s.id === liveId);
+      const drop = h('button', {
+        class: 'btn small danger', type: 'button', text: 'Delete system', disabled: hasLive,
+        title: hasLive ? 'Make a site of another system live first' : '',
+        onclick: () => remove(`${sys.label} with its ${sys.sites.length} site(s) and its profiles`, () => api.deleteSystem(sys.id)),
+      });
+      c.right.append(h('span', { class: 'badge', text: p.label }), drop);
       c.body.append(kv(p.systemIdentity(sys.identity)));
       for (const site of sys.sites) {
         const live = site.id === liveId;
@@ -184,12 +202,17 @@ export function mount(el) {
           announced(site, details);
         };
         const edit = h('button', { class: 'btn small', type: 'button', text: 'Edit' });
+        const del = h('button', {
+          class: 'btn small danger', type: 'button', text: 'Delete', disabled: live,
+          title: live ? 'Make another site live first' : '',
+          onclick: () => remove(`site ${site.label}`, () => api.deleteSite(sys.id, site.id)),
+        });
         edit.addEventListener('click', () => details.replaceChildren(siteEditor(sys, site, saved => (saved ? load() : show()))));
         show();
         c.body.append(h('div', { class: 'card-note' },
           h('div', { class: 'row' },
             h('strong', { text: site.label }), h('span', { class: 'dim', text: ` ${site.id}` }),
-            h('div', { class: 'spacer' }), edit, button),
+            h('div', { class: 'spacer' }), edit, del, button),
           details,
           ...(live ? [windowBox(site)] : [])));
       }
