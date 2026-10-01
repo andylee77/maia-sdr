@@ -1197,3 +1197,17 @@ From the brief:
     `lock=on&follower=off`) and reads `/api/imbe_dump`, `/api/ui/calls`, `/api/ui/state` and
     `/api/system`. The scanner has no lane hold yet; it, the frame dump and the bench's move to
     `/api/v1` are built and checked with the bench running.
+- 2026-10-01, phase 8 (prepared, waiting for Andy's go):
+  - **Done ahead:** `doc/API.md` generated from the route table (a test keeps it current) and the
+    crate's `README.md`.
+  - **Before the cutover, on each unit:** delete the test files from this work (the card's
+    `scanner-history.sqlite*` and `scanner_recordings/`, and `/mnt/jffs2/scanner/`), so the
+    first start migrates p25-httpd's configuration and copies its history as they are then.
+  - **tezuka_fw:** a `scanner` package like `p25-httpd`'s (rsync `/scanner/` and
+    `/p25-httpd/p25-pac/` without their target dirs or `scanner/tests/`; the same RUSTFLAGS and
+    cc toolchain; `/usr/bin/scanner.xz`), an `S60scanner` from `S60p25-httpd` (card fsck and
+    mount, respawn loop, log rotation, the certificates, `--listen 0.0.0.0:8080`), and
+    `fishball_p25_7020_defconfig` selecting it in place of `p25-httpd`.
+  - **Then:** the image on A, the checks of "Done means", then B; p25-httpd, `lsm/` and
+    `sw_demod/` leave the repo; `CHANGELOG_FORK.md`. Rolling back is booting the old image.
+
