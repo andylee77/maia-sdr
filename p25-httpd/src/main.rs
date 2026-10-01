@@ -43,7 +43,7 @@ use services::monitor;
 /// Bump this whenever a feature flag changes so on-target verification
 /// ("is this the binary I just flashed?") is a trivial grep. Buildroot
 /// zeroes mtimes and doc-comment strings don't survive into the binary.
-pub const BUILD_TAG: &str = "2026-09-30-dmr-events-075";
+pub const BUILD_TAG: &str = "2026-09-30-dmr-lpf25k-075";
 
 // ── Runtime / timing constants ─────────────────────────────────────
 //
@@ -1861,6 +1861,14 @@ async fn main() -> anyhow::Result<()> {
             current_control_freq_for_c4fm.clone(),
             current_rx_lo.clone(),
             dmr_rt.clone(),
+        );
+        app::dmr_task::spawn_dmr_traffic(traffic_iq.clone(), dmr_rt.clone());
+        app::dmr_task::spawn_dmr_executor(
+            dmr_rt.clone(),
+            ip_core.clone(),
+            current_rx_lo.clone(),
+            current_sample_rate_hz.clone(),
+            current_lo_shift_hz.clone(),
         );
     }
 

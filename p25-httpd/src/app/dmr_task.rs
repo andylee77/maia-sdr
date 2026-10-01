@@ -7,11 +7,17 @@
 //! carrier offset the equaliser learned, the CPU it costs, message counts by
 //! class, recent grants; and `/api/dmr/messages` the last messages in
 //! SDRTrunk's text.
+//!
+//! With `follow` on (`PUT /api/dmr?follow=1`), the call follower
+//! (`app::dmr_follower`) takes the control channel's grants: an executor task
+//! moves traffic chain 1 to the granted channel, and a second DMR thread on
+//! chain 1's IQ feeds the call's bursts back to the follower.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use crate::app::dmr_follower::{DmrFollower, FollowerAction};
 use crate::protocol::dmr::framer::FramerEvent;
 use crate::protocol::dmr::message::DmrMessage;
 
@@ -79,6 +85,22 @@ pub struct DmrRuntime {
     /// Everything but the filler (grants, PROTECT, CLEAR, voice, LC, ...).
     pub events: Mutex<VecDeque<MessageRecord>>,
     pub grants: Mutex<VecDeque<GrantRecord>>,
+    /// Follow grants onto traffic chain 1.
+    pub follow: AtomicBool,
+    pub follower: Mutex<DmrFollower>,
+    /// The follower's actions, to the executor task.
+    pub actions_tx: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<FollowerAction>>,
+    /// Bumped at every traffic-chain retune: the traffic thread restarts.
+    pub traffic_epoch: AtomicU64,
+    pub traffic_chunks: AtomicU64,
+    pub traffic_bursts: AtomicU64,
+    pub traffic_voice_bursts: AtomicU64,
+    pub traffic_fine_syncs: AtomicU64,
+    pub traffic_cpu_centi_pct: AtomicU64,
+    pub tunes: AtomicU64,
+    pub tune_errors: AtomicU64,
+    /// The follower's actions, as text, newest last.
+    pub follower_log: Mutex<VecDeque<(u64, String)>>,
 }
 
 impl DmrRuntime {
@@ -167,6 +189,46 @@ impl DmrRuntime {
         }
     }
 
+    /// Hands follower actions to the executor and logs them.
+    pub fn act(&self, actions: Vec<FollowerAction>) {
+        if actions.is_empty() {
+            return;
+        }
+        let now = crate::app::now_unix_ms();
+        if let Ok(mut log) = self.follower_log.lock() {
+            for a in &actions {
+                if !matches!(a, FollowerAction::Voice { .. } | FollowerAction::KeepAlive { .. }) {
+                    log.push_back((now, format!("{a:?}")));
+                }
+            }
+            while log.len() > 100 {
+                log.pop_front();
+            }
+        }
+        if let Some(tx) = self.actions_tx.get() {
+            for a in actions {
+                let _ = tx.send(a);
+            }
+        }
+    }
+
+    /// The control channel's message, to the follower (when following).
+    pub fn follow_control(&self, message: &DmrMessage) {
+        if !self.follow.load(Ordering::Relaxed) {
+            return;
+        }
+        let now = crate::app::now_unix_ms();
+        let actions = match self.follower.lock() {
+            Ok(mut f) => {
+                let mut a = f.on_control(message, now);
+                a.extend(f.tick(now));
+                a
+            }
+            Err(_) => return,
+        };
+        self.act(actions);
+    }
+
     /// The last `n` messages (oldest first): every message when `all`, else
     /// those other than the filler; optionally only class names containing
     /// `class`.
@@ -231,6 +293,24 @@ impl DmrRuntime {
             }).unwrap_or_default(),
             "recent_grants": self.grants.lock().map(|g| g.iter().rev().take(20).cloned().collect::<Vec<_>>())
                 .unwrap_or_default(),
+            "follow": self.follow.load(Ordering::Relaxed),
+            "following": self.follower.lock().ok().and_then(|f| f.following()).map(|g| serde_json::json!({
+                "talkgroup": g.talkgroup, "source": g.source, "private": g.private,
+                "lcn": g.lcn, "timeslot": g.timeslot, "freq_hz": g.freq_hz,
+            })),
+            "traffic": {
+                "tuned_hz": self.follower.lock().ok().and_then(|f| f.tuned_hz()),
+                "tunes": l(&self.tunes),
+                "tune_errors": l(&self.tune_errors),
+                "epoch": l(&self.traffic_epoch),
+                "chunks": l(&self.traffic_chunks),
+                "bursts": l(&self.traffic_bursts),
+                "voice_bursts": l(&self.traffic_voice_bursts),
+                "fine_syncs": l(&self.traffic_fine_syncs),
+                "cpu_pct": l(&self.traffic_cpu_centi_pct) as f64 / 100.0,
+            },
+            "follower_log": self.follower_log.lock().map(|g| g.iter().rev().take(30).cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
         })
     }
 }
@@ -289,6 +369,7 @@ pub fn spawn_dmr_control(
                 rt.count(&event);
                 for message in processor.process(event) {
                     rt.record(&message);
+                    rt.follow_control(&message);
                 }
             }
             busy += t0.elapsed();
@@ -311,6 +392,131 @@ pub fn spawn_dmr_control(
     if let Err(e) = spawned {
         tracing::error!("dmr control thread not started: {e}");
     }
+}
+
+/// The DMR traffic thread: chain 1's IQ -> DMR receiver -> the follower.
+/// Runs only while following; a retune (`traffic_epoch`) restarts the
+/// receiver and drops the chunk that may straddle it.
+#[cfg(target_os = "linux")]
+pub fn spawn_dmr_traffic(
+    hub: std::sync::Arc<crate::app::iq_hub::IqHub>,
+    rt: std::sync::Arc<DmrRuntime>,
+) {
+    use crate::protocol::dmr::demod::DmrDemodulator;
+    use crate::protocol::dmr::framer::DmrMessageFramer;
+    use crate::protocol::dmr::message::processor::DmrMessageProcessor;
+    use tokio::sync::broadcast::error::RecvError;
+    let spawned = std::thread::Builder::new().name("dmr-traffic".into()).spawn(move || {
+        let mut rx = hub.subscribe();
+        let mut chain: Option<(DmrDemodulator, DmrMessageFramer, DmrMessageProcessor)> = None;
+        let mut epoch = u64::MAX;
+        let lcn_map: HashMap<u16, u64> = DEFAULT_LCN_MAP.iter().copied().collect();
+        let mut busy = std::time::Duration::ZERO;
+        let mut since = std::time::Instant::now();
+        loop {
+            let chunk = match rx.blocking_recv() {
+                Ok(c) => c,
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => break,
+            };
+            if !rt.enabled.load(Ordering::Relaxed) || !rt.follow.load(Ordering::Relaxed) {
+                chain = None;
+                continue;
+            }
+            let now_epoch = rt.traffic_epoch.load(Ordering::Relaxed);
+            if now_epoch != epoch {
+                // Retuned: this chunk may hold the old channel's samples.
+                epoch = now_epoch;
+                let mut demod = DmrDemodulator::new();
+                demod.symbols.set_base_station_mode();
+                chain = Some((demod, DmrMessageFramer::default(), DmrMessageProcessor::new(lcn_map.clone())));
+                continue;
+            }
+            let Some((demod, framer, processor)) = chain.as_mut() else { continue };
+            let t0 = std::time::Instant::now();
+            demod.process_iq_i16(&chunk, framer);
+            let events: Vec<FramerEvent> = framer.drain().collect();
+            let now = crate::app::now_unix_ms();
+            let mut actions = Vec::new();
+            for event in events {
+                if let FramerEvent::Burst(b) = &event {
+                    rt.traffic_bursts.fetch_add(1, Ordering::Relaxed);
+                    if b.pattern.is_voice_pattern() {
+                        rt.traffic_voice_bursts.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                for message in processor.process(event) {
+                    if let Ok(mut f) = rt.follower.lock() {
+                        actions.extend(f.on_traffic(&message, now));
+                    }
+                }
+            }
+            if let Ok(mut f) = rt.follower.lock() {
+                actions.extend(f.tick(now));
+            }
+            rt.act(actions);
+            busy += t0.elapsed();
+            rt.traffic_chunks.fetch_add(1, Ordering::Relaxed);
+            rt.traffic_fine_syncs.store(demod.symbols.stats.fine_syncs, Ordering::Relaxed);
+            if since.elapsed() >= std::time::Duration::from_secs(5) {
+                let pct = busy.as_secs_f64() / since.elapsed().as_secs_f64() * 100.0;
+                rt.traffic_cpu_centi_pct.store((pct * 100.0) as u64, Ordering::Relaxed);
+                busy = std::time::Duration::ZERO;
+                since = std::time::Instant::now();
+            }
+        }
+        tracing::warn!("dmr traffic thread exiting (IQ hub closed)");
+    });
+    if let Err(e) = spawned {
+        tracing::error!("dmr traffic thread not started: {e}");
+    }
+}
+
+/// Carries out the follower's actions: retunes traffic chain 1 (NCO only:
+/// the P25 chain on it stays off).
+#[cfg(target_os = "linux")]
+pub fn spawn_dmr_executor(
+    rt: std::sync::Arc<DmrRuntime>,
+    ip_core: std::sync::Arc<tokio::sync::Mutex<crate::hardware::fpga::IpCore>>,
+    rx_lo: std::sync::Arc<AtomicI64>,
+    sample_rate_hz: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    lo_shift_hz: std::sync::Arc<AtomicI64>,
+) {
+    use crate::hardware::traffic_lane::Lane;
+    let (tx, mut actions) = tokio::sync::mpsc::unbounded_channel();
+    if rt.actions_tx.set(tx).is_err() {
+        tracing::error!("dmr executor already running");
+        return;
+    }
+    tokio::spawn(async move {
+        while let Some(action) = actions.recv().await {
+            if let FollowerAction::Tune { freq_hz } = action {
+                let offset = freq_hz as f64 - rx_lo.load(Ordering::Relaxed) as f64
+                    + lo_shift_hz.load(Ordering::Relaxed) as f64;
+                let sr = sample_rate_hz.load(Ordering::Relaxed) as f64;
+                let result = {
+                    let core = ip_core.lock().await;
+                    match core.lane(Lane::One) {
+                        Some(lane) => lane.set_ddc_frequency(offset, sr),
+                        None => Err(anyhow::anyhow!("no traffic chain 1")),
+                    }
+                };
+                match result {
+                    Ok(()) => {
+                        rt.tunes.fetch_add(1, Ordering::Relaxed);
+                        rt.traffic_epoch.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        rt.tune_errors.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!("dmr: traffic chain 1 retune to {freq_hz} Hz failed: {e}");
+                        if let Ok(mut f) = rt.follower.lock() {
+                            f.chain_moved();
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]

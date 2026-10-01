@@ -64,7 +64,7 @@ struct Following {
 }
 
 /// The follower's state: idle, or following one transmission.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DmrFollower {
     following: Option<Following>,
     tuned_hz: Option<u64>,
@@ -94,6 +94,12 @@ pub fn voice_grant(message: &DmrMessage) -> Option<DmrGrant> {
         timeslot: channel.timeslot,
         freq_hz: channel.downlink_hz,
     })
+}
+
+impl Default for DmrFollower {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DmrFollower {

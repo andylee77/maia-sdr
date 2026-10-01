@@ -15,27 +15,41 @@ pub async fn get_dmr(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
     Json(state.dmr_rt.snapshot())
 }
 
-/// `PUT /api/dmr?enabled=1|0`: run the DMR demodulator on the control IQ
-/// (beside the P25 decoders) or stop it. Enabling zeroes the counters.
+/// `PUT /api/dmr?enabled=1|0[&follow=1|0]`: run the DMR receiver on the
+/// control IQ (beside the P25 decoders) or stop it; `follow` lets it move
+/// traffic chain 1 to granted calls. Enabling zeroes the counters.
 pub async fn put_dmr(
     State(state): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let on = match params.get("enabled").map(|s| s.as_str()) {
-        Some("1") | Some("true") => true,
-        Some("0") | Some("false") => false,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "ok": false, "error": "expected ?enabled=1 or ?enabled=0" })),
-            );
-        }
+    let flag = |name: &str| match params.get(name).map(|s| s.as_str()) {
+        Some("1") | Some("true") => Some(Ok(true)),
+        Some("0") | Some("false") => Some(Ok(false)),
+        Some(_) => Some(Err(())),
+        None => None,
     };
-    let rt = &state.dmr_rt;
-    if on && !rt.enabled.load(Ordering::Relaxed) {
-        rt.clear();
+    let (enabled, follow) = (flag("enabled"), flag("follow"));
+    if matches!(enabled, Some(Err(_))) || matches!(follow, Some(Err(_))) || (enabled.is_none() && follow.is_none()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "error": "expected ?enabled=1|0 and / or ?follow=1|0" })),
+        );
     }
-    rt.enabled.store(on, Ordering::Relaxed);
+    let rt = &state.dmr_rt;
+    if let Some(Ok(on)) = enabled {
+        if on && !rt.enabled.load(Ordering::Relaxed) {
+            rt.clear();
+        }
+        rt.enabled.store(on, Ordering::Relaxed);
+    }
+    if let Some(Ok(on)) = follow {
+        rt.follow.store(on, Ordering::Relaxed);
+        if !on {
+            if let Ok(mut f) = rt.follower.lock() {
+                *f = crate::app::dmr_follower::DmrFollower::new();
+            }
+        }
+    }
     let mut body = rt.snapshot();
     body["ok"] = serde_json::Value::Bool(true);
     (StatusCode::OK, Json(body))
