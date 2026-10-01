@@ -43,6 +43,9 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/system` | legacy, for the bench: the build |
 | GET | `/api/ui/state` | legacy, for the bench: the unit's wall clock |
 | GET | `/api/imbe_dump` | legacy, for the bench: the newest raw IMBE frames |
+| GET | `/api/ui/calls` | legacy, for the bench: the newest calls with their voice frame counts (`limit`, default 40) |
+| GET | `/api/ui/settings` | legacy, for the bench: the clock source |
+| PUT | `/api/ui/settings` | legacy, for the bench: set the clock source |
 | GET | `/api/v1/profiles` | profiles and each site's active one |
 | PUT | `/api/v1/sites/{id}/profile` | choose a site's active profile |
 | POST | `/api/v1/profiles` | a new profile of a system, empty or a copy |

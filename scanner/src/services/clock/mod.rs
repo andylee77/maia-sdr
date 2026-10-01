@@ -61,16 +61,13 @@ impl Clock {
     }
 
     pub fn status(&self) -> ClockStatus {
-        let (now, precision) = {
-            let s = lock(&self.site);
-            (s.now_ms(), s.precision())
-        };
+        let site = lock(&self.site).now();
         let board = unix_ms();
         ClockStatus {
             source: *lock(&self.source),
             valid: board >= MIN_VALID_MS,
-            site_precision: precision.map(|p| p.as_str()),
-            site_offset_ms: now.map(|n| n as i64 - board as i64),
+            site_precision: site.map(|(_, p)| p.as_str()),
+            site_offset_ms: site.map(|(n, _)| n as i64 - board as i64),
             last_set: lock(&self.last_set).clone(),
         }
     }
@@ -135,11 +132,7 @@ impl Clock {
             if now_source != ClockSource::Site || !lease.is_normal() {
                 continue;
             }
-            let (site_ms, precision) = {
-                let s = lock(&self.site);
-                (s.now_ms(), s.precision())
-            };
-            let (Some(site_ms), Some(precision)) = (site_ms, precision) else { continue };
+            let Some((site_ms, precision)) = lock(&self.site).now() else { continue };
             let board_ms = unix_ms();
             match site_clock_action(board_ms, site_ms, precision, stepped) {
                 ClockAction::None => {}

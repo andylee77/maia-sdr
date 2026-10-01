@@ -23,6 +23,9 @@ pub const MIN_VALID_MS: u64 = 1_577_836_800_000;
 pub const MAX_VALID_MS: u64 = 4_102_444_800_000;
 /// A rollover seen across a longer gap between broadcasts is too vague.
 const MAX_ROLLOVER_GAP_MS: u64 = 5_000;
+/// With no broadcast for this long the site time is not used (the site was lost or switched,
+/// or a replay ended): an old anchor carried forward must not set the clock.
+pub const STALE_MS: u64 = 120_000;
 
 /// Milliseconds on a monotonic clock that started with the process.
 pub fn mono_ms() -> u64 {
@@ -139,13 +142,18 @@ impl SiteClock {
         }
     }
 
-    /// Site time (UTC unix ms) at monotonic `mono_ms`.
+    /// Site time (UTC unix ms) at monotonic `mono_ms`, while the site is still heard.
     pub fn site_ms_at(&self, mono_ms: u64) -> Option<u64> {
+        let (_, heard) = self.last?;
+        if mono_ms.saturating_sub(heard) > STALE_MS {
+            return None;
+        }
         self.anchor.map(|a| a.site_ms + mono_ms.saturating_sub(a.mono_ms))
     }
 
-    pub fn now_ms(&self) -> Option<u64> {
-        self.site_ms_at(mono_ms())
+    /// The site time now and how well it is known.
+    pub fn now(&self) -> Option<(u64, Precision)> {
+        Some((self.site_ms_at(mono_ms())?, self.precision()?))
     }
 
     pub fn precision(&self) -> Option<Precision> {
@@ -269,6 +277,17 @@ mod tests {
         let t2105 = civil_to_unix_ms(2026, 5, 3, 21, 5).unwrap();
         assert!((t2105..t2105 + 60_000).contains(&t), "{t}");
         assert_eq!(c.precision(), Some(Precision::Minute));
+    }
+
+    #[test]
+    fn a_site_no_longer_heard_gives_no_time() {
+        let mut c = SiteClock::default();
+        c.observe_at(sync(8, 42, 2000, true), 10_000);
+        assert!(c.site_ms_at(10_000 + STALE_MS).is_some());
+        assert_eq!(c.site_ms_at(10_001 + STALE_MS), None);
+        // Heard again: the time is back.
+        c.observe_at(sync(8, 44, 2000, true), 130_000);
+        assert!(c.site_ms_at(131_000).is_some());
     }
 
     #[test]

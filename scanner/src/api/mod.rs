@@ -118,6 +118,9 @@ routes! {
     get "/api/system" => legacy::system, "legacy, for the bench: the build";
     get "/api/ui/state" => legacy::ui_state, "legacy, for the bench: the unit's wall clock";
     get "/api/imbe_dump" => legacy::imbe_dump, "legacy, for the bench: the newest raw IMBE frames";
+    get "/api/ui/calls" => legacy::ui_calls, "legacy, for the bench: the newest calls with their voice frame counts (`limit`, default 40)";
+    get "/api/ui/settings" => legacy::ui_settings, "legacy, for the bench: the clock source";
+    put "/api/ui/settings" => legacy::put_ui_settings, "legacy, for the bench: set the clock source";
     get "/api/v1/profiles" => v1::profiles::list, "profiles and each site's active one";
     put "/api/v1/sites/{id}/profile" => v1::profiles::select, "choose a site's active profile";
     post "/api/v1/profiles" => v1::profiles::create, "a new profile of a system, empty or a copy";
