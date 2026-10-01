@@ -83,7 +83,7 @@ pub struct GrantDecodeSummary {
     /// Monotonic call_id from `call_tracker`. Joins this summary to
     /// the corresponding recording (same id).
     pub call_id: u64,
-    pub tg: u16,
+    pub tg: u32,
     pub nac: u16,
     pub source: Option<u32>,
     /// 2026-04-25: LDU1 LC FM: voted speaker observation. CC
@@ -175,7 +175,7 @@ fn is_zero_u8(v: &u8) -> bool { *v == 0 }
 
 struct ActiveSummary {
     call_id: u64,
-    tg: u16,
+    tg: u32,
     nac: u16,
     source: Option<u32>,
     actual_speaker: Option<u32>,
@@ -598,7 +598,7 @@ fn finalise_summary(
 /// back-to-back with no chain time.
 fn synthetic_not_followed_summary(
     call_id: u64,
-    tg: u16,
+    tg: u32,
     nac: u16,
     source: Option<u32>,
     freq_hz: Option<u64>,

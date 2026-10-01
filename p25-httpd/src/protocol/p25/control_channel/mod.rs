@@ -235,7 +235,7 @@ pub struct ControlChannelDecoder {
     /// caller can inspect `recent_messages`.
     pub max_recent: usize,
     /// Talkgroup aliases (ID -> name)
-    pub aliases: HashMap<u16, String>,
+    pub aliases: HashMap<u32, String>,
     /// Broadcast channel for WebSocket events
     event_tx: Option<broadcast::Sender<String>>,
     /// Typed grant event channel for the grant follower task.

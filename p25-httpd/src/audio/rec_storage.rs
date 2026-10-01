@@ -551,7 +551,7 @@ pub fn site_suffix(site: &str) -> String {
 /// (started_unix_ms, id, talkgroup, source, site) from
 /// `rec_<ms>_<id>_tg<tg>[_from<src>][.<site>].wav` (site "" when absent:
 /// recordings made before change 073).
-pub fn parse_filename(name: &str) -> Option<(u64, u64, u16, Option<u32>, String)> {
+pub fn parse_filename(name: &str) -> Option<(u64, u64, u32, Option<u32>, String)> {
     let body = name.strip_prefix("rec_")?.strip_suffix(".wav")?;
     let (body, site) = match body.split_once('.') {
         Some((b, s)) if !s.is_empty() && !s.contains('.') => (b, s.to_string()),

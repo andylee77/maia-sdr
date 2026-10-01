@@ -64,17 +64,19 @@ pub fn to_row(g: &GrantDecodeSummary, site: &str) -> CallRow {
     }
 }
 
-type NoteKey = (String, u32, u16, UnitEventKind);
+type NoteKey = (String, u32, u32, UnitEventKind);
 
 /// Count a radio event into the pending notes (per site, radio,
 /// talkgroup and kind).
 fn gather(notes: &mut HashMap<NoteKey, UnitNote>, site: String, u: UnitObservation, now: u64) {
-    let key = (site, u.unit, u.tg, u.kind);
+    // Change 075a: the P25 observation carries a 16-bit talkgroup.
+    let tg = u32::from(u.tg);
+    let key = (site, u.unit, tg, u.kind);
     if let Some(n) = notes.get_mut(&key) {
         n.count += 1;
         n.last_ms = now;
     } else if notes.len() < MAX_NOTES {
-        notes.insert(key, UnitNote { unit: u.unit, tg: u.tg, kind: u.kind, first_ms: now, last_ms: now, count: 1 });
+        notes.insert(key, UnitNote { unit: u.unit, tg, kind: u.kind, first_ms: now, last_ms: now, count: 1 });
     }
 }
 

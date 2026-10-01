@@ -140,7 +140,7 @@ pub struct CallRow {
     pub call_id: u64,
     pub started_ms: u64,
     pub ended_ms: u64,
-    pub tg: u16,
+    pub tg: u32,
     /// Primary source (grant owner, else the voice's).
     pub source: Option<u32>,
     /// Every radio heard in the call, the primary first.
@@ -190,7 +190,7 @@ impl UnitEventKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnitNote {
     pub unit: u32,
-    pub tg: u16,
+    pub tg: u32,
     pub kind: UnitEventKind,
     pub first_ms: u64,
     pub last_ms: u64,
@@ -235,7 +235,7 @@ pub struct Summary {
 /// `grant_s` the grant time of its calls with no decoded voice.
 #[derive(Debug, Clone, Serialize)]
 pub struct TgStat {
-    pub tg: u16,
+    pub tg: u32,
     pub calls: u64,
     pub encrypted: u64,
     pub voice_s: f64,
@@ -257,7 +257,7 @@ pub struct RadioStat {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RadioTg {
-    pub tg: u16,
+    pub tg: u32,
     pub calls: u64,
     pub encrypted: u64,
     pub voice_s: f64,
@@ -267,7 +267,7 @@ pub struct RadioTg {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UnitEvent {
-    pub tg: u16,
+    pub tg: u32,
     pub kind: String,
     pub first_ms: u64,
     pub last_ms: u64,
@@ -293,7 +293,7 @@ pub struct TgRadio {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TgDetail {
-    pub tg: u16,
+    pub tg: u32,
     pub radios: Vec<TgRadio>,
     pub calls: u64,
     pub encrypted: u64,
@@ -341,7 +341,7 @@ pub struct RecordingInfo {
 /// What a series or a listing is about.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SeriesFilter {
-    pub tg: Option<u16>,
+    pub tg: Option<u32>,
     pub unit: Option<u32>,
 }
 
@@ -504,7 +504,7 @@ impl HistoryStore {
         Ok(added)
     }
 
-    pub fn note_unit(&self, site: &str, unit: u32, tg: u16, kind: UnitEventKind, at_ms: u64) -> rusqlite::Result<()> {
+    pub fn note_unit(&self, site: &str, unit: u32, tg: u32, kind: UnitEventKind, at_ms: u64) -> rusqlite::Result<()> {
         self.note_units(site, &[UnitNote { unit, tg, kind, first_ms: at_ms, last_ms: at_ms, count: 1 }])
     }
 
@@ -635,7 +635,7 @@ impl HistoryStore {
         let conn = self.conn();
         let w = hours(q);
         let mut st = conn.prepare(&format!("SELECT tg, COUNT(DISTINCT unit) FROM hour_unit WHERE {HOURS} GROUP BY tg"))?;
-        let radios: HashMap<u16, u64> = st
+        let radios: HashMap<u32, u64> = st
             .query_map(params![w.0, w.1, w.2], |r| Ok((r.get(0)?, to_u64(r.get(1)?))))?
             .collect::<rusqlite::Result<_>>()?;
         let mut st = conn.prepare(&format!(
@@ -644,7 +644,7 @@ impl HistoryStore {
              ORDER BY SUM(voice_ms + clear_grant_ms + enc_grant_ms) DESC, SUM(calls) DESC LIMIT ?4"
         ))?;
         let rows = st.query_map(params![w.0, w.1, w.2, limit as i64], |r| {
-            let tg: u16 = r.get(0)?;
+            let tg: u32 = r.get(0)?;
             Ok(TgStat {
                 tg,
                 calls: to_u64(r.get(1)?),
@@ -722,7 +722,7 @@ impl HistoryStore {
     }
 
     /// The radios of one talkgroup and its encryption history.
-    pub fn talkgroup(&self, q: &Range, tg: u16) -> rusqlite::Result<TgDetail> {
+    pub fn talkgroup(&self, q: &Range, tg: u32) -> rusqlite::Result<TgDetail> {
         let conn = self.conn();
         let w = hours(q);
         let mut st = conn.prepare(&format!(

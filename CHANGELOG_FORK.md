@@ -5,6 +5,36 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-09-30] Talkgroups are 32-bit in the call pipeline (075a)
+
+**Branch:** fishball-p25
+**BUILD_TAG:** `2026-09-30-lo-scale-074c` (unchanged)
+**Bake required:** NO.
+
+Prerequisite for DMR Tier III, whose talkgroups are 24-bit (Clay Electric uses 87921-87926).
+No behaviour change for P25.
+
+- **Widened to u32:** call boundaries and audio chunks, the call lifecycle and its snapshot,
+  grant stats, the history (SQLite rows, queries), recordings (entries, file-name parser),
+  the forwarder's talkgroup atomics and encrypted set, lane policy, routing, monitor list,
+  UI settings (names, groups, monitor and ignore lists, profiles), the `p25-json` types and
+  the HTTP API (activity, talkgroups, encrypted list, audio WS meta).
+- **Stays u16:** the P25 protocol layer (TSBK fields, `Talkgroup(u16)`, `GrantEvent`, the
+  P25 grant map, `UnitObservation`). Values enter the shared pipeline with `u32::from`.
+- **End marker:** the lifecycle's pending end-of-transmission marker was `(tg << 48) | ms`
+  in an `AtomicU64`; a 24-bit TG and a unix ms no longer fit, so it is a small mutex
+  (`ImbeForwarder::end_marker`).
+- **Limits:** talkgroups are 1..=16777215 (`ui_settings::MAX_TG`); TG 0 is still rejected.
+  The web UI's 65535 caps (monitor picker, talkgroup names, group / ignore lists) are now
+  16777215.
+- **Compatibility:** the saved settings JSON, the SD recording names and the history
+  database are unchanged in format and load as before (tests below).
+
+Tests: p25-httpd 335 (a 16-bit settings file loads unchanged; 24-bit settings validate;
+recording names with TG > 65535; history rows old and 24-bit; end marker keeps a 24-bit TG).
+
+---
+
 ## [2026-09-30] Crystal correction scales with the LO; wideband capture length (074c)
 
 **Branch:** fishball-p25

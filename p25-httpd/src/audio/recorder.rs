@@ -151,7 +151,7 @@ pub struct RecordingEntry {
     /// the URL path for /api/recordings/{id}.wav.
     pub id: u64,
     /// Talkgroup the recording belongs to.
-    pub talkgroup: u16,
+    pub talkgroup: u32,
     /// Speaker radio ID (`FM:<n>` in SDRTrunk parlance, `BY:<n>` on
     /// the terminating Motorola TDULC) when the TDULC LCW parser
     /// recovered it; `None` otherwise (including non-Motorola sites
@@ -342,7 +342,7 @@ struct ActiveCall {
     /// Tracker-assigned monotonic call_id. Carries through to
     /// `RecordingEntry.id` so dashboard joins line up across modules.
     call_id: u64,
-    talkgroup: u16,
+    talkgroup: u32,
     /// Speaker radio ID. Phase 2b: populated by either (a) CallOpen
     /// carrying CC `GRP_VCH_GRANT.SRC`, (b) `SourceUpdate` from
     /// LDU1 LC FM: voted consensus or TDULC MOT_TC fill-in, or
@@ -413,7 +413,7 @@ struct ActiveCall {
 }
 
 impl ActiveCall {
-    fn new(call_id: u64, talkgroup: u16) -> Self {
+    fn new(call_id: u64, talkgroup: u32) -> Self {
         let started_unix_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)

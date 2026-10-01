@@ -55,7 +55,7 @@ pub fn spawn_vocoder_thread(
 
             // Per-call accumulators. `call_tg` is the TG the current
             // accumulator belongs to; flushed on reset or TG change.
-            let mut call_tg: u16 = 0;
+            let mut call_tg: u32 = 0;
             // 2026-04-30 agc-speaker-reset: track the SRC of the most
             // recent batch so we can snap the AGC EMA on speaker
             // change within a multi-speaker call. Without this, a
@@ -127,7 +127,7 @@ pub fn spawn_vocoder_thread(
             let mut call_id_cur: u64 = 0;
 
             let flush_call_summary = |
-                tg: u16,
+                tg: u32,
                 frames_in: u32,
                 frames_skipped_enc: u32,
                 pcm_samples: u64,

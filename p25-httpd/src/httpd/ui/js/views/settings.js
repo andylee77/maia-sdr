@@ -271,7 +271,7 @@ export function mount(host) {
   const rec = recordingCard(load);
   const callClose = callCloseCard(load);
   const tgAliases = aliasEditor({
-    title: 'Talkgroup names', idLabel: 'TG', maxId: 65535,
+    title: 'Talkgroup names', idLabel: 'TG', maxId: 16777215,
     onSave: async map => { await save({ tg_aliases: map }); load(); },
   });
   const unitAliases = aliasEditor({

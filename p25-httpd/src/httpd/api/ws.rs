@@ -163,7 +163,7 @@ pub async fn handle_ws_audio(
     let (mut tx_sock, mut rx_sock) = socket.split();
     // Change 062: (talkgroup, call_id) last announced to this client,
     // per traffic chain (change 066).
-    let mut last_meta: [Option<(u16, u64)>; 2] = [None; 2];
+    let mut last_meta: [Option<(u32, u64)>; 2] = [None; 2];
     loop {
         tokio::select! {
             // Audio broadcast → push to client.

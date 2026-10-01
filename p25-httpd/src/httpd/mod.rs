@@ -50,7 +50,7 @@ pub mod api;
 /// another is active.
 #[derive(Default)]
 pub struct SiteMemory {
-    pub encrypted_tgs: std::collections::HashSet<u16>,
+    pub encrypted_tgs: std::collections::HashSet<u32>,
     pub grant_map: std::collections::HashMap<(u16, u64), crate::protocol::p25::traffic_chain::GrantMapEntry>,
 }
 

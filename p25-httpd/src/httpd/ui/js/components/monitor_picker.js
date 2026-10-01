@@ -11,7 +11,7 @@ export function monitorPicker({ onSave }) {
   const refresh = h('button', { class: 'btn small', type: 'button', text: 'Refresh roster' });
   const clearBtn = h('button', { class: 'btn small', type: 'button', text: 'Clear' });
   const save = h('button', { class: 'btn primary small', type: 'button', text: 'Apply', disabled: true });
-  const manual = h('input', { class: 'input num', type: 'number', min: 1, max: 65535, placeholder: 'TG', 'aria-label': 'Add talkgroup' });
+  const manual = h('input', { class: 'input num', type: 'number', min: 1, max: 16777215, placeholder: 'TG', 'aria-label': 'Add talkgroup' });
   const addBtn = h('button', { class: 'btn small', type: 'button', text: 'Add' });
   const grid = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: '6px' } });
   c.right.append(status, save);
@@ -70,7 +70,7 @@ export function monitorPicker({ onSave }) {
 
   addBtn.addEventListener('click', () => {
     const tg = parseInt(manual.value, 10);
-    if (!Number.isFinite(tg) || tg < 1 || tg > 65535) { toast('TG must be 1–65535', true); return; }
+    if (!Number.isFinite(tg) || tg < 1 || tg > 16777215) { toast('TG must be 1–16777215', true); return; }
     staged.add(tg);
     manual.value = '';
     render();

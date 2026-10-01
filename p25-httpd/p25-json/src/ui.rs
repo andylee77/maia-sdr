@@ -104,7 +104,7 @@ pub struct UiSiteTime {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiCall {
     pub call_id: u64,
-    pub tg: u16,
+    pub tg: u32,
     pub tg_alias: Option<String>,
     /// Primary source (CC grant SRC, else first voted LDU1 LC source).
     pub source: Option<u32>,
@@ -165,7 +165,7 @@ pub struct UiChain {
     pub number: u8,
     /// Change 066: talkgroup the chain follows.
     #[serde(default)]
-    pub tg: Option<u16>,
+    pub tg: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -229,7 +229,7 @@ pub struct UiSiteCount {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiCallSummary {
     pub call_id: u64,
-    pub tg: u16,
+    pub tg: u32,
     pub tg_alias: Option<String>,
     pub source: Option<u32>,
     pub source_alias: Option<String>,

@@ -6,7 +6,7 @@ use super::*;
 use crate::hardware::dibit_ring::sim::{Rng, WriterModel};
 use crate::hardware::dibit_ring::{RingTracker, BURST_BYTES};
 
-fn ctx(tg: u16, call_id: u64) -> SegmentContext {
+fn ctx(tg: u32, call_id: u64) -> SegmentContext {
     SegmentContext {
         tg,
         source: 1000 + tg as u32,
@@ -576,7 +576,7 @@ fn end_to_end_air_time_attribution() {
     }
 
     // Ground truth: context of a dibit produced at time `tp`.
-    let truth = |tp: f64| -> Option<(u16, u64)> {
+    let truth = |tp: f64| -> Option<(u32, u64)> {
         if tp < 3_000_000.0 {
             None
         } else if tp < 6_000_000.0 {

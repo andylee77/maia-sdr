@@ -113,10 +113,10 @@ struct LaneMem {
     last_call_quality: Option<LastCallQuality>,
     /// Change 057: (TG, frequency, unix ms) of the live call the
     /// lifecycle last closed by `Timeout`, for `refollow_on_update`.
-    last_timeout_close: Option<(u16, u64, u64)>,
+    last_timeout_close: Option<(u32, u64, u64)>,
     /// Change 059: (TG, frequency, unix ms) of the newest clear grant the
     /// sticky gate rejected while this chain was a candidate.
-    last_sticky_reject: Option<(u16, u64, u64)>,
+    last_sticky_reject: Option<(u32, u64, u64)>,
     /// Change 071a: consecutive idle checks that found the chain locked
     /// with no open call.
     stuck_looks: u8,
@@ -196,17 +196,17 @@ pub fn spawn_grant_follower(
             // on every grant, followed or not).
             let is_enc = if g.encrypted {
                 if let Ok(mut hist) = imbe.encrypted_tg_history.lock() {
-                    hist.insert(g.talkgroup.0);
+                    hist.insert(u32::from(g.talkgroup.0));
                 }
                 true
             } else {
                 imbe.encrypted_tg_history.lock()
-                    .map(|h| h.contains(&g.talkgroup.0))
+                    .map(|h| h.contains(&u32::from(g.talkgroup.0)))
                     .unwrap_or(false)
             };
 
             if grant_is_for_active {
-                imbe.current_talkgroup.store(g.talkgroup.0, Ordering::Relaxed);
+                imbe.current_talkgroup.store(u32::from(g.talkgroup.0), Ordering::Relaxed);
                 // The grant's FM:<source> stamps recordings from the
                 // CONTROL channel. Only on a genuine active-call grant.
                 if let Some(src) = g.source {
@@ -245,13 +245,13 @@ pub fn spawn_grant_follower(
              lane: Option<Lane>| {
             let kind = if g.is_update {
                 audio::CallBoundaryKind::CcGrantUpdate {
-                    tg: g.talkgroup.0,
+                    tg: u32::from(g.talkgroup.0),
                     freq_hz: g.frequency_hz,
                     channel: g.channel.0,
                 }
             } else {
                 audio::CallBoundaryKind::CcGrantArrival {
-                    tg: g.talkgroup.0,
+                    tg: u32::from(g.talkgroup.0),
                     // 2026-04-25: RadioId(0) → None ("CC announced the
                     // call but didn't tell us who").
                     source: g.source.and_then(|r| if r.0 != 0 { Some(r.0) } else { None }),
@@ -265,7 +265,7 @@ pub fn spawn_grant_follower(
             let _ = follower_boundary_tx.send(audio::CallBoundary {
                 kind,
                 nac: 0,
-                talkgroup: Some(g.talkgroup.0),
+                talkgroup: Some(u32::from(g.talkgroup.0)),
                 expected_submit_count: 0,
                 lane,
             });
@@ -378,7 +378,7 @@ pub fn spawn_grant_follower(
                     // any gate runs.
                     if g.encrypted {
                         if let Ok(mut hist) = site.imbe.encrypted_tg_history.lock() {
-                            hist.insert(g.talkgroup.0);
+                            hist.insert(u32::from(g.talkgroup.0));
                         }
                     }
 
@@ -409,15 +409,15 @@ pub fn spawn_grant_follower(
                     }
 
                     // Every chain's lock, read once per grant.
-                    let mut locked: Vec<Option<u16>> = Vec::with_capacity(lanes.len());
+                    let mut locked: Vec<Option<u32>> = Vec::with_capacity(lanes.len());
                     for fl in &lanes {
-                        locked.push(fl.mgr.lock().await.current_talkgroup().map(|t| t.0));
+                        locked.push(fl.mgr.lock().await.current_talkgroup().map(|t| u32::from(t.0)));
                     }
 
                     // 2026-04-26 GVCG_UPD fast-path: an update for a TG a
                     // chain follows is a keep-alive; no heavy locks.
                     let g = if g.is_update {
-                        if locked.contains(&Some(g.talkgroup.0)) {
+                        if locked.contains(&Some(u32::from(g.talkgroup.0))) {
                             send_cc_boundary(&g, None, None);
                             continue;
                         }
@@ -432,7 +432,7 @@ pub fn spawn_grant_follower(
                         for (i, fl) in lanes.iter().enumerate() {
                             let idle = locked[i].is_none();
                             if super::refollow_on_update(
-                                mem[i].last_timeout_close, g.talkgroup.0, g.frequency_hz,
+                                mem[i].last_timeout_close, u32::from(g.talkgroup.0), g.frequency_hz,
                                 idle, now_ms, super::REFOLLOW_WINDOW_MS,
                             ) {
                                 refollow = Some((i, true));
@@ -441,13 +441,12 @@ pub fn spawn_grant_follower(
                             let chain_free = locked[i].map_or(true, |t| {
                                 super::end_marker_frees_chain(
                                     t,
-                                    super::unpack_end_marker(
-                                        fl.imbe.active_end_marker.load(Ordering::Relaxed)),
+                                    fl.imbe.end_marker(),
                                     now_ms,
                                 )
                             });
                             if super::refollow_on_update(
-                                mem[i].last_sticky_reject, g.talkgroup.0, g.frequency_hz,
+                                mem[i].last_sticky_reject, u32::from(g.talkgroup.0), g.frequency_hz,
                                 chain_free, now_ms, super::REFOLLOW_STICKY_MS,
                             ) {
                                 refollow = Some((i, false));
@@ -505,7 +504,7 @@ pub fn spawn_grant_follower(
                     // Change 068: the ignore list wins over the monitor
                     // list and the speaker groups.
                     let routing = follower_routing.snapshot();
-                    if routing.ignored(g.talkgroup.0) {
+                    if routing.ignored(u32::from(g.talkgroup.0)) {
                         follower_event_log.push(
                             LogCategory::Traffic,
                             format!("reject: TG={} on the ignore list", g.talkgroup.0),
@@ -537,7 +536,7 @@ pub fn spawn_grant_follower(
                     // Monitor list gate.
                     let monitored = {
                         let monitor = follower_monitor.read().await;
-                        monitor.is_empty() || monitor.contains(g.talkgroup.0)
+                        monitor.is_empty() || monitor.contains(u32::from(g.talkgroup.0))
                     };
                     if !monitored {
                         follower_event_log.push(
@@ -555,7 +554,7 @@ pub fn spawn_grant_follower(
                     // Change 063: speaker groups. A talkgroup whose group
                     // is on neither speaker, or an ungrouped one with
                     // "other talkgroups" off, is not followed.
-                    let Some(route) = routing.route(g.talkgroup.0) else {
+                    let Some(route) = routing.route(u32::from(g.talkgroup.0)) else {
                         follower_event_log.push(
                             LogCategory::Traffic,
                             format!("reject: TG={} not on a speaker", g.talkgroup.0),
@@ -645,7 +644,7 @@ pub fn spawn_grant_follower(
                     // history learns every encrypted TG and the log names
                     // the right reason.
                     let tg_known_enc = site.imbe.encrypted_tg_history.lock()
-                        .map(|h| h.contains(&g.talkgroup.0))
+                        .map(|h| h.contains(&u32::from(g.talkgroup.0)))
                         .unwrap_or(false);
                     // Forensics override (2026-05-03 Track 2): follow
                     // encrypted grants when armed with follow_encrypted=1.
@@ -656,7 +655,7 @@ pub fn spawn_grant_follower(
                         // of holding the slot until the call ends.
                         let mut was_locked = false;
                         for (i, fl) in lanes.iter().enumerate() {
-                            if locked[i] != Some(g.talkgroup.0) {
+                            if locked[i] != Some(u32::from(g.talkgroup.0)) {
                                 continue;
                             }
                             was_locked = true;
@@ -712,11 +711,10 @@ pub fn spawn_grant_follower(
                         lane: fl.lane(),
                         locked_tg: locked[i],
                         parked_freq: mem[i].last_traffic_freq_hz,
-                        end_marker: super::unpack_end_marker(
-                            fl.imbe.active_end_marker.load(Ordering::Relaxed)),
+                        end_marker: fl.imbe.end_marker(),
                     }).collect();
                     let choice = choose_lane(
-                        g.talkgroup.0, route.side, g.frequency_hz, &views, &routing,
+                        u32::from(g.talkgroup.0), route.side, g.frequency_hz, &views, &routing,
                         |t, m| super::end_marker_frees_chain(t, m, now_ms),
                     );
                     let Some(lane) = choice.lane() else {
@@ -728,7 +726,7 @@ pub fn spawn_grant_follower(
                         if let Some(f) = g.frequency_hz {
                             for (i, fl) in lanes.iter().enumerate() {
                                 if cands.contains(&fl.lane()) {
-                                    mem[i].last_sticky_reject = Some((g.talkgroup.0, f, now_ms));
+                                    mem[i].last_sticky_reject = Some((u32::from(g.talkgroup.0), f, now_ms));
                                 }
                             }
                         }
@@ -767,8 +765,7 @@ pub fn spawn_grant_follower(
                     let fl = &lanes[li];
                     if let LaneChoice::Preempt(_, reason) = choice {
                         let prev_tg = locked[li].unwrap_or(0);
-                        let end_marker = super::unpack_end_marker(
-                            fl.imbe.active_end_marker.load(Ordering::Relaxed));
+                        let end_marker = fl.imbe.end_marker();
                         let ended_ms = end_marker.map_or(0, |(_, at)| now_ms.saturating_sub(at));
                         let why = if reason == "priority_preempt" {
                             "higher-priority group".to_string()
@@ -1104,7 +1101,7 @@ pub fn spawn_grant_follower(
                     let parked_freq = fl.imbe.current_frequency_hz.load(Ordering::Relaxed);
                     mem[li].last_timeout_close = match (reason, pre_close_tg) {
                         (CloseReason::Timeout, Some(tg)) if parked_freq != 0 => {
-                            Some((tg.0, parked_freq, now_unix_ms()))
+                            Some((u32::from(tg.0), parked_freq, now_unix_ms()))
                         }
                         _ => None,
                     };

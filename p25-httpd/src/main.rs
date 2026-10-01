@@ -526,7 +526,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let boot_settings = ui_settings.snapshot();
 
-    let boot_aliases: std::collections::HashMap<u16, String> = boot_settings
+    let boot_aliases: std::collections::HashMap<u32, String> = boot_settings
         .tg_aliases
         .iter()
         .map(|(k, v)| (*k, v.clone()))

@@ -110,7 +110,7 @@ fn phase_acquiring_voice_hang() {
 #[test]
 fn build_call_reports_hang_countdown_and_aliases() {
     let mut tg = BTreeMap::new();
-    tg.insert(300u16, "EMS Dispatch".to_string());
+    tg.insert(300u32, "EMS Dispatch".to_string());
     let mut unit = BTreeMap::new();
     unit.insert(1014u32, "Console 14".to_string());
     let aliases = Aliases { tg: Some(&tg), unit: Some(&unit) };

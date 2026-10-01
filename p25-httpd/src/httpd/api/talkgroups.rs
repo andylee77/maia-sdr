@@ -126,14 +126,20 @@ pub async fn put_aliases(
 // ── WebSocket ──────────────────────────────────────────────────────────
 
 
+/// Change 075a: a talkgroup number from a query parameter (at most 24
+/// bits, `ui_settings::MAX_TG`).
+fn parse_tg(s: &str) -> Option<u32> {
+    s.parse::<u32>().ok().filter(|t| *t <= crate::services::ui_settings::MAX_TG)
+}
+
 /// GET /api/monitor -- return the current monitor list.
 /// PUT /api/monitor -- replace the list. Body: {"talkgroups": [300, 402]}
 /// GET /api/monitor?add=300 / ?remove=300 -- quick add/remove.
 /// Change 056: persist a monitor-list edit (and apply it) through the
 /// UI settings store. The list is also the boot default from now on.
-async fn store_monitor(state: &AppState, tgs: Vec<u16>, origin: &str) {
+async fn store_monitor(state: &AppState, tgs: Vec<u32>, origin: &str) {
     let patch = crate::services::ui_settings::SettingsPatch {
-        monitor_tgs: Some(tgs.into_iter().filter(|t| *t != 0).collect()),
+        monitor_tgs: Some(tgs.into_iter().filter(|t| crate::services::ui_settings::is_tg(*t)).collect()),
         ..Default::default()
     };
     if let Err(e) = crate::httpd::api::ui::apply_settings_patch(state, patch, origin).await {
@@ -148,12 +154,12 @@ async fn store_monitor(state: &AppState, tgs: Vec<u16>, origin: &str) {
 /// (change 068) gains the talkgroup on air. Returns (chain, talkgroup).
 pub async fn release_chains_on(
     state: &AppState,
-    drop: impl Fn(u16) -> bool,
-) -> Vec<(crate::hardware::traffic_lane::Lane, u16)> {
+    drop: impl Fn(u32) -> bool,
+) -> Vec<(crate::hardware::traffic_lane::Lane, u32)> {
     use std::sync::atomic::Ordering;
     let mut out = Vec::new();
     for lane in &state.traffic_lanes {
-        let locked = lane.chain.lock().await.current_talkgroup().map(|t| t.0);
+        let locked = lane.chain.lock().await.current_talkgroup().map(|t| u32::from(t.0));
         let Some(tg) = locked.filter(|t| drop(*t)) else { continue };
         lane.chain.lock().await.force_idle();
         lane.forwarder.current_talkgroup.store(0, Ordering::Relaxed);
@@ -185,12 +191,12 @@ pub async fn get_monitor(
     if edit {
         let mut list = state.monitor_list.read().await.clone();
         if let Some(tg_str) = params.get("add") {
-            if let Ok(tg) = tg_str.parse::<u16>() {
+            if let Some(tg) = parse_tg(tg_str) {
                 list.add(tg);
             }
         }
         if let Some(tg_str) = params.get("remove") {
-            if let Ok(tg) = tg_str.parse::<u16>() {
+            if let Some(tg) = parse_tg(tg_str) {
                 list.remove(tg);
             }
         }
@@ -208,9 +214,9 @@ pub async fn put_monitor(
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     if let Some(arr) = body.get("talkgroups").and_then(|v| v.as_array()) {
-        let tgs: Vec<u16> = arr
+        let tgs: Vec<u32> = arr
             .iter()
-            .filter_map(|v| v.as_u64().map(|n| n as u16))
+            .filter_map(|v| v.as_u64().and_then(|n| u32::try_from(n).ok()))
             .collect();
         store_monitor(&state, tgs, "api_monitor").await;
     }
@@ -229,7 +235,7 @@ pub async fn put_monitor(
 pub async fn get_encrypted_tgs(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let mut list: Vec<u16> = state
+    let mut list: Vec<u32> = state
         .imbe_forwarder
         .encrypted_tg_history
         .lock()
@@ -279,8 +285,8 @@ pub async fn put_encrypted_tgs(
         }
     }
     if let Some(v) = params.get("add") {
-        match v.parse::<u16>() {
-            Ok(tg) => {
+        match parse_tg(v) {
+            Some(tg) => {
                 if let Ok(mut h) =
                     state.imbe_forwarder.encrypted_tg_history.lock()
                 {
@@ -291,12 +297,12 @@ pub async fn put_encrypted_tgs(
                     }
                 }
             }
-            Err(_) => errors.push(format!("add={:?} not an integer", v)),
+            None => errors.push(format!("add={:?} not a talkgroup number", v)),
         }
     }
     if let Some(v) = params.get("remove") {
-        match v.parse::<u16>() {
-            Ok(tg) => {
+        match parse_tg(v) {
+            Some(tg) => {
                 if let Ok(mut h) =
                     state.imbe_forwarder.encrypted_tg_history.lock()
                 {
@@ -307,14 +313,14 @@ pub async fn put_encrypted_tgs(
                     }
                 }
             }
-            Err(_) => errors.push(format!("remove={:?} not an integer", v)),
+            None => errors.push(format!("remove={:?} not a talkgroup number", v)),
         }
     }
 
     // If anything changed, also force-idle a chain locked on a newly-
     // blocked TG. Otherwise the manual add takes effect only for the
     // NEXT grant for that TG. Change 066: on every traffic chain.
-    let blocked = |tg: u16| {
+    let blocked = |tg: u32| {
         state.imbe_forwarder.encrypted_tg_history.lock()
             .map(|h| h.contains(&tg))
             .unwrap_or(false)
@@ -331,8 +337,8 @@ pub async fn put_encrypted_tgs(
             "errors":  errors.clone(),
         }),
     );
-    let list: Vec<u16> = {
-        let mut v: Vec<u16> = state
+    let list: Vec<u32> = {
+        let mut v: Vec<u32> = state
             .imbe_forwarder
             .encrypted_tg_history
             .lock()
