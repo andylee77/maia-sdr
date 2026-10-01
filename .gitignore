@@ -20,6 +20,7 @@ maia-hdl/maia-sdr.svd
 # (e.g. cd p25-httpd/p25-pac && cargo check creates p25-pac/target/).
 p25-httpd/target/
 p25-httpd/**/target/
+scanner/target/
 maia-httpd/target/
 maia-httpd/**/target/
 
