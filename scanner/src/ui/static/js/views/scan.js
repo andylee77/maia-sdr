@@ -6,26 +6,18 @@ import { h, card, toast } from '../dom.js';
 import { mhz, num, pct } from '../format.js';
 import { api } from '../api.js';
 import { refresh } from '../store.js';
-import { protocol } from '../protocols.js';
+import { protocol, protocolNames } from '../protocols.js';
 
 const POLL_MS = 1500;
 const RUNNING = ['sweeping', 'probing', 'restoring'];
 
-function hex(v, width) {
-  return v === null || v === undefined ? '?' : v.toString(16).toUpperCase().padStart(width, '0');
-}
-
 // The system a found site belongs to, and default names for it and the site.
 function systemOf(f) {
-  const i = f.identity;
-  return i.protocol === 'p25'
-    ? { key: `p25:${i.wacn}-${i.system}`, label: `P25 WACN ${hex(i.wacn, 5)} system ${hex(i.system, 3)}` }
-    : { key: `dmr:${i.model}-${i.network}`, label: `DMR ${i.model} network ${i.network}` };
+  return protocol(f.protocol).scanSystem(f.identity);
 }
 
 function siteName(f) {
-  const i = f.identity;
-  return i.protocol === 'p25' ? `Site ${i.rfss}-${i.site}` : `Site ${i.site}`;
+  return protocol(f.protocol).scanSiteName(f.identity);
 }
 
 export function scanCard(onAdded) {
@@ -48,7 +40,7 @@ export function scanCard(onAdded) {
     const button = h('button', { class: 'btn primary', type: 'button', text: 'Scan' });
     button.addEventListener('click', () => start(button));
     c.body.replaceChildren(
-      h('p', { text: 'Look for P25 and DMR control channels on 700, 800 and 900 MHz, UHF and VHF. It takes about five minutes, and the live site pauses meanwhile.' }),
+      h('p', { text: `Look for ${protocolNames()} control channels on 700, 800 and 900 MHz, UHF and VHF. It takes about five minutes, and the live site pauses meanwhile.` }),
       h('div', { class: 'row' }, button));
   }
 

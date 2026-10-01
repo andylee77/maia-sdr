@@ -93,7 +93,7 @@ class Player {
     this.mode = 'worklet';
     const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'text/javascript' }));
     try { await this.ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
-    this.node = new AudioWorkletNode(this.ctx, 'p25-audio', { outputChannelCount: [2] });
+    this.node = new AudioWorkletNode(this.ctx, 'lane-audio', { outputChannelCount: [2] });
     this.node.port.onmessage = ev => {
       const m = ev.data;
       if (m && m.type === 'stats') { this.bufMs = (m.avail / 8) | 0; this.underruns = m.underruns; }

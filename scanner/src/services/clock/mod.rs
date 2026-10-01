@@ -81,10 +81,10 @@ impl Clock {
     }
 
     /// Set the clock from a browser (any source; the manual one keeps it).
-    pub fn set(&self, unix_ms: u64, log: &EventLog) -> std::io::Result<()> {
-        let was = unix_ms_now();
-        board::step(unix_ms)?;
-        self.noted(log, format!("clock set from a browser: {} (was {})", iso_utc(unix_ms), iso_utc(was)));
+    pub fn set(&self, to_ms: u64, log: &EventLog) -> std::io::Result<()> {
+        let was = unix_ms();
+        board::step(to_ms)?;
+        self.noted(log, format!("clock set from a browser: {} (was {})", iso_utc(to_ms), iso_utc(was)));
         Ok(())
     }
 
@@ -140,7 +140,7 @@ impl Clock {
                 (s.now_ms(), s.precision())
             };
             let (Some(site_ms), Some(precision)) = (site_ms, precision) else { continue };
-            let board_ms = unix_ms_now();
+            let board_ms = unix_ms();
             match site_clock_action(board_ms, site_ms, precision, stepped) {
                 ClockAction::None => {}
                 ClockAction::Step(ms) => match board::step(ms) {
@@ -161,10 +161,6 @@ impl Clock {
             }
         }
     }
-}
-
-fn unix_ms_now() -> u64 {
-    unix_ms()
 }
 
 fn source_name(s: ClockSource) -> &'static str {

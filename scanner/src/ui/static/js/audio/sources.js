@@ -13,7 +13,7 @@
 import { Ring, clip } from './ring.js';
 
 export const WORKLET_SRC = Ring.toString() + '\n' + clip.toString() + `
-class P25Audio extends AudioWorkletProcessor {
+class LaneAudio extends AudioWorkletProcessor {
   constructor() {
     super();
     this.rings = [new Ring(8000 / sampleRate), new Ring(8000 / sampleRate)];
@@ -48,7 +48,7 @@ class P25Audio extends AudioWorkletProcessor {
     return true;
   }
 }
-registerProcessor('p25-audio', P25Audio);
+registerProcessor('lane-audio', LaneAudio);
 `;
 
 export const WORKER_SRC = `

@@ -154,6 +154,25 @@ mod tests {
         assert!(unused.is_empty(), "embedded but unreachable: {unused:?}");
     }
 
+    /// Only the protocol registry knows the protocols: generic pages ask it (`protocol(...)`).
+    #[test]
+    fn only_the_protocol_registry_names_protocols() {
+        let word = |body: &str, w: &str| {
+            let lower = body.to_lowercase();
+            lower.match_indices(w).any(|(i, _)| {
+                let before = lower[..i].chars().next_back().is_none_or(|c| !c.is_ascii_alphanumeric());
+                let after = lower[i + w.len()..].chars().next().is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_');
+                before && after
+            })
+        };
+        for a in ASSETS.iter().filter(|a| (a.path.ends_with(".js") || a.path.ends_with(".html")) && a.path != "js/protocols.js") {
+            for w in ["p25", "dmr", "nac"] {
+                assert!(!word(a.body, w), "{} names {w}: ask js/protocols.js", a.path);
+            }
+            assert!(!a.body.to_lowercase().contains("tsbk"), "{} names TSBKs: ask js/protocols.js", a.path);
+        }
+    }
+
     #[test]
     fn the_version_changes_with_the_build() {
         assert!(version().starts_with(BUILD_TAG));

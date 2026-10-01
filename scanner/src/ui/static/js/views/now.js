@@ -66,9 +66,7 @@ export function mount(el) {
         [p.okLabel, pct(c.ok_pct)],
         ['Last message', ago(age)],
       ];
-      if (c.modulation) rows.push(['Demodulator', c.modulation === 'c4fm' ? 'C4FM (software)' : 'LSM (gateware)']);
-      if (c.tsbks_20s) rows.push(['TSBKs in 20 s', `LSM ${num(c.tsbks_20s.lsm)}, C4FM ${num(c.tsbks_20s.c4fm)}`]);
-      if (c.carrier_offset_hz !== null && c.carrier_offset_hz !== undefined) rows.push(['Carrier offset', `${num(c.carrier_offset_hz)} Hz`]);
+      rows.push(...p.healthRows(c));
       rows.push([p.planLabel, num(c.channel_plan_entries)], ['Grants', num(c.grants)], ['CPU', pct(c.cpu_pct)]);
       control.body.replaceChildren(kv(rows));
       showCalls(calls, s, clip);
