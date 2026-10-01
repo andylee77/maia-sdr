@@ -1204,7 +1204,9 @@ From the brief:
     running.
 - 2026-10-01, phase 8 (prepared, waiting for Andy's go):
   - **Done ahead:** `doc/API.md` generated from the route table (a test keeps it current) and the
-    crate's `README.md`.
+    crate's `README.md`. `Cargo.lock` pinned to the versions p25-httpd's image build uses (its
+    later resolution had pulled hyper-util, jobserver and zeroize versions needing Rust 1.85,
+    newer than the image toolchain is known to be; p25-httpd shows only 1.82 or later).
   - **Before the cutover, on each unit:** delete the test files from this work (the card's
     `scanner-history.sqlite*` and `scanner_recordings/`, and `/mnt/jffs2/scanner/`), so the
     first start migrates p25-httpd's configuration and copies its history as they are then.
