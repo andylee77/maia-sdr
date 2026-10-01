@@ -6,6 +6,7 @@ mod boot;
 mod hardware;
 mod radio;
 mod services;
+mod trunking;
 mod util;
 
 fn main() -> anyhow::Result<()> {
