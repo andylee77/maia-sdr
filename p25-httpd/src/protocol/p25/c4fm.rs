@@ -56,7 +56,7 @@ impl DibitSink for super::control_channel::ControlChannelDecoder {
 const PI: f32 = std::f32::consts::PI;
 const TWO_PI: f32 = 2.0 * PI;
 
-fn ideal_phase(dibit: u8) -> f32 {
+pub(crate) fn ideal_phase(dibit: u8) -> f32 {
     match dibit & 3 {
         0 => PI / 4.0,
         1 => 3.0 * PI / 4.0,
@@ -93,7 +93,7 @@ fn sync_dibits() -> [u8; 24] {
     d
 }
 
-fn linear(x1: f32, x2: f32, mu: f64) -> f32 {
+pub(crate) fn linear(x1: f32, x2: f32, mu: f64) -> f32 {
     if mu < 0.0 {
         x1
     } else if mu > 1.0 {
@@ -107,8 +107,9 @@ fn linear(x1: f32, x2: f32, mu: f64) -> f32 {
 
 /// Streaming real FIR with an optional decimation by 2. Block form: the
 /// last `taps - 1` inputs are kept and prepended to the next block; zero
-/// taps (every other one of a half-band) are skipped.
-struct Fir {
+/// taps (every other one of a half-band) are skipped. Shared with the DMR
+/// receiver (change 075).
+pub(crate) struct Fir {
     /// (index into the reversed window, tap) of the non-zero taps.
     taps: Vec<(usize, f32)>,
     len: usize,
@@ -119,7 +120,7 @@ struct Fir {
 }
 
 impl Fir {
-    fn new(taps: &'static [f32], decimate: bool) -> Self {
+    pub(crate) fn new(taps: &[f32], decimate: bool) -> Self {
         let len = taps.len();
         // y[n] = sum t[k] x[n-k]: with the window w = x[n-len+1 ..= n],
         // x[n-k] = w[len-1-k].
@@ -127,7 +128,7 @@ impl Fir {
         Fir { taps: nz, len, work: vec![0.0; len - 1], decimate, emit: true }
     }
 
-    fn process(&mut self, x: &[f32], out: &mut Vec<f32>) {
+    pub(crate) fn process(&mut self, x: &[f32], out: &mut Vec<f32>) {
         let hist = self.len - 1;
         self.work.truncate(hist);
         self.work.extend_from_slice(x);
@@ -149,8 +150,8 @@ impl Fir {
     }
 }
 
-/// SDRTrunk `DifferentialDemodulatorFloatScalar`.
-struct DifferentialDemod {
+/// SDRTrunk `DifferentialDemodulatorFloatScalar`. Shared with the DMR receiver.
+pub(crate) struct DifferentialDemod {
     i_buf: Vec<f32>,
     q_buf: Vec<f32>,
     overlap: usize,
@@ -159,7 +160,7 @@ struct DifferentialDemod {
 }
 
 impl DifferentialDemod {
-    fn new(samples_per_symbol: f64) -> Self {
+    pub(crate) fn new(samples_per_symbol: f64) -> Self {
         let mu = (samples_per_symbol % 1.0) as f32;
         let mut interp_offset = samples_per_symbol.floor() as i64 - 4;
         let mut overlap = samples_per_symbol.floor() as usize + 4;
@@ -183,7 +184,7 @@ impl DifferentialDemod {
             + t[3] * s[4] + t[2] * s[5] + t[1] * s[6] + t[0] * s[7]
     }
 
-    fn demodulate(&mut self, i: &[f32], q: &[f32], out: &mut Vec<f32>) {
+    pub(crate) fn demodulate(&mut self, i: &[f32], q: &[f32], out: &mut Vec<f32>) {
         let len = i.len();
         let keep = self.i_buf.len() - self.overlap;
         self.i_buf.drain(..keep);

@@ -4,7 +4,7 @@
 
 /// Change 071b: software C4FM demodulation (SDRTrunk port).
 pub mod c4fm;
-mod c4fm_filters;
+pub(crate) mod c4fm_filters;
 mod c4fm_interp_taps;
 pub mod control_channel;
 pub mod events;

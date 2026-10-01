@@ -35,7 +35,7 @@ scanner needs:
 | — | Code review and analysis of p25-httpd, then refactor into clean modules | review done: `doc/CODE_REVIEW_2026_09_28.md` (stages 0–3) |
 | — | Remote libiio control: detect it and share the radio | idea |
 | — | Agent control: MCP server and prompt structure | idea |
-| — | Clay Electric DMR | idea (needs a DMR chain) |
+| 075 | Clay Electric DMR (Tier III): software DMR receive, control channel, then voice | in progress (`fishball-dmr`) |
 | — | Real-time diagnostics: spectrum, waterfall, constellation and eye at 20+ Hz over WebSockets | idea |
 | — | Handheld page: the radio's face in the browser | idea |
 | — | Transcription (Whisper) and LLM summaries | idea (off-board) |
@@ -261,25 +261,20 @@ The Zynq's Cortex-A9 cannot run Whisper usefully, so this lives off the board:
 
 ## Clay Electric DMR
 
-From the SDRTrunk playlist (system "Clay Electric Cooperative", alias list `CEC-DMR`, talkgroups
-87921–87926: Lake City, Salt Springs, Palatka, Orange Park, Keystone Heights, Gainesville):
+Change 075, in progress on branch `fishball-dmr`: design, measurements and phases in
+`doc/changes/075_dmr_clay_electric.md`.
 
-| Site | Frequencies (MHz) and logical slots |
-|------|-------------------------------------|
-| Clay | 454.36875 (LSN 5) with 451.0875 (LSN 6); 454.59375 (LSN 19); 454.38125 (LSN 1) |
-| Alachua | 451.2125 (LSN 13), 452.3625 (LSN 14) |
-| Marion | 451.1625 (LSN 11), 451.2625 (LSN 12) |
-
-- The Clay site spans 451.0875–454.59375 MHz (3.5 MHz), which one 8M window covers. That was
-  the problem with the USB Pluto's narrow rate; the board handles it with the 070 planner.
-  Andy sent Radio Reference the missing frequency; check the playlist against RR before
-  building the site.
-- Needs a DMR receive chain: 4FSK at 4800 baud like C4FM, but two-slot TDMA with its own
-  sync patterns and CACH. The existing C4FM demod and DDC are a start; the framing, trunking
-  (Capacity Plus / Connect Plus style LSN maps) and the AMBE+2 vocoder are new. SDRTrunk's DMR
-  decoder is the reference, as it was for P25.
-- The protocol-agnostic call and site model from the refactor makes this far easier; do the
-  refactor first.
+- The system is **DMR Tier III Standard** (Radio Reference sid 11943), not Capacity Plus. It
+  has a real control channel (TSCC) whose grants carry a logical channel number (LCN). The
+  SDRTrunk playlist's `lsn` attribute holds that LCN.
+- Green Cove Springs (Clay) site: control channel 454.36875 MHz (LCN 5, TS1), voice on
+  451.0875 MHz (LCN 6) and on the control repeater's TS2. Talkgroups 87921–87926 (Lake City,
+  Salt Springs, Palatka, Orange Park, Keystone Heights, Gainesville), clear voice.
+- Both GCS channels are received at about +50 dB at the shop (unit A, 2026-09-30). The other
+  sites in the playlist are at the noise floor there.
+- Software receive on the PS (SDRTrunk's DMR decoder ported to `protocol::dmr`); no gateware
+  change. UHF and Clay County P25 (851–861 MHz) cannot share one AD9361 window, so a DMR site
+  is chosen like any other site.
 
 ## Real-time diagnostics plots (20+ Hz)
 
