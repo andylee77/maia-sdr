@@ -16,6 +16,9 @@ use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
 use std::sync::Arc;
 
+/// AMBE+2 (DMR) decoder, ported from jmbe v1.0.9; reuses this module's Golay(23,12) and synthesis window.
+pub mod ambe;
+
 // ============================================================================
 // Deinterleave table (144 entries)
 // ============================================================================

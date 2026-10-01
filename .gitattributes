@@ -1,2 +1,6 @@
 # Shell scripts must have Unix (LF) line endings for Docker/WSL
 *.sh text eol=lf
+
+# Test fixtures (raw frames, PCM): never convert line endings
+*.bin binary
+*.f32 binary
