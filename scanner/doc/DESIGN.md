@@ -1250,6 +1250,20 @@ From the brief:
     SDRTrunk's 639 IMBE frames, 99.7 to 99.8 % bit-exact (the others one raw bit apart, which
     the FEC corrects); the two-tone alert with no dropout on two runs of three, one 20 ms dip
     on the other (not in SDRTrunk's decode of the same transmission).
+  - **The replay corpus, mode B, all 42 items** (231 followable clear transmissions, 35,514 of
+    SDRTrunk's IMBE frames):
+    - p25-httpd: 35,325 (99.47 %), none missed, no relay underrun, the focus tone whole.
+    - the scanner (175e042): reported 95.6 % with 7 missed, but its `/api/ui/calls` gave no
+      call span (`open_ms`), so the scorer matched calls only by source. Rescored with the span
+      from each call's end: 35,289 (99.37 %), none missed. Every remaining difference is one
+      LDU or a few at a change of talker on one channel, either way (p25-httpd also loses one
+      where the scanner does not). The adapter now sends the span; voice aired after a call's
+      end marker now goes to the next call (the scanner's misses were a new talker's first LDU,
+      aired before the grant naming the talker was decoded).
+    - the scanner's crystal calibration on the replayed control channel (during the focus item,
+      which still decoded 639 of 639): LO shift 509 Hz, where p25-httpd's tracker had estimated
+      504 Hz on the same signal. The tracker then followed each recording's offset within the
+      50 Hz anchor.
   - **Found on the bench:**
     - with its clock source `site`, a unit sets its clock from the replayed control channel (a
       capture's date). The corpus test pins `manual` for the run and restores the source; the
