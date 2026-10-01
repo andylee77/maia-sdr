@@ -853,12 +853,8 @@ impl TsbkBlock {
     /// | channel spacing   | 38-47 | 10    |
     /// | base frequency    | 48-79 | 32    |
     ///
-    /// We expose the channel type via the `bw` field of
-    /// `IdentifierUpdate` for now (SDRTrunk stores TDMA bandwidth in a
-    /// separate enum mapped from `channel type`). Downstream the
-    /// `FrequencyBand` consumer treats it as bandwidth which is wrong
-    /// for TDMA -- not a problem for control-channel tracking which
-    /// only uses base_frequency + spacing.
+    /// The channel type gives the bandwidth and the timeslots per carrier
+    /// (SDRTrunk's `ChannelType`).
     ///
     /// The TDMA offset is `mag * channel_spacing`, not
     /// `mag * 250000` like FDMA/VUHF. SDRTrunk's

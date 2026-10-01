@@ -143,59 +143,66 @@ The target is the code review's layout, adjusted as the brief asks. Four additio
 
 ```text
 scanner/src/         the fresh crate (D13)
-  main.rs            ~40 lines: parse args, boot::run()
-  boot/              version (BUILD_TAG), args, logging + panic hook, persisted (load and migrate, once),
-                     radio init, streams, receivers, trunking, audio, services, state (AppState as
-                     handles), server, supervise, shutdown (flush history, recordings, plan)
-  util/              time (unix_ms, Stamp {mono, unix}, iso), atomic_file (tmp + fsync + rename,
-                     versioned JSON), fs_usage
+  main.rs            parse the arguments, boot::run()
+  boot/              args, logging and the panic policy, version (BUILD_TAG), radio (open the
+                     AD9361 and the P25 core, build the tuner), state (AppState: handles to the
+                     services), mod (start-up: configuration, storage, services, the live site;
+                     shutdown flushes the recordings, history and learned state)
+  util/              time (unix_ms, Stamp {mono, unix}, iso), atomic_file (tmp + fsync + rename)
   hardware/          drivers only
     ad9361.rs        IIO
-    mmio.rs          uio, rxbuffer
-    p25core/         regs, ddc, lsm, rings, spectrometer, lanes, irq, lsm_monitor (the 475-line heartbeat
-                     now inline in main.rs); fpga.rs is split here
-    presets/         ddc_presets (generated), ddc_fir_ram, ddc_rate; core_version
+    mmio.rs          UIO devices and maia-kmod's rxbuffer rings
+    core_version.rs  the P25 core's version register and what each version has
+    p25core/         regs (the three register banks), chain (one DDC and LSM), rings (DMA ring
+                     geometry and copies), irq (acknowledged; the readers poll), mod (the core:
+                     lanes, IQ taps, dibit rings, spectrometer)
+    presets/         DDC presets (a generated table) and their FIR RAM images
   radio/             the only way to move hardware
-    tuner.rs         apply(TuningPlan), retune_lane(), nco_offset(), scale_lo_shift(), watch<TuningSnapshot>
-    lease.rs         Normal | Switching | Scan (External later, for remote libiio)
-    lanes.rs         LaneId, LaneCaps {hdl_dibits, iq, protocols}, LaneController (one release sequence)
-    plan.rs          the window planner (the pure part of lo_plan)
-    streams/         iq_hub, dibit_readers, dibit_airtime, dibit_ring, spectrum producer, wideband capture
-  dsp/               fir, halfband, taps, fsk4 (DifferentialDemod, ideal_phase, interpolator), Complex32
+    tuner.rs         apply(TuningPlan), set_control, retune_lane, set_crystal_ppm; the crystal
+                     LO shift; what each lane's NCO holds
+    lease.rs         Normal | Switching | Scan
+    hw.rs            the board's RadioHw; on a development host a stand-in with no radio
+    plan.rs          the window planner
+    streams/         readers (the control chain's IQ and dibits; each lane's dibits, IQ and NID
+                     status), dibit_ring (ring tracking and the dibit production clock)
+  dsp/               taps (SDRTrunk's), fsk4 (DifferentialDemod, ideal_phase, interpolation)
   protocol/
     events.rs        ControlEvent, TrafficEvent, LogicalChannel, SiteIdentity (the decoders'
                      common output)
-    fec/             the codes both use: Golay(24,12) with Golay(18,6), the Hamming codes
-    p25/             framer, tsbk, control decoder, traffic decoder (voice_frame + forwarder parsing),
-                     pdu, c4fm demod, fec (BCH NID, Reed-Solomon, trellis)
+    fec/             the codes both use: Golay(24,12), the Hamming codes
+    p25/             framer, tsbk, control decoder, traffic decoder, voice_frame, pdu, c4fm demod,
+                     fec (BCH NID, Reed-Solomon, trellis)
     dmr/             demod, framer, fec (bptc, cach, emb, slot type, crc, RS(12,9)), message,
-                     tier3 control, traffic
+                     control (Tier III), traffic
   trunking/          protocol-neutral, host-tested
-    ids.rs           SystemId, SiteId, TalkgroupId(u32), UnitId(u32), CallId
-    follow/          one follower: ordered gates, lane choice, pre-emption
-    calls/           Call, CallBook (lifecycle + counters + recent ring), CallsView, CallEvent
-    site/            LiveSite: activate(), recentre(), the live state, per-site runtime memory
-    receivers.rs     runs the live protocol's decoders on their streams and feeds events in
+    follow/          one follower: ordered gates, lane choice, pre-emption; routing (a profile)
+    calls/           Call, CallBook (lifecycle and counters), CallEvent
+    trunk.rs         the trunking task: follower, call book and each lane's traffic decoder; the
+                     calls view; the last lane on the data channel between calls
+    site.rs          LiveSite: activate(), recentre(), the live state
+    learned.rs       what a site teaches: bands, grants, encrypted talkgroups, neighbours, its
+                     other channels
+    receivers.rs     runs the live protocol's control decoders on their streams, feeds events in
   audio/
-    codec/           VoiceCodec; imbe (jmbe port), ambe2 (jmbe AMBE port)
+    codec/           VoiceCodec; imbe (jmbe port), with ambe (jmbe's AMBE+2)
     agc.rs           PcmAgc, the only copy
-    pipeline.rs      per lane: frames → codec → AGC → 20 ms chunks
-    pacer.rs, live.rs   one pacer per lane; the audio broadcast
+    live.rs          per lane: frames, codec, AGC, pacer; the audio broadcast
   services/
-    config/          radio, systems, profiles, state, migrate (with the frozen legacy seeds)
-    history/         store (schema v2), writer, queries, migrate_v1
-    recordings/      manager, storage (RAM/SD), index, wav, naming
-    discovery/       scan jobs (P25 + DMR), grouping into systems, merge
-    clock/           site clock, NTP, clock task
+    config/          radio, systems, profiles, state, ids, migrate (with the frozen legacy seeds)
+    history/         schema v2, store, the writer, migrate_v1
+    recordings/      the recorder, storage (RAM/SD), index, wav
+    discovery/       carriers, probes (P25 and DMR), the sweep, grouping and merge
+    clock/           site clock, internet time, the board clock
     crystal.rs       crystal calibration and tracker (autoppm)
     packet_data.rs   P25 packet data records
-    events/          event log, the typed /ws/events feed
-  api/               one route table builds the router and the catalogue; ApiError; typed DTOs
-    v1/              status, radio, systems, sites, profiles, calls, recordings, activity, data, scan, events
-    diag/            protocol and hardware diagnostics (today's chain.rs, debug.rs, ...)
-    legacy.rs        old user-facing paths as adapters until their consumers move
-  ui/                ui_assets.rs + static files (index.html, js/, css/)
-dsp-lab/             dev crate: lsm models, sw_demod, golden dumps, software_decode tests
+    events.rs        the event log
+    notices.rs       what /ws/events sends
+  api/               one route table builds the router and doc/API.md; ApiError
+    v1/              status, radio, systems, sites, profiles, calls, recordings, activity, data,
+                     spectrum, scan, events
+    ws.rs            /ws/audio, /ws/events
+    legacy.rs        p25-httpd's routes the bench reads, in their old shape
+  ui/                mod.rs and the static files (index.html, js/, css/)
 ```
 
 Where today's files go. In the fresh crate, "goes to" means ported (leaf code, with its tests) or
@@ -204,7 +211,7 @@ rewritten there (glue); "delete" means not carried over.
 | Today | Goes to | Notes |
 |-------|---------|-------|
 | `app/grant_follower.rs` (1711) | `trunking::calls` (lifecycle) + `trunking::follow` (pure policies) | Split |
-| `app/grant_follower_routing.rs` (1138) | `trunking::follow` + `radio::lanes` | The 650-line `select!` arm becomes ordered gate functions |
+| `app/grant_follower_routing.rs` (1138) | `trunking::follow` + `trunking::trunk` | The 650-line `select!` arm becomes ordered gate functions |
 | `app/grant_stats.rs`, `call_counters.rs` | `trunking::calls` | Absorbed by the CallBook |
 | `app/imbe_forwarder.rs` (1723) | `protocol::p25` traffic decoder + `trunking::calls` + `audio::pipeline` | Split; its 86 fields mostly go |
 | `app/dmr_task.rs` (994) | `protocol::dmr` decoders + `trunking::receivers` + api DTO | Split; the lifecycle bridge goes |
@@ -215,7 +222,7 @@ rewritten there (glue); "delete" means not carried over.
 | `app/discovery*.rs` | `radio::lease` + `services::discovery` | Split |
 | `app/iq_hub.rs`, `dibit_readers.rs`, `dibit_airtime.rs` | `radio::streams` | |
 | `app/traffic_heartbeat.rs` | `hardware::p25core` register read + `protocol::p25` HDL source | Split |
-| `app/lane_policy.rs`, `traffic_lane.rs` | `trunking::follow`, `radio::lanes`, `boot` | |
+| `app/lane_policy.rs`, `traffic_lane.rs` | `trunking::follow`, `trunking::trunk`, `boot` | |
 | `app/history_task.rs` | `services::history::writer` | No ring polling |
 | `app/data_task.rs` | `services::packet_data`; the data channel in the site's learned state | The `DATA_CHANNEL_HZ` static goes |
 | `app/clock_task.rs` | `services::clock` | |
@@ -229,14 +236,14 @@ rewritten there (glue); "delete" means not carried over.
 | `httpd/api/tuning.rs` (1730) | `radio::tuner` (apply_preset, post_tune, ppm) + `api::v1::radio` | Domain logic leaves the handler |
 | `httpd/api/ui.rs` | `services::config` (`apply_settings_patch`) + `api::v1` | |
 | `httpd/api/sites.rs` | `trunking::site::activate` + `api::v1::sites` | |
-| `httpd/api/chain.rs`, `debug.rs` | `api::diag` | |
+| `httpd/api/chain.rs`, `debug.rs` | `api::diag` | Not built yet (status log) |
 | `httpd/ui/`, `ui_assets.rs` | `ui/` | |
 | `jmbe/`, `vocoder/` | `audio::codec::{imbe, ambe2}` | |
 | `lsm/`, `sw_demod/` | `dsp-lab` dev crate | First move `RRC_TAPS_25K` and `Complex32` (used by production code) to `dsp` |
 | `protocol/p25/c4fm.rs` | `dsp::fsk4` (shared parts) + `protocol::p25` | DMR borrows them through `pub(crate)` today |
 | `protocol/p25/control_channel/mod.rs` (1756) | `protocol::p25::{framer, control, traffic, diag}` | Split; the calls into app and services become events |
 | `protocol/p25/events.rs` | **delete** | Replaced by `ControlEvent` |
-| `protocol/p25/traffic_chain.rs` | `radio::lanes` (hardware state only) | `grant_map` and its 2 s dedup go |
+| `protocol/p25/traffic_chain.rs` | `radio::tuner` (what each lane's NCO holds) | `grant_map` and its 2 s dedup go |
 | `services/ui_settings.rs` (1318) | `services::config::{radio, profiles}`, recordings, calls, clock | Split |
 | `services/sites.rs`, `lo_plan.rs`, `monitor.rs` | `services::config`, `radio::plan` | The statics go |
 | `services/history.rs` | `services::history::store` | Schema v2 |
@@ -468,7 +475,7 @@ Rules:
   Autoppm at DMR sites reads the DMR equaliser's carrier offset.
 - **Side effects become events.** Today the P25 decoder calls into `data_task` and `site_clock`;
   those become `DataChannel` and `SiteTime` events.
-- **Lanes have capabilities** (`radio::lanes`). The follower picks only lanes that can carry the
+- **Lanes have capabilities** (`Setup::lanes`, by protocol). The follower picks only lanes that can carry the
   grant:
 
   | Lane | Capabilities |
@@ -734,7 +741,7 @@ its `dmr` attachment, which is what forces `site_card.js` to branch.
 | `/api/v1/receivers` (status; modulation choice) | `/api/modulation`, `/api/dmr` | UI; tool `retune_probe`; `log_dmr.py` |
 | `/ws/audio` (v2 framing; speaker in meta) | unchanged path; v1 framing kept | UI; tool `ws_audio_capture`; bench `wsaudio.py`, `services.py` |
 
-Diagnostics keep their paths in `api::diag` (D7). Examples: `hdl_lsm`, `irq_stats`,
+Diagnostics keep their paths in `api::diag` (D7; not built yet, see the status log). Examples: `hdl_lsm`, `irq_stats`,
 `decoder_compare`, the dibit and IQ dumps, `*_lsm_control`, `nid_capture`, `sync_tune`, `bch_t`,
 `decoder_reset`, `pipeline`, `dibit_delivery`, `spectrum*`, `wideband_iq_capture`, `imbe_dump`,
 `audio_test`, `sys_health` and `/ws/iq`. The GETs that write become POST or PUT:
@@ -1280,11 +1287,12 @@ From the brief:
     - **Neighbours, secondary control channels and the data channel** go into the site's learned
       state (`GET /api/v1/sites/{id}/learned`) and show on Systems.
     - **Packet data** (`services::packet_data`, `GET /api/v1/data`, the Activity card): the
-      control channel's PDUs.
+      control channel's PDUs, and the data channel's (below).
     - **`/ws/audio`:** p25-httpd's first framing (lane one, samples only) unless `?v=2`.
-  - **Still open from this pass:** p25-httpd parks its last lane on the announced data channel
-    while it is idle and reads the PDUs there; the scanner's packet data comes from the control
-    channel only.
-  - **The design's module map** describes the plan of 2026-10-01 morning; several entries differ
-    from the tree as built (the lanes module, the tuner's watch, the p25core split). It is to be
-    brought in line with the tree before the cutover ("Done means").
+  - **Then the data channel:** as in p25-httpd, the last lane of a P25 site waits on the announced
+    data channel between calls (a voice grant still takes it) and its PDUs go to packet data.
+  - **The module map** (section 2) now describes the tree as built.
+  - **Still open:** `api::diag` (D7): of p25-httpd's diagnostic routes the scanner serves only
+    `/api/imbe_dump`. The bench reads `/api/traffic` for the decoders' counters (it carries on
+    without them) and mode C holds a lane through it; the tools' other diagnostic routes are to
+    be listed with their consumers and ported or retired before the cutover.

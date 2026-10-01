@@ -898,7 +898,7 @@ mod tests {
     }
 
     // A parked lane resumed with its PLL at the clamp after the carrier had been gone for seconds
-    // and lost two whole transmissions (bench 2026-09-27).
+    // lost two whole transmissions on the bench.
     #[test]
     fn a_stale_or_runaway_lane_is_reset_on_resume() {
         let ms = Duration::from_millis;
