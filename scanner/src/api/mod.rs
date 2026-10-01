@@ -196,4 +196,25 @@ mod tests {
             assert!(seen.insert((r.method, r.path)), "{} {} twice", r.method, r.path);
         }
     }
+
+    /// `doc/API.md` is the route table rendered; `API_DOC_BLESS=1` rewrites it.
+    #[test]
+    fn the_api_reference_is_the_route_table() {
+        let mut md = String::from(
+            "# Scanner API\n\nGenerated from the route table (`src/api/mod.rs`) by the test \
+             `the_api_reference_is_the_route_table`; `API_DOC_BLESS=1 cargo test` rewrites it. Writes from \
+             another origin are refused; errors are `{\"ok\": false, \"error\": \"...\"}` with a status.\n\n\
+             | Method | Path | What |\n|--------|------|------|\n",
+        );
+        for r in CATALOGUE {
+            md += &format!("| {} | `{}` | {} |\n", r.method.to_uppercase(), r.path, r.summary.replace('|', "\\|"));
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("doc/API.md");
+        if std::env::var("API_DOC_BLESS").is_ok_and(|v| v == "1") {
+            std::fs::write(&path, &md).unwrap();
+            return;
+        }
+        let have = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+        assert!(have == md, "doc/API.md is not the route table: run with API_DOC_BLESS=1");
+    }
 }
