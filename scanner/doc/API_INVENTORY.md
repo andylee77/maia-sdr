@@ -24,12 +24,12 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 
 | Route | Carries | Used by | Missing or wrong |
 |-------|---------|---------|------------------|
-| `GET /api/v1/status` | Build, uptime, board time; the live state (`no_site`, `switching`, `scanning`, `live` with site, system, profile, window and tuning); the control channel's health; the lease; tuning; clock; the held talkgroup | UI (polled every 2 s and after each `/ws/events` frame: header, Now, Systems, Diagnostics); `scanner_live_check.py` | Tuning is there twice. When the site went live isn't exposed |
+| `GET /api/v1/status` | Build, uptime, board time; the live state (`no_site`, `switching`, `scanning`, `live` with site, system, profile, window and tuning); the control channel's health; the lease; tuning; clock; the held talkgroup | UI (after an action; otherwise each page gets it pushed by `/ws/live` each second); `scanner_live_check.py` | Tuning is there twice. When the site went live isn't exposed |
 | `GET /api/v1/receivers` | The control channel's status, carrier loop and AGC, and both P25 demodulators' (or the DMR decoder's) counters; each lane's channel, call, followed talkgroup, data-channel park, voice frames, decoder counters and carrier loop | Nothing yet (for the diagnostics) | Repeats `status.control`. No modulation override. No reset of the counters |
 | `GET /api/v1/system` | Board load, memory, CPU per core and per scanner thread, AD9361 and Zynq temperatures | Nothing yet | No filesystem space; the card's free space is only in `/recordings` |
 | `GET /api/v1/spectrum` | The receive window's spectrum (`bins`) with the LO, rate, control channel and lanes | UI Diagnostics | No frame time. A `bins` that doesn't divide 4096 isn't refused |
 | `GET /api/v1/events` | The event log after `after` (`limit`, `routine`) | UI Diagnostics events box | Any extra query key is a 400. More than `limit` new events leaves a silent gap. No filter by class, talkgroup or unit |
-| `WS /ws/events` | `call_opened`, `call_closed`, `recording_saved`, `lag` | UI (only as a cue to refresh) | No notice for a site switch, a scan, a recentre, a clock or crystal step, or a settings or profile change. No site in notices |
+| `WS /ws/events` | `call_opened`, `call_closed`, `recording_saved`, `lag` | Nothing in the UI (it uses `/ws/live`) | No notice for a site switch, a scan, a recentre, a clock or crystal step, or a settings or profile change. No site in notices |
 
 ## Calls, audio, recordings
 
@@ -142,7 +142,7 @@ The UI replacement (`UI_BRIEF.md`) sets the order. Its backend items come first:
 
 The list below follows them.
 
-1. **Notices for state changes.** On `/ws/events`: live state, scan progress, recentre, settings, profile and hold changes, each with its site. Then the UI can stop polling `/status` every 2 s.
+1. **Notices for state changes** (done: `/ws/live` pushes the live state, the scan's progress and every configuration change; the UI no longer polls `/status`).
 2. **Bench routes for mode C and replay.**
    - Lane hold and follower off (`/api/traffic`).
    - Decoder counters and their reset (`/api/stats`, `/api/decoder_compare`, `/api/decoder_reset`), from `/receivers`.

@@ -158,16 +158,16 @@ h2 { font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; color
 }
 .grid-2 { display: grid; gap: var(--gap); grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid-3 { display: grid; gap: var(--gap); grid-template-columns: repeat(3, minmax(0, 1fr)); }
-/* Now view: main column (call, recent calls) + side column (site,
-   recording). Phones stack call, side, calls. */
-.now-layout {
-  display: grid; gap: var(--gap); align-items: start;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
-  grid-template-areas: "call side" "calls side";
+/* Now view: the system card and the traffic channels stay on screen; only the calls scroll, in
+   their own pane. Narrow or short screens scroll the whole page instead. */
+.now { display: grid; gap: var(--gap); align-content: start; }
+@media (min-width: 861px) and (min-height: 600px) {
+  body[data-view="now"] { height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
+  body[data-view="now"] .view { flex: 1; min-height: 0; width: 100%; grid-template-rows: minmax(0, 1fr); }
+  .now { min-height: 0; grid-template-rows: auto auto minmax(0, 1fr); }
+  .now-calls { min-height: 0; display: flex; flex-direction: column; }
+  .now-calls .card-body { flex: 1; min-height: 0; overflow-y: auto; }
 }
-.now-call { grid-area: call; }
-.now-side { grid-area: side; }
-.now-calls { grid-area: calls; }
 .stack { display: grid; gap: var(--gap); align-content: start; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .row.end { justify-content: flex-end; }
@@ -204,7 +204,6 @@ h2 { font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; color
 
 @media (max-width: 860px) {
   .grid-2, .grid-3 { grid-template-columns: minmax(0, 1fr); }
-  .now-layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "call" "side" "calls"; }
 }
 
 @media (max-width: 640px) {

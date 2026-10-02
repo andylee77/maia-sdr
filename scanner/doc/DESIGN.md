@@ -1209,8 +1209,8 @@ From the brief:
   - **Live, unit B** (on a copy of its configuration): each endpoint did what it says, and a
     profile following TGs 300 and 319 only took effect from the next call (TGs 850, 600 and
     403 then `speaker_off`).
-  - **`/ws/events`:** a notice when a call opens or closes or a recording is saved; the UI
-    refreshes on them at once (32 in a minute on B).
+  - **`/ws/events`:** a notice when a call opens or closes or a recording is saved (32 in a
+    minute on B). The UI now takes everything from `/ws/live`.
   - **Spectrum:** `/api/v1/spectrum` from the wideband spectrometer and its card on
     Diagnostics (B: Clay's control channel 30 dB over a -99 dB floor).
   - **Clock** (`services::clock`): p25-httpd's site clock (SYNC_BCST, with its tests), internet
@@ -1416,3 +1416,8 @@ From the brief:
   - **The survey** (section 10): every spectrometer frame of the live window, averaged over ten
     minutes into the carriers heard, steady or intermittent; the intermittent ones are DMR
     channel candidates.
+  - **The Now page** (`UI_BRIEF.md`): the system card (a system and a site list that make a
+    site live; its details, identity and control channel health) and the two traffic channels,
+    left and right, stay on screen; the live site's calls scroll below in their own pane. The
+    state the pages share (status, calls, traffic channels, recordings, systems) comes from
+    `/ws/live` instead of a poll every 2 s.

@@ -28,6 +28,7 @@ const ICONS = {
   stop: [['rect', { x: '6.5', y: '6.5', width: '11', height: '11', rx: '1.5', fill: 'currentColor', stroke: 'none' }]],
   trash: [['path', { d: 'M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5' }]],
   tune: [['path', { d: 'M4 7h3M11 7h9M4 17h9M17 17h3' }], ['circle', { cx: '9', cy: '7', r: '2' }], ['circle', { cx: '15', cy: '17', r: '2' }]],
+  download: [['path', { d: 'M12 4v11M7 10.5l5 5 5-5M5 20h14' }]],
 };
 
 export function icon(name) {

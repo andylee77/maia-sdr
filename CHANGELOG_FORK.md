@@ -71,6 +71,10 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   followed on a candidate frequency, kept once the call's voice header names the granted
   talkgroup. The live site surveys its receive window from every spectrometer frame: the
   carriers heard over ten minutes, steady or intermittent (`/api/v1/survey`, Diagnostics).
+- **Now page:** the system card (system and site lists that make a site live; details,
+  identity, control channel health) and the left and right traffic channels stay on screen;
+  the live site's calls scroll below in their own pane, with playback and hold. The pages'
+  shared state comes from `/ws/live` instead of a poll every 2 s.
 
 Tests: scanner 411, p25-httpd 475.
 

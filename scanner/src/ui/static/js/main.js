@@ -1,4 +1,5 @@
-// Page shell: the header, the page router (#now, #activity, #systems, #diag, #settings) and the store.
+// Page shell: the header, the page router (#now, #activity, #systems, #diag, #settings) and the store
+// the radio pushes.
 // Pages are modules exporting mount(el) -> { update(store), unmount() }.
 
 import { store, subscribe, start } from './store.js';
@@ -23,6 +24,8 @@ function route() {
   if (current && current.page.unmount) current.page.unmount();
   const host = $('view');
   host.replaceChildren();
+  // The page's own layout (the Now page fills the screen and scrolls only its calls).
+  document.body.dataset.view = key;
   current = { name: key, page: PAGES[key].mount(host) };
   for (const a of document.querySelectorAll('#tabs a')) {
     setClass(a, 'active', a.dataset.view === key);

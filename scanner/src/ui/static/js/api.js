@@ -50,7 +50,7 @@ export const api = {
   scanOptions: () => request('GET', '/api/v1/scan/options'),
   scanCancel: () => request('POST', '/api/v1/scan/cancel'),
   scanAdd: card => request('POST', '/api/v1/scan/add', card),
-  recordings: limit => request('GET', `/api/v1/recordings?limit=${limit}`),
+  recordings: (limit, site) => request('GET', `/api/v1/recordings?limit=${limit}${site ? `&site=${encodeURIComponent(site)}` : ''}`),
   setRecording: recording => request('PUT', '/api/v1/radio/recording', recording),
   clearRecordings: store => request('DELETE', `/api/v1/recordings?store=${store}`),
   activity: (path, q) => request('GET', `/api/v1/activity/${path}${q ? `?${q}` : ''}`),
