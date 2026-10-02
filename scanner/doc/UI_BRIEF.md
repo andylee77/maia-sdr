@@ -11,6 +11,7 @@ For the session that designs the scanner's final web UI. Andy's direction, 2026-
 - The Now page gets a session of its own.
 
 `doc/API_INVENTORY.md` lists each route: what it carries, what it lacks, and who uses it.
+`doc/API_FIELDS.md` gives every field of every response with its meaning.
 
 ## The Now page
 

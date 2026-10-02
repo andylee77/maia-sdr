@@ -3,6 +3,8 @@
 What each route carries, who uses it, and what is missing or wrong. As of `5d7ff96`.
 
 - `doc/API.md` is the route table, generated from the code.
+- `doc/API_FIELDS.md` gives every GET route's fields with their types, meanings and an example,
+  generated from a unit by `tools/api_fields.py`.
 - `doc/UI_BRIEF.md` is the brief for the final UI.
 
 The cleanup list at the end ranks the backend work this inventory turned up.
