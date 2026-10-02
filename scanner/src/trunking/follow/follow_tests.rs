@@ -1,32 +1,45 @@
-//! Host tests for the follower. The routing is the bench's: Primary (TG 300) on the left, TAC
-//! (301-310) and Hospital (600-601) on the right, TAC above Hospital, other talkgroups right.
-//! Each is written as a profile of an earlier version and read through its conversion to
-//! aliases, so the conversion keeps what a profile followed.
+//! Host tests for the follower. The aliases are the bench's: Primary (TG 300) on the left above
+//! TAC (301-310) above Hospital (600-601), both on the right; talkgroups with no alias play on the
+//! right too.
 
 use super::*;
 use crate::protocol::events::LogicalChannel;
-use crate::services::config::aliases;
-use crate::services::config::profiles::{Group, Profile, Speakers};
+use crate::services::config::aliases::{Alias, AliasId, Listening, LOWEST_PRIORITY};
 
-fn routing(p: &Profile) -> Routing {
-    let (a, l) = aliases::from_names_and_profile(&Default::default(), &Default::default(), Some(p));
-    Routing::new(&a, l)
+/// An alias for the talkgroups `min..=max` with a priority and a speaker.
+fn ranked(name: &str, min: u32, max: u32, priority: u8, speaker: Side) -> Alias {
+    let id = if min == max { AliasId::Talkgroup { value: min } } else { AliasId::TalkgroupRange { min, max } };
+    Alias { ids: vec![id], priority: Some(priority), speaker, ..Alias::talkgroup(min, name) }
 }
 
-fn profile(other: Side, right: &[&str]) -> Profile {
-    Profile {
-        groups: vec![
-            Group { name: "Primary".into(), talkgroups: vec![300] },
-            Group { name: "TAC".into(), talkgroups: (301..=310).collect() },
-            Group { name: "Hospital".into(), talkgroups: vec![600, 601] },
-        ],
-        speakers: Speakers { left: vec!["Primary".into()], right: right.iter().map(|s| s.to_string()).collect(), other, preempt: true },
-        ..Profile::default()
-    }
+fn primary() -> Alias {
+    ranked("Primary", 300, 300, 1, Side::Left)
+}
+
+fn tac() -> Alias {
+    ranked("TAC", 301, 310, 2, Side::Right)
+}
+
+fn hospital() -> Alias {
+    ranked("Hospital", 600, 601, 3, Side::Right)
+}
+
+fn never(a: Alias) -> Alias {
+    Alias { do_not_monitor: true, ..a }
+}
+
+/// `aliases`, with talkgroups that have none playing on `other`.
+fn routing(aliases: &[Alias], other: Side) -> Routing {
+    Routing::new(aliases, Listening { unmonitored_speaker: other, ..Listening::default() })
+}
+
+/// Only talkgroups with a priority followed.
+fn monitored_only(aliases: &[Alias]) -> Routing {
+    Routing::new(aliases, Listening { follow_unmonitored: false, unmonitored_speaker: Side::Right, preempt: true })
 }
 
 fn bench() -> Routing {
-    routing(&profile(Side::Right, &["TAC", "Hospital"]))
+    routing(&[primary(), tac(), hospital()], Side::Right)
 }
 
 fn idle(lane: Lane) -> LaneView {
@@ -80,13 +93,13 @@ fn sides_map_to_their_lanes_and_do_not_borrow() {
 
 #[test]
 fn other_talkgroups_on_both_use_either_lane() {
-    let r = routing(&profile(Side::Both, &["TAC", "Hospital"]));
+    let r = routing(&[primary(), tac(), hospital()], Side::Both);
     let f = Some(859_425_000);
     assert_eq!(choose_lane(999, Side::Both, f, &[idle(Lane::One), idle(Lane::Two)], &r, NEVER), LaneChoice::Take(Lane::One));
     let parked = LaneView { tuned_hz: f, ..idle(Lane::Two) };
     assert_eq!(choose_lane(999, Side::Both, f, &[idle(Lane::One), parked], &r, NEVER), LaneChoice::Take(Lane::Two));
     assert_eq!(choose_lane(999, Side::Both, f, &[busy(Lane::One, 300), idle(Lane::Two)], &r, NEVER), LaneChoice::Take(Lane::Two));
-    let r = routing(&profile(Side::Both, &[]));
+    let r = routing(&[primary()], Side::Both);
     assert!(!r.side_has_groups(Side::Right) && r.side_has_groups(Side::Left));
     assert_eq!(choose_lane(999, Side::Both, f, &[idle(Lane::One), idle(Lane::Two)], &r, NEVER), LaneChoice::Take(Lane::Two));
     assert!(candidates(Side::Off, None, &[idle(Lane::One), idle(Lane::Two)], &r).is_empty());
@@ -94,23 +107,26 @@ fn other_talkgroups_on_both_use_either_lane() {
 
 #[test]
 fn routing_ignores_monitors_and_ranks() {
-    let mut p = profile(Side::Right, &["TAC"]);
-    p.ignore = vec![305];
-    p.monitor = vec![300, 305, 999];
-    let r = routing(&p);
-    assert!(r.ignored(305) && r.route(305).is_none());
-    assert!(r.monitored(999) && !r.monitored(301) && !r.monitored(777));
-    assert!(r.ignored(301), "grouped, but off the monitor list");
-    assert_eq!(r.route(600), None, "Hospital is on no speaker");
-    assert_eq!(r.route(999).map(|x| x.rank), Some(u16::from(aliases::LOWEST_PRIORITY)), "on the monitor list only: the lowest priority");
+    let r = monitored_only(&[
+        primary(),
+        tac(),
+        never(Alias::talkgroup(305, "TAC 5")),
+        never(hospital()),
+        ranked("Events", 999, 999, LOWEST_PRIORITY, Side::Right),
+    ]);
+    assert!(r.ignored(305) && r.route(305).is_none(), "its own alias before TAC's range");
+    assert!(r.monitored(301) && r.monitored(999) && !r.monitored(777), "only talkgroups with a priority");
+    assert_eq!(r.route(600), None, "do not monitor");
+    assert_eq!(r.route(302), Some(Route { side: Side::Right, rank: 2 }), "from TAC's range");
+    assert_eq!(r.route(999).map(|x| x.rank), Some(u16::from(LOWEST_PRIORITY)));
     assert_eq!(r.route(300).map(|x| x.rank), Some(1));
     assert!(r.preempts(300, 999) && !r.preempts(999, 300) && !r.preempts(300, 300));
     assert!(r.preempts(300, 600), "a call no longer followed yields");
 }
 
 #[test]
-fn the_speaker_of_a_talkgroup_is_its_groups() {
-    let f = Follower::new(&[Lane::One, Lane::Two], routing(&profile(Side::Both, &["TAC"])), HashSet::new());
+fn the_speaker_of_a_talkgroup_is_its_aliases() {
+    let f = Follower::new(&[Lane::One, Lane::Two], routing(&[primary(), tac()], Side::Both), HashSet::new());
     assert_eq!((f.speaker(300), f.speaker(305), f.speaker(999)), (Side::Left, Side::Right, Side::Both));
 }
 
@@ -166,10 +182,8 @@ fn decision(o: &Outcome) -> Option<Decision> {
 
 #[test]
 fn the_gates_name_why_a_grant_is_not_followed() {
-    let mut p = profile(Side::Right, &["TAC"]);
-    p.ignore = vec![402];
-    p.monitor = vec![300, 301, 600, 999];
-    let mut f = Follower::new(&[Lane::One], routing(&p), HashSet::from([700]));
+    let r = monitored_only(&[primary(), tac(), never(hospital()), never(Alias::talkgroup(402, "Ops"))]);
+    let mut f = Follower::new(&[Lane::One], r, HashSet::from([700]));
     let t = Instant::now();
     let mut run = |g: Grant| decision(&f.grant(&g, 0, t, &|_| None, &|hz| hz < 860_000_000));
     use NotFollowed as N;
@@ -177,9 +191,8 @@ fn the_gates_name_why_a_grant_is_not_followed() {
     let mut tdma = grant(300, 1, F1);
     tdma.channel.tdma = true;
     assert_eq!(run(tdma), Some(Decision::NotFollowed(N::Phase2)));
-    assert_eq!(run(grant(302, 1, F1)), Some(Decision::NotFollowed(N::Ignored)), "grouped, off the monitor list");
-    assert_eq!(run(grant(600, 1, F1)), Some(Decision::NotFollowed(N::Ignored)), "a group on no speaker");
-    assert_eq!(run(grant(777, 1, F1)), Some(Decision::NotFollowed(N::Unmonitored)), "no priority, only monitored talkgroups followed");
+    assert_eq!(run(grant(600, 1, F1)), Some(Decision::NotFollowed(N::Ignored)), "in a do-not-monitor range");
+    assert_eq!(run(grant(777, 1, F1)), Some(Decision::NotFollowed(N::Unmonitored)), "no priority, and only those with one are followed");
     let mut unknown = grant(300, 1, F1);
     unknown.channel.freq_hz = None;
     assert_eq!(run(unknown), Some(Decision::NotFollowed(N::UnknownLcn)));
@@ -190,15 +203,13 @@ fn the_gates_name_why_a_grant_is_not_followed() {
 }
 
 #[test]
-fn a_hold_follows_only_its_talkgroup_whatever_the_profile_says() {
-    let mut p = profile(Side::Right, &["TAC"]);
-    p.ignore = vec![402];
-    p.monitor = vec![300];
-    let mut f = Follower::new(&[Lane::One, Lane::Two], routing(&p), HashSet::new());
+fn a_hold_follows_only_its_talkgroup_whatever_its_alias_says() {
+    let aliases = [primary(), never(Alias::talkgroup(402, "Ops"))];
+    let mut f = Follower::new(&[Lane::One, Lane::Two], monitored_only(&aliases), HashSet::new());
     let t = Instant::now();
     let run = |f: &mut Follower, g: Grant| f.grant(&g, 0, t, &|_| None, &|hz| hz < 860_000_000);
     assert_eq!(decision(&run(&mut f, grant(300, 1, F1))), Some(Decision::Followed(Lane::One)));
-    // Holding 402 (ignored, off the monitor list, on no speaker) lets lane one go.
+    // Holding 402 (do not monitor) lets lane one go.
     assert_eq!(f.set_hold(Some(402)), vec![Command::Release { lane: Lane::One }]);
     assert_eq!(f.locked(), vec![(Lane::One, None), (Lane::Two, None)]);
     assert_eq!(decision(&run(&mut f, grant(300, 1, F1))), Some(Decision::NotFollowed(NotFollowed::Held)));
@@ -206,10 +217,10 @@ fn a_hold_follows_only_its_talkgroup_whatever_the_profile_says() {
     assert_eq!(f.set_hold(Some(402)), Vec::new(), "a lane on the held talkgroup is kept");
     assert_eq!(f.set_hold(None), Vec::new());
     // Encrypted stays refused: there is nothing to hear.
-    let mut f2 = Follower::new(&[Lane::One], routing(&p), HashSet::from([700]));
+    let mut f2 = Follower::new(&[Lane::One], monitored_only(&aliases), HashSet::from([700]));
     f2.set_hold(Some(700));
     assert_eq!(decision(&run(&mut f2, grant(700, 3, F1))), Some(Decision::NotFollowed(NotFollowed::Encrypted)));
-    // Released: the profile again.
+    // Released: the aliases again.
     assert_eq!(decision(&run(&mut f, grant(402, 2, F2))), Some(Decision::NotFollowed(NotFollowed::Ignored)));
 }
 

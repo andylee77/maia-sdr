@@ -8,7 +8,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/status` | build, uptime, the live site, its control channel and the tuning |
 | GET | `/api/v1/calls` | the live site's open calls and its newest closed ones (from its history after a restart or switch), with names |
 | GET | `/api/v1/hold` | the talkgroup the live site is held on, if any |
-| PUT | `/api/v1/hold` | hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the profile says |
+| PUT | `/api/v1/hold` | hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the aliases say |
 | GET | `/api/v1/calls/{id}` | one call, live while recent, else from the history; the same shape either way |
 | GET | `/ws/live` | the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, the scan and configuration changes |
 | GET | `/ws/events` | a text frame when a call opens or closes or a recording is saved |
@@ -27,9 +27,9 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/system` | the board's health: load, memory, CPU per core and per scanner thread, temperatures |
 | GET | `/api/v1/iq/control.wav` | the next `seconds` (default 10, at most 120) of the control channel's IQ as the decoder gets it: 50 kSPS stereo WAV, I left |
 | GET | `/api/v1/receivers` | the control channel and each lane: status, decoder counters, carrier loop |
-| GET | `/api/v1/config` | the whole configuration as one document: radio settings, systems with names and sites, profiles, the live site (`download=true`: as a file) |
+| GET | `/api/v1/config` | the whole configuration as one document: radio settings, systems with their aliases and sites, the live site (`download=true`: as a file) |
 | PUT | `/api/v1/config` | replace the configuration with an exported document (checked whole first); the scanner restarts |
-| POST | `/api/v1/config/factory-reset` | back to a new unit: no systems, sites, profiles, recordings or history, default settings (the crystal calibration stays); the scanner restarts |
+| POST | `/api/v1/config/factory-reset` | back to a new unit: no systems, sites, aliases, recordings or history, default settings (the crystal calibration stays); the scanner restarts |
 | GET | `/api/v1/radio` | radio configuration, hardware and tuning |
 | PUT | `/api/v1/radio/gain` | receiver gain mode and manual gain |
 | PUT | `/api/v1/radio/settings` | presets the planner may use, traffic lanes, call timings, history limits |
@@ -50,8 +50,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | PUT | `/api/v1/systems/{id}/listening` | how a system treats talkgroups with no priority, and pre-emption |
 | PUT | `/api/v1/systems/{id}/talkgroups/{tg}` | one talkgroup's controls: name, group, priority, do-not-monitor, record, speaker |
 | PUT | `/api/v1/systems/{system}/sites/{site}` | edit a site (the live site goes live again with the change) |
-| DELETE | `/api/v1/systems/{system}/sites/{site}` | remove a site (not the live one), its profile choice and what it learned; the history keeps its calls |
-| DELETE | `/api/v1/systems/{id}` | remove a system with its sites and profiles (none of its sites live); the history keeps their calls |
+| DELETE | `/api/v1/systems/{system}/sites/{site}` | remove a site (not the live one) and what it learned; the history keeps its calls |
+| DELETE | `/api/v1/systems/{id}` | remove a system with its sites and aliases (none of its sites live); the history keeps their calls |
 | GET | `/api/v1/sites` | every site, with the live one marked |
 | POST | `/api/v1/sites/{id}/activate` | make a site live (returns once it is) |
 | POST | `/api/v1/sites/{id}/stop` | stop the live site: no site is live until one is made live |

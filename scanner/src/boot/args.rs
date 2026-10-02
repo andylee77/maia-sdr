@@ -24,7 +24,7 @@ pub struct Args {
     #[arg(long)]
     pub ca_cert: Option<PathBuf>,
 
-    /// Directory of the persistent flash (configuration, learned state, legacy files).
+    /// Directory of the persistent flash (configuration, learned state).
     #[arg(long, default_value = "/mnt/jffs2")]
     pub flash_dir: PathBuf,
 

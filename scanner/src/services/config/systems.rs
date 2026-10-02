@@ -1,5 +1,5 @@
-//! `systems.json`: the trunked systems the user keeps, their talkgroup and radio names, and their
-//! sites. Written on a user change or a scan "Add". What the radio learns on the air goes to
+//! `systems.json`: the trunked systems the user keeps, their aliases and listening settings, and
+//! their sites. Written on a user change or a scan "Add". What the radio learns on the air goes to
 //! the per-site state files instead.
 
 use std::collections::BTreeMap;
@@ -65,12 +65,6 @@ pub struct System {
     pub listening: Listening,
     #[serde(default)]
     pub sites: Vec<Site>,
-    /// The talkgroup names of an earlier version, read once into `aliases`.
-    #[serde(rename = "talkgroups", default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub legacy_talkgroups: BTreeMap<u32, String>,
-    /// The radio names of an earlier version, read once into `aliases`.
-    #[serde(rename = "radios", default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub legacy_radios: BTreeMap<u32, String>,
 }
 
 impl System {
@@ -121,7 +115,7 @@ pub struct Site {
     pub window: Window,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
-    /// Where the site came from (a scan, a migrated file).
+    /// Where the site came from (the scan that found it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }

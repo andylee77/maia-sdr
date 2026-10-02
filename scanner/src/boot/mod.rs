@@ -1,4 +1,4 @@
-//! Start-up and shutdown: load (and on a first start migrate) the configuration, bring up the
+//! Start-up and shutdown: load the configuration, bring up the
 //! radio, make the live site live, serve the API until SIGTERM or Ctrl-C.
 
 pub mod args;
@@ -39,17 +39,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     tracing::warn!("scanner {} starting", version::BUILD_TAG);
     let started = Instant::now();
     let paths = Paths::new(&args.flash_dir, &args.sd_dir);
-    let loaded = config::load_or_migrate(&paths)?;
-    if let Some(report) = &loaded.migration {
-        tracing::warn!(
-            "migrated the p25-httpd files: {} systems, {} sites, {} profiles (see {})",
-            report.systems,
-            report.sites,
-            report.profiles,
-            paths.migration_log().display(),
-        );
-    }
-    let config = loaded.config;
+    let config = config::Config::load(&paths)?;
     let crystal_ppm = config.state.value.crystal.as_ref().map(|c| c.ppm).or(args.lo_ppm).unwrap_or(0.0);
     let live_site = config.state.value.live_site.clone();
     let (tuner, hardware) = radio::open(&config.radio.value, crystal_ppm).await?;

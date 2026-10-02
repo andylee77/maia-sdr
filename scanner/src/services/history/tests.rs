@@ -1,5 +1,4 @@
-//! The history store (p25-httpd's tests on schema v2), the writer, and the v1 copy checked against
-//! the Activity snapshots of the units' databases (phase 0).
+//! The history store and its writer.
 
 use std::path::{Path, PathBuf};
 
@@ -37,6 +36,12 @@ fn call(call_id: u64, at: u64, tg: u32, sources: &[u32], voice_ms: u64, enc: boo
         frame_errors: 1,
         close_reason: "call_end".into(),
         end_kind: None,
+    }
+}
+
+fn remove_db(path: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
 }
 
@@ -311,7 +316,6 @@ fn the_writer_batches_and_fills_in_the_voice_counts() {
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = HistoryConfig::default();
     let h = History::open(Some(&dir), &cfg, &[clay()]).unwrap();
-    assert!(h.note.is_empty(), "nothing to copy");
     let tx = h.sender();
     let mut c = call(1, T0, 300, &[101], 2_000, false);
     c.frame_errors = 0;
@@ -329,124 +333,4 @@ fn the_writer_batches_and_fills_in_the_voice_counts() {
     assert_eq!(h.store().calls(&range(), SeriesFilter::default(), 10).unwrap()[0].frame_errors, 9);
     let e = &h.store().radio(&range(), 101).unwrap().events[0];
     assert_eq!((e.count, e.first_ms, e.last_ms), (2, T0, T0 + 5));
-}
-
-// ── The v1 copy, against the Activity snapshots ──────────────────────
-
-fn fixture_dirs() -> Vec<PathBuf> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
-        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.join("history.sql").exists()).collect())
-        .unwrap_or_default();
-    dirs.sort();
-    dirs
-}
-
-/// A fixture dump loaded into a v1 database file.
-fn v1_from_dump(dir: &Path) -> PathBuf {
-    let name = dir.file_name().unwrap().to_string_lossy().to_string();
-    let path = temp(&format!("v1-{name}"));
-    let sql = std::fs::read_to_string(dir.join("history.sql")).unwrap();
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    // The dump creates `call_units` before `calls`.
-    conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
-    conn.execute_batch(&sql).unwrap();
-    path
-}
-
-/// v2's call fields under their v1 names, for the snapshots p25-httpd answered.
-fn as_v1(mut call: Value) -> Value {
-    let o = call.as_object_mut().unwrap();
-    for (v2, v1) in [("lane", "chain"), ("frames", "imbe"), ("frame_errors", "vocoder_errors")] {
-        let v = o.remove(v2).unwrap();
-        o.insert(v1.into(), v);
-    }
-    for gone in ["timeslot", "codec", "end_kind", "emergency", "private", "first_voice_ms"] {
-        o.remove(gone);
-    }
-    call
-}
-
-fn calls_v1(rows: Vec<CallRow>) -> Value {
-    Value::Array(rows.into_iter().map(|r| as_v1(json!(r))).collect())
-}
-
-/// The queries p25-httpd's snapshot test ran, in its shape.
-fn snapshot(store: &Store) -> Value {
-    let sites = store.sites().unwrap();
-    let mut out = Map::new();
-    out.insert("sites".into(), json!(sites));
-    for s in &sites {
-        let r = Range::site(&s.site, s.first_ms / H * H, s.last_ms + H);
-        let all = SeriesFilter::default();
-        let tgs = store.talkgroups(&r, 50).unwrap();
-        let radios = store.radios(&r, 50).unwrap();
-        let mut q = Map::new();
-        q.insert("window".into(), json!({"from_ms": r.from_ms, "to_ms": r.to_ms}));
-        q.insert("summary".into(), json!(store.summary(&r).unwrap()));
-        q.insert("talkgroups?limit=50".into(), json!(tgs));
-        q.insert("radios?limit=50".into(), json!(radios));
-        for t in tgs.iter().take(3) {
-            q.insert(format!("talkgroup/{}", t.tg), json!(store.talkgroup(&r, t.tg).unwrap()));
-            let f = SeriesFilter { tg: Some(t.tg), unit: None };
-            q.insert(format!("series?bucket=hour&tg={}", t.tg), json!(store.series(&r, H, 0, f).unwrap()));
-            q.insert(format!("calls?tg={}&limit=20", t.tg), calls_v1(store.calls(&r, f, 20).unwrap()));
-        }
-        for u in radios.iter().take(3) {
-            q.insert(format!("radio/{}", u.unit), json!(store.radio(&r, u.unit).unwrap()));
-            let f = SeriesFilter { tg: None, unit: Some(u.unit) };
-            q.insert(format!("calls?unit={}&limit=20", u.unit), calls_v1(store.calls(&r, f, 20).unwrap()));
-        }
-        q.insert("series?bucket=hour".into(), json!(store.series(&r, H, 0, all).unwrap()));
-        q.insert("series?bucket=day&tz=-240".into(), json!(store.series(&r, 24 * H, -240, all).unwrap()));
-        q.insert("calls?limit=1000".into(), calls_v1(store.calls(&r, all, 1_000).unwrap()));
-        out.insert(s.site.clone(), Value::Object(q));
-    }
-    Value::Object(out)
-}
-
-/// One line per query, as the snapshot files are written.
-fn lines(snapshot: &Value) -> String {
-    let mut out = String::from("{\n");
-    let mut rows = Vec::new();
-    for (site, queries) in snapshot.as_object().unwrap() {
-        match queries.as_object() {
-            Some(q) => rows.extend(q.iter().map(|(k, v)| (format!("{site} {k}"), v))),
-            None => rows.push((site.clone(), queries)),
-        }
-    }
-    let n = rows.len();
-    for (i, (k, v)) in rows.into_iter().enumerate() {
-        out += &format!("{}: {}{}\n", json!(k), v, if i + 1 < n { "," } else { "" });
-    }
-    out + "}\n"
-}
-
-#[test]
-fn the_units_histories_copy_to_v2_with_the_same_activity_answers() {
-    let dirs = fixture_dirs();
-    assert!(dirs.len() >= 2, "unit fixtures: {dirs:?}");
-    for dir in dirs {
-        let v1 = v1_from_dump(&dir);
-        assert!(migrate_v1::is_v1(&v1));
-        let name = dir.file_name().unwrap().to_string_lossy().to_string();
-        let v2 = temp(&format!("v2-{name}"));
-        let store = Store::open(&v2).unwrap();
-        let sites = [SiteInfo { id: "clay".into(), system: "clay_county".into(), protocol: "p25".into(), label: "Clay".into(), system_label: "Clay County".into() }];
-        let report = migrate_v1::migrate(&v1, &store, &sites).unwrap();
-        assert!(report.calls > 100, "{report:?}");
-        let got = lines(&snapshot(&store));
-        let want = std::fs::read_to_string(dir.join("activity.json")).unwrap().replace("\r\n", "\n");
-        if got != want {
-            let first = got.lines().zip(want.lines()).position(|(a, b)| a != b);
-            let line = first.map(|i| (got.lines().nth(i).unwrap_or("").chars().take(300).collect::<String>(), want.lines().nth(i).unwrap_or("").chars().take(300).collect::<String>()));
-            panic!("{name}: Activity answers differ after the copy; first difference: {line:?}");
-        }
-        // Each system's talkgroups and radios, from the calls.
-        let n: i64 = store.with_writer(|c| c.query_row("SELECT COUNT(*) FROM talkgroups", [], |r| r.get(0))).unwrap();
-        assert!(n > 0);
-        drop(store);
-        remove_db(&v1);
-        remove_db(&v2);
-    }
 }

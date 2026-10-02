@@ -38,10 +38,10 @@ mounted:
 
 Its files:
 
-- `/mnt/jffs2/scanner/`: `radio.json`, `systems.json`, `profiles.json`, and `state/` (what the
-  radio learns: crystal, band plans, grant counts). On a first start they are migrated from
-  `p25-httpd`'s files, which are left as they were.
-- `/mnt/sd/scanner-history.sqlite`: the history (`p25-httpd`'s copied in once).
+- `/mnt/jffs2/scanner/`: `radio.json`, `systems.json` (each system with its aliases and
+  sites), and `state/` (what the radio learns: crystal, band plans, grant counts). A unit
+  without them starts empty.
+- `/mnt/sd/scanner-history.sqlite`: the history.
 - `/mnt/sd/p25_recordings/`: the recordings (`--recordings-dir` elsewhere), RAM without a card.
 
 The API is in `doc/API.md`, generated from the route table.

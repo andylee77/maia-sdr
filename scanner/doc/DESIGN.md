@@ -16,10 +16,11 @@ scanner whose core knows nothing about P25 or DMR:
    One follower serves both, and only the live site's protocol runs.
 2. **One `Call` per call.** It is owned by `trunking::calls`. The follower, recorder, history and
    UI read it. Six partial copies of a call go away.
-3. **Three configuration layers:** radio, systems with their sites, and profiles. They live in new
-   versioned files, migrated from today's five. A fresh unit has no sites and starts with a scan.
+3. **Configuration in versioned files:** the radio, the systems (each with its aliases and its
+   sites), and what the radio learns. A unit starts empty (D16) and is set up by a scan, a manual
+   add or an import.
 4. **The live site is one server-side state** with one switch. The switch moves the radio
-   window, the decoders and the profile together.
+   window, the decoders and the system's aliases together.
 5. **One history writer** with a v2 schema, **one recording manager**, **one audio path**, a typed
    `/api/v1`, and a UI built from per-protocol components.
 
@@ -38,20 +39,22 @@ it.
 
 | # | Decision | Recommendation | Alternative |
 |---|----------|----------------|-------------|
-| D1 | Config files | `radio.json`, `systems.json` and `profiles.json` in `/mnt/jffs2/scanner/`, written only when the user changes something. What the radio learns by itself (crystal calibration, IDEN bands, LCNs, grant counts) goes to `state/` files beside them. | One file per layer, including learned state. The grant counts alone would rewrite the systems file every 10 minutes. |
-| D2 | Talkgroup and radio names | Per **system**: IDs are system-wide in P25 and DMR. Migration merges each system's sites' names and logs any conflict. | Per site, as today. |
-| D3 | Profile scope | A profile belongs to a system. Each site picks its active profile. | Per site, as today. |
-| D4 | Old files | Left untouched. Migration copies into the new files, so the old binary still runs on the old files and rollback is booting the old image. | Migrate in place. |
-| D5 | History migration | Copy v1 into a new `/mnt/sd/scanner-history.sqlite` (v2). Keep `p25-history.sqlite` until Andy deletes it. | In place, after a `VACUUM INTO` backup. |
-| D6 | Seed sites | Removed from the binary. On units A and B, clay, duval and cec_gcs exist **only** in the binary, so frozen copies stay inside the migrator. It writes out every seed a unit references. The repo files become test fixtures and can be imported. | Keep an importable "library" in the UI. |
+| D1 | Config files | `radio.json` and `systems.json` in `/mnt/jffs2/scanner/`, written only when the user changes something. What the radio learns by itself (crystal calibration, IDEN bands, LCNs, grant counts) goes to `state/` files beside them. | One file per layer, including learned state. The grant counts alone would rewrite the systems file every 10 minutes. |
+| D2 | Talkgroup and radio names | Per **system**, in its aliases (D15): IDs are system-wide in P25 and DMR. | Per site, as today. |
+| D3 | Profile scope | Superseded by D15: a system's aliases say what is followed, recorded and played where. | — |
+| D4 | Old files | Superseded by D16: p25-httpd's files are never read. | — |
+| D5 | History migration | Superseded by D16: the history starts empty in `/mnt/sd/scanner-history.sqlite`. | — |
+| D6 | Seed sites | Removed from the binary (D16): sites come from a scan, a manual add or an import. | Keep an importable "library" in the UI. |
 | D7 | API | The UI moves to a typed `/api/v1`. Diagnostic endpoints keep their paths, but every GET that writes becomes POST/PUT, with tools and bench updated in the same commit. Legacy user-facing routes stay as adapters until their consumers move. No auth in 076; writes get an Origin check. | Version everything now, or add tokens now. |
-| D8 | Pages | The Radio page dissolves: config goes to Settings, and spectrum, coverage and manual tune go to Diagnostics. The recording switch and the speakers/profile picker move from Now to Settings. Now shows the active profile read-only, with a link. | Keep the speakers on Now (063). |
+| D8 | Pages | The Radio page dissolves: config goes to Settings, and spectrum, coverage and manual tune go to Diagnostics. The recording switch moves from Now to Settings. The UI replacement (`UI_BRIEF.md`) lays the pages out anew. | Keep the speakers on Now (063). |
 | D9 | Names | Superseded by D13: the fresh crate needs a name of its own. `p25-json` and `p25-pac` keep theirs until the cutover. | — |
 | D10 | FPGA | Nothing moves into gateware in 076. 076 models what each chain can do. One later bake adds an IQ tap on traffic chain 2 (section 13). | — |
 | D11 | Packet data | The v2 schema has a `data_packets` table. Fill it only if Andy wants: 074b was parked. | Leave the table out. |
 | D12 | P25 regression gate (Andy, 2026-10-01) | B is wired into A over the bench link whenever a test needs it. The replay corpus (`rf.p25_corpus`), with B transmitting into A, is the P25 gate from phase 2, next to host replay and live A. | Host replay plus live A only. |
 | D13 | Execution (Andy, 2026-10-01) | A **fresh crate** in this repo, a workspace sibling of `p25-httpd/`, built top-down in phases. The old binary stays in production, with fixes only, until the cutover. Proposed name: `scanner/` (binary `scanner`); at the cutover tezuka_fw's package and init script switch to it. | Refactor in place (the 14-stage plan this replaces). |
 | D14 | Docs (Andy, 2026-10-01) | The old docs stay where they are. Docs that the refactor needs live in the fresh crate (`scanner/doc/`), starting with this design when phase 1 creates the crate. | Remove the old docs after a `pre-076` tag. |
+| D15 | Aliases (Andy, 2026-10-01) | SDRTrunk's model in place of profiles and name maps: each system has an alias list (name, group, color, talkgroup and radio IDs and ranges, priority 1–100, do-not-monitor, record, speaker) and listening settings (talkgroups with no priority, their speaker, pre-emption). SDRTrunk playlists import and export. | Profiles per system. |
+| D16 | No migration (Andy, 2026-10-01) | Nothing on the units is kept. A unit starts empty: no systems, the default radio settings, an empty history. p25-httpd's files and history are never read. | Migrate p25-httpd's files and history once (as first built). |
 
 ## 1. Where things stand
 
@@ -175,7 +178,7 @@ scanner/src/         the fresh crate (D13)
     dmr/             demod, framer, fec (bptc, cach, emb, slot type, crc, RS(12,9)), message,
                      control (Tier III), traffic
   trunking/          protocol-neutral, host-tested
-    follow/          one follower: ordered gates, lane choice, pre-emption; routing (a profile)
+    follow/          one follower: ordered gates, lane choice, pre-emption; routing (aliases)
     calls/           Call, CallBook (lifecycle and counters), CallEvent
     trunk.rs         the trunking task: follower, call book and each lane's traffic decoder; the
                      calls view; the last lane on the data channel between calls
@@ -188,8 +191,8 @@ scanner/src/         the fresh crate (D13)
     agc.rs           PcmAgc, the only copy
     live.rs          per lane: frames, codec, AGC, pacer; the audio broadcast
   services/
-    config/          radio, systems, profiles, state, ids, migrate (with the frozen legacy seeds)
-    history/         schema v2, store, the writer, migrate_v1
+    config/          radio, systems, aliases, state, ids
+    history/         schema v2, store, the writer
     recordings/      the recorder, storage (RAM/SD), index, wav
     discovery/       carriers, probes (P25 and DMR), the sweep, grouping and merge
     clock/           site clock, internet time, the board clock
@@ -198,9 +201,9 @@ scanner/src/         the fresh crate (D13)
     events.rs        the event log
     notices.rs       what /ws/events sends
   api/               one route table builds the router and doc/API.md; ApiError
-    v1/              status, radio, systems, sites, profiles, calls, recordings, activity, data,
+    v1/              status, radio, systems, aliases, sites, hold, calls, recordings, activity, data,
                      spectrum, scan, events
-    ws.rs            /ws/audio, /ws/events
+    ws.rs            /ws/live, /ws/audio, /ws/events
     legacy.rs        p25-httpd's routes the bench reads, in their old shape
   ui/                mod.rs and the static files (index.html, js/, css/)
 ```
@@ -244,7 +247,7 @@ rewritten there (glue); "delete" means not carried over.
 | `protocol/p25/control_channel/mod.rs` (1756) | `protocol::p25::{framer, control, traffic, diag}` | Split; the calls into app and services become events |
 | `protocol/p25/events.rs` | **delete** | Replaced by `ControlEvent` |
 | `protocol/p25/traffic_chain.rs` | `radio::tuner` (what each lane's NCO holds) | `grant_map` and its 2 s dedup go |
-| `services/ui_settings.rs` (1318) | `services::config::{radio, profiles}`, recordings, calls, clock | Split |
+| `services/ui_settings.rs` (1318) | `services::config::{radio, aliases}`, recordings, calls, clock | Split |
 | `services/sites.rs`, `lo_plan.rs`, `monitor.rs` | `services::config`, `radio::plan` | The statics go |
 | `services/history.rs` | `services::history::store` | Schema v2 |
 
@@ -256,23 +259,21 @@ in git and `CHANGELOG_FORK.md`, never in the code.
 ### 3.1 Files
 
 All files are versioned JSON, written by `util::atomic_file`: tmp, fsync, rename, then fsync the
-directory. A file whose `version` is newer than the binary understands is read but never written,
-so a downgrade cannot drop fields.
+directory. A missing file is its default. A file whose `version` is newer than the binary
+understands is read but never written, so a downgrade cannot drop fields.
 
 | File | Owner | Holds | Written |
 |------|-------|-------|---------|
-| `/mnt/jffs2/scanner/radio.json` | `services::config::radio` | Gain mode, presets allowed, traffic chains, call hang/grace, recording policy and storage, history limits, clock source | On a user change |
-| `/mnt/jffs2/scanner/systems.json` | `services::config::systems` | Systems: protocol, identity, label, talkgroup and radio names, and their sites (control channels, alternates, known channels, channel plan seed, window policy, modulation) | On a user change or a scan "Add" |
-| `/mnt/jffs2/scanner/profiles.json` | `services::config::profiles` | Profiles per system (groups, speakers, monitor, ignore) and the active profile per site | On a user change |
+| `/mnt/jffs2/scanner/radio.json` | `services::config::radio` | Gain mode, presets allowed, traffic chains, call hang/grace, recording policy (every call, or only aliases that say record) and storage, history limits, clock source | On a user change |
+| `/mnt/jffs2/scanner/systems.json` | `services::config::systems` | Systems: protocol, identity, label, aliases and listening settings (`services::config::aliases`), and their sites (control channels, alternates, known channels, channel plan, window policy, modulation) | On a user change or a scan "Add" |
 | `/mnt/jffs2/scanner/state/radio.json` | `services::config::state` | Live site; crystal calibration | On a switch; on a calibration |
 | `/mnt/jffs2/scanner/state/sites/<id>.json` | `services::config::state` | Learned per site: identity seen, IDEN bands or LCNs, neighbours, secondary CCs, grant counts per channel, known-encrypted talkgroups, last recentre | Every 10 min if changed, on a switch, at shutdown |
 
 Learned state is loaded when the site goes live. That fixes the 073 open item where a switch left
 grants waiting for the IDEN broadcast.
 
-IDs are slugs (`[a-z0-9_-]`, validated everywhere). **Existing site names are kept as site IDs**
-(`clay`, `duval`, `cec_gcs`, `psic_st_johns`, ...). The history rows and recording file names
-already use them, so nothing in the data has to be rewritten.
+IDs are slugs (`[a-z0-9_-]`, validated everywhere). A scan makes a site's id from its system's
+label and its own; the history rows and recording file names carry it.
 
 ### 3.2 Schemas (examples)
 
@@ -285,45 +286,53 @@ already use them, so nothing in the data has to be rewritten.
   "presets_allowed": ["8M", "12M", "16M"],
   "traffic_chains": 2,
   "calls": { "hang_ms": 3000, "end_grace_ms": 2000 },
-  "recording": { "enabled": true, "storage": "sd", "ram_max_count": 40,
+  "recording": { "enabled": true, "every_call": true, "storage": "sd", "ram_max_count": 40,
                  "sd_max_count": 2000, "sd_max_mb": 2048 },
   "history": { "retention_days": 365, "sd_max_mb": 2048 },
   "clock": { "source": "site" }
 }
 ```
 
-`systems.json`. Identities are stored as numbers, as today; the UI shows them in hex.
+`systems.json`. Identities are stored as numbers; the UI shows them in hex.
 
 ```json
 {
   "version": 1,
   "systems": [
     {
-      "id": "clay-county", "label": "Clay County", "protocol": "p25",
+      "id": "clay_county", "label": "Clay County", "protocol": "p25",
       "identity": { "wacn": 781824, "system": 2208 },
-      "talkgroups": { "300": "EMS Dispatch" },
-      "radios": { "1014": "Console 14" },
+      "aliases": [
+        { "name": "EMS Dispatch", "group": "Primary", "ids": [{ "type": "talkgroup", "value": 300 }],
+          "priority": 1, "do_not_monitor": false, "record": true, "speaker": "left" },
+        { "name": "TAC", "ids": [{ "type": "talkgroup_range", "min": 301, "max": 310 }],
+          "priority": 2, "do_not_monitor": false, "record": false, "speaker": "right" },
+        { "name": "Console 14", "ids": [{ "type": "radio", "value": 1014 }],
+          "priority": null, "do_not_monitor": false, "record": false, "speaker": "both" }
+      ],
+      "listening": { "follow_unmonitored": true, "unmonitored_speaker": "both", "preempt": true },
       "sites": [
         {
-          "id": "clay", "label": "Clay County",
+          "id": "clay_county_site_1", "label": "Site 1",
           "identity": { "rfss": 1, "site": 1, "nac": 2209, "lra": 0 },
           "control": { "freq_hz": 860962500, "alternates_hz": [859437500, 858987500, 860437500] },
           "modulation": "auto",
           "channels_hz": [852438500, 855237500, 856437500],
-          "window": { "auto": true, "min_preset": "12M", "cc_position": "top" },
-          "notes": ["control_freq_hz is LCN 11 ..."],
-          "source": "p25-sites seed clay.json (migrated)"
+          "window": { "auto": true, "min_preset": "12M", "cc_position": "top" }
         }
       ]
     },
     {
-      "id": "clay-electric", "label": "Clay Electric", "protocol": "dmr_tier3",
+      "id": "clay_electric", "label": "Clay Electric", "protocol": "dmr_tier3",
       "identity": { "model": "small", "network": 0 },
-      "talkgroups": { "87921": "Lake City", "87924": "Orange Park" },
-      "radios": {},
+      "aliases": [
+        { "name": "Lake City", "ids": [{ "type": "talkgroup", "value": 87921 }],
+          "priority": null, "do_not_monitor": false, "record": false, "speaker": "both" }
+      ],
+      "listening": { "follow_unmonitored": true, "unmonitored_speaker": "both", "preempt": true },
       "sites": [
         {
-          "id": "cec_gcs", "label": "Green Cove Springs",
+          "id": "clay_electric_green_cove_springs", "label": "Green Cove Springs",
           "identity": { "site": 2, "colour_code": 0 },
           "control": { "freq_hz": 454368750, "lcn": 5, "timeslot": 1 },
           "channel_plan": { "lcn_hz": { "5": 454368750, "6": 451087500 } },
@@ -335,50 +344,36 @@ already use them, so nothing in the data has to be rewritten.
 }
 ```
 
-`profiles.json`:
+### 3.3 Aliases
 
-```json
-{
-  "version": 1,
-  "profiles": [
-    { "id": "clay-county/default", "system": "clay-county", "name": "Default",
-      "groups": [ { "name": "Primary", "talkgroups": [300] }, { "name": "TAC", "talkgroups": [301] } ],
-      "speakers": { "left": ["Primary"], "right": ["TAC"], "other": "off", "preempt": true },
-      "monitor": [301, 300], "ignore": [402, 700] }
-  ],
-  "active": { "clay": "clay-county/default", "cec_gcs": "clay-electric/default" }
-}
-```
+A system's aliases are what the radio knows of its talkgroups and radios (D15). The follower,
+the recorder and every name shown read them, for P25 and DMR alike:
 
-Profiles now apply to DMR too: monitor, ignore and speakers go through the one follower (phase 3).
+- **Lookup:** an exact ID first, then the first range that holds it.
+- **Do not monitor:** never followed.
+- **Priority:** 1 is the highest, 100 the lowest. With `preempt`, a call of a higher priority
+  takes a traffic channel from a call of a lower one.
+- **No priority** (no alias, or an alias without one): followed at the lowest rank on
+  `unmonitored_speaker` while `follow_unmonitored` is on, else not followed (`unmonitored`).
+- **Speaker:** the traffic channel and the side a talkgroup plays on (`both`, `left`, `right`).
+- **Record:** with `recording.every_call` off, only these talkgroups' calls are recorded.
+- **Hold** (`/api/v1/hold`): one talkgroup followed whatever its alias says, until released or a
+  site switch.
 
-### 3.3 Migration, file by file
+`/api/v1/systems/{id}/aliases` reads and replaces the list, `/listening` the settings, and
+`/talkgroups/{tg}` sets one talkgroup's controls from the live screen. The live site follows
+each change at once.
 
-Migration runs once at boot when `/mnt/jffs2/scanner/` does not exist and any legacy file does.
-It writes the new files and a report (`scanner/migration-076.log`, plus an event-log entry). It
-never modifies or deletes a legacy file (D4).
+### 3.4 A new unit
 
-| Today | Becomes | Rules |
-|-------|---------|-------|
-| `p25-ui-settings.json` | `radio.json` (recording, call, radio gain, clock); `systems.json` names; `profiles.json` | `sites[s].tg_aliases` and `unit_aliases` go to the site's system. On a conflict between sites, the active site wins, then the site with more names; each conflict is logged. `sites[s].profiles` become profiles of the site's system; a name clash between sites gets the site label appended. The top-level live copy is dropped: after `store_live` it equals `sites[site]`. A pre-069 file with no `sites` makes its live fields the active site's "Default", as today. |
-| `p25-sites/*.json` + embedded seeds | `systems.json` sites; `state/sites/<id>.json` (IDEN bands) | Sites are grouped into systems by identity: P25 by (WACN, system), DMR by (model, network). A site with no identity gets a system of its own. A seed is written out when it is referenced by `active.json`, `ui.sites`, a plan file, the history or a recording name. The overlay merge rules of `load_site` are applied first. Kept: `_notes`, `_seed_source` (as `source`). Dropped: `_runtime_overlay_path` (stale), `preset_default` (the planner decides). `modulation` becomes "auto", today's runtime behaviour. cec_gcs gets the colour code, model, network and site from the frozen seed (today only in `_notes`). |
-| `p25-sites/active.json` | `state/radio.json` `live_site` | If it is missing: `ui.site`, then "clay" if clay is referenced (today's fallback), else no site. |
-| `p25-plans/*.json` | `systems.json` `window {auto, min_preset}`; `state/sites/<id>.json` `{grants, last_recentre_ms}` | Grant counts carry over as they are. They counted TSBK repeats (×2–3); new counts are per call. The planner only compares a site's channels with each other, so the scale cancels. |
-| `p25-ppm-cal.json` | `state/radio.json` `crystal {ppm, measured_at_lo_hz, lo_shift_hz, method, at}` | The ppm is the quantity (074c/d). The shift is kept for reference. |
-| `/mnt/sd/p25-history.sqlite` | `/mnt/sd/scanner-history.sqlite` (v2) | Section 8. |
-| SD recordings | unchanged files, indexed into history v2 | Section 9. |
-
-Testing: on copies of units A's and B's real files first (phase 0 fixtures), then on A, then on
-B.
-
-### 3.4 First run
-
-- With no legacy files and no `scanner/`, the radio boots to **NoSite**:
+- Nothing is migrated (D16). With no `/mnt/jffs2/scanner/`, the radio has no systems and the
+  default settings; the history and the recordings start empty on the card.
+- The radio boots to **NoSite**:
   - the AD9361 is configured but idle;
   - no decoders run;
-  - the Now page says "No sites yet" and links to Systems, which opens on the scan.
-- The init script's `--control-freq`, `--rx-lo` and `--preset` become optional; they are ignored
-  once a live site exists. The tezuka_fw init script drops them (one tezuka_fw commit, at the cutover).
+  - the UI offers the scan, a manual add or an import.
+- A factory reset (`POST /api/v1/config/factory-reset`) returns a unit to this state; the
+  crystal calibration stays (it is the board's).
 
 ## 4. The live site and multi-band
 
@@ -386,7 +381,7 @@ B.
 `watch`:
 
 ```text
-NoSite ──activate(s)──▶ Switching{to: s} ──▶ Live{site, system, profile, plan}
+NoSite ──activate(s)──▶ Switching{to: s} ──▶ Live{site, system, routing, plan}
 Live ──activate(t)──▶ Switching{to: t} ──▶ Live{t ...}
 Live ──scan──▶ Scanning (radio lease) ──▶ back to Live{same}
 ```
@@ -398,7 +393,7 @@ Live ──scan──▶ Scanning (radio lease) ──▶ back to Live{same}
 3. Stop the old protocol's receivers: control decoder, traffic decoders, its demod threads.
 4. `Tuner::apply(plan)`: AD9361 LO, rate and bandwidth, control NCO, lanes idle, scaled crystal
    shift.
-5. Load the site's learned state (channel plan, identity, encrypted list) and its active profile.
+5. Load the site's learned state (channel plan, identity, encrypted list) and its system's aliases.
 6. Start the new protocol's receivers with that context.
 7. Release the lease, publish `Live`, log "site switched", persist `live_site`.
 
@@ -579,7 +574,7 @@ The 20:57 Clay Electric call is the test.
   its lane's pipeline, so the second pacer and the second AGC go.
 - **AGC reset rule:** P25's (a talkgroup or call change; a speaker change when both IDs are known),
   applied to both protocols. DMR resets on any source change today, including None → Some.
-- **Speaker routing comes from one place.** The server already picks lanes from the profile. It
+- **Speaker routing comes from one place.** The server already picks lanes from the aliases. It
   now also sends the speaker (`left` / `right` / `both`) in the `/ws/audio` meta frame, so the
   browser stops recomputing routing from the settings.
 - The recorder routes chunks by `call_id` only. Every chunk carries one, DMR included.
@@ -599,7 +594,7 @@ One service, `services::history`:
 Schema v2:
 
 ```sql
-CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);   -- schema, migrated_from, created
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);   -- schema, created
 CREATE TABLE systems (id TEXT PRIMARY KEY, protocol TEXT NOT NULL, label TEXT, identity TEXT);
 CREATE TABLE sites (id TEXT PRIMARY KEY, system TEXT REFERENCES systems(id), label TEXT,
   identity TEXT, calls INTEGER NOT NULL DEFAULT 0, first_ms INTEGER, last_ms INTEGER);  -- was site_stats
@@ -646,20 +641,6 @@ Rules:
   `codec`. New columns: `protocol` (through the site's system), `timeslot`, `target`,
   encryption alg/key, `end_kind`.
 - **Activity endpoints** return the same JSON. A `system` filter is added.
-
-Migration from v1:
-
-- **Detect the schema by its shape.** `user_version` is always 1, with or without the `channel`
-  column.
-- **Copy into the new file in one transaction** (D5):
-  - calls with their columns renamed;
-  - `call_units` → `transmissions` (no per-speaker times for old rows);
-  - the hour tables copied as stored, not rebuilt, so the totals Andy has seen stay;
-  - `site_stats` → `sites`, mapped to systems from the migrated config;
-  - `talkgroups` and `radios` computed from the calls;
-  - recordings linked once (section 9).
-- **Old rows keep their known faults.** Not-followed rows stored with 0 grant time (defect 1)
-  can't be repaired. Rows filed under the wrong site before 073 stay where they are.
 
 ## 9. Recordings
 
@@ -708,7 +689,7 @@ The 071 finder becomes `services::discovery`, run on the Systems page, and on fi
 - **Proposal:** sites grouped into systems by identity. The user ticks what to keep and names it.
   "Already configured" sites are marked.
 - **Rescan** matches by identity, or by control channel within 3 kHz. It never overwrites labels,
-  names or profiles. It adds learned data (alternates, plan) to state, and adds new sites only when
+  aliases. It adds learned data (alternates, plan) to state, and adds new sites only when
   ticked.
 - **A DMR site without an LCN map** follows grants with absolute frequencies. An LCN with no
   frequency shows as `unknown_lcn` and can be entered in the site editor. Learning an LCN by
@@ -731,9 +712,9 @@ its `dmr` attachment, which is what forces `site_card.js` to branch.
 | `GET /api/v1/status` | `/api/ui/state`; parts of `/api/system`, `/api/stats` | UI; bench `corpus.py` |
 | `GET /api/v1/calls`, `/calls/{id}` | `/api/ui/calls`, `/api/grant_decode_stats`, `/api/grants` (chain 1 only), `/api/traffic` `current_call` | UI; bench `corpus.py`, `p25_score`; tools `audit`, `poll_grants_persist`, `sdrtrunk_teardown_stats`, `capture_session`, `check`, `status`, ... |
 | `GET /api/v1/radio`; `PUT /api/v1/radio/{gain, settings, clock, recording, crystal}`; `GET /api/v1/radio/crystal`; `POST /api/v1/radio/crystal/calibrate` | `/api/presets`, `/api/preset`, `/api/tune`, `/api/rx_gain`, `/api/ppm*`, radio parts of `ui/settings` | UI; `runs/dmr/log_dmr.py`, `record_chunks.sh` |
-| `/api/v1/systems[/{id}]` (names inside) | `/api/sites`, `/api/sites/{name}`, `/api/aliases` | UI; tool `status` |
+| `/api/v1/systems[/{id}]` (aliases inside) | `/api/sites`, `/api/sites/{name}`, `/api/aliases` | UI; tool `status` |
 | `/api/v1/systems/{id}/sites/{site}`; `POST /api/v1/sites/{id}/activate`; `/sites/{id}/plan`, `/recentre`, `/learned` | `/api/site`, `/api/site/plan`, `/api/site/recentre` | UI |
-| `/api/v1/profiles...`; `PUT /api/v1/sites/{id}/profile` | profile actions in `ui/settings`, `/api/monitor`, `/api/encrypted_tgs` | UI (not `/api/monitor`); bench `corpus_tests` (`/api/monitor`, mode C) |
+| `/api/v1/systems/{id}/aliases`, `/listening`, `/talkgroups/{tg}`; `/api/v1/hold` | profile actions in `ui/settings`, `/api/monitor`, `/api/encrypted_tgs` | UI (not `/api/monitor`); bench `corpus_tests` (`/api/monitor`, mode C) |
 | `/api/v1/recordings...` | `/api/recordings...` | UI; tools `poll_recordings_persist`, `compare_sim_vs_board`, `audit`, `capture_session` |
 | `/api/v1/activity/*`, `/api/v1/data` | `/api/activity/*`, `/api/data` | UI |
 | `/api/v1/scan` (GET, POST), `/scan/cancel`, `/scan/results/{key}/add` | `/api/discovery*` | UI |
@@ -775,10 +756,10 @@ Same stack: plain ES modules embedded by `ui_assets.rs`, no build step, no CDN.
 
 | Page | Contents |
 |------|----------|
-| **Now** | The at-a-glance summary: the live site card, a call card per lane, recent calls (site picker as today), the active profile's name with a link to Settings |
+| **Now** | The at-a-glance summary: the live site card, a call card per lane, recent calls (site picker as today), the hold |
 | **Systems** | System cards with their sites (identity, control channel, health, Listen), the site editor, and the setup scan with results grouped into systems. First run opens here. |
 | **Activity** | As today, with a system/site picker that includes DMR; packet data is a P25 component |
-| **Settings** | Radio (gain, crystal, presets, clock, storage and recording), names per system, profiles (groups, speakers, monitor, ignore, encrypted), browser, about |
+| **Settings** | Radio (gain, crystal, presets, clock, storage and recording), the configuration (export, import, factory reset), browser, about |
 | **Diagnostics** | The one **events box** for every protocol (CC messages off by default, calls, traffic lines), receivers (a protocol component), radio window (spectrum, coverage, manual tune), lanes, board, raw JSON |
 
 Protocol-specific parts are small components chosen by the site's protocol:
@@ -875,30 +856,14 @@ Committed fixtures live in the fresh crate's folder, `scanner/tests/fixtures/`.
      decisions, so the fresh follower's gates are checked on the same grants.
    - **DMR captures:** `runs/dmr/cc_*.wav` stay with the DMR reference and the 20:57 follower
      test.
-2. **Unit fixtures.**
-   - **Raw copies:** unit A's `/mnt/jffs2/p25-*` files, its history database and its SD
-     recording names, pulled read-only into the gitignored `runs/076/units/A/`.
-   - **Committed copy:** `tools/unit_fixtures.py` writes `unit_a/`, with radio IDs replaced by
-     stand-ins of the same digit count. The migration tests run on it.
-   - **Unit B:** `unit_b/` has the history schema from before 074a (no `channel` column), with
-     379 call ids repeated by restarts before ids continued past the history. It has no site
-     files: it runs on the "clay" seed compiled into the binary (D6).
-3. **Activity snapshots.** `history_snapshot_tests` runs the Activity queries on the fixture
-   database and compares the answers with `unit_a/activity.json`. History v2 must give the same
-   answers after the migration.
-4. **Route contract.** `tools/route_shapes.py` keeps the JSON shapes of the 31 GET routes the
+2. **Route contract.** `tools/route_shapes.py` keeps the JSON shapes of the 31 GET routes the
    tools and bench read, in `routes/shapes.json`, captured on a P25 site and on a DMR site.
    `check` lists the keys that went missing or changed type.
-5. **Baseline.** `tools/live_baseline.py` runs read-only on unit A for 30–60 minutes per system,
+3. **Baseline.** `tools/live_baseline.py` runs read-only on unit A for 30–60 minutes per system,
    with today's build. It records control-channel decode % (TSBK CRC or DMR valid), calls,
    follow rate, vocoder errors, recordings, history rows and CPU. The numbers are in the status
    log.
-6. **Replay corpus baseline** (`rf.p25_corpus`), once B is wired into A (D12).
-
-**Running the fresh crate on unit A before the cutover:** stop the old binary (S60), run the new
-one from `/tmp`, check it, then start the old one again. The fresh crate writes only
-`/mnt/jffs2/scanner/` and the new history file, so the old binary's files stay as they were
-(D4, D5). Check `ListAgents` first.
+4. **Replay corpus baseline** (`rf.p25_corpus`), once B is wired into A (D12).
 
 **Live:**
 
@@ -960,10 +925,6 @@ Notes:
   restart away. Measure CPU and audio jitter on A against the baseline (`top`, `sys_health`):
   the two-core runtime's latency is the real limit, not throughput.
 - **Two crates for a while.** Fixes during the build-up go to the old crate; keep them rare.
-- **Migrations (phases 1 and 5):**
-  - on host copies first;
-  - the old files are untouched, so rollback is the old image;
-  - check free SD space before copying the history (up to 2 GB).
 - **Bench time (D12).** A corpus run takes both units, and A listens to B instead of the air
   while it runs.
 - **Shared units:** other sessions may drive A and B.
@@ -986,7 +947,6 @@ From the brief:
   adds them;
 - both systems decode, follow, play, record and fill the history;
 - switching between them is one action;
-- existing units keep their sites, names, profiles, history and recordings;
 - the tree matches the module map with no dead code;
 - every phase passed its checks;
 - the crate's docs match the code: API reference, inventory, this design and the status log.
@@ -1366,4 +1326,18 @@ From the brief:
       private, first voice, open and grant spans, codec and frame errors; history schema 3.
   - **UI:** `doc/UI_BRIEF.md` holds Andy's requirements for the final layout. The pages stay
     templates of what the API offers until then.
-
+- 2026-10-01, the backend for the UI replacement (`doc/UI_BRIEF.md`):
+  - **`/ws/live`:** the radio's state pushed as it changes, so no page polls: a snapshot on
+    connect, the status each second, the traffic channels when they change, each call as it
+    opens and closes, each saved recording, the scan's progress and found sites, and `changed`
+    after every successful write.
+  - **Aliases (D15)** replace profiles and the name maps (section 3.3): the follower, the
+    recorder and every name read them; `/api/v1/systems/{id}/aliases`, `/listening` and
+    `/talkgroups/{tg}`; recording of every call or only aliases that say record.
+  - **No migration (D16).** Andy: nothing on the units is kept. The p25-httpd configuration
+    migration (with its frozen seeds), the history's v1 copy and the profile conversion are
+    gone, with the unit fixtures and the Activity snapshot test that only they used. A unit
+    with no `/mnt/jffs2/scanner/` starts empty; p25-httpd's files on the flash and its history
+    on the card are never read.
+  - **Field inventory:** `doc/API_FIELDS.md` (`tools/api_fields.py` against a unit) gives
+    every field of every GET route and `/ws/live` its type, an example and its meaning.

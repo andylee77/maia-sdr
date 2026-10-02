@@ -33,7 +33,7 @@ In this order; each item is usable through the API on its own.
 2. **Aliases** replace the talkgroup and radio name maps and the profiles:
    - The follower follows by alias: monitor priority, do-not-monitor, and speaker.
    - Recordings follow each alias's record flag.
-   - The present names and profiles migrate into aliases.
+   - Nothing migrates: a unit starts with no aliases.
 
    The model is SDRTrunk's, so a playlist round-trips. Each system has one alias list; an alias
    has:

@@ -10,8 +10,8 @@
 //! 3. hands the radio back to the live site.
 //!
 //! The found sites are grouped into systems by identity for the user to tick and name. Adding
-//! matches by identity, or by control channel within 3 kHz: it never overwrites labels, names or
-//! profiles; it adds what was learned (alternate control channels, the P25 band plan) and the
+//! matches by identity, or by control channel within 3 kHz: it never overwrites labels or
+//! aliases; it adds what was learned (alternate control channels, the P25 band plan) and the
 //! sites ticked.
 
 pub mod carriers;
@@ -269,8 +269,6 @@ pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], choice: &[AddSite])
                     aliases: Vec::new(),
                     listening: Default::default(),
                     sites: Vec::new(),
-                    legacy_talkgroups: Default::default(),
-                    legacy_radios: Default::default(),
                 });
                 added.systems.push(id);
                 systems.systems.len() - 1

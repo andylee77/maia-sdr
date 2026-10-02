@@ -1,8 +1,0 @@
-{
-  "lo_shift_hz": 598,
-  "lo_ppm": -0.6967293059852248,
-  "rx_lo_hz": 858100000,
-  "control_freq_hz": 860962500,
-  "unix_secs": 1790540882,
-  "method": "tracker"
-}

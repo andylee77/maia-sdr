@@ -6,7 +6,7 @@
 //!   and 20 ms of 8 kHz 16-bit mono. Without it, p25-httpd's first framing for its tools: lane
 //!   one only, the samples alone. Before a lane's first frame of a call, a text frame
 //!   `{"type":"meta","lane","tg","src","call_id","speaker"}` names it; `speaker` (left, right or
-//!   both) is where the profile routes the talkgroup. A listener that falls behind gets
+//!   both) is where its alias plays the talkgroup. A listener that falls behind gets
 //!   `{"type":"lag","skipped"}` and stays connected.
 
 use std::sync::atomic::Ordering;

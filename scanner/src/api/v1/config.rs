@@ -80,7 +80,7 @@ pub struct Reset {
     pub restarting: bool,
 }
 
-/// Back to a new unit: no systems, sites, profiles, recordings or history, and the default
+/// Back to a new unit: no systems, sites, aliases, recordings or history, and the default
 /// settings. The crystal calibration and the TLS certificates stay: they are the board's.
 pub async fn factory_reset(State(s): State<Arc<AppState>>) -> ApiResult<Reset> {
     let lease = take_radio(&s)?;

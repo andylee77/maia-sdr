@@ -121,8 +121,6 @@ pub struct Sites {
     pub used_bytes: u64,
     pub max_bytes: u64,
     pub retention_days: u32,
-    /// What opening the history did (the copy of p25-httpd's).
-    pub note: String,
 }
 
 pub async fn sites(State(s): State<Arc<AppState>>) -> ApiResult<Sites> {
@@ -150,7 +148,6 @@ pub async fn sites(State(s): State<Arc<AppState>>) -> ApiResult<Sites> {
         used_bytes: used,
         max_bytes: h.limits().max_bytes,
         retention_days: h.limits().retention_days,
-        note: h.note.clone(),
     }))
 }
 

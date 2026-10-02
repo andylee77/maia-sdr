@@ -218,8 +218,7 @@ export function mount(host) {
     siteSel.replaceChildren(...sites.map(s => h('option', { value: s.site, text: (s.label || s.site) + (s.site === d.active ? ' (active)' : '') + ' — ' + num(s.calls) + ' calls' })), ...whole);
     siteSel.value = st.site;
     setText(store, 'Kept ' + d.retention_days + ' days, up to ' + bytes(d.max_bytes) + ' (' + bytes(d.used_bytes) + ' used), in ' + d.database
-      + (d.on_sd ? ' (SD card).' : ' (RAM: lost on reboot; insert an SD card to keep it).')
-      + (d.note ? ' ' + d.note + '.' : ''));
+      + (d.on_sd ? ' (SD card).' : ' (RAM: lost on reboot; insert an SD card to keep it).'));
   }
 
   function renderSummary(s) {

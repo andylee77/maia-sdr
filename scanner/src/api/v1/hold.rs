@@ -1,6 +1,6 @@
 //! `/api/v1/hold`: keep the live site on one talkgroup. While held, only that talkgroup is
-//! followed, whatever the profile's monitor list, ignore list or speakers say; a switch to another
-//! site releases it.
+//! followed, whatever its alias or the system's listening settings say; a switch to another site
+//! releases it.
 
 use std::sync::Arc;
 

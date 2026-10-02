@@ -33,6 +33,14 @@ def get(host: str, path: str):
         return json.load(r)
 
 
+def maybe(host: str, path: str):
+    """The answer, or None when the unit refuses."""
+    try:
+        return get(host, path)
+    except OSError:
+        return None
+
+
 def join(prefix: str, path: str) -> str:
     if not prefix or not path:
         return prefix or path
@@ -40,7 +48,7 @@ def join(prefix: str, path: str) -> str:
 
 
 # What one element is, for a structure included as an array's elements.
-NOUNS = {"call": "call", "site": "site", "system": "system", "profile": "profile", "recording": "recording",
+NOUNS = {"call": "call", "site": "site", "system": "system", "alias": "alias", "recording": "recording",
          "lsm_control": "lane's LSM settings", "carrier": "carrier"}
 
 
@@ -89,7 +97,7 @@ def walk(v, path: str, seen: dict[str, str | None], maps: set[str]) -> None:
             return
         for key, x in v.items():
             walk(x, join(path, key), seen, maps)
-    elif k == "array" and not all(kind(x) == "number" for x in v):
+    elif k == "array" and not all(kind(x) in ("number", "null") for x in v):
         for x in v[:50]:
             walk(x, f"{path}[]", seen, maps)
 
@@ -126,8 +134,9 @@ def main() -> int:
     site = live["site"]["id"] if live.get("state") == "live" else None
     calls = get(args.host, "/api/v1/calls")
     voiced = next((c for c in calls["recent"] if c.get("voice_frames")), None)
-    radios = get(args.host, "/api/v1/activity/radios?limit=1")["items"]
-    tgs = get(args.host, "/api/v1/activity/talkgroups?limit=1")["items"]
+    # With no live site the activity routes refuse; their paths then go unsampled.
+    radios = (maybe(args.host, "/api/v1/activity/radios?limit=1") or {}).get("items", [])
+    tgs = (maybe(args.host, "/api/v1/activity/talkgroups?limit=1") or {}).get("items", [])
     ctx = {"site": site, "unit": radios[0]["unit"] if radios else None, "tg": tgs[0]["tg"] if tgs else None}
 
     out = ["# API fields", "",
@@ -176,7 +185,7 @@ def main() -> int:
             ex = seen.get(p)
             out.append(f"| `{p}` | {cell(t)} | {f'`{cell(ex)}`' if ex else ''} | {cell(meaning)} |")
         out.append("")
-    args.out.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
+    args.out.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8", newline="\n")
     if unknown:
         print(f"{len(unknown)} fields have no meaning:", file=sys.stderr)
         for u in unknown:

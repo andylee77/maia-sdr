@@ -84,7 +84,7 @@ routes! {
     get "/api/v1/status" => v1::status::get, "build, uptime, the live site, its control channel and the tuning";
     get "/api/v1/calls" => v1::calls::get, "the live site's open calls and its newest closed ones (from its history after a restart or switch), with names";
     get "/api/v1/hold" => v1::hold::get, "the talkgroup the live site is held on, if any";
-    put "/api/v1/hold" => v1::hold::put, "hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the profile says";
+    put "/api/v1/hold" => v1::hold::put, "hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the aliases say";
     get "/api/v1/calls/{id}" => v1::calls::one, "one call, live while recent, else from the history; the same shape either way";
     get "/ws/live" => ws::live, "the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, the scan and configuration changes";
     get "/ws/events" => ws::events, "a text frame when a call opens or closes or a recording is saved";
@@ -103,9 +103,9 @@ routes! {
     get "/api/v1/system" => v1::system::get, "the board's health: load, memory, CPU per core and per scanner thread, temperatures";
     get "/api/v1/iq/control.wav" => v1::iq::control, "the next `seconds` (default 10, at most 120) of the control channel's IQ as the decoder gets it: 50 kSPS stereo WAV, I left";
     get "/api/v1/receivers" => v1::receivers::get, "the control channel and each lane: status, decoder counters, carrier loop";
-    get "/api/v1/config" => v1::config::export, "the whole configuration as one document: radio settings, systems with names and sites, profiles, the live site (`download=true`: as a file)";
+    get "/api/v1/config" => v1::config::export, "the whole configuration as one document: radio settings, systems with their aliases and sites, the live site (`download=true`: as a file)";
     put "/api/v1/config" => v1::config::import, "replace the configuration with an exported document (checked whole first); the scanner restarts";
-    post "/api/v1/config/factory-reset" => v1::config::factory_reset, "back to a new unit: no systems, sites, profiles, recordings or history, default settings (the crystal calibration stays); the scanner restarts";
+    post "/api/v1/config/factory-reset" => v1::config::factory_reset, "back to a new unit: no systems, sites, aliases, recordings or history, default settings (the crystal calibration stays); the scanner restarts";
     get "/api/v1/radio" => v1::radio::get, "radio configuration, hardware and tuning";
     put "/api/v1/radio/gain" => v1::radio::put_gain, "receiver gain mode and manual gain";
     put "/api/v1/radio/settings" => v1::radio::put_settings, "presets the planner may use, traffic lanes, call timings, history limits";
@@ -126,8 +126,8 @@ routes! {
     put "/api/v1/systems/{id}/listening" => v1::aliases::put_listening, "how a system treats talkgroups with no priority, and pre-emption";
     put "/api/v1/systems/{id}/talkgroups/{tg}" => v1::aliases::put_talkgroup, "one talkgroup's controls: name, group, priority, do-not-monitor, record, speaker";
     put "/api/v1/systems/{system}/sites/{site}" => v1::systems::put_site, "edit a site (the live site goes live again with the change)";
-    delete "/api/v1/systems/{system}/sites/{site}" => v1::systems::delete_site, "remove a site (not the live one), its profile choice and what it learned; the history keeps its calls";
-    delete "/api/v1/systems/{id}" => v1::systems::delete_system, "remove a system with its sites and profiles (none of its sites live); the history keeps their calls";
+    delete "/api/v1/systems/{system}/sites/{site}" => v1::systems::delete_site, "remove a site (not the live one) and what it learned; the history keeps its calls";
+    delete "/api/v1/systems/{id}" => v1::systems::delete_system, "remove a system with its sites and aliases (none of its sites live); the history keeps their calls";
     get "/api/v1/sites" => v1::sites::list, "every site, with the live one marked";
     post "/api/v1/sites/{id}/activate" => v1::sites::activate, "make a site live (returns once it is)";
     post "/api/v1/sites/{id}/stop" => v1::sites::stop, "stop the live site: no site is live until one is made live";

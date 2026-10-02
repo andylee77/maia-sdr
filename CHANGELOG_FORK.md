@@ -11,11 +11,10 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 **BUILD_TAG:** `2026-10-01-scanner-image1` (scanner; the first SD image with it in place of p25-httpd)
 **Bake required:** NO.
 
-- **Phase 0:** the trunking trace tap (`P25_TRUNK_TRACE`) and host replay in p25-httpd; unit
-  fixtures, Activity snapshots, route shapes, replay fixtures; live baselines on unit A for
+- **Phase 0:** the trunking trace tap (`P25_TRUNK_TRACE`) and host replay in p25-httpd;
+  route shapes, replay fixtures; live baselines on unit A for
   Clay P25 and Clay Electric DMR. Design and status log: `scanner/doc/DESIGN.md`.
-- **Phase 1:** configuration in versioned files under `/mnt/jffs2/scanner/`, migrated from
-  p25-httpd's files without touching them; the hardware layer, the window planner, the tuner,
+- **Phase 1:** configuration in versioned files under `/mnt/jffs2/scanner/`; the hardware layer, the window planner, the tuner,
   the live site and `/api/v1`; the UI shell.
 - **Phase 2:** the receivers: P25 (HDL LSM and software C4FM, with the auto choice) and DMR
   control decoders behind one event type, the stream readers, the event log and the events
@@ -28,9 +27,8 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   and the Listen button; call recordings driven by the call book (RAM or SD, p25-httpd's file
   names and card writer), the card's recordings listed at boot, playback on Now and the
   recording settings.
-- **Phase 5:** history v2 (`scanner-history.sqlite`): one writer thread, p25-httpd's history
-  copied once (the units' Activity answers unchanged), `/api/v1/activity/*` by site or system,
-  the Activity page.
+- **Phase 5:** history v2 (`scanner-history.sqlite`): one writer thread, `/api/v1/activity/*`
+  by site or system, the Activity page.
 - **Phase 6:** the scan: P25 and DMR control channels found across 700/800/900 MHz, UHF and
   VHF, grouped into systems and added from the Systems page; the first-run flow.
 - **Phase 7 (in progress):** profiles, names, sites and radio settings edited from the UI and
@@ -49,7 +47,7 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   (`services::packet_data`, `/api/v1/data`, the Activity card; the last lane waits on the data
   channel between calls), and `/ws/audio`'s first framing for p25-httpd's tools.
 - **Phase 8, the image:** the scanner replaces p25-httpd on both units' SD image (tezuka_fw
-  `a7b2174`, `f103dde`); the first start migrates p25-httpd's files and copies its history.
+  `a7b2174`, `f103dde`).
 - **The API cleanup** (the inventory and its ranked list: `scanner/doc/API_INVENTORY.md`):
   - `/api/v1/receivers`: decoder counters and carrier loops;
   - the recent calls are the live site's;
@@ -59,8 +57,12 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   - `/status`, `/recordings` and `/data` corrected;
   - one call shape with names, emergency, private, first voice and spans (history schema 3).
   `scanner/doc/UI_BRIEF.md` holds the requirements for the final UI.
+- **The backend for the UI replacement:** `/ws/live` pushes the radio's state as it changes;
+  SDRTrunk-style aliases per system replace profiles and name maps (what is followed, recorded
+  and played where); `scanner/doc/API_FIELDS.md` lists every field. No migration: a unit
+  starts empty, and p25-httpd's files and history are never read.
 
-Tests: scanner 391, p25-httpd 475.
+Tests: scanner 387, p25-httpd 475.
 
 ---
 

@@ -637,8 +637,6 @@ mod tests {
             identity: Default::default(),
             aliases: Default::default(),
             listening: Default::default(),
-            legacy_talkgroups: Default::default(),
-            legacy_radios: Default::default(),
             sites: vec![
                 Site { id: "clay".into(), ..site(860_962_500, vec![857_987_500], CcPosition::Top) },
                 Site { id: "vhf".into(), ..site(155_000_000, vec![], CcPosition::Center) },
@@ -686,8 +684,6 @@ mod tests {
             identity: Default::default(),
             aliases: Default::default(),
             listening: Default::default(),
-            legacy_talkgroups: Default::default(),
-            legacy_radios: Default::default(),
             sites: vec![Site { id: "clay".into(), ..site(860_962_500, vec![857_987_500], CcPosition::Top) }],
         });
         config::save(&paths.systems(), &config.systems).unwrap();

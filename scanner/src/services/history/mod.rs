@@ -5,11 +5,7 @@
 //! counts after, radio events, sites, recordings), commits every 10 s or on a flush (fewer, larger
 //! SD writes), and prunes to the retention once an hour, whole hours at a time. The API reads
 //! through the store's read-only connection.
-//!
-//! On a card with p25-httpd's history and no v2 file yet, the v1 history is copied into a new
-//! file first (`migrate_v1`); the v1 file is left as it is.
 
-pub mod migrate_v1;
 pub mod schema;
 pub mod store;
 
@@ -26,8 +22,6 @@ use crate::util::time::unix_ms;
 use store::{CallRow, RecordingRow, SiteInfo, Store, UnitEventKind, UnitNote, VoiceResult};
 
 pub const FILE: &str = "scanner-history.sqlite";
-/// p25-httpd's history, copied once.
-pub const V1_FILE: &str = "p25-history.sqlite";
 const RAM_PATH: &str = "/tmp/scanner-history.sqlite";
 /// Most space in RAM, with no card.
 const MAX_BYTES_RAM: u64 = 16 << 20;
@@ -97,39 +91,16 @@ pub struct History {
     tx: HistoryTx,
     pub on_sd: bool,
     limits: std::sync::Mutex<Limits>,
-    /// What opening found or did (the v1 copy), for the API.
-    pub note: String,
 }
 
 impl History {
-    /// Open the history on the card (`sd`: its mounted directory), copying p25-httpd's v1
-    /// history into it the first time, or in RAM without a card; start the writer.
+    /// Open the history on the card (`sd`: its mounted directory), or in RAM without a card;
+    /// start the writer.
     pub fn open(sd: Option<&Path>, cfg: &HistoryConfig, sites: &[SiteInfo]) -> anyhow::Result<Arc<History>> {
         let (path, limits) = match sd {
             Some(dir) => (dir.join(FILE), Limits { retention_days: cfg.retention_days, max_bytes: cfg.sd_max_mb.saturating_mul(1 << 20) }),
             None => (PathBuf::from(RAM_PATH), Limits { retention_days: cfg.retention_days, max_bytes: MAX_BYTES_RAM }),
         };
-        let v1 = sd.map(|d| d.join(V1_FILE)).filter(|p| !path.exists() && p.exists() && migrate_v1::is_v1(p));
-        let note = match v1 {
-            Some(v1) => match copy_v1(&v1, &path, sites) {
-                Ok(r) => format!(
-                    "copied {} calls, {} radio rows, {} hour rows, {} radio events from {}",
-                    r.calls,
-                    r.transmissions,
-                    r.hours,
-                    r.radio_events,
-                    v1.display()
-                ),
-                Err(e) => {
-                    tracing::error!("history: copying {} failed, starting empty: {e:#}", v1.display());
-                    format!("copying {} failed: {e:#}", v1.display())
-                }
-            },
-            None => String::new(),
-        };
-        if !note.is_empty() {
-            tracing::warn!("history: {note}");
-        }
         let store = Arc::new(Store::open(&path).with_context(|| format!("opening {}", path.display()))?);
         for s in sites {
             store.note_site(s)?;
@@ -137,7 +108,7 @@ impl History {
         let (tx, rx) = std::sync::mpsc::channel();
         let writer = store.clone();
         std::thread::Builder::new().name("history".into()).spawn(move || write_loop(&writer, rx, limits))?;
-        Ok(Arc::new(History { store, tx: HistoryTx(Some(tx)), on_sd: sd.is_some(), limits: std::sync::Mutex::new(limits), note }))
+        Ok(Arc::new(History { store, tx: HistoryTx(Some(tx)), on_sd: sd.is_some(), limits: std::sync::Mutex::new(limits) }))
     }
 
     pub fn sender(&self) -> HistoryTx {
@@ -174,31 +145,6 @@ impl History {
         if self.tx.send(Input::Flush(done)) {
             let _ = tokio::task::spawn_blocking(move || wait.recv_timeout(max)).await;
         }
-    }
-}
-
-/// Migrate into `<path>.part` and rename it into place once complete.
-fn copy_v1(v1: &Path, path: &Path, sites: &[SiteInfo]) -> anyhow::Result<migrate_v1::Report> {
-    let part = PathBuf::from(format!("{}.part", path.display()));
-    remove_db(&part);
-    let res = (|| {
-        let store = Store::open(&part)?;
-        let report = migrate_v1::migrate(v1, &store, sites)?;
-        store.set_meta("migrated_from", &v1.display().to_string())?;
-        store.set_meta("migrated_calls", &report.calls.to_string())?;
-        drop(store);
-        std::fs::rename(&part, path)?;
-        anyhow::Ok(report)
-    })();
-    if res.is_err() {
-        remove_db(&part);
-    }
-    res
-}
-
-fn remove_db(path: &Path) {
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
 }
 

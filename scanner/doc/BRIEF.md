@@ -101,8 +101,8 @@ to "clay" when no site is active.
   for its protocol, its profile.
   - Leave room for scanning or priority between sites, but don't build it unless it falls out
     naturally.
-- **Migrate every existing file listed above, losslessly.** That includes the history
-  database and the recording index. Use a versioned schema and atomic writes.
+- **No migration** (Andy, 2026-10-01: nothing on the units is kept). A unit starts empty. Use
+  a versioned schema and atomic writes.
 
 ### Protocol-agnostic core
 
@@ -174,7 +174,7 @@ to "clay" when no site is active.
 1. **Analysis first, no code changes.** Inventory the current state against the requirements
    and write the design into this file's sibling, `DESIGN.md`:
    - the module map;
-   - the config schema and the migration of each persisted file;
+   - the config schema;
    - the call model;
    - the history schema;
    - the recording manager;
@@ -243,7 +243,5 @@ to "clay" when no site is active.
   Clay Electric DMR (plus the other local systems), and the user adds them in the UI.
 - Both systems decode, follow calls, play live audio, record, and fill the history.
 - Switching between them is one action.
-- Existing units keep their sites, names, profiles, history and recordings through the
-  migration.
 - The tree follows the agreed module map with no dead code, every stage passes the checks,
   and the docs (API reference, inventory, 076 design and status log) match the code.

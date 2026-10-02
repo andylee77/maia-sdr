@@ -14,7 +14,7 @@ pub enum Notice {
     CallOpened { call: u64, tg: u32, followed: bool },
     CallClosed { call: u64, tg: u32 },
     RecordingSaved { call: u64 },
-    /// A part of the configuration changed: `radio`, `systems`, `profiles`, `hold` or
+    /// A part of the configuration changed: `radio`, `systems`, `hold` or
     /// `recordings`.
     Changed { what: &'static str },
 }

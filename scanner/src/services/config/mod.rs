@@ -6,15 +6,11 @@
 //! - `state/`: the live site, the crystal calibration and per-site learned data (`state`).
 //!
 //! Files are versioned JSON under `<flash>/scanner/`, written atomically and only when something
-//! changes. A file written by a newer binary is read but never written, so a downgrade cannot
-//! drop its fields. On the first start of a unit that ran p25-httpd, `migrate` builds the files
-//! from the old ones and leaves those untouched. The talkgroup and radio names and the
-//! `profiles.json` of earlier versions become aliases once, at load (`aliases`).
+//! changes. A missing file is the default, so a new unit starts with no systems. A file written
+//! by a newer binary is read but never written, so a downgrade cannot drop its fields.
 
 pub mod aliases;
 pub mod ids;
-pub mod migrate;
-pub mod profiles;
 pub mod radio;
 pub mod state;
 pub mod systems;
@@ -26,7 +22,6 @@ use serde::Serialize;
 
 use crate::util::{atomic_file, time};
 
-pub use profiles::ProfilesConfig;
 pub use radio::RadioConfig;
 pub use state::{RadioState, SiteState};
 pub use systems::SystemsConfig;
@@ -34,21 +29,19 @@ pub use systems::SystemsConfig;
 /// Version of the files this binary writes.
 pub const VERSION: u32 = 1;
 
-/// Where the configuration and the legacy files live.
+/// Where the configuration, the history and the recordings live.
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub root: PathBuf,
-    /// The flash directory p25-httpd kept its files in.
-    pub flash: PathBuf,
     pub sd: PathBuf,
 }
 
 impl Paths {
     pub fn new(flash: &Path, sd: &Path) -> Self {
-        Paths { root: flash.join("scanner"), flash: flash.to_path_buf(), sd: sd.to_path_buf() }
+        Paths { root: flash.join("scanner"), sd: sd.to_path_buf() }
     }
 
-    /// The recordings on the SD card (p25-httpd's directory: its files are listed as they are).
+    /// The recordings on the SD card.
     pub fn recordings(&self) -> PathBuf {
         self.sd.join("p25_recordings")
     }
@@ -61,21 +54,12 @@ impl Paths {
         self.root.join("systems.json")
     }
 
-    /// The profiles of earlier versions, read once into aliases.
-    pub fn profiles(&self) -> PathBuf {
-        self.root.join("profiles.json")
-    }
-
     pub fn radio_state(&self) -> PathBuf {
         self.root.join("state").join("radio.json")
     }
 
     pub fn site_state(&self, site: &str) -> PathBuf {
         self.root.join("state").join("sites").join(format!("{site}.json"))
-    }
-
-    pub fn migration_log(&self) -> PathBuf {
-        self.root.join("migration-076.log")
     }
 }
 
@@ -144,9 +128,6 @@ pub struct ConfigDoc {
     pub exported_unix_ms: u64,
     pub radio: RadioConfig,
     pub systems: SystemsConfig,
-    /// A document exported before aliases carries profiles; an import turns them into aliases.
-    #[serde(default, skip_serializing)]
-    pub profiles: Option<ProfilesConfig>,
     #[serde(default)]
     pub live_site: Option<String>,
 }
@@ -166,54 +147,9 @@ pub struct Config {
     pub state: Stored<RadioState>,
 }
 
-/// Turn the name maps and profiles of an earlier version into each system's aliases: the
-/// profile active at the system's first site that has one, else the system's first. Returns
-/// whether anything changed.
-pub fn upgrade(systems: &mut SystemsConfig, profiles: Option<&ProfilesConfig>) -> bool {
-    let mut changed = false;
-    for sys in &mut systems.systems {
-        let profile = profiles.and_then(|p| {
-            sys.sites.iter().find_map(|s| p.active_for(&s.id)).or_else(|| p.profiles.iter().find(|x| x.system == sys.id))
-        });
-        if sys.legacy_talkgroups.is_empty() && sys.legacy_radios.is_empty() && profile.is_none() {
-            continue;
-        }
-        let (converted, listening) = aliases::from_names_and_profile(&sys.legacy_talkgroups, &sys.legacy_radios, profile);
-        if sys.aliases.is_empty() {
-            sys.aliases = converted;
-            sys.listening = listening;
-        } else {
-            let known = aliases::AliasIndex::new(&sys.aliases);
-            let more: Vec<_> = converted
-                .into_iter()
-                .filter(|a| {
-                    a.ids.iter().all(|id| match *id {
-                        aliases::AliasId::Talkgroup { value } => known.talkgroup(value).is_none(),
-                        aliases::AliasId::Radio { value } => known.radio(value).is_none(),
-                        _ => true,
-                    })
-                })
-                .collect();
-            sys.aliases.extend(more);
-        }
-        sys.legacy_talkgroups.clear();
-        sys.legacy_radios.clear();
-        changed = true;
-    }
-    changed
-}
-
 impl Config {
     pub fn load(paths: &Paths) -> anyhow::Result<Config> {
         let mut config = Config { radio: load(&paths.radio())?, systems: load(&paths.systems())?, state: load(&paths.radio_state())? };
-        let legacy = paths.profiles().exists().then(|| load::<ProfilesConfig>(&paths.profiles())).transpose()?;
-        if config.systems.writable && upgrade(&mut config.systems.value, legacy.as_ref().map(|l| &l.value)) {
-            save(&paths.systems(), &config.systems)?;
-            tracing::warn!("configuration: talkgroup and radio names and profiles became aliases");
-        }
-        if legacy.is_some() && config.systems.writable {
-            std::fs::rename(paths.profiles(), paths.root.join("profiles.json.converted"))?;
-        }
         for problem in config.repair() {
             tracing::warn!("configuration: {problem}");
         }
@@ -266,7 +202,6 @@ impl Config {
             exported_unix_ms: time::unix_ms(),
             radio: self.radio.value.clone(),
             systems: self.systems.value.clone(),
-            profiles: None,
             live_site: self.state.value.live_site.clone(),
         }
     }
@@ -282,8 +217,7 @@ impl Config {
             return Err(format!("version {} is newer than this scanner's {VERSION}", doc.version));
         }
         doc.radio.check().map_err(|e| format!("radio: {e}"))?;
-        let mut systems = doc.systems;
-        upgrade(&mut systems, doc.profiles.as_ref());
+        let systems = doc.systems;
         let live = doc.live_site.or_else(|| self.state.value.live_site.clone()).filter(|s| systems.site(s).is_some());
         let mut next = self.clone();
         next.radio.value = RadioConfig { version: VERSION, ..doc.radio };
@@ -353,21 +287,6 @@ pub fn forget_sites(paths: &Paths, sites: &[String]) {
             Err(e) => tracing::warn!("site {site}: learned state not deleted: {e}"),
         }
     }
-}
-
-/// The configuration at boot and, on a first start after p25-httpd, the migration report.
-pub struct Loaded {
-    pub config: Config,
-    pub migration: Option<migrate::Report>,
-}
-
-pub fn load_or_migrate(paths: &Paths) -> anyhow::Result<Loaded> {
-    let migration = if !paths.root.exists() && migrate::legacy_present(paths) {
-        Some(migrate::run(paths)?)
-    } else {
-        None
-    };
-    Ok(Loaded { config: Config::load(paths)?, migration })
 }
 
 #[cfg(test)]
@@ -459,40 +378,5 @@ mod tests {
         assert_eq!(r, Removed { systems: vec!["a".into()], sites: vec!["a1".into(), "a2".into()] });
         assert_eq!(c.systems.value.systems.len(), 1);
         assert_eq!(c.remove_system("a"), None);
-    }
-
-    #[test]
-    fn names_and_profiles_of_an_earlier_version_become_aliases_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = Paths::new(&dir.path().join("flash"), &dir.path().join("sd"));
-        std::fs::create_dir_all(&paths.root).unwrap();
-        let systems = json!({
-            "version": 1,
-            "systems": [{ "id": "clay", "label": "Clay", "protocol": "p25",
-                          "talkgroups": { "300": "Fire Dispatch" }, "radios": { "1014": "Engine 14" },
-                          "sites": [{ "id": "clay_1", "label": "Site 1", "control": { "freq_hz": 860_962_500u64 } }] }],
-        });
-        std::fs::write(paths.systems(), systems.to_string()).unwrap();
-        let profiles = json!({
-            "version": 1,
-            "profiles": [{ "id": "clay/default", "system": "clay", "name": "Default",
-                           "groups": [{ "name": "Primary", "talkgroups": [300] }],
-                           "speakers": { "left": ["Primary"], "right": [], "other": "right", "preempt": true },
-                           "ignore": [402] }],
-            "active": { "clay_1": "clay/default" },
-        });
-        std::fs::write(paths.profiles(), profiles.to_string()).unwrap();
-        let c = Config::load(&paths).unwrap();
-        let sys = &c.systems.value.systems[0];
-        let ix = sys.alias_index();
-        let fire = ix.talkgroup(300).unwrap();
-        assert_eq!((fire.name.as_str(), fire.priority, fire.speaker), ("Fire Dispatch", Some(1), aliases::Side::Left));
-        assert!(ix.talkgroup(402).unwrap().do_not_monitor);
-        assert_eq!(ix.radio(1014).unwrap().name, "Engine 14");
-        assert_eq!(sys.listening.unmonitored_speaker, aliases::Side::Right);
-        assert!(!paths.profiles().exists() && paths.root.join("profiles.json.converted").exists());
-        let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(paths.systems()).unwrap()).unwrap();
-        assert!(written["systems"][0].get("talkgroups").is_none() && written["systems"][0]["aliases"].is_array(), "written once, in the new form");
-        assert_eq!(Config::load(&paths).unwrap().systems.value, c.systems.value, "a second load changes nothing");
     }
 }

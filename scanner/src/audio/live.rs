@@ -34,7 +34,7 @@ pub struct VoiceBatch {
     pub call: u64,
     pub tg: u32,
     pub source: Option<u32>,
-    /// From the profile, as the follower routes the talkgroup.
+    /// From its alias, as the follower routes the talkgroup.
     pub speaker: Side,
     pub frames: VoiceFrames,
 }

@@ -3,11 +3,9 @@
 //! speaker each plays on. The follower, the recorder and every name shown come from here; a
 //! system's `Listening` settles talkgroups with no priority.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-
-use super::profiles::Profile;
 
 /// Where a talkgroup plays. `Off`: nowhere (an alias says `do_not_monitor` instead).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +63,7 @@ impl Alias {
         Alias::named(name, AliasId::Talkgroup { value: tg })
     }
 
+    #[cfg(test)]
     pub fn radio(id: u32, name: impl Into<String>) -> Self {
         Alias::named(name, AliasId::Radio { value: id })
     }
@@ -186,99 +185,9 @@ fn in_range(ranges: &[(u32, u32, usize)], v: u32) -> Option<usize> {
     ranges.iter().find(|(min, max, _)| (*min..=*max).contains(&v)).map(|r| r.2)
 }
 
-/// The aliases and listening settings that stand for the name maps and the profile of an
-/// earlier version: each name becomes an alias; a profile's groups give their talkgroups a
-/// priority (the first group 1), a group and a speaker; a group on no speaker and the ignore
-/// list become do-not-monitor; a monitor list leaves only its talkgroups (and the groups') followed.
-pub fn from_names_and_profile(
-    talkgroups: &BTreeMap<u32, String>,
-    radios: &BTreeMap<u32, String>,
-    profile: Option<&Profile>,
-) -> (Vec<Alias>, Listening) {
-    let mut aliases: Vec<Alias> = talkgroups.iter().map(|(&tg, name)| Alias::talkgroup(tg, name.clone())).collect();
-    let mut listening = Listening::default();
-    if let Some(p) = profile {
-        let mut by_tg: HashMap<u32, usize> = aliases.iter().enumerate().map(|(i, a)| (tg_of(a), i)).collect();
-        let mut alias_of = |aliases: &mut Vec<Alias>, tg: u32| -> usize {
-            *by_tg.entry(tg).or_insert_with(|| {
-                aliases.push(Alias::talkgroup(tg, format!("TG {tg}")));
-                aliases.len() - 1
-            })
-        };
-        let sp = &p.speakers;
-        let monitor: std::collections::HashSet<u32> = p.monitor.iter().copied().collect();
-        for (rank, g) in p.groups.iter().enumerate() {
-            let side = if sp.left.contains(&g.name) {
-                Side::Left
-            } else if sp.right.contains(&g.name) {
-                Side::Right
-            } else {
-                Side::Off
-            };
-            for &tg in &g.talkgroups {
-                let i = alias_of(&mut aliases, tg);
-                let a = &mut aliases[i];
-                if a.group.is_some() {
-                    continue; // A talkgroup in several groups keeps the first (highest).
-                }
-                a.group = Some(g.name.clone());
-                a.priority = Some((rank + 1).min(usize::from(LOWEST_PRIORITY) - 1) as u8);
-                match side {
-                    Side::Off => a.do_not_monitor = true,
-                    s => a.speaker = s,
-                }
-            }
-        }
-        if !monitor.is_empty() {
-            listening.follow_unmonitored = false;
-            for &tg in &p.monitor {
-                let i = alias_of(&mut aliases, tg);
-                let a = &mut aliases[i];
-                if a.priority.is_none() {
-                    a.priority = Some(LOWEST_PRIORITY);
-                    match sp.other {
-                        Side::Off => a.do_not_monitor = true,
-                        s => a.speaker = s,
-                    }
-                }
-            }
-            // A grouped talkgroup off the monitor list was not followed.
-            for a in aliases.iter_mut().filter(|a| a.group.is_some() && !monitor.contains(&tg_of(a))) {
-                a.do_not_monitor = true;
-            }
-        }
-        for &tg in &p.ignore {
-            let i = alias_of(&mut aliases, tg);
-            aliases[i].do_not_monitor = true;
-        }
-        match sp.other {
-            Side::Off => listening.follow_unmonitored = false,
-            s => {
-                listening.unmonitored_speaker = s;
-                // Talkgroups in no group played on the "other" speaker.
-                for a in aliases.iter_mut().filter(|a| a.priority.is_none() && !a.do_not_monitor) {
-                    a.speaker = s;
-                }
-            }
-        }
-        listening.preempt = sp.preempt;
-    }
-    aliases.extend(radios.iter().map(|(&id, name)| Alias::radio(id, name.clone())));
-    (aliases, listening)
-}
-
-/// The talkgroup of an alias made for one.
-fn tg_of(a: &Alias) -> u32 {
-    match a.ids.first() {
-        Some(AliasId::Talkgroup { value }) => *value,
-        _ => u32::MAX,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::config::profiles::{Group, Speakers};
 
     #[test]
     fn the_index_finds_exact_ids_before_ranges() {
@@ -294,47 +203,6 @@ mod tests {
         assert_eq!(ix.radio(1014).map(|a| a.name.as_str()), Some("Engine 14"));
         assert_eq!(ix.radio(3_409_510).map(|a| a.name.as_str()), Some("Portables"));
         assert_eq!(ix.talkgroup(1014), None, "talkgroups and radios are apart");
-    }
-
-    #[test]
-    fn names_and_a_profile_become_aliases() {
-        let names = BTreeMap::from([(300, "Fire Dispatch".to_string()), (402, "Encrypted".into())]);
-        let radios = BTreeMap::from([(1014, "Engine 14".to_string())]);
-        let p = Profile {
-            groups: vec![Group { name: "Primary".into(), talkgroups: vec![300] }, Group { name: "TAC".into(), talkgroups: vec![301, 302] }],
-            speakers: Speakers { left: vec!["Primary".into()], right: vec!["TAC".into()], other: Side::Right, preempt: false },
-            ignore: vec![402],
-            ..Profile::default()
-        };
-        let (aliases, listening) = from_names_and_profile(&names, &radios, Some(&p));
-        let ix = AliasIndex::new(&aliases);
-        let fire = ix.talkgroup(300).unwrap();
-        assert_eq!((fire.name.as_str(), fire.priority, fire.speaker, fire.group.as_deref()), ("Fire Dispatch", Some(1), Side::Left, Some("Primary")));
-        let tac = ix.talkgroup(302).unwrap();
-        assert_eq!((tac.name.as_str(), tac.priority, tac.speaker), ("TG 302", Some(2), Side::Right));
-        assert!(ix.talkgroup(402).unwrap().do_not_monitor);
-        assert_eq!(ix.radio(1014).unwrap().name, "Engine 14");
-        assert_eq!(listening, Listening { follow_unmonitored: true, unmonitored_speaker: Side::Right, preempt: false });
-        assert!(aliases.iter().all(|a| a.check().is_ok()));
-        // Names alone: aliases with no priority, everything followed as before.
-        let (plain, l) = from_names_and_profile(&names, &BTreeMap::new(), None);
-        assert_eq!((plain.len(), plain[0].priority, l), (2, None, Listening::default()));
-    }
-
-    #[test]
-    fn a_monitor_list_follows_only_its_talkgroups() {
-        let p = Profile {
-            groups: vec![Group { name: "Primary".into(), talkgroups: vec![300, 310] }],
-            speakers: Speakers { left: vec!["Primary".into()], ..Default::default() },
-            monitor: vec![300, 999],
-            ..Profile::default()
-        };
-        let (aliases, listening) = from_names_and_profile(&BTreeMap::new(), &BTreeMap::new(), Some(&p));
-        let ix = AliasIndex::new(&aliases);
-        assert!(!listening.follow_unmonitored);
-        assert_eq!(ix.talkgroup(300).map(|a| (a.priority, a.do_not_monitor)), Some((Some(1), false)));
-        assert!(ix.talkgroup(310).unwrap().do_not_monitor, "grouped but off the monitor list");
-        assert_eq!(ix.talkgroup(999).map(|a| (a.priority, a.speaker)), Some((Some(LOWEST_PRIORITY), Side::Both)));
     }
 
     #[test]

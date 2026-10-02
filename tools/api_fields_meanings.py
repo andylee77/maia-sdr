@@ -48,7 +48,7 @@ STRUCTS["site"] = [
     ("window.cc_position", "string", "Where the control channel sits in the window: `center`, `top` (traffic below) or `bottom`."),
     ("notes", "array of strings, absent when none", "Free notes."),
     ("notes[]", "string", "One note."),
-    ("source", "string, absent when unknown", "Where the site came from (a scan, a migrated file)."),
+    ("source", "string, absent when unknown", "Where the site came from (the scan that found it)."),
 ]
 
 STRUCTS["system"] = [
@@ -60,37 +60,35 @@ STRUCTS["system"] = [
     ("identity.system", "number, absent when unknown", "P25 system id."),
     ("identity.model", "string, absent when unknown", "DMR Tier III network model: `tiny`, `small`, `large` or `huge`."),
     ("identity.network", "number, absent when unknown", "DMR Tier III network."),
-    ("talkgroups", "map", "Talkgroup names by talkgroup."),
-    ("talkgroups{key}", "string", "The talkgroup's name."),
-    ("radios", "map", "Radio names by radio id."),
-    ("radios{key}", "string", "The radio's name."),
+    ("aliases", "array", "What the radio knows of the system's talkgroups and radios (SDRTrunk's alias list)."),
+    ("@aliases[]", "alias"),
+    ("listening", "object", "Talkgroups with no priority, and pre-emption."),
+    ("@listening", "listening"),
     ("sites", "array", "The system's sites."),
     ("@sites[]", "site"),
 ]
 
-STRUCTS["profile"] = [
-    ("id", "string", "`<system>/<name as an id>`."),
-    ("system", "string", "The system it belongs to."),
-    ("name", "string", "The profile's name."),
-    ("groups", "array", "Talkgroup groups in priority order (the first is the highest)."),
-    ("groups[]", "object", "One group."),
-    ("groups[].name", "string", "The group's name (the speakers name groups)."),
-    ("groups[].talkgroups", "array of numbers", "Its talkgroups."),
-    ("speakers", "object", "Where the groups play."),
-    ("speakers.left", "array of strings", "Groups on the left speaker."),
-    ("speakers.right", "array of strings", "Groups on the right speaker."),
-    ("speakers.other", "string", "Where talkgroups in no group go: `both`, `left`, `right` or `off` (not followed)."),
-    ("speakers.preempt", "bool", "A higher-priority group's call takes a lane from a lower one's."),
-    ("monitor", "array of numbers", "The only talkgroups followed, in priority order; empty: every clear call."),
-    ("ignore", "array of numbers", "Talkgroups never followed (wins over the monitor list and the groups)."),
+STRUCTS["alias"] = [
+    ("name", "string", "Shown wherever its talkgroup or radio appears."),
+    ("group", "string, absent when none", "A free label to sort and filter by (SDRTrunk's alias group)."),
+    ("color", "string, absent when none", "`#rrggbb`."),
+    ("ids", "array", "The talkgroups and radios it names."),
+    ("ids[]", "object", "One ID; `type` says which fields follow."),
+    ("ids[].type", "string", "`talkgroup`, `talkgroup_range`, `radio` or `radio_range`."),
+    ("ids[].value", "number, absent for a range", "The talkgroup or radio."),
+    ("ids[].min", "number, absent unless a range", "The range's first."),
+    ("ids[].max", "number, absent unless a range", "The range's last."),
+    ("priority", "number or null", "Monitor priority, 1 (highest) to 100 (lowest); a higher one takes a traffic channel from a lower one. Null: unmonitored (see `listening`)."),
+    ("do_not_monitor", "bool", "Never followed (SDRTrunk's priority -1)."),
+    ("record", "bool", "Its calls are recorded (when recording is not set to every call)."),
+    ("speaker", "string", "Where it plays: `both`, `left` or `right`."),
+    ("icon", "string, absent when none", "SDRTrunk's icon name, kept for the round trip."),
 ]
 
-STRUCTS["profiles"] = [
-    ("version", "number", "The file format's version."),
-    ("profiles", "array", "Every profile of every system."),
-    ("@profiles[]", "profile"),
-    ("active", "map", "Each site's active profile."),
-    ("active{key}", "string", "The profile id (key: the site)."),
+STRUCTS["listening"] = [
+    ("follow_unmonitored", "bool", "Talkgroups with no priority (no alias, or an alias without one) are followed at the lowest priority; false: only those with a priority (SDRTrunk's \"ignore unmonitored calls\")."),
+    ("unmonitored_speaker", "string", "Where those play: `both`, `left` or `right`."),
+    ("preempt", "bool", "A higher priority takes a traffic channel from a lower one."),
 ]
 
 STRUCTS["radio_config"] = [
@@ -106,6 +104,7 @@ STRUCTS["radio_config"] = [
     ("calls.end_grace_ms", "number", "After an end-of-transmission marker, the call closes this long later unless voice resumes."),
     ("recording", "object", "Call recordings."),
     ("recording.enabled", "bool", "Followed calls are recorded."),
+    ("recording.every_call", "bool", "Every followed call; false: only those whose alias says record."),
     ("recording.storage", "string", "Where new recordings go: `sd` or `ram`."),
     ("recording.ram_max_count", "number", "Recordings kept in RAM."),
     ("recording.sd_max_count", "number", "Recordings kept on the card."),
@@ -338,8 +337,6 @@ ROUTES: dict[str, list] = {
         ("live.system.id", "string", "The system's id."),
         ("live.system.label", "string", "The system's name."),
         ("live.system.protocol", "string", "`p25` or `dmr_tier3`."),
-        ("live.profile", "object or null, absent unless live", "The site's active profile; null: every clear call is followed."),
-        ("@live.profile", "profile"),
         ("live.window", "object, absent unless live", "The receive window the planner chose."),
         ("@live.window", "window_plan"),
         ("live.tuning", "object, absent unless live", "The tuning (the same as `tuning`)."),
@@ -439,7 +436,6 @@ ROUTES: dict[str, list] = {
         ("used_bytes", "number", "Space its data uses."),
         ("max_bytes", "number", "The limit; the oldest calls go past it."),
         ("retention_days", "number", "Calls older than this go."),
-        ("note", "string", "What opening the history found or did."),
     ],
     "/api/v1/activity/summary": [
         ("@", "window"),
@@ -613,8 +609,6 @@ ROUTES: dict[str, list] = {
         ("systems.version", "number", "Its format's version."),
         ("systems.systems", "array", "Every system."),
         ("@systems.systems[]", "system"),
-        ("profiles", "object", "The profiles file."),
-        ("@profiles", "profiles"),
         ("live_site", "string or null", "The live site."),
     ],
     "/api/v1/radio": [
@@ -821,7 +815,12 @@ ROUTES: dict[str, list] = {
         ("@other[]", "carrier"),
         ("error", "string or null", "What went wrong."),
     ],
-    "/api/v1/profiles": [("@", "profiles")],
+    "/api/v1/systems/{id}/aliases": [
+        ("aliases", "array", "The system's aliases."),
+        ("@aliases[]", "alias"),
+        ("listening", "object", "Talkgroups with no priority, and pre-emption."),
+        ("@listening", "listening"),
+    ],
     "/api/system": [
         ("build", "string", "The build tag."),
         ("uptime_s", "number", "Since start, s."),
@@ -867,6 +866,18 @@ ROUTES: dict[str, list] = {
 }
 
 NOT_JSON: dict[str, str] = {
+    "/ws/live": (
+        "A WebSocket of text frames, each a JSON object with `type`; the payload is under the key named:\n\n"
+        "| `type` | Key | When |\n|--------|-----|------|\n"
+        "| `snapshot` | `status`, `calls` (`open`, `recent`), `traffic`, `scan` | On connect, and after `lag`. |\n"
+        "| `status` | `status` (as `GET /api/v1/status`) | Each second, and at once when the live site changes. |\n"
+        "| `traffic` | `traffic`: `channels[]` (each traffic channel: `lane`, `tuned_hz`, `following_tg`, `on_data_channel`, `voice_frames`, `last_voice_ms_ago`, `call`) and `open[]` (every call on the air) | When a traffic channel changes. |\n"
+        "| `call_opened`, `call_closed` | `call` (as `GET /api/v1/calls/{id}`) | As a call opens or closes. |\n"
+        "| `recording` | `recording` (as an item of `GET /api/v1/recordings`) | As a recording is saved. |\n"
+        "| `scan` | `scan` (as `GET /api/v1/scan`) | While a scan runs, as its progress or found sites change. |\n"
+        "| `changed` | `what`: `radio`, `systems`, `hold` or `recordings` | After a write changed that part: read it again. |\n"
+        "| `lag` | | The listener fell behind; a snapshot follows. |"
+    ),
     "/ws/events": (
         "A WebSocket of text frames, each a JSON object with `type`:\n\n"
         "| `type` | Fields | When |\n|--------|--------|------|\n"

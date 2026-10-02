@@ -181,7 +181,7 @@ pub struct Follower {
     routing: Routing,
     /// Talkgroups seen encrypted at this site.
     encrypted: HashSet<u32>,
-    /// The one talkgroup followed, whatever the profile says.
+    /// The one talkgroup followed, whatever the aliases say.
     hold: Option<u32>,
 }
 
@@ -199,7 +199,7 @@ impl Follower {
         }
     }
 
-    /// Follow only `tg` (None: what the profile follows). Lanes on other talkgroups let go at
+    /// Follow only `tg` (None: what the aliases follow). Lanes on other talkgroups let go at
     /// once; their calls close as their voice stops.
     pub fn set_hold(&mut self, tg: Option<u32>) -> Vec<Command> {
         self.hold = tg;

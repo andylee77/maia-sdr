@@ -69,7 +69,7 @@ pub enum TrunkInput {
     /// A grant or grant update, with the control channel's NAC.
     Grant { grant: Grant, nac: u16, at: Stamp },
     Lane(LaneInput),
-    /// The live site's profile changed.
+    /// The live site's aliases changed.
     Routing(Box<Routing>),
     /// The receive window moved: every lane was reloaded and holds no channel.
     WindowMoved,
@@ -451,7 +451,7 @@ impl Trunking {
         }
     }
 
-    /// A new profile for the calls to come (the open ones keep their lanes).
+    /// New aliases for the calls to come (the open ones keep their lanes).
     pub async fn set_routing(&self, routing: Routing) {
         let tx = self.running.lock().await.as_ref().map(|r| r.tx.clone());
         if let Some(tx) = tx {

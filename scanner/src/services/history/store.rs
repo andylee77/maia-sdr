@@ -386,15 +386,8 @@ impl Store {
         Ok(Store { write: Mutex::new(write), read: Mutex::new(read), path: path.to_path_buf() })
     }
 
-    pub fn set_meta(&self, key: &str, value: &str) -> rusqlite::Result<()> {
-        lock(&self.write).execute(
-            "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, value],
-        )?;
-        Ok(())
-    }
-
-    /// Run `f` on the write connection (the migration).
+    /// Run `f` on the write connection.
+    #[cfg(test)]
     pub fn with_writer<T>(&self, f: impl FnOnce(&mut Connection) -> rusqlite::Result<T>) -> rusqlite::Result<T> {
         f(&mut lock(&self.write))
     }
@@ -916,8 +909,8 @@ impl Store {
     }
 }
 
-/// The insert, on a transaction of the caller's (the migration batches it too).
-pub fn insert_calls(tx: &rusqlite::Transaction, rows: &[CallRow]) -> rusqlite::Result<usize> {
+/// The insert, on the caller's transaction.
+fn insert_calls(tx: &rusqlite::Transaction, rows: &[CallRow]) -> rusqlite::Result<usize> {
     let mut added = 0;
     let mut ins = tx.prepare_cached(
         "INSERT OR IGNORE INTO calls (site, call_id, started_ms, ended_ms, tg, source, freq_hz, channel, timeslot, lane,
