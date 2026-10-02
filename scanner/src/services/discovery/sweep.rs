@@ -102,6 +102,8 @@ impl Discovery {
         self.update(|d| {
             d.state = "restoring";
             d.probing_hz = None;
+            d.band = None;
+            d.lo_hz = None;
         });
         drop(guard);
         live.resume_after_scan(back_to).await;
@@ -150,6 +152,9 @@ impl Discovery {
                 self.update(|d| {
                     d.step = k + 1;
                     d.state = "sweeping";
+                    d.band = bands.iter().copied().find(|&(a, b)| lo >= a && lo <= b);
+                    d.lo_hz = Some(lo);
+                    d.probing_hz = None;
                 });
                 tuner.apply(TuningPlan { preset, lo_hz: lo, control_hz: lo }).await?;
                 tokio::time::sleep(LO_SETTLE).await;
@@ -179,7 +184,10 @@ impl Discovery {
             neighbours.sort_unstable();
             neighbours.dedup();
             neighbours.retain(|&f| !near(&probed, f));
-            self.update(|d| d.to_probe += neighbours.len());
+            self.update(|d| {
+                d.to_probe += neighbours.len();
+                d.band = None;
+            });
             for f in neighbours {
                 if self.cancelled() {
                     return Ok(());

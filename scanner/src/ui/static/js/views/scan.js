@@ -1,129 +1,274 @@
-// The scan card (Systems page): find the systems on the air, then tick and name what to add.
-// Found sites are grouped by system identity; a site already configured is marked, and ticking
-// it only adds the alternate control channels it announced.
+// The scan card (Systems page): pick the bands and settings; follow the scan as /ws/live reports
+// it (the band, the window, what it is listening to); then a card per found system to fill in
+// and add. Found sites already configured are left out, and a card goes once its sites are
+// added; a system already configured keeps its own name and details.
 
 import { h, card, toast } from '../dom.js';
 import { mhz, num, pct } from '../format.js';
-import { api } from '../api.js';
+import { api, wsUrl } from '../api.js';
 import { refresh } from '../store.js';
-import { protocol, protocolNames } from '../protocols.js';
+import { protocol } from '../protocols.js';
+import { systemHead, siteTable, inline } from './cards.js';
 
-const POLL_MS = 1500;
 const RUNNING = ['sweeping', 'probing', 'restoring'];
+const MHZ0 = hz => (hz / 1e6).toLocaleString(undefined, { maximumFractionDigits: 3 });
+const range = ([low, high]) => `${MHZ0(low)}–${MHZ0(high)} MHz`;
 
-// The system a found site belongs to, and default names for it and the site.
-function systemOf(f) {
-  return protocol(f.protocol).scanSystem(f.identity);
-}
+// A found site's reception.
+const reception = f => `${pct(f.ok_pct)} · ${num(f.msgs_per_s, 1)} msg/s${f.modulation ? ` · ${f.modulation.toUpperCase()}` : ''}${f.via_neighbour ? ' · from a neighbour' : ''}`;
 
-function siteName(f) {
-  return protocol(f.protocol).scanSiteName(f.identity);
+// A scan's finds by system.
+function groups(s) {
+  const out = new Map();
+  for (const f of s.sites) {
+    const sys = protocol(f.protocol).scanSystem(f.identity);
+    if (!out.has(sys.key)) out.set(sys.key, { ...sys, protocol: f.protocol, sites: [] });
+    out.get(sys.key).sites.push(f);
+  }
+  return [...out.values()];
 }
 
 export function scanCard(onAdded) {
   const c = card('Find systems');
-  let timer = null;
+  let ws = null;
+  let retry = null;
+  let closed = false;
+  // The scan whose cards are on screen (`id:state`): drawn once, so what is typed stays.
   let shown = null;
+  let configured = [];
+  let options = null;
 
-  async function start(button) {
-    button.disabled = true;
-    try {
-      await api.scan();
-      poll();
-    } catch (e) {
-      toast(e.message, true);
-      button.disabled = false;
+  // The setup: bands, settings, and what they come to.
+  function setup() {
+    if (!options) {
+      c.body.replaceChildren(h('p', { class: 'dim', text: "The radio did not say what it can scan; reload the page." }));
+      return;
     }
+    const d = options.defaults;
+    const bands = options.bands.map(b => {
+      const tick = h('input', { type: 'checkbox' });
+      tick.checked = true;
+      tick.addEventListener('change', sum);
+      return { band: [b.low_hz, b.high_hz], tick, el: h('label', { class: 'chip' }, tick, h('strong', { text: b.name }), h('span', { class: 'dim', text: range([b.low_hz, b.high_hz]) })) };
+    });
+    const from = inline('', 'from', { min: 5, onInput: sum });
+    const to = inline('', 'to', { min: 5, onInput: sum });
+    const frames = inline(String(d.frames), 'frames', { min: 3 });
+    const listen = inline(String(d.probe_ms / 1000), 's', { min: 3 });
+    const identity = inline(String(d.identity_ms / 1000), 's', { min: 3 });
+    const most = inline(String(d.max_candidates), 'carriers', { min: 3 });
+    const note = h('p', { class: 'dim' });
+    const go = h('button', { class: 'btn primary', type: 'button', text: 'Scan' });
+
+    // The ticked bands and the typed one, in Hz.
+    function chosen() {
+      const out = bands.filter(b => b.tick.checked).map(b => b.band);
+      const [a, b] = [Number(from.value), Number(to.value)];
+      if (from.value.trim() || to.value.trim()) {
+        if (!(a >= 70 && b <= 6000 && a < b)) throw new Error('Your range: from and to in MHz, 70 to 6000');
+        out.push([Math.round(a * 1e6), Math.round(b * 1e6)]);
+      }
+      return out;
+    }
+    function sum() {
+      let list = [];
+      try {
+        list = chosen();
+      } catch {
+        return;
+      }
+      const windows = list.reduce((n, [a, b]) => n + Math.max(1, Math.ceil((b - a) / options.step_hz)), 0);
+      note.textContent = `The radio reads ${MHZ0(options.window_hz)} MHz at a time (${MHZ0(options.usable_hz)} MHz of it clean) and steps ${MHZ0(options.step_hz)} MHz: `
+        + `${windows} window${windows === 1 ? '' : 's'} for these bands. The live site pauses meanwhile.`;
+      go.disabled = !list.length;
+    }
+    go.addEventListener('click', async () => {
+      try {
+        const number = (el, what, lo, hi) => {
+          const v = Number(el.value);
+          if (!(v >= lo && v <= hi)) throw new Error(`${what}: ${lo} to ${hi}`);
+          return v;
+        };
+        const req = {
+          bands: chosen(),
+          frames: number(frames, 'Frames per window', 1, 64),
+          probe_ms: Math.round(number(listen, 'Listening to a carrier', 0.5, 30) * 1000),
+          identity_ms: Math.round(number(identity, 'Waiting for a site', 0, 60) * 1000),
+          max_candidates: number(most, 'Carriers', 1, 500),
+        };
+        go.disabled = true;
+        await api.scan(req);
+      } catch (e) {
+        toast(e.message, true);
+        go.disabled = false;
+      }
+    });
+    sum();
+    c.body.replaceChildren(h('div', { class: 'stack' },
+      h('div', { class: 'chips' }, ...bands.map(b => b.el),
+        h('span', { class: 'chip' }, h('span', { class: 'dim', text: 'and' }), from, h('span', { class: 'dim', text: 'to' }), to, h('span', { class: 'dim', text: 'MHz' }))),
+      h('div', { class: 'scan-settings' },
+        h('span', null, 'Read ', frames, ' spectrum frames a window'),
+        h('span', null, 'listen ', listen, ' s to each carrier'),
+        h('span', null, 'wait up to ', identity, " s for a site's identity"),
+        h('span', null, 'try at most ', most, ' carriers')),
+      note,
+      h('div', { class: 'row' }, go)));
   }
 
-  function idle() {
-    const button = h('button', { class: 'btn primary', type: 'button', text: 'Scan' });
-    button.addEventListener('click', () => start(button));
-    c.body.replaceChildren(
-      h('p', { text: `Look for ${protocolNames()} control channels on 700, 800 and 900 MHz, UHF and VHF. It takes about five minutes, and the live site pauses meanwhile.` }),
-      h('div', { class: 'row' }, button));
-  }
-
+  // The scan running: the band, the window, what it is doing, and what it found so far.
   function progress(s) {
     const cancel = h('button', { class: 'btn', type: 'button', text: 'Cancel' });
     cancel.addEventListener('click', () => api.scanCancel().catch(e => toast(e.message, true)));
-    const where = s.probing_hz ? `listening to ${mhz(s.probing_hz)}` : s.state;
-    c.body.replaceChildren(
-      h('p', { text: `Window ${s.step} of ${s.steps}; ${num(s.probed)} of ${num(s.to_probe)} carriers probed; ${where}.` }),
-      h('p', { class: 'dim', text: `${s.sites.length} control channels found so far.` }),
-      h('div', { class: 'row' }, cancel));
+    const named = s.band && options && options.bands.find(b => b.low_hz === s.band[0] && b.high_hz === s.band[1]);
+    const where = s.band ? `${named ? `${named.name} · ` : ''}${range(s.band)} · window ${s.step} of ${s.steps}` : `Window ${s.step} of ${s.steps} done`;
+    let doing;
+    if (s.state === 'restoring') doing = 'Handing the radio back to the live site';
+    else if (s.probing_hz && !s.band) doing = `Listening to ${mhz(s.probing_hz)}, a control channel a found site announced (${s.probed + 1} of ${s.to_probe})`;
+    else if (s.probing_hz && s.state === 'probing') doing = `Listening to ${mhz(s.probing_hz)} for a control channel (carrier ${s.probed + 1} of ${s.to_probe})`;
+    else doing = `Reading the spectrum around ${mhz(s.lo_hz)}`;
+    const found = groups(s);
+    c.body.replaceChildren(h('div', { class: 'stack' },
+      h('div', null, h('strong', { text: where })),
+      h('div', { class: 'dim', text: doing }),
+      h('progress', { class: 'scan', max: String(Math.max(s.steps, 1)), value: String(Math.max(s.step - 1, 0)) }),
+      ...(found.length ? [h('div', { class: 'dim', text: 'Found so far:' }), ...found.map(g => h('div', null,
+        h('strong', { text: g.label }), ` (${protocol(g.protocol).label}): `,
+        g.sites.map(f => `${protocol(f.protocol).scanSiteName(f.identity)} on ${mhz(f.freq_hz)}`).join(', ')))] : []),
+      h('div', { class: 'row' }, cancel)));
   }
 
-  function results(s) {
-    const groups = new Map();
-    for (const f of s.sites) {
-      const sys = systemOf(f);
-      if (!groups.has(sys.key)) groups.set(sys.key, { ...sys, sites: [] });
-      groups.get(sys.key).sites.push(f);
-    }
-    const picks = [];
-    const body = [];
-    for (const g of groups.values()) {
-      const known = g.sites.some(f => f.existing_site);
-      const sysName = h('input', { class: 'input wide', type: 'text', value: g.label, 'aria-label': 'System name' });
-      body.push(h('div', { class: 'row' }, h('strong', { text: protocol(g.sites[0].protocol).label }),
-        known ? h('span', { class: 'dim', text: 'a configured system' }) : sysName));
-      for (const f of g.sites) {
-        const tick = h('input', { type: 'checkbox', 'aria-label': 'Add this site' });
-        tick.checked = !f.existing_site;
-        const name = h('input', { class: 'input wide', type: 'text', value: siteName(f), 'aria-label': 'Site name' });
-        name.disabled = !!f.existing_site;
-        picks.push(() => tick.checked && { key: f.id, label: name.value, system_label: known ? null : sysName.value });
-        body.push(h('div', { class: 'row' }, tick, name,
-          h('span', { text: mhz(f.freq_hz) }),
-          h('span', { class: 'dim', text: `${num(f.msgs_per_s, 1)} msgs/s, ${pct(f.ok_pct)}${f.modulation ? ', ' + f.modulation.toUpperCase() : ''}${f.via_neighbour ? ', a neighbour' : ''}` }),
-          f.existing_site ? h('span', { class: 'badge ok', text: `configured: ${f.existing_site}` }) : null));
-      }
-    }
-    const add = h('button', { class: 'btn primary', type: 'button', text: 'Add ticked sites', disabled: !s.sites.length });
+  // The configured system a found one is, by identity.
+  function configuredAs(g) {
+    const p = protocol(g.protocol);
+    return configured.find(sys => sys.protocol === g.protocol && p.sameSystem(sys.identity || {}, g.sites[0].identity));
+  }
+
+  // Is a found site configured: a site on its control channel (or an alternate) within 3 kHz,
+  // or the same site of the same system?
+  function isConfigured(f) {
+    const p = protocol(f.protocol);
+    const near = hz => Math.abs(hz - f.freq_hz) <= 3000;
+    const key = p.siteKey(f.identity);
+    return configured.some(sys => sys.protocol === f.protocol && sys.sites.some(s => near(s.control.freq_hz)
+      || (s.control.alternates_hz || []).some(near)
+      || (key && p.sameSystem(sys.identity || {}, f.identity) && p.siteKey(s.identity || {}) === key)));
+  }
+
+  // The found cards on screen, to drop the ones whose sites have all been added.
+  let cards = [];
+  let cardList = null;
+
+  // Drop the cards with nothing left to add; say so when none is left.
+  function prune() {
+    cards = cards.filter(x => {
+      if (x.sites.some(f => !isConfigured(f))) return true;
+      x.el.remove();
+      return false;
+    });
+    if (cardList && !cards.length) cardList.replaceChildren(h('p', { class: 'dim', text: 'Every system found is added.' }));
+  }
+
+  // A found system's card: its head (a configured one's name), its new sites ticked, one Add.
+  function foundCard(g) {
+    const p = protocol(g.protocol);
+    const known = configuredAs(g);
+    const box = h('div', { class: 'sys-card' });
+    const add = h('button', { class: 'btn primary small', type: 'button', text: known ? 'Add sites' : 'Add system' });
+    const head = known ? null : systemHead({ protocol: g.protocol, label: g.label, identity: p.heardSystem(g.sites[0].identity), details: {} }, { right: [add] });
+    const fresh = g.sites.filter(f => !isConfigured(f));
+    const ticks = fresh.map(() => {
+      const tick = h('input', { type: 'checkbox', 'aria-label': 'Add this site' });
+      tick.checked = true;
+      return tick;
+    });
+    const table = siteTable(g.protocol, fresh.map((f, i) => ({
+      site: {
+        label: p.scanSiteName(f.identity), identity: p.heardSite(f.identity),
+        control: { freq_hz: f.freq_hz, alternates_hz: (f.secondary_hz || []).filter(x => Math.abs(x - f.freq_hz) > 3000), timeslot: f.timeslot },
+        channels_hz: [],
+      },
+      lead: ticks[i],
+      tail: [h('span', { class: 'dim', text: reception(f) })],
+    })), { traffic: false });
     add.addEventListener('click', async () => {
-      const sites = picks.map(p => p()).filter(Boolean);
-      if (!sites.length) return toast('Nothing ticked', true);
-      add.disabled = true;
       try {
-        const r = await api.scanAdd(sites);
-        toast(`Added ${r.sites.length} sites${r.updated.length ? `; ${r.updated.length} known sites updated` : ''}`);
+        const sites = fresh.map((f, i) => ticks[i].checked && { key: f.id, ...table.rows[i].read() }).filter(Boolean);
+        if (!sites.length) throw new Error('Tick a site to add');
+        const sys = known ? { label: known.label } : head.read();
+        add.disabled = true;
+        const r = await api.scanAdd({ ...sys, sites });
+        toast(`${sys.label.trim()}: ${r.sites.length} site${r.sites.length === 1 ? '' : 's'} added`);
+        await loadConfigured();
+        prune();
         await refresh();
         onAdded();
       } catch (e) {
         toast(e.message, true);
-      } finally {
         add.disabled = false;
       }
     });
-    const again = h('button', { class: 'btn', type: 'button', text: 'Scan again' });
-    again.addEventListener('click', () => start(again));
-    const summary = `${s.state === 'done' ? 'Done' : s.state === 'cancelled' ? 'Cancelled' : 'Failed'}: ${s.sites.length} control channels, `
-      + `${s.traffic.length} traffic channels, ${s.other.length} other carriers.` + (s.error ? ` ${s.error}` : '');
-    const none = s.sites.length ? [] : [h('p', { class: 'dim', text: 'No control channels heard. A scan on the site antenna finds more.' })];
-    c.body.replaceChildren(h('p', { text: summary }), ...body, ...none, h('div', { class: 'row' }, add, again));
+    box.append(
+      head ? head.el : h('div', { class: 'row' }, h('span', { class: 'sys-title', text: known.label }), h('span', { class: 'badge', text: p.label }),
+        h('span', { class: 'dim', text: 'configured: these sites are new' }), h('span', { class: 'spacer' }), add),
+      table.el);
+    return { el: box, sites: g.sites };
   }
 
-  async function poll() {
-    clearTimeout(timer);
-    let s;
-    try {
-      s = await api.scanState();
-    } catch (e) {
-      timer = setTimeout(poll, POLL_MS * 2);
-      return;
-    }
+  function results(s) {
+    const again = h('button', { class: 'btn', type: 'button', text: 'New scan' });
+    again.addEventListener('click', setup);
+    const summary = `${s.state === 'done' ? 'Found' : s.state === 'cancelled' ? 'Cancelled; found' : 'Failed; found'} ${s.sites.length} control channel${s.sites.length === 1 ? '' : 's'}`
+      + ` (and ${s.traffic.length} traffic channels, ${s.other.length} other carriers) in ${s.bands.map(range).join(', ')}.` + (s.error ? ` ${s.error}` : '');
+    cards = groups(s).filter(g => g.sites.some(f => !isConfigured(f))).map(foundCard);
+    cardList = h('div', { class: 'stack' }, ...cards.map(x => x.el));
+    if (s.sites.length && !cards.length) cardList.append(h('p', { class: 'dim', text: 'Every system found is added.' }));
+    const none = s.sites.length ? [] : [h('p', { class: 'dim', text: 'No control channels heard. A scan on the site antenna finds more.' })];
+    c.body.replaceChildren(h('div', { class: 'stack' }, h('p', { class: 'dim', text: summary }), cardList, ...none, h('div', { class: 'row' }, again)));
+  }
+
+  function show(s) {
     if (RUNNING.includes(s.state)) {
+      shown = null;
       progress(s);
-      timer = setTimeout(poll, POLL_MS);
     } else if (s.state === 'idle') {
-      idle();
+      if (shown !== 'idle') setup();
+      shown = 'idle';
     } else if (shown !== `${s.id}:${s.state}`) {
       shown = `${s.id}:${s.state}`;
       results(s);
     }
   }
 
-  poll();
-  return { el: c.el, stop() { clearTimeout(timer); } };
+  async function loadConfigured() {
+    try {
+      configured = await api.systems();
+    } catch { /* every find shows as new */ }
+  }
+
+  function connect(backoff = 1000) {
+    if (closed) return;
+    ws = new WebSocket(wsUrl('/ws/live'));
+    ws.onopen = () => { backoff = 1000; };
+    ws.onmessage = e => {
+      const m = JSON.parse(e.data);
+      if (m.type === 'snapshot' || m.type === 'scan') show(m.scan);
+      else if (m.type === 'changed' && m.what === 'systems') loadConfigured().then(prune);
+    };
+    ws.onclose = () => {
+      if (!closed) retry = setTimeout(() => connect(Math.min(backoff * 2, 30000)), backoff);
+    };
+  }
+
+  Promise.all([loadConfigured(), api.scanOptions().then(o => { options = o; })])
+    .catch(e => toast(e.message, true))
+    .finally(() => connect());
+  return {
+    el: c.el,
+    stop() {
+      closed = true;
+      clearTimeout(retry);
+      if (ws) ws.close();
+    },
+  };
 }

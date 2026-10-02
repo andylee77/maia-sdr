@@ -1,4 +1,4 @@
-//! `/api/v1/systems`: the configured systems and their sites; a system's names; the site editor;
+//! `/api/v1/systems`: the configured systems and their sites; the system and site editors;
 //! RadioReference imports; removing a system or a site.
 
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use crate::boot::state::AppState;
 use crate::hardware::presets::find_preset;
 use crate::services::config;
 use crate::services::config::radioreference::{self, ImportRequest, Imported};
-use crate::services::config::systems::{ChannelPlan, Control, Modulation, Site, System, Window};
+use crate::services::config::systems::{ChannelPlan, Control, Modulation, Site, SiteIdentity, System, SystemDetails, SystemIdentity, Window};
 use crate::services::config::Removed;
 use crate::trunking::site::LiveState;
 
@@ -25,11 +25,47 @@ pub async fn get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> ApiR
     c.systems.value.system(&id).cloned().map(Json).ok_or_else(|| ApiError::not_found(format!("system {id}")))
 }
 
-/// What the site editor changes: everything but the site's id, identity and origin.
+/// What the system editor changes: its name, identity and details (its id and protocol stay).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemEdit {
+    pub label: String,
+    #[serde(default)]
+    pub identity: SystemIdentity,
+    #[serde(default)]
+    pub details: SystemDetails,
+}
+
+/// Rename a system, correct its identity or its details; the live site carries the new name at
+/// once.
+pub async fn put_system(State(s): State<Arc<AppState>>, Path(id): Path<String>, Json(req): Json<SystemEdit>) -> ApiResult<System> {
+    let label = req.label.trim();
+    if label.is_empty() {
+        return Err(ApiError::bad_request("a system needs a name"));
+    }
+    let out = {
+        let mut c = s.config.lock().await;
+        let sys = c.systems.value.systems.iter_mut().find(|x| x.id == id).ok_or_else(|| ApiError::not_found(format!("system {id}")))?;
+        req.identity.check(sys.protocol).map_err(ApiError::bad_request)?;
+        sys.label = label.to_string();
+        sys.identity = req.identity;
+        sys.details = req.details.tidied();
+        let out = sys.clone();
+        config::save(&s.paths.systems(), &c.systems)?;
+        out
+    };
+    s.live.system_changed(&out);
+    Ok(Json(out))
+}
+
+/// What the site editor changes: everything but the site's id and origin.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SiteEdit {
     pub label: String,
+    /// Kept when absent.
+    #[serde(default)]
+    pub identity: Option<SiteIdentity>,
     pub control: Control,
     #[serde(default)]
     pub modulation: Modulation,
@@ -43,7 +79,7 @@ pub struct SiteEdit {
     pub notes: Vec<String>,
 }
 
-fn check_freq(what: &str, hz: u64) -> Result<(), ApiError> {
+pub fn check_freq(what: &str, hz: u64) -> Result<(), ApiError> {
     if (70_000_000..=6_000_000_000).contains(&hz) {
         Ok(())
     } else {
@@ -69,8 +105,14 @@ pub async fn put_site(State(s): State<Arc<AppState>>, Path((system, site)): Path
     let out = {
         let mut c = s.config.lock().await;
         let sys = c.systems.value.systems.iter_mut().find(|x| x.id == system).ok_or_else(|| ApiError::not_found(format!("system {system}")))?;
+        if let Some(identity) = &req.identity {
+            identity.check(sys.protocol).map_err(ApiError::bad_request)?;
+        }
         let x = sys.sites.iter_mut().find(|x| x.id == site).ok_or_else(|| ApiError::not_found(format!("site {site}")))?;
         x.label = req.label.trim().to_string();
+        if let Some(identity) = req.identity {
+            x.identity = identity;
+        }
         x.control = req.control;
         x.modulation = req.modulation;
         x.channels_hz = req.channels_hz;

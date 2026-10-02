@@ -42,24 +42,34 @@ fn dmr(freq_hz: u64) -> FoundSite {
     }
 }
 
-fn add_one(key: &str, label: &str, system: Option<&str>) -> AddSite {
-    AddSite { key: key.into(), label: label.into(), system_label: system.map(String::from) }
+/// A card that names a system and its ticked sites and leaves the rest as heard.
+fn card(label: &str, sites: &[(&FoundSite, &str)]) -> AddSystem {
+    AddSystem {
+        label: label.into(),
+        identity: None,
+        details: SystemDetails::default(),
+        sites: sites
+            .iter()
+            .map(|(f, l)| AddSite { key: f.key(), label: (*l).into(), identity: None, control: None, channels_hz: Vec::new() })
+            .collect(),
+    }
 }
 
 #[test]
 fn the_default_bands_take_eight_windows() {
     let uh = usable_half_hz(SWEEP_RATE_HZ) as f64;
-    let s = plan_steps(DEFAULT_BANDS, uh);
+    let s = plan_steps(&default_bands(), uh);
     // 700 (12 MHz) and 900 (6 MHz) take one window each; 800 (18), UHF (20) and VHF (24) two.
     assert_eq!(s.len(), 8, "{s:?}");
-    for &(lo, hi) in DEFAULT_BANDS {
+    assert_eq!(options().step_hz as f64, (2.0 * uh * 0.9).floor(), "the step the page shows is the plan's");
+    for (lo, hi) in default_bands() {
         let mut f = lo;
         while f <= hi {
             assert!(s.iter().any(|&c| (f as f64 - c as f64).abs() <= uh), "{f} uncovered");
             f += 100_000;
         }
     }
-    assert_eq!(ScanRequest::default().bands(), DEFAULT_BANDS.to_vec());
+    assert_eq!(ScanRequest::default().bands(), default_bands());
 }
 
 #[test]
@@ -84,16 +94,16 @@ fn a_scan_adds_systems_and_sites_and_merges_into_known_ones() {
     let clay_2 = p25(857_000_000, 0xBEE00, 0x8A1, 1, 2);
     let cec = dmr(454_368_750);
     let found = vec![clay.clone(), clay_2.clone(), cec.clone()];
-    let added = add(
-        &mut config,
-        &found,
-        &[add_one(&clay.key(), "Clay", Some("Clay County")), add_one(&clay_2.key(), "Clay 2", None), add_one(&cec.key(), "Green Cove Springs", Some("Clay Electric"))],
-    )
-    .unwrap();
-    assert_eq!(added.systems, vec!["clay_county", "clay_electric"]);
-    assert_eq!(added.sites, vec!["clay_county_clay", "clay_county_clay_2", "clay_electric_green_cove_springs"]);
+    let details = SystemDetails { location: Some("Green Cove Springs, FL".into()), county: Some(" Clay ".into()), ..Default::default() };
+    let added = add(&mut config, &found, &AddSystem { details, ..card("Clay County", &[(&clay, "Clay"), (&clay_2, "Clay 2")]) }).unwrap();
+    assert_eq!(added.systems, vec!["clay_county"]);
+    assert_eq!(added.sites, vec!["clay_county_clay", "clay_county_clay_2"]);
+    let added = add(&mut config, &found, &card("Clay Electric", &[(&cec, "Green Cove Springs")])).unwrap();
+    assert_eq!((added.systems, added.sites), (vec!["clay_electric".to_string()], vec!["clay_electric_green_cove_springs".to_string()]));
+    assert!(add(&mut config, &found, &card("Mixed", &[(&clay, "A"), (&cec, "B")])).is_err(), "one system a card");
     let sys = &config.systems[0];
     assert_eq!((sys.protocol, sys.identity.wacn, sys.identity.system), (Protocol::P25, Some(0xBEE00), Some(0x8A1)));
+    assert_eq!((sys.details.location.as_deref(), sys.details.county.as_deref()), (Some("Green Cove Springs, FL"), Some("Clay")));
     assert_eq!(sys.sites.len(), 2, "both P25 sites in one system");
     let site = &sys.sites[0];
     assert_eq!((site.control.freq_hz, site.control.alternates_hz.clone()), (860_962_500, vec![861_437_500]));
@@ -108,18 +118,40 @@ fn a_scan_adds_systems_and_sites_and_merges_into_known_ones() {
     assert_eq!(existing_site(&again, &config).as_deref(), Some("clay_county_clay"));
     let by_channel = p25(860_963_000, 0, 0, 0, 0);
     assert_eq!(existing_site(&by_channel, &config).as_deref(), Some("clay_county_clay"), "a control channel within 3 kHz");
-    let added = add(&mut config, &[again.clone()], &[add_one(&again.key(), "Renamed", None)]).unwrap();
-    assert_eq!((added.sites.len(), added.updated.clone()), (0, vec!["clay_county_clay".to_string()]));
+    let added = add(&mut config, &[again.clone()], &card("Renamed system", &[(&again, "Renamed")])).unwrap();
+    assert_eq!((added.systems.len(), added.sites.len(), added.updated.clone()), (0, 0, vec!["clay_county_clay".to_string()]));
     let site = &config.systems[0].sites[0];
     assert_eq!(site.label, "Clay");
     assert_eq!(site.control.alternates_hz, vec![861_437_500, 858_000_000]);
+    assert_eq!(config.systems[0].label, "Clay County", "a configured system keeps its name");
 
     // A name is needed; an id already taken gets a suffix.
     let other = p25(770_000_000, 0xBEE00, 0x8A1, 2, 9);
-    assert!(add(&mut config, &[other.clone()], &[add_one(&other.key(), " ", None)]).is_err());
-    let added = add(&mut config, &[other.clone()], &[add_one(&other.key(), "Clay", None)]).unwrap();
+    assert!(add(&mut config, &[other.clone()], &card("Clay County", &[(&other, " ")])).is_err());
+    let added = add(&mut config, &[other.clone()], &card("Clay County", &[(&other, "Clay")])).unwrap();
     assert_eq!(added.sites, vec!["clay_county_clay_3"]);
-    assert!(add(&mut config, &[], &[add_one("p25:none", "x", None)]).is_err());
+    let nowhere = AddSite { key: "p25:none".into(), label: "x".into(), identity: None, control: None, channels_hz: Vec::new() };
+    assert!(add(&mut config, &[], &AddSystem { sites: vec![nowhere], ..card("x", &[]) }).is_err());
+    assert!(add(&mut config, &[], &card("x", &[])).is_err(), "nothing ticked");
+}
+
+#[test]
+fn a_card_sets_what_the_user_changed() {
+    let clay = p25(860_962_500, 0xBEE00, 0x8A0, 1, 1);
+    let mut c = card("Clay County Public Safety", &[(&clay, "Simulcast")]);
+    c.sites[0].identity = Some(SiteIdentity { rfss: Some(1), site: Some(1), nac: Some(0x8A1), ..Default::default() });
+    c.sites[0].control = Some(Control { freq_hz: 860_962_500, alternates_hz: vec![858_987_500, 860_437_500], ..Default::default() });
+    c.sites[0].channels_hz = vec![855_237_500, 856_437_500];
+    let mut config = SystemsConfig::default();
+    add(&mut config, &[clay.clone()], &c).unwrap();
+    let site = &config.systems[0].sites[0];
+    assert_eq!((config.systems[0].label.as_str(), site.label.as_str()), ("Clay County Public Safety", "Simulcast"));
+    assert_eq!(site.control.alternates_hz, [858_987_500, 860_437_500]);
+    assert_eq!(site.channels_hz, [855_237_500, 856_437_500]);
+
+    let mut bad = c.clone();
+    bad.sites[0].identity = Some(SiteIdentity { nac: Some(0x1000), ..Default::default() });
+    assert!(add(&mut SystemsConfig::default(), &[clay], &bad).is_err(), "a NAC is 3 hex digits");
 }
 
 #[test]

@@ -14,6 +14,15 @@ const CC: u64 = 860_962_500;
 const SPECTRUM_BIAS_HZ: f64 = 40.0;
 
 #[test]
+fn a_dmr_site_is_measured_by_its_equaliser_with_or_without_an_identity() {
+    let con_plus = ControlStatus { running: true, last_message_age_ms: Some(100), carrier_offset_hz: Some(-456.0), ..ControlStatus::default() };
+    assert_eq!(Source::of(&con_plus), Some(Source::DmrEqualiser));
+    assert_eq!(Source::of(&ControlStatus { last_message_age_ms: Some(5_000), ..con_plus.clone() }), None, "nothing decoded lately");
+    assert_eq!(Source::of(&ControlStatus { carrier_offset_hz: None, ..con_plus }), None, "no sync yet");
+    assert_eq!(Source::of(&decoded_p25()), Some(Source::P25Loop));
+}
+
+#[test]
 fn the_loop_reading_scales_to_hz() {
     // A full turn per symbol is the symbol rate.
     assert!((pll_q213_to_hz(std::f64::consts::TAU * 8192.0) - 4800.0).abs() < 1e-9);

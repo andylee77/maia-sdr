@@ -129,10 +129,12 @@ impl Source {
             return None;
         }
         match control.identity {
-            Some(SiteIdentity::Dmr(_)) => Some(Source::DmrEqualiser),
             Some(SiteIdentity::P25(_)) if control.modulation == Some("lsm") => Some(Source::P25Loop),
             Some(SiteIdentity::P25(_)) => Some(Source::Spectrum),
-            None => None,
+            // The equaliser's offset needs no identity: a Connect Plus site never sends the Tier
+            // III one.
+            _ if control.carrier_offset_hz.is_some() => Some(Source::DmrEqualiser),
+            _ => None,
         }
     }
 }

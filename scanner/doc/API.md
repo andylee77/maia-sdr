@@ -45,13 +45,14 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | DELETE | `/api/v1/recordings/{id}` | delete one recording |
 | GET | `/api/v1/systems` | systems with their sites |
 | GET | `/api/v1/systems/{id}` | one system |
+| PUT | `/api/v1/systems/{id}` | edit a system: its name, identity (P25: WACN and system ID; DMR: model and network) and details (location, county, type, voice) |
 | GET | `/api/v1/systems/{id}/aliases` | a system's aliases (names, priorities, recording, speakers of its talkgroups and radios) and listening settings |
 | PUT | `/api/v1/systems/{id}/aliases` | replace a system's aliases (the live site follows them at once) |
 | PUT | `/api/v1/systems/{id}/listening` | how a system treats talkgroups with no priority, and pre-emption |
 | PUT | `/api/v1/systems/{id}/talkgroups/{tg}` | one talkgroup's controls: name, group, priority, do-not-monitor, record, speaker |
 | POST | `/api/v1/systems/{id}/radioreference` | import a RadioReference CSV (`csv`; talkgroups or sites, told by its header): talkgroups no alias covers become aliases (fully encrypted ones never followed unless `encrypted_do_not_monitor` is false); new sites are added (`sites`: only these rows), configured ones gain the channels they lack |
 | POST | `/api/v1/systems/{id}/radioreference/preview` | what that import would change; nothing is saved |
-| PUT | `/api/v1/systems/{system}/sites/{site}` | edit a site (the live site goes live again with the change) |
+| PUT | `/api/v1/systems/{system}/sites/{site}` | edit a site: its name, identity (kept when absent), channels and receiver settings (the live site goes live again with the change) |
 | DELETE | `/api/v1/systems/{system}/sites/{site}` | remove a site (not the live one) and what it learned; the history keeps its calls |
 | DELETE | `/api/v1/systems/{id}` | remove a system with its sites and aliases (none of its sites live); the history keeps their calls |
 | GET | `/api/v1/sites` | every site, with the live one marked |
@@ -60,10 +61,11 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/sites/{id}/learned` | what a site taught the radio: band plan, grants, encrypted talkgroups, neighbours, its other channels |
 | GET | `/api/v1/sites/{id}/plan` | the live site's receive window against its channels, and the planner's choice |
 | POST | `/api/v1/sites/{id}/recentre` | move the live site's window to the planner's choice now (both lanes idle) |
-| GET | `/api/v1/scan` | the scan's progress and what it found |
+| GET | `/api/v1/scan` | the scan's progress (the band and window read now) and what it found |
+| GET | `/api/v1/scan/options` | what a scan offers: its bands by name, the default settings, the window it reads at once and its step |
 | POST | `/api/v1/scan` | find the systems on the air (the live site pauses meanwhile) |
 | POST | `/api/v1/scan/cancel` | stop the scan |
-| POST | `/api/v1/scan/add` | add the ticked sites of the last scan |
+| POST | `/api/v1/scan/add` | add one found system from its card: a new system's name, identity and details; each ticked site's name, identity and channels (as heard when absent) |
 | GET | `/api/system` | legacy, for the bench: the build |
 | GET | `/api/ui/state` | legacy, for the bench: the unit's wall clock |
 | GET | `/api/imbe_dump` | legacy, for the bench: the newest raw IMBE frames |

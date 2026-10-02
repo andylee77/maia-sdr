@@ -24,6 +24,7 @@ fn system(protocol: Protocol, sites: Vec<Site>) -> System {
         label: "Clay County".into(),
         protocol,
         identity: Default::default(),
+        details: Default::default(),
         aliases: Vec::new(),
         listening: Default::default(),
         sites,

@@ -66,7 +66,7 @@ In this order; each item is usable through the API on its own.
    `/preview`; `DESIGN.md` section 3.4): talkgroups as aliases, sites as sites.
 4. **Manual add and edits:**
    - create a system (protocol, identity, name) and its sites (control channel and alternates, the DMR LCN plan);
-   - rename a system and edit its identity.
+   - edit a system's name, identity and details, and a site's identity (done: `PUT /api/v1/systems/{id}`, the site editor).
 
 ## Pages
 
@@ -117,10 +117,15 @@ p25-httpd's Now page was the better starting point (`p25-httpd/src/httpd/ui/js/v
   - edit;
   - stop the live site;
   - delete.
-- **Scan:**
-  - each control channel appears as it is found, grouped by system, with its identity, signal and decode rate;
-  - the user picks what to add and names it;
-  - what is saved is readable.
+- **Scan** (done on the current Systems page; Andy: "a nice simple clean setup, not some form"):
+  - before it: the bands to scan (ticks, plus a range of one's own) and its settings (spectrum
+    frames a window, time on each carrier, the wait for a site's identity, the most carriers);
+  - during it: the band, the window and what it is doing, and each system as it is found;
+  - after it: a compact card per found system in RadioReference's layout (name, location,
+    county, type, voice, Sysid and WACN; a table of its sites with RFSS, site, NAC, control
+    channel, the others it announced, reception), every value edited in place, then "Add".
+- **Configured systems** in the same card, edited in place with Save; traffic channels show the
+  configured ones and those heard on the air.
 - **Add by hand** (decision above).
 - **Import and export** an SDRTrunk playlist.
 - **Import RadioReference CSVs** into a system: the preview lists what would be added or kept,

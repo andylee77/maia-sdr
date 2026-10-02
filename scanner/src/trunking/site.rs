@@ -173,6 +173,17 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         self.state.subscribe()
     }
 
+    /// A system was renamed: the live site carries the new name.
+    pub fn system_changed(&self, system: &System) {
+        self.state.send_if_modified(|s| match s {
+            LiveState::Live(l) if l.system.id == system.id => {
+                l.system = SystemSummary::from(system);
+                true
+            }
+            _ => false,
+        });
+    }
+
     /// Save what the live site taught, when it changed (on the blocking pool: a flash write can
     /// take seconds).
     pub async fn save_learned(&self) {
@@ -635,6 +646,7 @@ mod tests {
             label: "Clay County".into(),
             protocol: Protocol::P25,
             identity: Default::default(),
+            details: Default::default(),
             aliases: Default::default(),
             listening: Default::default(),
             sites: vec![
@@ -642,6 +654,7 @@ mod tests {
                 Site { id: "vhf".into(), ..site(155_000_000, vec![], CcPosition::Center) },
             ],
         });
+        let renamed = System { label: "Clay County Public Safety".into(), ..config.systems.value.systems[0].clone() };
         config::save(&paths.systems(), &config.systems).unwrap();
         let tuner = Arc::new(Tuner::new(Nothing, 0.0));
         let log = Arc::new(EventLog::default());
@@ -655,6 +668,8 @@ mod tests {
         assert_eq!(l.system.id, "clay-county");
         assert_eq!(tuner.tuning().control_hz, 860_962_500);
         assert!(matches!(live.state(), LiveState::Live(_)));
+        live.system_changed(&renamed);
+        assert!(matches!(live.state(), LiveState::Live(l) if l.system.label == "Clay County Public Safety"), "a rename shows at once");
         assert_eq!(Config::load(&paths).unwrap().state.value.live_site.as_deref(), Some("clay"));
         assert!(receivers.status().running && receivers.status().site.as_deref() == Some("clay"));
         assert!(log.since(0, 10, false)[0].text.starts_with("site clay"));
@@ -682,6 +697,7 @@ mod tests {
             label: "Clay County".into(),
             protocol: Protocol::P25,
             identity: Default::default(),
+            details: Default::default(),
             aliases: Default::default(),
             listening: Default::default(),
             sites: vec![Site { id: "clay".into(), ..site(860_962_500, vec![857_987_500], CcPosition::Top) }],

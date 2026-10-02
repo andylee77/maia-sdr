@@ -62,8 +62,12 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   and played where); `scanner/doc/API_FIELDS.md` lists every field. No migration: a unit
   starts empty, and p25-httpd's files and history are never read. RadioReference's CSV
   downloads import into a system: talkgroups as aliases, sites as sites, with a preview.
+- **Systems setup:** systems carry RadioReference's details (location, county, type, voice) and
+  can be renamed and re-identified; the scan takes its bands and settings from the page and
+  reports its band and window; found and configured systems share one compact card, edited in
+  place.
 
-Tests: scanner 398, p25-httpd 475.
+Tests: scanner 404, p25-httpd 475.
 
 ---
 

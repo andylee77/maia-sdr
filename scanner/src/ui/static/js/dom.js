@@ -21,6 +21,34 @@ export function h(tag, attrs, ...children) {
   return el;
 }
 
+// Line icons drawn on a 24-unit grid in the text colour.
+const SVG = 'http://www.w3.org/2000/svg';
+const ICONS = {
+  play: [['path', { d: 'M8 5.5v13l10.5-6.5z', fill: 'currentColor', stroke: 'none' }]],
+  stop: [['rect', { x: '6.5', y: '6.5', width: '11', height: '11', rx: '1.5', fill: 'currentColor', stroke: 'none' }]],
+  trash: [['path', { d: 'M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5' }]],
+  tune: [['path', { d: 'M4 7h3M11 7h9M4 17h9M17 17h3' }], ['circle', { cx: '9', cy: '7', r: '2' }], ['circle', { cx: '15', cy: '17', r: '2' }]],
+};
+
+export function icon(name) {
+  const make = (tag, attrs) => {
+    const el = document.createElementNS(SVG, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    return el;
+  };
+  const svg = make('svg', {
+    viewBox: '0 0 24 24', width: '16', height: '16', fill: 'none', stroke: 'currentColor',
+    'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true',
+  });
+  for (const [tag, attrs] of ICONS[name]) svg.appendChild(make(tag, attrs));
+  return svg;
+}
+
+// A button that is one symbol; its name is the tooltip and the label.
+export function iconButton(name, label, { cls = '', onclick, disabled } = {}) {
+  return h('button', { class: `btn small icon ${cls}`.trim(), type: 'button', title: label, 'aria-label': label, onclick, disabled }, icon(name));
+}
+
 function append(el, children) {
   for (const c of children) {
     if (c === null || c === undefined || c === false) continue;

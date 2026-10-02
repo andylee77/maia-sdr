@@ -9,10 +9,10 @@
 //!    identity and plan; a P25 neighbour's control channel in the bands is probed too;
 //! 3. hands the radio back to the live site.
 //!
-//! The found sites are grouped into systems by identity for the user to tick and name. Adding
-//! matches by identity, or by control channel within 3 kHz: it never overwrites labels or
-//! aliases; it adds what was learned (alternate control channels, the P25 band plan) and the
-//! sites ticked.
+//! The found sites are grouped into systems by identity, a card each for the user to fill in
+//! (names, details, each site's identity and channels) and add. Adding matches by identity, or
+//! by control channel within 3 kHz: it never overwrites a configured system or site; it adds
+//! what was learned (alternate control channels, the P25 band plan) and the sites ticked.
 
 pub mod carriers;
 pub mod probe;
@@ -23,26 +23,68 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::events::SiteIdentity as HeardIdentity;
 use crate::services::config::ids::{slug, unique};
 use crate::services::config::state::IdenBand;
-use crate::services::config::systems::{Control, DmrModel, Protocol, Site, SiteIdentity, System, SystemIdentity, SystemsConfig};
+use crate::services::config::systems::{
+    Control, DmrModel, Protocol, Site, SiteIdentity, System, SystemDetails, SystemIdentity, SystemsConfig,
+};
 use carriers::Carrier;
 
-/// P25 700, 800 and 900 MHz; UHF 450–470 and VHF 150–174 MHz (DMR and P25 both live there).
-pub const DEFAULT_BANDS: &[(u64, u64)] = &[
-    (764_000_000, 776_000_000),
-    (851_000_000, 869_000_000),
-    (935_000_000, 941_000_000),
-    (450_000_000, 470_000_000),
-    (150_000_000, 174_000_000),
+/// The bands a scan offers by name: P25 700, 800 and 900 MHz; UHF 450–470 and VHF 150–174 MHz
+/// (DMR and P25 both live there).
+pub const BANDS: &[(&str, u64, u64)] = &[
+    ("700 MHz", 764_000_000, 776_000_000),
+    ("800 MHz", 851_000_000, 869_000_000),
+    ("900 MHz", 935_000_000, 941_000_000),
+    ("UHF", 450_000_000, 470_000_000),
+    ("VHF", 150_000_000, 174_000_000),
 ];
+
+pub fn default_bands() -> Vec<(u64, u64)> {
+    BANDS.iter().map(|&(_, low, high)| (low, high)).collect()
+}
+
+/// What a scan offers: its bands by name, the default settings, how much it reads at once and
+/// how far apart its windows are.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanOptions {
+    pub bands: Vec<NamedBand>,
+    pub defaults: ScanRequest,
+    pub window_hz: u32,
+    /// The part of a window clear of the decimator's edges.
+    pub usable_hz: u64,
+    pub step_hz: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NamedBand {
+    pub name: &'static str,
+    pub low_hz: u64,
+    pub high_hz: u64,
+}
+
+pub fn options() -> ScanOptions {
+    let uh = crate::radio::plan::usable_half_hz(SWEEP_RATE_HZ) as f64;
+    ScanOptions {
+        bands: BANDS.iter().map(|&(name, low_hz, high_hz)| NamedBand { name, low_hz, high_hz }).collect(),
+        defaults: ScanRequest::default(),
+        window_hz: SWEEP_RATE_HZ,
+        usable_hz: (2.0 * uh) as u64,
+        step_hz: step_hz(uh) as u64,
+    }
+}
+
+/// Windows overlap by 10 %.
+fn step_hz(usable_half_hz: f64) -> f64 {
+    2.0 * usable_half_hz * 0.9
+}
 pub const SWEEP_PRESET: &str = "16M";
 pub const SWEEP_RATE_HZ: u32 = 16_000_000;
 /// A found control channel this close to a configured one is that site.
 pub const SAME_CHANNEL_HZ: u64 = 3_000;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ScanRequest {
-    /// Ranges in Hz; empty = `DEFAULT_BANDS`.
+    /// Ranges in Hz; empty = every band of `BANDS`.
     pub bands: Vec<(u64, u64)>,
     /// Spectrometer frames per step.
     pub frames: usize,
@@ -62,13 +104,13 @@ impl Default for ScanRequest {
 
 impl ScanRequest {
     pub fn bands(&self) -> Vec<(u64, u64)> {
-        if self.bands.is_empty() { DEFAULT_BANDS.to_vec() } else { self.bands.clone() }
+        if self.bands.is_empty() { default_bands() } else { self.bands.clone() }
     }
 }
 
 /// LO positions covering `bands` with windows of ±`usable_half_hz` (overlapping by 10 %).
 pub fn plan_steps(bands: &[(u64, u64)], usable_half_hz: f64) -> Vec<u64> {
-    let step = 2.0 * usable_half_hz * 0.9;
+    let step = step_hz(usable_half_hz);
     let mut out = Vec::new();
     for &(lo, hi) in bands {
         let (lo, hi) = (lo as f64, hi as f64);
@@ -195,15 +237,36 @@ pub fn existing_site(found: &FoundSite, systems: &SystemsConfig) -> Option<Strin
     })
 }
 
-/// One found site to add, as the user named it.
+/// One found system to add, as the user filled in its card.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddSystem {
+    /// A new system's name; a configured one keeps its own, its identity and details.
+    pub label: String,
+    /// As heard when absent.
+    #[serde(default)]
+    pub identity: Option<SystemIdentity>,
+    #[serde(default)]
+    pub details: SystemDetails,
+    /// The ticked sites, all of this one system.
+    pub sites: Vec<AddSite>,
+}
+
+/// One found site to add.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AddSite {
     /// `FoundSite::key`.
     pub key: String,
     pub label: String,
-    /// The system's name, when its system is new.
-    pub system_label: Option<String>,
+    /// As heard when absent.
+    #[serde(default)]
+    pub identity: Option<SiteIdentity>,
+    /// As heard when absent: the channel found and the control channels it announced.
+    #[serde(default)]
+    pub control: Option<Control>,
+    #[serde(default)]
+    pub channels_hz: Vec<u64>,
 }
 
 /// What adding did.
@@ -215,12 +278,51 @@ pub struct Added {
     pub updated: Vec<String>,
 }
 
-/// Add the chosen found sites to `systems`: a configured site gains alternate control channels
-/// only; a new site joins the system with its identity, or a new system named by the user.
-pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], choice: &[AddSite]) -> Result<Added, String> {
+/// Add one found system's ticked sites to `systems`, as its card says. A configured site gains
+/// the alternate control channels it lacks, nothing else; a new site joins the configured
+/// system it belongs to, or a new system made from the card.
+pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], card: &AddSystem) -> Result<Added, String> {
+    let picked = card
+        .sites
+        .iter()
+        .map(|c| found.iter().find(|f| f.key() == c.key).map(|f| (f, c)).ok_or_else(|| format!("no found site {}", c.key)))
+        .collect::<Result<Vec<_>, String>>()?;
+    let Some(&(first, _)) = picked.first() else { return Err("no site ticked".into()) };
+    if picked.iter().any(|(f, _)| f.protocol != first.protocol || f.system_identity() != first.system_identity()) {
+        return Err("the ticked sites belong to different systems".into());
+    }
     let mut added = Added::default();
-    for c in choice {
-        let f = found.iter().find(|f| f.key() == c.key).ok_or_else(|| format!("no found site {}", c.key))?;
+    let configured = |systems: &SystemsConfig| {
+        picked
+            .iter()
+            .find_map(|(f, _)| existing_site(f, systems).and_then(|id| systems.systems.iter().position(|s| s.sites.iter().any(|x| x.id == id))))
+            .or_else(|| systems.systems.iter().position(|s| s.protocol == first.protocol && same_system(&s.identity, &first.system_identity())))
+    };
+    let index = match configured(systems) {
+        Some(i) => i,
+        None => {
+            let name = card.label.trim();
+            if name.is_empty() {
+                return Err("a system needs a name".into());
+            }
+            let identity = card.identity.clone().unwrap_or_else(|| first.system_identity());
+            identity.check(first.protocol)?;
+            let id = unique(slug(name), |id| systems.systems.iter().any(|s| s.id == id));
+            systems.systems.push(System {
+                id: id.clone(),
+                label: name.to_string(),
+                protocol: first.protocol,
+                identity,
+                details: card.details.clone().tidied(),
+                aliases: Vec::new(),
+                listening: Default::default(),
+                sites: Vec::new(),
+            });
+            added.systems.push(id);
+            systems.systems.len() - 1
+        }
+    };
+    for (f, c) in picked {
         if let Some(id) = existing_site(f, systems) {
             if let Some(site) = systems.systems.iter_mut().flat_map(|s| s.sites.iter_mut()).find(|s| s.id == id) {
                 let before = site.control.alternates_hz.len();
@@ -239,25 +341,9 @@ pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], choice: &[AddSite])
         if label.is_empty() {
             return Err(format!("{}: a site needs a name", c.key));
         }
-        let sys_identity = f.system_identity();
-        let index = match systems.systems.iter().position(|s| s.protocol == f.protocol && same_system(&s.identity, &sys_identity)) {
-            Some(i) => i,
-            None => {
-                let name = c.system_label.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(label);
-                let id = unique(slug(name), |id| systems.systems.iter().any(|s| s.id == id));
-                systems.systems.push(System {
-                    id: id.clone(),
-                    label: name.to_string(),
-                    protocol: f.protocol,
-                    identity: sys_identity,
-                    aliases: Vec::new(),
-                    listening: Default::default(),
-                    sites: Vec::new(),
-                });
-                added.systems.push(id);
-                systems.systems.len() - 1
-            }
-        };
+        let identity = c.identity.clone().unwrap_or_else(|| f.site_identity());
+        identity.check(f.protocol).map_err(|e| format!("{label}: {e}"))?;
+        let heard = Control { freq_hz: f.freq_hz, alternates_hz: f.alternates(), lcn: None, timeslot: f.timeslot };
         // Site ids are unique across systems and name both ("clay_county_site_1"): sites of
         // different systems are often named alike.
         let site_ids: Vec<String> = systems.systems.iter().flat_map(|s| s.sites.iter().map(|x| x.id.clone())).collect();
@@ -265,10 +351,10 @@ pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], choice: &[AddSite])
         systems.systems[index].sites.push(Site {
             id: site_id.clone(),
             label: label.to_string(),
-            identity: f.site_identity(),
-            control: Control { freq_hz: f.freq_hz, alternates_hz: f.alternates(), lcn: None, timeslot: f.timeslot },
+            identity,
+            control: c.control.clone().unwrap_or(heard),
             modulation: Default::default(),
-            channels_hz: Vec::new(),
+            channels_hz: c.channels_hz.clone(),
             channel_plan: None,
             window: Default::default(),
             notes: Vec::new(),
@@ -288,6 +374,11 @@ pub struct ScanState {
     pub started_unix_ms: u64,
     pub finished_unix_ms: u64,
     pub bands: Vec<(u64, u64)>,
+    /// The band of the window read now; none while the control channels found sites announced
+    /// are checked.
+    pub band: Option<(u64, u64)>,
+    /// The window's centre.
+    pub lo_hz: Option<u64>,
     pub step: usize,
     pub steps: usize,
     pub probed: usize,
@@ -312,6 +403,8 @@ impl Default for ScanState {
             started_unix_ms: 0,
             finished_unix_ms: 0,
             bands: Vec::new(),
+            band: None,
+            lo_hz: None,
             step: 0,
             steps: 0,
             probed: 0,

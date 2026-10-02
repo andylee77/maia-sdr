@@ -265,7 +265,7 @@ understands is read but never written, so a downgrade cannot drop fields.
 | File | Owner | Holds | Written |
 |------|-------|-------|---------|
 | `/mnt/jffs2/scanner/radio.json` | `services::config::radio` | Gain mode, presets allowed, traffic chains, call hang/grace, recording policy (every call, or only aliases that say record) and storage, history limits, clock source | On a user change |
-| `/mnt/jffs2/scanner/systems.json` | `services::config::systems` | Systems: protocol, identity, label, aliases and listening settings (`services::config::aliases`), and their sites (control channels, alternates, known channels, channel plan, window policy, modulation) | On a user change or a scan "Add" |
+| `/mnt/jffs2/scanner/systems.json` | `services::config::systems` | Systems: protocol, identity, label, details (location, county, type, voice: descriptive only), aliases and listening settings (`services::config::aliases`), and their sites (identity, control channels, alternates, known channels, channel plan, window policy, modulation) | On a user change or a scan "Add" |
 | `/mnt/jffs2/scanner/state/radio.json` | `services::config::state` | Live site; crystal calibration | On a switch; on a calibration |
 | `/mnt/jffs2/scanner/state/sites/<id>.json` | `services::config::state` | Learned per site: identity seen, IDEN bands or LCNs, neighbours, secondary CCs, grant counts per channel, known-encrypted talkgroups, last recentre | Every 10 min if changed, on a switch, at shutdown |
 
@@ -300,8 +300,10 @@ label and its own; the history rows and recording file names carry it.
   "version": 1,
   "systems": [
     {
-      "id": "clay_county", "label": "Clay County", "protocol": "p25",
+      "id": "clay_county", "label": "Clay County Public Safety", "protocol": "p25",
       "identity": { "wacn": 781824, "system": 2208 },
+      "details": { "location": "Green Cove Springs, FL", "county": "Clay",
+                   "system_type": "Project 25 Phase I", "voice": "APCO-25 Common Air Interface Exclusive" },
       "aliases": [
         { "name": "EMS Dispatch", "group": "Primary", "ids": [{ "type": "talkgroup", "value": 300 }],
           "priority": 1, "do_not_monitor": false, "record": true, "speaker": "left" },
@@ -697,10 +699,16 @@ One module, `services::recordings`, driven by the call:
 The 071 finder becomes `services::discovery`, run on the Systems page, and on first run.
 
 - **Bands:**
-  - P25 700, 800 and 900 MHz (today);
-  - UHF 450–470 MHz and VHF 150–174 MHz (today's optional list), on by default.
+  - P25 700, 800 and 900 MHz;
+  - UHF 450–470 MHz and VHF 150–174 MHz.
 
-  About 8 windows at 16 MSPS: roughly 4–5 minutes against 2.3 today.
+  All five are ticked by default; the user unticks bands and may add a range of their own.
+  `/api/v1/scan/options` gives the bands by name, the default settings (spectrum frames per
+  window, time on each carrier, the wait for a site's identity, the most carriers probed), the
+  16 MHz window and its 12.96 MHz step. All five bands take 8 windows: about 4–5 minutes.
+- **Progress** (`/ws/live`): the band and window being read, and what the scan is doing:
+  reading the spectrum, listening to a carrier for a control channel, checking a control channel
+  a found site announced, handing the radio back.
 - **Detection:**
   - the HDL spectrometer and `find_carriers`, as today (continuous vs bursty);
   - each carrier is probed by **every protocol's control decoder at once** on the control IQ:
@@ -712,8 +720,12 @@ The 071 finder becomes `services::discovery`, run on the Systems page, and on fi
   - DMR: colour code and system identity code (model, network, site); channel plan from
     channel-announcement CSBKs and MBC absolute parameters (parsed today but never fed back);
     neighbours from adjacent-site and vote-now (LCN only).
-- **Proposal:** sites grouped into systems by identity. The user ticks what to keep and names it.
-  "Already configured" sites are marked.
+- **Proposal:** a card per found system, sites grouped by identity: the system's name, details
+  and identity on two lines, then its sites in a table (name, identity, control channel, the
+  others it announced, reception), every value editable in place. "Add" sends the card
+  (`POST /api/v1/scan/add`: a new system's name, identity and details; each ticked site's name,
+  identity and channels). A configured system keeps its own name; its configured sites only gain
+  alternates.
 - **Rescan** matches by identity, or by control channel within 3 kHz. It never overwrites labels,
   aliases. It adds learned data (alternates, plan) to state, and adds new sites only when
   ticked.
@@ -783,7 +795,7 @@ Same stack: plain ES modules embedded by `ui_assets.rs`, no build step, no CDN.
 | Page | Contents |
 |------|----------|
 | **Now** | The at-a-glance summary: the live site card, a call card per lane, recent calls (site picker as today), the hold |
-| **Systems** | System cards with their sites (identity, control channel, health, Listen), the site editor, and the setup scan with results grouped into systems. First run opens here. |
+| **Systems** | The scan (bands and settings, progress, a card per found system to fill in and add), then the configured systems in the same card: name, details and identity, sites with their identity, control channel, alternates and traffic channels (the configured ones and those heard on the air), all edited in place with Save; the site's receiver settings behind a button. First run opens here. |
 | **Activity** | As today, with a system/site picker that includes DMR; packet data is a P25 component |
 | **Settings** | Radio (gain, crystal, presets, clock, storage and recording), the configuration (export, import, factory reset), browser, about |
 | **Diagnostics** | The one **events box** for every protocol (CC messages off by default, calls, traffic lines), receivers (a protocol component), radio window (spectrum, coverage, manual tune), lanes, board, raw JSON |
@@ -1369,3 +1381,8 @@ From the brief:
     every field of every GET route and `/ws/live` its type, an example and its meaning.
   - **RadioReference CSV import** (section 3.4): a system's talkgroups file becomes aliases and
     its sites file sites, with a preview first. Andy's saved downloads are the test files.
+  - **Systems setup** (Andy: "a nice simple clean setup"): systems carry RadioReference's
+    details (location, county, type, voice); `PUT /api/v1/systems/{id}` edits a system and the
+    site editor its identity; the scan takes bands and settings from the page and reports its
+    band and window; the Systems page shows found and configured systems in one compact card,
+    edited in place (section 10). The receive window moved to Diagnostics.
