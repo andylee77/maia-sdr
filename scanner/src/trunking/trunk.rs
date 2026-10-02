@@ -657,8 +657,9 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         self.lanes.iter_mut().find(|l| l.lane == lane)
     }
 
-    /// A grant. A DMR channel the plan lacks is looked for: on the next candidate frequency the
-    /// learner has, else among the carriers that key up after it.
+    /// A grant. A DMR channel the plan lacks is looked for: the grant waits a moment for the
+    /// carrier that keys up for it (`keyup_done`); when the spectrum cannot be watched, it is
+    /// followed at once on the learner's next candidate.
     async fn grant(&mut self, mut grant: Grant, nac: u16, at: Stamp) {
         let mut trial = false;
         if let ChannelId::DmrLcn(lcn) = grant.channel.id {
@@ -666,48 +667,51 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 grant.channel.freq_hz = self.lcn.freq_for(lcn, grant.tg);
             }
             if grant.channel.freq_hz.is_none() && self.lcn.idle() {
-                match self.lcn.candidate(lcn, &self.survey.intermittent()) {
-                    Some(f) => {
-                        self.lcn.start(lcn, f, grant.tg, at.mono);
-                        grant.channel.freq_hz = Some(f);
-                        trial = true;
-                    }
-                    None => self.watch_keyup(grant, nac, at),
+                // Repeated while its watch runs: the watch follows it.
+                if self.keyup.as_ref().is_some_and(|k| k.grant.channel.id == grant.channel.id && k.grant.tg == grant.tg) {
+                    return;
+                }
+                if self.keyup.is_none() && self.watch_keyup(&grant, nac, at) {
+                    return;
+                }
+                if let Some(f) = self.lcn.candidate(lcn, &[], &self.survey.intermittent()) {
+                    self.lcn.start(lcn, f, grant.tg, at.mono);
+                    grant.channel.freq_hz = Some(f);
+                    trial = true;
                 }
             }
         }
         self.follow_grant(grant, nac, at, trial).await;
     }
 
-    /// The carriers that keyed up after a grant on an unmapped channel: try the first one not
-    /// ruled out.
+    /// The watch after a grant on an unmapped channel is over: follow it on the first candidate
+    /// not ruled out, the carriers that keyed up first.
     async fn keyed(&mut self, mut grant: Grant, nac: u16, freqs: Vec<u64>) {
-        let ChannelId::DmrLcn(lcn) = grant.channel.id else { return };
-        if self.lcn.freq(lcn).is_some() || !self.lcn.idle() {
-            return;
+        let mut trial = false;
+        if let ChannelId::DmrLcn(lcn) = grant.channel.id {
+            grant.channel.freq_hz = self.lcn.freq_for(lcn, grant.tg);
+            if grant.channel.freq_hz.is_none() && self.lcn.idle() {
+                match self.lcn.candidate(lcn, &freqs, &self.survey.intermittent()) {
+                    Some(f) => {
+                        self.lcn.start(lcn, f, grant.tg, Instant::now());
+                        grant.channel.freq_hz = Some(f);
+                        trial = true;
+                    }
+                    None => self.log.system("lcn", format!("LCN {lcn}: nothing left to try for TG {}'s call", grant.tg)),
+                }
+            }
         }
-        let mut candidates = self.survey.intermittent();
-        candidates.extend(freqs);
-        let Some(f) = self.lcn.candidate(lcn, &candidates) else {
-            self.log.system("lcn", format!("LCN {lcn}: no carrier keyed up in the window after TG {}'s grant", grant.tg));
-            return;
-        };
-        let at = Stamp::now();
-        self.lcn.start(lcn, f, grant.tg, at.mono);
-        grant.channel.freq_hz = Some(f);
-        self.follow_grant(grant, nac, at, true).await;
+        self.follow_grant(grant, nac, Stamp::now(), trial).await;
     }
 
     /// Gather the spectrum for a moment after a grant on an unmapped channel, to compare with the
-    /// bins' usual level (`keyup_done`).
-    fn watch_keyup(&mut self, grant: Grant, nac: u16, at: Stamp) {
-        if self.keyup.is_some() {
-            return;
-        }
+    /// bins' usual level (`keyup_done`). False: no usual level to compare with yet.
+    fn watch_keyup(&mut self, grant: &Grant, nac: u16, at: Stamp) -> bool {
         let t = self.tuner.tuning();
         let window = (t.lo_hz, t.sample_rate_hz);
-        let Some(usual) = self.usual.level(window) else { return };
-        self.keyup = Some(KeyupWatch { grant, nac, usual, window, until: at.mono + KEYUP_WATCH, after: Vec::new() });
+        let Some(usual) = self.usual.level(window) else { return false };
+        self.keyup = Some(KeyupWatch { grant: *grant, nac, usual, window, until: at.mono + KEYUP_WATCH, after: Vec::new() });
+        true
     }
 
     /// The watch is over: the carriers that rose are the next candidates.
@@ -786,7 +790,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             });
             match (lane, self.lcn.trial()) {
                 (Some(lane), Some(t)) => {
-                    self.lcn.following(lane, at.mono);
+                    self.lcn.following(lane, Instant::now());
                     self.log.system("lcn", format!("LCN {}: trying {:.5} MHz with TG {}'s call on {lane}", t.lcn, t.freq_hz as f64 / 1e6, t.tg));
                 }
                 _ => self.lcn.abandon(),
@@ -856,10 +860,11 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         }
     }
 
+    /// A key-up watch keeps its grant (it is followed when the watch ends); it compares only the
+    /// frames of the window it began in.
     fn window_moved(&mut self) {
         self.usual.clear();
         self.survey.clear();
-        self.keyup = None;
         for slot in &mut self.lanes {
             slot.traffic.retuned();
             slot.tuned_hz = None;
@@ -944,6 +949,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 if let Some(t) = self.lcn.confirmed(lane) {
                     if let Some(l) = &self.learned {
                         l.lcn(t.lcn, t.freq_hz);
+                        l.grant(t.freq_hz);
                     }
                     self.log.system("lcn", format!("LCN {} is {:.5} MHz: TG {}'s voice header was heard there", t.lcn, t.freq_hz as f64 / 1e6, t.tg));
                 }
@@ -1114,8 +1120,11 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                         }
                     }
                     self.log.system("call", opened_text(&o));
+                    // A frequency on trial counts as the site's channel once confirmed.
                     if let (Some(l), Some(f)) = (&self.learned, o.channel.freq_hz) {
-                        l.grant(f);
+                        if !self.lcn.trying(f, o.tg) {
+                            l.grant(f);
+                        }
                     }
                     self.open.push(o);
                 }

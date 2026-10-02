@@ -22,6 +22,14 @@ pub fn usable_half_hz(sample_rate_hz: u32) -> i64 {
     (sample_rate_hz as f64 * USABLE_FRACTION) as i64
 }
 
+/// The bins `lo..hi` of an `n`-bin spectrum at `sample_rate_hz` (DC-centred) inside the usable
+/// window: what a lane can receive.
+pub fn usable_bins(n: usize, sample_rate_hz: u32) -> (usize, usize) {
+    let bin_hz = f64::from(sample_rate_hz) / n as f64;
+    let half = ((usable_half_hz(sample_rate_hz) as f64 / bin_hz).floor() as usize).min(n / 2);
+    (n / 2 - half, (n / 2 + half + 1).min(n))
+}
+
 /// Is `freq_hz` inside the usable window of an LO at `lo_hz`?
 pub fn covers(lo_hz: i64, freq_hz: u64, sample_rate_hz: u32) -> bool {
     (freq_hz as i64 - lo_hz).abs() <= usable_half_hz(sample_rate_hz)

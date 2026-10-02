@@ -18,13 +18,14 @@ export function hzList(text, what) {
   });
 }
 
-// "5 = 454.36875" lines <-> {5: Hz}.
-function lcnPlan(text) {
+// "5 = 454.36875, 6 = 451.0875" <-> {5: Hz}; "5: 454.36875 · 6: 451.0875", as shown, reads too.
+const lcnText = plan => Object.entries(plan).sort((a, b) => a[0] - b[0]).map(([k, v]) => `${k} = ${MHZ(v)}`).join(', ');
+function lcnPlan(text, what) {
   const out = {};
-  for (const line of text.split('\n').map(l => l.trim()).filter(Boolean)) {
-    const m = line.match(/^(\d+)\s*[=:,]\s*([\d.]+)$/);
-    if (!m) throw new Error(`"${line}" is not "LCN = MHz"`);
-    out[m[1]] = hzList(m[2], `LCN ${m[1]}`)[0];
+  for (const part of text.split(/[,;·\n]+/).map(t => t.trim()).filter(Boolean)) {
+    const m = part.match(/^(\d+)\s*[=:]?\s*([\d.]+)$/);
+    if (!m) throw new Error(`${what}: "${part}" is not "LCN = MHz"`);
+    out[m[1]] = hzList(m[2], `${what}: LCN ${m[1]}`)[0];
   }
   return out;
 }
@@ -87,9 +88,9 @@ function readIds(values, base) {
 }
 
 // A frequency list shown as wrapping text (`dim` ones in grey: heard, not configured); a click
-// edits it.
+// edits it, and what is typed is saved. Unedited, its value is the configured ones alone.
 function freqList(list, dim, label, onInput) {
-  let text = hzText(list);
+  const text = hzText(list);
   let input = null;
   const span = h('span', { class: 'list', title: 'Click to edit' });
   const draw = () => {
@@ -101,7 +102,34 @@ function freqList(list, dim, label, onInput) {
     span.replaceWith(input);
     input.focus();
   });
-  return { node: span, value: () => (input ? input.value : text) };
+  return { node: span, value: () => (input ? input.value : hzText(list.filter(f => !dim.includes(f)))) };
+}
+
+// A site's logical channels shown as "5: 454.36875 · 6: 451.0875" (those learned on the air in
+// grey); a click edits them all as "LCN = MHz" pairs, and what is typed becomes the plan.
+// Unedited, its value is the configured plan alone.
+function lcnList(site, learnedLcn, onInput) {
+  const configured = (site.channel_plan && site.channel_plan.lcn_hz) || {};
+  const all = { ...(learnedLcn || {}), ...configured };
+  const lcns = Object.keys(all).map(Number).sort((a, b) => a - b);
+  let input = null;
+  const span = h('span', { class: 'list', title: 'Click to edit: LCN = MHz, comma separated' },
+    ...(lcns.length
+      ? lcns.map((n, i) => h('span', {
+        class: configured[n] === undefined ? 'heard' : '',
+        title: configured[n] === undefined ? 'learned on the air' : 'configured',
+        text: `${i ? ' · ' : ''}${n}: ${MHZ(all[n])}`,
+      }))
+      : [h('span', { class: 'hex', text: 'learned from the calls' })]));
+  span.addEventListener('click', () => {
+    input = inline(lcnText(all), '5 = 454.36875, 6 = 451.0875', { min: 24, onInput });
+    span.replaceWith(input);
+    input.focus();
+  });
+  return {
+    node: span,
+    read: what => (input ? { lcn_hz: lcnPlan(input.value, what) } : site.channel_plan || null),
+  };
 }
 
 // A system's head. `right`: nodes at the end of the first line. read() gives
@@ -152,18 +180,6 @@ export function siteTable(proto, rows, { traffic = true, settings = false, onInp
   };
 }
 
-// A site's logical channels: the configured plan, then what the radio learned on the air.
-function channelTable(site, learnedLcn) {
-  const configured = (site.channel_plan && site.channel_plan.lcn_hz) || {};
-  const all = { ...(learnedLcn || {}), ...configured };
-  const lcns = Object.keys(all).map(Number).sort((a, b) => a - b);
-  if (!lcns.length) return h('span', { class: 'list' }, h('span', { class: 'hex', text: 'learned from the calls' }));
-  return h('span', { class: 'list' }, ...lcns.map((n, i) => h('span', {
-    title: configured[n] !== undefined ? 'configured' : 'learned on the air',
-    text: `${i ? ' · ' : ''}${n}: ${MHZ(all[n])}`,
-  })));
-}
-
 function siteRow(p, { site, lead = null, heard = [], tail = [], lcn = null }, { leads, traffic, settings, onInput, span }) {
   let edited = false;
   const changed = () => {
@@ -176,8 +192,12 @@ function siteRow(p, { site, lead = null, heard = [], tail = [], lcn = null }, { 
   const also = freqList(site.control.alternates_hz || [], [], 'none', changed);
   const slot = inlineSelect([['', '?'], ['1', '1'], ['2', '2']], site.control.timeslot ? String(site.control.timeslot) : '', 'Control timeslot', changed);
   const configured = site.channels_hz || [];
-  const extra = heard.filter(f => !configured.includes(f));
+  // Where channels are numbered, those heard are in the channel table; the traffic list then
+  // holds only frequencies configured without a number.
+  const lcns = p.edits.lcnPlan && traffic ? lcnList(site, lcn, changed) : null;
+  const extra = lcns ? [] : heard.filter(f => !configured.includes(f));
   const channels = freqList([...configured, ...extra].sort((a, b) => a - b), extra, 'none yet', changed);
+  const showTraffic = traffic && (!lcns || configured.length > 0);
 
   const more = settings ? siteSettings(p, site, changed) : null;
   const moreRow = more ? h('tr', { class: 'more', hidden: true }, h('td', { colspan: String(span) }, more.el)) : null;
@@ -192,8 +212,8 @@ function siteRow(p, { site, lead = null, heard = [], tail = [], lcn = null }, { 
     ...(leads ? [h('td')] : []),
     h('td', { colspan: String(span - (leads ? 1 : 0)) },
       h('span', { class: 'k', text: 'Also' }), also.node,
-      ...(traffic ? [h('span', { class: 'k', text: 'Traffic' }), channels.node] : []),
-      ...(p.edits.lcnPlan && traffic ? [h('span', { class: 'k', text: 'Channels' }), channelTable(site, lcn)] : [])));
+      ...(showTraffic ? [h('span', { class: 'k', text: 'Traffic' }), channels.node] : []),
+      ...(lcns ? [h('span', { class: 'k', text: 'Channels' }), lcns.node] : [])));
   return {
     trs: [tr, freqs, ...(moreRow ? [moreRow] : [])],
     site,
@@ -212,13 +232,14 @@ function siteRow(p, { site, lead = null, heard = [], tail = [], lcn = null }, { 
         },
         channels_hz: traffic ? hzList(channels.value(), `${name.value}: traffic`) : site.channels_hz || [],
         ...(more ? more.read() : {}),
+        ...(lcns || more ? { channel_plan: lcns ? lcns.read(`${name.value}: channels`) : site.channel_plan || null } : {}),
       };
     },
   };
 }
 
 // A configured site's receiver settings: the receive window, and what its protocol lets the user
-// set (the modulation, the control LCN and the channel plan).
+// set (the modulation, the control LCN).
 function siteSettings(p, site, onInput) {
   const modulation = inlineSelect([['auto', 'automatic'], ['lsm', 'LSM'], ['c4fm', 'C4FM']], site.modulation || 'auto', 'Modulation', onInput);
   const auto = h('input', { type: 'checkbox', 'aria-label': 'Move the window to the busiest channels' });
@@ -226,21 +247,16 @@ function siteSettings(p, site, onInput) {
   auto.addEventListener('change', onInput);
   const position = inlineSelect([['center', 'centre'], ['top', 'top'], ['bottom', 'bottom']], (site.window && site.window.cc_position) || 'center', 'Control channel in the window', onInput);
   const lcn = inline(site.control.lcn ?? '', 'LCN', { min: 3, onInput });
-  const plan = h('textarea', { class: 'input', rows: 3, cols: 28, 'aria-label': 'LCN plan', placeholder: '5 = 454.36875' });
-  plan.value = Object.entries((site.channel_plan && site.channel_plan.lcn_hz) || {}).map(([k, v]) => `${k} = ${MHZ(v)}`).join('\n');
-  plan.addEventListener('input', onInput);
   const el = h('div', { class: 'scan-settings' },
     ...(p.edits.modulation ? [h('span', { text: 'Modulation' }), modulation] : []),
     h('label', { class: 'row' }, auto, h('span', { text: 'Move the window to the busiest channels,' })),
     h('span', { text: 'control channel at the' }), position,
-    ...(p.edits.controlSlot ? [h('span', { text: 'Control LCN' }), lcn] : []),
-    ...(p.edits.lcnPlan ? [h('span', { text: 'Channel plan (one "LCN = MHz" a line)' }), plan] : []));
+    ...(p.edits.controlSlot ? [h('span', { text: 'Control LCN' }), lcn] : []));
   return {
     el,
     lcn: () => (p.edits.controlSlot && String(lcn.value).trim() !== '' ? Number(lcn.value) : site.control.lcn ?? null),
     read: () => ({
       modulation: p.edits.modulation ? modulation.value : site.modulation || 'auto',
-      channel_plan: p.edits.lcnPlan ? { lcn_hz: lcnPlan(plan.value) } : site.channel_plan || null,
       window: { ...(site.window || {}), auto: auto.checked, cc_position: position.value },
       notes: site.notes || [],
     }),

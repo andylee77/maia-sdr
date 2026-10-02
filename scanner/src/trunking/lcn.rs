@@ -3,15 +3,17 @@
 //! voice link control there names the granted talkgroup (the traffic decoder reports the talking
 //! radio only then). A candidate that fails is not tried again for that LCN.
 //!
-//! Candidates, in order: the control channel (a control repeater carries calls on its other
-//! timeslot), the site's known channels, then carriers that keyed up in the receive window just
-//! after the grant. One frequency belongs to one LCN, so a frequency another LCN holds is never
-//! a candidate.
+//! Candidates, in order: the carriers that keyed up in the receive window just after the grant
+//! (a traffic repeater keys up for the call it was granted), the control channel (a control
+//! repeater carries calls on its other timeslot, and stays on), the site's known channels, then
+//! the window's intermittent carriers. One frequency belongs to one LCN, so a frequency another
+//! LCN holds is never a candidate.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::hardware::p25core::Lane;
+use crate::radio::plan::usable_bins;
 use crate::services::discovery::probe::on_raster;
 
 /// From the trial's lane retune to the voice link control that confirms it: a call joined late
@@ -69,14 +71,22 @@ impl LcnLearner {
         self.trial.is_none()
     }
 
-    /// The next frequency to try for `lcn`: the control channel, the known channels, then the
-    /// carriers `keyed` up after its grant.
-    pub fn candidate(&self, lcn: u16, keyed: &[u64]) -> Option<u64> {
+    /// The next frequency to try for `lcn`: the carriers `keyed` up after its grant, the control
+    /// channel, the known channels, then the window's `intermittent` carriers.
+    pub fn candidate(&self, lcn: u16, keyed: &[u64], intermittent: &[u64]) -> Option<u64> {
         let taken = |f: u64| self.plan.iter().any(|(&l, &hz)| l != lcn && hz.abs_diff(f) <= SAME_HZ);
-        std::iter::once(self.control_hz)
+        keyed
+            .iter()
+            .copied()
+            .chain(std::iter::once(self.control_hz))
             .chain(self.known.iter().copied())
-            .chain(keyed.iter().copied())
+            .chain(intermittent.iter().copied())
             .find(|&f| f > 0 && !taken(f) && !self.rejected.iter().any(|&(l, r)| l == lcn && r.abs_diff(f) <= SAME_HZ))
+    }
+
+    /// The trial's frequency, while `tg`'s call is on it.
+    pub fn trying(&self, freq_hz: u64, tg: u32) -> bool {
+        self.trial.is_some_and(|t| t.freq_hz == freq_hz && t.tg == tg)
     }
 
     pub fn start(&mut self, lcn: u16, freq_hz: u64, tg: u32, now: Instant) {
@@ -164,8 +174,8 @@ impl Usual {
 }
 
 /// Carriers that keyed up: where the frames `after` a grant (dB per bin, DC-centred, spanning
-/// `sample_rate_hz` around `centre_hz`) stand `KEYED_DB` above the bins' `usual` level, away
-/// from the window's edges, on the channel raster; the biggest rise first.
+/// `sample_rate_hz` around `centre_hz`) stand `KEYED_DB` above the bins' `usual` level, inside
+/// the window a lane can receive, on the channel raster; the biggest rise first.
 pub fn keyed_up(usual: &[f32], after: &[Vec<f32>], centre_hz: u64, sample_rate_hz: u32) -> Vec<u64> {
     let n = usual.len();
     if n < 3 || after.iter().any(|f| f.len() != n) || after.is_empty() {
@@ -173,8 +183,7 @@ pub fn keyed_up(usual: &[f32], after: &[Vec<f32>], centre_hz: u64, sample_rate_h
     }
     let rise: Vec<f32> = (0..n).map(|i| after.iter().map(|f| f[i]).fold(f32::MIN, f32::max) - usual[i]).collect();
     let bin_hz = f64::from(sample_rate_hz) / n as f64;
-    // The outer tenth on each side is the decimator's roll-off.
-    let (lo, hi) = (n / 10, n - n / 10);
+    let (lo, hi) = usable_bins(n, sample_rate_hz);
     let mut peaks: Vec<(f32, u64)> = Vec::new();
     let mut i = lo;
     while i < hi {
@@ -212,20 +221,22 @@ mod tests {
     const CC: u64 = 454_368_750;
 
     #[test]
-    fn the_control_channel_then_known_then_keyed_up_carriers_are_tried() {
+    fn what_keyed_up_then_the_control_channel_known_and_intermittent_carriers_are_tried() {
+        const BLIP: u64 = 454_400_000;
         let mut l = LcnLearner::new(HashMap::new(), CC, vec![454_537_500]);
-        assert_eq!(l.candidate(5, &[451_087_500]), Some(CC), "a control repeater's other timeslot");
+        assert_eq!(l.candidate(6, &[451_087_500], &[BLIP]), Some(451_087_500), "the carrier that keyed up at the grant");
+        assert_eq!(l.candidate(5, &[], &[BLIP]), Some(CC), "nothing keyed up: a control repeater's other timeslot");
         let now = Instant::now();
         l.start(5, CC, 87925, now);
         l.following(Lane::One, now);
         assert_eq!(l.confirmed(Lane::One).map(|t| (t.lcn, t.freq_hz)), Some((5, CC)));
         assert_eq!(l.freq(5), Some(CC));
-        assert_eq!(l.candidate(6, &[451_087_500]), Some(454_537_500), "the control channel is LCN 5's now");
+        assert_eq!(l.candidate(6, &[CC], &[BLIP]), Some(454_537_500), "the control channel is LCN 5's now");
         l.start(6, 454_537_500, 87921, now);
         l.following(Lane::One, now);
         assert_eq!(l.expire(now + TRIAL).map(|t| t.freq_hz), Some(454_537_500));
-        assert_eq!(l.candidate(6, &[451_087_500]), Some(451_087_500), "a failed candidate is not tried again");
-        assert_eq!(l.candidate(6, &[]), None);
+        assert_eq!(l.candidate(6, &[], &[BLIP]), Some(BLIP), "a failed candidate is not tried again");
+        assert_eq!(l.candidate(6, &[], &[]), None);
     }
 
     #[test]
@@ -239,7 +250,7 @@ mod tests {
         assert!(l.expire(now + Duration::from_secs(1)).is_none(), "still in time");
         l.abandon();
         assert!(l.idle());
-        assert_eq!(l.candidate(5, &[]), Some(CC), "abandoned rules nothing out");
+        assert_eq!(l.candidate(5, &[], &[]), Some(CC), "abandoned rules nothing out");
     }
 
     #[test]
@@ -269,6 +280,22 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].abs_diff(451_087_500) <= 6_250, "{found:?}");
         assert!(keyed_up(&usual, &[usual.clone()], centre, rate).is_empty(), "nothing rose");
+    }
+
+    #[test]
+    fn a_carrier_near_the_edge_a_lane_can_receive_is_found() {
+        // Clay Electric's LCN 6, 451.0875 MHz: 3.296 MHz below a window at 454.38375 MHz (8 MSPS,
+        // a lane receives ±3.6 MHz).
+        let (n, centre, rate) = (4096usize, 454_383_750u64, 8_000_000u32);
+        let bin = |hz: f64| (n as f64 / 2.0 + (hz - centre as f64) / (f64::from(rate) / n as f64)).round() as usize;
+        let usual = vec![-120.0f32; n];
+        let mut after = usual.clone();
+        for b in bin(451_087_500.0 - 5_000.0)..=bin(451_087_500.0 + 5_000.0) {
+            after[b] = -70.0;
+        }
+        // Past the usable window: no lane could follow it.
+        after[bin(450_500_000.0)] = -60.0;
+        assert_eq!(keyed_up(&usual, &[after], centre, rate), vec![451_087_500]);
     }
 
     #[test]

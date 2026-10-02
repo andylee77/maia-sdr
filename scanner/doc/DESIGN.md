@@ -737,22 +737,35 @@ The 071 finder becomes `services::discovery`, run on the Systems page, and on fi
   on a Connect Plus control channel at 454.11875 MHz, and the scan, keeping one find per
   identity, dropped the real 454.36875 MHz.
 - **A DMR site's channel table is learned** (`trunking::lcn`; Andy: "if grants are given and a
-  traffic channel isn't mapped to it then it needs to auto identify"). A grant on an LCN the
-  plan lacks is followed on a candidate frequency: the control channel (a control repeater
-  carries calls on its other timeslot: Clay Electric's LCN 5 TS2), the site's known channels,
-  the intermittent carriers the survey heard in the window, then the carriers that keyed up in
-  the 800 ms after the grant (against each bin's usual level, read every 5 s).
+  traffic channel isn't mapped to it then it needs to auto identify"). Clay Electric's grants
+  carry only the LCN: nothing on its control channel maps one to a frequency (no absolute
+  channel parameters, no channel frequency announcements in SDRTrunk's decode of ten
+  minutes), so SDRTrunk needs a hand-made map. A grant on an LCN the plan lacks waits 800 ms
+  while the spectrum is watched, then is followed on a candidate frequency:
+  - the carriers that keyed up after it (10 dB over each bin's usual level, read every 5 s; a
+    traffic repeater keys up for its call, and Clay Electric's LCN 6 stands 52 dB over the
+    floor, louder than the control channel), the biggest rise first;
+  - the control channel (a control repeater carries calls on its other timeslot and never keys
+    up: Clay Electric's LCN 5 TS2);
+  - the site's known channels;
+  - the intermittent carriers the survey heard, the strongest first.
+
+  The candidate is kept when the call's voice link control there names the granted talkgroup
+  within 4 s, and is not tried again for that LCN when it does not; the grant's repeats while
+  it is tried are the same call. Only then does its frequency count as the site's traffic
+  channel. Learned channels go to the site's state (`lcn_hz`); a configured plan wins over
+  them; the site row shows the table, edited in place. A grant with an absolute frequency
+  needs none of this; an LCN with no candidate left shows as `unknown_lcn`. Both the watch and
+  the survey read the whole window a lane can receive (±3.6 MHz at 8 MSPS): ignoring the outer
+  tenth on each side had hidden LCN 6, 3.3 MHz from the centre.
 - **The survey** (`trunking::survey`, `/api/v1/survey`, Diagnostics): while a site is live its
   trunking reads every spectrometer frame (131 ms each, 7.6 a second; the spectrum page is
   served the newest) and counts, per bin, how often it stands 10 dB over the frame's floor,
-  decaying over ten minutes. Adjacent active bins are a carrier on the raster: steady ones
-  (on 90 % of the time) are control channels and the like, intermittent ones carry calls, data
-  and keep-alives (Andy: "short data blips ... identify other possible channels"). A scan stops
-  the live site, so it has the spectrometer to itself. The candidate is kept when the call's voice link
-  control there names the granted talkgroup within 4 s, and is not tried again for that LCN
-  when it does not. Learned channels go to the site's state (`lcn_hz`); a configured plan wins
-  over them; the site row shows the table. A grant with an absolute frequency needs none of
-  this; an LCN not yet learned shows as `unknown_lcn`.
+  decaying over ten minutes. Adjacent active bins are a carrier on the raster, placed at the
+  middle of its bins within 6 dB of its peak: steady ones (on 90 % of the time) are control
+  channels and the like, intermittent ones carry calls, data and keep-alives (Andy: "short
+  data blips ... identify other possible channels"). A scan stops the live site, so it has the
+  spectrometer to itself.
 - **Probes are one per protocol, behind one small trait.** A later spectrum survey (Andy,
   2026-10-01: other DMR and digital systems, ATSC, ADS-B, ISM sensors, strong-signal activity)
   can add classifiers without changing the scan itself.
@@ -1411,8 +1424,9 @@ From the brief:
     the previous carrier's identity), and a rescan moves a configured site to the control
     channel it is heard on.
   - **DMR channel tables are learned** (section 10): a grant on an unmapped LCN is followed on
-    a candidate (the control channel, the known channels, a carrier that keyed up), kept once
-    the call's voice header names the granted talkgroup.
+    a candidate (the carrier that keyed up for it, the control channel, the known channels, the
+    strongest intermittent carrier), kept once the call's voice header names the granted
+    talkgroup. Live on Clay Electric: LCN 5 learned as 454.36875 MHz.
   - **The survey** (section 10): every spectrometer frame of the live window, averaged over ten
     minutes into the carriers heard, steady or intermittent; the intermittent ones are DMR
     channel candidates.

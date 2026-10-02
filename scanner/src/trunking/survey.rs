@@ -8,6 +8,7 @@
 
 use serde::Serialize;
 
+use crate::radio::plan::usable_bins;
 use crate::services::discovery::probe::on_raster;
 
 /// A bin this far above the frame's floor is on.
@@ -25,6 +26,8 @@ const STEADY: f32 = 0.9;
 const DC_BINS: usize = 2;
 /// Active bins this many apart are one carrier.
 const GAP_BINS: usize = 2;
+/// A carrier's middle: its bins this close to its strongest.
+const TOP_DB: f32 = 6.0;
 
 /// One carrier heard in the window.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -91,8 +94,7 @@ impl Survey {
             !dc && self.on[i] >= MIN_FRAMES_ON && self.on[i] / self.frames >= MIN_ON
         };
         let bin_hz = f64::from(rate) / n as f64;
-        // The outer tenth on each side is the decimator's roll-off.
-        let (lo, hi) = (n / 10, n - n / 10);
+        let (lo, hi) = usable_bins(n, rate);
         let mut out: Vec<Carrier> = Vec::new();
         let mut i = lo;
         while i < hi {
@@ -108,15 +110,16 @@ impl Survey {
                 }
                 i += 1;
             }
-            // A carrier spans several bins on alike: its centre is the middle of those on at least
-            // half as often as its busiest.
+            // A carrier spans several bins: its centre is the middle of those within `TOP_DB` of
+            // its strongest (a strong carrier's skirts are on as often as its middle, and a
+            // weaker neighbour within the gap must not pull it aside).
             let most = (start..=last).map(|b| self.on[b]).fold(0.0f32, f32::max);
-            let wide: Vec<usize> = (start..=last).filter(|&b| self.on[b] >= most / 2.0).collect();
+            let peak_db = (start..=last).map(|b| self.peak[b]).fold(f32::MIN, f32::max);
+            let wide: Vec<usize> = (start..=last).filter(|&b| self.peak[b] >= peak_db - TOP_DB).collect();
             let centre = (wide[0] + wide[wide.len() - 1]) as f64 / 2.0;
             let share = most / self.frames;
             let offset = (centre - (n / 2) as f64) * bin_hz;
             let freq_hz = on_raster((centre_hz as f64 + offset).round() as u64);
-            let peak_db = (start..=last).map(|b| self.peak[b]).fold(f32::MIN, f32::max);
             match out.iter_mut().find(|c| c.freq_hz == freq_hz) {
                 Some(c) if c.on_pct >= share * 100.0 => {}
                 Some(c) => *c = Carrier { freq_hz, on_pct: share * 100.0, peak_db, steady: share >= STEADY },
@@ -127,10 +130,13 @@ impl Survey {
         out
     }
 
-    /// The intermittent carriers, the most active first: where a DMR site's unmapped channels are
-    /// looked for.
+    /// The intermittent carriers, the strongest first: where a DMR site's unmapped channels are
+    /// looked for when none keyed up at the grant (a site's own repeaters stand well above
+    /// another system's distant keep-alives).
     pub fn intermittent(&self) -> Vec<u64> {
-        self.carriers().into_iter().filter(|c| !c.steady).map(|c| c.freq_hz).collect()
+        let mut c: Vec<Carrier> = self.carriers().into_iter().filter(|c| !c.steady).collect();
+        c.sort_by(|a, b| b.peak_db.total_cmp(&a.peak_db));
+        c.into_iter().map(|c| c.freq_hz).collect()
     }
 }
 
@@ -189,6 +195,47 @@ mod tests {
         let c = s.carriers();
         assert_eq!(c.len(), 1, "{c:?}");
         assert_eq!(c[0].freq_hz, 454_368_750, "not an edge rounded to the next channel");
+    }
+
+    #[test]
+    fn a_strong_carrier_is_placed_at_its_peak_not_pulled_by_its_skirts_or_a_neighbour() {
+        // Unit A's spectrum around Clay Electric's control channel (454.36875 MHz; window at
+        // 453.4125 MHz, 4096 bins of 1953 Hz), dB above the floor from bin 2533: a weaker signal
+        // at about 454.381 MHz sits inside the gap. The middle of every bin on was 454.3715 MHz,
+        // which rounded to 454.375.
+        const PROFILE: [f32; 13] = [9.0, 23.0, 34.6, 42.4, 46.3, 46.9, 44.0, 37.1, 26.5, 15.3, 15.6, 16.1, 13.0];
+        let (n, w) = (4096usize, (453_412_500u64, 8_000_000u32));
+        let mut s = Survey::default();
+        for _ in 0..50 {
+            let mut db = vec![-120.0f32; n];
+            for (i, v) in PROFILE.iter().enumerate() {
+                db[2533 + i] = -120.0 + v;
+            }
+            s.add(&db, w);
+        }
+        let c = s.carriers();
+        assert_eq!(c.iter().map(|c| c.freq_hz).collect::<Vec<_>>(), vec![454_368_750], "{c:?}");
+    }
+
+    #[test]
+    fn a_channel_near_the_edge_a_lane_can_receive_is_surveyed() {
+        // Clay Electric's LCN 6: 3.296 MHz below a window at 454.38375 MHz (a lane receives
+        // ±3.6 MHz).
+        let (n, w) = (4096usize, (454_383_750u64, 8_000_000u32));
+        let at = |hz: f64| (n as f64 / 2.0 + (hz - w.0 as f64) / (8e6 / n as f64)).round() as usize;
+        let mut s = Survey::default();
+        for k in 0..100 {
+            let mut db = vec![-120.0f32; n];
+            if k % 4 == 0 {
+                for b in at(451_087_500.0 - 5_000.0)..=at(451_087_500.0 + 5_000.0) {
+                    db[b] = -70.0;
+                }
+                // Past the usable window: roll-off.
+                db[at(450_500_000.0)] = -70.0;
+            }
+            s.add(&db, w);
+        }
+        assert_eq!(s.intermittent(), vec![451_087_500]);
     }
 
     #[test]
