@@ -857,11 +857,13 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
     /// the view get each call.
     fn call_events(&mut self, events: Vec<CallEvent>) {
         let now = Instant::now();
+        // Announced after the view has the calls, so a listener can read them at once.
+        let mut notices = Vec::new();
         for e in events {
             match e {
                 CallEvent::Opened(o) => {
                     self.next_call.fetch_max(o.call + 1, Ordering::Relaxed);
-                    self.notices.send(Notice::CallOpened { call: o.call, tg: o.tg, followed: o.lane.is_some() });
+                    notices.push(Notice::CallOpened { call: o.call, tg: o.tg, followed: o.lane.is_some() });
                     if let Some(lane) = o.lane {
                         self.recorder.start(CallStart {
                             call: o.call,
@@ -908,7 +910,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                             self.log.system("call", closed_text(&o, &c));
                         }
                         self.history.call(call_row(&o, &c, self.codec));
-                        self.notices.send(Notice::CallClosed { call: o.call, tg: o.tg });
+                        notices.push(Notice::CallClosed { call: o.call, tg: o.tg });
                         self.recent.push_front(view_of(&o, Some(&c), self.codec));
                         self.recent.truncate(RECENT);
                     }
@@ -923,6 +925,12 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     }
                 }
                 _ => {}
+            }
+        }
+        if !notices.is_empty() {
+            self.publish();
+            for n in notices {
+                self.notices.send(n);
             }
         }
     }

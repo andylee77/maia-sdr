@@ -13,7 +13,7 @@ and the decisions taken with him. The current pages stay only until the new ones
 | Order | Backend first (testable through the API), then the new UI; the Now page first for Andy's review. |
 | Talkgroups and radios | SDRTrunk's alias model replaces profiles: per system an alias list (name, group, color, talkgroup and radio IDs and ranges, priority or do-not-monitor, record) plus the left/right speaker. Edited from the live screen. |
 | SDRTrunk | Playlists import (systems, sites, control channels, aliases) and export, so the scanner and SDRTrunk stay in step. |
-| The two traffic receivers | "Traffic 1" and "Traffic 2" in the UI (the API's `lane`). |
+| The two traffic receivers | The radio has a control tuner and two traffic channels: "Traffic 1" and "Traffic 2" in the UI (SDRTrunk's word; the API's `lane`). Andy may prefer "Channel 1/2"; "channel" also names RF channels, so that is open. |
 | Updates | Everything on a page comes from the radio as it happens, over one WebSocket. No page polls. |
 | Screen | 1920x1080 is the design size; a mobile layout comes later. |
 
@@ -21,7 +21,7 @@ and the decisions taken with him. The current pages stay only until the new ones
 
 In this order; each item is usable through the API on its own.
 
-1. **Realtime push.** One WebSocket carries a snapshot on connect, then each change:
+1. **Realtime push** (done: `/ws/live`). One WebSocket carries a snapshot on connect, then each change:
    - the live state;
    - the control channel's health;
    - both traffic channels (call, talkgroup, radio, voice);

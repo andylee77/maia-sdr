@@ -1,5 +1,6 @@
-//! What the UI should refresh on, the moment it happens: a call opened or closed, a recording
-//! saved. Pages then read the details from the API (`/ws/events` carries these).
+//! What happened, the moment it happens: a call opened or closed, a recording saved, a part of
+//! the configuration changed. `/ws/live` turns them into the state a page shows; `/ws/events`
+//! passes them on as they are.
 
 use serde::Serialize;
 use tokio::sync::broadcast;
@@ -13,6 +14,9 @@ pub enum Notice {
     CallOpened { call: u64, tg: u32, followed: bool },
     CallClosed { call: u64, tg: u32 },
     RecordingSaved { call: u64 },
+    /// A part of the configuration changed: `radio`, `systems`, `profiles`, `hold` or
+    /// `recordings`.
+    Changed { what: &'static str },
 }
 
 #[derive(Clone)]

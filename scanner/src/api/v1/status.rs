@@ -30,6 +30,10 @@ pub struct Status {
 }
 
 pub async fn get(State(s): State<Arc<AppState>>) -> Json<Status> {
+    Json(status(&s))
+}
+
+pub fn status(s: &AppState) -> Status {
     let tuning = s.tuner.tuning();
     let mut live = s.live.state();
     // The live site's snapshot is taken at activation; the tuning moves after (crystal, gain).
@@ -40,7 +44,7 @@ pub async fn get(State(s): State<Arc<AppState>>) -> Json<Status> {
         LiveState::Live(l) => s.trunking.hold(&l.site.id),
         _ => None,
     };
-    Json(Status {
+    Status {
         build: BUILD_TAG,
         uptime_s: s.started.elapsed().as_secs(),
         now_unix_ms: time::unix_ms(),
@@ -54,5 +58,5 @@ pub async fn get(State(s): State<Arc<AppState>>) -> Json<Status> {
         tuning,
         clock: s.clock.status(),
         hold,
-    })
+    }
 }

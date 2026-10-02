@@ -3,7 +3,7 @@
 //! One table (`routes!` below) builds the router and the route catalogue, so the catalogue
 //! cannot drift from what is served. Handlers answer with typed JSON or an `ApiError`. A write
 //! from another origin is refused (there is no authentication; the unit sits on a private
-//! network).
+//! network); a write that succeeds is announced on `/ws/live` by the part it changed.
 
 pub mod legacy;
 pub mod v1;
@@ -21,6 +21,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 
 use crate::boot::state::AppState;
+use crate::services::notices::Notice;
 use crate::ui;
 
 /// An error as the API reports it: `{"ok": false, "error": "..."}` with a status.
@@ -85,6 +86,7 @@ routes! {
     get "/api/v1/hold" => v1::hold::get, "the talkgroup the live site is held on, if any";
     put "/api/v1/hold" => v1::hold::put, "hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the profile says";
     get "/api/v1/calls/{id}" => v1::calls::one, "one call, live while recent, else from the history; the same shape either way";
+    get "/ws/live" => ws::live, "the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, the scan and configuration changes";
     get "/ws/events" => ws::events, "a text frame when a call opens or closes or a recording is saved";
     get "/ws/audio" => ws::audio, "live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta and lag frames); without, lane one untagged";
     get "/api/v1/data" => v1::data::get, "packet data of a site (`site`, default the live one; `all`): totals, radios and recent records (`limit`)";
@@ -170,8 +172,37 @@ pub fn router(state: Arc<AppState>) -> Router {
     api_router()
         .merge(ui::router())
         .fallback(not_found)
+        .layer(middleware::from_fn_with_state(state.clone(), announce_writes))
         .layer(middleware::from_fn(same_origin_writes))
         .with_state(state)
+}
+
+/// The part of the configuration a write to `path` changes, as `/ws/live` names it.
+fn changed_part(path: &str) -> Option<&'static str> {
+    if path.starts_with("/api/v1/radio") || path == "/api/v1/clock" {
+        Some("radio")
+    } else if path.starts_with("/api/v1/systems") || path == "/api/v1/scan/add" {
+        Some("systems")
+    } else if path.starts_with("/api/v1/profiles") || path.ends_with("/profile") {
+        Some("profiles")
+    } else if path == "/api/v1/hold" {
+        Some("hold")
+    } else if path.starts_with("/api/v1/recordings") {
+        Some("recordings")
+    } else {
+        None
+    }
+}
+
+/// Announce each successful write by the part it changed, so open pages read it again.
+async fn announce_writes(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    let write = req.method() != Method::GET && req.method() != Method::HEAD;
+    let part = changed_part(req.uri().path());
+    let response = next.run(req).await;
+    if let (true, Some(what)) = (write && response.status().is_success(), part) {
+        s.notices.send(Notice::Changed { what });
+    }
+    response
 }
 
 async fn not_found(State(_): State<Arc<AppState>>) -> ApiError {
@@ -211,6 +242,19 @@ pub async fn serve(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn writes_name_the_part_they_change() {
+        use super::changed_part;
+        assert_eq!(changed_part("/api/v1/radio/gain"), Some("radio"));
+        assert_eq!(changed_part("/api/v1/clock"), Some("radio"));
+        assert_eq!(changed_part("/api/v1/systems/clay/sites/clay_1"), Some("systems"));
+        assert_eq!(changed_part("/api/v1/scan/add"), Some("systems"));
+        assert_eq!(changed_part("/api/v1/sites/clay_1/profile"), Some("profiles"));
+        assert_eq!(changed_part("/api/v1/hold"), Some("hold"));
+        assert_eq!(changed_part("/api/v1/scan"), None, "the scan's progress comes on its own");
+        assert_eq!(changed_part("/api/v1/sites/clay_1/activate"), None, "the live state comes on its own");
+    }
+
     use super::*;
 
     #[test]
