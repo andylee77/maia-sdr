@@ -53,6 +53,9 @@ pub struct SiteState {
     pub secondary_control_hz: Vec<u64>,
     /// The site's packet data channel, as announced.
     pub data_channel_hz: Option<u64>,
+    /// DMR: the logical channels whose downlink the radio learned (a call followed there whose
+    /// voice header named the granted talkgroup).
+    pub lcn_hz: BTreeMap<u16, u64>,
 }
 
 /// An adjacent site as the control channel last announced it.
@@ -77,6 +80,7 @@ impl Default for SiteState {
             neighbours: Vec::new(),
             secondary_control_hz: Vec::new(),
             data_channel_hz: None,
+            lcn_hz: BTreeMap::new(),
         }
     }
 }

@@ -468,12 +468,14 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
                 }
             }
         }
-        let lcn_hz: std::collections::HashMap<u16, u64> =
-            site.channel_plan.as_ref().map(|p| p.lcn_hz.iter().map(|(k, v)| (*k, *v)).collect()).unwrap_or_default();
+        // The DMR channel plan: what the radio learned, and over it what the user set.
+        let mut lcn_hz: std::collections::HashMap<u16, u64> = learned.state().lcn_hz.into_iter().collect();
+        lcn_hz.extend(site.channel_plan.iter().flat_map(|p| p.lcn_hz.iter().map(|(k, v)| (*k, *v))));
         let setup = Setup {
             site: site.id.clone(),
             protocol: system.protocol,
             lcn_hz: lcn_hz.clone(),
+            channels_hz: site.channels_hz.clone(),
             // Lane one carries both protocols; lane two only P25 (it has no IQ tap).
             lanes: match system.protocol {
                 Protocol::P25 => self.lanes.clone(),

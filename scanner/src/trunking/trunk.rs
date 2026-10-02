@@ -6,6 +6,9 @@
 //! Voice is attributed by air time: a frame aired before the lane's current call opened belongs
 //! to the call before it, unless that call's transmission had already ended. Dibits aired before
 //! the lane's last retune are dropped (they are the old channel's).
+//!
+//! At a DMR site a grant on a channel the plan lacks is followed on a candidate frequency, which
+//! is kept once the call's link control is heard there (`lcn`).
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -18,6 +21,7 @@ use tokio::sync::mpsc;
 use super::calls::{CallBook, CallEvent, CallId, CallPolicy, Closed, Opened, SourceVia};
 use super::follow::routing::Routing;
 use super::follow::{Command, Follower, Record};
+use super::lcn::{self, LcnLearner, Usual};
 use crate::audio::live::{Audio, VoiceBatch};
 use crate::services::history::store::{CallRow, Store};
 use crate::services::history::HistoryTx;
@@ -29,7 +33,8 @@ use crate::hardware::p25core::Lane;
 use crate::protocol::dmr::demod::DmrDemodStats;
 use crate::protocol::dmr::traffic::{DmrCall, DmrTraffic};
 use crate::protocol::p25::framer::FramerStats;
-use crate::protocol::events::{Grant, TrafficEvent, VoiceFrames};
+use crate::protocol::events::{ChannelId, Grant, TrafficEvent, VoiceFrames};
+use crate::services::discovery::carriers::power_db;
 use crate::protocol::p25::traffic::{CallContext, P25Traffic};
 use crate::radio::streams::{LaneInput, LaneMode, StreamSource};
 use crate::services::config::systems::Protocol;
@@ -62,6 +67,9 @@ const STUCK_CHECK: Duration = Duration::from_secs(5);
 const COAST_MAX_IDLE: Duration = Duration::from_secs(1);
 /// IQ received this soon after a lane's retune may be the old channel's (a sub-buffer is ~164 ms).
 const IQ_SETTLE: Duration = Duration::from_millis(200);
+/// Spectrometer frames read after a grant on an unmapped DMR channel, for the carrier that keys
+/// up.
+const KEYUP_WATCH: Duration = Duration::from_millis(800);
 
 /// What the trunking task receives.
 #[derive(Debug)]
@@ -75,6 +83,8 @@ pub enum TrunkInput {
     WindowMoved,
     /// Follow only this talkgroup (None: release the hold).
     Hold(Option<u32>),
+    /// The carriers that keyed up after a grant on an unmapped DMR channel.
+    Keyed { grant: Grant, nac: u16, freqs: Vec<u64> },
 }
 
 pub type TrunkTx = mpsc::Sender<TrunkInput>;
@@ -83,8 +93,10 @@ pub type TrunkTx = mpsc::Sender<TrunkInput>;
 pub struct Setup {
     pub site: String,
     pub protocol: Protocol,
-    /// DMR: logical channel numbers to downlink Hz.
+    /// DMR: logical channel numbers to downlink Hz, configured and learned.
     pub lcn_hz: std::collections::HashMap<u16, u64>,
+    /// DMR: the site's known channels, where an unmapped channel is looked for first.
+    pub channels_hz: Vec<u64>,
     pub lanes: Vec<Lane>,
     pub routing: Routing,
     pub encrypted: HashSet<u32>,
@@ -249,6 +261,16 @@ struct Task<H> {
     data_park_tried: Option<Instant>,
     lanes_view: Arc<Mutex<Vec<LaneStatus>>>,
     lanes_published: Instant,
+    /// DMR: the site's channel plan, and the learning of the channels it lacks.
+    lcn: LcnLearner,
+    /// DMR: the receive window's bins at their usual level, read every `lcn::USUAL_EVERY`.
+    usual: Usual,
+    usual_read: Instant,
+    /// When the spectrum was last watched for a carrier keying up (one watch at a time).
+    keyup_watch: Option<Instant>,
+    dmr: bool,
+    /// The task's own queue, for what a spawned spectrum watch reports.
+    tx: TrunkTx,
 }
 
 pub struct Trunking {
@@ -386,6 +408,7 @@ impl Trunking {
         });
         let mut sources = sources;
         sources.push(forwarder);
+        let control_hz = tuner.tuning().control_hz;
         let task = Task {
             book: CallBook::new(&setup.site, &setup.lanes, setup.policy, self.next_call.load(Ordering::Relaxed)),
             follower: {
@@ -431,6 +454,12 @@ impl Trunking {
             site: setup.site.clone(),
             packet_data: self.packet_data.lock().ok().and_then(|d| d.clone()),
             data_park_tried: None,
+            lcn: LcnLearner::new(setup.lcn_hz.clone(), control_hz, setup.channels_hz.clone()),
+            usual: Usual::default(),
+            usual_read: Instant::now(),
+            keyup_watch: None,
+            dmr: setup.protocol == Protocol::DmrTier3,
+            tx: tx.clone(),
         };
         let task = tokio::spawn(task.run(rx, stop.clone()));
         *self.running.lock().await = Some(Running { tx: tx.clone(), stop, task, sources });
@@ -551,6 +580,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     Some(TrunkInput::Routing(r)) => self.follower.set_routing(*r),
                     Some(TrunkInput::WindowMoved) => self.window_moved(),
                     Some(TrunkInput::Hold(tg)) => self.hold(tg).await,
+                    Some(TrunkInput::Keyed { grant, nac, freqs }) => self.keyed(grant, nac, freqs).await,
                     None => break,
                 },
                 _ = tick.tick() => {
@@ -572,7 +602,79 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         self.lanes.iter_mut().find(|l| l.lane == lane)
     }
 
-    async fn grant(&mut self, grant: Grant, nac: u16, at: Stamp) {
+    /// A grant. A DMR channel the plan lacks is looked for: on the next candidate frequency the
+    /// learner has, else among the carriers that key up after it.
+    async fn grant(&mut self, mut grant: Grant, nac: u16, at: Stamp) {
+        let mut trial = false;
+        if let ChannelId::DmrLcn(lcn) = grant.channel.id {
+            if grant.channel.freq_hz.is_none() {
+                grant.channel.freq_hz = self.lcn.freq(lcn);
+            }
+            if grant.channel.freq_hz.is_none() && self.lcn.idle() {
+                match self.lcn.candidate(lcn, &[]) {
+                    Some(f) => {
+                        self.lcn.start(lcn, f, grant.tg, at.mono);
+                        grant.channel.freq_hz = Some(f);
+                        trial = true;
+                    }
+                    None => self.watch_keyup(grant, nac, at),
+                }
+            }
+        }
+        self.follow_grant(grant, nac, at, trial).await;
+    }
+
+    /// The carriers that keyed up after a grant on an unmapped channel: try the first one not
+    /// ruled out.
+    async fn keyed(&mut self, mut grant: Grant, nac: u16, freqs: Vec<u64>) {
+        self.keyup_watch = None;
+        let ChannelId::DmrLcn(lcn) = grant.channel.id else { return };
+        if self.lcn.freq(lcn).is_some() || !self.lcn.idle() {
+            return;
+        }
+        let Some(f) = self.lcn.candidate(lcn, &freqs) else {
+            self.log.system("lcn", format!("LCN {lcn}: no carrier keyed up in the window after TG {}'s grant", grant.tg));
+            return;
+        };
+        let at = Stamp::now();
+        self.lcn.start(lcn, f, grant.tg, at.mono);
+        grant.channel.freq_hz = Some(f);
+        self.follow_grant(grant, nac, at, true).await;
+    }
+
+    /// Read the spectrum for a moment after a grant on an unmapped channel, against the bins'
+    /// usual level; the carriers that rose come back as `TrunkInput::Keyed`.
+    fn watch_keyup(&mut self, grant: Grant, nac: u16, at: Stamp) {
+        if self.keyup_watch.is_some_and(|t| at.mono.saturating_duration_since(t) < 2 * KEYUP_WATCH) {
+            return;
+        }
+        let t = self.tuner.tuning();
+        let window = (t.lo_hz, t.sample_rate_hz);
+        let Some(usual) = self.usual.level(window) else { return };
+        self.keyup_watch = Some(at.mono);
+        let (tuner, tx) = (self.tuner.clone(), self.tx.clone());
+        tokio::spawn(async move {
+            let mut after = Vec::new();
+            let until = Instant::now() + KEYUP_WATCH;
+            while Instant::now() < until {
+                match tuner.hw().spectrum().await {
+                    Some(bytes) => {
+                        let db = power_db(&bytes);
+                        if db.len() == usual.len() {
+                            after.push(db);
+                        }
+                    }
+                    None => tokio::time::sleep(Duration::from_millis(20)).await,
+                }
+            }
+            let freqs = lcn::keyed_up(&usual, &after, window.0, window.1);
+            let _ = tx.send(TrunkInput::Keyed { grant, nac, freqs }).await;
+        });
+    }
+
+    /// Follow a grant; `trial`: its frequency is a candidate for its DMR channel, kept once the
+    /// call's link control is heard there.
+    async fn follow_grant(&mut self, grant: Grant, nac: u16, at: Stamp, trial: bool) {
         if grant.encrypted {
             if let Some(l) = &self.learned {
                 l.encrypted(grant.tg);
@@ -593,6 +695,19 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         );
         for note in &outcome.notes {
             self.log.system("follow", note.clone());
+        }
+        if trial {
+            let lane = outcome.commands.iter().find_map(|c| match c {
+                Command::Follow { lane, channel } if channel.freq_hz == grant.channel.freq_hz => Some(*lane),
+                _ => None,
+            });
+            match (lane, self.lcn.trial()) {
+                (Some(lane), Some(t)) => {
+                    self.lcn.following(lane, at.mono);
+                    self.log.system("lcn", format!("LCN {}: trying {:.5} MHz with TG {}'s call on {lane}", t.lcn, t.freq_hz as f64 / 1e6, t.tg));
+                }
+                _ => self.lcn.abandon(),
+            }
         }
         for command in outcome.commands {
             self.command(command, at).await;
@@ -659,6 +774,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
     }
 
     fn window_moved(&mut self) {
+        self.usual.clear();
         for slot in &mut self.lanes {
             slot.traffic.retuned();
             slot.tuned_hz = None;
@@ -738,7 +854,16 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     self.audio.voice(VoiceBatch { lane, call: c.id, tg: c.tg, source: c.speaker.or(c.source), speaker, frames });
                 }
             }
-            TrafficEvent::Source(s) => self.book.link_control_source(lane, s, &mut out),
+            TrafficEvent::Source(s) => {
+                // The link control named the call's talkgroup: a trial's frequency is its channel's.
+                if let Some(t) = self.lcn.confirmed(lane) {
+                    if let Some(l) = &self.learned {
+                        l.lcn(t.lcn, t.freq_hz);
+                    }
+                    self.log.system("lcn", format!("LCN {} is {:.5} MHz: TG {}'s voice header was heard there", t.lcn, t.freq_hz as f64 / 1e6, t.tg));
+                }
+                self.book.link_control_source(lane, s, &mut out);
+            }
             TrafficEvent::TalkComplete(Some(s)) => self.book.talk_complete_source(lane, s, &mut out),
             TrafficEvent::TalkComplete(None) => {}
             TrafficEvent::End { lc, air } => {
@@ -792,6 +917,22 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             }
         }
         self.park_on_data(at).await;
+        if let Some(t) = self.lcn.expire(at.mono) {
+            self.log.system(
+                "lcn",
+                format!("LCN {} is not {:.5} MHz: no voice header for TG {} there in {} s", t.lcn, t.freq_hz as f64 / 1e6, t.tg, lcn::TRIAL.as_secs()),
+            );
+        }
+        if self.dmr && at.mono.saturating_duration_since(self.usual_read) >= lcn::USUAL_EVERY {
+            self.usual_read = at.mono;
+            if let Some(bytes) = self.tuner.hw().spectrum().await {
+                let db = power_db(&bytes);
+                if !db.is_empty() {
+                    let t = self.tuner.tuning();
+                    self.usual.push(db, (t.lo_hz, t.sample_rate_hz));
+                }
+            }
+        }
         if at.mono.saturating_duration_since(self.lanes_published) >= Duration::from_secs(1) {
             self.lanes_published = at.mono;
             self.publish_lanes(at.mono);
@@ -1109,6 +1250,7 @@ mod tests {
             site: "clay".into(),
             protocol: Protocol::P25,
             lcn_hz: Default::default(),
+            channels_hz: Vec::new(),
             lanes: lanes.to_vec(),
             routing: Default::default(),
             encrypted: Default::default(),

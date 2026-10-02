@@ -66,7 +66,8 @@ export function mount(el) {
         ? [h('span', { class: 'badge ok', text: 'live' }), iconButton('stop', 'Stop', { onclick: e => act(e.currentTarget, () => api.stopSite(site.id), `${site.label} stopped`) })]
         : [iconButton('play', 'Make live', { onclick: e => act(e.currentTarget, () => api.activate(site.id), `${site.label} is live`) }),
           iconButton('trash', 'Delete the site', { cls: 'danger', onclick: () => remove(`site ${site.label}`, () => api.deleteSite(sys.id, site.id)) })];
-      return { site, heard: heardTraffic(learned.get(site.id), site.control.freq_hz), tail: status };
+      const l = learned.get(site.id);
+      return { site, heard: heardTraffic(l, site.control.freq_hz), lcn: l && l.lcn_hz, tail: status };
     }), { traffic: true, settings: true, onInput: touched });
 
     const cancel = h('button', { class: 'btn small', type: 'button', text: 'Cancel', onclick: () => { editing -= 1; load(); } });

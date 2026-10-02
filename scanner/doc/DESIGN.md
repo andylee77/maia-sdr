@@ -736,9 +736,16 @@ The 071 finder becomes `services::discovery`, run on the Systems page, and on fi
   carrier's messages were decoded as the next one's: Clay Electric's Tier III identity landed
   on a Connect Plus control channel at 454.11875 MHz, and the scan, keeping one find per
   identity, dropped the real 454.36875 MHz.
-- **A DMR site without an LCN map** follows grants with absolute frequencies. An LCN with no
-  frequency shows as `unknown_lcn` and can be entered in the site editor. Learning an LCN by
-  watching which carrier keys up after its grant is left for later.
+- **A DMR site's channel table is learned** (`trunking::lcn`; Andy: "if grants are given and a
+  traffic channel isn't mapped to it then it needs to auto identify"). A grant on an LCN the
+  plan lacks is followed on a candidate frequency: the control channel (a control repeater
+  carries calls on its other timeslot: Clay Electric's LCN 5 TS2), the site's known channels,
+  then the carriers that keyed up in the receive window in the 800 ms after the grant (against
+  each bin's usual level, read every 5 s). The candidate is kept when the call's voice link
+  control there names the granted talkgroup within 4 s, and is not tried again for that LCN
+  when it does not. Learned channels go to the site's state (`lcn_hz`); a configured plan wins
+  over them; the site row shows the table. A grant with an absolute frequency needs none of
+  this; an LCN not yet learned shows as `unknown_lcn`.
 - **Probes are one per protocol, behind one small trait.** A later spectrum survey (Andy,
   2026-10-01: other DMR and digital systems, ATSC, ADS-B, ISM sensors, strong-signal activity)
   can add classifiers without changing the scan itself.
@@ -1396,3 +1403,6 @@ From the brief:
   - **Scan fixes** (section 10): each probe hears only its own carrier (a probe had been given
     the previous carrier's identity), and a rescan moves a configured site to the control
     channel it is heard on.
+  - **DMR channel tables are learned** (section 10): a grant on an unmapped LCN is followed on
+    a candidate (the control channel, the known channels, a carrier that keyed up), kept once
+    the call's voice header names the granted talkgroup.

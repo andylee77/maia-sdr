@@ -749,6 +749,8 @@ ROUTES: dict[str, list] = {
         ("neighbours[].last_heard_unix_ms", "number", "Last announced."),
         ("secondary_control_hz", "array of numbers", "The site's other control channels."),
         ("data_channel_hz", "number or null", "The data channel it announces."),
+        ("lcn_hz", "object", "DMR: logical channel numbers and the downlinks the radio learned for them (a call followed there whose voice header named the granted talkgroup); the configured plan wins over them."),
+        ("lcn_hz.*", "number", "One channel's downlink, Hz."),
     ],
     "/api/v1/sites/{id}/plan": [
         ("site", "string", "The live site."),

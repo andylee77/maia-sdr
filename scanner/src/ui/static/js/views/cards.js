@@ -129,10 +129,11 @@ export function systemHead(sys, { right = [], onInput } = {}) {
 
 // A system's sites as a table: a line per site (name, identity, control channel, then `tail`),
 // and under it a line of its other frequencies (the control channels it may move to, its
-// traffic channels). Each of `rows`: {site, lead (before the name: a tick), heard (traffic
-// channels granted on the air), tail (reception, status, buttons)}. `traffic` shows the
-// traffic channels; `settings` adds each site's receiver settings behind a button. Each row's
-// read() gives the site as the API takes it.
+// traffic channels, and where its protocol numbers channels, its channel table). Each of
+// `rows`: {site, lead (before the name: a tick), heard (traffic channels granted on the air),
+// lcn (logical channels learned on the air), tail (reception, status, buttons)}. `traffic`
+// shows the traffic channels; `settings` adds each site's receiver settings behind a button.
+// Each row's read() gives the site as the API takes it.
 export function siteTable(proto, rows, { traffic = true, settings = false, onInput } = {}) {
   const p = protocol(proto);
   const leads = rows.some(r => r.lead);
@@ -151,7 +152,19 @@ export function siteTable(proto, rows, { traffic = true, settings = false, onInp
   };
 }
 
-function siteRow(p, { site, lead = null, heard = [], tail = [] }, { leads, traffic, settings, onInput, span }) {
+// A site's logical channels: the configured plan, then what the radio learned on the air.
+function channelTable(site, learnedLcn) {
+  const configured = (site.channel_plan && site.channel_plan.lcn_hz) || {};
+  const all = { ...(learnedLcn || {}), ...configured };
+  const lcns = Object.keys(all).map(Number).sort((a, b) => a - b);
+  if (!lcns.length) return h('span', { class: 'list' }, h('span', { class: 'hex', text: 'learned from the calls' }));
+  return h('span', { class: 'list' }, ...lcns.map((n, i) => h('span', {
+    title: configured[n] !== undefined ? 'configured' : 'learned on the air',
+    text: `${i ? ' · ' : ''}${n}: ${MHZ(all[n])}`,
+  })));
+}
+
+function siteRow(p, { site, lead = null, heard = [], tail = [], lcn = null }, { leads, traffic, settings, onInput, span }) {
   let edited = false;
   const changed = () => {
     edited = true;
@@ -179,7 +192,8 @@ function siteRow(p, { site, lead = null, heard = [], tail = [] }, { leads, traff
     ...(leads ? [h('td')] : []),
     h('td', { colspan: String(span - (leads ? 1 : 0)) },
       h('span', { class: 'k', text: 'Also' }), also.node,
-      ...(traffic ? [h('span', { class: 'k', text: 'Traffic' }), channels.node] : [])));
+      ...(traffic ? [h('span', { class: 'k', text: 'Traffic' }), channels.node] : []),
+      ...(p.edits.lcnPlan && traffic ? [h('span', { class: 'k', text: 'Channels' }), channelTable(site, lcn)] : [])));
   return {
     trs: [tr, freqs, ...(moreRow ? [moreRow] : [])],
     site,

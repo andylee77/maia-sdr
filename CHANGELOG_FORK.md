@@ -67,9 +67,11 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   reports its band and window; found and configured systems share one compact card, edited in
   place. Each scan probe now hears only its own carrier (the previous carrier's identity had
   landed on the next one), and a rescan moves a configured site to the control channel it is
-  heard on.
+  heard on. A DMR site learns its channel table: a grant on a logical channel the plan lacks is
+  followed on a candidate frequency, kept once the call's voice header names the granted
+  talkgroup.
 
-Tests: scanner 404, p25-httpd 475.
+Tests: scanner 408, p25-httpd 475.
 
 ---
 

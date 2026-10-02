@@ -1,7 +1,8 @@
 //! What the live site taught the radio (`state/sites/<id>.json`): its IDEN bands, the grants per
-//! channel (the window planner's weights), the talkgroups seen encrypted, and its neighbours,
-//! secondary control channels and data channel. The receivers and the trunking task add to it;
-//! it is saved every 10 minutes when it changed, on a site switch and at shutdown.
+//! channel (the window planner's weights), the talkgroups seen encrypted, its neighbours,
+//! secondary control channels and data channel, and a DMR site's logical channels. The
+//! receivers and the trunking task add to it; it is saved every 10 minutes when it changed, on a
+//! site switch and at shutdown.
 
 use std::sync::Mutex;
 
@@ -116,6 +117,15 @@ impl Learned {
         self.with(|s| {
             let changed = s.secondary_control_hz != hz;
             s.secondary_control_hz = hz;
+            ((), changed)
+        });
+    }
+
+    /// A DMR logical channel's downlink, confirmed on the air.
+    pub fn lcn(&self, lcn: u16, hz: u64) {
+        self.with(|s| {
+            let changed = s.lcn_hz.get(&lcn) != Some(&hz);
+            s.lcn_hz.insert(lcn, hz);
             ((), changed)
         });
     }
