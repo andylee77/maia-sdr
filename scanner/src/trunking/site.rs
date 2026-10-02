@@ -27,6 +27,7 @@ use crate::services::history::HistoryTx;
 use crate::hardware::p25core::Lane;
 use crate::trunking::calls::CallPolicy;
 use crate::trunking::follow::routing::Routing;
+use crate::trunking::lcn::SiteCode;
 use crate::trunking::learned::Learned;
 use crate::trunking::receivers::{self, Receivers};
 use crate::trunking::trunk::{Setup, Trunking};
@@ -48,6 +49,8 @@ const RECENTRE_MIN_INTERVAL_MS: u64 = 10 * 60 * 1_000;
 struct Plan {
     site: Site,
     system: SystemSummary,
+    /// DMR: what the site's own channels name.
+    site_code: Option<SiteCode>,
     routing: Routing,
     calls: crate::services::config::radio::Calls,
     learned: Arc<Learned>,
@@ -433,23 +436,29 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
 
     /// Everything a switch needs, read and planned without touching the radio.
     async fn plan(&self, site_id: &str) -> Result<Plan> {
-        let (site, system, routing, presets_allowed, calls) = {
+        let (site, system, site_code, routing, presets_allowed, calls) = {
             let c = self.config.lock().await;
             let Some((system, site)) = c.systems.value.site(site_id) else {
                 bail!("no site {site_id:?}");
             };
             let routing = Routing::new(&system.aliases, system.listening);
-            (site.clone(), SystemSummary::from(system), routing, c.radio.value.presets_allowed.clone(), c.radio.value.calls.clone())
+            let site_code = (system.protocol == Protocol::DmrTier3).then(|| SiteCode {
+                model: system.identity.model.map(|m| format!("{m:?}").to_lowercase()),
+                network: system.identity.network,
+                site: site.identity.site,
+                colour_code: site.identity.colour_code,
+            });
+            (site.clone(), SystemSummary::from(system), site_code, routing, c.radio.value.presets_allowed.clone(), c.radio.value.calls.clone())
         };
         let learned = Arc::new(Learned::new(site_id, Config::site_state(&self.paths, site_id)?));
         let window = window_for(&site, &learned.state(), &presets_allowed)?;
         let preset = find_preset(&window.preset).context("planned preset")?;
-        Ok(Plan { site, system, routing, calls, learned, window, preset })
+        Ok(Plan { site, system, site_code, routing, calls, learned, window, preset })
     }
 
     /// Stop the old site, tune, and start the new one.
     async fn go(&self, plan: Plan) -> Result<Live> {
-        let Plan { site, system, routing, calls, learned, window, preset } = plan;
+        let Plan { site, system, site_code, routing, calls, learned, window, preset } = plan;
         let site_id = site.id.as_str();
         self.save_learned().await;
         self.receivers.stop().await;
@@ -476,6 +485,7 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
             protocol: system.protocol,
             lcn_hz: lcn_hz.clone(),
             channels_hz: site.channels_hz.clone(),
+            site_code,
             // Lane one carries both protocols; lane two only P25 (it has no IQ tap).
             lanes: match system.protocol {
                 Protocol::P25 => self.lanes.clone(),

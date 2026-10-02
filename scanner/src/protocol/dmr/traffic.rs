@@ -1,7 +1,8 @@
 //! DMR Tier III traffic channel: the DMR receiver on a lane's IQ, decoding the followed call's
 //! timeslot. Voice bursts go out as three AMBE+2 frames; the voice link control (header or
 //! embedded) for the call's talkgroup names the talking radio and its encryption; a terminator
-//! or a CLEAR ends the transmission.
+//! or a CLEAR ends the transmission. With or without a call, the channel's own identity (its
+//! short LC's network and site, its bursts' colour code) is reported once heard.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -9,11 +10,11 @@ use std::time::Instant;
 use super::demod::DmrDemodulator;
 use super::framer::{DmrMessageFramer, FramerEvent};
 use super::message::csbk::CsbkKind;
-use super::message::lc::{FullLc, FullLcKind};
+use super::message::lc::{FullLc, FullLcKind, ShortLcKind};
 use super::message::processor::DmrMessageProcessor;
 use super::message::types::Address;
 use super::message::DmrMessage;
-use crate::protocol::events::{LogLine, TrafficEvent, VoiceFrames};
+use crate::protocol::events::{ChannelIdentity, LogLine, TrafficEvent, VoiceFrames};
 
 /// The call a lane follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,10 @@ pub struct DmrTraffic {
     lcn_hz: HashMap<u16, u64>,
     call: Option<DmrCall>,
     source: Option<u32>,
+    /// The colour code of the channel's last valid data burst.
+    colour_code: Option<u8>,
+    /// The identity last reported.
+    identity: Option<ChannelIdentity>,
     /// Bursts decoded, for the diagnostics pages.
     pub bursts: u64,
 }
@@ -51,6 +56,8 @@ impl DmrTraffic {
             lcn_hz,
             call: None,
             source: None,
+            colour_code: None,
+            identity: None,
             bursts: 0,
         }
     }
@@ -82,8 +89,30 @@ impl DmrTraffic {
                 self.bursts += 1;
             }
             for m in self.processor.process(event) {
+                self.identify(&m, out);
                 self.message(&m, now, out);
             }
+        }
+    }
+
+    /// The channel's network and site, from its short LC; reported again when its colour code
+    /// becomes known.
+    fn identify(&mut self, m: &DmrMessage, out: &mut Vec<TrafficEvent>) {
+        if let Some(d) = m.data_burst().filter(|d| d.valid) {
+            self.colour_code = Some(d.color_code);
+        }
+        let DmrMessage::ShortLc(slc) = m else { return };
+        let Some(code) = slc.system_identity_code().filter(|_| slc.valid) else { return };
+        let id = ChannelIdentity {
+            model: code.model_label(),
+            network: code.network,
+            site: code.site,
+            colour_code: self.colour_code,
+            control: slc.kind == ShortLcKind::ControlChannelSystemParameters,
+        };
+        if self.identity != Some(id) {
+            self.identity = Some(id);
+            out.push(TrafficEvent::Identity(id));
         }
     }
 
@@ -171,5 +200,25 @@ mod tests {
         assert!(voice >= 30, "{voice}");
         assert!(ends >= 1);
         assert_eq!(sources.first(), Some(&81921));
+    }
+
+    /// Offline: a lane with no call on unit A's control capture (`DMR_CAPTURE_DIR`) hears the
+    /// channel name itself: Clay Electric's small network 0, site 2, colour code 0, a control
+    /// channel; once, not on every short LC.
+    #[test]
+    fn a_channel_names_its_network_and_site_without_a_call() {
+        let Ok(dir) = std::env::var("DMR_CAPTURE_DIR") else { return };
+        let bytes = std::fs::read(std::path::Path::new(&dir).join("cc_454368750_20260930_204706_60s.wav")).unwrap();
+        let iq: Vec<i16> = bytes[44..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+        let mut t = DmrTraffic::new(HashMap::new());
+        let mut out = Vec::new();
+        for chunk in iq.chunks(2 * 1250) {
+            t.push(chunk, Instant::now(), &mut out);
+        }
+        let ids: Vec<ChannelIdentity> = out.iter().filter_map(|e| if let TrafficEvent::Identity(i) = e { Some(*i) } else { None }).collect();
+        let clay = ChannelIdentity { model: "SMALL", network: 0, site: 2, colour_code: Some(0), control: true };
+        assert_eq!(ids.last(), Some(&clay), "{ids:?}");
+        assert!(ids.len() <= 2, "reported again only when the colour code came: {ids:?}");
+        assert!(!out.iter().any(|e| matches!(e, TrafficEvent::Voice { .. })), "no call followed");
     }
 }

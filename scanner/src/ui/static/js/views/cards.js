@@ -105,20 +105,21 @@ function freqList(list, dim, label, onInput) {
   return { node: span, value: () => (input ? input.value : hzText(list.filter(f => !dim.includes(f)))) };
 }
 
-// A site's logical channels shown as "5: 454.36875 · 6: 451.0875" (those learned on the air in
-// grey); a click edits them all as "LCN = MHz" pairs, and what is typed becomes the plan.
-// Unedited, its value is the configured plan alone.
-function lcnList(site, learnedLcn, onInput) {
+// A site's logical channels shown as "5: 454.36875 · 6: 451.0875 · 7: ?" (learned on the air in
+// grey; granted with no frequency yet as "?"); a click edits the known ones as "LCN = MHz"
+// pairs, and what is typed becomes the plan. Unedited, its value is the configured plan alone.
+function lcnList(site, learnedLcn, granted, onInput) {
   const configured = (site.channel_plan && site.channel_plan.lcn_hz) || {};
   const all = { ...(learnedLcn || {}), ...configured };
-  const lcns = Object.keys(all).map(Number).sort((a, b) => a - b);
+  const lcns = [...new Set([...Object.keys(all).map(Number), ...(granted || [])])].sort((a, b) => a - b);
+  const label = n => (all[n] === undefined ? 'granted, frequency not known yet' : configured[n] === undefined ? 'learned on the air' : 'configured');
   let input = null;
   const span = h('span', { class: 'list', title: 'Click to edit: LCN = MHz, comma separated' },
     ...(lcns.length
       ? lcns.map((n, i) => h('span', {
         class: configured[n] === undefined ? 'heard' : '',
-        title: configured[n] === undefined ? 'learned on the air' : 'configured',
-        text: `${i ? ' · ' : ''}${n}: ${MHZ(all[n])}`,
+        title: label(n),
+        text: `${i ? ' · ' : ''}${n}: ${all[n] === undefined ? '?' : MHZ(all[n])}`,
       }))
       : [h('span', { class: 'hex', text: 'learned from the calls' })]));
   span.addEventListener('click', () => {
@@ -130,6 +131,18 @@ function lcnList(site, learnedLcn, onInput) {
     node: span,
     read: what => (input ? { lcn_hz: lcnPlan(input.value, what) } : site.channel_plan || null),
   };
+}
+
+// The channels a lane heard name themselves: the site's own as their frequency (a control
+// channel says so), another network's or site's in grey with what it named.
+function foundList(found) {
+  const entries = Object.entries(found || {}).map(([f, c]) => [Number(f), c]).sort((a, b) => a[0] - b[0]);
+  if (!entries.length) return h('span', { class: 'list' }, h('span', { class: 'hex', text: 'none yet' }));
+  return h('span', { class: 'list' }, ...entries.map(([f, c], i) => {
+    const named = `${c.model.toLowerCase()} network ${c.network}, site ${c.site}${c.colour_code === null || c.colour_code === undefined ? '' : `, colour code ${c.colour_code}`}`;
+    const what = c.own === true ? (c.control ? ' control' : '') : ` (net ${c.network} site ${c.site}${c.control ? ' control' : ''})`;
+    return h('span', { class: c.own === false ? 'heard' : '', title: `${c.control ? 'Control' : 'Traffic'} channel of ${named}`, text: `${i ? ' · ' : ''}${MHZ(f)}${what}` });
+  }));
 }
 
 // A system's head. `right`: nodes at the end of the first line. read() gives
@@ -159,7 +172,9 @@ export function systemHead(sys, { right = [], onInput } = {}) {
 // and under it a line of its other frequencies (the control channels it may move to, its
 // traffic channels, and where its protocol numbers channels, its channel table). Each of
 // `rows`: {site, lead (before the name: a tick), heard (traffic channels granted on the air),
-// lcn (logical channels learned on the air), tail (reception, status, buttons)}. `traffic`
+// lcn (logical channels learned on the air), granted (every logical channel a grant named),
+// found (the channels a lane heard name their network and site), tail (reception, status,
+// buttons)}. `traffic`
 // shows the traffic channels; `settings` adds each site's receiver settings behind a button.
 // Each row's read() gives the site as the API takes it.
 export function siteTable(proto, rows, { traffic = true, settings = false, onInput } = {}) {
@@ -180,7 +195,7 @@ export function siteTable(proto, rows, { traffic = true, settings = false, onInp
   };
 }
 
-function siteRow(p, { site, lead = null, heard = [], tail = [], lcn = null }, { leads, traffic, settings, onInput, span }) {
+function siteRow(p, { site, lead = null, heard = [], tail = [], lcn = null, granted = null, found = null }, { leads, traffic, settings, onInput, span }) {
   let edited = false;
   const changed = () => {
     edited = true;
@@ -194,7 +209,7 @@ function siteRow(p, { site, lead = null, heard = [], tail = [], lcn = null }, { 
   const configured = site.channels_hz || [];
   // Where channels are numbered, those heard are in the channel table; the traffic list then
   // holds only frequencies configured without a number.
-  const lcns = p.edits.lcnPlan && traffic ? lcnList(site, lcn, changed) : null;
+  const lcns = p.edits.lcnPlan && traffic ? lcnList(site, lcn, granted, changed) : null;
   const extra = lcns ? [] : heard.filter(f => !configured.includes(f));
   const channels = freqList([...configured, ...extra].sort((a, b) => a - b), extra, 'none yet', changed);
   const showTraffic = traffic && (!lcns || configured.length > 0);
@@ -213,7 +228,7 @@ function siteRow(p, { site, lead = null, heard = [], tail = [], lcn = null }, { 
     h('td', { colspan: String(span - (leads ? 1 : 0)) },
       h('span', { class: 'k', text: 'Also' }), also.node,
       ...(showTraffic ? [h('span', { class: 'k', text: 'Traffic' }), channels.node] : []),
-      ...(lcns ? [h('span', { class: 'k', text: 'Channels' }), lcns.node] : [])));
+      ...(lcns ? [h('span', { class: 'k', text: 'Channels' }), lcns.node, h('span', { class: 'k', text: 'Found' }), foundList(found)] : [])));
   return {
     trs: [tr, freqs, ...(moreRow ? [moreRow] : [])],
     site,

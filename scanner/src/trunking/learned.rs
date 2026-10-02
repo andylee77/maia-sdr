@@ -1,15 +1,17 @@
 //! What the live site taught the radio (`state/sites/<id>.json`): its IDEN bands, the grants per
 //! channel (the window planner's weights), the talkgroups seen encrypted, its neighbours,
-//! secondary control channels and data channel, and a DMR site's logical channels. The
+//! secondary control channels and data channel, and a DMR site's logical channels (those
+//! granted, those mapped) and the channels its lane heard name themselves. The
 //! receivers and the trunking task add to it; it is saved every 10 minutes when it changed, on a
 //! site switch and at shutdown.
 
 use std::sync::Mutex;
 
-use crate::protocol::events::{LogicalChannel, Neighbour};
+use crate::protocol::events::{ChannelIdentity, LogicalChannel, Neighbour};
 use crate::protocol::p25::tsbk::FrequencyBand;
-use crate::services::config::state::{IdenBand, NeighbourSite, SiteState};
+use crate::services::config::state::{HeardChannel, IdenBand, NeighbourSite, SiteState};
 use crate::services::config::{self, Paths, Stored};
+use crate::trunking::lcn::SiteCode;
 
 pub const SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
 
@@ -119,6 +121,39 @@ impl Learned {
             s.secondary_control_hz = hz;
             ((), changed)
         });
+    }
+
+    /// A grant named DMR logical channel `lcn`.
+    pub fn lcn_granted(&self, lcn: u16) {
+        self.with(|s| ((), s.lcns_granted.insert(lcn)));
+    }
+
+    /// The DMR channels a lane heard name themselves.
+    pub fn channels_heard_hz(&self) -> Vec<u64> {
+        self.state.lock().map(|s| s.0.value.channels_heard.keys().copied().collect()).unwrap_or_default()
+    }
+
+    /// A lane heard the DMR channel on `freq_hz` name itself: kept with whether it is the site's
+    /// own (`code`; a colour code heard before stands when this hearing had none yet). Returns
+    /// the entry, and whether it is new or says something else than before (the time heard
+    /// alone is saved with the next change).
+    pub fn channel_heard(&self, freq_hz: u64, id: &ChannelIdentity, code: Option<&SiteCode>, at_unix_ms: u64) -> Option<(HeardChannel, bool)> {
+        self.with(|s| {
+            let old = s.channels_heard.get(&freq_hz);
+            let colour_code = id.colour_code.or_else(|| old.and_then(|o| o.colour_code));
+            let entry = HeardChannel {
+                model: id.model.to_string(),
+                network: id.network,
+                site: id.site,
+                colour_code,
+                control: id.control,
+                own: code.and_then(|c| c.owns(id.model, id.network, id.site, colour_code)),
+                last_heard_unix_ms: at_unix_ms,
+            };
+            let changed = old.is_none_or(|o| HeardChannel { last_heard_unix_ms: at_unix_ms, ..o.clone() } != entry);
+            s.channels_heard.insert(freq_hz, entry.clone());
+            ((entry, changed), changed)
+        })
     }
 
     /// A DMR logical channel's downlink, confirmed on the air.

@@ -61,6 +61,19 @@ pub struct DmrIdentity {
     pub site: u32,
 }
 
+/// What a DMR Tier III channel says of itself in its CACH (the short LC's system parameters):
+/// whose network and site it is, and whether it is a control or a traffic channel. Its colour
+/// code once a burst carried one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct ChannelIdentity {
+    /// TINY, SMALL, LARGE or HUGE.
+    pub model: &'static str,
+    pub network: u32,
+    pub site: u32,
+    pub colour_code: Option<u8>,
+    pub control: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "protocol", rename_all = "snake_case")]
 pub enum SiteIdentity {
@@ -178,6 +191,8 @@ pub enum TrafficEvent {
     End { lc: &'static str, air: Instant },
     /// Packet data (a lane waiting on the data channel).
     Pdu(PduFrame),
+    /// DMR: the channel the lane is on named its network and site (heard with or without a call).
+    Identity(ChannelIdentity),
     Message(LogLine),
 }
 

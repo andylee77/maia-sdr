@@ -61,9 +61,7 @@ impl Survey {
         if self.window != Some(window) || self.on.len() != db.len() {
             *self = Survey { window: Some(window), on: vec![0.0; db.len()], peak: vec![f32::MIN; db.len()], ..Default::default() };
         }
-        let mut sorted = db.to_vec();
-        sorted.sort_by(f32::total_cmp);
-        let floor = sorted[sorted.len() / 2];
+        let floor = median(db);
         self.frames = self.frames * DECAY + 1.0;
         self.read += 1;
         for (i, &v) in db.iter().enumerate() {
@@ -84,42 +82,17 @@ impl Survey {
 
     /// The carriers heard, the most active first.
     pub fn carriers(&self) -> Vec<Carrier> {
-        let Some((centre_hz, rate)) = self.window else { return Vec::new() };
+        let Some(window) = self.window else { return Vec::new() };
         let n = self.on.len();
         if n == 0 || self.frames <= 0.0 {
             return Vec::new();
         }
-        let active = |i: usize| {
-            let dc = i.abs_diff(n / 2) <= DC_BINS;
-            !dc && self.on[i] >= MIN_FRAMES_ON && self.on[i] / self.frames >= MIN_ON
-        };
-        let bin_hz = f64::from(rate) / n as f64;
-        let (lo, hi) = usable_bins(n, rate);
+        let active = |i: usize| self.on[i] >= MIN_FRAMES_ON && self.on[i] / self.frames >= MIN_ON;
         let mut out: Vec<Carrier> = Vec::new();
-        let mut i = lo;
-        while i < hi {
-            if !active(i) {
-                i += 1;
-                continue;
-            }
-            let start = i;
-            let mut last = i;
-            while i < hi && (active(i) || i - last <= GAP_BINS) {
-                if active(i) {
-                    last = i;
-                }
-                i += 1;
-            }
-            // A carrier spans several bins: its centre is the middle of those within `TOP_DB` of
-            // its strongest (a strong carrier's skirts are on as often as its middle, and a
-            // weaker neighbour within the gap must not pull it aside).
+        for (start, last) in groups(n, window.1, active) {
             let most = (start..=last).map(|b| self.on[b]).fold(0.0f32, f32::max);
-            let peak_db = (start..=last).map(|b| self.peak[b]).fold(f32::MIN, f32::max);
-            let wide: Vec<usize> = (start..=last).filter(|&b| self.peak[b] >= peak_db - TOP_DB).collect();
-            let centre = (wide[0] + wide[wide.len() - 1]) as f64 / 2.0;
+            let (freq_hz, peak_db) = place(&self.peak, start, last, window);
             let share = most / self.frames;
-            let offset = (centre - (n / 2) as f64) * bin_hz;
-            let freq_hz = on_raster((centre_hz as f64 + offset).round() as u64);
             match out.iter_mut().find(|c| c.freq_hz == freq_hz) {
                 Some(c) if c.on_pct >= share * 100.0 => {}
                 Some(c) => *c = Carrier { freq_hz, on_pct: share * 100.0, peak_db, steady: share >= STEADY },
@@ -138,6 +111,74 @@ impl Survey {
         c.sort_by(|a, b| b.peak_db.total_cmp(&a.peak_db));
         c.into_iter().map(|c| c.freq_hz).collect()
     }
+}
+
+/// The carriers on the air in `frames` (dB per bin, DC-centred) of `window`: where a bin stood
+/// `ON_DB` over its frame's floor in any of them. Each with its level over the floor, the
+/// strongest first.
+pub fn on_air(frames: &[Vec<f32>], window: (u64, u32)) -> Vec<(u64, f32)> {
+    let Some(n) = frames.first().map(Vec::len).filter(|&n| n >= 16) else { return Vec::new() };
+    let mut level = vec![f32::MIN; n];
+    for f in frames.iter().filter(|f| f.len() == n) {
+        let floor = median(f);
+        for (l, &v) in level.iter_mut().zip(f) {
+            *l = l.max(v - floor);
+        }
+    }
+    let mut out: Vec<(u64, f32)> = Vec::new();
+    for (start, last) in groups(n, window.1, |i| level[i] >= ON_DB) {
+        let (freq_hz, db) = place(&level, start, last, window);
+        match out.iter_mut().find(|c| c.0 == freq_hz) {
+            Some(c) => c.1 = c.1.max(db),
+            None => out.push((freq_hz, db)),
+        }
+    }
+    out.sort_by(|a, b| b.1.total_cmp(&a.1));
+    out
+}
+
+fn median(db: &[f32]) -> f32 {
+    let mut sorted = db.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    sorted[sorted.len() / 2]
+}
+
+/// The runs of `active` bins of an `n`-bin frame, as (first, last): inside the window a lane can
+/// receive, the DC spur left out, active bins `GAP_BINS` apart joined.
+fn groups(n: usize, rate: u32, active: impl Fn(usize) -> bool) -> Vec<(usize, usize)> {
+    let active = |i: usize| i.abs_diff(n / 2) > DC_BINS && active(i);
+    let (lo, hi) = usable_bins(n, rate);
+    let mut out = Vec::new();
+    let mut i = lo;
+    while i < hi {
+        if !active(i) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut last = i;
+        while i < hi && (active(i) || i - last <= GAP_BINS) {
+            if active(i) {
+                last = i;
+            }
+            i += 1;
+        }
+        out.push((start, last));
+    }
+    out
+}
+
+/// A carrier spanning bins `start..=last`: its frequency on the raster and its strongest
+/// `level`. Its centre is the middle of its bins within `TOP_DB` of the strongest (a strong
+/// carrier's skirts stand out as often as its middle, and a weaker neighbour within the gap must
+/// not pull it aside).
+fn place(level: &[f32], start: usize, last: usize, (centre_hz, rate): (u64, u32)) -> (u64, f32) {
+    let n = level.len();
+    let top = (start..=last).map(|b| level[b]).fold(f32::MIN, f32::max);
+    let wide: Vec<usize> = (start..=last).filter(|&b| level[b] >= top - TOP_DB).collect();
+    let middle = (wide[0] + wide[wide.len() - 1]) as f64 / 2.0;
+    let offset = (middle - (n / 2) as f64) * f64::from(rate) / n as f64;
+    (on_raster((centre_hz as f64 + offset).round() as u64), top)
 }
 
 #[cfg(test)]
@@ -236,6 +277,19 @@ mod tests {
             s.add(&db, w);
         }
         assert_eq!(s.intermittent(), vec![451_087_500]);
+    }
+
+    #[test]
+    fn what_is_on_the_air_in_a_few_frames_is_found_the_strongest_first() {
+        let mut quiet = vec![-120.0f32; N];
+        quiet[bin(454_368_750)] = -60.0;
+        let mut keyed = quiet.clone();
+        keyed[bin(451_087_500)] = -65.0;
+        keyed[N / 2] = -40.0; // DC spur
+        let on = on_air(&[quiet, keyed], W);
+        assert_eq!(on.iter().map(|c| c.0).collect::<Vec<_>>(), vec![454_368_750, 451_087_500], "{on:?}");
+        assert!((on[1].1 - 55.0).abs() < 0.1, "{on:?}");
+        assert!(on_air(&[], W).is_empty());
     }
 
     #[test]

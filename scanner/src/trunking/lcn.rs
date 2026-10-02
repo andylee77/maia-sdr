@@ -1,15 +1,25 @@
-//! Learning a DMR site's channel plan. A grant names a logical channel (LCN) whose downlink the
-//! plan lacks: the call is followed on a candidate frequency, and the candidate is kept once the
-//! voice link control there names the granted talkgroup (the traffic decoder reports the talking
-//! radio only then). A candidate that fails is not tried again for that LCN.
+//! Learning a DMR site's channel plan. The LCNs its grants name are the rows to fill (the site
+//! is learning while one has no frequency); the channels a lane heard name this site's network
+//! and site are the frequencies to fill them with. A grant naming an LCN the plan lacks is
+//! followed on a candidate frequency, kept once the voice link control there names the granted
+//! talkgroup (the traffic decoder reports the talking radio only then). A candidate that fails,
+//! or names another network or site, is not tried again for that LCN.
 //!
-//! Candidates, in order: the carriers that keyed up in the receive window just after the grant
-//! (a traffic repeater keys up for the call it was granted), the control channel (a control
-//! repeater carries calls on its other timeslot, and stays on), the site's known channels, then
-//! the window's intermittent carriers. One frequency belongs to one LCN, so a frequency another
-//! LCN holds is never a candidate.
+//! Candidates, in order:
+//! 1. the site's own channels that keyed up just after the grant (a traffic repeater keys up for
+//!    the call it was granted);
+//! 2. other carriers that keyed up;
+//! 3. the site's own channels on the air meanwhile;
+//! 4. the control channel (a control repeater carries calls on its other timeslot, and is always
+//!    on);
+//! 5. the site's other own channels;
+//! 6. its known channels;
+//! 7. the window's intermittent carriers, the strongest first.
+//!
+//! One frequency belongs to one LCN, so a frequency another LCN holds is never a candidate, nor
+//! is one that named another site.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::hardware::p25core::Lane;
@@ -40,6 +50,48 @@ pub struct Trial {
     pub since: Instant,
 }
 
+/// A DMR site's identity as configured: what its own channels name in their CACH.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SiteCode {
+    /// tiny, small, large or huge.
+    pub model: Option<String>,
+    pub network: Option<u32>,
+    pub site: Option<u32>,
+    pub colour_code: Option<u8>,
+}
+
+impl SiteCode {
+    /// Whether a channel naming `model`, `network` and `site` (and `colour_code`, once heard) is
+    /// this site's: every field both know agrees. `None` while the site's network and site are
+    /// not configured.
+    pub fn owns(&self, model: &str, network: u32, site: u32, colour_code: Option<u8>) -> Option<bool> {
+        if self.network.is_none() && self.site.is_none() {
+            return None;
+        }
+        let colour = match (self.colour_code, colour_code) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        };
+        Some(
+            self.model.as_deref().is_none_or(|m| m.eq_ignore_ascii_case(model))
+                && self.network.is_none_or(|n| n == network)
+                && self.site.is_none_or(|s| s == site)
+                && colour,
+        )
+    }
+}
+
+/// What the spectrum showed around a grant.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Around<'a> {
+    /// Carriers that keyed up after it, the biggest rise first.
+    pub keyed: &'a [u64],
+    /// Carriers on the air meanwhile.
+    pub on: &'a [u64],
+    /// The window's intermittent carriers, the strongest first.
+    pub intermittent: &'a [u64],
+}
+
 #[derive(Debug, Default)]
 pub struct LcnLearner {
     /// The site's plan: configured and learned.
@@ -47,13 +99,41 @@ pub struct LcnLearner {
     control_hz: u64,
     /// The site's known channels.
     known: Vec<u64>,
+    /// Channels heard naming this site's network and site, and another's.
+    own: Vec<u64>,
+    foreign: Vec<u64>,
+    /// Every LCN a grant named.
+    granted: BTreeSet<u16>,
     rejected: HashSet<(u16, u64)>,
     trial: Option<Trial>,
+}
+
+fn near(list: &[u64], f: u64) -> bool {
+    list.iter().any(|&x| x.abs_diff(f) <= SAME_HZ)
 }
 
 impl LcnLearner {
     pub fn new(plan: HashMap<u16, u64>, control_hz: u64, known: Vec<u64>) -> Self {
         LcnLearner { plan, control_hz, known, ..Default::default() }
+    }
+
+    /// A grant named `lcn`.
+    pub fn granted(&mut self, lcn: u16) {
+        self.granted.insert(lcn);
+    }
+
+    /// A granted LCN has no frequency yet.
+    pub fn learning(&self) -> bool {
+        self.granted.iter().any(|l| !self.plan.contains_key(l))
+    }
+
+    /// A lane heard the channel on `freq_hz` name this site (`own`) or another.
+    pub fn heard(&mut self, freq_hz: u64, own: bool) {
+        let (add, other) = if own { (&mut self.own, &mut self.foreign) } else { (&mut self.foreign, &mut self.own) };
+        other.retain(|&f| f.abs_diff(freq_hz) > SAME_HZ);
+        if !near(add, freq_hz) {
+            add.push(freq_hz);
+        }
     }
 
     pub fn freq(&self, lcn: u16) -> Option<u64> {
@@ -71,17 +151,29 @@ impl LcnLearner {
         self.trial.is_none()
     }
 
-    /// The next frequency to try for `lcn`: the carriers `keyed` up after its grant, the control
-    /// channel, the known channels, then the window's `intermittent` carriers.
-    pub fn candidate(&self, lcn: u16, keyed: &[u64], intermittent: &[u64]) -> Option<u64> {
+    /// The next frequency to try for `lcn`, in the order the module header gives.
+    pub fn candidate(&self, lcn: u16, around: &Around) -> Option<u64> {
         let taken = |f: u64| self.plan.iter().any(|(&l, &hz)| l != lcn && hz.abs_diff(f) <= SAME_HZ);
-        keyed
-            .iter()
-            .copied()
+        let ruled_out = |f: u64| self.rejected.iter().any(|&(l, r)| l == lcn && r.abs_diff(f) <= SAME_HZ);
+        // An own channel by the frequency the lane heard it on.
+        let own_keyed = around.keyed.iter().filter_map(|&k| self.own.iter().copied().find(|&o| o.abs_diff(k) <= SAME_HZ));
+        let own_on = self.own.iter().copied().filter(|&o| near(around.on, o));
+        own_keyed
+            .chain(around.keyed.iter().copied())
+            .chain(own_on)
             .chain(std::iter::once(self.control_hz))
+            .chain(self.own.iter().copied())
             .chain(self.known.iter().copied())
-            .chain(intermittent.iter().copied())
-            .find(|&f| f > 0 && !taken(f) && !self.rejected.iter().any(|&(l, r)| l == lcn && r.abs_diff(f) <= SAME_HZ))
+            .chain(around.intermittent.iter().copied())
+            .find(|&f| f > 0 && !taken(f) && !ruled_out(f) && !near(&self.foreign, f))
+    }
+
+    /// The lane on trial heard its channel name another network or site: not its LCN's.
+    pub fn wrong_site(&mut self, lane: Lane) -> Option<Trial> {
+        let t = self.trial.filter(|t| t.lane == Some(lane))?;
+        self.trial = None;
+        self.rejected.insert((t.lcn, t.freq_hz));
+        Some(t)
     }
 
     /// The trial's frequency, while `tg`'s call is on it.
@@ -223,20 +315,63 @@ mod tests {
     #[test]
     fn what_keyed_up_then_the_control_channel_known_and_intermittent_carriers_are_tried() {
         const BLIP: u64 = 454_400_000;
+        let around = |keyed, intermittent| Around { keyed, on: &[], intermittent };
         let mut l = LcnLearner::new(HashMap::new(), CC, vec![454_537_500]);
-        assert_eq!(l.candidate(6, &[451_087_500], &[BLIP]), Some(451_087_500), "the carrier that keyed up at the grant");
-        assert_eq!(l.candidate(5, &[], &[BLIP]), Some(CC), "nothing keyed up: a control repeater's other timeslot");
+        assert_eq!(l.candidate(6, &around(&[451_087_500], &[BLIP])), Some(451_087_500), "the carrier that keyed up at the grant");
+        assert_eq!(l.candidate(5, &around(&[], &[BLIP])), Some(CC), "nothing keyed up: a control repeater's other timeslot");
         let now = Instant::now();
         l.start(5, CC, 87925, now);
         l.following(Lane::One, now);
         assert_eq!(l.confirmed(Lane::One).map(|t| (t.lcn, t.freq_hz)), Some((5, CC)));
         assert_eq!(l.freq(5), Some(CC));
-        assert_eq!(l.candidate(6, &[CC], &[BLIP]), Some(454_537_500), "the control channel is LCN 5's now");
+        assert_eq!(l.candidate(6, &around(&[CC], &[BLIP])), Some(454_537_500), "the control channel is LCN 5's now");
         l.start(6, 454_537_500, 87921, now);
         l.following(Lane::One, now);
         assert_eq!(l.expire(now + TRIAL).map(|t| t.freq_hz), Some(454_537_500));
-        assert_eq!(l.candidate(6, &[], &[BLIP]), Some(BLIP), "a failed candidate is not tried again");
-        assert_eq!(l.candidate(6, &[], &[]), None);
+        assert_eq!(l.candidate(6, &around(&[], &[BLIP])), Some(BLIP), "a failed candidate is not tried again");
+        assert_eq!(l.candidate(6, &around(&[], &[])), None);
+    }
+
+    #[test]
+    fn the_sites_own_channels_fill_its_lcns_and_another_sites_never_do() {
+        const OWN: u64 = 451_087_500;
+        const OTHER: u64 = 453_437_500;
+        let mut l = LcnLearner::new(HashMap::from([(5, CC)]), CC, Vec::new());
+        l.granted(5);
+        assert!(!l.learning(), "every LCN granted has its frequency");
+        l.granted(6);
+        assert!(l.learning());
+        l.heard(OWN, true);
+        l.heard(OTHER, false);
+        // One LCN to fill and one own channel left for it.
+        let quiet = Around { intermittent: &[OTHER], ..Default::default() };
+        assert_eq!(l.candidate(6, &quiet), Some(OWN));
+        // Another site's carrier keying up is never tried; an own one that keyed up comes first,
+        // by the frequency the lane heard it on.
+        assert_eq!(l.candidate(6, &Around { keyed: &[OTHER, OWN + 1_000], ..Default::default() }), Some(OWN));
+        // Its own channels on the air come before the control channel.
+        let mut m = LcnLearner::new(HashMap::new(), CC, Vec::new());
+        m.heard(OWN, true);
+        assert_eq!(m.candidate(6, &Around { on: &[OWN, CC], ..Default::default() }), Some(OWN));
+        assert_eq!(m.candidate(5, &Around { on: &[CC], ..Default::default() }), Some(CC));
+        // A trial whose channel names another site is ruled out at once.
+        let now = Instant::now();
+        l.start(7, 452_425_000, 87921, now);
+        l.following(Lane::One, now);
+        assert_eq!(l.wrong_site(Lane::One).map(|t| t.freq_hz), Some(452_425_000));
+        assert!(l.idle());
+        assert_eq!(l.candidate(7, &Around { keyed: &[452_425_000], ..Default::default() }), Some(OWN));
+    }
+
+    #[test]
+    fn a_channel_is_the_sites_when_its_network_site_and_colour_code_are() {
+        let code = SiteCode { model: Some("small".into()), network: Some(0), site: Some(2), colour_code: Some(0) };
+        assert_eq!(code.owns("SMALL", 0, 2, Some(0)), Some(true));
+        assert_eq!(code.owns("SMALL", 0, 2, None), Some(true), "its colour code not heard yet");
+        assert_eq!(code.owns("SMALL", 0, 3, Some(0)), Some(false), "a neighbour site");
+        assert_eq!(code.owns("SMALL", 115, 13, None), Some(false), "another network");
+        assert_eq!(code.owns("SMALL", 0, 2, Some(1)), Some(false));
+        assert_eq!(SiteCode::default().owns("SMALL", 0, 2, None), None, "nothing to compare with");
     }
 
     #[test]
@@ -250,7 +385,7 @@ mod tests {
         assert!(l.expire(now + Duration::from_secs(1)).is_none(), "still in time");
         l.abandon();
         assert!(l.idle());
-        assert_eq!(l.candidate(5, &[], &[]), Some(CC), "abandoned rules nothing out");
+        assert_eq!(l.candidate(5, &Around::default()), Some(CC), "abandoned rules nothing out");
     }
 
     #[test]

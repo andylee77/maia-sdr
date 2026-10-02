@@ -67,7 +67,10 @@ export function mount(el) {
         : [iconButton('play', 'Make live', { onclick: e => act(e.currentTarget, () => api.activate(site.id), `${site.label} is live`) }),
           iconButton('trash', 'Delete the site', { cls: 'danger', onclick: () => remove(`site ${site.label}`, () => api.deleteSite(sys.id, site.id)) })];
       const l = learned.get(site.id);
-      return { site, heard: heardTraffic(l, site.control.freq_hz), lcn: l && l.lcn_hz, tail: status };
+      return {
+        site, heard: heardTraffic(l, site.control.freq_hz), tail: status,
+        lcn: l && l.lcn_hz, granted: l && l.lcns_granted, found: l && l.channels_heard,
+      };
     }), { traffic: true, settings: true, onInput: touched });
 
     const cancel = h('button', { class: 'btn small', type: 'button', text: 'Cancel', onclick: () => { editing -= 1; load(); } });

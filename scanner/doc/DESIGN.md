@@ -740,15 +740,28 @@ The 071 finder becomes `services::discovery`, run on the Systems page, and on fi
   traffic channel isn't mapped to it then it needs to auto identify"). Clay Electric's grants
   carry only the LCN: nothing on its control channel maps one to a frequency (no absolute
   channel parameters, no channel frequency announcements in SDRTrunk's decode of ten
-  minutes), so SDRTrunk needs a hand-made map. A grant on an LCN the plan lacks waits 800 ms
-  while the spectrum is watched, then is followed on a candidate frequency:
-  - the carriers that keyed up after it (10 dB over each bin's usual level, read every 5 s; a
-    traffic repeater keys up for its call, and Clay Electric's LCN 6 stands 52 dB over the
-    floor, louder than the control channel), the biggest rise first;
+  minutes), so SDRTrunk needs a hand-made map. Each channel does name its network and site in
+  its CACH (the short LC's system parameters; Andy: "the grants identify # of slots we need to
+  fill, traffic identifies how many extra freq we found"): the LCNs grants name are the rows to
+  fill (`lcns_granted`), and the channels a lane heard name this site's network, site and colour
+  code are the frequencies to fill them with (`channels_heard`). While a granted LCN has no
+  frequency, the idle lane identifies the carriers on the air: it tunes to one no lane has heard
+  for up to 1.5 s, until its short LC names it (one every 3 s at most; one that names nothing is
+  left for ten minutes; a grant takes the lane at once). A grant on an LCN the plan lacks waits
+  800 ms while the spectrum is watched, then is followed on a candidate frequency:
+  - the site's own channels that keyed up after it (10 dB over each bin's usual level, read
+    every 5 s; a traffic repeater keys up for its call, and Clay Electric's LCN 6 stands 52 dB
+    over the floor, louder than the control channel);
+  - other carriers that keyed up, the biggest rise first;
+  - the site's own channels on the air meanwhile;
   - the control channel (a control repeater carries calls on its other timeslot and never keys
     up: Clay Electric's LCN 5 TS2);
+  - the site's other own channels (one LCN to fill and one own channel left: that one);
   - the site's known channels;
   - the intermittent carriers the survey heard, the strongest first.
+
+  A carrier that named another network or site is never a candidate, and a trial whose channel
+  names one is over at once.
 
   The candidate is kept when the call's voice link control there names the granted talkgroup
   within 4 s, and is not tried again for that LCN when it does not; the grant's repeats while

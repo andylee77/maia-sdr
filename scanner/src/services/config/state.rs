@@ -1,9 +1,9 @@
 //! What the radio learns by itself, kept apart from the user's configuration:
 //! `state/radio.json` (live site, crystal calibration) and `state/sites/<id>.json` (per site:
-//! channel plan, grant counts, encrypted talkgroups, and what the site announces of its
-//! neighbours and other channels).
+//! channel plan, grant counts, encrypted talkgroups, what the site announces of its neighbours
+//! and other channels, and the DMR channels a lane heard name themselves).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +56,26 @@ pub struct SiteState {
     /// DMR: the logical channels whose downlink the radio learned (a call followed there whose
     /// voice header named the granted talkgroup).
     pub lcn_hz: BTreeMap<u16, u64>,
+    /// DMR: every logical channel a grant named: the channel table's rows, known or not.
+    pub lcns_granted: BTreeSet<u16>,
+    /// DMR: the channels a lane heard, by downlink: the network and site each named.
+    pub channels_heard: BTreeMap<u64, HeardChannel>,
+}
+
+/// A DMR channel as a lane heard it name itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeardChannel {
+    /// TINY, SMALL, LARGE or HUGE.
+    pub model: String,
+    pub network: u32,
+    pub site: u32,
+    pub colour_code: Option<u8>,
+    /// A control channel (else a traffic channel).
+    pub control: bool,
+    /// It is this site's: its network, site and colour code are the site's. `None`: the site's
+    /// own are not configured.
+    pub own: Option<bool>,
+    pub last_heard_unix_ms: u64,
 }
 
 /// An adjacent site as the control channel last announced it.
@@ -81,6 +101,8 @@ impl Default for SiteState {
             secondary_control_hz: Vec::new(),
             data_channel_hz: None,
             lcn_hz: BTreeMap::new(),
+            lcns_granted: BTreeSet::new(),
+            channels_heard: BTreeMap::new(),
         }
     }
 }
