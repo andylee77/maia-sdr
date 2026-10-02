@@ -1,11 +1,11 @@
 // The spectrum card (Diagnostics): the receive window from the wideband spectrometer, with the
-// control channel and the lanes marked. Refreshed while the page is open.
+// control channel and the lanes marked; each frame the radio pushes while the card is open.
 
 import { h, card, setText } from '../dom.js';
 import { mhz } from '../format.js';
-import { api } from '../api.js';
+import { want } from '../store.js';
 
-const EVERY_MS = 1000;
+const BINS = 1024;
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
@@ -14,10 +14,9 @@ function cssVar(name) {
 export function spectrumCard() {
   const c = card('Spectrum');
   const canvas = h('canvas', { style: { width: '100%', height: '200px', display: 'block' }, 'aria-label': 'Spectrum of the receive window' });
-  const note = h('p', { class: 'card-note', text: ' ' });
+  const note = h('p', { class: 'card-note', text: 'Waiting for a frame (none comes while a scan has the radio).' });
   c.body.append(canvas, note);
   let data = null;
-  let timer = null;
 
   function draw() {
     if (!data || !data.db.length) return;
@@ -63,23 +62,19 @@ export function spectrumCard() {
     }
   }
 
-  async function poll() {
-    try {
-      data = await api.spectrum();
-      if (data.db.length) {
-        draw();
-        setText(note, `LO ${mhz(data.lo_hz)}, ${(data.sample_rate_hz / 1e6).toFixed(0)} MSPS; control channel ${mhz(data.control_hz)}`
-          + (data.fresh ? '' : ' (the last frame: a scan has the radio)'));
-      } else {
-        setText(note, 'No spectrum yet.');
-      }
-    } catch (e) {
-      setText(note, e.message);
-    }
-    timer = setTimeout(poll, EVERY_MS);
-  }
+  const stop = want({ spectrum: BINS }, m => {
+    if (!m.spectrum.db.length) return;
+    data = m.spectrum;
+    draw();
+    setText(note, `LO ${mhz(data.lo_hz)}, ${(data.sample_rate_hz / 1e6).toFixed(0)} MSPS; control channel ${mhz(data.control_hz)}`);
+  });
 
   window.addEventListener('resize', draw);
-  poll();
-  return { el: c.el, stop() { clearTimeout(timer); window.removeEventListener('resize', draw); } };
+  return {
+    el: c.el,
+    stop() {
+      stop();
+      window.removeEventListener('resize', draw);
+    },
+  };
 }

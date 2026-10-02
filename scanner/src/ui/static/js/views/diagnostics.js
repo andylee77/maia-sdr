@@ -1,9 +1,10 @@
 // Diagnostics: the event log, the spectrum of the window, the live site's receive window, the
-// tuning, the hardware and the API's routes.
+// tuning, the hardware and the API's routes; the radio pushes each while the page is open.
 
 import { h, card, table, toast, switchInput } from '../dom.js';
 import { mhz, uptime, clockMs, DASH } from '../format.js';
 import { api } from '../api.js';
+import { want } from '../store.js';
 import { spectrumCard } from './spectrum.js';
 import { boardCard } from './board.js';
 import { windowCard } from './window.js';
@@ -22,15 +23,6 @@ export function mount(el) {
 
   const log = h('div', { class: 'log', role: 'log' });
   events.body.append(log);
-  let after = 0;
-  let routine = false;
-  const housekeeping = switchInput('Housekeeping', false, on => {
-    routine = on;
-    after = 0;
-    log.replaceChildren();
-    poll();
-  });
-  events.right.append(housekeeping.el);
 
   function line(e) {
     return h('div', { class: 'log-line' + (e.valid ? '' : ' dim') },
@@ -39,27 +31,30 @@ export function mount(el) {
       h('span', { class: 'm', text: e.text }));
   }
 
-  let busy = false;
-  async function poll() {
-    if (busy) return;
-    busy = true;
-    try {
-      const { events: list } = await api.events(after, routine);
-      if (list.length) {
-        const pinned = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
-        for (const e of list) log.append(line(e));
-        after = list[list.length - 1].seq;
-        while (log.childElementCount > KEEP) log.firstElementChild.remove();
-        if (pinned) log.scrollTop = log.scrollHeight;
-      }
-    } catch (e) {
-      toast(e.message, true);
-    } finally {
-      busy = false;
+  // The log's new lines as the radio writes them; `after` moves on so a resubscription does not
+  // send them again.
+  function lines(m) {
+    if (m.type === 'restart') {
+      log.replaceChildren();
+      return;
     }
+    const list = m.events;
+    if (!list.length) return;
+    const pinned = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+    for (const e of list) log.append(line(e));
+    wants.events.after = list[list.length - 1].seq;
+    while (log.childElementCount > KEEP) log.firstElementChild.remove();
+    if (pinned) log.scrollTop = log.scrollHeight;
   }
-  poll();
-  const timer = setInterval(poll, 2000);
+  const wants = { events: { after: 0, routine: false } };
+  let stopEvents = want(wants, lines);
+  const housekeeping = switchInput('Housekeeping', false, on => {
+    stopEvents();
+    wants.events = { after: 0, routine: on };
+    log.replaceChildren();
+    stopEvents = want(wants, lines);
+  });
+  events.right.append(housekeeping.el);
 
   api.routes()
     .then(list => routes.body.append(table(['Method', 'Path', ''], list.map(r =>
@@ -90,7 +85,7 @@ export function mount(el) {
         h('tr', null, h('th', { text: k }), h('td', { text: v })))));
     },
     unmount() {
-      clearInterval(timer);
+      stopEvents();
       spectrum.stop();
       receive.stop();
       board.stop();

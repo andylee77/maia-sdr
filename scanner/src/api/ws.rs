@@ -11,15 +11,16 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::api::v1;
 use crate::api::v1::calls::{NamedCall, Names};
 use crate::api::v1::status::status;
 use crate::audio::live::audio_frame;
@@ -125,8 +126,104 @@ async fn notices(socket: WebSocket, s: Arc<AppState>) {
 /// traffic channel changes, `call_opened` and `call_closed` with the call, `recording` with a
 /// saved recording, `scan` while one runs, and `changed` naming the part of the configuration
 /// to read again. After `lag` a fresh snapshot follows.
+///
+/// What only some pages show comes while a page asks for it (`Wants`): it sends
+/// `{"type":"subscribe", ...}`, each replacing the last, and gets `spectrum`, `events`, `radio`,
+/// `window` and `crystal` messages.
 pub async fn live(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| live_feed(socket, s))
+}
+
+/// How often what a page asked for is looked at.
+const FEED_TICK: Duration = Duration::from_millis(250);
+const RADIO_EVERY: Duration = Duration::from_secs(3);
+const WINDOW_EVERY: Duration = Duration::from_secs(5);
+const CRYSTAL_EVERY: Duration = Duration::from_secs(1);
+/// Event log lines sent at most at once.
+const EVENTS_MAX: usize = 500;
+
+/// What a page asked `/ws/live` for besides the radio's state.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Wants {
+    /// `spectrum`: each new frame of the receive window, in this many bins (as `GET
+    /// /api/v1/spectrum`).
+    spectrum: Option<usize>,
+    /// `events`: the event log's new lines (as `GET /api/v1/events`).
+    events: Option<EventsWant>,
+    /// `radio`: the radio's configuration, hardware and readback (as `GET /api/v1/radio`), every 3 s.
+    radio: bool,
+    /// `window`: the live site's window against its channels (`plan`, as `GET
+    /// /api/v1/sites/{id}/plan`) and the survey (`survey`), every 5 s.
+    window: bool,
+    /// `crystal`: the crystal correction (as `GET /api/v1/radio/crystal`) when it changed.
+    crystal: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct EventsWant {
+    /// The last line the page has.
+    after: u64,
+    /// Housekeeping lines too.
+    #[serde(default)]
+    routine: bool,
+}
+
+impl Wants {
+    fn any(&self) -> bool {
+        self.spectrum.is_some() || self.events.is_some() || self.radio || self.window || self.crystal
+    }
+}
+
+/// What was last sent of each.
+#[derive(Default)]
+struct Sent {
+    frame: Option<Instant>,
+    radio: Option<Instant>,
+    window: Option<Instant>,
+    crystal: Option<Instant>,
+    crystal_text: String,
+}
+
+fn due(last: Option<Instant>, every: Duration, now: Instant) -> bool {
+    last.is_none_or(|t| now.saturating_duration_since(t) >= every)
+}
+
+/// What the page asked for that is due.
+async fn feeds(s: &AppState, w: &mut Wants, sent: &mut Sent) -> Vec<String> {
+    let now = Instant::now();
+    let mut out = Vec::new();
+    if let Some(bins) = w.spectrum {
+        if let Some((spectrum, at)) = v1::spectrum::next(s, sent.frame, bins).await {
+            sent.frame = Some(at);
+            out.push(message("spectrum", "spectrum", spectrum));
+        }
+    }
+    if let Some(e) = w.events.as_mut() {
+        let lines = s.log.since(e.after, EVENTS_MAX, e.routine);
+        if let Some(last) = lines.last() {
+            e.after = last.seq;
+            out.push(message("events", "events", lines));
+        }
+    }
+    if w.radio && due(sent.radio, RADIO_EVERY, now) {
+        sent.radio = Some(now);
+        out.push(message("radio", "radio", v1::radio::radio(s).await));
+    }
+    if w.window && due(sent.window, WINDOW_EVERY, now) {
+        sent.window = Some(now);
+        let window = serde_json::json!({ "plan": s.live.window_view().await, "survey": s.trunking.survey() });
+        out.push(message("window", "window", window));
+    }
+    if w.crystal && due(sent.crystal, CRYSTAL_EVERY, now) {
+        sent.crystal = Some(now);
+        let text = message("crystal", "crystal", s.crystal.status().await);
+        if text != sent.crystal_text {
+            sent.crystal_text = text.clone();
+            out.push(text);
+        }
+    }
+    out
 }
 
 /// One traffic channel as a page shows it.
@@ -210,10 +307,15 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
     let mut last_scan = String::new();
     let mut tick = tokio::time::interval(LIVE_TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut wants = Wants::default();
+    let mut sent = Sent::default();
+    let mut feed = tokio::time::interval(FEED_TICK);
+    feed.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         let mut msgs = Vec::new();
         let mut traffic_now = false;
         tokio::select! {
+            _ = feed.tick(), if wants.any() => msgs.extend(feeds(&s, &mut wants, &mut sent).await),
             _ = tick.tick() => {
                 msgs.push(message("status", "status", status(&s)));
                 traffic_now = true;
@@ -257,6 +359,15 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
             },
             msg = inbound.next() => match msg {
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                Some(Ok(Message::Text(t))) => {
+                    let asked: serde_json::Value = serde_json::from_str(&t).unwrap_or_default();
+                    if asked.get("type").and_then(|v| v.as_str()) == Some("subscribe") {
+                        // Each subscription starts afresh: what it asks for comes at once.
+                        wants = serde_json::from_value(asked).unwrap_or_default();
+                        sent = Sent::default();
+                        msgs.extend(feeds(&s, &mut wants, &mut sent).await);
+                    }
+                }
                 Some(Ok(_)) => {}
             },
         }

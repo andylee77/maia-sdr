@@ -750,18 +750,18 @@ ROUTES: dict[str, list] = {
         ("secondary_control_hz", "array of numbers", "The site's other control channels."),
         ("data_channel_hz", "number or null", "The data channel it announces."),
         ("lcn_hz", "object", "DMR: logical channel numbers and the downlinks the radio learned for them (a call followed there whose voice header named the granted talkgroup); the configured plan wins over them."),
-        ("lcn_hz.*", "number", "One channel's downlink, Hz."),
+        ("lcn_hz{key}", "number", "One channel's downlink, Hz."),
         ("lcns_granted", "array of numbers", "DMR: every logical channel a grant named: the channel table's rows, their frequency known or not."),
         ("lcns_granted[]", "number", "One LCN."),
         ("channels_heard", "object", "DMR: the channels a lane heard name themselves in their CACH, by downlink Hz."),
-        ("channels_heard.*", "object", "One channel."),
-        ("channels_heard.*.model", "string", "The network model it named: TINY, SMALL, LARGE or HUGE."),
-        ("channels_heard.*.network", "number", "The network it named."),
-        ("channels_heard.*.site", "number", "The site it named."),
-        ("channels_heard.*.colour_code", "number or null", "Its colour code, once a burst carried one."),
-        ("channels_heard.*.control", "bool", "A control channel (else a traffic channel)."),
-        ("channels_heard.*.own", "bool or null", "It is this site's: its network, site and colour code are the site's as configured; null when those are not configured."),
-        ("channels_heard.*.last_heard_unix_ms", "number", "When it was heard name itself (saved with the next change)."),
+        ("channels_heard{key}", "object", "One channel."),
+        ("channels_heard{key}.model", "string", "The network model it named: TINY, SMALL, LARGE or HUGE."),
+        ("channels_heard{key}.network", "number", "The network it named."),
+        ("channels_heard{key}.site", "number", "The site it named."),
+        ("channels_heard{key}.colour_code", "number or null", "Its colour code, once a burst carried one."),
+        ("channels_heard{key}.control", "bool", "A control channel (else a traffic channel)."),
+        ("channels_heard{key}.own", "bool or null", "It is this site's: its network, site and colour code are the site's as configured; null when those are not configured."),
+        ("channels_heard{key}.last_heard_unix_ms", "number", "When it was heard name itself (saved with the next change)."),
     ],
     "/api/v1/sites/{id}/plan": [
         ("site", "string", "The live site."),
@@ -924,7 +924,16 @@ NOT_JSON: dict[str, str] = {
         "| `recording` | `recording` (as an item of `GET /api/v1/recordings`) | As a recording is saved. |\n"
         "| `scan` | `scan` (as `GET /api/v1/scan`) | While a scan runs, as its progress or found sites change. |\n"
         "| `changed` | `what`: `radio`, `systems`, `hold` or `recordings` | After a write changed that part: read it again. |\n"
-        "| `lag` | | The listener fell behind; a snapshot follows. |"
+        "| `lag` | | The listener fell behind; a snapshot follows. |\n\n"
+        "What only some pages show comes while the page asks for it. It sends "
+        "`{\"type\": \"subscribe\", \"spectrum\": bins, \"events\": {\"after\": seq, \"routine\": bool}, \"radio\": bool, \"window\": bool, \"crystal\": bool}` "
+        "(each field optional; each subscribe replaces the last, and what it asks for comes at once):\n\n"
+        "| `type` | Key | When |\n|--------|-----|------|\n"
+        "| `spectrum` | `spectrum` (as `GET /api/v1/spectrum`, in `bins`) | Each new spectrometer frame (7.6 a second at most). |\n"
+        "| `events` | `events` (as `GET /api/v1/events`' `events`) | As the event log grows past `after` (housekeeping too with `routine`). |\n"
+        "| `radio` | `radio` (as `GET /api/v1/radio`) | Every 3 s. |\n"
+        "| `window` | `window`: `plan` (as `GET /api/v1/sites/{id}/plan`, null with no site live) and `survey` (as `GET /api/v1/survey`) | Every 5 s. |\n"
+        "| `crystal` | `crystal` (as `GET /api/v1/radio/crystal`) | When it changed, each second at most. |"
     ),
     "/ws/events": (
         "A WebSocket of text frames, each a JSON object with `type`:\n\n"

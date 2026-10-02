@@ -1445,6 +1445,10 @@ From the brief:
     channel candidates.
   - **The Now page** (`UI_BRIEF.md`): the system card (a system and a site list that make a
     site live; its details, identity and control channel health) and the two traffic channels,
-    left and right, stay on screen; the live site's calls scroll below in their own pane. The
-    state the pages share (status, calls, traffic channels, recordings, systems) comes from
-    `/ws/live` instead of a poll every 2 s.
+    left and right, stay on screen; the live site's calls scroll below in their own pane.
+  - **No page polls** (UI_BRIEF): the state the pages share (status, calls, traffic channels,
+    recordings, systems) comes from `/ws/live`, and so does what only some pages show, while a
+    page subscribes: each spectrometer frame, the event log's new lines, the radio's readback
+    every 3 s, the window and survey every 5 s, the crystal when it changes. The Activity page
+    reloads its history when calls close. On unit A every page made no HTTP request in 12 s
+    after loading.

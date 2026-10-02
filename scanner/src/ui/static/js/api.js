@@ -27,7 +27,6 @@ export const api = {
   stopSite: id => request('POST', `/api/v1/sites/${encodeURIComponent(id)}/stop`),
   siteLearned: id => request('GET', `/api/v1/sites/${encodeURIComponent(id)}/learned`),
   data: q => request('GET', '/api/v1/data' + (q ? '?' + q : '')),
-  survey: () => request('GET', '/api/v1/survey'),
   sitePlan: id => request('GET', `/api/v1/sites/${encodeURIComponent(id)}/plan`),
   recentre: id => request('POST', `/api/v1/sites/${encodeURIComponent(id)}/recentre`),
   saveSystem: (system, edit) => request('PUT', `/api/v1/systems/${encodeURIComponent(system)}`, edit),
@@ -43,7 +42,6 @@ export const api = {
   setCrystal: tracking => request('PUT', '/api/v1/radio/crystal', tracking),
   calibrateCrystal: () => request('POST', '/api/v1/radio/crystal/calibrate'),
   routes: () => request('GET', '/api/v1/routes'),
-  spectrum: () => request('GET', '/api/v1/spectrum?bins=1024'),
   calls: () => request('GET', '/api/v1/calls'),
   setHold: tg => request('PUT', '/api/v1/hold', { tg }),
   scan: req => request('POST', '/api/v1/scan', req),
@@ -54,5 +52,4 @@ export const api = {
   setRecording: recording => request('PUT', '/api/v1/radio/recording', recording),
   clearRecordings: store => request('DELETE', `/api/v1/recordings?store=${store}`),
   activity: (path, q) => request('GET', `/api/v1/activity/${path}${q ? `?${q}` : ''}`),
-  events: (after, routine) => request('GET', `/api/v1/events?after=${after}&routine=${!!routine}`),
 };

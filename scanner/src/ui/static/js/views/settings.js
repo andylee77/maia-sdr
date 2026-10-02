@@ -3,6 +3,7 @@
 
 import { h, card, clear, toast, switchInput } from '../dom.js';
 import { api } from '../api.js';
+import { store, subscribe, want } from '../store.js';
 import { ago, bytes, num } from '../format.js';
 import { crystalSource } from '../protocols.js';
 
@@ -186,26 +187,19 @@ function crystalCard(initial) {
     h('div', { class: 'row' }, tracking.el, h('span', { class: 'dim', text: 'within' }), anchor, h('span', { class: 'dim', text: 'Hz of the calibration' }), saveAnchor),
     h('div', { class: 'row end' }, calibrate),
     h('p', { class: 'card-note', text: 'The crystal is measured on the live control channel: once the site is decoded after start, and then followed as it warms and cools.' }));
-  const timer = setInterval(() => api.crystal().then(show).catch(() => {}), 5000);
-  return { el: c.el, stop: () => clearInterval(timer) };
+  const stop = want({ crystal: true }, m => show(m.crystal));
+  return { el: c.el, stop };
 }
 
-// After an import or a reset the scanner restarts: reload once it answers again.
+// After an import or a reset the scanner restarts: reload once it is back (the store's socket
+// dropped and came back, or brings a status of less uptime than before).
 function reloadAfterRestart() {
-  const started = Date.now();
-  const poll = async () => {
-    try {
-      const s = await api.status();
-      if (s.uptime_s < 60 && Date.now() - started > 2000) {
-        location.reload();
-        return;
-      }
-    } catch (e) {
-      // Restarting.
-    }
-    if (Date.now() - started < 60000) setTimeout(poll, 1000);
-  };
-  setTimeout(poll, 1500);
+  const before = store.status ? store.status.uptime_s : null;
+  let down = false;
+  subscribe(s => {
+    if (!s.connected) down = true;
+    else if (s.status && (down || (before !== null && s.status.uptime_s < before))) location.reload();
+  });
 }
 
 function configCard() {

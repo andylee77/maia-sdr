@@ -1,14 +1,13 @@
 // The receive window card (Diagnostics): the slice of spectrum the live site is received in,
 // against the traffic channels it grants, where the planner would put it, and the carriers heard
-// in it over the last ten minutes.
+// in it over the last ten minutes; the radio pushes them every few seconds while the card is open.
 
 import { h, card, toast, table } from '../dom.js';
 import { ago, mhz, DASH } from '../format.js';
 import { api } from '../api.js';
+import { want } from '../store.js';
 
 const share = (part, whole) => (whole > 0 ? `${Math.round((100 * part) / whole)} %` : DASH);
-// The plan and the survey move slowly: grants and activity add up over minutes.
-const REFRESH_MS = 15000;
 
 export function windowCard() {
   const c = card('Receive window');
@@ -20,32 +19,25 @@ export function windowCard() {
     box, heard);
   let site = null;
   let controlHz = null;
-  let timer = null;
 
-  async function load() {
-    if (!site) {
+  function pushed(w) {
+    if (!w.plan) {
       box.replaceChildren(h('p', { class: 'dim', text: 'No site is live.' }));
       heard.replaceChildren();
       return;
     }
-    try {
-      show(await api.sitePlan(site));
-    } catch {
-      box.replaceChildren();
-    }
-    try {
-      showSurvey(await api.survey());
-    } catch {
-      heard.replaceChildren();
-    }
+    site = w.plan.site;
+    show(w.plan);
+    showSurvey(w.survey);
   }
+  const stop = want({ window: true }, m => pushed(m.window));
 
   move.addEventListener('click', async () => {
     move.disabled = true;
     try {
       const r = await api.recentre(site);
       toast(r.moved_to ? `Window moved: ${r.moved_to.preset} at ${mhz(r.moved_to.lo_hz)}` : "The window is the planner's already");
-      load();
+      show(await api.sitePlan(site));
     } catch (e) {
       toast(e.message, true);
     } finally {
@@ -87,15 +79,8 @@ export function windowCard() {
     el: c.el,
     update(s) {
       const live = s.status && s.status.live;
-      const id = live && live.state === 'live' ? live.site.id : null;
       controlHz = live && live.state === 'live' ? live.site.control.freq_hz : null;
-      if (id !== site) {
-        site = id;
-        clearInterval(timer);
-        timer = site ? setInterval(load, REFRESH_MS) : null;
-        load();
-      }
     },
-    stop() { clearInterval(timer); },
+    stop,
   };
 }

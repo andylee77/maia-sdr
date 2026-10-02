@@ -7,7 +7,7 @@
 //! `GET /api/v1/survey`: what the live site's window carried over the last minutes.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Query, State};
 use axum::Json;
@@ -61,11 +61,29 @@ pub async fn get(State(s): State<Arc<AppState>>, Query(p): Query<Params>) -> Jso
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
-    let bins = p.bins.unwrap_or(1024).clamp(64, BINS);
-    let group = (BINS / bins).max(1);
-    let db = LAST.lock().unwrap_or_else(|e| e.into_inner()).chunks(group).map(|c| c.iter().copied().fold(f32::MIN, f32::max)).collect();
+    let db = LAST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    Json(shape(&s, &db, p.bins.unwrap_or(1024), fresh))
+}
+
+/// A frame newer than `since`, for `/ws/live`: the live site's newest, else one the spectrometer
+/// finished (none during a scan: the sweep needs every frame).
+pub async fn next(s: &AppState, since: Option<Instant>, bins: usize) -> Option<(Spectrum, Instant)> {
+    if let Some(f) = s.trunking.latest_frame() {
+        return since.is_none_or(|t| f.at > t).then(|| (shape(s, &f.db, bins, true), f.at));
+    }
+    if !s.lease.is_normal() {
+        return None;
+    }
+    let db = power_db(&s.tuner.hw().spectrum().await?);
+    (!db.is_empty()).then(|| (shape(s, &db, bins, true), Instant::now()))
+}
+
+/// `db` (every bin) in `bins`, the strongest of each group, with the tuning.
+fn shape(s: &AppState, db: &[f32], bins: usize, fresh: bool) -> Spectrum {
+    let group = (BINS / bins.clamp(64, BINS)).max(1);
+    let db = db.chunks(group).map(|c| c.iter().copied().fold(f32::MIN, f32::max)).collect();
     let t = s.tuner.tuning();
-    Json(Spectrum { lo_hz: t.lo_hz, sample_rate_hz: t.sample_rate_hz, control_hz: t.control_hz, lanes_hz: t.lanes, db, fresh })
+    Spectrum { lo_hz: t.lo_hz, sample_rate_hz: t.sample_rate_hz, control_hz: t.control_hz, lanes_hz: t.lanes, db, fresh }
 }
 
 pub async fn survey(State(s): State<Arc<AppState>>) -> Json<SurveyView> {

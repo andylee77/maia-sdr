@@ -11,8 +11,7 @@ import { api } from '../api.js';
 import { packetDataCard } from './packet_data.js';
 import { dur, num, bytes, tgLabel, unitLabel, DASH, dayTime as when } from '../format.js';
 
-const TICK_MS = 30000;
-// refresh: how often a period is reloaded (longer ones cost the radio more).
+// refresh: how often a period is reloaded at most (longer ones cost the radio more).
 const PERIODS = [
   { key: '24h', label: '24 h', hours: 24, bucket: 'hour', refresh: 30000 },
   { key: '7d', label: '7 days', hours: 168, bucket: 'hour', refresh: 120000 },
@@ -351,11 +350,25 @@ export function mount(host) {
   }
 
   load();
-  const timer = setInterval(() => {
-    if (!document.hidden && Date.now() - loadedAt >= st.period.refresh - 1000) load();
-  }, TICK_MS);
+  // The history changes as calls close (the store has them pushed): reload then, at most as
+  // often as the period's `refresh`; a close inside it reloads when it is over.
+  let seenCalls = null;
+  let later = null;
   return {
-    update() {},
-    unmount() { clearInterval(timer); plot.destroy(); },
+    update(s) {
+      if (!s.calls || s.calls.recent === seenCalls) return;
+      const first = seenCalls === null;
+      seenCalls = s.calls.recent;
+      if (first || later) return;
+      const wait = Math.max(0, loadedAt + st.period.refresh - Date.now());
+      later = setTimeout(() => {
+        later = null;
+        load();
+      }, wait);
+    },
+    unmount() {
+      clearTimeout(later);
+      plot.destroy();
+    },
   };
 }

@@ -27,8 +27,8 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `GET /api/v1/status` | Build, uptime, board time; the live state (`no_site`, `switching`, `scanning`, `live` with site, system, profile, window and tuning); the control channel's health; the lease; tuning; clock; the held talkgroup | UI (after an action; otherwise each page gets it pushed by `/ws/live` each second); `scanner_live_check.py` | Tuning is there twice. When the site went live isn't exposed |
 | `GET /api/v1/receivers` | The control channel's status, carrier loop and AGC, and both P25 demodulators' (or the DMR decoder's) counters; each lane's channel, call, followed talkgroup, data-channel park, voice frames, decoder counters and carrier loop | Nothing yet (for the diagnostics) | Repeats `status.control`. No modulation override. No reset of the counters |
 | `GET /api/v1/system` | Board load, memory, CPU per core and per scanner thread, AD9361 and Zynq temperatures | Nothing yet | No filesystem space; the card's free space is only in `/recordings` |
-| `GET /api/v1/spectrum` | The receive window's spectrum (`bins`) with the LO, rate, control channel and lanes | UI Diagnostics | No frame time. A `bins` that doesn't divide 4096 isn't refused |
-| `GET /api/v1/events` | The event log after `after` (`limit`, `routine`) | UI Diagnostics events box | Any extra query key is a 400. More than `limit` new events leaves a silent gap. No filter by class, talkgroup or unit |
+| `GET /api/v1/spectrum` | The receive window's spectrum (`bins`) with the LO, rate, control channel and lanes | Tools (the UI has it pushed on `/ws/live`) | No frame time. A `bins` that doesn't divide 4096 isn't refused |
+| `GET /api/v1/events` | The event log after `after` (`limit`, `routine`) | Tools (the UI's events box has it pushed on `/ws/live`) | Any extra query key is a 400. More than `limit` new events leaves a silent gap. No filter by class, talkgroup or unit |
 | `WS /ws/events` | `call_opened`, `call_closed`, `recording_saved`, `lag` | Nothing in the UI (it uses `/ws/live`) | No notice for a site switch, a scan, a recentre, a clock or crystal step, or a settings or profile change. No site in notices |
 
 ## Calls, audio, recordings
@@ -69,7 +69,7 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `PUT /api/v1/radio/settings` | Presets allowed, lanes, call timings, history limits | UI Settings | Lanes apply at the next start, not the next activation. Lane count isn't range-checked |
 | `PUT /api/v1/radio/clock` | Clock source | UI Settings | Same as legacy `PUT /api/ui/settings`. `{}` silently sets `site` |
 | `POST /api/v1/clock` | Set the board clock | UI Settings | Sits outside `/radio/`, unlike its sibling |
-| `GET`/`PUT /api/v1/radio/crystal`, `POST …/calibrate` | Crystal correction: applied, tracked, calibrated | UI Settings Crystal card | The stored calibration is only in `/radio` `state.crystal` |
+| `GET`/`PUT /api/v1/radio/crystal`, `POST …/calibrate` | Crystal correction: applied, tracked, calibrated | UI Settings Crystal card (then pushed on `/ws/live`) | The stored calibration is only in `/radio` `state.crystal` |
 | `PUT /api/v1/radio/recording` | Recording on/off, store, limits | UI Settings | Missing fields silently take defaults |
 
 ## Systems, sites, profiles, scan

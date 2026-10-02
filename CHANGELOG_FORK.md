@@ -79,8 +79,10 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   carriers heard over ten minutes, steady or intermittent (`/api/v1/survey`, Diagnostics).
 - **Now page:** the system card (system and site lists that make a site live; details,
   identity, control channel health) and the left and right traffic channels stay on screen;
-  the live site's calls scroll below in their own pane, with playback and hold. The pages'
-  shared state comes from `/ws/live` instead of a poll every 2 s.
+  the live site's calls scroll below in their own pane, with playback and hold.
+- **No page polls:** the pages' shared state comes from `/ws/live`, and a page subscribes there
+  to what only it shows (the spectrum, the event log, the radio's readback, the receive window,
+  the crystal); Activity reloads when calls close.
 
 Tests: scanner 419, p25-httpd 475.
 

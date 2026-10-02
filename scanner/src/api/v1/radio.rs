@@ -31,16 +31,21 @@ pub struct Radio {
 }
 
 pub async fn get(State(s): State<Arc<AppState>>) -> Json<Radio> {
+    Json(radio(&s).await)
+}
+
+/// The radio as `GET /api/v1/radio` and `/ws/live` give it.
+pub async fn radio(s: &AppState) -> Radio {
     let readback = s.tuner.readback().await;
     let c = s.config.lock().await;
-    Json(Radio {
+    Radio {
         presets: crate::hardware::presets::PRESETS.iter().map(|p| p.name).collect(),
         config: c.radio.value.clone(),
         state: c.state.value.clone(),
         hardware: s.hardware.clone(),
         tuning: s.tuner.tuning(),
         readback,
-    })
+    }
 }
 
 #[derive(Deserialize)]

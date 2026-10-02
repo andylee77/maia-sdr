@@ -2,6 +2,9 @@
 // air and the newest closed ones, the traffic channels, the newest recordings and the systems.
 // Pages subscribe and get the whole store on every change. A part is replaced, never changed in
 // place, so a page can tell what changed by comparing it with what it drew.
+//
+// What only some pages show (the spectrum, the event log, the radio's readback, the receive
+// window, the crystal) comes over the same socket while a page wants it (`want`).
 
 import { api, wsUrl } from './api.js';
 
@@ -81,6 +84,54 @@ function setTraffic(traffic) {
   if (store.calls) store.calls = { open: traffic.open, recent: store.calls.recent };
 }
 
+// Pages' wants: want({spectrum: 1024}, fn) and fn gets each `spectrum` message until the
+// returned function is called. `events: {after, routine}` is the event log past `after`; its
+// page moves `after` on as lines come, and gets {type: 'restart'} when the scanner restarted
+// (the log starts again).
+const wanting = new Map();
+let nextWant = 1;
+let socket = null;
+const FEEDS = ['spectrum', 'events', 'radio', 'window', 'crystal'];
+
+export function want(wants, onMessage) {
+  const id = nextWant++;
+  wanting.set(id, { wants, onMessage });
+  sendWants();
+  return () => {
+    wanting.delete(id);
+    sendWants();
+  };
+}
+
+// Every page's wants as one: the most spectrum bins, the event log of the first page that
+// wants it, and the rest if any page wants them.
+function sendWants() {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  const out = { type: 'subscribe' };
+  for (const { wants } of wanting.values()) {
+    if (wants.spectrum) out.spectrum = Math.max(out.spectrum || 0, wants.spectrum);
+    if (wants.events && !out.events) out.events = wants.events;
+    for (const k of ['radio', 'window', 'crystal']) if (wants[k]) out[k] = true;
+  }
+  socket.send(JSON.stringify(out));
+}
+
+function feed(m) {
+  for (const { wants, onMessage } of wanting.values()) if (wants[m.type]) onMessage(m);
+}
+
+// The scanner restarted (a snapshot with less uptime than the last status): the event log
+// numbers its lines afresh.
+function restarted() {
+  for (const { wants, onMessage } of wanting.values()) {
+    if (wants.events) {
+      wants.events.after = 0;
+      onMessage({ type: 'restart' });
+    }
+  }
+  sendWants();
+}
+
 // After an action: the status and the calls now, rather than at the next push.
 export async function refresh() {
   try {
@@ -90,8 +141,13 @@ export async function refresh() {
 }
 
 function receive(m) {
+  if (FEEDS.includes(m.type)) {
+    feed(m);
+    return;
+  }
   switch (m.type) {
     case 'snapshot':
+      if (store.status && m.status.uptime_s < store.status.uptime_s) restarted();
       callsOf = liveSite(m.status);
       store.calls = m.calls;
       setStatus(m.status);
@@ -138,10 +194,11 @@ function receive(m) {
 }
 
 function connect(backoff = 1000) {
-  const ws = new WebSocket(wsUrl('/ws/live'));
+  const ws = socket = new WebSocket(wsUrl('/ws/live'));
   ws.onopen = () => {
     backoff = 1000;
     store.connected = true;
+    sendWants();
   };
   ws.onmessage = e => {
     try {
