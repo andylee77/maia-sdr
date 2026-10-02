@@ -1341,7 +1341,8 @@ From the brief:
       (`/api/v1/iq/control.wav`), B's control IQ is 10 dB over the noise at 454 MHz, where Clay
       P25 at 860 MHz is 24 dB on the same antenna and A's capture of 2026-09-30 (outdoor
       antenna) 37.5 dB. SDRTrunk's own decoder passes 23.6 % of B's capture and 100 % of A's:
-      the decoder is not the cause; B's antenna is weak at UHF.
+      the decoder is not the cause. B's antenna is an indoor TV antenna (450-800 MHz) and Clay
+      Electric is weak indoors; DMR checks need the outdoor antenna.
   - **Open, crystal at DMR:** at Clay Electric the calibration took the DMR equaliser's -136 Hz
     and moved the correction from -0.061 to +0.214 ppm (then +0.319 by tracking), while the
     spectrum put the carrier 10 Hz from centre. Back on Clay P25 the loop returned it to -0.048
