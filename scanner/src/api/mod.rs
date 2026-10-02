@@ -98,6 +98,7 @@ routes! {
     get "/api/v1/activity/talkgroup/{tg}" => v1::activity::talkgroup, "a talkgroup's radios and encryption history";
     get "/api/v1/activity/series" => v1::activity::series, "calls and time per hour or day (`bucket`, `tz`, `tg`, `unit`)";
     get "/api/v1/activity/calls" => v1::activity::calls, "calls newest first in `/calls`' shape with names (`tg`, `unit`, `limit`; `format=csv`: history rows as a file)";
+    get "/api/v1/survey" => v1::spectrum::survey, "the carriers heard in the live site's receive window over the last ten minutes: how often each is on, its peak above the floor, steady or not (from every spectrometer frame)";
     get "/api/v1/spectrum" => v1::spectrum::get, "the receive window from the wideband spectrometer (`bins`), with the control channel and lanes";
     get "/api/v1/events" => v1::events::list, "the event log after `after` (newest `limit`; housekeeping too with `routine=true`)";
     get "/api/v1/system" => v1::system::get, "the board's health: load, memory, CPU per core and per scanner thread, temperatures";

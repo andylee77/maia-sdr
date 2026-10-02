@@ -22,6 +22,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/activity/talkgroup/{tg}` | a talkgroup's radios and encryption history |
 | GET | `/api/v1/activity/series` | calls and time per hour or day (`bucket`, `tz`, `tg`, `unit`) |
 | GET | `/api/v1/activity/calls` | calls newest first in `/calls`' shape with names (`tg`, `unit`, `limit`; `format=csv`: history rows as a file) |
+| GET | `/api/v1/survey` | the carriers heard in the live site's receive window over the last ten minutes: how often each is on, its peak above the floor, steady or not (from every spectrometer frame) |
 | GET | `/api/v1/spectrum` | the receive window from the wideband spectrometer (`bins`), with the control channel and lanes |
 | GET | `/api/v1/events` | the event log after `after` (newest `limit`; housekeeping too with `routine=true`) |
 | GET | `/api/v1/system` | the board's health: load, memory, CPU per core and per scanner thread, temperatures |

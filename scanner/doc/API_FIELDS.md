@@ -32,8 +32,8 @@ Build, uptime, the live site, its control channel and the tuning.
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
 | `build` | string | `"2026-10-01-scanner-image3"` | The scanner's build tag. |
-| `uptime_s` | number | `40` | Since the scanner started, s. |
-| `now_unix_ms` | number | `1790918603271` | The board's clock. |
+| `uptime_s` | number | `126` | Since the scanner started, s. |
+| `now_unix_ms` | number | `1790919890011` | The board's clock. |
 | `live` | object |  | The live site's state; `state` says which fields follow. |
 | `live.state` | string | `"live"` | `no_site`, `switching` (with `to`), `scanning` (with `back_to`) or `live` (with the fields below). |
 | `live.to` | string, absent unless switching |  | The site being made live. |
@@ -79,8 +79,8 @@ Build, uptime, the live site, its control channel and the tuning.
 | `live.tuning.preset` | string or null | `"8M"` | The DDC preset of the receive window (`8M`, `12M`, `16M`). |
 | `live.tuning.sample_rate_hz` | number | `8000000` | The AD9361's sample rate. |
 | `live.tuning.lo_hz` | number | `454383750` | The window's centre (the nominal LO). |
-| `live.tuning.lo_shift_hz` | number | `169` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
-| `live.tuning.crystal_ppm` | number | `-0.3728126280924439` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
+| `live.tuning.lo_shift_hz` | number | `177` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
+| `live.tuning.crystal_ppm` | number | `-0.3899787349349531` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
 | `live.tuning.control_hz` | number | `454368750` | The channel the control chain is tuned to. |
 | `live.tuning.gain` | object or null |  | The receiver gain. |
 | `live.tuning.gain.mode` | string | `"slow_attack"` | `manual`, `slow_attack`, `fast_attack` or `hybrid` (the AD9361's AGC modes). |
@@ -105,17 +105,17 @@ Build, uptime, the live site, its control channel and the tuning.
 | `control.tsbks_20s` | object, absent at DMR sites |  | P25: TSBKs each demodulator passed in the last 20 s (what the automatic choice compares). |
 | `control.tsbks_20s.lsm` | number |  | By the gateware LSM demodulator. |
 | `control.tsbks_20s.c4fm` | number |  | By the software C4FM demodulator. |
-| `control.msgs_per_s` | number or null | `45.8` | Messages that passed their checks, per second (over the last few seconds). |
+| `control.msgs_per_s` | number or null | `46.5` | Messages that passed their checks, per second (over the last few seconds). |
 | `control.ok_pct` | number or null | `100.0` | Share of messages that passed their checks (P25: TSBK CRC), %. |
-| `control.last_message_age_ms` | number or null | `28` | Since the last message that passed, ms. |
+| `control.last_message_age_ms` | number or null | `22` | Since the last message that passed, ms. |
 | `control.cpu_pct` | number | `12.3` | Share of one core the decode thread uses, %. |
-| `control.carrier_offset_hz` | number, absent at P25 sites | `-29.0` | DMR: the carrier's offset from the channel as the equaliser measures it. |
+| `control.carrier_offset_hz` | number, absent at P25 sites | `-34.0` | DMR: the carrier's offset from the channel as the equaliser measures it. |
 | `control.channel_plan_entries` | number | `0` | Channel plan entries known: P25 band (IDEN) entries, DMR LCNs. |
 | `control.neighbours` | number | `0` | P25: neighbour sites announced. |
 | `control.grants` | number | `0` | Voice grants decoded since the site went live. |
 | `control.grants_dropped` | number | `0` | Grants the trunking task could not take (its queue was full). |
 | `control.input` | object |  | What the stream readers delivered. |
-| `control.input.iq_chunks` | number | `245` | Control IQ chunks delivered. |
+| `control.input.iq_chunks` | number | `768` | Control IQ chunks delivered. |
 | `control.input.iq_dropped` | number | `0` | IQ chunks dropped because the decoder was behind. |
 | `control.input.dibit_bytes` | number | `0` | Bytes of gateware dibits delivered (four dibits a byte). |
 | `control.input.dibit_resyncs` | number | `0` | Times the dibit stream skipped and was resynchronised. |
@@ -125,8 +125,8 @@ Build, uptime, the live site, its control channel and the tuning.
 | `tuning.preset` | string or null | `"8M"` | The DDC preset of the receive window (`8M`, `12M`, `16M`). |
 | `tuning.sample_rate_hz` | number | `8000000` | The AD9361's sample rate. |
 | `tuning.lo_hz` | number | `454383750` | The window's centre (the nominal LO). |
-| `tuning.lo_shift_hz` | number | `169` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
-| `tuning.crystal_ppm` | number | `-0.3728126280924439` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
+| `tuning.lo_shift_hz` | number | `177` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
+| `tuning.crystal_ppm` | number | `-0.3899787349349531` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
 | `tuning.control_hz` | number | `454368750` | The channel the control chain is tuned to. |
 | `tuning.gain` | object or null |  | The receiver gain. |
 | `tuning.gain.mode` | string | `"slow_attack"` | `manual`, `slow_attack`, `fast_attack` or `hybrid` (the AD9361's AGC modes). |
@@ -380,8 +380,8 @@ Calls, voice and grant time, talkgroups, radios (`site`, `from`/`to` or `hours`)
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_elec_site_2"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1790832203341` | Start (unix ms). |
-| `window.to_ms` | number | `1790918603341` | End (unix ms). |
+| `window.from_ms` | number | `1790833490097` | Start (unix ms). |
+| `window.to_ms` | number | `1790919890097` | End (unix ms). |
 | `window.first_hour_ms` | number | `1790830800000` | The first whole hour the hourly totals use. |
 | `summary` | object |  | Totals over the window. |
 | `summary.calls` | number | `0` | Calls. |
@@ -405,8 +405,8 @@ Talkgroups by time, with names (`limit`).
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_elec_site_2"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1790832203348` | Start (unix ms). |
-| `window.to_ms` | number | `1790918603348` | End (unix ms). |
+| `window.from_ms` | number | `1790833490128` | Start (unix ms). |
+| `window.to_ms` | number | `1790919890128` | End (unix ms). |
 | `window.first_hour_ms` | number | `1790830800000` | The first whole hour the hourly totals use. |
 | `items` | array | `[]` | Talkgroups by time, most first (`limit`). |
 | `items[]` | object |  | One talkgroup. |
@@ -428,8 +428,8 @@ Radios by time, with names (`limit`).
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_elec_site_2"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1790832203379` | Start (unix ms). |
-| `window.to_ms` | number | `1790918603379` | End (unix ms). |
+| `window.from_ms` | number | `1790833490158` | Start (unix ms). |
+| `window.to_ms` | number | `1790919890158` | End (unix ms). |
 | `window.first_hour_ms` | number | `1790830800000` | The first whole hour the hourly totals use. |
 | `items` | array | `[]` | Radios by time, most first (`limit`). |
 | `items[]` | object |  | One radio. |
@@ -519,8 +519,8 @@ Calls and time per hour or day (`bucket`, `tz`, `tg`, `unit`).
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_elec_site_2"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1790832203411` | Start (unix ms). |
-| `window.to_ms` | number | `1790918603411` | End (unix ms). |
+| `window.from_ms` | number | `1790833490191` | Start (unix ms). |
+| `window.to_ms` | number | `1790919890191` | End (unix ms). |
 | `window.first_hour_ms` | number | `1790830800000` | The first whole hour the hourly totals use. |
 | `bucket_ms` | number | `3600000` | The bucket's length (an hour or a day). |
 | `tz` | number | `0` | The time zone the days are cut in, minutes east of UTC. |
@@ -542,8 +542,8 @@ Calls newest first in `/calls`' shape with names (`tg`, `unit`, `limit`; `format
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_elec_site_2"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1790832203441` | Start (unix ms). |
-| `window.to_ms` | number | `1790918603441` | End (unix ms). |
+| `window.from_ms` | number | `1790833490220` | Start (unix ms). |
+| `window.to_ms` | number | `1790919890220` | End (unix ms). |
 | `window.first_hour_ms` | number | `1790830800000` | The first whole hour the hourly totals use. |
 | `items` | array | `[]` | Calls, newest first (`limit`). |
 | `items[]` | object |  | One call. |
@@ -574,6 +574,23 @@ Calls newest first in `/calls`' shape with names (`tg`, `unit`, `limit`; `format
 | `items[].codec` | string or null |  | `imbe` (P25) or `ambe2` (DMR), once there was voice. |
 | `items[].frame_errors` | number or null |  | Voice frames the vocoder found errors in; known once the call is stored. |
 
+## `GET /api/v1/survey`
+
+The carriers heard in the live site's receive window over the last ten minutes: how often each is on, its peak above the floor, steady or not (from every spectrometer frame).
+
+| Field | Type | Example | Meaning |
+|-------|------|---------|---------|
+| `site` | string | `"clay_elec_site_2"` | The live site (empty with none). |
+| `lo_hz` | number or null | `454383750` | The centre of the window surveyed. |
+| `sample_rate_hz` | number or null | `8000000` | Its width. |
+| `frames` | number | `911` | Spectrometer frames read since the window last moved (7.6 a second). |
+| `carriers` | array |  | The carriers heard, the most active first. |
+| `carriers[]` | object |  | One carrier: adjacent bins 10 dB above the frame's floor, on the channel raster. |
+| `carriers[].freq_hz` | number | `454118750` | Its frequency. |
+| `carriers[].on_pct` | number | `100.0` | Share of the frames of the last ten minutes it was on, 0 to 100. |
+| `carriers[].peak_db` | number | `28.566917` | Its strongest level above the floor, dB. |
+| `carriers[].steady` | boolean | `true` | On 90 % of the frames or more: a control channel or the like; intermittent ones carry calls, data or keep-alives. |
+
 ## `GET /api/v1/spectrum`
 
 The receive window from the wideband spectrometer (`bins`), with the control channel and lanes.
@@ -584,7 +601,7 @@ The receive window from the wideband spectrometer (`bins`), with the control cha
 | `sample_rate_hz` | number | `8000000` | Its width. |
 | `control_hz` | number | `454368750` | The control channel. |
 | `lanes_hz` | array of 2 numbers or null | `[null, null]` | Each lane's channel. |
-| `db` | array of numbers | `[-95.6344, -95.88586, -95.764366, -95...` | Power per bin, dB, from -rate/2 to +rate/2 (each the strongest of its group). |
+| `db` | array of numbers | `[-97.155205, -96.78332, -96.59228, -9...` | Power per bin, dB, from -rate/2 to +rate/2 (each the strongest of its group). |
 | `fresh` | bool | `true` | A new frame (false: the last one again, during a scan or when none came in 300 ms). |
 
 ## `GET /api/v1/events`
@@ -596,7 +613,7 @@ The event log after `after` (newest `limit`; housekeeping too with `routine=true
 | `events` | array |  | Events after `after`, oldest first. |
 | `events[]` | object |  | One event. |
 | `events[].seq` | number | `1` | Its sequence number (ask for those after it next). |
-| `events[].unix_ms` | number | `1790918563145` | When. |
+| `events[].unix_ms` | number | `1790919764143` | When. |
 | `events[].source` | string | `"system"` | `p25`, `dmr` (a message) or `system` (the scanner). |
 | `events[].class` | string | `"start"` | The message class, or the system event's kind (`call`, `follow`, `hold`, `crystal`...). |
 | `events[].text` | string | `"scanner 2026-10-01-scanner-image3 st...` | The event. |
@@ -612,21 +629,21 @@ The board's health: load, memory, CPU per core and per scanner thread, temperatu
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `at_unix_ms` | number | `1790918603170` | When it was sampled (every 5 s). |
-| `board_uptime_s` | number or null | `12524.58` | Since the board booted. |
-| `load` | array of 3 numbers or null | `[0.2, 0.18, 0.17]` | Load average over 1, 5 and 15 minutes. |
+| `at_unix_ms` | number | `1790919889206` | When it was sampled (every 5 s). |
+| `board_uptime_s` | number or null | `13810.47` | Since the board booted. |
+| `load` | array of 3 numbers or null | `[0.2, 0.16, 0.13]` | Load average over 1, 5 and 15 minutes. |
 | `mem_total_kb` | number or null | `1007084` | Memory. |
-| `mem_available_kb` | number or null | `873620` | Memory free for use. |
-| `core_cpu_pct` | array of numbers | `[11.0, 3.2]` | Each core's use, %. |
-| `rss_kb` | number or null | `9684` | The scanner's memory. |
-| `threads` | number or null | `14` | The scanner's threads. |
-| `cpu_pct` | number or null | `13.6` | The scanner's share of one core, %. |
+| `mem_available_kb` | number or null | `874316` | Memory free for use. |
+| `core_cpu_pct` | array of numbers | `[10.4, 12.8]` | Each core's use, %. |
+| `rss_kb` | number or null | `10116` | The scanner's memory. |
+| `threads` | number or null | `12` | The scanner's threads. |
+| `cpu_pct` | number or null | `16.8` | The scanner's share of one core, %. |
 | `thread_cpu` | array |  | The scanner's threads by use, busiest first. |
 | `thread_cpu[]` | object |  | One thread. |
 | `thread_cpu[].name` | string | `"dmr-cc"` | Its name. |
-| `thread_cpu[].cpu_pct` | number | `12.2` | Its share of one core, %. |
-| `ad9361_temp_c` | number or null | `27.193` | The AD9361's temperature, °C. |
-| `zynq_temp_c` | number or null | `49.7` | The Zynq's temperature, °C. |
+| `thread_cpu[].cpu_pct` | number | `12.6` | Its share of one core, %. |
+| `ad9361_temp_c` | number or null | `26.316` | The AD9361's temperature, °C. |
+| `zynq_temp_c` | number or null | `49.0` | The Zynq's temperature, °C. |
 
 ## `GET /api/v1/iq/control.wav`
 
@@ -658,26 +675,26 @@ The control channel and each lane: status, decoder counters, carrier loop.
 | `control.tsbks_20s` | object, absent at DMR sites |  | P25: TSBKs each demodulator passed in the last 20 s (what the automatic choice compares). |
 | `control.tsbks_20s.lsm` | number |  | By the gateware LSM demodulator. |
 | `control.tsbks_20s.c4fm` | number |  | By the software C4FM demodulator. |
-| `control.msgs_per_s` | number or null | `45.8` | Messages that passed their checks, per second (over the last few seconds). |
+| `control.msgs_per_s` | number or null | `46.5` | Messages that passed their checks, per second (over the last few seconds). |
 | `control.ok_pct` | number or null | `100.0` | Share of messages that passed their checks (P25: TSBK CRC), %. |
-| `control.last_message_age_ms` | number or null | `116` | Since the last message that passed, ms. |
+| `control.last_message_age_ms` | number or null | `180` | Since the last message that passed, ms. |
 | `control.cpu_pct` | number | `12.3` | Share of one core the decode thread uses, %. |
-| `control.carrier_offset_hz` | number, absent at P25 sites | `-29.0` | DMR: the carrier's offset from the channel as the equaliser measures it. |
+| `control.carrier_offset_hz` | number, absent at P25 sites | `-34.0` | DMR: the carrier's offset from the channel as the equaliser measures it. |
 | `control.channel_plan_entries` | number | `0` | Channel plan entries known: P25 band (IDEN) entries, DMR LCNs. |
 | `control.neighbours` | number | `0` | P25: neighbour sites announced. |
 | `control.grants` | number | `0` | Voice grants decoded since the site went live. |
 | `control.grants_dropped` | number | `0` | Grants the trunking task could not take (its queue was full). |
 | `control.input` | object |  | What the stream readers delivered. |
-| `control.input.iq_chunks` | number | `246` | Control IQ chunks delivered. |
+| `control.input.iq_chunks` | number | `770` | Control IQ chunks delivered. |
 | `control.input.iq_dropped` | number | `0` | IQ chunks dropped because the decoder was behind. |
 | `control.input.dibit_bytes` | number | `0` | Bytes of gateware dibits delivered (four dibits a byte). |
 | `control.input.dibit_resyncs` | number | `0` | Times the dibit stream skipped and was resynchronised. |
 | `control.input.dibit_lost` | number | `0` | Dibit deliveries lost (decoder behind, or a copy failed). |
 | `control.loop` | object or null |  | The control chain's gateware carrier loop and AGC (P25). |
-| `control.loop.pll_q213` | number | `758` | The loop's phase correction per symbol, Q2.13 (one reading). |
-| `control.loop.pll_hz` | number | `70.68717589667384` | The same in Hz. |
-| `control.loop.agc_gain` | number | `805` | The LSM AGC's gain, Q9.7. |
-| `control.loop.agc_mag` | number | `4906` | The LSM AGC's magnitude, Q1.15. |
+| `control.loop.pll_q213` | number | `-902` | The loop's phase correction per symbol, Q2.13 (one reading). |
+| `control.loop.pll_hz` | number | `-84.1158742200525` | The same in Hz. |
+| `control.loop.agc_gain` | number | `854` | The LSM AGC's gain, Q9.7. |
+| `control.loop.agc_mag` | number | `4848` | The LSM AGC's magnitude, Q1.15. |
 | `control.counters` | object or null |  | The decoders' counters; `protocol` says which. |
 | `control.counters.protocol` | string | `"dmr"` | `p25` (with `lsm` and `c4fm`) or `dmr` (with `messages` and `demod`). |
 | `control.counters.lsm` | object |  | P25: the gateware LSM demodulator's framer. |
@@ -743,19 +760,19 @@ The control channel and each lane: status, decoder counters, carrier loop.
 | `control.counters.c4fm.pdu_header_failures` | number |  | PDU headers that failed their checks. |
 | `control.counters.c4fm.pdu_blocks` | number |  | PDU data blocks read. |
 | `control.counters.messages` | object |  | DMR: the message decoder. |
-| `control.counters.messages.bursts` | array of 3 numbers | `[0, 660, 659]` | Bursts by timeslot: unknown, 1, 2. |
+| `control.counters.messages.bursts` | array of 3 numbers | `[0, 2092, 2095]` | Bursts by timeslot: unknown, 1, 2. |
 | `control.counters.messages.voice_bursts` | number | `0` | Voice bursts. |
-| `control.counters.messages.cach_ok` | number | `1319` | CACH (the slot-type channel) decoded. |
+| `control.counters.messages.cach_ok` | number | `4187` | CACH (the slot-type channel) decoded. |
 | `control.counters.messages.cach_bad` | number | `0` | CACH that failed. |
-| `control.counters.messages.sync_loss_bits` | number | `602` | Bits processed while sync was lost. |
-| `control.counters.messages.msgs_valid` | number | `1650` | Messages that passed their checks. |
+| `control.counters.messages.sync_loss_bits` | number | `434` | Bits processed while sync was lost. |
+| `control.counters.messages.msgs_valid` | number | `5235` | Messages that passed their checks. |
 | `control.counters.messages.msgs_invalid` | number | `0` | Messages that failed. |
-| `control.counters.messages.classes` | map | `{"Aloha": [646, 0]}` | Messages by SDRTrunk class name. |
-| `control.counters.messages.classes{key}` | array of 2 numbers | `[646, 0]` | Passed and failed. |
+| `control.counters.messages.classes` | map | `{"Aloha": [2053, 0]}` | Messages by SDRTrunk class name. |
+| `control.counters.messages.classes{key}` | array of 2 numbers | `[2053, 0]` | Passed and failed. |
 | `control.counters.demod` | object |  | DMR: the demodulator. |
-| `control.counters.demod.symbols` | number | `190315` | Symbols demodulated. |
+| `control.counters.demod.symbols` | number | `603192` | Symbols demodulated. |
 | `control.counters.demod.coarse_syncs` | number | `2` | Syncs found from scratch (the coarse timing search). |
-| `control.counters.demod.fine_syncs` | number | `1318` | Syncs confirmed where the next burst was expected. |
+| `control.counters.demod.fine_syncs` | number | `4186` | Syncs confirmed where the next burst was expected. |
 | `control.counters.demod.fine_sync_losses` | number | `1` | Expected syncs that were not there (fine sync dropped). |
 | `lanes` | array |  | Each traffic lane of the live site (empty when none is live). |
 | `lanes[]` | object |  | One lane. |
@@ -819,7 +836,7 @@ The whole configuration as one document: radio settings, systems with their alia
 | `format` | string | `"scanner-config"` | `scanner-config`. |
 | `version` | number | `1` | The document's version. |
 | `build` | string | `"2026-10-01-scanner-image3"` | The build that exported it. |
-| `exported_unix_ms` | number | `1790918603550` | When. |
+| `exported_unix_ms` | number | `1790919890360` | When. |
 | `radio` | object |  | The radio settings. |
 | `radio.version` | number | `1` | The file format's version. |
 | `radio.gain` | object |  | The receiver gain setting. |
@@ -950,12 +967,12 @@ Radio configuration, hardware and tuning.
 | `state.version` | number | `1` | The file's version. |
 | `state.live_site` | string or null | `"clay_elec_site_2"` | The site made live at start. |
 | `state.crystal` | object or null |  | The stored crystal correction. |
-| `state.crystal.ppm` | number | `-0.3728126280924439` | The correction. |
+| `state.crystal.ppm` | number | `-0.3899787349349531` | The correction. |
 | `state.crystal.measured_at_lo_hz` | number | `454383750` | The LO it was measured at. |
-| `state.crystal.lo_shift_hz` | number | `169` | The shift it gave there. |
+| `state.crystal.lo_shift_hz` | number | `177` | The shift it gave there. |
 | `state.crystal.control_freq_hz` | number or null | `454368750` | The control channel it was measured on. |
 | `state.crystal.method` | string | `"calibration"` | How: `calibration` or `tracker`. |
-| `state.crystal.at_unix_ms` | number | `1790918586431` | When. |
+| `state.crystal.at_unix_ms` | number | `1790919789808` | When. |
 | `hardware` | object |  | What the scanner found at start. |
 | `hardware.core_version` | string or null | `"0.3.0"` | The gateware's version. |
 | `hardware.lanes` | number | `2` | Traffic lanes running. |
@@ -963,8 +980,8 @@ Radio configuration, hardware and tuning.
 | `tuning.preset` | string or null | `"8M"` | The DDC preset of the receive window (`8M`, `12M`, `16M`). |
 | `tuning.sample_rate_hz` | number | `8000000` | The AD9361's sample rate. |
 | `tuning.lo_hz` | number | `454383750` | The window's centre (the nominal LO). |
-| `tuning.lo_shift_hz` | number | `169` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
-| `tuning.crystal_ppm` | number | `-0.3728126280924439` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
+| `tuning.lo_shift_hz` | number | `177` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
+| `tuning.crystal_ppm` | number | `-0.3899787349349531` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
 | `tuning.control_hz` | number | `454368750` | The channel the control chain is tuned to. |
 | `tuning.gain` | object or null |  | The receiver gain. |
 | `tuning.gain.mode` | string | `"slow_attack"` | `manual`, `slow_attack`, `fast_attack` or `hybrid` (the AD9361's AGC modes). |
@@ -972,7 +989,7 @@ Radio configuration, hardware and tuning.
 | `tuning.lanes` | array of 2 numbers or null | `[null, null]` | The channel each traffic lane is tuned to (lane 1, lane 2); null when the lane holds none. |
 | `tuning.rev` | number | `4` | Counts tuning changes; a new value means something above moved. |
 | `readback` | object |  | Values read back from the hardware. |
-| `readback.lo_hz` | number or null | `454383918` | The AD9361's LO. |
+| `readback.lo_hz` | number or null | `454383924` | The AD9361's LO. |
 | `readback.gain_db` | number or null | `70.0` | The AD9361's gain. |
 | `readback.rssi_db` | number or null | `89.75` | The AD9361's RSSI (dB below full scale). |
 | `readback.gain_mode` | string or null | `"slow_attack"` | The AD9361's gain mode. |
@@ -986,7 +1003,7 @@ Radio configuration, hardware and tuning.
 | `readback.control_status` | object or null |  | The control LSM's status register. |
 | `readback.control_status.bch_busy` | bool | `false` | The BCH decoder is busy. |
 | `readback.control_status.in_nid_window` | bool | `false` | Inside a NID. |
-| `readback.control_status.nid_event` | bool | `true` | A NID was decoded. |
+| `readback.control_status.nid_event` | bool | `false` | A NID was decoded. |
 | `readback.control_status.nid_valid` | bool | `false` | It passed BCH. |
 | `readback.control_status.n_errors` | number | `9` | Bit errors BCH corrected. |
 | `readback.control_status.sync_distance` | number | `4` | The sync correlator's distance. |
@@ -1005,28 +1022,28 @@ The crystal correction: applied, calibrated and tracked.
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `ppm` | number | `-0.3728126280924439` | The correction applied. |
-| `lo_shift_hz` | number | `169` | The shift it gives at the current LO. |
+| `ppm` | number | `-0.3899787349349531` | The correction applied. |
+| `lo_shift_hz` | number | `177` | The shift it gives at the current LO. |
 | `tracking` | bool | `true` | Tracking is on. |
 | `anchor_hz` | number | `50` | How far tracking may move from this run's calibration, Hz (0: no limit). |
-| `anchor_ppm` | number or null | `-0.3728126280924439` | The calibration tracking is anchored to. |
+| `anchor_ppm` | number or null | `-0.3899787349349531` | The calibration tracking is anchored to. |
 | `source` | string or null | `"dmr_equaliser"` | What tracking measures now: `p25_loop`, `dmr_equaliser` or `spectrum`. |
-| `estimate_ppm` | number or null |  | Tracking's current estimate (applied each minute within the anchor). |
-| `samples` | number | `15` | Readings in the estimate. |
+| `estimate_ppm` | number or null | `-0.30857727636606713` | Tracking's current estimate (applied each minute within the anchor). |
+| `samples` | number | `98` | Readings in the estimate. |
 | `last_decision` | string or null |  | Tracking's last move. |
 | `calibrating` | bool | `false` | A calibration runs now. |
 | `calibration` | object or null |  | This run's calibration. |
-| `calibration.at_unix_ms` | number | `1790918586431` | When it was measured. |
+| `calibration.at_unix_ms` | number | `1790919789808` | When it was measured. |
 | `calibration.lo_hz` | number | `454383750` | The LO at the time. |
 | `calibration.control_hz` | number | `454368750` | The control channel it measured. |
 | `calibration.source` | string | `"dmr_equaliser"` | What it measured with: `p25_loop`, `dmr_equaliser` or `spectrum`. |
-| `calibration.spectrum_offset_hz` | number | `200.1495918045748` | The carrier's offset in the wideband spectrum. |
-| `calibration.spectrum_db` | number | `-43.193077` | The carrier's level in the spectrum, dB. |
-| `calibration.residual_hz` | number or null | `-161.6` | The decoder's mean carrier offset after the spectrum step. |
+| `calibration.spectrum_offset_hz` | number | `231.0959695369511` | The carrier's offset in the wideband spectrum. |
+| `calibration.spectrum_db` | number | `-43.43275` | The carrier's level in the spectrum, dB. |
+| `calibration.residual_hz` | number or null | `-185.8` | The decoder's mean carrier offset after the spectrum step. |
 | `calibration.residual_samples` | number | `30` | Readings averaged for it. |
-| `calibration.ppm_before` | number | `-0.2885342249979111` | The correction before. |
-| `calibration.ppm` | number | `-0.3728126280924439` | The correction it set. |
-| `calibration.duration_ms` | number | `7137` | How long it took. |
+| `calibration.ppm_before` | number | `-0.29159215496175916` | The correction before. |
+| `calibration.ppm` | number | `-0.3899787349349531` | The correction it set. |
+| `calibration.duration_ms` | number | `7484` | How long it took. |
 
 ## `GET /api/v1/recordings`
 
@@ -1080,7 +1097,7 @@ Recordings newest first (`limit`, `site`), with the stores' state.
 | `storage.sd_status.last_write_ms` | number or null |  | The last write's duration. |
 | `storage.sd_status.max_write_ms` | number | `0` | The longest write. |
 | `storage.sd_status.last_error` | string or null |  | The last error. |
-| `storage.sd_status.last_probe_unix_ms` | number or null | `1790918593504` | When the card was last checked. |
+| `storage.sd_status.last_probe_unix_ms` | number or null | `1790919884589` | When the card was last checked. |
 | `storage.sd_status.indexed_at_boot` | number | `14` | Recordings found on the card at start. |
 | `storage.sd_status.index_note` | string | `"indexed 14 recording(s) in /mnt/sd/p...` | What the start found. |
 | `storage.sd_status.queue_jobs` | number | `0` | Writes and deletes waiting. |
@@ -1462,7 +1479,7 @@ Legacy, for the bench: the build.
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
 | `build` | string | `"2026-10-01-scanner-image3"` | The build tag. |
-| `uptime_s` | number | `40` | Since start, s. |
+| `uptime_s` | number | `126` | Since start, s. |
 
 ## `GET /api/ui/state`
 
@@ -1472,7 +1489,7 @@ Legacy, for the bench: the unit's wall clock.
 |-------|------|---------|---------|
 | `v` | number | `1` | The shape's version (1). |
 | `build` | string | `"2026-10-01-scanner-image3"` | The build tag. |
-| `now_unix_ms` | number | `1790918603827` | The board's clock. |
+| `now_unix_ms` | number | `1790919890746` | The board's clock. |
 | `clock_valid` | bool | `true` | The clock has been set. |
 
 ## `GET /api/imbe_dump`
@@ -1494,7 +1511,7 @@ Legacy, for the bench: the newest calls with their voice frame counts (`limit`, 
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `now_unix_ms` | number | `1790918603865` | The board's clock. |
+| `now_unix_ms` | number | `1790919890809` | The board's clock. |
 | `items` | array | `[]` | Open and recent calls, newest first (`limit`). |
 | `items[]` | object |  | One call. |
 | `items[].call_id` | number |  | The call. |

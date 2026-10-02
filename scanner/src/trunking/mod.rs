@@ -6,4 +6,5 @@ pub mod lcn;
 pub mod learned;
 pub mod receivers;
 pub mod site;
+pub mod survey;
 pub mod trunk;

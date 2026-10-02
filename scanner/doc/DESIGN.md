@@ -740,8 +740,15 @@ The 071 finder becomes `services::discovery`, run on the Systems page, and on fi
   traffic channel isn't mapped to it then it needs to auto identify"). A grant on an LCN the
   plan lacks is followed on a candidate frequency: the control channel (a control repeater
   carries calls on its other timeslot: Clay Electric's LCN 5 TS2), the site's known channels,
-  then the carriers that keyed up in the receive window in the 800 ms after the grant (against
-  each bin's usual level, read every 5 s). The candidate is kept when the call's voice link
+  the intermittent carriers the survey heard in the window, then the carriers that keyed up in
+  the 800 ms after the grant (against each bin's usual level, read every 5 s).
+- **The survey** (`trunking::survey`, `/api/v1/survey`, Diagnostics): while a site is live its
+  trunking reads every spectrometer frame (131 ms each, 7.6 a second; the spectrum page is
+  served the newest) and counts, per bin, how often it stands 10 dB over the frame's floor,
+  decaying over ten minutes. Adjacent active bins are a carrier on the raster: steady ones
+  (on 90 % of the time) are control channels and the like, intermittent ones carry calls, data
+  and keep-alives (Andy: "short data blips ... identify other possible channels"). A scan stops
+  the live site, so it has the spectrometer to itself. The candidate is kept when the call's voice link
   control there names the granted talkgroup within 4 s, and is not tried again for that LCN
   when it does not. Learned channels go to the site's state (`lcn_hz`); a configured plan wins
   over them; the site row shows the table. A grant with an absolute frequency needs none of
@@ -1406,3 +1413,6 @@ From the brief:
   - **DMR channel tables are learned** (section 10): a grant on an unmapped LCN is followed on
     a candidate (the control channel, the known channels, a carrier that keyed up), kept once
     the call's voice header names the granted talkgroup.
+  - **The survey** (section 10): every spectrometer frame of the live window, averaged over ten
+    minutes into the carriers heard, steady or intermittent; the intermittent ones are DMR
+    channel candidates.

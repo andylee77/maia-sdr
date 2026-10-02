@@ -27,6 +27,7 @@ export const api = {
   stopSite: id => request('POST', `/api/v1/sites/${encodeURIComponent(id)}/stop`),
   siteLearned: id => request('GET', `/api/v1/sites/${encodeURIComponent(id)}/learned`),
   data: q => request('GET', '/api/v1/data' + (q ? '?' + q : '')),
+  survey: () => request('GET', '/api/v1/survey'),
   sitePlan: id => request('GET', `/api/v1/sites/${encodeURIComponent(id)}/plan`),
   recentre: id => request('POST', `/api/v1/sites/${encodeURIComponent(id)}/recentre`),
   saveSystem: (system, edit) => request('PUT', `/api/v1/systems/${encodeURIComponent(system)}`, edit),

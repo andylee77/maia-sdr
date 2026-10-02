@@ -22,6 +22,7 @@ use super::calls::{CallBook, CallEvent, CallId, CallPolicy, Closed, Opened, Sour
 use super::follow::routing::Routing;
 use super::follow::{Command, Follower, Record};
 use super::lcn::{self, LcnLearner, Usual};
+use super::survey::{Carrier, Survey};
 use crate::audio::live::{Audio, VoiceBatch};
 use crate::services::history::store::{CallRow, Store};
 use crate::services::history::HistoryTx;
@@ -67,9 +68,39 @@ const STUCK_CHECK: Duration = Duration::from_secs(5);
 const COAST_MAX_IDLE: Duration = Duration::from_secs(1);
 /// IQ received this soon after a lane's retune may be the old channel's (a sub-buffer is ~164 ms).
 const IQ_SETTLE: Duration = Duration::from_millis(200);
-/// Spectrometer frames read after a grant on an unmapped DMR channel, for the carrier that keys
-/// up.
+/// Spectrometer frames gathered after a grant on an unmapped DMR channel, for the carrier that
+/// keys up.
 const KEYUP_WATCH: Duration = Duration::from_millis(800);
+/// The survey's view is published this often.
+const SURVEY_PUBLISH: Duration = Duration::from_secs(5);
+
+/// The carriers heard in the live site's receive window (`survey`).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SurveyView {
+    pub site: String,
+    pub lo_hz: Option<u64>,
+    pub sample_rate_hz: Option<u32>,
+    /// Spectrometer frames read since the window last moved (7.6 a second).
+    pub frames: u64,
+    pub carriers: Vec<Carrier>,
+}
+
+/// The newest spectrometer frame the live site read: what the spectrum page shows.
+#[derive(Debug, Clone)]
+pub struct Frame {
+    pub db: Vec<f32>,
+    pub at: Instant,
+}
+
+/// The spectrum watched after a grant on an unmapped DMR channel.
+struct KeyupWatch {
+    grant: Grant,
+    nac: u16,
+    usual: Vec<f32>,
+    window: (u64, u32),
+    until: Instant,
+    after: Vec<Vec<f32>>,
+}
 
 /// What the trunking task receives.
 #[derive(Debug)]
@@ -83,8 +114,6 @@ pub enum TrunkInput {
     WindowMoved,
     /// Follow only this talkgroup (None: release the hold).
     Hold(Option<u32>),
-    /// The carriers that keyed up after a grant on an unmapped DMR channel.
-    Keyed { grant: Grant, nac: u16, freqs: Vec<u64> },
 }
 
 pub type TrunkTx = mpsc::Sender<TrunkInput>;
@@ -266,11 +295,15 @@ struct Task<H> {
     /// DMR: the receive window's bins at their usual level, read every `lcn::USUAL_EVERY`.
     usual: Usual,
     usual_read: Instant,
-    /// When the spectrum was last watched for a carrier keying up (one watch at a time).
-    keyup_watch: Option<Instant>,
+    /// The receive window over time, from every spectrometer frame (the task reads them all
+    /// while the site is live).
+    survey: Survey,
+    survey_published: Instant,
+    survey_view: Arc<Mutex<SurveyView>>,
+    latest: Arc<Mutex<Option<Frame>>>,
+    /// DMR: the spectrum watched after a grant on an unmapped channel (one watch at a time).
+    keyup: Option<KeyupWatch>,
     dmr: bool,
-    /// The task's own queue, for what a spawned spectrum watch reports.
-    tx: TrunkTx,
 }
 
 pub struct Trunking {
@@ -289,6 +322,8 @@ pub struct Trunking {
     /// (site, talkgroup): the hold outlives a restart of its site, not a switch to another.
     hold: std::sync::Mutex<Option<(String, u32)>>,
     lanes: Arc<Mutex<Vec<LaneStatus>>>,
+    survey: Arc<Mutex<SurveyView>>,
+    latest: Arc<Mutex<Option<Frame>>>,
     running: tokio::sync::Mutex<Option<Running>>,
 }
 
@@ -314,6 +349,8 @@ impl Trunking {
             store: std::sync::Mutex::new(None),
             hold: std::sync::Mutex::new(None),
             lanes: Arc::default(),
+            survey: Arc::default(),
+            latest: Arc::default(),
             running: tokio::sync::Mutex::new(None),
         }
     }
@@ -321,6 +358,16 @@ impl Trunking {
     /// Each lane of the live site, updated each second.
     pub fn lanes(&self) -> Vec<LaneStatus> {
         self.lanes.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
+    /// The carriers heard in the live site's receive window, updated every 5 s.
+    pub fn survey(&self) -> SurveyView {
+        self.survey.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// The newest spectrometer frame the live site read.
+    pub fn latest_frame(&self) -> Option<Frame> {
+        self.latest.lock().ok().and_then(|f| f.clone())
     }
 
     pub fn set_packet_data(&self, data: Arc<PacketData>) {
@@ -457,9 +504,12 @@ impl Trunking {
             lcn: LcnLearner::new(setup.lcn_hz.clone(), control_hz, setup.channels_hz.clone()),
             usual: Usual::default(),
             usual_read: Instant::now(),
-            keyup_watch: None,
+            survey: Survey::default(),
+            survey_published: Instant::now(),
+            survey_view: self.survey.clone(),
+            latest: self.latest.clone(),
+            keyup: None,
             dmr: setup.protocol == Protocol::DmrTier3,
-            tx: tx.clone(),
         };
         let task = tokio::spawn(task.run(rx, stop.clone()));
         *self.running.lock().await = Some(Running { tx: tx.clone(), stop, task, sources });
@@ -477,6 +527,12 @@ impl Trunking {
         let _ = r.task.await;
         if let Ok(mut l) = self.lanes.lock() {
             l.clear();
+        }
+        if let Ok(mut s) = self.survey.lock() {
+            *s = SurveyView::default();
+        }
+        if let Ok(mut f) = self.latest.lock() {
+            *f = None;
         }
     }
 
@@ -580,7 +636,6 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     Some(TrunkInput::Routing(r)) => self.follower.set_routing(*r),
                     Some(TrunkInput::WindowMoved) => self.window_moved(),
                     Some(TrunkInput::Hold(tg)) => self.hold(tg).await,
-                    Some(TrunkInput::Keyed { grant, nac, freqs }) => self.keyed(grant, nac, freqs).await,
                     None => break,
                 },
                 _ = tick.tick() => {
@@ -611,7 +666,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 grant.channel.freq_hz = self.lcn.freq(lcn);
             }
             if grant.channel.freq_hz.is_none() && self.lcn.idle() {
-                match self.lcn.candidate(lcn, &[]) {
+                match self.lcn.candidate(lcn, &self.survey.intermittent()) {
                     Some(f) => {
                         self.lcn.start(lcn, f, grant.tg, at.mono);
                         grant.channel.freq_hz = Some(f);
@@ -627,12 +682,13 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
     /// The carriers that keyed up after a grant on an unmapped channel: try the first one not
     /// ruled out.
     async fn keyed(&mut self, mut grant: Grant, nac: u16, freqs: Vec<u64>) {
-        self.keyup_watch = None;
         let ChannelId::DmrLcn(lcn) = grant.channel.id else { return };
         if self.lcn.freq(lcn).is_some() || !self.lcn.idle() {
             return;
         }
-        let Some(f) = self.lcn.candidate(lcn, &freqs) else {
+        let mut candidates = self.survey.intermittent();
+        candidates.extend(freqs);
+        let Some(f) = self.lcn.candidate(lcn, &candidates) else {
             self.log.system("lcn", format!("LCN {lcn}: no carrier keyed up in the window after TG {}'s grant", grant.tg));
             return;
         };
@@ -642,34 +698,61 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         self.follow_grant(grant, nac, at, true).await;
     }
 
-    /// Read the spectrum for a moment after a grant on an unmapped channel, against the bins'
-    /// usual level; the carriers that rose come back as `TrunkInput::Keyed`.
+    /// Gather the spectrum for a moment after a grant on an unmapped channel, to compare with the
+    /// bins' usual level (`keyup_done`).
     fn watch_keyup(&mut self, grant: Grant, nac: u16, at: Stamp) {
-        if self.keyup_watch.is_some_and(|t| at.mono.saturating_duration_since(t) < 2 * KEYUP_WATCH) {
+        if self.keyup.is_some() {
             return;
         }
         let t = self.tuner.tuning();
         let window = (t.lo_hz, t.sample_rate_hz);
         let Some(usual) = self.usual.level(window) else { return };
-        self.keyup_watch = Some(at.mono);
-        let (tuner, tx) = (self.tuner.clone(), self.tx.clone());
-        tokio::spawn(async move {
-            let mut after = Vec::new();
-            let until = Instant::now() + KEYUP_WATCH;
-            while Instant::now() < until {
-                match tuner.hw().spectrum().await {
-                    Some(bytes) => {
-                        let db = power_db(&bytes);
-                        if db.len() == usual.len() {
-                            after.push(db);
-                        }
-                    }
-                    None => tokio::time::sleep(Duration::from_millis(20)).await,
-                }
-            }
-            let freqs = lcn::keyed_up(&usual, &after, window.0, window.1);
-            let _ = tx.send(TrunkInput::Keyed { grant, nac, freqs }).await;
-        });
+        self.keyup = Some(KeyupWatch { grant, nac, usual, window, until: at.mono + KEYUP_WATCH, after: Vec::new() });
+    }
+
+    /// The watch is over: the carriers that rose are the next candidates.
+    async fn keyup_done(&mut self, now: Instant) {
+        if !self.keyup.as_ref().is_some_and(|k| now >= k.until) {
+            return;
+        }
+        let Some(k) = self.keyup.take() else { return };
+        let freqs = lcn::keyed_up(&k.usual, &k.after, k.window.0, k.window.1);
+        self.keyed(k.grant, k.nac, freqs).await;
+    }
+
+    /// One spectrometer frame of the receive window: into the survey, the usual level, a
+    /// key-up watch, and the spectrum page.
+    fn frame(&mut self, db: Vec<f32>, now: Instant) {
+        let t = self.tuner.tuning();
+        let window = (t.lo_hz, t.sample_rate_hz);
+        self.survey.add(&db, window);
+        if let Some(k) = self.keyup.as_mut().filter(|k| k.window == window && k.usual.len() == db.len()) {
+            k.after.push(db.clone());
+        }
+        if self.dmr && now.saturating_duration_since(self.usual_read) >= lcn::USUAL_EVERY {
+            self.usual_read = now;
+            self.usual.push(db.clone(), window);
+        }
+        if let Ok(mut l) = self.latest.lock() {
+            *l = Some(Frame { db, at: now });
+        }
+    }
+
+    fn publish_survey(&mut self, now: Instant) {
+        if now.saturating_duration_since(self.survey_published) < SURVEY_PUBLISH {
+            return;
+        }
+        self.survey_published = now;
+        let view = SurveyView {
+            site: self.site.clone(),
+            lo_hz: self.survey.window().map(|w| w.0),
+            sample_rate_hz: self.survey.window().map(|w| w.1),
+            frames: self.survey.read,
+            carriers: self.survey.carriers(),
+        };
+        if let Ok(mut v) = self.survey_view.lock() {
+            *v = view;
+        }
     }
 
     /// Follow a grant; `trial`: its frequency is a candidate for its DMR channel, kept once the
@@ -775,6 +858,8 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
 
     fn window_moved(&mut self) {
         self.usual.clear();
+        self.survey.clear();
+        self.keyup = None;
         for slot in &mut self.lanes {
             slot.traffic.retuned();
             slot.tuned_hz = None;
@@ -923,16 +1008,15 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 format!("LCN {} is not {:.5} MHz: no voice header for TG {} there in {} s", t.lcn, t.freq_hz as f64 / 1e6, t.tg, lcn::TRIAL.as_secs()),
             );
         }
-        if self.dmr && at.mono.saturating_duration_since(self.usual_read) >= lcn::USUAL_EVERY {
-            self.usual_read = at.mono;
-            if let Some(bytes) = self.tuner.hw().spectrum().await {
-                let db = power_db(&bytes);
-                if !db.is_empty() {
-                    let t = self.tuner.tuning();
-                    self.usual.push(db, (t.lo_hz, t.sample_rate_hz));
-                }
+        // Every frame the spectrometer finished since the last tick (one every 131 ms).
+        if let Some(bytes) = self.tuner.hw().spectrum().await {
+            let db = power_db(&bytes);
+            if !db.is_empty() {
+                self.frame(db, at.mono);
             }
         }
+        self.keyup_done(at.mono).await;
+        self.publish_survey(at.mono);
         if at.mono.saturating_duration_since(self.lanes_published) >= Duration::from_secs(1) {
             self.lanes_published = at.mono;
             self.publish_lanes(at.mono);

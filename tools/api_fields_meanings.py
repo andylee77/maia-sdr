@@ -774,6 +774,18 @@ ROUTES: dict[str, list] = {
         ("better", "bool", "The choice covers more than the window does."),
         ("last_recentre_unix_ms", "number", "The window's last move."),
     ],
+    "/api/v1/survey": [
+        ("site", "string", "The live site (empty with none)."),
+        ("lo_hz", "number or null", "The centre of the window surveyed."),
+        ("sample_rate_hz", "number or null", "Its width."),
+        ("frames", "number", "Spectrometer frames read since the window last moved (7.6 a second)."),
+        ("carriers", "array", "The carriers heard, the most active first."),
+        ("carriers[]", "object", "One carrier: adjacent bins 10 dB above the frame's floor, on the channel raster."),
+        ("carriers[].freq_hz", "number", "Its frequency."),
+        ("carriers[].on_pct", "number", "Share of the frames of the last ten minutes it was on, 0 to 100."),
+        ("carriers[].peak_db", "number", "Its strongest level above the floor, dB."),
+        ("carriers[].steady", "boolean", "On 90 % of the frames or more: a control channel or the like; intermittent ones carry calls, data or keep-alives."),
+    ],
     "/api/v1/scan/options": [
         ("bands", "array", "The bands a scan offers by name; all are scanned when a scan names none."),
         ("bands[]", "object", "One band."),

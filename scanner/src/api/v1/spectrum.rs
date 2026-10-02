@@ -1,7 +1,10 @@
 //! `GET /api/v1/spectrum`: the receive window as the wideband spectrometer sees it (dB per bin,
 //! the strongest of each group when fewer bins are asked for), with the LO, the rate and where
-//! the control channel and the lanes sit. During a scan the last frame is served: the sweep needs
-//! every frame.
+//! the control channel and the lanes sit. While a site is live its trunking reads every frame
+//! (for the survey) and the newest is served; with no site live the spectrometer is read here.
+//! During a scan the last frame is served: the sweep needs every frame.
+//!
+//! `GET /api/v1/survey`: what the live site's window carried over the last minutes.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,10 +16,13 @@ use serde::{Deserialize, Serialize};
 use crate::boot::state::AppState;
 use crate::radio::tuner::RadioHw;
 use crate::services::discovery::carriers::{power_db, BINS};
+use crate::trunking::trunk::SurveyView;
 
 /// The newest frame read, served while no newer one is ready.
 static LAST: Mutex<Vec<f32>> = Mutex::new(Vec::new());
 const WAIT: Duration = Duration::from_millis(300);
+/// The live site's newest frame counts as new this long (a frame is 131 ms).
+const FRESH: Duration = Duration::from_millis(400);
 
 #[derive(Deserialize)]
 pub struct Params {
@@ -38,7 +44,10 @@ pub struct Spectrum {
 
 pub async fn get(State(s): State<Arc<AppState>>, Query(p): Query<Params>) -> Json<Spectrum> {
     let mut fresh = false;
-    if s.lease.is_normal() {
+    if let Some(f) = s.trunking.latest_frame().filter(|f| f.at.elapsed() < FRESH) {
+        *LAST.lock().unwrap_or_else(|e| e.into_inner()) = f.db;
+        fresh = true;
+    } else if s.lease.is_normal() {
         let deadline = tokio::time::Instant::now() + WAIT;
         while tokio::time::Instant::now() < deadline {
             if let Some(bytes) = s.tuner.hw().spectrum().await {
@@ -57,4 +66,8 @@ pub async fn get(State(s): State<Arc<AppState>>, Query(p): Query<Params>) -> Jso
     let db = LAST.lock().unwrap_or_else(|e| e.into_inner()).chunks(group).map(|c| c.iter().copied().fold(f32::MIN, f32::max)).collect();
     let t = s.tuner.tuning();
     Json(Spectrum { lo_hz: t.lo_hz, sample_rate_hz: t.sample_rate_hz, control_hz: t.control_hz, lanes_hz: t.lanes, db, fresh })
+}
+
+pub async fn survey(State(s): State<Arc<AppState>>) -> Json<SurveyView> {
+    Json(s.trunking.survey())
 }

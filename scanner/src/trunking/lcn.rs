@@ -176,14 +176,17 @@ pub fn keyed_up(usual: &[f32], after: &[Vec<f32>], centre_hz: u64, sample_rate_h
             i += 1;
             continue;
         }
-        // One carrier: adjacent bins over the threshold, its peak the centre.
+        // One carrier: adjacent bins over the threshold; its centre is the middle of those within
+        // 3 dB of its top (a channel spans several bins alike).
         let start = i;
         while i < hi && rise[i] >= KEYED_DB {
             i += 1;
         }
-        let best = (start..i).max_by(|&a, &b| rise[a].total_cmp(&rise[b])).unwrap_or(start);
-        let offset = (best as f64 - (n / 2) as f64) * bin_hz;
-        peaks.push((rise[best], on_raster((centre_hz as f64 + offset).round() as u64)));
+        let top = (start..i).map(|b| rise[b]).fold(f32::MIN, f32::max);
+        let wide: Vec<usize> = (start..i).filter(|&b| rise[b] >= top - 3.0).collect();
+        let middle = (wide[0] + wide[wide.len() - 1]) as f64 / 2.0;
+        let offset = (middle - (n / 2) as f64) * bin_hz;
+        peaks.push((top, on_raster((centre_hz as f64 + offset).round() as u64)));
     }
     peaks.sort_by(|a, b| b.0.total_cmp(&a.0));
     let mut out: Vec<u64> = Vec::new();

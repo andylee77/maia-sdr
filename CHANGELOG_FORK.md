@@ -69,9 +69,10 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   landed on the next one), and a rescan moves a configured site to the control channel it is
   heard on. A DMR site learns its channel table: a grant on a logical channel the plan lacks is
   followed on a candidate frequency, kept once the call's voice header names the granted
-  talkgroup.
+  talkgroup. The live site surveys its receive window from every spectrometer frame: the
+  carriers heard over ten minutes, steady or intermittent (`/api/v1/survey`, Diagnostics).
 
-Tests: scanner 408, p25-httpd 475.
+Tests: scanner 411, p25-httpd 475.
 
 ---
 
