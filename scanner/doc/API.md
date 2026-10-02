@@ -24,6 +24,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/spectrum` | the receive window from the wideband spectrometer (`bins`), with the control channel and lanes |
 | GET | `/api/v1/events` | the event log after `after` (newest `limit`; housekeeping too with `routine=true`) |
 | GET | `/api/v1/system` | the board's health: load, memory, CPU per core and per scanner thread, temperatures |
+| GET | `/api/v1/iq/control.wav` | the next `seconds` (default 10, at most 120) of the control channel's IQ as the decoder gets it: 50 kSPS stereo WAV, I left |
 | GET | `/api/v1/receivers` | the control channel and each lane: status, decoder counters, carrier loop |
 | GET | `/api/v1/config` | the whole configuration as one document: radio settings, systems with names and sites, profiles, the live site (`download=true`: as a file) |
 | PUT | `/api/v1/config` | replace the configuration with an exported document (checked whole first); the scanner restarts |

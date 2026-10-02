@@ -27,6 +27,7 @@ use crate::services::config::systems::{Modulation, Protocol};
 use crate::services::clock::Clock;
 use crate::services::packet_data::PacketData;
 use crate::services::events::EventLog;
+use crate::services::iq::IqTap;
 use crate::services::history::store::UnitEventKind;
 use crate::services::history::HistoryTx;
 use crate::trunking::learned::Learned;
@@ -230,6 +231,8 @@ pub struct Receivers {
     data: Mutex<Option<Arc<PacketData>>>,
     view: Arc<Mutex<View>>,
     counters: Mutex<Arc<StreamCounters>>,
+    /// Copies of the control IQ for captures.
+    iq_tap: Arc<IqTap>,
     running: tokio::sync::Mutex<Option<Running>>,
 }
 
@@ -241,6 +244,7 @@ impl Receivers {
             data: Mutex::default(),
             view: Arc::default(),
             counters: Mutex::default(),
+            iq_tap: Arc::default(),
             running: tokio::sync::Mutex::new(None),
         }
     }
@@ -287,6 +291,7 @@ impl Receivers {
             site: context.site.clone(),
             clock: self.clock.lock().ok().and_then(|c| c.clone()),
             data: self.data.lock().ok().and_then(|d| d.clone()),
+            iq_tap: self.iq_tap.clone(),
         };
         let name = match context.protocol {
             Protocol::P25 => "p25-cc",
@@ -314,6 +319,10 @@ impl Receivers {
         if let Ok(mut v) = self.view.lock() {
             v.status.running = false;
         }
+    }
+
+    pub fn iq_tap(&self) -> &Arc<IqTap> {
+        &self.iq_tap
     }
 
     /// The counters of the running decoders, updated each second.
@@ -352,6 +361,7 @@ struct Decoder {
     site: String,
     clock: Option<Arc<Clock>>,
     data: Option<Arc<PacketData>>,
+    iq_tap: Arc<IqTap>,
 }
 
 /// Busy time over the last few seconds, as a share of one core.
@@ -435,6 +445,7 @@ impl Decoder {
                     events.clear();
                 }
                 Some(Input::Iq(iq)) => {
+                    self.iq_tap.push(&iq);
                     c4fm.push_c4fm(&mut demod, &iq, now, &mut events);
                     if choice.c4fm() {
                         self.publish("p25", now, &events);
@@ -482,6 +493,7 @@ impl Decoder {
         while let Some(input) = self.next(&rx) {
             let t0 = Instant::now();
             if let Some(Input::Iq(iq)) = input {
+                self.iq_tap.push(&iq);
                 dmr.push(&iq, &mut events);
                 self.publish("dmr", Stamp::now(), &events);
                 events.clear();

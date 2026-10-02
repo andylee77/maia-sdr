@@ -8,6 +8,7 @@ pub mod crystal;
 pub mod discovery;
 pub mod events;
 pub mod history;
+pub mod iq;
 pub mod notices;
 pub mod packet_data;
 pub mod recordings;

@@ -99,6 +99,7 @@ routes! {
     get "/api/v1/spectrum" => v1::spectrum::get, "the receive window from the wideband spectrometer (`bins`), with the control channel and lanes";
     get "/api/v1/events" => v1::events::list, "the event log after `after` (newest `limit`; housekeeping too with `routine=true`)";
     get "/api/v1/system" => v1::system::get, "the board's health: load, memory, CPU per core and per scanner thread, temperatures";
+    get "/api/v1/iq/control.wav" => v1::iq::control, "the next `seconds` (default 10, at most 120) of the control channel's IQ as the decoder gets it: 50 kSPS stereo WAV, I left";
     get "/api/v1/receivers" => v1::receivers::get, "the control channel and each lane: status, decoder counters, carrier loop";
     get "/api/v1/config" => v1::config::export, "the whole configuration as one document: radio settings, systems with names and sites, profiles, the live site (`download=true`: as a file)";
     put "/api/v1/config" => v1::config::import, "replace the configuration with an exported document (checked whole first); the scanner restarts";
