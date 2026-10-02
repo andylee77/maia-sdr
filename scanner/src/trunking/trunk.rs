@@ -663,7 +663,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         let mut trial = false;
         if let ChannelId::DmrLcn(lcn) = grant.channel.id {
             if grant.channel.freq_hz.is_none() {
-                grant.channel.freq_hz = self.lcn.freq(lcn);
+                grant.channel.freq_hz = self.lcn.freq_for(lcn, grant.tg);
             }
             if grant.channel.freq_hz.is_none() && self.lcn.idle() {
                 match self.lcn.candidate(lcn, &self.survey.intermittent()) {

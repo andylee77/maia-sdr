@@ -58,6 +58,12 @@ impl LcnLearner {
         self.plan.get(&lcn).copied()
     }
 
+    /// Where a grant of `tg` on `lcn` is followed: the plan's frequency, else the trial's when
+    /// the grant is its call's (the control channel repeats a grant while the call stands).
+    pub fn freq_for(&self, lcn: u16, tg: u32) -> Option<u64> {
+        self.freq(lcn).or_else(|| self.trial.filter(|t| t.lcn == lcn && t.tg == tg).map(|t| t.freq_hz))
+    }
+
     /// No trial under way.
     pub fn idle(&self) -> bool {
         self.trial.is_none()
@@ -234,6 +240,18 @@ mod tests {
         l.abandon();
         assert!(l.idle());
         assert_eq!(l.candidate(5, &[]), Some(CC), "abandoned rules nothing out");
+    }
+
+    #[test]
+    fn a_repeated_grant_is_followed_where_its_trial_is() {
+        let mut l = LcnLearner::new(HashMap::new(), CC, Vec::new());
+        l.start(6, CC, 87921, Instant::now());
+        assert_eq!(l.freq_for(6, 87921), Some(CC), "the same call, not another one with no channel");
+        assert_eq!(l.freq_for(6, 87925), None, "another talkgroup's call is not the trial's");
+        assert_eq!(l.freq_for(5, 87921), None);
+        l.following(Lane::One, Instant::now());
+        l.confirmed(Lane::One);
+        assert_eq!(l.freq_for(6, 87925), Some(CC), "learned: every call on it");
     }
 
     #[test]
