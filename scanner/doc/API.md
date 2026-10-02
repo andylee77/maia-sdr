@@ -45,7 +45,10 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | DELETE | `/api/v1/recordings/{id}` | delete one recording |
 | GET | `/api/v1/systems` | systems with their sites |
 | GET | `/api/v1/systems/{id}` | one system |
-| PUT | `/api/v1/systems/{id}/names` | a system's talkgroup and radio names |
+| GET | `/api/v1/systems/{id}/aliases` | a system's aliases (names, priorities, recording, speakers of its talkgroups and radios) and listening settings |
+| PUT | `/api/v1/systems/{id}/aliases` | replace a system's aliases (the live site follows them at once) |
+| PUT | `/api/v1/systems/{id}/listening` | how a system treats talkgroups with no priority, and pre-emption |
+| PUT | `/api/v1/systems/{id}/talkgroups/{tg}` | one talkgroup's controls: name, group, priority, do-not-monitor, record, speaker |
 | PUT | `/api/v1/systems/{system}/sites/{site}` | edit a site (the live site goes live again with the change) |
 | DELETE | `/api/v1/systems/{system}/sites/{site}` | remove a site (not the live one), its profile choice and what it learned; the history keeps its calls |
 | DELETE | `/api/v1/systems/{id}` | remove a system with its sites and profiles (none of its sites live); the history keeps their calls |
@@ -65,8 +68,3 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/ui/calls` | legacy, for the bench: the newest calls with their voice frame counts (`limit`, default 40) |
 | GET | `/api/ui/settings` | legacy, for the bench: the clock source |
 | PUT | `/api/ui/settings` | legacy, for the bench: set the clock source |
-| GET | `/api/v1/profiles` | profiles and each site's active one |
-| PUT | `/api/v1/sites/{id}/profile` | choose a site's active profile |
-| POST | `/api/v1/profiles` | a new profile of a system, empty or a copy |
-| PUT | `/api/v1/profiles/{*id}` | edit a profile (the live site follows it at once) |
-| DELETE | `/api/v1/profiles/{*id}` | delete a profile no site uses |

@@ -5,7 +5,6 @@
 //! `from` / `to` (unix ms) or `hours` back from now (default 24). Totals and series start at the
 //! hour `from` is in; call listings at `from`.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -18,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::api::v1::calls::{NamedCall, Names};
 use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
+use crate::services::config::aliases::AliasIndex;
 use crate::trunking::trunk::view_of_row;
 use crate::services::history::store::{self, Bucket, CallRow, Range, SeriesFilter, SiteStat, Summary, HOUR_MS};
 use crate::trunking::site::LiveState;
@@ -80,11 +80,19 @@ fn window(r: &Range) -> WindowView {
     WindowView { site: r.site.clone(), system: r.by_system, from_ms: r.from_ms, to_ms: r.to_ms, first_hour_ms: r.first_hour() }
 }
 
-/// The talkgroup and radio names of the range's system.
-async fn names(s: &AppState, r: &Range) -> (BTreeMap<u32, String>, BTreeMap<u32, String>) {
+/// The aliases of the range's system.
+async fn names(s: &AppState, r: &Range) -> AliasIndex {
     let c = s.config.lock().await;
     let sys = if r.by_system { c.systems.value.system(&r.site) } else { c.systems.value.site(&r.site).map(|(sys, _)| sys) };
-    sys.map(|sys| (sys.talkgroups.clone(), sys.radios.clone())).unwrap_or_default()
+    sys.map(|sys| sys.alias_index()).unwrap_or_default()
+}
+
+fn tg_name(ix: &AliasIndex, tg: u32) -> Option<String> {
+    ix.talkgroup(tg).map(|a| a.name.clone())
+}
+
+fn radio_name(ix: &AliasIndex, unit: u32) -> Option<String> {
+    ix.radio(unit).map(|a| a.name.clone())
 }
 
 /// A row with its name.
@@ -170,8 +178,8 @@ pub async fn talkgroups(State(s): State<Arc<AppState>>, Query(w): Query<Window>)
     let limit = w.limit.unwrap_or(50).clamp(1, 1000);
     let q = r.clone();
     let rows = s.history.query(move |st| st.talkgroups(&q, limit)).await?;
-    let (tg_names, _) = names(&s, &r).await;
-    let items = rows.into_iter().map(|t| Named { alias: tg_names.get(&t.tg).cloned(), row: t }).collect();
+    let ix = names(&s, &r).await;
+    let items = rows.into_iter().map(|t| Named { alias: tg_name(&ix, t.tg), row: t }).collect();
     Ok(Json(Items { window: window(&r), items }))
 }
 
@@ -180,8 +188,8 @@ pub async fn radios(State(s): State<Arc<AppState>>, Query(w): Query<Window>) -> 
     let limit = w.limit.unwrap_or(50).clamp(1, 1000);
     let q = r.clone();
     let rows = s.history.query(move |st| st.radios(&q, limit)).await?;
-    let (_, unit_names) = names(&s, &r).await;
-    let items = rows.into_iter().map(|u| Named { alias: unit_names.get(&u.unit).cloned(), row: u }).collect();
+    let ix = names(&s, &r).await;
+    let items = rows.into_iter().map(|u| Named { alias: radio_name(&ix, u.unit), row: u }).collect();
     Ok(Json(Items { window: window(&r), items }))
 }
 
@@ -203,12 +211,12 @@ pub async fn radio(State(s): State<Arc<AppState>>, Path(unit): Path<u32>, Query(
     let r = range(&s, &w).await?;
     let q = r.clone();
     let d = s.history.query(move |st| st.radio(&q, unit)).await?;
-    let (tg_names, unit_names) = names(&s, &r).await;
+    let ix = names(&s, &r).await;
     let radio = RadioView {
         unit,
-        alias: unit_names.get(&unit).cloned(),
-        talkgroups: d.talkgroups.into_iter().map(|t| Named { alias: tg_names.get(&t.tg).cloned(), row: t }).collect(),
-        events: d.events.into_iter().map(|e| Named { alias: tg_names.get(&e.tg).cloned(), row: e }).collect(),
+        alias: radio_name(&ix, unit),
+        talkgroups: d.talkgroups.into_iter().map(|t| Named { alias: tg_name(&ix, t.tg), row: t }).collect(),
+        events: d.events.into_iter().map(|e| Named { alias: tg_name(&ix, e.tg), row: e }).collect(),
     };
     Ok(Json(RadioReply { window: window(&r), radio }))
 }
@@ -236,11 +244,11 @@ pub async fn talkgroup(State(s): State<Arc<AppState>>, Path(tg): Path<u32>, Quer
     let r = range(&s, &w).await?;
     let q = r.clone();
     let d = s.history.query(move |st| st.talkgroup(&q, tg)).await?;
-    let (tg_names, unit_names) = names(&s, &r).await;
+    let ix = names(&s, &r).await;
     let talkgroup = TalkgroupView {
         tg: d.tg,
-        alias: tg_names.get(&tg).cloned(),
-        radios: d.radios.into_iter().map(|u| Named { alias: unit_names.get(&u.unit).cloned(), row: u }).collect(),
+        alias: tg_name(&ix, tg),
+        radios: d.radios.into_iter().map(|u| Named { alias: radio_name(&ix, u.unit), row: u }).collect(),
         calls: d.calls,
         encrypted: d.encrypted,
         first_encrypted_ms: d.first_encrypted_ms,

@@ -32,7 +32,7 @@ async fn view(s: &AppState) -> Hold {
     };
     let tg = s.trunking.hold(&live.site.id);
     let name = match tg {
-        Some(tg) => s.config.lock().await.systems.value.system(&live.system.id).and_then(|sys| sys.talkgroups.get(&tg).cloned()),
+        Some(tg) => s.config.lock().await.systems.value.system(&live.system.id).and_then(|sys| sys.alias_index().talkgroup(tg).map(|a| a.name.clone())),
         None => None,
     };
     Hold { site: Some(live.site.id.clone()), tg, name }

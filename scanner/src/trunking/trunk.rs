@@ -874,6 +874,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                             freq_hz: o.channel.freq_hz,
                             channel: o.channel_label.clone(),
                             started_unix_ms: o.at_unix_ms,
+                            record: self.follower.record(o.tg),
                         });
                         self.follower.opened(lane, o.call);
                         if let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) {

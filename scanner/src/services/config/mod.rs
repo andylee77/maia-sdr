@@ -1,15 +1,17 @@
 //! The configuration: three layers the user owns and the state the radio learns.
 //!
 //! - `radio.json`: the hardware and services (`radio`).
-//! - `systems.json`: systems, their names and their sites (`systems`).
-//! - `profiles.json`: what to follow and where it plays (`profiles`).
+//! - `systems.json`: systems, their aliases (what to follow, record and where it plays) and their
+//!   sites (`systems`).
 //! - `state/`: the live site, the crystal calibration and per-site learned data (`state`).
 //!
 //! Files are versioned JSON under `<flash>/scanner/`, written atomically and only when something
 //! changes. A file written by a newer binary is read but never written, so a downgrade cannot
 //! drop its fields. On the first start of a unit that ran p25-httpd, `migrate` builds the files
-//! from the old ones and leaves those untouched.
+//! from the old ones and leaves those untouched. The talkgroup and radio names and the
+//! `profiles.json` of earlier versions become aliases once, at load (`aliases`).
 
+pub mod aliases;
 pub mod ids;
 pub mod migrate;
 pub mod profiles;
@@ -59,6 +61,7 @@ impl Paths {
         self.root.join("systems.json")
     }
 
+    /// The profiles of earlier versions, read once into aliases.
     pub fn profiles(&self) -> PathBuf {
         self.root.join("profiles.json")
     }
@@ -127,9 +130,9 @@ pub fn save<T: Serialize>(path: &Path, stored: &Stored<T>) -> anyhow::Result<()>
 /// What `GET /api/v1/config` exports and `PUT` imports.
 pub const FORMAT: &str = "scanner-config";
 
-/// The user's configuration as one document: the radio settings, the systems with their names
-/// and sites, the profiles, and the live site. What the radio learned on the air and the crystal
-/// calibration (the board's own) are not part of it.
+/// The user's configuration as one document: the radio settings, the systems with their aliases
+/// and sites, and the live site. What the radio learned on the air and the crystal calibration
+/// (the board's own) are not part of it.
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigDoc {
@@ -141,7 +144,9 @@ pub struct ConfigDoc {
     pub exported_unix_ms: u64,
     pub radio: RadioConfig,
     pub systems: SystemsConfig,
-    pub profiles: ProfilesConfig,
+    /// A document exported before aliases carries profiles; an import turns them into aliases.
+    #[serde(default, skip_serializing)]
+    pub profiles: Option<ProfilesConfig>,
     #[serde(default)]
     pub live_site: Option<String>,
 }
@@ -151,7 +156,6 @@ pub struct ConfigDoc {
 pub struct Removed {
     pub systems: Vec<String>,
     pub sites: Vec<String>,
-    pub profiles: Vec<String>,
 }
 
 /// The whole configuration as loaded at boot.
@@ -159,18 +163,57 @@ pub struct Removed {
 pub struct Config {
     pub radio: Stored<RadioConfig>,
     pub systems: Stored<SystemsConfig>,
-    pub profiles: Stored<ProfilesConfig>,
     pub state: Stored<RadioState>,
+}
+
+/// Turn the name maps and profiles of an earlier version into each system's aliases: the
+/// profile active at the system's first site that has one, else the system's first. Returns
+/// whether anything changed.
+pub fn upgrade(systems: &mut SystemsConfig, profiles: Option<&ProfilesConfig>) -> bool {
+    let mut changed = false;
+    for sys in &mut systems.systems {
+        let profile = profiles.and_then(|p| {
+            sys.sites.iter().find_map(|s| p.active_for(&s.id)).or_else(|| p.profiles.iter().find(|x| x.system == sys.id))
+        });
+        if sys.legacy_talkgroups.is_empty() && sys.legacy_radios.is_empty() && profile.is_none() {
+            continue;
+        }
+        let (converted, listening) = aliases::from_names_and_profile(&sys.legacy_talkgroups, &sys.legacy_radios, profile);
+        if sys.aliases.is_empty() {
+            sys.aliases = converted;
+            sys.listening = listening;
+        } else {
+            let known = aliases::AliasIndex::new(&sys.aliases);
+            let more: Vec<_> = converted
+                .into_iter()
+                .filter(|a| {
+                    a.ids.iter().all(|id| match *id {
+                        aliases::AliasId::Talkgroup { value } => known.talkgroup(value).is_none(),
+                        aliases::AliasId::Radio { value } => known.radio(value).is_none(),
+                        _ => true,
+                    })
+                })
+                .collect();
+            sys.aliases.extend(more);
+        }
+        sys.legacy_talkgroups.clear();
+        sys.legacy_radios.clear();
+        changed = true;
+    }
+    changed
 }
 
 impl Config {
     pub fn load(paths: &Paths) -> anyhow::Result<Config> {
-        let mut config = Config {
-            radio: load(&paths.radio())?,
-            systems: load(&paths.systems())?,
-            profiles: load(&paths.profiles())?,
-            state: load(&paths.radio_state())?,
-        };
+        let mut config = Config { radio: load(&paths.radio())?, systems: load(&paths.systems())?, state: load(&paths.radio_state())? };
+        let legacy = paths.profiles().exists().then(|| load::<ProfilesConfig>(&paths.profiles())).transpose()?;
+        if config.systems.writable && upgrade(&mut config.systems.value, legacy.as_ref().map(|l| &l.value)) {
+            save(&paths.systems(), &config.systems)?;
+            tracing::warn!("configuration: talkgroup and radio names and profiles became aliases");
+        }
+        if legacy.is_some() && config.systems.writable {
+            std::fs::rename(paths.profiles(), paths.root.join("profiles.json.converted"))?;
+        }
         for problem in config.repair() {
             tracing::warn!("configuration: {problem}");
         }
@@ -191,22 +234,17 @@ impl Config {
                 }
             }
         }
+        for sys in &self.systems.value.systems {
+            for a in &sys.aliases {
+                if let Err(e) = a.check() {
+                    problems.push(format!("system {}: {e}", sys.id));
+                }
+            }
+            if let Err(e) = sys.listening.check() {
+                problems.push(format!("system {}: {e}", sys.id));
+            }
+        }
         let systems = &self.systems.value;
-        self.profiles.value.profiles.retain(|p| {
-            let known = systems.system(&p.system).is_some();
-            if !known {
-                problems.push(format!("profile {:?} belongs to an unknown system", p.id));
-            }
-            known
-        });
-        let profiles = &self.profiles.value.profiles;
-        self.profiles.value.active.retain(|site, id| {
-            let ok = systems.site(site).is_some() && profiles.iter().any(|p| &p.id == id);
-            if !ok {
-                problems.push(format!("active profile {id:?} of site {site:?} is unknown"));
-            }
-            ok
-        });
         if let Some(live) = &self.state.value.live_site {
             if systems.site(live).is_none() {
                 problems.push(format!("live site {live:?} is not configured; starting with no site"));
@@ -228,12 +266,12 @@ impl Config {
             exported_unix_ms: time::unix_ms(),
             radio: self.radio.value.clone(),
             systems: self.systems.value.clone(),
-            profiles: self.profiles.value.clone(),
+            profiles: None,
             live_site: self.state.value.live_site.clone(),
         }
     }
 
-    /// Take `doc` in place of the radio settings, systems and profiles, after checking it whole.
+    /// Take `doc` in place of the radio settings and systems, after checking it whole.
     /// The live site is the document's, else the current one if the document has it. Returns the
     /// sites that are gone.
     pub fn import(&mut self, doc: ConfigDoc) -> Result<Vec<String>, String> {
@@ -244,14 +282,12 @@ impl Config {
             return Err(format!("version {} is newer than this scanner's {VERSION}", doc.version));
         }
         doc.radio.check().map_err(|e| format!("radio: {e}"))?;
-        for p in &doc.profiles.profiles {
-            p.check().map_err(|e| format!("profile {}: {e}", p.id))?;
-        }
-        let live = doc.live_site.or_else(|| self.state.value.live_site.clone()).filter(|s| doc.systems.site(s).is_some());
+        let mut systems = doc.systems;
+        upgrade(&mut systems, doc.profiles.as_ref());
+        let live = doc.live_site.or_else(|| self.state.value.live_site.clone()).filter(|s| systems.site(s).is_some());
         let mut next = self.clone();
         next.radio.value = RadioConfig { version: VERSION, ..doc.radio };
-        next.systems.value = SystemsConfig { version: VERSION, ..doc.systems };
-        next.profiles.value = ProfilesConfig { version: VERSION, ..doc.profiles };
+        next.systems.value = SystemsConfig { version: VERSION, ..systems };
         next.state.value.live_site = live;
         let problems = next.repair();
         if !problems.is_empty() {
@@ -262,13 +298,12 @@ impl Config {
         Ok(gone)
     }
 
-    /// Back to a new unit's configuration: no systems, sites or profiles, the default radio
-    /// settings. The crystal calibration stays (it is the board's). Returns the sites that are gone.
+    /// Back to a new unit's configuration: no systems or sites, the default radio settings. The
+    /// crystal calibration stays (it is the board's). Returns the sites that are gone.
     pub fn factory(&mut self) -> Vec<String> {
         let gone = self.site_ids();
         self.radio.value = RadioConfig::default();
         self.systems.value = SystemsConfig::default();
-        self.profiles.value = ProfilesConfig::default();
         self.state.value.live_site = None;
         gone
     }
@@ -279,18 +314,17 @@ impl Config {
 
     /// Write every file (after an import or a factory reset).
     pub fn save_all(&mut self, paths: &Paths) -> anyhow::Result<()> {
-        for writable in [&mut self.radio.writable, &mut self.systems.writable, &mut self.profiles.writable, &mut self.state.writable] {
+        for writable in [&mut self.radio.writable, &mut self.systems.writable, &mut self.state.writable] {
             *writable = true;
         }
         save(&paths.radio(), &self.radio)?;
         save(&paths.systems(), &self.systems)?;
-        save(&paths.profiles(), &self.profiles)?;
         save(&paths.radio_state(), &self.state)?;
         Ok(())
     }
 
-    /// Take a site out of its system, with its active-profile choice. None if the system has no
-    /// such site. Keeping the live site is the caller's.
+    /// Take a site out of its system. None if the system has no such site. Keeping the live site
+    /// is the caller's.
     pub fn remove_site(&mut self, system: &str, site: &str) -> Option<Removed> {
         let sys = self.systems.value.systems.iter_mut().find(|s| s.id == system)?;
         let before = sys.sites.len();
@@ -298,22 +332,15 @@ impl Config {
         if sys.sites.len() == before {
             return None;
         }
-        self.profiles.value.active.remove(site);
         Some(Removed { sites: vec![site.to_string()], ..Default::default() })
     }
 
-    /// Take a system out with its sites and its profiles.
+    /// Take a system out with its sites and aliases.
     pub fn remove_system(&mut self, id: &str) -> Option<Removed> {
         let i = self.systems.value.systems.iter().position(|s| s.id == id)?;
         let sys = self.systems.value.systems.remove(i);
         let sites: Vec<String> = sys.sites.into_iter().map(|s| s.id).collect();
-        let profiles = &mut self.profiles.value;
-        for site in &sites {
-            profiles.active.remove(site);
-        }
-        let gone: Vec<String> = profiles.profiles.iter().filter(|p| p.system == id).map(|p| p.id.clone()).collect();
-        profiles.profiles.retain(|p| p.system != id);
-        Some(Removed { systems: vec![id.to_string()], sites, profiles: gone })
+        Some(Removed { systems: vec![id.to_string()], sites })
     }
 }
 
@@ -358,29 +385,18 @@ mod tests {
             ],
         }))
         .unwrap();
-        let profiles: ProfilesConfig = serde_json::from_value(json!({
-            "version": 1,
-            "profiles": [
-                { "id": "a/default", "system": "a", "name": "Default" },
-                { "id": "b/default", "system": "b", "name": "Default" },
-            ],
-            "active": { "a1": "a/default", "a2": "a/default", "b1": "b/default" },
-        }))
-        .unwrap();
         fn stored<T>(value: T) -> Stored<T> {
             Stored { value, writable: true }
         }
-        Config { radio: stored(RadioConfig::default()), systems: stored(systems), profiles: stored(profiles), state: stored(RadioState::default()) }
+        Config { radio: stored(RadioConfig::default()), systems: stored(systems), state: stored(RadioState::default()) }
     }
 
     #[test]
-    fn a_removed_site_takes_its_profile_choice_with_it() {
+    fn a_site_is_removed_from_its_system() {
         let mut c = config();
         assert_eq!(c.remove_site("a", "a2"), Some(Removed { sites: vec!["a2".into()], ..Default::default() }));
         assert!(c.systems.value.site("a2").is_none());
         assert!(c.systems.value.site("a1").is_some());
-        assert_eq!(c.profiles.value.active.keys().collect::<Vec<_>>(), ["a1", "b1"]);
-        assert_eq!(c.profiles.value.profiles.len(), 2, "the system's profiles stay");
         assert_eq!(c.remove_site("a", "a2"), None);
         assert_eq!(c.remove_site("b", "a1"), None, "a site of another system");
     }
@@ -395,15 +411,14 @@ mod tests {
         assert!(d.systems.value.systems.is_empty());
         assert_eq!(d.import(doc.clone()), Ok(Vec::new()));
         assert_eq!(d.systems.value, c.systems.value);
-        assert_eq!(d.profiles.value, c.profiles.value);
         assert_eq!(d.state.value.live_site.as_deref(), Some("b1"));
 
         let mut wrong = doc.clone();
         wrong.format = "p25-httpd".into();
         assert!(d.import(wrong).is_err());
-        let mut dangling = doc.clone();
-        dangling.profiles.active.insert("a1".into(), "a/missing".into());
-        assert!(d.import(dangling).unwrap_err().contains("a/missing"));
+        let mut bad_alias = doc.clone();
+        bad_alias.systems.systems[0].aliases.push(aliases::Alias { priority: Some(0), ..aliases::Alias::talkgroup(300, "Fire") });
+        assert!(d.import(bad_alias).unwrap_err().contains("priority"));
         let mut bad_radio = doc.clone();
         bad_radio.radio.presets_allowed.clear();
         assert!(d.import(bad_radio).unwrap_err().starts_with("radio:"));
@@ -412,8 +427,6 @@ mod tests {
         // A document without system b: its site is gone and the live site with it.
         let mut smaller = doc;
         smaller.systems.systems.retain(|s| s.id != "b");
-        smaller.profiles.profiles.retain(|p| p.system != "b");
-        smaller.profiles.active.remove("b1");
         smaller.live_site = None;
         assert_eq!(d.import(smaller), Ok(vec!["b1".to_string()]));
         assert_eq!(d.state.value.live_site, None);
@@ -433,20 +446,53 @@ mod tests {
         });
         c.radio.value.presets_allowed = vec!["16M".into()];
         assert_eq!(c.factory(), ["a1", "a2", "b1"]);
-        assert!(c.systems.value.systems.is_empty() && c.profiles.value.profiles.is_empty() && c.profiles.value.active.is_empty());
+        assert!(c.systems.value.systems.is_empty());
         assert_eq!(c.radio.value, RadioConfig::default());
         assert_eq!(c.state.value.live_site, None);
         assert!(c.state.value.crystal.is_some());
     }
 
     #[test]
-    fn a_removed_system_takes_its_sites_and_profiles() {
+    fn a_removed_system_takes_its_sites() {
         let mut c = config();
         let r = c.remove_system("a").unwrap();
-        assert_eq!(r, Removed { systems: vec!["a".into()], sites: vec!["a1".into(), "a2".into()], profiles: vec!["a/default".into()] });
+        assert_eq!(r, Removed { systems: vec!["a".into()], sites: vec!["a1".into(), "a2".into()] });
         assert_eq!(c.systems.value.systems.len(), 1);
-        assert_eq!(c.profiles.value.profiles.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["b/default"]);
-        assert_eq!(c.profiles.value.active.keys().collect::<Vec<_>>(), ["b1"]);
         assert_eq!(c.remove_system("a"), None);
+    }
+
+    #[test]
+    fn names_and_profiles_of_an_earlier_version_become_aliases_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(&dir.path().join("flash"), &dir.path().join("sd"));
+        std::fs::create_dir_all(&paths.root).unwrap();
+        let systems = json!({
+            "version": 1,
+            "systems": [{ "id": "clay", "label": "Clay", "protocol": "p25",
+                          "talkgroups": { "300": "Fire Dispatch" }, "radios": { "1014": "Engine 14" },
+                          "sites": [{ "id": "clay_1", "label": "Site 1", "control": { "freq_hz": 860_962_500u64 } }] }],
+        });
+        std::fs::write(paths.systems(), systems.to_string()).unwrap();
+        let profiles = json!({
+            "version": 1,
+            "profiles": [{ "id": "clay/default", "system": "clay", "name": "Default",
+                           "groups": [{ "name": "Primary", "talkgroups": [300] }],
+                           "speakers": { "left": ["Primary"], "right": [], "other": "right", "preempt": true },
+                           "ignore": [402] }],
+            "active": { "clay_1": "clay/default" },
+        });
+        std::fs::write(paths.profiles(), profiles.to_string()).unwrap();
+        let c = Config::load(&paths).unwrap();
+        let sys = &c.systems.value.systems[0];
+        let ix = sys.alias_index();
+        let fire = ix.talkgroup(300).unwrap();
+        assert_eq!((fire.name.as_str(), fire.priority, fire.speaker), ("Fire Dispatch", Some(1), aliases::Side::Left));
+        assert!(ix.talkgroup(402).unwrap().do_not_monitor);
+        assert_eq!(ix.radio(1014).unwrap().name, "Engine 14");
+        assert_eq!(sys.listening.unmonitored_speaker, aliases::Side::Right);
+        assert!(!paths.profiles().exists() && paths.root.join("profiles.json.converted").exists());
+        let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(paths.systems()).unwrap()).unwrap();
+        assert!(written["systems"][0].get("talkgroups").is_none() && written["systems"][0]["aliases"].is_array(), "written once, in the new form");
+        assert_eq!(Config::load(&paths).unwrap().systems.value, c.systems.value, "a second load changes nothing");
     }
 }

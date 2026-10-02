@@ -105,14 +105,9 @@ fn unit_a_migrates_into_systems_and_leaves_its_files_alone() {
     let crystal = c.state.value.crystal.as_ref().unwrap();
     assert_eq!((crystal.measured_at_lo_hz, crystal.lo_shift_hz), (858_100_000, 598));
 
-    // Every site has an active profile of its own system; identical defaults are shared.
-    let profiles = &c.profiles.value;
-    for sys in &systems.systems {
-        for site in &sys.sites {
-            assert_eq!(profiles.active_for(&site.id).map(|p| p.system.as_str()), Some(sys.id.as_str()), "{}", site.id);
-        }
-    }
-    assert_eq!(profiles.profiles.iter().filter(|p| p.system == fpl.id).count(), 1);
+    // The names and profiles the migration wrote became aliases at load.
+    assert!(systems.systems.iter().all(|s| s.legacy_talkgroups.is_empty() && s.legacy_radios.is_empty()));
+    assert!(!paths.profiles().exists() && paths.root.join("profiles.json.converted").exists());
 
     assert_eq!(c.radio.value.gain.mode, GainMode::SlowAttack);
     assert_eq!(c.radio.value.recording.storage, Storage::Sd);
@@ -172,8 +167,8 @@ fn a_file_from_before_profiles_becomes_the_live_sites_default() {
     let (built, report) = build(&input);
     assert_eq!(report.live_site.as_deref(), Some("clay"), "{:#?}", report.lines);
     let clay = built.systems.systems.iter().find(|s| s.id == "clay-county").unwrap();
-    assert_eq!(clay.talkgroups[&300], "Dispatch");
-    assert_eq!(clay.radios[&1014], "Console 14");
+    assert_eq!(clay.legacy_talkgroups[&300], "Dispatch");
+    assert_eq!(clay.legacy_radios[&1014], "Console 14");
     let p = &built.profiles.profiles[0];
     assert_eq!((p.id.as_str(), p.name.as_str()), ("clay-county/default", "Default"));
     assert_eq!((p.monitor.clone(), p.ignore.clone()), (vec![301, 300], vec![402, 700]));
@@ -213,7 +208,7 @@ fn names_of_two_sites_merge_and_the_live_site_wins_a_conflict() {
     let (built, report) = build(&input);
     let sys = &built.systems.systems[0];
     assert_eq!(sys.sites.len(), 2);
-    assert_eq!((sys.talkgroups[&300].as_str(), sys.talkgroups[&301].as_str()), ("Ops", "TAC 1"));
+    assert_eq!((sys.legacy_talkgroups[&300].as_str(), sys.legacy_talkgroups[&301].as_str()), ("Ops", "TAC 1"));
     assert!(report.lines.iter().any(|l| l.contains("talkgroup 300: \"Ops\" (fpl_clay) kept over \"Operations\" (other)")));
 }
 
@@ -231,7 +226,7 @@ fn names_and_profiles_kept_per_site_carry_over() {
     .unwrap();
     let (built, _) = build(&Legacy { settings: Some(settings), ..Default::default() });
     let clay = &built.systems.systems[0];
-    assert_eq!((clay.talkgroups[&300].as_str(), clay.radios[&3_406_028].as_str()), ("Dispatch", "Medic 1"));
+    assert_eq!((clay.legacy_talkgroups[&300].as_str(), clay.legacy_radios[&3_406_028].as_str()), ("Dispatch", "Medic 1"));
     assert_eq!(built.profiles.profiles.len(), 2);
     assert_eq!(built.profiles.active["clay"], "clay-county/fire");
     assert_eq!(built.profiles.profile("clay-county/fire").unwrap().monitor, vec![301]);

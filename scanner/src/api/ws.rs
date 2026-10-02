@@ -25,7 +25,7 @@ use crate::api::v1::status::status;
 use crate::audio::live::audio_frame;
 use crate::boot::state::AppState;
 use crate::hardware::p25core::Lane;
-use crate::services::config::profiles::Side;
+use crate::services::config::aliases::Side;
 use crate::services::notices::Notice;
 
 /// How often `/ws/live` sends the status (its counters change every second).

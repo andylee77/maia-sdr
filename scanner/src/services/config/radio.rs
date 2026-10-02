@@ -120,6 +120,8 @@ pub enum Storage {
 #[serde(default)]
 pub struct Recording {
     pub enabled: bool,
+    /// Every followed call is recorded; off: only those whose alias says record.
+    pub every_call: bool,
     pub storage: Storage,
     pub ram_max_count: u32,
     pub sd_max_count: u32,
@@ -128,7 +130,7 @@ pub struct Recording {
 
 impl Default for Recording {
     fn default() -> Self {
-        Recording { enabled: true, storage: Storage::Sd, ram_max_count: 40, sd_max_count: 2_000, sd_max_mb: 2_048 }
+        Recording { enabled: true, every_call: true, storage: Storage::Sd, ram_max_count: 40, sd_max_count: 2_000, sd_max_mb: 2_048 }
     }
 }
 

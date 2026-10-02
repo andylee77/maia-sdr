@@ -34,6 +34,29 @@ In this order; each item is usable through the API on its own.
    - The follower follows by alias: monitor priority, do-not-monitor, and speaker.
    - Recordings follow each alias's record flag.
    - The present names and profiles migrate into aliases.
+
+   The model is SDRTrunk's, so a playlist round-trips. Each system has one alias list; an alias
+   has:
+
+   | Field | Meaning |
+   |-------|---------|
+   | `name` | Shown wherever its talkgroup or radio appears. |
+   | `group` | A free label to sort and filter by (SDRTrunk's alias group). |
+   | `color` | Optional. |
+   | `ids` | Talkgroups, talkgroup ranges, radios, radio ranges. |
+   | `priority` | 1 (highest) to 100 (lowest), or "do not monitor" (SDRTrunk's -1). A higher priority takes a traffic channel from a lower one. |
+   | `record` | Its calls are recorded. |
+   | `speaker` | Left, right or both (ours; SDRTrunk has none). |
+
+   Per system:
+
+   - **Talkgroups with no alias:** followed at the lowest priority, or not at all. SDRTrunk calls
+     the second "ignore unmonitored calls".
+   - **Where they play:** left, right or both.
+   - **Pre-emption:** whether priority pre-empts.
+
+   Recording keeps a "record every followed call" switch beside the per-alias flag. The hold
+   stays as it is.
 3. **SDRTrunk playlist import and export:**
    - systems, sites, control channels (SDRTrunk's channels), the alias lists and their IDs;
    - priority, record, group and color.

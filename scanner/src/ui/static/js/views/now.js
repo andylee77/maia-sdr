@@ -71,11 +71,10 @@ export function mount(el) {
         ['Control channel', mhz(live.site.control.freq_hz)],
         ...p.siteIdentity(live.site.identity),
         ['Window', `${t.preset || DASH} at ${mhz(t.lo_hz)}`],
-      ]), s.status.hold
-        ? h('div', { class: 'row' }, h('strong', { text: `Holding TG ${s.status.hold}` }),
-          h('span', { class: 'dim', text: ': no other talkgroup is followed' }), h('div', { class: 'spacer' }), holdButton(s.status.hold, s.status.hold))
-        : h('p', { class: 'card-note' }, 'Following ', live.profile ? h('strong', { text: live.profile.name }) : 'every clear call',
-          ' (', h('a', { href: '#settings', text: 'profiles in Settings' }), ').'));
+      ]), ...(s.status.hold
+        ? [h('div', { class: 'row' }, h('strong', { text: `Holding TG ${s.status.hold}` }),
+          h('span', { class: 'dim', text: ': no other talkgroup is followed' }), h('div', { class: 'spacer' }), holdButton(s.status.hold, s.status.hold))]
+        : []));
 
       const c = s.status.control || {};
       const age = c.last_message_age_ms;

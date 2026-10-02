@@ -40,7 +40,7 @@ pub async fn export(State(s): State<Arc<AppState>>, Query(p): Query<ExportParams
 pub struct Imported {
     pub systems: usize,
     pub sites: usize,
-    pub profiles: usize,
+    pub aliases: usize,
     pub live_site: Option<String>,
     /// Sites the document does not have; what they learned is deleted.
     pub removed_sites: Vec<String>,
@@ -60,14 +60,14 @@ pub async fn import(State(s): State<Arc<AppState>>, Json(doc): Json<ConfigDoc>) 
         Imported {
             systems: systems.len(),
             sites: systems.iter().map(|x| x.sites.len()).sum(),
-            profiles: c.profiles.value.profiles.len(),
+            aliases: systems.iter().map(|x| x.aliases.len()).sum(),
             live_site: c.state.value.live_site.clone(),
             removed_sites,
             restarting: true,
         }
     };
     config::forget_sites(&s.paths, &out.removed_sites);
-    s.log.system("config", format!("configuration imported: {} systems, {} sites, {} profiles; restarting", out.systems, out.sites, out.profiles));
+    s.log.system("config", format!("configuration imported: {} systems, {} sites, {} aliases; restarting", out.systems, out.sites, out.aliases));
     restart_soon(&s, lease);
     Ok(Json(out))
 }

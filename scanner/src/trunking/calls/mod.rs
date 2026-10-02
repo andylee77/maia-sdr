@@ -57,9 +57,10 @@ pub enum NotFollowed {
     Encrypted,
     /// Every lane that could carry it is busy.
     Busy,
-    MonitorList,
+    /// It has no priority, and only talkgroups with one are followed.
+    Unmonitored,
+    /// Its alias says never follow it.
     Ignored,
-    SpeakerOff,
     OutOfBand,
     /// P25 Phase 2 (TDMA).
     Phase2,
@@ -74,9 +75,8 @@ impl NotFollowed {
         match self {
             NotFollowed::Encrypted => "encrypted",
             NotFollowed::Busy => "busy",
-            NotFollowed::MonitorList => "monitor_list",
+            NotFollowed::Unmonitored => "unmonitored",
             NotFollowed::Ignored => "ignored",
-            NotFollowed::SpeakerOff => "speaker_off",
             NotFollowed::OutOfBand => "out_of_band",
             NotFollowed::Phase2 => "phase2",
             NotFollowed::UnknownLcn => "unknown_lcn",
@@ -90,9 +90,8 @@ impl NotFollowed {
         Some(match s {
             "encrypted" => NotFollowed::Encrypted,
             "busy" | "sticky_lock" => NotFollowed::Busy,
-            "monitor_list" => NotFollowed::MonitorList,
+            "unmonitored" => NotFollowed::Unmonitored,
             "ignored" => NotFollowed::Ignored,
-            "speaker_off" => NotFollowed::SpeakerOff,
             "out_of_band" => NotFollowed::OutOfBand,
             "phase2" => NotFollowed::Phase2,
             "unknown_lcn" => NotFollowed::UnknownLcn,

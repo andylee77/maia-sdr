@@ -1,7 +1,7 @@
 //! `GET /api/v1/calls`: the live site's open calls and its newest closed ones; one call. Every
 //! call, live or stored, has the same shape, with its talkgroup's and radio's names.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
+use crate::services::config::aliases::AliasIndex;
 use crate::trunking::trunk::{view_of_row, CallView};
 
 /// A call with its talkgroup's and radio's names in its site's system.
@@ -21,27 +22,27 @@ pub struct NamedCall {
     pub source_name: Option<String>,
 }
 
-/// Each site's system's talkgroup and radio names.
-pub struct Names(HashMap<String, Arc<(BTreeMap<u32, String>, BTreeMap<u32, String>)>>);
+/// Each site's system's aliases.
+pub struct Names(HashMap<String, Arc<AliasIndex>>);
 
 impl Names {
     pub async fn load(s: &AppState) -> Names {
         let c = s.config.lock().await;
         let mut by_site = HashMap::new();
         for sys in &c.systems.value.systems {
-            let names = Arc::new((sys.talkgroups.clone(), sys.radios.clone()));
+            let ix = Arc::new(sys.alias_index());
             for site in &sys.sites {
-                by_site.insert(site.id.clone(), names.clone());
+                by_site.insert(site.id.clone(), ix.clone());
             }
         }
         Names(by_site)
     }
 
     pub fn call(&self, call: CallView) -> NamedCall {
-        let names = self.0.get(&call.site);
+        let ix = self.0.get(&call.site);
         // A unit-to-unit call's `tg` is the called radio.
-        let tg_name = names.and_then(|n| if call.private { n.1.get(&call.tg) } else { n.0.get(&call.tg) }).cloned();
-        let source_name = names.and_then(|n| call.source.and_then(|s| n.1.get(&s))).cloned();
+        let tg_name = ix.and_then(|ix| if call.private { ix.radio(call.tg) } else { ix.talkgroup(call.tg) }).map(|a| a.name.clone());
+        let source_name = ix.and_then(|ix| call.source.and_then(|s| ix.radio(s))).map(|a| a.name.clone());
         NamedCall { call, tg_name, source_name }
     }
 }

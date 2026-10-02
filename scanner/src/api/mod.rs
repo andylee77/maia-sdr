@@ -121,7 +121,10 @@ routes! {
     delete "/api/v1/recordings/{id}" => v1::recordings::delete, "delete one recording";
     get "/api/v1/systems" => v1::systems::list, "systems with their sites";
     get "/api/v1/systems/{id}" => v1::systems::get, "one system";
-    put "/api/v1/systems/{id}/names" => v1::systems::put_names, "a system's talkgroup and radio names";
+    get "/api/v1/systems/{id}/aliases" => v1::aliases::get, "a system's aliases (names, priorities, recording, speakers of its talkgroups and radios) and listening settings";
+    put "/api/v1/systems/{id}/aliases" => v1::aliases::put, "replace a system's aliases (the live site follows them at once)";
+    put "/api/v1/systems/{id}/listening" => v1::aliases::put_listening, "how a system treats talkgroups with no priority, and pre-emption";
+    put "/api/v1/systems/{id}/talkgroups/{tg}" => v1::aliases::put_talkgroup, "one talkgroup's controls: name, group, priority, do-not-monitor, record, speaker";
     put "/api/v1/systems/{system}/sites/{site}" => v1::systems::put_site, "edit a site (the live site goes live again with the change)";
     delete "/api/v1/systems/{system}/sites/{site}" => v1::systems::delete_site, "remove a site (not the live one), its profile choice and what it learned; the history keeps its calls";
     delete "/api/v1/systems/{id}" => v1::systems::delete_system, "remove a system with its sites and profiles (none of its sites live); the history keeps their calls";
@@ -141,11 +144,6 @@ routes! {
     get "/api/ui/calls" => legacy::ui_calls, "legacy, for the bench: the newest calls with their voice frame counts (`limit`, default 40)";
     get "/api/ui/settings" => legacy::ui_settings, "legacy, for the bench: the clock source";
     put "/api/ui/settings" => legacy::put_ui_settings, "legacy, for the bench: set the clock source";
-    get "/api/v1/profiles" => v1::profiles::list, "profiles and each site's active one";
-    put "/api/v1/sites/{id}/profile" => v1::profiles::select, "choose a site's active profile";
-    post "/api/v1/profiles" => v1::profiles::create, "a new profile of a system, empty or a copy";
-    put "/api/v1/profiles/{*id}" => v1::profiles::update, "edit a profile (the live site follows it at once)";
-    delete "/api/v1/profiles/{*id}" => v1::profiles::delete, "delete a profile no site uses";
 }
 
 async fn routes() -> Json<&'static [RouteDoc]> {
@@ -183,8 +181,6 @@ fn changed_part(path: &str) -> Option<&'static str> {
         Some("radio")
     } else if path.starts_with("/api/v1/systems") || path == "/api/v1/scan/add" {
         Some("systems")
-    } else if path.starts_with("/api/v1/profiles") || path.ends_with("/profile") {
-        Some("profiles")
     } else if path == "/api/v1/hold" {
         Some("hold")
     } else if path.starts_with("/api/v1/recordings") {
@@ -249,7 +245,7 @@ mod tests {
         assert_eq!(changed_part("/api/v1/clock"), Some("radio"));
         assert_eq!(changed_part("/api/v1/systems/clay/sites/clay_1"), Some("systems"));
         assert_eq!(changed_part("/api/v1/scan/add"), Some("systems"));
-        assert_eq!(changed_part("/api/v1/sites/clay_1/profile"), Some("profiles"));
+        assert_eq!(changed_part("/api/v1/systems/clay/talkgroups/300"), Some("systems"));
         assert_eq!(changed_part("/api/v1/hold"), Some("hold"));
         assert_eq!(changed_part("/api/v1/scan"), None, "the scan's progress comes on its own");
         assert_eq!(changed_part("/api/v1/sites/clay_1/activate"), None, "the live state comes on its own");

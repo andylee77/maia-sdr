@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::api::v1::activity::Named;
 use crate::api::ApiResult;
 use crate::boot::state::AppState;
+use crate::services::config::aliases::AliasIndex;
 use crate::services::packet_data::{DataRecord, RadioData, RECENT};
 use crate::trunking::site::LiveState;
 
@@ -46,22 +47,23 @@ pub async fn get(State(s): State<Arc<AppState>>, Query(p): Query<Params>) -> Api
         None => live.clone(),
     };
     // Radio names come from each record's own site's system.
-    let names: HashMap<String, BTreeMap<u32, String>> = {
+    let names: HashMap<String, Arc<AliasIndex>> = {
         let c = s.config.lock().await;
-        c.systems
-            .value
-            .systems
-            .iter()
-            .flat_map(|sys| sys.sites.iter().map(|x| (x.id.clone(), sys.radios.clone())))
-            .filter(|(id, _)| site.as_deref().is_none_or(|w| w == id))
-            .collect()
+        let mut by_site = HashMap::new();
+        for sys in &c.systems.value.systems {
+            let ix = Arc::new(sys.alias_index());
+            for x in sys.sites.iter().filter(|x| site.as_deref().is_none_or(|w| w == x.id)) {
+                by_site.insert(x.id.clone(), ix.clone());
+            }
+        }
+        by_site
     };
     let data_channel_hz = match &site {
         Some(id) => s.live.learned(id).await.ok().and_then(|l| l.data_channel_hz),
         None => None,
     };
     let wants = |r: &str| site.as_deref().is_none_or(|w| w == r);
-    let named = |site: &str, llid: u32| names.get(site).and_then(|m| m.get(&llid)).cloned();
+    let named = |site: &str, llid: u32| names.get(site).and_then(|ix| ix.radio(llid)).map(|a| a.name.clone());
     let view = s.packet_data.with(|d| {
         let mut radios: Vec<RadioData> = d.radios.values().filter(|r| wants(&r.site)).cloned().collect();
         radios.sort_by(|a, b| b.last_ms.cmp(&a.last_ms));

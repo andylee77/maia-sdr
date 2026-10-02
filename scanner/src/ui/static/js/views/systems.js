@@ -200,7 +200,7 @@ export function mount(el) {
       const drop = h('button', {
         class: 'btn small danger', type: 'button', text: 'Delete system', disabled: hasLive,
         title: hasLive ? 'Stop its live site first' : '',
-        onclick: () => remove(`${sys.label} with its ${sys.sites.length} site(s) and its profiles`, () => api.deleteSystem(sys.id)),
+        onclick: () => remove(`${sys.label} with its ${sys.sites.length} site(s) and its aliases`, () => api.deleteSystem(sys.id)),
       });
       c.right.append(h('span', { class: 'badge', text: p.label }), drop);
       c.body.append(kv(p.systemIdentity(sys.identity)));

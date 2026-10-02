@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::hardware::p25core::Lane;
 use crate::protocol::events::{ChannelId, Grant};
-use crate::services::config::profiles::Side;
+use crate::services::config::aliases::Side;
 use crate::trunking::calls::{CallId, ChannelKey, CloseReason, Closed, Decision, GrantIn, NotFollowed};
 use routing::{Route, Routing};
 
@@ -214,6 +214,11 @@ impl Follower {
         out
     }
 
+    /// Its alias says record its calls.
+    pub fn record(&self, tg: u32) -> bool {
+        self.routing.record(tg)
+    }
+
     /// The speaker a followed talkgroup plays on.
     pub fn speaker(&self, tg: u32) -> Side {
         self.routing.route(tg).map_or(Side::Both, |r| r.side)
@@ -324,24 +329,21 @@ impl Follower {
             tracing::debug!("{note}");
             out.record = record(Decision::NotFollowed(why));
         };
-        // A held talkgroup is followed whatever the profile says; no other is.
+        // A held talkgroup is followed whatever its alias says; no other is.
         let held = self.hold == Some(g.tg);
         if let Some(h) = self.hold.filter(|_| !held) {
             return refuse(out, NotFollowed::Held, format!("TG {} not followed: TG {h} is held", g.tg));
         }
         if !held && self.routing.ignored(g.tg) {
-            return refuse(out, NotFollowed::Ignored, format!("TG {} not followed: on the ignore list", g.tg));
+            return refuse(out, NotFollowed::Ignored, format!("TG {} not followed: its alias says do not monitor", g.tg));
         }
         if g.channel.tdma {
             return refuse(out, NotFollowed::Phase2, format!("TG {} not followed: granted a Phase 2 (TDMA) channel {}", g.tg, label(g)));
         }
-        if !held && !self.routing.monitored(g.tg) {
-            return refuse(out, NotFollowed::MonitorList, format!("TG {} not followed: not on the monitor list", g.tg));
-        }
         let route = match self.routing.route(g.tg) {
             Some(r) => r,
             None if held => Route { side: Side::Both, rank: 0 },
-            None => return refuse(out, NotFollowed::SpeakerOff, format!("TG {} not followed: not on a speaker", g.tg)),
+            None => return refuse(out, NotFollowed::Unmonitored, format!("TG {} not followed: it has no priority and only monitored talkgroups are followed", g.tg)),
         };
         let Some(freq) = g.channel.freq_hz else {
             return refuse(out, NotFollowed::UnknownLcn, format!("TG {} not followed: channel {} not in the channel plan", g.tg, label(g)));

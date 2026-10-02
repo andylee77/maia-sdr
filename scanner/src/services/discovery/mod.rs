@@ -266,9 +266,11 @@ pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], choice: &[AddSite])
                     label: name.to_string(),
                     protocol: f.protocol,
                     identity: sys_identity,
-                    talkgroups: Default::default(),
-                    radios: Default::default(),
+                    aliases: Vec::new(),
+                    listening: Default::default(),
                     sites: Vec::new(),
+                    legacy_talkgroups: Default::default(),
+                    legacy_radios: Default::default(),
                 });
                 added.systems.push(id);
                 systems.systems.len() - 1

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::aliases::{Alias, AliasIndex, Listening};
 use super::VERSION;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -55,13 +56,27 @@ pub struct System {
     pub protocol: Protocol,
     #[serde(default)]
     pub identity: SystemIdentity,
-    /// Talkgroup and radio names: ids are system-wide in P25 and DMR.
+    /// What the radio knows of the system's talkgroups and radios (IDs are system-wide in P25
+    /// and DMR): names, priorities, recording, speakers.
     #[serde(default)]
-    pub talkgroups: BTreeMap<u32, String>,
+    pub aliases: Vec<Alias>,
+    /// Talkgroups with no priority, and pre-emption.
     #[serde(default)]
-    pub radios: BTreeMap<u32, String>,
+    pub listening: Listening,
     #[serde(default)]
     pub sites: Vec<Site>,
+    /// The talkgroup names of an earlier version, read once into `aliases`.
+    #[serde(rename = "talkgroups", default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub legacy_talkgroups: BTreeMap<u32, String>,
+    /// The radio names of an earlier version, read once into `aliases`.
+    #[serde(rename = "radios", default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub legacy_radios: BTreeMap<u32, String>,
+}
+
+impl System {
+    pub fn alias_index(&self) -> AliasIndex {
+        AliasIndex::new(&self.aliases)
+    }
 }
 
 /// P25: WACN and system id. DMR Tier III: network model and network.

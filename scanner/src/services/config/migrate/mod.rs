@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::ids;
-use super::profiles::{Group, Profile, ProfilesConfig, Side, Speakers};
+use super::aliases::Side;
+use super::profiles::{Group, Profile, ProfilesConfig, Speakers};
 use super::radio::{self, ClockSource, GainMode, RadioConfig, Storage};
 use super::state::{Crystal, IdenBand, RadioState, SiteState};
 use super::systems::{
@@ -382,9 +383,11 @@ fn build_system(
         label: system_label.clone(),
         protocol,
         identity,
-        talkgroups: BTreeMap::new(),
-        radios: BTreeMap::new(),
+        aliases: Vec::new(),
+        listening: Default::default(),
         sites: Vec::new(),
+        legacy_talkgroups: BTreeMap::new(),
+        legacy_radios: BTreeMap::new(),
     };
     for name in names {
         let s = &sites[name];
@@ -516,8 +519,9 @@ fn build_names_and_profiles(
         merge_names(&mut talkgroups, &e.tg_aliases, site, "talkgroup", report);
         merge_names(&mut radios, &e.unit_aliases, site, "radio", report);
     }
-    system.talkgroups = talkgroups.into_iter().map(|(k, (v, _))| (k, v)).collect();
-    system.radios = radios.into_iter().map(|(k, (v, _))| (k, v)).collect();
+    // Written as names; the configuration's load turns them and the profiles into aliases.
+    system.legacy_talkgroups = talkgroups.into_iter().map(|(k, (v, _))| (k, v)).collect();
+    system.legacy_radios = radios.into_iter().map(|(k, (v, _))| (k, v)).collect();
 
     for (site, site_label) in &order {
         let Some(e) = entries.get(site) else { continue };
@@ -648,6 +652,8 @@ fn radio_from(s: &legacy::Settings, report: &mut Report) -> RadioConfig {
         },
         recording: radio::Recording {
             enabled: r.enabled.unwrap_or(true),
+            // p25-httpd recorded every followed call.
+            every_call: true,
             storage: if r.storage.as_deref() == Some("sd") { Storage::Sd } else { Storage::Ram },
             ram_max_count: r.max_count.unwrap_or(40).clamp(1, 500),
             sd_max_count: r.sd_max_count.unwrap_or(2_000).clamp(1, 5_000),

@@ -105,6 +105,8 @@ pub struct CallStart {
     pub freq_hz: Option<u64>,
     pub channel: Option<String>,
     pub started_unix_ms: u64,
+    /// Its alias says record it.
+    pub record: bool,
 }
 
 /// A followed call closed.
@@ -143,6 +145,8 @@ impl RecorderTx {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Policy {
     pub enabled: bool,
+    /// Every followed call; off: only those whose alias says record.
+    pub every_call: bool,
     pub store: Store,
     pub retention: Retention,
 }
@@ -151,6 +155,7 @@ impl From<&radio_config::Recording> for Policy {
     fn from(r: &radio_config::Recording) -> Policy {
         Policy {
             enabled: r.enabled,
+            every_call: r.every_call,
             store: r.storage.into(),
             retention: Retention {
                 ram_max_count: r.ram_max_count as usize,
@@ -421,7 +426,8 @@ impl Recorder {
     }
 
     fn start(&mut self, s: CallStart) {
-        let record = self.shared.policy().enabled;
+        let p = self.shared.policy();
+        let record = p.enabled && (p.every_call || s.record);
         self.open.entry(s.call).or_insert_with(|| Open {
             start: s,
             record,

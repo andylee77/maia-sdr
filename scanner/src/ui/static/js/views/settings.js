@@ -1,12 +1,10 @@
-// Settings: the receiver gain, the radio's other settings, the crystal, recording, profiles, each
-// system's talkgroup and radio names, and the configuration as a whole (export, import, factory
-// reset).
+// Settings: the receiver gain, the radio's other settings, the crystal, recording, and the
+// configuration as a whole (export, import, factory reset).
 
 import { h, card, clear, toast, switchInput } from '../dom.js';
 import { api } from '../api.js';
 import { ago, bytes, num } from '../format.js';
 import { crystalSource } from '../protocols.js';
-import { profilesCard } from './profiles.js';
 
 const MODES = [['slow_attack', 'AGC, slow'], ['fast_attack', 'AGC, fast'], ['hybrid', 'AGC, hybrid'], ['manual', 'Manual']];
 
@@ -45,7 +43,7 @@ function recordingCard(radio, recs) {
   save.addEventListener('click', async () => {
     try {
       const res = await api.setRecording({
-        enabled: on.input.checked, storage: where.value,
+        enabled: on.input.checked, every_call: r.every_call, storage: where.value,
         ram_max_count: Number(ramN.value), sd_max_count: Number(sdN.value), sd_max_mb: Number(sdMb.value),
       });
       toast(res.deleted ? `Saved; ${res.deleted} oldest recording(s) deleted` : 'Saved');
@@ -192,46 +190,6 @@ function crystalCard(initial) {
   return { el: c.el, stop: () => clearInterval(timer) };
 }
 
-// "300 = Fire Dispatch" lines <-> {300: "Fire Dispatch"}.
-function namesText(map) {
-  return Object.entries(map || {}).map(([k, v]) => `${k} = ${v}`).join('\n');
-}
-
-function parseNames(text, what) {
-  const out = {};
-  for (const line of text.split('\n').map(l => l.trim()).filter(Boolean)) {
-    const m = line.match(/^(\d+)\s*[=:,]\s*(.+)$/);
-    if (!m) throw new Error(`${what}: "${line}" is not "id = name"`);
-    out[m[1]] = m[2].trim();
-  }
-  return out;
-}
-
-function namesCard(systems) {
-  const c = card('Names');
-  for (const sys of systems) {
-    const tgs = h('textarea', { class: 'input', rows: 6, 'aria-label': `${sys.label} talkgroup names` });
-    tgs.value = namesText(sys.talkgroups);
-    const radios = h('textarea', { class: 'input', rows: 6, 'aria-label': `${sys.label} radio names` });
-    radios.value = namesText(sys.radios);
-    const save = h('button', { class: 'btn', type: 'button', text: 'Save names' });
-    save.addEventListener('click', async () => {
-      try {
-        await api.saveNames(sys.id, { talkgroups: parseNames(tgs.value, 'talkgroups'), radios: parseNames(radios.value, 'radios') });
-        toast(`${sys.label}: names saved`);
-      } catch (e) {
-        toast(e.message, true);
-      }
-    });
-    c.body.append(h('h3', { text: sys.label }),
-      h('div', { class: 'grid-2' },
-        h('label', { class: 'stack' }, h('span', { class: 'dim', text: 'Talkgroups, one "id = name" a line' }), tgs),
-        h('label', { class: 'stack' }, h('span', { class: 'dim', text: 'Radios' }), radios)),
-      h('div', { class: 'row end' }, save));
-  }
-  return c.el;
-}
-
 // After an import or a reset the scanner restarts: reload once it answers again.
 function reloadAfterRestart() {
   const started = Date.now();
@@ -268,10 +226,10 @@ function configCard() {
       toast(`${f.name} is not JSON`, true);
       return;
     }
-    if (!confirm(`Replace the radio settings, systems, sites and profiles with ${f.name}? The radio restarts.`)) return;
+    if (!confirm(`Replace the radio settings, systems, sites and aliases with ${f.name}? The radio restarts.`)) return;
     try {
       const r = await api.importConfig(doc);
-      toast(`Imported ${r.systems} systems, ${r.sites} sites, ${r.profiles} profiles; restarting`);
+      toast(`Imported ${r.systems} systems, ${r.sites} sites, ${r.aliases} aliases; restarting`);
       reloadAfterRestart();
     } catch (e) {
       toast(e.message, true);
@@ -279,7 +237,7 @@ function configCard() {
   });
   const reset = h('button', { class: 'btn danger', type: 'button', text: 'Factory reset' });
   reset.addEventListener('click', async () => {
-    if (!confirm('Factory reset: delete every system, site, profile, recording and the call history, and restore the default settings? The crystal calibration stays. This cannot be undone.')) return;
+    if (!confirm('Factory reset: delete every system (with its aliases), site, recording and the call history, and restore the default settings? The crystal calibration stays. This cannot be undone.')) return;
     try {
       const r = await api.factoryReset();
       toast(`Reset: ${r.sites} sites, ${r.recordings} recordings, ${r.calls} calls removed; restarting`);
@@ -289,7 +247,7 @@ function configCard() {
     }
   });
   c.body.append(
-    h('p', { class: 'card-note', text: 'The radio settings, systems with their names and sites, and profiles, as one file. What the radio learned on the air and the crystal calibration stay with the board.' }),
+    h('p', { class: 'card-note', text: 'The radio settings and the systems with their aliases and sites, as one file. What the radio learned on the air and the crystal calibration stay with the board.' }),
     h('div', { class: 'row' }, exportLink, file, importBtn),
     h('div', { class: 'row end' }, reset));
   return c.el;
@@ -299,10 +257,10 @@ export function mount(el) {
   const host = h('div', { class: 'stack' });
   el.append(host);
   let crystal = null;
-  Promise.all([api.radio(), api.crystal(), api.systems(), api.recordings(0)])
-    .then(([radio, crystalStatus, systems, recs]) => {
+  Promise.all([api.radio(), api.crystal(), api.recordings(0)])
+    .then(([radio, crystalStatus, recs]) => {
       crystal = crystalCard(crystalStatus);
-      host.append(gainCard(radio), radioCard(radio), crystal.el, recordingCard(radio, recs), configCard(), profilesCard(systems), namesCard(systems));
+      host.append(gainCard(radio), radioCard(radio), crystal.el, recordingCard(radio, recs), configCard());
     })
     .catch(e => toast(e.message, true));
   return { update() {}, unmount() { if (crystal) crystal.stop(); } };

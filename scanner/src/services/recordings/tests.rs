@@ -11,7 +11,7 @@ use super::*;
 use crate::audio::live::VoiceBatch;
 use crate::protocol::events::VoiceFrames;
 use crate::protocol::p25::voice_frame::ImbeFrameRaw;
-use crate::services::config::profiles::Side;
+use crate::services::config::aliases::Side;
 
 fn dirs(tag: &str) -> (PathBuf, PathBuf) {
     let root = std::env::temp_dir().join(format!("scanner_recordings_{}_{tag}", std::process::id()));
@@ -230,7 +230,7 @@ fn an_unusable_card_is_reported_without_a_writer_touching_it() {
 }
 
 fn policy(store: Store) -> Policy {
-    Policy { enabled: true, store, retention: Retention { ram_max_count: 40, sd_max_count: 2_000, sd_max_bytes: 1 << 30 } }
+    Policy { enabled: true, every_call: true, store, retention: Retention { ram_max_count: 40, sd_max_count: 2_000, sd_max_bytes: 1 << 30 } }
 }
 
 fn call(id: u64) -> CallStart {
@@ -243,6 +243,7 @@ fn call(id: u64) -> CallStart {
         freq_hz: Some(857_987_500),
         channel: Some("0-1117".into()),
         started_unix_ms: 1_790_870_000_000,
+        record: false,
     }
 }
 
@@ -313,4 +314,19 @@ async fn with_recording_off_calls_are_counted_not_saved() {
     let r = rec.get(6).unwrap();
     assert_eq!((r.store, r.path.clone()), (Store::Ram, ram.join(&r.file)));
     assert!(r.path.exists());
+}
+
+#[tokio::test]
+async fn without_every_call_only_the_aliases_that_say_record_are_saved() {
+    let (ram, sd) = dirs("aliased");
+    let c = cfg(&ram, &sd);
+    let audio = Audio::start(&[Lane::One]);
+    let rec = Recordings::start(c, Policy { every_call: false, ..policy(Store::Ram) }, (Vec::new(), String::new()), &audio, Default::default(), Default::default());
+    rec.sender().start(call(7));
+    play(&audio, 7).await;
+    rec.sender().start(CallStart { record: true, ..call(8) });
+    play(&audio, 8).await;
+    rec.flush(Duration::from_secs(5)).await;
+    assert!(rec.get(7).is_none(), "its alias does not say record");
+    assert!(rec.get(8).is_some());
 }

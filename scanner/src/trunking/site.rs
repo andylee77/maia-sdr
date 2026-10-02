@@ -2,8 +2,8 @@
 //!
 //! `activate` is the only way to change site. It takes the radio lease (grants decoded during
 //! the switch are dropped), stops the old site's receivers, plans the receive window from the
-//! site's channels and what was learned there, tunes, loads the site's learned state and active
-//! profile, starts the new site's receivers, publishes `Live` and persists the choice.
+//! site's channels and what was learned there, tunes, loads the site's learned state and its
+//! system's aliases, starts the new site's receivers, publishes `Live` and persists the choice.
 //!
 //! As grants are counted the planner may find a better window. `recentre` moves there while both
 //! lanes are idle, without stopping the site: automatically (at most every 10 minutes, at sites
@@ -30,15 +30,14 @@ use crate::trunking::follow::routing::Routing;
 use crate::trunking::learned::Learned;
 use crate::trunking::receivers::{self, Receivers};
 use crate::trunking::trunk::{Setup, Trunking};
-use crate::services::config::profiles::Profile;
 use crate::services::config::systems::{CcPosition, Protocol, Site, System};
 use crate::services::config::{self, Config, Paths, SiteState};
 
 /// Distance of the control channel from the window edge when a site has no known channels.
 const EDGE_MARGIN_HZ: f64 = 250_000.0;
-/// A profile change waits this many times for a switch to hand the radio back.
-const PROFILE_TRIES: u32 = 30;
-const PROFILE_RETRY: Duration = Duration::from_millis(100);
+/// A change of aliases waits this many times for a switch to hand the radio back.
+const ALIASES_TRIES: u32 = 30;
+const ALIASES_RETRY: Duration = Duration::from_millis(100);
 /// How often the automatic recentre looks, how long after a site goes live it starts, and the
 /// least time between two moves.
 const RECENTRE_EVERY: Duration = Duration::from_secs(30);
@@ -49,7 +48,7 @@ const RECENTRE_MIN_INTERVAL_MS: u64 = 10 * 60 * 1_000;
 struct Plan {
     site: Site,
     system: SystemSummary,
-    profile: Option<Profile>,
+    routing: Routing,
     calls: crate::services::config::radio::Calls,
     learned: Arc<Learned>,
     window: WindowPlan,
@@ -70,7 +69,6 @@ pub enum LiveState {
 pub struct Live {
     pub site: Site,
     pub system: SystemSummary,
-    pub profile: Option<Profile>,
     pub window: WindowPlan,
     pub tuning: Tuning,
 }
@@ -229,34 +227,29 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         back_to
     }
 
-    /// The profiles changed: the live site follows its active profile from now on. A switch in
-    /// progress picks the change up as it ends; a scan, when the site comes back.
-    pub async fn profile_changed(&self) {
-        for _ in 0..PROFILE_TRIES {
+    /// A system's aliases or listening settings changed: the live site follows them from now on.
+    /// A switch in progress picks the change up as it ends; a scan, when the site comes back.
+    pub async fn aliases_changed(&self) {
+        for _ in 0..ALIASES_TRIES {
             if let Some(_lease) = self.lease.take(Lease::Switching) {
-                self.apply_profile().await;
+                self.apply_routing().await;
                 return;
             }
-            tokio::time::sleep(PROFILE_RETRY).await;
+            tokio::time::sleep(ALIASES_RETRY).await;
         }
     }
 
-    /// Follow the live site's active profile, with the radio lease held (no switch or scan can
-    /// change the live site meanwhile).
-    async fn apply_profile(&self) {
+    /// Follow the live system's aliases, with the radio lease held (no switch or scan can change
+    /// the live site meanwhile).
+    async fn apply_routing(&self) {
         let LiveState::Live(live) = self.state() else { return };
-        let profile = self.config.lock().await.profiles.value.active_for(&live.site.id).cloned();
-        if profile == live.profile {
-            return;
+        let routing = {
+            let c = self.config.lock().await;
+            c.systems.value.system(&live.system.id).map(|sys| Routing::new(&sys.aliases, sys.listening))
+        };
+        if let Some(routing) = routing {
+            self.trunking.set_routing(routing).await;
         }
-        self.trunking.set_routing(profile.as_ref().map(Routing::new).unwrap_or_default()).await;
-        let name = profile.as_ref().map_or("none".to_string(), |p| p.name.clone());
-        self.state.send_modify(|s| {
-            if let LiveState::Live(l) = s {
-                l.profile = profile;
-            }
-        });
-        self.log.system("profile", format!("following profile {name}"));
     }
 
     /// After a scan: the site it paused, live again.
@@ -280,7 +273,7 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
             Ok(live) => {
                 self.state.send_replace(LiveState::Live(Box::new(live.clone())));
                 *self.live_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
-                self.apply_profile().await;
+                self.apply_routing().await;
                 Ok(live)
             }
             Err(e) => {
@@ -429,23 +422,23 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
 
     /// Everything a switch needs, read and planned without touching the radio.
     async fn plan(&self, site_id: &str) -> Result<Plan> {
-        let (site, system, profile, presets_allowed, calls) = {
+        let (site, system, routing, presets_allowed, calls) = {
             let c = self.config.lock().await;
             let Some((system, site)) = c.systems.value.site(site_id) else {
                 bail!("no site {site_id:?}");
             };
-            let profile = c.profiles.value.active_for(site_id).cloned();
-            (site.clone(), SystemSummary::from(system), profile, c.radio.value.presets_allowed.clone(), c.radio.value.calls.clone())
+            let routing = Routing::new(&system.aliases, system.listening);
+            (site.clone(), SystemSummary::from(system), routing, c.radio.value.presets_allowed.clone(), c.radio.value.calls.clone())
         };
         let learned = Arc::new(Learned::new(site_id, Config::site_state(&self.paths, site_id)?));
         let window = window_for(&site, &learned.state(), &presets_allowed)?;
         let preset = find_preset(&window.preset).context("planned preset")?;
-        Ok(Plan { site, system, profile, calls, learned, window, preset })
+        Ok(Plan { site, system, routing, calls, learned, window, preset })
     }
 
     /// Stop the old site, tune, and start the new one.
     async fn go(&self, plan: Plan) -> Result<Live> {
-        let Plan { site, system, profile, calls, learned, window, preset } = plan;
+        let Plan { site, system, routing, calls, learned, window, preset } = plan;
         let site_id = site.id.as_str();
         self.save_learned().await;
         self.receivers.stop().await;
@@ -475,7 +468,7 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
                 Protocol::P25 => self.lanes.clone(),
                 Protocol::DmrTier3 => self.lanes.iter().copied().filter(|&l| l == Lane::One).collect(),
             },
-            routing: profile.as_ref().map(Routing::new).unwrap_or_default(),
+            routing,
             encrypted: learned.state().encrypted_talkgroups.into_iter().collect(),
             policy: CallPolicy {
                 hang: std::time::Duration::from_millis(calls.hang_ms),
@@ -503,7 +496,7 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         self.receivers.start(context, self.tuner.hw()).await;
         tracing::info!("site {} live: {} at LO {} Hz", site.id, window.preset, window.lo_hz);
         self.log.system("site", format!("site {} ({}) live: {} window, LO {:.4} MHz", site.id, site.label, window.preset, window.lo_hz as f64 / 1e6));
-        Ok(Live { site, system, profile, window, tuning })
+        Ok(Live { site, system, window, tuning })
     }
 }
 
@@ -642,8 +635,10 @@ mod tests {
             label: "Clay County".into(),
             protocol: Protocol::P25,
             identity: Default::default(),
-            talkgroups: Default::default(),
-            radios: Default::default(),
+            aliases: Default::default(),
+            listening: Default::default(),
+            legacy_talkgroups: Default::default(),
+            legacy_radios: Default::default(),
             sites: vec![
                 Site { id: "clay".into(), ..site(860_962_500, vec![857_987_500], CcPosition::Top) },
                 Site { id: "vhf".into(), ..site(155_000_000, vec![], CcPosition::Center) },
@@ -689,8 +684,10 @@ mod tests {
             label: "Clay County".into(),
             protocol: Protocol::P25,
             identity: Default::default(),
-            talkgroups: Default::default(),
-            radios: Default::default(),
+            aliases: Default::default(),
+            listening: Default::default(),
+            legacy_talkgroups: Default::default(),
+            legacy_radios: Default::default(),
             sites: vec![Site { id: "clay".into(), ..site(860_962_500, vec![857_987_500], CcPosition::Top) }],
         });
         config::save(&paths.systems(), &config.systems).unwrap();

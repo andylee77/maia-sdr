@@ -1,7 +1,6 @@
 //! `/api/v1/systems`: the configured systems and their sites; a system's names; the site editor;
 //! removing a system or a site.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -23,25 +22,6 @@ pub async fn list(State(s): State<Arc<AppState>>) -> Json<Vec<System>> {
 pub async fn get(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<System> {
     let c = s.config.lock().await;
     c.systems.value.system(&id).cloned().map(Json).ok_or_else(|| ApiError::not_found(format!("system {id}")))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Names {
-    pub talkgroups: BTreeMap<u32, String>,
-    pub radios: BTreeMap<u32, String>,
-}
-
-/// Replace a system's talkgroup and radio names (blank names are dropped).
-pub async fn put_names(State(s): State<Arc<AppState>>, Path(id): Path<String>, Json(req): Json<Names>) -> ApiResult<System> {
-    let clean = |m: BTreeMap<u32, String>| m.into_iter().map(|(k, v)| (k, v.trim().to_string())).filter(|(_, v)| !v.is_empty()).collect();
-    let mut c = s.config.lock().await;
-    let sys = c.systems.value.systems.iter_mut().find(|x| x.id == id).ok_or_else(|| ApiError::not_found(format!("system {id}")))?;
-    sys.talkgroups = clean(req.talkgroups);
-    sys.radios = clean(req.radios);
-    let out = sys.clone();
-    config::save(&s.paths.systems(), &c.systems)?;
-    Ok(Json(out))
 }
 
 /// What the site editor changes: everything but the site's id, identity and origin.
@@ -116,8 +96,7 @@ fn in_use(s: &AppState, site: &str) -> bool {
     }
 }
 
-/// Remove a site (not the live one), its active-profile choice and what it learned. The history
-/// keeps its calls.
+/// Remove a site (not the live one) and what it learned. The history keeps its calls.
 pub async fn delete_site(State(s): State<Arc<AppState>>, Path((system, site)): Path<(String, String)>) -> ApiResult<Removed> {
     let removed = {
         let mut c = s.config.lock().await;
@@ -126,7 +105,6 @@ pub async fn delete_site(State(s): State<Arc<AppState>>, Path((system, site)): P
         }
         let r = c.remove_site(&system, &site).ok_or_else(|| ApiError::not_found(format!("site {site} of system {system}")))?;
         config::save(&s.paths.systems(), &c.systems)?;
-        config::save(&s.paths.profiles(), &c.profiles)?;
         r
     };
     config::forget_sites(&s.paths, &removed.sites);
@@ -134,7 +112,7 @@ pub async fn delete_site(State(s): State<Arc<AppState>>, Path((system, site)): P
     Ok(Json(removed))
 }
 
-/// Remove a system with its sites and profiles (none of its sites live). The history keeps their
+/// Remove a system with its sites and aliases (none of its sites live). The history keeps their
 /// calls.
 pub async fn delete_system(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<Removed> {
     let removed = {
@@ -145,10 +123,9 @@ pub async fn delete_system(State(s): State<Arc<AppState>>, Path(id): Path<String
         }
         let r = c.remove_system(&id).ok_or_else(|| ApiError::not_found(format!("system {id}")))?;
         config::save(&s.paths.systems(), &c.systems)?;
-        config::save(&s.paths.profiles(), &c.profiles)?;
         r
     };
     config::forget_sites(&s.paths, &removed.sites);
-    s.log.system("config", format!("system {id} removed with {} sites and {} profiles", removed.sites.len(), removed.profiles.len()));
+    s.log.system("config", format!("system {id} removed with {} sites", removed.sites.len()));
     Ok(Json(removed))
 }

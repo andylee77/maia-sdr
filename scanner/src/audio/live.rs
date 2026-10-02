@@ -17,7 +17,7 @@ use super::agc::PcmAgc;
 use super::codec::{Ambe2, Imbe, VoiceCodec, SAMPLES_PER_FRAME};
 use crate::hardware::p25core::Lane;
 use crate::protocol::events::VoiceFrames;
-use crate::services::config::profiles::Side;
+use crate::services::config::aliases::Side;
 
 /// Voice batches queued for a lane's decoder (~4 s of P25).
 const DECODE_QUEUE: usize = 24;
