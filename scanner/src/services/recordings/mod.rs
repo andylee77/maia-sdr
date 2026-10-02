@@ -266,11 +266,13 @@ impl Recordings {
         self.next_call
     }
 
-    /// Newest first: one site's (`""` = those with no site) or all, at most `limit`.
+    /// Newest first: one site's (`""` = those with no site) or all, at most `limit`; and how many
+    /// that site has.
     pub fn list(&self, site: Option<&str>, limit: usize) -> (Vec<Recording>, usize) {
         let ring = lock(&self.shared.ring);
-        let items = ring.iter().rev().filter(|r| site.is_none_or(|s| r.site == s)).take(limit).cloned().collect();
-        (items, ring.len())
+        let wanted = |r: &&Recording| site.is_none_or(|s| r.site == s);
+        let items = ring.iter().rev().filter(wanted).take(limit).cloned().collect();
+        (items, ring.iter().filter(wanted).count())
     }
 
     pub fn get(&self, id: u64) -> Option<Recording> {

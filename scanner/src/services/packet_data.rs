@@ -69,14 +69,22 @@ pub struct RadioData {
     pub ip: Option<std::net::Ipv4Addr>,
 }
 
+/// What a site's decoders read.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Counts {
+    pub pdus: u64,
+    /// The same PDU read by a second decoder.
+    pub duplicates: u64,
+    /// By kind ("packet/lrrp", "ambtc", "response/...").
+    pub totals: BTreeMap<String, u64>,
+}
+
 #[derive(Debug, Default)]
 pub struct DataState {
     pub recent: VecDeque<DataRecord>,
     pub radios: HashMap<(String, u32), RadioData>,
-    /// Counts by kind ("packet/lrrp", "ambtc", "response/...").
-    pub totals: BTreeMap<String, u64>,
-    pub pdus: u64,
-    pub duplicates: u64,
+    /// Per site.
+    pub counts: HashMap<String, Counts>,
 }
 
 fn hex(b: &[u8]) -> String {
@@ -162,17 +170,31 @@ fn summary(r: &DataRecord) -> String {
 }
 
 impl DataState {
+    /// One site's counts, or every site's together.
+    pub fn counts(&self, site: Option<&str>) -> Counts {
+        let mut out = Counts::default();
+        for (_, c) in self.counts.iter().filter(|(s, _)| site.is_none_or(|w| w == s.as_str())) {
+            out.pdus += c.pdus;
+            out.duplicates += c.duplicates;
+            for (k, n) in &c.totals {
+                *out.totals.entry(k.clone()).or_default() += n;
+            }
+        }
+        out
+    }
+
     /// Add a record, unless another decoder read the same PDU just before. True if new.
     pub fn add(&mut self, r: DataRecord) -> bool {
         let dup = self.recent.iter().rev().take(16).any(|o| {
             r.at_ms.saturating_sub(o.at_ms) < DUP_MS && o.chain != r.chain && o.llid == r.llid && o.hex == r.hex && o.format == r.format
         });
+        let counts = self.counts.entry(r.site.clone()).or_default();
         if dup {
-            self.duplicates += 1;
+            counts.duplicates += 1;
             return false;
         }
-        self.pdus += 1;
-        *self.totals.entry(kind(&r)).or_default() += 1;
+        counts.pdus += 1;
+        *counts.totals.entry(kind(&r)).or_default() += 1;
         let e = self.radios.entry((r.site.clone(), r.llid)).or_insert_with(|| RadioData {
             site: r.site.clone(),
             llid: r.llid,
@@ -259,10 +281,13 @@ mod tests {
         // The same radio again later, and another radio.
         assert!(d.add(to_record(&frame("control", 9_000, 0x1234, true), "clay")));
         assert!(d.add(to_record(&frame("control", 9_100, 0x5678, false), "clay")));
-        assert_eq!((d.pdus, d.duplicates), (3, 1));
+        assert!(d.add(to_record(&frame("control", 9_200, 0x1234, false), "fpl_clay")));
+        let clay = d.counts(Some("clay"));
+        assert_eq!((clay.pdus, clay.duplicates, clay.totals["ambtc"]), (3, 1, 3));
+        assert_eq!(d.counts(Some("fpl_clay")).pdus, 1);
+        assert_eq!(d.counts(None).pdus, 4);
         let r = &d.radios[&("clay".to_string(), 0x1234)];
         assert_eq!((r.packets, r.inbound, r.outbound, r.first_ms, r.last_ms), (2, 1, 1, 1_000, 9_000));
-        assert_eq!(d.totals["ambtc"], 3);
         let rec = &d.recent[0];
         assert_eq!((rec.format, rec.sap, rec.opcode, rec.bytes), ("ambtc", "trunking_control", Some(0), 12));
     }

@@ -30,7 +30,12 @@ pub struct Status {
 }
 
 pub async fn get(State(s): State<Arc<AppState>>) -> Json<Status> {
-    let live = s.live.state();
+    let tuning = s.tuner.tuning();
+    let mut live = s.live.state();
+    // The live site's snapshot is taken at activation; the tuning moves after (crystal, gain).
+    if let LiveState::Live(l) = &mut live {
+        l.tuning = tuning.clone();
+    }
     let hold = match &live {
         LiveState::Live(l) => s.trunking.hold(&l.site.id),
         _ => None,
@@ -46,7 +51,7 @@ pub async fn get(State(s): State<Arc<AppState>>) -> Json<Status> {
             Lease::Switching => "switching",
             Lease::Scan => "scan",
         },
-        tuning: s.tuner.tuning(),
+        tuning,
         clock: s.clock.status(),
         hold,
     })

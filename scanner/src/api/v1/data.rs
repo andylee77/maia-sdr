@@ -2,7 +2,7 @@
 //! for every site): totals by kind, the radios with packet data and the recent records, newest
 //! first, with the radios' names; and the data channel the site announces.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
@@ -45,28 +45,43 @@ pub async fn get(State(s): State<Arc<AppState>>, Query(p): Query<Params>) -> Api
         Some(id) => Some(id.to_string()),
         None => live.clone(),
     };
-    let names = {
+    // Radio names come from each record's own site's system.
+    let names: HashMap<String, BTreeMap<u32, String>> = {
         let c = s.config.lock().await;
-        site.as_deref().or(live.as_deref()).and_then(|id| c.systems.value.site(id)).map(|(sys, _)| sys.radios.clone()).unwrap_or_default()
+        c.systems
+            .value
+            .systems
+            .iter()
+            .flat_map(|sys| sys.sites.iter().map(|x| (x.id.clone(), sys.radios.clone())))
+            .filter(|(id, _)| site.as_deref().is_none_or(|w| w == id))
+            .collect()
     };
     let data_channel_hz = match &site {
         Some(id) => s.live.learned(id).await.ok().and_then(|l| l.data_channel_hz),
         None => None,
     };
     let wants = |r: &str| site.as_deref().is_none_or(|w| w == r);
-    let named = |llid: u32| names.get(&llid).cloned();
+    let named = |site: &str, llid: u32| names.get(site).and_then(|m| m.get(&llid)).cloned();
     let view = s.packet_data.with(|d| {
         let mut radios: Vec<RadioData> = d.radios.values().filter(|r| wants(&r.site)).cloned().collect();
         radios.sort_by(|a, b| b.last_ms.cmp(&a.last_ms));
         radios.truncate(200);
+        let counts = d.counts(site.as_deref());
         DataView {
             site: site.clone(),
             data_channel_hz,
-            pdus: d.pdus,
-            duplicates: d.duplicates,
-            totals: d.totals.clone(),
-            radios: radios.into_iter().map(|r| Named { alias: named(r.llid), row: r }).collect(),
-            recent: d.recent.iter().rev().filter(|r| wants(&r.site)).take(limit).map(|r| Named { alias: named(r.llid), row: r.clone() }).collect(),
+            pdus: counts.pdus,
+            duplicates: counts.duplicates,
+            totals: counts.totals,
+            radios: radios.into_iter().map(|r| Named { alias: named(&r.site, r.llid), row: r }).collect(),
+            recent: d
+                .recent
+                .iter()
+                .rev()
+                .filter(|r| wants(&r.site))
+                .take(limit)
+                .map(|r| Named { alias: named(&r.site, r.llid), row: r.clone() })
+                .collect(),
         }
     });
     Ok(Json(view))
