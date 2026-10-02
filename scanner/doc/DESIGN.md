@@ -1346,9 +1346,9 @@ From the brief:
   - **Open, crystal at DMR:** at Clay Electric the calibration took the DMR equaliser's -136 Hz
     and moved the correction from -0.061 to +0.214 ppm (then +0.319 by tracking), while the
     spectrum put the carrier 10 Hz from centre. Back on Clay P25 the loop returned it to -0.048
-    ppm, and there the spectrum's 304 Hz matched the 315 Hz error. On a weak DMR signal the
-    equaliser's reading looks biased; a calibration should not take it when the spectrum
-    disagrees. To check against SDRTrunk on a capture.
+    ppm, and there the spectrum's 304 Hz matched the 315 Hz error. B's DMR signal was 10 dB
+    over the noise (indoors), so this is to re-check on the outdoor antenna before the
+    calibration changes.
   - **API**, from the inventory (`doc/API_INVENTORY.md`, with its cleanup list) and Andy's asks:
     - `GET /api/v1/receivers`: the control channel's and each lane's state, decoder counters
       and carrier loop.
