@@ -1,6 +1,6 @@
 # API inventory
 
-What each route carries, who uses it, and what is missing or wrong. As of `9f881bf`.
+What each route carries, who uses it, and what is missing or wrong. As of `5d7ff96`.
 
 - `doc/API.md` is the route table, generated from the code.
 - `doc/UI_BRIEF.md` is the brief for the final UI.
@@ -16,13 +16,13 @@ The cleanup list at the end ranks the backend work this inventory turned up.
   - a site's `alternates_hz`, `channels_hz`, `notes`, `channel_plan`, `lcn`, `timeslot`;
   - the control status's `identity`, `modulation`, `tsbks_20s`, `carrier_offset_hz`;
   - a recording's `lane`, `freq_hz`, `channel`, `voice`.
-- **Tuning** (`preset`, `sample_rate_hz`, `lo_hz`, `lo_shift_hz`, `crystal_ppm`, `control_hz`, `gain`, `lanes[2]`, `rev`) appears in six responses. Only `status.tuning` and `radio.tuning` are always current.
+- **Tuning** (`preset`, `sample_rate_hz`, `lo_hz`, `lo_shift_hz`, `crystal_ppm`, `control_hz`, `gain`, `lanes[2]`, `rev`) appears in six responses.
 
 ## Live state
 
 | Route | Carries | Used by | Missing or wrong |
 |-------|---------|---------|------------------|
-| `GET /api/v1/status` | Build, uptime, board time; the live state (`no_site`, `switching`, `scanning`, `live` with site, system, profile, window and a tuning snapshot); the control channel's health; the lease; current tuning; clock | UI (polled every 2 s and after each `/ws/events` frame: header, Now, Systems, Diagnostics); `scanner_live_check.py` | `live.tuning` is a snapshot from the activation or the last recentre: its crystal, gain and lane values go stale. When the site went live isn't exposed |
+| `GET /api/v1/status` | Build, uptime, board time; the live state (`no_site`, `switching`, `scanning`, `live` with site, system, profile, window and tuning); the control channel's health; the lease; tuning; clock; the held talkgroup | UI (polled every 2 s and after each `/ws/events` frame: header, Now, Systems, Diagnostics); `scanner_live_check.py` | Tuning is there twice. When the site went live isn't exposed |
 | `GET /api/v1/receivers` | The control channel's status, carrier loop and AGC, and both P25 demodulators' (or the DMR decoder's) counters; each lane's channel, call, followed talkgroup, data-channel park, voice frames, decoder counters and carrier loop | Nothing yet (for the diagnostics) | Repeats `status.control`. No modulation override. No reset of the counters |
 | `GET /api/v1/system` | Board load, memory, CPU per core and per scanner thread, AD9361 and Zynq temperatures | Nothing yet | No filesystem space; the card's free space is only in `/recordings` |
 | `GET /api/v1/spectrum` | The receive window's spectrum (`bins`) with the LO, rate, control channel and lanes | UI Diagnostics | No frame time. A `bins` that doesn't divide 4096 isn't refused |
@@ -33,10 +33,11 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 
 | Route | Carries | Used by | Missing or wrong |
 |-------|---------|---------|------------------|
-| `GET /api/v1/calls` | The live site's open calls and its newest 100 closed ones: talkgroup, radios, channel, slot, lane, times, close reason, voice frames, why not followed | UI Now | No names. No emergency or private flag: both are decoded, then dropped. No first-voice time, open span, grant time, codec or frame errors. An open call that isn't followed shows no voice and no radios |
-| `GET /api/v1/calls/{id}` | One call: the live view while recent, else the history row | Nothing | Two shapes under one route (`call`/`call_id`, `started_unix_ms`/`started_ms`, `close`/`close_reason`, …) and nothing says which came back |
+| `GET /api/v1/calls` | The live site's open calls and its newest 100 closed ones, each with talkgroup and radio names, radios, channel, slot, lane, emergency, private, times (grant, first voice, end, open span, grant span), close reason, voice frames, codec, why not followed | UI Now | An open call that isn't followed shows no voice and no radios. Frame errors are known only once a call is stored |
+| `GET /api/v1/calls/{id}` | One call in the same shape, live while recent, else from the history | Nothing | — |
+| `GET`/`PUT /api/v1/hold` | The talkgroup the live site is held on; hold or release it | UI Now (Hold/Release) | — |
 | `WS /ws/audio` | 20 ms frames of 8 kHz audio. With `v=2`: every lane, each frame tagged; text `meta` (lane, talkgroup, radio, call, speaker) and `lag` | UI player; bench `wsaudio.py`, corpus, scoring; `p25_ws_audio_capture.py` | Lane is 0-based. Meta has no site or encryption flag, and sends `src` 0 for an unknown radio. The listener count and the audio counters (frames, errors, silent, dropped) are kept but never exposed |
-| `GET /api/v1/recordings` | Recordings newest first (`limit`, `site`) with the stores' full state | UI Now and Settings; `scanner_live_check.py` | `total` ignores `site`. Recordings from earlier runs lack lane, frequency, channel and voice counts, although the history has them. No paging |
+| `GET /api/v1/recordings` | Recordings newest first (`limit`, `site`) with the listed site's total and the stores' full state | UI Now and Settings; `scanner_live_check.py` | Recordings from earlier runs lack lane, frequency, channel and voice counts, although the history has them. No paging |
 | `GET /api/v1/recordings/{id}` | The WAV (byte ranges) | UI Now player | The whole file is read for every range request |
 | `DELETE /api/v1/recordings` | Clear a store (`sd`, `ram`, `all`) | UI Settings | — |
 | `DELETE /api/v1/recordings/{id}` | Delete one | Nothing | — |
@@ -54,8 +55,8 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `GET /api/v1/activity/radio/{unit}` | A radio's talkgroups and affiliation/registration events | UI Activity | No `limit` |
 | `GET /api/v1/activity/talkgroup/{tg}` | A talkgroup's radios and encryption history | UI Activity | — |
 | `GET /api/v1/activity/series` | Calls and time per hour or day (`tz`, `tg`, `unit`) | UI Activity chart | — |
-| `GET /api/v1/activity/calls` | History rows newest first; `format=csv` streams a file | UI Activity | No names on the rows |
-| `GET /api/v1/data` | Packet data: totals, radios, recent PDUs with IP decode | UI Activity card | Totals ignore `site`. With `all`, names come from the live system. Memory only: lost on restart. No `system` parameter |
+| `GET /api/v1/activity/calls` | Calls newest first in `/calls`' shape with names; `format=csv` streams the history rows as a file | UI Activity | — |
+| `GET /api/v1/data` | Packet data per site (or all): counts, radios with names, recent PDUs with IP decode | UI Activity card | Memory only: lost on restart. No `system` parameter |
 
 ## Radio settings
 
@@ -100,7 +101,7 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `GET /api/system` | Build, uptime | fbench units and sys/rf/corpus tests; many `tools/p25_*` | Some tools read identity fields it doesn't have (`p25_check.py`, `p25_status_and_next_step.py`) |
 | `GET /api/ui/state` | Board time, clock valid | corpus | `live_baseline.py` reads `site.*`, which isn't there |
 | `GET /api/imbe_dump` | The newest 128 raw IMBE frames | corpus, scoring, `p25_imbe_test.py`, `voice_capture.py` | No lane, call or time per frame; no v1 equivalent |
-| `GET /api/ui/calls` | Calls with `open_ms` and `imbe` | corpus, scoring | Scoring reads `ldu` and `first_voice_ms`, which aren't there. At most about 100 calls |
+| `GET /api/ui/calls` | Calls with `open_ms`, `first_voice_ms` and `imbe` | corpus, scoring | Scoring reads `ldu`, which isn't there. At most about 100 calls |
 | `GET`/`PUT /api/ui/settings` | Clock source | corpus (pins `manual`) | Same as `PUT /api/v1/radio/clock` |
 
 Bench routes that p25-httpd served and the scanner does not:
@@ -112,12 +113,7 @@ The bench agent's maintenance mode stops `S60p25-httpd`, not `S60scanner`.
 
 ## Kept but not reachable
 
-- **Calls:**
-  - emergency and private grants;
-  - the control channel's NAC and how the radio was learned;
-  - first voice and first HDU times;
-  - last grant update;
-  - open span.
+- **Calls:** the control channel's NAC, how the radio was learned, the first HDU time.
 - **Neighbours:** the six dropped fields.
 - **Live site:** when it went live.
 - **Audio:** listener count, frames, errors, silent and dropped counts.
@@ -132,44 +128,36 @@ The bench agent's maintenance mode stops `S60p25-httpd`, not `S60scanner`.
 
 Backend work, most useful first. Each item is a separate change.
 
-1. **Talkgroup hold.** The Now page needs it (`UI_BRIEF.md`).
-   - Hold the live site on one talkgroup until released: only it is followed; other grants are refused as `held`; the held talkgroup passes the monitor, ignore and speaker-off gates; lanes on other talkgroups are released.
-   - Report the hold in `/status`.
-2. **One call shape everywhere.**
-   - `/calls`, `/calls/{id}` and `/activity/calls` give the same fields.
-   - Add: emergency, private, codec, frame errors, first voice, open span, grant time, talkgroup and radio names.
-   - Then the legacy `/api/ui/calls` is a thin view of it, and the scoring's `first_voice_ms` exists.
-3. **Fix wrong data.**
-   - Drop `live.tuning`, or keep it current.
-   - `/recordings` `total` per site.
-   - `/data` totals per site, with names from each record's own system.
-4. **Notices for state changes.** On `/ws/events`: live state, scan progress, recentre, settings, profile and hold changes, each with its site. Then the UI can stop polling `/status` every 2 s.
-5. **Bench routes for mode C and replay.**
+Done since the inventory: the talkgroup hold (`5f2fde5`), wrong data in `/status`,
+`/recordings` and `/data` (`d1651c9`), and one call shape with names (`5d7ff96`).
+
+1. **Notices for state changes.** On `/ws/events`: live state, scan progress, recentre, settings, profile and hold changes, each with its site. Then the UI can stop polling `/status` every 2 s.
+2. **Bench routes for mode C and replay.**
    - Lane hold and follower off (`/api/traffic`).
    - Decoder counters and their reset (`/api/stats`, `/api/decoder_compare`, `/api/decoder_reset`), from `/receivers`.
    - `/api/monitor`.
    - The bench agent's maintenance mode stops `S60scanner`.
-6. **Operator controls.**
+3. **Operator controls.**
    - Force a modulation at runtime.
    - Move to an alternate control channel.
    - Clear a site's profile.
    - Create a site by hand, rename a system.
-7. **Diagnostics streams.** The IQ stream and IQ capture (control, lanes) for eye and IQ plots.
-8. **Keep what is decoded.**
+4. **Diagnostics streams.** The IQ stream and IQ capture (control, lanes) for eye and IQ plots.
+5. **Keep what is decoded.**
    - Neighbour flags.
    - Recording details from the history for older recordings.
    - Packet data in the history.
    - Filesystem space in `/system`.
    - Audio counters.
-9. **Tidy duplicates and names.**
+6. **Tidy duplicates and names.**
    - One tuning source.
    - `/sites` folded into `/systems`.
    - `/api/v1/clock` under `/radio`.
    - One protocol spelling.
    - 1-based lanes in `/ws/audio` v3.
    - Remove the legacy routes once the bench reads v1.
-10. **Tools on dead routes.** `route_shapes.py` (27 of 31 routes gone), `live_baseline.py`, `p25_check.py`, `p25_status_and_next_step.py`, `poll_recordings_persist.py`: port or retire.
-11. **Stale design text.** `DESIGN.md` still names:
+7. **Tools on dead routes.** `route_shapes.py` (27 of 31 routes gone), `live_baseline.py`, `p25_check.py`, `p25_status_and_next_step.py`, `poll_recordings_persist.py`: port or retire.
+8. **Stale design text.** `DESIGN.md` still names:
     - `/api/endpoints`;
     - `/scan/results/{key}/add`;
     - a modulation write;

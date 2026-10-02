@@ -41,9 +41,9 @@ Andy's requirements:
 
 | Need | API | Gap |
 |------|-----|-----|
-| System info | `GET /api/v1/status` (live site, control, tuning, clock); `GET /api/v1/receivers` for detail | `live.tuning` isn't refreshed when the crystal tracker steps the LO |
-| Call history | `GET /api/v1/calls` (open calls and the live site's newest 100); `GET /api/v1/activity/calls` (older calls, filters, CSV); `GET /api/v1/recordings/{id}` (the WAV, byte ranges) | No per-speaker times within a call |
+| System info | `GET /api/v1/status` (live site, control, tuning, clock, hold); `GET /api/v1/receivers` for detail | — |
+| Call history | `GET /api/v1/calls` (open calls and the live site's newest 100, with names, emergency, first voice, spans); `GET /api/v1/activity/calls` (older calls in the same shape, filters, CSV); `GET /api/v1/recordings/{id}` (the WAV, byte ranges) | No per-speaker times within a call |
 | Listening | `/ws/audio?v=2`: every lane, each 20 ms frame tagged with its lane, text meta frames naming the talkgroup | — |
 | Left/right | A profile's `speakers` (`left`, `right`, `other`, `preempt`) via `PUT /api/v1/profiles/{id}`; groups in the profile | — |
-| Talkgroup lock | None | An endpoint to hold the live site on one talkgroup until released (the follower only follows it); the follower already locks a lane to a call's talkgroup for follow-on replies |
+| Talkgroup lock | `GET`/`PUT /api/v1/hold`; `hold` in `/status` | — |
 | Profile select | `GET /api/v1/profiles`, `PUT /api/v1/sites/{id}/profile` | — |

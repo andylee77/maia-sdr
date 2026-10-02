@@ -5,7 +5,7 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
-## [2026-10-01] 076: the fresh `scanner` crate, phases 0-7 (not deployed)
+## [2026-10-01] 076: the fresh `scanner` crate, phases 0-8 (on both units' SD image)
 
 **Branch:** fishball-p25
 **BUILD_TAG:** `2026-10-01-scanner-image1` (scanner; the first SD image with it in place of p25-httpd)
@@ -48,8 +48,19 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   site's other channels in its learned state (`/learned`, on Systems), packet data
   (`services::packet_data`, `/api/v1/data`, the Activity card; the last lane waits on the data
   channel between calls), and `/ws/audio`'s first framing for p25-httpd's tools.
+- **Phase 8, the image:** the scanner replaces p25-httpd on both units' SD image (tezuka_fw
+  `a7b2174`, `f103dde`); the first start migrates p25-httpd's files and copies its history.
+- **The API cleanup** (the inventory and its ranked list: `scanner/doc/API_INVENTORY.md`):
+  - `/api/v1/receivers`: decoder counters and carrier loops;
+  - the recent calls are the live site's;
+  - removing a system or a site;
+  - configuration export, import and a factory reset (Settings);
+  - a talkgroup hold (`/api/v1/hold`, the Now page);
+  - `/status`, `/recordings` and `/data` corrected;
+  - one call shape with names, emergency, private, first voice and spans (history schema 3).
+  `scanner/doc/UI_BRIEF.md` holds the requirements for the final UI.
 
-Tests: scanner 381, p25-httpd 475.
+Tests: scanner 391, p25-httpd 475.
 
 ---
 

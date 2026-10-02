@@ -1228,7 +1228,7 @@ From the brief:
     `/api/system`. `/api/system` and `/api/ui/state` are there as legacy adapters; the lane
     hold, the frame dump and the bench's move to `/api/v1` are built and checked with the bench
     running.
-- 2026-10-01, phase 8 (prepared, waiting for Andy's go):
+- 2026-10-01, phase 8 (the image is on both units; p25-httpd, `lsm/` and `sw_demod/` are still in the repo):
   - **Done ahead:** `doc/API.md` generated from the route table (a test keeps it current) and the
     crate's `README.md`. `Cargo.lock` pinned to the versions p25-httpd's image build uses (its
     later resolution had pulled hyper-util, jobserver and zeroize versions needing Rust 1.85,
@@ -1325,3 +1325,40 @@ From the brief:
     - **no consumer:** 12 routes (below).
     The bench's routes come first (the corpus in mode C and `rf.p25_replay` on the scanner);
     the tools' are ported or the tools moved to v1 before the cutover.
+- 2026-10-01, the image on both units, and the API cleanup:
+  - **The image:** tezuka_fw `a7b2174` (the `scanner` package and `S60scanner`) and `f103dde` (the
+    post-build drops the daemons the defconfig does not select). A, then B (A's proven BOOT.bin
+    on both: B's older bitstream lacked the traffic IQ tap). First boots migrated p25-httpd's
+    files and copied its history: A 9 systems, 21 sites, 1,439 calls; B 1 system, 1 site, 5,765
+    calls. `S60scanner stop` unmounts the card, so a file put on the card by hand needs the card
+    mounted again first.
+  - **Live, unit B** (its antenna):
+    - Clay P25, 22 minutes (the run ended when A's reboot cut the route): TSBKs 83.7 % or better,
+      29.7 messages a second or more, no grant dropped, no resync, 24 recordings, 12.5 MB, no
+      panic or error. Auto modulation chose C4FM on one start (about 18 % more TSBKs) and LSM on
+      the next (3 to 6 % more): the two are close at B, and the 25 % margin keeps either.
+    - Clay Electric DMR, 18 minutes: weak at B (26 % of messages, CACH 90 %, no grant).
+  - **Open, crystal at DMR:** at Clay Electric the calibration took the DMR equaliser's -136 Hz
+    and moved the correction from -0.061 to +0.214 ppm (then +0.319 by tracking), while the
+    spectrum put the carrier 10 Hz from centre. Back on Clay P25 the loop returned it to -0.048
+    ppm, and there the spectrum's 304 Hz matched the 315 Hz error. On a weak DMR signal the
+    equaliser's reading looks biased; a calibration should not take it when the spectrum
+    disagrees. To check against SDRTrunk on a capture.
+  - **API**, from the inventory (`doc/API_INVENTORY.md`, with its cleanup list) and Andy's asks:
+    - `GET /api/v1/receivers`: the control channel's and each lane's state, decoder counters
+      and carrier loop.
+    - The recent calls are the live site's (from its history after a restart or a switch).
+    - Remove a system or a site; export and import the configuration as one document; a factory
+      reset (no systems, sites, profiles, recordings or history; the crystal calibration stays).
+      An import or a reset restarts the scanner. On A: export, two deletes refused (the live
+      site), two done, the reset, the import: radio, systems, profiles and live site as
+      exported. Settings and Systems have the buttons.
+    - A talkgroup hold (`/api/v1/hold`): on B with Clay's grants, every other talkgroup was
+      refused as `held` while 300 was held.
+    - Wrong data: `/status`'s live tuning is current; `/recordings`' total is the listed site's;
+      `/data` counts per site and names each radio from its own system.
+    - One call shape: `/calls`, `/calls/{id}` and `/activity/calls` with names, emergency,
+      private, first voice, open and grant spans, codec and frame errors; history schema 3.
+  - **UI:** `doc/UI_BRIEF.md` holds Andy's requirements for the final layout. The pages stay
+    templates of what the API offers until then.
+
