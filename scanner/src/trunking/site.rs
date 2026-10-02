@@ -187,6 +187,27 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         self.state.send_replace(LiveState::NoSite);
     }
 
+    /// Stop the live site, keeping what it learned. No site is live, now or at the next start,
+    /// until one is made live.
+    pub async fn stop(&self, site_id: &str) -> Result<()> {
+        let _lease = self.lease.take(Lease::Switching).context("the radio is busy (a scan or another switch)")?;
+        if !matches!(self.state(), LiveState::Live(l) if l.site.id == site_id) {
+            bail!("site {site_id} is not live");
+        }
+        self.save_learned().await;
+        self.receivers.stop().await;
+        self.trunking.stop().await;
+        *self.learned.lock().await = None;
+        self.state.send_replace(LiveState::NoSite);
+        let mut c = self.config.lock().await;
+        c.state.value.live_site = None;
+        if let Err(e) = config::save(&self.paths.radio_state(), &c.state) {
+            tracing::warn!("no live site not persisted: {e:#}");
+        }
+        self.log.system("site", format!("site {site_id} stopped; no site is live"));
+        Ok(())
+    }
+
     /// A scan takes the radio: the live site's receivers and trunking stop. Returns the site to
     /// go back to.
     pub async fn pause_for_scan(&self) -> Option<String> {
@@ -644,8 +665,13 @@ mod tests {
         assert!(matches!(live.state(), LiveState::Live(l) if l.site.id == "clay"));
         assert!(receivers.status().running && receivers.status().site.as_deref() == Some("clay"));
         assert_eq!(tuner.tuning().control_hz, 860_962_500);
-        receivers.stop().await;
-        trunking.stop().await;
+        // Stopped: no site is live, now or at the next start.
+        assert!(live.stop("vhf").await.is_err(), "only the live site stops");
+        live.stop("clay").await.unwrap();
+        assert!(matches!(live.state(), LiveState::NoSite));
+        assert!(!receivers.status().running);
+        assert_eq!(Config::load(&paths).unwrap().state.value.live_site, None);
+        assert!(live.stop("clay").await.is_err());
     }
 
     #[tokio::test]

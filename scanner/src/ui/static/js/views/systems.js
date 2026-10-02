@@ -1,5 +1,5 @@
-// Systems: find the systems on the air; every configured system and its sites; make a site live;
-// remove a site or a system.
+// Systems: find the systems on the air; every configured system and its sites; make a site live
+// or stop it; remove a site or a system.
 
 import { h, card, toast } from '../dom.js';
 import { ago, mhz, DASH } from '../format.js';
@@ -164,6 +164,18 @@ export function mount(el) {
     }
   }
 
+  async function stop(site, button) {
+    button.disabled = true;
+    try {
+      await api.stopSite(site.id);
+      toast(`${site.label} stopped; no site is live`);
+      await refresh();
+    } catch (e) {
+      toast(e.message, true);
+      button.disabled = false;
+    }
+  }
+
   async function remove(what, call) {
     if (!confirm(`Remove ${what}? What it learned goes too; the history keeps its calls.`)) return;
     try {
@@ -187,7 +199,7 @@ export function mount(el) {
       const hasLive = sys.sites.some(s => s.id === liveId);
       const drop = h('button', {
         class: 'btn small danger', type: 'button', text: 'Delete system', disabled: hasLive,
-        title: hasLive ? 'Make a site of another system live first' : '',
+        title: hasLive ? 'Stop its live site first' : '',
         onclick: () => remove(`${sys.label} with its ${sys.sites.length} site(s) and its profiles`, () => api.deleteSystem(sys.id)),
       });
       c.right.append(h('span', { class: 'badge', text: p.label }), drop);
@@ -204,7 +216,7 @@ export function mount(el) {
         const edit = h('button', { class: 'btn small', type: 'button', text: 'Edit' });
         const del = h('button', {
           class: 'btn small danger', type: 'button', text: 'Delete', disabled: live,
-          title: live ? 'Make another site live first' : '',
+          title: live ? 'Stop it first' : '',
           onclick: () => remove(`site ${site.label}`, () => api.deleteSite(sys.id, site.id)),
         });
         edit.addEventListener('click', () => details.replaceChildren(siteEditor(sys, site, saved => (saved ? load() : show()))));
@@ -212,7 +224,8 @@ export function mount(el) {
         c.body.append(h('div', { class: 'card-note' },
           h('div', { class: 'row' },
             h('strong', { text: site.label }), h('span', { class: 'dim', text: ` ${site.id}` }),
-            h('div', { class: 'spacer' }), edit, del, button),
+            h('div', { class: 'spacer' }), edit, del, button,
+            live ? h('button', { class: 'btn', type: 'button', text: 'Stop', onclick: e => stop(site, e.currentTarget) }) : null),
           details,
           ...(live ? [windowBox(site)] : [])));
       }

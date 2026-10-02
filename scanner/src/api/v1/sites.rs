@@ -57,6 +57,12 @@ pub async fn activate(State(s): State<Arc<AppState>>, Path(id): Path<String>) ->
     Ok(Json(s.live.activate(&id).await?))
 }
 
+/// Stop the live site: no site is live until one is made live.
+pub async fn stop(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<LiveState> {
+    s.live.stop(&id).await.map_err(|e| ApiError::conflict(format!("{e:#}")))?;
+    Ok(Json(s.live.state()))
+}
+
 /// The live site's window against its channels, and the planner's choice.
 pub async fn plan(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<WindowView> {
     match s.live.window_view().await {

@@ -50,6 +50,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | DELETE | `/api/v1/systems/{id}` | remove a system with its sites and profiles (none of its sites live); the history keeps their calls |
 | GET | `/api/v1/sites` | every site, with the live one marked |
 | POST | `/api/v1/sites/{id}/activate` | make a site live (returns once it is) |
+| POST | `/api/v1/sites/{id}/stop` | stop the live site: no site is live until one is made live |
 | GET | `/api/v1/sites/{id}/learned` | what a site taught the radio: band plan, grants, encrypted talkgroups, neighbours, its other channels |
 | GET | `/api/v1/sites/{id}/plan` | the live site's receive window against its channels, and the planner's choice |
 | POST | `/api/v1/sites/{id}/recentre` | move the live site's window to the planner's choice now (both lanes idle) |

@@ -125,6 +125,7 @@ routes! {
     delete "/api/v1/systems/{id}" => v1::systems::delete_system, "remove a system with its sites and profiles (none of its sites live); the history keeps their calls";
     get "/api/v1/sites" => v1::sites::list, "every site, with the live one marked";
     post "/api/v1/sites/{id}/activate" => v1::sites::activate, "make a site live (returns once it is)";
+    post "/api/v1/sites/{id}/stop" => v1::sites::stop, "stop the live site: no site is live until one is made live";
     get "/api/v1/sites/{id}/learned" => v1::sites::learned, "what a site taught the radio: band plan, grants, encrypted talkgroups, neighbours, its other channels";
     get "/api/v1/sites/{id}/plan" => v1::sites::plan, "the live site's receive window against its channels, and the planner's choice";
     post "/api/v1/sites/{id}/recentre" => v1::sites::recentre, "move the live site's window to the planner's choice now (both lanes idle)";

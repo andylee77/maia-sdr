@@ -302,7 +302,7 @@ export function mount(el) {
   Promise.all([api.radio(), api.crystal(), api.systems(), api.recordings(0)])
     .then(([radio, crystalStatus, systems, recs]) => {
       crystal = crystalCard(crystalStatus);
-      host.append(gainCard(radio), radioCard(radio), crystal.el, recordingCard(radio, recs), profilesCard(systems), namesCard(systems), configCard());
+      host.append(gainCard(radio), radioCard(radio), crystal.el, recordingCard(radio, recs), configCard(), profilesCard(systems), namesCard(systems));
     })
     .catch(e => toast(e.message, true));
   return { update() {}, unmount() { if (crystal) crystal.stop(); } };
