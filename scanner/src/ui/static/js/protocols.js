@@ -22,7 +22,7 @@ const P25 = {
     ...(c.tsbks_20s ? [['TSBKs in 20 s', `LSM ${count(c.tsbks_20s.lsm)}, C4FM ${count(c.tsbks_20s.c4fm)}`]] : []),
   ],
   // A found site's system (to group a scan's finds) and default names.
-  scanSystem: id => ({ key: `p25:${id.wacn}-${id.system}`, label: `P25 WACN ${hex(id.wacn, 5)} system ${hex(id.system, 3)}` }),
+  scanSystem: id => ({ key: `p25:${id.wacn}-${id.system}`, label: `P25 system ${hex(id.system, 3)}, WACN ${hex(id.wacn, 5)}` }),
   scanSiteName: id => `Site ${id.rfss}-${id.site}`,
   // What the site editor offers: the control channel's modulation; channel numbers by hand.
   edits: { modulation: true, lcnPlan: false, controlSlot: false },

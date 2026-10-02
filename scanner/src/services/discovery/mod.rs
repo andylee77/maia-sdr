@@ -220,7 +220,7 @@ pub fn slug(label: &str) -> String {
     while s.contains("__") {
         s = s.replace("__", "_");
     }
-    let s: String = s.trim_matches('_').chars().take(32).collect();
+    let s: String = s.trim_matches('_').chars().take(48).collect();
     if s.is_empty() { "site".into() } else { s }
 }
 
@@ -255,8 +255,6 @@ pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], choice: &[AddSite])
         if label.is_empty() {
             return Err(format!("{}: a site needs a name", c.key));
         }
-        let site_ids: Vec<String> = systems.systems.iter().flat_map(|s| s.sites.iter().map(|x| x.id.clone())).collect();
-        let site_id = unique(slug(label), |id| site_ids.iter().any(|x| x == id));
         let sys_identity = f.system_identity();
         let index = match systems.systems.iter().position(|s| s.protocol == f.protocol && same_system(&s.identity, &sys_identity)) {
             Some(i) => i,
@@ -276,6 +274,10 @@ pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], choice: &[AddSite])
                 systems.systems.len() - 1
             }
         };
+        // Site ids are unique across systems and name both ("clay_county_site_1"): sites of
+        // different systems are often named alike.
+        let site_ids: Vec<String> = systems.systems.iter().flat_map(|s| s.sites.iter().map(|x| x.id.clone())).collect();
+        let site_id = unique(slug(&format!("{} {label}", systems.systems[index].label)), |id| site_ids.iter().any(|x| x == id));
         systems.systems[index].sites.push(Site {
             id: site_id.clone(),
             label: label.to_string(),

@@ -100,9 +100,8 @@ export function scanCard(onAdded) {
     again.addEventListener('click', () => start(again));
     const summary = `${s.state === 'done' ? 'Done' : s.state === 'cancelled' ? 'Cancelled' : 'Failed'}: ${s.sites.length} control channels, `
       + `${s.traffic.length} traffic channels, ${s.other.length} other carriers.` + (s.error ? ` ${s.error}` : '');
-    c.body.replaceChildren(h('p', { text: summary }), ...body,
-      s.sites.length ? null : h('p', { class: 'dim', text: 'No control channels heard. A scan on the site antenna finds more.' }),
-      h('div', { class: 'row' }, add, again));
+    const none = s.sites.length ? [] : [h('p', { class: 'dim', text: 'No control channels heard. A scan on the site antenna finds more.' })];
+    c.body.replaceChildren(h('p', { text: summary }), ...body, ...none, h('div', { class: 'row' }, add, again));
   }
 
   async function poll() {

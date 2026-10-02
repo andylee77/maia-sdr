@@ -22,9 +22,12 @@ export function utcOffset(min) {
 
 export const CLOCK_SOURCE = { site: 'site time', ntp: 'internet (NTP)', manual: 'set by hand' };
 
-export function mhz(hz, digits = 4) {
+// "770.20625 MHz", "936.2500 MHz": five decimals where the channel needs them, else four.
+export function mhz(hz, digits) {
   if (hz === null || hz === undefined || hz === 0) return DASH;
-  return (hz / 1e6).toFixed(digits) + ' MHz';
+  if (digits !== undefined) return (hz / 1e6).toFixed(digits) + ' MHz';
+  const s = (hz / 1e6).toFixed(5);
+  return (s.endsWith('0') ? s.slice(0, -1) : s) + ' MHz';
 }
 
 export function khz(hz, digits = 1) {

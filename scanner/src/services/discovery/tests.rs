@@ -91,7 +91,7 @@ fn a_scan_adds_systems_and_sites_and_merges_into_known_ones() {
     )
     .unwrap();
     assert_eq!(added.systems, vec!["clay_county", "clay_electric"]);
-    assert_eq!(added.sites, vec!["clay", "clay_2", "green_cove_springs"]);
+    assert_eq!(added.sites, vec!["clay_county_clay", "clay_county_clay_2", "clay_electric_green_cove_springs"]);
     let sys = &config.systems[0];
     assert_eq!((sys.protocol, sys.identity.wacn, sys.identity.system), (Protocol::P25, Some(0xBEE00), Some(0x8A1)));
     assert_eq!(sys.sites.len(), 2, "both P25 sites in one system");
@@ -105,11 +105,11 @@ fn a_scan_adds_systems_and_sites_and_merges_into_known_ones() {
     // A rescan: the same sites are known; a new alternate is added, labels stay.
     let mut again = p25(860_962_500, 0xBEE00, 0x8A1, 1, 1);
     again.secondary_hz = vec![860_962_500, 861_437_500, 858_000_000];
-    assert_eq!(existing_site(&again, &config).as_deref(), Some("clay"));
+    assert_eq!(existing_site(&again, &config).as_deref(), Some("clay_county_clay"));
     let by_channel = p25(860_963_000, 0, 0, 0, 0);
-    assert_eq!(existing_site(&by_channel, &config).as_deref(), Some("clay"), "a control channel within 3 kHz");
+    assert_eq!(existing_site(&by_channel, &config).as_deref(), Some("clay_county_clay"), "a control channel within 3 kHz");
     let added = add(&mut config, &[again.clone()], &[add_one(&again.key(), "Renamed", None)]).unwrap();
-    assert_eq!((added.sites.len(), added.updated.clone()), (0, vec!["clay".to_string()]));
+    assert_eq!((added.sites.len(), added.updated.clone()), (0, vec!["clay_county_clay".to_string()]));
     let site = &config.systems[0].sites[0];
     assert_eq!(site.label, "Clay");
     assert_eq!(site.control.alternates_hz, vec![861_437_500, 858_000_000]);
@@ -118,7 +118,7 @@ fn a_scan_adds_systems_and_sites_and_merges_into_known_ones() {
     let other = p25(770_000_000, 0xBEE00, 0x8A1, 2, 9);
     assert!(add(&mut config, &[other.clone()], &[add_one(&other.key(), " ", None)]).is_err());
     let added = add(&mut config, &[other.clone()], &[add_one(&other.key(), "Clay", None)]).unwrap();
-    assert_eq!(added.sites, vec!["clay_3"]);
+    assert_eq!(added.sites, vec!["clay_county_clay_3"]);
     assert!(add(&mut config, &[], &[add_one("p25:none", "x", None)]).is_err());
 }
 
