@@ -133,6 +133,15 @@ Backend work, most useful first. Each item is a separate change.
 Done since the inventory: the talkgroup hold (`5f2fde5`), wrong data in `/status`,
 `/recordings` and `/data` (`d1651c9`), and one call shape with names (`5d7ff96`).
 
+The UI replacement (`UI_BRIEF.md`) sets the order. Its backend items come first:
+
+- realtime push over one WebSocket;
+- aliases replacing profiles;
+- SDRTrunk playlist import and export;
+- manual add and rename.
+
+The list below follows them.
+
 1. **Notices for state changes.** On `/ws/events`: live state, scan progress, recentre, settings, profile and hold changes, each with its site. Then the UI can stop polling `/status` every 2 s.
 2. **Bench routes for mode C and replay.**
    - Lane hold and follower off (`/api/traffic`).
