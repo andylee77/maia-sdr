@@ -1337,7 +1337,11 @@ From the brief:
       29.7 messages a second or more, no grant dropped, no resync, 24 recordings, 12.5 MB, no
       panic or error. Auto modulation chose C4FM on one start (about 18 % more TSBKs) and LSM on
       the next (3 to 6 % more): the two are close at B, and the 25 % margin keeps either.
-    - Clay Electric DMR, 18 minutes: weak at B (26 % of messages, CACH 90 %, no grant).
+    - Clay Electric DMR, 18 minutes: 26 % of messages, no grant. With the IQ capture
+      (`/api/v1/iq/control.wav`), B's control IQ is 10 dB over the noise at 454 MHz, where Clay
+      P25 at 860 MHz is 24 dB on the same antenna and A's capture of 2026-09-30 (outdoor
+      antenna) 37.5 dB. SDRTrunk's own decoder passes 23.6 % of B's capture and 100 % of A's:
+      the decoder is not the cause; B's antenna is weak at UHF.
   - **Open, crystal at DMR:** at Clay Electric the calibration took the DMR equaliser's -136 Hz
     and moved the correction from -0.061 to +0.214 ppm (then +0.319 by tracking), while the
     spectrum put the carrier 10 Hz from centre. Back on Clay P25 the loop returned it to -0.048
