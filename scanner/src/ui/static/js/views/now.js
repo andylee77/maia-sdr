@@ -51,9 +51,11 @@ function metric(label) {
   return { el: h('div', { class: 'metric' }, k, v), set: t => setText(v, t ?? DASH) };
 }
 
-// The channel as the control channel names it: "1-117", "6 · slot 2".
+// The channel as the control channel names it ("ch 1-117", "LCN 6 TS2": the name carries its
+// timeslot).
 function channel(x) {
-  return [x.channel || '', x.slot ? `slot ${x.slot}` : ''].filter(Boolean).join(' · ');
+  if (!x.channel) return '';
+  return /^\d/.test(x.channel) ? `ch ${x.channel}` : x.channel;
 }
 
 // The system card: what is live and its health; the lists make another site live.
@@ -433,7 +435,7 @@ function updateRow(el, x, ctx) {
   setText(c.src, x.source_name || (x.source ? String(x.source) : 'unknown'));
   setText(c.srcSub, x.source_name && x.source ? String(x.source) : '');
   setText(c.freq, mhz(x.freq_hz));
-  setText(c.freqSub, [x.channel ? `ch ${channel(x)}` : '', x.lane ? (SIDE[x.lane] || '').toLowerCase() : ''].filter(Boolean).join(' · '));
+  setText(c.freqSub, [channel(x), x.lane ? (SIDE[x.lane] || '').toLowerCase() : ''].filter(Boolean).join(' · '));
   setText(c.dur, x.voice_frames ? dur(x.voice_frames * 20) : DASH);
   const air = known(x.grant_ms) ? x.grant_ms : open ? ctx.now - x.started_unix_ms : x.open_ms;
   setText(c.durSub, air ? `on air ${dur(air)}` : '');
