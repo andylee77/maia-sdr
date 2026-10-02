@@ -27,6 +27,8 @@ pub struct Status {
     pub clock: ClockStatus,
     /// The talkgroup the live site is held on.
     pub hold: Option<u32>,
+    /// The talkgroup each traffic lane (1, 2) is held on.
+    pub lane_holds: [Option<u32>; 2],
 }
 
 pub async fn get(State(s): State<Arc<AppState>>) -> Json<Status> {
@@ -40,9 +42,15 @@ pub fn status(s: &AppState) -> Status {
     if let LiveState::Live(l) = &mut live {
         l.tuning = tuning.clone();
     }
-    let hold = match &live {
-        LiveState::Live(l) => s.trunking.hold(&l.site.id),
-        _ => None,
+    let (hold, lane_holds) = match &live {
+        LiveState::Live(l) => {
+            let mut lanes = [None; 2];
+            for (lane, tg) in s.trunking.lane_holds(&l.site.id) {
+                lanes[lane.index()] = tg;
+            }
+            (s.trunking.hold(&l.site.id), lanes)
+        }
+        _ => (None, [None; 2]),
     };
     Status {
         build: BUILD_TAG,
@@ -58,5 +66,6 @@ pub fn status(s: &AppState) -> Status {
         tuning,
         clock: s.clock.status(),
         hold,
+        lane_holds,
     }
 }

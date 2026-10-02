@@ -485,7 +485,8 @@ impl Decoder {
     }
 
     fn run_dmr(&self, context: &Context, rx: Receiver<Input>) {
-        let mut dmr = DmrControl::new(context.lcn_hz.clone());
+        // The calls on the control repeater's other timeslot are followed from its messages.
+        let mut dmr = DmrControl::new(context.lcn_hz.clone()).keep_calls();
         let mut rates = RateWindow::default();
         let mut cpu = Cpu::new();
         let mut second = Instant::now();
@@ -495,8 +496,13 @@ impl Decoder {
             if let Some(Input::Iq(iq)) = input {
                 self.iq_tap.push(&iq);
                 dmr.push(&iq, &mut events);
-                self.publish("dmr", Stamp::now(), &events);
+                let at = Stamp::now();
+                self.publish("dmr", at, &events);
                 events.clear();
+                let messages = dmr.take_calls();
+                if let (false, Some(trunk)) = (messages.is_empty(), &self.trunk) {
+                    let _ = trunk.try_send(TrunkInput::ControlCalls { messages, at });
+                }
             }
             cpu.add(t0.elapsed());
             if second.elapsed() >= Duration::from_secs(1) {

@@ -236,6 +236,21 @@ function systemCard() {
   return { el, draw };
 }
 
+// The talkgroups a lane can be held on: the live system's named ones and those heard lately,
+// by name, then number.
+function talkgroups(s) {
+  const lv = s.status.live;
+  const sys = lv && lv.state === 'live' && (s.systems || []).find(x => x.id === lv.system.id);
+  const out = new Map();
+  for (const a of (sys && sys.aliases) || []) {
+    for (const id of a.ids || []) if (id.type === 'talkgroup') out.set(id.value, a.name);
+  }
+  for (const c of s.calls ? [...s.calls.open, ...s.calls.recent] : []) {
+    if (!c.private && !out.has(c.tg)) out.set(c.tg, c.tg_name || null);
+  }
+  return [...out].sort((a, b) => (a[1] || '￿').localeCompare(b[1] || '￿') || a[0] - b[0]);
+}
+
 function idleLine(s, ch) {
   const lv = s.status.live;
   if (!lv || lv.state !== 'live') return 'No site is live.';
@@ -248,12 +263,41 @@ function idleLine(s, ch) {
   return parts.join(' ') || 'Waiting for a grant.';
 }
 
-// One traffic channel: its call, or idle.
+// One traffic channel: its call, or idle; and the talkgroup it is held on.
 function trafficCard(lane) {
   const c = card(`${SIDE[lane]} · Traffic ${lane}`, { class: 'call-card' });
   const flags = h('span', { class: 'row' });
   const phase = h('span', { class: 'badge' });
-  c.right.append(flags, phase);
+  const pick = h('select', { class: 'input lane-hold', 'aria-label': `Hold traffic ${lane} on a talkgroup`, title: 'Follow only this talkgroup on this channel (the other channel follows as before)' });
+  pick.addEventListener('change', async () => {
+    const tg = pick.value ? Number(pick.value) : null;
+    try {
+      await api.setHold(tg, lane);
+      toast(tg === null ? `Traffic ${lane} follows every talkgroup` : `Traffic ${lane} holds TG ${tg}`);
+      await refresh();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
+  c.right.append(flags, phase, pick);
+  let drawnPick = null;
+
+  // Rebuilt when the list or the hold changed, never under an open list.
+  function drawPick(s) {
+    const lv = s.status.live;
+    pick.disabled = !lv || lv.state !== 'live';
+    const held = (s.status.lane_holds || [])[lane - 1] ?? null;
+    const list = talkgroups(s);
+    const key = JSON.stringify([held, list, pick.disabled]);
+    if (key === drawnPick || document.activeElement === pick) return;
+    drawnPick = key;
+    const opts = [h('option', { value: '', text: 'Any talkgroup' })];
+    if (held !== null && !list.some(([tg]) => tg === held)) opts.push(h('option', { value: String(held), text: `TG ${held}` }));
+    for (const [tg, name] of list) opts.push(h('option', { value: String(tg), text: name ? `${name} (${tg})` : `TG ${tg}` }));
+    pick.replaceChildren(...opts);
+    pick.value = held === null ? '' : String(held);
+    setClass(pick, 'held', held !== null);
+  }
   const tg = h('div', { class: 'call-tg' });
   const sub = h('div', { class: 'call-alias' });
   const src = h('div', { class: 'call-src' });
@@ -267,6 +311,7 @@ function trafficCard(lane) {
   let drawnHold = null;
 
   function draw(s) {
+    drawPick(s);
     const ch = ((s.traffic && s.traffic.channels) || []).find(x => x.lane === lane);
     const call = ch && ch.call;
     active.hidden = !call;

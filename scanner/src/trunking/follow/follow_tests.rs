@@ -51,10 +51,11 @@ fn busy(lane: Lane, tg: u32) -> LaneView {
 }
 
 const NEVER: fn(u32, Option<(u32, Instant)>) -> bool = |_, _| false;
+const ANY: fn(Lane) -> bool = |_| true;
 
 fn choose(tg: u32, lanes: &[LaneView], r: &Routing) -> LaneChoice {
     let side = r.route(tg).map_or(Side::Off, |x| x.side);
-    choose_lane(tg, side, Some(859_425_000), lanes, r, NEVER)
+    choose_lane(tg, side, Some(859_425_000), lanes, r, NEVER, ANY)
 }
 
 #[test]
@@ -70,7 +71,7 @@ fn one_lane_takes_stays_preempts_or_rejects() {
     // The locked call's end marker: any talkgroup takes the lane.
     let ended = |_: u32, m: Option<(u32, Instant)>| m.is_some();
     let v = LaneView { end_marker: Some((305, Instant::now())), ..busy(Lane::One, 305) };
-    assert_eq!(choose_lane(600, Side::Right, None, &[v], &r, ended), LaneChoice::Preempt(Lane::One, Preemption::EndMarker));
+    assert_eq!(choose_lane(600, Side::Right, None, &[v], &r, ended, ANY), LaneChoice::Preempt(Lane::One, Preemption::EndMarker));
 }
 
 #[test]
@@ -95,13 +96,13 @@ fn sides_map_to_their_lanes_and_do_not_borrow() {
 fn other_talkgroups_on_both_use_either_lane() {
     let r = routing(&[primary(), tac(), hospital()], Side::Both);
     let f = Some(859_425_000);
-    assert_eq!(choose_lane(999, Side::Both, f, &[idle(Lane::One), idle(Lane::Two)], &r, NEVER), LaneChoice::Take(Lane::One));
+    assert_eq!(choose_lane(999, Side::Both, f, &[idle(Lane::One), idle(Lane::Two)], &r, NEVER, ANY), LaneChoice::Take(Lane::One));
     let parked = LaneView { tuned_hz: f, ..idle(Lane::Two) };
-    assert_eq!(choose_lane(999, Side::Both, f, &[idle(Lane::One), parked], &r, NEVER), LaneChoice::Take(Lane::Two));
-    assert_eq!(choose_lane(999, Side::Both, f, &[busy(Lane::One, 300), idle(Lane::Two)], &r, NEVER), LaneChoice::Take(Lane::Two));
+    assert_eq!(choose_lane(999, Side::Both, f, &[idle(Lane::One), parked], &r, NEVER, ANY), LaneChoice::Take(Lane::Two));
+    assert_eq!(choose_lane(999, Side::Both, f, &[busy(Lane::One, 300), idle(Lane::Two)], &r, NEVER, ANY), LaneChoice::Take(Lane::Two));
     let r = routing(&[primary()], Side::Both);
     assert!(!r.side_has_groups(Side::Right) && r.side_has_groups(Side::Left));
-    assert_eq!(choose_lane(999, Side::Both, f, &[idle(Lane::One), idle(Lane::Two)], &r, NEVER), LaneChoice::Take(Lane::Two));
+    assert_eq!(choose_lane(999, Side::Both, f, &[idle(Lane::One), idle(Lane::Two)], &r, NEVER, ANY), LaneChoice::Take(Lane::Two));
     assert!(candidates(Side::Off, None, &[idle(Lane::One), idle(Lane::Two)], &r).is_empty());
 }
 
@@ -222,6 +223,59 @@ fn a_hold_follows_only_its_talkgroup_whatever_its_alias_says() {
     assert_eq!(decision(&run(&mut f2, grant(700, 3, F1))), Some(Decision::NotFollowed(NotFollowed::Encrypted)));
     // Released: the aliases again.
     assert_eq!(decision(&run(&mut f, grant(402, 2, F2))), Some(Decision::NotFollowed(NotFollowed::Ignored)));
+}
+
+#[test]
+fn a_lane_held_on_a_talkgroup_takes_only_it_and_it_goes_there() {
+    let aliases = [primary(), never(Alias::talkgroup(402, "Ops"))];
+    let mut f = Follower::new(&[Lane::One, Lane::Two], routing(&aliases, Side::Both), HashSet::new());
+    let t = Instant::now();
+    let run = |f: &mut Follower, g: Grant| decision(&f.grant(&g, 0, t, &|_| None, &|hz| hz < 860_000_000));
+    // 999 plays on either side; lane two, where no group plays.
+    assert_eq!(run(&mut f, grant(999, 1, F1)), Some(Decision::Followed(Lane::Two)));
+    // Lane two held on 402: its call lets go, and 402 (do not monitor) is followed there.
+    assert_eq!(f.set_lane_hold(Lane::Two, Some(402)), vec![Command::Release { lane: Lane::Two }]);
+    assert_eq!(run(&mut f, grant(402, 2, F2)), Some(Decision::Followed(Lane::Two)));
+    // Other talkgroups use lane one only.
+    assert_eq!(run(&mut f, grant(999, 1, F1)), Some(Decision::Followed(Lane::One)));
+    assert_eq!(run(&mut f, grant(998, 3, 858_000_000)), Some(Decision::NotFollowed(NotFollowed::Busy)));
+    // The site held on another talkgroup: the lane's own still goes to it.
+    f.set_hold(Some(300));
+    assert_eq!(run(&mut f, grant(402, 2, F2)), Some(Decision::Followed(Lane::Two)));
+    f.set_hold(None);
+    assert_eq!(f.set_lane_hold(Lane::Two, None), Vec::new());
+}
+
+#[test]
+fn lanes_sharing_a_tuner_follow_two_calls_on_one_carrier_or_one_on_the_control_channel() {
+    const CC: u64 = 454_368_750;
+    const L6: u64 = 451_087_500;
+    const OTHER: u64 = 452_425_000;
+    let dmr = |tg: u32, freq: u64, slot: u8| Grant {
+        channel: LogicalChannel { id: ChannelId::DmrLcn(6), slot: Some(slot), freq_hz: Some(freq), tdma: false },
+        ..grant(tg, 1, freq)
+    };
+    let t = Instant::now();
+    let run = |f: &mut Follower, g: Grant| decision(&f.grant(&g, 0, t, &|_| None, &|_| true));
+    let shared = || {
+        let mut f = Follower::new(&[Lane::One, Lane::Two], routing(&[], Side::Both), HashSet::new());
+        f.share_tuner(CC);
+        f
+    };
+    let mut f = shared();
+    assert_eq!(run(&mut f, dmr(1, L6, 1)), Some(Decision::Followed(Lane::One)));
+    // Lane one's receiver is on 451.0875 MHz: another carrier waits.
+    assert_eq!(run(&mut f, dmr(2, OTHER, 1)), Some(Decision::NotFollowed(NotFollowed::Busy)));
+    // The same carrier's other timeslot: a second call.
+    assert_eq!(run(&mut f, dmr(3, L6, 2)), Some(Decision::Followed(Lane::Two)));
+    // The control channel has its own receiver: a call there beside one on any carrier.
+    let mut f = shared();
+    assert_eq!(run(&mut f, dmr(1, OTHER, 2)), Some(Decision::Followed(Lane::One)));
+    assert_eq!(run(&mut f, dmr(5, CC, 2)), Some(Decision::Followed(Lane::Two)));
+    // Without a shared tuner each lane goes anywhere.
+    let mut f = Follower::new(&[Lane::One, Lane::Two], routing(&[], Side::Both), HashSet::new());
+    assert_eq!(run(&mut f, dmr(1, L6, 1)), Some(Decision::Followed(Lane::One)));
+    assert_eq!(run(&mut f, dmr(2, OTHER, 1)), Some(Decision::Followed(Lane::Two)));
 }
 
 #[test]

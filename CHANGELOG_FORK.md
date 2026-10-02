@@ -80,11 +80,16 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 - **Now page:** the system card (system and site lists that make a site live; details,
   identity, control channel health) and the left and right traffic channels stay on screen;
   the live site's calls scroll below in their own pane, with playback and hold.
+- **Two DMR calls at once:** a call on the control channel's carrier is followed from the
+  control decoder's own messages, leaving lane one's receiver for another carrier, whose two
+  timeslots it follows at once; at a DMR site traffic 1 and 2 are those two calls.
+- **A traffic lane holds a talkgroup** (`PUT /api/v1/hold` with `lane`; a picker on each Now
+  traffic card): the lane takes only that talkgroup, the other lane follows as before.
 - **No page polls:** the pages' shared state comes from `/ws/live`, and a page subscribes there
   to what only it shows (the spectrum, the event log, the radio's readback, the receive window,
   the crystal); Activity reloads when calls close.
 
-Tests: scanner 419, p25-httpd 475.
+Tests: scanner 422, p25-httpd 475.
 
 ---
 

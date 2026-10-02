@@ -486,10 +486,14 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
             lcn_hz: lcn_hz.clone(),
             channels_hz: site.channels_hz.clone(),
             site_code,
-            // Lane one carries both protocols; lane two only P25 (it has no IQ tap).
+            // P25: each lane is its own chain. DMR is decoded from IQ, which only lane one's chain
+            // has (lane two's sends the gateware's P25 dibits alone), so a DMR site's two lanes
+            // are two calls on lane one's carrier, one a timeslot, or one of them on the control
+            // channel's other timeslot (its own receiver hears it).
             lanes: match system.protocol {
                 Protocol::P25 => self.lanes.clone(),
-                Protocol::DmrTier3 => self.lanes.iter().copied().filter(|&l| l == Lane::One).collect(),
+                Protocol::DmrTier3 if self.lanes.contains(&Lane::One) => vec![Lane::One, Lane::Two],
+                Protocol::DmrTier3 => Vec::new(),
             },
             routing,
             encrypted: learned.state().encrypted_talkgroups.into_iter().collect(),

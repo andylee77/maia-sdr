@@ -1,5 +1,6 @@
 //! DMR Tier III control channel: the software receiver (demodulator, framer, message processor)
-//! on the control DDC's IQ, turned into control events.
+//! on the control DDC's IQ, turned into control events. The messages that carry calls are kept
+//! too: a control repeater carries calls on its other timeslot, followed from them.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -8,6 +9,7 @@ use super::framer::{DmrMessageFramer, FramerEvent};
 use super::message::csbk::CsbkKind;
 use super::message::types::Address;
 use super::message::DmrMessage;
+use super::traffic::carries_calls;
 use crate::protocol::events::{ChannelId, ControlEvent, DmrIdentity, Grant, LogLine, LogicalChannel, SiteIdentity};
 
 /// A control channel's steady broadcasts.
@@ -42,6 +44,10 @@ pub struct DmrControl {
     processor: super::message::processor::DmrMessageProcessor,
     lcn_hz: HashMap<u16, u64>,
     identity: Option<DmrIdentity>,
+    /// The messages that carry calls, kept for `take_calls` (when `keep_calls`): a control
+    /// repeater carries calls on its other timeslot.
+    keep_calls: bool,
+    calls: Vec<DmrMessage>,
     pub stats: DmrStats,
 }
 
@@ -82,8 +88,22 @@ impl DmrControl {
             processor: super::message::processor::DmrMessageProcessor::new(lcn_hz.clone()),
             lcn_hz,
             identity: None,
+            keep_calls: false,
+            calls: Vec::new(),
             stats: DmrStats::default(),
         }
+    }
+
+    /// Keep the messages that carry calls (voice, its link control, terminators) for
+    /// `take_calls`.
+    pub fn keep_calls(mut self) -> Self {
+        self.keep_calls = true;
+        self
+    }
+
+    /// The messages that carry calls decoded since the last take.
+    pub fn take_calls(&mut self) -> Vec<DmrMessage> {
+        std::mem::take(&mut self.calls)
     }
 
     /// Decode 50 kSPS interleaved IQ.
@@ -174,6 +194,9 @@ impl DmrControl {
         let grant = voice_grant(message);
         if let Some(g) = grant {
             out.push(ControlEvent::Grant(g));
+        }
+        if self.keep_calls && carries_calls(message) {
+            self.calls.push(message.clone());
         }
         out.push(ControlEvent::Message(LogLine {
             class,

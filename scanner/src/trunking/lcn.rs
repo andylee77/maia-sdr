@@ -168,9 +168,9 @@ impl LcnLearner {
             .find(|&f| f > 0 && !taken(f) && !ruled_out(f) && !near(&self.foreign, f))
     }
 
-    /// The lane on trial heard its channel name another network or site: not its LCN's.
-    pub fn wrong_site(&mut self, lane: Lane) -> Option<Trial> {
-        let t = self.trial.filter(|t| t.lane == Some(lane))?;
+    /// The trial's frequency, being followed, named another network or site: not its LCN's.
+    pub fn wrong_site(&mut self, freq_hz: u64) -> Option<Trial> {
+        let t = self.trial.filter(|t| t.lane.is_some() && t.freq_hz == freq_hz)?;
         self.trial = None;
         self.rejected.insert((t.lcn, t.freq_hz));
         Some(t)
@@ -358,7 +358,8 @@ mod tests {
         let now = Instant::now();
         l.start(7, 452_425_000, 87921, now);
         l.following(Lane::One, now);
-        assert_eq!(l.wrong_site(Lane::One).map(|t| t.freq_hz), Some(452_425_000));
+        assert_eq!(l.wrong_site(452_500_000), None, "another frequency");
+        assert_eq!(l.wrong_site(452_425_000).map(|t| t.freq_hz), Some(452_425_000));
         assert!(l.idle());
         assert_eq!(l.candidate(7, &Around { keyed: &[452_425_000], ..Default::default() }), Some(OWN));
     }

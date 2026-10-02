@@ -358,6 +358,7 @@ ROUTES: dict[str, list] = {
         ("clock.site_offset_ms", "number or null", "The site's time minus the board's."),
         ("clock.last_set", "string or null", "When and from what the clock was last set."),
         ("hold", "number or null", "The talkgroup the live site is held on."),
+        ("lane_holds", "array of 2 numbers or null", "The talkgroup each traffic lane (1, 2) is held on; null when it follows what the aliases say."),
     ],
     "/api/v1/calls": [
         ("open", "array", "Calls on the air now: followed first (by lane), then those not followed."),
@@ -368,8 +369,13 @@ ROUTES: dict[str, list] = {
     "/api/v1/calls/{id}": [("@", "call")],
     "/api/v1/hold": [
         ("site", "string or null", "The live site; null when none."),
-        ("tg", "number or null", "The held talkgroup; null when not held."),
+        ("tg", "number or null", "The talkgroup the whole site is held on; null when not held."),
         ("name", "string or null", "The held talkgroup's name."),
+        ("lanes", "array", "Each traffic lane's own hold: it takes only that talkgroup, and the talkgroup goes to it."),
+        ("lanes[]", "object", "One lane."),
+        ("lanes[].lane", "number", "1 or 2."),
+        ("lanes[].tg", "number or null", "The talkgroup it is held on; null: it follows what the aliases say."),
+        ("lanes[].name", "string or null", "That talkgroup's name."),
     ],
     "/api/v1/data": [
         ("site", "string or null", "The site the answer covers; null for every site."),

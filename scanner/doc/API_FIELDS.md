@@ -32,8 +32,8 @@ Build, uptime, the live site, its control channel and the tuning.
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
 | `build` | string | `"2026-10-01-scanner-image3"` | The scanner's build tag. |
-| `uptime_s` | number | `136` | Since the scanner started, s. |
-| `now_unix_ms` | number | `1790942475819` | The board's clock. |
+| `uptime_s` | number | `1494` | Since the scanner started, s. |
+| `now_unix_ms` | number | `1790943833869` | The board's clock. |
 | `live` | object |  | The live site's state; `state` says which fields follow. |
 | `live.state` | string | `"live"` | `no_site`, `switching` (with `to`), `scanning` (with `back_to`) or `live` (with the fields below). |
 | `live.to` | string, absent unless switching |  | The site being made live. |
@@ -79,14 +79,14 @@ Build, uptime, the live site, its control channel and the tuning.
 | `live.tuning.preset` | string or null | `"8M"` | The DDC preset of the receive window (`8M`, `12M`, `16M`). |
 | `live.tuning.sample_rate_hz` | number | `8000000` | The AD9361's sample rate. |
 | `live.tuning.lo_hz` | number | `452728125` | The window's centre (the nominal LO). |
-| `live.tuning.lo_shift_hz` | number | `172` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
-| `live.tuning.crystal_ppm` | number | `-0.38065524056702543` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
+| `live.tuning.lo_shift_hz` | number | `131` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
+| `live.tuning.crystal_ppm` | number | `-0.2886128576499125` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
 | `live.tuning.control_hz` | number | `454368750` | The channel the control chain is tuned to. |
 | `live.tuning.gain` | object or null |  | The receiver gain. |
 | `live.tuning.gain.mode` | string | `"slow_attack"` | `manual`, `slow_attack`, `fast_attack` or `hybrid` (the AD9361's AGC modes). |
 | `live.tuning.gain.db` | number or null |  | The manual gain in dB; null under AGC. |
 | `live.tuning.lanes` | array of 2 numbers or null | `[451087500, null]` | The channel each traffic lane is tuned to (lane 1, lane 2); null when the lane holds none. |
-| `live.tuning.rev` | number | `8` | Counts tuning changes; a new value means something above moved. |
+| `live.tuning.rev` | number | `22` | Counts tuning changes; a new value means something above moved. |
 | `control` | object |  | The control channel decoder. |
 | `control.running` | bool | `true` | The control channel decoder runs. |
 | `control.site` | string, absent when stopped | `"clay_elec_site_2"` | The site it decodes. |
@@ -105,17 +105,17 @@ Build, uptime, the live site, its control channel and the tuning.
 | `control.tsbks_20s` | object, absent at DMR sites |  | P25: TSBKs each demodulator passed in the last 20 s (what the automatic choice compares). |
 | `control.tsbks_20s.lsm` | number |  | By the gateware LSM demodulator. |
 | `control.tsbks_20s.c4fm` | number |  | By the software C4FM demodulator. |
-| `control.msgs_per_s` | number or null | `47.0` | Messages that passed their checks, per second (over the last few seconds). |
+| `control.msgs_per_s` | number or null | `46.5` | Messages that passed their checks, per second (over the last few seconds). |
 | `control.ok_pct` | number or null | `100.0` | Share of messages that passed their checks (P25: TSBK CRC), %. |
-| `control.last_message_age_ms` | number or null | `43` | Since the last message that passed, ms. |
+| `control.last_message_age_ms` | number or null | `44` | Since the last message that passed, ms. |
 | `control.cpu_pct` | number | `12.4` | Share of one core the decode thread uses, %. |
-| `control.carrier_offset_hz` | number, absent at P25 sites | `-34.0` | DMR: the carrier's offset from the channel as the equaliser measures it. |
+| `control.carrier_offset_hz` | number, absent at P25 sites | `2.0` | DMR: the carrier's offset from the channel as the equaliser measures it. |
 | `control.channel_plan_entries` | number | `2` | Channel plan entries known: P25 band (IDEN) entries, DMR LCNs. |
 | `control.neighbours` | number | `0` | P25: neighbour sites announced. |
-| `control.grants` | number | `6` | Voice grants decoded since the site went live. |
+| `control.grants` | number | `19` | Voice grants decoded since the site went live. |
 | `control.grants_dropped` | number | `0` | Grants the trunking task could not take (its queue was full). |
 | `control.input` | object |  | What the stream readers delivered. |
-| `control.input.iq_chunks` | number | `834` | Control IQ chunks delivered. |
+| `control.input.iq_chunks` | number | `9123` | Control IQ chunks delivered. |
 | `control.input.iq_dropped` | number | `0` | IQ chunks dropped because the decoder was behind. |
 | `control.input.dibit_bytes` | number | `0` | Bytes of gateware dibits delivered (four dibits a byte). |
 | `control.input.dibit_resyncs` | number | `0` | Times the dibit stream skipped and was resynchronised. |
@@ -125,14 +125,14 @@ Build, uptime, the live site, its control channel and the tuning.
 | `tuning.preset` | string or null | `"8M"` | The DDC preset of the receive window (`8M`, `12M`, `16M`). |
 | `tuning.sample_rate_hz` | number | `8000000` | The AD9361's sample rate. |
 | `tuning.lo_hz` | number | `452728125` | The window's centre (the nominal LO). |
-| `tuning.lo_shift_hz` | number | `172` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
-| `tuning.crystal_ppm` | number | `-0.38065524056702543` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
+| `tuning.lo_shift_hz` | number | `131` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
+| `tuning.crystal_ppm` | number | `-0.2886128576499125` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
 | `tuning.control_hz` | number | `454368750` | The channel the control chain is tuned to. |
 | `tuning.gain` | object or null |  | The receiver gain. |
 | `tuning.gain.mode` | string | `"slow_attack"` | `manual`, `slow_attack`, `fast_attack` or `hybrid` (the AD9361's AGC modes). |
 | `tuning.gain.db` | number or null |  | The manual gain in dB; null under AGC. |
 | `tuning.lanes` | array of 2 numbers or null | `[451087500, null]` | The channel each traffic lane is tuned to (lane 1, lane 2); null when the lane holds none. |
-| `tuning.rev` | number | `8` | Counts tuning changes; a new value means something above moved. |
+| `tuning.rev` | number | `22` | Counts tuning changes; a new value means something above moved. |
 | `clock` | object |  | The board clock. |
 | `clock.source` | string | `"site"` | `site`, `ntp` or `manual`. |
 | `clock.valid` | bool | `true` | The board clock has been set (otherwise it counts from 1970). |
@@ -140,6 +140,7 @@ Build, uptime, the live site, its control channel and the tuning.
 | `clock.site_offset_ms` | number or null |  | The site's time minus the board's. |
 | `clock.last_set` | string or null | `"clock set from the internet: 2026-10...` | When and from what the clock was last set. |
 | `hold` | number or null |  | The talkgroup the live site is held on. |
+| `lane_holds` | array of 2 numbers or null |  | The talkgroup each traffic lane (1, 2) is held on; null when it follows what the aliases say. |
 
 ## `GET /api/v1/calls`
 
@@ -177,14 +178,14 @@ The live site's open calls and its newest closed ones (from its history after a 
 | `open[].frame_errors` | number or null |  | Voice frames the vocoder found errors in; known once the call is stored. |
 | `recent` | array |  | The live site's newest 100 closed calls, newest first. |
 | `recent[]` | object |  | One call. |
-| `recent[].call` | number | `160` | The call's id (also its recording's id). |
+| `recent[].call` | number | `166` | The call's id (also its recording's id). |
 | `recent[].site` | string | `"clay_elec_site_2"` | The site it was heard on. |
-| `recent[].tg` | number | `87926` | The talkgroup; for a private call, the called radio. |
+| `recent[].tg` | number | `87924` | The talkgroup; for a private call, the called radio. |
 | `recent[].tg_name` | string or null |  | The talkgroup's name in the site's system (the called radio's for a private call). |
-| `recent[].source` | number or null | `82483` | The calling radio: the grant's, else the voice's. |
+| `recent[].source` | number or null | `81983` | The calling radio: the grant's, else the voice's. |
 | `recent[].source_name` | string or null |  | The calling radio's name. |
-| `recent[].speaker` | number or null | `82483` | The radio the voice link control named last (who is talking now). |
-| `recent[].sources` | array of numbers | `[82483]` | Every radio heard in the call, in order. |
+| `recent[].speaker` | number or null | `81983` | The radio the voice link control named last (who is talking now). |
+| `recent[].sources` | array of numbers | `[81983]` | Every radio heard in the call, in order. |
 | `recent[].freq_hz` | number or null | `451087500` | The traffic channel's downlink. |
 | `recent[].channel` | string or null | `"LCN 6 TS2"` | The channel as the control channel names it (P25 `iden-number`, DMR LCN). |
 | `recent[].slot` | number or null | `2` | DMR: the timeslot. |
@@ -193,14 +194,14 @@ The live site's open calls and its newest closed ones (from its history after a 
 | `recent[].private` | bool | `false` | A unit-to-unit call. |
 | `recent[].not_followed` | string or null | `"unknown_lcn"` | Why no lane followed it: `encrypted`, `busy`, `monitor_list`, `ignored`, `speaker_off`, `out_of_band`, `phase2`, `unknown_lcn` or `held`; null: followed. |
 | `recent[].lane` | number or null | `1` | The lane that followed it (1 or 2). |
-| `recent[].started_unix_ms` | number | `1790942355532` | The grant. |
-| `recent[].first_voice_unix_ms` | number or null | `1790942355808` | The first voice frame. |
-| `recent[].ended_unix_ms` | number or null | `1790942361170` | The close; null while open. |
-| `recent[].open_ms` | number or null | `5638` | From the grant to the close; null while open. |
-| `recent[].grant_ms` | number or null | `5638` | From the grant to its last update on the control channel. |
+| `recent[].started_unix_ms` | number | `1790943444577` | The grant. |
+| `recent[].first_voice_unix_ms` | number or null | `1790943444814` | The first voice frame. |
+| `recent[].ended_unix_ms` | number or null | `1790943450537` | The close; null while open. |
+| `recent[].open_ms` | number or null | `5959` | From the grant to the close; null while open. |
+| `recent[].grant_ms` | number or null | `5960` | From the grant to its last update on the control channel. |
 | `recent[].close` | string or null | `"call_end"` | Why it closed: `call_end` (end of transmission), `timeout`, `tg_change` (another call took the channel or lane) or `site_switch`. |
 | `recent[].end_lc` | string or null | `"call_termination"` | The end-of-transmission marker seen, if any. |
-| `recent[].voice_frames` | number | `162` | Voice frames decoded (20 ms each). |
+| `recent[].voice_frames` | number | `180` | Voice frames decoded (20 ms each). |
 | `recent[].codec` | string or null | `"ambe2"` | `imbe` (P25) or `ambe2` (DMR), once there was voice. |
 | `recent[].frame_errors` | number or null | `0` | Voice frames the vocoder found errors in; known once the call is stored. |
 
@@ -211,8 +212,13 @@ The talkgroup the live site is held on, if any.
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
 | `site` | string or null | `"clay_elec_site_2"` | The live site; null when none. |
-| `tg` | number or null |  | The held talkgroup; null when not held. |
+| `tg` | number or null |  | The talkgroup the whole site is held on; null when not held. |
 | `name` | string or null |  | The held talkgroup's name. |
+| `lanes` | array |  | Each traffic lane's own hold: it takes only that talkgroup, and the talkgroup goes to it. |
+| `lanes[]` | object |  | One lane. |
+| `lanes[].lane` | number |  | 1 or 2. |
+| `lanes[].tg` | number or null |  | The talkgroup it is held on; null: it follows what the aliases say. |
+| `lanes[].name` | string or null |  | That talkgroup's name. |
 
 ## `GET /api/v1/calls/{id}`
 
@@ -220,14 +226,14 @@ One call, live while recent, else from the history; the same shape either way.
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `call` | number | `160` | The call's id (also its recording's id). |
+| `call` | number | `166` | The call's id (also its recording's id). |
 | `site` | string | `"clay_elec_site_2"` | The site it was heard on. |
-| `tg` | number | `87926` | The talkgroup; for a private call, the called radio. |
+| `tg` | number | `87924` | The talkgroup; for a private call, the called radio. |
 | `tg_name` | string or null |  | The talkgroup's name in the site's system (the called radio's for a private call). |
-| `source` | number or null | `82483` | The calling radio: the grant's, else the voice's. |
+| `source` | number or null | `81983` | The calling radio: the grant's, else the voice's. |
 | `source_name` | string or null |  | The calling radio's name. |
-| `speaker` | number or null | `82483` | The radio the voice link control named last (who is talking now). |
-| `sources` | array of numbers | `[82483]` | Every radio heard in the call, in order. |
+| `speaker` | number or null | `81983` | The radio the voice link control named last (who is talking now). |
+| `sources` | array of numbers | `[81983]` | Every radio heard in the call, in order. |
 | `freq_hz` | number or null | `451087500` | The traffic channel's downlink. |
 | `channel` | string or null | `"LCN 6 TS2"` | The channel as the control channel names it (P25 `iden-number`, DMR LCN). |
 | `slot` | number or null | `2` | DMR: the timeslot. |
@@ -236,14 +242,14 @@ One call, live while recent, else from the history; the same shape either way.
 | `private` | bool | `false` | A unit-to-unit call. |
 | `not_followed` | string or null |  | Why no lane followed it: `encrypted`, `busy`, `monitor_list`, `ignored`, `speaker_off`, `out_of_band`, `phase2`, `unknown_lcn` or `held`; null: followed. |
 | `lane` | number or null | `1` | The lane that followed it (1 or 2). |
-| `started_unix_ms` | number | `1790942355532` | The grant. |
-| `first_voice_unix_ms` | number or null | `1790942355808` | The first voice frame. |
-| `ended_unix_ms` | number or null | `1790942361170` | The close; null while open. |
-| `open_ms` | number or null | `5638` | From the grant to the close; null while open. |
-| `grant_ms` | number or null | `5638` | From the grant to its last update on the control channel. |
+| `started_unix_ms` | number | `1790943444577` | The grant. |
+| `first_voice_unix_ms` | number or null | `1790943444814` | The first voice frame. |
+| `ended_unix_ms` | number or null | `1790943450537` | The close; null while open. |
+| `open_ms` | number or null | `5959` | From the grant to the close; null while open. |
+| `grant_ms` | number or null | `5960` | From the grant to its last update on the control channel. |
 | `close` | string or null | `"call_end"` | Why it closed: `call_end` (end of transmission), `timeout`, `tg_change` (another call took the channel or lane) or `site_switch`. |
 | `end_lc` | string or null | `"call_termination"` | The end-of-transmission marker seen, if any. |
-| `voice_frames` | number | `162` | Voice frames decoded (20 ms each). |
+| `voice_frames` | number | `180` | Voice frames decoded (20 ms each). |
 | `codec` | string or null | `"ambe2"` | `imbe` (P25) or `ambe2` (DMR), once there was voice. |
 | `frame_errors` | number or null |  | Voice frames the vocoder found errors in; known once the call is stored. |
 
@@ -369,9 +375,9 @@ Sites with history; where it is kept, its size and limits.
 | `sites[].site` | string | `"clay_elec_site_2"` | The site. |
 | `sites[].label` | string | `"Site 2"` | Its name. |
 | `sites[].system` | string or null | `"clay_elec"` | Its system. |
-| `sites[].calls` | number | `26` | Calls kept. |
+| `sites[].calls` | number | `32` | Calls kept. |
 | `sites[].first_ms` | number | `1790923417256` | The oldest call (unix ms). |
-| `sites[].last_ms` | number | `1790942355532` | The newest call (unix ms). |
+| `sites[].last_ms` | number | `1790943444577` | The newest call (unix ms). |
 | `database` | string | `"/mnt/sd/scanner-history.sqlite"` | The history file. |
 | `on_sd` | bool | `true` | On the card (else in RAM, lost on restart). |
 | `size_bytes` | number | `4886224` | The file's size. |
@@ -388,21 +394,21 @@ Calls, voice and grant time, talkgroups, radios (`site`, `from`/`to` or `hours`)
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_elec_site_2"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1790856075974` | Start (unix ms). |
-| `window.to_ms` | number | `1790942475974` | End (unix ms). |
+| `window.from_ms` | number | `1790857434055` | Start (unix ms). |
+| `window.to_ms` | number | `1790943834055` | End (unix ms). |
 | `window.first_hour_ms` | number | `1790856000000` | The first whole hour the hourly totals use. |
 | `summary` | object |  | Totals over the window. |
-| `summary.calls` | number | `26` | Calls. |
-| `summary.followed` | number | `21` | Calls a lane followed. |
+| `summary.calls` | number | `32` | Calls. |
+| `summary.followed` | number | `27` | Calls a lane followed. |
 | `summary.encrypted` | number | `0` | Encrypted calls. |
-| `summary.voice_s` | number | `77.88` | Decoded voice, s. |
+| `summary.voice_s` | number | `107.7` | Decoded voice, s. |
 | `summary.clear_grant_s` | number | `14.549` | Grant time of clear calls, s. |
 | `summary.encrypted_grant_s` | number | `0.0` | Grant time of encrypted calls, s. |
-| `summary.voice_per_grant` | number or null | `0.710655266495725` | Voice time per grant time of the calls with voice; null without any. |
-| `summary.talkgroups` | number | `3` | Talkgroups heard. |
-| `summary.radios` | number | `5` | Radios heard. |
+| `summary.voice_per_grant` | number or null | `0.7178659983469752` | Voice time per grant time of the calls with voice; null without any. |
+| `summary.talkgroups` | number | `4` | Talkgroups heard. |
+| `summary.radios` | number | `7` | Radios heard. |
 | `summary.first_ms` | number or null | `1790923417256` | The first call (unix ms). |
-| `summary.last_ms` | number or null | `1790942355532` | The last call (unix ms). |
+| `summary.last_ms` | number or null | `1790943444577` | The last call (unix ms). |
 
 ## `GET /api/v1/activity/talkgroups`
 
@@ -413,8 +419,8 @@ Talkgroups by time, with names (`limit`).
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_elec_site_2"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1790856076004` | Start (unix ms). |
-| `window.to_ms` | number | `1790942476004` | End (unix ms). |
+| `window.from_ms` | number | `1790857434086` | Start (unix ms). |
+| `window.to_ms` | number | `1790943834086` | End (unix ms). |
 | `window.first_hour_ms` | number | `1790856000000` | The first whole hour the hourly totals use. |
 | `items` | array |  | Talkgroups by time, most first (`limit`). |
 | `items[]` | object |  | One talkgroup. |
@@ -436,19 +442,19 @@ Radios by time, with names (`limit`).
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_elec_site_2"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1790856076034` | Start (unix ms). |
-| `window.to_ms` | number | `1790942476034` | End (unix ms). |
+| `window.from_ms` | number | `1790857434117` | Start (unix ms). |
+| `window.to_ms` | number | `1790943834117` | End (unix ms). |
 | `window.first_hour_ms` | number | `1790856000000` | The first whole hour the hourly totals use. |
 | `items` | array |  | Radios by time, most first (`limit`). |
 | `items[]` | object |  | One radio. |
 | `items[].unit` | number | `81921` | The radio. |
-| `items[].calls` | number | `10` | Calls. |
+| `items[].calls` | number | `12` | Calls. |
 | `items[].encrypted` | number | `0` | Encrypted calls. |
-| `items[].voice_s` | number | `25.2` | Decoded voice, seconds. |
+| `items[].voice_s` | number | `35.22` | Decoded voice, seconds. |
 | `items[].grant_s` | number | `6.073` | Grant time of calls with no decoded voice, seconds. |
-| `items[].last_ms` | number | `1790942345045` | The newest call (unix ms). |
+| `items[].last_ms` | number | `1790943423897` | The newest call (unix ms). |
 | `items[].alias` | string or null |  | The name in the system. |
-| `items[].talkgroups` | number | `3` | Talkgroups it used. |
+| `items[].talkgroups` | number | `4` | Talkgroups it used. |
 
 ## `GET /api/v1/activity/radio/{unit}`
 
@@ -459,8 +465,8 @@ The talkgroups a radio used, its affiliations and registrations.
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_elec_site_2"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1790856076064` | Start (unix ms). |
-| `window.to_ms` | number | `1790942476064` | End (unix ms). |
+| `window.from_ms` | number | `1790857434147` | Start (unix ms). |
+| `window.to_ms` | number | `1790943834147` | End (unix ms). |
 | `window.first_hour_ms` | number | `1790856000000` | The first whole hour the hourly totals use. |
 | `radio` | object |  | The radio. |
 | `radio.unit` | number | `81921` | The radio. |
@@ -492,8 +498,8 @@ A talkgroup's radios and encryption history.
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_elec_site_2"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1790856076096` | Start (unix ms). |
-| `window.to_ms` | number | `1790942476096` | End (unix ms). |
+| `window.from_ms` | number | `1790857434177` | Start (unix ms). |
+| `window.to_ms` | number | `1790943834177` | End (unix ms). |
 | `window.first_hour_ms` | number | `1790856000000` | The first whole hour the hourly totals use. |
 | `talkgroup` | object |  | The talkgroup. |
 | `talkgroup.tg` | number | `87926` | The talkgroup. |
@@ -523,8 +529,8 @@ Calls and time per hour or day (`bucket`, `tz`, `tg`, `unit`).
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_elec_site_2"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1790856076128` | Start (unix ms). |
-| `window.to_ms` | number | `1790942476128` | End (unix ms). |
+| `window.from_ms` | number | `1790857434187` | Start (unix ms). |
+| `window.to_ms` | number | `1790943834187` | End (unix ms). |
 | `window.first_hour_ms` | number | `1790856000000` | The first whole hour the hourly totals use. |
 | `bucket_ms` | number | `3600000` | The bucket's length (an hour or a day). |
 | `tz` | number | `0` | The time zone the days are cut in, minutes east of UTC. |
@@ -546,19 +552,19 @@ Calls newest first in `/calls`' shape with names (`tg`, `unit`, `limit`; `format
 | `window` | object |  | The period the answer covers. |
 | `window.site` | string | `"clay_elec_site_2"` | The site, or the system when `system` is true. |
 | `window.system` | bool | `false` | The answer covers every site of a system. |
-| `window.from_ms` | number | `1790856076134` | Start (unix ms). |
-| `window.to_ms` | number | `1790942476134` | End (unix ms). |
+| `window.from_ms` | number | `1790857434207` | Start (unix ms). |
+| `window.to_ms` | number | `1790943834207` | End (unix ms). |
 | `window.first_hour_ms` | number | `1790856000000` | The first whole hour the hourly totals use. |
 | `items` | array |  | Calls, newest first (`limit`). |
 | `items[]` | object |  | One call. |
-| `items[].call` | number | `160` | The call's id (also its recording's id). |
+| `items[].call` | number | `166` | The call's id (also its recording's id). |
 | `items[].site` | string | `"clay_elec_site_2"` | The site it was heard on. |
-| `items[].tg` | number | `87926` | The talkgroup; for a private call, the called radio. |
+| `items[].tg` | number | `87924` | The talkgroup; for a private call, the called radio. |
 | `items[].tg_name` | string or null |  | The talkgroup's name in the site's system (the called radio's for a private call). |
-| `items[].source` | number or null | `82483` | The calling radio: the grant's, else the voice's. |
+| `items[].source` | number or null | `81983` | The calling radio: the grant's, else the voice's. |
 | `items[].source_name` | string or null |  | The calling radio's name. |
 | `items[].speaker` | number or null |  | The radio the voice link control named last (who is talking now). |
-| `items[].sources` | array of numbers | `[82483]` | Every radio heard in the call, in order. |
+| `items[].sources` | array of numbers | `[81983]` | Every radio heard in the call, in order. |
 | `items[].freq_hz` | number or null | `451087500` | The traffic channel's downlink. |
 | `items[].channel` | string or null | `"LCN 6 TS2"` | The channel as the control channel names it (P25 `iden-number`, DMR LCN). |
 | `items[].slot` | number or null | `2` | DMR: the timeslot. |
@@ -567,14 +573,14 @@ Calls newest first in `/calls`' shape with names (`tg`, `unit`, `limit`; `format
 | `items[].private` | bool | `false` | A unit-to-unit call. |
 | `items[].not_followed` | string or null | `"unknown_lcn"` | Why no lane followed it: `encrypted`, `busy`, `monitor_list`, `ignored`, `speaker_off`, `out_of_band`, `phase2`, `unknown_lcn` or `held`; null: followed. |
 | `items[].lane` | number or null | `1` | The lane that followed it (1 or 2). |
-| `items[].started_unix_ms` | number | `1790942355532` | The grant. |
-| `items[].first_voice_unix_ms` | number or null | `1790942355808` | The first voice frame. |
-| `items[].ended_unix_ms` | number or null | `1790942361170` | The close; null while open. |
-| `items[].open_ms` | number or null | `5638` | From the grant to the close; null while open. |
-| `items[].grant_ms` | number or null | `5638` | From the grant to its last update on the control channel. |
+| `items[].started_unix_ms` | number | `1790943444577` | The grant. |
+| `items[].first_voice_unix_ms` | number or null | `1790943444814` | The first voice frame. |
+| `items[].ended_unix_ms` | number or null | `1790943450537` | The close; null while open. |
+| `items[].open_ms` | number or null | `5960` | From the grant to the close; null while open. |
+| `items[].grant_ms` | number or null | `5960` | From the grant to its last update on the control channel. |
 | `items[].close` | string or null | `"call_end"` | Why it closed: `call_end` (end of transmission), `timeout`, `tg_change` (another call took the channel or lane) or `site_switch`. |
 | `items[].end_lc` | string or null | `"call_termination"` | The end-of-transmission marker seen, if any. |
-| `items[].voice_frames` | number | `162` | Voice frames decoded (20 ms each). |
+| `items[].voice_frames` | number | `180` | Voice frames decoded (20 ms each). |
 | `items[].codec` | string or null | `"ambe2"` | `imbe` (P25) or `ambe2` (DMR), once there was voice. |
 | `items[].frame_errors` | number or null | `0` | Voice frames the vocoder found errors in; known once the call is stored. |
 
@@ -587,12 +593,12 @@ The carriers heard in the live site's receive window over the last ten minutes: 
 | `site` | string | `"clay_elec_site_2"` | The live site (empty with none). |
 | `lo_hz` | number or null | `452728125` | The centre of the window surveyed. |
 | `sample_rate_hz` | number or null | `8000000` | Its width. |
-| `frames` | number | `1030` | Spectrometer frames read since the window last moved (7.6 a second). |
+| `frames` | number | `11376` | Spectrometer frames read since the window last moved (7.6 a second). |
 | `carriers` | array |  | The carriers heard, the most active first. |
 | `carriers[]` | object |  | One carrier: adjacent bins 10 dB above the frame's floor, on the channel raster. |
 | `carriers[].freq_hz` | number | `449993750` | Its frequency. |
 | `carriers[].on_pct` | number | `100.0` | Share of the frames of the last ten minutes it was on, 0 to 100. |
-| `carriers[].peak_db` | number | `19.829285` | Its strongest level above the floor, dB. |
+| `carriers[].peak_db` | number | `19.994148` | Its strongest level above the floor, dB. |
 | `carriers[].steady` | boolean | `true` | On 90 % of the frames or more: a control channel or the like; intermittent ones carry calls, data or keep-alives. |
 
 ## `GET /api/v1/spectrum`
@@ -605,7 +611,7 @@ The receive window from the wideband spectrometer (`bins`), with the control cha
 | `sample_rate_hz` | number | `8000000` | Its width. |
 | `control_hz` | number | `454368750` | The control channel. |
 | `lanes_hz` | array of 2 numbers or null | `[451087500, null]` | Each lane's channel. |
-| `db` | array of numbers | `[-96.1284, -95.962494, -96.35974, -95...` | Power per bin, dB, from -rate/2 to +rate/2 (each the strongest of its group). |
+| `db` | array of numbers | `[-94.669334, -94.493645, -94.83811, -...` | Power per bin, dB, from -rate/2 to +rate/2 (each the strongest of its group). |
 | `fresh` | bool | `true` | A new frame (false: the last one again, during a scan or when none came in 300 ms). |
 
 ## `GET /api/v1/events`
@@ -616,16 +622,16 @@ The event log after `after` (newest `limit`; housekeeping too with `routine=true
 |-------|------|---------|---------|
 | `events` | array |  | Events after `after`, oldest first. |
 | `events[]` | object |  | One event. |
-| `events[].seq` | number | `1` | Its sequence number (ask for those after it next). |
-| `events[].unix_ms` | number | `1790942339143` | When. |
-| `events[].source` | string | `"system"` | `p25`, `dmr` (a message) or `system` (the scanner). |
-| `events[].class` | string | `"start"` | The message class, or the system event's kind (`call`, `follow`, `hold`, `crystal`...). |
-| `events[].text` | string | `"scanner 2026-10-01-scanner-image3 st...` | The event. |
+| `events[].seq` | number | `45374` | Its sequence number (ask for those after it next). |
+| `events[].unix_ms` | number | `1790943425378` | When. |
+| `events[].source` | string | `"dmr"` | `p25`, `dmr` (a message) or `system` (the scanner). |
+| `events[].class` | string | `"VoiceEMBMessage"` | The message class, or the system event's kind (`call`, `follow`, `hold`, `crystal`...). |
+| `events[].text` | string | `"CC:0 BS VOICE D"` | The event. |
 | `events[].routine` | bool | `false` | Housekeeping (left out unless `routine=true`). |
 | `events[].valid` | bool | `true` | The message passed its checks. |
-| `events[].slot` | number, absent when none | `0` | DMR: the timeslot. |
-| `events[].tg` | number, absent when none | `87926` | The talkgroup it names. |
-| `events[].unit` | number, absent when none | `82483` | The radio it names. |
+| `events[].slot` | number, absent when none | `2` | DMR: the timeslot. |
+| `events[].tg` | number, absent when none |  | The talkgroup it names. |
+| `events[].unit` | number, absent when none |  | The radio it names. |
 
 ## `GET /api/v1/system`
 
@@ -633,21 +639,21 @@ The board's health: load, memory, CPU per core and per scanner thread, temperatu
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `at_unix_ms` | number | `1790942474219` | When it was sampled (every 5 s). |
-| `board_uptime_s` | number or null | `36395.18` | Since the board booted. |
-| `load` | array of 3 numbers or null | `[0.26, 0.22, 0.19]` | Load average over 1, 5 and 15 minutes. |
+| `at_unix_ms` | number | `1790943834218` | When it was sampled (every 5 s). |
+| `board_uptime_s` | number or null | `37755.18` | Since the board booted. |
+| `load` | array of 3 numbers or null | `[0.11, 0.14, 0.16]` | Load average over 1, 5 and 15 minutes. |
 | `mem_total_kb` | number or null | `1007084` | Memory. |
-| `mem_available_kb` | number or null | `873088` | Memory free for use. |
-| `core_cpu_pct` | array of numbers | `[6.8, 7.8]` | Each core's use, %. |
-| `rss_kb` | number or null | `11148` | The scanner's memory. |
+| `mem_available_kb` | number or null | `872840` | Memory free for use. |
+| `core_cpu_pct` | array of numbers | `[7.2, 6.6]` | Each core's use, %. |
+| `rss_kb` | number or null | `11760` | The scanner's memory. |
 | `threads` | number or null | `12` | The scanner's threads. |
-| `cpu_pct` | number or null | `17.0` | The scanner's share of one core, %. |
+| `cpu_pct` | number or null | `17.8` | The scanner's share of one core, %. |
 | `thread_cpu` | array |  | The scanner's threads by use, busiest first. |
 | `thread_cpu[]` | object |  | One thread. |
 | `thread_cpu[].name` | string | `"dmr-cc"` | Its name. |
 | `thread_cpu[].cpu_pct` | number | `12.6` | Its share of one core, %. |
 | `ad9361_temp_c` | number or null | `28.07` | The AD9361's temperature, °C. |
-| `zynq_temp_c` | number or null | `51.2` | The Zynq's temperature, °C. |
+| `zynq_temp_c` | number or null | `51.4` | The Zynq's temperature, °C. |
 
 ## `GET /api/v1/iq/control.wav`
 
@@ -679,26 +685,26 @@ The control channel and each lane: status, decoder counters, carrier loop.
 | `control.tsbks_20s` | object, absent at DMR sites |  | P25: TSBKs each demodulator passed in the last 20 s (what the automatic choice compares). |
 | `control.tsbks_20s.lsm` | number |  | By the gateware LSM demodulator. |
 | `control.tsbks_20s.c4fm` | number |  | By the software C4FM demodulator. |
-| `control.msgs_per_s` | number or null | `47.1` | Messages that passed their checks, per second (over the last few seconds). |
+| `control.msgs_per_s` | number or null | `45.7` | Messages that passed their checks, per second (over the last few seconds). |
 | `control.ok_pct` | number or null | `100.0` | Share of messages that passed their checks (P25: TSBK CRC), %. |
-| `control.last_message_age_ms` | number or null | `188` | Since the last message that passed, ms. |
+| `control.last_message_age_ms` | number or null | `3` | Since the last message that passed, ms. |
 | `control.cpu_pct` | number | `12.4` | Share of one core the decode thread uses, %. |
-| `control.carrier_offset_hz` | number, absent at P25 sites | `-34.0` | DMR: the carrier's offset from the channel as the equaliser measures it. |
+| `control.carrier_offset_hz` | number, absent at P25 sites | `2.0` | DMR: the carrier's offset from the channel as the equaliser measures it. |
 | `control.channel_plan_entries` | number | `2` | Channel plan entries known: P25 band (IDEN) entries, DMR LCNs. |
 | `control.neighbours` | number | `0` | P25: neighbour sites announced. |
-| `control.grants` | number | `6` | Voice grants decoded since the site went live. |
+| `control.grants` | number | `19` | Voice grants decoded since the site went live. |
 | `control.grants_dropped` | number | `0` | Grants the trunking task could not take (its queue was full). |
 | `control.input` | object |  | What the stream readers delivered. |
-| `control.input.iq_chunks` | number | `837` | Control IQ chunks delivered. |
+| `control.input.iq_chunks` | number | `9126` | Control IQ chunks delivered. |
 | `control.input.iq_dropped` | number | `0` | IQ chunks dropped because the decoder was behind. |
 | `control.input.dibit_bytes` | number | `0` | Bytes of gateware dibits delivered (four dibits a byte). |
 | `control.input.dibit_resyncs` | number | `0` | Times the dibit stream skipped and was resynchronised. |
 | `control.input.dibit_lost` | number | `0` | Dibit deliveries lost (decoder behind, or a copy failed). |
 | `control.loop` | object or null |  | The control chain's gateware carrier loop and AGC (P25). |
-| `control.loop.pll_q213` | number | `2674` | The loop's phase correction per symbol, Q2.13 (one reading). |
-| `control.loop.pll_hz` | number | `249.36346747718446` | The same in Hz. |
-| `control.loop.agc_gain` | number | `1053` | The LSM AGC's gain, Q9.7. |
-| `control.loop.agc_mag` | number | `3952` | The LSM AGC's magnitude, Q1.15. |
+| `control.loop.pll_q213` | number | `-2728` | The loop's phase correction per symbol, Q2.13 (one reading). |
+| `control.loop.pll_hz` | number | `-254.39922934845146` | The same in Hz. |
+| `control.loop.agc_gain` | number | `779` | The LSM AGC's gain, Q9.7. |
+| `control.loop.agc_mag` | number | `5059` | The LSM AGC's magnitude, Q1.15. |
 | `control.counters` | object or null |  | The decoders' counters; `protocol` says which. |
 | `control.counters.protocol` | string | `"dmr"` | `p25` (with `lsm` and `c4fm`) or `dmr` (with `messages` and `demod`). |
 | `control.counters.lsm` | object |  | P25: the gateware LSM demodulator's framer. |
@@ -764,19 +770,19 @@ The control channel and each lane: status, decoder counters, carrier loop.
 | `control.counters.c4fm.pdu_header_failures` | number |  | PDU headers that failed their checks. |
 | `control.counters.c4fm.pdu_blocks` | number |  | PDU data blocks read. |
 | `control.counters.messages` | object |  | DMR: the message decoder. |
-| `control.counters.messages.bursts` | array of 3 numbers | `[0, 2281, 2279]` | Bursts by timeslot: unknown, 1, 2. |
-| `control.counters.messages.voice_bursts` | number | `30` | Voice bursts. |
-| `control.counters.messages.cach_ok` | number | `4559` | CACH (the slot-type channel) decoded. |
+| `control.counters.messages.bursts` | array of 3 numbers | `[0, 24916, 24913]` | Bursts by timeslot: unknown, 1, 2. |
+| `control.counters.messages.voice_bursts` | number | `216` | Voice bursts. |
+| `control.counters.messages.cach_ok` | number | `49828` | CACH (the slot-type channel) decoded. |
 | `control.counters.messages.cach_bad` | number | `1` | CACH that failed. |
 | `control.counters.messages.sync_loss_bits` | number | `1608` | Bits processed while sync was lost. |
-| `control.counters.messages.msgs_valid` | number | `5708` | Messages that passed their checks. |
+| `control.counters.messages.msgs_valid` | number | `62325` | Messages that passed their checks. |
 | `control.counters.messages.msgs_invalid` | number | `1` | Messages that failed. |
-| `control.counters.messages.classes` | map | `{"Aloha": [2229, 0]}` | Messages by SDRTrunk class name. |
-| `control.counters.messages.classes{key}` | array of 2 numbers | `[2229, 0]` | Passed and failed. |
+| `control.counters.messages.classes` | map | `{"Acknowledge": [6, 0]}` | Messages by SDRTrunk class name. |
+| `control.counters.messages.classes{key}` | array of 2 numbers | `[6, 0]` | Passed and failed. |
 | `control.counters.demod` | object |  | DMR: the demodulator. |
-| `control.counters.demod.symbols` | number | `657457` | Symbols demodulated. |
+| `control.counters.demod.symbols` | number | `7176193` | Symbols demodulated. |
 | `control.counters.demod.coarse_syncs` | number | `5` | Syncs found from scratch (the coarse timing search). |
-| `control.counters.demod.fine_syncs` | number | `4531` | Syncs confirmed where the next burst was expected. |
+| `control.counters.demod.fine_syncs` | number | `49645` | Syncs confirmed where the next burst was expected. |
 | `control.counters.demod.fine_sync_losses` | number | `4` | Expected syncs that were not there (fine sync dropped). |
 | `lanes` | array |  | Each traffic lane of the live site (empty when none is live). |
 | `lanes[]` | object |  | One lane. |
@@ -785,8 +791,8 @@ The control channel and each lane: status, decoder counters, carrier loop.
 | `lanes[].call` | number or null |  | The call it carries. |
 | `lanes[].following_tg` | number or null |  | The talkgroup the follower keeps it for. |
 | `lanes[].on_data_channel` | bool | `false` | Waiting on the site's data channel between calls. |
-| `lanes[].voice_frames` | number | `630` | Voice frames decoded on it since the site went live. |
-| `lanes[].last_voice_ms_ago` | number or null | `116382` | Since its last voice frame. |
+| `lanes[].voice_frames` | number | `2121` | Voice frames decoded on it since the site went live. |
+| `lanes[].last_voice_ms_ago` | number or null | `384883` | Since its last voice frame. |
 | `lanes[].counters` | object |  | Its traffic decoder's counters; `protocol` says which. |
 | `lanes[].counters.protocol` | string | `"dmr"` | `p25` (the framer's fields) or `dmr` (`bursts` and `demod`). |
 | `lanes[].counters.dibits` | number |  | Dibits framed. |
@@ -819,15 +825,15 @@ The control channel and each lane: status, decoder counters, carrier loop.
 | `lanes[].counters.pdus` | number |  | Packet data units. |
 | `lanes[].counters.pdu_header_failures` | number |  | PDU headers that failed their checks. |
 | `lanes[].counters.pdu_blocks` | number |  | PDU data blocks read. |
-| `lanes[].counters.bursts` | number | `562` | DMR: bursts read. |
+| `lanes[].counters.bursts` | number | `1800` | DMR: bursts read. |
 | `lanes[].counters.demod` | object |  | DMR: the demodulator. |
-| `lanes[].counters.demod.symbols` | number | `25951` | Symbols demodulated. |
-| `lanes[].counters.demod.coarse_syncs` | number | `1` | Syncs found from scratch (the coarse timing search). |
-| `lanes[].counters.demod.fine_syncs` | number | `72` | Syncs confirmed where the next burst was expected. |
-| `lanes[].counters.demod.fine_sync_losses` | number | `1` | Expected syncs that were not there (fine sync dropped). |
+| `lanes[].counters.demod.symbols` | number | `27524` | Symbols demodulated. |
+| `lanes[].counters.demod.coarse_syncs` | number | `2` | Syncs found from scratch (the coarse timing search). |
+| `lanes[].counters.demod.fine_syncs` | number | `85` | Syncs confirmed where the next burst was expected. |
+| `lanes[].counters.demod.fine_sync_losses` | number | `2` | Expected syncs that were not there (fine sync dropped). |
 | `lanes[].loop` | object or null |  | Its gateware carrier loop. |
-| `lanes[].loop.pll_q213` | number | `5325` | Phase correction per symbol, Q2.13 (one reading). |
-| `lanes[].loop.pll_hz` | number | `496.58207341660705` | The same in Hz. |
+| `lanes[].loop.pll_q213` | number | `5219` | Phase correction per symbol, Q2.13 (one reading). |
+| `lanes[].loop.pll_hz` | number | `486.69705937300887` | The same in Hz. |
 | `lanes[].loop.clamp_q213` | number | `5325` | The loop's clamp. |
 | `lanes[].loop.hot` | bool | `true` | At half the clamp or more: running on noise. |
 
@@ -840,7 +846,7 @@ The whole configuration as one document: radio settings, systems with their alia
 | `format` | string | `"scanner-config"` | `scanner-config`. |
 | `version` | number | `1` | The document's version. |
 | `build` | string | `"2026-10-01-scanner-image3"` | The build that exported it. |
-| `exported_unix_ms` | number | `1790942476314` | When. |
+| `exported_unix_ms` | number | `1790943834378` | When. |
 | `radio` | object |  | The radio settings. |
 | `radio.version` | number | `1` | The file format's version. |
 | `radio.gain` | object |  | The receiver gain setting. |
@@ -971,12 +977,12 @@ Radio configuration, hardware and tuning.
 | `state.version` | number | `1` | The file's version. |
 | `state.live_site` | string or null | `"clay_elec_site_2"` | The site made live at start. |
 | `state.crystal` | object or null |  | The stored crystal correction. |
-| `state.crystal.ppm` | number | `-0.38065524056702543` | The correction. |
+| `state.crystal.ppm` | number | `-0.28205611666406954` | The correction. |
 | `state.crystal.measured_at_lo_hz` | number | `452728125` | The LO it was measured at. |
-| `state.crystal.lo_shift_hz` | number | `172` | The shift it gave there. |
+| `state.crystal.lo_shift_hz` | number | `128` | The shift it gave there. |
 | `state.crystal.control_freq_hz` | number or null | `454368750` | The control channel it was measured on. |
-| `state.crystal.method` | string | `"calibration"` | How: `calibration` or `tracker`. |
-| `state.crystal.at_unix_ms` | number | `1790942363506` | When. |
+| `state.crystal.method` | string | `"tracker"` | How: `calibration` or `tracker`. |
+| `state.crystal.at_unix_ms` | number | `1790942842512` | When. |
 | `hardware` | object |  | What the scanner found at start. |
 | `hardware.core_version` | string or null | `"0.3.0"` | The gateware's version. |
 | `hardware.lanes` | number | `2` | Traffic lanes running. |
@@ -984,18 +990,18 @@ Radio configuration, hardware and tuning.
 | `tuning.preset` | string or null | `"8M"` | The DDC preset of the receive window (`8M`, `12M`, `16M`). |
 | `tuning.sample_rate_hz` | number | `8000000` | The AD9361's sample rate. |
 | `tuning.lo_hz` | number | `452728125` | The window's centre (the nominal LO). |
-| `tuning.lo_shift_hz` | number | `172` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
-| `tuning.crystal_ppm` | number | `-0.38065524056702543` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
+| `tuning.lo_shift_hz` | number | `131` | The crystal correction applied to the LO: the radio is commanded to `lo_hz + lo_shift_hz`. |
+| `tuning.crystal_ppm` | number | `-0.2886128576499125` | The crystal correction in ppm (`lo_shift_hz` is `-ppm x lo_hz`). |
 | `tuning.control_hz` | number | `454368750` | The channel the control chain is tuned to. |
 | `tuning.gain` | object or null |  | The receiver gain. |
 | `tuning.gain.mode` | string | `"slow_attack"` | `manual`, `slow_attack`, `fast_attack` or `hybrid` (the AD9361's AGC modes). |
 | `tuning.gain.db` | number or null |  | The manual gain in dB; null under AGC. |
 | `tuning.lanes` | array of 2 numbers or null | `[451087500, null]` | The channel each traffic lane is tuned to (lane 1, lane 2); null when the lane holds none. |
-| `tuning.rev` | number | `8` | Counts tuning changes; a new value means something above moved. |
+| `tuning.rev` | number | `22` | Counts tuning changes; a new value means something above moved. |
 | `readback` | object |  | Values read back from the hardware. |
-| `readback.lo_hz` | number or null | `452728296` | The AD9361's LO. |
-| `readback.gain_db` | number or null | `71.0` | The AD9361's gain. |
-| `readback.rssi_db` | number or null | `92.25` | The AD9361's RSSI (dB below full scale). |
+| `readback.lo_hz` | number or null | `452728256` | The AD9361's LO. |
+| `readback.gain_db` | number or null | `72.0` | The AD9361's gain. |
+| `readback.rssi_db` | number or null | `91.75` | The AD9361's RSSI (dB below full scale). |
 | `readback.gain_mode` | string or null | `"slow_attack"` | The AD9361's gain mode. |
 | `readback.control_nco_hz` | number or null | `1640625.0` | The control chain's NCO offset from the LO. |
 | `readback.control_lsm` | object or null |  | The control chain's LSM settings. |
@@ -1026,15 +1032,15 @@ The crystal correction: applied, calibrated and tracked.
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `ppm` | number | `-0.38065524056702543` | The correction applied. |
-| `lo_shift_hz` | number | `172` | The shift it gives at the current LO. |
+| `ppm` | number | `-0.2886128576499125` | The correction applied. |
+| `lo_shift_hz` | number | `131` | The shift it gives at the current LO. |
 | `tracking` | bool | `true` | Tracking is on. |
 | `anchor_hz` | number | `50` | How far tracking may move from this run's calibration, Hz (0: no limit). |
 | `anchor_ppm` | number or null | `-0.38065524056702543` | The calibration tracking is anchored to. |
 | `source` | string or null | `"dmr_equaliser"` | What tracking measures now: `p25_loop`, `dmr_equaliser` or `spectrum`. |
-| `estimate_ppm` | number or null | `-0.31086788867741827` | Tracking's current estimate (applied each minute within the anchor). |
-| `samples` | number | `110` | Readings in the estimate. |
-| `last_decision` | string or null |  | Tracking's last move. |
+| `estimate_ppm` | number or null | `-0.28803158628592` | Tracking's current estimate (applied each minute within the anchor). |
+| `samples` | number | `300` | Readings in the estimate. |
+| `last_decision` | string or null | `"estimate -0.2879 ppm held: within 2 Hz"` | Tracking's last move. |
 | `calibrating` | bool | `false` | A calibration runs now. |
 | `calibration` | object or null |  | This run's calibration. |
 | `calibration.at_unix_ms` | number | `1790942363506` | When it was measured. |
@@ -1055,27 +1061,27 @@ Recordings newest first (`limit`, `site`), with the stores' state.
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `total` | number | `47` | Recordings of the listed site (all, without `site`). |
+| `total` | number | `53` | Recordings of the listed site (all, without `site`). |
 | `items` | array |  | Recordings newest first (`limit`, `site`). |
 | `items[]` | object |  | One recording. |
-| `items[].id` | number | `160` | The call's id. |
+| `items[].id` | number | `166` | The call's id. |
 | `items[].site` | string | `"clay_elec_site_2"` | The site (empty for recordings older than sites). |
-| `items[].tg` | number | `87926` | The talkgroup. |
-| `items[].source` | number or null | `82483` | The calling radio. |
-| `items[].started_unix_ms` | number | `1790942355532` | The call's start. |
-| `items[].duration_ms` | number | `3240` | The recording's length. |
-| `items[].bytes` | number | `51884` | The file's size. |
-| `items[].file` | string | `"rec_1790942355532_160_tg87926_from82...` | The file's name. |
+| `items[].tg` | number | `87924` | The talkgroup. |
+| `items[].source` | number or null | `81983` | The calling radio. |
+| `items[].started_unix_ms` | number | `1790943444577` | The call's start. |
+| `items[].duration_ms` | number | `3600` | The recording's length. |
+| `items[].bytes` | number | `57644` | The file's size. |
+| `items[].file` | string | `"rec_1790943444577_166_tg87924_from81...` | The file's name. |
 | `items[].store` | string | `"sd"` | `sd` or `ram`. |
 | `items[].sd_pending` | bool | `false` | Still waiting to be written to the card (served from RAM meanwhile). |
-| `items[].sources` | array of numbers | `[82483]` | Every radio heard. |
+| `items[].sources` | array of numbers | `[81983]` | Every radio heard. |
 | `items[].lane` | number, absent for earlier runs' recordings | `1` | The lane that recorded it. |
 | `items[].freq_hz` | number, absent for earlier runs' recordings | `451087500` | The traffic channel. |
 | `items[].channel` | string, absent for earlier runs' recordings | `"LCN 6 TS2"` | The channel as announced. |
 | `items[].voice` | object, absent for earlier runs' recordings |  | The vocoder's counts. |
-| `items[].voice.frames` | number | `162` | Voice frames. |
+| `items[].voice.frames` | number | `180` | Voice frames. |
 | `items[].voice.errors` | number | `0` | Frames with errors. |
-| `items[].voice.silent` | number | `21` | Frames decoded as silence. |
+| `items[].voice.silent` | number | `20` | Frames decoded as silence. |
 | `storage` | object |  | The stores. |
 | `storage.enabled` | bool | `true` | Recording is on. |
 | `storage.store` | string | `"sd"` | Where new recordings go: `sd` or `ram`. |
@@ -1084,8 +1090,8 @@ Recordings newest first (`limit`, `site`), with the stores' state.
 | `storage.ram.bytes` | number | `0` | Their size. |
 | `storage.ram_max_count` | number | `40` | The most RAM keeps. |
 | `storage.sd` | object |  | The card's recordings. |
-| `storage.sd.count` | number | `47` | Recordings. |
-| `storage.sd.bytes` | number | `2628308` | Their size. |
+| `storage.sd.count` | number | `53` | Recordings. |
+| `storage.sd.bytes` | number | `3105692` | Their size. |
 | `storage.sd_max_count` | number | `2000` | The most the card keeps. |
 | `storage.sd_max_bytes` | number | `2147483648` | The space they may use. |
 | `storage.sd_status` | object |  | The card. |
@@ -1093,15 +1099,15 @@ Recordings newest first (`limit`, `site`), with the stores' state.
 | `storage.sd_status.detail` | string or null |  | More on the state. |
 | `storage.sd_status.dir` | string | `"/mnt/sd/p25_recordings"` | The recordings' directory. |
 | `storage.sd_status.total_bytes` | number or null | `62209884160` | The card's size. |
-| `storage.sd_status.free_bytes` | number or null | `61745201152` | Free space. |
-| `storage.sd_status.writes_ok` | number | `3` | Recordings written. |
+| `storage.sd_status.free_bytes` | number or null | `61744644096` | Free space. |
+| `storage.sd_status.writes_ok` | number | `9` | Recordings written. |
 | `storage.sd_status.writes_failed` | number | `0` | Writes that failed. |
 | `storage.sd_status.fallbacks_to_ram` | number | `0` | Recordings kept in RAM because the card could not take them. |
 | `storage.sd_status.deletes` | number | `0` | Files deleted (retention, or by hand). |
-| `storage.sd_status.last_write_ms` | number or null | `20` | The last write's duration. |
-| `storage.sd_status.max_write_ms` | number | `29` | The longest write. |
+| `storage.sd_status.last_write_ms` | number or null | `23` | The last write's duration. |
+| `storage.sd_status.max_write_ms` | number | `34` | The longest write. |
 | `storage.sd_status.last_error` | string or null |  | The last error. |
-| `storage.sd_status.last_probe_unix_ms` | number or null | `1790942453196` | When the card was last checked. |
+| `storage.sd_status.last_probe_unix_ms` | number or null | `1790943812613` | When the card was last checked. |
 | `storage.sd_status.indexed_at_boot` | number | `44` | Recordings found on the card at start. |
 | `storage.sd_status.index_note` | string | `"indexed 44 recording(s) in /mnt/sd/p...` | What the start found. |
 | `storage.sd_status.queue_jobs` | number | `0` | Writes and deletes waiting. |
@@ -1110,7 +1116,7 @@ Recordings newest first (`limit`, `site`), with the stores' state.
 | `storage.sd_status.writer_running` | bool | `true` | The card's writer runs. |
 | `storage.recording_now` | number | `0` | Calls being recorded now. |
 | `storage.counters` | object |  | Since start. |
-| `storage.counters.saved` | number | `3` | Recordings saved. |
+| `storage.counters.saved` | number | `9` | Recordings saved. |
 | `storage.counters.no_audio` | number | `0` | Followed calls with no audio (not saved). |
 | `storage.counters.off` | number | `0` | Calls not recorded because recording was off. |
 | `storage.counters.failed` | number | `0` | Recordings that could not be saved. |
@@ -1337,8 +1343,8 @@ What a site taught the radio: band plan, grants, encrypted talkgroups, neighbour
 | `iden_bands[].bandwidth_hz` | number |  | Channel bandwidth. |
 | `iden_bands[].transmit_offset_hz` | number |  | Uplink offset. |
 | `iden_bands[].slots` | number |  | TDMA slots per channel (1: FDMA). |
-| `grants` | map | `{"451087500": 10}` | Grants per traffic channel (key: Hz), what the window planner weighs. |
-| `grants{key}` | number | `10` | Grants on that channel. |
+| `grants` | map | `{"451087500": 14}` | Grants per traffic channel (key: Hz), what the window planner weighs. |
+| `grants{key}` | number | `14` | Grants on that channel. |
 | `encrypted_talkgroups` | array of numbers | `[]` | Talkgroups seen encrypted. |
 | `last_recentre_unix_ms` | number | `0` | The window's last move. |
 | `neighbours` | array | `[]` | Neighbour sites announced. |
@@ -1362,7 +1368,7 @@ What a site taught the radio: band plan, grants, encrypted talkgroups, neighbour
 | `channels_heard{key}.colour_code` | number or null | `0` | Its colour code, once a burst carried one. |
 | `channels_heard{key}.control` | bool | `false` | A control channel (else a traffic channel). |
 | `channels_heard{key}.own` | bool or null | `true` | It is this site's: its network, site and colour code are the site's as configured; null when those are not configured. |
-| `channels_heard{key}.last_heard_unix_ms` | number | `1790942355968` | When it was heard name itself (saved with the next change). |
+| `channels_heard{key}.last_heard_unix_ms` | number | `1790943444814` | When it was heard name itself (saved with the next change). |
 
 ## `GET /api/v1/sites/{id}/plan`
 
@@ -1380,19 +1386,19 @@ The live site's receive window against its channels, and the planner's choice.
 | `channels` | array |  | The site's channels. |
 | `channels[]` | object |  | One channel. |
 | `channels[].freq_hz` | number | `451087500` | The channel. |
-| `channels[].grants` | number | `10` | Grants seen on it. |
+| `channels[].grants` | number | `14` | Grants seen on it. |
 | `channels[].listed` | bool | `false` | In the site's configuration. |
-| `channels[].weight` | number | `10.0` | Its weight in the plan. |
+| `channels[].weight` | number | `14.0` | Its weight in the plan. |
 | `channels[].covered` | bool | `true` | Inside the window now. |
-| `covered_weight` | number | `18.0` | The weight inside the window. |
-| `total_weight` | number | `18.0` | The weight of all channels. |
+| `covered_weight` | number | `24.0` | The weight inside the window. |
+| `total_weight` | number | `24.0` | The weight of all channels. |
 | `best` | object or null |  | The planner's choice now. |
 | `best.preset` | string | `"8M"` | The DDC preset. |
 | `best.sample_rate_hz` | number | `8000000` | Its sample rate. |
 | `best.lo_hz` | number | `452728125` | The window's centre. |
 | `best.usable_half_hz` | number | `3600000` | How far from the centre a channel can be received. |
-| `best.covered_weight` | number | `18.0` | The weight of the site's channels inside the window (channels weighted by their grants). |
-| `best.total_weight` | number | `18.0` | The weight of all the site's channels. |
+| `best.covered_weight` | number | `24.0` | The weight of the site's channels inside the window (channels weighted by their grants). |
+| `best.total_weight` | number | `24.0` | The weight of all the site's channels. |
 | `better` | bool | `false` | The choice covers more than the window does. |
 | `last_recentre_unix_ms` | number | `0` | The window's last move. |
 
@@ -1494,7 +1500,7 @@ Legacy, for the bench: the build.
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
 | `build` | string | `"2026-10-01-scanner-image3"` | The build tag. |
-| `uptime_s` | number | `137` | Since start, s. |
+| `uptime_s` | number | `1495` | Since start, s. |
 
 ## `GET /api/ui/state`
 
@@ -1504,7 +1510,7 @@ Legacy, for the bench: the unit's wall clock.
 |-------|------|---------|---------|
 | `v` | number | `1` | The shape's version (1). |
 | `build` | string | `"2026-10-01-scanner-image3"` | The build tag. |
-| `now_unix_ms` | number | `1790942476592` | The board's clock. |
+| `now_unix_ms` | number | `1790943834733` | The board's clock. |
 | `clock_valid` | bool | `true` | The clock has been set. |
 
 ## `GET /api/imbe_dump`
@@ -1526,20 +1532,20 @@ Legacy, for the bench: the newest calls with their voice frame counts (`limit`, 
 
 | Field | Type | Example | Meaning |
 |-------|------|---------|---------|
-| `now_unix_ms` | number | `1790942476621` | The board's clock. |
+| `now_unix_ms` | number | `1790943834797` | The board's clock. |
 | `items` | array |  | Open and recent calls, newest first (`limit`). |
 | `items[]` | object |  | One call. |
-| `items[].call_id` | number | `160` | The call. |
-| `items[].tg` | number | `87926` | The talkgroup. |
-| `items[].source` | number or null | `82483` | The calling radio. |
-| `items[].sources` | array of numbers | `[82483]` | Every radio heard. |
+| `items[].call_id` | number | `166` | The call. |
+| `items[].tg` | number | `87924` | The talkgroup. |
+| `items[].source` | number or null | `81983` | The calling radio. |
+| `items[].sources` | array of numbers | `[81983]` | Every radio heard. |
 | `items[].freq_hz` | number or null | `451087500` | The channel. |
-| `items[].started_unix_ms` | number | `1790942355532` | The grant. |
-| `items[].ended_unix_ms` | number or null | `1790942361170` | The close. |
-| `items[].open_ms` | number | `5638` | From the grant to the close (to now while open). |
-| `items[].first_voice_ms` | number or null | `276` | From the grant to the first voice. |
-| `items[].imbe` | number | `162` | Voice frames. |
-| `items[].voice_ms` | number | `3240` | Voice, ms. |
+| `items[].started_unix_ms` | number | `1790943444577` | The grant. |
+| `items[].ended_unix_ms` | number or null | `1790943450537` | The close. |
+| `items[].open_ms` | number | `5960` | From the grant to the close (to now while open). |
+| `items[].first_voice_ms` | number or null | `237` | From the grant to the first voice. |
+| `items[].imbe` | number | `180` | Voice frames. |
+| `items[].voice_ms` | number | `3600` | Voice, ms. |
 | `items[].encrypted` | bool | `false` | Encrypted. |
 | `items[].not_followed` | string or null | `"unknown_lcn"` | Why not followed. |
 | `items[].close_reason` | string or null | `"call_end"` | Why it closed. |

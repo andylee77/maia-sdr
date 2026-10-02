@@ -13,6 +13,12 @@
 //!
 //! With two lanes, lane one serves the left speaker's groups and lane two the right's; a
 //! talkgroup on "both" uses either. A busy side does not borrow the other side's lane.
+//!
+//! A lane held on a talkgroup takes only that talkgroup, whatever its alias says, and the
+//! talkgroup goes to that lane; the other lane follows as before. Where the lanes share one tuner
+//! (a DMR site's two lanes are the timeslots of lane one's receiver), two calls are followed at
+//! once only on the same frequency, or one of them on the frequency its own receiver hears (the
+//! control channel's).
 
 pub mod routing;
 
@@ -89,7 +95,8 @@ pub fn candidates(side: Side, grant_hz: Option<u64>, lanes: &[LaneView], routing
 }
 
 /// The lane for a clear, followed grant of `tg` on `side`. `end_frees(locked_tg, marker)` says
-/// whether a locked call's end marker lets another talkgroup take its lane.
+/// whether a locked call's end marker lets another talkgroup take its lane; `allowed(lane)`
+/// whether the lane may take this grant at all (its hold, a shared tuner).
 pub fn choose_lane(
     tg: u32,
     side: Side,
@@ -97,12 +104,14 @@ pub fn choose_lane(
     lanes: &[LaneView],
     routing: &Routing,
     end_frees: impl Fn(u32, Option<(u32, Instant)>) -> bool,
+    allowed: impl Fn(Lane) -> bool,
 ) -> LaneChoice {
     if let Some(v) = lanes.iter().find(|v| v.locked_tg == Some(tg)) {
         return LaneChoice::Stay(v.lane);
     }
     let cands = candidates(side, grant_hz, lanes, routing);
-    let views: Vec<LaneView> = cands.iter().filter_map(|&l| lanes.iter().find(|v| v.lane == l).copied()).collect();
+    let views: Vec<LaneView> =
+        cands.iter().filter(|&&l| allowed(l)).filter_map(|&l| lanes.iter().find(|v| v.lane == l).copied()).collect();
     if let Some(v) = views.iter().find(|v| v.locked_tg.is_none()) {
         return LaneChoice::Take(v.lane);
     }
@@ -174,6 +183,8 @@ struct LaneState {
     last_busy: Option<(u32, u64, Instant)>,
     /// Consecutive checks that found the lane locked with no open call.
     stuck_looks: u8,
+    /// The one talkgroup this lane follows, whatever the aliases say.
+    held: Option<u32>,
 }
 
 pub struct Follower {
@@ -183,6 +194,8 @@ pub struct Follower {
     encrypted: HashSet<u32>,
     /// The one talkgroup followed, whatever the aliases say.
     hold: Option<u32>,
+    /// The lanes share one tuner, except on this frequency (its own receiver hears it).
+    shared_except: Option<u64>,
 }
 
 impl Follower {
@@ -191,11 +204,43 @@ impl Follower {
         Follower {
             lanes: lanes
                 .iter()
-                .map(|&lane| LaneState { lane, locked: None, tuned_hz: None, last_timeout: None, last_busy: None, stuck_looks: 0 })
+                .map(|&lane| LaneState { lane, locked: None, tuned_hz: None, last_timeout: None, last_busy: None, stuck_looks: 0, held: None })
                 .collect(),
             routing,
             encrypted,
             hold: None,
+            shared_except: None,
+        }
+    }
+
+    /// The lanes share one tuner: two calls at once only on the same frequency, or one of them
+    /// on `own_hz`, which its own receiver hears.
+    pub fn share_tuner(&mut self, own_hz: u64) {
+        self.shared_except = Some(own_hz);
+    }
+
+    /// Can `lane` receive `freq` beside what the other lanes follow?
+    fn fits(&self, lane: Lane, freq: u64) -> bool {
+        let Some(own) = self.shared_except else { return true };
+        freq == own
+            || self
+                .lanes
+                .iter()
+                .filter(|l| l.lane != lane)
+                .all(|l| l.locked.and_then(|k| k.channel.freq_hz).is_none_or(|f| f == own || f == freq))
+    }
+
+    /// Hold `lane` on `tg` (None: the lane follows what the aliases say). A call of another
+    /// talkgroup on it lets go at once.
+    pub fn set_lane_hold(&mut self, lane: Lane, tg: Option<u32>) -> Vec<Command> {
+        let Some(l) = self.lanes.iter_mut().find(|l| l.lane == lane) else { return Vec::new() };
+        l.held = tg;
+        match (tg, l.locked) {
+            (Some(tg), Some(k)) if k.tg != tg => {
+                l.locked = None;
+                vec![Command::Release { lane }]
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -329,18 +374,21 @@ impl Follower {
             tracing::debug!("{note}");
             out.record = record(Decision::NotFollowed(why));
         };
-        // A held talkgroup is followed whatever its alias says; no other is.
+        // A held talkgroup is followed whatever its alias says; no other is. A talkgroup a lane
+        // is held on goes to that lane, whatever the site's hold or its alias say.
         let held = self.hold == Some(g.tg);
-        if let Some(h) = self.hold.filter(|_| !held) {
+        let lane_held = self.lanes.iter().find(|l| l.held == Some(g.tg)).map(|l| l.lane);
+        if let Some(h) = self.hold.filter(|_| !held && lane_held.is_none()) {
             return refuse(out, NotFollowed::Held, format!("TG {} not followed: TG {h} is held", g.tg));
         }
-        if !held && self.routing.ignored(g.tg) {
+        if !held && lane_held.is_none() && self.routing.ignored(g.tg) {
             return refuse(out, NotFollowed::Ignored, format!("TG {} not followed: its alias says do not monitor", g.tg));
         }
         if g.channel.tdma {
             return refuse(out, NotFollowed::Phase2, format!("TG {} not followed: granted a Phase 2 (TDMA) channel {}", g.tg, label(g)));
         }
         let route = match self.routing.route(g.tg) {
+            _ if lane_held.is_some() => Route { side: Side::Both, rank: 0 },
             Some(r) => r,
             None if held => Route { side: Side::Both, rank: 0 },
             None => return refuse(out, NotFollowed::Unmonitored, format!("TG {} not followed: it has no priority and only monitored talkgroups are followed", g.tg)),
@@ -369,7 +417,13 @@ impl Follower {
             return refuse(out, NotFollowed::Encrypted, format!("TG {} not followed: encrypted", g.tg));
         }
         let views = self.views(markers);
-        let choice = choose_lane(g.tg, route.side, Some(freq), &views, &self.routing, |t, m| end_marker_frees(t, m, now));
+        // A lane held on another talkgroup takes none of this one; a talkgroup held on a lane
+        // takes no other; a shared tuner must reach the frequency.
+        let allowed = |l: Lane| {
+            let open = self.lanes.iter().any(|x| x.lane == l && x.held.is_none_or(|h| h == g.tg));
+            open && lane_held.is_none_or(|h| h == l) && self.fits(l, freq)
+        };
+        let choice = choose_lane(g.tg, route.side, Some(freq), &views, &self.routing, |t, m| end_marker_frees(t, m, now), allowed);
         let lane = match choice {
             LaneChoice::Reject => {
                 let cands = candidates(route.side, Some(freq), &views, &self.routing);

@@ -43,7 +43,8 @@ export const api = {
   calibrateCrystal: () => request('POST', '/api/v1/radio/crystal/calibrate'),
   routes: () => request('GET', '/api/v1/routes'),
   calls: () => request('GET', '/api/v1/calls'),
-  setHold: tg => request('PUT', '/api/v1/hold', { tg }),
+  // `lane` (1 or 2): hold only that traffic lane.
+  setHold: (tg, lane) => request('PUT', '/api/v1/hold', lane ? { tg, lane } : { tg }),
   scan: req => request('POST', '/api/v1/scan', req),
   scanOptions: () => request('GET', '/api/v1/scan/options'),
   scanCancel: () => request('POST', '/api/v1/scan/cancel'),

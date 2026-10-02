@@ -83,8 +83,8 @@ routes! {
     get "/api/v1/routes" => routes, "this list";
     get "/api/v1/status" => v1::status::get, "build, uptime, the live site, its control channel and the tuning";
     get "/api/v1/calls" => v1::calls::get, "the live site's open calls and its newest closed ones (from its history after a restart or switch), with names";
-    get "/api/v1/hold" => v1::hold::get, "the talkgroup the live site is held on, if any";
-    put "/api/v1/hold" => v1::hold::put, "hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the aliases say";
+    get "/api/v1/hold" => v1::hold::get, "the talkgroup the live site is held on, if any, and each traffic lane's own";
+    put "/api/v1/hold" => v1::hold::put, "hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the aliases say; with `lane` (1 or 2) only that lane: it takes only that talkgroup, the other lane follows as before";
     get "/api/v1/calls/{id}" => v1::calls::one, "one call, live while recent, else from the history; the same shape either way";
     get "/ws/live" => ws::live, "the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, the scan and configuration changes; and what a page subscribes to (the spectrum, the event log, the radio's readback, the window, the crystal)";
     get "/ws/events" => ws::events, "a text frame when a call opens or closes or a recording is saved";

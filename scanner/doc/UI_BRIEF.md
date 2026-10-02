@@ -85,8 +85,9 @@ Then three ways in: scan for systems, add one by hand, or import an SDRTrunk pla
 
 p25-httpd's Now page was the better starting point (`p25-httpd/src/httpd/ui/js/views/now.js`).
 Done: the locked top, the system card with its two lists (picking a site makes it live), the
-traffic channels as "Left · Traffic 1" and "Right · Traffic 2" (a lane the site does not run says
-so), and the call history with playback. Still to come: the talkgroup controls (monitor,
+traffic channels as "Left · Traffic 1" and "Right · Traffic 2", each with a talkgroup picker
+that holds that channel alone (a lane the site does not run says so), and the call history with
+playback. Still to come: the talkgroup controls (monitor,
 record, priority, speaker).
 
 - **Locked top:** the header, the system card and the active channels stay on screen. Only the

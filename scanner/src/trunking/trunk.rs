@@ -34,7 +34,8 @@ use crate::services::recordings::{CallEnd, CallStart, RecorderTx};
 use crate::hardware::p25core::rings::mono_instant;
 use crate::hardware::p25core::Lane;
 use crate::protocol::dmr::demod::DmrDemodStats;
-use crate::protocol::dmr::traffic::{DmrCall, DmrTraffic};
+use crate::protocol::dmr::message::DmrMessage;
+use crate::protocol::dmr::traffic::{DmrCall, DmrReceiver, DmrTraffic};
 use crate::protocol::p25::framer::FramerStats;
 use crate::protocol::events::{ChannelId, ChannelIdentity, Grant, TrafficEvent, VoiceFrames};
 use crate::services::discovery::carriers::power_db;
@@ -85,10 +86,9 @@ const PROBE_AGAIN: Duration = Duration::from_secs(600);
 /// A spectrum frame older than this does not say what is on the air now.
 const FRAME_FRESH: Duration = Duration::from_millis(400);
 
-/// DMR: an idle lane listening to a carrier for its network and site.
+/// DMR: lane one's receiver listening to a carrier for its network and site.
 #[derive(Debug, Clone, Copy)]
 struct Probe {
-    lane: Lane,
     freq_hz: u64,
     until: Instant,
 }
@@ -126,6 +126,8 @@ struct KeyupWatch {
 pub enum TrunkInput {
     /// A grant or grant update, with the control channel's NAC.
     Grant { grant: Grant, nac: u16, at: Stamp },
+    /// DMR: the control channel's messages that carry calls (its other timeslot's).
+    ControlCalls { messages: Vec<DmrMessage>, at: Stamp },
     Lane(LaneInput),
     /// The live site's aliases changed.
     Routing(Box<Routing>),
@@ -133,6 +135,8 @@ pub enum TrunkInput {
     WindowMoved,
     /// Follow only this talkgroup (None: release the hold).
     Hold(Option<u32>),
+    /// This lane follows only this talkgroup (None: what the aliases say).
+    LaneHold { lane: Lane, tg: Option<u32> },
 }
 
 pub type TrunkTx = mpsc::Sender<TrunkInput>;
@@ -223,10 +227,11 @@ pub struct CallsView {
     pub recent: Vec<CallView>,
 }
 
-/// A lane's traffic decoder.
+/// A lane's traffic decoder: P25's on its own chain's dibits; DMR's on the messages of the
+/// carrier its call is on (`DmrHw`'s, or the control channel's).
 enum Decoder {
     P25(P25Traffic),
-    Dmr(Box<DmrTraffic>),
+    Dmr(DmrTraffic),
 }
 
 impl Decoder {
@@ -240,7 +245,7 @@ impl Decoder {
     fn retuned(&mut self) {
         match self {
             Decoder::P25(t) => t.retuned(),
-            Decoder::Dmr(t) => t.retuned(),
+            Decoder::Dmr(_) => {}
         }
     }
 
@@ -272,6 +277,15 @@ fn owner(calls: &VecDeque<LaneCall>, air: Instant) -> Option<CallId> {
         Some(next) if c.ended_air.is_some_and(|e| e <= air) => Some(next.id),
         _ => Some(c.id),
     }
+}
+
+/// DMR: lane one's receiver. Both lanes' calls off the control channel are on its carrier, one
+/// a timeslot (the control channel's calls come from its own receiver).
+struct DmrHw {
+    receiver: DmrReceiver,
+    tuned_hz: Option<u64>,
+    /// IQ read before this is the old carrier's.
+    retuned_at: Option<Instant>,
 }
 
 struct LaneSlot {
@@ -332,6 +346,9 @@ struct Task<H> {
     probe_last: Option<Instant>,
     /// When each carrier was last listened to without naming itself.
     probed: std::collections::HashMap<u64, Instant>,
+    /// DMR: lane one's receiver, and the control channel (whose calls its own receiver hears).
+    dmr_hw: Option<DmrHw>,
+    control_hz: u64,
 }
 
 pub struct Trunking {
@@ -349,6 +366,8 @@ pub struct Trunking {
     store: std::sync::Mutex<Option<Arc<Store>>>,
     /// (site, talkgroup): the hold outlives a restart of its site, not a switch to another.
     hold: std::sync::Mutex<Option<(String, u32)>>,
+    /// (site, each lane held and its talkgroup), likewise.
+    lane_holds: std::sync::Mutex<Option<(String, Vec<(Lane, u32)>)>>,
     lanes: Arc<Mutex<Vec<LaneStatus>>>,
     survey: Arc<Mutex<SurveyView>>,
     latest: Arc<Mutex<Option<Frame>>>,
@@ -376,6 +395,7 @@ impl Trunking {
             packet_data: std::sync::Mutex::new(None),
             store: std::sync::Mutex::new(None),
             hold: std::sync::Mutex::new(None),
+            lane_holds: std::sync::Mutex::new(None),
             lanes: Arc::default(),
             survey: Arc::default(),
             latest: Arc::default(),
@@ -426,6 +446,27 @@ impl Trunking {
         }
     }
 
+    /// The lanes of `site` held on a talkgroup, each with it (released lanes as `None`).
+    pub fn lane_holds(&self, site: &str) -> Vec<(Lane, Option<u32>)> {
+        let held: Vec<(Lane, u32)> =
+            self.lane_holds.lock().ok().and_then(|h| h.as_ref().filter(|(s, _)| s == site).map(|(_, v)| v.clone())).unwrap_or_default();
+        Lane::ALL.iter().map(|&l| (l, held.iter().find(|(x, _)| *x == l).map(|(_, tg)| *tg))).collect()
+    }
+
+    /// Hold `lane` of the live site `site` on `tg`, or release it (None).
+    pub async fn set_lane_hold(&self, site: &str, lane: Lane, tg: Option<u32>) {
+        if let Ok(mut h) = self.lane_holds.lock() {
+            let mut held: Vec<(Lane, u32)> = h.as_ref().filter(|(s, _)| s == site).map(|(_, v)| v.clone()).unwrap_or_default();
+            held.retain(|(l, _)| *l != lane);
+            held.extend(tg.map(|tg| (lane, tg)));
+            *h = Some((site.to_string(), held));
+        }
+        let tx = self.running.lock().await.as_ref().map(|r| r.tx.clone());
+        if let Some(tx) = tx {
+            let _ = tx.send(TrunkInput::LaneHold { lane, tg }).await;
+        }
+    }
+
     /// The site's newest calls: those still listed, and the stored ones (a call that closed just
     /// before a switch may not be stored yet).
     async fn recent_of(&self, site: &str) -> VecDeque<CallView> {
@@ -461,6 +502,11 @@ impl Trunking {
                 *h = None;
             }
         }
+        if self.lane_holds(&setup.site).iter().all(|(_, tg)| tg.is_none()) {
+            if let Ok(mut h) = self.lane_holds.lock() {
+                *h = None;
+            }
+        }
         let recent = self.recent_of(&setup.site).await;
         if let Ok(mut v) = self.view.lock() {
             *v = CallsView { open: Vec::new(), recent: recent.iter().cloned().collect() };
@@ -468,11 +514,12 @@ impl Trunking {
         let (tx, rx) = mpsc::channel(QUEUE);
         let stop = Arc::new(AtomicBool::new(false));
         let (lane_tx, mut lane_rx) = mpsc::channel(QUEUE);
-        let mode = match setup.protocol {
-            Protocol::P25 => LaneMode::Dibits,
-            Protocol::DmrTier3 => LaneMode::Iq,
+        // P25: each lane's own chain; DMR: lane one's IQ, whose carrier both lanes share.
+        let (mode, streamed) = match setup.protocol {
+            Protocol::P25 => (LaneMode::Dibits, setup.lanes.clone()),
+            Protocol::DmrTier3 => (LaneMode::Iq, setup.lanes.iter().copied().filter(|&l| l == Lane::One).collect()),
         };
-        let sources = tuner.hw().lane_streams(&setup.lanes, mode, lane_tx, stop.clone());
+        let sources = tuner.hw().lane_streams(&streamed, mode, lane_tx, stop.clone());
         let forward = tx.clone();
         let forwarder = tokio::spawn(async move {
             while let Some(input) = lane_rx.recv().await {
@@ -489,6 +536,12 @@ impl Trunking {
             follower: {
                 let mut f = Follower::new(&setup.lanes, setup.routing, setup.encrypted);
                 f.set_hold(hold);
+                for (lane, tg) in self.lane_holds(&setup.site) {
+                    f.set_lane_hold(lane, tg);
+                }
+                if setup.protocol == Protocol::DmrTier3 {
+                    f.share_tuner(control_hz);
+                }
                 f
             },
             lanes: setup
@@ -498,7 +551,7 @@ impl Trunking {
                     lane,
                     traffic: match setup.protocol {
                         Protocol::P25 => Decoder::P25(P25Traffic::new(lane.name())),
-                        Protocol::DmrTier3 => Decoder::Dmr(Box::new(DmrTraffic::new(setup.lcn_hz.clone()))),
+                        Protocol::DmrTier3 => Decoder::Dmr(DmrTraffic::new()),
                     },
                     calls: VecDeque::new(),
                     retuned_at: None,
@@ -557,6 +610,12 @@ impl Trunking {
             probe: None,
             probe_last: None,
             probed: std::collections::HashMap::new(),
+            dmr_hw: (setup.protocol == Protocol::DmrTier3).then(|| DmrHw {
+                receiver: DmrReceiver::new(setup.lcn_hz.clone()),
+                tuned_hz: None,
+                retuned_at: None,
+            }),
+            control_hz,
         };
         let task = tokio::spawn(task.run(rx, stop.clone()));
         *self.running.lock().await = Some(Running { tx: tx.clone(), stop, task, sources });
@@ -675,6 +734,11 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             tokio::select! {
                 input = rx.recv() => match input {
                     Some(TrunkInput::Grant { grant, nac, at }) => self.grant(grant, nac, at).await,
+                    Some(TrunkInput::ControlCalls { messages, at }) => {
+                        let control = self.control_hz;
+                        self.dmr_messages(control, &messages, at);
+                    }
+                    Some(TrunkInput::LaneHold { lane, tg }) => self.lane_hold(lane, tg).await,
                     Some(TrunkInput::Lane(LaneInput::Dibits { lane, bytes, first, reset, clock })) => {
                         self.dibits(lane, &bytes, first, reset, &clock);
                     }
@@ -888,9 +952,8 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         match command {
             Command::Follow { lane, channel } => {
                 let Some(freq) = channel.freq_hz else { return };
-                // A call takes a lane identifying a carrier.
-                if self.probe.is_some_and(|p| p.lane == lane) {
-                    self.probe = None;
+                if self.dmr_hw.is_some() {
+                    return self.follow_dmr(lane, freq).await;
                 }
                 let Some(slot) = self.slot(lane) else { return };
                 let moved = slot.tuned_hz != Some(freq);
@@ -920,6 +983,10 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 if let Some(slot) = self.slot(lane) {
                     slot.traffic.release();
                 }
+                // A DMR lane's receiver may carry the other lane's call.
+                if self.dmr_hw.is_some() {
+                    return;
+                }
                 if let Err(e) = self.tuner.pause_lane(lane).await {
                     self.log.system("lane", format!("{lane} pause failed: {e:#}"));
                 }
@@ -932,11 +999,52 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         }
     }
 
+    /// DMR: `lane` follows a call on `freq`. The control channel's own receiver hears it there;
+    /// elsewhere lane one's receiver goes to the carrier, unless it is there already (the other
+    /// lane's call on its other timeslot).
+    async fn follow_dmr(&mut self, lane: Lane, freq: u64) {
+        let on_hw = freq != self.control_hz;
+        if on_hw && self.dmr_hw.as_ref().is_some_and(|hw| hw.tuned_hz != Some(freq)) {
+            // A call takes the receiver from a carrier being identified.
+            self.probe = None;
+            if let Err(e) = self.tuner.retune_lane(Lane::One, freq, true).await {
+                self.log.system("lane", format!("{} retune to {:.5} MHz failed: {e:#}", Lane::One, freq as f64 / 1e6));
+                return;
+            }
+            if let Some(hw) = self.dmr_hw.as_mut() {
+                hw.receiver.retuned();
+                hw.tuned_hz = Some(freq);
+                hw.retuned_at = Some(Instant::now());
+            }
+        }
+        if let Some(slot) = self.slot(lane) {
+            slot.tuned_hz = Some(freq);
+        }
+        self.follower.retuned(lane, Some(freq));
+    }
+
+    async fn lane_hold(&mut self, lane: Lane, tg: Option<u32>) {
+        let at = Stamp::now();
+        for command in self.follower.set_lane_hold(lane, tg) {
+            self.command(command, at).await;
+        }
+        let text = match tg {
+            Some(tg) => format!("{lane} held on TG {tg}: it follows only that talkgroup, and the talkgroup only it"),
+            None => format!("{lane} released: it follows what the aliases say"),
+        };
+        self.log.system("hold", text);
+    }
+
     /// A key-up watch keeps its grant (it is followed when the watch ends); it compares only the
     /// frames of the window it began in.
     fn window_moved(&mut self) {
         self.usual.clear();
         self.survey.clear();
+        if let Some(hw) = self.dmr_hw.as_mut() {
+            hw.receiver.retuned();
+            hw.tuned_hz = None;
+            hw.retuned_at = Some(Instant::now());
+        }
         for slot in &mut self.lanes {
             slot.traffic.retuned();
             slot.tuned_hz = None;
@@ -971,19 +1079,40 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         }
     }
 
-    /// Lane one's IQ at a DMR site: decoded for its call, or for the identity of the carrier it
-    /// listens to.
+    /// Lane one's IQ at a DMR site: decoded while a lane's call is on its carrier, or while it
+    /// identifies a carrier.
     fn iq(&mut self, lane: Lane, iq: &[i16], at: Stamp) {
-        let probing = self.probe.is_some_and(|p| p.lane == lane);
-        let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) else { return };
-        let Decoder::Dmr(traffic) = &mut slot.traffic else { return };
-        // A sub-buffer read just after a retune can still hold the old channel's samples.
-        if (traffic.call().is_none() && !probing) || slot.retuned_at.is_some_and(|t| at.mono < t + IQ_SETTLE) {
+        let Some(hw) = self.dmr_hw.as_mut().filter(|_| lane == Lane::One) else { return };
+        let Some(freq) = hw.tuned_hz else { return };
+        let wanted = self.probe.is_some() || self.lanes.iter().any(|s| s.tuned_hz == Some(freq) && s.traffic.call().is_some());
+        // A sub-buffer read just after a retune can still hold the old carrier's samples.
+        if !wanted || hw.retuned_at.is_some_and(|t| at.mono < t + IQ_SETTLE) {
             return;
         }
-        let mut out = Vec::new();
-        traffic.push(iq, at.mono, &mut out);
-        for e in out {
+        let (mut messages, mut identity) = (Vec::new(), None);
+        hw.receiver.push(iq, &mut messages, &mut identity);
+        if let Some(id) = identity {
+            self.identified(freq, id, at);
+        }
+        self.dmr_messages(freq, &messages, at);
+    }
+
+    /// A DMR carrier's messages (lane one's, or the control channel's) to the lanes whose calls
+    /// are on it.
+    fn dmr_messages(&mut self, freq: u64, messages: &[DmrMessage], at: Stamp) {
+        let mut events = Vec::new();
+        for slot in self.lanes.iter_mut().filter(|s| s.tuned_hz == Some(freq)) {
+            let Decoder::Dmr(traffic) = &mut slot.traffic else { continue };
+            if traffic.call().is_none() {
+                continue;
+            }
+            let mut out = Vec::new();
+            for m in messages {
+                traffic.message(m, at.mono, &mut out);
+            }
+            events.extend(out.into_iter().map(|e| (slot.lane, e)));
+        }
+        for (lane, e) in events {
             self.traffic_event(lane, e, at);
         }
     }
@@ -1028,11 +1157,6 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                     self.log.system("lcn", format!("LCN {} is {:.5} MHz: TG {}'s voice header was heard there", t.lcn, t.freq_hz as f64 / 1e6, t.tg));
                 }
                 self.book.link_control_source(lane, s, &mut out);
-            }
-            TrafficEvent::Identity(id) => {
-                if let Some(freq) = self.slot(lane).and_then(|s| s.tuned_hz) {
-                    self.identified(lane, freq, id, at);
-                }
             }
             TrafficEvent::TalkComplete(Some(s)) => self.book.talk_complete_source(lane, s, &mut out),
             TrafficEvent::TalkComplete(None) => {}
@@ -1112,6 +1236,8 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
     fn publish_lanes(&self, now: Instant) {
         let following = self.follower.locked();
         let data_hz = self.learned.as_ref().and_then(|l| l.data_channel_hz());
+        // DMR: both lanes' counters are lane one's receiver's.
+        let dmr = self.dmr_hw.as_ref().map(|hw| (hw.receiver.bursts, hw.receiver.demod_stats()));
         let lanes = self
             .lanes
             .iter()
@@ -1125,7 +1251,10 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 last_voice_ms_ago: s.last_voice.map(|t| now.saturating_duration_since(t).as_millis() as u64),
                 counters: match &s.traffic {
                     Decoder::P25(t) => LaneCounters::P25(Box::new(t.stats().clone())),
-                    Decoder::Dmr(t) => LaneCounters::Dmr { bursts: t.bursts, demod: t.demod_stats() },
+                    Decoder::Dmr(_) => {
+                        let (bursts, demod) = dmr.unwrap_or_default();
+                        LaneCounters::Dmr { bursts, demod }
+                    }
                 },
             })
             .collect();
@@ -1164,10 +1293,10 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         }
     }
 
-    /// The channel on `freq` named its network and site to `lane`: it is kept in the learned
-    /// state, the learner hears whether it is the site's, a lane listening for it is done, and a
-    /// trial on another site's channel is over at once.
-    fn identified(&mut self, lane: Lane, freq: u64, id: ChannelIdentity, at: Stamp) {
+    /// The channel on `freq` named its network and site: it is kept in the learned state, the
+    /// learner hears whether it is the site's, the receiver listening for it is done, and a trial
+    /// on another site's channel is over at once.
+    fn identified(&mut self, freq: u64, id: ChannelIdentity, at: Stamp) {
         let code = self.site_code.as_ref();
         let (own, changed) = match self.learned.as_ref().and_then(|l| l.channel_heard(freq, &id, code, at.unix_ms)) {
             Some((entry, changed)) => (entry.own, changed),
@@ -1176,7 +1305,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         if let Some(own) = own {
             self.lcn.heard(freq, own);
         }
-        if self.probe.is_some_and(|p| p.lane == lane && p.freq_hz == freq) {
+        if self.probe.is_some_and(|p| p.freq_hz == freq) {
             self.probe = None;
             self.probed.remove(&freq);
         }
@@ -1194,15 +1323,16 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             );
         }
         if own == Some(false) {
-            if let Some(t) = self.lcn.wrong_site(lane) {
+            if let Some(t) = self.lcn.wrong_site(freq) {
                 self.log.system("lcn", format!("LCN {} is not {:.5} MHz: that is network {} site {}", t.lcn, t.freq_hz as f64 / 1e6, id.network, id.site));
             }
         }
     }
 
-    /// At a DMR site still learning its channels, an idle lane identifies a carrier on the air
-    /// that no lane has heard name itself: it listens there until the channel's short LC names
-    /// its network and site (`PROBE_FOR` at most). A grant takes the lane at once.
+    /// At a DMR site still learning its channels, lane one's receiver, while no call is on it,
+    /// identifies a carrier on the air that no lane has heard name itself: it listens there until
+    /// the channel's short LC names its network and site (`PROBE_FOR` at most). A grant takes the
+    /// receiver at once.
     async fn probe(&mut self, at: Stamp) {
         if let Some(p) = self.probe {
             if at.mono >= p.until {
@@ -1210,13 +1340,9 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             }
             return;
         }
-        let Some(lane) = self.lanes.first().map(|l| l.lane) else { return };
-        let idle = self.dmr
-            && self.lcn.learning()
-            && self.lcn.idle()
-            && self.keyup.is_none()
-            && self.book.on_lane(lane).is_none()
-            && self.follower.idle(lane);
+        let control = self.control_hz;
+        let receiver_free = self.lanes.iter().all(|s| s.tuned_hz == Some(control) || (self.follower.idle(s.lane) && self.book.on_lane(s.lane).is_none()));
+        let idle = self.dmr_hw.is_some() && self.lcn.learning() && self.lcn.idle() && self.keyup.is_none() && receiver_free;
         if !idle || self.probe_last.is_some_and(|t| at.mono.saturating_duration_since(t) < PROBE_EVERY) {
             return;
         }
@@ -1233,16 +1359,16 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         let Some(f) = target else { return };
         self.probe_last = Some(at.mono);
         self.probed.insert(f, at.mono);
-        match self.tuner.retune_lane(lane, f, true).await {
+        match self.tuner.retune_lane(Lane::One, f, true).await {
             Ok(_) => {
-                let slot = self.slot(lane).expect("lane");
-                slot.traffic.retuned();
-                slot.tuned_hz = Some(f);
-                slot.retuned_at = Some(Instant::now());
-                self.follower.retuned(lane, Some(f));
-                self.probe = Some(Probe { lane, freq_hz: f, until: Instant::now() + PROBE_FOR });
+                if let Some(hw) = self.dmr_hw.as_mut() {
+                    hw.receiver.retuned();
+                    hw.tuned_hz = Some(f);
+                    hw.retuned_at = Some(Instant::now());
+                }
+                self.probe = Some(Probe { freq_hz: f, until: Instant::now() + PROBE_FOR });
             }
-            Err(e) => self.log.system("lane", format!("{lane} could not listen to {:.5} MHz: {e:#}", f as f64 / 1e6)),
+            Err(e) => self.log.system("lane", format!("{} could not listen to {:.5} MHz: {e:#}", Lane::One, f as f64 / 1e6)),
         }
     }
 

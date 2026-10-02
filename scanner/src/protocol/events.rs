@@ -191,8 +191,6 @@ pub enum TrafficEvent {
     End { lc: &'static str, air: Instant },
     /// Packet data (a lane waiting on the data channel).
     Pdu(PduFrame),
-    /// DMR: the channel the lane is on named its network and site (heard with or without a call).
-    Identity(ChannelIdentity),
     Message(LogLine),
 }
 

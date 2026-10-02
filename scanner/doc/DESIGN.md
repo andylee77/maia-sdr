@@ -1446,6 +1446,19 @@ From the brief:
   - **The Now page** (`UI_BRIEF.md`): the system card (a system and a site list that make a
     site live; its details, identity and control channel health) and the two traffic channels,
     left and right, stay on screen; the live site's calls scroll below in their own pane.
+  - **Two DMR calls at once without the gateware** (Andy: "handle traffic from the control
+    channel without needing the traffic channel"). DMR is decoded in software from IQ, and only
+    the control chain and traffic chain 1 send IQ (chain 2 sends the gateware's P25 dibits
+    alone), so a DMR site's lanes 1 and 2 are two calls, not two receivers: a call on the
+    control channel's carrier is followed from the control decoder's own messages (a control
+    repeater carries calls on its other timeslot: Clay Electric's LCN 5 TS2), and lane one's
+    receiver carries the rest, both timeslots of its carrier at once. The follower keeps two
+    calls off the control channel on one frequency (the other waits as busy). A second carrier
+    needs an IQ tap on chain 2: a later gateware change.
+  - **A lane holds a talkgroup** (Andy: "hold the tg to the lane vs just holding a tg overall"):
+    `PUT /api/v1/hold` with `lane`; the lane takes only its talkgroup, the talkgroup goes only
+    to it, whatever its alias says, and the other lane follows as before. The Now page's
+    traffic cards each have the picker.
   - **No page polls** (UI_BRIEF): the state the pages share (status, calls, traffic channels,
     recordings, systems) comes from `/ws/live`, and so does what only some pages show, while a
     page subscribes: each spectrometer frame, the event log's new lines, the radio's readback

@@ -20,7 +20,6 @@ fn kinds(out: &[TrafficEvent]) -> Vec<String> {
             TrafficEvent::TalkComplete(s) => Some(format!("talk_complete {s:?}")),
             TrafficEvent::End { lc, .. } => Some(format!("end {lc}")),
             TrafficEvent::Pdu(f) => Some(format!("pdu {}", f.chain)),
-            TrafficEvent::Identity(i) => Some(format!("identity {i:?}")),
         })
         .collect()
 }
