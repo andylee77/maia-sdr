@@ -5,14 +5,8 @@ export function wsUrl(path) {
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + path;
 }
 
-// A read the board does not answer in this long fails, so a page left open across a restart
-// recovers on its next poll instead of waiting on a dead connection. Writes may take longer (a
-// site going live, a calibration).
-const READ_TIMEOUT_MS = 8000;
-const WRITE_TIMEOUT_MS = 60000;
-
 async function request(method, path, body) {
-  const opts = { method, headers: {}, signal: AbortSignal.timeout(method === 'GET' ? READ_TIMEOUT_MS : WRITE_TIMEOUT_MS) };
+  const opts = { method, headers: {} };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);

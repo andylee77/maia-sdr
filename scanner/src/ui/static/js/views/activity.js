@@ -297,7 +297,7 @@ export function mount(host) {
         h('td', { text: c.voice_frames ? dur(c.voice_frames * 20) : DASH }),
         h('td', { text: dur(c.grant_ms) }),
         h('td', null, c.encrypted ? h('span', { class: 'badge enc', text: 'enc' })
-          : (c.not_followed ? h('span', { class: 'badge hang', text: c.not_followed }) : ''))))))
+          : (c.not_followed ? h('span', { class: 'badge hang', text: c.not_followed }) : '')))))
       : h('p', { class: 'card-note', text: 'No calls in this period.' }));
   }
 
