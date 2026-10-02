@@ -8,10 +8,12 @@
 //! Files are versioned JSON under `<flash>/scanner/`, written atomically and only when something
 //! changes. A missing file is the default, so a new unit starts with no systems. A file written
 //! by a newer binary is read but never written, so a downgrade cannot drop its fields.
+//! RadioReference's CSV downloads import into a system (`radioreference`).
 
 pub mod aliases;
 pub mod ids;
 pub mod radio;
+pub mod radioreference;
 pub mod state;
 pub mod systems;
 

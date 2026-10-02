@@ -60,9 +60,10 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 - **The backend for the UI replacement:** `/ws/live` pushes the radio's state as it changes;
   SDRTrunk-style aliases per system replace profiles and name maps (what is followed, recorded
   and played where); `scanner/doc/API_FIELDS.md` lists every field. No migration: a unit
-  starts empty, and p25-httpd's files and history are never read.
+  starts empty, and p25-httpd's files and history are never read. RadioReference's CSV
+  downloads import into a system: talkgroups as aliases, sites as sites, with a preview.
 
-Tests: scanner 387, p25-httpd 475.
+Tests: scanner 398, p25-httpd 475.
 
 ---
 

@@ -125,6 +125,8 @@ routes! {
     put "/api/v1/systems/{id}/aliases" => v1::aliases::put, "replace a system's aliases (the live site follows them at once)";
     put "/api/v1/systems/{id}/listening" => v1::aliases::put_listening, "how a system treats talkgroups with no priority, and pre-emption";
     put "/api/v1/systems/{id}/talkgroups/{tg}" => v1::aliases::put_talkgroup, "one talkgroup's controls: name, group, priority, do-not-monitor, record, speaker";
+    post "/api/v1/systems/{id}/radioreference" => v1::systems::import_radioreference, "import a RadioReference CSV (`csv`; talkgroups or sites, told by its header): talkgroups no alias covers become aliases (fully encrypted ones never followed unless `encrypted_do_not_monitor` is false); new sites are added (`sites`: only these rows), configured ones gain the channels they lack";
+    post "/api/v1/systems/{id}/radioreference/preview" => v1::systems::preview_radioreference, "what that import would change; nothing is saved";
     put "/api/v1/systems/{system}/sites/{site}" => v1::systems::put_site, "edit a site (the live site goes live again with the change)";
     delete "/api/v1/systems/{system}/sites/{site}" => v1::systems::delete_site, "remove a site (not the live one) and what it learned; the history keeps its calls";
     delete "/api/v1/systems/{id}" => v1::systems::delete_system, "remove a system with its sites and aliases (none of its sites live); the history keeps their calls";
@@ -179,7 +181,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 fn changed_part(path: &str) -> Option<&'static str> {
     if path.starts_with("/api/v1/radio") || path == "/api/v1/clock" {
         Some("radio")
-    } else if path.starts_with("/api/v1/systems") || path == "/api/v1/scan/add" {
+    } else if (path.starts_with("/api/v1/systems") && !path.ends_with("/preview")) || path == "/api/v1/scan/add" {
         Some("systems")
     } else if path == "/api/v1/hold" {
         Some("hold")
@@ -246,6 +248,8 @@ mod tests {
         assert_eq!(changed_part("/api/v1/systems/clay/sites/clay_1"), Some("systems"));
         assert_eq!(changed_part("/api/v1/scan/add"), Some("systems"));
         assert_eq!(changed_part("/api/v1/systems/clay/talkgroups/300"), Some("systems"));
+        assert_eq!(changed_part("/api/v1/systems/clay/radioreference"), Some("systems"));
+        assert_eq!(changed_part("/api/v1/systems/clay/radioreference/preview"), None, "a preview changes nothing");
         assert_eq!(changed_part("/api/v1/hold"), Some("hold"));
         assert_eq!(changed_part("/api/v1/scan"), None, "the scan's progress comes on its own");
         assert_eq!(changed_part("/api/v1/sites/clay_1/activate"), None, "the live state comes on its own");

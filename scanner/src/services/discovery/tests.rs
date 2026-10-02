@@ -138,9 +138,3 @@ fn dmr_finds_land_on_the_channel_raster() {
     assert_eq!(on_raster(451_086_000), 451_087_500);
     assert_eq!(on_raster(151_001_900), 151_002_500);
 }
-
-#[test]
-fn slugs() {
-    assert_eq!(slug("Florida Power & Light (Clay)"), "florida_power_light_clay");
-    assert_eq!(slug("  "), "site");
-}

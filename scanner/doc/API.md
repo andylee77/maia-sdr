@@ -49,6 +49,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | PUT | `/api/v1/systems/{id}/aliases` | replace a system's aliases (the live site follows them at once) |
 | PUT | `/api/v1/systems/{id}/listening` | how a system treats talkgroups with no priority, and pre-emption |
 | PUT | `/api/v1/systems/{id}/talkgroups/{tg}` | one talkgroup's controls: name, group, priority, do-not-monitor, record, speaker |
+| POST | `/api/v1/systems/{id}/radioreference` | import a RadioReference CSV (`csv`; talkgroups or sites, told by its header): talkgroups no alias covers become aliases (fully encrypted ones never followed unless `encrypted_do_not_monitor` is false); new sites are added (`sites`: only these rows), configured ones gain the channels they lack |
+| POST | `/api/v1/systems/{id}/radioreference/preview` | what that import would change; nothing is saved |
 | PUT | `/api/v1/systems/{system}/sites/{site}` | edit a site (the live site goes live again with the change) |
 | DELETE | `/api/v1/systems/{system}/sites/{site}` | remove a site (not the live one) and what it learned; the history keeps its calls |
 | DELETE | `/api/v1/systems/{id}` | remove a system with its sites and aliases (none of its sites live); the history keeps their calls |

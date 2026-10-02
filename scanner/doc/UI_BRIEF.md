@@ -13,6 +13,7 @@ and the decisions taken with him. The current pages stay only until the new ones
 | Order | Backend first (testable through the API), then the new UI; the Now page first for Andy's review. |
 | Talkgroups and radios | SDRTrunk's alias model replaces profiles: per system an alias list (name, group, color, talkgroup and radio IDs and ranges, priority or do-not-monitor, record) plus the left/right speaker. Edited from the live screen. |
 | SDRTrunk | Playlists import (systems, sites, control channels, aliases) and export, so the scanner and SDRTrunk stay in step. |
+| RadioReference | At least a basic import of its CSV downloads (Andy saved them while subscribed): a system's talkgroups as aliases, its sites as sites. |
 | The two traffic receivers | The radio has a control tuner and two traffic channels: "Traffic 1" and "Traffic 2" in the UI (SDRTrunk's word; the API's `lane`). Andy may prefer "Channel 1/2"; "channel" also names RF channels, so that is open. |
 | Updates | Everything on a page comes from the radio as it happens, over one WebSocket. No page polls. |
 | Screen | 1920x1080 is the design size; a mobile layout comes later. |
@@ -60,6 +61,9 @@ In this order; each item is usable through the API on its own.
 3. **SDRTrunk playlist import and export:**
    - systems, sites, control channels (SDRTrunk's channels), the alias lists and their IDs;
    - priority, record, group and color.
+
+   **RadioReference CSV import** (done: `/api/v1/systems/{id}/radioreference` and its
+   `/preview`; `DESIGN.md` section 3.4): talkgroups as aliases, sites as sites.
 4. **Manual add and edits:**
    - create a system (protocol, identity, name) and its sites (control channel and alternates, the DMR LCN plan);
    - rename a system and edit its identity.
@@ -119,6 +123,8 @@ p25-httpd's Now page was the better starting point (`p25-httpd/src/httpd/ui/js/v
   - what is saved is readable.
 - **Add by hand** (decision above).
 - **Import and export** an SDRTrunk playlist.
+- **Import RadioReference CSVs** into a system: the preview lists what would be added or kept,
+  the user ticks the sites, then imports.
 
 ### Aliases
 

@@ -1,5 +1,5 @@
 //! `/api/v1/systems`: the configured systems and their sites; a system's names; the site editor;
-//! removing a system or a site.
+//! RadioReference imports; removing a system or a site.
 
 use std::sync::Arc;
 
@@ -11,6 +11,7 @@ use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
 use crate::hardware::presets::find_preset;
 use crate::services::config;
+use crate::services::config::radioreference::{self, ImportRequest, Imported};
 use crate::services::config::systems::{ChannelPlan, Control, Modulation, Site, System, Window};
 use crate::services::config::Removed;
 use crate::trunking::site::LiveState;
@@ -84,6 +85,40 @@ pub async fn put_site(State(s): State<Arc<AppState>>, Path((system, site)): Path
         s.live.activate(&site).await?;
     }
     Ok(Json(out))
+}
+
+/// Import a RadioReference CSV into a system. The live site follows new aliases at once, and goes
+/// live again when it gained channels.
+pub async fn import_radioreference(State(s): State<Arc<AppState>>, Path(id): Path<String>, Json(req): Json<ImportRequest>) -> ApiResult<Imported> {
+    let out = radioreference_import(&s, &id, &req, true).await?;
+    if !out.aliases_added.is_empty() {
+        s.live.aliases_changed().await;
+    }
+    if let LiveState::Live(l) = s.live.state() {
+        if out.sites_updated.iter().any(|u| u.site.id == l.site.id) {
+            s.live.activate(&l.site.id).await?;
+        }
+    }
+    Ok(Json(out))
+}
+
+/// What importing a RadioReference CSV would change; nothing is saved.
+pub async fn preview_radioreference(State(s): State<Arc<AppState>>, Path(id): Path<String>, Json(req): Json<ImportRequest>) -> ApiResult<Imported> {
+    Ok(Json(radioreference_import(&s, &id, &req, false).await?))
+}
+
+async fn radioreference_import(s: &AppState, id: &str, req: &ImportRequest, save: bool) -> Result<Imported, ApiError> {
+    let file = radioreference::parse(&req.csv).map_err(ApiError::bad_request)?;
+    let mut c = s.config.lock().await;
+    let site_ids: Vec<String> = c.systems.value.systems.iter().flat_map(|x| x.sites.iter().map(|y| y.id.clone())).collect();
+    let sys = c.systems.value.systems.iter_mut().find(|x| x.id == id).ok_or_else(|| ApiError::not_found(format!("system {id}")))?;
+    let mut next = sys.clone();
+    let out = radioreference::import(&mut next, &file, req, &site_ids).map_err(ApiError::bad_request)?;
+    if save {
+        *sys = next;
+        config::save(&s.paths.systems(), &c.systems)?;
+    }
+    Ok(out)
 }
 
 /// Is `site` live, being switched to, or the site a scan goes back to?

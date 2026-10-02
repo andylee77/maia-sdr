@@ -21,6 +21,7 @@ pub mod sweep;
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::events::SiteIdentity as HeardIdentity;
+use crate::services::config::ids::{slug, unique};
 use crate::services::config::state::IdenBand;
 use crate::services::config::systems::{Control, DmrModel, Protocol, Site, SiteIdentity, System, SystemIdentity, SystemsConfig};
 use carriers::Carrier;
@@ -212,23 +213,6 @@ pub struct Added {
     pub sites: Vec<String>,
     /// Sites already configured that gained alternate control channels.
     pub updated: Vec<String>,
-}
-
-/// A file-safe id from a label.
-pub fn slug(label: &str) -> String {
-    let mut s: String = label.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    while s.contains("__") {
-        s = s.replace("__", "_");
-    }
-    let s: String = s.trim_matches('_').chars().take(48).collect();
-    if s.is_empty() { "site".into() } else { s }
-}
-
-fn unique(base: String, taken: impl Fn(&str) -> bool) -> String {
-    if !taken(&base) {
-        return base;
-    }
-    (2..).map(|n| format!("{base}_{n}")).find(|c| !taken(c)).unwrap_or(base)
 }
 
 /// Add the chosen found sites to `systems`: a configured site gains alternate control channels

@@ -191,7 +191,7 @@ scanner/src/         the fresh crate (D13)
     agc.rs           PcmAgc, the only copy
     live.rs          per lane: frames, codec, AGC, pacer; the audio broadcast
   services/
-    config/          radio, systems, aliases, state, ids
+    config/          radio, systems, aliases, radioreference, state, ids
     history/         schema v2, store, the writer
     recordings/      the recorder, storage (RAM/SD), index, wav
     discovery/       carriers, probes (P25 and DMR), the sweep, grouping and merge
@@ -364,7 +364,33 @@ the recorder and every name shown read them, for P25 and DMR alike:
 `/talkgroups/{tg}` sets one talkgroup's controls from the live screen. The live site follows
 each change at once.
 
-### 3.4 A new unit
+### 3.4 RadioReference files
+
+RadioReference's CSV downloads import into a configured system
+(`POST /api/v1/systems/{id}/radioreference`; `/preview` shows what would change and saves
+nothing). The header row says which file it is, and a file is checked whole first
+(`config::radioreference`).
+
+- **Talkgroups** (`trs_tg_*.csv`: decimal ID, alpha tag, mode, category): an alias for each
+  talkgroup no alias covers yet, named by the alpha tag and grouped by the category, as
+  SDRTrunk's import makes them. Talkgroups an alias already covers are kept. Fully encrypted
+  talkgroups (mode `E`; `e` is partly) are never followed unless `encrypted_do_not_monitor` is
+  false (SDRTrunk's default too).
+- **Sites** (`trs_sites_*.csv`: RFSS or region, site, NAC, description, then the frequencies,
+  control channels marked `c`). The file's protocol must be the system's: an RFSS and NAC mean
+  P25, a region DMR.
+  - A new site starts on the first `c` frequency, with the others as alternates and every other
+    frequency as a known channel. The county, location and range go in its notes.
+  - A configured site (a P25 site by RFSS and site, else by a control channel within 3 kHz)
+    gains the channels it lacks and a missing NAC; its name and control channel stay.
+  - `sites` limits the import to the rows a preview listed and the user ticked.
+- **Not in the files:** the system's WACN and system ID (the scan that added the system gave
+  them) and a DMR site's LCN plan (the site editor).
+- **Alternate control channels:** RadioReference lists every channel that can carry control,
+  and the receiver stays on the site's one control channel. A new site whose first `c` is not
+  the one in use needs its control channel set in the site editor.
+
+### 3.5 A new unit
 
 - Nothing is migrated (D16). With no `/mnt/jffs2/scanner/`, the radio has no systems and the
   default settings; the history and the recordings start empty on the card.
@@ -1341,3 +1367,5 @@ From the brief:
     on the card are never read.
   - **Field inventory:** `doc/API_FIELDS.md` (`tools/api_fields.py` against a unit) gives
     every field of every GET route and `/ws/live` its type, an example and its meaning.
+  - **RadioReference CSV import** (section 3.4): a system's talkgroups file becomes aliases and
+    its sites file sites, with a preview first. Andy's saved downloads are the test files.
