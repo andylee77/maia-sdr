@@ -117,6 +117,9 @@ pub struct GrantIn {
     /// As the control channel names it ("0-1189", "LCN 6").
     pub channel_label: Option<String>,
     pub encrypted: bool,
+    pub emergency: bool,
+    /// A unit-to-unit call (`tg` is the called radio).
+    pub private: bool,
     /// P25 NAC of the control channel (0 for DMR).
     pub nac: u16,
     pub decision: Decision,
@@ -176,6 +179,8 @@ pub struct Opened {
     pub channel: ChannelKey,
     pub channel_label: Option<String>,
     pub encrypted: bool,
+    pub emergency: bool,
+    pub private: bool,
     pub not_followed: Option<NotFollowed>,
     pub via: OpenReason,
     pub lane: Option<Lane>,
@@ -252,6 +257,8 @@ pub struct Call {
     pub channel: ChannelKey,
     pub channel_label: Option<String>,
     pub encrypted: bool,
+    pub emergency: bool,
+    pub private: bool,
     pub not_followed: Option<NotFollowed>,
     pub lane: Option<Lane>,
     pub started: Stamp,
@@ -280,6 +287,8 @@ impl Call {
             channel: g.channel,
             channel_label: g.channel_label.clone(),
             encrypted: g.encrypted,
+            emergency: g.emergency,
+            private: g.private,
             not_followed: match g.decision {
                 Decision::NotFollowed(r) => Some(r),
                 Decision::Followed(_) => None,
@@ -377,6 +386,10 @@ impl Call {
         }
     }
 
+    pub fn first_voice_unix_ms(&self) -> Option<u64> {
+        self.first_voice.map(|s| s.unix_ms)
+    }
+
     fn opened(&self, site: &str, via: OpenReason) -> Opened {
         Opened {
             call: self.id,
@@ -387,6 +400,8 @@ impl Call {
             channel: self.channel,
             channel_label: self.channel_label.clone(),
             encrypted: self.encrypted,
+            emergency: self.emergency,
+            private: self.private,
             not_followed: self.not_followed,
             via,
             lane: self.lane,

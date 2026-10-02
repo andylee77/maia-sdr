@@ -6,10 +6,10 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 |--------|------|------|
 | GET | `/api/v1/routes` | this list |
 | GET | `/api/v1/status` | build, uptime, the live site, its control channel and the tuning |
-| GET | `/api/v1/calls` | the live site's open calls and its newest closed ones (from its history after a restart or switch) |
+| GET | `/api/v1/calls` | the live site's open calls and its newest closed ones (from its history after a restart or switch), with names |
 | GET | `/api/v1/hold` | the talkgroup the live site is held on, if any |
 | PUT | `/api/v1/hold` | hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the profile says |
-| GET | `/api/v1/calls/{id}` | one call: live while recent, else from the history |
+| GET | `/api/v1/calls/{id}` | one call, live while recent, else from the history; the same shape either way |
 | GET | `/ws/events` | a text frame when a call opens or closes or a recording is saved |
 | GET | `/ws/audio` | live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta and lag frames); without, lane one untagged |
 | GET | `/api/v1/data` | packet data of a site (`site`, default the live one; `all`): totals, radios and recent records (`limit`) |
@@ -20,7 +20,7 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/activity/radio/{unit}` | the talkgroups a radio used, its affiliations and registrations |
 | GET | `/api/v1/activity/talkgroup/{tg}` | a talkgroup's radios and encryption history |
 | GET | `/api/v1/activity/series` | calls and time per hour or day (`bucket`, `tz`, `tg`, `unit`) |
-| GET | `/api/v1/activity/calls` | calls newest first (`tg`, `unit`, `limit`; `format=csv` as a file) |
+| GET | `/api/v1/activity/calls` | calls newest first in `/calls`' shape with names (`tg`, `unit`, `limit`; `format=csv`: history rows as a file) |
 | GET | `/api/v1/spectrum` | the receive window from the wideband spectrometer (`bins`), with the control channel and lanes |
 | GET | `/api/v1/events` | the event log after `after` (newest `limit`; housekeeping too with `routine=true`) |
 | GET | `/api/v1/system` | the board's health: load, memory, CPU per core and per scanner thread, temperatures |

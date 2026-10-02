@@ -78,6 +78,8 @@ pub struct UiCall {
     pub ended_unix_ms: Option<u64>,
     /// How long the call was (or has been) open: the bench's measure of the call's span.
     pub open_ms: u64,
+    /// From the grant to the first voice.
+    pub first_voice_ms: Option<u64>,
     /// The call's own voice frames, and their length.
     pub imbe: u64,
     pub voice_ms: u64,
@@ -97,6 +99,7 @@ impl UiCall {
             started_unix_ms: c.started_unix_ms,
             ended_unix_ms: c.ended_unix_ms,
             open_ms: c.ended_unix_ms.unwrap_or(now_unix_ms).saturating_sub(c.started_unix_ms),
+            first_voice_ms: c.first_voice_unix_ms.map(|t| t.saturating_sub(c.started_unix_ms)),
             imbe: c.voice_frames,
             voice_ms: c.voice_frames * 20,
             encrypted: c.encrypted,
@@ -165,14 +168,21 @@ mod tests {
             slot: None,
             channel: None,
             encrypted: false,
+            emergency: false,
+            private: false,
             not_followed: None,
             lane: Some(1),
             started_unix_ms: started,
+            first_voice_unix_ms: Some(started + 250),
             ended_unix_ms: ended.then_some(started + 1_000),
+            open_ms: ended.then_some(1_000),
+            grant_ms: ended.then_some(1_000),
             close: ended.then(|| "call_end".to_string()),
             end_lc: None,
             sources: vec![1014],
             voice_frames: frames,
+            codec: Some("imbe".into()),
+            frame_errors: None,
         }
     }
 
@@ -182,6 +192,7 @@ mod tests {
         let items = ui_items(v.clone(), 40, 3_500);
         assert_eq!(items.iter().map(|c| (c.call_id, c.imbe)).collect::<Vec<_>>(), [(3, 9), (2, 45), (1, 81)]);
         assert_eq!(items[1].close_reason.as_deref(), Some("call_end"));
+        assert_eq!(items[1].first_voice_ms, Some(250), "from the grant");
         // The span: closed calls to their end, the open one to now.
         assert_eq!(items.iter().map(|c| (c.open_ms, c.voice_ms)).collect::<Vec<_>>(), [(500, 180), (1_000, 900), (1_000, 1_620)]);
         assert_eq!(ui_items(v, 2, 3_500).len(), 2);

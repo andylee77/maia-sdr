@@ -11,7 +11,7 @@ use std::time::Duration;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 
-use super::schema::{SCHEMA, VERSION};
+use super::schema::{ADDED, SCHEMA, VERSION};
 
 pub const HOUR_MS: u64 = 3_600_000;
 const READ_BUSY: Duration = Duration::from_secs(2);
@@ -35,6 +35,10 @@ pub struct CallRow {
     /// The lane that followed it (0 = none).
     pub lane: u8,
     pub encrypted: bool,
+    pub emergency: bool,
+    /// A unit-to-unit call (`tg` is the called radio).
+    pub private: bool,
+    pub first_voice_ms: Option<u64>,
     pub followed: bool,
     pub not_followed: Option<String>,
     /// Decoded voice (frames x 20 ms).
@@ -319,7 +323,8 @@ fn units_of(list: Option<String>) -> Vec<u32> {
 const CALL_COLUMNS: &str = "c.site, c.call_id, c.started_ms, c.ended_ms, c.tg, c.source, c.freq_hz, c.channel,
      c.timeslot, c.lane, c.encrypted, c.followed, c.not_followed, c.voice_ms, c.grant_ms, c.codec, c.frames,
      c.frame_errors, c.close_reason, c.end_kind,
-     (SELECT GROUP_CONCAT(unit) FROM (SELECT unit FROM transmissions t WHERE t.call = c.id ORDER BY t.rowid))";
+     (SELECT GROUP_CONCAT(unit) FROM (SELECT unit FROM transmissions t WHERE t.call = c.id ORDER BY t.rowid)),
+     c.emergency, c.target = 'unit', c.first_voice_ms";
 
 fn call_row(r: &rusqlite::Row) -> rusqlite::Result<CallRow> {
     Ok(CallRow {
@@ -344,6 +349,9 @@ fn call_row(r: &rusqlite::Row) -> rusqlite::Result<CallRow> {
         close_reason: r.get::<_, Option<String>>(18)?.unwrap_or_default(),
         end_kind: r.get(19)?,
         sources: units_of(r.get(20)?),
+        emergency: r.get(21)?,
+        private: r.get(22)?,
+        first_voice_ms: r.get::<_, Option<i64>>(23)?.map(to_u64),
     })
 }
 
@@ -359,8 +367,18 @@ impl Store {
         let _: String = write.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         write.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")?;
         write.execute_batch(SCHEMA)?;
+        for (table, column, kind) in ADDED {
+            let has: i64 = write.query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+                params![column],
+                |r| r.get(0),
+            )?;
+            if has == 0 {
+                write.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+            }
+        }
         write.execute(
-            "INSERT INTO meta (key, value) VALUES ('schema', ?1) ON CONFLICT(key) DO NOTHING",
+            "INSERT INTO meta (key, value) VALUES ('schema', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![VERSION.to_string()],
         )?;
         let read = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
@@ -903,8 +921,9 @@ pub fn insert_calls(tx: &rusqlite::Transaction, rows: &[CallRow]) -> rusqlite::R
     let mut added = 0;
     let mut ins = tx.prepare_cached(
         "INSERT OR IGNORE INTO calls (site, call_id, started_ms, ended_ms, tg, source, freq_hz, channel, timeslot, lane,
-         encrypted, followed, not_followed, voice_ms, grant_ms, codec, frames, frame_errors, close_reason, end_kind)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+         encrypted, followed, not_followed, voice_ms, grant_ms, codec, frames, frame_errors, close_reason, end_kind,
+         emergency, target, first_voice_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
     )?;
     let mut unit = tx.prepare_cached(
         "INSERT INTO transmissions (call, site, unit, started_ms, primary_src) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -951,7 +970,8 @@ pub fn insert_calls(tx: &rusqlite::Transaction, rows: &[CallRow]) -> rusqlite::R
         let n = ins.execute(params![
             r.site, r.call_id as i64, r.started_ms as i64, r.ended_ms as i64, r.tg, r.source, r.freq_hz.map(|f| f as i64),
             r.channel, r.timeslot, r.lane, r.encrypted, r.followed, r.not_followed, r.voice_ms as i64, r.grant_ms as i64,
-            r.codec, r.frames as i64, r.frame_errors as i64, r.close_reason, r.end_kind,
+            r.codec, r.frames as i64, r.frame_errors as i64, r.close_reason, r.end_kind, r.emergency,
+            if r.private { "unit" } else { "group" }, r.first_voice_ms.map(|t| t as i64),
         ])?;
         if n == 0 {
             continue;
@@ -998,13 +1018,13 @@ fn calls_sql(q: &Range) -> String {
 
 const CSV_CHUNK: usize = 64 * 1024;
 pub const CSV_HEADER: &str =
-    "site,call_id,started_utc,started_ms,ended_ms,tg,source,sources,freq_hz,channel,timeslot,lane,encrypted,followed,not_followed,voice_ms,grant_ms,codec,frames,frame_errors,close_reason,end_kind\n";
+    "site,call_id,started_utc,started_ms,ended_ms,tg,source,sources,freq_hz,channel,timeslot,lane,encrypted,followed,not_followed,voice_ms,grant_ms,codec,frames,frame_errors,close_reason,end_kind,emergency,private,first_voice_ms\n";
 
 /// One call as a CSV line.
 pub fn push_csv(out: &mut String, r: &CallRow) {
     let opt = |v: Option<String>| v.unwrap_or_default();
     out.push_str(&format!(
-        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
         r.site,
         r.call_id,
         crate::util::time::iso_utc(r.started_ms),
@@ -1027,5 +1047,8 @@ pub fn push_csv(out: &mut String, r: &CallRow) {
         r.frame_errors,
         r.close_reason,
         opt(r.end_kind.clone()),
+        u8::from(r.emergency),
+        u8::from(r.private),
+        opt(r.first_voice_ms.map(|v| v.to_string())),
     ));
 }

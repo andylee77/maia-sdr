@@ -291,13 +291,13 @@ export function mount(host) {
   function renderCalls(items) {
     callsCard.body.replaceChildren(items.length
       ? table(['Start', 'Talkgroup', 'Radios', 'Voice', 'Grant', ''], items.map(c => h('tr', null,
-        h('td', { text: when(c.started_ms) }),
-        h('td', { text: 'TG ' + c.tg }),
+        h('td', { text: when(c.started_unix_ms) }),
+        h('td', { text: 'TG ' + c.tg + (c.tg_name ? ` ${c.tg_name}` : '') }),
         h('td', { text: c.sources.length ? c.sources.join(', ') : DASH }),
-        h('td', { text: c.voice_ms ? dur(c.voice_ms) : DASH }),
+        h('td', { text: c.voice_frames ? dur(c.voice_frames * 20) : DASH }),
         h('td', { text: dur(c.grant_ms) }),
         h('td', null, c.encrypted ? h('span', { class: 'badge enc', text: 'enc' })
-          : (c.followed ? '' : h('span', { class: 'badge hang', text: c.not_followed || 'missed' }))))))
+          : (c.not_followed ? h('span', { class: 'badge hang', text: c.not_followed }) : ''))))))
       : h('p', { class: 'card-note', text: 'No calls in this period.' }));
   }
 

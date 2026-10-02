@@ -23,6 +23,9 @@ fn call(call_id: u64, at: u64, tg: u32, sources: &[u32], voice_ms: u64, enc: boo
         freq_hz: Some(858_437_500),
         channel: Some("0-1189".into()),
         timeslot: None,
+        emergency: false,
+        private: false,
+        first_voice_ms: None,
         lane: 1,
         encrypted: enc,
         followed: !enc,
@@ -62,6 +65,27 @@ fn store_at(tag: &str) -> Store {
 
 fn range() -> Range {
     Range::site("clay", T0, T0 + 3 * H)
+}
+
+#[test]
+fn an_older_database_gains_the_new_columns_and_they_round_trip() {
+    let path = temp("upgrade");
+    drop(Store::open(&path).unwrap());
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "ALTER TABLE calls DROP COLUMN emergency; ALTER TABLE calls DROP COLUMN first_voice_ms;
+             UPDATE meta SET value = '2' WHERE key = 'schema';",
+        )
+        .unwrap();
+    let s = Store::open(&path).unwrap();
+    s.note_site(&clay()).unwrap();
+    let row = CallRow { emergency: true, private: true, first_voice_ms: Some(T0 + 300), ..call(7, T0, 4001, &[101], 1_000, false) };
+    assert_eq!(s.insert_calls(&[row.clone()]).unwrap(), 1);
+    assert_eq!(s.call(7).unwrap(), Some(row));
+    let schema: String =
+        rusqlite::Connection::open(&path).unwrap().query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| r.get(0)).unwrap();
+    assert_eq!(schema, "3");
 }
 
 #[test]
@@ -337,7 +361,7 @@ fn as_v1(mut call: Value) -> Value {
         let v = o.remove(v2).unwrap();
         o.insert(v1.into(), v);
     }
-    for gone in ["timeslot", "codec", "end_kind"] {
+    for gone in ["timeslot", "codec", "end_kind", "emergency", "private", "first_voice_ms"] {
         o.remove(gone);
     }
     call

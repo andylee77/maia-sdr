@@ -1,4 +1,5 @@
-//! The history database, schema v2.
+//! The history database, schema v3 (v3 added `calls.emergency` and `calls.first_voice_ms`; `target`
+//! is `unit` for a unit-to-unit call).
 //!
 //! - `calls`: every finished call, followed or not, with its site; `transmissions`: the radios
 //!   heard in it, the primary (the grant's radio, else the voice's) first.
@@ -13,7 +14,7 @@
 //! calls only) and grant (the grant to its last update on the control channel; the only time
 //! known for a call that was not followed, credited to the radio granted the channel).
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 pub const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -52,6 +53,8 @@ CREATE TABLE IF NOT EXISTS calls (
     frame_errors INTEGER NOT NULL DEFAULT 0,
     close_reason TEXT,
     end_kind TEXT,
+    emergency INTEGER NOT NULL DEFAULT 0,
+    first_voice_ms INTEGER,
     UNIQUE(site, call_id, started_ms)
 );
 CREATE INDEX IF NOT EXISTS calls_site_time ON calls(site, started_ms);
@@ -142,3 +145,9 @@ CREATE TABLE IF NOT EXISTS recordings (
 );
 CREATE INDEX IF NOT EXISTS recordings_call_id ON recordings(call_id);
 ";
+
+/// Columns a later schema added to a table, for a database an earlier one created.
+pub const ADDED: &[(&str, &str, &str)] = &[
+    ("calls", "emergency", "INTEGER NOT NULL DEFAULT 0"),
+    ("calls", "first_voice_ms", "INTEGER"),
+];

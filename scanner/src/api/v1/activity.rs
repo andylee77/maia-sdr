@@ -15,8 +15,10 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use crate::api::v1::calls::{NamedCall, Names};
 use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
+use crate::trunking::trunk::view_of_row;
 use crate::services::history::store::{self, Bucket, CallRow, Range, SeriesFilter, SiteStat, Summary, HOUR_MS};
 use crate::trunking::site::LiveState;
 use crate::util::time::{iso_utc, unix_ms};
@@ -271,8 +273,8 @@ pub async fn series(State(s): State<Arc<AppState>>, Query(w): Query<Window>) -> 
     Ok(Json(Series { window: window(&r), bucket_ms, tz, buckets }))
 }
 
-/// Calls in the window, newest first; `format=csv` as a file.
-/// Calls in the window, newest first; `format=csv` as a file, streamed (up to a million).
+/// Calls in the window, newest first, in `/calls`' shape with names; `format=csv` as a file of
+/// history rows, streamed (up to a million).
 pub async fn calls(State(s): State<Arc<AppState>>, Query(w): Query<Window>) -> Result<Response, ApiError> {
     let r = range(&s, &w).await?;
     let f = SeriesFilter { tg: w.tg, unit: w.unit };
@@ -301,5 +303,7 @@ pub async fn calls(State(s): State<Arc<AppState>>, Query(w): Query<Window>) -> R
     let limit = w.limit.unwrap_or(200).clamp(1, JSON_CALLS_MAX);
     let q = r.clone();
     let rows: Vec<CallRow> = s.history.query(move |st| st.calls(&q, f, limit)).await?;
-    Ok(Json(Items { window: window(&r), items: rows }).into_response())
+    let names = Names::load(&s).await;
+    let items: Vec<NamedCall> = rows.into_iter().map(|row| names.call(view_of_row(row))).collect();
+    Ok(Json(Items { window: window(&r), items }).into_response())
 }

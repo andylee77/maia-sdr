@@ -110,6 +110,8 @@ fn replay(header: &Value, events: &[Value]) -> Vec<CallRecord> {
                     channel: ChannelKey { freq_hz: e["freq"].as_u64(), slot: None },
                     channel_label: e["ch"].as_u64().map(|c| c.to_string()),
                     encrypted: e["enc"].as_bool().unwrap_or(false),
+                    emergency: false,
+                    private: false,
                     nac: e["nac"].as_u64().unwrap_or(0) as u16,
                     decision,
                 };

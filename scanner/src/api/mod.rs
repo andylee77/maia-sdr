@@ -81,10 +81,10 @@ macro_rules! routes {
 routes! {
     get "/api/v1/routes" => routes, "this list";
     get "/api/v1/status" => v1::status::get, "build, uptime, the live site, its control channel and the tuning";
-    get "/api/v1/calls" => v1::calls::get, "the live site's open calls and its newest closed ones (from its history after a restart or switch)";
+    get "/api/v1/calls" => v1::calls::get, "the live site's open calls and its newest closed ones (from its history after a restart or switch), with names";
     get "/api/v1/hold" => v1::hold::get, "the talkgroup the live site is held on, if any";
     put "/api/v1/hold" => v1::hold::put, "hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the profile says";
-    get "/api/v1/calls/{id}" => v1::calls::one, "one call: live while recent, else from the history";
+    get "/api/v1/calls/{id}" => v1::calls::one, "one call, live while recent, else from the history; the same shape either way";
     get "/ws/events" => ws::events, "a text frame when a call opens or closes or a recording is saved";
     get "/ws/audio" => ws::audio, "live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta and lag frames); without, lane one untagged";
     get "/api/v1/data" => v1::data::get, "packet data of a site (`site`, default the live one; `all`): totals, radios and recent records (`limit`)";
@@ -95,7 +95,7 @@ routes! {
     get "/api/v1/activity/radio/{unit}" => v1::activity::radio, "the talkgroups a radio used, its affiliations and registrations";
     get "/api/v1/activity/talkgroup/{tg}" => v1::activity::talkgroup, "a talkgroup's radios and encryption history";
     get "/api/v1/activity/series" => v1::activity::series, "calls and time per hour or day (`bucket`, `tz`, `tg`, `unit`)";
-    get "/api/v1/activity/calls" => v1::activity::calls, "calls newest first (`tg`, `unit`, `limit`; `format=csv` as a file)";
+    get "/api/v1/activity/calls" => v1::activity::calls, "calls newest first in `/calls`' shape with names (`tg`, `unit`, `limit`; `format=csv`: history rows as a file)";
     get "/api/v1/spectrum" => v1::spectrum::get, "the receive window from the wideband spectrometer (`bins`), with the control channel and lanes";
     get "/api/v1/events" => v1::events::list, "the event log after `after` (newest `limit`; housekeeping too with `routine=true`)";
     get "/api/v1/system" => v1::system::get, "the board's health: load, memory, CPU per core and per scanner thread, temperatures";

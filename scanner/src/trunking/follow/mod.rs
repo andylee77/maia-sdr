@@ -313,6 +313,8 @@ impl Follower {
                 channel,
                 channel_label: Some(label(g)),
                 encrypted: g.encrypted,
+                emergency: g.emergency,
+                private: g.private,
                 nac,
                 decision,
             }))

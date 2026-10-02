@@ -105,14 +105,27 @@ pub struct CallView {
     pub slot: Option<u8>,
     pub channel: Option<String>,
     pub encrypted: bool,
+    pub emergency: bool,
+    /// A unit-to-unit call (`tg` is the called radio).
+    pub private: bool,
     pub not_followed: Option<String>,
     pub lane: Option<u8>,
     pub started_unix_ms: u64,
+    pub first_voice_unix_ms: Option<u64>,
     pub ended_unix_ms: Option<u64>,
+    /// From the grant to the close.
+    pub open_ms: Option<u64>,
+    /// From the grant to its last update on the control channel.
+    pub grant_ms: Option<u64>,
     pub close: Option<String>,
     pub end_lc: Option<String>,
     pub sources: Vec<u32>,
+    /// Decoded voice, 20 ms each.
     pub voice_frames: u64,
+    /// `imbe` or `ambe2`, once there was voice.
+    pub codec: Option<String>,
+    /// Voice frames the vocoder found errors in (known once the call is stored).
+    pub frame_errors: Option<u64>,
 }
 
 /// A lane as the trunking task sees it.
@@ -475,7 +488,8 @@ fn merge_recent(listed: Vec<CallView>, stored: Vec<CallRow>) -> VecDeque<CallVie
     all.into()
 }
 
-fn view_of_row(r: CallRow) -> CallView {
+/// A stored call in the live view's shape.
+pub fn view_of_row(r: CallRow) -> CallView {
     CallView {
         call: r.call_id,
         site: r.site,
@@ -486,15 +500,35 @@ fn view_of_row(r: CallRow) -> CallView {
         slot: r.timeslot,
         channel: r.channel,
         encrypted: r.encrypted,
+        emergency: r.emergency,
+        private: r.private,
         not_followed: r.not_followed,
         lane: (r.lane > 0).then_some(r.lane),
         started_unix_ms: r.started_ms,
+        first_voice_unix_ms: r.first_voice_ms,
         ended_unix_ms: Some(r.ended_ms),
+        open_ms: Some(r.ended_ms.saturating_sub(r.started_ms)),
+        grant_ms: Some(r.grant_ms),
         close: Some(r.close_reason),
         end_lc: r.end_kind,
         sources: r.sources,
         voice_frames: r.voice_ms / 20,
+        codec: r.codec,
+        frame_errors: Some(r.frame_errors),
     }
+}
+
+/// The grant to its last update; a call with no update was shorter than their period.
+fn grant_ms(c: &Closed) -> u64 {
+    match c.last_update_unix_ms.saturating_sub(c.started_unix_ms) {
+        0 => c.ended_unix_ms.saturating_sub(c.started_unix_ms),
+        ms => ms,
+    }
+}
+
+/// The codec a call's voice was decoded with, once it had voice.
+fn codec_of(o: &Opened, voice_frames: u64, codec: &'static str) -> Option<String> {
+    (o.lane.is_some() && voice_frames > 0).then(|| codec.to_string())
 }
 
 fn lane_number(l: Option<Lane>) -> Option<u8> {
@@ -875,7 +909,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                         }
                         self.history.call(call_row(&o, &c, self.codec));
                         self.notices.send(Notice::CallClosed { call: o.call, tg: o.tg });
-                        self.recent.push_front(view_of(&o, Some(&c)));
+                        self.recent.push_front(view_of(&o, Some(&c), self.codec));
                         self.recent.truncate(RECENT);
                     }
                 }
@@ -896,13 +930,15 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
     fn publish(&self) {
         let mut open: Vec<CallView> = Vec::new();
         for o in &self.open {
-            let mut v = view_of(o, None);
+            let mut v = view_of(o, None, self.codec);
             let call = o.lane.and_then(|l| self.book.on_lane(l)).filter(|c| c.id == o.call);
             if let Some(c) = call {
                 v.source = c.source;
                 v.speaker = c.speaker;
                 v.sources = c.sources.clone();
                 v.voice_frames = c.voice_frames;
+                v.first_voice_unix_ms = c.first_voice_unix_ms();
+                v.codec = codec_of(o, c.voice_frames, self.codec);
                 v.end_lc = c.end_lc().map(str::to_string);
             }
             open.push(v);
@@ -922,7 +958,8 @@ pub fn resume_needs_reset(pll: Option<crate::radio::tuner::LanePll>, since_voice
     stale || pll.is_some_and(|p| p.hot())
 }
 
-fn view_of(o: &Opened, c: Option<&Closed>) -> CallView {
+fn view_of(o: &Opened, c: Option<&Closed>, codec: &'static str) -> CallView {
+    let voice_frames = c.map_or(0, |c| c.voice_frames);
     CallView {
         call: o.call,
         site: o.site.clone(),
@@ -933,14 +970,21 @@ fn view_of(o: &Opened, c: Option<&Closed>) -> CallView {
         slot: o.channel.slot,
         channel: o.channel_label.clone(),
         encrypted: o.encrypted,
+        emergency: o.emergency,
+        private: o.private,
         not_followed: o.not_followed.map(|n| n.as_str().to_string()),
         lane: lane_number(o.lane),
         started_unix_ms: o.at_unix_ms,
+        first_voice_unix_ms: c.and_then(|c| c.first_voice_unix_ms),
         ended_unix_ms: c.map(|c| c.ended_unix_ms),
+        open_ms: c.map(|c| c.open_ms),
+        grant_ms: c.map(grant_ms),
         close: c.map(|c| c.reason.as_str().to_string()),
         end_lc: c.and_then(|c| c.end_lc).map(str::to_string),
         sources: c.map(|c| c.sources.clone()).unwrap_or_default(),
-        voice_frames: c.map_or(0, |c| c.voice_frames),
+        voice_frames,
+        codec: codec_of(o, voice_frames, codec),
+        frame_errors: None,
     }
 }
 
@@ -960,15 +1004,14 @@ fn call_row(o: &Opened, c: &Closed, codec: &'static str) -> CallRow {
         timeslot: o.channel.slot,
         lane: lane_number(o.lane).unwrap_or(0),
         encrypted: o.encrypted,
+        emergency: o.emergency,
+        private: o.private,
+        first_voice_ms: c.first_voice_unix_ms,
         followed,
         not_followed: o.not_followed.map(|n| n.as_str().to_string()),
         voice_ms: c.voice_frames * 20,
-        // The grant to its last update; a call with no update was shorter than their period.
-        grant_ms: match c.last_update_unix_ms.saturating_sub(c.started_unix_ms) {
-            0 => c.ended_unix_ms.saturating_sub(c.started_unix_ms),
-            ms => ms,
-        },
-        codec: (followed && c.voice_frames > 0).then(|| codec.to_string()),
+        grant_ms: grant_ms(c),
+        codec: codec_of(o, c.voice_frames, codec),
         frames: c.voice_frames,
         frame_errors: 0,
         close_reason: c.reason.as_str().to_string(),
@@ -1136,6 +1179,9 @@ mod tests {
             timeslot: None,
             lane: 0,
             encrypted: false,
+            emergency: false,
+            private: false,
+            first_voice_ms: None,
             followed: true,
             not_followed: None,
             voice_ms: 200,

@@ -37,6 +37,8 @@ fn grant_on(lane: Lane, tg: u32, source: u32, freq: u64) -> GrantIn {
         channel: ch(freq),
         channel_label: Some("0-1117".into()),
         encrypted: false,
+        emergency: false,
+        private: false,
         nac: 0,
         decision: Decision::Followed(lane),
     }
