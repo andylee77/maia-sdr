@@ -233,6 +233,8 @@ pub fn on_raster(freq_hz: u64) -> u64 {
 pub struct Probes {
     probes: Arc<Mutex<Vec<Box<dyn Probe>>>>,
     stop: Arc<AtomicBool>,
+    /// Drop what is queued: it was read before the reset.
+    drain: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     since: Instant,
 }
@@ -241,13 +243,16 @@ impl Probes {
     pub fn start(rx: Receiver<Input>, probes: Vec<Box<dyn Probe>>) -> std::io::Result<Probes> {
         let probes = Arc::new(Mutex::new(probes));
         let stop = Arc::new(AtomicBool::new(false));
-        let (p, s) = (probes.clone(), stop.clone());
-        let thread = std::thread::Builder::new().name("probe".into()).spawn(move || feed(&p, &s, rx))?;
-        Ok(Probes { probes, stop, thread: Some(thread), since: Instant::now() })
+        let drain = Arc::new(AtomicBool::new(false));
+        let (p, s, d) = (probes.clone(), stop.clone(), drain.clone());
+        let thread = std::thread::Builder::new().name("probe".into()).spawn(move || feed(&p, &s, &d, rx))?;
+        Ok(Probes { probes, stop, drain, thread: Some(thread), since: Instant::now() })
     }
 
-    /// The control channel moved to another carrier.
+    /// The control channel moved to another carrier and `sweep::RETUNE_SETTLE` has passed:
+    /// start afresh, without the samples still queued from before.
     pub fn reset(&mut self) {
+        self.drain.store(true, Ordering::Relaxed);
         for p in lock(&self.probes).iter_mut() {
             p.reset();
         }
@@ -289,7 +294,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn feed(probes: &Mutex<Vec<Box<dyn Probe>>>, stop: &AtomicBool, rx: Receiver<Input>) {
+fn feed(probes: &Mutex<Vec<Box<dyn Probe>>>, stop: &AtomicBool, drain: &AtomicBool, rx: Receiver<Input>) {
     let mut dibits = Vec::new();
     while !stop.load(Ordering::Relaxed) {
         let input = match rx.recv_timeout(Duration::from_millis(200)) {
@@ -297,6 +302,10 @@ fn feed(probes: &Mutex<Vec<Box<dyn Probe>>>, stop: &AtomicBool, rx: Receiver<Inp
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return,
         };
+        if drain.swap(false, Ordering::Relaxed) {
+            while rx.try_recv().is_ok() {}
+            continue;
+        }
         let now = Stamp::now();
         let mut ps = lock(probes);
         match input {

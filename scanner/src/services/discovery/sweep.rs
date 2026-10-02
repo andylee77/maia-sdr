@@ -33,6 +33,10 @@ const AFTER_IDENTITY: Duration = Duration::from_secs(3);
 const SAME_HZ: u64 = 3_000;
 /// How often a probe looks at what it heard (and at a cancel).
 const POLL: Duration = Duration::from_millis(250);
+/// After the control channel moves, before its samples are all the new carrier's: the control
+/// DDC's IQ arrives in sub-buffers of 8192 samples (164 ms at 50 kSPS; 6.1 a second on unit A),
+/// read every 40 ms, and the one under way at the move holds the old carrier.
+pub const RETUNE_SETTLE: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
 pub struct Discovery {
@@ -223,6 +227,9 @@ impl Discovery {
     ) -> Result<()> {
         self.update(|d| d.probing_hz = Some(c.freq_hz));
         tuner.set_control(c.freq_hz).await?;
+        // Without this, the last carrier's messages are decoded as this one's (its identity
+        // lands on this frequency).
+        tokio::time::sleep(RETUNE_SETTLE).await;
         probes.reset();
         let t0 = Instant::now();
         let probed_by = t0 + Duration::from_millis(req.probe_ms);

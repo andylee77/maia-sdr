@@ -81,16 +81,36 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .sys-head .ids .k + * { margin-right: 10px; }
 .sys-head .ids .inline { color: var(--text); }
 .sites-wrap { overflow-x: auto; }
-table.sites { width: 100%; border-collapse: collapse; }
+table.sites { width: 100%; min-width: 48em; border-collapse: collapse; table-layout: fixed; }
+table.sites col.c-tick { width: 2.2em; }
+table.sites col.c-name { width: 14em; }
+table.sites col.c-id { width: 6.5em; }
+table.sites col.c-freq { width: 7.5em; }
+table.sites col.c-ts { width: 4em; }
+table.sites tr.site td { border-bottom: 0; padding-bottom: 0; }
+table.sites tr.freqs td { padding-top: 0; padding-bottom: 8px; white-space: normal; }
+table.sites tr.freqs .k {
+  color: var(--text-faint); font-size: 0.74em; text-transform: uppercase; letter-spacing: 0.06em;
+  margin: 0 6px 0 4px;
+}
+table.sites tr.freqs .list + .k { margin-left: 28px; }
+table.sites td .inline { width: 100% !important; }
+table.sites td .nowrap { display: flex; align-items: center; }
+table.sites td .nowrap .inline { flex: 1; min-width: 0; }
+.sys-head .inline.title { width: 16em !important; }
+.sys-head .d-location { width: 15em !important; }
+.sys-head .d-county { width: 9em !important; }
+.sys-head .d-system_type { width: 11em !important; }
+.sys-head .d-voice { width: 22em !important; }
 table.sites th {
   text-align: left; font-weight: 500; white-space: nowrap;
   color: var(--text-faint); font-size: 0.74em; text-transform: uppercase; letter-spacing: 0.06em;
   padding: 4px 6px; border-bottom: 1px solid var(--line);
 }
 table.sites td { padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-/* Columns hug their values; the last one takes the rest, its contents to the right. */
-table.sites th, table.sites td { width: 1%; white-space: nowrap; padding-right: 16px; }
-table.sites th:last-child, table.sites td.end { width: auto; padding-right: 0; }
+table.sites th, table.sites td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 12px; }
+table.sites td .list { display: inline-block; white-space: normal; vertical-align: baseline; }
+table.sites th:last-child, table.sites td.end { padding-right: 0; }
 table.sites td.end .dim { font-size: 0.9em; }
 .sys-title { font-weight: 600; font-size: 1.06em; padding: 1px 5px; }
 table.sites tbody tr:last-child td { border-bottom: 0; }

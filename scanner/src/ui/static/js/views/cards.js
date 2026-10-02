@@ -112,7 +112,7 @@ export function systemHead(sys, { right = [], onInput } = {}) {
   const name = inline(sys.label, 'System name', { cls: 'title', onInput });
   const ids = p.identityEdits.map(f => idValue(f, (sys.identity || {})[f.key], onInput));
   const details = [['location', 'Location'], ['county', 'County'], ['system_type', 'System type'], ['voice', 'System voice']]
-    .map(([key, label]) => [key, inline(key === 'system_type' ? d.system_type ?? p.systemType : d[key], label, { onInput })]);
+    .map(([key, label]) => [key, inline(key === 'system_type' ? d.system_type ?? p.systemType : d[key], label, { cls: `d-${key}`, onInput })]);
   return {
     el: h('div', { class: 'sys-head' },
       h('div', { class: 'line' }, name, h('span', { class: 'badge', text: p.label }),
@@ -127,18 +127,25 @@ export function systemHead(sys, { right = [], onInput } = {}) {
   };
 }
 
-// A system's sites as a table. Each of `rows`: {site, lead (before the name: a tick), heard
-// (traffic channels granted on the air), tail (after the channels: reception, status,
-// buttons)}. `traffic` shows the traffic column; `settings` adds each site's receiver settings
-// behind a button. Each row's read() gives the site as the API takes it.
+// A system's sites as a table: a line per site (name, identity, control channel, then `tail`),
+// and under it a line of its other frequencies (the control channels it may move to, its
+// traffic channels). Each of `rows`: {site, lead (before the name: a tick), heard (traffic
+// channels granted on the air), tail (reception, status, buttons)}. `traffic` shows the
+// traffic channels; `settings` adds each site's receiver settings behind a button. Each row's
+// read() gives the site as the API takes it.
 export function siteTable(proto, rows, { traffic = true, settings = false, onInput } = {}) {
   const p = protocol(proto);
   const leads = rows.some(r => r.lead);
-  const cols = [...(leads ? [''] : []), 'Name', ...p.siteIdentityEdits.map(f => f.label), 'Control', 'Also', ...(p.edits.controlSlot ? ['TS'] : []), ...(traffic ? ['Traffic'] : []), ''];
+  // [heading, width class]: every table has the same columns, so tables line up.
+  const cols = [
+    ...(leads ? [['', 'c-tick']] : []), ['Name', 'c-name'], ...p.siteIdentityEdits.map(f => [f.label, 'c-id']),
+    ['Control', 'c-freq'], ...(p.edits.controlSlot ? [['TS', 'c-ts']] : []), ['', 'c-end'],
+  ];
   const out = rows.map(r => siteRow(p, r, { leads, traffic, settings, onInput, span: cols.length }));
   return {
     el: h('div', { class: 'sites-wrap' }, h('table', { class: 'sites' },
-      h('thead', null, h('tr', null, ...cols.map(c => h('th', { text: c })))),
+      h('colgroup', null, ...cols.map(([, cls]) => h('col', { class: cls }))),
+      h('thead', null, h('tr', null, ...cols.map(([c]) => h('th', { text: c })))),
       h('tbody', null, ...out.flatMap(x => x.trs)))),
     rows: out,
   };
@@ -163,14 +170,18 @@ function siteRow(p, { site, lead = null, heard = [], tail = [] }, { leads, traff
   const moreRow = more ? h('tr', { class: 'more', hidden: true }, h('td', { colspan: String(span) }, more.el)) : null;
   const moreButton = more ? iconButton('tune', 'Settings', { onclick: () => { moreRow.hidden = !moreRow.hidden; } }) : null;
 
-  const tr = h('tr', null,
+  const tr = h('tr', { class: 'site' },
     ...(leads ? [h('td', null, lead)] : []), h('td', null, name), ...ids.map(x => h('td', null, x.node)),
-    h('td', null, control), h('td', null, also.node),
+    h('td', null, control),
     ...(p.edits.controlSlot ? [h('td', null, slot)] : []),
-    ...(traffic ? [h('td', null, channels.node)] : []),
     h('td', { class: 'end' }, ...tail, moreButton));
+  const freqs = h('tr', { class: 'freqs' },
+    ...(leads ? [h('td')] : []),
+    h('td', { colspan: String(span - (leads ? 1 : 0)) },
+      h('span', { class: 'k', text: 'Also' }), also.node,
+      ...(traffic ? [h('span', { class: 'k', text: 'Traffic' }), channels.node] : [])));
   return {
-    trs: moreRow ? [tr, moreRow] : [tr],
+    trs: [tr, freqs, ...(moreRow ? [moreRow] : [])],
     site,
     edited: () => edited,
     read() {

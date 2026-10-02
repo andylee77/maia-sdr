@@ -1,6 +1,6 @@
-// Systems: find the systems on the air; every configured system as a card (its name, details and
-// identity, then its sites with their channels), edited in place; make a site live or stop it;
-// remove a site or a system.
+// Systems: find the systems on the air; the configured systems, one at a time from a pull-down
+// (its name, details and identity, then its sites with their channels), edited in place; make a
+// site live or stop it; remove a site or a system.
 
 import { h, card, toast, iconButton } from '../dom.js';
 import { api } from '../api.js';
@@ -91,11 +91,32 @@ export function mount(el) {
     return box;
   }
 
+  // The system shown: the one picked, else the live site's, else the first.
+  let selected = null;
+
   function render() {
     if (editing > 0) return;
-    list.body.replaceChildren(...(systems.length
-      ? systems.map(systemCard)
-      : [h('p', { class: 'dim', text: 'None yet: scan for systems above.' })]));
+    if (!systems.length) {
+      list.right.replaceChildren();
+      list.body.replaceChildren(h('p', { class: 'dim', text: 'None yet: scan for systems above.' }));
+      return;
+    }
+    const live = systems.find(s => s.sites.some(x => x.id === liveId));
+    if (!systems.some(s => s.id === selected)) selected = (live || systems[0]).id;
+    const pick = h('select', { class: 'input', 'aria-label': 'System' },
+      ...systems.map(s => h('option', { value: s.id, text: `${s.label}${s === live ? ' (live)' : ''}` })));
+    pick.value = selected;
+    pick.addEventListener('change', () => {
+      if (editing > 0 && !confirm('Leave this system without saving its changes?')) {
+        pick.value = selected;
+        return;
+      }
+      selected = pick.value;
+      editing = 0;
+      render();
+    });
+    list.right.replaceChildren(h('span', { class: 'dim', text: `${systems.length} system${systems.length === 1 ? '' : 's'}` }), pick);
+    list.body.replaceChildren(systemCard(systems.find(s => s.id === selected)));
   }
 
   async function load() {

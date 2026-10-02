@@ -144,25 +144,32 @@ export function scanCard(onAdded) {
     return configured.find(sys => sys.protocol === g.protocol && p.sameSystem(sys.identity || {}, g.sites[0].identity));
   }
 
-  // Is a found site configured: a site on its control channel (or an alternate) within 3 kHz,
-  // or the same site of the same system?
-  function isConfigured(f) {
+  // The configured site a found one is: one on its control channel within 3 kHz (`moved`
+  // false), or one it announces as an alternate or the same site of the same system, configured
+  // on another channel (`moved` true).
+  function configuredSite(f) {
     const p = protocol(f.protocol);
     const near = hz => Math.abs(hz - f.freq_hz) <= 3000;
     const key = p.siteKey(f.identity);
-    return configured.some(sys => sys.protocol === f.protocol && sys.sites.some(s => near(s.control.freq_hz)
-      || (s.control.alternates_hz || []).some(near)
-      || (key && p.sameSystem(sys.identity || {}, f.identity) && p.siteKey(s.identity || {}) === key)));
+    for (const sys of configured.filter(s => s.protocol === f.protocol)) {
+      for (const s of sys.sites) {
+        if (near(s.control.freq_hz)) return { site: s, moved: false };
+        const same = key && p.sameSystem(sys.identity || {}, f.identity) && p.siteKey(s.identity || {}) === key;
+        if (same || (s.control.alternates_hz || []).some(near)) return { site: s, moved: true };
+      }
+    }
+    return null;
   }
+  // Something to add: a new site, or a configured one heard on another channel.
+  const toAdd = f => { const c = configuredSite(f); return !c || c.moved; };
 
-  // The found cards on screen, to drop the ones whose sites have all been added.
+  // The found cards on screen, to drop the ones with nothing left to add.
   let cards = [];
   let cardList = null;
 
-  // Drop the cards with nothing left to add; say so when none is left.
   function prune() {
     cards = cards.filter(x => {
-      if (x.sites.some(f => !isConfigured(f))) return true;
+      if (x.sites.some(toAdd)) return true;
       x.el.remove();
       return false;
     });
@@ -176,12 +183,17 @@ export function scanCard(onAdded) {
     const box = h('div', { class: 'sys-card' });
     const add = h('button', { class: 'btn primary small', type: 'button', text: known ? 'Add sites' : 'Add system' });
     const head = known ? null : systemHead({ protocol: g.protocol, label: g.label, identity: p.heardSystem(g.sites[0].identity), details: {} }, { right: [add] });
-    const fresh = g.sites.filter(f => !isConfigured(f));
-    const ticks = fresh.map(() => {
-      const tick = h('input', { type: 'checkbox', 'aria-label': 'Add this site' });
-      tick.checked = true;
-      return tick;
-    });
+    const fresh = g.sites.filter(f => !configuredSite(f));
+    const tick = label => {
+      const t = h('input', { type: 'checkbox', 'aria-label': label });
+      t.checked = true;
+      return t;
+    };
+    const ticks = fresh.map(() => tick('Add this site'));
+    const moves = g.sites.map(f => ({ f, c: configuredSite(f) })).filter(x => x.c && x.c.moved).map(x => ({
+      ...x,
+      tick: tick('Move it to the channel it was heard on'),
+    }));
     const table = siteTable(g.protocol, fresh.map((f, i) => ({
       site: {
         label: p.scanSiteName(f.identity), identity: p.heardSite(f.identity),
@@ -193,7 +205,10 @@ export function scanCard(onAdded) {
     })), { traffic: false });
     add.addEventListener('click', async () => {
       try {
-        const sites = fresh.map((f, i) => ticks[i].checked && { key: f.id, ...table.rows[i].read() }).filter(Boolean);
+        const sites = [
+          ...fresh.map((f, i) => ticks[i].checked && { key: f.id, ...table.rows[i].read() }),
+          ...moves.map(m => m.tick.checked && { key: m.f.id, label: m.c.site.label }),
+        ].filter(Boolean);
         if (!sites.length) throw new Error('Tick a site to add');
         const sys = known ? { label: known.label } : head.read();
         add.disabled = true;
@@ -208,10 +223,14 @@ export function scanCard(onAdded) {
         add.disabled = false;
       }
     });
+    if (known && !fresh.length) add.textContent = 'Update';
     box.append(
       head ? head.el : h('div', { class: 'row' }, h('span', { class: 'sys-title', text: known.label }), h('span', { class: 'badge', text: p.label }),
-        h('span', { class: 'dim', text: 'configured: these sites are new' }), h('span', { class: 'spacer' }), add),
-      table.el);
+        h('span', { class: 'dim', text: 'configured' }), h('span', { class: 'spacer' }), add),
+      ...(fresh.length ? [table.el] : []),
+      ...moves.map(m => h('label', { class: 'row moved' }, m.tick,
+        h('span', null, h('strong', { text: m.c.site.label }), ` is configured on ${mhz(m.c.site.control.freq_hz)} but heard on ${mhz(m.f.freq_hz)} (${reception(m.f)}): `,
+          h('span', { class: 'dim', text: 'ticked, it moves there.' })))));
     return { el: box, sites: g.sites };
   }
 
@@ -220,7 +239,7 @@ export function scanCard(onAdded) {
     again.addEventListener('click', setup);
     const summary = `${s.state === 'done' ? 'Found' : s.state === 'cancelled' ? 'Cancelled; found' : 'Failed; found'} ${s.sites.length} control channel${s.sites.length === 1 ? '' : 's'}`
       + ` (and ${s.traffic.length} traffic channels, ${s.other.length} other carriers) in ${s.bands.map(range).join(', ')}.` + (s.error ? ` ${s.error}` : '');
-    cards = groups(s).filter(g => g.sites.some(f => !isConfigured(f))).map(foundCard);
+    cards = groups(s).filter(g => g.sites.some(toAdd)).map(foundCard);
     cardList = h('div', { class: 'stack' }, ...cards.map(x => x.el));
     if (s.sites.length && !cards.length) cardList.append(h('p', { class: 'dim', text: 'Every system found is added.' }));
     const none = s.sites.length ? [] : [h('p', { class: 'dim', text: 'No control channels heard. A scan on the site antenna finds more.' })];

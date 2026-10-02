@@ -728,7 +728,14 @@ The 071 finder becomes `services::discovery`, run on the Systems page, and on fi
   alternates.
 - **Rescan** matches by identity, or by control channel within 3 kHz. It never overwrites labels,
   aliases. It adds learned data (alternates, plan) to state, and adds new sites only when
-  ticked.
+  ticked. A configured site heard on another control channel is shown as such, and moves there
+  when ticked (its alternates become the ones it announces).
+- **Each probe hears only its own carrier.** After the control channel moves, the probe waits
+  250 ms (the control DDC's IQ comes in sub-buffers of 8192 samples, 164 ms at 50 kSPS, read
+  every 40 ms) and drops what is queued before its decoders start. Without this, the last
+  carrier's messages were decoded as the next one's: Clay Electric's Tier III identity landed
+  on a Connect Plus control channel at 454.11875 MHz, and the scan, keeping one find per
+  identity, dropped the real 454.36875 MHz.
 - **A DMR site without an LCN map** follows grants with absolute frequencies. An LCN with no
   frequency shows as `unknown_lcn` and can be entered in the site editor. Learning an LCN by
   watching which carrier keys up after its grant is left for later.
@@ -1386,3 +1393,6 @@ From the brief:
     site editor its identity; the scan takes bands and settings from the page and reports its
     band and window; the Systems page shows found and configured systems in one compact card,
     edited in place (section 10). The receive window moved to Diagnostics.
+  - **Scan fixes** (section 10): each probe hears only its own carrier (a probe had been given
+    the previous carrier's identity), and a rescan moves a configured site to the control
+    channel it is heard on.

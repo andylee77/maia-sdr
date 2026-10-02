@@ -136,6 +136,20 @@ fn a_scan_adds_systems_and_sites_and_merges_into_known_ones() {
 }
 
 #[test]
+fn a_configured_site_heard_on_another_channel_moves_there() {
+    let mut config = SystemsConfig::default();
+    let wrong = dmr(454_118_750);
+    add(&mut config, &[wrong.clone()], &card("Clay Electric", &[(&wrong, "Green Cove Springs")])).unwrap();
+    let right = dmr(454_368_750);
+    assert_eq!(existing_site(&right, &config).as_deref(), Some("clay_electric_green_cove_springs"), "the same site by identity");
+    let added = add(&mut config, &[right.clone()], &card("Clay Electric", &[(&right, "Green Cove Springs")])).unwrap();
+    assert_eq!((added.sites.len(), added.updated.clone()), (0, vec!["clay_electric_green_cove_springs".to_string()]));
+    let site = &config.systems[0].sites[0];
+    assert_eq!((site.label.as_str(), site.control.freq_hz, site.control.timeslot), ("Green Cove Springs", 454_368_750, Some(1)));
+    assert!(site.control.alternates_hz.is_empty(), "the old channel is not kept: the site does not announce it");
+}
+
+#[test]
 fn a_card_sets_what_the_user_changed() {
     let clay = p25(860_962_500, 0xBEE00, 0x8A0, 1, 1);
     let mut c = card("Clay County Public Safety", &[(&clay, "Simulcast")]);

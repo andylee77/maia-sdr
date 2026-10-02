@@ -11,8 +11,9 @@
 //!
 //! The found sites are grouped into systems by identity, a card each for the user to fill in
 //! (names, details, each site's identity and channels) and add. Adding matches by identity, or
-//! by control channel within 3 kHz: it never overwrites a configured system or site; it adds
-//! what was learned (alternate control channels, the P25 band plan) and the sites ticked.
+//! by control channel within 3 kHz: it never renames a configured system or site; it adds what
+//! was learned (alternate control channels, the P25 band plan, a control channel that moved)
+//! and the sites ticked.
 
 pub mod carriers;
 pub mod probe;
@@ -279,8 +280,9 @@ pub struct Added {
 }
 
 /// Add one found system's ticked sites to `systems`, as its card says. A configured site gains
-/// the alternate control channels it lacks, nothing else; a new site joins the configured
-/// system it belongs to, or a new system made from the card.
+/// the alternate control channels it lacks, and moves to the control channel it was heard on
+/// when that is another; a new site joins the configured system it belongs to, or a new system
+/// made from the card.
 pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], card: &AddSystem) -> Result<Added, String> {
     let picked = card
         .sites
@@ -325,13 +327,18 @@ pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], card: &AddSystem) -
     for (f, c) in picked {
         if let Some(id) = existing_site(f, systems) {
             if let Some(site) = systems.systems.iter_mut().flat_map(|s| s.sites.iter_mut()).find(|s| s.id == id) {
-                let before = site.control.alternates_hz.len();
+                let before = site.control.clone();
+                if site.control.freq_hz.abs_diff(f.freq_hz) > SAME_CHANNEL_HZ {
+                    // Heard on another channel: its control channel is there now, and its
+                    // alternates are the ones it announces.
+                    site.control = Control { freq_hz: f.freq_hz, alternates_hz: f.alternates(), lcn: None, timeslot: f.timeslot };
+                }
                 for a in f.alternates() {
                     if a.abs_diff(site.control.freq_hz) > SAME_CHANNEL_HZ && !site.control.alternates_hz.contains(&a) {
                         site.control.alternates_hz.push(a);
                     }
                 }
-                if site.control.alternates_hz.len() > before && !added.updated.contains(&id) {
+                if site.control != before && !added.updated.contains(&id) {
                     added.updated.push(id);
                 }
             }

@@ -65,7 +65,9 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 - **Systems setup:** systems carry RadioReference's details (location, county, type, voice) and
   can be renamed and re-identified; the scan takes its bands and settings from the page and
   reports its band and window; found and configured systems share one compact card, edited in
-  place.
+  place. Each scan probe now hears only its own carrier (the previous carrier's identity had
+  landed on the next one), and a rescan moves a configured site to the control channel it is
+  heard on.
 
 Tests: scanner 404, p25-httpd 475.
 
