@@ -1,20 +1,22 @@
-//! Live audio: per lane, a decode thread (codec, alert tones, then the AGC) and a pacer that
-//! releases one 20 ms chunk per 20 ms of wall clock, into one broadcast for the listeners
-//! (`/ws/audio`) and the recorder.
+//! Live audio: per lane, a decode thread (codec, alert tones, then the AGC, which starts each
+//! transmission from its radio's recent level, kept for both lanes) and a pacer that releases one
+//! 20 ms chunk per 20 ms of wall clock, into one broadcast for the listeners (`/ws/audio`) and
+//! the recorder.
 //!
 //! The vocoders run ~30 times faster than real time, so a decoded LDU would otherwise leave as a
 //! burst. After a silence the pacer restarts from the first chunk's arrival rather than
 //! catching up, so silence stays silence.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tokio::sync::{broadcast, mpsc};
 
 use super::agc::PcmAgc;
 use super::alert::{AlertDetector, ToneAlert};
+use super::levels::LevelBook;
 use super::codec::{Ambe2, Imbe, VoiceCodec, SAMPLES_PER_FRAME};
 use crate::hardware::p25core::Lane;
 use crate::protocol::events::VoiceFrames;
@@ -27,6 +29,8 @@ const PACER_QUEUE: usize = 256;
 /// Chunks the broadcast holds for a slow listener.
 const BROADCAST: usize = 256;
 pub const FRAME_PACE: Duration = Duration::from_millis(20);
+/// No voice on a lane for this long: the transmission heard is over.
+const PAUSE: Duration = Duration::from_millis(600);
 
 /// Clear voice of a followed call, for its lane's decoder.
 #[derive(Debug, Clone)]
@@ -78,14 +82,16 @@ impl Audio {
     pub fn start(lanes: &[Lane]) -> Arc<Audio> {
         let (tx, _) = broadcast::channel(BROADCAST);
         let counters = Arc::new(AudioCounters::default());
+        let levels = Arc::new(Mutex::new(LevelBook::default()));
         let mut inputs = Vec::new();
         for &lane in lanes {
             let (in_tx, in_rx) = sync_channel(DECODE_QUEUE);
             let (pace_tx, pace_rx) = mpsc::channel(PACER_QUEUE);
             let c = counters.clone();
+            let book = levels.clone();
             let spawned = std::thread::Builder::new()
                 .name(format!("voice{}", lane.number()))
-                .spawn(move || decode(in_rx, pace_tx, c));
+                .spawn(move || decode(in_rx, pace_tx, c, &book));
             if let Err(e) = spawned {
                 tracing::error!("{lane} voice decoder not started: {e}");
                 continue;
@@ -119,24 +125,57 @@ impl Audio {
     }
 }
 
-/// A lane's decode thread: a codec, an alert detector and an AGC per call (the AGC restarts on a
-/// new talker too). The detector hears the vocoder's own levels.
-fn decode(rx: Receiver<VoiceBatch>, tx: mpsc::Sender<AudioChunk>, counters: Arc<AudioCounters>) {
+fn lock(m: &Mutex<LevelBook>) -> std::sync::MutexGuard<'_, LevelBook> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The transmission heard is over: its radio's speech level, unless it carried an alert tone (a
+/// console's tones are not its dispatcher's voice).
+fn note_level(levels: &Mutex<LevelBook>, agc: &mut PcmAgc, radio: Option<u32>, alerted: bool) {
+    if let (Some(level), Some(radio), false) = (agc.take_level(), radio, alerted) {
+        lock(levels).note(radio, level, Instant::now());
+    }
+}
+
+/// Where the AGC starts a transmission of `radio`.
+fn start_level(levels: &Mutex<LevelBook>, radio: Option<u32>) -> Option<f32> {
+    radio.and_then(|r| lock(levels).level(r, Instant::now()))
+}
+
+/// A lane's decode thread: a codec, an alert detector and an AGC per call (the AGC starts afresh
+/// on a new talker too, each time from the radio's recent level). The detector hears the
+/// vocoder's own levels.
+fn decode(rx: Receiver<VoiceBatch>, tx: mpsc::Sender<AudioChunk>, counters: Arc<AudioCounters>, levels: &Mutex<LevelBook>) {
     let mut imbe = Imbe::default();
     let mut ambe = Ambe2::default();
     let mut alerts = AlertDetector::default();
     let mut agc = PcmAgc::default();
     let (mut call, mut source) = (0u64, None);
-    while let Ok(b) = rx.recv() {
+    // The transmission heard carried an alert tone.
+    let mut alerted = false;
+    loop {
+        let b = match rx.recv_timeout(PAUSE) {
+            Ok(b) => b,
+            Err(RecvTimeoutError::Timeout) => {
+                note_level(levels, &mut agc, source, alerted);
+                alerted = false;
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
         if b.call != call {
+            note_level(levels, &mut agc, source, alerted);
+            alerted = false;
             call = b.call;
             source = b.source;
             imbe.reset();
             ambe.reset();
             alerts.reset();
-            agc.reset();
+            agc.start(start_level(levels, source));
         } else if b.source.is_some() && source.is_some() && b.source != source {
-            agc.reset();
+            note_level(levels, &mut agc, source, alerted);
+            alerted = false;
+            agc.start(start_level(levels, b.source));
         }
         if b.source.is_some() {
             source = b.source;
@@ -149,6 +188,7 @@ fn decode(rx: Receiver<VoiceBatch>, tx: mpsc::Sender<AudioChunk>, counters: Arc<
                 counters.errors.fetch_add(1, Ordering::Relaxed);
             }
             let alert = alerts.frame(&pcm).map(Arc::new);
+            alerted |= alert.is_some();
             let silent = agc.apply(&mut pcm);
             if silent {
                 counters.silent.fetch_add(1, Ordering::Relaxed);
@@ -214,6 +254,79 @@ mod tests {
         let frame = audio_frame(&got[0], true);
         assert_eq!((frame.len(), frame[0]), (324, 1));
         assert_eq!(audio_frame(&got[0], false).len(), 320);
+    }
+
+    /// The AGC as the lanes run it (each transmission started from its radio's recent level,
+    /// alert transmissions not counted) over the raw calls in `AGC_WAV_DIR` (named as
+    /// recordings, in time order): each sender's median speech level after it, and the share of
+    /// calls within 6 dB of the target.
+    #[test]
+    #[ignore]
+    fn levels_of_raw_calls_in_a_directory() {
+        use crate::audio::alert::AlertDetector;
+        let Ok(dir) = std::env::var("AGC_WAV_DIR") else { return };
+        let mut calls: Vec<(u64, u32, std::path::PathBuf)> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let p = crate::services::recordings::index::parse(&name)?;
+                Some((p.started_unix_ms, p.source?, e.path()))
+            })
+            .collect();
+        calls.sort();
+        let t0 = calls.first().map_or(0, |c| c.0);
+        let base = Instant::now();
+        let book = Mutex::new(LevelBook::default());
+        let db = |x: f64| 20.0 * (x / 32768.0).max(1e-9).log10();
+        let mut by: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
+        for (start, source, path) in &calls {
+            let at = base + Duration::from_millis(start - t0);
+            let bytes = std::fs::read(path).unwrap();
+            let pcm: Vec<i16> = bytes[44..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+            let mut agc = PcmAgc::default();
+            agc.start(lock(&book).level(*source, at));
+            let mut alerts = AlertDetector::default();
+            let (mut alerted, mut frames) = (false, Vec::new());
+            for f in pcm.chunks_exact(SAMPLES_PER_FRAME) {
+                let raw: [i16; SAMPLES_PER_FRAME] = f.try_into().unwrap();
+                alerted |= alerts.frame(&raw).is_some();
+                let mut out = raw;
+                agc.apply(&mut out);
+                let rms = |p: &[i16; SAMPLES_PER_FRAME]| (p.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>() / 160.0).sqrt();
+                let peak = raw.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+                frames.push((rms(&raw), rms(&out), peak));
+            }
+            if let (Some(level), false) = (agc.take_level(), alerted) {
+                lock(&book).note(*source, level, at);
+            }
+            if alerted {
+                continue;
+            }
+            let speech: Vec<(f64, f64)> =
+                frames.iter().filter(|(r, _, pk)| *pk >= 16 && db(*r) > -55.0).map(|(r, o, _)| (*r, *o)).collect();
+            if speech.len() < 10 {
+                continue;
+            }
+            let mut raws: Vec<f64> = speech.iter().map(|s| s.0).collect();
+            raws.sort_by(f64::total_cmp);
+            let p95 = raws[(raws.len() - 1) * 95 / 100];
+            let loud: Vec<f64> = speech.iter().filter(|s| s.0 > p95 / 18.0).map(|s| s.1 * s.1).collect();
+            let level = db((loud.iter().sum::<f64>() / loud.len() as f64).sqrt());
+            let key = if *source < 10_000 { source.to_string() } else { "radios".into() };
+            by.entry(key).or_default().push(level);
+        }
+        let median = |v: &[f64]| {
+            let mut v = v.to_vec();
+            v.sort_by(f64::total_cmp);
+            v[v.len() / 2]
+        };
+        let all: Vec<f64> = by.values().flatten().copied().collect();
+        for (k, v) in &by {
+            println!("{k:>7} {:>4} calls, median {:.1} dBFS", v.len(), median(v));
+        }
+        let within = all.iter().filter(|l| (**l + 22.3).abs() <= 6.0).count();
+        println!("{} calls, {:.0} % within 6 dB of the target", all.len(), 100.0 * within as f64 / all.len() as f64);
     }
 
     #[tokio::test]

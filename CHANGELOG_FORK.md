@@ -126,8 +126,12 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   details and bookmarks per call; the lane pickers list the week's clear talkgroups only.
 - **Fix:** a restart with 2,260 recordings on the card listed none (each file's stat scans the
   FAT directory: 16 s, past the limit); the listing reads names and takes sizes from the history.
+- **Quiet consoles:** the AGC starts each transmission from its radio's level over its last 5
+  transmissions within 30 minutes, tracks the first 500 ms fast and goes to +24 dB; on Clay's
+  recordings 82 % of calls now land within 6 dB of the target (41 % before), recordings
+  included.
 
-Tests: scanner 433, p25-httpd 475.
+Tests: scanner 435, p25-httpd 475.
 
 ---
 

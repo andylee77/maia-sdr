@@ -602,6 +602,10 @@ The 20:57 Clay Electric call is the test.
   its lane's pipeline, so the second pacer and the second AGC go.
 - **AGC reset rule:** P25's (a talkgroup or call change; a speaker change when both IDs are known),
   applied to both protocols. DMR resets on any source change today, including None → Some.
+- **AGC start:** each transmission starts at the gain its radio's speech level needs: the
+  median of the radio's last 5 transmissions, none older than 30 minutes (`audio::levels`,
+  shared by the lanes; a transmission that carried an alert tone is not counted). The first
+  500 ms of voice track fast, then over about a second; the gain spans x0.25 to x16.
 - **Speaker routing comes from one place.** The server already picks lanes from the aliases. It
   now also sends the speaker (`left` / `right` / `both`) in the `/ws/audio` meta frame, so the
   browser stops recomputing routing from the settings.
@@ -1506,3 +1510,13 @@ From the brief:
   - **Fix:** the boot listing of the card's recordings stat'ed every file; on the card's FAT
     each stat scans the directory, so 2,260 files took 16 s, past the 15 s limit, and a restart
     listed none. The listing reads names only and the sizes come from the history.
+  - **Quiet consoles** (Andy: 1013 is very quiet): the AGC never cut them; it started each call
+    at unity and took about a second to rise, so a console's 1-2 s transmissions gained 1-3 dB.
+    Undoing the AGC on 2,149 TG 300 recordings showed the source: a console's level follows the
+    dispatcher at its mic (1013 near -30 dBFS, then -46 to -48 from 08:06; 1012 -45 overnight),
+    against -32 for field radios and -22 for the consoles' own tones. The AGC now starts each
+    transmission from its radio's recent level (Andy: the last few, recent ones only) and tracks
+    the first 500 ms fast, up to +24 dB. On those calls' rebuilt raw audio the scanner's own code
+    puts 82 % within 6 dB of the target (41 % before); every sender's median is -18 to -21 dBFS.
+    The browser's Level (x0.25 to x8 toward -20 dBFS, set from each transmission's first 20 ms)
+    already levelled live audio; recordings had nothing after the AGC.
