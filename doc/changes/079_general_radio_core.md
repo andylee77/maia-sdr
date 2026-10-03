@@ -217,3 +217,7 @@ Each step keeps the units running on core 0.3.0 until the cutover.
   recordings that SDRTrunk's loop lost among them. The second cause needs sample times on the
   IQ ring: its write-address registers (unread today) can give them as the dibit ring's do, or
   the lane ring's tags (step 3).
+- **2026-10-03, with the hold on unit A** (dc274c1, the image's NEON flags), over 22 gateware
+  HDUs on lane 1 (7 min): LDU1 / LDU2 software 209 / 196, gateware 212 / 195; HDUs 19 / 22;
+  NIDs 1,239 / 1,249. Control channel: software LSM 16,895 TSBKs, gateware 16,802, C4FM 16,620.
+  What is left is mostly HDUs at the start of a tuning, the retune drop.
