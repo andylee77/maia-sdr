@@ -21,6 +21,7 @@ maia-hdl/maia-sdr.svd
 p25-httpd/target/
 p25-httpd/**/target/
 scanner/target/
+scanner/**/target/
 maia-httpd/target/
 maia-httpd/**/target/
 

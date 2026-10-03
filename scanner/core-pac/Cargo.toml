@@ -1,0 +1,17 @@
+[package]
+name = "core-pac"
+version = "0.1.0"
+edition = "2021"
+authors = ["Andy Lee"]
+description = "Fishball radio core - register PAC (generated from the core's SVD)"
+license = "MIT"
+
+# src/lib.rs is generated from core.svd, which build_hdl.sh --p25 writes from the gateware
+# (maia-hdl/p25_hdl/p25_top.py). By hand, from maia-hdl/:
+#   PYTHONPATH=. python generate_p25_svd.py
+#   cd ../scanner/core-pac && svd2rust -i core.svd --target none && mv lib.rs src/lib.rs
+# svd2rust 0.33.5.
+
+[dependencies]
+critical-section = { version = "1.0", optional = true }
+vcell = "0.1"

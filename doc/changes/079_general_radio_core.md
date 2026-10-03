@@ -145,8 +145,8 @@ Each step keeps the units running on core 0.3.0 until the cutover.
 
 ## Step 3a: the lane ring core
 
-Ordered by Andy on 2026-10-03. The packet and register details are for his review before the HDL
-is written.
+Ordered by Andy on 2026-10-03, who approved the header (with whatever else belongs in it now) and
+the build in the existing package and project.
 
 ### What changes in the gateware
 
@@ -155,10 +155,19 @@ is written.
 | Lanes | control DDC, two traffic DDCs, an LSM chain on each | the same three DDCs, lanes 0 (control), 1 and 2, IQ only |
 | To the PS | rings for control IQ, traffic IQ, three dibit streams, two pre-diff taps | one lane ring of tagged packets, the spectrum, the raw IQ capture |
 | Registers | a vacant address, a bank in reset or a write without byte strobes hangs the bus | every access is answered |
-| DMA | `DmaStreamRingWrite` (AW ahead of data, F3/F5/F6) | `RingWriterV2` (hwval: store and forward, drain on disable, burst counters) for the lane ring |
+| DMA | `DmaStreamRingWrite` on every ring | the same for the lane ring, let to address only a packet already whole in block RAM; its enable acts between packets |
 | Removed | — | the LSM chains (~102 DSP, ~14.6k LUT, ~21k FF), dibit rings, pre-diff taps, seeds, NID registers, five HP1 masters |
 
 The spectrometer's inputs are registered in `sync` (064's suggested fix for the worst timing path).
+
+**Why the lane ring's DMA is gated.** `DmaStreamRingWrite` raises AWVALID whenever it is enabled
+and has fewer than two bursts open, whether or not data is coming (`maia_hdl/dma.py`). On a
+Zynq-7000 the ADI scripts build HP1's interconnect as `axi_interconnect`
+(`adi_project_xilinx.tcl`), which passes write data in the order of the addresses. A lane ring
+waiting up to 20 ms for its next packet would hold an address open that long, ahead of the capture
+ring's writes. The lane ring therefore enables the DMA for exactly the 32 bursts of a packet it has
+started. `RingWriterV2` (hwval) was the other candidate; it inserts its own marker words into the
+stream, which would break the packets' 4 KB alignment.
 
 ### The lane packet
 
@@ -171,7 +180,7 @@ Packets are 512 words of 64 bits (4 KB, a multiple of the 128 B burst, four to a
 | 0 | 15:0 | magic `0x5243` ("RC") |
 | 0 | 19:16 | format version (1) |
 | 0 | 23:20 | lane (0-15) |
-| 0 | 31:24 | flags: bit 0 `lost` (samples were dropped before this packet), bit 1 `retuned` (first packet with a new tag), bit 2 `last` (the lane was disabled after this packet) |
+| 0 | 31:24 | flags: bit 0 `lost` (samples were dropped before this packet), bit 1 `retuned` (the first packet after the lane's enable, or with a tag other than the packet before), bit 2 `last` (the lane's disable closed this packet; a packet already full when the disable came is not marked) |
 | 0 | 47:32 | count: valid samples (at most 1008; fewer when a tag change or a disable closes the packet) |
 | 0 | 63:48 | tag: the lane's tag when its first sample was made |
 | 1 | 63:0 | sample index: the AD9361 sample count (since `sdr_reset` was released) when the DDC made the first sample |
@@ -179,9 +188,9 @@ Packets are 512 words of 64 bits (4 KB, a multiple of the 128 B burst, four to a
 | 2 | 63:48 | peak: the largest \|I\| or \|Q\| among them |
 | 3 | 27:0 | the lane's NCO word for the first sample |
 | 3 | 47:32 | sequence: the lane's packet count (wraps) |
-| 4 | 31:0 | ADC clips: the running count of AD9361 samples at full scale (I or Q at ±2047), shared by the lanes; the difference between packets is the overload in between |
+| 4 | 31:0 | ADC clips: the running count of AD9361 samples at full scale (I or Q at +2047 or −2048), shared by the lanes; the difference between packets is the overload in between |
 | 5-6 | | reserved (3b's channel fields) |
-| 7 | 31:0 | check: the XOR of every 32-bit half of the packet's other 1023 halves, so a stale cache line (the driver invalidates L1 before L2, F8) is caught |
+| 7 | 31:0 | check: the XOR of every 32-bit half of the packet's other 1023 halves, so a stale cache line is caught (`maia-kmod/maia-sdr.c` invalidates L1 before L2) |
 | 8-511 | | IQ, two samples a word as today (`[15:0]` I, `[31:16]` Q, then the next sample); unused words are zero |
 
 - **Tag.** The PS writes it with the NCO in one register bank, so it lands after the NCO. A tag
@@ -197,15 +206,17 @@ Packets are 512 words of 64 bits (4 KB, a multiple of the 128 B burst, four to a
 
 Byte offsets in the 1 KB window at 0x7C46_0000 (the address bits are decoded in full; nothing
 aliases). Every bank keeps today's per-access crossing (`RegisterCDC`, in order, so coefficient
-loads are safe). The bridge answers an address no bank claims (reads 0), times out a bank that
-does not answer (a domain in reset), and completes a write with no byte strobes.
+loads are safe). The bridge (`p25_hdl/axil_bridge.py`) answers an address no bank claims (reads
+0) and a write with no byte strobes itself; the sync-domain banks are not claimed while
+`sdr_reset` holds their domain, nor for 16 AXI-Lite cycles after; a bank that still does not
+answer within 4,096 cycles is answered with 0 and its late answer ignored.
 
 | Offset | Bank | Registers |
 |---|---|---|
-| 0x000 | control (AXI-Lite domain) | `product_id` 0x72616431 ("rad1"); `version` (1.0.0); `capabilities` (lanes 3, packet words 2^9, header words 8, spectrum and capture present); `control.sdr_reset`; `interrupts` (read to clear: lane ring, spectrum, capture) |
-| 0x020, 0x040, 0x060 | lane 0, 1, 2 | the DDC registers at today's offsets (coefficient address and data, decimation, frequency, stage control); `lane_control` (enable, tag); `lane_status` (lost, sticky, alone in its word) |
-| 0x080 | lane ring | enable; last completed sub-buffer; committed bursts (32 bits, for lap checks); next address; overflow (sticky, alone); sample count (low word latches the high) |
-| 0x0A0 | spectrum | as today's spectrometer bank |
+| 0x000 | control (AXI-Lite domain) | `product_id` 0x72616431 ("rad1"); `version` (1.0.0); `control.sdr_reset`; `interrupts` (read to clear: lane ring, spectrum, capture); `capabilities` (lanes 3, packet words 2^9, header words 8, spectrum and capture present) |
+| 0x020, 0x040, 0x060 | lane 0, 1, 2 | `laneN_ddc_*`: the DDC registers at today's offsets (coefficient address and data, decimation, frequency, stage control); `laneN_control` (enable `[0]`, tag `[31:16]`); `laneN_status` (`lost`, read to clear, alone in its word) |
+| 0x080 | lane ring | `lanes_ring_control` (enable, acting between packets); `lanes_ring_status` (last completed sub-buffer); `lanes_ring_next_address`; `sample_count_lo` / `_hi` (reading the low word latches the high); `adc_clips` |
+| 0x0A0 | spectrum | as today's spectrometer bank (its `spec_overflow` has never been driven and reads 0) |
 | 0x0C0 | capture | as today's raw IQ bank |
 
 `product_id` and `version` stay at 0x00 and 0x04, so a scanner can tell the cores apart before it
@@ -232,7 +243,7 @@ touches anything else.
 ### The PS side
 
 - A `hardware::radiocore` backend and a PAC generated from the core's SVD in `scanner/core-pac`
-  (inside what the image's scanner package already copies). `p25-httpd/p25-pac` stays the 0.3.0
+  (`core_pac::radio_core`; inside what the image's scanner package already copies). `p25-httpd/p25-pac` stays the 0.3.0
   map, so p25-httpd still builds until it leaves the repo. The scanner of this change needs the
   radio core; unit B keeps the 0.3.0 image until A has run the new one.
 - One lane reader splits the ring into lanes: lane 0 is the control channel's IQ, lanes 1 and 2
@@ -257,11 +268,17 @@ touches anything else.
 
 ### Tests and gates
 
-- **Simulation** (`maia-hdl/test/test_p25_top.py`, rewritten; the timeout bus model): no access hangs (a
-  vacant address, a bank in reset, a write without byte strobes); every register reads back; IQ
-  through the DDCs into packets (the simulation switch for the input crossing, as hwval's); a tag
-  change closes a packet; a disable flushes; `lost`, the sample index and the power are exact
-  against a Python model of the packetiser.
+- **Simulation:**
+  - `test_lane_ring.py`: three packet builders, the lane ring and the production DMA into the AXI
+    write model. Every packet against the Python reference (`header_words`): full packets, tag
+    changes at odd counts, disables, re-enables, `lost` with the sample index's gap equal to the
+    samples dropped, a stalling interconnect, the ring switched off and on with packets in flight;
+    every AW has its data within a burst or two.
+  - `test_axil_bridge.py`: claimed, unclaimed, strobe-less, silent and late-answering banks.
+  - `test_p25_top.py` (rewritten): the map against the table above, the build files' version and
+    masters, identity, a bus that answers in reset, at vacant addresses and without strobes,
+    readback without aliasing, the sample and clip counters, and one lane's packet through the
+    DDC, ring and DMA (`P25Core(sim=True)` feeds samples in `sync` in place of the input FIFO).
 - **Bake:** timing met, utilization report.
 - **On unit A:** the control channel and both lanes decode at least as well as now; lane 2 carries
   DMR and C4FM; the starts of transmissions after a retune are no longer lost; CPU measured.
@@ -349,3 +366,15 @@ touches anything else.
   HDUs on lane 1 (7 min): LDU1 / LDU2 software 209 / 196, gateware 212 / 195; HDUs 19 / 22;
   NIDs 1,239 / 1,249. Control channel: software LSM 16,895 TSBKs, gateware 16,802, C4FM 16,620.
   What is left is mostly HDUs at the start of a tuning, the retune drop.
+- **2026-10-03, step 3a gateware written** (branch `079-lsm`; Andy: add what belongs in the header
+  now, build in the existing package). `p25_hdl/p25_top.py` is the lane ring core 1.0.0 with
+  `lane_packetizer.py`, `lane_ring.py` and `axil_bridge.py`; `config.py` holds the three rings.
+  The IP packaging and block design carry the three masters, `build_fpga.bat --p25` packages
+  1.0.0 and fails on timing, a route hook writes `utilization_hier.rpt`, and the SVD and PAC go
+  to `scanner/core-pac`. The simulations above pass. They found two faults in the first draft:
+  - the write address of a packet's samples carried the slot bit one place too high, so both
+    slots were written into the first;
+  - a packet closed by its 1008th sample left that sample out of its power and peak.
+
+  The burst gating (above) was added after reading the DMA and the ADI interconnect scripts.
+  Next: the bake (in the main checkout), then step 4 with it.

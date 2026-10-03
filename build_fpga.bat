@@ -30,7 +30,7 @@ if "%BUILD_P25%"=="1" (
     set "P25_CONFIG=default"
     set "FPGA_PROJECT=fishball7020_p25"
     set "FPGA_PROJECT_NAME=fishball_p25"
-    set "IP_CORE_VERSION=0.3.0"
+    set "IP_CORE_VERSION=1.0.0"
 ) else (
     set "FPGA_PROJECT=fishball7020_iio"
     set "FPGA_PROJECT_NAME=fishball"
@@ -56,7 +56,7 @@ if "%BUILD_HWVAL%"=="1" (
     echo ============================================================
     echo  Fishball 7020 -- P25 FPGA Bitstream Build ^(Vivado^)
     echo  Target: xc7z020clg400-1 ^(Zynq Z7020 SoC^)
-    echo  Project: fishball7020_p25
+    echo  Project: fishball7020_p25 ^(timing failure = hard error^)
     echo ============================================================
 ) else (
     echo ============================================================
@@ -498,15 +498,18 @@ echo          Synthesis -^> Implementation -^> Bitstream -^> XSA
 echo ============================================================
 
 cd /d "%FPGA_PROJECT_DIR%"
-:: hwval: remove XSAs left by a previous run so only this run's output can
-:: be picked up in Step 6 (a bad-timing XSA is never promoted for hwval).
-if "%BUILD_HWVAL%"=="1" (
+:: P25 and hwval: a timing failure is a hard error. Remove XSAs left by a previous run so only
+:: this run's output can be picked up in Step 6 (a bad-timing XSA is never promoted).
+set "STRICT_TIMING=0"
+if "%BUILD_P25%"=="1" set "STRICT_TIMING=1"
+if "%BUILD_HWVAL%"=="1" set "STRICT_TIMING=1"
+if "%STRICT_TIMING%"=="1" (
     if exist "%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top.xsa" del /q "%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top.xsa"
     if exist "%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top_bad_timing.xsa" del /q "%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top_bad_timing.xsa"
 )
 call "%VIVADO%" -mode batch -source system_project.tcl -notrace
-if "%BUILD_HWVAL%"=="1" if !errorlevel! neq 0 (
-    echo [FAIL] hwval FPGA build failed. For hwval a timing failure is a HARD error:
+if "%STRICT_TIMING%"=="1" if !errorlevel! neq 0 (
+    echo [FAIL] %FPGA_PROJECT% build failed. A timing failure is a HARD error here:
     echo        system_top_bad_timing.xsa is never promoted. Check
     echo        %FPGA_PROJECT_DIR%\timing_impl.log and
     echo        %FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.runs\
@@ -540,13 +543,13 @@ echo.
 :: ===== Step 6: Locate XSA and copy to Tezuka =====
 echo [Step 6] Locating XSA output...
 set "XSA_SOURCE=%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top.xsa"
-if "%BUILD_HWVAL%"=="1" (
+if "%STRICT_TIMING%"=="1" (
     if exist "%FPGA_PROJECT_DIR%\%FPGA_PROJECT_NAME%.sdk\system_top_bad_timing.xsa" (
-        echo [FAIL] hwval: system_top_bad_timing.xsa present -- timing not met, not promoting.
+        echo [FAIL] %FPGA_PROJECT%: system_top_bad_timing.xsa present -- timing not met, not promoting.
         goto :error
     )
     if not exist "!XSA_SOURCE!" (
-        echo [FAIL] hwval: !XSA_SOURCE! was not produced by this run.
+        echo [FAIL] %FPGA_PROJECT%: !XSA_SOURCE! was not produced by this run.
         goto :error
     )
 )

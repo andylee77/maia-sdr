@@ -116,7 +116,7 @@ log "Source files verified."
 
 # Validate P25 source if building P25
 if $DO_P25; then
-    for f in p25_hdl/p25_top.py p25_hdl/c4fm_demod.py p25_hdl/symbol_timing.py p25_hdl/dibit_packer.py; do
+    for f in p25_hdl/p25_top.py p25_hdl/lane_packetizer.py p25_hdl/lane_ring.py p25_hdl/axil_bridge.py; do
         if [ ! -f "$SRC_MOUNT/maia-hdl/$f" ]; then
             err "Required P25 source file missing: maia-hdl/$f"
             exit 1
@@ -396,21 +396,22 @@ if $DO_P25; then
     cp "$SRC_DIR/p25_core.v" "$P25_IP_DIR/p25_core.v"
     log "  ✓ p25_core.v → maia-hdl/ip/p25-core/$P25_CONFIG/ ($(wc -l < "$SRC_DIR/p25_core.v") lines)"
 
-    # Copy P25 SVD into the p25-pac crate and regenerate the PAC if svd2rust
-    # is available. Otherwise leave it for the host to run manually.
-    P25_PAC_DIR="$SRC_MOUNT/p25-httpd/p25-pac"
-    if [ -d "$P25_PAC_DIR" ]; then
-        cp "$SRC_DIR/p25.svd" "$P25_PAC_DIR/p25.svd"
-        log "  ✓ p25.svd → p25-httpd/p25-pac/ ($(wc -c < "$SRC_DIR/p25.svd") bytes)"
+    # Copy the core's SVD into the scanner's core-pac crate and regenerate the PAC if
+    # svd2rust is available. Otherwise leave it for the host to run manually.
+    # (p25-httpd/p25-pac keeps the 0.3.0 map until p25-httpd leaves the repo.)
+    CORE_PAC_DIR="$SRC_MOUNT/scanner/core-pac"
+    if [ -d "$CORE_PAC_DIR" ]; then
+        cp "$SRC_DIR/p25.svd" "$CORE_PAC_DIR/core.svd"
+        log "  ✓ p25.svd → scanner/core-pac/core.svd ($(wc -c < "$SRC_DIR/p25.svd") bytes)"
         if command -v svd2rust >/dev/null 2>&1; then
-            log "  Regenerating p25-pac with svd2rust..."
-            (cd "$P25_PAC_DIR" && svd2rust -i p25.svd --target none && \
+            log "  Regenerating core-pac with svd2rust..."
+            (cd "$CORE_PAC_DIR" && svd2rust -i core.svd --target none && \
                 mv lib.rs src/lib.rs 2>/dev/null) || \
                 warn "svd2rust regeneration failed"
-            log "  ✓ p25-pac src/lib.rs regenerated"
+            log "  ✓ core-pac src/lib.rs regenerated"
         else
             warn "svd2rust not in PATH — run manually:"
-            warn "  cd p25-httpd/p25-pac && svd2rust -i p25.svd --target none && mv lib.rs src/lib.rs"
+            warn "  cd scanner/core-pac && svd2rust -i core.svd --target none && mv lib.rs src/lib.rs"
         fi
     fi
 fi

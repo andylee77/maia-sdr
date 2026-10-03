@@ -1,285 +1,62 @@
 #
-# Fishball P25 - Configuration
+# Fishball P25 - Configuration: the platform and the DDR rings the core writes. Each ring has a
+# device-tree carve-out and rxbuffer node of the same geometry (tezuka_fw fishball-p25.dtsi).
 #
 # SPDX-License-Identifier: MIT
 #
 
 
 class P25Config:
-    """P25 core configuration
-
-    Defines memory layout and platform parameters for the P25 IP core.
-    """
+    """P25 core configuration: memory layout and platform."""
     def __init__(self):
-        # Platform identifier (0 = Fishball Z7020)
+        # Platform identifier (0 = Fishball Z7020), in `version[31:24]`.
         self.platform = 0
 
-        # ── Control channel post-DDC IQ ring DMA (Phase 6C) ───────
-        # Streams the control DDC's post-decimation IQ output to DDR
-        # at 62.5 kSPS (8 MSPS ADC / 128x decimation).
-        #
-        # IQ packing (per 64-bit DMA word):
-        #     bit 63                                                bit 0
-        #     +-----------------+-----------------+-----------------+-----------------+
-        #     |    im[1] s16    |    re[1] s16    |    im[0] s16    |    re[0] s16    |
-        #     +-----------------+-----------------+-----------------+-----------------+
-        # Sample 0 is in the low half.
-        #
-        # Bandwidth math:
-        #     62.5 kSPS x 4 B/sample          = 250 KB/s
-        #     8 sub-buffers x 32 KB           = 256 KB ring = ~1.0 s
-        #
-        # Ring base must be aligned to total ring size (256 KB).
-        self.iq_dma_address = 0x1900_0000
-        self.iq_dma_num_buffers_log2 = 3   # 8 sub-buffers
-        self.iq_dma_buffer_size = 0x8000   # 32 KB per sub-buffer
+        # Lanes: one DDC each, lane 0 the control channel.
+        self.lanes = 3
 
-        # ── Control channel LSM dibit ring DMA (Phase 6E.9) ───────
-        # Recovered dibits from the LSM demod chain. 4800 sym/s ->
-        # ~1.28 KB/s packed. 8 x 4 KB = 32 KB total ring.
-        #
-        # Ring base must be aligned to total ring size (32 KB).
-        self.lsm_dibit_dma_address = 0x1A00_0000
-        self.lsm_dibit_dma_num_buffers_log2 = 3   # 8 sub-buffers
-        self.lsm_dibit_dma_buffer_size = 0x1000   # 4 KB per sub-buffer
+        # The lane ring: every lane's tagged IQ packets (lane_packetizer.py), 4 KB each, four to a
+        # sub-buffer. Three lanes at 50 kSPS write ~600 KB/s, so 2 MB holds 3.4 s.
+        # Device `p25-lanes`.
+        self.lanes_dma_address = 0x1900_0000
+        self.lanes_dma_num_buffers_log2 = 7       # 128 sub-buffers
+        self.lanes_dma_buffer_size = 0x4000       # 16 KB
 
-        # ── Traffic channel LSM dibit ring DMA (Phase 7A.2) ───────
-        # Traffic-side twin of `lsm_dibit_dma`.
-        #
-        # Ring base must be aligned to total ring size (32 KB).
-        self.traffic_lsm_dibit_dma_address = 0x1B00_0000
-        self.traffic_lsm_dibit_dma_num_buffers_log2 = 3   # 8 sub-buffers
-        self.traffic_lsm_dibit_dma_buffer_size = 0x1000   # 4 KB per sub-buffer
-
-        # ── Traffic chain 2 LSM dibit ring DMA (core 0.3.0) ───────
-        # Second traffic decode chain (doc/changes/064). Same geometry
-        # as `traffic_lsm_dibit_dma`. 0x1D00_0000 was freed when the
-        # Phase 10.6 `lsm_iq_dma` ring was retired (2026-04-23).
-        # Must match the Tezuka DT carve-out `p25_traffic2_lsm_dibit_dma`
-        # (rxbuffer node `p25-traffic2-lsm-dibit`, fishball-p25.dtsi).
-        #
-        # Ring base must be aligned to total ring size (32 KB).
-        self.traffic2_lsm_dibit_dma_address = 0x1D00_0000
-        self.traffic2_lsm_dibit_dma_num_buffers_log2 = 3   # 8 sub-buffers
-        self.traffic2_lsm_dibit_dma_buffer_size = 0x1000   # 4 KB per sub-buffer
-
-        # ── Traffic channel post-DDC IQ ring DMA (2026-04-16) ─────
-        # Mirrors the control-side `iq_dma` for the traffic chain.
-        # Same 62.5 kSPS, same 256 KB geometry, address 0x1C00_0000.
-        #
-        # Ring base must be aligned to total ring size (256 KB).
-        self.traffic_iq_dma_address = 0x1C00_0000
-        self.traffic_iq_dma_num_buffers_log2 = 3   # 8 sub-buffers
-        self.traffic_iq_dma_buffer_size = 0x8000   # 32 KB per sub-buffer
-
-        # ── Control channel pre-diff IQ ring DMA (Phase 10.8) ─────
-        # Tap inside LsmDemodLoop after LsmPllRotate but BEFORE the
-        # differential slicer. `lsm_demod.i_pre_diff_out` /
-        # `q_pre_diff_out` / `pre_diff_strobe_out` deliver mid + sym
-        # samples (2 samples/symbol, ~9.6 kSPS) of carrier-derotated
-        # + AGC-scaled IQ. Samples are already pre-rotated / pre-
-        # interleaved -- the PS renders a clean open-eye + tight
-        # constellation with no additional signal processing.
-        #
-        # Same packing (64-bit words, 2 samples/word) as `iq_dma`.
-        # Bandwidth ~38 KB/s, oversized ring (256 KB) gives ~7 s
-        # of IQ in flight -- plenty of slack for 1 s deviation
-        # windows.
-        #
-        # Address 0x1F00_0000 was freed by retiring the superseded
-        # `post_pll_iq_dma` ring on 2026-04-22. 256 KB aligned.
-        self.pre_diff_iq_dma_address = 0x1F00_0000
-        self.pre_diff_iq_dma_num_buffers_log2 = 3
-        self.pre_diff_iq_dma_buffer_size = 0x8000
-
-        # ── Traffic channel pre-diff IQ ring DMA (Phase 10.8) ─────
-        # Traffic-side twin of `pre_diff_iq_dma`. Same tap point in
-        # `traffic_lsm_demod`, same packing, same geometry.
-        # Address 0x2000_0000 was freed by retiring
-        # `traffic_post_pll_iq_dma`. 256 KB aligned.
-        self.traffic_pre_diff_iq_dma_address = 0x2000_0000
-        self.traffic_pre_diff_iq_dma_num_buffers_log2 = 3
-        self.traffic_pre_diff_iq_dma_buffer_size = 0x8000
-
-        # ── Wideband spectrometer DMA (Phase 10.7) ────────────────
-        # `DmaBRAMWrite`, 4096-bin FFT geometry. 2 buffers × 32 KB =
-        # 64 KB ring. 5-10 Hz integrator. Address 0x2100_0000, 64 KB
-        # aligned. ~1.95 kHz/bin at 8 MSPS input.
-        # History: bumped 4096 -> 16384 in 2026-04-23, then back to
-        # 4096 in 2026-05-01 nominally for polyphase BRAM, but field-
-        # tested 14 was significantly slower with no operationally
-        # useful extra detail vs 12 — so 4096 is kept post the
-        # 2026-05-03 dual-DDC pivot on operational grounds.
+        # The wideband spectrometer: one 4096-bin integration (8 B a bin) per sub-buffer.
+        # Device `p25-wideband-spec`.
         self.wideband_spec_dma_address = 0x2100_0000
         self.wideband_spec_dma_num_buffers_log2 = 1   # 2 sub-buffers
-        # Spectrometer FFT is 4096 bins (order_log2=12) × 8 B/word.
         self.wideband_spec_dma_buffer_size = (1 << 12) * 8
 
-        # ── Wideband raw IQ DMA (2026-05-03) ──────────────────────
-        # Pre-DDC, post-rxiq_cdc 8 MSPS / 8 MHz BW IQ stream straight
-        # from AD9361. 12-bit signed I/Q sign-extended to 16-bit and
-        # packed two samples per 64-bit word -- same layout as
-        # `iq_dma`. Bandwidth math:
-        #     8 MSPS x 4 B/sample             = 32 MB/s
-        #     16 sub-buffers x 1 MB           = 16 MB ring = ~0.5 s
-        # Sub-buffer turns over every ~31 ms => ~32 IRQs/s.
-        #
-        # Built so the PS can run a software P25 stack (polyphase
-        # channelizer -> per-target DDC -> LSM demod) in parallel
-        # with the HDL traffic chain. HDL stays in the bitstream;
-        # PS picks which path drives audio per call.
-        #
-        # Ring base must be aligned to total ring size (16 MB).
+        # The raw IQ capture: the AD9361's samples before any DDC, two a 64-bit word, 32 MB/s
+        # at 8 MSPS (0.5 s in 16 MB). Device `p25-wideband-iq`.
         self.wideband_iq_dma_address = 0x2200_0000
-        self.wideband_iq_dma_num_buffers_log2 = 4   # 16 sub-buffers
-        self.wideband_iq_dma_buffer_size = 0x10_0000   # 1 MB
+        self.wideband_iq_dma_num_buffers_log2 = 4     # 16 sub-buffers
+        self.wideband_iq_dma_buffer_size = 0x10_0000  # 1 MB
 
-    @property
-    def iq_dma_num_buffers(self):
-        return 1 << self.iq_dma_num_buffers_log2
+    RING_NAMES = ('lanes_dma', 'wideband_spec_dma', 'wideband_iq_dma')
 
-    @property
-    def iq_dma_total_size(self):
-        return self.iq_dma_num_buffers * self.iq_dma_buffer_size
+    def num_buffers(self, ring):
+        return 1 << getattr(self, f'{ring}_num_buffers_log2')
 
-    @property
-    def lsm_dibit_dma_num_buffers(self):
-        return 1 << self.lsm_dibit_dma_num_buffers_log2
-
-    @property
-    def lsm_dibit_dma_total_size(self):
-        return self.lsm_dibit_dma_num_buffers * self.lsm_dibit_dma_buffer_size
-
-    @property
-    def traffic_lsm_dibit_dma_num_buffers(self):
-        return 1 << self.traffic_lsm_dibit_dma_num_buffers_log2
-
-    @property
-    def traffic_lsm_dibit_dma_total_size(self):
-        return (self.traffic_lsm_dibit_dma_num_buffers
-                * self.traffic_lsm_dibit_dma_buffer_size)
-
-    @property
-    def traffic2_lsm_dibit_dma_num_buffers(self):
-        return 1 << self.traffic2_lsm_dibit_dma_num_buffers_log2
-
-    @property
-    def traffic2_lsm_dibit_dma_total_size(self):
-        return (self.traffic2_lsm_dibit_dma_num_buffers
-                * self.traffic2_lsm_dibit_dma_buffer_size)
-
-    # Every ring DMA, as (name, base address, total size). Used by
-    # `validate()` for the alignment and no-overlap checks.
-    RING_NAMES = (
-        'iq_dma',
-        'lsm_dibit_dma',
-        'traffic_lsm_dibit_dma',
-        'traffic2_lsm_dibit_dma',
-        'traffic_iq_dma',
-        'pre_diff_iq_dma',
-        'traffic_pre_diff_iq_dma',
-        'wideband_spec_dma',
-        'wideband_iq_dma',
-    )
+    def total_size(self, ring):
+        return self.num_buffers(ring) * getattr(self, f'{ring}_buffer_size')
 
     def rings(self):
-        return [(name, getattr(self, f'{name}_address'),
-                 getattr(self, f'{name}_total_size'))
+        """Every ring as (name, base address, total size)."""
+        return [(name, getattr(self, f'{name}_address'), self.total_size(name))
                 for name in self.RING_NAMES]
 
-    @property
-    def traffic_iq_dma_num_buffers(self):
-        return 1 << self.traffic_iq_dma_num_buffers_log2
-
-    @property
-    def traffic_iq_dma_total_size(self):
-        return (self.traffic_iq_dma_num_buffers
-                * self.traffic_iq_dma_buffer_size)
-
-    @property
-    def pre_diff_iq_dma_num_buffers(self):
-        return 1 << self.pre_diff_iq_dma_num_buffers_log2
-
-    @property
-    def pre_diff_iq_dma_total_size(self):
-        return (self.pre_diff_iq_dma_num_buffers
-                * self.pre_diff_iq_dma_buffer_size)
-
-    @property
-    def traffic_pre_diff_iq_dma_num_buffers(self):
-        return 1 << self.traffic_pre_diff_iq_dma_num_buffers_log2
-
-    @property
-    def traffic_pre_diff_iq_dma_total_size(self):
-        return (self.traffic_pre_diff_iq_dma_num_buffers
-                * self.traffic_pre_diff_iq_dma_buffer_size)
-
-    @property
-    def wideband_spec_dma_num_buffers(self):
-        return 1 << self.wideband_spec_dma_num_buffers_log2
-
-    @property
-    def wideband_spec_dma_total_size(self):
-        return (self.wideband_spec_dma_num_buffers
-                * self.wideband_spec_dma_buffer_size)
-
-    @property
-    def wideband_iq_dma_num_buffers(self):
-        return 1 << self.wideband_iq_dma_num_buffers_log2
-
-    @property
-    def wideband_iq_dma_total_size(self):
-        return (self.wideband_iq_dma_num_buffers
-                * self.wideband_iq_dma_buffer_size)
-
     def validate(self):
-        assert self.platform >= 0 and self.platform < 256
-        # Ring base addresses must be aligned to total ring size
-        assert self.iq_dma_address & (self.iq_dma_total_size - 1) == 0, \
-            f'iq_dma_address {self.iq_dma_address:#x} not aligned to ' \
-            f'ring size {self.iq_dma_total_size:#x}'
-        assert self.lsm_dibit_dma_address & (self.lsm_dibit_dma_total_size - 1) == 0, \
-            f'lsm_dibit_dma_address {self.lsm_dibit_dma_address:#x} not ' \
-            f'aligned to ring size {self.lsm_dibit_dma_total_size:#x}'
-        assert self.traffic_lsm_dibit_dma_address & \
-            (self.traffic_lsm_dibit_dma_total_size - 1) == 0, \
-            f'traffic_lsm_dibit_dma_address ' \
-            f'{self.traffic_lsm_dibit_dma_address:#x} not aligned to ' \
-            f'ring size {self.traffic_lsm_dibit_dma_total_size:#x}'
-        assert self.traffic_iq_dma_address & \
-            (self.traffic_iq_dma_total_size - 1) == 0, \
-            f'traffic_iq_dma_address ' \
-            f'{self.traffic_iq_dma_address:#x} not aligned to ' \
-            f'ring size {self.traffic_iq_dma_total_size:#x}'
-        assert self.pre_diff_iq_dma_address & \
-            (self.pre_diff_iq_dma_total_size - 1) == 0, \
-            f'pre_diff_iq_dma_address ' \
-            f'{self.pre_diff_iq_dma_address:#x} not aligned to ' \
-            f'ring size {self.pre_diff_iq_dma_total_size:#x}'
-        assert self.traffic_pre_diff_iq_dma_address & \
-            (self.traffic_pre_diff_iq_dma_total_size - 1) == 0, \
-            f'traffic_pre_diff_iq_dma_address ' \
-            f'{self.traffic_pre_diff_iq_dma_address:#x} not aligned to ' \
-            f'ring size {self.traffic_pre_diff_iq_dma_total_size:#x}'
-        assert self.wideband_spec_dma_address & \
-            (self.wideband_spec_dma_total_size - 1) == 0, \
-            f'wideband_spec_dma_address ' \
-            f'{self.wideband_spec_dma_address:#x} not aligned to ' \
-            f'ring size {self.wideband_spec_dma_total_size:#x}'
-        assert self.wideband_iq_dma_address & \
-            (self.wideband_iq_dma_total_size - 1) == 0, \
-            f'wideband_iq_dma_address ' \
-            f'{self.wideband_iq_dma_address:#x} not aligned to ' \
-            f'ring size {self.wideband_iq_dma_total_size:#x}'
-        assert self.traffic2_lsm_dibit_dma_address & \
-            (self.traffic2_lsm_dibit_dma_total_size - 1) == 0, \
-            f'traffic2_lsm_dibit_dma_address ' \
-            f'{self.traffic2_lsm_dibit_dma_address:#x} not aligned to ' \
-            f'ring size {self.traffic2_lsm_dibit_dma_total_size:#x}'
-        # No two rings may overlap (each has its own DT carve-out).
+        assert 0 <= self.platform < 256
+        assert 1 <= self.lanes <= 15
+        for name, base, size in self.rings():
+            # The DMA engines need the base aligned to the whole ring.
+            assert base & (size - 1) == 0, \
+                f'{name} base {base:#x} not aligned to its size {size:#x}'
+            # U-Boot keeps the initrd and the device tree below 0x1800_0000.
+            assert base >= 0x1800_0000, f'{name} below 0x1800_0000'
         rings = sorted(self.rings(), key=lambda r: r[1])
-        for (name_a, base_a, size_a), (name_b, base_b, _) in zip(
-                rings, rings[1:]):
+        for (name_a, base_a, size_a), (name_b, base_b, _) in zip(rings, rings[1:]):
             assert base_a + size_a <= base_b, \
-                f'{name_a} [{base_a:#x}, {base_a + size_a:#x}) overlaps ' \
-                f'{name_b} at {base_b:#x}'
+                f'{name_a} [{base_a:#x}, {base_a + size_a:#x}) overlaps {name_b} at {base_b:#x}'

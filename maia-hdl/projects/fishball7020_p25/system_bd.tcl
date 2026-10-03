@@ -99,54 +99,18 @@ ad_connect adc_q_slice/Dout p25_core/im_in
 # ── AXI-Lite ─────────────────────────────────────────────────────────
 ad_cpu_interconnect 0x7C460000 p25_core
 
-# ── DMA: eight P25 masters on HP1 (traffic_iq rewired in 075b) ────────
-# HP1 was used by maia_sdr/m_axi_spectrometer (now deleted).
-# Reuse HP1 for all P25 DMA masters. ad_mem_hp1_interconnect is
-# idempotent — repeated calls extend the same SmartConnect rather than
-# creating a new one. HP1 budget at ~1.7 GB/s easily absorbs:
-#   - iq                 ~250  KB/s   (Phase 6C: 62.5 kSPS x 4 B post-DDC IQ)
-#   - lsm_dibit          ~1.28 KB/s   (Phase 6E.9: LSM control-channel dibits)
-#   - traffic_lsm_dibit  ~1.28 KB/s   (Phase 7A.2: LSM traffic-channel dibits)
-#   - traffic_iq         ~250  KB/s   (2026-04-16: mirror of `iq` on traffic side)
-#   - pre_diff_iq        ~38   KB/s   (Phase 10.8: carrier-derotated, AGC-scaled,
-#                                       pre-slicer IQ tap -- control chain.
-#                                       Clean eye + constellation + deviation.)
-#   - traffic_pre_diff_iq ~38 KB/s    (Phase 10.8: mirror on traffic chain.)
-#   - wideband_spec      ~32   KB/s   (Phase 10.7: 4096-bin spectrometer, 5-10 Hz)
-#   - traffic2_lsm_dibit ~1.28 KB/s   (core 0.3.0: traffic chain 2 dibits)
-# Total ~611 KB/s, still well under 1.7 GB/s.
-#
-# Phase 10.8 retirements (freed DMA channels):
-#   - dibit (C4FM control dibits)       -- superseded by lsm_dibit
-#   - traffic (C4FM traffic dibits)     -- superseded by traffic_lsm_dibit
-#   - lsm_iq (post-RRC matched-filter)  -- superseded by pre_diff_iq
-#   - traffic_lsm_iq (traffic twin)     -- superseded by traffic_pre_diff_iq
-#   - post_pll_iq (post-PLL interleave) -- superseded by pre_diff_iq
-#   - traffic_post_pll_iq (traffic twin) -- superseded by traffic_pre_diff_iq
-# See doc/P25_ADDRESS_MAP.md for the full carve-out / bandwidth table.
+# ── DMA: the core's three masters on HP1 ──────────────────────────────
+# HP1 was used by maia_sdr/m_axi_spectrometer (now deleted). On a Zynq-7000 the ADI scripts
+# build HP1's interconnect as axi_interconnect (adi_project_xilinx.tcl); repeated
+# ad_mem_hp1_interconnect calls add slave ports to it.
+#   - lanes          ~600 KB/s  (three 50 kSPS lanes in 4 KB packets, ring 0x1900_0000)
+#   - wideband_spec  ~32 KB/s   (4096-bin spectrometer, ring 0x2100_0000)
+#   - wideband_iq    32 MB/s    (raw 8 MSPS IQ while a capture runs, ring 0x2200_0000)
 ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP1 {1}
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 sys_ps7/S_AXI_HP1
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_iq
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_lsm_dibit
-# Phase 10.8 masters.
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_pre_diff_iq
-# Phase 10.7 master.
+ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_lanes
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_wideband_spec
-# M2B 2026-05-02: traffic LSM dibit DMA on the new mux-fed chain.
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_lsm_dibit
-# Change 075b: traffic chain 1 post-DDC IQ (ring 0x1C00_0000, ~200 KB/s)
-# feeds the software DMR decoder on a traffic channel. The core always
-# had the master; it was left unwired since 2026-05-02.
-# m_axi_traffic_pre_diff_iq stays unconnected.
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic_iq
-# 2026-05-03: pre-DDC raw 8 MSPS IQ tap for the PS-side software P25
-# stack. 32 MB/s sustained — well within HP1's headroom alongside the
-# narrowband rings.
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_wideband_iq
-# Core 0.3.0 (doc/changes/064): traffic chain 2 LSM dibit ring
-# (~1.28 KB/s, ring at 0x1D00_0000). One more HP1 SmartConnect slave
-# port; the traffic_pre_diff_iq master stays unconnected.
-ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_traffic2_lsm_dibit
 
 # ── Interrupt ─────────────────────────────────────────────────────────
 # With maia_iio, pluto base wired:

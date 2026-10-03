@@ -1,28 +1,15 @@
 #
-# Fishball P25 -- P25Core top-level tests (core 0.3.0, doc/changes/064)
+# Fishball P25 - the lane ring core's top (doc/changes/079, step 3a)
 #
-# Covers the second traffic decode chain (`traffic2_*`) and the rule that
-# the register map only grows: every register of the 0.2.0 map keeps its
-# name, offset, access and field layout, so a p25-httpd built against the
-# 0.2.0 PAC keeps working on a 0.3.0 bitstream.
+# The register map against the design's table, the build files that name the core's version and
+# DMA masters, and the core in simulation: identity registers, a bus that answers every access
+# (in reset, at vacant addresses, without byte strobes), register readback without aliasing, the
+# sample and clip counters, and one lane's packet through the DDC, lane ring and DMA.
 #
-# The 0.2.0 baseline is frozen in golden_vectors/p25_core_0.2.0.svd (the
-# p25-httpd/p25-pac/p25.svd of commit 86eef5d).
-#
-# Simulation notes. The full core runs in pysim at a few hundred `sync`
-# cycles per second, so the simulation tests stay short:
-#
-# - Register accesses go through the real AXI4-Lite bridge, bank decoder
-#   and RegisterCDCs.
-# - `rxiq_cdc` wraps a FIFO18E1 instance that pysim cannot simulate. Its
-#   EMPTY output reads 0, so every DDC sees a (zero) input sample on every
-#   `sync` cycle. That is enough to push strobes down chain 2 to the
-#   symbol clock.
-# - A full dibit DMA burst needs 512 symbols (~6 min of simulation), so
-#   the DMA / interrupt wiring is exercised from the AXI side instead: the
-#   test answers AW handshakes and injects B responses on the chain 2
-#   master port, which is what advances `last_buffer` and fires the
-#   sub-buffer interrupt.
+# The simulation uses P25Core(sim=True): samples go in on `sim_re`/`sim_im`/`sim_strobe` in
+# `sync`, in place of the FIFO-based input crossing. The full core runs at a few hundred `sync`
+# cycles per second, so the DDC is set up for a fast output (stage 1 at /4, stages 2 and 3
+# bypassed, a sample every `sync` cycle).
 #
 # SPDX-License-Identifier: MIT
 #
@@ -38,52 +25,45 @@ from amaranth.sim import Simulator
 from maia_hdl.pluto_platform import PlutoPlatform
 from p25_hdl import p25_top
 from p25_hdl.config import P25Config
+from p25_hdl.lane_packetizer import (
+    FLAG_RETUNED, HEADER_WORDS, MAGIC, MAX_SAMPLES, PACKET_WORDS, fold)
 from p25_hdl.p25_top import P25Core
 
+from .hwval_axi_wmodel import AxiWriteSlaveModel
 from .hwval_axil_bfm import axil_read, axil_write
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, '..', '..'))
-BASELINE_SVD = os.path.join(HERE, 'golden_vectors', 'p25_core_0.2.0.svd')
-PAC_SVD = os.path.join(REPO, 'p25-httpd', 'p25-pac', 'p25.svd')
+CORE_PAC_SVD = os.path.join(REPO, 'scanner', 'core-pac', 'core.svd')
 BUILD_FPGA_BAT = os.path.join(REPO, 'build_fpga.bat')
-PACKAGE_IP_TCL = os.path.join(REPO, 'maia-hdl', 'ip', 'p25-core',
-                              'package_ip.tcl')
-SYSTEM_BD_TCL = os.path.join(REPO, 'maia-hdl', 'projects',
-                             'fishball7020_p25', 'system_bd.tcl')
+PACKAGE_IP_TCL = os.path.join(REPO, 'maia-hdl', 'ip', 'p25-core', 'package_ip.tcl')
+SYSTEM_BD_TCL = os.path.join(REPO, 'maia-hdl', 'projects', 'fishball7020_p25', 'system_bd.tcl')
 
-# Byte offsets of the registers added in 0.3.0 (doc/changes/064).
-TRAFFIC2_REGISTERS = {
-    'traffic2_ddc_coeff_addr': 0x120,
-    'traffic2_ddc_coeff': 0x128,
-    'traffic2_ddc_decimation': 0x12C,
-    'traffic2_ddc_frequency': 0x130,
-    'traffic2_ddc_control': 0x134,
-    'traffic2_lsm_control': 0x140,
-    'traffic2_lsm_status': 0x144,
-    'traffic2_lsm_nid': 0x148,
-    'traffic2_lsm_drop_count': 0x14C,
-    'traffic2_lsm_dibit_next': 0x150,
-    'traffic2_lsm_debug': 0x154,
-    'traffic2_lsm_agc_debug': 0x158,
-    'traffic2_lsm_agc_config': 0x15C,
-    'traffic2_lsm_agc_seed': 0x160,
-    'traffic2_lsm_pll_seed': 0x164,
-    'traffic2_lsm_timing_seed': 0x168,
+MASTERS = ['lanes', 'wideband_spec', 'wideband_iq']
+
+
+def lane_base(i):
+    return 0x20 * (1 + i)
+
+
+# Byte offsets (doc/changes/079, "Registers").
+REGISTERS = {
+    'product_id': 0x00, 'version': 0x04, 'control': 0x08, 'interrupts': 0x0C,
+    'capabilities': 0x10,
+    **{name: lane_base(i) + off for i in range(3) for name, off in [
+        (f'lane{i}_ddc_coeff_addr', 0x00), (f'lane{i}_ddc_coeff', 0x08),
+        (f'lane{i}_ddc_decimation', 0x0C), (f'lane{i}_ddc_frequency', 0x10),
+        (f'lane{i}_ddc_control', 0x14), (f'lane{i}_control', 0x18), (f'lane{i}_status', 0x1C)]},
+    'lanes_ring_control': 0x80, 'lanes_ring_status': 0x84, 'lanes_ring_next_address': 0x88,
+    'sample_count_lo': 0x8C, 'sample_count_hi': 0x90, 'adc_clips': 0x94,
+    'spec_control': 0xA0, 'spec_status': 0xA4, 'spec_next_address': 0xA8,
+    'wideband_iq_dma_status': 0xC0, 'wideband_iq_dma_control': 0xC4,
+    'wideband_iq_next_address': 0xC8,
 }
+R = REGISTERS
 
-# Pre-existing register byte offsets used by the simulation tests.
-CONTROL = 0x08
-INTERRUPTS = 0x0C
-TRAFFIC_DDC_FREQUENCY = 0x50
-TRAFFIC_LSM_CONTROL = 0xC0
-TRAFFIC_LSM_DROP_COUNT = 0xCC
-TRAFFIC_LSM_DIBIT_NEXT = 0xD0
-TRAFFIC_LSM_AGC_CONFIG = 0xDC
-LSM_SEED_BANK = 0x100  # 6 registers, 0x100-0x114
-TRAFFIC_LSM_PLL_SEED = 0x110
-
-INTERRUPT_BIT_TRAFFIC2 = 8
+CONTROL = R['control']
+INTERRUPTS = R['interrupts']
 
 # Every clock domain of the core (seconds).
 CLOCKS = {
@@ -104,42 +84,43 @@ def svd_registers(svd_bytes):
             f.findtext('name'): (f.findtext('bitRange'), f.findtext('access'))
             for f in reg.iter('field')}
         regs[reg.findtext('name')] = (
-            int(reg.findtext('addressOffset'), 16),
-            reg.findtext('access'), fields)
+            int(reg.findtext('addressOffset'), 16), reg.findtext('access'), fields)
     return regs
-
-
-def bit_range(text):
-    msb, lsb = (int(x) for x in re.fullmatch(r'\[(\d+):(\d+)\]', text)
-                .groups())
-    return set(range(lsb, msb + 1))
 
 
 class TestP25Config(unittest.TestCase):
     def test_default_validates(self):
         P25Config().validate()
 
-    def test_traffic2_ring(self):
-        c = P25Config()
-        self.assertEqual(c.traffic2_lsm_dibit_dma_address, 0x1D00_0000)
-        self.assertEqual(c.traffic2_lsm_dibit_dma_num_buffers, 8)
-        self.assertEqual(c.traffic2_lsm_dibit_dma_buffer_size, 0x1000)
-        self.assertEqual(c.traffic2_lsm_dibit_dma_total_size, 0x8000)
-        # Same geometry as chain 1, so the PS ring reader is shared.
-        self.assertEqual(c.traffic2_lsm_dibit_dma_total_size,
-                         c.traffic_lsm_dibit_dma_total_size)
+    def test_rings(self):
+        self.assertEqual(P25Config().rings(), [
+            ('lanes_dma', 0x1900_0000, 0x20_0000),
+            ('wideband_spec_dma', 0x2100_0000, 0x1_0000),
+            ('wideband_iq_dma', 0x2200_0000, 0x100_0000),
+        ])
 
-    def test_rings_disjoint(self):
-        rings = sorted(P25Config().rings(), key=lambda r: r[1])
-        self.assertIn('traffic2_lsm_dibit_dma', [r[0] for r in rings])
-        for (_, base_a, size_a), (_, base_b, _) in zip(rings, rings[1:]):
-            self.assertLessEqual(base_a + size_a, base_b)
+    def test_packets_fill_sub_buffers(self):
+        c = P25Config()
+        self.assertEqual(c.lanes_dma_buffer_size % (PACKET_WORDS * 8), 0)
 
     def test_overlap_rejected(self):
         c = P25Config()
-        c.traffic2_lsm_dibit_dma_address = c.traffic_lsm_dibit_dma_address
+        c.wideband_spec_dma_address = 0x1910_0000
         with self.assertRaises(AssertionError):
             c.validate()
+
+    def test_misaligned_rejected(self):
+        c = P25Config()
+        c.lanes_dma_address = 0x1910_0000
+        with self.assertRaises(AssertionError):
+            c.validate()
+
+    def test_lanes_bounds(self):
+        for lanes in [0, 16]:
+            c = P25Config()
+            c.lanes = lanes
+            with self.assertRaises(AssertionError):
+                c.validate()
 
 
 class TestP25RegisterMap(unittest.TestCase):
@@ -147,17 +128,14 @@ class TestP25RegisterMap(unittest.TestCase):
     def setUpClass(cls):
         cls.svd = P25Core().svd()
         cls.regs = svd_registers(cls.svd)
-        with open(BASELINE_SVD, 'rb') as f:
-            cls.baseline = svd_registers(f.read())
 
-    def test_version_0_3_0(self):
-        self.assertEqual(p25_top._version, '0.3.0')
-        root = ET.fromstring(self.svd)
-        self.assertEqual(root.findtext('version'), '0.3.0')
+    def test_version_1_0_0(self):
+        self.assertEqual(p25_top._version, '1.0.0')
+        self.assertEqual(ET.fromstring(self.svd).findtext('version'), '1.0.0')
 
     def test_build_script_version_matches(self):
-        # build_fpga.bat packages the IP with its own IP_CORE_VERSION
-        # for --p25; the block design instantiates that VLNV.
+        # build_fpga.bat packages the IP with its own IP_CORE_VERSION for --p25; the block
+        # design instantiates that VLNV.
         with open(BUILD_FPGA_BAT, encoding='utf-8') as f:
             text = f.read()
         m = re.search(r'set "FPGA_PROJECT=fishball7020_p25".*?'
@@ -165,68 +143,26 @@ class TestP25RegisterMap(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1), p25_top._version)
 
-    def test_superset_of_0_2_0(self):
-        """Every 0.2.0 register keeps name, offset, access and fields."""
-        for name, (offset, access, fields) in self.baseline.items():
-            with self.subTest(register=name):
-                self.assertIn(name, self.regs)
-                new_offset, new_access, new_fields = self.regs[name]
-                self.assertEqual(new_offset, offset)
-                self.assertEqual(new_access, access)
-                for fname, layout in fields.items():
-                    self.assertEqual(new_fields.get(fname), layout,
-                                     f'{name}.{fname}')
-                # Fields added to an existing register may only use bits
-                # that were unused in 0.2.0.
-                old_bits = set().union(
-                    *(bit_range(r) for r, _ in fields.values()))
-                for fname, (rng, _) in new_fields.items():
-                    if fname not in fields:
-                        self.assertFalse(bit_range(rng) & old_bits,
-                                         f'{name}.{fname}')
+    def test_offsets(self):
+        self.assertEqual({name: v[0] for name, v in self.regs.items()}, REGISTERS)
 
-    def test_only_additions(self):
-        added = set(self.regs) - set(self.baseline)
-        self.assertEqual(added, set(TRAFFIC2_REGISTERS))
-        old_offsets = {v[0] for v in self.baseline.values()}
-        for name in added:
-            self.assertNotIn(self.regs[name][0], old_offsets, name)
+    def test_lane_banks_alike(self):
+        def layout(i):
+            p = f'lane{i}_'
+            return {name[len(p):]: (access, fields) for name, (_, access, fields)
+                    in self.regs.items() if name.startswith(p)}
+        self.assertEqual(layout(1), layout(0))
+        self.assertEqual(layout(2), layout(0))
 
-    def test_traffic2_offsets(self):
-        for name, offset in TRAFFIC2_REGISTERS.items():
-            with self.subTest(register=name):
-                self.assertEqual(self.regs[name][0], offset)
+    def test_lane_control_and_status(self):
+        self.assertEqual(self.regs['lane0_control'][2]['enable'], ('[0:0]', 'read-write'))
+        self.assertEqual(self.regs['lane0_control'][2]['tag'], ('[31:16]', 'read-write'))
+        # `lost` is read-to-clear, so it is alone in its word.
+        self.assertEqual(self.regs['lane0_status'][2], {'lost': ('[0:0]', 'read-only')})
 
-    def test_traffic2_mirrors_traffic(self):
-        """Chain 2 registers have chain 1's field layout (prefix swap)."""
-        pairs = {n: n.replace('traffic2_', 'traffic_')
-                 for n in TRAFFIC2_REGISTERS}
-        for new, old in pairs.items():
-            with self.subTest(register=new):
-                self.assertIn(old, self.regs)
-                new_fields = {f.replace('traffic2_', 'traffic_'): v
-                              for f, v in self.regs[new][2].items()}
-                self.assertEqual(new_fields, self.regs[old][2])
-                self.assertEqual(self.regs[new][1], self.regs[old][1])
-
-    def test_interrupt_bit(self):
-        fields = self.regs['interrupts'][2]
-        self.assertEqual(fields['traffic2_lsm_dibit_dma'],
-                         ('[8:8]', 'read-only'))
-
-    def test_offsets_unique_and_decodable(self):
-        offsets = [v[0] for v in self.regs.values()]
-        self.assertEqual(len(offsets), len(set(offsets)))
-        for name, (offset, _, _) in self.regs.items():
-            # 16 banks x 32 B: the decoder uses word-address bits [6:3].
-            self.assertLess(offset, 0x200, name)
-            self.assertEqual(offset % 4, 0, name)
-
-    def test_pac_svd_matches_hdl(self):
-        """p25-httpd/p25-pac/p25.svd is the SVD of this gateware."""
-        if not os.path.exists(PAC_SVD):
-            self.skipTest('p25-httpd not present')
-        with open(PAC_SVD, 'rb') as f:
+    def test_core_pac_svd_matches_hdl(self):
+        """scanner/core-pac/core.svd is the SVD of this gateware."""
+        with open(CORE_PAC_SVD, 'rb') as f:
             pac = f.read().replace(b'\r\n', b'\n')
         self.assertEqual(pac, self.svd.replace(b'\r\n', b'\n'))
 
@@ -234,8 +170,7 @@ class TestP25RegisterMap(unittest.TestCase):
 def verilog_top_ports(verilog):
     i = verilog.index('module top(')
     j = verilog.index(');', i)
-    return [p.strip() for p in
-            verilog[i + len('module top('):j].replace('\n', '').split(',')]
+    return [p.strip() for p in verilog[i + len('module top('):j].replace('\n', '').split(',')]
 
 
 class TestP25Elaboration(unittest.TestCase):
@@ -246,53 +181,30 @@ class TestP25Elaboration(unittest.TestCase):
             cls.top, platform=PlutoPlatform(), ports=cls.top.ports())
         cls.ports = verilog_top_ports(cls.verilog)
 
-    def test_traffic2_axi_master_port(self):
-        for p in ['awaddr', 'awlen', 'awsize', 'awburst', 'awcache',
-                  'awprot', 'awvalid', 'awready', 'wdata', 'wstrb', 'wlast',
-                  'wvalid', 'wready', 'bresp', 'bvalid', 'bready']:
-            self.assertIn(f'm_axi_traffic2_lsm_dibit_{p}', self.ports)
+    def test_dma_masters(self):
+        masters = sorted({m.group(1) for p in self.ports
+                          if (m := re.fullmatch(r'm_axi_(\w+)_awaddr', p))})
+        self.assertEqual(masters, sorted(MASTERS))
 
-    def test_existing_masters_kept(self):
-        for name in ['iq', 'lsm_dibit', 'pre_diff_iq', 'wideband_spec',
-                     'traffic_lsm_dibit', 'traffic_iq', 'traffic_pre_diff_iq',
-                     'wideband_iq']:
-            self.assertIn(f'm_axi_{name}_awaddr', self.ports)
-
-    def test_traffic2_chain_present(self):
-        for module in [
-                'top.traffic2_ddc.mixer',
-                'top.traffic2_lsm_decimator',
-                'top.traffic2_lsm_lpf',
-                'top.traffic2_lsm_rrc',
-                # 059 PLL/timing no-signal hold on chain 2 too.
-                'top.traffic2_lsm_demod.demod_loop.signal_hold',
-                'top.traffic2_lsm_dibit_packer',
-                'top.traffic2_lsm_dibit_dma',
-                'top.traffic2_lsm_dibit_dma_irq_sync',
-                'top.traffic2_lsm_registers_cdc',
-                'top.traffic2_sdr_registers_cdc']:
-            self.assertIn(f'module \\{module} ', self.verilog, module)
-
-    def test_every_master_is_packaged_and_wired(self):
-        """New DMA master: bus/clock association + an HP1 slave port."""
+    def test_masters_packaged_and_wired(self):
         with open(PACKAGE_IP_TCL, encoding='utf-8') as f:
             package = f.read()
         with open(SYSTEM_BD_TCL, encoding='utf-8') as f:
             bd = f.read()
-        self.assertIn('-busif m_axi_traffic2_lsm_dibit -clock clk', package)
-        self.assertRegex(
-            bd, r'(?m)^ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 '
-                r'p25_core/m_axi_traffic2_lsm_dibit\s*$')
-        # Masters wired on HP1 in 0.2.0 must stay wired.
-        for name in ['iq', 'lsm_dibit', 'pre_diff_iq', 'wideband_spec',
-                     'traffic_lsm_dibit', 'wideband_iq']:
-            self.assertRegex(
-                bd, rf'(?m)^ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 '
-                    rf'p25_core/m_axi_{name}\s*$')
+        self.assertEqual(sorted(re.findall(r'-busif m_axi_(\w+) -clock clk', package)),
+                         sorted(MASTERS))
+        self.assertEqual(
+            sorted(re.findall(r'(?m)^ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 '
+                              r'p25_core/m_axi_(\w+)\s*$', bd)),
+            sorted(MASTERS))
 
 
 class P25CoreSim:
-    """Full P25Core in pysim with AXI4-Lite register access."""
+    """The core in pysim, with AXI4-Lite register access."""
+
+    def setUp(self):
+        self.top = P25Core(sim=True)
+        self.axi = self.top.axi4lite.axi
 
     def run_sim(self, bench, background=()):
         sim = Simulator(self.top)
@@ -303,241 +215,175 @@ class P25CoreSim:
         sim.add_testbench(bench)
         sim.run()
 
-    def setUp(self):
-        self.top = P25Core()
-        self.axi = self.top.axi4lite.axi
+    async def wr(self, ctx, addr, value, **kw):
+        return await axil_write(ctx, self.axi, addr, value, domain='s_axi_lite', **kw)
 
-    async def wr(self, ctx, addr, value):
-        await axil_write(ctx, self.axi, addr, value, domain='s_axi_lite')
-
-    async def rd(self, ctx, addr):
-        return await axil_read(ctx, self.axi, addr, domain='s_axi_lite')
+    async def rd(self, ctx, addr, **kw):
+        return await axil_read(ctx, self.axi, addr, domain='s_axi_lite', **kw)
 
     async def release_reset(self, ctx):
-        # sdr_reset resets 1 and holds the sync-domain banks in reset
-        # (the PS clears it first thing in IpCore::take).
+        # `sdr_reset` resets to 1; the sync-domain banks are claimed a little after it clears.
         await self.wr(ctx, CONTROL, 0)
-        await ctx.tick('s_axi_lite').repeat(20)
+        await ctx.tick('s_axi_lite').repeat(30)
 
 
 class TestP25CoreRegisters(P25CoreSim, unittest.TestCase):
-    def test_version_register(self):
+    def test_identity(self):
         async def bench(ctx):
-            self.assertEqual(await self.rd(ctx, 0x00), 0x70323566)
-            self.assertEqual(await self.rd(ctx, 0x04), 0x00_00_03_00)
+            self.assertEqual(await self.rd(ctx, R['product_id']), 0x7261_6431)   # "rad1"
+            self.assertEqual(await self.rd(ctx, R['version']), 0x0001_0000)
+            # 3 lanes, 2^9 packet words, 8 header words, spectrum, capture.
+            self.assertEqual(await self.rd(ctx, R['capabilities']),
+                             3 | 9 << 4 | 8 << 8 | 1 << 12 | 1 << 13)
+        self.run_sim(bench)
+
+    def test_every_access_is_answered(self):
+        """In reset, at vacant addresses and without byte strobes the bus answers at once
+        (well within the bridge's timeout)."""
+        quick = dict(timeout=40)
+
+        async def bench(ctx):
+            self.assertEqual(await self.rd(ctx, CONTROL), 1)
+            # Sync-domain banks while `sdr_reset` holds their domain in reset.
+            for addr in [R['lane0_ddc_frequency'], R['lanes_ring_status'], R['spec_status']]:
+                self.assertEqual(await self.rd(ctx, addr, with_resp=True, **quick), (0, 0))
+                self.assertEqual(await self.wr(ctx, addr, 0x1234, **quick), 0)
+            # A write without strobes changes nothing.
+            self.assertEqual(await self.wr(ctx, CONTROL, 0, strb=0, **quick), 0)
+            self.assertEqual(await self.rd(ctx, CONTROL), 1)
+            await self.release_reset(ctx)
+            for addr in [0x0E0, 0x100, 0x200, 0x3FC, 0x014, 0x01C]:
+                self.assertEqual(await self.rd(ctx, addr, with_resp=True, **quick), (0, 0),
+                                 hex(addr))
+                self.assertEqual(await self.wr(ctx, addr, 0xFFFF_FFFF, **quick), 0, hex(addr))
+            await self.wr(ctx, R['lane1_ddc_frequency'], 0x123)
+            self.assertEqual(await self.wr(ctx, R['lane1_ddc_frequency'], 0x456, strb=0), 0)
+            self.assertEqual(await self.rd(ctx, R['lane1_ddc_frequency']), 0x123)
+            # Unused words of a bank answer 0.
+            self.assertEqual(await self.rd(ctx, lane_base(0) + 0x04), 0)
+            self.assertEqual(await self.rd(ctx, 0x98), 0)
         self.run_sim(bench)
 
     def test_reset_values(self):
         async def bench(ctx):
             await self.release_reset(ctx)
-            regs = TRAFFIC2_REGISTERS
-            self.assertEqual(await self.rd(ctx, regs['traffic2_lsm_control']),
-                             0)
-            self.assertEqual(
-                await self.rd(ctx, regs['traffic2_lsm_agc_config']), 256)
-            # last_buffer resets to -1 (3 bits) in [18:16].
-            self.assertEqual(
-                await self.rd(ctx, regs['traffic2_lsm_drop_count']),
-                0x7 << 16)
-            # Next burst address: the ring base.
-            self.assertEqual(
-                await self.rd(ctx, regs['traffic2_lsm_dibit_next']),
-                0x1D00_0000)
-            self.assertEqual(
-                await self.rd(ctx, TRAFFIC_LSM_DIBIT_NEXT), 0x1B00_0000)
-            for name in ['traffic2_lsm_agc_seed', 'traffic2_lsm_pll_seed',
-                         'traffic2_lsm_timing_seed', 'traffic2_ddc_frequency',
-                         'traffic2_ddc_control', 'traffic2_ddc_decimation']:
-                self.assertEqual(await self.rd(ctx, regs[name]), 0, name)
-            self.assertEqual(await self.rd(ctx, INTERRUPTS), 0)
+            expect = {
+                'interrupts': 0,
+                'lanes_ring_control': 0,
+                'lanes_ring_status': 0x7F,              # last_buffer = -1 (7 bits)
+                'lanes_ring_next_address': 0x1900_0000,
+                'spec_next_address': 0x2100_0000,
+                'wideband_iq_dma_status': 0xF << 1,     # last_buffer = -1 (4 bits) in [4:1]
+                'wideband_iq_next_address': 0x2200_0000,
+                **{f'lane{i}_{n}': 0 for i in range(3)
+                   for n in ['control', 'status', 'ddc_frequency', 'ddc_control']},
+            }
+            for name, value in expect.items():
+                self.assertEqual(await self.rd(ctx, R[name]), value, name)
         self.run_sim(bench)
 
-    def test_rw_readback_and_no_aliasing(self):
-        """Write distinct values to chain 1, chain 2 and seed registers,
-        then read all back: no bank or word aliases another."""
-        writes = {
-            # chain 2 (new)
-            0x120: (0x3FF, 0x2A5),
-            0x12C: (0xFFFFF, 0x5_4321),
-            0x130: (0xFFF_FFFF, 0x123_4567),
-            0x134: (0x1FF_FFFF, 0x0AB_CDEF),
-            0x15C: (0xFFFF, 0x1357),
-            0x160: (0xF_FFFF, 0xA_BCDE),
-            0x164: (0xFFFF, 0x8765),
-            0x168: (0x3_FFFF, 0x2_468A),
-            # chain 1 and the 0.2.0 seed bank (must be unaffected)
-            TRAFFIC_DDC_FREQUENCY: (0xFFF_FFFF, 0x0FE_DCBA),
-            TRAFFIC_LSM_AGC_CONFIG: (0xFFFF, 0x0246),
-        }
-        seed_bank = {LSM_SEED_BANK + 4 * i: 0x100 + i for i in range(6)}
+    def test_readback_without_aliasing(self):
+        """Distinct values in every writable register, then all read back."""
+        writes = {}
+        for i in range(3):
+            writes[R[f'lane{i}_ddc_coeff_addr']] = (0x3FF, 0x100 + i)
+            writes[R[f'lane{i}_ddc_decimation']] = (0xF_FFFF, 0x5_4321 + i)
+            writes[R[f'lane{i}_ddc_frequency']] = (0xFFF_FFFF, 0x123_4567 * (i + 1))
+            writes[R[f'lane{i}_ddc_control']] = (0x1FF_FFFF, 0x0AB_CDEF - i)
+            writes[R[f'lane{i}_control']] = (0xFFFF_0001, (0xBEE0 + i) << 16 | 0xFFFE | i & 1)
+        writes[R['lanes_ring_control']] = (0x1, 0x1)
+        # spec_abort (bit 2) is a pulse and reads 0.
+        writes[R['spec_control']] = (0x1FFB, 0x1A6B)
+        writes[R['wideband_iq_dma_control']] = (0x1, 0x1)
 
         async def bench(ctx):
             await self.release_reset(ctx)
-            for addr, (mask, value) in writes.items():
-                await self.wr(ctx, addr, value)
-            for addr, value in seed_bank.items():
+            for addr, (_, value) in writes.items():
                 await self.wr(ctx, addr, value)
             for addr, (mask, value) in writes.items():
-                self.assertEqual(await self.rd(ctx, addr), value & mask,
-                                 hex(addr))
-            for addr, value in seed_bank.items():
-                self.assertEqual(await self.rd(ctx, addr), value, hex(addr))
-            # Unused words of the 16-word bank answer with 0. (A read of
-            # vacant bank 15 gets no answer at all, as in 0.2.0.)
-            for addr in [0x16C, 0x170, 0x17C]:
-                self.assertEqual(await self.rd(ctx, addr), 0, hex(addr))
-        self.run_sim(bench)
-
-    def test_controls_reach_chain2_only(self):
-        top = self.top
-        t2 = top.traffic2_lsm_demod
-        t1 = top.traffic_lsm_demod
-        pulses = {'t1': 0, 't2': 0}
-
-        async def count_resets(ctx):
-            # The Wpulse fires in `sync` before the AXI write response
-            # comes back, so it is counted concurrently.
-            while True:
-                await ctx.tick('sync')
-                pulses['t1'] += ctx.get(t1.reset_in)
-                pulses['t2'] += ctx.get(t2.reset_in)
-
-        async def bench(ctx):
-            await self.release_reset(ctx)
-            await self.wr(ctx, 0x130, 0x123_4567)          # NCO
-            await self.wr(ctx, 0x12C, 3 | (4 << 7) | (5 << 13))
-            await self.wr(ctx, 0x134, (1 << 22) | (1 << 24))
-            await self.wr(ctx, 0x160, 0xA_BCDE)            # agc seed
-            await self.wr(ctx, 0x164, 0x8765)              # pll seed
-            await self.wr(ctx, 0x168, 0x2_468A)            # timing seed
-            await self.wr(ctx, 0x15C, 0x1357)              # AGC gate
-            # enable | dma_enable | dc_block | agc  (no reset)
-            await self.wr(ctx, 0x140, 0b11011)
-            await ctx.tick('sync').repeat(4)
-
-            ddc2 = top.traffic2_ddc
-            self.assertEqual(ctx.get(ddc2.frequency), 0x123_4567)
-            self.assertEqual(ctx.get(ddc2.decimation1), 3)
-            self.assertEqual(ctx.get(ddc2.decimation2), 4)
-            self.assertEqual(ctx.get(ddc2.decimation3), 5)
-            self.assertEqual(ctx.get(ddc2.bypass2), 1)
-            self.assertEqual(ctx.get(ddc2.enable_input), 1)
-            self.assertEqual(ctx.get(top.traffic_ddc.frequency), 0)
-            self.assertEqual(ctx.get(top.traffic_ddc.bypass2), 0)
-
-            self.assertEqual(ctx.get(t2.agc_seed_in), 0xA_BCDE)
-            self.assertEqual(ctx.get(t2.pll_seed_in), 0x8765 - 0x10000)
-            self.assertEqual(ctx.get(t2.timing_seed_in), 0x2_468A - 0x4_0000)
-            self.assertEqual(ctx.get(t2.agc_mag_update_threshold_in), 0x1357)
-            self.assertEqual(ctx.get(t2.dc_block_enable), 1)
-            self.assertEqual(ctx.get(t2.agc_enable), 1)
-            self.assertEqual(ctx.get(top.traffic2_lsm_dibit_dma.enable), 1)
-            self.assertEqual(ctx.get(t1.agc_seed_in), 0)
-            self.assertEqual(ctx.get(t1.pll_seed_in), 0)
-            self.assertEqual(ctx.get(t1.agc_mag_update_threshold_in), 256)
-            self.assertEqual(ctx.get(top.traffic_lsm_dibit_dma.enable), 0)
-
-            # traffic2_lsm_reset (Wpulse, bit 2) -> chain 2 reset_in only.
-            self.assertEqual(pulses, {'t1': 0, 't2': 0})
-            await self.wr(ctx, 0x140, 0b11111)
-            await ctx.tick('sync').repeat(10)
-            self.assertEqual(pulses, {'t1': 0, 't2': 1})
-            # Wpulse bit reads back 0; the level bits stay set.
-            self.assertEqual(await self.rd(ctx, 0x140), 0b11011)
-            # Chain 1's reset does not touch chain 2.
-            await self.wr(ctx, TRAFFIC_LSM_CONTROL, 0b100)
-            await ctx.tick('sync').repeat(10)
-            self.assertEqual(pulses, {'t1': 1, 't2': 1})
-        self.run_sim(bench, background=[count_resets])
-
-
-class TestP25CoreTraffic2Dma(P25CoreSim, unittest.TestCase):
-    def test_dma_and_interrupt(self):
-        """Chain 2 ring: gated by its enable, bursts at 0x1D00_0000,
-        sub-buffer completion -> last_buffer + interrupt bit 8."""
-        async def bench(ctx):
+                self.assertEqual(await self.rd(ctx, addr), value & mask, hex(addr))
             top = self.top
-            dma2 = top.traffic2_lsm_dibit_dma.axi
-            dma1 = top.traffic_lsm_dibit_dma.axi
-            await self.release_reset(ctx)
             await ctx.tick('sync').repeat(4)
-            self.assertEqual(ctx.get(dma2.awvalid), 0)
-
-            await self.wr(ctx, 0x140, 0b10)   # dibit DMA enable only
-            await ctx.tick('sync').repeat(4)
-            self.assertEqual(ctx.get(dma2.awvalid), 1)
-            self.assertEqual(ctx.get(dma2.awaddr), 0x1D00_0000)
-            self.assertEqual(ctx.get(dma1.awvalid), 0)
-
-            # Accept one AW: the next burst address moves on by 128 B.
-            ctx.set(dma2.awready, 1)
-            await ctx.tick('sync')
-            ctx.set(dma2.awready, 0)
-            await ctx.tick('sync').repeat(4)
-            self.assertEqual(await self.rd(ctx, 0x150), 0x1D00_0080)
-
-            # One 4 KB sub-buffer = 32 bursts = 32 B responses.
-            bursts = (P25Config().traffic2_lsm_dibit_dma_buffer_size
-                      // (16 * 8))
-            self.assertEqual(bursts, 32)
-            for i in range(bursts):
-                if i == bursts - 1:
-                    self.assertEqual(await self.rd(ctx, INTERRUPTS), 0)
-                ctx.set(dma2.bvalid, 1)
-                await ctx.tick('sync')
-                ctx.set(dma2.bvalid, 0)
-                await ctx.tick('sync')
-            await ctx.tick('s_axi_lite').repeat(10)
-
-            self.assertEqual(ctx.get(top.interrupt_out), 1)
-            # last_buffer 7 -> 0 in traffic2_lsm_drop_count[18:16].
-            self.assertEqual(await self.rd(ctx, 0x14C) >> 16, 0)
-            self.assertEqual(await self.rd(ctx, TRAFFIC_LSM_DROP_COUNT) >> 16,
-                             7)
-            irq = await self.rd(ctx, INTERRUPTS)
-            self.assertEqual(irq, 1 << INTERRUPT_BIT_TRAFFIC2)
-            # Read-to-clear.
-            await ctx.tick('s_axi_lite').repeat(4)
-            self.assertEqual(await self.rd(ctx, INTERRUPTS), 0)
-            await ctx.tick('s_axi_lite').repeat(4)
-            self.assertEqual(ctx.get(top.interrupt_out), 0)
+            self.assertEqual(ctx.get(top.ddcs[2].frequency), 0x123_4567 * 3)
+            self.assertEqual(ctx.get(top.packetizers[1].tag), 0xBEE1)
+            self.assertEqual(ctx.get(top.packetizers[1].enable), 1)
+            self.assertEqual(ctx.get(top.packetizers[0].enable), 0)
+            self.assertEqual(ctx.get(top.lane_ring.enable), 1)
         self.run_sim(bench)
 
 
-class TestP25CoreTraffic2Datapath(P25CoreSim, unittest.TestCase):
-    def test_chain2_runs_on_its_own_enable(self):
-        """traffic2_lsm_enable wakes chain 2 down to the symbol clock;
-        chain 1 (traffic_lsm_enable = 0) stays idle."""
+class TestP25CoreSamples(P25CoreSim, unittest.TestCase):
+    def test_sample_and_clip_counters(self):
+        n = 200
+        clipped = {7, 8, 50, 51, 52, 199}
+
         async def bench(ctx):
             top = self.top
             await self.release_reset(ctx)
-            # Chain 2 DDC: /64 stage 1, stages 2 and 3 bypassed. With the
-            # simulated input strobe on every sync cycle this puts one
-            # LSM sample per ~128 cycles into the LPF (needs >= 123).
-            await self.wr(ctx, 0x12C, 64)
-            await self.wr(ctx, 0x134, (1 << 22) | (1 << 23) | (1 << 24))
-            await ctx.tick('sync').repeat(300)
-            # Not enabled yet: the decimator input is gated.
-            self.assertEqual(ctx.get(top.traffic2_lsm_lpf.strobe_in), 0)
-
-            await self.wr(ctx, 0x140, 0b11001)  # enable | dc | agc
-            seen = dict.fromkeys(['dec', 'lpf', 'rrc', 'sym'], 0)
-            t1_dec = 0
-            for _ in range(2500):
+            for k in range(n):
+                ctx.set(top.sim_strobe, 1)
+                ctx.set(top.sim_re, 2047 if k in {7, 50, 199} else 100)
+                ctx.set(top.sim_im, -2048 if k in {8, 50, 51, 52} else -100)
                 await ctx.tick('sync')
-                seen['dec'] += ctx.get(top.traffic2_lsm_decimator.strobe_out)
-                seen['lpf'] += ctx.get(top.traffic2_lsm_lpf.strobe_out)
-                seen['rrc'] += ctx.get(top.traffic2_lsm_rrc.strobe_out)
-                seen['sym'] += ctx.get(top.traffic2_lsm_demod.symbol_strobe)
-                t1_dec += ctx.get(top.traffic_lsm_decimator.strobe_out)
-                if seen['sym'] >= 2:
+            ctx.set(top.sim_strobe, 0)
+            await ctx.tick('sync').repeat(4)
+            self.assertEqual(await self.rd(ctx, R['sample_count_lo']), n)
+            self.assertEqual(await self.rd(ctx, R['sample_count_hi']), 0)
+            self.assertEqual(await self.rd(ctx, R['adc_clips']), len(clipped))
+        self.run_sim(bench)
+
+    def test_lane_packet_through_the_core(self):
+        """Lane 1 tuned, tagged and enabled: its first packet reaches the ring with the lane's
+        tag, NCO word and a sample index from the shared count, and the ring's next address
+        moves on by one packet. Lanes 0 and 2 stay off."""
+        lane = 1
+        base = lane_base(lane)
+        model = AxiWriteSlaveModel(self.top.lanes_dma.axi)
+        nco = 0x0ABC_DEF0 & 0xFFF_FFFF
+        tag = 0x5A5A
+
+        async def bench(ctx):
+            top = self.top
+            await self.release_reset(ctx)
+            await self.wr(ctx, base + 0x0C, 4)                                  # stage 1 /4
+            await self.wr(ctx, base + 0x10, nco)
+            await self.wr(ctx, base + 0x14, (1 << 22) | (1 << 23) | (1 << 24))  # bypass 2, 3; on
+            await self.wr(ctx, base + 0x18, tag << 16 | 1)
+            await self.wr(ctx, R['lanes_ring_control'], 1)
+            start = None
+            for k in range(MAX_SAMPLES * 4 + 2000):
+                ctx.set(top.sim_strobe, 1)
+                ctx.set(top.sim_re, (k * 37) % 2000 - 1000)
+                ctx.set(top.sim_im, (k * 91) % 1800 - 900)
+                if start is None and ctx.get(top.ddcs[lane].strobe_out):
+                    start = k
+                await ctx.tick('sync')
+                if len(model.stream()) >= PACKET_WORDS:
                     break
-            self.assertGreater(seen['dec'], 0, seen)
-            self.assertGreater(seen['lpf'], 0, seen)
-            self.assertGreater(seen['rrc'], 0, seen)
-            self.assertGreaterEqual(seen['sym'], 2, seen)
-            self.assertEqual(t1_dec, 0)
-        self.run_sim(bench)
+            words = model.stream()
+            self.assertEqual(len(words), PACKET_WORDS)
+            h = words[:HEADER_WORDS]
+            self.assertEqual(h[0] & 0xFFFF, MAGIC)
+            self.assertEqual((h[0] >> 20) & 0xF, lane)
+            self.assertEqual((h[0] >> 24) & 0xFF, FLAG_RETUNED)
+            self.assertEqual((h[0] >> 32) & 0xFFFF, MAX_SAMPLES)
+            self.assertEqual(h[0] >> 48, tag)
+            self.assertEqual(h[3] & 0xFFF_FFFF, nco)
+            self.assertEqual(h[3] >> 32, 0)                     # sequence 0
+            # The sample index is the count of input samples registered when the DDC made its
+            # first output: the input register puts the count one sample behind the bench's.
+            self.assertEqual(h[1], start - 1)
+            check = 0
+            for w in words:
+                check ^= fold(w)
+            self.assertEqual(check, 0)                          # w7 holds the XOR of the rest
+            self.assertEqual(ctx.get(top.lanes_dma.axi.awvalid), 0)
+            await ctx.tick('s_axi_lite').repeat(10)
+            self.assertEqual(await self.rd(ctx, R['lanes_ring_next_address']), 0x1900_1000)
+            self.assertEqual(await self.rd(ctx, R['lane1_status']), 0)
+            for other in [0, 2]:
+                self.assertEqual(ctx.get(top.packetizers[other].ready), 0)
+        self.run_sim(bench, background=[model.bench])
 
 
 if __name__ == '__main__':
