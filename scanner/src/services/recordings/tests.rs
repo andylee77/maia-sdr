@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use super::storage::*;
 use super::*;
+use crate::audio::alert::{AlertKind, ToneAlert};
 use crate::audio::live::VoiceBatch;
 use crate::protocol::events::VoiceFrames;
 use crate::protocol::p25::voice_frame::ImbeFrameRaw;
@@ -109,7 +110,7 @@ fn retention_is_per_store_and_sd_has_a_size_cap() {
 }
 
 #[test]
-fn the_index_lists_card_recordings_oldest_first_with_their_length() {
+fn the_index_lists_card_recordings_oldest_first_by_name() {
     let (ram, sd) = dirs("index");
     let wav = |name: &str, ms: u64| std::fs::write(sd.join(name), vec![0u8; 44 + 16 * ms as usize]).unwrap();
     wav("rec_2000_12_tg300_from1014.wav", 1_440);
@@ -123,12 +124,38 @@ fn the_index_lists_card_recordings_oldest_first_with_their_length() {
     let (list, note) = index(&cfg(&ram, &sd)).unwrap();
     let ids: Vec<u64> = list.iter().map(|e| e.id).collect();
     assert_eq!(ids, vec![7, 12, 2, 9], "{note}");
-    assert_eq!(list[0].duration_ms, 1_620);
+    assert!(list.iter().all(|r| r.bytes == 0), "the names only");
     assert_eq!((list[0].tg, list[0].source), (300, Some(3436046)));
     assert_eq!(list[1].started_unix_ms, 3_000, "the newer of the duplicate id is listed");
     assert_eq!((list[3].tg, list[3].site.as_str()), (87_926, "clay_electric"));
     assert!(list.iter().all(|e| e.store == Store::Sd && e.pending.is_none()));
     assert!(note.contains("indexed 4") && note.contains("1 unrecognised"), "{note}");
+}
+
+#[test]
+fn reconcile_takes_lengths_from_the_history_and_measures_the_rest() {
+    let (ram, sd) = dirs("reconcile");
+    // 1.62 s unknown to the history; 0.5 s it knows, with 120 bytes of cue points after the audio.
+    std::fs::write(sd.join("rec_1000_7_tg300.clay.wav"), vec![0u8; 44 + 16 * 1_620]).unwrap();
+    std::fs::write(sd.join("rec_2000_8_tg300.clay.wav"), vec![0u8; 44 + 16 * 500 + 120]).unwrap();
+    let db = sd.join("history.sqlite");
+    let history = HistoryStore::open(&db).unwrap();
+    let known = RecordingRow {
+        file: "rec_2000_8_tg300.clay.wav".into(),
+        store: "sd".into(),
+        site: "clay".into(),
+        call_id: 8,
+        started_ms: 2_000,
+        tg: 300,
+        source: None,
+        bytes: 44 + 16 * 500 + 120,
+        duration_ms: 500,
+    };
+    history.add_recordings(&[known]).unwrap();
+    let (mut list, _) = index(&cfg(&ram, &sd)).unwrap();
+    assert_eq!(reconcile(&mut list, &history).unwrap(), (1, 0));
+    let got: Vec<(u64, u64, u64)> = list.iter().map(|r| (r.id, r.duration_ms, r.bytes)).collect();
+    assert_eq!(got, vec![(7, 1_620, 44 + 16 * 1_620), (8, 500, 44 + 16 * 500 + 120)]);
 }
 
 #[test]
@@ -314,6 +341,63 @@ async fn with_recording_off_calls_are_counted_not_saved() {
     let r = rec.get(6).unwrap();
     assert_eq!((r.store, r.path.clone()), (Store::Ram, ram.join(&r.file)));
     assert!(r.path.exists());
+}
+
+#[tokio::test]
+async fn an_alert_tone_is_a_bookmark_a_history_row_and_a_notice() {
+    let (ram, sd) = dirs("alert");
+    let c = cfg(&ram, &sd);
+    let audio = Audio::start(&[Lane::One]);
+    let notices = Notices::default();
+    let mut heard = notices.subscribe();
+    let rec = Recordings::start(c, policy(Store::Ram), (Vec::new(), String::new()), &audio, Default::default(), notices);
+    rec.sender().start(call(9));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // A warble 40 ms in, summarised a little longer on each chunk, then speech.
+    let summary = |frames: u32| ToneAlert {
+        seq: 3,
+        kind: AlertKind::Warble,
+        tones_hz: vec![806.5, 1506.0],
+        segments: 1 + frames / 12,
+        offset_ms: 40,
+        duration_ms: frames * 20,
+    };
+    for i in 0..60u32 {
+        let alert = (10..=57).contains(&i).then(|| Arc::new(summary(i)));
+        audio.inject(AudioChunk {
+            lane: Lane::One,
+            call: 9,
+            tg: 300,
+            source: Some(1014),
+            speaker: Side::Both,
+            pcm: [0; 160],
+            error: false,
+            silent: false,
+            alert,
+        });
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    rec.sender().end(CallEnd { call: 9, source: Some(1014), sources: vec![1014] });
+    rec.flush(Duration::from_secs(5)).await;
+
+    let r = rec.get(9).unwrap();
+    assert_eq!(r.duration_ms, 1_200);
+    assert_eq!(r.bookmarks.len(), 1);
+    let b = &r.bookmarks[0];
+    assert_eq!((b.offset_ms, b.duration_ms, b.label.as_str(), b.kind.as_str()), (40, 1_140, "warble 806.5/1506.0 Hz", "warble"));
+    let wav = std::fs::read(&r.path).unwrap();
+    assert_eq!(wav.len() as u64, r.bytes);
+    assert!(wav.windows(4).any(|w| w == b"cue "), "the WAV carries the cue point");
+    let alerts = rec.alerts_of(9);
+    assert_eq!(alerts.len(), 1);
+    let a = &alerts[0];
+    assert_eq!((a.call_id, a.tg, a.source, a.lane, a.segments), (9, 300, Some(1014), 1, 5));
+    assert!(a.at_ms >= unix_ms() - 10_000 && a.at_ms <= unix_ms());
+    let mut got = Vec::new();
+    while let Ok(n) = heard.try_recv() {
+        got.push(n);
+    }
+    assert_eq!(got, vec![Notice::RecordingSaved { call: 9 }, Notice::Alert { call: 9, tg: 300 }], "the recording first");
 }
 
 #[tokio::test]

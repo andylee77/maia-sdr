@@ -1,8 +1,8 @@
-//! The call history: every finished call (followed or not), the radios in it, radio events and
-//! recordings, in SQLite (schema v2, `schema`), on the SD card or in RAM without one.
+//! The call history: every finished call (followed or not), the radios in it, radio events,
+//! recordings and alert tones, in SQLite (`schema`), on the SD card or in RAM without one.
 //!
 //! One writer thread owns the writes. It is fed by a channel (calls as they close, the vocoder's
-//! counts after, radio events, sites, recordings), commits every 10 s or on a flush (fewer, larger
+//! counts and alerts after, radio events, sites, recordings), commits every 10 s or on a flush (fewer, larger
 //! SD writes), and prunes to the retention once an hour, whole hours at a time. The API reads
 //! through the store's read-only connection.
 
@@ -19,7 +19,7 @@ use anyhow::Context;
 
 use crate::services::config::radio::History as HistoryConfig;
 use crate::util::time::unix_ms;
-use store::{CallRow, RecordingRow, SiteInfo, Store, UnitEventKind, UnitNote, VoiceResult};
+use store::{AlertRow, CallRow, RecordingRow, SiteInfo, Store, UnitEventKind, UnitNote, VoiceResult};
 
 pub const FILE: &str = "scanner-history.sqlite";
 const RAM_PATH: &str = "/tmp/scanner-history.sqlite";
@@ -34,6 +34,7 @@ const DAY_MS: u64 = 86_400_000;
 enum Input {
     Call(CallRow),
     Voice(VoiceResult),
+    Alerts(Vec<AlertRow>),
     Unit { site: String, note: UnitNote },
     Site(SiteInfo),
     Recordings(Vec<RecordingRow>),
@@ -53,6 +54,12 @@ impl HistoryTx {
 
     pub fn voice(&self, v: VoiceResult) {
         self.send(Input::Voice(v));
+    }
+
+    pub fn alerts(&self, rows: Vec<AlertRow>) {
+        if !rows.is_empty() {
+            self.send(Input::Alerts(rows));
+        }
     }
 
     pub fn unit(&self, site: &str, unit: u32, tg: u32, kind: UnitEventKind, at_ms: u64) {
@@ -153,6 +160,7 @@ type NoteKey = (String, u32, u32, UnitEventKind);
 struct Pending {
     calls: Vec<CallRow>,
     voice: Vec<VoiceResult>,
+    alerts: Vec<AlertRow>,
     notes: HashMap<NoteKey, UnitNote>,
 }
 
@@ -170,6 +178,12 @@ impl Pending {
             }
             self.voice.clear();
         }
+        if !self.alerts.is_empty() {
+            if let Err(e) = store.insert_alerts(&self.alerts) {
+                tracing::warn!("history: {} alerts not stored: {e}", self.alerts.len());
+            }
+            self.alerts.clear();
+        }
         let mut by_site: HashMap<String, Vec<UnitNote>> = HashMap::new();
         for ((site, ..), n) in self.notes.drain() {
             by_site.entry(site).or_default().push(n);
@@ -183,7 +197,7 @@ impl Pending {
 }
 
 fn write_loop(store: &Store, rx: Receiver<Input>, mut limits: Limits) {
-    let mut p = Pending { calls: Vec::new(), voice: Vec::new(), notes: HashMap::new() };
+    let mut p = Pending { calls: Vec::new(), voice: Vec::new(), alerts: Vec::new(), notes: HashMap::new() };
     let mut last_commit = Instant::now();
     let mut last_prune: Option<Instant> = None;
     loop {
@@ -199,6 +213,7 @@ fn write_loop(store: &Store, rx: Receiver<Input>, mut limits: Limits) {
                     None => p.voice.push(v),
                 }
             }
+            Ok(Input::Alerts(rows)) => p.alerts.extend(rows),
             Ok(Input::Unit { site, note }) => {
                 let key = (site, note.unit, note.tg, note.kind);
                 if let Some(n) = p.notes.get_mut(&key) {

@@ -3,7 +3,9 @@
 // < 1 s after the last) waits for 150 ms of audio instead of playing each 20 ms frame as it lands.
 //
 // Each sample keeps the pan of its talkgroup (-1 left, 0 both, +1 right), so a talkgroup change
-// inside the buffer switches speaker exactly. One ring per lane, mixed into the output. The class
+// inside the buffer switches speaker exactly. One ring per lane, mixed into the output at the
+// lane's own volume (`vol`). It holds 8 s: a call held back until its alert tone (gate.js) plays
+// from its start. The class
 // is shared by the AudioWorklet (its source text is injected into the worklet, see sources.js, so
 // it may use no imports or globals) and the ScriptProcessor fallback. `now` is in seconds.
 //
@@ -15,7 +17,7 @@
 
 export class Ring {
   constructor(base) {
-    this.N = 16384;
+    this.N = 65536;
     this.buf = new Float32Array(this.N);
     this.pan = new Int8Array(this.N);
     this.w = 0; this.r = 0; this.avail = 0; this.frac = 0;
@@ -23,6 +25,7 @@ export class Ring {
     this.TARGET = 1200; this.KP = 4e-5; this.MAXDEV = 0.005;
     this.priming = true; this.underruns = 0; this.dryAt = -1;
     this.norm = false; this.lvl = 0; this.gain = 1; this.lastVoice = -10;
+    this.vol = 1;
   }
 
   // Gain for the next block from its RMS (see the header).
@@ -75,7 +78,7 @@ export class Ring {
     for (let i = 0; i < L.length; i++) {
       if (this.avail <= 1) { this.dryAt = now; this.priming = true; return; }
       const a = this.buf[this.r], b = this.buf[(this.r + 1) % this.N];
-      const v = a + (b - a) * this.frac, p = this.pan[this.r];
+      const v = (a + (b - a) * this.frac) * this.vol, p = this.pan[this.r];
       if (R) { if (p <= 0) L[i] += v; if (p >= 0) R[i] += v; } else L[i] += v;
       this.frac += this.ratio;
       while (this.frac >= 1) {

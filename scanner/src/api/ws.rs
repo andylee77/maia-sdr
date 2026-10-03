@@ -6,8 +6,10 @@
 //!   and 20 ms of 8 kHz 16-bit mono. Without it, p25-httpd's first framing for its tools: lane
 //!   one only, the samples alone. Before a lane's first frame of a call, a text frame
 //!   `{"type":"meta","lane","tg","src","call_id","speaker"}` names it; `speaker` (left, right or
-//!   both) is where its alias plays the talkgroup. A listener that falls behind gets
-//!   `{"type":"lag","skipped"}` and stays connected.
+//!   both) is where its alias plays the talkgroup. With `v=2`, before the frame that makes a
+//!   call's audio an alert tone (`audio::alert`), `{"type":"alert","lane","tg","call_id","seq",
+//!   "kind","tones_hz","offset_ms"}`: its tone began `offset_ms` into the call's audio. A listener
+//!   that falls behind gets `{"type":"lag","skipped"}` and stays connected.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -21,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::api::v1;
-use crate::api::v1::calls::{NamedCall, Names};
+use crate::api::v1::calls::{attach, named_alerts, NamedCall, Names};
 use crate::api::v1::status::status;
 use crate::audio::live::audio_frame;
 use crate::boot::state::AppState;
@@ -57,6 +59,8 @@ async fn stream(socket: WebSocket, s: Arc<AppState>, tagged: bool) {
     let mut rx = s.audio.subscribe();
     let (mut out, mut inbound) = socket.split();
     let mut announced: [Option<(u32, u64, Side)>; 2] = [None; 2];
+    // Each lane's last alert sent: (call, seq).
+    let mut alerted: [Option<(u64, u32)>; 2] = [None; 2];
     loop {
         tokio::select! {
             chunk = rx.recv() => match chunk {
@@ -70,6 +74,16 @@ async fn stream(socket: WebSocket, s: Arc<AppState>, tagged: bool) {
                             "speaker": c.speaker,
                         });
                         if out.send(Message::Text(meta.to_string().into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    if let Some(a) = c.alert.as_ref().filter(|a| tagged && alerted[li] != Some((c.call, a.seq))) {
+                        alerted[li] = Some((c.call, a.seq));
+                        let alert = serde_json::json!({
+                            "type": "alert", "lane": li, "tg": c.tg, "call_id": c.call, "seq": a.seq, "kind": a.kind,
+                            "tones_hz": a.tones_hz, "offset_ms": a.offset_ms,
+                        });
+                        if out.send(Message::Text(alert.to_string().into())).await.is_err() {
                             break;
                         }
                     }
@@ -124,8 +138,9 @@ async fn notices(socket: WebSocket, s: Arc<AppState>) {
 /// `/ws/live`: the radio's state as it changes, so a page shows it without asking. On connect a
 /// `snapshot` (status, calls, traffic, scan); then `status` once a second, `traffic` when a
 /// traffic channel changes, `call_opened` and `call_closed` with the call, `recording` with a
-/// saved recording, `scan` while one runs, and `changed` naming the part of the configuration
-/// to read again. After `lag` a fresh snapshot follows.
+/// saved recording, `alert` with a closed call's alert tones (`call`, `alerts`), `scan` while
+/// one runs, and `changed` naming the part of the configuration to read again. After `lag` a
+/// fresh snapshot follows.
 ///
 /// What only some pages show comes while a page asks for it (`Wants`): it sends
 /// `{"type":"subscribe", ...}`, each replacing the last, and gets `spectrum`, `events`, `radio`,
@@ -275,13 +290,14 @@ fn message(kind: &str, key: &str, value: impl Serialize) -> String {
 
 async fn snapshot(s: &AppState, names: &Names) -> String {
     let calls = s.trunking.calls();
+    let mut open: Vec<NamedCall> = calls.open.into_iter().map(|c| names.call(c)).collect();
+    let mut recent: Vec<NamedCall> = calls.recent.into_iter().map(|c| names.call(c)).collect();
+    attach(s, &mut open, None);
+    attach(s, &mut recent, None);
     serde_json::json!({
         "type": "snapshot",
         "status": status(s),
-        "calls": {
-            "open": calls.open.into_iter().map(|c| names.call(c)).collect::<Vec<_>>(),
-            "recent": calls.recent.into_iter().map(|c| names.call(c)).collect::<Vec<_>>(),
-        },
+        "calls": { "open": open, "recent": recent },
         "traffic": traffic(s, names),
         "scan": s.discovery.state(),
     })
@@ -291,7 +307,10 @@ async fn snapshot(s: &AppState, names: &Names) -> String {
 /// A call by id, from the open and recent calls.
 fn named_call(s: &AppState, names: &Names, id: u64) -> Option<NamedCall> {
     let v = s.trunking.calls();
-    v.open.into_iter().chain(v.recent).find(|c| c.call == id).map(|c| names.call(c))
+    let mut one = [v.open.into_iter().chain(v.recent).find(|c| c.call == id).map(|c| names.call(c))?];
+    attach(s, &mut one, None);
+    let [c] = one;
+    Some(c)
 }
 
 async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
@@ -343,6 +362,10 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
                 }
                 Ok(Notice::RecordingSaved { call }) => {
                     msgs.extend(s.recordings.get(call).map(|r| message("recording", "recording", r)));
+                }
+                Ok(Notice::Alert { call, .. }) => {
+                    let alerts = named_alerts(&s, &names, s.recordings.alerts_of(call));
+                    msgs.push(serde_json::json!({ "type": "alert", "call": call, "alerts": alerts }).to_string());
                 }
                 Ok(Notice::Changed { what }) => {
                     if what == "systems" {

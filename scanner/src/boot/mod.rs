@@ -206,6 +206,12 @@ async fn start_storage(
         }
     };
     let recordings = Recordings::start(cfg, policy, (list, note), audio, history.sender(), notices.clone());
+    // The recent calls come from the history after a restart, and so do their alerts.
+    let store = history.store().clone();
+    match tokio::task::spawn_blocking(move || store.all_alerts()).await? {
+        Ok(alerts) => recordings.remember_alerts(alerts),
+        Err(e) => tracing::warn!("history: alerts not read: {e}"),
+    }
     Ok((history, recordings))
 }
 

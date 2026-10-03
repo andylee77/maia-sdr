@@ -657,6 +657,10 @@ CREATE TABLE recordings (id INTEGER PRIMARY KEY, file TEXT NOT NULL UNIQUE, stor
   site TEXT, call_id INTEGER, started_ms INTEGER NOT NULL, tg INTEGER, source INTEGER,
   bytes INTEGER NOT NULL, duration_ms INTEGER,
   call INTEGER REFERENCES calls(id) ON DELETE SET NULL);
+CREATE TABLE alerts (site TEXT NOT NULL, call_id INTEGER NOT NULL, call_started_ms INTEGER NOT NULL,
+  at_ms INTEGER NOT NULL, tg INTEGER NOT NULL, source INTEGER, lane INTEGER NOT NULL DEFAULT 0,
+  kind TEXT NOT NULL, tones TEXT NOT NULL, segments INTEGER NOT NULL, offset_ms INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL, UNIQUE(site, call_id, call_started_ms, offset_ms));  -- v4
 CREATE TABLE data_packets (...);   -- D11
 ```
 
@@ -684,11 +688,15 @@ One module, `services::recordings`, driven by the call:
   rename, the fallback to RAM, and the retention limits. It moves; it is not rewritten.
 - **Naming is unchanged:** `rec_<start_ms>_<call_id>_tg<tg>_from<src>.<site>.wav`. The start is
   the call's own `opened.unix`, not the recorder's clock (defect 13).
-- **The index** is the history's `recordings` table. At boot, the directory listing and the
-  table are reconciled:
-  - a file not in the table is parsed with today's file-name parser, inserted and linked to its
-    call once;
+- **The index** is the history's `recordings` table. At boot, the directory listing (names only:
+  on the card's FAT each file's size costs a scan of the whole directory) and the table are
+  reconciled:
+  - a file in the table takes its size and length from it;
+  - a file not in the table is measured, parsed with today's file-name parser, inserted and
+    linked to its call once;
   - a row whose file is gone is removed.
+- **Bookmarks:** the alert tones heard in a call (`audio::alert`) are its recording's bookmarks,
+  in the list and in the WAV as cue points with a label and a region (`cue `, `LIST adtl`).
 
   The ±10 s full scan per file goes. Files the parser does not recognise are left alone and never
   deleted, as today.
@@ -1465,3 +1473,36 @@ From the brief:
     every 3 s, the window and survey every 5 s, the crystal when it changes. The Activity page
     reloads its history when calls close. On unit A every page made no HTTP request in 12 s
     after loading.
+- 2026-10-03, alert tones, listening and the whole call list (Andy, from a review of TG 300's
+  tone-outs):
+  - **What Clay sends:** no two-tone pages on any talkgroup (those go out on VHF 154.205 MHz,
+    simulcast from the trunked system). Its dispatch consoles (1011-1014) key a hi-lo warble
+    before a dispatch, 806.5 and 1506 Hz as decoded (each 240 ms, 2 to 4 cycles), and sometimes
+    a 1010 Hz beep (pulsed or steady). The vocoder rebuilds a tone as a harmonic of its pitch, so
+    the console's tones are known only to about 1 % (800-814 and 1488-1524 Hz).
+  - **Alert tones** (`audio::alert`): each lane's decoder finds them in the audio before the AGC
+    (a 64 ms FFT each frame; a tone holds 85 % of the energy from 100 Hz; a sequence is an alert
+    when two tones switch, one tone pulses or one tone lasts 500 ms). On A's 2,143 Clay
+    recordings it finds the 46 warbles and 4 beeps on TG 300 and the 2 beeps on TG 301, and
+    nothing else (a voice whose fundamental sat below 250 Hz had passed for a tone until the
+    band took in 100 Hz and tones began at 280 Hz). About 1 % of a core per decoding lane.
+  - **Where they go:** the history (schema v4 `alerts`), the recording's bookmarks (also WAV cue
+    points), `/ws/live` (`alert`) and `/ws/events`, `/ws/audio` (`alert`, before the frame that
+    makes one) and `GET /api/v1/activity/alerts` (grouped by kind and tones, and the newest, each
+    with its dispatch: its own call when its voice runs on 4 s past the tone, else the first of
+    the sending radio's next transmissions on the talkgroup with 4 s of voice, each within 5 s
+    of the last; Andy's limits). The rule links 50 of the 52 alerts heard on A to speech (13 to
+    the alert's own call); the other two were a beep with no 4 s reply and a beep nothing
+    followed for 55 s.
+  - **Listening** (this browser's, `prefs.js`): Listen comes back after a reload (the browser
+    plays once the page is clicked); the volume and the leveller are back in the header; each
+    traffic card has its own volume and mute; "Alerts only" plays only the talkgroups an alert
+    tone opened, for the time chosen: a lane's call is held back until its alert, then plays
+    from its start, tone included (`audio/gate.js`).
+  - **Now's calls:** every call of the live site, older ones read from the history as the list
+    reaches its end; each row has its details, an alert badge and a play button per bookmark.
+    The lane pickers list the talkgroups the history heard in the clear in the last week and
+    never one heard only encrypted.
+  - **Fix:** the boot listing of the card's recordings stat'ed every file; on the card's FAT
+    each stat scans the directory, so 2,260 files took 16 s, past the 15 s limit, and a restart
+    listed none. The listing reads names only and the sizes come from the history.

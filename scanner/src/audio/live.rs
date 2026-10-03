@@ -1,6 +1,6 @@
-//! Live audio: per lane, a decode thread (codec, then the AGC) and a pacer that releases one
-//! 20 ms chunk per 20 ms of wall clock, into one broadcast for the listeners (`/ws/audio`) and
-//! the recorder.
+//! Live audio: per lane, a decode thread (codec, alert tones, then the AGC) and a pacer that
+//! releases one 20 ms chunk per 20 ms of wall clock, into one broadcast for the listeners
+//! (`/ws/audio`) and the recorder.
 //!
 //! The vocoders run ~30 times faster than real time, so a decoded LDU would otherwise leave as a
 //! burst. After a silence the pacer restarts from the first chunk's arrival rather than
@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 
 use super::agc::PcmAgc;
+use super::alert::{AlertDetector, ToneAlert};
 use super::codec::{Ambe2, Imbe, VoiceCodec, SAMPLES_PER_FRAME};
 use crate::hardware::p25core::Lane;
 use crate::protocol::events::VoiceFrames;
@@ -51,6 +52,8 @@ pub struct AudioChunk {
     /// The vocoder found the frame damaged (it repeated or muted).
     pub error: bool,
     pub silent: bool,
+    /// While the call's frames make an alert tone: the alert so far (`audio::alert`).
+    pub alert: Option<Arc<ToneAlert>>,
 }
 
 #[derive(Debug, Default)]
@@ -108,12 +111,20 @@ impl Audio {
     pub fn subscribe(&self) -> broadcast::Receiver<AudioChunk> {
         self.tx.subscribe()
     }
+
+    /// Put a chunk on the broadcast as if a pacer had released it.
+    #[cfg(test)]
+    pub fn inject(&self, chunk: AudioChunk) {
+        let _ = self.tx.send(chunk);
+    }
 }
 
-/// A lane's decode thread: a codec and an AGC per call (the AGC restarts on a new talker too).
+/// A lane's decode thread: a codec, an alert detector and an AGC per call (the AGC restarts on a
+/// new talker too). The detector hears the vocoder's own levels.
 fn decode(rx: Receiver<VoiceBatch>, tx: mpsc::Sender<AudioChunk>, counters: Arc<AudioCounters>) {
     let mut imbe = Imbe::default();
     let mut ambe = Ambe2::default();
+    let mut alerts = AlertDetector::default();
     let mut agc = PcmAgc::default();
     let (mut call, mut source) = (0u64, None);
     while let Ok(b) = rx.recv() {
@@ -122,6 +133,7 @@ fn decode(rx: Receiver<VoiceBatch>, tx: mpsc::Sender<AudioChunk>, counters: Arc<
             source = b.source;
             imbe.reset();
             ambe.reset();
+            alerts.reset();
             agc.reset();
         } else if b.source.is_some() && source.is_some() && b.source != source {
             agc.reset();
@@ -136,11 +148,12 @@ fn decode(rx: Receiver<VoiceBatch>, tx: mpsc::Sender<AudioChunk>, counters: Arc<
             if q.error {
                 counters.errors.fetch_add(1, Ordering::Relaxed);
             }
+            let alert = alerts.frame(&pcm).map(Arc::new);
             let silent = agc.apply(&mut pcm);
             if silent {
                 counters.silent.fetch_add(1, Ordering::Relaxed);
             }
-            let chunk = AudioChunk { lane: b.lane, call: b.call, tg: b.tg, source: b.source, speaker: b.speaker, pcm, error: q.error, silent };
+            let chunk = AudioChunk { lane: b.lane, call: b.call, tg: b.tg, source: b.source, speaker: b.speaker, pcm, error: q.error, silent, alert };
             tx.blocking_send(chunk).is_ok()
         };
         let ok = match &b.frames {

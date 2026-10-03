@@ -51,8 +51,9 @@ pub fn parse(name: &str) -> Option<Parsed> {
 }
 
 /// The recordings in `dir`, oldest first, and a note for the status; an error when the
-/// directory cannot be read. Only the names and sizes are read: a call's other details are not
-/// kept across a restart.
+/// directory cannot be read. Only the names are read: on the card's FAT each file's size costs a
+/// scan of the whole directory (2,260 files took 16 s), so sizes come from the history
+/// (`reconcile`), which measures only the files it does not know.
 pub fn list(dir: &Path) -> Result<(Vec<Recording>, String), String> {
     let rd = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut out = Vec::new();
@@ -63,15 +64,12 @@ pub fn list(dir: &Path) -> Result<(Vec<Recording>, String), String> {
             skipped += usize::from(name.ends_with(".wav"));
             continue;
         };
-        let bytes = e.metadata().map(|m| m.len()).unwrap_or(0);
         out.push(Recording {
             id: p.call,
             site: p.site,
             tg: p.tg,
             source: p.source,
             started_unix_ms: p.started_unix_ms,
-            duration_ms: wav::duration_ms(bytes),
-            bytes,
             file: name,
             store: Store::Sd,
             sources: p.source.into_iter().collect(),
@@ -96,4 +94,10 @@ pub fn list(dir: &Path) -> Result<(Vec<Recording>, String), String> {
     let skipped = if skipped > 0 { format!(" ({skipped} unrecognised .wav names skipped)") } else { String::new() };
     let note = format!("indexed {} recording(s) in {}{skipped}", out.len(), dir.display());
     Ok((out, note))
+}
+
+/// A listed file's size and length, from the file.
+pub fn measure(r: &mut Recording) {
+    r.bytes = std::fs::metadata(&r.path).map(|m| m.len()).unwrap_or(0);
+    r.duration_ms = wav::duration_ms(r.bytes);
 }

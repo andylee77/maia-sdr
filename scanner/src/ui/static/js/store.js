@@ -1,5 +1,6 @@
 // Shared page state, pushed by the radio over /ws/live: the status (each second), the calls on the
-// air and the newest closed ones, the traffic channels, the newest recordings and the systems.
+// air and the newest closed ones (each with its recording and alert tones once known), the
+// traffic channels, the newest recordings, the alert tones heard and the systems.
 // Pages subscribe and get the whole store on every change. A part is replaced, never changed in
 // place, so a page can tell what changed by comparing it with what it drew.
 //
@@ -16,6 +17,8 @@ export const store = {
   traffic: null,
   trafficAt: 0,
   recordings: null,
+  // Alert tones heard since the page loaded, newest first.
+  alerts: [],
   systems: null,
   connected: false,
 };
@@ -76,6 +79,13 @@ function setStatus(status) {
   store.statusAt = Date.now();
   // Another site went live: its calls replace the last one's.
   if (liveSite(status) !== callsOf) readCalls();
+}
+
+// A closed call learns its recording and alert tones after it closed.
+function patchCall(id, change) {
+  if (!store.calls) return;
+  const recent = store.calls.recent.map(x => (x.call === id ? { ...x, ...change } : x));
+  store.calls = { open: store.calls.open, recent };
 }
 
 function setTraffic(traffic) {
@@ -175,9 +185,15 @@ function receive(m) {
     case 'recording': {
       const r = m.recording;
       const v = store.recordings || { total: 0, items: [] };
-      store.recordings = { ...v, items: [r, ...v.items.filter(x => x.id !== r.id)].slice(0, RECENT) };
+      const isNew = !v.items.some(x => x.id === r.id);
+      store.recordings = { ...v, total: v.total + (isNew ? 1 : 0), items: [r, ...v.items.filter(x => x.id !== r.id)].slice(0, RECENT) };
+      patchCall(r.id, { recording: r });
       break;
     }
+    case 'alert':
+      patchCall(m.call, { alerts: m.alerts });
+      store.alerts = [...m.alerts, ...store.alerts].slice(0, RECENT);
+      break;
     case 'changed':
       // Systems carry the names the calls show.
       if (m.what === 'systems') {

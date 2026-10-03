@@ -29,6 +29,10 @@ const ICONS = {
   trash: [['path', { d: 'M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5' }]],
   tune: [['path', { d: 'M4 7h3M11 7h9M4 17h9M17 17h3' }], ['circle', { cx: '9', cy: '7', r: '2' }], ['circle', { cx: '15', cy: '17', r: '2' }]],
   download: [['path', { d: 'M12 4v11M7 10.5l5 5 5-5M5 20h14' }]],
+  speaker: [['path', { d: 'M4 9.5h3.5L12 5.5v13l-4.5-4H4zM15.5 9a4.5 4.5 0 010 6M18 6.5a8 8 0 010 11' }]],
+  muted: [['path', { d: 'M4 9.5h3.5L12 5.5v13l-4.5-4H4zM16 9.5l5 5M21 9.5l-5 5' }]],
+  bell: [['path', { d: 'M6.5 16.5V11a5.5 5.5 0 0111 0v5.5l1.5 2h-14zM10 20.5a2 2 0 004 0' }]],
+  info: [['circle', { cx: '12', cy: '12', r: '9' }], ['path', { d: 'M12 11v6M12 7.5v.5' }]],
 };
 
 export function icon(name) {

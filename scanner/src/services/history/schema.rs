@@ -1,5 +1,5 @@
-//! The history database, schema v3 (v3 added `calls.emergency` and `calls.first_voice_ms`; `target`
-//! is `unit` for a unit-to-unit call).
+//! The history database, schema v4 (v3 added `calls.emergency` and `calls.first_voice_ms`; v4
+//! added `alerts`; `target` is `unit` for a unit-to-unit call).
 //!
 //! - `calls`: every finished call, followed or not, with its site; `transmissions`: the radios
 //!   heard in it, the primary (the grant's radio, else the voice's) first.
@@ -9,12 +9,14 @@
 //! - `talkgroups` / `radios`: first and last seen, per system (IDs are system-wide).
 //! - `radio_events`: affiliations and registrations per (site, radio, talkgroup).
 //! - `recordings`: the WAV files, linked to their call.
+//! - `alerts`: the alert tones heard in followed calls (`audio::alert`), recorded or not; `tones`
+//!   is their Hz, comma-separated, in the order first heard.
 //!
 //! Two kinds of time are never added as if they were one: voice (decoded, measured, followed
 //! calls only) and grant (the grant to its last update on the control channel; the only time
 //! known for a call that was not followed, credited to the radio granted the channel).
 
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 pub const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -144,6 +146,22 @@ CREATE TABLE IF NOT EXISTS recordings (
     call INTEGER REFERENCES calls(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS recordings_call_id ON recordings(call_id);
+CREATE TABLE IF NOT EXISTS alerts (
+    site TEXT NOT NULL,
+    call_id INTEGER NOT NULL,
+    call_started_ms INTEGER NOT NULL,
+    at_ms INTEGER NOT NULL,
+    tg INTEGER NOT NULL,
+    source INTEGER,
+    lane INTEGER NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL,
+    tones TEXT NOT NULL,
+    segments INTEGER NOT NULL,
+    offset_ms INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    UNIQUE(site, call_id, call_started_ms, offset_ms)
+);
+CREATE INDEX IF NOT EXISTS alerts_site_time ON alerts(site, at_ms);
 ";
 
 /// Columns a later schema added to a table, for a database an earlier one created.

@@ -37,6 +37,7 @@ const ASSETS: &[Asset] = assets![
     "js/dom.js",
     "js/format.js",
     "js/protocols.js",
+    "js/prefs.js",
     "js/views/now.js",
     "js/views/systems.js",
     "js/views/settings.js",
@@ -51,6 +52,7 @@ const ASSETS: &[Asset] = assets![
     "js/audio/player.js",
     "js/audio/ring.js",
     "js/audio/sources.js",
+    "js/audio/gate.js",
 ];
 
 const PLACEHOLDER: &str = "{{BUILD}}";

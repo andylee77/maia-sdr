@@ -134,6 +134,30 @@ pub struct RecordingInfo {
     pub frame_errors: u64,
 }
 
+/// An alert tone heard in a followed call (`audio::alert`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AlertRow {
+    pub site: String,
+    /// The call: its id and grant time.
+    pub call_id: u64,
+    pub call_started_ms: u64,
+    /// When its first tone began.
+    pub at_ms: u64,
+    pub tg: u32,
+    /// The calling radio (a console's ID for its alerts).
+    pub source: Option<u32>,
+    pub lane: u8,
+    /// `warble`, `pulsed`, `steady`, `two_tone` or `tones`.
+    pub kind: String,
+    /// The distinct tones in the order first heard, Hz.
+    pub tones_hz: Vec<f32>,
+    /// Its tones, counting each repeat.
+    pub segments: u32,
+    /// From the call's first audio to its first tone (its place in the recording).
+    pub offset_ms: u64,
+    pub duration_ms: u64,
+}
+
 /// A query window on one site, or on every site of a system (`by_system`: `site` is the system).
 #[derive(Debug, Clone)]
 pub struct Range {
@@ -355,6 +379,28 @@ fn call_row(r: &rusqlite::Row) -> rusqlite::Result<CallRow> {
     })
 }
 
+/// The columns `alert_row` reads.
+const ALERT_COLUMNS: &str =
+    "site, call_id, call_started_ms, at_ms, tg, source, lane, kind, tones, segments, offset_ms, duration_ms";
+
+fn alert_row(r: &rusqlite::Row) -> rusqlite::Result<AlertRow> {
+    let tones: String = r.get(8)?;
+    Ok(AlertRow {
+        site: r.get(0)?,
+        call_id: to_u64(r.get(1)?),
+        call_started_ms: to_u64(r.get(2)?),
+        at_ms: to_u64(r.get(3)?),
+        tg: r.get(4)?,
+        source: r.get(5)?,
+        lane: r.get(6)?,
+        kind: r.get(7)?,
+        tones_hz: tones.split(',').filter_map(|t| t.parse().ok()).collect(),
+        segments: r.get(9)?,
+        offset_ms: to_u64(r.get(10)?),
+        duration_ms: to_u64(r.get(11)?),
+    })
+}
+
 fn hours(q: &Range) -> (String, i64, i64) {
     (q.site.clone(), q.first_hour() as i64, q.to_ms as i64)
 }
@@ -435,6 +481,25 @@ impl Store {
         tx.commit()
     }
 
+    /// Store alerts (one already stored is left as it is).
+    pub fn insert_alerts(&self, rows: &[AlertRow]) -> rusqlite::Result<()> {
+        let mut conn = lock(&self.write);
+        let tx = conn.transaction()?;
+        {
+            let mut st = tx.prepare_cached(&format!(
+                "INSERT OR IGNORE INTO alerts ({ALERT_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+            ))?;
+            for a in rows {
+                let tones: Vec<String> = a.tones_hz.iter().map(|t| format!("{t:.1}")).collect();
+                st.execute(params![
+                    a.site, a.call_id as i64, a.call_started_ms as i64, a.at_ms as i64, a.tg, a.source, a.lane, a.kind,
+                    tones.join(","), a.segments, a.offset_ms as i64, a.duration_ms as i64,
+                ])?;
+            }
+        }
+        tx.commit()
+    }
+
     /// Add radio events, in one transaction.
     pub fn note_units(&self, site: &str, notes: &[UnitNote]) -> rusqlite::Result<()> {
         let mut conn = lock(&self.write);
@@ -492,11 +557,11 @@ impl Store {
         Ok(n)
     }
 
-    /// Every recording file listed.
-    pub fn recording_files(&self) -> rusqlite::Result<Vec<String>> {
+    /// Every recording file listed, with its size and length.
+    pub fn recording_sizes(&self) -> rusqlite::Result<HashMap<String, (u64, u64)>> {
         let conn = lock(&self.read);
-        let mut st = conn.prepare("SELECT file FROM recordings")?;
-        let rows = st.query_map([], |r| r.get(0))?;
+        let mut st = conn.prepare("SELECT file, bytes, COALESCE(duration_ms, 0) FROM recordings")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, (to_u64(r.get(1)?), to_u64(r.get(2)?)))))?;
         rows.collect()
     }
 
@@ -566,7 +631,7 @@ impl Store {
         let mut conn = lock(&self.write);
         let tx = conn.transaction()?;
         let calls = tx.execute("DELETE FROM calls", [])?;
-        for table in ["transmissions", "talkgroups", "radios", "radio_events", "tg_hour", "radio_hour", "recordings", "sites", "systems"] {
+        for table in ["transmissions", "talkgroups", "radios", "radio_events", "tg_hour", "radio_hour", "recordings", "alerts", "sites", "systems"] {
             tx.execute(&format!("DELETE FROM {table}"), [])?;
         }
         tx.commit()?;
@@ -583,6 +648,7 @@ impl Store {
         tx.execute("DELETE FROM tg_hour WHERE t < ?1", params![before])?;
         tx.execute("DELETE FROM radio_hour WHERE t < ?1", params![before])?;
         tx.execute("DELETE FROM radio_events WHERE last_ms < ?1", params![before])?;
+        tx.execute("DELETE FROM alerts WHERE call_started_ms < ?1", params![before])?;
         if n > 0 {
             tx.execute_batch(
                 "UPDATE sites SET
@@ -880,6 +946,39 @@ impl Store {
             chunk(buf);
         }
         Ok(())
+    }
+
+    /// Alerts in the window (by when their tone began), newest first; `f.unit` is the calling
+    /// radio.
+    pub fn alerts(&self, q: &Range, f: SeriesFilter, limit: usize) -> rusqlite::Result<Vec<AlertRow>> {
+        let conn = lock(&self.read);
+        let mut st = conn.prepare(&format!(
+            "SELECT {ALERT_COLUMNS} FROM alerts WHERE {} AND at_ms >= ?2 AND at_ms < ?3
+             AND (?5 IS NULL OR tg = ?5) AND (?6 IS NULL OR source = ?6) ORDER BY at_ms DESC LIMIT ?4",
+            q.scope("site")
+        ))?;
+        let rows = st.query_map(params![q.site, q.from_ms as i64, q.to_ms as i64, limit as i64, f.tg, f.unit], alert_row)?;
+        rows.collect()
+    }
+
+    /// The alerts of the calls that started in the window, in their calls' order of offset.
+    pub fn call_alerts(&self, q: &Range) -> rusqlite::Result<Vec<AlertRow>> {
+        let conn = lock(&self.read);
+        let mut st = conn.prepare(&format!(
+            "SELECT {ALERT_COLUMNS} FROM alerts WHERE {} AND call_started_ms >= ?2 AND call_started_ms < ?3
+             ORDER BY call_started_ms, offset_ms",
+            q.scope("site")
+        ))?;
+        let rows = st.query_map(params![q.site, q.from_ms as i64, q.to_ms as i64], alert_row)?;
+        rows.collect()
+    }
+
+    /// Every alert kept, by call and offset (the recordings' bookmarks at boot).
+    pub fn all_alerts(&self) -> rusqlite::Result<Vec<AlertRow>> {
+        let conn = lock(&self.read);
+        let mut st = conn.prepare(&format!("SELECT {ALERT_COLUMNS} FROM alerts ORDER BY call_started_ms, offset_ms"))?;
+        let rows = st.query_map([], alert_row)?;
+        rows.collect()
     }
 
     /// The newest calls of a site, newest first.

@@ -86,9 +86,12 @@ Then three ways in: scan for systems, add one by hand, or import an SDRTrunk pla
 p25-httpd's Now page was the better starting point (`p25-httpd/src/httpd/ui/js/views/now.js`).
 Done: the locked top, the system card with its two lists (picking a site makes it live), the
 traffic channels as "Left · Traffic 1" and "Right · Traffic 2", each with a talkgroup picker
-that holds that channel alone (a lane the site does not run says so), and the call history with
-playback. Still to come: the talkgroup controls (monitor,
-record, priority, speaker).
+that holds that channel alone (the clear talkgroups of the last week; a lane the site does not
+run says so) and this browser's volume and mute for it, and the call history with playback:
+every call of the site (older ones read as the list scrolls), each with its details, its alert
+tones as bookmarks and an alerts filter. The header keeps Listen across reloads, the volume, the
+leveller and "Alerts only" (play only the talkgroups an alert tone opened, for a chosen time).
+Still to come: the talkgroup controls (monitor, record, priority, speaker).
 
 - **Locked top:** the header, the system card and the active channels stay on screen. Only the
   call history scrolls, in its own pane.
@@ -149,3 +152,18 @@ Per system, SDRTrunk's alias list as a table:
 - **Diagnostics:** the receivers, the event log and the spectrum. Eye and IQ plots come later
   for every received signal.
 - **Settings:** the radio settings, and the configuration (export, import, factory reset).
+
+### Later: a system notebook
+
+Andy's idea (2026-10-03), not built: a wiki or scratch pad per system, in Markdown, with
+collapsible sections and an index. It holds what a listener needs at hand, each kind of page
+from its own template:
+
+- the system's details and its talkgroups' meanings;
+- its 10-codes, signals and plain-language codes;
+- station information and a station map;
+- emergency procedures;
+- the user's own notes.
+
+Kept on the radio with the system's configuration, so every browser sees the same notes, and
+exported and imported with it.

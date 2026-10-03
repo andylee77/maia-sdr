@@ -80,7 +80,7 @@ fn an_older_database_gains_the_new_columns_and_they_round_trip() {
         .unwrap()
         .execute_batch(
             "ALTER TABLE calls DROP COLUMN emergency; ALTER TABLE calls DROP COLUMN first_voice_ms;
-             UPDATE meta SET value = '2' WHERE key = 'schema';",
+             DROP TABLE alerts; UPDATE meta SET value = '2' WHERE key = 'schema';",
         )
         .unwrap();
     let s = Store::open(&path).unwrap();
@@ -88,9 +88,46 @@ fn an_older_database_gains_the_new_columns_and_they_round_trip() {
     let row = CallRow { emergency: true, private: true, first_voice_ms: Some(T0 + 300), ..call(7, T0, 4001, &[101], 1_000, false) };
     assert_eq!(s.insert_calls(&[row.clone()]).unwrap(), 1);
     assert_eq!(s.call(7).unwrap(), Some(row));
+    s.insert_alerts(&[alert(7, T0, 1014)]).unwrap();
+    assert_eq!(s.all_alerts().unwrap().len(), 1);
     let schema: String =
         rusqlite::Connection::open(&path).unwrap().query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| r.get(0)).unwrap();
-    assert_eq!(schema, "3");
+    assert_eq!(schema, "4");
+}
+
+/// A console's warble in call `call_id`, which started at `started`.
+fn alert(call_id: u64, started: u64, source: u32) -> AlertRow {
+    AlertRow {
+        site: "clay".into(),
+        call_id,
+        call_started_ms: started,
+        at_ms: started + 150,
+        tg: 300,
+        source: Some(source),
+        lane: 1,
+        kind: "warble".into(),
+        tones_hz: vec![806.5, 1506.1],
+        segments: 5,
+        offset_ms: 40,
+        duration_ms: 1_120,
+    }
+}
+
+#[test]
+fn alerts_are_listed_newest_first_and_go_with_their_calls() {
+    let s = store_at("alerts");
+    let (a1, a2) = (alert(1, T0, 1014), alert(3, T0 + 2 * H, 1012));
+    let later = AlertRow { offset_ms: 4_000, at_ms: a2.at_ms + 3_960, kind: "pulsed".into(), tones_hz: vec![1010.4], ..a2.clone() };
+    s.insert_alerts(&[a1.clone(), a2.clone(), later.clone()]).unwrap();
+    s.insert_alerts(&[a1.clone()]).unwrap();
+    assert_eq!(s.alerts(&range(), SeriesFilter::default(), 10).unwrap(), vec![later.clone(), a2.clone(), a1.clone()]);
+    let from_1012 = s.alerts(&range(), SeriesFilter { tg: None, unit: Some(1012) }, 10).unwrap();
+    assert_eq!(from_1012.len(), 2);
+    assert_eq!(s.call_alerts(&Range::site("clay", T0 + H, T0 + 3 * H)).unwrap(), vec![a2, later]);
+    assert_eq!(s.prune(T0 + H).unwrap(), 2);
+    assert_eq!(s.all_alerts().unwrap().len(), 2, "pruned with their calls");
+    s.clear().unwrap();
+    assert!(s.all_alerts().unwrap().is_empty());
 }
 
 #[test]
@@ -223,7 +260,7 @@ fn recordings_link_to_their_calls() {
     assert!(!info.contains_key("b.wav"), "too far from its call's start");
     assert!(!info.contains_key("c.wav"));
     assert_eq!(s.remove_recordings(&files[1..]).unwrap(), 2);
-    assert_eq!(s.recording_files().unwrap(), vec!["a.wav".to_string()]);
+    assert_eq!(s.recording_sizes().unwrap().into_keys().collect::<Vec<_>>(), vec!["a.wav".to_string()]);
 }
 
 #[test]

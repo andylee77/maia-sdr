@@ -6,6 +6,10 @@
 //! card's recordings found at boot plus this run's, oldest first. Every followed call's voice
 //! frames, vocoder errors and silent frames are counted, recorded or not, and go to the history
 //! with the recordings (`reconcile` links the card's files to their calls at boot).
+//!
+//! The alert tones the chunks carry (`audio::alert`) go to the history and the notices for every
+//! followed call, recorded or not, and become its recording's bookmarks: in the list, and in the
+//! WAV as cue points.
 
 pub mod index;
 pub mod storage;
@@ -21,12 +25,14 @@ use serde::{Serialize, Serializer};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
+use crate::audio::alert::ToneAlert;
 use crate::audio::live::{Audio, AudioChunk};
 use crate::hardware::p25core::Lane;
 use crate::services::config::radio::{self as radio_config, Storage as StorageKind};
-use crate::services::history::store::{RecordingRow, Store as HistoryStore, VoiceResult};
+use crate::services::history::store::{AlertRow, RecordingRow, Store as HistoryStore, VoiceResult};
 use crate::services::history::HistoryTx;
 use crate::services::notices::{Notice, Notices};
+use crate::util::time::unix_ms;
 use storage::{Retention, SdStatus, Storage, StorageConfig};
 
 /// After a call closes, its audio still in the decoder and pacer comes in for this long.
@@ -34,6 +40,8 @@ const DRAIN: Duration = Duration::from_secs(2);
 /// A recording with no close and no audio for this long is saved anyway (the close was lost).
 const STALE: Duration = Duration::from_secs(300);
 const TICK: Duration = Duration::from_millis(100);
+/// The newest alerts kept for the live pages (the history keeps them all).
+const RECENT_ALERTS: usize = 200;
 
 pub type Ring = Arc<Mutex<VecDeque<Recording>>>;
 
@@ -61,6 +69,30 @@ pub struct VoiceCounts {
     pub silent: u64,
 }
 
+/// A place in a recording: an alert tone heard there.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Bookmark {
+    pub offset_ms: u64,
+    pub duration_ms: u64,
+    /// "warble 806.5/1506.0 Hz".
+    pub label: String,
+    pub kind: String,
+    pub tones_hz: Vec<f32>,
+}
+
+impl Bookmark {
+    fn of(a: &AlertRow) -> Bookmark {
+        let tones: Vec<String> = a.tones_hz.iter().map(|f| format!("{f:.1}")).collect();
+        Bookmark {
+            offset_ms: a.offset_ms,
+            duration_ms: a.duration_ms,
+            label: format!("{} {} Hz", a.kind.replace('_', "-"), tones.join("/")),
+            kind: a.kind.clone(),
+            tones_hz: a.tones_hz.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Recording {
     /// The call's id.
@@ -86,6 +118,8 @@ pub struct Recording {
     pub channel: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voice: Option<VoiceCounts>,
+    /// Its alert tones.
+    pub bookmarks: Vec<Bookmark>,
     #[serde(skip)]
     pub path: PathBuf,
 }
@@ -218,6 +252,8 @@ struct Shared {
     policy: Mutex<Policy>,
     counters: Counters,
     recording_now: AtomicU64,
+    /// The newest alerts, oldest first.
+    alerts: Mutex<VecDeque<AlertRow>>,
 }
 
 impl Shared {
@@ -255,6 +291,7 @@ impl Recordings {
             policy: Mutex::new(policy),
             counters: Counters::default(),
             recording_now: AtomicU64::new(0),
+            alerts: Mutex::new(VecDeque::new()),
         });
         let (tx, rx) = mpsc::unbounded_channel();
         let recorder = Recorder { shared: shared.clone(), open: HashMap::new() };
@@ -282,6 +319,29 @@ impl Recordings {
 
     pub fn get(&self, id: u64) -> Option<Recording> {
         lock(&self.shared.ring).iter().find(|r| r.id == id).cloned()
+    }
+
+    /// The recordings of these call ids (an id may have more than one: ids restart when a boot
+    /// finds no recordings).
+    pub fn of_calls(&self, ids: &std::collections::HashSet<u64>) -> HashMap<u64, Vec<Recording>> {
+        let mut out: HashMap<u64, Vec<Recording>> = HashMap::new();
+        for r in lock(&self.shared.ring).iter().filter(|r| ids.contains(&r.id)) {
+            out.entry(r.id).or_default().push(r.clone());
+        }
+        out
+    }
+
+    /// Keep the newest of these alerts (oldest first) as this run's own (the history's at boot).
+    pub fn remember_alerts(&self, alerts: Vec<AlertRow>) {
+        let mut recent = lock(&self.shared.alerts);
+        recent.extend(alerts);
+        let excess = recent.len().saturating_sub(RECENT_ALERTS);
+        recent.drain(..excess);
+    }
+
+    /// The alerts of a recent call.
+    pub fn alerts_of(&self, call: u64) -> Vec<AlertRow> {
+        lock(&self.shared.alerts).iter().filter(|a| a.call_id == call).cloned().collect()
     }
 
     /// Delete one recording, its file too.
@@ -386,6 +446,10 @@ struct Open {
     record: bool,
     pcm: Vec<i16>,
     voice: VoiceCounts,
+    /// Each alert's last summary, in order.
+    alerts: Vec<ToneAlert>,
+    /// When its first audio played (unix ms).
+    first_audio_ms: Option<u64>,
     last_chunk: Instant,
     end: Option<(CallEnd, Instant)>,
 }
@@ -433,6 +497,8 @@ impl Recorder {
             record,
             pcm: Vec::new(),
             voice: VoiceCounts::default(),
+            alerts: Vec::new(),
+            first_audio_ms: None,
             last_chunk: Instant::now(),
             end: None,
         });
@@ -452,6 +518,13 @@ impl Recorder {
         o.voice.frames += 1;
         o.voice.errors += u64::from(c.error);
         o.voice.silent += u64::from(c.silent);
+        o.first_audio_ms.get_or_insert_with(unix_ms);
+        if let Some(a) = &c.alert {
+            match o.alerts.last_mut() {
+                Some(last) if last.seq == a.seq => *last = a.as_ref().clone(),
+                _ => o.alerts.push(a.as_ref().clone()),
+            }
+        }
         if o.record {
             o.pcm.extend_from_slice(&c.pcm);
         }
@@ -473,8 +546,26 @@ impl Recorder {
         }
     }
 
+    /// The call's alerts go to the history and the live pages (after its recording, so a page
+    /// told of them can play them), then its recording is saved.
     fn finish(&mut self, id: u64) {
         let Some(o) = self.open.remove(&id) else { return };
+        let alerts = alert_rows(&o);
+        let tg = o.start.tg;
+        if !alerts.is_empty() {
+            self.shared.history.alerts(alerts.clone());
+            let mut recent = lock(&self.shared.alerts);
+            recent.extend(alerts.iter().cloned());
+            let excess = recent.len().saturating_sub(RECENT_ALERTS);
+            recent.drain(..excess);
+        }
+        self.keep(id, o, alerts.iter().map(Bookmark::of).collect());
+        if !alerts.is_empty() {
+            self.shared.notices.send(Notice::Alert { call: id, tg });
+        }
+    }
+
+    fn keep(&mut self, id: u64, o: Open, bookmarks: Vec<Bookmark>) {
         if o.voice.frames > 0 {
             self.shared.history.voice(VoiceResult {
                 site: o.start.site.clone(),
@@ -493,7 +584,7 @@ impl Recorder {
             counters.no_audio.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        match save(&self.shared, o) {
+        match save(&self.shared, o, bookmarks) {
             Ok(()) => {
                 self.shared.notices.send(Notice::RecordingSaved { call: id });
                 counters.saved.fetch_add(1, Ordering::Relaxed)
@@ -506,8 +597,32 @@ impl Recorder {
     }
 }
 
+/// The call's alerts as the history keeps them.
+fn alert_rows(o: &Open) -> Vec<AlertRow> {
+    let s = &o.start;
+    let source = o.end.as_ref().and_then(|(e, _)| e.source).or(s.source);
+    let first_audio = o.first_audio_ms.unwrap_or(s.started_unix_ms);
+    o.alerts
+        .iter()
+        .map(|a| AlertRow {
+            site: s.site.clone(),
+            call_id: s.call,
+            call_started_ms: s.started_unix_ms,
+            at_ms: first_audio + u64::from(a.offset_ms),
+            tg: s.tg,
+            source,
+            lane: s.lane.number(),
+            kind: a.kind.as_str().to_string(),
+            tones_hz: a.tones_hz.clone(),
+            segments: a.segments,
+            offset_ms: u64::from(a.offset_ms),
+            duration_ms: u64::from(a.duration_ms),
+        })
+        .collect()
+}
+
 /// Write (RAM) or queue (card) the call's WAV and list it.
-fn save(shared: &Shared, o: Open) -> std::io::Result<()> {
+fn save(shared: &Shared, o: Open, bookmarks: Vec<Bookmark>) -> std::io::Result<()> {
     let s = &o.start;
     let (end_source, sources) = match o.end {
         Some((e, _)) => (e.source, e.sources),
@@ -515,7 +630,11 @@ fn save(shared: &Shared, o: Open) -> std::io::Result<()> {
     };
     let source = end_source.or(s.source);
     let file = index::file_name(s.started_unix_ms, s.call, s.tg, source, &s.site);
-    let bytes = wav::wav_bytes(&o.pcm);
+    let marks: Vec<wav::Mark> = bookmarks
+        .iter()
+        .map(|b| wav::Mark { offset_ms: b.offset_ms, duration_ms: b.duration_ms, label: b.label.clone() })
+        .collect();
+    let bytes = wav::wav_bytes(&o.pcm, &marks);
     let storage = &shared.storage;
     let policy = shared.policy();
     let to_card = policy.store == Store::Sd
@@ -532,7 +651,7 @@ fn save(shared: &Shared, o: Open) -> std::io::Result<()> {
         tg: s.tg,
         source,
         started_unix_ms: s.started_unix_ms,
-        duration_ms: wav::duration_ms(bytes.len() as u64),
+        duration_ms: wav::samples_ms(o.pcm.len()),
         bytes: bytes.len() as u64,
         file: file.clone(),
         store: Store::Ram,
@@ -542,6 +661,7 @@ fn save(shared: &Shared, o: Open) -> std::io::Result<()> {
         freq_hz: s.freq_hz,
         channel: s.channel.clone(),
         voice: Some(o.voice),
+        bookmarks,
         path: storage.ram_dir().join(&file),
     };
     let queued = if to_card {
@@ -588,10 +708,22 @@ fn row_of(r: &Recording) -> RecordingRow {
 }
 
 /// Bring the history's list of recordings in line with the card's (boot): files new to it are
-/// added and linked to their calls once, rows of files gone are removed. The card's recordings
-/// get their calls' frequency, channel, lane and radios. Returns (added, removed).
+/// measured, added and linked to their calls once, rows of files gone are removed. The card's
+/// recordings get their size and length from it (a WAV's bookmarks follow its audio, so its size
+/// says a little more), and their calls' frequency, channel, lane, radios and alerts (their
+/// bookmarks). Returns (added, removed).
 pub fn reconcile(list: &mut [Recording], history: &HistoryStore) -> rusqlite::Result<(usize, usize)> {
-    let known: std::collections::HashSet<String> = history.recording_files()?.into_iter().collect();
+    let sizes = history.recording_sizes();
+    for r in list.iter_mut() {
+        match sizes.as_ref().ok().and_then(|s| s.get(&r.file)) {
+            Some(&(bytes, ms)) => {
+                r.bytes = bytes;
+                r.duration_ms = ms;
+            }
+            None => index::measure(r),
+        }
+    }
+    let known: std::collections::HashSet<String> = sizes?.into_keys().collect();
     let on_card: std::collections::HashSet<&str> = list.iter().map(|r| r.file.as_str()).collect();
     let new: Vec<RecordingRow> = list.iter().filter(|r| !known.contains(&r.file)).map(row_of).collect();
     let gone: Vec<String> = known.iter().filter(|f| !on_card.contains(f.as_str())).cloned().collect();
@@ -599,6 +731,10 @@ pub fn reconcile(list: &mut [Recording], history: &HistoryStore) -> rusqlite::Re
     let removed = history.remove_recordings(&gone)?;
     let files: Vec<String> = list.iter().map(|r| r.file.clone()).collect();
     let info = history.recording_info(&files)?;
+    let mut alerts: HashMap<(String, u64, u64), Vec<AlertRow>> = HashMap::new();
+    for a in history.all_alerts()? {
+        alerts.entry((a.site.clone(), a.call_id, a.call_started_ms)).or_default().push(a);
+    }
     for r in list.iter_mut() {
         if let Some(i) = info.get(&r.file) {
             r.freq_hz = i.freq_hz;
@@ -607,6 +743,9 @@ pub fn reconcile(list: &mut [Recording], history: &HistoryStore) -> rusqlite::Re
             if !i.units.is_empty() {
                 r.sources = i.units.clone();
             }
+        }
+        if let Some(a) = alerts.get(&(r.site.clone(), r.id, r.started_unix_ms)) {
+            r.bookmarks = a.iter().map(Bookmark::of).collect();
         }
     }
     Ok((added, removed))

@@ -153,6 +153,7 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .badge.enc, .badge.bad { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
 .badge.rec { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 .badge.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.badge.alert { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--idle); flex: none; }
 .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
 .dot.warn { background: var(--warn); }
@@ -223,6 +224,11 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .now-traffic .call-card .card-body { min-height: 9.6em; }
 .lane-hold { max-width: 15em; min-height: 26px; padding: 2px 8px; font-size: 0.86em; }
 .lane-hold.held { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+/* A lane's volume and mute in this browser. */
+.lane-audio { display: inline-flex; align-items: center; gap: 4px; }
+.lane-audio .vol { width: 76px; }
+.lane-audio .vol.off { opacity: 0.4; }
+.btn.muted { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, transparent); }
 
 /* ── Calls ────────────────────────────────────────────────── */
 .calls { display: grid; }
@@ -230,7 +236,7 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .now-calls .card-head .input { width: 14em; min-height: 28px; padding: 3px 9px; }
 .call-row {
   display: grid;
-  grid-template-columns: 5.6em minmax(0, 1.3fr) minmax(0, 1.2fr) 10em 6.4em minmax(150px, 1fr) 5em;
+  grid-template-columns: 5.6em minmax(0, 1.3fr) minmax(0, 1.2fr) 10em 6.4em minmax(150px, 1fr) 6.6em;
   gap: 10px; align-items: center;
   padding: 9px 16px;
   border-top: 1px solid var(--line);
@@ -238,7 +244,12 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .call-row:first-child { border-top: 0; }
 .call-row.nf { opacity: 0.62; }
 .call-row.open { background: color-mix(in srgb, var(--voice) 6%, transparent); }
-.call-row .c-hold { display: flex; justify-content: flex-end; }
+.call-row .c-hold { display: flex; justify-content: flex-end; gap: 6px; }
+.call-row.alert { box-shadow: inset 3px 0 0 var(--warn); }
+.call-row .tg-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.call-row .c-flag:empty { display: none; }
+.call-row .btn.mark { padding: 2px 7px; color: var(--warn); }
+.call-row .call-details { grid-column: 1 / -1; margin: 4px 0 2px; padding: 8px 12px; background: var(--bg-sunken); border-radius: var(--radius-sm); }
 .call-row .when { font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 0.9em; }
 .call-row .tg { font-weight: 650; }
 .call-row .sub { font-size: 0.84em; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -248,6 +259,8 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .call-row .why { font-size: 0.82em; color: var(--text-faint); font-style: italic; }
 .calls-empty { padding: 18px 16px; color: var(--text-dim); }
 .calls-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 0 16px 10px; }
+.calls-more { display: flex; gap: 10px; align-items: center; justify-content: center; padding: 12px 16px; color: var(--text-dim); font-size: 0.86em; border-top: 1px solid var(--line); }
+.calls-more span:empty { display: none; }
 
 @media (max-width: 860px) {
   .call-row {

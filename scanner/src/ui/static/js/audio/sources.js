@@ -1,16 +1,19 @@
 // Source text of the AudioWorklet processor and the /ws/audio Worker, loaded through Blob URLs
 // (no extra routes):
 //
-//   net -> Worker (own thread, WebSocket) -> MessagePort -> AudioWorklet
+//   net -> Worker (own thread, WebSocket, alert gate) -> MessagePort -> AudioWorklet
 //
 // The jitter buffer, resampling PLL and per-sample pan are `Ring` (ring.js), whose source text is
-// injected into the worklet. Before a lane's audio the server sends a {"type":"meta"} text frame
-// naming its talkgroup and speaker (left, right or both, from the profile); the Worker tags each
-// block with that pan. Binary frames start with a 4-byte header [lane, 0, 0, 0]; the worklet keeps
-// one ring per lane and mixes them, so a call on the left and another on the right play at the
-// same time.
+// injected into the worklet; the alerts-only gate is `AlertGate` (gate.js), injected into the
+// Worker. Before a lane's audio the server sends a {"type":"meta"} text frame naming its call,
+// talkgroup and speaker (left, right or both); the Worker tags each block with that pan. Before
+// the frame that makes a call's audio an alert tone it sends {"type":"alert"}: the Worker opens
+// the gate and tells the page. Binary frames start with a 4-byte header [lane, 0, 0, 0]; the
+// worklet keeps one ring per lane and mixes them at each lane's volume, so a call on the left and
+// another on the right play at the same time.
 
 import { Ring, clip } from './ring.js';
+import { AlertGate } from './gate.js';
 
 export const WORKLET_SRC = Ring.toString() + '\n' + clip.toString() + `
 class LaneAudio extends AudioWorkletProcessor {
@@ -24,6 +27,8 @@ class LaneAudio extends AudioWorkletProcessor {
         if (p) p.onmessage = e2 => this.push(e2.data);
       } else if (m && m.type === 'norm') {
         for (const r of this.rings) r.norm = !!m.on;
+      } else if (m && m.type === 'vol') {
+        this.rings[m.lane === 1 ? 1 : 0].vol = m.v;
       } else if (m && m.type === 'stats') {
         const [a, b] = this.rings;
         this.port.postMessage({ type: 'stats', avail: Math.max(a.avail, b.avail),
@@ -51,14 +56,16 @@ class LaneAudio extends AudioWorkletProcessor {
 registerProcessor('lane-audio', LaneAudio);
 `;
 
-export const WORKER_SRC = `
+export const WORKER_SRC = AlertGate.toString() + `
 let port = null, ws = null, url = null, backoff = 1000, timer = null, chunks = 0, lag = 0, last = 0;
 let pans = [0, 0];
+const gate = new AlertGate();
 function panOf(speaker) { return speaker === 'left' ? -1 : speaker === 'right' ? 1 : 0; }
 function report(force) {
   const now = Date.now();
   if (force || now - last > 250) { self.postMessage({ type: 'status', chunks, lag }); last = now; }
 }
+function send(block) { if (port) port.postMessage(block, [block.data.buffer]); }
 function connect() {
   clearTimeout(timer);
   ws = new WebSocket(url);
@@ -68,8 +75,15 @@ function connect() {
     if (typeof ev.data === 'string') {
       try {
         const c = JSON.parse(ev.data);
+        const lane = c && c.lane === 1 ? 1 : 0;
         if (c && c.type === 'lag') { lag += c.skipped || 0; report(true); }
-        else if (c && c.type === 'meta') pans[c.lane === 1 ? 1 : 0] = panOf(c.speaker);
+        else if (c && c.type === 'meta') {
+          pans[lane] = panOf(c.speaker);
+          gate.call(lane, c.tg, c.call_id, Date.now());
+        } else if (c && c.type === 'alert') {
+          for (const block of gate.alert(lane, c.tg, c.call_id, Date.now())) send(block);
+          self.postMessage({ type: 'alert', alert: c });
+        }
       } catch (e) {}
       return;
     }
@@ -77,7 +91,8 @@ function connect() {
     const i16 = new Int16Array(ev.data, 4);
     const f32 = new Float32Array(i16.length);
     for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
-    if (port) port.postMessage({ type: 'pcm', lane, data: f32, pan: pans[lane] }, [f32.buffer]);
+    const block = { type: 'pcm', lane, data: f32, pan: pans[lane] };
+    if (gate.pass(lane, block)) send(block);
     chunks++;
     report(false);
   };
@@ -90,6 +105,7 @@ function connect() {
 self.onmessage = e => {
   const m = e.data;
   if (m.type === 'init') { port = m.port; url = m.url; connect(); }
+  else if (m.type === 'gate') gate.setMode(m.on, m.windowMs);
   else if (m.type === 'shutdown') { url = null; clearTimeout(timer); if (ws) try { ws.close(); } catch (e) {} }
 };
 `;

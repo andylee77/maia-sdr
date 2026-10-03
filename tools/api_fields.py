@@ -49,7 +49,8 @@ def join(prefix: str, path: str) -> str:
 
 # What one element is, for a structure included as an array's elements.
 NOUNS = {"call": "call", "site": "site", "system": "system", "alias": "alias", "recording": "recording",
-         "lsm_control": "lane's LSM settings", "carrier": "carrier"}
+         "lsm_control": "lane's LSM settings", "carrier": "carrier", "alert": "alert tone",
+         "bookmark": "bookmark", "named_alert": "alert tone"}
 
 
 def expand(entries: list, prefix: str = "") -> list[tuple[str, str, str]]:

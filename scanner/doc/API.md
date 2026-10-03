@@ -10,9 +10,9 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/hold` | the talkgroup the live site is held on, if any, and each traffic lane's own |
 | PUT | `/api/v1/hold` | hold the live site on one talkgroup (`tg`; null releases): only it is followed, whatever the aliases say; with `lane` (1 or 2) only that lane: it takes only that talkgroup, the other lane follows as before |
 | GET | `/api/v1/calls/{id}` | one call, live while recent, else from the history; the same shape either way |
-| GET | `/ws/live` | the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, the scan and configuration changes; and what a page subscribes to (the spectrum, the event log, the radio's readback, the window, the crystal) |
-| GET | `/ws/events` | a text frame when a call opens or closes or a recording is saved |
-| GET | `/ws/audio` | live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta and lag frames); without, lane one untagged |
+| GET | `/ws/live` | the radio's state pushed as it changes: a snapshot, then status, traffic channels, calls, recordings, alert tones, the scan and configuration changes; and what a page subscribes to (the spectrum, the event log, the radio's readback, the window, the crystal) |
+| GET | `/ws/events` | a text frame when a call opens or closes, a recording is saved or a call's alert tones are known |
+| GET | `/ws/audio` | live audio: with `v=2` every lane, each binary 20 ms frame tagged with its lane (text meta, alert and lag frames); without, lane one untagged |
 | GET | `/api/v1/data` | packet data of a site (`site`, default the live one; `all`): totals, radios and recent records (`limit`) |
 | GET | `/api/v1/activity/sites` | sites with history; where it is kept, its size and limits |
 | GET | `/api/v1/activity/summary` | calls, voice and grant time, talkgroups, radios (`site`, `from`/`to` or `hours`) |
@@ -21,7 +21,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/activity/radio/{unit}` | the talkgroups a radio used, its affiliations and registrations |
 | GET | `/api/v1/activity/talkgroup/{tg}` | a talkgroup's radios and encryption history |
 | GET | `/api/v1/activity/series` | calls and time per hour or day (`bucket`, `tz`, `tg`, `unit`) |
-| GET | `/api/v1/activity/calls` | calls newest first in `/calls`' shape with names (`tg`, `unit`, `limit`; `format=csv`: history rows as a file) |
+| GET | `/api/v1/activity/calls` | calls newest first in `/calls`' shape with names, recordings and alert tones (`tg`, `unit`, `limit`; `format=csv`: history rows as a file) |
+| GET | `/api/v1/activity/alerts` | the alert tones heard in followed calls (console warbles and beeps, two-tone pages): grouped by kind and tones, and the newest each with its call (`tg`, `unit`: the sending radio, `limit`) |
 | GET | `/api/v1/survey` | the carriers heard in the live site's receive window over the last ten minutes: how often each is on, its peak above the floor, steady or not (from every spectrometer frame) |
 | GET | `/api/v1/spectrum` | the receive window from the wideband spectrometer (`bins`), with the control channel and lanes |
 | GET | `/api/v1/events` | the event log after `after` (newest `limit`; housekeeping too with `routine=true`) |

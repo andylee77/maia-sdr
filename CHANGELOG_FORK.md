@@ -113,8 +113,21 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 - **No page polls:** the pages' shared state comes from `/ws/live`, and a page subscribes there
   to what only it shows (the spectrum, the event log, the radio's readback, the receive window,
   the crystal); Activity reloads when calls close.
+- **Alert tones:** each lane's decoded audio is searched for a console's attention signals
+  (Clay's hi-lo warble, 806.5/1506 Hz as decoded, and its 1010 Hz beep) and two-tone pages.
+  They go to the history (schema v4), the recordings as bookmarks (WAV cue points too),
+  `/ws/live`, `/ws/audio` and `GET /api/v1/activity/alerts` (grouped, each with the dispatch
+  call that followed); the Activity page lists them. Found every alert on A's 2,143 Clay
+  recordings and nothing else.
+- **Listening:** Listen comes back after a reload; the volume and leveller are back; each
+  traffic card has its volume and mute; "Alerts only" plays just the talkgroups an alert tone
+  opened, for a chosen time, from the tone on.
+- **Now's calls:** every call of the site scrolls (older ones read from the history), with
+  details and bookmarks per call; the lane pickers list the week's clear talkgroups only.
+- **Fix:** a restart with 2,260 recordings on the card listed none (each file's stat scans the
+  FAT directory: 16 s, past the limit); the listing reads names and takes sizes from the history.
 
-Tests: scanner 422, p25-httpd 475.
+Tests: scanner 433, p25-httpd 475.
 
 ---
 

@@ -1,12 +1,12 @@
-// Activity: the per-site history: who talks, on which talkgroups, how much, and what is
-// encrypted, per hour or per day.
+// Activity: the per-site history: who talks, on which talkgroups, how much, what is encrypted,
+// per hour or per day, and the alert tones heard (consoles' warbles and beeps, two-tone pages).
 //
 // Two kinds of time are shown apart. Voice is decoded on the voice channel (followed calls) and
 // is measured. Grant time is all that is known of a call that was not followed (encrypted, or no
 // lane free): from the grant to its last update on the control channel. It includes hang time and
 // any other radio keying up on the grant, and is credited to the radio granted.
 
-import { h, setText, card, toast, table } from '../dom.js';
+import { h, setText, card, toast, table, icon } from '../dom.js';
 import { api } from '../api.js';
 import { packetDataCard } from './packet_data.js';
 import { dur, num, bytes, tgLabel, unitLabel, DASH, dayTime as when } from '../format.js';
@@ -17,6 +17,9 @@ const PERIODS = [
   { key: '7d', label: '7 days', hours: 168, bucket: 'hour', refresh: 120000 },
   { key: '30d', label: '30 days', hours: 720, bucket: 'day', refresh: 300000 },
 ];
+const ALERT_NOTE = 'Found in the decoded audio of followed calls. The vocoder rebuilds a tone to within about 1 % of what '
+  + 'was sent, so the same tones read a little differently from call to call. The dispatch is what the alert announced: '
+  + 'the next transmission of the same radio on the talkgroup with 4 s of voice, each key-up within 5 s of the last.';
 const GRANT_NOTE = 'Encrypted and not-followed calls show grant time: from the grant to its last update on the control channel. '
   + 'It includes hang time and any other radio that keyed up on the grant, and is credited to the radio granted. '
   + 'Voice is decoded on the voice channel.';
@@ -40,6 +43,44 @@ function clickRow(cells, onClick, title) {
   const tr = h('tr', { style: { cursor: 'pointer' }, title: title || '' }, ...cells.map(c => (c instanceof Node ? h('td', null, c) : h('td', { text: c }))));
   tr.addEventListener('click', onClick);
   return tr;
+}
+
+// "warble", "two-tone".
+const kindLabel = kind => kind.replace('_', '-');
+const tonesLabel = tones => tones.map(t => t.toFixed(1)).join(' / ') + ' Hz';
+
+// "07:00:12" today, "10/2 07:00:12" another day.
+function stamp(ms) {
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  const time = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return d.toDateString() === new Date().toDateString() ? time : `${d.getMonth() + 1}/${d.getDate()} ${time}`;
+}
+
+// A call's recording, played from `offsetMs`.
+function playCall(callId, offsetMs, text, title) {
+  const btn = h('button', { class: 'btn small', type: 'button', title }, icon('play'), text);
+  btn.addEventListener('click', () => {
+    const audio = h('audio', { controls: true, preload: 'auto', src: `/api/v1/recordings/${callId}.wav` });
+    btn.replaceWith(audio);
+    audio.addEventListener('loadedmetadata', () => {
+      audio.currentTime = offsetMs / 1000;
+      audio.play().catch(() => { /* another tap */ });
+    }, { once: true });
+  });
+  return btn;
+}
+
+// What an alert announced: its dispatch call (the sending radio's next transmission with 4 s of
+// voice), else the tone itself.
+function playAlert(a) {
+  const d = a.dispatch;
+  if (d && d.recorded) {
+    const where = d.call_id === a.call_id ? 'after the tone in the same call' : `call #${d.call_id}`;
+    return playCall(d.call_id, d.offset_ms, 'Play', `Play the dispatch: ${where}, ${dur(d.voice_ms)}`);
+  }
+  if (a.recorded) return playCall(a.call_id, a.offset_ms, 'Tone', `No dispatch found: play the alert tone (call #${a.call_id})`);
+  return h('span', { class: 'faint', text: 'not recorded' });
 }
 
 function encBadge(n) {
@@ -178,6 +219,7 @@ export function mount(host) {
     h('div', { style: { marginTop: '14px' } }, plot.el),
     h('p', { class: 'card-note', text: GRANT_NOTE }));
 
+  const alertCard = card('Alert tones');
   const tgCard = card('Talkgroups');
   const radioCard = card('Radios');
   const detailCard = card('Details');
@@ -185,7 +227,7 @@ export function mount(host) {
   const callsCard = card('Recent calls');
   const packets = packetDataCard();
 
-  host.append(h('div', { class: 'stack' }, ctl.el, sum.el, h('div', { class: 'grid-2' }, tgCard.el, radioCard.el), detailCard.el, callsCard.el, packets.el));
+  host.append(h('div', { class: 'stack' }, ctl.el, sum.el, alertCard.el, h('div', { class: 'grid-2' }, tgCard.el, radioCard.el), detailCard.el, callsCard.el, packets.el));
 
   // `st.site` is a site id, or `system:<id>` for every site of a system.
   function query(extra = {}) {
@@ -286,6 +328,30 @@ export function mount(host) {
     detailCard.body.replaceChildren(...body);
   }
 
+  function renderAlerts(d) {
+    const groups = d.groups.length
+      ? table(['Alert', 'Tones', 'Times', 'Sent by', 'Talkgroups', 'First', 'Last'], d.groups.map(g => h('tr', null,
+        h('td', null, h('span', { class: 'badge alert', text: kindLabel(g.kind) })),
+        h('td', { text: tonesLabel(g.tones_hz) }),
+        h('td', { text: num(g.count) }),
+        h('td', { text: g.sources.join(', ') || DASH }),
+        h('td', { text: g.talkgroups.join(', ') }),
+        h('td', { text: when(g.first_ms) }),
+        h('td', { text: when(g.last_ms) }))))
+      : h('p', { class: 'card-note', text: 'No alert tones in this period.' });
+    const newest = d.items.length
+      ? table(['Time', 'Talkgroup', 'From', 'Alert', 'Tones', 'Dispatch', ''], d.items.map(a => h('tr', null,
+        h('td', { text: stamp(a.at_ms) }),
+        h('td', { text: tgLabel(a.tg, a.tg_name) }),
+        h('td', { text: unitLabel(a.source, a.source_name) }),
+        h('td', null, h('span', { class: 'badge alert', text: kindLabel(a.kind) })),
+        h('td', { text: tonesLabel(a.tones_hz) }),
+        h('td', { text: a.dispatch ? dur(a.dispatch.voice_ms) : DASH, title: a.dispatch ? `Call #${a.dispatch.call_id}` : 'No transmission of 4 s from the same radio followed within 5 s' }),
+        h('td', null, playAlert(a)))))
+      : null;
+    alertCard.body.replaceChildren(groups, ...(newest ? [h('h3', { text: 'Newest' }), newest] : []), h('p', { class: 'card-note', text: ALERT_NOTE }));
+  }
+
   function renderCalls(items) {
     callsCard.body.replaceChildren(items.length
       ? table(['Start', 'Talkgroup', 'Radios', 'Voice', 'Grant', ''], items.map(c => h('tr', null,
@@ -327,7 +393,7 @@ export function mount(host) {
         ? api.activity((st.detail.kind === 'tg' ? 'talkgroup/' : 'radio/') + st.detail.id, query())
         : Promise.resolve(null);
       const site = st.site && !st.site.startsWith('system:') ? st.site : null;
-      const [s, series, tgs, radios, calls, det, data] = await Promise.all([
+      const [s, series, tgs, radios, calls, det, data, alerts] = await Promise.all([
         api.activity('summary', query()),
         api.activity('series', query({ bucket: st.period.bucket, tz, ...f })),
         api.activity('talkgroups', query({ limit: 25 })),
@@ -335,6 +401,7 @@ export function mount(host) {
         api.activity('calls', query({ limit: 50, ...f })),
         detail,
         api.data(site ? new URLSearchParams({ site }).toString() : ''),
+        api.activity('alerts', query({ limit: 50, ...f })),
       ]);
       if (my !== seq) return;
       renderSummary(s.summary);
@@ -343,6 +410,7 @@ export function mount(host) {
       renderRadios(radios.items);
       renderDetail(det);
       renderCalls(calls.items);
+      renderAlerts(alerts);
       packets.update(data);
     } catch (e) {
       if (my === seq) toast('Activity: ' + e.message, true);

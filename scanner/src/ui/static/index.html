@@ -16,7 +16,16 @@
   <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Fishball scanner</div>
   <div class="topbar-site" id="top-site"><span class="dot" id="top-site-dot"></span><span id="top-site-text">connecting&hellip;</span></div>
   <div class="topbar-right">
-    <span class="dim" id="listen-state"></span>
+    <span class="dim listen-state" id="listen-state"></span>
+    <span class="listen-ctl">
+      <input class="vol" id="vol" type="range" min="0" max="200" step="5" value="100" aria-label="Volume">
+      <button class="chip" id="norm" type="button" aria-pressed="true" title="Volume normalization: evens out loud and quiet talkers">Level</button>
+      <button class="chip" id="alerts-only" type="button" aria-pressed="false" title="Play only the talkgroups an alert tone (a console's warble or beep, a two-tone page) opened, for the time chosen">Alerts only</button>
+      <select class="input alert-window" id="alert-window" aria-label="How long an alert tone opens its talkgroup" title="How long an alert tone opens its talkgroup">
+        <option value="0.5">30 s</option><option value="1">1 min</option><option value="2">2 min</option><option value="5">5 min</option>
+        <option value="10">10 min</option><option value="15">15 min</option><option value="30">30 min</option>
+      </select>
+    </span>
     <button class="btn btn-listen" id="listen" type="button" aria-pressed="false" title="Live audio of the followed calls">Listen</button>
     <span class="conn" id="conn" title="Connection to the radio"></span>
   </div>

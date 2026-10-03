@@ -251,6 +251,46 @@ STRUCTS["call"] = [
     ("voice_frames", "number", "Voice frames decoded (20 ms each)."),
     ("codec", "string or null", "`imbe` (P25) or `ambe2` (DMR), once there was voice."),
     ("frame_errors", "number or null", "Voice frames the vocoder found errors in; known once the call is stored."),
+    ("recording", "object or null", "Its recording (as an item of `GET /api/v1/recordings`), once saved."),
+    ("@recording", "recording"),
+    ("alerts", "array", "The alert tones heard in it, once it closed (a few seconds after)."),
+    ("@alerts[]", "alert"),
+]
+
+STRUCTS["alert"] = [
+    ("site", "string", "The site."),
+    ("call_id", "number", "The call it was heard in."),
+    ("call_started_ms", "number", "That call's grant (with `call_id`, it names the call)."),
+    ("at_ms", "number", "When its first tone began (unix ms)."),
+    ("tg", "number", "The talkgroup."),
+    ("source", "number or null", "The radio that sent it (a dispatch console's ID for its alerts)."),
+    ("lane", "number", "The lane that followed the call."),
+    ("kind", "string", "`warble` (two tones alternating), `pulsed` (one tone repeated), `steady` (one long tone), `two_tone` (a two-tone sequential page: tone A, then tone B) or `tones` (three or more)."),
+    ("tones_hz", "array of numbers", "Its distinct tones in the order first heard, Hz (the vocoder rebuilds a tone to within about 1 %)."),
+    ("segments", "number", "Its tones, counting each repeat."),
+    ("offset_ms", "number", "From the call's first audio to its first tone: where it is in the recording."),
+    ("duration_ms", "number", "From its first tone's start to its last tone's end."),
+]
+
+STRUCTS["bookmark"] = [
+    ("offset_ms", "number", "Where it is in the recording."),
+    ("duration_ms", "number", "How long the marked audio lasts."),
+    ("label", "string", "What it marks, like `warble 806.5/1506.2 Hz` (also the WAV's cue label)."),
+    ("kind", "string", "The alert tone's kind (as an alert's `kind`)."),
+    ("tones_hz", "array of numbers", "The alert's tones, Hz."),
+]
+
+STRUCTS["named_alert"] = [
+    ("@", "alert"),
+    ("tg_name", "string or null", "The talkgroup's name."),
+    ("source_name", "string or null", "The sending radio's name."),
+    ("recorded", "bool", "Its call's recording is kept (`/api/v1/recordings/{call_id}`)."),
+    ("dispatch", "object or null", "The call that carried what it announced: its own call when its voice runs on 4 s past the tone, else the first of the sending radio's next transmissions on the talkgroup with 4 s of voice (each within 5 s of the last, until another radio talks); null when none, or not stored yet."),
+    ("dispatch.call_id", "number", "That call."),
+    ("dispatch.started_ms", "number", "Its grant."),
+    ("dispatch.voice_ms", "number", "Its voice (past the tone when it is the alert's own call)."),
+    ("dispatch.offset_ms", "number", "Where its speech starts in its recording."),
+    ("dispatch.recorded", "bool", "Its recording is kept."),
 ]
 
 STRUCTS["window"] = [
@@ -311,6 +351,8 @@ STRUCTS["recording"] = [
     ("voice.frames", "number", "Voice frames."),
     ("voice.errors", "number", "Frames with errors."),
     ("voice.silent", "number", "Frames decoded as silence."),
+    ("bookmarks", "array", "The alert tones heard in it; the WAV carries each as a cue point with a label and a region."),
+    ("@bookmarks[]", "bookmark"),
 ]
 
 STRUCTS["carrier"] = [
@@ -530,6 +572,20 @@ ROUTES: dict[str, list] = {
         ("@", "window"),
         ("items", "array", "Calls, newest first (`limit`)."),
         ("@items[]", "call"),
+    ],
+    "/api/v1/activity/alerts": [
+        ("@", "window"),
+        ("groups", "array", "Every alert in the window, grouped: one kind with the same tones (each within 2 %), most heard first."),
+        ("groups[]", "object", "One group."),
+        ("groups[].kind", "string", "The kind (as an alert's `kind`)."),
+        ("groups[].tones_hz", "array of numbers", "Its tones, highest first: the mean of its alerts', Hz."),
+        ("groups[].count", "number", "Alerts."),
+        ("groups[].first_ms", "number", "The first (unix ms)."),
+        ("groups[].last_ms", "number", "The newest (unix ms)."),
+        ("groups[].sources", "array of numbers", "The radios that sent it, most first."),
+        ("groups[].talkgroups", "array of numbers", "The talkgroups it was on, most first."),
+        ("items", "array", "The newest alerts (`limit`), newest first."),
+        ("@items[]", "named_alert"),
     ],
     "/api/v1/spectrum": [
         ("lo_hz", "number", "The window's centre."),
@@ -928,6 +984,7 @@ NOT_JSON: dict[str, str] = {
         "| `traffic` | `traffic`: `channels[]` (each traffic channel: `lane`, `tuned_hz`, `following_tg`, `on_data_channel`, `voice_frames`, `last_voice_ms_ago`, `call`) and `open[]` (every call on the air) | When a traffic channel changes. |\n"
         "| `call_opened`, `call_closed` | `call` (as `GET /api/v1/calls/{id}`) | As a call opens or closes. |\n"
         "| `recording` | `recording` (as an item of `GET /api/v1/recordings`) | As a recording is saved. |\n"
+        "| `alert` | `call`, `alerts` (each as an item of `GET /api/v1/activity/alerts`, `dispatch` null) | When a closed call's alert tones are known, after its recording. |\n"
         "| `scan` | `scan` (as `GET /api/v1/scan`) | While a scan runs, as its progress or found sites change. |\n"
         "| `changed` | `what`: `radio`, `systems`, `hold` or `recordings` | After a write changed that part: read it again. |\n"
         "| `lag` | | The listener fell behind; a snapshot follows. |\n\n"
@@ -947,6 +1004,7 @@ NOT_JSON: dict[str, str] = {
         "| `call_opened` | `call`, `tg`, `followed` | A call opened (followed: a lane took it). |\n"
         "| `call_closed` | `call`, `tg` | A call closed. |\n"
         "| `recording_saved` | `call` | Its recording was saved. |\n"
+        "| `alert` | `call`, `tg` | Its alert tones are known (`GET /api/v1/calls/{id}`). |\n"
         "| `lag` | | The listener fell behind and missed notices: read the state again. |"
     ),
     "/ws/audio": (
@@ -955,6 +1013,7 @@ NOT_JSON: dict[str, str] = {
         "or 1); without it, lane 1 only and no header. Text frames:\n\n"
         "| `type` | Fields | When |\n|--------|--------|------|\n"
         "| `meta` | `lane` (0 or 1), `tg`, `src` (0: unknown), `call_id`, `speaker` (`both`, `left`, `right`, `off`) | Before a lane's first frame of a new call or talker. |\n"
+        "| `alert` | `lane`, `tg`, `call_id`, `seq`, `kind`, `tones_hz`, `offset_ms` | With `v=2`, before the frame that makes the call's audio an alert tone; it began `offset_ms` into the call's audio. |\n"
         "| `lag` | `skipped` | The listener fell behind; frames were skipped. |"
     ),
     "/api/v1/iq/control.wav": (
