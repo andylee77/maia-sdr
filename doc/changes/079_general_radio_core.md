@@ -128,15 +128,133 @@ Each step keeps the units running on core 0.3.0 until the cutover.
    what the HDL must match sample for sample. Feed it real wideband captures from unit A, and the
    existing 50 kSPS captures moved to worst-case offsets (halfway between bins).
    *Gate:* the DMR reference keeps 24,984+ of 24,996 lines and the P25 tests keep their counts.
-3. **The core (bake).** A fresh Amaranth package and a fresh Vivado project; `p25_hdl` and
-   `projects/fishball7020_p25` stay as they are until the cutover, as `p25-httpd` did for the
-   scanner. Simulation against the step 2 model.
-   *Gate:* bit-exact against the model, timing met with no waiver, a hierarchical utilization
-   report in the build, and the bench corpus (B into A).
-4. **Cutover (PS).** The scanner's hardware layer for the new core, every lane on software
-   demodulators, the removals above. The SD image carries the new bitstream.
+3. **The core (bake), in two parts.** A fresh Amaranth package and a fresh Vivado project;
+   `p25_hdl` and `projects/fishball7020_p25` stay as they are until the cutover, as `p25-httpd`
+   did for the scanner.
+   - **3a, the lane ring core:** today's three DDCs as lanes 0-2 into one tagged lane ring; the
+     LSM chains go. It needs no model. Spec below.
+   - **3b, the channelizer:** the polyphase bank and the lane synthesizer replace the three DDCs,
+     behind the same lane ring. *Gate:* bit-exact against the step 2 model.
+
+   *Gate for both:* timing met with no waiver and a hierarchical utilization report in the build.
+4. **Cutover (PS), with 3a.** The scanner's hardware layer for the new core, every lane on
+   software demodulators, the removals above. The SD image carries the new bitstream; a 3a
+   bitstream and the scanner that reads it ship together.
 5. **Optional: the filters in the PL**, when lanes outgrow the CPU. A fixed-point model first;
    *gate:* the same parity as step 2.
+
+## Step 3a: the lane ring core
+
+Ordered by Andy on 2026-10-03. The packet and register details are for his review before the HDL
+is written.
+
+### What changes in the gateware
+
+| | Core 0.3.0 | 3a |
+|---|---|---|
+| Lanes | control DDC, two traffic DDCs, an LSM chain on each | the same three DDCs, lanes 0 (control), 1 and 2, IQ only |
+| To the PS | rings for control IQ, traffic IQ, three dibit streams, two pre-diff taps | one lane ring of tagged packets, the spectrum, the raw IQ capture |
+| Registers | a vacant address, a bank in reset or a write without byte strobes hangs the bus | every access is answered |
+| DMA | `DmaStreamRingWrite` (AW ahead of data, F3/F5/F6) | `RingWriterV2` (hwval: store and forward, drain on disable, burst counters) for the lane ring |
+| Removed | — | the LSM chains (~102 DSP, ~14.6k LUT, ~21k FF), dibit rings, pre-diff taps, seeds, NID registers, five HP1 masters |
+
+The spectrometer's inputs are registered in `sync` (064's suggested fix for the worst timing path).
+
+### The lane packet
+
+A lane fills a packet as its DDC delivers samples (50 kSPS) and hands it to the lane ring whole.
+Packets are 512 words of 64 bits (4 KB, a multiple of the 128 B burst, four to a sub-buffer).
+
+| Word | Bits | Field |
+|---|---|---|
+| 0 | 15:0 | magic `0x5243` ("RC") |
+| 0 | 19:16 | format version (1) |
+| 0 | 23:20 | lane (0-15) |
+| 0 | 31:24 | flags: bit 0 `lost` (samples were dropped before this packet), bit 1 `retuned` (first packet with a new tag), bit 2 `last` (the lane was disabled after this packet) |
+| 0 | 47:32 | count: valid samples (at most 1016; fewer when a tag change or a disable closes the packet) |
+| 0 | 63:48 | tag: the lane's tag when its first sample was made |
+| 1 | 63:0 | sample index: the AD9361 sample count (since `sdr_reset` was released) when the DDC made the first sample |
+| 2 | 47:0 | power: the sum of I² + Q² over the valid samples |
+| 3 | 27:0 | the lane's NCO word for the first sample |
+| 4-511 | | IQ, two samples a word as today (`[15:0]` I, `[31:16]` Q, then the next sample); unused words are zero |
+
+- **Tag.** The PS writes it with the NCO in one register bank, so it lands after the NCO. A tag
+  change closes the current packet, so a packet never mixes two tunings. The first samples after a
+  change still carry the old channel through the DDC's filters; the PS skips the DDC's settling
+  (from the preset) after a new tag.
+- **Sample index.** With the sample rate, it gives every sample's air time, for every lane, on one
+  clock with the capture ring. The PS reads the running count (below) to tie it to its own clock.
+- **Lost.** A lane's packet buffer is double: one fills while the other waits for the ring. If
+  both are full the lane drops samples and the next packet says so; the sample index says how many.
+
+### Registers
+
+Byte offsets in the 1 KB window at 0x7C46_0000 (the address bits are decoded in full; nothing
+aliases). Every bank keeps today's per-access crossing (`RegisterCDC`, in order, so coefficient
+loads are safe). The bridge answers an address no bank claims (reads 0), times out a bank that
+does not answer (a domain in reset), and completes a write with no byte strobes.
+
+| Offset | Bank | Registers |
+|---|---|---|
+| 0x000 | control (AXI-Lite domain) | `product_id` 0x72616431 ("rad1"); `version` (0.1.0); `capabilities` (lanes 3, packet words 2^9, header words 4, spectrum and capture present); `control.sdr_reset`; `interrupts` (read to clear: lane ring, spectrum, capture) |
+| 0x020, 0x040, 0x060 | lane 0, 1, 2 | the DDC registers at today's offsets (coefficient address and data, decimation, frequency, stage control); `lane_control` (enable, tag); `lane_status` (lost, sticky, alone in its word) |
+| 0x080 | lane ring | enable; last completed sub-buffer; committed bursts (32 bits, for lap checks); next address; overflow (sticky, alone); sample count (low word latches the high) |
+| 0x0A0 | spectrum | as today's spectrometer bank |
+| 0x0C0 | capture | as today's raw IQ bank |
+
+`product_id` and `version` stay at 0x00 and 0x04, so a scanner can tell the cores apart before it
+touches anything else.
+
+### Rings and the device tree
+
+| Device | Base | Size | Sub-buffers |
+|---|---|---|---|
+| `radio-lanes` | 0x1900_0000 | 2 MB | 128 × 16 KB (3.4 s at three lanes) |
+| `radio-spectrum` | 0x2100_0000 | 64 KB | 2 × 32 KB (as today) |
+| `radio-capture` | 0x2200_0000 | 16 MB | 16 × 1 MB (as today) |
+
+- The UIO node becomes `radio-core@7c460000` (same address and interrupt); the seven old ring
+  nodes and their carve-outs go.
+- **The DMA driver goes into the image.** The P25 defconfig never selected maia-kmod: the units
+  load a module left over from an old Maia build in the persistent Buildroot target (053), and a
+  clean image would have no ring devices. 3a selects it with its init script.
+- The new bitstream goes to `bitstream/radio/` with its own package; the 0.3.0 one stays for a
+  rollback (and in `_archive/build_2026-10-03_p25-core-0.3.0`).
+
+### The PS side
+
+- A `hardware::radiocore` backend and a PAC generated from the core's SVD (`scanner/radio-pac`,
+  inside what the image's scanner package already copies). The scanner of this change needs the
+  radio core; unit B keeps the 0.3.0 image until A has run the new one.
+- One lane reader splits the ring into lanes: lane 0 is the control channel's IQ, lanes 1 and 2
+  the traffic lanes. Every lane decodes in software: P25 with the site's modulation (LSM or C4FM),
+  DMR on either lane.
+- After a retune a lane drops the packets of older tags and the DDC's settling; air time comes
+  from the sample index. `IQ_SETTLE` and the per-symbol stamping go.
+- The crystal tracker reads the software loops (the LSM's carrier loop, the C4FM and DMR
+  equalisers' offsets) instead of the gateware's; the scan's P25 probe runs the LSM on IQ.
+- Gone: the dibit ring readers and clock, the NID poller, the gateware loop readbacks, the
+  `lsm_gateware` counters, the core-version clamps.
+- The bench agent and fbench read the new map (UIO name, banks, ring names) after the core works.
+
+### Build
+
+- `maia-hdl/radio_hdl/` (the core), `maia-hdl/ip/radio-core/` (packaging),
+  `maia-hdl/projects/fishball7020_radio/` (three HP1 masters, the same clocks, interrupt and
+  address), `build_fpga.bat --radio`: a timing failure is an error (as `--hwval`), and a
+  route-design hook writes the hierarchical utilization report.
+- Vivado runs only in the main checkout (the ADI submodule is there); simulation runs anywhere.
+
+### Tests and gates
+
+- **Simulation** (`maia-hdl/test/test_radio_top.py`, the timeout bus model): no access hangs (a
+  vacant address, a bank in reset, a write without byte strobes); every register reads back; IQ
+  through the DDCs into packets (the simulation switch for the input crossing, as hwval's); a tag
+  change closes a packet; a disable flushes; `lost`, the sample index and the power are exact
+  against a Python model of the packetiser.
+- **Bake:** timing met, utilization report.
+- **On unit A:** the control channel and both lanes decode at least as well as now; lane 2 carries
+  DMR and C4FM; the starts of transmissions after a retune are no longer lost; CPU measured.
 
 ## What this supersedes
 
@@ -150,9 +268,9 @@ Each step keeps the units running on core 0.3.0 until the cutover.
   lanes is the proposed first build.
 - **The 16 MHz scan preset.** The scan can run at 12.8 MSPS, or the spectrometer alone can serve it
   at 16 MSPS with the lanes idle.
-- **The gateware LSM's own additions** (DC blocker, AGC idle gate, the no-signal hold) are not in
-  SDRTrunk. The software LSM starts as SDRTrunk's; step 1's comparison decides whether any of them
-  is needed.
+- **The gateware LSM's DC blocker** is not in the software LSM. Its AGC idle gate and no-signal
+  hold are (step 1 showed SDRTrunk's loop trapping on traffic-channel gaps); nothing so far points
+  at the DC blocker.
 - **Wideband captures.** The scanner has no raw IQ capture route; step 2 needs one, or the IIO path.
 
 ## Status log
