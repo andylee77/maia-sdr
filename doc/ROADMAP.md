@@ -33,6 +33,7 @@ scanner needs:
 | 074b | Packet data: keep it in the history; decode LRRP / ARS / TMS contents | next |
 | — | Phase 2 TDMA voice | later, if a nearby system uses it (Clay grants none) |
 | 076 | Restructure into a clean multi-band, multi-protocol scanner | design approved 2026-10-01; built as a fresh crate (`scanner/doc/DESIGN.md`) |
+| 079 | General radio core: a polyphase channelizer in the PL, every demodulator in software | design approved 2026-10-03 (`doc/changes/079_general_radio_core.md`); step 1 (software LSM) next |
 | — | Remote libiio control: detect it and share the radio | idea |
 | — | Agent control: MCP server and prompt structure | idea |
 | 075 | Clay Electric DMR (Tier III): software DMR receive, control channel, then voice | done (on fishball-p25) |
@@ -140,6 +141,14 @@ have started during an encrypted follow.
   (registrations), TMS (text). SDRTrunk has decoders for each (`module/decode/ip/mototrbo`).
 - Follow data channel grants (SNDCP data channel grant) to other data channels when Clay uses
   more than one (074 parks the idle chain on the announced channel only).
+
+## 079 — General radio core
+
+One bitstream for many radio functions, with lanes that are all alike. The PL channelizes the
+receive window the way SDRTrunk does (25 kHz bins oversampled 2x, two bins joined per lane) and
+sends each lane's 50 kSPS IQ to the PS, where LSM, C4FM and DMR all run in software. The gateware
+LSM chains and DDCs go; lanes become a build parameter (8-16) instead of copies of a chain.
+Design and steps: `doc/changes/079_general_radio_core.md`. Supersedes the chain-2 IQ tap (077).
 
 ## Code review and refactor
 

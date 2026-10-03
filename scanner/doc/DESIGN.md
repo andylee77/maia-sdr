@@ -1,7 +1,7 @@
 # 076 — Refactor: a multi-band, multi-protocol scanner
 
-**Started:** 2026-10-01. **Branch:** fishball-p25. **Bake required:** no (a later, separate bake is
-proposed in section 13). **Brief:** `BRIEF.md`.
+**Started:** 2026-10-01. **Branch:** fishball-p25. **Bake required:** no (change 079 replaces the
+core afterwards; section 13). **Brief:** `BRIEF.md`.
 
 **Status:** design approved by Andy on 2026-10-01. It is built as a fresh crate, top-down, in
 phases (section 15). Phase 0 is next.
@@ -48,7 +48,7 @@ it.
 | D7 | API | The UI moves to a typed `/api/v1`. Diagnostic endpoints keep their paths, but every GET that writes becomes POST/PUT, with tools and bench updated in the same commit. Legacy user-facing routes stay as adapters until their consumers move. No auth in 076; writes get an Origin check. | Version everything now, or add tokens now. |
 | D8 | Pages | The Radio page dissolves: config goes to Settings, and spectrum, coverage and manual tune go to Diagnostics. The recording switch moves from Now to Settings. The UI replacement (`UI_BRIEF.md`) lays the pages out anew. | Keep the speakers on Now (063). |
 | D9 | Names | Superseded by D13: the fresh crate needs a name of its own. `p25-json` and `p25-pac` keep theirs until the cutover. | — |
-| D10 | FPGA | Nothing moves into gateware in 076. 076 models what each chain can do. One later bake adds an IQ tap on traffic chain 2 (section 13). | — |
+| D10 | FPGA | Nothing moves into gateware in 076. 076 models what each chain can do. Change 079 then replaces the core with a channelizer whose lanes all carry IQ (section 13). | — |
 | D11 | Packet data | The v2 schema has a `data_packets` table. Fill it only if Andy wants: 074b was parked. | Leave the table out. |
 | D12 | P25 regression gate (Andy, 2026-10-01) | B is wired into A over the bench link whenever a test needs it. The replay corpus (`rf.p25_corpus`), with B transmitting into A, is the P25 gate from phase 2, next to host replay and live A. | Host replay plus live A only. |
 | D13 | Execution (Andy, 2026-10-01) | A **fresh crate** in this repo, a workspace sibling of `p25-httpd/`, built top-down in phases. The old binary stays in production, with fixes only, until the cutover. Proposed name: `scanner/` (binary `scanner`); at the cutover tezuka_fw's package and init script switch to it. | Refactor in place (the 14-stage plan this replaces). |
@@ -507,7 +507,7 @@ Rules:
   | Chain 2 | HDL dibits: P25 only |
   | Control slot | The control receiver's other timeslot: DMR grants to the control repeater's TS2 |
 
-  When the chain-2 IQ tap exists (section 13), chain 2 gains DMR with no other change.
+  With change 079's core every lane carries IQ and any protocol, and the table goes away.
 - **SDRTrunk constants and texts stay as they are.** The traits wrap the ported code; they do not
   rewrite it. The DMR reference (24,984+ of 24,996 lines) and the P25 tests gate every step.
 
@@ -876,8 +876,9 @@ until the cutover.
 
 ## 13. FPGA: what to move, and when
 
-Andy asked for this on 2026-10-01. Summary: **nothing has to move for 076.** One small bake is
-worth doing afterwards.
+Andy asked for this on 2026-10-01. Summary: **nothing has to move for 076.** Afterwards, change
+079 (`doc/changes/079_general_radio_core.md`, approved 2026-10-03) replaces the core: a polyphase
+channelizer in the PL, every demodulator in software.
 
 ### Fabric and CPU today
 
@@ -910,16 +911,18 @@ worth doing afterwards.
 | Candidate | Saves | Costs | Verdict |
 |-----------|-------|-------|---------|
 | Run only the live protocol's decoders | 12–17 % of a core at DMR sites | PS only | **076** (section 5) |
-| Chain capability model | — (lets lane 2 carry DMR/C4FM when the tap exists) | PS only | **076** (section 5) |
+| Chain capability model | — (lane 2 carries P25 LSM only until 079) | PS only | **076** (section 5) |
 | Scan on the existing spectrometer, DMR by software sync count | — | PS only | **076** (section 10) |
-| **Chain-2 post-DDC IQ tap** (IQ packer + DMA ring at the free 0x1E00_0000, bank 15, IRQ bit 9) | Enables DMR and C4FM voice on lane 2 with the existing SDRTrunk-parity software | ~150 slices, ~1 k FF, 1.5 BRAM, 0 DSP | **Later bake (077)**, with the always-responding register bridge (no CPU stall on vacant banks) and 064's timing fixes |
+| Chain-2 post-DDC IQ tap on core 0.3.0 | DMR and C4FM voice on lane 2 | ~150 slices, ~1 k FF, 1.5 BRAM, 0 DSP | Not built: 079 gives every lane IQ |
 | Symmetric, NEON-friendly FIR in `dsp::fsk4` | ~5–6 % of a core per software receiver | PS; parity gated by the DMR and C4FM tests | Late 076 or after |
-| Host experiment: DMR framer on the LSM model's dibits | If it passes, lane-2 DMR needs no bake | ~1 day, host only | Optional; LSM on C4FM passes only 42–69 %, so likely not |
-| LsmFir delay lines to SRL/LUTRAM | ~5k FF per chain of area back | Bake | Only before any new HDL block |
-| HDL DMR/C4FM front end (filters + discriminator) | ~8–9 % per receiver | ~850 slices per chain (does not fit without the area recovery); fixed point cannot match SDRTrunk's f32; weeks | Only if CPU ever binds (handheld power, three or more software receivers) |
+| Host experiment: DMR framer on the LSM model's dibits | Lane-2 DMR without a bake | ~1 day, host only | Not needed (079); LSM on C4FM passes only 42–69 % |
+| LsmFir delay lines to SRL/LUTRAM | ~5k FF per chain of area back | Bake | Not needed: 079 removes the LSM chains from the PL |
+| **Polyphase channelizer in the PL, every demodulator in software** | 8–16 identical lanes; ~60–70 DSPs instead of 172 | A new core and Vivado project; a fixed-point model first | **079** |
+| HDL channel filters (half-band, LPF, RRC), time-shared across lanes | ~60 % of each software receiver | Parity with SDRTrunk's f32 shown on a fixed-point model first | **079 step 5**, when lanes outgrow the CPU |
+| Software LSM demodulator | Retires the gateware LSM; P25 voice on any lane | PS; SDRTrunk port, checked against `p25-httpd/src/lsm` | **079 step 1** |
 | HDL 4FSK symbol processor or C4FM demodulator | — | Months; SDRTrunk's branchy sync-driven timing; worse late entry | Never |
 | Vocoders, FEC, PCM AGC, autoppm/recentre | ≤ 2.5 % each | 6–8 weeks for a vocoder alone | Never |
-| A fourth chain or a polyphase channelizer | — | DSP 217/220, slices over 100 % | Never on the Z7020 (retired once, 2026-05-03) |
+| A fourth copy of today's DDC and LSM chain | — | DSP 217/220, slices over 100 % | Never; more lanes come from 079's channelizer |
 
 ## 14. Test strategy
 
@@ -1033,7 +1036,7 @@ Notes:
   - Harris and Motorola vendor grants;
   - packet-data contents;
   - the 20 Hz plots;
-  - the chain-2 IQ bake.
+  - the new core (change 079).
 
 ## Done means
 
