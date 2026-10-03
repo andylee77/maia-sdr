@@ -100,6 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = verb("analyze", "re-run analysis offline on a run dir")
     sp.add_argument("run_dirs", nargs="+")
+    sp.add_argument("-p", "--param", action="append", default=[], metavar="KEY=VALUE",
+                    help="change an analysis parameter (stored with the run)")
 
     sp = verb("compare", "metric deltas between runs (first = baseline)")
     sp.add_argument("run_dirs", nargs="+")
@@ -356,7 +358,8 @@ def cmd_status(env: Env) -> tuple[dict[str, Any], int]:
 def cmd_analyze(env: Env) -> tuple[dict[str, Any], int]:
     from .runner import reanalyze
 
-    results = [reanalyze(Path(d)) for d in env.ns.run_dirs]
+    overrides = _parse_params(env.ns.param)
+    results = [reanalyze(Path(d), overrides) for d in env.ns.run_dirs]
     return {"runs": [r.brief() for r in results]}, worst_exit([r.exit_code for r in results])
 
 

@@ -55,7 +55,7 @@ def test_units_probe_dna_warning(cli, services, cfg_path: Path, tmp_path: Path) 
 def test_list_and_filters(cli) -> None:
     code, doc = cli("list")
     _common(doc, "list", 0)
-    assert doc["count"] == 37 and set(doc["suites"]) == {"smoke", "interface", "transport",
+    assert doc["count"] == 38 and set(doc["suites"]) == {"smoke", "interface", "transport",
                                                          "memory", "rf", "hwval", "soak"}
     code, doc = cli("list", "--tier", "1")
     assert doc["count"] == 11 and all(t["tier"] == 1 for t in doc["tests"])
@@ -256,7 +256,7 @@ def test_reg_read_write_and_refusals(cli, services) -> None:
     code, doc = cli("reg", "A", "p25", "read", "iq_dma_status", "--allow-side-effect")
     assert code == 0
     assert services.agent.calls[-1][1][-1] == "--force-side-effects"
-    code, doc = cli("reg", "A", "p25", "read", "0x130")
+    code, doc = cli("reg", "A", "p25", "read", "0x1E8")
     assert code == 4  # vacant bank
     code, doc = cli("reg", "A", "p25", "write", "product_id", "0x1")
     assert code == 4  # read-only
@@ -278,7 +278,7 @@ def test_tx_off_agent_and_host_fallback(cli, services) -> None:
 def test_regmaps_build_and_show(cli, tmp_path: Path) -> None:
     code, doc = cli("regmaps", "build", "--out", str(tmp_path))
     _common(doc, "regmaps", 0)
-    assert doc["cores"]["p25"] == 54
+    assert doc["cores"]["p25"] == 70
     code, doc = cli("regmaps", "show", "--core", "p25", "--out", str(tmp_path))
     assert any(r["read_side_effect"] for r in doc["regs"])
 

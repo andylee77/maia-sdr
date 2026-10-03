@@ -520,16 +520,17 @@ fn setup_bist(bist: &str, fs: f64, cleanup: &mut Cleanup) -> AResult<Value> {
 fn open_ctl<'m>(ctx: &'m Ctx, o: &StreamOpts, cleanup: &mut Cleanup<'m>, notes: &mut Vec<Value>) -> AResult<(Ctl<'m>, bool)> {
     match o.kind {
         RingKind::P25Wideband => {
-            if !safety::p25_running().is_empty() {
+            if !safety::daemon_pids().is_empty() {
+                let name = safety::daemon_name();
                 if o.enable || o.reenable || o.release_reset {
                     if !(o.ignore_maint || o.auto_maint) {
                         return Err(AgentError::new(
                             Code::Precondition,
-                            "p25-httpd is running and owns the wideband ring: `maint enter` first (or --auto-maint)",
+                            format!("{name} is running and owns the wideband ring: `maint enter` first (or --auto-maint)"),
                         ));
                     }
                 }
-                notes.push(json!("p25-httpd is running: each poll of the read-to-clear wideband status also clears its overflow latch"));
+                notes.push(json!(format!("{name} is running: each poll of the read-to-clear wideband status also clears its overflow latch")));
             }
             let (core, pm) = open_core(ctx, "p25", true)?;
             let mut a = RegAccess::new(core, pm);

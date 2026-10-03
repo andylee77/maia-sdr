@@ -30,12 +30,13 @@ def _regs(core: dict) -> dict[int, dict]:
 def test_p25_from_real_svd() -> None:
     m = build_p25(P25_SVD)
     assert m["schema"] == SCHEMA and m["core"] == "p25" and m["base"] == "0x7C460000"
-    assert m["vacant"] == [["0x120", "0x180"], ["0x1E0", "0x200"]]
+    assert m["vacant"] == [["0x1E0", "0x200"]]
     regs = _regs(m)
-    assert len(regs) == 54
+    assert len(regs) == 70
     side = {off for off, r in regs.items() if r["read_side_effect"]}
-    assert side == {0x0C, 0xA4, 0xC4, 0x60, 0x80, 0xE0, 0x184, 0x1A0, 0x1C0}
-    assert not any(0x120 <= off < 0x180 or 0x1E0 <= off < 0x200 for off in regs)
+    assert side == {0x0C, 0xA4, 0xC4, 0x60, 0x80, 0xE0, 0x144, 0x184, 0x1A0, 0x1C0}
+    assert not any(0x1E0 <= off < 0x200 for off in regs)
+    assert regs[0x120]["name"] == "traffic2_ddc_coeff_addr"
     assert regs[0x0]["name"] == "product_id" and regs[0x0]["expected"] == "0x70323566"
     assert regs[0x8]["access"] == "rw" and regs[0xC]["access"] == "ro"
     for r in regs.values():
@@ -96,7 +97,7 @@ def test_build_all_and_load(tmp_path: Path) -> None:
     assert r.address == 0x7C460000 and r.decode(0x70323566) == {"product_id": 0x70323566}
     assert find_reg(maps, "p25", "0xE0").read_side_effect
     with pytest.raises(SafetyRefusal):
-        find_reg(maps, "p25", "0x130")  # vacant bank: not in the allow-list
+        find_reg(maps, "p25", "0x1E8")  # vacant bank: not in the allow-list
 
 
 def test_repo_share_is_up_to_date() -> None:

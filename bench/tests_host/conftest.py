@@ -138,6 +138,8 @@ class BenchSim:
         self.corpus_imbe_zero = False  # calls followed but nothing decoded (09:11 on the board)
         self.traffic = {"follower_enabled": True, "lock_freq": False}
         self.traffic_calls: list[dict[str, str]] = []
+        # (unit, "rx"|"tx") -> LO ranges (Hz) where that synthesizer reports no lock.
+        self.unlocked: dict[tuple[str, str], list[tuple[float, float]]] = {}
         for u in cfg.units:
             self.set_attr(u, PHY, "sampling_frequency", "2500000", "voltage0", False)
             self.set_attr(u, PHY, "sampling_frequency", "2500000", "voltage0", True)
@@ -196,10 +198,14 @@ class BenchSim:
         lk = self.cfg.link_for(tx, rx)
         return lk.pad_db if lk else None
 
+    def synth_locked(self, unit: str, side: str) -> bool:
+        lo = self.num(unit, PHY, "frequency", "altvoltage0" if side == "rx" else "altvoltage1",
+                      True)
+        return not any(a <= lo <= b for a, b in self.unlocked.get((unit, side), ()))
+
     def _rx_level_db(self, rx: str) -> float:
+        # A unit hears its own TX only through a configured self-loop link.
         for tx in self.cfg.units:
-            if tx == rx:
-                continue
             src = self.tx_source(tx)
             pad = self._link(tx, rx)
             if src and pad is not None:
@@ -216,8 +222,6 @@ class BenchSim:
         iq = (rng.normal(0, sigma, n) + 1j * rng.normal(0, sigma, n))
         t = (np.arange(n) / fs) + self.t
         for tx in self.cfg.units:
-            if tx == rx:
-                continue
             src = self.tx_source(tx)
             if src and self._link(tx, rx) is not None:
                 f_rf, lvl = src
@@ -582,6 +586,11 @@ class FakeAgent(AgentClient):
             sim.set_attr(unit, dev, self._opt(args, "--attr"), self._opt(args, "--value"),
                          self._opt(args, "--chan"), "--out" in args)
             return {"ok": True}
+        if key == "ad9361 spi":
+            addr = int(self._opt(args, "--addr"), 0)
+            side = {0x247: "rx", 0x287: "tx"}.get(addr)
+            value = (0x02 if sim.synth_locked(unit, side) else 0x00) if side else 0
+            return {"ok": True, "addr": f"0x{addr:03X}", "value": value, "hex": f"0x{value:02X}"}
         if key == "eyescan":
             return fixture("eyescan_ad9361" if self._opt(args, "--mode") == "ad9361"
                            else "eyescan_idelay")
@@ -936,7 +945,7 @@ class FakeWsAudio:
             for s, pcm in fn(r["id"]):
                 t = r["t_air0"] + s + 0.3
                 if t <= self.sim.t:
-                    chunks.append((self.wall0 + (t - self.t0), pcm))
+                    chunks.append((self.wall0 + (t - self.t0), 0, pcm))  # lane 0
         return {"chunks": chunks, "texts": [], "error": None}
 
 

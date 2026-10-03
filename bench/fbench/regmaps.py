@@ -4,8 +4,8 @@
 
 - ``share/p25_regs.json`` — ``p25_core`` at 0x7C46_0000 from
   ``p25-httpd/p25-pac/p25.svd``. Read-to-clear (Rsticky) registers carry
-  ``"read_side_effect": true``. Vacant banks 0x120-0x17F and 0x1E0-0x1FF are
-  forbidden simply by not being listed (reading them hangs AXI-Lite, F15).
+  ``"read_side_effect": true``. The vacant bank 0x1E0-0x1FF is forbidden
+  simply by not being listed (reading it hangs AXI-Lite, F15).
 - ``share/adi_regs.json`` — ``axi_ad9361`` ADC/DAC cores and the RX/TX
   ``axi_dmac`` key registers.
 - ``share/ps_regs.json`` — SLCR/DDRC/L2C audit registers, with ``expected``
@@ -47,8 +47,9 @@ P25_BASE = 0x7C460000
 P25_WINDOW = 0x200
 
 #: p25_core registers whose read clears Rsticky bits (finding F2).
-P25_READ_SIDE_EFFECT = frozenset({0x0C, 0xA4, 0xC4, 0x60, 0x80, 0xE0, 0x184, 0x1A0, 0x1C0})
-#: p25_core banks (32-byte aligned) -> block name.
+P25_READ_SIDE_EFFECT = frozenset({0x0C, 0xA4, 0xC4, 0x60, 0x80, 0xE0, 0x144, 0x184, 0x1A0,
+                                  0x1C0})
+#: p25_core banks (32-byte aligned) -> block name. Traffic chain 2's LSM bank is 16 words.
 P25_BANKS: dict[int, str] = {
     0x000: "control",
     0x020: "ddc",
@@ -59,11 +60,14 @@ P25_BANKS: dict[int, str] = {
     0x0C0: "traffic_lsm",
     0x0E0: "wideband_iq",
     0x100: "lsm_seeds",
+    0x120: "traffic2_ddc",
+    0x140: "traffic2_lsm",
+    0x160: "traffic2_lsm_seeds",
     0x180: "spectrometer",
     0x1A0: "pre_diff_iq",
     0x1C0: "traffic_pre_diff_iq",
 }
-P25_VACANT = ((0x120, 0x180), (0x1E0, 0x200))
+P25_VACANT = ((0x1E0, 0x200),)
 P25_EXPECTED = {0x0: "0x70323566"}  # product_id "p25f"
 
 _ACCESS = {"read-only": "ro", "read-write": "rw", "write-only": "wo",

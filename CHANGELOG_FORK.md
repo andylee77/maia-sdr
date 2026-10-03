@@ -5,6 +5,31 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-03] 078: full-range frequency sweep (`rf.freq_sweep`); maintenance mode stops the scanner
+
+**Branch:** fishball-p25
+**Bake required:** NO (fbench and fbench-agent only; redeploy the agent to both units).
+
+- **`rf.freq_sweep`:** one cabled direction across 70 MHz-6 GHz (84 points, with the
+  AD9363's specified edges), every TX method the unit supports in turn. Per point:
+  - both synthesizers' lock bits and the LO read-backs;
+  - tone level and SNR at a fixed RX gain;
+  - the reference offset, whose jumps mark LOs that did not land;
+  - RX image, TX LO leakage and TX image after a TX quadrature calibration;
+  - the strongest spur.
+
+  Results are split inside and outside each unit's specified range.
+- **`compare=<run dirs>`:** the RX difference of runs that share a TX unit, and the TX
+  difference of runs that share an RX unit. One padded cable moved through B→A, B→B, A→A
+  and A→B gives each difference twice. A self loop (`--tx A --rx A`) is a valid direction.
+- **`fbench analyze -p`:** re-analyses a run with a changed parameter, stored with the run.
+- **Agent:** maintenance mode stops whichever radio daemon the image runs (the scanner or
+  p25-httpd). On the scanner image it had stopped nothing while reporting success.
+- **Register maps:** traffic chain 2's banks (064) are in the agent's and fbench's p25
+  maps. The agent no longer fails to build on the current SVD.
+- **Corpus tests:** the `/ws/audio` fake sends the lane (broken since 06aaf2c).
+- Record: `doc/changes/078_rf_freq_sweep.md`.
+
 ## [2026-10-01] 076: the fresh `scanner` crate, phases 0-8 (on both units' SD image)
 
 **Branch:** fishball-p25

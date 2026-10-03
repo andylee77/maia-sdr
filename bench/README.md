@@ -88,7 +88,7 @@ Every verb takes `--json`, `--config PATH`, `--timeout S` (default per remote ca
 | `describe` | `fbench describe rf.level_sweep` | Test or suite. |
 | `run` | `fbench run <test\|suite> [--unit U[,V]] [--tx U --rx V] [-p k=v …] [--duration S] [--dry-run]` | Writes one run dir per test; exit = verdict (worst for suites). |
 | `status` | `fbench status [--limit N] [--probe]` | Last runs, session state, alerts (maintenance left on, TX flagged active). |
-| `analyze` | `fbench analyze <run_dir> …` | Re-runs the analysis on pulled artifacts, no hardware. |
+| `analyze` | `fbench analyze <run_dir> … [-p k=v …]` | Re-runs the analysis on pulled artifacts, no hardware; `-p` changes an analysis parameter and the run keeps it (e.g. `rf.freq_sweep`'s `compare`). |
 | `compare` | `fbench compare <baseline_dir> <run_dir> …` | Metric deltas; exit 1 on regression (worse verdict or newly violated threshold). |
 | `boot` | `fbench boot A status\|p25\|hwval [--no-reboot] [--wait S]` / `boot A install --image hwval --from DIR` | Dual-image swap with sha256 manifest, reboot, session setup, image check. |
 | `safety` | `fbench safety --tx A --rx B --tx-atten 0` | Link budget and interlock verdict (exit 4 if refused). |
@@ -164,9 +164,9 @@ agent info, IIO context), `log.txt`, `artifacts/`, `FINDINGS.md`. Suites also wr
    enabling any source; after every TX test the runner issues `tx off` in a `finally`
    (agent, or libiio fallback), before leaving maintenance mode. A failed `tx off` turns
    the verdict into `error` and raises an alert in `status`.
-4. **Maintenance mode**: tests marked M run `maint enter` (stops p25-httpd) and always
-   `maint exit` afterwards; `rf.refclk_eth` enters it itself only when it must change the
-   RX rate.
+4. **Maintenance mode**: tests marked M run `maint enter` (stops the radio daemon: the
+   scanner, or p25-httpd on older cards) and always `maint exit` afterwards;
+   `rf.refclk_eth` enters it itself only when it must change the RX rate.
 5. **Register allow-lists**: `reg` only touches registers listed in `share/*.json`
    (vacant p25_core banks are not listed; reading them hangs the bus, F15).
 6. **Storage**: the bench only writes under `/mnt/sd/bench/**` (and `/tmp` on the board
@@ -213,6 +213,42 @@ power-cycle the unit.
 
 Raise `PreconditionError` (exit 3) for missing capabilities, `Inconclusive` (exit 5)
 when data cannot support a verdict; the runner maps everything else to `error`.
+
+## Frequency sweep (`rf.freq_sweep`)
+
+One cabled direction across the tuning range: 84 points from 70 MHz to 6 GHz, with every
+stimulus method the TX unit supports (`pattern` and `cyclic` on the scanner image, `dds` on
+the hwval and factory images), an estimated 3 s per point per method (not yet timed on
+the units). Both units go into maintenance mode (the scanner stops). Per point it records:
+
+- both synthesizers' lock bits and the LO read-backs;
+- the tone's level and SNR at a fixed RX gain;
+- the TX vs RX reference offset (a jump means an LO that did not land);
+- the RX image, TX LO leakage and TX image (after a TX quadrature calibration);
+- the strongest spur.
+
+Results inside and outside each unit's specified range (the AD9363's 325 MHz-3.8 GHz) are
+reported separately.
+
+A run's absolute level mixes the TX board (its PGA-102+ gain block rolls off above about
+1.5 GHz), the cable and pads, and the RX board. To separate them, move **one** padded cable
+through four positions and run the sweep at each. Before each move, set the `[[rf.links]]`
+entry in `bench.toml` to the path you cabled: the interlock refuses a TX that is not listed.
+
+| Cable | Run |
+|---|---|
+| B.TX1 → pads → A.RX1 | `fbench run rf.freq_sweep --tx B --rx A --json` |
+| B.TX1 → pads → B.RX1 | `fbench run rf.freq_sweep --tx B --rx B --json` |
+| A.TX1 → pads → A.RX1 | `fbench run rf.freq_sweep --tx A --rx A --json` |
+| A.TX1 → pads → B.RX1 | `fbench run rf.freq_sweep --tx A --rx B -p compare=<dir1>,<dir2>,<dir3> --json` |
+
+`compare` (or `fbench analyze <run_dir> -p compare=...` afterwards) writes `compare.json`
+and `compare_diff.png`. Two runs with the same TX unit give the RX difference (`RX B - RX
+A`), and two runs with the same RX unit give the TX difference. The four positions give
+each difference twice, through different boards, and the two estimates should agree. The
+two cross directions alone still give the lock, read-back, image, leakage and SNR results
+for both units' TX and RX; only their levels stay mixed. The comparison warns when the runs
+used different pads, gain, attenuation or sample rate.
 
 ## Replay corpus (`rf.p25_corpus`)
 

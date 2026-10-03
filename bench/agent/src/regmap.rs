@@ -573,21 +573,22 @@ mod tests {
         assert_eq!(ctl.domain.as_deref(), Some("axi_lite"));
         assert!(!ctl.read_side_effect);
         assert_eq!(ctl.field("sdr_reset").unwrap().lsb, 0);
-        for rtc in [0x0Cu32, 0x60, 0x80, 0xA4, 0xC4, 0xE0, 0x184, 0x1A0, 0x1C0] {
+        for rtc in [0x0Cu32, 0x60, 0x80, 0xA4, 0xC4, 0xE0, 0x144, 0x184, 0x1A0, 0x1C0] {
             let r = p25.regs.iter().find(|r| r.offset == rtc).unwrap();
             assert!(r.read_side_effect, "0x{rtc:X}");
         }
-        assert!(p25.offset_forbidden(0x120).is_some());
-        assert!(p25.offset_forbidden(0x17C).is_some());
         assert!(p25.offset_forbidden(0x1E0).is_some());
+        assert!(p25.offset_forbidden(0x1FC).is_some());
         assert!(p25.offset_forbidden(0x200).is_some());
         assert!(p25.offset_forbidden(0x2E0).is_some());
+        assert!(p25.offset_forbidden(0x120).is_none());
         assert!(p25.offset_forbidden(0x180).is_none());
         // No mapped register sits in a forbidden range.
         for r in &p25.regs {
             assert!(p25.offset_forbidden(r.offset).is_none(), "{}", r.name);
         }
-        assert!(p25.find("0x120").is_none());
+        assert!(p25.find("0x1E0").is_none());
+        assert_eq!(p25.find("0x120").unwrap().name, "traffic2_ddc_coeff_addr");
         let adc = set.core("adi_adc").unwrap();
         assert_eq!(adc.get("CHAN1_CNTRL_3").unwrap().offset, 0x458);
         assert_eq!(adc.get("IDELAY_6").unwrap().offset, 0x818);
@@ -627,7 +628,7 @@ mod tests {
             "regs": [
                 {"name": "WB_STATUS", "offset": "0xE0", "access": "ro"},
                 {"name": "PRODUCT", "offset": 0, "access": "ro"},
-                {"name": "BAD", "offset": "0x124", "access": "ro"}
+                {"name": "BAD", "offset": "0x1E4", "access": "ro"}
             ]
         });
         let (cores, _) = cores_from_file_value(&share, "test");

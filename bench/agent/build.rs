@@ -14,9 +14,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Word offsets whose read clears a sticky bit (Access.Rsticky in p25_top.py).
-const P25_READ_TO_CLEAR: &[u32] = &[0x0C, 0x60, 0x80, 0xA4, 0xC4, 0xE0, 0x184, 0x1A0, 0x1C0];
+const P25_READ_TO_CLEAR: &[u32] = &[0x0C, 0x60, 0x80, 0xA4, 0xC4, 0xE0, 0x144, 0x184, 0x1A0, 0x1C0];
 
-/// Bank names (bits [8:5] of the byte address), from p25_top.py.
+/// Bank names (bits [8:5] of the byte address), from p25_top.py. Traffic chain 2's LSM bank
+/// is 16 words, so it spans two 32-byte banks.
 const P25_BANKS: &[(u32, &str)] = &[
     (0x00, "control"),
     (0x20, "sdr"),
@@ -27,6 +28,9 @@ const P25_BANKS: &[(u32, &str)] = &[
     (0xC0, "traffic_lsm"),
     (0xE0, "wideband_iq"),
     (0x100, "lsm_seed"),
+    (0x120, "traffic2_sdr"),
+    (0x140, "traffic2_lsm"),
+    (0x160, "traffic2_lsm_seed"),
     (0x180, "spectrometer"),
     (0x1A0, "pre_diff_iq"),
     (0x1C0, "traffic_pre_diff_iq"),
@@ -225,7 +229,7 @@ fn p25_map_from_svd(svd: &str) -> serde_json::Value {
             "domains": ["sync"],
             "desc": "control.sdr_reset (powers up 1) holds the sync domain in reset; any access to a sync-domain bank hangs the AXI-Lite bus while it is set"
         },
-        "vacant": [["0x120", "0x180"], ["0x1E0", "0x200"]],
+        "vacant": [["0x1E0", "0x200"]],
         "decode_limit": "0x200",
         "source": "generated from p25-httpd/p25-pac/p25.svd by bench/agent/build.rs",
         "blocks": blocks,

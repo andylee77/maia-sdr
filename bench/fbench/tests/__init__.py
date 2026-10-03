@@ -8,6 +8,7 @@ from . import (  # noqa: F401
     store_tests,
     net_tests,
     rf_tests,
+    sweep_tests,
     hw_tests,
     corpus_tests,
 )

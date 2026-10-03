@@ -76,7 +76,12 @@ PC 192.168.2.10 ──USB (RNDIS)── Unit A usb0 192.168.2.1
 A.TX1A (JP1) ──[pad ≥20 dB]── B.RX1A (JP2)      primary A→B link
 B.TX1A (JP1) ──[pad ≥20 dB]── A.RX1A (JP2)      reverse link (optional)
 X.TX2A (JP3) ──[pad ≥20 dB]── X.RX2A (JP4)      per-board self loopback (optional, needs 2R2T image)
+X.TX1A (JP1) ──[pad ≥20 dB]── X.RX1A (JP2)      self loop on one board (rf.freq_sweep --tx X --rx X)
 ```
+
+`rf.freq_sweep` compares the two boards' receivers and transmitters by moving one padded
+cable through B→A, B→B, A→A and A→B, so every comparison goes through the same cable and
+pads (`bench/README.md`, "Frequency sweep").
 
 The bench currently has one 20 dB pad per link: with the PGA-102+ TX (+20 dBm worst
 case) a TX attenuation of 0 dB would put ≈0 dBm at the receiver, under the AD9361
@@ -137,8 +142,9 @@ On the `hwval` image `p25-httpd` still starts from `S60p25-httpd` but exits at
    restores max attenuation (−89.75 dB) and stops the source, even on error (the agent
    installs a cleanup path and the host re-issues `tx off` after every TX test).
 4. **Maintenance mode.** Tests that replace or corrupt the RX stream (BIST PRBS/tone,
-   loopback, digital tune, delay sweeps) stop `p25-httpd` first
-   (`/etc/init.d/S60p25-httpd stop`) and restart it afterwards. The run record notes it.
+   loopback, digital tune, delay sweeps, LO sweeps) stop the radio daemon first (the
+   scanner, `/etc/init.d/S60scanner stop`, or p25-httpd on older cards) and restart it
+   afterwards. The run record notes it.
 5. **Register allow-lists.** The agent refuses reads/writes outside the per-core maps in
    `share/*.json` (vacant `p25_core` banks hang the bus, F15).
 6. **No destructive storage ops.** Only `/mnt/sd/bench/**` and files the agent created
@@ -516,6 +522,7 @@ long bursts on an idle system.
 | `rf.level_sweep` | 0 | tx,rx | | TX attenuation sweep: RSSI, ADC power, clipping, linearity | monotonic, slope 1 dB/dB ±0.5 |
 | `rf.spur_scan` | 0 | any | | noise floor and spurs with TX off/terminated | report |
 | `rf.isolation` | 0 | tx,rx | | leakage with the cable removed | ≥ 60 dB below cabled level |
+| `rf.freq_sweep` | 0 | tx,rx | M | One cabled direction across the tuning range (default 70 MHz–6 GHz, 84 points, log-spaced below 1.1 GHz and 100 MHz apart above, with the AD9363's 325 MHz and 3.8 GHz edges). The TX LO follows 1 MHz above the RX LO and the tone sits 0.5 MHz above the TX LO, so tone, TX LO leakage, TX image, RX image and DC land on separate frequencies. Every stimulus method the TX unit supports (dds, pattern, cyclic) sweeps in turn at fixed RX gain. Per point: RX and TX synthesizer lock bits (SPI 0x247/0x287), LO read-back, tone level and SNR, TX vs RX reference offset, RX image, TX LO leakage and TX image after a TX quadrature calibration, strongest spur, RSSI. `--tx A --rx A` is a self loop. `compare=<run dirs>` overlays runs and plots the RX difference of runs sharing a TX unit and the TX difference of runs sharing an RX unit | every point tunes, both synthesizers lock, LOs read back as set, tone found (SNR ≥ 10 dB), tone frequency on the reference offset; the rest reported |
 | `rf.refclk_eth` | 0 | tx,rx | | RX-side CW phase continuity, frequency and spurs (25/125 MHz products) with the RX unit's Ethernet link up, down, bounced, and under `net` load (F19) | no phase steps, no Ethernet-correlated spurs or frequency shift |
 | `rf.p25_replay` | 0 | tx,rx | | P25 site clip replay into a DUT running p25-httpd. A Tezuka TX board streams the clip gap-free from its own RAM (p25-httpd stopped there); other boards take one cyclic buffer. The TX LO is trimmed by `units.<recorder>.ref_ppm − units.<tx>.ref_ppm`, and traffic is scored against SDRTrunk's per-call `.mbe` decode of the same air (`rf.p25_truth_dir`). | TSBK CRC-ok ≥ 1/s; IMBE recovery ≥ 90 % of SDRTrunk; per-build regression score |
 | `rf.p25_corpus` | 0 | tx,rx | | Many-recording replay corpus (manifest from `tools/p25_corpus_index.py`): `mode=A` the real wideband captures with `.mbe` truth (9 of 18), whole and single pass from the TX board's SD card through `fbench-agent replay stream` (RAM ring, underrun counters; `a_unit=window` for RAM windows); `mode=B` synthetic full system (CC + concurrent traffic recordings up-converted from 50 kSPS and mixed, aligned to their SDRTrunk log clocks ±30 ms); `mode=C` traffic only (every traffic recording with `.mbe` truth back to back on one channel after a CC primer, follower locked with `/api/traffic?lock=on&follower=off`, restored afterwards). Per-transmission scoring: raw IMBE frames from `/api/imbe_dump` matched to SDRTrunk's `.mbe` frames; p25-httpd calls matched by TG and time; `/ws/audio` tone continuity for focus calls (the 2026-05-03 two-tone alert). Resumable, stoppable | clear-voice frame recovery ≥ 90 % of SDRTrunk over followable transmissions; 0 relay underruns; 0 focus-tone dropouts |

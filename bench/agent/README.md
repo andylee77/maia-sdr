@@ -795,20 +795,25 @@ fbench-agent tx off [--lo-powerdown]
 fbench-agent maint enter | exit | status
 ```
 
-`enter` records `/tmp/fbench_maint.json` first, runs
-`/etc/init.d/S60p25-httpd stop` and waits for the process to exit (escalating
-to SIGTERM/SIGKILL); `exit` resets BIST/loopback, restarts p25-httpd if it was
+Maintenance mode stops the image's radio daemon: the scanner (`/etc/init.d/S60scanner`)
+or, on older cards, p25-httpd (`/etc/init.d/S60p25-httpd`), whichever init script is
+installed. `enter` records `/tmp/fbench_maint.json` first (with the daemon and its init
+script), runs `<init> stop` and waits for the process to exit (escalating to
+SIGTERM/SIGKILL); `exit` resets BIST/loopback, restarts the recorded daemon if it was
 running and removes the state file. A state file from another boot is ignored.
+`S60scanner stop` flushes the history and recordings (up to 25 s) and then tries to
+unmount the SD card, which stays mounted while the agent runs from it.
 
 ```json
 {"ok": true, "cmd": "maint enter", "maintenance": true,
- "state": {"entered": "2026-09-26T16:00:00.000Z", "boot_id": "...", "was_running": true, "pids": [312], "agent_pid": 900},
- "services": {"p25-httpd": {"running": false, "pids": []}, "...": {}}, "p25_httpd_pids": [],
- "steps": [{"cmd": "/etc/init.d/S60p25-httpd stop", "rc": 0, "stdout": "Stopping p25-httpd: OK", "stderr": ""}], "stopped": true}
+ "state": {"entered": "2026-10-03T16:00:00.000Z", "boot_id": "...", "was_running": true, "daemon": "scanner",
+           "init": "/etc/init.d/S60scanner", "pids": [312], "agent_pid": 900},
+ "services": {"scanner": {"running": false, "pids": []}, "...": {}}, "daemon": "scanner", "daemon_pids": [],
+ "steps": [{"cmd": "/etc/init.d/S60scanner stop", "rc": 0, "stdout": "Stopping scanner: OK", "stderr": ""}], "stopped": true}
 ```
 
-`exit` returns `{"maintenance": false, "state": null, "services", "p25_httpd_pids", "was_in_maintenance", "restarted", "steps"}`;
-`status` returns `{"maintenance", "state", "services", "p25_httpd_pids"}`.
+`exit` returns `{"maintenance": false, "state": null, "services", "daemon", "daemon_pids", "was_in_maintenance", "restarted", "steps"}`;
+`status` returns `{"maintenance", "state", "services", "daemon", "daemon_pids"}`.
 
 ### boot
 

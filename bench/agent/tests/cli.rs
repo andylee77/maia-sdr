@@ -62,7 +62,7 @@ fn boot_install_without_from_never_swaps() {
 #[test]
 fn allow_list_refusals_happen_before_any_access() {
     // Vacant P25 bank: not in the map.
-    let (v, c) = agent(&["reg", "read", "--core", "p25", "--reg", "0x120"], None);
+    let (v, c) = agent(&["reg", "read", "--core", "p25", "--reg", "0x1E0"], None);
     assert_eq!((v["code"].as_str(), c), (Some("safety"), 4), "{v}");
     // Read-to-clear status word.
     let (v, c) = agent(&["reg", "read", "--core", "p25", "--reg", "wideband_iq_dma_status"], None);

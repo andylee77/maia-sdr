@@ -8,8 +8,8 @@
 //!   loopback / BIST off;
 //! * `TxGuard`: writes the attenuation first, runs `tx_off()` on drop;
 //! * `Cleanup`: ordered restore actions run on drop (or explicitly);
-//! * maintenance mode: stop/start `S60p25-httpd`, state in
-//!   /tmp/fbench_maint.json.
+//! * maintenance mode: stop/start the image's radio daemon (`S60scanner` or
+//!   `S60p25-httpd`), state in /tmp/fbench_maint.json.
 
 use crate::access::{RegAccess, WriteOpts};
 use crate::err::{AResult, AgentError, Code};
@@ -312,11 +312,32 @@ impl Drop for Cleanup<'_> {
 // ── maintenance mode ──────────────────────────────────────────────────
 
 pub const MAINT_FILE: &str = "/tmp/fbench_maint.json";
-pub const P25_INIT: &str = "/etc/init.d/S60p25-httpd";
-pub const P25_SERVICE: &str = "p25-httpd";
 
-pub fn p25_running() -> Vec<u32> {
-    sys::find_procs(P25_SERVICE).iter().map(|p| p.pid).collect()
+/// The radio daemons a Fishball image may run, with their init scripts. An image installs
+/// one; maintenance mode stops whichever it is.
+const DAEMONS: &[(&str, &str)] = &[
+    ("scanner", "/etc/init.d/S60scanner"),
+    ("p25-httpd", "/etc/init.d/S60p25-httpd"),
+];
+
+/// The image's radio daemon: the first whose init script is installed.
+fn installed_daemon() -> Option<(&'static str, &'static str)> {
+    DAEMONS.iter().copied().find(|(_, init)| std::path::Path::new(init).exists())
+}
+
+/// Pids of the radio daemon, whichever runs.
+pub fn daemon_pids() -> Vec<u32> {
+    DAEMONS.iter().flat_map(|(name, _)| sys::find_procs(name)).map(|p| p.pid).collect()
+}
+
+/// The radio daemon's name for messages: the running one, else the installed one.
+pub fn daemon_name() -> &'static str {
+    DAEMONS
+        .iter()
+        .find(|(name, _)| !sys::find_procs(name).is_empty())
+        .map(|(name, _)| *name)
+        .or(installed_daemon().map(|(name, _)| name))
+        .unwrap_or("the radio daemon")
 }
 
 pub fn maint_state() -> Option<Value> {
@@ -333,17 +354,17 @@ pub fn in_maintenance() -> bool {
     maint_state().is_some()
 }
 
-fn run_init(arg: &str) -> AResult<Value> {
-    if !std::path::Path::new(P25_INIT).exists() {
-        return Err(AgentError::new(Code::Precondition, format!("{P25_INIT} not found")));
+fn run_init(init: &str, arg: &str) -> AResult<Value> {
+    if !std::path::Path::new(init).exists() {
+        return Err(AgentError::new(Code::Precondition, format!("{init} not found")));
     }
     let out = std::process::Command::new("/bin/sh")
-        .arg(P25_INIT)
+        .arg(init)
         .arg(arg)
         .output()
-        .map_err(|e| AgentError::new(Code::Error, format!("{P25_INIT} {arg}: {e}")))?;
+        .map_err(|e| AgentError::new(Code::Error, format!("{init} {arg}: {e}")))?;
     Ok(json!({
-        "cmd": format!("{P25_INIT} {arg}"),
+        "cmd": format!("{init} {arg}"),
         "rc": out.status.code(),
         "stdout": String::from_utf8_lossy(&out.stdout).trim(),
         "stderr": String::from_utf8_lossy(&out.stderr).trim(),
@@ -353,7 +374,7 @@ fn run_init(arg: &str) -> AResult<Value> {
 fn wait_procs(want_running: bool, timeout: Duration) -> bool {
     let end = Instant::now() + timeout;
     loop {
-        let running = !p25_running().is_empty();
+        let running = !daemon_pids().is_empty();
         if running == want_running {
             return true;
         }
@@ -370,7 +391,8 @@ pub fn maint_status_json() -> Value {
         "maintenance": st.is_some(),
         "state": st,
         "services": sys::services_json(),
-        "p25_httpd_pids": p25_running(),
+        "daemon": installed_daemon().map(|(name, _)| name),
+        "daemon_pids": daemon_pids(),
     })
 }
 
@@ -381,34 +403,43 @@ pub fn maint_enter() -> AResult<Value> {
         v["state"] = st;
         return Ok(v);
     }
-    let pids = p25_running();
+    let pids = daemon_pids();
     let was_running = !pids.is_empty();
+    let daemon = installed_daemon();
+    if was_running && daemon.is_none() {
+        return Err(AgentError::new(
+            Code::Precondition,
+            format!("{} runs but no init script for it is installed", daemon_name()),
+        ));
+    }
     let mut steps = Vec::new();
     // Record the state first so an interrupted enter can still be exited.
     let state = json!({
         "entered": util::iso_now(),
         "boot_id": sys::boot_id(),
         "was_running": was_running,
+        "daemon": daemon.map(|(name, _)| name),
+        "init": daemon.map(|(_, init)| init),
         "pids": pids,
         "agent_pid": std::process::id(),
     });
     util::write_file(MAINT_FILE, serde_json::to_string_pretty(&state)?.as_bytes())?;
-    if was_running {
-        steps.push(run_init("stop")?);
+    if let (true, Some((name, init))) = (was_running, daemon) {
+        steps.push(run_init(init, "stop")?);
         if !wait_procs(false, Duration::from_secs(5)) {
             // Escalate: SIGTERM, then SIGKILL the leftovers.
-            for pid in p25_running() {
+            for pid in daemon_pids() {
                 kill(pid, false);
             }
             if !wait_procs(false, Duration::from_secs(2)) {
-                for pid in p25_running() {
+                for pid in daemon_pids() {
                     kill(pid, true);
                 }
                 if !wait_procs(false, Duration::from_secs(2)) {
-                    return Err(AgentError::new(Code::Error, "p25-httpd did not stop"));
+                    return Err(AgentError::new(Code::Error, format!("{name} did not stop")));
                 }
             }
-            steps.push(json!("p25-httpd needed signals to stop"));
+            steps.push(json!(format!("{name} needed signals to stop")));
         }
     }
     let mut v = maint_status_json();
@@ -435,12 +466,17 @@ pub fn maint_exit() -> AResult<Value> {
         .and_then(|s| s.get("was_running"))
         .and_then(|b| b.as_bool())
         .unwrap_or(false);
+    // Restart the daemon that was stopped: the one the state names, else the installed one.
+    let recorded = st.as_ref().and_then(|s| {
+        let name = s.get("daemon")?.as_str()?;
+        DAEMONS.iter().copied().find(|(n, _)| *n == name)
+    });
     let mut started = false;
-    if was_running && p25_running().is_empty() {
-        steps.push(run_init("start")?);
+    if let (true, Some((name, init))) = (was_running && daemon_pids().is_empty(), recorded.or(installed_daemon())) {
+        steps.push(run_init(init, "start")?);
         started = wait_procs(true, Duration::from_secs(5));
         if !started {
-            steps.push(json!("p25-httpd did not appear within 5 s (check /var/log/p25-httpd.log)"));
+            steps.push(json!(format!("{name} did not appear within 5 s (check /var/log/{name}.log)")));
         }
     }
     let _ = std::fs::remove_file(MAINT_FILE);
@@ -464,7 +500,7 @@ impl Drop for MaintGuard {
 
 /// Enforces rule 4 for operations that corrupt the RX stream.
 pub fn require_maintenance(auto: bool, ignore: bool, warnings: &mut Vec<String>) -> AResult<Option<MaintGuard>> {
-    let running = !p25_running().is_empty();
+    let running = !daemon_pids().is_empty();
     if !running {
         return Ok(None);
     }
@@ -472,12 +508,13 @@ pub fn require_maintenance(auto: bool, ignore: bool, warnings: &mut Vec<String>)
         maint_enter()?;
         return Ok(Some(MaintGuard));
     }
+    let name = daemon_name();
     if ignore {
-        warnings.push("p25-httpd is running (maintenance ignored by --ignore-maint)".into());
+        warnings.push(format!("{name} is running (maintenance ignored by --ignore-maint)"));
         return Ok(None);
     }
     Err(AgentError::new(
         Code::Precondition,
-        "p25-httpd is running: this operation replaces the RX stream; run `maint enter` first or pass --auto-maint",
+        format!("{name} is running: this operation replaces the RX stream; run `maint enter` first or pass --auto-maint"),
     ))
 }

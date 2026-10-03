@@ -862,8 +862,11 @@ def load_result(run_dir: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def reanalyze(run_dir: Path) -> RunResult:
-    """``fbench analyze``: re-run a test's analysis on its pulled artifacts."""
+def reanalyze(run_dir: Path, overrides: dict[str, Any] | None = None) -> RunResult:
+    """``fbench analyze``: re-run a test's analysis on its pulled artifacts.
+
+    ``overrides`` change analysis parameters; the run keeps them (result.json, params.json).
+    """
     from .findings import write_findings
 
     run_dir = Path(run_dir)
@@ -871,6 +874,14 @@ def reanalyze(run_dir: Path) -> RunResult:
     spec = get_spec(old["test"])
     if spec.analyze is None:
         raise PreconditionError(f"{spec.id} has no offline analysis (acquisition-only test)")
+    if overrides:
+        params = dict(old.get("params", {}))
+        for key, raw in overrides.items():
+            if key not in spec.params:
+                raise UsageError(f"unknown parameter {key!r} for {spec.id}")
+            params[key] = coerce(raw, spec.params[key], key)
+        old["params"] = jsonable(params)
+        dump_json(old["params"], run_dir / "params.json")
     units_doc: dict[str, Any] = {}
     try:
         units_doc = json.loads((run_dir / "units.json").read_text(encoding="utf-8"))

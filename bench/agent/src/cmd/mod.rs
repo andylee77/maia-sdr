@@ -147,7 +147,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("replay stream --playlist P [--ring-mb M] [--status F] [--report F] [--on-underrun wait|zero]", "SD/RAM IQ files -> RAM ring -> int16 on stdout (for iio_writedev)"),
     ("replay check --playlist P | verify --file F [--sha256 H]", "validate a replay playlist / hash a staged file"),
     ("tx off", "max TX attenuation, DAC zero, DDS scale 0, loopback/BIST off"),
-    ("maint enter|exit|status", "maintenance mode (stop/start p25-httpd)"),
+    ("maint enter|exit|status", "maintenance mode (stop/start the radio daemon: scanner or p25-httpd)"),
     ("boot status|install|select [NAME|--image NAME] [--reboot]", "dual boot-image swap helper"),
 ];
 

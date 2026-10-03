@@ -153,6 +153,13 @@
               "width": 1,
               "access": "ro",
               "desc": "wideband_iq_dma"
+            },
+            {
+              "name": "traffic2_lsm_dibit_dma",
+              "lsb": 8,
+              "width": 1,
+              "access": "ro",
+              "desc": "traffic2_lsm_dibit_dma"
             }
           ],
           "read_side_effect": true,
@@ -1386,6 +1393,512 @@
       ]
     },
     {
+      "name": "traffic2_ddc",
+      "offset": "0x120",
+      "regs": [
+        {
+          "name": "traffic2_ddc_coeff_addr",
+          "offset": "0x120",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_ddc_coeff_addr",
+          "fields": [
+            {
+              "name": "traffic2_coeff_waddr",
+              "lsb": 0,
+              "width": 10,
+              "access": "rw",
+              "desc": "traffic2_coeff_waddr"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        },
+        {
+          "name": "traffic2_ddc_coeff",
+          "offset": "0x128",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_ddc_coeff",
+          "fields": [
+            {
+              "name": "traffic2_coeff_wren",
+              "lsb": 0,
+              "width": 1,
+              "access": "wo",
+              "desc": "traffic2_coeff_wren"
+            },
+            {
+              "name": "traffic2_coeff_wdata",
+              "lsb": 1,
+              "width": 18,
+              "access": "rw",
+              "desc": "traffic2_coeff_wdata"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        },
+        {
+          "name": "traffic2_ddc_decimation",
+          "offset": "0x12C",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_ddc_decimation",
+          "fields": [
+            {
+              "name": "traffic2_decimation1",
+              "lsb": 0,
+              "width": 7,
+              "access": "rw",
+              "desc": "traffic2_decimation1"
+            },
+            {
+              "name": "traffic2_decimation2",
+              "lsb": 7,
+              "width": 6,
+              "access": "rw",
+              "desc": "traffic2_decimation2"
+            },
+            {
+              "name": "traffic2_decimation3",
+              "lsb": 13,
+              "width": 7,
+              "access": "rw",
+              "desc": "traffic2_decimation3"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        },
+        {
+          "name": "traffic2_ddc_frequency",
+          "offset": "0x130",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_ddc_frequency",
+          "fields": [
+            {
+              "name": "traffic2_frequency",
+              "lsb": 0,
+              "width": 28,
+              "access": "rw",
+              "desc": "traffic2_frequency"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        },
+        {
+          "name": "traffic2_ddc_control",
+          "offset": "0x134",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_ddc_control",
+          "fields": [
+            {
+              "name": "traffic2_operations_minus_one1",
+              "lsb": 0,
+              "width": 7,
+              "access": "rw",
+              "desc": "traffic2_operations_minus_one1"
+            },
+            {
+              "name": "traffic2_operations_minus_one2",
+              "lsb": 7,
+              "width": 6,
+              "access": "rw",
+              "desc": "traffic2_operations_minus_one2"
+            },
+            {
+              "name": "traffic2_operations_minus_one3",
+              "lsb": 13,
+              "width": 7,
+              "access": "rw",
+              "desc": "traffic2_operations_minus_one3"
+            },
+            {
+              "name": "traffic2_odd_operations1",
+              "lsb": 20,
+              "width": 1,
+              "access": "rw",
+              "desc": "traffic2_odd_operations1"
+            },
+            {
+              "name": "traffic2_odd_operations3",
+              "lsb": 21,
+              "width": 1,
+              "access": "rw",
+              "desc": "traffic2_odd_operations3"
+            },
+            {
+              "name": "traffic2_bypass2",
+              "lsb": 22,
+              "width": 1,
+              "access": "rw",
+              "desc": "traffic2_bypass2"
+            },
+            {
+              "name": "traffic2_bypass3",
+              "lsb": 23,
+              "width": 1,
+              "access": "rw",
+              "desc": "traffic2_bypass3"
+            },
+            {
+              "name": "traffic2_enable_input",
+              "lsb": 24,
+              "width": 1,
+              "access": "rw",
+              "desc": "traffic2_enable_input"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        }
+      ]
+    },
+    {
+      "name": "traffic2_lsm",
+      "offset": "0x140",
+      "regs": [
+        {
+          "name": "traffic2_lsm_control",
+          "offset": "0x140",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_lsm_control",
+          "fields": [
+            {
+              "name": "traffic2_lsm_enable",
+              "lsb": 0,
+              "width": 1,
+              "access": "rw",
+              "desc": "traffic2_lsm_enable"
+            },
+            {
+              "name": "traffic2_lsm_dibit_dma_enable",
+              "lsb": 1,
+              "width": 1,
+              "access": "rw",
+              "desc": "traffic2_lsm_dibit_dma_enable"
+            },
+            {
+              "name": "traffic2_lsm_reset",
+              "lsb": 2,
+              "width": 1,
+              "access": "wo",
+              "desc": "traffic2_lsm_reset"
+            },
+            {
+              "name": "traffic2_lsm_dc_block_enable",
+              "lsb": 3,
+              "width": 1,
+              "access": "rw",
+              "desc": "traffic2_lsm_dc_block_enable"
+            },
+            {
+              "name": "traffic2_lsm_agc_enable",
+              "lsb": 4,
+              "width": 1,
+              "access": "rw",
+              "desc": "traffic2_lsm_agc_enable"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        },
+        {
+          "name": "traffic2_lsm_status",
+          "offset": "0x144",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_lsm_status \u2014 READ CLEARS Rsticky bits (F2); read only when intended",
+          "fields": [
+            {
+              "name": "bch_busy",
+              "lsb": 0,
+              "width": 1,
+              "access": "ro",
+              "desc": "bch_busy"
+            },
+            {
+              "name": "in_nid_window",
+              "lsb": 1,
+              "width": 1,
+              "access": "ro",
+              "desc": "in_nid_window"
+            },
+            {
+              "name": "nid_event",
+              "lsb": 2,
+              "width": 1,
+              "access": "ro",
+              "desc": "nid_event"
+            },
+            {
+              "name": "nid_valid",
+              "lsb": 3,
+              "width": 1,
+              "access": "ro",
+              "desc": "nid_valid"
+            },
+            {
+              "name": "n_errors",
+              "lsb": 4,
+              "width": 7,
+              "access": "ro",
+              "desc": "n_errors"
+            },
+            {
+              "name": "sync_distance",
+              "lsb": 11,
+              "width": 7,
+              "access": "ro",
+              "desc": "sync_distance"
+            },
+            {
+              "name": "traffic2_lsm_dibit_overflow",
+              "lsb": 18,
+              "width": 1,
+              "access": "ro",
+              "desc": "traffic2_lsm_dibit_overflow"
+            }
+          ],
+          "read_side_effect": true,
+          "expected": null
+        },
+        {
+          "name": "traffic2_lsm_nid",
+          "offset": "0x148",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_lsm_nid",
+          "fields": [
+            {
+              "name": "nac",
+              "lsb": 0,
+              "width": 12,
+              "access": "ro",
+              "desc": "nac"
+            },
+            {
+              "name": "duid",
+              "lsb": 12,
+              "width": 4,
+              "access": "ro",
+              "desc": "duid"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        },
+        {
+          "name": "traffic2_lsm_drop_count",
+          "offset": "0x14C",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_lsm_drop_count",
+          "fields": [
+            {
+              "name": "drop_count",
+              "lsb": 0,
+              "width": 16,
+              "access": "ro",
+              "desc": "drop_count"
+            },
+            {
+              "name": "traffic2_lsm_dibit_last_buffer",
+              "lsb": 16,
+              "width": 3,
+              "access": "ro",
+              "desc": "traffic2_lsm_dibit_last_buffer"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        },
+        {
+          "name": "traffic2_lsm_dibit_next",
+          "offset": "0x150",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_lsm_dibit_next",
+          "fields": [
+            {
+              "name": "next_address",
+              "lsb": 0,
+              "width": 32,
+              "access": "ro",
+              "desc": "next_address"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        },
+        {
+          "name": "traffic2_lsm_debug",
+          "offset": "0x154",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_lsm_debug",
+          "fields": [
+            {
+              "name": "pll_dbg",
+              "lsb": 0,
+              "width": 16,
+              "access": "ro",
+              "desc": "pll_dbg"
+            },
+            {
+              "name": "sample_point_dbg",
+              "lsb": 16,
+              "width": 16,
+              "access": "ro",
+              "desc": "sample_point_dbg"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        },
+        {
+          "name": "traffic2_lsm_agc_debug",
+          "offset": "0x158",
+          "access": "ro",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_lsm_agc_debug",
+          "fields": [
+            {
+              "name": "agc_gain_dbg",
+              "lsb": 0,
+              "width": 16,
+              "access": "ro",
+              "desc": "agc_gain_dbg"
+            },
+            {
+              "name": "agc_mag_dbg",
+              "lsb": 16,
+              "width": 16,
+              "access": "ro",
+              "desc": "agc_mag_dbg"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        },
+        {
+          "name": "traffic2_lsm_agc_config",
+          "offset": "0x15C",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_lsm_agc_config",
+          "fields": [
+            {
+              "name": "mag_update_threshold",
+              "lsb": 0,
+              "width": 16,
+              "access": "rw",
+              "desc": "mag_update_threshold"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        }
+      ]
+    },
+    {
+      "name": "traffic2_lsm_seeds",
+      "offset": "0x160",
+      "regs": [
+        {
+          "name": "traffic2_lsm_agc_seed",
+          "offset": "0x160",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_lsm_agc_seed",
+          "fields": [
+            {
+              "name": "agc_seed",
+              "lsb": 0,
+              "width": 20,
+              "access": "rw",
+              "desc": "agc_seed"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        },
+        {
+          "name": "traffic2_lsm_pll_seed",
+          "offset": "0x164",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_lsm_pll_seed",
+          "fields": [
+            {
+              "name": "pll_seed",
+              "lsb": 0,
+              "width": 16,
+              "access": "rw",
+              "desc": "pll_seed"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        },
+        {
+          "name": "traffic2_lsm_timing_seed",
+          "offset": "0x168",
+          "access": "rw",
+          "width": 32,
+          "reset": "0x0",
+          "snapshot": null,
+          "desc": "traffic2_lsm_timing_seed",
+          "fields": [
+            {
+              "name": "timing_seed",
+              "lsb": 0,
+              "width": 18,
+              "access": "rw",
+              "desc": "timing_seed"
+            }
+          ],
+          "read_side_effect": false,
+          "expected": null
+        }
+      ]
+    },
+    {
       "name": "spectrometer",
       "offset": "0x180",
       "regs": [
@@ -1627,10 +2140,6 @@
     }
   ],
   "vacant": [
-    [
-      "0x120",
-      "0x180"
-    ],
     [
       "0x1E0",
       "0x200"

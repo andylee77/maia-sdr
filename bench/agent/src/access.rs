@@ -318,7 +318,7 @@ mod tests {
         let e = a.read("wideband_iq_next_address").unwrap_err();
         assert_eq!(e.code, Code::Safety);
         // Vacant offsets are not even resolvable.
-        assert!(a.core.find("0x120").is_none());
+        assert!(a.core.find("0x1E0").is_none());
         // Release the reset -> allowed.
         a.write("control", 0).unwrap();
         a.refresh();
