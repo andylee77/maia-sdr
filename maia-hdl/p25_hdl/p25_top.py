@@ -241,7 +241,7 @@ class P25Core(Elaboratable):
         m.submodules.control_registers = s_axi_lite(self.control_registers)
         sdr_reset = self.control_registers['control']['sdr_reset']
 
-        # ── Input: the AD9361's samples, registered once for every consumer ──────────────
+        # ── Input: the AD9361's samples, registered once (per lane, below, for the DDCs) ─────
         rx_re = Signal(signed(12))
         rx_im = Signal(signed(12))
         rx_strobe = Signal()
@@ -281,6 +281,16 @@ class P25Core(Elaboratable):
             p = f'lane{i}_'
             ctrl = regs[p + 'ddc_control']
             dec = regs[p + 'ddc_decimation']
+            # Each DDC reads its own copy of the input register, placed beside it: the mixer
+            # takes it on the next clk3x edge, and one register shared by the lanes spread over
+            # the die left that path a few tens of picoseconds of slack. `keep` stops synthesis
+            # merging the copies.
+            lane_re = Signal(signed(12), reset_less=True, name=f'lane{i}_re',
+                             attrs={'keep': 'true'})
+            lane_im = Signal(signed(12), reset_less=True, name=f'lane{i}_im',
+                             attrs={'keep': 'true'})
+            lane_strobe = Signal(name=f'lane{i}_strobe', attrs={'keep': 'true'})
+            m.d.sync += [lane_re.eq(rx_re), lane_im.eq(rx_im), lane_strobe.eq(rx_strobe)]
             m.d.comb += [
                 ddc.common_edge.eq(common_edge_3x.common_edge),
                 ddc.enable_input.eq(ctrl['enable_input']),
@@ -298,9 +308,9 @@ class P25Core(Elaboratable):
                 ddc.operations_minus_one3.eq(ctrl['operations_minus_one3']),
                 ddc.odd_operations1.eq(ctrl['odd_operations1']),
                 ddc.odd_operations3.eq(ctrl['odd_operations3']),
-                ddc.strobe_in.eq(in_strobe),
-                ddc.re_in.eq(in_re),
-                ddc.im_in.eq(in_im),
+                ddc.strobe_in.eq(lane_strobe),
+                ddc.re_in.eq(lane_re),
+                ddc.im_in.eq(lane_im),
 
                 pk.re_in.eq(ddc.re_out),
                 pk.im_in.eq(ddc.im_out),
