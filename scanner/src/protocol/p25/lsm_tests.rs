@@ -81,11 +81,58 @@ fn block_size_does_not_change_the_output() {
     assert_eq!(whole.syncs, pieces.syncs);
 }
 
+/// White Gaussian noise at `rms` of full scale on I and Q (a deterministic generator).
+fn noise(n: usize, rms: f32, seed: u64) -> (Vec<f32>, Vec<f32>) {
+    let mut state = seed;
+    let mut uniform = move || {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((state >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    };
+    let mut gauss = || ((-2.0 * uniform().ln()).sqrt() * (2.0 * std::f64::consts::PI * uniform()).cos()) as f32;
+    let i = (0..n).map(|_| gauss() * rms).collect();
+    let q = (0..n).map(|_| gauss() * rms).collect();
+    (i, q)
+}
+
+/// The next transmission after two seconds of gap noise below the gate: the carrier loop comes
+/// back where it was (the first three noise symbols move it, 0.03 rad at most each, before the
+/// hold starts) and the frames are read from the start (change 059's case). SDRTrunk's loop
+/// wanders further over the same gap.
+#[test]
+fn the_loops_hold_through_a_gap() {
+    let dibits = test_dibits();
+    let (ti, tq) = cqpsk(&dibits, 250.0);
+    let (ni, nq) = noise(100_000, 0.002, 7);
+    let run = |mut dec: LsmDecoder| {
+        let mut first = Framer::default();
+        for (ci, cq) in ti.chunks(4096).zip(tq.chunks(4096)) {
+            dec.process_iq(ci, cq, &mut first);
+        }
+        let before = dec.demod.pll();
+        let mut gap = Framer::default();
+        for (ci, cq) in ni.chunks(4096).zip(nq.chunks(4096)) {
+            dec.process_iq(ci, cq, &mut gap);
+        }
+        let moved = (dec.demod.pll() - before).abs();
+        let mut second = Framer::default();
+        for (ci, cq) in ti.chunks(4096).zip(tq.chunks(4096)) {
+            dec.process_iq(ci, cq, &mut second);
+        }
+        (moved, first.stats.nid_ok, second.stats.nid_ok)
+    };
+    let (moved, first, second) = run(LsmDecoder::new());
+    assert!(moved <= 0.11, "the held loop moved {moved} rad over the gap");
+    assert!(second >= first, "NIDs {first} then {second}");
+    let (sdrtrunk_moved, _, _) = run(LsmDecoder::sdrtrunk());
+    assert!(sdrtrunk_moved > 2.0 * moved, "SDRTrunk's loop moved {sdrtrunk_moved} rad, the held one {moved}");
+}
+
 /// Decode 50 kSPS WAVs (SDRTrunk `_baseband.wav` recordings, `/api/v1/iq/control.wav` captures)
 /// for comparison with SDRTrunk's own LSM decoder (`tools/sdrtrunk_lsm_reference.py`):
 /// `P25_LSM_WAVS` = a directory (every `.wav` in it), `P25_LSM_OUT` = where each file's dibits
 /// go as `<stem>.bits` (SDRTrunk's packing) and one JSON line of counts per file goes to
 /// `summary.jsonl`. `tools/p25_lsm_compare.py` compares them with SDRTrunk's.
+/// `P25_LSM_LOOP=sdrtrunk` decodes with SDRTrunk's loop exactly (no hold, the π/3 limit).
 /// `cargo test --release lsm_wavs -- --ignored --nocapture`
 #[test]
 #[ignore = "needs P25_LSM_WAVS and P25_LSM_OUT"]
@@ -106,7 +153,10 @@ fn lsm_wavs() {
     for path in wavs {
         let bytes = std::fs::read(&path).unwrap();
         let pcm: Vec<i16> = bytes[44..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
-        let mut dec = LsmDecoder::new();
+        let mut dec = match std::env::var("P25_LSM_LOOP").as_deref() {
+            Ok("sdrtrunk") => LsmDecoder::sdrtrunk(),
+            _ => LsmDecoder::new(),
+        };
         let mut framer = Framer::default();
         let mut dibits = Vec::new();
         struct Both<'a> {

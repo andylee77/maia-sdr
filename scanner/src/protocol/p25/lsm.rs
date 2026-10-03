@@ -4,15 +4,29 @@
 //! symbol before it, a Costas loop, Gardner timing on linearly interpolated samples), with the
 //! soft sync detection of `P25P1MessageFramer.processWithSoftSyncDetect`. Names follow the Java so
 //! the two can be read side by side.
-
-use std::f32::consts::PI;
+//!
+//! Two additions from the gateware LSM (change 059), for a traffic channel's gaps between
+//! transmissions, where SDRTrunk's decision-directed loop walks on the noise and can stay at its
+//! limit when the next transmission starts:
+//! - **Hold:** below the AGC's idle gate the gain does not follow, and after a few such symbols
+//!   the carrier loop and the symbol timing stop too, until the signal is back.
+//! - **Clamp:** the carrier loop's limit is 0.65 rad, not π/3, so neither end absorbs near the
+//!   operating point.
 
 use super::c4fm::{sync_symbols, DibitSink, SoftSync, DEMOD_RATE_HZ, SYMBOL_RATE};
 use crate::dsp::fsk4::{ideal_phase, linear, to_symbol, Fir};
 use crate::dsp::taps::{HALFBAND_63, LPF_LSM_25K, RRC_TAPS_25K};
 
-/// The carrier loop's limit: ±800 Hz.
-const MAX_PLL: f32 = PI / 3.0;
+/// The carrier loop's limit, ±497 Hz (the gateware's `MAX_PLL_ABS`).
+const MAX_PLL: f32 = 0.65;
+/// SDRTrunk's limit, π/3 (±800 Hz).
+const MAX_PLL_SDRTRUNK: f32 = std::f32::consts::FRAC_PI_3;
+/// The AGC's idle gate, the gateware's `mag_update_threshold` (256 in Q1.15): a symbol sample
+/// weaker than this is gap noise.
+const SIGNAL_GATE: f32 = 256.0 / 32768.0;
+/// Gated symbols in a row that start the hold, and symbols above the gate that end it.
+const HOLD_ENTER_SYMBOLS: u32 = 4;
+const HOLD_EXIT_SYMBOLS: u32 = 8;
 const PLL_GAIN: f32 = 0.1;
 const MAX_PHASE_ERROR: f32 = 0.3;
 const OBJECTIVE_MAGNITUDE: f32 = 1.0;
@@ -27,6 +41,31 @@ pub struct LsmStats {
     pub symbols: u64,
     /// Symbols whose soft sync score passed the threshold.
     pub sync_detections: u64,
+}
+
+/// The hold's hysteresis (the gateware's `LsmSignalHold`). It starts held: a freshly tuned
+/// channel waits for the signal before its loops adapt.
+struct Hold {
+    held: bool,
+    run: u32,
+}
+
+impl Hold {
+    fn new() -> Self {
+        Hold { held: true, run: 0 }
+    }
+
+    fn symbol(&mut self, gated: bool) {
+        let (counts, limit) = if self.held { (!gated, HOLD_EXIT_SYMBOLS) } else { (gated, HOLD_ENTER_SYMBOLS) };
+        if !counts {
+            self.run = 0;
+        } else if self.run + 1 >= limit {
+            self.held = !self.held;
+            self.run = 0;
+        } else {
+            self.run += 1;
+        }
+    }
 }
 
 /// SDRTrunk `P25P1DemodulatorLSM`: filtered 25 kSPS samples in, dibits and sync detections out.
@@ -48,12 +87,20 @@ pub struct LsmDemodulator {
     previous_symbol_q: f32,
     sync_symbols: [f32; 24],
     soft_sync: SoftSync,
+    max_pll: f32,
+    /// None: SDRTrunk's loop, which never holds.
+    hold: Option<Hold>,
     pub stats: LsmStats,
 }
 
 impl LsmDemodulator {
     /// SDRTrunk `setSamplesPerSymbol`, which takes a float.
     pub fn new(samples_per_symbol: f32) -> Self {
+        LsmDemodulator { max_pll: MAX_PLL, hold: Some(Hold::new()), ..Self::sdrtrunk(samples_per_symbol) }
+    }
+
+    /// SDRTrunk's loop exactly: no hold, the π/3 limit.
+    fn sdrtrunk(samples_per_symbol: f32) -> Self {
         let reserve = samples_per_symbol.ceil() as usize;
         LsmDemodulator {
             sample_point: samples_per_symbol as f64,
@@ -72,6 +119,8 @@ impl LsmDemodulator {
             previous_symbol_q: 0.7,
             sync_symbols: sync_symbols(),
             soft_sync: SoftSync::new(),
+            max_pll: MAX_PLL_SDRTRUNK,
+            hold: None,
             stats: LsmStats::default(),
         }
     }
@@ -87,9 +136,12 @@ impl LsmDemodulator {
         self.sample_gain
     }
 
-    /// SDRTrunk `resetPLL`: the tuning moved.
+    /// SDRTrunk `resetPLL`: the tuning moved. The loops wait for the signal again.
     pub fn reset_pll(&mut self) {
         self.pll = 0.0;
+        if let Some(h) = self.hold.as_mut() {
+            *h = Hold::new();
+        }
     }
 
     pub fn process(&mut self, i: &[f32], q: &[f32], sink: &mut impl DibitSink) {
@@ -103,6 +155,7 @@ impl LsmDemodulator {
         let samples_per_half_symbol = self.samples_per_half_symbol;
         let ted_gain = samples_per_symbol / 4.0;
         let max_timing_adjustment = samples_per_symbol / 25.0;
+        let max_pll = self.max_pll;
         let mut sample_point = self.sample_point;
         let mut pll = self.pll;
         let mut sample_gain = self.sample_gain;
@@ -131,9 +184,15 @@ impl LsmDemodulator {
             let mut i_current = linear(bi[offset], bi[offset + 1], residual);
             let mut q_current = linear(bq[offset], bq[offset + 1], residual);
 
-            // Gain from the symbol sample's magnitude, applied to both samples.
+            // Gain from the symbol sample's magnitude, applied to both samples. Below the gate the
+            // gain stays, and a run of such symbols holds the loops.
             let magnitude = ((i_current as f64).powi(2) + (q_current as f64).powi(2)).sqrt() as f32;
-            if magnitude > 0.0 && magnitude.is_finite() {
+            let gated = self.hold.is_some() && !(magnitude >= SIGNAL_GATE);
+            if let Some(h) = self.hold.as_mut() {
+                h.symbol(gated);
+            }
+            let held = self.hold.as_ref().is_some_and(|h| h.held);
+            if !gated && magnitude > 0.0 && magnitude.is_finite() {
                 let required_gain = constrain(OBJECTIVE_MAGNITUDE / magnitude, MAX_SAMPLE_GAIN);
                 sample_gain += (required_gain - sample_gain) * SAMPLE_GAIN_SLEW;
                 sample_gain = sample_gain.min(required_gain).min(MAX_SAMPLE_GAIN);
@@ -162,15 +221,19 @@ impl LsmDemodulator {
             let soft_symbol = (q_symbol as f64).atan2(i_symbol as f64) as f32;
 
             // Gardner timing error.
-            let timing_adjustment = (((previous_symbol_i - i_symbol) * i_middle_demodulated)
-                + ((previous_symbol_q - q_symbol) * q_middle_demodulated)) as f64;
-            sample_point += constrain_f64(timing_adjustment, max_timing_adjustment) * ted_gain;
+            if !held {
+                let timing_adjustment = (((previous_symbol_i - i_symbol) * i_middle_demodulated)
+                    + ((previous_symbol_q - q_symbol) * q_middle_demodulated)) as f64;
+                sample_point += constrain_f64(timing_adjustment, max_timing_adjustment) * ted_gain;
+            }
 
             // The carrier loop does not move on a zero soft symbol.
             let hard_symbol = if soft_symbol != 0.0 {
                 let hard_symbol = to_symbol(soft_symbol);
-                let phase_error = constrain(soft_symbol - ideal_phase(hard_symbol), MAX_PHASE_ERROR);
-                pll = constrain(pll - phase_error * PLL_GAIN, MAX_PLL);
+                if !held {
+                    let phase_error = constrain(soft_symbol - ideal_phase(hard_symbol), MAX_PHASE_ERROR);
+                    pll = constrain(pll - phase_error * PLL_GAIN, max_pll);
+                }
                 hard_symbol
             } else {
                 0
@@ -243,6 +306,12 @@ impl LsmDecoder {
             demod: LsmDemodulator::new(DEMOD_RATE_HZ as f32 / SYMBOL_RATE as f32),
             scratch: Default::default(),
         }
+    }
+
+    /// SDRTrunk's chain exactly, without the hold and with the π/3 limit (to compare).
+    #[cfg(test)]
+    pub fn sdrtrunk() -> Self {
+        LsmDecoder { demod: LsmDemodulator::sdrtrunk(DEMOD_RATE_HZ as f32 / SYMBOL_RATE as f32), ..Self::new() }
     }
 
     /// Feed interleaved 16-bit IQ (the DDC ring format: I, Q per sample), scaled to ±1.0 full

@@ -200,3 +200,20 @@ Each step keeps the units running on core 0.3.0 until the cutover.
     at 35.1 %. The shared FIR (`dsp::fsk4::Fir`) sums its taps in one dependent chain, which the
     compiler does not vectorise; about 60 % of a software receiver is its FIRs (DESIGN §13), and
     the C4FM and DMR receivers pay the same.
+- **2026-10-03, the software LSM in use on unit A** (control channel and lane 1, the gateware's
+  counted beside it; lane 2 on the gateware). Control: software 24,013 TSBKs, gateware 23,913,
+  C4FM 23,835 in 600 s. Lane 1 trailed the gateware by 6-27 % of LDUs. A temporary logging build
+  found two causes, over 22 gateware HDUs on lane 1:
+  - **The carrier loop at its limit.** At 6 of them the software loop sat at ±π/3 and the HDU
+    was lost, with the loop staying there over the next transmissions: change 059's trap. A
+    traffic channel has gaps between transmissions where SDRTrunk's decision-directed loop walks
+    on the noise; the control channel has none.
+  - **The retune drop.** About one voice NID a retune fell inside the 200 ms the software path
+    drops after a retune, because the IQ ring carries no sample times.
+- **Fix for the first: 059's hold and 0.65 rad clamp in the software LSM** (a departure from
+  SDRTrunk, with this evidence). On the 313 recordings, through the scanner's framer: NIDs
+  142,279 (SDRTrunk 137,430), TSDUs 119,746 (116,347), LDU1 / LDU2 3,667 / 3,411 (3,647 /
+  3,390), HDUs 448 (443). Two recordings lose one LDU each; 40 gain, the carrier-offset
+  recordings that SDRTrunk's loop lost among them. The second cause needs sample times on the
+  IQ ring: its write-address registers (unread today) can give them as the dibit ring's do, or
+  the lane ring's tags (step 3).
