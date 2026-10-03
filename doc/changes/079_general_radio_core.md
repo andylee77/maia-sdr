@@ -182,3 +182,18 @@ Each step keeps the units running on core 0.3.0 until the cutover.
   - SDRTrunk's demodulator throws on a block shorter than the one before (live SDRTrunk sends
     fixed blocks); the harness leaves out each file's last partial block.
   - Next: CPU on an A9, then the port beside the gateware LSM on unit A.
+- **2026-10-03, step 1 live on unit A** (Clay County simulcast, branch `079-lsm` 6cbf291 hand
+  deployed; the software LSM is counted only). 600 s:
+  - **Control channel:** TSBKs gateware LSM 23,965 (5 CRC failures), software LSM 24,032 (0),
+    C4FM 24,025 (1). The gate is met here.
+  - **Lane 1** (the software LSM on its IQ whenever the lane is tuned): LDU1 / LDU2 gateware
+    321 / 309, software 316 / 303; HDUs 30 / 24; TDULCs 1,109 / 1,040. The shortfall is at the
+    ends of the lane's tunings, where the two paths do not see the same samples: the IQ ring has
+    no timestamps, so the software path drops 200 ms after each retune and stops when the lane
+    pauses, while the gateware's dibits are cut by air time. Not yet shown frame by frame; the
+    recordings (both decoders starting together on the same samples) show no demodulator
+    deficit. The lane ring's tune generation and sample index (step 3) remove the cause.
+  - **CPU:** a software LSM receiver costs 12-15 % of an A9 core: the control thread 20.3 % →
+    35.8 %, lane 1 on the runtime workers 16.2 % → 27.8 %. The shared FIR (`dsp::fsk4::Fir`)
+    sums its taps in one dependent chain, and the ARM build has NEON off (the target's default),
+    so it is most of that; the C4FM and DMR receivers pay the same.
