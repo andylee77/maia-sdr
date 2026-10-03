@@ -194,6 +194,9 @@ Each step keeps the units running on core 0.3.0 until the cutover.
     recordings (both decoders starting together on the same samples) show no demodulator
     deficit. The lane ring's tune generation and sample index (step 3) remove the cause.
   - **CPU:** a software LSM receiver costs 12-15 % of an A9 core: the control thread 20.3 % →
-    35.8 %, lane 1 on the runtime workers 16.2 % → 27.8 %. The shared FIR (`dsp::fsk4::Fir`)
-    sums its taps in one dependent chain, and the ARM build has NEON off (the target's default),
-    so it is most of that; the C4FM and DMR receivers pay the same.
+    35.8 %, lane 1 on the runtime workers 16.2 % → 27.8 %. NEON does not change it: the SD
+    image's build turns it on (`tezuka_fw/package/scanner/scanner.mk` RUSTFLAGS), the hand builds
+    measured here did not, and the same code built with the image's flags runs the control thread
+    at 35.1 %. The shared FIR (`dsp::fsk4::Fir`) sums its taps in one dependent chain, which the
+    compiler does not vectorise; about 60 % of a software receiver is its FIRs (DESIGN §13), and
+    the C4FM and DMR receivers pay the same.

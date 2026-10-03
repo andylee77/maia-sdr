@@ -15,6 +15,7 @@ fn kinds(out: &[TrafficEvent]) -> Vec<String> {
     out.iter()
         .filter_map(|e| match e {
             TrafficEvent::Message(_) => None,
+            TrafficEvent::VoiceNid { header, .. } => Some(format!("voice_nid header={header}")),
             TrafficEvent::Voice { encrypted, .. } => Some(format!("voice enc={encrypted}")),
             TrafficEvent::Source(s) => Some(format!("source {s}")),
             TrafficEvent::TalkComplete(s) => Some(format!("talk_complete {s:?}")),

@@ -4,6 +4,7 @@ use std::sync::mpsc::SyncSender;
 
 use super::*;
 use crate::protocol::p25::fec::{bch, trellis_encode_bytes, TsduDeinterleaver};
+use crate::protocol::p25::test_fixtures::cqpsk_i16;
 use crate::protocol::p25::tsbk::ccitt80_crc;
 use crate::protocol::p25::types::is_body_status_dibit;
 use crate::protocol::p25::wire::{FRAME_SYNC_PATTERN, NID_STATUS_DIBIT_INDEX};
@@ -106,8 +107,11 @@ fn pack(dibits: &[u8]) -> Vec<u8> {
     dibits.chunks(4).map(|c| c.iter().enumerate().fold(0u8, |b, (i, d)| b | (d << (2 * i)))).collect()
 }
 
-/// Hands prepared deliveries to the receivers.
-struct Prepared(Vec<Vec<u8>>);
+/// Hands prepared deliveries to the receivers: the gateware's dibit ring bytes, then IQ.
+struct Prepared {
+    dibits: Vec<Vec<u8>>,
+    iq: Vec<Vec<i16>>,
+}
 
 impl StreamSource for Prepared {
     fn control_streams(
@@ -117,13 +121,22 @@ impl StreamSource for Prepared {
         _: Arc<AtomicBool>,
         _: Arc<StreamCounters>,
     ) -> Vec<tokio::task::JoinHandle<()>> {
-        for bytes in &self.0 {
+        for bytes in &self.dibits {
             tx.send(Input::Dibits { bytes: bytes.clone(), reset: false }).unwrap();
         }
-        Vec::new()
+        for iq in &self.iq {
+            tx.send(Input::Iq(iq.clone())).unwrap();
+        }
+        // Open until stopped, as a ring reader is: the decode thread keeps its once-a-second work.
+        vec![tokio::spawn(async move {
+            let _open = tx;
+            std::future::pending::<()>().await
+        })]
     }
 }
 
+/// The software LSM's messages are published; the gateware LSM's dibits (the same four frames)
+/// are only counted.
 #[tokio::test]
 async fn p25_receivers_publish_the_lsm_decoder_messages() {
     let log = Arc::new(EventLog::default());
@@ -133,6 +146,20 @@ async fn p25_receivers_publish_the_lsm_decoder_messages() {
         dibits.extend(net_status_tsdu());
     }
     dibits.resize(dibits.len().div_ceil(4) * 4, 0);
+    // Random symbols ahead let the demodulator's loops settle; more after flush its filters.
+    let mut lfsr: u32 = 0xACE1;
+    let mut noise = |n: usize| -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                lfsr = (lfsr >> 1) ^ ((lfsr & 1).wrapping_neg() & 0xB400);
+                (lfsr & 3) as u8
+            })
+            .collect()
+    };
+    let mut on_air = noise(400);
+    on_air.extend(&dibits);
+    on_air.extend(noise(100));
+    let iq = cqpsk_i16(&on_air, 120.0);
     let context = Context {
         site: "clay".into(),
         protocol: Protocol::P25,
@@ -142,11 +169,18 @@ async fn p25_receivers_publish_the_lsm_decoder_messages() {
         learned: None,
         history: Default::default(),
     };
-    receivers.start(context, &Prepared(vec![pack(&dibits)])).await;
+    let iq = iq.chunks(8192 * 2).map(<[i16]>::to_vec).collect();
+    receivers.start(context, &Prepared { dibits: vec![pack(&dibits)], iq }).await;
+    // Both decoders have read all four frames once the counters say so.
+    let both_read = |r: &Receivers| match r.counters() {
+        Some(Counters::P25 { lsm, lsm_gateware, .. }) => lsm.tsbk_ok() >= 4 && lsm_gateware.tsbk_ok() >= 4,
+        _ => false,
+    };
     let deadline = Instant::now() + Duration::from_secs(5);
-    while log.since(0, 10, true).len() < 4 && Instant::now() < deadline {
+    while !both_read(&receivers) && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert!(both_read(&receivers), "{:?}", receivers.counters());
     let status = receivers.status();
     receivers.stop().await;
     let records = log.since(0, 10, true);

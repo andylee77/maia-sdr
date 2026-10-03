@@ -11,12 +11,15 @@
 //!   1.5 s.
 //! - Packet data goes out as it is read, call or not (a lane waits on the data channel between
 //!   calls).
+//! - Each voice unit's NID goes out as it passes, for a lane whose demodulator is not the
+//!   gateware's (the gateware's lanes report theirs in real time from its NID status).
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::framer::{Framed, Framer};
 use super::tsbk::service_options;
+use super::types::DataUnit;
 use super::voice_frame::{self, TdulcLcw};
 use super::pdu::PduFrame;
 use crate::protocol::events::{LogLine, TrafficEvent, VoiceFrames};
@@ -109,6 +112,15 @@ impl P25Traffic {
         self.framer.reset();
     }
 
+    /// Soft frame sync from a software demodulator.
+    pub fn sync_detected(&mut self) {
+        self.framer.sync_detected();
+    }
+
+    pub fn is_assembling(&self) -> bool {
+        self.framer.is_assembling()
+    }
+
     pub fn call(&self) -> Option<CallContext> {
         self.call
     }
@@ -122,8 +134,14 @@ impl P25Traffic {
         let mut units = Vec::new();
         let mut pdus = Vec::new();
         let mut nac = None;
+        let mut voice_nid = None;
         self.framer.push(dibit, &mut |f| match f {
-            Framed::Nid(n) => nac = Some(n.nac),
+            Framed::Nid(n) => {
+                nac = Some(n.nac);
+                if matches!(n.duid, DataUnit::Hdu | DataUnit::Ldu1 | DataUnit::Ldu2) {
+                    voice_nid = Some(n.duid == DataUnit::Hdu);
+                }
+            }
             Framed::Pdu { header, blocks, expected } => pdus.push((header, blocks, expected)),
             Framed::Hdu(b) => units.push(Unit::Hdu(voice_frame::parse_hdu_body(b))),
             Framed::Ldu1(b) => {
@@ -141,6 +159,9 @@ impl P25Traffic {
         });
         if let Some(n) = nac {
             self.nac = n;
+        }
+        if let Some(header) = voice_nid {
+            out.push(TrafficEvent::VoiceNid { header, nac: self.nac, air });
         }
         for (header, blocks, blocks_expected) in pdus {
             out.push(TrafficEvent::Pdu(PduFrame { chain: self.chain, nac: self.nac, at_ms: unix_ms(), header, blocks, blocks_expected }));

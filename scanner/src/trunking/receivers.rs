@@ -104,10 +104,10 @@ pub struct InputStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "protocol", rename_all = "snake_case")]
 pub enum Counters {
-    /// The gateware LSM and software C4FM demodulators run; `status.modulation` says whose
-    /// messages are used. The software LSM runs beside them on the same IQ and is counted only,
-    /// to compare with the gateware's (change 079).
-    P25 { lsm: Box<FramerStats>, c4fm: Box<FramerStats>, lsm_software: Box<FramerStats> },
+    /// The software LSM and C4FM demodulators run on the same IQ; `status.modulation` says whose
+    /// messages are used. The gateware LSM's dibits are framed beside them and counted only, to
+    /// compare with the software LSM (change 079).
+    P25 { lsm: Box<FramerStats>, c4fm: Box<FramerStats>, lsm_gateware: Box<FramerStats> },
     Dmr { messages: DmrStats, demod: DmrDemodStats },
 }
 
@@ -419,12 +419,12 @@ impl Decoder {
     fn run_p25(&self, context: &Context, rx: Receiver<Input>) {
         let mut lsm = P25Control::new("control");
         let mut c4fm = P25Control::new("control");
-        let mut lsm_software = P25Control::new("control");
+        let mut lsm_gateware = P25Control::new("control");
         if let Some(l) = &self.learned {
             let bands = l.bands();
             lsm.seed_bands(&bands);
             c4fm.seed_bands(&bands);
-            lsm_software.seed_bands(&bands);
+            lsm_gateware.seed_bands(&bands);
         }
         let mut demod = C4fmDecoder::new();
         let mut lsm_demod = LsmDecoder::new();
@@ -442,14 +442,11 @@ impl Decoder {
             match input {
                 Some(Input::Dibits { bytes, reset }) => {
                     if reset {
-                        lsm.retuned();
+                        lsm_gateware.retuned();
                     }
                     unpack(&bytes, &mut dibits);
-                    lsm.push(&dibits, now, &mut events);
-                    if !choice.c4fm() {
-                        self.publish("p25", now, &events);
-                    }
-                    events.clear();
+                    lsm_gateware.push(&dibits, now, &mut unpublished);
+                    unpublished.clear();
                 }
                 Some(Input::Iq(iq)) => {
                     self.iq_tap.push(&iq);
@@ -458,8 +455,11 @@ impl Decoder {
                         self.publish("p25", now, &events);
                     }
                     events.clear();
-                    lsm_software.push_lsm(&mut lsm_demod, &iq, now, &mut unpublished);
-                    unpublished.clear();
+                    lsm.push_lsm(&mut lsm_demod, &iq, now, &mut events);
+                    if !choice.c4fm() {
+                        self.publish("p25", now, &events);
+                    }
+                    events.clear();
                 }
                 None => {}
             }
@@ -490,7 +490,7 @@ impl Decoder {
                 self.set_counters(Counters::P25 {
                     lsm: Box::new(lsm.stats().clone()),
                     c4fm: Box::new(c4fm.stats().clone()),
-                    lsm_software: Box::new(lsm_software.stats().clone()),
+                    lsm_gateware: Box::new(lsm_gateware.stats().clone()),
                 });
             }
         }

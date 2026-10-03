@@ -181,6 +181,8 @@ impl VoiceFrames {
 /// What a traffic channel decoder reports about the call it follows.
 #[derive(Debug, Clone)]
 pub enum TrafficEvent {
+    /// P25: the NID of a voice unit (an HDU when `header`, else an LDU) passed, aired at `air`.
+    VoiceNid { header: bool, nac: u16, air: Instant },
     /// Voice, aired at `air` (the dibit that completed it).
     Voice { frames: VoiceFrames, encrypted: bool, air: Instant },
     /// The talking radio, from the voice link control (agreed over several frames).

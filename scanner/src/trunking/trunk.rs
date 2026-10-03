@@ -36,6 +36,7 @@ use crate::hardware::p25core::Lane;
 use crate::protocol::dmr::demod::DmrDemodStats;
 use crate::protocol::dmr::message::DmrMessage;
 use crate::protocol::dmr::traffic::{DmrCall, DmrReceiver, DmrTraffic};
+use crate::protocol::p25::c4fm::DibitSink;
 use crate::protocol::p25::framer::{Framer, FramerStats};
 use crate::protocol::p25::lsm::LsmDecoder;
 use crate::protocol::events::{ChannelId, ChannelIdentity, Grant, TrafficEvent, VoiceFrames};
@@ -72,6 +73,10 @@ const STUCK_CHECK: Duration = Duration::from_secs(5);
 const COAST_MAX_IDLE: Duration = Duration::from_secs(1);
 /// IQ received this soon after a lane's retune may be the old channel's (a sub-buffer is ~164 ms).
 const IQ_SETTLE: Duration = Duration::from_millis(200);
+/// A lane's IQ rate (the DDC's output).
+const IQ_RATE_HZ: f64 = 50_000.0;
+/// One P25 symbol, 1/4800 s.
+const SYMBOL: Duration = Duration::from_nanos(208_333);
 /// Spectrometer frames gathered after a grant on an unmapped DMR channel, for the carrier that
 /// keys up.
 const KEYUP_WATCH: Duration = Duration::from_millis(800);
@@ -217,13 +222,15 @@ pub struct LaneStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "protocol", rename_all = "snake_case")]
 pub enum LaneCounters {
-    /// The gateware LSM's framer; on lane one also the software LSM's while the lane is tuned, to
-    /// compare the two (change 079).
+    /// The framer of the lane's decoder, on the dibits of `demod` (`lsm_gateware` or
+    /// `lsm_software`). Lane one, on the software LSM, also frames the gateware LSM's dibits and
+    /// counts them only, to compare the two (change 079).
     P25 {
+        demod: &'static str,
         #[serde(flatten)]
-        gateware: Box<FramerStats>,
+        framer: Box<FramerStats>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        lsm_software: Option<Box<FramerStats>>,
+        lsm_gateware: Option<Box<FramerStats>>,
     },
     Dmr { bursts: u64, demod: DmrDemodStats },
 }
@@ -287,13 +294,46 @@ fn owner(calls: &VecDeque<LaneCall>, air: Instant) -> Option<CallId> {
     }
 }
 
-/// P25: the software LSM demodulator on lane one's IQ, framing what the lane's gateware LSM
-/// frames, to compare the two (change 079).
+/// P25: lane one decoded by the software LSM demodulator on its IQ, the gateware LSM's dibits
+/// framed beside it and counted only, to compare the two (change 079).
 struct LsmSoftware {
     decoder: LsmDecoder,
-    framer: Framer,
-    /// The lane's last retune this decoder started over from.
+    gateware: Framer,
+    /// The lane's last retune both started over from.
     retuned_at: Option<Instant>,
+}
+
+impl LsmSoftware {
+    /// Start over when the lane was retuned (the gateware's loop is reset at the same moments).
+    fn follow_retune(&mut self, retuned_at: Option<Instant>) {
+        if self.retuned_at != retuned_at {
+            self.retuned_at = retuned_at;
+            self.gateware.reset();
+            self.decoder.demod.reset_pll();
+        }
+    }
+}
+
+/// The software demodulator's dibits into a lane's traffic decoder. The IQ ring carries no
+/// sample times, so each dibit is stamped a symbol after the last, from the start of its block.
+struct LaneSink<'a> {
+    traffic: &'a mut P25Traffic,
+    air: Instant,
+    now: Instant,
+    out: &'a mut Vec<TrafficEvent>,
+}
+
+impl DibitSink for LaneSink<'_> {
+    fn push_dibit(&mut self, dibit: u8) {
+        self.traffic.push(dibit, self.air, self.now, self.out);
+        self.air += SYMBOL;
+    }
+    fn sync_detected(&mut self) {
+        self.traffic.sync_detected();
+    }
+    fn is_assembling(&self) -> bool {
+        self.traffic.is_assembling()
+    }
 }
 
 /// DMR: lane one's receiver. Both lanes' calls off the control channel are on its carrier, one
@@ -639,7 +679,7 @@ impl Trunking {
             }),
             lsm_software: lsm_software.then(|| LsmSoftware {
                 decoder: LsmDecoder::new(),
-                framer: Framer::default(),
+                gateware: Framer::default(),
                 retuned_at: None,
             }),
             control_hz,
@@ -1083,6 +1123,24 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
     fn dibits(&mut self, lane: Lane, bytes: &[u8], first: u64, reset: bool, clock: &crate::radio::streams::dibit_ring::ClockView) {
         let now = Stamp::now();
         let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) else { return };
+        // Lane one on the software LSM: the gateware's dibits are only counted.
+        if let Some(sw) = self.lsm_software.as_mut().filter(|_| lane == Lane::One) {
+            sw.follow_retune(slot.retuned_at);
+            if reset {
+                sw.gateware.reset();
+            }
+            let mut index = first;
+            for &b in bytes {
+                for shift in [0, 2, 4, 6] {
+                    let air = clock.time_of(index).map(|us| mono_instant(us as u64)).unwrap_or(now.mono);
+                    index += 1;
+                    if slot.retuned_at.is_none_or(|t| air >= t) {
+                        sw.gateware.push((b >> shift) & 3, &mut |_| {});
+                    }
+                }
+            }
+            return;
+        }
         let Decoder::P25(traffic) = &mut slot.traffic else { return };
         if reset {
             traffic.retuned();
@@ -1106,25 +1164,28 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         }
     }
 
-    /// Lane one's IQ. At a P25 site the software LSM frames it whenever the lane is tuned, as the
-    /// gateware LSM does, and starts over when the gateware's is reset. At a DMR site it is
-    /// decoded while a lane's call is on its carrier, or while it identifies a carrier.
+    /// Lane one's IQ. At a P25 site the software LSM decodes it whenever the lane is tuned, as the
+    /// gateware LSM would. At a DMR site it is decoded while a lane's call is on its carrier, or
+    /// while it identifies a carrier.
     fn iq(&mut self, lane: Lane, iq: &[i16], at: Stamp) {
         if let Some(sw) = self.lsm_software.as_mut() {
-            let Some(slot) = self.lanes.iter().find(|s| s.lane == lane) else { return };
+            let Some(slot) = self.lanes.iter_mut().find(|s| s.lane == lane) else { return };
             if slot.tuned_hz.is_none() {
                 return;
             }
-            if sw.retuned_at != slot.retuned_at {
-                sw.retuned_at = slot.retuned_at;
-                sw.framer.reset();
-                sw.decoder.demod.reset_pll();
-            }
+            sw.follow_retune(slot.retuned_at);
             // A sub-buffer read just after a retune can still hold the old channel's samples.
             if slot.retuned_at.is_some_and(|t| at.mono < t + IQ_SETTLE) {
                 return;
             }
-            sw.decoder.process_iq_i16(iq, &mut sw.framer);
+            let Decoder::P25(traffic) = &mut slot.traffic else { return };
+            let block = Duration::from_secs_f64((iq.len() / 2) as f64 / IQ_RATE_HZ);
+            let mut events = Vec::new();
+            let mut sink = LaneSink { traffic, air: at.mono.checked_sub(block).unwrap_or(at.mono), now: at.mono, out: &mut events };
+            sw.decoder.process_iq_i16(iq, &mut sink);
+            for e in events {
+                self.traffic_event(lane, e, at);
+            }
             return;
         }
         let Some(hw) = self.dmr_hw.as_mut().filter(|_| lane == Lane::One) else { return };
@@ -1165,6 +1226,12 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
     fn traffic_event(&mut self, lane: Lane, e: TrafficEvent, at: Stamp) {
         let mut out = Vec::new();
         match e {
+            TrafficEvent::VoiceNid { header, nac, air } => {
+                if self.on_software_lsm(lane) {
+                    let before = at.mono.saturating_duration_since(air).as_millis() as u64;
+                    self.voice_nid(lane, header, nac, Stamp { mono: air, unix_ms: at.unix_ms.saturating_sub(before) });
+                }
+            }
             TrafficEvent::Voice { frames, encrypted, air } => {
                 if let (VoiceFrames::Imbe(f), Ok(mut ring)) = (&frames, self.frames.lock()) {
                     let tg = self.book.on_lane(lane).map_or(0, |c| c.tg);
@@ -1230,17 +1297,27 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         self.call_events(out);
     }
 
+    /// The gateware's NID status, in real time. Lane one on the software LSM takes its NIDs from
+    /// that decoder instead (`TrafficEvent::VoiceNid`).
     fn nid(&mut self, lane: Lane, duid: u8, nac: u16, valid: bool, at: Stamp) {
         // HDU, LDU1, LDU2.
-        if !valid || !matches!(duid, 0x0 | 0x5 | 0xA) {
+        if !valid || !matches!(duid, 0x0 | 0x5 | 0xA) || self.on_software_lsm(lane) {
             return;
         }
+        self.voice_nid(lane, duid == 0x0, nac, at);
+    }
+
+    fn voice_nid(&mut self, lane: Lane, header: bool, nac: u16, at: Stamp) {
         let mut out = Vec::new();
         self.book.nid(lane, true, at, &mut out);
-        if duid == 0x0 && self.book.on_lane(lane).is_some() {
+        if header && self.book.on_lane(lane).is_some() {
             self.book.hdu(lane, nac, at, &mut out);
         }
         self.call_events(out);
+    }
+
+    fn on_software_lsm(&self, lane: Lane) -> bool {
+        lane == Lane::One && self.lsm_software.is_some()
     }
 
     async fn tick(&mut self) {
@@ -1295,14 +1372,14 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 voice_frames: s.voice_frames,
                 last_voice_ms_ago: s.last_voice.map(|t| now.saturating_duration_since(t).as_millis() as u64),
                 counters: match &s.traffic {
-                    Decoder::P25(t) => LaneCounters::P25 {
-                        gateware: Box::new(t.stats().clone()),
-                        lsm_software: self
-                            .lsm_software
-                            .as_ref()
-                            .filter(|_| s.lane == Lane::One)
-                            .map(|sw| Box::new(sw.framer.stats.clone())),
-                    },
+                    Decoder::P25(t) => {
+                        let software = self.lsm_software.as_ref().filter(|_| s.lane == Lane::One);
+                        LaneCounters::P25 {
+                            demod: if software.is_some() { "lsm_software" } else { "lsm_gateware" },
+                            framer: Box::new(t.stats().clone()),
+                            lsm_gateware: software.map(|sw| Box::new(sw.gateware.stats.clone())),
+                        }
+                    }
                     Decoder::Dmr(_) => {
                         let (bursts, demod) = dmr.unwrap_or_default();
                         LaneCounters::Dmr { bursts, demod }
@@ -1700,13 +1777,20 @@ mod tests {
     #[test]
     fn lane_counters_keep_the_framer_fields_at_the_top() {
         let stats = FramerStats { nid_ok: 7, ..Default::default() };
-        let gateware = serde_json::to_value(LaneCounters::P25 { gateware: Box::new(stats.clone()), lsm_software: None }).unwrap();
+        let gateware =
+            serde_json::to_value(LaneCounters::P25 { demod: "lsm_gateware", framer: Box::new(stats.clone()), lsm_gateware: None }).unwrap();
         assert_eq!(gateware["protocol"], "p25");
+        assert_eq!(gateware["demod"], "lsm_gateware");
         assert_eq!(gateware["nid_ok"], 7);
-        assert!(gateware.get("lsm_software").is_none());
-        let both = serde_json::to_value(LaneCounters::P25 { gateware: Box::new(stats.clone()), lsm_software: Some(Box::new(stats)) }).unwrap();
-        assert_eq!(both["nid_ok"], 7);
-        assert_eq!(both["lsm_software"]["nid_ok"], 7);
+        assert!(gateware.get("lsm_gateware").is_none());
+        let software = serde_json::to_value(LaneCounters::P25 {
+            demod: "lsm_software",
+            framer: Box::new(stats.clone()),
+            lsm_gateware: Some(Box::new(stats)),
+        })
+        .unwrap();
+        assert_eq!(software["nid_ok"], 7);
+        assert_eq!(software["lsm_gateware"]["nid_ok"], 7);
     }
 
     #[test]

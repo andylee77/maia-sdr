@@ -49,7 +49,7 @@ const P25 = {
   planLabel: 'Bands (IDEN_UP)',
   // The control channel's health beyond the common rows.
   healthRows: c => [
-    ...(c.modulation ? [['Demodulator', c.modulation === 'c4fm' ? 'C4FM (software)' : 'LSM (gateware)']] : []),
+    ...(c.modulation ? [['Demodulator', c.modulation === 'c4fm' ? 'C4FM (software)' : 'LSM (software)']] : []),
     ...(c.tsbks_20s ? [['TSBKs in 20 s', `LSM ${count(c.tsbks_20s.lsm)}, C4FM ${count(c.tsbks_20s.c4fm)}`]] : []),
   ],
   // A found site's system (to group a scan's finds) and default names.
