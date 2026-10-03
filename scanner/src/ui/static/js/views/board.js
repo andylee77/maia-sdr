@@ -1,16 +1,19 @@
 // The board card (Diagnostics): what the hardware holds now, as the radio reads it back every few
-// seconds: the AD9361 (LO, gain, RSSI), the control chain and each lane (NCO offset, the gateware
-// decoder).
+// seconds: the AD9361 (LO, gain, RSSI), the radio core's lanes (NCO offset, packets, tag), its
+// lane ring and the packets each lane delivered.
 
 import { h, card } from '../dom.js';
 import { mhz, DASH } from '../format.js';
 import { want } from '../store.js';
 
 const hz = v => (v === null || v === undefined ? DASH : `${Math.round(v).toLocaleString()} Hz`);
-const onOff = v => (v ? 'on' : 'off');
 
-function lsm(c) {
-  return c ? `${onOff(c.enable)}; dibit DMA ${onOff(c.dibit_dma)}, DC block ${onOff(c.dc_block)}, AGC ${onOff(c.agc)}` : DASH;
+function lane(l) {
+  return l ? `${hz(l.nco_hz)}; packets ${l.packets ? 'on' : 'off'}, tag ${l.tag}` : DASH;
+}
+
+function packets(c) {
+  return c ? `${c.packets} (${c.stale} stale, ${c.settling} samples settling, ${c.lost} after lost samples, ${c.missed} missed)` : DASH;
 }
 
 export function boardCard() {
@@ -21,19 +24,20 @@ export function boardCard() {
   function show(r) {
     const b = r.readback || {};
     const t = r.tuning;
-    const st = b.control_status;
-    const nid = b.control_nid ? `0x${b.control_nid[0].toString(16).toUpperCase()} / ${b.control_nid[1]}` : DASH;
+    const counters = b.lane_counters || [];
+    const ring = b.ring;
     const rows = [
-      ['Gateware', r.hardware.core_version || DASH],
-      ['Lanes', String(r.hardware.lanes)],
+      ['Radio core', r.hardware.core_version || DASH],
+      ['Traffic lanes', String(r.hardware.lanes)],
       ['AD9361 LO', `${mhz(b.lo_hz, 6)} (nominal ${mhz(t.lo_hz, 6)}, shift ${t.lo_shift_hz} Hz)`],
       ['Gain', `${b.gain_mode || DASH}, ${b.gain_db ?? DASH} dB; RSSI ${b.rssi_db ?? DASH} dB`],
-      ['Control NCO', hz(b.control_nco_hz)],
-      ['Control decoder', lsm(b.control_lsm)],
-      ['Last frame ID', st ? `${nid}; ${st.n_errors} bit errors, sync distance ${st.sync_distance}${st.dibit_overflow ? ', dibit overflow' : ''}` : nid],
+      ['ADC clips', b.adc_clips === null || b.adc_clips === undefined ? DASH : `${b.adc_clips} of ${b.sample_count ?? DASH} samples`],
+      ['Lane ring', ring ? `${ring.enabled ? 'on' : 'off'}, sub-buffer ${ring.last_buffer} done; ${b.packet_faults ?? 0} packets refused` : DASH],
+      ['Control lane', lane(b.control)],
+      ['Control packets', packets(counters[0])],
       ...[0, 1].filter(i => i < r.hardware.lanes).flatMap(i => [
-        [`Lane ${i + 1} NCO`, hz(b.lane_nco_hz && b.lane_nco_hz[i])],
-        [`Lane ${i + 1} decoder`, lsm(b.lane_lsm && b.lane_lsm[i])],
+        [`Lane ${i + 1}`, lane(b.lanes && b.lanes[i])],
+        [`Lane ${i + 1} packets`, packets(counters[i + 1])],
       ]),
     ];
     body.replaceChildren(h('table', { class: 'kv' }, ...rows.map(([k, v]) => h('tr', null, h('th', { text: k }), h('td', { text: v })))));

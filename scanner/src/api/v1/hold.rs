@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
-use crate::hardware::p25core::Lane;
+use crate::radio::lane::Lane;
 use crate::trunking::site::LiveState;
 
 #[derive(Serialize)]

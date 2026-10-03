@@ -17,8 +17,10 @@ use serde::Serialize;
 use tokio::sync::watch;
 
 use crate::hardware::ad9361::GainMode;
-use crate::hardware::p25core::Lane;
 use crate::hardware::presets::DdcPreset;
+use crate::hardware::radiocore::RingStatus;
+use crate::radio::lane::Lane;
+use crate::radio::streams::LaneCounters;
 
 /// What the radio is asked to do when a site goes live or the window moves.
 #[derive(Debug, Clone, Copy)]
@@ -71,13 +73,28 @@ pub struct Readback {
     pub gain_db: Option<f64>,
     pub rssi_db: Option<f64>,
     pub gain_mode: Option<&'static str>,
-    pub control_nco_hz: Option<f64>,
-    pub control_lsm: Option<crate::hardware::p25core::LsmControl>,
-    /// NAC and DUID of the latest frame the control chain's gateware LSM decoded.
-    pub control_nid: Option<(u16, u8)>,
-    pub control_status: Option<crate::hardware::p25core::LsmStatus>,
-    pub lane_nco_hz: [Option<f64>; 2],
-    pub lane_lsm: [Option<crate::hardware::p25core::LsmControl>; 2],
+    /// The control channel's lane (the core's lane 0).
+    pub control: Option<LaneReadback>,
+    /// The traffic lanes.
+    pub lanes: [Option<LaneReadback>; 2],
+    pub ring: Option<RingStatus>,
+    /// AD9361 samples since the core's reset.
+    pub sample_count: Option<u64>,
+    /// AD9361 samples at full scale since the core's reset.
+    pub adc_clips: Option<u32>,
+    /// Each core lane's packets since boot.
+    pub lane_counters: Vec<LaneCounters>,
+    /// Packets that failed their checks.
+    pub packet_faults: u64,
+}
+
+/// A core lane as its registers hold it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct LaneReadback {
+    pub nco_hz: Option<f64>,
+    /// Its packets are on.
+    pub packets: bool,
+    pub tag: u16,
 }
 
 /// The crystal correction at an LO: commanding `LO + shift` puts the real LO on `LO`.
@@ -95,55 +112,17 @@ pub trait RadioHw: Send + Sync {
     fn set_control_nco(&self, nco_hz: f64, sample_rate_hz: u32) -> impl Future<Output = Result<()>> + Send;
     /// Load `preset` into every lane's DDC, NCO 0, input on.
     fn configure_lanes(&self, preset: &'static DdcPreset) -> impl Future<Output = Result<()>> + Send;
+    /// Put a lane's NCO on `nco_hz` with its packets on. `reset` starts a new tuning (a new tag;
+    /// the receiver resets); without it the lane resumes the tuning it had.
     fn retune_lane(&self, lane: Lane, nco_hz: f64, sample_rate_hz: u32, reset: bool) -> impl Future<Output = Result<()>> + Send;
+    /// A lane's packets off; its NCO stays where it is.
     fn pause_lane(&self, lane: Lane) -> impl Future<Output = Result<()>> + Send;
     /// What the hardware holds now (`sample_rate_hz` converts NCO words).
     fn readback(&self, sample_rate_hz: u32) -> impl Future<Output = Readback> + Send;
-    /// A lane's carrier loop, when the hardware can tell.
-    fn lane_pll(&self, _lane: Lane) -> impl Future<Output = Option<LanePll>> + Send {
-        async { None }
-    }
-    /// The control chain's carrier loop and AGC, when the hardware can tell.
-    fn control_loop(&self) -> impl Future<Output = Option<ControlLoop>> + Send {
-        async { None }
-    }
     /// The wideband spectrometer's newest frame (its raw words), once; `None` until another
     /// completes.
     fn spectrum(&self) -> impl Future<Output = Option<Vec<u8>>> + Send {
         async { None }
-    }
-}
-
-/// A lane's carrier loop: its phase correction per symbol and the gateware's clamp (Q2.13).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LanePll {
-    pub pll_q213: i16,
-    pub clamp_q213: i32,
-}
-
-impl LanePll {
-    /// Half the clamp or more: the loop ran off on noise (a parked lane keeps demodulating after
-    /// the carrier drops).
-    pub fn hot(&self) -> bool {
-        i32::from(self.pll_q213).abs() >= self.clamp_q213 / 2
-    }
-}
-
-/// The control chain's LSM: its carrier loop's phase correction per symbol (Q2.13) and its AGC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ControlLoop {
-    pub pll_q213: i16,
-    /// Q9.7.
-    pub agc_gain: u16,
-    /// Q1.15.
-    pub agc_mag: u16,
-}
-
-impl ControlLoop {
-    /// Gain times input magnitude: about 1 to 3 while a burst is on the channel, 0.1 to 0.3
-    /// between bursts.
-    pub fn agc_product(&self) -> f64 {
-        f64::from(self.agc_gain) / 128.0 * f64::from(self.agc_mag) / 32768.0
     }
 }
 
@@ -259,8 +238,8 @@ impl<H: RadioHw> Tuner<H> {
         Ok(self.publish(|t| t.gain = Some(Gain { mode: mode.as_str(), db })))
     }
 
-    /// Put a lane on `freq_hz`. `reset` clears its AGC, PLL and timing; a lane already holding
-    /// the frequency only gets its chain switched on.
+    /// Put a lane on `freq_hz`. `reset` starts a new tuning (its receiver starts over); a lane
+    /// already holding the frequency without it resumes where it paused.
     pub async fn retune_lane(&self, lane: Lane, freq_hz: u64, reset: bool) -> Result<Tuning> {
         let _seq = self.sequence.lock().await;
         let t = self.tuning();
@@ -272,15 +251,7 @@ impl<H: RadioHw> Tuner<H> {
         Ok(self.publish(|t| t.lanes[lane.index()] = Some(freq_hz)))
     }
 
-    pub async fn lane_pll(&self, lane: Lane) -> Option<LanePll> {
-        self.hw.lane_pll(lane).await
-    }
-
-    pub async fn control_loop(&self) -> Option<ControlLoop> {
-        self.hw.control_loop().await
-    }
-
-    /// Stop a lane's chain; its NCO stays where it is.
+    /// Stop a lane's packets; its NCO stays where it is.
     pub async fn pause_lane(&self, lane: Lane) -> Result<()> {
         let _seq = self.sequence.lock().await;
         self.hw.pause_lane(lane).await

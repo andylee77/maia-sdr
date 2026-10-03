@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::hardware::p25core::Lane;
+use crate::radio::lane::Lane;
 use crate::util::time::Stamp;
 
 pub type CallId = u64;

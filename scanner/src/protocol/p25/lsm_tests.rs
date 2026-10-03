@@ -58,6 +58,24 @@ fn decodes_synthetic_cqpsk_with_carrier_offset() {
     assert!((dec.demod.pll().abs() - expected).abs() < 0.05, "pll {}", dec.demod.pll());
 }
 
+/// The reported offset is signal minus NCO, the DMR equaliser's convention, whichever way the
+/// loop's correction runs.
+#[test]
+fn the_carrier_offset_reads_signal_minus_nco() {
+    let dibits = test_dibits();
+    for offset in [150.0, -150.0] {
+        let (i, q) = cqpsk(&dibits, offset);
+        let mut dec = LsmDecoder::new();
+        let mut framer = Framer::default();
+        for (ci, cq) in i.chunks(4096).zip(q.chunks(4096)) {
+            dec.process_iq(ci, cq, &mut framer);
+        }
+        let c = dec.demod.carrier();
+        assert!((c.offset_hz as f64 - offset).abs() < 10.0, "{offset} Hz read {c:?}");
+        assert!(!c.held && !c.hot(), "{c:?}");
+    }
+}
+
 #[test]
 fn block_size_does_not_change_the_output() {
     let dibits = test_dibits();

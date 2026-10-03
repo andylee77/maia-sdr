@@ -2,10 +2,10 @@ use std::sync::Mutex as StdMutex;
 
 use super::*;
 use crate::hardware::ad9361::GainMode;
-use crate::hardware::p25core::Lane;
+use crate::radio::lane::Lane;
 use crate::hardware::presets::{find_preset, DdcPreset};
 use crate::protocol::events::P25Identity;
-use crate::radio::tuner::{lo_shift_hz, ControlLoop, Readback, TuningPlan};
+use crate::radio::tuner::{lo_shift_hz, Readback, TuningPlan};
 use crate::services::discovery::carriers::BINS;
 
 const LO: u64 = 858_100_000;
@@ -20,12 +20,6 @@ fn a_dmr_site_is_measured_by_its_equaliser_with_or_without_an_identity() {
     assert_eq!(Source::of(&ControlStatus { last_message_age_ms: Some(5_000), ..con_plus.clone() }), None, "nothing decoded lately");
     assert_eq!(Source::of(&ControlStatus { carrier_offset_hz: None, ..con_plus }), None, "no sync yet");
     assert_eq!(Source::of(&decoded_p25()), Some(Source::P25Loop));
-}
-
-#[test]
-fn the_loop_reading_scales_to_hz() {
-    // A full turn per symbol is the symbol rate.
-    assert!((pll_q213_to_hz(std::f64::consts::TAU * 8192.0) - 4800.0).abs() < 1e-9);
 }
 
 #[test]
@@ -96,19 +90,24 @@ fn tracker_samples_restart_on_a_move_or_another_site() {
 }
 
 /// A radio whose crystal needs `true_shift` Hz at `LO`: the control channel shows in the spectrum
-/// (40 Hz off, as a bin interpolation can be) and in the carrier loop by how far the commanded
-/// shift is from it.
-struct Fake {
+/// (40 Hz off, as a bin interpolation can be) and in the decoder's carrier offset by how far the
+/// commanded shift is from it.
+#[derive(Default)]
+struct Radio {
     true_shift: StdMutex<f64>,
     commanded: StdMutex<u64>,
-    loop_reads: StdMutex<u32>,
 }
 
-impl Fake {
+impl Radio {
+    /// How far the commanded LO is above where the crystal needs it.
     fn error_hz(&self) -> f64 {
         let shift = *self.commanded.lock().unwrap() as f64 - LO as f64;
         shift - *self.true_shift.lock().unwrap()
     }
+}
+
+struct Fake {
+    radio: Arc<Radio>,
 }
 
 /// Spectrometer words: a 47-bit mantissa per bin (exponent 0) for `db`.
@@ -118,7 +117,7 @@ fn words(db: &[f32]) -> Vec<u8> {
 
 impl RadioHw for Fake {
     async fn set_lo(&self, hz: u64) -> Result<()> {
-        *self.commanded.lock().unwrap() = hz;
+        *self.radio.commanded.lock().unwrap() = hz;
         Ok(())
     }
     async fn set_rate(&self, _: u32, _: u32) -> Result<()> {
@@ -148,15 +147,7 @@ impl RadioHw for Fake {
     async fn spectrum(&self) -> Option<Vec<u8>> {
         // The commanded LO sits `error` above where the crystal needs it: the channel shows that
         // much lower.
-        Some(words(&frame_db(12e6, (CC - LO) as f64 - self.error_hz() + SPECTRUM_BIAS_HZ)))
-    }
-    async fn control_loop(&self) -> Option<ControlLoop> {
-        // NCO minus signal; every other read falls between bursts.
-        let mut n = self.loop_reads.lock().unwrap();
-        *n += 1;
-        let q = (self.error_hz() / pll_q213_to_hz(1.0)).round() as i16;
-        let agc_mag = if *n % 2 == 0 { 16_384 } else { 1_000 };
-        Some(ControlLoop { pll_q213: q, agc_gain: 256, agc_mag })
+        Some(words(&frame_db(12e6, (CC - LO) as f64 - self.radio.error_hz() + SPECTRUM_BIAS_HZ)))
     }
 }
 
@@ -171,14 +162,17 @@ fn decoded_p25() -> ControlStatus {
 }
 
 async fn crystal(true_shift: f64, start_ppm: f64, dir: &std::path::Path) -> Arc<Crystal<Fake>> {
-    let fake = Fake { true_shift: StdMutex::new(true_shift), commanded: StdMutex::new(0), loop_reads: StdMutex::new(0) };
-    let tuner = Arc::new(Tuner::new(fake, start_ppm));
+    let radio = Arc::new(Radio::default());
+    *radio.true_shift.lock().unwrap() = true_shift;
+    let tuner = Arc::new(Tuner::new(Fake { radio: radio.clone() }, start_ppm));
     tuner.apply(TuningPlan { preset: find_preset("12M").unwrap(), lo_hz: LO, control_hz: CC }).await.unwrap();
     let paths = Paths::new(dir, dir);
     let config = Arc::new(tokio::sync::Mutex::new(Config::load(&paths).unwrap()));
+    // The LSM's carrier offset, signal minus NCO: a commanded LO too high puts the channel low.
+    let control = move || ControlStatus { carrier_offset_hz: Some(-radio.error_hz()), ..decoded_p25() };
     Crystal::new(Deps {
         tuner,
-        control: Arc::new(decoded_p25),
+        control: Arc::new(control),
         lease: RadioLease::default(),
         config,
         paths,
@@ -194,8 +188,10 @@ async fn a_calibration_lands_on_the_crystal_and_is_kept() {
     let cal = c.calibrate().await.unwrap();
     assert_eq!(cal.source, Source::P25Loop);
     assert!(cal.residual_samples >= 10, "{cal:?}");
-    // The spectrum step overshoots by the bias; the loop reads it back and the result is exact.
-    assert!((cal.residual_hz.unwrap() - SPECTRUM_BIAS_HZ).abs() < 1.0, "{cal:?}");
+    // The spectrum step overshoots by the bias (the LO commanded that much high, the channel
+    // that much low: signal minus NCO reads -bias); the loop reads it back and the result is
+    // exact.
+    assert!((cal.residual_hz.unwrap() + SPECTRUM_BIAS_HZ).abs() < 1.0, "{cal:?}");
     let shift = c.deps.tuner.tuning().lo_shift_hz;
     assert!((shift - 597).abs() <= 1, "LO shift {shift} Hz");
     let status = c.status().await;
@@ -211,7 +207,7 @@ async fn the_tracker_follows_a_drift_within_the_anchor() {
     let c = crystal(597.0, 1.0, dir.path()).await;
     c.calibrate().await.unwrap();
     // The crystal warms by 30 Hz.
-    *c.deps.tuner.hw().true_shift.lock().unwrap() = 627.0;
+    *c.deps.tuner.hw().radio.true_shift.lock().unwrap() = 627.0;
     tokio::time::sleep(SETTLE).await;
     for _ in 0..(MIN_SAMPLES * 2) {
         c.sample(Some(Source::P25Loop)).await;
@@ -220,7 +216,7 @@ async fn the_tracker_follows_a_drift_within_the_anchor() {
     let shift = c.deps.tuner.tuning().lo_shift_hz;
     assert!((shift - 627).abs() <= 1, "LO shift {shift} Hz");
     // 300 Hz more is outside the 50 Hz anchor: held.
-    *c.deps.tuner.hw().true_shift.lock().unwrap() = 927.0;
+    *c.deps.tuner.hw().radio.true_shift.lock().unwrap() = 927.0;
     tokio::time::sleep(SETTLE).await;
     for _ in 0..(MIN_SAMPLES * 2) {
         c.sample(Some(Source::P25Loop)).await;

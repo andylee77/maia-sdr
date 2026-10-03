@@ -1,11 +1,14 @@
-//! The live site's trunking: one task owning the follower, the call book and each lane's traffic
-//! decoder. Grants come from the control receivers; dibits and gateware NIDs from the lanes; a
-//! 100 ms tick drives the call book's timers. The follower's commands move the lanes through the
-//! tuner, and the call book's events go to the event log and the calls view.
+//! The live site's trunking: one task owning the follower, the call book and each lane's
+//! demodulator and traffic decoder. Grants come from the control receivers; each lane's IQ from
+//! the streams; a 100 ms tick drives the call book's timers. The follower's commands move the
+//! lanes through the tuner, and the call book's events go to the event log and the calls view.
+//!
+//! A P25 lane demodulates with the control channel's modulation (LSM or C4FM, as the control
+//! receivers choose). The streams deliver only the IQ of a lane's current tuning, each block
+//! with its air time; a new tuning's first block starts the lane's demodulator over.
 //!
 //! Voice is attributed by air time: a frame aired before the lane's current call opened belongs
-//! to the call before it, unless that call's transmission had already ended. Dibits aired before
-//! the lane's last retune are dropped (they are the old channel's).
+//! to the call before it, unless that call's transmission had already ended.
 //!
 //! At a DMR site a grant on a channel the plan lacks is followed on a candidate frequency, which
 //! is kept once the call's link control is heard there (`lcn`). While a granted channel still
@@ -31,18 +34,17 @@ use crate::services::history::HistoryTx;
 use crate::services::notices::{Notice, Notices};
 use crate::services::packet_data::PacketData;
 use crate::services::recordings::{CallEnd, CallStart, RecorderTx};
-use crate::hardware::p25core::rings::mono_instant;
-use crate::hardware::p25core::Lane;
+use crate::radio::lane::Lane;
 use crate::protocol::dmr::demod::DmrDemodStats;
 use crate::protocol::dmr::message::DmrMessage;
 use crate::protocol::dmr::traffic::{DmrCall, DmrReceiver, DmrTraffic};
-use crate::protocol::p25::c4fm::DibitSink;
-use crate::protocol::p25::framer::{Framer, FramerStats};
-use crate::protocol::p25::lsm::LsmDecoder;
+use crate::protocol::p25::c4fm::{C4fmDecoder, DibitSink};
+use crate::protocol::p25::framer::FramerStats;
+use crate::protocol::p25::lsm::{self, LsmDecoder};
 use crate::protocol::events::{ChannelId, ChannelIdentity, Grant, TrafficEvent, VoiceFrames};
 use crate::services::discovery::carriers::power_db;
 use crate::protocol::p25::traffic::{CallContext, P25Traffic};
-use crate::radio::streams::{LaneInput, LaneMode, StreamSource};
+use crate::radio::streams::{Block, LaneBlock, StreamSource};
 use crate::services::config::systems::Protocol;
 use crate::radio::tuner::{RadioHw, Tuner};
 use crate::services::events::EventLog;
@@ -71,10 +73,6 @@ const TICK: Duration = Duration::from_millis(100);
 const STUCK_CHECK: Duration = Duration::from_secs(5);
 /// A lane that carried voice this recently resumes on the same channel without a reset.
 const COAST_MAX_IDLE: Duration = Duration::from_secs(1);
-/// IQ received this soon after a lane's retune may be the old channel's (a sub-buffer is ~164 ms).
-const IQ_SETTLE: Duration = Duration::from_millis(200);
-/// A lane's IQ rate (the DDC's output).
-const IQ_RATE_HZ: f64 = 50_000.0;
 /// One P25 symbol, 1/4800 s.
 const SYMBOL: Duration = Duration::from_nanos(208_333);
 /// Spectrometer frames gathered after a grant on an unmapped DMR channel, for the carrier that
@@ -134,7 +132,10 @@ pub enum TrunkInput {
     Grant { grant: Grant, nac: u16, at: Stamp },
     /// DMR: the control channel's messages that carry calls (its other timeslot's).
     ControlCalls { messages: Vec<DmrMessage>, at: Stamp },
-    Lane(LaneInput),
+    /// P25: the control channel decodes as C4FM (or LSM); the lanes follow from their next
+    /// tuning.
+    Modulation { c4fm: bool },
+    Lane(LaneBlock),
     /// The live site's aliases changed.
     Routing(Box<Routing>),
     /// The receive window moved: every lane was reloaded and holds no channel.
@@ -158,6 +159,8 @@ pub struct Setup {
     /// DMR: what the site's own channels name in their CACH, as configured.
     pub site_code: Option<SiteCode>,
     pub lanes: Vec<Lane>,
+    /// P25: the lanes' first modulation, until the control receivers say (`Modulation`).
+    pub c4fm: bool,
     pub routing: Routing,
     pub encrypted: HashSet<u32>,
     pub policy: CallPolicy,
@@ -216,21 +219,20 @@ pub struct LaneStatus {
     pub voice_frames: u64,
     pub last_voice_ms_ago: Option<u64>,
     pub counters: LaneCounters,
+    /// P25: the lane's LSM carrier loop.
+    #[serde(rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub carrier_loop: Option<lsm::Carrier>,
 }
 
 /// A lane's traffic decoder's counters.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "protocol", rename_all = "snake_case")]
 pub enum LaneCounters {
-    /// The framer of the lane's decoder, on the dibits of `demod` (`lsm_gateware` or
-    /// `lsm_software`). Lane one, on the software LSM, also frames the gateware LSM's dibits and
-    /// counts them only, to compare the two (change 079).
+    /// The framer of the lane's decoder, on the dibits of `demod` (`lsm` or `c4fm`).
     P25 {
         demod: &'static str,
         #[serde(flatten)]
         framer: Box<FramerStats>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        lsm_gateware: Option<Box<FramerStats>>,
     },
     Dmr { bursts: u64, demod: DmrDemodStats },
 }
@@ -294,28 +296,46 @@ fn owner(calls: &VecDeque<LaneCall>, air: Instant) -> Option<CallId> {
     }
 }
 
-/// P25: lane one decoded by the software LSM demodulator on its IQ, the gateware LSM's dibits
-/// framed beside it and counted only, to compare the two (change 079).
-struct LsmSoftware {
-    decoder: LsmDecoder,
-    gateware: Framer,
-    /// The lane's last retune both started over from.
-    retuned_at: Option<Instant>,
+/// A P25 lane's demodulator.
+enum Demod {
+    Lsm(Box<LsmDecoder>),
+    C4fm(Box<C4fmDecoder>),
 }
 
-impl LsmSoftware {
-    /// Start over when the lane was retuned (the gateware's loop is reset at the same moments).
-    fn follow_retune(&mut self, retuned_at: Option<Instant>) {
-        if self.retuned_at != retuned_at {
-            self.retuned_at = retuned_at;
-            self.gateware.reset();
-            self.decoder.demod.reset_pll();
+impl Demod {
+    fn new(c4fm: bool) -> Demod {
+        if c4fm {
+            Demod::C4fm(Box::new(C4fmDecoder::new()))
+        } else {
+            Demod::Lsm(Box::new(LsmDecoder::new()))
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Demod::Lsm(_) => "lsm",
+            Demod::C4fm(_) => "c4fm",
+        }
+    }
+
+    fn process(&mut self, iq: &[i16], sink: &mut impl DibitSink) {
+        match self {
+            Demod::Lsm(d) => d.process_iq_i16(iq, sink),
+            Demod::C4fm(d) => d.process_iq_i16(iq, sink),
+        }
+    }
+
+    /// The LSM's carrier loop.
+    fn carrier(&self) -> Option<lsm::Carrier> {
+        match self {
+            Demod::Lsm(d) => Some(d.demod.carrier()),
+            Demod::C4fm(_) => None,
         }
     }
 }
 
-/// The software demodulator's dibits into a lane's traffic decoder. The IQ ring carries no
-/// sample times, so each dibit is stamped a symbol after the last, from the start of its block.
+/// The demodulator's dibits into a lane's traffic decoder, each stamped a symbol after the last
+/// from its block's air time.
 struct LaneSink<'a> {
     traffic: &'a mut P25Traffic,
     air: Instant,
@@ -341,17 +361,15 @@ impl DibitSink for LaneSink<'_> {
 struct DmrHw {
     receiver: DmrReceiver,
     tuned_hz: Option<u64>,
-    /// IQ read before this is the old carrier's.
-    retuned_at: Option<Instant>,
 }
 
 struct LaneSlot {
     lane: Lane,
     traffic: Decoder,
+    /// P25: the lane's demodulator, started with each tuning.
+    demod: Option<Demod>,
     /// The lane's calls, newest last.
     calls: VecDeque<LaneCall>,
-    /// Dibits aired before this are the old channel's.
-    retuned_at: Option<Instant>,
     last_voice: Option<Instant>,
     tuned_hz: Option<u64>,
     voice_frames: u64,
@@ -405,8 +423,9 @@ struct Task<H> {
     probed: std::collections::HashMap<u64, Instant>,
     /// DMR: lane one's receiver, and the control channel (whose calls its own receiver hears).
     dmr_hw: Option<DmrHw>,
-    lsm_software: Option<LsmSoftware>,
     control_hz: u64,
+    /// P25: the control channel's modulation, which each lane takes at its next tuning.
+    c4fm: bool,
 }
 
 pub struct Trunking {
@@ -572,17 +591,12 @@ impl Trunking {
         let (tx, rx) = mpsc::channel(QUEUE);
         let stop = Arc::new(AtomicBool::new(false));
         let (lane_tx, mut lane_rx) = mpsc::channel(QUEUE);
-        // P25: each lane's own chain; DMR: lane one's IQ, whose carrier both lanes share.
-        let (mode, streamed) = match setup.protocol {
-            Protocol::P25 => (LaneMode::Dibits, setup.lanes.clone()),
-            Protocol::DmrTier3 => (LaneMode::Iq, setup.lanes.iter().copied().filter(|&l| l == Lane::One).collect()),
+        // P25: each lane's IQ; DMR: lane one's, whose carrier both lanes share.
+        let streamed: Vec<Lane> = match setup.protocol {
+            Protocol::P25 => setup.lanes.clone(),
+            Protocol::DmrTier3 => setup.lanes.iter().copied().filter(|&l| l == Lane::One).collect(),
         };
-        let mut sources = tuner.hw().lane_streams(&streamed, mode, lane_tx.clone(), stop.clone());
-        // P25: lane one's IQ as well, for the software LSM beside the gateware's.
-        let lsm_software = setup.protocol == Protocol::P25 && setup.lanes.contains(&Lane::One);
-        if lsm_software {
-            sources.extend(tuner.hw().lane_streams(&[Lane::One], LaneMode::Iq, lane_tx, stop.clone()));
-        }
+        tuner.hw().lane_streams(&streamed, lane_tx, stop.clone());
         let forward = tx.clone();
         let forwarder = tokio::spawn(async move {
             while let Some(input) = lane_rx.recv().await {
@@ -591,7 +605,7 @@ impl Trunking {
                 }
             }
         });
-        sources.push(forwarder);
+        let sources = vec![forwarder];
         let control_hz = tuner.tuning().control_hz;
         let task = Task {
             book: CallBook::new(&setup.site, &setup.lanes, setup.policy, self.next_call.load(Ordering::Relaxed)),
@@ -615,8 +629,8 @@ impl Trunking {
                         Protocol::P25 => Decoder::P25(P25Traffic::new(lane.name())),
                         Protocol::DmrTier3 => Decoder::Dmr(DmrTraffic::new()),
                     },
+                    demod: None,
                     calls: VecDeque::new(),
-                    retuned_at: None,
                     last_voice: None,
                     tuned_hz: None,
                     voice_frames: 0,
@@ -672,17 +686,10 @@ impl Trunking {
             probe: None,
             probe_last: None,
             probed: std::collections::HashMap::new(),
-            dmr_hw: (setup.protocol == Protocol::DmrTier3).then(|| DmrHw {
-                receiver: DmrReceiver::new(setup.lcn_hz.clone()),
-                tuned_hz: None,
-                retuned_at: None,
-            }),
-            lsm_software: lsm_software.then(|| LsmSoftware {
-                decoder: LsmDecoder::new(),
-                gateware: Framer::default(),
-                retuned_at: None,
-            }),
+            dmr_hw: (setup.protocol == Protocol::DmrTier3)
+                .then(|| DmrHw { receiver: DmrReceiver::new(setup.lcn_hz.clone()), tuned_hz: None }),
             control_hz,
+            c4fm: setup.c4fm,
         };
         let task = tokio::spawn(task.run(rx, stop.clone()));
         *self.running.lock().await = Some(Running { tx: tx.clone(), stop, task, sources });
@@ -806,11 +813,8 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                         self.dmr_messages(control, &messages, at);
                     }
                     Some(TrunkInput::LaneHold { lane, tg }) => self.lane_hold(lane, tg).await,
-                    Some(TrunkInput::Lane(LaneInput::Dibits { lane, bytes, first, reset, clock })) => {
-                        self.dibits(lane, &bytes, first, reset, &clock);
-                    }
-                    Some(TrunkInput::Lane(LaneInput::Nid { lane, duid, nac, valid, at })) => self.nid(lane, duid, nac, valid, at),
-                    Some(TrunkInput::Lane(LaneInput::Iq { lane, iq, at })) => self.iq(lane, &iq, at),
+                    Some(TrunkInput::Modulation { c4fm }) => self.c4fm = c4fm,
+                    Some(TrunkInput::Lane(LaneBlock { lane, block })) => self.iq(lane, block),
                     Some(TrunkInput::Routing(r)) => self.follower.set_routing(*r),
                     Some(TrunkInput::WindowMoved) => self.window_moved(),
                     Some(TrunkInput::Hold(tg)) => self.hold(tg).await,
@@ -1025,13 +1029,14 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 let Some(slot) = self.slot(lane) else { return };
                 let moved = slot.tuned_hz != Some(freq);
                 let since_voice = slot.last_voice.map(|t| at.mono.saturating_duration_since(t));
-                let coast = !moved && !resume_needs_reset(self.tuner.lane_pll(lane).await, since_voice);
+                let carrier = slot.demod.as_ref().and_then(Demod::carrier);
+                let coast = !moved && !resume_needs_reset(carrier, since_voice);
                 match self.tuner.retune_lane(lane, freq, !coast).await {
                     Ok(_) => {
                         let slot = self.slot(lane).expect("lane");
                         slot.tuned_hz = Some(freq);
-                        if moved || !coast {
-                            slot.retuned_at = Some(Instant::now());
+                        if !coast {
+                            // The tuning's first block starts the demodulator over.
                             slot.traffic.retuned();
                         }
                         self.follower.retuned(lane, Some(freq));
@@ -1081,7 +1086,6 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             if let Some(hw) = self.dmr_hw.as_mut() {
                 hw.receiver.retuned();
                 hw.tuned_hz = Some(freq);
-                hw.retuned_at = Some(Instant::now());
             }
         }
         if let Some(slot) = self.slot(lane) {
@@ -1110,97 +1114,60 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         if let Some(hw) = self.dmr_hw.as_mut() {
             hw.receiver.retuned();
             hw.tuned_hz = None;
-            hw.retuned_at = Some(Instant::now());
         }
         for slot in &mut self.lanes {
             slot.traffic.retuned();
+            slot.demod = None;
             slot.tuned_hz = None;
-            slot.retuned_at = Some(Instant::now());
             self.follower.retuned(slot.lane, None);
         }
     }
 
-    fn dibits(&mut self, lane: Lane, bytes: &[u8], first: u64, reset: bool, clock: &crate::radio::streams::dibit_ring::ClockView) {
+    /// A block of a lane's IQ (only ever of its current tuning). At a P25 site the lane's
+    /// demodulator decodes it whenever the lane is tuned. At a DMR site lane one's is decoded
+    /// while a lane's call is on its carrier, or while it identifies a carrier.
+    fn iq(&mut self, lane: Lane, block: Block) {
         let now = Stamp::now();
-        let Some(slot) = self.lanes.iter_mut().find(|l| l.lane == lane) else { return };
-        // Lane one on the software LSM: the gateware's dibits are only counted.
-        if let Some(sw) = self.lsm_software.as_mut().filter(|_| lane == Lane::One) {
-            sw.follow_retune(slot.retuned_at);
-            if reset {
-                sw.gateware.reset();
+        if let Some(hw) = self.dmr_hw.as_mut() {
+            if lane != Lane::One {
+                return;
             }
-            let mut index = first;
-            for &b in bytes {
-                for shift in [0, 2, 4, 6] {
-                    let air = clock.time_of(index).map(|us| mono_instant(us as u64)).unwrap_or(now.mono);
-                    index += 1;
-                    if slot.retuned_at.is_none_or(|t| air >= t) {
-                        sw.gateware.push((b >> shift) & 3, &mut |_| {});
-                    }
-                }
+            let Some(freq) = hw.tuned_hz else { return };
+            if block.retuned {
+                hw.receiver.retuned();
             }
+            let wanted = self.probe.is_some() || self.lanes.iter().any(|s| s.tuned_hz == Some(freq) && s.traffic.call().is_some());
+            if !wanted {
+                return;
+            }
+            let (mut messages, mut identity) = (Vec::new(), None);
+            hw.receiver.push(&block.iq, &mut messages, &mut identity);
+            if let Some(id) = identity {
+                self.identified(freq, id, block.at);
+            }
+            self.dmr_messages(freq, &messages, block.at);
+            return;
+        }
+        let c4fm = self.c4fm;
+        let Some(slot) = self.lanes.iter_mut().find(|s| s.lane == lane) else { return };
+        if slot.tuned_hz.is_none() {
             return;
         }
         let Decoder::P25(traffic) = &mut slot.traffic else { return };
-        if reset {
+        if block.retuned || slot.demod.is_none() {
+            slot.demod = Some(Demod::new(c4fm));
+        }
+        if block.retuned || block.gap {
+            // The frames in progress are lost.
             traffic.retuned();
         }
+        let Some(demod) = slot.demod.as_mut() else { return };
         let mut events = Vec::new();
-        let mut index = first;
-        for &b in bytes {
-            for shift in [0, 2, 4, 6] {
-                let air = clock.time_of(index).map(|us| mono_instant(us as u64)).unwrap_or(now.mono);
-                index += 1;
-                if slot.retuned_at.is_some_and(|t| air < t) {
-                    continue;
-                }
-                let mut out = Vec::new();
-                traffic.push((b >> shift) & 3, air, now.mono, &mut out);
-                events.extend(out.into_iter().map(|e| (air, e)));
-            }
-        }
-        for (_, e) in events {
+        let mut sink = LaneSink { traffic, air: block.at.mono, now: now.mono, out: &mut events };
+        demod.process(&block.iq, &mut sink);
+        for e in events {
             self.traffic_event(lane, e, now);
         }
-    }
-
-    /// Lane one's IQ. At a P25 site the software LSM decodes it whenever the lane is tuned, as the
-    /// gateware LSM would. At a DMR site it is decoded while a lane's call is on its carrier, or
-    /// while it identifies a carrier.
-    fn iq(&mut self, lane: Lane, iq: &[i16], at: Stamp) {
-        if let Some(sw) = self.lsm_software.as_mut() {
-            let Some(slot) = self.lanes.iter_mut().find(|s| s.lane == lane) else { return };
-            if slot.tuned_hz.is_none() {
-                return;
-            }
-            sw.follow_retune(slot.retuned_at);
-            // A sub-buffer read just after a retune can still hold the old channel's samples.
-            if slot.retuned_at.is_some_and(|t| at.mono < t + IQ_SETTLE) {
-                return;
-            }
-            let Decoder::P25(traffic) = &mut slot.traffic else { return };
-            let block = Duration::from_secs_f64((iq.len() / 2) as f64 / IQ_RATE_HZ);
-            let mut events = Vec::new();
-            let mut sink = LaneSink { traffic, air: at.mono.checked_sub(block).unwrap_or(at.mono), now: at.mono, out: &mut events };
-            sw.decoder.process_iq_i16(iq, &mut sink);
-            for e in events {
-                self.traffic_event(lane, e, at);
-            }
-            return;
-        }
-        let Some(hw) = self.dmr_hw.as_mut().filter(|_| lane == Lane::One) else { return };
-        let Some(freq) = hw.tuned_hz else { return };
-        let wanted = self.probe.is_some() || self.lanes.iter().any(|s| s.tuned_hz == Some(freq) && s.traffic.call().is_some());
-        // A sub-buffer read just after a retune can still hold the old carrier's samples.
-        if !wanted || hw.retuned_at.is_some_and(|t| at.mono < t + IQ_SETTLE) {
-            return;
-        }
-        let (mut messages, mut identity) = (Vec::new(), None);
-        hw.receiver.push(iq, &mut messages, &mut identity);
-        if let Some(id) = identity {
-            self.identified(freq, id, at);
-        }
-        self.dmr_messages(freq, &messages, at);
     }
 
     /// A DMR carrier's messages (lane one's, or the control channel's) to the lanes whose calls
@@ -1227,10 +1194,8 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         let mut out = Vec::new();
         match e {
             TrafficEvent::VoiceNid { header, nac, air } => {
-                if self.on_software_lsm(lane) {
-                    let before = at.mono.saturating_duration_since(air).as_millis() as u64;
-                    self.voice_nid(lane, header, nac, Stamp { mono: air, unix_ms: at.unix_ms.saturating_sub(before) });
-                }
+                let before = at.mono.saturating_duration_since(air).as_millis() as u64;
+                self.voice_nid(lane, header, nac, Stamp { mono: air, unix_ms: at.unix_ms.saturating_sub(before) });
             }
             TrafficEvent::Voice { frames, encrypted, air } => {
                 if let (VoiceFrames::Imbe(f), Ok(mut ring)) = (&frames, self.frames.lock()) {
@@ -1297,16 +1262,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         self.call_events(out);
     }
 
-    /// The gateware's NID status, in real time. Lane one on the software LSM takes its NIDs from
-    /// that decoder instead (`TrafficEvent::VoiceNid`).
-    fn nid(&mut self, lane: Lane, duid: u8, nac: u16, valid: bool, at: Stamp) {
-        // HDU, LDU1, LDU2.
-        if !valid || !matches!(duid, 0x0 | 0x5 | 0xA) || self.on_software_lsm(lane) {
-            return;
-        }
-        self.voice_nid(lane, duid == 0x0, nac, at);
-    }
-
+    /// A voice NID (HDU, LDU1, LDU2) the lane's decoder read, at its air time.
     fn voice_nid(&mut self, lane: Lane, header: bool, nac: u16, at: Stamp) {
         let mut out = Vec::new();
         self.book.nid(lane, true, at, &mut out);
@@ -1314,10 +1270,6 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             self.book.hdu(lane, nac, at, &mut out);
         }
         self.call_events(out);
-    }
-
-    fn on_software_lsm(&self, lane: Lane) -> bool {
-        lane == Lane::One && self.lsm_software.is_some()
     }
 
     async fn tick(&mut self) {
@@ -1372,19 +1324,16 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 voice_frames: s.voice_frames,
                 last_voice_ms_ago: s.last_voice.map(|t| now.saturating_duration_since(t).as_millis() as u64),
                 counters: match &s.traffic {
-                    Decoder::P25(t) => {
-                        let software = self.lsm_software.as_ref().filter(|_| s.lane == Lane::One);
-                        LaneCounters::P25 {
-                            demod: if software.is_some() { "lsm_software" } else { "lsm_gateware" },
-                            framer: Box::new(t.stats().clone()),
-                            lsm_gateware: software.map(|sw| Box::new(sw.gateware.stats.clone())),
-                        }
-                    }
+                    Decoder::P25(t) => LaneCounters::P25 {
+                        demod: s.demod.as_ref().map_or(if self.c4fm { "c4fm" } else { "lsm" }, Demod::name),
+                        framer: Box::new(t.stats().clone()),
+                    },
                     Decoder::Dmr(_) => {
                         let (bursts, demod) = dmr.unwrap_or_default();
                         LaneCounters::Dmr { bursts, demod }
                     }
                 },
+                carrier_loop: s.demod.as_ref().and_then(Demod::carrier),
             })
             .collect();
         if let Ok(mut v) = self.lanes_view.lock() {
@@ -1414,7 +1363,6 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 let slot = self.slot(lane).expect("lane");
                 slot.traffic.retuned();
                 slot.tuned_hz = Some(data_hz);
-                slot.retuned_at = Some(Instant::now());
                 self.follower.retuned(lane, Some(data_hz));
                 self.log.system("lane", format!("{lane} waits on the data channel, {:.4} MHz", data_hz as f64 / 1e6));
             }
@@ -1493,7 +1441,6 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                 if let Some(hw) = self.dmr_hw.as_mut() {
                     hw.receiver.retuned();
                     hw.tuned_hz = Some(f);
-                    hw.retuned_at = Some(Instant::now());
                 }
                 self.probe = Some(Probe { freq_hz: f, until: Instant::now() + PROBE_FOR });
             }
@@ -1612,10 +1559,10 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
 
 /// Should a lane resuming on the channel it is parked on be reset rather than coast on its
 /// loops? Yes when it carried no voice within `COAST_MAX_IDLE` (the carrier dropped; its AGC wound
-/// up on noise), or its PLL ran to half its clamp or more.
-pub fn resume_needs_reset(pll: Option<crate::radio::tuner::LanePll>, since_voice: Option<Duration>) -> bool {
+/// up on noise), or its LSM's carrier loop ran to half its limit or more.
+pub fn resume_needs_reset(carrier: Option<lsm::Carrier>, since_voice: Option<Duration>) -> bool {
     let stale = since_voice.is_none_or(|d| d > COAST_MAX_IDLE);
-    stale || pll.is_some_and(|p| p.hot())
+    stale || carrier.is_some_and(|c| c.hot())
 }
 
 fn view_of(o: &Opened, c: Option<&Closed>, codec: &'static str) -> CallView {
@@ -1699,7 +1646,7 @@ mod tests {
     use super::*;
     use crate::hardware::presets::{find_preset, DdcPreset};
     use crate::protocol::events::{ChannelId, LogicalChannel};
-    use crate::radio::tuner::{LanePll, Readback, TuningPlan};
+    use crate::radio::tuner::{Readback, TuningPlan};
     use crate::services::config::{Config, Paths};
 
     /// A radio with nothing behind it.
@@ -1736,15 +1683,7 @@ mod tests {
     }
 
     impl StreamSource for Quiet {
-        fn control_streams(
-            &self,
-            _: crate::radio::streams::Wants,
-            _: std::sync::mpsc::SyncSender<crate::radio::streams::Input>,
-            _: Arc<AtomicBool>,
-            _: Arc<crate::radio::streams::StreamCounters>,
-        ) -> Vec<tokio::task::JoinHandle<()>> {
-            Vec::new()
-        }
+        fn control_streams(&self, _: std::sync::mpsc::SyncSender<Block>, _: Arc<AtomicBool>, _: Arc<crate::radio::streams::StreamCounters>) {}
     }
 
     /// Clay with the data channel learned, its trunking started on `lanes`: where the lanes sit.
@@ -1763,6 +1702,7 @@ mod tests {
             channels_hz: Vec::new(),
             site_code: None,
             lanes: lanes.to_vec(),
+            c4fm: false,
             routing: Default::default(),
             encrypted: Default::default(),
             policy: CallPolicy::default(),
@@ -1777,20 +1717,10 @@ mod tests {
     #[test]
     fn lane_counters_keep_the_framer_fields_at_the_top() {
         let stats = FramerStats { nid_ok: 7, ..Default::default() };
-        let gateware =
-            serde_json::to_value(LaneCounters::P25 { demod: "lsm_gateware", framer: Box::new(stats.clone()), lsm_gateware: None }).unwrap();
-        assert_eq!(gateware["protocol"], "p25");
-        assert_eq!(gateware["demod"], "lsm_gateware");
-        assert_eq!(gateware["nid_ok"], 7);
-        assert!(gateware.get("lsm_gateware").is_none());
-        let software = serde_json::to_value(LaneCounters::P25 {
-            demod: "lsm_software",
-            framer: Box::new(stats.clone()),
-            lsm_gateware: Some(Box::new(stats)),
-        })
-        .unwrap();
-        assert_eq!(software["nid_ok"], 7);
-        assert_eq!(software["lsm_gateware"]["nid_ok"], 7);
+        let v = serde_json::to_value(LaneCounters::P25 { demod: "c4fm", framer: Box::new(stats) }).unwrap();
+        assert_eq!(v["protocol"], "p25");
+        assert_eq!(v["demod"], "c4fm");
+        assert_eq!(v["nid_ok"], 7);
     }
 
     #[test]
@@ -1826,22 +1756,17 @@ mod tests {
     #[test]
     fn a_stale_or_runaway_lane_is_reset_on_resume() {
         let ms = Duration::from_millis;
-        for clamp_q213 in [8579, 5325] {
-            let pll = |q| Some(LanePll { pll_q213: q, clamp_q213 });
-            // Voice a moment ago, PLL near centre: coast.
-            assert!(!resume_needs_reset(pll(300), Some(ms(400))));
-            assert!(!resume_needs_reset(pll(-2000), Some(COAST_MAX_IDLE)));
-            // PLL at or past half the clamp: reset, however fresh.
-            assert!(resume_needs_reset(pll(clamp_q213 as i16), Some(ms(100))));
-            assert!(resume_needs_reset(pll(-(clamp_q213 / 2) as i16), Some(ms(100))));
-            // Gone longer than the coast window, or never any voice: reset.
-            assert!(resume_needs_reset(pll(0), Some(COAST_MAX_IDLE + ms(1))));
-            assert!(resume_needs_reset(pll(0), None));
-        }
-        // 3000 is inside the pi/3 clamp's coast band but past half the 0.65 rad clamp.
-        assert!(!resume_needs_reset(Some(LanePll { pll_q213: 3000, clamp_q213: 8579 }), Some(ms(100))));
-        assert!(resume_needs_reset(Some(LanePll { pll_q213: 3000, clamp_q213: 5325 }), Some(ms(100))));
-        // No PLL reading (no hardware): the voice rule alone.
+        let carrier = |pll: f32| Some(lsm::Carrier { pll, offset_hz: 0.0, limit: 0.65, held: false });
+        // Voice a moment ago, loop near centre: coast.
+        assert!(!resume_needs_reset(carrier(0.05), Some(ms(400))));
+        assert!(!resume_needs_reset(carrier(-0.3), Some(COAST_MAX_IDLE)));
+        // The loop at or past half its limit: reset, however fresh.
+        assert!(resume_needs_reset(carrier(0.65), Some(ms(100))));
+        assert!(resume_needs_reset(carrier(-0.325), Some(ms(100))));
+        // Gone longer than the coast window, or never any voice: reset.
+        assert!(resume_needs_reset(carrier(0.0), Some(COAST_MAX_IDLE + ms(1))));
+        assert!(resume_needs_reset(carrier(0.0), None));
+        // No loop (a C4FM lane): the voice rule alone.
         assert!(!resume_needs_reset(None, Some(ms(100))));
     }
 

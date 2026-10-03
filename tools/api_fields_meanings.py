@@ -103,7 +103,7 @@ STRUCTS["radio_config"] = [
     ("gain.manual_db", "number or null", "The gain in manual mode, dB."),
     ("presets_allowed", "array of strings", "DDC presets the window planner may choose, narrowest first."),
     ("presets_allowed[]", "string", "One preset."),
-    ("traffic_chains", "number or null", "Traffic lanes to run; null: every lane the gateware has (applies at the next start)."),
+    ("traffic_chains", "number or null", "Traffic lanes to run; null: every lane the radio core has (applies at the next start)."),
     ("calls", "object", "Call timing."),
     ("calls.hang_ms", "number", "A call with no voice, update or terminator for this long closes."),
     ("calls.end_grace_ms", "number", "After an end-of-transmission marker, the call closes this long later unless voice resumes."),
@@ -151,25 +151,46 @@ STRUCTS["control"] = [
     ("site", "string, absent when stopped", "The site it decodes."),
     ("identity", "object, absent until heard", "The site's identity as broadcast."),
     ("@identity", "heard_identity"),
-    ("modulation", "string, absent at DMR sites", "P25: the demodulator whose messages are used, `lsm` (gateware) or `c4fm` (software)."),
+    ("modulation", "string, absent at DMR sites", "P25: the demodulator whose messages are used, `lsm` or `c4fm` (both run on the same IQ)."),
     ("tsbks_20s", "object, absent at DMR sites", "P25: TSBKs each demodulator passed in the last 20 s (what the automatic choice compares)."),
-    ("tsbks_20s.lsm", "number", "By the gateware LSM demodulator."),
-    ("tsbks_20s.c4fm", "number", "By the software C4FM demodulator."),
+    ("tsbks_20s.lsm", "number", "By the LSM demodulator."),
+    ("tsbks_20s.c4fm", "number", "By the C4FM demodulator."),
     ("msgs_per_s", "number or null", "Messages that passed their checks, per second (over the last few seconds)."),
     ("ok_pct", "number or null", "Share of messages that passed their checks (P25: TSBK CRC), %."),
     ("last_message_age_ms", "number or null", "Since the last message that passed, ms."),
     ("cpu_pct", "number", "Share of one core the decode thread uses, %."),
-    ("carrier_offset_hz", "number, absent at P25 sites", "DMR: the carrier's offset from the channel as the equaliser measures it."),
+    ("carrier_offset_hz", "number, absent until measured", "The carrier's offset from the tuning, signal minus NCO, Hz: the DMR equaliser's, or the P25 LSM carrier loop's mean over the last second while a signal was on the channel (absent while the site decodes as C4FM)."),
+    ("loop", "object, absent at DMR sites", "P25: the LSM decoder's carrier loop, each second."),
+    ("@loop", "carrier_loop"),
     ("channel_plan_entries", "number", "Channel plan entries known: P25 band (IDEN) entries, DMR LCNs."),
     ("neighbours", "number", "P25: neighbour sites announced."),
     ("grants", "number", "Voice grants decoded since the site went live."),
     ("grants_dropped", "number", "Grants the trunking task could not take (its queue was full)."),
-    ("input", "object", "What the stream readers delivered."),
-    ("input.iq_chunks", "number", "Control IQ chunks delivered."),
-    ("input.iq_dropped", "number", "IQ chunks dropped because the decoder was behind."),
-    ("input.dibit_bytes", "number", "Bytes of gateware dibits delivered (four dibits a byte)."),
-    ("input.dibit_resyncs", "number", "Times the dibit stream skipped and was resynchronised."),
-    ("input.dibit_lost", "number", "Dibit deliveries lost (decoder behind, or a copy failed)."),
+    ("input", "object", "The control channel's IQ delivered to the decoder (blocks of up to 1008 samples, 20 ms)."),
+    ("input.blocks", "number", "Blocks delivered."),
+    ("input.dropped", "number", "Blocks dropped because the decoder was behind."),
+    ("input.gaps", "number", "Blocks after missing samples."),
+]
+
+STRUCTS["carrier_loop"] = [
+    ("pll", "number", "The loop's phase correction per symbol, radians."),
+    ("offset_hz", "number", "The carrier offset it tracks, signal minus NCO, Hz."),
+    ("limit", "number", "The correction's limit, radians per symbol (half of it or more: the loop runs on noise)."),
+    ("held", "bool", "No signal on the channel: the loops hold."),
+]
+
+STRUCTS["lane_readback"] = [
+    ("nco_hz", "number or null", "Its NCO offset from the LO."),
+    ("packets", "bool", "Its packets are on."),
+    ("tag", "number", "The tag of its current tuning."),
+]
+
+STRUCTS["lane_packets"] = [
+    ("packets", "number", "Packets read."),
+    ("stale", "number", "Packets of an older tuning, dropped."),
+    ("settling", "number", "Samples dropped while the DDC settled after a retune."),
+    ("lost", "number", "Packets after samples the core dropped (its buffer full)."),
+    ("missed", "number", "Packets missing between two of the lane's (the ring lapped the reader)."),
 ]
 
 STRUCTS["framer"] = [
@@ -314,13 +335,6 @@ STRUCTS["crystal_cal"] = [
     ("ppm_before", "number", "The correction before."),
     ("ppm", "number", "The correction it set."),
     ("duration_ms", "number", "How long it took."),
-]
-
-STRUCTS["lsm_control"] = [
-    ("enable", "bool", "The demodulator runs."),
-    ("dibit_dma", "bool", "Its dibits go to memory."),
-    ("dc_block", "bool", "The DC blocker is on."),
-    ("agc", "bool", "Its AGC is on."),
 ]
 
 STRUCTS["named_stat"] = [
@@ -629,19 +643,12 @@ ROUTES: dict[str, list] = {
     "/api/v1/receivers": [
         ("control", "object", "The control channel decoder (the fields of `/status` `control`, and those below)."),
         ("@control", "control"),
-        ("control.loop", "object or null", "The control chain's gateware carrier loop and AGC (P25)."),
-        ("control.loop.pll_q213", "number", "The loop's phase correction per symbol, Q2.13 (one reading)."),
-        ("control.loop.pll_hz", "number", "The same in Hz."),
-        ("control.loop.agc_gain", "number", "The LSM AGC's gain, Q9.7."),
-        ("control.loop.agc_mag", "number", "The LSM AGC's magnitude, Q1.15."),
         ("control.counters", "object or null", "The decoders' counters; `protocol` says which."),
-        ("control.counters.protocol", "string", "`p25` (with `lsm`, `c4fm` and `lsm_gateware`) or `dmr` (with `messages` and `demod`)."),
-        ("control.counters.lsm", "object", "P25: the software LSM demodulator's framer."),
+        ("control.counters.protocol", "string", "`p25` (with `lsm` and `c4fm`) or `dmr` (with `messages` and `demod`)."),
+        ("control.counters.lsm", "object", "P25: the LSM demodulator's framer."),
         ("@control.counters.lsm", "framer"),
-        ("control.counters.c4fm", "object", "P25: the software C4FM demodulator's framer."),
+        ("control.counters.c4fm", "object", "P25: the C4FM demodulator's framer."),
         ("@control.counters.c4fm", "framer"),
-        ("control.counters.lsm_gateware", "object", "P25: the gateware LSM demodulator's framer, counted only (change 079)."),
-        ("@control.counters.lsm_gateware", "framer"),
         ("control.counters.messages", "object", "DMR: the message decoder."),
         ("@control.counters.messages", "dmr_messages"),
         ("control.counters.demod", "object", "DMR: the demodulator."),
@@ -658,17 +665,12 @@ ROUTES: dict[str, list] = {
         ("lanes[].counters", "object", "Its traffic decoder's counters; `protocol` says which."),
         ("lanes[].counters.protocol", "string", "`p25` (the framer's fields) or `dmr` (`bursts` and `demod`)."),
         ("@lanes[].counters", "framer"),
-        ("lanes[].counters.demod", "string", "P25: whose dibits the lane decodes, `lsm_gateware` or `lsm_software` (lane 1)."),
-        ("lanes[].counters.lsm_gateware", "object", "P25, lane 1 on the software LSM: the gateware LSM's framer on the same lane, counted only (change 079)."),
-        ("@lanes[].counters.lsm_gateware", "framer"),
+        ("lanes[].counters.demod", "string", "P25: the lane's demodulator, `lsm` or `c4fm` (the control channel's, taken at each tuning)."),
         ("lanes[].counters.bursts", "number", "DMR: bursts read."),
         ("lanes[].counters.demod", "object", "DMR: the demodulator."),
         ("@lanes[].counters.demod", "dmr_demod"),
-        ("lanes[].loop", "object or null", "Its gateware carrier loop."),
-        ("lanes[].loop.pll_q213", "number", "Phase correction per symbol, Q2.13 (one reading)."),
-        ("lanes[].loop.pll_hz", "number", "The same in Hz."),
-        ("lanes[].loop.clamp_q213", "number", "The loop's clamp."),
-        ("lanes[].loop.hot", "bool", "At half the clamp or more: running on noise."),
+        ("lanes[].loop", "object, absent unless the lane runs the LSM", "P25: its LSM carrier loop."),
+        ("@lanes[].loop", "carrier_loop"),
     ],
     "/api/v1/config": [
         ("format", "string", "`scanner-config`."),
@@ -684,7 +686,7 @@ ROUTES: dict[str, list] = {
         ("live_site", "string or null", "The live site."),
     ],
     "/api/v1/radio": [
-        ("presets", "array of strings", "Every DDC preset the gateware has, narrowest first."),
+        ("presets", "array of strings", "Every DDC preset, narrowest first."),
         ("presets[]", "string", "One preset."),
         ("config", "object", "The radio settings."),
         ("@config", "radio_config"),
@@ -699,7 +701,7 @@ ROUTES: dict[str, list] = {
         ("state.crystal.method", "string", "How: `calibration` or `tracker`."),
         ("state.crystal.at_unix_ms", "number", "When."),
         ("hardware", "object", "What the scanner found at start."),
-        ("hardware.core_version", "string or null", "The gateware's version."),
+        ("hardware.core_version", "string or null", "The radio core's version (the FPGA)."),
         ("hardware.lanes", "number", "Traffic lanes running."),
         ("tuning", "object", "The tuning."),
         ("@tuning", "tuning"),
@@ -708,21 +710,19 @@ ROUTES: dict[str, list] = {
         ("readback.gain_db", "number or null", "The AD9361's gain."),
         ("readback.rssi_db", "number or null", "The AD9361's RSSI (dB below full scale)."),
         ("readback.gain_mode", "string or null", "The AD9361's gain mode."),
-        ("readback.control_nco_hz", "number or null", "The control chain's NCO offset from the LO."),
-        ("readback.control_lsm", "object or null", "The control chain's LSM settings."),
-        ("@readback.control_lsm", "lsm_control"),
-        ("readback.control_nid", "array of 2 numbers or null", "NAC and DUID of the latest frame the control LSM decoded."),
-        ("readback.control_status", "object or null", "The control LSM's status register."),
-        ("readback.control_status.bch_busy", "bool", "The BCH decoder is busy."),
-        ("readback.control_status.in_nid_window", "bool", "Inside a NID."),
-        ("readback.control_status.nid_event", "bool", "A NID was decoded."),
-        ("readback.control_status.nid_valid", "bool", "It passed BCH."),
-        ("readback.control_status.n_errors", "number", "Bit errors BCH corrected."),
-        ("readback.control_status.sync_distance", "number", "The sync correlator's distance."),
-        ("readback.control_status.dibit_overflow", "bool", "The dibit FIFO overflowed."),
-        ("readback.lane_nco_hz", "array of 2 numbers or null", "Each lane's NCO offset from the LO."),
-        ("readback.lane_lsm", "array of 2 objects or null", "Each lane's LSM settings."),
-        ("@readback.lane_lsm[]", "lsm_control"),
+        ("readback.control", "object or null", "The control channel's lane (the radio core's lane 0)."),
+        ("@readback.control", "lane_readback"),
+        ("readback.lanes", "array of 2 objects or null", "Each traffic lane (lane 1, lane 2)."),
+        ("@readback.lanes[]", "lane_readback"),
+        ("readback.ring", "object or null", "The lane ring."),
+        ("readback.ring.enabled", "bool", "It is on."),
+        ("readback.ring.last_buffer", "number", "The last sub-buffer completed (0-127)."),
+        ("readback.ring.next_address", "number", "The bus address of its next burst."),
+        ("readback.sample_count", "number or null", "AD9361 samples since the radio core's reset (the clock of the packets' air times)."),
+        ("readback.adc_clips", "number or null", "AD9361 samples at full scale since the core's reset."),
+        ("readback.lane_counters", "array", "Each core lane's packets since start (the control lane first)."),
+        ("@readback.lane_counters[]", "lane_packets"),
+        ("readback.packet_faults", "number", "Packets that failed their checks (never written, or stale in the cache)."),
     ],
     "/api/v1/radio/crystal": [
         ("ppm", "number", "The correction applied."),
@@ -1024,7 +1024,7 @@ NOT_JSON: dict[str, str] = {
     "/api/v1/iq/control.wav": (
         "A WAV file (`audio/wav`, an attachment named like `cc_454368750_20261002_002754_60s.wav`): "
         "the control channel's IQ at 50 kSPS, 16-bit stereo, I left and Q right, as the decoder gets "
-        "it. 409 when no site is live or its decoder reads only the gateware's dibits."
+        "it. 409 when no site is live."
     ),
     "/api/v1/recordings/{id}": (
         "The recording's WAV (`audio/wav`): 8 kHz 16-bit mono. Byte ranges are honoured (206 with "

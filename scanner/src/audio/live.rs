@@ -18,7 +18,7 @@ use super::agc::PcmAgc;
 use super::alert::{AlertDetector, ToneAlert};
 use super::levels::LevelBook;
 use super::codec::{Ambe2, Imbe, VoiceCodec, SAMPLES_PER_FRAME};
-use crate::hardware::p25core::Lane;
+use crate::radio::lane::Lane;
 use crate::protocol::events::VoiceFrames;
 use crate::services::config::aliases::Side;
 

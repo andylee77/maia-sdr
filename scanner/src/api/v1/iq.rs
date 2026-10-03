@@ -28,7 +28,7 @@ pub async fn control(State(s): State<Arc<AppState>>, Query(p): Query<Params>) ->
     let rx = s.receivers.iq_tap().capture((CONTROL_RATE * seconds) as usize);
     let iq = match tokio::time::timeout(Duration::from_secs(u64::from(seconds) + 5), rx).await {
         Ok(Ok(iq)) => iq,
-        _ => return Err(ApiError::conflict("no control IQ: no site is live, or its decoder reads only the gateware's dibits")),
+        _ => return Err(ApiError::conflict("no control IQ: no site is live")),
     };
     // "cc_454368750_20260930_204706_60s.wav", as p25-httpd named its dumps.
     let stamp: String = iso_utc(started).chars().filter(|c| c.is_ascii_digit()).take(14).collect();

@@ -54,7 +54,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let packet_data = Arc::new(crate::services::packet_data::PacketData::new(log.clone()));
     receivers.set_packet_data(packet_data.clone());
     clock.start(config.clone(), lease.clone(), log.clone());
-    let lanes = crate::hardware::p25core::Lane::ALL[..hardware.lanes].to_vec();
+    let lanes = crate::radio::lane::Lane::ALL[..hardware.lanes].to_vec();
     let audio = crate::audio::live::Audio::start(&lanes);
     let notices = Notices::default();
     let (history, recordings) = start_storage(&args, &paths, &config, &audio, &notices).await?;

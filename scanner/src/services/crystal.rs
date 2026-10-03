@@ -11,10 +11,11 @@
 //!   correction; each minute the trimmed mean of the last five minutes becomes the correction,
 //!   when it stays within the anchor of this run's calibration.
 //!
-//! The P25 carrier loop reads NCO minus signal, so the shift that cancels a residual `r` is
-//! `shift − r` (the other sign makes the correction run away). The DMR equaliser's carrier offset
-//! reads signal minus NCO: there it is `shift + offset`. A C4FM site is calibrated from the
-//! spectrum alone and not tracked. Estimates are kept in ppm, so they survive an LO move.
+//! Both measurements are the control decoder's own carrier offset, signal minus NCO: the P25
+//! LSM's carrier loop (while a signal is on the channel) and the DMR equaliser. The shift that
+//! cancels an offset is `shift + offset` (the other sign makes the correction run away). A C4FM
+//! site is calibrated from the spectrum alone and not tracked. Estimates are kept in ppm, so
+//! they survive an LO move.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -33,7 +34,6 @@ use crate::services::events::EventLog;
 use crate::trunking::receivers::ControlStatus;
 use crate::util::time::unix_ms;
 
-const SYMBOL_RATE: f64 = 4800.0;
 /// The spectrometer's search around the control channel: ±5 ppm at 2 GHz.
 const SEARCH_HZ: f64 = 10_000.0;
 const SPECTRUM_FRAMES: usize = 8;
@@ -41,9 +41,6 @@ const SPECTRUM_FRAMES: usize = 8;
 const SETTLE: Duration = Duration::from_secs(3);
 const RESIDUAL_READS: usize = 30;
 const RESIDUAL_EVERY: Duration = Duration::from_millis(100);
-/// AGC gain times input magnitude: a burst is on the channel (between bursts the loop has
-/// nothing to track).
-const MIN_AGC_PRODUCT: f64 = 0.6;
 const SAMPLE_EVERY: Duration = Duration::from_secs(1);
 /// Five minutes of samples.
 const WINDOW: usize = 300;
@@ -62,11 +59,6 @@ const SAVE_STEP_HZ: f64 = 5.0;
 const FIRST_CALIBRATION_AFTER: Duration = Duration::from_secs(15);
 /// The site counts as decoded while its last message is this recent.
 const FRESH_MS: u64 = 2_000;
-
-/// The P25 carrier loop's reading (Q2.13 radians per symbol) in Hz.
-pub fn pll_q213_to_hz(q213: f64) -> f64 {
-    q213 * SYMBOL_RATE / (std::f64::consts::TAU * 8192.0)
-}
 
 /// The correction (ppm) that commands `shift_hz` at `lo_hz`: the inverse of `lo_shift_hz`.
 pub fn ppm_of(shift_hz: f64, lo_hz: u64) -> f64 {
@@ -113,7 +105,7 @@ pub fn peak_near(db: &[f32], sample_rate: f64, offset_hz: f64, window_hz: f64) -
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
-    /// The P25 control chain's carrier loop.
+    /// The P25 control decoder's LSM carrier loop.
     P25Loop,
     /// The DMR equaliser's carrier offset.
     DmrEqualiser,
@@ -345,15 +337,8 @@ impl<H: RadioHw + 'static> Crystal<H> {
         if t.preset.is_none() {
             return;
         }
-        let shift = match source {
-            Some(Source::P25Loop) => match self.deps.tuner.control_loop().await {
-                Some(l) if l.agc_product() >= MIN_AGC_PRODUCT => t.lo_shift_hz as f64 - pll_q213_to_hz(f64::from(l.pll_q213)),
-                _ => return,
-            },
-            Some(Source::DmrEqualiser) => match (self.deps.control)().carrier_offset_hz {
-                Some(offset) => t.lo_shift_hz as f64 + offset,
-                None => return,
-            },
+        let shift = match (source, (self.deps.control)().carrier_offset_hz) {
+            (Some(Source::P25Loop | Source::DmrEqualiser), Some(offset)) => t.lo_shift_hz as f64 + offset,
             _ => return,
         };
         self.lock().tracker.sample(Instant::now(), (t.lo_hz, t.control_hz), ppm_of(shift, t.lo_hz));
@@ -417,11 +402,7 @@ impl<H: RadioHw + 'static> Crystal<H> {
             bail!("the radio moved during the calibration");
         }
         let (residual_hz, residual_samples) = self.residual(source).await;
-        let shift = match (source, residual_hz) {
-            (Source::P25Loop, Some(r)) => stepped.lo_shift_hz as f64 - r,
-            (Source::DmrEqualiser, Some(r)) => stepped.lo_shift_hz as f64 + r,
-            _ => stepped.lo_shift_hz as f64,
-        };
+        let shift = stepped.lo_shift_hz as f64 + residual_hz.unwrap_or(0.0);
         let ppm = ppm_of(shift, t.lo_hz);
         let done = self.deps.tuner.set_crystal_ppm(ppm).await?;
         let cal = Calibration {
@@ -457,23 +438,16 @@ impl<H: RadioHw + 'static> Crystal<H> {
         Ok(cal)
     }
 
-    /// The residual after a correction step: the loop's mean over 3 s of bursts, or the
-    /// equaliser's offset; `None` when the channel was mostly idle.
+    /// The residual after a correction step: the decoder's carrier offset over 3 s, while a
+    /// signal was on the channel; `None` when the channel was mostly idle.
     async fn residual(&self, source: Source) -> (Option<f64>, usize) {
+        if source == Source::Spectrum {
+            return (None, 0);
+        }
         let mut sum = 0.0;
         let mut n = 0usize;
         for _ in 0..RESIDUAL_READS {
-            let read = match source {
-                Source::P25Loop => self
-                    .deps
-                    .tuner
-                    .control_loop()
-                    .await
-                    .filter(|l| l.agc_product() >= MIN_AGC_PRODUCT)
-                    .map(|l| pll_q213_to_hz(f64::from(l.pll_q213))),
-                Source::DmrEqualiser => (self.deps.control)().carrier_offset_hz,
-                Source::Spectrum => return (None, 0),
-            };
+            let read = (self.deps.control)().carrier_offset_hz;
             if let Some(r) = read {
                 sum += r;
                 n += 1;

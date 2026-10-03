@@ -24,7 +24,7 @@ use crate::radio::tuner::{RadioHw, Tuner, Tuning, TuningPlan};
 use crate::services::events::EventLog;
 use crate::services::history::store::SiteInfo;
 use crate::services::history::HistoryTx;
-use crate::hardware::p25core::Lane;
+use crate::radio::lane::Lane;
 use crate::trunking::calls::CallPolicy;
 use crate::trunking::follow::routing::Routing;
 use crate::trunking::lcn::SiteCode;
@@ -486,15 +486,15 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
             lcn_hz: lcn_hz.clone(),
             channels_hz: site.channels_hz.clone(),
             site_code,
-            // P25: each lane is its own chain. DMR is decoded from IQ, which only lane one's chain
-            // has (lane two's sends the gateware's P25 dibits alone), so a DMR site's two lanes
-            // are two calls on lane one's carrier, one a timeslot, or one of them on the control
-            // channel's other timeslot (its own receiver hears it).
+            // P25: each lane is its own receiver. DMR follows on lane one's receiver: a DMR
+            // site's two lanes are two calls on lane one's carrier, one a timeslot, or one of them
+            // on the control channel's other timeslot (its own receiver hears it).
             lanes: match system.protocol {
                 Protocol::P25 => self.lanes.clone(),
                 Protocol::DmrTier3 if self.lanes.contains(&Lane::One) => vec![Lane::One, Lane::Two],
                 Protocol::DmrTier3 => Vec::new(),
             },
+            c4fm: site.modulation == crate::services::config::systems::Modulation::C4fm,
             routing,
             encrypted: learned.state().encrypted_talkgroups.into_iter().collect(),
             policy: CallPolicy {
@@ -594,10 +594,10 @@ mod tests {
         async fn configure_lanes(&self, _: &'static DdcPreset) -> Result<()> {
             Ok(())
         }
-        async fn retune_lane(&self, _: crate::hardware::p25core::Lane, _: f64, _: u32, _: bool) -> Result<()> {
+        async fn retune_lane(&self, _: crate::radio::lane::Lane, _: f64, _: u32, _: bool) -> Result<()> {
             Ok(())
         }
-        async fn pause_lane(&self, _: crate::hardware::p25core::Lane) -> Result<()> {
+        async fn pause_lane(&self, _: crate::radio::lane::Lane) -> Result<()> {
             Ok(())
         }
         async fn readback(&self, _: u32) -> crate::radio::tuner::Readback {
@@ -608,12 +608,10 @@ mod tests {
     impl StreamSource for Nothing {
         fn control_streams(
             &self,
-            _: crate::radio::streams::Wants,
-            _: std::sync::mpsc::SyncSender<crate::radio::streams::Input>,
+            _: std::sync::mpsc::SyncSender<crate::radio::streams::Block>,
             _: Arc<std::sync::atomic::AtomicBool>,
             _: Arc<crate::radio::streams::StreamCounters>,
-        ) -> Vec<tokio::task::JoinHandle<()>> {
-            Vec::new()
+        ) {
         }
     }
 

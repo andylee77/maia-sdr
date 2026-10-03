@@ -13,6 +13,30 @@ impl std::fmt::Debug for DdcPreset {
     }
 }
 
+impl DdcPreset {
+    /// Each stage's taps, in AD9361 samples (a stage's taps are spaced by the decimation
+    /// before it).
+    fn stage_spans(&self) -> [usize; 3] {
+        [
+            self.fir1_coeffs.len().saturating_sub(1),
+            self.fir2_coeffs.len().saturating_sub(1) * self.decim1,
+            self.fir3_coeffs.len().saturating_sub(1) * self.decim1 * self.decim2,
+        ]
+    }
+
+    /// Output samples after a retune that still hold the old tuning: the stages' delay lines
+    /// filling with new samples.
+    pub fn settle_samples(&self) -> usize {
+        self.stage_spans().iter().sum::<usize>().div_ceil(self.total_decim())
+    }
+
+    /// The DDC's delay in AD9361 samples: half of each stage's span (the filters are
+    /// symmetric).
+    pub fn group_delay(&self) -> f64 {
+        self.stage_spans().iter().sum::<usize>() as f64 / 2.0
+    }
+}
+
 /// The three FIR stages share one coefficient RAM: FIR1 (FIR4DSP, folded) at 0-255, FIR2
 /// (FIR2DSP) at 256-383 and FIR3 (FIR4DSP) at 512-767.
 pub const FIR4_RAM: usize = 256;
@@ -185,6 +209,17 @@ mod tests {
     fn oversized_stages_are_rejected() {
         assert!(fir4dsp_ram(&[1; 300], 1).is_err());
         assert!(fir2dsp_ram(&[1; 200], 1).is_err());
+    }
+
+    /// Every preset's filters span about 1.1 ms (53-55 output samples; the IQ path used to drop
+    /// 200 ms after a retune), half of it the delay.
+    #[test]
+    fn settling_is_about_a_millisecond() {
+        for p in PRESETS {
+            assert!((53..=55).contains(&p.settle_samples()), "{}: {}", p.name, p.settle_samples());
+            let delay_ms = p.group_delay() / p.sample_rate_hz as f64 * 1e3;
+            assert!((0.5..0.6).contains(&delay_ms), "{}: {delay_ms} ms", p.name);
+        }
     }
 
     #[test]

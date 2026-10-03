@@ -1,6 +1,6 @@
 //! What a carrier carries. Every protocol's control decoder listens to it at once, each behind
-//! `Probe`: P25 on the HDL slicer's dibits and on the IQ through the software C4FM demodulator,
-//! DMR on the IQ. A later survey can add classifiers without changing the sweep.
+//! `Probe`: P25 through the LSM and C4FM demodulators, DMR, all on the control channel's IQ. A
+//! later survey can add classifiers without changing the sweep.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -11,7 +11,8 @@ use crate::protocol::dmr::control::DmrControl;
 use crate::protocol::events::{ControlEvent, SiteIdentity};
 use crate::protocol::p25::c4fm::C4fmDecoder;
 use crate::protocol::p25::control::P25Control;
-use crate::radio::streams::Input;
+use crate::protocol::p25::lsm::LsmDecoder;
+use crate::radio::streams::Block;
 use crate::services::config::systems::Protocol;
 use crate::trunking::learned::iden_band;
 use crate::util::time::Stamp;
@@ -32,7 +33,6 @@ pub trait Probe: Send {
     /// The carrier changed: forget what was heard.
     fn reset(&mut self);
     fn iq(&mut self, iq: &[i16], now: Stamp);
-    fn dibits(&mut self, _dibits: &[u8], _now: Stamp) {}
     /// Its control channel with the site identity complete: no need to listen longer.
     fn identified(&self) -> bool;
     /// Control messages so far (a few are enough to say it is this protocol).
@@ -44,13 +44,20 @@ pub trait Probe: Send {
 pub struct P25Probe {
     lsm: P25Control,
     c4fm: P25Control,
+    lsm_demod: LsmDecoder,
     demod: C4fmDecoder,
     events: Vec<ControlEvent>,
 }
 
 impl Default for P25Probe {
     fn default() -> Self {
-        P25Probe { lsm: P25Control::new("probe"), c4fm: P25Control::new("probe"), demod: C4fmDecoder::new(), events: Vec::new() }
+        P25Probe {
+            lsm: P25Control::new("probe"),
+            c4fm: P25Control::new("probe"),
+            lsm_demod: LsmDecoder::new(),
+            demod: C4fmDecoder::new(),
+            events: Vec::new(),
+        }
     }
 }
 
@@ -69,18 +76,12 @@ impl P25Probe {
 
 impl Probe for P25Probe {
     fn reset(&mut self) {
-        self.lsm = P25Control::new("probe");
-        self.c4fm = P25Control::new("probe");
-        self.demod = C4fmDecoder::new();
+        *self = P25Probe::default();
     }
 
     fn iq(&mut self, iq: &[i16], now: Stamp) {
         self.c4fm.push_c4fm(&mut self.demod, iq, now, &mut self.events);
-        self.events.clear();
-    }
-
-    fn dibits(&mut self, dibits: &[u8], now: Stamp) {
-        self.lsm.push(dibits, now, &mut self.events);
+        self.lsm.push_lsm(&mut self.lsm_demod, iq, now, &mut self.events);
         self.events.clear();
     }
 
@@ -228,51 +229,60 @@ pub fn on_raster(freq_hz: u64) -> u64 {
     (freq_hz + step / 2) / step * step
 }
 
-/// The probes fed from the control streams on a thread of their own, while the sweep moves the
-/// control channel from carrier to carrier.
-pub struct Probes {
-    probes: Arc<Mutex<Vec<Box<dyn Probe>>>>,
-    stop: Arc<AtomicBool>,
-    /// Drop what is queued: it was read before the reset.
-    drain: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
+/// The probes and when they last started over.
+struct Listening {
+    probes: Vec<Box<dyn Probe>>,
     since: Instant,
 }
 
-impl Probes {
-    pub fn start(rx: Receiver<Input>, probes: Vec<Box<dyn Probe>>) -> std::io::Result<Probes> {
-        let probes = Arc::new(Mutex::new(probes));
-        let stop = Arc::new(AtomicBool::new(false));
-        let drain = Arc::new(AtomicBool::new(false));
-        let (p, s, d) = (probes.clone(), stop.clone(), drain.clone());
-        let thread = std::thread::Builder::new().name("probe".into()).spawn(move || feed(&p, &s, &d, rx))?;
-        Ok(Probes { probes, stop, drain, thread: Some(thread), since: Instant::now() })
-    }
-
-    /// The control channel moved to another carrier and `sweep::RETUNE_SETTLE` has passed:
-    /// start afresh, without the samples still queued from before.
-    pub fn reset(&mut self) {
-        self.drain.store(true, Ordering::Relaxed);
-        for p in lock(&self.probes).iter_mut() {
+impl Listening {
+    fn reset(&mut self) {
+        for p in self.probes.iter_mut() {
             p.reset();
         }
         self.since = Instant::now();
     }
+}
+
+/// The probes fed from the control channel's IQ on a thread of their own, while the sweep moves
+/// the control channel from carrier to carrier. Each move's first block starts them over: what
+/// was queued before it is the last carrier's.
+pub struct Probes {
+    listening: Arc<Mutex<Listening>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Probes {
+    pub fn start(rx: Receiver<Block>, probes: Vec<Box<dyn Probe>>) -> std::io::Result<Probes> {
+        let listening = Arc::new(Mutex::new(Listening { probes, since: Instant::now() }));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (l, s) = (listening.clone(), stop.clone());
+        let thread = std::thread::Builder::new().name("probe".into()).spawn(move || feed(&l, &s, rx))?;
+        Ok(Probes { listening, stop, thread: Some(thread) })
+    }
+
+    /// The control channel moved to another carrier: forget the last one's counts now (its
+    /// first block resets the probes again).
+    pub fn reset(&mut self) {
+        lock(&self.listening).reset();
+    }
 
     /// Some protocol heard its control messages (`min` of them).
     pub fn messages(&self, min: u64) -> bool {
-        lock(&self.probes).iter().any(|p| p.messages() >= min)
+        lock(&self.listening).probes.iter().any(|p| p.messages() >= min)
     }
 
     pub fn identified(&self) -> bool {
-        lock(&self.probes).iter().any(|p| p.identified())
+        lock(&self.listening).probes.iter().any(|p| p.identified())
     }
 
     /// The best verdict: a control channel over a traffic channel over nothing.
     pub fn heard(&self, freq_hz: u64, level_db: f32) -> Heard {
-        let secs = self.since.elapsed().as_secs_f64();
+        let l = lock(&self.listening);
+        let secs = l.since.elapsed().as_secs_f64();
         let mut best = Heard::Nothing;
-        for p in lock(&self.probes).iter() {
+        for p in l.probes.iter() {
             match p.heard(freq_hz, level_db, secs) {
                 h @ Heard::Control(_) => return h,
                 Heard::Traffic => best = Heard::Traffic,
@@ -294,27 +304,17 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn feed(probes: &Mutex<Vec<Box<dyn Probe>>>, stop: &AtomicBool, drain: &AtomicBool, rx: Receiver<Input>) {
-    let mut dibits = Vec::new();
+fn feed(listening: &Mutex<Listening>, stop: &AtomicBool, rx: Receiver<Block>) {
     while !stop.load(Ordering::Relaxed) {
-        let input = match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(i) => i,
+        let block = match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(b) => b,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        if drain.swap(false, Ordering::Relaxed) {
-            while rx.try_recv().is_ok() {}
-            continue;
+        let mut l = lock(listening);
+        if block.retuned {
+            l.reset();
         }
-        let now = Stamp::now();
-        let mut ps = lock(probes);
-        match input {
-            Input::Iq(iq) => ps.iter_mut().for_each(|p| p.iq(&iq, now)),
-            Input::Dibits { bytes, .. } => {
-                dibits.clear();
-                dibits.extend(bytes.iter().flat_map(|b| [b & 3, (b >> 2) & 3, (b >> 4) & 3, (b >> 6) & 3]));
-                ps.iter_mut().for_each(|p| p.dibits(&dibits, now));
-            }
-        }
+        l.probes.iter_mut().for_each(|p| p.iq(&block.iq, block.at));
     }
 }

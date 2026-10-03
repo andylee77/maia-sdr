@@ -11,8 +11,7 @@
 //!   1.5 s.
 //! - Packet data goes out as it is read, call or not (a lane waits on the data channel between
 //!   calls).
-//! - Each voice unit's NID goes out as it passes, for a lane whose demodulator is not the
-//!   gateware's (the gateware's lanes report theirs in real time from its NID status).
+//! - Each voice unit's NID goes out as it passes, at its air time.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};

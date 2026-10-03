@@ -25,7 +25,7 @@ pub mod routing;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use crate::hardware::p25core::Lane;
+use crate::radio::lane::Lane;
 use crate::protocol::events::{ChannelId, Grant};
 use crate::services::config::aliases::Side;
 use crate::trunking::calls::{CallId, ChannelKey, CloseReason, Closed, Decision, GrantIn, NotFollowed};

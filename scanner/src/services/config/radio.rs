@@ -13,7 +13,7 @@ pub struct RadioConfig {
     pub gain: Gain,
     /// DDC presets the window planner may choose, narrowest first.
     pub presets_allowed: Vec<String>,
-    /// Traffic chains to run; `None` = every chain the gateware has.
+    /// Traffic lanes to run; `None` = every lane the radio core has.
     pub traffic_chains: Option<u8>,
     pub calls: Calls,
     pub recording: Recording,

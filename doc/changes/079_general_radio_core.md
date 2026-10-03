@@ -240,7 +240,7 @@ touches anything else.
   and project; 0.3.0 is kept in `_archive/build_2026-10-03_p25-core-0.3.0` and the
   `build/p25-core-0.3.0` tags).
 
-### The PS side
+### What the PS needs from 3a
 
 - A `hardware::radiocore` backend and a PAC generated from the core's SVD in `scanner/core-pac`
   (`core_pac::radio_core`; inside what the image's scanner package already copies). `p25-httpd/p25-pac` stays the 0.3.0
@@ -256,6 +256,34 @@ touches anything else.
 - Gone: the dibit ring readers and clock, the NID poller, the gateware loop readbacks, the
   `lsm_gateware` counters, the core-version clamps.
 - The bench agent and fbench read the new map (UIO name, banks, ring names) after the core works.
+
+### Step 4 in the scanner
+
+- **`hardware::radiocore`** replaces `hardware::p25core` and `core_version`: the registers
+  through `core_pac::radio_core` (product "rad1", version 1.x, the lane count from
+  `capabilities`), the lanes by number (0 the control channel, then the traffic lanes), the lane
+  ring with the packet parser (check word verified), the spectrum, the sample count.
+- **One ring reader** (`radio::streams`) polls the lane ring every 20 ms and hands each lane's
+  packets to that lane's subscribers (the control receivers or the scan on lane 0, the trunk on
+  the traffic lanes) as blocks of IQ with an air time, the lane's tag, and whether samples were
+  lost before them.
+- **Tags in place of settle timers.** Every retune, control move or preset load gives the lane a
+  new tag after its NCO; the reader drops packets of older tags and the DDC's settling (from the
+  preset's filter lengths), and marks the first block of a tag. `IQ_SETTLE`, the scan's
+  `RETUNE_SETTLE` and its drain go.
+- **Air time** is the packet's sample index on a clock anchored by reading the sample count
+  beside the monotonic clock, less the DDC's group delay.
+- **Every lane in software:** P25 lanes on the control channel's modulation (LSM or C4FM; the
+  control receivers tell the trunk when their choice switches, and each lane takes it at its next
+  tuning). DMR stays on lane one's receiver, both timeslots of its carrier, as before; a second
+  DMR receiver on lane two is a change to the follower, for later. The coast decision reads the
+  lane's LSM loop; the dibit rings, the NID poller, the gateware readbacks and `lsm_gateware` go.
+- **The crystal tracker** reads the control decoder's own carrier offset, signal minus NCO, for
+  P25 (the LSM's loop, while a signal is on the channel) as for DMR (the equaliser); the scan's
+  P25 probe runs the LSM on IQ.
+- The API's loop fields come from the software loops; the radio readback shows each lane's
+  NCO, packets on or off and tag, the ring, the sample and clip counts and each lane's packet
+  counters.
 
 ### Build
 
@@ -377,4 +405,18 @@ touches anything else.
   - a packet closed by its 1008th sample left that sample out of its power and peak.
 
   The burst gating (above) was added after reading the DMA and the ADI interconnect scripts.
-  Next: the bake (in the main checkout), then step 4 with it.
+- **2026-10-03, the bake.** The first build met timing at +0.024 ns: one input register shared
+  by the three DDCs fed their mixers across the die (3.8 ns of routing into lane 1's mixer DSP on
+  the next clk3x edge). Each lane now has its own copy, kept from merging. The second: worst
+  setup +0.091 ns, in the spectrometer's clk3x path (Maia's block, unchanged; 0.3.0's worst
+  too, at +0.208), the sync to clk3x crossing +0.503 ns, worst hold +0.010 ns. The core takes
+  6,827 LUTs, 9,085 FFs, 28 + 35 block RAMs and 46 DSPs; the design 57.7 % of slices (0.3.0:
+  91.6 %) and 68 DSPs (172). The XSA is on `fishball-p25`, not yet in tezuka_fw.
+- **2026-10-03, step 4 written** (branch `079-lsm`, as the step 4 section above):
+  - **The software LSM's loop reads NCO minus signal,** as the gateware's did: on signals 150 Hz
+    above and below the NCO it reads −146 and +146 Hz before the sign. The receivers publish it
+    as signal minus NCO, DMR's convention, so the crystal tracker takes both the same way.
+  - **A DDC settles in 53-55 output samples** (about 1.1 ms) at every preset, with half of it
+    the delay: the reader drops that much after a new tag, where the IQ path dropped 200 ms.
+  - Host tests 432; the ARM check clean. Next: the device tree and the DMA driver in tezuka_fw,
+    an image, unit A.

@@ -27,7 +27,7 @@ use crate::api::v1::calls::{attach, named_alerts, NamedCall, Names};
 use crate::api::v1::status::status;
 use crate::audio::live::audio_frame;
 use crate::boot::state::AppState;
-use crate::hardware::p25core::Lane;
+use crate::radio::lane::Lane;
 use crate::services::config::aliases::Side;
 use crate::services::notices::Notice;
 

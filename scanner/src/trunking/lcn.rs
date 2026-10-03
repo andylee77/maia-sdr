@@ -22,7 +22,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::hardware::p25core::Lane;
+use crate::radio::lane::Lane;
 use crate::radio::plan::usable_bins;
 use crate::services::discovery::probe::on_raster;
 

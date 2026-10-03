@@ -21,7 +21,7 @@ use crate::services::config::{self, RadioState};
 
 #[derive(Serialize)]
 pub struct Radio {
-    /// Every DDC preset the gateware has, narrowest first.
+    /// Every DDC preset, narrowest first.
     pub presets: Vec<&'static str>,
     pub config: RadioConfig,
     pub state: RadioState,
@@ -101,7 +101,7 @@ pub async fn put_recording(State(s): State<Arc<AppState>>, Json(req): Json<Recor
 pub struct Settings {
     /// DDC presets the window planner may choose, narrowest first.
     pub presets_allowed: Vec<String>,
-    /// Traffic lanes to run; `None` = every lane the gateware has.
+    /// Traffic lanes to run; `None` = every lane the radio core has.
     pub traffic_chains: Option<u8>,
     pub calls: Calls,
     pub history: History,

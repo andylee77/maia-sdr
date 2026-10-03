@@ -2,6 +2,7 @@
 //! move it now), the window planner and the streams the receivers read.
 
 pub mod hw;
+pub mod lane;
 pub mod lease;
 pub mod plan;
 pub mod streams;

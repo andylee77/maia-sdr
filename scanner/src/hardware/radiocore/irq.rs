@@ -1,5 +1,6 @@
-//! The core's interrupt: one UIO interrupt, with a sticky bit per DMA ring that completed a
-//! sub-buffer. The readers poll the rings on a timer, so the interrupt is only acknowledged.
+//! The core's interrupt: one UIO interrupt, with a sticky bit per ring (lanes, spectrum,
+//! capture) that completed a sub-buffer. The readers poll the rings on a timer, so the interrupt
+//! is only acknowledged.
 
 use super::regs::Registers;
 use crate::hardware::mmio::Uio;

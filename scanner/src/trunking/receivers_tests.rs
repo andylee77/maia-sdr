@@ -78,13 +78,6 @@ fn rate_window_reports_per_second_and_share() {
     assert_eq!(r.rates(), (Some(10.0), Some(100.0)));
 }
 
-#[test]
-fn ring_bytes_unpack_low_bits_first() {
-    let mut out = Vec::new();
-    unpack(&[0b11_10_01_00, 0b00_00_00_11], &mut out);
-    assert_eq!(out, [0, 1, 2, 3, 3, 0, 0, 0]);
-}
-
 /// One TSDU with a single NET_STS_BCST for Clay County, as dibits.
 fn net_status_tsdu() -> Vec<u8> {
     let mut tsbk = [0xBBu8, 0x00, 0x00, 0xBE, 0xE0, 0x08, 0xA0, 0x06, 0x39, 0x00, 0, 0];
@@ -103,40 +96,25 @@ fn net_status_tsdu() -> Vec<u8> {
     out
 }
 
-fn pack(dibits: &[u8]) -> Vec<u8> {
-    dibits.chunks(4).map(|c| c.iter().enumerate().fold(0u8, |b, (i, d)| b | (d << (2 * i)))).collect()
-}
-
-/// Hands prepared deliveries to the receivers: the gateware's dibit ring bytes, then IQ.
+/// Hands prepared blocks of IQ to the receivers, the first a new tuning's.
 struct Prepared {
-    dibits: Vec<Vec<u8>>,
     iq: Vec<Vec<i16>>,
 }
 
 impl StreamSource for Prepared {
-    fn control_streams(
-        &self,
-        _: Wants,
-        tx: SyncSender<Input>,
-        _: Arc<AtomicBool>,
-        _: Arc<StreamCounters>,
-    ) -> Vec<tokio::task::JoinHandle<()>> {
-        for bytes in &self.dibits {
-            tx.send(Input::Dibits { bytes: bytes.clone(), reset: false }).unwrap();
+    fn control_streams(&self, tx: SyncSender<Block>, _: Arc<AtomicBool>, _: Arc<StreamCounters>) {
+        for (k, iq) in self.iq.iter().enumerate() {
+            tx.send(Block { iq: iq.clone(), at: Stamp::now(), retuned: k == 0, gap: false }).unwrap();
         }
-        for iq in &self.iq {
-            tx.send(Input::Iq(iq.clone())).unwrap();
-        }
-        // Open until stopped, as a ring reader is: the decode thread keeps its once-a-second work.
-        vec![tokio::spawn(async move {
+        // Open until stopped, as the streams are: the decode thread keeps its once-a-second work.
+        tokio::spawn(async move {
             let _open = tx;
             std::future::pending::<()>().await
-        })]
+        });
     }
 }
 
-/// The software LSM's messages are published; the gateware LSM's dibits (the same four frames)
-/// are only counted.
+/// The LSM decoder's messages are published (the site is not C4FM), with its carrier offset.
 #[tokio::test]
 async fn p25_receivers_publish_the_lsm_decoder_messages() {
     let log = Arc::new(EventLog::default());
@@ -169,19 +147,22 @@ async fn p25_receivers_publish_the_lsm_decoder_messages() {
         learned: None,
         history: Default::default(),
     };
-    let iq = iq.chunks(8192 * 2).map(<[i16]>::to_vec).collect();
-    receivers.start(context, &Prepared { dibits: vec![pack(&dibits)], iq }).await;
-    // Both decoders have read all four frames once the counters say so.
-    let both_read = |r: &Receivers| match r.counters() {
-        Some(Counters::P25 { lsm, lsm_gateware, .. }) => lsm.tsbk_ok() >= 4 && lsm_gateware.tsbk_ok() >= 4,
+    let iq = iq.chunks(1008 * 2).map(<[i16]>::to_vec).collect();
+    receivers.start(context, &Prepared { iq }).await;
+    // The LSM decoder has read all four frames once the counters say so.
+    let read = |r: &Receivers| match r.counters() {
+        Some(Counters::P25 { lsm, .. }) => lsm.tsbk_ok() >= 4,
         _ => false,
     };
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !both_read(&receivers) && Instant::now() < deadline {
+    while !read(&receivers) && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(both_read(&receivers), "{:?}", receivers.counters());
+    assert!(read(&receivers), "{:?}", receivers.counters());
     let status = receivers.status();
+    // 120 Hz above the NCO, read while the loops converge on it.
+    let offset = status.carrier_offset_hz.expect("a carrier offset");
+    assert!((60.0..=180.0).contains(&offset), "carrier offset {offset} Hz");
     receivers.stop().await;
     let records = log.since(0, 10, true);
     assert_eq!(records.len(), 4);

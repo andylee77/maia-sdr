@@ -35,6 +35,32 @@ const SAMPLE_GAIN_SLEW: f32 = 0.05;
 /// SDRTrunk `P25P1MessageFramer.SYNC_DETECTION_THRESHOLD`.
 const SYNC_DETECTION_THRESHOLD: f32 = 60.0;
 
+/// The loop's correction per symbol against the carrier's offset: `offset = SIGN · pll · 4800 /
+/// 2π` is signal minus NCO. The loop reads NCO minus signal, as the gateware LSM's did (measured
+/// on signals at known offsets, `lsm_tests`).
+const CARRIER_SIGN: f32 = -1.0;
+
+/// A carrier loop's state.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct Carrier {
+    /// The phase correction per symbol, radians.
+    pub pll: f32,
+    /// The carrier offset it tracks: signal minus NCO, Hz.
+    pub offset_hz: f32,
+    /// The correction's limit, radians per symbol.
+    pub limit: f32,
+    /// No signal on the channel: the loops hold.
+    pub held: bool,
+}
+
+impl Carrier {
+    /// Half the limit or more: the loop ran off on noise (a parked lane keeps demodulating
+    /// after the carrier drops).
+    pub fn hot(&self) -> bool {
+        self.pll.abs() >= self.limit / 2.0
+    }
+}
+
 /// Decode statistics (diagnostics / tests).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LsmStats {
@@ -131,17 +157,19 @@ impl LsmDemodulator {
         self.pll
     }
 
+    /// The carrier loop, as the receivers report it.
+    pub fn carrier(&self) -> Carrier {
+        Carrier {
+            pll: self.pll,
+            offset_hz: CARRIER_SIGN * self.pll * SYMBOL_RATE as f32 / std::f32::consts::TAU,
+            limit: self.max_pll,
+            held: self.hold.as_ref().is_some_and(|h| h.held),
+        }
+    }
+
     #[cfg(test)]
     pub fn sample_gain(&self) -> f32 {
         self.sample_gain
-    }
-
-    /// SDRTrunk `resetPLL`: the tuning moved. The loops wait for the signal again.
-    pub fn reset_pll(&mut self) {
-        self.pll = 0.0;
-        if let Some(h) = self.hold.as_mut() {
-            *h = Hold::new();
-        }
     }
 
     pub fn process(&mut self, i: &[f32], q: &[f32], sink: &mut impl DibitSink) {

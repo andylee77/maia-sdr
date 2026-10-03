@@ -27,7 +27,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::audio::alert::ToneAlert;
 use crate::audio::live::{Audio, AudioChunk};
-use crate::hardware::p25core::Lane;
+use crate::radio::lane::Lane;
 use crate::services::config::radio::{self as radio_config, Storage as StorageKind};
 use crate::services::history::store::{AlertRow, RecordingRow, Store as HistoryStore, VoiceResult};
 use crate::services::history::HistoryTx;

@@ -148,26 +148,28 @@ The target is the code review's layout, adjusted as the brief asks. Four additio
 scanner/src/         the fresh crate (D13)
   main.rs            parse the arguments, boot::run()
   boot/              args, logging and the panic policy, version (BUILD_TAG), radio (open the
-                     AD9361 and the P25 core, build the tuner), state (AppState: handles to the
-                     services), mod (start-up: configuration, storage, services, the live site;
-                     shutdown flushes the recordings, history and learned state)
+                     AD9361 and the radio core, start the lane ring reader, build the tuner),
+                     state (AppState: handles to the services), mod (start-up: configuration,
+                     storage, services, the live site; shutdown flushes the recordings, history
+                     and learned state)
   util/              time (unix_ms, Stamp {mono, unix}, iso), atomic_file (tmp + fsync + rename)
   hardware/          drivers only
     ad9361.rs        IIO
     mmio.rs          UIO devices and maia-kmod's rxbuffer rings
-    core_version.rs  the P25 core's version register and what each version has
-    p25core/         regs (the three register banks), chain (one DDC and LSM), rings (DMA ring
-                     geometry and copies), irq (acknowledged; the readers poll), mod (the core:
-                     lanes, IQ taps, dibit rings, spectrometer)
+    radiocore/       regs (the lane banks), lane (one DDC and its packets' enable and tag),
+                     packet (the lane ring's packet, checked), irq (acknowledged; the reader
+                     polls), mod (the core: identity, lanes, lane ring, sample count, spectrum)
     presets/         DDC presets (a generated table) and their FIR RAM images
   radio/             the only way to move hardware
     tuner.rs         apply(TuningPlan), set_control, retune_lane, set_crystal_ppm; the crystal
                      LO shift; what each lane's NCO holds
     lease.rs         Normal | Switching | Scan
-    hw.rs            the board's RadioHw; on a development host a stand-in with no radio
+    hw.rs            the board's RadioHw (a new tuning takes a new tag); on a development host
+                     a stand-in with no radio
+    lane.rs          the traffic lanes
     plan.rs          the window planner
-    streams/         readers (the control chain's IQ and dibits; each lane's dibits, IQ and NID
-                     status), dibit_ring (ring tracking and the dibit production clock)
+    streams/         the lane ring's reader and the hub: each lane's IQ of its current tuning
+                     to its subscribers, in blocks with an air time
   dsp/               taps (SDRTrunk's), fsk4 (DifferentialDemod, ideal_phase, interpolation)
   protocol/
     events.rs        ControlEvent, TrafficEvent, LogicalChannel, SiteIdentity (the decoders'

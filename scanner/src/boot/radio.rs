@@ -1,5 +1,6 @@
-//! Bring up the radio: open the AD9361 and the P25 core, arm every chain idle, start the
-//! interrupt task, and build the tuner with the stored crystal correction and gain.
+//! Bring up the radio: open the AD9361 and the radio core, start the lane ring and its reader,
+//! the spectrometer and the interrupt task, and build the tuner with the stored crystal
+//! correction and gain.
 
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ use crate::services::config::radio::{self, RadioConfig};
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct HardwareInfo {
     pub core_version: Option<String>,
+    /// Traffic lanes in use.
     pub lanes: usize,
 }
 
@@ -41,50 +43,33 @@ pub async fn open(config: &RadioConfig, crystal_ppm: f64) -> Result<(Arc<RadioTu
 #[cfg(target_os = "linux")]
 async fn hardware(config: &RadioConfig) -> Result<(Hardware, HardwareInfo)> {
     use crate::hardware::ad9361::Ad9361;
-    use crate::hardware::p25core::{IqRing, Lane, P25Core};
+    use crate::hardware::radiocore::RadioCore;
+    use crate::radio::streams::{reader, Streams};
 
     let ad9361 = Ad9361::open().await?;
-    let (core, interrupts) = P25Core::take().await?;
-    let control = core.control();
-    control.set_lsm_enable(true);
-    control.set_dibit_dma(true);
-    // Without the DC blocker the slicer sees a lopsided inner/outer ratio for minutes after
-    // the PLL starts.
-    control.set_dc_block(true);
-    control.set_agc(true);
-    core.set_iq_enable(IqRing::Control, true);
-    core.set_iq_enable(IqRing::PreDiff, true);
-    let wanted = config.traffic_chains.map_or(2, usize::from).clamp(1, 2);
-    let lanes: Vec<Lane> = core.lanes().take(wanted).collect();
-    for lane in &lanes {
-        if let Some(c) = core.lane(*lane) {
-            // Armed but off: a retune switches the chain on for a call.
-            c.set_lsm_enable(false);
-            c.set_dibit_dma(true);
-            c.set_dc_block(true);
-            c.set_agc(true);
-            let rb = c.lsm_control();
-            if rb.enable || !rb.dibit_dma {
-                tracing::error!("{lane} control readback {rb:?}: expected off with its dibit DMA on");
-            }
+    let (core, interrupts) = RadioCore::take().await?;
+    let identity = core.identity();
+    // Every lane idle until the tuner loads a preset; the control lane's packets start then.
+    for n in 0..identity.lanes {
+        if let Some(l) = core.lane(n) {
+            l.set_packets(false, 0);
         }
     }
-    core.set_iq_enable(IqRing::Traffic, true);
+    core.set_ring(true);
     core.set_spectrometer_integrations(256);
     core.set_spectrometer_peak(false);
     core.set_spectrometer(true);
-    let rb = core.control().lsm_control();
-    if !(rb.enable && rb.dibit_dma && rb.dc_block && rb.agc) {
-        tracing::error!("control chain readback {rb:?}: expected every bit on");
-    }
-    let info = HardwareInfo { core_version: Some(core.version().to_string()), lanes: lanes.len() };
+    let wanted = config.traffic_chains.map_or(2, usize::from).clamp(1, 2);
+    let info = HardwareInfo { core_version: Some(identity.version.to_string()), lanes: wanted.min(identity.lanes - 1) };
     tokio::spawn(async move {
         if let Err(e) = interrupts.run().await {
             tracing::error!("interrupt task ended: {e:#}");
         }
     });
     let core = Arc::new(tokio::sync::Mutex::new(core));
-    Ok((Hardware { ad9361, core }, info))
+    let streams = Streams::new(identity.lanes);
+    tokio::spawn(reader::run(core.clone(), streams.clone()));
+    Ok((Hardware { ad9361, core, streams }, info))
 }
 
 #[cfg(not(target_os = "linux"))]

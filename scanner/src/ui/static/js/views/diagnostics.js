@@ -78,8 +78,7 @@ export function mount(el) {
         ['Control channel', mhz(t.control_hz)],
         ['Lane 1', mhz(t.lanes[0])],
         ['Lane 2', mhz(t.lanes[1])],
-        ['IQ chunks', `${i.iq_chunks ?? DASH} (${i.iq_dropped ?? 0} dropped)`],
-        ['Dibit bytes', `${i.dibit_bytes ?? DASH} (${i.dibit_resyncs ?? 0} resyncs, ${i.dibit_lost ?? 0} lost)`],
+        ['Control IQ', `${i.blocks ?? DASH} blocks (${i.dropped ?? 0} dropped, ${i.gaps ?? 0} after a gap)`],
       ];
       tuning.body.replaceChildren(h('table', { class: 'kv' }, ...rows.map(([k, v]) =>
         h('tr', null, h('th', { text: k }), h('td', { text: v })))));

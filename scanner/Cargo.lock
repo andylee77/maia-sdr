@@ -306,6 +306,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
+name = "core-pac"
+version = "0.1.0"
+dependencies = [
+ "vcell",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -786,13 +793,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "p25-pac"
-version = "0.1.0"
-dependencies = [
- "vcell",
-]
-
-[[package]]
 name = "page_size"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1042,10 +1042,10 @@ dependencies = [
  "axum",
  "axum-server",
  "clap",
+ "core-pac",
  "futures-util",
  "libc",
  "nix",
- "p25-pac",
  "page_size",
  "paste",
  "realfft",

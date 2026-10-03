@@ -1,11 +1,11 @@
-//! Runs the live protocol's control decoders on the control chain's streams and publishes what
+//! Runs the live protocol's control decoders on the control channel's IQ and publishes what
 //! they report: messages to the event log, identity and health to the site card.
 //!
-//! One decode thread owns the decoders. At a P25 site it runs two: the HDL LSM demodulator's
-//! dibits and the software C4FM demodulator on the IQ; only the chosen one's events are
-//! published. In auto mode the one passing more TSBKs wins, with hysteresis and a dwell, so a
-//! C4FM site moves to C4FM and an LSM site stays on LSM. At a DMR site the thread runs the DMR
-//! receiver on the IQ, and the HDL chain's dibits are not read.
+//! One decode thread owns the decoders. At a P25 site it runs two on the same IQ, the LSM and
+//! C4FM demodulators; only the chosen one's events are published. In auto mode the one passing
+//! more TSBKs wins, with hysteresis and a dwell, so a C4FM site moves to C4FM and an LSM site
+//! stays on LSM. At a DMR site the thread runs the DMR receiver. Messages carry the air time of
+//! the block they came in; a new tuning of the control channel starts the demodulators over.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,8 +22,8 @@ use crate::protocol::events::{ControlEvent, SiteIdentity, UnitKind};
 use crate::util::time::Stamp;
 use crate::protocol::p25::c4fm::C4fmDecoder;
 use crate::protocol::p25::control::P25Control;
-use crate::protocol::p25::lsm::LsmDecoder;
-use crate::radio::streams::{Input, StreamCounters, StreamSource, Wants};
+use crate::protocol::p25::lsm::{Carrier, LsmDecoder};
+use crate::radio::streams::{Block, StreamCounters, StreamSource};
 use crate::services::config::systems::{Modulation, Protocol};
 use crate::services::clock::Clock;
 use crate::services::packet_data::PacketData;
@@ -34,8 +34,8 @@ use crate::services::history::HistoryTx;
 use crate::trunking::learned::Learned;
 use crate::trunking::trunk::{TrunkInput, TrunkTx};
 
-/// Deliveries queued for the decode thread (about 6 s of IQ).
-const QUEUE: usize = 64;
+/// Blocks queued for the decode thread (about 5 s of IQ).
+const QUEUE: usize = 256;
 /// Health over this many one-second samples.
 const RATE_WINDOW: usize = 10;
 
@@ -75,8 +75,13 @@ pub struct ControlStatus {
     pub last_message_age_ms: Option<u64>,
     /// Share of one core the decode thread uses.
     pub cpu_pct: f64,
+    /// The carrier's offset from the tuning, signal minus NCO, from the decoder's own loop (the
+    /// DMR equaliser, the P25 LSM's carrier loop while a signal is on the channel).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub carrier_offset_hz: Option<f64>,
+    /// P25: the LSM decoder's carrier loop, each second.
+    #[serde(rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub carrier_loop: Option<Carrier>,
     pub channel_plan_entries: usize,
     pub neighbours: usize,
     pub grants: u64,
@@ -91,23 +96,23 @@ pub struct TsbkWindow {
     pub c4fm: u64,
 }
 
+/// The control channel's IQ delivered to the decode thread.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct InputStatus {
-    pub iq_chunks: u64,
-    pub iq_dropped: u64,
-    pub dibit_bytes: u64,
-    pub dibit_resyncs: u64,
-    pub dibit_lost: u64,
+    pub blocks: u64,
+    /// Blocks dropped because the decode thread was behind.
+    pub dropped: u64,
+    /// Blocks after missing samples.
+    pub gaps: u64,
 }
 
 /// The control decoders' counters, for the diagnostics.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "protocol", rename_all = "snake_case")]
 pub enum Counters {
-    /// The software LSM and C4FM demodulators run on the same IQ; `status.modulation` says whose
-    /// messages are used. The gateware LSM's dibits are framed beside them and counted only, to
-    /// compare with the software LSM (change 079).
-    P25 { lsm: Box<FramerStats>, c4fm: Box<FramerStats>, lsm_gateware: Box<FramerStats> },
+    /// The LSM and C4FM demodulators run on the same IQ; `status.modulation` says whose messages
+    /// are used.
+    P25 { lsm: Box<FramerStats>, c4fm: Box<FramerStats> },
     Dmr { messages: DmrStats, demod: DmrDemodStats },
 }
 
@@ -223,7 +228,6 @@ impl ModulationChoice {
 struct Running {
     stop: Arc<AtomicBool>,
     thread: std::thread::JoinHandle<()>,
-    sources: Vec<tokio::task::JoinHandle<()>>,
 }
 
 pub struct Receivers {
@@ -278,10 +282,6 @@ impl Receivers {
                 counters: None,
             };
         }
-        let wants = match context.protocol {
-            Protocol::P25 => Wants { iq: true, dibits: true },
-            Protocol::DmrTier3 => Wants { iq: true, dibits: false },
-        };
         let (tx, rx) = sync_channel(QUEUE);
         let stop = Arc::new(AtomicBool::new(false));
         let decoder = Decoder {
@@ -307,17 +307,14 @@ impl Receivers {
                 return;
             }
         };
-        let sources = source.control_streams(wants, tx, stop.clone(), counters);
-        *self.running.lock().await = Some(Running { stop, thread, sources });
+        source.control_streams(tx, stop.clone(), counters);
+        *self.running.lock().await = Some(Running { stop, thread });
     }
 
     /// Stop the receivers and wait for the decode thread to finish.
     pub async fn stop(&self) {
         let Some(r) = self.running.lock().await.take() else { return };
         r.stop.store(true, Ordering::Relaxed);
-        for s in &r.sources {
-            s.abort();
-        }
         let _ = tokio::task::spawn_blocking(move || r.thread.join()).await;
         if let Ok(mut v) = self.view.lock() {
             v.status.running = false;
@@ -341,13 +338,7 @@ impl Receivers {
         status.last_message_age_ms = last.map(|t| t.elapsed().as_millis() as u64);
         if let Ok(c) = self.counters.lock() {
             let l = |a: &std::sync::atomic::AtomicU64| a.load(Ordering::Relaxed);
-            status.input = InputStatus {
-                iq_chunks: l(&c.iq_chunks),
-                iq_dropped: l(&c.iq_dropped),
-                dibit_bytes: l(&c.dibit_bytes),
-                dibit_resyncs: l(&c.dibit_resyncs),
-                dibit_lost: l(&c.dibit_lost),
-            };
+            status.input = InputStatus { blocks: l(&c.blocks), dropped: l(&c.dropped), gaps: l(&c.gaps) };
         }
         status
     }
@@ -390,14 +381,8 @@ impl Cpu {
     }
 }
 
-/// Unpack dibit ring bytes: four dibits a byte, the first in the low bits.
-fn unpack(bytes: &[u8], out: &mut Vec<u8>) {
-    out.clear();
-    out.extend(bytes.iter().flat_map(|b| [b & 3, (b >> 2) & 3, (b >> 4) & 3, (b >> 6) & 3]));
-}
-
 impl Decoder {
-    fn run(self, context: Context, rx: Receiver<Input>) {
+    fn run(self, context: Context, rx: Receiver<Block>) {
         tracing::info!("{} receivers on site {}", protocol_name(context.protocol), context.site);
         match context.protocol {
             Protocol::P25 => self.run_p25(&context, rx),
@@ -405,7 +390,7 @@ impl Decoder {
         }
     }
 
-    fn next(&self, rx: &Receiver<Input>) -> Option<Option<Input>> {
+    fn next(&self, rx: &Receiver<Block>) -> Option<Option<Block>> {
         if self.stop.load(Ordering::Relaxed) {
             return None;
         }
@@ -416,52 +401,51 @@ impl Decoder {
         }
     }
 
-    fn run_p25(&self, context: &Context, rx: Receiver<Input>) {
+    fn run_p25(&self, context: &Context, rx: Receiver<Block>) {
         let mut lsm = P25Control::new("control");
         let mut c4fm = P25Control::new("control");
-        let mut lsm_gateware = P25Control::new("control");
         if let Some(l) = &self.learned {
             let bands = l.bands();
             lsm.seed_bands(&bands);
             c4fm.seed_bands(&bands);
-            lsm_gateware.seed_bands(&bands);
         }
         let mut demod = C4fmDecoder::new();
         let mut lsm_demod = LsmDecoder::new();
-        let mut unpublished = Vec::new();
         let mut choice = ModulationChoice::new(context.modulation);
         let mut rates = RateWindow::default();
         let mut cpu = Cpu::new();
         let mut second = Instant::now();
-        let mut dibits = Vec::new();
         let mut events = Vec::new();
+        // The LSM's carrier offset over the second, while a signal is on the channel.
+        let mut offsets = Vec::new();
         self.set(|s| s.modulation = Some(if choice.c4fm() { "c4fm" } else { "lsm" }));
-        while let Some(input) = self.next(&rx) {
+        while let Some(block) = self.next(&rx) {
             let t0 = Instant::now();
-            let now = Stamp::now();
-            match input {
-                Some(Input::Dibits { bytes, reset }) => {
-                    if reset {
-                        lsm_gateware.retuned();
-                    }
-                    unpack(&bytes, &mut dibits);
-                    lsm_gateware.push(&dibits, now, &mut unpublished);
-                    unpublished.clear();
+            if let Some(b) = block {
+                if b.retuned {
+                    demod = C4fmDecoder::new();
+                    lsm_demod = LsmDecoder::new();
                 }
-                Some(Input::Iq(iq)) => {
-                    self.iq_tap.push(&iq);
-                    c4fm.push_c4fm(&mut demod, &iq, now, &mut events);
-                    if choice.c4fm() {
-                        self.publish("p25", now, &events);
-                    }
-                    events.clear();
-                    lsm.push_lsm(&mut lsm_demod, &iq, now, &mut events);
-                    if !choice.c4fm() {
-                        self.publish("p25", now, &events);
-                    }
-                    events.clear();
+                if b.retuned || b.gap {
+                    // The frames in progress are lost.
+                    lsm.retuned();
+                    c4fm.retuned();
                 }
-                None => {}
+                self.iq_tap.push(&b.iq);
+                c4fm.push_c4fm(&mut demod, &b.iq, b.at, &mut events);
+                if choice.c4fm() {
+                    self.publish("p25", b.at, &events);
+                }
+                events.clear();
+                lsm.push_lsm(&mut lsm_demod, &b.iq, b.at, &mut events);
+                if !choice.c4fm() {
+                    self.publish("p25", b.at, &events);
+                }
+                events.clear();
+                let carrier = lsm_demod.demod.carrier();
+                if !carrier.held {
+                    offsets.push(f64::from(carrier.offset_hz));
+                }
             }
             cpu.add(t0.elapsed());
             if second.elapsed() >= Duration::from_secs(1) {
@@ -470,6 +454,10 @@ impl Decoder {
                     let label = if choice.c4fm() { "C4FM" } else { "LSM" };
                     let (c, l) = choice.window_totals();
                     self.log.system("modulation", format!("control channel decoded as {label} (TSBKs in 20 s: C4FM {c}, LSM {l})"));
+                    // The lanes take it at their next tuning.
+                    if let Some(trunk) = &self.trunk {
+                        let _ = trunk.try_send(TrunkInput::Modulation { c4fm: choice.c4fm() });
+                    }
                 }
                 let active = if choice.c4fm() { &c4fm } else { &lsm };
                 let s = active.stats();
@@ -478,38 +466,43 @@ impl Decoder {
                 let a = active.announced();
                 let modulation = if choice.c4fm() { "c4fm" } else { "lsm" };
                 let (c, l) = choice.window_totals();
+                let offset = (!choice.c4fm() && !offsets.is_empty())
+                    .then(|| (offsets.iter().sum::<f64>() / offsets.len() as f64).round());
+                offsets.clear();
+                let carrier = lsm_demod.demod.carrier();
                 self.set(|v| {
                     v.modulation = Some(modulation);
                     v.tsbks_20s = Some(TsbkWindow { lsm: l, c4fm: c });
                     v.msgs_per_s = per_s;
                     v.ok_pct = pct;
                     v.cpu_pct = cpu.pct;
+                    v.carrier_offset_hz = offset;
+                    v.carrier_loop = Some(carrier);
                     v.channel_plan_entries = a.bands.len();
                     v.neighbours = a.neighbours.len();
                 });
-                self.set_counters(Counters::P25 {
-                    lsm: Box::new(lsm.stats().clone()),
-                    c4fm: Box::new(c4fm.stats().clone()),
-                    lsm_gateware: Box::new(lsm_gateware.stats().clone()),
-                });
+                self.set_counters(Counters::P25 { lsm: Box::new(lsm.stats().clone()), c4fm: Box::new(c4fm.stats().clone()) });
             }
         }
         tracing::info!("P25 receivers on site {} stopped", context.site);
     }
 
-    fn run_dmr(&self, context: &Context, rx: Receiver<Input>) {
+    fn run_dmr(&self, context: &Context, rx: Receiver<Block>) {
         // The calls on the control repeater's other timeslot are followed from its messages.
         let mut dmr = DmrControl::new(context.lcn_hz.clone()).keep_calls();
         let mut rates = RateWindow::default();
         let mut cpu = Cpu::new();
         let mut second = Instant::now();
         let mut events = Vec::new();
-        while let Some(input) = self.next(&rx) {
+        while let Some(block) = self.next(&rx) {
             let t0 = Instant::now();
-            if let Some(Input::Iq(iq)) = input {
-                self.iq_tap.push(&iq);
-                dmr.push(&iq, &mut events);
-                let at = Stamp::now();
+            if let Some(b) = block {
+                if b.retuned {
+                    dmr.retuned();
+                }
+                self.iq_tap.push(&b.iq);
+                dmr.push(&b.iq, &mut events);
+                let at = b.at;
                 self.publish("dmr", at, &events);
                 events.clear();
                 let messages = dmr.take_calls();
