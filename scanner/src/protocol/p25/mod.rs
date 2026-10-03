@@ -5,6 +5,7 @@ pub mod c4fm;
 pub mod control;
 pub mod fec;
 pub mod framer;
+pub mod lsm;
 pub mod pdu;
 pub mod traffic;
 pub mod tsbk;

@@ -54,6 +54,12 @@ fn sync_dibits() -> [u8; 24] {
     d
 }
 
+/// The sync dibits as ideal phases, what soft sync correlates against (SDRTrunk
+/// `syncPatternToSymbols`).
+pub(super) fn sync_symbols() -> [f32; 24] {
+    sync_dibits().map(ideal_phase)
+}
+
 
 const EQUALIZER_LOOP_GAIN: f32 = 0.15;
 const EQUALIZER_MAXIMUM_PLL: f32 = PI / 3.0;
@@ -93,16 +99,16 @@ impl Correction {
 }
 
 /// SDRTrunk `P25P1SoftSyncDetectorScalar`.
-struct SoftSync {
+pub(super) struct SoftSync {
     symbols: [f32; 48],
     ptr: usize,
 }
 
 impl SoftSync {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         SoftSync { symbols: [0.0; 48], ptr: 0 }
     }
-    fn process(&mut self, s: f32, pattern: &[f32; 24]) -> f32 {
+    pub(super) fn process(&mut self, s: f32, pattern: &[f32; 24]) -> f32 {
         self.symbols[self.ptr] = s;
         self.symbols[self.ptr + 24] = s;
         self.ptr = (self.ptr + 1) % 24;
@@ -153,10 +159,7 @@ pub struct C4fmDemodulator {
 impl C4fmDemodulator {
     pub fn new(samples_per_symbol: f64) -> Self {
         let sync_dibits = sync_dibits();
-        let mut sync_symbols = [0.0f32; 24];
-        for x in 0..24 {
-            sync_symbols[x] = ideal_phase(sync_dibits[x]);
-        }
+        let sync_symbols = sync_symbols();
         let sps = samples_per_symbol;
         let buffer_len = BUFFER_WORKSPACE_LENGTH
             + ((DIBIT_LENGTH_SYNC + DIBIT_LENGTH_NID + 2) as f64 * sps).ceil() as usize;

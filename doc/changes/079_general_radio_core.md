@@ -117,11 +117,13 @@ filtering, so around ten lanes need step 5 (the filters in the PL), which brings
 Each step keeps the units running on core 0.3.0 until the cutover.
 
 1. **Software LSM in the scanner (PS only).** Port SDRTrunk's `P25P1DecoderLSM` and
-   `P25P1DemodulatorLSM`, with names following the Java as in the C4FM and DMR ports;
-   `p25-httpd/src/lsm` (the f32 model the gateware was validated against) is the cross-check. Run
-   it beside the gateware LSM on the control channel's IQ and on chain 1's IQ.
-   *Gate:* TSBKs and voice frames at least the gateware's on Clay County, the P25 tests and the
-   replay corpus unchanged, CPU measured. Chain 1 also gains C4FM voice.
+   `P25P1DemodulatorLSM`, with names following the Java as in the C4FM and DMR ports. The
+   reference is SDRTrunk itself, run headless on Andy's SDRTrunk recordings
+   (`tools/sdrtrunk_lsm_reference.py`); then run the port beside the gateware LSM on the control
+   channel's IQ and on chain 1's IQ.
+   *Gate:* SDRTrunk's frames on the recordings, TSBKs and voice frames at least the gateware's on
+   Clay County, the P25 tests and the replay corpus unchanged, CPU measured. Chain 1 also gains
+   C4FM voice.
 2. **A fixed-point model of the polyphase bank and the lane synthesizer (host only).** The model is
    what the HDL must match sample for sample. Feed it real wideband captures from unit A, and the
    existing 50 kSPS captures moved to worst-case offsets (halfway between bins).
@@ -157,3 +159,26 @@ Each step keeps the units running on core 0.3.0 until the cutover.
 
 - **2026-10-03.** Review of core 0.3.0 and the PS (Andy's question: what runs on the PL and the PS,
   and where the demodulators should run). Design approved. Build backed up and tagged.
+- **2026-10-03, step 1 (branch `079-lsm`).** `scanner::protocol::p25::lsm` ports SDRTrunk's LSM
+  decoder with SDRTrunk's own taps. Measured on the 313 SDRTrunk recordings (50 kSPS
+  `_baseband.wav`, Apr 15 - May 3; Clay County is CQPSK in Andy's SDRTrunk playlist), against
+  SDRTrunk's decoder on the same files:
+  - **Dibits:** 99.85 % agreement on 234 recordings. Most of the other 76 are 2-6 s traffic
+    recordings whose silent tails lower the figure; their LDU counts equal SDRTrunk's.
+  - **Frames, through the scanner's framer:** SDRTrunk 116,347 TSDUs and 3,647 / 3,390 LDU1 /
+    LDU2; the port 112,721 and 3,635 / 3,374. The whole difference is in the 8 recordings whose
+    carrier offset is above 440 Hz (the others are below 270 Hz). There the loop has two stable
+    points, the true one and one π/2 away, both inside its ±π/3 limit, and either decoder can
+    take the wrong one: the port lost 1 control and 3 traffic recordings that way, SDRTrunk a
+    different 1 and 3. Live SDRTrunk avoids it by retuning from the loop's error; the scanner
+    keeps offsets small by crystal tracking (A's control channel: about 5 Hz).
+  - **SDRTrunk's LSM baseband low-pass does not converge** (67 taps: +31 dB at 12 kHz, +39 dB at
+    12.5 kHz). The gateware's 121-tap filter has the same band edges and −65 dB there. On the
+    recordings the two give the same frames apart from the trap recordings, so the port keeps
+    SDRTrunk's. It matters again for step 5.
+  - **Input at ±1.0 full scale, as SDRTrunk's:** the AGC's 500x limit is what keeps a quiet
+    channel's noise small. At raw 16-bit scale the loop wandered onto its limit before the
+    signal came and one control recording decoded nothing.
+  - SDRTrunk's demodulator throws on a block shorter than the one before (live SDRTrunk sends
+    fixed blocks); the harness leaves out each file's last partial block.
+  - Next: CPU on an A9, then the port beside the gateware LSM on unit A.
