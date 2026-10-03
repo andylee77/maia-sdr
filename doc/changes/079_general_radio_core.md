@@ -418,5 +418,19 @@ touches anything else.
     as signal minus NCO, DMR's convention, so the crystal tracker takes both the same way.
   - **A DDC settles in 53-55 output samples** (about 1.1 ms) at every preset, with half of it
     the delay: the reader drops that much after a new tag, where the IQ path dropped 200 ms.
-  - Host tests 432; the ARM check clean. Next: the device tree and the DMA driver in tezuka_fw,
-    an image, unit A.
+  - Host tests 432; the ARM check clean.
+- **2026-10-03, the image on unit A** (`2026-10-03-radio-core-image1`; tezuka_fw 385f52f with the
+  device tree's rings and maia-kmod selected, 96b16c3 so a changed device tree rebuilds the
+  kernel; B had no USB link to the PC). The 0.3.0 boot files are on A's card in
+  `boot_backup_core030`. Clay County, the first 5 minutes:
+  - **The core:** `/dev/p25-lanes` 128 x 16 KB; each lane's packets continuous (no stale, lost
+    or missed packet, no check failure); 54 samples of settling dropped per tuning; 0.035 % of
+    the AD9361's samples at full scale.
+  - **Control channel (LSM):** 808 TSBKs in 20 s (40.6 a second, 99.8 % passing; C4FM 710);
+    carrier offset +4 Hz; 17,423 blocks, none dropped, no gap.
+  - **Lanes:** lane 1 followed TG 850 (1,026 voice frames, each call ended on its talk
+    complete) with an HDU for each of its 6 calls; lane 2 on the data channel, 9,778 NIDs.
+  - **CPU:** the scanner 81 % of one core (the control decoder 33 %, the lanes on the runtime
+    workers 48 %); the system three quarters idle.
+  - Next: a longer run against the step 1 numbers, the bench agent and fbench on the new map,
+    the FIR speed-up.
