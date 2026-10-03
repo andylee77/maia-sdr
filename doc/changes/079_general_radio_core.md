@@ -163,7 +163,8 @@ The spectrometer's inputs are registered in `sync` (064's suggested fix for the 
 ### The lane packet
 
 A lane fills a packet as its DDC delivers samples (50 kSPS) and hands it to the lane ring whole.
-Packets are 512 words of 64 bits (4 KB, a multiple of the 128 B burst, four to a sub-buffer).
+Packets are 512 words of 64 bits (4 KB, a multiple of the 128 B burst, four to a sub-buffer): an
+8-word header and 504 words of IQ (1008 samples, 20.16 ms). Unused header bits are zero.
 
 | Word | Bits | Field |
 |---|---|---|
@@ -171,12 +172,17 @@ Packets are 512 words of 64 bits (4 KB, a multiple of the 128 B burst, four to a
 | 0 | 19:16 | format version (1) |
 | 0 | 23:20 | lane (0-15) |
 | 0 | 31:24 | flags: bit 0 `lost` (samples were dropped before this packet), bit 1 `retuned` (first packet with a new tag), bit 2 `last` (the lane was disabled after this packet) |
-| 0 | 47:32 | count: valid samples (at most 1016; fewer when a tag change or a disable closes the packet) |
+| 0 | 47:32 | count: valid samples (at most 1008; fewer when a tag change or a disable closes the packet) |
 | 0 | 63:48 | tag: the lane's tag when its first sample was made |
 | 1 | 63:0 | sample index: the AD9361 sample count (since `sdr_reset` was released) when the DDC made the first sample |
 | 2 | 47:0 | power: the sum of I² + Q² over the valid samples |
+| 2 | 63:48 | peak: the largest \|I\| or \|Q\| among them |
 | 3 | 27:0 | the lane's NCO word for the first sample |
-| 4-511 | | IQ, two samples a word as today (`[15:0]` I, `[31:16]` Q, then the next sample); unused words are zero |
+| 3 | 47:32 | sequence: the lane's packet count (wraps) |
+| 4 | 31:0 | ADC clips: the running count of AD9361 samples at full scale (I or Q at ±2047), shared by the lanes; the difference between packets is the overload in between |
+| 5-6 | | reserved (3b's channel fields) |
+| 7 | 31:0 | check: the XOR of every 32-bit half of the packet's other 1023 halves, so a stale cache line (the driver invalidates L1 before L2, F8) is caught |
+| 8-511 | | IQ, two samples a word as today (`[15:0]` I, `[31:16]` Q, then the next sample); unused words are zero |
 
 - **Tag.** The PS writes it with the NCO in one register bank, so it lands after the NCO. A tag
   change closes the current packet, so a packet never mixes two tunings. The first samples after a
@@ -196,7 +202,7 @@ does not answer (a domain in reset), and completes a write with no byte strobes.
 
 | Offset | Bank | Registers |
 |---|---|---|
-| 0x000 | control (AXI-Lite domain) | `product_id` 0x72616431 ("rad1"); `version` (0.1.0); `capabilities` (lanes 3, packet words 2^9, header words 4, spectrum and capture present); `control.sdr_reset`; `interrupts` (read to clear: lane ring, spectrum, capture) |
+| 0x000 | control (AXI-Lite domain) | `product_id` 0x72616431 ("rad1"); `version` (1.0.0); `capabilities` (lanes 3, packet words 2^9, header words 8, spectrum and capture present); `control.sdr_reset`; `interrupts` (read to clear: lane ring, spectrum, capture) |
 | 0x020, 0x040, 0x060 | lane 0, 1, 2 | the DDC registers at today's offsets (coefficient address and data, decimation, frequency, stage control); `lane_control` (enable, tag); `lane_status` (lost, sticky, alone in its word) |
 | 0x080 | lane ring | enable; last completed sub-buffer; committed bursts (32 bits, for lap checks); next address; overflow (sticky, alone); sample count (low word latches the high) |
 | 0x0A0 | spectrum | as today's spectrometer bank |
@@ -209,22 +215,25 @@ touches anything else.
 
 | Device | Base | Size | Sub-buffers |
 |---|---|---|---|
-| `radio-lanes` | 0x1900_0000 | 2 MB | 128 × 16 KB (3.4 s at three lanes) |
-| `radio-spectrum` | 0x2100_0000 | 64 KB | 2 × 32 KB (as today) |
-| `radio-capture` | 0x2200_0000 | 16 MB | 16 × 1 MB (as today) |
+| `p25-lanes` | 0x1900_0000 | 2 MB | 128 × 16 KB (3.4 s at three lanes) |
+| `p25-wideband-spec` | 0x2100_0000 | 64 KB | 2 × 32 KB (as today) |
+| `p25-wideband-iq` | 0x2200_0000 | 16 MB | 16 × 1 MB (as today) |
 
-- The UIO node becomes `radio-core@7c460000` (same address and interrupt); the seven old ring
-  nodes and their carve-outs go.
+- The UIO node stays `p25-core@7c460000` and the spectrum and capture keep their names, so the
+  bench agent's image detection and capture ring carry over; the other six old ring nodes and
+  their carve-outs go.
 - **The DMA driver goes into the image.** The P25 defconfig never selected maia-kmod: the units
   load a module left over from an old Maia build in the persistent Buildroot target (053), and a
   clean image would have no ring devices. 3a selects it with its init script.
-- The new bitstream goes to `bitstream/radio/` with its own package; the 0.3.0 one stays for a
-  rollback (and in `_archive/build_2026-10-03_p25-core-0.3.0`).
+- The new bitstream replaces `bitstream/p25/system_top.xsa` (Andy: build in the existing package
+  and project; 0.3.0 is kept in `_archive/build_2026-10-03_p25-core-0.3.0` and the
+  `build/p25-core-0.3.0` tags).
 
 ### The PS side
 
-- A `hardware::radiocore` backend and a PAC generated from the core's SVD (`scanner/radio-pac`,
-  inside what the image's scanner package already copies). The scanner of this change needs the
+- A `hardware::radiocore` backend and a PAC generated from the core's SVD in `scanner/core-pac`
+  (inside what the image's scanner package already copies). `p25-httpd/p25-pac` stays the 0.3.0
+  map, so p25-httpd still builds until it leaves the repo. The scanner of this change needs the
   radio core; unit B keeps the 0.3.0 image until A has run the new one.
 - One lane reader splits the ring into lanes: lane 0 is the control channel's IQ, lanes 1 and 2
   the traffic lanes. Every lane decodes in software: P25 with the site's modulation (LSM or C4FM),
@@ -239,15 +248,16 @@ touches anything else.
 
 ### Build
 
-- `maia-hdl/radio_hdl/` (the core), `maia-hdl/ip/radio-core/` (packaging),
-  `maia-hdl/projects/fishball7020_radio/` (three HP1 masters, the same clocks, interrupt and
-  address), `build_fpga.bat --radio`: a timing failure is an error (as `--hwval`), and a
-  route-design hook writes the hierarchical utilization report.
+- In place, in the existing package and project: `p25_hdl/p25_top.py` becomes the lane ring core
+  (`P25Core` 1.0.0, product "rad1"), with the IP packaging, `projects/fishball7020_p25`
+  (three HP1 masters: lanes, spectrum, capture) and `build_fpga.bat --p25` updated. A timing
+  failure becomes an error (as `--hwval`), and a route-design hook writes the hierarchical
+  utilization report.
 - Vivado runs only in the main checkout (the ADI submodule is there); simulation runs anywhere.
 
 ### Tests and gates
 
-- **Simulation** (`maia-hdl/test/test_radio_top.py`, the timeout bus model): no access hangs (a
+- **Simulation** (`maia-hdl/test/test_p25_top.py`, rewritten; the timeout bus model): no access hangs (a
   vacant address, a bank in reset, a write without byte strobes); every register reads back; IQ
   through the DDCs into packets (the simulation switch for the input crossing, as hwval's); a tag
   change closes a packet; a disable flushes; `lost`, the sample index and the power are exact
