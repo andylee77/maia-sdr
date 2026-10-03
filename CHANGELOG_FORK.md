@@ -5,6 +5,28 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-03] 079: a general radio core: the lanes' IQ in the PL, every demodulator in software (steps 1, 3a, 4)
+
+**Branch:** fishball-p25 (with tezuka_fw fishball-dev 385f52f, 96b16c3)
+**BUILD_TAG:** `2026-10-03-radio-core-image1`
+**Bake required:** YES (core 1.0.0; the scanner reads no older core).
+
+- **Step 1, the software LSM:** SDRTrunk's LSM decoder ported (`protocol::p25::lsm`), with
+  change 059's hold and 0.65 rad clamp after SDRTrunk's loop trapped on traffic-channel gaps;
+  on 313 SDRTrunk recordings it passes more NIDs, TSDUs and LDUs than SDRTrunk.
+- **Step 3a, the lane ring core 1.0.0** (product "rad1"): the three DDCs are lanes whose IQ is
+  cut into 4 KB tagged packets (sample index, power, peak, NCO, sequence, ADC clips, an XOR
+  check) on one ring (`p25-lanes`); the LSM chains, dibit rings and pre-diff taps are gone; the
+  register bridge answers every access; the DMA addresses only packets already in block RAM.
+  Timing met (worst setup +0.091 ns); 57.7 % of slices, 68 DSPs (0.3.0: 91.6 %, 172).
+- **Step 4, the scanner on it:** `hardware::radiocore`; one ring reader hands each lane's IQ of
+  its current tuning to its receivers with an air time; a new tuning's tag replaces the 200 ms
+  settle timers; every lane demodulates in software on the control channel's modulation; the
+  crystal tracker and the coast decision read the software loops; the scan probes P25 on IQ.
+- **tezuka_fw:** the device tree's rings, maia-kmod built by the P25 defconfig, and the image
+  build rebuilds the kernel when a device tree changes.
+- Record: `doc/changes/079_general_radio_core.md`.
+
 ## [2026-10-03] 078: full-range frequency sweep (`rf.freq_sweep`); maintenance mode stops the scanner
 
 **Branch:** fishball-p25
