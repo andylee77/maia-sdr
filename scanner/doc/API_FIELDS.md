@@ -786,7 +786,7 @@ The alert tones heard in followed calls (console warbles and beeps, two-tone pag
 | `items[].tg_name` | string or null |  | The talkgroup's name. |
 | `items[].source_name` | string or null |  | The sending radio's name. |
 | `items[].recorded` | bool | `true` | Its call's recording is kept (`/api/v1/recordings/{call_id}`). |
-| `items[].dispatch` | object or null |  | The call that carried what it announced: its own call when its voice runs on 4 s past the tone, else the first of the sending radio's next transmissions on the talkgroup with 4 s of voice (each within 5 s of the last, until another radio talks); null when none, or not stored yet. |
+| `items[].dispatch` | object or null |  | The call that carried what it announced: its own call when its voice runs on 4 s past the tone, else the first of the sending radio's next transmissions on the talkgroup with 4 s of voice (each within 10 s of its last; other radios' between are passed over), else the longest of those with 3 s; null when none, or not stored yet. |
 | `items[].dispatch.call_id` | number | `8281` | That call. |
 | `items[].dispatch.started_ms` | number | `1791028834074` | Its grant. |
 | `items[].dispatch.voice_ms` | number | `9720` | Its voice (past the tone when it is the alert's own call). |

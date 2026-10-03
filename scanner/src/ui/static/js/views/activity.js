@@ -19,7 +19,8 @@ const PERIODS = [
 ];
 const ALERT_NOTE = 'Found in the decoded audio of followed calls. The vocoder rebuilds a tone to within about 1 % of what '
   + 'was sent, so the same tones read a little differently from call to call. The dispatch is what the alert announced: '
-  + 'the next transmission of the same radio on the talkgroup with 4 s of voice, each key-up within 5 s of the last.';
+  + 'the next transmission of the same radio on the talkgroup with 4 s of voice, each of its key-ups within 10 s of its last '
+  + '(another radio\'s answer between is passed over); without one, the longest of them with 3 s.';
 const GRANT_NOTE = 'Encrypted and not-followed calls show grant time: from the grant to its last update on the control channel. '
   + 'It includes hang time and any other radio that keyed up on the grant, and is credited to the radio granted. '
   + 'Voice is decoded on the voice channel.';
@@ -346,7 +347,7 @@ export function mount(host) {
         h('td', { text: unitLabel(a.source, a.source_name) }),
         h('td', null, h('span', { class: 'badge alert', text: kindLabel(a.kind) })),
         h('td', { text: tonesLabel(a.tones_hz) }),
-        h('td', { text: a.dispatch ? dur(a.dispatch.voice_ms) : DASH, title: a.dispatch ? `Call #${a.dispatch.call_id}` : 'No transmission of 4 s from the same radio followed within 5 s' }),
+        h('td', { text: a.dispatch ? dur(a.dispatch.voice_ms) : DASH, title: a.dispatch ? `Call #${a.dispatch.call_id}` : 'No transmission of 3 s from the same radio followed, each key-up within 10 s' }),
         h('td', null, playAlert(a)))))
       : null;
     alertCard.body.replaceChildren(groups, ...(newest ? [h('h3', { text: 'Newest' }), newest] : []), h('p', { class: 'card-note', text: ALERT_NOTE }));

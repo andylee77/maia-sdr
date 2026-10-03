@@ -382,31 +382,38 @@ pub async fn alerts(State(s): State<Arc<AppState>>, Query(w): Query<Window>) -> 
 /// How far after an alert's call its dispatch is looked for.
 const FOLLOW_SPAN_MS: u64 = 120_000;
 /// The sending radio's next transmission follows its last within this.
-const FOLLOW_GAP_MS: u64 = 5_000;
+const FOLLOW_GAP_MS: u64 = 10_000;
 /// The least voice a dispatch has (a shorter key-up carries no message).
 const DISPATCH_MIN_MS: u64 = 4_000;
+/// The least voice of a short dispatch, taken when none of the radio's key-ups has 4 s.
+const SHORT_DISPATCH_MIN_MS: u64 = 3_000;
 
 /// The call that carried what an alert announced: a console sends its alert, then keys again to
-/// speak (sometimes a short, silent key-up between). The alert's own call when its voice runs on
-/// 4 s past the tone; else the first of the sending radio's next transmissions on the talkgroup
-/// with 4 s of voice, each within 5 s of the last, until another radio talks. `calls` are the
-/// talkgroup's from the alert's call on, oldest first.
+/// speak (sometimes after a short, silent key-up, or after a unit answers). The alert's own call
+/// when its voice runs on 4 s past the tone; else the first of the sending radio's next
+/// transmissions on the talkgroup with 4 s of voice, each within 10 s of its last (other radios'
+/// between are passed over); else the longest of those with 3 s. `calls` are the talkgroup's
+/// from the alert's call on, oldest first.
 fn dispatch_of(a: &AlertRow, calls: &[CallRow]) -> Option<Dispatch> {
     let own = calls.iter().find(|c| c.call_id == a.call_id && c.started_ms == a.call_started_ms)?;
     let tone_end = a.offset_ms + a.duration_ms;
     let mut last_end = own.ended_ms;
     let mut next: Option<&CallRow> = None;
-    for c in calls.iter().filter(|c| c.started_ms > own.started_ms) {
-        if c.started_ms.saturating_sub(last_end) > FOLLOW_GAP_MS || c.source != a.source {
+    let mut short: Option<&CallRow> = None;
+    for c in calls.iter().filter(|c| c.started_ms > own.started_ms && c.source == a.source) {
+        if c.started_ms.saturating_sub(last_end) > FOLLOW_GAP_MS {
             break;
         }
         if c.voice_ms >= DISPATCH_MIN_MS {
             next = Some(c);
             break;
         }
+        if c.voice_ms >= SHORT_DISPATCH_MIN_MS && !short.is_some_and(|s| s.voice_ms >= c.voice_ms) {
+            short = Some(c);
+        }
         last_end = c.ended_ms;
     }
-    match next {
+    match next.or(short) {
         _ if own.voice_ms >= tone_end + DISPATCH_MIN_MS => Some(Dispatch {
             call_id: own.call_id,
             started_ms: own.started_ms,
@@ -555,11 +562,38 @@ mod tests {
         // 08:00:32: straight into the dispatch.
         let calls = [call(8280, 0, 1_800, 1013, 1_080), call(8281, 1_800, 12_040, 1013, 9_720), call(8282, 12_040, 14_726, 3_400_031, 1_440)];
         assert_eq!(dispatch_of(&alert(8280, 0, 1_000), &calls).map(|d| d.call_id), Some(8281));
-        // Short key-ups are passed over; a pause over 5 s ends the console's turn.
+        // Short key-ups are passed over; a pause over 10 s ends the console's turn.
         let calls = [call(1, 0, 1_400, 1013, 900), call(2, 2_000, 5_500, 1013, 3_000), call(3, 6_000, 13_000, 1013, 6_500), call(4, 13_100, 30_000, 1013, 16_000)];
         assert_eq!(dispatch_of(&alert(1, 0, 880), &calls).map(|d| d.call_id), Some(3));
-        let late = [call(1, 0, 1_400, 1013, 900), call(2, 7_000, 15_000, 1013, 7_500)];
+        let late = [call(1, 0, 1_400, 1013, 900), call(2, 12_000, 20_000, 1013, 7_500)];
         assert_eq!(dispatch_of(&alert(1, 0, 880), &late), None);
+    }
+
+    #[test]
+    fn a_units_answer_between_is_passed_over() {
+        // Clay, 09:21:35: the warble, a short key-up, a unit answers, then the dispatch.
+        let calls = [
+            call(8718, 0, 2_240, 1013, 1_620),
+            call(8719, 2_240, 6_190, 1013, 3_060),
+            call(8720, 6_190, 9_690, 3_597_051, 2_520),
+            call(8722, 9_690, 17_440, 1013, 6_660),
+        ];
+        let d = dispatch_of(&alert(8718, 0, 1_160), &calls).unwrap();
+        assert_eq!((d.call_id, d.voice_ms, d.offset_ms), (8722, 6_660, 0));
+    }
+
+    #[test]
+    fn without_4_s_the_longest_3_s_key_up_is_the_dispatch() {
+        // Clay, 09:08:38: the warble, a 3.96 s message, a unit answers, the console acknowledges.
+        let calls = [
+            call(8622, 0, 2_600, 1013, 1_260),
+            call(8623, 2_600, 9_200, 1013, 3_960),
+            call(8624, 10_400, 13_200, 3_402_042, 1_620),
+            call(8625, 13_200, 16_900, 1013, 1_260),
+        ];
+        assert_eq!(dispatch_of(&alert(8622, 0, 1_200), &calls).map(|d| d.call_id), Some(8623));
+        let short = [call(1, 0, 1_400, 1013, 900), call(2, 2_000, 5_000, 1013, 2_900)];
+        assert_eq!(dispatch_of(&alert(1, 0, 880), &short), None);
     }
 
     #[test]

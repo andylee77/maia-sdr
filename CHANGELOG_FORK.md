@@ -126,6 +126,10 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   details and bookmarks per call; the lane pickers list the week's clear talkgroups only.
 - **Fix:** a restart with 2,260 recordings on the card listed none (each file's stat scans the
   FAT directory: 16 s, past the limit); the listing reads names and takes sizes from the history.
+- **Fix:** an alert's dispatch is found past a unit's answer to the console (the search had
+  stopped at the first other radio), with up to 10 s between the console's key-ups (5 s before);
+  when none of them has 4 s of voice, the longest with 3 s is taken. 11 of the 12 alerts in A's
+  history now have one (9 before).
 - **Quiet consoles:** the AGC starts each transmission from its radio's level over its last 5
   transmissions within 30 minutes, tracks the first 500 ms fast and goes to +24 dB; on Clay's
   recordings 82 % of calls now land within 6 dB of the target (41 % before), recordings

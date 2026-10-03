@@ -1497,10 +1497,12 @@ From the brief:
     points), `/ws/live` (`alert`) and `/ws/events`, `/ws/audio` (`alert`, before the frame that
     makes one) and `GET /api/v1/activity/alerts` (grouped by kind and tones, and the newest, each
     with its dispatch: its own call when its voice runs on 4 s past the tone, else the first of
-    the sending radio's next transmissions on the talkgroup with 4 s of voice, each within 5 s
-    of the last; Andy's limits). The rule links 50 of the 52 alerts heard on A to speech (13 to
-    the alert's own call); the other two were a beep with no 4 s reply and a beep nothing
-    followed for 55 s.
+    the sending radio's next transmissions on the talkgroup with 4 s of voice, each within 10 s
+    of its last, other radios' between passed over, since a unit may answer the console before it
+    speaks; without one, the longest of those with 3 s; Andy's limits). On the 52 alerts in A's
+    recordings it links at least 50 to speech (13 to the alert's own call). On the 12 in A's
+    history it links 11, 8718's past a unit's answer and 8622's a 3.96 s message; 8782 (a beep
+    from 1011) was followed only by 2.52 s of voice.
   - **Listening** (this browser's, `prefs.js`): Listen comes back after a reload (the browser
     plays once the page is clicked); the volume and the leveller are back in the header; each
     traffic card has its own volume and mute; "Alerts only" plays only the talkgroups an alert

@@ -285,7 +285,7 @@ STRUCTS["named_alert"] = [
     ("tg_name", "string or null", "The talkgroup's name."),
     ("source_name", "string or null", "The sending radio's name."),
     ("recorded", "bool", "Its call's recording is kept (`/api/v1/recordings/{call_id}`)."),
-    ("dispatch", "object or null", "The call that carried what it announced: its own call when its voice runs on 4 s past the tone, else the first of the sending radio's next transmissions on the talkgroup with 4 s of voice (each within 5 s of the last, until another radio talks); null when none, or not stored yet."),
+    ("dispatch", "object or null", "The call that carried what it announced: its own call when its voice runs on 4 s past the tone, else the first of the sending radio's next transmissions on the talkgroup with 4 s of voice (each within 10 s of its last; other radios' between are passed over), else the longest of those with 3 s; null when none, or not stored yet."),
     ("dispatch.call_id", "number", "That call."),
     ("dispatch.started_ms", "number", "Its grant."),
     ("dispatch.voice_ms", "number", "Its voice (past the tone when it is the alert's own call)."),
