@@ -77,10 +77,12 @@ impl LsmDemodulator {
     }
 
     /// The carrier loop's phase correction per symbol, radians.
+    #[cfg(test)]
     pub fn pll(&self) -> f32 {
         self.pll
     }
 
+    #[cfg(test)]
     pub fn sample_gain(&self) -> f32 {
         self.sample_gain
     }

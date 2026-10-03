@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use super::c4fm::{C4fmDecoder, DibitSink};
 use super::framer::{Framed, Framer, FramerConfig, FramerStats};
+use super::lsm::LsmDecoder;
 use super::pdu::PduFrame;
 use super::tsbk::{service_options, FrequencyBand, TsbkMessage};
 use super::types::Channel;
@@ -85,7 +86,7 @@ impl P25Control {
         }
     }
 
-    /// Soft frame sync from the C4FM demodulator.
+    /// Soft frame sync from a software demodulator.
     pub fn sync_detected(&mut self) {
         self.framer.sync_detected();
     }
@@ -118,9 +119,14 @@ impl P25Control {
     pub fn push_c4fm(&mut self, demod: &mut C4fmDecoder, iq: &[i16], now: Stamp, out: &mut Vec<ControlEvent>) {
         demod.process_iq_i16(iq, &mut Fed { control: self, now, out });
     }
+
+    /// Decode 50 kSPS interleaved IQ through the software LSM demodulator.
+    pub fn push_lsm(&mut self, demod: &mut LsmDecoder, iq: &[i16], now: Stamp, out: &mut Vec<ControlEvent>) {
+        demod.process_iq_i16(iq, &mut Fed { control: self, now, out });
+    }
 }
 
-/// The control decoder as the C4FM demodulator's dibit sink.
+/// The control decoder as a software demodulator's dibit sink.
 struct Fed<'a> {
     control: &'a mut P25Control,
     now: Stamp,

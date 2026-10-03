@@ -22,6 +22,7 @@ use crate::protocol::events::{ControlEvent, SiteIdentity, UnitKind};
 use crate::util::time::Stamp;
 use crate::protocol::p25::c4fm::C4fmDecoder;
 use crate::protocol::p25::control::P25Control;
+use crate::protocol::p25::lsm::LsmDecoder;
 use crate::radio::streams::{Input, StreamCounters, StreamSource, Wants};
 use crate::services::config::systems::{Modulation, Protocol};
 use crate::services::clock::Clock;
@@ -103,8 +104,10 @@ pub struct InputStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "protocol", rename_all = "snake_case")]
 pub enum Counters {
-    /// Both demodulators run; `status.modulation` says whose messages are used.
-    P25 { lsm: Box<FramerStats>, c4fm: Box<FramerStats> },
+    /// The gateware LSM and software C4FM demodulators run; `status.modulation` says whose
+    /// messages are used. The software LSM runs beside them on the same IQ and is counted only,
+    /// to compare with the gateware's (change 079).
+    P25 { lsm: Box<FramerStats>, c4fm: Box<FramerStats>, lsm_software: Box<FramerStats> },
     Dmr { messages: DmrStats, demod: DmrDemodStats },
 }
 
@@ -416,12 +419,16 @@ impl Decoder {
     fn run_p25(&self, context: &Context, rx: Receiver<Input>) {
         let mut lsm = P25Control::new("control");
         let mut c4fm = P25Control::new("control");
+        let mut lsm_software = P25Control::new("control");
         if let Some(l) = &self.learned {
             let bands = l.bands();
             lsm.seed_bands(&bands);
             c4fm.seed_bands(&bands);
+            lsm_software.seed_bands(&bands);
         }
         let mut demod = C4fmDecoder::new();
+        let mut lsm_demod = LsmDecoder::new();
+        let mut unpublished = Vec::new();
         let mut choice = ModulationChoice::new(context.modulation);
         let mut rates = RateWindow::default();
         let mut cpu = Cpu::new();
@@ -451,6 +458,8 @@ impl Decoder {
                         self.publish("p25", now, &events);
                     }
                     events.clear();
+                    lsm_software.push_lsm(&mut lsm_demod, &iq, now, &mut unpublished);
+                    unpublished.clear();
                 }
                 None => {}
             }
@@ -478,7 +487,11 @@ impl Decoder {
                     v.channel_plan_entries = a.bands.len();
                     v.neighbours = a.neighbours.len();
                 });
-                self.set_counters(Counters::P25 { lsm: Box::new(lsm.stats().clone()), c4fm: Box::new(c4fm.stats().clone()) });
+                self.set_counters(Counters::P25 {
+                    lsm: Box::new(lsm.stats().clone()),
+                    c4fm: Box::new(c4fm.stats().clone()),
+                    lsm_software: Box::new(lsm_software.stats().clone()),
+                });
             }
         }
         tracing::info!("P25 receivers on site {} stopped", context.site);
