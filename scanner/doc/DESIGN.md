@@ -931,6 +931,7 @@ channelizer in the PL, every demodulator in software.
 | HDL 4FSK symbol processor or C4FM demodulator | — | Months; SDRTrunk's branchy sync-driven timing; worse late entry | Never |
 | Vocoders, FEC, PCM AGC, autoppm/recentre | ≤ 2.5 % each | 6–8 weeks for a vocoder alone | Never |
 | A fourth copy of today's DDC and LSM chain | — | DSP 217/220, slices over 100 % | Never; more lanes come from 079's channelizer |
+| Gateware for every mode: wide lanes kept beside the channelizer, deeper rings, time on spectrum frames and captures | A new mode (data, ATSC) without a bake | Bake items, with 079 step 3b and later | **079, "Every mode's needs"**. Data mode's wide lanes need no bake on the 3a core (`DATA_MODE.md` §3) |
 
 ## 14. Test strategy
 

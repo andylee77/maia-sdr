@@ -38,8 +38,8 @@ scanner needs:
 | — | Agent control: MCP server and prompt structure | idea |
 | 075 | Clay Electric DMR (Tier III): software DMR receive, control channel, then voice | done (on fishball-p25) |
 | — | Spectrum survey: identify everything on air | idea (Andy, 2026-10-01; unit A) |
-| — | Data mode: ISM devices (315, 345, 433.92, 902-928 MHz) found, decoded, captured and streamed | study (Andy, 2026-10-04; `scanner/doc/DATA_MODE.md`) |
-| — | Gateware for every mode: what the next HDL work should add so a new mode needs no bake | list below (Andy, 2026-10-04) |
+| — | Data mode: ISM devices (315, 345, 433.92, 902-928 MHz) found, decoded, captured and streamed | study, Andy's decisions taken (2026-10-04; `scanner/doc/DATA_MODE.md`) |
+| — | Gateware for every mode: what the next HDL work should add so a new mode needs no bake | list in `doc/changes/079_general_radio_core.md`, "Every mode's needs" (Andy, 2026-10-04) |
 | — | Real-time diagnostics: spectrum, waterfall, constellation and eye at 20+ Hz over WebSockets | idea |
 | — | Handheld page: the radio's face in the browser | idea |
 | — | Transcription (Whisper) and LLM summaries | idea (off-board) |
@@ -155,35 +155,11 @@ Design and steps: `doc/changes/079_general_radio_core.md`. Supersedes the chain-
 ## Gateware for every mode
 
 Andy, 2026-10-04: the gateware should serve every mode (scanner, ATSC TV, data), so that a new
-mode is a software change. This is the list to take up with the next HDL work.
-
-**The principle.** The radio core's blocks carry no protocol. Every rate, filter and mode is
-a runtime register, so modes differ only in what the PS writes. Most of this is true already:
-
-- each lane's decimations, filter taps and `bypass2` / `bypass3` are registers (the PS clears the
-  bypass bits today);
-- the spectrometer's integrations (1-1023) and its peak-hold are registers;
-- the capture ring takes the raw AD9361 stream at any preset rate.
-
-Data mode's wide lanes (250 kSPS and 1 MSPS) are new coefficient sets, not a bake
-(`scanner/doc/DATA_MODE.md` §3).
-
-| # | Change | Modes | Today | Why |
-|---|--------|-------|-------|-----|
-| 1 | **Keep wide lanes beside the channelizer** (079 step 3b) | data, survey; ADS-B later | 3b replaces the three DDCs with 25 kHz-bin lanes at 50 kSPS | The DDCs' runtime decimation and bypass are what make 250 kSPS-2 MSPS lanes. Keep two or three DDC lanes in the same lane ring beside the narrow lanes, or let the lane synthesizer join more than two bins. Decide in 3b's design, before the DDCs go |
-| 2 | **More lanes** | scanner, data | 3 (`config.lanes` allows 15; the PS has 3 register banks, `radiocore/regs.rs`) | More traffic lanes; more data-mode hot spots. Already in 079 |
-| 3 | **A larger lane ring** | data | 2 MB: 3.4 s at three 50 kSPS lanes, 0.17 s at three 1 MSPS lanes | Wide lanes fill it 20 times faster. The geometry is in `config.py` and the device tree, so it rides on the next bake |
-| 4 | **A deeper spectrum ring** | data, diagnostics, survey | 2 frames of 32 KB; each frame can be read once | A burst detector and a waterfall need every frame; a late PS loses one. 8-16 frames |
-| 5 | **Average and peak in one frame** | data, ATSC, survey | `spec_peak_detect` picks one | Bursts want peak; the noise floor and ATSC's carrier to noise want average. Both, or alternate frames with a flag |
-| 6 | **Time on spectrum frames** | data, survey | Frames carry no time; the PS places them by when it reads them (±1 frame) | Latch the AD9361 sample index at each frame's start (a header word or a register per sub-buffer), so bursts sit on the lanes' clock |
-| 7 | **Time on the capture ring, and stop after a trigger** | data, validation | Registers are enable, overflow, last buffer and next address only | Latch the sample index at each sub-buffer's start. Add "stop N sub-buffers after a write", so the lead-in of a burst found in the spectrum stays in the ring without the PS racing it (0.26 s deep at 16 MSPS) |
-| 8 | **Windows wider than 16 MSPS** | data, survey | Presets 2-16 MSPS | 902-928 MHz in one window needs about 30 MSPS. Check first whether presets alone do it: the FIR budget at clk3x 187.5 MHz falls to about 6 operations an input sample, the spectrometer bin becomes 7.3 kHz and the capture ring holds 0.13 s |
-| 9 | **A burst detector in the PL** | data, survey | None; data mode starts with a software detector on spectrum frames | A per-bin threshold over a tracked floor, writing events (bins, start and end sample index, peak) to a small ring: FFT-resolution timing (0.26 ms at 16 MSPS) instead of a 65 ms frame. Only if the software detector proves too coarse. 079's channel-activity integrator is its narrowband cousin |
-| 10 | **A classifier tap** | survey, data | None | An AXI-Stream point where an hls4ml or FINN block takes spectrum frames or a lane's IQ and writes labels to a ring (`_shared/FPGA_ML_INFERENCE_GUIDE.md`). Data mode's captures, labelled by rtl_433, are its training set |
-| 11 | **An 8-VSB demodulator** | ATSC | Names come from a 0.5 s capture decoded on the PS (081) | Live video needs the transport stream in real time (080's next steps) |
-
-Items 1-3 matter first: they decide whether data mode keeps its lanes after 3b. Items 4-7 are
-small and can ride on any bake. Items 8-11 wait for evidence from data mode and the survey.
+mode is a software change. The core's blocks carry no protocol; every rate, filter and mode is a
+runtime register. The list for the next HDL work (eleven items, which modes need each, what is
+true today) is in the radio core's plan, `doc/changes/079_general_radio_core.md`, "Every mode's
+needs". First among them: step 3b must keep wide lanes, which data mode takes from the DDCs'
+runtime decimation and bypass.
 
 ## Code review and refactor
 

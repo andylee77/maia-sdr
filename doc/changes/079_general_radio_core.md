@@ -136,6 +136,9 @@ Each step keeps the units running on core 0.3.0 until the cutover.
      LSM chains go. It needs no model. Spec below.
    - **3b, the channelizer:** the polyphase bank and the lane synthesizer replace the three DDCs,
      behind the same lane ring. *Gate:* bit-exact against the step 2 model.
+     **Keep wide lanes.** Data mode's 250 kSPS and 1 MSPS lanes come from the DDCs' runtime
+     decimation and bypass, so 3b keeps two or three DDC lanes beside the channelizer's, or its
+     synthesizer joins more than two bins ("Every mode's needs", item 1).
 
    *Gate for both:* timing met with no waiver and a hierarchical utilization report in the build.
 4. **Cutover (PS), with 3a.** The scanner's hardware layer for the new core, every lane on
@@ -318,10 +321,53 @@ touches anything else.
 - DESIGN §13's verdicts on a channelizer, the LsmFir area recovery and the HDL front end are
   replaced by this plan.
 
+## Every mode's needs
+
+Andy, 2026-10-04: the gateware serves every mode (scanner, ATSC TV, data), so that a new mode
+is a software change. This is the list to take up with the next HDL work. The modes' designs:
+
+- this change, for the scanner;
+- `doc/changes/080_atsc_tv_mode.md` and `081_atsc_station_names.md`, for ATSC TV;
+- `scanner/doc/DATA_MODE.md`, for the data scanner.
+
+**The principle.** The core's blocks carry no protocol. Every rate, filter and mode is a runtime
+register, so modes differ only in what the PS writes. Most of this is true already:
+
+- each lane's decimations, filter taps and `bypass2` / `bypass3` are registers (the PS clears
+  the bypass bits today);
+- the spectrometer's integrations (1-1023) and its peak-hold are registers;
+- the capture ring takes the raw AD9361 stream at any preset rate.
+
+Data mode's wide lanes (250 kSPS and 1 MSPS) are new coefficient sets, not a bake
+(`scanner/doc/DATA_MODE.md` §3).
+
+| # | Change | Modes | Today | Why |
+|---|--------|-------|-------|-----|
+| 1 | **Keep wide lanes beside the channelizer** (step 3b) | data, survey; ADS-B later | 3b replaces the three DDCs with 25 kHz-bin lanes at 50 kSPS | The DDCs' runtime decimation and bypass are what make 250 kSPS-2 MSPS lanes. Keep two or three DDC lanes in the same lane ring beside the narrow lanes, or let the lane synthesizer join more than two bins. Decide in 3b's design, before the DDCs go |
+| 2 | **More lanes** | scanner, data | 3 (`config.lanes` allows 15; the PS has 3 register banks, `radiocore/regs.rs`) | More traffic lanes; more data-mode hot spots (open question N, below) |
+| 3 | **A larger lane ring** | data | 2 MB: 3.4 s at three 50 kSPS lanes, 0.17 s at three 1 MSPS lanes | Wide lanes fill it 20 times faster. The geometry is in `config.py` and the device tree, so it rides on the next bake |
+| 4 | **A deeper spectrum ring** | data, diagnostics, survey | 2 frames of 32 KB; each frame can be read once | A burst detector and a waterfall need every frame; a late PS loses one. 8-16 frames |
+| 5 | **Average and peak in one frame** | data, ATSC, survey | `spec_peak_detect` picks one | Bursts want peak; the noise floor and ATSC's carrier to noise want average. Both, or alternate frames with a flag |
+| 6 | **Time on spectrum frames** | data, survey | Frames carry no time; the PS places them by when it reads them (±1 frame) | Latch the AD9361 sample index at each frame's start (a header word or a register per sub-buffer), so bursts sit on the lanes' clock |
+| 7 | **Time on the capture ring, and stop after a trigger** | data, validation | Registers are enable, overflow, last buffer and next address only | Latch the sample index at each sub-buffer's start. Add "stop N sub-buffers after a write", so the lead-in of a burst found in the spectrum stays in the ring without the PS racing it (0.26 s deep at 16 MSPS) |
+| 8 | **Windows wider than 16 MSPS** | data, survey | Presets 2-16 MSPS | 902-928 MHz in one window needs about 30 MSPS. Check first whether presets alone do it: the FIR budget at clk3x 187.5 MHz falls to about 6 operations an input sample, the spectrometer bin becomes 7.3 kHz and the capture ring holds 0.13 s |
+| 9 | **A burst detector in the PL** | data, survey | None; data mode starts with a software detector on spectrum frames | A per-bin threshold over a tracked floor, writing events (bins, start and end sample index, peak) to a small ring: FFT-resolution timing (0.26 ms at 16 MSPS) instead of a 65 ms frame. Only if the software detector proves too coarse. The channel-activity integrator (above) is its narrowband cousin |
+| 10 | **A classifier tap** | survey, data | None | An AXI-Stream point where an hls4ml or FINN block takes spectrum frames or a lane's IQ and writes labels to a ring (`_shared/FPGA_ML_INFERENCE_GUIDE.md`). Data mode's captures, labelled by rtl_433, are its training set |
+| 11 | **An 8-VSB demodulator** | ATSC | Names come from a 0.5 s capture decoded on the PS (081) | Live video needs the transport stream in real time (080's next steps) |
+
+**Order:**
+
+- **Items 1-3 matter first:** they decide whether data mode keeps its lanes after 3b.
+- **Items 4-7 are small** and can ride on any bake.
+- **Items 8-11 wait for evidence** from data mode and the survey.
+
 ## Open questions
 
 - **N.** The bank's cost does not depend on N; the synthesizer's time slots and the ring do. 8
   lanes is the proposed first build.
+- **Wide lanes after 3b** (item 1 above): DDC lanes beside the channelizer's, or a synthesizer that
+  joins more bins. DDC lanes keep today's runtime rates and filters; joined bins share the bank
+  but give rates in steps of 25 kHz and the bank's filter shape at the edges.
 - **The 16 MHz scan preset.** The scan can run at 12.8 MSPS, or the spectrometer alone can serve it
   at 16 MSPS with the lanes idle.
 - **The gateware LSM's DC blocker** is not in the software LSM. Its AGC idle gate and no-signal
@@ -503,3 +549,7 @@ touches anything else.
     on the directional antenna; lane 1 carried 2,817 voice frames against 1,215).
   - Left: the LSM demodulator's double-precision atan2, sin and cos (about 0.5 % for three
     receivers) would need the recordings to judge single precision.
+- **2026-10-04, every mode's needs** (Andy: the gateware should serve every mode; record the HDL
+  changes for the next gateware work). The data mode study (`scanner/doc/DATA_MODE.md`) found
+  that the 3a core already gives wide lanes through the DDCs' registers. The section "Every
+  mode's needs" lists what the next bakes should add; step 3b now has to keep wide lanes.
