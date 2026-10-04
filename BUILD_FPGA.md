@@ -1,26 +1,32 @@
-# Fishball P25 -- FPGA Bitstream Build Guide
+# Fishball radio core — FPGA build guide
 
 ## Overview
 
-Builds the P25 FPGA gateware for the Fishball Z7020 board (Zynq-7020 + AD9361).
-The build script (`build_fpga.bat --p25`) runs on Windows and calls Vivado
-directly, bypassing the ADI HDL Linux Makefile system (which requires `flock`).
+Builds the radio core's bitstream for the Fishball Z7020 board (Zynq-7020 + AD9361): the
+Amaranth source in `maia-hdl/p25_hdl/`, the Vivado project `maia-hdl/projects/fishball7020_p25/`.
+The core and its register map are described in `doc/changes/079_general_radio_core.md`.
+
+- `build_fpga.bat --p25` runs the whole flow on Windows and calls Vivado directly, bypassing the
+  ADI HDL Linux makefiles (they need `flock`).
+- Run it through `./build_fpga_p25_pretty.sh`, which logs to `bake.log` and prints a line per
+  phase.
+- Run Vivado only inside this tree: the ADI and Maia TCL use relative paths.
 
 ## Prerequisites
 
 ### Vivado ML Standard (Free)
 
-- **Version**: 2023.2 (preferred) or 2025.2
+- **Version:** 2023.2, the version every bake has used.
 - Download: https://www.xilinx.com/support/download.html
-- During install, select **Zynq-7000** under SoCs (saves ~45 GB)
-- AMD account required (free)
+- During install, select **Zynq-7000** under SoCs (saves ~45 GB).
+- AMD account required (free).
 
 ### Docker Desktop
 
-- Required for Verilog generation (Amaranth runs inside a `python:3.11-slim`
-  container on ext4 to avoid NTFS issues with pip editable installs)
-- First run downloads the image and installs Python packages (~2 min)
-- Subsequent runs reuse the `maia-hdl-build` Docker volume cache
+- Required for Verilog generation (Amaranth runs inside a `python:3.11-slim` container on ext4
+  to avoid NTFS issues with pip editable installs).
+- The first run downloads the image and installs Python packages (~2 min).
+- Later runs reuse the `maia-hdl-build` Docker volume cache.
 
 ### Git Submodules
 
@@ -31,16 +37,17 @@ git submodule update --init --recursive
 This pulls `maia-hdl/adi-hdl/` (Analog Devices HDL library) and
 `maia-hdl/XilinxUnisimLibrary/` (Xilinx simulation primitives).
 
-## Build Pipeline
+## Build pipeline
 
-```
-maia-hdl/p25_hdl/*.py       [Amaranth HDL source]
-maia-hdl/maia_hdl/*.py      (P25 imports DDC / registers / DMA / CDC)
+```text
+maia-hdl/p25_hdl/*.py       [Amaranth source: the radio core]
+maia-hdl/maia_hdl/*.py      (DDC, spectrometer, DMA, registers, CDC)
          |
          | Staleness gate (tools/check_verilog_stale.ps1)
-         |   regen via Docker if any .py is newer than .v
+         |   regenerated in Docker if any .py is newer than the .v
          v
 maia-hdl/ip/p25-core/default/p25_core.v     [generated Verilog]
+scanner/core-pac/core.svd, src/lib.rs       [register SVD and the scanner's PAC]
          |
          | Vivado IP packaging (package_ip.tcl)
          v
@@ -48,229 +55,186 @@ maia-hdl/ip/p25-core/default/component.xml  [Vivado IP]
          |
          | Block design assembly (system_project.tcl)
          v
-Block Design: PS7 + AD9361 LVDS + clocking + ADI libs + p25_core
+Block design: PS7 + AD9361 LVDS + clocking + ADI libraries + p25_core
          |
-         | Vivado synthesis (parallel per sub-IP)
-         | Vivado implementation: opt -> place -> phys_opt -> route
-         | Vivado write_bitstream + write_hw_platform
+         | Synthesis, then opt -> place -> phys_opt -> route
+         | A route hook writes utilization_hier.rpt; a timing failure stops the build
          v
-system_top.bit  +  system_top.xsa   [hand-off to Tezuka firmware]
+system_top.bit  +  system_top.xsa   [hand-off to the Tezuka firmware]
 ```
 
-The Maia SDR core (`ip/maia-sdr/maia_iio/maia_sdr.v`) follows the same
-pipeline in parallel and is always required -- the P25 build instantiates
-the Maia IIO DMA chain alongside the P25 demod for libiio compatibility.
+The Maia SDR core (`ip/maia-sdr/maia_iio/maia_sdr.v`) is packaged on every build: the pluto base
+block design that the P25 project sources needs it before the P25 project puts the radio core in
+its place. The base's IIO DMA chain (`axi_dmac`, `util_cpack2`, `util_upack2`) stays, so libiio
+tools still work.
 
-## Quick Start
+## Quick start
 
-```bat
-sim_hdl.bat --tier1              # run HDL simulations (optional, ~1 min)
-build_fpga.bat --p25             # full pipeline (auto-regen Verilog if stale)
+```sh
+./build_fpga_p25_pretty.sh      # the whole flow, Verilog regenerated when stale
 ```
 
-The single `build_fpga.bat --p25` command now covers the entire flow
-from Amaranth source to packaged XSA. A staleness check in Step 2
-automatically re-runs Verilog generation in Docker whenever any
-`p25_hdl/*.py` or `maia_hdl/*.py` is newer than the current
-`p25_core.v`, so you never have to remember to call
-`build_hdl.bat --verilog-only --p25` manually.
+Run the HDL tests first, from `maia-hdl/` in `.venv-hdl`: `python -m pytest test/`.
 
-Output: `maia-hdl/projects/fishball7020_p25/fishball_p25.sdk/system_top.xsa`
-(also copied to Tezuka firmware if `tezuka_fw` is at the expected path)
+Output: `maia-hdl/projects/fishball7020_p25/fishball_p25.sdk/system_top.xsa`, also copied to
+`tezuka_fw/board/tezuka/fishball7020/bitstream/p25/` when tezuka_fw is at its usual path. Commit
+the XSA before an image build consumes it.
 
-## Build Steps (what the script does)
+## Build steps (what the script does)
 
-### Step 1: ADI HDL Submodule
+### Step 1: ADI HDL submodule
 
 Checks that `maia-hdl/adi-hdl/` is populated. If not, runs
 `git submodule update --init --recursive`.
 
 ### Step 2: Generate Verilog (with automatic staleness detection)
 
-Runs Amaranth HDL elaboration inside a Docker container (python:3.11-slim on
-ext4 filesystem) to avoid NTFS/CIFS issues with pip editable installs. Step 2
-does **not** use a simple "does the .v exist?" check -- it runs a staleness
-comparison on every build so edits to Amaranth source never silently get
-stranded in an old, unregenerated Verilog file.
+Runs the Amaranth elaboration inside a Docker container (python:3.11-slim on ext4) to avoid
+NTFS/CIFS issues with pip editable installs. It does not just check whether the `.v` exists: it
+compares mtimes on every build, so an edit to the Amaranth source never gets stranded in an old
+Verilog file (`doc/changes/009_build_verilog_staleness.md`).
 
-**How the staleness check works:**
+`tools/check_verilog_stale.ps1` compares the mtime of each generated `.v` file with the newest
+`*.py` under its source directories and returns `MISSING`, `STALE` or `FRESH`. On `MISSING` or
+`STALE`, `build_fpga.bat` runs `build_hdl.bat --verilog-only [--p25]` in Docker.
 
-`tools/check_verilog_stale.ps1` compares the mtime of each generated `.v`
-file against the maximum mtime of all `*.py` files under one or more source
-directories, and returns `MISSING`, `STALE`, or `FRESH`. If the result is
-`MISSING` or `STALE`, `build_fpga.bat` automatically invokes
-`build_hdl.bat --verilog-only [--p25]` in Docker to regenerate the file
-before continuing. If the result is `FRESH`, Step 2 is skipped.
+| Generated file | Source directories compared | Why |
+|----------------|-----------------------------|-----|
+| `maia-hdl/ip/maia-sdr/maia_iio/maia_sdr.v` | `maia-hdl/maia_hdl/*.py` | Maia's core is built from `maia_hdl` only |
+| `maia-hdl/ip/p25-core/default/p25_core.v` | `maia-hdl/p25_hdl/*.py` **and** `maia-hdl/maia_hdl/*.py` | The radio core imports the DDC, spectrometer, registers, DMA and CDC from `maia_hdl` |
 
-**Staleness checks performed:**
-
-| Generated file | Source directories compared | Rationale |
-|---------------|-----------------------------|-----------|
-| `maia-hdl/ip/maia-sdr/maia_iio/maia_sdr.v` | `maia-hdl/maia_hdl/*.py` | Maia core is built from `maia_hdl` only. |
-| `maia-hdl/ip/p25-core/default/p25_core.v` | `maia-hdl/p25_hdl/*.py` **and** `maia-hdl/maia_hdl/*.py` | `p25_top.py` imports DDC, registers, DMA, and CDC from `maia_hdl`, so a change to **either** directory can affect the generated P25 Verilog. |
-
-**Generation command:** when regeneration is needed, `build_fpga.bat` runs:
-
-```bat
-build_hdl.bat --verilog-only             # Maia only
-build_hdl.bat --verilog-only --p25       # Maia + P25
-```
-
-which in turn runs (inside the Docker container):
+Inside the container:
 
 - `python -m maia_hdl.maia_sdr --config maia_iio` -> `maia-hdl/ip/maia-sdr/maia_iio/maia_sdr.v`
 - `python -m p25_hdl.p25_top --config default` -> `maia-hdl/ip/p25-core/default/p25_core.v`
+- with `--p25`, the core's SVD and its `svd2rust` PAC go to `scanner/core-pac/`.
 
-The `--verilog-only` flag on `build_hdl.bat` is an internal mechanism used
-by `build_fpga.bat` and does not need to be invoked directly by users. Run
-`build_fpga.bat --p25` and the staleness check handles regeneration
-transparently.
+### Step 3: Package IP cores
 
-**Historical context:** Step 2 originally used an existence-only check
-(`if exist p25_core.v skip`), which led to a full hardware-debug day chasing
-AD9361 DC offset and DDC tuning hypotheses when the real problem was a
-bitstream built from pre-fix Verilog. The script reported `[OK] p25_core.v
-already exists` on every re-run even though `p25_hdl/symbol_timing.py` had
-been edited since. See `doc/changes/009_build_verilog_staleness.md` for the
-full incident write-up.
+Runs Vivado in batch mode to package both cores as Vivado IPs (`component.xml`).
 
-### Step 3: Package IP Cores
+### Step 4: Build ADI library IPs
 
-Runs Vivado in batch mode to package both IP cores as Vivado-compatible IPs
-with `component.xml`.
+Builds the ADI HDL library cores the pluto base design needs. Each is skipped if its
+`component.xml` already exists.
 
-### Step 4: Build ADI Library IPs
+- `util_clkdiv` (in `xilinx/`): the AD9361 clock divider
+- `util_rfifo`, `util_wfifo`: the AD9361 read and write FIFOs
+- `axi_ad9361`: the AD9361 LVDS interface
+- `util_axis_fifo`, `util_cdc`: CDC and AXI-Stream FIFO
+- `axi_dmac`: the DMA controller
+- `util_cpack2`, `util_upack2`: packing and unpacking
 
-Builds the ADI HDL library cores required by the pluto base design.
-Each library is skipped if its `component.xml` already exists (incremental).
+### Step 5: Vivado synthesis and implementation
 
-- `util_clkdiv` (in `xilinx/`) -- clock divider for AD9361
-- `util_rfifo`, `util_wfifo` -- read/write FIFOs for AD9361
-- `axi_ad9361` -- AD9361 LVDS interface
-- `util_axis_fifo`, `util_cdc` -- CDC and AXI stream FIFO
-- `axi_dmac` -- DMA controller (depends on util_axis_fifo, util_cdc)
-- `util_cpack2`, `util_upack2` -- data packing/unpacking
+`vivado -mode batch -source system_project.tcl`:
 
-### Step 5: Vivado Synthesis + Implementation
+1. creates the block design (PS7 + AD9361 + clocking + `p25_core`);
+2. synthesizes (~10 min);
+3. implements: opt -> place -> phys_opt -> route (~10 min); the route hook
+   (`utilization_hier.tcl`) writes `fishball_p25.runs/impl_1/utilization_hier.rpt`;
+4. writes the bitstream and the XSA (~2 min).
 
-Runs `vivado -mode batch -source system_project.tcl` which:
+### Step 6: Copy output
 
-1. Creates the block design (PS7 + AD9361 + clocking + p25_core)
-2. Synthesizes (~10 min)
-3. Implements: opt -> place -> phys_opt -> route (~10 min)
-4. Generates bitstream + XSA (~2 min)
+Copies `system_top.xsa` to the Tezuka firmware's bitstream directory when it is there.
 
-### Step 6: Copy Output
+## Block design
 
-Copies `system_top.xsa` to Tezuka firmware bitstream directory if available.
-
-## Block Design Architecture
-
-```
-+-----------------------------------------------------------+
-|                  Zynq Z7020 (Fishball)                    |
-|                                                           |
-|  +----------+    +----------------------------------+     |
-|  |  ARM PS  |    |        FPGA Fabric (PL)          |     |
-|  |          |    |                                    |    |
-|  | S_AXI_HP1+----+ m_axi_dibit + m_axi_traffic      |    |
-|  |          |    | (P25 dibit DMA channels)           |    |
-|  |          |    |                                    |    |
-|  | AXI-Lite +----+ s_axi_lite @ 0x7C460000           |    |
-|  |          |    | (P25 register control)              |    |
-|  |          |    |                                    |    |
-|  |  IRQ[13] +----+ interrupt_out                      |    |
-|  +----------+    +----------------------------------+     |
-+-----------------------------------------------------------+
+```text
++-------------------------------------------------------------+
+|                    Zynq Z7020 (Fishball)                    |
+|                                                             |
+|  +----------+      +----------------------------------+     |
+|  |  ARM PS  |      |         FPGA fabric (PL)          |     |
+|  |          |      |                                  |     |
+|  | S_AXI_HP1+------+ m_axi_lanes, m_axi_wideband_spec, |     |
+|  |          |      | m_axi_wideband_iq (the three rings)|    |
+|  |          |      |                                  |     |
+|  | AXI-Lite +------+ s_axi_lite @ 0x7C46_0000 (1 KB)   |     |
+|  |          |      |                                  |     |
+|  |  IRQ_F2P +------+ interrupt_out (concat In11)       |     |
+|  +----------+      +----------------------------------+     |
++-------------------------------------------------------------+
 ```
 
-**HP Port allocation:**
+| Port | AXI masters | Purpose |
+|------|-------------|---------|
+| HP1 | `m_axi_lanes`, `m_axi_wideband_spec`, `m_axi_wideband_iq` | The lane ring, the spectrum ring and the raw IQ capture, through an `axi_interconnect` at the sync clock (62.5 MHz, about 500 MB/s) |
+| HP2 | `adc_dma`, `dac_dma` | IIO DMA (AD9361 streaming through libiio) |
+| HP0, HP3 | — | Unused (the hwval build puts its memory testers there) |
 
-| Port | AXI Master | Purpose |
-|------|-----------|---------|
-| HP1 | m_axi_dibit + m_axi_traffic | P25 dibit DMA (control + traffic channels) |
-| HP2 | m_axi_recorder + adc_dma + dac_dma | IIO DMA (AD9361 streaming via libiio) |
+## Opening in the Vivado GUI
 
-The P25 design keeps full IIO DMA support (`axi_dmac` RX/TX, `util_cpack2`,
-`util_upack2`, 8-bit mode mux chain) so `iio_readdev` and PlutoSDR Python
-scripts work alongside the P25 decoder.
-
-## Opening in Vivado GUI
-
-After building, open the project to view the block diagram:
-
-```
+```text
 vivado maia-hdl\projects\fishball7020_p25\fishball_p25.xpr
 ```
 
-Then: Flow Navigator -> Open Block Design -> `system.bd`
+Then: Flow Navigator -> Open Block Design -> `system.bd`.
 
-## Timing Violations
+## Timing
 
-The build typically completes with timing violations on PS7 cross-clock domain
-paths. This is expected and matches the Maia SDR build behavior. The XSA is
-exported as `system_top_bad_timing.xsa` and promoted to `system_top.xsa`.
+A timing failure is an error for `--p25` (and `--hwval`): the build exports no usable XSA and
+never promotes `system_top_bad_timing.xsa`. No waiver is added to close it; 079's study names
+the paths with the least slack and their fix.
+
+The route hook's report stops at depth 4, which ends at the core's top. For the core's own
+blocks, run `report_utilization -hierarchical -cells [get_cells i_system_wrapper/system_i/p25_core/inst]`
+on `fishball_p25.runs/impl_1/system_top_routed.dcp` in a Vivado batch session.
 
 ## Troubleshooting
 
 ### Vivado not found
 
-The script searches standard install locations. Set `VIVADO_DIR_OVERRIDE` to
-override:
+The script searches the standard install locations. Set `VIVADO_DIR_OVERRIDE` to override:
 
-```
+```text
 set VIVADO_DIR_OVERRIDE=D:\Xilinx\Vivado\2023.2
 build_fpga.bat --p25
 ```
 
 ### "No parts matched xc7z020clg400-1"
 
-Zynq-7000 SoC device family not installed. Re-run Vivado installer -> Add
-Design Tools or Devices -> SoCs -> Zynq-7000.
+The Zynq-7000 device family is not installed. Re-run the Vivado installer -> Add Design Tools
+or Devices -> SoCs -> Zynq-7000.
+
+### "couldn't read ... mref/cs12_cs8/xgui/..."
+
+A stale Vivado project. Delete the generated `.Xil`, `fishball_p25.cache`, `.gen`, `.hw`,
+`.ip_user_files`, `.srcs` and `.xpr` in `maia-hdl/projects/fishball7020_p25/` and rebuild. The
+build deletes the tracked `fishball_p25.sdk/system_top.xsa` on its way; don't commit that
+deletion.
 
 ### ADI library build fails
 
 Clean and rebuild:
 
-```
+```text
 del /s /q maia-hdl\adi-hdl\library\*\component.xml
 build_fpga.bat --p25
 ```
 
 ### IP version mismatch
 
-Clean generated IP and rebuild:
+Clean the generated IP and rebuild:
 
-```
+```text
 rd /s /q maia-hdl\ip\p25-core\default
 build_fpga.bat --p25
 ```
 
-### "Why is my Amaranth source edit not showing up on the hardware?"
+### An Amaranth edit does not show up on the hardware
 
-Step 2 should catch this automatically now via the staleness check -- if
-any `p25_hdl/*.py` or `maia_hdl/*.py` is newer than `p25_core.v`, the
-Verilog is regenerated before Vivado synthesis runs. You should see:
+Step 2 catches this: if any `p25_hdl/*.py` or `maia_hdl/*.py` is newer than `p25_core.v`, the
+Verilog is regenerated before synthesis, and the log says:
 
-```
+```text
 [Step 2] Checking Verilog generation status...
 [WARN] p25_core.v is STALE -- p25_hdl or maia_hdl has newer changes.
-       Regenerating via Docker to avoid baking stale logic into bitstream.
 ```
 
-in the build output, followed by the Docker regeneration.
-
-If instead you see `[OK] p25_core.v is current` when you expected a
-regeneration, confirm the source file mtime is actually newer than the
-generated `.v`:
-
-```bash
-stat -c "%y %n" maia-hdl/ip/p25-core/default/p25_core.v
-stat -c "%y %n" maia-hdl/p25_hdl/*.py | sort
-```
-
-You can also invoke the staleness helper directly to see what state it
-reports:
+If it says `[OK] p25_core.v is current` when you expected a regeneration, compare the mtimes, or
+ask the helper directly:
 
 ```bat
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\check_verilog_stale.ps1 ^
@@ -278,90 +242,72 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\check_verilog_stale.ps
     -SourceDirs  "maia-hdl\p25_hdl;maia-hdl\maia_hdl"
 ```
 
-Output is a single word: `MISSING`, `STALE`, or `FRESH`.
+To force a regeneration, delete `maia-hdl\ip\p25-core\default\p25_core.v` and rebuild.
 
-To force a regeneration regardless of mtimes, just delete the generated
-Verilog:
-
-```
-del maia-hdl\ip\p25-core\default\p25_core.v
-build_fpga.bat --p25
-```
-
-## Output Files
+## Output files
 
 | File | Location | Purpose |
 |------|----------|---------|
-| `system_top.xsa` | `maia-hdl/projects/fishball7020_p25/fishball_p25.sdk/` | Hardware specification for Tezuka firmware (also auto-copied to `tezuka_fw/board/tezuka/fishball7020/bitstream/p25/`) |
+| `system_top.xsa` | `maia-hdl/projects/fishball7020_p25/fishball_p25.sdk/` | Hardware specification for the Tezuka firmware (also copied to `tezuka_fw/board/tezuka/fishball7020/bitstream/p25/`) |
 | `system_top.bit` | `maia-hdl/projects/fishball7020_p25/fishball_p25.runs/impl_1/` | Raw bitstream |
-| `p25_core.v` | `maia-hdl/ip/p25-core/default/` | Generated Verilog (~19k lines). Regenerated automatically by Step 2 staleness check when Amaranth source is newer. |
-| `maia_sdr.v` | `maia-hdl/ip/maia-sdr/maia_iio/` | Generated Maia SDR core Verilog. Same staleness logic. |
+| `utilization_hier.rpt` | the same `impl_1/` | Hierarchical utilization, from the route hook |
+| `p25_core.v` | `maia-hdl/ip/p25-core/default/` | Generated Verilog, regenerated by Step 2 when the source is newer |
+| `core.svd`, `src/lib.rs` | `scanner/core-pac/` | The core's register map, and the scanner's PAC from it |
+| `maia_sdr.v` | `maia-hdl/ip/maia-sdr/maia_iio/` | Generated Maia core Verilog |
 
-## Build Helper Scripts
+## Build helper scripts
 
 | File | Purpose |
 |------|---------|
-| `build_fpga.bat` | Windows entry point. Runs the full pipeline: staleness-checked Verilog regeneration -> IP packaging -> ADI library builds -> Vivado synthesis + implementation -> XSA export -> Tezuka copy. The single command users run. |
-| `build_hdl.bat` / `build_hdl.sh` | Docker-based Amaranth -> Verilog generation. Called internally by `build_fpga.bat` when the staleness check fires. Also generates SVD + regenerates `p25-pac/src/lib.rs` via `svd2rust` when `--p25` is set. |
-| `tools/check_verilog_stale.ps1` | PowerShell helper that compares generated `.v` mtime against `*.py` source mtimes. Outputs `MISSING`, `STALE`, or `FRESH`. Invoked by `build_fpga.bat` Step 2 for both Maia and P25 cores. |
-| `sim_hdl.bat` / `sim_hdl.sh` | Docker-based HDL simulation (runs `pytest` over `maia-hdl/test/`). Use before FPGA builds to catch logic regressions fast. |
+| `build_fpga_p25_pretty.sh` | The entry point: `build_fpga.bat --p25` with its log in `bake.log` and a line per phase |
+| `build_fpga.bat` | The whole flow: staleness-checked Verilog regeneration -> IP packaging -> ADI library builds -> Vivado synthesis and implementation -> XSA export -> Tezuka copy |
+| `build_hdl.bat` / `build_hdl.sh` | Docker-based Amaranth -> Verilog generation, called by `build_fpga.bat`. With `--p25` it also writes the SVD and runs `svd2rust` into `scanner/core-pac/` |
+| `tools/check_verilog_stale.ps1` | Compares a generated `.v` file's mtime with its `*.py` sources: `MISSING`, `STALE` or `FRESH` |
+| `sim_hdl.bat` / `sim_hdl.sh` | Docker-based HDL simulation; the tests are usually run from `.venv-hdl` instead |
 
-## Tezuka Firmware Build
+## Tezuka firmware build
 
-After the FPGA bitstream is built, build the full firmware via Tezuka
-(`andylee77/tezuka_fw` on `fishball-dev` branch):
+After the bitstream is built, build the SD image with the Tezuka firmware (`andylee77/tezuka_fw`,
+branch `fishball-dev`):
 
-```bat
-cd C:\Users\Andy\Projects\Tezuka\tezuka_fw
-build.bat --p25            # incremental (~3 min if cached)
-build.bat --p25 --clean    # clean build (~1-3 hours)
+```sh
+./build_tezuka_p25_pretty.sh      # tezuka_fw build.bat --p25, logged to tezuka_build.log
 ```
 
-Or manually inside Docker:
+It builds:
 
-```bash
-build.bat --interactive
-# then inside Docker:
-cd buildroot
-make fishball_p25_7020_defconfig && make
-```
+- the bitstream from the XSA (`package/fishball_fpga_p25`);
+- the scanner, cross-compiled from this checkout (`package/scanner`, init script `S60scanner`);
+- maia-kmod's DMA driver (`S50maia-kmod`);
+- the Linux kernel with the P25 device tree (`fishball-p25.dtsi`).
 
-This builds:
+Copy `tezuka_fw/output_images/` to a FAT32 SD card and boot.
 
-- P25 bitstream (from XSA) via `package/fishball_fpga_p25`
-- p25-httpd binary (Rust cross-compile) via `package/p25-httpd`
-- Linux kernel with P25 device tree (`fishball-p25.dtb`)
-- Root filesystem with `S60p25-httpd` init script
+### Build notes
 
-Flash `output_images/` to FAT32 SD card and boot.
+- **Docker required:** Buildroot can't build on NTFS; `build.bat` handles Docker.
+- **The scanner's source** is this repo, mounted read-only at `/mnt/maia-sdr`
+  (`SITE_METHOD = local`). Don't run cargo while the image builds: the package's rsync fails.
+- **The wrapper exits 0 on failure:** grep `tezuka_build.log` for `[ERROR]`.
+- **Rebuilds:** `build.sh` rebuilds the bitstream package when the XSA is newer, the scanner
+  when its sources, manifests or `core-pac` changed (`make scanner-dirclean`), and the kernel
+  when a device tree changed.
+- **Shell scripts** must have Unix (LF) line endings; `.gitattributes` enforces it for `*.sh`.
 
-### Build Notes
-
-- **Docker required**: Buildroot can't build on NTFS. `build.bat` handles
-  Docker setup automatically.
-- **p25-httpd source**: Mounted from the local maia-sdr repo at
-  `/mnt/maia-sdr` (read-only). The Buildroot package uses `SITE_METHOD = local`.
-- **Switching configs**: `build.sh` auto-detects when the source XSA is newer
-  than the cached FPGA package and forces a rebuild. No manual `--clean` needed
-  for XSA updates, but use `--clean` if other packages need a full reset.
-- **Rebuilding p25-httpd**: If you change Rust code and need to rebuild just
-  p25-httpd without a full clean build, use interactive mode:
-  `make p25-httpd-dirclean && make`
-- **Shell scripts**: Must have Unix (LF) line endings. The repo has
-  `.gitattributes` to enforce this for `*.sh` files.
-
-## Device Tree
+## Device tree
 
 The P25 build uses `fishball-p25.dtsi` (separate from Maia's `fishball.dtsi`):
 
-| DTS Node | Name seen by userspace | Purpose |
-|----------|----------------------|---------|
-| `p25-core@7c460000` | `/sys/class/uio/uio0/name` = `p25-core` | FPGA register UIO |
-| `p25-dibit` | `/dev/p25-dibit` | Control channel dibit DMA ring buffer |
-| `p25-traffic` | `/dev/p25-traffic` | Traffic channel dibit DMA ring buffer |
+| Node | Seen by userspace | Purpose |
+|------|-------------------|---------|
+| `p25-core@7c460000` | UIO `p25-core` | The radio core's registers |
+| `p25-lanes` | `/dev/p25-lanes` | The lane ring (0x1900_0000) |
+| `p25-wideband-spec` | `/dev/p25-wideband-spec` | The spectrum ring (0x2100_0000) |
+| `p25-wideband-iq` | `/dev/p25-wideband-iq` | The raw IQ capture ring (0x2200_0000) |
 
-Both DMA devices use `compatible = "maia-sdr,rxbuffer"` (reuses the maia-kmod
-kernel module for ARMv7 cache coherency on non-coherent AXI HP writes).
+The rings use `compatible = "maia-sdr,rxbuffer"` (maia-kmod's driver, which keeps the ARMv7
+caches coherent with the non-coherent HP writes). Their sizes and sub-buffers are in 079's
+"Rings and the device tree", and must match `maia-hdl/p25_hdl/config.py`.
 
 ## hwval bitstream (hardware validation)
 

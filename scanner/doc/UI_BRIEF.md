@@ -17,6 +17,7 @@ and the decisions taken with him. The current pages stay only until the new ones
 | The two traffic receivers | The radio has a control tuner and two traffic channels: "Traffic 1" and "Traffic 2" in the UI (SDRTrunk's word; the API's `lane`). Andy may prefer "Channel 1/2"; "channel" also names RF channels, so that is open. |
 | Updates | Everything on a page comes from the radio as it happens, over one WebSocket. No page polls. |
 | Screen | 1920x1080 is the design size; a mobile layout comes later. |
+| Modes | Each unit mode has its own tabs, with Diagnostics and Settings shared: scanner (Now, Activity, Systems), ATSC TV (Channels, Viewer; changes 080 and 081), data (Scan, Devices, Captures; `doc/DATA_MODE.md`). |
 
 ## Backend work before the UI
 
@@ -31,7 +32,8 @@ In this order; each item is usable through the API on its own.
    - the scan's progress and each control channel as it is found;
    - settings, systems and aliases changing;
    - the hold.
-2. **Aliases** replace the talkgroup and radio name maps and the profiles:
+2. **Aliases** (done: `/api/v1/systems/{id}/aliases`, D15) replace the talkgroup and radio name
+   maps and the profiles:
    - The follower follows by alias: monitor priority, do-not-monitor, and speaker.
    - Recordings follow each alias's record flag.
    - Nothing migrates: a unit starts with no aliases.

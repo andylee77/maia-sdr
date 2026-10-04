@@ -135,7 +135,7 @@ Set in `system_bd.tcl` around line 500:
 | Parameter | Value | Meaning |
 |---|---|---|
 | `CMOS_OR_LVDS_N` | `0` | LVDS mode (fishball hardware) |
-| `MODE_1R1T` | `0` | 2R2T (both I/Q channels live) |
+| `MODE_1R1T` | `1` | 1R1T since change 043: RX2 has no antenna on Fishball, so 2R2T wasted half the bus (the other boards keep `0`, 2R2T) |
 | `ADC_INIT_DELAY` | `30` | IDELAY taps for RX capture (fishball-specific; libre uses 21) |
 | `TDD_DISABLE` | `1` | Frequency-division duplex only |
 | `DAC_DDS_DISABLE` | `1` | No internal DDS — Maia drives TX from DMA |
@@ -183,7 +183,7 @@ The single picture to keep in mind:
 │                                  │          │          ↓           │
 │  SPI regs ◀──────── SPI ─────────│◀──────── │  axi-lite @0x79020000│
 └──────────────────────────────────┘          │          ↓           │
-                                               │  Maia DDC @15.36 MHz │
+                                               │  radio core @ fs     │
                                                └──────────────────────┘
 ```
 
@@ -247,7 +247,7 @@ BBPLL frequency itself is a derived number. What you actually set via libiio is 
 
 ### 5.3 LVDS Interface — Physical Layer
 
-Fishball wires the AD9361 to the PL in **LVDS 2R2T mode** (both RX and both TX channels carried). LVDS mode uses fewer pins than CMOS and is less sensitive to board skew, but is DDR-encoded — both rising and falling edges of `DATA_CLK_P` carry payload.
+Fishball wires the AD9361 to the PL in **LVDS mode**, 1R1T since change 043 (one RX and one TX channel carried; before, 2R2T). LVDS mode uses fewer pins than CMOS and is less sensitive to board skew, but is DDR-encoded — both rising and falling edges of `DATA_CLK_P` carry payload.
 
 Signals, as seen by the FPGA:
 
@@ -300,7 +300,7 @@ The samples from `axi_ad9361` are **already in the `l_clk` domain as parallel 12
 
 ### 5.5 From `l_clk` to `sampling_clk` — Why the Divide-by-4
 
-`l_clk` ticks at `DATA_CLK_P` — say 61.44 MHz for a 61.44 MSPS configuration. But a given channel's `adc_valid` asserts only once every **four** `l_clk` cycles (because the four channels take turns on the shared bus). Downstream Maia logic does not want to see three idle cycles out of four; it wants a clock that ticks once per useful sample.
+`l_clk` ticks at `DATA_CLK_P`. In 2R2T a given channel's `adc_valid` asserts only once every **four** `l_clk` cycles (the four I and Q values take turns on the shared bus); in 1R1T, Fishball's mode since 043, once every **two**. Downstream Maia logic does not want to see three idle cycles out of four; it wants a clock that ticks once per useful sample.
 
 That's what `util_ad9361_divclk` produces. The divider table is:
 
@@ -311,21 +311,12 @@ That's what `util_ad9361_divclk` produces. The divider table is:
 | CMOS | 2R2T | 2 | `LVDS_ENABLE` not set + `adc_r1_mode`=0 |
 | CMOS | 1R1T | 1 | `LVDS_ENABLE` not set + `adc_r1_mode`=1 |
 
-The mux between the two ratios is driven by `adc_r1_mode`/`dac_r1_mode` through `util_reduced_logic`. That handles the 1R1T ↔ 2R2T case at runtime — but note that `MODE_1R1T` on `axi_ad9361` is also a compile-time parameter that sets the deserializer framing, and on Fishball it is hard-set to 2R2T, so in practice `adc_r1_mode` stays 0 and the divider is always `/4`.
+The mux between the two ratios is driven by `adc_r1_mode`/`dac_r1_mode` through `util_reduced_logic`. That handles the 1R1T ↔ 2R2T case at runtime. `MODE_1R1T` on `axi_ad9361` is also a compile-time parameter that sets the deserializer framing; on Fishball it is 1 since 043, so `adc_r1_mode` is 1 and the divider is `/2`.
 
-Numbers for the canonical Fishball configuration:
-
-```
-BBPLL ≈ 983 MHz     (driver-computed, typical)
-on-chip decimation ratio chosen so that DATA_CLK = 61.44 MHz
-  ↓
-DATA_CLK_P   = l_clk            ≈ 61.44 MHz   (LVDS interface clock)
-sampling_clk = l_clk / 4        ≈ 15.36 MHz   (per-channel sample clock)
-
-payload:  15.36 Msamples/s × 12 bits (I) + 12 bits (Q)  per RX channel
-```
-
-**15.36 MSPS is the rate Maia's DDC actually sees at its input**, regardless of whatever final P25 sample rate the pipeline wants. Getting from 15.36 MSPS down to the P25 working rate is the job of Maia's *custom* DDC — it is not the AD9361's on-chip decimation. That custom DDC is the stage flagged as "weak" in the `project_p25_ddc_stage1_filter_weak` investigation and is the target of the P25DDC fork.
+On Fishball (1R1T since 043) `sampling_clk = l_clk / 2` carries one complex sample per cycle:
+the AD9361's sample rate, which the presets set between 2 and 16 MSPS. That is the rate the
+radio core sees at its input. Getting from it down to a lane's 50 kSPS is the job of the core's
+DDCs (`P25DDC`, a Maia DDC), not of the AD9361's on-chip decimation.
 
 ### 5.6 Clock Domains on the PL Side
 
@@ -334,11 +325,11 @@ Pulling it all together, here is every clock in the RX data path and where it co
 | Clock | Source | Typical Freq | Used by |
 |---|---|---|---|
 | `axi_ad9361/l_clk` | AD9361 `DATA_CLK_P`, recovered via IBUFDS + BUFR | ~61.44 MHz | ADI capture, wfifo write side |
-| `util_ad9361_divclk/clk_out` (= `sampling_clk`) | `l_clk` / 4 (LVDS) or / 2 (CMOS) | ~15.36 MHz | ADI FIFO read side + Maia DDC input |
+| `util_ad9361_divclk/clk_out` (= `sampling_clk`) | `l_clk` / 2 (LVDS 1R1T, Fishball since 043) or / 4 (LVDS 2R2T) | the sample rate | ADI FIFO read side + the radio core's input |
 | `sys_cpu_clk` | PS7 FCLK0 | 100 MHz | AXI-Lite control, DMA AXI-MM |
-| `maia_sdr_clk/clk_out1` | MMCM from `sys_cpu_clk` | ~250 MHz | Maia core `clk` |
-| `maia_sdr_clk/clk_out2` | MMCM | ~500 MHz | Maia `clk2x_clk` |
-| `maia_sdr_clk/clk_out3` | MMCM | ~750 MHz | Maia `clk3x_clk` |
+| `maia_sdr_clk/clk_out1` | MMCM from `sys_cpu_clk` | 62.5 MHz | the core's `clk` (sync), and HP1 |
+| `maia_sdr_clk/clk_out2` | MMCM | 125 MHz | `clk2x_clk` |
+| `maia_sdr_clk/clk_out3` | MMCM | 187.5 MHz | `clk3x_clk` (the 3x multipliers) |
 
 `l_clk` is forwarded from the AD9361 and is not phase-related to anything else in the PL. `sampling_clk` is derived from `l_clk` through `util_clkdiv` but the BUFR routing introduces enough delay that the downstream logic treats the boundary as asynchronous. Everything from `sys_cpu_clk` downward is generated by the PS/MMCM and is unrelated to either `l_clk` or `sampling_clk`.
 
@@ -371,22 +362,21 @@ This is why `iio_attr -u ip:192.168.2.1 ...` from your Windows host can change A
 
 Three numbers govern the usable RF window, and they are easy to confuse. Keep them straight:
 
-**1. Bit accounting on the LVDS bus (where `/4` comes from).**
+**1. Bit accounting on the LVDS bus.**
 
-LVDS mode uses 6 differential data pairs, DDR on both edges of `DATA_CLK`, giving 12 bits per full `DATA_CLK` period — exactly **one 12-bit AD9361 sample** per period.
+LVDS mode uses 6 differential data pairs, DDR on both edges of `DATA_CLK`, giving 12 bits per
+full `DATA_CLK` period — exactly **one 12-bit AD9361 sample** per period.
 
 - 2R2T mode packs 4 samples per IQ set `{I1, Q1, I2, Q2}` → needs 4 `DATA_CLK` periods → `fs_complex = DATA_CLK / 4`
 - 1R1T mode packs 2 samples per IQ set `{I, Q}` → needs 2 `DATA_CLK` periods → `fs_complex = DATA_CLK / 2`
 
-Fishball is compile-time-locked to 2R2T, so the divider is always `/4`, and with `DATA_CLK ≈ 61.44 MHz` the per-channel complex sample rate is `fs_complex ≈ 15.36 MHz`.
+Fishball runs 1R1T since change 043, so the divider is `/2`: at a given `DATA_CLK` the
+per-channel rate is twice what 2R2T gave.
 
-**2. "I at 15 MSPS + Q at 15 MSPS ≠ 30 MSPS signal."**
+**2. "I at fs + Q at fs ≠ a 2 fs signal."**
 
-`I` and `Q` are not two independent data streams. They are the two components of *one* complex sample `z = I + jQ`. Summing them is double-counting. The correct statement is:
-
-- `fs_complex = 15.36` Mcomplex-samples/s per channel
-- Raw payload on the wire: `15.36 M × 24 bit ≈ 368 Mbit/s` per channel
-- **Signal bandwidth represented: 15.36 MHz**, not 30.72 MHz
+`I` and `Q` are not two independent data streams. They are the two components of *one* complex
+sample `z = I + jQ`. A complex rate `fs` represents `fs` of signal bandwidth, not `2 fs`.
 
 **3. Complex-vs-real Nyquist — why the usable window equals `fs`, not `fs/2`.**
 
@@ -395,37 +385,27 @@ Fishball is compile-time-locked to 2R2T, so the divider is always `/4`, and with
 | Real-valued (one ADC) | `fs / 2` | classical Nyquist — can't distinguish `+f` from `−f` |
 | Complex IQ (quadrature pair) | **`fs`** | I and Q together encode the sign of frequency around the LO |
 
-So `fs_complex = 15.36 MHz` means the maximum theoretical RF window is:
-
-```
-[ f_LO − 7.68 MHz ,  f_LO + 7.68 MHz ]   =  15.36 MHz total
-```
-
-centered on whatever RX LO the AD9361 is tuned to.
+So the theoretical RF window is `[f_LO − fs/2, f_LO + fs/2]`. The scanner's window planner keeps
+channels within ±0.45 × `fs`, clear of the filters' edges.
 
 **4. The analog LPF is the real ceiling.**
 
-The `fs_complex` window is a theoretical cap from the bus. What the RF front-end *actually* lets through is set by the AD9361's on-die analog LPF corner, controlled via the libiio `rf_bandwidth` attribute (SPI register `0x1F5`). The LPF corner is roughly `rf_bandwidth / 2` per side.
+What the RF front end lets through is set by the AD9361's on-die analog LPF corner, controlled
+via the libiio `rf_bandwidth` attribute (SPI register `0x1F5`). The corner is roughly
+`rf_bandwidth / 2` per side:
 
 ```
 usable_RF_BW  =  min( rf_bandwidth, fs_complex )
 ```
 
-Concretely:
+An `rf_bandwidth` above `fs` lets in energy that aliases into the window.
 
-| `rf_bandwidth` | Analog LPF corner | Usable RF window | vs Nyquist |
-|---|---|---|---|
-| 4 MHz | ~2 MHz | ±2 MHz (4 MHz total) | 3.8× oversampled |
-| 8 MHz | ~4 MHz | ±4 MHz (8 MHz total) | 1.9× oversampled |
-| 15.36 MHz | ~7.68 MHz | ±7.68 MHz (15.36 MHz total) | at Nyquist |
-| > 15.36 MHz | > 7.68 MHz | **aliases** — LPF lets in energy that folds into the passband | above Nyquist |
+**5. Takeaways for Fishball.**
 
-**5. Takeaways for Fishball + Maia.**
-
-- The maximum real RF bandwidth this bitstream can capture is **15.36 MHz**, clamped by the compile-time `/4` divider on a 61.44 MHz `DATA_CLK`.
-- The current P25 configuration runs at `rf_bandwidth = 4 MHz`, which means you are heavily oversampled — plenty of margin for processing gain and noise shaping, but the actual spectrum window is only 4 MHz wide because the analog LPF throws the rest away before the ADC.
-- Widening `rf_bandwidth` past ~8 MHz in this bitstream has two compounding risks: (a) adjacent-site energy leaks past the analog LPF, and (b) the Maia custom DDC's weak stage-1 filter (see `project_p25_ddc_stage1_filter_weak`) can't reject it. This is why the 2026-04-15 8 MHz sweep collapsed control CRC from 80% to 43%.
-- Going above 15.36 MHz of real bandwidth requires **rebuilding the bitstream** for 1R1T (doubles `fs_complex`, loses RX2) or driving `DATA_CLK` higher (within AD9361 LVDS limits). Neither is a runtime knob.
+- The presets run 2-16 MSPS (ATSC uses 10 and 16). 079's study ("Every mode's needs", item 8)
+  checks about 30 MSPS for 902-928 MHz in one window.
+- A wider `rf_bandwidth` lets more adjacent energy past the analog LPF; the lanes' DDC filters
+  must reject it.
 
 ## 6. DMA / Memory Path
 
@@ -436,9 +416,12 @@ The Maia block design talks to PS DDR through **two** PS7 HP slaves:
 | `S_AXI_HP1` | `maia_sdr/m_axi_spectrometer` | Direct, single-master, high-throughput spectrum frame writes |
 | `S_AXI_HP2` | `axi_ad9361_adc_dma`, `axi_ad9361_dac_dma`, `maia_sdr/m_axi_recorder` | Shared via SmartConnect (`ad_mem_hp2_interconnect`) |
 
-On `fishball7020_p25`, Maia's `m_axi_recorder` carries a third IQ DMA ring added in Phase 6C — the SmartConnect arbiter behind HP2 handles three masters instead of two. See `doc/changes/013_phase6c_iq_dma.md` for the arbitration analysis.
+On `fishball7020_p25` the `maia_sdr` core is removed and the radio core takes its place: HP1
+carries the core's three masters (the lane ring, the spectrum ring and the raw IQ capture)
+through an `axi_interconnect` at 62.5 MHz (about 500 MB/s), and HP2 keeps the IIO DMA. HP0 and
+HP3 are unused.
 
-The IIO capture path used by libiio on the target is the S2MM DMA into a DDR buffer. No Maia custom logic sits in that path — it is pure ADI plumbing, which is why the libiio-based known-good baseband capture still works on the P25 build even when the Maia DDC / P25 pipeline is offline. This is load-bearing for debugging (see `feedback_keep_libiio_path.md` in auto-memory).
+The IIO capture path used by libiio on the target is the S2MM DMA into a DDR buffer. No Maia custom logic sits in that path — it is pure ADI plumbing, which is why the libiio-based known-good baseband capture still works on the P25 build even when the radio core is offline. Keep it: it is load-bearing for debugging.
 
 ## 7. Maia IP Core — Connection to the ADI Side
 
@@ -477,6 +460,11 @@ ad_mem_hp2_interconnect sys_cpu_clk  maia_sdr/m_axi_recorder
 ```
 
 Interrupt: Maia drives PS IRQ `ps-11` for spectrum-frame-done / IQ-DMA events.
+
+On `fishball7020_p25`, `system_bd.tcl` deletes `maia_sdr` after sourcing the pluto base and puts
+`p25_core` (the radio core) in its place, on the same clocks (`clk`, `clk2x_clk`, `clk3x_clk`
+from `maia_sdr_clk`; `sampling_clk` from `util_ad9361_divclk`), with its three masters on HP1
+and its interrupt on the same concat input (In11). See `BUILD_FPGA.md`, "Block design".
 
 ## 8. Interrupt Map (ADI-owned lines)
 

@@ -174,13 +174,14 @@ scanner/src/         the fresh crate (D13)
     plan.rs          the window planner
     streams/         the lane ring's reader and the hub: each lane's IQ of its current tuning
                      to its subscribers, in blocks with an air time
-  dsp/               taps (SDRTrunk's), fsk4 (DifferentialDemod, ideal_phase, interpolation)
+  dsp/               taps (SDRTrunk's), fsk4 (DifferentialDemod, ideal_phase, interpolation), run
+                     (the filters' multiply-accumulate, NEON on the board)
   protocol/
     events.rs        ControlEvent, TrafficEvent, LogicalChannel, SiteIdentity (the decoders'
                      common output)
     fec/             the codes both use: Golay(24,12), the Hamming codes
-    p25/             framer, tsbk, control decoder, traffic decoder, voice_frame, pdu, c4fm demod,
-                     fec (BCH NID, Reed-Solomon, trellis)
+    p25/             framer, tsbk, control decoder, traffic decoder, voice_frame, pdu, c4fm and
+                     lsm demodulators, fec (BCH NID, Reed-Solomon, trellis)
     dmr/             demod, framer, fec (bptc, cach, emb, slot type, crc, RS(12,9)), message,
                      control (Tier III), traffic
     atsc/            the US TV channel plan, the windows that read it, and one channel's
@@ -196,14 +197,18 @@ scanner/src/         the fresh crate (D13)
     site.rs          LiveSite: activate(), recentre(), the live state
     learned.rs       what a site teaches: bands, grants, encrypted talkgroups, neighbours, its
                      other channels
+    lcn.rs           DMR logical channels learned from the air
+    survey.rs        the carriers heard in the live window
     receivers.rs     runs the live protocol's control decoders on their streams, feeds events in
   audio/
     codec/           VoiceCodec; imbe (jmbe port), with ambe (jmbe's AMBE+2)
     agc.rs           PcmAgc, the only copy
     live.rs          per lane: frames, codec, AGC, pacer; the audio broadcast
+    alert.rs         alert tones (console warbles and beeps, two-tone pages)
+    levels.rs        each radio's recent levels, where the AGC starts a transmission
   services/
     config/          radio, systems, aliases, radioreference, state, ids
-    history/         schema v2, store, the writer
+    history/         schema v4, store, the writer
     recordings/      the recorder, storage (RAM/SD), index, wav
     discovery/       carriers, probes (P25 and DMR), the sweep, grouping and merge
     mode.rs          the unit's mode: the scanner or ATSC TV (holds the lease, pauses the site)
@@ -213,9 +218,11 @@ scanner/src/         the fresh crate (D13)
     packet_data.rs   P25 packet data records
     events.rs        the event log
     notices.rs       what /ws/events sends
+    iq.rs            the control channel's IQ as a WAV
+    system.rs        the board's health: load, memory, CPU per thread, temperatures
   api/               one route table builds the router and doc/API.md; ApiError
     v1/              status, radio, systems, aliases, sites, hold, calls, recordings, activity, data,
-                     spectrum, scan, events, mode, atsc
+                     spectrum, survey, scan, events, iq, receivers, system, config, mode, atsc
     ws.rs            /ws/live, /ws/audio, /ws/events
     legacy.rs        p25-httpd's routes the bench reads, in their old shape
   ui/                mod.rs and the static files (index.html, js/, css/)
@@ -237,7 +244,7 @@ rewritten there (glue); "delete" means not carried over.
 | `app/autoppm.rs`, `recentre_task.rs` | `services::crystal`; `LiveSite::recentre` | Call the Tuner, not `api::tuning` |
 | `app/discovery*.rs` | `radio::lease` + `services::discovery` | Split |
 | `app/iq_hub.rs`, `dibit_readers.rs`, `dibit_airtime.rs` | `radio::streams` | |
-| `app/traffic_heartbeat.rs` | `hardware::p25core` register read + `protocol::p25` HDL source | Split |
+| `app/traffic_heartbeat.rs` | `hardware::p25core` register read + `protocol::p25` HDL source (both gone with 079) | Split |
 | `app/lane_policy.rs`, `traffic_lane.rs` | `trunking::follow`, `trunking::trunk`, `boot` | |
 | `app/history_task.rs` | `services::history::writer` | No ring polling |
 | `app/data_task.rs` | `services::packet_data`; the data channel in the site's learned state | The `DATA_CHANNEL_HZ` static goes |
@@ -247,7 +254,7 @@ rewritten there (glue); "delete" means not carried over.
 | `app/wideband_iq_task.rs` | capture to `radio::streams`; the sw_demod tee is deleted | Fix the unaligned cast |
 | `audio/recorder.rs`, `rec_storage.rs` | `services::recordings` | `rec_storage` stops calling `api::system::fs_usage` |
 | `audio/mod.rs` | `audio::live` + `trunking` events | `CallBoundary` is replaced |
-| `hardware/fpga.rs` (2444) | `hardware::p25core::*` | Split. The two private FIR loaders are replaced by `ddc_fir_ram` (quick win 2) |
+| `hardware/fpga.rs` (2444) | `hardware::p25core::*`, then `hardware::radiocore` (079) | Split. The two private FIR loaders are replaced by `ddc_fir_ram` (quick win 2) |
 | `httpd/mod.rs` | `boot::state` (AppState as handles) + `api` (router) | 54 % comments today |
 | `httpd/api/tuning.rs` (1730) | `radio::tuner` (apply_preset, post_tune, ppm) + `api::v1::radio` | Domain logic leaves the handler |
 | `httpd/api/ui.rs` | `services::config` (`apply_settings_patch`) + `api::v1` | |
@@ -447,28 +454,29 @@ Room for scanning between sites: a later `SiteSelector` (priority list, dwell, h
 
 ## 5. Protocols behind traits
 
-Protocol modules stay pure and synchronous, and are tested on the host. Runners in
-`trunking::receivers` own the threads and feed them the stream they ask for. Data arrives in two
-shapes, and the traits accept both:
+Protocol modules stay pure and synchronous, and are tested on the host. Runners own the threads
+and feed them the stream they ask for: `trunking::receivers` the control channel's decoders,
+`trunking::trunk` the lanes'. Since change 079 every input has one shape: a lane's IQ at 50 kSPS
+from the radio core's lane ring (`radio::streams::Block`), with its air time, its tuning's tag and
+whether samples were lost before it.
 
-- **HDL LSM dibits:** DMA words with air-time epochs; P25 control and both traffic chains.
-- **Software IQ:** 50 kSPS from the IQ hub; P25 C4FM control, DMR control and traffic.
+The sketch below is the design. The code keeps its event types (`protocol::events`) and the
+codec trait (`audio::codec::VoiceCodec`), and has concrete decoders in place of the two decoder
+traits.
 
 ```rust
 pub enum Protocol { P25, DmrTier3 }
-pub enum RxInput<'a> { Iq(&'a [i16]), Dibits { dibits: &'a [u8], epoch: AirtimeEpoch } }
 
 pub trait ControlDecoder: Send {
     fn protocol(&self) -> Protocol;
-    fn input(&self) -> InputKind;                 // HdlDibits | Iq
-    fn push(&mut self, input: RxInput, now: Instant, out: &mut Vec<ControlEvent>);
+    fn push(&mut self, block: &Block, now: Instant, out: &mut Vec<ControlEvent>);
     fn retuned(&mut self);
     fn new_system(&mut self);
     fn health(&self) -> ControlHealth;            // msgs/s, ok %, last message age, CPU
 }
 pub trait TrafficDecoder: Send {
     fn follow(&mut self, ch: LogicalChannel, expect: Expect);   // NAC lock, or DMR slot + colour code
-    fn push(&mut self, input: RxInput, now: Instant, out: &mut Vec<TrafficEvent>);
+    fn push(&mut self, block: &Block, now: Instant, out: &mut Vec<TrafficEvent>);
 }
 pub trait VoiceCodec: Send {                      // Imbe (jmbe), Ambe2 (jmbe AMBE)
     fn frame_bits(&self) -> usize;                // 144 / 72
@@ -506,21 +514,13 @@ pub enum TrafficEvent {
 
 Rules:
 
-- **Only the live protocol's receivers run.** At a DMR site, the HDL LSM decoder, C4FM, autoppm's
-  LSM measurement and the P25 clock source stop. That saves 12–17 % of a core (defect 9).
-  Autoppm at DMR sites reads the DMR equaliser's carrier offset.
+- **Only the live protocol's receivers run.** At a DMR site the P25 demodulators and the P25
+  clock source stop; at a P25 site only the site's modulation (LSM or C4FM) runs. The crystal
+  tracker reads the control decoder's carrier offset: the LSM's loop or the DMR equaliser's.
 - **Side effects become events.** Today the P25 decoder calls into `data_task` and `site_clock`;
   those become `DataChannel` and `SiteTime` events.
-- **Lanes have capabilities** (`Setup::lanes`, by protocol). The follower picks only lanes that can carry the
-  grant:
-
-  | Lane | Capabilities |
-  |------|--------------|
-  | Chain 1 | HDL dibits and IQ: P25 and DMR |
-  | Chain 2 | HDL dibits: P25 only |
-  | Control slot | The control receiver's other timeslot: DMR grants to the control repeater's TS2 |
-
-  With change 079's core every lane carries IQ and any protocol, and the table goes away.
+- **Every lane carries any protocol** (079): its IQ goes to a software receiver. A DMR grant to
+  the control repeater's other timeslot goes to the control receiver instead of a lane.
 - **SDRTrunk constants and texts stay as they are.** The traits wrap the ported code; they do not
   rewrite it. The DMR reference (24,984+ of 24,996 lines) and the P25 tests gate every step.
 
@@ -636,7 +636,8 @@ One service, `services::history`:
 - **A second, read-only connection** with a busy timeout serves the API. A CSV export no longer
   blocks the writer.
 
-Schema v2:
+Schema v2, the design (the history is at v4: v3 gave calls one shape with names, v4 added
+`alerts`; `services/history` holds the current schema):
 
 ```sql
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);   -- schema, created
@@ -810,12 +811,12 @@ The 071 finder becomes `services::discovery`, run on the Systems page, and on fi
 
 ## 11. API
 
-The UI moves to `/api/v1`. Every v1 route is typed: DTOs in `p25-json`, `ApiError`, and one route
-table that builds both the router and `GET /api/endpoints`.
+The UI moves to `/api/v1`. Every v1 route has typed responses and `ApiError` (`api/mod.rs`), and
+one route table builds the router, `GET /api/v1/routes` and `doc/API.md`.
 
-Protocol-specific fields become tagged: `identity: {protocol, ...}` and a neutral
-`control_health {msgs_per_s, ok_pct, last_msg_age_ms}`. That retires `UiSite`'s P25 fields plus
-its `dmr` attachment, which is what forces `site_card.js` to branch.
+Protocol-specific fields are tagged (`identity: {protocol, ...}`), and the control channel's
+health (`status.control`) has the same fields for P25 and DMR. That retired p25-httpd's
+`UiSite` P25 fields and its `dmr` attachment, which forced `site_card.js` to branch.
 
 | v1 | Replaces | Consumers to move |
 |----|----------|-------------------|
@@ -827,7 +828,7 @@ its `dmr` attachment, which is what forces `site_card.js` to branch.
 | `/api/v1/systems/{id}/aliases`, `/listening`, `/talkgroups/{tg}`; `/api/v1/hold` | profile actions in `ui/settings`, `/api/monitor`, `/api/encrypted_tgs` | UI (not `/api/monitor`); bench `corpus_tests` (`/api/monitor`, mode C) |
 | `/api/v1/recordings...` | `/api/recordings...` | UI; tools `poll_recordings_persist`, `compare_sim_vs_board`, `audit`, `capture_session` |
 | `/api/v1/activity/*`, `/api/v1/data` | `/api/activity/*`, `/api/data` | UI |
-| `/api/v1/scan` (GET, POST), `/scan/cancel`, `/scan/results/{key}/add` | `/api/discovery*` | UI |
+| `/api/v1/scan` (GET, POST), `/scan/cancel`, `/scan/add` | `/api/discovery*` | UI |
 | `/api/v1/events`; typed `/ws/events` | `/api/log`, `/api/recent_tsbks`, `/api/dmr/messages` | UI; 8 tools use `/api/log`; `log_dmr.py` |
 | `/api/v1/receivers` (status; modulation choice) | `/api/modulation`, `/api/dmr` | UI; tool `retune_probe`; `log_dmr.py` |
 | `/ws/audio` (v2 framing; speaker in meta) | unchanged path; v1 framing kept | UI; tool `ws_audio_capture`; bench `wsaudio.py`, `services.py` |
@@ -857,8 +858,8 @@ otherwise. Seven tools still call routes that no longer exist (`/api/constellati
 `/api/voice_follow_targets`, `/api/debug`). Those calls are fixed, or the tool is retired.
 
 **Docs:** the fresh crate's `scanner/doc/API.md` covers both protocols; the catalogue is
-generated, so it cannot drift. Today the hand-written `/api/endpoints` catalogue is missing 34
-paths and `doc/P25_API.md` is missing 13. `API_CONSUMERS.md` is updated.
+generated, so it cannot drift. (p25-httpd's hand-written `/api/endpoints` catalogue was missing
+34 paths and `doc/P25_API.md` 13.)
 
 ## 12. UI
 
@@ -889,25 +890,25 @@ until the cutover.
 
 ## 13. FPGA: what to move, and when
 
-Andy asked for this on 2026-10-01. Summary: **nothing has to move for 076.** Afterwards, change
-079 (`doc/changes/079_general_radio_core.md`, approved 2026-10-03) replaces the core: a polyphase
-channelizer in the PL, every demodulator in software.
+Andy asked for this on 2026-10-01. Summary: **nothing had to move for 076.** Afterwards, change
+079 (`doc/changes/079_general_radio_core.md`) replaced the core: the lanes' IQ from the PL, every
+demodulator in software (steps 1, 3a and 4 done). 079 holds the gateware plan from here on.
 
 ### Fabric and CPU today
 
-**Fabric** (075b bake, `impl_1` reports):
+**Fabric** (the radio core 1.0.0, 079 step 3a):
 
 | Resource | Used |
 |----------|------|
-| Slices | 12,176 of 13,300 (**91.6 %**) |
-| DSP48 | 172 of 220 (78 %) |
-| LUTs | 55 % |
-| BRAM | 45 % |
+| Slices | 57.7 % |
+| DSP48 | 68 of 220 (31 %) |
+| LUTs | 14,958 of 53,200 (28 %) |
+| Block RAM tiles | 58 of 140 (41 %) |
 
-- Timing closed at WNS +0.208 ns. The bake before closed at +0.021 ns on the same path.
-- Each traffic chain costs about 5.5k LUTs, 8.3k FFs and 45 DSPs. The 121-tap LPF keeps its
-  delay line in flip-flops.
-- Slices are the binding resource.
+- Worst setup slack +0.091 ns, in clk3x: the shared common-edge pulse's fan-out (079's study).
+- A lane costs about 1,250 LUTs, 13 DSPs and 7 block RAM tiles. The per-block numbers are in
+  079's "Every mode's needs".
+- Core 0.3.0 (the 075b bake) had 91.6 % of slices and 172 DSPs, with 45 DSPs a chain.
 
 **PS CPU** (two A9s at 666.67 MHz, 200 % in all):
 
@@ -923,19 +924,19 @@ channelizer in the PL, every demodulator in software.
 | Candidate | Saves | Costs | Verdict |
 |-----------|-------|-------|---------|
 | Run only the live protocol's decoders | 12–17 % of a core at DMR sites | PS only | **076** (section 5) |
-| Chain capability model | — (lane 2 carries P25 LSM only until 079) | PS only | **076** (section 5) |
+| Chain capability model | — | PS only | Built in 076, then retired by 079: every lane carries IQ |
 | Scan on the existing spectrometer, DMR by software sync count | — | PS only | **076** (section 10) |
 | Chain-2 post-DDC IQ tap on core 0.3.0 | DMR and C4FM voice on lane 2 | ~150 slices, ~1 k FF, 1.5 BRAM, 0 DSP | Not built: 079 gives every lane IQ |
 | Symmetric, NEON-friendly FIR in `dsp::fsk4` | 9–10 % of a core per software receiver | PS; parity gated by the DMR and C4FM tests | **Done in 079**: byte-identical dibits |
 | Host experiment: DMR framer on the LSM model's dibits | Lane-2 DMR without a bake | ~1 day, host only | Not needed (079); LSM on C4FM passes only 42–69 % |
 | LsmFir delay lines to SRL/LUTRAM | ~5k FF per chain of area back | Bake | Not needed: 079 removes the LSM chains from the PL |
-| **Polyphase channelizer in the PL, every demodulator in software** | 8–16 identical lanes; ~60–70 DSPs instead of 172 | A new core and Vivado project; a fixed-point model first | **079** |
+| **Polyphase channelizer in the PL, every demodulator in software** | 8–16 identical lanes; ~60–70 DSPs instead of 172 | A fixed-point model first | **079**: every demodulator in software is done (3a); the channelizer (3b) waits for a mode that needs more lanes than DDC lanes give |
 | HDL channel filters (half-band, LPF, RRC), time-shared across lanes | ~2 % of a core per software receiver | Parity with SDRTrunk's f32 shown on a fixed-point model first | **079 step 5**, when lanes outgrow the CPU |
-| Software LSM demodulator | Retires the gateware LSM; P25 voice on any lane | PS; SDRTrunk port, checked against `p25-httpd/src/lsm` | **079 step 1** |
+| Software LSM demodulator | Retires the gateware LSM; P25 voice on any lane | PS; SDRTrunk port, checked against SDRTrunk on 313 recordings | **Done in 079 step 1** |
 | HDL 4FSK symbol processor or C4FM demodulator | — | Months; SDRTrunk's branchy sync-driven timing; worse late entry | Never |
 | Vocoders, FEC, PCM AGC, autoppm/recentre | ≤ 2.5 % each | 6–8 weeks for a vocoder alone | Never |
-| A fourth copy of today's DDC and LSM chain | — | DSP 217/220, slices over 100 % | Never; more lanes come from 079's channelizer |
-| Gateware for every mode: wide lanes kept beside the channelizer, deeper rings, time on spectrum frames and captures | A new mode (data, ATSC) without a bake | Bake items, with 079 step 3b and later | **079, "Every mode's needs"**. Data mode's wide lanes need no bake on the 3a core (`DATA_MODE.md` §3) |
+| A fourth copy of core 0.3.0's DDC and LSM chain | — | DSP 217/220, slices over 100 % | Never; more lanes come from more DDC lanes (13 DSPs each) or 079's channelizer |
+| Gateware for every mode: wide lanes kept beside the channelizer, deeper rings, time on spectrum frames and captures | A new mode (data, ATSC) without a bake | Bakes A-D | **079, "Every mode's needs"**: bake A next. Data mode's wide lanes need no bake on the 3a core (`DATA_MODE.md` §3) |
 
 ## 14. Test strategy
 
@@ -1004,11 +1005,15 @@ Rules for the build-up:
   timings, follower gates, air-time gating) come across with their tests.
 - **The old p25-httpd is frozen** apart from fixes until the cutover. A fix that lands meanwhile
   also goes into the fresh crate if the module already exists there.
-- **Shared crates.** `scanner` uses `p25-pac` by path from `p25-httpd/` until the cutover. They
-  are two packages, not a cargo workspace: the image build syncs only `p25-httpd/` and builds it
-  on its own. The fresh crate's API types live in the crate (`api::v1`), so `p25-json` stays
-  with the old crate.
+- **Shared crates.** None now: since 079 `scanner` builds against its own PAC, `scanner/core-pac`,
+  generated from the radio core's SVD. The fresh crate's API types live in the crate
+  (`api::v1`), so `p25-json` stayed with the old crate.
 - **Each commit builds and passes the checks**, and each phase ends with the live check on A.
+
+**Status:** the status log records phases 0-6 and phase 8's cutover (both units' image, since
+2026-10-01). Open: phase 7's `api::diag` and the bench's ports to `/api/v1`
+(`API_INVENTORY.md`, cleanup items 2 and 4), and phase 8's last item, p25-httpd out of the repo
+(`doc/CLEANUP_INVENTORY.md` §3). Phase 1's migration was dropped (D16).
 
 | Phase | What | Live check on unit A | Size |
 |-------|------|----------------------|------|
@@ -1538,6 +1543,12 @@ From the brief:
     puts 82 % within 6 dB of the target (41 % before); every sender's median is -18 to -21 dBFS.
     The browser's Level (x0.25 to x8 toward -20 dBFS, set from each transmission's first 20 ms)
     already levelled live audio; recordings had nothing after the AGC.
+- 2026-10-03, change 079 (the radio core; record: `doc/changes/079_general_radio_core.md`): the
+  scanner reads the radio core 1.0.0 (`hardware::radiocore`, `scanner/core-pac`) and no longer
+  core 0.3.0, so unit B keeps the older image. Every lane decodes in software (LSM, C4FM, DMR),
+  `radio::streams` reads the one lane ring with tags and air times, and the dibit readers, the
+  NID poller, the seeds and the settle timers are gone. The image `2026-10-03-radio-core-image1`
+  went onto unit A; the FIR speed-up and the CPU work followed (079's status log).
 - 2026-10-03, change 080 (branch `080-atsc`, worktree `maia-sdr-080`): **ATSC TV mode** (Andy:
   the unit does whatever mode it is in; scanner tabs in scanner mode, an ATSC tab in ATSC mode).
   `services::mode` keeps the mode in `state/radio.json`; ATSC mode holds the radio lease with the
