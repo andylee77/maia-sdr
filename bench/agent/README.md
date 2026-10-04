@@ -273,6 +273,34 @@ stdout followed by the reply line. Events: `over_temp` (>= 85 C),
 `rail_out_of_range` (+- 5 % of nominal; vccoddr 1.35 V for DDR3L),
 `clk_freq_change` (> 1 %).
 
+### profile
+
+```bash
+fbench-agent profile --pid scanner [--seconds 30] [--hz 1000] [--top 40] [--symbols /tmp/scanner.unstripped]
+```
+
+```json
+{"ok": true, "cmd": "profile", "pid": 32171, "samples": 240116, "pct_core": 44.8, "idle_pct_core": 152.9,
+ "threads": [{"name": "tokio-rt-worker", "pct_core": 27.8,
+              "functions": [{"name": "scanner::dsp::fsk4::folded_run [scanner]", "pct_core": 2.6}]}],
+ "functions": [{"name": "scanner::dsp::fsk4::folded_run [scanner]", "pct_core": 5.4,
+                "threads": [{"name": "p25-cc", "pct_core": 2.8}, {"name": "tokio-rt-worker", "pct_core": 2.6}]}],
+ "others": [{"pid": 30358, "comm": "fbench-agent", "pct_core": 0.5}],
+ "symbols": {"/usr/bin/scanner": "symtab", "/lib/libc.so.6": "dynsym"},
+ "exe": "/usr/bin/scanner", "seconds": 120.058, "hz": 1000.0, "cpus": 2, "lost": 0}
+```
+
+The kernel samples every CPU on its clock (`perf_event_open`, software CPU
+clock, `--hz` a second); each sample of the process counts for its thread and
+for the function it was in, `pct_core` being the share of one core. Functions
+come from the ELF symbol table of the executable or library mapped at the
+address (`symtab`, else `dynsym`): a stripped executable shows as `[scanner]`.
+`--symbols` names an unstripped build of the same code, which must hold the
+running executable's code segment byte for byte (`precondition` otherwise; a
+build in another target directory or with other profile settings differs).
+Inlined code counts for the function it was inlined into; `[kernel]` is time in
+the kernel on the process's behalf. `--pid` takes a PID or a process name.
+
 ### iio attr / iio debug
 
 ```bash

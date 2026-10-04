@@ -13,8 +13,9 @@ use crate::protocol::p25::c4fm::C4fmDecoder;
 use crate::protocol::p25::control::P25Control;
 use crate::protocol::p25::lsm::LsmDecoder;
 use crate::radio::streams::Block;
-use crate::services::config::systems::Protocol;
+use crate::services::config::systems::{Modulation, Protocol};
 use crate::trunking::learned::iden_band;
+use crate::trunking::receivers::c4fm_clearly_better;
 use crate::util::time::Stamp;
 
 use super::{FoundNeighbour, FoundSite};
@@ -62,14 +63,15 @@ impl Default for P25Probe {
 }
 
 impl P25Probe {
-    /// The C4FM path starts a moment later after a retune, so raw counts would favour LSM.
+    /// The site's modulation, by the receivers' rule. The C4FM path starts a moment later after
+    /// a retune, so raw counts would favour LSM: pass rates once both have tried enough.
     fn c4fm_better(&self) -> bool {
         let (c, l) = (self.c4fm.stats(), self.lsm.stats());
         let rate = |ok: u64, tries: u64| ok as f64 / tries.max(1) as f64;
         if c.tsbk_attempts() >= 10 && l.tsbk_attempts() >= 10 {
-            rate(c.tsbk_ok(), c.tsbk_attempts()) > rate(l.tsbk_ok(), l.tsbk_attempts())
+            c4fm_clearly_better(rate(c.tsbk_ok(), c.tsbk_attempts()), rate(l.tsbk_ok(), l.tsbk_attempts()))
         } else {
-            c.tsbk_ok() > l.tsbk_ok()
+            c4fm_clearly_better(c.tsbk_ok() as f64, l.tsbk_ok() as f64)
         }
     }
 }
@@ -122,7 +124,7 @@ impl Probe for P25Probe {
             freq_hz: announced.unwrap_or(freq_hz),
             level_db,
             protocol: Protocol::P25,
-            modulation: Some(if c4fm { "c4fm" } else { "lsm" }),
+            modulation: Some(if c4fm { Modulation::C4fm } else { Modulation::Lsm }),
             msgs_per_s: s.tsbk_ok() as f64 / secs.max(0.1),
             ok_pct: 100.0 * s.tsbk_ok() as f64 / s.tsbk_attempts().max(1) as f64,
             identity: SiteIdentity::P25(id),

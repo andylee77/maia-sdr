@@ -99,7 +99,7 @@ spectrometer, the raw IQ capture, `axi_ad9361` and the IIO DMAs stay.
 Since the FIR speed-up (status log) a software receiver costs 4-9 % of a core on the A9 (LSM
 4.1 %, C4FM 4.3 %, DMR 9.3 %, `dsp::cost_tests`), of which the filters are about 2 %: step 5 (the
 filters in the PL) would save about that much per receiver. On unit A the scanner with three LSM
-receivers and the control channel's C4FM runs at 48 % of one core.
+receivers runs at 15 % of one core (status log, the CPU work).
 
 ## The PS side
 
@@ -456,3 +456,50 @@ touches anything else.
     (the control thread 33.1 → 16.4 %, the runtime workers 50.5 → 31.1 %). Control 40.7
     messages a second at 100 %, no block dropped; lane 1 19 HDUs and 134 / 121 LDU1 / LDU2 in
     its first 6 minutes.
+- **2026-10-03, the CPU work** (Andy: find the other costs; drop the dual LSM/C4FM decode, the
+  site says what to decode and the scan validates both). `fbench-agent profile` (new: perf
+  sampling by thread and function, the link register for a leaf's caller) on unit A found, past
+  the filters:
+  - **The NID's BCH decoder** searched its 512 KB codebook to the end for any NID with an error,
+    and for every false sync on an idle lane (5 a second): 16.7 % of a core across the lanes and
+    the control decoders. It is now SDRTrunk's algebraic decoder (syndromes, Berlekamp-Massey,
+    the locator's roots), with the closest codeword's answers: 0.1 %.
+  - **Both control decoders on every P25 site.** A site runs its modulation's alone; a scan sets
+    it on the sites it adds (and on one set to auto); a site set to auto runs both until one is
+    chosen. The probe and the receivers choose by one rule, LSM unless C4FM passes clearly more.
+  - **The calls view** republished all 100 recent calls after every input, about 110 times a
+    second (clones, drops, the allocator: about 3 %); now when a call closes. The survey's noise
+    floor is a selection instead of a sort; spectrometer dB in f32.
+  - **Gates:** the 313 recordings decode the same (counts and dibits); DMR reference 24,984 of
+    24,996 with the 20:57 call; host tests 439.
+  - **Unit A, Clay County,** 5 minutes each: the scanner 47.7 % (fir1) → 19.9 % (one decoder,
+    the BCH early exit, the calls view) → 15.0 % of one core (the algebraic decoder); the control
+    thread 16.4 → 4.0 %. Control 40.8 messages a second at 100 %. Left: the three LSM receivers
+    (filters about 6.4 %), the kernel 1.7 %, the spectrometer's frames about 1 %.
+  - **Not SDRTrunk's, measured and kept (Andy: SDRTrunk is the baseline, not the ceiling).**
+    SDRTrunk decodes the NID's 63-bit BCH word without bit 63, and retries an uncorrectable NID
+    with the site's NAC; ours accepts 11 bits or fewer over all 64 and does not retry. On the 313
+    recordings both together recover 9 NIDs of 142,359 (+9 TSBKs, +1 LDU1, +1 LDU2, +3 TDU-LCs,
+    every one passing its own check; the harness now counts those). On noise the retry passes the
+    NAC check it would otherwise fail: a noise NID decodes with the site's NAC 3.3e-4 of the time
+    with it, 5e-7 without (a random-word estimate), so an idle lane's 5 false syncs a second
+    would give a false NID about every 10 minutes, a noise data unit read as voice. Not adopted.
+- **2026-10-03, the CPU work, second round** (`2026-10-03-radio-core-cpu4`, hand-deployed on A;
+  Andy: NID recovery and more CPU, then the ATSC work to share it):
+  - **`dsp::run`,** the filters' multiply-accumulate runs in one module for every receiver and
+    for 081's equalizer: `run::folded` (the symmetric pairs) and `run::plain` (any taps), eight
+    outputs at a time in NEON. A folded run adds to outputs the filter's first single tap started
+    instead of zeroing them: half-band 3.43 → 3.12, LSM low-pass 4.47 → 4.14, C4FM low-pass
+    3.01 → 2.68, RRC 3.49 → 3.18 ms per second of IQ. A 128-tap plain run: 385 ns an output
+    against 698 for one sum an output. Four outputs and two taps a step measured slower than
+    eight and one.
+  - **Spectrometer dB** in integer and f32 arithmetic (no software u64 conversion, no logarithm
+    call; within 1e-4 dB): the survey's frames 1.2 → 0.7 % of a core.
+  - **The kernel's share** (`profile` now names kernel functions): 1.1 % of a core, wakeups and
+    context switches, 0.2 % the lane ring's cache maintenance; nothing to take out.
+  - **Gates:** the 313 recordings decode the same; DMR reference 24,984 of 24,996; host tests
+    441; the NEON runs' tests on A.
+  - **Unit A:** 16.7 % of one core over 5 minutes, in a busier window than cpu2's 15.0 % (Clay
+    on the directional antenna; lane 1 carried 2,817 voice frames against 1,215).
+  - Left: the LSM demodulator's double-precision atan2, sin and cos (about 0.5 % for three
+    receivers) would need the recordings to judge single precision.

@@ -1,32 +1,25 @@
-//! BCH(63,16,11) NID forward error correction.
+//! BCH(63,16,23) NID forward error correction.
 //!
-//! SDRTrunk's `BCH_63_16_23_P25_Test.java` encoder, with a maximum-likelihood
-//! decoder over the 65536-entry codebook.
+//! SDRTrunk's `BCH_63_16_23_P25_Test.java` encoder, and its decoder's method: syndromes,
+//! Berlekamp-Massey and the error locator's roots over GF(2^6) (`BCH`, `BCH_63`).
 //!
 //! The P25 NID is a 64-bit field protected by binary BCH(63,16,d=23):
 //!
 //! ```text
 //! bit  0..11 : NAC  (12 bits, MSB-first within the data word)
 //! bit 12..15 : DUID (4 bits)
-//! bit 16..63 : 48 BCH parity bits
+//! bit 16..62 : 47 BCH parity bits
+//! bit 63     : the 48th parity bit (outside the BCH code)
 //! ```
 //!
-//! With minimum distance d=23 the code corrects up to t = (d-1)/2 = 11 bit
-//! errors. We decode by maximum likelihood: compute the Hamming distance to
-//! every one of the 65536 valid codewords and pick the closest. Within the
-//! unique-decoding sphere of radius t, ML decoding is identical to a
-//! properly-implemented Berlekamp-Massey decoder, so this is bit-exact with
-//! SDRTrunk's BCH decoder for any received word with <=11 bit errors.
-//!
-//! The codebook is built on the first call via `OnceLock` and reused for the
-//! lifetime of the process. ~512 KB resident, built in <10 ms on a Cortex-A9.
+//! The code corrects up to t = 11 bit errors in its 63 bits. A NID is accepted when the codeword
+//! found is within 11 bits of all 64 (SDRTrunk does not look at bit 63): the answer is the
+//! closest codeword's, as a search of all 65536 would give.
 //!
 //! Source of truth for the generator matrix:
 //!     sdrtrunk/src/test/java/io/github/dsheirer/edac/bch/BCH_63_16_23_P25_Test.java
 //! The 16 octal rows below are copied verbatim from
 //! `P25_NID_BCH_63_16_GENERATOR_MATRIX` in that file.
-
-use std::sync::OnceLock;
 
 /// 16-row systematic generator matrix from `BCH_63_16_23_P25_Test.java`.
 /// Octal literals in the Java source, converted to u64 here.
@@ -64,9 +57,6 @@ pub const CODE_BITS: u32 = DATA_BITS + PARITY_BITS;
 /// Maximum bit errors the BCH(63,16,23) code can correct: (d-1)/2 = 11.
 pub const T_MAX_ERRORS: u32 = 11;
 
-/// Total codebook entries (2^16).
-const N_CODEWORDS: usize = 1 << DATA_BITS;
-
 /// Encode a (NAC, DUID) pair into a 64-bit BCH(63,16,11) codeword.
 ///
 /// Verbatim port of `BCH_63_16_23_P25_Test.create()`:
@@ -100,22 +90,6 @@ pub fn encode_nid(nac: u16, duid: u8) -> u64 {
     (data_word << PARITY_BITS) | parity
 }
 
-/// Lazily built ML codebook: `[u64; 65536]` of valid codewords, indexed by
-/// data word value `((nac << DUID_BITS) | duid)`.
-fn codebook() -> &'static [u64; N_CODEWORDS] {
-    static CODEBOOK: OnceLock<Box<[u64; N_CODEWORDS]>> = OnceLock::new();
-    CODEBOOK.get_or_init(|| {
-        let mut cb = Box::new([0u64; N_CODEWORDS]);
-        for nac in 0..(1u32 << NAC_BITS) {
-            for duid in 0..(1u32 << DUID_BITS) {
-                let idx = (nac << DUID_BITS) | duid;
-                cb[idx as usize] = encode_nid(nac as u16, duid as u8);
-            }
-        }
-        cb
-    })
-}
-
 /// Result of a successful BCH NID decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodedNid {
@@ -125,44 +99,114 @@ pub struct DecodedNid {
     pub n_errors: u8,
 }
 
-/// Decode a received 64-bit NID via maximum likelihood.
-///
-/// Returns `None` if the closest codeword has more than `T_MAX_ERRORS` (11)
-/// bit differences from the received word — i.e. the received word is
-/// outside the BCH(63,16,23) unique-decoding sphere.
-pub fn decode_nid(received_nid: u64) -> Option<DecodedNid> {
-    let cb = codebook();
-    // Mask to 64 bits is a no-op, but kept symmetric with the Python ref
-    // which masks to `(1 << CODE_BITS) - 1`.
-    let received = received_nid;
+/// GF(2^6) over x^6 + x + 1 (SDRTrunk `PRIMITIVE_POLYNOMIAL_GF_63`): α^i for i < 63, and log_α.
+const N: usize = 63;
+const GF: ([u8; 64], [u8; 64]) = {
+    let (mut pow, mut log) = ([0u8; 64], [0u8; 64]);
+    let (mut x, mut i) = (1u32, 0);
+    while i < N {
+        pow[i] = x as u8;
+        log[x as usize] = i as u8;
+        x <<= 1;
+        if x & 64 != 0 {
+            x ^= 0x43;
+        }
+        i += 1;
+    }
+    (pow, log)
+};
 
-    // Linear ML scan. 65536 XOR + popcount + min — runs in well under 1 ms
-    // on a Cortex-A9.
-    let mut best_idx: usize = 0;
-    let mut best_dist: u32 = u32::MAX;
-    for (idx, &cw) in cb.iter().enumerate() {
-        let d = (cw ^ received).count_ones();
-        if d < best_dist {
-            best_dist = d;
-            best_idx = idx;
-            if d == 0 {
-                break;
-            }
+fn alpha(e: usize) -> u8 {
+    GF.0[e % N]
+}
+
+fn mul(a: u8, b: u8) -> u8 {
+    if a == 0 || b == 0 { 0 } else { alpha(GF.1[a as usize] as usize + GF.1[b as usize] as usize) }
+}
+
+/// a / b, b not zero.
+fn div(a: u8, b: u8) -> u8 {
+    if a == 0 { 0 } else { alpha(GF.1[a as usize] as usize + N - GF.1[b as usize] as usize) }
+}
+
+/// The syndromes S_1 ..= S_2t of a 63-bit word (bit k the coefficient of x^k): `s[j]` is S_j.
+fn syndromes(word: u64) -> [u8; 2 * T_MAX_ERRORS as usize + 1] {
+    let mut s = [0u8; 2 * T_MAX_ERRORS as usize + 1];
+    for j in (1..s.len()).step_by(2) {
+        let mut bits = word;
+        while bits != 0 {
+            s[j] ^= alpha(j * bits.trailing_zeros() as usize);
+            bits &= bits - 1;
         }
     }
+    // A binary code: S_2j = S_j^2.
+    for j in (2..s.len()).step_by(2) {
+        s[j] = mul(s[j / 2], s[j / 2]);
+    }
+    s
+}
 
-    if best_dist > T_MAX_ERRORS {
+/// The error positions in a 63-bit word, as a mask: Berlekamp-Massey's error locator and its
+/// roots. `None` when it is not a correctable word (more than 11 errors): the locator's degree
+/// is over 11, or it has fewer distinct roots than its degree.
+fn error_positions(word: u64) -> Option<u64> {
+    const T: usize = T_MAX_ERRORS as usize;
+    let s = syndromes(word);
+    if s.iter().all(|&v| v == 0) {
+        return Some(0);
+    }
+    // C(x), the error locator; B(x), C before its last length change; `step` the shift since.
+    let (mut c, mut prev) = ([0u8; 2 * T + 2], [0u8; 2 * T + 2]);
+    c[0] = 1;
+    prev[0] = 1;
+    let (mut len, mut step, mut prev_d) = (0usize, 1usize, 1u8);
+    for n in 0..2 * T {
+        let d = (1..=len).fold(s[n + 1], |d, i| d ^ mul(c[i], s[n + 1 - i]));
+        if d == 0 {
+            step += 1;
+            continue;
+        }
+        let before = c;
+        let f = div(d, prev_d);
+        for i in 0..c.len() - step {
+            c[i + step] ^= mul(f, prev[i]);
+        }
+        if 2 * len <= n {
+            len = n + 1 - len;
+            prev = before;
+            prev_d = d;
+            step = 1;
+        } else {
+            step += 1;
+        }
+    }
+    if len > T || c[len] == 0 || c[len + 1..].iter().any(|&v| v != 0) {
         return None;
     }
-    let data = best_idx as u32;
-    let nac = ((data >> DUID_BITS) & ((1 << NAC_BITS) - 1)) as u16;
-    let duid = (data & ((1 << DUID_BITS) - 1)) as u8;
-    Some(DecodedNid {
-        nac,
-        duid,
-        n_errors: best_dist as u8,
-    })
+    // An error at x^k is a root at α^-k.
+    let mut errors = 0u64;
+    let mut roots = 0;
+    for k in 0..N {
+        let v = (0..=len).filter(|&i| c[i] != 0).fold(0u8, |v, i| v ^ alpha(GF.1[c[i] as usize] as usize + i * (N - k)));
+        if v == 0 {
+            errors |= 1 << k;
+            roots += 1;
+        }
+    }
+    (roots == len).then_some(errors)
 }
+
+/// Decode a received 64-bit NID: the codeword within `T_MAX_ERRORS` (11) bits of it, or `None`
+/// when the received word is outside every codeword's unique-decoding sphere.
+pub fn decode_nid(received: u64) -> Option<DecodedNid> {
+    // The BCH word is bits 63..1 (x^62 .. x^0); bit 0 is the NID's 48th parity bit.
+    let errors = error_positions(received >> 1)?;
+    let data = ((received ^ (errors << 1)) >> PARITY_BITS) as u32;
+    let (nac, duid) = ((data >> DUID_BITS) as u16, (data & ((1 << DUID_BITS) - 1)) as u8);
+    let distance = (encode_nid(nac, duid) ^ received).count_ones();
+    (distance <= T_MAX_ERRORS).then_some(DecodedNid { nac, duid, n_errors: distance as u8 })
+}
+
 #[cfg(test)]
 #[path = "bch_tests.rs"]
 mod tests;
