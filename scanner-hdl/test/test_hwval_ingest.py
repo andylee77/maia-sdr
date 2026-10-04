@@ -34,7 +34,7 @@ from hwval_hdl.ingest import (
 
 
 ADI_PNMON = os.path.join(
-    os.path.dirname(__file__), '..', 'adi-hdl', 'library', 'axi_ad9361',
+    os.path.dirname(__file__), '..', '..', 'maia-hdl', 'adi-hdl', 'library', 'axi_ad9361',
     'axi_ad9361_rx_pnmon.v')
 
 

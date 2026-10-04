@@ -19,8 +19,8 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 | `scanner/` | The daemon on the Zynq PS (Rust): the radio core's driver, the demodulators, trunking, audio, history, ATSC, API, web UI (`src/ui/`, plain ES modules embedded at compile time). Design: `scanner/doc/DESIGN.md` |
 | `scanner/core-pac/` | The register PAC, generated from the radio core's SVD by the FPGA build |
 | `p25-httpd/` | The daemon before the scanner. It stays only until the bench reads the radio core's map, then leaves (`doc/CLEANUP_INVENTORY.md` §3) |
-| `maia-hdl/p25_hdl/` | The radio core 1.0.0 (Amaranth, product "rad1"); Vivado project `maia-hdl/projects/fishball7020_p25/` |
-| `maia-hdl/maia_hdl/`, `maia-hdl/hwval_hdl/` | Maia gateware; hardware-validation gateware |
+| `scanner-hdl/` | The fork's gateware (Amaranth): `radio_core/` (the radio core 1.0.0, product "rad1"), `hwval_hdl/` (hardware validation), their tests (`test/`, `test_cocotb/`) and `generate_svd.py`. It imports upstream `maia_hdl` |
+| `maia-hdl/` | Upstream Maia's gateware, unchanged apart from the fork's Vivado projects (`projects/fishball7020_p25/`, `fishball7020_hwval/`) and IP packaging (`ip/p25-core/`, `ip/hwval-core/`), which stay there because ADI's scripts use paths relative to them |
 | `bench/` | `fbench` CLI and board agent (`doc/HW_VALIDATION_SUITE.md`); its runs go to `runs/bench/` |
 | `tools/` | Host scripts: the SDRTrunk reference harnesses, DDC filter design, the API field reference, TV checks |
 | `runs/` | Gitignored run output and captures (`runs/dmr/` holds the DMR reference captures) |
@@ -50,8 +50,11 @@ Every commit builds and passes these, run from `scanner/`:
 - **P25 recordings,** when a receiver changes: the 313 SDRTrunk recordings decode as before
   (`P25_LSM_WAVS`, `P25_LSM_OUT`, `cargo test --release lsm_wavs -- --ignored --nocapture`, then
   `tools/p25_lsm_compare.py`; 079's status log has the counts).
-- **HDL tests,** when `maia-hdl/` changes: `python -m pytest test/` from `maia-hdl/` in
-  `.venv-hdl`. The long sweeps run with `MAIA_HDL_SLOW_TESTS=1`.
+- **HDL tests,** when `scanner-hdl/` or `maia-hdl/` changes: `python -m pytest test/` from
+  `scanner-hdl/` (and from `maia-hdl/` for upstream's) in `.venv-hdl`. The long sweeps run with
+  `MAIA_HDL_SLOW_TESTS=1`. Three upstream model tests (`test_cpwr`, `test_floating_point`,
+  `test_packer`) fail on Windows with numpy 2's integer types; the hardware they model is
+  unchanged.
 - **Bench host tests,** when `bench/` changes: `python -m pytest` from `bench/`.
 - **P25 replay corpus:** `python bench/fbench.py run rf.p25_corpus`, with unit B transmitting
   into unit A. Andy wires the bench link when a test needs it; ask first.

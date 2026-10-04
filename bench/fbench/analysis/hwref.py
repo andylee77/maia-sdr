@@ -1,4 +1,4 @@
-"""Guarded access to the hwval HDL Python references (``maia-hdl/hwval_hdl``).
+"""Guarded access to the hwval HDL Python references (``scanner-hdl/hwval_hdl``).
 
 The references are the single source of truth for pattern generators and
 checker constants (``pattern.prbs31_words``/``rate_inc``, ``ring_v2``
@@ -22,9 +22,10 @@ _CACHE: dict[str, Any] = {}
 def load(name: str) -> Any:
     """``hwval_hdl.<name>`` or ``None`` when it cannot be imported."""
     if name not in _CACHE:
-        hdl = str(REPO_ROOT / "maia-hdl")
-        if hdl not in sys.path:
-            sys.path.append(hdl)
+        # hwval_hdl lives in scanner-hdl and imports maia_hdl and radio_core.
+        for hdl in (str(REPO_ROOT / "scanner-hdl"), str(REPO_ROOT / "maia-hdl")):
+            if hdl not in sys.path:
+                sys.path.append(hdl)
         try:
             _CACHE[name] = importlib.import_module(f"hwval_hdl.{name}")
         except Exception:  # noqa: BLE001 - amaranth missing, module not written yet

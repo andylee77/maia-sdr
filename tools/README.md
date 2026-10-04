@@ -19,7 +19,7 @@ unit use the scanner's `/api/v1`. Scripts retired in the 2026-10 cleanup are in
 | Script | What it does |
 |--------|--------------|
 | [`p25_ddc_filter_design.py`](p25_ddc_filter_design.py) | Designs the lanes' three-stage DDC coefficients for each preset (unit DC gain, 50 kSPS out) and writes `scanner/src/hardware/presets/table.rs` (`--emit-rs`) |
-| [`polyphase_proto_design.py`](polyphase_proto_design.py) | The prototype filter for the polyphase channelizer (`maia-hdl/p25_hdl/polyphase_proto_coeffs.py`), kept for 079 step 3b |
+| [`polyphase_proto_design.py`](polyphase_proto_design.py) | The prototype filter for the polyphase channelizer (`scanner-hdl/radio_core/polyphase_proto_coeffs.py`), kept for 079 step 3b |
 
 ## The unit and its API
 

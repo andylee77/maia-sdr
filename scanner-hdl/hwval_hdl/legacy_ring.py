@@ -1,7 +1,7 @@
 #
 # Fishball hwval - instrumented replica of the production wideband ring
 #
-# p25_hdl.IQPacker -> maia_hdl.DmaStreamRingWrite, instantiated exactly as
+# radio_core.IQPacker -> maia_hdl.DmaStreamRingWrite, instantiated exactly as
 # p25_top.py does for wideband_iq, with non-invasive counters on the
 # stream and AXI handshakes (doc/HW_VALIDATION_SUITE.md sections 6.4 and
 # findings F5/F6).
@@ -11,8 +11,8 @@
 
 from amaranth import *
 
-from maia_hdl.dma import DmaStreamRingWrite
-from p25_hdl.iq_packer import IQPacker
+from radio_core.dma_ring import DmaStreamRingWrite
+from radio_core.iq_packer import IQPacker
 
 from .lat_hist import LatencyTracker
 

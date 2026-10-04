@@ -3,7 +3,7 @@
 #
 # Validates the post-DDC IQ packer that buffers two consecutive
 # (re, im) sample pairs into a 64-bit AXI4-Stream word for the
-# ring DMA. See p25_hdl/iq_packer.py for the bit layout.
+# ring DMA. See radio_core/iq_packer.py for the bit layout.
 #
 # SPDX-License-Identifier: MIT
 #

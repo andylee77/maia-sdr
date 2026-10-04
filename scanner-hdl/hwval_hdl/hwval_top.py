@@ -339,7 +339,7 @@ class HwvalCore(Elaboratable):
         rcmd = cmd('RINGV2_CMD', 'sync')
         rsrc = rctrl[3:6]
 
-        # Live IQ packer, same layout as p25_hdl.IQPacker:
+        # Live IQ packer, same layout as radio_core.IQPacker:
         # {im1, re1, im0, re0}, 16 bits each, sample 0 in the low half.
         pk_phase = Signal()
         pk_low = Signal(32)

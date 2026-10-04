@@ -13,7 +13,7 @@ import unittest
 from hwval_hdl.axil_regs import (
     AxiLiteRegisterFile, Reg, RegBlock, RegField, RegisterTable,
     UNMAPPED_READ_VALUE)
-from .amaranth_sim import AmaranthSim
+from amaranth_sim import AmaranthSim
 from .hwval_axil_bfm import axil_read, axil_write
 
 OKAY = 0

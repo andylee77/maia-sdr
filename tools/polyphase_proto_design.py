@@ -21,7 +21,7 @@ any prototype design change; the HDL bake then picks up the new ROM.
 Usage:
     python tools/polyphase_proto_design.py \
         --M 64 --taps-per-branch 6 \
-        --output maia-hdl/p25_hdl/polyphase_proto_coeffs.py
+        --output scanner-hdl/radio_core/polyphase_proto_coeffs.py
 
 Optional `--plot` shows the prototype's magnitude response and the
 overlap of two adjacent polyphase bin frequency responses for a
@@ -154,7 +154,7 @@ def main(argv=None):
                    help='quantization width (signed)')
     p.add_argument('--beta', type=float, default=8.6,
                    help='Kaiser window beta (8.6 ~ -80 dB stopband)')
-    p.add_argument('--output', default='maia-hdl/p25_hdl/polyphase_proto_coeffs.py',
+    p.add_argument('--output', default='scanner-hdl/radio_core/polyphase_proto_coeffs.py',
                    help='destination Python module')
     p.add_argument('--plot', action='store_true',
                    help='show magnitude response')

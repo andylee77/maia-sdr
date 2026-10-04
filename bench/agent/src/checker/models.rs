@@ -205,7 +205,7 @@ impl Model for Prbs31 {
         self.last = None;
     }
     fn info(&self) -> Value {
-        json!({"low_half_checked": self.low_checked, "reference": "maia-hdl/hwval_hdl/pattern.py prbs31_words"})
+        json!({"low_half_checked": self.low_checked, "reference": "scanner-hdl/hwval_hdl/pattern.py prbs31_words"})
     }
 }
 

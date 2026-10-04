@@ -3,7 +3,7 @@
 Validation bitstream for the Fishball Z7020 bench (`fbench` Tier 1). The design
 contract is `doc/HW_VALIDATION_SUITE.md` section 6 (block design, DDR windows,
 register rules) and section 11 (build and delivery). The gateware is
-`maia-hdl/hwval_hdl/` (`hwval_core`, Amaranth top module `top`), packaged by
+`scanner-hdl/hwval_hdl/` (`hwval_core`, Amaranth top module `top`), packaged by
 `maia-hdl/ip/hwval-core/` as
 `fishball-hwval:hwval_core_default:hwval_core:0.1.0`.
 

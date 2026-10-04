@@ -53,7 +53,7 @@ JP5 Bank 13 (3.3V) ──► XIAO ESP32-S3 ──► 1.5" SSD1351 SPI color OLED
                          └── UART ◄──► p25-httpd (/api/panel)
 
 JP5 Bank 35 (1.8V) ──► MAX98357A I²S amp ──► 8Ω speaker
-   (new Amaranth i2s_tx module in p25_hdl)
+   (new Amaranth i2s_tx module in radio_core)
 ```
 
 **Pros**
@@ -320,7 +320,7 @@ Keep it append-only: new fields must not break older firmware on either side.
 
 ### 9.4 Gateware
 
-New Amaranth module `p25_hdl/i2s_tx.py`:
+New Amaranth module `radio_core/i2s_tx.py`:
 
 - Inputs: 16-bit signed PCM stream, strobe on new sample at 8 kHz (vocoder rate). Upsample to 48 kHz internally (linear interp is fine for voice).
 - Outputs: `bclk`, `lrclk`, `sdin` — standard I²S, left-justified, 16-bit.
@@ -333,7 +333,7 @@ Lives in the P25 IP wrapper, driven from the same PCM FIFO that currently feeds 
 ## 10. Milestones
 
 1. **Breadboard prototype** — RP2040 dev board + MAX98357A breakout + OLED + encoder, wired to JP5 with jumper wires. Prove the UART protocol and audio path end-to-end. *No PCB yet.*
-2. **Gateware I²S module + audio routing** — land in `p25_hdl/` with its own sim test; land Rust audio router with a `sink=both` mode so the dashboard still works.
+2. **Gateware I²S module + audio routing** — land in `radio_core/` with its own sim test; land Rust audio router with a `sink=both` mode so the dashboard still works.
 3. **Schematic + PCB v1** — KiCad. Review against this doc, order 5 boards + assembly from JLCPCB.
 4. **Bring-up** — power-on test, programming test, LCD test, encoder test, audio test in that order. Solder-jumper the USB 5 V so you can test the PCB standalone without risking the Fishball rail.
 5. **Enclosure v1** — rough print in PLA, fit-check, iterate. Final in PETG.

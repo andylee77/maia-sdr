@@ -10,7 +10,7 @@ all: $(configs)
 
 $(configs):
 	mkdir -p $@
-	PYTHONPATH="../../:${PYTHONPATH}" python3 -m hwval_hdl.hwval_top --config $@ $@/hwval_core.v --svd $@/hwval.svd --json $@/hwval_regs.json --md $@/hwval_register_map.md
+	PYTHONPATH="../../../scanner-hdl:../../:${PYTHONPATH}" python3 -m hwval_hdl.hwval_top --config $@ $@/hwval_core.v --svd $@/hwval.svd --json $@/hwval_regs.json --md $@/hwval_register_map.md
 	cd $@ && IP_CORE_VERSION=$(IP_CORE_VERSION) HWVAL_CONFIG=$@ $(VIVADO) ../package_ip.tcl
 
 clean:

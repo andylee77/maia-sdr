@@ -15,11 +15,11 @@ import unittest
 from amaranth import *
 from amaranth.sim import Simulator
 
-from maia_hdl.dma import DmaStreamRingWrite
-from p25_hdl.lane_packetizer import (
+from radio_core.dma_ring import DmaStreamRingWrite
+from radio_core.lane_packetizer import (
     FLAG_LAST, FLAG_LOST, FLAG_RETUNED, HEADER_WORDS, MAGIC, MAX_SAMPLES, PACKET_WORDS,
     LanePacketizer, header_words, iq_word)
-from p25_hdl.lane_ring import BURSTS_PER_PACKET, LaneRing
+from radio_core.lane_ring import BURSTS_PER_PACKET, LaneRing
 
 from .hwval_axi_wmodel import AxiWriteSlaveModel
 

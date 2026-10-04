@@ -65,6 +65,7 @@ HWVAL_CONFIG="default"
 
 # Build dir layout (all on ext4)
 SRC_DIR="$BUILD_HOME/src"
+FORK_HDL_DIR="$BUILD_HOME/scanner-hdl"
 VENV_DIR="$BUILD_HOME/venv"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -116,9 +117,9 @@ log "Source files verified."
 
 # Validate P25 source if building P25
 if $DO_P25; then
-    for f in p25_hdl/p25_top.py p25_hdl/lane_packetizer.py p25_hdl/lane_ring.py p25_hdl/axil_bridge.py; do
-        if [ ! -f "$SRC_MOUNT/maia-hdl/$f" ]; then
-            err "Required P25 source file missing: maia-hdl/$f"
+    for f in radio_core/p25_top.py radio_core/lane_packetizer.py radio_core/lane_ring.py radio_core/axil_bridge.py; do
+        if [ ! -f "$SRC_MOUNT/scanner-hdl/$f" ]; then
+            err "Required radio core source file missing: scanner-hdl/$f"
             exit 1
         fi
     done
@@ -127,8 +128,8 @@ fi
 
 # Validate hwval source if building hwval
 if $DO_HWVAL; then
-    if [ ! -f "$SRC_MOUNT/maia-hdl/hwval_hdl/hwval_top.py" ]; then
-        err "Required hwval source file missing: maia-hdl/hwval_hdl/hwval_top.py"
+    if [ ! -f "$SRC_MOUNT/scanner-hdl/hwval_hdl/hwval_top.py" ]; then
+        err "Required hwval source file missing: scanner-hdl/hwval_hdl/hwval_top.py"
         exit 1
     fi
     log "hwval source files verified."
@@ -159,6 +160,17 @@ rsync -a --delete \
     --exclude='projects/' \
     --exclude='test_cocotb/' \
     "$SRC_MOUNT/maia-hdl/" "$SRC_DIR/"
+
+# The fork's gateware (the radio core, hwval) sits beside maia-hdl and imports maia_hdl.
+if $DO_P25 || $DO_HWVAL; then
+    mkdir -p "$FORK_HDL_DIR"
+    rsync -a --delete \
+        --exclude='*.pyc' \
+        --exclude='__pycache__/' \
+        --exclude='test/' \
+        --exclude='test_cocotb/' \
+        "$SRC_MOUNT/scanner-hdl/" "$FORK_HDL_DIR/"
+fi
 
 log "Source copied to ext4."
 
@@ -245,9 +257,9 @@ fi
 if $DO_P25; then
     step "Step 5b: Generate P25 Verilog → p25_core.v"
     cd "$SRC_DIR"
-    info "Command: PYTHONPATH=. python -m p25_hdl.p25_top --config $P25_CONFIG p25_core.v"
+    info "Command: PYTHONPATH=$FORK_HDL_DIR python -m radio_core.p25_top --config $P25_CONFIG p25_core.v"
 
-    PYTHONPATH="." python -m p25_hdl.p25_top --config "$P25_CONFIG" p25_core.v
+    PYTHONPATH="$FORK_HDL_DIR" python -m radio_core.p25_top --config "$P25_CONFIG" p25_core.v
 
     if [ ! -f p25_core.v ]; then
         err "p25_core.v was not created — P25 Amaranth elaboration failed."
@@ -265,14 +277,14 @@ if $DO_P25; then
     step "Step 5c: Generate P25 SVD → p25.svd"
     cd "$SRC_DIR"
 
-    PYTHONPATH="." python - <<PYEOF
+    PYTHONPATH="$FORK_HDL_DIR" python - <<PYEOF
 import sys
-from p25_hdl.p25_top import P25Core
-from p25_hdl import configs
+from radio_core.p25_top import P25Core
+from radio_core import configs
 
 cfg_fn = getattr(configs, '${P25_CONFIG}', None)
 if cfg_fn is None:
-    print(f"[ERROR] No P25 config named '${P25_CONFIG}' in p25_hdl.configs", file=sys.stderr)
+    print(f"[ERROR] No P25 config named '${P25_CONFIG}' in radio_core.configs", file=sys.stderr)
     sys.exit(1)
 
 core = P25Core(cfg_fn())
@@ -304,10 +316,10 @@ fi
 if $DO_HWVAL; then
     step "Step 5d: Generate hwval → hwval_core.v, hwval.svd, hwval_regs.json, hwval_register_map.md"
     cd "$SRC_DIR"
-    info "Command: PYTHONPATH=. python -m hwval_hdl.hwval_top --config $HWVAL_CONFIG hwval_core.v --svd hwval.svd --json hwval_regs.json --md hwval_register_map.md"
+    info "Command: PYTHONPATH=$FORK_HDL_DIR python -m hwval_hdl.hwval_top --config $HWVAL_CONFIG hwval_core.v --svd hwval.svd --json hwval_regs.json --md hwval_register_map.md"
 
     rm -f hwval_core.v hwval.svd hwval_regs.json hwval_register_map.md
-    PYTHONPATH="." python -m hwval_hdl.hwval_top --config "$HWVAL_CONFIG" hwval_core.v \
+    PYTHONPATH="$FORK_HDL_DIR" python -m hwval_hdl.hwval_top --config "$HWVAL_CONFIG" hwval_core.v \
         --svd hwval.svd --json hwval_regs.json --md hwval_register_map.md
 
     for f in hwval_core.v hwval.svd hwval_regs.json hwval_register_map.md; do

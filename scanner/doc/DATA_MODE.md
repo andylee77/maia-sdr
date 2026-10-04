@@ -64,7 +64,7 @@ more around their nominal frequency, and FSK sensors deviate ±30-80 kHz. rtl_43
 250 kSPS by default and 1 MSPS for the wider ones.
 
 **A lane can run wider without a bake.** Each lane's decimations (`decimation1-3`), filter taps,
-and `bypass2` / `bypass3` are runtime registers (`maia-hdl/p25_hdl/p25_top.py`, the lane bank).
+and `bypass2` / `bypass3` are runtime registers (`scanner-hdl/radio_core/p25_top.py`, the lane bank).
 The PS always clears the bypass bits today. A wide lane is a new coefficient set:
 
 | Lane rate | At 16 MSPS | Stage limits that apply |

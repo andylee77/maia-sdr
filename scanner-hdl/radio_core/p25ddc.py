@@ -6,7 +6,7 @@
 # about the SDRTrunk-faithful coefficient-design convention in use.
 #
 # Port-compatible with DDC for drop-in replacement in
-# p25_hdl/p25_top.py:
+# radio_core/p25_top.py:
 #
 #     from .p25ddc import P25DDC as DDC   # one-line change
 #
@@ -99,7 +99,7 @@ class P25DDC(DDC):
 
     Example
     -------
-    >>> # In p25_hdl/p25_top.py:
+    >>> # In radio_core/p25_top.py:
     >>> from .p25ddc import P25DDC
     >>> self.ddc = P25DDC('clk3x')
     >>> self.traffic_ddc = P25DDC('clk3x')

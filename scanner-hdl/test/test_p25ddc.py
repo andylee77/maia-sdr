@@ -31,7 +31,7 @@ from amaranth import *
 from amaranth.hdl import Fragment
 
 from maia_hdl.ddc import DDC
-from p25_hdl.p25ddc import P25DDC
+from radio_core.p25ddc import P25DDC
 
 
 class TestP25DDC(unittest.TestCase):

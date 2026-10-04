@@ -23,11 +23,11 @@ import amaranth.back.verilog
 from amaranth.sim import Simulator
 
 from maia_hdl.pluto_platform import PlutoPlatform
-from p25_hdl import p25_top
-from p25_hdl.config import P25Config
-from p25_hdl.lane_packetizer import (
+from radio_core import p25_top
+from radio_core.config import P25Config
+from radio_core.lane_packetizer import (
     FLAG_RETUNED, HEADER_WORDS, MAGIC, MAX_SAMPLES, PACKET_WORDS, fold)
-from p25_hdl.p25_top import P25Core
+from radio_core.p25_top import P25Core
 
 from .hwval_axi_wmodel import AxiWriteSlaveModel
 from .hwval_axil_bfm import axil_read, axil_write

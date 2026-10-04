@@ -26,10 +26,10 @@ import unittest
 import numpy as np
 from amaranth import *
 
-from p25_hdl.polyphase_channelizer import PolyphaseChannelizer
-from p25_hdl.polyphase_proto_coeffs import PROTO_COEFFS, M as PROTO_M, K as PROTO_K
-from .amaranth_sim import AmaranthSim
-from .common_edge import CommonEdgeTb
+from radio_core.polyphase_channelizer import PolyphaseChannelizer
+from radio_core.polyphase_proto_coeffs import PROTO_COEFFS, M as PROTO_M, K as PROTO_K
+from amaranth_sim import AmaranthSim
+from common_edge import CommonEdgeTb
 
 
 class TestPolyphaseChannelizer(AmaranthSim):

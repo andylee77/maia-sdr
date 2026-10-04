@@ -10,7 +10,7 @@ import amaranth.back.verilog
 import unittest
 
 from hwval_hdl.dna import DnaReader, DNA_BITS
-from .amaranth_sim import AmaranthSim
+from amaranth_sim import AmaranthSim
 
 
 class TestDnaReader(AmaranthSim):

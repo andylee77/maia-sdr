@@ -27,7 +27,7 @@ import amaranth.back.verilog
 
 from maia_hdl.cdc import RegisterCDC, RxIQCDC
 from maia_hdl.clknx import ClkNxCommonEdge
-from maia_hdl.dma import DmaStreamRingWrite
+from .dma_ring import DmaStreamRingWrite
 from maia_hdl.pluto_platform import PlutoPlatform
 from maia_hdl.register import Access, Field, Registers, Register, RegisterMap
 from maia_hdl.spectrometer import Spectrometer

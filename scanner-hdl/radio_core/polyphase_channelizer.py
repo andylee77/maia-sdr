@@ -54,7 +54,7 @@ class PolyphaseChannelizer(Elaboratable):
     coeffs : list[int]
         Prototype lowpass FIR coefficients, length M*K. Generated
         offline by ``tools/polyphase_proto_design.py`` and stored in
-        ``maia-hdl/p25_hdl/polyphase_proto_coeffs.py``.
+        ``scanner-hdl/radio_core/polyphase_proto_coeffs.py``.
     M : int
         Number of polyphase branches. Must be a power of 2 with
         ``log2(M) % 2 == 0`` so the R22 FFT cleanly maps. Default 64.

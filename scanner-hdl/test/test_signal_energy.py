@@ -22,8 +22,8 @@ import unittest
 
 from amaranth import *
 
-from p25_hdl.signal_energy import SignalEnergy
-from .amaranth_sim import AmaranthSim
+from radio_core.signal_energy import SignalEnergy
+from amaranth_sim import AmaranthSim
 
 
 class TestSignalEnergy(AmaranthSim):

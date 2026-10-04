@@ -1,6 +1,6 @@
 #
 # Fishball P25 - IQPacker tests: the 64-bit word layout, the handshake and the overflow pulse
-# (p25_hdl/iq_packer.py).
+# (radio_core/iq_packer.py).
 #
 # SPDX-License-Identifier: MIT
 #
@@ -10,7 +10,7 @@ import unittest
 from amaranth import *
 from amaranth.sim import Simulator
 
-from p25_hdl.iq_packer import IQPacker
+from radio_core.iq_packer import IQPacker
 
 
 def s16(x):

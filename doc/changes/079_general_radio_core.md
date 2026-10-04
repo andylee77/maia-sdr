@@ -82,7 +82,7 @@ AD9361 at 6.4 or 12.8 MSPS
 **Not the 2026-05 channelizer.** The core retired on 2026-05-03 was critically sampled (64 bins of
 125 kHz) with a DDC per target feeding the gateware LSM. Its problems were elsewhere, but its design
 also differed: no 2x oversampling, no two-bin synthesis. Its commutator, circular BRAM buffer and
-shared multiplier (`maia-hdl/p25_hdl/polyphase_channelizer.py`) can be reused.
+shared multiplier (`scanner-hdl/radio_core/polyphase_channelizer.py`) can be reused.
 
 ### Budget (estimates, to confirm by synthesis)
 
@@ -534,7 +534,7 @@ channelizer's lanes exist only at 6.4, 12.8 or 25.6 MSPS.
   - the AD9361 sample index of the frame's first transform's first input sample;
   - the ADC clip count;
   - the check: the XOR of the frame's other 32-bit halves.
-- **HDL:** a spectrometer wrapper in `p25_hdl`, leaving `maia_hdl`'s blocks as they are. In sync:
+- **HDL:** a spectrometer wrapper in `scanner-hdl/radio_core`, leaving `maia_hdl`'s blocks as they are. In sync:
   a 64-bit latch, the read-side multiplexer and the XOR, about 200 LUTs.
 - **PS:**
   - parse and check the header;

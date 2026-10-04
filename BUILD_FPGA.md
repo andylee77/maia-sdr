@@ -3,7 +3,7 @@
 ## Overview
 
 Builds the radio core's bitstream for the Fishball Z7020 board (Zynq-7020 + AD9361): the
-Amaranth source in `maia-hdl/p25_hdl/`, the Vivado project `maia-hdl/projects/fishball7020_p25/`.
+Amaranth source in `scanner-hdl/radio_core/`, the Vivado project `maia-hdl/projects/fishball7020_p25/`.
 The core and its register map are described in `doc/changes/079_general_radio_core.md`.
 
 - `build_fpga.bat --p25` runs the whole flow on Windows and calls Vivado directly, bypassing the
@@ -40,7 +40,7 @@ This pulls `maia-hdl/adi-hdl/` (Analog Devices HDL library) and
 ## Build pipeline
 
 ```text
-maia-hdl/p25_hdl/*.py       [Amaranth source: the radio core]
+scanner-hdl/radio_core/*.py       [Amaranth source: the radio core]
 maia-hdl/maia_hdl/*.py      (DDC, spectrometer, DMA, registers, CDC)
          |
          | Staleness gate (tools/check_verilog_stale.ps1)
@@ -74,7 +74,7 @@ tools still work.
 ./build_fpga_p25_pretty.sh      # the whole flow, Verilog regenerated when stale
 ```
 
-Run the HDL tests first, from `maia-hdl/` in `.venv-hdl`: `python -m pytest test/`.
+Run the HDL tests first, from `scanner-hdl/` in `.venv-hdl`: `python -m pytest test/`.
 
 Output: `maia-hdl/projects/fishball7020_p25/fishball_p25.sdk/system_top.xsa`, also copied to
 `tezuka_fw/board/tezuka/fishball7020/bitstream/p25/` when tezuka_fw is at its usual path. Commit
@@ -101,12 +101,12 @@ Verilog file (`doc/changes/009_build_verilog_staleness.md`).
 | Generated file | Source directories compared | Why |
 |----------------|-----------------------------|-----|
 | `maia-hdl/ip/maia-sdr/maia_iio/maia_sdr.v` | `maia-hdl/maia_hdl/*.py` | Maia's core is built from `maia_hdl` only |
-| `maia-hdl/ip/p25-core/default/p25_core.v` | `maia-hdl/p25_hdl/*.py` **and** `maia-hdl/maia_hdl/*.py` | The radio core imports the DDC, spectrometer, registers, DMA and CDC from `maia_hdl` |
+| `maia-hdl/ip/p25-core/default/p25_core.v` | `scanner-hdl/radio_core/*.py` **and** `maia-hdl/maia_hdl/*.py` | The radio core imports the DDC, spectrometer, registers, DMA and CDC from `maia_hdl` |
 
 Inside the container:
 
 - `python -m maia_hdl.maia_sdr --config maia_iio` -> `maia-hdl/ip/maia-sdr/maia_iio/maia_sdr.v`
-- `python -m p25_hdl.p25_top --config default` -> `maia-hdl/ip/p25-core/default/p25_core.v`
+- `python -m radio_core.p25_top --config default` -> `maia-hdl/ip/p25-core/default/p25_core.v`
 - with `--p25`, the core's SVD and its `svd2rust` PAC go to `scanner/core-pac/`.
 
 ### Step 3: Package IP cores
@@ -225,12 +225,12 @@ build_fpga.bat --p25
 
 ### An Amaranth edit does not show up on the hardware
 
-Step 2 catches this: if any `p25_hdl/*.py` or `maia_hdl/*.py` is newer than `p25_core.v`, the
+Step 2 catches this: if any `radio_core/*.py` or `maia_hdl/*.py` is newer than `p25_core.v`, the
 Verilog is regenerated before synthesis, and the log says:
 
 ```text
 [Step 2] Checking Verilog generation status...
-[WARN] p25_core.v is STALE -- p25_hdl or maia_hdl has newer changes.
+[WARN] p25_core.v is STALE -- radio_core or maia_hdl has newer changes.
 ```
 
 If it says `[OK] p25_core.v is current` when you expected a regeneration, compare the mtimes, or
@@ -239,7 +239,7 @@ ask the helper directly:
 ```bat
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\check_verilog_stale.ps1 ^
     -VerilogFile "maia-hdl\ip\p25-core\default\p25_core.v" ^
-    -SourceDirs  "maia-hdl\p25_hdl;maia-hdl\maia_hdl"
+    -SourceDirs  "scanner-hdl\radio_core;maia-hdl\maia_hdl"
 ```
 
 To force a regeneration, delete `maia-hdl\ip\p25-core\default\p25_core.v` and rebuild.
@@ -307,7 +307,7 @@ The P25 build uses `fishball-p25.dtsi` (separate from Maia's `fishball.dtsi`):
 
 The rings use `compatible = "maia-sdr,rxbuffer"` (maia-kmod's driver, which keeps the ARMv7
 caches coherent with the non-coherent HP writes). Their sizes and sub-buffers are in 079's
-"Rings and the device tree", and must match `maia-hdl/p25_hdl/config.py`.
+"Rings and the device tree", and must match `scanner-hdl/radio_core/config.py`.
 
 ## hwval bitstream (hardware validation)
 
@@ -327,9 +327,9 @@ exclusive.
 ### Pipeline
 
 ```
-maia-hdl/hwval_hdl/*.py  (+ p25_hdl, maia_hdl)   [Amaranth HDL source]
+scanner-hdl/hwval_hdl/*.py  (+ radio_core, maia_hdl)   [Amaranth HDL source]
          |
-         | Staleness gate (hwval_hdl + p25_hdl + maia_hdl vs hwval_core.v;
+         | Staleness gate (hwval_hdl + radio_core + maia_hdl vs hwval_core.v;
          |   a missing hwval_regs.json / hwval_register_map.md also regenerates)
          | build_hdl.bat --verilog-only --hwval  (Docker, Step 5d):
          |   python -m hwval_hdl.hwval_top --config default hwval_core.v

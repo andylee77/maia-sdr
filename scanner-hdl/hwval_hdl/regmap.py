@@ -539,7 +539,7 @@ def build_register_table(config: HwvalConfig = None) -> RegisterTable:
 
 
 MARKDOWN_PREAMBLE = """\
-Generated from `maia-hdl/hwval_hdl/regmap.py` (`build_register_table()`),
+Generated from `scanner-hdl/hwval_hdl/regmap.py` (`build_register_table()`),
 the single source of truth for the `hwval` register map. Do not edit by
 hand; regenerate with
 `python -m hwval_hdl.hwval_top --md ../doc/hwval_register_map.md`

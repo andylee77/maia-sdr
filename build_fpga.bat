@@ -18,6 +18,7 @@ set "PROJECT_DIR=%~dp0"
 if "%PROJECT_DIR:~-1%"=="\" set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
 
 set "MAIA_HDL=%PROJECT_DIR%\maia-hdl"
+set "SCANNER_HDL=%PROJECT_DIR%\scanner-hdl"
 set "ADI_LIB=%MAIA_HDL%\adi-hdl\library"
 set "ADI_HDL_BRANCH=hdl_2023_r2"
 
@@ -216,22 +217,22 @@ if "!MAIA_REGEN!"=="1" (
 )
 
 :: ----- P25 Verilog (only for --p25 build) -----
-:: Source dirs include both p25_hdl (the P25-specific modules) AND
+:: Source dirs include both scanner-hdl\radio_core (the radio core) AND
 :: maia_hdl (because p25_top.py imports DDC, registers, DMA, etc. from
 :: maia_hdl, so a change in maia_hdl affects the generated p25_core.v).
 if "%BUILD_P25%"=="1" (
     set "P25_VERILOG=%P25_IP_DIR%\%P25_CONFIG%\p25_core.v"
     set "P25_STATE="
-    for /f "delims=" %%R in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%STALE_CHECK%" -VerilogFile "!P25_VERILOG!" -SourceDirs "%MAIA_HDL%\p25_hdl;%MAIA_HDL%\maia_hdl"') do set "P25_STATE=%%R"
+    for /f "delims=" %%R in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%STALE_CHECK%" -VerilogFile "!P25_VERILOG!" -SourceDirs "%SCANNER_HDL%\radio_core;%MAIA_HDL%\maia_hdl"') do set "P25_STATE=%%R"
 
     set "P25_REGEN=0"
-    if "!P25_STATE!"=="FRESH" echo [OK] p25_core.v is current ^(newer than p25_hdl + maia_hdl source^).
+    if "!P25_STATE!"=="FRESH" echo [OK] p25_core.v is current ^(newer than radio_core + maia_hdl source^).
     if "!P25_STATE!"=="MISSING" (
         echo [INFO] p25_core.v not found. Generating P25 Verilog via Docker...
         set "P25_REGEN=1"
     )
     if "!P25_STATE!"=="STALE" (
-        echo [WARN] p25_core.v is STALE -- p25_hdl or maia_hdl has newer changes.
+        echo [WARN] p25_core.v is STALE -- radio_core or maia_hdl has newer changes.
         echo        Regenerating via Docker to avoid baking stale logic into bitstream.
         set "P25_REGEN=1"
     )
@@ -258,23 +259,23 @@ if "%BUILD_P25%"=="1" (
 )
 
 :: ----- hwval Verilog (only for --hwval build) -----
-:: hwval_top.py imports p25_hdl (IQPacker, production-replica ring) and
+:: hwval_top.py imports radio_core (IQPacker, production-replica ring) and
 :: maia_hdl (DMA, CDC), so all three source trees gate staleness. One
 :: Docker run emits hwval_core.v + hwval.svd + hwval_regs.json +
 :: hwval_register_map.md; a missing JSON/MD also forces regeneration.
 if "%BUILD_HWVAL%"=="1" (
     set "HWVAL_VERILOG=%HWVAL_IP_DIR%\%HWVAL_CONFIG%\hwval_core.v"
     set "HWVAL_STATE="
-    for /f "delims=" %%R in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%STALE_CHECK%" -VerilogFile "!HWVAL_VERILOG!" -SourceDirs "%MAIA_HDL%\hwval_hdl;%MAIA_HDL%\p25_hdl;%MAIA_HDL%\maia_hdl"') do set "HWVAL_STATE=%%R"
+    for /f "delims=" %%R in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%STALE_CHECK%" -VerilogFile "!HWVAL_VERILOG!" -SourceDirs "%SCANNER_HDL%\hwval_hdl;%SCANNER_HDL%\radio_core;%MAIA_HDL%\maia_hdl"') do set "HWVAL_STATE=%%R"
 
     set "HWVAL_REGEN=0"
-    if "!HWVAL_STATE!"=="FRESH" echo [OK] hwval_core.v is current ^(newer than hwval_hdl + p25_hdl + maia_hdl source^).
+    if "!HWVAL_STATE!"=="FRESH" echo [OK] hwval_core.v is current ^(newer than hwval_hdl + radio_core + maia_hdl source^).
     if "!HWVAL_STATE!"=="MISSING" (
         echo [INFO] hwval_core.v not found. Generating hwval Verilog via Docker...
         set "HWVAL_REGEN=1"
     )
     if "!HWVAL_STATE!"=="STALE" (
-        echo [WARN] hwval_core.v is STALE -- hwval_hdl, p25_hdl or maia_hdl has newer changes.
+        echo [WARN] hwval_core.v is STALE -- hwval_hdl, radio_core or maia_hdl has newer changes.
         echo        Regenerating via Docker to avoid baking stale logic into bitstream.
         set "HWVAL_REGEN=1"
     )

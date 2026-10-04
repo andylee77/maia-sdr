@@ -368,7 +368,7 @@ bit3 honor_valid, bit4 clear_on_snap), `INGEST_CMD` (W bit0 clear), `SAMPLES_LO/
 `Q_AND_MASK`, `WIN_SAMPLES_LO/HI`, `PRBS_CHECKED_LO/HI`, `PRBS_ERRORS`, `PRBS_OOS_EVENTS`,
 `PRBS_STATUS` (bit0 in_sync).
 
-**`legacy` (0x400, sync domain)** — production replica: `p25_hdl.IQPacker` →
+**`legacy` (0x400, sync domain)** — production replica: `radio_core.IQPacker` →
 `maia_hdl.DmaStreamRingWrite` at fixed base 0x2200_0000, 16 × 1 MiB, observed by
 non-invasive taps. `LEGACY_CTRL` (RW: bit0 dma_enable, bits[2:1] src (0 off, 1 sample
 ramp, 2 live rxiq)), `LEGACY_CMD` (W bit0 clear), `LEGACY_RATE_INC` (sample strobe rate =
@@ -570,7 +570,7 @@ Before the first RF test, on **both** boards:
 
 | Piece | Location | Built by |
 |---|---|---|
-| HDL (`hwval_hdl`, sims) | `maia-hdl/hwval_hdl/`, `maia-hdl/test/test_hwval_*.py` | Claude (sims run locally in `.venv-hdl`) |
+| HDL (`hwval_hdl`, sims) | `scanner-hdl/hwval_hdl/`, `scanner-hdl/test/test_hwval_*.py` | Claude (sims run locally in `.venv-hdl`) |
 | IP + Vivado project | `maia-hdl/ip/hwval-core/`, `maia-hdl/projects/fishball7020_hwval/` | Andy: `./build_fpga_hwval_pretty.sh` (wraps `build_fpga.bat --hwval`) |
 | Device tree + SD layout | Tezuka `board/tezuka/fishball7020/dts/fishball-hwval.dts(i)`, `post-image.sh` | Andy: Tezuka build |
 | Agent | `bench/agent/` (Rust, `armv7-unknown-linux-musleabihf`, `cargo zigbuild`) | Claude (`bench/scripts/build_agent.sh`), tested under qemu |

@@ -13,7 +13,7 @@ import unittest
 from amaranth import *
 from amaranth.sim import Simulator
 
-from p25_hdl.axil_bridge import AnsweringRegisterBridge
+from radio_core.axil_bridge import AnsweringRegisterBridge
 
 from .hwval_axil_bfm import axil_read, axil_write
 

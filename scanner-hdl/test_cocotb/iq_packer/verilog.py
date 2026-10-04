@@ -7,7 +7,7 @@
 
 from amaranth.back.verilog import convert
 
-from p25_hdl.iq_packer import IQPacker
+from radio_core.iq_packer import IQPacker
 
 
 def main():

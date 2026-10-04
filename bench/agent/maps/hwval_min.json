@@ -7,7 +7,7 @@
  "id_value": "0x68777631",
  "snapshot_domains": {},
  "requires": {"uio": "hwval-core"},
- "source": "bench/agent/maps/hwval_min.json (identification only; the full map is share/hwval_regs.json from maia-hdl/hwval_hdl/regmap.py)",
+ "source": "bench/agent/maps/hwval_min.json (identification only; the full map is share/hwval_regs.json from scanner-hdl/hwval_hdl/regmap.py)",
  "blocks": [
   {
    "name": "id",

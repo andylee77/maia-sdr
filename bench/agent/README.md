@@ -102,7 +102,7 @@ Host tests: `cargo test` in `bench/agent/` (unit tests of all pure logic plus
 
 ## Register maps
 
-Schema `fbench.regmap/1` (as emitted by `maia-hdl/hwval_hdl/regmap.py`):
+Schema `fbench.regmap/1` (as emitted by `scanner-hdl/hwval_hdl/regmap.py`):
 
 ```json
 {"schema": "fbench.regmap/1", "core": "hwval", "base": "0x7C460000", "size": 4096,
@@ -891,7 +891,7 @@ given hashes) without touching the boot pair.
 | `src/safety.rs` | signals, `tx off`, TX guard, restore guards, maintenance mode |
 | `src/sys.rs`, `src/iio.rs` | /proc, /sys, DT, IIO sysfs/debugfs, syscall wrappers |
 | `src/cmd/*.rs` | one module per subcommand |
-| `tests/cli.rs`, `tests/fixtures/` | end-to-end host tests; `hwval_regs.json` generated from `maia-hdl/hwval_hdl/regmap.py`, `hwval_small.json` hand-written |
+| `tests/cli.rs`, `tests/fixtures/` | end-to-end host tests; `hwval_regs.json` generated from `scanner-hdl/hwval_hdl/regmap.py`, `hwval_small.json` hand-written |
 
 ## Not yet verified on hardware
 

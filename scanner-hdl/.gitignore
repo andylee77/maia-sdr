@@ -1,0 +1,6 @@
+__pycache__
+/test_cocotb/*/dut.v
+/test_cocotb/*/results.xml
+/test_cocotb/*/sim_build
+*.vcd
+*.gtkw

@@ -1,6 +1,6 @@
 """Decoding of hwval AXI memory-tester (mt0/mt1) results.
 
-The bit-exact pattern reference lives in ``maia-hdl/hwval_hdl/axi_memtest.py``
+The bit-exact pattern reference lives in ``scanner-hdl/hwval_hdl/axi_memtest.py``
 (``expected_beat``, ``pattern_pass_index``, ``lat_bin``, ``MODE_*``/``PAT_*``).
 It imports amaranth, so it is loaded lazily and guarded: without it the
 cross-check of the agent's expected value is skipped (a warning, not an

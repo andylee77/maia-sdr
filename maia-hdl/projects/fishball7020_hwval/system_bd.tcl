@@ -20,6 +20,12 @@ set maia_iio "maia_iio"
 # Source the pluto base design (relative paths resolve in-tree)
 source ../pluto/system_bd.tcl
 
+# LVDS 1R1T: RX2 has no antenna on Fishball, so 2R2T wastes half the LVDS bus; 1R1T doubles the
+# per-channel rate ceiling at the same DATA_CLK (util_ad9361_divclk switches /4 -> /2 through
+# adc_r1_mode). The Tezuka device tree drops `adi,2rx-2tx-mode-enable` to match. The pluto base
+# keeps upstream's 2R2T for its own Fishball builds.
+ad_ip_parameter axi_ad9361 CONFIG.MODE_1R1T 1
+
 # ── Remove maia_sdr (identical to fishball7020_p25/system_bd.tcl) ─────
 delete_bd_objs [get_bd_cells maia_sdr]
 

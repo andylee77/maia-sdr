@@ -3,7 +3,7 @@
 //!
 //! The SVD does not mark read-to-clear (Rsticky) registers or clock domains,
 //! so those safety annotations are added here from the facts in
-//! `maia-hdl/p25_hdl/p25_top.py` (bank 0 is the AXI-Lite domain, every other
+//! `scanner-hdl/radio_core/p25_top.py` (bank 0 is the AXI-Lite domain, every other
 //! bank crosses into `sync` through a RegisterCDC; the listed status words
 //! carry Rsticky fields). If the SVD is not available (partial checkout) the
 //! checked-in `maps/p25_regs.fallback.json` is used instead.

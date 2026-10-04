@@ -52,6 +52,7 @@ BUILD_HOME="${BUILD_HOME:-/root/maia_hdl_build}"
 SRC_MOUNT="${SRC_MOUNT:-/mnt/src}"
 
 SRC_DIR="$BUILD_HOME/src"
+FORK_DIR="$BUILD_HOME/scanner-hdl"
 VENV_DIR="$BUILD_HOME/venv"
 
 # Flags
@@ -105,6 +106,13 @@ rsync -a --delete \
     --exclude='projects/' \
     "$SRC_MOUNT/maia-hdl/" "$SRC_DIR/"
 
+# The fork's gateware and its tests (they import maia_hdl and maia-hdl/test's helpers).
+mkdir -p "$FORK_DIR"
+rsync -a --delete \
+    --exclude='*.pyc' \
+    --exclude='__pycache__/' \
+    "$SRC_MOUNT/scanner-hdl/" "$FORK_DIR/"
+
 log "Source synced."
 
 # ── Bootstrap venv if needed ──────────────────────────────────────────────────
@@ -147,7 +155,7 @@ TIER1_RESULTS=""
 
 if $RUN_TIER1; then
     step "Tier 1: Amaranth Python Simulator"
-    info "Tests: test/test_*.py"
+    info "Tests: maia-hdl/test and scanner-hdl/test"
     echo ""
 
     cd "$SRC_DIR"
@@ -167,10 +175,13 @@ if $RUN_TIER1; then
         info "VCD output: $VCD_DIR"
     fi
 
-    # Run tests
+    # Run tests: upstream's, then the fork's
     set +e
     python -m pytest $PYTEST_ARGS $TEST_SPEC 2>&1
     TIER1_EXIT=$?
+    (cd "$FORK_DIR" && PYTHONPATH="$FORK_DIR:$SRC_DIR/test" python -m pytest $PYTEST_ARGS test/ 2>&1)
+    FORK_EXIT=$?
+    [ $TIER1_EXIT -eq 0 ] && TIER1_EXIT=$FORK_EXIT
     set -e
 
     if [ $TIER1_EXIT -eq 0 ]; then
@@ -214,7 +225,8 @@ if $RUN_TIER2; then
         # Find cocotb test directories (each has a Makefile)
         COCOTB_DIR="$SRC_DIR/test_cocotb"
         if [ -d "$COCOTB_DIR" ]; then
-            COCOTB_TESTS=$(find "$COCOTB_DIR" -name "Makefile" -not -path "$COCOTB_DIR/Makefile" | sort)
+            COCOTB_TESTS=$( (find "$COCOTB_DIR" -name "Makefile" -not -path "$COCOTB_DIR/Makefile"; \
+                find "$FORK_DIR/test_cocotb" -name "Makefile" 2>/dev/null) | sort)
 
             if [ -z "$COCOTB_TESTS" ]; then
                 warn "No cocotb test directories found."
