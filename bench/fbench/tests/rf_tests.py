@@ -513,7 +513,8 @@ def rf_isolation(ctx: TestContext) -> Outcome:
 # rf.p25_replay
 # ---------------------------------------------------------------------------
 
-P25_TX_FULL_SCALE = 2 ** 14 * 0.9  # same convention as tools/p25_bench_tx_replay.py
+# The DAC's full scale on the float TX path is 2**14; backed off so filter overshoot can't clip.
+P25_TX_FULL_SCALE = 2 ** 14 * 0.9
 REPLAY_DIR = "/root/fbench_replay"  # rootfs: RAM without the tmpfs cap on Tezuka images
 REPLAY_MEM_MARGIN_KB = 150 * 1024
 CYCLIC_MAX_BYTES = 56 << 20  # one DMA buffer from the 64 MiB CMA pool

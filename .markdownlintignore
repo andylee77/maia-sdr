@@ -2,10 +2,6 @@
 # aren't curated docs and shouldn't be held to the markdown-hygiene
 # rules applied to everything else in the repo.
 
-# Field diagnostic captures (eye diagrams, constellation plots, log
-# dumps, audio analysis, retune probes). Auto-generated; not prose.
-doc/diagnostics/
-
 # Nested target / build outputs that may contain incidental markdown.
 target/
 **/target/

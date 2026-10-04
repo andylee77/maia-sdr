@@ -218,7 +218,7 @@ Exit codes: `0` pass · `1` fail · `2` error (bug/exception) · `3` preconditio
 ### 5.2 Run directory and `result.json`
 
 Run dirs follow the diagnostic run-dir convention:
-`doc/diagnostics/<YYYY-MM-DD>/bench/run_<YYYYMMDD_HHMMSS>_<test_id>/`
+`runs/bench/<YYYY-MM-DD>/bench/run_<YYYYMMDD_HHMMSS>_<test_id>/`
 (gitignored), containing `result.json`, `FINDINGS.md` (auto-generated, then editable),
 `params.json`, `units.json` (identity snapshot per unit), `log.txt`, and `artifacts/`.
 

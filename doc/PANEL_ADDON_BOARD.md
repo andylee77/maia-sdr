@@ -384,5 +384,5 @@ The *exact same UX pattern* (small LCD + rotary encoder + speaker for P25 talkgr
 ## 13. Related Docs
 
 - [JP5 pinout + electrical reference](../../../_shared/Hardware/OpenSDRLab-7020/07_EXPANSION_IO.md) — authoritative source for pin assignments and PTT circuit (host-side reference)
-- `doc/P25_API.md` — HTTP API surface the panel must extend
-- `doc/P25_ADDRESS_MAP.md` — register layout; the new I²S TX module will claim an address range here
+- `scanner/doc/API.md` — the scanner's HTTP API, which the panel would extend
+- `doc/changes/079_general_radio_core.md`, "Registers" — the radio core's register map; an I²S TX block would take a bank there

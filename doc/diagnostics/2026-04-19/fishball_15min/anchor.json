@@ -1,7 +1,0 @@
-{
-  "host": "192.168.2.1:8080",
-  "session_start_unix_ms": 1776562217008,
-  "session_start_iso": "2026-04-18T21:30:17",
-  "board_boot_unix_ms": 1776561343060,
-  "note": "Add board_boot_unix_ms to any NID ring t_ms_since_boot to get wall-time unix-ms matching SDRTrunk log entries."
-}

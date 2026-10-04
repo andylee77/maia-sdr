@@ -10,7 +10,7 @@ default_unit = "A"
 
 [paths]
 # Run dirs land in <diagnostics_dir>/<YYYY-MM-DD>/bench/run_<ts>_<test>/.
-diagnostics_dir = "doc/diagnostics"
+diagnostics_dir = "runs/bench"
 # Session state (maintenance/TX flags, known_hosts, last seen DNA). Gitignored.
 state_dir = "bench/.state"
 # Register maps (fbench.regmap/1). Deployed to /mnt/sd/bench/share/.

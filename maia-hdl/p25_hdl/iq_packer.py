@@ -1,18 +1,7 @@
 #
-# Fishball P25 - IQ Packer for DMA (Phase 6C)
-#
-# Packs post-DDC IQ samples (16-bit signed I + 16-bit signed Q at
-# 62.5 kSPS) into 64-bit DMA words for transfer to PS DRAM via the
-# DmaStreamRingWrite ring buffer. Two consecutive samples per word.
-#
-# Modeled directly on dibit_packer.py — same handshake convention
-# (data_valid + stream_ready + sticky overflow), same sync-domain
-# semantics. The differences are: input width (16+16 instead of 2),
-# pack count (2 samples instead of 32 dibits), and the byte rate
-# (~250 KB/s instead of ~1.28 KB/s).
-#
-# See doc/P25_ADDRESS_MAP.md for the full address-space picture
-# (DDR carve-outs, register banks, IRQ assignments).
+# Fishball P25 - IQ packer: two IQ samples into each 64-bit word of a DmaStreamRingWrite ring.
+# The radio core packs the AD9361's raw samples (12 bits, sign-extended) for the capture ring;
+# hwval's replica of that ring uses it the same way.
 #
 # SPDX-License-Identifier: MIT
 #
@@ -21,12 +10,9 @@ from amaranth import *
 
 
 class IQPacker(Elaboratable):
-    """Pack post-DDC IQ stream into 64-bit DMA words.
+    """Pack an IQ stream into 64-bit DMA words, two samples a word.
 
-    Buffers two consecutive (re, im) sample pairs and emits one
-    64-bit AXI4-Stream word per pair-of-strobes. The first sample
-    seen lands in the LOW half of the word; the second lands in
-    the HIGH half. Bit layout of ``data_out``::
+    The first sample of a pair lands in the low half of the word, the second in the high half::
 
         bit 63                                                              bit 0
         +-----------------+-----------------+-----------------+-----------------+
@@ -36,44 +22,23 @@ class IQPacker(Elaboratable):
                        sample 1                          sample 0
                        (later)                           (earlier)
 
-    Each 16-bit field is two's complement, matching ``DDC.re_out`` /
-    ``DDC.im_out``. The PS-side reader interprets each 64-bit DMA
-    word as four little-endian ``int16`` values in the order
-    ``re0, im0, re1, im1`` (i.e. the natural byte order of an
-    interleaved-IQ buffer).
+    The PS reads each word as four little-endian ``int16`` values, ``re0, im0, re1, im1``:
+    interleaved IQ.
 
-    Upstream rate assumption: the control DDC produces post-decimation
-    samples at 62.5 kSPS (8 MSPS / 128x), so this packer emits one
-    64-bit word every 32 us. The downstream ``DmaStreamRingWrite`` is
-    almost always ready (HP1 budget at ~1.7 GB/s easily absorbs the
-    ~250 KB/s byte rate), but the overflow flag is still wired up
-    so we can detect AXI starvation in the field via the
-    ``iq_dma_status.iq_overflow`` register bit.
+    There is one holding register and no FIFO: a word not yet taken when the next pair is
+    complete is overwritten.
 
     Inputs (sync domain):
-        re_in: signed(16) — DDC re_out
-        im_in: signed(16) — DDC im_out
-        strobe_in: 1-cycle pulse from DDC strobe_out marking each
-            new (re_in, im_in) pair
-        stream_ready: backpressure from DmaStreamRingWrite (defaults
-            to ready so the packer can be tested in isolation)
+        re_in, im_in: signed(16)
+        strobe_in: a one-cycle pulse for each new (re_in, im_in) pair
+        stream_ready: back-pressure from the DMA (ready by default, for tests in isolation)
 
     Outputs (sync domain):
-        data_out: 64-bit packed word containing two IQ pairs
-        data_valid: AXI4-Stream valid; rises when a new word is
-            latched and stays high until ``stream_ready`` accepts it
-        overflow: **one-cycle pulse** — asserts for exactly one
-            cycle when a new word is latched while the previous
-            word is still waiting for ``stream_ready``. Must NOT be
-            a latched level: the ``Rsticky`` register-layer wrapper
-            (maia_hdl.register.Registers) already handles
-            accumulation + read-clear, and does so by snapshotting
-            the *current input value* on read (sticky := input), so
-            a latched level would get re-accumulated on the very
-            next cycle and the PS could never clear the sticky.
-            This was the Phase 6C iq_dma spurious-overflow bug that
-            caused the p25-httpd LSM pipeline to reset every
-            sub-buffer. See doc/changes/020_iq_dibit_packer_overflow_pulse.md.
+        data_out: the packed word
+        data_valid: AXI4-Stream valid; high from the word's latch until ``stream_ready`` takes it
+        overflow: a one-cycle pulse when a word is latched over one still waiting. It must be a
+            pulse, not a level: the ``Rsticky`` register field accumulates it and clears on read
+            by sampling its input, so a held level would set it again the cycle after a read.
     """
     def __init__(self):
         # Inputs
@@ -99,9 +64,8 @@ class IQPacker(Elaboratable):
         # 32-bit value: {im_in[15:0], re_in[15:0]}
         low_half = Signal(32, reset_less=True)
 
-        # Output holding register + valid flag, identical pattern
-        # to DibitPacker. Valid stays asserted until the DMA accepts
-        # the word via stream_ready.
+        # Output holding register + valid flag. Valid stays asserted
+        # until the DMA accepts the word via stream_ready.
         holding_valid = Signal()
 
         # Handshake: clear valid when DMA accepts the word.

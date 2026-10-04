@@ -1,10 +1,14 @@
 # 076 — Refactor: a multi-band, multi-protocol scanner
 
 **Started:** 2026-10-01. **Branch:** fishball-p25. **Bake required:** no (change 079 replaces the
-core afterwards; section 13). **Brief:** `BRIEF.md`.
+core afterwards; section 13). **Brief:** 076's brief, archived in
+`MAIA_SDR/_archive/cleanup_2026-10-04/maia-sdr/scanner/doc/BRIEF.md`.
 
-**Status:** design approved by Andy on 2026-10-01. It is built as a fresh crate, top-down, in
-phases (section 15). Phase 0 is next.
+**Status:** design approved by Andy on 2026-10-01 and built as a fresh crate, in phases (section
+15). The scanner has run on both units' SD image since 2026-10-01, and since 2026-10-03 it reads
+the radio core of change 079 (unit A's image; unit B still has core 0.3.0, which today's scanner
+does not read). Phase 8's last item, p25-httpd out of the repo, waits for the bench to read the
+radio core's map (`doc/CLEANUP_INVENTORY.md` §3).
 
 ## Summary
 

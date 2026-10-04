@@ -1,14 +1,12 @@
 #
 # Fishball P25 — polyphase analysis filter bank
 #
-# Part of the 2026-04-30 channelizer rewrite. See
-# `doc/diagnostics/2026-04-30/HDL_CHANNELIZER_PLAN.md` for the full
-# rationale and milestone breakdown.
-#
 # This module implements an M-branch polyphase analysis filter bank
 # for the wideband AD9361 IQ stream. The output is M complex baseband
-# channels, each at fs_in / M sample rate. Downstream consumers
-# (per-target DDC + LSM demod) pick one channel via the channel mux.
+# channels, each at fs_in / M sample rate. It is critically sampled.
+# Not in the radio core: 079 step 3b's bank (2x oversampled, 25 kHz
+# bins) would reuse its commutator, circular buffer and shared
+# multiplier.
 #
 # Mathematical model: a length-(M*K) prototype lowpass FIR is
 # decomposed into M sub-filters where sub-filter i has taps

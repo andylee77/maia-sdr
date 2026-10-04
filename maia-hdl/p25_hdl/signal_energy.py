@@ -1,18 +1,11 @@
 #
-# Fishball P25 — per-bin signal energy estimator
-#
-# Part of the 2026-04-30 channelizer rewrite. See
-# `doc/diagnostics/2026-04-30/HDL_CHANNELIZER_PLAN.md` §4.4.
+# Fishball P25 — per-bin signal energy estimator for a polyphase channelizer's outputs. Not in
+# the radio core: kept as a candidate for the channel-activity integrator of 079 step 3b.
 #
 # Computes a running |x|^2 IIR low-pass per channel and exposes:
-#   * the current energy estimate (PS-readable for debug / threshold
-#     tuning)
+#   * the current energy estimate (PS-readable)
 #   * a one-bit "energy_present" flag, asserted while energy is
 #     above a PS-programmable threshold.
-#
-# The energy_present flag is consumed by the LSM demod's TED + PLL
-# update gates (see `lsm_energy_gate.py`, planned M3) so the loops
-# don't random-walk on noise during inter-call gaps.
 #
 # Implementation: a single shared MACC walks the M channels in
 # round-robin, updating one channel's accumulator per output epoch

@@ -180,7 +180,7 @@ class IioConfig:
 @dataclass
 class PathsConfig:
     repo_root: Path = REPO_ROOT
-    diagnostics_dir: Path = REPO_ROOT / "doc" / "diagnostics"
+    diagnostics_dir: Path = REPO_ROOT / "runs" / "bench"
     state_dir: Path = BENCH_DIR / ".state"
     share_dir: Path = BENCH_DIR / "share"
 

@@ -68,7 +68,7 @@ $F describe iface.eye_idelay --json           # params, pass criteria, artifacts
 $F run smoke --unit A --json                  # suite; exit = worst verdict
 $F run rf.cw_ppm --tx A --rx B --dry-run --json   # params + interlock, no hardware
 $F run rf.cw_ppm --tx A --rx B -p span_s=600 --json
-$F analyze doc/diagnostics/2026-09-26/bench/run_20260926_153012_iface.eye_idelay --json
+$F analyze runs/bench/2026-09-26/bench/run_20260926_153012_iface.eye_idelay --json
 $F status --json                              # last runs, maintenance/TX alerts
 ```
 
@@ -136,7 +136,7 @@ Every document starts with `ok`, `verb`, `exit_code`; errors carry `error` and `
 {
   "ok": true, "verb": "run", "exit_code": 0, "suite": null, "verdict": "pass",
   "runs": [{"test": "iface.clk_freq", "run_id": "20260926_153000_iface.clk_freq",
-            "run_dir": "doc/diagnostics/2026-09-26/bench/run_20260926_153000_iface.clk_freq",
+            "run_dir": "runs/bench/2026-09-26/bench/run_20260926_153000_iface.clk_freq",
             "verdict": "pass", "exit_code": 0,
             "summary": "interface clock 16.0001 MHz vs expected 16.0000 MHz ..."}]
 }
@@ -144,7 +144,7 @@ Every document starts with `ok`, `verb`, `exit_code`; errors carry `error` and `
 
 ## Run directories
 
-`doc/diagnostics/<YYYY-MM-DD>/bench/run_<YYYYMMDD_HHMMSS>_<test_id>/` containing
+`runs/bench/<YYYY-MM-DD>/bench/run_<YYYYMMDD_HHMMSS>_<test_id>/` containing
 `result.json` (schema `fbench.result/1`, exactly the keys of design doc §5.2; unit
 identity adds `transceiver` and `label`), `params.json`, `units.json` (roles, identity,
 agent info, IIO context), `log.txt`, `artifacts/`, `FINDINGS.md`. Suites also write

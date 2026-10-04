@@ -509,8 +509,8 @@ If you ever find yourself wanting to change behavior inside an ADI core, prefer 
 
 - `doc/changes/001_build_scripts.md` — build script architecture, how `build_fpga.bat` drives Vivado
 - `doc/changes/013_phase6c_iq_dma.md` — HP2 SmartConnect arbitration with the third IQ DMA ring (P25)
-- `doc/P25_ADDRESS_MAP.md` — full DDR and AXI-Lite address map (incl. ADI core bases)
-- `doc/BUILD_FPGA.md` — end-user FPGA bitstream build guide
+- `doc/changes/079_general_radio_core.md`, "Registers" and "Rings and the device tree" — the radio core's register map and DDR rings
+- `BUILD_FPGA.md` — the FPGA bitstream build guide
 - Upstream ADI documentation: <https://analogdevicesinc.github.io/hdl/>
   - `axi_ad9361`: <https://analogdevicesinc.github.io/hdl/library/axi_ad9361/index.html>
   - `axi_dmac`: <https://analogdevicesinc.github.io/hdl/library/axi_dmac/index.html>

@@ -1,12 +1,6 @@
 #
-# Fishball P25 - IQPacker tests (Phase 6C)
-#
-# Pure-Python pysim test for the post-DDC IQ packer. Validates the
-# 64-bit packed word layout and the sticky overflow behaviour.
-# Mirrors the structure of test_dibit_packer.py.
-#
-# See p25_hdl/iq_packer.py for the bit layout and
-# doc/P25_ADDRESS_MAP.md for context.
+# Fishball P25 - IQPacker tests: the 64-bit word layout, the handshake and the overflow pulse
+# (p25_hdl/iq_packer.py).
 #
 # SPDX-License-Identifier: MIT
 #
@@ -213,9 +207,8 @@ class TestIQPacker(unittest.TestCase):
         """overflow fires for (at least) one cycle when a word is latched
         while the previous word is still waiting for stream_ready.
 
-        Note that `overflow` is now a one-cycle pulse on the packer
-        side, not a latched level -- see the IQPacker class docstring
-        and doc/changes/020_iq_dibit_packer_overflow_pulse.md. The
+        `overflow` is a one-cycle pulse on the packer side, not a
+        latched level (see the IQPacker class docstring). The
         accumulation across multiple triggers is handled by the
         ``Rsticky`` wrapper in maia_hdl.register.Registers.
         """
@@ -247,9 +240,7 @@ class TestIQPacker(unittest.TestCase):
         """overflow must return to 0 within a couple of cycles after the
         trigger event. A latched-level bug would cause the Rsticky
         register wrapper to re-accumulate it on every cycle, breaking
-        PS-side clear-on-read. This test guards against reintroducing
-        the Phase 6C spurious-overflow bug documented in
-        doc/changes/020_iq_dibit_packer_overflow_pulse.md.
+        PS-side clear-on-read.
         """
         self.dut = IQPacker()
         high_cycles = 0
@@ -296,8 +287,8 @@ class TestIQPacker(unittest.TestCase):
                         'expected at least one overflow trigger in this bench')
         self.assertLess(
             high_cycles, 4,
-            f'overflow stayed high for {high_cycles} cycles -- this is the '
-            f'Phase 6C latched-level bug (see doc 020); it must pulse for '
+            f'overflow stayed high for {high_cycles} cycles: a latched '
+            f'level the Rsticky field cannot clear; it must pulse for '
             f'only ~1 cycle per trigger')
 
 
