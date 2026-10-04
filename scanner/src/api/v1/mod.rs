@@ -2,12 +2,14 @@
 
 pub mod activity;
 pub mod aliases;
+pub mod atsc;
 pub mod calls;
 pub mod config;
 pub mod data;
 pub mod events;
 pub mod hold;
 pub mod iq;
+pub mod mode;
 pub mod radio;
 pub mod receivers;
 pub mod recordings;

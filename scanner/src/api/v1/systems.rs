@@ -163,12 +163,12 @@ async fn radioreference_import(s: &AppState, id: &str, req: &ImportRequest, save
     Ok(out)
 }
 
-/// Is `site` live, being switched to, or the site a scan goes back to?
+/// Is `site` live, being switched to, or the site a scan or the scanner mode goes back to?
 fn in_use(s: &AppState, site: &str) -> bool {
     match s.live.state() {
         LiveState::Live(l) => l.site.id == site,
         LiveState::Switching { to } => to == site,
-        LiveState::Scanning { back_to } => back_to.as_deref() == Some(site),
+        LiveState::Scanning { back_to } | LiveState::Away { back_to } => back_to.as_deref() == Some(site),
         LiveState::NoSite => false,
     }
 }

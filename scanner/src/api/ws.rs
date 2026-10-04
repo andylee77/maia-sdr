@@ -136,11 +136,11 @@ async fn notices(socket: WebSocket, s: Arc<AppState>) {
 }
 
 /// `/ws/live`: the radio's state as it changes, so a page shows it without asking. On connect a
-/// `snapshot` (status, calls, traffic, scan); then `status` once a second, `traffic` when a
+/// `snapshot` (status, calls, traffic, scan, atsc); then `status` once a second, `traffic` when a
 /// traffic channel changes, `call_opened` and `call_closed` with the call, `recording` with a
-/// saved recording, `alert` with a closed call's alert tones (`call`, `alerts`), `scan` while
-/// one runs, and `changed` naming the part of the configuration to read again. After `lag` a
-/// fresh snapshot follows.
+/// saved recording, `alert` with a closed call's alert tones (`call`, `alerts`), `scan` and
+/// `atsc` (the TV scan) while one runs, and `changed` naming the part of the configuration to
+/// read again. After `lag` a fresh snapshot follows.
 ///
 /// What only some pages show comes while a page asks for it (`Wants`): it sends
 /// `{"type":"subscribe", ...}`, each replacing the last, and gets `spectrum`, `events`, `radio`,
@@ -300,6 +300,7 @@ async fn snapshot(s: &AppState, names: &Names) -> String {
         "calls": { "open": open, "recent": recent },
         "traffic": traffic(s, names),
         "scan": s.discovery.state(),
+        "atsc": s.atsc.state(),
     })
     .to_string()
 }
@@ -324,6 +325,7 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
     // What was sent last, to send only what changed.
     let mut last_traffic = String::new();
     let mut last_scan = String::new();
+    let mut last_atsc = String::new();
     let mut tick = tokio::time::interval(LIVE_TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut wants = Wants::default();
@@ -342,6 +344,11 @@ async fn live_feed(socket: WebSocket, s: Arc<AppState>) {
                 if scan != last_scan {
                     last_scan = scan.clone();
                     msgs.push(scan);
+                }
+                let atsc = message("atsc", "atsc", s.atsc.state());
+                if atsc != last_atsc {
+                    last_atsc = atsc.clone();
+                    msgs.push(atsc);
                 }
             }
             changed = live.changed() => {

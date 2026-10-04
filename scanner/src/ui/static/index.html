@@ -14,6 +14,9 @@
 <body>
 <header class="topbar">
   <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Fishball scanner</div>
+  <select class="input mode-select" id="mode" aria-label="Mode" title="What the unit does; each mode has the radio to itself">
+    <option value="scanner">Scanner</option><option value="atsc">ATSC TV</option>
+  </select>
   <div class="topbar-site" id="top-site"><span class="dot" id="top-site-dot"></span><span id="top-site-text">connecting&hellip;</span></div>
   <div class="topbar-right">
     <span class="dim listen-state" id="listen-state"></span>
@@ -31,9 +34,10 @@
   </div>
 </header>
 <nav class="tabs" id="tabs" aria-label="Pages">
-  <a href="#now" data-view="now"><span class="tab-ico" aria-hidden="true">&#9679;</span>Now</a>
-  <a href="#activity" data-view="activity"><span class="tab-ico" aria-hidden="true">&#9636;</span>Activity</a>
-  <a href="#systems" data-view="systems"><span class="tab-ico" aria-hidden="true">&#9906;</span>Systems</a>
+  <a href="#now" data-view="now" data-mode="scanner"><span class="tab-ico" aria-hidden="true">&#9679;</span>Now</a>
+  <a href="#activity" data-view="activity" data-mode="scanner"><span class="tab-ico" aria-hidden="true">&#9636;</span>Activity</a>
+  <a href="#systems" data-view="systems" data-mode="scanner"><span class="tab-ico" aria-hidden="true">&#9906;</span>Systems</a>
+  <a href="#atsc" data-view="atsc" data-mode="atsc" hidden><span class="tab-ico" aria-hidden="true">&#9707;</span>ATSC</a>
   <a href="#diag" data-view="diag"><span class="tab-ico" aria-hidden="true">&#9636;</span>Diagnostics</a>
   <a href="#settings" data-view="settings"><span class="tab-ico" aria-hidden="true">&#9881;</span>Settings</a>
 </nav>

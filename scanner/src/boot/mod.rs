@@ -17,7 +17,9 @@ use state::AppState;
 
 use crate::audio::live::Audio;
 use crate::radio::lease::RadioLease;
+use crate::services::atsc::sweep::Atsc;
 use crate::services::history::store::SiteInfo;
+use crate::services::mode::{self, Mode, Modes};
 use crate::services::history::History;
 use crate::services::clock::Clock;
 use crate::services::crystal::{self, Crystal};
@@ -42,6 +44,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     let config = config::Config::load(&paths)?;
     let crystal_ppm = config.state.value.crystal.as_ref().map(|c| c.ppm).or(args.lo_ppm).unwrap_or(0.0);
     let live_site = config.state.value.live_site.clone();
+    let mode = config.state.value.mode;
     let (tuner, hardware) = radio::open(&config.radio.value, crystal_ppm).await?;
 
     let config = Arc::new(Mutex::new(config));
@@ -73,13 +76,21 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         log.clone(),
         history.sender(),
     ));
-    match &live_site {
-        Some(site) => {
+    let modes = Arc::new(Modes::default());
+    let atsc = Arc::new(Atsc::default());
+    match (mode, &live_site) {
+        (Mode::Atsc, _) => {
+            let deps = mode::Deps { lease: &lease, live: &live, tuner: &tuner, atsc: &atsc, config: &config, paths: &paths, log: &log };
+            if let Err(e) = modes.set(Mode::Atsc, live_site.clone(), deps).await {
+                tracing::error!("ATSC mode did not start: {e:#}");
+            }
+        }
+        (Mode::Scanner, Some(site)) => {
             if let Err(e) = live.activate(site).await {
                 tracing::error!("site {site} did not go live: {e:#}");
             }
         }
-        None => tracing::warn!("no site configured yet: waiting for a scan or a site to be added"),
+        (Mode::Scanner, None) => tracing::warn!("no site configured yet: waiting for a scan or a site to be added"),
     }
     live.start_recentre();
 
@@ -121,6 +132,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         recordings,
         history,
         discovery,
+        modes,
+        atsc,
         notices,
         clock,
         crystal,

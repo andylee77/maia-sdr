@@ -4,10 +4,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::audio::live::Audio;
+use crate::services::atsc::sweep::Atsc;
 use crate::services::clock::Clock;
 use crate::services::crystal::Crystal;
 use crate::services::discovery::sweep::Discovery;
 use crate::services::history::History;
+use crate::services::mode::Modes;
 use crate::services::notices::Notices;
 use crate::services::packet_data::PacketData;
 use crate::services::recordings::Recordings;
@@ -36,6 +38,9 @@ pub struct AppState {
     pub recordings: Arc<Recordings>,
     pub history: Arc<History>,
     pub discovery: Arc<Discovery>,
+    /// The unit's mode, and ATSC mode's channel finder.
+    pub modes: Arc<Modes>,
+    pub atsc: Arc<Atsc>,
     pub notices: Notices,
     pub clock: Arc<Clock>,
     pub crystal: Arc<Crystal<Hardware>>,

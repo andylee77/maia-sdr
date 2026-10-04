@@ -8,9 +8,9 @@ use serde::Serialize;
 
 use crate::boot::state::AppState;
 use crate::boot::version::BUILD_TAG;
-use crate::radio::lease::Lease;
 use crate::radio::tuner::Tuning;
 use crate::services::clock::ClockStatus;
+use crate::services::mode::Mode;
 use crate::trunking::receivers::ControlStatus;
 use crate::trunking::site::LiveState;
 use crate::util::time;
@@ -20,6 +20,8 @@ pub struct Status {
     pub build: &'static str,
     pub uptime_s: u64,
     pub now_unix_ms: u64,
+    /// What the unit is: the scanner or ATSC TV.
+    pub mode: Mode,
     pub live: LiveState,
     pub control: ControlStatus,
     pub lease: &'static str,
@@ -58,11 +60,8 @@ pub fn status(s: &AppState) -> Status {
         now_unix_ms: time::unix_ms(),
         live,
         control: s.receivers.status(),
-        lease: match s.lease.current() {
-            Lease::Normal => "normal",
-            Lease::Switching => "switching",
-            Lease::Scan => "scan",
-        },
+        mode: s.modes.current(),
+        lease: s.lease.current().as_str(),
         tuning,
         clock: s.clock.status(),
         hold,

@@ -24,7 +24,7 @@ use crate::util::time::unix_ms;
 const CARRIER_DB: f32 = 12.0;
 const CARRIER_PERSIST: f32 = 0.8;
 /// After an LO move, before the spectrometer's frames count.
-const LO_SETTLE: Duration = Duration::from_millis(200);
+pub const LO_SETTLE: Duration = Duration::from_millis(200);
 /// Control messages that make a carrier a control channel.
 const MIN_MESSAGES: u64 = 3;
 /// Listening on after the identity, for the band plan and neighbours.
@@ -108,7 +108,7 @@ impl Discovery {
             d.lo_hz = None;
         });
         drop(guard);
-        live.resume_after_scan(back_to).await;
+        live.resume(back_to).await;
         let summary = {
             let mut d = self.lock();
             d.finished_unix_ms = unix_ms();
@@ -266,7 +266,7 @@ impl Discovery {
 }
 
 /// `n` spectrometer frames as dB per bin, taken after the first two (the LO settling).
-async fn grab<H: RadioHw>(hw: &H, n: usize) -> Vec<Vec<f32>> {
+pub async fn grab<H: RadioHw>(hw: &H, n: usize) -> Vec<Vec<f32>> {
     let mut out = Vec::new();
     let mut discard = 2;
     let deadline = Instant::now() + Duration::from_secs(4);

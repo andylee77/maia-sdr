@@ -388,10 +388,11 @@ ROUTES: dict[str, list] = {
         ("build", "string", "The scanner's build tag."),
         ("uptime_s", "number", "Since the scanner started, s."),
         ("now_unix_ms", "number", "The board's clock."),
+        ("mode", "string", "What the unit is: `scanner` (P25 and DMR trunking) or `atsc` (ATSC TV, with the live site paused)."),
         ("live", "object", "The live site's state; `state` says which fields follow."),
-        ("live.state", "string", "`no_site`, `switching` (with `to`), `scanning` (with `back_to`) or `live` (with the fields below)."),
+        ("live.state", "string", "`no_site`, `switching` (with `to`), `scanning` or `away` (ATSC mode has the radio; both with `back_to`) or `live` (with the fields below)."),
         ("live.to", "string, absent unless switching", "The site being made live."),
-        ("live.back_to", "string or null, absent unless scanning", "The site the scan returns to."),
+        ("live.back_to", "string or null, absent unless scanning or away", "The site the scan or scanner mode brings back."),
         ("live.site", "object, absent unless live", "The live site's configuration."),
         ("@live.site", "site"),
         ("live.system", "object, absent unless live", "Its system."),
@@ -404,7 +405,7 @@ ROUTES: dict[str, list] = {
         ("@live.tuning", "tuning"),
         ("control", "object", "The control channel decoder."),
         ("@control", "control"),
-        ("lease", "string", "Who has the radio: `normal`, `switching` (a site going live) or `scan`."),
+        ("lease", "string", "Who has the radio: `normal`, `switching` (a site going live), `scan` or `atsc` (ATSC mode)."),
         ("tuning", "object", "The tuning."),
         ("@tuning", "tuning"),
         ("clock", "object", "The board clock."),
@@ -930,6 +931,48 @@ ROUTES: dict[str, list] = {
         ("@other[]", "carrier"),
         ("error", "string or null", "What went wrong."),
     ],
+    "/api/v1/mode": [
+        ("mode", "string", "`scanner` or `atsc`."),
+    ],
+    "/api/v1/atsc/scan/options": [
+        ("channels", "array", "The TV channel plan: RF 2-36 (US, after the repack)."),
+        ("channels[]", "object", "One RF channel."),
+        ("channels[].number", "number", "The RF channel."),
+        ("channels[].band", "string", "`VHF low`, `VHF high` or `UHF`."),
+        ("channels[].low_hz", "number", "Its lower edge (6 MHz wide)."),
+        ("channels[].center_hz", "number", "Its centre."),
+        ("channels[].reachable", "bool", "The AD9361 tunes it (not RF 2 and 3, below its 70 MHz LO)."),
+        ("defaults", "object", "The settings a scan takes when its request leaves them out."),
+        ("defaults.channels", "array", "Empty: every channel reached."),
+        ("defaults.frames", "number", "Spectrometer frames read at each window."),
+        ("defaults.gain_db", "number or null", "Manual gain, dB; null: the AGC (slow attack)."),
+        ("window_hz", "number", "How much the radio reads at a time (16 MHz: two channels a window)."),
+    ],
+    "/api/v1/atsc/scan": [
+        ("id", "number", "The TV scan's number."),
+        ("state", "string", "`idle`, `sweeping`, `done`, `cancelled` or `error`."),
+        ("started_unix_ms", "number", "Its start."),
+        ("finished_unix_ms", "number", "Its end (0 while running)."),
+        ("channels", "array of numbers", "The RF channels asked for."),
+        ("gain_db", "number or null", "Its manual gain, dB; null: the AGC."),
+        ("step", "number", "The window read now."),
+        ("steps", "number", "Its windows."),
+        ("lo_hz", "number or null", "The LO of the window read now."),
+        ("found", "array", "Every channel read so far, the lowest first."),
+        ("found[]", "object", "One channel."),
+        ("found[].number", "number", "The RF channel."),
+        ("found[].band", "string", "`VHF low`, `VHF high` or `UHF`."),
+        ("found[].center_hz", "number", "Its centre."),
+        ("found[].kind", "string", "`8vsb` (ATSC 1.0: its pilot found), `no_pilot` (a signal fills it without the 8-VSB pilot: ATSC 3.0 or other) or `vacant`."),
+        ("found[].pilot_hz", "number or null", "Where the pilot is (8-VSB)."),
+        ("found[].pilot_offset_hz", "number or null", "The pilot from where the plan puts it (309.44 kHz above the lower edge)."),
+        ("found[].pilot_db", "number or null", "The pilot over the plateau, dB: 20.1 for a clean signal, less with noise or a multipath notch on it."),
+        ("found[].level_db", "number", "The plateau over the noise floor at the channel's edges: its carrier to noise, dB (up to the transmitter's shoulders, 35-45 dB)."),
+        ("found[].power_dbm", "number or null", "Its power, about dBm (the spectrum's scale taken back to 60 dB of gain); null when the gain is unknown."),
+        ("found[].gain_db", "number or null", "The receiver gain while it was read."),
+        ("found[].clipped", "bool", "The ADC clipped while its window was read: overloaded, its numbers are not to be trusted."),
+        ("error", "string or null", "What went wrong."),
+    ],
     "/api/v1/systems/{id}/aliases": [
         ("aliases", "array", "The system's aliases."),
         ("@aliases[]", "alias"),
@@ -984,13 +1027,14 @@ NOT_JSON: dict[str, str] = {
     "/ws/live": (
         "A WebSocket of text frames, each a JSON object with `type`; the payload is under the key named:\n\n"
         "| `type` | Key | When |\n|--------|-----|------|\n"
-        "| `snapshot` | `status`, `calls` (`open`, `recent`), `traffic`, `scan` | On connect, and after `lag`. |\n"
+        "| `snapshot` | `status`, `calls` (`open`, `recent`), `traffic`, `scan`, `atsc` | On connect, and after `lag`. |\n"
         "| `status` | `status` (as `GET /api/v1/status`) | Each second, and at once when the live site changes. |\n"
         "| `traffic` | `traffic`: `channels[]` (each traffic channel: `lane`, `tuned_hz`, `following_tg`, `on_data_channel`, `voice_frames`, `last_voice_ms_ago`, `call`) and `open[]` (every call on the air) | When a traffic channel changes. |\n"
         "| `call_opened`, `call_closed` | `call` (as `GET /api/v1/calls/{id}`) | As a call opens or closes. |\n"
         "| `recording` | `recording` (as an item of `GET /api/v1/recordings`) | As a recording is saved. |\n"
         "| `alert` | `call`, `alerts` (each as an item of `GET /api/v1/activity/alerts`, `dispatch` null) | When a closed call's alert tones are known, after its recording. |\n"
         "| `scan` | `scan` (as `GET /api/v1/scan`) | While a scan runs, as its progress or found sites change. |\n"
+        "| `atsc` | `atsc` (as `GET /api/v1/atsc/scan`) | While a TV scan runs, as its progress or the channels read change. |\n"
         "| `changed` | `what`: `radio`, `systems`, `hold` or `recordings` | After a write changed that part: read it again. |\n"
         "| `lag` | | The listener fell behind; a snapshot follows. |\n\n"
         "What only some pages show comes while the page asks for it. It sends "

@@ -1,5 +1,5 @@
 //! What the radio learns by itself, kept apart from the user's configuration:
-//! `state/radio.json` (live site, crystal calibration) and `state/sites/<id>.json` (per site:
+//! `state/radio.json` (mode, live site, crystal calibration) and `state/sites/<id>.json` (per site:
 //! channel plan, grant counts, encrypted talkgroups, what the site announces of its neighbours
 //! and other channels, and the DMR channels a lane heard name themselves).
 
@@ -8,19 +8,22 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use super::VERSION;
+use crate::services::mode::Mode;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RadioState {
     pub version: u32,
-    /// The site to bring up at boot; `None` = no site yet.
+    /// The unit's mode at boot.
+    pub mode: Mode,
+    /// The site to bring up at boot (in scanner mode); `None` = no site yet.
     pub live_site: Option<String>,
     pub crystal: Option<Crystal>,
 }
 
 impl Default for RadioState {
     fn default() -> Self {
-        RadioState { version: VERSION, live_site: None, crystal: None }
+        RadioState { version: VERSION, mode: Mode::Scanner, live_site: None, crystal: None }
     }
 }
 

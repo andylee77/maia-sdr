@@ -65,6 +65,8 @@ pub enum LiveState {
     Switching { to: String },
     /// A scan has the radio; the site it goes back to.
     Scanning { back_to: Option<String> },
+    /// Another mode (ATSC TV) has the radio; the site that comes back with the scanner.
+    Away { back_to: Option<String> },
     Live(Box<Live>),
 }
 
@@ -228,17 +230,31 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
     /// A scan takes the radio: the live site's receivers and trunking stop. Returns the site to
     /// go back to.
     pub async fn pause_for_scan(&self) -> Option<String> {
+        let back_to = self.pause(None).await;
+        self.state.send_replace(LiveState::Scanning { back_to: back_to.clone() });
+        self.log.system("site", "scanning: the live site is paused".to_string());
+        back_to
+    }
+
+    /// Another mode takes the radio, as a scan does but for as long as the mode lasts.
+    /// `otherwise` is the site to come back to when none is live (at boot, the configured one).
+    pub async fn pause_for_mode(&self, otherwise: Option<String>) -> Option<String> {
+        let back_to = self.pause(otherwise).await;
+        self.state.send_replace(LiveState::Away { back_to: back_to.clone() });
+        self.log.system("site", "another mode has the radio: the live site is paused".to_string());
+        back_to
+    }
+
+    async fn pause(&self, otherwise: Option<String>) -> Option<String> {
         let back_to = match self.state() {
             LiveState::Live(l) => Some(l.site.id.clone()),
-            LiveState::Scanning { back_to } => back_to,
+            LiveState::Scanning { back_to } | LiveState::Away { back_to } => back_to,
             _ => None,
         };
         self.save_learned().await;
         self.receivers.stop().await;
         self.trunking.stop().await;
-        self.state.send_replace(LiveState::Scanning { back_to: back_to.clone() });
-        self.log.system("site", "scanning: the live site is paused".to_string());
-        back_to
+        back_to.or(otherwise)
     }
 
     /// A system's aliases or listening settings changed: the live site follows them from now on.
@@ -266,12 +282,12 @@ impl<H: RadioHw + StreamSource + 'static> LiveSite<H> {
         }
     }
 
-    /// After a scan: the site it paused, live again.
-    pub async fn resume_after_scan(&self, back_to: Option<String>) {
+    /// After a scan or another mode: the site it paused, live again.
+    pub async fn resume(&self, back_to: Option<String>) {
         self.state.send_replace(LiveState::NoSite);
         if let Some(site) = back_to {
             if let Err(e) = self.activate(&site).await {
-                tracing::error!("site {site} did not go live after the scan: {e:#}");
+                tracing::error!("site {site} did not go live again: {e:#}");
             }
         }
     }
@@ -699,6 +715,55 @@ mod tests {
         assert!(!receivers.status().running);
         assert_eq!(Config::load(&paths).unwrap().state.value.live_site, None);
         assert!(live.stop("clay").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn atsc_mode_pauses_the_live_site_and_scanner_mode_brings_it_back() {
+        use crate::services::atsc::sweep::Atsc;
+        use crate::services::mode::{Deps, Mode, Modes};
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(&dir.path().join("flash"), &dir.path().join("sd"));
+        let mut config = Config::load(&paths).unwrap();
+        config.systems.value.systems.push(System {
+            id: "clay-county".into(),
+            label: "Clay County".into(),
+            protocol: Protocol::P25,
+            identity: Default::default(),
+            details: Default::default(),
+            aliases: Default::default(),
+            listening: Default::default(),
+            sites: vec![Site { id: "clay".into(), ..site(860_962_500, vec![857_987_500], CcPosition::Top) }],
+        });
+        config::save(&paths.systems(), &config.systems).unwrap();
+        let config = Arc::new(Mutex::new(config));
+        let tuner = Arc::new(Tuner::new(Nothing, 0.0));
+        let log = Arc::new(EventLog::default());
+        let receivers = Arc::new(Receivers::new(log.clone()));
+        let trunking = Arc::new(Trunking::new(crate::audio::live::Audio::start(&[Lane::One]), Default::default(), Default::default(), Default::default(), 1));
+        let lease = RadioLease::default();
+        let live = LiveSite::new(paths.clone(), config.clone(), tuner.clone(), lease.clone(), receivers.clone(), trunking, vec![Lane::One], log.clone(), Default::default());
+        live.activate("clay").await.unwrap();
+        let (modes, atsc) = (Modes::default(), Atsc::default());
+        let deps = || Deps { lease: &lease, live: &live, tuner: &tuner, atsc: &atsc, config: &config, paths: &paths, log: &log };
+
+        modes.set(Mode::Atsc, None, deps()).await.unwrap();
+        assert_eq!((modes.current(), lease.current()), (Mode::Atsc, Lease::Atsc));
+        assert!(matches!(live.state(), LiveState::Away { back_to } if back_to.as_deref() == Some("clay")));
+        assert!(!receivers.status().running);
+        assert!(live.activate("clay").await.is_err(), "the radio is ATSC mode's");
+        assert_eq!(Config::load(&paths).unwrap().state.value.mode, Mode::Atsc, "kept for the next start");
+
+        modes.set(Mode::Scanner, None, deps()).await.unwrap();
+        assert!(lease.is_normal());
+        assert!(matches!(live.state(), LiveState::Live(l) if l.site.id == "clay"));
+        assert!(receivers.status().running);
+        assert_eq!(Config::load(&paths).unwrap().state.value.mode, Mode::Scanner);
+
+        // At a start in ATSC mode no site is live yet: the configured one comes back later.
+        live.stop("clay").await.unwrap();
+        modes.set(Mode::Atsc, Some("clay".into()), deps()).await.unwrap();
+        assert!(matches!(live.state(), LiveState::Away { back_to } if back_to.as_deref() == Some("clay")));
     }
 
     #[tokio::test]

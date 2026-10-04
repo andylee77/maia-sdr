@@ -1,6 +1,7 @@
 //! Who may move the radio. Normally the live site's follower and planner do; a site switch or a
 //! scan takes the radio for itself, and grants decoded meanwhile are dropped (they belong to
-//! whatever the radio is passing through). Dropping the guard hands the radio back.
+//! whatever the radio is passing through); ATSC mode holds it for as long as it lasts. Dropping
+//! the guard hands the radio back.
 
 use std::sync::Arc;
 
@@ -11,6 +12,18 @@ pub enum Lease {
     Normal,
     Switching,
     Scan,
+    Atsc,
+}
+
+impl Lease {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Lease::Normal => "normal",
+            Lease::Switching => "switching",
+            Lease::Scan => "scan",
+            Lease::Atsc => "atsc",
+        }
+    }
 }
 
 #[derive(Clone)]

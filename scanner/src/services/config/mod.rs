@@ -241,6 +241,7 @@ impl Config {
         self.radio.value = RadioConfig::default();
         self.systems.value = SystemsConfig::default();
         self.state.value.live_site = None;
+        self.state.value.mode = Default::default();
         gone
     }
 

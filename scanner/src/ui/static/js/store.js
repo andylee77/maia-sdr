@@ -1,6 +1,6 @@
 // Shared page state, pushed by the radio over /ws/live: the status (each second), the calls on the
 // air and the newest closed ones (each with its recording and alert tones once known), the
-// traffic channels, the newest recordings, the alert tones heard and the systems.
+// traffic channels, the newest recordings, the alert tones heard, the systems and the TV scan.
 // Pages subscribe and get the whole store on every change. A part is replaced, never changed in
 // place, so a page can tell what changed by comparing it with what it drew.
 //
@@ -20,6 +20,8 @@ export const store = {
   // Alert tones heard since the page loaded, newest first.
   alerts: [],
   systems: null,
+  // ATSC mode's TV scan: its progress and the channels read.
+  atsc: null,
   connected: false,
 };
 
@@ -160,6 +162,7 @@ function receive(m) {
       if (store.status && m.status.uptime_s < store.status.uptime_s) restarted();
       callsOf = liveSite(m.status);
       store.calls = m.calls;
+      store.atsc = m.atsc;
       setStatus(m.status);
       setTraffic(m.traffic);
       readRecordings();
@@ -167,6 +170,9 @@ function receive(m) {
       break;
     case 'status':
       setStatus(m.status);
+      break;
+    case 'atsc':
+      store.atsc = m.atsc;
       break;
     case 'traffic':
       setTraffic(m.traffic);
