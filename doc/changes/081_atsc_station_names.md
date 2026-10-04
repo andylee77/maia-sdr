@@ -78,6 +78,20 @@ should say which station it is and what it carries, as an HDHomeRun does.
   - The TVCT or CVCT gives the virtual channels: UTF-16 short names, and the extended channel
     name descriptor (0xA0) for the long name.
   - The STT gives the clock: GPS seconds less the UTC offset.
+- **What the programs carry** (`streams`):
+  - The PAT and each program's PMT give its streams: stream type (codec), PID and ISO 639
+    language.
+  - Each stream's packets' share of the capture's packet slots gives its bitrate, out of the
+    multiplex's 19.39 Mbit/s. The null packets' share is what the station leaves unused.
+  - The streams' own headers give their format:
+    - MPEG-2 video: the sequence header and its extension give size, scan, frame rate, aspect,
+      and profile and level.
+    - AC-3: a sync frame gives channels (with LFE), sample rate and bitrate. A frame counts only
+      when its length lands on the next frame's sync word.
+  - In the 17 captures, every station sends MPEG-2 video and AC-3 audio.
+  - About half the video streams have no sequence header within a capture: MPEG-2 repeats it
+    only every group of pictures, roughly every 0.5-1 s.
+  - RF 11 (W11DV-D) sends its tables and nothing else: 19.3 Mbit/s of null packets.
 
 The constants follow A/53 Part 2 and A/65. philburr/atsc, an 8-VSB modulator Andy pointed to, is
 GPL-2.0, so it was used only to cross-check them; none of its code is used.
@@ -144,6 +158,22 @@ What it took:
 - **Under a picked channel's spectrum:**
   - its station: TSID, MER, packets and its clock;
   - a table of its virtual channels: number, names, program, service, hidden or scrambled.
+- **ATSC mode's pages** (Andy): the ATSC page is now **Channels**, and **Viewer** is new.
+  - **Channels:** the tally and the header count frequencies with a signal, stations named and
+    their channels, for example "ATSC TV · 26 frequencies · 91 channels". Hidden channels are
+    left out of the count.
+  - **Viewer:**
+    - A channel picker sits above a 16:9 picture area. It holds every virtual channel the last
+      scan named, grouped by RF channel, and the browser remembers the last pick.
+    - There is no picture yet: playback needs the transport stream in real time.
+    - Until then the area shows what the scan's 0.5 s capture read of the channel:
+      - each stream's codec, format, language and bitrate;
+      - its program's number, PMT and PCR PIDs and bitrate, out of 19.39 Mbit/s;
+      - its station: TSID, channels, null bitrate;
+      - MER, C/N, packets, and those corrected or beyond Reed-Solomon;
+      - when it was read.
+  - A reload now keeps the page asked for until the unit's mode is known. Before, a reload on
+    the Viewer landed on Channels.
 
 ### Tools
 
@@ -221,6 +251,10 @@ All 17 captures decode as before every speed change:
 - **Weaker stations:** RF 10 and 11 decode in some scans and not others (they failed at a
   measured MER of about 17 dB), and other captures fail at 12-17 dB. A decision-feedback equalizer is the usual next step for long echoes; see first which
   echoes those channels have.
+- **The Viewer:**
+  - Live stats: tune to the picked channel and read it again, rather than the scan's capture.
+  - Playback: the transport stream in real time, from a gateware 8-VSB demodulator, with a
+    decoder in the browser.
 - **Speed:** the Viterbi (1.1 s for 0.8 s on two cores) could run four encoders at once in NEON.
   The FFT is scalar on ARMv7.
 - **The station's clock:** a longer capture, or a second one when the first has no STT.

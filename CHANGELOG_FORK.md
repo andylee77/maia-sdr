@@ -39,7 +39,13 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   about 17 dB) did not decode.
 - **UI:** a Station column, and a picked channel's station and virtual channels. The table
   fills in as the scan goes: a row for each channel from the start, "Reading…" and "Naming…" on
-  the channels in hand (BUILD_TAG `2026-10-04-atsc-table2`, hand-deployed on A).
+  the channels in hand.
+- **Channels and Viewer:**
+  - The ATSC tab is now Channels, counting frequencies, stations and channels.
+  - The new Viewer tab has a channel picker above a picture area. The area shows the picked
+    channel's streams (codec, format, language, bitrate), its program and its signal, read from
+    the scan's capture of the PAT, PMTs and stream headers.
+  - BUILD_TAG `2026-10-04-atsc-viewer2`, hand-deployed on A.
 - `tools/atsc_check.py` compares the names with the HDHomeRun's lineup (exit 3 on a difference).
 - Record: `doc/changes/081_atsc_station_names.md`.
 

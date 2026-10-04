@@ -182,7 +182,8 @@ scanner/src/         the fresh crate (D13)
     atsc/            the US TV channel plan, the windows that read it, and one channel's
                      spectrum: the 8-VSB pilot, the plateau, the floor at its edges; the 8-VSB
                      receiver (demod, fec: trellis, deinterleaver, Reed-Solomon) and PSIP
-                     (ts, psip), together in receiver: a capture to its station's names
+                     (ts, psip) and its programs' streams (streams: codec, bitrate, format),
+                     together in receiver: a capture to its station's names and contents
   trunking/          protocol-neutral, host-tested
     follow/          one follower: ordered gates, lane choice, pre-emption; routing (aliases)
     calls/           Call, CallBook (lifecycle and counters), CallEvent
