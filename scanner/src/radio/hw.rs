@@ -121,6 +121,46 @@ mod board {
             self.core.lock().await.read_spectrum().map(<[u8]>::to_vec)
         }
 
+        /// The capture ring's sub-buffers copied out as they complete (each holds 25 ms at 10
+        /// MSPS; the ring 16 of them), the first left out: it may hold older samples.
+        async fn capture(&self, samples: usize) -> Result<Vec<rustfft::num_complex::Complex32>> {
+            use rustfft::num_complex::Complex32;
+            use std::time::{Duration, Instant};
+
+            let mut out: Vec<Complex32> = Vec::with_capacity(samples);
+            let mut skip = true;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let ring = {
+                let mut core = self.core.lock().await;
+                core.set_capture(true);
+                core.capture_buffers()
+            };
+            let result = loop {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                let done = self.core.lock().await.read_capture(|b| {
+                    if std::mem::take(&mut skip) {
+                        return;
+                    }
+                    out.extend(b.chunks_exact(4).map(|c| {
+                        Complex32::new(f32::from(i16::from_le_bytes([c[0], c[1]])), f32::from(i16::from_le_bytes([c[2], c[3]])))
+                    }));
+                });
+                if done + 1 >= ring {
+                    break Err(anyhow::anyhow!("the capture fell a ring behind ({done} sub-buffers at once)"));
+                }
+                if out.len() >= samples {
+                    break Ok(());
+                }
+                if Instant::now() > deadline {
+                    break Err(anyhow::anyhow!("the capture ring stopped ({} of {samples} samples)", out.len()));
+                }
+            };
+            self.core.lock().await.set_capture(false);
+            result?;
+            out.truncate(samples);
+            Ok(out)
+        }
+
         async fn readback(&self, sample_rate_hz: u32) -> Readback {
             let sr = sample_rate_hz as f64;
             let mut r = Readback {

@@ -33,7 +33,7 @@ const TIMING_BLOCK: usize = 32;
 const EQ_TAPS: usize = 128;
 /// Equalizer taps ahead of the symbol (pre-echoes).
 const EQ_PRE: usize = 32;
-const EQ_DECISION_ROWS: usize = 30_000;
+const EQ_DECISION_ROWS: usize = 12_000;
 
 #[derive(Debug, Clone)]
 pub struct Demodulated {
@@ -50,7 +50,8 @@ pub struct Demodulated {
     pub mer_db: f32,
 }
 
-fn rrc(t: f64) -> f64 {
+/// The root-raised cosine at `t` symbols (rolloff 0.1152), peak 1 - a + 4a/π.
+pub(crate) fn rrc(t: f64) -> f64 {
     let a = ROLLOFF;
     if t.abs() < 1e-9 {
         return 1.0 - a + 4.0 * a / std::f64::consts::PI;

@@ -154,6 +154,8 @@ mod dma {
         lanes_last: Option<u32>,
         spectrum: RxBuffer,
         spectrum_last: Option<u8>,
+        capture: RxBuffer,
+        capture_last: Option<u32>,
     }
 
     impl Dma {
@@ -165,7 +167,8 @@ mod dma {
                 lanes.buffer_size()
             );
             let spectrum = RxBuffer::open("p25-wideband-spec").await.context("the spectrum ring")?;
-            Ok(Dma { lanes, lanes_last: None, spectrum, spectrum_last: None })
+            let capture = RxBuffer::open("p25-wideband-iq").await.context("the capture ring")?;
+            Ok(Dma { lanes, lanes_last: None, spectrum, spectrum_last: None, capture, capture_last: None })
         }
     }
 
@@ -184,6 +187,37 @@ mod dma {
                     each(packet::parse(bytes));
                 }
             }
+        }
+
+        /// The raw IQ capture on or off. On, completed sub-buffers are counted from now.
+        pub fn set_capture(&mut self, on: bool) {
+            if on {
+                let current = self.regs.wideband_iq_dma_status().read().last_buffer().bits() as u32;
+                self.dma.capture_last = Some(current);
+            }
+            self.regs.wideband_iq_dma_control().modify(|_, w| w.wideband_iq_enable().bit(on));
+        }
+
+        /// The capture ring's sub-buffers completed since the last call (cache invalidated), in
+        /// order: raw IQ at the AD9361's rate, interleaved little-endian i16 I, Q. Returns how
+        /// many completed; as many as the ring holds or more means the oldest were overwritten.
+        pub fn read_capture(&mut self, mut each: impl FnMut(&[u8])) -> usize {
+            let current = self.regs.wideband_iq_dma_status().read().last_buffer().bits() as u32;
+            let d = &mut self.dma;
+            let done = completed_since(d.capture.num_buffers(), &mut d.capture_last, current);
+            for &idx in &done {
+                if let Err(e) = d.capture.cache_invalidate(idx) {
+                    tracing::warn!("capture sub-buffer {idx}: {e}");
+                    continue;
+                }
+                each(d.capture.buffer(idx));
+            }
+            done.len()
+        }
+
+        /// The capture ring's sub-buffers.
+        pub fn capture_buffers(&self) -> usize {
+            self.dma.capture.num_buffers()
         }
 
         /// The latest completed wideband spectrum (packed mantissa and exponent), once.

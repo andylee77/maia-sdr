@@ -13,6 +13,7 @@ use std::future::Future;
 use std::sync::Mutex;
 
 use anyhow::{bail, Result};
+use rustfft::num_complex::Complex32;
 use serde::Serialize;
 use tokio::sync::watch;
 
@@ -123,6 +124,13 @@ pub trait RadioHw: Send + Sync {
     /// completes.
     fn spectrum(&self) -> impl Future<Output = Option<Vec<u8>>> + Send {
         async { None }
+    }
+    /// `samples` of raw IQ at the AD9361's rate, contiguous, from the capture ring.
+    fn capture(&self, samples: usize) -> impl Future<Output = Result<Vec<Complex32>>> + Send {
+        async move {
+            let _ = samples;
+            bail!("this radio has no IQ capture")
+        }
     }
 }
 

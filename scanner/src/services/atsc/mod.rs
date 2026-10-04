@@ -1,12 +1,15 @@
 //! ATSC TV mode's channel finder: it steps the LO across the TV channels at 16 MSPS, two channels
 //! a window, reads the wideband spectrometer there and says what each channel holds
 //! (`protocol::atsc`): an 8-VSB station by its pilot, a signal without one (ATSC 3.0 or another)
-//! or nothing, with the pilot's offset, the carrier to noise and the power.
+//! or nothing, with the pilot's offset, the carrier to noise and the power. Then each 8-VSB
+//! channel strong enough is tuned on its own, a short raw IQ capture decoded, and the station's
+//! own name for itself read: its virtual channels and transport stream id (`protocol::atsc::receiver`).
 
 pub mod sweep;
 
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::atsc::psip::VirtualChannel;
 use crate::protocol::atsc::spectrum::Kind;
 use crate::protocol::atsc::{Channel, FIRST, LAST};
 use crate::radio::plan::usable_half_hz;
@@ -26,11 +29,13 @@ pub struct AtscRequest {
     pub frames: usize,
     /// Manual receiver gain for the scan, dB; none = the AGC (slow attack).
     pub gain_db: Option<i32>,
+    /// Decode each 8-VSB channel strong enough for its station's names.
+    pub identify: bool,
 }
 
 impl Default for AtscRequest {
     fn default() -> Self {
-        AtscRequest { channels: Vec::new(), frames: 8, gain_db: None }
+        AtscRequest { channels: Vec::new(), frames: 8, gain_db: None, identify: true }
     }
 }
 
@@ -115,6 +120,25 @@ pub struct FoundChannel {
     /// unknown). The AGC lets a few peaks clip; many mean an overloaded radio (a lower manual gain
     /// helps).
     pub clips_ppm: Option<f64>,
+    /// What the station said of itself, once its channel was decoded.
+    pub station: Option<Station>,
+}
+
+/// A channel decoded: what its PSIP named, and how well it decoded.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Station {
+    pub tsid: Option<u16>,
+    /// The virtual channels it carries (major.minor, names, programs).
+    pub channels: Vec<VirtualChannel>,
+    /// The station's clock (its STT), Unix seconds.
+    pub time_unix: Option<i64>,
+    /// Modulation error ratio of the equalized symbols, dB.
+    pub mer_db: Option<f32>,
+    /// Transport stream packets decoded, and those Reed-Solomon could not correct.
+    pub packets: usize,
+    pub failed: usize,
+    /// Why it was not decoded (no syncs, the capture failed).
+    pub error: Option<String>,
 }
 
 /// One channel's stretch of the spectrum its window read: the channel and 0.5 MHz either side.
@@ -151,6 +175,10 @@ pub struct AtscScan {
     pub steps: usize,
     /// The window's LO now.
     pub lo_hz: Option<u64>,
+    /// The channel being decoded now, and how many are to be.
+    pub identifying: Option<u8>,
+    pub to_identify: usize,
+    pub identified: usize,
     /// Every channel read so far, lowest first.
     pub found: Vec<FoundChannel>,
     pub error: Option<String>,
@@ -170,6 +198,9 @@ impl Default for AtscScan {
             step: 0,
             steps: 0,
             lo_hz: None,
+            identifying: None,
+            to_identify: 0,
+            identified: 0,
             found: Vec::new(),
             error: None,
             cancel: false,

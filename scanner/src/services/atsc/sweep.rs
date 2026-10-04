@@ -1,5 +1,6 @@
 //! The channel finder's runs. In ATSC mode it holds the radio (the mode's lease), so it tunes as
-//! it likes; going back to scanner mode stops a run first and takes the radio from it.
+//! it likes; going back to scanner mode stops a run first and takes the radio from it. A run
+//! sweeps the channels' spectrum, then decodes each 8-VSB channel strong enough for its names.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -7,10 +8,11 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, bail, Context, Result};
 use tokio::sync::OwnedMutexGuard;
 
-use super::{usable_half, AtscRequest, AtscScan, ChannelSpectrum, FoundChannel};
+use super::{usable_half, AtscRequest, AtscScan, ChannelSpectrum, FoundChannel, Station};
 use crate::hardware::ad9361::GainMode;
 use crate::hardware::presets::find_preset;
 use crate::protocol::atsc::spectrum::{measure, Kind};
+use crate::protocol::atsc::receiver::{identify, Identified};
 use crate::protocol::atsc::{windows, Channel};
 use crate::radio::lease::LeaseGuard;
 use crate::radio::tuner::{RadioHw, Tuner, TuningPlan};
@@ -24,6 +26,12 @@ const SCALE_GAIN_DB: f64 = 60.0;
 
 /// Shown either side of a channel in its spectrum.
 const SPECTRUM_MARGIN_HZ: f64 = 500_000.0;
+/// A channel is decoded at this rate, its centre at the LO (the ±3 MHz channel inside ±4.5 MHz).
+const IDENTIFY_PRESET: &str = "10M";
+/// 0.6 s of it: PSIP sends the virtual channel table at least every 0.4 s.
+const CAPTURE_SAMPLES: usize = 6_000_000;
+/// 8-VSB needs about 15 dB of carrier to noise; weaker channels are not tried.
+const IDENTIFY_MIN_DB: f32 = 15.0;
 
 /// ATSC mode's hold on the radio, and the site scanner mode brings back.
 struct Held {
@@ -141,7 +149,7 @@ impl Atsc {
     }
 
     async fn run<H: RadioHw>(self: Arc<Self>, id: u64, req: AtscRequest, radio: OwnedMutexGuard<Option<Held>>, tuner: Arc<Tuner<H>>, log: Arc<EventLog>) {
-        let result = self.sweep(&req, &tuner).await;
+        let result = self.sweep(&req, &tuner, &log).await;
         drop(radio);
         let summary = {
             let mut d = self.lock();
@@ -167,7 +175,7 @@ impl Atsc {
         log.system("atsc", summary);
     }
 
-    async fn sweep<H: RadioHw>(&self, req: &AtscRequest, tuner: &Tuner<H>) -> Result<()> {
+    async fn sweep<H: RadioHw>(&self, req: &AtscRequest, tuner: &Tuner<H>, log: &EventLog) -> Result<()> {
         let preset = find_preset(SWEEP_PRESET).context("the sweep preset")?;
         match req.gain_db {
             Some(db) => tuner.set_gain(GainMode::Manual, Some(f64::from(db))).await?,
@@ -220,12 +228,83 @@ impl Atsc {
                         power_dbm: gain.map(|g| m.power_db - (g - SCALE_GAIN_DB) as f32),
                         gain_db: gain,
                         clips_ppm,
+                        station: None,
                     })
                 })
                 .collect();
             self.update(|d| d.found.extend(found));
         }
+        if req.identify {
+            self.identify(tuner, log).await?;
+        }
         Ok(())
+    }
+
+    /// Each 8-VSB channel strong enough, tuned on its own with its centre at the LO: a short
+    /// capture, decoded on a worker thread.
+    async fn identify<H: RadioHw>(&self, tuner: &Tuner<H>, log: &EventLog) -> Result<()> {
+        let preset = find_preset(IDENTIFY_PRESET).context("the capture preset")?;
+        let targets: Vec<u8> =
+            self.lock().found.iter().filter(|c| c.kind == Kind::Vsb && c.level_db >= IDENTIFY_MIN_DB).map(|c| c.number).collect();
+        self.update(|d| d.to_identify = targets.len());
+        for n in targets {
+            if self.stopping() {
+                return Ok(());
+            }
+            let Some(ch) = Channel::get(n) else { continue };
+            self.update(|d| {
+                d.identifying = Some(n);
+                d.lo_hz = Some(ch.center_hz());
+            });
+            tuner.apply(TuningPlan { preset, lo_hz: ch.center_hz(), control_hz: ch.center_hz() }).await?;
+            tokio::time::sleep(LO_SETTLE).await;
+            let station = match tuner.hw().capture(CAPTURE_SAMPLES).await {
+                Ok(iq) => {
+                    // The sample clock runs off the crystal the LO is corrected for.
+                    let fs = f64::from(preset.sample_rate_hz) * (1.0 + tuner.tuning().crystal_ppm * 1e-6);
+                    station_of(tokio::task::spawn_blocking(move || identify(&iq, fs, 0.0)).await?)
+                }
+                Err(e) => Station { error: Some(format!("{e:#}")), ..Default::default() },
+            };
+            log.system("atsc", describe(n, &station));
+            self.update(|d| {
+                if let Some(c) = d.found.iter_mut().find(|c| c.number == n) {
+                    c.station = Some(station);
+                }
+                d.identified += 1;
+            });
+        }
+        self.update(|d| d.identifying = None);
+        Ok(())
+    }
+}
+
+fn station_of(id: Option<Identified>) -> Station {
+    match id {
+        Some(i) => Station {
+            tsid: i.psip.tsid,
+            channels: i.psip.channels,
+            time_unix: i.psip.time_unix,
+            mer_db: Some(i.mer_db),
+            packets: i.packets,
+            failed: i.failed,
+            error: None,
+        },
+        None => Station { error: Some("no segment or field syncs".into()), ..Default::default() },
+    }
+}
+
+/// "RF 20: TSID 601, 4.1 WJXT-HD, 17.1 WCWJ-HD (MER 18.7 dB)", for the event log.
+fn describe(n: u8, s: &Station) -> String {
+    if let Some(e) = &s.error {
+        return format!("RF {n}: not decoded ({e})");
+    }
+    let names: Vec<String> = s.channels.iter().map(|c| format!("{}.{} {}", c.major, c.minor, c.short_name)).collect();
+    let mer = s.mer_db.map_or(String::new(), |m| format!(", MER {m:.1} dB"));
+    match s.tsid {
+        Some(t) if !names.is_empty() => format!("RF {n}: TSID {t}, {}{mer}", names.join(", ")),
+        Some(t) => format!("RF {n}: TSID {t}, no channel table heard{mer}"),
+        None => format!("RF {n}: no packets decoded ({} of {} failed{mer})", s.failed, s.packets),
     }
 }
 
