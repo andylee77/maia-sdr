@@ -17,9 +17,11 @@ pub const SEGMENT_SYNC: [f32; 4] = [5.0, -5.0, -5.0, 5.0];
 pub const PILOT: f32 = 1.25;
 /// Symbols at the start of a field sync segment whose values are known: the segment sync,
 /// PN511, three PN63 and the 24 symbols of the VSB mode.
+#[cfg(test)]
 pub const FIELD_SYNC_KNOWN: usize = 4 + 511 + 3 * 63 + 24;
 
-/// The symbol a 3-bit value (Z2 Z1 Z0) maps to, without the pilot.
+/// The symbol a 3-bit value (Z2 Z1 Z0) maps to, without the pilot (for test signals).
+#[cfg(test)]
 pub fn level(v: u8) -> f32 {
     2.0 * f32::from(v) - 7.0
 }
