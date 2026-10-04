@@ -507,53 +507,55 @@ fn convolve(y: &[f32], w: &[f32], len: usize) -> Vec<f32> {
     out
 }
 
-/// The least-squares equalizer: out[k] = Σ w[i] y[k + PRE − i]. Rows (k, wanted) from the field
-/// syncs, then from its own decisions on data.
-fn equalize(y: &[f32], first_sync: usize, inverted: &[bool]) -> Option<Vec<f32>> {
+/// Row k's window, newest first (tap i weighs y[k + PRE − i]); false where it leaves y.
+fn window(y: &[f32], k: usize, x: &mut [f32]) -> bool {
+    let hi = k + EQ_PRE + 1;
+    if hi < EQ_TAPS || hi > y.len() {
+        return false;
+    }
+    x.iter_mut().zip(y[hi - EQ_TAPS..hi].iter().rev()).for_each(|(a, &b)| *a = b);
+    true
+}
+
+/// The taps w minimizing Σ (wanted − Σ w[i] y[k + PRE − i])² over `rows` (k, wanted).
+fn least_squares(y: &[f32], rows: &[(usize, f32)]) -> Option<Vec<f32>> {
     let n = EQ_TAPS;
-    // The window of row k, newest first: tap i weighs y[k + PRE − i].
-    let window = |k: usize, x: &mut [f32]| -> bool {
-        let hi = k + EQ_PRE + 1;
-        if hi < n || hi > y.len() {
-            return false;
+    let mut a = vec![0f64; n * n];
+    let mut b = vec![0f64; n];
+    let mut a32 = vec![0f32; n * n];
+    let mut b32 = vec![0f32; n];
+    let mut x = vec![0f32; n];
+    let mut pending = 0;
+    for &(k, d) in rows {
+        if !window(y, k, &mut x) {
+            continue;
         }
-        x.iter_mut().zip(y[hi - n..hi].iter().rev()).for_each(|(a, &b)| *a = b);
-        true
-    };
-    let solve_rows = |rows: &[(usize, f32)]| -> Option<Vec<f32>> {
-        let mut a = vec![0f64; n * n];
-        let mut b = vec![0f64; n];
-        let mut a32 = vec![0f32; n * n];
-        let mut b32 = vec![0f32; n];
-        let mut x = vec![0f32; n];
-        let mut pending = 0;
-        for &(k, d) in rows {
-            if !window(k, &mut x) {
-                continue;
-            }
-            // Row i of the lower triangle gains x[i]·x[..=i]: not a reduction, so it vectorizes.
-            for i in 0..n {
-                let xi = x[i];
-                b32[i] += xi * d;
-                a32[i * n..i * n + i + 1].iter_mut().zip(&x[..=i]).for_each(|(s, &xj)| *s += xi * xj);
-            }
-            pending += 1;
-            if pending == EQ_BLOCK_ROWS {
-                a.iter_mut().zip(&mut a32).for_each(|(t, s)| *t += f64::from(std::mem::take(s)));
-                b.iter_mut().zip(&mut b32).for_each(|(t, s)| *t += f64::from(std::mem::take(s)));
-                pending = 0;
-            }
-        }
-        a.iter_mut().zip(&a32).for_each(|(t, s)| *t += f64::from(*s));
-        b.iter_mut().zip(&b32).for_each(|(t, s)| *t += f64::from(*s));
+        // Row i of the lower triangle gains x[i]·x[..=i]: not a reduction, so it vectorizes.
         for i in 0..n {
-            for j in 0..i {
-                a[j * n + i] = a[i * n + j];
-            }
+            let xi = x[i];
+            b32[i] += xi * d;
+            a32[i * n..i * n + i + 1].iter_mut().zip(&x[..=i]).for_each(|(s, &xj)| *s += xi * xj);
         }
-        solve(a, b, n).map(|w| w.into_iter().map(|v| v as f32).collect())
-    };
-    let training: Vec<(usize, f32)> = inverted
+        pending += 1;
+        if pending == EQ_BLOCK_ROWS {
+            a.iter_mut().zip(&mut a32).for_each(|(t, s)| *t += f64::from(std::mem::take(s)));
+            b.iter_mut().zip(&mut b32).for_each(|(t, s)| *t += f64::from(std::mem::take(s)));
+            pending = 0;
+        }
+    }
+    a.iter_mut().zip(&a32).for_each(|(t, s)| *t += f64::from(*s));
+    b.iter_mut().zip(&b32).for_each(|(t, s)| *t += f64::from(*s));
+    for i in 0..n {
+        for j in 0..i {
+            a[j * n + i] = a[i * n + j];
+        }
+    }
+    solve(a, b, n).map(|w| w.into_iter().map(|v| v as f32).collect())
+}
+
+/// The field syncs' known symbols as rows (k, wanted).
+fn training_rows(first_sync: usize, inverted: &[bool]) -> Vec<(usize, f32)> {
+    inverted
         .iter()
         .take(EQ_TRAINING_FIELDS)
         .enumerate()
@@ -561,9 +563,14 @@ fn equalize(y: &[f32], first_sync: usize, inverted: &[bool]) -> Option<Vec<f32>>
             let base = (first_sync + f * FIELD_SEGMENTS) * SEGMENT;
             field_sync(inv).into_iter().enumerate().map(move |(j, d)| (base + j, d))
         })
-        .collect();
-    let mut w = solve_rows(&training)?;
-    let mut x = vec![0f32; n];
+        .collect()
+}
+
+/// The least-squares equalizer: out[k] = Σ w[i] y[k + PRE − i]. Trained on the field syncs, then
+/// on its own decisions on data.
+fn equalize(y: &[f32], first_sync: usize, inverted: &[bool]) -> Option<Vec<f32>> {
+    let mut w = least_squares(y, &training_rows(first_sync, inverted))?;
+    let mut x = vec![0f32; EQ_TAPS];
     for round in 0..2u64 {
         // Data symbols spread over the signal, a fixed pseudo-random pick.
         let mut r = 0x9E37_79B9_7F4A_7C15u64 ^ round;
@@ -573,11 +580,11 @@ fn equalize(y: &[f32], first_sync: usize, inverted: &[bool]) -> Option<Vec<f32>>
             r ^= r >> 7;
             r ^= r << 17;
             let k = (r % y.len() as u64) as usize;
-            if k % SEGMENT >= SYNC_SYMBOLS && window(k, &mut x) {
+            if k % SEGMENT >= SYNC_SYMBOLS && window(y, k, &mut x) {
                 picks.push((k, slice(dot(&w, &x))));
             }
         }
-        w = solve_rows(&picks)?;
+        w = least_squares(y, &picks)?;
     }
     // out[k] = (y ⊛ w)[k + PRE].
     let c = convolve(y, &w, y.len() + EQ_PRE);

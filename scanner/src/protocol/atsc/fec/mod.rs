@@ -158,11 +158,10 @@ pub fn encode(packets: &[[u8; 188]]) -> Vec<[f32; SEGMENT]> {
         orig.extend_from_slice(&data);
         orig.extend_from_slice(&rs::parity(&data));
     }
+    // The interleaver as if the same fields had run before (a running transmitter's delay lines
+    // are full of data, not zeros).
     let inter: Vec<u8> = (0..orig.len())
-        .map(|t| {
-            let d = BRANCH_STEP * (t % BRANCHES);
-            if t >= d { orig[t - d] } else { 0 }
-        })
+        .map(|t| orig[(t + orig.len() - BRANCH_STEP * (t % BRANCHES) % orig.len()) % orig.len()])
         .collect();
     let (enc, nth) = byte_map();
     let mut encoders = [trellis::Encoder::default(); ENCODERS];
