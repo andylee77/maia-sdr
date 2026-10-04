@@ -1,8 +1,8 @@
-// The ATSC page (ATSC TV mode): the TV channel finder. Pick the bands and settings, follow the scan
-// as /ws/live reports it, then every channel read: what it holds (8-VSB by its pilot, a signal
-// without the 8-VSB pilot, or nothing), the station's own names when its channel was decoded, its
-// carrier to noise, its pilot and its power; a channel picked in the table shows its spectrum and
-// its station's virtual channels.
+// The ATSC page (ATSC TV mode): the TV channel finder. Pick the bands and settings, then one table of
+// the channels asked for, filled in as /ws/live reports the scan: each channel as its window is read
+// (what it holds: 8-VSB by its pilot, a signal without the 8-VSB pilot, or nothing; its carrier to
+// noise, its pilot and its power), then its station's own names as its channel is decoded. A
+// channel picked in the table shows its spectrum and its station's virtual channels.
 
 import { h, card, toast, table, setClass } from '../dom.js';
 import { mhz, num, DASH } from '../format.js';
@@ -116,9 +116,10 @@ export function mount(el) {
   el.append(h('div', { class: 'stack' }, c.el));
   let options = null;
   let last = null;
-  // What is on screen: the setup, a running scan, or one scan's results (`id:state`), drawn once
-  // so what is typed stays.
+  // What is on screen: the setup (drawn once, so what is typed stays) or a scan's table.
   let shown = null;
+  // The scan on screen: its id and how to bring it up to date.
+  let view = null;
   // The scan whose results were put away for a new setup.
   let dismissed = null;
   // The channel whose spectrum is shown, and its drawing again at a new width.
@@ -138,6 +139,7 @@ export function mount(el) {
 
   function setup() {
     shown = 'setup';
+    view = null;
     if (!options) {
       c.body.replaceChildren(h('p', { class: 'dim', text: 'Reading the channel plan…' }));
       return;
@@ -201,37 +203,24 @@ export function mount(el) {
       h('div', { class: 'row' }, go)));
   }
 
-  function progress(s) {
-    shown = 'running';
-    const cancel = h('button', { class: 'btn', type: 'button', text: 'Cancel' });
-    cancel.addEventListener('click', () => api.atscCancel().catch(e => toast(e.message, true)));
-    const found = s.found.filter(x => x.kind !== 'vacant');
-    const named = s.found.filter(x => x.station && x.station.channels.length);
-    const naming = s.identifying != null;
-    c.body.replaceChildren(h('div', { class: 'stack' },
-      naming
-        ? h('div', null, h('strong', { text: `Naming the stations: RF ${s.identifying}` }), h('span', { class: 'dim', text: ` · ${s.identified + 1} of ${s.to_identify}` }))
-        : h('div', null, h('strong', { text: `Window ${s.step} of ${s.steps}` }), s.lo_hz ? h('span', { class: 'dim', text: ` · around ${mhz(s.lo_hz, 1)}` }) : null),
-      naming
-        ? h('progress', { class: 'scan', max: String(Math.max(s.to_identify, 1)), value: String(s.identified) })
-        : h('progress', { class: 'scan', max: String(Math.max(s.steps, 1)), value: String(Math.max(s.step - 1, 0)) }),
-      named.length ? h('div', { class: 'dim', text: `Named: ${named.map(x => `RF ${x.number} ${stationText(x.station).text}`).join('; ')}` })
-        : found.length ? h('div', { class: 'dim', text: `Found so far: ${found.map(x => `RF ${x.number}${x.kind === 'no_pilot' ? ' (no 8-VSB pilot)' : ''}`).join(', ')}` }) : null,
-      h('div', { class: 'row' }, cancel)));
-  }
+  const HEAD = ['RF', 'Centre', 'Holds', 'Station', 'C/N', 'Pilot', 'Pilot offset', 'Power', 'Gain'];
 
-  function row(ch) {
+  // A channel read: what it holds and how well; its station, or "naming" while it is decoded.
+  function row(ch, naming) {
     const k = KIND[ch.kind] || KIND.vacant;
     const over = ch.clips_ppm != null && ch.clips_ppm >= OVERLOAD_PPM;
     const what = h('td', null, h('span', { class: `badge ${k.cls}`.trim(), text: k.label, title: k.title }),
       over ? h('span', { class: 'badge bad', text: 'Overload', title: `${num(ch.clips_ppm)} samples a million at the ADC's full scale: try a lower manual gain` }) : null);
     const vacant = ch.kind === 'vacant';
     const st = stationText(ch.station);
+    const station = naming
+      ? h('td', null, h('span', { class: 'badge acquiring', text: 'Naming…', title: 'Tuned on its own and being decoded' }))
+      : h('td', { text: st.text, title: st.title });
     return h('tr', { class: vacant ? 'faint' : null },
       h('td', null, h('strong', { text: String(ch.number) })),
       h('td', { class: 'num', text: mhz(ch.center_hz, 0) }),
       what,
-      h('td', { text: st.text, title: st.title }),
+      station,
       h('td', { class: 'num', text: db(ch.level_db), title: 'Carrier to noise: the plateau over the noise floor at the channel edges' }),
       h('td', { class: 'num', text: db(ch.pilot_db), title: 'The pilot over the plateau: 20.1 dB for a clean signal' }),
       h('td', { class: 'num', text: ch.pilot_offset_hz == null ? DASH : `${signed(ch.pilot_offset_hz)} kHz` }),
@@ -239,8 +228,40 @@ export function mount(el) {
       h('td', { class: 'num dim', text: ch.gain_db == null ? DASH : `${num(ch.gain_db)} dB`, title: clipText(ch.clips_ppm) }));
   }
 
-  function results(s) {
-    shown = `${s.id}:${s.state}`;
+  const plan = n => options.channels.find(x => x.number === n);
+
+  // A channel not read yet; "reading" while its window is.
+  function pending(n, reading) {
+    const p = plan(n);
+    return h('tr', { class: 'faint' },
+      h('td', null, h('strong', { text: String(n) })),
+      h('td', { class: 'num', text: p ? mhz(p.low_hz + 3e6, 0) : DASH }),
+      h('td', null, reading ? h('span', { class: 'badge acquiring', text: 'Reading…' }) : DASH),
+      h('td', { text: DASH }),
+      ...['', '', '', '', ''].map(() => h('td', { class: 'num', text: DASH })));
+  }
+
+  // Whether channel n lies in the window around `lo_hz`.
+  function inWindow(n, lo) {
+    const p = plan(n);
+    return !!p && Math.abs(p.low_hz + 3e6 - lo) < options.window_hz / 2;
+  }
+
+  // Above the table: where the scan is, with Cancel; once over, its tally, with New scan.
+  function status(s) {
+    if (s.state === 'sweeping') {
+      const cancel = h('button', { class: 'btn', type: 'button', text: 'Cancel' });
+      cancel.addEventListener('click', () => api.atscCancel().catch(e => toast(e.message, true)));
+      const naming = s.identifying != null;
+      return [
+        naming
+          ? h('div', null, h('strong', { text: `Naming the stations: RF ${s.identifying}` }), h('span', { class: 'dim', text: ` · ${s.identified + 1} of ${s.to_identify}` }))
+          : h('div', null, h('strong', { text: `Window ${s.step} of ${s.steps}` }), s.lo_hz ? h('span', { class: 'dim', text: ` · around ${mhz(s.lo_hz, 1)}` }) : null),
+        naming
+          ? h('progress', { class: 'scan', max: String(Math.max(s.to_identify, 1)), value: String(s.identified) })
+          : h('progress', { class: 'scan', max: String(Math.max(s.steps, 1)), value: String(Math.max(s.step - 1, 0)) }),
+        h('div', { class: 'row' }, cancel)];
+    }
     const again = h('button', { class: 'btn', type: 'button', text: 'New scan' });
     again.addEventListener('click', () => {
       dismissed = s.id;
@@ -251,45 +272,97 @@ export function mount(el) {
     const tally = `${count('8vsb')} with 8-VSB, ${count('no_pilot')} filled without the 8-VSB pilot (ATSC 3.0 or other), `
       + `${count('vacant')} vacant, of ${s.found.length} channels read${s.gain_db == null ? ' with the AGC' : ` at ${s.gain_db} dB of gain`}.`;
     const summary = s.found.length ? `${head}: ${tally}${s.error ? ` ${s.error}.` : ''}` : `${head}${s.error ? `: ${s.error}` : ''}.`;
+    return [h('p', { class: 'dim', text: summary }), h('div', { class: 'row' }, again)];
+  }
+
+  // One scan's table: a row for each channel asked for, kept and replaced in place as the scan
+  // reports it, so a picked channel and its spectrum stay while the rest fills in. Once the scan
+  // is over, only the channels read are left.
+  function scanView(first) {
+    shown = 'scan';
+    picked = null;
+    redraw = null;
+    const top = h('div', { class: 'stack' });
+    const wrap = table(HEAD, []);
+    const body = wrap.querySelector('tbody');
     const title = h('div', { class: 'dim' });
     const canvas = h('canvas', { style: { width: '100%', height: '220px', display: 'block' }, 'aria-label': "The channel's spectrum" });
     const about = h('div', { class: 'stack' });
     const plot = h('div', { class: 'stack', hidden: true }, title, canvas, about);
-    const rows = s.found.map(ch => {
-      const tr = row(ch);
-      tr.classList.add('pick');
-      tr.title = 'Show its spectrum';
-      tr.addEventListener('click', async () => {
-        for (const r of rows) setClass(r, 'sel', r === tr);
-        try {
-          picked = await api.atscChannel(ch.number);
-          plot.hidden = false;
-          title.textContent = `RF ${ch.number}, ${mhz(picked.low_hz, 0)} to ${mhz(picked.high_hz, 0)} (shaded), as its window read it: `
-            + "dB a bin, about dBm; the 8-VSB pilot's place and the window's LO marked.";
-          drawChannel(canvas, picked);
-          redraw = () => drawChannel(canvas, picked);
-          about.replaceChildren(...stationDetails(ch.station));
-        } catch (e) {
-          toast(e.message, true);
+    const asked = first.channels.length ? first.channels : first.found.map(x => x.number);
+    const rows = new Map();
+    let now = first;
+    let pickedNumber = null;
+
+    async function pick(n) {
+      pickedNumber = n;
+      for (const [k, r] of rows) setClass(r.tr, 'sel', k === n);
+      try {
+        picked = await api.atscChannel(n);
+        plot.hidden = false;
+        title.textContent = `RF ${n}, ${mhz(picked.low_hz, 0)} to ${mhz(picked.high_hz, 0)} (shaded), as its window read it: `
+          + "dB a bin, about dBm; the 8-VSB pilot's place and the window's LO marked.";
+        drawChannel(canvas, picked);
+        redraw = () => drawChannel(canvas, picked);
+        const ch = now.found.find(x => x.number === n);
+        about.replaceChildren(...stationDetails(ch && ch.station));
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+
+    function update(s) {
+      now = s;
+      const running = s.state === 'sweeping';
+      const found = new Map(s.found.map(x => [x.number, x]));
+      const list = [...asked, ...s.found.map(x => x.number).filter(n => !asked.includes(n))]
+        .filter(n => running || found.has(n));
+      for (const [n, r] of rows) {
+        if (!list.includes(n)) {
+          r.tr.remove();
+          rows.delete(n);
         }
-      });
-      return tr;
-    });
-    picked = null;
-    redraw = null;
-    c.body.replaceChildren(h('div', { class: 'stack' },
-      h('p', { class: 'dim', text: summary }),
-      s.found.length ? table(['RF', 'Centre', 'Holds', 'Station', 'C/N', 'Pilot', 'Pilot offset', 'Power', 'Gain'], rows) : null,
-      plot,
-      h('div', { class: 'row' }, again)));
+      }
+      let after = null;
+      for (const n of list) {
+        const ch = found.get(n);
+        const naming = running && s.identifying === n;
+        const reading = running && !ch && s.lo_hz != null && inWindow(n, s.lo_hz);
+        const sig = JSON.stringify([ch || null, naming, reading]);
+        let r = rows.get(n);
+        if (!r || r.sig !== sig) {
+          const tr = ch ? row(ch, naming) : pending(n, reading);
+          if (ch) {
+            tr.classList.add('pick');
+            tr.title = 'Show its spectrum';
+            tr.addEventListener('click', () => pick(n));
+          }
+          setClass(tr, 'sel', n === pickedNumber);
+          if (r) r.tr.replaceWith(tr);
+          else if (after) after.after(tr);
+          else body.prepend(tr);
+          r = { tr, sig };
+          rows.set(n, r);
+          if (n === pickedNumber && ch && !plot.hidden) about.replaceChildren(...stationDetails(ch.station));
+        }
+        after = r.tr;
+      }
+      wrap.hidden = !list.length;
+      top.replaceChildren(...status(s));
+    }
+
+    c.body.replaceChildren(h('div', { class: 'stack' }, top, wrap, plot));
+    return { id: first.id, update };
   }
 
   function draw(s) {
     if (!s || !options) return;
-    if (s.state === 'sweeping') progress(s);
-    else if (s.state === 'idle' || s.id === dismissed) {
+    if (s.state === 'idle' || s.id === dismissed) {
       if (shown !== 'setup') setup();
-    } else if (shown !== `${s.id}:${s.state}`) results(s);
+      return;
+    }
+    if (!view || view.id !== s.id) view = scanView(s);
+    view.update(s);
   }
 
   setup();
