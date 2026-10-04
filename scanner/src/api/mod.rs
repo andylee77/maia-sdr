@@ -146,10 +146,10 @@ routes! {
     post "/api/v1/scan/add" => v1::scan::add, "add one found system from its card: a new system's name, identity and details; each ticked site's name, identity and channels (as heard when absent)";
     get "/api/v1/mode" => v1::mode::get, "the unit's mode: `scanner` (P25 and DMR trunking) or `atsc` (ATSC TV)";
     put "/api/v1/mode" => v1::mode::put, "change mode (`mode`): ATSC mode has the radio to itself with the live site paused; scanner mode brings the site back with the configured gain; kept across restarts";
-    get "/api/v1/atsc/scan" => v1::atsc::get, "the TV scan's progress and each channel read: 8-VSB (its pilot found), a signal without the 8-VSB pilot (ATSC 3.0 or other) or vacant; the pilot's offset and level, the carrier to noise, the power";
+    get "/api/v1/atsc/scan" => v1::atsc::get, "the TV scan's progress and each channel read: 8-VSB (its pilot found), a signal without the 8-VSB pilot (ATSC 3.0 or other) or vacant; the pilot's offset and level, the carrier to noise, the power; the station decoded (TSID, virtual channels and names, its clock)";
     get "/api/v1/atsc/scan/channel/{n}" => v1::atsc::channel, "one RF channel's spectrum as the last TV scan read it: the channel and 0.5 MHz either side, dB per bin (about dBm)";
     get "/api/v1/atsc/scan/options" => v1::atsc::options, "the TV channel plan (RF 2-36 and which the radio reaches), the default settings and the window read at once";
-    post "/api/v1/atsc/scan" => v1::atsc::start, "scan the TV channels in ATSC mode (`channels`, default every one reached; `frames` a window; `gain_db`, default the AGC)";
+    post "/api/v1/atsc/scan" => v1::atsc::start, "scan the TV channels in ATSC mode (`channels`, default every one reached; `frames` a window; `gain_db`, default the AGC), then decode each 8-VSB channel of 15 dB or more for its station's names (`identify`, default on)";
     post "/api/v1/atsc/scan/cancel" => v1::atsc::cancel, "stop the TV scan";
     get "/api/system" => legacy::system, "legacy, for the bench: the build";
     get "/api/ui/state" => legacy::ui_state, "legacy, for the bench: the unit's wall clock";

@@ -70,10 +70,10 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | POST | `/api/v1/scan/add` | add one found system from its card: a new system's name, identity and details; each ticked site's name, identity and channels (as heard when absent) |
 | GET | `/api/v1/mode` | the unit's mode: `scanner` (P25 and DMR trunking) or `atsc` (ATSC TV) |
 | PUT | `/api/v1/mode` | change mode (`mode`): ATSC mode has the radio to itself with the live site paused; scanner mode brings the site back with the configured gain; kept across restarts |
-| GET | `/api/v1/atsc/scan` | the TV scan's progress and each channel read: 8-VSB (its pilot found), a signal without the 8-VSB pilot (ATSC 3.0 or other) or vacant; the pilot's offset and level, the carrier to noise, the power |
+| GET | `/api/v1/atsc/scan` | the TV scan's progress and each channel read: 8-VSB (its pilot found), a signal without the 8-VSB pilot (ATSC 3.0 or other) or vacant; the pilot's offset and level, the carrier to noise, the power; the station decoded (TSID, virtual channels and names, its clock) |
 | GET | `/api/v1/atsc/scan/channel/{n}` | one RF channel's spectrum as the last TV scan read it: the channel and 0.5 MHz either side, dB per bin (about dBm) |
 | GET | `/api/v1/atsc/scan/options` | the TV channel plan (RF 2-36 and which the radio reaches), the default settings and the window read at once |
-| POST | `/api/v1/atsc/scan` | scan the TV channels in ATSC mode (`channels`, default every one reached; `frames` a window; `gain_db`, default the AGC) |
+| POST | `/api/v1/atsc/scan` | scan the TV channels in ATSC mode (`channels`, default every one reached; `frames` a window; `gain_db`, default the AGC), then decode each 8-VSB channel of 15 dB or more for its station's names (`identify`, default on) |
 | POST | `/api/v1/atsc/scan/cancel` | stop the TV scan |
 | GET | `/api/system` | legacy, for the bench: the build |
 | GET | `/api/ui/state` | legacy, for the bench: the unit's wall clock |

@@ -1,7 +1,8 @@
 // The ATSC page (ATSC TV mode): the TV channel finder. Pick the bands and settings, follow the scan
 // as /ws/live reports it, then every channel read: what it holds (8-VSB by its pilot, a signal
-// without the 8-VSB pilot, or nothing), its carrier to noise, its pilot and its power; a channel
-// picked in the table shows its spectrum.
+// without the 8-VSB pilot, or nothing), the station's own names when its channel was decoded, its
+// carrier to noise, its pilot and its power; a channel picked in the table shows its spectrum and
+// its station's virtual channels.
 
 import { h, card, toast, table, setClass } from '../dom.js';
 import { mhz, num, DASH } from '../format.js';
@@ -20,6 +21,42 @@ const OVERLOAD_PPM = 1000;
 const clipText = ppm => (ppm == null ? '' : `${num(ppm, ppm < 10 ? 1 : 0)} samples a million at the ADC's full scale`);
 
 const db = v => (v === null || v === undefined ? DASH : `${num(v, 1)} dB`);
+const SERVICE = { 2: 'TV', 3: 'Audio', 4: 'Data' };
+const vchan = c => `${c.major}.${c.minor} ${c.short_name}`;
+
+// A decoded station in a table cell: its main channels (x.1) first, then how many more.
+function stationText(st) {
+  if (!st) return { text: DASH, title: 'Not decoded (not 8-VSB, or under 15 dB)' };
+  if (st.error) return { text: 'not decoded', title: st.error };
+  if (st.channels.length) {
+    const main = st.channels.filter(c => c.minor === 1);
+    const shown = (main.length ? main : st.channels.slice(0, 1)).map(vchan);
+    const more = st.channels.length - shown.length;
+    return { text: shown.join(', ') + (more > 0 ? ` +${more}` : ''), title: st.channels.map(vchan).join(', ') };
+  }
+  if (st.tsid != null) return { text: `TSID ${st.tsid}, no channel table`, title: 'Decoded, but no virtual channel table in the capture' };
+  return { text: 'too weak to decode', title: `${st.failed} of ${st.packets} packets failed${st.mer_db == null ? '' : `; MER ${num(st.mer_db, 1)} dB`}` };
+}
+
+// A decoded station: how it decoded, then its virtual channels.
+function stationDetails(st) {
+  if (!st) return [];
+  if (st.error) return [h('p', { class: 'dim', text: `Not decoded: ${st.error}.` })];
+  const clock = st.time_unix ? `; its clock ${new Date(st.time_unix * 1000).toISOString().replace('T', ' ').slice(0, 19)} UTC` : '';
+  const how = `${st.tsid == null ? 'No transport stream id' : `TSID ${st.tsid}`}; MER ${st.mer_db == null ? DASH : `${num(st.mer_db, 1)} dB`}; `
+    + `${num(st.packets)} packets, ${num(st.failed)} beyond Reed-Solomon${clock}.`;
+  const out = [h('p', { class: 'dim', text: how })];
+  if (st.channels.length) {
+    out.push(table(['Channel', 'Name', 'Long name', 'Program', 'Service', ''], st.channels.map(c => h('tr', null,
+      h('td', { class: 'num', text: `${c.major}.${c.minor}` }),
+      h('td', { text: c.short_name }),
+      h('td', { class: 'dim', text: c.long_name || DASH }),
+      h('td', { class: 'num', text: String(c.program) }),
+      h('td', { text: SERVICE[c.service_type] || `type ${c.service_type}` }),
+      h('td', { class: 'dim', text: [c.hidden ? 'hidden' : '', c.access_controlled ? 'scrambled' : ''].filter(Boolean).join(', ') })))));
+  }
+  return out;
+}
 const signed = v => (v > 0 ? '+' : v < 0 ? '−' : '') + num(Math.abs(v) / 1000, 1);
 
 function cssVar(name) {
@@ -117,6 +154,8 @@ export function mount(el) {
     });
     const frames = inline(String(d.frames), 'frames', { min: 3 });
     const gain = inline(d.gain_db == null ? '' : String(d.gain_db), 'AGC', { min: 4 });
+    const name = h('input', { type: 'checkbox' });
+    name.checked = d.identify;
     const note = h('p', { class: 'dim' });
     const go = h('button', { class: 'btn primary', type: 'button', text: 'Scan' });
 
@@ -145,7 +184,7 @@ export function mount(el) {
         const g = gain.value.trim();
         if (g && !(Number(g) >= -3 && Number(g) <= 76)) throw new Error('Gain: -3 to 76 dB, or empty for the AGC');
         go.disabled = true;
-        await api.atscScan({ channels: chosen(), frames: n, gain_db: g ? Math.round(Number(g)) : null });
+        await api.atscScan({ channels: chosen(), frames: n, gain_db: g ? Math.round(Number(g)) : null, identify: name.checked });
       } catch (e) {
         toast(e.message, true);
         go.disabled = false;
@@ -156,7 +195,8 @@ export function mount(el) {
       h('div', { class: 'chips' }, ...picks.map(p => p.el)),
       h('div', { class: 'scan-settings' },
         h('span', null, 'Read ', frames, ' spectrum frames a window'),
-        h('span', null, 'gain ', gain, ' dB (empty: the AGC)')),
+        h('span', null, 'gain ', gain, ' dB (empty: the AGC)'),
+        h('label', { class: 'row', title: 'Each 8-VSB channel of 15 dB or more is tuned on its own and decoded: a few seconds each' }, name, 'name the stations')),
       note,
       h('div', { class: 'row' }, go)));
   }
@@ -166,10 +206,17 @@ export function mount(el) {
     const cancel = h('button', { class: 'btn', type: 'button', text: 'Cancel' });
     cancel.addEventListener('click', () => api.atscCancel().catch(e => toast(e.message, true)));
     const found = s.found.filter(x => x.kind !== 'vacant');
+    const named = s.found.filter(x => x.station && x.station.channels.length);
+    const naming = s.identifying != null;
     c.body.replaceChildren(h('div', { class: 'stack' },
-      h('div', null, h('strong', { text: `Window ${s.step} of ${s.steps}` }), s.lo_hz ? h('span', { class: 'dim', text: ` · around ${mhz(s.lo_hz, 1)}` }) : null),
-      h('progress', { class: 'scan', max: String(Math.max(s.steps, 1)), value: String(Math.max(s.step - 1, 0)) }),
-      found.length ? h('div', { class: 'dim', text: `Found so far: ${found.map(x => `RF ${x.number}${x.kind === 'no_pilot' ? ' (no 8-VSB pilot)' : ''}`).join(', ')}` }) : null,
+      naming
+        ? h('div', null, h('strong', { text: `Naming the stations: RF ${s.identifying}` }), h('span', { class: 'dim', text: ` · ${s.identified + 1} of ${s.to_identify}` }))
+        : h('div', null, h('strong', { text: `Window ${s.step} of ${s.steps}` }), s.lo_hz ? h('span', { class: 'dim', text: ` · around ${mhz(s.lo_hz, 1)}` }) : null),
+      naming
+        ? h('progress', { class: 'scan', max: String(Math.max(s.to_identify, 1)), value: String(s.identified) })
+        : h('progress', { class: 'scan', max: String(Math.max(s.steps, 1)), value: String(Math.max(s.step - 1, 0)) }),
+      named.length ? h('div', { class: 'dim', text: `Named: ${named.map(x => `RF ${x.number} ${stationText(x.station).text}`).join('; ')}` })
+        : found.length ? h('div', { class: 'dim', text: `Found so far: ${found.map(x => `RF ${x.number}${x.kind === 'no_pilot' ? ' (no 8-VSB pilot)' : ''}`).join(', ')}` }) : null,
       h('div', { class: 'row' }, cancel)));
   }
 
@@ -179,10 +226,12 @@ export function mount(el) {
     const what = h('td', null, h('span', { class: `badge ${k.cls}`.trim(), text: k.label, title: k.title }),
       over ? h('span', { class: 'badge bad', text: 'Overload', title: `${num(ch.clips_ppm)} samples a million at the ADC's full scale: try a lower manual gain` }) : null);
     const vacant = ch.kind === 'vacant';
+    const st = stationText(ch.station);
     return h('tr', { class: vacant ? 'faint' : null },
       h('td', null, h('strong', { text: String(ch.number) })),
       h('td', { class: 'num', text: mhz(ch.center_hz, 0) }),
       what,
+      h('td', { text: st.text, title: st.title }),
       h('td', { class: 'num', text: db(ch.level_db), title: 'Carrier to noise: the plateau over the noise floor at the channel edges' }),
       h('td', { class: 'num', text: db(ch.pilot_db), title: 'The pilot over the plateau: 20.1 dB for a clean signal' }),
       h('td', { class: 'num', text: ch.pilot_offset_hz == null ? DASH : `${signed(ch.pilot_offset_hz)} kHz` }),
@@ -204,7 +253,8 @@ export function mount(el) {
     const summary = s.found.length ? `${head}: ${tally}${s.error ? ` ${s.error}.` : ''}` : `${head}${s.error ? `: ${s.error}` : ''}.`;
     const title = h('div', { class: 'dim' });
     const canvas = h('canvas', { style: { width: '100%', height: '220px', display: 'block' }, 'aria-label': "The channel's spectrum" });
-    const plot = h('div', { class: 'stack', hidden: true }, title, canvas);
+    const about = h('div', { class: 'stack' });
+    const plot = h('div', { class: 'stack', hidden: true }, title, canvas, about);
     const rows = s.found.map(ch => {
       const tr = row(ch);
       tr.classList.add('pick');
@@ -218,6 +268,7 @@ export function mount(el) {
             + "dB a bin, about dBm; the 8-VSB pilot's place and the window's LO marked.";
           drawChannel(canvas, picked);
           redraw = () => drawChannel(canvas, picked);
+          about.replaceChildren(...stationDetails(ch.station));
         } catch (e) {
           toast(e.message, true);
         }
@@ -228,7 +279,7 @@ export function mount(el) {
     redraw = null;
     c.body.replaceChildren(h('div', { class: 'stack' },
       h('p', { class: 'dim', text: summary }),
-      s.found.length ? table(['RF', 'Centre', 'Holds', 'C/N', 'Pilot', 'Pilot offset', 'Power', 'Gain'], rows) : null,
+      s.found.length ? table(['RF', 'Centre', 'Holds', 'Station', 'C/N', 'Pilot', 'Pilot offset', 'Power', 'Gain'], rows) : null,
       plot,
       h('div', { class: 'row' }, again)));
   }
