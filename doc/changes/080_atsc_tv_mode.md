@@ -1,7 +1,7 @@
 # 080 — ATSC TV mode: the unit's mode, and the TV channel finder
 
 **Date:** 2026-10-03. **Branch:** `080-atsc` (worktree `maia-sdr-080`), from fishball-p25
-7acca18; not merged. **Bake required:** NO. The scanner only; the gateware is unchanged.
+7acca18; merged into fishball-p25 at 2dad980. **Bake required:** NO. The scanner only; the gateware is unchanged.
 
 ## Why
 

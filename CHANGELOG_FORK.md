@@ -5,9 +5,32 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-04] 081: ATSC station names: the 8-VSB receiver and PSIP
+
+**Branch:** 081-atsc-names (worktree maia-sdr-080), not merged
+**BUILD_TAG:** `2026-10-04-atsc-names2` (hand-deployed on A for the test; A is back on cpu4)
+**Bake required:** NO (the scanner only).
+
+- **Names from the air:** after its sweep, the TV scan tunes each 8-VSB channel of 15 dB or more
+  on its own (10 MSPS, its centre at the LO), captures 0.5 s from the radio core's IQ capture
+  ring and decodes it. Each channel gets its station: TSID, virtual channels (number, short and
+  long name, program, service), clock, MER and packets.
+- **The receiver** (`protocol::atsc`): pilot, a matched filter evaluated at each symbol instant,
+  segment-sync timing, a least-squares equalizer on the field syncs and its decisions, 12 soft
+  Viterbi decoders, the deinterleaver, Reed-Solomon (207,187), the randomizer, then transport
+  stream sections and PSIP (PAT, TVCT/CVCT, STT).
+- **On the A9:** 5.3 s for a 0.8 s capture (from about 51 s). It uses NEON, both cores, and no
+  float library calls or VFP-to-ARM stalls in the loops.
+- **On unit A** (directional antenna): 33 channels in 86.9 s. 16 stations named themselves with
+  104 virtual channels, every number and name as Andy's HDHomeRun has them. RF 10 and 11 (MER
+  about 17 dB) did not decode.
+- **UI:** a Station column, and a picked channel's station and virtual channels.
+- `tools/atsc_check.py` compares the names with the HDHomeRun's lineup (exit 3 on a difference).
+- Record: `doc/changes/081_atsc_station_names.md`.
+
 ## [2026-10-03] 080: ATSC TV mode: the unit's mode, and the TV channel finder
 
-**Branch:** 080-atsc (worktree maia-sdr-080), not merged
+**Branch:** 080-atsc (worktree maia-sdr-080), merged into fishball-p25 at 2dad980
 **BUILD_TAG:** `2026-10-03-atsc2` (hand-deployed on A for the test; A is back on fir1)
 **Bake required:** NO (the scanner only).
 

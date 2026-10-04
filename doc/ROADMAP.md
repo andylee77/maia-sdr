@@ -301,9 +301,10 @@ What exists:
 - **Sweeping:** the HDL spectrometer sweeps 16 MHz windows: 70 MHz–6 GHz on unit A (AD9361), and
   325 MHz–3.8 GHz specified on unit B (AD9363).
 - **Decoders on board:** P25 and DMR Tier III.
-- **ATSC TV on board** (change 080, ATSC mode): the TV channel finder reads RF 4-36 and says
-  which channels carry 8-VSB (by its pilot), a signal without it (ATSC 3.0) or nothing, with each
-  channel's carrier to noise and spectrum.
+- **ATSC TV on board** (changes 080 and 081, ATSC mode): the TV channel finder reads RF 4-36 and
+  says which channels carry 8-VSB (by its pilot), a signal without it (ATSC 3.0) or nothing, with
+  each channel's carrier to noise and spectrum. Each 8-VSB channel strong enough is then decoded
+  from a 0.5 s capture to its station's PSIP: TSID and virtual channels (numbers and names).
 - **Captures:** wideband IQ goes to the SD card at up to 16 MSPS, for decoding on the PC:
 
   | Signal | Decoded or recognised by |

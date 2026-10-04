@@ -180,7 +180,9 @@ scanner/src/         the fresh crate (D13)
     dmr/             demod, framer, fec (bptc, cach, emb, slot type, crc, RS(12,9)), message,
                      control (Tier III), traffic
     atsc/            the US TV channel plan, the windows that read it, and one channel's
-                     spectrum: the 8-VSB pilot, the plateau, the floor at its edges
+                     spectrum: the 8-VSB pilot, the plateau, the floor at its edges; the 8-VSB
+                     receiver (demod, fec: trellis, deinterleaver, Reed-Solomon) and PSIP
+                     (ts, psip), together in receiver: a capture to its station's names
   trunking/          protocol-neutral, host-tested
     follow/          one follower: ordered gates, lane choice, pre-emption; routing (aliases)
     calls/           Call, CallBook (lifecycle and counters), CallEvent
@@ -200,7 +202,7 @@ scanner/src/         the fresh crate (D13)
     recordings/      the recorder, storage (RAM/SD), index, wav
     discovery/       carriers, probes (P25 and DMR), the sweep, grouping and merge
     mode.rs          the unit's mode: the scanner or ATSC TV (holds the lease, pauses the site)
-    atsc/            ATSC mode's TV scan and each channel's spectrum
+    atsc/            ATSC mode's TV scan, each channel's spectrum, and its station named
     clock/           site clock, internet time, the board clock
     crystal.rs       crystal calibration and tracker (autoppm)
     packet_data.rs   P25 packet data records
@@ -1539,3 +1541,13 @@ From the brief:
   Andy's HDHomeRun (VHF/UHF directional) on 18 of the 19 channels that receives now, ATSC 3.0
   on RF 18 included; the miss is VHF RF 11, under a third-harmonic image of the 600 MHz band.
   Record: `doc/changes/080_atsc_tv_mode.md`.
+- 2026-10-04, change 081 (branch `081-atsc-names`, worktree `maia-sdr-080`): **ATSC station
+  names** (Andy: "jump to the station names"). After its sweep the TV scan tunes each 8-VSB
+  channel of 15 dB or more on its own, captures 0.5 s from the radio core's IQ capture ring
+  (`RadioHw::capture`) and decodes it in software (`protocol::atsc`: `demod`, `fec`, `ts`,
+  `psip`, `receiver`). The receiver is a matched filter evaluated at each symbol instant
+  (NEON), segment-sync timing, a least-squares equalizer, 12 soft Viterbi decoders,
+  Reed-Solomon and PSIP. On the A9 it takes 5.3 s for 0.8 s of signal on both cores. On unit A
+  (directional antenna) 16 stations named themselves with 104 virtual channels, every number
+  and name as the HDHomeRun has them; RF 10 and 11 (MER about 17 dB) did not decode. Record:
+  `doc/changes/081_atsc_station_names.md`.
