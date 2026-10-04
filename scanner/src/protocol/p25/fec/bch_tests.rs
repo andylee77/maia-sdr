@@ -112,6 +112,20 @@ fn errors_beyond_sphere_dont_silently_corrupt() {
     );
 }
 
+/// Every codeword, by its data word.
+fn codebook() -> Vec<u64> {
+    (0..1u32 << 16).map(|d| encode_nid((d >> 4) as u16, (d & 0xF) as u8)).collect()
+}
+
+/// Every codeword's BCH word (bits 63..1) has α^1 ..= α^22 for roots: the field, the bit order
+/// and the generator agree.
+#[test]
+fn every_codeword_has_zero_syndromes() {
+    for (d, c) in codebook().into_iter().enumerate() {
+        assert!(syndromes(c >> 1).iter().all(|&s| s == 0), "data word {d:04x}");
+    }
+}
+
 /// Every non-zero codeword has 23 or more bits set (the code is linear), so two codewords differ
 /// in 23 or more and a codeword within 11 bits of a word is the only one.
 #[test]
@@ -120,23 +134,28 @@ fn the_minimum_distance_is_23() {
     assert!(lightest >= 2 * T_MAX_ERRORS + 1, "minimum distance {lightest}");
 }
 
-/// The decoder answers as the closest codeword of the whole codebook would (the first of equals),
-/// for words with every number of errors over all 64 bits and for noise.
+/// The decoder answers as the closest codeword of all 65536 would (the first of equals), for
+/// words with every number of errors over all 64 bits, the most around the 11-error edge, and
+/// for noise.
 #[test]
 fn the_decoder_is_the_closest_codeword() {
+    let book = codebook();
     let closest = |r: u64| {
-        let (idx, d) = codebook().iter().enumerate().map(|(i, c)| (i, (c ^ r).count_ones())).min_by_key(|&(i, d)| (d, i)).unwrap();
-        (d <= T_MAX_ERRORS).then(|| ((idx >> DUID_BITS) as u16, (idx & 0xF) as u8, d as u8))
+        let (idx, d) = book.iter().enumerate().map(|(i, c)| (i, (c ^ r).count_ones())).min_by_key(|&(i, d)| (d, i)).unwrap();
+        (d <= T_MAX_ERRORS).then(|| ((idx >> 4) as u16, (idx & 0xF) as u8, d as u8))
     };
     let mut rng = XorShift64::new(0x5EED_0F_B0C4);
-    for trial in 0..400 {
-        let received = if trial % 8 == 7 {
+    for trial in 0..600 {
+        let errors = [0, 1, 2, 3, 5, 8, 9, 10, 10, 11, 11, 11, 12, 12, 13, 16][trial % 16];
+        let received = if trial % 20 == 19 {
             rng.next_u64()
         } else {
-            let mut w = encode_nid((rng.next_u32() & 0xFFF) as u16, (rng.next_u32() & 0xF) as u8);
-            for _ in 0..trial % 15 {
-                w ^= 1u64 << (rng.next_u32() % 64);
+            let mut w = book[(rng.next_u32() & 0xFFFF) as usize];
+            let mut flipped = 0u64;
+            while flipped.count_ones() < errors {
+                flipped |= 1u64 << (rng.next_u32() % 64);
             }
+            w ^= flipped;
             w
         };
         let got = decode_nid(received).map(|d| (d.nac, d.duid, d.n_errors));
