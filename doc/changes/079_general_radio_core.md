@@ -99,7 +99,7 @@ spectrometer, the raw IQ capture, `axi_ad9361` and the IIO DMAs stay.
 Since the FIR speed-up (status log) a software receiver costs 4-9 % of a core on the A9 (LSM
 4.1 %, C4FM 4.3 %, DMR 9.3 %, `dsp::cost_tests`), of which the filters are about 2 %: step 5 (the
 filters in the PL) would save about that much per receiver. On unit A the scanner with three LSM
-receivers and the control channel's C4FM runs at 48 % of one core.
+receivers runs at 15 % of one core (status log, the CPU work).
 
 ## The PS side
 
@@ -456,3 +456,26 @@ touches anything else.
     (the control thread 33.1 → 16.4 %, the runtime workers 50.5 → 31.1 %). Control 40.7
     messages a second at 100 %, no block dropped; lane 1 19 HDUs and 134 / 121 LDU1 / LDU2 in
     its first 6 minutes.
+- **2026-10-03, the CPU work** (Andy: find the other costs; drop the dual LSM/C4FM decode, the
+  site says what to decode and the scan validates both). `fbench-agent profile` (new: perf
+  sampling by thread and function, the link register for a leaf's caller) on unit A found, past
+  the filters:
+  - **The NID's BCH decoder** searched its 512 KB codebook to the end for any NID with an error,
+    and for every false sync on an idle lane (5 a second): 16.7 % of a core across the lanes and
+    the control decoders. It is now SDRTrunk's algebraic decoder (syndromes, Berlekamp-Massey,
+    the locator's roots), with the closest codeword's answers: 0.1 %.
+  - **Both control decoders on every P25 site.** A site runs its modulation's alone; a scan sets
+    it on the sites it adds (and on one set to auto); a site set to auto runs both until one is
+    chosen. The probe and the receivers choose by one rule, LSM unless C4FM passes clearly more.
+  - **The calls view** republished all 100 recent calls after every input, about 110 times a
+    second (clones, drops, the allocator: about 3 %); now when a call closes. The survey's noise
+    floor is a selection instead of a sort; spectrometer dB in f32.
+  - **Gates:** the 313 recordings decode the same (counts and dibits); DMR reference 24,984 of
+    24,996 with the 20:57 call; host tests 439.
+  - **Unit A, Clay County,** 5 minutes each: the scanner 47.7 % (fir1) → 19.9 % (one decoder,
+    the BCH early exit, the calls view) → 15.0 % of one core (the algebraic decoder); the control
+    thread 16.4 → 4.0 %. Control 40.8 messages a second at 100 %. Left: the three LSM receivers
+    (filters about 6.4 %), the kernel 1.7 %, the spectrometer's frames about 1 %.
+  - **Not SDRTrunk's, on purpose (open):** SDRTrunk decodes the NID's 63-bit BCH word without
+    bit 63, and retries an uncorrectable NID with the site's NAC; ours requires 11 bits or fewer
+    over all 64 and does not retry. Both would recover NIDs; to measure on the recordings.

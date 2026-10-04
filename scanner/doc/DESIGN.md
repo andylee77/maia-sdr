@@ -903,8 +903,9 @@ channelizer in the PL, every demodulator in software.
 - IMBE is 2.4 % of a core per stream.
 - A software receiver on a lane's 50 kSPS IQ (`dsp::cost_tests` on unit A, since 079's FIR
   speed-up): LSM 4.1 %, C4FM 4.3 %, DMR 9.3 % of a core, of which the filters are about 2 %.
-- Unit A on Clay County (079's radio core; the control channel's LSM and C4FM, two LSM lanes):
-  the scanner 47.7 % of one core, the control thread 16.4 % of it.
+- Unit A on Clay County (079's radio core; the control channel's LSM decoder, two LSM lanes):
+  the scanner 15.0 % of one core, the control thread 4.0 % of it. The filters are about 6.4 %,
+  the kernel 1.7 %, the spectrometer's frames about 1 % (`fbench-agent profile`).
 
 ### Candidates
 
