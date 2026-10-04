@@ -163,7 +163,7 @@ scanner/src/         the fresh crate (D13)
   radio/             the only way to move hardware
     tuner.rs         apply(TuningPlan), set_control, retune_lane, set_crystal_ppm; the crystal
                      LO shift; what each lane's NCO holds
-    lease.rs         Normal | Switching | Scan
+    lease.rs         Normal | Switching | Scan | Atsc (held while ATSC mode lasts)
     hw.rs            the board's RadioHw (a new tuning takes a new tag); on a development host
                      a stand-in with no radio
     lane.rs          the traffic lanes
@@ -179,6 +179,8 @@ scanner/src/         the fresh crate (D13)
                      fec (BCH NID, Reed-Solomon, trellis)
     dmr/             demod, framer, fec (bptc, cach, emb, slot type, crc, RS(12,9)), message,
                      control (Tier III), traffic
+    atsc/            the US TV channel plan, the windows that read it, and one channel's
+                     spectrum: the 8-VSB pilot, the plateau, the floor at its edges
   trunking/          protocol-neutral, host-tested
     follow/          one follower: ordered gates, lane choice, pre-emption; routing (aliases)
     calls/           Call, CallBook (lifecycle and counters), CallEvent
@@ -197,6 +199,8 @@ scanner/src/         the fresh crate (D13)
     history/         schema v2, store, the writer
     recordings/      the recorder, storage (RAM/SD), index, wav
     discovery/       carriers, probes (P25 and DMR), the sweep, grouping and merge
+    mode.rs          the unit's mode: the scanner or ATSC TV (holds the lease, pauses the site)
+    atsc/            ATSC mode's TV scan and each channel's spectrum
     clock/           site clock, internet time, the board clock
     crystal.rs       crystal calibration and tracker (autoppm)
     packet_data.rs   P25 packet data records
@@ -204,7 +208,7 @@ scanner/src/         the fresh crate (D13)
     notices.rs       what /ws/events sends
   api/               one route table builds the router and doc/API.md; ApiError
     v1/              status, radio, systems, aliases, sites, hold, calls, recordings, activity, data,
-                     spectrum, scan, events
+                     spectrum, scan, events, mode, atsc
     ws.rs            /ws/live, /ws/audio, /ws/events
     legacy.rs        p25-httpd's routes the bench reads, in their old shape
   ui/                mod.rs and the static files (index.html, js/, css/)
@@ -1525,3 +1529,13 @@ From the brief:
     puts 82 % within 6 dB of the target (41 % before); every sender's median is -18 to -21 dBFS.
     The browser's Level (x0.25 to x8 toward -20 dBFS, set from each transmission's first 20 ms)
     already levelled live audio; recordings had nothing after the AGC.
+- 2026-10-03, change 080 (branch `080-atsc`, worktree `maia-sdr-080`): **ATSC TV mode** (Andy:
+  the unit does whatever mode it is in; scanner tabs in scanner mode, an ATSC tab in ATSC mode).
+  `services::mode` keeps the mode in `state/radio.json`; ATSC mode holds the radio lease with the
+  live site paused (`LiveState::Away`). Its first part is the TV channel finder
+  (`protocol::atsc`, `services::atsc`): RF 4-36 in 16 MSPS windows of two channels, each
+  channel 8-VSB (its pilot), no 8-VSB pilot (ATSC 3.0 or other) or vacant, with its carrier to
+  noise and its spectrum. On unit A (UHF omni) it read 33 channels in 15 s and agreed with
+  Andy's HDHomeRun (VHF/UHF directional) on 18 of the 19 channels that receives now, ATSC 3.0
+  on RF 18 included; the miss is VHF RF 11, under a third-harmonic image of the 600 MHz band.
+  Record: `doc/changes/080_atsc_tv_mode.md`.

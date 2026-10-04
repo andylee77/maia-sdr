@@ -5,6 +5,25 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-03] 080: ATSC TV mode: the unit's mode, and the TV channel finder
+
+**Branch:** 080-atsc (worktree maia-sdr-080), not merged
+**BUILD_TAG:** `2026-10-03-atsc2` (hand-deployed on A for the test; A is back on fir1)
+**Bake required:** NO (the scanner only).
+
+- **The mode:** scanner or ATSC TV, kept across restarts. ATSC mode holds the radio with the
+  live site paused; scanner mode brings the site back with the configured gain. The header
+  chooses it, and each mode shows its own tabs.
+- **The TV channel finder:** RF 4-36 in 16 MSPS windows of two channels. Each channel is 8-VSB
+  (its pilot found), `no_pilot` (ATSC 3.0 or other) or vacant, with the pilot's offset and
+  level, the carrier to noise (the plateau over the floor at its edges), the power, the gain and
+  the clipping rate. The ATSC page draws the spectrum of the channel picked in its table.
+- **On unit A:** 33 channels in 15 s, 18 of the 19 channels Andy's HDHomeRun receives found
+  alike (ATSC 3.0 on RF 18 included). VHF is weak on A's UHF omni; RF 11 lies under a
+  third-harmonic image of the 600 MHz band.
+- `tools/atsc_check.py` compares a unit's TV scan with an HDHomeRun's lineup.
+- Record: `doc/changes/080_atsc_tv_mode.md`.
+
 ## [2026-10-03] 079: a general radio core: the lanes' IQ in the PL, every demodulator in software (steps 1, 3a, 4)
 
 **Branch:** fishball-p25 (with tezuka_fw fishball-dev 385f52f, 96b16c3)
