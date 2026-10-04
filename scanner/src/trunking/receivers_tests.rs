@@ -105,7 +105,7 @@ struct Prepared {
 impl StreamSource for Prepared {
     fn control_streams(&self, tx: SyncSender<Block>, _: Arc<AtomicBool>, _: Arc<StreamCounters>) {
         for (k, iq) in self.iq.iter().enumerate() {
-            tx.send(Block { iq: iq.clone(), at: Stamp::now(), retuned: k == 0, gap: false }).unwrap();
+            tx.send(Block { iq: iq.clone(), at: Stamp::now(), index: 0, retuned: k == 0, gap: false }).unwrap();
         }
         // Open until stopped, as the streams are: the decode thread keeps its once-a-second work.
         tokio::spawn(async move {

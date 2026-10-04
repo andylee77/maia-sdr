@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use crate::audio::live::Audio;
 use crate::services::atsc::sweep::Atsc;
+use crate::services::burst::BurstCheck;
 use crate::services::clock::Clock;
 use crate::services::crystal::Crystal;
 use crate::services::discovery::sweep::Discovery;
@@ -41,6 +42,8 @@ pub struct AppState {
     /// The unit's mode, and ATSC mode's channel finder.
     pub modes: Arc<Modes>,
     pub atsc: Arc<Atsc>,
+    /// The radio core's burst timing check (a diagnostic).
+    pub burst: Arc<BurstCheck>,
     pub notices: Notices,
     pub clock: Arc<Clock>,
     pub crystal: Arc<Crystal<Hardware>>,

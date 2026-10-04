@@ -151,6 +151,9 @@ routes! {
     get "/api/v1/atsc/scan/options" => v1::atsc::options, "the TV channel plan (RF 2-36 and which the radio reaches), the default settings and the window read at once";
     post "/api/v1/atsc/scan" => v1::atsc::start, "scan the TV channels in ATSC mode (`channels`, default every one reached; `frames` a window; `gain_db`, default the AGC), then decode each 8-VSB channel of 15 dB or more for its station's names (`identify`, default on)";
     post "/api/v1/atsc/scan/cancel" => v1::atsc::cancel, "stop the TV scan";
+    get "/api/v1/diag/burst" => v1::diag::get, "the burst timing check's progress (what to do now) and result: where one burst starts, as an AD9361 sample index, in a spectrum frame's header, in the control lane's packets and in the capture, and whether they agree to within one transform";
+    post "/api/v1/diag/burst" => v1::diag::start, "check the radio core's timing with a burst (a key fob, the ESP32-DIV) at `freq_hz`: a first press finds it (`find`, default on), the next is measured; `offset_hz` (300 kHz) above the LO, `span_hz` (150 kHz) searched, `wait_s` (60) for each press, `threshold_db` (15). The live site pauses until it ends";
+    post "/api/v1/diag/burst/cancel" => v1::diag::cancel, "stop the burst timing check";
     get "/api/system" => legacy::system, "legacy, for the bench: the build";
     get "/api/ui/state" => legacy::ui_state, "legacy, for the bench: the unit's wall clock";
     get "/api/imbe_dump" => legacy::imbe_dump, "legacy, for the bench: the newest raw IMBE frames";

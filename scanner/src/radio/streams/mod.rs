@@ -29,6 +29,9 @@ pub struct Block {
     pub iq: Vec<i16>,
     /// Air time of the first sample.
     pub at: Stamp,
+    /// The AD9361 sample index (since the core's reset) when the DDC made the first sample; the
+    /// DDC's delay is not taken off.
+    pub index: u64,
     /// The first block of a new tuning (a retune, a control channel move, a new preset).
     pub retuned: bool,
     /// Samples of this tuning are missing before this block (the core's buffer or the ring was
@@ -325,6 +328,7 @@ impl LaneState {
         Some(Block {
             iq: p.iq[2 * skip..].to_vec(),
             at: clock.stamp_of(first_index as f64 - ddc.delay, rate_hz),
+            index: first_index,
             retuned,
             gap: gap && !retuned,
         })

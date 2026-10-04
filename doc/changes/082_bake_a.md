@@ -118,7 +118,7 @@ the words lost.
 ### The Vivado project (`maia-hdl/projects/fishball7020_p25`)
 
 - **XDC:** the CDC comments describe the radio core's banks, interrupts and reset synchronisers
-  (not core 0.3.0's LSM banks and a "commit <TBD>"); the TX rate counter's and `sdr_reset`'s
+  (not core 0.3.0's LSM banks and a `commit <TBD>`); the TX rate counter's and `sdr_reset`'s
   comments are current. The `manual_decim` false path went: no cell matched it (3a's checkpoint;
   the build raised a critical warning for it), as the P25 block design has no `manual_decim`.
 - **Block design:** the clocks' comment says what clk_out2 and clk_out3 feed, without a phase
@@ -145,6 +145,27 @@ the words lost.
   samples).
 - **The readback** (`/api/v1/radio`): the spectrum reader's counts with the newest frame's header,
   and the capture's status.
+
+## The burst timing check
+
+The gate "one burst at the same time in a frame's header, a lane's packets and a capture" needs a
+transmitter keyed by hand, so it is a tool Andy runs: `tools/burst_timing.py --freq 433.92`
+(`POST /api/v1/diag/burst` in the scanner, `services::burst`).
+
+- **The radio:** taken as a scan takes it (the live site pauses); the 2 MSPS preset with the burst
+  300 kHz above the LO, the spectrometer at one transform a frame (a frame every 2 ms, which the
+  spectrum's reader keeps up with), every frame's band (±150 kHz) seen by the reader's tap.
+- **A first press** shows where the transmitter really is: a fob may sit tens of kHz from its
+  nominal frequency, outside a lane's channel filter. The control lane moves there.
+- **The capture** then runs; the floors are learned for a second; the next press, seen in the
+  frames, triggers it, and it stops two sub-buffers later, so the ring keeps 1.7 s of lead-in.
+- **Each start** is the AD9361 sample index where the power first rises 15 dB above its floor:
+  the capture's in 64-sample blocks, the frame's header index, the lane's in blocks of four lane
+  samples less the DDC's delay (from its preset).
+- **Pass:** the capture's start within one transform (4096 samples) of the lane's, and in the
+  frame's transform or the one before (where the window hides a burst's start). The tool also
+  reports frames the reader missed and whether the capture lost words.
+- The lane blocks the streams hand out carry the sample index of their first sample (`Block::index`).
 
 ## The bench
 

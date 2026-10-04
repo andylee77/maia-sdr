@@ -338,9 +338,26 @@ mod dma {
             CaptureRead { read, lapped }
         }
 
-        /// The capture ring's sub-buffers.
-        pub fn capture_ring_buffers(&self) -> usize {
-            self.dma.capture.num_buffers()
+        /// Once the capture has stopped after a trigger: its whole ring, oldest first (the
+        /// newest sub-buffers the ring holds), each with the sample index of its first sample.
+        /// Nothing while it runs.
+        pub fn read_stopped_capture(&mut self, mut each: impl FnMut(u64, &[u8])) -> super::CaptureStatus {
+            let status = self.capture_status();
+            if !status.stopped {
+                return status;
+            }
+            let n = self.dma.capture.num_buffers() as u32;
+            let per = (self.dma.capture.buffer_size() / CAPTURE_SAMPLE_BYTES) as u64;
+            for k in status.buffers.saturating_sub(n)..status.buffers {
+                let slot = (k % n) as usize;
+                if let Err(e) = self.dma.capture.cache_invalidate(slot) {
+                    tracing::warn!("capture sub-buffer {slot}: {e}");
+                    continue;
+                }
+                each(status.start_index + k as u64 * per, self.dma.capture.buffer(slot));
+            }
+            self.capture_read = status.buffers;
+            status
         }
     }
 }

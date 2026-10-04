@@ -28,6 +28,7 @@ unit use the scanner's `/api/v1`. Scripts retired in the 2026-10 cleanup are in
 | [`api_fields.py`](api_fields.py) | Writes `scanner/doc/API_FIELDS.md`: every GET route's fields with type, example and meaning, sampled from a unit. Meanings are in [`api_fields_meanings.py`](api_fields_meanings.py); exit 3 names a field without one |
 | [`scanner_live_check.py`](scanner_live_check.py) | Samples a running scanner every minute (status, recordings, activity; with `--ssh` its process and log) for long live runs |
 | [`atsc_check.py`](atsc_check.py) | Runs a TV scan in ATSC mode and compares it with the HDHomeRun's lineup (`10.0.0.117`), channel by channel; writes `runs/atsc/<time>/` |
+| [`burst_timing.py`](burst_timing.py) | The radio core's burst timing gate (082): runs the scanner's `/api/v1/diag/burst` and says when to press a key fob or the ESP32-DIV; reports where the burst starts in a spectrum frame's header, the control lane's packets and the capture, and whether they agree to within one transform; writes `runs/burst/<time>/` |
 
 ## Build
 

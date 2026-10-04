@@ -134,6 +134,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         discovery,
         modes,
         atsc,
+        burst: Arc::default(),
         notices,
         clock,
         crystal,
