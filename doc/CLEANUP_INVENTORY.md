@@ -14,7 +14,7 @@ findings as they stood before the cleanup.
 | 4. The bench on the radio core | Done: the map from `radio_core.bench_map`, maintenance mode, `rf.cw_ppm`, `sys.boot_log`, the texts | 9f698db, b1f77f2 |
 | 5. p25-httpd out | Done, with tezuka_fw's package | 493a12d; tezuka_fw 8a34f2c |
 | 6. The archive move | Done: `MAIA_SDR/_archive/cleanup_2026-10-04/` | 31ac775 |
-| 7. `API_FIELDS.md` | Open: needs unit A | |
+| 7. `API_FIELDS.md` | Done: regenerated from unit A, every route sampled | (this commit) |
 | 8. The old fishball-p25 folder | Open | |
 | Added: `scanner-hdl/` | Done: the fork's gateware apart from Maia's (Andy's ask) | b64fa63 |
 

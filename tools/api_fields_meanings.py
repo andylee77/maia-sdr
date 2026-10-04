@@ -693,6 +693,7 @@ ROUTES: dict[str, list] = {
         ("@config", "radio_config"),
         ("state", "object", "What the radio keeps between runs."),
         ("state.version", "number", "The file's version."),
+        ("state.mode", "string", "The unit's mode at start: `scanner` or `atsc`."),
         ("state.live_site", "string or null", "The site made live at start."),
         ("state.crystal", "object or null", "The stored crystal correction."),
         ("state.crystal.ppm", "number", "The correction."),
