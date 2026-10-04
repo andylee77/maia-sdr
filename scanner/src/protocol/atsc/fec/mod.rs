@@ -8,6 +8,7 @@ pub mod trellis;
 
 use std::sync::OnceLock;
 
+use super::on_both_cores;
 use super::vsb::{DATA_SEGMENTS, DATA_SYMBOLS, FIELD_SEGMENTS, SEGMENT, SYNC_SYMBOLS};
 use trellis::ENCODERS;
 
@@ -84,64 +85,67 @@ pub fn decode(symbols: &[f32], first_sync: usize) -> (Vec<Packet>, FecStats) {
     if fields == 0 {
         return (Vec::new(), stats);
     }
-    // Each encoder's soft symbols in time order, over every field; within a segment the encoders
-    // take the symbols in turn.
+    // Each encoder's soft symbols in time order over every field (within a data segment the
+    // encoders take the symbols in turn, the first being encoder(segment, 0)), then its bit
+    // pairs: six encoders on each core.
     let per_field = DATA_SEGMENTS * DATA_SYMBOLS / ENCODERS;
-    let mut seqs = vec![Vec::with_capacity(per_field * fields); ENCODERS];
-    for f in 0..fields {
-        for dseg in 0..DATA_SEGMENTS {
-            let seg = first_sync + f * FIELD_SEGMENTS + 1 + dseg;
-            let row = &symbols[seg * SEGMENT + SYNC_SYMBOLS..(seg + 1) * SEGMENT];
-            let mut e = trellis::encoder(dseg, 0);
-            for &s in row {
-                seqs[e].push(trellis::soft(s));
-                e = if e + 1 == ENCODERS { 0 } else { e + 1 };
+    let mut pairs = vec![Vec::new(); ENCODERS];
+    on_both_cores(&mut pairs, 1, |first, out| {
+        for (i, o) in out.iter_mut().enumerate() {
+            let e = first + i;
+            let mut soft = Vec::with_capacity(per_field * fields);
+            for f in 0..fields {
+                for dseg in 0..DATA_SEGMENTS {
+                    let seg = first_sync + f * FIELD_SEGMENTS + 1 + dseg;
+                    let row = &symbols[seg * SEGMENT + SYNC_SYMBOLS..(seg + 1) * SEGMENT];
+                    let k0 = (e + ENCODERS - trellis::encoder(dseg, 0)) % ENCODERS;
+                    soft.extend(row[k0..].iter().step_by(ENCODERS).map(|&s| trellis::soft(s)));
+                }
             }
+            *o = trellis::decode(&soft);
         }
-    }
-    let pairs: Vec<Vec<u8>> = seqs.iter().map(|s| trellis::decode(s)).collect();
+    });
     // Each encoder's bytes, then the interleaved stream in field order.
     let (enc, nth) = byte_map();
     let bytes_per_field = FIELD_BYTES / ENCODERS;
     let mut stream = vec![0u8; fields * FIELD_BYTES];
-    for f in 0..fields {
-        for b in 0..FIELD_BYTES {
-            let e = enc[b] as usize;
-            let k = (f * bytes_per_field + nth[b] as usize) * 4;
-            let p = &pairs[e][k..k + 4];
-            stream[f * FIELD_BYTES + b] = (p[0] << 6) | (p[1] << 4) | (p[2] << 2) | p[3];
-        }
-    }
-    // Byte m before the interleaver is byte m + 208 (m mod 52) after it.
-    let mut packets = Vec::new();
-    let rand = randomizer();
-    let mut cw = [0u8; rs::N];
-    let total = stream.len() / rs::N;
-    for s in 0..total {
-        let mut whole = true;
-        for (j, c) in cw.iter_mut().enumerate() {
-            let m = s * rs::N + j;
-            match stream.get(m + BRANCH_STEP * (m % BRANCHES)) {
-                Some(&x) => *c = x,
-                None => whole = false,
+    on_both_cores(&mut stream, FIELD_BYTES, |first, half| {
+        for (i, field) in half.chunks_exact_mut(FIELD_BYTES).enumerate() {
+            let f = first / FIELD_BYTES + i;
+            for (b, out) in field.iter_mut().enumerate() {
+                let k = (f * bytes_per_field + nth[b] as usize) * 4;
+                let p = &pairs[enc[b] as usize][k..k + 4];
+                *out = (p[0] << 6) | (p[1] << 4) | (p[2] << 2) | p[3];
             }
         }
-        if !whole {
-            break;
+    });
+    // Byte m before the interleaver is byte m + 208 (m mod 52) after it: the codewords whose
+    // bytes have all arrived, corrected half on each core.
+    let at = |m: usize| m + BRANCH_STEP * (m % BRANCHES);
+    let total = (0..stream.len() / rs::N).take_while(|s| (0..rs::N).all(|j| at(s * rs::N + j) < stream.len())).count();
+    let rand = randomizer();
+    let mut packets = vec![Packet { bytes: [0; 188], outcome: rs::Outcome::Clean }; total];
+    on_both_cores(&mut packets, 1, |first, half| {
+        let mut cw = [0u8; rs::N];
+        for (i, packet) in half.iter_mut().enumerate() {
+            let s = first + i;
+            for (j, c) in cw.iter_mut().enumerate() {
+                *c = stream[at(s * rs::N + j)];
+            }
+            packet.outcome = rs::decode(&mut cw);
+            let fseg = s % DATA_SEGMENTS;
+            packet.bytes[0] = 0x47;
+            for (j, b) in packet.bytes[1..].iter_mut().enumerate() {
+                *b = cw[j] ^ rand[fseg * rs::K + j];
+            }
         }
-        let outcome = rs::decode(&mut cw);
-        match outcome {
+    });
+    for p in &packets {
+        match p.outcome {
             rs::Outcome::Corrected(_) => stats.corrected += 1,
             rs::Outcome::Failed => stats.failed += 1,
             rs::Outcome::Clean => {}
         }
-        let fseg = s % DATA_SEGMENTS;
-        let mut bytes = [0u8; 188];
-        bytes[0] = 0x47;
-        for (j, b) in bytes[1..].iter_mut().enumerate() {
-            *b = cw[j] ^ rand[fseg * rs::K + j];
-        }
-        packets.push(Packet { bytes, outcome });
     }
     stats.packets = packets.len();
     (packets, stats)

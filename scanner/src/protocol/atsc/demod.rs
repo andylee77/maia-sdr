@@ -9,7 +9,8 @@
 //!    fractional offsets between input samples, so the filtered signal at an instant is one sum
 //!    over the inputs around it (NEON on the A9, two instants a pass over their shared inputs).
 //!    Turned up RS/4 less the pilot's phase, its real part is the 8-level signal (the halves of
-//!    the vestige add up flat about the pilot).
+//!    the vestige add up flat about the pilot). The filter spans ±10 symbols of RS/2: the
+//!    captures decode alike at ±12, and lose packets at ±8.
 //! 3. **Timing.** From the segment syncs (+5 −5 −5 +5 every 832 symbols): the real signal at two
 //!    samples a symbol around where each is expected, summed over blocks of segments and tracked
 //!    block to block, then fitted to a line (the sample clock's error is a constant rate).
@@ -19,17 +20,21 @@
 //!    their known symbols, then on its own decisions over runs of data, and applied by fast
 //!    convolution. A run's normal equations take one row of dot products; the rest follow down
 //!    the diagonals.
+//!
+//! The passes over the whole signal (the pilot's sums, the symbols, the convolution) run on both
+//! of the A9's cores, half each.
 
 use realfft::RealFftPlanner;
 use rustfft::num_complex::{Complex32, Complex64};
 
+use super::on_both_cores;
 use super::vsb::{field_sync, pn511, pn63, FIELD_SEGMENTS, SEGMENT, SEGMENT_SYNC, SYNC_SYMBOLS};
 
 /// 8-VSB's symbol rate: 4.5 MHz × 684 / 286.
 pub const SYMBOL_RATE: f64 = 4_500_000.0 * 684.0 / 286.0;
 const ROLLOFF: f64 = 0.1152;
 /// The matched filter's half-span, in symbols of RS/2.
-const FILTER_HALF_SPAN: f64 = 12.0;
+const FILTER_HALF_SPAN: f64 = 10.0;
 /// Fractional offsets between input samples the matched filter is tabulated at (a timing error
 /// of 1/128 sample at most).
 const PHASE_BITS: u32 = 6;
@@ -169,9 +174,13 @@ impl Carrier {
         let sub = ((PILOT_SUB_BLOCK * fs).round() as usize).max(1);
         // The turn across a sub-block from a table; each sub-block's own start stepped once.
         let within: Vec<Complex32> = (0..sub).map(|k| Complex32::from_polar(1.0, (up * k as f64) as f32)).collect();
-        let mut start = Phasor::new(0.0, up * sub as f64);
-        let sums: Vec<Complex32> =
-            x.chunks_exact(sub).map(|c| start.next() * c.iter().zip(&within).map(|(&s, &w)| s * w).sum::<Complex32>()).collect();
+        let mut sums = vec![Complex32::new(0.0, 0.0); x.len() / sub];
+        on_both_cores(&mut sums, 1, |first, out| {
+            let mut start = Phasor::new(up * (first * sub) as f64, up * sub as f64);
+            for (c, s) in x[first * sub..].chunks_exact(sub).zip(out) {
+                *s = start.next() * c.iter().zip(&within).map(|(&v, &w)| v * w).sum::<Complex32>();
+            }
+        });
         let mut offset = 0.0;
         let mut n = 1;
         for block_s in PILOT_BLOCKS {
@@ -519,9 +528,11 @@ fn symbols(sig: &Real, start: f64, per: f64) -> Vec<f32> {
     let step = per / SEGMENT as f64;
     let nseg = ((sig.len() as f64 - start) / per).floor().max(0.0) as usize;
     let mut y = vec![0f32; nseg * SEGMENT];
-    for (s, seg) in y.chunks_exact_mut(SEGMENT).enumerate() {
-        sig.run(start + s as f64 * per, step, seg);
-    }
+    on_both_cores(&mut y, SEGMENT, |first, half| {
+        for (s, seg) in half.chunks_exact_mut(SEGMENT).enumerate() {
+            sig.run(start + (first / SEGMENT + s) as f64 * per, step, seg);
+        }
+    });
     let (mut sum, mut n) = (0f64, 0usize);
     for seg in y.chunks_exact(SEGMENT) {
         sum += seg[SYNC_SYMBOLS..].iter().map(|&v| f64::from(v)).sum::<f64>();
@@ -608,9 +619,9 @@ fn slice(v: f32) -> f32 {
     (2 * (((v + 8.0) * 0.5) as i32).clamp(0, 7) - 7) as f32
 }
 
-/// y ⊛ w: c[m] = Σ w[i] y[m − i] for m in skip..skip + len (y zero before 0 and from y.len()),
-/// by overlap-save.
-fn convolve(y: &[f32], w: &[f32], skip: usize, len: usize) -> Vec<f32> {
+/// y ⊛ w into `out`: out[i] = c[from + i], c[m] = Σ w[i] y[m − i] (y zero before 0 and from
+/// y.len()), by overlap-save.
+fn convolve(y: &[f32], w: &[f32], from: usize, out: &mut [f32]) {
     let m = w.len();
     let step = FFT_LEN - m + 1;
     let mut planner = RealFftPlanner::<f32>::new();
@@ -621,26 +632,25 @@ fn convolve(y: &[f32], w: &[f32], skip: usize, len: usize) -> Vec<f32> {
     buf[..m].copy_from_slice(w);
     let _ = fwd.process(&mut buf, &mut h);
     let mut spec = fwd.make_output_vec();
-    let mut out = Vec::with_capacity(len + FFT_LEN);
     let scale = 1.0 / FFT_LEN as f32;
-    let (mut b, mut skip) = (0usize, skip);
-    while out.len() < len {
-        // Block b: c[b·step ..< b·step + step] from y[b·step − (m − 1) ..< b·step + step].
-        for (j, v) in buf.iter_mut().enumerate() {
-            let k = (b * step + j) as isize - (m as isize - 1);
-            *v = if k >= 0 && (k as usize) < y.len() { y[k as usize] } else { 0.0 };
+    for (b, chunk) in out.chunks_mut(step).enumerate() {
+        // c[from + b·step ..< + step] from y[from + b·step − (m − 1) ..< + FFT_LEN].
+        let lo = (from + b * step) as isize - (m as isize - 1);
+        let (a, z) = (lo.max(0) as usize, ((lo + FFT_LEN as isize).max(0) as usize).min(y.len()));
+        buf.fill(0.0);
+        if a < z {
+            let at = (a as isize - lo) as usize;
+            buf[at..at + (z - a)].copy_from_slice(&y[a..z]);
         }
         let _ = fwd.process(&mut buf, &mut spec);
         for (s, &hk) in spec.iter_mut().zip(&h) {
             *s *= hk;
         }
         let _ = inv.process(&mut spec, &mut buf);
-        out.extend(buf[(m - 1 + skip).min(FFT_LEN)..].iter().map(|v| v * scale));
-        skip = skip.saturating_sub(step);
-        b += 1;
+        for (o, v) in chunk.iter_mut().zip(&buf[m - 1..]) {
+            *o = v * scale;
+        }
     }
-    out.truncate(len);
-    out
 }
 
 /// The rows whose windows lie inside y (of `y_len`): row k weighs y[k + PRE − i] by tap i.
@@ -719,7 +729,9 @@ fn equalize(y: &[f32], first_sync: usize, inverted: &[bool]) -> Option<Vec<f32>>
         w = least_squares(y, &runs)?;
     }
     // out[k] = (y ⊛ w)[k + PRE].
-    Some(convolve(y, &w, EQ_PRE, y.len()))
+    let mut out = vec![0f32; y.len()];
+    on_both_cores(&mut out, 1, |first, half| convolve(y, &w, EQ_PRE + first, half));
+    Some(out)
 }
 
 /// Modulation error ratio of the data symbols, from every fourth segment (plenty for the measure).
@@ -772,8 +784,8 @@ mod tests {
         let y: Vec<f32> = (0..10_000).map(|i| ((i * 7919) % 101) as f32 - 50.0).collect();
         let w: Vec<f32> = (0..EQ_TAPS).map(|i| ((i * 31) % 17) as f32 / 17.0 - 0.5).collect();
         let skip = 32;
-        let c = convolve(&y, &w, skip, y.len() + 8);
-        assert_eq!(c.len(), y.len() + 8);
+        let mut c = vec![f32::NAN; y.len() + 8];
+        convolve(&y, &w, skip, &mut c);
         for m in [32, 33, 127, 128, 4000, 4001 + 3969, 9999, 10_039] {
             let direct: f32 = (0..w.len()).filter(|&i| m >= i && m - i < y.len()).map(|i| w[i] * y[m - i]).sum();
             assert!((c[m - skip] - direct).abs() < 1e-2 * (1.0 + direct.abs()), "{m}: {} {direct}", c[m - skip]);

@@ -38,6 +38,17 @@ const BANDS: &[(&str, u8, u8, u64)] = &[
 pub const FIRST: u8 = 2;
 pub const LAST: u8 = 36;
 
+/// Runs `f` over the two halves of `out` (split at a whole number of `unit`s) at once, on the
+/// A9's two cores (the trunking site sleeps in ATSC mode); `f` is given each half's offset.
+pub(crate) fn on_both_cores<T: Send>(out: &mut [T], unit: usize, f: impl Fn(usize, &mut [T]) + Sync) {
+    let mid = out.len() / unit / 2 * unit;
+    let (a, b) = out.split_at_mut(mid);
+    std::thread::scope(|s| {
+        s.spawn(|| f(mid, b));
+        f(0, a);
+    });
+}
+
 /// One RF channel of the plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Channel {
