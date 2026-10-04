@@ -484,3 +484,22 @@ touches anything else.
     NAC check it would otherwise fail: a noise NID decodes with the site's NAC 3.3e-4 of the time
     with it, 5e-7 without (a random-word estimate), so an idle lane's 5 false syncs a second
     would give a false NID about every 10 minutes, a noise data unit read as voice. Not adopted.
+- **2026-10-03, the CPU work, second round** (`2026-10-03-radio-core-cpu4`, hand-deployed on A;
+  Andy: NID recovery and more CPU, then the ATSC work to share it):
+  - **`dsp::run`,** the filters' multiply-accumulate runs in one module for every receiver and
+    for 081's equalizer: `run::folded` (the symmetric pairs) and `run::plain` (any taps), eight
+    outputs at a time in NEON. A folded run adds to outputs the filter's first single tap started
+    instead of zeroing them: half-band 3.43 → 3.12, LSM low-pass 4.47 → 4.14, C4FM low-pass
+    3.01 → 2.68, RRC 3.49 → 3.18 ms per second of IQ. A 128-tap plain run: 385 ns an output
+    against 698 for one sum an output. Four outputs and two taps a step measured slower than
+    eight and one.
+  - **Spectrometer dB** in integer and f32 arithmetic (no software u64 conversion, no logarithm
+    call; within 1e-4 dB): the survey's frames 1.2 → 0.7 % of a core.
+  - **The kernel's share** (`profile` now names kernel functions): 1.1 % of a core, wakeups and
+    context switches, 0.2 % the lane ring's cache maintenance; nothing to take out.
+  - **Gates:** the 313 recordings decode the same; DMR reference 24,984 of 24,996; host tests
+    441; the NEON runs' tests on A.
+  - **Unit A:** 16.7 % of one core over 5 minutes, in a busier window than cpu2's 15.0 % (Clay
+    on the directional antenna; lane 1 carried 2,817 voice frames against 1,215).
+  - Left: the LSM demodulator's double-precision atan2, sin and cos (about 0.5 % for three
+    receivers) would need the recordings to judge single precision.

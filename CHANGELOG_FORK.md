@@ -27,10 +27,13 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   equal mirrored taps and runs eight outputs at a time in NEON. A receiver costs 4.1 % (LSM),
   4.3 % (C4FM) or 9.3 % (DMR) of a core, from 14.5, 13.6 and 19.4; the scanner on A 48 % of a
   core, from 84. The 313 recordings decode to byte-identical dibits.
-- **The CPU work** (`2026-10-03-radio-core-cpu2`, hand-deployed on A): the NID's BCH decoder is
+- **The CPU work** (`2026-10-03-radio-core-cpu4`, hand-deployed on A): the NID's BCH decoder is
   algebraic (it searched a 512 KB codebook); a P25 site runs one control decoder, its
-  modulation's, which a scan sets; the calls view republishes only when a call closes. The
-  scanner on A 15 % of a core, from 48. `fbench-agent profile` names where a process's CPU goes.
+  modulation's, which a scan sets; the calls view republishes only when a call closes;
+  `dsp::run` holds the filters' NEON runs (plain and folded) for every receiver and the ATSC
+  equalizer; spectrometer dB without a logarithm call. The scanner on A 15-17 % of a core, from
+  48. `fbench-agent profile` names where a process's CPU goes, kernel and callers included.
+  NID recovery past SDRTrunk's measured and not adopted (false NIDs on noise).
 - **tezuka_fw:** the device tree's rings, maia-kmod built by the P25 defconfig, and the image
   build rebuilds the kernel when a device tree changes.
 - Record: `doc/changes/079_general_radio_core.md`.
