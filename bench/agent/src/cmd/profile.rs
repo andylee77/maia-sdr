@@ -47,6 +47,8 @@ struct Sample {
     tid: u32,
     ip: u32,
     kernel: bool,
+    /// The link register in user space (0 when not read): in a leaf function, its caller.
+    lr: u32,
 }
 
 /// An executable mapping of the process (`/proc/PID/maps`).
@@ -271,7 +273,7 @@ fn report(
 ) -> Value {
     let pct = |n: u32| (n as f64 * sample_s / seconds * 1000.0).round() / 10.0;
     let mut threads: HashMap<String, (u32, HashMap<String, u32>)> = HashMap::new();
-    let mut functions: HashMap<String, (u32, HashMap<String, u32>)> = HashMap::new();
+    let mut functions: HashMap<String, (u32, HashMap<String, u32>, HashMap<String, u32>)> = HashMap::new();
     let mut others: HashMap<u32, u32> = HashMap::new();
     let (mut total, mut idle, mut process) = (0u32, 0u32, 0u32);
     for (s, &n) in samples {
@@ -292,6 +294,10 @@ fn report(
         let f = functions.entry(function).or_default();
         f.0 += n;
         *f.1.entry(thread).or_default() += n;
+        if !s.kernel && s.lr != 0 {
+            // The return address less a few bytes: inside the call (ARM or Thumb).
+            *f.2.entry(attr.function((s.lr & !1).wrapping_sub(2), false)).or_default() += n;
+        }
     }
     let ranked = |m: &HashMap<String, u32>, k: usize| {
         let mut v: Vec<_> = m.iter().collect();
@@ -312,8 +318,8 @@ fn report(
         "threads": threads.iter().map(|(name, (n, f))| json!({
             "name": name, "pct_core": pct(*n), "functions": ranked(f, 12),
         })).collect::<Vec<_>>(),
-        "functions": functions.iter().take(top).map(|(name, (n, t))| json!({
-            "name": name, "pct_core": pct(*n), "threads": ranked(t, 4),
+        "functions": functions.iter().take(top).map(|(name, (n, t, c))| json!({
+            "name": name, "pct_core": pct(*n), "threads": ranked(t, 4), "callers": ranked(c, 4),
         })).collect::<Vec<_>>(),
         "others": others.iter().take(12).map(|&(p, n)| json!({
             "pid": p, "comm": comm(p), "pct_core": pct(n),
@@ -329,7 +335,7 @@ mod imp {
     use std::sync::atomic::{fence, Ordering};
     use std::time::{Duration, Instant};
 
-    /// `struct perf_event_attr`, its first version (64 bytes).
+    /// `struct perf_event_attr` to `clockid` (its fourth version, 96 bytes).
     #[repr(C)]
     struct Attr {
         kind: u32,
@@ -342,12 +348,20 @@ mod imp {
         wakeup_events: u32,
         bp_type: u32,
         config1: u64,
+        config2: u64,
+        branch_sample_type: u64,
+        sample_regs_user: u64,
+        sample_stack_user: u32,
+        clockid: i32,
     }
 
     const PERF_TYPE_SOFTWARE: u32 = 1;
     const PERF_COUNT_SW_CPU_CLOCK: u64 = 0;
     const PERF_SAMPLE_IP: u64 = 1;
     const PERF_SAMPLE_TID: u64 = 2;
+    const PERF_SAMPLE_REGS_USER: u64 = 1 << 12;
+    /// `PERF_REG_ARM_LR`.
+    const REG_LR: u64 = 1 << 14;
     const PERF_FLAG_FD_CLOEXEC: libc::c_ulong = 8;
     const PERF_RECORD_LOST: u32 = 2;
     const PERF_RECORD_SAMPLE: u32 = 9;
@@ -371,12 +385,17 @@ mod imp {
                 size: std::mem::size_of::<Attr>() as u32,
                 config: PERF_COUNT_SW_CPU_CLOCK,
                 sample_period: period_ns,
-                sample_type: PERF_SAMPLE_IP | PERF_SAMPLE_TID,
+                sample_type: PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_REGS_USER,
                 read_format: 0,
                 flags: 0,
                 wakeup_events: 0,
                 bp_type: 0,
                 config1: 0,
+                config2: 0,
+                branch_sample_type: 0,
+                sample_regs_user: REG_LR,
+                sample_stack_user: 0,
+                clockid: 0,
             };
             let fd = unsafe {
                 libc::syscall(libc::SYS_perf_event_open, &attr as *const Attr, -1 as libc::pid_t, cpu, -1 as libc::c_int, PERF_FLAG_FD_CLOEXEC)
@@ -483,12 +502,18 @@ mod imp {
         let mut collect = |rings: &mut [Ring]| {
             for r in rings.iter_mut() {
                 r.drain(|kind, misc, body| match kind {
-                    PERF_RECORD_SAMPLE if body.len() >= 16 => {
+                    PERF_RECORD_SAMPLE if body.len() >= 24 => {
                         let ip = u64::from_le_bytes(body[0..8].try_into().unwrap()) as u32;
                         let pid = u32::from_le_bytes(body[8..12].try_into().unwrap());
                         let tid = u32::from_le_bytes(body[12..16].try_into().unwrap());
                         let kernel = misc & 7 == PERF_RECORD_MISC_KERNEL;
-                        *samples.entry(Sample { pid, tid, ip, kernel }).or_default() += 1;
+                        // The user registers' ABI (0: none read), then LR.
+                        let abi = u64::from_le_bytes(body[16..24].try_into().unwrap());
+                        let lr = match body.get(24..32) {
+                            Some(r) if abi != 0 => u64::from_le_bytes(r.try_into().unwrap()) as u32,
+                            _ => 0,
+                        };
+                        *samples.entry(Sample { pid, tid, ip, kernel, lr }).or_default() += 1;
                     }
                     PERF_RECORD_LOST if body.len() >= 16 => lost += u64::from_le_bytes(body[8..16].try_into().unwrap()),
                     _ => {}
@@ -643,15 +668,15 @@ mod tests {
 
     #[test]
     fn the_report_splits_the_process_from_the_rest() {
-        let bytes = elf(&[("work", 0x11000, 0x100)]);
+        let bytes = elf(&[("work", 0x11000, 0x80), ("caller", 0x11080, 0x80)]);
         let maps = parse_maps("00400000-00410000 r-xp 00001000 b3:02 77 /usr/bin/scanner\n");
         let read = |_: &str| Some(bytes.clone());
         let mut a = Attributor::new(&maps, &read);
         let mut samples = HashMap::new();
-        samples.insert(Sample { pid: 7, tid: 8, ip: 0x00400010, kernel: false }, 300);
-        samples.insert(Sample { pid: 7, tid: 9, ip: 0xc0000000, kernel: true }, 100);
-        samples.insert(Sample { pid: 5, tid: 5, ip: 0, kernel: false }, 50);
-        samples.insert(Sample { pid: 0, tid: 0, ip: 0, kernel: true }, 1550);
+        samples.insert(Sample { pid: 7, tid: 8, ip: 0x00400010, kernel: false, lr: 0x00400084 }, 300);
+        samples.insert(Sample { pid: 7, tid: 9, ip: 0xc0000000, kernel: true, lr: 0 }, 100);
+        samples.insert(Sample { pid: 5, tid: 5, ip: 0, kernel: false, lr: 0 }, 50);
+        samples.insert(Sample { pid: 0, tid: 0, ip: 0, kernel: true, lr: 0 }, 1550);
         let name = |t: u32| if t == 8 { "worker".to_string() } else { "io".to_string() };
         let comm = |_: u32| "other".to_string();
         // 1 ms samples over 1 s: 1000 samples are one core.
@@ -659,7 +684,10 @@ mod tests {
         assert_eq!(r["pct_core"], json!(40.0));
         assert_eq!(r["idle_pct_core"], json!(155.0));
         assert_eq!(r["threads"][0]["name"], json!("worker"));
-        assert_eq!(r["functions"][0], json!({"name": "work [scanner]", "pct_core": 30.0, "threads": [{"name": "worker", "pct_core": 30.0}]}));
+        assert_eq!(
+            r["functions"][0],
+            json!({"name": "work [scanner]", "pct_core": 30.0, "threads": [{"name": "worker", "pct_core": 30.0}], "callers": [{"name": "caller [scanner]", "pct_core": 30.0}]})
+        );
         assert_eq!(r["others"][0], json!({"pid": 5, "comm": "other", "pct_core": 5.0}));
     }
 }
