@@ -980,7 +980,7 @@ ROUTES: dict[str, list] = {
         ("found[].level_db", "number", "The plateau over the noise floor at the channel's edges: its carrier to noise, dB (up to the transmitter's shoulders, 35-45 dB)."),
         ("found[].power_dbm", "number or null", "Its power, about dBm (the spectrum's scale taken back to 60 dB of gain); null when the gain is unknown."),
         ("found[].gain_db", "number or null", "The receiver gain while it was read."),
-        ("found[].clipped", "bool", "The ADC clipped while its window was read: overloaded, its numbers are not to be trusted."),
+        ("found[].clips_ppm", "number or null", "Samples at the ADC's full scale while its window was read, per million (null when the counters are unknown): the AGC lets a few peaks clip; many mean an overloaded radio."),
         ("error", "string or null", "What went wrong."),
     ],
     "/api/v1/systems/{id}/aliases": [

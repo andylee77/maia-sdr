@@ -111,9 +111,10 @@ pub struct FoundChannel {
     pub power_dbm: Option<f32>,
     /// The receiver gain while it was read.
     pub gain_db: Option<f64>,
-    /// The ADC clipped while it was read: the radio was overloaded and the numbers are not to be
-    /// trusted (a lower manual gain helps).
-    pub clipped: bool,
+    /// Samples at the ADC's full scale while it was read, per million (none when the counters are
+    /// unknown). The AGC lets a few peaks clip; many mean an overloaded radio (a lower manual gain
+    /// helps).
+    pub clips_ppm: Option<f64>,
 }
 
 /// One channel's stretch of the spectrum its window read: the channel and 0.5 MHz either side.

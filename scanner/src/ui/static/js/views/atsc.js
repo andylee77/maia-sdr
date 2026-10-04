@@ -14,6 +14,11 @@ const KIND = {
   vacant: { label: 'Vacant', cls: '', title: 'Nothing above the noise' },
 };
 
+// The AGC lets a few peaks clip; above this many samples a million at the ADC's full scale the
+// radio is overloaded.
+const OVERLOAD_PPM = 1000;
+const clipText = ppm => (ppm == null ? '' : `${num(ppm, ppm < 10 ? 1 : 0)} samples a million at the ADC's full scale`);
+
 const db = v => (v === null || v === undefined ? DASH : `${num(v, 1)} dB`);
 const signed = v => (v > 0 ? '+' : v < 0 ? '−' : '') + num(Math.abs(v) / 1000, 1);
 
@@ -170,8 +175,9 @@ export function mount(el) {
 
   function row(ch) {
     const k = KIND[ch.kind] || KIND.vacant;
+    const over = ch.clips_ppm != null && ch.clips_ppm >= OVERLOAD_PPM;
     const what = h('td', null, h('span', { class: `badge ${k.cls}`.trim(), text: k.label, title: k.title }),
-      ch.clipped ? h('span', { class: 'badge bad', text: 'Overload', title: 'The ADC clipped while this window was read: try a lower manual gain' }) : null);
+      over ? h('span', { class: 'badge bad', text: 'Overload', title: `${num(ch.clips_ppm)} samples a million at the ADC's full scale: try a lower manual gain` }) : null);
     const vacant = ch.kind === 'vacant';
     return h('tr', { class: vacant ? 'faint' : null },
       h('td', null, h('strong', { text: String(ch.number) })),
@@ -181,7 +187,7 @@ export function mount(el) {
       h('td', { class: 'num', text: db(ch.pilot_db), title: 'The pilot over the plateau: 20.1 dB for a clean signal' }),
       h('td', { class: 'num', text: ch.pilot_offset_hz == null ? DASH : `${signed(ch.pilot_offset_hz)} kHz` }),
       h('td', { class: 'num', text: ch.power_dbm == null ? DASH : `${num(ch.power_dbm, 1)} dBm` }),
-      h('td', { class: 'num dim', text: ch.gain_db == null ? DASH : `${num(ch.gain_db)} dB` }));
+      h('td', { class: 'num dim', text: ch.gain_db == null ? DASH : `${num(ch.gain_db)} dB`, title: clipText(ch.clips_ppm) }));
   }
 
   function results(s) {

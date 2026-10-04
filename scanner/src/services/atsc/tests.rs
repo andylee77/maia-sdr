@@ -20,11 +20,13 @@ const AIR: &[(u8, bool, f64, f64)] =
 /// Clips the ADC whenever it is in the window.
 const LOUD: u8 = 36;
 
-/// A radio on that air: the spectrometer shows what falls in the window around the LO.
+/// A radio on that air: the spectrometer shows what falls in the window around the LO; each frame
+/// is a million samples, a thousand of them clipped while `LOUD` is in the window.
 #[derive(Default)]
 struct Air {
     lo: AtomicU64,
     clips: AtomicU32,
+    samples: AtomicU64,
     gains: Mutex<Vec<String>>,
 }
 
@@ -61,10 +63,16 @@ impl RadioHw for Air {
         Ok(())
     }
     async fn readback(&self, _: u32) -> Readback {
-        Readback { gain_db: Some(40.0), adc_clips: Some(self.clips.load(Ordering::SeqCst)), ..Default::default() }
+        Readback {
+            gain_db: Some(40.0),
+            adc_clips: Some(self.clips.load(Ordering::SeqCst)),
+            sample_count: Some(self.samples.load(Ordering::SeqCst)),
+            ..Default::default()
+        }
     }
     async fn spectrum(&self) -> Option<Vec<u8>> {
         let lo = self.lo.load(Ordering::SeqCst) as f64;
+        self.samples.fetch_add(1_000_000, Ordering::SeqCst);
         let mut p = noise();
         for &(n, flat, cn, shift) in AIR {
             let c = Channel::get(n).unwrap();
@@ -77,7 +85,7 @@ impl RadioHw for Air {
                 add_vsb(&mut p, lo, c, cn, shift);
             }
             if n == LOUD {
-                self.clips.fetch_add(1, Ordering::SeqCst);
+                self.clips.fetch_add(1_000, Ordering::SeqCst);
             }
         }
         Some(words(&p))
@@ -113,7 +121,10 @@ async fn a_scan_reads_each_channel_and_says_what_it_holds() {
     assert!((c19.level_db - 35.0).abs() < 1.0, "{c19:?}");
     assert!((s.found[3].level_db - 25.0).abs() < 1.0, "beside a strong neighbour: {:?}", s.found[3]);
     assert!(s.found.iter().all(|c| c.gain_db == Some(40.0) && c.power_dbm.is_some()));
-    assert!(s.found.iter().all(|c| c.clipped == (c.number == LOUD)), "{:?}", s.found);
+    for c in &s.found {
+        let want = if c.number == LOUD { 1_000.0 } else { 0.0 };
+        assert!((c.clips_ppm.unwrap() - want).abs() < 1e-6, "{c:?}");
+    }
     assert_eq!(tuner.hw().gains.lock().unwrap().as_slice(), ["slow_attack None"], "the AGC unless a gain is asked");
     let last = log.since(0, 10, false).last().unwrap().text.clone();
     assert!(last.contains("done on 6 channels: 4 8-VSB, 1 without an 8-VSB pilot"), "{last}");

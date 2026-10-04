@@ -192,7 +192,10 @@ impl Atsc {
                 bail!("no spectrometer frames at {:.1} MHz", w.lo_hz as f64 / 1e6);
             }
             let power = average(&frames);
-            let clipped = matches!((before.adc_clips, after.adc_clips), (Some(a), Some(b)) if b != a);
+            let clips_ppm = match (before.adc_clips, after.adc_clips, before.sample_count, after.sample_count) {
+                (Some(a), Some(b), Some(s0), Some(s1)) if s1 > s0 => Some(f64::from(b.wrapping_sub(a)) * 1e6 / (s1 - s0) as f64),
+                _ => None,
+            };
             let gain = after.gain_db;
             let to_dbm = gain.map_or(0.0, |g| (g - SCALE_GAIN_DB) as f32);
             self.spectra().push(WindowSpectrum {
@@ -216,7 +219,7 @@ impl Atsc {
                         level_db: m.level_db,
                         power_dbm: gain.map(|g| m.power_db - (g - SCALE_GAIN_DB) as f32),
                         gain_db: gain,
-                        clipped,
+                        clips_ppm,
                     })
                 })
                 .collect();
