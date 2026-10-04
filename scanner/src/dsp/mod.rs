@@ -3,3 +3,6 @@
 
 pub mod fsk4;
 pub mod taps;
+
+#[cfg(test)]
+mod cost_tests;

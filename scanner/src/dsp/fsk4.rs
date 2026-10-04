@@ -41,11 +41,85 @@ pub fn linear(x1: f32, x2: f32, mu: f64) -> f32 {
     }
 }
 
-/// Streaming real FIR, optionally decimating by two. The last `taps − 1` inputs carry over to
-/// the next block; zero taps (every other one of a half-band) are skipped.
+/// Streaming real FIR, optionally decimating by two (the first input of the stream produces an
+/// output). The inputs a later output needs carry over to the next block.
+///
+/// Equal taps at mirrored places fold in pairs (the two samples added before one multiply), the
+/// other taps go one by one, and a decimating half-band runs on two phases of its input: its
+/// non-zero taps fall on the samples of the output's parity, its centre tap on the others. Both
+/// take a block's outputs in one run (`folded_run`), eight outputs at a time in NEON on the A9.
+/// The taps are the given ones (but a half-band's residues of zero); only the order of the
+/// additions differs from a plain sum.
 pub struct Fir {
-    /// (index into the window, tap) of the non-zero taps.
-    taps: Vec<(usize, f32)>,
+    kind: Kind,
+}
+
+enum Kind {
+    Window(Window),
+    HalfBand(HalfBand),
+}
+
+/// A half-band tap this small against the centre is a residue of zero (SDRTrunk's designs leave
+/// about 1e-17): all of them together stay far below an `f32` output's resolution.
+const HALF_BAND_RESIDUE: f32 = 1e-12;
+
+fn symmetric(t: &[f32]) -> bool {
+    (0..t.len() / 2).all(|k| t[k] == t[t.len() - 1 - k])
+}
+
+impl Fir {
+    pub fn new(taps: &[f32], decimate: bool) -> Self {
+        let len = taps.len();
+        let centre = len / 2;
+        // A half-band: every tap at an even distance from the centre (but the centre) is zero.
+        let residue = taps[centre].abs() * HALF_BAND_RESIDUE;
+        let half_band = decimate
+            && symmetric(taps)
+            && len % 4 == 3
+            && taps.iter().enumerate().all(|(k, t)| k == centre || k.abs_diff(centre) % 2 == 1 || t.abs() <= residue);
+        let kind = if half_band {
+            Kind::HalfBand(HalfBand::new(taps))
+        } else {
+            // y[n] = Σ t[k]·x[n−k]; over the window w = x[n−len+1 ..= n], x[n−k] = w[len−1−k].
+            let wt: Vec<f32> = taps.iter().rev().copied().collect();
+            // The pairs of a run of taps that starts or ends the window, from its ends inwards while
+            // the two taps are equal; the run with the most.
+            let pairs = |a: usize, b: usize| (0..(b - a) / 2).take_while(|&i| wt[a + i] == wt[b - 1 - i]).count();
+            let (a, b) = (0..len)
+                .flat_map(|cut| [(cut, len), (0, len - cut)])
+                .min_by_key(|&(a, b)| std::cmp::Reverse(pairs(a, b)))
+                .unwrap();
+            let n = pairs(a, b);
+            let window_taps = if n > 0 && !decimate {
+                let single = (0..a).chain(a + n..b - n).chain(b..len).map(|j| (j, wt[j])).collect();
+                Taps::Folded { at: a, span: b - a - 1, half: wt[a..a + n].to_vec(), single }
+            } else {
+                Taps::Plain(wt)
+            };
+            Kind::Window(Window { taps: window_taps, len, work: vec![0.0; len - 1], decimate, emit: true })
+        };
+        Fir { kind }
+    }
+
+    pub fn process(&mut self, x: &[f32], out: &mut Vec<f32>) {
+        match &mut self.kind {
+            Kind::Window(w) => w.process(x, out),
+            Kind::HalfBand(h) => h.process(x, out),
+        }
+    }
+}
+
+/// Taps in window order (the oldest sample's first).
+enum Taps {
+    Plain(Vec<f32>),
+    /// A run of `span` + 1 taps from window position `at` whose outer pairs are equal, folded
+    /// (`half`: the first tap of each); the taps between the pairs and beyond the run's ends one
+    /// by one as (position, tap). Every output: not decimating.
+    Folded { at: usize, span: usize, half: Vec<f32>, single: Vec<(usize, f32)> },
+}
+
+struct Window {
+    taps: Taps,
     len: usize,
     work: Vec<f32>,
     decimate: bool,
@@ -53,30 +127,193 @@ pub struct Fir {
     emit: bool,
 }
 
-impl Fir {
-    pub fn new(taps: &[f32], decimate: bool) -> Self {
-        let len = taps.len();
-        // y[n] = Σ t[k]·x[n−k]; over the window w = x[n−len+1 ..= n], x[n−k] = w[len−1−k].
-        let nz = taps.iter().enumerate().filter(|(_, t)| **t != 0.0).map(|(k, t)| (len - 1 - k, *t)).collect();
-        Fir { taps: nz, len, work: vec![0.0; len - 1], decimate, emit: true }
-    }
-
-    pub fn process(&mut self, x: &[f32], out: &mut Vec<f32>) {
+impl Window {
+    fn process(&mut self, x: &[f32], out: &mut Vec<f32>) {
         let hist = self.len - 1;
         self.work.truncate(hist);
         self.work.extend_from_slice(x);
-        for n in 0..x.len() {
-            let produce = !self.decimate || self.emit;
-            self.emit = !self.emit;
-            if !produce {
-                continue;
+        match &self.taps {
+            Taps::Folded { at, span, half, single } => {
+                // Output n's window is work[n ..= n + len − 1].
+                let start = out.len();
+                out.resize(start + x.len(), 0.0);
+                folded_run(half, *span, &self.work[*at..], &mut out[start..]);
+                for &(j, tap) in single {
+                    out[start..].iter_mut().zip(&self.work[j..]).for_each(|(o, s)| *o += tap * s);
+                }
             }
-            let w = &self.work[n..n + self.len];
-            out.push(self.taps.iter().map(|&(i, t)| t * w[i]).sum());
+            Taps::Plain(h) => {
+                for n in 0..x.len() {
+                    let produce = !self.decimate || self.emit;
+                    self.emit = !self.emit;
+                    if produce {
+                        out.push(dot(h, &self.work[n..n + self.len]));
+                    }
+                }
+            }
         }
         let used = self.work.len() - hist;
         self.work.drain(..used);
     }
+}
+
+/// A half-band decimating by two (length 4p − 1, centre c = 2p − 1). The output at input 2m
+/// takes the 2p even inputs x[2m − 2c ..= 2m] (p symmetric pairs) and the odd input x[2m − c].
+struct HalfBand {
+    /// The taps of the even inputs' pairs, oldest first.
+    pairs: Vec<f32>,
+    centre: f32,
+    /// Even inputs: `even[i]` is x[2(even_base + i)].
+    even: Vec<f32>,
+    even_base: i64,
+    /// Odd inputs: `odd[i]` is x[2(odd_base + i) + 1].
+    odd: Vec<f32>,
+    odd_base: i64,
+    next_even: bool,
+}
+
+impl HalfBand {
+    fn new(taps: &[f32]) -> Self {
+        let pairs: Vec<f32> = taps[..taps.len() / 2].iter().step_by(2).copied().collect();
+        let p = pairs.len();
+        HalfBand {
+            centre: taps[taps.len() / 2],
+            // The stream starts after zeros, as a window FIR's does.
+            even: vec![0.0; 2 * p - 1],
+            even_base: -(2 * p as i64 - 1),
+            odd: vec![0.0; p],
+            odd_base: -(p as i64),
+            pairs,
+            next_even: true,
+        }
+    }
+
+    fn process(&mut self, x: &[f32], out: &mut Vec<f32>) {
+        let p = self.pairs.len();
+        let first = self.even_base + self.even.len() as i64;
+        for &s in x {
+            if self.next_even {
+                self.even.push(s);
+            } else {
+                self.odd.push(s);
+            }
+            self.next_even = !self.next_even;
+        }
+        let next = self.even_base + self.even.len() as i64;
+        // Output m's even inputs are even[m − even_base − (2p − 1) ..= m − even_base], its odd
+        // input odd[m − p − odd_base]: both step by one with m.
+        let start = out.len();
+        out.resize(start + (next - first) as usize, 0.0);
+        let window = (first - self.even_base) as usize + 1 - 2 * p;
+        folded_run(&self.pairs, 2 * p - 1, &self.even[window..], &mut out[start..]);
+        let mid = &self.odd[(first - p as i64 - self.odd_base) as usize..];
+        out[start..].iter_mut().zip(mid).for_each(|(o, m)| *o += self.centre * m);
+        let drop = self.even.len() - (2 * p - 1);
+        self.even.drain(..drop);
+        self.even_base += drop as i64;
+        // The next output's centre is x[2(next − p) + 1].
+        let drop = ((next - p as i64 - self.odd_base).max(0) as usize).min(self.odd.len());
+        self.odd.drain(..drop);
+        self.odd_base += drop as i64;
+    }
+}
+
+/// Σ t[i]·w[i], four partial sums at once.
+fn dot(t: &[f32], w: &[f32]) -> f32 {
+    let mut s = [0.0f32; 4];
+    let full = t.len() / 4 * 4;
+    for (tc, wc) in t[..full].chunks_exact(4).zip(w[..full].chunks_exact(4)) {
+        s[0] += tc[0] * wc[0];
+        s[1] += tc[1] * wc[1];
+        s[2] += tc[2] * wc[2];
+        s[3] += tc[3] * wc[3];
+    }
+    for i in full..t.len() {
+        s[0] += t[i] * w[i];
+    }
+    (s[0] + s[1]) + (s[2] + s[3])
+}
+
+/// out[k] = Σ t[i]·(x[k + i] + x[k + span − i]) over the n = `t.len()` outer tap pairs of a run
+/// of span + 1 taps, for every k < `out.len()`.
+fn folded_run(t: &[f32], span: usize, x: &[f32], out: &mut [f32]) {
+    assert!(x.len() >= out.len() + span && span + 1 >= 2 * t.len());
+    let done = folded_run_neon(t, span, x, out);
+    for (k, o) in out.iter_mut().enumerate().skip(done) {
+        *o = folded(t, &x[k..], &x[..=k + span]);
+    }
+}
+
+/// The NEON part of `folded_run`: the outputs in whole groups of eight, each tap's pair of
+/// eight-sample runs added and multiplied by the tap into eight sums. Returns the outputs done.
+#[cfg(target_arch = "arm")]
+fn folded_run_neon(t: &[f32], span: usize, x: &[f32], out: &mut [f32]) -> usize {
+    if t.is_empty() {
+        return 0;
+    }
+    let groups = out.len() / 8;
+    for g in 0..groups {
+        let k = 8 * g;
+        // SAFETY: tap i reads x[k + i .. k + i + 8] and x[k + span − i .. k + span − i + 8],
+        // inside x as folded_run checks (i < n ≤ (span + 1)/2, k + 8 ≤ out.len()); writes
+        // out[k .. k + 8] and only the registers it names.
+        unsafe {
+            std::arch::asm!(
+                ".fpu neon",
+                "vmov.i32 q4, #0",
+                "vmov.i32 q5, #0",
+                "2:",
+                "vld1.32 {{d0-d3}}, [{lo}]",
+                "vld1.32 {{d4-d7}}, [{hi}]",
+                "vld1.32 {{d12[]}}, [{t}]!",
+                "add {lo}, {lo}, #4",
+                "sub {hi}, {hi}, #4",
+                "vadd.f32 q0, q0, q2",
+                "vadd.f32 q1, q1, q3",
+                "vmla.f32 q4, q0, d12[0]",
+                "vmla.f32 q5, q1, d12[0]",
+                "subs {n}, {n}, #1",
+                "bne 2b",
+                "vst1.32 {{d8-d11}}, [{dst}]",
+                lo = inout(reg) x.as_ptr().add(k) => _,
+                hi = inout(reg) x.as_ptr().add(k + span) => _,
+                t = inout(reg) t.as_ptr() => _,
+                n = inout(reg) t.len() => _,
+                dst = in(reg) out.as_mut_ptr().add(k),
+                out("d0") _, out("d1") _, out("d2") _, out("d3") _, out("d4") _, out("d5") _,
+                out("d6") _, out("d7") _, out("d8") _, out("d9") _, out("d10") _, out("d11") _,
+                out("d12") _,
+                options(nostack),
+            );
+        }
+    }
+    groups * 8
+}
+
+#[cfg(not(target_arch = "arm"))]
+fn folded_run_neon(_: &[f32], _: usize, _: &[f32], _: &mut [f32]) -> usize {
+    0
+}
+
+/// Σ t[i]·(lo[i] + hi[n−1−i]) for the n = `t.len()` taps of a symmetric pair set (`hi` holds the
+/// pairs' later samples, in input order), four partial sums at once.
+fn folded(t: &[f32], lo: &[f32], hi: &[f32]) -> f32 {
+    let n = t.len();
+    let (lo, hi) = (&lo[..n], &hi[hi.len() - n..]);
+    let mut s = [0.0f32; 4];
+    let full = n / 4 * 4;
+    // lo[i]'s partner is hi[n−1−i]: the first full chunks of lo pair with hi's last ones, read
+    // from the end.
+    for ((tc, lc), hc) in t[..full].chunks_exact(4).zip(lo[..full].chunks_exact(4)).zip(hi[n - full..].rchunks_exact(4)) {
+        s[0] += tc[0] * (lc[0] + hc[3]);
+        s[1] += tc[1] * (lc[1] + hc[2]);
+        s[2] += tc[2] * (lc[2] + hc[1]);
+        s[3] += tc[3] * (lc[3] + hc[0]);
+    }
+    for i in full..n {
+        s[0] += t[i] * (lo[i] + hi[n - 1 - i]);
+    }
+    (s[0] + s[1]) + (s[2] + s[3])
 }
 
 /// The phase of each sample against the one a symbol earlier, the current sample MMSE
@@ -157,6 +394,84 @@ mod tests {
         let mut out = Vec::new();
         half.process(&[1.0, 2.0, 3.0, 4.0, 5.0], &mut out);
         assert_eq!(out, vec![1.0, 4.0, 8.0], "x[n] + x[n−2] at every other n");
+    }
+
+    /// (taps folded in pairs, taps one by one) of a filter of every output.
+    fn folds(taps: &[f32]) -> (usize, usize) {
+        match Fir::new(taps, false).kind {
+            Kind::Window(Window { taps: Taps::Folded { half, single, .. }, .. }) => (half.len(), single.len()),
+            _ => (0, taps.len()),
+        }
+    }
+
+    fn dmr_rrc() -> Vec<f32> {
+        crate::protocol::dmr::filters::root_raised_cosine(25_000.0 / 4800.0, 22, 5760.0 / 25_000.0)
+    }
+
+    #[test]
+    fn the_receivers_filters_fold() {
+        use crate::dsp::taps::{HALFBAND_63, LPF_C4FM_25K, LPF_LSM_25K, RRC_TAPS_25K};
+        use crate::protocol::dmr::filters::LPF_DMR_25K;
+        assert!(matches!(Fir::new(&HALFBAND_63, true).kind, Kind::HalfBand(_)), "a half-band but for residues of zero");
+        assert_eq!(folds(&LPF_LSM_25K), (33, 1));
+        assert_eq!(folds(&LPF_C4FM_25K), (19, 1));
+        assert_eq!(folds(&LPF_DMR_25K), (18, 1));
+        assert_eq!(folds(&RRC_TAPS_25K), (20, 2), "a symmetric 41 and one more");
+        assert_eq!(folds(&dmr_rrc()), (27, 3), "a lone first tap and an unequal inner pair");
+    }
+
+    /// The plain sum Σ t[k]·x[n−k] in f64, every output or (decimating) the even ones.
+    fn reference(taps: &[f32], decimate: bool, x: &[f32]) -> Vec<f64> {
+        (0..x.len())
+            .filter(|n| !decimate || n % 2 == 0)
+            .map(|n| taps.iter().enumerate().filter(|(k, _)| *k <= n).map(|(k, &t)| t as f64 * x[n - k] as f64).sum())
+            .collect()
+    }
+
+    #[test]
+    fn every_filter_shape_is_the_plain_sum() {
+        use crate::dsp::taps::{HALFBAND_63, LPF_LSM_25K, RRC_TAPS_25K};
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let x: Vec<f32> = (0..5000)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+            })
+            .collect();
+        let lopsided: Vec<f32> = (0..37).map(|k| ((k * 7 % 11) as f32 - 5.0) / 20.0).collect();
+        let even: Vec<f32> = LPF_LSM_25K[..33].iter().chain(&LPF_LSM_25K[34..]).copied().collect();
+        let dmr_rrc = dmr_rrc();
+        for (name, taps, decimate) in [
+            ("half-band", &HALFBAND_63[..], true),
+            ("half-band, every output", &HALFBAND_63[..], false),
+            ("symmetric, odd", &LPF_LSM_25K[..], false),
+            ("symmetric, even", &even[..], false),
+            ("symmetric and a lone tap", &RRC_TAPS_25K[..], false),
+            ("unequal inner pair", &dmr_rrc[..], false),
+            ("symmetric, decimating", &LPF_LSM_25K[..], true),
+            ("lopsided", &lopsided[..], false),
+            ("lopsided, decimating", &lopsided[..], true),
+        ] {
+            let want = reference(taps, decimate, &x);
+            let mut fir = Fir::new(taps, decimate);
+            let mut got = Vec::new();
+            let mut at = 0;
+            for size in [1008, 7, 1, 500, 33, 2, 3].iter().cycle() {
+                if at >= x.len() {
+                    break;
+                }
+                let end = (at + size).min(x.len());
+                fir.process(&x[at..end], &mut got);
+                at = end;
+            }
+            assert_eq!(got.len(), want.len(), "{name}");
+            let scale: f64 = taps.iter().map(|t| t.abs() as f64).sum::<f64>() * 0.5;
+            for (n, (g, w)) in got.iter().zip(&want).enumerate() {
+                assert!((*g as f64 - w).abs() <= 1e-6 * scale, "{name}: output {n} {g} against {w}");
+            }
+        }
     }
 
     #[test]

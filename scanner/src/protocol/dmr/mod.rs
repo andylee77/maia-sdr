@@ -12,7 +12,7 @@ pub mod demod;
 /// Error correction and checksums: CACH Hamming(7,4), Golay(20,8) slot type,
 /// BPTC(196,96) / (68,36) / (128,77), CRC-CCITT / CRC-8 / RS(12,9) / checksum 5.
 pub mod fec;
-mod filters;
+pub(crate) mod filters;
 /// Messages from bursts: CSBKs, link control, voice; SDRTrunk's text for each.
 pub mod message;
 /// Bursts and timeslots from the dibit stream.
