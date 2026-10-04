@@ -5,7 +5,8 @@
 # What we KEEP from maia_iio: axi_dmac (RX+TX DMA), util_cpack2/upack2,
 # AD9361 IIO streaming, 8-bit mode support, FIR filters.
 # What we REMOVE: maia_sdr IP (spectrometer + recorder).
-# What we ADD: p25_core (DDC + LSM demod + dibit DMA + pre-diff IQ DMA).
+# What we ADD: p25_core, the radio core (scanner-hdl/radio_core): DDC lanes into one lane
+# ring, the wideband spectrometer and the raw IQ capture, three masters on HP1.
 
 set LVDS_ENABLE "LVDS_ENABLE"
 set fishball "fishball"

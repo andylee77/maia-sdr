@@ -33,7 +33,8 @@ standards, same implementation strategy).
 | Core | `p25_core` | `hwval_core` (its `rst` output, if exported, stays unconnected as in P25) |
 | BD flags | `fishball LVDS_ENABLE maia_iio with_tx_fir with_rx_fir_maia` (+ unused `p25_iio`) | same, without the unused `p25_iio` |
 | `axi_ad9361` DDS | `DAC_DDS_DISABLE=1` (pluto base) | `DAC_DDS_DISABLE=0` (TX stimulus) |
-| HP1 (@ `clk_out1`, 62.5 MHz) | seven P25 ring masters | `m_axi_ringv2`, `m_axi_legacy` |
+| `axi_ad9361` mode | `MODE_1R1T=1`, set after sourcing the pluto base | same |
+| HP1 (@ `clk_out1`, 62.5 MHz) | three radio-core masters (lanes, spectrum, capture) | `m_axi_ringv2`, `m_axi_legacy` |
 | HP0 / HP3 | unused | `m_axi_mt0` -> HP0, `m_axi_mt1` -> HP3, 64-bit, @ `clk_out2` (125 MHz) |
 | AXI-Lite | `0x7C46_0000` | `0x7C46_0000` (4 KiB) |
 | IRQ | `sys_concat_intc/In11` (SPI 55) | same |
@@ -46,7 +47,7 @@ standards, same implementation strategy).
 | `manual_decim` false path | present (stale) | removed |
 | `p25_core ... field_sdr_reset_reg` false path | present | replaced by `-to *hwval_core*/fifo/fifo/fifo18e1/RST` (ingest and evt CDC FIFOs) |
 | New waivers | -- | `-from *_snapshadow* -to clk_fpga_0` (snapshot shadows and census counters, read only in the AXI-Lite domain; scoped so the census counters' own increment paths stay timed), `-from *_cdchold_reg*` (DomainCrossing/ConfigSync hold registers, `hwval_hdl/cdc_util.py`), `-to amaranth.vivado.false_path == "TRUE"` cells (census `*_count_snapstage`, rule from `maia_sdr.xdc`), `-from` ports `ad_clkout` and `gpio_status[*]` (async inputs), `y1_clk` 20 ns clock |
-| Bad-timing XSA | promoted by `build_fpga.bat` | hard failure |
+| Bad-timing XSA | hard failure | hard failure |
 
 Kept unchanged on purpose: the global `ASYNC_REG` false path, the maia
 `cdc_request/response_data_dest_reg` waivers (only a "no valid object"

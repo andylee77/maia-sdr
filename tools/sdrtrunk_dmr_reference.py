@@ -1,6 +1,6 @@
 """Decode DMR IQ WAVs with SDRTrunk's own DMRDecoder: the reference for protocol::dmr (change 075).
 
-Input: 50 kSPS stereo int16 WAVs as p25-httpd's /api/control_iq_dump writes them.
+Input: 50 kSPS stereo int16 WAVs (I left), as the scanner's /api/v1/iq/control.wav gives them.
 Output: one line per message, `file|timestamp_ms|timeslot|valid|class|text`, where text is
 SDRTrunk's toString() (protocol::dmr prints the same text, so the two can be diffed).
 

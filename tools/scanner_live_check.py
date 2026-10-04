@@ -73,8 +73,8 @@ def sample(host: str, ssh: bool) -> dict:
         "grants": c.get("grants"),
         "grants_dropped": c.get("grants_dropped"),
         "decoder_cpu_pct": c.get("cpu_pct"),
-        "dibit_resyncs": (c.get("input") or {}).get("dibit_resyncs"),
-        "iq_dropped": (c.get("input") or {}).get("iq_dropped"),
+        "input_dropped": (c.get("input") or {}).get("dropped"),
+        "input_gaps": (c.get("input") or {}).get("gaps"),
         "crystal_ppm": t.get("crystal_ppm"),
         "lo_shift_hz": t.get("lo_shift_hz"),
         "recordings": recs.get("total", recs.get("count")),
@@ -134,7 +134,8 @@ def main() -> int:
     summary["msgs_per_s_min"] = min((s["msgs_per_s"] for s in samples if s.get("msgs_per_s") is not None), default=None)
     summary["ok_pct_min"] = min((s["ok_pct"] for s in samples if s.get("ok_pct") is not None), default=None)
     summary["grants_dropped"] = last.get("grants_dropped")
-    summary["dibit_resyncs"] = last.get("dibit_resyncs")
+    summary["input_dropped"] = last.get("input_dropped")
+    summary["input_gaps"] = last.get("input_gaps")
     summary["crystal_ppm"] = [first.get("crystal_ppm"), last.get("crystal_ppm")]
     summary["uptime_s"] = [first.get("uptime_s"), last.get("uptime_s")]
     if args.ssh:

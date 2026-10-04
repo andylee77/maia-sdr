@@ -1,24 +1,18 @@
 #!/usr/bin/env python3
 """
-p25_ddc_filter_design.py -- P25DDC filter design, multi-preset sweep.
+p25_ddc_filter_design.py -- the lanes' DDC filters, one set per sample-rate preset.
 
-Designs the coefficients for the 3-stage DDC used by the Fishball P25
-control + traffic chains, across a fixed table of sample-rate presets.
-Every preset produces the same 50 kSPS DDC output (post-2026-05-03
-retune; see FS_OUT below). The downstream LsmDecimator2 /2 takes the
-50 kSPS to 25 kSPS, matching SDRTrunk's effective LSM front-end rate.
-Only the AD9361 ADC rate and the per-stage decimation factors change
-across presets.
+Designs the coefficients of the radio core's three-stage lane DDCs
+(`P25DDC`, scanner-hdl/radio_core/p25ddc.py) for a fixed table of AD9361
+sample-rate presets. Every preset decimates to 50 kSPS (FS_OUT), the rate
+the scanner's receivers take; their front end halves it to 25 kSPS,
+SDRTrunk's LSM rate. Only the AD9361 rate and the per-stage decimations
+change across presets.
 
-The 8M preset is the original P25DDC v2 design (doc/changes/041) and
-is bit-identical to what landed in 2026-04-15. All other presets are
-parameterised extensions of the same design philosophy:
-
-  * Stage 3 is always the critical anti-alias for LsmDecimator2's
-    naive /2 fold-back. Passband 7.25 kHz (SDRTrunk baseband LPF
-    edge), stopband 25 kHz (= output Nyquist at 50 kSPS), driven hard by a
-    220 dB weight target so remez spends the full 256-tap budget on
-    the steepest equiripple transition.
+  * Stage 3 is the critical anti-alias for the receivers' /2. Passband
+    7.25 kHz (SDRTrunk's baseband LPF edge), stopband 25 kHz (the output
+    Nyquist at 50 kSPS), driven hard by a 220 dB weight so remez spends
+    the full 256-tap budget on the steepest equiripple transition.
 
   * Stage 2 is a moderate anti-alias against stage 3's input
     Nyquist. Stopband = fs/(2*d1*d2) (= stage 2 output Nyquist),
@@ -27,26 +21,26 @@ parameterised extensions of the same design philosophy:
   * Stage 1 is a loose anti-alias against stage 2's input Nyquist.
     Stopband = fs/(2*d1), passband = min(200 kHz, stopband/5).
 
-All coefficients are unit-DC-gain Q1.17 integers. No peak-rescaling.
+All coefficients are unit-DC-gain Q1.17 integers, which P25DDC's
+macc_trunc assumes. No peak-rescaling.
 
 Usage
 -----
-Regenerate the whole preset table:
+Regenerate the preset table the scanner loads:
     python tools/p25_ddc_filter_design.py \\
-        --emit-rs p25-httpd/src/hardware/ddc_presets.rs
+        --emit-rs scanner/src/hardware/presets/table.rs
 
 Analyse one preset in detail (adjacent-channel rejection table, DC
 gain report, optional matplotlib plot):
     python tools/p25_ddc_filter_design.py --preset 8M --analyse
     python tools/p25_ddc_filter_design.py --preset 4M --analyse --plot
 
-Rust consumers
---------------
-The emitted `ddc_presets.rs` exposes a `DdcPreset` struct, one
-`PRESET_<name>` const per feasible preset, and a `PRESETS` slice.
-`p25-httpd/src/hardware/fpga.rs::configure_ddc()` takes a
-`&DdcPreset` and loads the matching coefficient tables + per-stage
-decimation + `operations_minus_one` into the HDL DDC coefficient RAM.
+Rust consumer
+-------------
+The emitted table exposes a `DdcPreset` struct, one `PRESET_<name>`
+const per feasible preset, and a `PRESETS` slice.
+`scanner/src/hardware/presets` loads a preset's coefficient tables,
+per-stage decimations and `operations_minus_one` into a lane's DDC.
 
 SPDX-License-Identifier: MIT
 """
@@ -65,12 +59,10 @@ from scipy.signal import remez, freqz, kaiserord
 
 # ── Global constants ──────────────────────────────────────────────
 
-# 2026-05-03: dropped DDC output rate from 62.5 kSPS to 50 kSPS so
-# the downstream LsmDecimator2 /2 lands at exactly 25 kSPS — matching
+# The DDC output rate: the receivers' /2 then lands at exactly 25 kSPS,
 # SDRTrunk's LSM decoder front-end rate (sps = 25000/4800 ≈ 5.21).
-# Per-preset (d1, d2, d3) factorizations are recomputed accordingly;
-# stage 3 always carries the new /5 factor (smallest filter cost,
-# cleanest transition band).
+# Stage 3 always carries a /5 factor (smallest filter cost, cleanest
+# transition band).
 FS_OUT = 50_000            # = 10.42 samples/symbol pre-/2; 5.21 post-/2
 
 # Fixed-point coefficient format (matches maia_hdl DDC):
@@ -81,8 +73,8 @@ COEFF_MAX = (1 << COEFF_FRAC) - 1                  # 131071
 COEFF_MIN = -(1 << COEFF_FRAC)                     # -131072
 
 # FIR4DSP / FIR2DSP RAM limits from maia_hdl/fir.py. The *usable*
-# tap count depends on the decimation factor because fpga.rs's
-# load_fir_*dsp() enforces `operations * decimation <= NUM_ADDR/2`
+# tap count depends on the decimation factor because the loaders
+# (scanner/src/hardware/presets) enforce `operations * decimation <= NUM_ADDR/2`
 # (FIR4DSP) or `operations * decimation <= NUM_ADDR` (FIR2DSP).
 # See max_taps_fir4dsp() / max_taps_fir2dsp() below.
 
@@ -111,13 +103,8 @@ def max_taps_fir2dsp(decim: int) -> int:
 # (name, sample_rate_hz, d1, d2, d3). Every entry must satisfy
 # d1*d2*d3 = sample_rate_hz / FS_OUT  with FS_OUT = 50 kSPS.
 #
-# 2026-05-03 retune: every preset now ends in d3=5. Stage 3's input
-# rate (and therefore its filter sharpness budget) is unchanged
-# vs the prior 62.5 kSPS table — only the decim factor moves from
-# 4 (or 8 for 8M) to 5, and stage 3's stopband moves from 31.25 kHz
-# to 25 kHz (the new fs_out/2). The previous bit-identical-to-2026
-# -04-15 8M preset is intentionally retired; the new design is
-# validated by the same `rejection_25k_db` build-time threshold.
+# Every preset ends in d3=5, and stage 3's stopband is 25 kHz (fs_out/2).
+# Each design must pass the `rejection_25k_db` threshold below.
 
 PRESETS = [
     ("2M",   2_000_000,  2, 4, 5),
@@ -176,12 +163,10 @@ def stages_for_preset(fs: int, d1: int, d2: int, d3: int):
         stopband_db=100.0,
     )
 
-    # Stage 3 is the critical anti-alias for LsmDecimator2's fold-back.
+    # Stage 3 is the critical anti-alias for the receivers' /2 fold-back.
     # Passband + stopband are ABSOLUTE frequencies (same across all
-    # presets); only the input rate changes.
-    # 2026-05-03: stopband moved from 31_250 (old fs_out/2 @ 62.5 kSPS)
-    # to 25_000 (new fs_out/2 @ 50 kSPS) so the LsmDecimator2 /2 lands
-    # at 25 kSPS without fold-back.
+    # presets); only the input rate changes. The stopband is fs_out/2
+    # (25 kHz) so the /2 lands at 25 kSPS without fold-back.
     stage3_fs = stage2_fs // d2
     stage3 = StageSpec(
         name='stage3',
@@ -358,7 +343,7 @@ def design_preset(name, fs, d1, d2, d3, *, verbose=False):
     taps3 = ensure_decim_divisible(taps3, d3)
     q1, q2, q3 = quantise(taps1), quantise(taps2), quantise(taps3)
 
-    # Adjacent-channel rejection at 25 kHz (the LsmDecimator2 fold-back
+    # Adjacent-channel rejection at 25 kHz (the receivers' /2 fold-back
     # hotspot) must stay below -55 dB. This is the single hardest
     # constraint; if we fail it the preset is not safe to ship.
     w, h = cascaded_response(taps1, taps2, taps3, d1, d2, fs)
@@ -398,27 +383,24 @@ def format_coeff_block(name: str, coeffs: list[int]) -> str:
 
 
 def emit_rust_module(presets_data: list[dict]) -> str:
-    """Build the full ddc_presets.rs file contents."""
+    """Build the full preset table (scanner/src/hardware/presets/table.rs)."""
     out: list[str] = []
     out.append("// SPDX-License-Identifier: MIT")
     out.append("//")
     out.append("// AUTO-GENERATED by tools/p25_ddc_filter_design.py.")
     out.append("// DO NOT EDIT BY HAND. Rerun the script to regenerate.")
     out.append("//")
-    out.append("// P25DDC v2 multi-preset coefficient tables. Every preset")
-    out.append("// produces 50 kSPS at the DDC output so the downstream")
-    out.append("// LsmDecimator2 /2 + LsmFir(LPF_TAPS_25K, RRC_TAPS_25K) chain")
-    out.append("// is identical across presets and lands at 25 kSPS at the")
-    out.append("// LSM front end (matching SDRTrunk's effective LSM rate).")
-    out.append("// 2026-05-03 retune; the prior 62.5 kSPS bit-identical-2026")
-    out.append("// -04-15 8M preset is intentionally retired.")
+    out.append("// The lanes' DDC coefficient tables, one set per AD9361")
+    out.append("// sample-rate preset. Every preset decimates to 50 kSPS, the")
+    out.append("// rate the scanner's receivers take; their front end halves")
+    out.append("// it to 25 kSPS, SDRTrunk's LSM rate.")
     out.append("")
     out.append("#![allow(dead_code)]")
     out.append("")
     out.append("/// One DDC preset: AD9361 sample-rate choice + matching")
     out.append("/// 3-stage FIR coefficient tables + decimation factors.")
     out.append("/// `sample_rate_hz / (decim1 * decim2 * decim3)` is always")
-    out.append("/// 50 000 Hz by construction (post-2026-05-03 retune).")
+    out.append("/// 50 000 Hz by construction.")
     out.append("pub struct DdcPreset {")
     out.append("    pub name: &'static str,")
     out.append("    pub sample_rate_hz: u32,")
@@ -490,10 +472,6 @@ def emit_rust_module(presets_data: list[dict]) -> str:
     for p in presets_data:
         out.append(f"    &PRESET_{p['name']},")
     out.append("];")
-    out.append("")
-    out.append("/// Default preset at boot / when CLI doesn't override.")
-    out.append("/// Matches the validated 2026-04-15 configuration.")
-    out.append("pub const DEFAULT_PRESET: &DdcPreset = &PRESET_8M;")
     out.append("")
     out.append("/// Look up a preset by its public name (`\"2M\"`, `\"8M\"`, …).")
     out.append("pub fn find_preset(name: &str) -> Option<&'static DdcPreset> {")

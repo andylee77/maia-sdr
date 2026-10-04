@@ -11,11 +11,8 @@ adi_project_files fishball_p25 [list \
   "system_constr.xdc" \
   "$ad_hdl_dir/library/common/ad_iobuf.v"]
 
-# use improved implementation strategy for best timing results
-# (Phase 6E.6e: Performance_ExtraTimingOpt for tighter intra-clock
-# closure on the dense post-CORDIC layout. Was
-# Performance_ExplorePostRoutePhysOpt; switched after the lerp
-# pipeline fix shifted violations into the AXI HP2 interconnect.)
+# Implementation strategy for intra-clock timing closure (ExtraTimingOpt closed paths that
+# ExplorePostRoutePhysOpt left into the AXI HP2 interconnect).
 set_property strategy Performance_ExtraTimingOpt [get_runs impl_1]
 
 set_property STEPS.ROUTE_DESIGN.TCL.POST [file normalize utilization_hier.tcl] [get_runs impl_1]
