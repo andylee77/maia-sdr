@@ -3,8 +3,10 @@
 **Date:** 2026-10-03. **Branch:** fishball-p25. **Bake required:** yes, at step 3 (a new core
 and a new Vivado project). Steps 1 and 2 are software and host only.
 
-**Status:** design approved by Andy on 2026-10-03. Step 1 is next. The current build is backed up
-in `MAIA_SDR/_archive/build_2026-10-03_p25-core-0.3.0/` and tagged `build/p25-core-0.3.0` (the
+**Status:** design approved by Andy on 2026-10-03. Steps 1, 3a and 4 are done and on unit A's
+image (status log). The gateware for every mode is studied in "Every mode's needs", with bakes
+proposed for Andy's decision. The 0.3.0 build is backed up in
+`MAIA_SDR/_archive/build_2026-10-03_p25-core-0.3.0/` and tagged `build/p25-core-0.3.0` (the
 gateware) and `build/2026-10-01-scanner-image3` (the image, in maia-sdr and tezuka_fw).
 
 ## Why
@@ -58,7 +60,9 @@ AD9361 at 6.4 or 12.8 MSPS
   `POLYPHASE_CHANNELIZER_TAPS_PER_CHANNEL = 9`. The FFT is Maia's, sized M = rate / 25 kHz.
 - **AD9361 rates.** A power-of-two M with 25 kHz bins means 6.4 MSPS (M = 256) or 12.8 MSPS
   (M = 512); 25.6 MSPS (M = 1024) is possible if the window needs it. These replace the 8/12/16
-  MHz presets for live sites; the window planner keeps its rule (±0.45 x rate usable).
+  MHz presets for live sites; the window planner keeps its rule (±0.45 x rate usable). Maia's
+  radix-2² FFT takes even orders only (M = 256, 1024); M = 512 needs its radix-2 form, nine
+  stages with a twiddle multiplier each, which step 2 has to cost.
 - **A lane** joins the two bins nearest its channel and moves it to DC, as SDRTrunk's
   `TwoChannelSynthesizerM2` and `PolyphaseChannelSource` do. It outputs 50 kSPS, the rate the
   software receivers take today. Lanes share one synthesizer in time, so N is a build parameter
@@ -134,11 +138,12 @@ Each step keeps the units running on core 0.3.0 until the cutover.
    did for the scanner.
    - **3a, the lane ring core:** today's three DDCs as lanes 0-2 into one tagged lane ring; the
      LSM chains go. It needs no model. Spec below.
-   - **3b, the channelizer:** the polyphase bank and the lane synthesizer replace the three DDCs,
-     behind the same lane ring. *Gate:* bit-exact against the step 2 model.
-     **Keep wide lanes.** Data mode's 250 kSPS and 1 MSPS lanes come from the DDCs' runtime
-     decimation and bypass, so 3b keeps two or three DDC lanes beside the channelizer's, or its
-     synthesizer joins more than two bins ("Every mode's needs", item 1).
+   - **3b, the channelizer:** the polyphase bank and the lane synthesizer add narrow lanes beside
+     the DDC lanes, behind the same lane ring. *Gate:* bit-exact against the step 2 model.
+     **The DDC lanes stay** (recommended, "Every mode's needs", item 1): data mode's 250 kSPS and
+     1 MSPS lanes, and every mode at a rate the bank does not serve, are DDC lanes. **3b waits
+     for a mode that needs more lanes** than DDC lanes give, about eight (item 2): Clay County
+     never needed more than three in a day on unit A.
 
    *Gate for both:* timing met with no waiver and a hierarchical utilization report in the build.
 4. **Cutover (PS), with 3a.** The scanner's hardware layer for the new core, every lane on
@@ -341,39 +346,450 @@ register, so modes differ only in what the PS writes. Most of this is true alrea
 Data mode's wide lanes (250 kSPS and 1 MSPS) are new coefficient sets, not a bake
 (`scanner/doc/DATA_MODE.md` §3).
 
-| # | Change | Modes | Today | Why |
-|---|--------|-------|-------|-----|
-| 1 | **Keep wide lanes beside the channelizer** (step 3b) | data, survey; ADS-B later | 3b replaces the three DDCs with 25 kHz-bin lanes at 50 kSPS | The DDCs' runtime decimation and bypass are what make 250 kSPS-2 MSPS lanes. Keep two or three DDC lanes in the same lane ring beside the narrow lanes, or let the lane synthesizer join more than two bins. Decide in 3b's design, before the DDCs go |
-| 2 | **More lanes** | scanner, data | 3 (`config.lanes` allows 15; the PS has 3 register banks, `radiocore/regs.rs`) | More traffic lanes; more data-mode hot spots (open question N, below) |
-| 3 | **A larger lane ring** | data | 2 MB: 3.4 s at three 50 kSPS lanes, 0.17 s at three 1 MSPS lanes | Wide lanes fill it 20 times faster. The geometry is in `config.py` and the device tree, so it rides on the next bake |
-| 4 | **A deeper spectrum ring** | data, diagnostics, survey | 2 frames of 32 KB; each frame can be read once | A burst detector and a waterfall need every frame; a late PS loses one. 8-16 frames |
-| 5 | **Average and peak in one frame** | data, ATSC, survey | `spec_peak_detect` picks one | Bursts want peak; the noise floor and ATSC's carrier to noise want average. Both, or alternate frames with a flag |
-| 6 | **Time on spectrum frames** | data, survey | Frames carry no time; the PS places them by when it reads them (±1 frame) | Latch the AD9361 sample index at each frame's start (a header word or a register per sub-buffer), so bursts sit on the lanes' clock |
-| 7 | **Time on the capture ring, and stop after a trigger** | data, validation | Registers are enable, overflow, last buffer and next address only | Latch the sample index at each sub-buffer's start. Add "stop N sub-buffers after a write", so the lead-in of a burst found in the spectrum stays in the ring without the PS racing it (0.26 s deep at 16 MSPS) |
-| 8 | **Windows wider than 16 MSPS** | data, survey | Presets 2-16 MSPS | 902-928 MHz in one window needs about 30 MSPS. Check first whether presets alone do it: the FIR budget at clk3x 187.5 MHz falls to about 6 operations an input sample, the spectrometer bin becomes 7.3 kHz and the capture ring holds 0.13 s |
-| 9 | **A burst detector in the PL** | data, survey | None; data mode starts with a software detector on spectrum frames | A per-bin threshold over a tracked floor, writing events (bins, start and end sample index, peak) to a small ring: FFT-resolution timing (0.26 ms at 16 MSPS) instead of a 65 ms frame. Only if the software detector proves too coarse. The channel-activity integrator (above) is its narrowband cousin |
-| 10 | **A classifier tap** | survey, data | None | An AXI-Stream point where an hls4ml or FINN block takes spectrum frames or a lane's IQ and writes labels to a ring (`_shared/FPGA_ML_INFERENCE_GUIDE.md`). Data mode's captures, labelled by rtl_433, are its training set |
-| 11 | **An 8-VSB demodulator** | ATSC | Names come from a 0.5 s capture decoded on the PS (081) | Live video needs the transport stream in real time (080's next steps) |
+| # | Change | Modes | Today |
+|---|--------|-------|-------|
+| 1 | Keep wide lanes beside the channelizer | data, survey; ADS-B later | 3b would replace the three DDCs with 50 kSPS lanes |
+| 2 | More lanes | scanner, data | 3 (`config.lanes` allows 15; the PS has 3 register banks) |
+| 3 | A larger lane ring | data | 2 MB: 3.4 s at three 50 kSPS lanes, 0.17 s at three 1 MSPS lanes |
+| 4 | A deeper spectrum ring | data, diagnostics, survey | 2 frames of 32 KB; each can be read once |
+| 5 | Average and peak | data, ATSC, survey | `spec_peak_detect` picks one, live, mid-frame too |
+| 6 | Time on spectrum frames | data, survey | None; the PS places a frame by when it reads it |
+| 7 | Time on the capture ring, and stop after a trigger | data, validation | Enable, overflow, last buffer and next address only |
+| 8 | Windows wider than 16 MSPS | data, survey | Presets 2-16 MSPS |
+| 9 | A burst detector in the PL | data, survey | None |
+| 10 | A classifier tap | survey, data | None |
+| 11 | An 8-VSB demodulator | ATSC | Names from a 0.5 s capture decoded on the PS (081) |
 
-**Order:**
+### What 3a uses, and where its timing margin goes
 
-- **Items 1-3 matter first:** they decide whether data mode keeps its lanes after 3b.
-- **Items 4-7 are small** and can ride on any bake.
-- **Items 8-11 wait for evidence** from data mode and the survey.
+Measured on 3a's routed checkpoint (2026-10-03 build; `report_utilization -cells` on the core,
+which the route hook's depth-4 report does not reach):
+
+| Block | LUTs | FFs | RAMB36 | RAMB18 | DSP |
+|-------|-----:|----:|-------:|-------:|----:|
+| A lane's DDC (mixer 1 DSP, three FIR stages 10) | 396 | 575 | 0 | 10 | 11 |
+| A lane's packetizer (the power sum takes the 2 DSPs) | 703 | 1,089 | 2 | 0 | 2 |
+| A lane's registers and their crossing | 150 | 310 | 0 | 0 | 0 |
+| The spectrometer (the FFT 2,292 LUTs, 8 RAMB36, 6 DSPs; the integrator 432, 12, 1) | 2,749 | 2,304 | 20 | 4 | 7 |
+| The lane ring, the capture packer and their DMAs | 190 | 200 | 0 | 0 | 0 |
+| **The core** | **6,836** | **9,165** | **28** | **35** | **46** |
+| **The design** (xc7z020) | 14,958 (28 %) | 21,974 (21 %) | 38 | 40 | 68 (31 %) |
+
+- **A lane costs** about 1,250 LUTs, 1,970 FFs, 7 block RAM tiles and 13 DSPs.
+- **Free:** about 38,000 LUTs, 82 of 140 block RAM tiles and 152 of 220 DSPs.
+
+**Timing.** clk3x (187.5 MHz, 5.333 ns) holds the design's worst setup slack, +0.091 ns. The
+worst paths there:
+
+| Slack (ns) | From | To | Paths |
+|-----------:|------|----|------:|
+| +0.091 | the common-edge pulse (`ClkNxCommonEdge`, shared) | the spectrometer FFT's first twiddle multiplier | 20 |
+| +0.487 to +0.602 | the same pulse | the lane mixers' multipliers | 44 |
+| +0.526 to +0.842 | the integrator's copy of the pulse | the FFT's twiddle multipliers | 60 |
+| +0.702 | `spec_control` (the peak-detect bit) | the integrator's power stage | 3 |
+
+- **Each path is one LUT and 3.5-4.2 ns of routing** (85-88 % of the path), so the margin goes to
+  fan-out, not logic depth.
+- The pulse register drives 368 loads, the multiplexers of every 3x multiplier in the core. Vivado
+  made three copies (130, 159 and 79 loads), two on the left of the die and one on the right.
+- Synthesis also merged the integrator's and the FFT's equal copies of the pulse into one.
+- **The fix:** one common-edge generator per consumer (the FFT, the integrator, each lane's
+  DDC), kept apart from merging as 3a kept each lane's input register. It comes first in the next
+  bake, before anything is added at clk3x.
+- **The other domains:**
+  - sync (62.5 MHz) has 3.6 ns;
+  - the AXI-Lite clock's worst path (+0.509 ns) is in ADI's HP2 interconnect, outside the core;
+  - worst hold is +0.010 ns, as the router left it.
+
+**What each item touches at clk3x:**
+
+- **Items 3, 4, 6 and 7** are counters, latches and DMA control in sync. They add nothing at clk3x.
+- **Item 5** touches the integrator's power stage only through the peak-detect bit, which is
+  already a +0.702 ns path. Latched per frame (below), it becomes a local register.
+- **Items 2, 9 and 11** add 3x multipliers. They need the common-edge fix first.
+
+### Rates by mode
+
+| Mode | Use | AD9361 rate | Blocks |
+|------|-----|-------------|--------|
+| Scanner, live site | control and traffic channels | presets 2-16 MSPS (8, 12, 16 in use); 6.4 or 12.8 with the channelizer | lanes, spectrum (crystal tracker, display) |
+| Scanner, systems scan | carriers across a window | 16 MSPS | spectrum |
+| ATSC, TV scan | pilots, carrier to noise | 16 MSPS, two channels a window | spectrum |
+| ATSC, naming | 0.5 s of IQ | 10 MSPS | capture |
+| ATSC, live (item 11) | the transport stream | 10 MSPS | the 8-VSB block |
+| Data, scan and park | bursts across a band | 16 MSPS; about 30 for 902-928 MHz (item 8) | spectrum, wide lanes (250 kSPS, 1 MSPS), capture |
+| Data, later (ADS-B) | 1090 MHz | 2-4 MSPS | a stage-1-only lane |
+| Validation, diagnostics | captures | any preset | capture |
+
+**Only the scanner's live sites would move** to the channelizer's rates. Every other use keeps
+its rate, because it uses the spectrum, the capture or DDC lanes, which work at any rate. The
+channelizer's lanes exist only at 6.4, 12.8 or 25.6 MSPS.
+
+### The items
+
+**1. Wide lanes after 3b. Recommended: the DDC lanes stay.**
+
+- **The two options:**
+  - **A synthesizer joining J bins:**
+    - its rates come in steps of 25 kHz;
+    - it needs a J-point synthesis transform for each wide lane;
+    - every joined edge has the bank's filter shape;
+    - it exists only at the bank's rates, so not at data mode's 16 MSPS windows.
+  - **A DDC lane:** any rate at any input rate, with its own filter. It exists today.
+- **The change:**
+  - HDL: none (3a's lanes).
+  - PS: wide-lane presets (data mode step 1).
+  - 3b, when it comes, adds narrow lanes beside the DDC lanes; it does not replace them.
+- **Cost:** 13 DSPs, 1,250 LUTs and 7 block RAM tiles per DDC lane kept.
+- **Modes:** data, survey, ADS-B later, and every mode at a rate the bank does not serve.
+- **Evidence still needed:** data mode step 1's check of the 250 kSPS and 1 MSPS presets: flat
+  ±100 / ±350 kHz, alias rejection, no lost packets with three 1 MSPS lanes for an hour.
+
+**2. More lanes.**
+
+- **Demand on Clay County,** from unit A's history (24 h to 2026-10-04 14:49 UTC):
+  - 6,557 grants: 1,912 followed, 4,010 encrypted, 632 held, 3 not followed because every lane
+    was busy.
+  - The clear grants overlapped as one call 10.1 % of the time, two 0.62 %, three 0.008 %, never
+    four.
+  - Lane 1 carried 1,800 calls, lane 2 112. Three lanes are enough here.
+- **Two ways to more lanes:**
+  - **More DDC lanes:**
+    - `config.lanes`, up to 15. No model is needed, and every lane keeps any rate.
+    - Eight lanes: about 133 DSPs (60 %), 21,000 LUTs (40 %) and 93 tiles (66 %).
+    - Block RAM sets the ceiling, at about ten lanes, or eight beside the 8-VSB block (item 11).
+  - **The channelizer (3b):**
+    - sixteen or more narrow lanes for about the cost of two DDC lanes;
+    - only at its rates;
+    - it needs step 2's model first.
+- **The change for more DDC lanes:**
+  - HDL: `config.lanes`, and a register map whose shared banks do not move with N (bake A).
+  - PS: `radiocore/regs.rs` (`LANE_BANKS`, the `lane_bank!` list), and the trunk's lane pool
+    sized from `capabilities`.
+- **Timing:** each DDC adds 3x multipliers. With a common edge of its own, its risk is placement
+  only.
+- **Modes:** scanner (two systems in one window, busier sites), data (more hot spots).
+- **Evidence still needed:** a mode that wants more than three lanes. Candidates:
+  - data mode's hot spots, measured in its step 3;
+  - following two systems at once;
+  - a busier site.
+- **Recommended:** no change now. When a mode needs it, DDC lanes up to about eight, the
+  channelizer past that.
+
+**3. A larger lane ring.**
+
+- **The change:** 2 MB to 8 MB (512 × 16 KB) at 0x1900_0000.
+- **What it holds:** 13.7 s at three 50 kSPS lanes, 0.67 s at three 1 MSPS lanes (33 times the
+  20 ms poll).
+- **HDL:** `config.py` (`last_buffer` grows from 7 to 9 bits) and the device tree's carve-out.
+- **PS:** nothing; the reader takes the ring's geometry from its device.
+- **Cost:** 6 MB more DDR reserved from Linux. No timing risk.
+- **Modes:** data (wide lanes), and any larger N.
+- **Evidence:** none needed.
+
+**4. A deeper spectrum ring.**
+
+- **The change:** 2 to 16 frames of 32 KB (512 KB).
+- **HDL:** `config.py` and the device tree.
+- **PS:**
+  - `read_spectrum` reads every completed frame in order (`completed_since`, as the lane ring);
+  - `spec_last_buffer` grows from 1 to 4 bits. svd2rust turns it from `.bit()` into `.bits()`;
+    the call is cfg(linux), so the ARM check catches it.
+- **Cost:** nothing in the fabric. No timing risk.
+- **Modes:** data, survey, diagnostics.
+- **Evidence:** none needed.
+
+**5. Average and peak. Recommended: a mode per frame, not both in one.**
+
+- **Both in every frame** needs a second accumulator:
+  - 12 RAMB36 (the integrator's ping-pong of 4096 × 50 bits);
+  - a second power stage (1 DSP at clk3x, in the block with the least slack);
+  - about 450 LUTs;
+  - frames twice the size.
+- **A mode per frame** costs a few flip-flops:
+  - the integrator takes `peak_detect` and `nint` when a frame starts, not live (today a
+    mid-frame write spoils that frame);
+  - the frame's header (item 6) records its mode;
+  - an `alternate` bit flips the mode every frame without the PS.
+- **Data mode may need only peak frames.** Over noise, a bin's peak over 256 transforms sits about
+  7.9 dB above its mean, with little spread, so the burst detector's floor can come from peak
+  frames.
+- **PS:** set the mode and `alternate`; read each frame's mode from its header.
+- **Modes:** data and survey (peak); ATSC (average, as now).
+- **Evidence still needed:** whether the detector misses bursts with alternating frames
+  (data mode step 3, with the ESP32-DIV's bursts). Only then the second accumulator.
+
+**6. Time on spectrum frames.**
+
+- **A header in the frame's first bins.**
+  - Bins 0-7 lie at −fs/2, outside the ±0.45 × rate that every user of the spectrum reads, so
+    nothing is lost.
+  - Bin 4095 takes a check word, as the lane packet's.
+  - The DMA's read side puts these words in place of the bins.
+- **The fields:**
+  - magic and format;
+  - the frame's sequence;
+  - its mode and integrations;
+  - whether it was aborted;
+  - the AD9361 sample index of the frame's first transform's first input sample;
+  - the ADC clip count;
+  - the check: the XOR of the frame's other 32-bit halves.
+- **HDL:** a spectrometer wrapper in `p25_hdl`, leaving `maia_hdl`'s blocks as they are. In sync:
+  a 64-bit latch, the read-side multiplexer and the XOR, about 200 LUTs.
+- **PS:**
+  - parse and check the header;
+  - for the display and the floor, blank the header's bins (copy their neighbours);
+  - the survey and data mode's detector place frames by the sample index.
+- **Timing:** sync only, low risk.
+- **Modes:** data, survey. ATSC can count its frames exactly.
+- **Evidence:** none; the simulation checks the index against the input.
+
+**7. Time on the capture ring, and stop after a trigger.**
+
+- **New registers in the capture bank:**
+  - `capture_start_index` (two words, the low latching the high): the sample index of the first
+    sample written after an enable;
+  - `capture_buffers`: the sub-buffers completed since the enable;
+  - `capture_stop_after` and `capture_trigger` (a write pulse): the capture writes that many
+    more sub-buffers after the trigger and stops itself at a sub-buffer's end;
+  - `capture_stopped`, in the status.
+- **Each sub-buffer's first sample** is then `start + k × 262,144` (1 MB of 4-byte samples),
+  exact while `overflow` stays clear.
+- **HDL:** a latch, two counters and the stop logic in sync, about 120 LUTs.
+- **PS:**
+  - `RadioHw::capture` returns the sample index of its first sample;
+  - a trigger call for data mode's burst captures.
+- **Timing:** sync only, low risk.
+- **Modes:**
+  - data: a burst's lead-in stays in the ring (0.26 s deep at 16 MSPS) without the PS racing it;
+  - validation captures;
+  - ATSC naming: the capture gets an air time.
+- **Evidence:** none needed.
+
+**8. Windows wider than 16 MSPS. Probably no bake: a preset and a check.**
+
+- **The core already takes such rates.**
+  - Maia runs its spectrometer at up to 61.44 MSPS on these clocks. The sync domain (62.5 MHz)
+    takes a sample a cycle.
+  - `axi_ad9361`'s interface is constrained for the full rate (`rx_clk` at 4 ns).
+- **What changes at about 30 MSPS:**
+  - a DDC's FIR budget at clk3x falls to about 6 operations an input sample;
+  - lane rates must divide the input rate (30 MSPS: 1 MSPS is /30, 50 kSPS /600);
+  - a spectrum bin becomes 7.3 kHz;
+  - the capture ring holds 0.13 s.
+- **DMA bandwidth on HP1:**
+  - **The port:** one 64-bit port at the sync clock (`system_bd.tcl`, `ad_mem_hp1_interconnect` on
+    `clk_out1`), about 500 MB/s for the core's three masters (also `HW_VALIDATION_SUITE.md` F13).
+  - **The load at 30 MSPS:**
+    - the capture, 120 MB/s;
+    - three 1 MSPS lanes, 12.2 MB/s;
+    - the spectrum, under 1 MB/s at 30 frames a second;
+    - 8-VSB codewords (item 11), 2.7 MB/s;
+    - together about 136 MB/s, 27 % of the port.
+  - **The risk is latency, not bandwidth.**
+    - The capture packer holds one word (`iq_packer.py`), and the DMA keeps at most a few
+      bursts open.
+    - At 8 MSPS the hwval simulation lost samples from 16.6 µs of write latency (F5). At 30 MSPS
+      that tolerance shrinks to about 4.4 µs.
+    - The interconnect is built for performance (ADI's `STRATEGY 2`), with a data FIFO on each
+      slave port (a RAMB36 and a RAMB18 each in 3a's report), which this estimate does not
+      count.
+- **The check, on unit A:**
+  - a 30 MSPS preset;
+  - 10 minutes with the capture on, three 1 MSPS lanes, the spectrum at 30 frames a second and
+    both A9 cores loaded (a TV naming decode);
+  - pass: no capture overflow and no lane `lost`.
+  - fbench's `hw.contention` would measure the margin, but it needs the hwval image, which has
+    never been baked.
+- **If the check fails:** a FIFO in front of the capture DMA (two RAMB36 hold 0.5 ms at
+  30 MSPS). Or move the capture to HP0 or HP3, which are unused, at a faster clock.
+- **Modes:** data (902-928 MHz in one window), survey.
+
+**9. A burst detector in the PL.**
+
+- **What it is:**
+  - a per-bin floor (4096 × 16 bits) tracked from each transform's power, before integration;
+  - a threshold over it;
+  - events (bins, first and last transform's sample index, peak) to a small ring.
+  - It times bursts to a transform (0.26 ms at 16 MSPS) where a frame is 65 ms.
+- **Cost:**
+  - the transform's magnitude: 1-2 DSPs at clk3x, or none with an alpha-max-beta-min estimate
+    in LUTs;
+  - 2-3 RAMB36 and about 1,500 LUTs;
+  - an event path: one more client of the lane ring, or a register FIFO.
+- **Timing:** medium. It taps the FFT's output inside the block with the least slack. With the
+  common-edge fix and a LUT magnitude it stays in sync.
+- **Modes:** data, survey. The channel-activity integrator (3b) is its narrowband cousin.
+- **Evidence still needed:** data mode's software detector (step 3) on peak frames with item 6's
+  times. Build this only if 65 ms frames are too coarse for what it must do; the lanes already
+  time a burst's pulses exactly.
+
+**10. A classifier tap.**
+
+- **What it is:** an AXI-Stream point where a generated block (hls4ml, FINN) reads spectrum frames
+  or a lane's IQ and writes labels to a ring (`_shared/FPGA_ML_INFERENCE_GUIDE.md`).
+- **Cost:**
+  - the tap itself: a stream port and a ring client, a few hundred LUTs;
+  - the classifier: unknown until a model is trained and sized on the PC.
+- **Modes:** survey, data.
+- **Evidence still needed:**
+  - data mode's corpus, labelled by rtl_433 (its step 4);
+  - a model measured on the PC.
+- Last of the eleven.
+
+**11. An 8-VSB demodulator. Recommended: the PL from the input to Reed-Solomon's syndromes; the
+PS corrects, derandomizes and does everything above.**
+
+**Where the time goes now.** 081 measured RF 19 (0.8 s of signal) at 5.3 s on both A9 cores:
+
+| Part | Time | Share |
+|------|-----:|------:|
+| Front end: pilot, matched filter and symbols, timing, field syncs, equalizer | 3.68 s | 69 % |
+| Viterbi | 1.1 s | 21 % |
+| The rest of the FEC: bytes, deinterleaver, Reed-Solomon, derandomizer | 0.48 s | 9 % |
+
+- **Real time needs 6.6 times that speed** on both cores.
+- **Even the last row is too much in real time:** 0.48 s for 0.8 s on two cores is more than one
+  core.
+- **The A9 can only do the work above the bytes.** The Viterbi is the second-largest stage, so it
+  goes to the PL with the front end.
+
+**The split:**
+
+| Stage | Where | Why |
+|-------|-------|-----|
+| Pilot and carrier loop | PL | Per sample, 10 M a second |
+| Matched filter at any instant (081's table, 64 phases × 40 taps at 10 MSPS); timing loop on the segment syncs; field sync (PN511) | PL | 10.76 M outputs a second |
+| Equalizer: 128 taps (32 ahead) applied | PL | 1.38 G multiply-accumulates a second |
+| Equalizer taps solved | PS | 081's least-squares solver named 16-18 stations. It runs on snapshots of the equalizer's input, at about 10 % of a core for a solve every 0.25 s (estimate). An LMS in the PL would be a new algorithm with no model and convergence of its own to prove |
+| Slicer and the 12 trellis decoders (4-state soft Viterbi, time-shared, one encoder a symbol) | PL | 21 % of the software's time. Logic only, no DSPs |
+| Bytes back in order, the convolutional deinterleaver (52 branches, 5,304 bytes), Reed-Solomon syndromes | PL | Two block RAMs and XOR networks. A codeword with zero syndromes needs nothing more |
+| Correcting the flagged codewords (Berlekamp-Massey, Chien, Forney), the derandomizer, the transport stream, PSIP, streaming | PS | 081's code. About 10 µs a flagged codeword: at 12,894 codewords a second, half of them flagged is about 6 % of a core. No Reed-Solomon decoder in the PL, so no LogiCORE licence |
+
+The split asked for (bytes to a ring after the Viterbi, the deinterleaver and Reed-Solomon on the
+PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third of a core
+(estimate). Putting them in the PL costs two block RAMs.
+
+**The rate: 10 MSPS.**
+
+- **081's receiver works there.** 16-18 stations were named from 10 MSPS captures.
+- **The matched filter costs its span times the input rate:**
+  - 40 taps at 10 MSPS;
+  - 51 at 12.8;
+  - 86 at 21.52 (twice the symbol rate).
+- **A multiple of the symbol rate simplifies nothing.**
+  - The filter computes any instant from its table.
+  - The timing loop tracks the crystal's error anyway (A: −0.688 ppm).
+- **12.8 MSPS would matter only beside the channelizer,** but in ATSC mode the unit has the radio
+  to itself.
+- 10 MSPS keeps the channel at the LO, as 081 tunes it.
+
+**The output:**
+
+- 207-byte codewords with their syndrome flag, in 4 KB packets, as one more client of the lane
+  ring: a packet kind in the header, 2.7 MB/s;
+- the header carries the field and segment counts, the sample index, the MER and the loops'
+  states;
+- no fourth DMA master and no new ring.
+
+**Budget** (estimates; the model and synthesis confirm):
+
+| Stage | DSP | LUTs | Block RAM tiles |
+|-------|----:|-----:|----------------:|
+| Pilot, carrier loop, mixer | 2-3 | 1,000 | 0-1 |
+| Matched filter (861 M multiply-accumulates a second) | 5-6 | 800 | 2 |
+| Timing loop, field sync | 1 | 800 | 1 |
+| Equalizer (1.38 G a second) and its snapshot | 8 | 1,500 | 3-4 |
+| Slicer, 12 trellis decoders | 0 | 2,000 | 1-2 |
+| Deinterleaver, syndromes, packets | 0 | 1,000 | 3-4 |
+| **Total** | **about 18** | **about 7,000** | **about 12** |
+
+- **It fits** beside 3a, or beside eight DDC lanes: about 151 DSPs (69 %) and 105 tiles (75 %).
+- **Timing risk: medium.**
+  - New 3x DSP chains (the matched filter and the equalizer), fed from block RAM.
+  - They are built as DSP cascades with registered RAM outputs and their own enables, not on
+    the shared common edge.
+
+**PS:**
+
+- 081's solver split out to run on snapshots;
+- its `fec` (correction only), `ts` and `psip` on the stream;
+- a socket carrying a program's packets to the Viewer.
+
+**Modes:** ATSC (live video, the Viewer's live stats, the full PSIP).
+
+**Evidence still needed, in this order:**
+
+1. **A fixed-point model of the PL half** in Rust, beside 081's f32 receiver. It must decode the
+   17 captures in `runs/atsc/captures_20261003/` with the receiver's results. The HDL matches the
+   model bit for bit.
+2. **Captures of several seconds,** to see whether taps solved every 0.25 s hold the MER or an
+   LMS is needed. The capture ring holds 0.4 s at 10 MSPS; longer needs the IIO path
+   (`axi_ad9361_adc_dma` is in the design) or a larger ring.
+3. **The browser's player** (MPEG-2 video and AC-3 in WASM), proven first on the HDHomeRun's own
+   transport stream (`http://10.0.0.117:5004/auto/v<channel>`). Without it the PL receiver gives
+   live statistics and the programme guide, not pictures.
+
+### The bakes
+
+| Bake | Items | Why together | Needs first |
+|------|-------|--------------|-------------|
+| **A: every mode's plumbing** (core 2.0.0) | the common-edge fix; a register map that does not move with N; 3, 4, 5 (a mode per frame), 6, 7; the core's block report | No new DSP path: counters, latches and DMA control in sync. Every mode uses them, and the timing fix makes room for B-D | nothing |
+| **B: more lanes** | 2: DDC lanes to about eight, or 3b's channelizer past that | | a mode that needs more than three lanes (item 2) |
+| **C: data mode in the PL** | 9; the capture FIFO if item 8's check fails | | data mode steps 3-4 |
+| **D: 8-VSB** | 11 | The largest block, with its own model | the model, long captures and the browser's player (item 11) |
+| no bake | 8: a preset and a check; 10 after data mode's corpus | | |
+
+- **Bake A's register map:**
+  - control at 0x000, the lane ring at 0x020, the spectrum at 0x040, the capture at 0x060;
+  - 0x080-0x0FF kept for later blocks (the 8-VSB, a burst detector);
+  - lane i at 0x100 + 0x20 × i, up to 15 lanes in the same 1 KB window.
+  - The version goes to 2.0.0 and the product stays "rad1". The scanner of the same commit reads
+    2.x only, so core and scanner ship together, as 3a did.
+- **Bake A's PS side:**
+  - `hardware::radiocore` for the 2.0.0 map;
+  - the spectrum ring read frame by frame, with the header, its check and the blanked bins;
+  - the frame mode and `alternate`;
+  - the capture's start index, buffer count and trigger;
+  - fbench and the bench agent on the new map;
+  - tezuka_fw: the XSA and the device tree's carve-outs (lanes 8 MB, spectrum 512 KB).
+- **Every bake's gates:**
+  - **Models:** bit-exact against a model wherever there is DSP. Bake A has no new DSP; its
+    spectrum frames are checked against the integrator's model.
+    - B: step 2's model for the channelizer; Maia's DDC for DDC lanes.
+    - C: a model of the detector.
+    - D: the fixed-point 8-VSB model.
+  - **Timing** met with no waiver, with the clk3x slack reported. Bake A targets +0.4 ns at
+    clk3x, the reason for its common-edge fix.
+  - **A hierarchical utilization report down to the core's blocks** (the route hook gains a
+    report on the core's cell).
+  - **The CLAUDE.md checks:** host tests, the ARM check, the DMR reference; the P25 replay
+    corpus when Andy wires the bench link.
+  - **On unit A**, at least:
+    - an hour on Clay County with no packet fault, lost or missed packet, and the control
+      channel at 40 or more messages a second at 99.8 % or better;
+    - a TV scan naming as many stations as 081's;
+    - fbench's tests that read the core, on the new map.
+  - **Bake A on unit A also needs:**
+    - every spectrum frame read for 10 minutes with no gap in the sequence;
+    - one burst (a key fob or the ESP32-DIV) at the same time to within one transform in a
+      frame's header, a lane's packets and a capture.
+- **Numbering:** each bake takes the next free change number in `doc/changes` when it starts.
 
 ## Open questions
 
-- **N.** The bank's cost does not depend on N; the synthesizer's time slots and the ring do. 8
-  lanes is the proposed first build.
-- **Wide lanes after 3b** (item 1 above): DDC lanes beside the channelizer's, or a synthesizer that
-  joins more bins. DDC lanes keep today's runtime rates and filters; joined bins share the bank
-  but give rates in steps of 25 kHz and the bank's filter shape at the edges.
+- **N.** The bank's cost does not depend on N; the synthesizer's time slots and the ring do. Clay
+  County needed three lanes at most in a day on unit A (item 2), so N waits for a mode that needs
+  more.
 - **The 16 MHz scan preset.** The scan can run at 12.8 MSPS, or the spectrometer alone can serve it
   at 16 MSPS with the lanes idle.
 - **The gateware LSM's DC blocker** is not in the software LSM. Its AGC idle gate and no-signal
   hold are (step 1 showed SDRTrunk's loop trapping on traffic-channel gaps); nothing so far points
   at the DC blocker.
-- **Wideband captures.** The scanner has no raw IQ capture route; step 2 needs one, or the IIO path.
+- **Wideband captures.** The scanner reads the capture ring (`RadioHw::capture`, since 081's
+  station naming). What is missing is an API route for raw IQ (data mode §6: `/ws/iq` for a lane,
+  window snapshots on the Captures tab). Step 2's wideband captures can come from that route or
+  from the IIO path.
 
 ## Status log
 
@@ -553,3 +969,22 @@ Data mode's wide lanes (250 kSPS and 1 MSPS) are new coefficient sets, not a bak
   changes for the next gateware work). The data mode study (`scanner/doc/DATA_MODE.md`) found
   that the 3a core already gives wide lanes through the DDCs' registers. The section "Every
   mode's needs" lists what the next bakes should add; step 3b now has to keep wide lanes.
+- **2026-10-04, the gateware study** ("Every mode's needs", rewritten with the items' changes,
+  costs, timing and evidence). What it rests on:
+  - per-block utilization and the worst clk3x paths from 3a's routed checkpoint (Vivado on the
+    checkpoint, no build);
+  - Clay County's lane demand from unit A's history (24 h, read through the API).
+
+  Findings:
+  - 3a's thin timing margin is the shared 3x common-edge pulse's fan-out (368 loads, one LUT and
+    3.5-4.2 ns of routing on each worst path), not logic depth.
+  - A DDC lane costs 13 DSPs, 1,250 LUTs and 7 block RAM tiles.
+  - Clay County never needed more than three lanes for its clear calls; 3 of 6,557 grants found
+    every lane busy.
+  - Only the scanner's live sites would use the channelizer's rates; every other mode needs DDC
+    lanes, the spectrum or the capture at its own rate.
+  - 8-VSB in the PL: from the input to Reed-Solomon's syndromes, about 18 DSPs, 7,000 LUTs and 12
+    tiles, at 10 MSPS.
+
+  Proposed: bake A (the timing fix, a fixed register map, items 3-7), then B-D on evidence.
+  Decisions are Andy's.
