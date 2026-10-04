@@ -129,7 +129,16 @@ What it took:
 ### UI
 
 - **Setup:** a "name the stations" switch.
-- **While naming:** the progress, channel by channel.
+- **The table fills in as the scan goes** (Andy, after his first scans on the image): one row for
+  each channel asked for from the start.
+  - Unread rows are dim, and the current window's two read "Reading…".
+  - Each row fills in as its window is read; while a channel is decoded its Station reads
+    "Naming…".
+  - Rows are replaced in place, so a channel picked during the scan keeps its spectrum, and its
+    station appears under it once named.
+  - The scan's place and Cancel sit above the table; once it is over, its tally and New scan,
+    with only the channels read left.
+  - The header's ATSC line says which station is being named ("naming 4 of 18").
 - **The table:** a Station column, showing each named channel's first virtual channel and how
   many more ("47.1 WJAXHD +3"), or why it was not decoded.
 - **Under a picked channel's spectrum:**
@@ -160,7 +169,11 @@ programs on that channel.
   - RF 20 carries two stations: 4.1 WJXT-HD and 17.1 WCWJ-HD.
   - RF 27 carries 16 virtual channels.
 - **MER:** 17.9-37.4 dB on the named stations.
-- **Not decoded:** RF 10 (WJXX, MER 17.2 dB) and RF 11 (W11DV-D, 17.0 dB).
+- **Not decoded in that scan:** RF 10 (WJXX: carrier to noise 20.2 dB, MER 17.2 dB) and RF 11
+  (W11DV-D: 15.2 dB, MER 17.0 dB).
+- **Later scans the same day** (Andy's on the image, then the live-table tests): 18 named in
+  each, RF 10 (25.1 WJXX-HD and 7 more) and RF 11 (6.1 W11DV-D) among them, at 23-24 and 19-20
+  dB of carrier to noise. Both sit at the edge of decoding.
 - **Not tried, below 15 dB of carrier to noise:** RF 15, 16, 22, 25, 29, 32 and 36.
 
 ### Captures on the PC (`runs/atsc/captures_20261003/`)
@@ -190,14 +203,23 @@ All 17 captures decode as before every speed change:
   - the host build in headless Chrome: the switch shows; with no spectrometer, the scan fails
     cleanly;
   - unit A's page after the scan: the Station column, and RF 19's station and virtual channels
-    under its spectrum.
-- **Unit A:** `2026-10-04-atsc-names2` was hand-deployed for the test. A is back on maia-sdr-40's
-  `2026-10-03-radio-core-cpu4` in scanner mode on Clay County.
+    under its spectrum;
+  - the live table, through whole scans on A in headless Chrome, sampled every 2 s:
+    - the rows filled window by window: 32 dim at 2 s, none at 16 s;
+    - "Reading…" was on the current window's two channels, and "Naming…" on the one being
+      decoded;
+    - RF 19, picked at 12 s, kept its selection and spectrum to the end, and its station
+      appeared under it once named;
+    - the header read "naming 1 of 2", "naming 2 of 2";
+    - no exceptions.
+- **Unit A:** `2026-10-04-atsc-names2` was hand-deployed for the first test. Since then A runs the
+  image `2026-10-04-radio-core-atsc1`, with `2026-10-04-atsc-table2` hand-deployed over it (a
+  reboot returns to the image).
 
 ## Next
 
-- **Weaker stations:** RF 10 and 11 fail at a measured MER of about 17 dB, and other captures at
-  12-17 dB. A decision-feedback equalizer is the usual next step for long echoes; see first which
+- **Weaker stations:** RF 10 and 11 decode in some scans and not others (they failed at a
+  measured MER of about 17 dB), and other captures fail at 12-17 dB. A decision-feedback equalizer is the usual next step for long echoes; see first which
   echoes those channels have.
 - **Speed:** the Viterbi (1.1 s for 0.8 s on two cores) could run four encoders at once in NEON.
   The FFT is scalar on ARMv7.

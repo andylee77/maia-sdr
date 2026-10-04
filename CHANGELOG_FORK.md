@@ -37,7 +37,9 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 - **On unit A** (directional antenna): 33 channels in 86.9 s. 16 stations named themselves with
   104 virtual channels, every number and name as Andy's HDHomeRun has them. RF 10 and 11 (MER
   about 17 dB) did not decode.
-- **UI:** a Station column, and a picked channel's station and virtual channels.
+- **UI:** a Station column, and a picked channel's station and virtual channels. The table
+  fills in as the scan goes: a row for each channel from the start, "Reading…" and "Naming…" on
+  the channels in hand (BUILD_TAG `2026-10-04-atsc-table2`, hand-deployed on A).
 - `tools/atsc_check.py` compares the names with the HDHomeRun's lineup (exit 3 on a difference).
 - Record: `doc/changes/081_atsc_station_names.md`.
 
