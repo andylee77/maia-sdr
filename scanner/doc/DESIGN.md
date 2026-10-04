@@ -1552,3 +1552,7 @@ From the brief:
   (directional antenna) 16 stations named themselves with 104 virtual channels, every number
   and name as the HDHomeRun has them; RF 10 and 11 (MER about 17 dB) did not decode. Record:
   `doc/changes/081_atsc_station_names.md`.
+- 2026-10-04, **the image on unit A** (`2026-10-04-radio-core-atsc1`: fishball-p25 88931d2, 079's
+  CPU work merged onto 081, with tezuka_fw 96b16c3): on A's card, the boot files it replaced in
+  `boot_backup_radiocore_image1`. After the reboot: Clay County live, its control channel at
+  40.5 messages a second with 100 % passing, the clock synced. Unit B is still on 0.3.0.

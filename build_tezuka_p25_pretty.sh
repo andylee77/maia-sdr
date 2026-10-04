@@ -20,7 +20,7 @@
 #   LOG_FILE    default: tezuka_build.log (in maia-sdr repo)
 #
 # Post-build output images live at:
-#   $TEZUKA_FW/output_images/sdimg/
+#   $TEZUKA_FW/output_images/
 
 set -eu -o pipefail
 

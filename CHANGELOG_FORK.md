@@ -5,6 +5,19 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-04] Image: the radio core with 079's CPU work and ATSC (080, 081), on unit A
+
+**Branch:** fishball-p25 88931d2 (079-lsm merged onto 081), tezuka_fw fishball-dev 96b16c3
+**BUILD_TAG:** `2026-10-04-radio-core-atsc1` (the SD image)
+**Bake required:** NO (core 1.0.0, unchanged).
+
+- **Built:** `build_tezuka_p25_pretty.sh`, no `[ERROR]`; the ramdisk's scanner carries the tag.
+- **Installed on A's card:** the boot files it replaced are in `/mnt/sd/boot_backup_radiocore_image1`,
+  the new ones also in `/mnt/sd/boot_new_atsc1`.
+- **After the reboot:** Clay County live, the control channel at 40.5 messages a second with
+  100 % passing, the clock synced, nothing logged above WARN.
+- **Unit B:** still on the 0.3.0 image.
+
 ## [2026-10-04] 081: ATSC station names: the 8-VSB receiver and PSIP
 
 **Branch:** 081-atsc-names (worktree maia-sdr-080), merged into fishball-p25 at c08c407

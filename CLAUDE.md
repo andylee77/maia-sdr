@@ -54,7 +54,7 @@ Every commit builds and passes these, run from `p25-httpd/` (later also `scanner
 - **SD image:** `./build_tezuka_p25_pretty.sh` (about 30 minutes cached). It builds tezuka_fw
   `fishball-dev` with `fishball_p25_7020_defconfig`, and its p25-httpd package rsyncs this
   checkout, so don't run cargo while it runs. It exits 0 on failure: grep `tezuka_build.log`
-  for `[ERROR]`. Images land in `tezuka_fw/output_images/sdimg/`.
+  for `[ERROR]`. Images land in `tezuka_fw/output_images/`.
 - **Gateware:** `./build_fpga_p25_pretty.sh` (Vivado 2023.2, only inside this tree; it
   regenerates the Verilog, SVD and PAC). Not needed for 076.
 - Never run `cargo fix`.
