@@ -112,7 +112,8 @@ impl RadioCore {
         self.regs.spec_control().modify(|_, w| w.spec_peak_detect().bit(on));
     }
 
-    #[cfg(test)]
+    /// A core with its registers in plain memory and no rings (host tests).
+    #[cfg(all(test, not(target_os = "linux")))]
     pub fn in_memory(lanes: usize) -> RadioCore {
         let version = Version { major: 1, minor: 0, bugfix: 0 };
         RadioCore { regs: Registers::in_memory(), identity: Identity { version, platform: 0, lanes } }
@@ -233,6 +234,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(target_os = "linux"))]
     fn lanes_past_the_core_s_are_absent() {
         let core = RadioCore::in_memory(3);
         assert!(core.lane(2).is_some());
