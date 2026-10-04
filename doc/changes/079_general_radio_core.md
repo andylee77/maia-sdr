@@ -4,8 +4,9 @@
 and a new Vivado project). Steps 1 and 2 are software and host only.
 
 **Status:** design approved by Andy on 2026-10-03. Steps 1, 3a and 4 are done and on unit A's
-image (status log). The gateware for every mode is studied in "Every mode's needs", with bakes
-proposed for Andy's decision. The 0.3.0 build is backed up in
+image (status log). The gateware for every mode is studied in "Every mode's needs"; Andy approved
+its recommendations on 2026-10-04, and bake A (change 082, core 2.0.0) is on unit A. Bakes B-D
+wait for their evidence. The 0.3.0 build is backed up in
 `MAIA_SDR/_archive/build_2026-10-03_p25-core-0.3.0/` and tagged `build/p25-core-0.3.0` (the
 gateware) and `build/2026-10-01-scanner-image3` (the image, in maia-sdr and tezuka_fw).
 
@@ -213,6 +214,9 @@ Packets are 512 words of 64 bits (4 KB, a multiple of the 128 B burst, four to a
 
 ### Registers
 
+The map of core 1.0.0. Core 2.0.0 (082) moved the banks so that the shared ones stay put whatever
+the lane count: its map is in `082_bake_a.md`, "The register map".
+
 Byte offsets in the 1 KB window at 0x7C46_0000 (the address bits are decoded in full; nothing
 aliases). Every bank keeps today's per-access crossing (`RegisterCDC`, in order, so coefficient
 loads are safe). The bridge (`p25_hdl/axil_bridge.py`) answers an address no bank claims (reads
@@ -232,6 +236,8 @@ answer within 4,096 cycles is answered with 0 and its late answer ignored.
 touches anything else.
 
 ### Rings and the device tree
+
+Core 1.0.0's rings. Core 2.0.0 (082) has a lane ring of 8 MB and a spectrum ring of 16 frames.
 
 | Device | Base | Size | Sub-buffers |
 |---|---|---|---|
@@ -988,3 +994,16 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
 
   Proposed: bake A (the timing fix, a fixed register map, items 3-7), then B-D on evidence.
   Decisions are Andy's.
+- **2026-10-04, bake A** (Andy approved the study's recommendations; change 082, record
+  `doc/changes/082_bake_a.md`): the radio core 2.0.0 on unit A (`2026-10-04-bake-a1`).
+  - A common edge per 3x consumer, the FFT's five twiddle multipliers each included: clk3x
+    +0.605 ns (3a +0.091), worst +0.480 ns (a lane mixer's NCO register into its DSP), at 288
+    LUTs and 971 FFs more than 3a and no block RAM or DSP.
+  - The map with the shared banks at 0x020-0x060 and lane i at 0x100 + 0x20 × i; the lane ring
+    8 MB, the spectrum ring 16 frames; spectrum frames with a mode each and a header (bit-exact
+    against the integrator's model in simulation); the capture's start index and trigger.
+  - On A: an hour on Clay County with no packet fault, lost or missed packet (about 178,000
+    packets a lane) and the control channel at 40.3 messages a second or more at 100 %; 27,467
+    spectrum frames with no gap; DMR decoding; fbench's core tests on the new map. The TV scan
+    named 5 stations against 081's 16, at 10-25 dB less input on most channels (081 had A on the
+    Jacksonville directional antenna); the burst-timing run is Andy's.

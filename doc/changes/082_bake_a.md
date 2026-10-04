@@ -3,7 +3,9 @@
 **Date:** 2026-10-04. **Branch:** fishball-p25. **Bake required:** YES (core 2.0.0, product
 "rad1"; the scanner of the same commit reads 2.x only, so core and scanner ship together).
 
-**Status:** in progress (status log below).
+**Status:** on unit A (image `2026-10-04-bake-a1`). Every gate run is met but the TV scan, which
+named 5 stations on what looks like another antenna than 081's (status log); the burst-timing
+gate's tooling is built and its run is left for Andy.
 
 ## Why
 
@@ -250,10 +252,69 @@ Slices 59.5 % (3a 57.7 %). Bake A added 288 LUTs and 971 FFs to the core and no 
 
 ## Gates
 
-(results in the status log)
+079's "Every bake's gates", with bake A's own; the numbers are in the status log.
+
+| Gate | Result |
+|------|--------|
+| Spectrum frames bit-exact against the integrator's model (sim) | **Met** (256 points: modes, alternate, integrations, abort; 4096 points: alternating) |
+| Timing with no waiver, clk3x slack reported | **Met:** worst +0.480 ns, clk3x +0.605 (target +0.4) |
+| Hierarchical utilization down to the core's blocks, against 3a | **Met** (the core +288 LUTs, +971 FFs, no block RAM or DSP) |
+| CLAUDE.md checks | **Met:** scanner host tests 488, ARM check, DMR reference 24,984 of 24,996 with the follower test; scanner-hdl 217; agent 63 + 11, bench host 269 (the P25 recordings not needed: no receiver changed) |
+| An hour on Clay County: no packet fault, lost or missed packet; control ≥ 40 messages a second at ≥ 99.8 % | **Met:** 40.3 or more at 100 %, none |
+| Clay Electric DMR decoding | **Met** |
+| A TV scan naming as many stations as 081's (16) | **Not met: 5** named, at 10-25 dB less input than 081's scan; the decoder's MER edge unchanged. Likely the antenna (above); for Andy |
+| fbench's tests that read the core, on the new map | **Met:** `sys.identity`, `xport.p25_ring_prbs`, `xport.p25_ring_lap`, `iface.fpga_loopback` |
+| Every spectrum frame read for 10 minutes with no gap | **Met:** 27,467 frames in the hour, none missed |
+| One burst at the same time in a frame's header, a lane's packets and a capture | **Tooling built** (`tools/burst_timing.py`); the run needs a key fob or the ESP32-DIV: left for Andy |
 
 ## Status log
 
 - **2026-10-04.** Gateware, tests, PS side and bench written. The first bitstream met timing at
   +0.270 ns with clk3x at +0.307: the FFT's twiddles still shared one edge. With an edge each, the
   second met it at +0.480, clk3x +0.605.
+- **2026-10-04, the image on unit A** (`2026-10-04-bake-a1`: fishball-p25 b4747b6, tezuka_fw
+  f24e01b). Checked before installing: the ramdisk's scanner carries the tag and reads 2.x, the
+  DTB has the new carve-outs, BOOT.bin holds the XSA's bitstream. The boot files it replaced are
+  in `/mnt/sd/boot_backup_radiocore_atsc1`, the new ones also in `/mnt/sd/boot_new_bakea1`; the
+  card's copies matched the build's sha256 before the reboot. A answered 37 s after it.
+  - **The core:** version 2.0.0; `/dev/p25-lanes` 512 × 16 KB, `/dev/p25-wideband-spec` 16 ×
+    32 KB, `/dev/p25-wideband-iq` 16 × 1 MB; System RAM now skips 0x1900_0000-0x197F_FFFF,
+    0x2100_0000-0x2107_FFFF and 0x2200_0000-0x22FF_FFFF.
+  - **Frame headers:** consecutive frames' sample indices step by exactly 1,048,576 (256
+    transforms of 4096).
+  - **fbench, on the 2.0.0 map** (the agent rebuilt at e5565d5 and set up on A with the map):
+    `sys.identity` pass; `xport.p25_ring_prbs` pass, 1,920 MB through the capture ring in 60 s
+    with no anomaly; `xport.p25_ring_lap` pass, loss from a 450-500 ms reader stall against the
+    model's 492 ms; `iface.fpga_loopback` pass, 0 PN errors in 262,144 samples.
+  - **An hour on Clay County** (`tools/scanner_live_check.py`, 61 samples): the control channel
+    at 40.3 messages a second or more, 100 % passing; lanes 0, 1, 2 178,579 / 177,087 / 178,582
+    packets with none lost or missed and no packet fault (60 and 13 packets of an older tag after
+    retunes, dropped as designed); 27,467 spectrum frames read with no gap in the sequence and no
+    fault; no grant or control block dropped; 365 calls (90 followed, 275 encrypted), 68
+    recordings; crystal −0.689 ppm; the scanner 5.5 % of a core (top), 16-21 MB; nothing logged
+    as an error.
+  - **Clay Electric DMR** (`clay_elec_site_2`, 10 minutes): the control channel at 42.0 messages
+    a second or more, 100 % passing; 5 calls, all followed, 26.6 s of voice, 5 recordings; lanes
+    0 and 1 29,790 and 25,070 packets with none lost or missed and no packet fault; 4,582
+    spectrum frames with no gap.
+  - **A TV scan** (`tools/atsc_check.py`, the AGC, `runs/atsc/20261004_164849`): 33 channels in
+    57.3 s, 20 8-VSB; naming tried 11 and named **5 RF channels** (14, 19, 20, 21, 30: 22 virtual
+    channels, every number and name as the HDHomeRun's), short of 081's 16. RF 11 read as vacant
+    (the check's one miss). The five named at 17.9-26.8 dB of MER; the six that failed Reed-Solomon
+    on all or nearly all packets at 15.8-17.2 dB (RF 23 at 15.9 dB of carrier to noise found no
+    sync).
+    - **What differs is the input,** by 10-25 dB on most channels: the measured power of RF 9 was
+      −23.6 dBm in 081's scan on A (2026-10-04 02:14, the image before this one) and −48.3 dBm
+      now, RF 14 −25.9 and −43.3, RF 28 −35.5 and −51.0, RF 31 −40.4 and −61.6; RF 18-21 stayed
+      within a few dB. The capture's MER fell with the spectrum's carrier to noise (RF 28: 39.6 /
+      35.6 dB then, 21.1 / 17.0 now).
+    - **The decoder's edge did not move:** 081 named its stations at 17.9-37.4 dB of MER and
+      failed RF 10 and 11 at 17.2 and 17.0 dB; here it names from 17.9 dB and fails at 17.2 and
+      below. The captures it decoded were contiguous (RF 19 and 21: no packet beyond
+      Reed-Solomon).
+    - **081's 16 were named with A on the VHF/UHF directional antenna aimed at Jacksonville,
+      moved over from the HDHomeRun;** on the omni, 081's captures named RF 19, 20 and 21. Today's
+      levels look like A is no longer on that antenna. An A/B on today's antenna (the previous
+      image is in `/mnt/sd/boot_backup_radiocore_atsc1`) was not run: the rollback was refused by
+      this session's permissions. **For Andy:** the TV gate wants the scan again with A on the
+      directional antenna (or the A/B).

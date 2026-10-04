@@ -1574,3 +1574,12 @@ From the brief:
   CPU work merged onto 081, with tezuka_fw 96b16c3): on A's card, the boot files it replaced in
   `boot_backup_radiocore_image1`. After the reboot: Clay County live, its control channel at
   40.5 messages a second with 100 % passing, the clock synced. Unit B is still on 0.3.0.
+- 2026-10-04, change 082 (bake A; record: `doc/changes/082_bake_a.md`): the scanner reads the
+  radio core 2.0.0 only (its map's shared banks no longer move with the lanes). `radio::spectrum`
+  reads every spectrum frame in order and checks its header, counting gaps and faults in the
+  readback, and keeps the newest with its header bins blanked; `RadioHw::spectrum` returns it
+  with its header. The capture starts afresh at each enable with the sample index of its first
+  sample, and can stop after a trigger; `RadioHw::capture` returns that index. The burst timing
+  check (`services::burst`, `/api/v1/diag/burst`) is bake A's last gate, run by hand. The image
+  `2026-10-04-bake-a1` is on unit A; the boot files it replaced are in
+  `boot_backup_radiocore_atsc1`.

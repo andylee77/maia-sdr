@@ -5,6 +5,47 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-04] 082: Bake A, the radio core 2.0.0 (every mode's plumbing), on unit A
+
+**Branch:** fishball-p25 (ef6b681, e5565d5, b4747b6 and the record; local), tezuka_fw fishball-dev
+f24e01b (local)
+**BUILD_TAG:** `2026-10-04-bake-a1` (the SD image)
+**Bake required:** YES (core 2.0.0, product "rad1"; the scanner reads 2.x only).
+
+- **Design and results:** `doc/changes/082_bake_a.md`; plan in 079, "Every mode's needs" and
+  "The bakes" (Andy approved its recommendations on 2026-10-04).
+- **Gateware** (`scanner-hdl/radio_core`):
+  - a common-edge generator per 3x consumer (each of the FFT's five twiddle multipliers, the
+    integrator, each lane's DDC), kept apart;
+  - a register map whose shared banks stay put whatever the lane count (control 0x000, lane ring
+    0x020, spectrum 0x040, capture 0x060, 0x080-0x0FF kept, lane i at 0x100 + 0x20 i);
+  - the lane ring 8 MB and the spectrum ring 16 frames;
+  - spectrum frames with a mode per frame and `spec_alternate`, and a header in bins 0-7 (mode,
+    transforms, abort, sequence, the sample index of the first transform's first input sample,
+    ADC clips) with a check in bin 4095;
+  - the capture's start index, sub-buffer count and stop after a trigger;
+  - F2 (IQPacker's false overflow pulses).
+- **Timing** met with no waiver: worst +0.480 ns (sync to clk3x), clk3x +0.605 (1.0.0: +0.091;
+  target +0.4), hold +0.018. The core 7,124 LUTs, 10,136 FFs, the same 28 + 35 block RAMs and
+  46 DSPs as 1.0.0; the design 59.5 % of slices.
+- **Scanner:** `hardware::radiocore` for 2.0.0; every spectrum frame read in order, checked and
+  blanked (`radio::spectrum`); the capture's start index and trigger; the burst timing check
+  (`/api/v1/diag/burst`, `tools/burst_timing.py`).
+- **Bench:** the 2.0.0 map; the agent on the `capture_*` names, rebuilt and on A.
+- **tezuka_fw:** the XSA; `fishball-p25.dtsi`'s lane ring 8 MB and spectrum ring 512 KB.
+- **Unit A:** the image installed; the replaced boot files are in
+  `/mnt/sd/boot_backup_radiocore_atsc1`, the new ones also in `/mnt/sd/boot_new_bakea1`.
+- **Gates** (082's table):
+  - met: frames bit-exact against the integrator's model; timing; the utilization report; the
+    CLAUDE.md checks; an hour on Clay County (40.3+ messages a second at 100 %, about 178,000
+    packets a lane with none lost or missed and no fault, 27,467 spectrum frames with no gap);
+    Clay Electric DMR; fbench's core tests (`sys.identity`, `xport.p25_ring_prbs`,
+    `xport.p25_ring_lap`, `iface.fpga_loopback`);
+  - not met: the TV scan named 5 stations against 081's 16, at 10-25 dB less input than 081's
+    scan (which had A on the Jacksonville directional antenna); the decoder's MER edge is
+    unchanged. For Andy: the scan on that antenna, or an A/B with the previous image;
+  - left for Andy: the burst-timing run (`tools/burst_timing.py`).
+
 ## [2026-10-04] Cleanup: p25-httpd out, the fork's gateware in scanner-hdl, the bench on the radio core
 
 **Branch:** fishball-p25 from 9740d17 (local; efef2ce, the inventory, is pushed), tezuka_fw

@@ -7,7 +7,9 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 ## Current work
 
 - **The radio core (079):** the gateware plan for every mode is in
-  `doc/changes/079_general_radio_core.md`, "Every mode's needs". Bake A (change 082) comes next.
+  `doc/changes/079_general_radio_core.md`, "Every mode's needs". Bake A (change 082, core 2.0.0)
+  is on unit A; its burst-timing gate waits for Andy (`tools/burst_timing.py`). Bakes B-D wait
+  for their evidence (079, "The bakes").
 - **The cleanup:** `doc/CLEANUP_INVENTORY.md`, section 14's batches.
 - **Data mode:** a study with Andy's decisions, `scanner/doc/DATA_MODE.md`.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`.
@@ -18,7 +20,7 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 |------|------|
 | `scanner/` | The daemon on the Zynq PS (Rust): the radio core's driver, the demodulators, trunking, audio, history, ATSC, API, web UI (`src/ui/`, plain ES modules embedded at compile time). Design: `scanner/doc/DESIGN.md` |
 | `scanner/core-pac/` | The register PAC, generated from the radio core's SVD by the FPGA build |
-| `scanner-hdl/` | The fork's gateware (Amaranth): `radio_core/` (the radio core 1.0.0, product "rad1"), `hwval_hdl/` (hardware validation), their tests (`test/`, `test_cocotb/`) and `generate_svd.py`. It imports upstream `maia_hdl` |
+| `scanner-hdl/` | The fork's gateware (Amaranth): `radio_core/` (the radio core 2.0.0, product "rad1"), `hwval_hdl/` (hardware validation), their tests (`test/`, `test_cocotb/`) and `generate_svd.py`. It imports upstream `maia_hdl` |
 | `maia-hdl/` | Upstream Maia's gateware, unchanged apart from the fork's Vivado projects (`projects/fishball7020_p25/`, `fishball7020_hwval/`) and IP packaging (`ip/p25-core/`, `ip/hwval-core/`), which stay there because ADI's scripts use paths relative to them |
 | `bench/` | `fbench` CLI and board agent (`doc/HW_VALIDATION_SUITE.md`); its runs go to `runs/bench/` |
 | `tools/` | Host scripts: the SDRTrunk reference harnesses, DDC filter design, the API field reference, TV checks |
@@ -26,8 +28,9 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 | `doc/` | `ROADMAP.md`, `CLEANUP_INVENTORY.md`; `doc/changes/NNN_*.md`, one per change |
 | `maia-httpd/`, `maia-wasm/`, `maia-kmod/` | Upstream Maia; the unit uses `maia-kmod`'s rxbuffer driver for DMA |
 
-- **The radio core's registers and rings:** 079's "Registers" and "Rings and the device tree", and
-  `scanner/core-pac/core.svd`.
+- **The radio core's registers, rings and frames:** 082's "The register map", "The rings", the
+  spectrum frame's header and the capture, and `scanner/core-pac/core.svd`; the lane packet in
+  079's "The lane packet".
 - **Retired docs, tools and gateware:** `C:\Users\Andy\Projects\MAIA_SDR\_archive\`, with a
   README per batch.
 
@@ -57,8 +60,8 @@ Every commit builds and passes these, run from `scanner/`:
 - **Bench host tests,** when `bench/` changes: `python -m pytest` from `bench/`.
 - **P25 replay corpus:** `python bench/fbench.py run rf.p25_corpus`, with unit B transmitting
   into unit A. Andy wires the bench link when a test needs it; ask first.
-- **Live:** on unit A, Clay County P25 (CC 860.9625 MHz) and Clay Electric DMR (site `cec_gcs`,
-  CC 454.36875 MHz).
+- **Live:** on unit A, Clay County P25 (site `clay_county_public_safety_simulcast`, CC
+  860.9625 MHz) and Clay Electric DMR (site `clay_elec_site_2`, CC 454.36875 MHz).
 
 ## Builds
 
@@ -80,7 +83,7 @@ Every commit builds and passes these, run from `scanner/`:
 
 | Unit | Address | Board | Image | Notes |
 |------|---------|-------|-------|-------|
-| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 1.0.0 (`2026-10-04-radio-core-atsc1`) | The unit in use |
+| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.0.0 (`2026-10-04-bake-a1`) | The unit in use |
 | B | `192.168.12.1` (USB) | AD9363, internal antenna | not in use; it needs the current image before anything runs on it | |
 
 - **SSH:** write the full command literally, never through a variable:
