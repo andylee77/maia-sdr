@@ -134,11 +134,16 @@ impl Window {
         self.work.extend_from_slice(x);
         match &self.taps {
             Taps::Folded { at, span, half, single } => {
-                // Output n's window is work[n ..= n + len − 1].
+                // Output n's window is work[n ..= n + len − 1]. The first single tap starts the
+                // sums, the pairs and the other single taps add to them.
                 let start = out.len();
-                out.resize(start + x.len(), 0.0);
+                let n = x.len();
+                match single.first() {
+                    Some(&(j, tap)) => out.extend(self.work[j..j + n].iter().map(|s| tap * s)),
+                    None => out.resize(start + n, 0.0),
+                }
                 folded_run(half, *span, &self.work[*at..], &mut out[start..]);
-                for &(j, tap) in single {
+                for &(j, tap) in single.iter().skip(1) {
                     out[start..].iter_mut().zip(&self.work[j..]).for_each(|(o, s)| *o += tap * s);
                 }
             }
@@ -201,13 +206,13 @@ impl HalfBand {
         }
         let next = self.even_base + self.even.len() as i64;
         // Output m's even inputs are even[m − even_base − (2p − 1) ..= m − even_base], its odd
-        // input odd[m − p − odd_base]: both step by one with m.
+        // input odd[m − p − odd_base]: both step by one with m. The centre tap starts the sums.
         let start = out.len();
-        out.resize(start + (next - first) as usize, 0.0);
+        let count = (next - first) as usize;
+        let mid = &self.odd[(first - p as i64 - self.odd_base) as usize..];
+        out.extend(mid[..count].iter().map(|m| self.centre * m));
         let window = (first - self.even_base) as usize + 1 - 2 * p;
         folded_run(&self.pairs, 2 * p - 1, &self.even[window..], &mut out[start..]);
-        let mid = &self.odd[(first - p as i64 - self.odd_base) as usize..];
-        out[start..].iter_mut().zip(mid).for_each(|(o, m)| *o += self.centre * m);
         let drop = self.even.len() - (2 * p - 1);
         self.even.drain(..drop);
         self.even_base += drop as i64;
@@ -234,18 +239,19 @@ fn dot(t: &[f32], w: &[f32]) -> f32 {
     (s[0] + s[1]) + (s[2] + s[3])
 }
 
-/// out[k] = Σ t[i]·(x[k + i] + x[k + span − i]) over the n = `t.len()` outer tap pairs of a run
+/// out[k] += Σ t[i]·(x[k + i] + x[k + span − i]) over the n = `t.len()` outer tap pairs of a run
 /// of span + 1 taps, for every k < `out.len()`.
 fn folded_run(t: &[f32], span: usize, x: &[f32], out: &mut [f32]) {
     assert!(x.len() >= out.len() + span && span + 1 >= 2 * t.len());
     let done = folded_run_neon(t, span, x, out);
     for (k, o) in out.iter_mut().enumerate().skip(done) {
-        *o = folded(t, &x[k..], &x[..=k + span]);
+        *o += folded(t, &x[k..], &x[..=k + span]);
     }
 }
 
 /// The NEON part of `folded_run`: the outputs in whole groups of eight, each tap's pair of
-/// eight-sample runs added and multiplied by the tap into eight sums. Returns the outputs done.
+/// eight-sample runs added and multiplied by the tap into the eight outputs. Returns the outputs
+/// done.
 #[cfg(target_arch = "arm")]
 fn folded_run_neon(t: &[f32], span: usize, x: &[f32], out: &mut [f32]) -> usize {
     if t.is_empty() {
@@ -255,13 +261,12 @@ fn folded_run_neon(t: &[f32], span: usize, x: &[f32], out: &mut [f32]) -> usize 
     for g in 0..groups {
         let k = 8 * g;
         // SAFETY: tap i reads x[k + i .. k + i + 8] and x[k + span − i .. k + span − i + 8],
-        // inside x as folded_run checks (i < n ≤ (span + 1)/2, k + 8 ≤ out.len()); writes
-        // out[k .. k + 8] and only the registers it names.
+        // inside x as folded_run checks (i < n ≤ (span + 1)/2, k + 8 ≤ out.len()); reads and
+        // writes out[k .. k + 8] and only the registers it names.
         unsafe {
             std::arch::asm!(
                 ".fpu neon",
-                "vmov.i32 q4, #0",
-                "vmov.i32 q5, #0",
+                "vld1.32 {{d8-d11}}, [{dst}]",
                 "2:",
                 "vld1.32 {{d0-d3}}, [{lo}]",
                 "vld1.32 {{d4-d7}}, [{hi}]",
