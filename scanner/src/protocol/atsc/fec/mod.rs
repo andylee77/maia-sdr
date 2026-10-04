@@ -1,0 +1,253 @@
+//! From equalized symbols to MPEG-2 transport stream packets: the 12 trellis decoders, the
+//! bytes back in field order, the convolutional deinterleaver (52 branches, 4 bytes more delay
+//! each), Reed-Solomon (207,187) and the randomizer. A field carries 312 packets; its data
+//! bytes, the interleaver's commutator and the randomizer all start afresh at its field sync.
+
+pub mod rs;
+pub mod trellis;
+
+use std::sync::OnceLock;
+
+use super::vsb::{DATA_SEGMENTS, DATA_SYMBOLS, FIELD_SEGMENTS, SEGMENT, SYNC_SYMBOLS};
+use trellis::ENCODERS;
+
+/// Reed-Solomon-coded bytes a field.
+pub const FIELD_BYTES: usize = rs::N * DATA_SEGMENTS;
+const BRANCHES: usize = 52;
+/// Bytes of delay the interleaver adds a branch.
+const BRANCH_STEP: usize = 4 * BRANCHES;
+
+/// Field byte b goes to encoder `.0[b]` as its `.1[b]`-th byte of the field. The encoders take
+/// the bytes in turn, the turn moving on by 4 at each segment's start rounded up to 12 bytes.
+fn byte_map() -> &'static (Vec<u8>, Vec<u16>) {
+    static MAP: OnceLock<(Vec<u8>, Vec<u16>)> = OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut enc = vec![0u8; FIELD_BYTES];
+        let mut nth = vec![0u16; FIELD_BYTES];
+        let mut count = [0u16; ENCODERS];
+        let (mut shift, mut seg) = (0usize, 1usize);
+        for b in 0..FIELD_BYTES {
+            while seg <= DATA_SEGMENTS && (rs::N * seg).div_ceil(ENCODERS) * ENCODERS == b {
+                shift = (shift + 4) % ENCODERS;
+                seg += 1;
+            }
+            let e = (b + shift) % ENCODERS;
+            enc[b] = e as u8;
+            nth[b] = count[e];
+            count[e] += 1;
+        }
+        (enc, nth)
+    })
+}
+
+/// The randomizer's bytes for a field's 312 packets (sync bytes left out): x^16 + x^13 + x^12 +
+/// x^11 + x^7 + x^6 + x^3 + x + 1 from 0xF180.
+fn randomizer() -> &'static [u8] {
+    static R: OnceLock<Vec<u8>> = OnceLock::new();
+    R.get_or_init(|| {
+        let mut st: u32 = 0xF180;
+        (0..rs::K * DATA_SEGMENTS)
+            .map(|_| {
+                let o = ((st & 0x3C00) >> 6) | ((st & 0x0040) >> 3) | ((st & 0x000C) >> 1) | (st & 1);
+                st <<= 1;
+                if st & 0x1_0000 != 0 {
+                    st ^= (0x9C65 << 1) | 1;
+                }
+                o as u8
+            })
+            .collect()
+    })
+}
+
+/// One transport stream packet, and whether Reed-Solomon passed it.
+#[derive(Debug, Clone)]
+pub struct Packet {
+    pub bytes: [u8; 188],
+    pub outcome: rs::Outcome,
+}
+
+/// Decoding counts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FecStats {
+    pub fields: usize,
+    pub packets: usize,
+    pub corrected: usize,
+    pub failed: usize,
+}
+
+/// The packets of the data fields after each field sync in `syncs` (indices into `segments`;
+/// consecutive fields only), in order. The last 51 or so packets are lost to the
+/// deinterleaver's delay.
+pub fn decode(segments: &[[f32; SEGMENT]], first_sync: usize) -> (Vec<Packet>, FecStats) {
+    let fields = segments.len().saturating_sub(first_sync) / FIELD_SEGMENTS;
+    let mut stats = FecStats { fields, ..Default::default() };
+    if fields == 0 {
+        return (Vec::new(), stats);
+    }
+    // Each encoder's symbols in time order, over every field.
+    let per_field = DATA_SEGMENTS * DATA_SYMBOLS / ENCODERS;
+    let mut seqs = vec![Vec::with_capacity(per_field * fields); ENCODERS];
+    for f in 0..fields {
+        for dseg in 0..DATA_SEGMENTS {
+            let row = &segments[first_sync + f * FIELD_SEGMENTS + 1 + dseg][SYNC_SYMBOLS..];
+            for (k, &s) in row.iter().enumerate() {
+                seqs[trellis::encoder(dseg, k)].push(s);
+            }
+        }
+    }
+    let pairs: Vec<Vec<u8>> = seqs.iter().map(|s| trellis::decode(s)).collect();
+    // Each encoder's bytes, then the interleaved stream in field order.
+    let (enc, nth) = byte_map();
+    let bytes_per_field = FIELD_BYTES / ENCODERS;
+    let mut stream = vec![0u8; fields * FIELD_BYTES];
+    for f in 0..fields {
+        for b in 0..FIELD_BYTES {
+            let e = enc[b] as usize;
+            let k = (f * bytes_per_field + nth[b] as usize) * 4;
+            let p = &pairs[e][k..k + 4];
+            stream[f * FIELD_BYTES + b] = (p[0] << 6) | (p[1] << 4) | (p[2] << 2) | p[3];
+        }
+    }
+    // Byte m before the interleaver is byte m + 208 (m mod 52) after it.
+    let mut packets = Vec::new();
+    let rand = randomizer();
+    let mut cw = [0u8; rs::N];
+    let total = stream.len() / rs::N;
+    for s in 0..total {
+        let mut whole = true;
+        for (j, c) in cw.iter_mut().enumerate() {
+            let m = s * rs::N + j;
+            match stream.get(m + BRANCH_STEP * (m % BRANCHES)) {
+                Some(&x) => *c = x,
+                None => whole = false,
+            }
+        }
+        if !whole {
+            break;
+        }
+        let outcome = rs::decode(&mut cw);
+        match outcome {
+            rs::Outcome::Corrected(_) => stats.corrected += 1,
+            rs::Outcome::Failed => stats.failed += 1,
+            rs::Outcome::Clean => {}
+        }
+        let fseg = s % DATA_SEGMENTS;
+        let mut bytes = [0u8; 188];
+        bytes[0] = 0x47;
+        for (j, b) in bytes[1..].iter_mut().enumerate() {
+            *b = cw[j] ^ rand[fseg * rs::K + j];
+        }
+        packets.push(Packet { bytes, outcome });
+    }
+    stats.packets = packets.len();
+    (packets, stats)
+}
+
+/// Test signals: packets through the randomizer, Reed-Solomon, the interleaver and the trellis
+/// encoders, into data segments (each `[0; 4]` sync, then 828 symbols, pilot not added), a field
+/// sync segment (zeros) before each 312.
+#[cfg(test)]
+pub fn encode(packets: &[[u8; 188]]) -> Vec<[f32; SEGMENT]> {
+    use super::vsb::level;
+    let fields = packets.len() / DATA_SEGMENTS;
+    let rand = randomizer();
+    let mut orig = Vec::with_capacity(fields * FIELD_BYTES);
+    for (i, p) in packets.iter().take(fields * DATA_SEGMENTS).enumerate() {
+        let fseg = i % DATA_SEGMENTS;
+        let data: Vec<u8> = p[1..].iter().enumerate().map(|(j, &b)| b ^ rand[fseg * rs::K + j]).collect();
+        orig.extend_from_slice(&data);
+        orig.extend_from_slice(&rs::parity(&data));
+    }
+    let inter: Vec<u8> = (0..orig.len())
+        .map(|t| {
+            let d = BRANCH_STEP * (t % BRANCHES);
+            if t >= d { orig[t - d] } else { 0 }
+        })
+        .collect();
+    let (enc, nth) = byte_map();
+    let mut encoders = [trellis::Encoder::default(); ENCODERS];
+    let mut segs = Vec::new();
+    for f in 0..fields {
+        // Each encoder's bytes of this field, in order.
+        let mut by_enc = vec![vec![0u8; FIELD_BYTES / ENCODERS]; ENCODERS];
+        for b in 0..FIELD_BYTES {
+            by_enc[enc[b] as usize][nth[b] as usize] = inter[f * FIELD_BYTES + b];
+        }
+        let mut sent = [0usize; ENCODERS];
+        segs.push([0f32; SEGMENT]);
+        for dseg in 0..DATA_SEGMENTS {
+            let mut seg = [0f32; SEGMENT];
+            for k in 0..DATA_SYMBOLS {
+                let e = trellis::encoder(dseg, k);
+                let n = sent[e];
+                sent[e] += 1;
+                let byte = by_enc[e][n / 4];
+                let pair = (byte >> (6 - 2 * (n % 4))) & 3;
+                seg[SYNC_SYMBOLS + k] = level(encoders[e].symbol(pair >> 1, pair & 1));
+            }
+            segs.push(seg);
+        }
+    }
+    segs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn packets(n: usize) -> Vec<[u8; 188]> {
+        (0..n)
+            .map(|i| {
+                let mut p = [0u8; 188];
+                p[0] = 0x47;
+                for (j, b) in p[1..].iter_mut().enumerate() {
+                    *b = (i * 7 + j * 13) as u8;
+                }
+                p
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_encoder_takes_the_same_share_of_a_field() {
+        let (enc, nth) = byte_map();
+        for e in 0..ENCODERS {
+            assert_eq!(enc.iter().filter(|&&x| x as usize == e).count(), FIELD_BYTES / ENCODERS);
+        }
+        assert_eq!(*nth.iter().max().unwrap() as usize, FIELD_BYTES / ENCODERS - 1);
+        // The first bytes go to the encoders in turn.
+        assert_eq!(&enc[..13], &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0]);
+    }
+
+    #[test]
+    fn three_fields_come_back_through_the_whole_chain() {
+        let sent = packets(3 * DATA_SEGMENTS);
+        let segs = encode(&sent);
+        let (got, stats) = decode(&segs, 0);
+        assert_eq!(stats.fields, 3);
+        assert!(got.len() >= 3 * DATA_SEGMENTS - 52, "{}", got.len());
+        assert_eq!((stats.failed, stats.corrected), (0, 0));
+        for (g, s) in got.iter().zip(&sent) {
+            assert_eq!(g.bytes, *s);
+        }
+    }
+
+    #[test]
+    fn noise_is_corrected_by_the_trellis_and_reed_solomon() {
+        let sent = packets(2 * DATA_SEGMENTS);
+        let mut segs = encode(&sent);
+        let mut x = 5u64;
+        for seg in segs.iter_mut() {
+            for s in seg[SYNC_SYMBOLS..].iter_mut() {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                // Uniform noise of ±0.95: a slicer's errors are rare but not absent.
+                *s += ((x >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 1.9;
+            }
+        }
+        let (got, stats) = decode(&segs, 0);
+        assert_eq!(stats.failed, 0, "{stats:?}");
+        for (g, s) in got.iter().zip(&sent) {
+            assert_eq!(g.bytes, *s);
+        }
+    }
+}
