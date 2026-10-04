@@ -384,6 +384,8 @@ struct Task<H> {
     view: Arc<Mutex<CallsView>>,
     open: Vec<Opened>,
     recent: VecDeque<CallView>,
+    /// A call closed since the view last took the recent calls.
+    recent_changed: bool,
     last_stuck_check: Instant,
     learned: Option<Arc<Learned>>,
     audio: Arc<Audio>,
@@ -641,6 +643,7 @@ impl Trunking {
             view: self.view.clone(),
             open: Vec::new(),
             recent,
+            recent_changed: false,
             last_stuck_check: Instant::now(),
             lanes_view: self.lanes.clone(),
             lanes_published: Instant::now(),
@@ -1512,6 +1515,7 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
                         notices.push(Notice::CallClosed { call: o.call, tg: o.tg });
                         self.recent.push_front(view_of(&o, Some(&c), self.codec));
                         self.recent.truncate(RECENT);
+                        self.recent_changed = true;
                     }
                 }
                 CallEvent::Source { call, lane: Some(lane), source, via: SourceVia::CcRefresh } => {
@@ -1534,7 +1538,8 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         }
     }
 
-    fn publish(&self) {
+    /// The calls view: the open calls, and the recent ones when a call closed.
+    fn publish(&mut self) {
         let mut open: Vec<CallView> = Vec::new();
         for o in &self.open {
             let mut v = view_of(o, None, self.codec);
@@ -1552,7 +1557,10 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
         }
         if let Ok(mut view) = self.view.lock() {
             view.open = open;
-            view.recent = self.recent.iter().cloned().collect();
+            if self.recent_changed {
+                view.recent = self.recent.iter().cloned().collect();
+                self.recent_changed = false;
+            }
         }
     }
 }

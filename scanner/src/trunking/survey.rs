@@ -138,9 +138,9 @@ pub fn on_air(frames: &[Vec<f32>], window: (u64, u32)) -> Vec<(u64, f32)> {
 }
 
 fn median(db: &[f32]) -> f32 {
-    let mut sorted = db.to_vec();
-    sorted.sort_by(f32::total_cmp);
-    sorted[sorted.len() / 2]
+    let mut v = db.to_vec();
+    let mid = v.len() / 2;
+    *v.select_nth_unstable_by(mid, f32::total_cmp).1
 }
 
 /// The runs of `active` bins of an `n`-bin frame, as (first, last): inside the window a lane can
