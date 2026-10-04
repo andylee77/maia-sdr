@@ -45,17 +45,16 @@ const INTO: [[(usize, usize); 2]; 4] = [[(0, 0), (1, 2)], [(2, 1), (3, 3)], [(0,
 const SOFT: f32 = 16.0;
 const SOFT_LIMIT: i32 = 256;
 
-/// A symbol in soft steps, rounded to the nearest: offset to stay positive where it matters, so
-/// that `as` (towards zero) floors.
-fn soft(r: f32) -> i32 {
+/// A symbol (in the ±1..±7 units, pilot removed) in soft steps, rounded to the nearest: offset to
+/// stay positive where it matters, so that `as` (towards zero) floors.
+pub fn soft(r: f32) -> i32 {
     ((r * SOFT + 4096.5) as i32 - 4096).clamp(-SOFT_LIMIT, SOFT_LIMIT)
 }
 
-/// Viterbi decoding of one encoder's symbols (in the ±1..±7 units, pilot removed): its bit pairs
-/// X2 X1 as `(x2 << 1) | x1`, one a symbol. The precoder is undone along the way; the first
-/// symbol's X2 assumes a previous Y2 of 0.
-pub fn decode(symbols: &[f32]) -> Vec<u8> {
-    let soft: Vec<i32> = symbols.iter().map(|&r| soft(r)).collect();
+/// Viterbi decoding of one encoder's soft symbols: its bit pairs X2 X1 as `(x2 << 1) | x1`, one a
+/// symbol. The precoder is undone along the way; the first symbol's X2 assumes a previous Y2 of
+/// 0. No branches on the data: the choices are masks.
+pub fn decode(soft: &[i32]) -> Vec<u8> {
     let n = soft.len();
     let unit = SOFT as i32;
     // Per step, two bits a next state (at 2 × state): the D2 of the state it came from, and the
@@ -65,25 +64,28 @@ pub fn decode(symbols: &[f32]) -> Vec<u8> {
     for (t, &r) in soft.iter().enumerate() {
         // Coset c's levels are 2c − 7 and 2c + 1; the nearer one, its distance and its Z2.
         let mut cost = [0i32; 4];
-        let mut z2 = [0u8; 4];
+        let mut z2 = [0i32; 4];
         for c in 0..4 {
             let lo = (2 * c as i32 - 7) * unit;
-            let high = r > lo + 4 * unit;
-            let d = if high { r - lo - 8 * unit } else { r - lo };
+            // All ones where the upper level is the nearer.
+            let high = (lo + 4 * unit - r) >> 31;
+            let d = r - lo - (8 * unit & high);
             cost[c] = d * d;
-            z2[c] = u8::from(high);
+            z2[c] = high & 1;
         }
         let mut next = [0i32; 4];
-        let mut bits = 0u8;
+        let mut bits = 0i32;
         for (ns, from) in INTO.iter().enumerate() {
             let (s0, c0) = from[0];
             let (s1, c1) = from[1];
             let (m0, m1) = (metric[s0] + cost[c0], metric[s1] + cost[c1]);
-            let (m, d2, c) = if m1 < m0 { (m1, 1, c1) } else { (m0, 0, c0) };
-            next[ns] = m;
-            bits |= (d2 | (z2[c] << 1)) << (2 * ns);
+            // All ones where the second way in is shorter (a tie keeps the first).
+            let second = (m1 - m0) >> 31;
+            next[ns] = m0 + ((m1 - m0) & second);
+            let z = z2[c0] ^ ((z2[c0] ^ z2[c1]) & second);
+            bits |= ((second & 1) | (z << 1)) << (2 * ns);
         }
-        back[t] = bits;
+        back[t] = bits as u8;
         // Only the differences between states matter.
         let base = next[0];
         for (m, x) in metric.iter_mut().zip(next) {
@@ -135,7 +137,7 @@ mod tests {
     fn noiseless_symbols_decode_to_their_bits() {
         let pairs = random_pairs(5_000, 7);
         let mut e = Encoder::default();
-        let syms: Vec<f32> = pairs.iter().map(|&p| level(e.symbol(p >> 1, p & 1))).collect();
+        let syms: Vec<i32> = pairs.iter().map(|&p| soft(level(e.symbol(p >> 1, p & 1)))).collect();
         assert_eq!(decode(&syms), pairs);
     }
 
@@ -153,7 +155,7 @@ mod tests {
             ((-2.0 * u().ln()).sqrt() * (2.0 * std::f64::consts::PI * u()).cos()) as f32
         };
         // Noise of 0.55 a symbol: a slicer errs on about 7 % of symbols.
-        let syms: Vec<f32> = pairs.iter().map(|&p| level(e.symbol(p >> 1, p & 1)) + 0.55 * gauss()).collect();
+        let syms: Vec<i32> = pairs.iter().map(|&p| soft(level(e.symbol(p >> 1, p & 1)) + 0.55 * gauss())).collect();
         let got = decode(&syms);
         let x1_errors = got.iter().zip(&pairs).filter(|(a, b)| (*a & 1) != (*b & 1)).count();
         assert!(x1_errors < pairs.len() / 200, "{x1_errors} X1 errors in {}", pairs.len());

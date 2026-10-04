@@ -84,15 +84,18 @@ pub fn decode(symbols: &[f32], first_sync: usize) -> (Vec<Packet>, FecStats) {
     if fields == 0 {
         return (Vec::new(), stats);
     }
-    // Each encoder's symbols in time order, over every field.
+    // Each encoder's soft symbols in time order, over every field; within a segment the encoders
+    // take the symbols in turn.
     let per_field = DATA_SEGMENTS * DATA_SYMBOLS / ENCODERS;
     let mut seqs = vec![Vec::with_capacity(per_field * fields); ENCODERS];
     for f in 0..fields {
         for dseg in 0..DATA_SEGMENTS {
             let seg = first_sync + f * FIELD_SEGMENTS + 1 + dseg;
             let row = &symbols[seg * SEGMENT + SYNC_SYMBOLS..(seg + 1) * SEGMENT];
-            for (k, &s) in row.iter().enumerate() {
-                seqs[trellis::encoder(dseg, k)].push(s);
+            let mut e = trellis::encoder(dseg, 0);
+            for &s in row {
+                seqs[e].push(trellis::soft(s));
+                e = if e + 1 == ENCODERS { 0 } else { e + 1 };
             }
         }
     }

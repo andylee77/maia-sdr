@@ -5,10 +5,11 @@
 //!    the pilot's frequency comes from the slope of their phase over short blocks, then its phase
 //!    from 0.2 ms blocks, a straight line between their centres.
 //! 2. **Matched filter at any instant.** 8-VSB's receive filter is, in the channel-centred signal,
-//!    a real root-raised cosine at RS/2 symbols a second (rolloff 0.1152). It is tabulated at 128
+//!    a real root-raised cosine at RS/2 symbols a second (rolloff 0.1152). It is tabulated at 64
 //!    fractional offsets between input samples, so the filtered signal at an instant is one sum
-//!    over the inputs around it (NEON on the A9). Turned up RS/4 less the pilot's phase, its real
-//!    part is the 8-level signal (the halves of the vestige add up flat about the pilot).
+//!    over the inputs around it (NEON on the A9, two instants a pass over their shared inputs).
+//!    Turned up RS/4 less the pilot's phase, its real part is the 8-level signal (the halves of
+//!    the vestige add up flat about the pilot).
 //! 3. **Timing.** From the segment syncs (+5 −5 −5 +5 every 832 symbols): the real signal at two
 //!    samples a symbol around where each is expected, summed over blocks of segments and tracked
 //!    block to block, then fitted to a line (the sample clock's error is a constant rate).
@@ -29,8 +30,13 @@ pub const SYMBOL_RATE: f64 = 4_500_000.0 * 684.0 / 286.0;
 const ROLLOFF: f64 = 0.1152;
 /// The matched filter's half-span, in symbols of RS/2.
 const FILTER_HALF_SPAN: f64 = 12.0;
-/// Fractional offsets between input samples the matched filter is tabulated at.
-const PHASES: usize = 128;
+/// Fractional offsets between input samples the matched filter is tabulated at (a timing error
+/// of 1/128 sample at most).
+const PHASE_BITS: u32 = 6;
+const PHASES: usize = 1 << PHASE_BITS;
+/// Zeros either side of each tabulated row: a pair's later instant may start this many inputs
+/// after the earlier one and still share its inputs.
+const PAIR_REACH: usize = 4;
 /// The pilot's sub-blocks, then the blocks its frequency and its phase come from, in seconds.
 const PILOT_SUB_BLOCK: f64 = 2e-6;
 const PILOT_BLOCKS: [f64; 2] = [20e-6, 2e-4];
@@ -49,8 +55,8 @@ const EQ_TRAINING_FIELDS: usize = 20;
 const EQ_ROUNDS: usize = 2;
 const EQ_DECISION_RUNS: usize = 16;
 const EQ_RUN: usize = 1024;
-/// The fast convolution's transform size.
-const FFT_LEN: usize = 4096;
+/// The fast convolution's transform size (on the A9 1024 beat 2048, 4096 and 8192).
+const FFT_LEN: usize = 1024;
 
 #[derive(Debug, Clone)]
 pub struct Demodulated {
@@ -161,8 +167,11 @@ impl Carrier {
         let two_pi = 2.0 * std::f64::consts::PI;
         let up = two_pi * SYMBOL_RATE / 4.0 / fs;
         let sub = ((PILOT_SUB_BLOCK * fs).round() as usize).max(1);
-        let mut turn = Phasor::new(0.0, up);
-        let sums: Vec<Complex32> = x.chunks_exact(sub).map(|c| c.iter().map(|&s| s * turn.next()).sum()).collect();
+        // The turn across a sub-block from a table; each sub-block's own start stepped once.
+        let within: Vec<Complex32> = (0..sub).map(|k| Complex32::from_polar(1.0, (up * k as f64) as f32)).collect();
+        let mut start = Phasor::new(0.0, up * sub as f64);
+        let sums: Vec<Complex32> =
+            x.chunks_exact(sub).map(|c| start.next() * c.iter().zip(&within).map(|(&s, &w)| s * w).sum::<Complex32>()).collect();
         let mut offset = 0.0;
         let mut n = 1;
         for block_s in PILOT_BLOCKS {
@@ -193,7 +202,8 @@ struct Matched {
     /// Inputs a sum: i + 1 − taps/2 ..= i + taps/2 around an instant i + f, 0 ≤ f ≤ 1. A whole
     /// number of groups of eight.
     taps: usize,
-    /// The taps at f = p / PHASES for p = 0..=PHASES, one row after another.
+    /// The taps at f = p / PHASES for p = 0..=PHASES, a row each: PAIR_REACH zeros, the taps,
+    /// PAIR_REACH zeros.
     table: Vec<f32>,
 }
 
@@ -206,10 +216,16 @@ impl Matched {
             .flat_map(|p| {
                 let f = p as f64 / PHASES as f64;
                 // Input j of the sum is f + h − 1 − j samples before the instant.
-                (0..taps).map(move |j| (rrc((f + h as f64 - 1.0 - j as f64) / fs * rb) * rb / fs) as f32)
+                let row = (0..taps).map(move |j| (rrc((f + h as f64 - 1.0 - j as f64) / fs * rb) * rb / fs) as f32);
+                std::iter::repeat_n(0.0, PAIR_REACH).chain(row).chain(std::iter::repeat_n(0.0, PAIR_REACH))
             })
             .collect();
         Matched { taps, table }
+    }
+
+    /// Where row p starts in the table.
+    fn row(&self, p: usize) -> usize {
+        p * (self.taps + 2 * PAIR_REACH)
     }
 
     /// The filtered signal at input instant `tau`; zero where its inputs leave `x`.
@@ -221,7 +237,8 @@ impl Matched {
             let p = ((tau - i as f64) * PHASES as f64 + 0.5) as usize;
             let start = i + 1 - h;
             if let Some(w) = x.get(start..start + self.taps) {
-                dot_iq(&self.table[p * self.taps..(p + 1) * self.taps], w, &mut z);
+                let r = self.row(p) + PAIR_REACH;
+                dot_iq(&self.table[r..r + self.taps], w, &mut z);
             }
         }
         z
@@ -230,24 +247,41 @@ impl Matched {
     /// The filtered signal at the instants u0 + k·du, k < `z.len()`. Where all of them are well
     /// inside the input, the instants step in 32.32 fixed point: the ARM side only finds each
     /// sum's inputs and taps, and never waits on NEON (a float-to-integer conversion, like a
-    /// NEON result, crosses to the ARM registers and stalls it on the A9).
+    /// NEON result, crosses to the ARM registers and stalls it on the A9). Two instants a pass:
+    /// the later one's taps from its padded row, shifted to line up with the earlier one's inputs.
     fn run(&self, x: &[Complex32], u0: f64, du: f64, z: &mut [Complex32]) {
         const ONE: f64 = 4_294_967_296.0;
         let (h, taps) = (self.taps / 2, self.taps);
+        let span = taps + PAIR_REACH;
         let last = u0 + du * z.len().saturating_sub(1) as f64;
-        if du < 0.0 || u0 < h as f64 || last + (h + 2) as f64 > x.len() as f64 {
+        if du < 0.0 || u0 < h as f64 || last + (h + PAIR_REACH + 2) as f64 > x.len() as f64 {
             for (k, v) in z.iter_mut().enumerate() {
                 *v = self.at(x, u0 + k as f64 * du);
             }
             return;
         }
+        // An instant's first input, and its row (the fraction rounded to 1/PHASES).
+        let place = |pos: u64| {
+            let p = ((pos & 0xFFFF_FFFF) + (1 << (31 - PHASE_BITS))) >> (32 - PHASE_BITS);
+            ((pos >> 32) as usize + 1 - h, self.row(p as usize))
+        };
         let (mut pos, step) = ((u0 * ONE) as u64, (du * ONE) as u64);
-        for v in z.iter_mut() {
-            // The instant's first input, and its table row (the fraction rounded to 1/PHASES).
-            let a = (pos >> 32) as usize + 1 - h;
-            let r = (((pos & 0xFFFF_FFFF) + (1 << 24)) >> 25) as usize * taps;
-            pos += step;
-            dot_iq(&self.table[r..r + taps], &x[a..a + taps], v);
+        let mut pairs = z.chunks_exact_mut(2);
+        for pair in &mut pairs {
+            let ((a, ra), (b, rb)) = (place(pos), place(pos + step));
+            pos += 2 * step;
+            let d = b - a;
+            if d <= PAIR_REACH {
+                let (ta, tb) = (ra + PAIR_REACH, rb + PAIR_REACH - d);
+                dot_iq_pair(&self.table[ta..ta + span], &self.table[tb..tb + span], &x[a..a + span], pair);
+            } else {
+                dot_iq(&self.table[ra + PAIR_REACH..ra + PAIR_REACH + taps], &x[a..a + taps], &mut pair[0]);
+                dot_iq(&self.table[rb + PAIR_REACH..rb + PAIR_REACH + taps], &x[b..b + taps], &mut pair[1]);
+            }
+        }
+        if let [v] = pairs.into_remainder() {
+            let (a, ra) = place(pos);
+            dot_iq(&self.table[ra + PAIR_REACH..ra + PAIR_REACH + taps], &x[a..a + taps], v);
         }
     }
 }
@@ -291,6 +325,58 @@ fn dot_iq(t: &[f32], x: &[Complex32], out: &mut Complex32) {
             options(nostack),
         );
     }
+}
+
+/// `out[0]` = Σ ta[i]·x[i] and `out[1]` = Σ tb[i]·x[i] over the same inputs; `x.len()` a non-zero
+/// multiple of four, the taps as long. Four inputs a step in NEON, each load feeding both sums.
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+fn dot_iq_pair(ta: &[f32], tb: &[f32], x: &[Complex32], out: &mut [Complex32]) {
+    let n = x.len();
+    assert!(n != 0 && n % 4 == 0 && ta.len() == n && tb.len() == n && out.len() == 2);
+    // SAFETY: reads ta, tb and x (n each, as checked above); writes out[..2] (16 bytes) and only
+    // the registers it names.
+    unsafe {
+        std::arch::asm!(
+            ".fpu neon",
+            "vmov.i32 q4, #0",
+            "vmov.i32 q5, #0",
+            "vmov.i32 q6, #0",
+            "vmov.i32 q7, #0",
+            "2:",
+            "vld2.32 {{d0-d3}}, [{x}]!",
+            "vld1.32 {{d4-d5}}, [{ta}]!",
+            "vld1.32 {{d6-d7}}, [{tb}]!",
+            "vmla.f32 q4, q0, q2",
+            "vmla.f32 q5, q1, q2",
+            "vmla.f32 q6, q0, q3",
+            "vmla.f32 q7, q1, q3",
+            "subs {n}, {n}, #1",
+            "bne 2b",
+            "vpadd.f32 d8, d8, d9",
+            "vpadd.f32 d10, d10, d11",
+            "vpadd.f32 d12, d12, d13",
+            "vpadd.f32 d14, d14, d15",
+            "vpadd.f32 d8, d8, d10",
+            "vpadd.f32 d9, d12, d14",
+            "vst1.32 {{d8-d9}}, [{dst}]",
+            x = inout(reg) x.as_ptr() => _,
+            ta = inout(reg) ta.as_ptr() => _,
+            tb = inout(reg) tb.as_ptr() => _,
+            n = inout(reg) n / 4 => _,
+            dst = in(reg) out.as_mut_ptr(),
+            out("d0") _, out("d1") _, out("d2") _, out("d3") _, out("d4") _, out("d5") _,
+            out("d6") _, out("d7") _, out("d8") _, out("d9") _, out("d10") _, out("d11") _,
+            out("d12") _, out("d13") _, out("d14") _, out("d15") _,
+            options(nostack),
+        );
+    }
+}
+
+#[cfg(not(target_arch = "arm"))]
+fn dot_iq_pair(ta: &[f32], tb: &[f32], x: &[Complex32], out: &mut [Complex32]) {
+    dot_iq(ta, x, &mut out[0]);
+    dot_iq(tb, x, &mut out[1]);
 }
 
 #[cfg(not(target_arch = "arm"))]
@@ -704,19 +790,22 @@ mod tests {
             (0..400).map(|i| Complex32::new(((i * 7919) % 101) as f32 - 50.0, ((i * 104_729) % 97) as f32 - 48.0)).collect();
         let h = m.taps / 2;
         // Instants on the table's offsets, the first and last whose inputs are all there.
-        for tau in [(h - 1) as f64, 100.0 + 37.0 / 128.0, 123.5, 200.0 + 127.0 / 128.0, (399 - h) as f64 + 0.5] {
+        for tau in [(h - 1) as f64, 100.0 + 37.0 / 64.0, 123.5, 200.0 + 63.0 / 64.0, (399 - h) as f64 + 0.5] {
             let i = tau as usize;
             let want: Complex64 =
                 (i + 1 - h..=i + h).map(|n| Complex64::new(x[n].re.into(), x[n].im.into()) * (rrc((tau - n as f64) / fs * rb) * rb / fs)).sum();
             let got = m.at(&x, tau);
             assert!((f64::from(got.re) - want.re).abs() < 1e-3 && (f64::from(got.im) - want.im).abs() < 1e-3, "{tau}: {got} {want}");
         }
-        // A run in fixed point lands on the same sums (instants a whole number of 1/2^32 apart).
-        let (u0, du) = (60.0 + 5.0 / 128.0, 0.9375);
-        let mut z = vec![Complex32::new(0.0, 0.0); 200];
-        m.run(&x, u0, du, &mut z);
-        for (k, v) in z.iter().enumerate() {
-            assert_eq!(*v, m.at(&x, u0 + k as f64 * du), "{k}");
+        // A run in fixed point lands on the same sums (instants a whole number of 1/2^32 apart),
+        // in pairs and the odd one out.
+        for (u0, du) in [(60.0 + 5.0 / 64.0, 0.9375), (61.0, 0.46875), (62.5, 2.25)] {
+            let mut z = vec![Complex32::new(0.0, 0.0); 101];
+            m.run(&x, u0, du, &mut z);
+            for (k, v) in z.iter().enumerate() {
+                let want = m.at(&x, u0 + k as f64 * du);
+                assert!((*v - want).norm() < 1e-3 && want.norm() > 0.0, "{u0} {du} {k}: {v} {want}");
+            }
         }
         assert_eq!(m.at(&x, (h - 2) as f64), Complex32::new(0.0, 0.0));
         assert_eq!(m.at(&x, (400 - h) as f64), Complex32::new(0.0, 0.0));
