@@ -79,7 +79,7 @@ impl PhysMap {
         })
     }
 
-    /// Maps map0 of a UIO device (`/dev/uioN`), as p25-httpd does. The
+    /// Maps map0 of a UIO device (`/dev/uioN`), as the scanner does. The
     /// mapping's physical address must equal `expect_phys`.
     #[cfg(target_os = "linux")]
     pub fn open_uio(num: usize, expect_phys: u64, len: usize, writable: bool) -> AResult<PhysMap> {

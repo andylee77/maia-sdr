@@ -103,7 +103,6 @@ pub fn processes() -> Vec<Proc> {
 /// Services of interest on the Fishball images.
 pub const SERVICES: &[&str] = &[
     "scanner",
-    "p25-httpd",
     "maia-httpd",
     "iiod",
     "fishball_ctrl",

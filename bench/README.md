@@ -164,8 +164,8 @@ agent info, IIO context), `log.txt`, `artifacts/`, `FINDINGS.md`. Suites also wr
    enabling any source; after every TX test the runner issues `tx off` in a `finally`
    (agent, or libiio fallback), before leaving maintenance mode. A failed `tx off` turns
    the verdict into `error` and raises an alert in `status`.
-4. **Maintenance mode**: tests marked M run `maint enter` (stops the radio daemon: the
-   scanner, or p25-httpd on older cards) and always `maint exit` afterwards;
+4. **Maintenance mode**: tests marked M run `maint enter` (stops the scanner) and always
+   `maint exit` afterwards;
    `rf.refclk_eth` enters it itself only when it must change the RX rate.
 5. **Register allow-lists**: `reg` only touches registers listed in `share/*.json`
    (offsets above the radio core's 1 KB window are refused: the bus aliases there).
@@ -252,7 +252,7 @@ used different pads, gain, attenuation or sample rate.
 
 ## Replay corpus (`rf.p25_corpus`)
 
-Many recordings replayed from the TX board (B) into the DUT (A, p25-httpd), each
+Many recordings replayed from the TX board (B) into the DUT (A, the scanner), each
 scored per transmission against SDRTrunk's decode of the same air. Design and
 inventory: [doc/changes/058_replay_corpus.md](../doc/changes/058_replay_corpus.md).
 
@@ -288,6 +288,9 @@ inventory: [doc/changes/058_replay_corpus.md](../doc/changes/058_replay_corpus.m
 | `B` | one scene: a CC recording + the traffic recordings overlapping it | 50 kSPS channel recordings up-converted to their RF offsets and mixed (`cs8`, 3.5/4/5 MSPS, AWGN `noise_db` below each channel; TX centre keeps IQ images and LO leakage >= 100 kHz off every channel) | placed on their SDRTrunk log clocks (+-30 ms) with each recording's SDRTrunk session frequency offset removed (`correct_hz`); TX LO trimmed by `-units.B.ref_ppm` |
 | `C` | one batch (~300 s): CC primer, then traffic recordings back to back on one channel (`gap_s` apart), CC throughout | `cs8`, 3.5 MSPS, offsets removed as in B | p25-httpd feeds traffic dibits only under a talkgroup context, so the follower is left on until the primer grant parks it on the channel, then `/api/traffic?lock=on&follower=off`; follower/lock are restored at the end |
 
+Mode C drives p25-httpd's `/api/traffic` and `/api/monitor`, which the scanner does not
+serve; on the scanner it needs a port to the hold (`PUT /api/v1/hold`).
+
 Selection: `items=all|focus|<id>,<id>`, `limit=N`, `max_minutes=M`. Stop
 gracefully with `touch bench/.state/corpus/STOP` (checked every tap poll; the
 current relay is stopped, TX off, maintenance exited, completed items analysed);
@@ -309,12 +312,12 @@ position, in `items/<id>.json` `relay`.
 On the DUT the test polls `/api/imbe_dump` (every `tap_period_s` = 0.5 s; the ring
 holds the last 128 frames, 2.56 s of voice, after a baseline dump taken before the
 stream starts) and `/api/ui/calls` (15 s), reads `/ws/audio`, and reads
-`/api/traffic` only at item boundaries: that endpoint clears the traffic
-`nid_event` sticky bit p25-httpd's heartbeat uses.
+`/api/traffic` at item boundaries for the per-item decoder counters. Only p25-httpd
+served `/api/traffic`; on the scanner those counters are null.
 
 Scores (`scores.json`, metrics in `result.json`):
 
-- **Recovery (the verdict):** p25-httpd's own per-call counts. Each `.mbe`
+- **Recovery (the verdict):** the DUT's own per-call counts. Each `.mbe`
   transmission is matched to the `/api/ui/calls` call with the same TG and source
   whose open interval covers it (DUT clock offset voted from the call starts), and
   the call's `imbe` (exact per call_id since 057) is credited to its transmissions
@@ -338,7 +341,7 @@ cd /c/Users/Andy/Projects/MAIA_SDR/maia-sdr/bench && ../.venv-hdl/Scripts/python
 
 The suite never touches the network: `tests_host/conftest.py` simulates both boards
 (IIO attributes, DAC registers, a CW whose frequency and level follow the TX settings,
-p25-httpd counters, UART boot log) behind fake SSH/HTTP/libiio/agent objects.
+the DUT's counters, UART boot log) behind fake SSH/HTTP/libiio/agent objects.
 
 ## Agent contract
 

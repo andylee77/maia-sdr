@@ -51,7 +51,7 @@
     }
   },
   "services": [
-    "p25-httpd",
+    "scanner",
     "iiod"
   ],
   "reserved_memory": [

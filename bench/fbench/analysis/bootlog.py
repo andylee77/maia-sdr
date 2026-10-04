@@ -20,7 +20,7 @@ _MARKERS: dict[str, re.Pattern[str]] = {
     "failed": re.compile(r"\bfail(ed|ure)?\b", re.IGNORECASE),
     "usb_gadget": re.compile(r"RNDIS|g_ether|\budc\b|gadget", re.IGNORECASE),
     "iiod_start": re.compile(r"iiod", re.IGNORECASE),
-    "p25_httpd_start": re.compile(r"p25-httpd", re.IGNORECASE),
+    "scanner_start": re.compile(r"Starting scanner"),
     "watchdog_reset": re.compile(r"watchdog|WDT|reset reason|REBOOT_STATUS", re.IGNORECASE),
     "login_prompt": re.compile(r"login:"),
     "tezuka": re.compile(r"tezuka", re.IGNORECASE),

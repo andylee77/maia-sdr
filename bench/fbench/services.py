@@ -52,7 +52,7 @@ class Services:
         return Http(u.host, u.http_port, timeout)
 
     def ws_audio(self, unit: str) -> Any:
-        """A started ``/ws/audio`` recorder on the unit's p25-httpd."""
+        """A started ``/ws/audio`` recorder on the unit's scanner."""
         from .wsaudio import WsAudioRecorder
 
         u = self.cfg.unit(unit)

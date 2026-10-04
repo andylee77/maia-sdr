@@ -671,7 +671,7 @@ def maintenance(ctx: TestContext, unit: str) -> Iterator[None]:
         if caps["image"] == "p25":
             raise PreconditionError(f"maintenance mode on {unit} needs the agent "
                                     f"({caps['agent_error']})")
-        ctx.log.info("unit %s has no agent (image %s): no p25-httpd to stop", unit,
+        ctx.log.info("unit %s has no agent (image %s): no scanner to stop", unit,
                      caps["image"])
         yield
         return
@@ -688,7 +688,7 @@ def maintenance(ctx: TestContext, unit: str) -> Iterator[None]:
             ctx.log.info("maintenance mode exited on %s", unit)
         except Exception as exc:  # noqa: BLE001
             ctx.maint_exit_failed = True
-            ctx.errors.append(f"maint exit failed on {unit}: {exc} — p25-httpd may still be "
+            ctx.errors.append(f"maint exit failed on {unit}: {exc} — the scanner may still be "
                               f"stopped; run `fbench agent {unit} -- maint exit`")
 
 

@@ -354,7 +354,7 @@ def test_mode_a_window_from_ram_and_purge(cfg, corp: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scoring from p25-httpd's per-call counts (bench feedback 2026-09-27)
+# Scoring from the DUT's per-call counts
 # ---------------------------------------------------------------------------
 
 
@@ -531,7 +531,7 @@ def test_blockers_first_come_and_sdrtrunk_channel_hold() -> None:
     t_after = _tx("t_after", 300, 3400027, F2, 44.41, 46.21, 90)  # grant 43.91: torn down
     t_hang = _tx("t_hang", 300, 1013, F2, 43.90, 45.00, 50)  # grant 43.40: still held
     t_voice = _tx("t_voice", 301, 3406004, F3, 40.00, 41.00, 50)  # grant during O's voice
-    t_same = _tx("t_same", 201, 3404012, F2, 43.00, 44.00, 50)  # same TG: p25-httpd retunes
+    t_same = _tx("t_same", 201, 3404012, F2, 43.00, 44.00, 50)  # same TG: the DUT retunes
     early = _tx("early", 300, 3409515, F3, 30.00, 38.00, 400)  # granted before O, missed
     txs = [o, t_after, t_hang, t_voice, t_same, early]
     blk = sc.blockers(txs, {"o": True}, busy)

@@ -232,7 +232,7 @@ def blockers(txs: list[dict[str, Any]], followed: dict[str, bool],
 
 
 # ---------------------------------------------------------------------------
-# p25-httpd calls
+# The DUT's calls
 # ---------------------------------------------------------------------------
 
 
@@ -249,7 +249,7 @@ def merge_calls(snapshots: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def match_calls(calls: list[dict[str, Any]], txs: list[dict[str, Any]], dut_minus_air_s: float,
                 tol_s: float = 3.0) -> dict[str, Any]:
-    """Assign each truth transmission to the p25-httpd call (same TG) whose open
+    """Assign each truth transmission to the DUT's call (same TG) whose open
     interval covers it; per call the truth frames vs the call's own ``imbe``."""
     assigned: dict[Any, list[str]] = collections.defaultdict(list)
     unmatched = []
@@ -308,15 +308,15 @@ MIN_COVER_S = 0.5  # a call covers a transmission: this much in common (or half 
 def score_by_calls(txs: list[dict[str, Any]], calls: list[dict[str, Any]],
                    dut_minus_stream: float | None = None, tol_s: float = 3.0,
                    prior: float | None = None) -> dict[str, Any]:
-    """Primary score: p25-httpd's own per-call counts (``/api/ui/calls`` ``imbe``,
-    exact per call_id since 057) matched to the truth transmissions.
+    """Primary score: the DUT's own per-call counts (``/api/ui/calls`` ``imbe``,
+    exact per call) matched to the truth transmissions.
 
     ``txs``: truth transmissions with ``t0``/``t1`` on the stream clock. The DUT
     clock offset is voted from (TG, source)-matched call starts unless given
     (``prior``: see :func:`vote_call_offset`). A transmission goes to every
     same-TG call on its frequency whose open interval covers it (``MIN_COVER_S``,
     or half of a shorter transmission), whatever source the call carries:
-    p25-httpd stamps the grant's source, SDRTrunk the talker it kept for the
+    the DUT stamps the grant's source, SDRTrunk the talker it kept for the
     channel, and the two differ on console grants and talker changes; the DUT
     may also split one transmission over two calls. Without such a call it falls
     back to the same-TG, same-source call within ``tol_s``, credited only from

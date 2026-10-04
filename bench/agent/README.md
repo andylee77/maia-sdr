@@ -22,7 +22,7 @@ from `/mnt/sd/bench/bin/fbench-agent`.
 | `error` | 2 | runtime failure |
 | `interrupted` | 2 | SIGINT/SIGTERM/SIGHUP received (restore guards ran) |
 | `unknown_command` | 3 | unknown subcommand |
-| `precondition` | 3 | state precondition not met (p25-httpd running, ring disabled, no /dev/mem, ...) |
+| `precondition` | 3 | state precondition not met (the scanner running, ring disabled, no /dev/mem, ...) |
 | `unsupported` | 3 | not supported here (for example Linux-only feature on the host) |
 | `no_device` | 3 | required IIO / rxbuffer device missing |
 | `wrong_image` | 3 | the running bitstream lacks the core (UIO / product ID mismatch) |
@@ -76,7 +76,7 @@ Host tests: `cargo test` in `bench/agent/` (unit tests of all pure logic plus
   core resets (`RSTN`) need `--force`; TX-affecting DAC registers need `--tx-ok`.
 - **Maintenance mode** (rule 4): commands that replace or corrupt the RX
   stream (eyescan, prbs soak, txlink, BIST via `iio debug set` / `ring --bist`,
-  AD9361 SPI writes, enabling the production ring) refuse while p25-httpd runs,
+  AD9361 SPI writes, enabling the production ring) refuse while the scanner runs,
   unless `maint enter` was run, or `--auto-maint` (enter and exit around the
   command) / `--ignore-maint` is given.
 - **TX** (rule 3): `txlink` arms a TX guard that writes -89.75 dB attenuation
@@ -97,7 +97,7 @@ Host tests: `cargo test` in `bench/agent/` (unit tests of all pure logic plus
   uncached ring mapping must lie inside a `no-map` reserved-memory region and
   never overlap System RAM.
 - PL cores with a UIO device (`p25-core`, `hwval-core`) are mapped through
-  `/dev/uioN` (as p25-httpd does); other registers through `/dev/mem` with
+  `/dev/uioN` (as the scanner does); other registers through `/dev/mem` with
   `O_SYNC`. A core is only touched when its UIO/IIO device exists and its
   product ID matches.
 
@@ -179,7 +179,7 @@ fbench-agent info
         "bench_dir": true, "agent_installed": true, "share": ["hwval_regs.json"], "images": ["hwval", "p25"]},
  "iio_devices": [{"id": "iio:device0", "name": "xadc"}, "..."], "uio": ["p25-core"],
  "modules": [{"name": "maia_sdr", "size": 16384, "used_by": "-", "srcversion": "...", "version": null}],
- "services": ["p25-httpd", "iiod", "dropbear"], "services_detail": {"p25-httpd": {"running": true, "pids": [312]}, "...": {}},
+ "services": ["scanner", "iiod", "dropbear"], "services_detail": {"scanner": {"running": true, "pids": [312]}, "...": {}},
  "maintenance": false, "agent_path": "/mnt/sd/bench/bin/fbench-agent", "build": {"...": "..."}, "warnings": []}
 ```
 
@@ -447,7 +447,7 @@ LEGACY_LAST_BUFFER via snapshot), `hwval-v2` (`/dev/hwval-ringv2`, window
 0x20000000, runtime RINGV2_BASE/SIZE_BURSTS, committed-pointer protocol).
 `--dev` / `--phys` override the device and base. Mappings: `cached`
 (maia-kmod rxbuffer mmap + `_IOW('M', 0, int)` cache invalidate per
-sub-buffer; the kmod allows one mapping per device, so p25-httpd must be
+sub-buffer; the kmod allows one mapping per device, so the scanner must be
 stopped) and `uncached` (`/dev/mem` `O_SYNC` of the reserved window).
 For hwval rings, `hw` holds the `LEGACY_*` / `RINGV2_*` counters (legacy: true
 loss = WORDS_IN - WORDS_ACCEPTED; PACKER_OVF reported but never used as loss;
@@ -824,9 +824,8 @@ fbench-agent tx off [--lo-powerdown]
 fbench-agent maint enter | exit | status
 ```
 
-Maintenance mode stops the image's radio daemon: the scanner (`/etc/init.d/S60scanner`)
-or, on older cards, p25-httpd (`/etc/init.d/S60p25-httpd`), whichever init script is
-installed. `enter` records `/tmp/fbench_maint.json` first (with the daemon and its init
+Maintenance mode stops the image's radio daemon, the scanner (`/etc/init.d/S60scanner`).
+`enter` records `/tmp/fbench_maint.json` first (with the daemon and its init
 script), runs `<init> stop` and waits for the process to exit (escalating to
 SIGTERM/SIGKILL); `exit` resets BIST/loopback, restarts the recorded daemon if it was
 running and removes the state file. A state file from another boot is ignored.

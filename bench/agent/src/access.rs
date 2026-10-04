@@ -125,7 +125,7 @@ impl<'c, IO: RegIo> RegAccess<'c, IO> {
             return Err(AgentError::new(
                 Code::Safety,
                 format!(
-                    "{}.{} is in the '{}' domain, which is held in reset ({}.bit{} = 1); accessing it would hang the AXI bus. Release the reset first (p25-httpd does this at start, or `ring ... --release-reset`).",
+                    "{}.{} is in the '{}' domain, which is held in reset ({}.bit{} = 1): it reads zeros and drops writes. Release the reset first (the scanner does this at start, or `ring ... --release-reset`).",
                     self.core.name, reg.name, dom, gate.reg, gate.bit
                 ),
             ));

@@ -149,7 +149,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("replay stream --playlist P [--ring-mb M] [--status F] [--report F] [--on-underrun wait|zero]", "SD/RAM IQ files -> RAM ring -> int16 on stdout (for iio_writedev)"),
     ("replay check --playlist P | verify --file F [--sha256 H]", "validate a replay playlist / hash a staged file"),
     ("tx off", "max TX attenuation, DAC zero, DDS scale 0, loopback/BIST off"),
-    ("maint enter|exit|status", "maintenance mode (stop/start the radio daemon: scanner or p25-httpd)"),
+    ("maint enter|exit|status", "maintenance mode (stop/start the scanner)"),
     ("boot status|install|select [NAME|--image NAME] [--reboot]", "dual boot-image swap helper"),
 ];
 
@@ -239,7 +239,7 @@ pub fn open_core<'m>(ctx: &'m Ctx, name: &str, writable: bool) -> AResult<(&'m C
     let core = ctx.maps().core(name)?;
     check_presence(core)?;
     let w = writable && !core.readonly;
-    // PL cores with a UIO device are mapped through it (like p25-httpd);
+    // PL cores with a UIO device are mapped through it (like the scanner);
     // /dev/mem is the fallback and the path for PS / ADI registers.
     let uio = core.requires_uio.as_deref().and_then(sys::find_uio);
     let mut pm = match uio {

@@ -538,7 +538,7 @@ fn open_ctl<'m>(ctx: &'m Ctx, o: &StreamOpts, cleanup: &mut Cleanup<'m>, notes: 
                 if !o.release_reset {
                     return Err(AgentError::new(
                         Code::Safety,
-                        "p25 control.sdr_reset = 1 (sync domain held in reset; p25-httpd not initialised): pass --release-reset to clear it",
+                        "p25 control.sdr_reset = 1 (sync domain held in reset; the scanner has not started): pass --release-reset to clear it",
                     ));
                 }
                 a.write("control", 0)?;
@@ -977,7 +977,7 @@ fn stream(ctx: &Ctx, args: &Args, capture: bool) -> AResult<Value> {
     let fs = phy.as_ref().and_then(|p| p.sample_rate()).unwrap_or(8_000_000) as f64;
 
     // Maintenance: BIST replaces the RX stream; enabling/toggling the
-    // production ring or releasing sdr_reset changes p25-httpd's state.
+    // production ring or releasing sdr_reset changes the scanner's state.
     let needs_maint = o.bist.is_some()
         || (o.kind == RingKind::P25Wideband && (o.enable || o.reenable || o.release_reset));
     let _maint = if needs_maint {

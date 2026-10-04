@@ -26,7 +26,7 @@
     "maia_sdr"
   ],
   "services": [
-    "p25-httpd",
+    "scanner",
     "iiod"
   ],
   "build": "2026-09-20-p25",

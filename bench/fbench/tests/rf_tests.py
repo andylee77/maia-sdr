@@ -43,7 +43,7 @@ from ..stimulus import (
 )
 
 ETH_CLOCKS_HZ = (25e6, 125e6)
-PPM_CAL_FILE = "/mnt/jffs2/p25-ppm-cal.json"  # p25-httpd autoppm.rs PersistedPpm
+CRYSTAL_FILE = "/mnt/jffs2/scanner/state/radio.json"  # the scanner's RadioState
 
 
 # ---------------------------------------------------------------------------
@@ -130,23 +130,23 @@ def _plot_xy(a: AnalysisContext, name: str, x: list[float], y: list[float], xlab
 
 
 def stored_ppm_cal(ctx: TestContext, unit: str) -> dict[str, Any]:
-    """p25-httpd's persisted LO correction on ``unit``.
+    """The scanner's stored crystal correction on ``unit``, read from flash (the
+    scanner may be stopped).
 
     ``lo_ppm`` is the reference error it corrects (negative: reference low;
-    the NCO shift is ``-lo_ppm * rx_lo``). No file means p25-httpd runs on its
-    ``--lo-ppm`` boot value, 0 on the bench images.
+    the LO shift is ``-lo_ppm * lo``). No calibration means no correction.
     """
     try:
-        rc, out, _ = ctx.services.ssh(unit).run(f"cat {PPM_CAL_FILE} 2>/dev/null", 15.0)
+        rc, out, _ = ctx.services.ssh(unit).run(f"cat {CRYSTAL_FILE} 2>/dev/null", 15.0)
     except FbenchError as exc:
         return {"status": "unreadable", "error": exc.message}
-    if rc != 0 or not out.strip():
-        return {"status": "absent", "lo_ppm": 0.0}
     try:
-        d = json.loads(out)
-        return {"status": "stored", "lo_ppm": float(d["lo_ppm"]),
-                "lo_shift_hz": d.get("lo_shift_hz"), "method": d.get("method"),
-                "unix_secs": d.get("unix_secs")}
+        crystal = json.loads(out).get("crystal") if rc == 0 and out.strip() else None
+        if not crystal:
+            return {"status": "absent", "lo_ppm": 0.0}
+        return {"status": "stored", "lo_ppm": float(crystal["ppm"]),
+                "lo_shift_hz": crystal.get("lo_shift_hz"), "method": crystal.get("method"),
+                "unix_ms": crystal.get("at_unix_ms")}
     except (ValueError, KeyError, TypeError) as exc:
         return {"status": "invalid", "error": str(exc)}
 
@@ -174,7 +174,7 @@ def _cal_check(a: AnalysisContext, d: dict[str, Any], measured: float, carrier: 
         return ""  # nothing calibrated (e.g. factory images): report the offset only
     a.metric("cal_residual_ppm_abs", round(abs(resid), 5),
              max=float(a.params["max_cal_residual_ppm"]))
-    return (f"; stored p25 corrections predict {predicted:+.4f} ppm, residual {resid:+.4f} ppm "
+    return (f"; stored crystal corrections predict {predicted:+.4f} ppm, residual {resid:+.4f} ppm "
             f"({resid * carrier / 1e6:+.0f} Hz)")
 
 
@@ -229,7 +229,7 @@ def analyze_cw(a: AnalysisContext) -> Outcome:
             "rx_retune": False, "tx_port": "", "max_cal_residual_ppm": 0.2},
     description="CW frequency offset between the boards (both 40 MHz references) and drift "
                 "over time. Tone at test_freq + offset_hz; ppm relative to the RF carrier. "
-                "Cross-checks the difference of the stored p25-httpd ppm corrections.",
+                "Cross-checks the difference of the scanner's stored crystal corrections.",
     pass_criteria="report ppm; drift < 0.5 ppm/10 min (inconclusive if span < min_span_s); "
                   "|measured - (cal_tx - cal_rx)| <= 0.2 ppm",
     artifacts=("cw.json", "cw_estimates.json", "cw_ppm.png", "cw_<n>.sigmf-*"),
@@ -785,13 +785,15 @@ def _prepare_clip(ctx: TestContext, clip: str, start_s: float, secs: float) -> d
             "tolerance_pct": 10.0, "min_crc_ok_per_s": 1.0, "tx_port": ""},
     description="Replay a P25 site clip (SigMF/.wav/.cs16) from the TX board into a DUT "
                 "running p25-httpd. Tezuka TX boards stream it gap-free from their own RAM "
-                "(source=board, p25-httpd stopped there); others take one cyclic libiio "
+                "(source=board, the radio daemon stopped there); others take one cyclic libiio "
                 "buffer. The TX LO is trimmed by the recorder/TX reference difference "
                 "(units.*.ref_ppm), and traffic is scored against SDRTrunk's per-call .mbe "
-                "decode of the same air (rf.p25_truth_dir).",
+                "decode of the same air (rf.p25_truth_dir). It reads p25-httpd's "
+                "/api/decoder_compare, /api/stats and /api/traffic, which the scanner does not "
+                "serve, so it is in no suite.",
     pass_criteria="TSBK CRC-ok >= min_crc_ok_per_s; IMBE recovery >= min_imbe_recovery_pct "
                   "of SDRTrunk (when ground truth exists); >= baseline - tolerance",
-    artifacts=("p25_replay.json", "clip.json"), suites=("rf",), analyze=analyze_p25,
+    artifacts=("p25_replay.json", "clip.json"), analyze=analyze_p25,
     duration_param="seconds",
 )
 def rf_p25_replay(ctx: TestContext) -> Outcome:
@@ -885,7 +887,7 @@ def rf_p25_replay(ctx: TestContext) -> Outcome:
             if handle is not None:
                 handle.stop()
             try:
-                ctx.tx_off(tx)  # before maintenance exit restarts p25-httpd on the TX board
+                ctx.tx_off(tx)  # before maintenance exit restarts the radio daemon on the TX board
             except FbenchError as exc:
                 ctx.errors.append(f"tx off on {tx} after replay: {exc.message}")
     ctx.save_json("p25_replay.json", {"clip": clip, "source": source, "build": system.get("build"),
@@ -1016,7 +1018,7 @@ def analyze_refclk(a: AnalysisContext) -> Outcome:
                 "RX board (iio_readdev to /tmp, pulled afterwards) with eth0 idle, down (only "
                 "units not managed over eth0), bounced mid-capture (detached, self-restoring) "
                 "and under agent net-send load. rx_rate_hz=0 keeps the RX rate; setting it "
-                "enters maintenance mode on the RX unit for the run (p25-httpd stopped).",
+                "enters maintenance mode on the RX unit for the run (the scanner stopped).",
     pass_criteria="no phase steps > 10 deg, no Ethernet-correlated spurs above -80 dBc, CW "
                   "shift between phases < 0.05 ppm",
     artifacts=("refclk.json", "refclk_phases.json", "refclk_<phase>.sigmf-*"), suites=("rf",),
@@ -1032,7 +1034,7 @@ def rf_refclk_eth(ctx: TestContext) -> Outcome:
     want_fs = float(ctx.params["rx_rate_hz"]) or st0.fs_hz
     with ExitStack() as stack:
         if abs(want_fs - st0.fs_hz) > 1:
-            # A rate change breaks p25-httpd's assumptions: stop it for the run.
+            # A rate change breaks the scanner's assumptions: stop it for the run.
             stack.enter_context(maintenance(ctx, rx))
         return _refclk_run(ctx, st0, want_fs)
 

@@ -1,7 +1,7 @@
 """Session state persisted in ``bench/.state/session.json``.
 
 Tracks what the host believes about each unit between invocations:
-maintenance mode (p25-httpd stopped), TX activity, last seen image. A crash
+maintenance mode (the scanner stopped), TX activity, last seen image. A crash
 between ``maint enter`` and ``maint exit`` leaves the flag set so
 ``fbench status`` shows it.
 """

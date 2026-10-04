@@ -229,7 +229,7 @@ def setup_session(cfg: BenchConfig, services: Any, units: list[str] | None) -> d
                 rep["agent"] = True
                 if rep["maintenance"]:
                     out["warnings"].append(
-                        f"{name} is in maintenance mode (p25-httpd stopped) from an earlier run; "
+                        f"{name} is in maintenance mode (the scanner stopped) from an earlier run; "
                         f"`fbench agent {name} -- maint exit` restores it")
                 state.set_maintenance(name, rep["maintenance"],
                                       state.load().get("units", {}).get(name, {})

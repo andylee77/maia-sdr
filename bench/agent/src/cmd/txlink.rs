@@ -158,7 +158,7 @@ fn verify_p25_ring(ctx: &Ctx) -> AResult<Value> {
     let (core, pm) = open_core(ctx, "p25", true)?;
     let mut a = RegAccess::new(core, pm);
     if a.gate_asserted()? {
-        return Err(AgentError::new(Code::Precondition, "p25 sdr_reset = 1: start p25-httpd once or use `ring check --release-reset`"));
+        return Err(AgentError::new(Code::Precondition, "p25 sdr_reset = 1: start the scanner once or use `ring check --release-reset`"));
     }
     let prev = a.read("wideband_iq_dma_control")? & 1;
     if prev == 0 {

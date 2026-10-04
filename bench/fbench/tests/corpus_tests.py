@@ -2,9 +2,9 @@
 
 Manifest-driven (``tools/p25_corpus_index.py`` -> ``bench/.state/corpus/manifest.json``).
 Each item is one single-pass stream from the TX board (``fbench-agent replay
-stream | iio_writedev``); the DUT runs p25-httpd. Scoring is per transmission
-from p25-httpd's own per-call counts (``/api/ui/calls`` ``imbe``, exact per
-call_id since 057) matched to the ``.mbe`` transmissions by TG, source and time.
+stream | iio_writedev``); the DUT runs the scanner. Scoring is per transmission
+from its own per-call counts (``/api/ui/calls`` ``imbe``, exact per call)
+matched to the ``.mbe`` transmissions by TG, source and time.
 The raw IMBE frames tapped from ``/api/imbe_dump`` (128-frame ring, polled every
 ``tap_period_s``) are only a bit-accuracy check: aligned in order with the
 ``.mbe`` frames (Hamming <= ``max_bits`` of 144), with the tap's coverage of the
@@ -421,7 +421,7 @@ def rf_p25_corpus(ctx: TestContext) -> Outcome:
                      ring_mb=int(p["ring_mb"]) if p["source"] == "sd" else min(int(p["ring_mb"]), 32),
                      prefill_mb=prefill, on_underrun=str(p["on_underrun"]))
     orig_traffic = None
-    # p25-httpd 067: with the clock source "site" the DUT sets its clock
+    # With the clock source "site" the DUT sets its clock
     # from the replayed control channel (a different day per item). The
     # scoring needs a steady DUT clock, so pin it to "manual" for the run.
     orig_clock = None
@@ -480,7 +480,7 @@ def rf_p25_corpus(ctx: TestContext) -> Outcome:
         finally:
             relay.stop()
             try:
-                ctx.tx_off(tx)  # before maintenance exit restarts p25-httpd on the TX board
+                ctx.tx_off(tx)  # before maintenance exit restarts the scanner on the TX board
             except FbenchError as exc:
                 ctx.errors.append(f"tx off on {tx}: {exc.message}")
             if orig_traffic is not None and p["restore_traffic"]:
@@ -577,7 +577,7 @@ def _busy_spans(man: dict[str, Any] | None, doc: dict[str, Any]
 def score_item(doc: dict[str, Any], txs: dict[str, dict[str, Any]], max_bits: int = 24,
                busy: list[tuple[float, float, float]] | None = None,
                clock_end: float | None = None) -> dict[str, Any]:
-    """Per transmission: recovered frames from p25-httpd's own per-call ``imbe``
+    """Per transmission: recovered frames from the DUT's own per-call ``imbe``
     (primary); the hex tap adds a bit-accuracy check that never lowers it.
 
     ``busy``: SDRTrunk's channel allocations (:func:`_busy_spans`) for
@@ -770,7 +770,7 @@ def analyze_corpus(a: AnalysisContext) -> Outcome:
     a.metric("transmissions_followable", len(foll))
     a.metric("truth_frames_followable", tf)
     a.metric("recovered_frames", rf)
-    a.metric("score_source", "p25-httpd per-call imbe (/api/ui/calls)")
+    a.metric("score_source", "DUT per-call imbe (/api/ui/calls)")
     pct = 100.0 * rf / tf if tf else None
     a.metric("clear_recovery_pct", round(pct, 2) if pct is not None else None,
              min=float(a.params.get("min_recovery_pct", 90.0)))
@@ -871,7 +871,8 @@ bench_test(
                 "relay; a_unit=window for short RAM windows), B synthetic full system (CC + "
                 "concurrent traffic recordings up-converted and mixed, log-clock aligned "
                 "+-30 ms), C traffic only (recordings back to back on one channel after a CC "
-                "primer; follower locked, restored afterwards). Manifest from "
+                "primer; follower locked, restored afterwards; p25-httpd's routes, not the "
+                "scanner's). Manifest from "
                 "tools/p25_corpus_index.py. Resumable (resume=<run dir>|auto), stoppable "
                 "(touch bench/.state/corpus/STOP, max_minutes).",
     pass_criteria="clear-voice frame recovery >= min_recovery_pct of SDRTrunk over followable "

@@ -170,7 +170,7 @@ gateway_eth = "10.25.0.1"
 # Set to true only when every TX->RX path has a pad, no antenna is connected
 # and unused ports are terminated.
 cabled_confirmed = false
-# Default RF test frequency: the P25 RX LO, so an RX unit running p25-httpd
+# Default RF test frequency: the P25 RX LO, so an RX unit running the scanner
 # does not need retuning.
 test_freq_hz = 858_100_000
 p25_cc_freq_hz = 860_962_500

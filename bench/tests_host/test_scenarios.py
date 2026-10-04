@@ -270,14 +270,15 @@ def test_rf_short_span_is_inconclusive(cfg, services) -> None:
     assert abs(res.result["metrics"]["ppm_mean"] + 1.5) < 0.01
 
 
-def test_cw_ppm_checks_stored_p25_corrections(cfg) -> None:
+def test_cw_ppm_checks_stored_crystal_corrections(cfg) -> None:
     # sim references: A 0 ppm, B +1.5 ppm, so A->B measures -1.5 ppm
-    cal_file = "/mnt/jffs2/p25-ppm-cal.json"
+    cal_file = "/mnt/jffs2/scanner/state/radio.json"
     for lo_ppm, verdict, resid in ((1.5, "pass", 0.0), (1.2, "fail", -0.3)):
         services = FakeServices(cfg)
         services.ssh("B").files[cal_file] = (
-            f'{{"lo_shift_hz": {round(-lo_ppm * 858.1)}, "lo_ppm": {lo_ppm}, '
-            '"rx_lo_hz": 858100000, "method": "manual_override"}').encode()
+            f'{{"version": 1, "mode": "scanner", "live_site": null, "crystal": {{"ppm": {lo_ppm}, '
+            f'"measured_at_lo_hz": 858100000, "lo_shift_hz": {round(-lo_ppm * 858.1)}, '
+            '"control_freq_hz": 860962500, "method": "calibration", "at_unix_ms": 0}}').encode()
         res = _run("rf.cw_ppm", cfg, services, {"tx": "A", "rx": "B"}, nsamples=16384,
                    span_s=300, interval_s=300)
         m = res.result["metrics"]
@@ -285,7 +286,7 @@ def test_cw_ppm_checks_stored_p25_corrections(cfg) -> None:
         assert m["cal_B_status"] == "stored" and m["cal_predicted_ppm"] == -lo_ppm
         assert abs(m["cal_residual_ppm"] - resid) < 0.01
         assert res.verdict == verdict, res.summary
-        assert "stored p25 corrections predict" in res.summary
+        assert "stored crystal corrections predict" in res.summary
 
 
 def test_dds_used_on_factory_tx_and_pattern_restored_on_p25(cfg) -> None:

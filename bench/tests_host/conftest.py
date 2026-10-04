@@ -5,7 +5,7 @@ registers and a virtual clock; ``FakeAgent`` (a real ``AgentClient`` whose
 ``run`` is replaced) answers every agent subcommand from
 ``fixtures/agent/*.json`` plus the simulation; ``FakeIio`` synthesises RX
 captures (a CW whose frequency/level follow the TX unit's settings);
-``FakeSsh``/``FakeHttp`` cover the shell and p25-httpd paths.
+``FakeSsh``/``FakeHttp`` cover the shell and the scanner's API.
 """
 
 from __future__ import annotations
@@ -120,7 +120,7 @@ class BenchSim:
         self.noise_dbfs = -60.0
         self.cyclic: dict[str, float] = {}
         self.images = {"A": "p25", "B": "factory"}
-        self.imbe_rate = 0.0  # IMBE frames/s the fake p25-httpd extracts while TX is live
+        self.imbe_rate = 0.0  # IMBE frames/s the fake scanner extracts while TX is live
         self.agent_units = {"A"}
         self.reachable = {"A", "B"}
         self.phase_step_in: str | None = None  # refclk phase with an injected phase step
@@ -793,7 +793,7 @@ BOOT_LOG = [
     "Linux version 6.1.0-tezuka (builder@host) #1 SMP",
     "usb 1-1: new high-speed USB device; g_ether gadget: using random self ethernet address",
     "Starting iiod: OK",
-    "Starting p25-httpd: OK",
+    "Starting scanner: OK (/var/log/scanner.log)",
     "Welcome to Tezuka",
     "fishball-p25 login:",
 ]

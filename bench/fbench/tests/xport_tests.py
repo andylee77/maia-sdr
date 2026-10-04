@@ -101,7 +101,7 @@ def xport_iio_capture(ctx: TestContext) -> Outcome:
 #
 # The agent drives the stimulus itself (``--bist prbs|tone``, restored on
 # exit) and, in maintenance mode, enables the wideband DMA (``--enable``) and
-# releases ``sdr_reset`` if p25-httpd left it asserted (``--release-reset``).
+# releases ``sdr_reset`` if nothing released it (the scanner does at start) (``--release-reset``).
 
 
 def _ring_kwargs(ctx: TestContext) -> dict[str, Any]:

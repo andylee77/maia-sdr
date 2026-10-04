@@ -1,4 +1,4 @@
-"""Transports: SSH/SCP (OpenSSH client), HTTP (p25-httpd) and libiio.
+"""Transports: SSH/SCP (OpenSSH client), HTTP (the scanner's API) and libiio.
 
 All calls take explicit timeouts and never prompt. ``Ssh`` uses BatchMode, a
 per-unit ``HostKeyAlias`` and a bench-local known_hosts file, so units that

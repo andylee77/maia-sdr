@@ -8,8 +8,8 @@
 //!   loopback / BIST off;
 //! * `TxGuard`: writes the attenuation first, runs `tx_off()` on drop;
 //! * `Cleanup`: ordered restore actions run on drop (or explicitly);
-//! * maintenance mode: stop/start the image's radio daemon (`S60scanner` or
-//!   `S60p25-httpd`), state in /tmp/fbench_maint.json.
+//! * maintenance mode: stop/start the image's radio daemon (`S60scanner`), state in
+//!   /tmp/fbench_maint.json.
 
 use crate::access::{RegAccess, WriteOpts};
 use crate::err::{AResult, AgentError, Code};
@@ -313,12 +313,9 @@ impl Drop for Cleanup<'_> {
 
 pub const MAINT_FILE: &str = "/tmp/fbench_maint.json";
 
-/// The radio daemons a Fishball image may run, with their init scripts. An image installs
-/// one; maintenance mode stops whichever it is.
-const DAEMONS: &[(&str, &str)] = &[
-    ("scanner", "/etc/init.d/S60scanner"),
-    ("p25-httpd", "/etc/init.d/S60p25-httpd"),
-];
+/// The radio daemon a Fishball scanner image runs, with its init script; maintenance mode
+/// stops it. The Maia and hwval images have none.
+const DAEMONS: &[(&str, &str)] = &[("scanner", "/etc/init.d/S60scanner")];
 
 /// The image's radio daemon: the first whose init script is installed.
 fn installed_daemon() -> Option<(&'static str, &'static str)> {

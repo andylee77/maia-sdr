@@ -2,6 +2,6 @@
   "ok": true,
   "maintenance": false,
   "services": {
-    "p25-httpd": "running"
+    "scanner": "running"
   }
 }

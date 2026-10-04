@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 /// `ad9361 spi read|write --addr A [--value V]` via debugfs direct_reg_access.
 /// Writes change the transceiver configuration: maintenance mode is
-/// required while p25-httpd runs (or --auto-maint / --ignore-maint).
+/// required while the scanner runs (or --auto-maint / --ignore-maint).
 pub fn run(ctx: &Ctx, args: &Args) -> AResult<Value> {
     sub(args, 1, &["spi"])?;
     let op = sub(args, 2, &["read", "write"])?;

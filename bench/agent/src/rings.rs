@@ -125,7 +125,7 @@ impl RxBuffer {
             let e = std::io::Error::last_os_error();
             unsafe { libc::close(fd) };
             let hint = if e.raw_os_error() == Some(libc::EINVAL) {
-                " (maia-kmod allows one mapping per device: is p25-httpd running? use `maint enter` or --mapping uncached)"
+                " (maia-kmod allows one mapping per device: is the scanner running? use `maint enter` or --mapping uncached)"
             } else {
                 ""
             };

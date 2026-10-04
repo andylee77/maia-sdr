@@ -316,7 +316,7 @@ pub fn run(ctx: &Ctx, args: &Args) -> AResult<Value> {
     // Leftover services on a P25 image.
     let services = sys::services_running();
     if sys::uio_names().iter().any(|u| u == "p25-core") && services.iter().any(|s| s == "maia-httpd") {
-        checks.add("leftover_maia_httpd", None, None, json!("not running on the P25 image"), false, "warn", "maia-httpd is running next to p25-httpd");
+        checks.add("leftover_maia_httpd", None, None, json!("not running on the P25 image"), false, "warn", "maia-httpd is running next to the scanner");
     }
     let cmdline = sys::cmdline().unwrap_or_default();
     checks.add(

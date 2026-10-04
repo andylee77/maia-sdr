@@ -54,6 +54,8 @@ known_serials = [
 ]
 fpga_dna = ""
 hw_model = "Analog Devices PlutoSDR Rev.C (Z7020-AD9361)"
+# The bench wiring: A on USB, its eth0 on the bench link to B. Unwired, A is on the LAN at
+# 192.168.120.50 (Ethernet): set host to that for tests on A alone.
 host = "192.168.2.1"
 usb_ip = "192.168.2.1"
 eth_ip = "10.25.0.1"

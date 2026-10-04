@@ -528,7 +528,7 @@ def analyze_boot_log(a: AnalysisContext) -> Outcome:
     params={"port": "", "baud": 115200, "seconds": 120.0, "until": "", "send": ""},
     description="Record the full boot on the FT2232 DEBUG UART (power-cycle the unit during "
                 "the window); extract U-Boot/kernel versions, panics, 'Unable to'/'failed' "
-                "lines, RNDIS/g_ether/udc, iiod and p25-httpd start, watchdog reset marker.",
+                "lines, RNDIS/g_ether/udc, iiod and scanner start, watchdog reset marker.",
     pass_criteria="boot reaches a login prompt with no kernel panic",
     artifacts=("console.log", "boot_log.json"), requires=("pyserial", "console"),
     analyze=analyze_boot_log, duration_param="seconds",
