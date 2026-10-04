@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::protocol::atsc::psip::VirtualChannel;
 use crate::protocol::atsc::spectrum::Kind;
+use crate::protocol::atsc::streams::Program;
 use crate::protocol::atsc::{Channel, FIRST, LAST};
 use crate::radio::plan::usable_half_hz;
 use crate::services::discovery::SWEEP_RATE_HZ;
@@ -134,9 +135,14 @@ pub struct Station {
     pub time_unix: Option<i64>,
     /// Modulation error ratio of the equalized symbols, dB.
     pub mer_db: Option<f32>,
-    /// Transport stream packets decoded, and those Reed-Solomon could not correct.
+    /// Transport stream packets decoded; those Reed-Solomon corrected, and those it could not.
     pub packets: usize,
+    pub corrected: usize,
     pub failed: usize,
+    /// Each program's streams (codec, language, bitrate, format), by program number.
+    pub programs: Vec<Program>,
+    /// The null packets' bitrate: what the station leaves unused of the multiplex.
+    pub null_bps: u32,
     /// Why it was not decoded (no syncs, the capture failed).
     pub error: Option<String>,
 }

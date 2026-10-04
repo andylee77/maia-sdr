@@ -1,5 +1,5 @@
 //! A channel's IQ to what its station says: demodulated, decoded to transport stream packets,
-//! its PSIP read.
+//! its PSIP read and its programs' streams measured.
 
 use rustfft::num_complex::Complex32;
 use serde::Serialize;
@@ -7,6 +7,7 @@ use serde::Serialize;
 use super::demod::demodulate;
 use super::fec::{self, rs, FecStats};
 use super::psip::Psip;
+use super::streams::{self, Multiplex};
 use super::ts::Sections;
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,6 +23,8 @@ pub struct Identified {
     /// Packets Reed-Solomon corrected, and those it could not.
     pub corrected: usize,
     pub failed: usize,
+    /// Its programs' streams (codec, language, bitrate, format) and the null packets' bitrate.
+    pub multiplex: Multiplex,
 }
 
 /// Identify the station on a channel: `iq` at `sample_rate_hz` (the true rate), the channel's
@@ -29,13 +32,15 @@ pub struct Identified {
 pub fn identify(iq: &[Complex32], sample_rate_hz: f64, centre_offset_hz: f64) -> Option<Identified> {
     let d = demodulate(iq, sample_rate_hz, centre_offset_hz)?;
     let (packets, FecStats { fields, packets: n, corrected, failed }) = fec::decode(&d.symbols, d.first_field_sync?);
+    let passed: Vec<&[u8; 188]> = packets.iter().filter(|p| p.outcome != rs::Outcome::Failed).map(|p| &p.bytes).collect();
     let mut sections = Sections::default();
     let mut psip = Psip::default();
-    for p in packets.iter().filter(|p| p.outcome != rs::Outcome::Failed) {
-        for (pid, s) in sections.push(&p.bytes, &Psip::pids()) {
+    for p in &passed {
+        for (pid, s) in sections.push(p, &Psip::pids()) {
             psip.section(pid, &s);
         }
     }
+    let multiplex = streams::analyse(&passed, packets.len());
     Some(Identified {
         psip,
         mer_db: d.mer_db,
@@ -45,6 +50,7 @@ pub fn identify(iq: &[Complex32], sample_rate_hz: f64, centre_offset_hz: f64) ->
         packets: n,
         corrected,
         failed,
+        multiplex,
     })
 }
 
@@ -210,6 +216,11 @@ mod tests {
                 id.psip.tsid,
                 id.psip.channels.iter().map(|c| format!("{}.{} {}", c.major, c.minor, c.short_name)).collect::<Vec<_>>()
             );
+            for p in &id.multiplex.programs {
+                let streams: Vec<String> = p.streams.iter().map(|s| format!("{} {} {:.2} Mbit/s{}", s.kind, s.codec, f64::from(s.bitrate_bps) / 1e6, if s.video.is_some() || s.audio.is_some() { "" } else { " (no format)" })).collect();
+                eprintln!("    program {}: {:.2} Mbit/s: {}", p.number, f64::from(p.bitrate_bps) / 1e6, streams.join("; "));
+            }
+            eprintln!("    null packets {:.2} Mbit/s", f64::from(id.multiplex.null_bps) / 1e6);
             if names.is_empty() {
                 continue;
             }

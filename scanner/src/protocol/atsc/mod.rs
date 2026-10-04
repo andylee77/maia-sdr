@@ -1,14 +1,15 @@
 //! ATSC TV. In the spectrum: the US channel plan (RF channels 2–36), the windows that read it two
 //! channels at a time, and what one channel's spectrum says (`spectrum`): an 8-VSB signal
 //! (ATSC 1.0, A/53) by its pilot, a wideband signal without that pilot (ATSC 3.0 or another), or
-//! nothing. In the signal: the 8-VSB receiver (`demod`, `fec`) and what a station says of itself
-//! (`ts`, `psip`), together in `receiver`.
+//! nothing. In the signal: the 8-VSB receiver (`demod`, `fec`), what a station says of itself
+//! (`ts`, `psip`) and what its programs carry (`streams`), together in `receiver`.
 
 pub mod demod;
 pub mod fec;
 pub mod psip;
 pub mod receiver;
 pub mod spectrum;
+pub mod streams;
 pub mod ts;
 pub mod vsb;
 
