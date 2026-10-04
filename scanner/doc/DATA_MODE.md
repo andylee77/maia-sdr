@@ -170,7 +170,7 @@ Following 080: each mode has its tabs, and Diagnostics and Settings are shared.
 | Mode | Tabs |
 |------|------|
 | scanner | Now, Activity, Systems |
-| atsc | ATSC |
+| atsc | Channels, Viewer |
 | data | **Devices** (the mode's home), **Spectrum**, **Captures** |
 | all | Diagnostics, Settings |
 
