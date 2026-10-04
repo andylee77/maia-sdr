@@ -7,7 +7,7 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ## [2026-10-04] 081: ATSC station names: the 8-VSB receiver and PSIP
 
-**Branch:** 081-atsc-names (worktree maia-sdr-080), not merged
+**Branch:** 081-atsc-names (worktree maia-sdr-080), merged into fishball-p25 at c08c407
 **BUILD_TAG:** `2026-10-04-atsc-names2` (hand-deployed on A for the test; A is back on cpu4)
 **Bake required:** NO (the scanner only).
 

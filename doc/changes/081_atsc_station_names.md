@@ -1,7 +1,7 @@
 # 081 — ATSC station names: the 8-VSB receiver and PSIP
 
 **Date:** 2026-10-04. **Branch:** `081-atsc-names` (worktree `maia-sdr-080`), from fishball-p25
-2dad980; not merged. **Bake required:** NO. The scanner only; the gateware is unchanged.
+2dad980; merged into fishball-p25 at c08c407. **Bake required:** NO. The scanner only; the gateware is unchanged.
 
 ## Why
 
