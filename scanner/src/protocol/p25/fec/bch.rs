@@ -125,42 +125,25 @@ pub struct DecodedNid {
     pub n_errors: u8,
 }
 
-/// Decode a received 64-bit NID via maximum likelihood.
+/// Decode a received 64-bit NID: the codeword within `T_MAX_ERRORS` (11) bits of it, or `None`
+/// when the received word is outside every codeword's unique-decoding sphere.
 ///
-/// Returns `None` if the closest codeword has more than `T_MAX_ERRORS` (11)
-/// bit differences from the received word — i.e. the received word is
-/// outside the BCH(63,16,23) unique-decoding sphere.
-pub fn decode_nid(received_nid: u64) -> Option<DecodedNid> {
+/// The code's minimum distance is 23, so a codeword within 11 bits is the only one, and the
+/// closest: the search stops at the first it finds. It starts with the codewords of the received
+/// data word and of the words one data bit from it, which hold nearly every NID on the air; a
+/// word with no codeword in reach takes the whole codebook.
+pub fn decode_nid(received: u64) -> Option<DecodedNid> {
     let cb = codebook();
-    // Mask to 64 bits is a no-op, but kept symmetric with the Python ref
-    // which masks to `(1 << CODE_BITS) - 1`.
-    let received = received_nid;
-
-    // Linear ML scan. 65536 XOR + popcount + min — runs in well under 1 ms
-    // on a Cortex-A9.
-    let mut best_idx: usize = 0;
-    let mut best_dist: u32 = u32::MAX;
-    for (idx, &cw) in cb.iter().enumerate() {
-        let d = (cw ^ received).count_ones();
-        if d < best_dist {
-            best_dist = d;
-            best_idx = idx;
-            if d == 0 {
-                break;
-            }
-        }
-    }
-
-    if best_dist > T_MAX_ERRORS {
-        return None;
-    }
-    let data = best_idx as u32;
-    let nac = ((data >> DUID_BITS) & ((1 << NAC_BITS) - 1)) as u16;
-    let duid = (data & ((1 << DUID_BITS) - 1)) as u8;
+    let data = (received >> PARITY_BITS) as usize;
+    let near = std::iter::once(data).chain((0..DATA_BITS).map(|b| data ^ (1 << b)));
+    let (idx, distance) = near.chain(0..N_CODEWORDS).find_map(|idx| {
+        let d = (cb[idx] ^ received).count_ones();
+        (d <= T_MAX_ERRORS).then_some((idx as u32, d))
+    })?;
     Some(DecodedNid {
-        nac,
-        duid,
-        n_errors: best_dist as u8,
+        nac: ((idx >> DUID_BITS) & ((1 << NAC_BITS) - 1)) as u16,
+        duid: (idx & ((1 << DUID_BITS) - 1)) as u8,
+        n_errors: distance as u8,
     })
 }
 #[cfg(test)]

@@ -112,6 +112,38 @@ fn errors_beyond_sphere_dont_silently_corrupt() {
     );
 }
 
+/// Every non-zero codeword has 23 or more bits set (the code is linear), so two codewords differ
+/// in 23 or more and a codeword within 11 bits of a word is the only one.
+#[test]
+fn the_minimum_distance_is_23() {
+    let lightest = codebook()[1..].iter().map(|c| c.count_ones()).min().unwrap();
+    assert!(lightest >= 2 * T_MAX_ERRORS + 1, "minimum distance {lightest}");
+}
+
+/// The decoder answers as the closest codeword of the whole codebook would (the first of equals),
+/// for words with every number of errors over all 64 bits and for noise.
+#[test]
+fn the_decoder_is_the_closest_codeword() {
+    let closest = |r: u64| {
+        let (idx, d) = codebook().iter().enumerate().map(|(i, c)| (i, (c ^ r).count_ones())).min_by_key(|&(i, d)| (d, i)).unwrap();
+        (d <= T_MAX_ERRORS).then(|| ((idx >> DUID_BITS) as u16, (idx & 0xF) as u8, d as u8))
+    };
+    let mut rng = XorShift64::new(0x5EED_0F_B0C4);
+    for trial in 0..400 {
+        let received = if trial % 8 == 7 {
+            rng.next_u64()
+        } else {
+            let mut w = encode_nid((rng.next_u32() & 0xFFF) as u16, (rng.next_u32() & 0xF) as u8);
+            for _ in 0..trial % 15 {
+                w ^= 1u64 << (rng.next_u32() % 64);
+            }
+            w
+        };
+        let got = decode_nid(received).map(|d| (d.nac, d.duid, d.n_errors));
+        assert_eq!(got, closest(received), "word {received:016x}");
+    }
+}
+
 /// Tiny xorshift64 PRNG for reproducible tests without `rand`.
 struct XorShift64(u64);
 impl XorShift64 {
