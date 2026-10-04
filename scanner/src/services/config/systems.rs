@@ -211,7 +211,9 @@ pub struct Control {
     pub timeslot: Option<u8>,
 }
 
-/// P25 control-channel modulation. `Auto` lets the receiver pick LSM or C4FM by decode rate.
+/// P25 control-channel modulation: the one demodulator the site's receivers run. A scan that
+/// finds a site sets it; `Auto` (a site no scan has probed) runs both at the start and keeps the
+/// better.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Modulation {

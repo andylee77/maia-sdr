@@ -11,7 +11,7 @@ fn p25(freq_hz: u64, wacn: u32, system: u16, rfss: u8, site: u8) -> FoundSite {
         freq_hz,
         level_db: 30.0,
         protocol: Protocol::P25,
-        modulation: Some("lsm"),
+        modulation: Some(Modulation::Lsm),
         msgs_per_s: 40.0,
         ok_pct: 99.5,
         identity: HeardIdentity::P25(P25Identity {
@@ -108,6 +108,7 @@ fn a_scan_adds_systems_and_sites_and_merges_into_known_ones() {
     let site = &sys.sites[0];
     assert_eq!((site.control.freq_hz, site.control.alternates_hz.clone()), (860_962_500, vec![861_437_500]));
     assert_eq!((site.identity.rfss, site.identity.site, site.identity.nac), (Some(1), Some(1), Some(0x8A1)));
+    assert_eq!(site.modulation, Modulation::Lsm, "the demodulator the scan found");
     let dmr_site = &config.systems[1].sites[0];
     assert_eq!((dmr_site.identity.colour_code, dmr_site.control.timeslot), (Some(0), Some(1)));
     assert_eq!(config.systems[1].identity.model, Some(DmrModel::Small));
@@ -133,6 +134,20 @@ fn a_scan_adds_systems_and_sites_and_merges_into_known_ones() {
     let nowhere = AddSite { key: "p25:none".into(), label: "x".into(), identity: None, control: None, channels_hz: Vec::new() };
     assert!(add(&mut config, &[], &AddSystem { sites: vec![nowhere], ..card("x", &[]) }).is_err());
     assert!(add(&mut config, &[], &card("x", &[])).is_err(), "nothing ticked");
+}
+
+#[test]
+fn a_scan_sets_the_modulation_of_a_site_set_to_auto_only() {
+    let mut config = SystemsConfig::default();
+    let clay = p25(860_962_500, 0xBEE00, 0x8A1, 1, 1);
+    add(&mut config, &[clay.clone()], &card("Clay County", &[(&clay, "Clay")])).unwrap();
+    let c4fm = FoundSite { modulation: Some(Modulation::C4fm), ..clay.clone() };
+    let added = add(&mut config, &[c4fm.clone()], &card("Clay County", &[(&c4fm, "Clay")])).unwrap();
+    assert!(added.updated.is_empty() && config.systems[0].sites[0].modulation == Modulation::Lsm, "a set modulation stays");
+    config.systems[0].sites[0].modulation = Modulation::Auto;
+    let added = add(&mut config, &[c4fm.clone()], &card("Clay County", &[(&c4fm, "Clay")])).unwrap();
+    assert_eq!(added.updated, vec!["clay_county_clay".to_string()]);
+    assert_eq!(config.systems[0].sites[0].modulation, Modulation::C4fm);
 }
 
 #[test]

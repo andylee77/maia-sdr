@@ -1,11 +1,11 @@
 //! Runs the live protocol's control decoders on the control channel's IQ and publishes what
 //! they report: messages to the event log, identity and health to the site card.
 //!
-//! One decode thread owns the decoders. At a P25 site it runs two on the same IQ, the LSM and
-//! C4FM demodulators; only the chosen one's events are published. In auto mode the one passing
-//! more TSBKs wins, with hysteresis and a dwell, so a C4FM site moves to C4FM and an LSM site
-//! stays on LSM. At a DMR site the thread runs the DMR receiver. Messages carry the air time of
-//! the block they came in; a new tuning of the control channel starts the demodulators over.
+//! One decode thread owns the decoders. At a P25 site it runs the site's demodulator, LSM or
+//! C4FM (a scan that finds a site tries both and sets it); a site set to auto runs both until
+//! one is chosen, then that one alone. At a DMR site the thread runs the DMR receiver. Messages
+//! carry the air time of the block they came in; a new tuning of the control channel starts the
+//! demodulators over.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -154,39 +154,53 @@ impl RateWindow {
     }
 }
 
-/// The choice between the LSM and C4FM decoders of a P25 control channel.
+/// C4FM over LSM, from what each decoder passed (counts, or pass rates): only when C4FM passes
+/// clearly more, as the two are close on an LSM site.
+pub fn c4fm_clearly_better(c4fm: f64, lsm: f64) -> bool {
+    c4fm > lsm * 1.25
+}
+
+/// The choice between the LSM and C4FM decoders of a P25 control channel: the site's. A site
+/// set to auto (one no scan has probed) runs both until one is chosen, LSM unless C4FM passes
+/// clearly more TSBKs, and from then on the chosen one alone.
 #[derive(Debug)]
 pub struct ModulationChoice {
-    mode: Modulation,
     c4fm: bool,
+    /// Auto, not yet chosen: both decoders run.
+    probing: bool,
     last: Option<(u64, u64)>,
     /// Per second: (C4FM, LSM) TSBKs passed.
     window: VecDeque<(u64, u64)>,
-    last_switch: Option<Instant>,
 }
 
 impl ModulationChoice {
-    /// Auto: the other decoder must pass this many TSBKs in the window and beat the active one
-    /// by `SWITCH_RATIO`. A short window flapped on a weak LSM site where the two are close;
-    /// hence 20 s and a dwell after a switch.
+    /// TSBKs passed by each decoder over this many seconds (the status's window).
     const WINDOW_S: usize = 20;
-    /// Seconds of counts before the first decision: the two demodulators start a few hundred
+    /// Seconds of counts before the choice: the two demodulators start a few hundred
     /// milliseconds apart.
     const MIN_SAMPLES: usize = 10;
+    /// TSBKs the better decoder must pass in the window to choose.
     const MIN_TSBKS: u64 = 30;
-    const SWITCH_RATIO: f64 = 1.25;
-    const MIN_DWELL: Duration = Duration::from_secs(60);
 
     pub fn new(mode: Modulation) -> Self {
-        ModulationChoice { mode, c4fm: mode == Modulation::C4fm, last: None, window: VecDeque::new(), last_switch: None }
+        ModulationChoice { c4fm: mode == Modulation::C4fm, probing: mode == Modulation::Auto, last: None, window: VecDeque::new() }
     }
 
+    /// The decoder whose messages are used: C4FM, or LSM.
     pub fn c4fm(&self) -> bool {
         self.c4fm
     }
 
-    /// The per-second decision from the cumulative TSBKs passed. True when it switched.
-    pub fn tick(&mut self, c4fm_ok: u64, lsm_ok: u64, now: Instant) -> bool {
+    pub fn runs_lsm(&self) -> bool {
+        self.probing || !self.c4fm
+    }
+
+    pub fn runs_c4fm(&self) -> bool {
+        self.probing || self.c4fm
+    }
+
+    /// Each second, the cumulative TSBKs passed. True when the probe chose.
+    pub fn tick(&mut self, c4fm_ok: u64, lsm_ok: u64) -> bool {
         if let Some((c, l)) = self.last {
             self.window.push_back((c4fm_ok.saturating_sub(c), lsm_ok.saturating_sub(l)));
             while self.window.len() > Self::WINDOW_S {
@@ -194,29 +208,13 @@ impl ModulationChoice {
             }
         }
         self.last = Some((c4fm_ok, lsm_ok));
-        let want = match self.mode {
-            Modulation::C4fm => true,
-            Modulation::Lsm => false,
-            Modulation::Auto if self.window.len() < Self::MIN_SAMPLES => self.c4fm,
-            Modulation::Auto if self.last_switch.is_some_and(|t| now.duration_since(t) < Self::MIN_DWELL) => self.c4fm,
-            Modulation::Auto => self.better(),
-        };
-        if want == self.c4fm {
+        let (c4fm, lsm) = self.window_totals();
+        if !self.probing || self.window.len() < Self::MIN_SAMPLES || c4fm.max(lsm) < Self::MIN_TSBKS {
             return false;
         }
-        self.c4fm = want;
-        self.last_switch = Some(now);
+        self.c4fm = c4fm_clearly_better(c4fm as f64, lsm as f64);
+        self.probing = false;
         true
-    }
-
-    fn better(&self) -> bool {
-        let (c4fm, lsm) = self.window.iter().fold((0, 0), |a, w| (a.0 + w.0, a.1 + w.1));
-        let (mine, other) = if self.c4fm { (c4fm, lsm) } else { (lsm, c4fm) };
-        if other >= Self::MIN_TSBKS && other as f64 > mine as f64 * Self::SWITCH_RATIO {
-            !self.c4fm
-        } else {
-            self.c4fm
-        }
     }
 
     /// TSBKs passed in the window: (C4FM, LSM).
@@ -432,28 +430,32 @@ impl Decoder {
                     c4fm.retuned();
                 }
                 self.iq_tap.push(&b.iq);
-                c4fm.push_c4fm(&mut demod, &b.iq, b.at, &mut events);
-                if choice.c4fm() {
-                    self.publish("p25", b.at, &events);
+                if choice.runs_c4fm() {
+                    c4fm.push_c4fm(&mut demod, &b.iq, b.at, &mut events);
+                    if choice.c4fm() {
+                        self.publish("p25", b.at, &events);
+                    }
+                    events.clear();
                 }
-                events.clear();
-                lsm.push_lsm(&mut lsm_demod, &b.iq, b.at, &mut events);
-                if !choice.c4fm() {
-                    self.publish("p25", b.at, &events);
-                }
-                events.clear();
-                let carrier = lsm_demod.demod.carrier();
-                if !carrier.held {
-                    offsets.push(f64::from(carrier.offset_hz));
+                if choice.runs_lsm() {
+                    lsm.push_lsm(&mut lsm_demod, &b.iq, b.at, &mut events);
+                    if !choice.c4fm() {
+                        self.publish("p25", b.at, &events);
+                    }
+                    events.clear();
+                    let carrier = lsm_demod.demod.carrier();
+                    if !carrier.held {
+                        offsets.push(f64::from(carrier.offset_hz));
+                    }
                 }
             }
             cpu.add(t0.elapsed());
             if second.elapsed() >= Duration::from_secs(1) {
                 second = Instant::now();
-                if choice.tick(c4fm.stats().tsbk_ok(), lsm.stats().tsbk_ok(), second) {
+                if choice.tick(c4fm.stats().tsbk_ok(), lsm.stats().tsbk_ok()) {
                     let label = if choice.c4fm() { "C4FM" } else { "LSM" };
                     let (c, l) = choice.window_totals();
-                    self.log.system("modulation", format!("control channel decoded as {label} (TSBKs in 20 s: C4FM {c}, LSM {l})"));
+                    self.log.system("modulation", format!("control channel decoded as {label} (TSBKs in 20 s: C4FM {c}, LSM {l}); the other decoder stops"));
                     // The lanes take it at their next tuning.
                     if let Some(trunk) = &self.trunk {
                         let _ = trunk.try_send(TrunkInput::Modulation { c4fm: choice.c4fm() });
@@ -469,7 +471,7 @@ impl Decoder {
                 let offset = (!choice.c4fm() && !offsets.is_empty())
                     .then(|| (offsets.iter().sum::<f64>() / offsets.len() as f64).round());
                 offsets.clear();
-                let carrier = lsm_demod.demod.carrier();
+                let carrier = choice.runs_lsm().then(|| lsm_demod.demod.carrier());
                 self.set(|v| {
                     v.modulation = Some(modulation);
                     v.tsbks_20s = Some(TsbkWindow { lsm: l, c4fm: c });
@@ -477,7 +479,7 @@ impl Decoder {
                     v.ok_pct = pct;
                     v.cpu_pct = cpu.pct;
                     v.carrier_offset_hz = offset;
-                    v.carrier_loop = Some(carrier);
+                    v.carrier_loop = carrier;
                     v.channel_plan_entries = a.bands.len();
                     v.neighbours = a.neighbours.len();
                 });

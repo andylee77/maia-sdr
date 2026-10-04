@@ -25,7 +25,7 @@ use crate::protocol::events::SiteIdentity as HeardIdentity;
 use crate::services::config::ids::{slug, unique};
 use crate::services::config::state::IdenBand;
 use crate::services::config::systems::{
-    Control, DmrModel, Protocol, Site, SiteIdentity, System, SystemDetails, SystemIdentity, SystemsConfig,
+    Control, DmrModel, Modulation, Protocol, Site, SiteIdentity, System, SystemDetails, SystemIdentity, SystemsConfig,
 };
 use carriers::Carrier;
 
@@ -143,8 +143,8 @@ pub struct FoundSite {
     pub freq_hz: u64,
     pub level_db: f32,
     pub protocol: Protocol,
-    /// P25: `lsm` or `c4fm`, the demodulator with the better pass rate.
-    pub modulation: Option<&'static str>,
+    /// P25: the demodulator that decodes it (both tried, by the receivers' rule).
+    pub modulation: Option<Modulation>,
     pub msgs_per_s: f64,
     pub ok_pct: f64,
     pub identity: HeardIdentity,
@@ -275,13 +275,13 @@ pub struct AddSite {
 pub struct Added {
     pub systems: Vec<String>,
     pub sites: Vec<String>,
-    /// Sites already configured that gained alternate control channels.
+    /// Sites already configured that gained alternate control channels or their modulation.
     pub updated: Vec<String>,
 }
 
 /// Add one found system's ticked sites to `systems`, as its card says. A configured site gains
-/// the alternate control channels it lacks, and moves to the control channel it was heard on
-/// when that is another; a new site joins the configured system it belongs to, or a new system
+/// the alternate control channels it lacks and, set to auto, the modulation found, and moves to
+/// the control channel it was heard on when that is another; a new site joins the configured system it belongs to, or a new system
 /// made from the card.
 pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], card: &AddSystem) -> Result<Added, String> {
     let picked = card
@@ -327,7 +327,7 @@ pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], card: &AddSystem) -
     for (f, c) in picked {
         if let Some(id) = existing_site(f, systems) {
             if let Some(site) = systems.systems.iter_mut().flat_map(|s| s.sites.iter_mut()).find(|s| s.id == id) {
-                let before = site.control.clone();
+                let before = (site.control.clone(), site.modulation);
                 if site.control.freq_hz.abs_diff(f.freq_hz) > SAME_CHANNEL_HZ {
                     // Heard on another channel: its control channel is there now, and its
                     // alternates are the ones it announces.
@@ -338,7 +338,11 @@ pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], card: &AddSystem) -
                         site.control.alternates_hz.push(a);
                     }
                 }
-                if site.control != before && !added.updated.contains(&id) {
+                // A site no scan had probed takes the demodulator this one found.
+                if site.modulation == Modulation::Auto {
+                    site.modulation = f.modulation.unwrap_or_default();
+                }
+                if (site.control.clone(), site.modulation) != before && !added.updated.contains(&id) {
                     added.updated.push(id);
                 }
             }
@@ -360,7 +364,7 @@ pub fn add(systems: &mut SystemsConfig, found: &[FoundSite], card: &AddSystem) -
             label: label.to_string(),
             identity,
             control: c.control.clone().unwrap_or(heard),
-            modulation: Default::default(),
+            modulation: f.modulation.unwrap_or_default(),
             channels_hz: c.channels_hz.clone(),
             channel_plan: None,
             window: Default::default(),

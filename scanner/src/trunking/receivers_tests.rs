@@ -9,59 +9,60 @@ use crate::protocol::p25::tsbk::ccitt80_crc;
 use crate::protocol::p25::types::is_body_status_dibit;
 use crate::protocol::p25::wire::{FRAME_SYNC_PATTERN, NID_STATUS_DIBIT_INDEX};
 
-/// Cumulative (C4FM, LSM) TSBKs from per-second counts.
-fn feed(choice: &mut ModulationChoice, per_second: &[(u64, u64)], start: Instant) -> bool {
+/// Cumulative (C4FM, LSM) TSBKs from per-second counts; true when the probe chose.
+fn feed(choice: &mut ModulationChoice, per_second: &[(u64, u64)]) -> bool {
     let (mut c, mut l) = (0, 0);
-    let mut switched = choice.tick(0, 0, start);
-    for (i, (dc, dl)) in per_second.iter().enumerate() {
+    let mut chose = choice.tick(0, 0);
+    for (dc, dl) in per_second {
         c += dc;
         l += dl;
-        switched |= choice.tick(c, l, start + Duration::from_secs(i as u64 + 1));
+        chose |= choice.tick(c, l);
     }
-    switched
+    chose
 }
 
 #[test]
-fn auto_moves_to_the_clearly_better_decoder_only() {
-    let t = Instant::now();
-    // C4FM 99 %, LSM 42 % (a C4FM site): C4FM, once ten seconds are counted.
+fn a_site_s_modulation_runs_one_decoder() {
+    let c = ModulationChoice::new(Modulation::Lsm);
+    assert!(c.runs_lsm() && !c.runs_c4fm() && !c.c4fm());
+    let mut c = ModulationChoice::new(Modulation::C4fm);
+    assert!(!c.runs_lsm() && c.runs_c4fm() && c.c4fm());
+    assert!(!feed(&mut c, &[(0, 40); 20]) && c.c4fm(), "no probe");
+}
+
+#[test]
+fn auto_probes_both_then_keeps_the_better() {
+    // C4FM 99 %, LSM 42 % (a C4FM site): both run until ten seconds are counted, then C4FM.
     let mut c = ModulationChoice::new(Modulation::Auto);
-    assert!(!feed(&mut c, &[(40, 17); 9], t) && !c.c4fm());
+    assert!(c.runs_lsm() && c.runs_c4fm());
+    assert!(!feed(&mut c, &[(40, 17); 9]) && c.runs_lsm() && c.runs_c4fm());
     let mut c = ModulationChoice::new(Modulation::Auto);
-    assert!(feed(&mut c, &[(40, 17); 10], t) && c.c4fm());
-    // A start-up transient does not decide: one demodulator a second late.
+    assert!(feed(&mut c, &[(40, 17); 10]) && c.c4fm() && !c.runs_lsm());
+    // Both about equal (an LSM site): LSM.
+    let mut c = ModulationChoice::new(Modulation::Auto);
+    assert!(feed(&mut c, &[(40, 39), (41, 40)].repeat(5)) && !c.c4fm() && !c.runs_c4fm());
+    // A start-up transient does not choose C4FM: one demodulator a second late.
     let mut c = ModulationChoice::new(Modulation::Auto);
     let mut start = vec![(40, 0)];
     start.extend([(40, 40); 15]);
-    assert!(!feed(&mut c, &start, t) && !c.c4fm());
-    // Both about equal (an LSM site): stays.
+    assert!(feed(&mut c, &start) && !c.c4fm());
+    // Too few TSBKs to judge: both go on.
     let mut c = ModulationChoice::new(Modulation::Auto);
-    assert!(!feed(&mut c, &[(40, 39), (41, 40)].repeat(10), t) && !c.c4fm());
-    // Too few TSBKs to judge: stays.
-    let mut c = ModulationChoice::new(Modulation::Auto);
-    assert!(!feed(&mut c, &[(1, 0); 20], t) && !c.c4fm());
-    // Forced.
-    let mut c = ModulationChoice::new(Modulation::Lsm);
-    assert!(!feed(&mut c, &[(40, 0); 20], t) && !c.c4fm());
-    let mut c = ModulationChoice::new(Modulation::C4fm);
-    assert!(!feed(&mut c, &[(0, 40); 20], t) && c.c4fm());
+    assert!(!feed(&mut c, &[(1, 0); 20]) && c.runs_lsm() && c.runs_c4fm());
 }
 
 #[test]
-fn auto_dwells_after_a_switch() {
-    let t = Instant::now();
+fn the_probe_s_choice_holds() {
     let mut c = ModulationChoice::new(Modulation::Auto);
-    feed(&mut c, &[(40, 10); 10], t);
+    feed(&mut c, &[(40, 10); 10]);
     assert!(c.c4fm());
-    // LSM clearly better now, but within the dwell: stays on C4FM.
+    // The LSM decoder stopped; its count no longer moves, and nothing switches back.
     let mut cum = (400, 100);
-    for s in 11..60 {
-        cum = (cum.0 + 5, cum.1 + 40);
-        assert!(!c.tick(cum.0, cum.1, t + Duration::from_secs(s)), "switched back at {s} s");
+    for _ in 0..120 {
+        cum.0 += 40;
+        assert!(!c.tick(cum.0, cum.1));
     }
-    cum = (cum.0 + 5, cum.1 + 40);
-    assert!(c.tick(cum.0, cum.1, t + Duration::from_secs(72)));
-    assert!(!c.c4fm());
+    assert!(c.c4fm() && !c.runs_lsm());
 }
 
 #[test]
