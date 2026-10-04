@@ -149,7 +149,9 @@ fn the_loops_hold_through_a_gap() {
 /// for comparison with SDRTrunk's own LSM decoder (`tools/sdrtrunk_lsm_reference.py`):
 /// `P25_LSM_WAVS` = a directory (every `.wav` in it), `P25_LSM_OUT` = where each file's dibits
 /// go as `<stem>.bits` (SDRTrunk's packing) and one JSON line of counts per file goes to
-/// `summary.jsonl`. `tools/p25_lsm_compare.py` compares them with SDRTrunk's.
+/// `summary.jsonl`, with the data units whose own check passed (`*_valid`: an HDU that parses,
+/// LDU1 link control and LDU2 encryption sync that pass their Reed-Solomon code, a TDU's link
+/// control). `tools/p25_lsm_compare.py` compares them with SDRTrunk's.
 /// `P25_LSM_LOOP=sdrtrunk` decodes with SDRTrunk's loop exactly (no hold, the π/3 limit).
 /// `cargo test --release lsm_wavs -- --ignored --nocapture`
 #[test]
@@ -177,14 +179,25 @@ fn lsm_wavs() {
         };
         let mut framer = Framer::default();
         let mut dibits = Vec::new();
+        let mut valid = [0u64; 4];
         struct Both<'a> {
             framer: &'a mut Framer,
             dibits: &'a mut Vec<u8>,
+            valid: &'a mut [u64; 4],
         }
         impl DibitSink for Both<'_> {
             fn push_dibit(&mut self, dibit: u8) {
+                use crate::protocol::p25::framer::Framed;
+                use crate::protocol::p25::voice_frame as vf;
                 self.dibits.push(dibit);
-                self.framer.push_dibit(dibit);
+                let valid = &mut *self.valid;
+                self.framer.push(dibit, &mut |f| match f {
+                    Framed::Hdu(b) => valid[0] += vf::parse_hdu_body(b).is_some() as u64,
+                    Framed::Ldu1(b) => valid[1] += vf::parse_ldu1_lcw(b).is_some() as u64,
+                    Framed::Ldu2(b) => valid[2] += vf::parse_ldu2_ess(b).is_some() as u64,
+                    Framed::TduLc(b) => valid[3] += vf::parse_tdulc_lcw_checked(b).is_some() as u64,
+                    _ => {}
+                });
             }
             fn sync_detected(&mut self) {
                 self.framer.sync_detected();
@@ -193,7 +206,7 @@ fn lsm_wavs() {
                 self.framer.is_assembling()
             }
         }
-        let mut sink = Both { framer: &mut framer, dibits: &mut dibits };
+        let mut sink = Both { framer: &mut framer, dibits: &mut dibits, valid: &mut valid };
         for chunk in pcm.chunks(1250 * 2) {
             dec.process_iq_i16(chunk, &mut sink);
         }
@@ -215,6 +228,11 @@ fn lsm_wavs() {
             "ldu2s": s.ldu2s,
             "tdus": s.tdus,
             "tdu_lcs": s.tdu_lcs,
+            "hdus_valid": valid[0],
+            "ldu1s_lc_valid": valid[1],
+            "ldu2s_ess_valid": valid[2],
+            "tdu_lcs_valid": valid[3],
+            "nid_bch_failures": s.nid_bch_failures,
             "pll": dec.demod.pll(),
             "sample_gain": dec.demod.sample_gain(),
         });
