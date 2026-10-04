@@ -2,16 +2,21 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::Json;
 
 use crate::api::v1::scan::Started;
 use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
-use crate::services::atsc::{self, AtscOptions, AtscRequest, AtscScan};
+use crate::services::atsc::{self, AtscOptions, AtscRequest, AtscScan, ChannelSpectrum};
 
 pub async fn get(State(s): State<Arc<AppState>>) -> Json<AtscScan> {
     Json(s.atsc.state())
+}
+
+/// One channel's spectrum as the last scan read it.
+pub async fn channel(State(s): State<Arc<AppState>>, Path(n): Path<u8>) -> ApiResult<ChannelSpectrum> {
+    s.atsc.channel_spectrum(n).map(Json).ok_or_else(|| ApiError::not_found(format!("RF channel {n} in the last TV scan")))
 }
 
 /// The channel plan, the default settings and the window read at once.

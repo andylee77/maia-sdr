@@ -116,6 +116,24 @@ pub struct FoundChannel {
     pub clipped: bool,
 }
 
+/// One channel's stretch of the spectrum its window read: the channel and 0.5 MHz either side.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ChannelSpectrum {
+    pub number: u8,
+    pub low_hz: u64,
+    pub high_hz: u64,
+    /// Where the plan puts the 8-VSB pilot.
+    pub pilot_hz: u64,
+    /// The window's LO (its DC spur).
+    pub lo_hz: u64,
+    /// The first bin's frequency.
+    pub start_hz: f64,
+    pub bin_hz: f64,
+    /// Power per bin, about dBm (the spectrum's scale taken back to 60 dB of gain; as read when
+    /// the gain is unknown).
+    pub db: Vec<f32>,
+}
+
 /// A scan's progress and results.
 #[derive(Debug, Clone, Serialize)]
 pub struct AtscScan {

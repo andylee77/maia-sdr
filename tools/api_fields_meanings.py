@@ -934,6 +934,16 @@ ROUTES: dict[str, list] = {
     "/api/v1/mode": [
         ("mode", "string", "`scanner` or `atsc`."),
     ],
+    "/api/v1/atsc/scan/channel/{n}": [
+        ("number", "number", "The RF channel."),
+        ("low_hz", "number", "Its lower edge."),
+        ("high_hz", "number", "Its upper edge."),
+        ("pilot_hz", "number", "Where the plan puts the 8-VSB pilot."),
+        ("lo_hz", "number", "The LO of the window that read it (its DC spur)."),
+        ("start_hz", "number", "The first bin's frequency (0.5 MHz below the channel)."),
+        ("bin_hz", "number", "The bins' spacing (16 MSPS in 4096 bins)."),
+        ("db", "array of numbers", "Power per bin averaged over the window's frames, about dBm (the spectrum's scale taken back to 60 dB of gain)."),
+    ],
     "/api/v1/atsc/scan/options": [
         ("channels", "array", "The TV channel plan: RF 2-36 (US, after the repack)."),
         ("channels[]", "object", "One RF channel."),

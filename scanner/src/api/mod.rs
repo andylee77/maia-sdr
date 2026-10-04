@@ -147,6 +147,7 @@ routes! {
     get "/api/v1/mode" => v1::mode::get, "the unit's mode: `scanner` (P25 and DMR trunking) or `atsc` (ATSC TV)";
     put "/api/v1/mode" => v1::mode::put, "change mode (`mode`): ATSC mode has the radio to itself with the live site paused; scanner mode brings the site back with the configured gain; kept across restarts";
     get "/api/v1/atsc/scan" => v1::atsc::get, "the TV scan's progress and each channel read: 8-VSB (its pilot found), a signal without the 8-VSB pilot (ATSC 3.0 or other) or vacant; the pilot's offset and level, the carrier to noise, the power";
+    get "/api/v1/atsc/scan/channel/{n}" => v1::atsc::channel, "one RF channel's spectrum as the last TV scan read it: the channel and 0.5 MHz either side, dB per bin (about dBm)";
     get "/api/v1/atsc/scan/options" => v1::atsc::options, "the TV channel plan (RF 2-36 and which the radio reaches), the default settings and the window read at once";
     post "/api/v1/atsc/scan" => v1::atsc::start, "scan the TV channels in ATSC mode (`channels`, default every one reached; `frames` a window; `gain_db`, default the AGC)";
     post "/api/v1/atsc/scan/cancel" => v1::atsc::cancel, "stop the TV scan";

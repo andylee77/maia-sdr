@@ -138,7 +138,9 @@ def main() -> int:
     # With no live site the activity routes refuse; their paths then go unsampled.
     radios = (maybe(args.host, "/api/v1/activity/radios?limit=1") or {}).get("items", [])
     tgs = (maybe(args.host, "/api/v1/activity/talkgroups?limit=1") or {}).get("items", [])
-    ctx = {"site": site, "unit": radios[0]["unit"] if radios else None, "tg": tgs[0]["tg"] if tgs else None}
+    tv = (maybe(args.host, "/api/v1/atsc/scan") or {}).get("found", [])
+    ctx = {"site": site, "unit": radios[0]["unit"] if radios else None, "tg": tgs[0]["tg"] if tgs else None,
+           "n": tv[0]["number"] if tv else None}
 
     out = ["# API fields", "",
            "Every GET route's response, field by field, with an example from a unit's own answer.",

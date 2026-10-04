@@ -1,8 +1,9 @@
 // The ATSC page (ATSC TV mode): the TV channel finder. Pick the bands and settings, follow the scan
 // as /ws/live reports it, then every channel read: what it holds (8-VSB by its pilot, a signal
-// without the 8-VSB pilot, or nothing), its carrier to noise, its pilot and its power.
+// without the 8-VSB pilot, or nothing), its carrier to noise, its pilot and its power; a channel
+// picked in the table shows its spectrum.
 
-import { h, card, toast, table } from '../dom.js';
+import { h, card, toast, table, setClass } from '../dom.js';
 import { mhz, num, DASH } from '../format.js';
 import { api } from '../api.js';
 import { inline } from './cards.js';
@@ -16,6 +17,58 @@ const KIND = {
 const db = v => (v === null || v === undefined ? DASH : `${num(v, 1)} dB`);
 const signed = v => (v > 0 ? '+' : v < 0 ? '−' : '') + num(Math.abs(v) / 1000, 1);
 
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
+}
+
+// One channel's spectrum: the channel shaded, the plan's pilot and the window's LO marked.
+function drawChannel(canvas, sp) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || 600;
+  const ht = canvas.clientHeight || 220;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(ht * dpr);
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, ht);
+  const sorted = [...sp.db].sort((a, b) => a - b);
+  const lo = sorted[Math.floor(sorted.length * 0.02)] - 3;
+  const hi = sorted[sorted.length - 1] + 3;
+  const left = 44, bottom = 18, right = 6;
+  const ph = ht - bottom;
+  const span = sp.db.length * sp.bin_hz;
+  const x = hz => left + ((hz - sp.start_hz) / span) * (w - left - right);
+  const y = v => ph - ((v - lo) / (hi - lo)) * ph;
+  g.fillStyle = cssVar('--accent');
+  g.globalAlpha = 0.08;
+  g.fillRect(x(sp.low_hz), 0, x(sp.high_hz) - x(sp.low_hz), ph);
+  g.globalAlpha = 0.6;
+  g.fillRect(x(sp.pilot_hz) - 0.5, 0, 1, ph);
+  g.fillStyle = cssVar('--text-faint');
+  g.globalAlpha = 0.5;
+  if (sp.lo_hz > sp.start_hz && sp.lo_hz < sp.start_hz + span) g.fillRect(x(sp.lo_hz) - 0.5, 0, 1, ph);
+  g.globalAlpha = 1;
+  g.strokeStyle = cssVar('--text-dim');
+  g.lineWidth = 1;
+  g.beginPath();
+  sp.db.forEach((v, i) => {
+    const px = x(sp.start_hz + i * sp.bin_hz);
+    if (i === 0) g.moveTo(px, y(v));
+    else g.lineTo(px, y(v));
+  });
+  g.stroke();
+  g.fillStyle = cssVar('--text-faint');
+  g.font = '11px system-ui, sans-serif';
+  g.textBaseline = 'top';
+  g.textAlign = 'center';
+  for (const f of [sp.low_hz, (sp.low_hz + sp.high_hz) / 2, sp.high_hz]) g.fillText(`${(f / 1e6).toFixed(1)} MHz`, x(f), ph + 4);
+  g.textAlign = 'right';
+  for (const v of [hi - 3, (hi + lo) / 2, lo + 3]) {
+    g.textBaseline = 'middle';
+    g.fillText(`${v.toFixed(0)}`, left - 6, y(v));
+  }
+}
+
 export function mount(el) {
   const c = card('TV channels');
   el.append(h('div', { class: 'stack' }, c.el));
@@ -26,6 +79,11 @@ export function mount(el) {
   let shown = null;
   // The scan whose results were put away for a new setup.
   let dismissed = null;
+  // The channel whose spectrum is shown, and its drawing again at a new width.
+  let picked = null;
+  let redraw = null;
+  const onResize = () => redraw && redraw();
+  window.addEventListener('resize', onResize);
 
   function bands() {
     const out = new Map();
@@ -138,9 +196,34 @@ export function mount(el) {
     const tally = `${count('8vsb')} with 8-VSB, ${count('no_pilot')} filled without the 8-VSB pilot (ATSC 3.0 or other), `
       + `${count('vacant')} vacant, of ${s.found.length} channels read${s.gain_db == null ? ' with the AGC' : ` at ${s.gain_db} dB of gain`}.`;
     const summary = s.found.length ? `${head}: ${tally}${s.error ? ` ${s.error}.` : ''}` : `${head}${s.error ? `: ${s.error}` : ''}.`;
+    const title = h('div', { class: 'dim' });
+    const canvas = h('canvas', { style: { width: '100%', height: '220px', display: 'block' }, 'aria-label': "The channel's spectrum" });
+    const plot = h('div', { class: 'stack', hidden: true }, title, canvas);
+    const rows = s.found.map(ch => {
+      const tr = row(ch);
+      tr.classList.add('pick');
+      tr.title = 'Show its spectrum';
+      tr.addEventListener('click', async () => {
+        for (const r of rows) setClass(r, 'sel', r === tr);
+        try {
+          picked = await api.atscChannel(ch.number);
+          plot.hidden = false;
+          title.textContent = `RF ${ch.number}, ${mhz(picked.low_hz, 0)} to ${mhz(picked.high_hz, 0)} (shaded), as its window read it: `
+            + "dB a bin, about dBm; the 8-VSB pilot's place and the window's LO marked.";
+          drawChannel(canvas, picked);
+          redraw = () => drawChannel(canvas, picked);
+        } catch (e) {
+          toast(e.message, true);
+        }
+      });
+      return tr;
+    });
+    picked = null;
+    redraw = null;
     c.body.replaceChildren(h('div', { class: 'stack' },
       h('p', { class: 'dim', text: summary }),
-      s.found.length ? table(['RF', 'Centre', 'Holds', 'C/N', 'Pilot', 'Pilot offset', 'Power', 'Gain'], s.found.map(row)) : null,
+      s.found.length ? table(['RF', 'Centre', 'Holds', 'C/N', 'Pilot', 'Pilot offset', 'Power', 'Gain'], rows) : null,
+      plot,
       h('div', { class: 'row' }, again)));
   }
 
@@ -169,6 +252,8 @@ export function mount(el) {
         draw(last);
       }
     },
-    unmount() {},
+    unmount() {
+      window.removeEventListener('resize', onResize);
+    },
   };
 }

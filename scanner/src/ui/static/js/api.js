@@ -53,6 +53,7 @@ export const api = {
   atscScan: req => request('POST', '/api/v1/atsc/scan', req),
   atscOptions: () => request('GET', '/api/v1/atsc/scan/options'),
   atscCancel: () => request('POST', '/api/v1/atsc/scan/cancel'),
+  atscChannel: n => request('GET', `/api/v1/atsc/scan/channel/${n}`),
   recordings: (limit, site) => request('GET', `/api/v1/recordings?limit=${limit}${site ? `&site=${encodeURIComponent(site)}` : ''}`),
   setRecording: recording => request('PUT', '/api/v1/radio/recording', recording),
   clearRecordings: store => request('DELETE', `/api/v1/recordings?store=${store}`),

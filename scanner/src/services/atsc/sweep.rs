@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, bail, Context, Result};
 use tokio::sync::OwnedMutexGuard;
 
-use super::{usable_half, AtscRequest, AtscScan, FoundChannel};
+use super::{usable_half, AtscRequest, AtscScan, ChannelSpectrum, FoundChannel};
 use crate::hardware::ad9361::GainMode;
 use crate::hardware::presets::find_preset;
 use crate::protocol::atsc::spectrum::{measure, Kind};
-use crate::protocol::atsc::windows;
+use crate::protocol::atsc::{windows, Channel};
 use crate::radio::lease::LeaseGuard;
 use crate::radio::tuner::{RadioHw, Tuner, TuningPlan};
 use crate::services::discovery::sweep::{grab, LO_SETTLE};
@@ -22,15 +22,28 @@ use crate::util::time::unix_ms;
 /// The gain at which the spectrum's dB scale reads about dBm (`discovery::carriers`).
 const SCALE_GAIN_DB: f64 = 60.0;
 
+/// Shown either side of a channel in its spectrum.
+const SPECTRUM_MARGIN_HZ: f64 = 500_000.0;
+
 /// ATSC mode's hold on the radio, and the site scanner mode brings back.
 struct Held {
     _lease: LeaseGuard,
     back_to: Option<String>,
 }
 
+/// One window of the last scan: its LO, its channels, and its frames averaged (dB per bin, about
+/// dBm).
+struct WindowSpectrum {
+    lo_hz: u64,
+    channels: Vec<Channel>,
+    db: Vec<f32>,
+}
+
 #[derive(Default)]
 pub struct Atsc {
     state: Mutex<AtscScan>,
+    /// The last scan's windows.
+    spectra: Mutex<Vec<WindowSpectrum>>,
     /// The radio while ATSC mode lasts; a run holds this lock.
     radio: Arc<tokio::sync::Mutex<Option<Held>>>,
     /// Scanner mode is coming back: no new run, and the running one stops.
@@ -59,6 +72,33 @@ impl Atsc {
 
     fn stopping(&self) -> bool {
         self.lock().cancel || self.leaving.load(Ordering::SeqCst)
+    }
+
+    fn spectra(&self) -> std::sync::MutexGuard<'_, Vec<WindowSpectrum>> {
+        self.spectra.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// RF channel `number` as the last scan read it.
+    pub fn channel_spectrum(&self, number: u8) -> Option<ChannelSpectrum> {
+        let spectra = self.spectra();
+        let (w, ch) = spectra.iter().find_map(|w| w.channels.iter().find(|c| c.number == number).map(|c| (w, *c)))?;
+        let n = w.db.len();
+        if n == 0 {
+            return None;
+        }
+        let bin_hz = f64::from(SWEEP_RATE_HZ) / n as f64;
+        let bin = |f: f64| ((f - w.lo_hz as f64) / bin_hz + (n / 2) as f64).round().clamp(0.0, (n - 1) as f64) as usize;
+        let (first, last) = (bin(ch.low_hz as f64 - SPECTRUM_MARGIN_HZ), bin(ch.high_hz() as f64 + SPECTRUM_MARGIN_HZ));
+        Some(ChannelSpectrum {
+            number,
+            low_hz: ch.low_hz,
+            high_hz: ch.high_hz(),
+            pilot_hz: ch.pilot_hz().round() as u64,
+            lo_hz: w.lo_hz,
+            start_hz: w.lo_hz as f64 + (first as f64 - (n / 2) as f64) * bin_hz,
+            bin_hz,
+            db: w.db[first..=last].to_vec(),
+        })
     }
 
     /// ATSC mode begins: the radio is this service's until `leave`.
@@ -92,6 +132,7 @@ impl Atsc {
             *d = AtscScan { id, state: "sweeping", started_unix_ms: unix_ms(), channels: channels.clone(), gain_db: req.gain_db, ..Default::default() };
             id
         };
+        self.spectra().clear();
         let gain = req.gain_db.map_or("the AGC".to_string(), |g| format!("{g} dB of gain"));
         log.system("atsc", format!("TV scan {id} started over {} channels at {gain}", channels.len()));
         let me = self.clone();
@@ -153,6 +194,12 @@ impl Atsc {
             let power = average(&frames);
             let clipped = matches!((before.adc_clips, after.adc_clips), (Some(a), Some(b)) if b != a);
             let gain = after.gain_db;
+            let to_dbm = gain.map_or(0.0, |g| (g - SCALE_GAIN_DB) as f32);
+            self.spectra().push(WindowSpectrum {
+                lo_hz: w.lo_hz,
+                channels: w.channels.clone(),
+                db: power.iter().map(|&p| (10.0 * p.max(1e-20).log10()) as f32 - to_dbm).collect(),
+            });
             let found: Vec<FoundChannel> = w
                 .channels
                 .iter()

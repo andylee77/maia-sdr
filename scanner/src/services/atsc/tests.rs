@@ -117,6 +117,14 @@ async fn a_scan_reads_each_channel_and_says_what_it_holds() {
     assert_eq!(tuner.hw().gains.lock().unwrap().as_slice(), ["slow_attack None"], "the AGC unless a gain is asked");
     let last = log.since(0, 10, false).last().unwrap().text.clone();
     assert!(last.contains("done on 6 channels: 4 8-VSB, 1 without an 8-VSB pilot"), "{last}");
+    // RF 19's stretch of its window: the channel and 0.5 MHz either side, its pilot the peak.
+    let sp = atsc.channel_spectrum(19).unwrap();
+    assert_eq!((sp.lo_hz, sp.low_hz, sp.pilot_hz), (500_500_000, 500_000_000, 500_309_441));
+    assert!((sp.start_hz - 499_500_000.0).abs() <= sp.bin_hz && (sp.db.len() as f64 * sp.bin_hz - 7e6).abs() <= 2.0 * sp.bin_hz);
+    let peak = sp.db.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
+    let peak_hz = sp.start_hz + peak as f64 * sp.bin_hz;
+    assert!((peak_hz - (sp.pilot_hz as f64 + 10_100.0)).abs() < sp.bin_hz, "{peak_hz}");
+    assert!(atsc.channel_spectrum(30).is_none(), "not read");
     // Leaving hands the radio back, with the site to bring back.
     assert_eq!(atsc.leave().await.as_deref(), Some("clay"));
     assert!(lease.is_normal());
