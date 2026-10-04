@@ -1005,5 +1005,5 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
   - On A: an hour on Clay County with no packet fault, lost or missed packet (about 178,000
     packets a lane) and the control channel at 40.3 messages a second or more at 100 %; 27,467
     spectrum frames with no gap; DMR decoding; fbench's core tests on the new map. The TV scan
-    named 5 stations against 081's 16, at 10-25 dB less input on most channels (081 had A on the
-    Jacksonville directional antenna); the burst-timing run is Andy's.
+    named 5 stations against 081's 16 because A is on the omni antenna (081's scan was on the
+    Jacksonville directional); the burst-timing run is Andy's.

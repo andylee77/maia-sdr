@@ -3,9 +3,9 @@
 **Date:** 2026-10-04. **Branch:** fishball-p25. **Bake required:** YES (core 2.0.0, product
 "rad1"; the scanner of the same commit reads 2.x only, so core and scanner ship together).
 
-**Status:** on unit A (image `2026-10-04-bake-a1`). Every gate run is met but the TV scan, which
-named 5 stations on what looks like another antenna than 081's (status log); the burst-timing
-gate's tooling is built and its run is left for Andy.
+**Status:** on unit A (image `2026-10-04-bake-a1`). Every gate run is met; the TV scan named 5
+stations because A is on the omni antenna, not the directional one 081 used (Andy, status log).
+The burst-timing gate's tooling is built and its run is left for Andy.
 
 ## Why
 
@@ -262,7 +262,7 @@ Slices 59.5 % (3a 57.7 %). Bake A added 288 LUTs and 971 FFs to the core and no 
 | CLAUDE.md checks | **Met:** scanner host tests 488, ARM check, DMR reference 24,984 of 24,996 with the follower test; scanner-hdl 217; agent 63 + 11, bench host 269 (the P25 recordings not needed: no receiver changed) |
 | An hour on Clay County: no packet fault, lost or missed packet; control ≥ 40 messages a second at ≥ 99.8 % | **Met:** 40.3 or more at 100 %, none |
 | Clay Electric DMR decoding | **Met** |
-| A TV scan naming as many stations as 081's (16) | **Not met: 5** named, at 10-25 dB less input than 081's scan; the decoder's MER edge unchanged. Likely the antenna (above); for Andy |
+| A TV scan naming as many stations as 081's (16) | **5 named on the omni antenna** (081's 16 were on the Jacksonville directional): 10-25 dB less input, the decoder's MER edge unchanged. Not a regression; the comparable scan is on the directional antenna |
 | fbench's tests that read the core, on the new map | **Met:** `sys.identity`, `xport.p25_ring_prbs`, `xport.p25_ring_lap`, `iface.fpga_loopback` |
 | Every spectrum frame read for 10 minutes with no gap | **Met:** 27,467 frames in the hour, none missed |
 | One burst at the same time in a frame's header, a lane's packets and a capture | **Tooling built** (`tools/burst_timing.py`); the run needs a key fob or the ESP32-DIV: left for Andy |
@@ -314,7 +314,6 @@ Slices 59.5 % (3a 57.7 %). Bake A added 288 LUTs and 971 FFs to the core and no 
       Reed-Solomon).
     - **081's 16 were named with A on the VHF/UHF directional antenna aimed at Jacksonville,
       moved over from the HDHomeRun;** on the omni, 081's captures named RF 19, 20 and 21. Today's
-      levels look like A is no longer on that antenna. An A/B on today's antenna (the previous
-      image is in `/mnt/sd/boot_backup_radiocore_atsc1`) was not run: the rollback was refused by
-      this session's permissions. **For Andy:** the TV gate wants the scan again with A on the
-      directional antenna (or the A/B).
+      levels pointed at another antenna, and Andy confirmed it: A is back on the omni. The
+      shortfall is the antenna, not the bake. A scan comparable with 081's needs A on the
+      directional antenna.

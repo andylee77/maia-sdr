@@ -41,9 +41,9 @@ f24e01b (local)
     packets a lane with none lost or missed and no fault, 27,467 spectrum frames with no gap);
     Clay Electric DMR; fbench's core tests (`sys.identity`, `xport.p25_ring_prbs`,
     `xport.p25_ring_lap`, `iface.fpga_loopback`);
-  - not met: the TV scan named 5 stations against 081's 16, at 10-25 dB less input than 081's
-    scan (which had A on the Jacksonville directional antenna); the decoder's MER edge is
-    unchanged. For Andy: the scan on that antenna, or an A/B with the previous image;
+  - the TV scan named 5 stations against 081's 16: A is on the omni antenna (Andy), 081's
+    scan on the Jacksonville directional, 10-25 dB more input; the decoder's MER edge is
+    unchanged;
   - left for Andy: the burst-timing run (`tools/burst_timing.py`).
 
 ## [2026-10-04] Cleanup: p25-httpd out, the fork's gateware in scanner-hdl, the bench on the radio core
