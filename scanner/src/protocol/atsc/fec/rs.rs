@@ -146,6 +146,7 @@ pub fn decode(cw: &mut [u8]) -> Outcome {
 }
 
 /// The 20 parity bytes of 187 data bytes (for test signals).
+#[cfg(test)]
 pub fn parity(data: &[u8]) -> [u8; PARITY] {
     static GEN: OnceLock<[u8; PARITY + 1]> = OnceLock::new();
     // g(x) = Π (x + α^j), highest power first.

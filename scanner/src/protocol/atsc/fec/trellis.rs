@@ -17,6 +17,7 @@ pub fn encoder(segment: usize, symbol: usize) -> usize {
 }
 
 /// One encoder's state, for building test signals.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Encoder {
     y2: u8,
@@ -24,6 +25,7 @@ pub struct Encoder {
     d2: u8,
 }
 
+#[cfg(test)]
 impl Encoder {
     /// The 3-bit symbol value for the bit pair (X2, X1).
     pub fn symbol(&mut self, x2: u8, x1: u8) -> u8 {

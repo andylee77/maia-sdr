@@ -41,7 +41,6 @@ pub struct Demodulated {
     pub segments: Vec<[f32; SEGMENT]>,
     /// The first field sync segment; the others follow every 313.
     pub first_field_sync: Option<usize>,
-    pub field_syncs: usize,
     /// The pilot from where it should be.
     pub pilot_offset_hz: f64,
     /// The symbol clock against the sample clock as given, ppm.
@@ -504,7 +503,6 @@ pub fn demodulate(iq: &[Complex32], sample_rate_hz: f64, centre_offset_hz: f64) 
         eq.chunks_exact(SEGMENT).map(|c| c.try_into().unwrap_or([0.0; SEGMENT])).collect();
     Some(Demodulated {
         mer_db: mer(&segments),
-        field_syncs: inverted.len(),
         first_field_sync: Some(first),
         pilot_offset_hz,
         clock_ppm: (PERIOD / per - 1.0) * 1e6,

@@ -12,7 +12,8 @@ pub const FIELD_SEGMENTS: usize = 313;
 pub const DATA_SEGMENTS: usize = FIELD_SEGMENTS - 1;
 /// The segment sync, in the symbols' units.
 pub const SEGMENT_SYNC: [f32; 4] = [5.0, -5.0, -5.0, 5.0];
-/// The pilot: a constant added to every symbol.
+/// The pilot: a constant added to every symbol (the receiver takes it out as DC).
+#[cfg(test)]
 pub const PILOT: f32 = 1.25;
 /// Symbols at the start of a field sync segment whose values are known: the segment sync,
 /// PN511, three PN63 and the 24 symbols of the VSB mode.
