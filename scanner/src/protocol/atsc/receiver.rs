@@ -28,7 +28,7 @@ pub struct Identified {
 /// centre `centre_offset_hz` from DC. `None` when the signal gives no syncs.
 pub fn identify(iq: &[Complex32], sample_rate_hz: f64, centre_offset_hz: f64) -> Option<Identified> {
     let d = demodulate(iq, sample_rate_hz, centre_offset_hz)?;
-    let (packets, FecStats { fields, packets: n, corrected, failed }) = fec::decode(&d.segments, d.first_field_sync?);
+    let (packets, FecStats { fields, packets: n, corrected, failed }) = fec::decode(&d.symbols, d.first_field_sync?);
     let mut sections = Sections::default();
     let mut psip = Psip::default();
     for p in packets.iter().filter(|p| p.outcome != rs::Outcome::Failed) {

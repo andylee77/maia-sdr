@@ -7,8 +7,6 @@
 //! The decoder is a soft-decision Viterbi on the 4 states: each branch's metric is the squared
 //! distance to the nearer of its coset's two levels (Z2 is uncoded), whose Z2 is kept with it.
 
-use crate::protocol::atsc::vsb::level;
-
 pub const ENCODERS: usize = 12;
 
 /// The encoder of data symbol `symbol` (0..828) of data segment `segment` (0..312).
@@ -42,28 +40,40 @@ impl Encoder {
 /// state and the coset.
 const INTO: [[(usize, usize); 2]; 4] = [[(0, 0), (1, 2)], [(2, 1), (3, 3)], [(0, 2), (1, 0)], [(2, 3), (3, 1)]];
 
+/// Soft symbols in integer steps of 1/16 of the levels' unit, limited to ±16 units: the metrics
+/// are integers, compared on the ARM side (a float comparison waits for its flags on the A9).
+const SOFT: f32 = 16.0;
+const SOFT_LIMIT: i32 = 256;
+
+/// A symbol in soft steps, rounded to the nearest: offset to stay positive where it matters, so
+/// that `as` (towards zero) floors.
+fn soft(r: f32) -> i32 {
+    ((r * SOFT + 4096.5) as i32 - 4096).clamp(-SOFT_LIMIT, SOFT_LIMIT)
+}
+
 /// Viterbi decoding of one encoder's symbols (in the ±1..±7 units, pilot removed): its bit pairs
 /// X2 X1 as `(x2 << 1) | x1`, one a symbol. The precoder is undone along the way; the first
-/// symbol's X2 assumes a previous Y2 of 0. Only comparisons and arithmetic in the loop (min and
-/// round are library calls on the A9).
+/// symbol's X2 assumes a previous Y2 of 0.
 pub fn decode(symbols: &[f32]) -> Vec<u8> {
-    let n = symbols.len();
+    let soft: Vec<i32> = symbols.iter().map(|&r| soft(r)).collect();
+    let n = soft.len();
+    let unit = SOFT as i32;
     // Per step, two bits a next state (at 2 × state): the D2 of the state it came from, and the
     // decided Z2 above it.
     let mut back = vec![0u8; n];
-    let mut metric = [0f32; 4];
-    for (t, &r) in symbols.iter().enumerate() {
+    let mut metric = [0i32; 4];
+    for (t, &r) in soft.iter().enumerate() {
         // Coset c's levels are 2c − 7 and 2c + 1; the nearer one, its distance and its Z2.
-        let mut cost = [0f32; 4];
+        let mut cost = [0i32; 4];
         let mut z2 = [0u8; 4];
         for c in 0..4 {
-            let lo = level(c as u8);
-            let high = r > lo + 4.0;
-            let d = if high { r - lo - 8.0 } else { r - lo };
+            let lo = (2 * c as i32 - 7) * unit;
+            let high = r > lo + 4 * unit;
+            let d = if high { r - lo - 8 * unit } else { r - lo };
             cost[c] = d * d;
             z2[c] = u8::from(high);
         }
-        let mut next = [0f32; 4];
+        let mut next = [0i32; 4];
         let mut bits = 0u8;
         for (ns, from) in INTO.iter().enumerate() {
             let (s0, c0) = from[0];
@@ -107,6 +117,7 @@ pub fn decode(symbols: &[f32]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::atsc::vsb::level;
 
     fn random_pairs(n: usize, seed: u64) -> Vec<u8> {
         let mut x = seed;

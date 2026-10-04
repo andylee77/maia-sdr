@@ -75,11 +75,11 @@ pub struct FecStats {
     pub failed: usize,
 }
 
-/// The packets of the data fields after each field sync in `syncs` (indices into `segments`;
-/// consecutive fields only), in order. The last 51 or so packets are lost to the
-/// deinterleaver's delay.
-pub fn decode(segments: &[[f32; SEGMENT]], first_sync: usize) -> (Vec<Packet>, FecStats) {
-    let fields = segments.len().saturating_sub(first_sync) / FIELD_SEGMENTS;
+/// The packets of the whole fields from the field sync segment `first_sync` on, in order, from
+/// `symbols` (segment after segment). The last 51 or so packets are lost to the deinterleaver's
+/// delay.
+pub fn decode(symbols: &[f32], first_sync: usize) -> (Vec<Packet>, FecStats) {
+    let fields = (symbols.len() / SEGMENT).saturating_sub(first_sync) / FIELD_SEGMENTS;
     let mut stats = FecStats { fields, ..Default::default() };
     if fields == 0 {
         return (Vec::new(), stats);
@@ -89,7 +89,8 @@ pub fn decode(segments: &[[f32; SEGMENT]], first_sync: usize) -> (Vec<Packet>, F
     let mut seqs = vec![Vec::with_capacity(per_field * fields); ENCODERS];
     for f in 0..fields {
         for dseg in 0..DATA_SEGMENTS {
-            let row = &segments[first_sync + f * FIELD_SEGMENTS + 1 + dseg][SYNC_SYMBOLS..];
+            let seg = first_sync + f * FIELD_SEGMENTS + 1 + dseg;
+            let row = &symbols[seg * SEGMENT + SYNC_SYMBOLS..(seg + 1) * SEGMENT];
             for (k, &s) in row.iter().enumerate() {
                 seqs[trellis::encoder(dseg, k)].push(s);
             }
@@ -222,7 +223,7 @@ mod tests {
     fn three_fields_come_back_through_the_whole_chain() {
         let sent = packets(3 * DATA_SEGMENTS);
         let segs = encode(&sent);
-        let (got, stats) = decode(&segs, 0);
+        let (got, stats) = decode(&segs.concat(), 0);
         assert_eq!(stats.fields, 3);
         assert!(got.len() >= 3 * DATA_SEGMENTS - 52, "{}", got.len());
         assert_eq!((stats.failed, stats.corrected), (0, 0));
@@ -243,7 +244,7 @@ mod tests {
                 *s += ((x >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 1.9;
             }
         }
-        let (got, stats) = decode(&segs, 0);
+        let (got, stats) = decode(&segs.concat(), 0);
         assert_eq!(stats.failed, 0, "{stats:?}");
         for (g, s) in got.iter().zip(&sent) {
             assert_eq!(g.bytes, *s);

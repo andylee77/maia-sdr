@@ -54,8 +54,8 @@ const FFT_LEN: usize = 4096;
 
 #[derive(Debug, Clone)]
 pub struct Demodulated {
-    /// Equalized symbols (pilot removed, ±1..±7), segment by segment.
-    pub segments: Vec<[f32; SEGMENT]>,
+    /// Equalized symbols (pilot removed, ±1..±7), segment after segment.
+    pub symbols: Vec<f32>,
     /// The first field sync segment; the others follow every 313.
     pub first_field_sync: Option<usize>,
     /// The pilot from where it should be.
@@ -213,31 +213,54 @@ impl Matched {
     }
 
     /// The filtered signal at input instant `tau`; zero where its inputs leave `x`.
-    #[inline(always)]
     fn at(&self, x: &[Complex32], tau: f64) -> Complex32 {
+        let mut z = Complex32::new(0.0, 0.0);
         let h = self.taps / 2;
-        if !(tau >= (h - 1) as f64) {
-            return Complex32::new(0.0, 0.0);
+        if tau >= (h - 1) as f64 {
+            let i = tau as usize;
+            let p = ((tau - i as f64) * PHASES as f64 + 0.5) as usize;
+            let start = i + 1 - h;
+            if let Some(w) = x.get(start..start + self.taps) {
+                dot_iq(&self.table[p * self.taps..(p + 1) * self.taps], w, &mut z);
+            }
         }
-        let i = tau as usize;
-        let p = ((tau - i as f64) * PHASES as f64 + 0.5) as usize;
-        let start = i + 1 - h;
-        match x.get(start..start + self.taps) {
-            Some(w) => dot_iq(&self.table[p * self.taps..(p + 1) * self.taps], w),
-            None => Complex32::new(0.0, 0.0),
+        z
+    }
+
+    /// The filtered signal at the instants u0 + k·du, k < `z.len()`. Where all of them are well
+    /// inside the input, the instants step in 32.32 fixed point: the ARM side only finds each
+    /// sum's inputs and taps, and never waits on NEON (a float-to-integer conversion, like a
+    /// NEON result, crosses to the ARM registers and stalls it on the A9).
+    fn run(&self, x: &[Complex32], u0: f64, du: f64, z: &mut [Complex32]) {
+        const ONE: f64 = 4_294_967_296.0;
+        let (h, taps) = (self.taps / 2, self.taps);
+        let last = u0 + du * z.len().saturating_sub(1) as f64;
+        if du < 0.0 || u0 < h as f64 || last + (h + 2) as f64 > x.len() as f64 {
+            for (k, v) in z.iter_mut().enumerate() {
+                *v = self.at(x, u0 + k as f64 * du);
+            }
+            return;
+        }
+        let (mut pos, step) = ((u0 * ONE) as u64, (du * ONE) as u64);
+        for v in z.iter_mut() {
+            // The instant's first input, and its table row (the fraction rounded to 1/PHASES).
+            let a = (pos >> 32) as usize + 1 - h;
+            let r = (((pos & 0xFFFF_FFFF) + (1 << 24)) >> 25) as usize * taps;
+            pos += step;
+            dot_iq(&self.table[r..r + taps], &x[a..a + taps], v);
         }
     }
 }
 
-/// Σ t[i]·x[i], real taps on complex inputs; `t.len()` a non-zero multiple of eight. Eight inputs
-/// a step in NEON: their I and Q split apart as they load, each times four taps into two sums.
+/// `out` = Σ t[i]·x[i], real taps on complex inputs; `t.len()` a non-zero multiple of eight.
+/// Eight inputs a step in NEON: their I and Q split apart as they load, each times four taps into
+/// two sums. The sum is stored from NEON, so the ARM side goes on without it.
 #[cfg(target_arch = "arm")]
 #[inline(always)]
-fn dot_iq(t: &[f32], x: &[Complex32]) -> Complex32 {
+fn dot_iq(t: &[f32], x: &[Complex32], out: &mut Complex32) {
     assert!(!t.is_empty() && t.len() % 8 == 0 && x.len() >= t.len());
-    let (re, im): (u32, u32);
-    // SAFETY: reads t[..t.len()] and x[..t.len()], inside both as checked above; writes only the
-    // registers it names.
+    // SAFETY: reads t[..t.len()] and x[..t.len()], inside both as checked above; writes `out`
+    // (8 bytes: re, im) and only the registers it names.
     unsafe {
         std::arch::asm!(
             ".fpu neon",
@@ -257,23 +280,21 @@ fn dot_iq(t: &[f32], x: &[Complex32]) -> Complex32 {
             "vpadd.f32 d12, d12, d13",
             "vpadd.f32 d14, d14, d15",
             "vpadd.f32 d12, d12, d14",
-            "vmov {re}, {im}, d12",
+            "vst1.32 {{d12}}, [{dst}]",
             x = inout(reg) x.as_ptr() => _,
             t = inout(reg) t.as_ptr() => _,
             n = inout(reg) t.len() / 8 => _,
-            re = out(reg) re,
-            im = out(reg) im,
+            dst = in(reg) out as *mut Complex32,
             out("d0") _, out("d1") _, out("d2") _, out("d3") _, out("d4") _, out("d5") _,
             out("d6") _, out("d7") _, out("d8") _, out("d9") _, out("d10") _, out("d11") _,
             out("d12") _, out("d13") _, out("d14") _, out("d15") _,
-            options(nostack, readonly),
+            options(nostack),
         );
     }
-    Complex32::new(f32::from_bits(re), f32::from_bits(im))
 }
 
 #[cfg(not(target_arch = "arm"))]
-fn dot_iq(t: &[f32], x: &[Complex32]) -> Complex32 {
+fn dot_iq(t: &[f32], x: &[Complex32], out: &mut Complex32) {
     let (mut re, mut im) = ([0f32; 4], [0f32; 4]);
     for (tc, xc) in t.chunks_exact(4).zip(x.chunks_exact(4)) {
         for l in 0..4 {
@@ -281,7 +302,7 @@ fn dot_iq(t: &[f32], x: &[Complex32]) -> Complex32 {
             im[l] += tc[l] * xc[l].im;
         }
     }
-    Complex32::new((re[0] + re[1]) + (re[2] + re[3]), (im[0] + im[1]) + (im[2] + im[3]))
+    *out = Complex32::new((re[0] + re[1]) + (re[2] + re[3]), (im[0] + im[1]) + (im[2] + im[3]));
 }
 
 /// The real signal (the 8 levels and the pilot's DC) at any instant.
@@ -303,11 +324,12 @@ impl Real<'_> {
             return;
         }
         let (u0, du) = (t0 * self.ratio, step * self.ratio);
+        let mut z = vec![Complex32::new(0.0, 0.0); n];
+        self.matched.run(self.x, u0, du, &mut z);
         let (a0, a1) = (self.carrier.at(u0), self.carrier.at(u0 + du * (n - 1) as f64));
         let mut turn = Complex32::from_polar(1.0, (a0 % (2.0 * std::f64::consts::PI)) as f32);
         let w = Complex32::from_polar(1.0, ((a1 - a0) / (n.max(2) - 1) as f64) as f32);
-        for (k, v) in out.iter_mut().enumerate() {
-            let z = self.matched.at(self.x, u0 + k as f64 * du);
+        for (v, z) in out.iter_mut().zip(&z) {
             *v = z.re * turn.re - z.im * turn.im;
             turn *= w;
         }
@@ -406,38 +428,34 @@ fn fit(points: &[(f64, f64)]) -> Option<(f64, f64)> {
     Some((mp - b * ms, b))
 }
 
-/// Symbols at the fitted instants, the pilot's DC out and the syncs at ±5.
-fn symbols(sig: &Real, start: f64, per: f64) -> Vec<[f32; SEGMENT]> {
+/// Symbols at the fitted instants, segment after segment; the pilot's DC out and the syncs at ±5.
+fn symbols(sig: &Real, start: f64, per: f64) -> Vec<f32> {
     let step = per / SEGMENT as f64;
     let nseg = ((sig.len() as f64 - start) / per).floor().max(0.0) as usize;
-    let mut segs = Vec::with_capacity(nseg);
-    for s in 0..nseg {
-        let mut seg = [0f32; SEGMENT];
-        sig.run(start + s as f64 * per, step, &mut seg);
-        segs.push(seg);
+    let mut y = vec![0f32; nseg * SEGMENT];
+    for (s, seg) in y.chunks_exact_mut(SEGMENT).enumerate() {
+        sig.run(start + s as f64 * per, step, seg);
     }
     let (mut sum, mut n) = (0f64, 0usize);
-    for seg in &segs {
+    for seg in y.chunks_exact(SEGMENT) {
         sum += seg[SYNC_SYMBOLS..].iter().map(|&v| f64::from(v)).sum::<f64>();
         n += SEGMENT - SYNC_SYMBOLS;
     }
     let dc = if n > 0 { (sum / n as f64) as f32 } else { 0.0 };
     let sync_energy: f32 = SEGMENT_SYNC.iter().map(|s| s * s).sum();
-    let gain = segs.iter().map(|seg| (0..4).map(|k| (seg[k] - dc) * SEGMENT_SYNC[k]).sum::<f32>()).sum::<f32>()
-        / (segs.len().max(1) as f32 * sync_energy);
+    let gain = y.chunks_exact(SEGMENT).map(|seg| (0..4).map(|k| (seg[k] - dc) * SEGMENT_SYNC[k]).sum::<f32>()).sum::<f32>()
+        / (nseg.max(1) as f32 * sync_energy);
     if gain.abs() > 1e-9 {
-        for seg in segs.iter_mut() {
-            for v in seg.iter_mut() {
-                *v = (*v - dc) / gain;
-            }
-        }
+        let scale = 1.0 / gain;
+        y.iter_mut().for_each(|v| *v = (*v - dc) * scale);
     }
-    segs
+    y
 }
 
-/// The first field sync (by its PN511), and for it and each one every 313 segments after,
-/// whether its middle PN63 is inverted.
-fn field_syncs(segs: &[[f32; SEGMENT]]) -> Option<(usize, Vec<bool>)> {
+/// The first field sync (by its PN511) in the symbols `y`, and for it and each one every 313
+/// segments after, whether its middle PN63 is inverted.
+fn field_syncs(y: &[f32]) -> Option<(usize, Vec<bool>)> {
+    let segs: Vec<&[f32]> = y.chunks_exact(SEGMENT).collect();
     let pn = pn511();
     let norm: f32 = pn.iter().map(|s| s * s).sum();
     let score: Vec<f32> = segs.iter().map(|seg| seg[4..515].iter().zip(pn).map(|(a, b)| a * b).sum::<f32>() / norm).collect();
@@ -504,9 +522,9 @@ fn slice(v: f32) -> f32 {
     (2 * (((v + 8.0) * 0.5) as i32).clamp(0, 7) - 7) as f32
 }
 
-/// y ⊛ w: c[m] = Σ w[i] y[m − i] for m in 0..len (y zero before 0 and from y.len()), by
-/// overlap-save.
-fn convolve(y: &[f32], w: &[f32], len: usize) -> Vec<f32> {
+/// y ⊛ w: c[m] = Σ w[i] y[m − i] for m in skip..skip + len (y zero before 0 and from y.len()),
+/// by overlap-save.
+fn convolve(y: &[f32], w: &[f32], skip: usize, len: usize) -> Vec<f32> {
     let m = w.len();
     let step = FFT_LEN - m + 1;
     let mut planner = RealFftPlanner::<f32>::new();
@@ -519,7 +537,7 @@ fn convolve(y: &[f32], w: &[f32], len: usize) -> Vec<f32> {
     let mut spec = fwd.make_output_vec();
     let mut out = Vec::with_capacity(len + FFT_LEN);
     let scale = 1.0 / FFT_LEN as f32;
-    let mut b = 0usize;
+    let (mut b, mut skip) = (0usize, skip);
     while out.len() < len {
         // Block b: c[b·step ..< b·step + step] from y[b·step − (m − 1) ..< b·step + step].
         for (j, v) in buf.iter_mut().enumerate() {
@@ -531,7 +549,8 @@ fn convolve(y: &[f32], w: &[f32], len: usize) -> Vec<f32> {
             *s *= hk;
         }
         let _ = inv.process(&mut spec, &mut buf);
-        out.extend(buf[m - 1..].iter().map(|v| v * scale));
+        out.extend(buf[(m - 1 + skip).min(FFT_LEN)..].iter().map(|v| v * scale));
+        skip = skip.saturating_sub(step);
         b += 1;
     }
     out.truncate(len);
@@ -614,13 +633,13 @@ fn equalize(y: &[f32], first_sync: usize, inverted: &[bool]) -> Option<Vec<f32>>
         w = least_squares(y, &runs)?;
     }
     // out[k] = (y ⊛ w)[k + PRE].
-    let c = convolve(y, &w, y.len() + EQ_PRE);
-    Some(c[EQ_PRE..].to_vec())
+    Some(convolve(y, &w, EQ_PRE, y.len()))
 }
 
-fn mer(segs: &[[f32; SEGMENT]]) -> f32 {
+/// Modulation error ratio of the data symbols, from every fourth segment (plenty for the measure).
+fn mer(y: &[f32]) -> f32 {
     let (mut sig, mut err) = (0f64, 0f64);
-    for seg in segs {
+    for seg in y.chunks_exact(SEGMENT).step_by(4) {
         for &v in &seg[SYNC_SYMBOLS..] {
             let d = slice(v);
             sig += f64::from(d * d);
@@ -645,19 +664,16 @@ pub fn demodulate(iq: &[Complex32], sample_rate_hz: f64, centre_offset_hz: f64) 
     let carrier = Carrier::find(x, sample_rate_hz)?;
     let sig = Real { x, matched: Matched::new(sample_rate_hz), carrier, ratio: sample_rate_hz / (2.0 * SYMBOL_RATE) };
     let (start, per) = timing(&sig)?;
-    let segs = symbols(&sig, start, per);
+    let y = symbols(&sig, start, per);
     let pilot_offset_hz = sig.carrier.offset_hz;
-    let (first, inverted) = field_syncs(&segs)?;
-    let flat: Vec<f32> = segs.iter().flatten().copied().collect();
-    drop(segs);
-    let eq = equalize(&flat, first, &inverted)?;
-    let segments: Vec<[f32; SEGMENT]> = eq.chunks_exact(SEGMENT).map(|c| c.try_into().unwrap_or([0.0; SEGMENT])).collect();
+    let (first, inverted) = field_syncs(&y)?;
+    let symbols = equalize(&y, first, &inverted)?;
     Some(Demodulated {
-        mer_db: mer(&segments),
+        mer_db: mer(&symbols),
         first_field_sync: Some(first),
         pilot_offset_hz,
         clock_ppm: (PERIOD / per - 1.0) * 1e6,
-        segments,
+        symbols,
     })
 }
 
@@ -669,10 +685,12 @@ mod tests {
     fn fast_convolution_matches_the_direct_sum() {
         let y: Vec<f32> = (0..10_000).map(|i| ((i * 7919) % 101) as f32 - 50.0).collect();
         let w: Vec<f32> = (0..EQ_TAPS).map(|i| ((i * 31) % 17) as f32 / 17.0 - 0.5).collect();
-        let c = convolve(&y, &w, y.len() + 40);
-        for m in [0, 1, 127, 128, 4000, 9999, 10_039] {
+        let skip = 32;
+        let c = convolve(&y, &w, skip, y.len() + 8);
+        assert_eq!(c.len(), y.len() + 8);
+        for m in [32, 33, 127, 128, 4000, 4001 + 3969, 9999, 10_039] {
             let direct: f32 = (0..w.len()).filter(|&i| m >= i && m - i < y.len()).map(|i| w[i] * y[m - i]).sum();
-            assert!((c[m] - direct).abs() < 1e-2 * (1.0 + direct.abs()), "{m}: {} {direct}", c[m]);
+            assert!((c[m - skip] - direct).abs() < 1e-2 * (1.0 + direct.abs()), "{m}: {} {direct}", c[m - skip]);
         }
     }
 
@@ -692,6 +710,13 @@ mod tests {
                 (i + 1 - h..=i + h).map(|n| Complex64::new(x[n].re.into(), x[n].im.into()) * (rrc((tau - n as f64) / fs * rb) * rb / fs)).sum();
             let got = m.at(&x, tau);
             assert!((f64::from(got.re) - want.re).abs() < 1e-3 && (f64::from(got.im) - want.im).abs() < 1e-3, "{tau}: {got} {want}");
+        }
+        // A run in fixed point lands on the same sums (instants a whole number of 1/2^32 apart).
+        let (u0, du) = (60.0 + 5.0 / 128.0, 0.9375);
+        let mut z = vec![Complex32::new(0.0, 0.0); 200];
+        m.run(&x, u0, du, &mut z);
+        for (k, v) in z.iter().enumerate() {
+            assert_eq!(*v, m.at(&x, u0 + k as f64 * du), "{k}");
         }
         assert_eq!(m.at(&x, (h - 2) as f64), Complex32::new(0.0, 0.0));
         assert_eq!(m.at(&x, (400 - h) as f64), Complex32::new(0.0, 0.0));
