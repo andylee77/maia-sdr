@@ -2,7 +2,7 @@
 
 `AmbeReference.java` decodes 9-byte AMBE frames with the jmbe 1.0.9 jar (the version this port follows) and writes the PCM the Rust tests compare against (`../tests.rs`). It seeds jmbe's comfort-noise `Random` (seed 20260930) so erasure and muted frames match too.
 
-Run from `p25-httpd/src/jmbe/ambe` in Git Bash (JDK 11+; the jars are SDRTrunk's jmbe folder):
+Run from `scanner/src/audio/codec/imbe/ambe` in Git Bash (JDK 11+; the jars are SDRTrunk's jmbe folder):
 
 ```sh
 J=C:/Users/Andy/SDRTrunk/jmbe

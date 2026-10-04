@@ -49,7 +49,6 @@ processing and protocol constants.
 | [bench/](bench/) | `fbench`, the two-unit test bench, and its board agent ([doc/HW_VALIDATION_SUITE.md](doc/HW_VALIDATION_SUITE.md)) |
 | [tools/](tools/) | Host scripts: the SDRTrunk reference harnesses, filter design, API field reference, TV checks ([tools/README.md](tools/README.md)) |
 | [doc/](doc/) | [ROADMAP.md](doc/ROADMAP.md), and one document per change in [doc/changes/](doc/changes/) |
-| `p25-httpd/` | The daemon before the scanner. It leaves the repo once the bench stops reading its register map |
 | `maia-hdl/`, `maia-httpd/`, `maia-wasm/`, `maia-kmod/` | Upstream Maia SDR, unchanged apart from the fork's Vivado projects and IP packaging in `maia-hdl/`. The unit uses `maia-kmod`'s DMA driver |
 
 ## Building

@@ -227,7 +227,7 @@ class Ssh:
 
 
 class Http:
-    """Minimal JSON-over-HTTP client for p25-httpd (doc/P25_API.md)."""
+    """Minimal JSON-over-HTTP client for the scanner's API (scanner/doc/API.md)."""
 
     def __init__(self, host: str, port: int = 8080, timeout: float = 5.0) -> None:
         self.base = f"http://{host}:{port}"

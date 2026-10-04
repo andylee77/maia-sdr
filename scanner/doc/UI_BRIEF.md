@@ -85,7 +85,7 @@ Then three ways in: scan for systems, add one by hand, or import an SDRTrunk pla
 
 ### Now (home)
 
-p25-httpd's Now page was the better starting point (`p25-httpd/src/httpd/ui/js/views/now.js`).
+p25-httpd's Now page was the better starting point (`p25-httpd/src/httpd/ui/js/views/now.js`, in git history since p25-httpd left the repo).
 Done: the locked top, the system card with its two lists (picking a site makes it live), the
 traffic channels as "Left · Traffic 1" and "Right · Traffic 2", each with a talkgroup picker
 that holds that channel alone (the clear talkgroups of the last week; a lane the site does not

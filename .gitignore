@@ -15,11 +15,9 @@ maia-hdl/ip/maia-sdr/maia_iio_lite/
 maia-hdl/ip/p25-core/default/
 maia-hdl/maia-sdr.svd
 
-# Rust build artifacts -- workspace-root target/ AND any per-subcrate
+# Rust build artifacts -- the crate's target/ AND any per-subcrate
 # target/ that gets created if cargo runs from inside a subcrate
-# (e.g. cd p25-httpd/p25-pac && cargo check creates p25-pac/target/).
-p25-httpd/target/
-p25-httpd/**/target/
+# (e.g. cd scanner/core-pac && cargo check creates core-pac/target/).
 scanner/target/
 scanner/**/target/
 maia-httpd/target/
@@ -123,9 +121,6 @@ Cargo.lock.bak
 # On-host validation + sweep output directories
 /gain_sweep/
 /wb_frames_check/
-
-# p25-httpd full-API JSON dumps
-/p25-httpd/log_full.json
 
 # Hardware validation suite (doc/HW_VALIDATION_SUITE.md)
 .venv-hdl/

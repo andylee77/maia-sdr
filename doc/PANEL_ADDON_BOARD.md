@@ -289,7 +289,7 @@ Flash layout: default ESP32-S3 partition table + single application binary. No O
 
 ### 9.2 `p25-httpd` side
 
-- New module `p25-httpd/src/panel.rs`:
+- A new module in the scanner (for example `scanner/src/services/panel.rs`):
   - Opens the UART device (`/dev/ttyULx` for PL UART, or `/dev/ttyPSx` for PS UART — probably PL given JP5 pins go to Bank 13 PL I/O).
   - Runs an async task that serializes/deserializes the panel protocol.
   - Bridges to the existing grant store / call manager / mute state.

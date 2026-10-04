@@ -18,7 +18,6 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 |------|------|
 | `scanner/` | The daemon on the Zynq PS (Rust): the radio core's driver, the demodulators, trunking, audio, history, ATSC, API, web UI (`src/ui/`, plain ES modules embedded at compile time). Design: `scanner/doc/DESIGN.md` |
 | `scanner/core-pac/` | The register PAC, generated from the radio core's SVD by the FPGA build |
-| `p25-httpd/` | The daemon before the scanner. It stays only until the bench reads the radio core's map, then leaves (`doc/CLEANUP_INVENTORY.md` §3) |
 | `scanner-hdl/` | The fork's gateware (Amaranth): `radio_core/` (the radio core 1.0.0, product "rad1"), `hwval_hdl/` (hardware validation), their tests (`test/`, `test_cocotb/`) and `generate_svd.py`. It imports upstream `maia_hdl` |
 | `maia-hdl/` | Upstream Maia's gateware, unchanged apart from the fork's Vivado projects (`projects/fishball7020_p25/`, `fishball7020_hwval/`) and IP packaging (`ip/p25-core/`, `ip/hwval-core/`), which stay there because ADI's scripts use paths relative to them |
 | `bench/` | `fbench` CLI and board agent (`doc/HW_VALIDATION_SUITE.md`); its runs go to `runs/bench/` |

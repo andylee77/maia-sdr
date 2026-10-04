@@ -1,4 +1,4 @@
-"""Generate p25-httpd/src/jmbe/ambe/tables.rs from jmbe v1.0.9 Java enums.
+"""Generate scanner/src/audio/codec/imbe/ambe/tables.rs from jmbe v1.0.9 Java enums.
 
 Literals are copied as text so the Rust values parse to the same f32/f64.
 """
