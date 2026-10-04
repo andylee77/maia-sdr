@@ -37,67 +37,68 @@ impl Encoder {
     }
 }
 
-/// State (D1, D2) as 2 D1 + D2; from state `s` with input `x1`: the next state and the coset
-/// (Z1 Z0) of the symbol sent.
-fn branch(s: usize, x1: usize) -> (usize, usize) {
-    let (d1, d2) = (s >> 1, s & 1);
-    (((x1 ^ d2) << 1) | d1, (x1 << 1) | d1)
-}
+/// State (D1, D2) as 2 D1 + D2. Next state 2a + b comes from the two states 2b + D2 (D2 = 0, 1)
+/// on input X1 = a ⊕ D2, sending coset (Z1 Z0) 2 X1 + b. Per next state, per D2: the previous
+/// state and the coset.
+const INTO: [[(usize, usize); 2]; 4] = [[(0, 0), (1, 2)], [(2, 1), (3, 3)], [(0, 2), (1, 0)], [(2, 3), (3, 1)]];
 
 /// Viterbi decoding of one encoder's symbols (in the ±1..±7 units, pilot removed): its bit pairs
 /// X2 X1 as `(x2 << 1) | x1`, one a symbol. The precoder is undone along the way; the first
-/// symbol's X2 assumes a previous Y2 of 0.
+/// symbol's X2 assumes a previous Y2 of 0. Only comparisons and arithmetic in the loop (min and
+/// round are library calls on the A9).
 pub fn decode(symbols: &[f32]) -> Vec<u8> {
     let n = symbols.len();
-    // Per step and next state: the previous state (2 bits) and the decided Z2 (bit 2).
-    let mut back = vec![[0u8; 4]; n];
+    // Per step, two bits a next state (at 2 × state): the D2 of the state it came from, and the
+    // decided Z2 above it.
+    let mut back = vec![0u8; n];
     let mut metric = [0f32; 4];
     for (t, &r) in symbols.iter().enumerate() {
-        // The nearer level of each coset, and its Z2.
+        // Coset c's levels are 2c − 7 and 2c + 1; the nearer one, its distance and its Z2.
         let mut cost = [0f32; 4];
         let mut z2 = [0u8; 4];
         for c in 0..4 {
             let lo = level(c as u8);
-            let hi = lo + 8.0;
-            let (a, b) = ((r - lo) * (r - lo), (r - hi) * (r - hi));
-            if b < a {
-                cost[c] = b;
-                z2[c] = 1;
-            } else {
-                cost[c] = a;
-            }
+            let high = r > lo + 4.0;
+            let d = if high { r - lo - 8.0 } else { r - lo };
+            cost[c] = d * d;
+            z2[c] = u8::from(high);
         }
-        let mut next = [f32::INFINITY; 4];
-        for s in 0..4 {
-            for x1 in 0..2 {
-                let (ns, c) = branch(s, x1);
-                let m = metric[s] + cost[c];
-                if m < next[ns] {
-                    next[ns] = m;
-                    back[t][ns] = s as u8 | (z2[c] << 2);
-                }
-            }
+        let mut next = [0f32; 4];
+        let mut bits = 0u8;
+        for (ns, from) in INTO.iter().enumerate() {
+            let (s0, c0) = from[0];
+            let (s1, c1) = from[1];
+            let (m0, m1) = (metric[s0] + cost[c0], metric[s1] + cost[c1]);
+            let (m, d2, c) = if m1 < m0 { (m1, 1, c1) } else { (m0, 0, c0) };
+            next[ns] = m;
+            bits |= (d2 | (z2[c] << 1)) << (2 * ns);
         }
-        let low = next.iter().copied().fold(f32::INFINITY, f32::min);
+        back[t] = bits;
+        // Only the differences between states matter.
+        let base = next[0];
         for (m, x) in metric.iter_mut().zip(next) {
-            *m = x - low;
+            *m = x - base;
+        }
+    }
+    let mut s = 0;
+    for k in 1..4 {
+        if metric[k] < metric[s] {
+            s = k;
         }
     }
     let mut out = vec![0u8; n];
-    let mut s = (0..4).min_by(|&a, &b| metric[a].total_cmp(&metric[b])).unwrap_or(0);
-    let mut y2 = vec![0u8; n];
     for t in (0..n).rev() {
-        let b = back[t][s];
-        let prev = (b & 3) as usize;
-        // x1 is the input that took `prev` to `s`.
-        let x1 = (s >> 1) ^ (prev & 1);
-        y2[t] = b >> 2;
-        out[t] = x1 as u8;
-        s = prev;
+        let b = (back[t] >> (2 * s)) & 3;
+        let d2 = usize::from(b & 1);
+        // x1 = a ⊕ D2 for next state 2a + b; Z2 kept above it for the precoder.
+        out[t] = ((s >> 1) ^ d2) as u8 | ((b >> 1) << 1);
+        s = ((s & 1) << 1) | d2;
     }
+    // X2 = Y2 ⊕ the previous Y2.
     let mut last = 0u8;
-    for (o, &y) in out.iter_mut().zip(&y2) {
-        *o |= (y ^ last) << 1;
+    for o in out.iter_mut() {
+        let y = *o >> 1;
+        *o = (*o & 1) | ((y ^ last) << 1);
         last = y;
     }
     out
@@ -145,6 +146,21 @@ mod tests {
         let got = decode(&syms);
         let x1_errors = got.iter().zip(&pairs).filter(|(a, b)| (*a & 1) != (*b & 1)).count();
         assert!(x1_errors < pairs.len() / 200, "{x1_errors} X1 errors in {}", pairs.len());
+    }
+
+    #[test]
+    fn the_transitions_are_the_encoders() {
+        // Every (state, input) of the encoder lands where INTO says it comes from.
+        for d1 in 0..2u8 {
+            for d2 in 0..2u8 {
+                for x1 in 0..2u8 {
+                    let mut e = Encoder { y2: 0, d1, d2 };
+                    let coset = e.symbol(0, x1) & 3;
+                    let (s, ns) = (usize::from(2 * d1 + d2), usize::from(2 * e.d1 + e.d2));
+                    assert_eq!(INTO[ns][usize::from(d2)], (s, usize::from(coset)), "from {s} on {x1}");
+                }
+            }
+        }
     }
 
     #[test]

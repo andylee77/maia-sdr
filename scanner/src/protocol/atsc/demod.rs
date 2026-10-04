@@ -1,37 +1,39 @@
-//! The 8-VSB demodulator: a channel's IQ (its centre at a known offset, sampled at 10 MSPS or
-//! faster, so the ±3 MHz channel stays inside ±0.3 of the rate) to equalized symbols, segment by
-//! segment.
+//! The 8-VSB demodulator: a channel's IQ (its centre at a known offset, the 6 MHz channel inside
+//! the sampled band, as at the unit's 10 MSPS) to equalized symbols, segment by segment.
 //!
-//! 1. **Receive filter.** 8-VSB's matched filter at the input rate. In the channel-centred
-//!    signal it is a real root-raised cosine at RS/2 symbols a second (rolloff 0.1152): symmetric,
-//!    so the shared FIR runs it on I and Q. The neighbouring channels fall outside it.
-//! 2. **Pilot.** RS/4 below the centre. Its frequency comes from the slope of its phase over short
-//!    blocks, then its phase from 0.2 ms blocks, a straight line between their centres.
-//! 3. **The real signal where it is needed.** The filtered signal interpolated at any instant
-//!    (a windowed sinc), moved up RS/4 and turned by the pilot's phase: its real part is the
-//!    8-level signal (the halves of the vestige add up flat about the pilot).
-//! 4. **Timing.** From the segment syncs (+5 −5 −5 +5 every 832 symbols): the real signal at two
+//! 1. **Pilot.** RS/4 below the centre. The input turned up RS/4 is summed over 2 µs sub-blocks;
+//!    the pilot's frequency comes from the slope of their phase over short blocks, then its phase
+//!    from 0.2 ms blocks, a straight line between their centres.
+//! 2. **Matched filter at any instant.** 8-VSB's receive filter is, in the channel-centred signal,
+//!    a real root-raised cosine at RS/2 symbols a second (rolloff 0.1152). It is tabulated at 128
+//!    fractional offsets between input samples, so the filtered signal at an instant is one sum
+//!    over the inputs around it (NEON on the A9). Turned up RS/4 less the pilot's phase, its real
+//!    part is the 8-level signal (the halves of the vestige add up flat about the pilot).
+//! 3. **Timing.** From the segment syncs (+5 −5 −5 +5 every 832 symbols): the real signal at two
 //!    samples a symbol around where each is expected, summed over blocks of segments and tracked
 //!    block to block, then fitted to a line (the sample clock's error is a constant rate).
-//! 5. **Symbols.** The real signal at each fitted instant; the pilot's DC taken out; scaled by
+//! 4. **Symbols.** The real signal at each fitted instant; the pilot's DC taken out; scaled by
 //!    the syncs.
-//! 6. **Equalizer.** Field syncs found by their PN511. A least-squares equalizer is trained on
-//!    their known symbols, then on its own decisions, and applied by fast convolution.
+//! 5. **Equalizer.** Field syncs found by their PN511. A least-squares equalizer is trained on
+//!    their known symbols, then on its own decisions over runs of data, and applied by fast
+//!    convolution. A run's normal equations take one row of dot products; the rest follow down
+//!    the diagonals.
 
 use realfft::RealFftPlanner;
 use rustfft::num_complex::{Complex32, Complex64};
 
 use super::vsb::{field_sync, pn511, pn63, FIELD_SEGMENTS, SEGMENT, SEGMENT_SYNC, SYNC_SYMBOLS};
-use crate::dsp::fsk4::Fir;
 
 /// 8-VSB's symbol rate: 4.5 MHz × 684 / 286.
 pub const SYMBOL_RATE: f64 = 4_500_000.0 * 684.0 / 286.0;
 const ROLLOFF: f64 = 0.1152;
-/// The receive filter's half-span, in symbols of RS/2.
+/// The matched filter's half-span, in symbols of RS/2.
 const FILTER_HALF_SPAN: f64 = 12.0;
-/// The interpolator: a windowed sinc of this many taps, at this many fractional phases.
-const INTERP_TAPS: usize = 24;
-const INTERP_PHASES: usize = 512;
+/// Fractional offsets between input samples the matched filter is tabulated at.
+const PHASES: usize = 128;
+/// The pilot's sub-blocks, then the blocks its frequency and its phase come from, in seconds.
+const PILOT_SUB_BLOCK: f64 = 2e-6;
+const PILOT_BLOCKS: [f64; 2] = [20e-6, 2e-4];
 /// Samples a segment at two a symbol.
 const PERIOD: f64 = (2 * SEGMENT) as f64;
 /// Segments summed for one timing estimate.
@@ -41,11 +43,12 @@ const SYNC_SEARCH: usize = 256;
 const EQ_TAPS: usize = 128;
 /// Equalizer taps ahead of the symbol (pre-echoes).
 const EQ_PRE: usize = 32;
-/// Field syncs the equalizer trains on, then decisions it refines on.
+/// Field syncs the equalizer trains on; then rounds on its own decisions, each over runs of data
+/// spread across the signal.
 const EQ_TRAINING_FIELDS: usize = 20;
-const EQ_DECISION_ROWS: usize = 12_000;
-/// Rows summed in f32 (vectorized) before they go into the f64 totals.
-const EQ_BLOCK_ROWS: usize = 128;
+const EQ_ROUNDS: usize = 2;
+const EQ_DECISION_RUNS: usize = 16;
+const EQ_RUN: usize = 1024;
 /// The fast convolution's transform size.
 const FFT_LEN: usize = 4096;
 
@@ -104,25 +107,6 @@ impl Phasor {
     }
 }
 
-/// The channel filtered at the input rate, as I and Q, its centre first moved to DC; and the
-/// filter's delay in samples (output n is centred on input n − delay).
-fn receive_filter(iq: &[Complex32], fs: f64, centre_offset_hz: f64) -> (Vec<f32>, Vec<f32>, usize) {
-    let rb = SYMBOL_RATE / 2.0;
-    let half = (FILTER_HALF_SPAN / rb * fs).ceil() as isize;
-    let taps: Vec<f32> = (-half..=half).map(|n| (rrc(n as f64 / fs * rb) * rb / fs) as f32).collect();
-    let mut shift = Phasor::new(0.0, -2.0 * std::f64::consts::PI * centre_offset_hz / fs);
-    let (mut re, mut im) = (Vec::with_capacity(iq.len()), Vec::with_capacity(iq.len()));
-    for &s in iq {
-        let v = if centre_offset_hz == 0.0 { s } else { s * shift.next() };
-        re.push(v.re);
-        im.push(v.im);
-    }
-    let (mut fre, mut fim) = (Vec::with_capacity(iq.len()), Vec::with_capacity(iq.len()));
-    Fir::new(&taps, false).process(&re, &mut fre);
-    Fir::new(&taps, false).process(&im, &mut fim);
-    (fre, fim, half as usize)
-}
-
 /// Least-squares slope of `y` against its index.
 fn slope(y: &[f64]) -> f64 {
     let n = y.len() as f64;
@@ -136,17 +120,14 @@ fn slope(y: &[f64]) -> f64 {
     if sxx > 0.0 { sxy / sxx } else { 0.0 }
 }
 
-/// Unwrapped phases of the signal's means over blocks of `len`, the signal first turned by
-/// `step` radians a sample.
-fn block_phases(re: &[f32], im: &[f32], len: usize, step: f64) -> Vec<f64> {
-    let mut ph = Phasor::new(0.0, step);
-    let mut out = Vec::with_capacity(re.len() / len);
+/// Unwrapped phases of the sub-block sums (`sub` samples each) over blocks of `n`, each sum first
+/// turned by `step` radians a sample at its sub-block's centre.
+fn block_phases(sums: &[Complex32], sub: usize, n: usize, step: f64) -> Vec<f64> {
+    let mut turn = Phasor::new(step * (sub - 1) as f64 / 2.0, step * sub as f64);
+    let mut out = Vec::with_capacity(sums.len() / n);
     let mut last = 0.0;
-    for (br, bi) in re.chunks_exact(len).zip(im.chunks_exact(len)) {
-        let mut m = Complex32::new(0.0, 0.0);
-        for (&r, &i) in br.iter().zip(bi) {
-            m += Complex32::new(r, i) * ph.next();
-        }
+    for block in sums.chunks_exact(n) {
+        let m: Complex32 = block.iter().map(|&s| s * turn.next()).sum();
         let mut p = f64::from(m.arg());
         while p - last > std::f64::consts::PI {
             p -= 2.0 * std::f64::consts::PI;
@@ -160,42 +141,46 @@ fn block_phases(re: &[f32], im: &[f32], len: usize, step: f64) -> Vec<f64> {
     out
 }
 
-/// The phase to turn the filtered signal by, at each instant, for its real part to be the
+/// The phase to turn the filtered signal by, at each input instant, for its real part to be the
 /// symbols: up RS/4, less the pilot's own phase.
 struct Carrier {
     /// Radians a sample: RS/4 less the pilot's offset.
     rate: f64,
     offset_hz: f64,
+    /// Samples a phase block.
     len: usize,
     /// The pilot's remaining phase at each block's centre.
     phases: Vec<f64>,
 }
 
 impl Carrier {
-    /// From the filtered signal at `fs`: short blocks (20 µs) take a pilot offset up to ±25 kHz,
-    /// then 0.2 ms blocks the rest and the phase.
-    fn find(re: &[f32], im: &[f32], fs: f64) -> Option<Carrier> {
+    /// From the input at `fs`: short blocks take a pilot offset up to ±25 kHz, then longer ones the
+    /// rest and the phase. The pilot's phase is the same before and after the matched filter
+    /// (real and centred on the instant).
+    fn find(x: &[Complex32], fs: f64) -> Option<Carrier> {
         let two_pi = 2.0 * std::f64::consts::PI;
         let up = two_pi * SYMBOL_RATE / 4.0 / fs;
+        let sub = ((PILOT_SUB_BLOCK * fs).round() as usize).max(1);
+        let mut turn = Phasor::new(0.0, up);
+        let sums: Vec<Complex32> = x.chunks_exact(sub).map(|c| c.iter().map(|&s| s * turn.next()).sum()).collect();
         let mut offset = 0.0;
-        for block_s in [20e-6, 2e-4] {
-            let len = (block_s * fs) as usize;
-            let ph = block_phases(re, im, len, up - two_pi * offset / fs);
+        let mut n = 1;
+        for block_s in PILOT_BLOCKS {
+            n = ((block_s / PILOT_SUB_BLOCK).round() as usize).max(1);
+            let ph = block_phases(&sums, sub, n, -two_pi * offset / fs);
             if ph.len() < 4 {
                 return None;
             }
-            offset += slope(&ph) / (two_pi * len as f64 / fs);
+            offset += slope(&ph) / (two_pi * (n * sub) as f64 / fs);
         }
-        let len = (2e-4 * fs) as usize;
-        let rate = up - two_pi * offset / fs;
-        let phases = block_phases(re, im, len, rate);
-        Some(Carrier { rate, offset_hz: offset, len, phases })
+        let phases = block_phases(&sums, sub, n, -two_pi * offset / fs);
+        Some(Carrier { rate: up - two_pi * offset / fs, offset_hz: offset, len: n * sub, phases })
     }
 
-    /// The turn at sample `u` of the filtered signal.
+    /// The turn at input instant `u`.
     fn at(&self, u: f64) -> f64 {
         let n = self.phases.len();
-        let x = (u / self.len as f64 - 0.5).clamp(0.0, (n - 1) as f64);
+        let x = ((u + 0.5) / self.len as f64 - 0.5).clamp(0.0, (n - 1) as f64);
         let i = (x as usize).min(n.saturating_sub(2));
         let f = x - i as f64;
         let p = self.phases[i] * (1.0 - f) + self.phases.get(i + 1).copied().unwrap_or(self.phases[i]) * f;
@@ -203,102 +188,152 @@ impl Carrier {
     }
 }
 
-/// A windowed sinc (Blackman) at `INTERP_PHASES` fractional phases, each phase's taps summing to
-/// one: the filtered signal (inside ±0.3 of its sample rate) at any instant.
-struct Interp {
-    table: Vec<[f32; INTERP_TAPS]>,
+/// The matched filter at any instant between input samples.
+struct Matched {
+    /// Inputs a sum: i + 1 − taps/2 ..= i + taps/2 around an instant i + f, 0 ≤ f ≤ 1. A whole
+    /// number of groups of eight.
+    taps: usize,
+    /// The taps at f = p / PHASES for p = 0..=PHASES, one row after another.
+    table: Vec<f32>,
 }
 
-impl Interp {
-    fn new() -> Interp {
-        let n = INTERP_TAPS as f64;
-        let table = (0..=INTERP_PHASES)
-            .map(|p| {
-                let f = p as f64 / INTERP_PHASES as f64;
-                let mut t = [0f32; INTERP_TAPS];
-                let mut sum = 0.0;
-                for (j, v) in t.iter_mut().enumerate() {
-                    let x = j as f64 - (INTERP_TAPS / 2 - 1) as f64 - f;
-                    let sinc = if x.abs() < 1e-12 { 1.0 } else { (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x) };
-                    let w = 0.42 + 0.5 * (2.0 * std::f64::consts::PI * x / n).cos() + 0.08 * (4.0 * std::f64::consts::PI * x / n).cos();
-                    *v = (sinc * w) as f32;
-                    sum += sinc * w;
-                }
-                t.iter_mut().for_each(|v| *v /= sum as f32);
-                t
+impl Matched {
+    fn new(fs: f64) -> Matched {
+        let rb = SYMBOL_RATE / 2.0;
+        let h = ((FILTER_HALF_SPAN / rb * fs).ceil() as usize + 1).div_ceil(4) * 4;
+        let taps = 2 * h;
+        let table = (0..=PHASES)
+            .flat_map(|p| {
+                let f = p as f64 / PHASES as f64;
+                // Input j of the sum is f + h − 1 − j samples before the instant.
+                (0..taps).map(move |j| (rrc((f + h as f64 - 1.0 - j as f64) / fs * rb) * rb / fs) as f32)
             })
             .collect();
-        Interp { table }
+        Matched { taps, table }
     }
 
-    /// The signal at sample position `u`; zero where the taps leave it.
-    fn at(&self, re: &[f32], im: &[f32], u: f64) -> Complex32 {
-        let i = u.floor();
-        let p = ((u - i) * INTERP_PHASES as f64).round() as usize;
-        let start = i as isize - (INTERP_TAPS / 2 - 1) as isize;
-        if start < 0 || start as usize + INTERP_TAPS > re.len() {
+    /// The filtered signal at input instant `tau`; zero where its inputs leave `x`.
+    #[inline(always)]
+    fn at(&self, x: &[Complex32], tau: f64) -> Complex32 {
+        let h = self.taps / 2;
+        if !(tau >= (h - 1) as f64) {
             return Complex32::new(0.0, 0.0);
         }
-        let s = start as usize;
-        let t = &self.table[p];
-        Complex32::new(dot(t, &re[s..s + INTERP_TAPS]), dot(t, &im[s..s + INTERP_TAPS]))
+        let i = tau as usize;
+        let p = ((tau - i as f64) * PHASES as f64 + 0.5) as usize;
+        let start = i + 1 - h;
+        match x.get(start..start + self.taps) {
+            Some(w) => dot_iq(&self.table[p * self.taps..(p + 1) * self.taps], w),
+            None => Complex32::new(0.0, 0.0),
+        }
     }
 }
 
-/// Σ a·b in eight running sums.
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    let mut acc = [0f32; 8];
-    let (ca, cb) = (a.chunks_exact(8), b.chunks_exact(8));
-    let tail: f32 = ca.remainder().iter().zip(cb.remainder()).map(|(x, y)| x * y).sum();
-    for (x, y) in ca.zip(cb) {
-        for l in 0..8 {
-            acc[l] += x[l] * y[l];
+/// Σ t[i]·x[i], real taps on complex inputs; `t.len()` a non-zero multiple of eight. Eight inputs
+/// a step in NEON: their I and Q split apart as they load, each times four taps into two sums.
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+fn dot_iq(t: &[f32], x: &[Complex32]) -> Complex32 {
+    assert!(!t.is_empty() && t.len() % 8 == 0 && x.len() >= t.len());
+    let (re, im): (u32, u32);
+    // SAFETY: reads t[..t.len()] and x[..t.len()], inside both as checked above; writes only the
+    // registers it names.
+    unsafe {
+        std::arch::asm!(
+            ".fpu neon",
+            "vmov.i32 q6, #0",
+            "vmov.i32 q7, #0",
+            "2:",
+            "vld2.32 {{d0-d3}}, [{x}]!",
+            "vld1.32 {{d8-d9}}, [{t}]!",
+            "vld2.32 {{d4-d7}}, [{x}]!",
+            "vld1.32 {{d10-d11}}, [{t}]!",
+            "vmla.f32 q6, q0, q4",
+            "vmla.f32 q7, q1, q4",
+            "vmla.f32 q6, q2, q5",
+            "vmla.f32 q7, q3, q5",
+            "subs {n}, {n}, #1",
+            "bne 2b",
+            "vpadd.f32 d12, d12, d13",
+            "vpadd.f32 d14, d14, d15",
+            "vpadd.f32 d12, d12, d14",
+            "vmov {re}, {im}, d12",
+            x = inout(reg) x.as_ptr() => _,
+            t = inout(reg) t.as_ptr() => _,
+            n = inout(reg) t.len() / 8 => _,
+            re = out(reg) re,
+            im = out(reg) im,
+            out("d0") _, out("d1") _, out("d2") _, out("d3") _, out("d4") _, out("d5") _,
+            out("d6") _, out("d7") _, out("d8") _, out("d9") _, out("d10") _, out("d11") _,
+            out("d12") _, out("d13") _, out("d14") _, out("d15") _,
+            options(nostack, readonly),
+        );
+    }
+    Complex32::new(f32::from_bits(re), f32::from_bits(im))
+}
+
+#[cfg(not(target_arch = "arm"))]
+fn dot_iq(t: &[f32], x: &[Complex32]) -> Complex32 {
+    let (mut re, mut im) = ([0f32; 4], [0f32; 4]);
+    for (tc, xc) in t.chunks_exact(4).zip(x.chunks_exact(4)) {
+        for l in 0..4 {
+            re[l] += tc[l] * xc[l].re;
+            im[l] += tc[l] * xc[l].im;
         }
     }
-    acc.iter().sum::<f32>() + tail
+    Complex32::new((re[0] + re[1]) + (re[2] + re[3]), (im[0] + im[1]) + (im[2] + im[3]))
 }
 
 /// The real signal (the 8 levels and the pilot's DC) at any instant.
-struct Real {
-    re: Vec<f32>,
-    im: Vec<f32>,
-    delay: f64,
+struct Real<'a> {
+    x: &'a [Complex32],
+    matched: Matched,
     carrier: Carrier,
-    interp: Interp,
     /// Input samples per sample at two a symbol.
     ratio: f64,
 }
 
-impl Real {
-    /// At `t` samples of two a symbol from the start of the input.
-    fn at(&self, t: f64) -> f32 {
-        let u = t * self.ratio + self.delay;
-        let z = self.interp.at(&self.re, &self.im, u);
-        (z * Complex32::from_polar(1.0, self.carrier.at(u) as f32)).re
+impl Real<'_> {
+    /// `out.len()` samples from `t0`, `step` apart, in samples of two a symbol from the start of
+    /// the input. Over a run this short the carrier's turn is close to linear, so one phasor steps
+    /// through it.
+    fn run(&self, t0: f64, step: f64, out: &mut [f32]) {
+        let n = out.len();
+        if n == 0 {
+            return;
+        }
+        let (u0, du) = (t0 * self.ratio, step * self.ratio);
+        let (a0, a1) = (self.carrier.at(u0), self.carrier.at(u0 + du * (n - 1) as f64));
+        let mut turn = Complex32::from_polar(1.0, (a0 % (2.0 * std::f64::consts::PI)) as f32);
+        let w = Complex32::from_polar(1.0, ((a1 - a0) / (n.max(2) - 1) as f64) as f32);
+        for (k, v) in out.iter_mut().enumerate() {
+            let z = self.matched.at(self.x, u0 + k as f64 * du);
+            *v = z.re * turn.re - z.im * turn.im;
+            turn *= w;
+        }
     }
 
     /// Samples at two a symbol the input holds.
     fn len(&self) -> usize {
-        ((self.re.len() as f64 - self.delay - INTERP_TAPS as f64) / self.ratio).max(0.0) as usize
+        (self.x.len().saturating_sub(self.matched.taps) as f64 / self.ratio) as usize
     }
 }
 
-/// The segment sync correlation at sample n (2 samples a symbol).
-fn sync_corr(r: &impl Fn(usize) -> f32, n: usize) -> f32 {
-    r(n) - r(n + 2) - r(n + 4) + r(n + 6)
-}
-
 /// Segment syncs: (first sync's sample, samples a segment) at two samples a symbol, from blocks
-/// of segments tracked along the signal and a line fitted through them. `len` samples.
-fn timing(r: &impl Fn(usize) -> f32, len: usize) -> Option<(f64, f64)> {
+/// of segments tracked along the signal and a line fitted through them.
+fn timing(sig: &Real) -> Option<(f64, f64)> {
     let period = PERIOD as usize;
+    let len = sig.len();
     let nseg = len.saturating_sub(8) / period;
     if nseg < 2 * TIMING_BLOCK {
         return None;
     }
     // Where the syncs are, from the first segments summed.
     let search = nseg.min(SYNC_SEARCH);
-    let first: Vec<f32> = (0..search * period + 8).map(r).collect();
+    let mut first = vec![0f32; search * period + 8];
+    for (s, run) in first.chunks_mut(period).enumerate() {
+        sig.run((s * period) as f64, 1.0, run);
+    }
     let mut acc = vec![0f32; period];
     for s in 0..search {
         for (ph, a) in acc.iter_mut().enumerate() {
@@ -309,16 +344,19 @@ fn timing(r: &impl Fn(usize) -> f32, len: usize) -> Option<(f64, f64)> {
     let p0 = acc.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1))?.0 as f64;
     let (mut start, mut per) = (p0, PERIOD);
     let mut points: Vec<(f64, f64)> = Vec::new();
+    // Around each expected sync: its correlation at 9 places, a sample apart.
+    let mut near = [0f32; 15];
     let mut s0 = 0;
     while s0 + TIMING_BLOCK <= nseg {
         let mut win = [0f32; 9];
         for s in s0..s0 + TIMING_BLOCK {
-            let base = (start + s as f64 * per).round() as isize - 4;
+            let base = (start + s as f64 * per).round() - 4.0;
+            if base < 0.0 || base as usize + near.len() > len {
+                continue;
+            }
+            sig.run(base, 1.0, &mut near);
             for (d, w) in win.iter_mut().enumerate() {
-                let n = base + d as isize;
-                if n >= 0 && (n as usize) + 7 < len {
-                    *w += sync_corr(r, n as usize);
-                }
+                *w += near[d] - near[d + 2] - near[d + 4] + near[d + 6];
             }
         }
         let j = (0..9).max_by(|&a, &b| win[a].total_cmp(&win[b])).unwrap_or(4);
@@ -368,23 +406,14 @@ fn fit(points: &[(f64, f64)]) -> Option<(f64, f64)> {
     Some((mp - b * ms, b))
 }
 
-/// Symbols at the fitted instants, the pilot's DC out and the syncs at ±5. Within a segment the
-/// instants are evenly spaced and the turn almost linear, so one phasor steps through it.
+/// Symbols at the fitted instants, the pilot's DC out and the syncs at ±5.
 fn symbols(sig: &Real, start: f64, per: f64) -> Vec<[f32; SEGMENT]> {
     let step = per / SEGMENT as f64;
     let nseg = ((sig.len() as f64 - start) / per).floor().max(0.0) as usize;
     let mut segs = Vec::with_capacity(nseg);
     for s in 0..nseg {
         let mut seg = [0f32; SEGMENT];
-        let t0 = start + (s * SEGMENT) as f64 * step;
-        let u0 = t0 * sig.ratio + sig.delay;
-        let du = step * sig.ratio;
-        let (a0, a1) = (sig.carrier.at(u0), sig.carrier.at(u0 + du * (SEGMENT - 1) as f64));
-        let mut turn = Phasor::new(a0, (a1 - a0) / (SEGMENT - 1) as f64);
-        for (k, v) in seg.iter_mut().enumerate() {
-            let z = sig.interp.at(&sig.re, &sig.im, u0 + k as f64 * du);
-            *v = (z * turn.next()).re;
-        }
+        sig.run(start + s as f64 * per, step, &mut seg);
         segs.push(seg);
     }
     let (mut sum, mut n) = (0f64, 0usize);
@@ -469,8 +498,10 @@ fn solve(mut a: Vec<f64>, mut b: Vec<f64>, n: usize) -> Option<Vec<f64>> {
     Some(b)
 }
 
+/// The nearest of the eight levels. (v + 7)/2 rounded is (v + 8)/2 truncated over the levels'
+/// range (no rounding call: it is a library call on the A9); `as` saturates.
 fn slice(v: f32) -> f32 {
-    (((v + 7.0) / 2.0).round().clamp(0.0, 7.0)) * 2.0 - 7.0
+    (2 * (((v + 8.0) * 0.5) as i32).clamp(0, 7) - 7) as f32
 }
 
 /// y ⊛ w: c[m] = Σ w[i] y[m − i] for m in 0..len (y zero before 0 and from y.len()), by
@@ -507,84 +538,80 @@ fn convolve(y: &[f32], w: &[f32], len: usize) -> Vec<f32> {
     out
 }
 
-/// Row k's window, newest first (tap i weighs y[k + PRE − i]); false where it leaves y.
-fn window(y: &[f32], k: usize, x: &mut [f32]) -> bool {
-    let hi = k + EQ_PRE + 1;
-    if hi < EQ_TAPS || hi > y.len() {
-        return false;
-    }
-    x.iter_mut().zip(y[hi - EQ_TAPS..hi].iter().rev()).for_each(|(a, &b)| *a = b);
-    true
+/// The rows whose windows lie inside y (of `y_len`): row k weighs y[k + PRE − i] by tap i.
+fn rows_inside(y_len: usize) -> std::ops::Range<usize> {
+    (EQ_TAPS - 1).saturating_sub(EQ_PRE)..y_len.saturating_sub(EQ_PRE)
 }
 
-/// The taps w minimizing Σ (wanted − Σ w[i] y[k + PRE − i])² over `rows` (k, wanted).
-fn least_squares(y: &[f32], rows: &[(usize, f32)]) -> Option<Vec<f32>> {
+/// The equalizer's output at row k.
+fn output(y: &[f32], w: &[f32], k: usize) -> f32 {
+    let top = k + EQ_PRE;
+    w.iter().enumerate().map(|(i, &c)| c * y[top - i]).sum()
+}
+
+/// Adds the normal equations of the rows k0, k0 + 1, … (their wanted values `wanted`, every
+/// window inside y) to `a` (n × n) and `b`. Entry (0, d) of the run's matrix is a dot product;
+/// entry (i + 1, j + 1) is entry (i, j) with the row before the run in and the run's last row out.
+fn add_run(y: &[f32], k0: usize, wanted: &[f32], a: &mut [f64], b: &mut [f64]) {
     let n = EQ_TAPS;
-    let mut a = vec![0f64; n * n];
-    let mut b = vec![0f64; n];
-    let mut a32 = vec![0f32; n * n];
-    let mut b32 = vec![0f32; n];
-    let mut x = vec![0f32; n];
-    let mut pending = 0;
-    for &(k, d) in rows {
-        if !window(y, k, &mut x) {
-            continue;
-        }
-        // Row i of the lower triangle gains x[i]·x[..=i]: not a reduction, so it vectorizes.
-        for i in 0..n {
-            let xi = x[i];
-            b32[i] += xi * d;
-            a32[i * n..i * n + i + 1].iter_mut().zip(&x[..=i]).for_each(|(s, &xj)| *s += xi * xj);
-        }
-        pending += 1;
-        if pending == EQ_BLOCK_ROWS {
-            a.iter_mut().zip(&mut a32).for_each(|(t, s)| *t += f64::from(std::mem::take(s)));
-            b.iter_mut().zip(&mut b32).for_each(|(t, s)| *t += f64::from(std::mem::take(s)));
-            pending = 0;
+    let len = wanted.len();
+    // Row k0 + m's window, newest first: y[top + m − i] for tap i.
+    let top = k0 + EQ_PRE;
+    let prod = |p: usize, q: usize| f64::from(y[p]) * f64::from(y[q]);
+    for (i, bi) in b.iter_mut().enumerate() {
+        *bi += y[top - i..top - i + len].iter().zip(wanted).map(|(&v, &d)| f64::from(v) * f64::from(d)).sum::<f64>();
+    }
+    for d in 0..n {
+        let mut r: f64 = (0..len).map(|m| prod(top + m, top + m - d)).sum();
+        for i in 0..n - d {
+            a[i * n + i + d] += r;
+            if d > 0 {
+                a[(i + d) * n + i] += r;
+            }
+            if i + d + 1 < n {
+                let (enter, leave) = (top - 1 - i, top + len - 1 - i);
+                r += prod(enter, enter - d) - prod(leave, leave - d);
+            }
         }
     }
-    a.iter_mut().zip(&a32).for_each(|(t, s)| *t += f64::from(*s));
-    b.iter_mut().zip(&b32).for_each(|(t, s)| *t += f64::from(*s));
-    for i in 0..n {
-        for j in 0..i {
-            a[j * n + i] = a[i * n + j];
+}
+
+/// The taps w minimizing Σ (wanted − Σ w[i] y[k + PRE − i])² over runs of rows (first row,
+/// wanted values); rows whose windows leave y are left out.
+fn least_squares(y: &[f32], runs: &[(usize, Vec<f32>)]) -> Option<Vec<f32>> {
+    let n = EQ_TAPS;
+    let (mut a, mut b) = (vec![0f64; n * n], vec![0f64; n]);
+    let inside = rows_inside(y.len());
+    for (k0, wanted) in runs {
+        let lo = (*k0).max(inside.start);
+        let hi = (k0 + wanted.len()).min(inside.end);
+        if lo < hi {
+            add_run(y, lo, &wanted[lo - k0..hi - k0], &mut a, &mut b);
         }
     }
     solve(a, b, n).map(|w| w.into_iter().map(|v| v as f32).collect())
 }
 
-/// The field syncs' known symbols as rows (k, wanted).
-fn training_rows(first_sync: usize, inverted: &[bool]) -> Vec<(usize, f32)> {
-    inverted
+/// The least-squares equalizer: out[k] = Σ w[i] y[k + PRE − i]. Trained on the field syncs' known
+/// symbols, then on its own decisions over runs spread across the signal, each round's between
+/// the last's.
+fn equalize(y: &[f32], first_sync: usize, inverted: &[bool]) -> Option<Vec<f32>> {
+    let training: Vec<(usize, Vec<f32>)> = inverted
         .iter()
         .take(EQ_TRAINING_FIELDS)
         .enumerate()
-        .flat_map(|(f, &inv)| {
-            let base = (first_sync + f * FIELD_SEGMENTS) * SEGMENT;
-            field_sync(inv).into_iter().enumerate().map(move |(j, d)| (base + j, d))
-        })
-        .collect()
-}
-
-/// The least-squares equalizer: out[k] = Σ w[i] y[k + PRE − i]. Trained on the field syncs, then
-/// on its own decisions on data.
-fn equalize(y: &[f32], first_sync: usize, inverted: &[bool]) -> Option<Vec<f32>> {
-    let mut w = least_squares(y, &training_rows(first_sync, inverted))?;
-    let mut x = vec![0f32; EQ_TAPS];
-    for round in 0..2u64 {
-        // Data symbols spread over the signal, a fixed pseudo-random pick.
-        let mut r = 0x9E37_79B9_7F4A_7C15u64 ^ round;
-        let mut picks = Vec::with_capacity(EQ_DECISION_ROWS);
-        for _ in 0..EQ_DECISION_ROWS {
-            r ^= r << 13;
-            r ^= r >> 7;
-            r ^= r << 17;
-            let k = (r % y.len() as u64) as usize;
-            if k % SEGMENT >= SYNC_SYMBOLS && window(y, k, &mut x) {
-                picks.push((k, slice(dot(&w, &x))));
-            }
-        }
-        w = least_squares(y, &picks)?;
+        .map(|(f, &inv)| ((first_sync + f * FIELD_SEGMENTS) * SEGMENT, field_sync(inv)))
+        .collect();
+    let mut w = least_squares(y, &training)?;
+    let inside = rows_inside(y.len());
+    let spacing = inside.len().saturating_sub(EQ_RUN) / EQ_DECISION_RUNS;
+    for round in 0..EQ_ROUNDS {
+        let runs: Vec<(usize, Vec<f32>)> = (0..EQ_DECISION_RUNS)
+            .map(|r| inside.start + r * spacing + round * spacing / EQ_ROUNDS)
+            .filter(|&k0| k0 + EQ_RUN <= inside.end)
+            .map(|k0| (k0, (k0..k0 + EQ_RUN).map(|k| slice(output(y, &w, k))).collect()))
+            .collect();
+        w = least_squares(y, &runs)?;
     }
     // out[k] = (y ⊛ w)[k + PRE].
     let c = convolve(y, &w, y.len() + EQ_PRE);
@@ -607,13 +634,19 @@ fn mer(segs: &[[f32; SEGMENT]]) -> f32 {
 /// the channel's centre `centre_offset_hz` from DC. `None` when no segment or field syncs are
 /// found.
 pub fn demodulate(iq: &[Complex32], sample_rate_hz: f64, centre_offset_hz: f64) -> Option<Demodulated> {
-    let (re, im, delay) = receive_filter(iq, sample_rate_hz, centre_offset_hz);
-    let carrier = Carrier::find(&re, &im, sample_rate_hz)?;
-    let sig = Real { re, im, delay: delay as f64, carrier, interp: Interp::new(), ratio: sample_rate_hz / (2.0 * SYMBOL_RATE) };
-    let (start, per) = timing(&|n: usize| sig.at(n as f64), sig.len())?;
+    let centred: Vec<Complex32>;
+    let x = if centre_offset_hz == 0.0 {
+        iq
+    } else {
+        let mut shift = Phasor::new(0.0, -2.0 * std::f64::consts::PI * centre_offset_hz / sample_rate_hz);
+        centred = iq.iter().map(|&s| s * shift.next()).collect();
+        &centred
+    };
+    let carrier = Carrier::find(x, sample_rate_hz)?;
+    let sig = Real { x, matched: Matched::new(sample_rate_hz), carrier, ratio: sample_rate_hz / (2.0 * SYMBOL_RATE) };
+    let (start, per) = timing(&sig)?;
     let segs = symbols(&sig, start, per);
     let pilot_offset_hz = sig.carrier.offset_hz;
-    drop(sig);
     let (first, inverted) = field_syncs(&segs)?;
     let flat: Vec<f32> = segs.iter().flatten().copied().collect();
     drop(segs);
@@ -644,20 +677,60 @@ mod tests {
     }
 
     #[test]
-    fn the_interpolator_rebuilds_a_tone_between_samples() {
-        // A tone at 0.3 of the sample rate, read half a sample in.
-        let n = 200;
-        let f = 0.3;
-        let re: Vec<f32> = (0..n).map(|k| (2.0 * std::f32::consts::PI * f * k as f32).cos()).collect();
-        let im = vec![0f32; n];
-        let interp = Interp::new();
-        let worst = (40..160)
-            .map(|k| {
-                let u = k as f64 + 0.37;
-                let want = (2.0 * std::f64::consts::PI * f as f64 * u).cos() as f32;
-                (interp.at(&re, &im, u).re - want).abs()
-            })
-            .fold(0f32, f32::max);
-        assert!(worst < 3e-3, "{worst}");
+    fn the_matched_filter_at_an_instant_is_its_sum() {
+        let fs = 10e6;
+        let rb = SYMBOL_RATE / 2.0;
+        let m = Matched::new(fs);
+        assert_eq!(m.taps % 8, 0);
+        let x: Vec<Complex32> =
+            (0..400).map(|i| Complex32::new(((i * 7919) % 101) as f32 - 50.0, ((i * 104_729) % 97) as f32 - 48.0)).collect();
+        let h = m.taps / 2;
+        // Instants on the table's offsets, the first and last whose inputs are all there.
+        for tau in [(h - 1) as f64, 100.0 + 37.0 / 128.0, 123.5, 200.0 + 127.0 / 128.0, (399 - h) as f64 + 0.5] {
+            let i = tau as usize;
+            let want: Complex64 =
+                (i + 1 - h..=i + h).map(|n| Complex64::new(x[n].re.into(), x[n].im.into()) * (rrc((tau - n as f64) / fs * rb) * rb / fs)).sum();
+            let got = m.at(&x, tau);
+            assert!((f64::from(got.re) - want.re).abs() < 1e-3 && (f64::from(got.im) - want.im).abs() < 1e-3, "{tau}: {got} {want}");
+        }
+        assert_eq!(m.at(&x, (h - 2) as f64), Complex32::new(0.0, 0.0));
+        assert_eq!(m.at(&x, (400 - h) as f64), Complex32::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn the_runs_normal_equations_match_row_by_row_sums() {
+        let y: Vec<f32> = (0..3000).map(|i| ((i * 7919) % 101) as f32 / 10.0 - 5.0).collect();
+        let runs: Vec<(usize, Vec<f32>)> =
+            vec![(0, (0..300).map(|k| (k % 7) as f32 - 3.0).collect()), (1500, (0..500).map(|k| (k % 5) as f32 - 2.0).collect())];
+        let n = EQ_TAPS;
+        let (mut a, mut b) = (vec![0f64; n * n], vec![0f64; n]);
+        let inside = rows_inside(y.len());
+        for (k0, wanted) in &runs {
+            for (m, &d) in wanted.iter().enumerate() {
+                let k = k0 + m;
+                if !inside.contains(&k) {
+                    continue;
+                }
+                let top = k + EQ_PRE;
+                for i in 0..n {
+                    b[i] += f64::from(y[top - i]) * f64::from(d);
+                    for j in 0..n {
+                        a[i * n + j] += f64::from(y[top - i]) * f64::from(y[top - j]);
+                    }
+                }
+            }
+        }
+        let want = solve(a, b, n).unwrap();
+        let got = least_squares(&y, &runs).unwrap();
+        for (g, w) in got.iter().zip(&want) {
+            assert!((f64::from(*g) - w).abs() < 1e-4 * (1.0 + w.abs()), "{g} {w}");
+        }
+    }
+
+    #[test]
+    fn the_slicer_takes_the_nearest_level() {
+        for (v, want) in [(-9.0, -7.0), (-6.1, -7.0), (-5.9, -5.0), (-0.1, -1.0), (0.1, 1.0), (5.9, 5.0), (6.1, 7.0), (30.0, 7.0)] {
+            assert_eq!(slice(v), want, "{v}");
+        }
     }
 }

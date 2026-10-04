@@ -12,12 +12,14 @@ const T: usize = PARITY / 2;
 struct Gf {
     exp: [u8; 512],
     log: [u16; 256],
+    /// times[j][v] = v·α^j, for the syndromes.
+    times: [[u8; 256]; PARITY],
 }
 
 fn gf() -> &'static Gf {
     static GF: OnceLock<Gf> = OnceLock::new();
     GF.get_or_init(|| {
-        let mut g = Gf { exp: [0; 512], log: [0; 256] };
+        let mut g = Gf { exp: [0; 512], log: [0; 256], times: [[0; 256]; PARITY] };
         let mut v: u16 = 1;
         for i in 0..255 {
             g.exp[i] = v as u8;
@@ -30,33 +32,40 @@ fn gf() -> &'static Gf {
         for i in 255..512 {
             g.exp[i] = g.exp[i - 255];
         }
+        for j in 0..PARITY {
+            for v in 1..256 {
+                g.times[j][v] = g.exp[g.log[v] as usize + j];
+            }
+        }
         g
     })
 }
 
-fn mul(a: u8, b: u8) -> u8 {
-    if a == 0 || b == 0 {
-        return 0;
+// The field's operations take the tables (fetched once a codeword: the fetch is a synchronised
+// load, a barrier on the A9).
+impl Gf {
+    fn mul(&self, a: u8, b: u8) -> u8 {
+        if a == 0 || b == 0 {
+            return 0;
+        }
+        self.exp[self.log[a as usize] as usize + self.log[b as usize] as usize]
     }
-    let g = gf();
-    g.exp[g.log[a as usize] as usize + g.log[b as usize] as usize]
-}
 
-fn div(a: u8, b: u8) -> u8 {
-    if a == 0 {
-        return 0;
+    fn div(&self, a: u8, b: u8) -> u8 {
+        if a == 0 {
+            return 0;
+        }
+        self.exp[(self.log[a as usize] as usize + 255 - self.log[b as usize] as usize) % 255]
     }
-    let g = gf();
-    g.exp[(g.log[a as usize] as usize + 255 - g.log[b as usize] as usize) % 255]
-}
 
-fn pow(i: usize) -> u8 {
-    gf().exp[i % 255]
-}
+    fn pow(&self, i: usize) -> u8 {
+        self.exp[i % 255]
+    }
 
-/// p(x) at `x`, coefficients lowest power first.
-fn eval(p: &[u8], x: u8) -> u8 {
-    p.iter().rev().fold(0, |acc, &c| mul(acc, x) ^ c)
+    /// p(x) at `x`, coefficients lowest power first.
+    fn eval(&self, p: &[u8], x: u8) -> u8 {
+        p.iter().rev().fold(0, |acc, &c| self.mul(acc, x) ^ c)
+    }
 }
 
 /// What decoding did to a codeword.
@@ -72,10 +81,13 @@ pub enum Outcome {
 /// Correct `cw` (207 bytes) in place.
 pub fn decode(cw: &mut [u8]) -> Outcome {
     debug_assert_eq!(cw.len(), N);
+    let g = gf();
+    // S_j = cw(α^j) by Horner, all 20 together.
     let mut syn = [0u8; PARITY];
-    for (j, s) in syn.iter_mut().enumerate() {
-        let a = pow(j);
-        *s = cw.iter().fold(0, |acc, &c| mul(acc, a) ^ c);
+    for &c in cw.iter() {
+        for (s, t) in syn.iter_mut().zip(&g.times) {
+            *s = t[*s as usize] ^ c;
+        }
     }
     if syn.iter().all(|&s| s == 0) {
         return Outcome::Clean;
@@ -87,19 +99,19 @@ pub fn decode(cw: &mut [u8]) -> Outcome {
     for n in 0..PARITY {
         let mut d = syn[n];
         for i in 1..=l.min(lambda.len() - 1) {
-            d ^= mul(lambda[i], syn[n - i]);
+            d ^= g.mul(lambda[i], syn[n - i]);
         }
         if d == 0 {
             m += 1;
             continue;
         }
-        let coef = div(d, b);
+        let coef = g.div(d, b);
         let mut next = lambda.clone();
         if next.len() < prev.len() + m {
             next.resize(prev.len() + m, 0);
         }
         for (i, &p) in prev.iter().enumerate() {
-            next[i + m] ^= mul(coef, p);
+            next[i + m] ^= g.mul(coef, p);
         }
         if 2 * l <= n {
             prev = lambda;
@@ -121,7 +133,7 @@ pub fn decode(cw: &mut [u8]) -> Outcome {
     let mut omega = [0u8; PARITY];
     for (i, &li) in lambda.iter().enumerate() {
         for j in 0..PARITY - i {
-            omega[i + j] ^= mul(li, syn[j]);
+            omega[i + j] ^= g.mul(li, syn[j]);
         }
     }
     // Λ'(x): the odd terms, one power down.
@@ -129,17 +141,17 @@ pub fn decode(cw: &mut [u8]) -> Outcome {
     let mut found = 0;
     for (i, byte) in cw.iter_mut().enumerate() {
         let power = N - 1 - i;
-        let x = pow(power);
-        let xinv = pow(255 - power % 255);
-        if eval(&lambda, xinv) != 0 {
+        let x = g.pow(power);
+        let xinv = g.pow(255 - power % 255);
+        if g.eval(&lambda, xinv) != 0 {
             continue;
         }
-        let den = eval(&deriv, xinv);
+        let den = g.eval(&deriv, xinv);
         if den == 0 {
             return Outcome::Failed;
         }
         // Forney with the first root α^0: e = X Ω(X^-1) / Λ'(X^-1).
-        *byte ^= mul(x, div(eval(&omega, xinv), den));
+        *byte ^= g.mul(x, g.div(g.eval(&omega, xinv), den));
         found += 1;
     }
     if found == l { Outcome::Corrected(found) } else { Outcome::Failed }
@@ -149,6 +161,7 @@ pub fn decode(cw: &mut [u8]) -> Outcome {
 #[cfg(test)]
 pub fn parity(data: &[u8]) -> [u8; PARITY] {
     static GEN: OnceLock<[u8; PARITY + 1]> = OnceLock::new();
+    let gf = gf();
     // g(x) = Π (x + α^j), highest power first.
     let g = GEN.get_or_init(|| {
         let mut g = vec![1u8];
@@ -156,7 +169,7 @@ pub fn parity(data: &[u8]) -> [u8; PARITY] {
             let mut next = vec![0u8; g.len() + 1];
             for (i, &c) in g.iter().enumerate() {
                 next[i] ^= c;
-                next[i + 1] ^= mul(c, pow(j));
+                next[i + 1] ^= gf.mul(c, gf.pow(j));
             }
             g = next;
         }
@@ -168,7 +181,7 @@ pub fn parity(data: &[u8]) -> [u8; PARITY] {
         reg.copy_within(1.., 0);
         reg[PARITY - 1] = 0;
         for (r, &gi) in reg.iter_mut().zip(&g[1..]) {
-            *r ^= mul(f, gi);
+            *r ^= gf.mul(f, gi);
         }
     }
     reg
