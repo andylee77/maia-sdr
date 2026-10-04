@@ -66,7 +66,9 @@ function showMode(m) {
 
 // ATSC mode's line in the header: the TV scan running, or what the last one found.
 function atscText(a) {
-  if (a && a.state === 'sweeping') return `TV scan · window ${a.step} of ${a.steps}`;
+  if (a && a.state === 'sweeping') {
+    return a.identifying != null ? `TV scan · naming ${a.identified + 1} of ${a.to_identify}` : `TV scan · window ${a.step} of ${a.steps}`;
+  }
   const n = a ? a.found.filter(c => c.kind === '8vsb').length : 0;
   return a && a.found.length ? `ATSC TV · ${n} station${n === 1 ? '' : 's'} found` : 'ATSC TV';
 }
