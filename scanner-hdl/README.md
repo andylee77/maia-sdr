@@ -10,6 +10,7 @@ imports.
 | `test/` | Both packages' tests. They use upstream's `maia_hdl` and two of its test helpers (`../maia-hdl/test`) |
 | `test_cocotb/` | Co-simulation tests (cocotb and Icarus; run through `../sim_hdl.bat` in Docker) |
 | `generate_svd.py` | Writes the core's register map to `../scanner/core-pac/core.svd` |
+| `radio_core/bench_map.py` | Writes the bench's map of the same registers, with their read-to-clear registers and clock domains, to `../bench/share/p25_regs.json` (`python -m radio_core.bench_map`) |
 
 The Vivado projects and the IP packaging stay in `../maia-hdl/projects/fishball7020_p25/`,
 `fishball7020_hwval/` and `../maia-hdl/ip/p25-core/`, `hwval-core/`, because ADI's scripts use

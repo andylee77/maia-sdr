@@ -2,20 +2,41 @@
   "schema": "fbench.regmap/1",
   "core": "p25",
   "base": "0x7C460000",
-  "size": 512,
+  "size": 1024,
+  "decode_limit": "0x400",
+  "id_reg": "product_id",
+  "id_value": "0x72616431",
+  "version": "1.0.0",
+  "snapshot_domains": {},
+  "requires": {
+    "uio": "p25-core"
+  },
+  "reset_gate": {
+    "reg": "control",
+    "bit": 0,
+    "domains": [
+      "sync"
+    ],
+    "desc": "control.sdr_reset (powers up 1) holds the sync domain in reset; its banks read 0 and drop writes until it clears"
+  },
+  "source": "generated from scanner-hdl/radio_core by radio_core.bench_map",
   "blocks": [
     {
       "name": "control",
-      "offset": "0x0",
+      "offset": "0x000",
+      "domain": "axi_lite",
       "regs": [
         {
           "name": "product_id",
-          "offset": "0x0",
+          "offset": "0x000",
           "access": "ro",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
           "desc": "product_id",
+          "domain": "axi_lite",
+          "read_side_effect": false,
+          "expected": "0x72616431",
           "fields": [
             {
               "name": "product_id",
@@ -24,18 +45,19 @@
               "access": "ro",
               "desc": "product_id"
             }
-          ],
-          "read_side_effect": false,
-          "expected": "0x70323566"
+          ]
         },
         {
           "name": "version",
-          "offset": "0x4",
+          "offset": "0x004",
           "access": "ro",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
           "desc": "version",
+          "domain": "axi_lite",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
               "name": "bugfix",
@@ -65,18 +87,19 @@
               "access": "ro",
               "desc": "platform"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
           "name": "control",
-          "offset": "0x8",
+          "offset": "0x008",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
           "desc": "control",
+          "domain": "axi_lite",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
               "name": "sdr_reset",
@@ -85,100 +108,110 @@
               "access": "rw",
               "desc": "sdr_reset"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
           "name": "interrupts",
-          "offset": "0xC",
+          "offset": "0x00C",
           "access": "ro",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "interrupts \u2014 READ CLEARS Rsticky bits (F2); read only when intended",
+          "desc": "interrupts (a read clears its sticky bits)",
+          "domain": "axi_lite",
+          "read_side_effect": true,
+          "expected": null,
           "fields": [
             {
-              "name": "iq_dma",
+              "name": "lanes_ring",
               "lsb": 0,
               "width": 1,
               "access": "ro",
-              "desc": "iq_dma"
+              "desc": "lanes_ring"
             },
             {
-              "name": "lsm_dibit_dma",
+              "name": "spectrum",
               "lsb": 1,
               "width": 1,
               "access": "ro",
-              "desc": "lsm_dibit_dma"
+              "desc": "spectrum"
             },
             {
-              "name": "pre_diff_iq_dma",
+              "name": "capture",
               "lsb": 2,
               "width": 1,
               "access": "ro",
-              "desc": "pre_diff_iq_dma"
-            },
-            {
-              "name": "wideband_spec_dma",
-              "lsb": 3,
-              "width": 1,
-              "access": "ro",
-              "desc": "wideband_spec_dma"
-            },
-            {
-              "name": "traffic_lsm_dibit_dma",
-              "lsb": 4,
-              "width": 1,
-              "access": "ro",
-              "desc": "traffic_lsm_dibit_dma"
-            },
-            {
-              "name": "traffic_iq_dma",
-              "lsb": 5,
-              "width": 1,
-              "access": "ro",
-              "desc": "traffic_iq_dma"
-            },
-            {
-              "name": "traffic_pre_diff_iq_dma",
-              "lsb": 6,
-              "width": 1,
-              "access": "ro",
-              "desc": "traffic_pre_diff_iq_dma"
-            },
-            {
-              "name": "wideband_iq_dma",
-              "lsb": 7,
-              "width": 1,
-              "access": "ro",
-              "desc": "wideband_iq_dma"
-            },
-            {
-              "name": "traffic2_lsm_dibit_dma",
-              "lsb": 8,
-              "width": 1,
-              "access": "ro",
-              "desc": "traffic2_lsm_dibit_dma"
+              "desc": "capture"
             }
-          ],
-          "read_side_effect": true,
-          "expected": null
+          ]
+        },
+        {
+          "name": "capabilities",
+          "offset": "0x010",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "capabilities",
+          "domain": "axi_lite",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "lanes",
+              "lsb": 0,
+              "width": 4,
+              "access": "ro",
+              "desc": "lanes"
+            },
+            {
+              "name": "packet_words_log2",
+              "lsb": 4,
+              "width": 4,
+              "access": "ro",
+              "desc": "packet_words_log2"
+            },
+            {
+              "name": "header_words",
+              "lsb": 8,
+              "width": 4,
+              "access": "ro",
+              "desc": "header_words"
+            },
+            {
+              "name": "spectrum",
+              "lsb": 12,
+              "width": 1,
+              "access": "ro",
+              "desc": "spectrum"
+            },
+            {
+              "name": "capture",
+              "lsb": 13,
+              "width": 1,
+              "access": "ro",
+              "desc": "capture"
+            }
+          ]
         }
       ]
     },
     {
-      "name": "ddc",
-      "offset": "0x20",
+      "name": "lane0",
+      "offset": "0x020",
+      "domain": "sync",
       "regs": [
         {
-          "name": "ddc_coeff_addr",
-          "offset": "0x20",
+          "name": "lane0_ddc_coeff_addr",
+          "offset": "0x020",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "ddc_coeff_addr",
+          "desc": "lane0_ddc_coeff_addr",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
               "name": "coeff_waddr",
@@ -187,18 +220,19 @@
               "access": "rw",
               "desc": "coeff_waddr"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "ddc_coeff",
-          "offset": "0x28",
+          "name": "lane0_ddc_coeff",
+          "offset": "0x028",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "ddc_coeff",
+          "desc": "lane0_ddc_coeff",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
               "name": "coeff_wren",
@@ -214,18 +248,19 @@
               "access": "rw",
               "desc": "coeff_wdata"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "ddc_decimation",
-          "offset": "0x2C",
+          "name": "lane0_ddc_decimation",
+          "offset": "0x02C",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "ddc_decimation",
+          "desc": "lane0_ddc_decimation",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
               "name": "decimation1",
@@ -248,18 +283,19 @@
               "access": "rw",
               "desc": "decimation3"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "ddc_frequency",
-          "offset": "0x30",
+          "name": "lane0_ddc_frequency",
+          "offset": "0x030",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "ddc_frequency",
+          "desc": "lane0_ddc_frequency",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
               "name": "frequency",
@@ -268,18 +304,19 @@
               "access": "rw",
               "desc": "frequency"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "ddc_control",
-          "offset": "0x34",
+          "name": "lane0_ddc_control",
+          "offset": "0x034",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "ddc_control",
+          "desc": "lane0_ddc_control",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
               "name": "operations_minus_one1",
@@ -337,1413 +374,600 @@
               "access": "rw",
               "desc": "enable_input"
             }
-          ],
+          ]
+        },
+        {
+          "name": "lane0_control",
+          "offset": "0x038",
+          "access": "rw",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "lane0_control",
+          "domain": "sync",
           "read_side_effect": false,
-          "expected": null
+          "expected": null,
+          "fields": [
+            {
+              "name": "enable",
+              "lsb": 0,
+              "width": 1,
+              "access": "rw",
+              "desc": "enable"
+            },
+            {
+              "name": "reserved",
+              "lsb": 1,
+              "width": 15,
+              "access": "ro",
+              "desc": "reserved"
+            },
+            {
+              "name": "tag",
+              "lsb": 16,
+              "width": 16,
+              "access": "rw",
+              "desc": "tag"
+            }
+          ]
+        },
+        {
+          "name": "lane0_status",
+          "offset": "0x03C",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "lane0_status (a read clears its sticky bits)",
+          "domain": "sync",
+          "read_side_effect": true,
+          "expected": null,
+          "fields": [
+            {
+              "name": "lost",
+              "lsb": 0,
+              "width": 1,
+              "access": "ro",
+              "desc": "lost"
+            }
+          ]
         }
       ]
     },
     {
-      "name": "traffic_ddc",
-      "offset": "0x40",
+      "name": "lane1",
+      "offset": "0x040",
+      "domain": "sync",
       "regs": [
         {
-          "name": "traffic_ddc_coeff_addr",
-          "offset": "0x40",
+          "name": "lane1_ddc_coeff_addr",
+          "offset": "0x040",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic_ddc_coeff_addr",
+          "desc": "lane1_ddc_coeff_addr",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "traffic_coeff_waddr",
+              "name": "coeff_waddr",
               "lsb": 0,
               "width": 10,
               "access": "rw",
-              "desc": "traffic_coeff_waddr"
+              "desc": "coeff_waddr"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "traffic_ddc_coeff",
-          "offset": "0x48",
+          "name": "lane1_ddc_coeff",
+          "offset": "0x048",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic_ddc_coeff",
+          "desc": "lane1_ddc_coeff",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "traffic_coeff_wren",
+              "name": "coeff_wren",
               "lsb": 0,
               "width": 1,
               "access": "wo",
-              "desc": "traffic_coeff_wren"
+              "desc": "coeff_wren"
             },
             {
-              "name": "traffic_coeff_wdata",
+              "name": "coeff_wdata",
               "lsb": 1,
               "width": 18,
               "access": "rw",
-              "desc": "traffic_coeff_wdata"
+              "desc": "coeff_wdata"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "traffic_ddc_decimation",
-          "offset": "0x4C",
+          "name": "lane1_ddc_decimation",
+          "offset": "0x04C",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic_ddc_decimation",
+          "desc": "lane1_ddc_decimation",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "traffic_decimation1",
+              "name": "decimation1",
               "lsb": 0,
               "width": 7,
               "access": "rw",
-              "desc": "traffic_decimation1"
+              "desc": "decimation1"
             },
             {
-              "name": "traffic_decimation2",
+              "name": "decimation2",
               "lsb": 7,
               "width": 6,
               "access": "rw",
-              "desc": "traffic_decimation2"
+              "desc": "decimation2"
             },
             {
-              "name": "traffic_decimation3",
+              "name": "decimation3",
               "lsb": 13,
               "width": 7,
               "access": "rw",
-              "desc": "traffic_decimation3"
+              "desc": "decimation3"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "traffic_ddc_frequency",
-          "offset": "0x50",
+          "name": "lane1_ddc_frequency",
+          "offset": "0x050",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic_ddc_frequency",
+          "desc": "lane1_ddc_frequency",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "traffic_frequency",
+              "name": "frequency",
               "lsb": 0,
               "width": 28,
               "access": "rw",
-              "desc": "traffic_frequency"
+              "desc": "frequency"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "traffic_ddc_control",
-          "offset": "0x54",
+          "name": "lane1_ddc_control",
+          "offset": "0x054",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic_ddc_control",
+          "desc": "lane1_ddc_control",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "traffic_operations_minus_one1",
+              "name": "operations_minus_one1",
               "lsb": 0,
               "width": 7,
               "access": "rw",
-              "desc": "traffic_operations_minus_one1"
+              "desc": "operations_minus_one1"
             },
             {
-              "name": "traffic_operations_minus_one2",
+              "name": "operations_minus_one2",
               "lsb": 7,
               "width": 6,
               "access": "rw",
-              "desc": "traffic_operations_minus_one2"
+              "desc": "operations_minus_one2"
             },
             {
-              "name": "traffic_operations_minus_one3",
+              "name": "operations_minus_one3",
               "lsb": 13,
               "width": 7,
               "access": "rw",
-              "desc": "traffic_operations_minus_one3"
+              "desc": "operations_minus_one3"
             },
             {
-              "name": "traffic_odd_operations1",
+              "name": "odd_operations1",
               "lsb": 20,
               "width": 1,
               "access": "rw",
-              "desc": "traffic_odd_operations1"
+              "desc": "odd_operations1"
             },
             {
-              "name": "traffic_odd_operations3",
+              "name": "odd_operations3",
               "lsb": 21,
               "width": 1,
               "access": "rw",
-              "desc": "traffic_odd_operations3"
+              "desc": "odd_operations3"
             },
             {
-              "name": "traffic_bypass2",
+              "name": "bypass2",
               "lsb": 22,
               "width": 1,
               "access": "rw",
-              "desc": "traffic_bypass2"
+              "desc": "bypass2"
             },
             {
-              "name": "traffic_bypass3",
+              "name": "bypass3",
               "lsb": 23,
               "width": 1,
               "access": "rw",
-              "desc": "traffic_bypass3"
+              "desc": "bypass3"
             },
             {
-              "name": "traffic_enable_input",
+              "name": "enable_input",
               "lsb": 24,
               "width": 1,
               "access": "rw",
-              "desc": "traffic_enable_input"
+              "desc": "enable_input"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        }
-      ]
-    },
-    {
-      "name": "traffic_iq",
-      "offset": "0x60",
-      "regs": [
+          ]
+        },
         {
-          "name": "traffic_iq_dma_status",
-          "offset": "0x60",
-          "access": "ro",
+          "name": "lane1_control",
+          "offset": "0x058",
+          "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic_iq_dma_status \u2014 READ CLEARS Rsticky bits (F2); read only when intended",
+          "desc": "lane1_control",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "traffic_iq_overflow",
+              "name": "enable",
               "lsb": 0,
               "width": 1,
-              "access": "ro",
-              "desc": "traffic_iq_overflow"
+              "access": "rw",
+              "desc": "enable"
             },
             {
-              "name": "traffic_iq_last_buffer",
+              "name": "reserved",
               "lsb": 1,
-              "width": 3,
+              "width": 15,
               "access": "ro",
-              "desc": "traffic_iq_last_buffer"
+              "desc": "reserved"
+            },
+            {
+              "name": "tag",
+              "lsb": 16,
+              "width": 16,
+              "access": "rw",
+              "desc": "tag"
             }
-          ],
+          ]
+        },
+        {
+          "name": "lane1_status",
+          "offset": "0x05C",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "lane1_status (a read clears its sticky bits)",
+          "domain": "sync",
           "read_side_effect": true,
-          "expected": null
-        },
-        {
-          "name": "traffic_iq_dma_control",
-          "offset": "0x64",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_iq_dma_control",
+          "expected": null,
           "fields": [
             {
-              "name": "traffic_iq_enable",
+              "name": "lost",
               "lsb": 0,
               "width": 1,
-              "access": "rw",
-              "desc": "traffic_iq_enable"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic_iq_next_address",
-          "offset": "0x68",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_iq_next_address",
-          "fields": [
-            {
-              "name": "next_address",
-              "lsb": 0,
-              "width": 32,
               "access": "ro",
-              "desc": "next_address"
+              "desc": "lost"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         }
       ]
     },
     {
-      "name": "iq",
-      "offset": "0x80",
+      "name": "lane2",
+      "offset": "0x060",
+      "domain": "sync",
       "regs": [
         {
-          "name": "iq_dma_status",
-          "offset": "0x80",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "iq_dma_status \u2014 READ CLEARS Rsticky bits (F2); read only when intended",
-          "fields": [
-            {
-              "name": "iq_overflow",
-              "lsb": 0,
-              "width": 1,
-              "access": "ro",
-              "desc": "iq_overflow"
-            },
-            {
-              "name": "last_buffer",
-              "lsb": 1,
-              "width": 3,
-              "access": "ro",
-              "desc": "last_buffer"
-            }
-          ],
-          "read_side_effect": true,
-          "expected": null
-        },
-        {
-          "name": "iq_dma_control",
-          "offset": "0x84",
+          "name": "lane2_ddc_coeff_addr",
+          "offset": "0x060",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "iq_dma_control",
-          "fields": [
-            {
-              "name": "iq_enable",
-              "lsb": 0,
-              "width": 1,
-              "access": "rw",
-              "desc": "iq_enable"
-            }
-          ],
+          "desc": "lane2_ddc_coeff_addr",
+          "domain": "sync",
           "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "iq_next_address",
-          "offset": "0x88",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "iq_next_address",
+          "expected": null,
           "fields": [
             {
-              "name": "next_address",
-              "lsb": 0,
-              "width": 32,
-              "access": "ro",
-              "desc": "next_address"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        }
-      ]
-    },
-    {
-      "name": "lsm",
-      "offset": "0xA0",
-      "regs": [
-        {
-          "name": "lsm_control",
-          "offset": "0xA0",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "lsm_control",
-          "fields": [
-            {
-              "name": "lsm_enable",
-              "lsb": 0,
-              "width": 1,
-              "access": "rw",
-              "desc": "lsm_enable"
-            },
-            {
-              "name": "lsm_dibit_dma_enable",
-              "lsb": 1,
-              "width": 1,
-              "access": "rw",
-              "desc": "lsm_dibit_dma_enable"
-            },
-            {
-              "name": "lsm_reset",
-              "lsb": 2,
-              "width": 1,
-              "access": "wo",
-              "desc": "lsm_reset"
-            },
-            {
-              "name": "lsm_dc_block_enable",
-              "lsb": 3,
-              "width": 1,
-              "access": "rw",
-              "desc": "lsm_dc_block_enable"
-            },
-            {
-              "name": "lsm_agc_enable",
-              "lsb": 4,
-              "width": 1,
-              "access": "rw",
-              "desc": "lsm_agc_enable"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "lsm_status",
-          "offset": "0xA4",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "lsm_status \u2014 READ CLEARS Rsticky bits (F2); read only when intended",
-          "fields": [
-            {
-              "name": "bch_busy",
-              "lsb": 0,
-              "width": 1,
-              "access": "ro",
-              "desc": "bch_busy"
-            },
-            {
-              "name": "in_nid_window",
-              "lsb": 1,
-              "width": 1,
-              "access": "ro",
-              "desc": "in_nid_window"
-            },
-            {
-              "name": "nid_event",
-              "lsb": 2,
-              "width": 1,
-              "access": "ro",
-              "desc": "nid_event"
-            },
-            {
-              "name": "nid_valid",
-              "lsb": 3,
-              "width": 1,
-              "access": "ro",
-              "desc": "nid_valid"
-            },
-            {
-              "name": "n_errors",
-              "lsb": 4,
-              "width": 7,
-              "access": "ro",
-              "desc": "n_errors"
-            },
-            {
-              "name": "sync_distance",
-              "lsb": 11,
-              "width": 7,
-              "access": "ro",
-              "desc": "sync_distance"
-            },
-            {
-              "name": "lsm_dibit_overflow",
-              "lsb": 18,
-              "width": 1,
-              "access": "ro",
-              "desc": "lsm_dibit_overflow"
-            }
-          ],
-          "read_side_effect": true,
-          "expected": null
-        },
-        {
-          "name": "lsm_nid",
-          "offset": "0xA8",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "lsm_nid",
-          "fields": [
-            {
-              "name": "nac",
-              "lsb": 0,
-              "width": 12,
-              "access": "ro",
-              "desc": "nac"
-            },
-            {
-              "name": "duid",
-              "lsb": 12,
-              "width": 4,
-              "access": "ro",
-              "desc": "duid"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "lsm_drop_count",
-          "offset": "0xAC",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "lsm_drop_count",
-          "fields": [
-            {
-              "name": "drop_count",
-              "lsb": 0,
-              "width": 16,
-              "access": "ro",
-              "desc": "drop_count"
-            },
-            {
-              "name": "lsm_dibit_last_buffer",
-              "lsb": 16,
-              "width": 3,
-              "access": "ro",
-              "desc": "lsm_dibit_last_buffer"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "lsm_dibit_next",
-          "offset": "0xB0",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "lsm_dibit_next",
-          "fields": [
-            {
-              "name": "next_address",
-              "lsb": 0,
-              "width": 32,
-              "access": "ro",
-              "desc": "next_address"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "lsm_debug",
-          "offset": "0xB4",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "lsm_debug",
-          "fields": [
-            {
-              "name": "pll_dbg",
-              "lsb": 0,
-              "width": 16,
-              "access": "ro",
-              "desc": "pll_dbg"
-            },
-            {
-              "name": "sample_point_dbg",
-              "lsb": 16,
-              "width": 16,
-              "access": "ro",
-              "desc": "sample_point_dbg"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "lsm_agc_debug",
-          "offset": "0xB8",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "lsm_agc_debug",
-          "fields": [
-            {
-              "name": "agc_gain_dbg",
-              "lsb": 0,
-              "width": 16,
-              "access": "ro",
-              "desc": "agc_gain_dbg"
-            },
-            {
-              "name": "agc_mag_dbg",
-              "lsb": 16,
-              "width": 16,
-              "access": "ro",
-              "desc": "agc_mag_dbg"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "lsm_agc_config",
-          "offset": "0xBC",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "lsm_agc_config",
-          "fields": [
-            {
-              "name": "mag_update_threshold",
-              "lsb": 0,
-              "width": 16,
-              "access": "rw",
-              "desc": "mag_update_threshold"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        }
-      ]
-    },
-    {
-      "name": "traffic_lsm",
-      "offset": "0xC0",
-      "regs": [
-        {
-          "name": "traffic_lsm_control",
-          "offset": "0xC0",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_lsm_control",
-          "fields": [
-            {
-              "name": "traffic_lsm_enable",
-              "lsb": 0,
-              "width": 1,
-              "access": "rw",
-              "desc": "traffic_lsm_enable"
-            },
-            {
-              "name": "traffic_lsm_dibit_dma_enable",
-              "lsb": 1,
-              "width": 1,
-              "access": "rw",
-              "desc": "traffic_lsm_dibit_dma_enable"
-            },
-            {
-              "name": "traffic_lsm_reset",
-              "lsb": 2,
-              "width": 1,
-              "access": "wo",
-              "desc": "traffic_lsm_reset"
-            },
-            {
-              "name": "traffic_lsm_dc_block_enable",
-              "lsb": 3,
-              "width": 1,
-              "access": "rw",
-              "desc": "traffic_lsm_dc_block_enable"
-            },
-            {
-              "name": "traffic_lsm_agc_enable",
-              "lsb": 4,
-              "width": 1,
-              "access": "rw",
-              "desc": "traffic_lsm_agc_enable"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic_lsm_status",
-          "offset": "0xC4",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_lsm_status \u2014 READ CLEARS Rsticky bits (F2); read only when intended",
-          "fields": [
-            {
-              "name": "bch_busy",
-              "lsb": 0,
-              "width": 1,
-              "access": "ro",
-              "desc": "bch_busy"
-            },
-            {
-              "name": "in_nid_window",
-              "lsb": 1,
-              "width": 1,
-              "access": "ro",
-              "desc": "in_nid_window"
-            },
-            {
-              "name": "nid_event",
-              "lsb": 2,
-              "width": 1,
-              "access": "ro",
-              "desc": "nid_event"
-            },
-            {
-              "name": "nid_valid",
-              "lsb": 3,
-              "width": 1,
-              "access": "ro",
-              "desc": "nid_valid"
-            },
-            {
-              "name": "n_errors",
-              "lsb": 4,
-              "width": 7,
-              "access": "ro",
-              "desc": "n_errors"
-            },
-            {
-              "name": "sync_distance",
-              "lsb": 11,
-              "width": 7,
-              "access": "ro",
-              "desc": "sync_distance"
-            },
-            {
-              "name": "traffic_lsm_dibit_overflow",
-              "lsb": 18,
-              "width": 1,
-              "access": "ro",
-              "desc": "traffic_lsm_dibit_overflow"
-            }
-          ],
-          "read_side_effect": true,
-          "expected": null
-        },
-        {
-          "name": "traffic_lsm_nid",
-          "offset": "0xC8",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_lsm_nid",
-          "fields": [
-            {
-              "name": "nac",
-              "lsb": 0,
-              "width": 12,
-              "access": "ro",
-              "desc": "nac"
-            },
-            {
-              "name": "duid",
-              "lsb": 12,
-              "width": 4,
-              "access": "ro",
-              "desc": "duid"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic_lsm_drop_count",
-          "offset": "0xCC",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_lsm_drop_count",
-          "fields": [
-            {
-              "name": "drop_count",
-              "lsb": 0,
-              "width": 16,
-              "access": "ro",
-              "desc": "drop_count"
-            },
-            {
-              "name": "traffic_lsm_dibit_last_buffer",
-              "lsb": 16,
-              "width": 3,
-              "access": "ro",
-              "desc": "traffic_lsm_dibit_last_buffer"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic_lsm_dibit_next",
-          "offset": "0xD0",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_lsm_dibit_next",
-          "fields": [
-            {
-              "name": "next_address",
-              "lsb": 0,
-              "width": 32,
-              "access": "ro",
-              "desc": "next_address"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic_lsm_debug",
-          "offset": "0xD4",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_lsm_debug",
-          "fields": [
-            {
-              "name": "pll_dbg",
-              "lsb": 0,
-              "width": 16,
-              "access": "ro",
-              "desc": "pll_dbg"
-            },
-            {
-              "name": "sample_point_dbg",
-              "lsb": 16,
-              "width": 16,
-              "access": "ro",
-              "desc": "sample_point_dbg"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic_lsm_agc_debug",
-          "offset": "0xD8",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_lsm_agc_debug",
-          "fields": [
-            {
-              "name": "agc_gain_dbg",
-              "lsb": 0,
-              "width": 16,
-              "access": "ro",
-              "desc": "agc_gain_dbg"
-            },
-            {
-              "name": "agc_mag_dbg",
-              "lsb": 16,
-              "width": 16,
-              "access": "ro",
-              "desc": "agc_mag_dbg"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic_lsm_agc_config",
-          "offset": "0xDC",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_lsm_agc_config",
-          "fields": [
-            {
-              "name": "mag_update_threshold",
-              "lsb": 0,
-              "width": 16,
-              "access": "rw",
-              "desc": "mag_update_threshold"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        }
-      ]
-    },
-    {
-      "name": "wideband_iq",
-      "offset": "0xE0",
-      "regs": [
-        {
-          "name": "wideband_iq_dma_status",
-          "offset": "0xE0",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "wideband_iq_dma_status \u2014 READ CLEARS Rsticky bits (F2); read only when intended",
-          "fields": [
-            {
-              "name": "wideband_iq_overflow",
-              "lsb": 0,
-              "width": 1,
-              "access": "ro",
-              "desc": "wideband_iq_overflow"
-            },
-            {
-              "name": "last_buffer",
-              "lsb": 1,
-              "width": 4,
-              "access": "ro",
-              "desc": "last_buffer"
-            }
-          ],
-          "read_side_effect": true,
-          "expected": null
-        },
-        {
-          "name": "wideband_iq_dma_control",
-          "offset": "0xE4",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "wideband_iq_dma_control",
-          "fields": [
-            {
-              "name": "wideband_iq_enable",
-              "lsb": 0,
-              "width": 1,
-              "access": "rw",
-              "desc": "wideband_iq_enable"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "wideband_iq_next_address",
-          "offset": "0xE8",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "wideband_iq_next_address",
-          "fields": [
-            {
-              "name": "next_address",
-              "lsb": 0,
-              "width": 32,
-              "access": "ro",
-              "desc": "next_address"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        }
-      ]
-    },
-    {
-      "name": "lsm_seeds",
-      "offset": "0x100",
-      "regs": [
-        {
-          "name": "lsm_agc_seed",
-          "offset": "0x100",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "lsm_agc_seed",
-          "fields": [
-            {
-              "name": "agc_seed",
-              "lsb": 0,
-              "width": 20,
-              "access": "rw",
-              "desc": "agc_seed"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "lsm_pll_seed",
-          "offset": "0x104",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "lsm_pll_seed",
-          "fields": [
-            {
-              "name": "pll_seed",
-              "lsb": 0,
-              "width": 16,
-              "access": "rw",
-              "desc": "pll_seed"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "lsm_timing_seed",
-          "offset": "0x108",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "lsm_timing_seed",
-          "fields": [
-            {
-              "name": "timing_seed",
-              "lsb": 0,
-              "width": 18,
-              "access": "rw",
-              "desc": "timing_seed"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic_lsm_agc_seed",
-          "offset": "0x10C",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_lsm_agc_seed",
-          "fields": [
-            {
-              "name": "agc_seed",
-              "lsb": 0,
-              "width": 20,
-              "access": "rw",
-              "desc": "agc_seed"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic_lsm_pll_seed",
-          "offset": "0x110",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_lsm_pll_seed",
-          "fields": [
-            {
-              "name": "pll_seed",
-              "lsb": 0,
-              "width": 16,
-              "access": "rw",
-              "desc": "pll_seed"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic_lsm_timing_seed",
-          "offset": "0x114",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_lsm_timing_seed",
-          "fields": [
-            {
-              "name": "timing_seed",
-              "lsb": 0,
-              "width": 18,
-              "access": "rw",
-              "desc": "timing_seed"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        }
-      ]
-    },
-    {
-      "name": "traffic2_ddc",
-      "offset": "0x120",
-      "regs": [
-        {
-          "name": "traffic2_ddc_coeff_addr",
-          "offset": "0x120",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic2_ddc_coeff_addr",
-          "fields": [
-            {
-              "name": "traffic2_coeff_waddr",
+              "name": "coeff_waddr",
               "lsb": 0,
               "width": 10,
               "access": "rw",
-              "desc": "traffic2_coeff_waddr"
+              "desc": "coeff_waddr"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "traffic2_ddc_coeff",
-          "offset": "0x128",
+          "name": "lane2_ddc_coeff",
+          "offset": "0x068",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic2_ddc_coeff",
+          "desc": "lane2_ddc_coeff",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "traffic2_coeff_wren",
+              "name": "coeff_wren",
               "lsb": 0,
               "width": 1,
               "access": "wo",
-              "desc": "traffic2_coeff_wren"
+              "desc": "coeff_wren"
             },
             {
-              "name": "traffic2_coeff_wdata",
+              "name": "coeff_wdata",
               "lsb": 1,
               "width": 18,
               "access": "rw",
-              "desc": "traffic2_coeff_wdata"
+              "desc": "coeff_wdata"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "traffic2_ddc_decimation",
-          "offset": "0x12C",
+          "name": "lane2_ddc_decimation",
+          "offset": "0x06C",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic2_ddc_decimation",
+          "desc": "lane2_ddc_decimation",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "traffic2_decimation1",
+              "name": "decimation1",
               "lsb": 0,
               "width": 7,
               "access": "rw",
-              "desc": "traffic2_decimation1"
+              "desc": "decimation1"
             },
             {
-              "name": "traffic2_decimation2",
+              "name": "decimation2",
               "lsb": 7,
               "width": 6,
               "access": "rw",
-              "desc": "traffic2_decimation2"
+              "desc": "decimation2"
             },
             {
-              "name": "traffic2_decimation3",
+              "name": "decimation3",
               "lsb": 13,
               "width": 7,
               "access": "rw",
-              "desc": "traffic2_decimation3"
+              "desc": "decimation3"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "traffic2_ddc_frequency",
-          "offset": "0x130",
+          "name": "lane2_ddc_frequency",
+          "offset": "0x070",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic2_ddc_frequency",
+          "desc": "lane2_ddc_frequency",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "traffic2_frequency",
+              "name": "frequency",
               "lsb": 0,
               "width": 28,
               "access": "rw",
-              "desc": "traffic2_frequency"
+              "desc": "frequency"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "traffic2_ddc_control",
-          "offset": "0x134",
+          "name": "lane2_ddc_control",
+          "offset": "0x074",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic2_ddc_control",
+          "desc": "lane2_ddc_control",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "traffic2_operations_minus_one1",
+              "name": "operations_minus_one1",
               "lsb": 0,
               "width": 7,
               "access": "rw",
-              "desc": "traffic2_operations_minus_one1"
+              "desc": "operations_minus_one1"
             },
             {
-              "name": "traffic2_operations_minus_one2",
+              "name": "operations_minus_one2",
               "lsb": 7,
               "width": 6,
               "access": "rw",
-              "desc": "traffic2_operations_minus_one2"
+              "desc": "operations_minus_one2"
             },
             {
-              "name": "traffic2_operations_minus_one3",
+              "name": "operations_minus_one3",
               "lsb": 13,
               "width": 7,
               "access": "rw",
-              "desc": "traffic2_operations_minus_one3"
+              "desc": "operations_minus_one3"
             },
             {
-              "name": "traffic2_odd_operations1",
+              "name": "odd_operations1",
               "lsb": 20,
               "width": 1,
               "access": "rw",
-              "desc": "traffic2_odd_operations1"
+              "desc": "odd_operations1"
             },
             {
-              "name": "traffic2_odd_operations3",
+              "name": "odd_operations3",
               "lsb": 21,
               "width": 1,
               "access": "rw",
-              "desc": "traffic2_odd_operations3"
+              "desc": "odd_operations3"
             },
             {
-              "name": "traffic2_bypass2",
+              "name": "bypass2",
               "lsb": 22,
               "width": 1,
               "access": "rw",
-              "desc": "traffic2_bypass2"
+              "desc": "bypass2"
             },
             {
-              "name": "traffic2_bypass3",
+              "name": "bypass3",
               "lsb": 23,
               "width": 1,
               "access": "rw",
-              "desc": "traffic2_bypass3"
+              "desc": "bypass3"
             },
             {
-              "name": "traffic2_enable_input",
+              "name": "enable_input",
               "lsb": 24,
               "width": 1,
               "access": "rw",
-              "desc": "traffic2_enable_input"
+              "desc": "enable_input"
             }
-          ],
+          ]
+        },
+        {
+          "name": "lane2_control",
+          "offset": "0x078",
+          "access": "rw",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "lane2_control",
+          "domain": "sync",
           "read_side_effect": false,
-          "expected": null
+          "expected": null,
+          "fields": [
+            {
+              "name": "enable",
+              "lsb": 0,
+              "width": 1,
+              "access": "rw",
+              "desc": "enable"
+            },
+            {
+              "name": "reserved",
+              "lsb": 1,
+              "width": 15,
+              "access": "ro",
+              "desc": "reserved"
+            },
+            {
+              "name": "tag",
+              "lsb": 16,
+              "width": 16,
+              "access": "rw",
+              "desc": "tag"
+            }
+          ]
+        },
+        {
+          "name": "lane2_status",
+          "offset": "0x07C",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "lane2_status (a read clears its sticky bits)",
+          "domain": "sync",
+          "read_side_effect": true,
+          "expected": null,
+          "fields": [
+            {
+              "name": "lost",
+              "lsb": 0,
+              "width": 1,
+              "access": "ro",
+              "desc": "lost"
+            }
+          ]
         }
       ]
     },
     {
-      "name": "traffic2_lsm",
-      "offset": "0x140",
+      "name": "lanes_ring",
+      "offset": "0x080",
+      "domain": "sync",
       "regs": [
         {
-          "name": "traffic2_lsm_control",
-          "offset": "0x140",
+          "name": "lanes_ring_control",
+          "offset": "0x080",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic2_lsm_control",
+          "desc": "lanes_ring_control",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "traffic2_lsm_enable",
+              "name": "enable",
               "lsb": 0,
               "width": 1,
               "access": "rw",
-              "desc": "traffic2_lsm_enable"
-            },
-            {
-              "name": "traffic2_lsm_dibit_dma_enable",
-              "lsb": 1,
-              "width": 1,
-              "access": "rw",
-              "desc": "traffic2_lsm_dibit_dma_enable"
-            },
-            {
-              "name": "traffic2_lsm_reset",
-              "lsb": 2,
-              "width": 1,
-              "access": "wo",
-              "desc": "traffic2_lsm_reset"
-            },
-            {
-              "name": "traffic2_lsm_dc_block_enable",
-              "lsb": 3,
-              "width": 1,
-              "access": "rw",
-              "desc": "traffic2_lsm_dc_block_enable"
-            },
-            {
-              "name": "traffic2_lsm_agc_enable",
-              "lsb": 4,
-              "width": 1,
-              "access": "rw",
-              "desc": "traffic2_lsm_agc_enable"
+              "desc": "enable"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "traffic2_lsm_status",
-          "offset": "0x144",
+          "name": "lanes_ring_status",
+          "offset": "0x084",
           "access": "ro",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic2_lsm_status \u2014 READ CLEARS Rsticky bits (F2); read only when intended",
+          "desc": "lanes_ring_status",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "bch_busy",
+              "name": "last_buffer",
               "lsb": 0,
-              "width": 1,
-              "access": "ro",
-              "desc": "bch_busy"
-            },
-            {
-              "name": "in_nid_window",
-              "lsb": 1,
-              "width": 1,
-              "access": "ro",
-              "desc": "in_nid_window"
-            },
-            {
-              "name": "nid_event",
-              "lsb": 2,
-              "width": 1,
-              "access": "ro",
-              "desc": "nid_event"
-            },
-            {
-              "name": "nid_valid",
-              "lsb": 3,
-              "width": 1,
-              "access": "ro",
-              "desc": "nid_valid"
-            },
-            {
-              "name": "n_errors",
-              "lsb": 4,
               "width": 7,
               "access": "ro",
-              "desc": "n_errors"
-            },
-            {
-              "name": "sync_distance",
-              "lsb": 11,
-              "width": 7,
-              "access": "ro",
-              "desc": "sync_distance"
-            },
-            {
-              "name": "traffic2_lsm_dibit_overflow",
-              "lsb": 18,
-              "width": 1,
-              "access": "ro",
-              "desc": "traffic2_lsm_dibit_overflow"
+              "desc": "last_buffer"
             }
-          ],
-          "read_side_effect": true,
-          "expected": null
+          ]
         },
         {
-          "name": "traffic2_lsm_nid",
-          "offset": "0x148",
+          "name": "lanes_ring_next_address",
+          "offset": "0x088",
           "access": "ro",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic2_lsm_nid",
-          "fields": [
-            {
-              "name": "nac",
-              "lsb": 0,
-              "width": 12,
-              "access": "ro",
-              "desc": "nac"
-            },
-            {
-              "name": "duid",
-              "lsb": 12,
-              "width": 4,
-              "access": "ro",
-              "desc": "duid"
-            }
-          ],
+          "desc": "lanes_ring_next_address",
+          "domain": "sync",
           "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic2_lsm_drop_count",
-          "offset": "0x14C",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic2_lsm_drop_count",
-          "fields": [
-            {
-              "name": "drop_count",
-              "lsb": 0,
-              "width": 16,
-              "access": "ro",
-              "desc": "drop_count"
-            },
-            {
-              "name": "traffic2_lsm_dibit_last_buffer",
-              "lsb": 16,
-              "width": 3,
-              "access": "ro",
-              "desc": "traffic2_lsm_dibit_last_buffer"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic2_lsm_dibit_next",
-          "offset": "0x150",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic2_lsm_dibit_next",
+          "expected": null,
           "fields": [
             {
               "name": "next_address",
@@ -1752,164 +976,89 @@
               "access": "ro",
               "desc": "next_address"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "traffic2_lsm_debug",
-          "offset": "0x154",
+          "name": "sample_count_lo",
+          "offset": "0x08C",
           "access": "ro",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic2_lsm_debug",
+          "desc": "sample_count_lo",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "pll_dbg",
+              "name": "count",
               "lsb": 0,
-              "width": 16,
+              "width": 32,
               "access": "ro",
-              "desc": "pll_dbg"
-            },
-            {
-              "name": "sample_point_dbg",
-              "lsb": 16,
-              "width": 16,
-              "access": "ro",
-              "desc": "sample_point_dbg"
+              "desc": "count"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "traffic2_lsm_agc_debug",
-          "offset": "0x158",
+          "name": "sample_count_hi",
+          "offset": "0x090",
           "access": "ro",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "traffic2_lsm_agc_debug",
+          "desc": "sample_count_hi",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "agc_gain_dbg",
+              "name": "count",
               "lsb": 0,
-              "width": 16,
+              "width": 32,
               "access": "ro",
-              "desc": "agc_gain_dbg"
-            },
+              "desc": "count"
+            }
+          ]
+        },
+        {
+          "name": "adc_clips",
+          "offset": "0x094",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "adc_clips",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
             {
-              "name": "agc_mag_dbg",
-              "lsb": 16,
-              "width": 16,
+              "name": "count",
+              "lsb": 0,
+              "width": 32,
               "access": "ro",
-              "desc": "agc_mag_dbg"
+              "desc": "count"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic2_lsm_agc_config",
-          "offset": "0x15C",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic2_lsm_agc_config",
-          "fields": [
-            {
-              "name": "mag_update_threshold",
-              "lsb": 0,
-              "width": 16,
-              "access": "rw",
-              "desc": "mag_update_threshold"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        }
-      ]
-    },
-    {
-      "name": "traffic2_lsm_seeds",
-      "offset": "0x160",
-      "regs": [
-        {
-          "name": "traffic2_lsm_agc_seed",
-          "offset": "0x160",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic2_lsm_agc_seed",
-          "fields": [
-            {
-              "name": "agc_seed",
-              "lsb": 0,
-              "width": 20,
-              "access": "rw",
-              "desc": "agc_seed"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic2_lsm_pll_seed",
-          "offset": "0x164",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic2_lsm_pll_seed",
-          "fields": [
-            {
-              "name": "pll_seed",
-              "lsb": 0,
-              "width": 16,
-              "access": "rw",
-              "desc": "pll_seed"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic2_lsm_timing_seed",
-          "offset": "0x168",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic2_lsm_timing_seed",
-          "fields": [
-            {
-              "name": "timing_seed",
-              "lsb": 0,
-              "width": 18,
-              "access": "rw",
-              "desc": "timing_seed"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         }
       ]
     },
     {
       "name": "spectrometer",
-      "offset": "0x180",
+      "offset": "0x0A0",
+      "domain": "sync",
       "regs": [
         {
           "name": "spec_control",
-          "offset": "0x180",
+          "offset": "0x0A0",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
           "desc": "spec_control",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
               "name": "spec_enable",
@@ -1939,18 +1088,19 @@
               "access": "rw",
               "desc": "spec_num_integrations"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
           "name": "spec_status",
-          "offset": "0x184",
+          "offset": "0x0A4",
           "access": "ro",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "spec_status \u2014 READ CLEARS Rsticky bits (F2); read only when intended",
+          "desc": "spec_status (a read clears its sticky bits)",
+          "domain": "sync",
+          "read_side_effect": true,
+          "expected": null,
           "fields": [
             {
               "name": "spec_overflow",
@@ -1966,18 +1116,19 @@
               "access": "ro",
               "desc": "spec_last_buffer"
             }
-          ],
-          "read_side_effect": true,
-          "expected": null
+          ]
         },
         {
           "name": "spec_next_address",
-          "offset": "0x188",
+          "offset": "0x0A8",
           "access": "ro",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
           "desc": "spec_next_address",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
               "name": "next_address",
@@ -1986,71 +1137,75 @@
               "access": "ro",
               "desc": "next_address"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         }
       ]
     },
     {
-      "name": "pre_diff_iq",
-      "offset": "0x1A0",
+      "name": "wideband_iq",
+      "offset": "0x0C0",
+      "domain": "sync",
       "regs": [
         {
-          "name": "pre_diff_iq_dma_status",
-          "offset": "0x1A0",
+          "name": "wideband_iq_dma_status",
+          "offset": "0x0C0",
           "access": "ro",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "pre_diff_iq_dma_status \u2014 READ CLEARS Rsticky bits (F2); read only when intended",
+          "desc": "wideband_iq_dma_status (a read clears its sticky bits)",
+          "domain": "sync",
+          "read_side_effect": true,
+          "expected": null,
           "fields": [
             {
-              "name": "pre_diff_iq_overflow",
+              "name": "wideband_iq_overflow",
               "lsb": 0,
               "width": 1,
               "access": "ro",
-              "desc": "pre_diff_iq_overflow"
+              "desc": "wideband_iq_overflow"
             },
             {
               "name": "last_buffer",
               "lsb": 1,
-              "width": 3,
+              "width": 4,
               "access": "ro",
               "desc": "last_buffer"
             }
-          ],
-          "read_side_effect": true,
-          "expected": null
+          ]
         },
         {
-          "name": "pre_diff_iq_dma_control",
-          "offset": "0x1A4",
+          "name": "wideband_iq_dma_control",
+          "offset": "0x0C4",
           "access": "rw",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "pre_diff_iq_dma_control",
+          "desc": "wideband_iq_dma_control",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
-              "name": "pre_diff_iq_enable",
+              "name": "wideband_iq_enable",
               "lsb": 0,
               "width": 1,
               "access": "rw",
-              "desc": "pre_diff_iq_enable"
+              "desc": "wideband_iq_enable"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         },
         {
-          "name": "pre_diff_iq_next_address",
-          "offset": "0x1A8",
+          "name": "wideband_iq_next_address",
+          "offset": "0x0C8",
           "access": "ro",
           "width": 32,
-          "reset": "0x0",
+          "reset": null,
           "snapshot": null,
-          "desc": "pre_diff_iq_next_address",
+          "desc": "wideband_iq_next_address",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
           "fields": [
             {
               "name": "next_address",
@@ -2059,90 +1214,9 @@
               "access": "ro",
               "desc": "next_address"
             }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        }
-      ]
-    },
-    {
-      "name": "traffic_pre_diff_iq",
-      "offset": "0x1C0",
-      "regs": [
-        {
-          "name": "traffic_pre_diff_iq_dma_status",
-          "offset": "0x1C0",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_pre_diff_iq_dma_status \u2014 READ CLEARS Rsticky bits (F2); read only when intended",
-          "fields": [
-            {
-              "name": "traffic_pre_diff_iq_overflow",
-              "lsb": 0,
-              "width": 1,
-              "access": "ro",
-              "desc": "traffic_pre_diff_iq_overflow"
-            },
-            {
-              "name": "traffic_pre_diff_iq_last_buffer",
-              "lsb": 1,
-              "width": 3,
-              "access": "ro",
-              "desc": "traffic_pre_diff_iq_last_buffer"
-            }
-          ],
-          "read_side_effect": true,
-          "expected": null
-        },
-        {
-          "name": "traffic_pre_diff_iq_dma_control",
-          "offset": "0x1C4",
-          "access": "rw",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_pre_diff_iq_dma_control",
-          "fields": [
-            {
-              "name": "traffic_pre_diff_iq_enable",
-              "lsb": 0,
-              "width": 1,
-              "access": "rw",
-              "desc": "traffic_pre_diff_iq_enable"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
-        },
-        {
-          "name": "traffic_pre_diff_iq_next_address",
-          "offset": "0x1C8",
-          "access": "ro",
-          "width": 32,
-          "reset": "0x0",
-          "snapshot": null,
-          "desc": "traffic_pre_diff_iq_next_address",
-          "fields": [
-            {
-              "name": "next_address",
-              "lsb": 0,
-              "width": 32,
-              "access": "ro",
-              "desc": "next_address"
-            }
-          ],
-          "read_side_effect": false,
-          "expected": null
+          ]
         }
       ]
     }
-  ],
-  "vacant": [
-    [
-      "0x1E0",
-      "0x200"
-    ]
   ]
 }

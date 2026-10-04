@@ -246,18 +246,18 @@ def test_agent_passthrough_and_contract(cli, services) -> None:
 
 
 def test_reg_read_write_and_refusals(cli, services) -> None:
-    services.sim.regs[("A", "p25", "product_id")] = 0x70323566
+    services.sim.regs[("A", "p25", "product_id")] = 0x72616431
     code, doc = cli("reg", "A", "p25", "read", "product_id")
     _common(doc, "reg", 0)
-    assert doc["value"] == "0x70323566" and doc["matches_expected"] is True
+    assert doc["value"] == "0x72616431" and doc["matches_expected"] is True
     assert doc["address"] == "0x7c460000"
-    code, doc = cli("reg", "A", "p25", "read", "iq_dma_status")
+    code, doc = cli("reg", "A", "p25", "read", "wideband_iq_dma_status")
     assert code == 4 and "read-to-clear" in doc["error"]
-    code, doc = cli("reg", "A", "p25", "read", "iq_dma_status", "--allow-side-effect")
+    code, doc = cli("reg", "A", "p25", "read", "wideband_iq_dma_status", "--allow-side-effect")
     assert code == 0
     assert services.agent.calls[-1][1][-1] == "--force-side-effects"
-    code, doc = cli("reg", "A", "p25", "read", "0x1E8")
-    assert code == 4  # vacant bank
+    code, doc = cli("reg", "A", "p25", "read", "0x400")
+    assert code == 4  # above the decoded window
     code, doc = cli("reg", "A", "p25", "write", "product_id", "0x1")
     assert code == 4  # read-only
     code, doc = cli("reg", "A", "adi_adc", "write", "SCRATCH", "0x1234")
@@ -278,8 +278,8 @@ def test_tx_off_agent_and_host_fallback(cli, services) -> None:
 def test_regmaps_build_and_show(cli, tmp_path: Path) -> None:
     code, doc = cli("regmaps", "build", "--out", str(tmp_path))
     _common(doc, "regmaps", 0)
-    assert doc["cores"]["p25"] == 70
-    code, doc = cli("regmaps", "show", "--core", "p25", "--out", str(tmp_path))
+    assert "p25" not in doc["cores"] and doc["cores"]["adi_adc"] > 0
+    code, doc = cli("regmaps", "show", "--core", "p25")
     assert any(r["read_side_effect"] for r in doc["regs"])
 
 

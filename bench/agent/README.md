@@ -65,12 +65,13 @@ Host tests: `cargo test` in `bench/agent/` (unit tests of all pure logic plus
 ## Safety behaviour
 
 - **Register allow-lists** (rule 5, F15): every register access goes through a
-  map. Unknown registers, offsets in vacant P25 banks (0x120-0x17F,
-  0x1E0-0x1FF) and anything at or above 0x200 (aliases) are refused before the
-  device is even opened. P25 sync-domain banks are refused while
-  `control.sdr_reset = 1` (they would hang the AXI bus). Read-to-clear
-  registers (P25 0x0C, 0x60, 0x80, 0xA4, 0xC4, 0xE0, 0x184, 0x1A0, 0x1C0; axi_dmac
-  PARTIAL_TRANSFER_ID) need `--force-side-effects`. PS cores (`slcr`, `ddrc`,
+  map. Unknown registers and anything at or above the radio core's 1 KB window
+  (0x400: the bus aliases there) are refused before the device is even opened.
+  The radio core's sync-domain banks are refused while `control.sdr_reset = 1`
+  (they read 0 and drop writes until it clears). Read-to-clear registers (the
+  radio core's `interrupts` 0x0C, `laneN_status` 0x3C/0x5C/0x7C, `spec_status`
+  0xA4, `wideband_iq_dma_status` 0xC0; axi_dmac PARTIAL_TRANSFER_ID) need
+  `--force-side-effects`. PS cores (`slcr`, `ddrc`,
   `l2c`, `afi`) are read-only; `rx_dmac`/`tx_dmac` only allow SCRATCH writes;
   core resets (`RSTN`) need `--force`; TX-affecting DAC registers need `--tx-ok`.
 - **Maintenance mode** (rule 4): commands that replace or corrupt the RX
@@ -121,10 +122,10 @@ as block-relative). A file may hold one map, an array of maps, or
 
 Built-in maps (embedded; `bench/agent/maps/*.json`): `adi_adc`, `adi_dac`
 (both at 0x79020000, DAC offsets 0x4000+), `rx_dmac`, `tx_dmac`, `slcr`
-(including DDRIOB 0xB40-0xB74), `ddrc`, `l2c`, `afi`, `p25` (generated at
-build time from `p25-httpd/p25-pac/p25.svd` by `build.rs`, with the
-read-to-clear, clock-domain, reset-gate and vacant-bank annotations added) and
-an ID-only `hwval`. Every `*.json` in the share directory overrides the
+(including DDRIOB 0xB40-0xB74), `ddrc`, `l2c`, `afi`, `p25` (the radio core:
+`bench/share/p25_regs.json`, which scanner-hdl's `radio_core.bench_map` writes
+from the core's own register banks with their read-to-clear registers, clock
+domains and reset gate; `build.rs` embeds it) and an ID-only `hwval`. Every `*.json` in the share directory overrides the
 built-in of the same core, but the built-in safety annotations are merged back
 as a floor (a share map cannot remove a read side effect, vacant range, reset
 gate, UIO requirement or read-only flag).
@@ -167,7 +168,7 @@ fbench-agent info
  "model": "FISH Ball PlutoSDR Rev.A (Z7020/AD9361)", "serial": "OVHNVI2FJEBXAB4M",
  "hw_model": "...", "fw_version": "...", "hostname": "pluto",
  "image": "p25",
- "bitstream": {"core": "p25", "product_id": "0x70323566", "name": "p25f", "version": "0.1.0", "platform": 0, "sdr_reset": 0},
+ "bitstream": {"core": "p25", "product_id": "0x72616431", "name": "rad1", "version": "1.0.0", "platform": 0, "sdr_reset": 0},
  "fpga_dna": null,
  "ad936x_compatible": "adi,ad9361", "ad936x_note": "AD9361 and AD9363 cannot be told apart in software; see bench config",
  "sample_rate_hz": 8000000, "rx_lo_hz": 858100000,
@@ -235,7 +236,7 @@ registers), `--tx-ok` (TX-affecting), `--no-init` (hwval).
 
 ```json
 {"ok": true, "cmd": "reg read", "core": "p25", "reg": "product_id", "offset": "0x000",
- "value": 1882338662, "hex": "0x70323566", "fields": {"product_id": 1882338662},
+ "value": 1918985265, "hex": "0x72616431", "fields": {"product_id": 1918985265},
  "snapshot": [{"mask": 1, "ack": 1, "ok": true, "dead_domains": [], "elapsed_us": 3}], "stale": false}
 ```
 
@@ -441,7 +442,7 @@ ring v2 lines also carry `committed`, `from`, `to`, `lost_bursts`,
 ```
 
 Rings: `p25-wideband` (`/dev/p25-wideband-iq`, 16 x 1 MiB at 0x22000000,
-`last_buffer` from status 0xE0), `hwval-legacy` (`/dev/hwval-legacy`,
+`last_buffer` from status 0xC0), `hwval-legacy` (`/dev/hwval-legacy`,
 LEGACY_LAST_BUFFER via snapshot), `hwval-v2` (`/dev/hwval-ringv2`, window
 0x20000000, runtime RINGV2_BASE/SIZE_BURSTS, committed-pointer protocol).
 `--dev` / `--phys` override the device and base. Mappings: `cached`

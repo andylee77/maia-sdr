@@ -564,31 +564,31 @@ mod tests {
         }
         let p25 = set.core("p25").unwrap();
         assert_eq!(p25.base, 0x7C46_0000);
-        assert_eq!(p25.id_value, Some(0x7032_3566));
+        assert_eq!(p25.id_value, Some(0x7261_6431));
         let st = p25.get("wideband_iq_dma_status").unwrap();
-        assert_eq!(st.offset, 0xE0);
+        assert_eq!(st.offset, 0xC0);
         assert!(st.read_side_effect);
         assert_eq!(st.domain.as_deref(), Some("sync"));
         let ctl = p25.get("control").unwrap();
         assert_eq!(ctl.domain.as_deref(), Some("axi_lite"));
         assert!(!ctl.read_side_effect);
         assert_eq!(ctl.field("sdr_reset").unwrap().lsb, 0);
-        for rtc in [0x0Cu32, 0x60, 0x80, 0xA4, 0xC4, 0xE0, 0x144, 0x184, 0x1A0, 0x1C0] {
+        // interrupts, each lane's status, the spectrum's and the capture's.
+        for rtc in [0x0Cu32, 0x3C, 0x5C, 0x7C, 0xA4, 0xC0] {
             let r = p25.regs.iter().find(|r| r.offset == rtc).unwrap();
             assert!(r.read_side_effect, "0x{rtc:X}");
         }
-        assert!(p25.offset_forbidden(0x1E0).is_some());
-        assert!(p25.offset_forbidden(0x1FC).is_some());
-        assert!(p25.offset_forbidden(0x200).is_some());
-        assert!(p25.offset_forbidden(0x2E0).is_some());
-        assert!(p25.offset_forbidden(0x120).is_none());
-        assert!(p25.offset_forbidden(0x180).is_none());
+        assert_eq!(p25.regs.iter().filter(|r| r.read_side_effect).count(), 6);
+        // The bridge answers every address of its 1 KB window; above it the bus aliases.
+        assert!(p25.offset_forbidden(0x3FC).is_none());
+        assert!(p25.offset_forbidden(0x400).is_some());
+        assert!(p25.offset_forbidden(0x0E0).is_none());
         // No mapped register sits in a forbidden range.
         for r in &p25.regs {
             assert!(p25.offset_forbidden(r.offset).is_none(), "{}", r.name);
         }
-        assert!(p25.find("0x1E0").is_none());
-        assert_eq!(p25.find("0x120").unwrap().name, "traffic2_ddc_coeff_addr");
+        assert!(p25.find("0x0E0").is_none());
+        assert_eq!(p25.find("0x020").unwrap().name, "lane0_ddc_coeff_addr");
         let adc = set.core("adi_adc").unwrap();
         assert_eq!(adc.get("CHAN1_CNTRL_3").unwrap().offset, 0x458);
         assert_eq!(adc.get("IDELAY_6").unwrap().offset, 0x818);
@@ -626,9 +626,9 @@ mod tests {
         let share = json!({
             "schema": "fbench.regmap/1", "core": "p25", "base": "0x7C460000", "size": 4096,
             "regs": [
-                {"name": "WB_STATUS", "offset": "0xE0", "access": "ro"},
+                {"name": "WB_STATUS", "offset": "0xC0", "access": "ro"},
                 {"name": "PRODUCT", "offset": 0, "access": "ro"},
-                {"name": "BAD", "offset": "0x1E4", "access": "ro"}
+                {"name": "BAD", "offset": "0x404", "access": "ro"}
             ]
         });
         let (cores, _) = cores_from_file_value(&share, "test");

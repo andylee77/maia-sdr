@@ -14,6 +14,7 @@
 # SPDX-License-Identifier: MIT
 #
 
+import json
 import os
 import re
 import unittest
@@ -23,7 +24,7 @@ import amaranth.back.verilog
 from amaranth.sim import Simulator
 
 from maia_hdl.pluto_platform import PlutoPlatform
-from radio_core import p25_top
+from radio_core import bench_map, p25_top
 from radio_core.config import P25Config
 from radio_core.lane_packetizer import (
     FLAG_RETUNED, HEADER_WORDS, MAGIC, MAX_SAMPLES, PACKET_WORDS, fold)
@@ -35,6 +36,7 @@ from .hwval_axil_bfm import axil_read, axil_write
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, '..', '..'))
 CORE_PAC_SVD = os.path.join(REPO, 'scanner', 'core-pac', 'core.svd')
+BENCH_MAP = os.path.join(REPO, 'bench', 'share', 'p25_regs.json')
 BUILD_FPGA_BAT = os.path.join(REPO, 'build_fpga.bat')
 PACKAGE_IP_TCL = os.path.join(REPO, 'maia-hdl', 'ip', 'p25-core', 'package_ip.tcl')
 SYSTEM_BD_TCL = os.path.join(REPO, 'maia-hdl', 'projects', 'fishball7020_p25', 'system_bd.tcl')
@@ -165,6 +167,11 @@ class TestP25RegisterMap(unittest.TestCase):
         with open(CORE_PAC_SVD, 'rb') as f:
             pac = f.read().replace(b'\r\n', b'\n')
         self.assertEqual(pac, self.svd.replace(b'\r\n', b'\n'))
+
+    def test_bench_map_matches_hdl(self):
+        """bench/share/p25_regs.json is this gateware's map (`python -m radio_core.bench_map`)."""
+        with open(BENCH_MAP, encoding='utf-8') as f:
+            self.assertEqual(json.load(f), bench_map.bench_map())
 
 
 def verilog_top_ports(verilog):

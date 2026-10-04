@@ -95,7 +95,7 @@ Every verb takes `--json`, `--config PATH`, `--timeout S` (default per remote ca
 | `agent` | `fbench agent A -- maint status` / `fbench agent --contract` | Raw passthrough; `--contract` prints the assumed agent CLI/JSON. |
 | `reg` | `fbench reg A p25 read product_id` | Allow-listed; read-to-clear registers need `--allow-side-effect`; writes to `ro` registers refused (exit 4). |
 | `tx` | `fbench tx B off` | Emergency: agent `tx off`, or libiio fallback (hardwaregain −89.75, DDS scale 0). |
-| `regmaps` | `fbench regmaps build` / `regmaps show --core p25` | Regenerates `share/p25_regs.json` (from `p25-httpd/p25-pac/p25.svd`), `adi_regs.json`, `ps_regs.json`. |
+| `regmaps` | `fbench regmaps build` / `regmaps show --core p25` | Regenerates `share/adi_regs.json` and `ps_regs.json`. `share/p25_regs.json`, the radio core's map, is written by the FPGA build (scanner-hdl's `radio_core.bench_map`). |
 | `console` | `fbench console A --seconds 120 --until "login:"` / `console --list` | FT2232 DEBUG UART (115200 8N1); log in `run_*_console_A/artifacts/console.log`. Needs pyserial. |
 
 ### Exit codes
@@ -168,7 +168,7 @@ agent info, IIO context), `log.txt`, `artifacts/`, `FINDINGS.md`. Suites also wr
    scanner, or p25-httpd on older cards) and always `maint exit` afterwards;
    `rf.refclk_eth` enters it itself only when it must change the RX rate.
 5. **Register allow-lists**: `reg` only touches registers listed in `share/*.json`
-   (vacant p25_core banks are not listed; reading them hangs the bus, F15).
+   (offsets above the radio core's 1 KB window are refused: the bus aliases there).
 6. **Storage**: the bench only writes under `/mnt/sd/bench/**` (and `/tmp` on the board
    for RAM-first captures). `setup net --apply-env` is the only persistent config
    change and needs the explicit flag.

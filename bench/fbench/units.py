@@ -25,7 +25,7 @@ from typing import Any
 from .config import BenchConfig, UnitConfig, normalize_dna
 from .errors import FbenchError
 
-P25_PRODUCT_ID = 0x70323566  # "p25f"
+P25_PRODUCT_ID = 0x72616431  # "rad1", the radio core
 HWVAL_ID = 0x68777631  # "hwv1"
 
 

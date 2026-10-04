@@ -140,7 +140,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = verb("regmaps", "build or show register maps (bench/share/*.json)")
     sp.add_argument("action", choices=["build", "show"])
-    sp.add_argument("--svd")
     sp.add_argument("--out")
     sp.add_argument("--core")
 
@@ -462,12 +461,12 @@ def cmd_tx(env: Env) -> tuple[dict[str, Any], int]:
 
 def cmd_regmaps(env: Env) -> tuple[dict[str, Any], int]:
     from . import BENCH_DIR
-    from .regmaps import P25_SVD, build_all, load_regmaps
+    from .regmaps import build_all, load_regmaps
 
     ns = env.ns
     if ns.action == "build":
         out_dir = Path(ns.out) if ns.out else BENCH_DIR / "share"
-        written = build_all(out_dir, Path(ns.svd) if ns.svd else P25_SVD)
+        written = build_all(out_dir)
         maps = load_regmaps(out_dir)
         return {"written": [p.as_posix() for p in written],
                 "cores": {k: len(v) for k, v in maps.items()}}, 0

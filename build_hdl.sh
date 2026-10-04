@@ -293,6 +293,10 @@ svd_bytes = core.svd()
 with open('p25.svd', 'wb') as f:
     f.write(svd_bytes)
 
+# The bench's register map, from the same banks (read-to-clear registers and clock domains).
+from radio_core.bench_map import write_bench_map
+write_bench_map('p25_regs.json')
+
 import xml.etree.ElementTree as ET
 tree = ET.fromstring(svd_bytes)
 regs = tree.findall('.//register')
@@ -408,9 +412,12 @@ if $DO_P25; then
     cp "$SRC_DIR/p25_core.v" "$P25_IP_DIR/p25_core.v"
     log "  ✓ p25_core.v → maia-hdl/ip/p25-core/$P25_CONFIG/ ($(wc -l < "$SRC_DIR/p25_core.v") lines)"
 
+    # The bench's register map (the board agent embeds it; fbench reads it).
+    cp "$SRC_DIR/p25_regs.json" "$SRC_MOUNT/bench/share/p25_regs.json"
+    log "  ✓ p25_regs.json → bench/share/"
+
     # Copy the core's SVD into the scanner's core-pac crate and regenerate the PAC if
     # svd2rust is available. Otherwise leave it for the host to run manually.
-    # (p25-httpd/p25-pac keeps the 0.3.0 map until p25-httpd leaves the repo.)
     CORE_PAC_DIR="$SRC_MOUNT/scanner/core-pac"
     if [ -d "$CORE_PAC_DIR" ]; then
         cp "$SRC_DIR/p25.svd" "$CORE_PAC_DIR/core.svd"

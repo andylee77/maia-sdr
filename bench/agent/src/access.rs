@@ -304,11 +304,11 @@ mod tests {
         let set = MapSet::builtin();
         let p25 = set.core("p25").unwrap();
         let mut io = MockIo::new();
-        io.regs.insert(0x0, 0x7032_3566);
+        io.regs.insert(0x0, 0x7261_6431);
         io.regs.insert(0x8, 1); // sdr_reset = 1
-        io.regs.insert(0xE0, 0x1F);
+        io.regs.insert(0xC0, 0x1F);
         let mut a = RegAccess::new(p25, &mut io);
-        assert_eq!(a.read("product_id").unwrap(), 0x7032_3566);
+        assert_eq!(a.read("product_id").unwrap(), 0x7261_6431);
         // Read-to-clear refused by default.
         let e = a.read("wideband_iq_dma_status").unwrap_err();
         assert_eq!(e.code, Code::Safety);
@@ -317,8 +317,8 @@ mod tests {
         assert!(e.msg.contains("reset"), "{}", e.msg);
         let e = a.read("wideband_iq_next_address").unwrap_err();
         assert_eq!(e.code, Code::Safety);
-        // Vacant offsets are not even resolvable.
-        assert!(a.core.find("0x1E0").is_none());
+        // Offsets above the decoded window are not even resolvable.
+        assert!(a.core.find("0x400").is_none());
         // Release the reset -> allowed.
         a.write("control", 0).unwrap();
         a.refresh();
@@ -327,7 +327,7 @@ mod tests {
         // Read-only register writes are refused.
         assert_eq!(a.write("product_id", 1).unwrap_err().code, Code::Safety);
         drop(a);
-        // The mock never saw an access in a vacant range.
+        // The mock never saw an access at a forbidden offset.
         assert!(io.reads.iter().all(|o| p25.offset_forbidden(*o).is_none()));
     }
 

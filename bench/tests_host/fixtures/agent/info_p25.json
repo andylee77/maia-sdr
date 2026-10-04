@@ -10,8 +10,8 @@
   "fw_version": "tezuka-v0.3",
   "bitstream": {
     "core": "p25",
-    "product_id": "0x70323566",
-    "name": "p25",
+    "product_id": "0x72616431",
+    "name": "rad1",
     "version": "1.0.0",
     "platform": 0,
     "sdr_reset": 0

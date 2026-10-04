@@ -1,11 +1,11 @@
 """Register maps (schema ``fbench.regmap/1``) for the agent allow-lists.
 
+``share/p25_regs.json``, the radio core at 0x7C46_0000, is not built here: scanner-hdl's
+``radio_core.bench_map`` writes it from the core's own register banks (read-to-clear registers
+carry ``"read_side_effect": true``).
+
 ``fbench regmaps build`` writes:
 
-- ``share/p25_regs.json`` — ``p25_core`` at 0x7C46_0000 from
-  ``p25-httpd/p25-pac/p25.svd``. Read-to-clear (Rsticky) registers carry
-  ``"read_side_effect": true``. The vacant bank 0x1E0-0x1FF is forbidden
-  simply by not being listed (reading it hangs AXI-Lite, F15).
 - ``share/adi_regs.json`` — ``axi_ad9361`` ADC/DAC cores and the RX/TX
   ``axi_dmac`` key registers.
 - ``share/ps_regs.json`` — SLCR/DDRC/L2C audit registers, with ``expected``
@@ -32,46 +32,14 @@ always a superset of the agent's built-in allow-list.
 from __future__ import annotations
 
 import json
-import re
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import BENCH_DIR, REPO_ROOT
+from . import BENCH_DIR
 from .errors import ConfigError, SafetyRefusal
 
 SCHEMA = "fbench.regmap/1"
-P25_SVD = REPO_ROOT / "p25-httpd" / "p25-pac" / "p25.svd"
-P25_BASE = 0x7C460000
-P25_WINDOW = 0x200
-
-#: p25_core registers whose read clears Rsticky bits (finding F2).
-P25_READ_SIDE_EFFECT = frozenset({0x0C, 0xA4, 0xC4, 0x60, 0x80, 0xE0, 0x144, 0x184, 0x1A0,
-                                  0x1C0})
-#: p25_core banks (32-byte aligned) -> block name. Traffic chain 2's LSM bank is 16 words.
-P25_BANKS: dict[int, str] = {
-    0x000: "control",
-    0x020: "ddc",
-    0x040: "traffic_ddc",
-    0x060: "traffic_iq",
-    0x080: "iq",
-    0x0A0: "lsm",
-    0x0C0: "traffic_lsm",
-    0x0E0: "wideband_iq",
-    0x100: "lsm_seeds",
-    0x120: "traffic2_ddc",
-    0x140: "traffic2_lsm",
-    0x160: "traffic2_lsm_seeds",
-    0x180: "spectrometer",
-    0x1A0: "pre_diff_iq",
-    0x1C0: "traffic_pre_diff_iq",
-}
-P25_VACANT = ((0x1E0, 0x200),)
-P25_EXPECTED = {0x0: "0x70323566"}  # product_id "p25f"
-
-_ACCESS = {"read-only": "ro", "read-write": "rw", "write-only": "wo",
-           "writeOnce": "wo", "read-writeOnce": "rw"}
 
 
 def _hex(v: int) -> str:
@@ -105,53 +73,6 @@ def core(name: str, base: int, size: int, blocks: list[dict]) -> dict[str, Any]:
 
 def block(name: str, offset: int, regs: list[dict]) -> dict[str, Any]:
     return {"name": name, "offset": _hex(offset), "regs": regs}
-
-
-# ---------------------------------------------------------------------------
-# p25_core from SVD
-# ---------------------------------------------------------------------------
-
-
-def _bit_range(text: str) -> tuple[int, int]:
-    m = re.fullmatch(r"\[(\d+):(\d+)\]", text.strip())
-    if not m:
-        raise ConfigError(f"bad SVD bitRange {text!r}")
-    hi, lo = int(m.group(1)), int(m.group(2))
-    return lo, hi - lo + 1
-
-
-def build_p25(svd_path: Path = P25_SVD) -> dict[str, Any]:
-    root = ET.parse(svd_path).getroot()
-    banks: dict[int, list[dict]] = {}
-    for r in root.iter("register"):
-        name = (r.findtext("name") or "").strip()
-        off = int((r.findtext("addressOffset") or "0").strip(), 0)
-        if any(lo <= off < hi for lo, hi in P25_VACANT):
-            raise ConfigError(f"SVD register {name} at 0x{off:X} lies in a vacant bank")
-        access = _ACCESS.get((r.findtext("access") or "read-write").strip(), "rw")
-        fields = []
-        for f in r.iter("field"):
-            lsb, width = _bit_range(f.findtext("bitRange") or "[31:0]")
-            faccess = _ACCESS.get((f.findtext("access") or "").strip(), access)
-            fields.append(fld((f.findtext("name") or "").strip(), lsb, width, faccess,
-                              (f.findtext("description") or "").strip()))
-        side = off in P25_READ_SIDE_EFFECT
-        desc = (r.findtext("description") or name).strip()
-        if side:
-            desc += " — READ CLEARS Rsticky bits (F2); read only when intended"
-        banks.setdefault(off & ~0x1F, []).append(
-            reg(name, off, access, desc, fields, expected=P25_EXPECTED.get(off),
-                read_side_effect=side)
-        )
-    blocks = []
-    for bank_off in sorted(banks):
-        bname = P25_BANKS.get(bank_off, f"bank_{bank_off:03x}")
-        regs = sorted(banks[bank_off], key=lambda x: int(x["offset"], 16))
-        blocks.append(block(bname, bank_off, regs))
-    m = core("p25", P25_BASE, P25_WINDOW, blocks)
-    # Defence in depth: the agent also honours explicit vacant ranges.
-    m["vacant"] = [[_hex(lo), _hex(hi)] for lo, hi in P25_VACANT]
-    return m
 
 
 # ---------------------------------------------------------------------------
@@ -486,13 +407,11 @@ def merge_doc(doc: dict, builtins: dict[str, dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def build_all(out_dir: Path = BENCH_DIR / "share", svd_path: Path = P25_SVD,
-              agent_dir: Path = AGENT_MAPS) -> list[Path]:
+def build_all(out_dir: Path = BENCH_DIR / "share", agent_dir: Path = AGENT_MAPS) -> list[Path]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     builtins = agent_builtin_maps(agent_dir)
     outputs = {
-        "p25_regs.json": build_p25(svd_path),
         "adi_regs.json": merge_doc(build_adi(), builtins),
         "ps_regs.json": merge_doc(build_ps(), builtins),
     }

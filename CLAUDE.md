@@ -82,7 +82,7 @@ Every commit builds and passes these, run from `scanner/`:
 | Unit | Address | Board | Image | Notes |
 |------|---------|-------|-------|-------|
 | A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 1.0.0 (`2026-10-04-radio-core-atsc1`) | The unit in use |
-| B | `192.168.12.1` (USB) | AD9363, internal antenna | core 0.3.0: today's scanner does not run on it | |
+| B | `192.168.12.1` (USB) | AD9363, internal antenna | not in use; it needs the current image before anything runs on it | |
 
 - **SSH:** write the full command literally, never through a variable:
   `ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@192.168.120.50 '...'`.
