@@ -1,4 +1,4 @@
-// The ATSC page (ATSC TV mode): the TV channel finder. Pick the bands and settings, then one table of
+// The Channels page (ATSC TV mode): the TV channel finder. Pick the bands and settings, then one table of
 // the channels asked for, filled in as /ws/live reports the scan: each channel as its window is read
 // (what it holds: 8-VSB by its pilot, a signal without the 8-VSB pilot, or nothing; its carrier to
 // noise, its pilot and its power), then its station's own names as its channel is decoded. A
@@ -23,6 +23,22 @@ const clipText = ppm => (ppm == null ? '' : `${num(ppm, ppm < 10 ? 1 : 0)} sampl
 const db = v => (v === null || v === undefined ? DASH : `${num(v, 1)} dB`);
 const SERVICE = { 2: 'TV', 3: 'Audio', 4: 'Data' };
 const vchan = c => `${c.major}.${c.minor} ${c.short_name}`;
+
+// A scan's counts: frequencies with a signal (8-VSB or not), stations named, and their channels
+// (the virtual channels viewers see; hidden ones left out).
+export function tally(scan) {
+  const found = scan ? scan.found : [];
+  const named = found.filter(x => x.station && x.station.channels && x.station.channels.length);
+  return {
+    frequencies: found.filter(x => x.kind !== 'vacant').length,
+    vsb: found.filter(x => x.kind === '8vsb').length,
+    noPilot: found.filter(x => x.kind === 'no_pilot').length,
+    vacant: found.filter(x => x.kind === 'vacant').length,
+    stations: named.length,
+    channels: named.reduce((n, x) => n + x.station.channels.filter(c => !c.hidden).length, 0),
+  };
+}
+const plural = (n, one, many) => `${num(n)} ${n === 1 ? one : many}`;
 
 // A decoded station in a table cell: its main channels (x.1) first, then how many more.
 function stationText(st) {
@@ -267,11 +283,13 @@ export function mount(el) {
       dismissed = s.id;
       setup();
     });
-    const count = kind => s.found.filter(x => x.kind === kind).length;
+    const t = tally(s);
     const head = { done: 'Done', cancelled: 'Cancelled', error: 'Failed' }[s.state] || s.state;
-    const tally = `${count('8vsb')} with 8-VSB, ${count('no_pilot')} filled without the 8-VSB pilot (ATSC 3.0 or other), `
-      + `${count('vacant')} vacant, of ${s.found.length} channels read${s.gain_db == null ? ' with the AGC' : ` at ${s.gain_db} dB of gain`}.`;
-    const summary = s.found.length ? `${head}: ${tally}${s.error ? ` ${s.error}.` : ''}` : `${head}${s.error ? `: ${s.error}` : ''}.`;
+    const counts = `${plural(t.frequencies, 'frequency', 'frequencies')} with a signal (${num(t.vsb)} 8-VSB, `
+      + `${num(t.noPilot)} without the 8-VSB pilot: ATSC 3.0 or other), ${num(t.vacant)} vacant, of ${num(s.found.length)} read`
+      + `${s.gain_db == null ? ' with the AGC' : ` at ${s.gain_db} dB of gain`}.`
+      + (t.stations ? ` ${plural(t.stations, 'station', 'stations')} named, with ${plural(t.channels, 'channel', 'channels')}.` : '');
+    const summary = s.found.length ? `${head}: ${counts}${s.error ? ` ${s.error}.` : ''}` : `${head}${s.error ? `: ${s.error}` : ''}.`;
     return [h('p', { class: 'dim', text: summary }), h('div', { class: 'row' }, again)];
   }
 

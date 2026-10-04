@@ -1,6 +1,6 @@
 // Page shell: the header with the unit's mode, live audio and this browser's listening settings,
-// the page router (#now, #activity, #systems in scanner mode, #atsc in ATSC mode; #diag and
-// #settings in both) and the store the radio pushes.
+// the page router (#now, #activity, #systems in scanner mode, #channels and #viewer in ATSC mode;
+// #diag and #settings in both) and the store the radio pushes.
 // Pages are modules exporting mount(el) -> { update(store), unmount() }.
 
 import { store, subscribe, start, refresh } from './store.js';
@@ -10,15 +10,16 @@ import { api } from './api.js';
 import * as now from './views/now.js';
 import * as activity from './views/activity.js';
 import * as systems from './views/systems.js';
-import * as atsc from './views/atsc.js';
+import * as channels from './views/channels.js';
+import * as viewer from './views/viewer.js';
 import * as diag from './views/diagnostics.js';
 import * as settings from './views/settings.js';
 import { player } from './audio/player.js';
 import { getPrefs, setPrefs, onPrefs } from './prefs.js';
 
-const PAGES = { now, activity, systems, atsc, diag, settings };
+const PAGES = { now, activity, systems, channels, viewer, diag, settings };
 // Each mode's first page.
-const HOME = { scanner: 'now', atsc: 'atsc' };
+const HOME = { scanner: 'now', atsc: 'channels' };
 const $ = id => document.getElementById(id);
 
 let current = null;
@@ -64,13 +65,16 @@ function showMode(m) {
   }
 }
 
-// ATSC mode's line in the header: the TV scan running, or what the last one found.
+// ATSC mode's line in the header: the TV scan running, or what the last one found: frequencies
+// with a signal, and the channels on them.
 function atscText(a) {
   if (a && a.state === 'sweeping') {
     return a.identifying != null ? `TV scan · naming ${a.identified + 1} of ${a.to_identify}` : `TV scan · window ${a.step} of ${a.steps}`;
   }
-  const n = a ? a.found.filter(c => c.kind === '8vsb').length : 0;
-  return a && a.found.length ? `ATSC TV · ${n} station${n === 1 ? '' : 's'} found` : 'ATSC TV';
+  if (!a || !a.found.length) return 'ATSC TV';
+  const t = channels.tally(a);
+  const freq = `${t.frequencies} frequenc${t.frequencies === 1 ? 'y' : 'ies'}`;
+  return t.channels ? `ATSC TV · ${freq} · ${t.channels} channel${t.channels === 1 ? '' : 's'}` : `ATSC TV · ${freq}`;
 }
 
 function header(s) {

@@ -305,9 +305,30 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 /* ── Spectrum ─────────────────────────────────────────────── */
 .spectrum { width: 100%; height: 260px; display: block; border-radius: var(--radius-sm); background: var(--bg-sunken); }
 
+/* ── Viewer: the picture area (dark in either theme, as a picture is) ── */
+.screen {
+  aspect-ratio: 16 / 9; width: 100%; max-height: 72vh; overflow: auto;
+  display: flex; flex-direction: column; gap: 14px; padding: 18px 22px;
+  background: #000; color: #d8dde3; border-radius: var(--radius-sm);
+}
+.screen .dim { color: #9aa4ae; }
+.screen-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 1.25em; }
+.screen-title .r { margin-left: auto; font-size: 0.8em; color: #9aa4ae; }
+.screen-stats {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 6px 16px;
+  font-variant-numeric: tabular-nums;
+}
+.screen-stats .k { color: #8b95a0; }
+.screen-stats .r { text-align: right; color: #9aa4ae; }
+.screen-note { margin-top: auto; color: #6f7882; font-size: 0.88em; }
+.screen-empty { margin: auto; color: #8b95a0; }
+
 @media (max-width: 640px) {
   .call-tg { font-size: 1.8em; }
   .log-line { grid-template-columns: 8.2em minmax(0, 1fr); }
   .log-line .c { display: none; }
   .spectrum { height: 200px; }
+  .screen { aspect-ratio: auto; min-height: 56vw; padding: 12px 14px; }
+  .screen-stats { grid-template-columns: max-content minmax(0, 1fr); }
+  .screen-stats .r { grid-column: 2; text-align: left; }
 }
