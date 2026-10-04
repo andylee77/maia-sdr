@@ -2,9 +2,12 @@
 """A live run of the scanner on a unit: samples it every minute and summarises the window.
 
 Each sample (one JSON line in samples.jsonl): the control channel's decode rate and CRC share,
-grants, the crystal correction, recordings, and with --ssh the process's memory, threads and
-CPU. The summary (summary.json, also printed): the Activity summary of the window (calls,
-followed, voice), recordings made, memory at the start and end, panics and errors in the log.
+grants, the crystal correction, recordings, the radio core's lane counters, packet faults and
+spectrum frames, and with --ssh the process's memory, threads and CPU. The summary
+(summary.json, also printed): the Activity summary of the window (calls, followed, voice),
+recordings made, what the radio core's counters gained over the window (each lane's packets,
+lost and missed; packet faults; spectrum frames read, missed and refused), memory at the start
+and end, panics and errors in the log.
 
   python tools/scanner_live_check.py --host 10.25.0.2 --minutes 60 --ssh
   python tools/scanner_live_check.py --host 10.25.0.2 --site cec_gcs --minutes 60 --ssh
@@ -79,8 +82,27 @@ def sample(host: str, ssh: bool) -> dict:
         "lo_shift_hz": t.get("lo_shift_hz"),
         "recordings": recs.get("total", recs.get("count")),
     }
+    r = get(host, "/api/v1/radio").get("readback") or {}
+    out["lanes"] = r.get("lane_counters")
+    out["packet_faults"] = r.get("packet_faults")
+    spec = r.get("spectrum") or {}
+    out["spectrum"] = {k: spec.get(k) for k in ("frames", "missed", "faults")}
     if ssh:
         out["board"] = board(host)
+    return out
+
+
+def core_gained(first: dict, last: dict) -> dict:
+    """What the radio core's counters gained between two samples."""
+    out: dict = {}
+    if first.get("lanes") and last.get("lanes"):
+        out["lanes"] = [{k: b.get(k, 0) - a.get(k, 0) for k in ("packets", "lost", "missed", "stale")}
+                        for a, b in zip(first["lanes"], last["lanes"])]
+    if first.get("packet_faults") is not None and last.get("packet_faults") is not None:
+        out["packet_faults"] = last["packet_faults"] - first["packet_faults"]
+    fs, ls = first.get("spectrum") or {}, last.get("spectrum") or {}
+    if fs.get("frames") is not None and ls.get("frames") is not None:
+        out["spectrum"] = {k: (ls.get(k) or 0) - (fs.get(k) or 0) for k in ("frames", "missed", "faults")}
     return out
 
 
@@ -137,6 +159,7 @@ def main() -> int:
     summary["input_dropped"] = last.get("input_dropped")
     summary["input_gaps"] = last.get("input_gaps")
     summary["crystal_ppm"] = [first.get("crystal_ppm"), last.get("crystal_ppm")]
+    summary["radio_core"] = core_gained(first, last)
     summary["uptime_s"] = [first.get("uptime_s"), last.get("uptime_s")]
     if args.ssh:
         boards = [s["board"] for s in samples if s.get("board")]

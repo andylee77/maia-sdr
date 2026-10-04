@@ -23,9 +23,13 @@ consumers' equal copies of it and of the registers they derive from it (the inte
 loads were each lane's mixer 56 (+4 in its input buffer), each of the FFT's five twiddle
 multipliers 17, the integrator's power stage 76 and its exponent stage 18.
 
-`common_edge.py` is a generator per consumer: the FFT, the integrator, each lane's DDC (and the
-FFT window's 2x edge), with `keep` on its registers so that synthesis leaves the copies apart and
-each is placed beside its consumer.
+`common_edge.py` is a generator per consumer, with `keep` on its registers so that synthesis
+leaves the copies apart and each is placed beside its consumer: each of the FFT's five twiddle
+multipliers, the integrator, each lane's DDC (and the FFT window's 2x edge). The twiddles have one
+each because the first build gave the FFT one: synthesis merged the five multipliers' equal
+derived registers (`common_edge_q`/`_qq`) into twiddle4's, which then drove all five across the
+FFT and held clk3x at +0.307 ns. `TwiddleEdgeFFT` (`spectrum.py`) is upstream's FFT with an edge
+input per twiddle multiplier.
 
 ### The register map
 
@@ -201,10 +205,55 @@ the spectrum 512 KB (0x2100_0000-0x2107_FFFF), the capture 16 MB as before
   - `test_p25_top.py`: the map, five lanes leaving the shared banks in place, the fields, the
     version and build files, the reset values, the capture's start index through the core.
 
+## The bitstream
+
+Vivado 2023.2, `build_fpga_p25_pretty.sh`; XSA sha256 `843aae06…`.
+
+**Timing** (worst setup slack; worst hold +0.018 ns, 3a +0.010):
+
+| Paths | 3a (1.0.0) | First 2.0.0 build | 2.0.0 |
+|-------|-----------:|------------------:|------:|
+| clk3x (187.5 MHz) | +0.091 | +0.307 | **+0.605** |
+| sync to clk3x | +0.503 | +0.270 | **+0.480** (the design's worst) |
+| sync (62.5 MHz) | +3.571 | +0.924 | +1.991 |
+| AXI-Lite (100 MHz) | +0.509 | +1.040 | +0.929 |
+
+- **clk3x** meets the +0.4 ns target. In the first build the FFT had one generator for its five
+  twiddle multipliers, and synthesis merged their derived registers (above): twiddle4's
+  `common_edge_q` drove every twiddle's DSP, +0.307. With a generator each, the worst clk3x paths
+  are the lanes' and twiddles' own pulses into their DSPs.
+- **sync to clk3x** is a lane mixer's NCO register into its DSP's D port through the 3x
+  multiplexer: Maia's `Mixer`, unchanged. Its slack follows placement: lane 0's +0.527 in 3a,
+  lane 1's +0.270 in the first build (3.5 ns of routing from the register to the DSP), +0.480
+  here.
+- **sync's** worst paths are the domain's reset fanning out to the lane banks (14 ns of routing in
+  the first build); 2.0.0 has more registers on that reset (the capture's and the spectrum's).
+
+**Utilization** (the route hook's `utilization_hier.rpt`; the core's blocks):
+
+| Block | LUTs | FFs | RAMB36 | RAMB18 | DSP | 3a |
+|-------|-----:|----:|-------:|-------:|----:|----|
+| A lane's DDC | 390-398 | 575-580 | 0 | 10 | 11 | 396 / 575 |
+| A lane's packetizer | 702-703 | 1,089 | 2 | 0 | 2 | 703 / 1,089 |
+| A lane's registers | 70-72 | 154 | | | | |
+| The spectrometer | 2,901 | 2,960 | 20 | 4 | 7 | 2,749 / 2,304 |
+| - its FFT | 2,374 | 1,865 | 8 | 4 | 6 | 2,292 |
+| - its integrator (`FrameIntegrator`) | 430 | 434 | 12 | 0 | 1 | 432 |
+| - the header, the index history and the check | 78 | 613 | | | | |
+| The capture (packer, DMA, start index, trigger) | 110 | 304 | | | | |
+| The lane ring and its DMA | 159 | 77 | | | | |
+| The common-edge generators (11) | 2-4 each | 5 each | | | | 8 / 9 (two) |
+| **The core** | **7,124** | **10,136** | **28** | **35** | **46** | 6,836 / 9,165, 28, 35, 46 |
+| **The design** | 15,251 (28.7 %) | 22,945 (21.6 %) | 38 | 40 | 68 (30.9 %) | 14,958 / 21,974 |
+
+Slices 59.5 % (3a 57.7 %). Bake A added 288 LUTs and 971 FFs to the core and no block RAM or DSP.
+
 ## Gates
 
 (results in the status log)
 
 ## Status log
 
-- **2026-10-04.** Gateware, tests, PS side and bench written; the bitstream build started.
+- **2026-10-04.** Gateware, tests, PS side and bench written. The first bitstream met timing at
+  +0.270 ns with clk3x at +0.307: the FFT's twiddles still shared one edge. With an edge each, the
+  second met it at +0.480, clk3x +0.605.

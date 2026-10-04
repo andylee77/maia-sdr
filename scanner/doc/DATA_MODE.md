@@ -73,8 +73,8 @@ The PS always clears the bypass bits today. A wide lane is a new coefficient set
 | 1 MSPS | stage 1 /16, stages 2 and 3 bypassed | FIR4 ≤ 256 taps, ≤ 11 operations per input sample at clk3x 187.5 MHz: about ±350 kHz flat |
 
 - The rates are set per lane, so lanes can differ.
-- Three lanes at 1 MSPS are 12 MB/s into the 2 MB lane ring: 0.17 s of slack against the 20 ms
-  poll.
+- Three lanes at 1 MSPS are 12 MB/s into the 8 MB lane ring (082): 0.67 s of slack against the
+  20 ms poll.
 - No preset like this exists and none has been tested. The filter-design tool
   (`tools/p25_ddc_filter_design.py`) would make them, and a bench check proves them (section 9).
 - This lasts only while the lanes are DDCs. 079 step 3b would replace them (section 11).

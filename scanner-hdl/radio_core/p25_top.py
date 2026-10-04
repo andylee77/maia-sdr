@@ -388,7 +388,8 @@ class P25Core(Elaboratable):
             spec.sample_index.eq(sample_count),
             spec.adc_clips.eq(adc_clips),
             spec.common_edge_2x.eq(common_edge_2x.common_edge),
-            spec.common_edge_fft.eq(common_edge_3x('ce3x_fft')),
+            *[edge.eq(common_edge_3x(f'ce3x_twiddle{j}'))
+              for j, edge in enumerate(spec.common_edge_twiddles)],
             spec.common_edge_integrator.eq(common_edge_3x('ce3x_integrator')),
             spec.number_integrations.eq(spec_ctrl['spec_num_integrations']),
             spec.peak_detect.eq(spec_ctrl['spec_peak_detect']),

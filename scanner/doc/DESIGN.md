@@ -896,18 +896,19 @@ demodulator in software (steps 1, 3a and 4 done). 079 holds the gateware plan fr
 
 ### Fabric and CPU today
 
-**Fabric** (the radio core 1.0.0, 079 step 3a):
+**Fabric** (the radio core 2.0.0, bake A, change 082):
 
 | Resource | Used |
 |----------|------|
-| Slices | 57.7 % |
+| Slices | 59.5 % |
 | DSP48 | 68 of 220 (31 %) |
-| LUTs | 14,958 of 53,200 (28 %) |
+| LUTs | 15,251 of 53,200 (29 %) |
 | Block RAM tiles | 58 of 140 (41 %) |
 
-- Worst setup slack +0.091 ns, in clk3x: the shared common-edge pulse's fan-out (079's study).
+- Worst setup slack +0.480 ns (a lane mixer's NCO register into its DSP, sync to clk3x); clk3x
+  itself +0.605, since each 3x multiplier has its own common edge (1.0.0: +0.091).
 - A lane costs about 1,250 LUTs, 13 DSPs and 7 block RAM tiles. The per-block numbers are in
-  079's "Every mode's needs".
+  082's "The bitstream".
 - Core 0.3.0 (the 075b bake) had 91.6 % of slices and 172 DSPs, with 45 DSPs a chain.
 
 **PS CPU** (two A9s at 666.67 MHz, 200 % in all):

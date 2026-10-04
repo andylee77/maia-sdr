@@ -306,8 +306,9 @@ The P25 build uses `fishball-p25.dtsi` (separate from Maia's `fishball.dtsi`):
 | `p25-wideband-iq` | `/dev/p25-wideband-iq` | The raw IQ capture ring (0x2200_0000) |
 
 The rings use `compatible = "maia-sdr,rxbuffer"` (maia-kmod's driver, which keeps the ARMv7
-caches coherent with the non-coherent HP writes). Their sizes and sub-buffers are in 079's
-"Rings and the device tree", and must match `scanner-hdl/radio_core/config.py`.
+caches coherent with the non-coherent HP writes). Their sizes and sub-buffers are in 082's
+"The rings" (lanes 8 MB, spectrum 512 KB, capture 16 MB), and must match
+`scanner-hdl/radio_core/config.py`.
 
 ## hwval bitstream (hardware validation)
 

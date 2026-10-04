@@ -25,7 +25,7 @@
 from amaranth import *
 
 from maia_hdl.dma import DmaBRAMWrite
-from maia_hdl.fft import FFT
+from maia_hdl.fft import FFT, TwiddleI
 
 from .frame_integrator import FrameIntegrator
 
@@ -73,6 +73,49 @@ def _fold(word):
     return word[:32] ^ word[32:]
 
 
+class TwiddleEdgeFFT(FFT):
+    """maia_hdl's FFT with a 3x common edge for each twiddle multiplier
+    (``common_edge_twiddles``) in place of the one ``common_edge_3x`` they share.
+
+    The twiddle multipliers are spread along the FFT; with one edge, synthesis also merged their
+    equal copies of the registers derived from it, so one register drove every multiplier's
+    multiplexers across the die. The parameters and the rest are ``FFT``'s; ``elaborate`` is
+    upstream's with the edges wired one to a multiplier.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.multipliers = [t for t in self._twiddles if not isinstance(t, TwiddleI)]
+        self.common_edge_twiddles = [Signal(name=f'common_edge_twiddle{j}')
+                                     for j in range(len(self.multipliers))]
+
+    def elaborate(self, platform):
+        m = Module()
+        if self._window is not None:
+            m.submodules.window = self._window
+            m.d.comb += self._window.common_edge.eq(self.common_edge_2x)
+            first = self._window
+        else:
+            first = self._butterflies[0]
+        for j, bfly in enumerate(self._butterflies):
+            m.submodules[f'bfly{j}'] = bfly
+        for j, twiddle in enumerate(self._twiddles):
+            m.submodules[f'twiddle{j}'] = twiddle
+        m.d.comb += [t.common_edge.eq(edge)
+                     for t, edge in zip(self.multipliers, self.common_edge_twiddles)]
+        m.submodules.control = ctrl = self._control
+        ctrl.connect_stages(m)
+        last_bfly = self._butterflies[-1]
+        m.d.comb += [
+            ctrl.clken.eq(self.clken),
+            first.re_in.eq(self.re_in),
+            first.im_in.eq(self.im_in),
+            self.re_out.eq(last_bfly.re_out),
+            self.im_out.eq(last_bfly.im_out),
+            self.out_last.eq(ctrl.out_last),
+        ]
+        return m
+
+
 class SpectrumFrames(Elaboratable):
     """The framed spectrometer.
 
@@ -93,8 +136,10 @@ class SpectrumFrames(Elaboratable):
         number_integrations : Signal(10), peak_detect, alternate, abort
                                         the integrator's (``FrameIntegrator``)
         common_edge_2x                  the FFT window's
-        common_edge_fft, common_edge_integrator
-                                        each block's own 3x common edge
+        common_edge_twiddles : [Signal()]
+                                        each of the FFT's twiddle multipliers' own 3x common
+                                        edge (one per multiplier, ``len(fft.multipliers)``)
+        common_edge_integrator          the integrator's own 3x common edge
 
     Outputs (sync):
         last_buffer                     the last sub-buffer written whole
@@ -107,7 +152,7 @@ class SpectrumFrames(Elaboratable):
         self.width_in = 16
         self.nint_width = 10
 
-        self.fft = FFT(
+        self.fft = TwiddleEdgeFFT(
             self.width_in, order_log2, 'R22',
             width_twiddle=16, truncates=[[0, 1]] * (order_log2 // 2),
             use_bram_reg=True, window='blackmanharris',
@@ -126,7 +171,8 @@ class SpectrumFrames(Elaboratable):
         self.alternate = Signal()
         self.abort = Signal()
         self.common_edge_2x = Signal()
-        self.common_edge_fft = Signal()
+        self.common_edge_twiddles = [Signal(name=f'common_edge_twiddle{j}')
+                                     for j in range(len(self.fft.multipliers))]
         self.common_edge_integrator = Signal()
 
         self.last_buffer = Signal(dma_buffers_log2)
@@ -143,7 +189,7 @@ class SpectrumFrames(Elaboratable):
         m.d.comb += [
             fft.clken.eq(self.strobe_in),
             fft.common_edge_2x.eq(self.common_edge_2x),
-            fft.common_edge_3x.eq(self.common_edge_fft),
+            *[a.eq(b) for a, b in zip(fft.common_edge_twiddles, self.common_edge_twiddles)],
             fft.re_in.eq(self.re_in),
             fft.im_in.eq(self.im_in),
 

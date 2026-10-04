@@ -40,11 +40,13 @@ class Harness(Elaboratable):
         m.domains += [ClockDomain('clk2x'), ClockDomain('clk3x')]
         m.submodules.spec = spec = self.spec
         m.submodules.ce2x = ce2x = CommonEdge('sync', 'clk2x', 2, 'ce2x')
-        m.submodules.ce_fft = ce_fft = CommonEdge('sync', 'clk3x', 3, 'ce_fft')
         m.submodules.ce_int = ce_int = CommonEdge('sync', 'clk3x', 3, 'ce_int')
+        for j, edge in enumerate(spec.common_edge_twiddles):
+            gen = CommonEdge('sync', 'clk3x', 3, f'ce_twiddle{j}')
+            m.submodules[f'ce_twiddle{j}'] = gen
+            m.d.comb += edge.eq(gen.common_edge)
         m.d.comb += [
             spec.common_edge_2x.eq(ce2x.common_edge),
-            spec.common_edge_fft.eq(ce_fft.common_edge),
             spec.common_edge_integrator.eq(ce_int.common_edge),
         ]
         return m

@@ -30,11 +30,14 @@ processing and protocol constants.
 - **The radio core (FPGA):**
   - three lanes, each a Maia DDC with its own NCO and filters, cut into tagged packets on one DMA
     ring;
-  - a 4096-bin wideband spectrometer;
-  - a raw IQ capture ring.
+  - a 4096-bin wideband spectrometer whose frames carry a header (their sample index, mode and
+    sequence);
+  - a raw IQ capture ring that knows the sample index of its first sample and can stop itself
+    after a trigger.
 
-  It holds no demodulator. Its design and plans are in
-  [doc/changes/079_general_radio_core.md](doc/changes/079_general_radio_core.md).
+  Every block keeps time by the AD9361's sample count. It holds no demodulator. Its design and
+  plans are in [doc/changes/079_general_radio_core.md](doc/changes/079_general_radio_core.md); its
+  register map, rings and frames in [doc/changes/082_bake_a.md](doc/changes/082_bake_a.md).
 - **The scanner (ARM, Rust):**
   - every demodulator (LSM, C4FM, DMR, 8-VSB);
   - framing, FEC, the vocoders, trunking, history and recordings;

@@ -5,8 +5,9 @@
 # 3x multiplier's input multiplexers read it. One generator shared by the core drove 368 loads
 # across the die, and synthesis merged the consumers' equal copies of it and of the registers
 # derived from it, so the core's worst clk3x paths were that pulse's routing. Here each
-# consumer (the FFT, the integrator, each lane's DDC) has its own generator, with `keep` on its
-# registers so that synthesis leaves the copies apart and each is placed beside its consumer.
+# consumer (each of the FFT's twiddle multipliers, the integrator, each lane's DDC) has its own
+# generator, with `keep` on its registers so that synthesis leaves the copies apart and each is
+# placed beside its consumer.
 #
 # SPDX-License-Identifier: MIT
 #

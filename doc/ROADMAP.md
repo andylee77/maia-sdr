@@ -107,10 +107,12 @@ grants overlapped as two calls 0.6 % of a day and as three 0.008 % (unit A, 2026
 ## 079 — General radio core
 
 One bitstream for many radio functions. The PL gives each lane's IQ to the PS, where LSM, C4FM,
-DMR and 8-VSB run in software. Steps 1, 3a and 4 are done: the radio core 1.0.0 has three DDC
-lanes in one tagged lane ring, the spectrometer and the capture ring, and runs on unit A's image.
-Design and steps: `doc/changes/079_general_radio_core.md`. It superseded the chain-2 IQ tap
-(077).
+DMR and 8-VSB run in software. Steps 1, 3a and 4 are done: the radio core has three DDC
+lanes in one tagged lane ring, the spectrometer and the capture ring. Bake A (082, core 2.0.0)
+gave every mode its plumbing: a register map that does not move with the lanes, larger rings,
+spectrum frames with a header and a mode each, and a capture with its start index and a trigger.
+Design and steps: `doc/changes/079_general_radio_core.md`, `082_bake_a.md`. It superseded the
+chain-2 IQ tap (077).
 
 ## Gateware for every mode
 

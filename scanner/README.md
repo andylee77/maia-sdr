@@ -4,7 +4,8 @@ The trunking scanner for the Fishball Z7020 (Zynq-7020 and AD9361): P25 Phase 1 
 control channels decoded, their calls followed on the radio core's traffic lanes, voice decoded
 (IMBE, AMBE+2), played live in the browser, recorded and kept in a history. In ATSC mode it finds
 the TV channels and names their stations. Its design is in `doc/DESIGN.md` (change 076); the
-radio core it drives is in `../doc/changes/079_general_radio_core.md`.
+radio core it drives is in `../doc/changes/079_general_radio_core.md` (its map, rings and frames in
+`082_bake_a.md`).
 
 ## Layout
 

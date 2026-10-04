@@ -5,7 +5,7 @@ imports.
 
 | Path | What |
 |------|------|
-| `radio_core/` | The radio core (product "rad1"): DDC lanes into one tagged lane ring, the wideband spectrometer, the raw IQ capture, the register bridge. Design: `../doc/changes/079_general_radio_core.md` |
+| `radio_core/` | The radio core (product "rad1", 2.0.0): DDC lanes into one tagged lane ring, the wideband spectrometer with framed output, the raw IQ capture, the register bridge. Design: `../doc/changes/079_general_radio_core.md`; map, rings and frames: `../doc/changes/082_bake_a.md` |
 | `hwval_hdl/` | The hardware-validation core for the two-unit bench (`../doc/HW_VALIDATION_SUITE.md`) |
 | `test/` | Both packages' tests. They use upstream's `maia_hdl` and two of its test helpers (`../maia-hdl/test`) |
 | `test_cocotb/` | Co-simulation tests (cocotb and Icarus; run through `../sim_hdl.bat` in Docker) |
