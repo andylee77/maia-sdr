@@ -1,6 +1,6 @@
 """P25 replay corpus: inventory, alignment and replay plans (``fbench.p25corpus/1``).
 
-Built by ``tools/p25_corpus_index.py``; read by ``rf.p25_corpus``. Three modes:
+Built by ``tools/p25_corpus_index.py``; read by ``rf.p25_corpus``. Two modes:
 
 - **A** real wideband air (``my_captures``): whole captures single-pass from the
   TX board's SD card through ``fbench-agent replay stream`` (``cs12``, lossless
@@ -13,10 +13,6 @@ Built by ``tools/p25_corpus_index.py``; read by ``rf.p25_corpus``. Three modes:
   +-27 ms (p10..p90 of 332 transmissions), so CC-to-traffic alignment is
   ~+-30 ms. Recordings without a log fall back to the 1 s file-name stamp
   (``align: name``).
-- **C** traffic only: every traffic recording with ``.mbe`` truth, back to back
-  on one RF channel with gaps, after a control-channel primer (a real grant to
-  that channel) so p25-httpd's air-time gate has a talkgroup context; the
-  follower is then locked (``/api/traffic?lock=on&follower=off``).
 """
 
 from __future__ import annotations
@@ -290,43 +286,6 @@ def plan_b(recs: list[dict[str, Any]], txs: list[dict[str, Any]], *, fmt: str = 
                                                    if x["align"] != "log")}}
 
 
-# ---------------------------------------------------------------------------
-# Mode C: traffic recordings back to back on one channel
-# ---------------------------------------------------------------------------
-
-
-def choose_primer(recs: list[dict[str, Any]], logs_dir: str | Path, *, tg: int = 300,
-                  cc_freq: float = 860962500.0, lead_s: float = 4.0, min_len_s: float = 400.0,
-                  nac: str = "8A1") -> dict[str, Any] | None:
-    """A clear grant to ``tg`` in an aligned CC recording, on the channel closest to
-    the CC (the narrowest replay band), with no other grant in the ``lead_s`` before
-    it and ``min_len_s`` of CC after it (the batch's control channel)."""
-    ccs = sorted((r for r in recs if r["kind"] == "cc" and r["log"]),
-                 key=lambda r: -r["seconds"])
-    best: tuple[float, float, dict[str, Any]] | None = None
-    for cc in ccs:
-        msgs = st.parse_log(Path(logs_dir) / cc["log"])
-        real = [g for g in st.cc_grants(msgs, nac) if g["kind"] == "grant"]
-        for g in real:
-            if g["tg"] != tg or g["encrypted"] or not g["freq_hz"]:
-                continue
-            off = g["t"] - cc["start_unix"]
-            if off < lead_s or cc["seconds"] - off < min(min_len_s, cc["seconds"] * 0.5):
-                continue
-            others = [x for x in real if g["t"] - lead_s <= x["t"] < g["t"] and
-                      (x["tg"], x["freq_hz"]) != (g["tg"], g["freq_hz"])]
-            if others:
-                continue
-            key = (abs(cc_freq - g["freq_hz"]), -(cc["seconds"] - off))
-            if best is None or key < best[:2]:
-                best = (key[0], key[1], {
-                    "cc": cc["id"], "file": cc["file"], "cc_start_unix": cc["start_unix"],
-                    "cc_seconds": cc["seconds"], "offset_s": round(off - lead_s, 3),
-                    "correct_hz": cc.get("correct_hz", 0.0),
-                    "grant": g, "channel_hz": g["freq_hz"]})
-    return best[2] if best else None
-
-
 SYNTH_RATES = (3e6, 3.5e6, 4e6, 5e6, 6e6)  # multiples of the 50 kSPS channel rate
 USABLE = 0.40  # channel centres within +-0.40 fs: inside the AD9361 TX interpolator passband
 IMAGE_CLEAR_HZ = 100e3
@@ -369,44 +328,6 @@ def band_rate(freqs: list[float], rates: tuple[float, ...] = SYNTH_RATES,
     return fallback or (round(mid / 1e3) * 1e3, rates[-1])
 
 
-def plan_c(recs: list[dict[str, Any]], txs: list[dict[str, Any]], primer: dict[str, Any] | None,
-           cc_freq: float, *, fmt: str = "cs8", gap_s: float = 2.5, batch_s: float = 300.0,
-           primer_s: float = 12.0, focus: tuple[str, ...] = ()) -> dict[str, Any]:
-    byid = {t["id"]: t for t in txs}
-    items = []
-    for r in recs:
-        if r["kind"] != "traffic" or not r["transmissions"]:
-            continue
-        ids = r["transmissions"]
-        items.append({"id": r["id"], "file": r["file"], "freq_hz": r["freq_hz"],
-                      "start_unix": r["start_unix"], "seconds": r["seconds"],
-                      "align": r["align"], "bits": r["bits"], "mp3": r.get("mp3", []),
-                      "correct_hz": r.get("correct_hz", 0.0),
-                      "transmissions": ids, "clear": sum(not byid[i]["encrypted"] for i in ids),
-                      "frames": sum(byid[i]["frames"] for i in ids),
-                      "focus": any(byid[i]["call"] in focus for i in ids)})
-    items.sort(key=lambda it: (not it["focus"], it["start_unix"]))
-    channel = float(primer["channel_hz"]) if primer else 0.0
-    centre, rate = band_rate([channel, cc_freq]) if primer else (0.0, 3e6)
-    batches, cur, t = [], [], primer_s
-    for it in items:
-        if cur and t + it["seconds"] + gap_s > batch_s:
-            batches.append({"id": f"C_{len(batches):03d}", "items": [x["id"] for x in cur],
-                            "seconds": round(t, 3)})
-            cur, t = [], primer_s
-        cur.append(it)
-        t += it["seconds"] + gap_s
-    if cur:
-        batches.append({"id": f"C_{len(batches):03d}", "items": [x["id"] for x in cur],
-                        "seconds": round(t, 3)})
-    cov_txs = [byid[i] for it in items for i in it["transmissions"]]
-    total = sum(b["seconds"] for b in batches)
-    return {"format": fmt, "rate_hz": rate, "centre_hz": centre, "channel_hz": channel,
-            "image_clearance_hz": image_clearance([channel, cc_freq], centre) if primer else None,
-            "gap_s": gap_s, "primer_s": primer_s, "batch_s": batch_s, "primer": primer,
-            "items": items, "batches": batches, "coverage": _cov(cov_txs, total, fmt, rate)}
-
-
 # ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
@@ -414,10 +335,10 @@ def plan_c(recs: list[dict[str, Any]], txs: list[dict[str, Any]], primer: dict[s
 
 def build_manifest(captures_dir: str | Path, recordings_dir: str | Path,
                    event_logs_dir: str | Path, *, cc_freq: int = 860962500, nac: str = "8A1",
-                   focus: tuple[str, ...] = DEFAULT_FOCUS, primer_tg: int = 300,
-                   a_format: str = "cs12", bc_format: str = "cs8",
+                   focus: tuple[str, ...] = DEFAULT_FOCUS, a_format: str = "cs12",
+                   b_format: str = "cs8",
                    plan_kw: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
-    """``plan_kw``: per-mode keyword overrides, e.g. ``{"C": {"gap_s": 1.0}}``."""
+    """``plan_kw``: per-mode keyword overrides, e.g. ``{"B": {"pre_s": 3.0}}``."""
     kw = plan_kw or {}
     t_start = time.time()
     calls, txs = st.scan_mbe(recordings_dir)
@@ -438,12 +359,9 @@ def build_manifest(captures_dir: str | Path, recordings_dir: str | Path,
             c0, c1 = r["start_unix"], r["start_unix"] + r["seconds"]
             r["overlapping_traffic"] = [x["id"] for x in recs if x["kind"] == "traffic" and
                                         x["start_unix"] < c1 and x["start_unix"] + x["seconds"] > c0]
-    primer = choose_primer(recs, event_logs_dir, tg=primer_tg, cc_freq=cc_freq, nac=nac,
-                           **kw.get("primer", {}))
     plans = {
         "A": plan_a(caps, txs, fmt=a_format, **kw.get("A", {})),
-        "B": plan_b(recs, txs, fmt=bc_format, focus=focus, **kw.get("B", {})),
-        "C": plan_c(recs, txs, primer, cc_freq, fmt=bc_format, focus=focus, **kw.get("C", {})),
+        "B": plan_b(recs, txs, fmt=b_format, focus=focus, **kw.get("B", {})),
     }
     in_rec = {i for r in recs for i in r["transmissions"]}
     summary = {
@@ -465,7 +383,7 @@ def build_manifest(captures_dir: str | Path, recordings_dir: str | Path,
         "decoded_messages_logs": len(logs),
         "modes": {"A_whole": plans["A"]["coverage"]["whole"],
                   "A_windows": plans["A"]["coverage"]["windows"],
-                  "B": plans["B"]["coverage"], "C": plans["C"]["coverage"]},
+                  "B": plans["B"]["coverage"]},
     }
     return {
         "schema": SCHEMA, "generated": time.strftime("%Y-%m-%dT%H:%M:%S%z"),

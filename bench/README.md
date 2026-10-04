@@ -270,13 +270,12 @@ inventory: [doc/changes/058_replay_corpus.md](../doc/changes/058_replay_corpus.m
    `bench/.state/corpus/staged_B.json` and next to each file on the card):
 
    ```bash
-   $PY bench/fbench.py run rf.p25_corpus --tx B --rx A -p mode=C -p stage_only=true --json
+   $PY bench/fbench.py run rf.p25_corpus --tx B --rx A -p mode=B -p stage_only=true --json
    ```
 
 4. Run it (the DUT is A, so always `--tx B --rx A`):
 
    ```bash
-   $PY bench/fbench.py run rf.p25_corpus --tx B --rx A -p mode=C --json
    $PY bench/fbench.py run rf.p25_corpus --tx B --rx A -p mode=B -p items=focus --json
    $PY bench/fbench.py run rf.p25_corpus --tx B --rx A -p mode=A --json
    $PY bench/fbench.py run rf.p25_corpus --tx B --rx A -p mode=A -p a_unit=window -p source=ram --json
@@ -286,19 +285,13 @@ inventory: [doc/changes/058_replay_corpus.md](../doc/changes/058_replay_corpus.m
 |---|---|---|---|
 | `A` | one wideband capture (`a_unit=whole`, default) or window (`a_unit=window`) | the real air, `cs12` (lossless 12-bit), 4 MSPS | TX LO trimmed by `units.A.ref_ppm - units.B.ref_ppm` (captures carry A's uncorrected reference) |
 | `B` | one scene: a CC recording + the traffic recordings overlapping it | 50 kSPS channel recordings up-converted to their RF offsets and mixed (`cs8`, 3.5/4/5 MSPS, AWGN `noise_db` below each channel; TX centre keeps IQ images and LO leakage >= 100 kHz off every channel) | placed on their SDRTrunk log clocks (+-30 ms) with each recording's SDRTrunk session frequency offset removed (`correct_hz`); TX LO trimmed by `-units.B.ref_ppm` |
-| `C` | one batch (~300 s): CC primer, then traffic recordings back to back on one channel (`gap_s` apart), CC throughout | `cs8`, 3.5 MSPS, offsets removed as in B | p25-httpd feeds traffic dibits only under a talkgroup context, so the follower is left on until the primer grant parks it on the channel, then `/api/traffic?lock=on&follower=off`; follower/lock are restored at the end |
-
-Mode C drives p25-httpd's `/api/traffic` and `/api/monitor`, which the scanner does not
-serve; on the scanner it needs a port to the hold (`PUT /api/v1/hold`).
 
 Selection: `items=all|focus|<id>,<id>`, `limit=N`, `max_minutes=M`. Stop
 gracefully with `touch bench/.state/corpus/STOP` (checked every tap poll; the
 current relay is stopped, TX off, maintenance exited, completed items analysed);
 continue later with `-p resume=<run dir>` or `-p resume=auto` (the latest run of
 that mode). `-p purge=true` with `stage_only` deletes corpus files the current
-selection does not use (B's card cannot hold all three modes at once). Mode C restores
-A's follower/lock in its cleanup; after a hard crash restore it by hand with
-`curl 'http://192.168.2.1:8080/api/traffic?follower=on&lock=off'`.
+selection does not use.
 
 On the TX board each item runs `fbench-agent replay stream --playlist … |
 iio_writedev -u local: -b 262144 cf-ad9361-dds-core-lpc voltage0 voltage1` in
@@ -311,9 +304,7 @@ position, in `items/<id>.json` `relay`.
 
 On the DUT the test polls `/api/imbe_dump` (every `tap_period_s` = 0.5 s; the ring
 holds the last 128 frames, 2.56 s of voice, after a baseline dump taken before the
-stream starts) and `/api/ui/calls` (15 s), reads `/ws/audio`, and reads
-`/api/traffic` at item boundaries for the per-item decoder counters. Only p25-httpd
-served `/api/traffic`; on the scanner those counters are null.
+stream starts) and `/api/ui/calls` (15 s), and reads `/ws/audio`.
 
 Scores (`scores.json`, metrics in `result.json`):
 
@@ -327,8 +318,7 @@ Scores (`scores.json`, metrics in `result.json`):
 - **Bit accuracy (report only, never changes the recovery):** the tapped raw
   144-bit codewords aligned in order with SDRTrunk's (`hex_aligned_*`,
   `hex_exact_pct_of_aligned`, `hex_mean_bit_diff`; two receivers differ in the
-  bits the IMBE FEC corrects, about 2 bits per frame on the 05:44 scene) and the
-  tap's coverage of `imbe_frames_extracted` (`tap_coverage_pct`).
+  bits the IMBE FEC corrects, about 2 bits per frame on the 05:44 scene).
 - Missed transmissions, worst items, close reasons, relay health, and for focus
   items the tone check (per-tone mean / std / max deviation, dropouts, `/ws/audio`
   arrival gaps and lag events).
@@ -341,7 +331,7 @@ cd /c/Users/Andy/Projects/MAIA_SDR/maia-sdr/bench && ../.venv-hdl/Scripts/python
 
 The suite never touches the network: `tests_host/conftest.py` simulates both boards
 (IIO attributes, DAC registers, a CW whose frequency and level follow the TX settings,
-the DUT's counters, UART boot log) behind fake SSH/HTTP/libiio/agent objects.
+the DUT's calls and IMBE tap, UART boot log) behind fake SSH/HTTP/libiio/agent objects.
 
 ## Agent contract
 

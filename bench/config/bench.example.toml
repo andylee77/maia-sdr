@@ -182,12 +182,9 @@ default_rx = "B"
 tx_port = "TX1A"
 # Default TX attenuation for RF tests (dB, positive = quieter).
 tx_atten_default_db = 40.0
-# P25 site clip for rf.p25_replay (.sigmf-meta, .wav or .cs16). Empty = none.
-p25_clip = ""
-# Unit whose uncorrected reference is baked into the clips (trims the replay TX LO
-# with units.*.ref_ppm), and an SDRTrunk recordings dir (per-call .mbe) for ground truth.
+# Unit whose uncorrected reference is baked into the wideband captures that
+# rf.p25_corpus mode A replays (trims the replay TX LO with units.*.ref_ppm). Empty = A.
 p25_clip_recorder = ""
-p25_truth_dir = ""
 
 [[rf.links]]
 tx = "A.TX1A"

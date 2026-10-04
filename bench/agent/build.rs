@@ -35,9 +35,14 @@ fn main() {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
     println!("cargo:rustc-env=FBENCH_RUSTC={rustc_v}");
-    let head = manifest.join("../../.git/HEAD");
-    if head.exists() {
+    // The stamp follows new commits: HEAD names the branch, whose ref file moves with each one.
+    let git_dir = manifest.join("../../.git");
+    let head = git_dir.join("HEAD");
+    if let Ok(text) = fs::read_to_string(&head) {
         println!("cargo:rerun-if-changed={}", head.display());
+        if let Some(branch) = text.trim().strip_prefix("ref: ") {
+            println!("cargo:rerun-if-changed={}", git_dir.join(branch).display());
+        }
     }
 
     // ── The radio core's register map ─────────────────────────────────

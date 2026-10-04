@@ -7,11 +7,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pytest
 
 from conftest import BENCH, FakeServices
-from fbench.analysis import sigmf
 from fbench.runner import build_params, load_tests, resolve_roles, run_test, validate_result
 
 DOC = BENCH.parent / "doc" / "HW_VALIDATION_SUITE.md"
@@ -50,15 +48,6 @@ def test_every_tier1_test_drives_the_hwval_agent_op() -> None:
     assert all("hwval" in s.suites for s in tier1)
 
 
-def _clip(tmp: Path) -> Path:
-    fs = 1_000_000.0
-    t = np.arange(int(fs * 0.2)) / fs
-    iq = 3000 * np.exp(2j * np.pi * 50e3 * t)
-    base = tmp / "site_clip"
-    sigmf.write(base, iq, fs, 860_962_500.0, "ci16_le")
-    return base.with_suffix(".sigmf-meta")
-
-
 #: per-test scenario: roles, sim tweaks, parameter overrides, expected verdict.
 SCENARIOS: dict[str, dict[str, Any]] = {
     "sys.telemetry": {"params": {"seconds": 5}},
@@ -72,7 +61,6 @@ SCENARIOS: dict[str, dict[str, Any]] = {
     "rf.spur_scan": {"unit": "B", "params": {"nsamples": 65536}},
     "rf.isolation": {"tx": "A", "rx": "B", "params": {"nsamples": 65536},
                      "verdict": "inconclusive"},
-    "rf.p25_replay": {"tx": "B", "rx": "A", "clip": True, "params": {"seconds": 10}},
     "rf.p25_corpus": {"tx": "B", "rx": "A", "corpus": "A", "params": {"tail_s": 2.0}},
     "rf.freq_sweep": {"tx": "A", "rx": "B",
                       "params": {"freqs_mhz": [100.0, 900.0, 4000.0], "nsamples": 16384,
@@ -95,8 +83,6 @@ def run_scenario(tid: str, cfg: Any, tmp_path: Path, scen: dict[str, Any] | None
     if "agents" in scen:
         services.sim.agent_units = set(scen["agents"])
     overrides = dict(scen.get("params", {}))
-    if scen.get("clip"):
-        overrides["clip"] = str(_clip(tmp_path))
     if scen.get("corpus"):
         from conftest import install_corpus, make_corpus
 

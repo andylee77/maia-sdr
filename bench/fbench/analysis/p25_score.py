@@ -4,10 +4,7 @@ Inputs recorded during a replay (all host-clock stamped):
 
 - IMBE tap: successive ``/api/imbe_dump`` rings (last 128 raw 144-bit frames,
   oldest first, with the talkgroup context). :func:`merge_dumps` stitches them
-  into one frame sequence by overlap (frames arrive in LDU batches of 9); the
-  ``/api/traffic`` counter is read only at item boundaries, because that
-  endpoint clears the traffic ``nid_event`` sticky bit p25-httpd's heartbeat
-  uses.
+  into one frame sequence by overlap (frames arrive in LDU batches of 9).
 - ``/api/ui/calls`` items (per-call ``imbe``, ``tg``, ``source``,
   ``started_unix_ms`` on the DUT clock).
 - ``/ws/audio`` PCM chunks (8 kHz, 20 ms) for the audio-continuity check.

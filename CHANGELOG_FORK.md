@@ -26,8 +26,11 @@ fishball-dev 8a34f2c (local)
   The Vivado projects and IP packaging stay in `maia-hdl/` (ADI's scripts use relative paths).
 - **The bench:** reads the radio core's map, which `radio_core.bench_map` writes beside the SVD
   on every FPGA build (a test fails if the committed map drifts); maintenance mode stops the
-  scanner only; `rf.cw_ppm` cross-checks the scanner's stored crystal; `rf.p25_replay` (p25-httpd's
-  routes) is in no suite; fbench writes runs to `runs/bench/`.
+  scanner only; `rf.cw_ppm` cross-checks the scanner's stored crystal; fbench writes runs to
+  `runs/bench/`. Deleted (Andy), as they drove p25-httpd's routes: `rf.p25_replay` (corpus mode
+  A replays the same captures) and corpus mode C with the per-item `/api/traffic` counters.
+  The agent on unit A reads the radio core; F20 is closed (the radio core's carve-outs are
+  clear of System RAM).
 - **Texts:** README, CLAUDE.md, DESIGN, BUILD_FPGA, ADI_HDL_INTEGRATION, UI_BRIEF, ROADMAP,
   API_INVENTORY, HW_VALIDATION_SUITE and the stale code headers describe the scanner and the
   radio core. `tools/sdrtrunk_teardown_stats.py --p25-calls` reads the scanner's calls; its

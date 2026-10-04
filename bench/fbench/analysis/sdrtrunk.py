@@ -40,9 +40,6 @@ LOG_NAME = re.compile(r"^(\d{8})_(\d{6})\.(\d{3})_(\d+)_Hz_(.+)_(decoded_message
 LOG_LINE = re.compile(r"^(\d{8} \d{6}),(\w+),(.*)$")
 FS_BITS = {"H": 792, "L": 1728, "T": 144, "LC": 432}
 TSDU_BITS = {"1": 360, "2": 216, "3": 144}  # cumulative 360 / 576 / 720 for 1..3 TSBKs
-GRANT_RE = re.compile(r"GRP_VCH_GRANT FM:(\d+) TO:(\d+) CHAN:(\d+)-(\d+)")
-UPD_RE = re.compile(r"GROUP ([AB]):(\d+) CHAN \1:(\d+)-(\d+)")
-IDEN_RE = re.compile(r"IDEN_UPDATE(_TDMA)? ID:(\d+) \S+ SPACING:(\d+) BASE:(\d+)")
 
 
 def local_epoch(date8: str, time6: str) -> float:
@@ -250,7 +247,7 @@ def scan_captures(captures: str | Path) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# decoded_messages logs: bit clock and grants
+# decoded_messages logs: bit clock
 # ---------------------------------------------------------------------------
 
 
@@ -345,31 +342,3 @@ def log_clock(path: str | Path, max_lines: int | None = 4000) -> dict[str, Any] 
     return {"bit0_unix": msgs[0]["clock"], "messages": len(msgs),
             "first_frame_start": first["start"] if first else None,
             "first_kind": first["k"] if first else None}
-
-
-def cc_grants(msgs: list[dict[str, Any]], nac: str = "8A1") -> list[dict[str, Any]]:
-    """Voice grants and grant updates of a control-channel log, with RF frequency."""
-    idens: dict[int, tuple[int, int, int]] = {0: (851006250, 6250, 1)}
-    for m in msgs:
-        g = IDEN_RE.search(m["body"])
-        if g:
-            ts = re.search(r"TIMESLOTS:(\d+)", m["body"])
-            idens[int(g.group(2))] = (int(g.group(4)), int(g.group(3)), int(ts.group(1)) if ts else 1)
-
-    def hz(i: int, c: int) -> int | None:
-        return idens[i][0] + (c // idens[i][2]) * idens[i][1] if i in idens else None
-
-    out = []
-    for m in msgs:
-        if not m["ok"] or m["k"] != "TSBK" or "CRC" in m["body"] or f"x{nac}" not in m["body"]:
-            continue
-        g = GRANT_RE.search(m["body"])
-        if g:
-            out.append({"t": round(m["t"], 3), "kind": "grant", "src": int(g.group(1)),
-                        "tg": int(g.group(2)), "freq_hz": hz(int(g.group(3)), int(g.group(4))),
-                        "encrypted": "ENCRYPTED" in m["body"]})
-        elif "GRP_VCH_GRNT_UPD" in m["body"]:
-            for _, tg, i, c in UPD_RE.findall(m["body"]):
-                out.append({"t": round(m["t"], 3), "kind": "update", "src": None, "tg": int(tg),
-                            "freq_hz": hz(int(i), int(c)), "encrypted": None})
-    return out

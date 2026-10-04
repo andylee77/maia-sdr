@@ -5,9 +5,7 @@ An *item* is one continuous stream the TX board plays in a single pass:
 - mode A ``whole``: one wideband capture (its 1 GiB ``cs12`` segments, played
   back to back), ``window``: a slice of a capture;
 - mode B: one scene (a CC recording plus the overlapping traffic recordings,
-  up-converted from 50 kSPS and mixed at their RF offsets);
-- mode C: one batch (a CC primer + traffic recordings back to back on one
-  channel, CC throughout).
+  up-converted from 50 kSPS and mixed at their RF offsets).
 
 Stream files are rendered on the host while they upload (no local copies), named
 by a key over their recipe, and cached on ``/mnt/sd/bench/corpus`` (or
@@ -31,7 +29,7 @@ from .analysis import p25_dsp
 from .analysis import sdrtrunk as st
 from .errors import FbenchError, PreconditionError, UsageError
 
-P25_TX_FULL_SCALE = 2 ** 14 * 0.9  # same peak as rf.p25_replay
+P25_TX_FULL_SCALE = 2 ** 14 * 0.9  # the DAC's 2**14 full scale, backed off for filter overshoot
 CORPUS_SD = "/mnt/sd/bench/corpus"
 CORPUS_RAM = "/root/fbench_corpus"
 RELAY_DIR = "/tmp/fbench_relay"
@@ -69,8 +67,6 @@ class Item:
     transmissions: list[str]
     recorder: str  # unit whose reference error the content carries, or "true"
     focus: bool = False
-    primer: dict[str, Any] | None = None
-    sub_items: list[dict[str, Any]] = field(default_factory=list)
     out_of_band: list[str] = field(default_factory=list)
 
     def spec(self) -> dict[str, Any]:
@@ -78,8 +74,7 @@ class Item:
                 "centre_hz": self.centre_hz, "format": self.fmt, "gain": self.gain,
                 "seconds": round(self.seconds, 3), "timeline": self.timeline,
                 "transmissions": self.transmissions, "recorder": self.recorder,
-                "focus": self.focus, "primer": self.primer, "sub_items": self.sub_items,
-                "out_of_band": self.out_of_band,
+                "focus": self.focus, "out_of_band": self.out_of_band,
                 "files": [{"name": f.name, "bytes": f.nbytes, "samples": f.samples}
                           for f in self.files],
                 "playlist": self.playlist}
@@ -264,9 +259,7 @@ def item_ids(man: dict[str, Any], mode: str, a_unit: str = "whole") -> list[str]
         return [c["id"] for c in plans["A"]["captures"] if c["transmissions"]]
     if mode == "B":
         return [s["id"] for s in plans["B"]["scenes"]]
-    if mode == "C":
-        return [b["id"] for b in plans["C"]["batches"]]
-    raise UsageError(f"mode must be A, B or C, not {mode!r}")
+    raise UsageError(f"mode must be A or B, not {mode!r}")
 
 
 def build_item(man: dict[str, Any], mode: str, item_id: str, *, a_unit: str = "whole",
@@ -277,9 +270,7 @@ def build_item(man: dict[str, Any], mode: str, item_id: str, *, a_unit: str = "w
         return _build_a(man, plans["A"], item_id, a_unit, a_recorder, Path(src["captures"]))
     if mode == "B":
         return _build_b(man, plans["B"], item_id, Path(src["recordings"]), noise_db)
-    if mode == "C":
-        return _build_c(man, plans["C"], item_id, Path(src["recordings"]), noise_db)
-    raise UsageError(f"mode must be A, B or C, not {mode!r}")
+    raise UsageError(f"mode must be A or B, not {mode!r}")
 
 
 def _build_a(man: dict[str, Any], plan: dict[str, Any], item_id: str, a_unit: str,
@@ -359,54 +350,6 @@ def _build_b(man: dict[str, Any], plan: dict[str, Any], item_id: str, recordings
                 timeline=[{"s0": 0.0, "s1": float(sc["seconds"]), "air0": sc["t0"]}],
                 transmissions=list(sc["transmissions"]), recorder="true",
                 focus=bool(sc.get("focus")))
-
-
-def _build_c(man: dict[str, Any], plan: dict[str, Any], item_id: str, recordings: Path,
-             noise_db: float) -> Item:
-    b = next((x for x in plan["batches"] if x["id"] == item_id), None)
-    if b is None:
-        raise UsageError(f"no mode C batch {item_id!r} in the manifest")
-    pr = plan["primer"]
-    if not pr:
-        raise PreconditionError("the manifest has no mode C primer (no clear grant found)")
-    fmt, rate, centre = plan["format"], float(plan["rate_hz"]), float(plan["centre_hz"])
-    chan, gap, primer_s = float(plan["channel_hz"]), float(plan["gap_s"]), float(plan["primer_s"])
-    items = {it["id"]: it for it in plan["items"]}
-    target = CH_RMS_FRACTION * p25_dsp.FULL_SCALE[fmt]
-    seconds = float(b["seconds"])
-    cc_from = float(pr["offset_s"])
-    sources = [MixSource(pr["file"], float(man["site"]["cc_freq_hz"]), -cc_from, cc_from,
-                         min(float(pr["cc_seconds"]), cc_from + seconds),
-                         source_gain(recordings, pr["file"], cc_from, cc_from + 60, target),
-                         float(pr.get("correct_hz") or 0.0))]
-    timeline, subs, txs = [], [], []
-    t = primer_s
-    for iid in b["items"]:
-        it = items[iid]
-        dur = float(it["seconds"])
-        # Placed on the batch channel: its offset scales from its own frequency.
-        corr = float(it.get("correct_hz") or 0.0) * chan / float(it["freq_hz"])
-        sources.append(MixSource(it["file"], chan, t, 0.0, dur,
-                                 source_gain(recordings, it["file"], 0.0, dur, target), corr))
-        timeline.append({"s0": round(t, 6), "s1": round(t + dur, 6), "air0": it["start_unix"]})
-        subs.append({"id": iid, "s0": round(t, 3), "s1": round(t + dur, 3),
-                     "freq_hz": it["freq_hz"], "transmissions": it["transmissions"],
-                     "focus": it["focus"]})
-        txs += it["transmissions"]
-        t += dur + gap
-    if cc_from + seconds > float(pr["cc_seconds"]):
-        seconds = min(seconds, float(pr["cc_seconds"]) - cc_from)
-    recipe = {"kind": "batch", "items": b["items"], "primer": pr, "channel_hz": chan,
-              "gap_s": gap, "primer_s": primer_s, "format": fmt}
-    files, playlist, gain = _mixed_item("C", item_id, recordings, sources, rate, centre, fmt,
-                                        seconds, noise_db, recipe)
-    return Item(id=item_id, mode="C", rate_hz=rate, centre_hz=centre, fmt=fmt, gain=gain,
-                files=files, playlist=playlist, seconds=seconds, timeline=timeline,
-                transmissions=txs, recorder="true",
-                focus=any(s["focus"] for s in subs),
-                primer={**pr, "channel_hz": chan, "grant_stream_s": round(
-                    pr["grant"]["t"] - pr["cc_start_unix"] - cc_from, 3)},
-                sub_items=subs)
 
 
 def truth_stream_frames(item: Item, man: dict[str, Any]

@@ -120,11 +120,9 @@ class BenchSim:
         self.noise_dbfs = -60.0
         self.cyclic: dict[str, float] = {}
         self.images = {"A": "p25", "B": "factory"}
-        self.imbe_rate = 0.0  # IMBE frames/s the fake scanner extracts while TX is live
         self.agent_units = {"A"}
         self.reachable = {"A", "B"}
         self.phase_step_in: str | None = None  # refclk phase with an injected phase step
-        self.decode_rate = 30.0
         self.cable_removed = False
         self.leak_db = -75.0  # coupling with the cable removed (relative to cabled)
         # rf.p25_corpus: the TX board's relay and what the DUT "decodes" from it.
@@ -132,12 +130,9 @@ class BenchSim:
         self.relay_underruns = 0
         self.corpus_fn: Callable[[str], list[tuple]] | None = None  # item -> frames
         self.corpus_drop: set[str] = set()  # transmission ids the DUT misses
-        self.corpus_park: tuple[float, int] | None = None  # mode C: (freq, TG) after primer
         self.corpus_audio_fn: Callable[[str], list[tuple[float, bytes]]] | None = None
         self.corpus_hex_flip = 0  # bits flipped in every /api/imbe_dump frame
         self.corpus_imbe_zero = False  # calls followed but nothing decoded (09:11 on the board)
-        self.traffic = {"follower_enabled": True, "lock_freq": False}
-        self.traffic_calls: list[dict[str, str]] = []
         # (unit, "rx"|"tx") -> LO ranges (Hz) where that synthesizer reports no lock.
         self.unlocked: dict[tuple[str, str], list[tuple[float, float]]] = {}
         for u in cfg.units:
@@ -416,7 +411,7 @@ class FakeSsh:
         if rel is not None:
             return rel
         m = re.search(r"ls -ln (\S+)", cmd)
-        if m and "awk" not in cmd:
+        if m:
             return 0, self._ls(m.group(1)), ""
         m = re.match(r"mv -f (\S+) (\S+)$", cmd)
         if m:
@@ -451,14 +446,6 @@ class FakeSsh:
         if m:
             data = self.files.get(m.group(1))
             return (0, data.decode(), "") if data is not None else (1, "", "")
-        if "setsid sh -c" in cmd and "iio_writedev" in cmd:  # rf.p25_replay board stream
-            self.sim.cyclic[self.unit] = 0.0
-            return 0, "", ""
-        if cmd.startswith("pgrep -x iio_writedev"):
-            return 0, "streaming\n" if self.unit in self.sim.cyclic else "", ""
-        if "pkill -x iio_writedev" in cmd:
-            self.sim.cyclic.pop(self.unit, None)
-            return 0, "", ""
         return 0, "", ""
 
     def spawn(self, cmd: str) -> FakePopen:
@@ -693,7 +680,6 @@ class FakeHttp:
     def __init__(self, sim: BenchSim, unit: str) -> None:
         self.sim, self.unit = sim, unit
         self.calls: list[str] = []
-        self.base_t = 0.0
 
     # -- rf.p25_corpus: frames the fake DUT decodes from the relay's stream --------
     def _aired(self) -> list[tuple]:
@@ -740,36 +726,6 @@ class FakeHttp:
             return {"items": list(reversed(self._corpus_calls()))}
         if path == "/api/ui/state":
             return {"now_unix_ms": int((1_790_000_000 + self.sim.t) * 1000), "clock_valid": True}
-        if path == "/api/monitor":
-            return {"talkgroups": []}
-        if path == "/api/traffic" and params:
-            self.sim.traffic_calls.append({k: str(v) for k, v in params.items()})
-            for k, key in (("follower", "follower_enabled"), ("lock", "lock_freq")):
-                if k in params:
-                    self.sim.traffic[key] = str(params[k]) in ("on", "1", "true")
-        if path == "/api/decoder_reset":
-            self.base_t = self.sim.t
-            return {"ok": True}
-        el = self.sim.t - self.base_t
-        live = any(self.sim.tx_source(u) for u in self.sim.cfg.units if u != self.unit)
-        r = self.sim.decode_rate if live else 0.0
-        if path == "/api/decoder_compare":
-            return {"ps_lsm": {"tsbk_crc_ok": int(r * el), "tsbk_block_attempts": int(r * el * 1.1),
-                               "nid_decoded_ok": int(10 * el * (r > 0)),
-                               "nid_attempts": int(11 * el * (r > 0))}}
-        if path == "/api/stats":
-            return {"dibit_count": int(4800 * el), "rx_rssi_db": 100.0}
-        if path == "/api/traffic":
-            f = self.sim.imbe_rate * el if live else 0.0
-            f += len(self._aired())
-            park = self.sim.corpus_park
-            r = self.sim.relay
-            parked = park is not None and r is not None and self.sim.t >= r["t_air0"] + 1.0
-            return {"imbe": {"ldu1_count": int(f / 18), "ldu2_count": int(f / 18),
-                             "hdu_count": 0, "imbe_frames_extracted": int(f)},
-                    **self.sim.traffic,
-                    "current_frequency_hz": park[0] if parked else 858100000,
-                    "current_talkgroup": park[1] if parked else None}
         return {}
 
     def post_json(self, path: str, params: dict | None = None, body: Any = None,
@@ -993,11 +949,7 @@ def make_corpus(tmp: Path, tone: bool = True) -> dict[str, Any]:
     _wav(rec / "20260503_084247_860962500_Clay-County_Clay_LCN-11_3_baseband.wav",
          noise(24 * 50000, 600), 50000)
     cc = [("<-> SYNC LOSS - BITS PROCESSED [172]", 172)]
-    for k in range(int(24 * 9600 / 360)):
-        body = "NAC:2209/x8A1 TSBK1 RFSS_STATUS_BCST SYSTEM:2208/x8A0"
-        if k == int(5.0 * 9600 / 360):
-            body = "NAC:2209/x8A1 TSBK1 GRP_VCH_GRANT FM:1014 TO:300 CHAN:0-1193 PRI4 CIRCUIT"
-        cc.append((body, 360))
+    cc += [("NAC:2209/x8A1 TSBK1 RFSS_STATUS_BCST SYSTEM:2208/x8A0", 360)] * int(24 * 9600 / 360)
     _log(logs / "20260503_084247.412_860962500_Hz_LCN-11_decoded_messages.log", T0 + 0.5, cc)
     _wav(rec / "20260503_084255_858437500_Clay-County_Clay_T-LCN-11_79_baseband.wav",
          noise(4 * 50000, 900), 50000)
@@ -1023,10 +975,8 @@ def make_corpus(tmp: Path, tone: bool = True) -> dict[str, Any]:
     (rec / "20260503_084259_Clay-County_Clay_T-LCN-11__TO_300_FROM_1014.mp3").write_bytes(b"")
     cap_start = int(T0 + 5)
     _wav(caps / f"{cap_start}_858437500_400000_baseband.wav", noise(10 * 400000, 300), 400000)
-    man = pc.build_manifest(caps, rec, logs, focus=(call,), plan_kw={
-        "B": {"pre_s": 3.0, "post_s": 1.0}, "C": {"primer_s": 3.0, "gap_s": 1.0,
-                                                  "batch_s": 60.0},
-        "primer": {"min_len_s": 10.0}})
+    man = pc.build_manifest(caps, rec, logs, focus=(call,),
+                            plan_kw={"B": {"pre_s": 3.0, "post_s": 1.0}})
     if tone:
         man["focus_reference"] = {call: {"recording": "x", "mp3": [
             {"mp3": "ref.mp3", "seconds": 1.0, "tones_hz": [807.0, 1506.0], "tonal_frames": 44,
@@ -1073,6 +1023,3 @@ def install_corpus(services: "FakeServices", manifest: dict[str, Any], mode: str
     services.sim.corpus_audio_fn = audio
     services.sim.images["B"] = "p25"
     services.sim.agent_units = {"A", "B"}
-    if mode == "C":
-        plan = manifest["plans"]["C"]
-        services.sim.corpus_park = (plan["channel_hz"], plan["primer"]["grant"]["tg"])

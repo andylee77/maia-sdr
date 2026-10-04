@@ -7,10 +7,9 @@ from its own per-call counts (``/api/ui/calls`` ``imbe``, exact per call)
 matched to the ``.mbe`` transmissions by TG, source and time.
 The raw IMBE frames tapped from ``/api/imbe_dump`` (128-frame ring, polled every
 ``tap_period_s``) are only a bit-accuracy check: aligned in order with the
-``.mbe`` frames (Hamming <= ``max_bits`` of 144), with the tap's coverage of the
-extracted frames; they never change the recovery score. For focus
-items (the 2026-05-03 two-tone alert) ``/ws/audio`` is recorded and the tone's
-frequency stability and dropouts are measured.
+``.mbe`` frames (Hamming <= ``max_bits`` of 144); they never change the recovery
+score. For focus items (the 2026-05-03 two-tone alert) ``/ws/audio`` is recorded
+and the tone's frequency stability and dropouts are measured.
 
 Resumable (``-p resume=<run dir>|auto``) and stoppable: create
 ``bench/.state/corpus/STOP`` (checked every tap poll) or pass ``max_minutes``;
@@ -86,13 +85,8 @@ def _select(ctx: Any, man: dict[str, Any], mode: str) -> list[str]:
 
 
 def _is_focus(man: dict[str, Any], mode: str, iid: str) -> bool:
-    p = man["plans"]
     if mode == "B":
-        return any(s["id"] == iid and s.get("focus") for s in p["B"]["scenes"])
-    if mode == "C":
-        items = {it["id"]: it for it in p["C"]["items"]}
-        return any(b["id"] == iid and any(items[x]["focus"] for x in b["items"])
-                   for b in p["C"]["batches"])
+        return any(s["id"] == iid and s.get("focus") for s in man["plans"]["B"]["scenes"])
     return False
 
 
@@ -153,64 +147,6 @@ def _stop_requested(ctx: Any) -> bool:
     return (corpus_dir(ctx.cfg) / STOP_NAME).exists()
 
 
-def _imbe_counters(http: Any) -> dict[str, Any] | None:
-    try:
-        tr = http.get_json("/api/traffic", None, 5.0) or {}
-    except FbenchError:
-        return None
-    imbe = tr.get("imbe") or {}
-    out = {k: imbe.get(k) for k in ("hdu_count", "ldu1_count", "ldu2_count", "tdu_count",
-                                    "tdu_lc_count", "imbe_frames_extracted",
-                                    "imbe_frames_dropped")}
-    out["grants_seen_new"] = tr.get("grants_seen_new")  # CC grants decoded (delta per item)
-    wd = tr.get("pll_watchdog") or {}
-    out["pll_wd_resets_onset"] = wd.get("resets_onset")
-    out["pll_wd_resets_pinned"] = wd.get("resets_pinned")
-    # Control chain at the item boundary (after the inter-item silence): a PLL
-    # pinned at its clamp here would explain a late control-channel acquisition.
-    cc = tr.get("control_lsm_agc")
-    if isinstance(cc, dict):
-        out["control"] = {k: cc.get(k) for k in ("pll_dbg", "agc_gain", "agc_mag",
-                                                  "mag_update_threshold")}
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Mode C: park the traffic chain on the batch channel
-# ---------------------------------------------------------------------------
-
-
-def _traffic_state(http: Any) -> dict[str, Any]:
-    d = http.get_json("/api/traffic", None, 5.0) or {}
-    return {"follower_enabled": d.get("follower_enabled"), "lock_freq": d.get("lock_freq"),
-            "freq_hz": d.get("current_frequency_hz"), "tg": d.get("current_talkgroup")}
-
-
-def _primer_lock(ctx: TestContext, http: Any, item: cp.Item, taps: cp.Taps,
-                 t_stream0: float) -> dict[str, Any]:
-    """Follower on and unlocked until the primer grant parks it on the channel, then
-    ``lock=on&follower=off`` (p25-httpd's air-time gate feeds dibits only under a
-    talkgroup context, which a manual retune alone does not set)."""
-    pr = item.primer or {}
-    chan = float(pr["channel_hz"])
-    http.get_json("/api/traffic", {"follower": "on", "lock": "off"}, 5.0)
-    deadline = t_stream0 + float(pr.get("grant_stream_s", 4.0)) + float(ctx.params["primer_wait_s"])
-    polls = []
-    while ctx.services.monotonic() < deadline:
-        s = _traffic_state(http)
-        polls.append({"t": round(ctx.services.monotonic() - t_stream0, 2), **s})
-        if s["freq_hz"] and abs(float(s["freq_hz"]) - chan) < 1000 and s["tg"]:
-            http.get_json("/api/traffic", {"lock": "on", "follower": "off"}, 5.0)
-            after = _traffic_state(http)
-            ok = bool(after["lock_freq"]) and after["follower_enabled"] is False and \
-                after["freq_hz"] is not None and abs(float(after["freq_hz"]) - chan) < 1000
-            return {"locked": ok, "at_stream_s": polls[-1]["t"], "tg": s["tg"],
-                    "state": after, "polls": polls}
-        taps.poll(calls=False)
-        ctx.sleep(0.5)
-    return {"locked": False, "polls": polls}
-
-
 # ---------------------------------------------------------------------------
 # Acquisition
 # ---------------------------------------------------------------------------
@@ -244,7 +180,6 @@ def _save_audio(ctx: TestContext, name: str, rec: dict[str, Any], mono_minus_wal
 def _run_item(ctx: TestContext, man: dict[str, Any], item: cp.Item, stager: cp.Stager,
               relay: cp.Relay, tx: str, rx: str) -> dict[str, Any]:
     p = ctx.params
-    http = ctx.http(rx)
     phy = ctx.cfg.iio.phy_device
     doc: dict[str, Any] = {"id": item.id, "mode": item.mode, "status": "error", "error": None,
                            "spec": item.spec(), "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
@@ -272,7 +207,6 @@ def _run_item(ctx: TestContext, man: dict[str, Any], item: cp.Item, stager: cp.S
     taps = cp.Taps(ctx, rx, calls_every=max(1, int(float(p["calls_period_s"]) /
                                                    max(float(p["tap_period_s"]), 0.1))))
     doc["dut_clock"] = taps.dut_clock()
-    doc["counters_before"] = _imbe_counters(http)
     audio = None
     wall0, mono0 = time.time(), ctx.services.monotonic()
     if p["ws_audio"]:
@@ -299,12 +233,6 @@ def _run_item(ctx: TestContext, man: dict[str, Any], item: cp.Item, stager: cp.S
         stream0 = m_read - (float(st0["now_unix"]) - float(t_first)) if t_first else m_read
         doc["stream0_mono"] = round(stream0, 3)
         doc["prefill_s"] = st0.get("prefill_s")
-        if item.mode == "C":
-            doc["lock"] = _primer_lock(ctx, http, item, taps, stream0)
-            if not doc["lock"]["locked"]:
-                raise FbenchError(f"mode C primer: the follower did not park on "
-                                  f"{item.primer['channel_hz'] / 1e6:.4f} MHz "
-                                  f"(TG {item.primer['grant']['tg']}); see lock.polls")
         end = stream0 + item.seconds + float(p["tail_s"])
         hard = stream0 + item.seconds * 1.5 + float(p["prefill_timeout_s"]) + 60
         k, last = 0, st0
@@ -331,7 +259,6 @@ def _run_item(ctx: TestContext, man: dict[str, Any], item: cp.Item, stager: cp.S
     doc["relay"] = relay.report() or relay.status()
     doc["dut_clock_end"] = taps.dut_clock()  # the DUT clock can be set mid-item
     taps.poll_calls()
-    doc["counters_after"] = _imbe_counters(http)
     merged = sc.merge_dumps(taps.dumps, skip_first=taps.has_baseline)
     doc["tap"] = {"polls": len(taps.dumps), "gaps": merged["gaps"],
                   "ambiguous": merged["ambiguous"], "errors": taps.errors[:20],
@@ -362,8 +289,8 @@ def rf_p25_corpus(ctx: TestContext) -> Outcome:
 
     p = ctx.params
     mode = str(p["mode"]).upper()
-    if mode not in ("A", "B", "C"):
-        raise UsageError("mode must be A, B or C")
+    if mode not in ("A", "B"):
+        raise UsageError("mode must be A or B")
     if p["source"] not in ("sd", "ram"):
         raise UsageError("source must be sd or ram")
     tx, rx = ctx.roles["tx"], ctx.roles["rx"]
@@ -420,7 +347,6 @@ def rf_p25_corpus(ctx: TestContext) -> Outcome:
     relay = cp.Relay(ctx, tx, root, block_samples=int(p["block_samples"]),
                      ring_mb=int(p["ring_mb"]) if p["source"] == "sd" else min(int(p["ring_mb"]), 32),
                      prefill_mb=prefill, on_underrun=str(p["on_underrun"]))
-    orig_traffic = None
     # With the clock source "site" the DUT sets its clock
     # from the replayed control channel (a different day per item). The
     # scoring needs a steady DUT clock, so pin it to "manual" for the run.
@@ -437,15 +363,6 @@ def rf_p25_corpus(ctx: TestContext) -> Outcome:
     with ExitStack() as stack:
         if tx_image == "p25":
             stack.enter_context(maintenance(ctx, tx))  # rule 4: TX rate changes corrupt its RX
-        if mode == "C":
-            orig_traffic = _traffic_state(http)
-            run["traffic_before"] = orig_traffic
-            mon = http.get_json("/api/monitor", None, 5.0) or {}
-            tgs = mon.get("talkgroups") or []
-            pr_tg = ((man["plans"]["C"].get("primer") or {}).get("grant") or {}).get("tg")
-            if tgs and pr_tg not in tgs:
-                raise PreconditionError(f"/api/monitor lists {tgs} without the primer TG {pr_tg}: "
-                                        "the follower would ignore the primer grant")
         try:
             for n, iid in enumerate(todo):
                 if _stop_requested(ctx):
@@ -483,15 +400,6 @@ def rf_p25_corpus(ctx: TestContext) -> Outcome:
                 ctx.tx_off(tx)  # before maintenance exit restarts the scanner on the TX board
             except FbenchError as exc:
                 ctx.errors.append(f"tx off on {tx}: {exc.message}")
-            if orig_traffic is not None and p["restore_traffic"]:
-                try:
-                    http.get_json("/api/traffic", {
-                        "follower": "on" if orig_traffic["follower_enabled"] is not False
-                        else "off", "lock": "on" if orig_traffic["lock_freq"] else "off"}, 5.0)
-                    run["traffic_after"] = _traffic_state(http)
-                except FbenchError as exc:
-                    ctx.errors.append(f"could not restore /api/traffic follower/lock: "
-                                      f"{exc.message}")
             if orig_clock is not None:
                 try:
                     http.put_json("/api/ui/settings", {"clock": {"source": orig_clock}}, 5.0)
@@ -508,19 +416,6 @@ def rf_p25_corpus(ctx: TestContext) -> Outcome:
 # ---------------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------------
-
-
-def _tap_new_frames(doc: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
-    """Tapped frames decoded during the item: the first dump is only a reference
-    (``baseline_frames``); runs before that field drop what exceeds the
-    ``imbe_frames_extracted`` delta (stale ring content)."""
-    tap = doc.get("tap") or {}
-    frames = tap.get("frames") or []
-    if "baseline_frames" in tap:
-        return frames, 0
-    delta = (_counter_delta(doc) or {}).get("imbe_frames_extracted")
-    stale = max(0, len(frames) - int(delta)) if delta is not None else 0
-    return frames[stale:], stale
 
 
 def _item_calls(doc: dict[str, Any], clock_end: float | None = None) -> list[dict[str, Any]]:
@@ -596,13 +491,12 @@ def score_item(doc: dict[str, Any], txs: dict[str, dict[str, Any]], max_bits: in
         doc.get("stream0_mono") is not None else None
     by_calls = sc.score_by_calls(stream_txs, calls, prior=prior)
     # Secondary: raw codewords from the /api/imbe_dump tap, aligned in order.
-    tapped, stale = _tap_new_frames(doc)
+    tapped = (doc.get("tap") or {}).get("frames") or []
     order = [(t["id"], f) for t in stream_txs for f in truth[t["id"]]]
     al = sc.align_bits([f for _, f in order], tapped, max_bits=max_bits)
     per_tx_aligned: dict[str, int] = {}
     for i in al["matched_idx"]:
         per_tx_aligned[order[i][0]] = per_tx_aligned.get(order[i][0], 0) + 1
-    delta = (_counter_delta(doc) or {}).get("imbe_frames_extracted")
     rows = []
     for t in stream_txs:
         r = by_calls["rows"].get(t["id"], {})
@@ -616,10 +510,8 @@ def score_item(doc: dict[str, Any], txs: dict[str, dict[str, Any]], max_bits: in
                      "dut_match": r.get("match"), "dut_followed": bool(r.get("followed")),
                      "dut_ldu": r.get("ldu"),
                      "hex_aligned": per_tx_aligned.get(t["id"], 0)})
-    mixed = doc.get("mode") in ("A", "B")
-    conf = sc.conflicts(stream_txs) if mixed else {}
-    blk = sc.blockers(stream_txs, {r["id"]: r["dut_followed"] for r in rows},
-                      busy or ()) if mixed else {}
+    conf = sc.conflicts(stream_txs)
+    blk = sc.blockers(stream_txs, {r["id"]: r["dut_followed"] for r in rows}, busy or ())
     for r in rows:
         r["conflicts"] = conf.get(r["id"], [])
         r["blocked_by"] = blk.get(r["id"], [])
@@ -634,24 +526,14 @@ def score_item(doc: dict[str, Any], txs: dict[str, dict[str, Any]], max_bits: in
             "calls": {"calls": by_calls["calls"], "unmatched_calls": by_calls["unmatched_calls"],
                       "close_reasons": dict(collections.Counter(
                           str(c.get("close_reason")) for c in calls))},
-            "bits": {"tapped": len(tapped), "stale_dropped": stale, "extracted": delta,
-                     "coverage_pct": round(100.0 * len(tapped) / delta, 1) if delta else None,
-                     "aligned": al["aligned"], "exact": al["exact"],
+            "bits": {"tapped": len(tapped), "aligned": al["aligned"], "exact": al["exact"],
                      "mean_bit_diff": al["mean_bit_diff"], "truth": al["truth"],
                      "hist": dict(collections.Counter(min(b, 24) for b in al["bits"]))},
             "relay": {k: relay.get(k) for k in ("state", "complete", "underruns",
                                                 "underrun_ms", "ring_min_fill_s",
                                                 "read_max_ms", "read_mbs", "zero_samples",
                                                 "prefill_s", "samples_out")},
-            "tap": {k: tap.get(k) for k in ("polls", "gaps", "ambiguous", "period_s")},
-            "counters": _counter_delta(doc)}
-
-
-def _counter_delta(doc: dict[str, Any]) -> dict[str, Any] | None:
-    a, b = doc.get("counters_before"), doc.get("counters_after")
-    if not a or not b:
-        return None
-    return {k: (b.get(k) or 0) - (a.get(k) or 0) for k in b if isinstance(b.get(k), (int, float))}
+            "tap": {k: tap.get(k) for k in ("polls", "gaps", "ambiguous", "period_s")}}
 
 
 def _audio_offset(doc: dict[str, Any], it: dict[str, Any]) -> float | None:
@@ -786,10 +668,7 @@ def analyze_corpus(a: AnalysisContext) -> Outcome:
     a.metric("encrypted_transmissions", len(rows) - len(clear))
     a.metric("conflicted_transmissions", sum(1 for r in clear if r.get("conflicts")))
     # Secondary: bit accuracy of the tapped raw codewords (never changes the score).
-    tapped = sum(it["bits"]["tapped"] for it in items)
-    ext = [it["bits"]["extracted"] for it in items if it["bits"]["extracted"] is not None]
-    a.metric("tap_frames", tapped)
-    a.metric("tap_coverage_pct", round(100.0 * tapped / sum(ext), 1) if ext and sum(ext) else None)
+    a.metric("tap_frames", sum(it["bits"]["tapped"] for it in items))
     al = sum(it["bits"]["aligned"] for it in items)
     a.metric("hex_aligned_frames", al)
     a.metric("hex_aligned_pct_of_truth", round(100.0 * al / max(1, sum(it["bits"]["truth"]
@@ -861,20 +740,18 @@ bench_test(
             "tx_rf_bandwidth_hz": 0.0, "ring_mb": 192, "prefill_mb": -1,
             "block_samples": 262144, "on_underrun": "wait", "prefill_timeout_s": 90.0,
             "tail_s": 6.0, "tap_period_s": 0.5, "calls_period_s": 15.0, "ws_audio": True,
-            "primer_wait_s": 20.0, "noise_db": 35.0, "restore_traffic": True,
-            "min_recovery_pct": 90.0, "max_underruns": 0, "max_tone_dropouts": 0,
-            "max_bits": 24, "tx_port": ""},
+            "noise_db": 35.0, "min_recovery_pct": 90.0, "max_underruns": 0,
+            "max_tone_dropouts": 0, "max_bits": 24, "tx_port": ""},
     description="Replay many P25 recordings from the TX board and score the DUT per "
-                "transmission against SDRTrunk's .mbe decode (raw IMBE frames tapped from "
-                "/api/imbe_dump, matched by Hamming distance). mode=A real wideband captures "
+                "transmission against SDRTrunk's .mbe decode (the DUT's per-call voice frames "
+                "from /api/ui/calls; the /api/imbe_dump tap, matched by Hamming distance, "
+                "checks bit accuracy). mode=A real wideband captures "
                 "(whole, single pass from the TX board's SD through the fbench-agent RAM-ring "
                 "relay; a_unit=window for short RAM windows), B synthetic full system (CC + "
                 "concurrent traffic recordings up-converted and mixed, log-clock aligned "
-                "+-30 ms), C traffic only (recordings back to back on one channel after a CC "
-                "primer; follower locked, restored afterwards; p25-httpd's routes, not the "
-                "scanner's). Manifest from "
-                "tools/p25_corpus_index.py. Resumable (resume=<run dir>|auto), stoppable "
-                "(touch bench/.state/corpus/STOP, max_minutes).",
+                "+-30 ms). Manifest from tools/p25_corpus_index.py. Resumable "
+                "(resume=<run dir>|auto), stoppable (touch bench/.state/corpus/STOP, "
+                "max_minutes).",
     pass_criteria="clear-voice frame recovery >= min_recovery_pct of SDRTrunk over followable "
                   "transmissions; relay underruns <= max_underruns; focus tone dropouts <= "
                   "max_tone_dropouts",

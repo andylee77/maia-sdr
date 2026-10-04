@@ -6,7 +6,6 @@ from pathlib import Path
 
 from conftest import BOOT_LOG, FakeServices, fixture, telemetry_jsonl
 from fbench.runner import build_params, load_tests, run_test
-from test_catalog import run_scenario
 
 
 def _run(tid: str, cfg, services: FakeServices, roles: dict, **params):
@@ -164,95 +163,6 @@ def test_isolation_two_phase(cfg, tmp_path: Path) -> None:
                                          "reference": str(cabled.run_dir)}))
     assert open_.verdict == "pass", open_.summary
     assert open_.result["metrics"]["isolation_db"] > 60
-
-
-def test_p25_replay_regression_against_baseline(cfg, tmp_path: Path) -> None:
-    base, services = run_scenario("rf.p25_replay", cfg, tmp_path)
-    assert base.verdict == "pass"
-    services.sim.decode_rate = 20.0  # a worse build: -33 %
-    spec = load_tests()["rf.p25_replay"]
-    from test_catalog import _clip
-
-    params = build_params(spec, {"clip": str(_clip(tmp_path)), "seconds": 10,
-                                 "baseline": str(base.run_dir)})
-    worse = run_test(spec, cfg, services, {"tx": "B", "rx": "A"}, params)
-    assert worse.verdict == "fail"
-    assert worse.result["metrics"]["score_vs_baseline_pct"] < -30
-
-
-def _site_clip(tmp_path: Path, truth_frames: int) -> tuple[Path, Path]:
-    """0.4 s SDRTrunk-named capture plus a truth dir with one transmission inside it."""
-    import json
-    import time
-
-    import numpy as np
-
-    fs, t0 = 1_000_000, 1777801424
-    t = np.arange(int(0.4 * fs)) / fs
-    iq = 3000 * np.exp(2j * np.pi * 50e3 * t)
-    inter = np.empty(2 * t.size, dtype="<i2")
-    inter[0::2], inter[1::2] = np.round(iq.real), np.round(iq.imag)
-    clip = tmp_path / f"{t0}_860000000_{fs}_baseband.cs16"
-    inter.tofile(clip)
-    truth = tmp_path / "recordings"
-    truth.mkdir()
-    stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(t0))
-    frames = [{"time": int((t0 + 0.1 + 0.01 * i) * 1000), "hex": "00"}
-              for i in range(truth_frames)]
-    (truth / f"{stamp}_860000000_1_300_1014.mbe").write_text(
-        json.dumps({"to": "300", "from": "1014", "frames": frames}))
-    return clip, truth
-
-
-def test_p25_replay_streams_from_tx_board_and_scores_against_sdrtrunk(cfg, tmp_path) -> None:
-    clip, truth = _site_clip(tmp_path, truth_frames=10)
-    cfg.unit("A").ref_ppm, cfg.unit("B").ref_ppm = 0.2, -0.5
-    # clip recorded by B (an explicit clip does not inherit rf.p25_clip_recorder)
-    for imbe_rate, verdict in ((25.0, "pass"), (5.0, "fail")):
-        services = FakeServices(cfg)
-        services.sim.images["B"] = "p25"
-        services.sim.agent_units = {"A", "B"}
-        services.sim.imbe_rate = imbe_rate  # 25/s x 0.4 s loop = the 10 truth frames
-        res = _run("rf.p25_replay", cfg, services, {"tx": "A", "rx": "B"}, clip=str(clip),
-                   clip_seconds=0.4, seconds=4.0, settle_s=0.1, truth_dir=str(truth),
-                   clip_recorder="B")
-        m = res.result["metrics"]
-        assert res.verdict == verdict, (res.summary, res.result["errors"])
-        assert m["source"] == "board" and m["loops"] == 10.0
-        assert m["truth_imbe_per_loop"] == 10
-        assert abs(m["imbe_recovery_pct"] - 4 * imbe_rate) < 3
-        ssh = services.ssh("A")
-        assert any(r.startswith("/root/fbench_replay/clip_") for _, r in ssh.puts)
-        assert any("setsid sh -c" in c and "iio_writedev -u local:" in c for c in ssh.commands)
-        assert any("pkill -x iio_writedev" in c for c in ssh.commands)
-        assert "A" not in services.sim.cyclic  # stream stopped
-        calls = [" ".join(a) for u, a in services.agent.calls if u == "A"]
-        assert "maint enter" in " | ".join(calls) and "maint exit" in " | ".join(calls)
-        # TX LO = clip centre + (ref_B - ref_A) x f = 860 MHz - 0.7 ppm = -602 Hz
-        lo = services.sim.num("A", "ad9361-phy", "frequency", "altvoltage1", True)
-        assert lo == 860_000_000 - 602
-    clip_json = res.run_dir / "artifacts" / "clip.json"
-    assert '"lo_trim_from": "ref_ppm B -0.500 - A +0.200"' in clip_json.read_text()
-
-
-def test_p25_replay_warns_without_recorder_and_rejects_long_cyclic(cfg, tmp_path) -> None:
-    clip, _ = _site_clip(tmp_path, truth_frames=0)
-    services = FakeServices(cfg)
-    res = _run("rf.p25_replay", cfg, services, {"tx": "B", "rx": "A"}, clip=str(clip),
-               clip_seconds=0.4, seconds=1.0, settle_s=0.1)
-    assert res.result["metrics"]["source"] == "cyclic"  # B runs factory firmware
-    assert any("clip recorder unknown" in w for w in res.result["warnings"])
-    assert any("traffic not scored" in w for w in res.result["warnings"])
-    big = tmp_path / "1777801424_860000000_4000000_baseband.cs16"
-    big.write_bytes(b"\0" * (60 << 20))
-    res = _run("rf.p25_replay", cfg, FakeServices(cfg), {"tx": "B", "rx": "A"}, clip=str(big),
-               clip_seconds=4.0, source="cyclic")
-    assert res.verdict == "precondition" and "cyclic DMA buffer" in res.summary
-
-
-def test_p25_replay_needs_clip(cfg, services) -> None:
-    res = _run("rf.p25_replay", cfg, services, {"tx": "B", "rx": "A"}, seconds=1)
-    assert res.verdict == "precondition" and "clip" in res.summary
 
 
 def test_rf_warns_outside_ad9363_lo_range(cfg, services) -> None:

@@ -51,11 +51,7 @@ def test_manifest_aligns_recordings_and_plans_all_modes(corp: dict) -> None:
     b = man["plans"]["B"]["scenes"][0]
     assert b["focus"] and b["rate_hz"] == 3.5e6 and len(b["sources"]) == 2
     assert b["image_clearance_hz"] >= pc.IMAGE_CLEAR_HZ
-    c = man["plans"]["C"]
-    assert c["primer"]["channel_hz"] == 858462500 and c["primer"]["grant"]["tg"] == 300
-    assert c["rate_hz"] == 3.5e6 and c["items"][0]["focus"]
-    assert c["image_clearance_hz"] >= pc.IMAGE_CLEAR_HZ
-    assert s["modes"]["C"]["transmissions"] == 2
+    assert s["modes"]["B"]["transmissions"] == 2
 
 
 def test_band_rate_keeps_tx_images_off_the_channels() -> None:
@@ -181,7 +177,7 @@ def test_merge_dumps_repetitive_and_lossy_polls() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mode", ["A", "B", "C"])
+@pytest.mark.parametrize("mode", ["A", "B"])
 def test_corpus_modes_score_every_frame(cfg, corp: dict, mode: str) -> None:
     cfg.unit("A").ref_ppm, cfg.unit("B").ref_ppm = -0.548, 0.114
     services = FakeServices(cfg)
@@ -201,7 +197,7 @@ def test_corpus_modes_score_every_frame(cfg, corp: dict, mode: str) -> None:
     assert gain < next(i for i, c in enumerate(ssh.commands) if "replay stream" in c) + len(calls)
     assert "maint enter" in " | ".join(calls) and "maint exit" in " | ".join(calls)
     assert "B" not in services.sim.cyclic
-    if mode in ("B", "C"):
+    if mode == "B":
         assert m["tone_found"] and m["tone_dropouts"] == 0
         # reference-true content: trimmed by B's own reference only
         doc = json.loads(next((res.run_dir / "artifacts" / "items").glob("*.json")).read_text())
@@ -223,30 +219,6 @@ def test_items_param_accepts_a_comma_list(corp: dict) -> None:
     for raw in (",".join(want), coerce(",".join(want), "all", "items")):
         ctx = SimpleNamespace(params={"a_unit": "A", "items": raw, "limit": 0})
         assert _select(ctx, corp["man"], "B") == want
-
-
-def test_mode_c_primer_locks_then_restores_the_follower(cfg, corp: dict) -> None:
-    services = FakeServices(cfg)
-    install_corpus(services, corp["man"], "C")
-    services.sim.traffic = {"follower_enabled": True, "lock_freq": False}
-    res = _run(cfg, services, corp, "C")
-    assert res.verdict == "pass", res.summary
-    seq = services.sim.traffic_calls
-    assert seq[0] == {"follower": "on", "lock": "off"}
-    assert {"lock": "on", "follower": "off"} in seq
-    assert seq[-1] == {"follower": "on", "lock": "off"}  # restored
-    doc = json.loads(next((res.run_dir / "artifacts" / "items").glob("*.json")).read_text())
-    assert doc["lock"]["locked"] and doc["lock"]["tg"] == 300
-
-
-def test_mode_c_without_park_is_an_item_error(cfg, corp: dict) -> None:
-    services = FakeServices(cfg)
-    install_corpus(services, corp["man"], "C")
-    services.sim.corpus_park = None
-    res = _run(cfg, services, corp, "C", primer_wait_s=2.0)
-    assert res.verdict == "inconclusive"
-    assert any("did not park" in e for e in res.result["errors"])
-    assert services.sim.traffic_calls[-1] == {"follower": "on", "lock": "off"}
 
 
 def test_missed_transmission_and_underruns_fail(cfg, corp: dict) -> None:
@@ -323,7 +295,8 @@ def test_index_tool_writes_manifest_and_report(corp: dict, tmp_path: Path) -> No
                      "--no-mp3", "--focus", corp["call"]]) == 0
     assert pc.load_manifest(out)["summary"]["transmissions"] == 2
     text = rep.read_text()
-    assert "## Coverage per replay mode" in text and "| C traffic only | 2 | 1 | 1 |" in text
+    assert "## Coverage per replay mode" in text
+    assert "| B synthetic full system | 2 | 1 | 1 |" in text
 
 
 def test_agent_contract_lists_replay() -> None:
@@ -366,7 +339,7 @@ def test_score_is_the_duts_call_counts_not_the_hex_tap(cfg, corp: dict) -> None:
     m = res.result["metrics"]
     assert res.verdict == "pass", res.summary
     assert m["recovered_frames"] == 90 and m["clear_recovery_pct"] == 100.0
-    assert m["hex_aligned_frames"] == 0 and m["tap_coverage_pct"] == 100.0
+    assert m["hex_aligned_frames"] == 0 and m["tap_frames"] == 90
 
 
 def test_followed_calls_without_frames_score_zero(cfg, corp: dict) -> None:
@@ -538,31 +511,6 @@ def test_blockers_first_come_and_sdrtrunk_channel_hold() -> None:
     assert blk == {"t_hang": ["o"], "t_voice": ["o"]}
     assert sc.blockers(txs, {}, busy) == {}  # nothing followed, nothing blocked
     assert sc.blockers(txs, {"o": True}) == {"t_voice": ["o"]}  # without the channel spans
-
-
-def test_item_counters_keep_the_control_chain_and_watchdog() -> None:
-    from fbench.tests.corpus_tests import _counter_delta, _imbe_counters
-
-    class Http:
-        def __init__(self, d: dict) -> None:
-            self.d = d
-
-        def get_json(self, path: str, params: dict | None, timeout: float) -> dict:
-            assert path == "/api/traffic" and params is None
-            return self.d
-
-    def snap(frames: int, grants: int, onset: int, pll: int) -> dict:
-        return {"imbe": {"imbe_frames_extracted": frames}, "grants_seen_new": grants,
-                "pll_watchdog": {"enabled": True, "resets_onset": onset, "resets_pinned": 0},
-                "control_lsm_agc": {"pll_dbg": pll, "agc_gain": 1.5, "agc_mag": 0.004,
-                                    "mag_update_threshold": 256, "sample_point_dbg": 3}}
-
-    a, b = _imbe_counters(Http(snap(10, 5, 1, 8579))), _imbe_counters(Http(snap(100, 12, 3, 40)))
-    assert a["control"] == {"pll_dbg": 8579, "agc_gain": 1.5, "agc_mag": 0.004,
-                            "mag_update_threshold": 256}
-    d = _counter_delta({"counters_before": a, "counters_after": b})
-    assert (d["imbe_frames_extracted"], d["grants_seen_new"], d["pll_wd_resets_onset"]) == \
-        (90, 7, 2) and "control" not in d
 
 
 def test_followable_is_first_come_not_whichever_the_dut_got() -> None:

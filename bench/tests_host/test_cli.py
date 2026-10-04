@@ -55,7 +55,7 @@ def test_units_probe_dna_warning(cli, services, cfg_path: Path, tmp_path: Path) 
 def test_list_and_filters(cli) -> None:
     code, doc = cli("list")
     _common(doc, "list", 0)
-    assert doc["count"] == 38 and set(doc["suites"]) == {"smoke", "interface", "transport",
+    assert doc["count"] == 37 and set(doc["suites"]) == {"smoke", "interface", "transport",
                                                          "memory", "rf", "hwval", "soak"}
     code, doc = cli("list", "--tier", "1")
     assert doc["count"] == 11 and all(t["tier"] == 1 for t in doc["tests"])

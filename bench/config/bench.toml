@@ -110,13 +110,8 @@ default_tx = "B"
 default_rx = "A"
 tx_port = "TX1A"
 tx_atten_default_db = 40.0
-# Default replay: 28 s of the 2026-05-03 capture (CC + 4 TG 300 transmissions, 297 IMBE).
-p25_clip = "C:/Users/Andy/SDRTrunk/my_captures/1777801424_859212970_4000000_baseband.wav"
-p25_clip_start_s = 13.0
-p25_clip_seconds = 28.0
 # The my_captures clips were recorded by unit A with no frequency correction applied.
 p25_clip_recorder = "A"
-p25_truth_dir = "C:/Users/Andy/SDRTrunk/recordings"
 
 # The only link cabled: no A->B entry, so the interlock refuses any transmission from A.
 [[rf.links]]

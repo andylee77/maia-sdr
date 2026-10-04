@@ -241,65 +241,6 @@ def test_read_clip_formats(tmp_path: Path) -> None:
     assert fs == 2e6 and fc == 860e6 and clip[0] == -4 - 3j
 
 
-def test_prepare_replay_cuts_window_in_chunks(tmp_path: Path) -> None:
-    import hashlib
-    import wave
-
-    fs = 1000
-    n = np.arange(5 * fs)
-    iq = np.empty(2 * n.size, dtype="<i2")
-    iq[0::2] = n % 1000  # I encodes the sample index: the window is checkable
-    iq[1::2] = 0
-    iq[2 * 2500] = 2000  # the peak sits inside the window
-    raw = tmp_path / f"1777801424_859212970_{fs}_baseband.cs16"
-    iq.tofile(raw)
-    out = tmp_path / "out.cs16"
-    info = sigmf.prepare_replay(raw, out, start_s=2.0, seconds=1.5, full_scale=1000.0, chunk=256)
-    y = np.fromfile(out, dtype="<i2")
-    assert info["samples"] == 1500 and y.size == 3000
-    assert info["rate_hz"] == fs and info["freq_hz"] == 859212970
-    assert info["peak_counts"] == 2000.0
-    assert y[0] == 0 and y[4] == 1  # window starts at sample 2000 (I=0); 2002 -> 2 x 0.5
-    assert y[2 * 500] == 1000  # the 2000-count peak lands on full scale
-    assert info["sha256"] == hashlib.sha256(out.read_bytes()).hexdigest()
-    w = tmp_path / "clip.wav"
-    with wave.open(str(w), "wb") as wf:
-        wf.setnchannels(2)
-        wf.setsampwidth(2)
-        wf.setframerate(fs)
-        wf.writeframes(iq.tobytes())
-    info_w = sigmf.prepare_replay(w, tmp_path / "w.cs16", start_s=2.0, seconds=1.5,
-                                  freq_hz=860e6, full_scale=1000.0, chunk=333)
-    assert info_w["sha256"] == info["sha256"] and info_w["freq_hz"] == 860e6
-
-
-def test_mbe_truth_counts_frames_in_window(tmp_path: Path) -> None:
-    import json
-    import time
-
-    from fbench.analysis.p25_truth import clip_epoch, mbe_truth
-
-    t0 = clip_epoch("1777801424_859212970_4000000_baseband.wav")
-    assert t0 == 1777801424.0
-
-    def mbe(start: float, n: int, name_freq: int, frm: str, enc: bool = False) -> None:
-        stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(start))
-        frames = [{"time": int((start + 0.02 * i) * 1000), "hex": "00"} for i in range(n)]
-        (tmp_path / f"{stamp}_{name_freq}_1_300_{frm}.mbe").write_text(
-            json.dumps({"to": "300", "from": frm, "encrypted": enc, "frames": frames}))
-
-    mbe(t0 + 4.0, 81, 857987500, "1")        # inside
-    mbe(t0 + 9.5, 50, 858437500, "2")        # straddles the end (t0 + 10)
-    mbe(t0 + 30.0, 72, 858437500, "3")       # after the window
-    mbe(t0 + 5.0, 10, 857987500, "4", True)  # inside, encrypted
-    r = mbe_truth(tmp_path, t0, t0 + 10.0)
-    assert r["transmissions"] == 3
-    assert r["imbe"] == 81 + 25 + 10 and r["imbe_clear"] == 81 + 25
-    straddle = [c for c in r["calls"] if c["from"] == "2"][0]
-    assert straddle["straddles"] and straddle["frames"] == 25 and straddle["frames_total"] == 50
-    assert not [c for c in r["calls"] if c["from"] == "1"][0]["straddles"]
-
-
 # ---------------------------------------------------------------------------
 # boot log / memtest decoding
 # ---------------------------------------------------------------------------

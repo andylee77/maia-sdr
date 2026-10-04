@@ -18,15 +18,16 @@ findings as they stood before the cleanup.
 | 8. The old fishball-p25 folder | Done: checked (`main` equals GitHub's, its submodule commit is in this repo, the F: backup holds all but the cargo `target/` caches), then emptied by Andy. Explorer's handles on the empty folder kept it "in use" | |
 | Added: `scanner-hdl/` | Done: the fork's gateware apart from Maia's (Andy's ask) | b64fa63 |
 
-Left open in sections 8 and 9:
+The rest of section 9, done in the bench commit after batch 8:
 
-- `rf.p25_replay` reads p25-httpd's routes and is in no suite; a port to `/api/v1` (`receivers`,
-  the hold) would bring it back.
-- `rf.p25_corpus` modes A and B use routes the scanner serves; mode C and the per-item counters
-  need `/api/traffic` and `/api/monitor`, which it does not. Not yet run on the radio core.
-- `fbench setup agent` on both units: their agents predate the new map. Unit B needs the
-  current image first.
-- F20 in `HW_VALIDATION_SUITE.md`: re-check against the radio core's carve-outs.
+- `rf.p25_replay` deleted (Andy): it read p25-httpd's decoder counters, and `rf.p25_corpus`
+  mode A replays the same captures.
+- `rf.p25_corpus` mode C and the per-item `/api/traffic` counters deleted (Andy): mode C needed
+  the traffic lane parked on a channel without grants, which the scanner does not do. Modes A
+  and B use routes the scanner serves; the corpus has not yet run on the radio core.
+- The agent on unit A updated: it reads the radio core (`rad1` 1.0.0). Unit B gets it with the
+  current image.
+- F20 closed: on unit A the radio core's carve-outs are reserved and clear of System RAM.
 
 What the inventory covers:
 

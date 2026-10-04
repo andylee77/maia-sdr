@@ -130,13 +130,9 @@ class RfConfig:
     default_rx: str = "B"
     tx_port: str = "TX1A"
     tx_atten_default_db: float = 40.0
-    p25_clip: str = ""
-    p25_clip_start_s: float = 0.0
-    p25_clip_seconds: float = 0.0  # 0 = 10 s
-    # Unit whose uncorrected reference is baked into the site clips ("" = unknown).
+    # Unit whose uncorrected reference is baked into the wideband captures that
+    # rf.p25_corpus mode A replays ("" = A).
     p25_clip_recorder: str = ""
-    # SDRTrunk recordings dir (per-call .mbe) for replay ground truth ("" = none).
-    p25_truth_dir: str = ""
     links: list[LinkConfig] = field(default_factory=list)
 
 
