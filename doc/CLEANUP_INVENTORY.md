@@ -8,7 +8,7 @@ findings as they stood before the cleanup.
 
 | Batch | State | Commits |
 |-------|-------|---------|
-| 1. Push | The branch is pushed to efef2ce (the inventory). The later commits, the four tags, and tezuka_fw's branch and tag wait for Andy | |
+| 1. Push | Done: maia-sdr `fishball-p25` with its four tags, and tezuka_fw `fishball-dev` with its tag, are on GitHub (Andy's go) | 6468511; tezuka_fw 8a34f2c |
 | 2. Texts that mislead | Done | e384095, 6e6d7ab; tezuka_fw 8a34f2c |
 | 3. Dead on arrival | Done | 9740d17 |
 | 4. The bench on the radio core | Done: the map from `radio_core.bench_map`, maintenance mode, `rf.cw_ppm`, `sys.boot_log`, the texts | 9f698db, b1f77f2 |
