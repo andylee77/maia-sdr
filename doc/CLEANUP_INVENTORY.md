@@ -15,7 +15,7 @@ findings as they stood before the cleanup.
 | 5. p25-httpd out | Done, with tezuka_fw's package | 493a12d; tezuka_fw 8a34f2c |
 | 6. The archive move | Done: `MAIA_SDR/_archive/cleanup_2026-10-04/` | 31ac775 |
 | 7. `API_FIELDS.md` | Done: regenerated from unit A, every route sampled | 6a60b0e |
-| 8. The old fishball-p25 folder | Checked, for Andy to delete by hand: `main` equals GitHub's, its submodule commit is in this repo, and the F: backup holds all but the cargo `target/` caches | |
+| 8. The old fishball-p25 folder | Done: checked (`main` equals GitHub's, its submodule commit is in this repo, the F: backup holds all but the cargo `target/` caches), then emptied by Andy. Explorer's handles on the empty folder kept it "in use" | |
 | Added: `scanner-hdl/` | Done: the fork's gateware apart from Maia's (Andy's ask) | b64fa63 |
 
 Left open in sections 8 and 9:
