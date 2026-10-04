@@ -165,8 +165,8 @@ fn body_hash(body: &[u8]) -> u64 {
 }
 
 /// Writes what the framer (and the voice unit parsers) make of every SDRTrunk `.bits` file in
-/// `P25_SDRTRUNK_DIR` to `P25_FRAMER_DUMP/<stem>.txt`, in the format of p25-httpd's
-/// `framer_dump`, so the two crates can be compared file by file.
+/// `P25_SDRTRUNK_DIR` to `P25_FRAMER_DUMP/<stem>.txt`, in the format p25-httpd's
+/// `framer_dump` wrote, so its earlier dumps compare file by file.
 #[test]
 #[ignore = "needs P25_SDRTRUNK_DIR and P25_FRAMER_DUMP"]
 fn framer_dump() {

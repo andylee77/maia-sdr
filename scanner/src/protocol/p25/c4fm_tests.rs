@@ -85,7 +85,7 @@ fn decodes_synthetic_c4fm() {
 }
 
 /// Decode a recorded control channel (`P25_C4FM_WAV` = a WAV from
-/// `/api/control_iq_dump`: 50 kSPS, I left, Q right) and print the TSBK
+/// `/api/v1/iq/control.wav`: 50 kSPS, I left, Q right) and print the TSBK
 /// CRC pass rate. `cargo test c4fm_wav -- --ignored --nocapture`.
 #[test]
 #[ignore]

@@ -157,7 +157,7 @@ fn noise_finds_no_sync() {
 }
 
 /// Offline check against captures from unit A: `DMR_CAPTURE_DIR` holds the
-/// 50 kSPS stereo i16 WAVs (`/api/control_iq_dump`). Skipped without it.
+/// 50 kSPS stereo i16 WAVs (`/api/v1/iq/control.wav`). Skipped without it.
 #[test]
 fn captured_control_channel() {
     let Ok(dir) = std::env::var("DMR_CAPTURE_DIR") else {
