@@ -126,9 +126,9 @@ mod tests {
 
     #[test]
     fn a_modulated_station_names_itself() {
-        // Four fields at 8 MSPS, noise of ±0.3 on I and Q.
-        let iq = modulate(&station_packets(4), 8e6, 0.6);
-        let id = identify(&iq, 8e6, 0.0).expect("syncs");
+        // Four fields at 10 MSPS, noise of ±0.3 on I and Q.
+        let iq = modulate(&station_packets(4), 10e6, 0.6);
+        let id = identify(&iq, 10e6, 0.0).expect("syncs");
         assert!(id.mer_db > 20.0, "MER {}", id.mer_db);
         assert_eq!((id.failed, id.psip.tsid), (0, Some(601)), "{id:?}");
         let c = &id.psip.channels;
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn a_station_off_centre_and_off_clock_still_decodes() {
         // The channel 40 kHz off DC, the sample clock 2 ppm fast.
-        let fs = 8e6;
+        let fs = 10e6;
         let iq: Vec<Complex32> = modulate(&station_packets(4), fs, 0.6)
             .into_iter()
             .enumerate()

@@ -28,8 +28,8 @@ const SCALE_GAIN_DB: f64 = 60.0;
 const SPECTRUM_MARGIN_HZ: f64 = 500_000.0;
 /// A channel is decoded at this rate, its centre at the LO (the ±3 MHz channel inside ±4.5 MHz).
 const IDENTIFY_PRESET: &str = "10M";
-/// 0.6 s of it: PSIP sends the virtual channel table at least every 0.4 s.
-const CAPTURE_SAMPLES: usize = 6_000_000;
+/// 0.5 s of it: PSIP sends the virtual channel table at least every 0.4 s.
+const CAPTURE_SAMPLES: usize = 5_000_000;
 /// 8-VSB needs about 15 dB of carrier to noise; weaker channels are not tried.
 const IDENTIFY_MIN_DB: f32 = 15.0;
 
