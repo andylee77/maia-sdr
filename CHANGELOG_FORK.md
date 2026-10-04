@@ -23,6 +23,10 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   its current tuning to its receivers with an air time; a new tuning's tag replaces the 200 ms
   settle timers; every lane demodulates in software on the control channel's modulation; the
   crystal tracker and the coast decision read the software loops; the scan probes P25 on IQ.
+- **The FIR speed-up** (`2026-10-03-radio-core-fir1`, hand-deployed on A): the shared FIR folds
+  equal mirrored taps and runs eight outputs at a time in NEON. A receiver costs 4.1 % (LSM),
+  4.3 % (C4FM) or 9.3 % (DMR) of a core, from 14.5, 13.6 and 19.4; the scanner on A 48 % of a
+  core, from 84. The 313 recordings decode to byte-identical dibits.
 - **tezuka_fw:** the device tree's rings, maia-kmod built by the P25 defconfig, and the image
   build rebuilds the kernel when a device tree changes.
 - Record: `doc/changes/079_general_radio_core.md`.

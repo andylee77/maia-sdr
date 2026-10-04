@@ -901,12 +901,10 @@ channelizer in the PL, every demodulator in software.
 **PS CPU** (two A9s at 666.67 MHz, 200 % in all):
 
 - IMBE is 2.4 % of a core per stream.
-- The software C4FM control demod is 12–17 %; a DMR receiver is 12.7 %. About 60 % of each is
-  FIR work.
-- Worst cases:
-  - a C4FM P25 site with traffic C4FM on chain 1 is about 51–61 % of the 200 %;
-  - a DMR site with a followed call is about 48–55 %, or 36–40 % once C4FM stops at DMR sites
-    (section 5).
+- A software receiver on a lane's 50 kSPS IQ (`dsp::cost_tests` on unit A, since 079's FIR
+  speed-up): LSM 4.1 %, C4FM 4.3 %, DMR 9.3 % of a core, of which the filters are about 2 %.
+- Unit A on Clay County (079's radio core; the control channel's LSM and C4FM, two LSM lanes):
+  the scanner 47.7 % of one core, the control thread 16.4 % of it.
 
 ### Candidates
 
@@ -916,11 +914,11 @@ channelizer in the PL, every demodulator in software.
 | Chain capability model | — (lane 2 carries P25 LSM only until 079) | PS only | **076** (section 5) |
 | Scan on the existing spectrometer, DMR by software sync count | — | PS only | **076** (section 10) |
 | Chain-2 post-DDC IQ tap on core 0.3.0 | DMR and C4FM voice on lane 2 | ~150 slices, ~1 k FF, 1.5 BRAM, 0 DSP | Not built: 079 gives every lane IQ |
-| Symmetric, NEON-friendly FIR in `dsp::fsk4` | ~5–6 % of a core per software receiver | PS; parity gated by the DMR and C4FM tests | Late 076 or after |
+| Symmetric, NEON-friendly FIR in `dsp::fsk4` | 9–10 % of a core per software receiver | PS; parity gated by the DMR and C4FM tests | **Done in 079**: byte-identical dibits |
 | Host experiment: DMR framer on the LSM model's dibits | Lane-2 DMR without a bake | ~1 day, host only | Not needed (079); LSM on C4FM passes only 42–69 % |
 | LsmFir delay lines to SRL/LUTRAM | ~5k FF per chain of area back | Bake | Not needed: 079 removes the LSM chains from the PL |
 | **Polyphase channelizer in the PL, every demodulator in software** | 8–16 identical lanes; ~60–70 DSPs instead of 172 | A new core and Vivado project; a fixed-point model first | **079** |
-| HDL channel filters (half-band, LPF, RRC), time-shared across lanes | ~60 % of each software receiver | Parity with SDRTrunk's f32 shown on a fixed-point model first | **079 step 5**, when lanes outgrow the CPU |
+| HDL channel filters (half-band, LPF, RRC), time-shared across lanes | ~2 % of a core per software receiver | Parity with SDRTrunk's f32 shown on a fixed-point model first | **079 step 5**, when lanes outgrow the CPU |
 | Software LSM demodulator | Retires the gateware LSM; P25 voice on any lane | PS; SDRTrunk port, checked against `p25-httpd/src/lsm` | **079 step 1** |
 | HDL 4FSK symbol processor or C4FM demodulator | — | Months; SDRTrunk's branchy sync-driven timing; worse late entry | Never |
 | Vocoders, FEC, PCM AGC, autoppm/recentre | ≤ 2.5 % each | 6–8 weeks for a vocoder alone | Never |

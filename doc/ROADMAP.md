@@ -366,8 +366,7 @@ Plan:
   C4FM mode.
 - Harris (MFID 0xA4) and Motorola (0x90) vendor TSBKs: SLERS and FPL send many Harris ones.
   Decode the voice-grant and patch ones so those systems can be followed.
-- The software C4FM demodulator uses 12–17 % of one A9 core. NEON or fixed-point FIRs would cut
-  that before a second instance runs for traffic.
+- The software C4FM demodulator uses 4.3 % of one A9 core since 079's NEON FIRs.
 
 ## Handheld page
 

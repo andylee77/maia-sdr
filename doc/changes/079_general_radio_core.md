@@ -31,7 +31,7 @@ gateware) and `build/2026-10-01-scanner-image3` (the image, in maia-sdr and tezu
 | Stage | Rate | Where | Why |
 |-------|------|-------|-----|
 | Channelize, mix, decimate | 6.4-12.8 MSPS | **PL** | Per sample, protocol-agnostic; impossible on the A9s at N channels |
-| Channel and matched filters (half-band, LPF, RRC) | 50 → 25 kSPS | PS now, **PL later** (step 5) | About 60 % of a software receiver's CPU; only needed in the PL when lanes outgrow the CPU |
+| Channel and matched filters (half-band, LPF, RRC) | 50 → 25 kSPS | PS now, **PL later** (step 5) | About 2 % of a core per software receiver since the FIR speed-up; only needed in the PL when lanes outgrow the CPU |
 | LSM: AGC, Gardner timing, Costas loop, differential slicer | 4800 baud | **PS** | Protocol-specific and branchy; SDRTrunk's f32 code is the reference |
 | C4FM and DMR: sync-driven timing, equalizer, slicer | 4800 baud | **PS** | Same; already ported and tested against SDRTrunk |
 | Framing, FEC, messages, vocoders, audio | — | **PS** | Unchanged |
@@ -96,9 +96,10 @@ spectrometer, the raw IQ capture, `axi_ad9361` and the IIO DMAs stay.
 
 ### CPU
 
-Three software lanes fit as today. A software receiver costs 12-17 % of a core, about 60 % of it
-filtering, so around ten lanes need step 5 (the filters in the PL), which brings each to about
-5-7 %. The software LSM's cost is not yet measured (step 1).
+Since the FIR speed-up (status log) a software receiver costs 4-9 % of a core on the A9 (LSM
+4.1 %, C4FM 4.3 %, DMR 9.3 %, `dsp::cost_tests`), of which the filters are about 2 %: step 5 (the
+filters in the PL) would save about that much per receiver. On unit A the scanner with three LSM
+receivers and the control channel's C4FM runs at 48 % of one core.
 
 ## The PS side
 
@@ -434,3 +435,24 @@ touches anything else.
     workers 48 %); the system three quarters idle.
   - Next: a longer run against the step 1 numbers, the bench agent and fbench on the new map,
     the FIR speed-up.
+- **2026-10-03, two hours on the image:** no warning in the log, no packet fault, lost or missed
+  packet on any lane (about 360,000 each), control 40.6 TSBKs a second at 100 %, 23,156 grants
+  with none dropped, no block dropped and no gap; crystal −0.688 ppm; the scanner 85 % of a core.
+- **2026-10-03, the FIR speed-up** (`2026-10-03-radio-core-fir1`, hand-deployed on A). The A9's
+  VFP ran the filters at about 11 cycles a tap pair: its loads into the single-precision halves
+  of the registers that held the sums made each tap wait for the one before. `dsp::fsk4::Fir`
+  now folds equal mirrored taps in pairs and takes eight outputs at a time in NEON (inline asm);
+  a decimating half-band runs on its two input phases. Two things had kept the receivers'
+  filters off the folded path: SDRTrunk's half-band holds 1e-17 residues where its zero taps are
+  (now counted as zero below 1e-12 of the centre; SDRTrunk's own scalar half-band skips them),
+  and both RRCs have a lone tap beyond their symmetric run (the DMR one also an unequal inner
+  pair, from SDRTrunk's centre formula). The taps are unchanged.
+  - **Cost on A** (ms per second of a lane's IQ, one of I and Q): half-band 22.2 → 3.4, LSM
+    low-pass 23.3 → 4.5, C4FM low-pass 13.8 → 3.0, RRC 16.0 → 3.5. Receivers: LSM 14.5 → 4.1 %,
+    C4FM 13.6 → 4.3 %, DMR 19.4 → 9.3 % of a core; about 7 % of DMR's is outside the filters.
+  - **Parity:** the 313 recordings decode to byte-identical dibits, and 23 of them on the A9
+    too; DMR reference 24,984 of 24,996 with the 20:57 call followed; host tests 434.
+  - **Unit A, Clay County,** 5 minutes before and after: the scanner 83.7 → 47.7 % of one core
+    (the control thread 33.1 → 16.4 %, the runtime workers 50.5 → 31.1 %). Control 40.7
+    messages a second at 100 %, no block dropped; lane 1 19 HDUs and 134 / 121 LDU1 / LDU2 in
+    its first 6 minutes.
