@@ -6,6 +6,7 @@
 use std::time::{Duration, Instant};
 
 use super::fsk4::Fir;
+use super::run;
 use super::taps::{HALFBAND_63, LPF_C4FM_25K, LPF_LSM_25K, RRC_TAPS_25K};
 use crate::protocol::dmr::demod::{DmrDemodulator, DmrSymbolSink};
 use crate::protocol::dmr::filters::{root_raised_cosine, LPF_DMR_25K};
@@ -88,6 +89,14 @@ fn receiver_cost() {
     for (name, ms) in stages {
         eprintln!("{name:>18}: {ms:6.2} ms per second of IQ (one of I, Q)");
     }
+
+    // A 128-tap filter of no symmetry (an equalizer's): the run against one sum an output.
+    let taps: Vec<f32> = half[..128].to_vec();
+    let mut out = vec![0.0f32; half.len() - 127];
+    let run = time(|| run::plain(&taps, &half, &mut out));
+    let each = time(|| out.iter_mut().enumerate().for_each(|(k, o)| *o = run::dot(&taps, &half[k..])));
+    let ns = |ms: f64| ms * 1e6 * SECONDS as f64 / out.len() as f64;
+    eprintln!("{:>18}: {:6.1} ns an output (one sum an output: {:.1})", "plain 128, run", ns(run), ns(each));
 
     let whole = |name: &str, ms: f64| eprintln!("{name:>18}: {ms:6.2} ms per second of IQ ({:.1} % of a core)", ms / 10.0);
     let mut lsm = LsmDecoder::new();
