@@ -64,7 +64,8 @@ function screen({ rf, st, v }, scan) {
   if (prog) {
     let lastKind = null;
     for (const s of prog.streams) {
-      const text = s.kind === 'video' ? videoText(s) : s.kind === 'audio' ? audioText(s) : s.codec;
+      const text = !s.bitrate_bps ? `${s.codec} · nothing sent in the capture`
+        : s.kind === 'video' ? videoText(s) : s.kind === 'audio' ? audioText(s) : s.codec;
       line(s.kind === lastKind ? '' : KIND[s.kind] || 'Data', text, mbps(s.bitrate_bps));
       lastKind = s.kind;
     }

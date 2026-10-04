@@ -36,7 +36,8 @@ function inMode(key, m) {
 function route() {
   const name = (location.hash || '#now').slice(1);
   let key = PAGES[name] ? name : 'now';
-  if (!inMode(key, mode())) key = HOME[mode()];
+  // Until the unit's mode is known a page of either mode stays; showMode moves it once it is.
+  if (store.status && !inMode(key, mode())) key = HOME[mode()];
   if (key !== name) history.replaceState(null, '', `#${key}`);
   if (current && current.name === key) return;
   if (current && current.page.unmount) current.page.unmount();
