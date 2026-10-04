@@ -476,6 +476,11 @@ touches anything else.
     the BCH early exit, the calls view) → 15.0 % of one core (the algebraic decoder); the control
     thread 16.4 → 4.0 %. Control 40.8 messages a second at 100 %. Left: the three LSM receivers
     (filters about 6.4 %), the kernel 1.7 %, the spectrometer's frames about 1 %.
-  - **Not SDRTrunk's, on purpose (open):** SDRTrunk decodes the NID's 63-bit BCH word without
-    bit 63, and retries an uncorrectable NID with the site's NAC; ours requires 11 bits or fewer
-    over all 64 and does not retry. Both would recover NIDs; to measure on the recordings.
+  - **Not SDRTrunk's, measured and kept (Andy: SDRTrunk is the baseline, not the ceiling).**
+    SDRTrunk decodes the NID's 63-bit BCH word without bit 63, and retries an uncorrectable NID
+    with the site's NAC; ours accepts 11 bits or fewer over all 64 and does not retry. On the 313
+    recordings both together recover 9 NIDs of 142,359 (+9 TSBKs, +1 LDU1, +1 LDU2, +3 TDU-LCs,
+    every one passing its own check; the harness now counts those). On noise the retry passes the
+    NAC check it would otherwise fail: a noise NID decodes with the site's NAC 3.3e-4 of the time
+    with it, 5e-7 without (a random-word estimate), so an idle lane's 5 false syncs a second
+    would give a false NID about every 10 minutes, a noise data unit read as voice. Not adopted.
