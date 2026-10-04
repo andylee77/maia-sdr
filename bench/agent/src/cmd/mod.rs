@@ -12,6 +12,7 @@ pub mod maint;
 pub mod mem;
 pub mod net;
 pub mod prbs;
+pub mod profile;
 pub mod reg;
 pub mod replay;
 pub mod ring;
@@ -129,6 +130,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("audit", "PS configuration audit (PLLs, DDR, DDRIOB, PL310, AFI, reserved memory, kmod)"),
     ("reg read|write|dump|list --core C [--reg R] [--value V]", "allow-listed register access"),
     ("telemetry --seconds N --interval-ms M [--jsonl FILE|-]", "XADC, AD9361 temp, CLK_FREQ, load, IRQs"),
+    ("profile --pid PID|NAME [--seconds N] [--hz H] [--top K] [--symbols UNSTRIPPED_EXE]", "where a process's CPU goes: by thread and by function (perf sampling)"),
     ("iio attr get|set --dev D [--chan C [--out]] --attr A [--value V]", "IIO sysfs access"),
     ("iio debug get|set --dev D --attr A [--value V]", "IIO debugfs access"),
     ("ad9361 spi read|write --addr A [--value V]", "AD9361 SPI register via direct_reg_access"),
@@ -160,6 +162,7 @@ pub fn dispatch(ctx: &Ctx, args: &Args) -> AResult<Value> {
         "reg" => reg::run(ctx, args),
         "replay" => replay::run(ctx, args),
         "telemetry" => telemetry::run(ctx, args),
+        "profile" => profile::run(ctx, args),
         "iio" => iio_cmd::run(ctx, args),
         "ad9361" => ad9361::run(ctx, args),
         "eyescan" => eyescan::run(ctx, args),
