@@ -26,11 +26,24 @@ pub fn power_db(bytes: &[u8]) -> Vec<f32> {
             let w = u64::from_le_bytes(b.try_into().unwrap_or_default());
             let mantissa = w & ((1u64 << 47) - 1);
             let exponent = ((w >> 56) & 0x03) as u32;
-            // In f32: a millionth of a dB, at a fraction of the f64 logarithm's cost.
-            let power = mantissa as f32 * (1u64 << (2 * exponent)) as f32;
-            if power > 0.0 { 10.0 * power.log10() - DB_REF as f32 } else { -170.0 }
+            if mantissa == 0 { -170.0 } else { db_of(mantissa, exponent) - DB_REF as f32 }
         })
         .collect()
+}
+
+/// 10·log10 of mantissa · 4^exponent, within 1e-4 dB, in integer and f32 arithmetic (the A9
+/// converts a u64 to a float in software, and a logarithm call costs several times this): the
+/// top bit's position gives log2's integer part; the 23 bits under it, m in [1, 2), give ln m by
+/// its series in s = (m − 1)/(m + 1) ≤ 1/3.
+fn db_of(mantissa: u64, exponent: u32) -> f32 {
+    let top = 63 - mantissa.leading_zeros();
+    let m = f32::from_bits(0x3F80_0000 | (((mantissa << (63 - top)) >> 40) as u32 & 0x7F_FFFF));
+    let s = (m - 1.0) / (m + 1.0);
+    let s2 = s * s;
+    let ln_m = 2.0 * s * (1.0 + s2 * (1.0 / 3.0 + s2 * (1.0 / 5.0 + s2 * (1.0 / 7.0 + s2 / 9.0))));
+    const DB_PER_OCTAVE: f32 = 3.010_299_956_6;
+    const DB_PER_NEPER: f32 = 4.342_944_819;
+    (top + 2 * exponent) as f32 * DB_PER_OCTAVE + ln_m * DB_PER_NEPER
 }
 
 /// A continuous carrier found in a pass.
@@ -140,6 +153,23 @@ mod tests {
         assert!((c[0].freq_hz as f64 - 861_000_000.0).abs() < bin * 1.5, "{}", c[0].freq_hz);
         assert!(c[0].level_db > 29.0 && c[0].persistence == 1.0);
         assert!(find_carriers(&[], 0.0, span, 1.0, 12.0, 0.8).is_empty());
+    }
+
+    #[test]
+    fn the_db_series_is_the_logarithm() {
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut worst = 0.0f64;
+        for i in 0..20_000u64 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            // Every magnitude from 1 to 2^47 - 1.
+            let mantissa = ((x >> 17) >> (i % 47)).max(1);
+            let exponent = (i % 4) as u32;
+            let exact = 10.0 * (mantissa as f64 * 4f64.powi(exponent as i32)).log10();
+            worst = worst.max((db_of(mantissa, exponent) as f64 - exact).abs());
+        }
+        assert!(worst < 1e-4, "{worst} dB");
     }
 
     #[test]
