@@ -38,7 +38,7 @@ impl Encoder {
 /// State (D1, D2) as 2 D1 + D2. Next state 2a + b comes from the two states 2b + D2 (D2 = 0, 1)
 /// on input X1 = a ⊕ D2, sending coset (Z1 Z0) 2 X1 + b. Per next state, per D2: the previous
 /// state and the coset.
-const INTO: [[(usize, usize); 2]; 4] = [[(0, 0), (1, 2)], [(2, 1), (3, 3)], [(0, 2), (1, 0)], [(2, 3), (3, 1)]];
+pub(crate) const INTO: [[(usize, usize); 2]; 4] = [[(0, 0), (1, 2)], [(2, 1), (3, 3)], [(0, 2), (1, 0)], [(2, 3), (3, 1)]];
 
 /// Soft symbols in integer steps of 1/16 of the levels' unit, limited to ±16 units: the metrics
 /// are integers, compared on the ARM side (a float comparison waits for its flags on the A9).

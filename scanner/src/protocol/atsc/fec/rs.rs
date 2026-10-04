@@ -68,6 +68,23 @@ impl Gf {
     }
 }
 
+/// S_j = cw(α^j) for j = 0..20, by Horner, all 20 together.
+fn syndromes_with(g: &Gf, cw: &[u8]) -> [u8; PARITY] {
+    let mut syn = [0u8; PARITY];
+    for &c in cw {
+        for (s, t) in syn.iter_mut().zip(&g.times) {
+            *s = t[*s as usize] ^ c;
+        }
+    }
+    syn
+}
+
+/// A codeword's 20 syndromes; all zero for a codeword the code holds.
+#[cfg(test)]
+pub(crate) fn syndromes(cw: &[u8]) -> [u8; PARITY] {
+    syndromes_with(gf(), cw)
+}
+
 /// What decoding did to a codeword.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -82,13 +99,7 @@ pub enum Outcome {
 pub fn decode(cw: &mut [u8]) -> Outcome {
     debug_assert_eq!(cw.len(), N);
     let g = gf();
-    // S_j = cw(α^j) by Horner, all 20 together.
-    let mut syn = [0u8; PARITY];
-    for &c in cw.iter() {
-        for (s, t) in syn.iter_mut().zip(&g.times) {
-            *s = t[*s as usize] ^ c;
-        }
-    }
+    let syn = syndromes_with(g, cw);
     if syn.iter().all(|&s| s == 0) {
         return Outcome::Clean;
     }

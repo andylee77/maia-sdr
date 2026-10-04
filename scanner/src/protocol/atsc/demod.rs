@@ -51,9 +51,9 @@ const PERIOD: f64 = (2 * SEGMENT) as f64;
 const TIMING_BLOCK: usize = 32;
 /// Segments searched at every phase for where the syncs are.
 const SYNC_SEARCH: usize = 256;
-const EQ_TAPS: usize = 128;
+pub(crate) const EQ_TAPS: usize = 128;
 /// Equalizer taps ahead of the symbol (pre-echoes).
-const EQ_PRE: usize = 32;
+pub(crate) const EQ_PRE: usize = 32;
 /// Field syncs the equalizer trains on; then rounds on its own decisions, each over runs of data
 /// spread across the signal.
 const EQ_TRAINING_FIELDS: usize = 20;
@@ -615,7 +615,7 @@ fn solve(mut a: Vec<f64>, mut b: Vec<f64>, n: usize) -> Option<Vec<f64>> {
 
 /// The nearest of the eight levels. (v + 7)/2 rounded is (v + 8)/2 truncated over the levels'
 /// range (no rounding call: it is a library call on the A9); `as` saturates.
-fn slice(v: f32) -> f32 {
+pub(crate) fn slice(v: f32) -> f32 {
     (2 * (((v + 8.0) * 0.5) as i32).clamp(0, 7) - 7) as f32
 }
 
@@ -654,12 +654,12 @@ fn convolve(y: &[f32], w: &[f32], from: usize, out: &mut [f32]) {
 }
 
 /// The rows whose windows lie inside y (of `y_len`): row k weighs y[k + PRE − i] by tap i.
-fn rows_inside(y_len: usize) -> std::ops::Range<usize> {
+pub(crate) fn rows_inside(y_len: usize) -> std::ops::Range<usize> {
     (EQ_TAPS - 1).saturating_sub(EQ_PRE)..y_len.saturating_sub(EQ_PRE)
 }
 
 /// The equalizer's output at row k.
-fn output(y: &[f32], w: &[f32], k: usize) -> f32 {
+pub(crate) fn output(y: &[f32], w: &[f32], k: usize) -> f32 {
     let top = k + EQ_PRE;
     w.iter().enumerate().map(|(i, &c)| c * y[top - i]).sum()
 }
@@ -693,7 +693,7 @@ fn add_run(y: &[f32], k0: usize, wanted: &[f32], a: &mut [f64], b: &mut [f64]) {
 
 /// The taps w minimizing Σ (wanted − Σ w[i] y[k + PRE − i])² over runs of rows (first row,
 /// wanted values); rows whose windows leave y are left out. Half the runs' sums on each core.
-fn least_squares(y: &[f32], runs: &[(usize, Vec<f32>)]) -> Option<Vec<f32>> {
+pub(crate) fn least_squares(y: &[f32], runs: &[(usize, Vec<f32>)]) -> Option<Vec<f32>> {
     let n = EQ_TAPS;
     let inside = rows_inside(y.len());
     let share = runs.len().div_ceil(2);
@@ -717,7 +717,7 @@ fn least_squares(y: &[f32], runs: &[(usize, Vec<f32>)]) -> Option<Vec<f32>> {
 /// The least-squares equalizer: out[k] = Σ w[i] y[k + PRE − i]. Trained on the field syncs' known
 /// symbols, then on its own decisions over runs spread across the signal, each round's between
 /// the last's.
-fn equalize(y: &[f32], first_sync: usize, inverted: &[bool]) -> Option<Vec<f32>> {
+pub(crate) fn equalize(y: &[f32], first_sync: usize, inverted: &[bool]) -> Option<Vec<f32>> {
     let training: Vec<(usize, Vec<f32>)> = inverted
         .iter()
         .take(EQ_TRAINING_FIELDS)
@@ -743,7 +743,7 @@ fn equalize(y: &[f32], first_sync: usize, inverted: &[bool]) -> Option<Vec<f32>>
 
 /// Modulation error ratio of the data symbols, from every sixteenth segment (half a million
 /// symbols in a 0.5 s capture: plenty for the measure).
-fn mer(y: &[f32]) -> f32 {
+pub(crate) fn mer(y: &[f32]) -> f32 {
     let (mut sig, mut err) = (0f64, 0f64);
     for seg in y.chunks_exact(SEGMENT).step_by(16) {
         for &v in &seg[SYNC_SYMBOLS..] {
@@ -755,10 +755,20 @@ fn mer(y: &[f32]) -> f32 {
     if err > 0.0 { (10.0 * (sig / err).log10()) as f32 } else { 99.0 }
 }
 
-/// Demodulate a channel: `iq` at `sample_rate_hz` (the true rate: a crystal's error taken out),
-/// the channel's centre `centre_offset_hz` from DC. `None` when no segment or field syncs are
-/// found.
-pub fn demodulate(iq: &[Complex32], sample_rate_hz: f64, centre_offset_hz: f64) -> Option<Demodulated> {
+/// The symbols before the equalizer (the pilot's DC out, the syncs at ±5), segment after segment,
+/// with the field syncs found in them.
+pub(crate) struct Unequalized {
+    pub symbols: Vec<f32>,
+    /// The first field sync segment; the others follow every 313.
+    pub first_sync: usize,
+    /// For it and each one after: whether its middle PN63 is inverted.
+    pub inverted: Vec<bool>,
+    pub pilot_offset_hz: f64,
+    pub clock_ppm: f64,
+}
+
+/// The receiver up to the equalizer's input; arguments as `demodulate`'s.
+pub(crate) fn unequalized(iq: &[Complex32], sample_rate_hz: f64, centre_offset_hz: f64) -> Option<Unequalized> {
     let centred: Vec<Complex32>;
     let x = if centre_offset_hz == 0.0 {
         iq
@@ -770,15 +780,22 @@ pub fn demodulate(iq: &[Complex32], sample_rate_hz: f64, centre_offset_hz: f64) 
     let carrier = Carrier::find(x, sample_rate_hz)?;
     let sig = Real { x, matched: Matched::new(sample_rate_hz), carrier, ratio: sample_rate_hz / (2.0 * SYMBOL_RATE) };
     let (start, per) = timing(&sig)?;
-    let y = symbols(&sig, start, per);
-    let pilot_offset_hz = sig.carrier.offset_hz;
-    let (first, inverted) = field_syncs(&y)?;
-    let symbols = equalize(&y, first, &inverted)?;
+    let symbols = symbols(&sig, start, per);
+    let (first_sync, inverted) = field_syncs(&symbols)?;
+    Some(Unequalized { symbols, first_sync, inverted, pilot_offset_hz: sig.carrier.offset_hz, clock_ppm: (PERIOD / per - 1.0) * 1e6 })
+}
+
+/// Demodulate a channel: `iq` at `sample_rate_hz` (the true rate: a crystal's error taken out),
+/// the channel's centre `centre_offset_hz` from DC. `None` when no segment or field syncs are
+/// found.
+pub fn demodulate(iq: &[Complex32], sample_rate_hz: f64, centre_offset_hz: f64) -> Option<Demodulated> {
+    let u = unequalized(iq, sample_rate_hz, centre_offset_hz)?;
+    let symbols = equalize(&u.symbols, u.first_sync, &u.inverted)?;
     Some(Demodulated {
         mer_db: mer(&symbols),
-        first_field_sync: Some(first),
-        pilot_offset_hz,
-        clock_ppm: (PERIOD / per - 1.0) * 1e6,
+        first_field_sync: Some(u.first_sync),
+        pilot_offset_hz: u.pilot_offset_hz,
+        clock_ppm: u.clock_ppm,
         symbols,
     })
 }

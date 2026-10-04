@@ -14,13 +14,13 @@ use trellis::ENCODERS;
 
 /// Reed-Solomon-coded bytes a field.
 pub const FIELD_BYTES: usize = rs::N * DATA_SEGMENTS;
-const BRANCHES: usize = 52;
+pub(crate) const BRANCHES: usize = 52;
 /// Bytes of delay the interleaver adds a branch.
 const BRANCH_STEP: usize = 4 * BRANCHES;
 
 /// Field byte b goes to encoder `.0[b]` as its `.1[b]`-th byte of the field. The encoders take
 /// the bytes in turn, the turn moving on by 4 at each segment's start rounded up to 12 bytes.
-fn byte_map() -> &'static (Vec<u8>, Vec<u16>) {
+pub(crate) fn byte_map() -> &'static (Vec<u8>, Vec<u16>) {
     static MAP: OnceLock<(Vec<u8>, Vec<u16>)> = OnceLock::new();
     MAP.get_or_init(|| {
         let mut enc = vec![0u8; FIELD_BYTES];
@@ -43,7 +43,7 @@ fn byte_map() -> &'static (Vec<u8>, Vec<u16>) {
 
 /// The randomizer's bytes for a field's 312 packets (sync bytes left out): x^16 + x^13 + x^12 +
 /// x^11 + x^7 + x^6 + x^3 + x + 1 from 0xF180.
-fn randomizer() -> &'static [u8] {
+pub(crate) fn randomizer() -> &'static [u8] {
     static R: OnceLock<Vec<u8>> = OnceLock::new();
     R.get_or_init(|| {
         let mut st: u32 = 0xF180;

@@ -32,15 +32,7 @@ pub struct Identified {
 pub fn identify(iq: &[Complex32], sample_rate_hz: f64, centre_offset_hz: f64) -> Option<Identified> {
     let d = demodulate(iq, sample_rate_hz, centre_offset_hz)?;
     let (packets, FecStats { fields, packets: n, corrected, failed }) = fec::decode(&d.symbols, d.first_field_sync?);
-    let passed: Vec<&[u8; 188]> = packets.iter().filter(|p| p.outcome != rs::Outcome::Failed).map(|p| &p.bytes).collect();
-    let mut sections = Sections::default();
-    let mut psip = Psip::default();
-    for p in &passed {
-        for (pid, s) in sections.push(p, &Psip::pids()) {
-            psip.section(pid, &s);
-        }
-    }
-    let multiplex = streams::analyse(&passed, packets.len());
+    let (psip, multiplex) = read(&packets);
     Some(Identified {
         psip,
         mer_db: d.mer_db,
@@ -52,6 +44,20 @@ pub fn identify(iq: &[Complex32], sample_rate_hz: f64, centre_offset_hz: f64) ->
         failed,
         multiplex,
     })
+}
+
+/// What a station's packets say: its PSIP from those Reed-Solomon passed, and its programs'
+/// streams over all the packets' slots.
+pub(crate) fn read(packets: &[fec::Packet]) -> (Psip, Multiplex) {
+    let passed: Vec<&[u8; 188]> = packets.iter().filter(|p| p.outcome != rs::Outcome::Failed).map(|p| &p.bytes).collect();
+    let mut sections = Sections::default();
+    let mut psip = Psip::default();
+    for p in &passed {
+        for (pid, s) in sections.push(p, &Psip::pids()) {
+            psip.section(pid, &s);
+        }
+    }
+    (psip, streams::analyse(&passed, packets.len()))
 }
 
 /// An 8-VSB signal for tests: `packets` (312 a field) through the FEC, segment and field syncs
@@ -101,13 +107,13 @@ pub fn modulate(packets: &[[u8; 188]], fs: f64, noise: f32) -> Vec<Complex32> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::protocol::atsc::ts::tests::{packets as ts_packets, section};
 
     /// Each field: a PAT (TSID 601) and a TVCT naming 4.1 WJXT-HD (stations repeat them), then
     /// null packets.
-    fn station_packets(fields: usize) -> Vec<[u8; 188]> {
+    pub(crate) fn station_packets(fields: usize) -> Vec<[u8; 188]> {
         let mut tables = ts_packets(0x0000, &section(0x00, &[0x02, 0x59, 0xC1, 0, 0, 0, 7, 0xE0, 0x31]));
         let mut ch = Vec::new();
         let mut name: Vec<u16> = "WJXT-HD".encode_utf16().collect();

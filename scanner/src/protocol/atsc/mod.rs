@@ -6,6 +6,8 @@
 
 pub mod demod;
 pub mod fec;
+#[cfg(test)]
+pub mod pl;
 pub mod psip;
 pub mod receiver;
 pub mod spectrum;
