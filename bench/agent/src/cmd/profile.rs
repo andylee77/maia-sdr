@@ -221,17 +221,42 @@ fn demangle(name: &str) -> String {
 struct Attributor<'a> {
     maps: &'a [Mapping],
     files: HashMap<String, Option<Symbols>>,
+    /// The kernel's text symbols (`/proc/kallsyms`), read on the first kernel sample.
+    kernel: Option<Vec<(u32, String)>>,
     read: &'a dyn Fn(&str) -> Option<Vec<u8>>,
+}
+
+/// The text symbols of `/proc/kallsyms` ("address type name [module]"), by address.
+fn parse_kallsyms(text: &str) -> Vec<(u32, String)> {
+    let mut syms: Vec<(u32, String)> = text
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let addr = u32::from_str_radix(f.next()?, 16).ok()?;
+            let kind = f.next()?;
+            let name = f.next()?;
+            (addr != 0 && (kind == "t" || kind == "T")).then(|| (addr, name.to_string()))
+        })
+        .collect();
+    syms.sort_by_key(|s| s.0);
+    syms
 }
 
 impl<'a> Attributor<'a> {
     fn new(maps: &'a [Mapping], read: &'a dyn Fn(&str) -> Option<Vec<u8>>) -> Self {
-        Attributor { maps, files: HashMap::new(), read }
+        Attributor { maps, files: HashMap::new(), kernel: None, read }
     }
 
     fn function(&mut self, ip: u32, kernel: bool) -> String {
         if kernel {
-            return "[kernel]".into();
+            let read = self.read;
+            let syms = self
+                .kernel
+                .get_or_insert_with(|| read("/proc/kallsyms").map(|b| parse_kallsyms(&String::from_utf8_lossy(&b))).unwrap_or_default());
+            return match syms.partition_point(|s| s.0 <= ip).checked_sub(1) {
+                Some(i) => format!("{} [kernel]", syms[i].1),
+                None => "[kernel]".into(),
+            };
         }
         let Some(m) = self.maps.iter().find(|m| (m.start..m.end).contains(&ip)) else {
             return "[unknown]".into();
@@ -645,8 +670,26 @@ mod tests {
         assert_eq!(a.function(0x00400080, false), "a [scanner]");
         assert_eq!(a.function(0x00400150, false), "x::b [scanner]");
         assert_eq!(a.function(0xb6e00010, false), "[libm.so.6]");
-        assert_eq!(a.function(0xc0008000, true), "[kernel]");
+        assert_eq!(a.function(0xc0008000, true), "[kernel]", "no kernel symbols to read");
         assert_eq!(a.function(0x1000, false), "[unknown]");
+    }
+
+    #[test]
+    fn kernel_addresses_take_the_text_symbol_below_them() {
+        let k = parse_kallsyms("c0100000 T _stext
+c0108000 t v7_dma_inv_range
+c0109000 D some_data
+c010a000 T __do_softirq
+");
+        assert_eq!(k.len(), 3, "text symbols only");
+        let maps = Vec::new();
+        let read = |p: &str| (p == "/proc/kallsyms").then(|| b"c0108000 t v7_dma_inv_range
+c010a000 T __do_softirq
+".to_vec());
+        let mut a = Attributor::new(&maps, &read);
+        assert_eq!(a.function(0xc0108040, true), "v7_dma_inv_range [kernel]");
+        assert_eq!(a.function(0xc010a100, true), "__do_softirq [kernel]");
+        assert_eq!(a.function(0xc0000000, true), "[kernel]");
     }
 
     #[test]
