@@ -11,7 +11,7 @@ unit use the scanner's `/api/v1`. Scripts retired in the 2026-10 cleanup are in
 | [`sdrtrunk_dmr_reference.py`](sdrtrunk_dmr_reference.py) | Decodes 50 kSPS stereo IQ WAVs (`/api/v1/iq/control.wav`) with SDRTrunk's own `DMRDecoder` through a small Java harness (`sdrtrunk_dmr_harness/`). It prints `file\|timestamp\|timeslot\|valid\|class\|text` per message, so the scanner's DMR output can be diffed against it. The `DMR_CAPTURE_DIR` tests read its output. Uses Gradle `--offline`; nothing in the SDRTrunk repo changes |
 | [`sdrtrunk_lsm_reference.py`](sdrtrunk_lsm_reference.py) | SDRTrunk's `P25P1DecoderLSM`, headless: `taps` prints its filters; `decode` writes `.bits` and messages for `_baseband.wav` or `/api/v1/iq/control.wav` captures (harness in `sdrtrunk_lsm_harness/`). It imports `classpath()` from the DMR reference |
 | [`p25_lsm_compare.py`](p25_lsm_compare.py) | Aligns three dibit streams: the scanner's (`lsm_wavs`, an ignored test in `scanner/src/protocol/p25/lsm_tests.rs`), SDRTrunk's offline decode, and SDRTrunk's live `.bits` |
-| [`sdrtrunk_teardown_stats.py`](sdrtrunk_teardown_stats.py) | Teardown and call-close timing distributions from SDRTrunk's `event_logs`. Its `--p25-calls` and `--p25-log` options read p25-httpd's old dumps |
+| [`sdrtrunk_teardown_stats.py`](sdrtrunk_teardown_stats.py) | Teardown and call-close timing distributions from SDRTrunk's `event_logs`. `--p25-calls` adds the scanner's calls (`/api/ui/calls` dumps) |
 | [`p25_corpus_index.py`](p25_corpus_index.py) | Indexes the SDRTrunk captures, recordings and `.mbe` truth into the replay manifest for `fbench run rf.p25_corpus` |
 
 ## Design

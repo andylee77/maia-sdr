@@ -1,7 +1,32 @@
 # Cleanup inventory
 
-**Date:** 2026-10-04, on `fishball-p25` after abc6214. **Nothing has been changed yet.** Andy
-picks what to act on; section 14 proposes the batches.
+**Date:** 2026-10-04, on `fishball-p25` after abc6214. Andy approved the recommendations;
+section 14 proposes the batches, and the status below says what is done. Sections 1-13 are the
+findings as they stood before the cleanup.
+
+## Status
+
+| Batch | State | Commits |
+|-------|-------|---------|
+| 1. Push | The branch is pushed to efef2ce (the inventory). The later commits, the four tags, and tezuka_fw's branch and tag wait for Andy | |
+| 2. Texts that mislead | Done | e384095, 6e6d7ab; tezuka_fw 8a34f2c |
+| 3. Dead on arrival | Done | 9740d17 |
+| 4. The bench on the radio core | Done: the map from `radio_core.bench_map`, maintenance mode, `rf.cw_ppm`, `sys.boot_log`, the texts | 9f698db, b1f77f2 |
+| 5. p25-httpd out | Done, with tezuka_fw's package | 493a12d; tezuka_fw 8a34f2c |
+| 6. The archive move | Done: `MAIA_SDR/_archive/cleanup_2026-10-04/` | 31ac775 |
+| 7. `API_FIELDS.md` | Open: needs unit A | |
+| 8. The old fishball-p25 folder | Open | |
+| Added: `scanner-hdl/` | Done: the fork's gateware apart from Maia's (Andy's ask) | b64fa63 |
+
+Left open in sections 8 and 9:
+
+- `rf.p25_replay` reads p25-httpd's routes and is in no suite; a port to `/api/v1` (`receivers`,
+  the hold) would bring it back.
+- `rf.p25_corpus` modes A and B use routes the scanner serves; mode C and the per-item counters
+  need `/api/traffic` and `/api/monitor`, which it does not. Not yet run on the radio core.
+- `fbench setup agent` on both units: their agents predate the new map. Unit B needs the
+  current image first.
+- F20 in `HW_VALIDATION_SUITE.md`: re-check against the radio core's carve-outs.
 
 What the inventory covers:
 

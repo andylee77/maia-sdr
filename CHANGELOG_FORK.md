@@ -5,6 +5,36 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-04] Cleanup: p25-httpd out, the fork's gateware in scanner-hdl, the bench on the radio core
+
+**Branch:** fishball-p25 from 9740d17 (local; efef2ce, the inventory, is pushed), tezuka_fw
+fishball-dev 8a34f2c (local)
+**Bake required:** NO (the generated Verilog and SVDs are unchanged).
+
+- **Plan and status:** `doc/CLEANUP_INVENTORY.md`, item by item, with Andy's picks. A copy of
+  MAIA_SDR, fishball-p25 and tezuka_fw from before it is in
+  `F:\backups\MAIA_SDR_2026-10-04_precleanup\`.
+- **Deleted** (git keeps them): `p25-httpd/`; the dead-on-arrival HDL (`channel_mux`,
+  `traffic_pipeline`, `c4fm_demod`, `symbol_timing`) and their tests, the 0.2.0 SVD, a stale
+  Vivado script and XSA, three tools.
+- **Archived** to `MAIA_SDR/_archive/cleanup_2026-10-04/` with a README: core 0.3.0's LSM
+  gateware, its tests and golden vectors; 49 tools; 15 docs from `doc/`, `BRIEF.md`,
+  `DEVLOG.md`, `DEVPLAN.md`; `doc/diagnostics/` and `_validation/`.
+- **`scanner-hdl/`:** the radio core (was `maia-hdl/p25_hdl`), `hwval_hdl`, their tests and the
+  SVD generator. `DmaStreamRingWrite` moved to `radio_core/dma_ring.py`, so `maia_hdl`, `pluto`
+  and maia-hdl's tests equal upstream's `main`; LVDS 1R1T is set by the two Fishball projects.
+  The Vivado projects and IP packaging stay in `maia-hdl/` (ADI's scripts use relative paths).
+- **The bench:** reads the radio core's map, which `radio_core.bench_map` writes beside the SVD
+  on every FPGA build (a test fails if the committed map drifts); maintenance mode stops the
+  scanner only; `rf.cw_ppm` cross-checks the scanner's stored crystal; `rf.p25_replay` (p25-httpd's
+  routes) is in no suite; fbench writes runs to `runs/bench/`.
+- **Texts:** README, CLAUDE.md, DESIGN, BUILD_FPGA, ADI_HDL_INTEGRATION, UI_BRIEF, ROADMAP,
+  API_INVENTORY, HW_VALIDATION_SUITE and the stale code headers describe the scanner and the
+  radio core. `tools/sdrtrunk_teardown_stats.py --p25-calls` reads the scanner's calls; its
+  `--p25-log` (p25-httpd's `/api/log`) goes.
+- **tezuka_fw** (change 006): no p25-httpd package; the scanner package syncs only `scanner/`;
+  `maia-httpd` and `maia-wasm` fetch maia-sdr's `main`, as the remote `fishball-dev` was deleted.
+
 ## [2026-10-04] Image: the radio core with 079's CPU work and ATSC (080, 081), on unit A
 
 **Branch:** fishball-p25 88931d2 (079-lsm merged onto 081), tezuka_fw fishball-dev 96b16c3

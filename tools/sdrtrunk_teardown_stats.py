@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure P25 traffic-channel teardown / call-close timing from SDRTrunk logs (+ optional p25-httpd dumps).
+"""Measure P25 traffic-channel teardown / call-close timing from SDRTrunk logs (+ optional dumps of the scanner's calls).
 
 Distributions (n, min, p10..p99, max, bucket fractions) for: terminators after
 the last LDU, system channel hang, same-channel turnaround (by TG and by CC
@@ -20,7 +20,7 @@ Usage:
   python tools/sdrtrunk_teardown_stats.py --recordings C:/Users/Andy/SDRTrunk/recordings \\
       --out report.md --json raw.json
   python tools/sdrtrunk_teardown_stats.py --since 2026-05-02 --freqs 857987500 858437500
-  python tools/sdrtrunk_teardown_stats.py --event-logs NONE --p25-calls calls.jsonl --p25-log log.json
+  python tools/sdrtrunk_teardown_stats.py --event-logs NONE --p25-calls calls.jsonl
 """
 from __future__ import annotations
 
@@ -349,8 +349,8 @@ def items_of(doc):
     return []
 
 
-def p25_section(calls_paths, log_paths, J):
-    R = ["## p25-httpd comparison\n"]
+def p25_section(calls_paths, J):
+    R = ["## The scanner's calls\n"]
     num = lambda c, k: c.get(k) if isinstance(c.get(k), (int, float)) else None  # noqa: E731
     if calls_paths:
         calls = {}
@@ -375,18 +375,11 @@ def p25_section(calls_paths, log_paths, J):
                         ta["same TG" if a.get("tg") == b.get("tg") else "different TG"].append(g)
         J["p25_calls"] = dict(teardown=tear, first_voice=fv, turnaround=dict(ta))
         R.append("%d unique call_id in %d file(s); %d followed with voice.\n" % (len(cl), len(calls_paths), len(voiced)))
-        for k in ("close_reason", "not_followed", "audio_status"):
+        for k in ("close_reason", "not_followed"):
             R.append(count_table(collections.Counter(str(c.get(k)) for c in cl), (k, "calls")))
         R.append(dist_table([("teardown = open_ms - (first_voice_ms + voice_ms)", tear), ("first_voice_ms", fv)]
                             + [("turnaround, " + k, v) for k, v in sorted(ta.items())]))
         R.append(bucket_table([("turnaround, " + k, v) for k, v in sorted(ta.items())]))
-    for p in log_paths:
-        ents = [e for d in load_json_docs(p) for e in items_of(d) if isinstance(e, dict)]
-        reasons = collections.Counter(str((e.get("fields") or {}).get("reason")) for e in ents
-                                      if e.get("message") == "call_closing")
-        R.append("Log `%s`: %d entries; categories %s.\n" % (os.path.basename(p), len(ents),
-                                                           dict(collections.Counter(str(e.get("category")) for e in ents))))
-        R.append(count_table(reasons, ("call_closing reason", "count")) if reasons else "No call_closing entries.\n")
     return "\n".join(R)
 
 
@@ -698,8 +691,7 @@ def main(argv=None):
     ap.add_argument("--freqs", type=int, nargs="*", help="traffic frequencies in Hz (default: all at the site)")
     ap.add_argument("--since", help="YYYY-MM-DD, inclusive, by log/recording file name")
     ap.add_argument("--until", help="YYYY-MM-DD, inclusive")
-    ap.add_argument("--p25-calls", nargs="*", default=[], help="GET /api/ui/calls dumps (JSON or JSONL snapshots)")
-    ap.add_argument("--p25-log", nargs="*", default=[], help="GET /api/log dumps (JSON)")
+    ap.add_argument("--p25-calls", nargs="*", default=[], help="the scanner's GET /api/ui/calls dumps (JSON or JSONL snapshots)")
     ap.add_argument("--out", help="Markdown report path (default stdout)")
     ap.add_argument("--json", help="write the raw distributions as JSON")
     a = ap.parse_args(argv)
@@ -707,8 +699,8 @@ def main(argv=None):
     J, parts = {}, []
     if a.event_logs and a.event_logs.upper() != "NONE":
         parts.append(analyse(a, J))
-    if a.p25_calls or a.p25_log:
-        parts.append(p25_section(a.p25_calls, a.p25_log, J))
+    if a.p25_calls:
+        parts.append(p25_section(a.p25_calls, J))
     rep = "\n".join(parts)
     if a.out:
         with open(a.out, "w", encoding="utf-8") as fh:

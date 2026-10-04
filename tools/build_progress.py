@@ -336,9 +336,9 @@ class Progress:
             self.start_time = now
         elapsed = now - self.start_time
         stamp = ansi("gray") + f"[{fmt_elapsed(elapsed)}]" + ansi("reset")
-        # Color-code important packages. p25-httpd is our Rust daemon;
+        # Color-code important packages. scanner is our Rust daemon;
         # linux is the kernel; u-boot / zynq-fsbl are boot chain.
-        highlight = {"p25-httpd", "maia-httpd", "jmbe", "linux",
+        highlight = {"scanner", "maia-httpd", "jmbe", "linux",
                      "u-boot", "zynq-fsbl"}
         pkg_fmt = (f"{ansi('cyan')}{pkg}{ansi('reset')}"
                    if pkg in highlight else pkg)
