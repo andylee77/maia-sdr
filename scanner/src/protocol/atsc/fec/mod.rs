@@ -85,24 +85,34 @@ pub fn decode(symbols: &[f32], first_sync: usize) -> (Vec<Packet>, FecStats) {
     if fields == 0 {
         return (Vec::new(), stats);
     }
-    // Each encoder's soft symbols in time order over every field (within a data segment the
-    // encoders take the symbols in turn, the first being encoder(segment, 0)), then its bit
-    // pairs: six encoders on each core.
+    // The soft symbols in one pass, field by field and within a field encoder by encoder: in a
+    // data segment the encoders take the symbols in turn, the first being encoder(segment, 0).
     let per_field = DATA_SEGMENTS * DATA_SYMBOLS / ENCODERS;
+    let per_segment = DATA_SYMBOLS / ENCODERS;
+    let mut soft = vec![0i32; fields * ENCODERS * per_field];
+    on_both_cores(&mut soft, ENCODERS * per_field, |first, half| {
+        for (i, field) in half.chunks_exact_mut(ENCODERS * per_field).enumerate() {
+            let f = first / (ENCODERS * per_field) + i;
+            for dseg in 0..DATA_SEGMENTS {
+                let seg = first_sync + f * FIELD_SEGMENTS + 1 + dseg;
+                let row = &symbols[seg * SEGMENT + SYNC_SYMBOLS..(seg + 1) * SEGMENT];
+                let e0 = trellis::encoder(dseg, 0);
+                for (q, turn) in row.chunks_exact(ENCODERS).enumerate() {
+                    for (j, &s) in turn.iter().enumerate() {
+                        let e = if e0 + j < ENCODERS { e0 + j } else { e0 + j - ENCODERS };
+                        field[e * per_field + dseg * per_segment + q] = trellis::soft(s);
+                    }
+                }
+            }
+        }
+    });
+    // Each encoder's bit pairs: six encoders on each core.
     let mut pairs = vec![Vec::new(); ENCODERS];
     on_both_cores(&mut pairs, 1, |first, out| {
         for (i, o) in out.iter_mut().enumerate() {
             let e = first + i;
-            let mut soft = Vec::with_capacity(per_field * fields);
-            for f in 0..fields {
-                for dseg in 0..DATA_SEGMENTS {
-                    let seg = first_sync + f * FIELD_SEGMENTS + 1 + dseg;
-                    let row = &symbols[seg * SEGMENT + SYNC_SYMBOLS..(seg + 1) * SEGMENT];
-                    let k0 = (e + ENCODERS - trellis::encoder(dseg, 0)) % ENCODERS;
-                    soft.extend(row[k0..].iter().step_by(ENCODERS).map(|&s| trellis::soft(s)));
-                }
-            }
-            *o = trellis::decode(&soft);
+            let seq = (0..fields).flat_map(|f| soft[(f * ENCODERS + e) * per_field..][..per_field].iter().copied());
+            *o = trellis::decode(fields * per_field, seq);
         }
     });
     // Each encoder's bytes, then the interleaved stream in field order.

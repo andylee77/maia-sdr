@@ -692,18 +692,25 @@ fn add_run(y: &[f32], k0: usize, wanted: &[f32], a: &mut [f64], b: &mut [f64]) {
 }
 
 /// The taps w minimizing Σ (wanted − Σ w[i] y[k + PRE − i])² over runs of rows (first row,
-/// wanted values); rows whose windows leave y are left out.
+/// wanted values); rows whose windows leave y are left out. Half the runs' sums on each core.
 fn least_squares(y: &[f32], runs: &[(usize, Vec<f32>)]) -> Option<Vec<f32>> {
     let n = EQ_TAPS;
-    let (mut a, mut b) = (vec![0f64; n * n], vec![0f64; n]);
     let inside = rows_inside(y.len());
-    for (k0, wanted) in runs {
-        let lo = (*k0).max(inside.start);
-        let hi = (k0 + wanted.len()).min(inside.end);
-        if lo < hi {
-            add_run(y, lo, &wanted[lo - k0..hi - k0], &mut a, &mut b);
+    let share = runs.len().div_ceil(2);
+    let mut sums = [(vec![0f64; n * n], vec![0f64; n]), (vec![0f64; n * n], vec![0f64; n])];
+    on_both_cores(&mut sums, 1, |core, sum| {
+        let (a, b) = &mut sum[0];
+        for (k0, wanted) in runs.iter().skip(core * share).take(share) {
+            let lo = (*k0).max(inside.start);
+            let hi = (k0 + wanted.len()).min(inside.end);
+            if lo < hi {
+                add_run(y, lo, &wanted[lo - k0..hi - k0], a, b);
+            }
         }
-    }
+    });
+    let [(mut a, mut b), (a1, b1)] = sums;
+    a.iter_mut().zip(a1).for_each(|(s, v)| *s += v);
+    b.iter_mut().zip(b1).for_each(|(s, v)| *s += v);
     solve(a, b, n).map(|w| w.into_iter().map(|v| v as f32).collect())
 }
 
@@ -734,10 +741,11 @@ fn equalize(y: &[f32], first_sync: usize, inverted: &[bool]) -> Option<Vec<f32>>
     Some(out)
 }
 
-/// Modulation error ratio of the data symbols, from every fourth segment (plenty for the measure).
+/// Modulation error ratio of the data symbols, from every sixteenth segment (half a million
+/// symbols in a 0.5 s capture: plenty for the measure).
 fn mer(y: &[f32]) -> f32 {
     let (mut sig, mut err) = (0f64, 0f64);
-    for seg in y.chunks_exact(SEGMENT).step_by(4) {
+    for seg in y.chunks_exact(SEGMENT).step_by(16) {
         for &v in &seg[SYNC_SYMBOLS..] {
             let d = slice(v);
             sig += f64::from(d * d);
