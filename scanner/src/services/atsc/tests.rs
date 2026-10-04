@@ -11,6 +11,7 @@ use crate::hardware::presets::DdcPreset;
 use crate::protocol::atsc::tests::{add_flat, add_vsb, noise};
 use crate::radio::lane::Lane;
 use crate::radio::lease::{Lease, RadioLease};
+use crate::radio::spectrum::SpectrumFrame;
 use crate::radio::tuner::{RadioHw, Readback, Tuner};
 use crate::services::events::EventLog;
 
@@ -70,7 +71,7 @@ impl RadioHw for Air {
             ..Default::default()
         }
     }
-    async fn spectrum(&self) -> Option<Vec<u8>> {
+    async fn spectrum(&self) -> Option<SpectrumFrame> {
         let lo = self.lo.load(Ordering::SeqCst) as f64;
         self.samples.fetch_add(1_000_000, Ordering::SeqCst);
         let mut p = noise();
@@ -88,7 +89,7 @@ impl RadioHw for Air {
                 self.clips.fetch_add(1_000, Ordering::SeqCst);
             }
         }
-        Some(words(&p))
+        Some(SpectrumFrame { header: Default::default(), bytes: words(&p) })
     }
 }
 

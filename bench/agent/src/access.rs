@@ -306,24 +306,24 @@ mod tests {
         let mut io = MockIo::new();
         io.regs.insert(0x0, 0x7261_6431);
         io.regs.insert(0x8, 1); // sdr_reset = 1
-        io.regs.insert(0xC0, 0x1F);
+        io.regs.insert(0x60, 0x1F);
         let mut a = RegAccess::new(p25, &mut io);
         assert_eq!(a.read("product_id").unwrap(), 0x7261_6431);
         // Read-to-clear refused by default.
-        let e = a.read("wideband_iq_dma_status").unwrap_err();
+        let e = a.read("capture_status").unwrap_err();
         assert_eq!(e.code, Code::Safety);
         // Sync bank refused while in reset, even for trusted reads.
-        let e = a.read_se("wideband_iq_dma_status").unwrap_err();
+        let e = a.read_se("capture_status").unwrap_err();
         assert!(e.msg.contains("reset"), "{}", e.msg);
-        let e = a.read("wideband_iq_next_address").unwrap_err();
+        let e = a.read("capture_next_address").unwrap_err();
         assert_eq!(e.code, Code::Safety);
         // Offsets above the decoded window are not even resolvable.
         assert!(a.core.find("0x400").is_none());
         // Release the reset -> allowed.
         a.write("control", 0).unwrap();
         a.refresh();
-        assert_eq!(a.read_se("wideband_iq_dma_status").unwrap(), 0x1F);
-        assert!(a.read("wideband_iq_next_address").is_ok());
+        assert_eq!(a.read_se("capture_status").unwrap(), 0x1F);
+        assert!(a.read("capture_next_address").is_ok());
         // Read-only register writes are refused.
         assert_eq!(a.write("product_id", 1).unwrap_err().code, Code::Safety);
         drop(a);

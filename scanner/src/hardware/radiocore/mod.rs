@@ -3,8 +3,11 @@
 //!
 //! The core has lanes, each a DDC (to 50 kSPS) whose IQ it cuts into tagged packets
 //! (`packet`); one ring carries every lane's packets. Lane 0 is the control channel's, the
-//! others the traffic lanes. Beside them: a wideband spectrometer and a raw IQ capture ring.
+//! others the traffic lanes. Beside them: a wideband spectrometer, whose frames carry a header
+//! (`frame`), and a raw IQ capture ring, which starts afresh at each enable with the sample
+//! index of its first sample and can stop itself after a trigger.
 
+pub mod frame;
 #[cfg(target_os = "linux")]
 pub mod irq;
 pub mod lane;
@@ -12,9 +15,11 @@ pub mod packet;
 pub mod regs;
 
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 
+pub use frame::FrameHeader;
 pub use lane::LaneDdc;
 pub use packet::Header;
 pub use regs::nco_to_freq;
@@ -23,8 +28,12 @@ use regs::{LaneBank, Registers, LANE_BANKS};
 
 /// Expected `product_id` ("rad1").
 pub const PRODUCT_ID: u32 = 0x7261_6431;
+/// The major version of the core's map this scanner reads.
+pub const MAJOR_VERSION: u8 = 2;
 /// The control channel's lane.
 pub const CONTROL_LANE: usize = 0;
+/// Bytes of one capture sample (I and Q, 16 bits each).
+pub const CAPTURE_SAMPLE_BYTES: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Version {
@@ -52,13 +61,40 @@ pub struct Identity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub struct RingStatus {
     pub enabled: bool,
-    pub last_buffer: u8,
+    pub last_buffer: u16,
     pub next_address: u32,
+}
+
+/// The capture's registers, in one reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct CaptureStatus {
+    pub enabled: bool,
+    /// Sub-buffers completed since the enable.
+    pub buffers: u32,
+    /// The capture stopped itself after a trigger.
+    pub stopped: bool,
+    /// The AD9361 sample index of the capture's first sample (valid once a sub-buffer is done).
+    pub start_index: u64,
+    /// Words were lost since the capture started: its samples are no longer contiguous.
+    pub overflow: bool,
+}
+
+/// What one reading of the capture ring found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CaptureRead {
+    /// Sub-buffers handed over.
+    pub read: u32,
+    /// Sub-buffers the ring overwrote before or while they were read (the reader fell behind).
+    pub lapped: u32,
 }
 
 pub struct RadioCore {
     regs: Registers,
     identity: Identity,
+    /// The capture's overflow, kept across readings (its register clears on read).
+    capture_overflow: AtomicBool,
+    /// Sub-buffers of the capture read since its enable.
+    capture_read: u32,
     #[cfg(target_os = "linux")]
     dma: dma::Dma,
 }
@@ -102,21 +138,62 @@ impl RadioCore {
         self.regs.spec_control().modify(|_, w| w.spec_enable().bit(on));
     }
 
-    /// FFT frames averaged into one spectrum (10 bits).
+    /// FFT frames averaged into one spectrum (10 bits), from the next frame.
     pub fn set_spectrometer_integrations(&self, n: u16) {
         self.regs.spec_control().modify(|_, w| unsafe { w.spec_num_integrations().bits(n & 0x3FF) });
     }
 
-    /// Peak hold instead of averaged power.
-    pub fn set_spectrometer_peak(&self, on: bool) {
-        self.regs.spec_control().modify(|_, w| w.spec_peak_detect().bit(on));
+    /// Peak hold instead of averaged power, or each frame in the other mode from the frame
+    /// before (`alternate`), from the next frame. Each frame's header says its mode.
+    pub fn set_spectrum_mode(&self, peak: bool, alternate: bool) {
+        self.regs.spec_control().modify(|_, w| w.spec_peak_detect().bit(peak).spec_alternate().bit(alternate));
+    }
+
+    /// Start a capture: the ring starts afresh at its first sub-buffer, with the sample index
+    /// of its first sample (the enable's rise; a capture running is stopped first).
+    pub fn start_capture(&mut self) {
+        self.regs.capture_control().modify(|_, w| w.enable().clear_bit());
+        self.regs.capture_control().modify(|_, w| w.enable().set_bit());
+        // The overflow of the capture before, cleared by the read.
+        let _ = self.regs.capture_status().read();
+        self.capture_overflow.store(false, Ordering::Relaxed);
+        self.capture_read = 0;
+    }
+
+    /// Let the capture finish the sub-buffer it is writing and `stop_after` more, then stop.
+    pub fn trigger_capture(&self, stop_after: u8) {
+        self.regs.capture_control().modify(|_, w| unsafe { w.trigger().set_bit().stop_after().bits(stop_after & 0xF) });
+    }
+
+    pub fn stop_capture(&self) {
+        self.regs.capture_control().modify(|_, w| w.enable().clear_bit());
+    }
+
+    pub fn capture_status(&self) -> CaptureStatus {
+        let status = self.regs.capture_status().read();
+        let overflow = self.capture_overflow.fetch_or(status.overflow().bit(), Ordering::Relaxed) | status.overflow().bit();
+        // Reading the low word latches the high one.
+        let lo = self.regs.capture_start_lo().read().index().bits();
+        let hi = self.regs.capture_start_hi().read().index().bits();
+        CaptureStatus {
+            enabled: self.regs.capture_control().read().enable().bit(),
+            buffers: self.regs.capture_buffers().read().count().bits(),
+            stopped: status.stopped().bit(),
+            start_index: (hi as u64) << 32 | lo as u64,
+            overflow,
+        }
     }
 
     /// A core with its registers in plain memory and no rings (host tests).
     #[cfg(all(test, not(target_os = "linux")))]
     pub fn in_memory(lanes: usize) -> RadioCore {
-        let version = Version { major: 1, minor: 0, bugfix: 0 };
-        RadioCore { regs: Registers::in_memory(), identity: Identity { version, platform: 0, lanes } }
+        let version = Version { major: MAJOR_VERSION, minor: 0, bugfix: 0 };
+        RadioCore {
+            regs: Registers::in_memory(),
+            identity: Identity { version, platform: 0, lanes },
+            capture_overflow: AtomicBool::new(false),
+            capture_read: 0,
+        }
     }
 }
 
@@ -141,21 +218,43 @@ pub fn completed_since(num_buffers: usize, last_seen: &mut Option<u32>, current:
     out
 }
 
+/// The capture's sub-buffers to read: those after `read` up to `buffers` (completed since the
+/// enable), less the ones the ring may have overwritten. Sub-buffer `buffers` is being written,
+/// and while its last write responses are on their way the next one may have begun, so the
+/// newest `num_buffers - 2` completed are whole. Returns the range and how many were lost.
+pub fn capture_pending(num_buffers: u32, read: u32, buffers: u32) -> (std::ops::Range<u32>, u32) {
+    let from = read.max(capture_oldest_whole(num_buffers, buffers));
+    (from..buffers.max(from), from - read.min(from))
+}
+
+/// The oldest sub-buffer the writer cannot have reached when `buffers` are complete.
+fn capture_oldest_whole(num_buffers: u32, buffers: u32) -> u32 {
+    (buffers + 2).saturating_sub(num_buffers)
+}
+
+/// A frame the spectrometer wrote, checked.
+#[derive(Debug, Clone, Copy)]
+pub struct Frame<'a> {
+    pub header: FrameHeader,
+    /// The frame as written (header bins included).
+    pub bytes: &'a [u8],
+}
+
 #[cfg(target_os = "linux")]
 mod dma {
     use anyhow::{Context, Result};
 
+    use super::frame::{self, FRAME_BYTES};
     use super::packet::{self, Fault, Packet, PACKET_BYTES};
-    use super::{completed_since, RadioCore};
+    use super::{capture_pending, completed_since, CaptureRead, Frame, RadioCore, CAPTURE_SAMPLE_BYTES};
     use crate::hardware::mmio::RxBuffer;
 
     pub(super) struct Dma {
         lanes: RxBuffer,
         lanes_last: Option<u32>,
         spectrum: RxBuffer,
-        spectrum_last: Option<u8>,
+        spectrum_last: Option<u32>,
         capture: RxBuffer,
-        capture_last: Option<u32>,
     }
 
     impl Dma {
@@ -167,8 +266,13 @@ mod dma {
                 lanes.buffer_size()
             );
             let spectrum = RxBuffer::open("p25-wideband-spec").await.context("the spectrum ring")?;
+            anyhow::ensure!(
+                spectrum.buffer_size() == FRAME_BYTES,
+                "spectrum ring sub-buffers of {} bytes, frames are {FRAME_BYTES}",
+                spectrum.buffer_size()
+            );
             let capture = RxBuffer::open("p25-wideband-iq").await.context("the capture ring")?;
-            Ok(Dma { lanes, lanes_last: None, spectrum, spectrum_last: None, capture, capture_last: None })
+            Ok(Dma { lanes, lanes_last: None, spectrum, spectrum_last: None, capture })
         }
     }
 
@@ -189,49 +293,54 @@ mod dma {
             }
         }
 
-        /// The raw IQ capture on or off. On, completed sub-buffers are counted from now.
-        pub fn set_capture(&mut self, on: bool) {
-            if on {
-                let current = self.regs.wideband_iq_dma_status().read().last_buffer().bits() as u32;
-                self.dma.capture_last = Some(current);
-            }
-            self.regs.wideband_iq_dma_control().modify(|_, w| w.wideband_iq_enable().bit(on));
-        }
-
-        /// The capture ring's sub-buffers completed since the last call (cache invalidated), in
-        /// order: raw IQ at the AD9361's rate, interleaved little-endian i16 I, Q. Returns how
-        /// many completed; as many as the ring holds or more means the oldest were overwritten.
-        pub fn read_capture(&mut self, mut each: impl FnMut(&[u8])) -> usize {
-            let current = self.regs.wideband_iq_dma_status().read().last_buffer().bits() as u32;
+        /// Every spectrum frame completed since the last call (cache invalidated), in order,
+        /// checked, the newest marked. The first call only finds the ring's position.
+        pub fn read_frames(&mut self, mut each: impl FnMut(Result<Frame<'_>, frame::Fault>, bool)) {
+            let current = self.regs.spec_status().read().spec_last_buffer().bits() as u32;
             let d = &mut self.dma;
-            let done = completed_since(d.capture.num_buffers(), &mut d.capture_last, current);
-            for &idx in &done {
-                if let Err(e) = d.capture.cache_invalidate(idx) {
-                    tracing::warn!("capture sub-buffer {idx}: {e}");
+            let done = completed_since(d.spectrum.num_buffers(), &mut d.spectrum_last, current);
+            let newest = done.last().copied();
+            for idx in done {
+                if let Err(e) = d.spectrum.cache_invalidate(idx) {
+                    tracing::warn!("spectrum sub-buffer {idx}: {e}");
                     continue;
                 }
-                each(d.capture.buffer(idx));
+                let bytes = d.spectrum.buffer(idx);
+                each(frame::parse(bytes).map(|header| Frame { header, bytes }), Some(idx) == newest);
             }
-            done.len()
+        }
+
+        /// The capture's sub-buffers completed since the last call (cache invalidated), in
+        /// order, each with the sample index of its first sample: raw IQ at the AD9361's rate,
+        /// interleaved little-endian i16 I, Q.
+        pub fn read_capture(&mut self, mut each: impl FnMut(u64, &[u8])) -> CaptureRead {
+            let status = self.capture_status();
+            let n = self.dma.capture.num_buffers() as u32;
+            let per = (self.dma.capture.buffer_size() / CAPTURE_SAMPLE_BYTES) as u64;
+            let (pending, mut lapped) = capture_pending(n, self.capture_read, status.buffers);
+            let first = pending.start;
+            let mut read = 0;
+            for k in pending {
+                let slot = (k % n) as usize;
+                if let Err(e) = self.dma.capture.cache_invalidate(slot) {
+                    tracing::warn!("capture sub-buffer {slot}: {e}");
+                    continue;
+                }
+                each(status.start_index + k as u64 * per, self.dma.capture.buffer(slot));
+                read += 1;
+            }
+            self.capture_read = first + read;
+            if read > 0 {
+                // Sub-buffers the ring began to overwrite while they were copied.
+                let now = self.regs.capture_buffers().read().count().bits();
+                lapped += super::capture_oldest_whole(n, now).saturating_sub(first).min(read);
+            }
+            CaptureRead { read, lapped }
         }
 
         /// The capture ring's sub-buffers.
-        pub fn capture_buffers(&self) -> usize {
+        pub fn capture_ring_buffers(&self) -> usize {
             self.dma.capture.num_buffers()
-        }
-
-        /// The latest completed wideband spectrum (packed mantissa and exponent), once.
-        pub fn read_spectrum(&mut self) -> Option<&[u8]> {
-            let last = self.regs.spec_status().read().spec_last_buffer().bit() as u8;
-            if self.dma.spectrum_last == Some(last) {
-                return None;
-            }
-            self.dma.spectrum_last = Some(last);
-            if let Err(e) = self.dma.spectrum.cache_invalidate(last as usize) {
-                tracing::warn!("spectrum sub-buffer {last}: {e}");
-                return None;
-            }
-            Some(self.dma.spectrum.buffer(last as usize))
         }
     }
 }
@@ -250,7 +359,7 @@ impl RadioCore {
         anyhow::ensure!(id == PRODUCT_ID, "FPGA product id 0x{id:08x}, expected 0x{PRODUCT_ID:08x} (the radio core)");
         let v = regs.version().read();
         let version = Version { major: v.major().bits(), minor: v.minor().bits(), bugfix: v.bugfix().bits() };
-        anyhow::ensure!(version.major == 1, "radio core {version}: this scanner reads 1.x");
+        anyhow::ensure!(version.major == MAJOR_VERSION, "radio core {version}: this scanner reads {MAJOR_VERSION}.x");
         let lanes = regs.capabilities().read().lanes().bits() as usize;
         anyhow::ensure!((2..=LANE_BANKS).contains(&lanes), "radio core {version} reports {lanes} lanes");
         let identity = Identity { version, platform: v.platform().bits(), lanes };
@@ -259,7 +368,8 @@ impl RadioCore {
         let dma = dma::Dma::open().await?;
         tracing::info!("radio core {version}, {lanes} lanes");
         let interrupts = irq::Interrupts::new(uio, regs.clone());
-        Ok((RadioCore { regs, identity, dma }, interrupts))
+        let core = RadioCore { regs, identity, capture_overflow: AtomicBool::new(false), capture_read: 0, dma };
+        Ok((core, interrupts))
     }
 }
 
@@ -278,9 +388,35 @@ mod tests {
     #[test]
     fn completed_sub_buffers_follow_the_index_round_the_ring() {
         let mut last = None;
-        assert!(completed_since(128, &mut last, 5).is_empty(), "the first call anchors");
-        assert_eq!(completed_since(128, &mut last, 7), vec![6, 7]);
-        assert_eq!(completed_since(128, &mut last, 1), (8..128).chain(0..=1).collect::<Vec<_>>());
-        assert!(completed_since(128, &mut last, 1).is_empty());
+        assert!(completed_since(512, &mut last, 5).is_empty(), "the first call anchors");
+        assert_eq!(completed_since(512, &mut last, 7), vec![6, 7]);
+        assert_eq!(completed_since(512, &mut last, 1), (8..512).chain(0..=1).collect::<Vec<_>>());
+        assert!(completed_since(512, &mut last, 1).is_empty());
+    }
+
+    #[test]
+    fn the_capture_s_whole_sub_buffers_are_the_newest_fourteen() {
+        // Sixteen sub-buffers: sub-buffer 14 complete, 15 being written, 16 (slot 0) perhaps
+        // begun.
+        assert_eq!(capture_pending(16, 0, 0), (0..0, 0));
+        assert_eq!(capture_pending(16, 0, 3), (0..3, 0));
+        assert_eq!(capture_pending(16, 3, 14), (3..14, 0));
+        assert_eq!(capture_pending(16, 0, 15), (1..15, 1), "sub-buffer 0 may be overwritten");
+        assert_eq!(capture_pending(16, 2, 40), (26..40, 24));
+        assert_eq!(capture_pending(16, 40, 40), (40..40, 0));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn a_capture_s_start_clears_its_overflow_and_count() {
+        let mut core = RadioCore::in_memory(3);
+        core.capture_overflow.store(true, Ordering::Relaxed);
+        core.capture_read = 7;
+        core.start_capture();
+        assert!(core.capture_status().enabled);
+        assert!(!core.capture_status().overflow);
+        assert_eq!(core.capture_read, 0);
+        core.stop_capture();
+        assert!(!core.capture_status().enabled);
     }
 }

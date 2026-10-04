@@ -5,7 +5,7 @@
 //! writes it after the NCO, so the streams know which packets are of the new tuning.
 
 use super::streams::StreamSource;
-use super::tuner::{RadioHw, Readback};
+use super::tuner::{Capture, RadioHw, Readback};
 use crate::hardware::ad9361::GainMode;
 use crate::hardware::presets::DdcPreset;
 use crate::radio::lane::Lane;
@@ -26,7 +26,8 @@ mod board {
 
     use super::*;
     use crate::hardware::ad9361::Ad9361;
-    use crate::hardware::radiocore::{nco_to_freq, LaneDdc, RadioCore, CONTROL_LANE};
+    use crate::hardware::radiocore::{nco_to_freq, LaneDdc, RadioCore, CAPTURE_SAMPLE_BYTES, CONTROL_LANE};
+    use crate::radio::spectrum::{Spectrum, SpectrumFrame};
     use crate::radio::streams::{Block, LaneBlock, StreamCounters, Streams};
     use crate::radio::tuner::LaneReadback;
 
@@ -34,6 +35,7 @@ mod board {
         pub ad9361: Ad9361,
         pub core: Arc<Mutex<RadioCore>>,
         pub streams: Arc<Streams>,
+        pub spectrum: Arc<Spectrum>,
     }
 
     fn lane_of(core: &RadioCore, n: usize) -> Result<LaneDdc<'_>> {
@@ -117,47 +119,45 @@ mod board {
             Ok(())
         }
 
-        async fn spectrum(&self) -> Option<Vec<u8>> {
-            self.core.lock().await.read_spectrum().map(<[u8]>::to_vec)
+        async fn spectrum(&self) -> Option<SpectrumFrame> {
+            self.spectrum.take()
         }
 
-        /// The capture ring's sub-buffers copied out as they complete (each holds 25 ms at 10
-        /// MSPS; the ring 16 of them), the first left out: it may hold older samples.
-        async fn capture(&self, samples: usize) -> Result<Vec<rustfft::num_complex::Complex32>> {
+        /// The capture ring's sub-buffers copied out as they complete (each holds 26 ms at 10
+        /// MSPS; the ring 16 of them), from the capture's first sample.
+        async fn capture(&self, samples: usize) -> Result<Capture> {
             use rustfft::num_complex::Complex32;
             use std::time::{Duration, Instant};
 
-            let mut out: Vec<Complex32> = Vec::with_capacity(samples);
-            let mut skip = true;
+            let mut out = Capture { samples: Vec::with_capacity(samples), ..Default::default() };
             let deadline = Instant::now() + Duration::from_secs(10);
-            let ring = {
-                let mut core = self.core.lock().await;
-                core.set_capture(true);
-                core.capture_buffers()
-            };
+            self.core.lock().await.start_capture();
             let result = loop {
                 tokio::time::sleep(Duration::from_millis(5)).await;
-                let done = self.core.lock().await.read_capture(|b| {
-                    if std::mem::take(&mut skip) {
-                        return;
+                let mut core = self.core.lock().await;
+                let read = core.read_capture(|index, b| {
+                    if out.samples.is_empty() {
+                        out.first_index = index;
                     }
-                    out.extend(b.chunks_exact(4).map(|c| {
+                    out.samples.extend(b.chunks_exact(CAPTURE_SAMPLE_BYTES).map(|c| {
                         Complex32::new(f32::from(i16::from_le_bytes([c[0], c[1]])), f32::from(i16::from_le_bytes([c[2], c[3]])))
                     }));
                 });
-                if done + 1 >= ring {
-                    break Err(anyhow::anyhow!("the capture fell a ring behind ({done} sub-buffers at once)"));
+                out.overflow = core.capture_status().overflow;
+                drop(core);
+                if read.lapped > 0 {
+                    break Err(anyhow::anyhow!("the capture fell a ring behind ({} sub-buffers overwritten)", read.lapped));
                 }
-                if out.len() >= samples {
+                if out.samples.len() >= samples {
                     break Ok(());
                 }
                 if Instant::now() > deadline {
-                    break Err(anyhow::anyhow!("the capture ring stopped ({} of {samples} samples)", out.len()));
+                    break Err(anyhow::anyhow!("the capture ring stopped ({} of {samples} samples)", out.samples.len()));
                 }
             };
-            self.core.lock().await.set_capture(false);
+            self.core.lock().await.stop_capture();
             result?;
-            out.truncate(samples);
+            out.samples.truncate(samples);
             Ok(out)
         }
 
@@ -170,6 +170,7 @@ mod board {
                 gain_mode: self.ad9361.gain_mode().await.ok().map(GainMode::as_str),
                 lane_counters: self.streams.counters(),
                 packet_faults: self.streams.faults(),
+                spectrum: Some(self.spectrum.counters()),
                 ..Default::default()
             };
             let core = self.core.lock().await;
@@ -184,6 +185,7 @@ mod board {
             r.ring = Some(core.ring_status());
             r.sample_count = Some(core.sample_count());
             r.adc_clips = Some(core.adc_clips());
+            r.capture = Some(core.capture_status());
             r
         }
     }

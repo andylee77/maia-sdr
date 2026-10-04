@@ -19,8 +19,9 @@ use tokio::sync::watch;
 
 use crate::hardware::ad9361::GainMode;
 use crate::hardware::presets::DdcPreset;
-use crate::hardware::radiocore::RingStatus;
+use crate::hardware::radiocore::{CaptureStatus, RingStatus};
 use crate::radio::lane::Lane;
+use crate::radio::spectrum::{SpectrumCounters, SpectrumFrame};
 use crate::radio::streams::LaneCounters;
 
 /// What the radio is asked to do when a site goes live or the window moves.
@@ -87,6 +88,9 @@ pub struct Readback {
     pub lane_counters: Vec<LaneCounters>,
     /// Packets that failed their checks.
     pub packet_faults: u64,
+    /// The spectrometer's frames since boot.
+    pub spectrum: Option<SpectrumCounters>,
+    pub capture: Option<CaptureStatus>,
 }
 
 /// A core lane as its registers hold it.
@@ -96,6 +100,17 @@ pub struct LaneReadback {
     /// Its packets are on.
     pub packets: bool,
     pub tag: u16,
+}
+
+/// Raw IQ from the capture ring.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Capture {
+    /// The AD9361 sample index of the first sample (the clock of the lanes' packets and the
+    /// spectrum's frames).
+    pub first_index: u64,
+    pub samples: Vec<Complex32>,
+    /// The core lost words while it ran: the samples are not contiguous.
+    pub overflow: bool,
 }
 
 /// The crystal correction at an LO: commanding `LO + shift` puts the real LO on `LO`.
@@ -120,13 +135,12 @@ pub trait RadioHw: Send + Sync {
     fn pause_lane(&self, lane: Lane) -> impl Future<Output = Result<()>> + Send;
     /// What the hardware holds now (`sample_rate_hz` converts NCO words).
     fn readback(&self, sample_rate_hz: u32) -> impl Future<Output = Readback> + Send;
-    /// The wideband spectrometer's newest frame (its raw words), once; `None` until another
-    /// completes.
-    fn spectrum(&self) -> impl Future<Output = Option<Vec<u8>>> + Send {
+    /// The wideband spectrometer's newest frame, once; `None` until another completes.
+    fn spectrum(&self) -> impl Future<Output = Option<SpectrumFrame>> + Send {
         async { None }
     }
-    /// `samples` of raw IQ at the AD9361's rate, contiguous, from the capture ring.
-    fn capture(&self, samples: usize) -> impl Future<Output = Result<Vec<Complex32>>> + Send {
+    /// `samples` of raw IQ at the AD9361's rate from the capture ring, from its start.
+    fn capture(&self, samples: usize) -> impl Future<Output = Result<Capture>> + Send {
         async move {
             let _ = samples;
             bail!("this radio has no IQ capture")

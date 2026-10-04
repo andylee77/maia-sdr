@@ -204,34 +204,32 @@ class TestLegacyRing(LegacyTestCase):
         self.assertLessEqual(sum(g // 2 - 1 for g in gaps), lost)
         # every formed word is either accepted or overwritten
         self.assertEqual(c['words_accepted'], self.model.w_beats)
-        self.assertGreaterEqual(c['packer_ovf'], lost)
+        self.assertEqual(c['packer_ovf'], lost)
         self.assertGreater(c['max_stall'], 100)
         self.assertEqual(c['max_outstanding'], 5)
         self.assertEqual(c['lat_max'], 1200)
         self.assertEqual(self.model.violations, [])
 
-    def test_packer_ovf_overcounts_near_cliff(self):
-        """IQPacker's overflow pulse over-reports the loss.
+    def test_packer_ovf_counts_the_loss_near_cliff(self):
+        """IQPacker's overflow pulses count the words lost (F2).
 
-        The packer flags an overflow whenever the second sample of a pair
-        arrives while its holding register is valid, even if the DMA
-        accepts the old word in that same cycle (no data lost). With a
-        constant 1060-cycle B latency the stall release lines up with the
-        pair strobe, and the pulse count is more than twice the number of
-        words actually lost. The exact loss is words_in - words_accepted.
+        With a constant 1060-cycle B latency the stall release lines up
+        with the pair strobe: the DMA often takes the old word in the cycle
+        the next one is latched. Those words are not lost and not counted,
+        so the pulses equal words_in - words_accepted.
         """
         c = self.run_b_latency(1060)
         lost = c['words_in'] - c['words_accepted']
         self.assertGreater(lost, 0)
-        self.assertGreater(c['packer_ovf'], 2 * lost)
+        self.assertEqual(c['packer_ovf'], lost)
 
-    def test_packer_ovf_false_positive_directed(self):
-        """Directed: overflow pulse with no data lost.
+    def test_packer_ovf_no_false_positive_directed(self):
+        """Directed: no overflow pulse when no data is lost (F2).
 
         WREADY is held low while word 0 waits, then raised exactly in the
         cycle of the strobe that completes word 1: the W handshake takes
         word 0 at the same edge at which word 1 is latched. Memory holds
-        both words, yet packer_ovf = 1.
+        both words, and packer_ovf stays 0.
         """
         self.make(awready_prob=1.0, b_latency=(2, 2))
         release = {'cycle': None}
@@ -283,7 +281,7 @@ class TestLegacyRing(LegacyTestCase):
         beats = [sample_index(w) for w in self.model.bursts[0]['data']]
         self.assertEqual(beats, list(range(0, 32, 2)))  # nothing lost
         self.assertEqual(c['words_in'], c['words_accepted'])
-        self.assertEqual(c['packer_ovf'], 1)      # ... but flagged
+        self.assertEqual(c['packer_ovf'], 0)
         self.assertEqual(self.model.violations, [])
 
     def test_enable_toggle_splice(self):

@@ -1,10 +1,11 @@
 #
-# Fishball P25 - the lane ring core's top (doc/changes/079, step 3a)
+# Fishball P25 - the radio core's top (doc/changes/079; the map of doc/changes/082)
 #
-# The register map against the design's table, the build files that name the core's version and
-# DMA masters, and the core in simulation: identity registers, a bus that answers every access
-# (in reset, at vacant addresses, without byte strobes), register readback without aliasing, the
-# sample and clip counters, and one lane's packet through the DDC, lane ring and DMA.
+# The register map against the design's table (shared banks that stay put whatever the lane
+# count), the build files that name the core's version and DMA masters, and the core in
+# simulation: identity registers, a bus that answers every access (in reset, at vacant
+# addresses, without byte strobes), register readback without aliasing, the sample and clip
+# counters, the capture's start index, and one lane's packet through the DDC, lane ring and DMA.
 #
 # The simulation uses P25Core(sim=True): samples go in on `sim_re`/`sim_im`/`sim_strobe` in
 # `sync`, in place of the FIFO-based input crossing. The full core runs at a few hundred `sync`
@@ -28,7 +29,7 @@ from radio_core import bench_map, p25_top
 from radio_core.config import P25Config
 from radio_core.lane_packetizer import (
     FLAG_RETUNED, HEADER_WORDS, MAGIC, MAX_SAMPLES, PACKET_WORDS, fold)
-from radio_core.p25_top import P25Core
+from radio_core.p25_top import P25Core, lane_bank_offset
 
 from .hwval_axi_wmodel import AxiWriteSlaveModel
 from .hwval_axil_bfm import axil_read, axil_write
@@ -45,22 +46,22 @@ MASTERS = ['lanes', 'wideband_spec', 'wideband_iq']
 
 
 def lane_base(i):
-    return 0x20 * (1 + i)
+    return 0x100 + 0x20 * i
 
 
-# Byte offsets (doc/changes/079, "Registers").
+# Byte offsets (doc/changes/082, "The register map").
 REGISTERS = {
     'product_id': 0x00, 'version': 0x04, 'control': 0x08, 'interrupts': 0x0C,
     'capabilities': 0x10,
+    'lanes_ring_control': 0x20, 'lanes_ring_status': 0x24, 'lanes_ring_next_address': 0x28,
+    'sample_count_lo': 0x2C, 'sample_count_hi': 0x30, 'adc_clips': 0x34,
+    'spec_control': 0x40, 'spec_status': 0x44, 'spec_next_address': 0x48,
+    'capture_status': 0x60, 'capture_control': 0x64, 'capture_next_address': 0x68,
+    'capture_start_lo': 0x6C, 'capture_start_hi': 0x70, 'capture_buffers': 0x74,
     **{name: lane_base(i) + off for i in range(3) for name, off in [
         (f'lane{i}_ddc_coeff_addr', 0x00), (f'lane{i}_ddc_coeff', 0x08),
         (f'lane{i}_ddc_decimation', 0x0C), (f'lane{i}_ddc_frequency', 0x10),
         (f'lane{i}_ddc_control', 0x14), (f'lane{i}_control', 0x18), (f'lane{i}_status', 0x1C)]},
-    'lanes_ring_control': 0x80, 'lanes_ring_status': 0x84, 'lanes_ring_next_address': 0x88,
-    'sample_count_lo': 0x8C, 'sample_count_hi': 0x90, 'adc_clips': 0x94,
-    'spec_control': 0xA0, 'spec_status': 0xA4, 'spec_next_address': 0xA8,
-    'wideband_iq_dma_status': 0xC0, 'wideband_iq_dma_control': 0xC4,
-    'wideband_iq_next_address': 0xC8,
 }
 R = REGISTERS
 
@@ -95,9 +96,11 @@ class TestP25Config(unittest.TestCase):
         P25Config().validate()
 
     def test_rings(self):
+        """The lane ring 512 x 16 KB, the spectrum 16 frames of 32 KB, the capture 16 x 1 MB (the
+        device tree's carve-outs, tezuka_fw fishball-p25.dtsi)."""
         self.assertEqual(P25Config().rings(), [
-            ('lanes_dma', 0x1900_0000, 0x20_0000),
-            ('wideband_spec_dma', 0x2100_0000, 0x1_0000),
+            ('lanes_dma', 0x1900_0000, 0x80_0000),
+            ('wideband_spec_dma', 0x2100_0000, 0x8_0000),
             ('wideband_iq_dma', 0x2200_0000, 0x100_0000),
         ])
 
@@ -131,9 +134,9 @@ class TestP25RegisterMap(unittest.TestCase):
         cls.svd = P25Core().svd()
         cls.regs = svd_registers(cls.svd)
 
-    def test_version_1_0_0(self):
-        self.assertEqual(p25_top._version, '1.0.0')
-        self.assertEqual(ET.fromstring(self.svd).findtext('version'), '1.0.0')
+    def test_version_2_0_0(self):
+        self.assertEqual(p25_top._version, '2.0.0')
+        self.assertEqual(ET.fromstring(self.svd).findtext('version'), '2.0.0')
 
     def test_build_script_version_matches(self):
         # build_fpga.bat packages the IP with its own IP_CORE_VERSION for --p25; the block
@@ -155,6 +158,31 @@ class TestP25RegisterMap(unittest.TestCase):
                     in self.regs.items() if name.startswith(p)}
         self.assertEqual(layout(1), layout(0))
         self.assertEqual(layout(2), layout(0))
+
+    def test_shared_banks_stay_put_whatever_the_lanes(self):
+        """Five lanes: the shared banks where three put them, lane 4 at 0x180."""
+        config = P25Config()
+        config.lanes = 5
+        regs = svd_registers(P25Core(config).svd())
+        for name, offset in REGISTERS.items():
+            self.assertEqual(regs[name][0], offset, name)
+        self.assertEqual(regs['lane4_ddc_coeff_addr'][0], 0x180)
+        self.assertEqual(regs['lane4_status'][0], 0x19C)
+        self.assertEqual(lane_bank_offset(14), 0x2C0)
+
+    def test_ring_and_capture_fields(self):
+        self.assertEqual(self.regs['lanes_ring_status'][2]['last_buffer'], ('[8:0]', 'read-only'))
+        self.assertEqual(self.regs['spec_status'][2],
+                         {'spec_last_buffer': ('[3:0]', 'read-only')})
+        self.assertEqual(self.regs['spec_control'][2]['spec_alternate'],
+                         ('[13:13]', 'read-write'))
+        # The capture's status keeps overflow and last_buffer where the bench reads them.
+        self.assertEqual(self.regs['capture_status'][2], {
+            'overflow': ('[0:0]', 'read-only'), 'last_buffer': ('[4:1]', 'read-only'),
+            'stopped': ('[5:5]', 'read-only')})
+        self.assertEqual(self.regs['capture_control'][2], {
+            'enable': ('[0:0]', 'read-write'), 'trigger': ('[1:1]', 'write-only'),
+            'stop_after': ('[5:2]', 'read-write')})
 
     def test_lane_control_and_status(self):
         self.assertEqual(self.regs['lane0_control'][2]['enable'], ('[0:0]', 'read-write'))
@@ -238,7 +266,7 @@ class TestP25CoreRegisters(P25CoreSim, unittest.TestCase):
     def test_identity(self):
         async def bench(ctx):
             self.assertEqual(await self.rd(ctx, R['product_id']), 0x7261_6431)   # "rad1"
-            self.assertEqual(await self.rd(ctx, R['version']), 0x0001_0000)
+            self.assertEqual(await self.rd(ctx, R['version']), 0x0002_0000)
             # 3 lanes, 2^9 packet words, 8 header words, spectrum, capture.
             self.assertEqual(await self.rd(ctx, R['capabilities']),
                              3 | 9 << 4 | 8 << 8 | 1 << 12 | 1 << 13)
@@ -259,7 +287,9 @@ class TestP25CoreRegisters(P25CoreSim, unittest.TestCase):
             self.assertEqual(await self.wr(ctx, CONTROL, 0, strb=0, **quick), 0)
             self.assertEqual(await self.rd(ctx, CONTROL), 1)
             await self.release_reset(ctx)
-            for addr in [0x0E0, 0x100, 0x200, 0x3FC, 0x014, 0x01C]:
+            # The kept range, lanes the core does not have, the window's end, the control
+            # bank's unused words.
+            for addr in [0x080, 0x0E0, 0x0FC, 0x160, 0x200, 0x3FC, 0x014, 0x01C]:
                 self.assertEqual(await self.rd(ctx, addr, with_resp=True, **quick), (0, 0),
                                  hex(addr))
                 self.assertEqual(await self.wr(ctx, addr, 0xFFFF_FFFF, **quick), 0, hex(addr))
@@ -268,7 +298,8 @@ class TestP25CoreRegisters(P25CoreSim, unittest.TestCase):
             self.assertEqual(await self.rd(ctx, R['lane1_ddc_frequency']), 0x123)
             # Unused words of a bank answer 0.
             self.assertEqual(await self.rd(ctx, lane_base(0) + 0x04), 0)
-            self.assertEqual(await self.rd(ctx, 0x98), 0)
+            self.assertEqual(await self.rd(ctx, 0x38), 0)
+            self.assertEqual(await self.rd(ctx, 0x7C), 0)
         self.run_sim(bench)
 
     def test_reset_values(self):
@@ -277,11 +308,14 @@ class TestP25CoreRegisters(P25CoreSim, unittest.TestCase):
             expect = {
                 'interrupts': 0,
                 'lanes_ring_control': 0,
-                'lanes_ring_status': 0x7F,              # last_buffer = -1 (7 bits)
+                'lanes_ring_status': 0x1FF,             # last_buffer = -1 (9 bits)
                 'lanes_ring_next_address': 0x1900_0000,
+                'spec_status': 0xF,                     # last_buffer = -1 (4 bits)
                 'spec_next_address': 0x2100_0000,
-                'wideband_iq_dma_status': 0xF << 1,     # last_buffer = -1 (4 bits) in [4:1]
-                'wideband_iq_next_address': 0x2200_0000,
+                'capture_status': 0xF << 1,             # last_buffer = -1 (4 bits) in [4:1]
+                'capture_next_address': 0x2200_0000,
+                'capture_start_lo': 0,
+                'capture_buffers': 0,
                 **{f'lane{i}_{n}': 0 for i in range(3)
                    for n in ['control', 'status', 'ddc_frequency', 'ddc_control']},
             }
@@ -299,9 +333,9 @@ class TestP25CoreRegisters(P25CoreSim, unittest.TestCase):
             writes[R[f'lane{i}_ddc_control']] = (0x1FF_FFFF, 0x0AB_CDEF - i)
             writes[R[f'lane{i}_control']] = (0xFFFF_0001, (0xBEE0 + i) << 16 | 0xFFFE | i & 1)
         writes[R['lanes_ring_control']] = (0x1, 0x1)
-        # spec_abort (bit 2) is a pulse and reads 0.
-        writes[R['spec_control']] = (0x1FFB, 0x1A6B)
-        writes[R['wideband_iq_dma_control']] = (0x1, 0x1)
+        # spec_abort (bit 2) and the capture's trigger (bit 1) are pulses and read 0.
+        writes[R['spec_control']] = (0x3FFB, 0x3A6B)
+        writes[R['capture_control']] = (0x3D, 0x15)
 
         async def bench(ctx):
             await self.release_reset(ctx)
@@ -338,6 +372,38 @@ class TestP25CoreSamples(P25CoreSim, unittest.TestCase):
             self.assertEqual(await self.rd(ctx, R['sample_count_hi']), 0)
             self.assertEqual(await self.rd(ctx, R['adc_clips']), len(clipped))
         self.run_sim(bench)
+
+    def test_capture_start_index(self):
+        """An enable written between samples: the capture's first word holds the first two
+        samples after it, at its start index (the low word latches the high), at the ring's first
+        address."""
+        model = AxiWriteSlaveModel(self.top.capture.dma.axi)
+
+        async def bench(ctx):
+            top = self.top
+            await self.release_reset(ctx)
+            k = 0
+
+            async def feed(n):
+                nonlocal k
+                for _ in range(n):
+                    ctx.set(top.sim_strobe, 1)
+                    ctx.set(top.sim_re, k % 2048)
+                    ctx.set(top.sim_im, 5)
+                    k += 1
+                    await ctx.tick('sync')
+                ctx.set(top.sim_strobe, 0)
+            await feed(40)
+            await self.wr(ctx, R['capture_control'], 1)
+            await ctx.tick('sync').repeat(8)
+            await feed(80)
+            # The bench's k-th sample has index k.
+            self.assertEqual(await self.rd(ctx, R['capture_start_lo']), 40)
+            self.assertEqual(await self.rd(ctx, R['capture_start_hi']), 0)
+            self.assertEqual(model.mem.get(0x2200_0000), 40 | 5 << 16 | 41 << 32 | 5 << 48)
+            status = await self.rd(ctx, R['capture_status'])
+            self.assertEqual(status & 1, 0)                     # no overflow
+        self.run_sim(bench, background=[model.bench])
 
     def test_lane_packet_through_the_core(self):
         """Lane 1 tuned, tagged and enabled: its first packet reaches the ring with the lane's

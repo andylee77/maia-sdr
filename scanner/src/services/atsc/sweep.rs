@@ -259,10 +259,13 @@ impl Atsc {
             tuner.apply(TuningPlan { preset, lo_hz: ch.center_hz(), control_hz: ch.center_hz() }).await?;
             tokio::time::sleep(LO_SETTLE).await;
             let station = match tuner.hw().capture(CAPTURE_SAMPLES).await {
-                Ok(iq) => {
+                Ok(capture) => {
+                    if capture.overflow {
+                        tracing::warn!("RF {n}: the capture lost samples");
+                    }
                     // The sample clock runs off the crystal the LO is corrected for.
                     let fs = f64::from(preset.sample_rate_hz) * (1.0 + tuner.tuning().crystal_ppm * 1e-6);
-                    station_of(tokio::task::spawn_blocking(move || identify(&iq, fs, 0.0)).await?)
+                    station_of(tokio::task::spawn_blocking(move || identify(&capture.samples, fs, 0.0)).await?)
                 }
                 Err(e) => Station { error: Some(format!("{e:#}")), ..Default::default() },
             };

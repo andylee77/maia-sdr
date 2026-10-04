@@ -1,6 +1,6 @@
 #
-# Fishball P25 - IQPacker tests: the 64-bit word layout, the handshake and the overflow pulse
-# (radio_core/iq_packer.py).
+# Fishball P25 - IQPacker tests: the 64-bit word layout, the handshake, the overflow pulse and
+# the clear (radio_core/iq_packer.py).
 #
 # SPDX-License-Identifier: MIT
 #
@@ -290,6 +290,71 @@ class TestIQPacker(unittest.TestCase):
             f'overflow stayed high for {high_cycles} cycles: a latched '
             f'level the Rsticky field cannot clear; it must pulse for '
             f'only ~1 cycle per trigger')
+
+    def test_no_overflow_when_the_old_word_is_taken_in_the_same_cycle(self):
+        """F2: the DMA takes the waiting word at the edge the next one is
+        latched; nothing is lost, so nothing is flagged. The same timing
+        with the DMA still stalled is one word lost and one pulse."""
+        for ready_at_latch, pulses_expected in [(1, 0), (0, 1)]:
+            self.dut = IQPacker()
+            pulses = 0
+
+            async def bench(ctx):
+                nonlocal pulses
+                ctx.set(self.dut.stream_ready, 0)
+                for k in range(4):
+                    ctx.set(self.dut.re_in, s16(k))
+                    ctx.set(self.dut.im_in, s16(-k))
+                    ctx.set(self.dut.strobe_in, 1)
+                    if k == 3:
+                        # The second word is latched at this edge.
+                        ctx.set(self.dut.stream_ready, ready_at_latch)
+                    await ctx.tick()
+                    ctx.set(self.dut.stream_ready, 0)
+                    pulses += ctx.get(self.dut.overflow)
+                ctx.set(self.dut.strobe_in, 0)
+                for _ in range(3):
+                    await ctx.tick()
+                    pulses += ctx.get(self.dut.overflow)
+
+            self._simulate(bench)
+            self.assertEqual(pulses, pulses_expected, f'ready at the latch: {ready_at_latch}')
+
+    def test_clear_starts_a_fresh_word(self):
+        """`clear` drops the half pair and the waiting word, and wins over a strobe in its
+        cycle: the next two samples make the next word."""
+        self.dut = IQPacker()
+        words = []
+
+        async def bench(ctx):
+            ctx.set(self.dut.stream_ready, 0)
+            for k in range(3):                        # a word waiting and a half pair
+                ctx.set(self.dut.re_in, s16(k))
+                ctx.set(self.dut.im_in, s16(-k))
+                ctx.set(self.dut.strobe_in, 1)
+                await ctx.tick()
+            ctx.set(self.dut.re_in, s16(3))
+            ctx.set(self.dut.clear, 1)                # this strobe is dropped too
+            await ctx.tick()
+            ctx.set(self.dut.clear, 0)
+            ctx.set(self.dut.strobe_in, 0)
+            await ctx.tick()
+            self.assertEqual(ctx.get(self.dut.data_valid), 0)
+            self.assertEqual(ctx.get(self.dut.overflow), 0)
+            ctx.set(self.dut.stream_ready, 1)
+            for k in [10, 11]:
+                ctx.set(self.dut.re_in, s16(k))
+                ctx.set(self.dut.im_in, s16(-k))
+                ctx.set(self.dut.strobe_in, 1)
+                await ctx.tick()
+            ctx.set(self.dut.strobe_in, 0)
+            for _ in range(3):
+                if ctx.get(self.dut.data_valid):
+                    words.append(ctx.get(self.dut.data_out))
+                await ctx.tick()
+
+        self._simulate(bench)
+        self.assertEqual(words[:1], [expected_word(10, -10, 11, -11)])
 
 
 if __name__ == '__main__':

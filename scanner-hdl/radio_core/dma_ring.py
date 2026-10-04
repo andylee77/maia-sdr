@@ -51,6 +51,11 @@ class DmaStreamRingWrite(Elaboratable):
         returns empty until at least one sub-buffer has been written.
     interrupt : Signal(), out
         Pulses high for one clock cycle when a sub-buffer completes.
+    idle : Signal(), out
+        No burst is open: every accepted AW has had its data and its write response.
+    restart : Signal(), in
+        One cycle while ``idle`` and ``enable`` is low: the ring starts again at its first
+        sub-buffer, with ``last_buffer`` at -1.
     """
 
     def __init__(self, base_address, num_buffers_log2, buffer_size,
@@ -93,12 +98,14 @@ class DmaStreamRingWrite(Elaboratable):
         self.stream_ready = Signal()
         self.last_buffer = Signal(num_buffers_log2, init=-1)
         self.interrupt = Signal()
+        self.idle = Signal()
+        self.restart = Signal()
 
     def ports(self):
         return self.axi.ports() + [
             self.enable,
             self.stream_data, self.stream_valid, self.stream_ready,
-            self.last_buffer, self.interrupt,
+            self.last_buffer, self.interrupt, self.idle, self.restart,
         ]
 
     def elaborate(self, platform):
@@ -187,5 +194,15 @@ class DmaStreamRingWrite(Elaboratable):
             with m.If(b_at_end):
                 m.d.sync += self.last_buffer.eq(self.last_buffer + 1)
                 m.d.comb += self.interrupt.eq(1)
+
+        m.d.comb += self.idle.eq(
+            ~one_outstanding_burst & ~two_outstanding_bursts & no_outstanding_b)
+        with m.If(self.restart):
+            m.d.sync += [
+                aw_counter.eq(0),
+                beat_counter.eq(0),
+                b_counter.eq(0),
+                self.last_buffer.eq(-1),
+            ]
 
         return m

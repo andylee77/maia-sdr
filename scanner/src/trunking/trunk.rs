@@ -1295,8 +1295,8 @@ impl<H: RadioHw + Send + Sync + 'static> Task<H> {
             );
         }
         // Every frame the spectrometer finished since the last tick (one every 131 ms).
-        if let Some(bytes) = self.tuner.hw().spectrum().await {
-            let db = power_db(&bytes);
+        if let Some(frame) = self.tuner.hw().spectrum().await {
+            let db = power_db(&frame.bytes);
             if !db.is_empty() {
                 self.frame(db, at.mono);
             }

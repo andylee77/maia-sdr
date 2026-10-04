@@ -65,7 +65,7 @@ fn allow_list_refusals_happen_before_any_access() {
     let (v, c) = agent(&["reg", "read", "--core", "p25", "--reg", "0x400"], None);
     assert_eq!((v["code"].as_str(), c), (Some("safety"), 4), "{v}");
     // Read-to-clear status word.
-    let (v, c) = agent(&["reg", "read", "--core", "p25", "--reg", "wideband_iq_dma_status"], None);
+    let (v, c) = agent(&["reg", "read", "--core", "p25", "--reg", "capture_status"], None);
     assert_eq!((v["code"].as_str(), c), (Some("safety"), 4), "{v}");
     // PS registers are read-only for the agent.
     let (v, c) = agent(&["reg", "write", "--core", "ddrc", "--reg", "DRAM_EMR_MR_REG", "--value", "0"], None);

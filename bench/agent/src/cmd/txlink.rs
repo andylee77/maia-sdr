@@ -160,14 +160,16 @@ fn verify_p25_ring(ctx: &Ctx) -> AResult<Value> {
     if a.gate_asserted()? {
         return Err(AgentError::new(Code::Precondition, "p25 sdr_reset = 1: start the scanner once or use `ring check --release-reset`"));
     }
-    let prev = a.read("wideband_iq_dma_control")? & 1;
+    let prev = a.read("capture_control")? & 1;
     if prev == 0 {
-        a.write("wideband_iq_dma_control", 1)?;
+        a.write("capture_control", 1)?;
+        // The ring starts again at its first sub-buffer once the capture before has finished.
+        std::thread::sleep(Duration::from_millis(1));
     }
     let def = rings::ring_def(RingKind::P25Wideband, None, None);
     let map = Mapping::open(&def, "uncached")?;
     let mut tr = LegacyTracker::new(def.num_subbufs as u32);
-    let poll = |a: &mut RegAccess<PhysMap>| -> AResult<u32> { Ok((a.read_se("wideband_iq_dma_status")? >> 1) & 0xF) };
+    let poll = |a: &mut RegAccess<PhysMap>| -> AResult<u32> { Ok((a.read_se("capture_status")? >> 1) & 0xF) };
     tr.advance(poll(&mut a)?);
     let mut got = 0;
     let mut idx = 0;
@@ -201,7 +203,7 @@ fn verify_p25_ring(ctx: &Ctx) -> AResult<Value> {
         json!({"method": "p25 wideband ring", "errors": null, "error": "no sub-buffer completed within 3 s"})
     };
     if prev == 0 {
-        a.write("wideband_iq_dma_control", 0)?;
+        a.write("capture_control", 0)?;
     }
     Ok(res)
 }

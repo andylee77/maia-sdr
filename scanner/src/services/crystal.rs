@@ -486,8 +486,8 @@ async fn spectrum<H: RadioHw>(hw: &H, n: usize) -> Vec<Vec<f32>> {
     while out.len() < n && Instant::now() < deadline {
         match hw.spectrum().await {
             Some(_) if discard > 0 => discard -= 1,
-            Some(bytes) => {
-                let db = power_db(&bytes);
+            Some(frame) => {
+                let db = power_db(&frame.bytes);
                 if !db.is_empty() {
                     out.push(db);
                 }

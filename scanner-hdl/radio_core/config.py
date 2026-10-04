@@ -16,20 +16,20 @@ class P25Config:
         self.lanes = 3
 
         # The lane ring: every lane's tagged IQ packets (lane_packetizer.py), 4 KB each, four to a
-        # sub-buffer. Three lanes at 50 kSPS write ~600 KB/s, so 2 MB holds 3.4 s.
-        # Device `p25-lanes`.
+        # sub-buffer. Three lanes at 50 kSPS write ~600 KB/s, so 8 MB holds 13.7 s (0.67 s at
+        # three 1 MSPS lanes). Device `p25-lanes`.
         self.lanes_dma_address = 0x1900_0000
-        self.lanes_dma_num_buffers_log2 = 7       # 128 sub-buffers
+        self.lanes_dma_num_buffers_log2 = 9       # 512 sub-buffers
         self.lanes_dma_buffer_size = 0x4000       # 16 KB
 
-        # The wideband spectrometer: one 4096-bin integration (8 B a bin) per sub-buffer.
-        # Device `p25-wideband-spec`.
+        # The wideband spectrometer: one 4096-bin frame (8 B a bin) per sub-buffer, read in order
+        # (spectrum.py). Device `p25-wideband-spec`.
         self.wideband_spec_dma_address = 0x2100_0000
-        self.wideband_spec_dma_num_buffers_log2 = 1   # 2 sub-buffers
+        self.wideband_spec_dma_num_buffers_log2 = 4   # 16 sub-buffers
         self.wideband_spec_dma_buffer_size = (1 << 12) * 8
 
         # The raw IQ capture: the AD9361's samples before any DDC, two a 64-bit word, 32 MB/s
-        # at 8 MSPS (0.5 s in 16 MB). Device `p25-wideband-iq`.
+        # at 8 MSPS (0.5 s in 16 MB; capture.py). Device `p25-wideband-iq`.
         self.wideband_iq_dma_address = 0x2200_0000
         self.wideband_iq_dma_num_buffers_log2 = 4     # 16 sub-buffers
         self.wideband_iq_dma_buffer_size = 0x10_0000  # 1 MB

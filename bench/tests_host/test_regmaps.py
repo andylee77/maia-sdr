@@ -33,17 +33,19 @@ def test_p25_share_map_is_the_radio_core() -> None:
     assert m["id_value"] == "0x72616431" and m["decode_limit"] == "0x400"
     regs = _regs(m)
     side = {off for off, r in regs.items() if r["read_side_effect"]}
-    # interrupts, each lane's status, the spectrum's and the capture's
-    assert side == {0x0C, 0x3C, 0x5C, 0x7C, 0xA4, 0xC0}
+    # interrupts, the capture's status and each lane's
+    assert side == {0x0C, 0x60, 0x11C, 0x13C, 0x15C}
     assert regs[0x0]["name"] == "product_id" and regs[0x0]["expected"] == "0x72616431"
     assert regs[0x8]["access"] == "rw" and regs[0xC]["access"] == "ro"
-    assert regs[0xC0]["name"] == "wideband_iq_dma_status"
+    assert regs[0x60]["name"] == "capture_status"
     ver = regs[0x4]["fields"]
     assert [(f["name"], f["lsb"], f["width"]) for f in ver][:2] == [("bugfix", 0, 8),
                                                                     ("minor", 8, 8)]
-    names = [b["name"] for b in m["blocks"]]
-    assert names == ["control", "lane0", "lane1", "lane2", "lanes_ring", "spectrometer",
-                     "wideband_iq"]
+    # The shared banks first, at offsets that do not move with the lanes; the lanes from 0x100.
+    blocks = [(b["name"], b["offset"]) for b in m["blocks"]]
+    assert blocks == [("control", "0x000"), ("lanes_ring", "0x020"), ("spectrum", "0x040"),
+                      ("capture", "0x060"), ("lane0", "0x100"), ("lane1", "0x120"),
+                      ("lane2", "0x140")]
 
 
 def test_adi_cores() -> None:
@@ -95,7 +97,7 @@ def test_build_all_and_load(tmp_path: Path) -> None:
     maps = load_regmaps(BENCH_DIR / "share")
     r = find_reg(maps, "p25", "PRODUCT_ID")
     assert r.address == 0x7C460000 and r.decode(0x72616431) == {"product_id": 0x72616431}
-    assert find_reg(maps, "p25", "0xC0").read_side_effect
+    assert find_reg(maps, "p25", "0x60").read_side_effect
     with pytest.raises(SafetyRefusal):
         find_reg(maps, "p25", "0x400")  # above the decoded window: not in the allow-list
 

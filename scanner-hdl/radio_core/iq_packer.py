@@ -32,13 +32,16 @@ class IQPacker(Elaboratable):
         re_in, im_in: signed(16)
         strobe_in: a one-cycle pulse for each new (re_in, im_in) pair
         stream_ready: back-pressure from the DMA (ready by default, for tests in isolation)
+        clear: drop the half-built pair and the word waiting, so the next sample starts a word
+            (it takes precedence over a strobe in the same cycle)
 
     Outputs (sync domain):
         data_out: the packed word
         data_valid: AXI4-Stream valid; high from the word's latch until ``stream_ready`` takes it
-        overflow: a one-cycle pulse when a word is latched over one still waiting. It must be a
-            pulse, not a level: the ``Rsticky`` register field accumulates it and clears on read
-            by sampling its input, so a held level would set it again the cycle after a read.
+        overflow: a one-cycle pulse when a word is latched over one still waiting (a word the
+            DMA takes in that same cycle is not lost). It must be a pulse, not a level: the
+            ``Rsticky`` register field accumulates it and clears on read by sampling its input,
+            so a held level would set it again the cycle after a read.
     """
     def __init__(self):
         # Inputs
@@ -46,6 +49,7 @@ class IQPacker(Elaboratable):
         self.im_in = Signal(signed(16))
         self.strobe_in = Signal()
         self.stream_ready = Signal(reset=1)  # default ready
+        self.clear = Signal()
 
         # Outputs
         self.data_out = Signal(64)
@@ -96,13 +100,16 @@ class IQPacker(Elaboratable):
                     holding_valid.eq(1),
                     phase.eq(0),
                 ]
-                # If the previous word still hasn't been accepted by
-                # the DMA, we are about to overwrite it -- emit a
-                # one-cycle overflow pulse. The Rsticky register
+                # If the previous word is still waiting and the DMA does
+                # not take it in this cycle, we are about to overwrite it
+                # -- emit a one-cycle overflow pulse. The Rsticky register
                 # wrapper in maia_hdl.register.Registers takes care
                 # of accumulation + PS read-clear.
-                with m.If(holding_valid):
+                with m.If(holding_valid & ~self.stream_ready):
                     m.d.sync += self.overflow.eq(1)
+
+        with m.If(self.clear):
+            m.d.sync += [phase.eq(0), holding_valid.eq(0), self.overflow.eq(0)]
 
         m.d.comb += self.data_valid.eq(holding_valid)
 

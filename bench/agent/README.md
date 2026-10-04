@@ -69,8 +69,8 @@ Host tests: `cargo test` in `bench/agent/` (unit tests of all pure logic plus
   (0x400: the bus aliases there) are refused before the device is even opened.
   The radio core's sync-domain banks are refused while `control.sdr_reset = 1`
   (they read 0 and drop writes until it clears). Read-to-clear registers (the
-  radio core's `interrupts` 0x0C, `laneN_status` 0x3C/0x5C/0x7C, `spec_status`
-  0xA4, `wideband_iq_dma_status` 0xC0; axi_dmac PARTIAL_TRANSFER_ID) need
+  radio core's `interrupts` 0x0C, `capture_status` 0x060, `laneN_status`
+  0x11C/0x13C/0x15C; axi_dmac PARTIAL_TRANSFER_ID) need
   `--force-side-effects`. PS cores (`slcr`, `ddrc`,
   `l2c`, `afi`) are read-only; `rx_dmac`/`tx_dmac` only allow SCRATCH writes;
   core resets (`RSTN`) need `--force`; TX-affecting DAC registers need `--tx-ok`.
@@ -168,7 +168,7 @@ fbench-agent info
  "model": "FISH Ball PlutoSDR Rev.A (Z7020/AD9361)", "serial": "OVHNVI2FJEBXAB4M",
  "hw_model": "...", "fw_version": "...", "hostname": "pluto",
  "image": "p25",
- "bitstream": {"core": "p25", "product_id": "0x72616431", "name": "rad1", "version": "1.0.0", "platform": 0, "sdr_reset": 0},
+ "bitstream": {"core": "p25", "product_id": "0x72616431", "name": "rad1", "version": "2.0.0", "platform": 0, "sdr_reset": 0},
  "fpga_dna": null,
  "ad936x_compatible": "adi,ad9361", "ad936x_note": "AD9361 and AD9363 cannot be told apart in software; see bench config",
  "sample_rate_hz": 8000000, "rx_lo_hz": 858100000,
@@ -225,7 +225,7 @@ registers are reported raw in `regs`.
 
 ```bash
 fbench-agent reg read  --core p25 --reg product_id
-fbench-agent reg read  --core p25 --reg wideband_iq_dma_status --force-side-effects
+fbench-agent reg read  --core p25 --reg capture_status --force-side-effects
 fbench-agent reg write --core adi_adc --reg IDELAY_3 --value 0x11
 fbench-agent reg dump  --core hwval
 fbench-agent reg list  [--core C]
@@ -437,12 +437,13 @@ ring v2 lines also carry `committed`, `from`, `to`, `lost_bursts`,
  "capture_s": 2.1, "write_s": 5.4, "subbuf_period_ms": 32.768,
  "reader": {"polls": 4000, "wakes": 64, "chunks": 64, "bytes": 67108864, "busy_frac": 0.05, "backlog_max": 0,
             "hw_overflow_flags": 0, "last_buffer_delta_hist": [0, 64, 0, "..."], "v2_lost_bursts": 0, "v2_discarded_bursts": 0},
- "hw": {"wideband_iq_next_address": "0x22345000"}, "notes": ["enabled wideband_iq DMA (epoch)"],
- "cleanup": [{"action": "restore wideband_iq_enable", "ok": true, "detail": 0}], "warnings": []}
+ "hw": {"capture_next_address": "0x22345000"}, "notes": ["enabled the capture (epoch: the ring starts at its first sub-buffer)"],
+ "cleanup": [{"action": "restore the capture's enable", "ok": true, "detail": 0}], "warnings": []}
 ```
 
 Rings: `p25-wideband` (`/dev/p25-wideband-iq`, 16 x 1 MiB at 0x22000000,
-`last_buffer` from status 0xC0), `hwval-legacy` (`/dev/hwval-legacy`,
+`last_buffer` from `capture_status` 0x060; each enable starts it again at its
+first sub-buffer), `hwval-legacy` (`/dev/hwval-legacy`,
 LEGACY_LAST_BUFFER via snapshot), `hwval-v2` (`/dev/hwval-ringv2`, window
 0x20000000, runtime RINGV2_BASE/SIZE_BURSTS, committed-pointer protocol).
 `--dev` / `--phys` override the device and base. Mappings: `cached`

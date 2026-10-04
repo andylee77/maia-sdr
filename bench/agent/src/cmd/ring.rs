@@ -455,7 +455,8 @@ impl Ctl<'_> {
     fn poll_legacy(&mut self) -> AResult<(u32, bool)> {
         match self {
             Ctl::P25(a) => {
-                let v = a.read_se("wideband_iq_dma_status")?;
+                // overflow [0] and last_buffer [4:1] of the radio core's capture_status.
+                let v = a.read_se("capture_status")?;
                 Ok(((v >> 1) & 0xF, v & 1 == 1))
             }
             Ctl::Legacy(a) => {
@@ -545,27 +546,30 @@ fn open_ctl<'m>(ctx: &'m Ctx, o: &StreamOpts, cleanup: &mut Cleanup<'m>, notes: 
                 a.refresh();
                 notes.push(json!("cleared control.sdr_reset"));
             }
-            let prev = a.read("wideband_iq_dma_control")? & 1;
+            let prev = a.read("capture_control")? & 1;
             let mut epoch = false;
             if prev == 0 || o.reenable {
                 if !(o.enable || o.reenable) {
                     return Err(AgentError::new(
                         Code::Precondition,
-                        "wideband IQ ring is disabled: pass --enable (or --reenable to measure the enable splice)",
+                        "the capture ring is disabled: pass --enable (or --reenable to start it again)",
                     ));
                 }
                 if prev == 1 {
-                    a.write("wideband_iq_dma_control", 0)?;
+                    a.write("capture_control", 0)?;
                     safety::sleep_ms(2)?;
                 }
-                a.write("wideband_iq_dma_control", 1)?;
+                a.write("capture_control", 1)?;
+                // The enable starts the ring again at its first sub-buffer, last_buffer -1,
+                // once the capture before has finished its writes (microseconds).
+                safety::sleep_ms(1)?;
                 epoch = true;
-                notes.push(json!("enabled wideband_iq DMA (epoch)"));
+                notes.push(json!("enabled the capture (epoch: the ring starts at its first sub-buffer)"));
                 if !o.leave_enabled {
-                    cleanup.push("restore wideband_iq_enable", move || {
+                    cleanup.push("restore the capture's enable", move || {
                         let (core, pm) = open_core(ctx, "p25", true)?;
                         let mut a = RegAccess::new(core, pm);
-                        a.write("wideband_iq_dma_control", prev)?;
+                        a.write("capture_control", prev)?;
                         Ok(json!(prev))
                     });
                 }
@@ -873,7 +877,7 @@ fn v2_loop(
 fn hw_counters(ctl: &mut Ctl) -> Value {
     match ctl {
         Ctl::P25(a) => {
-            json!({"wideband_iq_next_address": a.read("wideband_iq_next_address").ok().map(util::hex32)})
+            json!({"capture_next_address": a.read("capture_next_address").ok().map(util::hex32)})
         }
         Ctl::Legacy(a) => {
             a.refresh();

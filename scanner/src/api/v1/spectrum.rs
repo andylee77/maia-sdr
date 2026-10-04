@@ -50,8 +50,8 @@ pub async fn get(State(s): State<Arc<AppState>>, Query(p): Query<Params>) -> Jso
     } else if s.lease.is_normal() {
         let deadline = tokio::time::Instant::now() + WAIT;
         while tokio::time::Instant::now() < deadline {
-            if let Some(bytes) = s.tuner.hw().spectrum().await {
-                let db = power_db(&bytes);
+            if let Some(frame) = s.tuner.hw().spectrum().await {
+                let db = power_db(&frame.bytes);
                 if !db.is_empty() {
                     *LAST.lock().unwrap_or_else(|e| e.into_inner()) = db;
                     fresh = true;
@@ -74,7 +74,7 @@ pub async fn next(s: &AppState, since: Option<Instant>, bins: usize) -> Option<(
     if !s.lease.is_normal() {
         return None;
     }
-    let db = power_db(&s.tuner.hw().spectrum().await?);
+    let db = power_db(&s.tuner.hw().spectrum().await?.bytes);
     (!db.is_empty()).then(|| (shape(s, &db, bins, true), Instant::now()))
 }
 

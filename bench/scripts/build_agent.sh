@@ -102,9 +102,9 @@ run tx_off tx off
 run maint_status maint status
 run reg_list reg list
 run reg_p25_list reg list --core p25
-run reg_vacant reg read --core p25 --reg 0x120
+run reg_vacant reg read --core p25 --reg 0x0E0
 run reg_nomap reg read --core bogus --reg X
-run reg_rtc reg read --core p25 --reg wideband_iq_dma_status
+run reg_rtc reg read --core p25 --reg capture_status
 run reg_ro_write reg write --core slcr --reg DDR_PLL_CTRL --value 0
 run reg_p25_absent reg read --core p25 --reg product_id
 run bad_cmd frobnicate

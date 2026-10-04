@@ -1,20 +1,25 @@
 #
-# Fishball P25 - the lane ring core (doc/changes/079_general_radio_core.md, step 3a).
+# Fishball P25 - the radio core (doc/changes/079_general_radio_core.md; its map and blocks as
+# doc/changes/082_bake_a.md left them).
 #
 # The AD9361's samples go to N lanes, each a DDC (tune and decimate to 50 kSPS) whose output is
 # cut into tagged packets (lane_packetizer.py); one ring DMA carries every lane's packets to the
-# PS, where all demodulation runs. Beside the lanes: the wideband spectrometer and the raw IQ
-# capture ring. The register bridge answers every access.
+# PS, where all demodulation runs. Beside the lanes: the wideband spectrometer, whose frames
+# carry a header (spectrum.py), and the raw IQ capture ring (capture.py). The register bridge
+# answers every access.
 #
 #   rxiq_cdc -> input register -+-> lane DDC 0..N-1 -> packetizers -> LaneRing -> lanes_dma
-#                               +-> spectrometer -> wideband_spec_dma
-#                               +-> IQPacker -> wideband_iq_dma
+#                               +-> SpectrumFrames -> wideband_spec_dma
+#                               +-> Capture (IQPacker -> wideband_iq_dma)
 #
-# Registers (byte offsets, 32-byte banks; doc/changes/079 "Registers"):
+# Registers (byte offsets, 32-byte banks). The shared banks stay where they are whatever N is:
 #   0x000           control (AXI-Lite domain): product id, version, control, interrupts,
 #                   capabilities
-#   0x020 * (1+i)   lane i: DDC coefficients and stages, NCO, lane control (enable, tag), status
-#   then            lanes ring, spectrometer, capture
+#   0x020           lane ring, sample and clip counts
+#   0x040           spectrum
+#   0x060           capture
+#   0x080-0x0FF     kept for later blocks
+#   0x100 + 0x20*i  lane i: DDC coefficients and stages, NCO, lane control (enable, tag), status
 #
 # SPDX-License-Identifier: MIT
 #
@@ -26,34 +31,45 @@ from amaranth.lib.cdc import FFSynchronizer, PulseSynchronizer
 import amaranth.back.verilog
 
 from maia_hdl.cdc import RegisterCDC, RxIQCDC
-from maia_hdl.clknx import ClkNxCommonEdge
 from .dma_ring import DmaStreamRingWrite
 from maia_hdl.pluto_platform import PlutoPlatform
 from maia_hdl.register import Access, Field, Registers, Register, RegisterMap
-from maia_hdl.spectrometer import Spectrometer
 
 from .axil_bridge import AnsweringRegisterBridge
+from .capture import Capture
+from .common_edge import CommonEdge
 from .config import P25Config
-from .iq_packer import IQPacker
 from .lane_packetizer import HEADER_WORDS, LanePacketizer, PACKET_WORDS
 from .lane_ring import LaneRing
 from .p25ddc import P25DDC
+from .spectrum import SpectrumFrames
 from . import configs
 
-# IP core version. 1.0.0: the lane ring core (doc/changes/079).
-_version = '1.0.0'
+# IP core version. The scanner reads one major version: a change to the map takes the next.
+_version = '2.0.0'
 PRODUCT_ID = 0x72616431   # "rad1"
 
 # Word address bits of the register bus (a 1 KB window), and of one bank (8 words).
 ADDRESS_WIDTH = 8
 BANK_WORDS_LOG2 = 3
+BANK_BYTES = 4 << BANK_WORDS_LOG2
+# The banks' byte offsets.
+CONTROL_BANK = 0x000
+LANES_RING_BANK = 0x020
+SPECTRUM_BANK = 0x040
+CAPTURE_BANK = 0x060
+LANE_BANKS = 0x100
 # AXI-Lite cycles after `sdr_reset` clears before the sync-domain banks are claimed (their reset
 # synchronisers release a few cycles later).
 LIVE_DELAY = 16
 
 
+def lane_bank_offset(i):
+    return LANE_BANKS + BANK_BYTES * i
+
+
 class P25Core(Elaboratable):
-    """The lane ring core.
+    """The radio core.
 
     Parameters
     ----------
@@ -119,46 +135,58 @@ class P25Core(Elaboratable):
             0b101: Register('adc_clips', [Field('count', Access.R, 32, 0)]),
         }, BANK_WORDS_LOG2)
 
-        self.wideband_spec = Spectrometer(
+        self.wideband_spec = SpectrumFrames(
             config.wideband_spec_dma_address, config.wideband_spec_dma_num_buffers_log2,
             dma_name='m_axi_wideband_spec', domain_2x='clk2x', domain_3x='clk3x')
-        self.spec_registers = Registers('spectrometer', {
+        self.spec_registers = Registers('spectrum', {
             0b000: Register('spec_control', [
                 Field('spec_enable', Access.RW, 1, 0),
+                # The mode and the integrations of the frames that start from now on.
                 Field('spec_peak_detect', Access.RW, 1, 0),
                 Field('spec_abort', Access.Wpulse, 1, 0),
                 Field('spec_num_integrations', Access.RW, self.wideband_spec.nint_width, -1),
+                # Each frame in the other mode from the frame before.
+                Field('spec_alternate', Access.RW, 1, 0),
             ]),
             0b001: Register('spec_status', [
-                Field('spec_overflow', Access.Rsticky, 1, 0),
-                Field('spec_last_buffer', Access.R, len(self.wideband_spec.last_buffer), -1),
+                Field('spec_last_buffer', Access.R, config.wideband_spec_dma_num_buffers_log2,
+                      -1),
             ]),
             0b010: Register('spec_next_address', [Field('next_address', Access.R, 32, 0)]),
         }, BANK_WORDS_LOG2)
 
-        self.wideband_iq_packer = IQPacker()
-        self.wideband_iq_dma = DmaStreamRingWrite(
+        self.capture = Capture(
             config.wideband_iq_dma_address, config.wideband_iq_dma_num_buffers_log2,
-            config.wideband_iq_dma_buffer_size, width=64, axi_awidth=32,
-            name='m_axi_wideband_iq')
-        self.capture_registers = Registers('wideband_iq', {
-            0b000: Register('wideband_iq_dma_status', [
-                Field('wideband_iq_overflow', Access.Rsticky, 1, 0),
-                Field('last_buffer', Access.R, config.wideband_iq_dma_num_buffers_log2, -1),
+            config.wideband_iq_dma_buffer_size, name='m_axi_wideband_iq')
+        nbuf = config.wideband_iq_dma_num_buffers_log2
+        self.capture_registers = Registers('capture', {
+            # `overflow` clears on read: take it from the same read as `last_buffer`.
+            0b000: Register('capture_status', [
+                Field('overflow', Access.Rsticky, 1, 0),
+                Field('last_buffer', Access.R, nbuf, -1),
+                Field('stopped', Access.R, 1, 0),
             ]),
-            0b001: Register('wideband_iq_dma_control', [
-                Field('wideband_iq_enable', Access.RW, 1, 0),
+            0b001: Register('capture_control', [
+                Field('enable', Access.RW, 1, 0),
+                Field('trigger', Access.Wpulse, 1, 0),
+                Field('stop_after', Access.RW, nbuf, 0),
             ]),
-            0b010: Register('wideband_iq_next_address', [Field('next_address', Access.R, 32, 0)]),
+            0b010: Register('capture_next_address', [Field('next_address', Access.R, 32, 0)]),
+            # Reading the low word latches the high word.
+            0b011: Register('capture_start_lo', [Field('index', Access.R, 32, 0)]),
+            0b100: Register('capture_start_hi', [Field('index', Access.R, 32, 0)]),
+            0b101: Register('capture_buffers', [Field('count', Access.R, 32, 0)]),
         }, BANK_WORDS_LOG2)
 
-        # Banks in address order: control, the lanes, then the ring, spectrum and capture.
-        self.sync_banks = self.lane_registers + [
-            self.ring_registers, self.spec_registers, self.capture_registers]
-        self.bank_offsets = {id(bank): 0x20 * (1 + i) for i, bank in enumerate(self.sync_banks)}
+        # The sync-domain banks by byte offset.
+        self.sync_banks = {
+            LANES_RING_BANK: self.ring_registers,
+            SPECTRUM_BANK: self.spec_registers,
+            CAPTURE_BANK: self.capture_registers,
+            **{lane_bank_offset(i): bank for i, bank in enumerate(self.lane_registers)},
+        }
         self.register_map = RegisterMap(
-            {0x00: self.control_registers,
-             **{0x20 * (1 + i): bank for i, bank in enumerate(self.sync_banks)}},
+            {CONTROL_BANK: self.control_registers, **self.sync_banks},
             {
                 'vendor': 'Andy Lee',
                 'vendorID': 'fishball-p25',
@@ -181,7 +209,7 @@ class P25Core(Elaboratable):
 
     @staticmethod
     def _lane_bank(i):
-        """Lane i: the DDC registers at the 0.3.0 offsets, then the lane's control and status."""
+        """Lane i: the DDC's registers, then the lane's control and status."""
         p = f'lane{i}_'
         return Registers(f'lane{i}', {
             0b000: Register(p + 'ddc_coeff_addr', [Field('coeff_waddr', Access.RW, 10, 0)]),
@@ -219,7 +247,7 @@ class P25Core(Elaboratable):
             self.axi4lite.axi.ports()
             + self.lanes_dma.axi.ports()
             + self.wideband_spec.dma.axi.ports()
-            + self.wideband_iq_dma.axi.ports()
+            + self.capture.dma.axi.ports()
             + [
                 self.re_in, self.im_in, self.interrupt_out,
                 self.s_axi_lite.clk, self.s_axi_lite.rst,
@@ -234,7 +262,6 @@ class P25Core(Elaboratable):
     def elaborate(self, platform):
         m = Module()
         m.domains += [self.s_axi_lite, self.sampling, self.sync, self.clk3x, self.clk2x]
-        cfg = self.config
 
         s_axi_lite = DomainRenamer({'sync': 's_axi_lite'})
         m.submodules.axi4lite = s_axi_lite(self.axi4lite)
@@ -263,7 +290,8 @@ class P25Core(Elaboratable):
         in_strobe = Signal()
         m.d.sync += [in_re.eq(rx_re), in_im.eq(rx_im), in_strobe.eq(rx_strobe)]
 
-        # The AD9361 sample count and the samples at full scale, for the packet headers.
+        # The AD9361 sample count (the index of the sample in `in_re` while `in_strobe`) and
+        # the samples at full scale, for the packet and frame headers and the capture.
         sample_count = Signal(64)
         adc_clips = Signal(32)
         with m.If(in_strobe):
@@ -271,8 +299,12 @@ class P25Core(Elaboratable):
             with m.If((in_re == 2047) | (in_re == -2048) | (in_im == 2047) | (in_im == -2048)):
                 m.d.sync += adc_clips.eq(adc_clips + 1)
 
-        m.submodules.common_edge_3x = common_edge_3x = ClkNxCommonEdge('sync', 'clk3x', 3)
-        m.submodules.common_edge_2x = common_edge_2x = ClkNxCommonEdge('sync', 'clk2x', 2)
+        # Every 3x multiplier's consumer has its own common edge (common_edge.py).
+        def common_edge_3x(name):
+            gen = CommonEdge('sync', 'clk3x', 3, name)
+            setattr(m.submodules, name, gen)
+            return gen.common_edge
+        m.submodules.common_edge_2x = common_edge_2x = CommonEdge('sync', 'clk2x', 2, 'ce2x_fft')
 
         # ── Lanes ────────────────────────────────────────────────────────────────────────
         for i, (ddc, pk, regs) in enumerate(zip(self.ddcs, self.packetizers, self.lane_registers)):
@@ -292,7 +324,7 @@ class P25Core(Elaboratable):
             lane_strobe = Signal(name=f'lane{i}_strobe', attrs={'keep': 'true'})
             m.d.sync += [lane_re.eq(rx_re), lane_im.eq(rx_im), lane_strobe.eq(rx_strobe)]
             m.d.comb += [
-                ddc.common_edge.eq(common_edge_3x.common_edge),
+                ddc.common_edge.eq(common_edge_3x(f'ce3x_lane{i}')),
                 ddc.enable_input.eq(ctrl['enable_input']),
                 ddc.frequency.eq(regs[p + 'ddc_frequency']['frequency']),
                 ddc.coeff_waddr.eq(regs[p + 'ddc_coeff_addr']['coeff_waddr']),
@@ -345,48 +377,55 @@ class P25Core(Elaboratable):
             m.d.sync += count_hi.eq(sample_count[32:])
 
         # ── Spectrometer ─────────────────────────────────────────────────────────────────
-        m.submodules.wideband_spec = self.wideband_spec
+        m.submodules.wideband_spec = spec = self.wideband_spec
         spec_ctrl = self.spec_registers['spec_control']
-        spec_stat = self.spec_registers['spec_status']
         spec_strobe = Signal()
         m.d.sync += spec_strobe.eq(rx_strobe & spec_ctrl['spec_enable'])
         m.d.comb += [
-            self.wideband_spec.re_in.eq(in_re),
-            self.wideband_spec.im_in.eq(in_im),
-            self.wideband_spec.strobe_in.eq(spec_strobe),
-            self.wideband_spec.common_edge_2x.eq(common_edge_2x.common_edge),
-            self.wideband_spec.common_edge_3x.eq(common_edge_3x.common_edge),
-            self.wideband_spec.number_integrations.eq(spec_ctrl['spec_num_integrations']),
-            self.wideband_spec.peak_detect.eq(spec_ctrl['spec_peak_detect']),
-            self.wideband_spec.abort.eq(spec_ctrl['spec_abort']),
-            spec_stat['spec_last_buffer'].eq(self.wideband_spec.last_buffer),
-            self.spec_registers['spec_next_address']['next_address'].eq(
-                self.wideband_spec.dma.axi.awaddr),
+            spec.re_in.eq(in_re),
+            spec.im_in.eq(in_im),
+            spec.strobe_in.eq(spec_strobe),
+            spec.sample_index.eq(sample_count),
+            spec.adc_clips.eq(adc_clips),
+            spec.common_edge_2x.eq(common_edge_2x.common_edge),
+            spec.common_edge_fft.eq(common_edge_3x('ce3x_fft')),
+            spec.common_edge_integrator.eq(common_edge_3x('ce3x_integrator')),
+            spec.number_integrations.eq(spec_ctrl['spec_num_integrations']),
+            spec.peak_detect.eq(spec_ctrl['spec_peak_detect']),
+            spec.alternate.eq(spec_ctrl['spec_alternate']),
+            spec.abort.eq(spec_ctrl['spec_abort']),
+            self.spec_registers['spec_status']['spec_last_buffer'].eq(spec.last_buffer),
+            self.spec_registers['spec_next_address']['next_address'].eq(spec.dma.axi.awaddr),
         ]
 
         # ── Raw IQ capture ───────────────────────────────────────────────────────────────
-        m.submodules.wideband_iq_packer = self.wideband_iq_packer
-        m.submodules.wideband_iq_dma = self.wideband_iq_dma
+        m.submodules.capture = capture = self.capture
         cap = self.capture_registers
+        start_hi = Signal(32)
         m.d.comb += [
-            self.wideband_iq_packer.re_in.eq(in_re),
-            self.wideband_iq_packer.im_in.eq(in_im),
-            self.wideband_iq_packer.strobe_in.eq(in_strobe),
-            self.wideband_iq_dma.stream_data.eq(self.wideband_iq_packer.data_out),
-            self.wideband_iq_dma.stream_valid.eq(self.wideband_iq_packer.data_valid),
-            self.wideband_iq_packer.stream_ready.eq(self.wideband_iq_dma.stream_ready),
-            self.wideband_iq_dma.enable.eq(cap['wideband_iq_dma_control']['wideband_iq_enable']),
-            cap['wideband_iq_dma_status']['wideband_iq_overflow'].eq(
-                self.wideband_iq_packer.overflow),
-            cap['wideband_iq_dma_status']['last_buffer'].eq(self.wideband_iq_dma.last_buffer),
-            cap['wideband_iq_next_address']['next_address'].eq(self.wideband_iq_dma.axi.awaddr),
+            capture.re_in.eq(in_re),
+            capture.im_in.eq(in_im),
+            capture.strobe_in.eq(in_strobe),
+            capture.sample_index.eq(sample_count),
+            capture.enable.eq(cap['capture_control']['enable']),
+            capture.trigger.eq(cap['capture_control']['trigger']),
+            capture.stop_after.eq(cap['capture_control']['stop_after']),
+            cap['capture_status']['overflow'].eq(capture.overflow),
+            cap['capture_status']['last_buffer'].eq(capture.last_buffer),
+            cap['capture_status']['stopped'].eq(capture.stopped),
+            cap['capture_next_address']['next_address'].eq(capture.dma.axi.awaddr),
+            cap['capture_start_lo']['index'].eq(capture.start_index[:32]),
+            cap['capture_start_hi']['index'].eq(start_hi),
+            cap['capture_buffers']['count'].eq(capture.buffers),
         ]
+        with m.If(cap.ren & (cap.address[:BANK_WORDS_LOG2] == 0b011)):
+            m.d.sync += start_hi.eq(capture.start_index[32:])
 
         # ── Interrupts: each source's pulse into the AXI-Lite domain ─────────────────────
         interrupts = self.control_registers['interrupts']
         for name, pulse in [('lanes_ring', self.lanes_dma.interrupt),
-                            ('spectrum', self.wideband_spec.interrupt_out),
-                            ('capture', self.wideband_iq_dma.interrupt)]:
+                            ('spectrum', spec.interrupt_out),
+                            ('capture', capture.interrupt)]:
             sync = PulseSynchronizer('sync', 's_axi_lite')
             setattr(m.submodules, f'{name}_irq_sync', sync)
             m.d.comb += [sync.i.eq(pulse), interrupts[name].eq(sync.o)]
@@ -410,8 +449,8 @@ class P25Core(Elaboratable):
 
         bus = self.axi4lite
         bank = bus.address[BANK_WORDS_LOG2:]
-        control_sel = bank == 0
-        selects = [bank == (1 + i) for i in range(len(self.sync_banks))]
+        control_sel = bank == CONTROL_BANK // BANK_BYTES
+        selects = [bank == offset // BANK_BYTES for offset in self.sync_banks]
         m.d.comb += bus.claimed.eq(control_sel | (live & Cat(*selects).any()))
 
         rdata = self.control_registers.rdata
@@ -423,7 +462,7 @@ class P25Core(Elaboratable):
             self.control_registers.address.eq(bus.address),
             self.control_registers.wdata.eq(bus.wdata),
         ]
-        for i, (regs, sel) in enumerate(zip(self.sync_banks, selects)):
+        for regs, sel in zip(self.sync_banks.values(), selects):
             setattr(m.submodules, f'{regs.name}_registers', regs)
             cdc = RegisterCDC('s_axi_lite', 'sync', regs.aw)
             setattr(m.submodules, f'{regs.name}_registers_cdc', cdc)

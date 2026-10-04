@@ -4,7 +4,7 @@
   <vendorID>fishball-p25</vendorID>
   <name>Radio Core</name>
   <series>Fishball</series>
-  <version>1.0.0</version>
+  <version>2.0.0</version>
   <description>Fishball radio core: lanes, spectrum, capture (platform 0)</description>
   <licenseText>SPDX-License-Identifier: MIT</licenseText>
   <width>32</width>
@@ -12,13 +12,13 @@
   <peripherals>
     <peripheral>
       <name>Radio Core</name>
-      <version>1.0.0</version>
+      <version>2.0.0</version>
       <description>Fishball radio core: lanes, spectrum, capture (platform 0)</description>
       <baseAddress>0x00000000</baseAddress>
       <access>read-write</access>
       <addressBlock>
         <offset>0</offset>
-        <size>0xc8</size>
+        <size>0x160</size>
         <usage>registers</usage>
       </addressBlock>
       <registers>
@@ -147,9 +147,267 @@
           </fields>
         </register>
         <register>
+          <name>lanes_ring_control</name>
+          <description>lanes_ring_control</description>
+          <addressOffset>0x20</addressOffset>
+          <access>read-write</access>
+          <fields>
+            <field>
+              <name>enable</name>
+              <description>enable</description>
+              <bitRange>[0:0]</bitRange>
+              <access>read-write</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>lanes_ring_status</name>
+          <description>lanes_ring_status</description>
+          <addressOffset>0x24</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>last_buffer</name>
+              <description>last_buffer</description>
+              <bitRange>[8:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>lanes_ring_next_address</name>
+          <description>lanes_ring_next_address</description>
+          <addressOffset>0x28</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>next_address</name>
+              <description>next_address</description>
+              <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>sample_count_lo</name>
+          <description>sample_count_lo</description>
+          <addressOffset>0x2c</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>count</name>
+              <description>count</description>
+              <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>sample_count_hi</name>
+          <description>sample_count_hi</description>
+          <addressOffset>0x30</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>count</name>
+              <description>count</description>
+              <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>adc_clips</name>
+          <description>adc_clips</description>
+          <addressOffset>0x34</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>count</name>
+              <description>count</description>
+              <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>spec_control</name>
+          <description>spec_control</description>
+          <addressOffset>0x40</addressOffset>
+          <access>read-write</access>
+          <fields>
+            <field>
+              <name>spec_enable</name>
+              <description>spec_enable</description>
+              <bitRange>[0:0]</bitRange>
+              <access>read-write</access>
+            </field>
+            <field>
+              <name>spec_peak_detect</name>
+              <description>spec_peak_detect</description>
+              <bitRange>[1:1]</bitRange>
+              <access>read-write</access>
+            </field>
+            <field>
+              <name>spec_abort</name>
+              <description>spec_abort</description>
+              <bitRange>[2:2]</bitRange>
+              <access>write-only</access>
+            </field>
+            <field>
+              <name>spec_num_integrations</name>
+              <description>spec_num_integrations</description>
+              <bitRange>[12:3]</bitRange>
+              <access>read-write</access>
+            </field>
+            <field>
+              <name>spec_alternate</name>
+              <description>spec_alternate</description>
+              <bitRange>[13:13]</bitRange>
+              <access>read-write</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>spec_status</name>
+          <description>spec_status</description>
+          <addressOffset>0x44</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>spec_last_buffer</name>
+              <description>spec_last_buffer</description>
+              <bitRange>[3:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>spec_next_address</name>
+          <description>spec_next_address</description>
+          <addressOffset>0x48</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>next_address</name>
+              <description>next_address</description>
+              <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>capture_status</name>
+          <description>capture_status</description>
+          <addressOffset>0x60</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>overflow</name>
+              <description>overflow</description>
+              <bitRange>[0:0]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>last_buffer</name>
+              <description>last_buffer</description>
+              <bitRange>[4:1]</bitRange>
+              <access>read-only</access>
+            </field>
+            <field>
+              <name>stopped</name>
+              <description>stopped</description>
+              <bitRange>[5:5]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>capture_control</name>
+          <description>capture_control</description>
+          <addressOffset>0x64</addressOffset>
+          <access>read-write</access>
+          <fields>
+            <field>
+              <name>enable</name>
+              <description>enable</description>
+              <bitRange>[0:0]</bitRange>
+              <access>read-write</access>
+            </field>
+            <field>
+              <name>trigger</name>
+              <description>trigger</description>
+              <bitRange>[1:1]</bitRange>
+              <access>write-only</access>
+            </field>
+            <field>
+              <name>stop_after</name>
+              <description>stop_after</description>
+              <bitRange>[5:2]</bitRange>
+              <access>read-write</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>capture_next_address</name>
+          <description>capture_next_address</description>
+          <addressOffset>0x68</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>next_address</name>
+              <description>next_address</description>
+              <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>capture_start_lo</name>
+          <description>capture_start_lo</description>
+          <addressOffset>0x6c</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>index</name>
+              <description>index</description>
+              <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>capture_start_hi</name>
+          <description>capture_start_hi</description>
+          <addressOffset>0x70</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>index</name>
+              <description>index</description>
+              <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
+          <name>capture_buffers</name>
+          <description>capture_buffers</description>
+          <addressOffset>0x74</addressOffset>
+          <access>read-only</access>
+          <fields>
+            <field>
+              <name>count</name>
+              <description>count</description>
+              <bitRange>[31:0]</bitRange>
+              <access>read-only</access>
+            </field>
+          </fields>
+        </register>
+        <register>
           <name>lane0_ddc_coeff_addr</name>
           <description>lane0_ddc_coeff_addr</description>
-          <addressOffset>0x20</addressOffset>
+          <addressOffset>0x100</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -163,7 +421,7 @@
         <register>
           <name>lane0_ddc_coeff</name>
           <description>lane0_ddc_coeff</description>
-          <addressOffset>0x28</addressOffset>
+          <addressOffset>0x108</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -183,7 +441,7 @@
         <register>
           <name>lane0_ddc_decimation</name>
           <description>lane0_ddc_decimation</description>
-          <addressOffset>0x2c</addressOffset>
+          <addressOffset>0x10c</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -209,7 +467,7 @@
         <register>
           <name>lane0_ddc_frequency</name>
           <description>lane0_ddc_frequency</description>
-          <addressOffset>0x30</addressOffset>
+          <addressOffset>0x110</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -223,7 +481,7 @@
         <register>
           <name>lane0_ddc_control</name>
           <description>lane0_ddc_control</description>
-          <addressOffset>0x34</addressOffset>
+          <addressOffset>0x114</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -279,7 +537,7 @@
         <register>
           <name>lane0_control</name>
           <description>lane0_control</description>
-          <addressOffset>0x38</addressOffset>
+          <addressOffset>0x118</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -305,7 +563,7 @@
         <register>
           <name>lane0_status</name>
           <description>lane0_status</description>
-          <addressOffset>0x3c</addressOffset>
+          <addressOffset>0x11c</addressOffset>
           <access>read-only</access>
           <fields>
             <field>
@@ -319,7 +577,7 @@
         <register>
           <name>lane1_ddc_coeff_addr</name>
           <description>lane1_ddc_coeff_addr</description>
-          <addressOffset>0x40</addressOffset>
+          <addressOffset>0x120</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -333,7 +591,7 @@
         <register>
           <name>lane1_ddc_coeff</name>
           <description>lane1_ddc_coeff</description>
-          <addressOffset>0x48</addressOffset>
+          <addressOffset>0x128</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -353,7 +611,7 @@
         <register>
           <name>lane1_ddc_decimation</name>
           <description>lane1_ddc_decimation</description>
-          <addressOffset>0x4c</addressOffset>
+          <addressOffset>0x12c</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -379,7 +637,7 @@
         <register>
           <name>lane1_ddc_frequency</name>
           <description>lane1_ddc_frequency</description>
-          <addressOffset>0x50</addressOffset>
+          <addressOffset>0x130</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -393,7 +651,7 @@
         <register>
           <name>lane1_ddc_control</name>
           <description>lane1_ddc_control</description>
-          <addressOffset>0x54</addressOffset>
+          <addressOffset>0x134</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -449,7 +707,7 @@
         <register>
           <name>lane1_control</name>
           <description>lane1_control</description>
-          <addressOffset>0x58</addressOffset>
+          <addressOffset>0x138</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -475,7 +733,7 @@
         <register>
           <name>lane1_status</name>
           <description>lane1_status</description>
-          <addressOffset>0x5c</addressOffset>
+          <addressOffset>0x13c</addressOffset>
           <access>read-only</access>
           <fields>
             <field>
@@ -489,7 +747,7 @@
         <register>
           <name>lane2_ddc_coeff_addr</name>
           <description>lane2_ddc_coeff_addr</description>
-          <addressOffset>0x60</addressOffset>
+          <addressOffset>0x140</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -503,7 +761,7 @@
         <register>
           <name>lane2_ddc_coeff</name>
           <description>lane2_ddc_coeff</description>
-          <addressOffset>0x68</addressOffset>
+          <addressOffset>0x148</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -523,7 +781,7 @@
         <register>
           <name>lane2_ddc_decimation</name>
           <description>lane2_ddc_decimation</description>
-          <addressOffset>0x6c</addressOffset>
+          <addressOffset>0x14c</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -549,7 +807,7 @@
         <register>
           <name>lane2_ddc_frequency</name>
           <description>lane2_ddc_frequency</description>
-          <addressOffset>0x70</addressOffset>
+          <addressOffset>0x150</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -563,7 +821,7 @@
         <register>
           <name>lane2_ddc_control</name>
           <description>lane2_ddc_control</description>
-          <addressOffset>0x74</addressOffset>
+          <addressOffset>0x154</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -619,7 +877,7 @@
         <register>
           <name>lane2_control</name>
           <description>lane2_control</description>
-          <addressOffset>0x78</addressOffset>
+          <addressOffset>0x158</addressOffset>
           <access>read-write</access>
           <fields>
             <field>
@@ -645,211 +903,13 @@
         <register>
           <name>lane2_status</name>
           <description>lane2_status</description>
-          <addressOffset>0x7c</addressOffset>
+          <addressOffset>0x15c</addressOffset>
           <access>read-only</access>
           <fields>
             <field>
               <name>lost</name>
               <description>lost</description>
               <bitRange>[0:0]</bitRange>
-              <access>read-only</access>
-            </field>
-          </fields>
-        </register>
-        <register>
-          <name>lanes_ring_control</name>
-          <description>lanes_ring_control</description>
-          <addressOffset>0x80</addressOffset>
-          <access>read-write</access>
-          <fields>
-            <field>
-              <name>enable</name>
-              <description>enable</description>
-              <bitRange>[0:0]</bitRange>
-              <access>read-write</access>
-            </field>
-          </fields>
-        </register>
-        <register>
-          <name>lanes_ring_status</name>
-          <description>lanes_ring_status</description>
-          <addressOffset>0x84</addressOffset>
-          <access>read-only</access>
-          <fields>
-            <field>
-              <name>last_buffer</name>
-              <description>last_buffer</description>
-              <bitRange>[6:0]</bitRange>
-              <access>read-only</access>
-            </field>
-          </fields>
-        </register>
-        <register>
-          <name>lanes_ring_next_address</name>
-          <description>lanes_ring_next_address</description>
-          <addressOffset>0x88</addressOffset>
-          <access>read-only</access>
-          <fields>
-            <field>
-              <name>next_address</name>
-              <description>next_address</description>
-              <bitRange>[31:0]</bitRange>
-              <access>read-only</access>
-            </field>
-          </fields>
-        </register>
-        <register>
-          <name>sample_count_lo</name>
-          <description>sample_count_lo</description>
-          <addressOffset>0x8c</addressOffset>
-          <access>read-only</access>
-          <fields>
-            <field>
-              <name>count</name>
-              <description>count</description>
-              <bitRange>[31:0]</bitRange>
-              <access>read-only</access>
-            </field>
-          </fields>
-        </register>
-        <register>
-          <name>sample_count_hi</name>
-          <description>sample_count_hi</description>
-          <addressOffset>0x90</addressOffset>
-          <access>read-only</access>
-          <fields>
-            <field>
-              <name>count</name>
-              <description>count</description>
-              <bitRange>[31:0]</bitRange>
-              <access>read-only</access>
-            </field>
-          </fields>
-        </register>
-        <register>
-          <name>adc_clips</name>
-          <description>adc_clips</description>
-          <addressOffset>0x94</addressOffset>
-          <access>read-only</access>
-          <fields>
-            <field>
-              <name>count</name>
-              <description>count</description>
-              <bitRange>[31:0]</bitRange>
-              <access>read-only</access>
-            </field>
-          </fields>
-        </register>
-        <register>
-          <name>spec_control</name>
-          <description>spec_control</description>
-          <addressOffset>0xa0</addressOffset>
-          <access>read-write</access>
-          <fields>
-            <field>
-              <name>spec_enable</name>
-              <description>spec_enable</description>
-              <bitRange>[0:0]</bitRange>
-              <access>read-write</access>
-            </field>
-            <field>
-              <name>spec_peak_detect</name>
-              <description>spec_peak_detect</description>
-              <bitRange>[1:1]</bitRange>
-              <access>read-write</access>
-            </field>
-            <field>
-              <name>spec_abort</name>
-              <description>spec_abort</description>
-              <bitRange>[2:2]</bitRange>
-              <access>write-only</access>
-            </field>
-            <field>
-              <name>spec_num_integrations</name>
-              <description>spec_num_integrations</description>
-              <bitRange>[12:3]</bitRange>
-              <access>read-write</access>
-            </field>
-          </fields>
-        </register>
-        <register>
-          <name>spec_status</name>
-          <description>spec_status</description>
-          <addressOffset>0xa4</addressOffset>
-          <access>read-only</access>
-          <fields>
-            <field>
-              <name>spec_overflow</name>
-              <description>spec_overflow</description>
-              <bitRange>[0:0]</bitRange>
-              <access>read-only</access>
-            </field>
-            <field>
-              <name>spec_last_buffer</name>
-              <description>spec_last_buffer</description>
-              <bitRange>[1:1]</bitRange>
-              <access>read-only</access>
-            </field>
-          </fields>
-        </register>
-        <register>
-          <name>spec_next_address</name>
-          <description>spec_next_address</description>
-          <addressOffset>0xa8</addressOffset>
-          <access>read-only</access>
-          <fields>
-            <field>
-              <name>next_address</name>
-              <description>next_address</description>
-              <bitRange>[31:0]</bitRange>
-              <access>read-only</access>
-            </field>
-          </fields>
-        </register>
-        <register>
-          <name>wideband_iq_dma_status</name>
-          <description>wideband_iq_dma_status</description>
-          <addressOffset>0xc0</addressOffset>
-          <access>read-only</access>
-          <fields>
-            <field>
-              <name>wideband_iq_overflow</name>
-              <description>wideband_iq_overflow</description>
-              <bitRange>[0:0]</bitRange>
-              <access>read-only</access>
-            </field>
-            <field>
-              <name>last_buffer</name>
-              <description>last_buffer</description>
-              <bitRange>[4:1]</bitRange>
-              <access>read-only</access>
-            </field>
-          </fields>
-        </register>
-        <register>
-          <name>wideband_iq_dma_control</name>
-          <description>wideband_iq_dma_control</description>
-          <addressOffset>0xc4</addressOffset>
-          <access>read-write</access>
-          <fields>
-            <field>
-              <name>wideband_iq_enable</name>
-              <description>wideband_iq_enable</description>
-              <bitRange>[0:0]</bitRange>
-              <access>read-write</access>
-            </field>
-          </fields>
-        </register>
-        <register>
-          <name>wideband_iq_next_address</name>
-          <description>wideband_iq_next_address</description>
-          <addressOffset>0xc8</addressOffset>
-          <access>read-only</access>
-          <fields>
-            <field>
-              <name>next_address</name>
-              <description>next_address</description>
-              <bitRange>[31:0]</bitRange>
               <access>read-only</access>
             </field>
           </fields>

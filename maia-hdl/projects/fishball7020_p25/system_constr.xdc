@@ -84,8 +84,6 @@ set_input_jitter clk_fpga_1 0.15
 set_false_path -from [get_pins {i_system_wrapper/system_i/axi_ad9361/inst/i_rx/i_up_adc_common/up_adc_gpio_out_int_reg[0]/C}]
 set_false_path -from [get_pins {i_system_wrapper/system_i/axi_ad9361/inst/i_tx/i_up_dac_common/up_dac_gpio_out_int_reg[0]/C}]
 
-set_false_path -from [get_pins {i_system_wrapper/system_i/manual_decim/U0/gpio_core_1/Not_Dual.gpio_Data_Out_reg[0]/C}]
-
 set_false_path -from [get_pins {i_system_wrapper/system_i/axi_ad9361/inst/i_rx/i_up_adc_common/i_xfer_cntrl/d_data_cntrl_int_reg[0]/C}]
 set_false_path -from [get_pins {i_system_wrapper/system_i/axi_ad9361/inst/i_tx/i_up_dac_common/i_xfer_cntrl/d_data_cntrl_int_reg[0]/C}]
 
@@ -103,14 +101,12 @@ create_clock -name rx_clk       -period  4 [get_ports rx_clk_in_p]
 # inter-clock setup paths between the source and destination flops
 # of every synchronizer chain are reported as failing by several ns.
 #
-# For the Fishball P25 core, this hits ~293 endpoints between
+# In the radio core these chains cross between
 # clk_out1_system_maia_sdr_clk_0 (PL sync, 62.5 MHz) and clk_fpga_0
-# (PS AXI, 100 MHz): the RegisterCDC request/response data lanes
-# for every register bank (sdr_registers_cdc, demod_registers_cdc,
-# iq_registers_cdc, lsm_registers_cdc, traffic_registers_cdc,
-# traffic_lsm_registers_cdc) plus the 5 DMA interrupt
-# PulseSynchronizers added in commit <TBD> for the v2 P25DDC
-# fork.
+# (PS AXI, 100 MHz): the handshakes of the RegisterCDC in front of
+# every sync-domain register bank (the lane ring, the spectrum, the
+# capture and each lane), the three interrupt PulseSynchronizers,
+# and the FFSynchronizers that carry sdr_reset into each domain.
 #
 # These synchronizer chains are correct by construction (MTBF ~ 1
 # failure per universe-age at 2 sync stages and typical
@@ -133,9 +129,8 @@ set_false_path -to [get_cells -hierarchical -filter {ASYNC_REG == TRUE}]
 # many cycles before the pulse handshake permits the destination
 # flop to sample it -- but Vivado's default analysis treats the
 # cross-clock data-lane path as a real 2 ns inter-clock setup
-# constraint and reports ~272 failing endpoints across all six
-# P25 RegisterCDC instances (sdr, demod, iq, lsm, traffic,
-# traffic_lsm). Waive those paths explicitly by cell name.
+# constraint and reports every data-lane flop of every bank's
+# RegisterCDC as failing. Waive those paths explicitly by cell name.
 set_false_path -to [get_cells -hierarchical -filter {NAME =~ *cdc_request_data_dest_reg*}]
 set_false_path -to [get_cells -hierarchical -filter {NAME =~ *cdc_response_data_dest_reg*}]
 
@@ -145,8 +140,7 @@ set_false_path -to [get_cells -hierarchical -filter {NAME =~ *cdc_response_data_
 # counter (`i_tx/i_up_dac_common/i_xfer_cntrl/dac_rate_cnt_reg`)
 # has a 7-logic-level CARRY4+LUT chain that is marginal at 4 ns
 # period and fails timing by ~0.4 ns when placement isn't
-# cooperative. Phase 10-prep closed it; the P25DDC v2 bake didn't.
-# Fishball P25 uses the AD9361 RX side only (P25 is receive-only);
+# cooperative. The radio core uses the AD9361's RX side only;
 # the TX rate counter is instantiated by the ADI axi_ad9361 IP
 # but never used by any downstream consumer. Waive the TX-side
 # rx_clk counter paths so placement-dependent marginal failures
@@ -165,8 +159,9 @@ set_false_path -through [get_pins {i_system_wrapper/system_i/sys_rstgen/U0/ACTIV
 # ── sdr_reset software reset ───────────────────────────────────────────
 #
 # control_registers/control/field_sdr_reset_reg is a software-
-# initiated reset the PS writes via AXI-Lite (clk_fpga_0). Its
-# only downstream consumer is the RxIQ CDC FIFO18E1 async reset
+# initiated reset the PS writes via AXI-Lite (clk_fpga_0). Besides
+# the synchronizers that carry it into each domain (ASYNC_REG,
+# above), it drives the RxIQ CDC FIFO18E1's asynchronous reset
 # pin (in the clk_out1 sample domain). The PS asserts the reset,
 # waits tens of milliseconds, releases it, and the FIFO takes a
 # handful of cycles to come out of reset -- there is no

@@ -5,6 +5,7 @@ use crate::hardware::ad9361::GainMode;
 use crate::radio::lane::Lane;
 use crate::hardware::presets::{find_preset, DdcPreset};
 use crate::protocol::events::P25Identity;
+use crate::radio::spectrum::SpectrumFrame;
 use crate::radio::tuner::{lo_shift_hz, Readback, TuningPlan};
 use crate::services::discovery::carriers::BINS;
 
@@ -144,10 +145,11 @@ impl RadioHw for Fake {
     async fn readback(&self, _: u32) -> Readback {
         Readback::default()
     }
-    async fn spectrum(&self) -> Option<Vec<u8>> {
+    async fn spectrum(&self) -> Option<SpectrumFrame> {
         // The commanded LO sits `error` above where the crystal needs it: the channel shows that
         // much lower.
-        Some(words(&frame_db(12e6, (CC - LO) as f64 - self.radio.error_hz() + SPECTRUM_BIAS_HZ)))
+        let db = frame_db(12e6, (CC - LO) as f64 - self.radio.error_hz() + SPECTRUM_BIAS_HZ);
+        Some(SpectrumFrame { header: Default::default(), bytes: words(&db) })
     }
 }
 

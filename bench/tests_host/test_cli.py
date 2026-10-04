@@ -251,9 +251,9 @@ def test_reg_read_write_and_refusals(cli, services) -> None:
     _common(doc, "reg", 0)
     assert doc["value"] == "0x72616431" and doc["matches_expected"] is True
     assert doc["address"] == "0x7c460000"
-    code, doc = cli("reg", "A", "p25", "read", "wideband_iq_dma_status")
+    code, doc = cli("reg", "A", "p25", "read", "capture_status")
     assert code == 4 and "read-to-clear" in doc["error"]
-    code, doc = cli("reg", "A", "p25", "read", "wideband_iq_dma_status", "--allow-side-effect")
+    code, doc = cli("reg", "A", "p25", "read", "capture_status", "--allow-side-effect")
     assert code == 0
     assert services.agent.calls[-1][1][-1] == "--force-side-effects"
     code, doc = cli("reg", "A", "p25", "read", "0x400")

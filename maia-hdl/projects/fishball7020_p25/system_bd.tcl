@@ -90,11 +90,9 @@ create_bd_cell -type ip \
 ad_connect sys_cpu_clk p25_core/s_axi_lite_clk
 ad_connect sys_cpu_reset p25_core/s_axi_lite_rst
 ad_connect maia_sdr_clk/clk_out1 p25_core/clk
-# Phase 10.7: reconnect clk_out2 (125 MHz = 2 x sync) for the
-# wideband spectrometer's window + FFT twiddle path. pluto base
-# configures maia_sdr_clk with 3 outputs; clk_out2 was previously
-# wired to maia_sdr/clk2x_clk and got disconnected when we deleted
-# the maia_sdr IP. Reconnect to p25_core.
+# clk_out2 (125 MHz = 2 x sync) clocks the spectrometer's FFT window and clk_out3
+# (187.5 MHz = 3 x sync) every 3x multiplier. The pluto base configures maia_sdr_clk with three
+# outputs and wired them to the maia_sdr IP deleted above.
 ad_connect maia_sdr_clk/clk_out2 p25_core/clk2x_clk
 ad_connect maia_sdr_clk/clk_out3 p25_core/clk3x_clk
 ad_connect p25_core/sampling_clk util_ad9361_divclk/clk_out
@@ -110,9 +108,10 @@ ad_cpu_interconnect 0x7C460000 p25_core
 # HP1 was used by maia_sdr/m_axi_spectrometer (now deleted). On a Zynq-7000 the ADI scripts
 # build HP1's interconnect as axi_interconnect (adi_project_xilinx.tcl); repeated
 # ad_mem_hp1_interconnect calls add slave ports to it.
-#   - lanes          ~600 KB/s  (three 50 kSPS lanes in 4 KB packets, ring 0x1900_0000)
-#   - wideband_spec  ~32 KB/s   (4096-bin spectrometer, ring 0x2100_0000)
-#   - wideband_iq    32 MB/s    (raw 8 MSPS IQ while a capture runs, ring 0x2200_0000)
+#   - lanes          ~600 KB/s  (three 50 kSPS lanes in 4 KB packets, ring 0x1900_0000, 8 MB)
+#   - wideband_spec  ~500 KB/s  (32 KB frames, 15 a second at 16 MSPS and 256 integrations;
+#                                ring 0x2100_0000, 16 frames)
+#   - wideband_iq    32 MB/s    (raw 8 MSPS IQ while a capture runs, ring 0x2200_0000, 16 MB)
 ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP1 {1}
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 sys_ps7/S_AXI_HP1
 ad_mem_hp1_interconnect maia_sdr_clk/clk_out1 p25_core/m_axi_lanes

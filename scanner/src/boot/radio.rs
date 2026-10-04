@@ -1,6 +1,6 @@
 //! Bring up the radio: open the AD9361 and the radio core, start the lane ring and its reader,
-//! the spectrometer and the interrupt task, and build the tuner with the stored crystal
-//! correction and gain.
+//! the spectrometer and its reader, and the interrupt task, and build the tuner with the stored
+//! crystal correction and gain.
 
 use std::sync::Arc;
 
@@ -44,6 +44,7 @@ pub async fn open(config: &RadioConfig, crystal_ppm: f64) -> Result<(Arc<RadioTu
 async fn hardware(config: &RadioConfig) -> Result<(Hardware, HardwareInfo)> {
     use crate::hardware::ad9361::Ad9361;
     use crate::hardware::radiocore::RadioCore;
+    use crate::radio::spectrum::{self, Spectrum};
     use crate::radio::streams::{reader, Streams};
 
     let ad9361 = Ad9361::open().await?;
@@ -57,7 +58,7 @@ async fn hardware(config: &RadioConfig) -> Result<(Hardware, HardwareInfo)> {
     }
     core.set_ring(true);
     core.set_spectrometer_integrations(256);
-    core.set_spectrometer_peak(false);
+    core.set_spectrum_mode(false, false);
     core.set_spectrometer(true);
     let wanted = config.traffic_chains.map_or(2, usize::from).clamp(1, 2);
     let info = HardwareInfo { core_version: Some(identity.version.to_string()), lanes: wanted.min(identity.lanes - 1) };
@@ -69,7 +70,9 @@ async fn hardware(config: &RadioConfig) -> Result<(Hardware, HardwareInfo)> {
     let core = Arc::new(tokio::sync::Mutex::new(core));
     let streams = Streams::new(identity.lanes);
     tokio::spawn(reader::run(core.clone(), streams.clone()));
-    Ok((Hardware { ad9361, core, streams }, info))
+    let spectrum = Arc::new(Spectrum::default());
+    tokio::spawn(spectrum::run(core.clone(), spectrum.clone()));
+    Ok((Hardware { ad9361, core, streams, spectrum }, info))
 }
 
 #[cfg(not(target_os = "linux"))]

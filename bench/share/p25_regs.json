@@ -6,7 +6,7 @@
   "decode_limit": "0x400",
   "id_reg": "product_id",
   "id_value": "0x72616431",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "snapshot_domains": {},
   "requires": {
     "uio": "p25-core"
@@ -197,13 +197,405 @@
       ]
     },
     {
-      "name": "lane0",
+      "name": "lanes_ring",
       "offset": "0x020",
       "domain": "sync",
       "regs": [
         {
-          "name": "lane0_ddc_coeff_addr",
+          "name": "lanes_ring_control",
           "offset": "0x020",
+          "access": "rw",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "lanes_ring_control",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "enable",
+              "lsb": 0,
+              "width": 1,
+              "access": "rw",
+              "desc": "enable"
+            }
+          ]
+        },
+        {
+          "name": "lanes_ring_status",
+          "offset": "0x024",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "lanes_ring_status",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "last_buffer",
+              "lsb": 0,
+              "width": 9,
+              "access": "ro",
+              "desc": "last_buffer"
+            }
+          ]
+        },
+        {
+          "name": "lanes_ring_next_address",
+          "offset": "0x028",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "lanes_ring_next_address",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "next_address",
+              "lsb": 0,
+              "width": 32,
+              "access": "ro",
+              "desc": "next_address"
+            }
+          ]
+        },
+        {
+          "name": "sample_count_lo",
+          "offset": "0x02C",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "sample_count_lo",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "count",
+              "lsb": 0,
+              "width": 32,
+              "access": "ro",
+              "desc": "count"
+            }
+          ]
+        },
+        {
+          "name": "sample_count_hi",
+          "offset": "0x030",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "sample_count_hi",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "count",
+              "lsb": 0,
+              "width": 32,
+              "access": "ro",
+              "desc": "count"
+            }
+          ]
+        },
+        {
+          "name": "adc_clips",
+          "offset": "0x034",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "adc_clips",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "count",
+              "lsb": 0,
+              "width": 32,
+              "access": "ro",
+              "desc": "count"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "spectrum",
+      "offset": "0x040",
+      "domain": "sync",
+      "regs": [
+        {
+          "name": "spec_control",
+          "offset": "0x040",
+          "access": "rw",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "spec_control",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "spec_enable",
+              "lsb": 0,
+              "width": 1,
+              "access": "rw",
+              "desc": "spec_enable"
+            },
+            {
+              "name": "spec_peak_detect",
+              "lsb": 1,
+              "width": 1,
+              "access": "rw",
+              "desc": "spec_peak_detect"
+            },
+            {
+              "name": "spec_abort",
+              "lsb": 2,
+              "width": 1,
+              "access": "wo",
+              "desc": "spec_abort"
+            },
+            {
+              "name": "spec_num_integrations",
+              "lsb": 3,
+              "width": 10,
+              "access": "rw",
+              "desc": "spec_num_integrations"
+            },
+            {
+              "name": "spec_alternate",
+              "lsb": 13,
+              "width": 1,
+              "access": "rw",
+              "desc": "spec_alternate"
+            }
+          ]
+        },
+        {
+          "name": "spec_status",
+          "offset": "0x044",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "spec_status",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "spec_last_buffer",
+              "lsb": 0,
+              "width": 4,
+              "access": "ro",
+              "desc": "spec_last_buffer"
+            }
+          ]
+        },
+        {
+          "name": "spec_next_address",
+          "offset": "0x048",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "spec_next_address",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "next_address",
+              "lsb": 0,
+              "width": 32,
+              "access": "ro",
+              "desc": "next_address"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "capture",
+      "offset": "0x060",
+      "domain": "sync",
+      "regs": [
+        {
+          "name": "capture_status",
+          "offset": "0x060",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "capture_status (a read clears its sticky bits)",
+          "domain": "sync",
+          "read_side_effect": true,
+          "expected": null,
+          "fields": [
+            {
+              "name": "overflow",
+              "lsb": 0,
+              "width": 1,
+              "access": "ro",
+              "desc": "overflow"
+            },
+            {
+              "name": "last_buffer",
+              "lsb": 1,
+              "width": 4,
+              "access": "ro",
+              "desc": "last_buffer"
+            },
+            {
+              "name": "stopped",
+              "lsb": 5,
+              "width": 1,
+              "access": "ro",
+              "desc": "stopped"
+            }
+          ]
+        },
+        {
+          "name": "capture_control",
+          "offset": "0x064",
+          "access": "rw",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "capture_control",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "enable",
+              "lsb": 0,
+              "width": 1,
+              "access": "rw",
+              "desc": "enable"
+            },
+            {
+              "name": "trigger",
+              "lsb": 1,
+              "width": 1,
+              "access": "wo",
+              "desc": "trigger"
+            },
+            {
+              "name": "stop_after",
+              "lsb": 2,
+              "width": 4,
+              "access": "rw",
+              "desc": "stop_after"
+            }
+          ]
+        },
+        {
+          "name": "capture_next_address",
+          "offset": "0x068",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "capture_next_address",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "next_address",
+              "lsb": 0,
+              "width": 32,
+              "access": "ro",
+              "desc": "next_address"
+            }
+          ]
+        },
+        {
+          "name": "capture_start_lo",
+          "offset": "0x06C",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "capture_start_lo",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "index",
+              "lsb": 0,
+              "width": 32,
+              "access": "ro",
+              "desc": "index"
+            }
+          ]
+        },
+        {
+          "name": "capture_start_hi",
+          "offset": "0x070",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "capture_start_hi",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "index",
+              "lsb": 0,
+              "width": 32,
+              "access": "ro",
+              "desc": "index"
+            }
+          ]
+        },
+        {
+          "name": "capture_buffers",
+          "offset": "0x074",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "capture_buffers",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "count",
+              "lsb": 0,
+              "width": 32,
+              "access": "ro",
+              "desc": "count"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "lane0",
+      "offset": "0x100",
+      "domain": "sync",
+      "regs": [
+        {
+          "name": "lane0_ddc_coeff_addr",
+          "offset": "0x100",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -224,7 +616,7 @@
         },
         {
           "name": "lane0_ddc_coeff",
-          "offset": "0x028",
+          "offset": "0x108",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -252,7 +644,7 @@
         },
         {
           "name": "lane0_ddc_decimation",
-          "offset": "0x02C",
+          "offset": "0x10C",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -287,7 +679,7 @@
         },
         {
           "name": "lane0_ddc_frequency",
-          "offset": "0x030",
+          "offset": "0x110",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -308,7 +700,7 @@
         },
         {
           "name": "lane0_ddc_control",
-          "offset": "0x034",
+          "offset": "0x114",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -378,7 +770,7 @@
         },
         {
           "name": "lane0_control",
-          "offset": "0x038",
+          "offset": "0x118",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -413,7 +805,7 @@
         },
         {
           "name": "lane0_status",
-          "offset": "0x03C",
+          "offset": "0x11C",
           "access": "ro",
           "width": 32,
           "reset": null,
@@ -436,12 +828,12 @@
     },
     {
       "name": "lane1",
-      "offset": "0x040",
+      "offset": "0x120",
       "domain": "sync",
       "regs": [
         {
           "name": "lane1_ddc_coeff_addr",
-          "offset": "0x040",
+          "offset": "0x120",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -462,7 +854,7 @@
         },
         {
           "name": "lane1_ddc_coeff",
-          "offset": "0x048",
+          "offset": "0x128",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -490,7 +882,7 @@
         },
         {
           "name": "lane1_ddc_decimation",
-          "offset": "0x04C",
+          "offset": "0x12C",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -525,7 +917,7 @@
         },
         {
           "name": "lane1_ddc_frequency",
-          "offset": "0x050",
+          "offset": "0x130",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -546,7 +938,7 @@
         },
         {
           "name": "lane1_ddc_control",
-          "offset": "0x054",
+          "offset": "0x134",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -616,7 +1008,7 @@
         },
         {
           "name": "lane1_control",
-          "offset": "0x058",
+          "offset": "0x138",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -651,7 +1043,7 @@
         },
         {
           "name": "lane1_status",
-          "offset": "0x05C",
+          "offset": "0x13C",
           "access": "ro",
           "width": 32,
           "reset": null,
@@ -674,12 +1066,12 @@
     },
     {
       "name": "lane2",
-      "offset": "0x060",
+      "offset": "0x140",
       "domain": "sync",
       "regs": [
         {
           "name": "lane2_ddc_coeff_addr",
-          "offset": "0x060",
+          "offset": "0x140",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -700,7 +1092,7 @@
         },
         {
           "name": "lane2_ddc_coeff",
-          "offset": "0x068",
+          "offset": "0x148",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -728,7 +1120,7 @@
         },
         {
           "name": "lane2_ddc_decimation",
-          "offset": "0x06C",
+          "offset": "0x14C",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -763,7 +1155,7 @@
         },
         {
           "name": "lane2_ddc_frequency",
-          "offset": "0x070",
+          "offset": "0x150",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -784,7 +1176,7 @@
         },
         {
           "name": "lane2_ddc_control",
-          "offset": "0x074",
+          "offset": "0x154",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -854,7 +1246,7 @@
         },
         {
           "name": "lane2_control",
-          "offset": "0x078",
+          "offset": "0x158",
           "access": "rw",
           "width": 32,
           "reset": null,
@@ -889,7 +1281,7 @@
         },
         {
           "name": "lane2_status",
-          "offset": "0x07C",
+          "offset": "0x15C",
           "access": "ro",
           "width": 32,
           "reset": null,
@@ -905,314 +1297,6 @@
               "width": 1,
               "access": "ro",
               "desc": "lost"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "lanes_ring",
-      "offset": "0x080",
-      "domain": "sync",
-      "regs": [
-        {
-          "name": "lanes_ring_control",
-          "offset": "0x080",
-          "access": "rw",
-          "width": 32,
-          "reset": null,
-          "snapshot": null,
-          "desc": "lanes_ring_control",
-          "domain": "sync",
-          "read_side_effect": false,
-          "expected": null,
-          "fields": [
-            {
-              "name": "enable",
-              "lsb": 0,
-              "width": 1,
-              "access": "rw",
-              "desc": "enable"
-            }
-          ]
-        },
-        {
-          "name": "lanes_ring_status",
-          "offset": "0x084",
-          "access": "ro",
-          "width": 32,
-          "reset": null,
-          "snapshot": null,
-          "desc": "lanes_ring_status",
-          "domain": "sync",
-          "read_side_effect": false,
-          "expected": null,
-          "fields": [
-            {
-              "name": "last_buffer",
-              "lsb": 0,
-              "width": 7,
-              "access": "ro",
-              "desc": "last_buffer"
-            }
-          ]
-        },
-        {
-          "name": "lanes_ring_next_address",
-          "offset": "0x088",
-          "access": "ro",
-          "width": 32,
-          "reset": null,
-          "snapshot": null,
-          "desc": "lanes_ring_next_address",
-          "domain": "sync",
-          "read_side_effect": false,
-          "expected": null,
-          "fields": [
-            {
-              "name": "next_address",
-              "lsb": 0,
-              "width": 32,
-              "access": "ro",
-              "desc": "next_address"
-            }
-          ]
-        },
-        {
-          "name": "sample_count_lo",
-          "offset": "0x08C",
-          "access": "ro",
-          "width": 32,
-          "reset": null,
-          "snapshot": null,
-          "desc": "sample_count_lo",
-          "domain": "sync",
-          "read_side_effect": false,
-          "expected": null,
-          "fields": [
-            {
-              "name": "count",
-              "lsb": 0,
-              "width": 32,
-              "access": "ro",
-              "desc": "count"
-            }
-          ]
-        },
-        {
-          "name": "sample_count_hi",
-          "offset": "0x090",
-          "access": "ro",
-          "width": 32,
-          "reset": null,
-          "snapshot": null,
-          "desc": "sample_count_hi",
-          "domain": "sync",
-          "read_side_effect": false,
-          "expected": null,
-          "fields": [
-            {
-              "name": "count",
-              "lsb": 0,
-              "width": 32,
-              "access": "ro",
-              "desc": "count"
-            }
-          ]
-        },
-        {
-          "name": "adc_clips",
-          "offset": "0x094",
-          "access": "ro",
-          "width": 32,
-          "reset": null,
-          "snapshot": null,
-          "desc": "adc_clips",
-          "domain": "sync",
-          "read_side_effect": false,
-          "expected": null,
-          "fields": [
-            {
-              "name": "count",
-              "lsb": 0,
-              "width": 32,
-              "access": "ro",
-              "desc": "count"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "spectrometer",
-      "offset": "0x0A0",
-      "domain": "sync",
-      "regs": [
-        {
-          "name": "spec_control",
-          "offset": "0x0A0",
-          "access": "rw",
-          "width": 32,
-          "reset": null,
-          "snapshot": null,
-          "desc": "spec_control",
-          "domain": "sync",
-          "read_side_effect": false,
-          "expected": null,
-          "fields": [
-            {
-              "name": "spec_enable",
-              "lsb": 0,
-              "width": 1,
-              "access": "rw",
-              "desc": "spec_enable"
-            },
-            {
-              "name": "spec_peak_detect",
-              "lsb": 1,
-              "width": 1,
-              "access": "rw",
-              "desc": "spec_peak_detect"
-            },
-            {
-              "name": "spec_abort",
-              "lsb": 2,
-              "width": 1,
-              "access": "wo",
-              "desc": "spec_abort"
-            },
-            {
-              "name": "spec_num_integrations",
-              "lsb": 3,
-              "width": 10,
-              "access": "rw",
-              "desc": "spec_num_integrations"
-            }
-          ]
-        },
-        {
-          "name": "spec_status",
-          "offset": "0x0A4",
-          "access": "ro",
-          "width": 32,
-          "reset": null,
-          "snapshot": null,
-          "desc": "spec_status (a read clears its sticky bits)",
-          "domain": "sync",
-          "read_side_effect": true,
-          "expected": null,
-          "fields": [
-            {
-              "name": "spec_overflow",
-              "lsb": 0,
-              "width": 1,
-              "access": "ro",
-              "desc": "spec_overflow"
-            },
-            {
-              "name": "spec_last_buffer",
-              "lsb": 1,
-              "width": 1,
-              "access": "ro",
-              "desc": "spec_last_buffer"
-            }
-          ]
-        },
-        {
-          "name": "spec_next_address",
-          "offset": "0x0A8",
-          "access": "ro",
-          "width": 32,
-          "reset": null,
-          "snapshot": null,
-          "desc": "spec_next_address",
-          "domain": "sync",
-          "read_side_effect": false,
-          "expected": null,
-          "fields": [
-            {
-              "name": "next_address",
-              "lsb": 0,
-              "width": 32,
-              "access": "ro",
-              "desc": "next_address"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "wideband_iq",
-      "offset": "0x0C0",
-      "domain": "sync",
-      "regs": [
-        {
-          "name": "wideband_iq_dma_status",
-          "offset": "0x0C0",
-          "access": "ro",
-          "width": 32,
-          "reset": null,
-          "snapshot": null,
-          "desc": "wideband_iq_dma_status (a read clears its sticky bits)",
-          "domain": "sync",
-          "read_side_effect": true,
-          "expected": null,
-          "fields": [
-            {
-              "name": "wideband_iq_overflow",
-              "lsb": 0,
-              "width": 1,
-              "access": "ro",
-              "desc": "wideband_iq_overflow"
-            },
-            {
-              "name": "last_buffer",
-              "lsb": 1,
-              "width": 4,
-              "access": "ro",
-              "desc": "last_buffer"
-            }
-          ]
-        },
-        {
-          "name": "wideband_iq_dma_control",
-          "offset": "0x0C4",
-          "access": "rw",
-          "width": 32,
-          "reset": null,
-          "snapshot": null,
-          "desc": "wideband_iq_dma_control",
-          "domain": "sync",
-          "read_side_effect": false,
-          "expected": null,
-          "fields": [
-            {
-              "name": "wideband_iq_enable",
-              "lsb": 0,
-              "width": 1,
-              "access": "rw",
-              "desc": "wideband_iq_enable"
-            }
-          ]
-        },
-        {
-          "name": "wideband_iq_next_address",
-          "offset": "0x0C8",
-          "access": "ro",
-          "width": 32,
-          "reset": null,
-          "snapshot": null,
-          "desc": "wideband_iq_next_address",
-          "domain": "sync",
-          "read_side_effect": false,
-          "expected": null,
-          "fields": [
-            {
-              "name": "next_address",
-              "lsb": 0,
-              "width": 32,
-              "access": "ro",
-              "desc": "next_address"
             }
           ]
         }
