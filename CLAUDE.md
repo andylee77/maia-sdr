@@ -8,10 +8,9 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 
 - **The radio core (079):** the gateware plan for every mode is in
   `doc/changes/079_general_radio_core.md`, "Every mode's needs". Bake A (change 082, core 2.0.0)
-  is on unit A; its burst-timing gate waits for Andy (`tools/burst_timing.py`). Bakes B-D wait
-  for their evidence (079, "The bakes"). Bake D's model and long captures are change 083
-  (`doc/changes/083_8vsb_model_and_long_captures.md`, `scanner/src/protocol/atsc/pl`); its third
-  piece, the browser's player, is change 084.
+  is on unit A; its burst-timing gate waits for Andy (`tools/burst_timing.py`). Bakes B and C
+  wait for their evidence (079, "The bakes"). Bake D's evidence is in: the model and long
+  captures (083, `scanner/src/protocol/atsc/pl`) and the browser's player (084).
 - **The ATSC player (084):** `doc/changes/084_atsc_player.md`: our own decoders in Rust for the
   browser (the transport stream, AC-3, MPEG-2 video), and the stream for VLC. The Viewer plays a
   recorded channel's picture and sound; live TV waits for bake D. H.262 (2000) and its corrigenda are in

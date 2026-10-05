@@ -723,7 +723,8 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
 - 081's solver on the snapshots, every 0.25 s from each one's field sync (083: about a third of an
   A9 core);
 - its `fec` (correction only), `ts` and `psip` on the stream;
-- a socket carrying a program's packets to the Viewer.
+- 084's stream route (`/api/v1/atsc/stream/{rf}`) carrying the PL's packets in place of the
+  recording it plays now, to the Viewer and to VLC.
 
 **Modes:** ATSC (live video, the Viewer's live stats, the full PSIP).
 
@@ -736,9 +737,11 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
 2. **Captures of several seconds:** done in 083 (ten of 8 s, five channels on each antenna, by
    the IIO path). Taps solved every 0.25 s hold the MER when each solve starts from its own
    snapshot's field sync; the evidence does not ask for an LMS.
-3. **Still needed: the browser's player** (MPEG-2 video and AC-3 in WASM), proven first on the
-   HDHomeRun's own transport stream (`http://10.0.0.117:5004/auto/v<channel>`). Without it the PL
-   receiver gives live statistics and the programme guide, not pictures.
+3. **The browser's player:** done in 084 (`scanner/player`: the transport stream, AC-3 and
+   MPEG-2 video in Rust compiled to WebAssembly, each matching FFmpeg; the Viewer plays picture
+   and sound, and VLC the same stream). Proven on 083's recordings of the receiver's own output
+   played by the unit in real time, so no HDHomeRun tuner was taken; 1080i decodes at 80 pictures
+   a second in WebAssembly on the PC.
 
 ### The bakes
 
@@ -747,7 +750,7 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
 | **A: every mode's plumbing** (core 2.0.0) | the common-edge fix; a register map that does not move with N; 3, 4, 5 (a mode per frame), 6, 7; the core's block report | No new DSP path: counters, latches and DMA control in sync. Every mode uses them, and the timing fix makes room for B-D | nothing |
 | **B: more lanes** | 2: DDC lanes to about eight, or 3b's channelizer past that | | a mode that needs more than three lanes (item 2) |
 | **C: data mode in the PL** | 9; the capture FIFO if item 8's check fails | | data mode steps 3-4 |
-| **D: 8-VSB** | 11 | The largest block, with its own model | the browser's player (item 11; the model and the long captures are 083) |
+| **D: 8-VSB** | 11 | The largest block, with its own model | nothing: its evidence is in (083: the model and the long captures; 084: the player) |
 | no bake | 8: a preset and a check; 10 after data mode's corpus | | |
 
 - **Bake A's register map:**
@@ -1028,3 +1031,12 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
     the snapshot goes through the lane ring. About 15 DSPs and 8 tiles.
   - Andy's omni sits a foot behind the Yagi: its channels have 15-25 dB notches the directional's
     do not.
+- **2026-10-05, bake D's third piece: the browser's player** (change 084, record
+  `doc/changes/084_atsc_player.md`; no bake):
+  - `scanner/player`: the transport stream, AC-3 and MPEG-2 video in Rust compiled to
+    WebAssembly, from the standards (FFmpeg only the tests' reference): every frame of five
+    programmes is FFmpeg's to 56.5-63 dB; the AC-3 coefficients agree to 66-98 dB.
+  - `/api/v1/atsc/stream/{rf}` plays a recording at its clock's pace for VLC and the Viewer; the
+    Viewer draws the picture with WebGL, the sound its clock. 1080i decodes at 80 pictures a
+    second in WebAssembly on the PC.
+  - Bake D now waits for nothing but its own work: the HDL from 083's model.
