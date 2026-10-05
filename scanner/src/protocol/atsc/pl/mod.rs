@@ -29,10 +29,14 @@ use crate::protocol::atsc::vsb::{FIELD_SEGMENTS, SEGMENT};
 /// Symbols a field.
 pub const FIELD: usize = FIELD_SEGMENTS * SEGMENT;
 
-/// `v` rounded to `shift` fewer bits (half up, as a DSP48's rounding constant does) and
-/// saturated to `width` signed bits.
-pub fn requantize(v: i64, shift: u32, width: u32) -> i32 {
-    let r = if shift == 0 { v } else { (v + (1 << (shift - 1))) >> shift };
+/// `v` rounded to `shift` fewer bits (half up, as a DSP48's rounding constant does; a negative
+/// shift adds bits) and saturated to `width` signed bits.
+pub fn requantize(v: i64, shift: i32, width: u32) -> i32 {
+    let r = match shift {
+        0 => v,
+        s if s < 0 => v << -s,
+        s => (v + (1 << (s - 1))) >> s,
+    };
     let max = (1i64 << (width - 1)) - 1;
     r.clamp(-max - 1, max) as i32
 }
@@ -76,7 +80,23 @@ impl Widths {
         eq_out: 24,
         soft_frac: 8,
         soft_limit: 32,
-        traceback: 32,
+        traceback: 64,
+    };
+
+    /// Chosen by measurement (083): each stage the narrowest that, alone, loses at most 0.03 dB of
+    /// MER on the cleanest capture (36 dB) or no packet on the weakest decoded.
+    pub const CHOSEN: Widths = Widths {
+        mf_taps: 12,
+        mf_out: 13,
+        gain: 12,
+        nco_addr: 11,
+        nco_amp: 10,
+        y: 12,
+        eq_taps: 16,
+        eq_out: 12,
+        soft_frac: 5,
+        soft_limit: 12,
+        traceback: 40,
     };
 }
 
@@ -123,17 +143,23 @@ pub struct Schedule {
     pub every: Option<usize>,
     /// Data segments in a snapshot after its field sync (the segment before it comes too).
     pub snapshot_segments: usize,
-    /// Whole fields between a snapshot's field and the field its taps start: 0 is the next field.
-    pub latency: usize,
+    /// Fields from a snapshot's field to the field its taps start: 1, the next field, is the
+    /// soonest a receiver can load them; 0 (the snapshot's own field) is a bound, not a receiver.
+    pub delay: usize,
     /// Rounds on the taps' own decisions in a solve.
     pub rounds: usize,
     /// A solve after the first starts from the last taps rather than the field sync alone.
     pub track: bool,
+    /// The first field a snapshot may come from (counted from the first field sync), once the
+    /// timing loop also tracks.
+    pub start: usize,
 }
 
 impl Schedule {
-    /// Every 0.25 s (10 fields), a snapshot of 20 data segments, the taps from the next field.
-    pub const DEFAULT: Schedule = Schedule { every: Some(10), snapshot_segments: 20, latency: 0, rounds: 2, track: true };
+    /// 083's answer: every 0.25 s (10 fields), each solve from its own snapshot's field sync (from
+    /// the last taps, a marginal channel's decisions carry the old taps' errors), 10 data
+    /// segments and one round on the decisions; the taps from the next field.
+    pub const DEFAULT: Schedule = Schedule { every: Some(10), snapshot_segments: 10, delay: 1, rounds: 1, track: false, start: 0 };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,13 +197,14 @@ pub struct Solve {
 
 /// The model over a capture.
 pub struct Run {
-    pub front: front::Output,
     pub fields: Vec<FieldResult>,
     pub codewords: Vec<decoder::Codeword>,
     pub packets: Vec<[u8; packets::PACKET]>,
     pub solves: Vec<Solve>,
     /// The trellis decoders' largest path metric, after each step's normalization.
     pub max_metric: i64,
+    /// The equalizer's accumulator's largest magnitude.
+    pub max_eq_acc: i64,
 }
 
 impl Run {
@@ -192,12 +219,12 @@ impl Run {
 /// `centre_offset_hz` from DC. `None` when no field sync is found.
 pub fn run(x: &[[i16; 2]], fs: f64, centre_offset_hz: f64, cfg: &Config) -> Option<Run> {
     let front = front::run(x, fs, centre_offset_hz, cfg, 0..0);
-    back(front, cfg)
+    back(&front, cfg)
 }
 
 /// The equalizer, the decoder and the packets on the front end's output, the PS solving the
 /// taps from snapshots as the schedule says.
-pub fn back(front: front::Output, cfg: &Config) -> Option<Run> {
+pub fn back(front: &front::Output, cfg: &Config) -> Option<Run> {
     let w = &cfg.widths;
     let s = &cfg.schedule;
     // The fields counted without a break from the first field sync found.
@@ -218,9 +245,9 @@ pub fn back(front: front::Output, cfg: &Config) -> Option<Run> {
     let mut solves = Vec::new();
     let mut loads: Vec<Option<Vec<i32>>> = vec![None; fields.len()];
     let mut last: Option<Vec<f32>> = None;
-    let mut at = fields.iter().position(|f| f.start > tracking).unwrap_or(fields.len());
+    let mut at = fields.iter().position(|f| f.start > tracking).unwrap_or(fields.len()).max(s.start);
     while at < fields.len() {
-        let applied = at + 1 + s.latency;
+        let applied = at + s.delay;
         if applied >= fields.len() {
             break;
         }
@@ -268,6 +295,6 @@ pub fn back(front: front::Output, cfg: &Config) -> Option<Run> {
         }
     }
     let codewords = dec.finish();
-    let packets = packets::pack(&codewords, &fields, &front, &results, w);
-    Some(Run { front, fields: results, codewords, packets, solves, max_metric: dec.max_metric })
+    let packets = packets::pack(&codewords, &fields, front, &results, w, tracking);
+    Some(Run { fields: results, codewords, packets, solves, max_metric: dec.max_metric, max_eq_acc: eq.max_acc })
 }

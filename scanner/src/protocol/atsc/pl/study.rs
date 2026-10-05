@@ -34,6 +34,15 @@ pub(crate) fn read_cs16(path: &std::path::Path, max: usize) -> Vec<Complex32> {
         .collect()
 }
 
+/// Interleaved little-endian i16 I, Q as the PL takes them, at most `max` samples.
+pub(crate) fn read_adc(path: &std::path::Path, max: usize) -> Vec<[i16; 2]> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).unwrap();
+    let mut b = Vec::new();
+    f.by_ref().take(4 * max as u64).read_to_end(&mut b).unwrap();
+    b.chunks_exact(4).map(|c| [i16::from_le_bytes([c[0], c[1]]), i16::from_le_bytes([c[2], c[3]])]).collect()
+}
+
 /// The equalizer's taps solved on the field whose sync segment starts at symbol `s` of `y`: its
 /// field sync's known symbols, then `rounds` rounds on its own decisions over runs spread across
 /// `rows` (rows of y, inside it).

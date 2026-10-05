@@ -2,8 +2,8 @@
 //!
 //! - **Taps:** from a snapshot of the equalizer's input (the segment before a field sync, the
 //!   field sync, and data segments after it), by 081's least squares: the field sync's known
-//!   symbols (or the last taps), then rounds on the taps' own decisions over runs in the
-//!   snapshot.
+//!   symbols (or, if asked, the last taps), then rounds on the taps' own decisions over runs in
+//!   the snapshot.
 //! - **The stream:** each packet's codewords, the flagged ones corrected by 081's Reed-Solomon
 //!   decoder, derandomized, and read for PSIP and the programs' streams as 081 reads its own.
 

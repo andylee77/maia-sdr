@@ -5,6 +5,36 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-04] 083: Bake D's first evidence, a fixed-point model of the 8-VSB PL half and long captures
+
+**Branch:** fishball-p25 (6d9b7d4 and the record; local)
+**Bake required:** NO (a test-only model and studies; no gateware, no SD image).
+
+- **Design and results:** `doc/changes/083_8vsb_model_and_long_captures.md`; plan in 079, item 11
+  (its first two pieces of evidence; the browser's player is left).
+- **The model** (`scanner/src/protocol/atsc/pl`, test-only): the PL half in integers, each stage
+  a struct the HDL can match bit for bit: the matched filter at any instant, the gain, the turn
+  and the carrier loop, the pilot's DC, the timing loop on the segment syncs, the segment and
+  field syncs, the equalizer (128 taps), the soft symbols, 12 trellis decoders, the bytes, the
+  deinterleaver, Reed-Solomon's syndromes, 4 KB lane-ring packets; the PS half (tap solves from
+  snapshots by 081's least squares, correction and reading by 081's code).
+- **The gate:** on 081's 17 captures the model names every station 081 names and nothing else;
+  MER within 0.1-1.3 dB of 081's.
+- **Widths** by measurement: the matched filter's taps 12 and output 13, the gain 12, the sine
+  table 11 / 10, y 12, the equalizer's taps 16 and output 12, soft symbols 10, survivors 40 deep;
+  together 0.10 dB at worst.
+- **Long captures on unit A** (`runs/atsc/captures_20261004/`, gitignored): RF 14, 19, 20, 21, 30,
+  8 s each, on the omni and the directional.
+- **The taps:** solved on the PS every 0.25 s, each from its own snapshot's field sync, hold the
+  MER (within 0.1 dB of solving every field at the decoding edge); no LMS. From the last taps a
+  marginal channel loses 54-84 % of codewords. The solve costs about a third of an A9 core
+  (measured on A; 079 estimated 10 %).
+- **The antenna:** A's omni, a foot behind the Yagi, sees 15-25 dB notches across channels the
+  directional receives flat.
+- **081's code:** `demod::unequalized`, `receiver::read`, `rs::syndromes`; pieces crate-visible.
+
+---
+
 ## [2026-10-04] 082: Bake A, the radio core 2.0.0 (every mode's plumbing), on unit A
 
 **Branch:** fishball-p25 (ef6b681, e5565d5, b4747b6 and the record; local), tezuka_fw fishball-dev

@@ -15,8 +15,10 @@ pub struct Equalizer {
     /// The last TAPS inputs, twice over, so that the window is always one run.
     hist: [i64; 2 * TAPS],
     at: usize,
-    shift: u32,
+    shift: i32,
     width: u32,
+    /// The accumulator's largest magnitude, for its width.
+    pub max_acc: i64,
 }
 
 /// A tap of 1, in the taps' integers.
@@ -34,8 +36,7 @@ pub fn quantize(taps: &[f32], w: &Widths) -> Vec<i32> {
 impl Equalizer {
     pub fn new(w: &Widths) -> Equalizer {
         let shift = w.eq_taps as i32 + w.y as i32 - w.eq_out as i32 - 3;
-        assert!(shift >= 0, "widths {w:?}");
-        let mut e = Equalizer { reversed: [0; TAPS], hist: [0; 2 * TAPS], at: 0, shift: shift as u32, width: w.eq_out };
+        let mut e = Equalizer { reversed: [0; TAPS], hist: [0; 2 * TAPS], at: 0, shift, width: w.eq_out, max_acc: 0 };
         e.reversed[TAPS - 1 - PRE] = one(w);
         e
     }
@@ -54,6 +55,7 @@ impl Equalizer {
         let window = &self.hist[self.at + 1..self.at + 1 + TAPS];
         let acc: i64 = window.iter().zip(&self.reversed).map(|(a, b)| a * b).sum();
         self.at = (self.at + 1) % TAPS;
+        self.max_acc = self.max_acc.max(acc.abs());
         requantize(acc, self.shift, self.width)
     }
 }

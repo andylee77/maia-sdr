@@ -9,7 +9,9 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 - **The radio core (079):** the gateware plan for every mode is in
   `doc/changes/079_general_radio_core.md`, "Every mode's needs". Bake A (change 082, core 2.0.0)
   is on unit A; its burst-timing gate waits for Andy (`tools/burst_timing.py`). Bakes B-D wait
-  for their evidence (079, "The bakes").
+  for their evidence (079, "The bakes"). Bake D's model and long captures are change 083
+  (`doc/changes/083_8vsb_model_and_long_captures.md`, `scanner/src/protocol/atsc/pl`); its third
+  piece, the browser's player, is left.
 - **The cleanup:** `doc/CLEANUP_INVENTORY.md`, section 14's batches.
 - **Data mode:** a study with Andy's decisions, `scanner/doc/DATA_MODE.md`.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`.

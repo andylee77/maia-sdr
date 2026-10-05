@@ -29,8 +29,9 @@ pub const PER_FIELD: usize = DATA_SEGMENTS * DATA_SYMBOLS / ENCODERS;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Viterbi {
     pub metric: [i64; 4],
-    /// Each state's survivor: its last decisions (Z2 X1), two bits each, the newest lowest.
-    pub survivor: [u64; 4],
+    /// Each state's survivor: its last decisions (Z2 X1), two bits each, the newest lowest (64
+    /// deep at most).
+    pub survivor: [u128; 4],
     seen: usize,
     last_z2: u8,
 }
@@ -47,7 +48,7 @@ impl Viterbi {
             cost[c] = d * d;
             z2[c] = u8::from(high);
         }
-        let (mut next, mut surv) = ([0i64; 4], [0u64; 4]);
+        let (mut next, mut surv) = ([0i64; 4], [0u128; 4]);
         for (ns, from) in INTO.iter().enumerate() {
             let ((s0, c0), (s1, c1)) = (from[0], from[1]);
             let (m0, m1) = (self.metric[s0] + cost[c0], self.metric[s1] + cost[c1]);
@@ -56,7 +57,7 @@ impl Viterbi {
             let (prev, c) = if second { (s1, c1) } else { (s0, c0) };
             next[ns] = m0.min(m1);
             let x1 = ((ns >> 1) as u8) ^ u8::from(second);
-            surv[ns] = (self.survivor[prev] << 2) | u64::from((z2[c] << 1) | x1);
+            surv[ns] = (self.survivor[prev] << 2) | u128::from((z2[c] << 1) | x1);
         }
         let low = *next.iter().min().unwrap_or(&0);
         for m in next.iter_mut() {
@@ -174,7 +175,7 @@ impl Decoder {
 
     /// The soft symbol for `e`.
     pub fn soft(&self, e: i64) -> i64 {
-        let s = if self.soft_shift >= 0 { i64::from(requantize(e, self.soft_shift as u32, 32)) } else { e << -self.soft_shift };
+        let s = i64::from(requantize(e, self.soft_shift, 32));
         s.clamp(-self.soft_limit, self.soft_limit)
     }
 

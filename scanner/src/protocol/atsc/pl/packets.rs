@@ -7,7 +7,7 @@
 //! | 0 | 15:0 | magic `0x5243` |
 //! | 0 | 19:16 | format (2: 8-VSB codewords) |
 //! | 0 | 23:20 | lane (15: the 8-VSB block) |
-//! | 0 | 31:24 | flags: bit 0 lost (codewords dropped before this packet), bit 1 segments counted, bit 2 fields counted |
+//! | 0 | 31:24 | flags: bit 0 lost (codewords dropped before this packet), bit 1 segments counted, bit 2 fields counted, bit 3 the timing loop tracks (past its acquisition gear at the first codeword's field sync: the PS's first snapshot waits for it) |
 //! | 0 | 47:32 | codewords in the packet (at most 19) |
 //! | 0 | 63:48 | sequence |
 //! | 1 | 63:0 | sample index: the AD9361 sample at the first codeword's field sync |
@@ -61,8 +61,9 @@ fn check(p: &[u8]) -> u32 {
     p.chunks_exact(4).enumerate().filter(|(i, _)| *i != 14).fold(0, |a, (_, c)| a ^ u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
 }
 
-/// The codewords in packets, each field's header fields from the front end and the decoder.
-pub fn pack(codewords: &[Codeword], fields: &[Field], front: &Output, results: &[FieldResult], w: &Widths) -> Vec<[u8; PACKET]> {
+/// The codewords in packets, each field's header fields from the front end and the decoder;
+/// `tracking`: the symbol from which the timing loop tracks.
+pub fn pack(codewords: &[Codeword], fields: &[Field], front: &Output, results: &[FieldResult], w: &Widths, tracking: usize) -> Vec<[u8; PACKET]> {
     let unit = 2.0 * f64::from(w.eq_out as i32 - 6);
     let scale = 256.0 / 2f64.powf(unit);
     let mut out = Vec::new();
@@ -72,8 +73,9 @@ pub fn pack(codewords: &[Codeword], fields: &[Field], front: &Output, results: &
         let field = fields.get(c0.field);
         let seg = field.and_then(|f| front.segments.iter().find(|s| s.start == f.start)).copied().unwrap_or_default();
         let result = results.get(c0.field).copied().unwrap_or_default();
+        let flags: u64 = 0b110 | u64::from(field.is_some_and(|f| f.start > tracking)) << 3;
         let words: [u64; 7] = [
-            MAGIC | FORMAT << 16 | LANE << 20 | 0b110 << 24 | (chunk.len() as u64) << 32 | ((seq as u64) & 0xFFFF) << 48,
+            MAGIC | FORMAT << 16 | LANE << 20 | flags << 24 | (chunk.len() as u64) << 32 | ((seq as u64) & 0xFFFF) << 48,
             seg.pos >> 32,
             c0.field as u64 | (c0.index as u64) << 32 | ((result.taps as u64) & 0xFFFF) << 48,
             (result.error * scale).round() as u64,

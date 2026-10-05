@@ -664,11 +664,11 @@ PS corrects, derandomizes and does everything above.**
 
 | Stage | Where | Why |
 |-------|-------|-----|
-| Pilot and carrier loop | PL | Per sample, 10 M a second |
+| Pilot and carrier loop, the turn (after the matched filter, as 081: a quarter turn a symbol plus the loop), the gain and the pilot's DC | PL | 10.76 M a second, six multiplies a symbol (083) |
 | Matched filter at any instant (081's table, 64 phases × 40 taps at 10 MSPS); timing loop on the segment syncs; field sync (PN511) | PL | 10.76 M outputs a second |
 | Equalizer: 128 taps (32 ahead) applied | PL | 1.38 G multiply-accumulates a second |
-| Equalizer taps solved | PS | 081's least-squares solver named 16-18 stations. It runs on snapshots of the equalizer's input, at about 10 % of a core for a solve every 0.25 s (estimate). An LMS in the PL would be a new algorithm with no model and convergence of its own to prove |
-| Slicer and the 12 trellis decoders (4-state soft Viterbi, time-shared, one encoder a symbol) | PL | 21 % of the software's time. Logic only, no DSPs |
+| Equalizer taps solved | PS | 081's least-squares solver named 16-18 stations. It runs on snapshots of the equalizer's input every 0.25 s, each solve from its snapshot's own field sync (10 data segments, one round): that holds the MER within 0.1 dB of solving every field at the decoding edge, and costs about a third of an A9 core, measured (083). The evidence does not ask for an LMS in the PL (083) |
+| Slicer and the 12 trellis decoders (4-state soft Viterbi, time-shared, one encoder a symbol) | PL | 21 % of the software's time. Logic, and the branch metrics' squares in LUTs or one shared DSP |
 | Bytes back in order, the convolutional deinterleaver (52 branches, 5,304 bytes), Reed-Solomon syndromes | PL | Two block RAMs and XOR networks. A codeword with zero syndromes needs nothing more |
 | Correcting the flagged codewords (Berlekamp-Massey, Chien, Forney), the derandomizer, the transport stream, PSIP, streaming | PS | 081's code. About 10 µs a flagged codeword: at 12,894 codewords a second, half of them flagged is about 6 % of a core. No Reed-Solomon decoder in the PL, so no LogiCORE licence |
 
@@ -693,24 +693,26 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
 **The output:**
 
 - 207-byte codewords with their syndrome flag, in 4 KB packets, as one more client of the lane
-  ring: a packet kind in the header, 2.7 MB/s;
+  ring: a packet kind in the header, 2.7 MB/s (083's layout: format 2, 19 codewords a packet,
+  `scanner/src/protocol/atsc/pl/packets.rs`);
+- the equalizer's snapshots for the PS, a third packet kind: 9,984 values every 0.25 s (083);
 - the header carries the field and segment counts, the sample index, the MER and the loops'
   states;
 - no fourth DMA master and no new ring.
 
-**Budget** (estimates; the model and synthesis confirm):
+**Budget** (estimates; 083's model sets the widths, synthesis confirms):
 
 | Stage | DSP | LUTs | Block RAM tiles |
 |-------|----:|-----:|----------------:|
-| Pilot, carrier loop, mixer | 2-3 | 1,000 | 0-1 |
-| Matched filter (861 M multiply-accumulates a second) | 5-6 | 800 | 2 |
-| Timing loop, field sync | 1 | 800 | 1 |
-| Equalizer (1.38 G a second) and its snapshot | 8 | 1,500 | 3-4 |
-| Slicer, 12 trellis decoders | 0 | 2,000 | 1-2 |
+| Turn, carrier loop, gain, DC (6 multiplies a symbol; an 11-bit sine table) | 1 | 1,000 | 0-1 |
+| Matched filter (861 M multiply-accumulates a second; its table 64 × 40 × 12 bits) | 5 | 800 | 1 |
+| Timing loop, segment and field syncs (the search's 832 sums) | 1 | 800 | 1 |
+| Equalizer (1.38 G a second; taps 16 bits, input 12); the snapshot through the lane ring | 8 | 1,500 | 0-1 |
+| Slicer, 12 trellis decoders (soft symbols 10 bits, survivors 40 deep) | 0-1 | 2,000 | 0-1 |
 | Deinterleaver, syndromes, packets | 0 | 1,000 | 3-4 |
-| **Total** | **about 18** | **about 7,000** | **about 12** |
+| **Total** | **about 15** | **about 7,000** | **about 8** |
 
-- **It fits** beside 3a, or beside eight DDC lanes: about 151 DSPs (69 %) and 105 tiles (75 %).
+- **It fits** beside 3a, or beside eight DDC lanes: about 148 DSPs (67 %) and 101 tiles (72 %).
 - **Timing risk: medium.**
   - New 3x DSP chains (the matched filter and the equalizer), fed from block RAM.
   - They are built as DSP cascades with registered RAM outputs and their own enables, not on
@@ -718,23 +720,25 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
 
 **PS:**
 
-- 081's solver split out to run on snapshots;
+- 081's solver on the snapshots, every 0.25 s from each one's field sync (083: about a third of an
+  A9 core);
 - its `fec` (correction only), `ts` and `psip` on the stream;
 - a socket carrying a program's packets to the Viewer.
 
 **Modes:** ATSC (live video, the Viewer's live stats, the full PSIP).
 
-**Evidence still needed, in this order:**
+**Evidence, in this order:**
 
-1. **A fixed-point model of the PL half** in Rust, beside 081's f32 receiver. It must decode the
-   17 captures in `runs/atsc/captures_20261003/` with the receiver's results. The HDL matches the
-   model bit for bit.
-2. **Captures of several seconds,** to see whether taps solved every 0.25 s hold the MER or an
-   LMS is needed. The capture ring holds 0.4 s at 10 MSPS; longer needs the IIO path
-   (`axi_ad9361_adc_dma` is in the design) or a larger ring.
-3. **The browser's player** (MPEG-2 video and AC-3 in WASM), proven first on the HDHomeRun's own
-   transport stream (`http://10.0.0.117:5004/auto/v<channel>`). Without it the PL receiver gives
-   live statistics and the programme guide, not pictures.
+1. **A fixed-point model of the PL half** in Rust, beside 081's f32 receiver: done in 083
+   (`scanner/src/protocol/atsc/pl`). On 081's 17 captures it names every station 081 names and
+   nothing else, its MER within 0.1-1.3 dB of 081's; each stage's width chosen by the MER it
+   loses (together 0.10 dB at worst). The HDL matches the model bit for bit, stage by stage.
+2. **Captures of several seconds:** done in 083 (ten of 8 s, five channels on each antenna, by
+   the IIO path). Taps solved every 0.25 s hold the MER when each solve starts from its own
+   snapshot's field sync; the evidence does not ask for an LMS.
+3. **Still needed: the browser's player** (MPEG-2 video and AC-3 in WASM), proven first on the
+   HDHomeRun's own transport stream (`http://10.0.0.117:5004/auto/v<channel>`). Without it the PL
+   receiver gives live statistics and the programme guide, not pictures.
 
 ### The bakes
 
@@ -743,7 +747,7 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
 | **A: every mode's plumbing** (core 2.0.0) | the common-edge fix; a register map that does not move with N; 3, 4, 5 (a mode per frame), 6, 7; the core's block report | No new DSP path: counters, latches and DMA control in sync. Every mode uses them, and the timing fix makes room for B-D | nothing |
 | **B: more lanes** | 2: DDC lanes to about eight, or 3b's channelizer past that | | a mode that needs more than three lanes (item 2) |
 | **C: data mode in the PL** | 9; the capture FIFO if item 8's check fails | | data mode steps 3-4 |
-| **D: 8-VSB** | 11 | The largest block, with its own model | the model, long captures and the browser's player (item 11) |
+| **D: 8-VSB** | 11 | The largest block, with its own model | the browser's player (item 11; the model and the long captures are 083) |
 | no bake | 8: a preset and a check; 10 after data mode's corpus | | |
 
 - **Bake A's register map:**
@@ -764,7 +768,8 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
     spectrum frames are checked against the integrator's model.
     - B: step 2's model for the channelizer; Maia's DDC for DDC lanes.
     - C: a model of the detector.
-    - D: the fixed-point 8-VSB model.
+    - D: the fixed-point 8-VSB model (083, `scanner/src/protocol/atsc/pl`), bit for bit, stage by
+      stage.
   - **Timing** met with no waiver, with the clk3x slack reported. Bake A targets +0.4 ns at
     clk3x, the reason for its common-edge fix.
   - **A hierarchical utilization report down to the core's blocks** (the route hook gains a
@@ -1007,3 +1012,19 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
     spectrum frames with no gap; DMR decoding; fbench's core tests on the new map. The TV scan
     named 5 stations against 081's 16 because A is on the omni antenna (081's scan was on the
     Jacksonville directional); the burst-timing run is Andy's.
+- **2026-10-04, bake D's model and long captures** (change 083, record
+  `doc/changes/083_8vsb_model_and_long_captures.md`; no bake):
+  - A fixed-point model of the PL half (`scanner/src/protocol/atsc/pl`, test-only), each stage a
+    struct the HDL can match. On 081's 17 captures it names every station 081 names, and nothing
+    else; its MER is within 0.1-1.3 dB of 081's (the loops; at the edge the same).
+  - The widths, each the narrowest losing at most 0.03 dB alone: the matched filter's taps 12 and
+    output 13, the gain 12, the sine table 11 / 10, y 12, the equalizer's taps 16 and output 12,
+    soft symbols 10 (5 below a level), survivors 40 deep. Together 0.10 dB at worst.
+  - Ten 8 s captures on unit A (RF 14, 19, 20, 21, 30 on the omni and the directional): taps
+    solved every 0.25 s hold the MER when each solve starts from its own snapshot's field sync
+    (within 0.1 dB of solving every field at the edge; from the last taps, 54-84 % of codewords
+    fail there). No LMS. The solve costs about a third of an A9 core (079 estimated 10 %).
+  - The turn comes after the matched filter, at the symbol rate; a gain and a DC loop are added;
+    the snapshot goes through the lane ring. About 15 DSPs and 8 tiles.
+  - Andy's omni sits a foot behind the Yagi: its channels have 15-25 dB notches the directional's
+    do not.

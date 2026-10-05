@@ -63,7 +63,7 @@ pub struct MatchedFilter {
     pub table: Vec<i32>,
     /// Bits of the output below the input's.
     pub frac: i32,
-    shift: u32,
+    shift: i32,
     width: u32,
 }
 
@@ -82,8 +82,7 @@ impl MatchedFilter {
             .collect();
         let frac = w.mf_out as i32 - 13;
         let shift = w.mf_taps as i32 - 1 - frac;
-        assert!(shift >= 0, "mf_out {} too wide for mf_taps {}", w.mf_out, w.mf_taps);
-        MatchedFilter { half, taps, table, frac, shift: shift as u32, width: w.mf_out }
+        MatchedFilter { half, taps, table, frac, shift, width: w.mf_out }
     }
 
     /// The filtered I and Q at instant `pos` (input samples, 32.32); `None` where its inputs leave
@@ -110,7 +109,7 @@ pub struct Turn {
     addr: u32,
     /// cos, sin of 2π k / 2^addr.
     pub table: Vec<[i32; 2]>,
-    shift: u32,
+    shift: i32,
     width: u32,
 }
 
@@ -124,7 +123,7 @@ impl Turn {
                 [(a.cos() * one).round() as i32, (a.sin() * one).round() as i32]
             })
             .collect();
-        Turn { addr: w.nco_addr, table, shift: w.nco_amp - 1, width: w.y }
+        Turn { addr: w.nco_addr, table, shift: w.nco_amp as i32 - 1, width: w.y }
     }
 
     /// z turned by θ (2^32 a turn): its real and imaginary parts.
@@ -195,6 +194,28 @@ pub struct Output {
     pub fields: Vec<Field>,
     /// The stages' outputs for the symbols asked for.
     pub trace: Vec<Symbol>,
+    /// The loops' registers' largest magnitudes, for their widths.
+    pub ranges: Ranges,
+}
+
+/// The largest magnitude each loop register reached once the segments were counted.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Ranges {
+    pub freq_sum: i64,
+    pub rate_sum: i64,
+    pub gain_sum: i64,
+    pub dc_sum: i64,
+    pub sync: i64,
+    pub early_late: i64,
+    pub pn511: i64,
+    pub search: i64,
+}
+
+impl Ranges {
+    /// Signed bits to hold `v`.
+    pub fn bits(v: i64) -> u32 {
+        65 - v.unsigned_abs().leading_zeros()
+    }
 }
 
 enum Segments {
@@ -222,8 +243,6 @@ pub fn run(x: &[[i16; 2]], fs: f64, centre_offset_hz: f64, cfg: &Config, trace: 
     let mf = MatchedFilter::new(fs, w);
     let turn = Turn::new(w);
     let gain_shift = w.gain as i32 - 4 + mf.frac - (w.y as i32 - LOOP_BITS as i32);
-    assert!(gain_shift >= 0, "widths {w:?}");
-    let gain_shift = gain_shift as u32;
     let gain_max = (1u64 << w.gain) - 1;
     let gain_word = |acc: i64| -> u32 {
         let g = acc >> (GAIN_ONE_BITS + l.gain_k - (w.gain - 4));
@@ -281,6 +300,7 @@ pub fn run(x: &[[i16; 2]], fs: f64, centre_offset_hz: f64, cfg: &Config, trace: 
                 *count += 1;
                 if *count == SEARCH_SEGMENTS * SEGMENT {
                     let best = (0..SEGMENT).max_by_key(|&b| acc[b]).unwrap_or(0);
+                    out.ranges.search = acc.iter().fold(0, |m, v| m.max(v.abs()));
                     // Bin `best` holds the sync's last symbol (place 3 in its segment); this
                     // symbol's bin is 831, so the next one's place is:
                     let next = (2 * SEGMENT + 3 - best) % SEGMENT;
@@ -362,6 +382,16 @@ pub fn run(x: &[[i16; 2]], fs: f64, centre_offset_hz: f64, cfg: &Config, trace: 
         dc_acc += diff;
         gain_acc = (gain_acc + (GAIN_TARGET - yl.abs())).max(1);
         pos = (pos as i64 + step + nudge) as u64;
+        if out.first_segment.is_some_and(|f| n >= f) {
+            let r = &mut out.ranges;
+            r.freq_sum = r.freq_sum.max(freq_acc.abs());
+            r.rate_sum = r.rate_sum.max(rate_acc.abs());
+            r.gain_sum = r.gain_sum.max(gain_acc.abs());
+            r.dc_sum = r.dc_sum.max(dc_acc.abs());
+            r.sync = r.sync.max(sync.abs());
+            r.early_late = r.early_late.max(early.abs()).max(late.abs());
+            r.pn511 = r.pn511.max(pn_acc.abs());
+        }
     }
     out
 }
