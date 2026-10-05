@@ -36,7 +36,11 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   integer IDCT within IEEE 1180's measures. On five programmes (1080i, 720p, 480i, 480p) every
   frame is FFmpeg's, by PTS and type, to 56.5-63 dB in every plane. No stream here uses field
   pictures, 16×8 or dual prime, so those paths are unchecked.
-- **Next:** the picture in the Viewer.
+- **The Viewer's picture:** the player decodes the video beside the sound (WebAssembly: 1080i at
+  80 pictures a second on the PC); the page draws each picture through WebGL (BT.709 or BT.601,
+  interlaced lines blended, the aspect kept) when the sound reaches its time. On unit A, 47.1
+  WJAX's 1080i plays with its sound in headless Chrome over http and https.
+- **Left:** live TV, which needs bake D's 8-VSB receiver; the stream's route and the Viewer stay.
 
 ---
 

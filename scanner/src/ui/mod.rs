@@ -66,6 +66,7 @@ const ASSETS: &[Asset] = assets![
     "js/audio/gate.js",
     "js/tv/player.js",
     "js/tv/ring.js",
+    "js/tv/screen.js",
     "js/tv/sources.js",
     "player/atsc_player.wasm",
 ];

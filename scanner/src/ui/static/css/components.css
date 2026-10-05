@@ -323,6 +323,11 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .screen-note { margin-top: auto; color: #6f7882; font-size: 0.88em; }
 .screen a { color: #8fbff0; overflow-wrap: anywhere; }
 .screen-play { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+.screen { position: relative; }
+.screen-picture { position: absolute; inset: 0; width: 100%; height: 100%; display: none; border-radius: inherit; }
+.screen.playing .screen-picture { display: block; }
+.screen.playing .screen-title, .screen.playing .screen-stats { visibility: hidden; }
+.screen.playing .screen-play { position: relative; z-index: 1; padding: 6px 8px; border-radius: var(--radius-sm); background: rgba(0, 0, 0, 0.6); }
 .screen .btn { background: #1d232a; border-color: #3a434d; color: #d8dde3; }
 .screen .btn:hover { border-color: #8fbff0; }
 .screen-play .screen-note { margin-top: 0; }

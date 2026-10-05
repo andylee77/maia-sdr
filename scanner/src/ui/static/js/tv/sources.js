@@ -1,12 +1,16 @@
 // Source text of the TV's AudioWorklet processor and Worker, loaded through Blob URLs:
 //
 //   net -> Worker (fetch, the player's WebAssembly module) -> MessagePort -> AudioWorklet
+//                                                           -> the page (pictures)
 //
 // The Worker fetches a channel's stream (/api/v1/atsc/stream/{rf}?program=), writes it into the
-// player (scanner/player: the transport stream, AC-3) and sends each syncframe's sound, two
-// channels interleaved with its presentation time, to the worklet's `StereoRing` (ring.js, whose
-// source text is injected), or to the page when there is no worklet. It reports the player's
-// description (programmes, the sound's format, frames lost) twice a second.
+// player (scanner/player: the transport stream, AC-3, MPEG-2 video) and sends each syncframe's
+// sound, two channels interleaved with its presentation time, to the worklet's `StereoRing`
+// (ring.js, whose source text is injected), or to the page when there is no worklet; each
+// picture's planes, size, time and flags go to the page. It reports the player's description
+// (programmes, the formats, frames lost) twice a second. The worklet reports, when asked, its
+// ring's state and the time of the sample it plays next with its own clock, for the pictures to
+// follow the sound.
 
 import { StereoRing } from './ring.js';
 
@@ -22,7 +26,7 @@ class TvAudio extends AudioWorkletProcessor {
         if (p) p.onmessage = e2 => { if (e2.data && e2.data.type === 'pcm') this.ring.write(e2.data.data, e2.data.pts); };
       } else if (m && m.type === 'stats') {
         const r = this.ring;
-        this.port.postMessage({ type: 'stats', avail: r.avail, underruns: r.underruns, priming: r.priming, started: r.started, pts: r.pts() });
+        this.port.postMessage({ type: 'stats', avail: r.avail, underruns: r.underruns, priming: r.priming, started: r.started, pts: r.pts(), at: currentTime });
       }
     };
   }
@@ -54,6 +58,16 @@ function feed(bytes) {
     const block = { type: 'pcm', data, pts: ex.player_sound_pts(h) };
     if (port) port.postMessage(block, [data.buffer]); else self.postMessage(block, [data.buffer]);
     frames++;
+  }
+  while (ex.player_picture(h)) {
+    const stride = ex.player_picture_stride(h), rows = ex.player_picture_rows(h);
+    const plane = (k, n) => new Uint8Array(ex.memory.buffer, ex.player_picture_plane(h, k), n).slice().buffer;
+    const pic = {
+      type: 'picture', y: plane(0, stride * rows), cb: plane(1, stride * rows / 4), cr: plane(2, stride * rows / 4),
+      stride, rows, width: ex.player_picture_width(h), height: ex.player_picture_height(h),
+      pts: ex.player_picture_pts(h), flags: ex.player_picture_flags(h),
+    };
+    self.postMessage(pic, [pic.y, pic.cb, pic.cr]);
   }
   const now = Date.now();
   if (now - last > 500) { last = now; self.postMessage({ type: 'status', frames, info: describe() }); }

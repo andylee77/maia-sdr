@@ -1,6 +1,6 @@
 //! A programme played from its transport stream: the demultiplexer, then each stream's decoder.
-//! Out comes sound, two channels at the stream's rate, each syncframe's samples with their
-//! presentation time.
+//! Out come pictures (MPEG-2 video, its frames in display order) and sound (two channels at the
+//! stream's rate, each syncframe's samples), each with its presentation time.
 //!
 //! A PES packet's PTS belongs to the first syncframe that starts in it (H.222.0 2.4.3.7); the
 //! syncframes after it take the last time plus their duration. A syncframe that fails to decode
@@ -9,7 +9,8 @@
 use std::collections::VecDeque;
 
 use crate::ac3::{self, frame_len, Decoder, FRAME_SAMPLES};
-use crate::ts::{Demux, Program, STREAM_AC3};
+use crate::mpeg2;
+use crate::ts::{Demux, Program, STREAM_AC3, STREAM_MPEG2_VIDEO};
 
 /// PTS ticks a second.
 pub const PTS_HZ: u64 = 90_000;
@@ -49,6 +50,8 @@ pub struct Player {
     format: Option<AudioFormat>,
     /// Syncframes that failed to decode.
     pub lost_frames: u32,
+    video_pid: Option<u16>,
+    video: mpeg2::Decoder,
 }
 
 impl Player {
@@ -67,7 +70,19 @@ impl Player {
             sound: VecDeque::new(),
             format: None,
             lost_frames: 0,
+            video_pid: None,
+            video: mpeg2::Decoder::default(),
         }
+    }
+
+    /// The next picture, in display order.
+    pub fn picture(&mut self) -> Option<mpeg2::Frame> {
+        self.video.next_frame()
+    }
+
+    /// Video slices that failed to decode.
+    pub fn video_errors(&self) -> u32 {
+        self.video.slice_errors
     }
 
     pub fn programs(&self) -> impl Iterator<Item = &Program> {
@@ -85,7 +100,9 @@ impl Player {
             self.choose();
         }
         while let Some(pes) = self.demux.next_pes() {
-            if Some(pes.pid) == self.audio_pid {
+            if Some(pes.pid) == self.video_pid {
+                self.video.push(&pes.data, pes.pts);
+            } else if Some(pes.pid) == self.audio_pid {
                 if let Some(pts) = pes.pts {
                     self.stamps.push_back((self.es.len(), pts));
                 }
@@ -100,11 +117,12 @@ impl Player {
         self.sound.pop_front()
     }
 
-    /// The programme's main sound: its first AC-3 stream.
+    /// The programme's picture and main sound: its MPEG-2 video and its first AC-3 stream.
     fn choose(&mut self) {
         let program = self.demux.programs().find(|p| !matches!(self.program, Some(n) if n != p.number) && p.streams.iter().any(|s| s.stream_type == STREAM_AC3));
         if let Some(p) = program {
             self.audio_pid = p.streams.iter().find(|s| s.stream_type == STREAM_AC3).map(|s| s.pid);
+            self.video_pid = p.streams.iter().find(|s| s.stream_type == STREAM_MPEG2_VIDEO).map(|s| s.pid);
             let number = p.number;
             if self.program.is_none() {
                 self.program = Some(number);
@@ -171,6 +189,23 @@ pub fn describe(p: &Player) -> String {
         ),
         None => "null".into(),
     };
+    let video = match p.video.sequence() {
+        Some(s) => format!(
+            "{{\"pid\":{},\"width\":{},\"height\":{},\"progressive\":{},\"rate\":{:.3},\"aspect\":{}}}",
+            p.video_pid.unwrap_or(0),
+            s.width,
+            s.height,
+            s.progressive_sequence,
+            f64::from(s.rate_num) / f64::from(s.rate_den),
+            s.aspect_ratio_information
+        ),
+        None => "null".into(),
+    };
     let program = p.program.map_or("null".into(), |n| n.to_string());
-    format!("{{\"program\":{program},\"programs\":[{}],\"audio\":{audio},\"lost_frames\":{}}}", programs.join(","), p.lost_frames)
+    format!(
+        "{{\"program\":{program},\"programs\":[{}],\"audio\":{audio},\"video\":{video},\"lost_frames\":{},\"video_errors\":{}}}",
+        programs.join(","),
+        p.lost_frames,
+        p.video.slice_errors
+    )
 }

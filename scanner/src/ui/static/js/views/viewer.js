@@ -1,9 +1,9 @@
 // The Viewer page (ATSC TV mode): pick a channel the last TV scan named, above the picture area.
 // The area shows what the scan's capture read of the channel: its program's streams (codec,
 // format, bitrate, language), its station, and how well its signal decoded. When the unit holds a
-// recording of the channel's RF channel (/api/v1/atsc/recordings), its program plays: the sound
-// here (../tv/player.js), the whole program in VLC or another player from the stream's address
-// or a playlist file. The picture is not decoded in the page yet.
+// recording of the channel's RF channel (/api/v1/atsc/recordings), its program plays here
+// (../tv/player.js: the picture on a canvas over the area, the sound) and in VLC or another player
+// from the stream's address or a playlist file.
 
 import { h, card } from '../dom.js';
 import { mhz, num, DASH } from '../format.js';
@@ -72,17 +72,21 @@ function playlist(rf, v) {
 }
 
 // Play and Stop for one channel's program, the player's state, and the stream for other players.
-function playback({ rf, v }, recorded, status) {
+function playback({ rf, v }, recorded, status, canvas) {
   if (!recorded) {
     return h('div', { class: 'screen-note', text: `No recording of RF ${rf.number} on the unit's card (tv/rf${rf.number}.ts) to play.` });
   }
   const mine = tv.playing && tv.playing.rf === rf.number && tv.playing.program === v.program;
-  const button = h('button', { class: 'btn small', text: mine ? 'Stop' : 'Play sound', onclick: () => (mine ? tv.stop() : tv.start(rf.number, v.program)) });
+  const play = () => {
+    tv.attach(canvas);
+    tv.start(rf.number, v.program);
+  };
+  const button = h('button', { class: 'btn small', text: mine ? 'Stop' : 'Play', onclick: () => (mine ? tv.stop() : play()) });
   const url = streamUrl(rf.number, v.program);
   return h('div', { class: 'screen-play' },
     h('div', { class: 'row' }, button, status),
     h('div', { class: 'screen-note' },
-      'Its recording, played in a loop. The picture is not decoded here yet; VLC or another player shows the whole program: ',
+      'Its recording, played in a loop. VLC or another player plays it too: ',
       h('a', { href: url, text: url }), ' · ',
       h('a', { href: '#', text: 'playlist', onclick: e => { e.preventDefault(); playlist(rf.number, v); } })));
 }
@@ -135,8 +139,9 @@ export function mount(el) {
   let held = '';
   // RF channel -> the programs its recording on the card holds.
   let recorded = new Map();
-  // The player's state, updated in place.
+  // The player's state, updated in place, and the canvas its pictures go to.
   const status = h('span', { class: 'dim' });
+  const canvas = h('canvas', { class: 'screen-picture' });
   // What `show` last drew: the channel and whether the player was playing it.
   let drawn = '';
 
@@ -148,7 +153,7 @@ export function mount(el) {
     drawn = key;
     const has = sel && (recorded.get(sel.rf.number) || []).includes(sel.v.program);
     area.replaceChildren(...(sel
-      ? screen(sel, last, playback(sel, has, status))
+      ? [mine ? canvas : null, ...screen(sel, last, playback(sel, has, status, canvas))].filter(Boolean)
       : [h('div', { class: 'screen-empty', text: list.length ? 'Pick a channel.' : 'No stations named yet: run a scan in Channels with "name the stations" on.' })]));
   }
 
@@ -161,6 +166,8 @@ export function mount(el) {
   const off = tv.onChange(s => {
     status.textContent = [s.label, s.detail].filter(Boolean).join(' · ');
     show();
+    // Once a picture is up it fills the area; the channel's details give way to it.
+    area.classList.toggle('playing', !!(s.playing && s.picture));
   });
 
   pick.addEventListener('change', () => {
@@ -198,6 +205,7 @@ export function mount(el) {
     unmount() {
       off();
       tv.stop();
+      tv.attach(null);
     },
   };
 }

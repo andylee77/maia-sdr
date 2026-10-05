@@ -2,9 +2,10 @@
 
 **Date:** 2026-10-05. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** in progress. Steps 1 and 2 done: the transport stream, AC-3 and MPEG-2 video, each
-matching FFmpeg. Step 4's stream is on unit A and plays in VLC; step 3's sound plays in the Viewer,
-its picture is next.
+**Status:** steps 1-4 done, step 5 in part. The transport stream, AC-3 and MPEG-2 video match
+FFmpeg; the Viewer plays a recorded channel's picture and sound in the browser and gives its stream
+to VLC; on unit A both play its five recordings. Live TV waits for bake D's receiver; the stream's
+route and the Viewer stay as they are.
 
 ## Why
 
@@ -197,6 +198,33 @@ those paths follow the standard but no stream here has checked them.
   Viewer: every channel of RF 14 and 20 playable; Play gives "Playing" within 2 s over http
   (ScriptProcessor) and https (AudioWorklet), the buffer at 0.4-0.54 s, no exceptions. A went
   back to scanner mode on Clay County after.
+
+## Step 3, the picture
+
+- **The player** decodes the programme's MPEG-2 video beside its sound; the module gives each
+  picture's planes (at the coded size), its size, PTS and flags (progressive, top field first,
+  repeat_first_field, matrix coefficients, aspect ratio, type). 218 KB with the video decoder.
+- **Speed in WebAssembly** (VS Code's Node, the module as the Worker drives it, with the
+  demultiplexer, the sound and the copies the Worker makes): 1080i 80 pictures a second, 720p
+  146, 480i 509, against the 30, 60 and 30 the streams need: under half of one core here.
+- **The page:** the Worker sends each picture's planes to the page, which queues them (at most 120)
+  and draws the latest one due at each animation frame (`js/tv/screen.js`: WebGL, three
+  luminance textures, Y'CbCr to R'G'B' in the shader with BT.709 for HD unless the stream signals
+  otherwise and BT.601 for SD, video range; an interlaced frame's lines blended with the next
+  line's so motion does not comb; the display aspect ratio kept, the rest black). The sound is the
+  clock: the worklet reports the time of the sample it plays next with its own clock ten times a
+  second (the ScriptProcessor the time of each buffer it fills), less the output latency. Before
+  the sound has a time the first picture stays up. A picture more than 5 s from the sound's time
+  is across a jump in the timestamps (the recording's start again): ahead of the sound, it is from
+  before the jump and goes; behind, it waits for the sound to jump too.
+- **The Viewer:** Play draws the pictures on a canvas over the picture area, the channel's details
+  giving way once one is up, Play/Stop, the player's state and the links for VLC along the bottom.
+- **Checks:** the page's Worker source against unit A's RF 19 for 12 s: 366 pictures (1080i, 30.5 a
+  second), the sound unbroken. On unit A in ATSC mode after a TV scan (build
+  `2026-10-05-tv-picture1`), headless Chrome (WebGL through SwiftShader) on the Viewer playing 47.1
+  WJAX: the picture and sound over http (ScriptProcessor) and https (AudioWorklet), no exceptions;
+  9 s in: 20 pictures dropped (those from before the loop's seam the sound had left), 4 slices lost
+  (RF 19's uncorrected packets and the seam). A went back to scanner mode on Clay County after.
 
 ## Step 4: the stream
 
