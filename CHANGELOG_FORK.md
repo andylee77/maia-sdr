@@ -31,6 +31,9 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   (measured on A; 079 estimated 10 %).
 - **The antenna:** A's omni, a foot behind the Yagi, sees 15-25 dB notches across channels the
   directional receives flat.
+- **The stream, played:** each long capture's stream from the model written as a `.ts` file;
+  ffmpeg decodes every programme of the clean ones (1080i, 720p, 480i MPEG-2; AC-3) with only the
+  cut's own errors, and they play in VLC.
 - **081's code:** `demod::unequalized`, `receiver::read`, `rs::syndromes`; pieces crate-visible.
 
 ---

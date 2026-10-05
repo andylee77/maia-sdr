@@ -411,6 +411,25 @@ wall time.
 - The normal equations are in f64 on the VFP. 081 measured NEON f32 at about 0.7
   multiply-accumulates a cycle; whether f32 sums solve as well is not measured here.
 
+## The model's stream, played
+
+`transport_stream_files` writes each long capture's stream, as the model's PS half reads it, to a
+`.ts` file (`runs/atsc/captures_20261004/ts/`, about 19 MB and 8.6 s each; a packet Reed-Solomon
+could not correct carries the transport error indicator). ffmpeg 8.0.1 decodes them:
+
+- **Every programme on RF 14, 19 and 30 directional and RF 20 and 21 omni** (MPEG-2 video in
+  1920×1080i, 1280×720p and 480i; AC-3 in 5.1 and stereo) decodes with only the cut's own
+  messages: pictures before the first sequence header, a picture referring to frames before the
+  cut, the last AC-3 frame.
+- **RF 20 directional** (17.8 dB, 30 % of its packets failed) decodes with hundreds of errors a
+  programme, as its packets say.
+- **A frame from each programme, 5 s in,** shows the station's picture: FOX's NFL game on 30.1
+  WFOXHD, an advert on 47.1 WJAX, CW 17's sitcom on RF 20, TBN on 59.1 (`ts/frames/`).
+
+The files play in VLC (Playback, Program, to pick one) or `ffplay -vf yadif`. They are the
+browser player's test input (079, item 11, the third piece of evidence), with no HDHomeRun tuner
+taken.
+
 ## What changes in 079's plan for bake D
 
 The split stands: the PL from the input to Reed-Solomon's syndromes, the PS solving the taps,
@@ -486,4 +505,6 @@ The offline runs (from `scanner/`, `--release`; the capture folders under `runs/
   core; no LMS in the PL. Agree, or ask for more evidence (a longer evening, more channels).
 - **The omni's place:** moving it clear of the Yagi and capturing again would tell whether its
   notches are the Yagi's doing.
+- **Watch:** `runs/atsc/captures_20261004/ts/*.ts` in VLC: our receiver's own decode, 8 s a
+  station.
 - **Pushes:** 083's commits are local on fishball-p25.

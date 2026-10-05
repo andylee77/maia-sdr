@@ -51,6 +51,16 @@ pub struct Station {
 }
 
 pub fn station(packets: &[[u8; PACKET]]) -> Station {
+    let (out, mer_db) = stream(packets);
+    let corrected = out.iter().filter(|p| matches!(p.outcome, rs::Outcome::Corrected(_))).count();
+    let failed = out.iter().filter(|p| p.outcome == rs::Outcome::Failed).count();
+    let (psip, multiplex) = receiver::read(&out);
+    Station { psip, multiplex, packets: out.len(), corrected, failed, mer_db }
+}
+
+/// The transport stream in the packets: their codewords corrected where flagged and
+/// derandomized, in order; and each field's MER from the headers.
+pub fn stream(packets: &[[u8; PACKET]]) -> (Vec<fec::Packet>, Vec<(u32, f64)>) {
     let rand = randomizer();
     let mut out = Vec::new();
     let mut mer_db: Vec<(u32, f64)> = Vec::new();
@@ -72,8 +82,19 @@ pub fn station(packets: &[[u8; PACKET]]) -> Station {
             out.push(fec::Packet { bytes: b, outcome });
         }
     }
-    let corrected = out.iter().filter(|p| matches!(p.outcome, rs::Outcome::Corrected(_))).count();
-    let failed = out.iter().filter(|p| p.outcome == rs::Outcome::Failed).count();
-    let (psip, multiplex) = receiver::read(&out);
-    Station { psip, multiplex, packets: out.len(), corrected, failed, mer_db }
+    (out, mer_db)
+}
+
+/// Packets as a transport stream file's bytes: those Reed-Solomon could not correct carry the
+/// transport error indicator, so that a player skips them.
+pub fn ts_bytes(packets: &[fec::Packet]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(packets.len() * 188);
+    for p in packets {
+        let mut b = p.bytes;
+        if p.outcome == rs::Outcome::Failed {
+            b[1] |= 0x80;
+        }
+        out.extend_from_slice(&b);
+    }
+    out
 }

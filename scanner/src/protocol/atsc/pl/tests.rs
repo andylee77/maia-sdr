@@ -666,3 +666,40 @@ fn register_widths() {
         b(max(&|r| r.1)) - 1,
     );
 }
+
+#[test]
+fn a_failed_packet_carries_the_transport_error_indicator() {
+    use crate::protocol::atsc::fec::{rs, Packet};
+    let mut ok = [0u8; 188];
+    ok[..4].copy_from_slice(&[0x47, 0x01, 0x00, 0x10]);
+    let bytes = ps::ts_bytes(&[Packet { bytes: ok, outcome: rs::Outcome::Clean }, Packet { bytes: ok, outcome: rs::Outcome::Failed }]);
+    assert_eq!((bytes.len(), bytes[1], bytes[188 + 1]), (376, 0x01, 0x81));
+}
+
+/// Offline: each long capture (`ATSC_LONG_CAPTURE_DIR`, those whose names contain
+/// `ATSC_TS_ONLY` if set) through the model at the chosen widths and the default schedule, its
+/// transport stream written to `ATSC_TS_OUT/<capture>.ts` for a player.
+#[test]
+#[ignore]
+fn transport_stream_files() {
+    let (Ok(dir), Ok(out)) = (std::env::var("ATSC_LONG_CAPTURE_DIR"), std::env::var("ATSC_TS_OUT")) else { return };
+    let only = std::env::var("ATSC_TS_ONLY").unwrap_or_default();
+    let fs = 10e6 * (1.0 - 0.688e-6);
+    let cfg = Config { widths: Widths::CHOSEN, ..CONFIG };
+    let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "cs16")).collect();
+    files.sort();
+    for path in files.iter().filter(|p| p.file_stem().is_some_and(|s| s.to_string_lossy().contains(&only))) {
+        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+        let front = front::run(&study::read_adc(path, usize::MAX), fs, 0.0, &cfg, 0..0);
+        let Some(r) = back(&front, &cfg) else {
+            eprintln!("{name}: no field syncs");
+            continue;
+        };
+        let (packets, _) = ps::stream(&r.packets);
+        let failed = packets.iter().filter(|p| p.outcome == crate::protocol::atsc::fec::rs::Outcome::Failed).count();
+        let (psip, _) = crate::protocol::atsc::receiver::read(&packets);
+        let file = std::path::Path::new(&out).join(format!("{name}.ts"));
+        std::fs::write(&file, ps::ts_bytes(&packets)).unwrap();
+        eprintln!("{name}: {} packets ({failed} failed), MER {:.1} dB, TSID {:?} {:?} -> {}", packets.len(), r.mer_db(), psip.tsid, names(&psip), file.display());
+    }
+}
