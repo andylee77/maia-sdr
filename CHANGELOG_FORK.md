@@ -21,8 +21,11 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   FFmpeg's to 66-98 dB in every bin that carried bits, on six programmes (5.1 and stereo). FFmpeg
   itself steps once per stream, at the first block mixing long and short transforms; the test
   leaves that block out.
-- **Next:** MPEG-2 video (waits for the H.262 PDF), the WebAssembly build and the Viewer, the
-  scanner's stream hub.
+- **The stream** (`services::atsc::stream`): `GET /api/v1/atsc/stream/{rf}` serves an RF
+  channel's transport stream as it plays (`program`: one programme under its own PAT), from its
+  recording on the SD card (`tv/rf<N>.ts`) at the pace of its clock references, looping;
+  `GET /api/v1/atsc/recordings` lists them. On unit A, VLC and FFmpeg play it from the PC.
+- **Next:** MPEG-2 video (waits for the H.262 PDF), the WebAssembly build and the Viewer.
 
 ---
 

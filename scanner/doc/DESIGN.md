@@ -212,7 +212,8 @@ scanner/src/         the fresh crate (D13)
     recordings/      the recorder, storage (RAM/SD), index, wav
     discovery/       carriers, probes (P25 and DMR), the sweep, grouping and merge
     mode.rs          the unit's mode: the scanner or ATSC TV (holds the lease, pauses the site)
-    atsc/            ATSC mode's TV scan, each channel's spectrum, and its station named
+    atsc/            ATSC mode's TV scan, each channel's spectrum, and its station named;
+                     the TV stream (a channel's recording served as it plays, one programme or all)
     clock/           site clock, internet time, the board clock
     crystal.rs       crystal calibration and tracker (autoppm)
     packet_data.rs   P25 packet data records

@@ -945,6 +945,12 @@ ROUTES: dict[str, list] = {
         ("bin_hz", "number", "The bins' spacing (16 MSPS in 4096 bins)."),
         ("db", "array of numbers", "Power per bin averaged over the window's frames, about dBm (the spectrum's scale taken back to 60 dB of gain)."),
     ],
+    "/api/v1/atsc/recordings": [
+        ("[]", "object", "One TV recording (`tv/rf<N>.ts` on the SD card), for `/api/v1/atsc/stream/{rf}`."),
+        ("[].rf", "number", "Its RF channel."),
+        ("[].bytes", "number", "Its size."),
+        ("[].programs", "array of numbers", "The programme numbers its first PAT lists (a stream's `program`)."),
+    ],
     "/api/v1/atsc/scan/options": [
         ("channels", "array", "The TV channel plan: RF 2-36 (US, after the repack)."),
         ("channels[]", "object", "One RF channel."),
@@ -1133,5 +1139,12 @@ NOT_JSON: dict[str, str] = {
     "/api/v1/recordings/{id}": (
         "The recording's WAV (`audio/wav`): 8 kHz 16-bit mono. Byte ranges are honoured (206 with "
         "`Content-Range`)."
+    ),
+    "/api/v1/atsc/stream/{rf}": (
+        "An MPEG-2 transport stream (`video/mp2t`) that does not end: the RF channel's recording at "
+        "the pace of its clock references, from the start again at its end (its first clock "
+        "reference then marked discontinuous). With `program`, only that programme's packets (its "
+        "PMT, streams and clock, and PSIP's base PID) under a PAT naming it alone. 404 when there "
+        "is no recording of the channel or the programme is not in it."
     ),
 }

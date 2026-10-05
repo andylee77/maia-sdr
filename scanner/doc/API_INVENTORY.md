@@ -99,6 +99,8 @@ The cleanup list at the end ranks the backend work this inventory turned up.
 | `GET`/`PUT /api/v1/mode` | The unit's mode (`scanner`, `atsc`); change it | UI header | — |
 | `GET`/`POST /api/v1/atsc/scan`, `…/options`, `…/cancel` | The TV scan: each channel's kind, pilot, carrier to noise, clipping, and the station named from PSIP | UI Channels and Viewer; `tools/atsc_check.py` | Results are in memory only |
 | `GET /api/v1/atsc/scan/channel/{n}` | One RF channel's spectrum from the last TV scan | UI Channels | — |
+| `GET /api/v1/atsc/recordings` | The TV recordings on the SD card: RF channel, size, programmes | — | The Viewer does not use it yet (084) |
+| `GET /api/v1/atsc/stream/{rf}` | An RF channel's transport stream as it plays (`program`: one programme) | VLC and other players | Its source is a recording until the radio core decodes 8-VSB (bake D); the Viewer does not play it yet (084) |
 
 ## Configuration
 

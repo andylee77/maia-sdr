@@ -2,12 +2,17 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::body::Body;
+use axum::extract::{Path, Query, State};
+use axum::http::header;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
+use serde::Deserialize;
 
 use crate::api::v1::scan::Started;
 use crate::api::{ApiError, ApiResult};
 use crate::boot::state::AppState;
+use crate::services::atsc::stream::{self, TvRecording};
 use crate::services::atsc::{self, AtscOptions, AtscRequest, AtscScan, ChannelSpectrum};
 
 pub async fn get(State(s): State<Arc<AppState>>) -> Json<AtscScan> {
@@ -35,4 +40,40 @@ pub async fn start(State(s): State<Arc<AppState>>, body: Option<Json<AtscRequest
 pub async fn cancel(State(s): State<Arc<AppState>>) -> Json<AtscScan> {
     s.atsc.cancel();
     Json(s.atsc.state())
+}
+
+/// The TV recordings a player can be served.
+pub async fn recordings(State(s): State<Arc<AppState>>) -> ApiResult<Vec<TvRecording>> {
+    let dir = s.paths.tv();
+    tokio::task::spawn_blocking(move || stream::recordings(&dir)).await.map(Json).map_err(|e| ApiError::from(anyhow::anyhow!(e)))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StreamQuery {
+    /// One programme alone; none: the whole multiplex.
+    pub program: Option<u16>,
+}
+
+/// An RF channel's transport stream as it plays (`services::atsc::stream`).
+pub async fn stream(State(s): State<Arc<AppState>>, Path(rf): Path<u8>, Query(q): Query<StreamQuery>) -> Result<Response, ApiError> {
+    let path = stream::recording_path(&s.paths.tv(), rf);
+    let listed = {
+        let path = path.clone();
+        tokio::task::spawn_blocking(move || path.is_file().then(|| stream::programs(&path))).await.map_err(|e| ApiError::from(anyhow::anyhow!(e)))?
+    };
+    let Some(programs) = listed else {
+        return Err(ApiError::not_found(format!("a recording of RF channel {rf}")));
+    };
+    if let Some(p) = q.program.filter(|p| !programs.contains(p)) {
+        return Err(ApiError::not_found(format!("program {p} in RF channel {rf}'s recording (it has {programs:?})")));
+    }
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+    tokio::spawn(async move {
+        if let Err(e) = stream::play(path, q.program, tx).await {
+            tracing::warn!("TV stream of RF {rf}: {e:#}");
+        }
+    });
+    let body = Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|c| (Ok::<_, std::io::Error>(c), rx)) }));
+    Ok(([(header::CONTENT_TYPE, "video/mp2t"), (header::CACHE_CONTROL, "no-store")], body).into_response())
 }

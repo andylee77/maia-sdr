@@ -75,6 +75,8 @@ Generated from the route table (`src/api/mod.rs`) by the test `the_api_reference
 | GET | `/api/v1/atsc/scan/options` | the TV channel plan (RF 2-36 and which the radio reaches), the default settings and the window read at once |
 | POST | `/api/v1/atsc/scan` | scan the TV channels in ATSC mode (`channels`, default every one reached; `frames` a window; `gain_db`, default the AGC), then decode each 8-VSB channel of 15 dB or more for its station's names (`identify`, default on) |
 | POST | `/api/v1/atsc/scan/cancel` | stop the TV scan |
+| GET | `/api/v1/atsc/recordings` | the TV recordings a player can be served (`tv/rf<N>.ts` on the SD card): each one's RF channel, size and programmes |
+| GET | `/api/v1/atsc/stream/{rf}` | an RF channel's transport stream as it plays, for VLC and other players and the Viewer (`video/mp2t`): its recording at the pace of its clock, from the start again at its end; `program`: that programme alone, under a PAT naming only it |
 | GET | `/api/v1/diag/burst` | the burst timing check's progress (what to do now) and result: where one burst starts, as an AD9361 sample index, in a spectrum frame's header, in the control lane's packets and in the capture, and whether they agree to within one transform |
 | POST | `/api/v1/diag/burst` | check the radio core's timing with a burst (a key fob, the ESP32-DIV) at `freq_hz`: a first press finds it (`find`, default on), the next is measured; `offset_hz` (300 kHz) above the LO, `span_hz` (150 kHz) searched, `wait_s` (60) for each press, `threshold_db` (15). The live site pauses until it ends |
 | POST | `/api/v1/diag/burst/cancel` | stop the burst timing check |

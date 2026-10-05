@@ -4,6 +4,7 @@
 
 **Status:** in progress. Step 1 done (the transport stream and the AC-3 decoder, matching FFmpeg);
 step 2 waits for ITU-T H.262 (Andy is fetching the PDF: the ITU's site refuses scripted downloads).
+Step 4's stream is on unit A and plays in VLC; the Viewer's side of it comes with step 3.
 
 ## Why
 
@@ -105,3 +106,32 @@ block's first sample (RF 19, frame 219, block 5: the right channel from -1.3e-3 
 centre's value), in both its float and fixed-point decoders; ours is continuous in every
 channel. It happens once per stream (RF 14 programme 4 block 60, RF 19 block 1319, RF 20 block
 1018), and the test leaves out the two transforms spanning that block.
+
+## Step 4: the stream
+
+`scanner/src/services/atsc/stream.rs`, two routes:
+
+- `GET /api/v1/atsc/recordings`: the TV recordings on the SD card (`tv/rf<N>.ts`), each one's RF
+  channel, size and the programmes its PAT lists.
+- `GET /api/v1/atsc/stream/{rf}` (`video/mp2t`): the RF channel's transport stream as it plays,
+  for VLC and other players now and the Viewer with step 3. The recording is read at the pace of
+  its clock references (each piece between two of them sent when the first is due) and from the
+  start again at its end, the first clock reference after the seam marked discontinuous. With
+  `program`, only that programme: a PAT naming it alone (the original's transport stream id and
+  version), its PMT, streams and clock, and PSIP's base PID for the station's names. Each player
+  gets its own reading; 404 for a channel with no recording or a programme not in it.
+
+Its source is a recording until the radio core decodes 8-VSB (bake D); the route and what it
+serves stay the same then.
+
+**On unit A** (build `2026-10-05-tv-stream1`, scanner mode, Clay County live throughout): 083's
+clean multiplexes copied to `/mnt/sd/tv/` (RF 14, 19 and 30 directional, RF 20 and 21 omni).
+
+- The whole of RF 14 came at 19.3 Mbit/s and its programme 3 at 12.17 Mbit/s over 12 s, exactly
+  that programme's share of the recording's packets (62.8 %), the first bytes 57 ms after the
+  request. FFmpeg finds programme 3 alone (720p MPEG-2, AC-3 5.1 and stereo) and decodes it with
+  errors only at the loop's seam.
+- VLC 3 plays `http://192.168.120.50:8080/api/v1/atsc/stream/19?program=3` (its own MPEG-2 and
+  AC-3 decoders). It reports continuity gaps on the video PID: they are the recording's own, the
+  packets Reed-Solomon could not correct in RF 19's capture (121 flagged in 8.6 s), passed on
+  flagged as they were. VLC also lists programmes 4-6 from PSIP's channel table, empty.

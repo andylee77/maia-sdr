@@ -48,6 +48,11 @@ impl Paths {
         self.sd.join("p25_recordings")
     }
 
+    /// The TV recordings on the SD card, `rf<N>.ts` (`services::atsc::stream`).
+    pub fn tv(&self) -> PathBuf {
+        self.sd.join("tv")
+    }
+
     pub fn radio(&self) -> PathBuf {
         self.root.join("radio.json")
     }
