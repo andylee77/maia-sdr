@@ -2,10 +2,9 @@
 
 **Date:** 2026-10-05. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** in progress. Step 1 done (the transport stream and the AC-3 decoder, matching FFmpeg);
-step 2 waits for ITU-T H.262 (Andy is fetching the PDF: the ITU's site refuses scripted downloads).
-Step 4's stream is on unit A and plays in VLC; step 3's sound plays in the Viewer. The picture
-waits for step 2.
+**Status:** in progress. Steps 1 and 2 done: the transport stream, AC-3 and MPEG-2 video, each
+matching FFmpeg. Step 4's stream is on unit A and plays in VLC; step 3's sound plays in the Viewer,
+its picture is next.
 
 ## Why
 
@@ -107,6 +106,66 @@ block's first sample (RF 19, frame 219, block 5: the right channel from -1.3e-3 
 centre's value), in both its float and fixed-point decoders; ours is continuous in every
 channel. It happens once per stream (RF 14 programme 4 block 60, RF 19 block 1319, RF 20 block
 1018), and the test leaves out the two transforms spanning that block.
+
+## Step 2: MPEG-2 video (`scanner/player/src/mpeg2/`)
+
+**The standard:** ITU-T H.262 (02/12) is sold (it is common text with ISO/IEC 13818-2, and the
+ITU gives it only to TIES members); the superseded H.262 (02/2000) and its Corrigenda 1 (11/2000)
+and 2 (05/2006) are free from the ITU and hold all of Main Profile, which is all ATSC sends.
+Andy downloaded them to `C:\Users\Andy\Projects\_shared\ITU\H.262\`. Corrigendum 1 has reserved
+extension data ignored; Corrigendum 2 restates the IDCT's accuracy requirement.
+
+**The decoder,** Main Profile (4:2:0; I, P and B; frame and field pictures; every prediction
+mode), from the 2000 edition's syntax (6.2) and decoding process (7.1-7.6):
+
+- the elementary stream cut at its start codes, a slice decoded as soon as the next start code
+  ends it; the sequence header and extension (size, frame rate, matrices), the sequence display
+  extension's matrix coefficients, the picture header and coding extension, quant matrix
+  extensions;
+- Annex B's eleven code tables read from the standard's text by a script (each checked a prefix
+  code; B.14 and B.15 hold the same 111 run/level pairs; the unused patterns are those the
+  standard's code lengths leave), decoded through two-level lookups;
+- the coefficients: intra DC with its predictors, the two coefficient tables with the first
+  non-intra coefficient's own code, escapes; the two scans; inverse quantisation with the
+  weighting matrices and both quantiser scale mappings, saturation, mismatch control;
+- the IDCT in integers (cos(kπ/16) × 2^13, four extra bits between passes): within IEEE 1180's
+  measures on 60,000 random blocks and within 1 of the exact transform on Annex A's 4096 DC
+  blocks (a first version with 2^12 constants missed the overall mean square error, 0.040
+  against 0.020);
+- motion vectors and their predictors (Tables 7-9, 7-10), frame, field, 16×8 and dual prime
+  prediction with half-sample filtering, forward and backward averaged, the second field of a P
+  frame predicting from the first, skipped macroblocks in P and B pictures;
+- reference frames, frame re-ordering and timestamps: a picture takes the PTS of the PES packet
+  it starts in, or the last frame's plus its duration; decoding starts at the first I-picture,
+  and B frames whose forward reference was never decoded are left out;
+- a slice that fails is abandoned there, the macroblocks it left copied from the latest
+  reference frame.
+
+**Against FFmpeg** (`tests/mpeg2_vs_ffmpeg.rs`; FFmpeg's references from
+`player_ref/video/make.sh`: the first 2 s of five programmes): from our first frame on, every frame
+is one of FFmpeg's, by PTS and of the same type, and every one of FFmpeg's is ours. The worst plane
+of any frame:
+
+| Programme | Format | Frames compared | Worst plane (dB) |
+|-----------|--------|-----------------|------------------|
+| RF 19 directional, 3 | 1920×1080 interlaced, 29.97 | 44 | 62.5 |
+| RF 14 directional, 3 | 1280×720 progressive, 59.94 | 120 | 56.5 |
+| RF 14 directional, 4 | 720×480 interlaced, 29.97 | 30 | 61.2 |
+| RF 20 omni, 4 | 704×480 interlaced, 29.97 | 60 | 63.0 |
+| RF 30 directional, 5 | 720×480 progressive, 29.97 | 60 | 61.5 |
+
+The differences are the two IDCTs' rounding (both within the standard's accuracy), growing along a
+GOP's predictions; the lowest is deep in a 720p GOP. Fewer frames on two streams because FFmpeg
+also decodes the PES packets before the first PMT, which hold an I-picture the player never sees;
+the player starts at the next GOP.
+
+**What the streams use.** Counted on all 22 programmes of the five multiplexes: frame pictures
+only; frame and field prediction (field prediction in frame pictures), field DCT, bidirectional
+averaging, both scans, both intra coefficient tables, both quantiser scale mappings. None uses
+field pictures, 16×8 or dual prime prediction, concealment motion vectors or repeat_first_field:
+those paths follow the standard but no stream here has checked them.
+
+**Speed** (this PC, one thread, native): 1080i 103 frames a second, 720p 190, 480i 750.
 
 ## Step 3, the sound: the module and the Viewer
 

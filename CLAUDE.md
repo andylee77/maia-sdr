@@ -13,7 +13,9 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   (`doc/changes/083_8vsb_model_and_long_captures.md`, `scanner/src/protocol/atsc/pl`); its third
   piece, the browser's player, is change 084.
 - **The ATSC player (084):** `doc/changes/084_atsc_player.md`: our own decoders in Rust for the
-  browser, and the stream for VLC. Step 2 (MPEG-2 video) waits for the ITU-T H.262 PDF.
+  browser (the transport stream, AC-3, MPEG-2 video), and the stream for VLC. The Viewer plays
+  the sound; its picture is next. H.262 (2000) and its corrigenda are in
+  `C:\Users\Andy\Projects\_shared\ITU\H.262\`.
 - **The cleanup:** `doc/CLEANUP_INVENTORY.md`, section 14's batches.
 - **Data mode:** a study with Andy's decisions, `scanner/doc/DATA_MODE.md`.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`.

@@ -31,7 +31,12 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   stream and plays it through the module into an AudioWorklet ring (ScriptProcessor on plain
   http). On unit A, the Viewer plays a recorded channel's sound in headless Chrome over http and
   https, and gives the stream's address and a playlist for VLC.
-- **Next:** MPEG-2 video (waits for the H.262 PDF), then the picture in the Viewer.
+- **MPEG-2 video** (`scanner/player/src/mpeg2/`, from H.262 (2000) and its corrigenda, free from
+  the ITU): Main Profile, every prediction mode, its code tables read from the standard's text, an
+  integer IDCT within IEEE 1180's measures. On five programmes (1080i, 720p, 480i, 480p) every
+  frame is FFmpeg's, by PTS and type, to 56.5-63 dB in every plane. No stream here uses field
+  pictures, 16×8 or dual prime, so those paths are unchecked.
+- **Next:** the picture in the Viewer.
 
 ---
 

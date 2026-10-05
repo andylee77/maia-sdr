@@ -15,6 +15,7 @@
 
 pub mod ac3;
 pub mod bits;
+pub mod mpeg2;
 pub mod player;
 pub mod ts;
 #[cfg(target_arch = "wasm32")]
