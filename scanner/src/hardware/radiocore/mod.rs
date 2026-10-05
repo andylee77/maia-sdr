@@ -4,8 +4,9 @@
 //! The core has lanes, each a DDC (to 50 kSPS) whose IQ it cuts into tagged packets
 //! (`packet`); one ring carries every lane's packets. Lane 0 is the control channel's, the
 //! others the traffic lanes. Beside them: a wideband spectrometer, whose frames carry a header
-//! (`frame`), and a raw IQ capture ring, which starts afresh at each enable with the sample
-//! index of its first sample and can stop itself after a trigger.
+//! (`frame`), a raw IQ capture ring, which starts afresh at each enable with the sample index of
+//! its first sample and can stop itself after a trigger, and (core 2.1) an 8-VSB receiver
+//! (`vsb`) whose codewords and snapshots come through the lane ring.
 
 pub mod frame;
 #[cfg(target_os = "linux")]
@@ -13,6 +14,7 @@ pub mod irq;
 pub mod lane;
 pub mod packet;
 pub mod regs;
+pub mod vsb;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,8 +23,9 @@ use serde::Serialize;
 
 pub use frame::FrameHeader;
 pub use lane::LaneDdc;
-pub use packet::Header;
+pub use packet::{Header, Parsed};
 pub use regs::nco_to_freq;
+pub use vsb::VsbStatus;
 
 use regs::{LaneBank, Registers, LANE_BANKS};
 
@@ -55,6 +58,8 @@ pub struct Identity {
     pub platform: u8,
     /// Lanes, the control channel's included.
     pub lanes: usize,
+    /// The 8-VSB receiver is in the core.
+    pub vsb: bool,
 }
 
 /// The lane ring's registers, in one reading.
@@ -187,10 +192,10 @@ impl RadioCore {
     /// A core with its registers in plain memory and no rings (host tests).
     #[cfg(all(test, not(target_os = "linux")))]
     pub fn in_memory(lanes: usize) -> RadioCore {
-        let version = Version { major: MAJOR_VERSION, minor: 0, bugfix: 0 };
+        let version = Version { major: MAJOR_VERSION, minor: 1, bugfix: 0 };
         RadioCore {
             regs: Registers::in_memory(),
-            identity: Identity { version, platform: 0, lanes },
+            identity: Identity { version, platform: 0, lanes, vsb: true },
             capture_overflow: AtomicBool::new(false),
             capture_read: 0,
         }
@@ -245,7 +250,7 @@ mod dma {
     use anyhow::{Context, Result};
 
     use super::frame::{self, FRAME_BYTES};
-    use super::packet::{self, Fault, Packet, PACKET_BYTES};
+    use super::packet::{self, Fault, Parsed, PACKET_BYTES};
     use super::{capture_pending, completed_since, CaptureRead, Frame, RadioCore, CAPTURE_SAMPLE_BYTES};
     use crate::hardware::mmio::RxBuffer;
 
@@ -278,8 +283,9 @@ mod dma {
 
     impl RadioCore {
         /// Every packet in the lane ring's sub-buffers completed since the last call (cache
-        /// invalidated), in ring order. The first call only finds the ring's position.
-        pub fn read_packets(&mut self, mut each: impl FnMut(Result<Packet<'_>, Fault>)) {
+        /// invalidated), in ring order: the lanes' and the 8-VSB block's. The first call only
+        /// finds the ring's position.
+        pub fn read_packets(&mut self, mut each: impl FnMut(Result<Parsed<'_>, Fault>)) {
             let current = self.regs.lanes_ring_status().read().last_buffer().bits() as u32;
             let d = &mut self.dma;
             for idx in completed_since(d.lanes.num_buffers(), &mut d.lanes_last, current) {
@@ -288,7 +294,7 @@ mod dma {
                     continue;
                 }
                 for bytes in d.lanes.buffer(idx).chunks_exact(PACKET_BYTES) {
-                    each(packet::parse(bytes));
+                    each(packet::parse_any(bytes));
                 }
             }
         }
@@ -377,13 +383,14 @@ impl RadioCore {
         let v = regs.version().read();
         let version = Version { major: v.major().bits(), minor: v.minor().bits(), bugfix: v.bugfix().bits() };
         anyhow::ensure!(version.major == MAJOR_VERSION, "radio core {version}: this scanner reads {MAJOR_VERSION}.x");
-        let lanes = regs.capabilities().read().lanes().bits() as usize;
+        let caps = regs.capabilities().read();
+        let lanes = caps.lanes().bits() as usize;
         anyhow::ensure!((2..=LANE_BANKS).contains(&lanes), "radio core {version} reports {lanes} lanes");
-        let identity = Identity { version, platform: v.platform().bits(), lanes };
+        let identity = Identity { version, platform: v.platform().bits(), lanes, vsb: caps.vsb().bit() };
         regs.control().modify(|_, w| w.sdr_reset().clear_bit());
 
         let dma = dma::Dma::open().await?;
-        tracing::info!("radio core {version}, {lanes} lanes");
+        tracing::info!("radio core {version}, {lanes} lanes{}", if identity.vsb { ", 8-VSB" } else { "" });
         let interrupts = irq::Interrupts::new(uio, regs.clone());
         let core = RadioCore { regs, identity, capture_overflow: AtomicBool::new(false), capture_read: 0, dma };
         Ok((core, interrupts))

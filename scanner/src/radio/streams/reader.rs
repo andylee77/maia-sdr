@@ -1,5 +1,6 @@
 //! The lane ring's reader: every 20 ms (a packet is 20.16 ms of one lane), the packets of the
 //! sub-buffers completed since the last poll, then the core's sample count to place them in time.
+//! The 8-VSB block's packets in the same ring go on whole to the live TV receiver.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +8,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use super::{ClockReading, LanePacket, Streams};
-use crate::hardware::radiocore::RadioCore;
+use crate::hardware::radiocore::{Parsed, RadioCore};
 use crate::util::time::Stamp;
 
 const POLL: Duration = Duration::from_millis(20);
@@ -20,10 +21,12 @@ pub async fn run(core: Arc<Mutex<RadioCore>>, streams: Arc<Streams>) {
     loop {
         tick.tick().await;
         let mut packets = Vec::new();
+        let mut vsb = Vec::new();
         let clock = {
             let mut c = core.lock().await;
             c.read_packets(|p| match p {
-                Ok(p) => packets.push(LanePacket { header: p.header, iq: p.iq().collect() }),
+                Ok(Parsed::Lane(p)) => packets.push(LanePacket { header: p.header, iq: p.iq().collect() }),
+                Ok(Parsed::Vsb(bytes)) => vsb.push(bytes.to_vec()),
                 Err(fault) => {
                     streams.fault();
                     if faults_logged < 20 {
@@ -35,5 +38,8 @@ pub async fn run(core: Arc<Mutex<RadioCore>>, streams: Arc<Streams>) {
             ClockReading { sample_count: c.sample_count(), at: Stamp::now() }
         };
         streams.deliver(packets, clock);
+        if !vsb.is_empty() {
+            streams.deliver_vsb(vsb);
+        }
     }
 }

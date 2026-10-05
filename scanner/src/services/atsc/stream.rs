@@ -1,7 +1,8 @@
 //! The TV stream: an RF channel's transport stream served to players as it plays (VLC and other
-//! players over HTTP, and the Viewer's). Its source is the channel's recording on the SD card
-//! (`tv/rf<N>.ts`), played at the pace its programme clock references set and from the start
-//! again at its end; each player gets its own reading.
+//! players over HTTP, and the Viewer's). Its source is live TV (`live`, the radio core's 8-VSB
+//! block) on the channel it plays, or the channel's recording on the SD card (`tv/rf<N>.ts`),
+//! played at the pace its programme clock references set and from the start again at its end;
+//! each player gets its own reading.
 //!
 //! With a programme asked for, only its packets pass: the PAT rewritten to name it alone, its
 //! PMT, its elementary streams, its clock's PID and PSIP's base PID (the station's names).
@@ -13,9 +14,10 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tokio::io::AsyncReadExt;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::Instant;
 
+use super::live::LiveReceiver;
 use crate::protocol::atsc::ts::{crc32, pid, Sections, PAT_PID, PSIP_PID};
 
 pub const PACKET: usize = 188;
@@ -194,6 +196,33 @@ fn section_packet(pid: u16, section: &[u8], cc: u8) -> [u8; PACKET] {
     p[4] = 0;
     p[5..5 + section.len()].copy_from_slice(section);
     p
+}
+
+/// Relays live TV (`live`) into `tx` until the player is gone: programme `program` alone under
+/// its own PAT, as a recording is served, or the whole multiplex. Live data needs no pacing; a
+/// player that falls behind loses what it missed.
+pub async fn relay(mut rx: LiveReceiver, program: Option<u16>, tx: mpsc::Sender<Vec<u8>>) {
+    let mut filter = program.map(ProgramFilter::new);
+    loop {
+        let chunk = match rx.recv().await {
+            Ok(c) => c,
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => return,
+        };
+        let out = match &mut filter {
+            None => chunk.to_vec(),
+            Some(f) => {
+                let mut out = Vec::with_capacity(chunk.len());
+                for p in chunk.chunks_exact(PACKET) {
+                    f.push(p.try_into().expect("a packet's length"), &mut out);
+                }
+                out
+            }
+        };
+        if !out.is_empty() && tx.send(out).await.is_err() {
+            return;
+        }
+    }
 }
 
 /// Plays the recording at `path` into `tx` until the receiver is gone: programme `program` (or

@@ -1,9 +1,10 @@
 // The Viewer page (ATSC TV mode): pick a channel the last TV scan named, above the picture area.
 // The area shows what the scan's capture read of the channel: its program's streams (codec,
-// format, bitrate, language), its station, and how well its signal decoded. When the unit holds a
-// recording of the channel's RF channel (/api/v1/atsc/recordings), its program plays here
-// (../tv/player.js: the picture on a canvas over the area, the sound) and in VLC or another player
-// from the stream's address or a playlist file.
+// format, bitrate, language), its station, and how well its signal decoded. When the radio core
+// has the 8-VSB block the channel plays live (/api/v1/atsc/live, its statistics under the
+// controls); otherwise a recording of its RF channel on the card plays (/api/v1/atsc/recordings).
+// It plays here (../tv/player.js: the picture on a canvas over the area, the sound) and in VLC or
+// another player from the stream's address or a playlist file.
 
 import { h, card } from '../dom.js';
 import { mhz, num, DASH } from '../format.js';
@@ -71,22 +72,59 @@ function playlist(rf, v) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-// Play and Stop for one channel's program, the player's state, and the stream for other players.
-function playback({ rf, v }, recorded, status, canvas) {
-  if (!recorded) {
+// Live TV's statistics (/api/v1/atsc/live) in a line.
+function liveText(s) {
+  if (s.state === 'error') return `Live TV failed: ${s.error || 'no reason given'}`;
+  if (s.state === 'idle') return '';
+  const mer = s.mer_db.length ? s.mer_db[s.mer_db.length - 1] : null;
+  const parts = [`Live on RF ${s.rf}: ${s.state}`];
+  if (s.state === 'playing') {
+    parts.push(`MER ${mer == null ? DASH : `${num(mer, 1)} dB`}`,
+      `carrier ${s.carrier_hz == null ? DASH : `${num(s.carrier_hz)} Hz`}`,
+      `timing ${s.timing_ppm == null ? DASH : `${num(s.timing_ppm, 1)} ppm`}`,
+      `${num(s.codewords)} codewords, ${num(s.corrected)} corrected, ${num(s.failed)} beyond Reed-Solomon`,
+      `${num(s.solves)} tap solves${s.solve_ms == null ? '' : ` (${num(s.solve_ms)} ms)`}`);
+  }
+  if (s.missed || s.dropped) parts.push(`${num(s.missed)} packets missed, ${num(s.dropped)} dropped`);
+  if (s.restarts) parts.push(`${num(s.restarts)} restart${s.restarts === 1 ? '' : 's'}`);
+  if (s.viewers) parts.push(`${num(s.viewers)} on the stream`);
+  return parts.join(' · ');
+}
+
+// Play and Stop for one channel's program, the player's state, live TV's statistics, and the
+// stream for other players. Live TV plays every channel when the radio core has the 8-VSB block;
+// otherwise a recording on the card plays.
+function playback({ rf, v }, recorded, live, status, liveLine, canvas) {
+  const onAir = !!(live && live.available);
+  if (!onAir && !recorded) {
     return h('div', { class: 'screen-note', text: `No recording of RF ${rf.number} on the unit's card (tv/rf${rf.number}.ts) to play.` });
   }
   const mine = tv.playing && tv.playing.rf === rf.number && tv.playing.program === v.program;
-  const play = () => {
+  const play = async () => {
     tv.attach(canvas);
+    if (onAir) {
+      // Tuned before the player asks for the stream, so it never meets the last channel's.
+      try {
+        await api.atscLiveStart(rf.number);
+      } catch (e) {
+        status.textContent = e.message;
+        return;
+      }
+    }
     tv.start(rf.number, v.program);
   };
-  const button = h('button', { class: 'btn small', text: mine ? 'Stop' : 'Play', onclick: () => (mine ? tv.stop() : play()) });
+  const stop = () => {
+    tv.stop();
+    if (onAir) api.atscLiveStop().catch(e => { status.textContent = e.message; });
+  };
+  const button = h('button', { class: 'btn small', text: mine ? 'Stop' : 'Play', onclick: () => (mine ? stop() : play()) });
   const url = streamUrl(rf.number, v.program);
   return h('div', { class: 'screen-play' },
     h('div', { class: 'row' }, button, status),
+    onAir ? liveLine : null,
     h('div', { class: 'screen-note' },
-      'Its recording, played in a loop. VLC or another player plays it too: ',
+      onAir ? 'Live from the radio core\'s 8-VSB receiver; it holds the radio until stopped. VLC or another player plays it too: '
+        : 'Its recording, played in a loop. VLC or another player plays it too: ',
       h('a', { href: url, text: url }), ' · ',
       h('a', { href: '#', text: 'playlist', onclick: e => { e.preventDefault(); playlist(rf.number, v); } })));
 }
@@ -139,23 +177,42 @@ export function mount(el) {
   let held = '';
   // RF channel -> the programs its recording on the card holds.
   let recorded = new Map();
-  // The player's state, updated in place, and the canvas its pictures go to.
+  // The player's state and live TV's statistics, updated in place, and the canvas the pictures
+  // go to.
   const status = h('span', { class: 'dim' });
+  const liveInfo = h('span');
+  const liveStop = h('button', { class: 'btn small', text: 'Stop live TV', onclick: () => { tv.stop(); api.atscLiveStop().then(setLive).catch(() => {}); } });
+  const liveLine = h('div', { class: 'row screen-note' }, liveInfo, liveStop);
   const canvas = h('canvas', { class: 'screen-picture' });
+  // Live TV's last statistics.
+  let live = null;
   // What `show` last drew: the channel and whether the player was playing it.
   let drawn = '';
+
+  function setLive(s) {
+    live = s;
+    liveInfo.textContent = liveText(s);
+    // Stop is offered here when the receiver runs without this page's player.
+    liveStop.hidden = s.state === 'idle' || !!tv.playing;
+    show();
+  }
 
   function show(force) {
     const sel = list.find(x => x.key === pick.value);
     const mine = sel && tv.playing && tv.playing.rf === sel.rf.number && tv.playing.program === sel.v.program;
-    const key = `${pick.value}|${mine}|${sel ? (recorded.get(sel.rf.number) || []).join(',') : ''}`;
+    const key = `${pick.value}|${mine}|${sel ? (recorded.get(sel.rf.number) || []).join(',') : ''}|${!!(live && live.available)}`;
     if (!force && key === drawn) return;
     drawn = key;
     const has = sel && (recorded.get(sel.rf.number) || []).includes(sel.v.program);
     area.replaceChildren(...(sel
-      ? [mine ? canvas : null, ...screen(sel, last, playback(sel, has, status, canvas))].filter(Boolean)
+      ? [mine ? canvas : null, ...screen(sel, last, playback(sel, has, live, status, liveLine, canvas))].filter(Boolean)
       : [h('div', { class: 'screen-empty', text: list.length ? 'Pick a channel.' : 'No stations named yet: run a scan in Channels with "name the stations" on.' })]));
   }
+
+  function loadLive() {
+    api.atscLive().then(setLive).catch(() => { /* an older daemon: no live TV */ });
+  }
+  const liveTimer = setInterval(loadLive, 1000);
 
   function loadRecorded() {
     api.atscRecordings()
@@ -180,6 +237,7 @@ export function mount(el) {
   el.addEventListener('click', () => tv.resume());
   show();
   loadRecorded();
+  loadLive();
 
   return {
     update(store) {
@@ -203,6 +261,7 @@ export function mount(el) {
       show(true);
     },
     unmount() {
+      clearInterval(liveTimer);
       off();
       tv.stop();
       tv.attach(null);

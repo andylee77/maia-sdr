@@ -26,7 +26,8 @@ mod board {
 
     use super::*;
     use crate::hardware::ad9361::Ad9361;
-    use crate::hardware::radiocore::{nco_to_freq, LaneDdc, RadioCore, CAPTURE_SAMPLE_BYTES, CONTROL_LANE};
+    use crate::hardware::radiocore::{nco_to_freq, LaneDdc, RadioCore, VsbStatus, CAPTURE_SAMPLE_BYTES, CONTROL_LANE};
+    use crate::protocol::atsc::live::MF_DSPS;
     use crate::radio::spectrum::{Spectrum, SpectrumFrame};
     use crate::radio::streams::{Block, LaneBlock, StreamCounters, Streams};
     use crate::radio::tuner::LaneReadback;
@@ -187,6 +188,43 @@ mod board {
             r.adc_clips = Some(core.adc_clips());
             r.capture = Some(core.capture_status());
             r
+        }
+
+        async fn vsb_present(&self) -> bool {
+            self.core.lock().await.vsb_present()
+        }
+
+        async fn vsb_start(&self, table: Vec<[u16; MF_DSPS]>, step: u32, carrier: i32, packets: SyncSender<Vec<u8>>) -> Result<()> {
+            let core = self.core.lock().await;
+            anyhow::ensure!(core.vsb_present(), "radio core {} has no 8-VSB block", core.identity().version);
+            self.streams.subscribe_vsb(packets);
+            core.set_ring(true);
+            core.vsb_start(&table, step, carrier);
+            Ok(())
+        }
+
+        async fn vsb_stop(&self) {
+            let core = self.core.lock().await;
+            if core.vsb_present() {
+                core.vsb_disable();
+            }
+        }
+
+        async fn vsb_load_taps(&self, taps: Vec<i32>) -> bool {
+            self.core.lock().await.vsb_load_taps(&taps)
+        }
+
+        async fn vsb_snapshot(&self) {
+            self.core.lock().await.vsb_snapshot();
+        }
+
+        async fn vsb_status(&self) -> Option<VsbStatus> {
+            let core = self.core.lock().await;
+            core.vsb_present().then(|| core.vsb_status())
+        }
+
+        fn vsb_dropped(&self) -> u64 {
+            self.streams.vsb_dropped()
         }
     }
 

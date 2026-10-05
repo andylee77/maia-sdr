@@ -1,6 +1,7 @@
 //! The lane ring's packets (maia-sdr doc/changes/079, "The lane packet"): 4 KB each, an 8-word
 //! header and up to 1008 IQ samples. Every 64-bit word is little-endian, so the IQ is
-//! interleaved `i16` I, Q in byte order.
+//! interleaved `i16` I, Q in byte order. The 8-VSB block's packets (formats 2 and 3, lane 15;
+//! doc/changes/085) share the ring and the check, and are read by `protocol::atsc::live`.
 
 /// Bytes per packet.
 pub const PACKET_BYTES: usize = 4096;
@@ -10,6 +11,8 @@ pub const MAX_SAMPLES: usize = 1008;
 const HEADER_BYTES: usize = 64;
 const MAGIC: u16 = 0x5243;
 const FORMAT: u8 = 1;
+/// The 8-VSB block's formats: codewords, snapshots.
+const VSB_FORMATS: [u8; 2] = [2, 3];
 
 /// Why a packet was not taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +74,30 @@ fn word(bytes: &[u8], i: usize) -> u64 {
     u64::from_le_bytes(bytes[8 * i..8 * i + 8].try_into().unwrap())
 }
 
-/// Check and read one packet.
+/// A packet of the ring, checked.
+#[derive(Debug, Clone, Copy)]
+pub enum Parsed<'a> {
+    Lane(Packet<'a>),
+    /// The 8-VSB block's, whole (`protocol::atsc::live::packets` reads it).
+    Vsb(&'a [u8]),
+}
+
+/// Check and read one packet of the ring.
+pub fn parse_any(bytes: &[u8]) -> Result<Parsed<'_>, Fault> {
+    assert_eq!(bytes.len(), PACKET_BYTES);
+    let w0 = word(bytes, 0);
+    let format = (w0 >> 16) as u8 & 0xF;
+    if w0 as u16 == MAGIC && VSB_FORMATS.contains(&format) {
+        let check = bytes.chunks_exact(4).fold(0u32, |x, b| x ^ u32::from_le_bytes(b.try_into().unwrap()));
+        if check != 0 {
+            return Err(Fault::Check(check));
+        }
+        return Ok(Parsed::Vsb(bytes));
+    }
+    parse(bytes).map(Parsed::Lane)
+}
+
+/// Check and read one lane packet.
 pub fn parse(bytes: &[u8]) -> Result<Packet<'_>, Fault> {
     assert_eq!(bytes.len(), PACKET_BYTES);
     let w0 = word(bytes, 0);
@@ -182,6 +208,21 @@ mod tests {
     #[test]
     fn unwritten_memory_is_not_a_packet() {
         assert_eq!(parse(&[0u8; PACKET_BYTES]).unwrap_err(), Fault::Magic(0));
+    }
+
+    #[test]
+    fn the_8vsb_block_s_packets_pass_whole_when_their_check_holds() {
+        let mut bytes = vec![0u8; PACKET_BYTES];
+        let w0: u64 = 0x5243 | 2 << 16 | 15 << 20 | 19 << 32;
+        bytes[..8].copy_from_slice(&w0.to_le_bytes());
+        bytes[100] = 0x5A;
+        let check = bytes.chunks_exact(4).fold(0u32, |x, b| x ^ u32::from_le_bytes(b.try_into().unwrap()));
+        bytes[56..60].copy_from_slice(&check.to_le_bytes());
+        assert!(matches!(parse_any(&bytes), Ok(Parsed::Vsb(b)) if b.len() == PACKET_BYTES));
+        bytes[200] ^= 1;
+        assert!(matches!(parse_any(&bytes), Err(Fault::Check(_))));
+        let lane = build(&header(3), &samples(3));
+        assert!(matches!(parse_any(&lane), Ok(Parsed::Lane(p)) if p.header.count == 3));
     }
 
     /// The words the gateware's reference model writes (maia-hdl `lane_packetizer.header_words`,

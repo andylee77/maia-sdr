@@ -10,6 +10,7 @@
 //! LO move) clears that, so the next retune always writes the NCO.
 
 use std::future::Future;
+use std::sync::mpsc::SyncSender;
 use std::sync::Mutex;
 
 use anyhow::{bail, Result};
@@ -19,7 +20,8 @@ use tokio::sync::watch;
 
 use crate::hardware::ad9361::GainMode;
 use crate::hardware::presets::DdcPreset;
-use crate::hardware::radiocore::{CaptureStatus, RingStatus};
+use crate::hardware::radiocore::{CaptureStatus, RingStatus, VsbStatus};
+use crate::protocol::atsc::live::MF_DSPS;
 use crate::radio::lane::Lane;
 use crate::radio::spectrum::{SpectrumCounters, SpectrumFrame};
 use crate::radio::streams::LaneCounters;
@@ -145,6 +147,40 @@ pub trait RadioHw: Send + Sync {
             let _ = samples;
             bail!("this radio has no IQ capture")
         }
+    }
+    /// The radio core has the 8-VSB block (live TV, doc/changes/085).
+    fn vsb_present(&self) -> impl Future<Output = bool> + Send {
+        async { false }
+    }
+    /// Start the 8-VSB block afresh (its matched filter's table as the block's words, the nominal
+    /// symbol step, the carrier loop's starting frequency); its packets go to `packets`.
+    fn vsb_start(&self, table: Vec<[u16; MF_DSPS]>, step: u32, carrier: i32, packets: SyncSender<Vec<u8>>) -> impl Future<Output = Result<()>> + Send {
+        async move {
+            let _ = (table, step, carrier, packets);
+            bail!("this radio has no 8-VSB block")
+        }
+    }
+    /// Hold the 8-VSB block in reset.
+    fn vsb_stop(&self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
+    /// A tap set into the block's idle set, armed for the next field; false while one is armed.
+    fn vsb_load_taps(&self, taps: Vec<i32>) -> impl Future<Output = bool> + Send {
+        async move {
+            let _ = taps;
+            false
+        }
+    }
+    /// The block takes the next field's snapshot.
+    fn vsb_snapshot(&self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
+    fn vsb_status(&self) -> impl Future<Output = Option<VsbStatus>> + Send {
+        async { None }
+    }
+    /// The block's packets dropped because their receiver was behind.
+    fn vsb_dropped(&self) -> u64 {
+        0
     }
 }
 

@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, bail, Context, Result};
 use tokio::sync::OwnedMutexGuard;
 
+use super::live::{Live, LiveReceiver};
 use super::{usable_half, AtscRequest, AtscScan, ChannelSpectrum, FoundChannel, Station};
 use crate::hardware::ad9361::GainMode;
 use crate::hardware::presets::find_preset;
@@ -52,10 +53,12 @@ pub struct Atsc {
     state: Mutex<AtscScan>,
     /// The last scan's windows.
     spectra: Mutex<Vec<WindowSpectrum>>,
-    /// The radio while ATSC mode lasts; a run holds this lock.
+    /// The radio while ATSC mode lasts; a run or live TV holds this lock.
     radio: Arc<tokio::sync::Mutex<Option<Held>>>,
     /// Scanner mode is coming back: no new run, and the running one stops.
     leaving: AtomicBool,
+    /// Live TV (the radio core's 8-VSB block).
+    pub live: Arc<Live>,
 }
 
 impl Atsc {
@@ -115,21 +118,54 @@ impl Atsc {
         self.leaving.store(false, Ordering::SeqCst);
     }
 
-    /// ATSC mode ends: a run stops, the radio is handed back. Returns the site to bring back.
+    /// ATSC mode ends: a run and live TV stop, the radio is handed back. Returns the site to bring
+    /// back.
     pub async fn leave(&self) -> Option<String> {
         self.leaving.store(true, Ordering::SeqCst);
         self.cancel();
+        self.live.stop().await;
         self.radio.lock().await.take().and_then(|h| h.back_to)
     }
 
-    /// Start a run; refused outside ATSC mode or while one runs.
+    /// Live TV on RF `rf`: what played stops, and the radio goes to the block. Refused outside
+    /// ATSC mode or while a scan runs.
+    pub async fn live_start<H: RadioHw + 'static>(self: &Arc<Self>, rf: u8, tuner: Arc<Tuner<H>>, log: Arc<EventLog>) -> Result<()> {
+        self.live.stop().await;
+        let radio = self.radio.clone().try_lock_owned().map_err(|_| anyhow!("a TV scan is running"))?;
+        if radio.is_none() || self.leaving.load(Ordering::SeqCst) {
+            bail!("the unit is not in ATSC mode");
+        }
+        let result = self.live.start(rf, tuner, log, Box::new(radio)).await;
+        if let Err(e) = &result {
+            self.live.failed(rf, e);
+        }
+        result
+    }
+
+    /// The live stream of RF `rf`: the channel the block plays, or, in ATSC mode with nobody
+    /// watching another channel, `rf` tuned now. `None` without the block or outside ATSC mode.
+    pub async fn live_stream<H: RadioHw + 'static>(self: &Arc<Self>, rf: u8, tuner: Arc<Tuner<H>>, log: Arc<EventLog>) -> Result<Option<LiveReceiver>> {
+        if self.live.rf().await == Some(rf) {
+            return Ok(Some(self.live.subscribe()));
+        }
+        if !tuner.hw().vsb_present().await || self.radio.try_lock().is_ok_and(|r| r.is_none()) || self.leaving.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        if let Some(other) = self.live.rf().await.filter(|_| self.live.viewers() > 0) {
+            bail!("live TV is playing RF {other} for another viewer");
+        }
+        self.live_start(rf, tuner, log).await?;
+        Ok(Some(self.live.subscribe()))
+    }
+
+    /// Start a run; refused outside ATSC mode, while one runs or while live TV plays.
     pub fn start<H: RadioHw + Send + Sync + 'static>(
         self: &Arc<Self>,
         req: AtscRequest,
         tuner: Arc<Tuner<H>>,
         log: Arc<EventLog>,
     ) -> Result<u64> {
-        let radio = self.radio.clone().try_lock_owned().map_err(|_| anyhow!("a TV scan is already running"))?;
+        let radio = self.radio.clone().try_lock_owned().map_err(|_| anyhow!("the radio is busy: a TV scan runs, or live TV plays (stop it first)"))?;
         if radio.is_none() || self.leaving.load(Ordering::SeqCst) {
             bail!("the unit is not in ATSC mode");
         }

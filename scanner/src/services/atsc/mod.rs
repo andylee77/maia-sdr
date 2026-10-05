@@ -5,6 +5,7 @@
 //! channel strong enough is tuned on its own, a short raw IQ capture decoded, and the station's
 //! own name for itself read: its virtual channels and transport stream id (`protocol::atsc::receiver`).
 
+pub mod live;
 pub mod stream;
 pub mod sweep;
 

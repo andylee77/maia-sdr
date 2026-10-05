@@ -5,6 +5,33 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-05] 085: Bake D, the 8-VSB receiver in the PL, live ATSC TV (in progress)
+
+**Branch:** fishball-p25 (local)
+**Bake required:** YES (radio core 2.1.0).
+
+- **Design and status:** `doc/changes/085_bake_d_8vsb_receiver.md`. Andy's decisions: no LMS in
+  the PL (the PS solves the taps every 0.25 s); Verilator in a local Docker image for the
+  whole-field simulations.
+- **The gateware** (`scanner-hdl/radio_core/vsb/`): the AD9361's samples to Reed-Solomon's
+  syndromes, bit for bit 083's model. In clk3x the matched filter at any instant (5 DSPs, the
+  table written by the PS), the gain, turn and DC with their loops, the timing loop at the segment
+  syncs, the segment and field syncs, the 128-tap equalizer (8 DSPs, two tap sets swapped at a
+  field's start); in sync the MER, the 12 trellis decoders, the bytes in field order, the
+  deinterleaver and the syndromes; codeword packets (format 2) and snapshots (format 3) through
+  the lane ring as lane 15. Registers at 0x080-0x0FF, `capabilities.vsb`.
+- **The model** (`scanner/src/protocol/atsc/pl`): a packet's error energy is its field before's,
+  the gain loop's sum is bounded, the decoder restarts when fields are lost and found again. What
+  the PS shares with it moved to `protocol::atsc::live` (the matched filter's table, the step, the
+  packets, the snapshot gatherer and the tap solve, a codeword's correction).
+- **Tests:** each stage against vectors the model writes from unit A's captures (Amaranth's
+  simulator), and the front end and the whole block in Verilator on five captures, every symbol
+  and every packet word equal to the model's.
+- **The PS:** `hardware::radiocore` drives the block and parses its packets; `services::atsc::live`
+  tunes, loads and runs it, corrects and derandomizes the codewords, solves and loads the taps,
+  reads PSIP; `/api/v1/atsc/stream/{rf}` serves the live multiplex where the block plays,
+  `/api/v1/atsc/live` its statistics; the Viewer plays any named channel live with them.
+
 ## [2026-10-05] 084: The ATSC player, our own decoders in Rust for the browser, and a stream for VLC (in progress)
 
 **Branch:** fishball-p25 (local)

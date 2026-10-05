@@ -195,6 +195,10 @@ pub struct Streams {
     state: Mutex<State>,
     /// Packets that failed their checks (never written, or stale in the cache).
     faults: AtomicU64,
+    /// Where the 8-VSB block's packets go (the live TV receiver), whole as they came.
+    vsb: Mutex<Option<SyncSender<Vec<u8>>>>,
+    /// The block's packets dropped because their receiver was behind.
+    vsb_dropped: AtomicU64,
 }
 
 impl Streams {
@@ -202,7 +206,36 @@ impl Streams {
         Arc::new(Streams {
             state: Mutex::new(State { lanes: (0..lanes).map(|_| LaneState::default()).collect(), rate_hz: 0.0 }),
             faults: AtomicU64::new(0),
+            vsb: Mutex::new(None),
+            vsb_dropped: AtomicU64::new(0),
         })
+    }
+
+    /// The 8-VSB block's packets go to `tx` from now on, in ring order.
+    pub fn subscribe_vsb(&self, tx: SyncSender<Vec<u8>>) {
+        *self.vsb.lock().unwrap_or_else(|p| p.into_inner()) = Some(tx);
+    }
+
+    /// Hand one poll's 8-VSB packets to their receiver, if one listens.
+    pub fn deliver_vsb(&self, packets: Vec<Vec<u8>>) {
+        let mut sink = self.vsb.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(tx) = sink.as_ref() else { return };
+        for p in packets {
+            match tx.try_send(p) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    self.vsb_dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    *sink = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    pub fn vsb_dropped(&self) -> u64 {
+        self.vsb_dropped.load(Ordering::Relaxed)
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
