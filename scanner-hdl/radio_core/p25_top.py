@@ -5,10 +5,12 @@
 # The AD9361's samples go to N lanes, each a DDC (tune and decimate to 50 kSPS) whose output is
 # cut into tagged packets (lane_packetizer.py); one ring DMA carries every lane's packets to the
 # PS, where all demodulation runs. Beside the lanes: the wideband spectrometer, whose frames
-# carry a header (spectrum.py), and the raw IQ capture ring (capture.py). The register bridge
+# carry a header (spectrum.py), the raw IQ capture ring (capture.py), and the 8-VSB receiver
+# (vsb/), whose codewords and snapshots go through the lane ring as lane 15. The register bridge
 # answers every access.
 #
-#   rxiq_cdc -> input register -+-> lane DDC 0..N-1 -> packetizers -> LaneRing -> lanes_dma
+#   rxiq_cdc -> input register -+-> lane DDC 0..N-1 -> packetizers -+-> LaneRing -> lanes_dma
+#                               +-> VsbBlock -> codewords, snapshots -+
 #                               +-> SpectrumFrames -> wideband_spec_dma
 #                               +-> Capture (IQPacker -> wideband_iq_dma)
 #
@@ -18,7 +20,10 @@
 #   0x020           lane ring, sample and clip counts
 #   0x040           spectrum
 #   0x060           capture
-#   0x080-0x0FF     kept for later blocks
+#   0x080           8-VSB: control, nominal step, carrier, status and counts
+#   0x0A0           8-VSB: the matched filter's table
+#   0x0C0           8-VSB: the equalizer's taps
+#   0x0E0-0x0FF     kept for later blocks
 #   0x100 + 0x20*i  lane i: DDC coefficients and stages, NCO, lane control (enable, tag), status
 #
 # SPDX-License-Identifier: MIT
@@ -43,10 +48,12 @@ from .lane_packetizer import HEADER_WORDS, LanePacketizer, PACKET_WORDS
 from .lane_ring import LaneRing
 from .p25ddc import P25DDC
 from .spectrum import SpectrumFrames
+from .vsb.block import VsbBlock
 from . import configs
 
-# IP core version. The scanner reads one major version: a change to the map takes the next.
-_version = '2.0.0'
+# IP core version. The scanner reads one major version: a change to the map takes the next; a
+# block added where the map kept room takes the next minor.
+_version = '2.1.0'
 PRODUCT_ID = 0x72616431   # "rad1"
 
 # Word address bits of the register bus (a 1 KB window), and of one bank (8 words).
@@ -58,6 +65,9 @@ CONTROL_BANK = 0x000
 LANES_RING_BANK = 0x020
 SPECTRUM_BANK = 0x040
 CAPTURE_BANK = 0x060
+VSB_BANK = 0x080
+VSB_MF_BANK = 0x0A0
+VSB_EQ_BANK = 0x0C0
 LANE_BANKS = 0x100
 # AXI-Lite cycles after `sdr_reset` clears before the sync-domain banks are claimed (their reset
 # synchronisers release a few cycles later).
@@ -112,6 +122,7 @@ class P25Core(Elaboratable):
                 Field('header_words', Access.R, 4, HEADER_WORDS),
                 Field('spectrum', Access.R, 1, 1),
                 Field('capture', Access.R, 1, 1),
+                Field('vsb', Access.R, 1, int(config.vsb)),
             ]),
         }, BANK_WORDS_LOG2)
 
@@ -119,7 +130,11 @@ class P25Core(Elaboratable):
         self.packetizers = [LanePacketizer(i) for i in range(self.lanes)]
         self.lane_registers = [self._lane_bank(i) for i in range(self.lanes)]
 
-        self.lane_ring = LaneRing(self.packetizers)
+        self.vsb = VsbBlock() if config.vsb else None
+        sources = list(self.packetizers)
+        if self.vsb is not None:
+            sources += [self.vsb.codewords, self.vsb.snapshots]
+        self.lane_ring = LaneRing(sources)
         self.lanes_dma = DmaStreamRingWrite(
             config.lanes_dma_address, config.lanes_dma_num_buffers_log2,
             config.lanes_dma_buffer_size, width=64, axi_awidth=32, name='m_axi_lanes')
@@ -178,11 +193,63 @@ class P25Core(Elaboratable):
             0b101: Register('capture_buffers', [Field('count', Access.R, 32, 0)]),
         }, BANK_WORDS_LOG2)
 
+        # The 8-VSB receiver (doc/changes/085, "Registers").
+        if self.vsb is not None:
+            self.vsb_registers = Registers('vsb', {
+                0b000: Register('vsb_control', [
+                    # 0 holds the block in reset: a retune restarts it.
+                    Field('enable', Access.RW, 1, 0),
+                    # Take the next field's snapshot.
+                    Field('snapshot', Access.Wpulse, 1, 0),
+                    # The taps written since take effect at the next field's first symbol.
+                    Field('taps_arm', Access.Wpulse, 1, 0),
+                ]),
+                # The nominal symbol step, input samples x 2^32, from the true sample rate.
+                0b001: Register('vsb_step', [Field('step', Access.RW, 32, 0)]),
+                # The carrier loop's starting frequency (theta a symbol beyond the quarter turn).
+                0b010: Register('vsb_carrier', [Field('frequency', Access.RW, 32, 0)]),
+                0b011: Register('vsb_status', [
+                    Field('segments', Access.R, 1, 0),
+                    Field('fields', Access.R, 1, 0),
+                    Field('tracking', Access.R, 1, 0),
+                    Field('taps_armed', Access.R, 1, 0),
+                    Field('snapshot_pending', Access.R, 1, 0),
+                    Field('overrun', Access.R, 1, 0),
+                ]),
+                0b100: Register('vsb_taps_loaded', [Field('count', Access.R, 16, 0)]),
+                0b101: Register('vsb_fields', [Field('count', Access.R, 32, 0)]),
+                0b110: Register('vsb_lost', [Field('count', Access.R, 32, 0)]),
+            }, BANK_WORDS_LOG2)
+            # A table word (row p, step c at 8p + c) of the five DSPs' taps; `write` commits it.
+            self.vsb_mf_registers = Registers('vsb_mf', {
+                0b000: Register('vsb_mf_taps01', [
+                    Field('tap0', Access.RW, 12, 0), Field('reserved0', Access.R, 4, 0),
+                    Field('tap1', Access.RW, 12, 0),
+                ]),
+                0b001: Register('vsb_mf_taps23', [
+                    Field('tap2', Access.RW, 12, 0), Field('reserved0', Access.R, 4, 0),
+                    Field('tap3', Access.RW, 12, 0),
+                ]),
+                0b010: Register('vsb_mf_tap4', [
+                    Field('tap4', Access.RW, 12, 0), Field('addr', Access.RW, 9, 0),
+                    Field('reserved0', Access.R, 10, 0), Field('write', Access.Wpulse, 1, 0),
+                ]),
+            }, BANK_WORDS_LOG2)
+            # A tap into the idle set.
+            self.vsb_eq_registers = Registers('vsb_eq', {
+                0b000: Register('vsb_eq_tap', [
+                    Field('tap', Access.RW, 16, 0), Field('index', Access.RW, 7, 0),
+                    Field('reserved0', Access.R, 8, 0), Field('write', Access.Wpulse, 1, 0),
+                ]),
+            }, BANK_WORDS_LOG2)
+
         # The sync-domain banks by byte offset.
         self.sync_banks = {
             LANES_RING_BANK: self.ring_registers,
             SPECTRUM_BANK: self.spec_registers,
             CAPTURE_BANK: self.capture_registers,
+            **({VSB_BANK: self.vsb_registers, VSB_MF_BANK: self.vsb_mf_registers,
+                VSB_EQ_BANK: self.vsb_eq_registers} if self.vsb is not None else {}),
             **{lane_bank_offset(i): bank for i, bank in enumerate(self.lane_registers)},
         }
         self.register_map = RegisterMap(
@@ -193,7 +260,7 @@ class P25Core(Elaboratable):
                 'name': 'Radio Core',
                 'series': 'Fishball',
                 'version': _version,
-                'description': f'Fishball radio core: lanes, spectrum, capture '
+                'description': f'Fishball radio core: lanes, spectrum, capture, 8-VSB '
                                f'(platform {config.platform})',
                 'licenseText': 'SPDX-License-Identifier: MIT',
             })
@@ -353,6 +420,45 @@ class P25Core(Elaboratable):
                 pk.sample_index.eq(sample_count),
                 pk.adc_clips.eq(adc_clips),
                 regs[p + 'status']['lost'].eq(pk.lost),
+            ]
+
+        # ── The 8-VSB receiver ───────────────────────────────────────────────────────────
+        if self.vsb is not None:
+            m.submodules.vsb = vsb = self.vsb
+            # Its own copy of the input register, as each lane's, the sample count's index.
+            vsb_re = Signal(signed(12), reset_less=True, name='vsb_re', attrs={'keep': 'true'})
+            vsb_im = Signal(signed(12), reset_less=True, name='vsb_im', attrs={'keep': 'true'})
+            vsb_strobe = Signal(name='vsb_strobe', attrs={'keep': 'true'})
+            m.d.sync += [vsb_re.eq(rx_re), vsb_im.eq(rx_im), vsb_strobe.eq(rx_strobe)]
+            ctl = self.vsb_registers
+            mf = self.vsb_mf_registers
+            eqr = self.vsb_eq_registers['vsb_eq_tap']
+            status = ctl['vsb_status']
+            m.d.comb += [
+                vsb.re_in.eq(vsb_re), vsb.im_in.eq(vsb_im), vsb.strobe_in.eq(vsb_strobe),
+                vsb.sample_count.eq(sample_count),
+                vsb.common_edge.eq(common_edge_3x('ce3x_vsb')),
+                vsb.enable.eq(ctl['vsb_control']['enable']),
+                vsb.snapshot.eq(ctl['vsb_control']['snapshot']),
+                vsb.taps_arm.eq(ctl['vsb_control']['taps_arm']),
+                vsb.step0.eq(ctl['vsb_step']['step']),
+                vsb.carrier0.eq(ctl['vsb_carrier']['frequency']),
+                vsb.mf_wen.eq(mf['vsb_mf_tap4']['write']),
+                vsb.mf_addr.eq(mf['vsb_mf_tap4']['addr']),
+                vsb.mf_data.eq(Cat(mf['vsb_mf_taps01']['tap0'], mf['vsb_mf_taps01']['tap1'],
+                                   mf['vsb_mf_taps23']['tap2'], mf['vsb_mf_taps23']['tap3'],
+                                   mf['vsb_mf_tap4']['tap4'])),
+                vsb.tap_wen.eq(eqr['write']), vsb.tap_addr.eq(eqr['index']),
+                vsb.tap_data.eq(eqr['tap']),
+                status['segments'].eq(vsb.status_segments),
+                status['fields'].eq(vsb.status_fields),
+                status['tracking'].eq(vsb.status_tracking),
+                status['taps_armed'].eq(vsb.status_armed),
+                status['snapshot_pending'].eq(vsb.status_snapshot),
+                status['overrun'].eq(vsb.status_overrun),
+                ctl['vsb_taps_loaded']['count'].eq(vsb.taps_loaded),
+                ctl['vsb_fields']['count'].eq(vsb.field_count),
+                ctl['vsb_lost']['count'].eq(vsb.lost),
             ]
 
         # ── The lane ring ────────────────────────────────────────────────────────────────

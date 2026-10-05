@@ -13,7 +13,8 @@
 //!
 //! The PS half (`ps`) solves the equalizer's taps from snapshots of its input (081's least
 //! squares), and corrects the flagged codewords and reads the transport stream as 081 does.
-//! `study` holds the studies on unit A's captures that size the model.
+//! `study` holds the studies on unit A's captures that size the model; `vectors` writes each
+//! stage's inputs and outputs for the gateware's tests (085).
 
 pub mod decoder;
 pub mod equalizer;
@@ -23,6 +24,8 @@ pub mod ps;
 pub mod study;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vectors;
 
 use crate::protocol::atsc::vsb::{FIELD_SEGMENTS, SEGMENT};
 
@@ -222,9 +225,33 @@ pub fn run(x: &[[i16; 2]], fs: f64, centre_offset_hz: f64, cfg: &Config) -> Opti
     back(&front, cfg)
 }
 
+/// The back half's stage outputs, for the HDL to match.
+#[derive(Debug, Clone, Default)]
+pub struct BackTrace {
+    /// The first field's first symbol.
+    pub first: usize,
+    /// The equalizer's output for each symbol from `first` to the last field's end.
+    pub eq_out: Vec<i32>,
+    /// The tap sets as loaded: the field (counted from the first) and the symbol they start at,
+    /// and the taps.
+    pub loads: Vec<(usize, usize, Vec<i32>)>,
+    /// Each data symbol the decoder took: its trellis decoder, its soft symbol, and the decision
+    /// the decoder gave (none while its survivors fill).
+    pub decisions: Vec<(u8, i16, Option<u8>)>,
+}
+
 /// The equalizer, the decoder and the packets on the front end's output, the PS solving the
 /// taps from snapshots as the schedule says.
 pub fn back(front: &front::Output, cfg: &Config) -> Option<Run> {
+    back_with(front, cfg, None)
+}
+
+/// `back`, its stage outputs kept in `trace`.
+pub fn back_traced(front: &front::Output, cfg: &Config, trace: &mut BackTrace) -> Option<Run> {
+    back_with(front, cfg, Some(trace))
+}
+
+fn back_with(front: &front::Output, cfg: &Config, mut trace: Option<&mut BackTrace>) -> Option<Run> {
     let w = &cfg.widths;
     let s = &cfg.schedule;
     // The fields counted without a break from the first field sync found.
@@ -272,6 +299,11 @@ pub fn back(front: &front::Output, cfg: &Config) -> Option<Run> {
     let mut loaded = 0;
     let first = fields[0].start;
     let end = fields[fields.len() - 1].start + FIELD;
+    if let Some(t) = trace.as_deref_mut() {
+        t.first = first;
+        t.loads = loads.iter().enumerate().filter_map(|(f, l)| Some((f, fields[f].start, l.clone()?))).collect();
+        dec.decisions = Some(Vec::new());
+    }
     for n in first.saturating_sub(equalizer::TAPS)..(end + equalizer::PRE).min(front.y.len()) {
         // Output m is the symbol PRE before the input n.
         let m = n.wrapping_sub(equalizer::PRE);
@@ -284,6 +316,9 @@ pub fn back(front: &front::Output, cfg: &Config) -> Option<Run> {
         }
         let e = eq.step(front.y[n]);
         if in_fields {
+            if let Some(t) = trace.as_deref_mut() {
+                t.eq_out.push(e);
+            }
             let i = (m - first) / FIELD;
             let within = (m - first) % FIELD;
             let (seg, k) = (within / SEGMENT, within % SEGMENT);
@@ -295,6 +330,9 @@ pub fn back(front: &front::Output, cfg: &Config) -> Option<Run> {
         }
     }
     let codewords = dec.finish();
+    if let Some(t) = trace {
+        t.decisions = dec.decisions.take().unwrap_or_default();
+    }
     let packets = packets::pack(&codewords, &fields, front, &results, w, tracking);
     Some(Run { fields: results, codewords, packets, solves, max_metric: dec.max_metric, max_eq_acc: eq.max_acc })
 }

@@ -41,11 +41,14 @@ def test_p25_share_map_is_the_radio_core() -> None:
     ver = regs[0x4]["fields"]
     assert [(f["name"], f["lsb"], f["width"]) for f in ver][:2] == [("bugfix", 0, 8),
                                                                     ("minor", 8, 8)]
-    # The shared banks first, at offsets that do not move with the lanes; the lanes from 0x100.
+    # The shared banks first, at offsets that do not move with the lanes (the 8-VSB block's from
+    # 0x080); the lanes from 0x100.
     blocks = [(b["name"], b["offset"]) for b in m["blocks"]]
     assert blocks == [("control", "0x000"), ("lanes_ring", "0x020"), ("spectrum", "0x040"),
-                      ("capture", "0x060"), ("lane0", "0x100"), ("lane1", "0x120"),
+                      ("capture", "0x060"), ("vsb", "0x080"), ("vsb_mf", "0x0A0"),
+                      ("vsb_eq", "0x0C0"), ("lane0", "0x100"), ("lane1", "0x120"),
                       ("lane2", "0x140")]
+    assert regs[0x8C]["name"] == "vsb_status" and regs[0x84]["access"] == "rw"
 
 
 def test_adi_cores() -> None:

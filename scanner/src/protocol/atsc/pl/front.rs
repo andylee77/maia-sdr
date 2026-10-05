@@ -22,20 +22,22 @@
 use std::ops::Range;
 
 use super::{requantize, Config, Loops, Widths};
-use crate::protocol::atsc::demod::{rrc, SYMBOL_RATE};
+use crate::protocol::atsc::demod::SYMBOL_RATE;
+use crate::protocol::atsc::live;
 use crate::protocol::atsc::vsb::{pn511, pn63, FIELD_SEGMENTS, SEGMENT};
 
 /// Offsets between input samples the matched filter is tabulated at.
-pub const PHASE_BITS: u32 = 6;
-/// The matched filter's half-span, in symbols of RS/2 (081's).
-const FILTER_HALF_SPAN: f64 = 10.0;
+pub const PHASE_BITS: u32 = live::MF_PHASE_BITS;
 /// The loops take their errors at 128 a level (the equalizer's input at 12 bits).
 const LOOP_BITS: u32 = 12;
 const LEVEL: i64 = 1 << (LOOP_BITS - 5);
 /// θ's step a symbol: a quarter turn.
 const QUARTER: i64 = 1 << 30;
-/// The gain loop's sum, unity at 2^(24 + gain_k).
+/// The gain loop's sum, unity at 2^(24 + gain_k). The gain word reaches its largest value at
+/// 2^(28 + gain_k), whatever its width; the sum stops there, so that on a channel too weak to
+/// fill y it does not grow without end while the word sits at its limit.
 const GAIN_ONE_BITS: u32 = 24;
+const GAIN_SUM_BITS: u32 = GAIN_ONE_BITS + 4;
 /// The timing loop's rate: its sum's bits below 2^-32 samples a symbol.
 const RATE_FRAC: u32 = 16;
 /// The gain loop's target: the mean |y|, 4 levels.
@@ -69,17 +71,7 @@ pub struct MatchedFilter {
 
 impl MatchedFilter {
     pub fn new(fs: f64, w: &Widths) -> MatchedFilter {
-        let rb = SYMBOL_RATE / 2.0;
-        let half = ((FILTER_HALF_SPAN / rb * fs).ceil() as usize + 1).div_ceil(4) * 4;
-        let taps = 2 * half;
-        let one = f64::from(1u32 << (w.mf_taps - 1));
-        let rows = 1usize << PHASE_BITS;
-        let table = (0..rows)
-            .flat_map(|p| {
-                let f = p as f64 / rows as f64;
-                (0..taps).map(move |j| (rrc((f + half as f64 - 1.0 - j as f64) / fs * rb) * rb / fs * one).round() as i32)
-            })
-            .collect();
+        let (half, taps, table) = live::matched_filter(fs, w.mf_taps);
         let frac = w.mf_out as i32 - 13;
         let shift = w.mf_taps as i32 - 1 - frac;
         MatchedFilter { half, taps, table, frac, shift, width: w.mf_out }
@@ -151,6 +143,20 @@ pub struct Symbol {
     pub y: i32,
 }
 
+/// A segment sync symbol's evaluation half a symbol early or late, for the HDL to match.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Side {
+    /// The symbol it belongs to.
+    pub n: usize,
+    pub late: bool,
+    /// Its instant, input samples (32.32).
+    pub pos: u64,
+    pub filtered: [i32; 2],
+    pub theta: u32,
+    /// The turned real part less the DC, saturated, at the loops' scale.
+    pub value: i64,
+}
+
 /// A field sync segment, found or counted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Field {
@@ -192,8 +198,9 @@ pub struct Output {
     pub first_segment: Option<usize>,
     pub segments: Vec<Segment>,
     pub fields: Vec<Field>,
-    /// The stages' outputs for the symbols asked for.
+    /// The stages' outputs for the symbols asked for, and their early and late evaluations.
     pub trace: Vec<Symbol>,
+    pub sides: Vec<Side>,
     /// The loops' registers' largest magnitudes, for their widths.
     pub ranges: Ranges,
 }
@@ -317,12 +324,18 @@ pub fn run(x: &[[i16; 2]], fs: f64, centre_offset_hz: f64, cfg: &Config, trace: 
                     // Half a symbol either side of this sync symbol, the turn half a step either side.
                     let half_step = (step / 2) as u64;
                     let half_turn = (QUARTER + freq) / 2;
-                    let side = |p: u64, t: u32| -> Option<i64> {
-                        let z = gained(mf.at(x, p)?, g);
-                        let v = i64::from(turn.apply(z, t)[0]) - i64::from(dc);
-                        Some(at_loop_scale(v.clamp(-y_max - 1, y_max) as i32, w.y))
+                    let side = |p: u64, t: u32| -> Option<([i32; 2], i64)> {
+                        let f = mf.at(x, p)?;
+                        let v = i64::from(turn.apply(gained(f, g), t)[0]) - i64::from(dc);
+                        Some((f, at_loop_scale(v.clamp(-y_max - 1, y_max) as i32, w.y)))
                     };
-                    let (Some(e), Some(lt)) = (side(pos - half_step, theta.wrapping_sub(half_turn as u32)), side(pos + half_step, theta.wrapping_add(half_turn as u32))) else { break };
+                    let (pe, te) = (pos - half_step, theta.wrapping_sub(half_turn as u32));
+                    let (pl, tl) = (pos + half_step, theta.wrapping_add(half_turn as u32));
+                    let (Some((fe, e)), Some((fl, lt))) = (side(pe, te), side(pl, tl)) else { break };
+                    if trace.contains(&n) {
+                        out.sides.push(Side { n, late: false, pos: pe, filtered: fe, theta: te, value: e });
+                        out.sides.push(Side { n, late: true, pos: pl, filtered: fl, theta: tl, value: lt });
+                    }
                     early += SYNC[kk] * e;
                     late += SYNC[kk] * lt;
                     sync += SYNC[kk] * yl;
@@ -380,7 +393,7 @@ pub fn run(x: &[[i16; 2]], fs: f64, centre_offset_hz: f64, cfg: &Config, trace: 
         freq_acc -= ui;
         theta = theta.wrapping_add((QUARTER + freq - (ui << l.carrier_kp)) as u32);
         dc_acc += diff;
-        gain_acc = (gain_acc + (GAIN_TARGET - yl.abs())).max(1);
+        gain_acc = (gain_acc + (GAIN_TARGET - yl.abs())).clamp(1, (1 << (GAIN_SUM_BITS + l.gain_k)) - 1);
         pos = (pos as i64 + step + nudge) as u64;
         if out.first_segment.is_some_and(|f| n >= f) {
             let r = &mut out.ranges;

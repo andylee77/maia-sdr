@@ -15,6 +15,9 @@ class P25Config:
         # Lanes: one DDC each, lane 0 the control channel.
         self.lanes = 3
 
+        # The 8-VSB receiver (doc/changes/085), its packets in the lane ring as lane 15.
+        self.vsb = True
+
         # The lane ring: every lane's tagged IQ packets (lane_packetizer.py), 4 KB each, four to a
         # sub-buffer. Three lanes at 50 kSPS write ~600 KB/s, so 8 MB holds 13.7 s (0.67 s at
         # three 1 MSPS lanes). Device `p25-lanes`.

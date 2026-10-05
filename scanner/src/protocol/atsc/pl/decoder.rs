@@ -137,6 +137,8 @@ pub struct Decoder {
     cw: [u8; rs::N],
     pub codewords: Vec<Codeword>,
     pub max_metric: i64,
+    /// When kept: each data symbol's trellis decoder, soft symbol and decision.
+    pub decisions: Option<Vec<(u8, i16, Option<u8>)>>,
 }
 
 impl Decoder {
@@ -163,6 +165,7 @@ impl Decoder {
             cw: [0; rs::N],
             codewords: Vec::new(),
             max_metric: 0,
+            decisions: None,
         }
     }
 
@@ -192,6 +195,9 @@ impl Decoder {
         let enc = (k - SYNC_SYMBOLS + 4 * dseg) % ENCODERS;
         let (pair, top) = self.viterbi[enc].step(r, self.unit_s, self.depth);
         self.max_metric = self.max_metric.max(top);
+        if let Some(d) = &mut self.decisions {
+            d.push((enc as u8, r as i16, pair));
+        }
         if let Some(p) = pair {
             self.place_pair(enc, p);
         }

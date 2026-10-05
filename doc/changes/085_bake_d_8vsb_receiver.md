@@ -177,22 +177,20 @@ The banks are in sync like the others; their values reach clk3x as above.
 | 0x080 | `vsb_control` | `enable` [0] (0 holds the block in reset: a retune restarts it); `snapshot` [1] pulse (take the next field's snapshot); `taps_arm` [2] pulse (the taps written since take effect at the next field's first symbol) |
 | 0x084 | `vsb_step` | the nominal symbol step, input samples × 2^32 (the model's `step0`, from the true sample rate) |
 | 0x088 | `vsb_carrier` | the carrier loop's starting frequency (θ a symbol beyond the quarter turn, 2^32 a turn: the channel's centre off the LO) |
-| 0x08C | `vsb_status` | `segments`, `fields`, `tracking`, `taps_armed`, `snapshot_pending` |
-| 0x090 | `vsb_taps_loaded` | tap sets loaded since the enable |
-| 0x094 | `vsb_field` | fields counted since the enable |
+| 0x08C | `vsb_status` | `segments` [0], `fields` [1], `tracking` [2], `taps_armed` [3], `snapshot_pending` [4], `overrun` [5] (the symbols outran the front end: the PS restarts the block) |
+| 0x090 | `vsb_taps_loaded` | tap sets loaded since the enable [15:0] |
+| 0x094 | `vsb_fields` | fields counted since the enable |
 | 0x098 | `vsb_lost` | codewords and snapshot values the packet buffers could not take |
-| 0x0A0 | `vsb_mf_addr` | the matched filter table's word (8p + c, 9 bits); each commit moves it on |
-| 0x0A4 | `vsb_mf_taps01` | the taps for DSPs 0 and 1 ([11:0], [27:16]) |
-| 0x0A8 | `vsb_mf_taps23` | DSPs 2 and 3 |
-| 0x0AC | `vsb_mf_tap4` | DSP 4 [11:0]; `write` [31] pulse commits the word |
-| 0x0C0 | `vsb_eq_addr` | the next tap to write (7 bits); each write moves it on |
-| 0x0C4 | `vsb_eq_tap` | the tap [15:0] with `write` [31] pulse, into the idle set |
-| 0x0E0-0x0FF | | kept, answered with 0 |
+| 0x0A0 | `vsb_mf_taps01` | the taps for DSPs 0 and 1 ([11:0], [27:16]) |
+| 0x0A4 | `vsb_mf_taps23` | DSPs 2 and 3 |
+| 0x0A8 | `vsb_mf_tap4` | DSP 4 [11:0], the table's word `addr` [20:12] (8p + c), `write` [31] pulse commits the word |
+| 0x0C0 | `vsb_eq_tap` | the tap [15:0], its `index` [22:16], `write` [31] pulse, into the idle set |
+| 0x09C, 0x0AC-0x0BC, 0x0C4-0x0FF | | kept, answered with 0 |
 
 - **Version 2.1.0.** A block in the space 2.0.0 kept answered with 0; nothing else moves, so a 2.0
-  scanner runs on it. `capabilities` gains `vsb` [17]. This commit's scanner reads 2.x and offers
+  scanner runs on it. `capabilities` gains `vsb` [14]. This commit's scanner reads 2.x and offers
   live TV where `vsb` is set, the recordings where it is not.
-- **Loading taps:** the PS writes `vsb_eq_addr` 0, the 128 taps, then `taps_arm`; `vsb_taps_loaded`
+- **Loading taps:** the PS writes the 128 taps with their indices, then `taps_arm`; `vsb_taps_loaded`
   counts up at the field they start, and the packets say from which field. A set written while one
   is armed waits for it to load first (the PS reads `taps_armed`).
 
@@ -209,17 +207,32 @@ ring carries the block's packets.
 
 - **`hardware::radiocore`:** the 8-VSB banks; `parse` for formats 2 and 3 beside format 1; the ring
   reader hands the block's packets to the ATSC service and the lanes' to the streams.
-- **The live receiver (`services::atsc::live`):** tune, load, enable; then each packet: the
-  codewords checked in order (field, place), the flagged ones corrected (081's Reed-Solomon
-  decoder), derandomized, read for PSIP and the programmes, and handed to the stream hub; the
-  snapshots gathered and solved on a worker thread (083's `pl::ps`, moved out of test-only code),
-  the taps quantized, written and armed; the next snapshot asked for 10 fields after the last.
+- **What the PS and the model share (`protocol::atsc::live`):** the matched filter's table and its
+  words for the block, the step word, the packets' layout and the snapshot gatherer, the tap solve
+  (083's `pl::ps`, moved out of test-only code), and a codeword's correction and derandomization.
+  The model (`pl`) calls the same code, so the PS gives the block what the vectors were made with.
+- **The live receiver (`services::atsc::live`):** it takes the radio as a TV scan does (the two
+  exclude each other), tunes, writes the table, the step and `vsb_carrier` 0, and enables the
+  block; then each packet on a thread of its own: the codewords counted against the packets'
+  sequence, the flagged ones corrected (081's Reed-Solomon decoder), derandomized, read for PSIP,
+  and handed to the stream's players; the snapshots gathered and solved on a worker thread, the
+  taps quantized, written and armed; the next snapshot asked for 10 fields after the last once the
+  timing loop tracks. The front end finds the segment syncs once, at its enable, so the receiver
+  restarts the block when it overruns, when its fields stay lost for 3 s, or when it finds none in
+  8 s.
 - **The stream route:** `/api/v1/atsc/stream/{rf}` serves the live multiplex when the receiver is
   on that channel (live data needs no pacing), the recording otherwise. A request for another
   channel while nobody watches retunes the receiver; while someone watches one channel, another
   channel's request gets its recording if there is one, else 409.
-- **The Viewer's live statistics** (`/api/v1/atsc/live`): MER per field, the carrier and timing
-  loops, the gain word, codewords clean, corrected and failed, tap solves and their time.
+- **Live TV's routes:** `GET /api/v1/atsc/live` (the statistics and whether the core has the
+  block), `POST /api/v1/atsc/live` `{rf}` (tune and start, retuning whatever plays), `POST
+  /api/v1/atsc/live/stop`. Leaving ATSC mode stops it; a TV scan is refused while it plays.
+- **The Viewer:** where the core has the block, Play for every channel the scan named: it starts
+  the receiver on the channel's RF channel before the player asks for the stream (so a change of
+  channel never meets the last one's stream), and Stop ends both. Under the controls, live TV's
+  statistics: the state, the last field's MER, the carrier offset, the timing against nominal,
+  codewords corrected and beyond Reed-Solomon, tap solves and their time, packets missed or
+  dropped, restarts. Without the block, the recordings play as before.
 
 ## Resources against 079's budget
 
@@ -242,6 +255,37 @@ datapath's loop within 16 cycles (it is a recursion, so its stages are counted, 
 away); the 64-bit instant and the 37- to 48-bit loop sums (split adders); the decoder in sync is
 relaxed. Bake A's clk3x slack was +0.605 ns; the target here stays +0.4 ns at clk3x and no waiver.
 
+## The bitstream
+
+Vivado 2023.2, `build_fpga_p25_pretty.sh`. How timing was closed at clk3x (each build's worst
+paths, and what changed; none changed what the block computes, and the stage and whole-field
+tests ran again after each):
+
+- **Build 1: −1.320 ns** over many paths: the scheduler's issue decision from the input count, the
+  field search's decision from its PN511 compare, the equalizer's place memory into its tap counts
+  and its sum into the output, the matched filter's sum into its output, the segment search's
+  block RAM into its best-place compare, the datapath's products into its saturation, the
+  instant's 96-bit adds. Each became registered steps where an evaluation's 16 cycles leave room:
+  the instant split at bit 48 with its carry a cycle later, the step and half step registered, the
+  rounding and the saturation a cycle each, the search's sum registered before its write and
+  compare, the field search's decision a stage after its sums, the equalizer's next field start
+  read a symbol ahead.
+- **Build 2: −0.177 ns,** 262 endpoints, all from one compare: whether the evaluation's last input
+  was in (`lead`) drove the main-symbol queue's 512 clock enables and the next step. The queue now
+  takes its entry the cycle after the issue (neither the instant nor the rate has moved by then),
+  the step is loaded every cycle the scheduler waits to issue, the compare has its own register
+  behind one more scheduler cycle (the matched filter, at 16 cycles an evaluation, stays the
+  bottleneck), and the timing error's shifted moves are registered when it arrives. The matched
+  filter's table reached its DSPs at +0.167 ns: synthesis had folded the table's output register
+  into the DSPs' B registers, leaving the block RAM's unregistered output a cycle to cross to five
+  DSPs; that register is kept in the fabric.
+- **Build 2's resources** were over the plan: 23 DSPs and 15 tiles. Synthesis put the trellis
+  decoders' 397-bit state (12 words) in six RAMB36 and their four squares in DSPs, and the matched
+  filter's three adds after its DSPs in three more DSPs. The state is LUT RAM and the squares and
+  adds are carry chains now (`ram_style`, `use_dsp`), as the plan has them; an out-of-context
+  synthesis of the two modules shows no block RAM or DSP in the decoders and five DSPs in the
+  matched filter.
+
 ## Tests
 
 - **Vectors from the model** (an ignored Rust test writes them from 081's and 083's captures):
@@ -255,7 +299,19 @@ relaxed. Bake A's clk3x slack was +0.605 ns; the target here stays +0.4 ns at cl
 - **Whole fields in Verilator** (`MAIA_HDL_SLOW_TESTS=1`, Docker): the block from the AD9361's
   samples of a capture to the lane ring's packets, compared word for word with the model's, for the
   fields after the first field sync (about 900,000 symbols in), the model's tap loads applied as it
-  applies them; on a clean channel, one at the decoding edge with corrections, and one that fails.
+  applies them; on a clean channel and on channels at the decoding edge, with corrections and
+  failures.
+  - `test_vsb_whole.py` runs two benches (`test_verilator/`): the front end alone (every symbol,
+    early and late value, segment and field record) and the whole block (every codeword packet,
+    every snapshot value and header, the tap loads, the counters), each against a vector set
+    (`VSB_VECTORS`, written by `pl::vectors`).
+  - The sets: RF 14 directional (MER 23.8 dB, 7 fields, 10 codewords corrected, none failed,
+    one tap load); RF 14 omni, RF 21 and RF 20 directional and 081's RF 11 directional (31 fields each,
+    17.6-18.8 dB MER, 5-33 % of codewords beyond Reed-Solomon), three tap loads and 15 snapshot
+    packets each.
+- **The PS's packet path:** `services::atsc::live`'s test plays a vector set's packets through the
+  live receiver's packet thread (`ATSC_VECTOR_DIR`): its players get the model's transport stream
+  byte for byte, its counts and PSIP are the model's.
 - **The core:** the map with the new banks, the version, `capabilities`, the block's packets
   through the lane ring and its DMA beside a lane's.
 

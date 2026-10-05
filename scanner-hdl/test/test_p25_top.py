@@ -1,5 +1,6 @@
 #
-# Fishball P25 - the radio core's top (doc/changes/079; the map of doc/changes/082)
+# Fishball P25 - the radio core's top (doc/changes/079; the map of doc/changes/082 and the 8-VSB
+# banks of doc/changes/085)
 #
 # The register map against the design's table (shared banks that stay put whatever the lane
 # count), the build files that name the core's version and DMA masters, and the core in
@@ -10,7 +11,8 @@
 # The simulation uses P25Core(sim=True): samples go in on `sim_re`/`sim_im`/`sim_strobe` in
 # `sync`, in place of the FIFO-based input crossing. The full core runs at a few hundred `sync`
 # cycles per second, so the DDC is set up for a fast output (stage 1 at /4, stages 2 and 3
-# bypassed, a sample every `sync` cycle).
+# bypassed, a sample every `sync` cycle), and the sample tests leave the 8-VSB block out (its own
+# tests are test_vsb_*.py).
 #
 # SPDX-License-Identifier: MIT
 #
@@ -58,6 +60,10 @@ REGISTERS = {
     'spec_control': 0x40, 'spec_status': 0x44, 'spec_next_address': 0x48,
     'capture_status': 0x60, 'capture_control': 0x64, 'capture_next_address': 0x68,
     'capture_start_lo': 0x6C, 'capture_start_hi': 0x70, 'capture_buffers': 0x74,
+    'vsb_control': 0x80, 'vsb_step': 0x84, 'vsb_carrier': 0x88, 'vsb_status': 0x8C,
+    'vsb_taps_loaded': 0x90, 'vsb_fields': 0x94, 'vsb_lost': 0x98,
+    'vsb_mf_taps01': 0xA0, 'vsb_mf_taps23': 0xA4, 'vsb_mf_tap4': 0xA8,
+    'vsb_eq_tap': 0xC0,
     **{name: lane_base(i) + off for i in range(3) for name, off in [
         (f'lane{i}_ddc_coeff_addr', 0x00), (f'lane{i}_ddc_coeff', 0x08),
         (f'lane{i}_ddc_decimation', 0x0C), (f'lane{i}_ddc_frequency', 0x10),
@@ -134,9 +140,28 @@ class TestP25RegisterMap(unittest.TestCase):
         cls.svd = P25Core().svd()
         cls.regs = svd_registers(cls.svd)
 
-    def test_version_2_0_0(self):
-        self.assertEqual(p25_top._version, '2.0.0')
-        self.assertEqual(ET.fromstring(self.svd).findtext('version'), '2.0.0')
+    def test_version_2_1_0(self):
+        self.assertEqual(p25_top._version, '2.1.0')
+        self.assertEqual(ET.fromstring(self.svd).findtext('version'), '2.1.0')
+
+    def test_vsb_fields(self):
+        """The 8-VSB banks (doc/changes/085, "Registers")."""
+        self.assertEqual(self.regs['vsb_control'][2], {
+            'enable': ('[0:0]', 'read-write'), 'snapshot': ('[1:1]', 'write-only'),
+            'taps_arm': ('[2:2]', 'write-only')})
+        self.assertEqual(list(self.regs['vsb_status'][2]),
+                         ['segments', 'fields', 'tracking', 'taps_armed', 'snapshot_pending',
+                          'overrun'])
+        self.assertEqual(self.regs['vsb_mf_tap4'][2]['addr'], ('[20:12]', 'read-write'))
+        self.assertEqual(self.regs['vsb_mf_tap4'][2]['write'], ('[31:31]', 'write-only'))
+        self.assertEqual(self.regs['vsb_eq_tap'][2]['index'], ('[22:16]', 'read-write'))
+        self.assertEqual(self.regs['capabilities'][2]['vsb'], ('[14:14]', 'read-only'))
+
+    def test_without_the_block_the_banks_answer_zero(self):
+        config = P25Config()
+        config.vsb = False
+        regs = svd_registers(P25Core(config).svd())
+        self.assertFalse([n for n in regs if n.startswith('vsb')])
 
     def test_build_script_version_matches(self):
         # build_fpga.bat packages the IP with its own IP_CORE_VERSION for --p25; the block
@@ -236,9 +261,12 @@ class TestP25Elaboration(unittest.TestCase):
 
 class P25CoreSim:
     """The core in pysim, with AXI4-Lite register access."""
+    vsb = True
 
     def setUp(self):
-        self.top = P25Core(sim=True)
+        config = P25Config()
+        config.vsb = self.vsb
+        self.top = P25Core(config, sim=True)
         self.axi = self.top.axi4lite.axi
 
     def run_sim(self, bench, background=()):
@@ -266,10 +294,10 @@ class TestP25CoreRegisters(P25CoreSim, unittest.TestCase):
     def test_identity(self):
         async def bench(ctx):
             self.assertEqual(await self.rd(ctx, R['product_id']), 0x7261_6431)   # "rad1"
-            self.assertEqual(await self.rd(ctx, R['version']), 0x0002_0000)
-            # 3 lanes, 2^9 packet words, 8 header words, spectrum, capture.
+            self.assertEqual(await self.rd(ctx, R['version']), 0x0002_0100)
+            # 3 lanes, 2^9 packet words, 8 header words, spectrum, capture, 8-VSB.
             self.assertEqual(await self.rd(ctx, R['capabilities']),
-                             3 | 9 << 4 | 8 << 8 | 1 << 12 | 1 << 13)
+                             3 | 9 << 4 | 8 << 8 | 1 << 12 | 1 << 13 | 1 << 14)
         self.run_sim(bench)
 
     def test_every_access_is_answered(self):
@@ -287,9 +315,9 @@ class TestP25CoreRegisters(P25CoreSim, unittest.TestCase):
             self.assertEqual(await self.wr(ctx, CONTROL, 0, strb=0, **quick), 0)
             self.assertEqual(await self.rd(ctx, CONTROL), 1)
             await self.release_reset(ctx)
-            # The kept range, lanes the core does not have, the window's end, the control
-            # bank's unused words.
-            for addr in [0x080, 0x0E0, 0x0FC, 0x160, 0x200, 0x3FC, 0x014, 0x01C]:
+            # The 8-VSB banks' unused words, the kept range, lanes the core does not have, the
+            # window's end, the control bank's unused words.
+            for addr in [0x09C, 0x0B0, 0x0C4, 0x0E0, 0x0FC, 0x160, 0x200, 0x3FC, 0x014, 0x01C]:
                 self.assertEqual(await self.rd(ctx, addr, with_resp=True, **quick), (0, 0),
                                  hex(addr))
                 self.assertEqual(await self.wr(ctx, addr, 0xFFFF_FFFF, **quick), 0, hex(addr))
@@ -316,6 +344,8 @@ class TestP25CoreRegisters(P25CoreSim, unittest.TestCase):
                 'capture_next_address': 0x2200_0000,
                 'capture_start_lo': 0,
                 'capture_buffers': 0,
+                'vsb_control': 0, 'vsb_step': 0, 'vsb_status': 0, 'vsb_taps_loaded': 0,
+                'vsb_fields': 0, 'vsb_lost': 0,
                 **{f'lane{i}_{n}': 0 for i in range(3)
                    for n in ['control', 'status', 'ddc_frequency', 'ddc_control']},
             }
@@ -336,6 +366,13 @@ class TestP25CoreRegisters(P25CoreSim, unittest.TestCase):
         # spec_abort (bit 2) and the capture's trigger (bit 1) are pulses and read 0.
         writes[R['spec_control']] = (0x3FFB, 0x3A6B)
         writes[R['capture_control']] = (0x3D, 0x15)
+        # The 8-VSB block stays disabled; its pulses read 0.
+        writes[R['vsb_step']] = (0xFFFF_FFFF, 0xEDCB_A987)
+        writes[R['vsb_carrier']] = (0xFFFF_FFFF, 0x8000_0123)
+        writes[R['vsb_mf_taps01']] = (0x0FFF_0FFF, 0xFABC_F123)
+        writes[R['vsb_mf_taps23']] = (0x0FFF_0FFF, 0x0456_0789)
+        writes[R['vsb_mf_tap4']] = (0x001F_FFFF, 0x0012_3ABC)
+        writes[R['vsb_eq_tap']] = (0x007F_FFFF, 0x0055_8001)
 
         async def bench(ctx):
             await self.release_reset(ctx)
@@ -354,6 +391,8 @@ class TestP25CoreRegisters(P25CoreSim, unittest.TestCase):
 
 
 class TestP25CoreSamples(P25CoreSim, unittest.TestCase):
+    vsb = False
+
     def test_sample_and_clip_counters(self):
         n = 200
         clipped = {7, 8, 50, 51, 52, 199}

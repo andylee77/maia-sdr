@@ -4,6 +4,7 @@
 
 use super::{requantize, Widths};
 use crate::protocol::atsc::demod::{EQ_PRE, EQ_TAPS};
+use crate::protocol::atsc::live::taps;
 
 pub const TAPS: usize = EQ_TAPS;
 /// Taps ahead of the symbol: the output's delay.
@@ -23,14 +24,12 @@ pub struct Equalizer {
 
 /// A tap of 1, in the taps' integers.
 pub fn one(w: &Widths) -> i64 {
-    1 << (w.eq_taps - 4)
+    taps::one(w.eq_taps)
 }
 
 /// Taps solved on the PS (in levels) as the PL holds them; a tap saturates at ±8.
-pub fn quantize(taps: &[f32], w: &Widths) -> Vec<i32> {
-    let one = one(w) as f64;
-    let max = (1i64 << (w.eq_taps - 1)) - 1;
-    taps.iter().map(|&t| ((f64::from(t) * one).round() as i64).clamp(-max - 1, max) as i32).collect()
+pub fn quantize(t: &[f32], w: &Widths) -> Vec<i32> {
+    taps::quantize(t, w.eq_taps)
 }
 
 impl Equalizer {

@@ -2,10 +2,13 @@
 //! channels at a time, and what one channel's spectrum says (`spectrum`): an 8-VSB signal
 //! (ATSC 1.0, A/53) by its pilot, a wideband signal without that pilot (ATSC 3.0 or another), or
 //! nothing. In the signal: the 8-VSB receiver (`demod`, `fec`), what a station says of itself
-//! (`ts`, `psip`) and what its programs carry (`streams`), together in `receiver`.
+//! (`ts`, `psip`) and what its programs carry (`streams`), together in `receiver`. The radio
+//! core's 8-VSB block: what the PS gives it and makes of its packets (`live`), and the model it
+//! matches bit for bit (`pl`, test-only).
 
 pub mod demod;
 pub mod fec;
+pub mod live;
 #[cfg(test)]
 pub mod pl;
 pub mod psip;

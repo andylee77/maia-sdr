@@ -9,7 +9,8 @@ use std::ops::Range;
 use realfft::RealFftPlanner;
 use rustfft::num_complex::Complex32;
 
-use crate::protocol::atsc::demod::{least_squares, output, rows_inside, slice, unequalized, EQ_PRE, EQ_TAPS, SYMBOL_RATE};
+use crate::protocol::atsc::demod::{output, rows_inside, slice, unequalized, EQ_PRE, EQ_TAPS, SYMBOL_RATE};
+use crate::protocol::atsc::live::taps::solve_on;
 use crate::protocol::atsc::vsb::{field_sync, FIELD_SEGMENTS, SEGMENT, SEGMENT_SYNC, SYNC_SYMBOLS};
 
 /// Symbols a field.
@@ -19,9 +20,6 @@ const PRE_LAGS: usize = 64;
 const POST_LAGS: usize = 512;
 /// Delays within this of the main path count as the main path (the pulse's own spread).
 const MAIN: usize = 5;
-/// Decision runs a round within a field, and their length.
-const RUNS: usize = 16;
-const RUN: usize = 1024;
 
 /// Interleaved little-endian i16 I, Q, at most `max` samples.
 pub(crate) fn read_cs16(path: &std::path::Path, max: usize) -> Vec<Complex32> {
@@ -41,30 +39,6 @@ pub(crate) fn read_adc(path: &std::path::Path, max: usize) -> Vec<[i16; 2]> {
     let mut b = Vec::new();
     f.by_ref().take(4 * max as u64).read_to_end(&mut b).unwrap();
     b.chunks_exact(4).map(|c| [i16::from_le_bytes([c[0], c[1]]), i16::from_le_bytes([c[2], c[3]])]).collect()
-}
-
-/// The equalizer's taps solved on the field whose sync segment starts at symbol `s` of `y`: its
-/// field sync's known symbols, then `rounds` rounds on its own decisions over runs spread across
-/// `rows` (rows of y, inside it).
-pub(crate) fn solve_on(y: &[f32], s: usize, inverted: bool, rows: Range<usize>, rounds: usize, start: Option<Vec<f32>>) -> Option<Vec<f32>> {
-    let known = (s, field_sync(inverted));
-    let mut w = match start {
-        Some(w) => w,
-        None => least_squares(y, std::slice::from_ref(&known))?,
-    };
-    let inside = rows_inside(y.len());
-    let (lo, hi) = (rows.start.max(inside.start), rows.end.min(inside.end));
-    let n = (hi.saturating_sub(lo) / RUN).min(RUNS);
-    if n == 0 {
-        return Some(w);
-    }
-    let spacing = (hi - lo - RUN) / n.max(1);
-    for round in 0..rounds {
-        let mut runs = vec![known.clone()];
-        runs.extend((0..n).map(|r| lo + r * spacing + round * spacing / rounds.max(1)).filter(|&k0| k0 + RUN <= hi).map(|k0| (k0, (k0..k0 + RUN).map(|k| slice(output(y, &w, k))).collect())));
-        w = least_squares(y, &runs)?;
-    }
-    Some(w)
 }
 
 /// MER (signal and error energy) of equalized data symbols.

@@ -6,7 +6,7 @@
   "decode_limit": "0x400",
   "id_reg": "product_id",
   "id_value": "0x72616431",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "snapshot_domains": {},
   "requires": {
     "uio": "p25-core"
@@ -191,6 +191,13 @@
               "width": 1,
               "access": "ro",
               "desc": "capture"
+            },
+            {
+              "name": "vsb",
+              "lsb": 14,
+              "width": 1,
+              "access": "ro",
+              "desc": "vsb"
             }
           ]
         }
@@ -583,6 +590,377 @@
               "width": 32,
               "access": "ro",
               "desc": "count"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "vsb",
+      "offset": "0x080",
+      "domain": "sync",
+      "regs": [
+        {
+          "name": "vsb_control",
+          "offset": "0x080",
+          "access": "rw",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "vsb_control",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "enable",
+              "lsb": 0,
+              "width": 1,
+              "access": "rw",
+              "desc": "enable"
+            },
+            {
+              "name": "snapshot",
+              "lsb": 1,
+              "width": 1,
+              "access": "wo",
+              "desc": "snapshot"
+            },
+            {
+              "name": "taps_arm",
+              "lsb": 2,
+              "width": 1,
+              "access": "wo",
+              "desc": "taps_arm"
+            }
+          ]
+        },
+        {
+          "name": "vsb_step",
+          "offset": "0x084",
+          "access": "rw",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "vsb_step",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "step",
+              "lsb": 0,
+              "width": 32,
+              "access": "rw",
+              "desc": "step"
+            }
+          ]
+        },
+        {
+          "name": "vsb_carrier",
+          "offset": "0x088",
+          "access": "rw",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "vsb_carrier",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "frequency",
+              "lsb": 0,
+              "width": 32,
+              "access": "rw",
+              "desc": "frequency"
+            }
+          ]
+        },
+        {
+          "name": "vsb_status",
+          "offset": "0x08C",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "vsb_status",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "segments",
+              "lsb": 0,
+              "width": 1,
+              "access": "ro",
+              "desc": "segments"
+            },
+            {
+              "name": "fields",
+              "lsb": 1,
+              "width": 1,
+              "access": "ro",
+              "desc": "fields"
+            },
+            {
+              "name": "tracking",
+              "lsb": 2,
+              "width": 1,
+              "access": "ro",
+              "desc": "tracking"
+            },
+            {
+              "name": "taps_armed",
+              "lsb": 3,
+              "width": 1,
+              "access": "ro",
+              "desc": "taps_armed"
+            },
+            {
+              "name": "snapshot_pending",
+              "lsb": 4,
+              "width": 1,
+              "access": "ro",
+              "desc": "snapshot_pending"
+            },
+            {
+              "name": "overrun",
+              "lsb": 5,
+              "width": 1,
+              "access": "ro",
+              "desc": "overrun"
+            }
+          ]
+        },
+        {
+          "name": "vsb_taps_loaded",
+          "offset": "0x090",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "vsb_taps_loaded",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "count",
+              "lsb": 0,
+              "width": 16,
+              "access": "ro",
+              "desc": "count"
+            }
+          ]
+        },
+        {
+          "name": "vsb_fields",
+          "offset": "0x094",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "vsb_fields",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "count",
+              "lsb": 0,
+              "width": 32,
+              "access": "ro",
+              "desc": "count"
+            }
+          ]
+        },
+        {
+          "name": "vsb_lost",
+          "offset": "0x098",
+          "access": "ro",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "vsb_lost",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "count",
+              "lsb": 0,
+              "width": 32,
+              "access": "ro",
+              "desc": "count"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "vsb_mf",
+      "offset": "0x0A0",
+      "domain": "sync",
+      "regs": [
+        {
+          "name": "vsb_mf_taps01",
+          "offset": "0x0A0",
+          "access": "rw",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "vsb_mf_taps01",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "tap0",
+              "lsb": 0,
+              "width": 12,
+              "access": "rw",
+              "desc": "tap0"
+            },
+            {
+              "name": "reserved0",
+              "lsb": 12,
+              "width": 4,
+              "access": "ro",
+              "desc": "reserved0"
+            },
+            {
+              "name": "tap1",
+              "lsb": 16,
+              "width": 12,
+              "access": "rw",
+              "desc": "tap1"
+            }
+          ]
+        },
+        {
+          "name": "vsb_mf_taps23",
+          "offset": "0x0A4",
+          "access": "rw",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "vsb_mf_taps23",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "tap2",
+              "lsb": 0,
+              "width": 12,
+              "access": "rw",
+              "desc": "tap2"
+            },
+            {
+              "name": "reserved0",
+              "lsb": 12,
+              "width": 4,
+              "access": "ro",
+              "desc": "reserved0"
+            },
+            {
+              "name": "tap3",
+              "lsb": 16,
+              "width": 12,
+              "access": "rw",
+              "desc": "tap3"
+            }
+          ]
+        },
+        {
+          "name": "vsb_mf_tap4",
+          "offset": "0x0A8",
+          "access": "rw",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "vsb_mf_tap4",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "tap4",
+              "lsb": 0,
+              "width": 12,
+              "access": "rw",
+              "desc": "tap4"
+            },
+            {
+              "name": "addr",
+              "lsb": 12,
+              "width": 9,
+              "access": "rw",
+              "desc": "addr"
+            },
+            {
+              "name": "reserved0",
+              "lsb": 21,
+              "width": 10,
+              "access": "ro",
+              "desc": "reserved0"
+            },
+            {
+              "name": "write",
+              "lsb": 31,
+              "width": 1,
+              "access": "wo",
+              "desc": "write"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "vsb_eq",
+      "offset": "0x0C0",
+      "domain": "sync",
+      "regs": [
+        {
+          "name": "vsb_eq_tap",
+          "offset": "0x0C0",
+          "access": "rw",
+          "width": 32,
+          "reset": null,
+          "snapshot": null,
+          "desc": "vsb_eq_tap",
+          "domain": "sync",
+          "read_side_effect": false,
+          "expected": null,
+          "fields": [
+            {
+              "name": "tap",
+              "lsb": 0,
+              "width": 16,
+              "access": "rw",
+              "desc": "tap"
+            },
+            {
+              "name": "index",
+              "lsb": 16,
+              "width": 7,
+              "access": "rw",
+              "desc": "index"
+            },
+            {
+              "name": "reserved0",
+              "lsb": 23,
+              "width": 8,
+              "access": "ro",
+              "desc": "reserved0"
+            },
+            {
+              "name": "write",
+              "lsb": 31,
+              "width": 1,
+              "access": "wo",
+              "desc": "write"
             }
           ]
         }
