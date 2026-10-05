@@ -1,0 +1,23 @@
+[package]
+name = "atsc-player"
+version = "0.1.0"
+edition = "2021"
+authors = ["Andy Lee"]
+description = "ATSC TV in the browser: the transport stream, MPEG-2 video and AC-3 audio decoded in Rust (WebAssembly)"
+license = "MIT"
+
+# Built two ways: natively for its tests (against FFmpeg's decode of the same streams), and for
+# wasm32-unknown-unknown as the Viewer's player (tools/build_player.sh), which the scanner embeds.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.test]
+opt-level = 3

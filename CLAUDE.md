@@ -11,7 +11,9 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
   is on unit A; its burst-timing gate waits for Andy (`tools/burst_timing.py`). Bakes B-D wait
   for their evidence (079, "The bakes"). Bake D's model and long captures are change 083
   (`doc/changes/083_8vsb_model_and_long_captures.md`, `scanner/src/protocol/atsc/pl`); its third
-  piece, the browser's player, is left.
+  piece, the browser's player, is change 084.
+- **The ATSC player (084):** `doc/changes/084_atsc_player.md`: our own decoders in Rust for the
+  browser, and the stream for VLC. Step 2 (MPEG-2 video) waits for the ITU-T H.262 PDF.
 - **The cleanup:** `doc/CLEANUP_INVENTORY.md`, section 14's batches.
 - **Data mode:** a study with Andy's decisions, `scanner/doc/DATA_MODE.md`.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`.
@@ -22,6 +24,7 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 |------|------|
 | `scanner/` | The daemon on the Zynq PS (Rust): the radio core's driver, the demodulators, trunking, audio, history, ATSC, API, web UI (`src/ui/`, plain ES modules embedded at compile time). Design: `scanner/doc/DESIGN.md` |
 | `scanner/core-pac/` | The register PAC, generated from the radio core's SVD by the FPGA build |
+| `scanner/player/` | The ATSC player (`atsc-player`, MIT, no dependencies, built to WebAssembly for the Viewer): the transport stream, AC-3, MPEG-2 video. FFmpeg is only its tests' reference (084) |
 | `scanner-hdl/` | The fork's gateware (Amaranth): `radio_core/` (the radio core 2.0.0, product "rad1"), `hwval_hdl/` (hardware validation), their tests (`test/`, `test_cocotb/`) and `generate_svd.py`. It imports upstream `maia_hdl` |
 | `maia-hdl/` | Upstream Maia's gateware, unchanged apart from the fork's Vivado projects (`projects/fishball7020_p25/`, `fishball7020_hwval/`) and IP packaging (`ip/p25-core/`, `ip/hwval-core/`), which stay there because ADI's scripts use paths relative to them |
 | `bench/` | `fbench` CLI and board agent (`doc/HW_VALIDATION_SUITE.md`); its runs go to `runs/bench/` |
@@ -60,6 +63,9 @@ Every commit builds and passes these, run from `scanner/`:
   `test_packer`) fail on Windows with numpy 2's integer types; the hardware they model is
   unchanged.
 - **Bench host tests,** when `bench/` changes: `python -m pytest` from `bench/`.
+- **Player tests,** when `scanner/player/` changes: `cargo test` from `scanner/player/`, with
+  `ATSC_PLAYER_DATA=C:/Users/Andy/Projects/MAIA_SDR/maia-sdr/runs/atsc/captures_20261004` for the
+  comparisons with FFmpeg.
 - **P25 replay corpus:** `python bench/fbench.py run rf.p25_corpus`, with unit B transmitting
   into unit A. Andy wires the bench link when a test needs it; ask first.
 - **Live:** on unit A, Clay County P25 (site `clay_county_public_safety_simulcast`, CC

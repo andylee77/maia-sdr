@@ -5,6 +5,27 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
+## [2026-10-05] 084: The ATSC player, our own decoders in Rust for the browser, and a stream for VLC (in progress)
+
+**Branch:** fishball-p25 (local)
+**Bake required:** NO.
+
+- **Design and status:** `doc/changes/084_atsc_player.md`. Andy's decision: in-house decoders in
+  Rust compiled to WebAssembly (MIT, no FFmpeg code; FFmpeg is the tests' reference), and the
+  stream also served to VLC and other players.
+- **The crate** (`scanner/player`, `atsc-player`, no dependencies): the transport stream (PAT,
+  PMT, PES with timestamps; errored packets dropped, continuity gaps marked) and the AC-3 decoder
+  (A/52:2012, every step of its decoding process, and a stereo downmix).
+- **Tests against FFmpeg** on 083's streams from unit A: the demultiplexed AC-3 is FFmpeg's byte
+  for byte from the PMT on, with the same timestamps; the decoded coefficients agree with
+  FFmpeg's to 66-98 dB in every bin that carried bits, on six programmes (5.1 and stereo). FFmpeg
+  itself steps once per stream, at the first block mixing long and short transforms; the test
+  leaves that block out.
+- **Next:** MPEG-2 video (waits for the H.262 PDF), the WebAssembly build and the Viewer, the
+  scanner's stream hub.
+
+---
+
 ## [2026-10-04] 083: Bake D's first evidence, a fixed-point model of the 8-VSB PL half and long captures
 
 **Branch:** fishball-p25 (6d9b7d4 and the record; local)
