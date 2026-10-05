@@ -1,5 +1,7 @@
 //! The web UI: plain HTML, CSS and ES modules under `static/`, embedded at compile time (no
-//! build step, no CDN: the unit may have no internet).
+//! build step, no CDN: the unit may have no internet). The one built file is the ATSC player's
+//! WebAssembly module (`player/atsc_player.wasm`, from `scanner/player` by
+//! `tools/build_player.sh`); a test checks it was built from the crate's sources as they are.
 //!
 //! `index.html` is served at `/` and refers to every asset as `ui/{{BUILD}}/<path>`; the
 //! placeholder becomes the build tag plus a hash of the assets, so a new binary always gets new
@@ -18,12 +20,19 @@ use crate::boot::version::BUILD_TAG;
 
 struct Asset {
     path: &'static str,
-    body: &'static str,
+    body: &'static [u8],
+}
+
+impl Asset {
+    /// A text asset's text (none for the WebAssembly module).
+    fn text(&self) -> &'static str {
+        std::str::from_utf8(self.body).unwrap_or("")
+    }
 }
 
 macro_rules! assets {
     ($($p:literal),* $(,)?) => {
-        &[$(Asset { path: $p, body: include_str!(concat!("static/", $p)) }),*]
+        &[$(Asset { path: $p, body: include_bytes!(concat!("static/", $p)) }),*]
     };
 }
 
@@ -55,6 +64,10 @@ const ASSETS: &[Asset] = assets![
     "js/audio/ring.js",
     "js/audio/sources.js",
     "js/audio/gate.js",
+    "js/tv/player.js",
+    "js/tv/ring.js",
+    "js/tv/sources.js",
+    "player/atsc_player.wasm",
 ];
 
 const PLACEHOLDER: &str = "{{BUILD}}";
@@ -69,6 +82,8 @@ fn content_type(path: &str) -> &'static str {
         Some("css") => "text/css; charset=utf-8",
         // Browsers refuse to run a module served as anything else.
         Some("js") => "text/javascript; charset=utf-8",
+        // As WebAssembly.compileStreaming requires.
+        Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
     }
 }
@@ -79,7 +94,7 @@ fn version() -> &'static str {
     V.get_or_init(|| {
         let mut hash: u32 = 0x811c_9dc5;
         for a in ASSETS {
-            for b in a.path.bytes().chain(a.body.bytes()) {
+            for &b in a.path.as_bytes().iter().chain(a.body) {
                 hash ^= b as u32;
                 hash = hash.wrapping_mul(0x0100_0193);
             }
@@ -89,7 +104,7 @@ fn version() -> &'static str {
 }
 
 async fn index() -> Response {
-    let body = find("index.html").map(|a| a.body.replace(PLACEHOLDER, version())).unwrap_or_default();
+    let body = find("index.html").map(|a| a.text().replace(PLACEHOLDER, version())).unwrap_or_default();
     ([(header::CONTENT_TYPE, content_type("index.html")), (header::CACHE_CONTROL, "no-cache")], body).into_response()
 }
 
@@ -115,11 +130,12 @@ mod tests {
 
     use super::*;
 
-    /// Relative imports of a module, resolved against its directory.
+    /// Relative imports of a module, and the files it names by `new URL(..., import.meta.url)`,
+    /// resolved against its directory.
     fn imports(path: &str, body: &str) -> Vec<String> {
         let dir: Vec<&str> = path.rsplit_once('/').map_or(vec![], |(d, _)| d.split('/').collect());
         body.lines()
-            .filter(|l| l.trim_start().starts_with("import "))
+            .filter(|l| l.trim_start().starts_with("import ") || l.contains("import.meta.url"))
             .filter_map(|l| l.split(['\'', '"']).nth(1))
             .filter(|spec| spec.starts_with('.'))
             .map(|spec| {
@@ -140,7 +156,7 @@ mod tests {
 
     #[test]
     fn every_reference_resolves_and_every_asset_is_used() {
-        let index = find("index.html").unwrap().body;
+        let index = find("index.html").unwrap().text();
         let mut reached: BTreeSet<String> = index
             .split(&format!("ui/{PLACEHOLDER}/"))
             .skip(1)
@@ -149,7 +165,7 @@ mod tests {
         let mut queue: Vec<String> = reached.iter().cloned().collect();
         while let Some(path) = queue.pop() {
             let asset = find(&path).unwrap_or_else(|| panic!("{path} is referenced but not embedded"));
-            for dep in imports(&path, asset.body) {
+            for dep in imports(&path, asset.text()) {
                 assert!(find(&dep).is_some(), "{path} imports {dep}, which is not embedded");
                 if reached.insert(dep.clone()) {
                     queue.push(dep);
@@ -174,9 +190,9 @@ mod tests {
         };
         for a in ASSETS.iter().filter(|a| (a.path.ends_with(".js") || a.path.ends_with(".html")) && a.path != "js/protocols.js") {
             for w in ["p25", "dmr", "nac"] {
-                assert!(!word(a.body, w), "{} names {w}: ask js/protocols.js", a.path);
+                assert!(!word(a.text(), w), "{} names {w}: ask js/protocols.js", a.path);
             }
-            assert!(!a.body.to_lowercase().contains("tsbk"), "{} names TSBKs: ask js/protocols.js", a.path);
+            assert!(!a.text().to_lowercase().contains("tsbk"), "{} names TSBKs: ask js/protocols.js", a.path);
         }
     }
 
@@ -184,5 +200,49 @@ mod tests {
     fn the_version_changes_with_the_build() {
         assert!(version().starts_with(BUILD_TAG));
         assert_eq!(content_type("js/main.js"), "text/javascript; charset=utf-8");
+        assert_eq!(content_type("player/atsc_player.wasm"), "application/wasm");
+    }
+
+    /// FNV-1a (64 bits) of the player crate's sources: each file's path in the crate and its text
+    /// with LF line ends, in path order.
+    fn player_sources_hash() -> String {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("player");
+        let mut files = vec!["Cargo.toml".to_string(), "Cargo.lock".to_string()];
+        let mut dirs = vec![root.join("src")];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()) {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    files.push(p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        files.sort();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for f in &files {
+            let text = std::fs::read_to_string(root.join(f)).unwrap().replace("\r\n", "\n");
+            for b in f.bytes().chain([0]).chain(text.bytes()).chain([0]) {
+                hash ^= u64::from(b);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        format!("{hash:016x}")
+    }
+
+    /// `static/player/atsc_player.source` holds the hash of the sources the committed module was
+    /// built from: `tools/build_player.sh` builds it, then runs this with `PLAYER_BLESS=1`.
+    #[test]
+    fn the_player_module_is_built_from_its_sources() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui/static/player/atsc_player.source");
+        let hash = player_sources_hash();
+        if std::env::var("PLAYER_BLESS").is_ok_and(|v| v == "1") {
+            std::fs::write(&path, format!("{hash}\n")).unwrap();
+            return;
+        }
+        let have = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(have.trim(), hash, "scanner/player changed since its module was built: run tools/build_player.sh");
+        assert!(find("player/atsc_player.wasm").is_some_and(|a| a.body.starts_with(b"\0asm")));
     }
 }

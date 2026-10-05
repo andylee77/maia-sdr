@@ -321,6 +321,11 @@ progress.scan { width: 100%; height: 6px; accent-color: var(--accent); }
 .screen-stats .k { color: #8b95a0; }
 .screen-stats .r { text-align: right; color: #9aa4ae; }
 .screen-note { margin-top: auto; color: #6f7882; font-size: 0.88em; }
+.screen a { color: #8fbff0; overflow-wrap: anywhere; }
+.screen-play { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+.screen .btn { background: #1d232a; border-color: #3a434d; color: #d8dde3; }
+.screen .btn:hover { border-color: #8fbff0; }
+.screen-play .screen-note { margin-top: 0; }
 .screen-empty { margin: auto; color: #8b95a0; }
 
 @media (max-width: 640px) {

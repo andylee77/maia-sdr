@@ -40,6 +40,13 @@ pub enum Error {
     Invalid,
 }
 
+/// The channels an audio coding mode carries, as A/52 writes them (Table 5.8): "3/2", "2/0",
+/// "1+1" and so on, with "+LFE".
+pub fn channels(acmod: u8, lfe: bool) -> String {
+    let base = ["1+1", "1/0", "2/0", "3/0", "2/1", "3/1", "2/2", "3/2"][usize::from(acmod & 7)];
+    format!("{base}{}", if lfe { "+LFE" } else { "" })
+}
+
 /// A syncframe's length in bytes, from its first five; `None` if they do not start one.
 pub fn frame_len(h: &[u8]) -> Option<usize> {
     if h.len() < 5 || h[0] != 0x0B || h[1] != 0x77 {

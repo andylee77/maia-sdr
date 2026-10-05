@@ -4,7 +4,8 @@
 
 **Status:** in progress. Step 1 done (the transport stream and the AC-3 decoder, matching FFmpeg);
 step 2 waits for ITU-T H.262 (Andy is fetching the PDF: the ITU's site refuses scripted downloads).
-Step 4's stream is on unit A and plays in VLC; the Viewer's side of it comes with step 3.
+Step 4's stream is on unit A and plays in VLC; step 3's sound plays in the Viewer. The picture
+waits for step 2.
 
 ## Why
 
@@ -31,15 +32,15 @@ evidence for bake D.
   together by their timestamps.
 - **The stream:** a transport-stream hub in the scanner. Its source is a recorded `.ts` on the
   SD card played in real time (paced by its PCR) until bake D, then the PL's packets. It serves
-  the whole multiplex or one programme over HTTP (VLC and other players; an "open in VLC" link)
-  and over a WebSocket to the Viewer.
+  the whole multiplex or one programme over HTTP, to VLC and other players (the Viewer gives
+  the address and a playlist) and to the Viewer's own player, which fetches the same route.
 
 ## Steps
 
 1. The crate: the transport stream and PES (timestamps), the AC-3 decoder; tests against FFmpeg.
 2. The MPEG-2 video decoder; tests against FFmpeg.
 3. The WebAssembly build, the Viewer's Worker, WebGL and AudioWorklet; playback from a URL.
-4. The scanner's transport-stream hub and its HTTP and WebSocket routes; the VLC link.
+4. The scanner's transport-stream hub and its HTTP route; the VLC link.
 5. Unit A: a recorded `.ts` through both paths.
 
 Test input: `runs/atsc/captures_20261004/ts/*.ts` (083: ten 8 s multiplexes from unit A).
@@ -106,6 +107,37 @@ block's first sample (RF 19, frame 219, block 5: the right channel from -1.3e-3 
 centre's value), in both its float and fixed-point decoders; ours is continuous in every
 channel. It happens once per stream (RF 14 programme 4 block 60, RF 19 block 1319, RF 20 block
 1018), and the test leaves out the two transforms spanning that block.
+
+## Step 3, the sound: the module and the Viewer
+
+- **The player** (`scanner/player/src/player.rs`): a programme from its transport stream, the
+  demultiplexer then the AC-3 decoder, with the AC-3 framed across PES packets. A PES packet's PTS
+  goes to the first syncframe starting in it and the frames after it take the last time plus
+  1536 samples; a frame that fails its CRC comes out as silence of its length, so the sound keeps
+  its time. `player_vs_ffmpeg.rs`: on the six programmes, fed in uneven pieces, every syncframe
+  plays at the time FFmpeg gives it (230 to 240 each), none lost.
+- **The module** (`src/wasm.rs`): plain exports over a player the page holds by address, with an
+  input buffer and an output buffer in the module's memory; no imports. 128 KB.
+  `tools/build_player.sh` builds it into `scanner/src/ui/static/player/` with the hash of the
+  crate's sources (`atsc_player.source`); the scanner's test fails when the crate changed since.
+  The UI's assets became bytes so the module is embedded like the scripts, served as
+  `application/wasm`.
+- **The page** (`js/tv/`): the module compiled once and handed to a Worker that fetches the
+  stream (`/api/v1/atsc/stream/{rf}?program=`), feeds the player and sends each syncframe's sound
+  with its time to an AudioWorklet ring (`StereoRing`: 48 kHz in, a slow PLL on its fill, target
+  0.5 s, the playing sample's time kept for the picture to follow), or to the same ring under a
+  ScriptProcessorNode on plain http, where browsers hide AudioWorklet. The Viewer offers it for a
+  channel whose RF channel has a recording holding its programme (`/api/v1/atsc/recordings`):
+  Play sound and Stop, the player's state (format, buffer, frames lost), the stream's address
+  and a playlist file for VLC.
+- **Checks:** the page's Worker source run in a Node worker thread against unit A's stream for
+  20 s: 650 syncframes (20.8 s of sound), the time stepping back only at the two loop seams, no
+  underruns, two frames lost (the frame each seam cuts). It caught one bug before the page ran:
+  the Worker read the description's address before asking for the description. On unit A in
+  ATSC mode after a TV scan of RF 14-30 (build `2026-10-05-tv-sound1`), headless Chrome on the
+  Viewer: every channel of RF 14 and 20 playable; Play gives "Playing" within 2 s over http
+  (ScriptProcessor) and https (AudioWorklet), the buffer at 0.4-0.54 s, no exceptions. A went
+  back to scanner mode on Clay County after.
 
 ## Step 4: the stream
 

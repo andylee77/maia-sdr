@@ -4,3 +4,4 @@
 # Test fixtures (raw frames, PCM): never convert line endings
 *.bin binary
 *.f32 binary
+*.wasm binary

@@ -5,6 +5,8 @@
 //!   timestamps.
 //! - `ac3`: AC-3 audio (ATSC A/52).
 //! - `bits`: the bit reader both use.
+//! - `player`: a programme played, its streams through their decoders.
+//! - `wasm` (WebAssembly only): the functions the page calls.
 //!
 //! Written from the standards; FFmpeg's decode of the same streams is the tests' reference.
 
@@ -13,4 +15,7 @@
 
 pub mod ac3;
 pub mod bits;
+pub mod player;
 pub mod ts;
+#[cfg(target_arch = "wasm32")]
+mod wasm;

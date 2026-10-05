@@ -25,7 +25,13 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   channel's transport stream as it plays (`program`: one programme under its own PAT), from its
   recording on the SD card (`tv/rf<N>.ts`) at the pace of its clock references, looping;
   `GET /api/v1/atsc/recordings` lists them. On unit A, VLC and FFmpeg play it from the PC.
-- **Next:** MPEG-2 video (waits for the H.262 PDF), the WebAssembly build and the Viewer.
+- **The Viewer's sound:** the crate's `Player` (each syncframe at its PES packet's time, FFmpeg's
+  on every frame of six programmes) built to WebAssembly (`tools/build_player.sh`, 128 KB,
+  committed beside the UI with a test that it matches the crate's sources); a Worker fetches the
+  stream and plays it through the module into an AudioWorklet ring (ScriptProcessor on plain
+  http). On unit A, the Viewer plays a recorded channel's sound in headless Chrome over http and
+  https, and gives the stream's address and a playlist for VLC.
+- **Next:** MPEG-2 video (waits for the H.262 PDF), then the picture in the Viewer.
 
 ---
 

@@ -81,6 +81,9 @@ Every commit builds and passes these, run from `scanner/`:
   - Its scanner package rsyncs this checkout, so don't run cargo while it runs.
   - It exits 0 on failure: grep `tezuka_build.log` for `[ERROR]`.
   - Images land in `tezuka_fw/output_images/`.
+- **The ATSC player's module:** `tools/build_player.sh` after a change to `scanner/player/`; commit
+  `scanner/src/ui/static/player/atsc_player.wasm` and its `.source` with it (a host test fails
+  until then).
 - **Gateware:** `./build_fpga_p25_pretty.sh` (Vivado 2023.2, only inside this tree).
   - It regenerates the Verilog, the SVD and `scanner/core-pac`.
   - A timing failure is an error, and a route hook writes `utilization_hier.rpt`.

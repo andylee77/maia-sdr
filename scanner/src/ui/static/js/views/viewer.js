@@ -1,10 +1,14 @@
 // The Viewer page (ATSC TV mode): pick a channel the last TV scan named, above the picture area.
-// There is no picture yet (playback needs the transport stream in real time); the area shows what
-// the scan's capture read of the channel instead: its program's streams (codec, format, bitrate,
-// language), its station, and how well its signal decoded.
+// The area shows what the scan's capture read of the channel: its program's streams (codec,
+// format, bitrate, language), its station, and how well its signal decoded. When the unit holds a
+// recording of the channel's RF channel (/api/v1/atsc/recordings), its program plays: the sound
+// here (../tv/player.js), the whole program in VLC or another player from the stream's address
+// or a playlist file. The picture is not decoded in the page yet.
 
 import { h, card } from '../dom.js';
 import { mhz, num, DASH } from '../format.js';
+import { api } from '../api.js';
+import { tv, streamUrl } from '../tv/player.js';
 
 // This browser's last channel, kept for its next visit.
 const KEY = 'viewer.channel';
@@ -56,8 +60,35 @@ function audioText(s) {
     .filter(Boolean).join(' · ');
 }
 
+// A playlist naming the stream, for VLC and other players to open.
+function playlist(rf, v) {
+  const name = `${v.major}.${v.minor} ${v.short_name}`;
+  const body = `#EXTM3U\n#EXTINF:-1,${name}\n${streamUrl(rf, v.program)}\n`;
+  const a = h('a', { href: URL.createObjectURL(new Blob([body], { type: 'audio/x-mpegurl' })), download: `rf${rf}-${v.program}.m3u` });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// Play and Stop for one channel's program, the player's state, and the stream for other players.
+function playback({ rf, v }, recorded, status) {
+  if (!recorded) {
+    return h('div', { class: 'screen-note', text: `No recording of RF ${rf.number} on the unit's card (tv/rf${rf.number}.ts) to play.` });
+  }
+  const mine = tv.playing && tv.playing.rf === rf.number && tv.playing.program === v.program;
+  const button = h('button', { class: 'btn small', text: mine ? 'Stop' : 'Play sound', onclick: () => (mine ? tv.stop() : tv.start(rf.number, v.program)) });
+  const url = streamUrl(rf.number, v.program);
+  return h('div', { class: 'screen-play' },
+    h('div', { class: 'row' }, button, status),
+    h('div', { class: 'screen-note' },
+      'Its recording, played in a loop. The picture is not decoded here yet; VLC or another player shows the whole program: ',
+      h('a', { href: url, text: url }), ' · ',
+      h('a', { href: '#', text: 'playlist', onclick: e => { e.preventDefault(); playlist(rf.number, v); } })));
+}
+
 // The picture area's contents for one channel.
-function screen({ rf, st, v }, scan) {
+function screen({ rf, st, v }, scan, controls) {
   const rows = [];
   const line = (label, text, right) => rows.push(h('span', { class: 'k', text: label }), h('span', { text }), h('span', { class: 'r', text: right || '' }));
   const prog = (st.programs || []).find(p => p.number === v.program);
@@ -88,7 +119,7 @@ function screen({ rf, st, v }, scan) {
       v.long_name ? h('span', { class: 'dim', text: v.long_name }) : null,
       h('span', { class: 'r', text: `RF ${rf.number} · ${mhz(rf.center_hz, 0)}` })),
     h('div', { class: 'screen-stats' }, ...rows),
-    h('div', { class: 'screen-note', text: 'No picture yet: playback needs the stream in real time.' }),
+    controls,
   ];
 }
 
@@ -102,19 +133,46 @@ export function mount(el) {
   let list = [];
   // The channels the picker holds, to rebuild it only when they change.
   let held = '';
+  // RF channel -> the programs its recording on the card holds.
+  let recorded = new Map();
+  // The player's state, updated in place.
+  const status = h('span', { class: 'dim' });
+  // What `show` last drew: the channel and whether the player was playing it.
+  let drawn = '';
 
-  function show() {
+  function show(force) {
     const sel = list.find(x => x.key === pick.value);
+    const mine = sel && tv.playing && tv.playing.rf === sel.rf.number && tv.playing.program === sel.v.program;
+    const key = `${pick.value}|${mine}|${sel ? (recorded.get(sel.rf.number) || []).join(',') : ''}`;
+    if (!force && key === drawn) return;
+    drawn = key;
+    const has = sel && (recorded.get(sel.rf.number) || []).includes(sel.v.program);
     area.replaceChildren(...(sel
-      ? screen(sel, last)
+      ? screen(sel, last, playback(sel, has, status))
       : [h('div', { class: 'screen-empty', text: list.length ? 'Pick a channel.' : 'No stations named yet: run a scan in Channels with "name the stations" on.' })]));
   }
 
-  pick.addEventListener('change', () => {
-    remember(pick.value);
+  function loadRecorded() {
+    api.atscRecordings()
+      .then(rs => { recorded = new Map(rs.map(r => [r.rf, r.programs])); show(); })
+      .catch(() => { /* none listed: nothing to play */ });
+  }
+
+  const off = tv.onChange(s => {
+    status.textContent = [s.label, s.detail].filter(Boolean).join(' · ');
     show();
   });
+
+  pick.addEventListener('change', () => {
+    remember(pick.value);
+    // The sound belongs to the channel it was started on.
+    if (tv.playing) tv.stop();
+    show();
+  });
+  // A browser starts sound only after a click on the page.
+  el.addEventListener('click', () => tv.resume());
   show();
+  loadRecorded();
 
   return {
     update(store) {
@@ -135,8 +193,11 @@ export function mount(el) {
         pick.value = list.some(x => x.key === want) ? want : list.length ? list[0].key : '';
         pick.disabled = !list.length;
       }
-      show();
+      show(true);
     },
-    unmount() {},
+    unmount() {
+      off();
+      tv.stop();
+    },
   };
 }
