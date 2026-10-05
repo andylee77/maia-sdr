@@ -3,7 +3,8 @@
 **Date:** 2026-10-05. **Branch:** fishball-p25. **Bake required:** YES (radio core 2.1.0, product
 "rad1": the 8-VSB block in the banks bake A kept for it; the scanner of the same commit reads it).
 
-**Status:** plan; Andy's decisions recorded.
+**Status:** steps 1-3 done (the plan, the gateware with its tests, the bitstream); the PS's side
+written and tested on the host; the image and the gates on unit A to come.
 
 ## Why
 
@@ -257,7 +258,51 @@ relaxed. Bake A's clk3x slack was +0.605 ns; the target here stays +0.4 ns at cl
 
 ## The bitstream
 
-Vivado 2023.2, `build_fpga_p25_pretty.sh`. How timing was closed at clk3x (each build's worst
+Vivado 2023.2, `build_fpga_p25_pretty.sh`, the fourth build; XSA sha256 `cdbb148d…`.
+
+**Timing** (worst setup slack, no failing endpoint, no waiver; worst hold +0.019 ns, clk_fpga_0):
+
+| Clock | Setup | Bake A |
+|---|---:|---:|
+| clk3x (187.5 MHz) | **+0.179 ns** | +0.605 |
+| sync → clk3x | +0.538 | |
+| clk3x → sync | +1.229 | |
+| clk_fpga_0 (100 MHz, the AXI side) | +0.413 | |
+| rx_clk (the AD9361's interface) | +0.536 | |
+| sync (62.5 MHz) | +3.665 | |
+
+clk3x is the design's worst and below the plan's +0.4 ns target; 15 paths are under +0.4 ns, in
+three places in the front end: the field search's PN511 sign into its correlation (+0.179, 7
+levels), the datapath's turned I into y (+0.238), the matched filter's rounding into its output
+(+0.375).
+
+**Utilization** (the route hook's `utilization_hier.rpt`):
+
+| Block | LUTs (LUT RAM) | FFs | RAMB36 | RAMB18 | DSP |
+|---|---:|---:|---:|---:|---:|
+| Matched filter | 429 (160) | 488 | 1 | | 5 |
+| Datapath: gain, turn, DC, loops | 426 | 642 | | 1 | 2 |
+| Scheduler, timing loop, segment and field syncs | 941 | 1,944 | 1 | 1 | |
+| Equalizer | 603 (240) | 687 | | | 8 |
+| MER, soft symbols, reorder | 157 (12) | 285 | | | 1 |
+| Trellis decoders and bytes | 1,469 (266) | 1,449 | | | |
+| Deinterleaver, syndromes | 510 (8) | 375 | 2 | | |
+| Codeword packets | 809 | 1,044 | 2 | | |
+| Snapshot packets | 602 | 634 | 2 | | |
+| The block's crossings, field table, status | 104 | 1,872 | | | |
+| **The block** | **6,044 (686)** | **9,420** | **8** | **2** | **16** |
+| Its registers (three banks and their crossings) | 199 | 667 | | | |
+| **The core** | 13,564 | 20,265 | 36 | 37 | 62 |
+| Bake A's core | 7,124 | 10,136 | 28 | 35 | 46 |
+| **The design** | 21,689 (40.8 %) | 33,074 (31.1 %) | 46 | 42 | 84 (38.2 %) |
+
+Block RAM tiles 67 of 140 (47.9 %), slices 77.7 % (bake A 59.5 %). Against 079's budget (about
+15 DSPs, 7,000 LUTs, 8 tiles): 16 DSPs, 6,243 LUTs with the registers, 9 tiles; the tile over is
+the deinterleaver's 5,304 bytes, which need a RAMB36 and a RAMB18 but took two RAMB36. The
+flip-flops are many more than the plan counted (the pipelines' registered steps, the crossings'
+held registers): 9,420 of the 83,455 bake A left free.
+
+How timing was closed at clk3x (each build's worst
 paths, and what changed; none changed what the block computes, and the stage and whole-field
 tests ran again after each):
 
@@ -285,6 +330,8 @@ tests ran again after each):
   adds are carry chains now (`ram_style`, `use_dsp`), as the plan has them; an out-of-context
   synthesis of the two modules shows no block RAM or DSP in the decoders and five DSPs in the
   matched filter.
+- **Build 3** was stopped: build 2's resources changed the design again.
+- **Build 4: +0.179 ns,** met (above).
 
 ## Tests
 
@@ -335,3 +382,7 @@ tests ran again after each):
 ## Status log
 
 - **2026-10-05.** Plan. Andy: no LMS; Verilator in Docker.
+- **2026-10-05.** The gateware and its tests (87c352f): every stage bit for bit against the model
+  on five captures' vectors, the whole block in Verilator word for word. Four builds to close
+  timing and hold the resources to the plan (above); the fourth meets it, clk3x +0.179 ns. Its
+  XSA committed.
