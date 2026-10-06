@@ -5,8 +5,8 @@ and a new Vivado project). Steps 1 and 2 are software and host only.
 
 **Status:** design approved by Andy on 2026-10-03. Steps 1, 3a and 4 are done and on unit A's
 image (status log). The gateware for every mode is studied in "Every mode's needs"; Andy approved
-its recommendations on 2026-10-04, and bake A (change 082, core 2.0.0) is on unit A. Bakes B-D
-wait for their evidence. The 0.3.0 build is backed up in
+its recommendations on 2026-10-04. Bake A (change 082, core 2.0.0) and bake D (change 085, core
+2.1.0, live ATSC TV) are on unit A. Bakes B and C wait for their evidence. The 0.3.0 build is backed up in
 `MAIA_SDR/_archive/build_2026-10-03_p25-core-0.3.0/` and tagged `build/p25-core-0.3.0` (the
 gateware) and `build/2026-10-01-scanner-image3` (the image, in maia-sdr and tezuka_fw).
 
@@ -670,7 +670,7 @@ PS corrects, derandomizes and does everything above.**
 | Equalizer taps solved | PS | 081's least-squares solver named 16-18 stations. It runs on snapshots of the equalizer's input every 0.25 s, each solve from its snapshot's own field sync (10 data segments, one round): that holds the MER within 0.1 dB of solving every field at the decoding edge, and costs about a third of an A9 core, measured (083). The evidence does not ask for an LMS in the PL (083) |
 | Slicer and the 12 trellis decoders (4-state soft Viterbi, time-shared, one encoder a symbol) | PL | 21 % of the software's time. Logic, and the branch metrics' squares in LUTs or one shared DSP |
 | Bytes back in order, the convolutional deinterleaver (52 branches, 5,304 bytes), Reed-Solomon syndromes | PL | Two block RAMs and XOR networks. A codeword with zero syndromes needs nothing more |
-| Correcting the flagged codewords (Berlekamp-Massey, Chien, Forney), the derandomizer, the transport stream, PSIP, streaming | PS | 081's code. About 10 µs a flagged codeword: at 12,894 codewords a second, half of them flagged is about 6 % of a core. No Reed-Solomon decoder in the PL, so no LogiCORE licence |
+| Correcting the flagged codewords (Berlekamp-Massey, Chien, Forney), the derandomizer, the transport stream, PSIP, streaming | PS | 081's code. A codeword Reed-Solomon cannot correct costs about 133 µs on the A9 (085, measured), so a channel where every codeword fails holds a core and the queue overflows; on a watchable channel live TV's thread takes 6.5 % (085). No Reed-Solomon decoder in the PL, so no LogiCORE licence |
 
 The split asked for (bytes to a ring after the Viterbi, the deinterleaver and Reed-Solomon on the
 PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third of a core
@@ -750,7 +750,7 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
 | **A: every mode's plumbing** (core 2.0.0) | the common-edge fix; a register map that does not move with N; 3, 4, 5 (a mode per frame), 6, 7; the core's block report | No new DSP path: counters, latches and DMA control in sync. Every mode uses them, and the timing fix makes room for B-D | nothing |
 | **B: more lanes** | 2: DDC lanes to about eight, or 3b's channelizer past that | | a mode that needs more than three lanes (item 2) |
 | **C: data mode in the PL** | 9; the capture FIFO if item 8's check fails | | data mode steps 3-4 |
-| **D: 8-VSB** | 11 | The largest block, with its own model | nothing: its evidence is in (083: the model and the long captures; 084: the player) |
+| **D: 8-VSB** (core 2.1.0) | 11 | The largest block, with its own model | done: change 085, on unit A (its evidence: 083's model and long captures, 084's player) |
 | no bake | 8: a preset and a check; 10 after data mode's corpus | | |
 
 - **Bake A's register map:**
@@ -1040,3 +1040,16 @@ PS) would leave the PS a deinterleave and syndromes over 2.7 MB/s: about a third
     Viewer draws the picture with WebGL, the sound its clock. 1080i decodes at 80 pictures a
     second in WebAssembly on the PC.
   - Bake D now waits for nothing but its own work: the HDL from 083's model.
+- **2026-10-05, bake D: live ATSC TV** (change 085, record
+  `doc/changes/085_bake_d_8vsb_receiver.md`; core 2.1.0):
+  - `scanner-hdl/radio_core/vsb/`: the AD9361's samples to Reed-Solomon's syndromes in the PL,
+    the front end and equalizer at clk3x, the decoder at sync, codewords and snapshots through the
+    lane ring. Every stage bit for bit 083's model; the whole block word for word in Verilator on
+    six captures' vectors. 6,079 LUTs, 16 DSPs, 9 block RAM tiles; clk3x +0.192 ns.
+  - The PS solves the taps every 0.25 s (a fifth of a core), corrects the flagged codewords and
+    serves the live multiplex on `/api/v1/atsc/stream/{rf}`; the Viewer plays any named channel.
+  - On unit A: 079's gates held (an hour on Clay County at 40.3 messages a second, 100 %, no packet
+    fault); 17 stations named live on the directional, all of 081's and 083's; 30 minutes of
+    RF 19's 1080i in the Viewer and VLC with no codeword failed, MER 32.7 dB.
+  - A station with its pilot 885 Hz off (RF 34) needs the carrier loop started at the TV scan's
+    measurement; checking that path found and fixed a gateware mismatch with the model.

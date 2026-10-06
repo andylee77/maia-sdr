@@ -269,49 +269,51 @@ relaxed. Bake A's clk3x slack was +0.605 ns; the target here stays +0.4 ns at cl
 
 ## The bitstream
 
-Vivado 2023.2, `build_fpga_p25_pretty.sh`, the fourth build; XSA sha256 `cdbb148d…`.
+Vivado 2023.2, `build_fpga_p25_pretty.sh`, the fifth build (the fourth's design with the carrier
+loop's start fixed, "Gates on unit A"); XSA sha256 `c493089d…`.
 
-**Timing** (worst setup slack, no failing endpoint, no waiver; worst hold +0.019 ns, clk_fpga_0):
+**Timing** (worst setup slack, no failing endpoint, no waiver; worst hold +0.021 ns):
 
 | Clock | Setup | Bake A |
 |---|---:|---:|
-| clk3x (187.5 MHz) | **+0.179 ns** | +0.605 |
-| sync → clk3x | +0.538 | |
-| clk3x → sync | +1.229 | |
-| clk_fpga_0 (100 MHz, the AXI side) | +0.413 | |
-| rx_clk (the AD9361's interface) | +0.536 | |
-| sync (62.5 MHz) | +3.665 | |
+| clk3x (187.5 MHz) | **+0.192 ns** | +0.605 |
+| sync → clk3x | +0.553 | |
+| clk3x → sync | +0.975 | |
+| clk_fpga_0 (100 MHz, the AXI side) | +0.591 | |
+| rx_clk (the AD9361's interface) | +0.599 | |
+| sync (62.5 MHz) | +3.292 | |
 
-clk3x is the design's worst and below the plan's +0.4 ns target; 15 paths are under +0.4 ns, in
-three places in the front end: the field search's PN511 sign into its correlation (+0.179, 7
-levels), the datapath's turned I into y (+0.238), the matched filter's rounding into its output
-(+0.375).
+clk3x is the design's worst and below the plan's +0.4 ns target; 65 paths are under +0.4 ns, all
+in the front end and the equalizer: the datapath's turned I into y (+0.192, 6 levels) and its gain
+sum's clamp (+0.239), the sync logic's input into the early, late, PN511 and PN63 correlations
+(+0.312-0.379), the equalizer's place memory into its next field start (+0.332). The fourth build,
+the same design but for the start, met +0.179 ns with a different handful: placement moves these.
 
 **Utilization** (the route hook's `utilization_hier.rpt`):
 
 | Block | LUTs (LUT RAM) | FFs | RAMB36 | RAMB18 | DSP |
 |---|---:|---:|---:|---:|---:|
 | Matched filter | 429 (160) | 488 | 1 | | 5 |
-| Datapath: gain, turn, DC, loops | 426 | 642 | | 1 | 2 |
-| Scheduler, timing loop, segment and field syncs | 941 | 1,944 | 1 | 1 | |
-| Equalizer | 603 (240) | 687 | | | 8 |
-| MER, soft symbols, reorder | 157 (12) | 285 | | | 1 |
-| Trellis decoders and bytes | 1,469 (266) | 1,449 | | | |
+| Datapath: gain, turn, DC, loops | 461 | 612 | | 1 | 2 |
+| Scheduler, timing loop, segment and field syncs | 937 | 1,944 | 1 | 1 | |
+| Equalizer | 602 (240) | 687 | | | 8 |
+| MER, soft symbols, reorder | 158 (12) | 285 | | | 1 |
+| Trellis decoders and bytes | 1,468 (266) | 1,449 | | | |
 | Deinterleaver, syndromes | 510 (8) | 375 | 2 | | |
 | Codeword packets | 809 | 1,044 | 2 | | |
-| Snapshot packets | 602 | 634 | 2 | | |
+| Snapshot packets | 606 | 634 | 2 | | |
 | The block's crossings, field table, status | 104 | 1,872 | | | |
-| **The block** | **6,044 (686)** | **9,420** | **8** | **2** | **16** |
+| **The block** | **6,079 (686)** | **9,390** | **8** | **2** | **16** |
 | Its registers (three banks and their crossings) | 199 | 667 | | | |
-| **The core** | 13,564 | 20,265 | 36 | 37 | 62 |
+| **The core** | 13,587 | 20,237 | 36 | 37 | 62 |
 | Bake A's core | 7,124 | 10,136 | 28 | 35 | 46 |
-| **The design** | 21,689 (40.8 %) | 33,074 (31.1 %) | 46 | 42 | 84 (38.2 %) |
+| **The design** | 21,714 (40.8 %) | 33,046 (31.1 %) | 46 | 42 | 84 (38.2 %) |
 
-Block RAM tiles 67 of 140 (47.9 %), slices 77.7 % (bake A 59.5 %). Against 079's budget (about
-15 DSPs, 7,000 LUTs, 8 tiles): 16 DSPs, 6,243 LUTs with the registers, 9 tiles; the tile over is
+Block RAM tiles 67 of 140 (47.9 %), slices 77.5 % (bake A 59.5 %). Against 079's budget (about
+15 DSPs, 7,000 LUTs, 8 tiles): 16 DSPs, 6,278 LUTs with the registers, 9 tiles; the tile over is
 the deinterleaver's 5,304 bytes, which need a RAMB36 and a RAMB18 but took two RAMB36. The
 flip-flops are many more than the plan counted (the pipelines' registered steps, the crossings'
-held registers): 9,420 of the 83,455 bake A left free.
+held registers): 9,390 of the 83,455 bake A left free.
 
 How timing was closed at clk3x (each build's worst
 paths, and what changed; none changed what the block computes, and the stage and whole-field
@@ -342,7 +344,8 @@ tests ran again after each):
   synthesis of the two modules shows no block RAM or DSP in the decoders and five DSPs in the
   matched filter.
 - **Build 3** was stopped: build 2's resources changed the design again.
-- **Build 4: +0.179 ns,** met (above).
+- **Build 4: +0.179 ns,** met; the image `2026-10-05-bake-d1` and the gates ran on it.
+- **Build 5: +0.192 ns,** met (above), with the carrier loop's start fixed.
 
 ## Tests
 
@@ -434,3 +437,7 @@ DevTools protocol, sampling the player each minute.
   on five captures' vectors, the whole block in Verilator word for word. Four builds to close
   timing and hold the resources to the plan (above); the fourth meets it, clk3x +0.179 ns. Its
   XSA committed.
+- **2026-10-05.** The PS (e912c01) and the image `2026-10-05-bake-d1` on unit A; the gates
+  (above). RF 34's pilot offset led to the carrier loop's start from the TV scan and the
+  gateware's start fixed (0260906); the fifth build meets timing, clk3x +0.192 ns, its XSA
+  committed.

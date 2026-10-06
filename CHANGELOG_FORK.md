@@ -5,14 +5,15 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
 
 ---
 
-## [2026-10-05] 085: Bake D, the 8-VSB receiver in the PL, live ATSC TV (in progress)
+## [2026-10-05] 085: Bake D, the 8-VSB receiver in the PL, live ATSC TV
 
 **Branch:** fishball-p25 (local)
 **Bake required:** YES (radio core 2.1.0).
 
 - **Design and status:** `doc/changes/085_bake_d_8vsb_receiver.md`. Andy's decisions: no LMS in
   the PL (the PS solves the taps every 0.25 s); Verilator in a local Docker image for the
-  whole-field simulations.
+  whole-field simulations; a channel where every codeword fails holding the live thread at a core
+  is a known limit, left as it is.
 - **The gateware** (`scanner-hdl/radio_core/vsb/`): the AD9361's samples to Reed-Solomon's
   syndromes, bit for bit 083's model. In clk3x the matched filter at any instant (5 DSPs, the
   table written by the PS), the gain, turn and DC with their loops, the timing loop at the segment
@@ -25,12 +26,24 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   the PS shares with it moved to `protocol::atsc::live` (the matched filter's table, the step, the
   packets, the snapshot gatherer and the tap solve, a codeword's correction).
 - **Tests:** each stage against vectors the model writes from unit A's captures (Amaranth's
-  simulator), and the front end and the whole block in Verilator on five captures, every symbol
-  and every packet word equal to the model's.
+  simulator), and the front end and the whole block in Verilator on six vector sets (one shifted
+  885 Hz off the LO with the carrier loop told), every symbol and every packet word equal to the
+  model's.
+- **The bitstream:** clk3x +0.192 ns, no waiver (five builds: registered steps where the 16-cycle
+  evaluations allow; synthesis held to the plan's RAM and DSP mapping with attributes). The block
+  6,079 LUTs, 16 DSPs, 9 block RAM tiles.
 - **The PS:** `hardware::radiocore` drives the block and parses its packets; `services::atsc::live`
-  tunes, loads and runs it, corrects and derandomizes the codewords, solves and loads the taps,
-  reads PSIP; `/api/v1/atsc/stream/{rf}` serves the live multiplex where the block plays,
-  `/api/v1/atsc/live` its statistics; the Viewer plays any named channel live with them.
+  tunes, loads and runs it (the carrier loop started at the TV scan's pilot offset), corrects and
+  derandomizes the codewords, solves and loads the taps, reads PSIP; `/api/v1/atsc/stream/{rf}`
+  serves the live multiplex where the block plays, `/api/v1/atsc/live` its statistics; the Viewer
+  plays any named channel live with them. `tools/atsc_live_check.py` names stations live and
+  watches a channel.
+- **On unit A** (image `2026-10-05-bake-d1`): an hour on Clay County at 40.3 messages a second or
+  more, 100 %, no packet fault, lost or missed packet; Clay Electric DMR; fbench's core tests; 17
+  stations named live on the directional, all of 081's and 083's; 30 minutes of RF 19's 1080i in
+  the Viewer and VLC with no codeword failed, MER 32.7 dB, the A9's cores 19 % busy with the tap
+  solves a fifth of one. RF 34's pilot sits 885 Hz off: checking the carrier loop's start for it
+  found the gateware's start a step behind the model's, fixed.
 
 ## [2026-10-05] 084: The ATSC player, our own decoders in Rust for the browser, and a stream for VLC (in progress)
 
