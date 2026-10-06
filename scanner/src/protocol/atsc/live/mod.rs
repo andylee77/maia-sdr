@@ -64,6 +64,14 @@ pub fn step_word(fs: f64) -> u32 {
     (fs / SYMBOL_RATE * 4_294_967_296.0).round() as u32
 }
 
+/// The carrier loop's starting frequency for a channel whose centre is `centre_offset_hz` from
+/// the LO (θ a symbol beyond the quarter turn, 2^32 a turn). The loop pulls in a few hundred Hz
+/// while the front end settles; a station whose pilot sits further off (RF 34's, −885 Hz) needs
+/// its offset here, or the segment search runs before the loop has locked and never finds a field.
+pub fn carrier_word(centre_offset_hz: f64) -> i32 {
+    (-centre_offset_hz / SYMBOL_RATE * 4_294_967_296.0).round() as i32
+}
+
 /// A codeword as a transport stream packet: corrected by Reed-Solomon when its flag says a
 /// syndrome is not zero, derandomized for its place in the field (0-311), the sync byte first.
 pub fn transport(place: u16, bytes: &[u8; rs::N], flag: bool) -> fec::Packet {
@@ -98,5 +106,13 @@ mod tests {
         assert_eq!(step_word(10e6), 3_990_775_330);
         // The model's step on unit A's captures (its vectors' `step0`).
         assert_eq!(step_word(10e6 * (1.0 - 0.688e-6)), 3_990_772_585);
+    }
+
+    #[test]
+    fn the_carrier_starts_against_the_offset() {
+        assert_eq!(carrier_word(0.0), 0);
+        // A pilot 885 Hz low: the loop turns on by 885 Hz a symbol's worth.
+        assert_eq!(carrier_word(-885.0), (885.0 / SYMBOL_RATE * 4_294_967_296.0_f64).round() as i32);
+        assert!(carrier_word(40e3) < 0);
     }
 }

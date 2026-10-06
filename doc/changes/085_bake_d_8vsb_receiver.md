@@ -22,6 +22,9 @@ player. This is bake D (079, "The bakes").
   A9 core). An LMS could be added later without changing how taps load.
 - **Verilator in a local Docker image** (Ubuntu 24.04's package) for the whole-field simulations;
   Amaranth's simulator runs the stage tests.
+- **A channel where every codeword fails** (found on the unit, below): recorded as a known limit,
+  nothing changed. Faster Reed-Solomon on the PS, passing codewords through uncorrected when
+  behind, or the PL's syndromes in the packets remain options for later.
 
 ## The block
 
@@ -199,8 +202,16 @@ The banks are in sync like the others; their values reach clk3x as above.
 
 As 081's naming tunes it: the 10M preset (10 MSPS, 8 MHz bandwidth), the LO on the channel's centre
 plus the crystal shift, the slow-attack AGC. The PS writes the matched filter's table for the true
-sample rate (10 MSPS × (1 + crystal ppm)), `vsb_step` for the same rate, `vsb_carrier` 0 (the centre
-is at the LO, as the gate's captures were decoded), then `enable`. A retune drops `enable` first.
+sample rate (10 MSPS × (1 + crystal ppm)), `vsb_step` for the same rate, `vsb_carrier` for the
+pilot offset the last TV scan measured on the channel (0 without one; `live::carrier_word`), then
+`enable`. A retune drops `enable` first.
+
+The carrier loop pulls in a few hundred Hz while the front end settles (2^16 symbols, 6 ms). A
+station whose pilot sits further off its nominal place, as unit A's RF 34 does (−885 Hz; every
+other channel on A is within ±90 Hz), is still pulling in when the segment search runs: the search
+takes the wrong place, no field sync is found, and the front end does not search again. The
+model shows it on RF 14's capture shifted by −600, −885 and −1,200 Hz, and decodes each exactly as
+the unshifted capture when told the offset; on −300 Hz it needs no help.
 The lanes and the spectrum stay idle in ATSC mode (the mode has the radio to itself); the lane
 ring carries the block's packets.
 
@@ -378,6 +389,43 @@ tests ran again after each):
    lists on the same antenna; 30 minutes of one HD channel in the Viewer and in VLC, with the
    codeword failure rate, the MER against the model's on the long captures, and the A9's load with
    the solver running.
+
+## Gates on unit A
+
+Image `2026-10-05-bake-d1` (fishball-p25 d7aca14, tezuka_fw e2df4d9), the core 2.1.0. TV on the
+directional (the Yagi aimed at Jacksonville), as 081's and 083's directional lists.
+
+| Gate | Result |
+|------|--------|
+| An hour on Clay County | **Met:** 60 minutes, 61 samples; the control channel at 40.3 messages a second or more, 100 % passing; lanes 0-2 178,581 / 175,082 / 178,585 packets, none lost or missed, no packet fault; 27,467 spectrum frames, none missed; 371 calls (129 followed), 41 recordings; 4.4 % CPU; no panic or error |
+| Clay Electric DMR | **Met:** 10 minutes on `clay_elec_site_2`, the control channel at 43.6 messages a second or more, 100 % passing; lane 0 29,788 packets, none lost or missed, no fault; 4,582 spectrum frames, none missed. No calls came in the window |
+| fbench's tests that read the core, on the new map | **Met:** `sys.identity`; `xport.p25_ring_prbs` 1,919.9 MB in 60 s, no anomaly; `xport.p25_ring_lap` loss from a 450-500 ms stall against the model's 492 ms; `iface.fpga_loopback` 0 PN errors in 262,144 samples |
+| The stations named live, against 081's and 083's lists on the same antenna | **Met:** 17 stations named through the block, the 17 the PS's TV scan names on the same antenna, with the same TSIDs and channels: every station of 081's directional list (RF 9, 11, 13, 14, 17, 20, 23) and 083's (RF 14, 19, 20, 21, 30), and RF 24, 27, 28, 31, 33, 34, 35. Every TSID is in the HDHomeRun's lineup but RF 11's 0 (as 081 found). Fields came 0.6-1.5 s after each request (RF 34 9.5 s, below). RF 10, 25, 29 and 36 play at 16-17 dB with every codeword failing, as the model fails on 081's RF 10 and 36 captures |
+| 30 minutes of an HD channel in the Viewer and in VLC | **Met:** RF 19, 47.1 WJAXHD (1080i, AC-3 5.1), both on the stream at once. 23,210,381 codewords in the 30 minutes, none failed, none corrected; no restart, packet missed or dropped. The Viewer (headless Chrome) drew 53,875 pictures at 29.97 a second, 2 dropped, with no underrun and no sound frame or slice lost; Andy listened to it and the sound played unbroken throughout. VLC decoded the picture throughout with no stream error (its audio output did not open in the test's dummy setup) |
+| MER against the model's on the long captures | Live, the 30 minutes: 32.7 dB mean (28.9-34.7). 083's model on RF 19's directional capture: 33.0 dB with taps every 0.25 s, 33.8 dB with every field's own (another day; today's TV scan read 34.1 dB with the PS's receiver) |
+| The A9's load with the solver running | The scanner 52.4 % of one core (53.4 % at most), its live TV thread 6.5 %; the two cores 19.0 % and 18.6 % busy on average (23.8 % and 22.3 % at most). 7,037 tap solves at 50.3 ms (62 ms at most), one every 0.25 s: a fifth of a core (083 estimated a third) |
+
+`tools/atsc_live_check.py` ran the names and the watch; the Viewer ran in headless Chrome over the
+DevTools protocol, sampling the player each minute.
+
+**Found on the unit:**
+
+- **A pilot off its place (RF 34).** In the sweep RF 34 found its fields only after one restart
+  and lost 32 % of its codewords at 23.9 dB; played again it found none through four restarts,
+  its carrier loop reading +897 Hz. The TV scan had measured its pilot at −885 Hz from nominal.
+  The cause, and the model's reproduction, are in "How ATSC mode sets the radio for live TV": the
+  PS now starts the loop at the scan's offset. Checking the gateware with a start frequency (a
+  vector set from RF 14's capture shifted −885 Hz, `ATSC_VECTOR_SHIFT`) found it did not match the
+  model: the start went into the loop's sum but not into the frequency the first symbol's turn
+  reads, so θ trailed by one step. The datapath now loads both, and the set matches word for
+  word.
+- **A channel where every codeword fails holds the live TV thread at a full core.** On RF 10
+  (16-17 dB, no codeword correctable) the thread tried Reed-Solomon on each of the 12,894
+  codewords a second and managed about 7,500 (some 133 µs each); the 2.9 s queue filled and the
+  reader dropped 15,456 packets in 54 s. Such a channel shows nothing either way, but the thread
+  cannot keep up there. On RF 19 the thread takes 6.5 %. Andy: a known limit, left as it is.
+- **The dropped-packet count** in live TV's statistics counted since boot; it counts each session
+  now, as the others do.
 
 ## Status log
 

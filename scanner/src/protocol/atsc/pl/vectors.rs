@@ -21,6 +21,7 @@
 
 use super::*;
 use crate::protocol::atsc::demod::SYMBOL_RATE;
+use crate::protocol::atsc::live;
 
 fn write(dir: &std::path::Path, name: &str, bytes: &[u8]) {
     std::fs::write(dir.join(name), bytes).unwrap();
@@ -29,7 +30,8 @@ fn write(dir: &std::path::Path, name: &str, bytes: &[u8]) {
 /// Offline: `ATSC_VECTOR_CAPTURE` (a `.cs16` capture) through the model into `ATSC_VECTOR_OUT`.
 /// `ATSC_VECTOR_FIELDS`: fields to decode (default 6); `ATSC_VECTOR_PPM`: the crystal's error
 /// (default −0.688, unit A on 083's captures); `ATSC_VECTOR_TRACE`: the symbols whose front-end
-/// stages to keep, from the first (default all).
+/// stages to keep, from the first (default all); `ATSC_VECTOR_SHIFT`: Hz to move the channel off
+/// the LO, the carrier loop told so (`meta.json`'s `carrier0`, default 0).
 #[test]
 #[ignore]
 fn vectors_for_the_hdl() {
@@ -37,6 +39,7 @@ fn vectors_for_the_hdl() {
     let fields: usize = std::env::var("ATSC_VECTOR_FIELDS").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
     let ppm: f64 = std::env::var("ATSC_VECTOR_PPM").ok().and_then(|v| v.parse().ok()).unwrap_or(-0.688);
     let traced: usize = std::env::var("ATSC_VECTOR_TRACE").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
+    let shift: f64 = std::env::var("ATSC_VECTOR_SHIFT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let dir = std::path::Path::new(&out);
     std::fs::create_dir_all(dir).unwrap();
     let fs = 10e6 * (1.0 + ppm * 1e-6);
@@ -45,8 +48,17 @@ fn vectors_for_the_hdl() {
     // one counted, then the fields asked for and one more for the decoder's delay.
     let symbols = front::SETTLE + 64 * crate::protocol::atsc::vsb::SEGMENT + (fields + 3) * FIELD;
     let samples = (symbols as f64 * fs / SYMBOL_RATE) as usize + 1000;
-    let x = study::read_adc(std::path::Path::new(&capture), samples);
-    let f = front::run(&x, fs, 0.0, &cfg, 0..traced);
+    let mut x = study::read_adc(std::path::Path::new(&capture), samples);
+    if shift != 0.0 {
+        // The channel moved off the LO, and the carrier loop told so (the block's `carrier0`).
+        let w = 2.0 * std::f64::consts::PI * shift / 10e6;
+        for (k, s) in x.iter_mut().enumerate() {
+            let (sin, cos) = (w * k as f64).sin_cos();
+            let (re, im) = (f64::from(s[0]), f64::from(s[1]));
+            *s = [(re * cos - im * sin).round() as i16, (re * sin + im * cos).round() as i16];
+        }
+    }
+    let f = front::run(&x, fs, shift, &cfg, 0..traced);
     let mut trace = BackTrace::default();
     let run = back_traced(&f, &cfg, &mut trace).expect("field syncs");
 
@@ -146,6 +158,8 @@ fn vectors_for_the_hdl() {
         "capture": capture,
         "fs": fs,
         "step0": (fs / SYMBOL_RATE * 4_294_967_296.0).round() as u64,
+        "shift_hz": shift,
+        "carrier0": live::carrier_word(shift),
         "settle": front::SETTLE,
         "inputs": x.len(),
         "symbols": f.y.len(),

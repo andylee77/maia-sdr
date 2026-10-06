@@ -265,7 +265,7 @@ pub fn run(x: &[[i16; 2]], fs: f64, centre_offset_hz: f64, cfg: &Config, trace: 
     let mut pos: u64 = ((mf.half as u64) << 32) + (1 << 31);
     let mut rate_acc: i64 = 0;
     let mut theta: u32 = 0;
-    let mut freq_acc: i64 = ((-centre_offset_hz / SYMBOL_RATE * 4_294_967_296.0).round() as i64) << l.carrier_ki;
+    let mut freq_acc: i64 = i64::from(live::carrier_word(centre_offset_hz)) << l.carrier_ki;
     let mut gain_acc: i64 = 1 << (GAIN_ONE_BITS + l.gain_k);
     let mut dc_acc: i64 = 0;
     let mut segments = Segments::Settle;

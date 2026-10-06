@@ -113,7 +113,8 @@ class Datapath(Elaboratable):
         dc = Signal(signed(DC_SUM_WIDTH - DC_K))
         loaded = Signal()
         with m.If(~loaded):
-            m.d.sync += [loaded.eq(1), freq_sum.eq(self.carrier0 << CARRIER_KI)]
+            # The starting frequency, in the sum and in what the first symbol's step reads.
+            m.d.sync += [loaded.eq(1), freq_sum.eq(self.carrier0 << CARRIER_KI), freq.eq(self.carrier0)]
 
         # ── Cycle 0: the input ───────────────────────────────────────────────────────────
         s1_valid = Signal()

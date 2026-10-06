@@ -3,9 +3,9 @@
 //!
 //! In ATSC mode live TV takes the radio as a scan does (the two exclude each other) and tunes the
 //! channel as 081's naming does: the 10M preset (10 MSPS), the LO on the channel's centre with the
-//! crystal shift, the slow-attack AGC. The block gets its matched filter for the true sample rate
-//! and its nominal symbol step, and starts. Its packets come through the lane ring to a thread
-//! here:
+//! crystal shift, the slow-attack AGC. The block gets its matched filter for the true sample rate,
+//! its nominal symbol step and its carrier loop's start (the pilot offset the last TV scan
+//! measured on the channel), and starts. Its packets come through the lane ring to a thread here:
 //!
 //! - codewords: each corrected where its flag says so and derandomized
 //!   (`protocol::atsc::live::transport`), counted, handed to the stream's players and read for
@@ -32,7 +32,7 @@ use crate::hardware::radiocore::VsbStatus;
 use crate::protocol::atsc::demod::SYMBOL_RATE;
 use crate::protocol::atsc::fec::rs;
 use crate::protocol::atsc::live::packets::{self, Gathered, Gatherer, CODEWORDS, FLAG_RERUN, FLAG_TRACKING, PACKET, SNAPSHOT};
-use crate::protocol::atsc::live::{matched_filter, step_word, table_words, taps, transport, MF_DSPS, MF_TAP_BITS};
+use crate::protocol::atsc::live::{carrier_word, matched_filter, step_word, table_words, taps, transport, MF_DSPS, MF_TAP_BITS};
 use crate::protocol::atsc::psip::Psip;
 use crate::protocol::atsc::ts::Sections;
 use crate::protocol::atsc::Channel;
@@ -69,6 +69,9 @@ pub struct LiveStats {
     /// error.
     pub state: &'static str,
     pub rf: Option<u8>,
+    /// Where the carrier loop starts: the channel's centre off the LO, Hz (the pilot offset the
+    /// last TV scan measured; 0 without one).
+    pub offset_hz: f64,
     pub started_unix_ms: u64,
     pub error: Option<String>,
     /// The block's registers.
@@ -167,12 +170,12 @@ impl Live {
         });
     }
 
-    /// Tune `rf` and start the block; `radio` is ATSC mode's hold on the radio, kept while it
-    /// plays.
-    pub async fn start<H: RadioHw + 'static>(self: &Arc<Self>, rf: u8, tuner: Arc<Tuner<H>>, log: Arc<EventLog>, radio: Box<dyn std::any::Any + Send>) -> Result<()> {
+    /// Tune `rf` and start the block, its carrier loop at `offset_hz` (the channel's centre off
+    /// the LO); `radio` is ATSC mode's hold on the radio, kept while it plays.
+    pub async fn start<H: RadioHw + 'static>(self: &Arc<Self>, rf: u8, offset_hz: f64, tuner: Arc<Tuner<H>>, log: Arc<EventLog>, radio: Box<dyn std::any::Any + Send>) -> Result<()> {
         let ch = Channel::get(rf).with_context(|| format!("RF channel {rf} is not in the plan"))?;
         anyhow::ensure!(tuner.hw().vsb_present().await, "the radio core has no 8-VSB block (core 2.1 or later)");
-        self.update(|s| *s = LiveStats { state: "starting", rf: Some(rf), started_unix_ms: unix_ms(), ..Default::default() });
+        self.update(|s| *s = LiveStats { state: "starting", rf: Some(rf), offset_hz, started_unix_ms: unix_ms(), ..Default::default() });
         let preset = find_preset(PRESET).context("the live TV preset")?;
         tuner.apply(TuningPlan { preset, lo_hz: ch.center_hz(), control_hz: ch.center_hz() }).await?;
         tuner.set_gain(GainMode::SlowAttack, None).await?;
@@ -182,8 +185,9 @@ impl Live {
         let (_, n, table) = matched_filter(fs, MF_TAP_BITS);
         let table = table_words(n, &table).context("the matched filter's table does not fit the block")?;
         let step = step_word(fs);
+        let carrier = carrier_word(offset_hz);
         let (tx, rx) = sync_channel::<Vec<u8>>(QUEUE);
-        tuner.hw().vsb_start(table.clone(), step, 0, tx.clone()).await?;
+        tuner.hw().vsb_start(table.clone(), step, carrier, tx.clone()).await?;
         let stop = Arc::new(AtomicBool::new(false));
         let (snaps_tx, snaps_rx) = mpsc::channel::<Gathered>(4);
         let thread = {
@@ -195,7 +199,7 @@ impl Live {
         };
         let control = {
             let (me, stop) = (self.clone(), stop.clone());
-            let start = Start { table, step, packets: tx };
+            let start = Start { table, step, carrier, packets: tx };
             tokio::spawn(async move { me.control(tuner, start, snaps_rx, stop).await })
         };
         log.system("atsc", format!("live TV on RF {rf} ({:.3} MHz)", ch.center_hz() as f64 / 1e6));
@@ -301,6 +305,8 @@ impl Live {
     /// The block's status, its snapshots asked for and solved, its restarts.
     async fn control<H: RadioHw>(self: Arc<Self>, tuner: Arc<Tuner<H>>, start: Start, mut snaps: mpsc::Receiver<Gathered>, stop: Arc<AtomicBool>) {
         let hw = tuner.hw();
+        // The reader's drops count since boot; these statistics count this session's.
+        let dropped_before = hw.vsb_dropped();
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut started = Instant::now();
@@ -338,7 +344,7 @@ impl Live {
                 }
             }
             let Some(status) = hw.vsb_status().await else { break };
-            let dropped = hw.vsb_dropped();
+            let dropped = hw.vsb_dropped() - dropped_before;
             let fields = status.fields;
             self.update(|s| {
                 s.block = Some(status);
@@ -364,7 +370,7 @@ impl Live {
             let never = !seen_fields && started.elapsed() > FIRST_FIELDS;
             if status.overrun || lost || never {
                 tracing::info!("live TV: the block starts afresh (overrun {}, fields lost {lost}, none found {never})", status.overrun);
-                if let Err(e) = hw.vsb_start(start.table.clone(), start.step, 0, start.packets.clone()).await {
+                if let Err(e) = hw.vsb_start(start.table.clone(), start.step, start.carrier, start.packets.clone()).await {
                     self.update(|s| {
                         s.state = "error";
                         s.error = Some(format!("{e:#}"));
@@ -384,6 +390,7 @@ impl Live {
 struct Start {
     table: Vec<[u16; MF_DSPS]>,
     step: u32,
+    carrier: i32,
     packets: SyncSender<Vec<u8>>,
 }
 

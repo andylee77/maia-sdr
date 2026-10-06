@@ -96,13 +96,16 @@ int main(int argc, char** argv) {
     auto model = load<uint64_t>(dir + "/packets.bin");
     std::ifstream mf(dir + "/meta.json");
     std::string meta((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
-    auto num = [&](const char* key) -> int64_t {
+    auto num = [&](const char* key, int64_t missing = -1) -> int64_t {
         auto at = meta.find(std::string("\"") + key + "\"");
-        if (at == std::string::npos) return -1;
+        if (at == std::string::npos) return missing;
         at = meta.find(':', at);
         return strtoll(meta.c_str() + at + 1, nullptr, 10);
     };
     uint64_t step0 = (uint64_t)num("step0");
+    // The carrier loop's starting frequency: the channel moved off the LO (vector sets without
+    // one were made at the LO).
+    int32_t carrier0 = (int32_t)num("carrier0", 0);
     size_t model_packets = model.size() / 512;
 
     VerilatedContext ctx;
@@ -121,7 +124,7 @@ int main(int argc, char** argv) {
     top.rst = 0;
     top.clk3x_rst = 0;
     top.step0 = (uint32_t)step0;
-    top.carrier0 = 0;
+    top.carrier0 = (uint32_t)carrier0;
     for (int p = 0; p < 64; p++)
         for (int c = 0; c < 8; c++) {
             uint64_t w = 0;

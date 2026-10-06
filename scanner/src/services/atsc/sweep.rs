@@ -127,15 +127,17 @@ impl Atsc {
         self.radio.lock().await.take().and_then(|h| h.back_to)
     }
 
-    /// Live TV on RF `rf`: what played stops, and the radio goes to the block. Refused outside
-    /// ATSC mode or while a scan runs.
+    /// Live TV on RF `rf`: what played stops, and the radio goes to the block, its carrier loop
+    /// started at the pilot offset the last TV scan measured on the channel. Refused outside ATSC
+    /// mode or while a scan runs.
     pub async fn live_start<H: RadioHw + 'static>(self: &Arc<Self>, rf: u8, tuner: Arc<Tuner<H>>, log: Arc<EventLog>) -> Result<()> {
         self.live.stop().await;
         let radio = self.radio.clone().try_lock_owned().map_err(|_| anyhow!("a TV scan is running"))?;
         if radio.is_none() || self.leaving.load(Ordering::SeqCst) {
             bail!("the unit is not in ATSC mode");
         }
-        let result = self.live.start(rf, tuner, log, Box::new(radio)).await;
+        let offset_hz = self.lock().found.iter().find(|c| c.number == rf).and_then(|c| c.pilot_offset_hz).unwrap_or(0);
+        let result = self.live.start(rf, offset_hz as f64, tuner, log, Box::new(radio)).await;
         if let Err(e) = &result {
             self.live.failed(rf, e);
         }

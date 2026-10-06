@@ -152,6 +152,24 @@ fn a_station_off_centre_and_off_clock_still_decodes_through_the_model() {
     assert_eq!((st.failed, st.psip.tsid), (0, Some(601)), "MER {}", run.mer_db());
 }
 
+/// A pilot 885 Hz off the channel's centre (unit A's RF 34): the carrier loop pulls in only after
+/// the segment search has run, and the decode fails, unless the loop starts at the offset (the PS
+/// gives the block the TV scan's measurement).
+#[test]
+fn a_station_885_hz_off_centre_needs_the_loop_started_there() {
+    let fs = 10e6;
+    let iq: Vec<Complex32> = modulate(&station_packets(6), fs, 0.6)
+        .into_iter()
+        .enumerate()
+        .map(|(k, s)| s * Complex32::from_polar(1.0, (-2.0 * std::f64::consts::PI * 885.0 * k as f64 / fs) as f32))
+        .collect();
+    let x = as_adc(&iq, 80.0);
+    let told = ps::station(&run(&x, fs, -885.0, &CONFIG).expect("field syncs").packets);
+    assert_eq!((told.failed, told.psip.tsid), (0, Some(601)));
+    let (_, _, failed) = measure(run(&x, fs, 0.0, &CONFIG));
+    assert!(failed > 0, "decoded without the offset");
+}
+
 /// The HDHomeRun's programmes: (TSID, "major.minor name").
 fn lineup(path: &std::path::Path) -> Vec<(u16, String)> {
     let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
