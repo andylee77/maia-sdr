@@ -8,13 +8,18 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 
 - **The radio core (079):** the gateware plan for every mode is in
   `doc/changes/079_general_radio_core.md`, "Every mode's needs". Bake A (change 082, core 2.0.0)
-  is on unit A; its burst-timing gate waits for Andy (`tools/burst_timing.py`). Bakes B and C
-  wait for their evidence (079, "The bakes"). Bake D's evidence is in: the model and long
-  captures (083, `scanner/src/protocol/atsc/pl`) and the browser's player (084).
+  is in; its burst-timing gate waits for Andy (`tools/burst_timing.py`). Bake D (change 085,
+  core 2.1.0: the 8-VSB receiver in the PL, live ATSC TV) is on unit A. Bakes B and C wait for
+  their evidence (079, "The bakes").
+- **Live ATSC TV (085):** `doc/changes/085_bake_d_8vsb_receiver.md`. The block
+  (`scanner-hdl/radio_core/vsb/`) matches 083's model (`scanner/src/protocol/atsc/pl`) bit for
+  bit; the PS's half is `protocol::atsc::live` and `services::atsc::live`;
+  `tools/atsc_live_check.py` names stations live and watches a channel. Known limit: a channel
+  where every codeword fails holds the live thread at a core.
 - **The ATSC player (084):** `doc/changes/084_atsc_player.md`: our own decoders in Rust for the
-  browser (the transport stream, AC-3, MPEG-2 video), and the stream for VLC. The Viewer plays a
-  recorded channel's picture and sound; live TV waits for bake D. H.262 (2000) and its corrigenda are in
-  `C:\Users\Andy\Projects\_shared\ITU\H.262\`.
+  browser (the transport stream, AC-3, MPEG-2 video), and the stream for VLC. The Viewer plays any
+  named channel live (085), or a recorded one without the block. H.262 (2000) and its corrigenda
+  are in `C:\Users\Andy\Projects\_shared\ITU\H.262\`.
 - **The cleanup:** `doc/CLEANUP_INVENTORY.md`, section 14's batches.
 - **Data mode:** a study with Andy's decisions, `scanner/doc/DATA_MODE.md`.
 - **The UI replacement:** `scanner/doc/UI_BRIEF.md`.
@@ -26,7 +31,7 @@ an AD9361 or AD9363), built on Maia SDR's gateware. Fork `andylee77/maia-sdr`, b
 | `scanner/` | The daemon on the Zynq PS (Rust): the radio core's driver, the demodulators, trunking, audio, history, ATSC, API, web UI (`src/ui/`, plain ES modules embedded at compile time). Design: `scanner/doc/DESIGN.md` |
 | `scanner/core-pac/` | The register PAC, generated from the radio core's SVD by the FPGA build |
 | `scanner/player/` | The ATSC player (`atsc-player`, MIT, no dependencies, built to WebAssembly for the Viewer): the transport stream, AC-3, MPEG-2 video. FFmpeg is only its tests' reference (084) |
-| `scanner-hdl/` | The fork's gateware (Amaranth): `radio_core/` (the radio core 2.0.0, product "rad1"), `hwval_hdl/` (hardware validation), their tests (`test/`, `test_cocotb/`) and `generate_svd.py`. It imports upstream `maia_hdl` |
+| `scanner-hdl/` | The fork's gateware (Amaranth): `radio_core/` (the radio core 2.1.0, product "rad1", its 8-VSB block in `vsb/`), `hwval_hdl/` (hardware validation), their tests (`test/`, `test_cocotb/`, the Verilator benches in `test_verilator/`) and `generate_svd.py`. It imports upstream `maia_hdl` |
 | `maia-hdl/` | Upstream Maia's gateware, unchanged apart from the fork's Vivado projects (`projects/fishball7020_p25/`, `fishball7020_hwval/`) and IP packaging (`ip/p25-core/`, `ip/hwval-core/`), which stay there because ADI's scripts use paths relative to them |
 | `bench/` | `fbench` CLI and board agent (`doc/HW_VALIDATION_SUITE.md`); its runs go to `runs/bench/` |
 | `tools/` | Host scripts: the SDRTrunk reference harnesses, DDC filter design, the API field reference, TV checks |
@@ -63,6 +68,11 @@ Every commit builds and passes these, run from `scanner/`:
   `MAIA_HDL_SLOW_TESTS=1`. Three upstream model tests (`test_cpwr`, `test_floating_point`,
   `test_packer`) fail on Windows with numpy 2's integer types; the hardware they model is
   unchanged.
+- **The 8-VSB block's whole fields,** when `scanner-hdl/radio_core/vsb/` or the model changes:
+  `MAIA_HDL_SLOW_TESTS=1 VSB_VECTORS=<set> python -m pytest test/test_vsb_whole.py` from
+  `scanner-hdl/`, Verilator in Docker (`test_verilator/Dockerfile`), on each of the six sets in
+  `runs/atsc/vectors/` (written by `pl::vectors`, 085's "Tests"); every symbol and packet word
+  must match the model.
 - **Bench host tests,** when `bench/` changes: `python -m pytest` from `bench/`.
 - **Player tests,** when `scanner/player/` changes: `cargo test` from `scanner/player/`, with
   `ATSC_PLAYER_DATA=C:/Users/Andy/Projects/MAIA_SDR/maia-sdr/runs/atsc/captures_20261004` for the
@@ -95,7 +105,7 @@ Every commit builds and passes these, run from `scanner/`:
 
 | Unit | Address | Board | Image | Notes |
 |------|---------|-------|-------|-------|
-| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.0.0 (`2026-10-04-bake-a1`) | The unit in use |
+| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.1.0 (`2026-10-05-bake-d2`) | The unit in use; its feed on the directional (Yagi) since 085 |
 | B | `192.168.12.1` (USB) | AD9363, internal antenna | not in use; it needs the current image before anything runs on it | |
 
 - **SSH:** write the full command literally, never through a variable:

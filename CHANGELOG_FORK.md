@@ -43,7 +43,8 @@ Upstream: [F5OEO/maia-sdr](https://github.com/F5OEO/maia-sdr) (originally [maia-
   stations named live on the directional, all of 081's and 083's; 30 minutes of RF 19's 1080i in
   the Viewer and VLC with no codeword failed, MER 32.7 dB, the A9's cores 19 % busy with the tap
   solves a fifth of one. RF 34's pilot sits 885 Hz off: checking the carrier loop's start for it
-  found the gateware's start a step behind the model's, fixed.
+  found the gateware's start a step behind the model's, fixed; on the image `2026-10-05-bake-d2`
+  RF 34 plays live with 0.001 % of its codewords failed.
 
 ## [2026-10-05] 084: The ATSC player, our own decoders in Rust for the browser, and a stream for VLC (in progress)
 

@@ -3,8 +3,8 @@
 **Date:** 2026-10-05. **Branch:** fishball-p25. **Bake required:** YES (radio core 2.1.0, product
 "rad1": the 8-VSB block in the banks bake A kept for it; the scanner of the same commit reads it).
 
-**Status:** steps 1-3 done (the plan, the gateware with its tests, the bitstream); the PS's side
-written and tested on the host; the image and the gates on unit A to come.
+**Status:** done. The gateware, the bitstream, the PS and the image `2026-10-05-bake-d2` on unit
+A; the gates met (below). Local commits, not pushed.
 
 ## Why
 
@@ -421,7 +421,9 @@ DevTools protocol, sampling the player each minute.
   vector set from RF 14's capture shifted −885 Hz, `ATSC_VECTOR_SHIFT`) found it did not match the
   model: the start went into the loop's sum but not into the frequency the first symbol's turn
   reads, so θ trailed by one step. The datapath now loads both, and the set matches word for
-  word.
+  word. On the image with both (`2026-10-05-bake-d2`) the scan measured RF 34 at −923 Hz; live,
+  it found its fields 1.3-1.4 s after each of two requests with no restart, and over two minutes
+  1,513,540 codewords had 2,047 corrected and 21 failed, MER 23.8 dB.
 - **A channel where every codeword fails holds the live TV thread at a full core.** On RF 10
   (16-17 dB, no codeword correctable) the thread tried Reed-Solomon on each of the 12,894
   codewords a second and managed about 7,500 (some 133 µs each); the 2.9 s queue filled and the
@@ -441,3 +443,10 @@ DevTools protocol, sampling the player each minute.
   (above). RF 34's pilot offset led to the carrier loop's start from the TV scan and the
   gateware's start fixed (0260906); the fifth build meets timing, clk3x +0.192 ns, its XSA
   committed.
+- **2026-10-05.** The image `2026-10-05-bake-d2` (fishball-p25 6c68172, tezuka_fw 2827b89) on
+  unit A, its boot files also in `/mnt/sd/boot_new_baked2`; bake-d1's are in
+  `/mnt/sd/boot_new_baked1`, bake A's in `/mnt/sd/boot_backup_bakea1`. A answered 46 s after the
+  reboot, core 2.1.0. RF 34 plays live with the carrier start (above). A back in scanner mode on
+  Clay County, its feed left on the directional: 10 minutes at 40.3 messages a second or more,
+  100 % passing, lanes 0-2 29,787 / 14,994 / 29,787 packets with none lost or missed, no packet
+  fault, 4,581 spectrum frames with none missed.
