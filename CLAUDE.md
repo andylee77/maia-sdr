@@ -105,7 +105,7 @@ Every commit builds and passes these, run from `scanner/`:
 
 | Unit | Address | Board | Image | Notes |
 |------|---------|-------|-------|-------|
-| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.1.0 (`2026-10-05-bake-d2`) | The unit in use; its feed on the directional (Yagi) since 085 |
+| A | `192.168.120.50` (Ethernet) | AD9361, external antenna | radio core 2.1.0 (`2026-10-06-rec1`) | The unit in use; its feed on the directional (Yagi) since 085 |
 | B | `192.168.12.1` (USB) | AD9363, internal antenna | not in use; it needs the current image before anything runs on it | |
 
 - **SSH:** write the full command literally, never through a variable:
@@ -120,7 +120,8 @@ Every commit builds and passes these, run from `scanner/`:
   - Log: `/var/log/scanner.log`. Web UI on port 8080 (HTTPS 8443).
 - **State on a unit:**
   - `/mnt/jffs2/scanner/` (`radio.json`, `systems.json`, `state/`);
-  - `/mnt/sd/scanner-history.sqlite` and `/mnt/sd/p25_recordings/`.
+  - `/mnt/sd/scanner-history.sqlite` and `/mnt/sd/p25_recordings/` (UTC day folders, locked ones
+    under `locked/`; FAT32 allows a directory about 8,000 recordings, 086).
   - A's flash still holds p25-httpd's old files; nothing reads them.
 - **Shared units:** before a restart, deploy, retune or site switch, run `ListAgents` and message
   any other session that may be using the unit.

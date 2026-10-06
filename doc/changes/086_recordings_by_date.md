@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-06. **Branch:** fishball-p25. **Bake required:** NO.
 
-**Status:** done on unit A (test build `2026-10-06-rec1`); the SD image with it to come.
+**Status:** done; unit A runs the SD image `2026-10-06-rec1` with it.
 
 ## Why
 
@@ -117,3 +117,7 @@ goes. Settings shows them; a lowered retention deletes at once, as before.
   8 GB, 4,000 a folder; alert calls locked, and a Lock button.
 - **2026-10-06.** The scanner's side, with tests (host 515, the ARM check, the DMR reference, the
   UI checks); on unit A the files moved and the test build `2026-10-06-rec1` running (above).
+- **2026-10-06.** The SD image `2026-10-06-rec1` (fishball-p25 7473ddb, tezuka_fw 2827b89, the
+  radio core 2.1.0's fifth build) on unit A, its boot files also in `/mnt/sd/boot_new_rec1`
+  (bake-d2's in `/mnt/sd/boot_new_baked2`). After the reboot the listing found 8,792 recordings
+  and new ones wrote in 12 ms; A on Clay County.
